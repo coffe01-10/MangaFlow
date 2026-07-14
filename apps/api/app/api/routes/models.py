@@ -25,7 +25,10 @@ def vertex_status() -> VertexStatusRead:
         credential_file_present=present,
         location=settings.google_cloud_location,
         text_model=settings.vertex_text_model,
-        image_models=[settings.vertex_image_model_default, settings.vertex_image_model_quality],
+        image_models=[
+            settings.vertex_image_model_nano_banana_2,
+            settings.vertex_image_model_nano_banana_pro,
+        ],
         verification="not_run",
         message="服务端凭据已配置，尚未执行联网验证"
         if settings.vertex_configured
@@ -55,7 +58,10 @@ def verify_vertex_credentials() -> VertexStatusRead:
         credential_file_present=True,
         location=settings.google_cloud_location,
         text_model=settings.vertex_text_model,
-        image_models=[settings.vertex_image_model_default, settings.vertex_image_model_quality],
+        image_models=[
+            settings.vertex_image_model_nano_banana_2,
+            settings.vertex_image_model_nano_banana_pro,
+        ],
         verification="verified",
         message="Vertex AI 服务账号验证成功",
     )

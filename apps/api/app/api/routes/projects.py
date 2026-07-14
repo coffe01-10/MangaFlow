@@ -20,7 +20,8 @@ def list_projects(db: Session = Depends(get_db)) -> list[Project]:
 
 @router.post("", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
 def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> Project:
-    project = Project(**payload.model_dump())
+    values = payload.model_dump()
+    project = Project(**values, image_model_alias=values["last_image_model_alias"])
     db.add(project)
     db.commit()
     db.refresh(project)
@@ -48,6 +49,8 @@ def update_project(
     changes = payload.model_dump(exclude_unset=True, exclude={"version"})
     for key, value in changes.items():
         setattr(project, key, value)
+    if "last_image_model_alias" in changes:
+        project.image_model_alias = changes["last_image_model_alias"]
     project.version += 1
     db.commit()
     db.refresh(project)

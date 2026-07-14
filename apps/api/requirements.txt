@@ -5,5 +5,7 @@ pillow==12.3.0
 pydantic==2.13.4
 pydantic-settings==2.14.2
 python-multipart==0.0.32
+redis==6.4.0
+rq==2.6.1
 sqlalchemy==2.0.51
 uvicorn[standard]==0.51.0

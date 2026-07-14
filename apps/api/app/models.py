@@ -75,7 +75,14 @@ class Project(Timestamped, Base):
     consistency_check_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     default_style_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     text_model_alias: Mapped[str] = mapped_column(String(64), default="text.fast")
-    image_model_alias: Mapped[str] = mapped_column(String(64), default="image.fast")
+    # Kept for a one-migration compatibility window. New code uses the neutral
+    # last-used value and requires every generation request to choose a model.
+    image_model_alias: Mapped[str] = mapped_column(
+        String(64), default="image.nano_banana_2"
+    )
+    last_image_model_alias: Mapped[str] = mapped_column(
+        String(64), default="image.nano_banana_2"
+    )
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     chapters: Mapped[list["Chapter"]] = relationship(
@@ -125,7 +132,10 @@ class Character(Timestamped, Base):
     project_id: Mapped[str] = mapped_column(
         ForeignKey("projects.id", ondelete="CASCADE"), index=True
     )
-    name: Mapped[str] = mapped_column(String(120))
+    primary_name: Mapped[str] = mapped_column(String(120))
+    aliases: Mapped[list] = mapped_column(JSON, default=list)
+    aliases_normalized: Mapped[list] = mapped_column(JSON, default=list)
+    alias_conflict: Mapped[bool] = mapped_column(Boolean, default=False)
     canonical_description: Mapped[str] = mapped_column(Text, default="")
     locked_features: Mapped[list] = mapped_column(JSON, default=list)
     forbidden_changes: Mapped[list] = mapped_column(JSON, default=list)
@@ -181,6 +191,7 @@ class Asset(Timestamped, Base):
     height: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source: Mapped[str] = mapped_column(String(32), default="USER_UPLOAD")
     status: Mapped[AssetStatus] = mapped_column(Enum(AssetStatus), default=AssetStatus.UPLOADED)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Scene(Timestamped, Base):
@@ -223,13 +234,14 @@ class Beat(Timestamped, Base):
 
 class MangaPage(Timestamped, Base):
     __tablename__ = "manga_pages"
-    __table_args__ = (UniqueConstraint("chapter_id", "page_number", "version"),)
+    __table_args__ = (UniqueConstraint("chapter_id", "page_number", "revision_no"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     chapter_id: Mapped[str] = mapped_column(
         ForeignKey("chapters.id", ondelete="CASCADE"), index=True
     )
     page_number: Mapped[int] = mapped_column(Integer)
+    revision_no: Mapped[int] = mapped_column(Integer, default=1)
     page_function: Mapped[str] = mapped_column(String(32), default="dialogue")
     panel_count: Mapped[int] = mapped_column(Integer, default=4)
     reading_direction: Mapped[str] = mapped_column(String(8), default="rtl")
@@ -239,6 +251,11 @@ class MangaPage(Timestamped, Base):
     scene_ids: Mapped[list] = mapped_column(JSON, default=list)
     beat_ids: Mapped[list] = mapped_column(JSON, default=list)
     locked_fields: Mapped[list] = mapped_column(JSON, default=list)
+    estimated_text_chars: Mapped[int] = mapped_column(Integer, default=0)
+    estimated_bubbles: Mapped[int] = mapped_column(Integer, default=0)
+    source_coverage: Mapped[dict] = mapped_column(JSON, default=dict)
+    selected_candidate_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    continuity_status: Mapped[str] = mapped_column(String(32), default="NOT_CHECKED")
 
     panels: Mapped[list["Panel"]] = relationship(cascade="all, delete-orphan")
 
@@ -314,6 +331,19 @@ class GenerationJob(Timestamped, Base):
     max_attempts: Mapped[int] = mapped_column(Integer, default=3)
     model_alias: Mapped[str | None] = mapped_column(String(64), nullable=True)
     request_parameters: Mapped[dict] = mapped_column(JSON, default=dict)
+    progress: Mapped[int] = mapped_column(Integer, default=0)
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String(160), nullable=True, unique=True
+    )
+    scheduled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_owner: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -362,8 +392,11 @@ class InspectionResult(Base):
     __tablename__ = "inspection_results"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    generation_record_id: Mapped[str] = mapped_column(
-        ForeignKey("generation_records.id", ondelete="CASCADE"), index=True
+    generation_record_id: Mapped[str | None] = mapped_column(
+        ForeignKey("generation_records.id", ondelete="CASCADE"), index=True, nullable=True
+    )
+    candidate_id: Mapped[str | None] = mapped_column(
+        ForeignKey("page_candidates.id", ondelete="CASCADE"), index=True, nullable=True
     )
     category: Mapped[str] = mapped_column(String(48))
     outcome: Mapped[str] = mapped_column(String(48))
@@ -388,3 +421,161 @@ class RepairPlan(Base):
     automatic_attempts: Mapped[int] = mapped_column(Integer, default=0)
     max_automatic_attempts: Mapped[int] = mapped_column(Integer, default=3)
     manual_review_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class SourceSegment(Base):
+    __tablename__ = "source_segments"
+    __table_args__ = (UniqueConstraint("source_revision_id", "ordinal"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    source_revision_id: Mapped[str] = mapped_column(
+        ForeignKey("source_revisions.id", ondelete="CASCADE"), index=True
+    )
+    ordinal: Mapped[int] = mapped_column(Integer)
+    text: Mapped[str] = mapped_column(Text)
+    start_offset: Mapped[int] = mapped_column(Integer)
+    end_offset: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PageSourceSegment(Base):
+    __tablename__ = "page_source_segments"
+    __table_args__ = (UniqueConstraint("page_id", "source_segment_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    page_id: Mapped[str] = mapped_column(
+        ForeignKey("manga_pages.id", ondelete="CASCADE"), index=True
+    )
+    source_segment_id: Mapped[str] = mapped_column(
+        ForeignKey("source_segments.id", ondelete="CASCADE"), index=True
+    )
+
+
+class ScriptRevision(Timestamped, Base):
+    __tablename__ = "script_revisions"
+    __table_args__ = (UniqueConstraint("chapter_id", "revision_no"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    chapter_id: Mapped[str] = mapped_column(
+        ForeignKey("chapters.id", ondelete="CASCADE"), index=True
+    )
+    source_revision_id: Mapped[str] = mapped_column(
+        ForeignKey("source_revisions.id", ondelete="RESTRICT"), index=True
+    )
+    revision_no: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(32), default="DRAFT")
+    coverage: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class CharacterReference(Base):
+    __tablename__ = "character_references"
+    __table_args__ = (UniqueConstraint("character_id", "asset_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    character_id: Mapped[str] = mapped_column(
+        ForeignKey("characters.id", ondelete="CASCADE"), index=True
+    )
+    asset_id: Mapped[str] = mapped_column(
+        ForeignKey("assets.id", ondelete="RESTRICT"), index=True
+    )
+    angle: Mapped[str] = mapped_column(String(32), default="unspecified")
+    is_canonical: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class GenerationBatch(Timestamped, Base):
+    __tablename__ = "generation_batches"
+    __table_args__ = (UniqueConstraint("project_id", "ordinal"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    chapter_id: Mapped[str | None] = mapped_column(
+        ForeignKey("chapters.id", ondelete="CASCADE"), index=True, nullable=True
+    )
+    page_id: Mapped[str | None] = mapped_column(
+        ForeignKey("manga_pages.id", ondelete="CASCADE"), index=True, nullable=True
+    )
+    target_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    target_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    ordinal: Mapped[int] = mapped_column(Integer)
+    generation_kind: Mapped[str] = mapped_column(String(32), default="PAGE")
+    status: Mapped[str] = mapped_column(String(24), default="OPEN")
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PageCandidate(Timestamped, Base):
+    __tablename__ = "page_candidates"
+    __table_args__ = (UniqueConstraint("batch_id", "ordinal"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    batch_id: Mapped[str] = mapped_column(
+        ForeignKey("generation_batches.id", ondelete="CASCADE"), index=True
+    )
+    page_id: Mapped[str] = mapped_column(
+        ForeignKey("manga_pages.id", ondelete="CASCADE"), index=True
+    )
+    ordinal: Mapped[int] = mapped_column(Integer)
+    model_alias: Mapped[str] = mapped_column(String(64))
+    resolution: Mapped[Resolution] = mapped_column(Enum(Resolution))
+    status: Mapped[str] = mapped_column(String(32), default="QUEUED")
+    asset_id: Mapped[str | None] = mapped_column(
+        ForeignKey("assets.id", ondelete="RESTRICT"), nullable=True
+    )
+    job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("generation_jobs.id", ondelete="SET NULL"), nullable=True
+    )
+    generation_record_id: Mapped[str | None] = mapped_column(
+        ForeignKey("generation_records.id", ondelete="SET NULL"), nullable=True
+    )
+    is_favorite: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_selected: Mapped[bool] = mapped_column(Boolean, default=False)
+    prompt_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AssetCandidate(Timestamped, Base):
+    __tablename__ = "asset_candidates"
+    __table_args__ = (UniqueConstraint("batch_id", "ordinal"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    batch_id: Mapped[str] = mapped_column(
+        ForeignKey("generation_batches.id", ondelete="CASCADE"), index=True
+    )
+    ordinal: Mapped[int] = mapped_column(Integer)
+    model_alias: Mapped[str] = mapped_column(String(64))
+    resolution: Mapped[Resolution] = mapped_column(Enum(Resolution))
+    variant: Mapped[str] = mapped_column(String(48))
+    instruction: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(32), default="QUEUED")
+    asset_id: Mapped[str | None] = mapped_column(
+        ForeignKey("assets.id", ondelete="RESTRICT"), nullable=True
+    )
+    job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("generation_jobs.id", ondelete="SET NULL"), nullable=True
+    )
+    generation_record_id: Mapped[str | None] = mapped_column(
+        ForeignKey("generation_records.id", ondelete="SET NULL"), nullable=True
+    )
+    is_favorite: Mapped[bool] = mapped_column(Boolean, default=False)
+    prompt_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ExportBundle(Timestamped, Base):
+    __tablename__ = "export_bundles"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    chapter_id: Mapped[str | None] = mapped_column(
+        ForeignKey("chapters.id", ondelete="CASCADE"), index=True, nullable=True
+    )
+    export_type: Mapped[str] = mapped_column(String(24))
+    storage_key: Mapped[str] = mapped_column(String(500))
+    byte_size: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str] = mapped_column(String(64))
+    page_count: Mapped[int] = mapped_column(Integer, default=0)

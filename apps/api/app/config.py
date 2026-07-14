@@ -21,8 +21,14 @@ class Settings(BaseSettings):
     google_genai_use_vertexai: bool = True
 
     vertex_text_model: str = "gemini-3.5-flash"
-    vertex_image_model_default: str = "gemini-3.1-flash-image"
-    vertex_image_model_quality: str = "gemini-3-pro-image"
+    vertex_image_model_nano_banana_2: str = "gemini-3.1-flash-image"
+    vertex_image_model_nano_banana_pro: str = "gemini-3-pro-image"
+
+    redis_url: str = "redis://localhost:6379/0"
+    queue_name: str = "mangaflow"
+    queue_enabled: bool = True
+    job_timeout_seconds: int = Field(default=900, ge=30, le=3600)
+    max_auto_repairs: int = Field(default=3, ge=0, le=10)
 
     max_upload_bytes: int = Field(default=20 * 1024 * 1024, ge=1)
     allowed_upload_types: tuple[str, ...] = (

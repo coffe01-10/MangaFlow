@@ -69,14 +69,14 @@ function CreateProjectPanel({ open, onClose }: { open: boolean; onClose: () => v
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
   const [mode, setMode] = useState("SEMI_AUTO");
-  const [model, setModel] = useState("image.fast");
+  const [model, setModel] = useState<Project["last_image_model_alias"]>("image.nano_banana_2");
   const [resolution, setResolution] = useState("2K");
   const [error, setError] = useState("");
   const createProject = useMutation({
     mutationFn: () => api.createProject({
       name: name.trim(),
       workflow_mode: mode as Project["workflow_mode"],
-      image_model_alias: model,
+      last_image_model_alias: model,
       default_resolution: resolution as Project["default_resolution"],
     }),
     onSuccess: () => {
@@ -119,11 +119,11 @@ function CreateProjectPanel({ open, onClose }: { open: boolean; onClose: () => v
             ))}
           </div>
 
-          <label className="field-label">生图引擎</label>
+          <label className="field-label">初次使用的生图引擎</label>
           <div className="select-wrap">
-            <select value={model} onChange={(event) => setModel(event.target.value)}>
-              <option value="image.fast">Nano Banana 2 · 快速 / 默认</option>
-              <option value="image.quality">Nano Banana Pro · 高质量</option>
+            <select value={model} onChange={(event) => setModel(event.target.value as Project["last_image_model_alias"])}>
+              <option value="image.nano_banana_2">Nano Banana 2</option>
+              <option value="image.nano_banana_pro">Nano Banana Pro</option>
             </select>
             <ChevronDown size={16} />
           </div>
@@ -185,7 +185,7 @@ export default function HomePage() {
             <div><span>活跃项目</span><strong>{String(projectCount).padStart(2, "0")}</strong><small>PROJECTS</small></div>
             <div><span>漫画页面</span><strong>00</strong><small>尚未生成</small></div>
             <div><span>待审核</span><strong>00</strong><small>NEEDS REVIEW</small></div>
-            <div className="metric-accent"><Gauge size={17} /><span>默认引擎</span><strong>{modelMap.get("image.fast")?.display_name ?? "加载中"}</strong><small>{modelMap.get("image.fast")?.model_id ?? "—"}</small></div>
+            <div className="metric-accent"><Gauge size={17} /><span>平级生图引擎</span><strong>Nano Banana 2 / Pro</strong><small>{modelMap.size >= 3 ? "每次抽卡独立选择" : "读取模型能力…"}</small></div>
           </div>
 
           <section className="projects-section">
@@ -227,7 +227,7 @@ export default function HomePage() {
                 <li key={step}><span>{String(index + 1).padStart(2, "0")}</span><p>{step}</p><i className={index === 0 ? "ready" : ""} /></li>
               ))}
             </ol>
-            <p className="honesty-note">当前完成基础工程与项目管理；后续步骤会按里程碑逐项开放。</p>
+            <p className="honesty-note">原作导入、动态分页、逐页抽卡、收藏采用与批次素材库均已接入真实工作流。</p>
           </section>
         </aside>
       </div>

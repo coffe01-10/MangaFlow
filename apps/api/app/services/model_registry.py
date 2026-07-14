@@ -31,20 +31,20 @@ def build_registry(settings: Settings) -> dict[str, ModelCapability]:
             display_name="Gemini 3.5 Flash",
             operations=("structured_text", "multimodal_analysis"),
         ),
-        "image.fast": ModelCapability(
+        "image.nano_banana_2": ModelCapability(
             provider="vertex-ai",
-            model_id=settings.vertex_image_model_default,
-            logical_alias="image.fast",
+            model_id=settings.vertex_image_model_nano_banana_2,
+            logical_alias="image.nano_banana_2",
             display_name="Nano Banana 2",
             operations=("generate", "edit", "multi_turn_edit"),
             resolutions=("1K", "2K", "4K"),
             preview_resolutions=("4K",),
             max_reference_images=14,
         ),
-        "image.quality": ModelCapability(
+        "image.nano_banana_pro": ModelCapability(
             provider="vertex-ai",
-            model_id=settings.vertex_image_model_quality,
-            logical_alias="image.quality",
+            model_id=settings.vertex_image_model_nano_banana_pro,
+            logical_alias="image.nano_banana_pro",
             display_name="Nano Banana Pro",
             operations=("generate", "edit", "multi_turn_edit"),
             resolutions=("1K", "2K", "4K"),

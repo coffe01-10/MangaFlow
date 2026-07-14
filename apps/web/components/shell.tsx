@@ -40,7 +40,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <span>{item.label}</span>
               </Link>
             ) : (
-              <span key={item.label} className="rail-link disabled" title={`${item.label} · 后续里程碑`}>
+              <span key={item.label} className="rail-link disabled" title={`${item.label} · 请在项目内使用`}>
                 <Icon size={19} strokeWidth={1.8} />
                 <span>{item.label}</span>
               </span>

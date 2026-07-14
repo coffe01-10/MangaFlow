@@ -4,7 +4,12 @@ from typing import Any
 from pydantic import BaseModel
 
 from app.config import Settings
-from app.model_adapters.base import ImageRequest, ModelResponse, StructuredRequest
+from app.model_adapters.base import (
+    ImageRequest,
+    ModelResponse,
+    MultimodalRequest,
+    StructuredRequest,
+)
 from app.services.model_registry import ModelCapability
 
 
@@ -60,8 +65,10 @@ class VertexTextAdapter(_VertexBase):
     ) -> BaseModel:
         from google.genai import types
 
+        client = None
         try:
-            response = self._client().models.generate_content(
+            client = self._client()
+            response = client.models.generate_content(
                 model=self.capability.model_id,
                 contents=request.prompt,
                 config=types.GenerateContentConfig(
@@ -78,6 +85,45 @@ class VertexTextAdapter(_VertexBase):
             raise
         except Exception as error:
             raise self._translate_error(error) from error
+        finally:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
+
+    def analyze_multimodal(
+        self, request: MultimodalRequest, output_schema: type[BaseModel]
+    ) -> BaseModel:
+        from google.genai import types
+
+        if len(request.images) != len(request.mime_types):
+            raise VertexAdapterError("INVALID_INPUT", "图片与 MIME 类型数量不一致")
+        contents: list[Any] = [request.prompt]
+        for data, mime_type in zip(request.images, request.mime_types, strict=True):
+            contents.append(types.Part.from_bytes(data=data, mime_type=mime_type))
+        client = None
+        try:
+            client = self._client()
+            response = client.models.generate_content(
+                model=self.capability.model_id,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=request.system_instruction,
+                    temperature=request.temperature,
+                    response_mime_type="application/json",
+                    response_schema=output_schema,
+                ),
+            )
+            if not response.text:
+                raise VertexAdapterError("INVALID_OUTPUT", "模型没有返回检查结果")
+            return output_schema.model_validate(json.loads(response.text))
+        except VertexAdapterError:
+            raise
+        except Exception as error:
+            raise self._translate_error(error) from error
+        finally:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
 
 
 class VertexImageAdapter(_VertexBase):
@@ -114,8 +160,10 @@ class VertexImageAdapter(_VertexBase):
         ):
             contents.append(types.Part.from_bytes(data=data, mime_type=mime_type))
 
+        client = None
         try:
-            response = self._client().models.generate_content(
+            client = self._client()
+            response = client.models.generate_content(
                 model=self.capability.model_id,
                 contents=contents,
                 config=types.GenerateContentConfig(
@@ -152,3 +200,7 @@ class VertexImageAdapter(_VertexBase):
             raise
         except Exception as error:
             raise self._translate_error(error) from error
+        finally:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()

@@ -13,6 +13,16 @@ class StructuredRequest:
 
 
 @dataclass(frozen=True)
+class MultimodalRequest:
+    prompt: str
+    images: tuple[bytes, ...]
+    mime_types: tuple[str, ...]
+    system_instruction: str | None = None
+    temperature: float = 0.1
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class ImageRequest:
     prompt: str
     resolution: str = "1K"
@@ -34,6 +44,10 @@ class ModelResponse:
 class TextModelAdapter(Protocol):
     def generate_structured(
         self, request: StructuredRequest, output_schema: type[BaseModel]
+    ) -> BaseModel: ...
+
+    def analyze_multimodal(
+        self, request: MultimodalRequest, output_schema: type[BaseModel]
     ) -> BaseModel: ...
 
 

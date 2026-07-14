@@ -1,7 +1,9 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
+const API_ORIGIN = API_URL.replace(/\/api\/v1\/?$/, "");
 
 export type Resolution = "1K" | "2K" | "4K";
 export type WorkflowMode = "AUTO" | "DIRECTOR" | "SEMI_AUTO";
+export type ImageModelAlias = "image.nano_banana_2" | "image.nano_banana_pro";
 
 export interface Project {
   id: string;
@@ -16,7 +18,7 @@ export interface Project {
   ocr_enabled: boolean;
   consistency_check_enabled: boolean;
   text_model_alias: string;
-  image_model_alias: string;
+  last_image_model_alias: ImageModelAlias;
   created_at: string;
   updated_at: string;
   version: number;
@@ -55,6 +57,135 @@ export interface Asset {
   height: number | null;
   status: string;
   created_at: string;
+  content_url: string | null;
+}
+
+export interface Chapter {
+  id: string;
+  project_id: string;
+  title: string;
+  ordinal: number;
+  status: string;
+  current_source_revision_id: string | null;
+  source_character_count: number;
+  segment_count: number;
+  page_count: number;
+  coverage_ratio: number;
+  created_at: string;
+  updated_at: string;
+  version: number;
+}
+
+export interface CharacterReference {
+  id: string;
+  character_id: string;
+  asset_id: string;
+  angle: string;
+  is_canonical: boolean;
+}
+
+export interface Character {
+  id: string;
+  project_id: string;
+  primary_name: string;
+  aliases: string[];
+  alias_conflict: boolean;
+  canonical_description: string;
+  locked_features: string[];
+  forbidden_changes: string[];
+  status: string;
+  version: number;
+  references: CharacterReference[];
+}
+
+export interface MangaPage {
+  id: string;
+  chapter_id: string;
+  page_number: number;
+  revision_no: number;
+  page_function: string;
+  panel_count: number;
+  reading_direction: string;
+  resolution: Resolution;
+  status: string;
+  estimated_text_chars: number;
+  estimated_bubbles: number;
+  source_coverage: { complete?: boolean; ranges?: { text: string }[] };
+  selected_candidate_id: string | null;
+  continuity_status: string;
+}
+
+export interface GenerationBatch {
+  id: string;
+  project_id: string;
+  chapter_id: string | null;
+  page_id: string | null;
+  target_type: string | null;
+  target_id: string | null;
+  ordinal: number;
+  generation_kind: string;
+  status: string;
+  created_at: string;
+  closed_at: string | null;
+}
+
+export interface PageCandidate {
+  id: string;
+  batch_id: string;
+  page_id: string | null;
+  ordinal: number;
+  model_alias: ImageModelAlias;
+  resolution: Resolution;
+  status: string;
+  asset_id: string | null;
+  job_id: string | null;
+  is_favorite: boolean;
+  is_selected: boolean;
+  created_at: string;
+  content_url: string | null;
+}
+
+export interface Job {
+  id: string;
+  project_id: string;
+  target_type: string;
+  target_id: string;
+  job_type: string;
+  status: string;
+  progress: number;
+  attempt_count: number;
+  max_attempts: number;
+  model_alias: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  created_at: string;
+}
+
+export interface LibraryGroup {
+  batch: GenerationBatch;
+  candidates: PageCandidate[];
+}
+
+export interface Library {
+  groups: LibraryGroup[];
+  total_candidates: number;
+  favorite_count: number;
+}
+
+export interface ExportBundle {
+  id: string;
+  project_id: string;
+  chapter_id: string | null;
+  export_type: "PNG" | "PDF" | "JSON";
+  byte_size: number;
+  page_count: number;
+  created_at: string;
+  download_url: string;
+}
+
+export function publicUrl(path: string | null) {
+  if (!path) return null;
+  return path.startsWith("http") ? path : `${API_ORIGIN}${path}`;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -67,7 +198,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({ detail: "请求失败" }));
-    throw new Error(body.detail ?? "请求失败");
+    const detail = typeof body.detail === "string" ? body.detail : "请求数据不符合要求";
+    throw new Error(detail);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
@@ -91,4 +223,66 @@ export const api = {
     data.append("file", file);
     return request<Asset>("/assets/upload", { method: "POST", body: data });
   },
+  chapters: (projectId: string) => request<Chapter[]>(`/projects/${projectId}/chapters`),
+  importSource: (projectId: string, title: string, text: string) =>
+    request<{ chapters: Chapter[]; total_characters: number }>(`/projects/${projectId}/sources/import`, {
+      method: "POST",
+      body: JSON.stringify({ title, text, source_type: "PASTE" }),
+    }),
+  parseChapter: (chapterId: string) => request<Job>(`/chapters/${chapterId}/parse`, { method: "POST" }),
+  planChapter: (chapterId: string) => request<{ pages: MangaPage[]; coverage_ratio: number }>(`/chapters/${chapterId}/plan`, {
+    method: "POST",
+    body: JSON.stringify({ replace_existing: true }),
+  }),
+  pages: (chapterId: string) => request<MangaPage[]>(`/chapters/${chapterId}/pages`),
+  characters: (projectId: string) => request<Character[]>(`/projects/${projectId}/characters`),
+  createCharacter: (projectId: string, primaryName: string, aliases: string[]) =>
+    request<Character>(`/projects/${projectId}/characters`, {
+      method: "POST",
+      body: JSON.stringify({ primary_name: primaryName, aliases }),
+    }),
+  bindCharacterReference: (characterId: string, assetId: string) =>
+    request<CharacterReference>(`/characters/${characterId}/references`, {
+      method: "POST",
+      body: JSON.stringify({ asset_id: assetId, angle: "unspecified", is_canonical: true }),
+    }),
+  startAssetBatch: (targetType: "CHARACTER" | "OUTFIT" | "STYLE", targetId: string, generationKind: "CHARACTER" | "OUTFIT" | "STYLE_TEST") =>
+    request<GenerationBatch>("/asset-generation-batches", {
+      method: "POST",
+      body: JSON.stringify({ target_type: targetType, target_id: targetId, generation_kind: generationKind }),
+    }),
+  generateAssetCandidate: (batchId: string, model_alias: ImageModelAlias, resolution: Resolution, variant: "FRONT" | "SIDE" | "BACK" | "EXPRESSION" | "OUTFIT" | "STYLE_TEST") =>
+    request<{ job_id: string; job_status: string; candidate: PageCandidate }>(`/asset-generation-batches/${batchId}/candidates`, {
+      method: "POST",
+      body: JSON.stringify({ model_alias, resolution, variant, instruction: "" }),
+    }),
+  batches: (pageId: string) => request<GenerationBatch[]>(`/pages/${pageId}/batches`),
+  startBatch: (pageId: string) => request<GenerationBatch>(`/pages/${pageId}/batches`, { method: "POST" }),
+  candidates: (batchId: string) => request<PageCandidate[]>(`/batches/${batchId}/candidates`),
+  generateCandidate: (batchId: string, model_alias: ImageModelAlias, resolution: Resolution) =>
+    request<{ job_id: string; job_status: string; candidate: PageCandidate }>(`/batches/${batchId}/candidates`, {
+      method: "POST",
+      body: JSON.stringify({ model_alias, resolution }),
+    }),
+  favoriteCandidate: (candidateId: string, isFavorite: boolean) =>
+    request<PageCandidate>(`/candidates/${candidateId}/favorite`, {
+      method: "PATCH",
+      body: JSON.stringify({ is_favorite: isFavorite }),
+    }),
+  selectCandidate: (pageId: string, candidateId: string) =>
+    request<MangaPage>(`/pages/${pageId}/select-candidate`, {
+      method: "POST",
+      body: JSON.stringify({ candidate_id: candidateId }),
+    }),
+  nextPage: (pageId: string) => request<MangaPage>(`/pages/${pageId}/next`, { method: "POST" }),
+  library: (projectId: string, favorite?: boolean) => request<Library>(
+    `/projects/${projectId}/library?group_by=batch${favorite === undefined ? "" : `&favorite=${favorite}`}`,
+  ),
+  jobs: (projectId: string) => request<Job[]>(`/projects/${projectId}/jobs`),
+  exports: (projectId: string) => request<ExportBundle[]>(`/projects/${projectId}/exports`),
+  createExport: (chapterId: string, exportType: ExportBundle["export_type"]) =>
+    request<ExportBundle>(`/chapters/${chapterId}/exports`, {
+      method: "POST",
+      body: JSON.stringify({ export_type: exportType }),
+    }),
 };

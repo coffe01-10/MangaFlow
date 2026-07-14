@@ -3,11 +3,13 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi.responses import FileResponse
 from PIL import Image, UnidentifiedImageError
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.api.helpers import asset_read
 from app.config import get_settings
 from app.database import get_db
 from app.models import Asset, Project
@@ -18,15 +20,18 @@ CHUNK_SIZE = 1024 * 1024
 
 
 @router.get("", response_model=list[AssetRead])
-def list_assets(project_id: str, db: Session = Depends(get_db)) -> list[Asset]:
+def list_assets(project_id: str, db: Session = Depends(get_db)) -> list[AssetRead]:
     project = db.get(Project, project_id)
     if not project or project.deleted_at is not None:
         raise HTTPException(status_code=404, detail="项目不存在")
-    return list(
+    assets = list(
         db.scalars(
-            select(Asset).where(Asset.project_id == project_id).order_by(Asset.created_at.desc())
+            select(Asset)
+            .where(Asset.project_id == project_id, Asset.deleted_at.is_(None))
+            .order_by(Asset.created_at.desc())
         )
     )
+    return [asset_read(asset) for asset in assets]
 
 
 @router.post("/upload", response_model=AssetRead, status_code=status.HTTP_201_CREATED)
@@ -35,7 +40,7 @@ def upload_asset(
     kind: str = Form(),
     file: UploadFile = File(),
     db: Session = Depends(get_db),
-) -> Asset:
+) -> AssetRead:
     settings = get_settings()
     project = db.get(Project, project_id)
     if not project or project.deleted_at is not None:
@@ -69,7 +74,7 @@ def upload_asset(
         )
         if existing:
             destination.unlink(missing_ok=True)
-            return existing
+            return asset_read(existing)
 
         width = height = None
         if file.content_type.startswith("image/"):
@@ -96,7 +101,7 @@ def upload_asset(
         db.add(asset)
         db.commit()
         db.refresh(asset)
-        return asset
+        return asset_read(asset)
     except HTTPException:
         destination.unlink(missing_ok=True)
         raise
@@ -106,3 +111,16 @@ def upload_asset(
         raise HTTPException(status_code=500, detail="文件保存失败") from error
     finally:
         file.file.close()
+
+
+@router.get("/{asset_id}/content")
+def asset_content(asset_id: str, db: Session = Depends(get_db)) -> FileResponse:
+    settings = get_settings()
+    asset = db.get(Asset, asset_id)
+    if not asset or asset.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="素材不存在")
+    root = settings.upload_root if asset.source == "USER_UPLOAD" else settings.storage_root
+    path = (root / asset.storage_key).resolve()
+    if not path.is_relative_to(root.resolve()) or not path.is_file():
+        raise HTTPException(status_code=404, detail="素材文件不存在")
+    return FileResponse(path, media_type=asset.mime_type, filename=asset.original_name)

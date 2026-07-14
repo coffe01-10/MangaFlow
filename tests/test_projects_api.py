@@ -10,7 +10,7 @@ from app.config import get_settings
 def test_create_and_update_project(client):
     response = client.post(
         "/api/v1/projects",
-        json={"name": "雾港来信", "image_model_alias": "image.fast"},
+        json={"name": "雾港来信", "last_image_model_alias": "image.nano_banana_2"},
     )
     assert response.status_code == 201
     project = response.json()
@@ -21,12 +21,12 @@ def test_create_and_update_project(client):
         f"/api/v1/projects/{project['id']}",
         json={
             "version": project["version"],
-            "image_model_alias": "image.quality",
+            "last_image_model_alias": "image.nano_banana_pro",
             "default_concurrency": 2,
         },
     )
     assert updated.status_code == 200
-    assert updated.json()["image_model_alias"] == "image.quality"
+    assert updated.json()["last_image_model_alias"] == "image.nano_banana_pro"
     assert updated.json()["version"] == 2
 
 
@@ -44,9 +44,9 @@ def test_model_registry_reports_preview_resolution(client):
     assert response.status_code == 200
     models = {item["logical_alias"]: item for item in response.json()}
     assert models["text.fast"]["model_id"] == "gemini-3.5-flash"
-    assert models["image.fast"]["model_id"] == "gemini-3.1-flash-image"
-    assert models["image.quality"]["model_id"] == "gemini-3-pro-image"
-    assert models["image.fast"]["preview_resolutions"] == ["4K"]
+    assert models["image.nano_banana_2"]["model_id"] == "gemini-3.1-flash-image"
+    assert models["image.nano_banana_pro"]["model_id"] == "gemini-3-pro-image"
+    assert models["image.nano_banana_2"]["preview_resolutions"] == ["4K"]
 
 
 def test_upload_image_is_validated_and_registered(client, monkeypatch):
