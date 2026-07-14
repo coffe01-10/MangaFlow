@@ -18,9 +18,7 @@ class ProjectCreate(BaseModel):
     default_concurrency: int = Field(default=4, ge=1, le=8)
     ocr_enabled: bool = True
     consistency_check_enabled: bool = True
-    last_image_model_alias: str = Field(
-        default="image.nano_banana_2", pattern=IMAGE_MODEL_PATTERN
-    )
+    last_image_model_alias: str = Field(default="image.nano_banana_2", pattern=IMAGE_MODEL_PATTERN)
 
 
 class ProjectUpdate(BaseModel):
@@ -70,6 +68,10 @@ class AssetRead(BaseModel):
     status: str
     created_at: datetime
     content_url: str | None = None
+
+
+class AssetUpdate(BaseModel):
+    kind: str = Field(pattern="^(CHARACTER_REFERENCE|OUTFIT_REFERENCE|STYLE_REFERENCE)$")
 
 
 class ModelCapabilityRead(BaseModel):
@@ -126,6 +128,65 @@ class ChapterRead(BaseModel):
     segment_count: int = 0
     page_count: int = 0
     coverage_ratio: float = 0
+
+
+class SourceRevisionCreate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    text: str = Field(min_length=1, max_length=2_000_000)
+    source_type: str = Field(default="PASTE", pattern="^(PASTE|TXT|MARKDOWN)$")
+
+
+class SourceRevisionRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    chapter_id: str
+    revision: int
+    source_type: str
+    original_text: str
+    character_count: int
+    imported_at: datetime
+
+
+class BeatRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    scene_id: str
+    ordinal: int
+    action: str
+    dialogue: str
+    narration: str
+    subtext: str
+    emotion: str
+    importance: float
+    must_visualize: bool
+    mergeable: bool
+    page_turn_hook: bool
+    source_range: dict
+
+
+class SceneRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    chapter_id: str
+    ordinal: int
+    location: str
+    time_label: str
+    weather: str
+    purpose: str
+    emotional_arc: str
+    source_range: dict
+    beats: list[BeatRead] = Field(default_factory=list)
+
+
+class ScriptRead(BaseModel):
+    chapter_id: str
+    status: str
+    revision_no: int | None
+    coverage: dict
+    scenes: list[SceneRead]
 
 
 class SourceImportRead(BaseModel):

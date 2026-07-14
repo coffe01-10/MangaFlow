@@ -31,15 +31,11 @@ def upgrade() -> None:
         "CASE WHEN image_model_alias = 'image.quality' THEN 'image.nano_banana_pro' "
         "ELSE 'image.nano_banana_2' END"
     )
-    op.execute(
-        "UPDATE projects SET image_model_alias = last_image_model_alias"
-    )
+    op.execute("UPDATE projects SET image_model_alias = last_image_model_alias")
 
     with op.batch_alter_table("characters") as batch:
         batch.alter_column("name", new_column_name="primary_name")
-        batch.add_column(
-            sa.Column("aliases", sa.JSON(), nullable=False, server_default="[]")
-        )
+        batch.add_column(sa.Column("aliases", sa.JSON(), nullable=False, server_default="[]"))
         batch.add_column(
             sa.Column("aliases_normalized", sa.JSON(), nullable=False, server_default="[]")
         )
@@ -147,9 +143,7 @@ def upgrade() -> None:
     op.create_index(
         "ix_character_references_character_id", "character_references", ["character_id"]
     )
-    op.create_index(
-        "ix_character_references_asset_id", "character_references", ["asset_id"]
-    )
+    op.create_index("ix_character_references_asset_id", "character_references", ["asset_id"])
 
     op.create_table(
         "generation_batches",
@@ -243,9 +237,7 @@ def upgrade() -> None:
         sa.Column("page_id", sa.String(length=36), nullable=False),
         sa.Column("source_segment_id", sa.String(length=36), nullable=False),
         sa.ForeignKeyConstraint(["page_id"], ["manga_pages.id"], ondelete="CASCADE"),
-        sa.ForeignKeyConstraint(
-            ["source_segment_id"], ["source_segments.id"], ondelete="CASCADE"
-        ),
+        sa.ForeignKeyConstraint(["source_segment_id"], ["source_segments.id"], ondelete="CASCADE"),
         sa.UniqueConstraint("page_id", "source_segment_id"),
     )
     op.create_index("ix_page_source_segments_page_id", "page_source_segments", ["page_id"])

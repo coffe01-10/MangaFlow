@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 from PIL import Image
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from app.config import get_settings
 from app.database import SessionLocal
@@ -26,6 +26,7 @@ from app.models import (
     PageCandidate,
     Project,
     Scene,
+    ScriptRevision,
     SourceRevision,
     SourceSegment,
     StyleProfile,
@@ -181,6 +182,8 @@ def _run_page_generate(db, job: GenerationJob) -> None:
     page = db.get(MangaPage, candidate.page_id)
     chapter = db.get(Chapter, page.chapter_id)
     project = db.get(Project, chapter.project_id)
+    if not page.scene_ids or not page.beat_ids:
+        raise RuntimeError("页面缺少剧本与分镜来源，禁止生成")
     if not page.source_coverage.get("complete"):
         raise RuntimeError("页面原文覆盖不完整，禁止生成")
 
@@ -261,8 +264,7 @@ def _run_story_parse(db, job: GenerationJob) -> None:
         )
     )
     source_payload = [
-        {"id": item.id, "ordinal": item.ordinal, "text": item.text}
-        for item in segments
+        {"id": item.id, "ordinal": item.ordinal, "text": item.text} for item in segments
     ]
     prompt = """逐段解析以下中文小说，禁止总结、删除或合并关键内容。
 提取角色、主要姓名、绰号、场景和情节拍。
@@ -313,7 +315,12 @@ def _run_story_parse(db, job: GenerationJob) -> None:
                 )
             )
     db.flush()
+    db.execute(delete(Scene).where(Scene.chapter_id == chapter.id))
+    db.execute(delete(ScriptRevision).where(ScriptRevision.chapter_id == chapter.id))
+    db.flush()
+    covered_segment_ids: set[str] = set()
     for scene_draft in output.scenes:
+        covered_segment_ids.update(scene_draft.source_segment_ids)
         scene = Scene(
             chapter_id=chapter.id,
             ordinal=scene_draft.ordinal,
@@ -326,6 +333,7 @@ def _run_story_parse(db, job: GenerationJob) -> None:
         db.add(scene)
         db.flush()
         for beat_draft in scene_draft.beats:
+            covered_segment_ids.update(beat_draft.source_segment_ids)
             db.add(
                 Beat(
                     scene_id=scene.id,
@@ -337,7 +345,27 @@ def _run_story_parse(db, job: GenerationJob) -> None:
                     source_range={"segment_ids": beat_draft.source_segment_ids},
                 )
             )
-    chapter.status = "PARSED"
+    expected_segment_ids = {item.id for item in segments}
+    missing_segment_ids = sorted(expected_segment_ids - covered_segment_ids)
+    script = ScriptRevision(
+        chapter_id=chapter.id,
+        source_revision_id=revision.id,
+        revision_no=1,
+        status="READY" if not missing_segment_ids else "INCOMPLETE",
+        coverage={
+            "expected": len(expected_segment_ids),
+            "covered": len(expected_segment_ids) - len(missing_segment_ids),
+            "ratio": round(
+                (len(expected_segment_ids) - len(missing_segment_ids)) / len(expected_segment_ids),
+                4,
+            )
+            if expected_segment_ids
+            else 1,
+            "missing_segment_ids": missing_segment_ids,
+        },
+    )
+    db.add(script)
+    chapter.status = "SCRIPT_READY" if not missing_segment_ids else "SCRIPT_INCOMPLETE"
     chapter.version += 1
 
 
@@ -383,9 +411,11 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
     elif batch.target_type == "STYLE":
         style = db.get(StyleProfile, batch.target_id)
         reference_ids = style.profile.get("reference_asset_ids", [])
-        references = list(
-            db.scalars(select(Asset).where(Asset.id.in_(reference_ids)))
-        ) if reference_ids else []
+        references = (
+            list(db.scalars(select(Asset).where(Asset.id.in_(reference_ids))))
+            if reference_ids
+            else []
+        )
         subject = {
             "name": style.name,
             "color_mode": style.color_mode,
@@ -456,9 +486,7 @@ def _run_inspection(db, job: GenerationJob) -> None:
         raise RuntimeError("候选图片尚未生成")
     page = db.get(MangaPage, candidate.page_id)
     asset = db.get(Asset, candidate.asset_id)
-    expected = "\n".join(
-        item.get("text", "") for item in page.source_coverage.get("ranges", [])
-    )
+    expected = "\n".join(item.get("text", "") for item in page.source_coverage.get("ranges", []))
     prompt = f"""检查这张漫画页。目标文字如下：\n{expected}\n
 检查错字、漏字、文字顺序、说话人、角色身份、服装、标志特征、道具和连续性。
 每项输出 category、outcome、score、severity、details、regions。"""
@@ -503,13 +531,16 @@ def execute_job(job_id: str) -> None:
         return
     try:
         project = db.get(Project, job.project_id)
-        active = db.scalar(
-            select(func.count(GenerationJob.id)).where(
-                GenerationJob.project_id == job.project_id,
-                GenerationJob.status.in_(ACTIVE_STATUSES),
-                GenerationJob.id != job.id,
+        active = (
+            db.scalar(
+                select(func.count(GenerationJob.id)).where(
+                    GenerationJob.project_id == job.project_id,
+                    GenerationJob.status.in_(ACTIVE_STATUSES),
+                    GenerationJob.id != job.id,
+                )
             )
-        ) or 0
+            or 0
+        )
         if project and active >= project.default_concurrency:
             job.status = JobStatus.WAITING
             job.error_code = "CONCURRENCY_LIMIT"

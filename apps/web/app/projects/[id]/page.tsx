@@ -5,6 +5,7 @@ import {
   api,
   publicUrl,
   type ImageModelAlias,
+  type AssetPurpose,
   type MangaPage,
   type Project,
   type Resolution,
@@ -14,6 +15,7 @@ import {
   ArrowLeft,
   ArrowRight,
   BookOpenText,
+  Clapperboard,
   Check,
   ChevronDown,
   CircleAlert,
@@ -22,13 +24,17 @@ import {
   Heart,
   ImagePlus,
   LibraryBig,
+  ListTodo,
   LoaderCircle,
   LockKeyhole,
   PanelTop,
   Plus,
+  Pencil,
+  RotateCcw,
   Save,
   Sparkles,
   Star,
+  Trash2,
   Upload,
   Users,
 } from "lucide-react";
@@ -37,13 +43,19 @@ import Image from "next/image";
 import { useParams } from "next/navigation";
 import { ChangeEvent, useMemo, useState } from "react";
 
-type WorkspaceTab = "assets" | "source" | "pages" | "draw" | "library";
+type WorkspaceTab = "source" | "assets" | "script" | "pages" | "draw" | "library" | "jobs";
 
 const kinds = [
-  ["character", "人物参考"],
-  ["outfit", "服装参考"],
-  ["style", "漫画风格"],
+  ["CHARACTER_REFERENCE", "人物参考"],
+  ["OUTFIT_REFERENCE", "服装参考"],
+  ["STYLE_REFERENCE", "漫画风格"],
 ] as const;
+
+const purposeLabel = Object.fromEntries(kinds) as Record<string, string>;
+const jobLabels: Record<string, string> = {
+  SOURCE_PARSE: "解析剧本", PAGE_GENERATE: "生成页面", PAGE_REPAIR: "修复页面",
+  ASSET_GENERATE: "生成角色/服装素材", INSPECT: "检查页面",
+};
 
 const modelOptions: { alias: ImageModelAlias; name: string; id: string }[] = [
   { alias: "image.nano_banana_2", name: "Nano Banana 2", id: "gemini-3.1-flash-image" },
@@ -69,7 +81,7 @@ export default function ProjectWorkspace() {
   const queryClient = useQueryClient();
   const [tab, setTab] = useState<WorkspaceTab>("source");
   const [localDraft, setDraft] = useState<Project | null>(null);
-  const [assetKind, setAssetKind] = useState("character");
+  const [assetKind, setAssetKind] = useState<AssetPurpose>("CHARACTER_REFERENCE");
   const [uploadError, setUploadError] = useState("");
   const [sourceTitle, setSourceTitle] = useState("第一章");
   const [sourceText, setSourceText] = useState("");
@@ -81,6 +93,8 @@ export default function ProjectWorkspace() {
   const [characterAliases, setCharacterAliases] = useState("");
   const [bindCharacterId, setBindCharacterId] = useState("");
   const [favoriteOnly, setFavoriteOnly] = useState(false);
+  const [editingChapterId, setEditingChapterId] = useState<string | null>(null);
+  const [deletedChapterId, setDeletedChapterId] = useState<string | null>(null);
 
   const project = useQuery({ queryKey: ["project", id], queryFn: () => api.project(id) });
   const assets = useQuery({ queryKey: ["assets", id], queryFn: () => api.assets(id) });
@@ -102,6 +116,17 @@ export default function ProjectWorkspace() {
   const pages = useQuery({
     queryKey: ["pages", activeChapterId],
     queryFn: () => api.pages(activeChapterId!),
+    enabled: Boolean(activeChapterId),
+  });
+  const script = useQuery({
+    queryKey: ["script", activeChapterId],
+    queryFn: () => api.script(activeChapterId!),
+    enabled: Boolean(activeChapterId),
+    refetchInterval: 4000,
+  });
+  const revisions = useQuery({
+    queryKey: ["revisions", activeChapterId],
+    queryFn: () => api.revisions(activeChapterId!),
     enabled: Boolean(activeChapterId),
   });
   const selectedPage = pages.data?.find((item) => item.id === selectedPageId) ?? pages.data?.[0] ?? null;
@@ -147,7 +172,7 @@ export default function ProjectWorkspace() {
   const upload = useMutation({
     mutationFn: async (file: File) => {
       const uploaded = await api.uploadAsset(id, assetKind, file);
-      if (assetKind === "character" && bindCharacterId) {
+      if (assetKind === "CHARACTER_REFERENCE" && bindCharacterId) {
         await api.bindCharacterReference(bindCharacterId, uploaded.id);
       }
       return uploaded;
@@ -158,6 +183,22 @@ export default function ProjectWorkspace() {
       queryClient.invalidateQueries({ queryKey: ["characters", id] });
     },
     onError: (reason) => setUploadError(reason instanceof Error ? reason.message : "上传失败"),
+  });
+
+  const deleteAsset = useMutation({
+    mutationFn: (assetId: string) => api.deleteAsset(assetId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["assets", id] });
+      queryClient.invalidateQueries({ queryKey: ["characters", id] });
+    },
+  });
+
+  const reclassifyAsset = useMutation({
+    mutationFn: ({ assetId, kind }: { assetId: string; kind: AssetPurpose }) => api.updateAsset(assetId, kind),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["assets", id] });
+      queryClient.invalidateQueries({ queryKey: ["characters", id] });
+    },
   });
 
   const createCharacter = useMutation({
@@ -186,17 +227,44 @@ export default function ProjectWorkspace() {
   });
 
   const importSource = useMutation({
-    mutationFn: () => api.importSource(id, sourceTitle.trim(), sourceText),
+    mutationFn: () => editingChapterId
+      ? api.reviseSource(editingChapterId, sourceTitle.trim(), sourceText).then(() => ({ chapters: [], total_characters: 0 }))
+      : api.importSource(id, sourceTitle.trim(), sourceText),
     onSuccess: (result) => {
-      setSelectedChapterId(result.chapters[0]?.id ?? null);
+      setSelectedChapterId(result.chapters[0]?.id ?? editingChapterId);
+      setEditingChapterId(null);
       setSourceText("");
+      queryClient.invalidateQueries({ queryKey: ["chapters", id] });
+      queryClient.invalidateQueries({ queryKey: ["revisions"] });
+      queryClient.invalidateQueries({ queryKey: ["script"] });
+      queryClient.invalidateQueries({ queryKey: ["pages"] });
+    },
+  });
+
+  const deleteChapter = useMutation({
+    mutationFn: (chapterId: string) => api.deleteChapter(chapterId),
+    onSuccess: (_, chapterId) => {
+      setDeletedChapterId(chapterId);
+      setSelectedChapterId(null);
+      queryClient.invalidateQueries({ queryKey: ["chapters", id] });
+    },
+  });
+
+  const restoreChapter = useMutation({
+    mutationFn: (chapterId: string) => api.restoreChapter(chapterId),
+    onSuccess: (chapter) => {
+      setDeletedChapterId(null);
+      setSelectedChapterId(chapter.id);
       queryClient.invalidateQueries({ queryKey: ["chapters", id] });
     },
   });
 
   const parseChapter = useMutation({
     mutationFn: () => api.parseChapter(activeChapterId!),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["jobs", id] }),
+    onSuccess: () => {
+      setTab("jobs");
+      queryClient.invalidateQueries({ queryKey: ["jobs", id] });
+    },
   });
 
   const planChapter = useMutation({
@@ -238,6 +306,23 @@ export default function ProjectWorkspace() {
     },
   });
 
+  const deleteCandidate = useMutation({
+    mutationFn: (candidateId: string) => api.deleteCandidate(candidateId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["candidates"] });
+      queryClient.invalidateQueries({ queryKey: ["library", id] });
+    },
+  });
+
+  const cancelJob = useMutation({
+    mutationFn: (jobId: string) => api.cancelJob(jobId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["jobs", id] }),
+  });
+  const retryJob = useMutation({
+    mutationFn: (jobId: string) => api.retryJob(jobId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["jobs", id] }),
+  });
+
   const selectCandidate = useMutation({
     mutationFn: (candidateId: string) => api.selectCandidate(selectedPage!.id, candidateId),
     onSuccess: () => {
@@ -271,6 +356,16 @@ export default function ProjectWorkspace() {
     setTab("draw");
   }
 
+  async function beginEditChapter(chapterId: string, title: string) {
+    setSelectedChapterId(chapterId);
+    const values = await queryClient.fetchQuery({ queryKey: ["revisions", chapterId], queryFn: () => api.revisions(chapterId) });
+    const revision = values[0];
+    setEditingChapterId(chapterId);
+    setSourceTitle(title);
+    setSourceText(revision?.original_text ?? "");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
   if (project.isLoading || !draft) {
     return <AppShell><div className="full-loading"><LoaderCircle className="spin" />加载项目工作区…</div></AppShell>;
   }
@@ -289,11 +384,13 @@ export default function ProjectWorkspace() {
         <aside className="workspace-left">
           <div className="workspace-project-title"><span>PROJECT / 01</span><h1>{draft.name}</h1><p>{chapters.data?.length ?? 0} 章 · {pages.data?.length ?? 0} 页已规划</p></div>
           <nav className="workspace-steps">
-            <button className={tab === "source" ? "active" : ""} onClick={() => setTab("source")}><BookOpenText size={17} /><span>原作导入<small>无损分段</small></span><i>01</i></button>
-            <button className={tab === "assets" ? "active" : ""} onClick={() => setTab("assets")}><Users size={17} /><span>角色与素材<small>姓名绑定</small></span><i>02</i></button>
-            <button className={tab === "pages" ? "active" : ""} onClick={() => setTab("pages")}><PanelTop size={17} /><span>动态分页<small>按内容扩展</small></span><i>03</i></button>
-            <button className={tab === "draw" ? "active" : ""} onClick={() => setTab("draw")}><Sparkles size={17} /><span>单页抽卡<small>逐页选择</small></span><i>04</i></button>
-            <button className={tab === "library" ? "active" : ""} onClick={() => setTab("library")}><LibraryBig size={17} /><span>批次素材库<small>收藏与导出</small></span><i>05</i></button>
+            <button className={tab === "source" ? "active" : ""} onClick={() => setTab("source")}><BookOpenText size={17} /><span>原作与修订<small>导入、修改、撤回</small></span><i>01</i></button>
+            <button className={tab === "assets" ? "active" : ""} onClick={() => setTab("assets")}><Users size={17} /><span>参考资产<small>人物 / 服装 / 风格</small></span><i>02</i></button>
+            <button className={tab === "script" ? "active" : ""} onClick={() => setTab("script")}><Clapperboard size={17} /><span>漫画剧本<small>场景、情节拍、对白</small></span><i>03</i></button>
+            <button className={tab === "pages" ? "active" : ""} onClick={() => setTab("pages")}><PanelTop size={17} /><span>分页与分镜<small>场景切页、格子脚本</small></span><i>04</i></button>
+            <button className={tab === "draw" ? "active" : ""} onClick={() => setTab("draw")}><Sparkles size={17} /><span>单页生成<small>抽卡、收藏、采用</small></span><i>05</i></button>
+            <button className={tab === "library" ? "active" : ""} onClick={() => setTab("library")}><LibraryBig size={17} /><span>生成素材库<small>按类型和批次归档</small></span><i>06</i></button>
+            <button className={tab === "jobs" ? "active" : ""} onClick={() => setTab("jobs")}><ListTodo size={17} /><span>任务中心<small>进度、失败、取消重试</small></span><i>07</i></button>
           </nav>
           <div className="lock-note"><LockKeyhole size={16} /><p><strong>采用版本才影响后续</strong>收藏与采用互相独立，重新抽卡不会覆盖历史候选。</p></div>
         </aside>
@@ -305,18 +402,20 @@ export default function ProjectWorkspace() {
               <div className="source-compose">
                 <input className="text-input" value={sourceTitle} onChange={(event) => setSourceTitle(event.target.value)} placeholder="章节标题" />
                 <textarea value={sourceText} onChange={(event) => setSourceText(event.target.value)} placeholder="粘贴完整章节。系统先无损分段，再根据文字和剧本长度动态计算页数。" />
-                <div><span>不会限制总页数 · 单页硬上限 180 个中文字符</span><button className="button ink" disabled={!sourceText.trim() || importSource.isPending} onClick={() => importSource.mutate()}>{importSource.isPending ? <LoaderCircle className="spin" size={16} /> : <Upload size={16} />}导入原作</button></div>
+                <div><span>{editingChapterId ? "保存后生成新修订，旧版本仍保留" : "不会限制总页数 · 单页硬上限 180 个中文字符"}</span><span className="compose-actions">{editingChapterId && <button className="button ghost compact" onClick={() => { setEditingChapterId(null); setSourceText(""); }}>取消修改</button>}<button className="button ink" disabled={!sourceText.trim() || importSource.isPending} onClick={() => importSource.mutate()}>{importSource.isPending ? <LoaderCircle className="spin" size={16} /> : editingChapterId ? <Save size={16} /> : <Upload size={16} />}{editingChapterId ? "保存新修订" : "导入原作"}</button></span></div>
                 {importSource.isError && <p className="form-error"><CircleAlert size={14} />{importSource.error.message}</p>}
               </div>
               <div className="chapter-register">
                 {chapters.data?.map((chapter) => (
-                    <button key={chapter.id} className={activeChapterId === chapter.id ? "chapter-row active" : "chapter-row"} onClick={() => setSelectedChapterId(chapter.id)}>
-                    <span>{String(chapter.ordinal).padStart(2, "0")}</span><div><strong>{chapter.title}</strong><small>{chapter.source_character_count} 字 · {chapter.segment_count} 段 · {chapter.page_count} 页</small></div><em>{Math.round(chapter.coverage_ratio * 100)}% 覆盖</em>
-                  </button>
+                  <div key={chapter.id} className={activeChapterId === chapter.id ? "chapter-row active" : "chapter-row"} onClick={() => setSelectedChapterId(chapter.id)}>
+                    <span>{String(chapter.ordinal).padStart(2, "0")}</span><div><strong>{chapter.title}</strong><small>{chapter.source_character_count} 字 · {chapter.segment_count} 段 · {chapter.page_count} 页 · {chapter.status}</small></div><em>{Math.round(chapter.coverage_ratio * 100)}% 覆盖</em><div className="row-actions"><button title="修改原文" onClick={(event) => { event.stopPropagation(); beginEditChapter(chapter.id, chapter.title); }}><Pencil size={13} /></button><button title="删除章节" onClick={(event) => { event.stopPropagation(); if (window.confirm("删除后会暂时隐藏该章节，可立即撤回。继续吗？")) deleteChapter.mutate(chapter.id); }}><Trash2 size={13} /></button></div>
+                  </div>
                 ))}
                 {!chapters.data?.length && <div className="asset-empty"><BookOpenText size={24} /><strong>尚未导入原作</strong><p>粘贴一个完整章节开始工作。</p></div>}
               </div>
-              {activeChapterId && <div className="workflow-actions"><button className="button outline" disabled={parseChapter.isPending} onClick={() => parseChapter.mutate()}><Sparkles size={15} />Gemini 解析角色与剧本</button><button className="button ink" disabled={planChapter.isPending} onClick={() => planChapter.mutate()}>{planChapter.isPending ? <LoaderCircle className="spin" size={15} /> : <PanelTop size={15} />}计算动态分页</button></div>}
+              {deletedChapterId && <div className="undo-banner"><span>章节已移入回收状态</span><button onClick={() => restoreChapter.mutate(deletedChapterId)}><RotateCcw size={13} />撤回删除</button></div>}
+              {activeChapterId && <div className="workflow-actions"><button className="button outline" disabled={parseChapter.isPending} onClick={() => parseChapter.mutate()}><Sparkles size={15} />生成漫画剧本</button><button className="button ink" disabled={planChapter.isPending || script.data?.status !== "READY"} onClick={() => planChapter.mutate()}>{planChapter.isPending ? <LoaderCircle className="spin" size={15} /> : <PanelTop size={15} />}从剧本计算分页</button></div>}
+              {planChapter.isError && <p className="form-error"><CircleAlert size={14} />{planChapter.error.message}</p>}
             </>
           )}
 
@@ -332,20 +431,27 @@ export default function ProjectWorkspace() {
                 {characters.data?.map((character) => <button key={character.id} className={bindCharacterId === character.id ? "character-chip active" : "character-chip"} onClick={() => setBindCharacterId(character.id)}><strong>{character.primary_name}</strong><span>{character.aliases.length ? `又名 ${character.aliases.join(" / ")}` : "无绰号"}</span>{character.alias_conflict && <em>称呼冲突待确认</em>}<small>{character.references.length} 张参考图</small></button>)}
               </div>
               {bindCharacterId && <div className="asset-quickgen"><span>为选中角色生成补充角度（使用抽卡区当前模型）</span><div>{(["FRONT", "SIDE", "BACK", "EXPRESSION"] as const).map((variant) => <button key={variant} disabled={generateCharacterAsset.isPending} onClick={() => generateCharacterAsset.mutate(variant)}><Sparkles size={13} />{{ FRONT: "正面", SIDE: "侧面", BACK: "背面", EXPRESSION: "表情" }[variant]}</button>)}</div></div>}
-              <div className="intake-toolbar"><div className="kind-switch">{kinds.map(([value, label]) => <button key={value} className={assetKind === value ? "active" : ""} onClick={() => setAssetKind(value)}>{label}</button>)}</div><span>{assetKind === "character" && bindCharacterId ? "将绑定到选中的角色" : "PNG / JPG / WEBP · 最大 20 MB"}</span></div>
+              <div className="intake-toolbar"><div className="kind-switch">{kinds.map(([value, label]) => <button key={value} className={assetKind === value ? "active" : ""} onClick={() => setAssetKind(value)}>{label}</button>)}</div><span>{assetKind === "CHARACTER_REFERENCE" ? (bindCharacterId ? "将绑定到选中的角色" : "请先选择要绑定的角色") : assetKind === "OUTFIT_REFERENCE" ? "用于锁定角色服装、配饰和状态" : "用于锁定黑白网点、线条和构图风格"}</span></div>
               <label className={upload.isPending ? "upload-stage busy" : "upload-stage"}><input type="file" accept="image/png,image/jpeg,image/webp" onChange={chooseFile} disabled={upload.isPending} /><span className="upload-icon">{upload.isPending ? <LoaderCircle className="spin" /> : <Upload />}</span><strong>{upload.isPending ? "正在安全上传…" : `上传${kinds.find(([value]) => value === assetKind)?.[1]}`}</strong><p>人物图会和选中的主要姓名绑定，不会只依赖文件名猜测身份。</p></label>
               {uploadError && <p className="form-error"><CircleAlert size={15} />{uploadError}</p>}
-              <div className="asset-list-header"><span>素材登记</span><small>ASSET REGISTER</small></div>
-              <div className="asset-grid">
-                {assets.data?.map((asset, index) => <article className="asset-card" key={asset.id}><div className={`asset-thumb thumb-${(index % 3) + 1}`}>{asset.content_url ? <Image src={publicUrl(asset.content_url)!} alt={asset.original_name} width={74} height={74} unoptimized /> : <FileImage size={27} />}<span>{asset.width && asset.height ? `${asset.width}×${asset.height}` : asset.mime_type}</span></div><div><strong>{asset.original_name}</strong><p>{asset.kind} · {formatBytes(asset.byte_size)}</p><span className="tiny-status"><Check size={11} />{asset.status}</span></div></article>)}
-              </div>
+              {kinds.map(([kind, label]) => {
+                const grouped = assets.data?.filter((asset) => asset.kind === kind) ?? [];
+                return <section className="asset-purpose-group" key={kind}><div className="asset-list-header"><span>{label}</span><small>{grouped.length} FILES</small></div><p className="purpose-explain">{{ CHARACTER_REFERENCE: "绑定主要姓名与绰号，用于保持脸、发型和体型一致。", OUTFIT_REFERENCE: "绑定服装档案，用于保持衣着、配饰和状态一致。", STYLE_REFERENCE: "绑定风格档案，用于保持线稿、网点和页面语言一致。" }[kind]}</p><div className="asset-grid">{grouped.map((asset, index) => <article className="asset-card" key={asset.id}><div className={`asset-thumb thumb-${(index % 3) + 1}`}>{asset.content_url ? <Image src={publicUrl(asset.content_url)!} alt={asset.original_name} width={74} height={74} unoptimized /> : <FileImage size={27} />}<span>{asset.width && asset.height ? `${asset.width}×${asset.height}` : asset.mime_type}</span></div><div><strong>{asset.original_name}</strong><p>{label} · {formatBytes(asset.byte_size)}</p><span className="tiny-status"><Check size={11} />{asset.status}</span><div className="asset-actions"><select aria-label="修改素材用途" value={asset.kind} onChange={(event) => reclassifyAsset.mutate({ assetId: asset.id, kind: event.target.value as AssetPurpose })}>{kinds.map(([value, option]) => <option key={value} value={value}>{option}</option>)}</select><button title="删除素材" onClick={() => { if (window.confirm("删除该导入素材并解除人物绑定？")) deleteAsset.mutate(asset.id); }}><Trash2 size={13} /></button></div></div></article>)}</div>{!grouped.length && <div className="purpose-empty">尚无{label}</div>}</section>;
+              })}
+            </>
+          )}
+
+          {tab === "script" && (
+            <>
+              <header className="canvas-header"><div><span>SCREENPLAY / 漫画剧本</span><h2>先写场景与情节拍，再进入分页</h2></div><small>{script.data?.scenes.length ?? 0} 个场景</small></header>
+              {!activeChapterId ? <div className="asset-empty tall"><Clapperboard size={28} /><strong>请先导入原作</strong></div> : !script.data?.scenes.length ? <div className="script-empty"><Clapperboard size={30} /><strong>本章还没有漫画剧本</strong><p>点击“生成漫画剧本”，Gemini 会逐段提取场景、动作、对白、旁白和情绪；不会把整章压缩成几页。</p><button className="button ink" disabled={parseChapter.isPending} onClick={() => parseChapter.mutate()}><Sparkles size={15} />生成漫画剧本</button></div> : <div className="script-scenes"><div className="script-coverage"><strong>原文覆盖 {Math.round((script.data.coverage.ratio ?? 0) * 100)}%</strong><span>{script.data.coverage.covered ?? 0} / {script.data.coverage.expected ?? 0} 个原文片段 · {script.data.status}</span></div>{script.data.scenes.map((scene) => <section className="script-scene" key={scene.id}><header><span>SCENE {String(scene.ordinal).padStart(2, "0")}</span><strong>{scene.location || "未命名场景"} · {scene.time_label || "时间未定"}</strong><small>{scene.purpose}</small></header><p className="emotion-arc">情绪线：{scene.emotional_arc || "待补充"}</p><div className="beat-list">{scene.beats.map((beat) => <article key={beat.id}><i>{String(beat.ordinal).padStart(2, "0")}</i><div><strong>{beat.action || "动作待补充"}</strong>{beat.dialogue && <p><b>对白</b>{beat.dialogue}</p>}{beat.narration && <p><b>旁白</b>{beat.narration}</p>}<small>{beat.emotion || "情绪未标注"} · 来源 {beat.source_range.segment_ids?.length ?? 0} 段</small></div></article>)}</div></section>)}</div>}
             </>
           )}
 
           {tab === "pages" && (
             <>
               <header className="canvas-header"><div><span>PAGE CAPACITY / 动态分页</span><h2>内容有多少，页面就有多少</h2></div><small>{pages.data?.length ?? 0} 页</small></header>
-              {!pages.data?.length ? <div className="asset-empty tall"><PanelTop size={28} /><strong>尚未计算页面</strong><p>先导入章节，再运行动态分页。</p></div> : <div className="page-plan-grid">{pages.data.map((page) => <button key={page.id} className={page.selected_candidate_id ? "page-plan-card accepted" : "page-plan-card"} onClick={() => openPage(page)}><span className="page-no">P.{String(page.page_number).padStart(3, "0")}</span><div className="mini-panels">{Array.from({ length: Math.min(page.panel_count, 6) }).map((_, index) => <i key={index} />)}</div><strong>{page.panel_count} 格 · {page.estimated_bubbles} 气泡</strong><p>{page.estimated_text_chars} 字 / 上限 180</p><small>{page.source_coverage.complete ? "原文覆盖完整" : "覆盖缺失"}</small>{page.selected_candidate_id && <em><Check size={11} />已采用</em>}</button>)}</div>}
+              {!pages.data?.length ? <div className="asset-empty tall"><PanelTop size={28} /><strong>尚未生成分页分镜</strong><p>先完成漫画剧本；系统按场景切换、动作复杂度、对白和气泡容量拆页。</p></div> : <div className="page-plan-grid">{pages.data.map((page) => <button key={page.id} className={page.selected_candidate_id ? "page-plan-card accepted" : "page-plan-card"} onClick={() => openPage(page)}><span className="page-no">P.{String(page.page_number).padStart(3, "0")}</span><div className="mini-panels">{Array.from({ length: Math.min(page.panel_count, 6) }).map((_, index) => <i key={index} />)}</div><strong>{page.panel_count} 格 · {page.estimated_bubbles} 气泡</strong><p>{page.estimated_text_chars} 字 / 上限 180</p><small>{page.scene_ids.length} 场景 · {page.beat_ids.length} 情节拍 · {page.source_coverage.complete ? "覆盖完整" : "覆盖缺失"}</small>{page.selected_candidate_id && <em><Check size={11} />已采用</em>}</button>)}</div>}
             </>
           )}
 
@@ -359,7 +465,7 @@ export default function ProjectWorkspace() {
                 <div className="generation-bar"><div className="resolution-row small">{(["1K", "2K", "4K"] as Resolution[]).map((value) => <button key={value} className={drawResolution === value ? "selected" : ""} onClick={() => setDrawResolution(value)}>{value}{value === "4K" && <small>P</small>}</button>)}</div><button className="button ink generate-one" disabled={generate.isPending} onClick={() => generate.mutate()}>{generate.isPending ? <LoaderCircle className="spin" size={17} /> : <Star size={17} />}生成一个候选</button></div>
                 {(generate.isError || startBatch.isError) && <p className="form-error"><CircleAlert size={14} />{(generate.error ?? startBatch.error)?.message}</p>}
                 <div className="batch-heading"><div><span>BATCH</span><strong>{currentBatch ? `批次 ${currentBatch.ordinal}` : "尚未开始批次"}</strong></div><small>可跨模型比较 · 收藏不等于采用</small></div>
-                <div className="candidate-grid">{candidates.data?.map((candidate) => <article className={candidate.is_selected ? "candidate-card selected" : "candidate-card"} key={candidate.id}><CandidateArtwork contentUrl={candidate.content_url} label={`候选 ${candidate.ordinal}`} /><div className="candidate-meta"><span>候选 {String(candidate.ordinal).padStart(2, "0")}</span><strong>{modelOptions.find((item) => item.alias === candidate.model_alias)?.name}</strong><small>{candidate.resolution} · {candidate.status}</small></div><div className="candidate-actions"><button className={candidate.is_favorite ? "favorited" : ""} onClick={() => favorite.mutate({ candidateId: candidate.id, value: !candidate.is_favorite })}><Heart size={14} fill={candidate.is_favorite ? "currentColor" : "none"} />收藏</button><button disabled={!candidate.asset_id || candidate.is_selected} onClick={() => selectCandidate.mutate(candidate.id)}><Check size={14} />{candidate.is_selected ? "已采用" : "采用"}</button></div></article>)}</div>
+                <div className="candidate-grid">{candidates.data?.map((candidate) => <article className={candidate.is_selected ? "candidate-card selected" : "candidate-card"} key={candidate.id}><CandidateArtwork contentUrl={candidate.content_url} label={`候选 ${candidate.ordinal}`} /><div className="candidate-meta"><span>候选 {String(candidate.ordinal).padStart(2, "0")}</span><strong>{modelOptions.find((item) => item.alias === candidate.model_alias)?.name}</strong><small>{candidate.resolution} · {candidate.status}</small></div><div className="candidate-actions"><button className={candidate.is_favorite ? "favorited" : ""} onClick={() => favorite.mutate({ candidateId: candidate.id, value: !candidate.is_favorite })}><Heart size={14} fill={candidate.is_favorite ? "currentColor" : "none"} />收藏</button><button disabled={!candidate.asset_id || candidate.is_selected} onClick={() => selectCandidate.mutate(candidate.id)}><Check size={14} />{candidate.is_selected ? "已采用" : "采用"}</button><button className="danger-action" disabled={candidate.is_selected} onClick={() => { if (window.confirm("删除这个候选？收藏状态也会一并移除。")) deleteCandidate.mutate(candidate.id); }}><Trash2 size={14} />删除</button></div></article>)}</div>
                 {!candidates.data?.length && <div className="asset-empty"><ImagePlus size={25} /><strong>这个批次还没有候选</strong><p>选择任一平级模型，生成一张再决定是否收藏或采用。</p></div>}
                 <div className="next-page-row"><span>{selectedPage.selected_candidate_id ? "当前页已有采用版本，可以继续" : "采用一个满意候选后才能进入下一页"}</span><button className="button outline" disabled={!selectedPage.selected_candidate_id || goNext.isPending} onClick={() => goNext.mutate()}>生成下一页 <ArrowRight size={15} /></button></div>
               </> : <div className="asset-empty tall"><Sparkles size={28} /><strong>没有可抽卡页面</strong><p>先完成动态分页。</p></div>}
@@ -375,6 +481,14 @@ export default function ProjectWorkspace() {
               <div className="export-desk"><div><span>EXPORT / 导出</span><strong>采用全部页面后导出整章</strong></div><div>{(["PNG", "PDF", "JSON"] as const).map((type) => <button key={type} disabled={!activeChapterId || createExport.isPending} onClick={() => createExport.mutate(type)}><Download size={14} />{type}</button>)}</div></div>
               <div className="export-list">{exportsQuery.data?.map((item) => <a key={item.id} href={publicUrl(item.download_url)!}><FileImage size={14} /><span>{item.export_type} · {item.page_count} 页 · {formatBytes(item.byte_size)}</span><Download size={13} /></a>)}</div>
               {createExport.isError && <p className="form-error"><CircleAlert size={14} />{createExport.error.message}</p>}
+            </>
+          )}
+
+          {tab === "jobs" && (
+            <>
+              <header className="canvas-header"><div><span>JOBS / 任务中心</span><h2>每个生成任务都能看懂、取消和重试</h2></div><small>{jobs.data?.length ?? 0} 个任务</small></header>
+              <div className="job-list">{jobs.data?.map((job) => <article className={`job-row status-${job.status.toLowerCase()}`} key={job.id}><div className="job-type"><span>{jobLabels[job.job_type] ?? job.job_type}</span><strong>{job.status}</strong></div><div className="job-progress"><i><b style={{ width: `${job.progress}%` }} /></i><span>{job.progress}% · 尝试 {job.attempt_count}/{job.max_attempts}</span></div><div className="job-detail"><span>{job.model_alias ? modelOptions.find((item) => item.alias === job.model_alias)?.name ?? job.model_alias : "系统任务"}</span><small>{new Date(job.created_at).toLocaleString("zh-CN")}</small>{job.error_message && <em>{job.error_message}</em>}</div><div className="job-actions">{["WAITING", "QUEUED", "PREPARING", "GENERATING"].includes(job.status) && <button onClick={() => cancelJob.mutate(job.id)}>取消</button>}{(["FAILED", "CANCELLED", "TIMED_OUT"].includes(job.status) || (job.status === "WAITING" && Boolean(job.error_code))) && <button onClick={() => retryJob.mutate(job.id)}><RotateCcw size={12} />重试</button>}</div></article>)}</div>
+              {!jobs.data?.length && <div className="asset-empty tall"><ListTodo size={28} /><strong>当前没有任务</strong><p>剧本解析、页面生成、检查和修复都会列在这里。</p></div>}
             </>
           )}
         </section>
@@ -398,7 +512,7 @@ export default function ProjectWorkspace() {
         </aside>
       </div>
 
-      <footer className="queue-dock"><div><span className={queueStats.waiting ? "queue-light active" : "queue-light"} /><strong>生成队列</strong><small>{jobs.data?.[0] ? `${jobs.data[0].job_type} · ${jobs.data[0].status}` : "当前没有任务"}</small></div><div><span>并发上限 {draft.default_concurrency}</span><i /><span>{queueStats.waiting} WAITING</span><i /><span>{queueStats.failed} FAILED</span></div></footer>
+      <footer className="queue-dock" role="button" tabIndex={0} onClick={() => setTab("jobs")}><div><span className={queueStats.waiting ? "queue-light active" : "queue-light"} /><strong>打开任务中心</strong><small>{jobs.data?.[0] ? `${jobLabels[jobs.data[0].job_type] ?? jobs.data[0].job_type} · ${jobs.data[0].status}` : "当前没有任务"}</small></div><div><span>并发上限 {draft.default_concurrency}</span><i /><span>{queueStats.waiting} 等待</span><i /><span>{queueStats.failed} 失败</span></div></footer>
     </AppShell>
   );
 }

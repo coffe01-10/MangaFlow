@@ -1,22 +1,31 @@
 import hashlib
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
 from PIL import Image, UnidentifiedImageError
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.api.helpers import asset_read
 from app.config import get_settings
 from app.database import get_db
-from app.models import Asset, Project
-from app.schemas import AssetRead
+from app.models import Asset, CharacterReference, Project
+from app.schemas import AssetRead, AssetUpdate
 
 router = APIRouter()
 CHUNK_SIZE = 1024 * 1024
+ASSET_KINDS = {
+    "character": "CHARACTER_REFERENCE",
+    "outfit": "OUTFIT_REFERENCE",
+    "style": "STYLE_REFERENCE",
+    "CHARACTER_REFERENCE": "CHARACTER_REFERENCE",
+    "OUTFIT_REFERENCE": "OUTFIT_REFERENCE",
+    "STYLE_REFERENCE": "STYLE_REFERENCE",
+}
 
 
 @router.get("", response_model=list[AssetRead])
@@ -42,6 +51,9 @@ def upload_asset(
     db: Session = Depends(get_db),
 ) -> AssetRead:
     settings = get_settings()
+    normalized_kind = ASSET_KINDS.get(kind)
+    if not normalized_kind:
+        raise HTTPException(status_code=422, detail="请选择人物、服装或漫画风格参考用途")
     project = db.get(Project, project_id)
     if not project or project.deleted_at is not None:
         raise HTTPException(status_code=404, detail="项目不存在")
@@ -89,7 +101,7 @@ def upload_asset(
         asset = Asset(
             id=asset_id,
             project_id=project_id,
-            kind=kind,
+            kind=normalized_kind,
             original_name=safe_name,
             storage_key=destination.relative_to(settings.upload_root).as_posix(),
             mime_type=file.content_type,
@@ -111,6 +123,33 @@ def upload_asset(
         raise HTTPException(status_code=500, detail="文件保存失败") from error
     finally:
         file.file.close()
+
+
+@router.patch("/{asset_id}", response_model=AssetRead)
+def update_asset(asset_id: str, payload: AssetUpdate, db: Session = Depends(get_db)) -> AssetRead:
+    asset = db.get(Asset, asset_id)
+    if not asset or asset.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="素材不存在")
+    if asset.source != "USER_UPLOAD":
+        raise HTTPException(status_code=409, detail="生成结果不能改成参考图")
+    asset.kind = payload.kind
+    if payload.kind != "CHARACTER_REFERENCE":
+        db.execute(delete(CharacterReference).where(CharacterReference.asset_id == asset.id))
+    db.commit()
+    db.refresh(asset)
+    return asset_read(asset)
+
+
+@router.delete("/{asset_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_asset(asset_id: str, db: Session = Depends(get_db)) -> None:
+    asset = db.get(Asset, asset_id)
+    if not asset or asset.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="素材不存在")
+    if asset.source != "USER_UPLOAD":
+        raise HTTPException(status_code=409, detail="生成结果请在对应批次中删除")
+    db.execute(delete(CharacterReference).where(CharacterReference.asset_id == asset.id))
+    asset.deleted_at = datetime.now(UTC)
+    db.commit()
 
 
 @router.get("/{asset_id}/content")

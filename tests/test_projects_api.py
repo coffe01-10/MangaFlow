@@ -65,6 +65,13 @@ def test_upload_image_is_validated_and_registered(client, monkeypatch):
         asset = response.json()
         assert asset["width"] == 32
         assert asset["height"] == 48
-        assert asset["kind"] == "character"
+        assert asset["kind"] == "CHARACTER_REFERENCE"
+        changed = client.patch(
+            f"/api/v1/assets/{asset['id']}", json={"kind": "STYLE_REFERENCE"}
+        )
+        assert changed.status_code == 200
+        assert changed.json()["kind"] == "STYLE_REFERENCE"
+        assert client.delete(f"/api/v1/assets/{asset['id']}").status_code == 204
+        assert client.get(f"/api/v1/assets?project_id={project['id']}").json() == []
         assert list(Path(directory).rglob("*.png"))
     assert not Path(directory).exists()

@@ -77,12 +77,8 @@ class Project(Timestamped, Base):
     text_model_alias: Mapped[str] = mapped_column(String(64), default="text.fast")
     # Kept for a one-migration compatibility window. New code uses the neutral
     # last-used value and requires every generation request to choose a model.
-    image_model_alias: Mapped[str] = mapped_column(
-        String(64), default="image.nano_banana_2"
-    )
-    last_image_model_alias: Mapped[str] = mapped_column(
-        String(64), default="image.nano_banana_2"
-    )
+    image_model_alias: Mapped[str] = mapped_column(String(64), default="image.nano_banana_2")
+    last_image_model_alias: Mapped[str] = mapped_column(String(64), default="image.nano_banana_2")
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     chapters: Mapped[list["Chapter"]] = relationship(
@@ -102,6 +98,7 @@ class Chapter(Timestamped, Base):
     ordinal: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(32), default="IMPORTED")
     current_source_revision_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     project: Mapped[Project] = relationship(back_populates="chapters")
     source_revisions: Mapped[list["SourceRevision"]] = relationship(cascade="all, delete-orphan")
@@ -332,12 +329,8 @@ class GenerationJob(Timestamped, Base):
     model_alias: Mapped[str | None] = mapped_column(String(64), nullable=True)
     request_parameters: Mapped[dict] = mapped_column(JSON, default=dict)
     progress: Mapped[int] = mapped_column(Integer, default=0)
-    idempotency_key: Mapped[str | None] = mapped_column(
-        String(160), nullable=True, unique=True
-    )
-    scheduled_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    idempotency_key: Mapped[str | None] = mapped_column(String(160), nullable=True, unique=True)
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     lease_owner: Mapped[str | None] = mapped_column(String(120), nullable=True)
@@ -476,9 +469,7 @@ class CharacterReference(Base):
     character_id: Mapped[str] = mapped_column(
         ForeignKey("characters.id", ondelete="CASCADE"), index=True
     )
-    asset_id: Mapped[str] = mapped_column(
-        ForeignKey("assets.id", ondelete="RESTRICT"), index=True
-    )
+    asset_id: Mapped[str] = mapped_column(ForeignKey("assets.id", ondelete="RESTRICT"), index=True)
     angle: Mapped[str] = mapped_column(String(32), default="unspecified")
     is_canonical: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

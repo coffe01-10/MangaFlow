@@ -15,9 +15,7 @@ def candidate_read(candidate: PageCandidate) -> PageCandidateRead:
     return value.model_copy(
         update={
             "content_url": (
-                f"/api/v1/assets/{candidate.asset_id}/content"
-                if candidate.asset_id
-                else None
+                f"/api/v1/assets/{candidate.asset_id}/content" if candidate.asset_id else None
             )
         }
     )

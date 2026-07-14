@@ -163,9 +163,7 @@ def generate_asset_candidate(
         raise HTTPException(status_code=422, detail="未识别的图像模型")
     ordinal = (
         db.scalar(
-            select(func.max(AssetCandidate.ordinal)).where(
-                AssetCandidate.batch_id == batch.id
-            )
+            select(func.max(AssetCandidate.ordinal)).where(AssetCandidate.batch_id == batch.id)
         )
         or 0
     ) + 1

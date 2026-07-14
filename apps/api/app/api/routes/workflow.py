@@ -114,15 +114,22 @@ def get_page(page_id: str, db: Session = Depends(get_db)) -> MangaPage:
 )
 def start_batch(page_id: str, db: Session = Depends(get_db)) -> GenerationBatch:
     page = _page(db, page_id)
+    chapter = db.get(Chapter, page.chapter_id)
+    if (
+        chapter.status not in {"SCRIPT_READY", "PAGES_PLANNED"}
+        or not page.scene_ids
+        or not page.beat_ids
+    ):
+        raise HTTPException(
+            status_code=409, detail="该页面不是从完整漫画剧本生成，请重新解析剧本并规划分镜"
+        )
     if not page.source_coverage.get("complete"):
         raise HTTPException(status_code=409, detail="页面原文覆盖不完整，不能开始抽卡")
     return _new_batch(db, page)
 
 
 @router.get("/pages/{page_id}/batches", response_model=list[GenerationBatchRead])
-def list_batches(
-    page_id: str, db: Session = Depends(get_db)
-) -> list[GenerationBatch]:
+def list_batches(page_id: str, db: Session = Depends(get_db)) -> list[GenerationBatch]:
     _page(db, page_id)
     return list(
         db.scalars(
@@ -149,14 +156,17 @@ def create_candidate(
     if payload.model_alias not in build_registry(get_settings()):
         raise HTTPException(status_code=422, detail="未识别的图像模型")
     page = _page(db, batch.page_id)
+    chapter = db.get(Chapter, page.chapter_id)
+    if (
+        chapter.status not in {"SCRIPT_READY", "PAGES_PLANNED"}
+        or not page.scene_ids
+        or not page.beat_ids
+    ):
+        raise HTTPException(status_code=409, detail="该页面缺少剧本与分镜来源，禁止生成")
     if not page.source_coverage.get("complete"):
         raise HTTPException(status_code=409, detail="页面原文覆盖不完整，禁止生成")
     ordinal = (
-        db.scalar(
-            select(func.max(PageCandidate.ordinal)).where(
-                PageCandidate.batch_id == batch.id
-            )
-        )
+        db.scalar(select(func.max(PageCandidate.ordinal)).where(PageCandidate.batch_id == batch.id))
         or 0
     ) + 1
     candidate = PageCandidate(
@@ -194,12 +204,8 @@ def create_candidate(
     )
 
 
-@router.get(
-    "/batches/{batch_id}/candidates", response_model=list[PageCandidateRead]
-)
-def list_candidates(
-    batch_id: str, db: Session = Depends(get_db)
-) -> list[PageCandidateRead]:
+@router.get("/batches/{batch_id}/candidates", response_model=list[PageCandidateRead])
+def list_candidates(batch_id: str, db: Session = Depends(get_db)) -> list[PageCandidateRead]:
     if not db.get(GenerationBatch, batch_id):
         raise HTTPException(status_code=404, detail="抽卡批次不存在")
     candidates = list(
@@ -260,9 +266,7 @@ def select_candidate(
     ):
         raise HTTPException(status_code=409, detail="该候选尚不能采用")
     db.execute(
-        update(PageCandidate)
-        .where(PageCandidate.page_id == page.id)
-        .values(is_selected=False)
+        update(PageCandidate).where(PageCandidate.page_id == page.id).values(is_selected=False)
     )
     candidate.is_selected = True
     candidate.version += 1
@@ -324,9 +328,7 @@ def library(
         raise HTTPException(status_code=404, detail="项目不存在")
     batch_query = select(GenerationBatch).where(GenerationBatch.project_id == project_id)
     if generation_kind:
-        batch_query = batch_query.where(
-            GenerationBatch.generation_kind == generation_kind.upper()
-        )
+        batch_query = batch_query.where(GenerationBatch.generation_kind == generation_kind.upper())
     batches = list(db.scalars(batch_query.order_by(GenerationBatch.created_at.desc())))
     groups: list[LibraryBatchRead] = []
     all_candidates: list[PageCandidateRead] = []
@@ -436,12 +438,8 @@ def inspect_candidate(
     return enqueue_job(db, job)
 
 
-@router.get(
-    "/candidates/{candidate_id}/inspections", response_model=list[InspectionRead]
-)
-def list_inspections(
-    candidate_id: str, db: Session = Depends(get_db)
-) -> list[InspectionResult]:
+@router.get("/candidates/{candidate_id}/inspections", response_model=list[InspectionRead])
+def list_inspections(candidate_id: str, db: Session = Depends(get_db)) -> list[InspectionResult]:
     return list(
         db.scalars(
             select(InspectionResult)
@@ -467,11 +465,14 @@ def repair_candidate(
         raise HTTPException(status_code=409, detail="原始候选图片不存在")
     if not inspection or inspection.candidate_id != original.id:
         raise HTTPException(status_code=409, detail="检查结果与候选不匹配")
-    attempts = db.scalar(
-        select(func.count(RepairPlan.id)).where(
-            RepairPlan.inspection_result_id == inspection.id
+    attempts = (
+        db.scalar(
+            select(func.count(RepairPlan.id)).where(
+                RepairPlan.inspection_result_id == inspection.id
+            )
         )
-    ) or 0
+        or 0
+    )
     if attempts >= get_settings().max_auto_repairs:
         raise HTTPException(status_code=409, detail="已达到最大自动修复次数，请人工处理")
     page = _page(db, original.page_id)

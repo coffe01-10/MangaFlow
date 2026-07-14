@@ -46,15 +46,11 @@ def _selected_pages(db: Session, chapter: Chapter):
     result = []
     for page in pages:
         if not page.selected_candidate_id:
-            raise HTTPException(
-                status_code=409, detail=f"第 {page.page_number} 页尚未采用候选"
-            )
+            raise HTTPException(status_code=409, detail=f"第 {page.page_number} 页尚未采用候选")
         candidate = db.get(PageCandidate, page.selected_candidate_id)
         asset = db.get(Asset, candidate.asset_id) if candidate and candidate.asset_id else None
         if not asset:
-            raise HTTPException(
-                status_code=409, detail=f"第 {page.page_number} 页采用素材不存在"
-            )
+            raise HTTPException(status_code=409, detail=f"第 {page.page_number} 页采用素材不存在")
         result.append((page, candidate, asset))
     return result
 
@@ -118,9 +114,7 @@ def create_export(
                 for page, candidate, asset in selected
             ],
         }
-        destination.write_text(
-            json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        destination.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
 
     data = destination.read_bytes()
     bundle = ExportBundle(

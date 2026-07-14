@@ -32,9 +32,7 @@ def _has_conflict(
     exclude_id: str | None = None,
 ) -> bool:
     incoming = _tokens(primary_name, aliases)
-    others = list(
-        db.scalars(select(Character).where(Character.project_id == project_id))
-    )
+    others = list(db.scalars(select(Character).where(Character.project_id == project_id)))
     return any(
         incoming & _tokens(item.primary_name, item.aliases)
         for item in others
@@ -49,9 +47,7 @@ def _read(db: Session, character: Character) -> CharacterRead:
 
 
 @router.get("/projects/{project_id}/characters", response_model=list[CharacterRead])
-def list_characters(
-    project_id: str, db: Session = Depends(get_db)
-) -> list[CharacterRead]:
+def list_characters(project_id: str, db: Session = Depends(get_db)) -> list[CharacterRead]:
     project = db.get(Project, project_id)
     if not project or project.deleted_at is not None:
         raise HTTPException(status_code=404, detail="项目不存在")
@@ -148,6 +144,8 @@ def bind_reference(
         raise HTTPException(status_code=404, detail="参考素材不存在")
     if asset.project_id != character.project_id:
         raise HTTPException(status_code=409, detail="参考图和角色不属于同一项目")
+    if asset.kind != "CHARACTER_REFERENCE":
+        raise HTTPException(status_code=409, detail="只有人物参考图可以绑定角色，请先修改素材用途")
     existing = db.scalar(
         select(CharacterReference).where(
             CharacterReference.character_id == character_id,
@@ -172,3 +170,12 @@ def bind_reference(
     db.commit()
     db.refresh(reference)
     return reference
+
+
+@router.delete("/character-references/{reference_id}", status_code=status.HTTP_204_NO_CONTENT)
+def unbind_reference(reference_id: str, db: Session = Depends(get_db)) -> None:
+    reference = db.get(CharacterReference, reference_id)
+    if not reference:
+        raise HTTPException(status_code=404, detail="角色参考绑定不存在")
+    db.delete(reference)
+    db.commit()

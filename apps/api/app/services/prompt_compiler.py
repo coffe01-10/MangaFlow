@@ -49,7 +49,7 @@ def compile_page_prompt(db: Session, page: MangaPage, project: Project) -> tuple
 阅读方向必须为从右到左，页面包含 {page.panel_count} 格以内。
 中文文字必须严格保留，不得总结、改写或遗漏。
 原文与页面结构如下：
-{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}
+{json.dumps(payload, ensure_ascii=False, separators=(",", ":"))}
 要求：黑白墨线、网点、清晰格线、角色身份与服装一致；禁止加入原文没有的关键剧情；输出一张完整竖版漫画页。
 """
     snapshot = {

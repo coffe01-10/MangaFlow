@@ -80,8 +80,7 @@ def _split_long_range(text: str, start: int, end: int) -> list[tuple[int, int]]:
         upper = min(cursor + MAX_SEGMENT_CHARS, end)
         if upper < end:
             candidates = [
-                text.rfind(mark, cursor, upper)
-                for mark in ("。", "！", "？", "；", "\n")
+                text.rfind(mark, cursor, upper) for mark in ("。", "！", "？", "；", "\n")
             ]
             boundary = max(candidates)
             if boundary > cursor + MAX_SEGMENT_CHARS // 2:
@@ -95,9 +94,7 @@ def create_source_segments(db: Session, revision: SourceRevision) -> list[Source
     segments: list[SourceSegment] = []
     ordinal = 1
     for start, end in _paragraph_ranges(revision.original_text):
-        for chunk_start, chunk_end in _split_long_range(
-            revision.original_text, start, end
-        ):
+        for chunk_start, chunk_end in _split_long_range(revision.original_text, start, end):
             value = revision.original_text[chunk_start:chunk_end]
             segment = SourceSegment(
                 source_revision_id=revision.id,
@@ -123,9 +120,9 @@ def import_source(
 ) -> list[Chapter]:
     if not text.strip():
         raise HTTPException(status_code=422, detail="原文不能为空")
-    current_max = db.scalar(
-        select(func.max(Chapter.ordinal)).where(Chapter.project_id == project_id)
-    ) or 0
+    current_max = (
+        db.scalar(select(func.max(Chapter.ordinal)).where(Chapter.project_id == project_id)) or 0
+    )
     chapters: list[Chapter] = []
     for offset, (chapter_title, chapter_text) in enumerate(split_chapters(title, text), 1):
         chapter = Chapter(
@@ -224,6 +221,13 @@ def plan_chapter_pages(
 ) -> list[MangaPage]:
     if not chapter.current_source_revision_id:
         raise HTTPException(status_code=409, detail="章节没有可用原文")
+    scenes = list(
+        db.scalars(select(Scene).where(Scene.chapter_id == chapter.id).order_by(Scene.ordinal))
+    )
+    if chapter.status not in {"SCRIPT_READY", "PAGES_PLANNED"} or not scenes:
+        raise HTTPException(
+            status_code=409, detail="请先完成剧本解析并确认原文覆盖完整，再计算分页"
+        )
     existing = list(
         db.scalars(
             select(MangaPage)
@@ -236,9 +240,7 @@ def plan_chapter_pages(
     if existing:
         page_ids = [page.id for page in existing]
         has_batches = db.scalar(
-            select(func.count(GenerationBatch.id)).where(
-                GenerationBatch.page_id.in_(page_ids)
-            )
+            select(func.count(GenerationBatch.id)).where(GenerationBatch.page_id.in_(page_ids))
         )
         if has_batches:
             raise HTTPException(
@@ -259,20 +261,40 @@ def plan_chapter_pages(
     if not segments:
         raise HTTPException(status_code=409, detail="原文尚未完成无损分段")
 
+    segment_scene: dict[str, str] = {}
+    for scene in scenes:
+        for segment_id in scene.source_range.get("segment_ids", []):
+            segment_scene.setdefault(segment_id, scene.id)
+        for beat in db.scalars(
+            select(Beat).where(Beat.scene_id == scene.id).order_by(Beat.ordinal)
+        ):
+            for segment_id in beat.source_range.get("segment_ids", []):
+                segment_scene.setdefault(segment_id, scene.id)
+    missing = [segment.id for segment in segments if segment.id not in segment_scene]
+    if missing:
+        raise HTTPException(
+            status_code=409, detail=f"剧本仍有 {len(missing)} 段原文未覆盖，禁止分页"
+        )
+
     pages_chunks: list[list[PageChunk]] = []
     current: list[PageChunk] = []
     current_chars = 0
     current_bubbles = 0
+    current_scene_id: str | None = None
     for segment in segments:
+        scene_id = segment_scene[segment.id]
+        if current and current_scene_id != scene_id:
+            pages_chunks.append(current)
+            current = []
+            current_chars = 0
+            current_bubbles = 0
+        current_scene_id = scene_id
         for chunk in _split_for_pages(segment):
             size = meaningful_characters(chunk.text)
-            overflow = (
-                current
-                and (
-                    current_chars + size > HARD_TEXT_LIMIT
-                    or current_bubbles + chunk.bubble_count > MAX_BUBBLES
-                    or current_chars >= SOFT_TEXT_LIMIT
-                )
+            overflow = current and (
+                current_chars + size > HARD_TEXT_LIMIT
+                or current_bubbles + chunk.bubble_count > MAX_BUBBLES
+                or current_chars >= SOFT_TEXT_LIMIT
             )
             if overflow:
                 pages_chunks.append(current)
@@ -286,11 +308,6 @@ def plan_chapter_pages(
         pages_chunks.append(current)
 
     pages: list[MangaPage] = []
-    scenes = list(
-        db.scalars(
-            select(Scene).where(Scene.chapter_id == chapter.id).order_by(Scene.ordinal)
-        )
-    )
     characters = list(
         db.scalars(select(Character).where(Character.project_id == chapter.project_id))
     )
@@ -314,9 +331,11 @@ def plan_chapter_pages(
             if set(scene.source_range.get("segment_ids", [])) & set(segment_ids)
         ]
         scene_ids = [scene.id for scene in page_scenes]
-        beat_ids = list(
-            db.scalars(select(Beat.id).where(Beat.scene_id.in_(scene_ids)))
-        ) if scene_ids else []
+        beat_ids = (
+            list(db.scalars(select(Beat.id).where(Beat.scene_id.in_(scene_ids))))
+            if scene_ids
+            else []
+        )
         page = MangaPage(
             chapter_id=chapter.id,
             page_number=page_number,
@@ -396,19 +415,25 @@ def chapter_metrics(db: Session, chapter: Chapter) -> dict[str, int | float]:
     )
     segment_count = 0
     if revision:
-        segment_count = db.scalar(
-            select(func.count(SourceSegment.id)).where(
-                SourceSegment.source_revision_id == revision.id
+        segment_count = (
+            db.scalar(
+                select(func.count(SourceSegment.id)).where(
+                    SourceSegment.source_revision_id == revision.id
+                )
             )
-        ) or 0
-    page_count = db.scalar(
-        select(func.count(MangaPage.id)).where(MangaPage.chapter_id == chapter.id)
-    ) or 0
-    covered_count = db.scalar(
-        select(func.count(func.distinct(PageSourceSegment.source_segment_id)))
-        .join(MangaPage, MangaPage.id == PageSourceSegment.page_id)
-        .where(MangaPage.chapter_id == chapter.id)
-    ) or 0
+            or 0
+        )
+    page_count = (
+        db.scalar(select(func.count(MangaPage.id)).where(MangaPage.chapter_id == chapter.id)) or 0
+    )
+    covered_count = (
+        db.scalar(
+            select(func.count(func.distinct(PageSourceSegment.source_segment_id)))
+            .join(MangaPage, MangaPage.id == PageSourceSegment.page_id)
+            .where(MangaPage.chapter_id == chapter.id)
+        )
+        or 0
+    )
     return {
         "source_character_count": revision.character_count if revision else 0,
         "segment_count": segment_count,

@@ -1,4 +1,5 @@
 from datetime import timedelta
+from threading import Thread
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -24,9 +25,7 @@ def create_job(
 ) -> GenerationJob:
     if idempotency_key:
         existing = db.scalar(
-            select(GenerationJob).where(
-                GenerationJob.idempotency_key == idempotency_key
-            )
+            select(GenerationJob).where(GenerationJob.idempotency_key == idempotency_key)
         )
         if existing:
             return existing
@@ -96,12 +95,26 @@ def enqueue_job(db: Session, job: GenerationJob) -> GenerationJob:
         job.error_code = None
         job.error_message = None
     except Exception:
+        if settings.environment == "development":
+            job.status = JobStatus.QUEUED
+            job.error_code = "LOCAL_WORKER"
+            job.error_message = "Redis 不可用，已切换到本地后台执行"
+            db.commit()
+            db.refresh(job)
+            Thread(target=_execute_locally, args=(job.id,), daemon=True).start()
+            return job
         job.status = JobStatus.WAITING
         job.error_code = "QUEUE_UNAVAILABLE"
         job.error_message = "任务已保存；Redis 队列暂时不可用"
     db.commit()
     db.refresh(job)
     return job
+
+
+def _execute_locally(job_id: str) -> None:
+    from app.worker_tasks import execute_job
+
+    execute_job(job_id)
 
 
 def cancel_job(db: Session, job: GenerationJob) -> GenerationJob:

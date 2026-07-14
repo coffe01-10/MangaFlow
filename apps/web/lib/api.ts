@@ -60,6 +60,8 @@ export interface Asset {
   content_url: string | null;
 }
 
+export type AssetPurpose = "CHARACTER_REFERENCE" | "OUTFIT_REFERENCE" | "STYLE_REFERENCE";
+
 export interface Chapter {
   id: string;
   project_id: string;
@@ -74,6 +76,45 @@ export interface Chapter {
   created_at: string;
   updated_at: string;
   version: number;
+}
+
+export interface SourceRevision {
+  id: string;
+  chapter_id: string;
+  revision: number;
+  source_type: string;
+  original_text: string;
+  character_count: number;
+  imported_at: string;
+}
+
+export interface ScriptBeat {
+  id: string;
+  ordinal: number;
+  action: string;
+  dialogue: string;
+  narration: string;
+  emotion: string;
+  source_range: { segment_ids?: string[] };
+}
+
+export interface ScriptScene {
+  id: string;
+  ordinal: number;
+  location: string;
+  time_label: string;
+  purpose: string;
+  emotional_arc: string;
+  source_range: { segment_ids?: string[] };
+  beats: ScriptBeat[];
+}
+
+export interface Script {
+  chapter_id: string;
+  status: string;
+  revision_no: number | null;
+  coverage: { ratio?: number; expected?: number; covered?: number; missing_segment_ids?: string[] };
+  scenes: ScriptScene[];
 }
 
 export interface CharacterReference {
@@ -113,6 +154,8 @@ export interface MangaPage {
   source_coverage: { complete?: boolean; ranges?: { text: string }[] };
   selected_candidate_id: string | null;
   continuity_status: string;
+  scene_ids: string[];
+  beat_ids: string[];
 }
 
 export interface GenerationBatch {
@@ -223,12 +266,23 @@ export const api = {
     data.append("file", file);
     return request<Asset>("/assets/upload", { method: "POST", body: data });
   },
+  updateAsset: (assetId: string, kind: AssetPurpose) => request<Asset>(`/assets/${assetId}`, {
+    method: "PATCH", body: JSON.stringify({ kind }),
+  }),
+  deleteAsset: (assetId: string) => request<void>(`/assets/${assetId}`, { method: "DELETE" }),
   chapters: (projectId: string) => request<Chapter[]>(`/projects/${projectId}/chapters`),
   importSource: (projectId: string, title: string, text: string) =>
     request<{ chapters: Chapter[]; total_characters: number }>(`/projects/${projectId}/sources/import`, {
       method: "POST",
       body: JSON.stringify({ title, text, source_type: "PASTE" }),
     }),
+  revisions: (chapterId: string) => request<SourceRevision[]>(`/chapters/${chapterId}/revisions`),
+  reviseSource: (chapterId: string, title: string, text: string) => request<SourceRevision>(`/chapters/${chapterId}/revisions`, {
+    method: "POST", body: JSON.stringify({ title, text, source_type: "PASTE" }),
+  }),
+  deleteChapter: (chapterId: string) => request<void>(`/chapters/${chapterId}`, { method: "DELETE" }),
+  restoreChapter: (chapterId: string) => request<Chapter>(`/chapters/${chapterId}/restore`, { method: "POST" }),
+  script: (chapterId: string) => request<Script>(`/chapters/${chapterId}/script`),
   parseChapter: (chapterId: string) => request<Job>(`/chapters/${chapterId}/parse`, { method: "POST" }),
   planChapter: (chapterId: string) => request<{ pages: MangaPage[]; coverage_ratio: number }>(`/chapters/${chapterId}/plan`, {
     method: "POST",
@@ -269,6 +323,7 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ is_favorite: isFavorite }),
     }),
+  deleteCandidate: (candidateId: string) => request<void>(`/candidates/${candidateId}`, { method: "DELETE" }),
   selectCandidate: (pageId: string, candidateId: string) =>
     request<MangaPage>(`/pages/${pageId}/select-candidate`, {
       method: "POST",
@@ -279,6 +334,8 @@ export const api = {
     `/projects/${projectId}/library?group_by=batch${favorite === undefined ? "" : `&favorite=${favorite}`}`,
   ),
   jobs: (projectId: string) => request<Job[]>(`/projects/${projectId}/jobs`),
+  cancelJob: (jobId: string) => request<Job>(`/jobs/${jobId}/cancel`, { method: "POST" }),
+  retryJob: (jobId: string) => request<Job>(`/jobs/${jobId}/retry`, { method: "POST" }),
   exports: (projectId: string) => request<ExportBundle[]>(`/projects/${projectId}/exports`),
   createExport: (chapterId: string, exportType: ExportBundle["export_type"]) =>
     request<ExportBundle>(`/chapters/${chapterId}/exports`, {

@@ -1,22 +1,47 @@
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import get_db
-from app.models import Chapter, Project, SourceSegment
+from app.models import (
+    Beat,
+    Chapter,
+    Dialogue,
+    GenerationBatch,
+    MangaPage,
+    PageSourceSegment,
+    Panel,
+    Project,
+    Scene,
+    ScriptRevision,
+    SourceRevision,
+    SourceSegment,
+)
 from app.schemas import (
     ChapterRead,
     JobRead,
     PlanRead,
     PlanRequest,
+    SceneRead,
+    ScriptRead,
     SourceImportRead,
     SourceImportRequest,
+    SourceRevisionCreate,
+    SourceRevisionRead,
     SourceSegmentRead,
 )
-from app.services.content_workflow import chapter_metrics, import_source, plan_chapter_pages
+from app.services.content_workflow import (
+    chapter_metrics,
+    create_source_segments,
+    import_source,
+    meaningful_characters,
+    plan_chapter_pages,
+    sha256_text,
+)
 from app.services.job_service import create_job, enqueue_job
 
 router = APIRouter()
@@ -30,9 +55,7 @@ def _project(db: Session, project_id: str) -> Project:
 
 
 def _chapter_read(db: Session, chapter: Chapter) -> ChapterRead:
-    return ChapterRead.model_validate(chapter).model_copy(
-        update=chapter_metrics(db, chapter)
-    )
+    return ChapterRead.model_validate(chapter).model_copy(update=chapter_metrics(db, chapter))
 
 
 @router.post(
@@ -107,7 +130,7 @@ def list_chapters(project_id: str, db: Session = Depends(get_db)) -> list[Chapte
     chapters = list(
         db.scalars(
             select(Chapter)
-            .where(Chapter.project_id == project_id)
+            .where(Chapter.project_id == project_id, Chapter.deleted_at.is_(None))
             .order_by(Chapter.ordinal)
         )
     )
@@ -117,17 +140,15 @@ def list_chapters(project_id: str, db: Session = Depends(get_db)) -> list[Chapte
 @router.get("/chapters/{chapter_id}", response_model=ChapterRead)
 def get_chapter(chapter_id: str, db: Session = Depends(get_db)) -> ChapterRead:
     chapter = db.get(Chapter, chapter_id)
-    if not chapter:
+    if not chapter or chapter.deleted_at is not None:
         raise HTTPException(status_code=404, detail="章节不存在")
     return _chapter_read(db, chapter)
 
 
 @router.get("/chapters/{chapter_id}/segments", response_model=list[SourceSegmentRead])
-def list_segments(
-    chapter_id: str, db: Session = Depends(get_db)
-) -> list[SourceSegment]:
+def list_segments(chapter_id: str, db: Session = Depends(get_db)) -> list[SourceSegment]:
     chapter = db.get(Chapter, chapter_id)
-    if not chapter or not chapter.current_source_revision_id:
+    if not chapter or chapter.deleted_at is not None or not chapter.current_source_revision_id:
         raise HTTPException(status_code=404, detail="章节原文不存在")
     return list(
         db.scalars(
@@ -145,7 +166,7 @@ def list_segments(
 )
 def parse_chapter(chapter_id: str, db: Session = Depends(get_db)):
     chapter = db.get(Chapter, chapter_id)
-    if not chapter:
+    if not chapter or chapter.deleted_at is not None:
         raise HTTPException(status_code=404, detail="章节不存在")
     job = create_job(
         db,
@@ -166,7 +187,7 @@ def plan_chapter(
     db: Session = Depends(get_db),
 ) -> PlanRead:
     chapter = db.get(Chapter, chapter_id)
-    if not chapter:
+    if not chapter or chapter.deleted_at is not None:
         raise HTTPException(status_code=404, detail="章节不存在")
     pages = plan_chapter_pages(db, chapter, replace_existing=payload.replace_existing)
     metrics = chapter_metrics(db, chapter)
@@ -178,4 +199,122 @@ def plan_chapter(
         covered_segment_count=covered,
         coverage_ratio=metrics["coverage_ratio"],
         pages=pages,
+    )
+
+
+@router.get("/chapters/{chapter_id}/revisions", response_model=list[SourceRevisionRead])
+def list_revisions(chapter_id: str, db: Session = Depends(get_db)) -> list[SourceRevision]:
+    chapter = db.get(Chapter, chapter_id)
+    if not chapter or chapter.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="章节不存在")
+    return list(
+        db.scalars(
+            select(SourceRevision)
+            .where(SourceRevision.chapter_id == chapter_id)
+            .order_by(SourceRevision.revision.desc())
+        )
+    )
+
+
+@router.post(
+    "/chapters/{chapter_id}/revisions",
+    response_model=SourceRevisionRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def revise_source(
+    chapter_id: str, payload: SourceRevisionCreate, db: Session = Depends(get_db)
+) -> SourceRevision:
+    chapter = db.get(Chapter, chapter_id)
+    if not chapter or chapter.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="章节不存在")
+    page_ids = list(db.scalars(select(MangaPage.id).where(MangaPage.chapter_id == chapter_id)))
+    if page_ids and db.scalar(
+        select(func.count(GenerationBatch.id)).where(GenerationBatch.page_id.in_(page_ids))
+    ):
+        raise HTTPException(
+            status_code=409, detail="已有页面进入抽卡流程，请先删除相关候选后再修改原文"
+        )
+    if page_ids:
+        panel_ids = list(db.scalars(select(Panel.id).where(Panel.page_id.in_(page_ids))))
+        if panel_ids:
+            db.execute(delete(Dialogue).where(Dialogue.panel_id.in_(panel_ids)))
+            db.execute(delete(Panel).where(Panel.id.in_(panel_ids)))
+        db.execute(delete(PageSourceSegment).where(PageSourceSegment.page_id.in_(page_ids)))
+        db.execute(delete(MangaPage).where(MangaPage.id.in_(page_ids)))
+    scene_ids = list(db.scalars(select(Scene.id).where(Scene.chapter_id == chapter_id)))
+    if scene_ids:
+        db.execute(delete(Beat).where(Beat.scene_id.in_(scene_ids)))
+        db.execute(delete(Scene).where(Scene.id.in_(scene_ids)))
+    db.execute(delete(ScriptRevision).where(ScriptRevision.chapter_id == chapter_id))
+    latest = (
+        db.scalar(
+            select(func.max(SourceRevision.revision)).where(SourceRevision.chapter_id == chapter_id)
+        )
+        or 0
+    )
+    revision = SourceRevision(
+        chapter_id=chapter_id,
+        revision=latest + 1,
+        source_type=payload.source_type,
+        original_text=payload.text,
+        sha256=sha256_text(payload.text),
+        character_count=meaningful_characters(payload.text),
+    )
+    db.add(revision)
+    db.flush()
+    create_source_segments(db, revision)
+    chapter.current_source_revision_id = revision.id
+    chapter.status = "IMPORTED"
+    chapter.title = payload.title or chapter.title
+    chapter.version += 1
+    db.commit()
+    db.refresh(revision)
+    return revision
+
+
+@router.delete("/chapters/{chapter_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_chapter(chapter_id: str, db: Session = Depends(get_db)) -> None:
+    chapter = db.get(Chapter, chapter_id)
+    if not chapter or chapter.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="章节不存在")
+    chapter.deleted_at = datetime.now(UTC)
+    chapter.version += 1
+    db.commit()
+
+
+@router.post("/chapters/{chapter_id}/restore", response_model=ChapterRead)
+def restore_chapter(chapter_id: str, db: Session = Depends(get_db)) -> ChapterRead:
+    chapter = db.get(Chapter, chapter_id)
+    if not chapter:
+        raise HTTPException(status_code=404, detail="章节不存在")
+    chapter.deleted_at = None
+    chapter.version += 1
+    db.commit()
+    db.refresh(chapter)
+    return _chapter_read(db, chapter)
+
+
+@router.get("/chapters/{chapter_id}/script", response_model=ScriptRead)
+def get_script(chapter_id: str, db: Session = Depends(get_db)) -> ScriptRead:
+    chapter = db.get(Chapter, chapter_id)
+    if not chapter or chapter.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="章节不存在")
+    scenes = list(
+        db.scalars(select(Scene).where(Scene.chapter_id == chapter_id).order_by(Scene.ordinal))
+    )
+    for scene in scenes:
+        scene.beats = list(
+            db.scalars(select(Beat).where(Beat.scene_id == scene.id).order_by(Beat.ordinal))
+        )
+    revision = db.scalar(
+        select(ScriptRevision)
+        .where(ScriptRevision.chapter_id == chapter_id)
+        .order_by(ScriptRevision.revision_no.desc())
+    )
+    return ScriptRead(
+        chapter_id=chapter_id,
+        status=revision.status if revision else "NOT_CREATED",
+        revision_no=revision.revision_no if revision else None,
+        coverage=revision.coverage if revision else {},
+        scenes=[SceneRead.model_validate(scene) for scene in scenes],
     )
