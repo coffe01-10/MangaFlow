@@ -1,0 +1,23 @@
+{
+  "name": "mangaflow-ai",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/web"
+  ],
+  "scripts": {
+    "dev": "concurrently -n web,api -c cyan,magenta \"npm run dev:web\" \"npm run dev:api\"",
+    "dev:web": "npm run dev --workspace @mangaflow/web",
+    "dev:api": ".venv\\Scripts\\python.exe -m uvicorn app.main:app --reload --app-dir apps/api --port 8000",
+    "build": "npm run build --workspace @mangaflow/web",
+    "lint": "npm run lint --workspace @mangaflow/web && .venv\\Scripts\\python.exe -m ruff check apps/api tests",
+    "test": ".venv\\Scripts\\python.exe -m pytest",
+    "check": "npm run lint && npm run test && npm run build"
+  },
+  "devDependencies": {
+    "concurrently": "10.0.3"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

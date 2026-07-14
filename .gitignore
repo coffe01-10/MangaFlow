@@ -1,0 +1,41 @@
+# Local credentials and environment
+.env
+.env.*
+!.env.example
+*service-account*.json
+*vertex*key*.json
+gen-lang-client-*-key.json
+
+# JavaScript
+node_modules/
+.next/
+out/
+dist/
+coverage/
+*.tsbuildinfo
+npm-debug.log*
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Local runtime data
+storage/*
+!storage/.gitkeep
+uploads/*
+!uploads/.gitkeep
+*.db
+*.sqlite
+*.sqlite3
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
