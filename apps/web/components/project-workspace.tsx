@@ -9,8 +9,10 @@ import {
   type ImageModelAlias,
   type AssetPurpose,
   type InspectionResult,
+  type Outfit,
   type Project,
   type Resolution,
+  type StyleProfile,
 } from "@/lib/api";
 import { getPageGenerationIssue, getPageStructureIssue } from "@/lib/generation-rules";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -28,6 +30,7 @@ import {
   History,
   ImagePlus,
   LibraryBig,
+  Link2,
   ListTodo,
   LoaderCircle,
   LockKeyhole,
@@ -137,6 +140,23 @@ function ImageModelPicker({
   </div>;
 }
 
+function ComicModeSwitch({
+  value,
+  onChange,
+  compact = false,
+  disabled = false,
+}: {
+  value: StyleProfile["color_mode"];
+  onChange: (mode: StyleProfile["color_mode"]) => void;
+  compact?: boolean;
+  disabled?: boolean;
+}) {
+  return <div className={compact ? "comic-mode-switch compact" : "comic-mode-switch"} role="group" aria-label="漫画色彩模式">
+    <button type="button" aria-pressed={value === "monochrome"} className={value === "monochrome" ? "active monochrome" : "monochrome"} disabled={disabled} onClick={() => onChange("monochrome")}><i />黑白漫画</button>
+    <button type="button" aria-pressed={value === "color"} className={value === "color" ? "active color" : "color"} disabled={disabled} onClick={() => onChange("color")}><i />彩色漫画</button>
+  </div>;
+}
+
 function formatBytes(value: number) {
   if (value < 1024 * 1024) return `${Math.ceil(value / 1024)} KB`;
   return `${(value / 1024 / 1024).toFixed(1)} MB`;
@@ -189,8 +209,10 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
   const [deletedChapterId, setDeletedChapterId] = useState<string | null>(null);
   const [outfitName, setOutfitName] = useState("");
   const [outfitLockedFields, setOutfitLockedFields] = useState("");
+  const [editingOutfitId, setEditingOutfitId] = useState<string | null>(null);
   const [styleName, setStyleName] = useState("黑白网点风格");
   const [styleLockedFields, setStyleLockedFields] = useState("");
+  const [styleColorMode, setStyleColorMode] = useState<StyleProfile["color_mode"]>("monochrome");
   const [selectedOutfitAssets, setSelectedOutfitAssets] = useState<string[]>([]);
   const [selectedStyleAssets, setSelectedStyleAssets] = useState<string[]>([]);
   const [reviewCandidateId, setReviewCandidateId] = useState<string | null>(null);
@@ -264,6 +286,9 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
 
   const draft = localDraft ?? project.data ?? null;
   const boundCharacter = characters.data?.find((item) => item.id === bindCharacterId) ?? null;
+  const editingOutfit = outfits.data?.find((item) => item.id === editingOutfitId) ?? null;
+  const selectedOutfitFiles = assets.data?.filter((item) => selectedOutfitAssets.includes(item.id)) ?? [];
+  const selectedStyleFiles = assets.data?.filter((item) => selectedStyleAssets.includes(item.id)) ?? [];
   const activeDrawModel = drawModel;
   const effectiveDrawCount = Math.min(drawCount, draft?.default_concurrency ?? 1);
   const selectedPageStructureIssue = getPageStructureIssue(selectedPage);
@@ -299,8 +324,14 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
       }
       return uploaded;
     },
-    onSuccess: () => {
+    onSuccess: (uploaded) => {
       setUploadError("");
+      if (assetKind === "OUTFIT_REFERENCE") {
+        setSelectedOutfitAssets((values) => values.includes(uploaded.id) ? values : [...values, uploaded.id]);
+      }
+      if (assetKind === "STYLE_REFERENCE") {
+        setSelectedStyleAssets((values) => values.includes(uploaded.id) ? values : [...values, uploaded.id]);
+      }
       queryClient.invalidateQueries({ queryKey: ["assets", id] });
       queryClient.invalidateQueries({ queryKey: ["characters", id] });
     },
@@ -412,6 +443,26 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
       setOutfitName("");
       setOutfitLockedFields("");
       setSelectedOutfitAssets([]);
+      setEditingOutfitId(null);
+      queryClient.invalidateQueries({ queryKey: ["outfits", id] });
+    },
+  });
+
+  const updateOutfit = useMutation({
+    mutationFn: () => {
+      if (!editingOutfit) throw new Error("服装档案不存在，请刷新后重试");
+      return api.updateOutfit(editingOutfit.id, {
+        version: editingOutfit.version,
+        name: outfitName.trim(),
+        reference_asset_ids: selectedOutfitAssets,
+        locked_fields: outfitLockedFields.split(/[，,、]/).map((item) => item.trim()).filter(Boolean),
+      });
+    },
+    onSuccess: () => {
+      setOutfitName("");
+      setOutfitLockedFields("");
+      setSelectedOutfitAssets([]);
+      setEditingOutfitId(null);
       queryClient.invalidateQueries({ queryKey: ["outfits", id] });
     },
   });
@@ -432,6 +483,7 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
     mutationFn: () => api.createStyle(
       id,
       styleName.trim(),
+      styleColorMode,
       selectedStyleAssets,
       styleLockedFields.split(/[，,、]/).map((item) => item.trim()).filter(Boolean),
     ),
@@ -612,6 +664,12 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
     mutationFn: (jobId: string) => api.retryJob(jobId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["jobs", id] }),
   });
+
+  const updateStyleMode = useMutation({
+    mutationFn: ({ style, colorMode }: { style: StyleProfile; colorMode: StyleProfile["color_mode"] }) =>
+      api.updateStyleMode(style.id, style.version, colorMode),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["styles", id] }),
+  });
   const archiveJob = useMutation({
     mutationFn: (jobId: string) => api.archiveJob(jobId),
     onSuccess: () => {
@@ -704,6 +762,22 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["exports", id] }),
   });
 
+  function resetOutfitForm() {
+    setEditingOutfitId(null);
+    setOutfitName("");
+    setOutfitLockedFields("");
+    setSelectedOutfitAssets([]);
+  }
+
+  function beginOutfitEdit(outfit: Outfit) {
+    setEditingOutfitId(outfit.id);
+    setBindCharacterId(outfit.character_id);
+    setOutfitName(outfit.name);
+    setOutfitLockedFields(outfit.locked_fields.join("，"));
+    setSelectedOutfitAssets(outfit.reference_asset_ids);
+    setAssetKind("OUTFIT_REFERENCE");
+  }
+
   function chooseFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (file) upload.mutate(file);
@@ -787,28 +861,73 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
                 <button className="button ink compact" disabled={!characterName.trim() || createCharacter.isPending} onClick={() => createCharacter.mutate()}><Plus size={14} />添加角色</button>
               </div>
               <div className="character-strip">
-                {characters.data?.map((character) => <button key={character.id} className={bindCharacterId === character.id ? "character-chip active" : "character-chip"} onClick={() => { setBindCharacterId(character.id); setEditCharacterName(character.primary_name); setEditCharacterAliases(character.aliases.join("，")); setEditLockedFeatures(character.locked_features.join("，")); setEditForbiddenChanges(character.forbidden_changes.join("，")); }}><strong>{character.primary_name}</strong><span>{character.aliases.length ? `又名 ${character.aliases.join(" / ")}` : "无绰号"}</span>{character.alias_conflict && <em>称呼冲突待确认</em>}<small>{character.references.length} 张参考图 · {character.locked_features.length} 项已锁定</small></button>)}
+                {characters.data?.map((character) => <button key={character.id} className={bindCharacterId === character.id ? "character-chip active" : "character-chip"} onClick={() => { if (editingOutfitId) resetOutfitForm(); setBindCharacterId(character.id); setEditCharacterName(character.primary_name); setEditCharacterAliases(character.aliases.join("，")); setEditLockedFeatures(character.locked_features.join("，")); setEditForbiddenChanges(character.forbidden_changes.join("，")); }}><strong>{character.primary_name}</strong><span>{character.aliases.length ? `又名 ${character.aliases.join(" / ")}` : "无绰号"}</span>{character.alias_conflict && <em>称呼冲突待确认</em>}<small>{character.references.length} 张参考图 · {character.locked_features.length} 项已锁定</small></button>)}
               </div>
               {boundCharacter && <div className="character-editor"><div><strong>规范姓名与一致性锁</strong><span>剧本统一使用主要姓名；固定特征和禁止改变项会进入每次生图提示。</span></div><input aria-label="编辑主要姓名" className="text-input" value={editCharacterName} onChange={(event) => setEditCharacterName(event.target.value)} /><input aria-label="编辑角色绰号" className="text-input" value={editCharacterAliases} onChange={(event) => setEditCharacterAliases(event.target.value)} placeholder="绰号，用逗号分隔" /><button className="button outline compact" disabled={!editCharacterName.trim() || updateCharacter.isPending} onClick={() => updateCharacter.mutate()}>{updateCharacter.isPending ? <LoaderCircle className="spin" size={13} /> : <Pencil size={13} />}保存角色规范</button><div className="character-lock-fields"><input aria-label="角色固定特征" className="text-input" value={editLockedFeatures} onChange={(event) => setEditLockedFeatures(event.target.value)} placeholder="固定特征：黑色长发、左眼泪痣…" /><input aria-label="角色禁止改变项" className="text-input" value={editForbiddenChanges} onChange={(event) => setEditForbiddenChanges(event.target.value)} placeholder="禁止改变：发色、瞳色、身高关系…" /></div>{boundCharacter.alias_conflict && <em><CircleAlert size={12} />当前称呼与其他角色冲突，请修改后保存</em>}</div>}
               <ImageModelPicker selected={activeDrawModel} onSelect={setDrawModel} label="本次素材生成模型（两个模型完全平级，每次进入本页均需重新选择）" />
               {bindCharacterId && <div className="asset-quickgen"><span>为选中角色补全标准形象（使用当前模型，受项目并发上限控制）</span><div><button className="complete-sheet" disabled={generateCompleteSheet.isPending || !boundCharacter?.references.length || !activeDrawModel} onClick={() => generateCompleteSheet.mutate()}><Sparkles size={13} />一键生成全套 4 张</button>{(["FRONT", "SIDE", "BACK", "EXPRESSION"] as const).map((variant) => <button key={variant} disabled={generateCharacterAsset.isPending || !boundCharacter?.references.length || !activeDrawModel} onClick={() => generateCharacterAsset.mutate(variant)}>{{ FRONT: "正面", SIDE: "侧面", BACK: "背面", EXPRESSION: "表情" }[variant]}</button>)}</div></div>}
               <div className="asset-workbench">
-                <section><header><Shirt size={16} /><div><strong>服装档案</strong><span>把服装参考绑定到选中角色</span></div></header><div className="workbench-form"><div className="workbench-fields"><input aria-label="服装档案名称" className="text-input" value={outfitName} onChange={(event) => setOutfitName(event.target.value)} placeholder="例如：校服 / 冬季便装" /><input aria-label="服装锁定项" className="text-input" value={outfitLockedFields} onChange={(event) => setOutfitLockedFields(event.target.value)} placeholder="锁定项：颜色、鞋、配饰…" /></div><button disabled={!bindCharacterId || !outfitName.trim() || !selectedOutfitAssets.length || createOutfit.isPending} onClick={() => createOutfit.mutate()}>建立档案（{selectedOutfitAssets.length} 图）</button></div><div className="profile-chips">{outfits.data?.map((outfit) => <span key={outfit.id}>{characters.data?.find((item) => item.id === outfit.character_id)?.primary_name} · {outfit.name}<small>{outfit.reference_asset_ids.length} 图 · {outfit.locked_fields.length} 项锁定</small><button disabled={generateOutfitPreview.isPending || !activeDrawModel} onClick={() => generateOutfitPreview.mutate(outfit.id)}>生成穿着图</button></span>)}</div></section>
-                <section><header><Palette size={16} /><div><strong>漫画风格档案</strong><span>Gemini 总结参考页，再供生图模仿</span></div></header><div className="workbench-form"><div className="workbench-fields"><input aria-label="漫画风格档案名称" className="text-input" value={styleName} onChange={(event) => setStyleName(event.target.value)} placeholder="风格档案名称" /><input aria-label="漫画风格锁定项" className="text-input" value={styleLockedFields} onChange={(event) => setStyleLockedFields(event.target.value)} placeholder="锁定项：线稿、网点、构图…" /></div><button disabled={!styleName.trim() || !selectedStyleAssets.length || createStyle.isPending} onClick={() => createStyle.mutate()}>创建并分析（{selectedStyleAssets.length} 图）</button></div><div className="profile-chips">{styles.data?.map((style) => <span className={draft.default_style_id === style.id ? "active" : ""} key={style.id}>{style.name}<small>{style.status} · {style.locked_fields.length} 项锁定</small><button onClick={() => analyzeStyle.mutate(style.id)}>重新分析</button><button disabled={generateStyleTest.isPending || !activeDrawModel} onClick={() => generateStyleTest.mutate(style.id)}>生成测试图</button><button onClick={() => activateStyle.mutate(style.id)}>{draft.default_style_id === style.id ? "使用中" : "设为当前"}</button></span>)}</div></section>
+                <section className="profile-workbench outfit-profile-workbench">
+                  <header><Shirt size={16} /><div><strong>服装档案</strong><span>明确绑定角色、服装名称与参考图</span></div></header>
+                  <div className="binding-flow" aria-label="服装参考绑定流程">
+                    <span className={boundCharacter ? "done" : ""}><i>01</i><small>所属角色</small><strong>{boundCharacter?.primary_name ?? "未选择"}</strong></span><b>→</b>
+                    <span className={selectedOutfitAssets.length ? "done" : ""}><i>02</i><small>服装参考</small><strong>{selectedOutfitAssets.length} 张</strong></span><b>→</b>
+                    <span className={outfitName.trim() ? "done" : ""}><i>03</i><small>服装档案</small><strong>{outfitName.trim() || "待命名"}</strong></span>
+                  </div>
+                  <div className="profile-compose">
+                    <div className="workbench-fields">
+                      <label><span>所属角色</span><select aria-label="服装所属角色" className="text-input" value={editingOutfit?.character_id ?? bindCharacterId} disabled={Boolean(editingOutfit)} onChange={(event) => setBindCharacterId(event.target.value)}><option value="">选择角色后再绑定服装</option>{characters.data?.map((character) => <option key={character.id} value={character.id}>{character.primary_name}{character.aliases.length ? `（${character.aliases.join(" / ")}）` : ""}</option>)}</select></label>
+                      <label><span>服装档案名称</span><input aria-label="服装档案名称" className="text-input" value={outfitName} onChange={(event) => setOutfitName(event.target.value)} placeholder="例如：校服 / 冬季便装" /></label>
+                      <label><span>一致性锁定项</span><input aria-label="服装锁定项" className="text-input" value={outfitLockedFields} onChange={(event) => setOutfitLockedFields(event.target.value)} placeholder="颜色、鞋型、领结、配饰…" /></label>
+                    </div>
+                    <aside className="reference-selection-summary"><span>当前待绑定</span><strong>{selectedOutfitFiles.length}<small> 张参考图</small></strong><p>{selectedOutfitFiles.length ? selectedOutfitFiles.slice(0, 2).map((asset) => asset.original_name).join("、") : "在下方“服装参考”中选择图片"}{selectedOutfitFiles.length > 2 ? ` 等 ${selectedOutfitFiles.length} 张` : ""}</p></aside>
+                    <div className="profile-form-actions">{editingOutfit && <button className="secondary" type="button" onClick={resetOutfitForm}><X size={12} />取消编辑</button>}<button type="button" disabled={!outfitName.trim() || (!editingOutfit && (!bindCharacterId || !selectedOutfitAssets.length)) || createOutfit.isPending || updateOutfit.isPending} onClick={() => editingOutfit ? updateOutfit.mutate() : createOutfit.mutate()}><Link2 size={12} />{editingOutfit ? `保存绑定（${selectedOutfitAssets.length} 图）` : `建立并绑定（${selectedOutfitAssets.length} 图）`}</button></div>
+                  </div>
+                  <p className="binding-guide"><Link2 size={12} />上传服装参考后会自动加入当前档案；也可以在下方素材卡中加入、移除，再点击保存绑定。</p>
+                  <div className="profile-records">{outfits.data?.map((outfit) => {
+                    const owner = characters.data?.find((item) => item.id === outfit.character_id);
+                    return <article className={editingOutfitId === outfit.id ? "editing" : ""} key={outfit.id}><div className="profile-record-title"><span>WARDROBE</span><strong>{outfit.name}</strong><small>{outfit.locked_fields.length} 项锁定</small></div><div className="relationship-chain"><span>{owner?.primary_name ?? "未知角色"}</span><b>→</b><span>{outfit.name}</span><b>→</b><span>{outfit.reference_asset_ids.length} 张参考图</span></div><div className="profile-record-actions"><button type="button" onClick={() => beginOutfitEdit(outfit)}>{editingOutfitId === outfit.id ? "编辑中" : "管理参考图"}</button><button type="button" disabled={generateOutfitPreview.isPending || !activeDrawModel || !outfit.reference_asset_ids.length} onClick={() => generateOutfitPreview.mutate(outfit.id)}>生成穿着图</button></div></article>;
+                  })}{!outfits.data?.length && <p className="profile-record-empty">还没有服装档案。完成上方 01–03 三步后建立。</p>}</div>
+                </section>
+                <section className="profile-workbench style-profile-workbench">
+                  <header><Palette size={16} /><div><strong>漫画风格档案</strong><span>黑白与彩色平级选择，模式会进入生图提示</span></div></header>
+                  <div className="mode-selector-block"><div><span>新档案色彩模式</span><strong>{styleColorMode === "monochrome" ? "黑白漫画" : "彩色漫画"}</strong></div><ComicModeSwitch value={styleColorMode} onChange={(mode) => { setStyleColorMode(mode); setStyleName((current) => ["黑白网点风格", "彩色漫画风格"].includes(current) ? (mode === "monochrome" ? "黑白网点风格" : "彩色漫画风格") : current); }} /><p>{styleColorMode === "monochrome" ? "分析线稿、网点、黑白对比与留白。" : "分析色板、肤色发色、上色方式与光影。"}</p></div>
+                  <div className="profile-compose style-compose">
+                    <div className="workbench-fields"><label><span>风格档案名称</span><input aria-label="漫画风格档案名称" className="text-input" value={styleName} onChange={(event) => setStyleName(event.target.value)} placeholder="风格档案名称" /></label><label><span>一致性锁定项</span><input aria-label="漫画风格锁定项" className="text-input" value={styleLockedFields} onChange={(event) => setStyleLockedFields(event.target.value)} placeholder={styleColorMode === "monochrome" ? "线稿、网点、构图…" : "色板、肤色、光影、构图…"} /></label></div>
+                    <aside className="reference-selection-summary"><span>当前待分析</span><strong>{selectedStyleFiles.length}<small> 张参考页</small></strong><p>{selectedStyleFiles.length ? selectedStyleFiles.slice(0, 2).map((asset) => asset.original_name).join("、") : "在下方“漫画风格”中选择参考页"}</p></aside>
+                    <div className="profile-form-actions"><button type="button" disabled={!styleName.trim() || !selectedStyleAssets.length || createStyle.isPending} onClick={() => createStyle.mutate()}><Sparkles size={12} />创建并分析（{selectedStyleAssets.length} 图）</button></div>
+                  </div>
+                  <div className="profile-records">{styles.data?.map((style) => {
+                    const isActive = draft.default_style_id === style.id;
+                    const referenceCount = style.profile.reference_asset_ids?.length ?? 0;
+                    return <article className={isActive ? "active" : ""} key={style.id}><div className="profile-record-title"><span>{isActive ? "CURRENT STYLE" : "STYLE PROFILE"}</span><strong>{style.name}</strong><small>{style.status} · {referenceCount} 张参考 · {style.locked_fields.length} 项锁定</small></div><ComicModeSwitch compact value={style.color_mode} disabled={updateStyleMode.isPending} onChange={(colorMode) => updateStyleMode.mutate({ style, colorMode })} />{style.status === "DRAFT" && <p className="reanalyze-note">色彩模式已改变，建议补充对应参考页后重新分析。</p>}<div className="profile-record-actions"><button type="button" disabled={!referenceCount || analyzeStyle.isPending} onClick={() => analyzeStyle.mutate(style.id)}>重新分析</button><button type="button" disabled={generateStyleTest.isPending || !activeDrawModel || !referenceCount} onClick={() => generateStyleTest.mutate(style.id)}>生成测试图</button><button type="button" onClick={() => activateStyle.mutate(style.id)}>{isActive ? "使用中" : "设为当前"}</button></div></article>;
+                  })}{!styles.data?.length && <p className="profile-record-empty">选择色彩模式并绑定参考页，建立第一份漫画风格档案。</p>}</div>
+                </section>
               </div>
-              <div className="intake-toolbar"><div className="kind-switch">{kinds.map(([value, label]) => <button key={value} className={assetKind === value ? "active" : ""} onClick={() => setAssetKind(value)}>{label}</button>)}</div><span>{assetKind === "CHARACTER_REFERENCE" ? (bindCharacterId ? "将绑定到选中的角色" : "请先选择要绑定的角色") : assetKind === "OUTFIT_REFERENCE" ? "用于锁定角色服装、配饰和状态" : "用于锁定黑白网点、线条和构图风格"}</span></div>
-              <label className={upload.isPending ? "upload-stage busy" : "upload-stage"}><input type="file" accept="image/png,image/jpeg,image/webp" onChange={chooseFile} disabled={upload.isPending} /><span className="upload-icon">{upload.isPending ? <LoaderCircle className="spin" /> : <Upload />}</span><strong>{upload.isPending ? "正在安全上传…" : `上传${kinds.find(([value]) => value === assetKind)?.[1]}`}</strong><p>人物图会和选中的主要姓名绑定，不会只依赖文件名猜测身份。</p></label>
+              <div className="intake-toolbar"><div className="kind-switch">{kinds.map(([value, label]) => <button key={value} className={assetKind === value ? "active" : ""} onClick={() => setAssetKind(value)}>{label}</button>)}</div><span>{assetKind === "CHARACTER_REFERENCE" ? (bindCharacterId ? "将绑定到选中的角色" : "请先选择要绑定的角色") : assetKind === "OUTFIT_REFERENCE" ? (boundCharacter ? `当前绑定目标：${boundCharacter.primary_name} → ${outfitName.trim() || "未命名服装"}` : "先选择所属角色，再建立服装档案") : `当前分析目标：${styleColorMode === "monochrome" ? "黑白漫画" : "彩色漫画"}`}</span></div>
+              <label className={upload.isPending ? "upload-stage busy" : "upload-stage"}><input type="file" accept="image/png,image/jpeg,image/webp" onChange={chooseFile} disabled={upload.isPending} /><span className="upload-icon">{upload.isPending ? <LoaderCircle className="spin" /> : <Upload />}</span><strong>{upload.isPending ? "正在安全上传…" : `上传${kinds.find(([value]) => value === assetKind)?.[1]}`}</strong><p>{assetKind === "CHARACTER_REFERENCE" ? "人物图会和选中的主要姓名绑定，不会只依赖文件名猜测身份。" : assetKind === "OUTFIT_REFERENCE" ? "上传后自动加入当前服装档案，保存时绑定到上方所选角色。" : `上传后自动加入当前${styleColorMode === "monochrome" ? "黑白" : "彩色"}风格档案，创建后再由 Gemini 分析。`}</p></label>
               {uploadError && <p className="form-error"><CircleAlert size={15} />{uploadError}</p>}
               {(bindExistingCharacterReference.isError || unbindExistingCharacterReference.isError) && <p className="form-error"><CircleAlert size={15} />{(bindExistingCharacterReference.error ?? unbindExistingCharacterReference.error)?.message}</p>}
+              {(createOutfit.isError || updateOutfit.isError || createStyle.isError || updateStyleMode.isError) && <p className="form-error"><CircleAlert size={15} />{(createOutfit.error ?? updateOutfit.error ?? createStyle.error ?? updateStyleMode.error)?.message}</p>}
               {kinds.map(([kind, label]) => {
                 const grouped = assets.data?.filter((asset) => asset.kind === kind) ?? [];
                 return <section className="asset-purpose-group" key={kind}>
                   <div className="asset-list-header"><span>{label}</span><small>{grouped.length} FILES</small></div>
-                  <p className="purpose-explain">{{ CHARACTER_REFERENCE: "绑定主要姓名与绰号，用于保持脸、发型和体型一致。", OUTFIT_REFERENCE: "选择后建立角色服装档案，并在场景中指定穿着。", STYLE_REFERENCE: "选择后由 Gemini 总结线稿、网点、对比和构图语言。" }[kind]}</p>
+                  <p className="purpose-explain">{{ CHARACTER_REFERENCE: "绑定主要姓名与绰号，用于保持脸、发型和体型一致。", OUTFIT_REFERENCE: "选择图片后，上方绑定流程会明确保存“角色 → 服装档案 → 参考图”的关系。", STYLE_REFERENCE: "选择后由 Gemini 按所选的黑白或彩色模式总结可复用画面语言。" }[kind]}</p>
                   <div className="asset-grid">{grouped.map((asset, index) => {
                     const characterReference = kind === "CHARACTER_REFERENCE" ? boundCharacter?.references.find((reference) => reference.asset_id === asset.id) : undefined;
                     const selected = kind === "CHARACTER_REFERENCE" ? Boolean(characterReference) : kind === "OUTFIT_REFERENCE" ? selectedOutfitAssets.includes(asset.id) : selectedStyleAssets.includes(asset.id);
-                    return <article className={selected ? "asset-card selected" : "asset-card"} key={asset.id}><div className={`asset-thumb thumb-${(index % 3) + 1}`}>{asset.content_url ? <Image src={publicUrl(asset.content_url)!} alt={asset.original_name} width={74} height={74} unoptimized /> : <FileImage size={27} />}<span>{asset.width && asset.height ? `${asset.width}×${asset.height}` : asset.mime_type}</span></div><div><strong>{asset.original_name}</strong><p>{label} · {formatBytes(asset.byte_size)}</p><span className="tiny-status"><Check size={11} />{asset.status}</span>{kind === "CHARACTER_REFERENCE" ? <button className={characterReference ? "bind-purpose bound" : "bind-purpose"} disabled={!boundCharacter || bindExistingCharacterReference.isPending || unbindExistingCharacterReference.isPending} onClick={() => characterReference ? unbindExistingCharacterReference.mutate(characterReference.id) : bindExistingCharacterReference.mutate(asset.id)}>{!boundCharacter ? "先选择角色" : characterReference ? `解除与 ${boundCharacter.primary_name} 的绑定` : `绑定到 ${boundCharacter.primary_name}`}</button> : <button className="bind-purpose" onClick={() => kind === "OUTFIT_REFERENCE" ? setSelectedOutfitAssets((values) => values.includes(asset.id) ? values.filter((item) => item !== asset.id) : [...values, asset.id]) : setSelectedStyleAssets((values) => values.includes(asset.id) ? values.filter((item) => item !== asset.id) : [...values, asset.id])}>{selected ? "已选入档案" : "选入新档案"}</button>}<div className="asset-actions"><select aria-label="修改素材用途" value={asset.kind} onChange={(event) => reclassifyAsset.mutate({ assetId: asset.id, kind: event.target.value as AssetPurpose })}>{kinds.map(([value, option]) => <option key={value} value={value}>{option}</option>)}</select><button title="删除素材" onClick={() => { if (window.confirm("删除该导入素材并解除人物绑定？")) deleteAsset.mutate(asset.id); }}><Trash2 size={13} /></button></div></div></article>;
+                    const linkedOutfits = kind === "OUTFIT_REFERENCE" ? outfits.data?.filter((outfit) => outfit.reference_asset_ids.includes(asset.id)) ?? [] : [];
+                    const linkedStyles = kind === "STYLE_REFERENCE" ? styles.data?.filter((style) => style.profile.reference_asset_ids?.includes(asset.id)) ?? [] : [];
+                    return <article className={selected ? "asset-card selected" : "asset-card"} key={asset.id}>
+                      <div className={`asset-thumb thumb-${(index % 3) + 1}`}>{asset.content_url ? <Image src={publicUrl(asset.content_url)!} alt={asset.original_name} width={74} height={74} unoptimized /> : <FileImage size={27} />}<span>{asset.width && asset.height ? `${asset.width}×${asset.height}` : asset.mime_type}</span></div>
+                      <div><strong>{asset.original_name}</strong><p>{label} · {formatBytes(asset.byte_size)}</p><span className="tiny-status"><Check size={11} />{asset.status}</span>
+                        {kind === "OUTFIT_REFERENCE" && <p className={linkedOutfits.length ? "reference-binding bound" : "reference-binding"}><Link2 size={10} />{linkedOutfits.length ? `已绑定：${linkedOutfits.map((outfit) => `${characters.data?.find((character) => character.id === outfit.character_id)?.primary_name ?? "未知角色"} → ${outfit.name}`).join("；")}` : "尚未写入服装档案"}</p>}
+                        {kind === "STYLE_REFERENCE" && <p className={linkedStyles.length ? "reference-binding bound" : "reference-binding"}><Link2 size={10} />{linkedStyles.length ? `已用于：${linkedStyles.map((style) => `${style.name}（${style.color_mode === "monochrome" ? "黑白" : "彩色"}）`).join("；")}` : "尚未写入风格档案"}</p>}
+                        {kind === "CHARACTER_REFERENCE" ? <button className={characterReference ? "bind-purpose bound" : "bind-purpose"} disabled={!boundCharacter || bindExistingCharacterReference.isPending || unbindExistingCharacterReference.isPending} onClick={() => characterReference ? unbindExistingCharacterReference.mutate(characterReference.id) : bindExistingCharacterReference.mutate(asset.id)}>{!boundCharacter ? "先选择角色" : characterReference ? `解除与 ${boundCharacter.primary_name} 的绑定` : `绑定到 ${boundCharacter.primary_name}`}</button> : <button className="bind-purpose" disabled={kind === "OUTFIT_REFERENCE" && !bindCharacterId} onClick={() => kind === "OUTFIT_REFERENCE" ? setSelectedOutfitAssets((values) => values.includes(asset.id) ? values.filter((item) => item !== asset.id) : [...values, asset.id]) : setSelectedStyleAssets((values) => values.includes(asset.id) ? values.filter((item) => item !== asset.id) : [...values, asset.id])}>{kind === "OUTFIT_REFERENCE" && !bindCharacterId ? "先选择所属角色" : selected ? "已选：保存后绑定" : kind === "OUTFIT_REFERENCE" ? "加入当前服装档案" : "加入当前风格档案"}</button>}
+                        <div className="asset-actions"><select aria-label="修改素材用途" value={asset.kind} onChange={(event) => reclassifyAsset.mutate({ assetId: asset.id, kind: event.target.value as AssetPurpose })}>{kinds.map(([value, option]) => <option key={value} value={value}>{option}</option>)}</select><button title="删除素材" onClick={() => { if (window.confirm("删除该导入素材并解除人物绑定？")) deleteAsset.mutate(asset.id); }}><Trash2 size={13} /></button></div>
+                      </div>
+                    </article>;
                   })}</div>
                   {!grouped.length && <div className="purpose-empty">尚无{label}</div>}
                 </section>;

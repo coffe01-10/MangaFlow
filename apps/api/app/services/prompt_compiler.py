@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Character, Dialogue, MangaPage, Outfit, Panel, Project, Scene, StyleProfile
 
-PAGE_TEMPLATE_VERSION = "page-v2.0.0"
+PAGE_TEMPLATE_VERSION = "page-v2.1.0"
 
 
 def compile_page_prompt(db: Session, page: MangaPage, project: Project) -> tuple[str, dict]:
@@ -50,6 +50,7 @@ def compile_page_prompt(db: Session, page: MangaPage, project: Project) -> tuple
         if (page.style_id or project.default_style_id)
         else None
     )
+    color_mode = style.color_mode if style else "monochrome"
     panels = list(
         db.scalars(select(Panel).where(Panel.page_id == page.id).order_by(Panel.reading_order))
     )
@@ -118,7 +119,14 @@ def compile_page_prompt(db: Session, page: MangaPage, project: Project) -> tuple
             for outfit in outfits
         ],
         "style": (
-            {"id": style.id, "name": style.name, "profile": style.profile} if style else None
+            {
+                "id": style.id,
+                "name": style.name,
+                "color_mode": style.color_mode,
+                "profile": style.profile,
+            }
+            if style
+            else None
         ),
     }
     mode_instruction = {
@@ -126,15 +134,26 @@ def compile_page_prompt(db: Session, page: MangaPage, project: Project) -> tuple
         "DIRECTOR": "导演模式：严格执行已给出的格位、镜头、人物、服装和动作，不擅自改动。",
         "SEMI_AUTO": "半自动模式：严格保持剧情、人物与服装，允许补足不影响剧情的环境和表演细节。",
     }[project.workflow_mode.value]
-    prompt = f"""你是黑白网点日式漫画的单页导演。请只生成第 {page.page_number} 页，不生成相邻页面。
+    director_role = "黑白网点日式漫画" if color_mode == "monochrome" else "彩色日式漫画"
+    render_rules = (
+        "使用干净墨线、专业网点、明确黑白对比与克制留白；"
+        if color_mode == "monochrome"
+        else "使用统一色彩脚本、稳定肤色发色与服装配色、清晰光影层次；不得擅自改变跨格固有色；"
+    )
+    style_dimensions = (
+        "线稿、网点、黑白对比和构图规则"
+        if color_mode == "monochrome"
+        else "线稿、色板、上色方式、光影和构图规则"
+    )
+    prompt = f"""你是{director_role}的单页导演。请只生成第 {page.page_number} 页，不生成相邻页面。
 阅读方向必须为从右到左，严格按照 layout 中的格位、阅读顺序和镜头生成 {page.panel_count} 格。
 中文文字必须严格保留，不得总结、改写或遗漏。
 {mode_instruction}
 原文与页面结构如下：
 {json.dumps(payload, ensure_ascii=False, separators=(",", ":"))}
 要求：采用专业日本漫画页面语言，格子大小有节奏变化，右上开始、左下结束；
-黑白墨线、网点、清晰格线；严格使用 scene_outfits 指定服装；角色身份、服装、道具和场景连续；
-若存在 style.profile，按其总结的线稿、网点、对比和构图规则执行；
+{render_rules}使用清晰格线；严格使用 scene_outfits 指定服装；角色身份、服装、道具和场景连续；
+若存在 style.profile，按其总结的{style_dimensions}执行；
 禁止加入原文没有的关键剧情；输出一张完整竖版漫画页。
 """
     snapshot = {

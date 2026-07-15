@@ -761,6 +761,15 @@ def test_reference_profiles_scene_wardrobe_and_complete_sheet(
         byte_size=10,
         sha256="b" * 64,
     )
+    outfit_asset_alt = Asset(
+        project_id=project["id"],
+        kind="OUTFIT_REFERENCE",
+        original_name="uniform-back.png",
+        storage_key="uniform-back.png",
+        mime_type="image/png",
+        byte_size=10,
+        sha256="d" * 64,
+    )
     style_asset = Asset(
         project_id=project["id"],
         kind="STYLE_REFERENCE",
@@ -770,7 +779,7 @@ def test_reference_profiles_scene_wardrobe_and_complete_sheet(
         byte_size=10,
         sha256="c" * 64,
     )
-    db_session.add_all([character_asset, outfit_asset, style_asset])
+    db_session.add_all([character_asset, outfit_asset, outfit_asset_alt, style_asset])
     db_session.commit()
     assert (
         client.post(
@@ -787,6 +796,18 @@ def test_reference_profiles_scene_wardrobe_and_complete_sheet(
             "reference_asset_ids": [outfit_asset.id],
         },
     ).json()
+    rebound_outfit = client.patch(
+        f"/api/v1/outfits/{outfit['id']}",
+        json={
+            "version": outfit["version"],
+            "name": "校服",
+            "reference_asset_ids": [outfit_asset_alt.id],
+            "locked_fields": ["领结", "裙长"],
+        },
+    )
+    assert rebound_outfit.status_code == 200
+    outfit = rebound_outfit.json()
+    assert outfit["reference_asset_ids"] == [outfit_asset_alt.id]
     style = client.post(
         f"/api/v1/projects/{project['id']}/styles",
         json={"name": "黑白网点", "reference_asset_ids": [style_asset.id]},
@@ -797,6 +818,14 @@ def test_reference_profiles_scene_wardrobe_and_complete_sheet(
         ).status_code
         == 200
     )
+    current_style = client.get(f"/api/v1/projects/{project['id']}/styles").json()[0]
+    color_style = client.patch(
+        f"/api/v1/styles/{style['id']}",
+        json={"version": current_style["version"], "color_mode": "color"},
+    )
+    assert color_style.status_code == 200
+    assert color_style.json()["color_mode"] == "color"
+    assert color_style.json()["profile"] == {"reference_asset_ids": [style_asset.id]}
     assert client.post(f"/api/v1/styles/{style['id']}/analyze").status_code == 202
     sheet = client.post(
         f"/api/v1/characters/{character['id']}/complete-sheet",
@@ -871,12 +900,15 @@ def test_reference_profiles_scene_wardrobe_and_complete_sheet(
     assert assigned.status_code == 200
     page = db_session.get(MangaPage, plan["pages"][0]["id"])
     project_record = db_session.get(Project, project["id"])
-    _, snapshot = compile_page_prompt(db_session, page, project_record)
+    prompt, snapshot = compile_page_prompt(db_session, page, project_record)
     assert (
         snapshot["input"]["scene_outfits"][0]["assignments"][character["id"]]
         == outfit["id"]
     )
     assert snapshot["input"]["style"]["id"] == style["id"]
+    assert snapshot["input"]["style"]["color_mode"] == "color"
+    assert "彩色日式漫画" in prompt
+    assert "稳定肤色发色与服装配色" in prompt
 
 
 def test_eight_candidate_jobs_are_isolated(client, db_session, monkeypatch):

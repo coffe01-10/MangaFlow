@@ -15,6 +15,7 @@ from app.models import (
     Project,
     Scene,
     StyleProfile,
+    StyleStatus,
 )
 from app.schemas import (
     AssetBatchCreate,
@@ -25,14 +26,37 @@ from app.schemas import (
     JobRead,
     OutfitCreate,
     OutfitRead,
+    OutfitUpdate,
     SceneOutfitUpdate,
     StyleProfileCreate,
     StyleProfileRead,
+    StyleProfileUpdate,
 )
 from app.services.job_service import create_job, enqueue_job
 from app.services.model_registry import build_registry
 
 router = APIRouter()
+
+
+def _validate_reference_assets(
+    db: Session,
+    project_id: str,
+    asset_ids: list[str],
+    expected_kind: str,
+    label: str,
+) -> None:
+    for asset_id in asset_ids:
+        asset = db.get(Asset, asset_id)
+        if (
+            not asset
+            or asset.deleted_at is not None
+            or asset.project_id != project_id
+            or asset.kind != expected_kind
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=f"{label}不存在、用途错误或不属于当前项目",
+            )
 
 
 @router.get("/projects/{project_id}/outfits", response_model=list[OutfitRead])
@@ -60,19 +84,47 @@ def create_outfit(
         raise HTTPException(status_code=404, detail="项目不存在")
     if not character or character.project_id != project_id:
         raise HTTPException(status_code=409, detail="服装角色不属于当前项目")
-    for asset_id in payload.reference_asset_ids:
-        asset = db.get(Asset, asset_id)
-        if (
-            not asset
-            or asset.deleted_at is not None
-            or asset.project_id != project_id
-            or asset.kind != "OUTFIT_REFERENCE"
-        ):
-            raise HTTPException(
-                status_code=409, detail="服装参考图不存在、用途错误或不属于当前项目"
-            )
+    _validate_reference_assets(
+        db,
+        project_id,
+        payload.reference_asset_ids,
+        "OUTFIT_REFERENCE",
+        "服装参考图",
+    )
     outfit = Outfit(project_id=project_id, **payload.model_dump())
     db.add(outfit)
+    db.commit()
+    db.refresh(outfit)
+    return outfit
+
+
+@router.patch("/outfits/{outfit_id}", response_model=OutfitRead)
+def update_outfit(
+    outfit_id: str,
+    payload: OutfitUpdate,
+    db: Session = Depends(get_db),
+) -> Outfit:
+    outfit = db.get(Outfit, outfit_id)
+    if not outfit:
+        raise HTTPException(status_code=404, detail="服装档案不存在")
+    if outfit.version != payload.version:
+        raise HTTPException(status_code=409, detail="服装档案已更新，请刷新后重试")
+    values = payload.model_dump(exclude_unset=True, exclude={"version"})
+    reference_asset_ids = values.get("reference_asset_ids")
+    if reference_asset_ids is not None:
+        _validate_reference_assets(
+            db,
+            outfit.project_id,
+            reference_asset_ids,
+            "OUTFIT_REFERENCE",
+            "服装参考图",
+        )
+        values["reference_asset_ids"] = list(dict.fromkeys(reference_asset_ids))
+    if "name" in values:
+        values["name"] = values["name"].strip()
+    for key, value in values.items():
+        setattr(outfit, key, value)
+    outfit.version += 1
     db.commit()
     db.refresh(outfit)
     return outfit
@@ -102,17 +154,13 @@ def create_style(
     project = db.get(Project, project_id)
     if not project or project.deleted_at is not None:
         raise HTTPException(status_code=404, detail="项目不存在")
-    for asset_id in payload.reference_asset_ids:
-        asset = db.get(Asset, asset_id)
-        if (
-            not asset
-            or asset.deleted_at is not None
-            or asset.project_id != project_id
-            or asset.kind != "STYLE_REFERENCE"
-        ):
-            raise HTTPException(
-                status_code=409, detail="漫画风格参考图不存在、用途错误或不属于当前项目"
-            )
+    _validate_reference_assets(
+        db,
+        project_id,
+        payload.reference_asset_ids,
+        "STYLE_REFERENCE",
+        "漫画风格参考图",
+    )
     profile = dict(payload.profile)
     profile["reference_asset_ids"] = payload.reference_asset_ids
     style = StyleProfile(
@@ -129,6 +177,28 @@ def create_style(
         project.default_style_id = style.id
     db.commit()
     db.refresh(style)
+    return style
+
+
+@router.patch("/styles/{style_id}", response_model=StyleProfileRead)
+def update_style(
+    style_id: str,
+    payload: StyleProfileUpdate,
+    db: Session = Depends(get_db),
+) -> StyleProfile:
+    style = db.get(StyleProfile, style_id)
+    if not style:
+        raise HTTPException(status_code=404, detail="风格档案不存在")
+    if style.version != payload.version:
+        raise HTTPException(status_code=409, detail="风格档案已更新，请刷新后重试")
+    if payload.color_mode and payload.color_mode != style.color_mode:
+        reference_ids = style.profile.get("reference_asset_ids", [])
+        style.color_mode = payload.color_mode
+        style.profile = {"reference_asset_ids": reference_ids}
+        style.status = StyleStatus.DRAFT
+        style.version += 1
+        db.commit()
+        db.refresh(style)
     return style
 
 

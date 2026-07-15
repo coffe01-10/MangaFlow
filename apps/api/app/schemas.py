@@ -283,6 +283,13 @@ class OutfitCreate(BaseModel):
     reference_asset_ids: list[str] = Field(default_factory=list)
 
 
+class OutfitUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    locked_fields: list[str] | None = None
+    reference_asset_ids: list[str] | None = None
+    version: int = Field(ge=1)
+
+
 class OutfitRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -300,10 +307,15 @@ class OutfitRead(BaseModel):
 
 class StyleProfileCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
-    color_mode: str = Field(default="monochrome", max_length=24)
+    color_mode: str = Field(default="monochrome", pattern="^(monochrome|color)$")
     profile: dict = Field(default_factory=dict)
     reference_asset_ids: list[str] = Field(default_factory=list)
     locked_fields: list[str] = Field(default_factory=list)
+
+
+class StyleProfileUpdate(BaseModel):
+    color_mode: str | None = Field(default=None, pattern="^(monochrome|color)$")
+    version: int = Field(ge=1)
 
 
 class StyleProfileRead(BaseModel):

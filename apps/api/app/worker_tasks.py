@@ -684,6 +684,7 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
         "instruction": candidate.instruction,
         "subject": subject,
     }
+    asset_color_mode = subject.get("color_mode", "reference")
     task_instruction = {
         "CHARACTER": (
             "按 variant 生成同一角色的标准正面、侧面、背面或表情设定图；"
@@ -694,12 +695,24 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
             "准确还原服装剪裁、层次、配饰与状态，不改变角色身份。"
         ),
         "STYLE": (
-            "生成不含现有作品角色的原创风格测试页，用简单人物与背景验证线稿、网点、"
-            "黑白对比和分格语言，不复制参考漫画的文字与剧情。"
+            "生成不含现有作品角色的原创风格测试页，用简单人物与背景验证线稿、"
+            + (
+                "网点、黑白对比和分格语言，"
+                if asset_color_mode == "monochrome"
+                else "色板、上色方式、光影层次和分格语言，"
+            )
+            + "不复制参考漫画的文字与剧情。"
         ),
     }[batch.target_type]
-    prompt = (
+    base_instruction = (
         "生成黑白日式漫画规范资产图。"
+        if batch.target_type == "STYLE" and asset_color_mode == "monochrome"
+        else "生成彩色日式漫画规范资产图。"
+        if batch.target_type == "STYLE"
+        else "生成漫画制作规范资产图，色彩与明暗服从参考素材。"
+    )
+    prompt = (
+        base_instruction
         + task_instruction
         + "不要加入文字水印；背景使用便于比对的简洁浅色。输入："
         + json.dumps(prompt_payload, ensure_ascii=False)
@@ -768,8 +781,14 @@ def _run_style_analyze(db, job: GenerationJob) -> None:
     job.status = JobStatus.GENERATING
     job.progress = 35
     db.commit()
-    prompt = """分析这些漫画参考页的视觉风格，只总结可复用的画面语言，不识别作者姓名或作品名。
-输出线稿、网点、黑白对比、人物画法、背景画法、光影、日式分格语言、构图规则、禁止项，
+    visual_dimensions = (
+        "线稿、网点、黑白对比、留白、人物画法、背景画法、光影"
+        if style.color_mode == "monochrome"
+        else "线稿、主辅色板、肤色与发色、上色方式、色彩光影、人物画法、背景画法"
+    )
+    prompt = f"""分析这些漫画参考页的视觉风格，只总结可复用的画面语言，不识别作者姓名或作品名。
+目标输出类型是{'黑白漫画' if style.color_mode == 'monochrome' else '彩色漫画'}。
+输出{visual_dimensions}、日式分格语言、构图规则、禁止项，
 以及一段可直接用于生图的中文 prompt_summary。不要复制参考页中的文字或剧情。"""
     output = _adapter("text.fast").analyze_multimodal(
         MultimodalRequest(

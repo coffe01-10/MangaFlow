@@ -177,7 +177,7 @@ export interface StyleProfile {
   id: string;
   project_id: string;
   name: string;
-  color_mode: string;
+  color_mode: "monochrome" | "color";
   profile: Record<string, unknown> & { prompt_summary?: string; reference_asset_ids?: string[] };
   locked_fields: string[];
   status: string;
@@ -607,11 +607,19 @@ export const api = {
     request<Outfit>(`/projects/${projectId}/outfits`, {
       method: "POST", body: JSON.stringify({ ...payload, components: {}, state_rules: {} }),
     }),
+  updateOutfit: (outfitId: string, payload: { version: number; name: string; reference_asset_ids: string[]; locked_fields: string[] }) =>
+    request<Outfit>(`/outfits/${outfitId}`, {
+      method: "PATCH", body: JSON.stringify(payload),
+    }),
   styles: (projectId: string) => request<StyleProfile[]>(`/projects/${projectId}/styles`),
-  createStyle: (projectId: string, name: string, referenceAssetIds: string[], lockedFields: string[]) =>
+  createStyle: (projectId: string, name: string, colorMode: StyleProfile["color_mode"], referenceAssetIds: string[], lockedFields: string[]) =>
     request<StyleProfile>(`/projects/${projectId}/styles`, {
       method: "POST",
-      body: JSON.stringify({ name, color_mode: "monochrome", profile: {}, reference_asset_ids: referenceAssetIds, locked_fields: lockedFields }),
+      body: JSON.stringify({ name, color_mode: colorMode, profile: {}, reference_asset_ids: referenceAssetIds, locked_fields: lockedFields }),
+    }),
+  updateStyleMode: (styleId: string, version: number, colorMode: StyleProfile["color_mode"]) =>
+    request<StyleProfile>(`/styles/${styleId}`, {
+      method: "PATCH", body: JSON.stringify({ version, color_mode: colorMode }),
     }),
   analyzeStyle: (styleId: string) => request<Job>(`/styles/${styleId}/analyze`, { method: "POST" }),
   activateStyle: (projectId: string, styleId: string) => request<StyleProfile>(`/projects/${projectId}/styles/${styleId}/activate`, { method: "POST" }),
