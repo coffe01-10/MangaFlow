@@ -18,6 +18,11 @@ async def lifespan(_: FastAPI):
 
 
 settings = get_settings()
+web_origins = {
+    settings.web_origin,
+    settings.web_origin.replace("localhost", "127.0.0.1"),
+    settings.web_origin.replace("127.0.0.1", "localhost"),
+}
 app = FastAPI(
     title=settings.app_name,
     version="0.1.0",
@@ -27,7 +32,7 @@ app = FastAPI(
 )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.web_origin],
+    allow_origins=sorted(web_origins),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
