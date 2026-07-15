@@ -92,7 +92,7 @@ PostgreSQL 与 Redis 的开发容器可用 `docker compose up -d` 启动；默�
 npm run check
 ```
 
-当前验收结果：25 项后端测试通过、Ruff 与 ESLint 通过、Next.js 生产构建通过、Alembic 全新升级/回滚/再升级通过。Codex 内置浏览器实测左侧七步工作流、角色/服装/风格锁定项、10 页动态分页、两个平级生图模型和素材库筛选；浏览器日志为空，API 请求均成功。真实 Vertex 烟雾测试使用最多 32 输出 token 的 Gemini 3.5 Flash 请求和一张 Nano Banana 2 的 1K 图片请求，均成功。
+当前验收结果：26 项后端测试通过，其中统一闭环用一个 1500–3000 字章节跑通 AI 剧本、角色四视图、服装图、风格分析、动态分页、逐页候选、收藏采用、检查修复和 PNG/PDF/JSON 导出；Ruff、ESLint、Next.js 生产构建及 Alembic 全新升级/回滚/再升级均通过。Codex 内置浏览器实测左侧七步工作流、角色/服装/风格锁定项、10 页动态分页、两个平级生图模型和素材库筛选；浏览器日志为空，API 请求均成功。真实 Vertex 烟雾测试使用最多 32 输出 token 的 Gemini 3.5 Flash 请求和一张 Nano Banana 2 的 1K 图片请求，均成功。
 
 ## 安全说明
 

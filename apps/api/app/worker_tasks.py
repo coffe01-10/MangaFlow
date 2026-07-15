@@ -5,6 +5,7 @@ from threading import Lock
 
 from PIL import Image
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import IntegrityError
 
 from app.config import get_settings
 from app.database import SessionLocal
@@ -146,6 +147,14 @@ def _save_generated_asset(db, candidate: PageCandidate, data: bytes) -> Asset:
     page = db.get(MangaPage, candidate.page_id)
     chapter = db.get(Chapter, page.chapter_id)
     digest = hashlib.sha256(data).hexdigest()
+    existing = db.scalar(
+        select(Asset).where(
+            Asset.project_id == chapter.project_id,
+            Asset.sha256 == digest,
+        )
+    )
+    if existing:
+        return existing
     destination = (
         settings.storage_root
         / "generated"
@@ -162,27 +171,48 @@ def _save_generated_asset(db, candidate: PageCandidate, data: bytes) -> Asset:
     except OSError:
         width = height = None
         mime_type = "image/png"
-    asset = Asset(
-        project_id=chapter.project_id,
-        kind="page_candidate",
-        original_name=f"page-{page.page_number}-candidate-{candidate.ordinal}.png",
-        storage_key=destination.relative_to(settings.storage_root).as_posix(),
-        mime_type=mime_type,
-        byte_size=len(data),
-        sha256=digest,
-        width=width,
-        height=height,
-        source="VERTEX_GENERATED",
-        status="GENERATED",
-    )
-    db.add(asset)
-    db.flush()
-    return asset
+    try:
+        with db.begin_nested():
+            asset = Asset(
+                project_id=chapter.project_id,
+                kind="page_candidate",
+                original_name=f"page-{page.page_number}-candidate-{candidate.ordinal}.png",
+                storage_key=destination.relative_to(settings.storage_root).as_posix(),
+                mime_type=mime_type,
+                byte_size=len(data),
+                sha256=digest,
+                width=width,
+                height=height,
+                source="VERTEX_GENERATED",
+                status="GENERATED",
+            )
+            db.add(asset)
+            db.flush()
+        return asset
+    except IntegrityError:
+        destination.unlink(missing_ok=True)
+        existing = db.scalar(
+            select(Asset).where(
+                Asset.project_id == chapter.project_id,
+                Asset.sha256 == digest,
+            )
+        )
+        if existing:
+            return existing
+        raise
 
 
 def _save_asset_candidate(db, candidate: AssetCandidate, project_id: str, data: bytes) -> Asset:
     settings = get_settings()
     digest = hashlib.sha256(data).hexdigest()
+    existing = db.scalar(
+        select(Asset).where(
+            Asset.project_id == project_id,
+            Asset.sha256 == digest,
+        )
+    )
+    if existing:
+        return existing
     destination = (
         settings.storage_root
         / "generated"
@@ -200,22 +230,38 @@ def _save_asset_candidate(db, candidate: AssetCandidate, project_id: str, data: 
         width = height = None
         mime_type = "image/png"
     batch = db.get(GenerationBatch, candidate.batch_id)
-    asset = Asset(
-        project_id=project_id,
-        kind=batch.generation_kind.lower(),
-        original_name=f"{batch.generation_kind.lower()}-{candidate.variant.lower()}-{candidate.ordinal}.png",
-        storage_key=destination.relative_to(settings.storage_root).as_posix(),
-        mime_type=mime_type,
-        byte_size=len(data),
-        sha256=digest,
-        width=width,
-        height=height,
-        source="VERTEX_GENERATED",
-        status="GENERATED",
-    )
-    db.add(asset)
-    db.flush()
-    return asset
+    try:
+        with db.begin_nested():
+            asset = Asset(
+                project_id=project_id,
+                kind=batch.generation_kind.lower(),
+                original_name=(
+                    f"{batch.generation_kind.lower()}-{candidate.variant.lower()}-"
+                    f"{candidate.ordinal}.png"
+                ),
+                storage_key=destination.relative_to(settings.storage_root).as_posix(),
+                mime_type=mime_type,
+                byte_size=len(data),
+                sha256=digest,
+                width=width,
+                height=height,
+                source="VERTEX_GENERATED",
+                status="GENERATED",
+            )
+            db.add(asset)
+            db.flush()
+        return asset
+    except IntegrityError:
+        destination.unlink(missing_ok=True)
+        existing = db.scalar(
+            select(Asset).where(
+                Asset.project_id == project_id,
+                Asset.sha256 == digest,
+            )
+        )
+        if existing:
+            return existing
+        raise
 
 
 def _run_page_generate(db, job: GenerationJob) -> None:
