@@ -11,6 +11,7 @@ import {
   Gauge,
   LoaderCircle,
   Plus,
+  Settings,
   ShieldCheck,
   Sparkles,
   X,
@@ -23,8 +24,10 @@ const modeLabel = { AUTO: "自动", DIRECTOR: "导演", SEMI_AUTO: "半自动" }
 function ConnectionBadge({ status }: { status?: VertexStatus }) {
   if (!status) return <span className="status-chip muted"><i />检测中</span>;
   if (!status.configured) return <span className="status-chip danger"><i />未配置</span>;
-  if (status.verification === "verified") return <span className="status-chip success"><i />Vertex 已验证</span>;
-  return <span className="status-chip warning"><i />Vertex 待验证</span>;
+  if (status.health_state === "HEALTHY") return <span className="status-chip success"><i />Vertex 已验证</span>;
+  if (status.health_state === "CHECKING") return <span className="status-chip muted"><i />正在验证</span>;
+  if (status.health_state === "DEGRADED") return <span className="status-chip warning"><i />连接降级</span>;
+  return <span className="status-chip danger"><i />Vertex 离线</span>;
 }
 
 function EmptyProjects({ onCreate }: { onCreate: () => void }) {
@@ -147,7 +150,7 @@ export default function HomePage() {
   const vertex = useQuery({ queryKey: ["vertex-status"], queryFn: api.vertexStatus });
   const models = useQuery({ queryKey: ["models"], queryFn: api.models });
   const verify = useMutation({
-    mutationFn: api.verifyVertex,
+    mutationFn: () => api.verifyVertex("CREDENTIALS"),
     onSuccess: (result) => queryClient.setQueryData(["vertex-status"], result),
   });
   const modelMap = useMemo(() => new Map(models.data?.map((model) => [model.logical_alias, model])), [models.data]);
@@ -160,6 +163,7 @@ export default function HomePage() {
         <div className="topbar-title"><span>MANGAFLOW / PRODUCTION DESK</span><strong>漫画生产台</strong></div>
         <div className="topbar-actions">
           <ConnectionBadge status={vertex.data} />
+          <Link className="button ghost compact" href="/settings"><Settings size={16} />系统设置</Link>
           <button className="button ink compact" onClick={() => setCreating(true)}><Plus size={16} />新建项目</button>
         </div>
       </header>
@@ -196,7 +200,7 @@ export default function HomePage() {
         <aside className="dashboard-side">
           <section className="side-card vertex-card">
             <header><span><CloudCog size={17} />VERTEX AI</span><ConnectionBadge status={vertex.data} /></header>
-            <div className="vertex-signal"><i className={vertex.data?.configured ? "on" : ""} /><i className={vertex.data?.configured ? "on" : ""} /><i className={vertex.data?.verification === "verified" ? "on" : ""} /></div>
+            <div className="vertex-signal"><i className={vertex.data?.configured ? "on" : ""} /><i className={vertex.data?.credential_file_present ? "on" : ""} /><i className={vertex.data?.health_state === "HEALTHY" ? "on" : ""} /></div>
             <h3>{vertex.data?.configured ? "服务端凭据已接入" : "等待服务端配置"}</h3>
             <p>{vertex.data?.message ?? "正在检查本地配置…"}</p>
             <dl>
@@ -205,7 +209,7 @@ export default function HomePage() {
               <div><dt>生图模型</dt><dd>NB 2 / NB Pro</dd></div>
             </dl>
             <button className="button outline full" disabled={!vertex.data?.configured || verify.isPending} onClick={() => verify.mutate()}>
-              {verify.isPending ? <LoaderCircle className="spin" size={16} /> : <ShieldCheck size={16} />}{vertex.data?.verification === "verified" ? "重新验证" : "联网验证凭据"}
+              {verify.isPending ? <LoaderCircle className="spin" size={16} /> : <ShieldCheck size={16} />}{vertex.data?.health_state === "HEALTHY" ? "重新验证" : "联网验证凭据"}
             </button>
             {verify.isError && <p className="inline-error">{verify.error.message}</p>}
           </section>

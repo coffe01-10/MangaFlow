@@ -6,7 +6,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app import models  # noqa: F401
 from app.api.router import api_router
 from app.config import get_settings
-from app.database import Base, engine
+from app.database import Base, SessionLocal, engine
+from app.services.runtime_settings import apply_runtime_overrides
 
 
 @asynccontextmanager
@@ -14,6 +15,8 @@ async def lifespan(_: FastAPI):
     settings = get_settings()
     settings.ensure_directories()
     Base.metadata.create_all(bind=engine)
+    with SessionLocal() as db:
+        apply_runtime_overrides(db, settings)
     yield
 
 

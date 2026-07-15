@@ -16,6 +16,7 @@ class RuntimeSettingsRead(BaseModel):
     storage_root: str
     upload_root: str
     redis_configured: bool
+    version: int
 
 
 class RuntimeSettingsUpdate(BaseModel):

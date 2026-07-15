@@ -11,6 +11,10 @@ from app.model_adapters.base import (
     StructuredRequest,
 )
 from app.services.model_registry import ModelCapability
+from app.services.vertex_credentials import (
+    classify_vertex_failure,
+    get_vertex_credential_manager,
+)
 
 
 class VertexAdapterError(RuntimeError):
@@ -26,37 +30,22 @@ class _VertexBase:
             raise VertexAdapterError("AUTHENTICATION", "Vertex AI 服务账号尚未正确配置")
         self.settings = settings
         self.capability = capability
+        self.credential_manager = get_vertex_credential_manager()
 
     def _client(self):
-        from google import genai
-        from google.oauth2 import service_account
+        return self.credential_manager.create_client(self.settings)
 
-        credentials = service_account.Credentials.from_service_account_file(
-            str(self.settings.google_application_credentials),
-            scopes=["https://www.googleapis.com/auth/cloud-platform"],
-        )
-
-        return genai.Client(
-            vertexai=True,
-            project=self.settings.google_cloud_project,
-            location=self.settings.google_cloud_location,
-            credentials=credentials,
+    def _execute(self, operation):
+        return self.credential_manager.execute(
+            self.settings,
+            operation,
+            client_factory=self._client,
         )
 
     @staticmethod
     def _translate_error(error: Exception) -> VertexAdapterError:
-        message = str(error).lower()
-        if "credential" in message or "unauth" in message:
-            return VertexAdapterError("AUTHENTICATION", "Vertex AI 凭据无效或已过期")
-        if "permission" in message or "403" in message:
-            return VertexAdapterError("PERMISSION", "服务账号没有调用该 Vertex 模型的权限")
-        if "quota" in message or "resource_exhausted" in message:
-            return VertexAdapterError("QUOTA", "Vertex AI 配额不足")
-        if "429" in message or "rate" in message:
-            return VertexAdapterError("RATE_LIMIT", "Vertex AI 请求过于频繁，请稍后重试")
-        if "timeout" in message or "deadline" in message:
-            return VertexAdapterError("TIMEOUT", "Vertex AI 请求超时")
-        return VertexAdapterError("UPSTREAM", "Vertex AI 暂时无法完成请求")
+        failure = classify_vertex_failure(error)
+        return VertexAdapterError(failure.code, failure.message)
 
 
 class VertexTextAdapter(_VertexBase):
@@ -65,19 +54,19 @@ class VertexTextAdapter(_VertexBase):
     ) -> BaseModel:
         from google.genai import types
 
-        client = None
         try:
-            client = self._client()
-            response = client.models.generate_content(
-                model=self.capability.model_id,
-                contents=request.prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=request.system_instruction,
-                    temperature=request.temperature,
-                    max_output_tokens=request.metadata.get("max_output_tokens"),
-                    response_mime_type="application/json",
-                    response_schema=output_schema,
-                ),
+            response = self._execute(
+                lambda client: client.models.generate_content(
+                    model=self.capability.model_id,
+                    contents=request.prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=request.system_instruction,
+                        temperature=request.temperature,
+                        max_output_tokens=request.metadata.get("max_output_tokens"),
+                        response_mime_type="application/json",
+                        response_schema=output_schema,
+                    ),
+                )
             )
             if not response.text:
                 raise VertexAdapterError("INVALID_OUTPUT", "模型没有返回可验证的结构化结果")
@@ -86,10 +75,6 @@ class VertexTextAdapter(_VertexBase):
             raise
         except Exception as error:
             raise self._translate_error(error) from error
-        finally:
-            close = getattr(client, "close", None)
-            if callable(close):
-                close()
 
     def analyze_multimodal(
         self, request: MultimodalRequest, output_schema: type[BaseModel]
@@ -101,19 +86,19 @@ class VertexTextAdapter(_VertexBase):
         contents: list[Any] = [request.prompt]
         for data, mime_type in zip(request.images, request.mime_types, strict=True):
             contents.append(types.Part.from_bytes(data=data, mime_type=mime_type))
-        client = None
         try:
-            client = self._client()
-            response = client.models.generate_content(
-                model=self.capability.model_id,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=request.system_instruction,
-                    temperature=request.temperature,
-                    max_output_tokens=request.metadata.get("max_output_tokens"),
-                    response_mime_type="application/json",
-                    response_schema=output_schema,
-                ),
+            response = self._execute(
+                lambda client: client.models.generate_content(
+                    model=self.capability.model_id,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=request.system_instruction,
+                        temperature=request.temperature,
+                        max_output_tokens=request.metadata.get("max_output_tokens"),
+                        response_mime_type="application/json",
+                        response_schema=output_schema,
+                    ),
+                )
             )
             if not response.text:
                 raise VertexAdapterError("INVALID_OUTPUT", "模型没有返回检查结果")
@@ -122,10 +107,6 @@ class VertexTextAdapter(_VertexBase):
             raise
         except Exception as error:
             raise self._translate_error(error) from error
-        finally:
-            close = getattr(client, "close", None)
-            if callable(close):
-                close()
 
 
 class VertexImageAdapter(_VertexBase):
@@ -162,19 +143,19 @@ class VertexImageAdapter(_VertexBase):
         ):
             contents.append(types.Part.from_bytes(data=data, mime_type=mime_type))
 
-        client = None
         try:
-            client = self._client()
-            response = client.models.generate_content(
-                model=self.capability.model_id,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    response_modalities=[types.Modality.TEXT, types.Modality.IMAGE],
-                    image_config=types.ImageConfig(
-                        aspect_ratio=request.aspect_ratio,
-                        image_size=request.resolution,
+            response = self._execute(
+                lambda client: client.models.generate_content(
+                    model=self.capability.model_id,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        response_modalities=[types.Modality.TEXT, types.Modality.IMAGE],
+                        image_config=types.ImageConfig(
+                            aspect_ratio=request.aspect_ratio,
+                            image_size=request.resolution,
+                        ),
                     ),
-                ),
+                )
             )
             images: list[bytes] = []
             texts: list[str] = []
@@ -202,7 +183,3 @@ class VertexImageAdapter(_VertexBase):
             raise
         except Exception as error:
             raise self._translate_error(error) from error
-        finally:
-            close = getattr(client, "close", None)
-            if callable(close):
-                close()
