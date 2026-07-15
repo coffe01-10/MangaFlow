@@ -16,13 +16,19 @@ from app.models import (
     Beat,
     Chapter,
     Character,
+    CharacterReference,
     InspectionResult,
     ScriptRevision,
     SourceSegment,
 )
 from app.services.prompt_compiler import compile_page_prompt
-from app.services.ai_schemas import BeatDraft, CharacterDraft, SceneDraft, StoryParseOutput
-from app.worker_tasks import _run_story_parse
+from app.services.ai_schemas import (
+    BeatDraft,
+    CharacterDraft,
+    SceneDraft,
+    StoryParseOutput,
+)
+from app.worker_tasks import _load_reference_assets, _run_story_parse
 
 
 def _project(client, name="长篇测试"):
@@ -121,6 +127,62 @@ def test_lossless_import_and_dynamic_pagination(client, db_session):
     )
 
 
+def test_split_source_segment_assigns_each_script_beat_to_its_page(client, db_session):
+    project = _project(client, "跨页情节拍")
+    source_parts = [
+        "第一幕细雨落在京都的屋檐上，主人公站在窗前凝视远方，屋内只听见钟表缓慢走动的声音。",
+        "第二幕他接到家里的电话，匆忙收拾行李赶往车站，沿途的阳光与沉重消息形成强烈反差。",
+        "第三幕他终于跪在父亲灵牌前失声痛哭，母亲站在一旁，既悲伤又担忧地望着自己的孩子。",
+        "第四幕母亲轻轻抱住他安慰，两个人在沉默里接受亲人离去的事实，随后才一起回到家中。",
+    ]
+    source_parts = [part + part for part in source_parts]
+    imported = client.post(
+        f"/api/v1/projects/{project['id']}/sources/import",
+        json={"title": "第一章", "text": "".join(source_parts)},
+    ).json()["chapters"][0]
+    segment = (
+        db_session.query(SourceSegment)
+        .filter_by(source_revision_id=imported["current_source_revision_id"])
+        .one()
+    )
+    scene = Scene(
+        chapter_id=imported["id"],
+        ordinal=1,
+        location="京都",
+        source_range={"segment_ids": [segment.id]},
+    )
+    db_session.add(scene)
+    db_session.flush()
+    beats = [
+        Beat(
+            scene_id=scene.id,
+            ordinal=index,
+            action=part,
+            narration=part,
+            source_range={"segment_ids": [segment.id]},
+        )
+        for index, part in enumerate(source_parts, 1)
+    ]
+    db_session.add_all(beats)
+    chapter = db_session.get(Chapter, imported["id"])
+    chapter.status = "SCRIPT_READY"
+    db_session.commit()
+
+    response = client.post(
+        f"/api/v1/chapters/{chapter.id}/plan",
+        json={"replace_existing": True},
+    )
+    assert response.status_code == 200
+    pages = response.json()["pages"]
+    assert len(pages) >= 2
+    first_ids = set(pages[0]["beat_ids"])
+    second_ids = set(pages[1]["beat_ids"])
+    assert first_ids
+    assert second_ids
+    assert first_ids.isdisjoint(second_ids)
+    assert first_ids | second_ids == {beat.id for beat in beats}
+
+
 def test_txt_and_markdown_source_upload(client):
     project = _project(client, "文件原文导入")
     uploaded = client.post(
@@ -140,9 +202,7 @@ def test_txt_and_markdown_source_upload(client):
     unsupported = client.post(
         f"/api/v1/projects/{project['id']}/sources/upload",
         data={"title": "错误格式"},
-        files={
-            "file": ("chapter.docx", b"not-a-docx", "application/octet-stream")
-        },
+        files={"file": ("chapter.docx", b"not-a-docx", "application/octet-stream")},
     )
     assert unsupported.status_code == 415
 
@@ -171,9 +231,7 @@ def test_story_parse_worker_writes_complete_traceable_script(
             assert schema is StoryParseOutput
             assert all(segment.id in request.prompt for segment in segments)
             return StoryParseOutput(
-                characters=[
-                    CharacterDraft(primary_name="顾川", aliases=["小川"])
-                ],
+                characters=[CharacterDraft(primary_name="顾川", aliases=["小川"])],
                 scenes=[
                     SceneDraft(
                         ordinal=1,
@@ -210,12 +268,91 @@ def test_story_parse_worker_writes_complete_traceable_script(
 
     db_session.refresh(chapter)
     script = db_session.query(ScriptRevision).filter_by(chapter_id=chapter.id).one()
-    beats = db_session.query(Beat).join(Scene).filter(Scene.chapter_id == chapter.id).all()
+    beats = (
+        db_session.query(Beat).join(Scene).filter(Scene.chapter_id == chapter.id).all()
+    )
     assert chapter.status == "SCRIPT_READY"
     assert script.coverage["ratio"] == 1
     assert script.coverage["missing_segment_ids"] == []
     assert len(beats) == len(segments)
     assert beats[-1].speaker_name == "顾川"
+
+
+def test_story_parse_reuses_user_character_when_model_returns_alias(
+    client, db_session, monkeypatch
+):
+    project = _project(client, "角色别名复用")
+    canonical = Character(
+        project_id=project["id"],
+        primary_name="荻原桜",
+        aliases=["桜"],
+        aliases_normalized=["桜"],
+        status="UPLOADED",
+    )
+    db_session.add(canonical)
+    imported = client.post(
+        f"/api/v1/projects/{project['id']}/sources/import",
+        json={"title": "第一章", "text": "妹妹桜轻声说：“哥哥。”"},
+    ).json()
+    chapter = db_session.get(Chapter, imported["chapters"][0]["id"])
+    segment = (
+        db_session.query(SourceSegment)
+        .filter_by(source_revision_id=chapter.current_source_revision_id)
+        .one()
+    )
+
+    class FakeTextAdapter:
+        def generate_structured(self, request, schema):
+            assert schema is StoryParseOutput
+            return StoryParseOutput(
+                characters=[
+                    CharacterDraft(
+                        primary_name="桜",
+                        aliases=["妹妹"],
+                        description="主角的妹妹",
+                    )
+                ],
+                scenes=[
+                    SceneDraft(
+                        ordinal=1,
+                        location="家中",
+                        source_segment_ids=[segment.id],
+                        beats=[
+                            BeatDraft(
+                                ordinal=1,
+                                action="桜开口",
+                                speaker_name="妹妹",
+                                dialogue="哥哥。",
+                                source_segment_ids=[segment.id],
+                            )
+                        ],
+                    )
+                ],
+            )
+
+    monkeypatch.setattr("app.worker_tasks._adapter", lambda alias: FakeTextAdapter())
+    job = GenerationJob(
+        project_id=project["id"],
+        target_type="CHAPTER",
+        target_id=chapter.id,
+        job_type="SOURCE_PARSE",
+        status="PREPARING",
+        model_alias="text.fast",
+    )
+    db_session.add(job)
+    db_session.flush()
+    _run_story_parse(db_session, job)
+    db_session.commit()
+
+    characters = db_session.query(Character).filter_by(project_id=project["id"]).all()
+    beat = (
+        db_session.query(Beat).join(Scene).filter(Scene.chapter_id == chapter.id).one()
+    )
+    assert len(characters) == 1
+    assert characters[0].primary_name == "荻原桜"
+    assert characters[0].aliases == ["桜", "妹妹"]
+    assert characters[0].canonical_description == "主角的妹妹"
+    assert beat.speaker_name == "荻原桜"
 
 
 def test_page_plan_persists_rtl_storyboard_panels(client, db_session):
@@ -239,9 +376,65 @@ def test_page_plan_persists_rtl_storyboard_panels(client, db_session):
     assert len({(item.bounds["width"], item.bounds["height"]) for item in panels}) > 1
 
 
+def test_page_generation_only_loads_references_for_characters_on_page(
+    client, db_session
+):
+    project_data = _project(client, "页面人物参考隔离")
+    _, planned = _chapter_and_pages(client, db_session, project_data["id"], repeat=1)
+    project = db_session.get(Project, project_data["id"])
+    page = db_session.get(MangaPage, planned["pages"][0]["id"])
+    on_page = Character(project_id=project.id, primary_name="本页角色")
+    off_page = Character(project_id=project.id, primary_name="后续角色")
+    on_page_asset = Asset(
+        project_id=project.id,
+        kind="CHARACTER_REFERENCE",
+        original_name="on-page.png",
+        storage_key="on-page.png",
+        mime_type="image/png",
+        byte_size=10,
+        sha256="d" * 64,
+    )
+    off_page_asset = Asset(
+        project_id=project.id,
+        kind="CHARACTER_REFERENCE",
+        original_name="off-page.png",
+        storage_key="off-page.png",
+        mime_type="image/png",
+        byte_size=10,
+        sha256="e" * 64,
+    )
+    db_session.add_all([on_page, off_page, on_page_asset, off_page_asset])
+    db_session.flush()
+    db_session.add_all(
+        [
+            CharacterReference(
+                character_id=on_page.id,
+                asset_id=on_page_asset.id,
+                is_canonical=True,
+            ),
+            CharacterReference(
+                character_id=off_page.id,
+                asset_id=off_page_asset.id,
+                is_canonical=True,
+            ),
+        ]
+    )
+    panel = db_session.query(Panel).filter_by(page_id=page.id).first()
+    panel.characters = [on_page.id]
+    db_session.commit()
+
+    reference_ids = {
+        asset.id for asset in _load_reference_assets(db_session, page, project)
+    }
+    assert on_page_asset.id in reference_ids
+    assert off_page_asset.id not in reference_ids
+
+
 def test_canonical_speaker_flows_from_script_to_panel_prompt(client, db_session):
     project = _project(client, "说话人追踪")
-    character = Character(project_id=project["id"], primary_name="顾川", aliases=["老顾"])
+    character = Character(
+        project_id=project["id"], primary_name="顾川", aliases=["老顾"]
+    )
     db_session.add(character)
     imported = client.post(
         f"/api/v1/projects/{project['id']}/sources/import",
@@ -249,7 +442,9 @@ def test_canonical_speaker_flows_from_script_to_panel_prompt(client, db_session)
     ).json()["chapters"][0]
     segment = (
         db_session.query(SourceSegment)
-        .filter(SourceSegment.source_revision_id == imported["current_source_revision_id"])
+        .filter(
+            SourceSegment.source_revision_id == imported["current_source_revision_id"]
+        )
         .one()
     )
     scene = Scene(
@@ -276,7 +471,12 @@ def test_canonical_speaker_flows_from_script_to_panel_prompt(client, db_session)
             source_revision_id=imported["current_source_revision_id"],
             revision_no=1,
             status="READY",
-            coverage={"expected": 1, "covered": 1, "ratio": 1, "missing_segment_ids": []},
+            coverage={
+                "expected": 1,
+                "covered": 1,
+                "ratio": 1,
+                "missing_segment_ids": [],
+            },
         )
     )
     chapter = db_session.get(Chapter, imported["id"])
@@ -383,9 +583,7 @@ def test_batch_candidate_favorite_select_and_next(client, db_session, monkeypatc
     candidate = queued.json()["candidate"]
     assert candidate["model_alias"] == "image.nano_banana_pro"
     assert (
-        client.get(f"/api/v1/projects/{project['id']}").json()[
-            "last_image_model_alias"
-        ]
+        client.get(f"/api/v1/projects/{project['id']}").json()["last_image_model_alias"]
         == "image.nano_banana_pro"
     )
 
@@ -471,15 +669,23 @@ def test_asset_generation_batches_join_library(client, db_session, monkeypatch):
         json={"primary_name": "苏清白", "aliases": ["小白"]},
     ).json()
     reference = Asset(
-        project_id=project["id"], kind="CHARACTER_REFERENCE", original_name="face.png",
-        storage_key="face.png", mime_type="image/png", byte_size=10, sha256="d" * 64,
+        project_id=project["id"],
+        kind="CHARACTER_REFERENCE",
+        original_name="face.png",
+        storage_key="face.png",
+        mime_type="image/png",
+        byte_size=10,
+        sha256="d" * 64,
     )
     db_session.add(reference)
     db_session.commit()
-    assert client.post(
-        f"/api/v1/characters/{character['id']}/references",
-        json={"asset_id": reference.id, "is_canonical": True},
-    ).status_code == 201
+    assert (
+        client.post(
+            f"/api/v1/characters/{character['id']}/references",
+            json={"asset_id": reference.id, "is_canonical": True},
+        ).status_code
+        == 201
+    )
     batch = client.post(
         "/api/v1/asset-generation-batches",
         json={
@@ -501,9 +707,7 @@ def test_asset_generation_batches_join_library(client, db_session, monkeypatch):
     assert candidate.status_code == 202
     assert candidate.json()["candidate"]["page_id"] is None
     assert (
-        client.get(f"/api/v1/projects/{project['id']}").json()[
-            "last_image_model_alias"
-        ]
+        client.get(f"/api/v1/projects/{project['id']}").json()["last_image_model_alias"]
         == "image.nano_banana_2"
     )
     library = client.get(
@@ -521,9 +725,12 @@ def test_asset_generation_batches_join_library(client, db_session, monkeypatch):
         ).status_code
         == 204
     )
-    assert client.get(
-        f"/api/v1/projects/{project['id']}/library?group_by=batch"
-    ).json()["total_candidates"] == 0
+    assert (
+        client.get(f"/api/v1/projects/{project['id']}/library?group_by=batch").json()[
+            "total_candidates"
+        ]
+        == 0
+    )
 
 
 def test_reference_profiles_scene_wardrobe_and_complete_sheet(
@@ -599,32 +806,56 @@ def test_reference_profiles_scene_wardrobe_and_complete_sheet(
 
     mismatch = client.post(
         "/api/v1/asset-generation-batches",
-        json={"target_type": "OUTFIT", "target_id": outfit["id"], "generation_kind": "CHARACTER"},
+        json={
+            "target_type": "OUTFIT",
+            "target_id": outfit["id"],
+            "generation_kind": "CHARACTER",
+        },
     )
     assert mismatch.status_code == 422
     outfit_batch = client.post(
         "/api/v1/asset-generation-batches",
-        json={"target_type": "OUTFIT", "target_id": outfit["id"], "generation_kind": "OUTFIT"},
+        json={
+            "target_type": "OUTFIT",
+            "target_id": outfit["id"],
+            "generation_kind": "OUTFIT",
+        },
     )
     assert outfit_batch.status_code == 201
     invalid_outfit_variant = client.post(
         f"/api/v1/asset-generation-batches/{outfit_batch.json()['id']}/candidates",
-        json={"model_alias": "image.nano_banana_2", "resolution": "1K", "variant": "STYLE_TEST"},
+        json={
+            "model_alias": "image.nano_banana_2",
+            "resolution": "1K",
+            "variant": "STYLE_TEST",
+        },
     )
     assert invalid_outfit_variant.status_code == 422
     outfit_candidate = client.post(
         f"/api/v1/asset-generation-batches/{outfit_batch.json()['id']}/candidates",
-        json={"model_alias": "image.nano_banana_2", "resolution": "1K", "variant": "OUTFIT"},
+        json={
+            "model_alias": "image.nano_banana_2",
+            "resolution": "1K",
+            "variant": "OUTFIT",
+        },
     )
     assert outfit_candidate.status_code == 202
     style_batch = client.post(
         "/api/v1/asset-generation-batches",
-        json={"target_type": "STYLE", "target_id": style["id"], "generation_kind": "STYLE_TEST"},
+        json={
+            "target_type": "STYLE",
+            "target_id": style["id"],
+            "generation_kind": "STYLE_TEST",
+        },
     )
     assert style_batch.status_code == 201
     style_candidate = client.post(
         f"/api/v1/asset-generation-batches/{style_batch.json()['id']}/candidates",
-        json={"model_alias": "image.nano_banana_pro", "resolution": "1K", "variant": "STYLE_TEST"},
+        json={
+            "model_alias": "image.nano_banana_pro",
+            "resolution": "1K",
+            "variant": "STYLE_TEST",
+        },
     )
     assert style_candidate.status_code == 202
 
@@ -753,12 +984,12 @@ def test_inspection_repair_escalation_and_upscale_jobs(client, db_session, monke
     assert upscaled.status_code == 202
     upscale_job = db_session.get(GenerationJob, upscaled.json()["job_id"])
     assert upscale_job.job_type == "PAGE_UPSCALE"
-    upscale_batch = db_session.get(GenerationBatch, upscaled.json()["candidate"]["batch_id"])
+    upscale_batch = db_session.get(
+        GenerationBatch, upscaled.json()["candidate"]["batch_id"]
+    )
     assert upscale_batch.generation_kind == "UPSCALE"
     assert (
-        client.get(f"/api/v1/projects/{project['id']}").json()[
-            "last_image_model_alias"
-        ]
+        client.get(f"/api/v1/projects/{project['id']}").json()["last_image_model_alias"]
         == "image.nano_banana_pro"
     )
 
@@ -828,7 +1059,9 @@ def test_project_json_export_uses_selected_page_versions(
         assert downloaded.json()["chapter"]["title"] == chapter["title"]
         assert len(downloaded.json()["asset_manifest"]) == len(plan["pages"])
         first_page = db_session.get(MangaPage, plan["pages"][0]["id"])
-        first_candidate = db_session.get(PageCandidate, first_page.selected_candidate_id)
+        first_candidate = db_session.get(
+            PageCandidate, first_page.selected_candidate_id
+        )
         first_asset = db_session.get(Asset, first_candidate.asset_id)
         page_path = Path(directory) / first_asset.storage_key
         page_path.parent.mkdir(parents=True, exist_ok=True)

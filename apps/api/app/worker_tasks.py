@@ -26,6 +26,7 @@ from app.models import (
     MangaPage,
     Outfit,
     PageCandidate,
+    Panel,
     Project,
     RepairPlan,
     Scene,
@@ -55,6 +56,49 @@ def _normalize_name(value: str) -> str:
     return "".join(value.split()).casefold()
 
 
+def _character_tokens(primary_name: str, aliases: list[str]) -> set[str]:
+    return {
+        normalized for value in [primary_name, *aliases] if (normalized := _normalize_name(value))
+    }
+
+
+def _match_existing_character(
+    characters: list[Character],
+    primary_name: str,
+    aliases: list[str],
+    claimed_ids: set[str],
+) -> Character | None:
+    """Prefer user-curated characters when the model returns one of their aliases."""
+
+    incoming = _character_tokens(primary_name, aliases)
+    matches = [
+        character
+        for character in characters
+        if character.id not in claimed_ids
+        and incoming & _character_tokens(character.primary_name, character.aliases)
+    ]
+    if not matches:
+        return None
+
+    status_priority = {
+        "CANONICAL": 0,
+        "UPLOADED": 1,
+        "NEEDS_CONFIRMATION": 2,
+        "ANALYZED": 3,
+    }
+    normalized_primary = _normalize_name(primary_name)
+
+    def rank(character: Character) -> tuple[int, int, str]:
+        status = getattr(character.status, "value", character.status)
+        return (
+            status_priority.get(str(status), 4),
+            0 if _normalize_name(character.primary_name) == normalized_primary else 1,
+            character.created_at.isoformat() if character.created_at else "",
+        )
+
+    return min(matches, key=rank)
+
+
 def _asset_path(asset: Asset) -> Path:
     settings = get_settings()
     root = settings.upload_root if asset.source == "USER_UPLOAD" else settings.storage_root
@@ -75,18 +119,31 @@ def _adapter(alias: str):
 
 
 def _load_reference_assets(db, page: MangaPage, project: Project) -> list[Asset]:
-    references = list(
-        db.scalars(
-            select(Asset)
-            .join(CharacterReference, CharacterReference.asset_id == Asset.id)
-            .join(Character, Character.id == CharacterReference.character_id)
-            .where(
-                Character.project_id == project.id,
-                Asset.deleted_at.is_(None),
+    page_character_ids = {
+        character_id
+        for panel in db.scalars(select(Panel).where(Panel.page_id == page.id))
+        for character_id in panel.characters
+    }
+    references = (
+        list(
+            db.scalars(
+                select(Asset)
+                .join(CharacterReference, CharacterReference.asset_id == Asset.id)
+                .join(Character, Character.id == CharacterReference.character_id)
+                .where(
+                    Character.project_id == project.id,
+                    Character.id.in_(page_character_ids),
+                    Asset.deleted_at.is_(None),
+                )
+                .order_by(
+                    CharacterReference.is_canonical.desc(),
+                    CharacterReference.created_at,
+                )
+                .limit(10)
             )
-            .order_by(CharacterReference.is_canonical.desc(), CharacterReference.created_at)
-            .limit(10)
         )
+        if page_character_ids
+        else []
     )
     scenes = (
         list(db.scalars(select(Scene).where(Scene.id.in_(page.scene_ids))))
@@ -408,12 +465,10 @@ def _run_story_parse(db, job: GenerationJob) -> None:
     project = db.get(Project, chapter.project_id)
     mode_instruction = {
         "AUTO": (
-            "自动模式：主动补充可视化动作、表情、环境、转场、潜台词和翻页悬念，"
-            "但不得改变剧情。"
+            "自动模式：主动补充可视化动作、表情、环境、转场、潜台词和翻页悬念，但不得改变剧情。"
         ),
         "DIRECTOR": (
-            "导演模式：只结构化原文明确给出的内容，不新增关键动作；"
-            "无法判断的细节留空供用户指定。"
+            "导演模式：只结构化原文明确给出的内容，不新增关键动作；无法判断的细节留空供用户指定。"
         ),
         "SEMI_AUTO": "半自动模式：补充镜头所需的动作、表情和环境细节，但不新增人物动机与剧情事实。",
     }[project.workflow_mode.value]
@@ -435,40 +490,62 @@ def _run_story_parse(db, job: GenerationJob) -> None:
     )
     project_id = chapter.project_id
     all_aliases: dict[str, str] = {}
+    existing_characters = list(
+        db.scalars(
+            select(Character)
+            .where(Character.project_id == project_id)
+            .order_by(Character.created_at)
+        )
+    )
+    claimed_character_ids: set[str] = set()
     for draft in output.characters:
-        normalized_primary = _normalize_name(draft.primary_name)
-        character = db.scalar(
-            select(Character).where(
-                Character.project_id == project_id,
-                Character.primary_name == draft.primary_name,
+        character = _match_existing_character(
+            existing_characters,
+            draft.primary_name,
+            draft.aliases,
+            claimed_character_ids,
+        )
+        primary_name = character.primary_name if character else draft.primary_name.strip()
+        aliases = list(
+            dict.fromkeys(
+                item.strip()
+                for item in [
+                    *(character.aliases if character else []),
+                    draft.primary_name,
+                    *draft.aliases,
+                ]
+                if item.strip() and _normalize_name(item) != _normalize_name(primary_name)
             )
         )
-        aliases = list(dict.fromkeys(item.strip() for item in draft.aliases if item.strip()))
         normalized = [_normalize_name(item) for item in aliases]
+        normalized_primary = _normalize_name(primary_name)
         conflict = any(
-            alias in all_aliases and all_aliases[alias] != normalized_primary
-            for alias in normalized
+            token in all_aliases and all_aliases[token] != normalized_primary
+            for token in [normalized_primary, *normalized]
         )
-        for alias in normalized:
-            all_aliases.setdefault(alias, normalized_primary)
+        for token in [normalized_primary, *normalized]:
+            all_aliases.setdefault(token, normalized_primary)
         if character:
             character.aliases = aliases
             character.aliases_normalized = normalized
             character.alias_conflict = conflict
-            character.canonical_description = draft.description
+            character.canonical_description = draft.description or character.canonical_description
             character.version += 1
+            claimed_character_ids.add(character.id)
         else:
-            db.add(
-                Character(
-                    project_id=project_id,
-                    primary_name=draft.primary_name,
-                    aliases=aliases,
-                    aliases_normalized=normalized,
-                    alias_conflict=conflict,
-                    canonical_description=draft.description,
-                    status="NEEDS_CONFIRMATION" if conflict else "ANALYZED",
-                )
+            character = Character(
+                project_id=project_id,
+                primary_name=primary_name,
+                aliases=aliases,
+                aliases_normalized=normalized,
+                alias_conflict=conflict,
+                canonical_description=draft.description,
+                status="NEEDS_CONFIRMATION" if conflict else "ANALYZED",
             )
+            db.add(character)
+            db.flush()
+            existing_characters.append(character)
+            claimed_character_ids.add(character.id)
     db.flush()
     character_map: dict[str, Character] = {}
     for character in db.scalars(select(Character).where(Character.project_id == project_id)):
@@ -726,7 +803,7 @@ def _run_inspection(db, job: GenerationJob) -> None:
     prompt = f"""你是漫画成片质检员。对照结构化目标检查这张生成漫画页。
 只检查这些类别：{json.dumps(categories, ensure_ascii=False)}。
 目标剧本、格位、说话人、角色、服装与风格上下文：
-{json.dumps(snapshot['input'], ensure_ascii=False, separators=(',', ':'))}
+{json.dumps(snapshot["input"], ensure_ascii=False, separators=(",", ":"))}
 TEXT 检查错字、漏字、擅自改写和阅读顺序；SPEAKER 检查气泡归属；
 CHARACTER 检查脸、发型、体型和标志特征；OUTFIT 检查场景指定服装；
 PROP 检查关键道具；CONTINUITY 检查与页面结构、场景状态和前后逻辑的一致性。

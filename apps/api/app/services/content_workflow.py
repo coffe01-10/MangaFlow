@@ -220,6 +220,85 @@ def _split_for_pages(segment: SourceSegment) -> list[PageChunk]:
     return chunks
 
 
+def _beat_text_anchor(segment: SourceSegment, beat: Beat) -> int | None:
+    """Locate a beat inside its source segment using preserved dialogue/narration."""
+
+    for value in (beat.dialogue, beat.narration):
+        candidate = value.strip()
+        if not candidate:
+            continue
+        probes = [candidate, candidate.strip("「」『』“”\"' \r\n\t")]
+        for probe in probes:
+            if not probe:
+                continue
+            relative = segment.text.find(probe)
+            if relative >= 0:
+                return segment.start_offset + relative
+    return None
+
+
+def _build_beat_anchors(
+    segments: list[SourceSegment], beats: list[Beat]
+) -> tuple[dict[tuple[str, str], int], dict[str, list[Beat]]]:
+    segment_map = {segment.id: segment for segment in segments}
+    beats_by_segment: dict[str, list[Beat]] = {segment.id: [] for segment in segments}
+    for beat in beats:
+        for segment_id in beat.source_range.get("segment_ids", []):
+            if segment_id in beats_by_segment:
+                beats_by_segment[segment_id].append(beat)
+
+    anchors: dict[tuple[str, str], int] = {}
+    for segment_id, related_beats in beats_by_segment.items():
+        segment = segment_map[segment_id]
+        total = len(related_beats)
+        for index, beat in enumerate(related_beats):
+            anchor = _beat_text_anchor(segment, beat)
+            if anchor is None:
+                relative = int((index + 0.5) * len(segment.text) / max(total, 1))
+                anchor = segment.start_offset + min(relative, max(len(segment.text) - 1, 0))
+            anchors[(beat.id, segment_id)] = anchor
+    return anchors, beats_by_segment
+
+
+def _beats_for_page_ranges(
+    ranges: list[dict],
+    beats: list[Beat],
+    anchors: dict[tuple[str, str], int],
+    beats_by_segment: dict[str, list[Beat]],
+) -> list[Beat]:
+    range_by_segment: dict[str, list[tuple[int, int]]] = {}
+    for item in ranges:
+        range_by_segment.setdefault(item["segment_id"], []).append(
+            (int(item["start_offset"]), int(item["end_offset"]))
+        )
+
+    selected = [
+        beat
+        for beat in beats
+        if any(
+            start <= anchors.get((beat.id, segment_id), -1) < end
+            for segment_id in beat.source_range.get("segment_ids", [])
+            for start, end in range_by_segment.get(segment_id, [])
+        )
+    ]
+    selected_ids = {beat.id for beat in selected}
+    # A very long beat can legitimately span more than one page. Keep the nearest
+    # trace only when a page range would otherwise have no script beat at all.
+    for segment_id, bounds in range_by_segment.items():
+        related = beats_by_segment.get(segment_id, [])
+        if not related or any(beat.id in selected_ids for beat in related):
+            continue
+        midpoint = sum(start + end for start, end in bounds) / (2 * len(bounds))
+        nearest = min(
+            related,
+            key=lambda beat: abs(anchors[(beat.id, segment_id)] - midpoint),
+        )
+        selected.append(nearest)
+        selected_ids.add(nearest.id)
+    beat_order = {beat.id: index for index, beat in enumerate(beats)}
+    return sorted(selected, key=lambda beat: beat_order[beat.id])
+
+
 def japanese_panel_layout(panel_count: int, page_number: int) -> list[dict]:
     """Return an asymmetric, right-to-left manga layout in normalized coordinates."""
     gap = 0.012
@@ -265,6 +344,114 @@ def japanese_panel_layout(panel_count: int, page_number: int) -> list[dict]:
     ]
 
 
+def _page_function(beats: list[Beat]) -> str:
+    action_weight = sum(len(beat.action) for beat in beats)
+    dialogue_weight = sum(len(beat.dialogue) + len(beat.narration) for beat in beats)
+    if any(beat.page_turn_hook for beat in beats):
+        return "page_turn_hook"
+    return "action" if action_weight > dialogue_weight * 1.4 else "dialogue"
+
+
+def _populate_page_storyboard(
+    db: Session,
+    page: MangaPage,
+    chunks: list[PageChunk],
+    page_scenes: list[Scene],
+    page_beats: list[Beat],
+    characters: list[Character],
+) -> None:
+    layout = japanese_panel_layout(page.panel_count, page.page_number)
+    for panel_index in range(page.panel_count):
+        chunk = chunks[panel_index] if panel_index < len(chunks) else None
+        text = chunk.text if chunk else ""
+        beat = page_beats[panel_index] if panel_index < len(page_beats) else None
+        visual_text = " ".join(
+            item
+            for item in [
+                text,
+                beat.action if beat else "",
+                beat.dialogue if beat else "",
+                beat.narration if beat else "",
+            ]
+            if item
+        )
+        character_ids = [
+            character.id
+            for character in characters
+            if character.primary_name in visual_text
+            or any(alias in visual_text for alias in character.aliases)
+        ]
+        panel_outfits = {
+            character_id: outfit_id
+            for scene in page_scenes
+            for character_id, outfit_id in scene.outfit_assignments.items()
+            if character_id in character_ids
+        }
+        shot_type = (
+            "establishing"
+            if panel_index == 0
+            else "extreme_close_up"
+            if beat and beat.page_turn_hook
+            else "wide_action"
+            if page.page_function == "action" and panel_index % 2 == 0
+            else "medium_close_up"
+        )
+        panel = Panel(
+            page_id=page.id,
+            reading_order=panel_index + 1,
+            bounds=layout[panel_index],
+            shot_type=shot_type,
+            camera_angle=(
+                "low_angle"
+                if page.page_function == "action" and panel_index % 3 == 1
+                else "eye_level"
+            ),
+            camera_height="eye_level",
+            characters=character_ids,
+            outfits=panel_outfits,
+            actions={"source_text": text, "script_action": beat.action if beat else ""},
+            expressions={character_id: beat.emotion for character_id in character_ids}
+            if beat
+            else {},
+            background=(
+                page_scenes[0].location if panel_index == 0 and page_scenes else "延续当前场景"
+            ),
+            bubble_regions=[],
+            sound_effects=[],
+            bleed=page.page_function == "action" and panel_index == 0,
+            borderless=bool(beat and beat.page_turn_hook),
+        )
+        db.add(panel)
+        db.flush()
+        target_text = (beat.dialogue or beat.narration or text) if beat else text
+        if target_text:
+            speaker = (
+                next(
+                    (
+                        character
+                        for character in characters
+                        if beat
+                        and _normalize_character_name(character.primary_name)
+                        == _normalize_character_name(beat.speaker_name)
+                    ),
+                    None,
+                )
+                if beat and beat.speaker_name
+                else None
+            )
+            db.add(
+                Dialogue(
+                    panel_id=panel.id,
+                    speaker_character_id=speaker.id if speaker else None,
+                    target_text=target_text,
+                    reading_order=1,
+                    text_direction="vertical",
+                    region={"preferred": "upper_inner"},
+                    rewrite_forbidden=True,
+                )
+            )
+
+
 def plan_chapter_pages(
     db: Session,
     chapter: Chapter,
@@ -299,9 +486,7 @@ def plan_chapter_pages(
             affected = [page for page in existing if page.page_number >= from_page_number]
             if not affected:
                 raise HTTPException(status_code=409, detail="指定的局部重算起始页不存在")
-            preserved_pages = [
-                page for page in existing if page.page_number < from_page_number
-            ]
+            preserved_pages = [page for page in existing if page.page_number < from_page_number]
             start_page_number = from_page_number
             first_ranges = affected[0].source_coverage.get("ranges", [])
             if not first_ranges:
@@ -350,6 +535,14 @@ def plan_chapter_pages(
             status_code=409, detail=f"剧本仍有 {len(missing)} 段原文未覆盖，禁止分页"
         )
 
+    chapter_beats: list[Beat] = []
+    for scene in scenes:
+        chapter_beats.extend(
+            db.scalars(select(Beat).where(Beat.scene_id == scene.id).order_by(Beat.ordinal))
+        )
+    beat_anchors, beats_by_segment = _build_beat_anchors(segments, chapter_beats)
+    scene_map = {scene.id: scene for scene in scenes}
+
     pages_chunks: list[list[PageChunk]] = []
     current: list[PageChunk] = []
     current_chars = 0
@@ -369,10 +562,7 @@ def plan_chapter_pages(
             current_bubbles = 0
         current_scene_id = scene_id
         for chunk in _split_for_pages(segment):
-            if (
-                segment.id == start_segment_id
-                and chunk.end_offset <= start_offset
-            ):
+            if segment.id == start_segment_id and chunk.end_offset <= start_offset:
                 continue
             size = meaningful_characters(chunk.text)
             overflow = current and (
@@ -408,35 +598,11 @@ def plan_chapter_pages(
             }
             for item in chunks
         ]
-        segment_ids = list(dict.fromkeys(item.segment_id for item in chunks))
-        page_scenes = [
-            scene
-            for scene in scenes
-            if set(scene.source_range.get("segment_ids", [])) & set(segment_ids)
-        ]
-        scene_ids = [scene.id for scene in page_scenes]
-        scene_beats = (
-            list(
-                db.scalars(select(Beat).where(Beat.scene_id.in_(scene_ids)).order_by(Beat.ordinal))
-            )
-            if scene_ids
-            else []
-        )
-        page_beats = [
-            beat
-            for beat in scene_beats
-            if set(beat.source_range.get("segment_ids", [])) & set(segment_ids)
-        ]
+        page_beats = _beats_for_page_ranges(ranges, chapter_beats, beat_anchors, beats_by_segment)
+        scene_ids = list(dict.fromkeys(beat.scene_id for beat in page_beats))
+        page_scenes = [scene_map[scene_id] for scene_id in scene_ids]
         beat_ids = [beat.id for beat in page_beats]
-        action_weight = sum(len(beat.action) for beat in page_beats)
-        dialogue_weight = sum(len(beat.dialogue) + len(beat.narration) for beat in page_beats)
-        page_function = (
-            "page_turn_hook"
-            if any(beat.page_turn_hook for beat in page_beats)
-            else "action"
-            if action_weight > dialogue_weight * 1.4
-            else "dialogue"
-        )
+        page_function = _page_function(page_beats)
         page = MangaPage(
             chapter_id=chapter.id,
             page_number=page_number,
@@ -454,97 +620,7 @@ def plan_chapter_pages(
         db.flush()
         for segment_id in dict.fromkeys(item.segment_id for item in chunks):
             db.add(PageSourceSegment(page_id=page.id, source_segment_id=segment_id))
-        panel_total = panel_count
-        layout = japanese_panel_layout(panel_total, page_number)
-        for panel_index in range(panel_total):
-            chunk = chunks[panel_index] if panel_index < len(chunks) else None
-            text = chunk.text if chunk else ""
-            beat = page_beats[panel_index] if panel_index < len(page_beats) else None
-            visual_text = " ".join(
-                item
-                for item in [
-                    text,
-                    beat.action if beat else "",
-                    beat.dialogue if beat else "",
-                    beat.narration if beat else "",
-                ]
-                if item
-            )
-            character_ids = [
-                character.id
-                for character in characters
-                if character.primary_name in visual_text
-                or any(alias in visual_text for alias in character.aliases)
-            ]
-            panel_outfits = {
-                character_id: outfit_id
-                for scene in page_scenes
-                for character_id, outfit_id in scene.outfit_assignments.items()
-                if character_id in character_ids
-            }
-            shot_type = (
-                "establishing"
-                if panel_index == 0
-                else "extreme_close_up"
-                if beat and beat.page_turn_hook
-                else "wide_action"
-                if page_function == "action" and panel_index % 2 == 0
-                else "medium_close_up"
-            )
-            panel = Panel(
-                page_id=page.id,
-                reading_order=panel_index + 1,
-                bounds=layout[panel_index],
-                shot_type=shot_type,
-                camera_angle=(
-                    "low_angle"
-                    if page_function == "action" and panel_index % 3 == 1
-                    else "eye_level"
-                ),
-                camera_height="eye_level",
-                characters=character_ids,
-                outfits=panel_outfits,
-                actions={"source_text": text, "script_action": beat.action if beat else ""},
-                expressions={character_id: beat.emotion for character_id in character_ids}
-                if beat
-                else {},
-                background=(
-                    page_scenes[0].location if panel_index == 0 and page_scenes else "延续当前场景"
-                ),
-                bubble_regions=[],
-                sound_effects=[],
-                bleed=page_function == "action" and panel_index == 0,
-                borderless=bool(beat and beat.page_turn_hook),
-            )
-            db.add(panel)
-            db.flush()
-            target_text = (beat.dialogue or beat.narration or text) if beat else text
-            if target_text:
-                speaker = (
-                    next(
-                        (
-                            character
-                            for character in characters
-                            if beat
-                            and _normalize_character_name(character.primary_name)
-                            == _normalize_character_name(beat.speaker_name)
-                        ),
-                        None,
-                    )
-                    if beat and beat.speaker_name
-                    else None
-                )
-                db.add(
-                    Dialogue(
-                        panel_id=panel.id,
-                        speaker_character_id=speaker.id if speaker else None,
-                        target_text=target_text,
-                        reading_order=1,
-                        text_direction="vertical",
-                        region={"preferred": "upper_inner"},
-                        rewrite_forbidden=True,
-                    )
-                )
+        _populate_page_storyboard(db, page, chunks, page_scenes, page_beats, characters)
         pages.append(page)
 
     chapter.status = "PAGES_PLANNED"
