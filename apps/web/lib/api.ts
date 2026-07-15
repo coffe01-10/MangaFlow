@@ -39,12 +39,49 @@ export interface ModelCapability {
 
 export interface VertexStatus {
   configured: boolean;
+  health_state: "UNCONFIGURED" | "CHECKING" | "HEALTHY" | "DEGRADED" | "OFFLINE";
   credential_file_present: boolean;
+  project: string | null;
   location: string;
   text_model: string;
   image_models: string[];
-  verification: "not_run" | "verified";
+  last_checked_at: string | null;
+  last_success_at: string | null;
+  token_expires_at: string | null;
+  consecutive_failures: number;
+  latency_ms: number | null;
+  error_code: string | null;
   message: string;
+  text_model_access: string;
+  image_model_access: Record<string, string>;
+}
+
+export interface RuntimeSettings {
+  queue_mode: "AUTO" | "LOCAL" | "REDIS";
+  job_timeout_seconds: number;
+  max_auto_repairs: number;
+  default_concurrency: number;
+  health_check_interval_seconds: number;
+  ui_poll_interval_seconds: number;
+  workflow_autosave_ms: number;
+  database_backend: string;
+  storage_root: string;
+  upload_root: string;
+  redis_configured: boolean;
+  version: number;
+}
+
+export interface DiagnosticCheck {
+  id: string;
+  label: string;
+  status: "OK" | "WARNING" | "FAILED" | "NOT_CHECKED";
+  message: string;
+  latency_ms: number | null;
+}
+
+export interface Diagnostics {
+  checks: DiagnosticCheck[];
+  checked_at: string;
 }
 
 export interface Asset {
@@ -439,8 +476,16 @@ export const api = {
   updateProject: (id: string, payload: Partial<Project> & { version: number }) =>
     request<Project>(`/projects/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   models: () => request<ModelCapability[]>("/models"),
-  vertexStatus: () => request<VertexStatus>("/models/vertex/status"),
-  verifyVertex: () => request<VertexStatus>("/models/vertex/verify", { method: "POST" }),
+  vertexStatus: () => request<VertexStatus>("/settings/vertex/status"),
+  verifyVertex: (level: "CREDENTIALS" | "TEXT_MODEL" | "IMAGE_MODEL" = "CREDENTIALS", imageModelAlias?: ImageModelAlias) =>
+    request<VertexStatus>("/settings/vertex/verify", {
+      method: "POST",
+      body: JSON.stringify({ level, image_model_alias: imageModelAlias }),
+    }),
+  runtimeSettings: () => request<RuntimeSettings>("/settings/runtime"),
+  updateRuntimeSettings: (payload: Partial<RuntimeSettings> & { version: number }) =>
+    request<RuntimeSettings>("/settings/runtime", { method: "PATCH", body: JSON.stringify(payload) }),
+  diagnostics: () => request<Diagnostics>("/settings/diagnostics"),
   assets: (projectId: string) => request<Asset[]>(`/assets?project_id=${encodeURIComponent(projectId)}`),
   uploadAsset: (projectId: string, kind: string, file: File) => {
     const data = new FormData();
