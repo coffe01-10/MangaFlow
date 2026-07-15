@@ -23,6 +23,9 @@ def test_empty_database_upgrade_downgrade_and_upgrade(tmp_path, monkeypatch):
     assert {index["name"] for index in schema.get_indexes("generation_batches")} >= {
         "ix_generation_batches_project_created_id",
     }
+    assert "archived_at" in {
+        column["name"] for column in schema.get_columns("generation_jobs")
+    }
     engine.dispose()
 
     command.downgrade(config, "base")
@@ -50,5 +53,8 @@ def test_upgrade_adopts_complete_schema_created_by_early_local_build(tmp_path, m
     assert {column["name"] for column in schema.get_columns("assets")} >= {
         "thumbnail_320_key",
         "thumbnail_640_key",
+    }
+    assert "archived_at" in {
+        column["name"] for column in schema.get_columns("generation_jobs")
     }
     engine.dispose()

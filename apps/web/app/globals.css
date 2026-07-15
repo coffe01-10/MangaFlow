@@ -450,6 +450,12 @@ a { color: inherit; text-decoration: none; }
 .inspection-results article.failed strong { color: var(--vermillion); }
 .inspection-results article p { min-height: 34px; margin: 9px 0; color: #666057; font-size: 8px; line-height: 1.55; }
 .inspection-results article button { min-height: 28px; padding: 0 9px; display: flex; align-items: center; gap: 5px; border: 1px solid var(--line-dark); background: transparent; cursor: pointer; font-size: 8px; }
+.job-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 12px; }
+.job-toolbar > div { display: flex; gap: 6px; }
+.job-toolbar button { min-height: 32px; display: flex; align-items: center; gap: 5px; padding: 0 10px; border: 1px solid var(--line); background: rgba(255,255,255,.4); color: var(--ink); font-size: 8px; cursor: pointer; }
+.job-toolbar button.active { border-color: var(--line-dark); background: var(--ink); color: var(--paper); }
+.job-toolbar > button:last-child { border-color: var(--line-dark); }
+.job-notice { display: flex; align-items: center; gap: 6px; margin: -3px 0 12px; padding: 8px 10px; border-left: 2px solid var(--vermillion); background: rgba(192, 54, 38, .06); color: #6f423a; font-size: 8px; }
 .job-list { display: grid; gap: 8px; }
 .job-row { display: grid; grid-template-columns: 130px minmax(150px,1fr) minmax(160px,1fr) auto; gap: 14px; align-items: center; padding: 12px 14px; border: 1px solid var(--line); background: rgba(255,255,255,.5); }
 .job-type, .job-detail { display: grid; gap: 4px; }
@@ -459,6 +465,7 @@ a { color: inherit; text-decoration: none; }
 .job-detail em { color: #9a3f33; font-size: 8px; font-style: normal; }
 .job-progress i { display: block; height: 4px; background: #ddd7ca; }
 .job-progress b { display: block; height: 100%; background: var(--vermillion); }
+.job-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
 .job-actions button { min-height: 28px; display: flex; gap: 4px; align-items: center; border: 1px solid var(--line); background: transparent; font-size: 8px; cursor: pointer; }
 .queue-dock { cursor: pointer; }
 .next-page-row { display: flex; justify-content: space-between; align-items: center; margin-top: 20px; padding: 15px 0; border-top: 1px solid var(--line); }
@@ -690,6 +697,12 @@ a { color: inherit; text-decoration: none; }
   .character-lock-fields { grid-template-columns: 1fr; }
   .page-plan-grid, .candidate-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .library-candidates { grid-template-columns: repeat(2, minmax(90px, 1fr)); }
+  .job-toolbar { align-items: stretch; flex-direction: column; }
+  .job-toolbar > div, .job-toolbar > button { width: 100%; }
+  .job-toolbar > div > button { flex: 1; justify-content: center; }
+  .job-toolbar > button { justify-content: center; }
+  .job-row { grid-template-columns: 1fr; gap: 9px; }
+  .job-actions { justify-content: flex-start; }
   .export-desk, .next-page-row { align-items: stretch; flex-direction: column; gap: 10px; }
   .help-page { padding: 28px 16px 74px; }
   .help-hero { min-height: 0; padding: 12px 0 32px; }

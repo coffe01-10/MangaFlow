@@ -270,6 +270,7 @@ export interface Job {
   workflow_run_id: string | null;
   workflow_node_id: string | null;
   created_at: string;
+  archived_at: string | null;
 }
 
 export interface InspectionResult {
@@ -615,9 +616,13 @@ export const api = {
     });
     return request<Library>(`/projects/${projectId}/library?${query.toString()}`);
   },
-  jobs: (projectId: string) => request<Job[]>(`/projects/${projectId}/jobs`),
+  jobs: (projectId: string, archived = false) => request<Job[]>(`/projects/${projectId}/jobs?archived=${archived}`),
   cancelJob: (jobId: string) => request<Job>(`/jobs/${jobId}/cancel`, { method: "POST" }),
   retryJob: (jobId: string) => request<Job>(`/jobs/${jobId}/retry`, { method: "POST" }),
+  archiveJob: (jobId: string) => request<Job>(`/jobs/${jobId}/archive`, { method: "POST" }),
+  restoreJob: (jobId: string) => request<Job>(`/jobs/${jobId}/restore`, { method: "POST" }),
+  archiveCompletedJobs: (projectId: string) => request<{ archived_count: number }>(`/projects/${projectId}/jobs/archive-completed`, { method: "POST" }),
+  deleteJob: (jobId: string) => request<void>(`/jobs/${jobId}`, { method: "DELETE" }),
   inspectCandidate: (candidateId: string) => request<Job>(`/candidates/${candidateId}/inspect`, {
     method: "POST",
     body: JSON.stringify({ categories: ["TEXT", "SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"] }),

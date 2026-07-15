@@ -16,6 +16,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
   ArrowRight,
+  Archive,
   BookOpenText,
   Clapperboard,
   Check,
@@ -23,6 +24,7 @@ import {
   Download,
   FileImage,
   Heart,
+  History,
   ImagePlus,
   LibraryBig,
   ListTodo,
@@ -157,6 +159,8 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
   const [localDraft, setDraft] = useState<Project | null>(null);
   const [assetKind, setAssetKind] = useState<AssetPurpose>("CHARACTER_REFERENCE");
   const [uploadError, setUploadError] = useState("");
+  const [showArchivedJobs, setShowArchivedJobs] = useState(false);
+  const [jobNotice, setJobNotice] = useState("");
   const [sourceTitle, setSourceTitle] = useState("第一章");
   const [sourceText, setSourceText] = useState("");
   const [selectedChapterId, setSelectedChapterId] = useState<string | null>(null);
@@ -219,8 +223,8 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
     enabled: section === "library",
   });
   const jobs = useQuery({
-    queryKey: ["jobs", id],
-    queryFn: () => api.jobs(id),
+    queryKey: ["jobs", id, showArchivedJobs],
+    queryFn: () => api.jobs(id, showArchivedJobs),
     enabled: ["jobs", "generate"].includes(section),
     refetchInterval: (query) => (query.state.data ?? []).some((job) => ["WAITING", "QUEUED", "PREPARING", "GENERATING", "RUNNING"].includes(job.status)) ? 3000 : false,
   });
@@ -607,6 +611,38 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
     mutationFn: (jobId: string) => api.retryJob(jobId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["jobs", id] }),
   });
+  const archiveJob = useMutation({
+    mutationFn: (jobId: string) => api.archiveJob(jobId),
+    onSuccess: () => {
+      setJobNotice("任务已移入历史记录");
+      queryClient.invalidateQueries({ queryKey: ["jobs", id] });
+    },
+    onError: (reason) => setJobNotice(reason instanceof Error ? reason.message : "归档失败"),
+  });
+  const restoreJob = useMutation({
+    mutationFn: (jobId: string) => api.restoreJob(jobId),
+    onSuccess: () => {
+      setJobNotice("任务已恢复到近期记录");
+      queryClient.invalidateQueries({ queryKey: ["jobs", id] });
+    },
+    onError: (reason) => setJobNotice(reason instanceof Error ? reason.message : "恢复失败"),
+  });
+  const archiveCompletedJobs = useMutation({
+    mutationFn: () => api.archiveCompletedJobs(id),
+    onSuccess: (result) => {
+      setJobNotice(result.archived_count ? `已归档 ${result.archived_count} 条已结束任务` : "没有可归档的已结束任务");
+      queryClient.invalidateQueries({ queryKey: ["jobs", id] });
+    },
+    onError: (reason) => setJobNotice(reason instanceof Error ? reason.message : "清空失败"),
+  });
+  const deleteJob = useMutation({
+    mutationFn: (jobId: string) => api.deleteJob(jobId),
+    onSuccess: () => {
+      setJobNotice("无引用任务已彻底删除");
+      queryClient.invalidateQueries({ queryKey: ["jobs", id] });
+    },
+    onError: (reason) => setJobNotice(reason instanceof Error ? reason.message : "删除失败"),
+  });
 
   const inspectCandidate = useMutation({
     mutationFn: (candidateId: string) => api.inspectCandidate(candidateId),
@@ -847,8 +883,10 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
           {section === "jobs" && (
             <>
               <header className="canvas-header"><div><span>JOBS / 任务中心</span><h2>每个生成任务都能看懂、取消和重试</h2></div><small>{jobs.data?.length ?? 0} 个任务</small></header>
-              <div className="job-list">{jobs.data?.map((job) => <article className={`job-row status-${job.status.toLowerCase()}`} key={job.id}><div className="job-type"><span>{jobLabels[job.job_type] ?? job.job_type}</span><strong>{job.status}</strong></div><div className="job-progress"><i><b style={{ width: `${job.progress}%` }} /></i><span>{job.progress}% · 尝试 {job.attempt_count}/{job.max_attempts}</span></div><div className="job-detail"><span>{job.workflow_node_id ? `节点 ${job.workflow_node_id}` : job.model_alias ? modelOptions.find((item) => item.alias === job.model_alias)?.name ?? job.model_alias : "系统任务"}</span><small>{new Date(job.created_at).toLocaleString("zh-CN")}</small>{job.error_message && <em>{job.error_message}</em>}</div><div className="job-actions">{["WAITING", "QUEUED", "PREPARING", "GENERATING"].includes(job.status) && <button onClick={() => cancelJob.mutate(job.id)}>取消</button>}{(["FAILED", "CANCELLED", "TIMED_OUT"].includes(job.status) || (job.status === "WAITING" && Boolean(job.error_code))) && <button onClick={() => retryJob.mutate(job.id)}><RotateCcw size={12} />重试</button>}</div></article>)}</div>
-              {!jobs.data?.length && <div className="asset-empty tall"><ListTodo size={28} /><strong>当前没有任务</strong><p>剧本解析、页面生成、检查和修复都会列在这里。</p></div>}
+              <div className="job-toolbar"><div><button className={!showArchivedJobs ? "active" : ""} onClick={() => { setShowArchivedJobs(false); setJobNotice(""); }}><ListTodo size={13} />近期任务</button><button className={showArchivedJobs ? "active" : ""} onClick={() => { setShowArchivedJobs(true); setJobNotice(""); }}><History size={13} />历史记录</button></div>{!showArchivedJobs && <button disabled={archiveCompletedJobs.isPending} onClick={() => { if (window.confirm("将所有已完成、失败和已取消任务移入历史记录？生成候选与溯源信息不会删除。")) archiveCompletedJobs.mutate(); }}><Archive size={13} />清空已结束任务</button>}</div>
+              {jobNotice && <p className="job-notice"><CircleAlert size={13} />{jobNotice}</p>}
+              <div className="job-list">{jobs.data?.map((job) => <article className={`job-row status-${job.status.toLowerCase()}`} key={job.id}><div className="job-type"><span>{jobLabels[job.job_type] ?? job.job_type}</span><strong>{job.status}</strong></div><div className="job-progress"><i><b style={{ width: `${job.progress}%` }} /></i><span>{job.progress}% · 尝试 {job.attempt_count}/{job.max_attempts}</span></div><div className="job-detail"><span>{job.workflow_node_id ? `节点 ${job.workflow_node_id}` : job.model_alias ? modelOptions.find((item) => item.alias === job.model_alias)?.name ?? job.model_alias : "系统任务"}</span><small>{new Date(job.created_at).toLocaleString("zh-CN")}</small>{job.error_message && <em>{job.error_message}</em>}</div><div className="job-actions">{!showArchivedJobs && ["WAITING", "QUEUED", "PREPARING", "GENERATING"].includes(job.status) && <button onClick={() => cancelJob.mutate(job.id)}>取消</button>}{!showArchivedJobs && (["FAILED", "CANCELLED", "TIMED_OUT"].includes(job.status) || (job.status === "WAITING" && Boolean(job.error_code))) && <button onClick={() => retryJob.mutate(job.id)}><RotateCcw size={12} />重试</button>}{!showArchivedJobs && ["COMPLETED", "FAILED", "CANCELLED"].includes(job.status) && <button onClick={() => archiveJob.mutate(job.id)}><Archive size={12} />归档</button>}{showArchivedJobs && <button onClick={() => restoreJob.mutate(job.id)}><RotateCcw size={12} />恢复</button>}{showArchivedJobs && ["FAILED", "CANCELLED"].includes(job.status) && <button className="danger-action" onClick={() => { if (window.confirm("仅无候选、生成记录、工作流或任务依赖的失败任务可以彻底删除。继续吗？")) deleteJob.mutate(job.id); }}><Trash2 size={12} />彻底删除</button>}</div></article>)}</div>
+              {!jobs.data?.length && <div className="asset-empty tall">{showArchivedJobs ? <History size={28} /> : <ListTodo size={28} />}<strong>{showArchivedJobs ? "还没有历史任务" : "当前没有任务"}</strong><p>{showArchivedJobs ? "归档后的已结束任务会保留在这里，可随时恢复。" : "剧本解析、页面生成、检查和修复都会列在这里。"}</p></div>}
             </>
           )}
         </section>

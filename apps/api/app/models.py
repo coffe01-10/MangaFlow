@@ -324,6 +324,12 @@ class GenerationJob(Timestamped, Base):
     __tablename__ = "generation_jobs"
     __table_args__ = (
         Index("ix_generation_jobs_project_status_created", "project_id", "status", "created_at"),
+        Index(
+            "ix_generation_jobs_project_archived_created",
+            "project_id",
+            "archived_at",
+            "created_at",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -353,6 +359,9 @@ class GenerationJob(Timestamped, Base):
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class JobDependency(Base):

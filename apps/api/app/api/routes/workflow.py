@@ -16,13 +16,16 @@ from app.models import (
     Character,
     GenerationBatch,
     GenerationJob,
+    GenerationRecord,
     InspectionResult,
+    JobDependency,
     MangaPage,
     Outfit,
     PageCandidate,
     Panel,
     Project,
     RepairPlan,
+    WorkflowNodeRun,
     utcnow,
 )
 from app.schemas import (
@@ -32,6 +35,7 @@ from app.schemas import (
     GenerationBatchRead,
     InspectionRead,
     InspectionRequest,
+    JobArchiveResult,
     JobRead,
     LibraryBatchRead,
     LibraryRead,
@@ -45,6 +49,9 @@ from app.services.job_service import cancel_job, create_job, enqueue_job, reset_
 from app.services.model_registry import build_registry
 
 router = APIRouter()
+
+TERMINAL_JOB_STATUSES = {"COMPLETED", "FAILED", "CANCELLED"}
+DELETABLE_JOB_STATUSES = {"FAILED", "CANCELLED"}
 
 
 def _page(db: Session, page_id: str) -> MangaPage:
@@ -492,11 +499,20 @@ def library(
 
 
 @router.get("/projects/{project_id}/jobs", response_model=list[JobRead])
-def list_jobs(project_id: str, db: Session = Depends(get_db)) -> list[GenerationJob]:
+def list_jobs(
+    project_id: str,
+    archived: bool = Query(default=False),
+    db: Session = Depends(get_db),
+) -> list[GenerationJob]:
     return list(
         db.scalars(
             select(GenerationJob)
-            .where(GenerationJob.project_id == project_id)
+            .where(
+                GenerationJob.project_id == project_id,
+                GenerationJob.archived_at.is_not(None)
+                if archived
+                else GenerationJob.archived_at.is_(None),
+            )
             .order_by(GenerationJob.created_at.desc())
             .limit(100)
         )
@@ -527,6 +543,87 @@ def retry(job_id: str, db: Session = Depends(get_db)) -> GenerationJob:
     if job.attempt_count >= job.max_attempts:
         raise HTTPException(status_code=409, detail="任务已达到最大重试次数")
     return reset_for_retry(db, job)
+
+
+@router.post("/jobs/{job_id}/archive", response_model=JobRead)
+def archive_job(job_id: str, db: Session = Depends(get_db)) -> GenerationJob:
+    job = db.get(GenerationJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if job.status.value not in TERMINAL_JOB_STATUSES:
+        raise HTTPException(status_code=409, detail="运行中的任务不能归档，请先取消")
+    if job.archived_at is None:
+        job.archived_at = utcnow()
+        job.version += 1
+        db.commit()
+        db.refresh(job)
+    return job
+
+
+@router.post("/jobs/{job_id}/restore", response_model=JobRead)
+def restore_job(job_id: str, db: Session = Depends(get_db)) -> GenerationJob:
+    job = db.get(GenerationJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if job.archived_at is not None:
+        job.archived_at = None
+        job.version += 1
+        db.commit()
+        db.refresh(job)
+    return job
+
+
+@router.post(
+    "/projects/{project_id}/jobs/archive-completed",
+    response_model=JobArchiveResult,
+)
+def archive_completed_jobs(
+    project_id: str, db: Session = Depends(get_db)
+) -> JobArchiveResult:
+    jobs = list(
+        db.scalars(
+            select(GenerationJob).where(
+                GenerationJob.project_id == project_id,
+                GenerationJob.archived_at.is_(None),
+                GenerationJob.status.in_(TERMINAL_JOB_STATUSES),
+            )
+        )
+    )
+    archived_at = utcnow()
+    for job in jobs:
+        job.archived_at = archived_at
+        job.version += 1
+    db.commit()
+    return JobArchiveResult(archived_count=len(jobs))
+
+
+def _job_has_references(db: Session, job_id: str) -> bool:
+    checks = (
+        select(GenerationRecord.id).where(GenerationRecord.job_id == job_id),
+        select(PageCandidate.id).where(PageCandidate.job_id == job_id),
+        select(AssetCandidate.id).where(AssetCandidate.job_id == job_id),
+        select(WorkflowNodeRun.id).where(WorkflowNodeRun.job_id == job_id),
+        select(JobDependency.id).where(
+            or_(
+                JobDependency.job_id == job_id,
+                JobDependency.depends_on_job_id == job_id,
+            )
+        ),
+    )
+    return any(db.scalar(query.limit(1)) is not None for query in checks)
+
+
+@router.delete("/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_job(job_id: str, db: Session = Depends(get_db)) -> None:
+    job = db.get(GenerationJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if job.status.value not in DELETABLE_JOB_STATUSES:
+        raise HTTPException(status_code=409, detail="只有失败或已取消任务可以彻底删除")
+    if _job_has_references(db, job.id):
+        raise HTTPException(status_code=409, detail="任务仍被候选、生成记录或工作流引用，只能归档")
+    db.delete(job)
+    db.commit()
 
 
 @router.post(

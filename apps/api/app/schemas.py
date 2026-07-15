@@ -437,6 +437,7 @@ class JobRead(BaseModel):
     updated_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+    archived_at: datetime | None
     request_parameters: dict = Field(default_factory=dict, exclude=True)
 
     @computed_field
@@ -452,6 +453,10 @@ class JobRead(BaseModel):
             "workflow_node_id"
         )
         return value if isinstance(value, str) else None
+
+
+class JobArchiveResult(BaseModel):
+    archived_count: int
 
 
 class LibraryBatchRead(BaseModel):

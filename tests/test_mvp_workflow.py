@@ -8,6 +8,7 @@ from app.models import (
     Dialogue,
     GenerationBatch,
     GenerationJob,
+    GenerationRecord,
     MangaPage,
     PageCandidate,
     Panel,
@@ -902,6 +903,87 @@ def test_eight_candidate_jobs_are_isolated(client, db_session, monkeypatch):
     }
     assert jobs[job_ids[0]]["status"] == "FAILED"
     assert all(jobs[job_id]["status"] == "WAITING" for job_id in job_ids[1:])
+
+
+def test_job_history_archive_restore_and_safe_delete(client, db_session):
+    project = _project(client, "任务历史")
+    completed = GenerationJob(
+        project_id=project["id"],
+        target_type="PROJECT",
+        target_id=project["id"],
+        job_type="SOURCE_PARSE",
+        status=JobStatus.COMPLETED,
+    )
+    failed_unreferenced = GenerationJob(
+        project_id=project["id"],
+        target_type="PROJECT",
+        target_id=project["id"],
+        job_type="SOURCE_PARSE",
+        status=JobStatus.FAILED,
+    )
+    failed_referenced = GenerationJob(
+        project_id=project["id"],
+        target_type="PROJECT",
+        target_id=project["id"],
+        job_type="PAGE_GENERATE",
+        status=JobStatus.FAILED,
+    )
+    running = GenerationJob(
+        project_id=project["id"],
+        target_type="PROJECT",
+        target_id=project["id"],
+        job_type="SOURCE_PARSE",
+        status=JobStatus.WAITING,
+    )
+    db_session.add_all([completed, failed_unreferenced, failed_referenced, running])
+    db_session.flush()
+    db_session.add(
+        GenerationRecord(
+            job_id=failed_referenced.id,
+            model_id="fake-image-model",
+            location="global",
+            parameters={},
+            prompt_template="test",
+            prompt_version="1",
+            prompt_checksum="0" * 64,
+            input_versions={},
+        )
+    )
+    db_session.commit()
+
+    archived = client.post(f"/api/v1/jobs/{completed.id}/archive")
+    assert archived.status_code == 200
+    assert archived.json()["archived_at"] is not None
+    assert client.post(f"/api/v1/jobs/{running.id}/archive").status_code == 409
+
+    cleared = client.post(
+        f"/api/v1/projects/{project['id']}/jobs/archive-completed"
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["archived_count"] == 2
+    recent_ids = {
+        item["id"]
+        for item in client.get(f"/api/v1/projects/{project['id']}/jobs").json()
+    }
+    assert recent_ids == {running.id}
+    history_ids = {
+        item["id"]
+        for item in client.get(
+            f"/api/v1/projects/{project['id']}/jobs?archived=true"
+        ).json()
+    }
+    assert history_ids == {
+        completed.id,
+        failed_unreferenced.id,
+        failed_referenced.id,
+    }
+
+    restored = client.post(f"/api/v1/jobs/{completed.id}/restore")
+    assert restored.status_code == 200
+    assert restored.json()["archived_at"] is None
+    assert client.delete(f"/api/v1/jobs/{completed.id}").status_code == 409
+    assert client.delete(f"/api/v1/jobs/{failed_referenced.id}").status_code == 409
+    assert client.delete(f"/api/v1/jobs/{failed_unreferenced.id}").status_code == 204
 
 
 def test_inspection_repair_escalation_and_upscale_jobs(client, db_session, monkeypatch):
