@@ -7,9 +7,11 @@ from app.api.routes import (
     health,
     models,
     projects,
+    settings,
     sources,
     uploads,
     workflow,
+    workflow_definitions,
 )
 
 api_router = APIRouter()
@@ -22,3 +24,5 @@ api_router.include_router(characters.router, tags=["characters"])
 api_router.include_router(workflow.router, tags=["workflow"])
 api_router.include_router(exports.router, tags=["exports"])
 api_router.include_router(asset_generation.router, tags=["asset-generation"])
+api_router.include_router(workflow_definitions.router, tags=["workflow-definitions"])
+api_router.include_router(settings.router, tags=["settings"])
