@@ -48,11 +48,13 @@ def read_runtime_settings(db: Session, settings: Settings) -> RuntimeSettingsRea
 def apply_runtime_overrides(db: Session, settings: Settings) -> None:
     """Rehydrate the safe dynamic subset in API and worker processes."""
     overrides, _ = _safe_overrides(db)
+    if not overrides:
+        return
     if "job_timeout_seconds" in overrides:
         settings.job_timeout_seconds = overrides["job_timeout_seconds"]
     if "max_auto_repairs" in overrides:
         settings.max_auto_repairs = overrides["max_auto_repairs"]
-    queue_mode = overrides.get("queue_mode", "AUTO")
+    queue_mode = overrides.get("queue_mode")
     if queue_mode == "LOCAL":
         settings.queue_enabled = False
     elif queue_mode in {"AUTO", "REDIS"}:

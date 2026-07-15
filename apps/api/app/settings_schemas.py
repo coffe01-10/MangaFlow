@@ -20,6 +20,8 @@ class RuntimeSettingsRead(BaseModel):
 
 
 class RuntimeSettingsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     queue_mode: Literal["AUTO", "LOCAL", "REDIS"] | None = None
     job_timeout_seconds: int | None = Field(default=None, ge=30, le=3600)
     max_auto_repairs: int | None = Field(default=None, ge=0, le=10)
@@ -50,6 +52,8 @@ class VertexHealthRead(BaseModel):
 
 
 class VertexVerifyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     level: Literal["CREDENTIALS", "TEXT_MODEL", "IMAGE_MODEL"] = "CREDENTIALS"
     image_model_alias: Literal["image.nano_banana_2", "image.nano_banana_pro"] | None = None
 

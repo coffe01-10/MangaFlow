@@ -25,7 +25,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 const healthLabels: Record<VertexStatus["health_state"], string> = {
   UNCONFIGURED: "未配置", CHECKING: "检查中", HEALTHY: "健康", DEGRADED: "连接降级", OFFLINE: "离线",
@@ -44,19 +44,19 @@ export default function SystemSettingsPage() {
   const runtime = useQuery({ queryKey: ["runtime-settings"], queryFn: api.runtimeSettings });
   const vertex = useQuery({ queryKey: ["vertex-status"], queryFn: api.vertexStatus });
   const diagnostics = useQuery({ queryKey: ["diagnostics"], queryFn: api.diagnostics });
-  const [draft, setDraft] = useState<RuntimeSettings | null>(null);
+  const [localDraft, setLocalDraft] = useState<RuntimeSettings | null>(null);
   const [notice, setNotice] = useState("");
-  useEffect(() => { if (runtime.data) setDraft(runtime.data); }, [runtime.data]);
+  const draft = localDraft ?? runtime.data ?? null;
 
   const save = useMutation({
     mutationFn: () => { if (!draft) throw new Error("运行设置尚未加载"); return api.updateRuntimeSettings(draft); },
-    onSuccess: (data) => { queryClient.setQueryData(["runtime-settings"], data); setDraft(data); setNotice("运行设置已保存并应用到后续任务"); diagnostics.refetch(); },
+    onSuccess: (data) => { queryClient.setQueryData(["runtime-settings"], data); setLocalDraft(data); setNotice("运行设置已保存并应用到后续任务"); diagnostics.refetch(); },
   });
   const verify = useMutation({
     mutationFn: ({ level, alias }: { level: "CREDENTIALS" | "TEXT_MODEL" | "IMAGE_MODEL"; alias?: ImageModelAlias }) => api.verifyVertex(level, alias),
     onSuccess: (data) => { queryClient.setQueryData(["vertex-status"], data); diagnostics.refetch(); },
   });
-  const update = <K extends keyof RuntimeSettings>(key: K, value: RuntimeSettings[K]) => { setDraft((current) => current ? { ...current, [key]: value } : current); setNotice(""); };
+  const update = <K extends keyof RuntimeSettings>(key: K, value: RuntimeSettings[K]) => { setLocalDraft((current) => ({ ...(current ?? draft!), [key]: value })); setNotice(""); };
 
   return (
     <AppShell>

@@ -176,7 +176,10 @@ class StyleProfile(Timestamped, Base):
 
 class Asset(Timestamped, Base):
     __tablename__ = "assets"
-    __table_args__ = (UniqueConstraint("project_id", "sha256"),)
+    __table_args__ = (
+        UniqueConstraint("project_id", "sha256"),
+        Index("ix_assets_project_deleted_created", "project_id", "deleted_at", "created_at"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     project_id: Mapped[str] = mapped_column(
@@ -185,6 +188,8 @@ class Asset(Timestamped, Base):
     kind: Mapped[str] = mapped_column(String(32))
     original_name: Mapped[str] = mapped_column(String(255))
     storage_key: Mapped[str] = mapped_column(String(500))
+    thumbnail_320_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    thumbnail_640_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
     mime_type: Mapped[str] = mapped_column(String(100))
     byte_size: Mapped[int] = mapped_column(Integer)
     sha256: Mapped[str] = mapped_column(String(64))
@@ -317,6 +322,9 @@ class ContinuitySnapshot(Base):
 
 class GenerationJob(Timestamped, Base):
     __tablename__ = "generation_jobs"
+    __table_args__ = (
+        Index("ix_generation_jobs_project_status_created", "project_id", "status", "created_at"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     project_id: Mapped[str] = mapped_column(
@@ -482,7 +490,10 @@ class CharacterReference(Base):
 
 class GenerationBatch(Timestamped, Base):
     __tablename__ = "generation_batches"
-    __table_args__ = (UniqueConstraint("project_id", "ordinal"),)
+    __table_args__ = (
+        UniqueConstraint("project_id", "ordinal"),
+        Index("ix_generation_batches_project_created_id", "project_id", "created_at", "id"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     project_id: Mapped[str] = mapped_column(
@@ -504,7 +515,10 @@ class GenerationBatch(Timestamped, Base):
 
 class PageCandidate(Timestamped, Base):
     __tablename__ = "page_candidates"
-    __table_args__ = (UniqueConstraint("batch_id", "ordinal"),)
+    __table_args__ = (
+        UniqueConstraint("batch_id", "ordinal"),
+        Index("ix_page_candidates_batch_deleted_ordinal", "batch_id", "deleted_at", "ordinal"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     batch_id: Mapped[str] = mapped_column(

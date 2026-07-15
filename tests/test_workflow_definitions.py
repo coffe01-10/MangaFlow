@@ -155,7 +155,7 @@ def test_run_pauses_before_single_page_generation_and_reuses_jobs(client, db_ses
 
         approved = client.post(
             f"/api/v1/workflow-runs/{run['id']}/nodes/generate/approve",
-            json={},
+            json={"image_model_alias": "image.nano_banana_pro", "resolution": "1K"},
         )
         assert approved.status_code == 200, approved.text
         generate = approved.json()["node_runs"][0]
@@ -164,13 +164,49 @@ def test_run_pauses_before_single_page_generation_and_reuses_jobs(client, db_ses
         candidate = db_session.get(PageCandidate, generate["output_refs"]["candidate_id"])
         assert candidate is not None
         assert candidate.ordinal == 1
+        assert candidate.model_alias == "image.nano_banana_pro"
 
         duplicate = client.post(
             f"/api/v1/workflow-runs/{run['id']}/nodes/generate/approve",
-            json={},
+            json={"image_model_alias": "image.nano_banana_2", "resolution": "1K"},
         )
         assert duplicate.status_code == 409
         assert db_session.query(PageCandidate).count() == 1
+    finally:
+        settings.queue_enabled = previous_queue
+
+
+def test_generation_gate_requires_explicit_equal_model_choice(client, db_session):
+    project = _project(client)
+    workflow = _workflow(client, project["id"])
+    assert client.post(f"/api/v1/workflows/{workflow['id']}/publish").status_code == 200
+    chapter = Chapter(project_id=project["id"], title="第一章", ordinal=1)
+    db_session.add(chapter)
+    db_session.flush()
+    page = MangaPage(chapter_id=chapter.id, page_number=1)
+    db_session.add(page)
+    db_session.commit()
+
+    settings = get_settings()
+    previous_queue = settings.queue_enabled
+    settings.queue_enabled = False
+    try:
+        run = client.post(
+            f"/api/v1/workflows/{workflow['id']}/runs",
+            json={
+                "scope_type": "PAGE",
+                "scope_id": page.id,
+                "start_node_ids": ["generate"],
+                "stop_node_ids": ["generate"],
+            },
+        ).json()
+        response = client.post(
+            f"/api/v1/workflow-runs/{run['id']}/nodes/generate/approve",
+            json={"resolution": "1K"},
+        )
+        assert response.status_code == 409
+        assert "明确选择" in response.json()["detail"]
+        assert db_session.query(PageCandidate).count() == 0
     finally:
         settings.queue_enabled = previous_queue
 

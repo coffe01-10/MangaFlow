@@ -12,6 +12,7 @@ node_modules/
 out/
 dist/
 coverage/
+output/playwright/
 *.tsbuildinfo
 npm-debug.log*
 

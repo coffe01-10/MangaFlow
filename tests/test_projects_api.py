@@ -67,6 +67,15 @@ def test_upload_image_is_validated_and_registered(client, monkeypatch):
         assert asset["width"] == 32
         assert asset["height"] == 48
         assert asset["kind"] == "CHARACTER_REFERENCE"
+        assert asset["thumbnail_url"].endswith(f"/{asset['id']}/thumbnail/640")
+        thumbnail = client.get(asset["thumbnail_url"])
+        assert thumbnail.status_code == 200
+        assert thumbnail.headers["content-type"].startswith("image/webp")
+        with Image.open(BytesIO(thumbnail.content)) as preview:
+            assert preview.size == (32, 48)
+            assert preview.format == "WEBP"
+        assert list(Path(directory).rglob("320.webp"))
+        assert list(Path(directory).rglob("640.webp"))
         changed = client.patch(
             f"/api/v1/assets/{asset['id']}", json={"kind": "STYLE_REFERENCE"}
         )

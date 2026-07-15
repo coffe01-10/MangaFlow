@@ -96,6 +96,7 @@ export interface Asset {
   status: string;
   created_at: string;
   content_url: string | null;
+  thumbnail_url: string | null;
 }
 
 export type AssetPurpose = "CHARACTER_REFERENCE" | "OUTFIT_REFERENCE" | "STYLE_REFERENCE";
@@ -250,6 +251,7 @@ export interface PageCandidate {
   is_selected: boolean;
   created_at: string;
   content_url: string | null;
+  thumbnail_url: string | null;
 }
 
 export interface Job {
@@ -265,6 +267,8 @@ export interface Job {
   model_alias: string | null;
   error_code: string | null;
   error_message: string | null;
+  workflow_run_id: string | null;
+  workflow_node_id: string | null;
   created_at: string;
 }
 
@@ -295,6 +299,8 @@ export interface Library {
   groups: LibraryGroup[];
   total_candidates: number;
   favorite_count: number;
+  next_cursor: string | null;
+  limit: number;
 }
 
 export interface LibraryFilters {
@@ -305,6 +311,8 @@ export interface LibraryFilters {
   resolution?: Resolution;
   date_from?: string;
   date_to?: string;
+  cursor?: string;
+  limit?: number;
 }
 
 export interface ExportBundle {
@@ -448,7 +456,11 @@ export interface WorkflowRun {
 
 export function publicUrl(path: string | null) {
   if (!path) return null;
-  return path.startsWith("http") ? path : `${API_ORIGIN}${path}`;
+  const previewPath = path.replace(
+    /\/api\/v1\/assets\/([^/]+)\/content$/,
+    "/api/v1/assets/$1/thumbnail/640",
+  );
+  return previewPath.startsWith("http") ? previewPath : `${API_ORIGIN}${previewPath}`;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -668,8 +680,16 @@ export const api = {
   workflowRun: (runId: string) => request<WorkflowRun>(`/workflow-runs/${runId}`),
   cancelWorkflowRun: (runId: string) => request<WorkflowRun>(`/workflow-runs/${runId}/cancel`, { method: "POST" }),
   retryWorkflowRun: (runId: string) => request<WorkflowRun>(`/workflow-runs/${runId}/retry`, { method: "POST" }),
-  approveWorkflowNode: (runId: string, nodeId: string, candidateId?: string) => request<WorkflowRun>(`/workflow-runs/${runId}/nodes/${nodeId}/approve`, {
+  approveWorkflowNode: (
+    runId: string,
+    nodeId: string,
+    payload: {
+      candidate_id?: string | null;
+      image_model_alias?: ImageModelAlias | null;
+      resolution?: Resolution | null;
+    } = {},
+  ) => request<WorkflowRun>(`/workflow-runs/${runId}/nodes/${nodeId}/approve`, {
     method: "POST",
-    body: JSON.stringify({ candidate_id: candidateId ?? null }),
+    body: JSON.stringify(payload),
   }),
 };

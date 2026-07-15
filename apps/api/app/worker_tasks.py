@@ -36,6 +36,7 @@ from app.models import (
     utcnow,
 )
 from app.services.ai_schemas import PageInspectionOutput, StoryParseOutput, StyleAnalysisOutput
+from app.services.media import create_thumbnails, remove_thumbnails
 from app.services.model_registry import build_registry
 from app.services.prompt_compiler import PAGE_TEMPLATE_VERSION, compile_page_prompt
 
@@ -188,6 +189,9 @@ def _save_generated_asset(db, candidate: PageCandidate, data: bytes) -> Asset:
             )
             db.add(asset)
             db.flush()
+            thumbnails = create_thumbnails(destination, settings.storage_root, asset.id)
+            asset.thumbnail_320_key = thumbnails[320]
+            asset.thumbnail_640_key = thumbnails[640]
         return asset
     except IntegrityError:
         destination.unlink(missing_ok=True)
@@ -199,6 +203,11 @@ def _save_generated_asset(db, candidate: PageCandidate, data: bytes) -> Asset:
         )
         if existing:
             return existing
+        raise
+    except Exception:
+        destination.unlink(missing_ok=True)
+        if "asset" in locals() and asset.id:
+            remove_thumbnails(settings.storage_root, asset.id)
         raise
 
 
@@ -250,6 +259,9 @@ def _save_asset_candidate(db, candidate: AssetCandidate, project_id: str, data: 
             )
             db.add(asset)
             db.flush()
+            thumbnails = create_thumbnails(destination, settings.storage_root, asset.id)
+            asset.thumbnail_320_key = thumbnails[320]
+            asset.thumbnail_640_key = thumbnails[640]
         return asset
     except IntegrityError:
         destination.unlink(missing_ok=True)
@@ -261,6 +273,11 @@ def _save_asset_candidate(db, candidate: AssetCandidate, project_id: str, data: 
         )
         if existing:
             return existing
+        raise
+    except Exception:
+        destination.unlink(missing_ok=True)
+        if "asset" in locals() and asset.id:
+            remove_thumbnails(settings.storage_root, asset.id)
         raise
 
 
@@ -801,7 +818,7 @@ def execute_job(job_id: str) -> None:
         job.error_code = None
         job.error_message = None
         db.commit()
-        if job.job_type == "WORKFLOW_NODE":
+        if job.request_parameters.get("workflow_run_id"):
             from app.services.workflow_engine import reconcile_run
 
             reconcile_run(db, job.request_parameters["workflow_run_id"])
@@ -822,6 +839,10 @@ def execute_job(job_id: str) -> None:
         if style:
             style.status = "DRAFT"
         db.commit()
+        if job.request_parameters.get("workflow_run_id"):
+            from app.services.workflow_engine import reconcile_run
+
+            reconcile_run(db, job.request_parameters["workflow_run_id"])
         raise
     except Exception as error:
         db.rollback()
@@ -840,6 +861,10 @@ def execute_job(job_id: str) -> None:
         if style:
             style.status = "DRAFT"
         db.commit()
+        if job.request_parameters.get("workflow_run_id"):
+            from app.services.workflow_engine import reconcile_run
+
+            reconcile_run(db, job.request_parameters["workflow_run_id"])
         raise
     finally:
         db.close()

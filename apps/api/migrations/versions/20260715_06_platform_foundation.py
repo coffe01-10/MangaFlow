@@ -17,6 +17,24 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    managed_tables = {
+        "workflow_definitions",
+        "workflow_versions",
+        "workflow_runs",
+        "workflow_node_runs",
+        "provider_health",
+        "app_settings",
+    }
+    existing_tables = set(sa.inspect(op.get_bind()).get_table_names())
+    existing_managed_tables = existing_tables & managed_tables
+    if existing_managed_tables == managed_tables:
+        # Early local builds created model metadata at startup before Alembic ran.
+        # Treat that complete schema as adopted so existing projects can upgrade.
+        return
+    if existing_managed_tables:
+        missing = ", ".join(sorted(managed_tables - existing_managed_tables))
+        raise RuntimeError(f"工作流基础表处于不完整状态，缺少: {missing}")
+
     op.create_table(
         "workflow_definitions",
         sa.Column("id", sa.String(length=36), nullable=False),

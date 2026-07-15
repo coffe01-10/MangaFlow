@@ -15,6 +15,7 @@ from app.config import get_settings
 from app.database import get_db
 from app.models import Asset, CharacterReference, Project
 from app.schemas import AssetRead, AssetUpdate
+from app.services.media import create_thumbnails, remove_thumbnails
 
 router = APIRouter()
 CHUNK_SIZE = 1024 * 1024
@@ -98,12 +99,15 @@ def upload_asset(
             except (UnidentifiedImageError, OSError) as error:
                 raise HTTPException(status_code=422, detail="图片文件损坏或格式不符") from error
 
+        thumbnails = create_thumbnails(destination, settings.upload_root, asset_id)
         asset = Asset(
             id=asset_id,
             project_id=project_id,
             kind=normalized_kind,
             original_name=safe_name,
             storage_key=destination.relative_to(settings.upload_root).as_posix(),
+            thumbnail_320_key=thumbnails[320],
+            thumbnail_640_key=thumbnails[640],
             mime_type=file.content_type,
             byte_size=byte_size,
             sha256=digest.hexdigest(),
@@ -116,10 +120,12 @@ def upload_asset(
         return asset_read(asset)
     except HTTPException:
         destination.unlink(missing_ok=True)
+        remove_thumbnails(settings.upload_root, asset_id)
         raise
     except (OSError, SQLAlchemyError) as error:
         db.rollback()
         destination.unlink(missing_ok=True)
+        remove_thumbnails(settings.upload_root, asset_id)
         raise HTTPException(status_code=500, detail="文件保存失败") from error
     finally:
         file.file.close()
@@ -163,3 +169,29 @@ def asset_content(asset_id: str, db: Session = Depends(get_db)) -> FileResponse:
     if not path.is_relative_to(root.resolve()) or not path.is_file():
         raise HTTPException(status_code=404, detail="素材文件不存在")
     return FileResponse(path, media_type=asset.mime_type, filename=asset.original_name)
+
+
+@router.get("/{asset_id}/thumbnail/{size}")
+def asset_thumbnail(asset_id: str, size: int, db: Session = Depends(get_db)) -> FileResponse:
+    if size not in {320, 640}:
+        raise HTTPException(status_code=422, detail="缩略图尺寸只支持 320 或 640")
+    settings = get_settings()
+    asset = db.get(Asset, asset_id)
+    if not asset or asset.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="素材不存在")
+    root = settings.upload_root if asset.source == "USER_UPLOAD" else settings.storage_root
+    key = asset.thumbnail_320_key if size == 320 else asset.thumbnail_640_key
+    path = (root / key).resolve() if key else None
+    if not path or not path.is_relative_to(root.resolve()) or not path.is_file():
+        source = (root / asset.storage_key).resolve()
+        if not source.is_relative_to(root.resolve()) or not source.is_file():
+            raise HTTPException(status_code=404, detail="素材文件不存在")
+        try:
+            thumbnails = create_thumbnails(source, root, asset.id)
+        except OSError as error:
+            raise HTTPException(status_code=422, detail="无法生成素材缩略图") from error
+        asset.thumbnail_320_key = thumbnails[320]
+        asset.thumbnail_640_key = thumbnails[640]
+        db.commit()
+        path = (root / thumbnails[size]).resolve()
+    return FileResponse(path, media_type="image/webp")

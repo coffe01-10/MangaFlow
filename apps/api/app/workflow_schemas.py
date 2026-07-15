@@ -132,6 +132,10 @@ class WorkflowRestoreRequest(BaseModel):
 
 class WorkflowNodeApproveRequest(BaseModel):
     candidate_id: str | None = None
+    image_model_alias: Literal[
+        "image.nano_banana_2", "image.nano_banana_pro"
+    ] | None = None
+    resolution: Literal["1K", "2K", "4K"] | None = None
 
 
 class WorkflowImportRequest(BaseModel):

@@ -305,6 +305,13 @@ def approve(
     db: Session = Depends(get_db),
 ) -> WorkflowRun:
     try:
-        return approve_node(db, run_id, node_id, payload.candidate_id)
+        return approve_node(
+            db,
+            run_id,
+            node_id,
+            payload.candidate_id,
+            payload.image_model_alias,
+            payload.resolution,
+        )
     except ValueError as error:
         raise _value_error(error) from error

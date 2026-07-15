@@ -6,7 +6,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Check, CircleAlert, Gauge, LoaderCircle, Save, ScanText, ShieldCheck, SlidersHorizontal } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 type ProjectDraft = Pick<Project, "workflow_mode" | "draft_resolution" | "default_resolution" | "default_concurrency" | "ocr_enabled" | "consistency_check_enabled">;
 
@@ -14,19 +14,16 @@ export default function ProjectSettingsPage() {
   const { id } = useParams<{ id: string }>();
   const queryClient = useQueryClient();
   const project = useQuery({ queryKey: ["project", id], queryFn: () => api.project(id) });
-  const [draft, setDraft] = useState<ProjectDraft | null>(null);
+  const [localDraft, setLocalDraft] = useState<ProjectDraft | null>(null);
   const [saved, setSaved] = useState(false);
-  useEffect(() => {
-    if (!project.data) return;
-    setDraft({
+  const draft = localDraft ?? (project.data ? {
       workflow_mode: project.data.workflow_mode,
       draft_resolution: project.data.draft_resolution,
       default_resolution: project.data.default_resolution,
       default_concurrency: project.data.default_concurrency,
       ocr_enabled: project.data.ocr_enabled,
       consistency_check_enabled: project.data.consistency_check_enabled,
-    });
-  }, [project.data]);
+    } : null);
 
   const save = useMutation({
     mutationFn: () => {
@@ -35,11 +32,19 @@ export default function ProjectSettingsPage() {
     },
     onSuccess: (data) => {
       queryClient.setQueryData(["project", id], data);
+      setLocalDraft({
+        workflow_mode: data.workflow_mode,
+        draft_resolution: data.draft_resolution,
+        default_resolution: data.default_resolution,
+        default_concurrency: data.default_concurrency,
+        ocr_enabled: data.ocr_enabled,
+        consistency_check_enabled: data.consistency_check_enabled,
+      });
       setSaved(true);
     },
   });
   const update = <K extends keyof ProjectDraft>(key: K, value: ProjectDraft[K]) => {
-    setDraft((current) => current ? { ...current, [key]: value } : current);
+    setLocalDraft((current) => ({ ...(current ?? draft!), [key]: value }));
     setSaved(false);
   };
 

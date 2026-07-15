@@ -17,6 +17,7 @@ from app.models import (
     ExportBundle,
     GenerationBatch,
     GenerationJob,
+    InspectionResult,
     MangaPage,
     PageCandidate,
     ScriptRevision,
@@ -246,7 +247,7 @@ def default_graph() -> dict:
             "单页生成",
             1180,
             250,
-            model_alias="image.nano_banana_2",
+            model_alias=None,
             resolution="1K",
             requires_approval=True,
         ),
@@ -340,7 +341,7 @@ def validate_graph(graph_value: WorkflowGraph | dict) -> WorkflowValidationRead:
                     node_id=node.id,
                 )
             )
-        if spec.model_family == "image" and alias not in IMAGE_MODELS:
+        if spec.model_family == "image" and alias is not None and alias not in IMAGE_MODELS:
             issues.append(
                 WorkflowValidationIssue(
                     severity="ERROR",
@@ -735,6 +736,165 @@ def _graph_for_run(db: Session, run: WorkflowRun) -> WorkflowGraph:
     return WorkflowGraph.model_validate(version.graph)
 
 
+def _latest_script(db: Session, run: WorkflowRun) -> ScriptRevision | None:
+    chapter = _scope_chapter(db, run)
+    if not chapter:
+        return None
+    return db.scalar(
+        select(ScriptRevision)
+        .where(ScriptRevision.chapter_id == chapter.id)
+        .order_by(ScriptRevision.revision_no.desc())
+    )
+
+
+def _candidate_for_run(
+    db: Session,
+    run: WorkflowRun,
+    node_runs: list[WorkflowNodeRun],
+) -> PageCandidate | None:
+    for item in reversed(node_runs):
+        candidate_id = item.output_refs.get("candidate_id")
+        candidate = db.get(PageCandidate, candidate_id) if candidate_id else None
+        if candidate:
+            return candidate
+    if run.scope_type == "CANDIDATE" and run.scope_id:
+        return db.get(PageCandidate, run.scope_id)
+    if run.scope_type == "PAGE" and run.scope_id:
+        page = db.get(MangaPage, run.scope_id)
+        if page and page.selected_candidate_id:
+            return db.get(PageCandidate, page.selected_candidate_id)
+    return None
+
+
+def _completed_output_refs(
+    db: Session,
+    run: WorkflowRun,
+    item: WorkflowNodeRun,
+    job: GenerationJob,
+    node_runs: list[WorkflowNodeRun],
+) -> dict:
+    base = {**item.output_refs, "job_id": job.id, "node_type": item.node_type}
+    if item.node_type in {"agent.parse", "agent.adapt"}:
+        script = _latest_script(db, run)
+        if not script:
+            raise ValueError("剧本节点没有产生可追溯的 ScriptRevision")
+        if script.status != "READY":
+            raise ValueError("原文覆盖不完整，禁止继续生成图片")
+        return {
+            **base,
+            "script_revision_id": script.id,
+            "chapter_id": script.chapter_id,
+            "coverage": script.coverage,
+        }
+    if item.node_type == "generator.page":
+        candidate = _candidate_for_run(db, run, node_runs)
+        if not candidate or candidate.status not in {"READY", "INSPECTED", "NEEDS_REVIEW"}:
+            raise ValueError("图片节点没有产生可用的页面候选")
+        return {**base, "candidate_id": candidate.id, "asset_id": candidate.asset_id}
+    if item.node_type == "quality.inspect":
+        candidate = _candidate_for_run(db, run, node_runs)
+        if not candidate:
+            raise ValueError("质量检查节点找不到候选图片")
+        inspection_ids = list(
+            db.scalars(
+                select(InspectionResult.id).where(InspectionResult.candidate_id == candidate.id)
+            )
+        )
+        return {
+            **base,
+            "candidate_id": candidate.id,
+            "inspection_result_ids": inspection_ids,
+            "candidate_status": candidate.status,
+        }
+    return base
+
+
+def _condition_value(payload: dict[str, Any], path: str) -> Any:
+    normalized = path.removeprefix("$").lstrip(".")
+    value: Any = payload
+    if not normalized:
+        return value
+    for part in normalized.split("."):
+        if not isinstance(value, dict) or part not in value:
+            return None
+        value = value[part]
+    return value
+
+
+def _condition_matches(value: Any, operator: str, expected: Any) -> bool:
+    if operator == "exists":
+        return value is not None
+    if operator == "eq":
+        return value == expected
+    if operator == "ne":
+        return value != expected
+    if operator == "contains":
+        return expected in value if isinstance(value, (str, list, tuple, dict)) else False
+    if operator in {"gt", "gte", "lt", "lte"}:
+        try:
+            return {
+                "gt": value > expected,
+                "gte": value >= expected,
+                "lt": value < expected,
+                "lte": value <= expected,
+            }[operator]
+        except TypeError:
+            return False
+    raise ValueError("不支持的条件比较符")
+
+
+def _parent_payloads(
+    graph: WorkflowGraph,
+    by_node: dict[str, WorkflowNodeRun],
+    node_id: str,
+) -> dict[str, dict]:
+    return {
+        edge.target_port: by_node[edge.source_node].output_refs
+        for edge in graph.edges
+        if edge.target_node == node_id
+        and edge.source_node in by_node
+        and by_node[edge.source_node].status == "COMPLETED"
+    }
+
+
+def _create_inspection_job(
+    db: Session,
+    run: WorkflowRun,
+    graph: WorkflowGraph,
+    node: WorkflowNodeDefinition,
+    node_run: WorkflowNodeRun,
+    node_runs: list[WorkflowNodeRun],
+) -> GenerationJob:
+    candidate = _candidate_for_run(db, run, node_runs)
+    if not candidate or not candidate.asset_id:
+        raise ValueError("质量检查必须等待已生成并采用的页面候选")
+    job = create_job(
+        db,
+        project_id=run.project_id,
+        target_type="PAGE_CANDIDATE",
+        target_id=candidate.id,
+        job_type="PAGE_INSPECT",
+        model_alias=node.config.model_alias or "text.fast",
+        request_parameters={
+            "categories": ["TEXT", "SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"],
+            "workflow_run_id": run.id,
+            "workflow_node_run_id": node_run.id,
+            "node_id": node.id,
+            "node_type": node.type,
+        },
+        max_attempts=node.config.max_attempts,
+        idempotency_key=f"workflow:{run.id}:{node.id}:1",
+        dependency_ids=_parent_job_ids(db, run, graph, node.id),
+    )
+    node_run.job_id = job.id
+    node_run.input_snapshot = {
+        **node_run.input_snapshot,
+        "candidate_id": candidate.id,
+        "asset_id": candidate.asset_id,
+    }
+    return job
+
+
 def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
     run = db.get(WorkflowRun, run_id)
     if not run or run.status in {"COMPLETED", "CANCELLED", "FAILED"}:
@@ -747,8 +907,10 @@ def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
     )
     by_node = {item.node_id: item for item in node_runs}
     parents: dict[str, list[str]] = defaultdict(list)
+    incoming_edges: dict[str, list] = defaultdict(list)
     for edge in graph.edges:
         parents[edge.target_node].append(edge.source_node)
+        incoming_edges[edge.target_node].append(edge)
 
     paused = False
     failed = False
@@ -760,16 +922,19 @@ def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
         if (
             job
             and job.status == JobStatus.COMPLETED
-            and item.status not in {"COMPLETED", "CANCELLED"}
+            and item.status not in {"COMPLETED", "CANCELLED", "SKIPPED"}
         ):
-            item.status = "COMPLETED"
-            item.started_at = job.started_at
-            item.finished_at = job.finished_at or utcnow()
-            item.output_refs = {
-                "job_id": job.id,
-                "target_id": job.target_id,
-                "node_type": item.node_type,
-            }
+            try:
+                item.output_refs = _completed_output_refs(db, run, item, job, node_runs)
+            except ValueError as error:
+                item.status = "FAILED"
+                item.error_code = "INVALID_NODE_OUTPUT"
+                item.error_message = str(error)
+                failed = True
+            else:
+                item.status = "COMPLETED"
+                item.started_at = job.started_at
+                item.finished_at = job.finished_at or utcnow()
         elif job and job.status == JobStatus.FAILED:
             item.status = "FAILED"
             item.error_code = job.error_code
@@ -780,10 +945,22 @@ def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
                 paused = True
             continue
         if not all(
-            by_node[parent].status == "COMPLETED"
+            by_node[parent].status in {"COMPLETED", "SKIPPED"}
             for parent in parents[node_id]
             if parent in by_node
         ):
+            continue
+        disabled_branch = any(
+            by_node[edge.source_node].node_type == "control.condition"
+            and by_node[edge.source_node].status == "COMPLETED"
+            and by_node[edge.source_node].output_refs.get("selected_port") != edge.source_port
+            for edge in incoming_edges[node_id]
+            if edge.source_node in by_node
+        )
+        if disabled_branch:
+            item.status = "SKIPPED"
+            item.finished_at = utcnow()
+            item.output_refs = {"reason": "CONDITION_BRANCH_NOT_SELECTED"}
             continue
         spec = NODE_TYPE_MAP[node_map[node_id].type]
         if spec.barrier:
@@ -791,6 +968,17 @@ def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
             item.input_snapshot = {**item.input_snapshot, "action": spec.barrier}
             paused = True
             continue
+        if node_map[node_id].type == "quality.inspect" and not job:
+            try:
+                job = _create_inspection_job(
+                    db, run, graph, node_map[node_id], item, node_runs
+                )
+            except ValueError as error:
+                item.status = "FAILED"
+                item.error_code = "MISSING_CANDIDATE"
+                item.error_message = str(error)
+                failed = True
+                continue
         if job:
             item.status = "RUNNING"
             item.started_at = utcnow()
@@ -799,7 +987,7 @@ def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
     if failed:
         run.status = "FAILED"
         run.finished_at = utcnow()
-    elif all(item.status == "COMPLETED" for item in node_runs):
+    elif all(item.status in {"COMPLETED", "SKIPPED"} for item in node_runs):
         run.status = "COMPLETED"
         run.finished_at = utcnow()
     elif paused:
@@ -818,7 +1006,27 @@ def execute_workflow_node(db: Session, job: GenerationJob) -> None:
     node_run.status = "RUNNING"
     node_run.started_at = node_run.started_at or utcnow()
     run = db.get(WorkflowRun, node_run.workflow_run_id)
-    if node_run.node_type == "director.storyboard":
+    if not run:
+        raise RuntimeError("工作流运行不存在")
+    graph = _graph_for_run(db, run)
+    by_node = {
+        item.node_id: item
+        for item in db.scalars(
+            select(WorkflowNodeRun).where(WorkflowNodeRun.workflow_run_id == run.id)
+        )
+    }
+    parent_payloads = _parent_payloads(graph, by_node, node_run.node_id)
+    if node_run.node_type == "agent.adapt":
+        script = _latest_script(db, run)
+        if not script or script.status != "READY":
+            raise RuntimeError("UNSUPPORTED_INPUT: 剧本改编需要完整的 ScriptRevision")
+        node_run.output_refs = {
+            "job_id": job.id,
+            "node_type": node_run.node_type,
+            "script_revision_id": script.id,
+            "coverage": script.coverage,
+        }
+    elif node_run.node_type == "director.storyboard":
         from app.services.content_workflow import plan_chapter_pages
 
         chapter = _scope_chapter(db, run)
@@ -831,17 +1039,55 @@ def execute_workflow_node(db: Session, job: GenerationJob) -> None:
             "chapter_id": chapter.id,
             "page_ids": [page.id for page in pages],
         }
-    else:
+    elif node_run.node_type == "control.condition":
+        node = next(item for item in graph.nodes if item.id == node_run.node_id)
+        condition = node.config.condition
+        payload = next(iter(parent_payloads.values()), {})
+        actual = _condition_value(payload, condition["path"])
+        matched = _condition_matches(actual, condition["operator"], condition.get("value"))
         node_run.output_refs = {
             "job_id": job.id,
             "node_type": node_run.node_type,
-            "completed": True,
+            "matched": matched,
+            "selected_port": "true" if matched else "false",
+            "value": actual,
+            "input": payload,
         }
+    elif node_run.node_type == "control.merge":
+        node_run.output_refs = {
+            "job_id": job.id,
+            "node_type": node_run.node_type,
+            "merged": parent_payloads,
+        }
+    elif node_run.node_type == "output.export":
+        from app.api.routes.exports import create_export
+        from app.schemas import ExportRequest
+
+        chapter = _scope_chapter(db, run)
+        if not chapter:
+            raise RuntimeError("UNSUPPORTED_INPUT: 导出节点需要章节、页面或候选范围")
+        bundle = create_export(chapter.id, ExportRequest(export_type="JSON"), db)
+        if not isinstance(bundle, ExportBundle):
+            raise RuntimeError("导出节点没有产生 ExportBundle")
+        node_run.output_refs = {
+            "job_id": job.id,
+            "node_type": node_run.node_type,
+            "export_id": bundle.id,
+            "export_type": bundle.export_type,
+            "storage_key": bundle.storage_key,
+        }
+    else:
+        raise RuntimeError(f"UNSUPPORTED_NODE_TYPE: {node_run.node_type}")
     db.flush()
 
 
 def approve_node(
-    db: Session, run_id: str, node_id: str, candidate_id: str | None = None
+    db: Session,
+    run_id: str,
+    node_id: str,
+    candidate_id: str | None = None,
+    image_model_alias: str | None = None,
+    resolution: str | None = None,
 ) -> WorkflowRun:
     run = db.get(WorkflowRun, run_id)
     if not run or run.status not in {"PAUSED", "RUNNING"}:
@@ -859,6 +1105,11 @@ def approve_node(
     node = next(item for item in graph.nodes if item.id == node_id)
     spec = NODE_TYPE_MAP[node.type]
     if spec.barrier == "GENERATE":
+        if image_model_alias not in IMAGE_MODELS:
+            raise ValueError("每次生成候选都必须明确选择 Nano Banana 2 或 Nano Banana Pro")
+        selected_resolution = resolution or node.config.resolution
+        if selected_resolution not in {"1K", "2K", "4K"}:
+            raise ValueError("每次生成候选都必须明确选择 1K、2K 或 4K")
         if node_run.job_id:
             raise ValueError("该节点本次运行已经生成过一个候选")
         if run.scope_type != "PAGE" or not run.scope_id:
@@ -891,8 +1142,8 @@ def approve_node(
             batch_id=batch.id,
             page_id=page.id,
             ordinal=1,
-            model_alias=node.config.model_alias or "image.nano_banana_2",
-            resolution=Resolution(node.config.resolution or "1K"),
+            model_alias=image_model_alias,
+            resolution=Resolution(selected_resolution),
             status="QUEUED",
         )
         db.add(candidate)

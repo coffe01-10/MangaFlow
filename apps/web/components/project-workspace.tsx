@@ -71,6 +71,7 @@ const jobLabels: Record<string, string> = {
   SOURCE_PARSE: "解析剧本", PAGE_GENERATE: "生成页面", PAGE_REPAIR: "修复页面",
   PAGE_UPSCALE: "保持结构升清", ASSET_GENERATE: "生成角色/服装素材",
   PAGE_INSPECT: "检查页面", STYLE_ANALYZE: "分析漫画风格",
+  WORKFLOW_NODE: "执行工作流节点",
 };
 
 const generationKindLabels: Record<string, string> = {
@@ -122,8 +123,8 @@ function formatBytes(value: number) {
   return `${(value / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function CandidateArtwork({ contentUrl, label }: { contentUrl: string | null; label: string }) {
-  const url = publicUrl(contentUrl);
+function CandidateArtwork({ contentUrl, thumbnailUrl, label }: { contentUrl: string | null; thumbnailUrl?: string | null; label: string }) {
+  const url = publicUrl(thumbnailUrl ?? contentUrl);
   return url ? (
     <Image className="candidate-image" src={url} alt={label} width={720} height={960} unoptimized />
   ) : (
@@ -161,6 +162,8 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
   const [libraryResolution, setLibraryResolution] = useState("");
   const [libraryDateFrom, setLibraryDateFrom] = useState("");
   const [libraryDateTo, setLibraryDateTo] = useState("");
+  const [libraryCursor, setLibraryCursor] = useState("");
+  const [libraryHistory, setLibraryHistory] = useState<string[]>([]);
   const [editingChapterId, setEditingChapterId] = useState<string | null>(null);
   const [deletedChapterId, setDeletedChapterId] = useState<string | null>(null);
   const [outfitName, setOutfitName] = useState("");
@@ -185,7 +188,7 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
   const outfits = useQuery({ queryKey: ["outfits", id], queryFn: () => api.outfits(id), enabled: needsOutfits });
   const styles = useQuery({ queryKey: ["styles", id], queryFn: () => api.styles(id), enabled: section === "assets" });
   const library = useQuery({
-    queryKey: ["library", id, favoriteOnly, libraryCharacter, libraryKind, libraryModel, libraryResolution, libraryDateFrom, libraryDateTo],
+    queryKey: ["library", id, favoriteOnly, libraryCharacter, libraryKind, libraryModel, libraryResolution, libraryDateFrom, libraryDateTo, libraryCursor],
     queryFn: () => api.library(id, {
       favorite: favoriteOnly ? true : undefined,
       character_id: libraryCharacter || undefined,
@@ -194,6 +197,8 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
       resolution: (libraryResolution || undefined) as Resolution | undefined,
       date_from: libraryDateFrom ? `${libraryDateFrom}T00:00:00Z` : undefined,
       date_to: libraryDateTo ? `${libraryDateTo}T23:59:59Z` : undefined,
+      cursor: libraryCursor || undefined,
+      limit: 30,
     }),
     enabled: section === "library",
   });
@@ -656,7 +661,7 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
     <AppShell>
       <header className="workspace-topbar">
         <div className="workspace-crumb"><button className="project-nav-toggle" aria-expanded={navOpen} aria-label={navOpen ? "关闭项目导航" : "打开项目导航"} onClick={() => setNavOpen(!navOpen)}>{navOpen ? <X size={17} /> : <Menu size={17} />}</button><Link href="/"><ArrowLeft size={17} />项目</Link><i /><span>{draft.name}</span></div>
-        <div className="workspace-status"><span><i />项目工作区</span><Link className="button ink compact" href={projectPath("settings")}><Settings size={15} />项目设置</Link></div>
+        <div className="workspace-status"><span><i />项目工作区</span><Link className="button outline compact" href={projectPath("workflow")}><Workflow size={15} />在工作流中查看</Link><Link className="button ink compact" href={projectPath("settings")}><Settings size={15} />项目设置</Link></div>
       </header>
 
       <div className="workspace-layout">
@@ -780,9 +785,10 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
           {section === "library" && (
             <>
               <header className="canvas-header"><div><span>LIBRARY / 批次素材库</span><h2>保存每一次值得比较的结果</h2></div><small>{library.data?.total_candidates ?? 0} 个候选</small></header>
-              <div className="library-toolbar"><div className="library-filter-grid"><button className={favoriteOnly ? "active" : ""} onClick={() => setFavoriteOnly(!favoriteOnly)}><Heart size={14} />只看收藏（{library.data?.favorite_count ?? 0}）</button><select aria-label="按角色筛选素材" value={libraryCharacter} onChange={(event) => setLibraryCharacter(event.target.value)}><option value="">全部角色</option>{characters.data?.map((character) => <option key={character.id} value={character.id}>{character.primary_name}</option>)}</select><select aria-label="按生成类型筛选素材" value={libraryKind} onChange={(event) => setLibraryKind(event.target.value)}><option value="">全部类型</option>{Object.entries(generationKindLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><select aria-label="按模型筛选素材" value={libraryModel} onChange={(event) => setLibraryModel(event.target.value)}><option value="">全部模型</option>{modelOptions.map((model) => <option key={model.alias} value={model.alias}>{model.name}</option>)}</select><select aria-label="按分辨率筛选素材" value={libraryResolution} onChange={(event) => setLibraryResolution(event.target.value)}><option value="">全部清晰度</option>{(["1K", "2K", "4K"] as const).map((value) => <option key={value} value={value}>{value}</option>)}</select><label>从<input aria-label="素材开始日期" type="date" value={libraryDateFrom} onChange={(event) => setLibraryDateFrom(event.target.value)} /></label><label>至<input aria-label="素材结束日期" type="date" value={libraryDateTo} onChange={(event) => setLibraryDateTo(event.target.value)} /></label><button onClick={() => { setFavoriteOnly(false); setLibraryCharacter(""); setLibraryKind(""); setLibraryModel(""); setLibraryResolution(""); setLibraryDateFrom(""); setLibraryDateTo(""); }}><RotateCcw size={13} />重置</button></div><span>按章节 → 页面 → 批次排列</span></div>
+              <div className="library-toolbar"><div className="library-filter-grid"><button className={favoriteOnly ? "active" : ""} onClick={() => { setFavoriteOnly(!favoriteOnly); setLibraryCursor(""); setLibraryHistory([]); }}><Heart size={14} />只看收藏（{library.data?.favorite_count ?? 0}）</button><select aria-label="按角色筛选素材" value={libraryCharacter} onChange={(event) => { setLibraryCharacter(event.target.value); setLibraryCursor(""); setLibraryHistory([]); }}><option value="">全部角色</option>{characters.data?.map((character) => <option key={character.id} value={character.id}>{character.primary_name}</option>)}</select><select aria-label="按生成类型筛选素材" value={libraryKind} onChange={(event) => { setLibraryKind(event.target.value); setLibraryCursor(""); setLibraryHistory([]); }}><option value="">全部类型</option>{Object.entries(generationKindLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><select aria-label="按模型筛选素材" value={libraryModel} onChange={(event) => { setLibraryModel(event.target.value); setLibraryCursor(""); setLibraryHistory([]); }}><option value="">全部模型</option>{modelOptions.map((model) => <option key={model.alias} value={model.alias}>{model.name}</option>)}</select><select aria-label="按分辨率筛选素材" value={libraryResolution} onChange={(event) => { setLibraryResolution(event.target.value); setLibraryCursor(""); setLibraryHistory([]); }}><option value="">全部清晰度</option>{(["1K", "2K", "4K"] as const).map((value) => <option key={value} value={value}>{value}</option>)}</select><label>从<input aria-label="素材开始日期" type="date" value={libraryDateFrom} onChange={(event) => { setLibraryDateFrom(event.target.value); setLibraryCursor(""); setLibraryHistory([]); }} /></label><label>至<input aria-label="素材结束日期" type="date" value={libraryDateTo} onChange={(event) => { setLibraryDateTo(event.target.value); setLibraryCursor(""); setLibraryHistory([]); }} /></label><button onClick={() => { setFavoriteOnly(false); setLibraryCharacter(""); setLibraryKind(""); setLibraryModel(""); setLibraryResolution(""); setLibraryDateFrom(""); setLibraryDateTo(""); setLibraryCursor(""); setLibraryHistory([]); }}><RotateCcw size={13} />重置</button></div><span>按章节 → 页面 → 批次排列</span></div>
               <div className="library-groups">{library.data?.groups.map((group) => <section className="library-group" key={group.batch.id}><header><div><span>BATCH {String(group.batch.ordinal).padStart(3, "0")}</span><strong>{generationKindLabels[group.batch.generation_kind] ?? group.batch.generation_kind}</strong></div><small>{new Date(group.batch.created_at).toLocaleString("zh-CN")} · {group.candidates.length} 张</small></header><div className="library-candidates">{group.candidates.map((candidate) => <article key={candidate.id}><CandidateArtwork contentUrl={candidate.content_url} label={`批次候选 ${candidate.ordinal}`} /><div><strong>{modelOptions.find((item) => item.alias === candidate.model_alias)?.name}</strong><span>{candidate.resolution} · {candidate.status}</span>{candidate.is_favorite && <Heart size={13} fill="currentColor" />}{candidate.is_selected && <em>采用中</em>}<button className="library-delete" title="从素材库软删除" disabled={candidate.is_selected || deleteCandidate.isPending} onClick={() => { if (window.confirm("从素材库隐藏这个候选？生成文件和任务记录会保留。")) deleteCandidate.mutate(candidate.id); }}><Trash2 size={12} /></button></div></article>)}</div></section>)}</div>
               {!library.data?.groups.length && <div className="asset-empty tall"><LibraryBig size={28} /><strong>素材库还是空的</strong><p>从单页抽卡开始，所有候选都会按批次保留。</p></div>}
+              {(libraryHistory.length > 0 || library.data?.next_cursor) && <div className="library-pagination"><button disabled={!libraryHistory.length} onClick={() => { const previous = libraryHistory.at(-1) ?? ""; setLibraryHistory((items) => items.slice(0, -1)); setLibraryCursor(previous); }}><ArrowLeft size={13} />上一页</button><span>每页最多 {library.data?.limit ?? 30} 个批次</span><button disabled={!library.data?.next_cursor} onClick={() => { setLibraryHistory((items) => [...items, libraryCursor]); setLibraryCursor(library.data?.next_cursor ?? ""); }}>下一页<ArrowRight size={13} /></button></div>}
               <div className="export-desk"><div><span>EXPORT / 导出</span><strong>采用全部页面后导出整章</strong></div><div>{(["PNG", "PDF", "JSON"] as const).map((type) => <button key={type} disabled={!activeChapterId || createExport.isPending} onClick={() => createExport.mutate(type)}><Download size={14} />{type}</button>)}</div></div>
               <div className="export-list">{exportsQuery.data?.map((item) => <a key={item.id} href={publicUrl(item.download_url)!}><FileImage size={14} /><span>{item.export_type} · {item.page_count} 页 · {formatBytes(item.byte_size)}</span><Download size={13} /></a>)}</div>
               {createExport.isError && <p className="form-error"><CircleAlert size={14} />{createExport.error.message}</p>}
@@ -792,7 +798,7 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
           {section === "jobs" && (
             <>
               <header className="canvas-header"><div><span>JOBS / 任务中心</span><h2>每个生成任务都能看懂、取消和重试</h2></div><small>{jobs.data?.length ?? 0} 个任务</small></header>
-              <div className="job-list">{jobs.data?.map((job) => <article className={`job-row status-${job.status.toLowerCase()}`} key={job.id}><div className="job-type"><span>{jobLabels[job.job_type] ?? job.job_type}</span><strong>{job.status}</strong></div><div className="job-progress"><i><b style={{ width: `${job.progress}%` }} /></i><span>{job.progress}% · 尝试 {job.attempt_count}/{job.max_attempts}</span></div><div className="job-detail"><span>{job.model_alias ? modelOptions.find((item) => item.alias === job.model_alias)?.name ?? job.model_alias : "系统任务"}</span><small>{new Date(job.created_at).toLocaleString("zh-CN")}</small>{job.error_message && <em>{job.error_message}</em>}</div><div className="job-actions">{["WAITING", "QUEUED", "PREPARING", "GENERATING"].includes(job.status) && <button onClick={() => cancelJob.mutate(job.id)}>取消</button>}{(["FAILED", "CANCELLED", "TIMED_OUT"].includes(job.status) || (job.status === "WAITING" && Boolean(job.error_code))) && <button onClick={() => retryJob.mutate(job.id)}><RotateCcw size={12} />重试</button>}</div></article>)}</div>
+              <div className="job-list">{jobs.data?.map((job) => <article className={`job-row status-${job.status.toLowerCase()}`} key={job.id}><div className="job-type"><span>{jobLabels[job.job_type] ?? job.job_type}</span><strong>{job.status}</strong></div><div className="job-progress"><i><b style={{ width: `${job.progress}%` }} /></i><span>{job.progress}% · 尝试 {job.attempt_count}/{job.max_attempts}</span></div><div className="job-detail"><span>{job.workflow_node_id ? `节点 ${job.workflow_node_id}` : job.model_alias ? modelOptions.find((item) => item.alias === job.model_alias)?.name ?? job.model_alias : "系统任务"}</span><small>{new Date(job.created_at).toLocaleString("zh-CN")}</small>{job.error_message && <em>{job.error_message}</em>}</div><div className="job-actions">{["WAITING", "QUEUED", "PREPARING", "GENERATING"].includes(job.status) && <button onClick={() => cancelJob.mutate(job.id)}>取消</button>}{(["FAILED", "CANCELLED", "TIMED_OUT"].includes(job.status) || (job.status === "WAITING" && Boolean(job.error_code))) && <button onClick={() => retryJob.mutate(job.id)}><RotateCcw size={12} />重试</button>}</div></article>)}</div>
               {!jobs.data?.length && <div className="asset-empty tall"><ListTodo size={28} /><strong>当前没有任务</strong><p>剧本解析、页面生成、检查和修复都会列在这里。</p></div>}
             </>
           )}
