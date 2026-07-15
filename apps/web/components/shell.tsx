@@ -9,12 +9,14 @@ import {
   Images,
   Settings,
   Sparkles,
+  Workflow,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const navigation = [
   { label: "项目", href: "/", icon: FolderKanban, enabled: true },
+  { label: "工作流", href: "/workflow", icon: Workflow, enabled: true },
   { label: "原作", href: "#", icon: BookOpenText, enabled: false },
   { label: "资产", href: "#", icon: Boxes, enabled: false },
   { label: "分镜", href: "#", icon: Clapperboard, enabled: false },

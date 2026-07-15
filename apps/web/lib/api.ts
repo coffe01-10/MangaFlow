@@ -1,4 +1,4 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "/api/v1";
 const API_ORIGIN = API_URL.replace(/\/api\/v1\/?$/, "");
 
 export type Resolution = "1K" | "2K" | "4K";
