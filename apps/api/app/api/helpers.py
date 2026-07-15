@@ -7,7 +7,12 @@ from app.schemas import AssetRead, CharacterReferenceRead, PageCandidateRead
 
 def asset_read(asset: Asset) -> AssetRead:
     value = AssetRead.model_validate(asset)
-    return value.model_copy(update={"content_url": f"/api/v1/assets/{asset.id}/content"})
+    return value.model_copy(
+        update={
+            "content_url": f"/api/v1/assets/{asset.id}/content",
+            "thumbnail_url": f"/api/v1/assets/{asset.id}/thumbnail/640",
+        }
+    )
 
 
 def candidate_read(candidate: PageCandidate) -> PageCandidateRead:
@@ -16,7 +21,12 @@ def candidate_read(candidate: PageCandidate) -> PageCandidateRead:
         update={
             "content_url": (
                 f"/api/v1/assets/{candidate.asset_id}/content" if candidate.asset_id else None
-            )
+            ),
+            "thumbnail_url": (
+                f"/api/v1/assets/{candidate.asset_id}/thumbnail/640"
+                if candidate.asset_id
+                else None
+            ),
         }
     )
 
@@ -37,6 +47,11 @@ def asset_candidate_read(candidate: AssetCandidate) -> PageCandidateRead:
         created_at=candidate.created_at,
         content_url=(
             f"/api/v1/assets/{candidate.asset_id}/content" if candidate.asset_id else None
+        ),
+        thumbnail_url=(
+            f"/api/v1/assets/{candidate.asset_id}/thumbnail/640"
+            if candidate.asset_id
+            else None
         ),
     )
 

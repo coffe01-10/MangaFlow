@@ -1,7 +1,9 @@
+import base64
+import json
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, exists, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.api.helpers import asset_candidate_read, candidate_read
@@ -331,6 +333,8 @@ def library(
     resolution: Resolution | None = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
+    cursor: str | None = None,
+    limit: int = Query(default=30, ge=1, le=100),
     db: Session = Depends(get_db),
 ) -> LibraryRead:
     project = db.get(Project, project_id)
@@ -343,7 +347,6 @@ def library(
         batch_query = batch_query.where(GenerationBatch.created_at >= date_from)
     if date_to:
         batch_query = batch_query.where(GenerationBatch.created_at <= date_to)
-    batches = list(db.scalars(batch_query.order_by(GenerationBatch.created_at.desc())))
     if character_id:
         character = db.get(Character, character_id)
         if not character or character.project_id != project_id:
@@ -361,56 +364,130 @@ def library(
             )
             if character_id in panel.character_ids
         }
-        batches = [
-            batch
-            for batch in batches
-            if (batch.target_type == "CHARACTER" and batch.target_id == character_id)
-            or (batch.target_type == "OUTFIT" and batch.target_id in outfit_ids)
-            or (batch.page_id in page_ids)
+        character_filters = [
+            and_(
+                GenerationBatch.target_type == "CHARACTER",
+                GenerationBatch.target_id == character_id,
+            )
         ]
-    groups: list[LibraryBatchRead] = []
-    all_candidates: list[PageCandidateRead] = []
-    for batch in batches:
-        query = select(PageCandidate).where(
-            PageCandidate.batch_id == batch.id,
+        if outfit_ids:
+            character_filters.append(
+                and_(
+                    GenerationBatch.target_type == "OUTFIT",
+                    GenerationBatch.target_id.in_(outfit_ids),
+                )
+            )
+        if page_ids:
+            character_filters.append(GenerationBatch.page_id.in_(page_ids))
+        batch_query = batch_query.where(or_(*character_filters))
+
+    page_filters = [
+        PageCandidate.batch_id == GenerationBatch.id,
+        PageCandidate.deleted_at.is_(None),
+    ]
+    asset_filters = [
+        AssetCandidate.batch_id == GenerationBatch.id,
+        AssetCandidate.deleted_at.is_(None),
+    ]
+    if model_alias:
+        page_filters.append(PageCandidate.model_alias == model_alias)
+        asset_filters.append(AssetCandidate.model_alias == model_alias)
+    if favorite is not None:
+        page_filters.append(PageCandidate.is_favorite == favorite)
+        asset_filters.append(AssetCandidate.is_favorite == favorite)
+    if resolution:
+        page_filters.append(PageCandidate.resolution == resolution)
+        asset_filters.append(AssetCandidate.resolution == resolution)
+    batch_query = batch_query.where(
+        or_(
+            exists(select(1).where(*page_filters)),
+            exists(select(1).where(*asset_filters)),
+        )
+    )
+
+    if cursor:
+        try:
+            payload = json.loads(base64.urlsafe_b64decode(cursor.encode("ascii")))
+            cursor_time = datetime.fromisoformat(payload["created_at"])
+            cursor_id = payload["id"]
+        except (ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
+            raise HTTPException(status_code=422, detail="素材库游标无效") from error
+        batch_query = batch_query.where(
+            or_(
+                GenerationBatch.created_at < cursor_time,
+                and_(
+                    GenerationBatch.created_at == cursor_time,
+                    GenerationBatch.id < cursor_id,
+                ),
+            )
+        )
+
+    batches = list(
+        db.scalars(
+            batch_query.order_by(
+                GenerationBatch.created_at.desc(), GenerationBatch.id.desc()
+            ).limit(limit + 1)
+        )
+    )
+    has_more = len(batches) > limit
+    batches = batches[:limit]
+    next_cursor = None
+    if has_more and batches:
+        next_cursor = base64.urlsafe_b64encode(
+            json.dumps(
+                {
+                    "created_at": batches[-1].created_at.isoformat(),
+                    "id": batches[-1].id,
+                },
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).decode("ascii")
+
+    batch_ids = [batch.id for batch in batches]
+    candidates_by_batch: dict[str, list[PageCandidateRead]] = {
+        batch_id: [] for batch_id in batch_ids
+    }
+    if batch_ids:
+        page_query = select(PageCandidate).where(
+            PageCandidate.batch_id.in_(batch_ids),
             PageCandidate.deleted_at.is_(None),
         )
-        if model_alias:
-            query = query.where(PageCandidate.model_alias == model_alias)
-        if favorite is not None:
-            query = query.where(PageCandidate.is_favorite == favorite)
-        if resolution:
-            query = query.where(PageCandidate.resolution == resolution)
-        candidates = [
-            candidate_read(item)
-            for item in db.scalars(query.order_by(PageCandidate.ordinal.desc()))
-        ]
         asset_query = select(AssetCandidate).where(
-            AssetCandidate.batch_id == batch.id,
+            AssetCandidate.batch_id.in_(batch_ids),
             AssetCandidate.deleted_at.is_(None),
         )
         if model_alias:
+            page_query = page_query.where(PageCandidate.model_alias == model_alias)
             asset_query = asset_query.where(AssetCandidate.model_alias == model_alias)
         if favorite is not None:
+            page_query = page_query.where(PageCandidate.is_favorite == favorite)
             asset_query = asset_query.where(AssetCandidate.is_favorite == favorite)
         if resolution:
+            page_query = page_query.where(PageCandidate.resolution == resolution)
             asset_query = asset_query.where(AssetCandidate.resolution == resolution)
-        candidates.extend(
-            asset_candidate_read(item)
-            for item in db.scalars(asset_query.order_by(AssetCandidate.ordinal.desc()))
+        for item in db.scalars(
+            page_query.order_by(PageCandidate.batch_id, PageCandidate.ordinal.desc())
+        ):
+            candidates_by_batch[item.batch_id].append(candidate_read(item))
+        for item in db.scalars(
+            asset_query.order_by(AssetCandidate.batch_id, AssetCandidate.ordinal.desc())
+        ):
+            candidates_by_batch[item.batch_id].append(asset_candidate_read(item))
+
+    groups = [
+        LibraryBatchRead(
+            batch=GenerationBatchRead.model_validate(batch),
+            candidates=candidates_by_batch[batch.id],
         )
-        if candidates:
-            groups.append(
-                LibraryBatchRead(
-                    batch=GenerationBatchRead.model_validate(batch),
-                    candidates=candidates,
-                )
-            )
-            all_candidates.extend(candidates)
+        for batch in batches
+    ]
+    all_candidates = [candidate for group in groups for candidate in group.candidates]
     return LibraryRead(
         groups=groups,
         total_candidates=len(all_candidates),
         favorite_count=sum(item.is_favorite for item in all_candidates),
+        next_cursor=next_cursor,
+        limit=limit,
     )
 
 

@@ -39,12 +39,49 @@ export interface ModelCapability {
 
 export interface VertexStatus {
   configured: boolean;
+  health_state: "UNCONFIGURED" | "CHECKING" | "HEALTHY" | "DEGRADED" | "OFFLINE";
   credential_file_present: boolean;
+  project: string | null;
   location: string;
   text_model: string;
   image_models: string[];
-  verification: "not_run" | "verified";
+  last_checked_at: string | null;
+  last_success_at: string | null;
+  token_expires_at: string | null;
+  consecutive_failures: number;
+  latency_ms: number | null;
+  error_code: string | null;
   message: string;
+  text_model_access: string;
+  image_model_access: Record<string, string>;
+}
+
+export interface RuntimeSettings {
+  queue_mode: "AUTO" | "LOCAL" | "REDIS";
+  job_timeout_seconds: number;
+  max_auto_repairs: number;
+  default_concurrency: number;
+  health_check_interval_seconds: number;
+  ui_poll_interval_seconds: number;
+  workflow_autosave_ms: number;
+  database_backend: string;
+  storage_root: string;
+  upload_root: string;
+  redis_configured: boolean;
+  version: number;
+}
+
+export interface DiagnosticCheck {
+  id: string;
+  label: string;
+  status: "OK" | "WARNING" | "FAILED" | "NOT_CHECKED";
+  message: string;
+  latency_ms: number | null;
+}
+
+export interface Diagnostics {
+  checks: DiagnosticCheck[];
+  checked_at: string;
 }
 
 export interface Asset {
@@ -59,6 +96,7 @@ export interface Asset {
   status: string;
   created_at: string;
   content_url: string | null;
+  thumbnail_url: string | null;
 }
 
 export type AssetPurpose = "CHARACTER_REFERENCE" | "OUTFIT_REFERENCE" | "STYLE_REFERENCE";
@@ -213,6 +251,7 @@ export interface PageCandidate {
   is_selected: boolean;
   created_at: string;
   content_url: string | null;
+  thumbnail_url: string | null;
 }
 
 export interface Job {
@@ -228,6 +267,8 @@ export interface Job {
   model_alias: string | null;
   error_code: string | null;
   error_message: string | null;
+  workflow_run_id: string | null;
+  workflow_node_id: string | null;
   created_at: string;
 }
 
@@ -258,6 +299,8 @@ export interface Library {
   groups: LibraryGroup[];
   total_candidates: number;
   favorite_count: number;
+  next_cursor: string | null;
+  limit: number;
 }
 
 export interface LibraryFilters {
@@ -268,6 +311,8 @@ export interface LibraryFilters {
   resolution?: Resolution;
   date_from?: string;
   date_to?: string;
+  cursor?: string;
+  limit?: number;
 }
 
 export interface ExportBundle {
@@ -281,9 +326,141 @@ export interface ExportBundle {
   download_url: string;
 }
 
+export type WorkflowPortDataType = "text" | "json" | "image" | "asset" | "report" | "boolean";
+
+export interface WorkflowPort {
+  id: string;
+  label: string;
+  data_type: WorkflowPortDataType;
+  required: boolean;
+}
+
+export interface WorkflowNodeConfig {
+  model_alias: string | null;
+  prompt_template: string;
+  system_instruction: string;
+  temperature: number;
+  timeout_seconds: number;
+  max_attempts: number;
+  concurrency: number;
+  resolution: Resolution | null;
+  locked: boolean;
+  notes: string;
+  condition: Record<string, unknown>;
+  requires_approval: boolean;
+}
+
+export interface WorkflowGraphNode {
+  id: string;
+  type: string;
+  name: string;
+  position: { x: number; y: number };
+  inputs: WorkflowPort[];
+  outputs: WorkflowPort[];
+  config: WorkflowNodeConfig;
+}
+
+export interface WorkflowGraphEdge {
+  id: string;
+  source_node: string;
+  source_port: string;
+  target_node: string;
+  target_port: string;
+}
+
+export interface WorkflowGraph {
+  schema_version: 2;
+  nodes: WorkflowGraphNode[];
+  edges: WorkflowGraphEdge[];
+}
+
+export interface WorkflowDefinition {
+  id: string;
+  project_id: string;
+  name: string;
+  description: string;
+  draft_graph: WorkflowGraph;
+  draft_version: number;
+  published_version_id: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+  version: number;
+}
+
+export interface WorkflowValidationIssue {
+  severity: "ERROR" | "WARNING";
+  code: string;
+  message: string;
+  node_id: string | null;
+  edge_id: string | null;
+}
+
+export interface WorkflowValidation {
+  valid: boolean;
+  issues: WorkflowValidationIssue[];
+  topological_order: string[];
+}
+
+export interface WorkflowVersion {
+  id: string;
+  workflow_id: string;
+  revision: number;
+  graph: WorkflowGraph;
+  graph_checksum: string;
+  validation_report: WorkflowValidation;
+  published_at: string;
+}
+
+export interface WorkflowNodeType {
+  type: string;
+  label: string;
+  category: "INPUT" | "AGENT" | "CONTROL" | "OUTPUT" | string;
+  description: string;
+  inputs: WorkflowPort[];
+  outputs: WorkflowPort[];
+  configurable_fields: string[];
+}
+
+export interface WorkflowNodeRun {
+  id: string;
+  workflow_run_id: string;
+  node_id: string;
+  node_type: string;
+  status: string;
+  job_id: string | null;
+  input_snapshot: Record<string, unknown>;
+  output_refs: Record<string, unknown>;
+  attempt_count: number;
+  started_at: string | null;
+  finished_at: string | null;
+  error_code: string | null;
+  error_message: string | null;
+}
+
+export interface WorkflowRun {
+  id: string;
+  workflow_id: string;
+  workflow_version_id: string;
+  project_id: string;
+  scope_type: "PROJECT" | "CHAPTER" | "PAGE" | "CANDIDATE";
+  scope_id: string | null;
+  status: string;
+  start_node_ids: string[];
+  stop_node_ids: string[];
+  node_runs: WorkflowNodeRun[];
+  created_at: string;
+  updated_at: string;
+  version: number;
+}
+
 export function publicUrl(path: string | null) {
   if (!path) return null;
-  return path.startsWith("http") ? path : `${API_ORIGIN}${path}`;
+  const previewPath = path.replace(
+    /\/api\/v1\/assets\/([^/]+)\/content$/,
+    "/api/v1/assets/$1/thumbnail/640",
+  );
+  return previewPath.startsWith("http") ? previewPath : `${API_ORIGIN}${previewPath}`;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -311,8 +488,16 @@ export const api = {
   updateProject: (id: string, payload: Partial<Project> & { version: number }) =>
     request<Project>(`/projects/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   models: () => request<ModelCapability[]>("/models"),
-  vertexStatus: () => request<VertexStatus>("/models/vertex/status"),
-  verifyVertex: () => request<VertexStatus>("/models/vertex/verify", { method: "POST" }),
+  vertexStatus: () => request<VertexStatus>("/settings/vertex/status"),
+  verifyVertex: (level: "CREDENTIALS" | "TEXT_MODEL" | "IMAGE_MODEL" = "CREDENTIALS", imageModelAlias?: ImageModelAlias) =>
+    request<VertexStatus>("/settings/vertex/verify", {
+      method: "POST",
+      body: JSON.stringify({ level, image_model_alias: imageModelAlias }),
+    }),
+  runtimeSettings: () => request<RuntimeSettings>("/settings/runtime"),
+  updateRuntimeSettings: (payload: Partial<RuntimeSettings> & { version: number }) =>
+    request<RuntimeSettings>("/settings/runtime", { method: "PATCH", body: JSON.stringify(payload) }),
+  diagnostics: () => request<Diagnostics>("/settings/diagnostics"),
   assets: (projectId: string) => request<Asset[]>(`/assets?project_id=${encodeURIComponent(projectId)}`),
   uploadAsset: (projectId: string, kind: string, file: File) => {
     const data = new FormData();
@@ -462,4 +647,49 @@ export const api = {
       body: JSON.stringify({ export_type: exportType }),
     }),
   selectedPagePngUrl: (pageId: string) => publicUrl(`/api/v1/pages/${pageId}/export.png`),
+  workflowNodeTypes: () => request<WorkflowNodeType[]>("/workflow-node-types"),
+  workflows: (projectId: string) => request<WorkflowDefinition[]>(`/projects/${projectId}/workflows`),
+  createWorkflow: (projectId: string, name = "默认漫画工作流", template: "manga_default" | "blank" = "manga_default") =>
+    request<WorkflowDefinition>(`/projects/${projectId}/workflows`, {
+      method: "POST",
+      body: JSON.stringify({ name, template, description: "" }),
+    }),
+  importWorkflow: (projectId: string, payload: { name: string; description?: string; graph: WorkflowGraph }) =>
+    request<WorkflowDefinition>(`/projects/${projectId}/workflows/import`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  updateWorkflow: (workflowId: string, version: number, payload: Partial<Pick<WorkflowDefinition, "name" | "description" | "draft_graph" | "is_active">>) =>
+    request<WorkflowDefinition>(`/workflows/${workflowId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ ...payload, version }),
+    }),
+  validateWorkflow: (workflowId: string) => request<WorkflowValidation>(`/workflows/${workflowId}/validate`, { method: "POST" }),
+  publishWorkflow: (workflowId: string) => request<WorkflowVersion>(`/workflows/${workflowId}/publish`, { method: "POST" }),
+  workflowVersions: (workflowId: string) => request<WorkflowVersion[]>(`/workflows/${workflowId}/versions`),
+  restoreWorkflowVersion: (versionId: string, version: number) => request<WorkflowDefinition>(`/workflow-versions/${versionId}/restore`, {
+    method: "POST",
+    body: JSON.stringify({ version }),
+  }),
+  workflowRuns: (workflowId: string) => request<WorkflowRun[]>(`/workflows/${workflowId}/runs`),
+  startWorkflowRun: (workflowId: string, payload: { scope_type: WorkflowRun["scope_type"]; scope_id: string | null; start_node_ids?: string[]; stop_node_ids?: string[] }) =>
+    request<WorkflowRun>(`/workflows/${workflowId}/runs`, {
+      method: "POST",
+      body: JSON.stringify({ ...payload, start_node_ids: payload.start_node_ids ?? [], stop_node_ids: payload.stop_node_ids ?? [] }),
+    }),
+  workflowRun: (runId: string) => request<WorkflowRun>(`/workflow-runs/${runId}`),
+  cancelWorkflowRun: (runId: string) => request<WorkflowRun>(`/workflow-runs/${runId}/cancel`, { method: "POST" }),
+  retryWorkflowRun: (runId: string) => request<WorkflowRun>(`/workflow-runs/${runId}/retry`, { method: "POST" }),
+  approveWorkflowNode: (
+    runId: string,
+    nodeId: string,
+    payload: {
+      candidate_id?: string | null;
+      image_model_alias?: ImageModelAlias | null;
+      resolution?: Resolution | null;
+    } = {},
+  ) => request<WorkflowRun>(`/workflow-runs/${runId}/nodes/${nodeId}/approve`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  }),
 };

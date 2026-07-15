@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.domain.states import JobStatus
 from app.models import GenerationJob, JobDependency, utcnow
+from app.services.runtime_settings import apply_runtime_overrides
 
 LOCAL_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="mangaflow-local")
 
@@ -69,6 +70,7 @@ def dependencies_complete(db: Session, job: GenerationJob) -> bool:
 
 def enqueue_job(db: Session, job: GenerationJob) -> GenerationJob:
     settings = get_settings()
+    apply_runtime_overrides(db, settings)
     if not dependencies_complete(db, job):
         job.status = JobStatus.WAITING
         db.commit()

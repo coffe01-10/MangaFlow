@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from app.domain.states import JobStatus, PageStatus, Resolution, WorkflowMode
 
@@ -69,6 +69,7 @@ class AssetRead(BaseModel):
     status: str
     created_at: datetime
     content_url: str | None = None
+    thumbnail_url: str | None = None
 
 
 class AssetUpdate(BaseModel):
@@ -392,6 +393,7 @@ class PageCandidateRead(BaseModel):
     is_selected: bool
     created_at: datetime
     content_url: str | None = None
+    thumbnail_url: str | None = None
 
 
 class CandidateQueuedRead(BaseModel):
@@ -435,6 +437,21 @@ class JobRead(BaseModel):
     updated_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+    request_parameters: dict = Field(default_factory=dict, exclude=True)
+
+    @computed_field
+    @property
+    def workflow_run_id(self) -> str | None:
+        value = self.request_parameters.get("workflow_run_id")
+        return value if isinstance(value, str) else None
+
+    @computed_field
+    @property
+    def workflow_node_id(self) -> str | None:
+        value = self.request_parameters.get("node_id") or self.request_parameters.get(
+            "workflow_node_id"
+        )
+        return value if isinstance(value, str) else None
 
 
 class LibraryBatchRead(BaseModel):
@@ -446,6 +463,8 @@ class LibraryRead(BaseModel):
     groups: list[LibraryBatchRead]
     total_candidates: int
     favorite_count: int
+    next_cursor: str | None = None
+    limit: int = 30
 
 
 class InspectionRequest(BaseModel):
