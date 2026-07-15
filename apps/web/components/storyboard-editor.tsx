@@ -18,6 +18,42 @@ type DialogueDraft = Pick<PanelDialogue, "target_text" | "speaker_character_id" 
 const shotTypes = [["establishing", "远景建立"], ["wide_action", "全景动作"], ["medium_close_up", "中近景"], ["close_up", "近景"], ["extreme_close_up", "大特写"]] as const;
 const cameraAngles = [["eye_level", "平视"], ["low_angle", "仰拍"], ["high_angle", "俯拍"], ["dutch_angle", "倾斜镜头"], ["over_shoulder", "越肩"]] as const;
 
+function DialogueCard({
+  index,
+  draft,
+  characters,
+  isNew = false,
+  busy,
+  onChange,
+  onSave,
+  onCancel,
+  onDelete,
+}: {
+  index: number;
+  draft: DialogueDraft;
+  characters: Character[];
+  isNew?: boolean;
+  busy: boolean;
+  onChange: (draft: DialogueDraft) => void;
+  onSave: () => void;
+  onCancel?: () => void;
+  onDelete?: () => void;
+}) {
+  return <article className={isNew ? "dialogue-card new" : "dialogue-card"}>
+    <header className="dialogue-card-head">
+      <div><span>{isNew ? "NEW BALLOON" : `BALLOON ${String(index).padStart(2, "0")}`}</span><strong>{isNew ? "新增文字气泡" : `气泡 ${String(index).padStart(2, "0")}`}</strong></div>
+      <div><small>{draft.target_text.trim().length} 字</small>{onDelete && <button type="button" aria-label={`删除气泡 ${index}`} title="删除气泡" className="dialogue-delete" disabled={busy} onClick={onDelete}><Trash2 size={13} /></button>}</div>
+    </header>
+    <label className="dialogue-copy"><span>文字内容</span><textarea aria-label={isNew ? "新增气泡文字" : `气泡 ${index} 文字`} autoFocus={isNew} placeholder="输入对白、旁白或画外音" value={draft.target_text} onChange={(event) => onChange({ ...draft, target_text: event.target.value })} /></label>
+    <div className="dialogue-control-deck">
+      <label className="dialogue-speaker"><span>说话人</span><select aria-label={isNew ? "新增气泡说话人" : `气泡 ${index} 说话人`} value={draft.speaker_character_id ?? ""} onChange={(event) => onChange({ ...draft, speaker_character_id: event.target.value || null })}><option value="">旁白 / 无说话人</option>{characters.map((character) => <option key={character.id} value={character.id}>{character.primary_name}</option>)}</select></label>
+      <fieldset className="dialogue-direction"><legend>排字方向</legend><button type="button" aria-pressed={draft.text_direction === "vertical"} className={draft.text_direction === "vertical" ? "active" : ""} onClick={() => onChange({ ...draft, text_direction: "vertical" })}>竖排</button><button type="button" aria-pressed={draft.text_direction === "horizontal"} className={draft.text_direction === "horizontal" ? "active" : ""} onClick={() => onChange({ ...draft, text_direction: "horizontal" })}>横排</button></fieldset>
+      <label className="dialogue-lock"><input type="checkbox" checked={draft.rewrite_forbidden} onChange={(event) => onChange({ ...draft, rewrite_forbidden: event.target.checked })} /><span>锁定文字</span><small>生图时禁止改写</small></label>
+      <div className="dialogue-card-actions">{onCancel && <button type="button" className="dialogue-cancel" onClick={onCancel}><X size={12} />取消</button>}<button type="button" className="dialogue-save" disabled={busy || !draft.target_text.trim()} onClick={onSave}><Save size={12} />{isNew ? "新增气泡" : "保存更改"}</button></div>
+    </div>
+  </article>;
+}
+
 export function StoryboardEditor({
   chapterId,
   pages,
@@ -147,9 +183,9 @@ export function StoryboardEditor({
           <div className="panel-flags"><label><input type="checkbox" checked={panelDraft.bleed} onChange={(event) => setPanelDraft({ ...panelDraft, bleed: event.target.checked })} />出血格</label><label><input type="checkbox" checked={panelDraft.borderless} onChange={(event) => setPanelDraft({ ...panelDraft, borderless: event.target.checked })} />无边框</label></div>
           <button className="panel-save" disabled={savePanel.isPending || !panelDraft.actions.script_action?.trim()} onClick={() => savePanel.mutate()}><Save size={13} />保存本格分镜</button>
         </div> : <div className="panel-readout"><dl><div><dt>景别</dt><dd>{shotTypes.find(([value]) => value === selectedPanel.shot_type)?.[1] ?? selectedPanel.shot_type}</dd></div><div><dt>角度</dt><dd>{cameraAngles.find(([value]) => value === selectedPanel.camera_angle)?.[1] ?? selectedPanel.camera_angle}</dd></div><div><dt>动作</dt><dd>{selectedPanel.actions.script_action || "待补充"}</dd></div><div><dt>背景</dt><dd>{selectedPanel.background || "待补充"}</dd></div></dl><div className="panel-cast">{selectedPanel.characters.map((id) => <span key={id}>{characters.find((item) => item.id === id)?.primary_name ?? "未知角色"}</span>)}</div></div>}
-        <section className="dialogue-editor"><header><div><span>LETTERING</span><strong>文字与气泡</strong></div><button onClick={() => setNewDialogue({ target_text: "", speaker_character_id: null, text_direction: "vertical", rewrite_forbidden: true })}><MessageSquarePlus size={12} />新增</button></header>
-          {selectedPanel.dialogues.map((dialogue) => { const draft = dialogueDrafts[dialogue.id] ?? { target_text: dialogue.target_text, speaker_character_id: dialogue.speaker_character_id, text_direction: dialogue.text_direction, rewrite_forbidden: dialogue.rewrite_forbidden }; return <div className="dialogue-row" key={dialogue.id}><select aria-label="说话人" value={draft.speaker_character_id ?? ""} onChange={(event) => setDialogueDrafts({ ...dialogueDrafts, [dialogue.id]: { ...draft, speaker_character_id: event.target.value || null } })}><option value="">旁白 / 无说话人</option>{characters.map((character) => <option key={character.id} value={character.id}>{character.primary_name}</option>)}</select><textarea aria-label="对白或旁白文字" value={draft.target_text} onChange={(event) => setDialogueDrafts({ ...dialogueDrafts, [dialogue.id]: { ...draft, target_text: event.target.value } })} /><div><select aria-label="排字方向" value={draft.text_direction} onChange={(event) => setDialogueDrafts({ ...dialogueDrafts, [dialogue.id]: { ...draft, text_direction: event.target.value as DialogueDraft["text_direction"] } })}><option value="vertical">竖排</option><option value="horizontal">横排</option></select><button disabled={!draft.target_text.trim() || saveDialogue.isPending} onClick={() => saveDialogue.mutate({ dialogue, draft })}><Save size={11} />保存</button><button aria-label="删除气泡" className="danger-action" disabled={removeDialogue.isPending} onClick={() => window.confirm("删除这个文字气泡？") && removeDialogue.mutate(dialogue.id)}><Trash2 size={11} /></button></div></div>; })}
-          {newDialogue && <div className="dialogue-row new"><select aria-label="新增气泡说话人" value={newDialogue.speaker_character_id ?? ""} onChange={(event) => setNewDialogue({ ...newDialogue, speaker_character_id: event.target.value || null })}><option value="">旁白 / 无说话人</option>{characters.map((character) => <option key={character.id} value={character.id}>{character.primary_name}</option>)}</select><textarea aria-label="新增气泡文字" autoFocus placeholder="输入对白或旁白" value={newDialogue.target_text} onChange={(event) => setNewDialogue({ ...newDialogue, target_text: event.target.value })} /><div><select aria-label="新增气泡排字方向" value={newDialogue.text_direction} onChange={(event) => setNewDialogue({ ...newDialogue, text_direction: event.target.value as DialogueDraft["text_direction"] })}><option value="vertical">竖排</option><option value="horizontal">横排</option></select><button onClick={() => setNewDialogue(null)}><X size={11} />取消</button><button disabled={!newDialogue.target_text.trim() || addDialogue.isPending} onClick={() => addDialogue.mutate()}><Save size={11} />新增</button></div></div>}
+        <section className="dialogue-editor"><header><div><span>LETTERING</span><strong>文字与气泡</strong><small>{selectedPanel.dialogues.length} 个气泡 · 本格文字单独校对</small></div><button type="button" disabled={Boolean(newDialogue)} onClick={() => setNewDialogue({ target_text: "", speaker_character_id: null, text_direction: "vertical", rewrite_forbidden: true })}><MessageSquarePlus size={12} />新增气泡</button></header>
+          <div className="dialogue-stack">{selectedPanel.dialogues.map((dialogue, index) => { const draft = dialogueDrafts[dialogue.id] ?? { target_text: dialogue.target_text, speaker_character_id: dialogue.speaker_character_id, text_direction: dialogue.text_direction, rewrite_forbidden: dialogue.rewrite_forbidden }; return <DialogueCard key={dialogue.id} index={index + 1} draft={draft} characters={characters} busy={saveDialogue.isPending || removeDialogue.isPending} onChange={(value) => setDialogueDrafts({ ...dialogueDrafts, [dialogue.id]: value })} onSave={() => saveDialogue.mutate({ dialogue, draft })} onDelete={() => window.confirm("删除这个文字气泡？") && removeDialogue.mutate(dialogue.id)} />; })}
+          {newDialogue && <DialogueCard index={selectedPanel.dialogues.length + 1} draft={newDialogue} characters={characters} isNew busy={addDialogue.isPending} onChange={setNewDialogue} onSave={() => addDialogue.mutate()} onCancel={() => setNewDialogue(null)} />}</div>
         </section>
       </aside>}
     </div>}
