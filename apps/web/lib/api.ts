@@ -281,6 +281,134 @@ export interface ExportBundle {
   download_url: string;
 }
 
+export type WorkflowPortDataType = "text" | "json" | "image" | "asset" | "report" | "boolean";
+
+export interface WorkflowPort {
+  id: string;
+  label: string;
+  data_type: WorkflowPortDataType;
+  required: boolean;
+}
+
+export interface WorkflowNodeConfig {
+  model_alias: string | null;
+  prompt_template: string;
+  system_instruction: string;
+  temperature: number;
+  timeout_seconds: number;
+  max_attempts: number;
+  concurrency: number;
+  resolution: Resolution | null;
+  locked: boolean;
+  notes: string;
+  condition: Record<string, unknown>;
+  requires_approval: boolean;
+}
+
+export interface WorkflowGraphNode {
+  id: string;
+  type: string;
+  name: string;
+  position: { x: number; y: number };
+  inputs: WorkflowPort[];
+  outputs: WorkflowPort[];
+  config: WorkflowNodeConfig;
+}
+
+export interface WorkflowGraphEdge {
+  id: string;
+  source_node: string;
+  source_port: string;
+  target_node: string;
+  target_port: string;
+}
+
+export interface WorkflowGraph {
+  schema_version: 2;
+  nodes: WorkflowGraphNode[];
+  edges: WorkflowGraphEdge[];
+}
+
+export interface WorkflowDefinition {
+  id: string;
+  project_id: string;
+  name: string;
+  description: string;
+  draft_graph: WorkflowGraph;
+  draft_version: number;
+  published_version_id: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+  version: number;
+}
+
+export interface WorkflowValidationIssue {
+  severity: "ERROR" | "WARNING";
+  code: string;
+  message: string;
+  node_id: string | null;
+  edge_id: string | null;
+}
+
+export interface WorkflowValidation {
+  valid: boolean;
+  issues: WorkflowValidationIssue[];
+  topological_order: string[];
+}
+
+export interface WorkflowVersion {
+  id: string;
+  workflow_id: string;
+  revision: number;
+  graph: WorkflowGraph;
+  graph_checksum: string;
+  validation_report: WorkflowValidation;
+  published_at: string;
+}
+
+export interface WorkflowNodeType {
+  type: string;
+  label: string;
+  category: "INPUT" | "AGENT" | "CONTROL" | "OUTPUT" | string;
+  description: string;
+  inputs: WorkflowPort[];
+  outputs: WorkflowPort[];
+  configurable_fields: string[];
+}
+
+export interface WorkflowNodeRun {
+  id: string;
+  workflow_run_id: string;
+  node_id: string;
+  node_type: string;
+  status: string;
+  job_id: string | null;
+  input_snapshot: Record<string, unknown>;
+  output_refs: Record<string, unknown>;
+  attempt_count: number;
+  started_at: string | null;
+  finished_at: string | null;
+  error_code: string | null;
+  error_message: string | null;
+}
+
+export interface WorkflowRun {
+  id: string;
+  workflow_id: string;
+  workflow_version_id: string;
+  project_id: string;
+  scope_type: "PROJECT" | "CHAPTER" | "PAGE" | "CANDIDATE";
+  scope_id: string | null;
+  status: string;
+  start_node_ids: string[];
+  stop_node_ids: string[];
+  node_runs: WorkflowNodeRun[];
+  created_at: string;
+  updated_at: string;
+  version: number;
+}
+
 export function publicUrl(path: string | null) {
   if (!path) return null;
   return path.startsWith("http") ? path : `${API_ORIGIN}${path}`;
@@ -462,4 +590,41 @@ export const api = {
       body: JSON.stringify({ export_type: exportType }),
     }),
   selectedPagePngUrl: (pageId: string) => publicUrl(`/api/v1/pages/${pageId}/export.png`),
+  workflowNodeTypes: () => request<WorkflowNodeType[]>("/workflow-node-types"),
+  workflows: (projectId: string) => request<WorkflowDefinition[]>(`/projects/${projectId}/workflows`),
+  createWorkflow: (projectId: string, name = "默认漫画工作流", template: "manga_default" | "blank" = "manga_default") =>
+    request<WorkflowDefinition>(`/projects/${projectId}/workflows`, {
+      method: "POST",
+      body: JSON.stringify({ name, template, description: "" }),
+    }),
+  importWorkflow: (projectId: string, payload: { name: string; description?: string; graph: WorkflowGraph }) =>
+    request<WorkflowDefinition>(`/projects/${projectId}/workflows/import`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  updateWorkflow: (workflowId: string, version: number, payload: Partial<Pick<WorkflowDefinition, "name" | "description" | "draft_graph" | "is_active">>) =>
+    request<WorkflowDefinition>(`/workflows/${workflowId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ ...payload, version }),
+    }),
+  validateWorkflow: (workflowId: string) => request<WorkflowValidation>(`/workflows/${workflowId}/validate`, { method: "POST" }),
+  publishWorkflow: (workflowId: string) => request<WorkflowVersion>(`/workflows/${workflowId}/publish`, { method: "POST" }),
+  workflowVersions: (workflowId: string) => request<WorkflowVersion[]>(`/workflows/${workflowId}/versions`),
+  restoreWorkflowVersion: (versionId: string, version: number) => request<WorkflowDefinition>(`/workflow-versions/${versionId}/restore`, {
+    method: "POST",
+    body: JSON.stringify({ version }),
+  }),
+  workflowRuns: (workflowId: string) => request<WorkflowRun[]>(`/workflows/${workflowId}/runs`),
+  startWorkflowRun: (workflowId: string, payload: { scope_type: WorkflowRun["scope_type"]; scope_id: string | null; start_node_ids?: string[]; stop_node_ids?: string[] }) =>
+    request<WorkflowRun>(`/workflows/${workflowId}/runs`, {
+      method: "POST",
+      body: JSON.stringify({ ...payload, start_node_ids: payload.start_node_ids ?? [], stop_node_ids: payload.stop_node_ids ?? [] }),
+    }),
+  workflowRun: (runId: string) => request<WorkflowRun>(`/workflow-runs/${runId}`),
+  cancelWorkflowRun: (runId: string) => request<WorkflowRun>(`/workflow-runs/${runId}/cancel`, { method: "POST" }),
+  retryWorkflowRun: (runId: string) => request<WorkflowRun>(`/workflow-runs/${runId}/retry`, { method: "POST" }),
+  approveWorkflowNode: (runId: string, nodeId: string, candidateId?: string) => request<WorkflowRun>(`/workflow-runs/${runId}/nodes/${nodeId}/approve`, {
+    method: "POST",
+    body: JSON.stringify({ candidate_id: candidateId ?? null }),
+  }),
 };

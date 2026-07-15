@@ -126,6 +126,20 @@ class WorkflowRunCreate(BaseModel):
     stop_node_ids: list[str] = Field(default_factory=list)
 
 
+class WorkflowRestoreRequest(BaseModel):
+    version: int = Field(ge=1)
+
+
+class WorkflowNodeApproveRequest(BaseModel):
+    candidate_id: str | None = None
+
+
+class WorkflowImportRequest(BaseModel):
+    name: str = Field(default="导入的工作流", min_length=1, max_length=160)
+    description: str = Field(default="", max_length=10_000)
+    graph: WorkflowGraph
+
+
 class WorkflowNodeRunRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
