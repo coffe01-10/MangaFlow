@@ -11,12 +11,18 @@ from app.models import (
     MangaPage,
     PageCandidate,
     Panel,
+    Project,
     Scene,
     Beat,
     Chapter,
+    Character,
+    InspectionResult,
     ScriptRevision,
     SourceSegment,
 )
+from app.services.prompt_compiler import compile_page_prompt
+from app.services.ai_schemas import BeatDraft, CharacterDraft, SceneDraft, StoryParseOutput
+from app.worker_tasks import _run_story_parse
 
 
 def _project(client, name="长篇测试"):
@@ -100,6 +106,116 @@ def test_lossless_import_and_dynamic_pagination(client, db_session):
     assert (
         short_chapter["source_character_count"] < long_chapter["source_character_count"]
     )
+    first_page_id = long["pages"][0]["id"]
+    original_second_page_id = long["pages"][1]["id"]
+    replanned = client.post(
+        f"/api/v1/chapters/{long_chapter['id']}/plan",
+        json={"replace_existing": True, "from_page_number": 2},
+    )
+    assert replanned.status_code == 200
+    assert replanned.json()["coverage_ratio"] == 1
+    assert replanned.json()["pages"][0]["id"] == first_page_id
+    assert replanned.json()["pages"][1]["id"] != original_second_page_id
+    assert [page["page_number"] for page in replanned.json()["pages"]] == list(
+        range(1, replanned.json()["page_count"] + 1)
+    )
+
+
+def test_txt_and_markdown_source_upload(client):
+    project = _project(client, "文件原文导入")
+    uploaded = client.post(
+        f"/api/v1/projects/{project['id']}/sources/upload",
+        data={"title": "上传章节"},
+        files={
+            "file": (
+                "chapter.md",
+                "# 第一章\n\n原文内容必须完整保留。".encode(),
+                "text/markdown",
+            )
+        },
+    )
+    assert uploaded.status_code == 201
+    assert uploaded.json()["chapters"][0]["title"] == "上传章节"
+    assert uploaded.json()["total_characters"] > 0
+    unsupported = client.post(
+        f"/api/v1/projects/{project['id']}/sources/upload",
+        data={"title": "错误格式"},
+        files={
+            "file": ("chapter.docx", b"not-a-docx", "application/octet-stream")
+        },
+    )
+    assert unsupported.status_code == 415
+
+
+def test_story_parse_worker_writes_complete_traceable_script(
+    client, db_session, monkeypatch
+):
+    project = _project(client, "AI 剧本生成")
+    imported = client.post(
+        f"/api/v1/projects/{project['id']}/sources/import",
+        json={
+            "title": "第一章",
+            "text": "顾川推开门。\n\n他看向窗边，轻声说：“我来了。”",
+        },
+    ).json()
+    chapter = db_session.get(Chapter, imported["chapters"][0]["id"])
+    segments = (
+        db_session.query(SourceSegment)
+        .filter(SourceSegment.source_revision_id == chapter.current_source_revision_id)
+        .order_by(SourceSegment.ordinal)
+        .all()
+    )
+
+    class FakeTextAdapter:
+        def generate_structured(self, request, schema):
+            assert schema is StoryParseOutput
+            assert all(segment.id in request.prompt for segment in segments)
+            return StoryParseOutput(
+                characters=[
+                    CharacterDraft(primary_name="顾川", aliases=["小川"])
+                ],
+                scenes=[
+                    SceneDraft(
+                        ordinal=1,
+                        location="教室",
+                        purpose="顾川登场",
+                        source_segment_ids=[segment.id for segment in segments],
+                        beats=[
+                            BeatDraft(
+                                ordinal=index,
+                                action=segment.text,
+                                speaker_name="小川" if index == len(segments) else "",
+                                dialogue="我来了。" if index == len(segments) else "",
+                                source_segment_ids=[segment.id],
+                            )
+                            for index, segment in enumerate(segments, 1)
+                        ],
+                    )
+                ],
+            )
+
+    monkeypatch.setattr("app.worker_tasks._adapter", lambda alias: FakeTextAdapter())
+    job = GenerationJob(
+        project_id=project["id"],
+        target_type="CHAPTER",
+        target_id=chapter.id,
+        job_type="SOURCE_PARSE",
+        status="PREPARING",
+        model_alias="text.fast",
+    )
+    db_session.add(job)
+    db_session.flush()
+    _run_story_parse(db_session, job)
+    db_session.commit()
+
+    db_session.refresh(chapter)
+    script = db_session.query(ScriptRevision).filter_by(chapter_id=chapter.id).one()
+    beats = db_session.query(Beat).join(Scene).filter(Scene.chapter_id == chapter.id).all()
+    assert chapter.status == "SCRIPT_READY"
+    assert script.coverage["ratio"] == 1
+    assert script.coverage["missing_segment_ids"] == []
+    assert len(beats) == len(segments)
+    assert beats[-1].speaker_name == "顾川"
 
 
 def test_page_plan_persists_rtl_storyboard_panels(client, db_session):
@@ -114,12 +230,73 @@ def test_page_plan_persists_rtl_storyboard_panels(client, db_session):
     )
     assert len(panels) == first["panel_count"]
     assert [panel.reading_order for panel in panels] == list(range(1, len(panels) + 1))
-    assert panels[0].bounds["x"] == 0.5
+    assert panels[0].bounds["x"] > panels[1].bounds["x"]
     assert (
         db_session.query(Dialogue)
         .filter(Dialogue.panel_id.in_([item.id for item in panels]))
         .count()
     )
+    assert len({(item.bounds["width"], item.bounds["height"]) for item in panels}) > 1
+
+
+def test_canonical_speaker_flows_from_script_to_panel_prompt(client, db_session):
+    project = _project(client, "说话人追踪")
+    character = Character(project_id=project["id"], primary_name="顾川", aliases=["老顾"])
+    db_session.add(character)
+    imported = client.post(
+        f"/api/v1/projects/{project['id']}/sources/import",
+        json={"title": "对白章", "text": "顾川看向门口，说：“你来了。”"},
+    ).json()["chapters"][0]
+    segment = (
+        db_session.query(SourceSegment)
+        .filter(SourceSegment.source_revision_id == imported["current_source_revision_id"])
+        .one()
+    )
+    scene = Scene(
+        chapter_id=imported["id"],
+        ordinal=1,
+        location="教室",
+        source_range={"segment_ids": [segment.id]},
+    )
+    db_session.add(scene)
+    db_session.flush()
+    db_session.add(
+        Beat(
+            scene_id=scene.id,
+            ordinal=1,
+            action="顾川看向门口",
+            speaker_name="顾川",
+            dialogue="你来了。",
+            source_range={"segment_ids": [segment.id]},
+        )
+    )
+    db_session.add(
+        ScriptRevision(
+            chapter_id=imported["id"],
+            source_revision_id=imported["current_source_revision_id"],
+            revision_no=1,
+            status="READY",
+            coverage={"expected": 1, "covered": 1, "ratio": 1, "missing_segment_ids": []},
+        )
+    )
+    chapter = db_session.get(Chapter, imported["id"])
+    chapter.status = "SCRIPT_READY"
+    db_session.commit()
+    page_data = client.post(
+        f"/api/v1/chapters/{chapter.id}/plan",
+        json={"replace_existing": True},
+    ).json()["pages"][0]
+    dialogue = (
+        db_session.query(Dialogue)
+        .join(Panel, Panel.id == Dialogue.panel_id)
+        .filter(Panel.page_id == page_data["id"])
+        .first()
+    )
+    assert dialogue.speaker_character_id == character.id
+    page = db_session.get(MangaPage, page_data["id"])
+    project_record = db_session.get(Project, project["id"])
+    _, snapshot = compile_page_prompt(db_session, page, project_record)
+    assert snapshot["input"]["page"]["layout"][0]["dialogues"][0]["speaker"] == "顾川"
 
 
 def test_character_alias_conflict_and_reference_binding(client):
@@ -137,6 +314,21 @@ def test_character_alias_conflict_and_reference_binding(client):
     )
     assert second.status_code == 201
     assert second.json()["alias_conflict"] is True
+    resolved = client.patch(
+        f"/api/v1/characters/{second.json()['id']}",
+        json={
+            "version": second.json()["version"],
+            "primary_name": "白露",
+            "aliases": ["露露"],
+            "locked_features": ["银色短发", "右眼泪痣"],
+            "forbidden_changes": ["不得改变发色"],
+        },
+    )
+    assert resolved.status_code == 200
+    assert resolved.json()["alias_conflict"] is False
+    assert resolved.json()["status"] == "CANONICAL"
+    assert resolved.json()["locked_features"] == ["银色短发", "右眼泪痣"]
+    assert resolved.json()["forbidden_changes"] == ["不得改变发色"]
 
 
 def test_page_plan_requires_complete_script(client):
@@ -161,7 +353,11 @@ def test_chapter_delete_restore_and_source_revision(client):
     ).json()["chapters"][0]
     revised = client.post(
         f"/api/v1/chapters/{chapter['id']}/revisions",
-        json={"title": "第一章（修订）", "text": "第二版完整原文。", "source_type": "PASTE"},
+        json={
+            "title": "第一章（修订）",
+            "text": "第二版完整原文。",
+            "source_type": "PASTE",
+        },
     )
     assert revised.status_code == 201
     assert revised.json()["revision"] == 2
@@ -186,6 +382,12 @@ def test_batch_candidate_favorite_select_and_next(client, db_session, monkeypatc
     assert queued.status_code == 202
     candidate = queued.json()["candidate"]
     assert candidate["model_alias"] == "image.nano_banana_pro"
+    assert (
+        client.get(f"/api/v1/projects/{project['id']}").json()[
+            "last_image_model_alias"
+        ]
+        == "image.nano_banana_pro"
+    )
 
     favorite = client.patch(
         f"/api/v1/candidates/{candidate['id']}/favorite",
@@ -229,6 +431,24 @@ def test_batch_candidate_favorite_select_and_next(client, db_session, monkeypatc
     ).json()
     assert library["favorite_count"] == 1
     assert library["groups"][0]["candidates"][0]["is_selected"] is True
+    filtered = client.get(
+        f"/api/v1/projects/{project['id']}/library",
+        params={
+            "group_by": "batch",
+            "model_alias": "image.nano_banana_pro",
+            "resolution": "1K",
+            "generation_kind": "PAGE",
+            "date_from": "2000-01-01T00:00:00Z",
+        },
+    ).json()
+    assert filtered["total_candidates"] == 1
+    assert (
+        client.get(
+            f"/api/v1/projects/{project['id']}/library",
+            params={"group_by": "batch", "resolution": "2K"},
+        ).json()["total_candidates"]
+        == 0
+    )
 
 
 def test_candidate_requires_explicit_neutral_model(client, db_session, monkeypatch):
@@ -243,13 +463,23 @@ def test_candidate_requires_explicit_neutral_model(client, db_session, monkeypat
     assert response.status_code == 422
 
 
-def test_asset_generation_batches_join_library(client, monkeypatch):
+def test_asset_generation_batches_join_library(client, db_session, monkeypatch):
     monkeypatch.setattr(get_settings(), "queue_enabled", False)
     project = _project(client, "角色补图")
     character = client.post(
         f"/api/v1/projects/{project['id']}/characters",
         json={"primary_name": "苏清白", "aliases": ["小白"]},
     ).json()
+    reference = Asset(
+        project_id=project["id"], kind="CHARACTER_REFERENCE", original_name="face.png",
+        storage_key="face.png", mime_type="image/png", byte_size=10, sha256="d" * 64,
+    )
+    db_session.add(reference)
+    db_session.commit()
+    assert client.post(
+        f"/api/v1/characters/{character['id']}/references",
+        json={"asset_id": reference.id, "is_canonical": True},
+    ).status_code == 201
     batch = client.post(
         "/api/v1/asset-generation-batches",
         json={
@@ -270,10 +500,151 @@ def test_asset_generation_batches_join_library(client, monkeypatch):
     )
     assert candidate.status_code == 202
     assert candidate.json()["candidate"]["page_id"] is None
+    assert (
+        client.get(f"/api/v1/projects/{project['id']}").json()[
+            "last_image_model_alias"
+        ]
+        == "image.nano_banana_2"
+    )
     library = client.get(
         f"/api/v1/projects/{project['id']}/library?group_by=batch"
     ).json()
     assert library["groups"][0]["batch"]["generation_kind"] == "CHARACTER"
+    character_library = client.get(
+        f"/api/v1/projects/{project['id']}/library",
+        params={"group_by": "batch", "character_id": character["id"]},
+    ).json()
+    assert character_library["total_candidates"] == 1
+    assert (
+        client.delete(
+            f"/api/v1/candidates/{candidate.json()['candidate']['id']}"
+        ).status_code
+        == 204
+    )
+    assert client.get(
+        f"/api/v1/projects/{project['id']}/library?group_by=batch"
+    ).json()["total_candidates"] == 0
+
+
+def test_reference_profiles_scene_wardrobe_and_complete_sheet(
+    client, db_session, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    project = _project(client, "设定闭环")
+    character = client.post(
+        f"/api/v1/projects/{project['id']}/characters",
+        json={"primary_name": "苏清白", "aliases": ["小白"]},
+    ).json()
+    character_asset = Asset(
+        project_id=project["id"],
+        kind="CHARACTER_REFERENCE",
+        original_name="char.png",
+        storage_key="char.png",
+        mime_type="image/png",
+        byte_size=10,
+        sha256="a" * 64,
+    )
+    outfit_asset = Asset(
+        project_id=project["id"],
+        kind="OUTFIT_REFERENCE",
+        original_name="uniform.png",
+        storage_key="uniform.png",
+        mime_type="image/png",
+        byte_size=10,
+        sha256="b" * 64,
+    )
+    style_asset = Asset(
+        project_id=project["id"],
+        kind="STYLE_REFERENCE",
+        original_name="style.png",
+        storage_key="style.png",
+        mime_type="image/png",
+        byte_size=10,
+        sha256="c" * 64,
+    )
+    db_session.add_all([character_asset, outfit_asset, style_asset])
+    db_session.commit()
+    assert (
+        client.post(
+            f"/api/v1/characters/{character['id']}/references",
+            json={"asset_id": character_asset.id, "is_canonical": True},
+        ).status_code
+        == 201
+    )
+    outfit = client.post(
+        f"/api/v1/projects/{project['id']}/outfits",
+        json={
+            "character_id": character["id"],
+            "name": "校服",
+            "reference_asset_ids": [outfit_asset.id],
+        },
+    ).json()
+    style = client.post(
+        f"/api/v1/projects/{project['id']}/styles",
+        json={"name": "黑白网点", "reference_asset_ids": [style_asset.id]},
+    ).json()
+    assert (
+        client.post(
+            f"/api/v1/projects/{project['id']}/styles/{style['id']}/activate"
+        ).status_code
+        == 200
+    )
+    assert client.post(f"/api/v1/styles/{style['id']}/analyze").status_code == 202
+    sheet = client.post(
+        f"/api/v1/characters/{character['id']}/complete-sheet",
+        json={"model_alias": "image.nano_banana_2", "resolution": "1K"},
+    )
+    assert sheet.status_code == 202
+    assert len(sheet.json()) == 4
+
+    mismatch = client.post(
+        "/api/v1/asset-generation-batches",
+        json={"target_type": "OUTFIT", "target_id": outfit["id"], "generation_kind": "CHARACTER"},
+    )
+    assert mismatch.status_code == 422
+    outfit_batch = client.post(
+        "/api/v1/asset-generation-batches",
+        json={"target_type": "OUTFIT", "target_id": outfit["id"], "generation_kind": "OUTFIT"},
+    )
+    assert outfit_batch.status_code == 201
+    invalid_outfit_variant = client.post(
+        f"/api/v1/asset-generation-batches/{outfit_batch.json()['id']}/candidates",
+        json={"model_alias": "image.nano_banana_2", "resolution": "1K", "variant": "STYLE_TEST"},
+    )
+    assert invalid_outfit_variant.status_code == 422
+    outfit_candidate = client.post(
+        f"/api/v1/asset-generation-batches/{outfit_batch.json()['id']}/candidates",
+        json={"model_alias": "image.nano_banana_2", "resolution": "1K", "variant": "OUTFIT"},
+    )
+    assert outfit_candidate.status_code == 202
+    style_batch = client.post(
+        "/api/v1/asset-generation-batches",
+        json={"target_type": "STYLE", "target_id": style["id"], "generation_kind": "STYLE_TEST"},
+    )
+    assert style_batch.status_code == 201
+    style_candidate = client.post(
+        f"/api/v1/asset-generation-batches/{style_batch.json()['id']}/candidates",
+        json={"model_alias": "image.nano_banana_pro", "resolution": "1K", "variant": "STYLE_TEST"},
+    )
+    assert style_candidate.status_code == 202
+
+    _, plan = _chapter_and_pages(client, db_session, project["id"], repeat=3)
+    scene = (
+        db_session.query(Scene).filter(Scene.chapter_id == plan["chapter_id"]).first()
+    )
+    assigned = client.patch(
+        f"/api/v1/scenes/{scene.id}/outfits",
+        json={"assignments": {character["id"]: outfit["id"]}},
+    )
+    assert assigned.status_code == 200
+    page = db_session.get(MangaPage, plan["pages"][0]["id"])
+    project_record = db_session.get(Project, project["id"])
+    _, snapshot = compile_page_prompt(db_session, page, project_record)
+    assert (
+        snapshot["input"]["scene_outfits"][0]["assignments"][character["id"]]
+        == outfit["id"]
+    )
+    assert snapshot["input"]["style"]["id"] == style["id"]
 
 
 def test_eight_candidate_jobs_are_isolated(client, db_session, monkeypatch):
@@ -300,6 +671,102 @@ def test_eight_candidate_jobs_are_isolated(client, db_session, monkeypatch):
     }
     assert jobs[job_ids[0]]["status"] == "FAILED"
     assert all(jobs[job_id]["status"] == "WAITING" for job_id in job_ids[1:])
+
+
+def test_inspection_repair_escalation_and_upscale_jobs(client, db_session, monkeypatch):
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    project = _project(client, "检查修复升清")
+    _, plan = _chapter_and_pages(client, db_session, project["id"], repeat=2)
+    page = plan["pages"][0]
+    batch = client.post(f"/api/v1/pages/{page['id']}/batches").json()
+    candidate_data = client.post(
+        f"/api/v1/batches/{batch['id']}/candidates",
+        json={"model_alias": "image.nano_banana_2", "resolution": "1K"},
+    ).json()["candidate"]
+    asset = Asset(
+        project_id=project["id"],
+        kind="page_candidate",
+        original_name="review.png",
+        storage_key="generated/review.png",
+        mime_type="image/png",
+        byte_size=10,
+        sha256="d" * 64,
+        source="VERTEX_GENERATED",
+        status="GENERATED",
+    )
+    db_session.add(asset)
+    db_session.flush()
+    candidate = db_session.get(PageCandidate, candidate_data["id"])
+    candidate.asset_id = asset.id
+    candidate.status = "READY"
+    inspection = InspectionResult(
+        candidate_id=candidate.id,
+        category="TEXT",
+        outcome="MISMATCH",
+        score=0.4,
+        severity="ERROR",
+        details={"expected": "你来了。", "observed": "你来子。"},
+        regions=[{"x": 0.6, "y": 0.1, "width": 0.2, "height": 0.2}],
+    )
+    db_session.add(inspection)
+    db_session.commit()
+
+    checked = client.post(
+        f"/api/v1/candidates/{candidate.id}/inspect",
+        json={"categories": ["TEXT", "SPEAKER"]},
+    )
+    assert checked.status_code == 202
+    assert checked.json()["job_type"] == "PAGE_INSPECT"
+
+    for repair_type in ["TEXT_REGION", "BUBBLE_REGION", "PANEL"]:
+        repaired = client.post(
+            f"/api/v1/candidates/{candidate.id}/repairs",
+            json={
+                "inspection_result_id": inspection.id,
+                "repair_type": repair_type,
+                "target_regions": [],
+                "target_fields": [],
+                "model_alias": "image.nano_banana_2",
+                "resolution": "1K",
+            },
+        )
+        assert repaired.status_code == 202
+        repair_job = db_session.get(GenerationJob, repaired.json()["job_id"])
+        assert repair_job.job_type == "PAGE_REPAIR"
+
+    blocked = client.post(
+        f"/api/v1/candidates/{candidate.id}/repairs",
+        json={
+            "inspection_result_id": inspection.id,
+            "repair_type": "PAGE",
+            "model_alias": "image.nano_banana_2",
+            "resolution": "1K",
+        },
+    )
+    assert blocked.status_code == 409
+    assert "最大自动修复次数" in blocked.json()["detail"]
+
+    upscaled = client.post(
+        f"/api/v1/candidates/{candidate.id}/upscale",
+        json={"model_alias": "image.nano_banana_pro", "resolution": "4K"},
+    )
+    assert upscaled.status_code == 202
+    upscale_job = db_session.get(GenerationJob, upscaled.json()["job_id"])
+    assert upscale_job.job_type == "PAGE_UPSCALE"
+    upscale_batch = db_session.get(GenerationBatch, upscaled.json()["candidate"]["batch_id"])
+    assert upscale_batch.generation_kind == "UPSCALE"
+    assert (
+        client.get(f"/api/v1/projects/{project['id']}").json()[
+            "last_image_model_alias"
+        ]
+        == "image.nano_banana_pro"
+    )
+
+    invalid = client.post(
+        f"/api/v1/candidates/{candidate.id}/upscale",
+        json={"model_alias": "image.nano_banana_2", "resolution": "1K"},
+    )
+    assert invalid.status_code == 422
 
 
 def test_project_json_export_uses_selected_page_versions(
@@ -359,4 +826,14 @@ def test_project_json_export_uses_selected_page_versions(
         downloaded = client.get(exported["download_url"])
         assert downloaded.status_code == 200
         assert downloaded.json()["chapter"]["title"] == chapter["title"]
+        assert len(downloaded.json()["asset_manifest"]) == len(plan["pages"])
+        first_page = db_session.get(MangaPage, plan["pages"][0]["id"])
+        first_candidate = db_session.get(PageCandidate, first_page.selected_candidate_id)
+        first_asset = db_session.get(Asset, first_candidate.asset_id)
+        page_path = Path(directory) / first_asset.storage_key
+        page_path.parent.mkdir(parents=True, exist_ok=True)
+        page_path.write_bytes(b"PNG_PAGE")
+        page_download = client.get(f"/api/v1/pages/{first_page.id}/export.png")
+        assert page_download.status_code == 200
+        assert page_download.content == b"PNG_PAGE"
     assert not Path(directory).exists()

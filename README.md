@@ -26,7 +26,7 @@
 | --- | --- | --- | --- |
 | `text.fast` | Gemini 3.5 Flash | `gemini-3.5-flash` | 解析、剧本、分页、分镜和检查 |
 | `image.nano_banana_2` | Nano Banana 2 | `gemini-3.1-flash-image` | 页面、资产和修复图生成 |
-| `image.nano_banana_pro` | Nano Banana Pro | `gemini-3-pro-image` | 页面、资产和修复图生成 |
+| `image.nano_banana_pro` | Nano Banana Pro | `gemini-3-pro-image-preview` | 页面、资产和修复图生成 |
 
 两个图像模型没有主次关系。项目只记录上次使用的模型；每次创建候选时必须重新显式传入模型。1K、2K、4K 均在能力注册表中声明，4K 标记为 Preview。
 
@@ -68,6 +68,22 @@ npm run dev
 - API 文档：`http://localhost:8000/api/docs`
 - API 健康检查：`http://localhost:8000/api/v1/health`
 
+### Codex / Windows 一键环境
+
+在 Codex 的“创建本地环境 → Windows → 设置脚本”中填写：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "$env:CODEX_WORKTREE_PATH\scripts\setup-codex.ps1"
+```
+
+环境建立后，一键启动命令为：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1
+```
+
+开发模式没有 Redis 也能运行：任务会进入最多 8 线程的本地后台执行器，并继续遵守项目设置的 1–8 路并发上限。正式部署仍建议使用 Redis/RQ。
+
 PostgreSQL 与 Redis 的开发容器可用 `docker compose up -d` 启动；默认数据库仍为 `storage/mangaflow.db`。
 
 ## 检查
@@ -76,7 +92,7 @@ PostgreSQL 与 Redis 的开发容器可用 `docker compose up -d` 启动；默�
 npm run check
 ```
 
-当前验收结果：17 项后端测试通过、Ruff 通过、ESLint 通过、Next.js 生产构建通过、Alembic 升级/回滚通过。Codex 内置浏览器以 2127 字章节验证得到 14 页、100% 原文覆盖；单次点击只创建一个 Nano Banana Pro 候选，收藏后按批次出现在素材库中，控制台无错误。真实 Vertex 烟雾测试使用低 token 文本请求和一张 Nano Banana 2 的 1K 图片请求，均成功。
+当前验收结果：25 项后端测试通过、Ruff 与 ESLint 通过、Next.js 生产构建通过、Alembic 全新升级/回滚/再升级通过。Codex 内置浏览器实测左侧七步工作流、角色/服装/风格锁定项、10 页动态分页、两个平级生图模型和素材库筛选；浏览器日志为空，API 请求均成功。真实 Vertex 烟雾测试使用最多 32 输出 token 的 Gemini 3.5 Flash 请求和一张 Nano Banana 2 的 1K 图片请求，均成功。
 
 ## 安全说明
 

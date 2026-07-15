@@ -6,7 +6,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowRight,
   Check,
-  ChevronDown,
   CircleAlert,
   CloudCog,
   Gauge,
@@ -69,14 +68,12 @@ function CreateProjectPanel({ open, onClose }: { open: boolean; onClose: () => v
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
   const [mode, setMode] = useState("SEMI_AUTO");
-  const [model, setModel] = useState<Project["last_image_model_alias"]>("image.nano_banana_2");
   const [resolution, setResolution] = useState("2K");
   const [error, setError] = useState("");
   const createProject = useMutation({
     mutationFn: () => api.createProject({
       name: name.trim(),
       workflow_mode: mode as Project["workflow_mode"],
-      last_image_model_alias: model,
       default_resolution: resolution as Project["default_resolution"],
     }),
     onSuccess: () => {
@@ -119,14 +116,7 @@ function CreateProjectPanel({ open, onClose }: { open: boolean; onClose: () => v
             ))}
           </div>
 
-          <label className="field-label">初次使用的生图引擎</label>
-          <div className="select-wrap">
-            <select value={model} onChange={(event) => setModel(event.target.value as Project["last_image_model_alias"])}>
-              <option value="image.nano_banana_2">Nano Banana 2</option>
-              <option value="image.nano_banana_pro">Nano Banana Pro</option>
-            </select>
-            <ChevronDown size={16} />
-          </div>
+          <p className="form-note"><Sparkles size={14} />Nano Banana 2 与 Pro 不设默认主模型；进入工作区后，每次生成前选择。</p>
 
           <label className="field-label">正式输出清晰度</label>
           <div className="resolution-row">

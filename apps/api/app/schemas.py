@@ -18,7 +18,7 @@ class ProjectCreate(BaseModel):
     default_concurrency: int = Field(default=4, ge=1, le=8)
     ocr_enabled: bool = True
     consistency_check_enabled: bool = True
-    last_image_model_alias: str = Field(default="image.nano_banana_2", pattern=IMAGE_MODEL_PATTERN)
+    last_image_model_alias: str | None = Field(default=None, pattern=IMAGE_MODEL_PATTERN)
 
 
 class ProjectUpdate(BaseModel):
@@ -48,7 +48,8 @@ class ProjectRead(BaseModel):
     ocr_enabled: bool
     consistency_check_enabled: bool
     text_model_alias: str
-    last_image_model_alias: str
+    last_image_model_alias: str | None
+    default_style_id: str | None
     created_at: datetime
     updated_at: datetime
     version: int
@@ -155,6 +156,7 @@ class BeatRead(BaseModel):
     scene_id: str
     ordinal: int
     action: str
+    speaker_name: str
     dialogue: str
     narration: str
     subtext: str
@@ -178,6 +180,7 @@ class SceneRead(BaseModel):
     purpose: str
     emotional_arc: str
     source_range: dict
+    outfit_assignments: dict
     beats: list[BeatRead] = Field(default_factory=list)
 
 
@@ -250,6 +253,7 @@ class OutfitCreate(BaseModel):
     components: dict = Field(default_factory=dict)
     state_rules: dict = Field(default_factory=dict)
     locked_fields: list[str] = Field(default_factory=list)
+    reference_asset_ids: list[str] = Field(default_factory=list)
 
 
 class OutfitRead(BaseModel):
@@ -262,6 +266,7 @@ class OutfitRead(BaseModel):
     components: dict
     state_rules: dict
     locked_fields: list
+    reference_asset_ids: list[str]
     status: str
     version: int
 
@@ -285,6 +290,28 @@ class StyleProfileRead(BaseModel):
     locked_fields: list
     status: str
     version: int
+
+
+class SceneOutfitUpdate(BaseModel):
+    assignments: dict[str, str] = Field(default_factory=dict)
+
+
+class CharacterSheetCreate(BaseModel):
+    model_alias: str = Field(pattern=IMAGE_MODEL_PATTERN)
+    resolution: Resolution = Resolution.DRAFT_1K
+    variants: list[str] = Field(
+        default_factory=lambda: ["FRONT", "SIDE", "BACK", "EXPRESSION"],
+        min_length=1,
+        max_length=8,
+    )
+
+    @model_validator(mode="after")
+    def validate_variants(self):
+        allowed = {"FRONT", "SIDE", "BACK", "EXPRESSION"}
+        if any(item not in allowed for item in self.variants):
+            raise ValueError("角色形象只支持正面、侧面、背面和表情")
+        self.variants = list(dict.fromkeys(self.variants))
+        return self
 
 
 class AssetBatchCreate(BaseModel):
@@ -316,6 +343,7 @@ class PageRead(BaseModel):
 
 class PlanRequest(BaseModel):
     replace_existing: bool = True
+    from_page_number: int | None = Field(default=None, ge=1)
 
 
 class PlanRead(BaseModel):
@@ -422,7 +450,14 @@ class LibraryRead(BaseModel):
 
 class InspectionRequest(BaseModel):
     categories: list[str] = Field(
-        default_factory=lambda: ["TEXT", "CHARACTER", "OUTFIT", "CONTINUITY"]
+        default_factory=lambda: [
+            "TEXT",
+            "SPEAKER",
+            "CHARACTER",
+            "OUTFIT",
+            "PROP",
+            "CONTINUITY",
+        ]
     )
 
 
@@ -447,6 +482,17 @@ class RepairRequest(BaseModel):
     target_fields: list[str] = Field(default_factory=list)
     model_alias: str = Field(pattern=IMAGE_MODEL_PATTERN)
     resolution: Resolution
+
+
+class UpscaleRequest(BaseModel):
+    model_alias: str = Field(pattern=IMAGE_MODEL_PATTERN)
+    resolution: Resolution
+
+    @model_validator(mode="after")
+    def validate_resolution(self):
+        if self.resolution == Resolution.DRAFT_1K:
+            raise ValueError("升清目标只能选择 2K 或 4K")
+        return self
 
 
 class ExportRequest(BaseModel):

@@ -32,6 +32,7 @@ def test_create_and_update_project(client):
 
 def test_project_optimistic_lock(client):
     project = client.post("/api/v1/projects", json={"name": "测试项目"}).json()
+    assert project["last_image_model_alias"] is None
     response = client.patch(
         f"/api/v1/projects/{project['id']}",
         json={"version": 99, "name": "过期修改"},
@@ -45,7 +46,7 @@ def test_model_registry_reports_preview_resolution(client):
     models = {item["logical_alias"]: item for item in response.json()}
     assert models["text.fast"]["model_id"] == "gemini-3.5-flash"
     assert models["image.nano_banana_2"]["model_id"] == "gemini-3.1-flash-image"
-    assert models["image.nano_banana_pro"]["model_id"] == "gemini-3-pro-image"
+    assert models["image.nano_banana_pro"]["model_id"] == "gemini-3-pro-image-preview"
     assert models["image.nano_banana_2"]["preview_resolutions"] == ["4K"]
 
 

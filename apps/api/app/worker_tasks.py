@@ -1,6 +1,7 @@
 import hashlib
 import json
 from pathlib import Path
+from threading import Lock
 
 from PIL import Image
 from sqlalchemy import delete, func, select
@@ -25,6 +26,7 @@ from app.models import (
     Outfit,
     PageCandidate,
     Project,
+    RepairPlan,
     Scene,
     ScriptRevision,
     SourceRevision,
@@ -32,7 +34,7 @@ from app.models import (
     StyleProfile,
     utcnow,
 )
-from app.services.ai_schemas import PageInspectionOutput, StoryParseOutput
+from app.services.ai_schemas import PageInspectionOutput, StoryParseOutput, StyleAnalysisOutput
 from app.services.model_registry import build_registry
 from app.services.prompt_compiler import PAGE_TEMPLATE_VERSION, compile_page_prompt
 
@@ -44,6 +46,7 @@ ACTIVE_STATUSES = {
     JobStatus.CONSISTENCY_CHECKING,
     JobStatus.REPAIRING,
 }
+EXECUTION_RESERVATION_LOCK = Lock()
 
 
 def _normalize_name(value: str) -> str:
@@ -83,6 +86,45 @@ def _load_reference_assets(db, page: MangaPage, project: Project) -> list[Asset]
             .limit(10)
         )
     )
+    scenes = (
+        list(db.scalars(select(Scene).where(Scene.id.in_(page.scene_ids))))
+        if page.scene_ids
+        else []
+    )
+    outfit_ids = {
+        outfit_id
+        for scene in scenes
+        for outfit_id in scene.outfit_assignments.values()
+        if outfit_id
+    }
+    if outfit_ids:
+        outfits = list(db.scalars(select(Outfit).where(Outfit.id.in_(outfit_ids))))
+        outfit_reference_ids = {
+            asset_id for outfit in outfits for asset_id in outfit.reference_asset_ids
+        }
+        if outfit_reference_ids:
+            references.extend(
+                db.scalars(
+                    select(Asset).where(
+                        Asset.id.in_(outfit_reference_ids), Asset.deleted_at.is_(None)
+                    )
+                )
+            )
+    style = (
+        db.get(StyleProfile, page.style_id or project.default_style_id)
+        if page.style_id or project.default_style_id
+        else None
+    )
+    if style:
+        style_reference_ids = style.profile.get("reference_asset_ids", [])
+        if style_reference_ids:
+            references.extend(
+                db.scalars(
+                    select(Asset).where(
+                        Asset.id.in_(style_reference_ids), Asset.deleted_at.is_(None)
+                    )
+                )
+            )
     previous = db.scalar(
         select(MangaPage).where(
             MangaPage.chapter_id == page.chapter_id,
@@ -95,7 +137,8 @@ def _load_reference_assets(db, page: MangaPage, project: Project) -> list[Asset]
             previous_asset = db.get(Asset, candidate.asset_id)
             if previous_asset:
                 references.append(previous_asset)
-    return references[:14]
+    unique = list({asset.id: asset for asset in references}.values())
+    return unique[:14]
 
 
 def _save_generated_asset(db, candidate: PageCandidate, data: bytes) -> Asset:
@@ -188,7 +231,6 @@ def _run_page_generate(db, job: GenerationJob) -> None:
         raise RuntimeError("页面原文覆盖不完整，禁止生成")
 
     prompt, snapshot = compile_page_prompt(db, page, project)
-    candidate.prompt_snapshot = snapshot
     candidate.status = "GENERATING"
     page.status = PageStatus.DRAFT_GENERATING
     job.status = JobStatus.UPLOADING_REFERENCES
@@ -204,14 +246,44 @@ def _run_page_generate(db, job: GenerationJob) -> None:
             reference_bytes.append(path.read_bytes())
             reference_types.append(asset.mime_type)
 
-    if job.job_type == "PAGE_REPAIR":
+    reference_asset_ids = [asset.id for asset in reference_assets]
+    if job.job_type in {"PAGE_REPAIR", "PAGE_UPSCALE"}:
         original = db.get(PageCandidate, job.request_parameters.get("original_candidate_id"))
         if not original or not original.asset_id:
-            raise RuntimeError("修复任务缺少原始候选图")
+            raise RuntimeError("修复或升清任务缺少原始候选图")
         original_asset = db.get(Asset, original.asset_id)
         reference_bytes.insert(0, _asset_path(original_asset).read_bytes())
         reference_types.insert(0, original_asset.mime_type)
-        prompt += "\n仅修复指定区域，保持其他人物、背景、格线、文字和构图不变。"
+        reference_asset_ids.insert(0, original_asset.id)
+        if job.job_type == "PAGE_REPAIR":
+            repair = db.get(RepairPlan, job.request_parameters.get("repair_plan_id"))
+            inspection = db.get(InspectionResult, repair.inspection_result_id) if repair else None
+            if not repair or not inspection:
+                raise RuntimeError("修复任务缺少检查结果或修复计划")
+            repair_context = {
+                "repair_type": repair.repair_type,
+                "category": inspection.category,
+                "outcome": inspection.outcome,
+                "severity": inspection.severity,
+                "details": inspection.details,
+                "target_regions": repair.target_regions,
+            }
+            prompt += (
+                "\n这是局部修复任务。严格根据以下检查结果修复指定范围："
+                f"{json.dumps(repair_context, ensure_ascii=False, separators=(',', ':'))}。"
+                "不得改动范围外的人物身份、服装、背景、格线、文字、镜头与构图；"
+                "修复后仍输出完整页面。"
+            )
+        else:
+            prompt += (
+                "\n这是保持结构的升清任务。原始页是第一张参考图。像素级保持原有分格、"
+                "人物姿态、脸、服装、道具、背景、文字内容与位置，只提高线稿、网点和边缘清晰度；"
+                "禁止重构、增删格子或重写文字。"
+            )
+
+    snapshot["operation"] = job.job_type
+    snapshot["checksum"] = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    candidate.prompt_snapshot = snapshot
 
     job.status = JobStatus.GENERATING
     job.progress = 45
@@ -230,12 +302,16 @@ def _run_page_generate(db, job: GenerationJob) -> None:
         job_id=job.id,
         model_id=response.model_id,
         location=get_settings().google_cloud_location,
-        parameters={"resolution": candidate.resolution.value, "aspect_ratio": "3:4"},
+        parameters={
+            "resolution": candidate.resolution.value,
+            "aspect_ratio": "3:4",
+            "operation": job.job_type,
+        },
         prompt_template=PAGE_TEMPLATE_VERSION,
         prompt_version=PAGE_TEMPLATE_VERSION,
         prompt_checksum=snapshot["checksum"],
         input_versions={"page": page.version, "page_revision": page.revision_no},
-        reference_asset_ids=[asset.id for asset in reference_assets],
+        reference_asset_ids=list(dict.fromkeys(reference_asset_ids)),
         provider_request_id=response.request_id,
         finished_at=utcnow(),
         usage=response.usage,
@@ -266,10 +342,26 @@ def _run_story_parse(db, job: GenerationJob) -> None:
     source_payload = [
         {"id": item.id, "ordinal": item.ordinal, "text": item.text} for item in segments
     ]
-    prompt = """逐段解析以下中文小说，禁止总结、删除或合并关键内容。
-提取角色、主要姓名、绰号、场景和情节拍。
-所有情节拍必须携带输入中的 source_segment_ids；剧本对白中的人物名称必须使用 primary_name。
-输入：""" + json.dumps(source_payload, ensure_ascii=False)
+    project = db.get(Project, chapter.project_id)
+    mode_instruction = {
+        "AUTO": (
+            "自动模式：主动补充可视化动作、表情、环境、转场、潜台词和翻页悬念，"
+            "但不得改变剧情。"
+        ),
+        "DIRECTOR": (
+            "导演模式：只结构化原文明确给出的内容，不新增关键动作；"
+            "无法判断的细节留空供用户指定。"
+        ),
+        "SEMI_AUTO": "半自动模式：补充镜头所需的动作、表情和环境细节，但不新增人物动机与剧情事实。",
+    }[project.workflow_mode.value]
+    prompt = f"""逐段把以下中文小说改写成可直接分镜的完整漫画剧本，禁止总结、删除或合并关键内容。
+{mode_instruction}
+提取角色主要姓名与绰号、场景地点/时间/天气/目的/情绪线，以及逐拍动作、原文对白、旁白、潜台词、情绪、重要度、
+是否必须画出、能否和相邻拍合并、是否适合作为翻页悬念。
+所有场景和情节拍必须携带输入中的 source_segment_ids 并覆盖全部输入；
+剧本人物称呼必须使用 primary_name；每个有对白的情节拍必须把说话人的 primary_name
+写入 speaker_name，旁白留空。
+输入：{json.dumps(source_payload, ensure_ascii=False)}"""
     output = _adapter("text.fast").generate_structured(
         StructuredRequest(
             prompt=prompt,
@@ -315,6 +407,11 @@ def _run_story_parse(db, job: GenerationJob) -> None:
                 )
             )
     db.flush()
+    character_map: dict[str, Character] = {}
+    for character in db.scalars(select(Character).where(Character.project_id == project_id)):
+        character_map[_normalize_name(character.primary_name)] = character
+        for alias in character.aliases:
+            character_map[_normalize_name(alias)] = character
     db.execute(delete(Scene).where(Scene.chapter_id == chapter.id))
     db.execute(delete(ScriptRevision).where(ScriptRevision.chapter_id == chapter.id))
     db.flush()
@@ -326,6 +423,7 @@ def _run_story_parse(db, job: GenerationJob) -> None:
             ordinal=scene_draft.ordinal,
             location=scene_draft.location,
             time_label=scene_draft.time_label,
+            weather=scene_draft.weather,
             purpose=scene_draft.purpose,
             emotional_arc=scene_draft.emotional_arc,
             source_range={"segment_ids": scene_draft.source_segment_ids},
@@ -334,14 +432,24 @@ def _run_story_parse(db, job: GenerationJob) -> None:
         db.flush()
         for beat_draft in scene_draft.beats:
             covered_segment_ids.update(beat_draft.source_segment_ids)
+            speaker_name = beat_draft.speaker_name.strip()
+            if speaker_name:
+                speaker = character_map.get(_normalize_name(speaker_name))
+                speaker_name = speaker.primary_name if speaker else speaker_name
             db.add(
                 Beat(
                     scene_id=scene.id,
                     ordinal=beat_draft.ordinal,
                     action=beat_draft.action,
+                    speaker_name=speaker_name,
                     dialogue=beat_draft.dialogue,
                     narration=beat_draft.narration,
+                    subtext=beat_draft.subtext,
                     emotion=beat_draft.emotion,
+                    importance=beat_draft.importance,
+                    must_visualize=beat_draft.must_visualize,
+                    mergeable=beat_draft.mergeable,
+                    page_turn_hook=beat_draft.page_turn_hook,
                     source_range={"segment_ids": beat_draft.source_segment_ids},
                 )
             )
@@ -394,13 +502,19 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
     elif batch.target_type == "OUTFIT":
         outfit = db.get(Outfit, batch.target_id)
         character = db.get(Character, outfit.character_id)
-        references = list(
+        character_references = list(
             db.scalars(
                 select(Asset)
                 .join(CharacterReference, CharacterReference.asset_id == Asset.id)
                 .where(CharacterReference.character_id == character.id)
             )
         )
+        outfit_references = (
+            list(db.scalars(select(Asset).where(Asset.id.in_(outfit.reference_asset_ids))))
+            if outfit.reference_asset_ids
+            else []
+        )
+        references = [*character_references, *outfit_references]
         subject = {
             "character": character.primary_name,
             "outfit": outfit.name,
@@ -430,9 +544,24 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
         "instruction": candidate.instruction,
         "subject": subject,
     }
+    task_instruction = {
+        "CHARACTER": (
+            "按 variant 生成同一角色的标准正面、侧面、背面或表情设定图；"
+            "必须保持脸、发型、体型和标志特征一致。"
+        ),
+        "OUTFIT": (
+            "生成该角色穿着指定服装的完整全身造型图；同时服从人物参考和服装参考，"
+            "准确还原服装剪裁、层次、配饰与状态，不改变角色身份。"
+        ),
+        "STYLE": (
+            "生成不含现有作品角色的原创风格测试页，用简单人物与背景验证线稿、网点、"
+            "黑白对比和分格语言，不复制参考漫画的文字与剧情。"
+        ),
+    }[batch.target_type]
     prompt = (
-        "生成黑白日式漫画规范资产图。严格保持参考图中的身份、脸部与锁定特征。"
-        "不要加入文字水印；背景使用便于比对的简洁浅色。输入："
+        "生成黑白日式漫画规范资产图。"
+        + task_instruction
+        + "不要加入文字水印；背景使用便于比对的简洁浅色。输入："
         + json.dumps(prompt_payload, ensure_ascii=False)
     )
     checksum = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
@@ -480,16 +609,67 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
     candidate.status = "READY"
 
 
+def _run_style_analyze(db, job: GenerationJob) -> None:
+    style = db.get(StyleProfile, job.target_id)
+    if not style:
+        raise RuntimeError("风格档案不存在")
+    reference_ids = style.profile.get("reference_asset_ids", [])
+    references = list(
+        db.scalars(
+            select(Asset).where(
+                Asset.id.in_(reference_ids),
+                Asset.deleted_at.is_(None),
+                Asset.kind == "STYLE_REFERENCE",
+            )
+        )
+    )
+    if not references:
+        raise RuntimeError("风格档案没有可用漫画参考图")
+    job.status = JobStatus.GENERATING
+    job.progress = 35
+    db.commit()
+    prompt = """分析这些漫画参考页的视觉风格，只总结可复用的画面语言，不识别作者姓名或作品名。
+输出线稿、网点、黑白对比、人物画法、背景画法、光影、日式分格语言、构图规则、禁止项，
+以及一段可直接用于生图的中文 prompt_summary。不要复制参考页中的文字或剧情。"""
+    output = _adapter("text.fast").analyze_multimodal(
+        MultimodalRequest(
+            prompt=prompt,
+            images=tuple(_asset_path(asset).read_bytes() for asset in references[:8]),
+            mime_types=tuple(asset.mime_type for asset in references[:8]),
+        ),
+        StyleAnalysisOutput,
+    )
+    analyzed = output.model_dump()
+    analyzed["reference_asset_ids"] = reference_ids
+    style.profile = analyzed
+    project = db.get(Project, style.project_id)
+    style.status = "ACTIVE" if project and project.default_style_id == style.id else "CONFIRMED"
+    style.version += 1
+    job.progress = 90
+
+
 def _run_inspection(db, job: GenerationJob) -> None:
     candidate = db.get(PageCandidate, job.target_id)
     if not candidate or not candidate.asset_id:
         raise RuntimeError("候选图片尚未生成")
     page = db.get(MangaPage, candidate.page_id)
     asset = db.get(Asset, candidate.asset_id)
-    expected = "\n".join(item.get("text", "") for item in page.source_coverage.get("ranges", []))
-    prompt = f"""检查这张漫画页。目标文字如下：\n{expected}\n
-检查错字、漏字、文字顺序、说话人、角色身份、服装、标志特征、道具和连续性。
-每项输出 category、outcome、score、severity、details、regions。"""
+    project = db.get(Project, db.get(Chapter, page.chapter_id).project_id)
+    _, snapshot = compile_page_prompt(db, page, project)
+    categories = job.request_parameters.get(
+        "categories",
+        ["TEXT", "SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"],
+    )
+    prompt = f"""你是漫画成片质检员。对照结构化目标检查这张生成漫画页。
+只检查这些类别：{json.dumps(categories, ensure_ascii=False)}。
+目标剧本、格位、说话人、角色、服装与风格上下文：
+{json.dumps(snapshot['input'], ensure_ascii=False, separators=(',', ':'))}
+TEXT 检查错字、漏字、擅自改写和阅读顺序；SPEAKER 检查气泡归属；
+CHARACTER 检查脸、发型、体型和标志特征；OUTFIT 检查场景指定服装；
+PROP 检查关键道具；CONTINUITY 检查与页面结构、场景状态和前后逻辑的一致性。
+每个请求类别至少输出一项，字段为 category、outcome、score、severity、details、regions；
+outcome 只能用 PASS、ACCEPTABLE、MISMATCH、MISSING、EXTRA；
+details 写清 expected 和 observed，regions 使用 0 到 1 的归一化 x/y/width/height。"""
     job.status = JobStatus.OCR_CHECKING
     job.progress = 45
     db.commit()
@@ -531,33 +711,36 @@ def execute_job(job_id: str) -> None:
         return
     try:
         project = db.get(Project, job.project_id)
-        active = (
-            db.scalar(
-                select(func.count(GenerationJob.id)).where(
-                    GenerationJob.project_id == job.project_id,
-                    GenerationJob.status.in_(ACTIVE_STATUSES),
-                    GenerationJob.id != job.id,
+        with EXECUTION_RESERVATION_LOCK:
+            active = (
+                db.scalar(
+                    select(func.count(GenerationJob.id)).where(
+                        GenerationJob.project_id == job.project_id,
+                        GenerationJob.status.in_(ACTIVE_STATUSES),
+                        GenerationJob.id != job.id,
+                    )
                 )
+                or 0
             )
-            or 0
-        )
-        if project and active >= project.default_concurrency:
-            job.status = JobStatus.WAITING
-            job.error_code = "CONCURRENCY_LIMIT"
-            job.error_message = "等待项目并发名额"
+            if project and active >= project.default_concurrency:
+                job.status = JobStatus.WAITING
+                job.error_code = "CONCURRENCY_LIMIT"
+                job.error_message = "等待项目并发名额"
+                db.commit()
+                return
+            job.status = JobStatus.PREPARING
+            job.progress = 5
+            job.attempt_count += 1
+            job.started_at = job.started_at or utcnow()
             db.commit()
-            return
-        job.status = JobStatus.PREPARING
-        job.progress = 5
-        job.attempt_count += 1
-        job.started_at = job.started_at or utcnow()
-        db.commit()
-        if job.job_type in {"PAGE_GENERATE", "PAGE_REPAIR"}:
+        if job.job_type in {"PAGE_GENERATE", "PAGE_REPAIR", "PAGE_UPSCALE"}:
             _run_page_generate(db, job)
         elif job.job_type == "ASSET_GENERATE":
             _run_asset_generate(db, job)
         elif job.job_type == "SOURCE_PARSE":
             _run_story_parse(db, job)
+        elif job.job_type == "STYLE_ANALYZE":
+            _run_style_analyze(db, job)
         elif job.job_type == "PAGE_INSPECT":
             _run_inspection(db, job)
         else:
@@ -581,6 +764,9 @@ def execute_job(job_id: str) -> None:
         asset_candidate = db.get(AssetCandidate, job.target_id)
         if asset_candidate:
             asset_candidate.status = "FAILED"
+        style = db.get(StyleProfile, job.target_id) if job.target_type == "STYLE" else None
+        if style:
+            style.status = "DRAFT"
         db.commit()
         raise
     except Exception as error:
@@ -596,6 +782,9 @@ def execute_job(job_id: str) -> None:
         asset_candidate = db.get(AssetCandidate, job.target_id)
         if asset_candidate:
             asset_candidate.status = "FAILED"
+        style = db.get(StyleProfile, job.target_id) if job.target_type == "STYLE" else None
+        if style:
+            style.status = "DRAFT"
         db.commit()
         raise
     finally:

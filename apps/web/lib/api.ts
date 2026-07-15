@@ -15,10 +15,11 @@ export interface Project {
   draft_resolution: Resolution;
   workflow_mode: WorkflowMode;
   default_concurrency: number;
+  default_style_id: string | null;
   ocr_enabled: boolean;
   consistency_check_enabled: boolean;
   text_model_alias: string;
-  last_image_model_alias: ImageModelAlias;
+  last_image_model_alias: ImageModelAlias | null;
   created_at: string;
   updated_at: string;
   version: number;
@@ -92,6 +93,7 @@ export interface ScriptBeat {
   id: string;
   ordinal: number;
   action: string;
+  speaker_name: string;
   dialogue: string;
   narration: string;
   emotion: string;
@@ -106,7 +108,32 @@ export interface ScriptScene {
   purpose: string;
   emotional_arc: string;
   source_range: { segment_ids?: string[] };
+  outfit_assignments: Record<string, string>;
   beats: ScriptBeat[];
+}
+
+export interface Outfit {
+  id: string;
+  project_id: string;
+  character_id: string;
+  name: string;
+  components: Record<string, unknown>;
+  state_rules: Record<string, unknown>;
+  locked_fields: string[];
+  reference_asset_ids: string[];
+  status: string;
+  version: number;
+}
+
+export interface StyleProfile {
+  id: string;
+  project_id: string;
+  name: string;
+  color_mode: string;
+  profile: Record<string, unknown> & { prompt_summary?: string; reference_asset_ids?: string[] };
+  locked_fields: string[];
+  status: string;
+  version: number;
 }
 
 export interface Script {
@@ -204,6 +231,24 @@ export interface Job {
   created_at: string;
 }
 
+export interface InspectionResult {
+  id: string;
+  candidate_id: string | null;
+  category: "TEXT" | "SPEAKER" | "CHARACTER" | "OUTFIT" | "PROP" | "CONTINUITY" | string;
+  outcome: string;
+  score: number | null;
+  details: Record<string, unknown>;
+  regions: Array<Record<string, unknown>>;
+  severity: string;
+  created_at: string;
+}
+
+export interface CandidateQueued {
+  job_id: string;
+  job_status: string;
+  candidate: PageCandidate;
+}
+
 export interface LibraryGroup {
   batch: GenerationBatch;
   candidates: PageCandidate[];
@@ -213,6 +258,16 @@ export interface Library {
   groups: LibraryGroup[];
   total_candidates: number;
   favorite_count: number;
+}
+
+export interface LibraryFilters {
+  favorite?: boolean;
+  character_id?: string;
+  generation_kind?: string;
+  model_alias?: ImageModelAlias;
+  resolution?: Resolution;
+  date_from?: string;
+  date_to?: string;
 }
 
 export interface ExportBundle {
@@ -276,6 +331,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ title, text, source_type: "PASTE" }),
     }),
+  uploadSource: (projectId: string, title: string, file: File) => {
+    const data = new FormData();
+    data.append("title", title);
+    data.append("file", file);
+    return request<{ chapters: Chapter[]; total_characters: number }>(`/projects/${projectId}/sources/upload`, {
+      method: "POST",
+      body: data,
+    });
+  },
   revisions: (chapterId: string) => request<SourceRevision[]>(`/chapters/${chapterId}/revisions`),
   reviseSource: (chapterId: string, title: string, text: string) => request<SourceRevision>(`/chapters/${chapterId}/revisions`, {
     method: "POST", body: JSON.stringify({ title, text, source_type: "PASTE" }),
@@ -284,16 +348,38 @@ export const api = {
   restoreChapter: (chapterId: string) => request<Chapter>(`/chapters/${chapterId}/restore`, { method: "POST" }),
   script: (chapterId: string) => request<Script>(`/chapters/${chapterId}/script`),
   parseChapter: (chapterId: string) => request<Job>(`/chapters/${chapterId}/parse`, { method: "POST" }),
-  planChapter: (chapterId: string) => request<{ pages: MangaPage[]; coverage_ratio: number }>(`/chapters/${chapterId}/plan`, {
+  planChapter: (chapterId: string, fromPageNumber?: number) => request<{ pages: MangaPage[]; coverage_ratio: number }>(`/chapters/${chapterId}/plan`, {
     method: "POST",
-    body: JSON.stringify({ replace_existing: true }),
+    body: JSON.stringify({ replace_existing: true, from_page_number: fromPageNumber }),
   }),
   pages: (chapterId: string) => request<MangaPage[]>(`/chapters/${chapterId}/pages`),
   characters: (projectId: string) => request<Character[]>(`/projects/${projectId}/characters`),
+  outfits: (projectId: string) => request<Outfit[]>(`/projects/${projectId}/outfits`),
+  createOutfit: (projectId: string, payload: { character_id: string; name: string; reference_asset_ids: string[]; locked_fields: string[] }) =>
+    request<Outfit>(`/projects/${projectId}/outfits`, {
+      method: "POST", body: JSON.stringify({ ...payload, components: {}, state_rules: {} }),
+    }),
+  styles: (projectId: string) => request<StyleProfile[]>(`/projects/${projectId}/styles`),
+  createStyle: (projectId: string, name: string, referenceAssetIds: string[], lockedFields: string[]) =>
+    request<StyleProfile>(`/projects/${projectId}/styles`, {
+      method: "POST",
+      body: JSON.stringify({ name, color_mode: "monochrome", profile: {}, reference_asset_ids: referenceAssetIds, locked_fields: lockedFields }),
+    }),
+  analyzeStyle: (styleId: string) => request<Job>(`/styles/${styleId}/analyze`, { method: "POST" }),
+  activateStyle: (projectId: string, styleId: string) => request<StyleProfile>(`/projects/${projectId}/styles/${styleId}/activate`, { method: "POST" }),
+  assignSceneOutfits: (sceneId: string, assignments: Record<string, string>) =>
+    request<{ scene_id: string; assignments: Record<string, string> }>(`/scenes/${sceneId}/outfits`, {
+      method: "PATCH", body: JSON.stringify({ assignments }),
+    }),
   createCharacter: (projectId: string, primaryName: string, aliases: string[]) =>
     request<Character>(`/projects/${projectId}/characters`, {
       method: "POST",
       body: JSON.stringify({ primary_name: primaryName, aliases }),
+    }),
+  updateCharacter: (characterId: string, version: number, primaryName: string, aliases: string[], lockedFeatures: string[], forbiddenChanges: string[]) =>
+    request<Character>(`/characters/${characterId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ version, primary_name: primaryName, aliases, locked_features: lockedFeatures, forbidden_changes: forbiddenChanges }),
     }),
   bindCharacterReference: (characterId: string, assetId: string) =>
     request<CharacterReference>(`/characters/${characterId}/references`, {
@@ -309,6 +395,11 @@ export const api = {
     request<{ job_id: string; job_status: string; candidate: PageCandidate }>(`/asset-generation-batches/${batchId}/candidates`, {
       method: "POST",
       body: JSON.stringify({ model_alias, resolution, variant, instruction: "" }),
+    }),
+  generateCompleteCharacterSheet: (characterId: string, model_alias: ImageModelAlias, resolution: Resolution) =>
+    request<Array<{ job_id: string; job_status: string; candidate: PageCandidate }>>(`/characters/${characterId}/complete-sheet`, {
+      method: "POST",
+      body: JSON.stringify({ model_alias, resolution, variants: ["FRONT", "SIDE", "BACK", "EXPRESSION"] }),
     }),
   batches: (pageId: string) => request<GenerationBatch[]>(`/pages/${pageId}/batches`),
   startBatch: (pageId: string) => request<GenerationBatch>(`/pages/${pageId}/batches`, { method: "POST" }),
@@ -330,16 +421,45 @@ export const api = {
       body: JSON.stringify({ candidate_id: candidateId }),
     }),
   nextPage: (pageId: string) => request<MangaPage>(`/pages/${pageId}/next`, { method: "POST" }),
-  library: (projectId: string, favorite?: boolean) => request<Library>(
-    `/projects/${projectId}/library?group_by=batch${favorite === undefined ? "" : `&favorite=${favorite}`}`,
-  ),
+  library: (projectId: string, filters: LibraryFilters = {}) => {
+    const query = new URLSearchParams({ group_by: "batch" });
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value !== undefined && value !== "") query.set(key, String(value));
+    });
+    return request<Library>(`/projects/${projectId}/library?${query.toString()}`);
+  },
   jobs: (projectId: string) => request<Job[]>(`/projects/${projectId}/jobs`),
   cancelJob: (jobId: string) => request<Job>(`/jobs/${jobId}/cancel`, { method: "POST" }),
   retryJob: (jobId: string) => request<Job>(`/jobs/${jobId}/retry`, { method: "POST" }),
+  inspectCandidate: (candidateId: string) => request<Job>(`/candidates/${candidateId}/inspect`, {
+    method: "POST",
+    body: JSON.stringify({ categories: ["TEXT", "SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"] }),
+  }),
+  inspections: (candidateId: string) => request<InspectionResult[]>(`/candidates/${candidateId}/inspections`),
+  repairCandidate: (
+    candidateId: string,
+    payload: {
+      inspection_result_id: string;
+      repair_type: "TEXT_REGION" | "BUBBLE_REGION" | "PANEL" | "PAGE";
+      target_regions: Array<Record<string, unknown>>;
+      target_fields: string[];
+      model_alias: ImageModelAlias;
+      resolution: Resolution;
+    },
+  ) => request<CandidateQueued>(`/candidates/${candidateId}/repairs`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  }),
+  upscaleCandidate: (candidateId: string, model_alias: ImageModelAlias, resolution: "2K" | "4K") =>
+    request<CandidateQueued>(`/candidates/${candidateId}/upscale`, {
+      method: "POST",
+      body: JSON.stringify({ model_alias, resolution }),
+    }),
   exports: (projectId: string) => request<ExportBundle[]>(`/projects/${projectId}/exports`),
   createExport: (chapterId: string, exportType: ExportBundle["export_type"]) =>
     request<ExportBundle>(`/chapters/${chapterId}/exports`, {
       method: "POST",
       body: JSON.stringify({ export_type: exportType }),
     }),
+  selectedPagePngUrl: (pageId: string) => publicUrl(`/api/v1/pages/${pageId}/export.png`),
 };

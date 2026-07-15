@@ -189,7 +189,12 @@ def plan_chapter(
     chapter = db.get(Chapter, chapter_id)
     if not chapter or chapter.deleted_at is not None:
         raise HTTPException(status_code=404, detail="章节不存在")
-    pages = plan_chapter_pages(db, chapter, replace_existing=payload.replace_existing)
+    pages = plan_chapter_pages(
+        db,
+        chapter,
+        replace_existing=payload.replace_existing,
+        from_page_number=payload.from_page_number,
+    )
     metrics = chapter_metrics(db, chapter)
     covered = round(metrics["coverage_ratio"] * metrics["segment_count"])
     return PlanRead(

@@ -85,7 +85,7 @@ flowchart LR
 | --- | --- | --- |
 | `text.fast` | `gemini-3.5-flash` | 结构化解析、剧本和多模态检查 |
 | `image.nano_banana_2` | `gemini-3.1-flash-image` | 与 Pro 平级的页面/资产/修复模型 |
-| `image.nano_banana_pro` | `gemini-3-pro-image` | 与 NB2 平级的页面/资产/修复模型 |
+| `image.nano_banana_pro` | `gemini-3-pro-image-preview` | 与 NB2 平级的页面/资产/修复模型 |
 
 两个图像模型都声明 1K、2K、4K 能力，4K 标记 Preview。业务代码使用逻辑别名，真实模型 ID 由环境变量配置。模型错误统一归类为认证、权限、配额、限流、模型不可用、能力不支持、内容安全、超时、无效输出或上游错误。
 

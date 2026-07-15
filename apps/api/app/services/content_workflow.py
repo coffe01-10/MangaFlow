@@ -40,6 +40,10 @@ def meaningful_characters(value: str) -> int:
     return len(WHITESPACE.sub("", value))
 
 
+def _normalize_character_name(value: str) -> str:
+    return "".join(value.split()).casefold()
+
+
 def split_chapters(title: str, text: str) -> list[tuple[str, str]]:
     matches = list(CHAPTER_HEADER.finditer(text))
     if not matches:
@@ -216,8 +220,57 @@ def _split_for_pages(segment: SourceSegment) -> list[PageChunk]:
     return chunks
 
 
+def japanese_panel_layout(panel_count: int, page_number: int) -> list[dict]:
+    """Return an asymmetric, right-to-left manga layout in normalized coordinates."""
+    gap = 0.012
+    templates = {
+        3: [(0, 0, 1, 0.46), (0.46, 0.46, 0.54, 0.54), (0, 0.46, 0.46, 0.54)],
+        4: [(0.42, 0, 0.58, 0.38), (0, 0, 0.42, 0.38), (0, 0.38, 1, 0.30), (0, 0.68, 1, 0.32)],
+        5: [
+            (0.44, 0, 0.56, 0.34),
+            (0, 0, 0.44, 0.34),
+            (0, 0.34, 1, 0.30),
+            (0.52, 0.64, 0.48, 0.36),
+            (0, 0.64, 0.52, 0.36),
+        ],
+        6: [
+            (0.38, 0, 0.62, 0.31),
+            (0, 0, 0.38, 0.31),
+            (0.53, 0.31, 0.47, 0.34),
+            (0, 0.31, 0.53, 0.34),
+            (0.46, 0.65, 0.54, 0.35),
+            (0, 0.65, 0.46, 0.35),
+        ],
+        7: [
+            (0, 0, 1, 0.25),
+            (0.55, 0.25, 0.45, 0.25),
+            (0, 0.25, 0.55, 0.25),
+            (0.42, 0.50, 0.58, 0.25),
+            (0, 0.50, 0.42, 0.25),
+            (0.52, 0.75, 0.48, 0.25),
+            (0, 0.75, 0.52, 0.25),
+        ],
+    }
+    values = templates[panel_count]
+    if page_number % 2 == 0 and panel_count in {4, 5, 6}:
+        values = [(1 - x - width, y, width, height) for x, y, width, height in values]
+    return [
+        {
+            "x": round(x + gap, 4),
+            "y": round(y + gap, 4),
+            "width": round(width - gap * 2, 4),
+            "height": round(height - gap * 2, 4),
+        }
+        for x, y, width, height in values
+    ]
+
+
 def plan_chapter_pages(
-    db: Session, chapter: Chapter, *, replace_existing: bool = True
+    db: Session,
+    chapter: Chapter,
+    *,
+    replace_existing: bool = True,
+    from_page_number: int | None = None,
 ) -> list[MangaPage]:
     if not chapter.current_source_revision_id:
         raise HTTPException(status_code=409, detail="章节没有可用原文")
@@ -237,19 +290,40 @@ def plan_chapter_pages(
     )
     if existing and not replace_existing:
         return existing
+    preserved_pages: list[MangaPage] = []
+    start_page_number = 1
+    start_segment_id: str | None = None
+    start_offset = 0
     if existing:
-        page_ids = [page.id for page in existing]
+        if from_page_number is not None:
+            affected = [page for page in existing if page.page_number >= from_page_number]
+            if not affected:
+                raise HTTPException(status_code=409, detail="指定的局部重算起始页不存在")
+            preserved_pages = [
+                page for page in existing if page.page_number < from_page_number
+            ]
+            start_page_number = from_page_number
+            first_ranges = affected[0].source_coverage.get("ranges", [])
+            if not first_ranges:
+                raise HTTPException(status_code=409, detail="起始页缺少原文区间，不能局部重算")
+            start_segment_id = first_ranges[0].get("segment_id")
+            start_offset = int(first_ranges[0].get("start_offset", 0))
+        else:
+            affected = existing
+        page_ids = [page.id for page in affected]
         has_batches = db.scalar(
             select(func.count(GenerationBatch.id)).where(GenerationBatch.page_id.in_(page_ids))
         )
         if has_batches:
             raise HTTPException(
                 status_code=409,
-                detail="已有页面进入抽卡流程，不能整体覆盖页面规划",
+                detail="受影响页面已有抽卡批次，不能覆盖页面规划",
             )
         db.execute(delete(PageSourceSegment).where(PageSourceSegment.page_id.in_(page_ids)))
         db.execute(delete(MangaPage).where(MangaPage.id.in_(page_ids)))
         db.flush()
+    elif from_page_number is not None:
+        raise HTTPException(status_code=409, detail="尚无页面规划，不能执行局部重算")
 
     segments = list(
         db.scalars(
@@ -281,7 +355,12 @@ def plan_chapter_pages(
     current_chars = 0
     current_bubbles = 0
     current_scene_id: str | None = None
+    started = start_segment_id is None
     for segment in segments:
+        if not started:
+            if segment.id != start_segment_id:
+                continue
+            started = True
         scene_id = segment_scene[segment.id]
         if current and current_scene_id != scene_id:
             pages_chunks.append(current)
@@ -290,6 +369,11 @@ def plan_chapter_pages(
             current_bubbles = 0
         current_scene_id = scene_id
         for chunk in _split_for_pages(segment):
+            if (
+                segment.id == start_segment_id
+                and chunk.end_offset <= start_offset
+            ):
+                continue
             size = meaningful_characters(chunk.text)
             overflow = current and (
                 current_chars + size > HARD_TEXT_LIMIT
@@ -311,7 +395,7 @@ def plan_chapter_pages(
     characters = list(
         db.scalars(select(Character).where(Character.project_id == chapter.project_id))
     )
-    for page_number, chunks in enumerate(pages_chunks, 1):
+    for page_number, chunks in enumerate(pages_chunks, start_page_number):
         text_chars = sum(meaningful_characters(item.text) for item in chunks)
         bubbles = sum(item.bubble_count for item in chunks)
         panel_count = min(7, max(3, len(chunks) + (1 if bubbles > 4 else 0)))
@@ -331,15 +415,33 @@ def plan_chapter_pages(
             if set(scene.source_range.get("segment_ids", [])) & set(segment_ids)
         ]
         scene_ids = [scene.id for scene in page_scenes]
-        beat_ids = (
-            list(db.scalars(select(Beat.id).where(Beat.scene_id.in_(scene_ids))))
+        scene_beats = (
+            list(
+                db.scalars(select(Beat).where(Beat.scene_id.in_(scene_ids)).order_by(Beat.ordinal))
+            )
             if scene_ids
             else []
+        )
+        page_beats = [
+            beat
+            for beat in scene_beats
+            if set(beat.source_range.get("segment_ids", [])) & set(segment_ids)
+        ]
+        beat_ids = [beat.id for beat in page_beats]
+        action_weight = sum(len(beat.action) for beat in page_beats)
+        dialogue_weight = sum(len(beat.dialogue) + len(beat.narration) for beat in page_beats)
+        page_function = (
+            "page_turn_hook"
+            if any(beat.page_turn_hook for beat in page_beats)
+            else "action"
+            if action_weight > dialogue_weight * 1.4
+            else "dialogue"
         )
         page = MangaPage(
             chapter_id=chapter.id,
             page_number=page_number,
             revision_no=1,
+            page_function=page_function,
             panel_count=panel_count,
             reading_direction="rtl",
             estimated_text_chars=text_chars,
@@ -353,44 +455,90 @@ def plan_chapter_pages(
         for segment_id in dict.fromkeys(item.segment_id for item in chunks):
             db.add(PageSourceSegment(page_id=page.id, source_segment_id=segment_id))
         panel_total = panel_count
-        rows = (panel_total + 1) // 2
+        layout = japanese_panel_layout(panel_total, page_number)
         for panel_index in range(panel_total):
-            row = panel_index // 2
-            column_from_right = panel_index % 2
             chunk = chunks[panel_index] if panel_index < len(chunks) else None
             text = chunk.text if chunk else ""
+            beat = page_beats[panel_index] if panel_index < len(page_beats) else None
+            visual_text = " ".join(
+                item
+                for item in [
+                    text,
+                    beat.action if beat else "",
+                    beat.dialogue if beat else "",
+                    beat.narration if beat else "",
+                ]
+                if item
+            )
             character_ids = [
                 character.id
                 for character in characters
-                if character.primary_name in text
-                or any(alias in text for alias in character.aliases)
+                if character.primary_name in visual_text
+                or any(alias in visual_text for alias in character.aliases)
             ]
+            panel_outfits = {
+                character_id: outfit_id
+                for scene in page_scenes
+                for character_id, outfit_id in scene.outfit_assignments.items()
+                if character_id in character_ids
+            }
+            shot_type = (
+                "establishing"
+                if panel_index == 0
+                else "extreme_close_up"
+                if beat and beat.page_turn_hook
+                else "wide_action"
+                if page_function == "action" and panel_index % 2 == 0
+                else "medium_close_up"
+            )
             panel = Panel(
                 page_id=page.id,
                 reading_order=panel_index + 1,
-                bounds={
-                    "x": 0.5 - column_from_right * 0.5,
-                    "y": row / rows,
-                    "width": 0.5,
-                    "height": 1 / rows,
-                },
-                shot_type=("establishing" if panel_index == 0 else "medium_close_up"),
-                camera_angle="eye_level",
+                bounds=layout[panel_index],
+                shot_type=shot_type,
+                camera_angle=(
+                    "low_angle"
+                    if page_function == "action" and panel_index % 3 == 1
+                    else "eye_level"
+                ),
                 camera_height="eye_level",
                 characters=character_ids,
-                actions={"source_text": text},
-                expressions={},
-                background=("场景建立" if panel_index == 0 else "延续当前场景"),
+                outfits=panel_outfits,
+                actions={"source_text": text, "script_action": beat.action if beat else ""},
+                expressions={character_id: beat.emotion for character_id in character_ids}
+                if beat
+                else {},
+                background=(
+                    page_scenes[0].location if panel_index == 0 and page_scenes else "延续当前场景"
+                ),
                 bubble_regions=[],
                 sound_effects=[],
+                bleed=page_function == "action" and panel_index == 0,
+                borderless=bool(beat and beat.page_turn_hook),
             )
             db.add(panel)
             db.flush()
-            if text:
+            target_text = (beat.dialogue or beat.narration or text) if beat else text
+            if target_text:
+                speaker = (
+                    next(
+                        (
+                            character
+                            for character in characters
+                            if beat
+                            and _normalize_character_name(character.primary_name)
+                            == _normalize_character_name(beat.speaker_name)
+                        ),
+                        None,
+                    )
+                    if beat and beat.speaker_name
+                    else None
+                )
                 db.add(
                     Dialogue(
                         panel_id=panel.id,
-                        target_text=text,
+                        speaker_character_id=speaker.id if speaker else None,
+                        target_text=target_text,
                         reading_order=1,
                         text_direction="vertical",
                         region={"preferred": "upper_inner"},
@@ -404,7 +552,7 @@ def plan_chapter_pages(
     db.commit()
     for page in pages:
         db.refresh(page)
-    return pages
+    return [*preserved_pages, *pages]
 
 
 def chapter_metrics(db: Session, chapter: Chapter) -> dict[str, int | float]:

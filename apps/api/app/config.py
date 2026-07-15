@@ -22,7 +22,7 @@ class Settings(BaseSettings):
 
     vertex_text_model: str = "gemini-3.5-flash"
     vertex_image_model_nano_banana_2: str = "gemini-3.1-flash-image"
-    vertex_image_model_nano_banana_pro: str = "gemini-3-pro-image"
+    vertex_image_model_nano_banana_pro: str = "gemini-3-pro-image-preview"
 
     redis_url: str = "redis://localhost:6379/0"
     queue_name: str = "mangaflow"

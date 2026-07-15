@@ -78,7 +78,9 @@ class Project(Timestamped, Base):
     # Kept for a one-migration compatibility window. New code uses the neutral
     # last-used value and requires every generation request to choose a model.
     image_model_alias: Mapped[str] = mapped_column(String(64), default="image.nano_banana_2")
-    last_image_model_alias: Mapped[str] = mapped_column(String(64), default="image.nano_banana_2")
+    last_image_model_alias: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, default=None
+    )
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     chapters: Mapped[list["Chapter"]] = relationship(
@@ -153,6 +155,7 @@ class Outfit(Timestamped, Base):
     components: Mapped[dict] = mapped_column(JSON, default=dict)
     state_rules: Mapped[dict] = mapped_column(JSON, default=dict)
     locked_fields: Mapped[list] = mapped_column(JSON, default=list)
+    reference_asset_ids: Mapped[list] = mapped_column(JSON, default=list)
     status: Mapped[AssetStatus] = mapped_column(Enum(AssetStatus), default=AssetStatus.UPLOADED)
 
 
@@ -218,6 +221,7 @@ class Beat(Timestamped, Base):
     scene_id: Mapped[str] = mapped_column(ForeignKey("scenes.id", ondelete="CASCADE"), index=True)
     ordinal: Mapped[int] = mapped_column(Integer)
     action: Mapped[str] = mapped_column(Text, default="")
+    speaker_name: Mapped[str] = mapped_column(String(120), default="")
     dialogue: Mapped[str] = mapped_column(Text, default="")
     narration: Mapped[str] = mapped_column(Text, default="")
     subtext: Mapped[str] = mapped_column(Text, default="")

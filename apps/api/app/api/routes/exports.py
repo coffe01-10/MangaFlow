@@ -15,6 +15,7 @@ from app.models import (
     Asset,
     Chapter,
     ExportBundle,
+    GenerationRecord,
     MangaPage,
     PageCandidate,
     Project,
@@ -53,6 +54,23 @@ def _selected_pages(db: Session, chapter: Chapter):
             raise HTTPException(status_code=409, detail=f"第 {page.page_number} 页采用素材不存在")
         result.append((page, candidate, asset))
     return result
+
+
+@router.get("/pages/{page_id}/export.png")
+def download_selected_page(page_id: str, db: Session = Depends(get_db)) -> FileResponse:
+    page = db.get(MangaPage, page_id)
+    if not page or not page.selected_candidate_id:
+        raise HTTPException(status_code=409, detail="页面尚未采用候选")
+    candidate = db.get(PageCandidate, page.selected_candidate_id)
+    asset = db.get(Asset, candidate.asset_id) if candidate and candidate.asset_id else None
+    if not asset:
+        raise HTTPException(status_code=409, detail="页面采用素材不存在")
+    path = _asset_path(asset)
+    return FileResponse(
+        path,
+        media_type=asset.mime_type or "image/png",
+        filename=f"page-{page.page_number:04d}.png",
+    )
 
 
 @router.post(
@@ -95,6 +113,25 @@ def create_export(
                 image.close()
     else:
         destination = output_dir / f"{token}-project.json"
+        manifest: dict[str, dict] = {}
+        for _, candidate, asset in selected:
+            related_ids = [asset.id]
+            if candidate.generation_record_id:
+                record = db.get(GenerationRecord, candidate.generation_record_id)
+                if record:
+                    related_ids.extend(record.reference_asset_ids)
+            for asset_id in related_ids:
+                related = db.get(Asset, asset_id)
+                if related:
+                    manifest[related.id] = {
+                        "id": related.id,
+                        "kind": related.kind,
+                        "original_name": related.original_name,
+                        "mime_type": related.mime_type,
+                        "byte_size": related.byte_size,
+                        "sha256": related.sha256,
+                        "source": related.source,
+                    }
         document = {
             "schema_version": "1.0",
             "project": {"id": project.id, "name": project.name},
@@ -113,6 +150,7 @@ def create_export(
                 }
                 for page, candidate, asset in selected
             ],
+            "asset_manifest": list(manifest.values()),
         }
         destination.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
 

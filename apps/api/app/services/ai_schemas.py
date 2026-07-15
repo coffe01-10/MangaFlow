@@ -11,9 +11,15 @@ class CharacterDraft(BaseModel):
 class BeatDraft(BaseModel):
     ordinal: int
     action: str = ""
+    speaker_name: str = ""
     dialogue: str = ""
     narration: str = ""
     emotion: str = ""
+    subtext: str = ""
+    importance: float = Field(default=0.5, ge=0, le=1)
+    must_visualize: bool = True
+    mergeable: bool = False
+    page_turn_hook: bool = False
     source_segment_ids: list[str] = Field(default_factory=list)
 
 
@@ -21,6 +27,7 @@ class SceneDraft(BaseModel):
     ordinal: int
     location: str = ""
     time_label: str = ""
+    weather: str = ""
     purpose: str = ""
     emotional_arc: str = ""
     source_segment_ids: list[str] = Field(default_factory=list)
@@ -43,3 +50,16 @@ class InspectionItem(BaseModel):
 
 class PageInspectionOutput(BaseModel):
     items: list[InspectionItem]
+
+
+class StyleAnalysisOutput(BaseModel):
+    line_art: str = ""
+    screentone: str = ""
+    contrast: str = ""
+    panel_language: str = ""
+    character_rendering: str = ""
+    background_rendering: str = ""
+    lighting: str = ""
+    composition_rules: list[str] = Field(default_factory=list)
+    negative_rules: list[str] = Field(default_factory=list)
+    prompt_summary: str = ""

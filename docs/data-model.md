@@ -38,7 +38,7 @@ erDiagram
 
 ### Project
 
-保存语言、右至左阅读方向、比例、分辨率、工作模式、并发上限、检查开关和 `last_image_model_alias`。旧字段 `image_model_alias` 仅保留迁移兼容；项目不设置默认主图像模型。
+保存语言、右至左阅读方向、比例、分辨率、工作模式、并发上限、检查开关和可空的 `last_image_model_alias`。新项目不预选图像模型，用户第一次生成前必须选择；生成后只记录上一次选择。旧字段 `image_model_alias` 仅保留迁移兼容，不代表默认主图像模型。
 
 ### Chapter、SourceRevision、SourceSegment
 

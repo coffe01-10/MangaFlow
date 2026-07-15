@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
@@ -5,15 +7,18 @@ from sqlalchemy.orm import Session
 from app.api.helpers import asset_candidate_read, candidate_read
 from app.config import get_settings
 from app.database import get_db
-from app.domain.states import PageStatus, ensure_unlocked
+from app.domain.states import PageStatus, Resolution, ensure_unlocked
 from app.models import (
     AssetCandidate,
     Chapter,
+    Character,
     GenerationBatch,
     GenerationJob,
     InspectionResult,
     MangaPage,
+    Outfit,
     PageCandidate,
+    Panel,
     Project,
     RepairPlan,
     utcnow,
@@ -32,6 +37,7 @@ from app.schemas import (
     PageRead,
     RepairRequest,
     SelectCandidateRequest,
+    UpscaleRequest,
 )
 from app.services.job_service import cancel_job, create_job, enqueue_job, reset_for_retry
 from app.services.model_registry import build_registry
@@ -239,10 +245,10 @@ def favorite_candidate(
 
 @router.delete("/candidates/{candidate_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_candidate(candidate_id: str, db: Session = Depends(get_db)) -> None:
-    candidate = db.get(PageCandidate, candidate_id)
+    candidate = db.get(PageCandidate, candidate_id) or db.get(AssetCandidate, candidate_id)
     if not candidate or candidate.deleted_at is not None:
         raise HTTPException(status_code=404, detail="候选不存在")
-    if candidate.is_selected:
+    if isinstance(candidate, PageCandidate) and candidate.is_selected:
         raise HTTPException(status_code=409, detail="当前采用版本不能删除")
     candidate.deleted_at = utcnow()
     candidate.version += 1
@@ -321,6 +327,10 @@ def library(
     model_alias: str | None = None,
     favorite: bool | None = None,
     generation_kind: str | None = None,
+    character_id: str | None = None,
+    resolution: Resolution | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
     db: Session = Depends(get_db),
 ) -> LibraryRead:
     project = db.get(Project, project_id)
@@ -329,7 +339,35 @@ def library(
     batch_query = select(GenerationBatch).where(GenerationBatch.project_id == project_id)
     if generation_kind:
         batch_query = batch_query.where(GenerationBatch.generation_kind == generation_kind.upper())
+    if date_from:
+        batch_query = batch_query.where(GenerationBatch.created_at >= date_from)
+    if date_to:
+        batch_query = batch_query.where(GenerationBatch.created_at <= date_to)
     batches = list(db.scalars(batch_query.order_by(GenerationBatch.created_at.desc())))
+    if character_id:
+        character = db.get(Character, character_id)
+        if not character or character.project_id != project_id:
+            raise HTTPException(status_code=404, detail="筛选角色不存在或不属于当前项目")
+        outfit_ids = set(
+            db.scalars(select(Outfit.id).where(Outfit.character_id == character_id))
+        )
+        page_ids = {
+            panel.page_id
+            for panel in db.scalars(
+                select(Panel)
+                .join(MangaPage, MangaPage.id == Panel.page_id)
+                .join(Chapter, Chapter.id == MangaPage.chapter_id)
+                .where(Chapter.project_id == project_id)
+            )
+            if character_id in panel.character_ids
+        }
+        batches = [
+            batch
+            for batch in batches
+            if (batch.target_type == "CHARACTER" and batch.target_id == character_id)
+            or (batch.target_type == "OUTFIT" and batch.target_id in outfit_ids)
+            or (batch.page_id in page_ids)
+        ]
     groups: list[LibraryBatchRead] = []
     all_candidates: list[PageCandidateRead] = []
     for batch in batches:
@@ -341,6 +379,8 @@ def library(
             query = query.where(PageCandidate.model_alias == model_alias)
         if favorite is not None:
             query = query.where(PageCandidate.is_favorite == favorite)
+        if resolution:
+            query = query.where(PageCandidate.resolution == resolution)
         candidates = [
             candidate_read(item)
             for item in db.scalars(query.order_by(PageCandidate.ordinal.desc()))
@@ -353,6 +393,8 @@ def library(
             asset_query = asset_query.where(AssetCandidate.model_alias == model_alias)
         if favorite is not None:
             asset_query = asset_query.where(AssetCandidate.is_favorite == favorite)
+        if resolution:
+            asset_query = asset_query.where(AssetCandidate.resolution == resolution)
         candidates.extend(
             asset_candidate_read(item)
             for item in db.scalars(asset_query.order_by(AssetCandidate.ordinal.desc()))
@@ -465,16 +507,24 @@ def repair_candidate(
         raise HTTPException(status_code=409, detail="原始候选图片不存在")
     if not inspection or inspection.candidate_id != original.id:
         raise HTTPException(status_code=409, detail="检查结果与候选不匹配")
-    attempts = (
-        db.scalar(
-            select(func.count(RepairPlan.id)).where(
-                RepairPlan.inspection_result_id == inspection.id
-            )
-        )
-        or 0
+    inspection_ids = select(InspectionResult.id).where(
+        InspectionResult.candidate_id == original.id
     )
+    previous_repairs = list(
+        db.scalars(
+            select(RepairPlan).where(RepairPlan.inspection_result_id.in_(inspection_ids))
+        )
+    )
+    attempts = max((item.automatic_attempts for item in previous_repairs), default=0)
     if attempts >= get_settings().max_auto_repairs:
         raise HTTPException(status_code=409, detail="已达到最大自动修复次数，请人工处理")
+    repair_rank = {"TEXT_REGION": 0, "BUBBLE_REGION": 1, "PANEL": 2, "PAGE": 3}
+    previous_rank = max(
+        (repair_rank[item.repair_type] for item in previous_repairs),
+        default=-1,
+    )
+    if repair_rank[payload.repair_type] < previous_rank:
+        raise HTTPException(status_code=409, detail="修复范围只能保持或逐步扩大，不能退回更小范围")
     page = _page(db, original.page_id)
     try:
         ensure_unlocked(page.locked_fields, payload.target_fields)
@@ -493,7 +543,7 @@ def repair_candidate(
     repair = RepairPlan(
         inspection_result_id=inspection.id,
         repair_type=payload.repair_type,
-        target_regions=payload.target_regions,
+        target_regions=payload.target_regions or inspection.regions,
         target_fields=payload.target_fields,
         lock_conflicts=[],
         automatic_attempts=attempts + 1,
@@ -502,6 +552,9 @@ def repair_candidate(
     db.add(repair)
     db.flush()
     project = _project_for_page(db, page)
+    project.last_image_model_alias = payload.model_alias
+    project.image_model_alias = payload.model_alias
+    project.version += 1
     job = create_job(
         db,
         project_id=project.id,
@@ -516,6 +569,64 @@ def repair_candidate(
             "target_regions": payload.target_regions,
         },
         idempotency_key=f"repair:{repair.id}",
+    )
+    candidate.job_id = job.id
+    db.commit()
+    db.refresh(candidate)
+    job = enqueue_job(db, job)
+    return CandidateQueuedRead(
+        job_id=job.id,
+        job_status=job.status,
+        candidate=candidate_read(candidate),
+    )
+
+
+@router.post(
+    "/candidates/{candidate_id}/upscale",
+    response_model=CandidateQueuedRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def upscale_candidate(
+    candidate_id: str,
+    payload: UpscaleRequest,
+    db: Session = Depends(get_db),
+) -> CandidateQueuedRead:
+    original = db.get(PageCandidate, candidate_id)
+    if not original or not original.asset_id:
+        raise HTTPException(status_code=409, detail="原始候选图片不存在")
+    resolution_rank = {"1K": 1, "2K": 2, "4K": 4}
+    if resolution_rank[payload.resolution.value] <= resolution_rank[original.resolution.value]:
+        raise HTTPException(status_code=409, detail="升清目标必须高于当前候选清晰度")
+    page = _page(db, original.page_id)
+    batch = _new_batch(db, page, generation_kind="UPSCALE")
+    candidate = PageCandidate(
+        batch_id=batch.id,
+        page_id=page.id,
+        ordinal=1,
+        model_alias=payload.model_alias,
+        resolution=payload.resolution,
+        status="QUEUED",
+    )
+    db.add(candidate)
+    db.flush()
+    project = _project_for_page(db, page)
+    project.last_image_model_alias = payload.model_alias
+    project.image_model_alias = payload.model_alias
+    project.version += 1
+    job = create_job(
+        db,
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=candidate.id,
+        job_type="PAGE_UPSCALE",
+        model_alias=payload.model_alias,
+        request_parameters={
+            "original_candidate_id": original.id,
+            "preserve_structure": True,
+            "source_resolution": original.resolution.value,
+            "target_resolution": payload.resolution.value,
+        },
+        idempotency_key=f"upscale:{batch.id}:{payload.resolution.value}",
     )
     candidate.job_id = job.id
     db.commit()

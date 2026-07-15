@@ -1,5 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
-from threading import Thread
+from threading import Event
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -7,6 +8,8 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.domain.states import JobStatus
 from app.models import GenerationJob, JobDependency, utcnow
+
+LOCAL_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="mangaflow-local")
 
 
 def create_job(
@@ -101,7 +104,7 @@ def enqueue_job(db: Session, job: GenerationJob) -> GenerationJob:
             job.error_message = "Redis 不可用，已切换到本地后台执行"
             db.commit()
             db.refresh(job)
-            Thread(target=_execute_locally, args=(job.id,), daemon=True).start()
+            LOCAL_EXECUTOR.submit(_execute_locally, job.id)
             return job
         job.status = JobStatus.WAITING
         job.error_code = "QUEUE_UNAVAILABLE"
@@ -114,7 +117,15 @@ def enqueue_job(db: Session, job: GenerationJob) -> GenerationJob:
 def _execute_locally(job_id: str) -> None:
     from app.worker_tasks import execute_job
 
-    execute_job(job_id)
+    while True:
+        execute_job(job_id)
+        from app.database import SessionLocal
+
+        with SessionLocal() as db:
+            job = db.get(GenerationJob, job_id)
+            if not job or job.status != JobStatus.WAITING or job.error_code != "CONCURRENCY_LIMIT":
+                return
+        Event().wait(0.25)
 
 
 def cancel_job(db: Session, job: GenerationJob) -> GenerationJob:
