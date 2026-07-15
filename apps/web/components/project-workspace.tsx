@@ -11,6 +11,7 @@ import {
   type Project,
   type Resolution,
 } from "@/lib/api";
+import { getPageGenerationIssue, getPageStructureIssue } from "@/lib/generation-rules";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
@@ -117,6 +118,21 @@ const modelOptions: { alias: ImageModelAlias; name: string; id: string }[] = [
   { alias: "image.nano_banana_2", name: "Nano Banana 2", id: "gemini-3.1-flash-image" },
   { alias: "image.nano_banana_pro", name: "Nano Banana Pro", id: "gemini-3-pro-image-preview" },
 ];
+
+function ImageModelPicker({
+  selected,
+  onSelect,
+  label,
+}: {
+  selected: ImageModelAlias | null;
+  onSelect: (model: ImageModelAlias) => void;
+  label?: string;
+}) {
+  return <div className="model-picker">
+    {label && <p>{label}</p>}
+    <div className="model-duel">{modelOptions.map((option) => <button type="button" aria-pressed={selected === option.alias} key={option.alias} className={selected === option.alias ? "model-choice active" : "model-choice"} onClick={() => onSelect(option.alias)}><Sparkles size={18} /><span><strong>{option.name}</strong><small>{option.id}</small></span>{selected === option.alias && <Check size={15} />}</button>)}</div>
+  </div>;
+}
 
 function formatBytes(value: number) {
   if (value < 1024 * 1024) return `${Math.ceil(value / 1024)} KB`;
@@ -243,8 +259,11 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
 
   const draft = localDraft ?? project.data ?? null;
   const boundCharacter = characters.data?.find((item) => item.id === bindCharacterId) ?? null;
-  const activeDrawModel = drawModel ?? draft?.last_image_model_alias ?? null;
+  const activeDrawModel = drawModel;
   const effectiveDrawCount = Math.min(drawCount, draft?.default_concurrency ?? 1);
+  const selectedPageStructureIssue = getPageStructureIssue(selectedPage);
+  const selectedPageGenerationIssue = getPageGenerationIssue(selectedPage, activeDrawModel);
+  const invalidPlannedPageCount = (pages.data ?? []).filter((page) => getPageStructureIssue(page)).length;
 
   function requireDrawModel(): ImageModelAlias {
     if (!activeDrawModel) throw new Error("请先选择 Nano Banana 2 或 Nano Banana Pro");
@@ -293,6 +312,25 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
 
   const reclassifyAsset = useMutation({
     mutationFn: ({ assetId, kind }: { assetId: string; kind: AssetPurpose }) => api.updateAsset(assetId, kind),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["assets", id] });
+      queryClient.invalidateQueries({ queryKey: ["characters", id] });
+    },
+  });
+
+  const bindExistingCharacterReference = useMutation({
+    mutationFn: (assetId: string) => {
+      if (!boundCharacter) throw new Error("请先选择要绑定的角色");
+      return api.bindCharacterReference(boundCharacter.id, assetId);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["assets", id] });
+      queryClient.invalidateQueries({ queryKey: ["characters", id] });
+    },
+  });
+
+  const unbindExistingCharacterReference = useMutation({
+    mutationFn: (referenceId: string) => api.unbindCharacterReference(referenceId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["assets", id] });
       queryClient.invalidateQueries({ queryKey: ["characters", id] });
@@ -515,12 +553,18 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
   });
 
   const startBatch = useMutation({
-    mutationFn: () => api.startBatch(selectedPage!.id),
+    mutationFn: () => {
+      const issue = getPageStructureIssue(selectedPage);
+      if (issue) throw new Error(issue);
+      return api.startBatch(selectedPage!.id);
+    },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["batches", selectedPage?.id] }),
   });
 
   const generate = useMutation({
     mutationFn: async () => {
+      const issue = getPageGenerationIssue(selectedPage, activeDrawModel);
+      if (issue) throw new Error(issue);
       const batch = currentBatch ?? await api.startBatch(selectedPage!.id);
       const queued = [];
       for (let index = 0; index < effectiveDrawCount; index += 1) {
@@ -714,6 +758,7 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
                 {characters.data?.map((character) => <button key={character.id} className={bindCharacterId === character.id ? "character-chip active" : "character-chip"} onClick={() => { setBindCharacterId(character.id); setEditCharacterName(character.primary_name); setEditCharacterAliases(character.aliases.join("，")); setEditLockedFeatures(character.locked_features.join("，")); setEditForbiddenChanges(character.forbidden_changes.join("，")); }}><strong>{character.primary_name}</strong><span>{character.aliases.length ? `又名 ${character.aliases.join(" / ")}` : "无绰号"}</span>{character.alias_conflict && <em>称呼冲突待确认</em>}<small>{character.references.length} 张参考图 · {character.locked_features.length} 项已锁定</small></button>)}
               </div>
               {boundCharacter && <div className="character-editor"><div><strong>规范姓名与一致性锁</strong><span>剧本统一使用主要姓名；固定特征和禁止改变项会进入每次生图提示。</span></div><input aria-label="编辑主要姓名" className="text-input" value={editCharacterName} onChange={(event) => setEditCharacterName(event.target.value)} /><input aria-label="编辑角色绰号" className="text-input" value={editCharacterAliases} onChange={(event) => setEditCharacterAliases(event.target.value)} placeholder="绰号，用逗号分隔" /><button className="button outline compact" disabled={!editCharacterName.trim() || updateCharacter.isPending} onClick={() => updateCharacter.mutate()}>{updateCharacter.isPending ? <LoaderCircle className="spin" size={13} /> : <Pencil size={13} />}保存角色规范</button><div className="character-lock-fields"><input aria-label="角色固定特征" className="text-input" value={editLockedFeatures} onChange={(event) => setEditLockedFeatures(event.target.value)} placeholder="固定特征：黑色长发、左眼泪痣…" /><input aria-label="角色禁止改变项" className="text-input" value={editForbiddenChanges} onChange={(event) => setEditForbiddenChanges(event.target.value)} placeholder="禁止改变：发色、瞳色、身高关系…" /></div>{boundCharacter.alias_conflict && <em><CircleAlert size={12} />当前称呼与其他角色冲突，请修改后保存</em>}</div>}
+              <ImageModelPicker selected={activeDrawModel} onSelect={setDrawModel} label="本次素材生成模型（两个模型完全平级，每次进入本页均需重新选择）" />
               {bindCharacterId && <div className="asset-quickgen"><span>为选中角色补全标准形象（使用当前模型，受项目并发上限控制）</span><div><button className="complete-sheet" disabled={generateCompleteSheet.isPending || !boundCharacter?.references.length || !activeDrawModel} onClick={() => generateCompleteSheet.mutate()}><Sparkles size={13} />一键生成全套 4 张</button>{(["FRONT", "SIDE", "BACK", "EXPRESSION"] as const).map((variant) => <button key={variant} disabled={generateCharacterAsset.isPending || !boundCharacter?.references.length || !activeDrawModel} onClick={() => generateCharacterAsset.mutate(variant)}>{{ FRONT: "正面", SIDE: "侧面", BACK: "背面", EXPRESSION: "表情" }[variant]}</button>)}</div></div>}
               <div className="asset-workbench">
                 <section><header><Shirt size={16} /><div><strong>服装档案</strong><span>把服装参考绑定到选中角色</span></div></header><div className="workbench-form"><div className="workbench-fields"><input aria-label="服装档案名称" className="text-input" value={outfitName} onChange={(event) => setOutfitName(event.target.value)} placeholder="例如：校服 / 冬季便装" /><input aria-label="服装锁定项" className="text-input" value={outfitLockedFields} onChange={(event) => setOutfitLockedFields(event.target.value)} placeholder="锁定项：颜色、鞋、配饰…" /></div><button disabled={!bindCharacterId || !outfitName.trim() || !selectedOutfitAssets.length || createOutfit.isPending} onClick={() => createOutfit.mutate()}>建立档案（{selectedOutfitAssets.length} 图）</button></div><div className="profile-chips">{outfits.data?.map((outfit) => <span key={outfit.id}>{characters.data?.find((item) => item.id === outfit.character_id)?.primary_name} · {outfit.name}<small>{outfit.reference_asset_ids.length} 图 · {outfit.locked_fields.length} 项锁定</small><button disabled={generateOutfitPreview.isPending || !activeDrawModel} onClick={() => generateOutfitPreview.mutate(outfit.id)}>生成穿着图</button></span>)}</div></section>
@@ -722,14 +767,16 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
               <div className="intake-toolbar"><div className="kind-switch">{kinds.map(([value, label]) => <button key={value} className={assetKind === value ? "active" : ""} onClick={() => setAssetKind(value)}>{label}</button>)}</div><span>{assetKind === "CHARACTER_REFERENCE" ? (bindCharacterId ? "将绑定到选中的角色" : "请先选择要绑定的角色") : assetKind === "OUTFIT_REFERENCE" ? "用于锁定角色服装、配饰和状态" : "用于锁定黑白网点、线条和构图风格"}</span></div>
               <label className={upload.isPending ? "upload-stage busy" : "upload-stage"}><input type="file" accept="image/png,image/jpeg,image/webp" onChange={chooseFile} disabled={upload.isPending} /><span className="upload-icon">{upload.isPending ? <LoaderCircle className="spin" /> : <Upload />}</span><strong>{upload.isPending ? "正在安全上传…" : `上传${kinds.find(([value]) => value === assetKind)?.[1]}`}</strong><p>人物图会和选中的主要姓名绑定，不会只依赖文件名猜测身份。</p></label>
               {uploadError && <p className="form-error"><CircleAlert size={15} />{uploadError}</p>}
+              {(bindExistingCharacterReference.isError || unbindExistingCharacterReference.isError) && <p className="form-error"><CircleAlert size={15} />{(bindExistingCharacterReference.error ?? unbindExistingCharacterReference.error)?.message}</p>}
               {kinds.map(([kind, label]) => {
                 const grouped = assets.data?.filter((asset) => asset.kind === kind) ?? [];
                 return <section className="asset-purpose-group" key={kind}>
                   <div className="asset-list-header"><span>{label}</span><small>{grouped.length} FILES</small></div>
                   <p className="purpose-explain">{{ CHARACTER_REFERENCE: "绑定主要姓名与绰号，用于保持脸、发型和体型一致。", OUTFIT_REFERENCE: "选择后建立角色服装档案，并在场景中指定穿着。", STYLE_REFERENCE: "选择后由 Gemini 总结线稿、网点、对比和构图语言。" }[kind]}</p>
                   <div className="asset-grid">{grouped.map((asset, index) => {
-                    const selected = kind === "OUTFIT_REFERENCE" ? selectedOutfitAssets.includes(asset.id) : kind === "STYLE_REFERENCE" ? selectedStyleAssets.includes(asset.id) : false;
-                    return <article className={selected ? "asset-card selected" : "asset-card"} key={asset.id}><div className={`asset-thumb thumb-${(index % 3) + 1}`}>{asset.content_url ? <Image src={publicUrl(asset.content_url)!} alt={asset.original_name} width={74} height={74} unoptimized /> : <FileImage size={27} />}<span>{asset.width && asset.height ? `${asset.width}×${asset.height}` : asset.mime_type}</span></div><div><strong>{asset.original_name}</strong><p>{label} · {formatBytes(asset.byte_size)}</p><span className="tiny-status"><Check size={11} />{asset.status}</span>{kind !== "CHARACTER_REFERENCE" && <button className="bind-purpose" onClick={() => kind === "OUTFIT_REFERENCE" ? setSelectedOutfitAssets((values) => values.includes(asset.id) ? values.filter((item) => item !== asset.id) : [...values, asset.id]) : setSelectedStyleAssets((values) => values.includes(asset.id) ? values.filter((item) => item !== asset.id) : [...values, asset.id])}>{selected ? "已选入档案" : "选入新档案"}</button>}<div className="asset-actions"><select aria-label="修改素材用途" value={asset.kind} onChange={(event) => reclassifyAsset.mutate({ assetId: asset.id, kind: event.target.value as AssetPurpose })}>{kinds.map(([value, option]) => <option key={value} value={value}>{option}</option>)}</select><button title="删除素材" onClick={() => { if (window.confirm("删除该导入素材并解除人物绑定？")) deleteAsset.mutate(asset.id); }}><Trash2 size={13} /></button></div></div></article>;
+                    const characterReference = kind === "CHARACTER_REFERENCE" ? boundCharacter?.references.find((reference) => reference.asset_id === asset.id) : undefined;
+                    const selected = kind === "CHARACTER_REFERENCE" ? Boolean(characterReference) : kind === "OUTFIT_REFERENCE" ? selectedOutfitAssets.includes(asset.id) : selectedStyleAssets.includes(asset.id);
+                    return <article className={selected ? "asset-card selected" : "asset-card"} key={asset.id}><div className={`asset-thumb thumb-${(index % 3) + 1}`}>{asset.content_url ? <Image src={publicUrl(asset.content_url)!} alt={asset.original_name} width={74} height={74} unoptimized /> : <FileImage size={27} />}<span>{asset.width && asset.height ? `${asset.width}×${asset.height}` : asset.mime_type}</span></div><div><strong>{asset.original_name}</strong><p>{label} · {formatBytes(asset.byte_size)}</p><span className="tiny-status"><Check size={11} />{asset.status}</span>{kind === "CHARACTER_REFERENCE" ? <button className={characterReference ? "bind-purpose bound" : "bind-purpose"} disabled={!boundCharacter || bindExistingCharacterReference.isPending || unbindExistingCharacterReference.isPending} onClick={() => characterReference ? unbindExistingCharacterReference.mutate(characterReference.id) : bindExistingCharacterReference.mutate(asset.id)}>{!boundCharacter ? "先选择角色" : characterReference ? `解除与 ${boundCharacter.primary_name} 的绑定` : `绑定到 ${boundCharacter.primary_name}`}</button> : <button className="bind-purpose" onClick={() => kind === "OUTFIT_REFERENCE" ? setSelectedOutfitAssets((values) => values.includes(asset.id) ? values.filter((item) => item !== asset.id) : [...values, asset.id]) : setSelectedStyleAssets((values) => values.includes(asset.id) ? values.filter((item) => item !== asset.id) : [...values, asset.id])}>{selected ? "已选入档案" : "选入新档案"}</button>}<div className="asset-actions"><select aria-label="修改素材用途" value={asset.kind} onChange={(event) => reclassifyAsset.mutate({ assetId: asset.id, kind: event.target.value as AssetPurpose })}>{kinds.map(([value, option]) => <option key={value} value={value}>{option}</option>)}</select><button title="删除素材" onClick={() => { if (window.confirm("删除该导入素材并解除人物绑定？")) deleteAsset.mutate(asset.id); }}><Trash2 size={13} /></button></div></div></article>;
                   })}</div>
                   {!grouped.length && <div className="purpose-empty">尚无{label}</div>}
                 </section>;
@@ -759,7 +806,8 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
           {section === "storyboard" && (
             <>
               <header className="canvas-header"><div><span>PAGE CAPACITY / 动态分页</span><h2>内容有多少，页面就有多少</h2></div><small>{pages.data?.length ?? 0} 页</small></header>
-              {!pages.data?.length ? <div className="asset-empty tall"><PanelTop size={28} /><strong>尚未生成分页分镜</strong><p>先完成漫画剧本；系统按场景切换、动作复杂度、对白和气泡容量拆页。</p></div> : <div className="page-plan-grid">{pages.data.map((page) => <div className="page-plan-item" key={page.id}><button className={page.selected_candidate_id ? "page-plan-card accepted" : "page-plan-card"} onClick={() => openPage(page)}><span className="page-no">P.{String(page.page_number).padStart(3, "0")}</span><div className="mini-panels">{Array.from({ length: Math.min(page.panel_count, 6) }).map((_, index) => <i key={index} />)}</div><strong>{page.panel_count} 格 · {page.estimated_bubbles} 气泡</strong><p>{page.estimated_text_chars} 字 / 上限 180</p><small>{page.scene_ids.length} 场景 · {page.beat_ids.length} 情节拍 · {page.source_coverage.complete ? "覆盖完整" : "覆盖缺失"}</small>{page.selected_candidate_id && <em><Check size={11} />已采用</em>}</button><button className="page-replan" disabled={replanPage.isPending} onClick={() => replanPage.mutate(page.page_number)}><RotateCcw size={11} />从此页重算</button></div>)}</div>}
+              {invalidPlannedPageCount > 0 && <div className="workflow-warning"><CircleAlert size={17} /><div><strong>{invalidPlannedPageCount} 页缺少剧本与分镜来源</strong><p>这是旧版分页数据，不能直接生图。请先生成漫画剧本，再从第 1 页重新计算分页。</p></div><Link className="button outline compact" href={projectPath("script")}>前往漫画剧本</Link></div>}
+              {!pages.data?.length ? <div className="asset-empty tall"><PanelTop size={28} /><strong>尚未生成分页分镜</strong><p>先完成漫画剧本；系统按场景切换、动作复杂度、对白和气泡容量拆页。</p></div> : <div className="page-plan-grid">{pages.data.map((page) => { const issue = getPageStructureIssue(page); return <div className="page-plan-item" key={page.id}><button className={page.selected_candidate_id ? "page-plan-card accepted" : "page-plan-card"} onClick={() => openPage(page)}><span className="page-no">P.{String(page.page_number).padStart(3, "0")}</span><div className="mini-panels">{Array.from({ length: Math.min(page.panel_count, 6) }).map((_, index) => <i key={index} />)}</div><strong>{page.panel_count} 格 · {page.estimated_bubbles} 气泡</strong><p>{page.estimated_text_chars} 字 / 上限 180</p><small className={issue ? "page-source-invalid" : ""}>{page.scene_ids.length} 场景 · {page.beat_ids.length} 情节拍 · {issue ? "缺少剧本来源" : "覆盖完整"}</small>{page.selected_candidate_id && <em><Check size={11} />已采用</em>}</button><button className="page-replan" disabled={replanPage.isPending} onClick={() => replanPage.mutate(page.page_number)}><RotateCcw size={11} />从此页重算</button></div>; })}</div>}
               {replanPage.isError && <p className="form-error"><CircleAlert size={14} />{replanPage.error.message}</p>}
             </>
           )}
@@ -768,10 +816,11 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
             <>
               <header className="canvas-header"><div><span>DRAW / 单页抽卡</span><h2>{selectedPage ? `第 ${selectedPage.page_number} 页候选` : "选择一页开始"}</h2></div><small>每次只生成 1 页</small></header>
               {selectedPage ? <>
-                <div className="draw-toolbar"><div className="page-picker">{pages.data?.map((page) => <button key={page.id} className={selectedPage.id === page.id ? "active" : ""} onClick={() => setSelectedPageId(page.id)}>{page.page_number}</button>)}</div><button className="button ghost compact" onClick={() => startBatch.mutate()}><Plus size={14} />新批次</button></div>
+                {selectedPageStructureIssue && <div className="workflow-warning"><CircleAlert size={17} /><div><strong>当前页暂不能生成</strong><p>{selectedPageStructureIssue}</p></div><Link className="button outline compact" href={projectPath("script")}>前往漫画剧本</Link></div>}
+                <div className="draw-toolbar"><div className="page-picker">{pages.data?.map((page) => <button key={page.id} className={selectedPage.id === page.id ? "active" : ""} onClick={() => setSelectedPageId(page.id)}>{page.page_number}</button>)}</div><button className="button ghost compact" disabled={startBatch.isPending || Boolean(selectedPageStructureIssue)} onClick={() => startBatch.mutate()}><Plus size={14} />新批次</button></div>
                 <div className="draw-context"><div><span>PAGE LOAD</span><strong>{selectedPage.estimated_text_chars} 字</strong><small>{selectedPage.panel_count} 格 / {selectedPage.estimated_bubbles} 气泡</small></div><p>{selectedPage.source_coverage.ranges?.map((item) => item.text).join("").slice(0, 180)}</p></div>
-                <div className="model-duel">{modelOptions.map((option) => <button key={option.alias} className={activeDrawModel === option.alias ? "model-choice active" : "model-choice"} onClick={() => setDrawModel(option.alias)}><Sparkles size={18} /><span><strong>{option.name}</strong><small>{option.id}</small></span>{activeDrawModel === option.alias && <Check size={15} />}</button>)}</div>
-                <div className="generation-bar"><div className="generation-options"><div><span>清晰度</span><div className="resolution-row small">{(["1K", "2K", "4K"] as Resolution[]).map((value) => <button key={value} className={drawResolution === value ? "selected" : ""} onClick={() => setDrawResolution(value)}>{value}{value === "4K" && <small>P</small>}</button>)}</div></div><div><span>本次候选数</span><div className="resolution-row small count-row">{Array.from({ length: draft.default_concurrency }, (_, index) => index + 1).map((value) => <button key={value} className={effectiveDrawCount === value ? "selected" : ""} onClick={() => setDrawCount(value)}>{value}</button>)}</div></div></div><button className="button ink generate-one" disabled={generate.isPending || !activeDrawModel} onClick={() => generate.mutate()}>{generate.isPending ? <LoaderCircle className="spin" size={17} /> : <Star size={17} />}{generate.isPending ? `正在加入 ${effectiveDrawCount} 个任务` : activeDrawModel ? `生成 ${effectiveDrawCount} 个候选` : "请先选择模型"}</button></div>
+                <ImageModelPicker selected={activeDrawModel} onSelect={setDrawModel} label="本次页面生成模型（项目上次使用记录不会自动代替本次选择）" />
+                <div className="generation-bar"><div className="generation-options"><div><span>清晰度</span><div className="resolution-row small">{(["1K", "2K", "4K"] as Resolution[]).map((value) => <button key={value} className={drawResolution === value ? "selected" : ""} onClick={() => setDrawResolution(value)}>{value}{value === "4K" && <small>P</small>}</button>)}</div></div><div><span>本次候选数</span><div className="resolution-row small count-row">{Array.from({ length: draft.default_concurrency }, (_, index) => index + 1).map((value) => <button key={value} className={effectiveDrawCount === value ? "selected" : ""} onClick={() => setDrawCount(value)}>{value}</button>)}</div></div></div><button className="button ink generate-one" disabled={generate.isPending || Boolean(selectedPageGenerationIssue)} onClick={() => generate.mutate()}>{generate.isPending ? <LoaderCircle className="spin" size={17} /> : <Star size={17} />}{generate.isPending ? `正在加入 ${effectiveDrawCount} 个任务` : selectedPageStructureIssue ? "请先补全剧本与分镜" : activeDrawModel ? `生成 ${effectiveDrawCount} 个候选` : "请先选择模型"}</button></div>
                 {(generate.isError || startBatch.isError) && <p className="form-error"><CircleAlert size={14} />{(generate.error ?? startBatch.error)?.message}</p>}
                 <div className="batch-heading"><div><span>BATCH</span><strong>{currentBatch ? `批次 ${currentBatch.ordinal}` : "尚未开始批次"}</strong></div><small>可跨模型比较 · 收藏不等于采用</small></div>
                 <div className="candidate-grid">{candidates.data?.map((candidate) => <article className={candidate.is_selected ? "candidate-card selected" : "candidate-card"} key={candidate.id}><CandidateArtwork contentUrl={candidate.content_url} label={`候选 ${candidate.ordinal}`} /><div className="candidate-meta"><span>候选 {String(candidate.ordinal).padStart(2, "0")}</span><strong>{modelOptions.find((item) => item.alias === candidate.model_alias)?.name}</strong><small>{candidate.resolution} · {candidate.status}</small></div><div className="candidate-actions"><button className={candidate.is_favorite ? "favorited" : ""} onClick={() => favorite.mutate({ candidateId: candidate.id, value: !candidate.is_favorite })}><Heart size={14} fill={candidate.is_favorite ? "currentColor" : "none"} />收藏</button><button disabled={!candidate.asset_id || candidate.is_selected} onClick={() => selectCandidate.mutate(candidate.id)}><Check size={14} />{candidate.is_selected ? "已采用" : "采用"}</button><button className={reviewCandidateId === candidate.id ? "reviewing" : ""} disabled={!candidate.asset_id || inspectCandidate.isPending} onClick={() => { setReviewCandidateId(candidate.id); inspectCandidate.mutate(candidate.id); }}><CircleAlert size={14} />检查</button>{candidate.asset_id && candidate.resolution === "1K" && <button disabled={upscaleCandidate.isPending || !activeDrawModel} onClick={() => upscaleCandidate.mutate({ candidateId: candidate.id, resolution: "2K" })}>升至 2K</button>}{candidate.asset_id && candidate.resolution !== "4K" && <button disabled={upscaleCandidate.isPending || !activeDrawModel} onClick={() => upscaleCandidate.mutate({ candidateId: candidate.id, resolution: "4K" })}>升至 4K</button>}<button className="danger-action" disabled={candidate.is_selected} onClick={() => { if (window.confirm("删除这个候选？收藏状态也会一并移除。")) deleteCandidate.mutate(candidate.id); }}><Trash2 size={14} />删除</button></div></article>)}</div>

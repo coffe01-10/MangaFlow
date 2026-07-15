@@ -81,6 +81,19 @@ def get_project_summary(project_id: str, db: Session = Depends(get_db)) -> Proje
         .correlate(Project)
         .scalar_subquery()
     )
+    ready_page_count = (
+        select(func.count(MangaPage.id))
+        .join(Chapter, Chapter.id == MangaPage.chapter_id)
+        .where(
+            Chapter.project_id == Project.id,
+            Chapter.deleted_at.is_(None),
+            func.json_array_length(MangaPage.scene_ids) > 0,
+            func.json_array_length(MangaPage.beat_ids) > 0,
+            MangaPage.source_coverage["complete"].as_boolean().is_(True),
+        )
+        .correlate(Project)
+        .scalar_subquery()
+    )
     asset_count = (
         select(func.count(Asset.id))
         .where(Asset.project_id == Project.id, Asset.deleted_at.is_(None))
@@ -168,6 +181,7 @@ def get_project_summary(project_id: str, db: Session = Depends(get_db)) -> Proje
             Project.id,
             chapter_count.label("chapter_count"),
             page_count.label("page_count"),
+            ready_page_count.label("ready_page_count"),
             asset_count.label("asset_count"),
             scene_count.label("scene_count"),
             candidate_count.label("candidate_count"),
@@ -185,12 +199,20 @@ def get_project_summary(project_id: str, db: Session = Depends(get_db)) -> Proje
         "source": "READY" if row.chapter_count else "EMPTY",
         "assets": "READY" if row.asset_count else "EMPTY",
         "script": "READY" if row.scene_count else "NOT_STARTED",
-        "storyboard": "READY" if row.page_count else "NOT_STARTED",
+        "storyboard": (
+            "NOT_STARTED"
+            if not row.page_count
+            else "READY"
+            if row.ready_page_count == row.page_count
+            else "NEEDS_REVIEW"
+        ),
         "generate": (
             "RUNNING"
             if row.pending_job_count
             else "READY"
             if row.candidate_count
+            else "NEEDS_REVIEW"
+            if row.page_count and row.ready_page_count < row.page_count
             else "NOT_STARTED"
         ),
         "library": "READY" if row.candidate_count or row.asset_count else "EMPTY",

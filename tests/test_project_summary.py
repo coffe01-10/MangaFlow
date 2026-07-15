@@ -33,10 +33,18 @@ def test_project_summary_aggregates_project_shell_state(client, db_session):
     chapter = Chapter(project_id=project_id, title="第一章", ordinal=1)
     db_session.add(chapter)
     db_session.flush()
+    scene = Scene(chapter_id=chapter.id, ordinal=1)
+    db_session.add(scene)
+    db_session.flush()
     db_session.add_all(
         [
-            Scene(chapter_id=chapter.id, ordinal=1),
-            MangaPage(chapter_id=chapter.id, page_number=1),
+            MangaPage(
+                chapter_id=chapter.id,
+                page_number=1,
+                scene_ids=[scene.id],
+                beat_ids=["beat-1"],
+                source_coverage={"complete": True},
+            ),
             Asset(
                 project_id=project_id,
                 kind="STYLE_REFERENCE",
@@ -96,6 +104,30 @@ def test_project_summary_aggregates_project_shell_state(client, db_session):
         "jobs": "FAILED",
         "workflow": "DRAFT",
     }
+
+
+def test_project_summary_marks_legacy_pages_for_review(client, db_session):
+    created = client.post("/api/v1/projects", json={"name": "旧分页项目"}).json()
+    chapter = Chapter(project_id=created["id"], title="第一章", ordinal=1)
+    db_session.add(chapter)
+    db_session.flush()
+    db_session.add(
+        MangaPage(
+            chapter_id=chapter.id,
+            page_number=1,
+            scene_ids=[],
+            beat_ids=[],
+            source_coverage={"complete": True},
+        )
+    )
+    db_session.commit()
+
+    response = client.get(f"/api/v1/projects/{created['id']}/summary")
+
+    assert response.status_code == 200
+    statuses = response.json()["section_statuses"]
+    assert statuses["storyboard"] == "NEEDS_REVIEW"
+    assert statuses["generate"] == "NEEDS_REVIEW"
 
 
 def test_project_summary_hides_archived_projects(client):

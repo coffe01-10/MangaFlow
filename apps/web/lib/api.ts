@@ -571,6 +571,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ asset_id: assetId, angle: "unspecified", is_canonical: true }),
     }),
+  unbindCharacterReference: (referenceId: string) =>
+    request<void>(`/character-references/${referenceId}`, { method: "DELETE" }),
   startAssetBatch: (targetType: "CHARACTER" | "OUTFIT" | "STYLE", targetId: string, generationKind: "CHARACTER" | "OUTFIT" | "STYLE_TEST") =>
     request<GenerationBatch>("/asset-generation-batches", {
       method: "POST",
