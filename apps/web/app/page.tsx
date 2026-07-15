@@ -1,6 +1,6 @@
 "use client";
 
-import { AppShell } from "@/components/shell";
+import { AppShell, GlobalNav } from "@/components/shell";
 import { api, type Project, type VertexStatus } from "@/lib/api";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -159,6 +159,7 @@ export default function HomePage() {
       <header className="topbar">
         <div className="topbar-title"><span>MANGAFLOW / PRODUCTION DESK</span><strong>漫画生产台</strong></div>
         <div className="topbar-actions">
+          <GlobalNav />
           <ConnectionBadge status={vertex.data} />
           <button className="button ink compact" onClick={() => setCreating(true)}><Plus size={16} />新建项目</button>
         </div>
