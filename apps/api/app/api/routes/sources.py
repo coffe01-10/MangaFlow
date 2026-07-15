@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import get_db
+from app.domain.states import ensure_unlocked
 from app.models import (
     Beat,
     Chapter,
@@ -22,11 +23,14 @@ from app.models import (
     SourceSegment,
 )
 from app.schemas import (
+    BeatRead,
+    BeatUpdate,
     ChapterRead,
     JobRead,
     PlanRead,
     PlanRequest,
     SceneRead,
+    SceneUpdate,
     ScriptRead,
     SourceImportRead,
     SourceImportRequest,
@@ -42,6 +46,7 @@ from app.services.content_workflow import (
     plan_chapter_pages,
     sha256_text,
 )
+from app.services.editor import canonical_speaker_name, mark_pages_for_review
 from app.services.job_service import create_job, enqueue_job
 
 router = APIRouter()
@@ -323,3 +328,72 @@ def get_script(chapter_id: str, db: Session = Depends(get_db)) -> ScriptRead:
         coverage=revision.coverage if revision else {},
         scenes=[SceneRead.model_validate(scene) for scene in scenes],
     )
+
+
+@router.patch("/scenes/{scene_id}", response_model=SceneRead)
+def update_scene(
+    scene_id: str,
+    payload: SceneUpdate,
+    db: Session = Depends(get_db),
+) -> Scene:
+    scene = db.get(Scene, scene_id)
+    if not scene:
+        raise HTTPException(status_code=404, detail="场景不存在")
+    if scene.version != payload.version:
+        raise HTTPException(status_code=409, detail="场景已被更新，请刷新后重试")
+    values = payload.model_dump(exclude_unset=True, exclude={"version"})
+    try:
+        ensure_unlocked(scene.locked_fields, list(values))
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    for key, value in values.items():
+        setattr(scene, key, value.strip() if isinstance(value, str) else value)
+    scene.version += 1
+    mark_pages_for_review(
+        db,
+        scene.chapter_id,
+        reference_id=scene.id,
+        reference_kind="scene",
+    )
+    db.commit()
+    db.refresh(scene)
+    scene.beats = list(
+        db.scalars(select(Beat).where(Beat.scene_id == scene.id).order_by(Beat.ordinal))
+    )
+    return scene
+
+
+@router.patch("/beats/{beat_id}", response_model=BeatRead)
+def update_beat(
+    beat_id: str,
+    payload: BeatUpdate,
+    db: Session = Depends(get_db),
+) -> Beat:
+    beat = db.get(Beat, beat_id)
+    if not beat:
+        raise HTTPException(status_code=404, detail="情节拍不存在")
+    if beat.version != payload.version:
+        raise HTTPException(status_code=409, detail="情节拍已被更新，请刷新后重试")
+    scene = db.get(Scene, beat.scene_id)
+    chapter = db.get(Chapter, scene.chapter_id) if scene else None
+    if not scene or not chapter:
+        raise HTTPException(status_code=404, detail="情节拍所属章节不存在")
+    values = payload.model_dump(exclude_unset=True, exclude={"version"})
+    if "speaker_name" in values:
+        values["speaker_name"] = canonical_speaker_name(
+            db,
+            chapter.project_id,
+            values["speaker_name"] or "",
+        )
+    for key, value in values.items():
+        setattr(beat, key, value.strip() if isinstance(value, str) else value)
+    beat.version += 1
+    mark_pages_for_review(
+        db,
+        chapter.id,
+        reference_id=beat.id,
+        reference_kind="beat",
+    )
+    db.commit()
+    db.refresh(beat)
+    return beat

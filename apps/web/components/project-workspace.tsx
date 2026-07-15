@@ -1,13 +1,14 @@
 "use client";
 
 import { AppShell } from "@/components/shell";
+import { ScriptEditor } from "@/components/script-editor";
+import { StoryboardEditor } from "@/components/storyboard-editor";
 import {
   api,
   publicUrl,
   type ImageModelAlias,
   type AssetPurpose,
   type InspectionResult,
-  type MangaPage,
   type Project,
   type Resolution,
 } from "@/lib/api";
@@ -195,8 +196,8 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
   const [reviewCandidateId, setReviewCandidateId] = useState<string | null>(null);
 
   const needsChapters = ["source", "script", "storyboard", "generate", "library"].includes(section);
-  const needsCharacters = ["assets", "script", "library"].includes(section);
-  const needsOutfits = ["assets", "script"].includes(section);
+  const needsCharacters = ["assets", "script", "storyboard", "library"].includes(section);
+  const needsOutfits = ["assets", "script", "storyboard"].includes(section);
   const needsPages = ["storyboard", "generate"].includes(section);
   const needsScript = ["source", "script"].includes(section);
   const projectPath = (target: string) => `/projects/${id}/${target}`;
@@ -715,11 +716,6 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
     event.target.value = "";
   }
 
-  function openPage(page: MangaPage) {
-    setSelectedPageId(page.id);
-    router.push(`${projectPath("generate")}?page=${encodeURIComponent(page.id)}`);
-  }
-
   async function beginEditChapter(chapterId: string, title: string) {
     setSelectedChapterId(chapterId);
     const values = await queryClient.fetchQuery({ queryKey: ["revisions", chapterId], queryFn: () => api.revisions(chapterId) });
@@ -822,29 +818,16 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
 
           {section === "script" && (
             <>
-              <header className="canvas-header"><div><span>SCREENPLAY / 漫画剧本</span><h2>先写场景与情节拍，再进入分页</h2></div><small>{script.data?.scenes.length ?? 0} 个场景</small></header>
-              {!activeChapterId ? <div className="asset-empty tall"><Clapperboard size={28} /><strong>请先导入原作</strong></div> : !script.data?.scenes.length ? <div className="script-empty"><Clapperboard size={30} /><strong>本章还没有漫画剧本</strong><p>点击“生成漫画剧本”，Gemini 会逐段补充可视化动作、场景、对白、旁白、情绪和翻页悬念，不会压缩原文。</p><button className="button ink" disabled={parseChapter.isPending} onClick={() => parseChapter.mutate()}><Sparkles size={15} />生成漫画剧本</button></div> : <div className="script-scenes">
-                <div className="script-coverage"><strong>原文覆盖 {Math.round((script.data.coverage.ratio ?? 0) * 100)}%</strong><span>{script.data.coverage.covered ?? 0} / {script.data.coverage.expected ?? 0} 个原文片段 · {script.data.status}</span></div>
-                {script.data.scenes.map((scene) => <section className="script-scene" key={scene.id}>
-                  <header><span>SCENE {String(scene.ordinal).padStart(2, "0")}</span><strong>{scene.location || "未命名场景"} · {scene.time_label || "时间未定"}</strong><small>{scene.purpose}</small></header>
-                  <p className="emotion-arc">情绪线：{scene.emotional_arc || "待补充"}</p>
-                  <div className="scene-wardrobe"><strong><Shirt size={13} />本场服装指定</strong><div>{characters.data?.map((character) => {
-                    const options = outfits.data?.filter((outfit) => outfit.character_id === character.id) ?? [];
-                    if (!options.length) return null;
-                    return <label key={character.id}><span>{character.primary_name}</span><select value={scene.outfit_assignments[character.id] ?? ""} onChange={(event) => assignOutfit.mutate({ sceneId: scene.id, assignments: { ...scene.outfit_assignments, [character.id]: event.target.value } })}><option value="">未指定</option>{options.map((outfit) => <option key={outfit.id} value={outfit.id}>{outfit.name}</option>)}</select></label>;
-                  })}</div></div>
-                  <div className="beat-list">{scene.beats.map((beat) => <article key={beat.id}><i>{String(beat.ordinal).padStart(2, "0")}</i><div><strong>{beat.action || "动作待补充"}</strong>{beat.dialogue && <p><b>{beat.speaker_name || "说话人待确认"}</b>{beat.dialogue}</p>}{beat.narration && <p><b>旁白</b>{beat.narration}</p>}<small>{beat.emotion || "情绪未标注"} · 来源 {beat.source_range.segment_ids?.length ?? 0} 段</small></div></article>)}</div>
-                </section>)}
-              </div>}
+              <header className="canvas-header"><div><span>SCREENPLAY / 漫画剧本</span><h2>先写场景与情节拍，再进入分页</h2></div><div className="chapter-stage-control"><select aria-label="选择要编辑剧本的章节" value={activeChapterId ?? ""} onChange={(event) => setSelectedChapterId(event.target.value)}>{chapters.data?.map((chapter) => <option key={chapter.id} value={chapter.id}>{chapter.ordinal}. {chapter.title}</option>)}</select><small>{script.data?.scenes.length ?? 0} 个场景</small></div></header>
+              {!activeChapterId ? <div className="asset-empty tall"><Clapperboard size={28} /><strong>请先导入原作</strong></div> : !script.data?.scenes.length ? <div className="script-empty"><Clapperboard size={30} /><strong>本章还没有漫画剧本</strong><p>点击“生成漫画剧本”，Gemini 会逐段补充可视化动作、场景、对白、旁白、情绪和翻页悬念，不会压缩原文。</p><button className="button ink" disabled={parseChapter.isPending} onClick={() => parseChapter.mutate()}><Sparkles size={15} />生成漫画剧本</button></div> : <ScriptEditor chapterId={activeChapterId} script={script.data} characters={characters.data ?? []} outfits={outfits.data ?? []} onAssignOutfit={(sceneId, assignments) => assignOutfit.mutate({ sceneId, assignments })} />}
             </>
           )}
 
           {section === "storyboard" && (
             <>
-              <header className="canvas-header"><div><span>PAGE CAPACITY / 动态分页</span><h2>内容有多少，页面就有多少</h2></div><small>{pages.data?.length ?? 0} 页</small></header>
+              <header className="canvas-header"><div><span>PAGE CAPACITY / 动态分页</span><h2>内容有多少，页面就有多少</h2></div><div className="chapter-stage-control"><select aria-label="选择要编辑分镜的章节" value={activeChapterId ?? ""} onChange={(event) => setSelectedChapterId(event.target.value)}>{chapters.data?.map((chapter) => <option key={chapter.id} value={chapter.id}>{chapter.ordinal}. {chapter.title}</option>)}</select><small>{pages.data?.length ?? 0} 页</small></div></header>
               {invalidPlannedPageCount > 0 && <div className="workflow-warning"><CircleAlert size={17} /><div><strong>{invalidPlannedPageCount} 页缺少剧本与分镜来源</strong><p>这是旧版分页数据，不能直接生图。请先生成漫画剧本，再从第 1 页重新计算分页。</p></div><Link className="button outline compact" href={projectPath("script")}>前往漫画剧本</Link></div>}
-              {!pages.data?.length ? <div className="asset-empty tall"><PanelTop size={28} /><strong>尚未生成分页分镜</strong><p>先完成漫画剧本；系统按场景切换、动作复杂度、对白和气泡容量拆页。</p></div> : <div className="page-plan-grid">{pages.data.map((page) => { const issue = getPageStructureIssue(page); return <div className="page-plan-item" key={page.id}><button className={page.selected_candidate_id ? "page-plan-card accepted" : "page-plan-card"} onClick={() => openPage(page)}><span className="page-no">P.{String(page.page_number).padStart(3, "0")}</span><div className="mini-panels">{Array.from({ length: Math.min(page.panel_count, 6) }).map((_, index) => <i key={index} />)}</div><strong>{page.panel_count} 格 · {page.estimated_bubbles} 气泡</strong><p>{page.estimated_text_chars} 字 / 上限 180</p><small className={issue ? "page-source-invalid" : ""}>{page.scene_ids.length} 场景 · {page.beat_ids.length} 情节拍 · {issue ? "缺少剧本来源" : "覆盖完整"}</small>{page.selected_candidate_id && <em><Check size={11} />已采用</em>}</button><button className="page-replan" disabled={replanPage.isPending} onClick={() => replanPage.mutate(page.page_number)}><RotateCcw size={11} />从此页重算</button></div>; })}</div>}
-              {replanPage.isError && <p className="form-error"><CircleAlert size={14} />{replanPage.error.message}</p>}
+              {!pages.data?.length ? <div className="asset-empty tall"><PanelTop size={28} /><strong>尚未生成分页分镜</strong><p>先完成漫画剧本；系统按场景切换、动作复杂度、对白和气泡容量拆页。</p></div> : <StoryboardEditor chapterId={activeChapterId!} pages={pages.data} characters={characters.data ?? []} outfits={outfits.data ?? []} onReplan={(pageNumber) => replanPage.mutate(pageNumber)} replanPending={replanPage.isPending} replanError={replanPage.error} />}
             </>
           )}
 
@@ -853,6 +836,7 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
               <header className="canvas-header"><div><span>DRAW / 单页抽卡</span><h2>{selectedPage ? `第 ${selectedPage.page_number} 页候选` : "选择一页开始"}</h2></div><small>每次只生成 1 页</small></header>
               {selectedPage ? <>
                 {selectedPageStructureIssue && <div className="workflow-warning"><CircleAlert size={17} /><div><strong>当前页暂不能生成</strong><p>{selectedPageStructureIssue}</p></div><Link className="button outline compact" href={projectPath("script")}>前往漫画剧本</Link></div>}
+                {selectedPage.continuity_status === "NEEDS_REVIEW" && <div className="workflow-warning"><CircleAlert size={17} /><div><strong>剧本或分镜已修改</strong><p>历史候选仍然保留，但可能不再对应当前脚本。建议重新抽卡并执行连续性检查。</p></div><Link className="button outline compact" href={projectPath("storyboard")}>检查分镜</Link></div>}
                 <div className="draw-toolbar"><div className="page-picker">{pages.data?.map((page) => <button key={page.id} className={selectedPage.id === page.id ? "active" : ""} onClick={() => setSelectedPageId(page.id)}>{page.page_number}</button>)}</div><button className="button ghost compact" disabled={startBatch.isPending || Boolean(selectedPageStructureIssue)} onClick={() => startBatch.mutate()}><Plus size={14} />新批次</button></div>
                 <div className="draw-context"><div><span>PAGE LOAD</span><strong>{selectedPage.estimated_text_chars} 字</strong><small>{selectedPage.panel_count} 格 / {selectedPage.estimated_bubbles} 气泡</small></div><p>{selectedPage.source_coverage.ranges?.map((item) => item.text).join("").slice(0, 180)}</p></div>
                 <ImageModelPicker selected={activeDrawModel} onSelect={setDrawModel} label="本次页面生成模型（项目上次使用记录不会自动代替本次选择）" />

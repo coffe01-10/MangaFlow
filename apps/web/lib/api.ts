@@ -129,13 +129,20 @@ export interface SourceRevision {
 
 export interface ScriptBeat {
   id: string;
+  scene_id: string;
   ordinal: number;
   action: string;
   speaker_name: string;
   dialogue: string;
   narration: string;
+  subtext: string;
   emotion: string;
+  importance: number;
+  must_visualize: boolean;
+  mergeable: boolean;
+  page_turn_hook: boolean;
   source_range: { segment_ids?: string[] };
+  version: number;
 }
 
 export interface ScriptScene {
@@ -143,10 +150,13 @@ export interface ScriptScene {
   ordinal: number;
   location: string;
   time_label: string;
+  weather: string;
   purpose: string;
   emotional_arc: string;
   source_range: { segment_ids?: string[] };
   outfit_assignments: Record<string, string>;
+  locked_fields: string[];
+  version: number;
   beats: ScriptBeat[];
 }
 
@@ -221,6 +231,45 @@ export interface MangaPage {
   continuity_status: string;
   scene_ids: string[];
   beat_ids: string[];
+  version: number;
+}
+
+export interface PanelDialogue {
+  id: string;
+  panel_id: string;
+  speaker_character_id: string | null;
+  target_text: string;
+  reading_order: number;
+  text_direction: "vertical" | "horizontal";
+  region: Record<string, unknown>;
+  rewrite_forbidden: boolean;
+}
+
+export interface StoryboardPanel {
+  id: string;
+  page_id: string;
+  reading_order: number;
+  bounds: Record<string, number>;
+  shot_type: string;
+  camera_angle: string;
+  camera_height: string;
+  characters: string[];
+  outfits: Record<string, string>;
+  actions: Record<string, string>;
+  expressions: Record<string, string>;
+  background: string;
+  bubble_regions: Array<Record<string, unknown>>;
+  sound_effects: Array<Record<string, unknown> | string>;
+  bleed: boolean;
+  borderless: boolean;
+  locked_fields: string[];
+  version: number;
+  dialogues: PanelDialogue[];
+}
+
+export interface Storyboard {
+  page: MangaPage;
+  panels: StoryboardPanel[];
 }
 
 export interface GenerationBatch {
@@ -533,12 +582,25 @@ export const api = {
   deleteChapter: (chapterId: string) => request<void>(`/chapters/${chapterId}`, { method: "DELETE" }),
   restoreChapter: (chapterId: string) => request<Chapter>(`/chapters/${chapterId}/restore`, { method: "POST" }),
   script: (chapterId: string) => request<Script>(`/chapters/${chapterId}/script`),
+  updateScene: (sceneId: string, payload: Partial<Pick<ScriptScene, "location" | "time_label" | "weather" | "purpose" | "emotional_arc">> & { version: number }) =>
+    request<ScriptScene>(`/scenes/${sceneId}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  updateBeat: (beatId: string, payload: Partial<Pick<ScriptBeat, "action" | "speaker_name" | "dialogue" | "narration" | "subtext" | "emotion" | "importance" | "must_visualize" | "mergeable" | "page_turn_hook">> & { version: number }) =>
+    request<ScriptBeat>(`/beats/${beatId}`, { method: "PATCH", body: JSON.stringify(payload) }),
   parseChapter: (chapterId: string) => request<Job>(`/chapters/${chapterId}/parse`, { method: "POST" }),
   planChapter: (chapterId: string, fromPageNumber?: number) => request<{ pages: MangaPage[]; coverage_ratio: number }>(`/chapters/${chapterId}/plan`, {
     method: "POST",
     body: JSON.stringify({ replace_existing: true, from_page_number: fromPageNumber }),
   }),
   pages: (chapterId: string) => request<MangaPage[]>(`/chapters/${chapterId}/pages`),
+  storyboard: (pageId: string) => request<Storyboard>(`/pages/${pageId}/storyboard`),
+  updatePanel: (panelId: string, payload: Partial<Pick<StoryboardPanel, "shot_type" | "camera_angle" | "camera_height" | "characters" | "outfits" | "actions" | "expressions" | "background" | "sound_effects" | "bleed" | "borderless">> & { version: number }) =>
+    request<StoryboardPanel>(`/panels/${panelId}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  createDialogue: (panelId: string, payload: Pick<PanelDialogue, "target_text" | "speaker_character_id" | "text_direction" | "rewrite_forbidden"> & { panel_version: number }) =>
+    request<PanelDialogue>(`/panels/${panelId}/dialogues`, { method: "POST", body: JSON.stringify(payload) }),
+  updateDialogue: (dialogueId: string, payload: Partial<Pick<PanelDialogue, "target_text" | "speaker_character_id" | "text_direction" | "rewrite_forbidden">> & { panel_version: number }) =>
+    request<PanelDialogue>(`/dialogues/${dialogueId}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  deleteDialogue: (dialogueId: string, panelVersion: number) =>
+    request<void>(`/dialogues/${dialogueId}`, { method: "DELETE", body: JSON.stringify({ panel_version: panelVersion }) }),
   characters: (projectId: string) => request<Character[]>(`/projects/${projectId}/characters`),
   outfits: (projectId: string) => request<Outfit[]>(`/projects/${projectId}/outfits`),
   createOutfit: (projectId: string, payload: { character_id: string; name: string; reference_asset_ids: string[]; locked_fields: string[] }) =>

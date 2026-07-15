@@ -14,6 +14,7 @@ from app.models import (
     AssetCandidate,
     Chapter,
     Character,
+    Dialogue,
     GenerationBatch,
     GenerationJob,
     GenerationRecord,
@@ -31,6 +32,10 @@ from app.models import (
 from app.schemas import (
     CandidateCreate,
     CandidateQueuedRead,
+    DialogueCreate,
+    DialogueDelete,
+    DialogueRead,
+    DialogueUpdate,
     FavoriteUpdate,
     GenerationBatchRead,
     InspectionRead,
@@ -41,9 +46,18 @@ from app.schemas import (
     LibraryRead,
     PageCandidateRead,
     PageRead,
+    PanelRead,
+    PanelUpdate,
     RepairRequest,
     SelectCandidateRequest,
+    StoryboardRead,
     UpscaleRequest,
+)
+from app.services.editor import (
+    mark_pages_for_review,
+    project_id_for_page,
+    refresh_page_text_metrics,
+    validate_character_ids,
 )
 from app.services.job_service import cancel_job, create_job, enqueue_job, reset_for_retry
 from app.services.model_registry import build_registry
@@ -120,6 +134,179 @@ def list_pages(chapter_id: str, db: Session = Depends(get_db)) -> list[MangaPage
 @router.get("/pages/{page_id}", response_model=PageRead)
 def get_page(page_id: str, db: Session = Depends(get_db)) -> MangaPage:
     return _page(db, page_id)
+
+
+def _panel_read(db: Session, panel: Panel) -> PanelRead:
+    panel.dialogues = list(
+        db.scalars(
+            select(Dialogue).where(Dialogue.panel_id == panel.id).order_by(Dialogue.reading_order)
+        )
+    )
+    return PanelRead.model_validate(panel)
+
+
+def _panel_context(db: Session, panel_id: str) -> tuple[Panel, MangaPage, str]:
+    panel = db.get(Panel, panel_id)
+    if not panel:
+        raise HTTPException(status_code=404, detail="分镜格不存在")
+    page = _page(db, panel.page_id)
+    return panel, page, project_id_for_page(db, page)
+
+
+def _validate_dialogue_speaker(
+    db: Session,
+    project_id: str,
+    speaker_character_id: str | None,
+) -> str | None:
+    if not speaker_character_id:
+        return None
+    return validate_character_ids(db, project_id, [speaker_character_id])[0]
+
+
+@router.get("/pages/{page_id}/storyboard", response_model=StoryboardRead)
+def get_storyboard(page_id: str, db: Session = Depends(get_db)) -> StoryboardRead:
+    page = _page(db, page_id)
+    panels = list(
+        db.scalars(select(Panel).where(Panel.page_id == page.id).order_by(Panel.reading_order))
+    )
+    return StoryboardRead(
+        page=PageRead.model_validate(page),
+        panels=[_panel_read(db, panel) for panel in panels],
+    )
+
+
+@router.patch("/panels/{panel_id}", response_model=PanelRead)
+def update_panel(
+    panel_id: str,
+    payload: PanelUpdate,
+    db: Session = Depends(get_db),
+) -> PanelRead:
+    panel, page, project_id = _panel_context(db, panel_id)
+    if panel.version != payload.version:
+        raise HTTPException(status_code=409, detail="分镜格已被更新，请刷新后重试")
+    values = payload.model_dump(exclude_unset=True, exclude={"version"})
+    try:
+        ensure_unlocked(panel.locked_fields, list(values))
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    if "characters" in values:
+        values["characters"] = validate_character_ids(db, project_id, values["characters"] or [])
+    character_ids = values.get("characters", panel.characters)
+    if "outfits" in values:
+        assignments = values["outfits"] or {}
+        if any(character_id not in character_ids for character_id in assignments):
+            raise HTTPException(status_code=409, detail="服装只能指定给本格出现的角色")
+        for character_id, outfit_id in assignments.items():
+            outfit = db.get(Outfit, outfit_id)
+            if not outfit or outfit.project_id != project_id or outfit.character_id != character_id:
+                raise HTTPException(status_code=409, detail="分镜服装与角色或项目不匹配")
+    if "expressions" in values and any(
+        character_id not in character_ids for character_id in (values["expressions"] or {})
+    ):
+        raise HTTPException(status_code=409, detail="表情只能指定给本格出现的角色")
+    if "actions" in values:
+        values["actions"] = {
+            **panel.actions,
+            **(values["actions"] or {}),
+            "source_text": panel.actions.get("source_text", ""),
+        }
+    for key, value in values.items():
+        setattr(panel, key, value.strip() if isinstance(value, str) else value)
+    panel.version += 1
+    mark_pages_for_review(db, page.chapter_id, from_page_number=page.page_number)
+    db.commit()
+    db.refresh(panel)
+    return _panel_read(db, panel)
+
+
+@router.post(
+    "/panels/{panel_id}/dialogues",
+    response_model=DialogueRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_dialogue(
+    panel_id: str,
+    payload: DialogueCreate,
+    db: Session = Depends(get_db),
+) -> Dialogue:
+    panel, page, project_id = _panel_context(db, panel_id)
+    if panel.version != payload.panel_version:
+        raise HTTPException(status_code=409, detail="分镜格已被更新，请刷新后重试")
+    if not payload.target_text.strip():
+        raise HTTPException(status_code=422, detail="气泡文字不能为空")
+    reading_order = (
+        db.scalar(select(func.max(Dialogue.reading_order)).where(Dialogue.panel_id == panel.id))
+        or 0
+    ) + 1
+    dialogue = Dialogue(
+        panel_id=panel.id,
+        speaker_character_id=_validate_dialogue_speaker(
+            db, project_id, payload.speaker_character_id
+        ),
+        target_text=payload.target_text.strip(),
+        reading_order=reading_order,
+        text_direction=payload.text_direction,
+        region=payload.region,
+        rewrite_forbidden=payload.rewrite_forbidden,
+    )
+    db.add(dialogue)
+    db.flush()
+    refresh_page_text_metrics(db, page)
+    panel.version += 1
+    mark_pages_for_review(db, page.chapter_id, from_page_number=page.page_number)
+    db.commit()
+    db.refresh(dialogue)
+    return dialogue
+
+
+@router.patch("/dialogues/{dialogue_id}", response_model=DialogueRead)
+def update_dialogue(
+    dialogue_id: str,
+    payload: DialogueUpdate,
+    db: Session = Depends(get_db),
+) -> Dialogue:
+    dialogue = db.get(Dialogue, dialogue_id)
+    if not dialogue:
+        raise HTTPException(status_code=404, detail="对白不存在")
+    panel, page, project_id = _panel_context(db, dialogue.panel_id)
+    if panel.version != payload.panel_version:
+        raise HTTPException(status_code=409, detail="分镜格已被更新，请刷新后重试")
+    values = payload.model_dump(exclude_unset=True, exclude={"panel_version"})
+    if "target_text" in values and not (values["target_text"] or "").strip():
+        raise HTTPException(status_code=422, detail="气泡文字不能为空")
+    if "speaker_character_id" in values:
+        values["speaker_character_id"] = _validate_dialogue_speaker(
+            db, project_id, values["speaker_character_id"]
+        )
+    for key, value in values.items():
+        setattr(dialogue, key, value.strip() if isinstance(value, str) else value)
+    db.flush()
+    refresh_page_text_metrics(db, page)
+    panel.version += 1
+    mark_pages_for_review(db, page.chapter_id, from_page_number=page.page_number)
+    db.commit()
+    db.refresh(dialogue)
+    return dialogue
+
+
+@router.delete("/dialogues/{dialogue_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_dialogue(
+    dialogue_id: str,
+    payload: DialogueDelete,
+    db: Session = Depends(get_db),
+) -> None:
+    dialogue = db.get(Dialogue, dialogue_id)
+    if not dialogue:
+        raise HTTPException(status_code=404, detail="对白不存在")
+    panel, page, _ = _panel_context(db, dialogue.panel_id)
+    if panel.version != payload.panel_version:
+        raise HTTPException(status_code=409, detail="分镜格已被更新，请刷新后重试")
+    db.delete(dialogue)
+    db.flush()
+    refresh_page_text_metrics(db, page)
+    panel.version += 1
+    mark_pages_for_review(db, page.chapter_id, from_page_number=page.page_number)
+    db.commit()
 
 
 @router.post(
@@ -358,9 +545,7 @@ def library(
         character = db.get(Character, character_id)
         if not character or character.project_id != project_id:
             raise HTTPException(status_code=404, detail="筛选角色不存在或不属于当前项目")
-        outfit_ids = set(
-            db.scalars(select(Outfit.id).where(Outfit.character_id == character_id))
-        )
+        outfit_ids = set(db.scalars(select(Outfit.id).where(Outfit.character_id == character_id)))
         page_ids = {
             panel.page_id
             for panel in db.scalars(
@@ -577,9 +762,7 @@ def restore_job(job_id: str, db: Session = Depends(get_db)) -> GenerationJob:
     "/projects/{project_id}/jobs/archive-completed",
     response_model=JobArchiveResult,
 )
-def archive_completed_jobs(
-    project_id: str, db: Session = Depends(get_db)
-) -> JobArchiveResult:
+def archive_completed_jobs(project_id: str, db: Session = Depends(get_db)) -> JobArchiveResult:
     jobs = list(
         db.scalars(
             select(GenerationJob).where(
@@ -681,13 +864,9 @@ def repair_candidate(
         raise HTTPException(status_code=409, detail="原始候选图片不存在")
     if not inspection or inspection.candidate_id != original.id:
         raise HTTPException(status_code=409, detail="检查结果与候选不匹配")
-    inspection_ids = select(InspectionResult.id).where(
-        InspectionResult.candidate_id == original.id
-    )
+    inspection_ids = select(InspectionResult.id).where(InspectionResult.candidate_id == original.id)
     previous_repairs = list(
-        db.scalars(
-            select(RepairPlan).where(RepairPlan.inspection_result_id.in_(inspection_ids))
-        )
+        db.scalars(select(RepairPlan).where(RepairPlan.inspection_result_id.in_(inspection_ids)))
     )
     attempts = max((item.automatic_attempts for item in previous_repairs), default=0)
     if attempts >= get_settings().max_auto_repairs:

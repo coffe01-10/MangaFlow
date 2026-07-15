@@ -167,6 +167,21 @@ class BeatRead(BaseModel):
     mergeable: bool
     page_turn_hook: bool
     source_range: dict
+    version: int
+
+
+class BeatUpdate(BaseModel):
+    action: str | None = Field(default=None, max_length=8000)
+    speaker_name: str | None = Field(default=None, max_length=120)
+    dialogue: str | None = Field(default=None, max_length=4000)
+    narration: str | None = Field(default=None, max_length=4000)
+    subtext: str | None = Field(default=None, max_length=4000)
+    emotion: str | None = Field(default=None, max_length=120)
+    importance: float | None = Field(default=None, ge=0, le=1)
+    must_visualize: bool | None = None
+    mergeable: bool | None = None
+    page_turn_hook: bool | None = None
+    version: int = Field(ge=1)
 
 
 class SceneRead(BaseModel):
@@ -182,7 +197,18 @@ class SceneRead(BaseModel):
     emotional_arc: str
     source_range: dict
     outfit_assignments: dict
+    locked_fields: list
+    version: int
     beats: list[BeatRead] = Field(default_factory=list)
+
+
+class SceneUpdate(BaseModel):
+    location: str | None = Field(default=None, max_length=200)
+    time_label: str | None = Field(default=None, max_length=120)
+    weather: str | None = Field(default=None, max_length=120)
+    purpose: str | None = Field(default=None, max_length=8000)
+    emotional_arc: str | None = Field(default=None, max_length=8000)
+    version: int = Field(ge=1)
 
 
 class ScriptRead(BaseModel):
@@ -340,6 +366,86 @@ class PageRead(BaseModel):
     continuity_status: str
     scene_ids: list
     beat_ids: list
+    version: int
+
+
+class DialogueRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    panel_id: str
+    speaker_character_id: str | None
+    target_text: str
+    reading_order: int
+    text_direction: str
+    region: dict
+    rewrite_forbidden: bool
+
+
+class PanelRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    page_id: str
+    reading_order: int
+    bounds: dict
+    shot_type: str
+    camera_angle: str
+    camera_height: str
+    characters: list
+    outfits: dict
+    actions: dict
+    expressions: dict
+    background: str
+    bubble_regions: list
+    sound_effects: list
+    bleed: bool
+    borderless: bool
+    locked_fields: list
+    version: int
+    dialogues: list[DialogueRead] = Field(default_factory=list)
+
+
+class StoryboardRead(BaseModel):
+    page: PageRead
+    panels: list[PanelRead]
+
+
+class PanelUpdate(BaseModel):
+    shot_type: str | None = Field(default=None, min_length=1, max_length=64)
+    camera_angle: str | None = Field(default=None, min_length=1, max_length=64)
+    camera_height: str | None = Field(default=None, min_length=1, max_length=64)
+    characters: list[str] | None = Field(default=None, max_length=20)
+    outfits: dict[str, str] | None = None
+    actions: dict | None = None
+    expressions: dict[str, str] | None = None
+    background: str | None = Field(default=None, max_length=8000)
+    sound_effects: list | None = None
+    bleed: bool | None = None
+    borderless: bool | None = None
+    version: int = Field(ge=1)
+
+
+class DialogueCreate(BaseModel):
+    target_text: str = Field(min_length=1, max_length=4000)
+    speaker_character_id: str | None = None
+    text_direction: str = Field(default="vertical", pattern="^(vertical|horizontal)$")
+    region: dict = Field(default_factory=lambda: {"preferred": "upper_inner"})
+    rewrite_forbidden: bool = True
+    panel_version: int = Field(ge=1)
+
+
+class DialogueUpdate(BaseModel):
+    target_text: str | None = Field(default=None, min_length=1, max_length=4000)
+    speaker_character_id: str | None = None
+    text_direction: str | None = Field(default=None, pattern="^(vertical|horizontal)$")
+    region: dict | None = None
+    rewrite_forbidden: bool | None = None
+    panel_version: int = Field(ge=1)
+
+
+class DialogueDelete(BaseModel):
+    panel_version: int = Field(ge=1)
 
 
 class PlanRequest(BaseModel):
