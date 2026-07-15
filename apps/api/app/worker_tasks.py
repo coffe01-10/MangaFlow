@@ -789,6 +789,10 @@ def execute_job(job_id: str) -> None:
             _run_style_analyze(db, job)
         elif job.job_type == "PAGE_INSPECT":
             _run_inspection(db, job)
+        elif job.job_type == "WORKFLOW_NODE":
+            from app.services.workflow_engine import execute_workflow_node
+
+            execute_workflow_node(db, job)
         else:
             raise RuntimeError(f"未知任务类型：{job.job_type}")
         job.status = JobStatus.COMPLETED
@@ -797,6 +801,10 @@ def execute_job(job_id: str) -> None:
         job.error_code = None
         job.error_message = None
         db.commit()
+        if job.job_type == "WORKFLOW_NODE":
+            from app.services.workflow_engine import reconcile_run
+
+            reconcile_run(db, job.request_parameters["workflow_run_id"])
     except VertexAdapterError as error:
         db.rollback()
         job = db.get(GenerationJob, job_id)
