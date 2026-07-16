@@ -144,8 +144,14 @@ def bind_reference(
         raise HTTPException(status_code=404, detail="参考素材不存在")
     if asset.project_id != character.project_id:
         raise HTTPException(status_code=409, detail="参考图和角色不属于同一项目")
-    if asset.kind != "CHARACTER_REFERENCE":
-        raise HTTPException(status_code=409, detail="只有人物参考图可以绑定角色，请先修改素材用途")
+    allowed_generated_kinds = {"character", "outfit"}
+    if asset.kind != "CHARACTER_REFERENCE" and not (
+        asset.source == "VERTEX_GENERATED" and asset.kind in allowed_generated_kinds
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="只有人物参考图或已生成的角色/服装设定页可以绑定角色",
+        )
     existing = db.scalar(
         select(CharacterReference).where(
             CharacterReference.character_id == character_id,

@@ -226,7 +226,7 @@ export interface MangaPage {
   status: string;
   estimated_text_chars: number;
   estimated_bubbles: number;
-  source_coverage: { complete?: boolean; ranges?: { text: string }[] };
+  source_coverage: { complete?: boolean; layout_mode?: "dynamic" | "balanced"; ranges?: { text: string }[] };
   selected_candidate_id: string | null;
   continuity_status: string;
   scene_ids: string[];
@@ -299,6 +299,8 @@ export interface PageCandidate {
   is_favorite: boolean;
   is_selected: boolean;
   created_at: string;
+  variant: string | null;
+  prompt_snapshot: Record<string, unknown>;
   content_url: string | null;
   thumbnail_url: string | null;
 }
@@ -649,23 +651,30 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ target_type: targetType, target_id: targetId, generation_kind: generationKind }),
     }),
-  generateAssetCandidate: (batchId: string, model_alias: ImageModelAlias, resolution: Resolution, variant: "FRONT" | "SIDE" | "BACK" | "EXPRESSION" | "OUTFIT" | "STYLE_TEST") =>
+  assetBatches: (targetType: "CHARACTER" | "OUTFIT" | "STYLE", targetId: string, limit = 10) =>
+    request<GenerationBatch[]>(`/asset-generation-batches?target_type=${targetType}&target_id=${targetId}&limit=${limit}`),
+  generateAssetCandidate: (batchId: string, model_alias: ImageModelAlias, resolution: Resolution, variant: "FRONT" | "SIDE" | "BACK" | "EXPRESSION" | "SHEET" | "OUTFIT" | "OUTFIT_SHEET" | "STYLE_TEST") =>
     request<{ job_id: string; job_status: string; candidate: PageCandidate }>(`/asset-generation-batches/${batchId}/candidates`, {
       method: "POST",
       body: JSON.stringify({ model_alias, resolution, variant, instruction: "" }),
     }),
   generateCompleteCharacterSheet: (characterId: string, model_alias: ImageModelAlias, resolution: Resolution) =>
-    request<Array<{ job_id: string; job_status: string; candidate: PageCandidate }>>(`/characters/${characterId}/complete-sheet`, {
+    request<{ job_id: string; job_status: string; candidate: PageCandidate }>(`/characters/${characterId}/complete-sheet`, {
       method: "POST",
-      body: JSON.stringify({ model_alias, resolution, variants: ["FRONT", "SIDE", "BACK", "EXPRESSION"] }),
+      body: JSON.stringify({ model_alias, resolution }),
+    }),
+  updatePageLayout: (pageId: string, panelCount: number, layoutMode: "dynamic" | "balanced") =>
+    request<Storyboard>(`/pages/${pageId}/layout`, {
+      method: "PATCH",
+      body: JSON.stringify({ panel_count: panelCount, layout_mode: layoutMode }),
     }),
   batches: (pageId: string) => request<GenerationBatch[]>(`/pages/${pageId}/batches`),
   startBatch: (pageId: string) => request<GenerationBatch>(`/pages/${pageId}/batches`, { method: "POST" }),
   candidates: (batchId: string) => request<PageCandidate[]>(`/batches/${batchId}/candidates`),
-  generateCandidate: (batchId: string, model_alias: ImageModelAlias, resolution: Resolution) =>
+  generateCandidate: (batchId: string, model_alias: ImageModelAlias, resolution: Resolution, reference_selections: Record<string, { character_asset_id: string | null; outfit_id: string | null; outfit_asset_id: string | null }>) =>
     request<{ job_id: string; job_status: string; candidate: PageCandidate }>(`/batches/${batchId}/candidates`, {
       method: "POST",
-      body: JSON.stringify({ model_alias, resolution }),
+      body: JSON.stringify({ model_alias, resolution, reference_selections }),
     }),
   favoriteCandidate: (candidateId: string, isFavorite: boolean) =>
     request<PageCandidate>(`/candidates/${candidateId}/favorite`, {

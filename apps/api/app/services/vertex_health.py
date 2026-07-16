@@ -115,6 +115,16 @@ def verify_vertex(
         if payload.level == "CREDENTIALS":
             # Creating the client refreshes OAuth when required but never calls a model.
             manager.execute(settings, lambda _client: True)
+            # A successful OAuth refresh proves the previous network outage is over, but
+            # it does not prove model access. Clear only transient results; permanent
+            # permission denials remain visible until that model is explicitly verified.
+            if health.text_model_access == "UNAVAILABLE":
+                health.text_model_access = "NOT_CHECKED"
+            access = dict(health.image_model_access or {})
+            health.image_model_access = {
+                alias: ("NOT_CHECKED" if state == "UNAVAILABLE" else state)
+                for alias, state in access.items()
+            }
             message = "Vertex AI 服务账号验证成功"
         elif payload.level == "TEXT_MODEL":
             adapter = VertexTextAdapter(settings, build_registry(settings)["text.fast"])

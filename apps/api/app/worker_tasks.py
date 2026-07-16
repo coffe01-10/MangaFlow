@@ -118,57 +118,86 @@ def _adapter(alias: str):
     return VertexTextAdapter(settings, capability)
 
 
-def _load_reference_assets(db, page: MangaPage, project: Project) -> list[Asset]:
+def _load_reference_assets(
+    db,
+    page: MangaPage,
+    project: Project,
+    reference_selections: dict[str, dict[str, str | None]] | None = None,
+) -> list[Asset]:
     page_character_ids = {
         character_id
         for panel in db.scalars(select(Panel).where(Panel.page_id == page.id))
         for character_id in panel.characters
     }
-    references = (
-        list(
-            db.scalars(
-                select(Asset)
-                .join(CharacterReference, CharacterReference.asset_id == Asset.id)
-                .join(Character, Character.id == CharacterReference.character_id)
-                .where(
-                    Character.project_id == project.id,
-                    Character.id.in_(page_character_ids),
-                    Asset.deleted_at.is_(None),
-                )
-                .order_by(
-                    CharacterReference.is_canonical.desc(),
-                    CharacterReference.created_at,
-                )
-                .limit(10)
+    if reference_selections is not None:
+        selected_ids = {
+            asset_id
+            for character_id in page_character_ids
+            for asset_id in (
+                reference_selections.get(character_id, {}).get("character_asset_id"),
+                reference_selections.get(character_id, {}).get("outfit_asset_id"),
             )
-        )
-        if page_character_ids
-        else []
-    )
-    scenes = (
-        list(db.scalars(select(Scene).where(Scene.id.in_(page.scene_ids))))
-        if page.scene_ids
-        else []
-    )
-    outfit_ids = {
-        outfit_id
-        for scene in scenes
-        for outfit_id in scene.outfit_assignments.values()
-        if outfit_id
-    }
-    if outfit_ids:
-        outfits = list(db.scalars(select(Outfit).where(Outfit.id.in_(outfit_ids))))
-        outfit_reference_ids = {
-            asset_id for outfit in outfits for asset_id in outfit.reference_asset_ids
+            if asset_id
         }
-        if outfit_reference_ids:
-            references.extend(
+        references = (
+            list(
                 db.scalars(
                     select(Asset).where(
-                        Asset.id.in_(outfit_reference_ids), Asset.deleted_at.is_(None)
+                        Asset.id.in_(selected_ids),
+                        Asset.project_id == project.id,
+                        Asset.deleted_at.is_(None),
                     )
                 )
             )
+            if selected_ids
+            else []
+        )
+    else:
+        references = (
+            list(
+                db.scalars(
+                    select(Asset)
+                    .join(CharacterReference, CharacterReference.asset_id == Asset.id)
+                    .join(Character, Character.id == CharacterReference.character_id)
+                    .where(
+                        Character.project_id == project.id,
+                        Character.id.in_(page_character_ids),
+                        Asset.deleted_at.is_(None),
+                    )
+                    .order_by(
+                        CharacterReference.is_canonical.desc(),
+                        CharacterReference.created_at,
+                    )
+                    .limit(10)
+                )
+            )
+            if page_character_ids
+            else []
+        )
+        scenes = (
+            list(db.scalars(select(Scene).where(Scene.id.in_(page.scene_ids))))
+            if page.scene_ids
+            else []
+        )
+        outfit_ids = {
+            outfit_id
+            for scene in scenes
+            for outfit_id in scene.outfit_assignments.values()
+            if outfit_id
+        }
+        if outfit_ids:
+            outfits = list(db.scalars(select(Outfit).where(Outfit.id.in_(outfit_ids))))
+            outfit_reference_ids = {
+                asset_id for outfit in outfits for asset_id in outfit.reference_asset_ids
+            }
+            if outfit_reference_ids:
+                references.extend(
+                    db.scalars(
+                        select(Asset).where(
+                            Asset.id.in_(outfit_reference_ids), Asset.deleted_at.is_(None)
+                        )
+                    )
+                )
     style = (
         db.get(StyleProfile, page.style_id or project.default_style_id)
         if page.style_id or project.default_style_id
@@ -350,14 +379,40 @@ def _run_page_generate(db, job: GenerationJob) -> None:
     if not page.source_coverage.get("complete"):
         raise RuntimeError("页面原文覆盖不完整，禁止生成")
 
+    reference_selections = candidate.prompt_snapshot.get("reference_selections", {})
     prompt, snapshot = compile_page_prompt(db, page, project)
+    reference_bindings: list[dict[str, str | None]] = []
+    for character_id, selection in reference_selections.items():
+        character = db.get(Character, character_id)
+        outfit = db.get(Outfit, selection.get("outfit_id")) if selection.get("outfit_id") else None
+        character_asset = db.get(Asset, selection.get("character_asset_id"))
+        outfit_asset = (
+            db.get(Asset, selection.get("outfit_asset_id"))
+            if selection.get("outfit_asset_id")
+            else None
+        )
+        reference_bindings.append(
+            {
+                "character": character.primary_name if character else character_id,
+                "character_reference": (
+                    character_asset.original_name if character_asset else None
+                ),
+                "outfit": outfit.name if outfit else None,
+                "outfit_reference": outfit_asset.original_name if outfit_asset else None,
+            }
+        )
+    if reference_bindings:
+        prompt += (
+            "\n本页人物与参考图绑定如下，必须逐项对应，不得串脸、串服装："
+            + json.dumps(reference_bindings, ensure_ascii=False, separators=(",", ":"))
+        )
     candidate.status = "GENERATING"
     page.status = PageStatus.DRAFT_GENERATING
     job.status = JobStatus.UPLOADING_REFERENCES
     job.progress = 20
     db.commit()
 
-    reference_assets = _load_reference_assets(db, page, project)
+    reference_assets = _load_reference_assets(db, page, project, reference_selections)
     reference_bytes: list[bytes] = []
     reference_types: list[str] = []
     for asset in reference_assets:
@@ -402,6 +457,9 @@ def _run_page_generate(db, job: GenerationJob) -> None:
             )
 
     snapshot["operation"] = job.job_type
+    snapshot["reference_selections"] = reference_selections
+    snapshot["reference_bindings"] = reference_bindings
+    snapshot["prompt_preview"] = prompt
     snapshot["checksum"] = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
     candidate.prompt_snapshot = snapshot
 
@@ -685,16 +743,24 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
         "subject": subject,
     }
     asset_color_mode = subject.get("color_mode", "reference")
-    task_instruction = {
-        "CHARACTER": (
-            "按 variant 生成同一角色的标准正面、侧面、背面或表情设定图；"
-            "必须保持脸、发型、体型和标志特征一致。"
-        ),
-        "OUTFIT": (
-            "生成该角色穿着指定服装的完整全身造型图；同时服从人物参考和服装参考，"
-            "准确还原服装剪裁、层次、配饰与状态，不改变角色身份。"
-        ),
-        "STYLE": (
+    task_instruction = (
+        "在同一张角色设定页中同时展示正面、侧面、背面、代表性表情和关键局部细节；"
+        "所有视图必须是同一个角色，版面清楚但不生成任何文字标签。"
+        if candidate.variant == "SHEET"
+        else (
+            "在同一张服装角色设定页中展示角色穿着指定服装的正面、侧面、背面、"
+            "代表性表情和服装关键局部；同时服从人物与服装参考，不得改变角色身份。"
+            if candidate.variant == "OUTFIT_SHEET"
+            else {
+                "CHARACTER": (
+                    "按 variant 生成同一角色的单一标准视图；"
+                    "必须保持脸、发型、体型和标志特征一致。"
+                ),
+                "OUTFIT": (
+                    "生成该角色穿着指定服装的完整全身造型图；同时服从人物参考和服装参考，"
+                    "准确还原服装剪裁、层次、配饰与状态，不改变角色身份。"
+                ),
+                "STYLE": (
             "生成不含现有作品角色的原创风格测试页，用简单人物与背景验证线稿、"
             + (
                 "网点、黑白对比和分格语言，"
@@ -702,8 +768,10 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
                 else "色板、上色方式、光影层次和分格语言，"
             )
             + "不复制参考漫画的文字与剧情。"
-        ),
-    }[batch.target_type]
+                ),
+            }[batch.target_type]
+        )
+    )
     base_instruction = (
         "生成黑白日式漫画规范资产图。"
         if batch.target_type == "STYLE" and asset_color_mode == "monochrome"
@@ -719,9 +787,10 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
     )
     checksum = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
     candidate.prompt_snapshot = {
-        "template": "asset-v1.0.0",
+        "template": "asset-v1.1.0",
         "checksum": checksum,
         "input": prompt_payload,
+        "prompt_preview": prompt,
     }
     candidate.status = "GENERATING"
     job.status = JobStatus.GENERATING
@@ -733,7 +802,9 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
         ImageRequest(
             prompt=prompt,
             resolution=candidate.resolution.value,
-            aspect_ratio="3:4",
+            aspect_ratio=(
+                "4:3" if candidate.variant in {"SHEET", "OUTFIT_SHEET"} else "3:4"
+            ),
             reference_images=tuple(reference_bytes),
             reference_mime_types=tuple(reference_types),
         )
@@ -744,8 +815,8 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
         model_id=response.model_id,
         location=get_settings().google_cloud_location,
         parameters={"resolution": candidate.resolution.value, "variant": candidate.variant},
-        prompt_template="asset-v1.0.0",
-        prompt_version="asset-v1.0.0",
+        prompt_template="asset-v1.1.0",
+        prompt_version="asset-v1.1.0",
         prompt_checksum=checksum,
         input_versions={"batch": batch.version},
         reference_asset_ids=[asset.id for asset in references],

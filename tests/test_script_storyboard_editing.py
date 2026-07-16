@@ -48,7 +48,17 @@ def _editable_story(db_session):
             panel_count=3,
             estimated_text_chars=5,
             estimated_bubbles=1,
-            source_coverage={"complete": True},
+            source_coverage={
+                "complete": True,
+                "ranges": [
+                    {
+                        "segment_id": "source-1",
+                        "start_offset": 0,
+                        "end_offset": 5,
+                        "text": "荻原桜抬头。",
+                    }
+                ],
+            },
         )
         for number in (1, 2)
     ]
@@ -193,3 +203,28 @@ def test_storyboard_panel_and_dialogue_are_editable(client, db_session):
         json={"version": db_session.get(Panel, panel.id).version, "characters": ["missing"]},
     )
     assert invalid.status_code == 409
+
+
+def test_storyboard_layout_can_reflow_three_to_five_panels_from_script(client, db_session):
+    _, _, _, _, _, pages, _, _ = _editable_story(db_session)
+
+    response = client.patch(
+        f"/api/v1/pages/{pages[0].id}/layout",
+        json={"panel_count": 5, "layout_mode": "dynamic"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["page"]["panel_count"] == 5
+    assert payload["page"]["source_coverage"]["layout_mode"] == "dynamic"
+    assert len(payload["panels"]) == 5
+    assert len({tuple(panel["bounds"].values()) for panel in payload["panels"]}) == 5
+    assert db_session.query(PageCandidate).count() == 1
+
+    balanced = client.patch(
+        f"/api/v1/pages/{pages[0].id}/layout",
+        json={"panel_count": 3, "layout_mode": "balanced"},
+    )
+    assert balanced.status_code == 200
+    assert balanced.json()["page"]["source_coverage"]["layout_mode"] == "balanced"
+    assert len(balanced.json()["panels"]) == 3

@@ -14,6 +14,7 @@ from app.models import (
     AssetCandidate,
     Chapter,
     Character,
+    CharacterReference,
     Dialogue,
     GenerationBatch,
     GenerationJob,
@@ -45,6 +46,7 @@ from app.schemas import (
     LibraryBatchRead,
     LibraryRead,
     PageCandidateRead,
+    PageLayoutUpdate,
     PageRead,
     PanelRead,
     PanelUpdate,
@@ -53,6 +55,7 @@ from app.schemas import (
     StoryboardRead,
     UpscaleRequest,
 )
+from app.services.content_workflow import update_page_layout
 from app.services.editor import (
     mark_pages_for_review,
     project_id_for_page,
@@ -166,6 +169,27 @@ def _validate_dialogue_speaker(
 @router.get("/pages/{page_id}/storyboard", response_model=StoryboardRead)
 def get_storyboard(page_id: str, db: Session = Depends(get_db)) -> StoryboardRead:
     page = _page(db, page_id)
+    panels = list(
+        db.scalars(select(Panel).where(Panel.page_id == page.id).order_by(Panel.reading_order))
+    )
+    return StoryboardRead(
+        page=PageRead.model_validate(page),
+        panels=[_panel_read(db, panel) for panel in panels],
+    )
+
+
+@router.patch("/pages/{page_id}/layout", response_model=StoryboardRead)
+def patch_page_layout(
+    page_id: str,
+    payload: PageLayoutUpdate,
+    db: Session = Depends(get_db),
+) -> StoryboardRead:
+    page = update_page_layout(
+        db,
+        _page(db, page_id),
+        panel_count=payload.panel_count,
+        layout_mode=payload.layout_mode,
+    )
     panels = list(
         db.scalars(select(Panel).where(Panel.page_id == page.id).order_by(Panel.reading_order))
     )
@@ -367,6 +391,60 @@ def create_candidate(
         raise HTTPException(status_code=409, detail="该页面缺少剧本与分镜来源，禁止生成")
     if not page.source_coverage.get("complete"):
         raise HTTPException(status_code=409, detail="页面原文覆盖不完整，禁止生成")
+    project = _project_for_page(db, page)
+    panels = list(db.scalars(select(Panel).where(Panel.page_id == page.id)))
+    visible_character_ids = list(
+        dict.fromkeys(character_id for panel in panels for character_id in panel.characters)
+    )
+    normalized_selections: dict[str, dict[str, str | None]] = {}
+    for character_id in visible_character_ids:
+        selection = payload.reference_selections.get(character_id, {})
+        character_asset_id = selection.get("character_asset_id")
+        valid_character_reference = (
+            db.scalar(
+                select(CharacterReference).where(
+                    CharacterReference.character_id == character_id,
+                    CharacterReference.asset_id == character_asset_id,
+                )
+            )
+            if character_asset_id
+            else None
+        )
+        if not valid_character_reference:
+            character = db.get(Character, character_id)
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "请为画面人物 "
+                    f"{character.primary_name if character else character_id} "
+                    "选择一张人物参考图"
+                ),
+            )
+        assigned_outfits = {
+            panel.outfits.get(character_id)
+            for panel in panels
+            if panel.outfits.get(character_id)
+        }
+        if len(assigned_outfits) > 1:
+            raise HTTPException(status_code=409, detail="同一页同一角色存在多套服装，请先拆页")
+        assigned_outfit_id = next(iter(assigned_outfits), None)
+        outfit_id = selection.get("outfit_id") or assigned_outfit_id
+        outfit_asset_id = selection.get("outfit_asset_id")
+        if assigned_outfit_id and outfit_id != assigned_outfit_id:
+            raise HTTPException(status_code=409, detail="参考确认中的服装与分镜指定服装不一致")
+        if outfit_id:
+            outfit = db.get(Outfit, outfit_id)
+            if not outfit or outfit.character_id != character_id or outfit.project_id != project.id:
+                raise HTTPException(status_code=409, detail="所选服装不属于当前人物")
+            if not outfit.reference_asset_ids:
+                raise HTTPException(status_code=409, detail="分镜指定服装还没有绑定参考图")
+            if outfit_asset_id not in outfit.reference_asset_ids:
+                raise HTTPException(status_code=409, detail="请为分镜服装选择一张已绑定参考图")
+        normalized_selections[character_id] = {
+            "character_asset_id": character_asset_id,
+            "outfit_id": outfit_id,
+            "outfit_asset_id": outfit_asset_id,
+        }
     ordinal = (
         db.scalar(select(func.max(PageCandidate.ordinal)).where(PageCandidate.batch_id == batch.id))
         or 0
@@ -378,9 +456,9 @@ def create_candidate(
         model_alias=payload.model_alias,
         resolution=payload.resolution,
         status="QUEUED",
+        prompt_snapshot={"reference_selections": normalized_selections},
     )
     db.add(candidate)
-    project = _project_for_page(db, page)
     project.last_image_model_alias = payload.model_alias
     project.image_model_alias = payload.model_alias
     project.version += 1
@@ -392,7 +470,10 @@ def create_candidate(
         target_id=candidate.id,
         job_type="PAGE_GENERATE",
         model_alias=payload.model_alias,
-        request_parameters={"resolution": payload.resolution.value},
+        request_parameters={
+            "resolution": payload.resolution.value,
+            "reference_selections": normalized_selections,
+        },
         idempotency_key=f"candidate:{candidate.id}",
     )
     candidate.job_id = job.id
@@ -408,8 +489,21 @@ def create_candidate(
 
 @router.get("/batches/{batch_id}/candidates", response_model=list[PageCandidateRead])
 def list_candidates(batch_id: str, db: Session = Depends(get_db)) -> list[PageCandidateRead]:
-    if not db.get(GenerationBatch, batch_id):
+    batch = db.get(GenerationBatch, batch_id)
+    if not batch:
         raise HTTPException(status_code=404, detail="抽卡批次不存在")
+    if batch.target_type:
+        candidates = list(
+            db.scalars(
+                select(AssetCandidate)
+                .where(
+                    AssetCandidate.batch_id == batch_id,
+                    AssetCandidate.deleted_at.is_(None),
+                )
+                .order_by(AssetCandidate.ordinal.desc())
+            )
+        )
+        return [asset_candidate_read(item) for item in candidates]
     candidates = list(
         db.scalars(
             select(PageCandidate)

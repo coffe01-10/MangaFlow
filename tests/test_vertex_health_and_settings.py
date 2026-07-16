@@ -185,3 +185,41 @@ def test_vertex_status_get_never_returns_credential_path(client, tmp_path, monke
     assert response.status_code == 200
     assert str(credential_file) not in response.text
     assert "private_key" not in response.text
+
+
+def test_successful_credential_refresh_clears_only_transient_model_outages(
+    db_session, tmp_path, monkeypatch
+):
+    credential_file = tmp_path / "service-account.json"
+    credential_file.write_text("{}", encoding="utf-8")
+    settings = Settings(
+        google_cloud_project="test-project",
+        google_application_credentials=credential_file,
+    )
+    health = ProviderHealth(
+        provider="vertex-ai",
+        configured=True,
+        credential_file_present=True,
+        health_state="DEGRADED",
+        text_model_access="UNAVAILABLE",
+        image_model_access={
+            "image.nano_banana_2": "UNAVAILABLE",
+            "image.nano_banana_pro": "DENIED",
+        },
+    )
+    db_session.add(health)
+    db_session.commit()
+    manager = SimpleNamespace(
+        execute=lambda *_args, **_kwargs: True,
+        token_expiry=lambda _settings: datetime.now(UTC) + timedelta(hours=1),
+    )
+    monkeypatch.setattr(
+        "app.services.vertex_health.get_vertex_credential_manager", lambda: manager
+    )
+
+    result = verify_vertex(db_session, settings, VertexVerifyRequest(level="CREDENTIALS"))
+
+    assert result.health_state == "HEALTHY"
+    assert result.text_model_access == "NOT_CHECKED"
+    assert result.image_model_access["image.nano_banana_2"] == "NOT_CHECKED"
+    assert result.image_model_access["image.nano_banana_pro"] == "DENIED"

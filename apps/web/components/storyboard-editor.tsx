@@ -11,6 +11,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, CircleAlert, MessageSquarePlus, Pencil, RotateCcw, Save, Trash2, X } from "lucide-react";
 import { useState } from "react";
+import type { CSSProperties } from "react";
 
 type PanelDraft = Pick<StoryboardPanel, "shot_type" | "camera_angle" | "camera_height" | "characters" | "outfits" | "actions" | "expressions" | "background" | "sound_effects" | "bleed" | "borderless">;
 type DialogueDraft = Pick<PanelDialogue, "target_text" | "speaker_character_id" | "text_direction" | "rewrite_forbidden">;
@@ -123,6 +124,16 @@ export function StoryboardEditor({
       refresh();
     },
   });
+  const updateLayout = useMutation({
+    mutationFn: ({ panelCount, layoutMode }: { panelCount: number; layoutMode: "dynamic" | "balanced" }) =>
+      api.updatePageLayout(currentPage.id, panelCount, layoutMode),
+    onSuccess: () => {
+      setPanelId("");
+      setEditingPanel(false);
+      setNotice("已根据本页剧本内容重排分镜；人物、动作、对白与原文追溯均已重新映射。");
+      refresh();
+    },
+  });
 
   function beginPanel(panel: StoryboardPanel) {
     setPanelId(panel.id);
@@ -156,15 +167,16 @@ export function StoryboardEditor({
     setPanelDraft({ ...panelDraft, characters: charactersNext, outfits: outfitsNext, expressions: expressionsNext });
   }
 
-  const error = savePanel.error ?? saveDialogue.error ?? addDialogue.error ?? removeDialogue.error ?? replanError;
+  const error = savePanel.error ?? saveDialogue.error ?? addDialogue.error ?? removeDialogue.error ?? updateLayout.error ?? replanError;
   if (!currentPage) return null;
   return <div className="storyboard-desk">
     <div className="storyboard-page-strip">{pages.map((page) => <button key={page.id} className={page.id === currentPage.id ? "active" : ""} onClick={() => { setPageId(page.id); setPanelId(""); setEditingPanel(false); }}><span>P.{String(page.page_number).padStart(3, "0")}</span><strong>{page.panel_count} 格</strong><small>{page.continuity_status === "NEEDS_REVIEW" ? "待复查" : page.selected_candidate_id ? "已采用" : "已规划"}</small></button>)}</div>
-    <div className="storyboard-status"><div><strong>第 {currentPage.page_number} 页 · {currentPage.estimated_text_chars}/180 字 · {currentPage.estimated_bubbles}/8 气泡</strong><span>点击格子进入导演修订；修改不会删除已有候选。</span></div><button disabled={replanPending} onClick={() => onReplan(currentPage.page_number)}><RotateCcw size={12} />从本页重新计算</button></div>
+    <div className="storyboard-status"><div><strong>第 {currentPage.page_number} 页 · {currentPage.estimated_text_chars}/180 字 · {currentPage.estimated_bubbles}/8 气泡</strong><span>来自漫画剧本：{currentPage.scene_ids.length} 个场景 · {currentPage.beat_ids.length} 个情节拍；修改不会删除已有候选。</span></div><button disabled={replanPending} onClick={() => onReplan(currentPage.page_number)}><RotateCcw size={12} />从本页重新计算</button></div>
+    <div className="storyboard-layout-controls"><div><span>本页格数</span>{[3, 4, 5].map((count) => <button type="button" className={currentPage.panel_count === count ? "active" : ""} disabled={updateLayout.isPending} key={count} onClick={() => updateLayout.mutate({ panelCount: count, layoutMode: currentPage.source_coverage.layout_mode ?? "dynamic" })}>{count} 格</button>)}</div><div><span>版式</span><button type="button" className={(currentPage.source_coverage.layout_mode ?? "dynamic") === "dynamic" ? "active" : ""} disabled={updateLayout.isPending} onClick={() => updateLayout.mutate({ panelCount: currentPage.panel_count, layoutMode: "dynamic" })}>动态错落</button><button type="button" className={currentPage.source_coverage.layout_mode === "balanced" ? "active" : ""} disabled={updateLayout.isPending} onClick={() => updateLayout.mutate({ panelCount: currentPage.panel_count, layoutMode: "balanced" })}>均衡网格</button></div><p>格子数量与版式只重排当前页；内容仍从已确认剧本与原文区间重新映射。</p></div>
     {notice && <p className="edit-notice"><Check size={13} />{notice}</p>}
     {error && <p className="form-error"><CircleAlert size={14} />{error.message}</p>}
     {storyboard.isLoading ? <div className="storyboard-loading">正在展开格子脚本…</div> : <div className="storyboard-worktable">
-      <div className="panel-contact-sheet">{storyboard.data?.panels.map((panel) => <button key={panel.id} className={panel.id === selectedPanel?.id ? "panel-proof active" : "panel-proof"} onClick={() => { setPanelId(panel.id); setEditingPanel(false); setPanelDraft(null); }}>
+      <div className="panel-contact-sheet">{storyboard.data?.panels.map((panel) => <button key={panel.id} style={{ left: `${(panel.bounds.x ?? 0) * 100}%`, top: `${(panel.bounds.y ?? 0) * 100}%`, width: `${(panel.bounds.width ?? 1) * 100}%`, height: `${(panel.bounds.height ?? 1) * 100}%` } as CSSProperties} className={panel.id === selectedPanel?.id ? "panel-proof active" : "panel-proof"} onClick={() => { setPanelId(panel.id); setEditingPanel(false); setPanelDraft(null); }}>
         <span>格 {String(panel.reading_order).padStart(2, "0")}</span><div className="panel-proof-frame"><i>{shotTypes.find(([value]) => value === panel.shot_type)?.[1] ?? panel.shot_type}</i><strong>{panel.actions.script_action || panel.actions.source_text || "动作待补充"}</strong><small>{panel.background || "背景待补充"}</small></div><em>{panel.dialogues.length} 气泡 · {panel.characters.length} 人物</em>
       </button>)}</div>
       {selectedPanel && <aside className="panel-inspector">

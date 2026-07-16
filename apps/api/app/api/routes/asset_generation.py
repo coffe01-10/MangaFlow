@@ -327,6 +327,29 @@ def start_asset_batch(
     return batch
 
 
+@router.get("/asset-generation-batches", response_model=list[GenerationBatchRead])
+def list_asset_batches(
+    target_type: str,
+    target_id: str,
+    limit: int = 10,
+    db: Session = Depends(get_db),
+) -> list[GenerationBatch]:
+    if target_type not in {"CHARACTER", "OUTFIT", "STYLE"}:
+        raise HTTPException(status_code=422, detail="资产生成目标类型无效")
+    _target_project(db, target_type, target_id)
+    return list(
+        db.scalars(
+            select(GenerationBatch)
+            .where(
+                GenerationBatch.target_type == target_type,
+                GenerationBatch.target_id == target_id,
+            )
+            .order_by(GenerationBatch.created_at.desc())
+            .limit(min(max(limit, 1), 30))
+        )
+    )
+
+
 @router.post(
     "/asset-generation-batches/{batch_id}/candidates",
     response_model=CandidateQueuedRead,
@@ -343,8 +366,8 @@ def generate_asset_candidate(
     if payload.model_alias not in build_registry(get_settings()):
         raise HTTPException(status_code=422, detail="未识别的图像模型")
     allowed_variants = {
-        "CHARACTER": {"FRONT", "SIDE", "BACK", "EXPRESSION"},
-        "OUTFIT": {"OUTFIT"},
+        "CHARACTER": {"FRONT", "SIDE", "BACK", "EXPRESSION", "SHEET"},
+        "OUTFIT": {"OUTFIT", "OUTFIT_SHEET"},
         "STYLE": {"STYLE_TEST"},
     }
     if payload.variant not in allowed_variants[batch.target_type]:
@@ -397,14 +420,14 @@ def generate_asset_candidate(
 
 @router.post(
     "/characters/{character_id}/complete-sheet",
-    response_model=list[CandidateQueuedRead],
+    response_model=CandidateQueuedRead,
     status_code=status.HTTP_202_ACCEPTED,
 )
 def generate_complete_character_sheet(
     character_id: str,
     payload: CharacterSheetCreate,
     db: Session = Depends(get_db),
-) -> list[CandidateQueuedRead]:
+) -> CandidateQueuedRead:
     character = db.get(Character, character_id)
     if not character:
         raise HTTPException(status_code=404, detail="角色不存在")
@@ -418,16 +441,13 @@ def generate_complete_character_sheet(
         ),
         db,
     )
-    return [
-        generate_asset_candidate(
-            batch.id,
-            AssetCandidateCreate(
-                model_alias=payload.model_alias,
-                resolution=payload.resolution,
-                variant=variant,
-                instruction="保持同一角色身份，生成标准角色设定资料",
-            ),
-            db,
-        )
-        for variant in payload.variants
-    ]
+    return generate_asset_candidate(
+        batch.id,
+        AssetCandidateCreate(
+            model_alias=payload.model_alias,
+            resolution=payload.resolution,
+            variant="SHEET",
+            instruction="保持同一角色身份，在一张图中生成完整角色设定资料",
+        ),
+        db,
+    )

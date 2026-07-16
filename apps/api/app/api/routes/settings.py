@@ -107,8 +107,12 @@ def diagnostics(db: Session = Depends(get_db)) -> DiagnosticsRead:
         access = health.text_model_access if health else "NOT_CHECKED"
         if access == "GRANTED":
             return "OK", "Gemini 3.5 Flash 最近一次验证成功"
-        if access in {"DENIED", "UNAVAILABLE"}:
-            return "WARNING", "文本模型当前不可用，请查看 Vertex 诊断"
+        if access == "DENIED":
+            return "WARNING", "文本模型权限被拒绝，请检查项目、区域和模型权限"
+        if access == "UNAVAILABLE":
+            if health and health.health_state == "HEALTHY":
+                return "NOT_CHECKED", "连接已经恢复，请按需重新验证文本模型"
+            return "WARNING", "上次文本验证遇到网络或上游故障，尚未证明模型不可用"
         return "NOT_CHECKED", "尚未执行低 token 文本模型验证"
 
     checks = [

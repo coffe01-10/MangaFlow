@@ -19,6 +19,7 @@ def candidate_read(candidate: PageCandidate) -> PageCandidateRead:
     value = PageCandidateRead.model_validate(candidate)
     return value.model_copy(
         update={
+            "prompt_snapshot": candidate.prompt_snapshot,
             "content_url": (
                 f"/api/v1/assets/{candidate.asset_id}/content" if candidate.asset_id else None
             ),
@@ -45,6 +46,8 @@ def asset_candidate_read(candidate: AssetCandidate) -> PageCandidateRead:
         is_favorite=candidate.is_favorite,
         is_selected=False,
         created_at=candidate.created_at,
+        variant=candidate.variant,
+        prompt_snapshot=candidate.prompt_snapshot,
         content_url=(
             f"/api/v1/assets/{candidate.asset_id}/content" if candidate.asset_id else None
         ),

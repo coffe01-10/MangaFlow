@@ -255,6 +255,10 @@ def test_1500_to_3000_character_full_manga_acceptance(
         character_asset = upload_reference(
             "CHARACTER_REFERENCE", "character.png", _png_bytes((250, 250, 250))
         )
+        other_character = next(item for item in characters if item["id"] != character["id"])
+        other_character_asset = upload_reference(
+            "CHARACTER_REFERENCE", "elder.png", _png_bytes((220, 220, 220))
+        )
         outfit_asset = upload_reference(
             "OUTFIT_REFERENCE", "uniform.png", _png_bytes((180, 180, 180))
         )
@@ -266,6 +270,17 @@ def test_1500_to_3000_character_full_manga_acceptance(
             json={"asset_id": character_asset["id"], "angle": "front", "is_canonical": True},
         )
         assert bound.status_code == 201
+        assert (
+            client.post(
+                f"/api/v1/characters/{other_character['id']}/references",
+                json={
+                    "asset_id": other_character_asset["id"],
+                    "angle": "front",
+                    "is_canonical": True,
+                },
+            ).status_code
+            == 201
+        )
         outfit = client.post(
             f"/api/v1/projects/{project['id']}/outfits",
             json={
@@ -302,11 +317,11 @@ def test_1500_to_3000_character_full_manga_acceptance(
             json={"model_alias": "image.nano_banana_2", "resolution": "1K"},
         )
         assert sheet_response.status_code == 202
-        assert len(sheet_response.json()) == 4
-        for queued in sheet_response.json():
-            _finish_job(db_session, queued["job_id"], _run_asset_generate)
-            candidate = db_session.get(AssetCandidate, queued["candidate"]["id"])
-            assert candidate.status == "READY" and candidate.asset_id
+        queued_sheet = sheet_response.json()
+        assert queued_sheet["candidate"]["variant"] == "SHEET"
+        _finish_job(db_session, queued_sheet["job_id"], _run_asset_generate)
+        candidate = db_session.get(AssetCandidate, queued_sheet["candidate"]["id"])
+        assert candidate.status == "READY" and candidate.asset_id
 
         outfit_batch = client.post(
             "/api/v1/asset-generation-batches",
@@ -345,7 +360,7 @@ def test_1500_to_3000_character_full_manga_acceptance(
         )
         assert style_preview.status_code == 202
         _finish_job(db_session, style_preview.json()["job_id"], _run_asset_generate)
-        assert len(fake_adapter.asset_prompts) == 6
+        assert len(fake_adapter.asset_prompts) == 3
 
         for scene in script["scenes"]:
             assigned = client.patch(
@@ -364,7 +379,7 @@ def test_1500_to_3000_character_full_manga_acceptance(
         assert planned["page_count"] >= 10
         assert all(page["source_coverage"]["complete"] for page in planned["pages"])
         assert all(page["scene_ids"] and page["beat_ids"] for page in planned["pages"])
-        assert all(3 <= page["panel_count"] <= 7 for page in planned["pages"])
+        assert all(3 <= page["panel_count"] <= 5 for page in planned["pages"])
         assert all(page["estimated_bubbles"] <= 8 for page in planned["pages"])
         assert all(page["estimated_text_chars"] <= 180 for page in planned["pages"])
         assert all(page["reading_direction"] == "rtl" for page in planned["pages"])
@@ -379,9 +394,24 @@ def test_1500_to_3000_character_full_manga_acceptance(
             )
             queued_response = client.post(
                 f"/api/v1/batches/{batch_response.json()['id']}/candidates",
-                json={"model_alias": model_alias, "resolution": "1K"},
+                json={
+                    "model_alias": model_alias,
+                    "resolution": "1K",
+                        "reference_selections": {
+                            character["id"]: {
+                                "character_asset_id": character_asset["id"],
+                                "outfit_id": outfit["id"],
+                                "outfit_asset_id": outfit_asset["id"],
+                            },
+                            other_character["id"]: {
+                                "character_asset_id": other_character_asset["id"],
+                                "outfit_id": None,
+                                "outfit_asset_id": None,
+                            },
+                        },
+                },
             )
-            assert queued_response.status_code == 202
+            assert queued_response.status_code == 202, queued_response.json()
             queued = queued_response.json()
             _finish_job(db_session, queued["job_id"], _run_page_generate)
             candidate_id = queued["candidate"]["id"]
@@ -456,7 +486,7 @@ def test_1500_to_3000_character_full_manga_acceptance(
             params={"group_by": "batch"},
         ).json()
         assert library["favorite_count"] == 1
-        assert library["total_candidates"] >= planned["page_count"] + 7
+        assert library["total_candidates"] >= planned["page_count"] + 4
         favorites = client.get(
             f"/api/v1/projects/{project['id']}/library",
             params={"group_by": "batch", "favorite": True},

@@ -299,9 +299,33 @@ def _beats_for_page_ranges(
     return sorted(selected, key=lambda beat: beat_order[beat.id])
 
 
-def japanese_panel_layout(panel_count: int, page_number: int) -> list[dict]:
+def japanese_panel_layout(
+    panel_count: int, page_number: int, layout_mode: str = "dynamic"
+) -> list[dict]:
     """Return an asymmetric, right-to-left manga layout in normalized coordinates."""
     gap = 0.012
+    if layout_mode == "balanced":
+        balanced = {
+            3: [(0, 0, 1, 0.34), (0.5, 0.34, 0.5, 0.66), (0, 0.34, 0.5, 0.66)],
+            4: [(0.5, 0, 0.5, 0.5), (0, 0, 0.5, 0.5), (0.5, 0.5, 0.5, 0.5), (0, 0.5, 0.5, 0.5)],
+            5: [
+                (0, 0, 1, 0.30),
+                (0.5, 0.30, 0.5, 0.35),
+                (0, 0.30, 0.5, 0.35),
+                (0.5, 0.65, 0.5, 0.35),
+                (0, 0.65, 0.5, 0.35),
+            ],
+        }
+        values = balanced[panel_count]
+        return [
+            {
+                "x": round(x + gap, 4),
+                "y": round(y + gap, 4),
+                "width": round(width - gap * 2, 4),
+                "height": round(height - gap * 2, 4),
+            }
+            for x, y, width, height in values
+        ]
     templates = {
         3: [(0, 0, 1, 0.46), (0.46, 0.46, 0.54, 0.54), (0, 0.46, 0.46, 0.54)],
         4: [(0.42, 0, 0.58, 0.38), (0, 0, 0.42, 0.38), (0, 0.38, 1, 0.30), (0, 0.68, 1, 0.32)],
@@ -360,7 +384,11 @@ def _populate_page_storyboard(
     page_beats: list[Beat],
     characters: list[Character],
 ) -> None:
-    layout = japanese_panel_layout(page.panel_count, page.page_number)
+    layout = japanese_panel_layout(
+        page.panel_count,
+        page.page_number,
+        page.source_coverage.get("layout_mode", "dynamic"),
+    )
     for panel_index in range(page.panel_count):
         chunk = chunks[panel_index] if panel_index < len(chunks) else None
         text = chunk.text if chunk else ""
@@ -450,6 +478,72 @@ def _populate_page_storyboard(
                     rewrite_forbidden=True,
                 )
             )
+
+
+def update_page_layout(
+    db: Session,
+    page: MangaPage,
+    *,
+    panel_count: int,
+    layout_mode: str,
+) -> MangaPage:
+    """Rebuild one page's storyboard from its preserved script/source trace."""
+    ranges = page.source_coverage.get("ranges", [])
+    if not ranges or not page.beat_ids or not page.scene_ids:
+        raise HTTPException(status_code=409, detail="当前页缺少剧本或原文追溯，不能调整格数")
+
+    raw_chunks = [
+        PageChunk(
+            segment_id=item["segment_id"],
+            start_offset=int(item["start_offset"]),
+            end_offset=int(item["end_offset"]),
+            text=item.get("text", ""),
+            bubble_count=_bubble_count(item.get("text", "")),
+        )
+        for item in ranges
+    ]
+    groups: list[list[PageChunk]] = [[] for _ in range(panel_count)]
+    for index, chunk in enumerate(raw_chunks):
+        group_index = min(index * panel_count // max(len(raw_chunks), 1), panel_count - 1)
+        groups[group_index].append(chunk)
+    chunks: list[PageChunk] = []
+    for group in groups:
+        if not group:
+            continue
+        chunks.append(
+            PageChunk(
+                segment_id=group[0].segment_id,
+                start_offset=group[0].start_offset,
+                end_offset=group[-1].end_offset,
+                text="".join(item.text for item in group),
+                bubble_count=sum(item.bubble_count for item in group),
+            )
+        )
+
+    beat_order = {beat_id: index for index, beat_id in enumerate(page.beat_ids)}
+    page_beats = list(db.scalars(select(Beat).where(Beat.id.in_(page.beat_ids))))
+    page_beats.sort(key=lambda beat: beat_order[beat.id])
+    scene_order = {scene_id: index for index, scene_id in enumerate(page.scene_ids)}
+    page_scenes = list(db.scalars(select(Scene).where(Scene.id.in_(page.scene_ids))))
+    page_scenes.sort(key=lambda scene: scene_order[scene.id])
+    chapter = db.get(Chapter, page.chapter_id)
+    characters = list(
+        db.scalars(select(Character).where(Character.project_id == chapter.project_id))
+    )
+
+    panel_ids = list(db.scalars(select(Panel.id).where(Panel.page_id == page.id)))
+    if panel_ids:
+        db.execute(delete(Dialogue).where(Dialogue.panel_id.in_(panel_ids)))
+        db.execute(delete(Panel).where(Panel.id.in_(panel_ids)))
+    page.panel_count = panel_count
+    page.source_coverage = {**page.source_coverage, "layout_mode": layout_mode}
+    page.continuity_status = "NEEDS_REVIEW"
+    page.version += 1
+    db.flush()
+    _populate_page_storyboard(db, page, chunks, page_scenes, page_beats, characters)
+    db.commit()
+    db.refresh(page)
+    return page
 
 
 def plan_chapter_pages(
@@ -588,7 +682,7 @@ def plan_chapter_pages(
     for page_number, chunks in enumerate(pages_chunks, start_page_number):
         text_chars = sum(meaningful_characters(item.text) for item in chunks)
         bubbles = sum(item.bubble_count for item in chunks)
-        panel_count = min(7, max(3, len(chunks) + (1 if bubbles > 4 else 0)))
+        panel_count = min(5, max(3, len(chunks) + (1 if bubbles > 4 else 0)))
         ranges = [
             {
                 "segment_id": item.segment_id,
@@ -612,7 +706,7 @@ def plan_chapter_pages(
             reading_direction="rtl",
             estimated_text_chars=text_chars,
             estimated_bubbles=bubbles,
-            source_coverage={"ranges": ranges, "complete": True},
+            source_coverage={"ranges": ranges, "complete": True, "layout_mode": "dynamic"},
             scene_ids=scene_ids,
             beat_ids=beat_ids,
         )

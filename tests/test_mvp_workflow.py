@@ -109,7 +109,7 @@ def test_lossless_import_and_dynamic_pagination(client, db_session):
     assert long["coverage_ratio"] == 1
     assert long["page_count"] > short["page_count"]
     assert all(page["estimated_text_chars"] <= 180 for page in long["pages"])
-    assert all(3 <= page["panel_count"] <= 7 for page in long["pages"])
+    assert all(3 <= page["panel_count"] <= 5 for page in long["pages"])
     assert (
         short_chapter["source_character_count"] < long_chapter["source_character_count"]
     )
@@ -832,7 +832,18 @@ def test_reference_profiles_scene_wardrobe_and_complete_sheet(
         json={"model_alias": "image.nano_banana_2", "resolution": "1K"},
     )
     assert sheet.status_code == 202
-    assert len(sheet.json()) == 4
+    assert sheet.json()["candidate"]["variant"] == "SHEET"
+    batches = client.get(
+        "/api/v1/asset-generation-batches",
+        params={"target_type": "CHARACTER", "target_id": character["id"]},
+    )
+    assert batches.status_code == 200
+    assert batches.json()[0]["id"] == sheet.json()["candidate"]["batch_id"]
+    candidates = client.get(
+        f"/api/v1/batches/{batches.json()[0]['id']}/candidates"
+    )
+    assert candidates.status_code == 200
+    assert candidates.json()[0]["variant"] == "SHEET"
 
     mismatch = client.post(
         "/api/v1/asset-generation-batches",

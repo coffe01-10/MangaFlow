@@ -338,19 +338,6 @@ class SceneOutfitUpdate(BaseModel):
 class CharacterSheetCreate(BaseModel):
     model_alias: str = Field(pattern=IMAGE_MODEL_PATTERN)
     resolution: Resolution = Resolution.DRAFT_1K
-    variants: list[str] = Field(
-        default_factory=lambda: ["FRONT", "SIDE", "BACK", "EXPRESSION"],
-        min_length=1,
-        max_length=8,
-    )
-
-    @model_validator(mode="after")
-    def validate_variants(self):
-        allowed = {"FRONT", "SIDE", "BACK", "EXPRESSION"}
-        if any(item not in allowed for item in self.variants):
-            raise ValueError("角色形象只支持正面、侧面、背面和表情")
-        self.variants = list(dict.fromkeys(self.variants))
-        return self
 
 
 class AssetBatchCreate(BaseModel):
@@ -493,6 +480,12 @@ class GenerationBatchRead(BaseModel):
 class CandidateCreate(BaseModel):
     model_alias: str = Field(pattern=IMAGE_MODEL_PATTERN)
     resolution: Resolution
+    reference_selections: dict[str, dict[str, str | None]] = Field(default_factory=dict)
+
+
+class PageLayoutUpdate(BaseModel):
+    panel_count: int = Field(ge=3, le=5)
+    layout_mode: str = Field(default="dynamic", pattern="^(dynamic|balanced)$")
 
 
 class PageCandidateRead(BaseModel):
@@ -510,6 +503,8 @@ class PageCandidateRead(BaseModel):
     is_favorite: bool
     is_selected: bool
     created_at: datetime
+    variant: str | None = None
+    prompt_snapshot: dict = Field(default_factory=dict)
     content_url: str | None = None
     thumbnail_url: str | None = None
 
@@ -523,7 +518,9 @@ class CandidateQueuedRead(BaseModel):
 class AssetCandidateCreate(BaseModel):
     model_alias: str = Field(pattern=IMAGE_MODEL_PATTERN)
     resolution: Resolution
-    variant: str = Field(pattern="^(FRONT|SIDE|BACK|EXPRESSION|OUTFIT|STYLE_TEST)$")
+    variant: str = Field(
+        pattern="^(FRONT|SIDE|BACK|EXPRESSION|SHEET|OUTFIT|OUTFIT_SHEET|STYLE_TEST)$"
+    )
     instruction: str = Field(default="", max_length=2000)
 
 
