@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.api.helpers import asset_candidate_read, candidate_read
 from app.config import get_settings
 from app.database import get_db
-from app.domain.states import PageStatus, Resolution, ensure_unlocked
+from app.domain.states import CharacterPresence, PageStatus, Resolution, ensure_unlocked
 from app.models import (
     AssetCandidate,
     Chapter,
@@ -48,6 +48,7 @@ from app.schemas import (
     PageCandidateRead,
     PageLayoutUpdate,
     PageRead,
+    PageReadinessRead,
     PanelRead,
     PanelUpdate,
     RepairRequest,
@@ -64,6 +65,12 @@ from app.services.editor import (
 )
 from app.services.job_service import cancel_job, create_job, enqueue_job, reset_for_retry
 from app.services.model_registry import build_registry
+from app.services.page_readiness import (
+    FORMAL_IMAGE_MODEL,
+    FORMAL_RESOLUTION,
+    build_page_readiness,
+    ensure_page_ready,
+)
 
 router = APIRouter()
 
@@ -137,6 +144,14 @@ def list_pages(chapter_id: str, db: Session = Depends(get_db)) -> list[MangaPage
 @router.get("/pages/{page_id}", response_model=PageRead)
 def get_page(page_id: str, db: Session = Depends(get_db)) -> MangaPage:
     return _page(db, page_id)
+
+
+@router.get("/pages/{page_id}/readiness", response_model=PageReadinessRead)
+def get_page_readiness(
+    page_id: str,
+    db: Session = Depends(get_db),
+) -> PageReadinessRead:
+    return build_page_readiness(db, _page(db, page_id), get_settings())
 
 
 def _panel_read(db: Session, panel: Panel) -> PanelRead:
@@ -213,8 +228,39 @@ def update_panel(
         ensure_unlocked(panel.locked_fields, list(values))
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
-    if "characters" in values:
+    if "character_presence" in values:
+        requested_presence = values.get("character_presence") or {}
+        validate_character_ids(db, project_id, list(requested_presence))
+        values["character_presence"] = {
+            character_id: str(getattr(presence, "value", presence))
+            for character_id, presence in requested_presence.items()
+        }
+        values["characters"] = [
+            character_id
+            for character_id, presence in values["character_presence"].items()
+            if presence == CharacterPresence.VISIBLE.value
+        ]
+    elif "characters" in values:
         values["characters"] = validate_character_ids(db, project_id, values["characters"] or [])
+        values["character_presence"] = {
+            **{
+                character_id: presence
+                for character_id, presence in (panel.character_presence or {}).items()
+                if presence != CharacterPresence.VISIBLE.value
+            },
+            **{
+                character_id: CharacterPresence.VISIBLE.value
+                for character_id in values["characters"]
+            },
+        }
+    if "props" in values:
+        values["props"] = list(
+            dict.fromkeys(
+                str(item).strip()
+                for item in (values["props"] or [])
+                if str(item).strip()
+            )
+        )
     character_ids = values.get("characters", panel.characters)
     if "outfits" in values:
         assignments = values["outfits"] or {}
@@ -228,6 +274,19 @@ def update_panel(
         character_id not in character_ids for character_id in (values["expressions"] or {})
     ):
         raise HTTPException(status_code=409, detail="表情只能指定给本格出现的角色")
+    if "characters" in values:
+        if "outfits" not in values:
+            values["outfits"] = {
+                character_id: outfit_id
+                for character_id, outfit_id in (panel.outfits or {}).items()
+                if character_id in character_ids
+            }
+        if "expressions" not in values:
+            values["expressions"] = {
+                character_id: expression
+                for character_id, expression in (panel.expressions or {}).items()
+                if character_id in character_ids
+            }
     if "actions" in values:
         values["actions"] = {
             **panel.actions,
@@ -340,17 +399,7 @@ def delete_dialogue(
 )
 def start_batch(page_id: str, db: Session = Depends(get_db)) -> GenerationBatch:
     page = _page(db, page_id)
-    chapter = db.get(Chapter, page.chapter_id)
-    if (
-        chapter.status not in {"SCRIPT_READY", "PAGES_PLANNED"}
-        or not page.scene_ids
-        or not page.beat_ids
-    ):
-        raise HTTPException(
-            status_code=409, detail="该页面不是从完整漫画剧本生成，请重新解析剧本并规划分镜"
-        )
-    if not page.source_coverage.get("complete"):
-        raise HTTPException(status_code=409, detail="页面原文覆盖不完整，不能开始抽卡")
+    ensure_page_ready(db, page, get_settings())
     return _new_batch(db, page)
 
 
@@ -381,16 +430,13 @@ def create_candidate(
         raise HTTPException(status_code=409, detail="抽卡批次不存在或已经关闭")
     if payload.model_alias not in build_registry(get_settings()):
         raise HTTPException(status_code=422, detail="未识别的图像模型")
+    if payload.model_alias != FORMAL_IMAGE_MODEL or payload.resolution.value != FORMAL_RESOLUTION:
+        raise HTTPException(
+            status_code=422,
+            detail="本轮正式页面只允许使用 Nano Banana 2 与 1K 清晰度",
+        )
     page = _page(db, batch.page_id)
-    chapter = db.get(Chapter, page.chapter_id)
-    if (
-        chapter.status not in {"SCRIPT_READY", "PAGES_PLANNED"}
-        or not page.scene_ids
-        or not page.beat_ids
-    ):
-        raise HTTPException(status_code=409, detail="该页面缺少剧本与分镜来源，禁止生成")
-    if not page.source_coverage.get("complete"):
-        raise HTTPException(status_code=409, detail="页面原文覆盖不完整，禁止生成")
+    ensure_page_ready(db, page, get_settings())
     project = _project_for_page(db, page)
     panels = list(db.scalars(select(Panel).where(Panel.page_id == page.id)))
     visible_character_ids = list(
@@ -558,9 +604,77 @@ def select_candidate(
         or candidate.page_id != page.id
         or candidate.deleted_at is not None
         or not candidate.asset_id
-        or candidate.status not in {"READY", "INSPECTED", "NEEDS_REVIEW"}
+        or candidate.status not in {"INSPECTED", "NEEDS_REVIEW"}
     ):
         raise HTTPException(status_code=409, detail="该候选尚不能采用")
+    inspections = list(
+        db.scalars(
+            select(InspectionResult)
+            .where(InspectionResult.candidate_id == candidate.id)
+            .order_by(InspectionResult.created_at.desc())
+        )
+    )
+    latest_by_category: dict[str, InspectionResult] = {}
+    for inspection in inspections:
+        latest_by_category.setdefault(inspection.category.upper(), inspection)
+    blockers: list[dict] = []
+    text_inspection = latest_by_category.get("OCR") or latest_by_category.get("TEXT")
+    if payload.manual_text_confirmed:
+        pass
+    elif not text_inspection or text_inspection.score is None:
+        blockers.append(
+            {
+                "code": "TEXT_REVIEW_REQUIRED",
+                "message": "请先人工校对页面中文并确认采用",
+                "recommended_action": "MANUAL_TEXT_REVIEW",
+            }
+        )
+    elif text_inspection.score < 0.95:
+        blockers.append(
+            {
+                "code": "TEXT_REVIEW_REQUIRED",
+                "message": f"文字辅助检查相似度 {text_inspection.score:.1%}，请人工校对后确认采用",
+                "score": text_inspection.score,
+                "threshold": 0.95,
+                "inspection_result_id": text_inspection.id,
+                "recommended_action": "MANUAL_TEXT_REVIEW",
+            }
+        )
+    for category in ("CHARACTER", "OUTFIT", "CONTINUITY"):
+        inspection = latest_by_category.get(category)
+        if not inspection:
+            blockers.append(
+                {
+                    "code": f"{category}_CHECK_MISSING",
+                    "message": f"缺少 {category} 检查结果",
+                    "recommended_action": "RUN_INSPECTION",
+                }
+            )
+            continue
+        outcome = inspection.outcome.upper()
+        severity = inspection.severity.upper()
+        if outcome not in {"MATCH", "PASS", "ACCEPTABLE"} and severity in {
+            "HIGH",
+            "ERROR",
+            "CRITICAL",
+        }:
+            blockers.append(
+                {
+                    "code": f"SEVERE_{category}_ISSUE",
+                    "message": f"{category} 存在严重问题，不能采用",
+                    "inspection_result_id": inspection.id,
+                    "recommended_action": "REPAIR_OR_MANUAL_REVIEW",
+                }
+            )
+    if blockers:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "CANDIDATE_NOT_APPROVABLE",
+                "message": "候选尚未达到采用标准",
+                "blockers": blockers,
+            },
+        )
     db.execute(
         update(PageCandidate).where(PageCandidate.page_id == page.id).values(is_selected=False)
     )

@@ -534,6 +534,9 @@ def _run_story_parse(db, job: GenerationJob) -> None:
 {mode_instruction}
 提取角色主要姓名与绰号、场景地点/时间/天气/目的/情绪线，以及逐拍动作、原文对白、旁白、潜台词、情绪、重要度、
 是否必须画出、能否和相邻拍合并、是否适合作为翻页悬念。
+每个情节拍必须输出 character_presence：只有画面中实际可见的人物标记 VISIBLE，
+画外说话标记 OFFSCREEN，仅在对白或叙述中被提及标记 MENTIONED；另把灵牌、遗像、
+墓碑等场景物件写入 props，不能把物件代表的人物误标为 VISIBLE。
 所有场景和情节拍必须携带输入中的 source_segment_ids 并覆盖全部输入；
 剧本人物称呼必须使用 primary_name；每个有对白的情节拍必须把说话人的 primary_name
 写入 speaker_name，旁白留空。
@@ -648,7 +651,14 @@ def _run_story_parse(db, job: GenerationJob) -> None:
                     must_visualize=beat_draft.must_visualize,
                     mergeable=beat_draft.mergeable,
                     page_turn_hook=beat_draft.page_turn_hook,
-                    source_range={"segment_ids": beat_draft.source_segment_ids},
+                    source_range={
+                        "segment_ids": beat_draft.source_segment_ids,
+                        "character_presence": {
+                            key: value.value
+                            for key, value in beat_draft.character_presence.items()
+                        },
+                        "props": beat_draft.props,
+                    },
                 )
             )
     expected_segment_ids = {item.id for item in segments}
@@ -831,6 +841,43 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
     candidate.asset_id = asset.id
     candidate.generation_record_id = record.id
     candidate.status = "READY"
+    if batch.target_type == "STYLE" and candidate.variant == "STYLE_TEST":
+        style = db.get(StyleProfile, batch.target_id)
+        if style:
+            style.status = "TEST_GENERATED"
+            style.version += 1
+
+
+def _build_style_prompt_summary(analyzed: dict, color_mode: str) -> str:
+    """Compile visual language without leaking subjects from the reference page."""
+
+    prefix = "彩色日式漫画" if color_mode == "color" else "黑白日式漫画"
+    visual_parts = [
+        analyzed.get("line_art", ""),
+        analyzed.get("screentone", ""),
+        analyzed.get("contrast", ""),
+        analyzed.get("panel_language", ""),
+        analyzed.get("lighting", ""),
+    ]
+    return "；".join([prefix, *(part for part in visual_parts if part)])
+
+
+def _build_color_palette(analyzed: dict) -> dict[str, str]:
+    """Recover an editable palette when the model omits the optional palette object."""
+
+    palette = analyzed.get("palette")
+    if isinstance(palette, dict) and palette:
+        return {str(key): str(value) for key, value in palette.items() if str(value).strip()}
+
+    color_rules = [str(rule) for rule in analyzed.get("color_rules", []) if str(rule).strip()]
+    return {
+        "主色": color_rules[0] if color_rules else "低饱和冷灰蓝，保持克制与潮湿感",
+        "辅助色": "低明度卡其灰与雾紫，只用于小面积识别和层次",
+        "肤色": "偏冷的自然肤色，保留血色但避免过度红润",
+        "发色": "深黑与低明度识别色，保留发丝层次和角色辨识度",
+        "环境色": "潮湿京都的蓝灰、纸门米灰与深木色",
+        "光影色": analyzed.get("lighting") or "柔和冷色散射光，阴影不使用纯黑硬切",
+    }
 
 
 def _run_style_analyze(db, job: GenerationJob) -> None:
@@ -857,10 +904,14 @@ def _run_style_analyze(db, job: GenerationJob) -> None:
         if style.color_mode == "monochrome"
         else "线稿、主辅色板、肤色与发色、上色方式、色彩光影、人物画法、背景画法"
     )
+    atmosphere = job.request_parameters.get("palette_atmosphere", "")
     prompt = f"""分析这些漫画参考页的视觉风格，只总结可复用的画面语言，不识别作者姓名或作品名。
 目标输出类型是{'黑白漫画' if style.color_mode == 'monochrome' else '彩色漫画'}。
 输出{visual_dimensions}、日式分格语言、构图规则、禁止项，
-以及一段可直接用于生图的中文 prompt_summary。不要复制参考页中的文字或剧情。"""
+以及一段可直接用于生图的中文 prompt_summary。彩色模式必须额外输出 palette，包含
+主色、辅助色、肤色、发色、环境色和光影色，并输出 color_rules。
+章节氛围补充：{atmosphere or '葬礼后的克制、潮湿京都与低饱和情绪'}。
+不要复制参考页中的文字或剧情。"""
     output = _adapter("text.fast").analyze_multimodal(
         MultimodalRequest(
             prompt=prompt,
@@ -870,10 +921,24 @@ def _run_style_analyze(db, job: GenerationJob) -> None:
         StyleAnalysisOutput,
     )
     analyzed = output.model_dump()
+    analyzed["prompt_summary"] = _build_style_prompt_summary(analyzed, style.color_mode)
     analyzed["reference_asset_ids"] = reference_ids
+    analyzed["palette_draft"] = (
+        _build_color_palette(analyzed) if style.color_mode == "color" else {}
+    )
+    analyzed.pop("palette", None)
+    analyzed["palette_confirmed"] = False
+    analyzed["test_image_approved"] = False
     style.profile = analyzed
-    project = db.get(Project, style.project_id)
-    style.status = "ACTIVE" if project and project.default_style_id == style.id else "CONFIRMED"
+    if style.color_mode == "color":
+        style.locked_fields = [
+            "细腻线稿" if field == "黑白墨线" else field
+            for field in style.locked_fields
+            if field != "禁止彩色"
+        ]
+        if "低饱和色板" not in style.locked_fields:
+            style.locked_fields = [*style.locked_fields, "低饱和色板"]
+    style.status = "DRAFT"
     style.version += 1
     job.progress = 90
 
@@ -899,7 +964,9 @@ CHARACTER 检查脸、发型、体型和标志特征；OUTFIT 检查场景指定
 PROP 检查关键道具；CONTINUITY 检查与页面结构、场景状态和前后逻辑的一致性。
 每个请求类别至少输出一项，字段为 category、outcome、score、severity、details、regions；
 outcome 只能用 PASS、ACCEPTABLE、MISMATCH、MISSING、EXTRA；
-details 写清 expected 和 observed，regions 使用 0 到 1 的归一化 x/y/width/height。"""
+details 必须写清 expected、observed 和 differences；TEXT 还必须按每个气泡输出
+bubble_diffs（balloon_index、target_text、recognized_text、similarity）。
+regions 使用 0 到 1 的归一化 x/y/width/height。"""
     job.status = JobStatus.OCR_CHECKING
     job.progress = 45
     db.commit()
@@ -922,7 +989,7 @@ details 写清 expected 和 observed，regions 使用 0 到 1 的归一化 x/y/w
                 category=item.category,
                 outcome=item.outcome,
                 score=item.score,
-                details=item.details,
+                details=item.details.model_dump(),
                 regions=item.regions,
                 severity=item.severity,
             )

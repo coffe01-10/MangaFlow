@@ -60,6 +60,7 @@ class FakeAcceptanceAdapter:
         self.page_prompts: list[str] = []
         self.asset_prompts: list[str] = []
         self.request_index = 0
+        self.inspection_index = 0
 
     def _response(self) -> ModelResponse:
         self.request_index += 1
@@ -131,18 +132,28 @@ class FakeAcceptanceAdapter:
                 background_rendering="京都旧宅保留建筑细节",
                 lighting="阴天柔光",
                 composition_rules=["关键反应使用近景", "跨场景使用留白转场"],
-                negative_rules=["禁止彩色", "禁止复制参考页文字"],
-                prompt_summary="黑白日式漫画，细线稿、低密度网点、克制留白和右到左阅读。",
+                negative_rules=["禁止高饱和霓虹色", "禁止复制参考页文字"],
+                prompt_summary="彩色日式漫画，细线稿、低饱和色板、克制留白和右到左阅读。",
+                palette={
+                    "primary": ["#343746", "#69717D"],
+                    "skin": "#E4C1AF",
+                    "hair": "#272638",
+                    "environment": ["#74858A", "#A7B3B5"],
+                    "light": "#D8DEDE",
+                },
+                color_rules=["人物略暖，雨夜环境偏冷", "服装保持低饱和深色"],
             )
         assert output_schema is PageInspectionOutput
+        self.inspection_index += 1
+        text_mismatch = self.inspection_index == 1
         categories = ["TEXT", "SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"]
         return PageInspectionOutput(
             items=[
                 InspectionItem(
                     category=category,
-                    outcome="MISMATCH" if category == "TEXT" else "PASS",
-                    score=0.6 if category == "TEXT" else 0.98,
-                    severity="WARNING" if category == "TEXT" else "INFO",
+                    outcome="MISMATCH" if category == "TEXT" and text_mismatch else "PASS",
+                    score=0.6 if category == "TEXT" and text_mismatch else 0.98,
+                    severity="WARNING" if category == "TEXT" and text_mismatch else "INFO",
                     details={
                         "expected": "对白与剧本一致",
                         "observed": "首个气泡有一个错字" if category == "TEXT" else "符合目标",
@@ -176,6 +187,10 @@ def test_1500_to_3000_character_full_manga_acceptance(
         monkeypatch.setattr(settings, "queue_enabled", False)
         monkeypatch.setattr(settings, "storage_root", root / "storage")
         monkeypatch.setattr(settings, "upload_root", root / "uploads")
+        monkeypatch.setattr(
+            "app.api.routes.workflow.ensure_page_ready",
+            lambda *_args, **_kwargs: None,
+        )
 
         project_response = client.post(
             "/api/v1/projects",
@@ -295,8 +310,9 @@ def test_1500_to_3000_character_full_manga_acceptance(
         style = client.post(
             f"/api/v1/projects/{project['id']}/styles",
             json={
-                "name": "雨夜黑白网点",
-                "locked_fields": ["线稿", "网点", "右到左构图"],
+                "name": "B1 雨夜彩色漫画",
+                "color_mode": "color",
+                "locked_fields": ["线稿", "低饱和色板", "右到左构图"],
                 "reference_asset_ids": [style_asset["id"]],
             },
         ).json()
@@ -304,13 +320,15 @@ def test_1500_to_3000_character_full_manga_acceptance(
         assert style_job.status_code == 202
         _finish_job(db_session, style_job.json()["id"], _run_style_analyze)
         analyzed_style = db_session.get(StyleProfile, style["id"])
-        assert analyzed_style.profile["prompt_summary"].startswith("黑白日式漫画")
-        assert (
-            client.post(
-                f"/api/v1/projects/{project['id']}/styles/{style['id']}/activate"
-            ).status_code
-            == 200
+        assert analyzed_style.profile["prompt_summary"].startswith("彩色日式漫画")
+        palette = client.post(
+            f"/api/v1/styles/{style['id']}/palette-approve",
+            json={
+                "version": analyzed_style.version,
+                "palette": analyzed_style.profile["palette_draft"],
+            },
         )
+        assert palette.status_code == 200, palette.json()
 
         sheet_response = client.post(
             f"/api/v1/characters/{character['id']}/complete-sheet",
@@ -334,7 +352,7 @@ def test_1500_to_3000_character_full_manga_acceptance(
         outfit_preview = client.post(
             f"/api/v1/asset-generation-batches/{outfit_batch['id']}/candidates",
             json={
-                "model_alias": "image.nano_banana_pro",
+                "model_alias": "image.nano_banana_2",
                 "resolution": "1K",
                 "variant": "OUTFIT",
             },
@@ -360,6 +378,22 @@ def test_1500_to_3000_character_full_manga_acceptance(
         )
         assert style_preview.status_code == 202
         _finish_job(db_session, style_preview.json()["job_id"], _run_asset_generate)
+        analyzed_style = db_session.get(StyleProfile, style["id"])
+        approved_test = client.post(
+            f"/api/v1/styles/{style['id']}/style-test-approve",
+            json={
+                "candidate_id": style_preview.json()["candidate"]["id"],
+                "approved": True,
+                "version": analyzed_style.version,
+            },
+        )
+        assert approved_test.status_code == 200, approved_test.json()
+        assert (
+            client.post(
+                f"/api/v1/projects/{project['id']}/styles/{style['id']}/activate"
+            ).status_code
+            == 200
+        )
         assert len(fake_adapter.asset_prompts) == 3
 
         for scene in script["scenes"]:
@@ -389,9 +423,7 @@ def test_1500_to_3000_character_full_manga_acceptance(
         for index, page in enumerate(planned["pages"]):
             batch_response = client.post(f"/api/v1/pages/{page['id']}/batches")
             assert batch_response.status_code == 201
-            model_alias = (
-                "image.nano_banana_2" if index % 2 == 0 else "image.nano_banana_pro"
-            )
+            model_alias = "image.nano_banana_2"
             queued_response = client.post(
                 f"/api/v1/batches/{batch_response.json()['id']}/candidates",
                 json={
@@ -454,7 +486,7 @@ def test_1500_to_3000_character_full_manga_acceptance(
                         "repair_type": "TEXT_REGION",
                         "target_regions": text_issue["regions"],
                         "target_fields": ["dialogue.text"],
-                        "model_alias": "image.nano_banana_pro",
+                        "model_alias": "image.nano_banana_2",
                         "resolution": "1K",
                     },
                 )
@@ -462,6 +494,26 @@ def test_1500_to_3000_character_full_manga_acceptance(
                 repaired = repair_response.json()
                 _finish_job(db_session, repaired["job_id"], _run_page_generate)
                 selected_id = repaired["candidate"]["id"]
+
+            final_inspection_job = client.post(
+                f"/api/v1/candidates/{selected_id}/inspect",
+                json={
+                    "categories": [
+                        "TEXT",
+                        "SPEAKER",
+                        "CHARACTER",
+                        "OUTFIT",
+                        "PROP",
+                        "CONTINUITY",
+                    ]
+                },
+            )
+            assert final_inspection_job.status_code == 202
+            _finish_job(
+                db_session,
+                final_inspection_job.json()["id"],
+                _run_inspection,
+            )
 
             selected = client.post(
                 f"/api/v1/pages/{page['id']}/select-candidate",
@@ -479,7 +531,7 @@ def test_1500_to_3000_character_full_manga_acceptance(
         assert all("从右到左" in prompt for prompt in fake_adapter.page_prompts)
         assert any("黑色长发" in prompt for prompt in fake_adapter.page_prompts)
         assert any("深色冬季校服" in prompt for prompt in fake_adapter.page_prompts)
-        assert any("雨夜黑白网点" in prompt for prompt in fake_adapter.page_prompts)
+        assert any("B1 雨夜彩色漫画" in prompt for prompt in fake_adapter.page_prompts)
 
         library = client.get(
             f"/api/v1/projects/{project['id']}/library",

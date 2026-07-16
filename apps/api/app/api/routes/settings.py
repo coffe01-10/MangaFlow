@@ -10,11 +10,16 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.database import get_db
 from app.models import ProviderHealth
-from app.services.runtime_settings import read_runtime_settings, update_runtime_settings
+from app.services.runtime_settings import (
+    queue_execution_state,
+    read_runtime_settings,
+    update_runtime_settings,
+)
 from app.services.vertex_health import get_or_create_health, health_read, verify_vertex
 from app.settings_schemas import (
     DiagnosticCheckRead,
     DiagnosticsRead,
+    QueueDiagnosticRead,
     RuntimeSettingsRead,
     RuntimeSettingsUpdate,
     VertexHealthRead,
@@ -69,28 +74,22 @@ def _check(check_id: str, label: str, operation) -> DiagnosticCheckRead:
 def diagnostics(db: Session = Depends(get_db)) -> DiagnosticsRead:
     settings = get_settings()
     health = db.scalar(select(ProviderHealth).where(ProviderHealth.provider == "vertex-ai"))
+    queue_state = queue_execution_state(db, settings)
 
     def database_check():
         db.execute(text("SELECT 1"))
         return "OK", "数据库连接正常"
 
     def queue_check():
-        if not settings.queue_enabled:
-            return "OK", "当前使用本地同步执行"
-        from redis import Redis
-
-        connection = Redis.from_url(
-            settings.redis_url,
-            socket_connect_timeout=0.4,
-            socket_timeout=0.4,
-        )
-        try:
-            connection.ping()
-            return "OK", "Redis 队列连接正常"
-        except Exception:
-            return "WARNING", "Redis 暂不可用，开发环境任务会保留并等待重试"
-        finally:
-            connection.close()
+        if queue_state.actual_executor == "LOCAL":
+            if queue_state.queue_mode == "LOCAL":
+                return "OK", "LOCAL 模式；本地后台执行器可以执行新任务"
+            return "WARNING", "AUTO 模式；Redis 暂不可用，已切换本地后台执行器"
+        if queue_state.actual_executor == "REDIS":
+            return "OK", f"{queue_state.queue_mode} 模式；Redis 队列可以执行新任务"
+        if queue_state.redis_state == "NOT_USED":
+            return "WARNING", "后台执行器被环境级维护开关停用，新任务将保留等待"
+        return "WARNING", f"{queue_state.queue_mode} 模式；Redis 暂不可用，新任务将保留等待"
 
     def oauth_check():
         if not settings.google_cloud_project or not settings.google_application_credentials:
@@ -113,6 +112,8 @@ def diagnostics(db: Session = Depends(get_db)) -> DiagnosticsRead:
             if health and health.health_state == "HEALTHY":
                 return "NOT_CHECKED", "连接已经恢复，请按需重新验证文本模型"
             return "WARNING", "上次文本验证遇到网络或上游故障，尚未证明模型不可用"
+        if health and health.health_state == "HEALTHY":
+            return "NOT_CHECKED", "Vertex 凭据健康；文本模型需要重新验证"
         return "NOT_CHECKED", "尚未执行低 token 文本模型验证"
 
     checks = [
@@ -124,4 +125,13 @@ def diagnostics(db: Session = Depends(get_db)) -> DiagnosticsRead:
         _check("oauth", "Google OAuth", oauth_check),
         _check("text-model", "文本模型", text_check),
     ]
-    return DiagnosticsRead(checks=checks, checked_at=datetime.now(UTC))
+    return DiagnosticsRead(
+        checks=checks,
+        checked_at=datetime.now(UTC),
+        queue=QueueDiagnosticRead(
+            current_mode=queue_state.queue_mode,
+            actual_executor=queue_state.actual_executor,
+            redis_state=queue_state.redis_state,
+            can_execute_new_jobs=queue_state.can_execute,
+        ),
+    )

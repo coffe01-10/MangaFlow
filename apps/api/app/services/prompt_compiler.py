@@ -70,6 +70,8 @@ def compile_page_prompt(db: Session, page: MangaPage, project: Project) -> tuple
                 "shot_type": panel.shot_type,
                 "camera_angle": panel.camera_angle,
                 "characters": panel.characters,
+                "character_presence": panel.character_presence,
+                "props": panel.props,
                 "actions": panel.actions,
                 "expressions": panel.expressions,
                 "background": panel.background,

@@ -11,12 +11,15 @@
 - Next.js 16 + React 19 中文创作工作台，FastAPI + SQLAlchemy API。
 - 粘贴、TXT、Markdown 原作导入；不可变修订、来源区间、无损片段和覆盖率校验。
 - 角色主要姓名、绰号、歧义冲突、参考图与服装/风格素材绑定。
-- 按原文长度动态分页，默认每页 3–7 格、最多 8 个气泡、中文硬上限 180 字；总页数不设上限。
+- 按原文长度动态分页，每页可选 3–5 格并支持动态错落版式，最多 8 个气泡、中文硬上限 180 字；总页数不设上限。
+- 分镜区分实际出镜、画外人物和仅被提及人物，道具独立保存；只有实际出镜人物要求人物与服装参考。
+- 页面统一 readiness 检查原文/剧本覆盖、人物与服装参考、彩色风格、Vertex 和实际执行器，未满足时返回结构化 `409 PAGE_NOT_READY`。
+- AI 概念设定图先作为草稿，人工确认后才同时成为人物与服装规范参考；彩色风格必须依次确认色板、测试图并激活。
 - 右至左分镜数据，以及原文、Scene、Beat、对白和页面之间的追溯关系。
 - Nano Banana 2 与 Nano Banana Pro 完全平级，每个候选显式选模型和分辨率。
 - 同一页多批次、多候选、跨模型抽卡；收藏多个、采用一个，采用版本才进入下一页连续性上下文。
 - 按“章节 → 页面 → 批次”读取素材库，支持页面、角色补图、服装图、风格测试和修复图批次。
-- Redis/RQ 持久化任务、DAG、幂等、取消、重试、超时和并发限制；Redis 不可用时任务安全停留在 `WAITING`。
+- 持久化任务、DAG、幂等、取消、重试、超时和并发限制；`AUTO` 在开发环境无 Redis 时使用本地执行器，`LOCAL` 强制本地执行，`REDIS` 不可用时任务安全停留在 `WAITING`。
 - Gemini 多模态检查、分级修复任务，以及 PNG、PDF、项目 JSON 和素材清单导出。
 - Vertex 凭据只由 API/Worker 读取，浏览器不接触服务账号密钥。
 
@@ -32,7 +35,7 @@
 
 ## 本地启动（Windows PowerShell）
 
-要求：Node.js 22+、Python 3.12+，完整异步生成另需 Redis。
+要求：Node.js 22+、Python 3.12+。Windows 本地开发不强制安装 Redis。
 
 ```powershell
 npm install
@@ -53,14 +56,13 @@ REDIS_URL=redis://localhost:6379/0
 QUEUE_ENABLED=true
 ```
 
-如果只调试页面/API，或本机暂未安装 Redis，可使用：
+本地直接启动：
 
 ```powershell
-$env:QUEUE_ENABLED='false'
 npm run dev
 ```
 
-此模式仍会持久化任务和候选，但不会执行付费模型调用，任务显示为 `WAITING`。
+运行设置中的队列模式默认为 `AUTO`：开发环境检测不到 Redis 时自动切到并发受控的本地后台执行器；选择 `LOCAL` 后不再探测 Redis；只有显式选择 `REDIS` 且 Redis 不可用时，新任务才保持 `WAITING`。
 
 打开：
 
@@ -92,7 +94,7 @@ PostgreSQL 与 Redis 的开发容器可用 `docker compose up -d` 启动；默�
 npm run check
 ```
 
-当前验收结果：26 项后端测试通过，其中统一闭环用一个 1500–3000 字章节跑通 AI 剧本、角色四视图、服装图、风格分析、动态分页、逐页候选、收藏采用、检查修复和 PNG/PDF/JSON 导出；Ruff、ESLint、Next.js 生产构建及 Alembic 全新升级/回滚/再升级均通过。Codex 内置浏览器实测左侧七步工作流、角色/服装/风格锁定项、10 页动态分页、两个平级生图模型和素材库筛选；浏览器日志为空，API 请求均成功。真实 Vertex 烟雾测试使用最多 32 输出 token 的 Gemini 3.5 Flash 请求和一张 Nano Banana 2 的 1K 图片请求，均成功。
+当前验收覆盖后端 Pytest、Ruff、前端 ESLint/Vitest/TypeScript/Next.js 构建、Playwright 闭环和 Alembic 全新升级/回滚/再升级。Codex 内置浏览器在当前项目实测了第一页 readiness、男性角色与深色葬礼服装综合设定页、彩色色板、风格测试图和 Nano Banana 2 1K 正式页面。真实检查中角色、服装、道具和连续性通过，文字辅助检查为 75% 并给出逐气泡差异。文字检查只作为人工校对提示，人工确认后可以采用，不会为了追分自动发起付费修图。
 
 ## 安全说明
 

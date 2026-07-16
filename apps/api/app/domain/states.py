@@ -13,6 +13,12 @@ class Resolution(StrEnum):
     HIGH_4K = "4K"
 
 
+class CharacterPresence(StrEnum):
+    VISIBLE = "VISIBLE"
+    OFFSCREEN = "OFFSCREEN"
+    MENTIONED = "MENTIONED"
+
+
 class PageStatus(StrEnum):
     PLANNED = "PLANNED"
     STORYBOARDED = "STORYBOARDED"

@@ -132,7 +132,7 @@ def verify_vertex(
                 StructuredRequest(
                     prompt='只返回 {"ok": true}',
                     temperature=0,
-                    metadata={"max_output_tokens": 16},
+                    metadata={"max_output_tokens": 64, "thinking_budget": 0},
                 ),
                 _TextSmokeResult,
             )

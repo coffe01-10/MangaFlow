@@ -26,6 +26,9 @@ def test_empty_database_upgrade_downgrade_and_upgrade(tmp_path, monkeypatch):
     assert "archived_at" in {
         column["name"] for column in schema.get_columns("generation_jobs")
     }
+    assert {"character_presence", "props"}.issubset(
+        {column["name"] for column in schema.get_columns("panels")}
+    )
     engine.dispose()
 
     command.downgrade(config, "base")
@@ -57,4 +60,7 @@ def test_upgrade_adopts_complete_schema_created_by_early_local_build(tmp_path, m
     assert "archived_at" in {
         column["name"] for column in schema.get_columns("generation_jobs")
     }
+    assert {"character_presence", "props"}.issubset(
+        {column["name"] for column in schema.get_columns("panels")}
+    )
     engine.dispose()

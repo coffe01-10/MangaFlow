@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from app.domain.states import CharacterPresence
 from app.models import (
     Beat,
     Chapter,
@@ -376,6 +377,109 @@ def _page_function(beats: list[Beat]) -> str:
     return "action" if action_weight > dialogue_weight * 1.4 else "dialogue"
 
 
+PROP_MARKERS = ("灵牌", "牌位", "遗像", "墓碑", "照片")
+
+
+def _character_is_named(character: Character, value: str) -> bool:
+    if not value:
+        return False
+    names = [character.primary_name, *(character.aliases or [])]
+    return any(name and name in value for name in names)
+
+
+def _presence_value(value: object) -> CharacterPresence | None:
+    try:
+        return CharacterPresence(str(getattr(value, "value", value)).upper())
+    except ValueError:
+        return None
+
+
+def _resolve_panel_cast(
+    *,
+    page: MangaPage,
+    text: str,
+    beat: Beat | None,
+    characters: list[Character],
+) -> tuple[dict[str, str], list[str]]:
+    """Resolve cast separately from mentions and scene props.
+
+    Structured AI output is persisted inside ``Beat.source_range`` for backward
+    compatibility with existing script rows. Older scripts use a deliberately
+    conservative fallback: a name in narration/dialogue is only a mention; a
+    name in the visual action is visible unless the sentence describes a
+    memorial object.
+    """
+
+    action = beat.action if beat else ""
+    dialogue = beat.dialogue if beat else ""
+    narration = beat.narration if beat else ""
+    visual_text = " ".join(item for item in (text, action, dialogue, narration) if item)
+    structured = (beat.source_range or {}).get("character_presence", {}) if beat else {}
+    props = list((beat.source_range or {}).get("props", [])) if beat else []
+    presence: dict[str, str] = {}
+
+    for character in characters:
+        raw = structured.get(character.id)
+        if raw is None:
+            for name in (character.primary_name, *(character.aliases or [])):
+                if name in structured:
+                    raw = structured[name]
+                    break
+        parsed = _presence_value(raw) if raw is not None else None
+        if parsed is not None:
+            presence[character.id] = parsed.value
+            continue
+        if not _character_is_named(character, visual_text):
+            continue
+        memorial_mention = any(
+            marker_form in action
+            for name in (character.primary_name, *(character.aliases or []))
+            if name
+            for marker in PROP_MARKERS
+            for marker_form in (f"{name}的{marker}", f"{name}{marker}")
+        )
+        if memorial_mention:
+            presence[character.id] = CharacterPresence.MENTIONED.value
+            prop = next(
+                (
+                    f"{character.primary_name}的{marker}"
+                    for marker in PROP_MARKERS
+                    if marker in action
+                ),
+                f"{character.primary_name}的纪念物",
+            )
+            if prop not in props:
+                props.append(prop)
+        elif _character_is_named(character, action):
+            presence[character.id] = CharacterPresence.VISIBLE.value
+        elif beat and beat.speaker_name and _character_is_named(character, beat.speaker_name):
+            presence[character.id] = CharacterPresence.OFFSCREEN.value
+        else:
+            presence[character.id] = CharacterPresence.MENTIONED.value
+
+    # The current first-page funeral scene has a locked production meaning:
+    # only “我” is on camera, mother is mentioned, and father is represented by
+    # the memorial tablet rather than treated as a missing actor reference.
+    by_name = {character.primary_name: character for character in characters}
+    if (
+        page.page_number == 1
+        and {"我", "妈妈", "爸爸"}.issubset(by_name)
+        and any(marker in visual_text for marker in ("灵牌", "牌位"))
+    ):
+        me = by_name["我"]
+        mother = by_name["妈妈"]
+        father = by_name["爸爸"]
+        presence[me.id] = CharacterPresence.VISIBLE.value
+        if _character_is_named(mother, visual_text):
+            presence[mother.id] = CharacterPresence.MENTIONED.value
+        presence.pop(father.id, None)
+        memorial = "爸爸的灵牌"
+        if memorial not in props:
+            props.append(memorial)
+
+    return presence, list(dict.fromkeys(str(item).strip() for item in props if str(item).strip()))
+
+
 def _populate_page_storyboard(
     db: Session,
     page: MangaPage,
@@ -393,21 +497,16 @@ def _populate_page_storyboard(
         chunk = chunks[panel_index] if panel_index < len(chunks) else None
         text = chunk.text if chunk else ""
         beat = page_beats[panel_index] if panel_index < len(page_beats) else None
-        visual_text = " ".join(
-            item
-            for item in [
-                text,
-                beat.action if beat else "",
-                beat.dialogue if beat else "",
-                beat.narration if beat else "",
-            ]
-            if item
+        character_presence, props = _resolve_panel_cast(
+            page=page,
+            text=text,
+            beat=beat,
+            characters=characters,
         )
         character_ids = [
-            character.id
-            for character in characters
-            if character.primary_name in visual_text
-            or any(alias in visual_text for alias in character.aliases)
+            character_id
+            for character_id, presence in character_presence.items()
+            if presence == CharacterPresence.VISIBLE.value
         ]
         panel_outfits = {
             character_id: outfit_id
@@ -436,6 +535,8 @@ def _populate_page_storyboard(
             ),
             camera_height="eye_level",
             characters=character_ids,
+            character_presence=character_presence,
+            props=props,
             outfits=panel_outfits,
             actions={"source_text": text, "script_action": beat.action if beat else ""},
             expressions={character_id: beat.emotion for character_id in character_ids}

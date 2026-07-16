@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.api.helpers import asset_candidate_read, character_references
@@ -10,6 +10,7 @@ from app.models import (
     AssetCandidate,
     Chapter,
     Character,
+    CharacterReference,
     GenerationBatch,
     Outfit,
     Project,
@@ -20,6 +21,7 @@ from app.models import (
 from app.schemas import (
     AssetBatchCreate,
     AssetCandidateCreate,
+    AssetReferenceApproval,
     CandidateQueuedRead,
     CharacterSheetCreate,
     GenerationBatchRead,
@@ -28,9 +30,12 @@ from app.schemas import (
     OutfitRead,
     OutfitUpdate,
     SceneOutfitUpdate,
+    StylePaletteApproval,
+    StylePaletteDraftRequest,
     StyleProfileCreate,
     StyleProfileRead,
     StyleProfileUpdate,
+    StyleTestApproval,
 )
 from app.services.job_service import create_job, enqueue_job
 from app.services.model_registry import build_registry
@@ -191,14 +196,38 @@ def update_style(
         raise HTTPException(status_code=404, detail="风格档案不存在")
     if style.version != payload.version:
         raise HTTPException(status_code=409, detail="风格档案已更新，请刷新后重试")
-    if payload.color_mode and payload.color_mode != style.color_mode:
-        reference_ids = style.profile.get("reference_asset_ids", [])
-        style.color_mode = payload.color_mode
-        style.profile = {"reference_asset_ids": reference_ids}
-        style.status = StyleStatus.DRAFT
-        style.version += 1
-        db.commit()
-        db.refresh(style)
+    values = payload.model_dump(exclude_unset=True, exclude={"version"})
+    reference_ids = values.pop("reference_asset_ids", None)
+    if reference_ids is not None:
+        _validate_reference_assets(
+            db,
+            style.project_id,
+            reference_ids,
+            "STYLE_REFERENCE",
+            "漫画风格参考图",
+        )
+    color_changed = bool(
+        values.get("color_mode") and values["color_mode"] != style.color_mode
+    )
+    profile_patch = values.pop("profile", None)
+    for key, value in values.items():
+        setattr(style, key, value.strip() if key == "name" else value)
+    profile = dict(style.profile)
+    if profile_patch is not None:
+        profile.update(profile_patch)
+    if reference_ids is not None:
+        profile["reference_asset_ids"] = list(dict.fromkeys(reference_ids))
+    if color_changed:
+        profile.pop("palette", None)
+        profile.pop("palette_draft", None)
+        profile["palette_confirmed"] = False
+        profile["test_image_approved"] = False
+        profile.pop("test_candidate_id", None)
+    style.profile = profile
+    style.status = StyleStatus.DRAFT
+    style.version += 1
+    db.commit()
+    db.refresh(style)
     return style
 
 
@@ -208,6 +237,12 @@ def activate_style(project_id: str, style_id: str, db: Session = Depends(get_db)
     style = db.get(StyleProfile, style_id)
     if not project or not style or style.project_id != project_id:
         raise HTTPException(status_code=404, detail="项目或风格档案不存在")
+    if style.color_mode != "color":
+        raise HTTPException(status_code=409, detail="正式页面要求使用彩色漫画风格")
+    if not style.profile.get("palette_confirmed"):
+        raise HTTPException(status_code=409, detail="请先确认彩色色板")
+    if not style.profile.get("test_image_approved"):
+        raise HTTPException(status_code=409, detail="请先人工通过风格测试图")
     previous = db.get(StyleProfile, project.default_style_id) if project.default_style_id else None
     if previous and previous.id != style.id and previous.status == "ACTIVE":
         previous.status = "CONFIRMED"
@@ -246,6 +281,99 @@ def analyze_style(style_id: str, db: Session = Depends(get_db)):
         idempotency_key=f"style-analyze:{style.id}:{style.version}",
     )
     return enqueue_job(db, job)
+
+
+@router.post(
+    "/styles/{style_id}/palette-draft",
+    response_model=JobRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def draft_style_palette(
+    style_id: str,
+    payload: StylePaletteDraftRequest,
+    db: Session = Depends(get_db),
+):
+    style = db.get(StyleProfile, style_id)
+    if not style:
+        raise HTTPException(status_code=404, detail="风格档案不存在")
+    if style.color_mode != "color":
+        raise HTTPException(status_code=409, detail="请先将风格档案切换为彩色漫画")
+    if not style.profile.get("reference_asset_ids"):
+        raise HTTPException(status_code=409, detail="请先绑定至少一张风格参考图")
+    style.status = StyleStatus.ANALYZING
+    style.version += 1
+    db.commit()
+    job = create_job(
+        db,
+        project_id=style.project_id,
+        target_type="STYLE",
+        target_id=style.id,
+        job_type="STYLE_ANALYZE",
+        model_alias="text.fast",
+        request_parameters={"palette_atmosphere": payload.atmosphere},
+        idempotency_key=f"style-palette:{style.id}:{style.version}",
+    )
+    return enqueue_job(db, job)
+
+
+@router.post("/styles/{style_id}/palette-approve", response_model=StyleProfileRead)
+def approve_style_palette(
+    style_id: str,
+    payload: StylePaletteApproval,
+    db: Session = Depends(get_db),
+) -> StyleProfile:
+    style = db.get(StyleProfile, style_id)
+    if not style:
+        raise HTTPException(status_code=404, detail="风格档案不存在")
+    if style.version != payload.version:
+        raise HTTPException(status_code=409, detail="风格档案已更新，请刷新后重试")
+    if style.color_mode != "color" or not payload.palette:
+        raise HTTPException(status_code=409, detail="彩色色板不能为空")
+    profile = dict(style.profile)
+    profile["palette"] = payload.palette
+    profile["palette_confirmed"] = True
+    profile["test_image_approved"] = False
+    profile.pop("test_candidate_id", None)
+    style.profile = profile
+    style.status = StyleStatus.DRAFT
+    style.version += 1
+    db.commit()
+    db.refresh(style)
+    return style
+
+
+@router.post("/styles/{style_id}/style-test-approve", response_model=StyleProfileRead)
+def approve_style_test(
+    style_id: str,
+    payload: StyleTestApproval,
+    db: Session = Depends(get_db),
+) -> StyleProfile:
+    style = db.get(StyleProfile, style_id)
+    candidate = db.get(AssetCandidate, payload.candidate_id)
+    if not style:
+        raise HTTPException(status_code=404, detail="风格档案不存在")
+    if style.version != payload.version:
+        raise HTTPException(status_code=409, detail="风格档案已更新，请刷新后重试")
+    batch = db.get(GenerationBatch, candidate.batch_id) if candidate else None
+    if (
+        not candidate
+        or not batch
+        or batch.target_type != "STYLE"
+        or batch.target_id != style.id
+        or candidate.variant != "STYLE_TEST"
+        or candidate.status != "READY"
+        or not candidate.asset_id
+    ):
+        raise HTTPException(status_code=409, detail="请选择已生成完成的风格测试图")
+    profile = dict(style.profile)
+    profile["test_candidate_id"] = candidate.id
+    profile["test_image_approved"] = payload.approved
+    style.profile = profile
+    style.status = "CONFIRMED" if payload.approved else StyleStatus.DRAFT
+    style.version += 1
+    db.commit()
+    db.refresh(style)
+    return style
 
 
 @router.patch("/scenes/{scene_id}/outfits", response_model=dict)
@@ -305,6 +433,8 @@ def start_asset_batch(
             raise HTTPException(status_code=409, detail="请先给服装所属角色绑定人物参考图")
     if payload.target_type == "STYLE" and not target.profile.get("reference_asset_ids", []):
         raise HTTPException(status_code=409, detail="请先给风格档案绑定至少一张漫画参考图")
+    if payload.target_type == "STYLE" and not target.profile.get("palette_confirmed"):
+        raise HTTPException(status_code=409, detail="请先确认彩色色板，再生成风格测试图")
     ordinal = (
         db.scalar(
             select(func.max(GenerationBatch.ordinal)).where(
@@ -431,23 +561,163 @@ def generate_complete_character_sheet(
     character = db.get(Character, character_id)
     if not character:
         raise HTTPException(status_code=404, detail="角色不存在")
-    if not character_references(db, character_id):
+    has_reference = bool(character_references(db, character_id))
+    if payload.generation_mode == "REFERENCE" and not has_reference:
         raise HTTPException(status_code=409, detail="请先给角色绑定至少一张人物参考图")
-    batch = start_asset_batch(
-        AssetBatchCreate(
-            target_type="CHARACTER",
-            target_id=character_id,
-            generation_kind="CHARACTER",
-        ),
-        db,
+    ordinal = (
+        db.scalar(
+            select(func.max(GenerationBatch.ordinal)).where(
+                GenerationBatch.project_id == character.project_id
+            )
+        )
+        or 0
+    ) + 1
+    batch = GenerationBatch(
+        project_id=character.project_id,
+        ordinal=ordinal,
+        generation_kind="CHARACTER",
+        target_type="CHARACTER",
+        target_id=character.id,
+        status="OPEN",
     )
+    db.add(batch)
+    db.commit()
+    db.refresh(batch)
+    appearance = (
+        payload.appearance_description.strip()
+        or character.canonical_description
+        or "依据剧本身份、年龄和气质设计稳定外观"
+    )
+    outfit_name = payload.outfit_name.strip() or "深色葬礼正装"
+    outfit_description = (
+        payload.outfit_description.strip() or "深色葬礼正装，克制、庄重、适合京都葬礼场景"
+    )
+    mode_instruction = (
+        "这是没有既有人物参考图的概念草稿。"
+        if payload.generation_mode == "CONCEPT"
+        else "严格保持已有角色参考图的身份。"
+    )
+    alias_context = "、".join(character.aliases or []) or "无"
     return generate_asset_candidate(
         batch.id,
         AssetCandidateCreate(
             model_alias=payload.model_alias,
             resolution=payload.resolution,
             variant="SHEET",
-            instruction="保持同一角色身份，在一张图中生成完整角色设定资料",
+            instruction=(
+                f"{mode_instruction}角色主要姓名：{character.primary_name}；"
+                f"绰号与关系称谓：{alias_context}。"
+                "必须把哥哥、弟弟、姐姐、妹妹、父亲、母亲等关系称谓视为身份与性别约束，"
+                "不得画成与称谓冲突的性别。"
+                f"角色外观：{appearance}。"
+                f"服装名称：{outfit_name}。服装要求：{outfit_description}。"
+                "在一张彩色设定页中同时展示正面、侧面、背面、代表性表情、"
+                "服装剪裁和配饰细节；这是一个综合版面，不生成四张独立图片。"
+            ),
         ),
         db,
     )
+
+
+@router.post("/asset-candidates/{candidate_id}/approve-reference", response_model=dict)
+def approve_asset_reference(
+    candidate_id: str,
+    payload: AssetReferenceApproval,
+    db: Session = Depends(get_db),
+) -> dict:
+    candidate = db.get(AssetCandidate, candidate_id)
+    character = db.get(Character, payload.character_id)
+    batch = db.get(GenerationBatch, candidate.batch_id) if candidate else None
+    if (
+        not candidate
+        or not batch
+        or batch.target_type != "CHARACTER"
+        or batch.target_id != payload.character_id
+        or candidate.status != "READY"
+        or not candidate.asset_id
+    ):
+        raise HTTPException(status_code=409, detail="角色设定草稿尚未生成完成")
+    if not character or character.id != batch.target_id:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    asset = db.get(Asset, candidate.asset_id)
+    if not asset or asset.deleted_at is not None:
+        raise HTTPException(status_code=409, detail="设定草稿图片不存在")
+
+    reference = db.scalar(
+        select(CharacterReference).where(
+            CharacterReference.character_id == character.id,
+            CharacterReference.asset_id == asset.id,
+        )
+    )
+    if payload.bind_character_reference:
+        if payload.set_canonical:
+            db.execute(
+                update(CharacterReference)
+                .where(CharacterReference.character_id == character.id)
+                .values(is_canonical=False)
+            )
+        if reference:
+            reference.is_canonical = payload.set_canonical
+        else:
+            db.add(
+                CharacterReference(
+                    character_id=character.id,
+                    asset_id=asset.id,
+                    angle="complete_sheet",
+                    is_canonical=payload.set_canonical,
+                )
+            )
+        asset.kind = "CHARACTER_REFERENCE"
+        character.status = "CANONICAL"
+        character.version += 1
+
+    outfit = None
+    if payload.outfit_name:
+        outfit_name = payload.outfit_name.strip()
+        outfit = db.scalar(
+            select(Outfit).where(
+                Outfit.character_id == character.id,
+                Outfit.name == outfit_name,
+            )
+        )
+        if not outfit:
+            outfit = Outfit(
+                project_id=character.project_id,
+                character_id=character.id,
+                name=outfit_name,
+                components={"description": payload.outfit_description},
+                locked_fields=payload.outfit_locked_fields,
+                reference_asset_ids=[asset.id],
+                status="CANONICAL",
+            )
+            db.add(outfit)
+        else:
+            outfit.components = {
+                **outfit.components,
+                "description": payload.outfit_description,
+            }
+            outfit.locked_fields = payload.outfit_locked_fields
+            outfit.reference_asset_ids = list(
+                dict.fromkeys([*outfit.reference_asset_ids, asset.id])
+            )
+            outfit.status = "CANONICAL"
+            outfit.version += 1
+
+    snapshot = dict(candidate.prompt_snapshot)
+    snapshot["reference_approval"] = {
+        "approved": True,
+        "character_id": character.id,
+        "outfit_name": payload.outfit_name,
+    }
+    candidate.prompt_snapshot = snapshot
+    candidate.version += 1
+    db.commit()
+    if outfit:
+        db.refresh(outfit)
+    return {
+        "candidate_id": candidate.id,
+        "asset_id": asset.id,
+        "character_id": character.id,
+        "outfit_id": outfit.id if outfit else None,
+        "approved": True,
+    }

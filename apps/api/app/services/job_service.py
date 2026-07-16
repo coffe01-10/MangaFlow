@@ -1,16 +1,18 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
-from threading import Event
+from threading import Event, Lock
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.domain.states import JobStatus
 from app.models import GenerationJob, JobDependency, utcnow
-from app.services.runtime_settings import apply_runtime_overrides
+from app.services.runtime_settings import apply_runtime_overrides, read_queue_mode
 
 LOCAL_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="mangaflow-local")
+LOCAL_SUBMISSION_LOCK = Lock()
+LOCAL_SUBMITTED_JOB_IDS: set[str] = set()
 
 
 def create_job(
@@ -76,17 +78,29 @@ def enqueue_job(db: Session, job: GenerationJob) -> GenerationJob:
         db.commit()
         db.refresh(job)
         return job
+    # Legacy environment-level maintenance switch. Runtime LOCAL no longer
+    # toggles this flag, so selecting LOCAL still executes immediately.
     if not settings.queue_enabled:
+        job.status = JobStatus.WAITING
         job.error_code = "QUEUE_DISABLED"
-        job.error_message = "任务已保存，队列当前未启用"
+        job.error_message = "任务已保存，后台执行器当前未启用"
         db.commit()
         db.refresh(job)
         return job
+    queue_mode = read_queue_mode(db)
+    if queue_mode == "LOCAL":
+        return _enqueue_locally(db, job, "本地后台执行器正在处理任务")
+
+    connection = None
     try:
         from redis import Redis
         from rq import Queue, Retry
 
-        connection = Redis.from_url(settings.redis_url)
+        connection = Redis.from_url(
+            settings.redis_url,
+            socket_connect_timeout=0.4,
+            socket_timeout=0.4,
+        )
         connection.ping()
         queue = Queue(settings.queue_name, connection=connection)
         queue.enqueue(
@@ -100,34 +114,113 @@ def enqueue_job(db: Session, job: GenerationJob) -> GenerationJob:
         job.error_code = None
         job.error_message = None
     except Exception:
-        if settings.environment == "development":
-            job.status = JobStatus.QUEUED
-            job.error_code = "LOCAL_WORKER"
-            job.error_message = "Redis 不可用，已切换到本地后台执行"
-            db.commit()
-            db.refresh(job)
-            LOCAL_EXECUTOR.submit(_execute_locally, job.id)
-            return job
+        if queue_mode == "AUTO" and settings.environment == "development":
+            return _enqueue_locally(db, job, "Redis 不可用，已切换到本地后台执行")
         job.status = JobStatus.WAITING
         job.error_code = "QUEUE_UNAVAILABLE"
-        job.error_message = "任务已保存；Redis 队列暂时不可用"
+        job.error_message = (
+            "任务已保存；REDIS 模式要求 Redis 可用"
+            if queue_mode == "REDIS"
+            else "任务已保存；Redis 队列暂时不可用"
+        )
+    finally:
+        if connection is not None:
+            connection.close()
     db.commit()
     db.refresh(job)
     return job
 
 
+def _enqueue_locally(db: Session, job: GenerationJob, message: str) -> GenerationJob:
+    job.status = JobStatus.QUEUED
+    job.error_code = "LOCAL_WORKER"
+    job.error_message = message
+    db.commit()
+    db.refresh(job)
+    _submit_local(job.id)
+    return job
+
+
+def _submit_local(job_id: str) -> bool:
+    """Submit once per API process, including during startup recovery."""
+
+    with LOCAL_SUBMISSION_LOCK:
+        if job_id in LOCAL_SUBMITTED_JOB_IDS:
+            return False
+        LOCAL_SUBMITTED_JOB_IDS.add(job_id)
+    try:
+        LOCAL_EXECUTOR.submit(_execute_locally, job_id)
+    except Exception:
+        with LOCAL_SUBMISSION_LOCK:
+            LOCAL_SUBMITTED_JOB_IDS.discard(job_id)
+        raise
+    return True
+
+
 def _execute_locally(job_id: str) -> None:
     from app.worker_tasks import execute_job
 
-    while True:
-        execute_job(job_id)
-        from app.database import SessionLocal
+    try:
+        while True:
+            execute_job(job_id)
+            from app.database import SessionLocal
 
-        with SessionLocal() as db:
-            job = db.get(GenerationJob, job_id)
-            if not job or job.status != JobStatus.WAITING or job.error_code != "CONCURRENCY_LIMIT":
-                return
-        Event().wait(0.25)
+            with SessionLocal() as db:
+                job = db.get(GenerationJob, job_id)
+                if (
+                    not job
+                    or job.status != JobStatus.WAITING
+                    or job.error_code != "CONCURRENCY_LIMIT"
+                ):
+                    return
+            Event().wait(0.25)
+    finally:
+        with LOCAL_SUBMISSION_LOCK:
+            LOCAL_SUBMITTED_JOB_IDS.discard(job_id)
+
+
+def recover_pending_jobs(db: Session) -> int:
+    """Re-enqueue jobs orphaned by an API restart in local-capable modes.
+
+    Only WAITING jobs and jobs previously handed to this process-local executor are
+    eligible. Active jobs are intentionally left alone because their lease handling
+    belongs to the worker layer.
+    """
+
+    settings = get_settings()
+    apply_runtime_overrides(db, settings)
+    if not settings.queue_enabled:
+        return 0
+    queue_mode = read_queue_mode(db)
+    if queue_mode == "REDIS" or (queue_mode == "AUTO" and settings.environment != "development"):
+        return 0
+
+    jobs = list(
+        db.scalars(
+            select(GenerationJob)
+            .where(
+                or_(
+                    GenerationJob.status == JobStatus.WAITING,
+                    and_(
+                        GenerationJob.status == JobStatus.QUEUED,
+                        GenerationJob.error_code == "LOCAL_WORKER",
+                    ),
+                )
+            )
+            .order_by(GenerationJob.priority.desc(), GenerationJob.created_at)
+        )
+    )
+    recovered = 0
+    for job in jobs:
+        with LOCAL_SUBMISSION_LOCK:
+            already_submitted = job.id in LOCAL_SUBMITTED_JOB_IDS
+        if already_submitted or not dependencies_complete(db, job):
+            continue
+        job.status = JobStatus.WAITING
+        db.commit()
+        enqueue_job(db, job)
+        recovered += 1
+    return recovered
 
 
 def cancel_job(db: Session, job: GenerationJob) -> GenerationJob:

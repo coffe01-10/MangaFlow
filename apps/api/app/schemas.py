@@ -2,7 +2,13 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
-from app.domain.states import JobStatus, PageStatus, Resolution, WorkflowMode
+from app.domain.states import (
+    CharacterPresence,
+    JobStatus,
+    PageStatus,
+    Resolution,
+    WorkflowMode,
+)
 
 IMAGE_MODEL_PATTERN = r"^image\.(nano_banana_2|nano_banana_pro)$"
 
@@ -314,7 +320,11 @@ class StyleProfileCreate(BaseModel):
 
 
 class StyleProfileUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
     color_mode: str | None = Field(default=None, pattern="^(monochrome|color)$")
+    profile: dict | None = None
+    locked_fields: list[str] | None = None
+    reference_asset_ids: list[str] | None = None
     version: int = Field(ge=1)
 
 
@@ -338,6 +348,34 @@ class SceneOutfitUpdate(BaseModel):
 class CharacterSheetCreate(BaseModel):
     model_alias: str = Field(pattern=IMAGE_MODEL_PATTERN)
     resolution: Resolution = Resolution.DRAFT_1K
+    generation_mode: str = Field(default="REFERENCE", pattern="^(REFERENCE|CONCEPT)$")
+    appearance_description: str = Field(default="", max_length=4000)
+    outfit_name: str = Field(default="", max_length=120)
+    outfit_description: str = Field(default="", max_length=4000)
+
+
+class AssetReferenceApproval(BaseModel):
+    character_id: str
+    bind_character_reference: bool = True
+    set_canonical: bool = True
+    outfit_name: str | None = Field(default=None, min_length=1, max_length=120)
+    outfit_description: str = Field(default="", max_length=4000)
+    outfit_locked_fields: list[str] = Field(default_factory=list)
+
+
+class StylePaletteDraftRequest(BaseModel):
+    atmosphere: str = Field(default="", max_length=2000)
+
+
+class StylePaletteApproval(BaseModel):
+    palette: dict
+    version: int = Field(ge=1)
+
+
+class StyleTestApproval(BaseModel):
+    candidate_id: str
+    approved: bool = True
+    version: int = Field(ge=1)
 
 
 class AssetBatchCreate(BaseModel):
@@ -392,6 +430,8 @@ class PanelRead(BaseModel):
     camera_angle: str
     camera_height: str
     characters: list
+    character_presence: dict[str, CharacterPresence] = Field(default_factory=dict)
+    props: list[str] = Field(default_factory=list)
     outfits: dict
     actions: dict
     expressions: dict
@@ -415,6 +455,8 @@ class PanelUpdate(BaseModel):
     camera_angle: str | None = Field(default=None, min_length=1, max_length=64)
     camera_height: str | None = Field(default=None, min_length=1, max_length=64)
     characters: list[str] | None = Field(default=None, max_length=20)
+    character_presence: dict[str, CharacterPresence] | None = None
+    props: list[str] | None = Field(default=None, max_length=40)
     outfits: dict[str, str] | None = None
     actions: dict | None = None
     expressions: dict[str, str] | None = None
@@ -530,6 +572,65 @@ class FavoriteUpdate(BaseModel):
 
 class SelectCandidateRequest(BaseModel):
     candidate_id: str
+    manual_text_confirmed: bool = False
+
+
+class PageReadinessBlocker(BaseModel):
+    code: str
+    message: str
+    stage: str
+    target_id: str | None = None
+    severity: str = "BLOCKING"
+
+
+class PageReadinessCharacter(BaseModel):
+    character_id: str
+    primary_name: str
+    presence: CharacterPresence
+    character_reference_ids: list[str] = Field(default_factory=list)
+    outfit_id: str | None = None
+    outfit_name: str | None = None
+    outfit_reference_ids: list[str] = Field(default_factory=list)
+
+
+class PageReadinessStyle(BaseModel):
+    style_id: str | None = None
+    name: str | None = None
+    color_mode: str | None = None
+    status: str | None = None
+    palette_confirmed: bool = False
+    test_image_approved: bool = False
+
+
+class PageReadinessProvider(BaseModel):
+    configured: bool
+    health_state: str
+    text_model_access: str
+    image_model_access: str
+    image_model_alias: str = "image.nano_banana_2"
+
+
+class PageReadinessWorker(BaseModel):
+    queue_mode: str
+    executor: str
+    can_execute: bool
+    redis_state: str
+
+
+class PageReadinessRead(BaseModel):
+    page_id: str
+    ready: bool
+    source_complete: bool
+    script_complete: bool
+    visible_characters: list[PageReadinessCharacter] = Field(default_factory=list)
+    mentioned_characters: list[PageReadinessCharacter] = Field(default_factory=list)
+    props: list[str] = Field(default_factory=list)
+    style: PageReadinessStyle
+    provider: PageReadinessProvider
+    worker: PageReadinessWorker
+    blockers: list[PageReadinessBlocker] = Field(default_factory=list)
+    estimated_image_calls: int = 1
+    estimated_cost_note: str = "将调用 1 次 Nano Banana 2 1K 生图"
 
 
 class JobRead(BaseModel):

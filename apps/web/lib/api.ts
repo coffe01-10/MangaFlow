@@ -254,6 +254,8 @@ export interface StoryboardPanel {
   camera_angle: string;
   camera_height: string;
   characters: string[];
+  character_presence: Record<string, CharacterPresence>;
+  props: string[];
   outfits: Record<string, string>;
   actions: Record<string, string>;
   expressions: Record<string, string>;
@@ -270,6 +272,60 @@ export interface StoryboardPanel {
 export interface Storyboard {
   page: MangaPage;
   panels: StoryboardPanel[];
+}
+
+export type CharacterPresence = "VISIBLE" | "OFFSCREEN" | "MENTIONED";
+
+export interface PageReadinessBlocker {
+  code: string;
+  message: string;
+  stage: string;
+  target_id: string | null;
+  severity: string;
+}
+
+export interface PageReadinessCharacter {
+  character_id: string;
+  primary_name: string;
+  presence: CharacterPresence;
+  character_reference_ids: string[];
+  outfit_id: string | null;
+  outfit_name: string | null;
+  outfit_reference_ids: string[];
+}
+
+export interface PageReadiness {
+  page_id: string;
+  ready: boolean;
+  source_complete: boolean;
+  script_complete: boolean;
+  visible_characters: PageReadinessCharacter[];
+  mentioned_characters: PageReadinessCharacter[];
+  props: string[];
+  style: {
+    style_id: string | null;
+    name: string | null;
+    color_mode: string | null;
+    status: string | null;
+    palette_confirmed: boolean;
+    test_image_approved: boolean;
+  };
+  provider: {
+    configured: boolean;
+    health_state: string;
+    text_model_access: string;
+    image_model_access: string;
+    image_model_alias: string;
+  };
+  worker: {
+    queue_mode: string;
+    executor: string;
+    can_execute: boolean;
+    redis_state: string;
+  };
+  blockers: PageReadinessBlocker[];
+  estimated_image_calls: number;
+  estimated_cost_note: string;
 }
 
 export interface GenerationBatch {
@@ -594,8 +650,9 @@ export const api = {
     body: JSON.stringify({ replace_existing: true, from_page_number: fromPageNumber }),
   }),
   pages: (chapterId: string) => request<MangaPage[]>(`/chapters/${chapterId}/pages`),
+  pageReadiness: (pageId: string) => request<PageReadiness>(`/pages/${pageId}/readiness`),
   storyboard: (pageId: string) => request<Storyboard>(`/pages/${pageId}/storyboard`),
-  updatePanel: (panelId: string, payload: Partial<Pick<StoryboardPanel, "shot_type" | "camera_angle" | "camera_height" | "characters" | "outfits" | "actions" | "expressions" | "background" | "sound_effects" | "bleed" | "borderless">> & { version: number }) =>
+  updatePanel: (panelId: string, payload: Partial<Pick<StoryboardPanel, "shot_type" | "camera_angle" | "camera_height" | "characters" | "character_presence" | "props" | "outfits" | "actions" | "expressions" | "background" | "sound_effects" | "bleed" | "borderless">> & { version: number }) =>
     request<StoryboardPanel>(`/panels/${panelId}`, { method: "PATCH", body: JSON.stringify(payload) }),
   createDialogue: (panelId: string, payload: Pick<PanelDialogue, "target_text" | "speaker_character_id" | "text_direction" | "rewrite_forbidden"> & { panel_version: number }) =>
     request<PanelDialogue>(`/panels/${panelId}/dialogues`, { method: "POST", body: JSON.stringify(payload) }),
@@ -623,6 +680,15 @@ export const api = {
     request<StyleProfile>(`/styles/${styleId}`, {
       method: "PATCH", body: JSON.stringify({ version, color_mode: colorMode }),
     }),
+  draftStylePalette: (styleId: string, atmosphere: string) => request<Job>(`/styles/${styleId}/palette-draft`, {
+    method: "POST", body: JSON.stringify({ atmosphere }),
+  }),
+  approveStylePalette: (styleId: string, version: number, palette: Record<string, unknown>) => request<StyleProfile>(`/styles/${styleId}/palette-approve`, {
+    method: "POST", body: JSON.stringify({ version, palette }),
+  }),
+  approveStyleTest: (styleId: string, version: number, candidateId: string, approved = true) => request<StyleProfile>(`/styles/${styleId}/style-test-approve`, {
+    method: "POST", body: JSON.stringify({ version, candidate_id: candidateId, approved }),
+  }),
   analyzeStyle: (styleId: string) => request<Job>(`/styles/${styleId}/analyze`, { method: "POST" }),
   activateStyle: (projectId: string, styleId: string) => request<StyleProfile>(`/projects/${projectId}/styles/${styleId}/activate`, { method: "POST" }),
   assignSceneOutfits: (sceneId: string, assignments: Record<string, string>) =>
@@ -658,10 +724,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ model_alias, resolution, variant, instruction: "" }),
     }),
-  generateCompleteCharacterSheet: (characterId: string, model_alias: ImageModelAlias, resolution: Resolution) =>
+  generateCompleteCharacterSheet: (characterId: string, model_alias: ImageModelAlias, resolution: Resolution, concept?: { appearance_description: string; outfit_name: string; outfit_description: string }) =>
     request<{ job_id: string; job_status: string; candidate: PageCandidate }>(`/characters/${characterId}/complete-sheet`, {
       method: "POST",
-      body: JSON.stringify({ model_alias, resolution }),
+      body: JSON.stringify({ model_alias, resolution, generation_mode: concept ? "CONCEPT" : "REFERENCE", ...concept }),
+    }),
+  approveAssetReference: (candidateId: string, payload: { character_id: string; bind_character_reference?: boolean; set_canonical?: boolean; outfit_name?: string; outfit_description?: string; outfit_locked_fields?: string[] }) =>
+    request<{ candidate_id: string; asset_id: string; character_id: string; outfit_id?: string | null }>(`/asset-candidates/${candidateId}/approve-reference`, {
+      method: "POST", body: JSON.stringify(payload),
     }),
   updatePageLayout: (pageId: string, panelCount: number, layoutMode: "dynamic" | "balanced") =>
     request<Storyboard>(`/pages/${pageId}/layout`, {
@@ -682,10 +752,10 @@ export const api = {
       body: JSON.stringify({ is_favorite: isFavorite }),
     }),
   deleteCandidate: (candidateId: string) => request<void>(`/candidates/${candidateId}`, { method: "DELETE" }),
-  selectCandidate: (pageId: string, candidateId: string) =>
+  selectCandidate: (pageId: string, candidateId: string, manualTextConfirmed = false) =>
     request<MangaPage>(`/pages/${pageId}/select-candidate`, {
       method: "POST",
-      body: JSON.stringify({ candidate_id: candidateId }),
+      body: JSON.stringify({ candidate_id: candidateId, manual_text_confirmed: manualTextConfirmed }),
     }),
   nextPage: (pageId: string) => request<MangaPage>(`/pages/${pageId}/next`, { method: "POST" }),
   library: (projectId: string, filters: LibraryFilters = {}) => {

@@ -20,11 +20,13 @@ class FakeResponse:
 class FakeModels:
     def __init__(self, client):
         self.client_ref = weakref.ref(client)
+        self.last_kwargs = None
 
-    def generate_content(self, **_kwargs):
+    def generate_content(self, **kwargs):
         client = self.client_ref()
         if client is None or client.closed:
             raise RuntimeError("client was closed before request completion")
+        self.last_kwargs = kwargs
         return FakeResponse()
 
 
@@ -52,8 +54,14 @@ def test_vertex_client_stays_alive_for_entire_request(monkeypatch):
 
     monkeypatch.setattr(adapter, "_client", make_client)
     result = adapter.generate_structured(
-        StructuredRequest(prompt="return ok", temperature=0), SmokeReply
+        StructuredRequest(
+            prompt="return ok",
+            temperature=0,
+            metadata={"max_output_tokens": 64, "thinking_budget": 0},
+        ),
+        SmokeReply,
     )
 
     assert result.ok is True
+    assert clients[0].models.last_kwargs["config"].thinking_config.thinking_budget == 0
     assert clients[0].closed is True

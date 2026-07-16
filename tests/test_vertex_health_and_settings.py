@@ -7,7 +7,10 @@ import pytest
 
 from app.config import Settings, get_settings
 from app.models import AppSetting, ProviderHealth
-from app.services.runtime_settings import apply_runtime_overrides, update_runtime_settings
+from app.services.runtime_settings import (
+    apply_runtime_overrides,
+    update_runtime_settings,
+)
 from app.services.vertex_credentials import (
     VertexCredentialManager,
     classify_vertex_failure,
@@ -22,6 +25,12 @@ class ProviderError(RuntimeError):
         self.status_code = status_code
 
 
+class AdapterError(RuntimeError):
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
 @pytest.mark.parametrize(
     ("error", "code", "retryable"),
     [
@@ -31,6 +40,7 @@ class ProviderError(RuntimeError):
         (ProviderError(429, "quota"), "RATE_LIMIT", True),
         (ProviderError(503, "upstream"), "UPSTREAM", True),
         (TimeoutError("slow"), "TIMEOUT", True),
+        (AdapterError("INVALID_OUTPUT"), "INVALID_OUTPUT", False),
     ],
 )
 def test_vertex_failure_classification_is_safe(error, code, retryable):
@@ -110,7 +120,9 @@ def test_credential_refresh_is_serialized(tmp_path, monkeypatch):
     assert all(item is credentials for item in results)
 
 
-def test_runtime_overrides_survive_rehydrate_and_reject_sensitive_fields(client, db_session):
+def test_runtime_overrides_survive_rehydrate_and_reject_sensitive_fields(
+    client, db_session
+):
     settings = Settings(queue_enabled=True, job_timeout_seconds=900, max_auto_repairs=3)
     update_runtime_settings(
         db_session,
@@ -122,9 +134,12 @@ def test_runtime_overrides_survive_rehydrate_and_reject_sensitive_fields(client,
             version=1,
         ),
     )
-    restarted = Settings(queue_enabled=True, job_timeout_seconds=900, max_auto_repairs=3)
+    restarted = Settings(
+        queue_enabled=True, job_timeout_seconds=900, max_auto_repairs=3
+    )
     apply_runtime_overrides(db_session, restarted)
-    assert restarted.queue_enabled is False
+    # LOCAL is an executor mode, not a switch that disables execution.
+    assert restarted.queue_enabled is True
     assert restarted.job_timeout_seconds == 120
     assert restarted.max_auto_repairs == 2
     assert set(db_session.get(AppSetting, "runtime").value) <= {
@@ -138,9 +153,35 @@ def test_runtime_overrides_survive_rehydrate_and_reject_sensitive_fields(client,
         json={"version": 2, "google_application_credentials": "must-not-enter-api"},
     )
     assert response.status_code == 422
-    assert "google_application_credentials" not in client.get(
-        "/api/v1/settings/runtime"
-    ).text
+    assert (
+        "google_application_credentials"
+        not in client.get("/api/v1/settings/runtime").text
+    )
+
+
+def test_diagnostics_reports_local_executor_without_probing_redis(client, db_session):
+    db_session.add(
+        AppSetting(
+            key="runtime",
+            value={"queue_mode": "LOCAL"},
+            version=1,
+        )
+    )
+    db_session.commit()
+
+    response = client.get("/api/v1/settings/diagnostics")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["queue"] == {
+        "current_mode": "LOCAL",
+        "actual_executor": "LOCAL",
+        "redis_state": "NOT_USED",
+        "can_execute_new_jobs": True,
+    }
+    queue_check = next(item for item in payload["checks"] if item["id"] == "queue")
+    assert queue_check["status"] == "OK"
+    assert "本地后台执行器" in queue_check["message"]
 
 
 def test_provider_health_persists_permission_failure_without_losing_configuration(
@@ -162,7 +203,9 @@ def test_provider_health_persists_permission_failure_without_losing_configuratio
         "app.services.vertex_health.get_vertex_credential_manager", lambda: manager
     )
 
-    result = verify_vertex(db_session, settings, VertexVerifyRequest(level="CREDENTIALS"))
+    result = verify_vertex(
+        db_session, settings, VertexVerifyRequest(level="CREDENTIALS")
+    )
 
     stored = db_session.query(ProviderHealth).filter_by(provider="vertex-ai").one()
     assert result.configured is True
@@ -217,7 +260,9 @@ def test_successful_credential_refresh_clears_only_transient_model_outages(
         "app.services.vertex_health.get_vertex_credential_manager", lambda: manager
     )
 
-    result = verify_vertex(db_session, settings, VertexVerifyRequest(level="CREDENTIALS"))
+    result = verify_vertex(
+        db_session, settings, VertexVerifyRequest(level="CREDENTIALS")
+    )
 
     assert result.health_state == "HEALTHY"
     assert result.text_model_access == "NOT_CHECKED"

@@ -36,6 +36,13 @@ def _project(client, name="长篇测试"):
     return client.post("/api/v1/projects", json={"name": name}).json()
 
 
+def _skip_page_readiness(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.api.routes.workflow.ensure_page_ready",
+        lambda *_args, **_kwargs: None,
+    )
+
+
 def _chapter_and_pages(client, db_session, project_id: str, repeat: int = 12):
     paragraph = "苏清白推开教室的门。她看见窗边的顾川，轻声问道：“你怎么还在这里？”"
     imported = client.post(
@@ -570,6 +577,7 @@ def test_chapter_delete_restore_and_source_revision(client):
 
 def test_batch_candidate_favorite_select_and_next(client, db_session, monkeypatch):
     monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    _skip_page_readiness(monkeypatch)
     project = _project(client, "抽卡测试")
     _, plan = _chapter_and_pages(client, db_session, project["id"], repeat=12)
     first_page, second_page = plan["pages"][:2]
@@ -578,14 +586,14 @@ def test_batch_candidate_favorite_select_and_next(client, db_session, monkeypatc
     assert batch.status_code == 201
     queued = client.post(
         f"/api/v1/batches/{batch.json()['id']}/candidates",
-        json={"model_alias": "image.nano_banana_pro", "resolution": "1K"},
+        json={"model_alias": "image.nano_banana_2", "resolution": "1K"},
     )
     assert queued.status_code == 202
     candidate = queued.json()["candidate"]
-    assert candidate["model_alias"] == "image.nano_banana_pro"
+    assert candidate["model_alias"] == "image.nano_banana_2"
     assert (
         client.get(f"/api/v1/projects/{project['id']}").json()["last_image_model_alias"]
-        == "image.nano_banana_pro"
+        == "image.nano_banana_2"
     )
 
     favorite = client.patch(
@@ -611,7 +619,22 @@ def test_batch_candidate_favorite_select_and_next(client, db_session, monkeypatc
     db_session.flush()
     record = db_session.get(PageCandidate, candidate["id"])
     record.asset_id = asset.id
-    record.status = "READY"
+    record.status = "INSPECTED"
+    for category, score in [
+        ("TEXT", 0.95),
+        ("CHARACTER", 0.99),
+        ("OUTFIT", 0.99),
+        ("CONTINUITY", 0.99),
+    ]:
+        db_session.add(
+            InspectionResult(
+                candidate_id=record.id,
+                category=category,
+                outcome="PASS",
+                score=score,
+                severity="INFO",
+            )
+        )
     db_session.commit()
 
     selected = client.post(
@@ -634,7 +657,7 @@ def test_batch_candidate_favorite_select_and_next(client, db_session, monkeypatc
         f"/api/v1/projects/{project['id']}/library",
         params={
             "group_by": "batch",
-            "model_alias": "image.nano_banana_pro",
+            "model_alias": "image.nano_banana_2",
             "resolution": "1K",
             "generation_kind": "PAGE",
             "date_from": "2000-01-01T00:00:00Z",
@@ -652,6 +675,7 @@ def test_batch_candidate_favorite_select_and_next(client, db_session, monkeypatc
 
 def test_candidate_requires_explicit_neutral_model(client, db_session, monkeypatch):
     monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    _skip_page_readiness(monkeypatch)
     project = _project(client, "模型选择")
     _, plan = _chapter_and_pages(client, db_session, project["id"], repeat=2)
     batch = client.post(f"/api/v1/pages/{plan['pages'][0]['id']}/batches").json()
@@ -810,7 +834,15 @@ def test_reference_profiles_scene_wardrobe_and_complete_sheet(
     assert outfit["reference_asset_ids"] == [outfit_asset_alt.id]
     style = client.post(
         f"/api/v1/projects/{project['id']}/styles",
-        json={"name": "黑白网点", "reference_asset_ids": [style_asset.id]},
+        json={
+            "name": "彩色漫画",
+            "color_mode": "color",
+            "profile": {
+                "palette_confirmed": True,
+                "test_image_approved": True,
+            },
+            "reference_asset_ids": [style_asset.id],
+        },
     ).json()
     assert (
         client.post(
@@ -825,7 +857,7 @@ def test_reference_profiles_scene_wardrobe_and_complete_sheet(
     )
     assert color_style.status_code == 200
     assert color_style.json()["color_mode"] == "color"
-    assert color_style.json()["profile"] == {"reference_asset_ids": [style_asset.id]}
+    assert color_style.json()["profile"]["reference_asset_ids"] == [style_asset.id]
     assert client.post(f"/api/v1/styles/{style['id']}/analyze").status_code == 202
     sheet = client.post(
         f"/api/v1/characters/{character['id']}/complete-sheet",
@@ -893,7 +925,7 @@ def test_reference_profiles_scene_wardrobe_and_complete_sheet(
     style_candidate = client.post(
         f"/api/v1/asset-generation-batches/{style_batch.json()['id']}/candidates",
         json={
-            "model_alias": "image.nano_banana_pro",
+            "model_alias": "image.nano_banana_2",
             "resolution": "1K",
             "variant": "STYLE_TEST",
         },
@@ -924,12 +956,13 @@ def test_reference_profiles_scene_wardrobe_and_complete_sheet(
 
 def test_eight_candidate_jobs_are_isolated(client, db_session, monkeypatch):
     monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    _skip_page_readiness(monkeypatch)
     project = _project(client, "并发隔离")
     _, plan = _chapter_and_pages(client, db_session, project["id"], repeat=2)
     batch = client.post(f"/api/v1/pages/{plan['pages'][0]['id']}/batches").json()
     job_ids = []
     for index in range(8):
-        alias = "image.nano_banana_2" if index % 2 == 0 else "image.nano_banana_pro"
+        alias = "image.nano_banana_2"
         response = client.post(
             f"/api/v1/batches/{batch['id']}/candidates",
             json={"model_alias": alias, "resolution": "1K"},
@@ -1031,6 +1064,7 @@ def test_job_history_archive_restore_and_safe_delete(client, db_session):
 
 def test_inspection_repair_escalation_and_upscale_jobs(client, db_session, monkeypatch):
     monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    _skip_page_readiness(monkeypatch)
     project = _project(client, "检查修复升清")
     _, plan = _chapter_and_pages(client, db_session, project["id"], repeat=2)
     page = plan["pages"][0]

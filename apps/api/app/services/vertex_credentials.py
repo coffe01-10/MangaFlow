@@ -33,6 +33,11 @@ def classify_vertex_failure(error: Exception) -> VertexFailure:
             status = None
     status_text = str(status).lower()
 
+    if status == "INVALID_OUTPUT":
+        return VertexFailure("INVALID_OUTPUT", "模型已响应，但返回格式无法验证", False)
+    if status in {"INVALID_INPUT", "UNSUPPORTED_CAPABILITY"}:
+        return VertexFailure("CONFIGURATION", "模型调用参数与当前能力不匹配", False)
+
     if status in (401,) or "401" in raw or "unauth" in raw or "invalid_grant" in raw:
         return VertexFailure(
             "AUTHENTICATION", "Vertex AI 凭据无效或令牌已过期", True, authentication=True

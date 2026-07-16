@@ -12,15 +12,19 @@ flowchart LR
     W -->|"REST / OpenAPI"| A["FastAPI API"]
     A --> D[("SQLite / PostgreSQL")]
     A --> F["本地文件 / S3 兼容存储"]
-    A --> Q["Redis / RQ"]
-    Q --> K["Python Worker"]
-    K --> M["模型适配层"]
+    A --> Q["队列路由 AUTO / LOCAL / REDIS"]
+    Q --> L["本地后台执行器"]
+    Q --> R["Redis / RQ Worker"]
+    L --> M["模型适配层"]
+    R --> M
     M --> V["Vertex AI Gemini API"]
-    K --> D
-    K --> F
+    L --> D
+    L --> F
+    R --> D
+    R --> F
 ```
 
-本地默认使用 SQLite 和本地文件。任务元数据始终写入数据库；Redis 不可用或 `QUEUE_ENABLED=false` 时任务保留为 `WAITING` 并带可诊断错误码，不会在 API 进程中偷偷执行付费调用。生产环境可替换为 PostgreSQL、对象存储和独立 RQ Worker。
+本地默认使用 SQLite 和本地文件。任务元数据始终先写入数据库。`LOCAL` 直接使用受并发限制的本地后台执行器；`AUTO` 在开发环境无法连接 Redis 时自动使用本地执行器；`REDIS` 必须进入 RQ，Redis 不可用时任务保留为 `WAITING`。生产环境可替换为 PostgreSQL、对象存储和独立 RQ Worker。
 
 ## 3. 代码结构
 
@@ -50,14 +54,14 @@ flowchart LR
 - `story/pages`：Scene、Beat、剧本、动态分页、右至左分镜和来源映射。
 - `batches/candidates`：页面或资产批次、候选、收藏、采用、下一页和软删除。
 - `jobs`：任务提交、DAG、幂等、取消、重试、超时、租约和并发限制。
-- `inspection/repair`：文字、说话人、角色、服装、道具和连续性检查及分级修复。
+- `inspection/repair`：文字、说话人、角色、服装、道具和连续性检查及分级修复；文字识别是人工校对辅助项，不自动触发付费修图，采用时需显式人工确认。
 - `library/exports`：批次素材库、PNG、PDF、项目 JSON 和素材清单。
 
 所有 AI 创建接口返回 `202 + job_id`；普通查询只读数据库和存储，不触发模型调用。
 
 ## 5. 任务队列
 
-`GenerationJob` 使用 `JobDependency` 表达 DAG。依赖未完成的任务保持 `WAITING`；依赖完成后由 RQ 进入 `QUEUED/RUNNING`。任务支持幂等键、取消标记、最大尝试次数、超时、租约和每项目并发上限。
+`GenerationJob` 使用 `JobDependency` 表达 DAG。依赖未完成的任务保持 `WAITING`；依赖完成后由当前实际执行器运行。任务支持幂等键、取消标记、最大尝试次数、超时、租约和每项目并发上限；API 启动时会恢复本地模式遗留的可执行等待任务。
 
 ```mermaid
 flowchart LR
@@ -75,7 +79,7 @@ flowchart LR
 
 ## 6. 动态分页与逐页生成
 
-原作先拆为带字符区间和哈希的 `SourceSegment`，再映射到 Scene、Beat、剧本和 `MangaPage`。容量估算默认每页 3–7 格、最多 8 个气泡，中文对白/旁白软上限 120 字、硬上限 180 字；溢出时继续拆页，不压缩或删除情节。任何来源片段未映射到页面时，候选生成接口拒绝请求。
+原作先拆为带字符区间和哈希的 `SourceSegment`，再映射到 Scene、Beat、剧本和 `MangaPage`。容量估算使用每页 3–5 格、最多 8 个气泡，中文对白/旁白软上限 120 字、硬上限 180 字；溢出时继续拆页，不压缩或删除情节。格内人物用 `VISIBLE/OFFSCREEN/MENTIONED` 表示，道具独立保存。任何来源片段未映射、实际出镜人物缺参考、场景服装缺失或正式风格未确认时，统一 readiness 服务拒绝候选请求。
 
 页面规划可以一次完成，但图片只允许逐页生成。`GenerationBatch` 是同一页的一轮抽卡会话，`PageCandidate` 是一次模型调用的候选。收藏和采用互相独立；每页只有一个当前采用版本，该版本才会成为下一页的连续性输入。
 
@@ -99,6 +103,6 @@ flowchart LR
 
 ## 9. 部署与验证
 
-开发模式用 `npm run dev:full` 同时启动 Web、API 和 RQ Worker；Docker Compose 提供 PostgreSQL 与 Redis。数据库迁移由 Alembic 管理，生产启动只检查版本，不自动升级。
+开发模式可直接用 `npm run dev` 启动 Web 和 API；默认 `AUTO` 会在无 Redis 时使用本地执行器。需要验证独立 RQ 时使用 `npm run dev:full`；Docker Compose 提供 PostgreSQL 与 Redis。数据库迁移由 Alembic 管理，生产启动只检查版本，不自动升级。
 
 自动检查入口为 `npm run check`，包括 Ruff、ESLint、Pytest 和 Next.js 生产构建；迁移另做 SQLite 升级/回滚验证。真实 Vertex 图片调用不属于默认测试，避免意外费用。

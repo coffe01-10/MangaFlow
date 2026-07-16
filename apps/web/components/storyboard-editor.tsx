@@ -3,6 +3,7 @@
 import {
   api,
   type Character,
+  type CharacterPresence,
   type MangaPage,
   type Outfit,
   type PanelDialogue,
@@ -13,7 +14,7 @@ import { Check, CircleAlert, MessageSquarePlus, Pencil, RotateCcw, Save, Trash2,
 import { useState } from "react";
 import type { CSSProperties } from "react";
 
-type PanelDraft = Pick<StoryboardPanel, "shot_type" | "camera_angle" | "camera_height" | "characters" | "outfits" | "actions" | "expressions" | "background" | "sound_effects" | "bleed" | "borderless">;
+type PanelDraft = Pick<StoryboardPanel, "shot_type" | "camera_angle" | "camera_height" | "characters" | "character_presence" | "props" | "outfits" | "actions" | "expressions" | "background" | "sound_effects" | "bleed" | "borderless">;
 type DialogueDraft = Pick<PanelDialogue, "target_text" | "speaker_character_id" | "text_direction" | "rewrite_forbidden">;
 
 const shotTypes = [["establishing", "远景建立"], ["wide_action", "全景动作"], ["medium_close_up", "中近景"], ["close_up", "近景"], ["extreme_close_up", "大特写"]] as const;
@@ -143,6 +144,10 @@ export function StoryboardEditor({
       camera_angle: panel.camera_angle,
       camera_height: panel.camera_height,
       characters: [...panel.characters],
+      character_presence: Object.keys(panel.character_presence ?? {}).length
+        ? { ...panel.character_presence }
+        : Object.fromEntries(panel.characters.map((characterId) => [characterId, "VISIBLE" as const])),
+      props: [...(panel.props ?? [])],
       outfits: { ...panel.outfits },
       actions: { ...panel.actions },
       expressions: { ...panel.expressions },
@@ -154,17 +159,19 @@ export function StoryboardEditor({
     setNotice("");
   }
 
-  function toggleCharacter(characterId: string) {
+  function setPresence(characterId: string, presence: CharacterPresence | "NONE") {
     if (!panelDraft) return;
-    const selected = panelDraft.characters.includes(characterId);
-    const charactersNext = selected ? panelDraft.characters.filter((id) => id !== characterId) : [...panelDraft.characters, characterId];
+    const presenceNext = { ...panelDraft.character_presence };
+    if (presence === "NONE") delete presenceNext[characterId];
+    else presenceNext[characterId] = presence;
+    const charactersNext = Object.entries(presenceNext).filter(([, value]) => value === "VISIBLE").map(([id]) => id);
     const outfitsNext = { ...panelDraft.outfits };
     const expressionsNext = { ...panelDraft.expressions };
-    if (selected) {
+    if (presence !== "VISIBLE") {
       delete outfitsNext[characterId];
       delete expressionsNext[characterId];
     }
-    setPanelDraft({ ...panelDraft, characters: charactersNext, outfits: outfitsNext, expressions: expressionsNext });
+    setPanelDraft({ ...panelDraft, characters: charactersNext, character_presence: presenceNext, outfits: outfitsNext, expressions: expressionsNext });
   }
 
   const error = savePanel.error ?? saveDialogue.error ?? addDialogue.error ?? removeDialogue.error ?? updateLayout.error ?? replanError;
@@ -177,7 +184,7 @@ export function StoryboardEditor({
     {error && <p className="form-error"><CircleAlert size={14} />{error.message}</p>}
     {storyboard.isLoading ? <div className="storyboard-loading">正在展开格子脚本…</div> : <div className="storyboard-worktable">
       <div className="panel-contact-sheet">{storyboard.data?.panels.map((panel) => <button key={panel.id} style={{ left: `${(panel.bounds.x ?? 0) * 100}%`, top: `${(panel.bounds.y ?? 0) * 100}%`, width: `${(panel.bounds.width ?? 1) * 100}%`, height: `${(panel.bounds.height ?? 1) * 100}%` } as CSSProperties} className={panel.id === selectedPanel?.id ? "panel-proof active" : "panel-proof"} onClick={() => { setPanelId(panel.id); setEditingPanel(false); setPanelDraft(null); }}>
-        <span>格 {String(panel.reading_order).padStart(2, "0")}</span><div className="panel-proof-frame"><i>{shotTypes.find(([value]) => value === panel.shot_type)?.[1] ?? panel.shot_type}</i><strong>{panel.actions.script_action || panel.actions.source_text || "动作待补充"}</strong><small>{panel.background || "背景待补充"}</small></div><em>{panel.dialogues.length} 气泡 · {panel.characters.length} 人物</em>
+        <span>格 {String(panel.reading_order).padStart(2, "0")}</span><div className="panel-proof-frame"><i>{shotTypes.find(([value]) => value === panel.shot_type)?.[1] ?? panel.shot_type}</i><strong>{panel.actions.script_action || panel.actions.source_text || "动作待补充"}</strong><small>{panel.background || "背景待补充"}</small></div><em>{panel.dialogues.length} 气泡 · {panel.characters.length} 人物 · {panel.props?.length ?? 0} 道具</em>
       </button>)}</div>
       {selectedPanel && <aside className="panel-inspector">
         <header><div><span>P.{String(currentPage.page_number).padStart(3, "0")} / PANEL {String(selectedPanel.reading_order).padStart(2, "0")}</span><strong>分镜导演台</strong></div>{editingPanel ? <button onClick={() => { setEditingPanel(false); setPanelDraft(null); }}><X size={12} />退出编辑</button> : <button onClick={() => beginPanel(selectedPanel)}><Pencil size={12} />编辑本格</button>}</header>
@@ -185,8 +192,9 @@ export function StoryboardEditor({
           <div className="panel-edit-grid"><label><span>景别</span><select value={panelDraft.shot_type} onChange={(event) => setPanelDraft({ ...panelDraft, shot_type: event.target.value })}>{shotTypes.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label><label><span>镜头角度</span><select value={panelDraft.camera_angle} onChange={(event) => setPanelDraft({ ...panelDraft, camera_angle: event.target.value })}>{cameraAngles.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label><label><span>机位高度</span><select value={panelDraft.camera_height} onChange={(event) => setPanelDraft({ ...panelDraft, camera_height: event.target.value })}><option value="eye_level">视线高度</option><option value="ground_level">贴地机位</option><option value="waist_level">腰部机位</option><option value="overhead">顶视机位</option></select></label></div>
           <label><span>动作与表演</span><textarea value={panelDraft.actions.script_action ?? ""} onChange={(event) => setPanelDraft({ ...panelDraft, actions: { ...panelDraft.actions, script_action: event.target.value } })} /></label>
           <label><span>背景</span><textarea value={panelDraft.background} onChange={(event) => setPanelDraft({ ...panelDraft, background: event.target.value })} /></label>
+          <label><span>场景道具（用逗号分隔）</span><input value={panelDraft.props.join("，")} onChange={(event) => setPanelDraft({ ...panelDraft, props: event.target.value.split(/[，,]/).map((item) => item.trim()).filter(Boolean) })} placeholder="例如：爸爸的灵牌、香炉、白菊" /></label>
           <label><span>拟声词（用逗号分隔）</span><input value={panelDraft.sound_effects.map(String).join("，")} onChange={(event) => setPanelDraft({ ...panelDraft, sound_effects: event.target.value.split(/[，,]/).map((item) => item.trim()).filter(Boolean) })} /></label>
-          <fieldset><legend>入镜人物</legend><div className="character-checks">{characters.map((character) => <label key={character.id} className={panelDraft.characters.includes(character.id) ? "active" : ""}><input type="checkbox" checked={panelDraft.characters.includes(character.id)} onChange={() => toggleCharacter(character.id)} />{character.primary_name}</label>)}</div></fieldset>
+          <fieldset><legend>人物状态</legend><p className="presence-help">只有“实际出镜”会要求人物与服装参考；画外音和被提及人物不会阻塞生图。</p><div className="character-presence-grid">{characters.map((character) => { const presence = (panelDraft.character_presence[character.id] || "NONE") as CharacterPresence | "NONE"; return <label key={character.id} className={presence !== "NONE" ? `active presence-${presence.toLowerCase()}` : ""}><strong>{character.primary_name}</strong><select aria-label={`${character.primary_name}人物状态`} value={presence} onChange={(event) => setPresence(character.id, event.target.value as CharacterPresence | "NONE")}><option value="NONE">不在本格</option><option value="VISIBLE">实际出镜</option><option value="OFFSCREEN">画外人物</option><option value="MENTIONED">仅被提及</option></select></label>; })}</div></fieldset>
           {panelDraft.characters.map((characterId) => {
             const character = characters.find((item) => item.id === characterId);
             const options = outfits.filter((item) => item.character_id === characterId);
@@ -194,7 +202,7 @@ export function StoryboardEditor({
           })}
           <div className="panel-flags"><label><input type="checkbox" checked={panelDraft.bleed} onChange={(event) => setPanelDraft({ ...panelDraft, bleed: event.target.checked })} />出血格</label><label><input type="checkbox" checked={panelDraft.borderless} onChange={(event) => setPanelDraft({ ...panelDraft, borderless: event.target.checked })} />无边框</label></div>
           <button className="panel-save" disabled={savePanel.isPending || !panelDraft.actions.script_action?.trim()} onClick={() => savePanel.mutate()}><Save size={13} />保存本格分镜</button>
-        </div> : <div className="panel-readout"><dl><div><dt>景别</dt><dd>{shotTypes.find(([value]) => value === selectedPanel.shot_type)?.[1] ?? selectedPanel.shot_type}</dd></div><div><dt>角度</dt><dd>{cameraAngles.find(([value]) => value === selectedPanel.camera_angle)?.[1] ?? selectedPanel.camera_angle}</dd></div><div><dt>动作</dt><dd>{selectedPanel.actions.script_action || "待补充"}</dd></div><div><dt>背景</dt><dd>{selectedPanel.background || "待补充"}</dd></div></dl><div className="panel-cast">{selectedPanel.characters.map((id) => <span key={id}>{characters.find((item) => item.id === id)?.primary_name ?? "未知角色"}</span>)}</div></div>}
+        </div> : <div className="panel-readout"><dl><div><dt>景别</dt><dd>{shotTypes.find(([value]) => value === selectedPanel.shot_type)?.[1] ?? selectedPanel.shot_type}</dd></div><div><dt>角度</dt><dd>{cameraAngles.find(([value]) => value === selectedPanel.camera_angle)?.[1] ?? selectedPanel.camera_angle}</dd></div><div><dt>动作</dt><dd>{selectedPanel.actions.script_action || "待补充"}</dd></div><div><dt>背景</dt><dd>{selectedPanel.background || "待补充"}</dd></div><div><dt>道具</dt><dd>{selectedPanel.props?.join("、") || "无"}</dd></div></dl><div className="panel-presence-readout">{Object.entries(selectedPanel.character_presence ?? Object.fromEntries(selectedPanel.characters.map((id) => [id, "VISIBLE"]))).map(([id, presence]) => <span className={`presence-${String(presence).toLowerCase()}`} key={id}>{characters.find((item) => item.id === id)?.primary_name ?? "未知角色"} · {presence === "VISIBLE" ? "实际出镜" : presence === "OFFSCREEN" ? "画外" : "提及"}</span>)}</div></div>}
         <section className="dialogue-editor"><header><div><span>LETTERING</span><strong>文字与气泡</strong><small>{selectedPanel.dialogues.length} 个气泡 · 本格文字单独校对</small></div><button type="button" disabled={Boolean(newDialogue)} onClick={() => setNewDialogue({ target_text: "", speaker_character_id: null, text_direction: "vertical", rewrite_forbidden: true })}><MessageSquarePlus size={12} />新增气泡</button></header>
           <div className="dialogue-stack">{selectedPanel.dialogues.map((dialogue, index) => { const draft = dialogueDrafts[dialogue.id] ?? { target_text: dialogue.target_text, speaker_character_id: dialogue.speaker_character_id, text_direction: dialogue.text_direction, rewrite_forbidden: dialogue.rewrite_forbidden }; return <DialogueCard key={dialogue.id} index={index + 1} draft={draft} characters={characters} busy={saveDialogue.isPending || removeDialogue.isPending} onChange={(value) => setDialogueDrafts({ ...dialogueDrafts, [dialogue.id]: value })} onSave={() => saveDialogue.mutate({ dialogue, draft })} onDelete={() => window.confirm("删除这个文字气泡？") && removeDialogue.mutate(dialogue.id)} />; })}
           {newDialogue && <DialogueCard index={selectedPanel.dialogues.length + 1} draft={newDialogue} characters={characters} isNew busy={addDialogue.isPending} onChange={setNewDialogue} onSave={() => addDialogue.mutate()} onCancel={() => setNewDialogue(null)} />}</div>

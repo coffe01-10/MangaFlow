@@ -66,9 +66,17 @@ class DiagnosticCheckRead(BaseModel):
     latency_ms: int | None = None
 
 
+class QueueDiagnosticRead(BaseModel):
+    current_mode: Literal["AUTO", "LOCAL", "REDIS"]
+    actual_executor: Literal["LOCAL", "REDIS", "NONE", "PENDING"]
+    redis_state: Literal["AVAILABLE", "UNAVAILABLE", "NOT_USED", "UNKNOWN"]
+    can_execute_new_jobs: bool
+
+
 class DiagnosticsRead(BaseModel):
     checks: list[DiagnosticCheckRead]
     checked_at: datetime
+    queue: QueueDiagnosticRead
 
 
 class ProjectSummaryRead(BaseModel):

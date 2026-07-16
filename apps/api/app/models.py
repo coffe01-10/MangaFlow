@@ -281,6 +281,8 @@ class Panel(Timestamped, Base):
     camera_angle: Mapped[str] = mapped_column(String(64), default="eye_level")
     camera_height: Mapped[str] = mapped_column(String(64), default="eye_level")
     characters: Mapped[list] = mapped_column(JSON, default=list)
+    character_presence: Mapped[dict] = mapped_column(JSON, default=dict)
+    props: Mapped[list] = mapped_column(JSON, default=list)
     outfits: Mapped[dict] = mapped_column(JSON, default=dict)
     actions: Mapped[dict] = mapped_column(JSON, default=dict)
     expressions: Mapped[dict] = mapped_column(JSON, default=dict)

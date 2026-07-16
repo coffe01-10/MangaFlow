@@ -7,16 +7,22 @@ from app import models  # noqa: F401
 from app.api.router import api_router
 from app.config import get_settings
 from app.database import Base, SessionLocal, engine
+from app.services.job_service import recover_pending_jobs
 from app.services.runtime_settings import apply_runtime_overrides
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI):
+async def lifespan(application: FastAPI):
     settings = get_settings()
     settings.ensure_directories()
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as db:
         apply_runtime_overrides(db, settings)
+        # Tests commonly replace the request-scoped database while the global
+        # SessionLocal still points at a developer database. Never recover that
+        # unrelated database when dependency overrides are active.
+        if not application.dependency_overrides:
+            recover_pending_jobs(db)
     yield
 
 

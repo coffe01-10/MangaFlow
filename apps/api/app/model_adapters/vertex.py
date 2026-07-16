@@ -63,6 +63,13 @@ class VertexTextAdapter(_VertexBase):
                         system_instruction=request.system_instruction,
                         temperature=request.temperature,
                         max_output_tokens=request.metadata.get("max_output_tokens"),
+                        thinking_config=(
+                            types.ThinkingConfig(
+                                thinking_budget=request.metadata["thinking_budget"]
+                            )
+                            if "thinking_budget" in request.metadata
+                            else None
+                        ),
                         response_mime_type="application/json",
                         response_schema=output_schema,
                     ),

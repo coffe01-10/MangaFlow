@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import HTTPException
@@ -17,6 +18,16 @@ RUNTIME_DEFAULTS: dict[str, Any] = {
     "ui_poll_interval_seconds": 3000,
     "workflow_autosave_ms": 800,
 }
+
+
+@dataclass(frozen=True)
+class QueueExecutionState:
+    """The queue mode requested by the user and the executor available now."""
+
+    queue_mode: str
+    actual_executor: str
+    redis_state: str
+    can_execute: bool
 
 
 def _safe_overrides(db: Session) -> tuple[dict[str, Any], int]:
@@ -45,6 +56,75 @@ def read_runtime_settings(db: Session, settings: Settings) -> RuntimeSettingsRea
     )
 
 
+def read_queue_mode(db: Session) -> str:
+    overrides, _ = _safe_overrides(db)
+    return str(overrides.get("queue_mode") or RUNTIME_DEFAULTS["queue_mode"])
+
+
+def queue_execution_state(
+    db: Session,
+    settings: Settings,
+    *,
+    probe_redis: bool = True,
+) -> QueueExecutionState:
+    """Resolve AUTO/LOCAL/REDIS without making LOCAL depend on Redis.
+
+    Redis probing is deliberately short-lived. Callers that only need the configured
+    mode can disable it, while diagnostics and readiness use the live result.
+    """
+
+    queue_mode = read_queue_mode(db)
+    if not settings.queue_enabled:
+        return QueueExecutionState(
+            queue_mode=queue_mode,
+            actual_executor="NONE",
+            redis_state="NOT_USED",
+            can_execute=False,
+        )
+    if queue_mode == "LOCAL":
+        return QueueExecutionState(
+            queue_mode=queue_mode,
+            actual_executor="LOCAL",
+            redis_state="NOT_USED",
+            can_execute=True,
+        )
+    if not probe_redis:
+        return QueueExecutionState(
+            queue_mode=queue_mode,
+            actual_executor="PENDING",
+            redis_state="UNKNOWN",
+            can_execute=queue_mode == "AUTO" and settings.environment == "development",
+        )
+
+    connection = None
+    try:
+        from redis import Redis
+
+        connection = Redis.from_url(
+            settings.redis_url,
+            socket_connect_timeout=0.4,
+            socket_timeout=0.4,
+        )
+        connection.ping()
+        return QueueExecutionState(
+            queue_mode=queue_mode,
+            actual_executor="REDIS",
+            redis_state="AVAILABLE",
+            can_execute=True,
+        )
+    except Exception:
+        use_local = queue_mode == "AUTO" and settings.environment == "development"
+        return QueueExecutionState(
+            queue_mode=queue_mode,
+            actual_executor="LOCAL" if use_local else "NONE",
+            redis_state="UNAVAILABLE",
+            can_execute=use_local,
+        )
+    finally:
+        if connection is not None:
+            connection.close()
+
+
 def apply_runtime_overrides(db: Session, settings: Settings) -> None:
     """Rehydrate the safe dynamic subset in API and worker processes."""
     overrides, _ = _safe_overrides(db)
@@ -54,11 +134,10 @@ def apply_runtime_overrides(db: Session, settings: Settings) -> None:
         settings.job_timeout_seconds = overrides["job_timeout_seconds"]
     if "max_auto_repairs" in overrides:
         settings.max_auto_repairs = overrides["max_auto_repairs"]
-    queue_mode = overrides.get("queue_mode")
-    if queue_mode == "LOCAL":
-        settings.queue_enabled = False
-    elif queue_mode in {"AUTO", "REDIS"}:
-        settings.queue_enabled = True
+    # queue_mode is resolved per enqueue operation. In particular, LOCAL means
+    # "run with the local executor", not "disable the queue". Keep queue_enabled
+    # unchanged as a legacy environment value so rehydration cannot silently turn
+    # a valid local worker into a save-only mode.
 
 
 def update_runtime_settings(
