@@ -799,12 +799,14 @@ a { color: inherit; text-decoration: none; }
 .diagnostic-row strong { font-size: 9px; }
 .diagnostic-row small { color: #817b70; font-size: 7px; line-height: 1.4; }
 .diagnostic-row em { color: #9b9489; font-family: monospace; font-size: 7px; font-style: normal; }
-.storage-card { padding-bottom: 12px; }
-.storage-card dl { margin: 0; padding: 4px 13px; }
-.storage-card dl div { min-height: 40px; display: grid; grid-template-columns: 76px 1fr; align-items: center; border-bottom: 1px dotted var(--line); }
-.storage-card dt { color: #817b70; font-size: 8px; }
-.storage-card dd { margin: 0; overflow: hidden; font-family: monospace; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
-.storage-card > p { margin: 9px 13px 0; color: #817b70; font-size: 7px; line-height: 1.55; }
+.storage-card { padding-bottom: 16px; }
+.storage-card > header { min-height: 56px; padding: 0 16px; }
+.storage-card > header span { font-size: 14px; letter-spacing: .08em; }
+.storage-card dl { margin: 0; padding: 5px 16px; }
+.storage-card dl div { min-height: 48px; display: grid; grid-template-columns: 90px 1fr; align-items: center; border-bottom: 1px dotted var(--line); }
+.storage-card dt { color: #625d55; font-size: 12px; font-weight: 700; }
+.storage-card dd { margin: 0; overflow: hidden; font-family: var(--mono); font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.storage-card > p { margin: 11px 16px 0; color: #625d55; font-size: 13px; line-height: 1.65; }
 
 .project-settings-page { max-width: 1160px; margin: 0 auto; }
 .project-settings-hero { padding: 18px 0 28px; border-bottom: 1px solid var(--ink); }
