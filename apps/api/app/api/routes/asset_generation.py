@@ -8,6 +8,7 @@ from app.database import get_db
 from app.models import (
     Asset,
     AssetCandidate,
+    AssetStatus,
     Chapter,
     Character,
     CharacterReference,
@@ -386,7 +387,12 @@ def assign_scene_outfits(
     if not scene:
         raise HTTPException(status_code=404, detail="场景不存在")
     chapter = db.get(Chapter, scene.chapter_id)
-    for character_id, outfit_id in payload.assignments.items():
+    assignments = {
+        character_id: outfit_id
+        for character_id, outfit_id in payload.assignments.items()
+        if outfit_id.strip()
+    }
+    for character_id, outfit_id in assignments.items():
         character = db.get(Character, character_id)
         outfit = db.get(Outfit, outfit_id)
         if not character or character.project_id != chapter.project_id:
@@ -397,7 +403,7 @@ def assign_scene_outfits(
             or outfit.character_id != character_id
         ):
             raise HTTPException(status_code=409, detail="服装必须属于指定角色")
-    scene.outfit_assignments = payload.assignments
+    scene.outfit_assignments = assignments
     scene.version += 1
     db.commit()
     return {"scene_id": scene.id, "assignments": scene.outfit_assignments}
@@ -650,6 +656,12 @@ def approve_asset_reference(
         )
     )
     if payload.bind_character_reference:
+        db.execute(
+            CharacterReference.__table__.delete().where(
+                CharacterReference.asset_id == asset.id,
+                CharacterReference.character_id != character.id,
+            )
+        )
         if payload.set_canonical:
             db.execute(
                 update(CharacterReference)
@@ -721,3 +733,61 @@ def approve_asset_reference(
         "outfit_id": outfit.id if outfit else None,
         "approved": True,
     }
+
+
+@router.delete("/asset-candidates/{candidate_id}/approve-reference", response_model=dict)
+def retract_asset_reference(candidate_id: str, db: Session = Depends(get_db)) -> dict:
+    candidate = db.get(AssetCandidate, candidate_id)
+    batch = db.get(GenerationBatch, candidate.batch_id) if candidate else None
+    if not candidate or not batch or batch.target_type != "CHARACTER" or not candidate.asset_id:
+        raise HTTPException(status_code=404, detail="角色设定候选不存在")
+    snapshot = dict(candidate.prompt_snapshot)
+    approval = snapshot.get("reference_approval")
+    if not isinstance(approval, dict) or not approval.get("approved"):
+        return {"candidate_id": candidate.id, "approved": False}
+
+    character_id = str(approval.get("character_id") or batch.target_id or "")
+    db.execute(
+        CharacterReference.__table__.delete().where(
+            CharacterReference.character_id == character_id,
+            CharacterReference.asset_id == candidate.asset_id,
+        )
+    )
+    outfit_name = str(approval.get("outfit_name") or "").strip()
+    if outfit_name:
+        outfit = db.scalar(
+            select(Outfit).where(
+                Outfit.character_id == character_id,
+                Outfit.name == outfit_name,
+            )
+        )
+        if outfit and candidate.asset_id in outfit.reference_asset_ids:
+            outfit.reference_asset_ids = [
+                asset_id
+                for asset_id in outfit.reference_asset_ids
+                if asset_id != candidate.asset_id
+            ]
+            outfit.status = (
+                AssetStatus.CANONICAL
+                if outfit.reference_asset_ids
+                else AssetStatus.NEEDS_CONFIRMATION
+            )
+            outfit.version += 1
+    character = db.get(Character, character_id)
+    if character:
+        has_other_reference = db.scalar(
+            select(CharacterReference.id).where(CharacterReference.character_id == character_id)
+        )
+        if not has_other_reference:
+            character.status = AssetStatus.NEEDS_CONFIRMATION
+        character.version += 1
+
+    snapshot["reference_approval"] = {
+        **approval,
+        "approved": False,
+        "retracted": True,
+    }
+    candidate.prompt_snapshot = snapshot
+    candidate.version += 1
+    db.commit()
+    return {"candidate_id": candidate.id, "approved": False}

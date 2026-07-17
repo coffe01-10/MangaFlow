@@ -16,10 +16,11 @@
 .topActions button, .topActions label { min-height: 34px; display: flex; gap: 5px; align-items: center; padding: 0 10px; border: 1px solid #cbc6b9; border-right: 0; background: transparent; cursor: pointer; font-size: 8px; }
 .topActions label input { display: none; }
 .topActions .publish { border-right: 1px solid #171815; border-color: #171815; background: #171815; color: #fff; }
-.legacy { min-height: 49px; display: grid; grid-template-columns: 24px 1fr auto 28px; align-items: center; gap: 10px; padding: 7px 14px; border-bottom: 1px solid #8f6030; background: #3a3023; color: #f4e6cd; }
+.legacy { min-height: 64px; display: grid; grid-template-columns: 24px 1fr auto auto; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid #8f6030; background: #3a3023; color: #f4e6cd; }
 .legacy div { display: grid; gap: 2px; }
-.legacy span { color: #bfb098; font-size: 8px; }
-.legacy button { min-height: 28px; border: 1px solid #806743; background: transparent; color: inherit; cursor: pointer; font-size: 8px; }
+.legacy span { color: #d4c7b1; font-size: 12px; line-height: 1.5; }
+.legacy button { min-height: 40px; padding: 0 12px; border: 1px solid #a58b64; background: transparent; color: inherit; cursor: pointer; font-size: 12px; }
+.legacy .ignoreLegacy { display: inline-flex; align-items: center; gap: 5px; color: #d9c6a8; }
 .notice { position: fixed; z-index: 70; top: 68px; right: 14px; min-height: 34px; display: flex; gap: 12px; align-items: center; padding: 0 11px; border: 1px solid #806743; background: #efe7d6; color: #342a1f; box-shadow: 4px 4px 0 rgba(0,0,0,.18); cursor: pointer; font-size: 8px; }
 .workflowStatus { min-height: 50px; padding: 6px 14px; display: flex; align-items: stretch; gap: 0; border-bottom: 1px solid var(--flow-line); background: #171a18; }
 .workflowStatus > div { min-width: 128px; padding: 0 13px; display: grid; align-content: center; gap: 2px; border-right: 1px solid var(--flow-line); }

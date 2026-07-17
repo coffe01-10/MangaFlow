@@ -25,6 +25,10 @@ def test_empty_database_upgrade_downgrade_and_upgrade(tmp_path, monkeypatch):
     assert {index["name"] for index in schema.get_indexes("generation_batches")} >= {
         "ix_generation_batches_project_created_id",
     }
+    character_reference_indexes = {
+        index["name"]: index for index in schema.get_indexes("character_references")
+    }
+    assert character_reference_indexes["uq_character_reference_asset"]["unique"]
     assert "archived_at" in {
         column["name"] for column in schema.get_columns("generation_jobs")
     }

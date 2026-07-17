@@ -490,7 +490,7 @@ class ScriptRevision(Timestamped, Base):
 
 class CharacterReference(Base):
     __tablename__ = "character_references"
-    __table_args__ = (UniqueConstraint("character_id", "asset_id"),)
+    __table_args__ = (UniqueConstraint("asset_id", name="uq_character_reference_asset"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     character_id: Mapped[str] = mapped_column(

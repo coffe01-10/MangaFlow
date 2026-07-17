@@ -784,6 +784,10 @@ export const api = {
     request<{ candidate_id: string; asset_id: string; character_id: string; outfit_id?: string | null }>(`/asset-candidates/${candidateId}/approve-reference`, {
       method: "POST", body: JSON.stringify(payload),
     }),
+  retractAssetReference: (candidateId: string) =>
+    request<{ candidate_id: string; approved: boolean }>(`/asset-candidates/${candidateId}/approve-reference`, {
+      method: "DELETE",
+    }),
   updatePageLayout: (pageId: string, panelCount: number, layoutMode: "dynamic" | "balanced") =>
     request<Storyboard>(`/pages/${pageId}/layout`, {
       method: "PATCH",
