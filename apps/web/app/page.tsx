@@ -1,7 +1,7 @@
 "use client";
 
 import { AppShell, GlobalNav } from "@/components/shell";
-import { api, type Project, type VertexStatus } from "@/lib/api";
+import { api, type DashboardProject, type Project, type VertexStatus } from "@/lib/api";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowRight,
@@ -44,9 +44,11 @@ function EmptyProjects({ onCreate }: { onCreate: () => void }) {
   );
 }
 
-function ProjectCard({ project, index }: { project: Project; index: number }) {
+function ProjectCard({ item, index }: { item: DashboardProject; index: number }) {
+  const { project } = item;
+  const progress = item.page_count ? Math.round((item.selected_page_count / item.page_count) * 100) : 0;
   return (
-    <Link href={`/projects/${project.id}`} className="project-card">
+    <Link href={`/projects/${project.id}/${item.next_action.section}`} className="project-card">
       <div className={`project-cover cover-${(index % 3) + 1}`}>
         <span className="cover-kicker">MANGA PROJECT</span>
         <span className="cover-number">{String(index + 1).padStart(2, "0")}</span>
@@ -61,8 +63,8 @@ function ProjectCard({ project, index }: { project: Project; index: number }) {
         </div>
         <ArrowRight size={17} />
       </div>
-      <div className="project-progress"><i style={{ width: "2%" }} /></div>
-      <footer><span>尚未导入章节</span><span>刚刚更新</span></footer>
+      <div className="project-progress" aria-label={`制作进度 ${progress}%`}><i style={{ width: `${progress}%` }} /></div>
+      <footer><span>{item.chapter_count} 章 · {item.page_count} 页 · {item.selected_page_count} 已采用</span><span>{item.next_action.label}</span></footer>
     </Link>
   );
 }
@@ -80,7 +82,7 @@ function CreateProjectPanel({ open, onClose }: { open: boolean; onClose: () => v
       default_resolution: resolution as Project["default_resolution"],
     }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["projects"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       setName("");
       setError("");
       onClose();
@@ -96,8 +98,9 @@ function CreateProjectPanel({ open, onClose }: { open: boolean; onClose: () => v
 
   return (
     <>
-      <button className={open ? "drawer-backdrop show" : "drawer-backdrop"} onClick={onClose} aria-label="关闭" />
-      <aside className={open ? "create-drawer open" : "create-drawer"} aria-hidden={!open}>
+      {open && <>
+      <button className="drawer-backdrop show" onClick={onClose} aria-label="关闭" />
+      <aside className="create-drawer open">
         <header>
           <div><span>NEW PROJECT / 01</span><h2>建立漫画项目</h2></div>
           <button className="icon-button" onClick={onClose} aria-label="关闭创建面板"><X size={19} /></button>
@@ -139,6 +142,7 @@ function CreateProjectPanel({ open, onClose }: { open: boolean; onClose: () => v
           </div>
         </form>
       </aside>
+      </>}
     </>
   );
 }
@@ -146,7 +150,7 @@ function CreateProjectPanel({ open, onClose }: { open: boolean; onClose: () => v
 export default function HomePage() {
   const [creating, setCreating] = useState(false);
   const queryClient = useQueryClient();
-  const projects = useQuery({ queryKey: ["projects"], queryFn: api.projects });
+  const dashboard = useQuery({ queryKey: ["dashboard"], queryFn: api.dashboard });
   const vertex = useQuery({ queryKey: ["vertex-status"], queryFn: api.vertexStatus });
   const models = useQuery({ queryKey: ["models"], queryFn: api.models });
   const verify = useMutation({
@@ -154,7 +158,7 @@ export default function HomePage() {
     onSuccess: (result) => queryClient.setQueryData(["vertex-status"], result),
   });
   const modelMap = useMemo(() => new Map(models.data?.map((model) => [model.logical_alias, model])), [models.data]);
-  const projectCount = projects.data?.length ?? 0;
+  const projectCount = dashboard.data?.totals.project_count ?? 0;
 
   return (
     <AppShell>
@@ -178,20 +182,20 @@ export default function HomePage() {
 
           <div className="metric-strip">
             <div><span>活跃项目</span><strong>{String(projectCount).padStart(2, "0")}</strong><small>PROJECTS</small></div>
-            <div><span>漫画页面</span><strong>00</strong><small>尚未生成</small></div>
-            <div><span>待审核</span><strong>00</strong><small>NEEDS REVIEW</small></div>
+            <div><span>漫画页面</span><strong>{String(dashboard.data?.totals.page_count ?? 0).padStart(2, "0")}</strong><small>{dashboard.data?.totals.selected_page_count ?? 0} 页已采用</small></div>
+            <div><span>待复查</span><strong>{String(dashboard.data?.totals.review_page_count ?? 0).padStart(2, "0")}</strong><small>按页面去重</small></div>
             <div className="metric-accent"><Gauge size={17} /><span>平级生图引擎</span><strong>Nano Banana 2 / Pro</strong><small>{modelMap.size >= 3 ? "每次抽卡独立选择" : "读取模型能力…"}</small></div>
           </div>
 
           <section className="projects-section">
             <header><div><span className="section-index">项目 / PROJECTS</span><h2>最近创作</h2></div><span className="count-label">{projectCount} 个项目</span></header>
-            {projects.isLoading ? (
+            {dashboard.isLoading ? (
               <div className="loading-panel"><LoaderCircle className="spin" />正在读取项目…</div>
-            ) : projects.isError ? (
+            ) : dashboard.isError ? (
               <div className="error-panel"><CircleAlert /><div><strong>无法连接 MangaFlow API</strong><p>请确认 FastAPI 已在 8000 端口启动。</p></div></div>
             ) : (
               <div className="project-grid">
-                {projects.data?.map((project, index) => <ProjectCard key={project.id} project={project} index={index} />)}
+                {dashboard.data?.projects.map((item, index) => <ProjectCard key={item.project.id} item={item} index={index} />)}
                 <EmptyProjects onCreate={() => setCreating(true)} />
               </div>
             )}
@@ -218,7 +222,7 @@ export default function HomePage() {
           <section className="side-card flow-card">
             <header><span>生产闭环</span><small>MVP ROUTE</small></header>
             <ol>
-              {["导入原作", "建立资产", "剧本改编", "分页分镜", "生成页面", "检查修复", "连续导出"].map((step, index) => (
+              {["导入原作", "建立资产", "剧本改编", "分页分镜", "生成页面", "人工校对与采用", "连续导出"].map((step, index) => (
                 <li key={step}><span>{String(index + 1).padStart(2, "0")}</span><p>{step}</p><i className={index === 0 ? "ready" : ""} /></li>
               ))}
             </ol>

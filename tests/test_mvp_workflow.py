@@ -586,7 +586,11 @@ def test_batch_candidate_favorite_select_and_next(client, db_session, monkeypatc
     assert batch.status_code == 201
     queued = client.post(
         f"/api/v1/batches/{batch.json()['id']}/candidates",
-        json={"model_alias": "image.nano_banana_2", "resolution": "1K"},
+        json={
+            "model_alias": "image.nano_banana_2",
+            "resolution": "1K",
+            "storyboard_version": first_page["storyboard_version"],
+        },
     )
     assert queued.status_code == 202
     candidate = queued.json()["candidate"]
@@ -639,7 +643,7 @@ def test_batch_candidate_favorite_select_and_next(client, db_session, monkeypatc
 
     selected = client.post(
         f"/api/v1/pages/{first_page['id']}/select-candidate",
-        json={"candidate_id": candidate["id"]},
+        json={"candidate_id": candidate["id"], "manual_text_confirmed": True},
     )
     assert selected.status_code == 200
     assert selected.json()["selected_candidate_id"] == candidate["id"]
@@ -965,7 +969,11 @@ def test_eight_candidate_jobs_are_isolated(client, db_session, monkeypatch):
         alias = "image.nano_banana_2"
         response = client.post(
             f"/api/v1/batches/{batch['id']}/candidates",
-            json={"model_alias": alias, "resolution": "1K"},
+            json={
+                "model_alias": alias,
+                "resolution": "1K",
+                "storyboard_version": plan["pages"][0]["storyboard_version"],
+            },
         )
         assert response.status_code == 202
         job_ids.append(response.json()["job_id"])
@@ -1071,7 +1079,11 @@ def test_inspection_repair_escalation_and_upscale_jobs(client, db_session, monke
     batch = client.post(f"/api/v1/pages/{page['id']}/batches").json()
     candidate_data = client.post(
         f"/api/v1/batches/{batch['id']}/candidates",
-        json={"model_alias": "image.nano_banana_2", "resolution": "1K"},
+        json={
+            "model_alias": "image.nano_banana_2",
+            "resolution": "1K",
+            "storyboard_version": page["storyboard_version"],
+        },
     ).json()["candidate"]
     asset = Asset(
         project_id=project["id"],
@@ -1091,11 +1103,11 @@ def test_inspection_repair_escalation_and_upscale_jobs(client, db_session, monke
     candidate.status = "READY"
     inspection = InspectionResult(
         candidate_id=candidate.id,
-        category="TEXT",
+        category="CHARACTER",
         outcome="MISMATCH",
         score=0.4,
         severity="ERROR",
-        details={"expected": "你来了。", "observed": "你来子。"},
+        details={"expected": "角色面部一致", "observed": "角色特征偏离"},
         regions=[{"x": 0.6, "y": 0.1, "width": 0.2, "height": 0.2}],
     )
     db_session.add(inspection)
@@ -1103,12 +1115,12 @@ def test_inspection_repair_escalation_and_upscale_jobs(client, db_session, monke
 
     checked = client.post(
         f"/api/v1/candidates/{candidate.id}/inspect",
-        json={"categories": ["TEXT", "SPEAKER"]},
+        json={"categories": ["CHARACTER", "SPEAKER"]},
     )
     assert checked.status_code == 202
     assert checked.json()["job_type"] == "PAGE_INSPECT"
 
-    for repair_type in ["TEXT_REGION", "BUBBLE_REGION", "PANEL"]:
+    for repair_type in ["BUBBLE_REGION", "PANEL", "PAGE"]:
         repaired = client.post(
             f"/api/v1/candidates/{candidate.id}/repairs",
             json={

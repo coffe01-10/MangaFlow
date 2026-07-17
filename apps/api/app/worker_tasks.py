@@ -52,6 +52,10 @@ ACTIVE_STATUSES = {
 EXECUTION_RESERVATION_LOCK = Lock()
 
 
+class StaleStoryboardVersionError(RuntimeError):
+    """Stop a queued image call when its storyboard input has already changed."""
+
+
 def _normalize_name(value: str) -> str:
     return "".join(value.split()).casefold()
 
@@ -372,6 +376,10 @@ def _run_page_generate(db, job: GenerationJob) -> None:
     if not candidate:
         raise RuntimeError("候选记录不存在")
     page = db.get(MangaPage, candidate.page_id)
+    if candidate.based_on_storyboard_version != page.storyboard_version:
+        raise StaleStoryboardVersionError(
+            "分镜版本已变化，已在调用模型前取消本次生成；请按当前分镜重新生成"
+        )
     chapter = db.get(Chapter, page.chapter_id)
     project = db.get(Project, chapter.project_id)
     if not page.scene_ids or not page.beat_ids:
@@ -475,6 +483,9 @@ def _run_page_generate(db, job: GenerationJob) -> None:
             reference_mime_types=tuple(reference_types[:14]),
         )
     )
+    # An edit may arrive while the paid request is in flight. Keep the result, but
+    # refresh the page so API consumers immediately expose it as a stale candidate.
+    db.refresh(page, attribute_names=["storyboard_version"])
     asset = _save_generated_asset(db, candidate, response.images[0])
     record = GenerationRecord(
         job_id=job.id,
@@ -488,7 +499,11 @@ def _run_page_generate(db, job: GenerationJob) -> None:
         prompt_template=PAGE_TEMPLATE_VERSION,
         prompt_version=PAGE_TEMPLATE_VERSION,
         prompt_checksum=snapshot["checksum"],
-        input_versions={"page": page.version, "page_revision": page.revision_no},
+        input_versions={
+            "page": page.version,
+            "page_revision": page.revision_no,
+            "storyboard": candidate.based_on_storyboard_version,
+        },
         reference_asset_ids=list(dict.fromkeys(reference_asset_ids)),
         provider_request_id=response.request_id,
         finished_at=utcnow(),
@@ -953,21 +968,20 @@ def _run_inspection(db, job: GenerationJob) -> None:
     _, snapshot = compile_page_prompt(db, page, project)
     categories = job.request_parameters.get(
         "categories",
-        ["TEXT", "SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"],
+        ["SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"],
     )
     prompt = f"""你是漫画成片质检员。对照结构化目标检查这张生成漫画页。
 只检查这些类别：{json.dumps(categories, ensure_ascii=False)}。
 目标剧本、格位、说话人、角色、服装与风格上下文：
 {json.dumps(snapshot["input"], ensure_ascii=False, separators=(",", ":"))}
-TEXT 检查错字、漏字、擅自改写和阅读顺序；SPEAKER 检查气泡归属；
+SPEAKER 检查气泡归属；
 CHARACTER 检查脸、发型、体型和标志特征；OUTFIT 检查场景指定服装；
 PROP 检查关键道具；CONTINUITY 检查与页面结构、场景状态和前后逻辑的一致性。
 每个请求类别至少输出一项，字段为 category、outcome、score、severity、details、regions；
 outcome 只能用 PASS、ACCEPTABLE、MISMATCH、MISSING、EXTRA；
-details 必须写清 expected、observed 和 differences；TEXT 还必须按每个气泡输出
-bubble_diffs（balloon_index、target_text、recognized_text、similarity）。
+details 必须写清 expected、observed 和 differences。
 regions 使用 0 到 1 的归一化 x/y/width/height。"""
-    job.status = JobStatus.OCR_CHECKING
+    job.status = JobStatus.CONSISTENCY_CHECKING
     job.progress = 45
     db.commit()
     output = _adapter("text.fast").analyze_multimodal(
@@ -1056,6 +1070,22 @@ def execute_job(job_id: str) -> None:
             from app.services.workflow_engine import reconcile_run
 
             reconcile_run(db, job.request_parameters["workflow_run_id"])
+    except StaleStoryboardVersionError as error:
+        db.rollback()
+        job = db.get(GenerationJob, job_id)
+        job.status = JobStatus.FAILED
+        job.error_code = "STALE_STORYBOARD_VERSION"
+        job.error_message = str(error)
+        job.finished_at = utcnow()
+        candidate = db.get(PageCandidate, job.target_id)
+        if candidate:
+            candidate.status = "STALE"
+        db.commit()
+        if job.request_parameters.get("workflow_run_id"):
+            from app.services.workflow_engine import reconcile_run
+
+            reconcile_run(db, job.request_parameters["workflow_run_id"])
+        raise
     except VertexAdapterError as error:
         db.rollback()
         job = db.get(GenerationJob, job_id)

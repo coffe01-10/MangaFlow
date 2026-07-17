@@ -1,8 +1,37 @@
 from copy import deepcopy
+from io import BytesIO
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PIL import Image
 
 from app.config import get_settings
-from app.models import Chapter, MangaPage, PageCandidate, WorkflowVersion
-from app.services.workflow_engine import default_graph, validate_graph
+from app.domain.states import JobStatus
+from app.model_adapters.base import ModelResponse
+from app.models import (
+    Beat,
+    Chapter,
+    GenerationJob,
+    JobDependency,
+    MangaPage,
+    PageCandidate,
+    Panel,
+    Scene,
+    ScriptRevision,
+    SourceSegment,
+    WorkflowNodeRun,
+    WorkflowRun,
+    WorkflowVersion,
+    utcnow,
+)
+from app.services.ai_schemas import InspectionItem, PageInspectionOutput
+from app.services.workflow_engine import (
+    default_graph,
+    execute_workflow_node,
+    reconcile_run,
+    validate_graph,
+)
+from app.worker_tasks import _run_inspection, _run_page_generate
 
 
 def _project(client):
@@ -18,6 +47,52 @@ def _workflow(client, project_id: str):
     )
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def _png_bytes() -> bytes:
+    output = BytesIO()
+    Image.new("RGB", (48, 64), (242, 239, 231)).save(output, format="PNG")
+    return output.getvalue()
+
+
+class DeterministicWorkflowAdapter:
+    def generate_page(self, _request):
+        return ModelResponse(
+            model_id="fake-nano-banana-2",
+            request_id="fake-page-request",
+            usage={"input_tokens": 1, "output_images": 1},
+            images=(_png_bytes(),),
+        )
+
+    def analyze_multimodal(self, _request, output_schema):
+        assert output_schema is PageInspectionOutput
+        return PageInspectionOutput(
+            items=[
+                InspectionItem(
+                    category=category,
+                    outcome="PASS",
+                    score=1.0,
+                    severity="INFO",
+                    details={"expected": "deterministic", "observed": "deterministic"},
+                    regions=[],
+                )
+                for category in ["SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"]
+            ]
+        )
+
+
+def _complete_job(db_session, run_id: str, job: GenerationJob, runner) -> None:
+    job.status = JobStatus.PREPARING
+    job.error_code = None
+    job.error_message = None
+    job.started_at = job.started_at or utcnow()
+    job.attempt_count += 1
+    runner(db_session, job)
+    job.status = JobStatus.COMPLETED
+    job.progress = 100
+    job.finished_at = utcnow()
+    db_session.commit()
+    reconcile_run(db_session, run_id)
 
 
 def test_default_graph_is_strict_and_valid():
@@ -208,6 +283,168 @@ def test_generation_gate_requires_explicit_equal_model_choice(client, db_session
         assert "明确选择" in response.json()["detail"]
         assert db_session.query(PageCandidate).count() == 0
     finally:
+        settings.queue_enabled = previous_queue
+
+
+def test_default_dag_deterministic_full_run_to_export(
+    client, db_session, monkeypatch
+):
+    with TemporaryDirectory() as directory:
+        settings = get_settings()
+        previous_queue = settings.queue_enabled
+        monkeypatch.setattr(settings, "queue_enabled", False)
+        monkeypatch.setattr(settings, "storage_root", Path(directory) / "storage")
+        monkeypatch.setattr(settings, "upload_root", Path(directory) / "uploads")
+        adapter = DeterministicWorkflowAdapter()
+        monkeypatch.setattr("app.worker_tasks._adapter", lambda _alias: adapter)
+
+        project = _project(client)
+        workflow = _workflow(client, project["id"])
+        published = client.post(f"/api/v1/workflows/{workflow['id']}/publish")
+        assert published.status_code == 200
+        assert published.json()["revision"] == 1
+        imported = client.post(
+            f"/api/v1/projects/{project['id']}/sources/import",
+            json={"title": "第一章", "text": "雨停了。\n\n她推开门，决定把真相说清楚。"},
+        ).json()["chapters"][0]
+        segment = db_session.query(SourceSegment).filter_by(
+            source_revision_id=imported["current_source_revision_id"]
+        ).first()
+        chapter = db_session.get(Chapter, imported["id"])
+        chapter.status = "PAGES_PLANNED"
+        scene = Scene(
+            chapter_id=chapter.id,
+            ordinal=1,
+            source_range={"segment_ids": [segment.id]},
+        )
+        db_session.add(scene)
+        db_session.flush()
+        beat = Beat(
+            scene_id=scene.id,
+            ordinal=1,
+            action="她推开门。",
+            source_range={"segment_ids": [segment.id]},
+        )
+        db_session.add(beat)
+        db_session.flush()
+        script = ScriptRevision(
+            chapter_id=chapter.id,
+            source_revision_id=chapter.current_source_revision_id,
+            revision_no=1,
+            status="READY",
+            coverage={"complete": True, "segment_ids": [segment.id]},
+        )
+        page = MangaPage(
+            chapter_id=chapter.id,
+            page_number=1,
+            scene_ids=[scene.id],
+            beat_ids=[beat.id],
+            panel_count=3,
+            source_coverage={
+                "complete": True,
+                "ranges": [
+                    {
+                        "segment_id": segment.id,
+                        "start_offset": 0,
+                        "end_offset": len(segment.text),
+                        "text": segment.text,
+                    }
+                ],
+            },
+        )
+        db_session.add_all([script, page])
+        db_session.flush()
+        db_session.add(
+            Panel(
+                page_id=page.id,
+                reading_order=1,
+                bounds={"x": 0.02, "y": 0.02, "width": 0.96, "height": 0.96},
+                actions={"source_text": segment.text},
+            )
+        )
+        db_session.commit()
+
+        started = client.post(
+            f"/api/v1/workflows/{workflow['id']}/runs",
+            json={"scope_type": "PAGE", "scope_id": page.id},
+        )
+        assert started.status_code == 202, started.text
+        run_id = started.json()["id"]
+
+        def node_run(node_id: str) -> WorkflowNodeRun:
+            return db_session.query(WorkflowNodeRun).filter_by(
+                workflow_run_id=run_id, node_id=node_id
+            ).one()
+
+        parse_job = db_session.get(GenerationJob, node_run("parse").job_id)
+        _complete_job(db_session, run_id, parse_job, lambda *_args: None)
+        for node_id in ("adapt", "storyboard"):
+            job = db_session.get(GenerationJob, node_run(node_id).job_id)
+            _complete_job(db_session, run_id, job, execute_workflow_node)
+
+        paused = client.get(f"/api/v1/workflow-runs/{run_id}").json()
+        assert paused["status"] == "PAUSED"
+        assert next(
+            item for item in paused["node_runs"] if item["node_id"] == "generate"
+        )["status"] == "WAITING_APPROVAL"
+
+        approved_generation = client.post(
+            f"/api/v1/workflow-runs/{run_id}/nodes/generate/approve",
+            json={"image_model_alias": "image.nano_banana_2", "resolution": "1K"},
+        )
+        assert approved_generation.status_code == 200, approved_generation.text
+        generate_run = node_run("generate")
+        generate_job = db_session.get(GenerationJob, generate_run.job_id)
+        generate_job.status = JobStatus.FAILED
+        generate_job.error_code = "UPSTREAM"
+        generate_run.status = "FAILED"
+        run_record = db_session.get(WorkflowRun, run_id)
+        run_record.status = "FAILED"
+        db_session.commit()
+        retried = client.post(f"/api/v1/jobs/{generate_job.id}/retry")
+        assert retried.status_code == 200
+        assert db_session.get(WorkflowRun, run_id).status == "RUNNING"
+        assert node_run("generate").status == "RUNNING"
+        _complete_job(db_session, run_id, generate_job, _run_page_generate)
+        candidate_id = node_run("generate").output_refs["candidate_id"]
+        candidate = db_session.get(PageCandidate, candidate_id)
+        assert candidate.status == "READY"
+        assert candidate.based_on_storyboard_version == page.storyboard_version
+
+        adoption_pause = client.get(f"/api/v1/workflow-runs/{run_id}").json()
+        assert adoption_pause["status"] == "PAUSED"
+        selected = client.post(
+            f"/api/v1/pages/{page.id}/select-candidate",
+            json={"candidate_id": candidate_id, "manual_text_confirmed": True},
+        )
+        assert selected.status_code == 200, selected.text
+        adopted = client.post(
+            f"/api/v1/workflow-runs/{run_id}/nodes/adopt/approve",
+            json={"candidate_id": candidate_id},
+        )
+        assert adopted.status_code == 200, adopted.text
+
+        inspection_job = db_session.get(GenerationJob, node_run("inspect").job_id)
+        _complete_job(db_session, run_id, inspection_job, _run_inspection)
+        export_job = db_session.get(GenerationJob, node_run("export").job_id)
+        _complete_job(db_session, run_id, export_job, execute_workflow_node)
+
+        completed = client.get(f"/api/v1/workflow-runs/{run_id}").json()
+        assert completed["status"] == "COMPLETED"
+        assert len(completed["node_runs"]) == len(default_graph()["nodes"])
+        assert {item["status"] for item in completed["node_runs"]} == {"COMPLETED"}
+        assert node_run("export").output_refs["export_id"]
+
+        dependencies = {
+            (item.job_id, item.depends_on_job_id)
+            for item in db_session.query(JobDependency).all()
+        }
+        assert (inspection_job.id, generate_job.id) in dependencies
+        assert (export_job.id, inspection_job.id) in dependencies
+        job_count = db_session.query(GenerationJob).count()
+        reconcile_run(db_session, run_id)
+        reconcile_run(db_session, run_id)
+        assert db_session.query(GenerationJob).count() == job_count
         settings.queue_enabled = previous_queue
 
 

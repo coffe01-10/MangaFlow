@@ -10,7 +10,7 @@ import {
   type StoryboardPanel,
 } from "@/lib/api";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, CircleAlert, MessageSquarePlus, Pencil, RotateCcw, Save, Trash2, X } from "lucide-react";
+import { Check, CircleAlert, Maximize2, MessageSquarePlus, Minimize2, Pencil, RotateCcw, Save, Trash2, X } from "lucide-react";
 import { useState } from "react";
 import type { CSSProperties } from "react";
 
@@ -88,6 +88,18 @@ export function StoryboardEditor({
   const [dialogueDrafts, setDialogueDrafts] = useState<Record<string, DialogueDraft>>({});
   const [newDialogue, setNewDialogue] = useState<DialogueDraft | null>(null);
   const [notice, setNotice] = useState("");
+  const [focusMode, setFocusMode] = useState(false);
+  const [inspectorWidth, setInspectorWidth] = useState(() => {
+    if (typeof window === "undefined") return 390;
+    const stored = Number(window.localStorage.getItem("mangaflow.storyboard-inspector-width"));
+    return stored >= 320 && stored <= 620 ? stored : 390;
+  });
+
+  const persistInspectorWidth = (value: number) => {
+    const next = Math.min(620, Math.max(320, value));
+    setInspectorWidth(next);
+    window.localStorage.setItem("mangaflow.storyboard-inspector-width", String(next));
+  };
 
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ["storyboard", currentPage?.id] });
@@ -98,7 +110,7 @@ export function StoryboardEditor({
     onSuccess: () => {
       setEditingPanel(false);
       setPanelDraft(null);
-      setNotice("本格分镜已保存；本页及后续页已进入待复查状态。");
+      setNotice(`已保存 · 当前 V${currentPage.storyboard_version + 1} · 将使 ${storyboard.data?.candidate_count ?? 0} 个候选过期`);
       refresh();
     },
   });
@@ -106,7 +118,7 @@ export function StoryboardEditor({
     mutationFn: ({ dialogue, draft }: { dialogue: PanelDialogue; draft: DialogueDraft }) => api.updateDialogue(dialogue.id, { panel_version: selectedPanel!.version, ...draft }),
     onSuccess: (_, variables) => {
       setDialogueDrafts((values) => { const next = { ...values }; delete next[variables.dialogue.id]; return next; });
-      setNotice("文字与说话人已保存，容量统计已重新计算。");
+      setNotice(`已保存 · 当前 V${currentPage.storyboard_version + 1} · 将使 ${storyboard.data?.candidate_count ?? 0} 个候选过期`);
       refresh();
     },
   });
@@ -114,14 +126,14 @@ export function StoryboardEditor({
     mutationFn: () => api.createDialogue(selectedPanel!.id, { panel_version: selectedPanel!.version, ...newDialogue! }),
     onSuccess: () => {
       setNewDialogue(null);
-      setNotice("已新增一个文字气泡。");
+      setNotice(`已保存 · 当前 V${currentPage.storyboard_version + 1} · 将使 ${storyboard.data?.candidate_count ?? 0} 个候选过期`);
       refresh();
     },
   });
   const removeDialogue = useMutation({
     mutationFn: (dialogueId: string) => api.deleteDialogue(dialogueId, selectedPanel!.version),
     onSuccess: () => {
-      setNotice("文字气泡已删除。");
+      setNotice(`已保存 · 当前 V${currentPage.storyboard_version + 1} · 将使 ${storyboard.data?.candidate_count ?? 0} 个候选过期`);
       refresh();
     },
   });
@@ -131,7 +143,7 @@ export function StoryboardEditor({
     onSuccess: () => {
       setPanelId("");
       setEditingPanel(false);
-      setNotice("已根据本页剧本内容重排分镜；人物、动作、对白与原文追溯均已重新映射。");
+      setNotice(`已保存 · 当前 V${currentPage.storyboard_version + 1} · 将使 ${storyboard.data?.candidate_count ?? 0} 个候选过期`);
       refresh();
     },
   });
@@ -175,17 +187,22 @@ export function StoryboardEditor({
   }
 
   const error = savePanel.error ?? saveDialogue.error ?? addDialogue.error ?? removeDialogue.error ?? updateLayout.error ?? replanError;
+  const saving = savePanel.isPending || saveDialogue.isPending || addDialogue.isPending || removeDialogue.isPending || updateLayout.isPending || replanPending;
+  const saveStatus = saving ? "保存中" : error ? "保存失败" : "已保存";
   if (!currentPage) return null;
-  return <div className="storyboard-desk">
+  return <div className={focusMode ? "storyboard-desk focus-mode" : "storyboard-desk"}>
+    <div className={`storyboard-save-status ${error ? "failed" : saving ? "saving" : "saved"}`} aria-live="polite"><span>{saveStatus}</span><strong>当前 V{storyboard.data?.page.storyboard_version ?? currentPage.storyboard_version}</strong><button type="button" aria-pressed={focusMode} onClick={() => setFocusMode((value) => !value)}>{focusMode ? <Minimize2 size={14} /> : <Maximize2 size={14} />}{focusMode ? "退出专注" : "画布专注"}</button></div>
+    <label className="storyboard-page-select"><span>当前页面</span><select value={currentPage.id} onChange={(event) => { setPageId(event.target.value); setPanelId(""); setEditingPanel(false); }}>{pages.map((page) => <option key={page.id} value={page.id}>第 {page.page_number} 页 · {page.panel_count} 格</option>)}</select></label>
     <div className="storyboard-page-strip">{pages.map((page) => <button key={page.id} className={page.id === currentPage.id ? "active" : ""} onClick={() => { setPageId(page.id); setPanelId(""); setEditingPanel(false); }}><span>P.{String(page.page_number).padStart(3, "0")}</span><strong>{page.panel_count} 格</strong><small>{page.continuity_status === "NEEDS_REVIEW" ? "待复查" : page.selected_candidate_id ? "已采用" : "已规划"}</small></button>)}</div>
     <div className="storyboard-status"><div><strong>第 {currentPage.page_number} 页 · {currentPage.estimated_text_chars}/180 字 · {currentPage.estimated_bubbles}/8 气泡</strong><span>来自漫画剧本：{currentPage.scene_ids.length} 个场景 · {currentPage.beat_ids.length} 个情节拍；修改不会删除已有候选。</span></div><button disabled={replanPending} onClick={() => onReplan(currentPage.page_number)}><RotateCcw size={12} />从本页重新计算</button></div>
     <div className="storyboard-layout-controls"><div><span>本页格数</span>{[3, 4, 5].map((count) => <button type="button" className={currentPage.panel_count === count ? "active" : ""} disabled={updateLayout.isPending} key={count} onClick={() => updateLayout.mutate({ panelCount: count, layoutMode: currentPage.source_coverage.layout_mode ?? "dynamic" })}>{count} 格</button>)}</div><div><span>版式</span><button type="button" className={(currentPage.source_coverage.layout_mode ?? "dynamic") === "dynamic" ? "active" : ""} disabled={updateLayout.isPending} onClick={() => updateLayout.mutate({ panelCount: currentPage.panel_count, layoutMode: "dynamic" })}>动态错落</button><button type="button" className={currentPage.source_coverage.layout_mode === "balanced" ? "active" : ""} disabled={updateLayout.isPending} onClick={() => updateLayout.mutate({ panelCount: currentPage.panel_count, layoutMode: "balanced" })}>均衡网格</button></div><p>格子数量与版式只重排当前页；内容仍从已确认剧本与原文区间重新映射。</p></div>
     {notice && <p className="edit-notice"><Check size={13} />{notice}</p>}
     {error && <p className="form-error"><CircleAlert size={14} />{error.message}</p>}
-    {storyboard.isLoading ? <div className="storyboard-loading">正在展开格子脚本…</div> : <div className="storyboard-worktable">
+    {storyboard.isLoading ? <div className="storyboard-loading">正在展开格子脚本…</div> : <div className="storyboard-worktable" style={{ "--inspector-width": `${inspectorWidth}px` } as CSSProperties}>
       <div className="panel-contact-sheet">{storyboard.data?.panels.map((panel) => <button key={panel.id} style={{ left: `${(panel.bounds.x ?? 0) * 100}%`, top: `${(panel.bounds.y ?? 0) * 100}%`, width: `${(panel.bounds.width ?? 1) * 100}%`, height: `${(panel.bounds.height ?? 1) * 100}%` } as CSSProperties} className={panel.id === selectedPanel?.id ? "panel-proof active" : "panel-proof"} onClick={() => { setPanelId(panel.id); setEditingPanel(false); setPanelDraft(null); }}>
         <span>格 {String(panel.reading_order).padStart(2, "0")}</span><div className="panel-proof-frame"><i>{shotTypes.find(([value]) => value === panel.shot_type)?.[1] ?? panel.shot_type}</i><strong>{panel.actions.script_action || panel.actions.source_text || "动作待补充"}</strong><small>{panel.background || "背景待补充"}</small></div><em>{panel.dialogues.length} 气泡 · {panel.characters.length} 人物 · {panel.props?.length ?? 0} 道具</em>
       </button>)}</div>
+      {selectedPanel && <div className="panel-inspector-resizer" role="separator" aria-label="调整属性面板宽度" aria-orientation="vertical" tabIndex={0} onKeyDown={(event) => { if (event.key === "ArrowLeft") persistInspectorWidth(inspectorWidth + 16); if (event.key === "ArrowRight") persistInspectorWidth(inspectorWidth - 16); }} onPointerMove={(event) => { if (event.buttons !== 1) return; const worktable = event.currentTarget.parentElement?.getBoundingClientRect(); if (worktable) persistInspectorWidth(worktable.right - event.clientX); }}><span /></div>}
       {selectedPanel && <aside className="panel-inspector">
         <header><div><span>P.{String(currentPage.page_number).padStart(3, "0")} / PANEL {String(selectedPanel.reading_order).padStart(2, "0")}</span><strong>分镜导演台</strong></div>{editingPanel ? <button onClick={() => { setEditingPanel(false); setPanelDraft(null); }}><X size={12} />退出编辑</button> : <button onClick={() => beginPanel(selectedPanel)}><Pencil size={12} />编辑本格</button>}</header>
         {editingPanel && panelDraft ? <div className="panel-edit-form">

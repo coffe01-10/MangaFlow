@@ -18,6 +18,7 @@ from app.models import (
     GenerationBatch,
     GenerationJob,
     InspectionResult,
+    JobDependency,
     MangaPage,
     PageCandidate,
     ScriptRevision,
@@ -166,7 +167,7 @@ NODE_TYPES: tuple[NodeTypeSpec, ...] = (
         "quality.inspect",
         "质量检查",
         "AGENT",
-        "检查文字、说话人、角色、服装与连续性。",
+        "检查说话人归属、角色、服装、道具与连续性；文字由人工校对。",
         (("page", "采用页面", "image", True),),
         (("report", "检查报告", "report", False), ("approved", "通过页面", "image", False)),
         ("model_alias", "timeout_seconds", "max_attempts", "notes"),
@@ -876,7 +877,7 @@ def _create_inspection_job(
         job_type="PAGE_INSPECT",
         model_alias=node.config.model_alias or "text.fast",
         request_parameters={
-            "categories": ["TEXT", "SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"],
+            "categories": ["SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"],
             "workflow_run_id": run.id,
             "workflow_node_run_id": node_run.id,
             "node_id": node.id,
@@ -980,6 +981,7 @@ def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
                 failed = True
                 continue
         if job:
+            _sync_job_dependencies(db, job, _parent_job_ids(db, run, graph, node_id))
             item.status = "RUNNING"
             item.started_at = utcnow()
             enqueue_job(db, job)
@@ -1145,6 +1147,8 @@ def approve_node(
             model_alias=image_model_alias,
             resolution=Resolution(selected_resolution),
             status="QUEUED",
+            based_on_storyboard_version=page.storyboard_version,
+            prompt_snapshot={"storyboard_version": page.storyboard_version},
         )
         db.add(candidate)
         db.flush()
@@ -1158,6 +1162,7 @@ def approve_node(
             model_alias=candidate.model_alias,
             request_parameters={
                 "resolution": candidate.resolution.value,
+                "storyboard_version": page.storyboard_version,
                 "workflow_run_id": run.id,
                 "workflow_node_id": node_id,
             },
@@ -1191,16 +1196,47 @@ def approve_node(
 
 
 def _parent_job_ids(db: Session, run: WorkflowRun, graph: WorkflowGraph, node_id: str) -> list[str]:
-    parent_ids = [edge.source_node for edge in graph.edges if edge.target_node == node_id]
-    return list(
+    """Return the nearest upstream jobs, traversing manual barrier nodes."""
+
+    parent_nodes: dict[str, list[str]] = defaultdict(list)
+    for edge in graph.edges:
+        parent_nodes[edge.target_node].append(edge.source_node)
+    jobs_by_node = {
+        item.node_id: item.job_id
+        for item in db.scalars(
+            select(WorkflowNodeRun).where(WorkflowNodeRun.workflow_run_id == run.id)
+        )
+        if item.job_id
+    }
+    pending = deque(parent_nodes[node_id])
+    visited: set[str] = set()
+    job_ids: list[str] = []
+    while pending:
+        parent_id = pending.popleft()
+        if parent_id in visited:
+            continue
+        visited.add(parent_id)
+        job_id = jobs_by_node.get(parent_id)
+        if job_id:
+            job_ids.append(job_id)
+        else:
+            pending.extend(parent_nodes[parent_id])
+    return list(dict.fromkeys(job_ids))
+
+
+def _sync_job_dependencies(
+    db: Session, job: GenerationJob, dependency_ids: list[str]
+) -> None:
+    existing = set(
         db.scalars(
-            select(WorkflowNodeRun.job_id).where(
-                WorkflowNodeRun.workflow_run_id == run.id,
-                WorkflowNodeRun.node_id.in_(parent_ids),
-                WorkflowNodeRun.job_id.is_not(None),
-            )
+            select(JobDependency.depends_on_job_id).where(JobDependency.job_id == job.id)
         )
     )
+    for dependency_id in dependency_ids:
+        if dependency_id != job.id and dependency_id not in existing:
+            db.add(JobDependency(job_id=job.id, depends_on_job_id=dependency_id))
+            existing.add(dependency_id)
+    db.flush()
 
 
 def cancel_run(db: Session, run: WorkflowRun) -> WorkflowRun:

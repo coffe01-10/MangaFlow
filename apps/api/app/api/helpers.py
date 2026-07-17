@@ -1,7 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Asset, AssetCandidate, CharacterReference, PageCandidate
+from app.models import Asset, AssetCandidate, CharacterReference, MangaPage, PageCandidate
 from app.schemas import AssetRead, CharacterReferenceRead, PageCandidateRead
 
 
@@ -15,11 +15,38 @@ def asset_read(asset: Asset) -> AssetRead:
     )
 
 
-def candidate_read(candidate: PageCandidate) -> PageCandidateRead:
+def candidate_version_state(
+    candidate: PageCandidate, page: MangaPage | None
+) -> tuple[str, list[str]]:
+    if candidate.based_on_storyboard_version is None:
+        if (
+            page is not None
+            and candidate.is_selected
+            and page.selected_candidate_ack_version == page.storyboard_version
+        ):
+            return "STALE_ACCEPTED", ["GENERATION_VERSION_UNKNOWN"]
+        return "LEGACY_UNKNOWN", ["GENERATION_VERSION_UNKNOWN"]
+    if page is None or candidate.based_on_storyboard_version == page.storyboard_version:
+        return "CURRENT", []
+    if (
+        candidate.is_selected
+        and page.selected_candidate_ack_version == page.storyboard_version
+    ):
+        return "STALE_ACCEPTED", ["STORYBOARD_CHANGED"]
+    return "STALE", ["STORYBOARD_CHANGED"]
+
+
+def candidate_read(
+    candidate: PageCandidate,
+    page: MangaPage | None = None,
+) -> PageCandidateRead:
     value = PageCandidateRead.model_validate(candidate)
+    version_state, staleness_reasons = candidate_version_state(candidate, page)
     return value.model_copy(
         update={
             "prompt_snapshot": candidate.prompt_snapshot,
+            "version_state": version_state,
+            "staleness_reasons": staleness_reasons,
             "content_url": (
                 f"/api/v1/assets/{candidate.asset_id}/content" if candidate.asset_id else None
             ),

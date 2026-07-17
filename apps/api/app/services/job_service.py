@@ -7,7 +7,13 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.domain.states import JobStatus
-from app.models import GenerationJob, JobDependency, utcnow
+from app.models import (
+    GenerationJob,
+    JobDependency,
+    WorkflowNodeRun,
+    WorkflowRun,
+    utcnow,
+)
 from app.services.runtime_settings import apply_runtime_overrides, read_queue_mode
 
 LOCAL_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="mangaflow-local")
@@ -242,5 +248,20 @@ def reset_for_retry(db: Session, job: GenerationJob) -> GenerationJob:
     job.error_message = None
     job.progress = 0
     job.scheduled_at = utcnow() + timedelta(seconds=1)
+    workflow_run_id = job.request_parameters.get("workflow_run_id")
+    if workflow_run_id:
+        run = db.get(WorkflowRun, workflow_run_id)
+        node_run = db.scalar(
+            select(WorkflowNodeRun).where(WorkflowNodeRun.job_id == job.id)
+        )
+        if run and run.status == "FAILED":
+            run.status = "RUNNING"
+            run.finished_at = None
+            run.version += 1
+        if node_run and node_run.status == "FAILED":
+            node_run.status = "RUNNING"
+            node_run.error_code = None
+            node_run.error_message = None
+            node_run.finished_at = None
     db.commit()
     return enqueue_job(db, job)

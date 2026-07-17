@@ -5,6 +5,11 @@ from sqlalchemy.orm import Session
 from app.models import Chapter, Character, Dialogue, MangaPage, Panel
 
 
+def mark_storyboard_changed(page: MangaPage) -> None:
+    page.storyboard_version += 1
+    page.selected_candidate_ack_version = None
+
+
 def _normalize_name(value: str) -> str:
     return "".join(value.split()).casefold()
 

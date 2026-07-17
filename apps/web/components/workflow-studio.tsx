@@ -17,6 +17,7 @@ import {
   type Node,
   type NodeChange,
   type NodeProps,
+  type ReactFlowInstance,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -186,6 +187,7 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
   const [drawResolution, setDrawResolution] = useState<Resolution>("1K");
   const [legacyGraph, setLegacyGraph] = useState<WorkflowGraph | null>(null);
   const [notice, setNotice] = useState("");
+  const [saveStatus, setSaveStatus] = useState<"已保存" | "待保存" | "保存中" | "保存失败">("已保存");
   const initializedId = useRef<string | null>(null);
   const workflowRef = useRef<WorkflowDefinition | null>(null);
   const nodesRef = useRef(nodes);
@@ -195,6 +197,7 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
   const dirty = useRef(false);
   const dragging = useRef(false);
   const creating = useRef(false);
+  const flowInstance = useRef<ReactFlowInstance<StudioNode, StudioEdge> | null>(null);
 
   const project = useQuery({ queryKey: ["project", projectId], queryFn: () => api.project(projectId), staleTime: 60_000 });
   const workflows = useQuery({ queryKey: ["workflows", projectId], queryFn: () => api.workflows(projectId), staleTime: 20_000 });
@@ -237,6 +240,7 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
     setFuture([]);
     setValidation([]);
     setSelectedId(null);
+    setSaveStatus("已保存");
   }, [activeWorkflow]);
 
   useEffect(() => {
@@ -266,13 +270,16 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
     const workflow = workflowRef.current;
     if (!workflow || saving.current || !dirty.current) return;
     saving.current = true;
+    setSaveStatus("保存中");
     try {
       const updated = await api.updateWorkflow(workflow.id, workflow.version, { draft_graph: buildGraph() });
       workflowRef.current = updated;
       dirty.current = false;
+      setSaveStatus("已保存");
       queryClient.setQueryData<WorkflowDefinition[]>(["workflows", projectId], (items = []) => items.map((item) => item.id === updated.id ? updated : item));
       setNotice("草稿已保存");
     } catch (error) {
+      setSaveStatus("保存失败");
       setNotice(error instanceof Error ? error.message : "保存失败");
     } finally {
       saving.current = false;
@@ -281,6 +288,7 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
 
   const scheduleSave = useCallback(() => {
     dirty.current = true;
+    setSaveStatus("待保存");
     if (dragging.current) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => { void saveNow(); }, 800);
@@ -490,11 +498,25 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
     return [...groups.entries()];
   }, [catalog.data]);
   const displayedRun = currentRun ?? runs.data?.[0] ?? null;
+  const selectedNodeRun = displayedRun?.node_runs.find((item) => item.node_id === selectedId) ?? null;
   const renderedNodes = useMemo(() => {
     if (!displayedRun) return nodes;
     const statuses = new Map(displayedRun.node_runs.map((item) => [item.node_id, item.status]));
     return nodes.map((node) => ({ ...node, data: { ...node.data, runStatus: statuses.get(node.id) } }));
   }, [displayedRun, nodes]);
+
+  useEffect(() => {
+    const targetRun = displayedRun?.node_runs.find((item) => item.status === "RUNNING")
+      ?? displayedRun?.node_runs.find((item) => !["COMPLETED", "SKIPPED"].includes(item.status));
+    const target = nodesRef.current.find((node) => node.id === targetRun?.node_id)
+      ?? nodesRef.current[0];
+    if (target && flowInstance.current) {
+      void flowInstance.current.setCenter(target.position.x + 112, target.position.y + 60, {
+        zoom: 0.75,
+        duration: 350,
+      });
+    }
+  }, [activeWorkflow?.id, displayedRun]);
 
   if (project.isLoading || workflows.isLoading || !activeWorkflow) {
     return <div className={styles.loading}><LoaderCircle className={styles.spin} />正在载入项目工作流…</div>;
@@ -516,6 +538,7 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
 
       {legacyGraph ? <section className={styles.legacy}><History size={17} /><div><strong>检测到旧版浏览器草稿</strong><span>导入服务端后将停止写入 localStorage，原数据不会自动覆盖。</span></div><button onClick={importLegacy}>导入旧版</button><button aria-label="暂不导入" onClick={() => setLegacyGraph(null)}><X size={14} /></button></section> : null}
       {notice ? <button className={styles.notice} onClick={() => setNotice("")}>{notice}<X size={12} /></button> : null}
+      <section className={styles.workflowStatus} aria-live="polite"><div><span>草稿版本</span><strong>V{activeWorkflow.draft_version}</strong></div><div><span>已发布版本</span><strong>{versions.data?.[0] ? `V${versions.data[0].revision}` : "尚未发布"}</strong></div><div><span>保存状态</span><strong>{saveStatus}</strong></div><div><span>校验问题</span><strong>{validation.length} 项</strong></div><button onClick={() => startRun.mutate("FULL")} disabled={startRun.isPending}><Play size={14} />运行已发布流程</button></section>
 
       <section className={`${styles.body} ${libraryOpen ? "" : styles.libraryClosed} ${inspectorOpen ? "" : styles.inspectorClosed}`}>
         <aside className={styles.library}>
@@ -528,6 +551,7 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
             {!libraryOpen ? <button onClick={() => setLibraryOpen(true)}><Plus size={14} />节点库</button> : null}
             <button disabled={!past.length} onClick={undo}><Undo2 size={14} />撤销</button><button disabled={!future.length} onClick={redo}><Redo2 size={14} />重做</button>
             <button onClick={autoLayout}><LayoutGrid size={14} />自动布局</button><button disabled={!selected} onClick={duplicateSelected}><Copy size={14} />复制</button><button disabled={!selected} onClick={deleteSelected}><Trash2 size={14} />删除</button>
+            <button onClick={() => void flowInstance.current?.fitView({ padding: 0.15, duration: 300 })}><LayoutGrid size={14} />查看全图</button>
             {!inspectorOpen ? <button onClick={() => setInspectorOpen(true)}><BoxSelect size={14} />属性</button> : null}
           </div>
           <ReactFlow<StudioNode, StudioEdge>
@@ -544,7 +568,8 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
             selectionOnDrag
             multiSelectionKeyCode={["Meta", "Control"]}
             deleteKeyCode={["Backspace", "Delete"]}
-            fitView
+            defaultViewport={{ x: 80, y: 70, zoom: 0.75 }}
+            onInit={(instance) => { flowInstance.current = instance; }}
             minZoom={0.2}
             maxZoom={1.6}
             onlyRenderVisibleElements={nodes.length > 200}
@@ -568,7 +593,8 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
             <label>提示词<textarea value={selected.data.graphNode.config.prompt_template} onChange={(event) => updateSelected({}, { prompt_template: event.target.value })} placeholder="留空时使用内置业务提示词" /></label>
             {selected.data.graphNode.type === "control.condition" ? <><label>JSON 路径<input value={String(selected.data.graphNode.config.condition.path ?? "$")} onChange={(event) => updateSelected({}, { condition: { ...selected.data.graphNode.config.condition, path: event.target.value } })} /></label><label>比较符<select value={String(selected.data.graphNode.config.condition.operator ?? "exists")} onChange={(event) => updateSelected({}, { condition: { ...selected.data.graphNode.config.condition, operator: event.target.value } })}><option value="exists">存在</option><option value="eq">等于</option><option value="ne">不等于</option><option value="contains">包含</option><option value="gt">大于</option><option value="gte">大于等于</option><option value="lt">小于</option><option value="lte">小于等于</option></select></label></> : null}
             <label>备注<textarea value={selected.data.graphNode.config.notes} onChange={(event) => updateSelected({}, { notes: event.target.value })} /></label>
-          </div> : <div className={styles.noSelection}><GitBranch size={28} /><strong>未选择节点</strong><span>单击画布节点查看配置、端口和运行状态。</span></div>}
+            {selectedNodeRun ? <section className={styles.nodeRuntime}><strong>{statusLabel[selectedNodeRun.status] ?? selectedNodeRun.status}</strong><span>{selectedNodeRun.started_at && selectedNodeRun.finished_at ? `耗时 ${((new Date(selectedNodeRun.finished_at).getTime() - new Date(selectedNodeRun.started_at).getTime()) / 1000).toFixed(1)} 秒` : "尚未产生完整耗时"}</span><pre>{JSON.stringify(selectedNodeRun.output_refs, null, 2)}</pre>{selectedNodeRun.error_message ? <em>{selectedNodeRun.error_code} · {selectedNodeRun.error_message}</em> : null}</section> : null}
+          </div> : <div className={styles.noSelection}><GitBranch size={28} /><strong>从这里开始</strong><ol><li>选择节点查看配置</li><li>拖动端口建立连线</li><li>校验草稿并修复问题</li><li>发布不可变版本</li><li>选择范围后运行</li></ol></div>}
           <section className={styles.versionList}><header><span>发布版本</span><strong>{versions.data?.length ?? 0}</strong></header>{versions.data?.slice(0, 4).map((version) => <button key={version.id} onClick={async () => { const restored = await api.restoreWorkflowVersion(version.id, workflowRef.current!.version); workflowRef.current = restored; initializedId.current = null; await workflows.refetch(); }}><RotateCcw size={12} />V{version.revision}<small>{new Date(version.published_at).toLocaleString("zh-CN")}</small></button>)}</section>
         </aside>
       </section>

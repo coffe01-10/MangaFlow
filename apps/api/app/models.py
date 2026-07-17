@@ -72,7 +72,8 @@ class Project(Timestamped, Base):
         Enum(WorkflowMode), default=WorkflowMode.SEMI_AUTO
     )
     default_concurrency: Mapped[int] = mapped_column(Integer, default=4)
-    ocr_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Legacy storage only. OCR is no longer exposed or used by the production flow.
+    ocr_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     consistency_check_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     default_style_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     text_model_alias: Mapped[str] = mapped_column(String(64), default="text.fast")
@@ -262,6 +263,8 @@ class MangaPage(Timestamped, Base):
     estimated_bubbles: Mapped[int] = mapped_column(Integer, default=0)
     source_coverage: Mapped[dict] = mapped_column(JSON, default=dict)
     selected_candidate_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    storyboard_version: Mapped[int] = mapped_column(Integer, default=1)
+    selected_candidate_ack_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     continuity_status: Mapped[str] = mapped_column(String(32), default="NOT_CHECKED")
 
     panels: Mapped[list["Panel"]] = relationship(cascade="all, delete-orphan")
@@ -551,6 +554,7 @@ class PageCandidate(Timestamped, Base):
     generation_record_id: Mapped[str | None] = mapped_column(
         ForeignKey("generation_records.id", ondelete="SET NULL"), nullable=True
     )
+    based_on_storyboard_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     is_favorite: Mapped[bool] = mapped_column(Boolean, default=False)
     is_selected: Mapped[bool] = mapped_column(Boolean, default=False)
     prompt_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)

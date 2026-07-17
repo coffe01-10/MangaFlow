@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import and_, exists, func, or_, select, update
 from sqlalchemy.orm import Session
 
-from app.api.helpers import asset_candidate_read, candidate_read
+from app.api.helpers import asset_candidate_read, candidate_read, candidate_version_state
 from app.config import get_settings
 from app.database import get_db
 from app.domain.states import CharacterPresence, PageStatus, Resolution, ensure_unlocked
@@ -39,10 +39,13 @@ from app.schemas import (
     DialogueUpdate,
     FavoriteUpdate,
     GenerationBatchRead,
+    GenerationWorkbenchRead,
     InspectionRead,
     InspectionRequest,
     JobArchiveResult,
+    JobBulkArchiveRequest,
     JobRead,
+    KeepSelectedCandidateRequest,
     LibraryBatchRead,
     LibraryRead,
     PageCandidateRead,
@@ -59,6 +62,7 @@ from app.schemas import (
 from app.services.content_workflow import update_page_layout
 from app.services.editor import (
     mark_pages_for_review,
+    mark_storyboard_changed,
     project_id_for_page,
     refresh_page_text_metrics,
     validate_character_ids,
@@ -76,6 +80,26 @@ router = APIRouter()
 
 TERMINAL_JOB_STATUSES = {"COMPLETED", "FAILED", "CANCELLED"}
 DELETABLE_JOB_STATUSES = {"FAILED", "CANCELLED"}
+
+
+def _job_reads(db: Session, jobs: list[GenerationJob]) -> list[JobRead]:
+    job_ids = [job.id for job in jobs]
+    records = (
+        list(
+            db.scalars(
+                select(GenerationRecord).where(GenerationRecord.job_id.in_(job_ids))
+            )
+        )
+        if job_ids
+        else []
+    )
+    usage_by_job = {record.job_id: record.usage for record in records}
+    return [
+        JobRead.model_validate(job).model_copy(
+            update={"usage_summary": usage_by_job.get(job.id, {}), "estimated_cost": None}
+        )
+        for job in jobs
+    ]
 
 
 def _page(db: Session, page_id: str) -> MangaPage:
@@ -154,6 +178,57 @@ def get_page_readiness(
     return build_page_readiness(db, _page(db, page_id), get_settings())
 
 
+@router.get("/pages/{page_id}/generation-workbench", response_model=GenerationWorkbenchRead)
+def get_generation_workbench(
+    page_id: str,
+    db: Session = Depends(get_db),
+) -> GenerationWorkbenchRead:
+    page = _page(db, page_id)
+    panels = list(
+        db.scalars(select(Panel).where(Panel.page_id == page.id).order_by(Panel.reading_order))
+    )
+    batch = db.scalar(
+        select(GenerationBatch)
+        .where(GenerationBatch.page_id == page.id)
+        .order_by(
+            (GenerationBatch.status == "OPEN").desc(),
+            GenerationBatch.ordinal.desc(),
+        )
+        .limit(1)
+    )
+    candidates = (
+        list(
+            db.scalars(
+                select(PageCandidate)
+                .where(
+                    PageCandidate.batch_id == batch.id,
+                    PageCandidate.deleted_at.is_(None),
+                )
+                .order_by(PageCandidate.ordinal.desc())
+            )
+        )
+        if batch
+        else []
+    )
+    selected = (
+        db.get(PageCandidate, page.selected_candidate_id) if page.selected_candidate_id else None
+    )
+    selected_read = candidate_read(selected, page) if selected else None
+    return GenerationWorkbenchRead(
+        page=PageRead.model_validate(page),
+        storyboard=StoryboardRead(
+            page=PageRead.model_validate(page),
+            panels=[_panel_read(db, panel) for panel in panels],
+            candidate_count=_page_candidate_count(db, page.id),
+        ),
+        readiness=build_page_readiness(db, page, get_settings()),
+        current_batch=GenerationBatchRead.model_validate(batch) if batch else None,
+        candidates=[candidate_read(item, page) for item in candidates],
+        selected_candidate=selected_read,
+        selected_candidate_state=selected_read.version_state if selected_read else "NONE",
+    )
+
+
 def _panel_read(db: Session, panel: Panel) -> PanelRead:
     panel.dialogues = list(
         db.scalars(
@@ -169,6 +244,18 @@ def _panel_context(db: Session, panel_id: str) -> tuple[Panel, MangaPage, str]:
         raise HTTPException(status_code=404, detail="分镜格不存在")
     page = _page(db, panel.page_id)
     return panel, page, project_id_for_page(db, page)
+
+
+def _page_candidate_count(db: Session, page_id: str) -> int:
+    return (
+        db.scalar(
+            select(func.count(PageCandidate.id)).where(
+                PageCandidate.page_id == page_id,
+                PageCandidate.deleted_at.is_(None),
+            )
+        )
+        or 0
+    )
 
 
 def _validate_dialogue_speaker(
@@ -190,6 +277,7 @@ def get_storyboard(page_id: str, db: Session = Depends(get_db)) -> StoryboardRea
     return StoryboardRead(
         page=PageRead.model_validate(page),
         panels=[_panel_read(db, panel) for panel in panels],
+        candidate_count=_page_candidate_count(db, page.id),
     )
 
 
@@ -211,6 +299,7 @@ def patch_page_layout(
     return StoryboardRead(
         page=PageRead.model_validate(page),
         panels=[_panel_read(db, panel) for panel in panels],
+        candidate_count=_page_candidate_count(db, page.id),
     )
 
 
@@ -296,6 +385,7 @@ def update_panel(
     for key, value in values.items():
         setattr(panel, key, value.strip() if isinstance(value, str) else value)
     panel.version += 1
+    mark_storyboard_changed(page)
     mark_pages_for_review(db, page.chapter_id, from_page_number=page.page_number)
     db.commit()
     db.refresh(panel)
@@ -336,6 +426,7 @@ def create_dialogue(
     db.flush()
     refresh_page_text_metrics(db, page)
     panel.version += 1
+    mark_storyboard_changed(page)
     mark_pages_for_review(db, page.chapter_id, from_page_number=page.page_number)
     db.commit()
     db.refresh(dialogue)
@@ -366,6 +457,7 @@ def update_dialogue(
     db.flush()
     refresh_page_text_metrics(db, page)
     panel.version += 1
+    mark_storyboard_changed(page)
     mark_pages_for_review(db, page.chapter_id, from_page_number=page.page_number)
     db.commit()
     db.refresh(dialogue)
@@ -388,6 +480,7 @@ def delete_dialogue(
     db.flush()
     refresh_page_text_metrics(db, page)
     panel.version += 1
+    mark_storyboard_changed(page)
     mark_pages_for_review(db, page.chapter_id, from_page_number=page.page_number)
     db.commit()
 
@@ -436,6 +529,16 @@ def create_candidate(
             detail="本轮正式页面只允许使用 Nano Banana 2 与 1K 清晰度",
         )
     page = _page(db, batch.page_id)
+    if payload.storyboard_version != page.storyboard_version:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "STALE_STORYBOARD_VERSION",
+                "message": "分镜已更新，请刷新页面后重新确认参考图",
+                "expected": payload.storyboard_version,
+                "current": page.storyboard_version,
+            },
+        )
     ensure_page_ready(db, page, get_settings())
     project = _project_for_page(db, page)
     panels = list(db.scalars(select(Panel).where(Panel.page_id == page.id)))
@@ -502,7 +605,11 @@ def create_candidate(
         model_alias=payload.model_alias,
         resolution=payload.resolution,
         status="QUEUED",
-        prompt_snapshot={"reference_selections": normalized_selections},
+        based_on_storyboard_version=page.storyboard_version,
+        prompt_snapshot={
+            "reference_selections": normalized_selections,
+            "storyboard_version": page.storyboard_version,
+        },
     )
     db.add(candidate)
     project.last_image_model_alias = payload.model_alias
@@ -518,6 +625,7 @@ def create_candidate(
         model_alias=payload.model_alias,
         request_parameters={
             "resolution": payload.resolution.value,
+            "storyboard_version": page.storyboard_version,
             "reference_selections": normalized_selections,
         },
         idempotency_key=f"candidate:{candidate.id}",
@@ -529,7 +637,7 @@ def create_candidate(
     return CandidateQueuedRead(
         job_id=job.id,
         job_status=job.status,
-        candidate=candidate_read(candidate),
+        candidate=candidate_read(candidate, page),
     )
 
 
@@ -560,7 +668,8 @@ def list_candidates(batch_id: str, db: Session = Depends(get_db)) -> list[PageCa
             .order_by(PageCandidate.ordinal.desc())
         )
     )
-    return [candidate_read(item) for item in candidates]
+    page = db.get(MangaPage, batch.page_id) if batch.page_id else None
+    return [candidate_read(item, page) for item in candidates]
 
 
 @router.patch("/candidates/{candidate_id}/favorite", response_model=PageCandidateRead)
@@ -604,7 +713,7 @@ def select_candidate(
         or candidate.page_id != page.id
         or candidate.deleted_at is not None
         or not candidate.asset_id
-        or candidate.status not in {"INSPECTED", "NEEDS_REVIEW"}
+        or candidate.status not in {"READY", "INSPECTED", "NEEDS_REVIEW"}
     ):
         raise HTTPException(status_code=409, detail="该候选尚不能采用")
     inspections = list(
@@ -618,10 +727,7 @@ def select_candidate(
     for inspection in inspections:
         latest_by_category.setdefault(inspection.category.upper(), inspection)
     blockers: list[dict] = []
-    text_inspection = latest_by_category.get("OCR") or latest_by_category.get("TEXT")
-    if payload.manual_text_confirmed:
-        pass
-    elif not text_inspection or text_inspection.score is None:
+    if not payload.manual_text_confirmed:
         blockers.append(
             {
                 "code": "TEXT_REVIEW_REQUIRED",
@@ -629,27 +735,22 @@ def select_candidate(
                 "recommended_action": "MANUAL_TEXT_REVIEW",
             }
         )
-    elif text_inspection.score < 0.95:
+    version_state, reasons = candidate_version_state(candidate, page)
+    if version_state != "CURRENT" and not payload.accept_stale:
         blockers.append(
             {
-                "code": "TEXT_REVIEW_REQUIRED",
-                "message": f"文字辅助检查相似度 {text_inspection.score:.1%}，请人工校对后确认采用",
-                "score": text_inspection.score,
-                "threshold": 0.95,
-                "inspection_result_id": text_inspection.id,
-                "recommended_action": "MANUAL_TEXT_REVIEW",
+                "code": "STALE_CANDIDATE_CONFIRMATION_REQUIRED",
+                "message": "该候选不是基于当前分镜生成，请明确选择继续使用旧候选",
+                "version_state": version_state,
+                "reasons": reasons,
+                "recommended_action": "KEEP_STALE_CANDIDATE",
             }
         )
     for category in ("CHARACTER", "OUTFIT", "CONTINUITY"):
         inspection = latest_by_category.get(category)
         if not inspection:
-            blockers.append(
-                {
-                    "code": f"{category}_CHECK_MISSING",
-                    "message": f"缺少 {category} 检查结果",
-                    "recommended_action": "RUN_INSPECTION",
-                }
-            )
+            # The default DAG performs visual QA after the human adoption gate.
+            # Missing automatic checks therefore cannot block the first adoption.
             continue
         outcome = inspection.outcome.upper()
         severity = inspection.severity.upper()
@@ -682,6 +783,7 @@ def select_candidate(
     candidate.version += 1
     changed = page.selected_candidate_id and page.selected_candidate_id != candidate.id
     page.selected_candidate_id = candidate.id
+    page.selected_candidate_ack_version = page.storyboard_version
     page.status = PageStatus.APPROVED
     page.version += 1
     if changed:
@@ -694,6 +796,32 @@ def select_candidate(
             )
             .values(continuity_status="NEEDS_RECHECK")
         )
+    db.commit()
+    db.refresh(page)
+    return page
+
+
+@router.post("/pages/{page_id}/selected-candidate/keep", response_model=PageRead)
+def keep_selected_candidate(
+    page_id: str,
+    payload: KeepSelectedCandidateRequest,
+    db: Session = Depends(get_db),
+) -> MangaPage:
+    page = _page(db, page_id)
+    if page.storyboard_version != payload.storyboard_version:
+        raise HTTPException(status_code=409, detail="分镜已再次更新，请刷新后重试")
+    candidate = db.get(PageCandidate, payload.candidate_id)
+    if (
+        not candidate
+        or candidate.page_id != page.id
+        or page.selected_candidate_id != candidate.id
+        or not candidate.is_selected
+    ):
+        raise HTTPException(status_code=409, detail="只能继续使用当前已采用的候选")
+    if not payload.manual_text_confirmed:
+        raise HTTPException(status_code=409, detail="请先人工校对页面文字")
+    page.selected_candidate_ack_version = page.storyboard_version
+    page.version += 1
     db.commit()
     db.refresh(page)
     return page
@@ -896,8 +1024,8 @@ def list_jobs(
     project_id: str,
     archived: bool = Query(default=False),
     db: Session = Depends(get_db),
-) -> list[GenerationJob]:
-    return list(
+) -> list[JobRead]:
+    jobs = list(
         db.scalars(
             select(GenerationJob)
             .where(
@@ -910,6 +1038,7 @@ def list_jobs(
             .limit(100)
         )
     )
+    return _job_reads(db, jobs)
 
 
 @router.get("/jobs/{job_id}", response_model=JobRead)
@@ -986,6 +1115,40 @@ def archive_completed_jobs(project_id: str, db: Session = Depends(get_db)) -> Jo
         job.version += 1
     db.commit()
     return JobArchiveResult(archived_count=len(jobs))
+
+
+@router.post(
+    "/projects/{project_id}/jobs/bulk-archive",
+    response_model=JobArchiveResult,
+)
+def bulk_archive_jobs(
+    project_id: str,
+    payload: JobBulkArchiveRequest,
+    db: Session = Depends(get_db),
+) -> JobArchiveResult:
+    jobs = list(
+        db.scalars(
+            select(GenerationJob).where(
+                GenerationJob.id.in_(payload.job_ids),
+                GenerationJob.project_id == project_id,
+            )
+        )
+    )
+    if len(jobs) != len(set(payload.job_ids)):
+        raise HTTPException(status_code=404, detail="部分任务不存在或不属于当前项目")
+    non_terminal = [job.id for job in jobs if job.status.value not in TERMINAL_JOB_STATUSES]
+    if non_terminal:
+        raise HTTPException(status_code=409, detail="运行中的任务不能批量归档")
+    archived_at = utcnow()
+    archived_count = 0
+    for job in jobs:
+        if job.archived_at is not None:
+            continue
+        job.archived_at = archived_at
+        job.version += 1
+        archived_count += 1
+    db.commit()
+    return JobArchiveResult(archived_count=archived_count)
 
 
 def _job_has_references(db: Session, job_id: str) -> bool:
@@ -1079,7 +1242,11 @@ def repair_candidate(
     attempts = max((item.automatic_attempts for item in previous_repairs), default=0)
     if attempts >= get_settings().max_auto_repairs:
         raise HTTPException(status_code=409, detail="已达到最大自动修复次数，请人工处理")
-    repair_rank = {"TEXT_REGION": 0, "BUBBLE_REGION": 1, "PANEL": 2, "PAGE": 3}
+    if inspection.category.upper() in {"TEXT", "OCR"}:
+        raise HTTPException(
+            status_code=409, detail="历史文字检查仅供查看，文字问题不再创建修复任务"
+        )
+    repair_rank = {"BUBBLE_REGION": 0, "PANEL": 1, "PAGE": 2}
     previous_rank = max(
         (repair_rank[item.repair_type] for item in previous_repairs),
         default=-1,
@@ -1099,6 +1266,8 @@ def repair_candidate(
         model_alias=payload.model_alias,
         resolution=payload.resolution,
         status="QUEUED",
+        based_on_storyboard_version=page.storyboard_version,
+        prompt_snapshot={"storyboard_version": page.storyboard_version},
     )
     db.add(candidate)
     repair = RepairPlan(
@@ -1128,6 +1297,7 @@ def repair_candidate(
             "repair_plan_id": repair.id,
             "repair_type": payload.repair_type,
             "target_regions": payload.target_regions,
+            "storyboard_version": page.storyboard_version,
         },
         idempotency_key=f"repair:{repair.id}",
     )
@@ -1138,7 +1308,7 @@ def repair_candidate(
     return CandidateQueuedRead(
         job_id=job.id,
         job_status=job.status,
-        candidate=candidate_read(candidate),
+        candidate=candidate_read(candidate, page),
     )
 
 
@@ -1167,6 +1337,8 @@ def upscale_candidate(
         model_alias=payload.model_alias,
         resolution=payload.resolution,
         status="QUEUED",
+        based_on_storyboard_version=page.storyboard_version,
+        prompt_snapshot={"storyboard_version": page.storyboard_version},
     )
     db.add(candidate)
     db.flush()
@@ -1186,6 +1358,7 @@ def upscale_candidate(
             "preserve_structure": True,
             "source_resolution": original.resolution.value,
             "target_resolution": payload.resolution.value,
+            "storyboard_version": page.storyboard_version,
         },
         idempotency_key=f"upscale:{batch.id}:{payload.resolution.value}",
     )
@@ -1196,5 +1369,5 @@ def upscale_candidate(
     return CandidateQueuedRead(
         job_id=job.id,
         job_status=job.status,
-        candidate=candidate_read(candidate),
+        candidate=candidate_read(candidate, page),
     )
