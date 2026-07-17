@@ -36,7 +36,6 @@ import {
   Link2,
   ListTodo,
   LoaderCircle,
-  LockKeyhole,
   Maximize2,
   ZoomIn,
   ZoomOut,
@@ -60,7 +59,7 @@ import {
 import Link from "next/link";
 import Image from "next/image";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { ChangeEvent, useMemo, useState } from "react";
+import { ChangeEvent, useEffect, useMemo, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 
 export type WorkspaceSection = "source" | "assets" | "script" | "storyboard" | "generate" | "library" | "jobs";
@@ -361,6 +360,29 @@ export default function ProjectWorkspace({
     refetchInterval: (query) => (query.state.data ?? []).length ? false : 4000,
   });
 
+  const workspaceRouteReady = !project.isLoading
+    && (!needsChapters || !chapters.isLoading)
+    && (!needsCharacters || !characters.isLoading)
+    && (!needsOutfits || !outfits.isLoading)
+    && (!needsPages || !pages.isLoading)
+    && (!needsScript || !script.isLoading)
+    && (section !== "assets" || !assets.isLoading)
+    && (section !== "library" || !library.isLoading)
+    && (section !== "jobs" || !jobs.isLoading);
+
+  useEffect(() => {
+    if (!workspaceRouteReady) return;
+    const key = `mangaflow.workspace-scroll.${id}`;
+    const saved = window.sessionStorage.getItem(key);
+    if (saved === null) return;
+    const top = Number(saved);
+    const frame = window.requestAnimationFrame(() => {
+      window.scrollTo({ top: Number.isFinite(top) ? top : 0, behavior: "auto" });
+      window.sessionStorage.removeItem(key);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [assetView, id, section, workspaceRouteReady]);
+
   const draft = localDraft ?? project.data ?? null;
   const boundCharacter = characters.data?.find((item) => item.id === bindCharacterId) ?? null;
   const editingOutfit = outfits.data?.find((item) => item.id === editingOutfitId) ?? null;
@@ -411,6 +433,11 @@ export default function ProjectWorkspace({
     setStyleColorMode(mode);
     window.localStorage.setItem(`mangaflow.style-mode.${id}`, mode);
     setStyleName((current) => ["黑白网点风格", "彩色漫画风格"].includes(current) ? (mode === "monochrome" ? "黑白网点风格" : "彩色漫画风格") : current);
+  }
+
+  function rememberWorkspaceScroll() {
+    window.sessionStorage.setItem(`mangaflow.workspace-scroll.${id}`, String(window.scrollY));
+    setNavOpen(false);
   }
 
   function beginSidebarResize(event: ReactPointerEvent<HTMLButtonElement>) {
@@ -967,12 +994,11 @@ export default function ProjectWorkspace({
           <button type="button" className="workspace-resizer" aria-label="拖动调整项目侧边栏宽度" onPointerDown={beginSidebarResize} />
           <div className="workspace-project-title"><span>PROJECT / 01</span><h1>{draft.name}</h1><p>{needsChapters ? `${chapters.data?.length ?? 0} 章` : "漫画生产工作区"}{needsPages ? ` · ${pages.data?.length ?? 0} 页已规划` : ""}</p></div>
           <nav className="workspace-steps">
-            {navigationItems.map(([target, label, description, index, Icon]) => <Link key={target} href={projectPath(target)} className={section === target ? "active" : ""} aria-current={section === target ? "page" : undefined} onClick={() => setNavOpen(false)}><Icon size={17} /><span>{label}<small>{description}</small></span><i>{index}</i></Link>)}
+            {navigationItems.map(([target, label, description, index, Icon]) => <Link scroll={false} key={target} href={projectPath(target)} className={section === target ? "active" : ""} aria-current={section === target ? "page" : undefined} onClick={rememberWorkspaceScroll}><Icon size={17} /><span>{label}<small>{description}</small></span><i>{index}</i></Link>)}
             <span className="workspace-nav-divider" />
             <Link href={projectPath("workflow")} onClick={() => setNavOpen(false)}><Workflow size={17} /><span>流程编排<small>查看与自定义 DAG</small></span><i>FL</i></Link>
             <Link href={projectPath("settings")} onClick={() => setNavOpen(false)}><Settings size={17} /><span>项目设置<small>模型、清晰度与检查</small></span><i>ST</i></Link>
           </nav>
-          <div className="lock-note"><LockKeyhole size={16} /><p><strong>采用版本才影响后续</strong>收藏与采用互相独立，重新抽卡不会覆盖历史候选。</p></div>
         </aside>
 
         <section className="workspace-canvas">
@@ -1010,10 +1036,12 @@ export default function ProjectWorkspace({
                   ["references", "原始参考素材"],
                 ] as const).map(([view, label]) => (
                   <Link
+                    scroll={false}
                     key={view}
                     aria-current={assetView === view ? "page" : undefined}
                     className={assetView === view ? "active" : ""}
                     href={`/projects/${id}/assets/${view}`}
+                    onClick={rememberWorkspaceScroll}
                   >
                     {label}
                   </Link>
