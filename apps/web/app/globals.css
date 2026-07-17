@@ -1298,12 +1298,16 @@ p { font-size: 14px !important; }
   gap: 14px;
   padding: 14px;
 }
-.library-chapter-filter { margin: 14px 0 0; padding: 12px 14px; display: grid; grid-template-columns: minmax(220px,1fr) minmax(260px,420px) auto; align-items: center; gap: 12px; border: 1px solid var(--line-dark); background: rgba(255,255,255,.42); }
-.library-chapter-filter label { display: grid; gap: 3px; }
-.library-chapter-filter label span { color: var(--vermillion); font-size: 12px; font-weight: 850; letter-spacing: .1em; }
-.library-chapter-filter label strong { font-family: var(--serif); font-size: 15px; }
-.library-chapter-filter select { min-height: 44px; padding: 0 38px 0 12px; border: 1px solid var(--line); background: #fffdf8; font-size: 14px; }
-.library-chapter-filter button { min-height: 44px; padding: 0 12px; display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: transparent; font-size: 13px; cursor: pointer; }
+.library-scope-tabs { margin-top: 4px; display: flex; align-items: stretch; gap: 0; overflow-x: auto; overflow-y: hidden; border-bottom: 1px solid var(--line-dark); scrollbar-width: none; }
+.library-scope-tabs::-webkit-scrollbar { display: none; }
+.library-scope-tabs button { position: relative; min-width: 132px; min-height: 52px; padding: 8px 18px 9px; display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 9px; border: 0; border-right: 1px solid var(--line); background: transparent; color: #716a60; text-align: left; cursor: pointer; }
+.library-scope-tabs button::after { content: ""; position: absolute; right: 0; bottom: -1px; left: 0; height: 3px; background: transparent; }
+.library-scope-tabs button:hover { background: rgba(255,255,255,.45); color: var(--ink); }
+.library-scope-tabs button.active { background: rgba(255,255,255,.62); color: var(--ink); }
+.library-scope-tabs button.active::after { background: var(--vermillion); }
+.library-scope-tabs span { font-family: var(--mono); font-size: 11px; font-weight: 800; letter-spacing: .08em; color: #9b9489; }
+.library-scope-tabs button.active span { color: var(--vermillion); }
+.library-scope-tabs strong { overflow: hidden; font-family: var(--serif); font-size: 14px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
 .library-candidates article { width: 100%; }
 .library-candidates article > div:last-child { min-height: 62px; padding: 8px 42px 4px 2px; gap: 3px; }
 .library-candidates strong { font-size: 13px; }
