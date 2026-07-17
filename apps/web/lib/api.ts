@@ -821,6 +821,8 @@ export const api = {
         manual_text_confirmed: true,
       }),
     }),
+  retractSelectedCandidate: (pageId: string) =>
+    request<MangaPage>(`/pages/${pageId}/selected-candidate`, { method: "DELETE" }),
   nextPage: (pageId: string) => request<MangaPage>(`/pages/${pageId}/next`, { method: "POST" }),
   library: (projectId: string, filters: LibraryFilters = {}) => {
     const query = new URLSearchParams({ group_by: "batch" });
