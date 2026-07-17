@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
@@ -444,12 +444,18 @@ def update_project(
 
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
-def archive_project(project_id: str, db: Session = Depends(get_db)) -> None:
+def archive_project(
+    project_id: str,
+    confirm_name: str = Query(min_length=1, max_length=120),
+    db: Session = Depends(get_db),
+) -> None:
     from app.models import utcnow
 
     project = db.get(Project, project_id)
     if not project or project.deleted_at is not None:
         raise HTTPException(status_code=404, detail="项目不存在")
+    if confirm_name.strip() != project.name:
+        raise HTTPException(status_code=409, detail="项目名称不匹配，未执行删除")
     project.deleted_at = utcnow()
     project.version += 1
     db.commit()

@@ -132,7 +132,13 @@ def test_project_summary_marks_legacy_pages_for_review(client, db_session):
 
 def test_project_summary_hides_archived_projects(client):
     created = client.post("/api/v1/projects", json={"name": "归档项目"}).json()
-    assert client.delete(f"/api/v1/projects/{created['id']}").status_code == 204
+    mismatch = client.delete(
+        f"/api/v1/projects/{created['id']}", params={"confirm_name": "错误名称"}
+    )
+    assert mismatch.status_code == 409
+    assert client.delete(
+        f"/api/v1/projects/{created['id']}", params={"confirm_name": "归档项目"}
+    ).status_code == 204
 
     response = client.get(f"/api/v1/projects/{created['id']}/summary")
 

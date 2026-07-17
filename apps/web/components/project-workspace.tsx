@@ -8,6 +8,7 @@ import { CharacterConceptPanel, StyleProductionPanel } from "@/components/asset-
 import {
   api,
   publicUrl,
+  type Asset,
   type ImageModelAlias,
   type AssetPurpose,
   type InspectionResult,
@@ -180,6 +181,35 @@ function formatBytes(value: number) {
   return `${(value / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function assetName(asset: Asset | undefined) {
+  return asset?.display_name?.trim() || asset?.original_name || "未命名素材";
+}
+
+function AssetNameEditor({ asset, pending, onSave }: { asset: Asset; pending: boolean; onSave: (displayName: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(asset.display_name ?? asset.original_name);
+  const visibleName = asset.display_name?.trim() || asset.original_name;
+
+  if (editing) {
+    return <form className="asset-name-edit" onSubmit={(event) => {
+      event.preventDefault();
+      const next = value.trim();
+      if (!next) return;
+      onSave(next);
+      setEditing(false);
+    }}>
+      <input aria-label={`重命名 ${visibleName}`} maxLength={120} autoFocus value={value} onChange={(event) => setValue(event.target.value)} />
+      <button type="submit" aria-label="保存素材名称" disabled={pending || !value.trim()}><Check size={14} /></button>
+      <button type="button" aria-label="取消重命名" onClick={() => { setValue(visibleName); setEditing(false); }}><X size={14} /></button>
+    </form>;
+  }
+
+  return <div className="asset-name-row">
+    <strong title={`原始文件名：${asset.original_name}`}>{visibleName}</strong>
+    <button type="button" aria-label={`重命名 ${visibleName}`} title="自定义素材名称" onClick={() => { setValue(visibleName); setEditing(true); }}><Pencil size={13} /></button>
+  </div>;
+}
+
 function promptPreview(candidate: { prompt_snapshot: Record<string, unknown> }) {
   return typeof candidate.prompt_snapshot.prompt_preview === "string"
     ? candidate.prompt_snapshot.prompt_preview
@@ -228,6 +258,7 @@ export default function ProjectWorkspace({
   const [editForbiddenChanges, setEditForbiddenChanges] = useState("");
   const [bindCharacterId, setBindCharacterId] = useState("");
   const [favoriteOnly, setFavoriteOnly] = useState(false);
+  const [libraryChapter, setLibraryChapter] = useState("");
   const [libraryCharacter, setLibraryCharacter] = useState("");
   const [libraryKind, setLibraryKind] = useState("");
   const [libraryModel, setLibraryModel] = useState("");
@@ -293,9 +324,10 @@ export default function ProjectWorkspace({
     refetchInterval: (query) => (query.state.data ?? []).some((style) => style.status === "ANALYZING") ? 2500 : false,
   });
   const library = useQuery({
-    queryKey: ["library", id, favoriteOnly, libraryCharacter, libraryKind, libraryModel, libraryResolution, libraryDateFrom, libraryDateTo, libraryCursor],
+    queryKey: ["library", id, favoriteOnly, libraryChapter, libraryCharacter, libraryKind, libraryModel, libraryResolution, libraryDateFrom, libraryDateTo, libraryCursor],
     queryFn: () => api.library(id, {
       favorite: favoriteOnly ? true : undefined,
+      chapter_id: libraryChapter || undefined,
       character_id: libraryCharacter || undefined,
       generation_kind: libraryKind || undefined,
       model_alias: (libraryModel || undefined) as ImageModelAlias | undefined,
@@ -509,10 +541,18 @@ export default function ProjectWorkspace({
   });
 
   const reclassifyAsset = useMutation({
-    mutationFn: ({ assetId, kind }: { assetId: string; kind: AssetPurpose }) => api.updateAsset(assetId, kind),
+    mutationFn: ({ assetId, kind }: { assetId: string; kind: AssetPurpose }) => api.updateAsset(assetId, { kind }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["assets", id] });
       queryClient.invalidateQueries({ queryKey: ["characters", id] });
+    },
+  });
+
+  const renameAsset = useMutation({
+    mutationFn: ({ assetId, displayName }: { assetId: string; displayName: string }) => api.updateAsset(assetId, { display_name: displayName }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["assets", id] });
+      queryClient.invalidateQueries({ queryKey: ["library", id] });
     },
   });
 
@@ -1091,7 +1131,7 @@ export default function ProjectWorkspace({
                       <label><span>服装档案名称</span><input aria-label="服装档案名称" className="text-input" value={outfitName} onChange={(event) => setOutfitName(event.target.value)} placeholder="例如：校服 / 冬季便装" /></label>
                       <label><span>一致性锁定项</span><input aria-label="服装锁定项" className="text-input" value={outfitLockedFields} onChange={(event) => setOutfitLockedFields(event.target.value)} placeholder="颜色、鞋型、领结、配饰…" /></label>
                     </div>
-                    <aside className="reference-selection-summary"><span>当前待绑定</span><strong>{selectedOutfitFiles.length}<small> 张参考图</small></strong><p>{selectedOutfitFiles.length ? selectedOutfitFiles.slice(0, 2).map((asset) => asset.original_name).join("、") : "在下方“服装参考”中选择图片"}{selectedOutfitFiles.length > 2 ? ` 等 ${selectedOutfitFiles.length} 张` : ""}</p></aside>
+                    <aside className="reference-selection-summary"><span>当前待绑定</span><strong>{selectedOutfitFiles.length}<small> 张参考图</small></strong><p>{selectedOutfitFiles.length ? selectedOutfitFiles.slice(0, 2).map((asset) => assetName(asset)).join("、") : "在下方“服装参考”中选择图片"}{selectedOutfitFiles.length > 2 ? ` 等 ${selectedOutfitFiles.length} 张` : ""}</p></aside>
                     <div className="profile-form-actions">{editingOutfit && <button className="secondary" type="button" onClick={resetOutfitForm}><X size={12} />取消编辑</button>}<button type="button" disabled={!outfitName.trim() || (!editingOutfit && (!bindCharacterId || !selectedOutfitAssets.length)) || createOutfit.isPending || updateOutfit.isPending} onClick={() => editingOutfit ? updateOutfit.mutate() : createOutfit.mutate()}><Link2 size={12} />{editingOutfit ? `保存绑定（${selectedOutfitAssets.length} 图）` : `建立并绑定（${selectedOutfitAssets.length} 图）`}</button></div>
                   </div>
                   <p className="binding-guide"><Link2 size={12} />上传服装参考后会自动加入当前档案；也可以在下方素材卡中加入、移除，再点击保存绑定。</p>
@@ -1108,7 +1148,7 @@ export default function ProjectWorkspace({
                   <div className="mode-selector-block"><div><span>新档案色彩模式</span><strong>{styleColorMode === "monochrome" ? "黑白漫画" : "彩色漫画"}</strong></div><ComicModeSwitch value={styleColorMode} onChange={selectStyleMode} /><p>{styleColorMode === "monochrome" ? "分析线稿、网点、黑白对比与留白。" : "分析色板、肤色发色、上色方式与光影。"}</p></div>
                   <div className="profile-compose style-compose">
                     <div className="workbench-fields"><label><span>风格档案名称</span><input aria-label="漫画风格档案名称" className="text-input" value={styleName} onChange={(event) => setStyleName(event.target.value)} placeholder="风格档案名称" /></label><label><span>一致性锁定项</span><input aria-label="漫画风格锁定项" className="text-input" value={styleLockedFields} onChange={(event) => setStyleLockedFields(event.target.value)} placeholder={styleColorMode === "monochrome" ? "线稿、网点、构图…" : "色板、肤色、光影、构图…"} /></label></div>
-                    <aside className="reference-selection-summary"><span>当前待分析</span><strong>{selectedStyleFiles.length}<small> 张参考页</small></strong><p>{selectedStyleFiles.length ? selectedStyleFiles.slice(0, 2).map((asset) => asset.original_name).join("、") : "在下方“漫画风格”中选择参考页"}</p></aside>
+                    <aside className="reference-selection-summary"><span>当前待分析</span><strong>{selectedStyleFiles.length}<small> 张参考页</small></strong><p>{selectedStyleFiles.length ? selectedStyleFiles.slice(0, 2).map((asset) => assetName(asset)).join("、") : "在下方“漫画风格”中选择参考页"}</p></aside>
                     <div className="profile-form-actions"><button type="button" disabled={!styleName.trim() || !selectedStyleAssets.length || createStyle.isPending} onClick={() => createStyle.mutate()}><Sparkles size={12} />创建并分析（{selectedStyleAssets.length} 图）</button></div>
                   </div>
                   <div className="profile-subsection-title"><div><span>已保存档案</span><strong>逐份修改与切换</strong></div><p>下方开关修改的是该档案本身，不会改变上方新档案表单。</p></div><div className="profile-records">{styles.data?.map((style) => {
@@ -1136,8 +1176,8 @@ export default function ProjectWorkspace({
                     const linkedOutfits = kind === "OUTFIT_REFERENCE" ? outfits.data?.filter((outfit) => outfit.reference_asset_ids.includes(asset.id)) ?? [] : [];
                     const linkedStyles = kind === "STYLE_REFERENCE" ? styles.data?.filter((style) => style.profile.reference_asset_ids?.includes(asset.id)) ?? [] : [];
                     return <article className={selected ? "asset-card selected" : "asset-card"} key={asset.id}>
-                      <div className={`asset-thumb thumb-${(index % 3) + 1}`}>{asset.content_url ? <Image src={publicUrl(asset.content_url)!} alt={asset.original_name} width={74} height={74} unoptimized /> : <FileImage size={27} />}<span>{asset.width && asset.height ? `${asset.width}×${asset.height}` : asset.mime_type}</span></div>
-                      <div><strong>{asset.original_name}</strong><p>{label} · {formatBytes(asset.byte_size)}</p><span className="tiny-status"><Check size={11} />{asset.status}</span>
+                      <div className={`asset-thumb thumb-${(index % 3) + 1}`}>{asset.content_url ? <Image src={publicUrl(asset.content_url)!} alt={assetName(asset)} width={74} height={74} unoptimized /> : <FileImage size={27} />}<span>{asset.width && asset.height ? `${asset.width}×${asset.height}` : asset.mime_type}</span></div>
+                      <div><AssetNameEditor asset={asset} pending={renameAsset.isPending} onSave={(displayName) => renameAsset.mutate({ assetId: asset.id, displayName })} /><p>{label} · {formatBytes(asset.byte_size)}</p><span className="tiny-status"><Check size={11} />{asset.status}</span>
                         {kind === "OUTFIT_REFERENCE" && <p className={linkedOutfits.length ? "reference-binding bound" : "reference-binding"}><Link2 size={10} />{linkedOutfits.length ? `已绑定：${linkedOutfits.map((outfit) => `${characters.data?.find((character) => character.id === outfit.character_id)?.primary_name ?? "未知角色"} → ${outfit.name}`).join("；")}` : "尚未写入服装档案"}</p>}
                         {kind === "STYLE_REFERENCE" && <p className={linkedStyles.length ? "reference-binding bound" : "reference-binding"}><Link2 size={10} />{linkedStyles.length ? `已用于：${linkedStyles.map((style) => `${style.name}（${style.color_mode === "monochrome" ? "黑白" : "彩色"}）`).join("；")}` : "尚未写入风格档案"}</p>}
                         {kind === "CHARACTER_REFERENCE" && linkedCharacter && !characterReference ? <p className="reference-binding bound"><Link2 size={10} />当前绑定：{linkedCharacter.primary_name}</p> : null}
@@ -1220,6 +1260,7 @@ export default function ProjectWorkspace({
           {section === "library" && (
             <>
               <header className="canvas-header"><div><span>LIBRARY / 批次素材库</span><h2>保存每一次值得比较的结果</h2></div><small>{library.data?.total_candidates ?? 0} 个候选</small></header>
+              <div className="library-chapter-filter"><label htmlFor="library-chapter"><span>CHAPTER / 章节批次</span><strong>按所属章节查看生成批次</strong></label><select id="library-chapter" value={libraryChapter} onChange={(event) => { setLibraryChapter(event.target.value); setLibraryCursor(""); setLibraryHistory([]); }}><option value="">全部章节与项目级素材</option>{chapters.data?.map((chapter) => <option key={chapter.id} value={chapter.id}>第 {chapter.ordinal} 章 · {chapter.title}</option>)}</select>{libraryChapter && <button type="button" onClick={() => { setLibraryChapter(""); setLibraryCursor(""); setLibraryHistory([]); }}><X size={14} />清除章节</button>}</div>
               <div className="library-toolbar"><div className="library-filter-grid"><button className={favoriteOnly ? "active" : ""} onClick={() => { setFavoriteOnly(!favoriteOnly); setLibraryCursor(""); setLibraryHistory([]); }}><Heart size={14} />只看收藏（{library.data?.favorite_count ?? 0}）</button><select aria-label="按角色筛选素材" value={libraryCharacter} onChange={(event) => { setLibraryCharacter(event.target.value); setLibraryCursor(""); setLibraryHistory([]); }}><option value="">全部角色</option>{characters.data?.map((character) => <option key={character.id} value={character.id}>{character.primary_name}</option>)}</select><select aria-label="按生成类型筛选素材" value={libraryKind} onChange={(event) => { setLibraryKind(event.target.value); setLibraryCursor(""); setLibraryHistory([]); }}><option value="">全部类型</option>{Object.entries(generationKindLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><select aria-label="按模型筛选素材" value={libraryModel} onChange={(event) => { setLibraryModel(event.target.value); setLibraryCursor(""); setLibraryHistory([]); }}><option value="">全部模型</option>{modelOptions.map((model) => <option key={model.alias} value={model.alias}>{model.name}</option>)}</select><select aria-label="按分辨率筛选素材" value={libraryResolution} onChange={(event) => { setLibraryResolution(event.target.value); setLibraryCursor(""); setLibraryHistory([]); }}><option value="">全部清晰度</option>{(["1K", "2K", "4K"] as const).map((value) => <option key={value} value={value}>{value}</option>)}</select><label>从<input aria-label="素材开始日期" type="date" value={libraryDateFrom} onChange={(event) => { setLibraryDateFrom(event.target.value); setLibraryCursor(""); setLibraryHistory([]); }} /></label><label>至<input aria-label="素材结束日期" type="date" value={libraryDateTo} onChange={(event) => { setLibraryDateTo(event.target.value); setLibraryCursor(""); setLibraryHistory([]); }} /></label><button onClick={() => { setFavoriteOnly(false); setLibraryCharacter(""); setLibraryKind(""); setLibraryModel(""); setLibraryResolution(""); setLibraryDateFrom(""); setLibraryDateTo(""); setLibraryCursor(""); setLibraryHistory([]); }}><RotateCcw size={13} />重置</button></div><span>按章节 → 页面 → 批次排列</span></div>
               <div className="library-groups">{library.data?.groups.map((group, groupIndex) => { const columns = Math.min(Math.max(group.candidates.length, 1), 3); return <section className="library-group" style={{ "--batch-columns": columns } as CSSProperties} key={group.batch.id}><header><div><span>BATCH {String(group.batch.ordinal).padStart(3, "0")}</span><strong>{generationKindLabels[group.batch.generation_kind] ?? group.batch.generation_kind}</strong></div><small>{new Date(group.batch.created_at).toLocaleString("zh-CN")} · {group.candidates.length} 张</small></header><div className="library-candidates">{group.candidates.map((candidate, candidateIndex) => <article className={candidate.is_selected ? "is-selected" : undefined} key={candidate.id}><CandidateArtwork contentUrl={candidate.content_url} thumbnailUrl={candidate.thumbnail_url} label={`批次候选 ${candidate.ordinal}`} eager={groupIndex === 0 && candidateIndex === 0} onOpen={(url, label) => setPreviewImage({ url, label })} /><div><strong>{modelOptions.find((item) => item.alias === candidate.model_alias)?.name}</strong><span>{candidate.resolution} · {candidate.status}</span>{candidate.is_favorite && <Heart size={13} fill="currentColor" />}{candidate.is_selected && <div className="library-selection-row"><em><Check size={12} />已采用</em><button className="library-retract" disabled={!candidate.page_id || retractSelectedCandidate.isPending} onClick={() => { if (candidate.page_id && window.confirm("撤回采用后，候选图片和生成记录仍会保留，后续页面将标记为待复查。是否继续？")) retractSelectedCandidate.mutate(candidate.page_id); }}><RotateCcw size={13} />撤回</button></div>}{!candidate.is_selected && <button className="library-delete" title="从素材库软删除" disabled={deleteCandidate.isPending} onClick={() => { if (window.confirm("从素材库隐藏这个候选？生成文件和任务记录会保留。")) deleteCandidate.mutate(candidate.id); }}><Trash2 size={12} /></button>}</div></article>)}</div></section>; })}</div>
               {!library.data?.groups.length && <div className="asset-empty tall"><LibraryBig size={28} /><strong>素材库还是空的</strong><p>从单页抽卡开始，所有候选都会按批次保留。</p></div>}

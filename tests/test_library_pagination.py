@@ -81,6 +81,53 @@ def test_library_rejects_invalid_cursor(client):
     assert response.status_code == 422
 
 
+def test_library_filters_batches_by_chapter(client, db_session):
+    project = client.post("/api/v1/projects", json={"name": "章节素材库"}).json()
+    chapters = [
+        Chapter(project_id=project["id"], title="第一章", ordinal=1),
+        Chapter(project_id=project["id"], title="第二章", ordinal=2),
+    ]
+    db_session.add_all(chapters)
+    db_session.flush()
+    for chapter in chapters:
+        page = MangaPage(chapter_id=chapter.id, page_number=1)
+        db_session.add(page)
+        db_session.flush()
+        batch = GenerationBatch(
+            project_id=project["id"],
+            chapter_id=chapter.id,
+            page_id=page.id,
+            ordinal=chapter.ordinal,
+        )
+        db_session.add(batch)
+        db_session.flush()
+        db_session.add(
+            PageCandidate(
+                batch_id=batch.id,
+                page_id=page.id,
+                ordinal=1,
+                model_alias="image.nano_banana_2",
+                resolution=Resolution.DRAFT_1K,
+            )
+        )
+    db_session.commit()
+
+    response = client.get(
+        f"/api/v1/projects/{project['id']}/library",
+        params={"chapter_id": chapters[1].id},
+    )
+    assert response.status_code == 200, response.text
+    groups = response.json()["groups"]
+    assert len(groups) == 1
+    assert groups[0]["batch"]["chapter_id"] == chapters[1].id
+
+    other_project = client.post("/api/v1/projects", json={"name": "其他项目"}).json()
+    assert client.get(
+        f"/api/v1/projects/{other_project['id']}/library",
+        params={"chapter_id": chapters[0].id},
+    ).status_code == 404
+
+
 def test_library_10000_candidate_hot_request_benchmark(client, db_session):
     project = client.post("/api/v1/projects", json={"name": "万级素材库"}).json()
     chapter = Chapter(project_id=project["id"], title="第一章", ordinal=1)

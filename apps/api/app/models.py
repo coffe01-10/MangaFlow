@@ -188,6 +188,7 @@ class Asset(Timestamped, Base):
     )
     kind: Mapped[str] = mapped_column(String(32))
     original_name: Mapped[str] = mapped_column(String(255))
+    display_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     storage_key: Mapped[str] = mapped_column(String(500))
     thumbnail_320_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
     thumbnail_640_key: Mapped[str | None] = mapped_column(String(500), nullable=True)

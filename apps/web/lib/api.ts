@@ -94,6 +94,7 @@ export interface Asset {
   project_id: string;
   kind: string;
   original_name: string;
+  display_name: string | null;
   mime_type: string;
   byte_size: number;
   width: number | null;
@@ -461,6 +462,7 @@ export interface Library {
 
 export interface LibraryFilters {
   favorite?: boolean;
+  chapter_id?: string;
   character_id?: string;
   generation_kind?: string;
   model_alias?: ImageModelAlias;
@@ -644,6 +646,8 @@ export const api = {
     request<Project>("/projects", { method: "POST", body: JSON.stringify(payload) }),
   updateProject: (id: string, payload: Partial<Project> & { version: number }) =>
     request<Project>(`/projects/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  deleteProject: (id: string, confirmName: string) =>
+    request<void>(`/projects/${id}?confirm_name=${encodeURIComponent(confirmName)}`, { method: "DELETE" }),
   models: () => request<ModelCapability[]>("/models"),
   vertexStatus: () => request<VertexStatus>("/settings/vertex/status"),
   verifyVertex: (level: "CREDENTIALS" | "TEXT_MODEL" | "IMAGE_MODEL" = "CREDENTIALS", imageModelAlias?: ImageModelAlias) =>
@@ -663,8 +667,8 @@ export const api = {
     data.append("file", file);
     return request<Asset>("/assets/upload", { method: "POST", body: data });
   },
-  updateAsset: (assetId: string, kind: AssetPurpose) => request<Asset>(`/assets/${assetId}`, {
-    method: "PATCH", body: JSON.stringify({ kind }),
+  updateAsset: (assetId: string, payload: { kind?: AssetPurpose; display_name?: string | null }) => request<Asset>(`/assets/${assetId}`, {
+    method: "PATCH", body: JSON.stringify(payload),
   }),
   deleteAsset: (assetId: string) => request<void>(`/assets/${assetId}`, { method: "DELETE" }),
   chapters: (projectId: string) => request<Chapter[]>(`/projects/${projectId}/chapters`),

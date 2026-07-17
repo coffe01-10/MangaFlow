@@ -331,6 +331,53 @@ def test_foreign_keys_cascade_content_but_keep_generated_assets(db_session):
     assert db_session.get(Asset, asset_id) is not None
 
 
+def test_generated_and_uploaded_assets_support_display_names(client, db_session):
+    project = Project(name="素材命名")
+    db_session.add(project)
+    db_session.flush()
+    assets = [
+        Asset(
+            project_id=project.id,
+            kind="CHARACTER_REFERENCE",
+            original_name="generated-character.png",
+            storage_key="generated/generated-character.png",
+            mime_type="image/png",
+            byte_size=1,
+            sha256="1" * 64,
+            source="GENERATED",
+        ),
+        Asset(
+            project_id=project.id,
+            kind="STYLE_REFERENCE",
+            original_name="uploaded-style.png",
+            storage_key="uploads/uploaded-style.png",
+            mime_type="image/png",
+            byte_size=1,
+            sha256="2" * 64,
+            source="USER_UPLOAD",
+        ),
+    ]
+    db_session.add_all(assets)
+    db_session.commit()
+
+    for asset, display_name in zip(assets, ["荻原桜人物正面", "葬礼场景色彩参考"], strict=True):
+        response = client.patch(
+            f"/api/v1/assets/{asset.id}", json={"display_name": display_name}
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["display_name"] == display_name
+        assert response.json()["original_name"] == asset.original_name
+
+    cleared = client.patch(
+        f"/api/v1/assets/{assets[0].id}", json={"display_name": None}
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["display_name"] is None
+    assert client.patch(
+        f"/api/v1/assets/{assets[0].id}", json={"display_name": "   "}
+    ).status_code == 422
+
+
 def test_bulk_archive_only_accepts_project_terminal_jobs(client, db_session):
     project = _project(client, "批量归档")
     other = _project(client, "其他项目")

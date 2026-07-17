@@ -97,6 +97,7 @@ class AssetRead(BaseModel):
     project_id: str
     kind: str
     original_name: str
+    display_name: str | None
     mime_type: str
     byte_size: int
     width: int | None
@@ -108,7 +109,21 @@ class AssetRead(BaseModel):
 
 
 class AssetUpdate(BaseModel):
-    kind: str = Field(pattern="^(CHARACTER_REFERENCE|OUTFIT_REFERENCE|STYLE_REFERENCE)$")
+    kind: str | None = Field(
+        default=None,
+        pattern="^(CHARACTER_REFERENCE|OUTFIT_REFERENCE|STYLE_REFERENCE)$",
+    )
+    display_name: str | None = Field(default=None, min_length=1, max_length=120)
+
+    @model_validator(mode="after")
+    def require_change(self):
+        if not self.model_fields_set:
+            raise ValueError("请提供素材名称或分类")
+        if "display_name" in self.model_fields_set and self.display_name is not None:
+            self.display_name = self.display_name.strip()
+            if not self.display_name:
+                raise ValueError("素材名称不能为空")
+        return self
 
 
 class ModelCapabilityRead(BaseModel):

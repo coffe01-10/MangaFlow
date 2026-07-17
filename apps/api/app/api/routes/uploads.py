@@ -136,11 +136,15 @@ def update_asset(asset_id: str, payload: AssetUpdate, db: Session = Depends(get_
     asset = db.get(Asset, asset_id)
     if not asset or asset.deleted_at is not None:
         raise HTTPException(status_code=404, detail="素材不存在")
-    if asset.source != "USER_UPLOAD":
-        raise HTTPException(status_code=409, detail="生成结果不能改成参考图")
-    asset.kind = payload.kind
-    if payload.kind != "CHARACTER_REFERENCE":
-        db.execute(delete(CharacterReference).where(CharacterReference.asset_id == asset.id))
+    if payload.kind is not None:
+        if asset.source != "USER_UPLOAD":
+            raise HTTPException(status_code=409, detail="生成结果不能改成参考图")
+        asset.kind = payload.kind
+        if payload.kind != "CHARACTER_REFERENCE":
+            db.execute(delete(CharacterReference).where(CharacterReference.asset_id == asset.id))
+    if "display_name" in payload.model_fields_set:
+        asset.display_name = payload.display_name
+    asset.version += 1
     db.commit()
     db.refresh(asset)
     return asset_read(asset)

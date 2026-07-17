@@ -3,19 +3,21 @@
 import { AppShell } from "@/components/shell";
 import { api, type Project, type Resolution, type WorkflowMode } from "@/lib/api";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Check, CircleAlert, Gauge, LoaderCircle, Save, ShieldCheck, SlidersHorizontal } from "lucide-react";
+import { ArrowLeft, Check, CircleAlert, Gauge, LoaderCircle, Save, ShieldCheck, SlidersHorizontal, Trash2 } from "lucide-react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useState } from "react";
 
 type ProjectDraft = Pick<Project, "workflow_mode" | "draft_resolution" | "default_resolution" | "default_concurrency" | "consistency_check_enabled">;
 
 export default function ProjectSettingsPage() {
   const { id } = useParams<{ id: string }>();
+  const router = useRouter();
   const queryClient = useQueryClient();
   const project = useQuery({ queryKey: ["project", id], queryFn: () => api.project(id) });
   const [localDraft, setLocalDraft] = useState<ProjectDraft | null>(null);
   const [saved, setSaved] = useState(false);
+  const [deleteConfirmation, setDeleteConfirmation] = useState("");
   const draft = localDraft ?? (project.data ? {
       workflow_mode: project.data.workflow_mode,
       draft_resolution: project.data.draft_resolution,
@@ -45,6 +47,18 @@ export default function ProjectSettingsPage() {
     setLocalDraft((current) => ({ ...(current ?? draft!), [key]: value }));
     setSaved(false);
   };
+  const archive = useMutation({
+    mutationFn: () => {
+      if (!project.data || deleteConfirmation !== project.data.name) throw new Error("请输入完整项目名称");
+      return api.deleteProject(id, deleteConfirmation);
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      await queryClient.invalidateQueries({ queryKey: ["projects"] });
+      queryClient.removeQueries({ queryKey: ["project", id] });
+      router.replace("/");
+    },
+  });
 
   return (
     <AppShell>
@@ -82,6 +96,7 @@ export default function ProjectSettingsPage() {
         </div> : <div className="loading-panel"><LoaderCircle className="spin" />读取项目设置…</div>}
         {saved && <p className="save-success floating"><Check size={15} />项目设置已保存</p>}
         {save.isError && <p className="form-error"><CircleAlert size={15} />{save.error.message}</p>}
+        {project.data && <section className="project-danger-zone"><header><Trash2 size={18} /><div><span>DANGER ZONE / 项目管理</span><h2>删除当前项目</h2></div></header><div><p>删除后项目将从工作台隐藏。数据库记录和生成文件暂时保留，避免误删；如需恢复可由维护工具处理。</p><label><span>输入项目名称确认</span><input aria-label="输入项目名称确认删除" value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} placeholder={project.data.name} /></label><button type="button" disabled={deleteConfirmation !== project.data.name || archive.isPending} onClick={() => { if (window.confirm(`确认从工作台删除项目“${project.data.name}”？`)) archive.mutate(); }}>{archive.isPending ? <LoaderCircle className="spin" size={16} /> : <Trash2 size={16} />}删除项目</button></div>{archive.isError && <p className="form-error"><CircleAlert size={15} />{archive.error.message}</p>}</section>}
       </main>
     </AppShell>
   );

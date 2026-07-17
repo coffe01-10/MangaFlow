@@ -888,6 +888,7 @@ def next_page(page_id: str, db: Session = Depends(get_db)) -> MangaPage:
 def library(
     project_id: str,
     group_by: str = Query(default="batch", pattern="^batch$"),
+    chapter_id: str | None = None,
     model_alias: str | None = None,
     favorite: bool | None = None,
     generation_kind: str | None = None,
@@ -903,6 +904,15 @@ def library(
     if not project or project.deleted_at is not None:
         raise HTTPException(status_code=404, detail="项目不存在")
     batch_query = select(GenerationBatch).where(GenerationBatch.project_id == project_id)
+    if chapter_id:
+        chapter = db.get(Chapter, chapter_id)
+        if (
+            not chapter
+            or chapter.project_id != project_id
+            or chapter.deleted_at is not None
+        ):
+            raise HTTPException(status_code=404, detail="筛选章节不存在或不属于当前项目")
+        batch_query = batch_query.where(GenerationBatch.chapter_id == chapter_id)
     if generation_kind:
         batch_query = batch_query.where(GenerationBatch.generation_kind == generation_kind.upper())
     if date_from:
