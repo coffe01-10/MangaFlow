@@ -666,13 +666,13 @@ a { color: inherit; text-decoration: none; }
 .next-page-row { display: flex; justify-content: space-between; align-items: center; margin-top: 20px; padding: 15px 0; border-top: 1px solid var(--line); }
 .next-page-row span { color: #777166; font-size: 9px; }
 .next-page-row > div { display: flex; align-items: center; gap: 7px; }
-.library-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 14px 0; }
-.library-toolbar button { min-height: 32px; display: flex; align-items: center; gap: 5px; padding: 0 10px; border: 1px solid var(--line); background: transparent; cursor: pointer; font-size: 8px; }
+.library-toolbar { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding: 14px 0 16px; }
+.library-toolbar button { min-height: 40px; display: flex; align-items: center; gap: 6px; padding: 0 12px; border: 1px solid var(--line); background: rgba(255,255,255,.28); cursor: pointer; font-size: 13px; }
 .library-toolbar button.active { color: var(--vermillion); border-color: var(--vermillion); }
-.library-toolbar span { color: #817b71; font-size: 8px; }
-.library-filter-grid { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.library-filter-grid select, .library-filter-grid input { min-height: 32px; padding: 0 7px; border: 1px solid var(--line); background: rgba(255,255,255,.5); color: var(--ink); font-size: 8px; }
-.library-filter-grid label { display: flex; align-items: center; gap: 4px; color: #817b71; font-size: 8px; }
+.library-toolbar > span { flex: none; padding-top: 11px; color: #817b71; font-size: 12px; }
+.library-filter-grid { flex: 1; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.library-filter-grid select, .library-filter-grid input { min-height: 40px; padding: 0 34px 0 11px; border: 1px solid var(--line); background: rgba(255,255,255,.5); color: var(--ink); font-size: 13px; }
+.library-filter-grid label { display: flex; align-items: center; gap: 6px; color: #716a60; font-size: 12px; }
 .library-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); align-items: start; gap: 16px; }
 .library-group { --batch-columns: 1; min-width: 0; width: 100%; grid-column: span var(--batch-columns); content-visibility: auto; contain-intrinsic-size: 290px; border: 1px solid var(--line-dark); background: rgba(255,255,255,.38); }
 .library-group > header { display: flex; justify-content: space-between; align-items: center; padding: 11px 13px; border-bottom: 1px solid var(--line); }
@@ -1298,16 +1298,7 @@ p { font-size: 14px !important; }
   gap: 14px;
   padding: 14px;
 }
-.library-scope-tabs { margin-top: 4px; display: flex; align-items: stretch; gap: 0; overflow-x: auto; overflow-y: hidden; border-bottom: 1px solid var(--line-dark); scrollbar-width: none; }
-.library-scope-tabs::-webkit-scrollbar { display: none; }
-.library-scope-tabs button { position: relative; min-width: 132px; min-height: 52px; padding: 8px 18px 9px; display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 9px; border: 0; border-right: 1px solid var(--line); background: transparent; color: #716a60; text-align: left; cursor: pointer; }
-.library-scope-tabs button::after { content: ""; position: absolute; right: 0; bottom: -1px; left: 0; height: 3px; background: transparent; }
-.library-scope-tabs button:hover { background: rgba(255,255,255,.45); color: var(--ink); }
-.library-scope-tabs button.active { background: rgba(255,255,255,.62); color: var(--ink); }
-.library-scope-tabs button.active::after { background: var(--vermillion); }
-.library-scope-tabs span { font-family: var(--mono); font-size: 11px; font-weight: 800; letter-spacing: .08em; color: #9b9489; }
-.library-scope-tabs button.active span { color: var(--vermillion); }
-.library-scope-tabs strong { overflow: hidden; font-family: var(--serif); font-size: 14px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
+.library-filter-grid select.filter-active { border-color: var(--vermillion); box-shadow: inset 3px 0 var(--vermillion); color: var(--ink); font-weight: 750; }
 .library-candidates article { width: 100%; }
 .library-candidates article > div:last-child { min-height: 62px; padding: 8px 42px 4px 2px; gap: 3px; }
 .library-candidates strong { font-size: 13px; }
