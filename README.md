@@ -37,16 +37,35 @@
 
 要求：Node.js 22+、Python 3.12+。Windows 本地开发不强制安装 Redis。
 
+### 已有环境：日常启动
+
+在 PowerShell 中执行：
+
 ```powershell
-npm install
-python -m venv .venv
-.venv\Scripts\python.exe -m pip install -r apps/api/requirements-dev.txt
-Copy-Item .env.example .env
-.venv\Scripts\python.exe -m alembic -c apps/api/alembic.ini upgrade head
-npm run dev:full
+cd "D:\自媒体\漫画工作流"
+powershell -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1
 ```
 
-新环境需要在 `.env` 设置：
+启动脚本会先执行数据库迁移，再同时启动 Next.js 前端和 FastAPI。Redis 不可用时，`AUTO` 队列模式会自动使用受并发限制的本地后台执行器。
+
+打开：
+
+- Web 工作台：`http://localhost:3000`
+- API 文档：`http://localhost:8000/api/docs`
+- API 健康检查：`http://localhost:8000/api/v1/health`
+
+停止项目时，在启动项目的 PowerShell 窗口按 `Ctrl+C`。如果提示 3000 或 8000 端口已被占用，请先关闭此前启动的开发服务。
+
+### 第一次安装
+
+新电脑、首次克隆仓库，或 `.venv`、`node_modules` 已被删除时，执行：
+
+```powershell
+cd "D:\自媒体\漫画工作流"
+powershell -ExecutionPolicy Bypass -File .\scripts\setup-codex.ps1
+```
+
+脚本会安装前后端依赖、创建 Python 虚拟环境、建立 `storage` / `uploads` 目录、创建 `.env` 并升级数据库。随后编辑 `.env`：
 
 ```env
 GOOGLE_CLOUD_PROJECT=your-project-id
@@ -56,19 +75,25 @@ REDIS_URL=redis://localhost:6379/0
 QUEUE_ENABLED=true
 ```
 
-本地直接启动：
+配置完成后运行：
 
 ```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1
+```
+
+没有配置 Vertex 凭据时，工作台和已有数据仍能打开，但 AI 分析与图片生成不可用。Redis 是可选项：运行设置中的队列模式默认为 `AUTO`，检测不到 Redis 时自动切到本地执行器；选择 `LOCAL` 后不再探测 Redis；只有显式选择 `REDIS` 且 Redis 不可用时，新任务才保持 `WAITING`。
+
+### 手动启动
+
+不使用启动脚本时，可以手动迁移数据库并启动前端和 API：
+
+```powershell
+cd "D:\自媒体\漫画工作流"
+.venv\Scripts\python.exe -m alembic -c apps/api/alembic.ini upgrade head
 npm run dev
 ```
 
-运行设置中的队列模式默认为 `AUTO`：开发环境检测不到 Redis 时自动切到并发受控的本地后台执行器；选择 `LOCAL` 后不再探测 Redis；只有显式选择 `REDIS` 且 Redis 不可用时，新任务才保持 `WAITING`。
-
-打开：
-
-- Web 工作台：`http://localhost:3000`
-- API 文档：`http://localhost:8000/api/docs`
-- API 健康检查：`http://localhost:8000/api/v1/health`
+只有已经启动 Redis 且需要独立 RQ Worker 时才使用 `npm run dev:full`。日常本地使用推荐 `scripts\start-dev.ps1`。
 
 ### Codex / Windows 一键环境
 
