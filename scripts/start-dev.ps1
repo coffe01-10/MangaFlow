@@ -11,6 +11,32 @@ if (-not (Test-Path -LiteralPath ".env")) {
     throw ".env is missing. Copy .env.example and configure Vertex AI."
 }
 
+function Get-DotEnvValue([string]$Name) {
+    $escapedName = [Regex]::Escape($Name)
+    foreach ($line in Get-Content -LiteralPath ".env") {
+        $trimmed = $line.Trim()
+        if (-not $trimmed -or $trimmed.StartsWith("#")) {
+            continue
+        }
+        if ($trimmed -match "^$escapedName\s*=\s*(.*)$") {
+            return $Matches[1].Trim().Trim('"').Trim("'")
+        }
+    }
+    return $null
+}
+
+$proxyUrl = Get-DotEnvValue "MANGAFLOW_PROXY_URL"
+if ($proxyUrl) {
+    $env:HTTP_PROXY = $proxyUrl
+    $env:HTTPS_PROXY = $proxyUrl
+    $localBypass = @("localhost", "127.0.0.1")
+    if ($env:NO_PROXY) {
+        $localBypass += $env:NO_PROXY.Split(",", [StringSplitOptions]::RemoveEmptyEntries)
+    }
+    $env:NO_PROXY = ($localBypass | Select-Object -Unique) -join ","
+    Write-Output "Local HTTP/Mixed proxy enabled for API and Worker processes."
+}
+
 & ".\.venv\Scripts\python.exe" -m alembic -c "apps\api\alembic.ini" upgrade head
 $env:ENVIRONMENT = "development"
 $env:QUEUE_ENABLED = "true"

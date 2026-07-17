@@ -73,6 +73,7 @@ GOOGLE_CLOUD_LOCATION=global
 GOOGLE_APPLICATION_CREDENTIALS=D:/absolute/path/to/service-account-key.json
 REDIS_URL=redis://localhost:6379/0
 QUEUE_ENABLED=true
+MANGAFLOW_PROXY_URL=http://127.0.0.1:7897
 ```
 
 配置完成后运行：
@@ -82,6 +83,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1
 ```
 
 没有配置 Vertex 凭据时，工作台和已有数据仍能打开，但 AI 分析与图片生成不可用。Redis 是可选项：运行设置中的队列模式默认为 `AUTO`，检测不到 Redis 时自动切到本地执行器；选择 `LOCAL` 后不再探测 Redis；只有显式选择 `REDIS` 且 Redis 不可用时，新任务才保持 `WAITING`。
+
+如果浏览器能访问 Google，但 API 显示 `DEGRADED / UPSTREAM`，可将 `MANGAFLOW_PROXY_URL` 设置为 Clash/Mihomo 的 HTTP 或 Mixed 端口。`scripts\start-dev.ps1` 会自动把它转换成 Python 网络库识别的 `HTTP_PROXY` / `HTTPS_PROXY`，并为 `localhost`、`127.0.0.1` 设置直连。不要填写仅支持 SOCKS 的端口。
 
 ### 手动启动
 
