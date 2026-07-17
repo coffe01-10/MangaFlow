@@ -1,7 +1,7 @@
 import pytest
 from sqlalchemy import text
 
-from app.domain.states import JobStatus, Resolution
+from app.domain.states import JobStatus, PageStatus, Resolution
 from app.models import (
     Asset,
     Chapter,
@@ -127,6 +127,73 @@ def test_candidate_version_states_and_keep_old_selection(client, db_session):
     )
     assert kept.status_code == 200
     assert kept.json()["selected_candidate_ack_version"] == 3
+
+
+def test_retract_selected_candidate_preserves_candidate_and_marks_following_page(client, db_session):
+    project = _project(client, "撤回采用")
+    chapter = Chapter(project_id=project["id"], title="第一章", ordinal=1)
+    db_session.add(chapter)
+    db_session.flush()
+    page = MangaPage(
+        chapter_id=chapter.id,
+        page_number=1,
+        status=PageStatus.APPROVED,
+        selected_candidate_ack_version=2,
+        storyboard_version=2,
+    )
+    following = MangaPage(
+        chapter_id=chapter.id,
+        page_number=2,
+        status=PageStatus.APPROVED,
+        continuity_status="CHECKED",
+    )
+    db_session.add_all([page, following])
+    db_session.flush()
+    batch = GenerationBatch(
+        project_id=project["id"], chapter_id=chapter.id, page_id=page.id, ordinal=1
+    )
+    following_batch = GenerationBatch(
+        project_id=project["id"], chapter_id=chapter.id, page_id=following.id, ordinal=2
+    )
+    db_session.add_all([batch, following_batch])
+    db_session.flush()
+    candidate = PageCandidate(
+        batch_id=batch.id,
+        page_id=page.id,
+        ordinal=1,
+        model_alias="image.nano_banana_2",
+        resolution=Resolution.DRAFT_1K,
+        based_on_storyboard_version=2,
+        is_selected=True,
+    )
+    following_candidate = PageCandidate(
+        batch_id=following_batch.id,
+        page_id=following.id,
+        ordinal=1,
+        model_alias="image.nano_banana_2",
+        resolution=Resolution.DRAFT_1K,
+        is_selected=True,
+    )
+    db_session.add_all([candidate, following_candidate])
+    db_session.flush()
+    page.selected_candidate_id = candidate.id
+    following.selected_candidate_id = following_candidate.id
+    db_session.commit()
+
+    response = client.delete(f"/api/v1/pages/{page.id}/selected-candidate")
+
+    assert response.status_code == 200
+    assert response.json()["selected_candidate_id"] is None
+    assert response.json()["selected_candidate_ack_version"] is None
+    assert response.json()["status"] == "REVIEW_REQUIRED"
+    db_session.refresh(candidate)
+    db_session.refresh(following)
+    assert candidate.is_selected is False
+    assert candidate.deleted_at is None
+    assert following.continuity_status == "NEEDS_RECHECK"
+
+    repeated = client.delete(f"/api/v1/pages/{page.id}/selected-candidate")
+    assert repeated.status_code == 409
 
 
 def test_text_checks_and_text_repairs_are_retired(client, db_session):

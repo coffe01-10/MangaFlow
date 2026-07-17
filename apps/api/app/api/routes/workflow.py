@@ -827,6 +827,38 @@ def keep_selected_candidate(
     return page
 
 
+@router.delete("/pages/{page_id}/selected-candidate", response_model=PageRead)
+def retract_selected_candidate(
+    page_id: str,
+    db: Session = Depends(get_db),
+) -> MangaPage:
+    page = _page(db, page_id)
+    if not page.selected_candidate_id:
+        raise HTTPException(status_code=409, detail="当前页面没有已采用候选")
+
+    candidate = db.get(PageCandidate, page.selected_candidate_id)
+    if candidate and candidate.page_id == page.id:
+        candidate.is_selected = False
+        candidate.version += 1
+
+    page.selected_candidate_id = None
+    page.selected_candidate_ack_version = None
+    page.status = PageStatus.REVIEW_REQUIRED
+    page.version += 1
+    db.execute(
+        update(MangaPage)
+        .where(
+            MangaPage.chapter_id == page.chapter_id,
+            MangaPage.page_number > page.page_number,
+            MangaPage.selected_candidate_id.is_not(None),
+        )
+        .values(continuity_status="NEEDS_RECHECK")
+    )
+    db.commit()
+    db.refresh(page)
+    return page
+
+
 @router.post("/pages/{page_id}/next", response_model=PageRead)
 def next_page(page_id: str, db: Session = Depends(get_db)) -> MangaPage:
     page = _page(db, page_id)
