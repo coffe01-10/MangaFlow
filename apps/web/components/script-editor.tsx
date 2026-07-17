@@ -110,7 +110,12 @@ export function ScriptEditor({
       <div className="scene-wardrobe"><strong><Shirt size={13} />本场服装指定</strong><div>{characters.map((character) => {
         const options = outfits.filter((outfit) => outfit.character_id === character.id);
         if (!options.length) return null;
-        return <label key={character.id}><span>{character.primary_name}</span><select value={scene.outfit_assignments[character.id] ?? ""} onChange={(event) => onAssignOutfit(scene.id, { ...scene.outfit_assignments, [character.id]: event.target.value })}><option value="">未指定</option>{options.map((outfit) => <option key={outfit.id} value={outfit.id}>{outfit.name}</option>)}</select></label>;
+        return <label key={character.id}><span>{character.primary_name}</span><select value={scene.outfit_assignments[character.id] ?? ""} onChange={(event) => {
+          const assignments = { ...scene.outfit_assignments };
+          if (event.target.value) assignments[character.id] = event.target.value;
+          else delete assignments[character.id];
+          onAssignOutfit(scene.id, assignments);
+        }}><option value="">未指定</option>{options.map((outfit) => <option key={outfit.id} value={outfit.id}>{outfit.name}</option>)}</select></label>;
       })}</div></div>
       <div className="beat-list">{scene.beats.map((beat) => <article className={editingBeat === beat.id ? "beat-row editing" : "beat-row"} key={beat.id}>
         <i>{String(beat.ordinal).padStart(2, "0")}</i>

@@ -4,6 +4,7 @@ from app.models import (
     Asset,
     AssetCandidate,
     Chapter,
+    Character,
     CharacterReference,
     GenerationBatch,
     InspectionResult,
@@ -11,6 +12,7 @@ from app.models import (
     Outfit,
     PageCandidate,
     StyleProfile,
+    Scene,
 )
 
 
@@ -82,6 +84,77 @@ def test_concept_sheet_can_be_approved_as_character_and_outfit_reference(
     assert reference.is_canonical is True
     assert outfit.reference_asset_ids == [asset.id]
     assert outfit.name == "深色葬礼正装"
+
+    retracted = client.delete(
+        f"/api/v1/asset-candidates/{candidate_id}/approve-reference"
+    )
+    assert retracted.status_code == 200, retracted.json()
+    assert retracted.json()["approved"] is False
+    assert (
+        db_session.query(CharacterReference)
+        .filter_by(character_id=character["id"], asset_id=asset.id)
+        .count()
+        == 0
+    )
+    db_session.refresh(outfit)
+    assert outfit.reference_asset_ids == []
+    assert outfit.status.value == "NEEDS_CONFIRMATION"
+
+
+def test_character_reference_reassignment_is_exclusive(client, db_session):
+    project = _project(client, "人物参考唯一绑定")
+    first = client.post(
+        f"/api/v1/projects/{project['id']}/characters",
+        json={"primary_name": "荻原桜"},
+    ).json()
+    second = client.post(
+        f"/api/v1/projects/{project['id']}/characters",
+        json={"primary_name": "我"},
+    ).json()
+    asset = _asset(project["id"], "character-sheet.png", "e", "CHARACTER_REFERENCE")
+    db_session.add(asset)
+    db_session.commit()
+
+    assert client.post(
+        f"/api/v1/characters/{first['id']}/references",
+        json={"asset_id": asset.id, "is_canonical": True},
+    ).status_code == 201
+    rebound = client.post(
+        f"/api/v1/characters/{second['id']}/references",
+        json={"asset_id": asset.id, "is_canonical": True},
+    )
+    assert rebound.status_code == 201, rebound.json()
+    references = db_session.query(CharacterReference).filter_by(asset_id=asset.id).all()
+    assert len(references) == 1
+    assert references[0].character_id == second["id"]
+
+
+def test_scene_outfit_can_return_to_unspecified(client, db_session):
+    project = _project(client, "服装可清空")
+    chapter = Chapter(project_id=project["id"], title="第一章", ordinal=1)
+    character = Character(project_id=project["id"], primary_name="我")
+    db_session.add_all([chapter, character])
+    db_session.flush()
+    scene = Scene(chapter_id=chapter.id, ordinal=1)
+    outfit = Outfit(
+        project_id=project["id"],
+        character_id=character.id,
+        name="深色葬礼正装",
+    )
+    db_session.add_all([scene, outfit])
+    db_session.commit()
+
+    assigned = client.patch(
+        f"/api/v1/scenes/{scene.id}/outfits",
+        json={"assignments": {character.id: outfit.id}},
+    )
+    assert assigned.status_code == 200, assigned.json()
+    cleared = client.patch(
+        f"/api/v1/scenes/{scene.id}/outfits",
+        json={"assignments": {character.id: ""}},
+    )
+    assert cleared.status_code == 200, cleared.json()
+    assert cleared.json()["assignments"] == {}
 
 
 def test_color_style_requires_palette_and_approved_test_image(

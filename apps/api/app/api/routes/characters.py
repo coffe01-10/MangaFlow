@@ -153,13 +153,22 @@ def bind_reference(
             detail="只有人物参考图或已生成的角色/服装设定页可以绑定角色",
         )
     existing = db.scalar(
-        select(CharacterReference).where(
-            CharacterReference.character_id == character_id,
-            CharacterReference.asset_id == asset.id,
-        )
+        select(CharacterReference).where(CharacterReference.asset_id == asset.id)
     )
     if existing:
-        return existing
+        if existing.character_id == character_id:
+            if payload.is_canonical and not existing.is_canonical:
+                db.execute(
+                    update(CharacterReference)
+                    .where(CharacterReference.character_id == character_id)
+                    .values(is_canonical=False)
+                )
+                existing.is_canonical = True
+                db.commit()
+                db.refresh(existing)
+            return existing
+        db.delete(existing)
+        db.flush()
     if payload.is_canonical:
         db.execute(
             update(CharacterReference)

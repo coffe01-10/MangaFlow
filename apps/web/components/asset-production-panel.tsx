@@ -96,8 +96,18 @@ export function CharacterConceptPanel({
       queryClient.invalidateQueries({ queryKey: ["jobs", projectId] });
     },
   });
+  const retractApproval = useMutation({
+    mutationFn: (candidateId: string) => api.retractAssetReference(candidateId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["characters", projectId] });
+      queryClient.invalidateQueries({ queryKey: ["outfits", projectId] });
+      queryClient.invalidateQueries({ queryKey: ["assets", projectId] });
+      queryClient.invalidateQueries({ queryKey: ["asset-candidates"] });
+      queryClient.invalidateQueries({ queryKey: ["page-readiness"] });
+    },
+  });
 
-  const error = generate.error ?? approve.error ?? rejectAndRedraw.error;
+  const error = generate.error ?? approve.error ?? rejectAndRedraw.error ?? retractApproval.error;
   return <section className="asset-production-panel concept-production-panel">
     <header><div><span>AI CONCEPT / 待确认草稿</span><strong>一张综合设定页，同时建立人物与服装规范</strong></div><small>{character.references.length ? "已有参考也可重做" : "无需已有参考图"}</small></header>
     <div className="concept-form-grid">
@@ -111,7 +121,7 @@ export function CharacterConceptPanel({
     <div className="production-candidate-grid">{candidates.data?.slice(0, 2).map((candidate) => {
       const approval = candidate.prompt_snapshot.reference_approval as { approved?: boolean } | undefined;
       const approved = Boolean(approval?.approved);
-      return <article key={candidate.id} className={approved ? "approved" : ""}><CandidatePreview candidate={candidate} label={`${character.primary_name} 综合设定草稿 ${candidate.ordinal}`} onOpen={onOpen} /><div><span>CONCEPT {String(candidate.ordinal).padStart(2, "0")}</span><strong>{approved ? "已确认为规范参考" : "等待人工确认"}</strong><small>{candidate.status} · {candidate.resolution}</small><details><summary>查看实际提示词</summary><p>{promptPreview(candidate)}</p></details><div className="candidate-decision-row"><button type="button" className="secondary" disabled={!candidate.asset_id || approved || rejectAndRedraw.isPending} onClick={() => window.confirm("拒绝这张草稿并按当前描述重新生成？") && rejectAndRedraw.mutate(candidate.id)}><RotateCcw size={13} />拒绝并重抽</button><button type="button" disabled={!candidate.asset_id || approved || approve.isPending} onClick={() => approve.mutate(candidate.id)}><Check size={13} />{approved ? "已绑定人物与服装" : "确认并设为规范参考"}</button></div></div></article>;
+      return <article key={candidate.id} className={approved ? "approved" : ""}><CandidatePreview candidate={candidate} label={`${character.primary_name} 综合设定草稿 ${candidate.ordinal}`} onOpen={onOpen} /><div><span>CONCEPT {String(candidate.ordinal).padStart(2, "0")}</span><strong>{approved ? "已确认为规范参考" : "等待人工确认"}</strong><small>{candidate.status} · {candidate.resolution}</small><details><summary>查看实际提示词</summary><p>{promptPreview(candidate)}</p></details><div className="candidate-decision-row"><button type="button" className="secondary" disabled={!candidate.asset_id || rejectAndRedraw.isPending || retractApproval.isPending} onClick={() => approved ? (window.confirm("撤销采用这张设定图？人物与服装绑定会解除，图片仍保留在素材库。") && retractApproval.mutate(candidate.id)) : (window.confirm("拒绝这张草稿并按当前描述重新生成？") && rejectAndRedraw.mutate(candidate.id))}><RotateCcw size={13} />{approved ? "撤销采用" : "拒绝并重抽"}</button><button type="button" disabled={!candidate.asset_id || approved || approve.isPending} onClick={() => approve.mutate(candidate.id)}><Check size={13} />{approved ? "已绑定人物与服装" : "确认并设为规范参考"}</button></div></div></article>;
     })}</div>
     {(candidates.data?.length ?? 0) > 2 ? <p className="asset-result-empty">另有 {(candidates.data?.length ?? 0) - 2} 个历史候选，可在生成素材库中查看。</p> : null}
     {!candidates.data?.length ? <p className="asset-result-empty">第一张草稿生成后会实时出现在这里；确认前不会进入正式页面提示词。</p> : null}

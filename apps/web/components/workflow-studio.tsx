@@ -492,6 +492,11 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
     }
   }
 
+  function ignoreLegacy() {
+    window.localStorage.removeItem("mangaflow.workflow.v1");
+    setLegacyGraph(null);
+  }
+
   const groupedCatalog = useMemo(() => {
     const groups = new Map<string, WorkflowNodeType[]>();
     for (const item of catalog.data ?? []) groups.set(item.category, [...(groups.get(item.category) ?? []), item]);
@@ -536,7 +541,7 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
         </div>
       </header>
 
-      {legacyGraph ? <section className={styles.legacy}><History size={17} /><div><strong>检测到旧版浏览器草稿</strong><span>导入服务端后将停止写入 localStorage，原数据不会自动覆盖。</span></div><button onClick={importLegacy}>导入旧版</button><button aria-label="暂不导入" onClick={() => setLegacyGraph(null)}><X size={14} /></button></section> : null}
+      {legacyGraph ? <section className={styles.legacy}><History size={17} /><div><strong>发现升级前保存在当前浏览器的工作流草稿</strong><span>它不影响现在的服务端草稿与已发布版本。需要保留时可另存导入；确认无用可永久忽略。</span></div><button onClick={importLegacy}>另存为新流程</button><button className={styles.ignoreLegacy} onClick={() => window.confirm("永久忽略这份旧版浏览器草稿？不会删除服务端流程。") && ignoreLegacy()}><X size={14} />永久忽略</button></section> : null}
       {notice ? <button className={styles.notice} onClick={() => setNotice("")}>{notice}<X size={12} /></button> : null}
       <section className={styles.workflowStatus} aria-live="polite"><div><span>草稿版本</span><strong>V{activeWorkflow.draft_version}</strong></div><div><span>已发布版本</span><strong>{versions.data?.[0] ? `V${versions.data[0].revision}` : "尚未发布"}</strong></div><div><span>保存状态</span><strong>{saveStatus}</strong></div><div><span>校验问题</span><strong>{validation.length} 项</strong></div><button onClick={() => startRun.mutate("FULL")} disabled={startRun.isPending}><Play size={14} />运行已发布流程</button></section>
 
