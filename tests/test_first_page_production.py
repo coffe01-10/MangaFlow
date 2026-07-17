@@ -195,6 +195,7 @@ def test_candidate_selection_allows_manual_text_confirmation_and_blocks_severe_i
         resolution=Resolution.DRAFT_1K,
         status="NEEDS_REVIEW",
         asset_id=asset.id,
+        based_on_storyboard_version=page.storyboard_version,
     )
     db_session.add(candidate)
     db_session.flush()

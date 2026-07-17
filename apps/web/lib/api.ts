@@ -16,7 +16,6 @@ export interface Project {
   workflow_mode: WorkflowMode;
   default_concurrency: number;
   default_style_id: string | null;
-  ocr_enabled: boolean;
   consistency_check_enabled: boolean;
   text_model_alias: string;
   last_image_model_alias: ImageModelAlias | null;
@@ -82,6 +81,12 @@ export interface DiagnosticCheck {
 export interface Diagnostics {
   checks: DiagnosticCheck[];
   checked_at: string;
+  queue: {
+    current_mode: string;
+    actual_executor: string;
+    redis_state: string;
+    can_execute_new_jobs: boolean;
+  };
 }
 
 export interface Asset {
@@ -228,6 +233,8 @@ export interface MangaPage {
   estimated_bubbles: number;
   source_coverage: { complete?: boolean; layout_mode?: "dynamic" | "balanced"; ranges?: { text: string }[] };
   selected_candidate_id: string | null;
+  storyboard_version: number;
+  selected_candidate_ack_version: number | null;
   continuity_status: string;
   scene_ids: string[];
   beat_ids: string[];
@@ -272,6 +279,7 @@ export interface StoryboardPanel {
 export interface Storyboard {
   page: MangaPage;
   panels: StoryboardPanel[];
+  candidate_count: number;
 }
 
 export type CharacterPresence = "VISIBLE" | "OFFSCREEN" | "MENTIONED";
@@ -354,6 +362,9 @@ export interface PageCandidate {
   job_id: string | null;
   is_favorite: boolean;
   is_selected: boolean;
+  based_on_storyboard_version: number | null;
+  version_state: "CURRENT" | "STALE" | "STALE_ACCEPTED" | "LEGACY_UNKNOWN";
+  staleness_reasons: string[];
   created_at: string;
   variant: string | null;
   prompt_snapshot: Record<string, unknown>;
@@ -376,8 +387,45 @@ export interface Job {
   error_message: string | null;
   workflow_run_id: string | null;
   workflow_node_id: string | null;
+  duration_ms: number | null;
+  usage_summary: Record<string, unknown>;
+  estimated_cost: number | null;
   created_at: string;
   archived_at: string | null;
+}
+
+export interface DashboardProject {
+  project: Project;
+  chapter_count: number;
+  page_count: number;
+  selected_page_count: number;
+  review_page_count: number;
+  stale_selected_page_count: number;
+  candidate_count: number;
+  pending_job_count: number;
+  failed_job_count: number;
+  next_action: { section: string; label: string; reason: string };
+}
+
+export interface ProjectDashboard {
+  totals: {
+    project_count: number;
+    page_count: number;
+    selected_page_count: number;
+    review_page_count: number;
+    pending_job_count: number;
+  };
+  projects: DashboardProject[];
+}
+
+export interface GenerationWorkbench {
+  page: MangaPage;
+  storyboard: Storyboard;
+  readiness: PageReadiness;
+  current_batch: GenerationBatch | null;
+  candidates: PageCandidate[];
+  selected_candidate: PageCandidate | null;
+  selected_candidate_state: PageCandidate["version_state"] | "NONE";
 }
 
 export interface InspectionResult {
@@ -590,6 +638,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   projects: () => request<Project[]>("/projects"),
+  dashboard: () => request<ProjectDashboard>("/projects/dashboard"),
   project: (id: string) => request<Project>(`/projects/${id}`),
   createProject: (payload: Partial<Project> & { name: string }) =>
     request<Project>("/projects", { method: "POST", body: JSON.stringify(payload) }),
@@ -651,6 +700,8 @@ export const api = {
   }),
   pages: (chapterId: string) => request<MangaPage[]>(`/chapters/${chapterId}/pages`),
   pageReadiness: (pageId: string) => request<PageReadiness>(`/pages/${pageId}/readiness`),
+  generationWorkbench: (pageId: string) =>
+    request<GenerationWorkbench>(`/pages/${pageId}/generation-workbench`),
   storyboard: (pageId: string) => request<Storyboard>(`/pages/${pageId}/storyboard`),
   updatePanel: (panelId: string, payload: Partial<Pick<StoryboardPanel, "shot_type" | "camera_angle" | "camera_height" | "characters" | "character_presence" | "props" | "outfits" | "actions" | "expressions" | "background" | "sound_effects" | "bleed" | "borderless">> & { version: number }) =>
     request<StoryboardPanel>(`/panels/${panelId}`, { method: "PATCH", body: JSON.stringify(payload) }),
@@ -741,10 +792,10 @@ export const api = {
   batches: (pageId: string) => request<GenerationBatch[]>(`/pages/${pageId}/batches`),
   startBatch: (pageId: string) => request<GenerationBatch>(`/pages/${pageId}/batches`, { method: "POST" }),
   candidates: (batchId: string) => request<PageCandidate[]>(`/batches/${batchId}/candidates`),
-  generateCandidate: (batchId: string, model_alias: ImageModelAlias, resolution: Resolution, reference_selections: Record<string, { character_asset_id: string | null; outfit_id: string | null; outfit_asset_id: string | null }>) =>
+  generateCandidate: (batchId: string, model_alias: ImageModelAlias, resolution: Resolution, storyboard_version: number, reference_selections: Record<string, { character_asset_id: string | null; outfit_id: string | null; outfit_asset_id: string | null }>) =>
     request<{ job_id: string; job_status: string; candidate: PageCandidate }>(`/batches/${batchId}/candidates`, {
       method: "POST",
-      body: JSON.stringify({ model_alias, resolution, reference_selections }),
+      body: JSON.stringify({ model_alias, resolution, storyboard_version, reference_selections }),
     }),
   favoriteCandidate: (candidateId: string, isFavorite: boolean) =>
     request<PageCandidate>(`/candidates/${candidateId}/favorite`, {
@@ -752,10 +803,19 @@ export const api = {
       body: JSON.stringify({ is_favorite: isFavorite }),
     }),
   deleteCandidate: (candidateId: string) => request<void>(`/candidates/${candidateId}`, { method: "DELETE" }),
-  selectCandidate: (pageId: string, candidateId: string, manualTextConfirmed = false) =>
+  selectCandidate: (pageId: string, candidateId: string, manualTextConfirmed = false, acceptStale = false) =>
     request<MangaPage>(`/pages/${pageId}/select-candidate`, {
       method: "POST",
-      body: JSON.stringify({ candidate_id: candidateId, manual_text_confirmed: manualTextConfirmed }),
+      body: JSON.stringify({ candidate_id: candidateId, manual_text_confirmed: manualTextConfirmed, accept_stale: acceptStale }),
+    }),
+  keepSelectedCandidate: (pageId: string, candidateId: string, storyboardVersion: number) =>
+    request<MangaPage>(`/pages/${pageId}/selected-candidate/keep`, {
+      method: "POST",
+      body: JSON.stringify({
+        candidate_id: candidateId,
+        storyboard_version: storyboardVersion,
+        manual_text_confirmed: true,
+      }),
     }),
   nextPage: (pageId: string) => request<MangaPage>(`/pages/${pageId}/next`, { method: "POST" }),
   library: (projectId: string, filters: LibraryFilters = {}) => {
@@ -771,17 +831,22 @@ export const api = {
   archiveJob: (jobId: string) => request<Job>(`/jobs/${jobId}/archive`, { method: "POST" }),
   restoreJob: (jobId: string) => request<Job>(`/jobs/${jobId}/restore`, { method: "POST" }),
   archiveCompletedJobs: (projectId: string) => request<{ archived_count: number }>(`/projects/${projectId}/jobs/archive-completed`, { method: "POST" }),
+  bulkArchiveJobs: (projectId: string, jobIds: string[]) =>
+    request<{ archived_count: number }>(`/projects/${projectId}/jobs/bulk-archive`, {
+      method: "POST",
+      body: JSON.stringify({ job_ids: jobIds }),
+    }),
   deleteJob: (jobId: string) => request<void>(`/jobs/${jobId}`, { method: "DELETE" }),
   inspectCandidate: (candidateId: string) => request<Job>(`/candidates/${candidateId}/inspect`, {
     method: "POST",
-    body: JSON.stringify({ categories: ["TEXT", "SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"] }),
+    body: JSON.stringify({ categories: ["SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"] }),
   }),
   inspections: (candidateId: string) => request<InspectionResult[]>(`/candidates/${candidateId}/inspections`),
   repairCandidate: (
     candidateId: string,
     payload: {
       inspection_result_id: string;
-      repair_type: "TEXT_REGION" | "BUBBLE_REGION" | "PANEL" | "PAGE";
+      repair_type: "BUBBLE_REGION" | "PANEL" | "PAGE";
       target_regions: Array<Record<string, unknown>>;
       target_fields: string[];
       model_alias: ImageModelAlias;

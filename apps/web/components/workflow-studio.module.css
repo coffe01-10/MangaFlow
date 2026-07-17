@@ -1,4 +1,4 @@
-.studio { --flow-bg: #1a1d1b; --flow-panel: #202421; --flow-line: #383d39; min-height: 100vh; color: #e9e6dd; background: var(--flow-bg); font-size: 11px; overflow: hidden; }
+.studio { --flow-bg: #1a1d1b; --flow-panel: #202421; --flow-line: #383d39; min-height: 100vh; color: #e9e6dd; background: var(--flow-bg); font-size: 14px; overflow: hidden; }
 .loading { min-height: 100vh; display: grid; place-items: center; gap: 9px; color: #8b928d; background: #1a1d1b; }
 .spin { animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -21,7 +21,12 @@
 .legacy span { color: #bfb098; font-size: 8px; }
 .legacy button { min-height: 28px; border: 1px solid #806743; background: transparent; color: inherit; cursor: pointer; font-size: 8px; }
 .notice { position: fixed; z-index: 70; top: 68px; right: 14px; min-height: 34px; display: flex; gap: 12px; align-items: center; padding: 0 11px; border: 1px solid #806743; background: #efe7d6; color: #342a1f; box-shadow: 4px 4px 0 rgba(0,0,0,.18); cursor: pointer; font-size: 8px; }
-.body { height: calc(100vh - 118px); display: grid; grid-template-columns: 238px minmax(420px, 1fr) 286px; }
+.workflowStatus { min-height: 50px; padding: 6px 14px; display: flex; align-items: stretch; gap: 0; border-bottom: 1px solid var(--flow-line); background: #171a18; }
+.workflowStatus > div { min-width: 128px; padding: 0 13px; display: grid; align-content: center; gap: 2px; border-right: 1px solid var(--flow-line); }
+.workflowStatus span { color: #7f8982; font-size: 12px; }
+.workflowStatus strong { font-size: 14px; }
+.workflowStatus button { margin-left: auto; min-height: 40px; padding: 0 14px; display: flex; align-items: center; gap: 6px; border: 1px solid #e8e4da; background: #e8e4da; color: #151714; cursor: pointer; font-size: 12px; }
+.body { height: calc(100vh - 168px); display: grid; grid-template-columns: 238px minmax(420px, 1fr) 286px; }
 .body.libraryClosed { grid-template-columns: 0 minmax(420px, 1fr) 286px; }
 .body.inspectorClosed { grid-template-columns: 238px minmax(420px, 1fr) 0; }
 .body.libraryClosed.inspectorClosed { grid-template-columns: 0 minmax(420px, 1fr) 0; }
@@ -78,7 +83,12 @@
 .inspectorForm input:disabled { color: #727a75; }
 .noSelection { min-height: 240px; display: grid; place-content: center; justify-items: center; gap: 8px; padding: 28px; color: #69716c; text-align: center; }
 .noSelection strong { color: #aaaFAA; font-family: var(--serif); font-size: 12px; }
-.noSelection span { max-width: 180px; font-size: 7px; line-height: 1.5; }
+.noSelection ol { max-width: 210px; margin: 0; padding-left: 22px; color: #9aa39d; font-size: 12px; line-height: 1.9; text-align: left; }
+.nodeRuntime { padding: 10px; display: grid; gap: 7px; border: 1px solid #455049; background: #171b18; }
+.nodeRuntime > strong { color: #d9d5ca; font-size: 14px; }
+.nodeRuntime > span { color: #8f9992; font-size: 12px; }
+.nodeRuntime pre { max-height: 120px; margin: 0; padding: 8px; overflow: auto; background: #111411; color: #aeb8b1; font-size: 11px; white-space: pre-wrap; }
+.nodeRuntime em { color: #dc8b7e; font-size: 12px; font-style: normal; }
 .versionList { border-top: 1px solid var(--flow-line); }
 .versionList > header { height: 37px; padding: 0 10px; display: flex; justify-content: space-between; align-items: center; color: #808983; font-size: 7px; }
 .versionList button { width: 100%; min-height: 32px; display: grid; grid-template-columns: 18px 36px 1fr; align-items: center; border: 0; border-top: 1px solid #303632; background: transparent; color: #b9bfbb; text-align: left; cursor: pointer; font-size: 7px; }
@@ -98,3 +108,9 @@
 .approval strong { margin-right: 8px; color: #eadcbf; font-size: 8px; }
 .approval a { border-right: 1px solid #3b413d; }
 @media (max-width: 980px) { .topbar { grid-template-columns: 1fr auto; }.workflowSelect { display: none; }.topActions button:not(.publish), .topActions label { display: none; }.body { grid-template-columns: 0 1fr 0; }.library, .inspector { position: absolute; z-index: 30; top: 58px; bottom: 60px; width: min(320px, 88vw); }.library { left: 0; }.inspector { right: 0; }.libraryClosed .library, .inspectorClosed .inspector { display: none; }.runner { flex-wrap: wrap; }.runState { display: none; }.runActions { margin-left: 0; }.approval { left: 14px; right: 14px; overflow-x: auto; } }
+
+/* Workflow uses a dense dark canvas, but text and controls still keep the shared baseline. */
+.studio :is(span, small, label, button, select, input, textarea, a, p, li, code, em) { font-size: 12px !important; }
+.studio :is(button, select, input, textarea, a) { min-height: 40px !important; }
+.studio button { min-width: 40px; }
+.crumb a { display: inline-flex; align-items: center; }

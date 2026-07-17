@@ -160,7 +160,7 @@ const paletteGroups: { label: string; items: PaletteTemplate[] }[] = [
     label: "生成 / OUTPUT",
     items: [
       { key: "generator", title: "漫画页生成", description: "组装提示词并生成候选", kind: "generator", icon: ImageIcon, inputs: [port("panels", "分镜数据", "json"), port("assets", "参考资产", "asset")], outputs: [port("page", "漫画页面", "image")] },
-      { key: "quality", title: "质量检查", description: "OCR 与角色一致性检查", kind: "quality", icon: ScanSearch, inputs: [port("page", "漫画页面", "image")], outputs: [port("report", "检查报告", "report"), port("approved", "通过页面", "image")] },
+      { key: "quality", title: "质量检查", description: "说话人、角色、服装、道具与连续性", kind: "quality", icon: ScanSearch, inputs: [port("page", "漫画页面", "image")], outputs: [port("report", "检查报告", "report"), port("approved", "通过页面", "image")] },
       { key: "export", title: "连续导出", description: "输出 PNG、PDF 与项目数据", kind: "output", icon: FileOutput, inputs: [port("page", "通过页面", "image")], outputs: [port("files", "导出文件", "asset")] },
     ],
   },

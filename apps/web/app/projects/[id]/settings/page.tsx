@@ -3,12 +3,12 @@
 import { AppShell } from "@/components/shell";
 import { api, type Project, type Resolution, type WorkflowMode } from "@/lib/api";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Check, CircleAlert, Gauge, LoaderCircle, Save, ScanText, ShieldCheck, SlidersHorizontal } from "lucide-react";
+import { ArrowLeft, Check, CircleAlert, Gauge, LoaderCircle, Save, ShieldCheck, SlidersHorizontal } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useState } from "react";
 
-type ProjectDraft = Pick<Project, "workflow_mode" | "draft_resolution" | "default_resolution" | "default_concurrency" | "ocr_enabled" | "consistency_check_enabled">;
+type ProjectDraft = Pick<Project, "workflow_mode" | "draft_resolution" | "default_resolution" | "default_concurrency" | "consistency_check_enabled">;
 
 export default function ProjectSettingsPage() {
   const { id } = useParams<{ id: string }>();
@@ -21,7 +21,6 @@ export default function ProjectSettingsPage() {
       draft_resolution: project.data.draft_resolution,
       default_resolution: project.data.default_resolution,
       default_concurrency: project.data.default_concurrency,
-      ocr_enabled: project.data.ocr_enabled,
       consistency_check_enabled: project.data.consistency_check_enabled,
     } : null);
 
@@ -37,7 +36,6 @@ export default function ProjectSettingsPage() {
         draft_resolution: data.draft_resolution,
         default_resolution: data.default_resolution,
         default_concurrency: data.default_concurrency,
-        ocr_enabled: data.ocr_enabled,
         consistency_check_enabled: data.consistency_check_enabled,
       });
       setSaved(true);
@@ -76,8 +74,8 @@ export default function ProjectSettingsPage() {
 
           <section className="project-setting-section checks-section">
             <header><ShieldCheck size={18} /><div><span>QUALITY GATES</span><h2>检查开关</h2></div></header>
-            <button className={`switch-setting ${draft.ocr_enabled ? "on" : ""}`} onClick={() => update("ocr_enabled", !draft.ocr_enabled)}><ScanText size={19} /><span><strong>OCR 文字检查</strong><small>生成后检查对白与旁白文字</small></span><i /></button>
             <button className={`switch-setting ${draft.consistency_check_enabled ? "on" : ""}`} onClick={() => update("consistency_check_enabled", !draft.consistency_check_enabled)}><ShieldCheck size={19} /><span><strong>连续性检查</strong><small>检查角色、服装、道具和场景状态</small></span><i /></button>
+            <p className="project-setting-note"><strong>文字由人工校对</strong><span>采用候选前必须明确确认页面文字，不再运行 OCR 或自动文字修复。</span></p>
           </section>
 
           <aside className="project-setting-note"><span>MODEL POLICY</span><strong>Nano Banana 2 与 Pro 完全平级</strong><p>项目设置不会保存“主模型”。每次生成候选都必须由用户明确选择模型和分辨率。</p></aside>

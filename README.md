@@ -2,7 +2,7 @@
 
 面向小说作者与漫画创作者的私有 AI 漫画生产工作台。MVP 已接通完整闭环：
 
-`完整原文 → 无损分段 → 剧本任务 → 动态分页 → 单页抽卡 → 收藏/采用 → 下一页 → 检查修复 → 导出`
+`完整原文 → 无损分段 → 剧本任务 → 动态分页 → 单页抽卡 → 人工校对与采用 → 视觉检查 → 导出`
 
 完整需求见 [`plan.md`](plan.md)，实际完成度见 [`docs/development-progress.md`](docs/development-progress.md)。
 
@@ -20,7 +20,7 @@
 - 同一页多批次、多候选、跨模型抽卡；收藏多个、采用一个，采用版本才进入下一页连续性上下文。
 - 按“章节 → 页面 → 批次”读取素材库，支持页面、角色补图、服装图、风格测试和修复图批次。
 - 持久化任务、DAG、幂等、取消、重试、超时和并发限制；`AUTO` 在开发环境无 Redis 时使用本地执行器，`LOCAL` 强制本地执行，`REDIS` 不可用时任务安全停留在 `WAITING`。
-- Gemini 多模态检查、分级修复任务，以及 PNG、PDF、项目 JSON 和素材清单导出。
+- Gemini 多模态视觉检查、分级视觉修复、人工文字校对，以及 PNG、PDF、项目 JSON 和素材清单导出。
 - Vertex 凭据只由 API/Worker 读取，浏览器不接触服务账号密钥。
 
 ## Vertex AI 模型
@@ -94,7 +94,7 @@ PostgreSQL 与 Redis 的开发容器可用 `docker compose up -d` 启动；默�
 npm run check
 ```
 
-当前验收覆盖后端 Pytest、Ruff、前端 ESLint/Vitest/TypeScript/Next.js 构建、Playwright 闭环和 Alembic 全新升级/回滚/再升级。Codex 内置浏览器在当前项目实测了第一页 readiness、男性角色与深色葬礼服装综合设定页、彩色色板、风格测试图和 Nano Banana 2 1K 正式页面。真实检查中角色、服装、道具和连续性通过，文字辅助检查为 75% 并给出逐气泡差异。文字检查只作为人工校对提示，人工确认后可以采用，不会为了追分自动发起付费修图。
+当前验收覆盖后端 Pytest、Ruff、前端 ESLint/Vitest、TypeScript、Next.js 构建、Playwright 闭环和 Alembic 全新升级/回滚/再升级。文字由用户在采用候选前人工校对；系统不再创建文字自动检查或文字区域修复任务，也不会为了文字分数自动发起付费调用。
 
 ## 安全说明
 

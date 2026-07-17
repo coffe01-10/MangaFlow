@@ -17,7 +17,15 @@ from app.models import (
     StyleStatus,
     WorkflowDefinition,
 )
-from app.schemas import ProjectCreate, ProjectRead, ProjectUpdate
+from app.schemas import (
+    DashboardNextAction,
+    DashboardTotals,
+    ProjectCreate,
+    ProjectDashboardItem,
+    ProjectDashboardRead,
+    ProjectRead,
+    ProjectUpdate,
+)
 from app.settings_schemas import ProjectSummaryRead
 
 router = APIRouter()
@@ -30,6 +38,11 @@ def list_projects(db: Session = Depends(get_db)) -> list[Project]:
             select(Project).where(Project.deleted_at.is_(None)).order_by(Project.updated_at.desc())
         )
     )
+
+
+@router.get("/dashboard", response_model=ProjectDashboardRead)
+def get_dashboard(db: Session = Depends(get_db)) -> ProjectDashboardRead:
+    return _get_dashboard_snapshot(db)
 
 
 @router.post("", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
@@ -51,6 +64,176 @@ def get_project(project_id: str, db: Session = Depends(get_db)) -> Project:
     if not project or project.deleted_at is not None:
         raise HTTPException(status_code=404, detail="项目不存在")
     return project
+
+
+def _get_dashboard_snapshot(db: Session) -> ProjectDashboardRead:
+    """Return a consistent dashboard snapshot without per-project request waterfalls."""
+
+    projects = list(
+        db.scalars(
+            select(Project).where(Project.deleted_at.is_(None)).order_by(Project.updated_at.desc())
+        )
+    )
+    if not projects:
+        return ProjectDashboardRead(
+            totals=DashboardTotals(
+                project_count=0,
+                page_count=0,
+                selected_page_count=0,
+                review_page_count=0,
+                pending_job_count=0,
+            ),
+            projects=[],
+        )
+
+    project_ids = [project.id for project in projects]
+    chapter_rows = list(
+        db.execute(
+            select(Chapter.id, Chapter.project_id).where(
+                Chapter.project_id.in_(project_ids), Chapter.deleted_at.is_(None)
+            )
+        )
+    )
+    project_by_chapter = {row.id: row.project_id for row in chapter_rows}
+    chapter_ids = list(project_by_chapter)
+    pages = (
+        list(db.scalars(select(MangaPage).where(MangaPage.chapter_id.in_(chapter_ids))))
+        if chapter_ids
+        else []
+    )
+    selected_ids = [page.selected_candidate_id for page in pages if page.selected_candidate_id]
+    selected_candidates = {
+        candidate.id: candidate
+        for candidate in (
+            db.scalars(select(PageCandidate).where(PageCandidate.id.in_(selected_ids)))
+            if selected_ids
+            else []
+        )
+    }
+    candidate_counts = dict(
+        db.execute(
+            select(GenerationBatch.project_id, func.count(PageCandidate.id))
+            .join(PageCandidate, PageCandidate.batch_id == GenerationBatch.id)
+            .where(
+                GenerationBatch.project_id.in_(project_ids),
+                PageCandidate.deleted_at.is_(None),
+            )
+            .group_by(GenerationBatch.project_id)
+        ).all()
+    )
+    job_rows = list(
+        db.execute(
+            select(GenerationJob.project_id, GenerationJob.status, func.count(GenerationJob.id))
+            .where(GenerationJob.project_id.in_(project_ids))
+            .group_by(GenerationJob.project_id, GenerationJob.status)
+        )
+    )
+
+    pending_statuses = {
+        JobStatus.WAITING,
+        JobStatus.QUEUED,
+        JobStatus.PREPARING,
+        JobStatus.UPLOADING_REFERENCES,
+        JobStatus.GENERATING,
+        JobStatus.OCR_CHECKING,
+        JobStatus.CONSISTENCY_CHECKING,
+        JobStatus.REPAIRING,
+    }
+    chapters_by_project: dict[str, int] = {project_id: 0 for project_id in project_ids}
+    pages_by_project: dict[str, list[MangaPage]] = {project_id: [] for project_id in project_ids}
+    jobs_by_project: dict[str, dict[str, int]] = {
+        project_id: {"pending": 0, "failed": 0} for project_id in project_ids
+    }
+    for row in chapter_rows:
+        chapters_by_project[row.project_id] += 1
+    for page in pages:
+        pages_by_project[project_by_chapter[page.chapter_id]].append(page)
+    for project_id, job_status, count in job_rows:
+        if job_status in pending_statuses:
+            jobs_by_project[project_id]["pending"] += count
+        elif job_status == JobStatus.FAILED:
+            jobs_by_project[project_id]["failed"] += count
+
+    items: list[ProjectDashboardItem] = []
+    for project in projects:
+        project_pages = pages_by_project[project.id]
+        selected_page_count = sum(bool(page.selected_candidate_id) for page in project_pages)
+        stale_selected_page_count = 0
+        review_page_ids: set[str] = set()
+        for page in project_pages:
+            if page.continuity_status in {"NEEDS_REVIEW", "NEEDS_RECHECK"}:
+                review_page_ids.add(page.id)
+            selected = selected_candidates.get(page.selected_candidate_id or "")
+            selected_is_stale = bool(
+                selected
+                and (
+                    selected.based_on_storyboard_version is None
+                    or selected.based_on_storyboard_version != page.storyboard_version
+                )
+            )
+            if selected_is_stale:
+                stale_selected_page_count += 1
+                if page.selected_candidate_ack_version != page.storyboard_version:
+                    review_page_ids.add(page.id)
+
+        chapter_count = chapters_by_project[project.id]
+        page_count = len(project_pages)
+        candidate_count = candidate_counts.get(project.id, 0)
+        job_counts = jobs_by_project[project.id]
+        if not chapter_count:
+            next_action = DashboardNextAction(
+                section="source", label="导入第一章", reason="项目还没有原作章节"
+            )
+        elif not page_count:
+            next_action = DashboardNextAction(
+                section="storyboard", label="创建分页分镜", reason="章节尚未规划漫画页面"
+            )
+        elif review_page_ids:
+            next_action = DashboardNextAction(
+                section="storyboard",
+                label=f"复查 {len(review_page_ids)} 页",
+                reason="分镜或已采用候选需要确认",
+            )
+        elif selected_page_count < page_count:
+            next_action = DashboardNextAction(
+                section="generate",
+                label="继续生成",
+                reason=f"还有 {page_count - selected_page_count} 页未采用候选",
+            )
+        elif job_counts["failed"]:
+            next_action = DashboardNextAction(
+                section="jobs", label="处理失败任务", reason="任务中心存在失败记录"
+            )
+        else:
+            next_action = DashboardNextAction(
+                section="library", label="查看已采用页面", reason="当前页面均已有采用版本"
+            )
+
+        items.append(
+            ProjectDashboardItem(
+                project=ProjectRead.model_validate(project),
+                chapter_count=chapter_count,
+                page_count=page_count,
+                selected_page_count=selected_page_count,
+                review_page_count=len(review_page_ids),
+                stale_selected_page_count=stale_selected_page_count,
+                candidate_count=candidate_count,
+                pending_job_count=job_counts["pending"],
+                failed_job_count=job_counts["failed"],
+                next_action=next_action,
+            )
+        )
+
+    return ProjectDashboardRead(
+        totals=DashboardTotals(
+            project_count=len(projects),
+            page_count=sum(item.page_count for item in items),
+            selected_page_count=sum(item.selected_page_count for item in items),
+            review_page_count=sum(item.review_page_count for item in items),
+            pending_job_count=sum(item.pending_job_count for item in items),
+        ),
+        projects=items,
+    )
 
 
 @router.get("/{project_id}/summary", response_model=ProjectSummaryRead)

@@ -22,7 +22,6 @@ class ProjectCreate(BaseModel):
     draft_resolution: Resolution = Resolution.DRAFT_1K
     workflow_mode: WorkflowMode = WorkflowMode.SEMI_AUTO
     default_concurrency: int = Field(default=4, ge=1, le=8)
-    ocr_enabled: bool = True
     consistency_check_enabled: bool = True
     last_image_model_alias: str | None = Field(default=None, pattern=IMAGE_MODEL_PATTERN)
 
@@ -33,7 +32,6 @@ class ProjectUpdate(BaseModel):
     draft_resolution: Resolution | None = None
     workflow_mode: WorkflowMode | None = None
     default_concurrency: int | None = Field(default=None, ge=1, le=8)
-    ocr_enabled: bool | None = None
     consistency_check_enabled: bool | None = None
     last_image_model_alias: str | None = Field(default=None, pattern=IMAGE_MODEL_PATTERN)
     version: int = Field(ge=1)
@@ -51,7 +49,6 @@ class ProjectRead(BaseModel):
     draft_resolution: Resolution
     workflow_mode: WorkflowMode
     default_concurrency: int
-    ocr_enabled: bool
     consistency_check_enabled: bool
     text_model_alias: str
     last_image_model_alias: str | None
@@ -59,6 +56,38 @@ class ProjectRead(BaseModel):
     created_at: datetime
     updated_at: datetime
     version: int
+
+
+class DashboardNextAction(BaseModel):
+    section: str
+    label: str
+    reason: str
+
+
+class ProjectDashboardItem(BaseModel):
+    project: ProjectRead
+    chapter_count: int
+    page_count: int
+    selected_page_count: int
+    review_page_count: int
+    stale_selected_page_count: int
+    candidate_count: int
+    pending_job_count: int
+    failed_job_count: int
+    next_action: DashboardNextAction
+
+
+class DashboardTotals(BaseModel):
+    project_count: int
+    page_count: int
+    selected_page_count: int
+    review_page_count: int
+    pending_job_count: int
+
+
+class ProjectDashboardRead(BaseModel):
+    totals: DashboardTotals
+    projects: list[ProjectDashboardItem]
 
 
 class AssetRead(BaseModel):
@@ -400,6 +429,8 @@ class PageRead(BaseModel):
     estimated_bubbles: int
     source_coverage: dict
     selected_candidate_id: str | None
+    storyboard_version: int
+    selected_candidate_ack_version: int | None
     continuity_status: str
     scene_ids: list
     beat_ids: list
@@ -448,6 +479,7 @@ class PanelRead(BaseModel):
 class StoryboardRead(BaseModel):
     page: PageRead
     panels: list[PanelRead]
+    candidate_count: int = 0
 
 
 class PanelUpdate(BaseModel):
@@ -522,6 +554,7 @@ class GenerationBatchRead(BaseModel):
 class CandidateCreate(BaseModel):
     model_alias: str = Field(pattern=IMAGE_MODEL_PATTERN)
     resolution: Resolution
+    storyboard_version: int = Field(ge=1)
     reference_selections: dict[str, dict[str, str | None]] = Field(default_factory=dict)
 
 
@@ -544,6 +577,9 @@ class PageCandidateRead(BaseModel):
     job_id: str | None
     is_favorite: bool
     is_selected: bool
+    based_on_storyboard_version: int | None = None
+    version_state: str = "LEGACY_UNKNOWN"
+    staleness_reasons: list[str] = Field(default_factory=list)
     created_at: datetime
     variant: str | None = None
     prompt_snapshot: dict = Field(default_factory=dict)
@@ -572,6 +608,13 @@ class FavoriteUpdate(BaseModel):
 
 class SelectCandidateRequest(BaseModel):
     candidate_id: str
+    manual_text_confirmed: bool = False
+    accept_stale: bool = False
+
+
+class KeepSelectedCandidateRequest(BaseModel):
+    candidate_id: str
+    storyboard_version: int = Field(ge=1)
     manual_text_confirmed: bool = False
 
 
@@ -633,6 +676,16 @@ class PageReadinessRead(BaseModel):
     estimated_cost_note: str = "将调用 1 次 Nano Banana 2 1K 生图"
 
 
+class GenerationWorkbenchRead(BaseModel):
+    page: PageRead
+    storyboard: StoryboardRead
+    readiness: PageReadinessRead
+    current_batch: GenerationBatchRead | None = None
+    candidates: list[PageCandidateRead] = Field(default_factory=list)
+    selected_candidate: PageCandidateRead | None = None
+    selected_candidate_state: str = "NONE"
+
+
 class JobRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -655,6 +708,16 @@ class JobRead(BaseModel):
     finished_at: datetime | None
     archived_at: datetime | None
     request_parameters: dict = Field(default_factory=dict, exclude=True)
+    usage_summary: dict = Field(default_factory=dict)
+    estimated_cost: float | None = None
+
+    @computed_field
+    @property
+    def duration_ms(self) -> int | None:
+        if not self.started_at:
+            return None
+        end = self.finished_at or self.updated_at
+        return max(0, int((end - self.started_at).total_seconds() * 1000))
 
     @computed_field
     @property
@@ -675,6 +738,10 @@ class JobArchiveResult(BaseModel):
     archived_count: int
 
 
+class JobBulkArchiveRequest(BaseModel):
+    job_ids: list[str] = Field(min_length=1, max_length=100)
+
+
 class LibraryBatchRead(BaseModel):
     batch: GenerationBatchRead
     candidates: list[PageCandidateRead]
@@ -691,7 +758,6 @@ class LibraryRead(BaseModel):
 class InspectionRequest(BaseModel):
     categories: list[str] = Field(
         default_factory=lambda: [
-            "TEXT",
             "SPEAKER",
             "CHARACTER",
             "OUTFIT",
@@ -699,6 +765,12 @@ class InspectionRequest(BaseModel):
             "CONTINUITY",
         ]
     )
+
+    @model_validator(mode="after")
+    def reject_text_checks(self):
+        if {item.upper() for item in self.categories} & {"TEXT", "OCR"}:
+            raise ValueError("文字由人工校对，不再创建 OCR 或文字检查任务")
+        return self
 
 
 class InspectionRead(BaseModel):
@@ -717,7 +789,7 @@ class InspectionRead(BaseModel):
 
 class RepairRequest(BaseModel):
     inspection_result_id: str
-    repair_type: str = Field(pattern="^(TEXT_REGION|BUBBLE_REGION|PANEL|PAGE)$")
+    repair_type: str = Field(pattern="^(BUBBLE_REGION|PANEL|PAGE)$")
     target_regions: list[dict] = Field(default_factory=list)
     target_fields: list[str] = Field(default_factory=list)
     model_alias: str = Field(pattern=IMAGE_MODEL_PATTERN)

@@ -11,6 +11,7 @@ import {
   type ImageModelAlias,
   type AssetPurpose,
   type InspectionResult,
+  type Job,
   type Outfit,
   type Project,
   type Resolution,
@@ -61,6 +62,7 @@ import { ChangeEvent, useMemo, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 
 export type WorkspaceSection = "source" | "assets" | "script" | "storyboard" | "generate" | "library" | "jobs";
+export type AssetWorkspaceView = "characters" | "outfits" | "style" | "references";
 
 const navigationItems = [
   ["source", "原作与修订", "导入、修改、撤回", "01", BookOpenText],
@@ -77,6 +79,12 @@ const kinds = [
   ["OUTFIT_REFERENCE", "服装参考"],
   ["STYLE_REFERENCE", "漫画风格"],
 ] as const;
+
+const assetKindByView: Record<Exclude<AssetWorkspaceView, "references">, AssetPurpose> = {
+  characters: "CHARACTER_REFERENCE",
+  outfits: "OUTFIT_REFERENCE",
+  style: "STYLE_REFERENCE",
+};
 
 const jobLabels: Record<string, string> = {
   SOURCE_PARSE: "解析剧本", PAGE_GENERATE: "生成页面", PAGE_REPAIR: "修复页面",
@@ -104,14 +112,12 @@ const inspectionLabels: Record<string, string> = {
 };
 
 const repairTypeLabels = {
-  TEXT_REGION: "文字区域",
   BUBBLE_REGION: "气泡区域",
   PANEL: "单格",
   PAGE: "整页",
 } as const;
 
-function recommendedRepairType(category: string): "TEXT_REGION" | "BUBBLE_REGION" | "PANEL" | "PAGE" {
-  if (category === "TEXT") return "TEXT_REGION";
+function recommendedRepairType(category: string): "BUBBLE_REGION" | "PANEL" | "PAGE" {
   if (category === "SPEAKER") return "BUBBLE_REGION";
   if (["CHARACTER", "OUTFIT", "PROP"].includes(category)) return "PANEL";
   return "PAGE";
@@ -189,7 +195,13 @@ function CandidateArtwork({ contentUrl, thumbnailUrl, label, onOpen, eager = fal
   );
 }
 
-export default function ProjectWorkspace({ section }: { section: WorkspaceSection }) {
+export default function ProjectWorkspace({
+  section,
+  assetView = "characters",
+}: {
+  section: WorkspaceSection;
+  assetView?: AssetWorkspaceView;
+}) {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -197,9 +209,11 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
   const [navOpen, setNavOpen] = useState(false);
   const [localDraft, setDraft] = useState<Project | null>(null);
   const [assetKind, setAssetKind] = useState<AssetPurpose>("CHARACTER_REFERENCE");
+  const currentAssetKind = assetView === "references" ? assetKind : assetKindByView[assetView];
   const [uploadError, setUploadError] = useState("");
   const [showArchivedJobs, setShowArchivedJobs] = useState(false);
   const [jobNotice, setJobNotice] = useState("");
+  const [selectedJobIds, setSelectedJobIds] = useState<string[]>([]);
   const [sourceTitle, setSourceTitle] = useState("第一章");
   const [sourceText, setSourceText] = useState("");
   const [selectedChapterId, setSelectedChapterId] = useState<string | null>(null);
@@ -246,11 +260,16 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
   const [confirmedReferencePageId, setConfirmedReferencePageId] = useState<string | null>(null);
 
   const needsChapters = ["source", "script", "storyboard", "generate", "library"].includes(section);
-  const needsCharacters = ["assets", "script", "storyboard", "generate", "library"].includes(section);
-  const needsOutfits = ["assets", "script", "storyboard", "generate"].includes(section);
+  const needsCharacters = section === "assets"
+    ? assetView !== "style"
+    : ["script", "storyboard", "generate", "library"].includes(section);
+  const needsOutfits = section === "assets"
+    ? ["outfits", "references"].includes(assetView)
+    : ["script", "storyboard", "generate"].includes(section);
   const needsPages = ["storyboard", "generate"].includes(section);
   const needsScript = ["source", "script"].includes(section);
-  const projectPath = (target: string) => `/projects/${id}/${target}`;
+  const projectPath = (target: string) =>
+    target === "assets" ? `/projects/${id}/assets/characters` : `/projects/${id}/${target}`;
 
   const project = useQuery({ queryKey: ["project", id], queryFn: () => api.project(id), staleTime: 30_000 });
   const assets = useQuery({ queryKey: ["assets", id], queryFn: () => api.assets(id), enabled: ["assets", "generate"].includes(section) });
@@ -260,7 +279,7 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
   const styles = useQuery({
     queryKey: ["styles", id],
     queryFn: () => api.styles(id),
-    enabled: section === "assets",
+    enabled: section === "assets" && ["style", "references"].includes(assetView),
     refetchInterval: (query) => (query.state.data ?? []).some((style) => style.status === "ANALYZING") ? 2500 : false,
   });
   const library = useQuery({
@@ -297,43 +316,31 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
     enabled: needsScript && Boolean(activeChapterId),
     refetchInterval: (query) => query.state.data?.status === "PROCESSING" ? 4000 : false,
   });
-  const selectedPage = pages.data?.find((item) => item.id === selectedPageId) ?? pages.data?.[0] ?? null;
-  const batches = useQuery({
-    queryKey: ["batches", selectedPage?.id],
-    queryFn: () => api.batches(selectedPage!.id),
-    enabled: section === "generate" && Boolean(selectedPage),
+  const selectedPageEntry = pages.data?.find((item) => item.id === selectedPageId) ?? pages.data?.[0] ?? null;
+  const workbench = useQuery({
+    queryKey: ["generation-workbench", selectedPageEntry?.id],
+    queryFn: () => api.generationWorkbench(selectedPageEntry!.id),
+    enabled: section === "generate" && Boolean(selectedPageEntry),
+    refetchInterval: (query) => (query.state.data?.candidates ?? []).some((candidate) => ["WAITING", "QUEUED", "PREPARING", "GENERATING"].includes(candidate.status)) ? 3000 : false,
   });
-  const currentBatch = batches.data?.find((item) => item.status === "OPEN") ?? batches.data?.[0] ?? null;
-  const candidates = useQuery({
-    queryKey: ["candidates", currentBatch?.id],
-    queryFn: () => api.candidates(currentBatch!.id),
-    enabled: section === "generate" && Boolean(currentBatch),
-    refetchInterval: (query) => (query.state.data ?? []).some((candidate) => ["WAITING", "QUEUED", "PREPARING", "GENERATING"].includes(candidate.status)) ? 3000 : false,
-  });
-  const generationStoryboard = useQuery({
-    queryKey: ["storyboard", selectedPage?.id],
-    queryFn: () => api.storyboard(selectedPage!.id),
-    enabled: section === "generate" && Boolean(selectedPage),
-  });
-  const pageReadiness = useQuery({
-    queryKey: ["page-readiness", selectedPage?.id],
-    queryFn: () => api.pageReadiness(selectedPage!.id),
-    enabled: section === "generate" && Boolean(selectedPage),
-    staleTime: 10_000,
-  });
+  const selectedPage = workbench.data?.page ?? selectedPageEntry;
+  const currentBatch = workbench.data?.current_batch ?? null;
+  const candidates = { data: workbench.data?.candidates, isLoading: workbench.isLoading };
+  const generationStoryboard = { data: workbench.data?.storyboard, isLoading: workbench.isLoading };
+  const pageReadiness = { data: workbench.data?.readiness, isLoading: workbench.isLoading, error: workbench.error };
   const assetGenerationTarget = selectedCharacterOutfitId
     ? { type: "OUTFIT" as const, id: selectedCharacterOutfitId }
     : null;
   const assetBatches = useQuery({
     queryKey: ["asset-batches", assetGenerationTarget?.type, assetGenerationTarget?.id],
     queryFn: () => api.assetBatches(assetGenerationTarget!.type, assetGenerationTarget!.id),
-    enabled: section === "assets" && Boolean(assetGenerationTarget),
+    enabled: section === "assets" && assetView === "outfits" && Boolean(assetGenerationTarget),
   });
   const currentAssetBatch = assetBatches.data?.[0] ?? null;
   const assetCandidates = useQuery({
     queryKey: ["asset-candidates", currentAssetBatch?.id],
     queryFn: () => api.candidates(currentAssetBatch!.id),
-    enabled: section === "assets" && Boolean(currentAssetBatch),
+    enabled: section === "assets" && assetView === "outfits" && Boolean(currentAssetBatch),
     refetchInterval: (query) => (query.state.data ?? []).some((candidate) => ["WAITING", "QUEUED", "PREPARING", "GENERATING"].includes(candidate.status)) ? 2000 : false,
   });
   const inspections = useQuery({
@@ -349,6 +356,9 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
   const selectedOutfitFiles = assets.data?.filter((item) => selectedOutfitAssets.includes(item.id)) ?? [];
   const selectedStyleFiles = assets.data?.filter((item) => selectedStyleAssets.includes(item.id)) ?? [];
   const activeDrawModel = drawModel;
+  const visibleAssetKinds = assetView === "references"
+    ? kinds
+    : kinds.filter(([kind]) => kind === currentAssetKind);
   const selectedPageStructureIssue = getPageStructureIssue(selectedPage);
   const selectedPageGenerationIssue = getPageGenerationIssue(selectedPage, formalPageModel);
   const invalidPlannedPageCount = (pages.data ?? []).filter((page) => getPageStructureIssue(page)).length;
@@ -428,21 +438,22 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
   }, [inspections.data]);
   const reviewCandidate = candidates.data?.find((item) => item.id === reviewCandidateId) ?? null;
   const reviewJob = jobs.data?.find((item) => item.target_id === reviewCandidateId && item.job_type === "PAGE_INSPECT") ?? null;
+  const selectedWorkbenchCandidate = workbench.data?.selected_candidate ?? null;
 
   const upload = useMutation({
     mutationFn: async (file: File) => {
-      const uploaded = await api.uploadAsset(id, assetKind, file);
-      if (assetKind === "CHARACTER_REFERENCE" && bindCharacterId) {
+      const uploaded = await api.uploadAsset(id, currentAssetKind, file);
+      if (currentAssetKind === "CHARACTER_REFERENCE" && bindCharacterId) {
         await api.bindCharacterReference(bindCharacterId, uploaded.id);
       }
       return uploaded;
     },
     onSuccess: (uploaded) => {
       setUploadError("");
-      if (assetKind === "OUTFIT_REFERENCE") {
+      if (currentAssetKind === "OUTFIT_REFERENCE") {
         setSelectedOutfitAssets((values) => values.includes(uploaded.id) ? values : [...values, uploaded.id]);
       }
-      if (assetKind === "STYLE_REFERENCE") {
+      if (currentAssetKind === "STYLE_REFERENCE") {
         setSelectedStyleAssets((values) => values.includes(uploaded.id) ? values : [...values, uploaded.id]);
       }
       queryClient.invalidateQueries({ queryKey: ["assets", id] });
@@ -689,7 +700,7 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
       if (issue) throw new Error(issue);
       return api.startBatch(selectedPage!.id);
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["batches", selectedPage?.id] }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["generation-workbench", selectedPage?.id] }),
   });
 
   const generate = useMutation({
@@ -700,7 +711,13 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
       if (!generationReferenceReady) throw new Error("请为本页每个入镜人物选择人物参考图，并补齐分镜指定服装的参考图");
       if (!referencesConfirmed) throw new Error("请先确认本页人物、服装与参考图对应关系");
       const batch = currentBatch ?? await api.startBatch(selectedPage!.id);
-      return api.generateCandidate(batch.id, formalPageModel, "1K", effectiveReferenceSelections);
+      return api.generateCandidate(
+        batch.id,
+        formalPageModel,
+        "1K",
+        selectedPage!.storyboard_version,
+        effectiveReferenceSelections,
+      );
     },
     onSuccess: () => {
       setDraft(null);
@@ -710,6 +727,7 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
       queryClient.invalidateQueries({ queryKey: ["project", id] });
       queryClient.invalidateQueries({ queryKey: ["library", id] });
       queryClient.invalidateQueries({ queryKey: ["page-readiness", selectedPage?.id] });
+      queryClient.invalidateQueries({ queryKey: ["generation-workbench", selectedPage?.id] });
     },
   });
 
@@ -768,6 +786,15 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
     },
     onError: (reason) => setJobNotice(reason instanceof Error ? reason.message : "清空失败"),
   });
+  const bulkArchiveJobs = useMutation({
+    mutationFn: () => api.bulkArchiveJobs(id, selectedJobIds),
+    onSuccess: (result) => {
+      setJobNotice(`已批量归档 ${result.archived_count} 条任务`);
+      setSelectedJobIds([]);
+      queryClient.invalidateQueries({ queryKey: ["jobs", id] });
+    },
+    onError: (reason) => setJobNotice(reason instanceof Error ? reason.message : "批量归档失败"),
+  });
   const deleteJob = useMutation({
     mutationFn: (jobId: string) => api.deleteJob(jobId),
     onSuccess: () => {
@@ -815,12 +842,22 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
   });
 
   const selectCandidate = useMutation({
-    mutationFn: ({ candidateId, manualTextConfirmed }: { candidateId: string; manualTextConfirmed: boolean }) =>
-      api.selectCandidate(selectedPage!.id, candidateId, manualTextConfirmed),
+    mutationFn: ({ candidateId, manualTextConfirmed, acceptStale = false }: { candidateId: string; manualTextConfirmed: boolean; acceptStale?: boolean }) =>
+      api.selectCandidate(selectedPage!.id, candidateId, manualTextConfirmed, acceptStale),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["pages", activeChapterId] });
       queryClient.invalidateQueries({ queryKey: ["candidates"] });
       queryClient.invalidateQueries({ queryKey: ["library", id] });
+      queryClient.invalidateQueries({ queryKey: ["generation-workbench", selectedPage?.id] });
+    },
+  });
+
+  const keepSelectedCandidate = useMutation({
+    mutationFn: (candidateId: string) =>
+      api.keepSelectedCandidate(selectedPage!.id, candidateId, selectedPage!.storyboard_version),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["pages", activeChapterId] });
+      queryClient.invalidateQueries({ queryKey: ["generation-workbench", selectedPage?.id] });
     },
   });
 
@@ -875,6 +912,28 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
     setSourceTitle(title);
     setSourceText(revision?.original_text ?? "");
     window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  const activeJobStatuses = new Set(["WAITING", "QUEUED", "PREPARING", "UPLOADING_REFERENCES", "GENERATING", "CONSISTENCY_CHECKING", "REPAIRING"]);
+  const activeJobs = (jobs.data ?? []).filter((job) => activeJobStatuses.has(job.status));
+  const failedJobs = (jobs.data ?? []).filter((job) => job.status === "FAILED");
+  const completedJobGroups = Object.entries(
+    (jobs.data ?? []).filter((job) => !activeJobStatuses.has(job.status) && job.status !== "FAILED").reduce<Record<string, Job[]>>((groups, job) => {
+      const date = new Date(job.created_at).toLocaleDateString("zh-CN");
+      groups[date] = [...(groups[date] ?? []), job];
+      return groups;
+    }, {}),
+  );
+
+  function renderJob(job: Job, showProgress: boolean) {
+    const terminal = ["COMPLETED", "FAILED", "CANCELLED", "NEEDS_REVIEW"].includes(job.status);
+    return <article className={`job-row status-${job.status.toLowerCase()}`} key={job.id}>
+      {!showArchivedJobs && terminal && <label className="job-select"><input type="checkbox" aria-label={`选择${jobLabels[job.job_type] ?? job.job_type}`} checked={selectedJobIds.includes(job.id)} onChange={(event) => setSelectedJobIds((values) => event.target.checked ? [...values, job.id] : values.filter((id) => id !== job.id))} /></label>}
+      <div className="job-type"><span>{jobLabels[job.job_type] ?? job.job_type}</span><strong>{job.status}</strong></div>
+      {showProgress && <div className="job-progress"><i><b style={{ width: `${job.progress}%` }} /></i><span>{job.progress}% · 尝试 {job.attempt_count}/{job.max_attempts}</span></div>}
+      <div className="job-detail"><span>{job.workflow_node_id ? `节点 ${job.workflow_node_id}` : job.model_alias ? modelOptions.find((item) => item.alias === job.model_alias)?.name ?? job.model_alias : "系统任务"}</span><small>{job.duration_ms === null ? "尚未完成" : `耗时 ${(job.duration_ms / 1000).toFixed(1)} 秒`} · {job.estimated_cost === null ? "费用暂不可估算" : `预估 ¥${job.estimated_cost.toFixed(3)}`}</small>{job.error_message && <em>{job.error_code ? `${job.error_code} · ` : ""}{job.error_message}</em>}</div>
+      <div className="job-actions">{!showArchivedJobs && activeJobStatuses.has(job.status) && <button onClick={() => cancelJob.mutate(job.id)}>取消</button>}{!showArchivedJobs && job.status === "FAILED" && <button onClick={() => retryJob.mutate(job.id)}><RotateCcw size={12} />重试</button>}{!showArchivedJobs && terminal && <button onClick={() => archiveJob.mutate(job.id)}><Archive size={12} />归档</button>}{showArchivedJobs && <button onClick={() => restoreJob.mutate(job.id)}><RotateCcw size={12} />恢复</button>}{showArchivedJobs && ["FAILED", "CANCELLED"].includes(job.status) && <button className="danger-action" onClick={() => { if (window.confirm("仅无候选、生成记录、工作流或任务依赖的失败任务可以彻底删除。继续吗？")) deleteJob.mutate(job.id); }}><Trash2 size={12} />彻底删除</button>}</div>
+    </article>;
   }
 
   if (project.isLoading || !draft) {
@@ -932,6 +991,24 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
 
           {section === "assets" && (
             <>
+              <nav className="asset-subnav" aria-label="参考资产分类">
+                {([
+                  ["characters", "人物设定"],
+                  ["outfits", "服装档案"],
+                  ["style", "漫画风格"],
+                  ["references", "原始参考素材"],
+                ] as const).map(([view, label]) => (
+                  <Link
+                    key={view}
+                    aria-current={assetView === view ? "page" : undefined}
+                    className={assetView === view ? "active" : ""}
+                    href={`/projects/${id}/assets/${view}`}
+                  >
+                    {label}
+                  </Link>
+                ))}
+              </nav>
+              {assetView === "characters" && <>
               <header className="canvas-header"><div><span>CHARACTER BIBLE / 角色资产</span><h2>姓名、绰号与参考图绑定</h2></div><small>{characters.data?.length ?? 0} 个角色</small></header>
               <div className="character-create">
                 <input className="text-input" value={characterName} onChange={(event) => setCharacterName(event.target.value)} placeholder="主要姓名（剧本默认使用）" />
@@ -944,8 +1021,14 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
               {boundCharacter && <div className="character-editor"><div><strong>规范姓名与一致性锁</strong><span>剧本统一使用主要姓名；固定特征和禁止改变项会进入每次生图提示。</span></div><input aria-label="编辑主要姓名" className="text-input" value={editCharacterName} onChange={(event) => setEditCharacterName(event.target.value)} /><input aria-label="编辑角色绰号" className="text-input" value={editCharacterAliases} onChange={(event) => setEditCharacterAliases(event.target.value)} placeholder="绰号，用逗号分隔" /><button className="button outline compact" disabled={!editCharacterName.trim() || updateCharacter.isPending} onClick={() => updateCharacter.mutate()}>{updateCharacter.isPending ? <LoaderCircle className="spin" size={13} /> : <Pencil size={13} />}保存角色规范</button><div className="character-lock-fields"><input aria-label="角色固定特征" className="text-input" value={editLockedFeatures} onChange={(event) => setEditLockedFeatures(event.target.value)} placeholder="固定特征：黑色长发、左眼泪痣…" /><input aria-label="角色禁止改变项" className="text-input" value={editForbiddenChanges} onChange={(event) => setEditForbiddenChanges(event.target.value)} placeholder="禁止改变：发色、瞳色、身高关系…" /></div>{boundCharacter.alias_conflict && <em><CircleAlert size={12} />当前称呼与其他角色冲突，请修改后保存</em>}</div>}
               <ImageModelPicker selected={activeDrawModel} onSelect={setDrawModel} label="本次素材生成模型（两个模型完全平级，每次进入本页均需重新选择）" />
               {boundCharacter && <CharacterConceptPanel key={boundCharacter.id} projectId={id} character={boundCharacter} model={activeDrawModel} onOpen={(url, label) => setPreviewImage({ url, label })} />}
+              </>}
+              {assetView === "outfits" && <>
+              <header className="canvas-header"><div><span>WARDROBE / 服装档案</span><h2>角色、服装与参考图逐一绑定</h2></div><small>{outfits.data?.length ?? 0} 份档案</small></header>
+              <ImageModelPicker selected={activeDrawModel} onSelect={setDrawModel} label="本次服装预览模型" />
               {selectedCharacterOutfitId && <section className="asset-live-results"><header><div><span>LIVE RESULT</span><strong>服装穿着图实时结果</strong></div><small>{outfits.data?.find((outfit) => outfit.id === selectedCharacterOutfitId)?.name ?? "服装"}</small></header><div className="asset-result-grid">{assetCandidates.data?.map((candidate) => <article key={candidate.id}><CandidateArtwork contentUrl={candidate.content_url} thumbnailUrl={candidate.thumbnail_url} label={`服装穿着图 ${candidate.ordinal}`} onOpen={(url, label) => setPreviewImage({ url, label })} /><div><strong>服装穿着预览</strong><span>{candidate.status} · {candidate.resolution}</span><details><summary>实际提示词</summary><p>{promptPreview(candidate)}</p></details></div></article>)}</div></section>}
+              </>}
               <div className="asset-workbench">
+                {assetView === "outfits" &&
                 <section className="profile-workbench outfit-profile-workbench">
                   <header><Shirt size={16} /><div><strong>服装档案</strong><span>明确绑定角色、服装名称与参考图</span></div></header>
                   <div className="binding-flow" aria-label="服装参考绑定流程">
@@ -967,7 +1050,10 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
                     const owner = characters.data?.find((item) => item.id === outfit.character_id);
                     return <article className={editingOutfitId === outfit.id ? "editing" : ""} key={outfit.id}><div className="profile-record-title"><span>WARDROBE</span><strong>{outfit.name}</strong><small>{outfit.locked_fields.length} 项锁定</small></div><div className="relationship-chain"><span>{owner?.primary_name ?? "未知角色"}</span><b>→</b><span>{outfit.name}</span><b>→</b><span>{outfit.reference_asset_ids.length} 张参考图</span></div><div className="profile-record-actions"><button type="button" onClick={() => beginOutfitEdit(outfit)}>{editingOutfitId === outfit.id ? "编辑中" : "管理参考图"}</button><button type="button" disabled={generateOutfitPreview.isPending || !activeDrawModel || !outfit.reference_asset_ids.length} onClick={() => generateOutfitPreview.mutate(outfit.id)}>生成穿着图</button></div></article>;
                   })}{!outfits.data?.length && <p className="profile-record-empty">还没有服装档案。完成上方 01–03 三步后建立。</p>}</div>
-                </section>
+                </section>}
+                {assetView === "style" && <>
+                <header className="canvas-header"><div><span>STYLE SYSTEM / 漫画风格</span><h2>色板、画面语言与测试图</h2></div><small>{styles.data?.length ?? 0} 份档案</small></header>
+                <ImageModelPicker selected={activeDrawModel} onSelect={setDrawModel} label="本次风格测试模型" />
                 <section className="profile-workbench style-profile-workbench">
                   <header><Palette size={16} /><div><strong>创建新风格档案</strong><span>这里的模式只用于下面正在创建的新档案，并会记住本项目上次选择</span></div></header>
                   <div className="mode-selector-block"><div><span>新档案色彩模式</span><strong>{styleColorMode === "monochrome" ? "黑白漫画" : "彩色漫画"}</strong></div><ComicModeSwitch value={styleColorMode} onChange={selectStyleMode} /><p>{styleColorMode === "monochrome" ? "分析线稿、网点、黑白对比与留白。" : "分析色板、肤色发色、上色方式与光影。"}</p></div>
@@ -981,14 +1067,15 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
                     const referenceCount = style.profile.reference_asset_ids?.length ?? 0;
                     return <article className={isActive ? "active style-production-record" : "style-production-record"} key={style.id}><div className="profile-record-title"><span>{isActive ? "CURRENT STYLE" : "STYLE PROFILE"}</span><strong>{style.name}</strong><small>{style.status} · {referenceCount} 张参考 · {style.locked_fields.length} 项锁定</small></div><ComicModeSwitch compact value={style.color_mode} disabled={updateStyleMode.isPending} onChange={(colorMode) => updateStyleMode.mutate({ style, colorMode })} />{style.status === "DRAFT" && <p className="reanalyze-note">彩色风格必须依次确认色板和测试图，再激活用于正式页面。</p>}<div className="profile-record-actions"><button type="button" disabled={!referenceCount || analyzeStyle.isPending} onClick={() => analyzeStyle.mutate(style.id)}>重新分析画面语言</button></div><StyleProductionPanel key={`${style.id}:${style.version}`} projectId={id} style={style} model={activeDrawModel} active={isActive} onOpen={(url, label) => setPreviewImage({ url, label })} /></article>;
                   })}{!styles.data?.length && <p className="profile-record-empty">选择色彩模式并绑定参考页，建立第一份漫画风格档案。</p>}</div>
-                </section>
+                </section></>}
               </div>
-              <div className="intake-toolbar"><div className="kind-switch">{kinds.map(([value, label]) => <button key={value} className={assetKind === value ? "active" : ""} onClick={() => setAssetKind(value)}>{label}</button>)}</div><span>{assetKind === "CHARACTER_REFERENCE" ? (bindCharacterId ? "将绑定到选中的角色" : "请先选择要绑定的角色") : assetKind === "OUTFIT_REFERENCE" ? (boundCharacter ? `当前绑定目标：${boundCharacter.primary_name} → ${outfitName.trim() || "未命名服装"}` : "先选择所属角色，再建立服装档案") : `当前分析目标：${styleColorMode === "monochrome" ? "黑白漫画" : "彩色漫画"}`}</span></div>
-              <label className={upload.isPending ? "upload-stage busy" : "upload-stage"}><input type="file" accept="image/png,image/jpeg,image/webp" onChange={chooseFile} disabled={upload.isPending} /><span className="upload-icon">{upload.isPending ? <LoaderCircle className="spin" /> : <Upload />}</span><strong>{upload.isPending ? "正在安全上传…" : `上传${kinds.find(([value]) => value === assetKind)?.[1]}`}</strong><p>{assetKind === "CHARACTER_REFERENCE" ? "人物图会和选中的主要姓名绑定，不会只依赖文件名猜测身份。" : assetKind === "OUTFIT_REFERENCE" ? "上传后自动加入当前服装档案，保存时绑定到上方所选角色。" : `上传后自动加入当前${styleColorMode === "monochrome" ? "黑白" : "彩色"}风格档案，创建后再由 Gemini 分析。`}</p></label>
+              {assetView === "references" && <header className="canvas-header"><div><span>REFERENCE INTAKE / 原始素材</span><h2>上传、分类与追溯原始参考图</h2></div><small>{assets.data?.length ?? 0} 个文件</small></header>}
+              <div className="intake-toolbar"><div className="kind-switch">{assetView === "references" ? kinds.map(([value, label]) => <button key={value} className={assetKind === value ? "active" : ""} onClick={() => setAssetKind(value)}>{label}</button>) : <strong>{kinds.find(([value]) => value === currentAssetKind)?.[1]}</strong>}</div><span>{currentAssetKind === "CHARACTER_REFERENCE" ? (bindCharacterId ? "将绑定到选中的角色" : "请先选择要绑定的角色") : currentAssetKind === "OUTFIT_REFERENCE" ? (boundCharacter ? `当前绑定目标：${boundCharacter.primary_name} → ${outfitName.trim() || "未命名服装"}` : "先选择所属角色，再建立服装档案") : `当前分析目标：${styleColorMode === "monochrome" ? "黑白漫画" : "彩色漫画"}`}</span></div>
+              <label className={upload.isPending ? "upload-stage busy" : "upload-stage"}><input type="file" accept="image/png,image/jpeg,image/webp" onChange={chooseFile} disabled={upload.isPending} /><span className="upload-icon">{upload.isPending ? <LoaderCircle className="spin" /> : <Upload />}</span><strong>{upload.isPending ? "正在安全上传…" : `上传${kinds.find(([value]) => value === currentAssetKind)?.[1]}`}</strong><p>{currentAssetKind === "CHARACTER_REFERENCE" ? "人物图会和选中的主要姓名绑定，不会只依赖文件名猜测身份。" : currentAssetKind === "OUTFIT_REFERENCE" ? "上传后自动加入当前服装档案，保存时绑定到上方所选角色。" : `上传后自动加入当前${styleColorMode === "monochrome" ? "黑白" : "彩色"}风格档案，创建后再由 Gemini 分析。`}</p></label>
               {uploadError && <p className="form-error"><CircleAlert size={15} />{uploadError}</p>}
               {(bindExistingCharacterReference.isError || unbindExistingCharacterReference.isError) && <p className="form-error"><CircleAlert size={15} />{(bindExistingCharacterReference.error ?? unbindExistingCharacterReference.error)?.message}</p>}
               {(createOutfit.isError || updateOutfit.isError || createStyle.isError || updateStyleMode.isError) && <p className="form-error"><CircleAlert size={15} />{(createOutfit.error ?? updateOutfit.error ?? createStyle.error ?? updateStyleMode.error)?.message}</p>}
-              {kinds.map(([kind, label]) => {
+              {visibleAssetKinds.map(([kind, label]) => {
                 const grouped = assets.data?.filter((asset) => asset.kind === kind) ?? [];
                 return <section className="asset-purpose-group" key={kind}>
                   <div className="asset-list-header"><span>{label}</span><small>{grouped.length} FILES</small></div>
@@ -1035,6 +1122,7 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
               {selectedPage ? <>
                 {selectedPageStructureIssue && <div className="workflow-warning"><CircleAlert size={17} /><div><strong>当前页暂不能生成</strong><p>{selectedPageStructureIssue}</p></div><Link className="button outline compact" href={projectPath("script")}>前往漫画剧本</Link></div>}
                 {selectedPage.continuity_status === "NEEDS_REVIEW" && <div className="workflow-warning"><CircleAlert size={17} /><div><strong>剧本或分镜已修改</strong><p>历史候选仍然保留，但可能不再对应当前脚本。建议重新抽卡并执行连续性检查。</p></div><Link className="button outline compact" href={projectPath("storyboard")}>检查分镜</Link></div>}
+                {selectedWorkbenchCandidate && ["STALE", "LEGACY_UNKNOWN"].includes(selectedWorkbenchCandidate.version_state) && <div className="stale-candidate-banner"><div><span>版本需要决定</span><strong>旧候选基于 {selectedWorkbenchCandidate.based_on_storyboard_version ? `V${selectedWorkbenchCandidate.based_on_storyboard_version}` : "未知版本"}，当前分镜为 V{selectedPage.storyboard_version}</strong><p>旧图仍可查看和导出。请选择继续沿用，或按当前分镜重新生成。</p></div><div><button disabled={keepSelectedCandidate.isPending} onClick={() => keepSelectedCandidate.mutate(selectedWorkbenchCandidate.id)}><Check size={14} />继续使用旧候选</button><button className="primary" disabled={generate.isPending || !pageReadiness.data?.ready || !generationReferenceReady || !referencesConfirmed} onClick={() => generate.mutate()}><Sparkles size={14} />按当前 V{selectedPage.storyboard_version} 重新生成</button></div></div>}
                 <div className="draw-toolbar"><div className="page-picker">{pages.data?.map((page) => <button key={page.id} className={selectedPage.id === page.id ? "active" : ""} onClick={() => { setSelectedPageId(page.id); setReferenceSelections({}); setConfirmedReferencePageId(null); }}>{page.page_number}</button>)}</div><button className="button ghost compact" disabled={startBatch.isPending || Boolean(selectedPageStructureIssue) || !pageReadiness.data?.ready} onClick={() => startBatch.mutate()}><Plus size={14} />新批次</button></div>
                 <div className="draw-context"><div><span>PAGE LOAD</span><strong>{selectedPage.estimated_text_chars} 字</strong><small>{selectedPage.panel_count} 格 / {selectedPage.estimated_bubbles} 气泡</small></div><p>{selectedPage.source_coverage.ranges?.map((item) => item.text).join("").slice(0, 180)}</p></div>
                 <ProductionReadiness projectId={id} readiness={pageReadiness.data} loading={pageReadiness.isLoading} error={pageReadiness.error} targetDialogues={targetDialogues} />
@@ -1055,9 +1143,9 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
                 <div className="generation-bar"><div className="generation-options"><div><span>正式模型</span><strong>Nano Banana 2</strong></div><div><span>本次规格</span><strong>1K · 彩色 · 1 个候选</strong></div></div><button className="button ink generate-one" disabled={generate.isPending || Boolean(selectedPageGenerationIssue) || !pageReadiness.data?.ready || !generationReferenceReady || !referencesConfirmed} onClick={() => generate.mutate()}>{generate.isPending ? <LoaderCircle className="spin" size={17} /> : <Star size={17} />}{generate.isPending ? "正在加入 1 个正式任务" : selectedPageStructureIssue ? "请先补全剧本与分镜" : !pageReadiness.data?.ready ? "先完成页面生产准备" : !referencesConfirmed ? "先确认人物与参考图" : "生成 1 个 1K 彩色候选"}</button></div>
                 {(generate.isError || startBatch.isError) && <p className="form-error"><CircleAlert size={14} />{(generate.error ?? startBatch.error)?.message}</p>}
                 <div className="batch-heading"><div><span>BATCH</span><strong>{currentBatch ? `批次 ${currentBatch.ordinal}` : "尚未开始批次"}</strong></div><small>本轮固定 Nano Banana 2 · 收藏不等于采用</small></div>
-                <div className="candidate-grid">{candidates.data?.map((candidate, candidateIndex) => <article className={candidate.is_selected ? "candidate-card selected" : "candidate-card"} key={candidate.id}><CandidateArtwork contentUrl={candidate.content_url} thumbnailUrl={candidate.thumbnail_url} label={`候选 ${candidate.ordinal}`} eager={candidateIndex === 0} onOpen={(url, label) => setPreviewImage({ url, label })} /><div className="candidate-meta"><span>候选 {String(candidate.ordinal).padStart(2, "0")}</span><strong>{modelOptions.find((item) => item.alias === candidate.model_alias)?.name}</strong><small>{candidate.resolution} · {candidate.status}</small></div><div className="candidate-actions"><button className={candidate.is_favorite ? "favorited" : ""} onClick={() => favorite.mutate({ candidateId: candidate.id, value: !candidate.is_favorite })}><Heart size={14} fill={candidate.is_favorite ? "currentColor" : "none"} />收藏</button><button disabled={!candidate.asset_id || candidate.is_selected} onClick={() => { if (window.confirm("文字检查只作辅助。请人工确认页面文字已校对或将由后续排字处理；是否采用这个候选？")) selectCandidate.mutate({ candidateId: candidate.id, manualTextConfirmed: true }); }}><Check size={14} />{candidate.is_selected ? "已采用" : "人工确认并采用"}</button><button className={reviewCandidateId === candidate.id ? "reviewing" : ""} disabled={!candidate.asset_id || inspectCandidate.isPending} onClick={() => { setReviewCandidateId(candidate.id); inspectCandidate.mutate(candidate.id); }}><CircleAlert size={14} />检查</button>{candidate.asset_id && candidate.resolution === "1K" && <button disabled={upscaleCandidate.isPending || !activeDrawModel} onClick={() => upscaleCandidate.mutate({ candidateId: candidate.id, resolution: "2K" })}>升至 2K</button>}{candidate.asset_id && candidate.resolution !== "4K" && <button disabled={upscaleCandidate.isPending || !activeDrawModel} onClick={() => upscaleCandidate.mutate({ candidateId: candidate.id, resolution: "4K" })}>升至 4K</button>}<button className="danger-action" disabled={candidate.is_selected} onClick={() => { if (window.confirm("删除这个候选？收藏状态也会一并移除。")) deleteCandidate.mutate(candidate.id); }}><Trash2 size={14} />删除</button></div></article>)}</div>
+                <div className="candidate-grid">{candidates.data?.map((candidate, candidateIndex) => <article className={`${candidate.is_selected ? "candidate-card selected" : "candidate-card"} version-${candidate.version_state.toLowerCase()}`} key={candidate.id}><CandidateArtwork contentUrl={candidate.content_url} thumbnailUrl={candidate.thumbnail_url} label={`候选 ${candidate.ordinal}`} eager={candidateIndex === 0} onOpen={(url, label) => setPreviewImage({ url, label })} /><div className="candidate-meta"><span>候选 {String(candidate.ordinal).padStart(2, "0")}</span><strong>{modelOptions.find((item) => item.alias === candidate.model_alias)?.name}</strong><small>{candidate.resolution} · {candidate.status}</small><em>{candidate.based_on_storyboard_version ? `生成依据 V${candidate.based_on_storyboard_version}` : "生成版本未知"} · {candidate.version_state}</em></div><div className="candidate-actions"><button className={candidate.is_favorite ? "favorited" : ""} onClick={() => favorite.mutate({ candidateId: candidate.id, value: !candidate.is_favorite })}><Heart size={14} fill={candidate.is_favorite ? "currentColor" : "none"} />收藏</button><button disabled={!candidate.asset_id || candidate.is_selected} onClick={() => { if (window.confirm("请人工确认页面文字已经校对。采用后仍可随时导出；是否继续？")) selectCandidate.mutate({ candidateId: candidate.id, manualTextConfirmed: true, acceptStale: candidate.version_state !== "CURRENT" }); }}><Check size={14} />{candidate.is_selected ? "已采用" : candidate.version_state === "CURRENT" ? "人工校对并采用" : "确认旧版本并采用"}</button><button className={reviewCandidateId === candidate.id ? "reviewing" : ""} disabled={!candidate.asset_id || inspectCandidate.isPending} onClick={() => { setReviewCandidateId(candidate.id); inspectCandidate.mutate(candidate.id); }}><CircleAlert size={14} />视觉检查</button>{candidate.asset_id && candidate.resolution === "1K" && <button disabled={upscaleCandidate.isPending || !activeDrawModel} onClick={() => upscaleCandidate.mutate({ candidateId: candidate.id, resolution: "2K" })}>升至 2K</button>}{candidate.asset_id && candidate.resolution !== "4K" && <button disabled={upscaleCandidate.isPending || !activeDrawModel} onClick={() => upscaleCandidate.mutate({ candidateId: candidate.id, resolution: "4K" })}>升至 4K</button>}<button className="danger-action" disabled={candidate.is_selected} onClick={() => { if (window.confirm("删除这个候选？收藏状态也会一并移除。")) deleteCandidate.mutate(candidate.id); }}><Trash2 size={14} />删除</button></div></article>)}</div>
                 {reviewCandidateId && <section className="inspection-panel">
-                  <header><div><span>AI QUALITY CHECK</span><strong>候选成片检查</strong><small>文字识别仅供人工校对参考，不会自动触发付费修图。</small></div><button onClick={() => setReviewCandidateId(null)}>关闭</button></header>
+                  <header><div><span>AI QUALITY CHECK</span><strong>候选视觉检查</strong><small>检查说话人归属、角色、服装、道具和连续性；文字由人工校对。</small></div><button onClick={() => setReviewCandidateId(null)}>关闭</button></header>
                   {!latestInspections.length ? <div className="inspection-wait"><LoaderCircle className={reviewJob && !["COMPLETED", "FAILED"].includes(reviewJob.status) ? "spin" : ""} size={18} /><span>{reviewJob ? `检查任务 ${reviewJob.status} · ${reviewJob.progress}%` : "正在读取检查结果"}</span></div> : <div className="inspection-results">{latestInspections.map((inspection) => {
                     const passed = ["PASS", "ACCEPTABLE", "MATCH"].includes(inspection.outcome);
                     const repairType = recommendedRepairType(inspection.category);
@@ -1094,9 +1182,13 @@ export default function ProjectWorkspace({ section }: { section: WorkspaceSectio
           {section === "jobs" && (
             <>
               <header className="canvas-header"><div><span>JOBS / 任务中心</span><h2>每个生成任务都能看懂、取消和重试</h2></div><small>{jobs.data?.length ?? 0} 个任务</small></header>
-              <div className="job-toolbar"><div><button className={!showArchivedJobs ? "active" : ""} onClick={() => { setShowArchivedJobs(false); setJobNotice(""); }}><ListTodo size={13} />近期任务</button><button className={showArchivedJobs ? "active" : ""} onClick={() => { setShowArchivedJobs(true); setJobNotice(""); }}><History size={13} />历史记录</button></div>{!showArchivedJobs && <button disabled={archiveCompletedJobs.isPending} onClick={() => { if (window.confirm("将所有已完成、失败和已取消任务移入历史记录？生成候选与溯源信息不会删除。")) archiveCompletedJobs.mutate(); }}><Archive size={13} />清空已结束任务</button>}</div>
+              <div className="job-toolbar"><div><button className={!showArchivedJobs ? "active" : ""} onClick={() => { setShowArchivedJobs(false); setJobNotice(""); }}><ListTodo size={13} />近期任务</button><button className={showArchivedJobs ? "active" : ""} onClick={() => { setShowArchivedJobs(true); setJobNotice(""); }}><History size={13} />历史记录</button></div>{!showArchivedJobs && <div className="job-bulk-actions"><button disabled={!selectedJobIds.length || bulkArchiveJobs.isPending} onClick={() => bulkArchiveJobs.mutate()}><Archive size={13} />归档已选（{selectedJobIds.length}）</button><button disabled={archiveCompletedJobs.isPending} onClick={() => { if (window.confirm("将所有已完成、失败和已取消任务移入历史记录？生成候选与溯源信息不会删除。")) archiveCompletedJobs.mutate(); }}><Archive size={13} />归档全部终态</button></div>}</div>
               {jobNotice && <p className="job-notice"><CircleAlert size={13} />{jobNotice}</p>}
-              <div className="job-list">{jobs.data?.map((job) => <article className={`job-row status-${job.status.toLowerCase()}`} key={job.id}><div className="job-type"><span>{jobLabels[job.job_type] ?? job.job_type}</span><strong>{job.status}</strong></div><div className="job-progress"><i><b style={{ width: `${job.progress}%` }} /></i><span>{job.progress}% · 尝试 {job.attempt_count}/{job.max_attempts}</span></div><div className="job-detail"><span>{job.workflow_node_id ? `节点 ${job.workflow_node_id}` : job.model_alias ? modelOptions.find((item) => item.alias === job.model_alias)?.name ?? job.model_alias : "系统任务"}</span><small>{new Date(job.created_at).toLocaleString("zh-CN")}</small>{job.error_message && <em>{job.error_message}</em>}</div><div className="job-actions">{!showArchivedJobs && ["WAITING", "QUEUED", "PREPARING", "GENERATING"].includes(job.status) && <button onClick={() => cancelJob.mutate(job.id)}>取消</button>}{!showArchivedJobs && (["FAILED", "CANCELLED", "TIMED_OUT"].includes(job.status) || (job.status === "WAITING" && Boolean(job.error_code))) && <button onClick={() => retryJob.mutate(job.id)}><RotateCcw size={12} />重试</button>}{!showArchivedJobs && ["COMPLETED", "FAILED", "CANCELLED"].includes(job.status) && <button onClick={() => archiveJob.mutate(job.id)}><Archive size={12} />归档</button>}{showArchivedJobs && <button onClick={() => restoreJob.mutate(job.id)}><RotateCcw size={12} />恢复</button>}{showArchivedJobs && ["FAILED", "CANCELLED"].includes(job.status) && <button className="danger-action" onClick={() => { if (window.confirm("仅无候选、生成记录、工作流或任务依赖的失败任务可以彻底删除。继续吗？")) deleteJob.mutate(job.id); }}><Trash2 size={12} />彻底删除</button>}</div></article>)}</div>
+              <div className="job-sections">
+                {activeJobs.length > 0 && <section><header><strong>正在运行</strong><small>{activeJobs.length} 条</small></header><div className="job-list">{activeJobs.map((job) => renderJob(job, true))}</div></section>}
+                {failedJobs.length > 0 && <details open className="job-group failed"><summary><span>失败任务</span><strong>{failedJobs.length} 条 · 展开查看错误与重试</strong></summary><div className="job-list">{failedJobs.map((job) => renderJob(job, false))}</div></details>}
+                {completedJobGroups.map(([date, groupedJobs]) => <details className="job-group" key={date}><summary><span>{date}</span><strong>{groupedJobs.length} 条已结束任务</strong></summary><div className="job-list">{groupedJobs.map((job) => renderJob(job, false))}</div></details>)}
+              </div>
               {!jobs.data?.length && <div className="asset-empty tall">{showArchivedJobs ? <History size={28} /> : <ListTodo size={28} />}<strong>{showArchivedJobs ? "还没有历史任务" : "当前没有任务"}</strong><p>{showArchivedJobs ? "归档后的已结束任务会保留在这里，可随时恢复。" : "剧本解析、页面生成、检查和修复都会列在这里。"}</p></div>}
             </>
           )}

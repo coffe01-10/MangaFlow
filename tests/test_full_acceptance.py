@@ -145,24 +145,19 @@ class FakeAcceptanceAdapter:
             )
         assert output_schema is PageInspectionOutput
         self.inspection_index += 1
-        text_mismatch = self.inspection_index == 1
-        categories = ["TEXT", "SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"]
+        categories = ["SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"]
         return PageInspectionOutput(
             items=[
                 InspectionItem(
                     category=category,
-                    outcome="MISMATCH" if category == "TEXT" and text_mismatch else "PASS",
-                    score=0.6 if category == "TEXT" and text_mismatch else 0.98,
-                    severity="WARNING" if category == "TEXT" and text_mismatch else "INFO",
+                    outcome="PASS",
+                    score=0.98,
+                    severity="INFO",
                     details={
-                        "expected": "对白与剧本一致",
-                        "observed": "首个气泡有一个错字" if category == "TEXT" else "符合目标",
+                        "expected": "结构化目标",
+                        "observed": "符合目标",
                     },
-                    regions=(
-                        [{"x": 0.68, "y": 0.08, "width": 0.22, "height": 0.13}]
-                        if category == "TEXT"
-                        else []
-                    ),
+                    regions=[],
                 )
                 for category in categories
             ]
@@ -426,9 +421,10 @@ def test_1500_to_3000_character_full_manga_acceptance(
             model_alias = "image.nano_banana_2"
             queued_response = client.post(
                 f"/api/v1/batches/{batch_response.json()['id']}/candidates",
-                json={
-                    "model_alias": model_alias,
-                    "resolution": "1K",
+                    json={
+                        "model_alias": model_alias,
+                        "resolution": "1K",
+                        "storyboard_version": page["storyboard_version"],
                         "reference_selections": {
                             character["id"]: {
                                 "character_asset_id": character_asset["id"],
@@ -462,7 +458,6 @@ def test_1500_to_3000_character_full_manga_acceptance(
                     f"/api/v1/candidates/{candidate_id}/inspect",
                     json={
                         "categories": [
-                            "TEXT",
                             "SPEAKER",
                             "CHARACTER",
                             "OUTFIT",
@@ -476,30 +471,12 @@ def test_1500_to_3000_character_full_manga_acceptance(
                 inspections = client.get(
                     f"/api/v1/candidates/{candidate_id}/inspections"
                 ).json()
-                assert len(inspections) == 6
-                text_issue = next(item for item in inspections if item["category"] == "TEXT")
-                assert text_issue["outcome"] == "MISMATCH"
-                repair_response = client.post(
-                    f"/api/v1/candidates/{candidate_id}/repairs",
-                    json={
-                        "inspection_result_id": text_issue["id"],
-                        "repair_type": "TEXT_REGION",
-                        "target_regions": text_issue["regions"],
-                        "target_fields": ["dialogue.text"],
-                        "model_alias": "image.nano_banana_2",
-                        "resolution": "1K",
-                    },
-                )
-                assert repair_response.status_code == 202
-                repaired = repair_response.json()
-                _finish_job(db_session, repaired["job_id"], _run_page_generate)
-                selected_id = repaired["candidate"]["id"]
+                assert len(inspections) == 5
 
             final_inspection_job = client.post(
                 f"/api/v1/candidates/{selected_id}/inspect",
                 json={
                     "categories": [
-                        "TEXT",
                         "SPEAKER",
                         "CHARACTER",
                         "OUTFIT",
@@ -517,7 +494,7 @@ def test_1500_to_3000_character_full_manga_acceptance(
 
             selected = client.post(
                 f"/api/v1/pages/{page['id']}/select-candidate",
-                json={"candidate_id": selected_id},
+                json={"candidate_id": selected_id, "manual_text_confirmed": True},
             )
             assert selected.status_code == 200
             assert selected.json()["selected_candidate_id"] == selected_id
@@ -527,7 +504,7 @@ def test_1500_to_3000_character_full_manga_acceptance(
                 assert following.status_code == 200
                 assert following.json()["page_number"] == page["page_number"] + 1
 
-        assert len(fake_adapter.page_prompts) == planned["page_count"] + 1
+        assert len(fake_adapter.page_prompts) == planned["page_count"]
         assert all("从右到左" in prompt for prompt in fake_adapter.page_prompts)
         assert any("黑色长发" in prompt for prompt in fake_adapter.page_prompts)
         assert any("深色冬季校服" in prompt for prompt in fake_adapter.page_prompts)
@@ -538,7 +515,7 @@ def test_1500_to_3000_character_full_manga_acceptance(
             params={"group_by": "batch"},
         ).json()
         assert library["favorite_count"] == 1
-        assert library["total_candidates"] >= planned["page_count"] + 4
+        assert library["total_candidates"] >= planned["page_count"] + 3
         favorites = client.get(
             f"/api/v1/projects/{project['id']}/library",
             params={"group_by": "batch", "favorite": True},

@@ -58,7 +58,14 @@ export function ProductionReadiness({
     {error ? <p className="form-error"><CircleAlert size={14} />准备检查失败：{error.message}</p> : null}
 
     {readiness ? <>
-      <div className="reference-check-grid readiness-overview">
+      {readiness.blockers.length ? <div className="workflow-warning readiness-blockers">
+        <CircleAlert size={17} />
+        <div><strong>{readiness.blockers.length} 项准备工作未完成</strong><ul>{readiness.blockers.map((blocker) => <li key={`${blocker.code}-${blocker.target_id ?? "page"}`}><span>{blocker.message}</span><Link href={routeForStage(projectId, blocker.stage)}>去处理</Link></li>)}</ul></div>
+      </div> : <p className="edit-notice"><Check size={13} />页面生产条件已全部满足，可以确认参考图后生成 1 个 1K 彩色候选。</p>}
+
+      <details className="production-diagnostics" open={!readiness.ready}>
+        <summary>{readiness.ready ? "查看原文覆盖、模型与执行器诊断" : "展开查看阻塞诊断"}</summary>
+        <div className="reference-check-grid readiness-overview">
         <article>
           <div><strong><ShieldCheck size={15} />内容追溯</strong><span>原文与剧本必须同时覆盖</span></div>
           <ReadinessMark ok={readiness.source_complete}>原文{readiness.source_complete ? "完整" : "未覆盖"}</ReadinessMark>
@@ -82,17 +89,13 @@ export function ProductionReadiness({
           <ReadinessMark ok={readiness.worker.can_execute}>{readiness.worker.executor} · {readiness.worker.queue_mode}</ReadinessMark>
           <small>{readiness.estimated_cost_note}</small>
         </article>
-      </div>
+        </div>
 
-      <div className="draw-context readiness-dialogue-proof">
-        <div><span>LETTERING</span><strong><MessageSquareText size={15} />目标中文</strong><small>模型直接绘制 · OCR 95% 门槛</small></div>
-        <p>{targetDialogues.length ? targetDialogues.map((text, index) => `${index + 1}. ${text}`).join("　") : "本页没有对白或旁白。"}</p>
-      </div>
-
-      {readiness.blockers.length ? <div className="workflow-warning readiness-blockers">
-        <CircleAlert size={17} />
-        <div><strong>{readiness.blockers.length} 项准备工作未完成</strong><ul>{readiness.blockers.map((blocker) => <li key={`${blocker.code}-${blocker.target_id ?? "page"}`}><span>{blocker.message}</span><Link href={routeForStage(projectId, blocker.stage)}>去处理</Link></li>)}</ul></div>
-      </div> : <p className="edit-notice"><Check size={13} />页面生产条件已全部满足，可以确认参考图后生成 1 个 1K 彩色候选。</p>}
+        <div className="draw-context readiness-dialogue-proof">
+          <div><span>LETTERING</span><strong><MessageSquareText size={15} />目标中文</strong><small>模型直接绘制 · 采用前人工校对</small></div>
+          <p>{targetDialogues.length ? targetDialogues.map((text, index) => `${index + 1}. ${text}`).join("　") : "本页没有对白或旁白。"}</p>
+        </div>
+      </details>
     </> : null}
   </section>;
 }

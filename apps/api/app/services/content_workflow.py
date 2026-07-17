@@ -639,6 +639,8 @@ def update_page_layout(
     page.panel_count = panel_count
     page.source_coverage = {**page.source_coverage, "layout_mode": layout_mode}
     page.continuity_status = "NEEDS_REVIEW"
+    page.storyboard_version += 1
+    page.selected_candidate_ack_version = None
     page.version += 1
     db.flush()
     _populate_page_storyboard(db, page, chunks, page_scenes, page_beats, characters)
