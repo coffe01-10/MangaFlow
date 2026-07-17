@@ -17,7 +17,7 @@
 - AI 概念设定图先作为草稿，人工确认后才同时成为人物与服装规范参考；彩色风格必须依次确认色板、测试图并激活。
 - 右至左分镜数据，以及原文、Scene、Beat、对白和页面之间的追溯关系。
 - Nano Banana 2 与 Nano Banana Pro 完全平级，每个候选显式选模型和分辨率。
-- 同一页多批次、多候选、跨模型抽卡；收藏多个、采用一个，采用版本才进入下一页连续性上下文。
+- 同一页多批次、多候选、跨模型抽卡；收藏多个、采用一个，并可随时撤回采用而不删除候选或生成文件；采用版本才进入下一页连续性上下文。
 - 按“章节 → 页面 → 批次”读取素材库，支持页面、角色补图、服装图、风格测试和修复图批次。
 - 持久化任务、DAG、幂等、取消、重试、超时和并发限制；`AUTO` 在开发环境无 Redis 时使用本地执行器，`LOCAL` 强制本地执行，`REDIS` 不可用时任务安全停留在 `WAITING`。
 - Gemini 多模态视觉检查、分级视觉修复、人工文字校对，以及 PNG、PDF、项目 JSON 和素材清单导出。
@@ -88,13 +88,50 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1
 
 PostgreSQL 与 Redis 的开发容器可用 `docker compose up -d` 启动；默认数据库仍为 `storage/mangaflow.db`。
 
+## 数据存储与备份
+
+默认部署是本地单用户工作台，采用“SQLite 元数据 + 本地文件目录”的双层存储。图片二进制不会写入数据库；数据库只保存资产 ID、相对 `storage_key`、版本状态和业务关系。
+
+| 数据 | 默认位置 | 说明 |
+| --- | --- | --- |
+| 项目与业务元数据 | `storage/mangaflow.db` | 项目、章节、原文修订、角色、服装、风格、分镜、候选、任务、工作流、检查与导出记录 |
+| AI 生成原图 | `storage/generated/<project_id>/<batch_id>/` | 页面候选、角色/服装设定图、风格测试、修复和升清结果 |
+| 生成图缩略图 | `storage/thumbnails/<asset_id>/` | 自动生成的 320px、640px WebP |
+| 用户上传原文件 | `uploads/<project_id>/` | 文件名规范化为 UUID，原始扩展名保留 |
+| 上传图缩略图 | `uploads/thumbnails/<asset_id>/` | 自动生成的 320px、640px WebP |
+| 导出文件 | `storage/exports/<project_id>/<chapter_id>/` | PNG、PDF、项目 JSON 和素材清单 |
+| 浏览器界面偏好 | `localStorage` / `sessionStorage` | 侧栏与检查器宽度、滚动位置、风格模式，以及尚未导入服务端的旧版工作流草稿 |
+
+主要项目数据由 API 写入 SQLite，所有应用 SQLite 连接都会启用外键检查和 5 秒 busy timeout。采用或撤回候选只改变数据库关系：撤回不会删除候选、任务、资产或图片文件。素材库普通删除是软删除，生成文件和任务记录继续保留。
+
+清除浏览器缓存不会删除项目、分镜或素材，但会重置界面偏好，并可能移除尚未导入服务端的旧版工作流草稿。工作流正式版本、运行和节点运行记录保存在数据库中。
+
+> [!IMPORTANT]
+> `storage/`、`uploads/`、`.env` 和服务账号文件均被 Git 忽略。提交代码、切换分支或合并到 `master` 都不构成数据备份。
+
+完整备份至少应包含：
+
+1. `storage/mangaflow.db`
+2. `storage/generated/`
+3. `uploads/`
+4. 如需保留已导出成品，再包含 `storage/exports/`
+5. 单独加密保存 `.env` 和 Vertex 凭据；不要把凭据放进普通项目归档
+
+复制数据库文件前应停止 API/Worker 写入，或使用 SQLite 在线备份工具生成一致性快照。迁移脚本产生的 `.db` 备份只保护数据库，不包含生成图和上传素材，因此不能替代完整备份。
+
+如需迁移到另一台机器，应保持上述目录的相对结构；数据库中的 `storage_key` 使用相对路径，恢复文件后重新执行 Alembic 升级即可：
+
+```powershell
+.venv\Scripts\python.exe -m alembic -c apps/api/alembic.ini upgrade head
+```
+
 ## 检查
 
 ```powershell
 npm run check
 ```
 
-当前验收覆盖后端 Pytest、Ruff、前端 ESLint/Vitest、TypeScript、Next.js 构建、Playwright 闭环和 Alembic 全新升级/回滚/再升级。文字由用户在采用候选前人工校对；系统不再创建文字自动检查或文字区域修复任务，也不会为了文字分数自动发起付费调用。
+当前质量基线为 89 个后端测试和 4 个前端测试，并覆盖 Ruff、ESLint、TypeScript、Next.js 生产构建、Playwright 闭环和 Alembic 全新升级/回滚/再升级。文字由用户在采用候选前人工校对；系统不再创建文字自动检查或文字区域修复任务，也不会为了文字分数自动发起付费调用。
 
 ## 安全说明
 
