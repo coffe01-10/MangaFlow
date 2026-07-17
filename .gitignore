@@ -9,6 +9,7 @@ gen-lang-client-*-key.json
 # JavaScript
 node_modules/
 .next/
+.next-dev/
 out/
 dist/
 coverage/

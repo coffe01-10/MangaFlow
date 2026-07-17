@@ -4,6 +4,10 @@ const apiOrigin = process.env.MANGAFLOW_API_ORIGIN ?? "http://127.0.0.1:8000";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  // `next dev` and `next build` can run during the same acceptance session.
+  // Keep their manifests and compiled CSS separate so a production build
+  // cannot make the live development server serve stale assets.
+  distDir: process.env.NODE_ENV === "development" ? ".next-dev" : ".next",
   allowedDevOrigins: ["127.0.0.1", "localhost"],
   async rewrites() {
     return [
