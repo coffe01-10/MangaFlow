@@ -1248,6 +1248,31 @@ button, input, select, textarea { min-height: 40px; font-size: 12px; }
 .system-status-strip span { color: #756f65; font-size: 12px; font-weight: 750; }
 .system-status-strip strong { overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
 
+/* Fine-pointer feedback keeps the control room tactile without disturbing touch layouts. */
+@media (hover: hover) and (pointer: fine) {
+  .settings-page .system-status-strip > div { transition: transform .18s ease, background-color .18s ease, box-shadow .18s ease; }
+  .settings-page .system-status-strip > div:hover { transform: translateY(-2px); background: rgba(252,251,247,.82); box-shadow: inset 0 -3px var(--vermillion), 0 7px 15px rgba(21,21,18,.06); }
+  .settings-page .control-card, .settings-page .diagnostic-card, .settings-page .storage-card { transition: border-color .2s ease, box-shadow .2s ease, background-color .2s ease; }
+  .settings-page .control-card:hover, .settings-page .diagnostic-card:hover, .settings-page .storage-card:hover { border-color: #8d867a; background: rgba(252,251,247,.76); box-shadow: 7px 7px 0 rgba(21,21,18,.08); }
+  .settings-page .provider-group-toggle, .settings-page .provider-group-toggle > svg, .settings-page .provider-card, .settings-page .provider-card-title > strong, .settings-page .provider-connection { transition: transform .17s ease, color .17s ease, background-color .17s ease, border-color .17s ease, box-shadow .17s ease; }
+  .settings-page .provider-group-toggle:hover > svg { transform: translateX(2px); color: var(--vermillion); }
+  .settings-page .provider-card:hover { background: rgba(252,251,247,.9); box-shadow: inset 3px 0 var(--vermillion); }
+  .settings-page .provider-card-toggle:hover .provider-card-title > strong { transform: translateX(3px); color: #9f3926; }
+  .settings-page .provider-connection:hover { border-color: var(--line-dark); box-shadow: 3px 3px 0 rgba(21,21,18,.045); }
+  .settings-page .provider-create button, .settings-page .provider-connection button, .settings-page .provider-enable-toggle, .settings-page .diagnostic-card > header button { transition: transform .16s ease, border-color .16s ease, background-color .16s ease, color .16s ease, box-shadow .16s ease; }
+  .settings-page .provider-create button:hover:not(:disabled), .settings-page .provider-connection button:hover:not(:disabled), .settings-page .provider-enable-toggle:hover:not(:disabled) { transform: translateY(-2px); border-color: var(--ink); background: var(--white); box-shadow: 2px 3px 0 rgba(21,21,18,.08); }
+  .settings-page .diagnostic-card > header button:hover:not(:disabled) { transform: rotate(-4deg); color: var(--ink); }
+  .settings-page .diagnostic-row, .settings-page .storage-card dl div { transition: transform .17s ease, background-color .17s ease, box-shadow .17s ease; }
+  .settings-page .diagnostic-row:hover { transform: translateX(3px); background: rgba(71,116,90,.055); box-shadow: inset 3px 0 var(--green); }
+  .settings-page .storage-card dl div:hover { transform: translateX(3px); background: rgba(211,74,47,.045); box-shadow: inset 3px 0 var(--vermillion); }
+  .settings-page .provider-toolbar input, .settings-page .provider-toolbar select, .settings-page .runtime-form input, .settings-page .runtime-form select { transition: border-color .16s ease, background-color .16s ease, box-shadow .16s ease; }
+  .settings-page .provider-toolbar input:hover, .settings-page .provider-toolbar select:hover, .settings-page .runtime-form input:hover, .settings-page .runtime-form select:hover { border-color: #8d867a; background: var(--white); box-shadow: 0 3px 8px rgba(21,21,18,.045); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-page *, .settings-page *::before, .settings-page *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+}
+
 @media (min-width: 1440px) {
   .storyboard-desk:not(.focus-mode) { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 0 14px; }
   .storyboard-desk:not(.focus-mode) > :not(.storyboard-page-strip) { grid-column: 2; }
