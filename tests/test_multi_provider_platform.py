@@ -32,6 +32,7 @@ from app.models import (
 )
 from app.services.credential_crypto import (
     decrypt_secret,
+    encrypt_secret,
     mark_key_failure,
     select_provider_key,
 )
@@ -42,6 +43,41 @@ from app.services.provider_presets import ensure_provider_presets
 
 class SmokeResult(BaseModel):
     ok: bool
+
+
+def test_development_creates_local_master_key_on_first_encryption(tmp_path):
+    from app.config import Settings
+
+    settings = Settings(
+        environment="development",
+        storage_root=tmp_path,
+        mangaflow_credential_master_key=None,
+    )
+
+    assert settings.provider_credentials_writable is True
+    token = encrypt_secret(settings, "local-development-secret")
+
+    key_path = tmp_path / ".provider-credential-master-key"
+    assert key_path.is_file()
+    assert key_path.read_text(encoding="ascii").strip()
+    assert decrypt_secret(settings, token) == "local-development-secret"
+
+
+def test_production_refuses_to_generate_local_master_key(tmp_path):
+    from app.config import Settings
+
+    settings = Settings(
+        environment="production",
+        storage_root=tmp_path,
+        mangaflow_credential_master_key=None,
+    )
+
+    assert settings.provider_credentials_writable is False
+    with pytest.raises(HTTPException) as error:
+        encrypt_secret(settings, "production-secret")
+
+    assert error.value.status_code == 503
+    assert not (tmp_path / ".provider-credential-master-key").exists()
 
 
 def test_presets_seed_default_provider_catalog(client):

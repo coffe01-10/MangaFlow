@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     @property
     def provider_credentials_writable(self) -> bool:
         if not self.mangaflow_credential_master_key:
-            return False
+            return self.environment.lower() == "development"
         try:
             return (
                 len(

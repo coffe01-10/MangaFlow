@@ -14,15 +14,34 @@ from app.config import Settings
 from app.models import ProviderKey
 
 _AAD = b"mangaflow-provider-key-v1"
+_LOCAL_MASTER_KEY_FILENAME = ".provider-credential-master-key"
+
+
+def _load_or_create_local_master_key(settings: Settings) -> str:
+    settings.storage_root.mkdir(parents=True, exist_ok=True)
+    path = settings.storage_root / _LOCAL_MASTER_KEY_FILENAME
+    try:
+        return path.read_text(encoding="ascii").strip()
+    except FileNotFoundError:
+        generated = base64.urlsafe_b64encode(os.urandom(32)).decode("ascii")
+        try:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            return path.read_text(encoding="ascii").strip()
+        with os.fdopen(descriptor, "w", encoding="ascii") as stream:
+            stream.write(generated)
+        return generated
 
 
 def _decode_master_key(settings: Settings) -> bytes:
     raw = settings.mangaflow_credential_master_key
     if not raw:
-        raise HTTPException(
-            status_code=503,
-            detail="服务端尚未配置 MANGAFLOW_CREDENTIAL_MASTER_KEY，无法保存 API Key",
-        )
+        if settings.environment.lower() != "development":
+            raise HTTPException(
+                status_code=503,
+                detail="服务端尚未配置 MANGAFLOW_CREDENTIAL_MASTER_KEY，无法保存 API Key",
+            )
+        raw = _load_or_create_local_master_key(settings)
     try:
         key = base64.urlsafe_b64decode(raw.encode("ascii"))
     except Exception as error:

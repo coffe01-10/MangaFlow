@@ -90,7 +90,7 @@ MANGAFLOW_CREDENTIAL_MASTER_KEY=replace-with-a-url-safe-base64-32-byte-key
 powershell -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1
 ```
 
-没有配置 Vertex 凭据时，仍可使用其他已配置供应商。若要从设置页保存 API Key，必须先配置 `MANGAFLOW_CREDENTIAL_MASTER_KEY`；未配置时接口只读且不会把密钥退回浏览器。Redis 是可选项：运行设置中的队列模式默认为 `AUTO`，检测不到 Redis 时自动切到本地执行器；选择 `LOCAL` 后不再探测 Redis；只有显式选择 `REDIS` 且 Redis 不可用时，新任务才保持 `WAITING`。
+没有配置 Vertex 凭据时，仍可使用其他已配置供应商。开发环境第一次从设置页保存 API Key 时，会在 `storage/.provider-credential-master-key` 自动创建本机主密钥；生产环境必须显式配置 `MANGAFLOW_CREDENTIAL_MASTER_KEY`。接口只保存加密值且不会把密钥退回浏览器。Redis 是可选项：运行设置中的队列模式默认为 `AUTO`，检测不到 Redis 时自动切到本地执行器；选择 `LOCAL` 后不再探测 Redis；只有显式选择 `REDIS` 且 Redis 不可用时，新任务才保持 `WAITING`。
 
 如果浏览器能访问 Google，但 API 显示 `DEGRADED / UPSTREAM`，可将 `MANGAFLOW_PROXY_URL` 设置为 Clash/Mihomo 的 HTTP 或 Mixed 端口。`scripts\start-dev.ps1` 会自动把它转换成 Python 网络库识别的 `HTTP_PROXY` / `HTTPS_PROXY`，并为 `localhost`、`127.0.0.1` 设置直连。不要填写仅支持 SOCKS 的端口。
 
@@ -155,7 +155,7 @@ PostgreSQL 与 Redis 的开发容器可用 `docker compose up -d` 启动；默�
 2. `storage/generated/`
 3. `uploads/`
 4. 如需保留已导出成品，再包含 `storage/exports/`
-5. 单独加密保存 `.env`、凭据主密钥和 Vertex 凭据；不要把凭据放进普通项目归档
+5. 单独加密保存 `.env`、`storage/.provider-credential-master-key`（如存在）和 Vertex 凭据；不要把凭据放进普通项目归档
 
 复制数据库文件前应停止 API/Worker 写入，或使用 SQLite 在线备份工具生成一致性快照。迁移脚本产生的 `.db` 备份只保护数据库，不包含生成图和上传素材，因此不能替代完整备份。
 
@@ -171,7 +171,7 @@ PostgreSQL 与 Redis 的开发容器可用 `docker compose up -d` 启动；默�
 npm run check
 ```
 
-当前质量基线包含 112 个后端测试和 4 个前端测试，并覆盖 Ruff、ESLint、TypeScript、Next.js 生产构建和 Alembic 全新升级/回滚/再升级。真实供应商图片调用不属于默认测试，避免意外费用。文字由用户在采用候选前人工校对；系统不再创建文字自动检查或文字区域修复任务。
+当前质量基线包含 114 个后端测试和 4 个前端测试，并覆盖 Ruff、ESLint、TypeScript、Next.js 生产构建和 Alembic 全新升级/回滚/再升级。真实供应商图片调用不属于默认测试，避免意外费用。文字由用户在采用候选前人工校对；系统不再创建文字自动检查或文字区域修复任务。
 
 ## 安全说明
 

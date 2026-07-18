@@ -8,11 +8,13 @@
 
 ## 凭据配置
 
-先在服务端 `.env` 设置一次固定主密钥：
+生产环境先在服务端 `.env` 设置一次固定主密钥：
 
 ```env
 MANGAFLOW_CREDENTIAL_MASTER_KEY=<URL-safe Base64 编码的 32 字节随机值>
 ```
+
+开发环境在第一次保存 API Key 时自动生成 `storage/.provider-credential-master-key`，无需手动配置；该文件与数据库必须一起备份，否则已有密钥无法解密。非开发环境不会自动生成主密钥。
 
 API Key 使用 AES-256-GCM 加密写入 `provider_keys`。设置页只显示标签、末四位提示、健康状态与冷却时间。一个连接可保存多个 Key；任务按最久未使用优先轮换，认证失败会停用该 Key，限流会进入冷却。
 

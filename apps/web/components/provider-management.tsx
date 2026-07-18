@@ -9,6 +9,9 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
+  ArrowDownAZ,
+  ChevronDown,
+  ChevronRight,
   CircleAlert,
   Coins,
   KeyRound,
@@ -188,8 +191,50 @@ function ConnectionPanel({
   </section>;
 }
 
+type ProviderSort = "RECOMMENDED" | "NAME" | "HEALTH" | "MODELS" | "LATENCY";
+
+const healthOrder: Record<string, number> = {
+  HEALTHY: 0,
+  DEGRADED: 1,
+  UNKNOWN: 2,
+  UNCONFIGURED: 3,
+  OFFLINE: 4,
+};
+
+function providerModelCount(provider: ProviderProfile) {
+  return provider.connections.reduce((total, connection) => total + connection.model_count, 0);
+}
+
+function providerLatency(provider: ProviderProfile) {
+  const measured = provider.connections
+    .map((connection) => connection.latency_ms)
+    .filter((latency): latency is number => latency !== null);
+  return measured.length ? Math.min(...measured) : Number.POSITIVE_INFINITY;
+}
+
+function providerHealthRank(provider: ProviderProfile) {
+  return Math.min(...provider.connections.map((connection) => healthOrder[connection.health_state] ?? 5));
+}
+
+function sortProviders(items: ProviderProfile[], sort: ProviderSort) {
+  return [...items].sort((left, right) => {
+    if (sort === "NAME") return left.name.localeCompare(right.name, "zh-CN");
+    if (sort === "HEALTH") return providerHealthRank(left) - providerHealthRank(right) || left.name.localeCompare(right.name, "zh-CN");
+    if (sort === "MODELS") return providerModelCount(right) - providerModelCount(left) || left.name.localeCompare(right.name, "zh-CN");
+    if (sort === "LATENCY") return providerLatency(left) - providerLatency(right) || left.name.localeCompare(right.name, "zh-CN");
+    const leftScore = Number(left.connections.some((connection) => connection.configured)) * 4
+      + Number(providerHealthRank(left) === 0) * 2 + Number(providerModelCount(left) > 0);
+    const rightScore = Number(right.connections.some((connection) => connection.configured)) * 4
+      + Number(providerHealthRank(right) === 0) * 2 + Number(providerModelCount(right) > 0);
+    return rightScore - leftScore || left.name.localeCompare(right.name, "zh-CN");
+  });
+}
+
 function ProviderCard({ provider, models }: { provider: ProviderProfile; models: ModelCapability[] }) {
   const queryClient = useQueryClient();
+  const [expanded, setExpanded] = useState(
+    provider.connections.some((connection) => connection.configured),
+  );
   const toggle = useMutation({
     mutationFn: () => api.updateProvider(provider.id, { version: provider.version, enabled: !provider.enabled }),
     onSuccess: () => {
@@ -197,10 +242,35 @@ function ProviderCard({ provider, models }: { provider: ProviderProfile; models:
       queryClient.invalidateQueries({ queryKey: ["models"] });
     },
   });
+  const connectionCount = provider.connections.length;
+  const configuredCount = provider.connections.filter((connection) => connection.configured).length;
+  const modelCount = providerModelCount(provider);
   return <article className={`provider-card ${provider.enabled ? "" : "disabled"}`}>
-    <header><div><span>{provider.category} · {provider.risk_label}</span><strong>{provider.name}</strong><small>{provider.description}</small></div><button disabled={toggle.isPending} onClick={() => toggle.mutate()}>{provider.enabled ? "停用" : "启用"}</button></header>
-    {provider.connections.map((connection) => <ConnectionPanel key={`${connection.id}:${connection.version}`} connection={connection} models={models} />)}
+    <header>
+      <button className="provider-card-toggle" aria-expanded={expanded} onClick={() => setExpanded((current) => !current)}>
+        {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+        <span className="provider-card-title"><span>{provider.category} · {provider.risk_label}</span><strong>{provider.name}</strong><small>{provider.description}</small></span>
+        <span className="provider-card-counts"><small>{configuredCount}/{connectionCount} 连接</small><small>{modelCount} 模型</small></span>
+      </button>
+      <button className="provider-enable-toggle" disabled={toggle.isPending} onClick={() => toggle.mutate()}>{provider.enabled ? "停用" : "启用"}</button>
+    </header>
+    {expanded && <div className="provider-card-body">{provider.connections.map((connection) => <ConnectionPanel key={`${connection.id}:${connection.version}`} connection={connection} models={models} />)}</div>}
   </article>;
+}
+
+function ProviderGroup({
+  label,
+  providers,
+  models,
+}: {
+  label: string;
+  providers: ProviderProfile[];
+  models: ModelCapability[];
+}) {
+  return <section className="provider-group">
+    <header><span>{label}</span><strong>{providers.length}</strong></header>
+    {providers.length ? providers.map((provider) => <ProviderCard key={`${provider.id}:${provider.version}`} provider={provider} models={models} />) : <p className="provider-group-empty">当前筛选条件下没有供应商</p>}
+  </section>;
 }
 
 export function ProviderManagement() {
@@ -208,6 +278,7 @@ export function ProviderManagement() {
   const providers = useQuery({ queryKey: ["providers"], queryFn: api.providers });
   const models = useQuery({ queryKey: ["models"], queryFn: api.models });
   const [filter, setFilter] = useState("");
+  const [sort, setSort] = useState<ProviderSort>("RECOMMENDED");
   const [name, setName] = useState("");
   const [protocol, setProtocol] = useState<"OPENAI" | "ANTHROPIC">("OPENAI");
   const [baseUrl, setBaseUrl] = useState("");
@@ -219,19 +290,23 @@ export function ProviderManagement() {
       queryClient.invalidateQueries({ queryKey: ["providers"] });
     },
   });
-  const visible = useMemo(() => {
+  const grouped = useMemo(() => {
     const normalized = filter.trim().toLowerCase();
-    return (providers.data ?? []).filter((provider) => !normalized || `${provider.name} ${provider.preset_key ?? ""}`.toLowerCase().includes(normalized));
-  }, [filter, providers.data]);
+    const visible = (providers.data ?? []).filter((provider) => !normalized || `${provider.name} ${provider.preset_key ?? ""}`.toLowerCase().includes(normalized));
+    return {
+      enabled: sortProviders(visible.filter((provider) => provider.enabled), sort),
+      disabled: sortProviders(visible.filter((provider) => !provider.enabled), sort),
+    };
+  }, [filter, providers.data, sort]);
 
   return <article className="control-card provider-platform">
     <header><div><Sparkles size={18} /><span>AI PROVIDERS / MODEL PLATFORM</span></div><small>{providers.data?.length ?? 0} 个预设供应商</small></header>
-    <div className="provider-toolbar"><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="搜索 OpenAI、Claude、DeepSeek、火山…" /><span>API 协议：OpenAI / Anthropic；Vertex 作为内置原生连接保留。</span></div>
+    <div className="provider-toolbar"><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="搜索 OpenAI、Claude、DeepSeek、火山…" /><label><ArrowDownAZ size={14} /><span>排序</span><select aria-label="供应商排序" value={sort} onChange={(event) => setSort(event.target.value as ProviderSort)}><option value="RECOMMENDED">推荐顺序</option><option value="NAME">名称</option><option value="HEALTH">健康优先</option><option value="MODELS">模型数量</option><option value="LATENCY">延迟</option></select></label><span>OpenAI / Anthropic；Vertex 保留为原生连接。</span></div>
     <details className="provider-create">
       <summary><Plus size={14} />添加自定义供应商</summary>
       <form onSubmit={(event) => { event.preventDefault(); create.mutate(); }}><input value={name} onChange={(event) => setName(event.target.value)} placeholder="供应商名称" /><select value={protocol} onChange={(event) => setProtocol(event.target.value as "OPENAI" | "ANTHROPIC")}><option value="OPENAI">OpenAI 协议</option><option value="ANTHROPIC">Anthropic 协议</option></select><input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.example.com/v1" /><button disabled={!name.trim() || !baseUrl.trim() || create.isPending}><Plus size={14} />创建</button></form>
       {create.error && <p className="form-error"><CircleAlert size={14} />{create.error.message}</p>}
     </details>
-    {providers.isLoading || models.isLoading ? <div className="loading-panel"><LoaderCircle className="spin" />读取供应商与模型目录…</div> : <div className="provider-list">{visible.map((provider) => <ProviderCard key={`${provider.id}:${provider.version}`} provider={provider} models={models.data ?? []} />)}</div>}
+    {providers.isLoading || models.isLoading ? <div className="loading-panel"><LoaderCircle className="spin" />读取供应商与模型目录…</div> : <div className="provider-list"><ProviderGroup label="已启用" providers={grouped.enabled} models={models.data ?? []} /><ProviderGroup label="已停用" providers={grouped.disabled} models={models.data ?? []} /></div>}
   </article>;
 }
