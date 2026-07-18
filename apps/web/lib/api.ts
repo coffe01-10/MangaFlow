@@ -3,7 +3,7 @@ const API_ORIGIN = API_URL.replace(/\/api\/v1\/?$/, "");
 
 export type Resolution = "1K" | "2K" | "4K";
 export type WorkflowMode = "AUTO" | "DIRECTOR" | "SEMI_AUTO";
-export type ImageModelAlias = "image.nano_banana_2" | "image.nano_banana_pro";
+export type ImageModelAlias = string;
 
 export interface Project {
   id: string;
@@ -19,21 +19,33 @@ export interface Project {
   consistency_check_enabled: boolean;
   text_model_alias: string;
   last_image_model_alias: ImageModelAlias | null;
+  default_text_model_id: string | null;
+  last_image_model_id: string | null;
   created_at: string;
   updated_at: string;
   version: number;
 }
 
 export interface ModelCapability {
+  catalog_id: string;
+  connection_id: string;
   provider: string;
+  protocol: string;
   model_id: string;
   logical_alias: string;
   display_name: string;
+  model_type: "TEXT" | "IMAGE";
+  input_modalities: string[];
+  output_modalities: string[];
   operations: string[];
   resolutions: string[];
   preview_resolutions: string[];
   max_reference_images: number;
   regions: string[];
+  confidence: string;
+  enabled: boolean;
+  auto_eligible: boolean;
+  priority: number;
 }
 
 export interface VertexStatus {
@@ -76,6 +88,95 @@ export interface DiagnosticCheck {
   status: "OK" | "WARNING" | "FAILED" | "NOT_CHECKED";
   message: string;
   latency_ms: number | null;
+}
+
+export interface ProviderKeySummary {
+  id: string;
+  label: string;
+  key_hint: string;
+  enabled: boolean;
+  health_state: string;
+  cooldown_until: string | null;
+  last_used_at: string | null;
+  last_error_code: string | null;
+}
+
+export interface ProviderConnection {
+  id: string;
+  provider_id: string;
+  name: string;
+  protocol: "OPENAI" | "ANTHROPIC" | "VERTEX_NATIVE" | "GOOGLE_NATIVE";
+  base_url: string;
+  enabled: boolean;
+  configured: boolean;
+  credential_writable: boolean;
+  use_responses_api: boolean;
+  endpoint_templates: Record<string, string>;
+  extra_headers: Record<string, string>;
+  balance_config: Record<string, unknown>;
+  nonsecret_config: Record<string, unknown>;
+  health_state: string;
+  last_checked_at: string | null;
+  last_success_at: string | null;
+  latency_ms: number | null;
+  error_code: string | null;
+  message: string;
+  key_count: number;
+  model_count: number;
+  keys: ProviderKeySummary[];
+  version: number;
+}
+
+export interface ProviderProfile {
+  id: string;
+  preset_key: string | null;
+  name: string;
+  category: string;
+  description: string;
+  built_in: boolean;
+  enabled: boolean;
+  risk_label: string;
+  documentation_url: string | null;
+  connections: ProviderConnection[];
+  version: number;
+}
+
+export interface ProviderModel {
+  id: string;
+  connection_id: string;
+  provider_model_id: string;
+  display_name: string;
+  legacy_alias: string | null;
+  model_type: "TEXT" | "IMAGE";
+  input_modalities: string[];
+  output_modalities: string[];
+  operations: string[];
+  api_surfaces: string[];
+  capabilities: Record<string, unknown>;
+  enabled: boolean;
+  priority: number;
+  confidence: string;
+  source: string;
+  pricing: Record<string, unknown>;
+  success_rate: number | null;
+  median_latency_ms: number | null;
+  last_verified_at: string | null;
+  created_at: string;
+  updated_at: string;
+  version: number;
+}
+
+export interface ModelProbe {
+  id: string;
+  connection_id: string;
+  model_id: string | null;
+  probe_type: string;
+  status: string;
+  latency_ms: number | null;
+  metrics: Record<string, unknown>;
+  error_code: string | null;
+  message: string;
+  created_at: string;
 }
 
 export interface Diagnostics {
@@ -325,6 +426,8 @@ export interface PageReadiness {
     text_model_access: string;
     image_model_access: string;
     image_model_alias: string;
+    usable_image_model_count: number;
+    auto_image_model_count: number;
   };
   worker: {
     queue_mode: string;
@@ -391,6 +494,14 @@ export interface Job {
   duration_ms: number | null;
   usage_summary: Record<string, unknown>;
   estimated_cost: number | null;
+  result: {
+    kind: "IMAGE";
+    label: string;
+    candidate_id: string | null;
+    page_id: string | null;
+    content_url: string;
+    thumbnail_url: string | null;
+  } | null;
   created_at: string;
   archived_at: string | null;
 }
@@ -659,6 +770,26 @@ export const api = {
   updateRuntimeSettings: (payload: Partial<RuntimeSettings> & { version: number }) =>
     request<RuntimeSettings>("/settings/runtime", { method: "PATCH", body: JSON.stringify(payload) }),
   diagnostics: () => request<Diagnostics>("/settings/diagnostics"),
+  providers: () => request<ProviderProfile[]>("/providers"),
+  createProvider: (payload: { name: string; protocol: "OPENAI" | "ANTHROPIC"; base_url: string; use_responses_api: boolean }) =>
+    request<ProviderProfile>("/providers", { method: "POST", body: JSON.stringify(payload) }),
+  updateProvider: (id: string, payload: { version: number; name?: string; enabled?: boolean }) =>
+    request<ProviderProfile>(`/providers/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  updateProviderConnection: (id: string, payload: Partial<Pick<ProviderConnection, "name" | "base_url" | "enabled" | "use_responses_api" | "endpoint_templates" | "extra_headers" | "balance_config" | "nonsecret_config">> & { version: number }) =>
+    request<ProviderConnection>(`/providers/connections/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  saveProviderKey: (connectionId: string, label: string, apiKey: string) =>
+    request<ProviderKeySummary>(`/providers/connections/${connectionId}/keys`, { method: "PUT", body: JSON.stringify({ label, api_key: apiKey }) }),
+  deleteProviderKey: (connectionId: string, keyId: string) =>
+    request<void>(`/providers/connections/${connectionId}/keys/${keyId}`, { method: "DELETE" }),
+  discoverProviderModels: (connectionId: string) =>
+    request<ProviderModel[]>(`/providers/connections/${connectionId}/discover`, { method: "POST" }),
+  createProviderModel: (connectionId: string, payload: { provider_model_id: string; display_name?: string; model_type: "TEXT" | "IMAGE"; input_modalities: string[]; output_modalities: string[]; operations: string[]; api_surfaces: string[]; capabilities: Record<string, unknown> }) =>
+    request<ProviderModel>(`/providers/connections/${connectionId}/models`, { method: "POST", body: JSON.stringify(payload) }),
+  testProviderConnection: (connectionId: string, payload: { test_type: "CREDENTIALS" | "TEXT" | "VISION" | "IMAGE" | "BENCHMARK"; model_id?: string; acknowledge_cost?: boolean; runs?: number }) =>
+    request<ModelProbe>(`/providers/connections/${connectionId}/test`, { method: "POST", body: JSON.stringify(payload) }),
+  providerBalance: (connectionId: string) =>
+    request<{ configured: boolean; value: string | number | null; usage?: string | number | null; currency?: string | null; message: string }>(`/providers/connections/${connectionId}/balance`),
+  providerProbes: (connectionId: string) => request<ModelProbe[]>(`/providers/probes?connection_id=${encodeURIComponent(connectionId)}`),
   assets: (projectId: string) => request<Asset[]>(`/assets?project_id=${encodeURIComponent(projectId)}`),
   uploadAsset: (projectId: string, kind: string, file: File) => {
     const data = new FormData();

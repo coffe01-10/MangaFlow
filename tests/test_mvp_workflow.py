@@ -685,9 +685,49 @@ def test_candidate_requires_explicit_neutral_model(client, db_session, monkeypat
     batch = client.post(f"/api/v1/pages/{plan['pages'][0]['id']}/batches").json()
     response = client.post(
         f"/api/v1/batches/{batch['id']}/candidates",
-        json={"model_alias": "image.fast", "resolution": "1K"},
+        json={
+            "model_alias": "auto",
+            "resolution": "1K",
+            "storyboard_version": plan["pages"][0]["storyboard_version"],
+        },
     )
     assert response.status_code == 422
+    assert "显式选择" in response.text
+
+
+def test_character_concept_without_references_uses_generate_capability(
+    client, db_session, monkeypatch
+):
+    from app.api.routes import asset_generation
+
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    project = _project(client, "无参考概念图")
+    character = client.post(
+        f"/api/v1/projects/{project['id']}/characters",
+        json={"primary_name": "林澄", "aliases": []},
+    ).json()
+    operations: list[str] = []
+    original_resolve = asset_generation.resolve_model
+
+    def record_operation(*args, operation: str, **kwargs):
+        operations.append(operation)
+        return original_resolve(*args, operation=operation, **kwargs)
+
+    monkeypatch.setattr(asset_generation, "resolve_model", record_operation)
+    response = client.post(
+        f"/api/v1/characters/{character['id']}/complete-sheet",
+        json={
+            "model_alias": "image.nano_banana_2",
+            "resolution": "1K",
+            "generation_mode": "CONCEPT",
+            "appearance_description": "黑色短发，冷静克制",
+            "outfit_name": "日常制服",
+            "outfit_description": "深色简洁制服",
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    assert operations == ["image_generate"]
 
 
 def test_asset_generation_batches_join_library(client, db_session, monkeypatch):
@@ -724,6 +764,17 @@ def test_asset_generation_batches_join_library(client, db_session, monkeypatch):
         },
     )
     assert batch.status_code == 201
+    automatic = client.post(
+        f"/api/v1/asset-generation-batches/{batch.json()['id']}/candidates",
+        json={
+            "model_alias": "auto",
+            "resolution": "1K",
+            "variant": "SIDE",
+            "instruction": "",
+        },
+    )
+    assert automatic.status_code == 422
+    assert "必须显式选择" in automatic.text
     candidate = client.post(
         f"/api/v1/asset-generation-batches/{batch.json()['id']}/candidates",
         json={
@@ -987,6 +1038,68 @@ def test_eight_candidate_jobs_are_isolated(client, db_session, monkeypatch):
     }
     assert jobs[job_ids[0]]["status"] == "FAILED"
     assert all(jobs[job_id]["status"] == "WAITING" for job_id in job_ids[1:])
+
+
+def test_completed_image_job_exposes_clickable_result(client, db_session):
+    project = _project(client, "任务结果入口")
+    chapter, plan = _chapter_and_pages(client, db_session, project["id"], repeat=2)
+    page = db_session.get(MangaPage, plan["pages"][0]["id"])
+    batch = GenerationBatch(
+        project_id=project["id"],
+        chapter_id=chapter["id"],
+        page_id=page.id,
+        ordinal=1,
+        generation_kind="PAGE",
+        status="CLOSED",
+    )
+    asset = Asset(
+        project_id=project["id"],
+        kind="page_candidate",
+        original_name="job-result.png",
+        storage_key="generated/job-result.png",
+        mime_type="image/png",
+        byte_size=10,
+        sha256="9" * 64,
+        source="VERTEX_GENERATED",
+        status="GENERATED",
+    )
+    db_session.add_all([batch, asset])
+    db_session.flush()
+    candidate = PageCandidate(
+        batch_id=batch.id,
+        page_id=page.id,
+        ordinal=1,
+        model_alias="image.nano_banana_2",
+        resolution=Resolution.DRAFT_1K,
+        status="READY",
+        asset_id=asset.id,
+    )
+    db_session.add(candidate)
+    db_session.flush()
+    job = GenerationJob(
+        project_id=project["id"],
+        target_type="PAGE_CANDIDATE",
+        target_id=candidate.id,
+        job_type="PAGE_GENERATE",
+        status=JobStatus.COMPLETED,
+    )
+    db_session.add(job)
+    db_session.flush()
+    candidate.job_id = job.id
+    db_session.commit()
+
+    listed = client.get(f"/api/v1/projects/{project['id']}/jobs")
+
+    assert listed.status_code == 200
+    result = next(item for item in listed.json() if item["id"] == job.id)["result"]
+    assert result == {
+        "kind": "IMAGE",
+        "label": "页面候选 1 · 1K",
+        "candidate_id": candidate.id,
+        "page_id": page.id,
+        "content_url": f"/api/v1/assets/{asset.id}/content",
+        "thumbnail_url": f"/api/v1/assets/{asset.id}/thumbnail/640",
+    }
 
 
 def test_job_history_archive_restore_and_safe_delete(client, db_session):

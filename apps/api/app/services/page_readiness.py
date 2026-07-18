@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.config import Settings
 from app.domain.states import CharacterPresence
 from app.models import (
+    AIModel,
     Asset,
     Chapter,
     Character,
@@ -16,7 +18,9 @@ from app.models import (
     Outfit,
     Panel,
     Project,
-    ProviderHealth,
+    ProviderConnection,
+    ProviderKey,
+    ProviderProfile,
     StyleProfile,
 )
 from app.schemas import (
@@ -27,9 +31,10 @@ from app.schemas import (
     PageReadinessStyle,
     PageReadinessWorker,
 )
+from app.services.model_router import model_operation_verified
+from app.services.provider_presets import ensure_provider_presets
 from app.services.runtime_settings import queue_execution_state
 
-FORMAL_IMAGE_MODEL = "image.nano_banana_2"
 FORMAL_RESOLUTION = "1K"
 _PRESENCE_PRIORITY = {
     CharacterPresence.MENTIONED.value: 1,
@@ -55,6 +60,52 @@ def _block(
         stage=stage,
         target_id=target_id,
     )
+
+
+def _catalog_model_availability(db: Session, settings: Settings) -> dict[str, int]:
+    usable_key_connections = set(
+        db.scalars(
+            select(ProviderKey.connection_id).where(
+                ProviderKey.enabled.is_(True),
+                or_(
+                    ProviderKey.cooldown_until.is_(None),
+                    ProviderKey.cooldown_until <= datetime.now(UTC),
+                ),
+            )
+        )
+    )
+    rows = (
+        db.query(AIModel, ProviderConnection, ProviderProfile)
+        .join(ProviderConnection, AIModel.connection_id == ProviderConnection.id)
+        .join(ProviderProfile, ProviderConnection.provider_id == ProviderProfile.id)
+        .all()
+    )
+    counts = {"text": 0, "image": 0, "auto_text": 0, "auto_image": 0}
+    for model, connection, profile in rows:
+        has_credentials = connection.protocol == "VERTEX_NATIVE" or (
+            settings.provider_credentials_writable
+            and connection.id in usable_key_connections
+        )
+        available = (
+            model.enabled
+            and connection.enabled
+            and profile.enabled
+            and has_credentials
+        )
+        if not available:
+            continue
+        kind = None
+        if model.model_type == "IMAGE" and "image_edit" in (model.operations or []):
+            kind = "image"
+        elif model.model_type == "TEXT" and "structured_text" in (model.operations or []):
+            kind = "text"
+        if kind is None:
+            continue
+        counts[kind] += 1
+        operation = "image_edit" if kind == "image" else "structured_text"
+        if model_operation_verified(model, operation) and connection.health_state == "HEALTHY":
+            counts[f"auto_{kind}"] += 1
+    return counts
 
 
 def _active_asset_ids(db: Session, asset_ids: list[str]) -> list[str]:
@@ -144,6 +195,7 @@ def build_page_readiness(
     page: MangaPage,
     settings: Settings,
 ) -> PageReadinessRead:
+    ensure_provider_presets(db, settings)
     chapter = db.get(Chapter, page.chapter_id)
     project = db.get(Project, chapter.project_id)
     blockers: list[PageReadinessBlocker] = []
@@ -268,45 +320,34 @@ def build_page_readiness(
                 )
             )
 
-    health = db.scalar(select(ProviderHealth).where(ProviderHealth.provider == "vertex-ai"))
-    configured = bool(
-        settings.vertex_configured
-        and health
-        and health.configured
-        and health.credential_file_present
+    model_counts = _catalog_model_availability(db, settings)
+    configured = model_counts["image"] > 0
+    health_state = (
+        "HEALTHY"
+        if model_counts["auto_image"] > 0
+        else "AVAILABLE"
+        if configured
+        else "UNCONFIGURED"
     )
-    health_state = health.health_state if health else "NOT_CHECKED"
-    text_access = health.text_model_access if health else "NOT_CHECKED"
-    image_access = (
-        (health.image_model_access or {}).get(FORMAL_IMAGE_MODEL, "NOT_CHECKED")
-        if health
-        else "NOT_CHECKED"
-    )
+    text_access = "GRANTED" if model_counts["text"] > 0 else "NOT_CONFIGURED"
+    image_access = "GRANTED" if configured else "NOT_CONFIGURED"
     provider = PageReadinessProvider(
         configured=configured,
         health_state=health_state,
         text_model_access=text_access,
         image_model_access=image_access,
+        image_model_alias="explicit",
+        usable_image_model_count=model_counts["image"],
+        auto_image_model_count=model_counts["auto_image"],
     )
     if not configured:
-        blockers.append(_block("VERTEX_NOT_CONFIGURED", "Vertex 凭据尚未就绪", "settings"))
-    if text_access != "GRANTED":
         blockers.append(
             _block(
-                "TEXT_MODEL_UNVERIFIED",
-                "Gemini 3.5 Flash 需要重新验证",
+                "IMAGE_MODEL_UNAVAILABLE",
+                "尚无已启用且支持参考图编辑的图片模型",
                 "settings",
             )
         )
-    if image_access != "GRANTED":
-        blockers.append(
-            _block(
-                "IMAGE_MODEL_UNVERIFIED",
-                "Nano Banana 2 需要执行 1K 模型验证",
-                "settings",
-            )
-        )
-
     execution = queue_execution_state(db, settings, probe_redis=True)
     worker = PageReadinessWorker(
         queue_mode=execution.queue_mode,

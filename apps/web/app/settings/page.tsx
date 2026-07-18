@@ -1,6 +1,7 @@
 "use client";
 
 import { AppShell } from "@/components/shell";
+import { ProviderManagement } from "@/components/provider-management";
 import {
   api,
   type DiagnosticCheck,
@@ -43,6 +44,7 @@ export default function SystemSettingsPage() {
   const queryClient = useQueryClient();
   const runtime = useQuery({ queryKey: ["runtime-settings"], queryFn: api.runtimeSettings });
   const vertex = useQuery({ queryKey: ["vertex-status"], queryFn: api.vertexStatus });
+  const providers = useQuery({ queryKey: ["providers"], queryFn: api.providers });
   const diagnostics = useQuery({ queryKey: ["diagnostics"], queryFn: api.diagnostics });
   const [localDraft, setLocalDraft] = useState<RuntimeSettings | null>(null);
   const [notice, setNotice] = useState("");
@@ -54,7 +56,7 @@ export default function SystemSettingsPage() {
   });
   const verify = useMutation({
     mutationFn: ({ level, alias }: { level: "CREDENTIALS" | "TEXT_MODEL" | "IMAGE_MODEL"; alias?: ImageModelAlias }) => api.verifyVertex(level, alias),
-    onSuccess: (data) => { queryClient.setQueryData(["vertex-status"], data); diagnostics.refetch(); },
+    onSuccess: (data) => { queryClient.setQueryData(["vertex-status"], data); queryClient.invalidateQueries({ queryKey: ["providers"] }); diagnostics.refetch(); },
   });
   const update = <K extends keyof RuntimeSettings>(key: K, value: RuntimeSettings[K]) => { setLocalDraft((current) => ({ ...(current ?? draft!), [key]: value })); setNotice(""); };
 
@@ -67,7 +69,7 @@ export default function SystemSettingsPage() {
       </header>
       <main className="settings-page">
         <section className="system-status-strip" aria-label="当前运行状态">
-          <div><span>Vertex</span><strong>{vertex.data ? healthLabels[vertex.data.health_state] : "读取中"}</strong></div>
+          <div><span>AI 连接</span><strong>{providers.data ? `${providers.data.flatMap((provider) => provider.connections).filter((connection) => connection.health_state === "HEALTHY").length} 健康` : "读取中"}</strong></div>
           <div><span>执行器</span><strong>{diagnostics.data?.queue.actual_executor ?? "检测中"}</strong></div>
           <div><span>数据库</span><strong>{draft?.database_backend ?? "读取中"}</strong></div>
           <div><span>存储</span><strong>{draft?.storage_root ?? "读取中"}</strong></div>
@@ -75,6 +77,7 @@ export default function SystemSettingsPage() {
         </section>
         <div className="settings-board">
           <section className="settings-primary">
+            <ProviderManagement />
             <article className="control-card vertex-control">
               <header><div><CloudCog size={18} /><span>VERTEX AI / PROVIDER</span></div><strong className={`health-pill ${vertex.data?.health_state.toLowerCase() ?? "checking"}`}>{vertex.data ? healthLabels[vertex.data.health_state] : "读取中"}</strong></header>
               {vertex.data ? <>

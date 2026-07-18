@@ -8,13 +8,14 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useState } from "react";
 
-type ProjectDraft = Pick<Project, "workflow_mode" | "draft_resolution" | "default_resolution" | "default_concurrency" | "consistency_check_enabled">;
+type ProjectDraft = Pick<Project, "workflow_mode" | "draft_resolution" | "default_resolution" | "default_concurrency" | "consistency_check_enabled" | "default_text_model_id" | "text_model_alias">;
 
 export default function ProjectSettingsPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const queryClient = useQueryClient();
   const project = useQuery({ queryKey: ["project", id], queryFn: () => api.project(id) });
+  const models = useQuery({ queryKey: ["models"], queryFn: api.models });
   const [localDraft, setLocalDraft] = useState<ProjectDraft | null>(null);
   const [saved, setSaved] = useState(false);
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
@@ -24,6 +25,8 @@ export default function ProjectSettingsPage() {
       default_resolution: project.data.default_resolution,
       default_concurrency: project.data.default_concurrency,
       consistency_check_enabled: project.data.consistency_check_enabled,
+      default_text_model_id: project.data.default_text_model_id,
+      text_model_alias: project.data.text_model_alias,
     } : null);
 
   const save = useMutation({
@@ -39,6 +42,8 @@ export default function ProjectSettingsPage() {
         default_resolution: data.default_resolution,
         default_concurrency: data.default_concurrency,
         consistency_check_enabled: data.consistency_check_enabled,
+        default_text_model_id: data.default_text_model_id,
+        text_model_alias: data.text_model_alias,
       });
       setSaved(true);
     },
@@ -92,7 +97,15 @@ export default function ProjectSettingsPage() {
             <p className="project-setting-note"><strong>文字由人工校对</strong><span>采用候选前必须明确确认页面文字，不再运行 OCR 或自动文字修复。</span></p>
           </section>
 
-          <aside className="project-setting-note"><span>MODEL POLICY</span><strong>Nano Banana 2 与 Pro 完全平级</strong><p>项目设置不会保存“主模型”。每次生成候选都必须由用户明确选择模型和分辨率。</p></aside>
+          <aside className="project-setting-note"><span>MODEL POLICY</span><strong>图片模型按任务选择</strong><p>项目不绑定图片“主模型”。每次生成候选都必须明确选择供应商模型，以保持画风一致。</p></aside>
+          <section className="project-setting-section">
+            <header><Gauge size={18} /><div><span>TEXT MODEL</span><h2>文字任务默认路由</h2></div></header>
+            <label className="project-inline-setting"><span><strong>剧本、风格分析与视觉检查</strong><small>自动路由只使用已完成能力测试的模型</small></span><select value={draft.default_text_model_id ?? draft.text_model_alias} onChange={(event) => {
+              const value = event.target.value;
+              update("default_text_model_id", value === "auto" || value === "text.fast" ? null : value);
+              update("text_model_alias", value === "auto" ? "auto" : "text.fast");
+            }}><option value="text.fast">兼容默认 · Gemini 3.5 Flash</option><option value="auto">自动路由 · 已验证文字/视觉模型</option>{(models.data ?? []).filter((model) => model.enabled && model.model_type === "TEXT" && model.operations.includes("structured_text") && model.operations.includes("multimodal_analysis") && model.logical_alias !== "text.fast").map((model) => <option key={model.catalog_id} value={model.catalog_id}>{model.provider} · {model.display_name}</option>)}</select></label>
+          </section>
         </div> : <div className="loading-panel"><LoaderCircle className="spin" />读取项目设置…</div>}
         {saved && <p className="save-success floating"><Check size={15} />项目设置已保存</p>}
         {save.isError && <p className="form-error"><CircleAlert size={15} />{save.error.message}</p>}

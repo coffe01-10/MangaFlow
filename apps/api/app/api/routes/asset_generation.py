@@ -39,7 +39,7 @@ from app.schemas import (
     StyleTestApproval,
 )
 from app.services.job_service import create_job, enqueue_job
-from app.services.model_registry import build_registry
+from app.services.model_router import model_supports_resolution, resolve_model
 
 router = APIRouter()
 
@@ -80,6 +80,23 @@ def _has_active_reference_assets(
         )
         or 0
     ) > 0
+
+
+def _generation_reference_ids(db: Session, batch: GenerationBatch) -> list[str]:
+    if batch.target_type == "CHARACTER":
+        return [item.asset_id for item in character_references(db, batch.target_id)]
+    if batch.target_type == "OUTFIT":
+        outfit = db.get(Outfit, batch.target_id)
+        if not outfit:
+            return []
+        character_ids = [
+            item.asset_id for item in character_references(db, outfit.character_id)
+        ]
+        return list(dict.fromkeys([*character_ids, *outfit.reference_asset_ids]))
+    if batch.target_type == "STYLE":
+        style = db.get(StyleProfile, batch.target_id)
+        return list(style.profile.get("reference_asset_ids", [])) if style else []
+    return []
 
 
 @router.get("/projects/{project_id}/outfits", response_model=list[OutfitRead])
@@ -296,6 +313,7 @@ def analyze_style(style_id: str, db: Session = Depends(get_db)):
         target_id=style.id,
         job_type="STYLE_ANALYZE",
         model_alias="text.fast",
+        reference_asset_ids=reference_ids,
         idempotency_key=f"style-analyze:{style.id}:{style.version}",
     )
     return enqueue_job(db, job)
@@ -329,6 +347,7 @@ def draft_style_palette(
         job_type="STYLE_ANALYZE",
         model_alias="text.fast",
         request_parameters={"palette_atmosphere": payload.atmosphere},
+        reference_asset_ids=list(style.profile.get("reference_asset_ids", [])),
         idempotency_key=f"style-palette:{style.id}:{style.version}",
     )
     return enqueue_job(db, job)
@@ -515,11 +534,25 @@ def generate_asset_candidate(
     payload: AssetCandidateCreate,
     db: Session = Depends(get_db),
 ) -> CandidateQueuedRead:
+    if payload.model_alias.lower() == "auto":
+        raise HTTPException(
+            status_code=422,
+            detail="参考资产必须显式选择图片模型，以保持项目画风一致",
+        )
     batch = db.get(GenerationBatch, batch_id)
     if not batch or batch.status != "OPEN" or not batch.target_type or not batch.target_id:
         raise HTTPException(status_code=409, detail="资产生成批次不存在或已关闭")
-    if payload.model_alias not in build_registry(get_settings()):
-        raise HTTPException(status_code=422, detail="未识别的图像模型")
+    reference_asset_ids = _generation_reference_ids(db, batch)
+    resolved_model = resolve_model(
+        db,
+        get_settings(),
+        operation="image_edit" if reference_asset_ids else "image_generate",
+        explicit_reference=payload.model_alias,
+        project_id=batch.project_id,
+        task_kind="ASSET_GENERATE",
+    )
+    if not model_supports_resolution(resolved_model.model, payload.resolution.value):
+        raise HTTPException(status_code=422, detail="所选模型不支持该输出清晰度")
     allowed_variants = {
         "CHARACTER": {"FRONT", "SIDE", "BACK", "EXPRESSION", "SHEET"},
         "OUTFIT": {"OUTFIT", "OUTFIT_SHEET"},
@@ -537,6 +570,7 @@ def generate_asset_candidate(
         batch_id=batch.id,
         ordinal=ordinal,
         model_alias=payload.model_alias,
+        catalog_model_id=resolved_model.model.id,
         resolution=payload.resolution,
         variant=payload.variant,
         instruction=payload.instruction,
@@ -546,6 +580,7 @@ def generate_asset_candidate(
     project = db.get(Project, batch.project_id)
     project.last_image_model_alias = payload.model_alias
     project.image_model_alias = payload.model_alias
+    project.last_image_model_id = resolved_model.model.id
     project.version += 1
     db.flush()
     job = create_job(
@@ -555,11 +590,13 @@ def generate_asset_candidate(
         target_id=candidate.id,
         job_type="ASSET_GENERATE",
         model_alias=payload.model_alias,
+        catalog_model_id=resolved_model.model.id,
         request_parameters={
             "variant": payload.variant,
             "instruction": payload.instruction,
             "resolution": payload.resolution.value,
         },
+        reference_asset_ids=reference_asset_ids,
         idempotency_key=f"asset-candidate:{candidate.id}",
     )
     candidate.job_id = job.id

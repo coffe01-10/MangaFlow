@@ -45,6 +45,7 @@ from app.schemas import (
     JobArchiveResult,
     JobBulkArchiveRequest,
     JobRead,
+    JobResultRead,
     KeepSelectedCandidateRequest,
     LibraryBatchRead,
     LibraryRead,
@@ -68,22 +69,21 @@ from app.services.editor import (
     validate_character_ids,
 )
 from app.services.job_service import cancel_job, create_job, enqueue_job, reset_for_retry
-from app.services.model_registry import build_registry
+from app.services.model_router import model_supports_resolution, resolve_model
 from app.services.page_readiness import (
-    FORMAL_IMAGE_MODEL,
-    FORMAL_RESOLUTION,
     build_page_readiness,
     ensure_page_ready,
 )
 
 router = APIRouter()
 
-TERMINAL_JOB_STATUSES = {"COMPLETED", "FAILED", "CANCELLED"}
+TERMINAL_JOB_STATUSES = {"COMPLETED", "FAILED", "CANCELLED", "NEEDS_REVIEW"}
 DELETABLE_JOB_STATUSES = {"FAILED", "CANCELLED"}
 
 
 def _job_reads(db: Session, jobs: list[GenerationJob]) -> list[JobRead]:
     job_ids = [job.id for job in jobs]
+    target_ids = [job.target_id for job in jobs]
     records = (
         list(
             db.scalars(
@@ -94,9 +94,70 @@ def _job_reads(db: Session, jobs: list[GenerationJob]) -> list[JobRead]:
         else []
     )
     usage_by_job = {record.job_id: record.usage for record in records}
+    page_candidates = (
+        list(
+            db.scalars(
+                select(PageCandidate).where(
+                    or_(
+                        PageCandidate.job_id.in_(job_ids),
+                        PageCandidate.id.in_(target_ids),
+                    )
+                )
+            )
+        )
+        if job_ids
+        else []
+    )
+    asset_candidates = (
+        list(
+            db.scalars(
+                select(AssetCandidate).where(
+                    or_(
+                        AssetCandidate.job_id.in_(job_ids),
+                        AssetCandidate.id.in_(target_ids),
+                    )
+                )
+            )
+        )
+        if job_ids
+        else []
+    )
+    page_by_job = {item.job_id: item for item in page_candidates if item.job_id}
+    page_by_id = {item.id: item for item in page_candidates}
+    asset_by_job = {item.job_id: item for item in asset_candidates if item.job_id}
+    asset_by_id = {item.id: item for item in asset_candidates}
+
+    def job_result(job: GenerationJob) -> JobResultRead | None:
+        page_candidate = page_by_job.get(job.id) or page_by_id.get(job.target_id)
+        if page_candidate and page_candidate.asset_id:
+            value = candidate_read(page_candidate)
+            return JobResultRead(
+                kind="IMAGE",
+                label=f"页面候选 {page_candidate.ordinal} · {page_candidate.resolution.value}",
+                candidate_id=page_candidate.id,
+                page_id=page_candidate.page_id,
+                content_url=value.content_url,
+                thumbnail_url=value.thumbnail_url,
+            )
+        asset_candidate = asset_by_job.get(job.id) or asset_by_id.get(job.target_id)
+        if asset_candidate and asset_candidate.asset_id:
+            value = asset_candidate_read(asset_candidate)
+            return JobResultRead(
+                kind="IMAGE",
+                label=f"素材候选 {asset_candidate.variant} · {asset_candidate.resolution.value}",
+                candidate_id=asset_candidate.id,
+                content_url=value.content_url,
+                thumbnail_url=value.thumbnail_url,
+            )
+        return None
+
     return [
         JobRead.model_validate(job).model_copy(
-            update={"usage_summary": usage_by_job.get(job.id, {}), "estimated_cost": None}
+            update={
+                "usage_summary": usage_by_job.get(job.id, {}),
+                "estimated_cost": None,
+                "result": job_result(job),
+            }
         )
         for job in jobs
     ]
@@ -521,13 +582,6 @@ def create_candidate(
     batch = db.get(GenerationBatch, batch_id)
     if not batch or batch.status != "OPEN" or not batch.page_id:
         raise HTTPException(status_code=409, detail="抽卡批次不存在或已经关闭")
-    if payload.model_alias not in build_registry(get_settings()):
-        raise HTTPException(status_code=422, detail="未识别的图像模型")
-    if payload.model_alias != FORMAL_IMAGE_MODEL or payload.resolution.value != FORMAL_RESOLUTION:
-        raise HTTPException(
-            status_code=422,
-            detail="本轮正式页面只允许使用 Nano Banana 2 与 1K 清晰度",
-        )
     page = _page(db, batch.page_id)
     if payload.storyboard_version != page.storyboard_version:
         raise HTTPException(
@@ -541,6 +595,16 @@ def create_candidate(
         )
     ensure_page_ready(db, page, get_settings())
     project = _project_for_page(db, page)
+    resolved_model = resolve_model(
+        db,
+        get_settings(),
+        operation="image_edit",
+        explicit_reference=payload.model_alias,
+        project_id=project.id,
+        task_kind="PAGE_GENERATE",
+    )
+    if not model_supports_resolution(resolved_model.model, payload.resolution.value):
+        raise HTTPException(status_code=422, detail="所选模型不支持该输出清晰度")
     panels = list(db.scalars(select(Panel).where(Panel.page_id == page.id)))
     visible_character_ids = list(
         dict.fromkeys(character_id for panel in panels for character_id in panel.characters)
@@ -603,6 +667,7 @@ def create_candidate(
         page_id=page.id,
         ordinal=ordinal,
         model_alias=payload.model_alias,
+        catalog_model_id=resolved_model.model.id,
         resolution=payload.resolution,
         status="QUEUED",
         based_on_storyboard_version=page.storyboard_version,
@@ -614,6 +679,7 @@ def create_candidate(
     db.add(candidate)
     project.last_image_model_alias = payload.model_alias
     project.image_model_alias = payload.model_alias
+    project.last_image_model_id = resolved_model.model.id
     project.version += 1
     db.flush()
     job = create_job(
@@ -623,11 +689,21 @@ def create_candidate(
         target_id=candidate.id,
         job_type="PAGE_GENERATE",
         model_alias=payload.model_alias,
+        catalog_model_id=resolved_model.model.id,
         request_parameters={
             "resolution": payload.resolution.value,
             "storyboard_version": page.storyboard_version,
             "reference_selections": normalized_selections,
         },
+        reference_asset_ids=[
+            asset_id
+            for selection in normalized_selections.values()
+            for asset_id in (
+                selection.get("character_asset_id"),
+                selection.get("outfit_asset_id"),
+            )
+            if asset_id
+        ],
         idempotency_key=f"candidate:{candidate.id}",
     )
     candidate.job_id = job.id
@@ -1084,11 +1160,11 @@ def list_jobs(
 
 
 @router.get("/jobs/{job_id}", response_model=JobRead)
-def get_job(job_id: str, db: Session = Depends(get_db)) -> GenerationJob:
+def get_job(job_id: str, db: Session = Depends(get_db)) -> JobRead:
     job = db.get(GenerationJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
-    return job
+    return _job_reads(db, [job])[0]
 
 
 @router.post("/jobs/{job_id}/cancel", response_model=JobRead)
@@ -1245,6 +1321,7 @@ def inspect_candidate(
         job_type="PAGE_INSPECT",
         model_alias="text.fast",
         request_parameters={"categories": payload.categories},
+        reference_asset_ids=[candidate.asset_id],
         idempotency_key=f"inspect:{candidate.id}:{candidate.version}",
     )
     return enqueue_job(db, job)
@@ -1324,8 +1401,20 @@ def repair_candidate(
     db.add(repair)
     db.flush()
     project = _project_for_page(db, page)
+    resolved_model = resolve_model(
+        db,
+        get_settings(),
+        operation="image_edit",
+        explicit_reference=payload.model_alias,
+        project_id=project.id,
+        task_kind="PAGE_REPAIR",
+    )
+    if not model_supports_resolution(resolved_model.model, payload.resolution.value):
+        raise HTTPException(status_code=422, detail="所选模型不支持该输出清晰度")
+    candidate.catalog_model_id = resolved_model.model.id
     project.last_image_model_alias = payload.model_alias
     project.image_model_alias = payload.model_alias
+    project.last_image_model_id = resolved_model.model.id
     project.version += 1
     job = create_job(
         db,
@@ -1334,6 +1423,7 @@ def repair_candidate(
         target_id=candidate.id,
         job_type="PAGE_REPAIR",
         model_alias=payload.model_alias,
+        catalog_model_id=resolved_model.model.id,
         request_parameters={
             "original_candidate_id": original.id,
             "repair_plan_id": repair.id,
@@ -1341,6 +1431,7 @@ def repair_candidate(
             "target_regions": payload.target_regions,
             "storyboard_version": page.storyboard_version,
         },
+        reference_asset_ids=[original.asset_id],
         idempotency_key=f"repair:{repair.id}",
     )
     candidate.job_id = job.id
@@ -1385,8 +1476,20 @@ def upscale_candidate(
     db.add(candidate)
     db.flush()
     project = _project_for_page(db, page)
+    resolved_model = resolve_model(
+        db,
+        get_settings(),
+        operation="image_edit",
+        explicit_reference=payload.model_alias,
+        project_id=project.id,
+        task_kind="PAGE_UPSCALE",
+    )
+    if not model_supports_resolution(resolved_model.model, payload.resolution.value):
+        raise HTTPException(status_code=422, detail="所选模型不支持目标升清规格")
+    candidate.catalog_model_id = resolved_model.model.id
     project.last_image_model_alias = payload.model_alias
     project.image_model_alias = payload.model_alias
+    project.last_image_model_id = resolved_model.model.id
     project.version += 1
     job = create_job(
         db,
@@ -1395,6 +1498,7 @@ def upscale_candidate(
         target_id=candidate.id,
         job_type="PAGE_UPSCALE",
         model_alias=payload.model_alias,
+        catalog_model_id=resolved_model.model.id,
         request_parameters={
             "original_candidate_id": original.id,
             "preserve_structure": True,
@@ -1402,6 +1506,7 @@ def upscale_candidate(
             "target_resolution": payload.resolution.value,
             "storyboard_version": page.storyboard_version,
         },
+        reference_asset_ids=[original.asset_id],
         idempotency_key=f"upscale:{batch.id}:{payload.resolution.value}",
     )
     candidate.job_id = job.id

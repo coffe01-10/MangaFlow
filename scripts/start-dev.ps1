@@ -38,6 +38,9 @@ if ($proxyUrl) {
 }
 
 & ".\.venv\Scripts\python.exe" -m alembic -c "apps\api\alembic.ini" upgrade head
+if ($LASTEXITCODE -ne 0) {
+    throw "Database migration failed with exit code $LASTEXITCODE. Services were not started."
+}
 $env:ENVIRONMENT = "development"
 $env:QUEUE_ENABLED = "true"
 

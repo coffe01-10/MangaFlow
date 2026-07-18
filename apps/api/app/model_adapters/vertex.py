@@ -8,6 +8,7 @@ from app.model_adapters.base import (
     ImageRequest,
     ModelResponse,
     MultimodalRequest,
+    ProviderAdapterError,
     StructuredRequest,
 )
 from app.services.model_registry import ModelCapability
@@ -17,11 +18,9 @@ from app.services.vertex_credentials import (
 )
 
 
-class VertexAdapterError(RuntimeError):
+class VertexAdapterError(ProviderAdapterError):
     def __init__(self, code: str, user_message: str) -> None:
-        super().__init__(user_message)
-        self.code = code
-        self.user_message = user_message
+        super().__init__(code, user_message)
 
 
 class _VertexBase:

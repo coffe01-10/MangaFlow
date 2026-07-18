@@ -10,6 +10,7 @@ from app.domain.states import JobStatus
 from app.models import (
     AssetCandidate,
     GenerationJob,
+    JobAssetReference,
     JobDependency,
     MangaPage,
     PageCandidate,
@@ -33,7 +34,9 @@ def create_job(
     target_id: str,
     job_type: str,
     model_alias: str | None = None,
+    catalog_model_id: str | None = None,
     request_parameters: dict | None = None,
+    reference_asset_ids: list[str] | None = None,
     priority: int = 50,
     max_attempts: int = 3,
     idempotency_key: str | None = None,
@@ -51,6 +54,7 @@ def create_job(
         target_id=target_id,
         job_type=job_type,
         model_alias=model_alias,
+        catalog_model_id=catalog_model_id,
         request_parameters=request_parameters or {},
         priority=priority,
         max_attempts=max_attempts,
@@ -61,6 +65,8 @@ def create_job(
     db.flush()
     for dependency_id in dependency_ids or []:
         db.add(JobDependency(job_id=job.id, depends_on_job_id=dependency_id))
+    for asset_id in dict.fromkeys(reference_asset_ids or []):
+        db.add(JobAssetReference(job_id=job.id, asset_id=asset_id))
     db.commit()
     db.refresh(job)
     return job
@@ -276,6 +282,8 @@ def mark_job_cancelled(db: Session, job: GenerationJob) -> GenerationJob:
 
 
 def cancel_job(db: Session, job: GenerationJob) -> GenerationJob:
+    if job.status == JobStatus.COMPLETED:
+        return job
     node_run = db.scalar(select(WorkflowNodeRun).where(WorkflowNodeRun.job_id == job.id))
     if node_run:
         run = db.get(WorkflowRun, node_run.workflow_run_id)

@@ -10,7 +10,7 @@ from app.domain.states import (
     WorkflowMode,
 )
 
-IMAGE_MODEL_PATTERN = r"^image\.(nano_banana_2|nano_banana_pro)$"
+MODEL_REFERENCE_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$"
 
 
 class ProjectCreate(BaseModel):
@@ -23,7 +23,10 @@ class ProjectCreate(BaseModel):
     workflow_mode: WorkflowMode = WorkflowMode.SEMI_AUTO
     default_concurrency: int = Field(default=4, ge=1, le=8)
     consistency_check_enabled: bool = True
-    last_image_model_alias: str | None = Field(default=None, pattern=IMAGE_MODEL_PATTERN)
+    last_image_model_alias: str | None = Field(default=None, pattern=MODEL_REFERENCE_PATTERN)
+    default_text_model_id: str | None = Field(default=None, max_length=36)
+    last_image_model_id: str | None = Field(default=None, max_length=36)
+    text_model_alias: str = Field(default="text.fast", pattern=MODEL_REFERENCE_PATTERN)
 
 
 class ProjectUpdate(BaseModel):
@@ -33,7 +36,10 @@ class ProjectUpdate(BaseModel):
     workflow_mode: WorkflowMode | None = None
     default_concurrency: int | None = Field(default=None, ge=1, le=8)
     consistency_check_enabled: bool | None = None
-    last_image_model_alias: str | None = Field(default=None, pattern=IMAGE_MODEL_PATTERN)
+    last_image_model_alias: str | None = Field(default=None, pattern=MODEL_REFERENCE_PATTERN)
+    default_text_model_id: str | None = Field(default=None, max_length=36)
+    last_image_model_id: str | None = Field(default=None, max_length=36)
+    text_model_alias: str | None = Field(default=None, pattern=MODEL_REFERENCE_PATTERN)
     version: int = Field(ge=1)
 
 
@@ -52,6 +58,8 @@ class ProjectRead(BaseModel):
     consistency_check_enabled: bool
     text_model_alias: str
     last_image_model_alias: str | None
+    default_text_model_id: str | None
+    last_image_model_id: str | None
     default_style_id: str | None
     created_at: datetime
     updated_at: datetime
@@ -127,15 +135,25 @@ class AssetUpdate(BaseModel):
 
 
 class ModelCapabilityRead(BaseModel):
+    catalog_id: str | None = None
+    connection_id: str | None = None
     provider: str
+    protocol: str | None = None
     model_id: str
     logical_alias: str
     display_name: str
+    model_type: str = "TEXT"
+    input_modalities: list[str] = Field(default_factory=lambda: ["TEXT"])
+    output_modalities: list[str] = Field(default_factory=lambda: ["TEXT"])
     operations: list[str]
     resolutions: list[str]
     preview_resolutions: list[str]
     max_reference_images: int
     regions: list[str]
+    confidence: str = "VERIFIED"
+    enabled: bool = True
+    auto_eligible: bool = False
+    priority: int = 50
 
 
 class VertexStatusRead(BaseModel):
@@ -390,7 +408,7 @@ class SceneOutfitUpdate(BaseModel):
 
 
 class CharacterSheetCreate(BaseModel):
-    model_alias: str = Field(pattern=IMAGE_MODEL_PATTERN)
+    model_alias: str = Field(pattern=MODEL_REFERENCE_PATTERN)
     resolution: Resolution = Resolution.DRAFT_1K
     generation_mode: str = Field(default="REFERENCE", pattern="^(REFERENCE|CONCEPT)$")
     appearance_description: str = Field(default="", max_length=4000)
@@ -567,7 +585,7 @@ class GenerationBatchRead(BaseModel):
 
 
 class CandidateCreate(BaseModel):
-    model_alias: str = Field(pattern=IMAGE_MODEL_PATTERN)
+    model_alias: str = Field(pattern=MODEL_REFERENCE_PATTERN)
     resolution: Resolution
     storyboard_version: int = Field(ge=1)
     reference_selections: dict[str, dict[str, str | None]] = Field(default_factory=dict)
@@ -609,7 +627,7 @@ class CandidateQueuedRead(BaseModel):
 
 
 class AssetCandidateCreate(BaseModel):
-    model_alias: str = Field(pattern=IMAGE_MODEL_PATTERN)
+    model_alias: str = Field(pattern=MODEL_REFERENCE_PATTERN)
     resolution: Resolution
     variant: str = Field(
         pattern="^(FRONT|SIDE|BACK|EXPRESSION|SHEET|OUTFIT|OUTFIT_SHEET|STYLE_TEST)$"
@@ -666,6 +684,8 @@ class PageReadinessProvider(BaseModel):
     text_model_access: str
     image_model_access: str
     image_model_alias: str = "image.nano_banana_2"
+    usable_image_model_count: int = 0
+    auto_image_model_count: int = 0
 
 
 class PageReadinessWorker(BaseModel):
@@ -701,6 +721,15 @@ class GenerationWorkbenchRead(BaseModel):
     selected_candidate_state: str = "NONE"
 
 
+class JobResultRead(BaseModel):
+    kind: str
+    label: str
+    candidate_id: str | None = None
+    page_id: str | None = None
+    content_url: str
+    thumbnail_url: str | None = None
+
+
 class JobRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -725,6 +754,7 @@ class JobRead(BaseModel):
     request_parameters: dict = Field(default_factory=dict, exclude=True)
     usage_summary: dict = Field(default_factory=dict)
     estimated_cost: float | None = None
+    result: JobResultRead | None = None
 
     @computed_field
     @property
@@ -807,12 +837,12 @@ class RepairRequest(BaseModel):
     repair_type: str = Field(pattern="^(BUBBLE_REGION|PANEL|PAGE)$")
     target_regions: list[dict] = Field(default_factory=list)
     target_fields: list[str] = Field(default_factory=list)
-    model_alias: str = Field(pattern=IMAGE_MODEL_PATTERN)
+    model_alias: str = Field(pattern=MODEL_REFERENCE_PATTERN)
     resolution: Resolution
 
 
 class UpscaleRequest(BaseModel):
-    model_alias: str = Field(pattern=IMAGE_MODEL_PATTERN)
+    model_alias: str = Field(pattern=MODEL_REFERENCE_PATTERN)
     resolution: Resolution
 
     @model_validator(mode="after")

@@ -103,14 +103,16 @@ stateDiagram-v2
 
 候选的收藏与采用是正交状态。候选任务完成前可以收藏，但只有具备输出资产的候选允许采用。换选已采用版本时，后续页面只标记 `NEEDS_REVIEW`，不删除历史候选。
 
-## 5. 模型能力数据
+## 5. 供应商与模型能力数据
+
+`ProviderProfile` 保存内置或自定义供应商及风险标签；`ProviderConnection` 保存协议、Base URL、端点模板和健康状态；`ProviderKey` 保存 AES-GCM 密文、末四位提示与轮换/冷却状态；`AIModel` 区分文字和图片模型、输入输出模态、操作、能力来源和验证置信度；`ModelProbe` 保存连接、文字、视觉、图片和基准测试结果；`RoutingPolicy` 保存任务级自动路由权重。
 
 ```json
 {
   "provider": "vertex-ai",
   "model_id": "gemini-3.1-flash-image",
   "logical_alias": "image.nano_banana_2",
-  "operations": ["generate", "edit", "multi_turn_edit"],
+  "operations": ["image_generate", "image_edit"],
   "resolutions": ["1K", "2K", "4K"],
   "preview_resolutions": ["4K"],
   "regions": ["global"]
@@ -126,7 +128,8 @@ Nano Banana Pro 使用同构能力记录和别名 `image.nano_banana_pro`；UI �
 - 页面最多 8 个气泡，字符硬上限 180；超过时由规划器拆页。
 - 每页最多一个当前采用候选；收藏数量不限。
 - 任务幂等键在有效范围内唯一；每项目执行中任务不得超过并发上限。
-- 模型别名只接受 `image.nano_banana_2` 或 `image.nano_banana_pro`，旧别名仅在迁移脚本中映射。
+- 新任务接受目录模型 ID、兼容旧别名或 `auto`；运行前必须验证类型、操作、连接状态和凭据。
+- `JobAssetReference` 锁定排队/执行任务正在使用的参考资产，避免验证后被删除或改用途。
 - 对项目/状态/优先级、章节/页码、批次/时间、候选/模型/收藏、资产/哈希建立复合索引。
 
 ## 7. 迁移策略

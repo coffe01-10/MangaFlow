@@ -455,7 +455,12 @@ def test_bulk_archive_only_accepts_project_terminal_jobs(client, db_session):
             job_type="TEST",
             status=status,
         )
-        for status in [JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.GENERATING]
+        for status in [
+            JobStatus.COMPLETED,
+            JobStatus.FAILED,
+            JobStatus.NEEDS_REVIEW,
+            JobStatus.GENERATING,
+        ]
     ]
     foreign_job = GenerationJob(
         project_id=other["id"],
@@ -469,7 +474,7 @@ def test_bulk_archive_only_accepts_project_terminal_jobs(client, db_session):
 
     rejected = client.post(
         f"/api/v1/projects/{project['id']}/jobs/bulk-archive",
-        json={"job_ids": [jobs[0].id, jobs[2].id]},
+        json={"job_ids": [jobs[0].id, jobs[3].id]},
     )
     assert rejected.status_code == 409
     foreign = client.post(
@@ -479,7 +484,7 @@ def test_bulk_archive_only_accepts_project_terminal_jobs(client, db_session):
     assert foreign.status_code == 404
     archived = client.post(
         f"/api/v1/projects/{project['id']}/jobs/bulk-archive",
-        json={"job_ids": [jobs[0].id, jobs[1].id]},
+        json={"job_ids": [jobs[0].id, jobs[1].id, jobs[2].id]},
     )
     assert archived.status_code == 200
-    assert archived.json()["archived_count"] == 2
+    assert archived.json()["archived_count"] == 3

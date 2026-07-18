@@ -19,6 +19,6 @@ export function getPageGenerationIssue(
   selectedModel: ImageModelAlias | null,
 ): string | null {
   return getPageStructureIssue(page) ?? (
-    selectedModel ? null : "请先选择 Nano Banana 2 或 Nano Banana Pro"
+    selectedModel ? null : "请先选择一个支持当前任务的图片模型"
   );
 }

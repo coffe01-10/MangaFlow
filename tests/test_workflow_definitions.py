@@ -290,6 +290,14 @@ def test_generation_gate_requires_explicit_equal_model_choice(client, db_session
         assert response.status_code == 409
         assert "明确选择" in response.json()["detail"]
         assert db_session.query(PageCandidate).count() == 0
+
+        automatic = client.post(
+            f"/api/v1/workflow-runs/{run['id']}/nodes/generate/approve",
+            json={"image_model_alias": "auto", "resolution": "1K"},
+        )
+        assert automatic.status_code == 409
+        assert "明确选择" in automatic.json()["detail"]
+        assert db_session.query(PageCandidate).count() == 0
     finally:
         settings.queue_enabled = previous_queue
 

@@ -4,6 +4,22 @@ from typing import Any, Protocol
 from pydantic import BaseModel
 
 
+class ProviderAdapterError(RuntimeError):
+    def __init__(
+        self,
+        code: str,
+        user_message: str,
+        *,
+        retryable: bool = False,
+        retry_after_seconds: int | None = None,
+    ) -> None:
+        super().__init__(user_message)
+        self.code = code
+        self.user_message = user_message
+        self.retryable = retryable
+        self.retry_after_seconds = retry_after_seconds
+
+
 @dataclass(frozen=True)
 class StructuredRequest:
     prompt: str

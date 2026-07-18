@@ -1,7 +1,7 @@
 "use client";
 
 import { AppShell, GlobalNav } from "@/components/shell";
-import { api, type DashboardProject, type Project, type VertexStatus } from "@/lib/api";
+import { api, type DashboardProject, type Project, type ProviderProfile, type VertexStatus } from "@/lib/api";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowRight,
@@ -21,7 +21,11 @@ import { FormEvent, useMemo, useState } from "react";
 
 const modeLabel = { AUTO: "自动", DIRECTOR: "导演", SEMI_AUTO: "半自动" } as const;
 
-function ConnectionBadge({ status }: { status?: VertexStatus }) {
+function ConnectionBadge({ status, providers }: { status?: VertexStatus; providers?: ProviderProfile[] }) {
+  const connections = providers?.flatMap((provider) => provider.connections) ?? [];
+  const healthy = connections.filter((connection) => connection.health_state === "HEALTHY").length;
+  if (healthy) return <span className="status-chip success"><i />{healthy} 个 AI 连接健康</span>;
+  if (connections.some((connection) => connection.configured)) return <span className="status-chip warning"><i />供应商待验证</span>;
   if (!status) return <span className="status-chip muted"><i />检测中</span>;
   if (!status.configured) return <span className="status-chip danger"><i />未配置</span>;
   if (status.health_state === "HEALTHY") return <span className="status-chip success"><i />Vertex 已验证</span>;
@@ -122,7 +126,7 @@ function CreateProjectPanel({ open, onClose }: { open: boolean; onClose: () => v
             ))}
           </div>
 
-          <p className="form-note"><Sparkles size={14} />Nano Banana 2 与 Pro 不设默认主模型；进入工作区后，每次生成前选择。</p>
+          <p className="form-note"><Sparkles size={14} />图片模型不设默认主次；进入工作区后必须显式选择，以保持项目画风一致。</p>
 
           <label className="field-label">正式输出清晰度</label>
           <div className="resolution-row">
@@ -153,9 +157,10 @@ export default function HomePage() {
   const dashboard = useQuery({ queryKey: ["dashboard"], queryFn: api.dashboard });
   const vertex = useQuery({ queryKey: ["vertex-status"], queryFn: api.vertexStatus });
   const models = useQuery({ queryKey: ["models"], queryFn: api.models });
+  const providers = useQuery({ queryKey: ["providers"], queryFn: api.providers });
   const verify = useMutation({
     mutationFn: () => api.verifyVertex("CREDENTIALS"),
-    onSuccess: (result) => queryClient.setQueryData(["vertex-status"], result),
+    onSuccess: (result) => { queryClient.setQueryData(["vertex-status"], result); queryClient.invalidateQueries({ queryKey: ["providers"] }); },
   });
   const modelMap = useMemo(() => new Map(models.data?.map((model) => [model.logical_alias, model])), [models.data]);
   const projectCount = dashboard.data?.totals.project_count ?? 0;
@@ -167,7 +172,7 @@ export default function HomePage() {
         <div className="topbar-title"><span>MANGAFLOW / PRODUCTION DESK</span><strong>漫画生产台</strong></div>
         <div className="topbar-actions">
           <GlobalNav />
-          <ConnectionBadge status={vertex.data} />
+          <ConnectionBadge status={vertex.data} providers={providers.data} />
           <Link className="button ghost compact" href="/settings"><Settings size={16} />系统设置</Link>
           <button className="button ink compact" onClick={() => setCreating(true)}><Plus size={16} />新建项目</button>
         </div>
@@ -184,7 +189,7 @@ export default function HomePage() {
             <div><span>活跃项目</span><strong>{String(projectCount).padStart(2, "0")}</strong><small>PROJECTS</small></div>
             <div><span>漫画页面</span><strong>{String(dashboard.data?.totals.page_count ?? 0).padStart(2, "0")}</strong><small>{dashboard.data?.totals.selected_page_count ?? 0} 页已采用</small></div>
             <div><span>待复查</span><strong>{String(dashboard.data?.totals.review_page_count ?? 0).padStart(2, "0")}</strong><small>按页面去重</small></div>
-            <div className="metric-accent"><Gauge size={17} /><span>平级生图引擎</span><strong>Nano Banana 2 / Pro</strong><small>{modelMap.size >= 3 ? "每次抽卡独立选择" : "读取模型能力…"}</small></div>
+            <div className="metric-accent"><Gauge size={17} /><span>AI 模型目录</span><strong>{[...modelMap.values()].filter((model) => model.enabled).length} 个可用模型</strong><small>图片显式选择 · 文字可自动路由</small></div>
           </div>
 
           <section className="projects-section">
@@ -204,7 +209,7 @@ export default function HomePage() {
 
         <aside className="dashboard-side">
           <section className="side-card vertex-card">
-            <header><span><CloudCog size={17} />VERTEX AI</span><ConnectionBadge status={vertex.data} /></header>
+            <header><span><CloudCog size={17} />VERTEX AI / LEGACY</span><ConnectionBadge status={vertex.data} /></header>
             <div className="vertex-signal"><i className={vertex.data?.configured ? "on" : ""} /><i className={vertex.data?.credential_file_present ? "on" : ""} /><i className={vertex.data?.health_state === "HEALTHY" ? "on" : ""} /></div>
             <h3>{vertex.data?.configured ? "服务端凭据已接入" : "等待服务端配置"}</h3>
             <p>{vertex.data?.message ?? "正在检查本地配置…"}</p>

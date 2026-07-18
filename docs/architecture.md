@@ -2,7 +2,7 @@
 
 ## 1. 架构目标
 
-MangaFlow AI 围绕“原作 → 资产 → 剧本 → 分页 → 单页抽卡 → 检查修复 → 导出”建设。结构化数据是事实来源，提示词和图片是可追溯派生物；浏览器不持有 Vertex 凭据；任何付费 AI 创建操作都进入持久化任务。
+MangaFlow AI 围绕“原作 → 资产 → 剧本 → 分页 → 单页抽卡 → 检查修复 → 导出”建设。结构化数据是事实来源，提示词和图片是可追溯派生物；浏览器不持有供应商凭据；任何付费 AI 创建操作都进入持久化任务。
 
 ## 2. 系统边界
 
@@ -17,7 +17,9 @@ flowchart LR
     Q --> R["Redis / RQ Worker"]
     L --> M["模型适配层"]
     R --> M
-    M --> V["Vertex AI Gemini API"]
+    M --> V["Vertex / Gemini 原生"]
+    M --> O["OpenAI 兼容 API"]
+    M --> N["Anthropic 兼容 API"]
     L --> D
     L --> F
     R --> D
@@ -34,7 +36,7 @@ flowchart LR
 │   ├── web/                         # Next.js、React、TypeScript
 │   └── api/
 │       ├── app/api/routes/          # REST 接口
-│       ├── app/model_adapters/      # Vertex 文本/图像适配器
+│       ├── app/model_adapters/      # 原生与 OpenAI/Anthropic 兼容适配器
 │       ├── app/services/            # 分段、分页、任务、提示词服务
 │       ├── app/worker_tasks.py      # RQ 任务执行器
 │       └── migrations/              # Alembic
@@ -83,7 +85,9 @@ flowchart LR
 
 页面规划可以一次完成，但图片只允许逐页生成。`GenerationBatch` 是同一页的一轮抽卡会话，`PageCandidate` 是一次模型调用的候选。收藏和采用互相独立；每页只有一个当前采用版本，该版本才会成为下一页的连续性输入。
 
-## 7. Vertex AI 模型适配
+## 7. 多供应商模型适配
+
+`ProviderProfile → ProviderConnection → ProviderKey / AIModel` 构成供应商目录。连接定义协议、Base URL、端点模板、非敏感请求头、余额规则和健康状态；模型定义文字/图片类型、模态、操作、能力置信度与探测指标。兼容协议只允许 OpenAI 与 Anthropic；Vertex/Gemini 原生适配用于兼容已有部署。详细规则见 [`provider-platform.md`](provider-platform.md)。
 
 | 逻辑别名 | 默认 Vertex 模型 ID | 说明 |
 | --- | --- | --- |
@@ -91,11 +95,12 @@ flowchart LR
 | `image.nano_banana_2` | `gemini-3.1-flash-image` | 与 Pro 平级的页面/资产/修复模型 |
 | `image.nano_banana_pro` | `gemini-3-pro-image-preview` | 与 NB2 平级的页面/资产/修复模型 |
 
-两个图像模型都声明 1K、2K、4K 能力，4K 标记 Preview。业务代码使用逻辑别名，真实模型 ID 由环境变量配置。模型错误统一归类为认证、权限、配额、限流、模型不可用、能力不支持、内容安全、超时、无效输出或上游错误。
+旧逻辑别名仍可用，但新任务会解析到目录模型 ID。自动路由只使用已完成能力测试的模型。模型错误统一归类为认证、权限、配额、限流、模型不可用、能力不支持、内容安全、超时、无效输出或上游错误。
 
 ## 8. 安全与可观测性
 
-- 服务账号 JSON 只由 `GOOGLE_APPLICATION_CREDENTIALS` 指向，仅 API/Worker 读取。
+- 服务账号 JSON 和 AES-256-GCM 加密的供应商 API Key 仅由 API/Worker 读取。
+- 自定义供应商执行 HTTPS、DNS/IP、私网、保护请求头和禁止重定向检查。
 - `.env`、服务账号 JSON、数据库、上传素材和生成输出均被 Git 忽略。
 - API 只返回配置状态与脱敏错误，不返回凭据路径、邮箱、令牌或认证头。
 - 上传执行扩展名、MIME、大小、文件头、哈希去重和路径穿越检查。

@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.domain.states import JobStatus
 from app.models import (
+    AIModel,
     Asset,
     Chapter,
     GenerationBatch,
@@ -434,6 +435,16 @@ def update_project(
         raise HTTPException(status_code=409, detail="项目已被其他操作更新，请刷新后重试")
 
     changes = payload.model_dump(exclude_unset=True, exclude={"version"})
+    for field, model_type in (
+        ("default_text_model_id", "TEXT"),
+        ("last_image_model_id", "IMAGE"),
+    ):
+        model_id = changes.get(field)
+        if not model_id:
+            continue
+        model = db.get(AIModel, model_id)
+        if not model or model.model_type != model_type or not model.enabled:
+            raise HTTPException(status_code=422, detail=f"{field} 指向的模型不可用")
     for key, value in changes.items():
         setattr(project, key, value)
     if changes.get("last_image_model_alias"):

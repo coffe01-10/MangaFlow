@@ -54,7 +54,7 @@ export function ProductionReadiness({
       <small>{loading ? "检查中" : readiness?.ready ? "准备完成" : "存在阻塞项"}</small>
     </header>
 
-    {loading ? <p className="reference-check-loading"><Cpu className="spin" size={15} />正在核对剧本、参考资产、风格、模型与执行器…</p> : null}
+    {loading ? <p className="reference-check-loading"><Cpu className="spin" size={15} />正在核对剧本、参考资产、风格与执行器…</p> : null}
     {error ? <p className="form-error"><CircleAlert size={14} />准备检查失败：{error.message}</p> : null}
 
     {readiness ? <>
@@ -64,7 +64,7 @@ export function ProductionReadiness({
       </div> : <p className="edit-notice"><Check size={13} />页面生产条件已全部满足，可以确认参考图后生成 1 个 1K 彩色候选。</p>}
 
       <details className="production-diagnostics" open={!readiness.ready}>
-        <summary>{readiness.ready ? "查看原文覆盖、模型与执行器诊断" : "展开查看阻塞诊断"}</summary>
+        <summary>{readiness.ready ? "查看原文覆盖、供应商目录与执行器诊断" : "展开查看阻塞诊断"}</summary>
         <div className="reference-check-grid readiness-overview">
         <article>
           <div><strong><ShieldCheck size={15} />内容追溯</strong><span>原文与剧本必须同时覆盖</span></div>
@@ -84,8 +84,8 @@ export function ProductionReadiness({
           <ReadinessMark ok={readiness.style.test_image_approved}>测试图已通过</ReadinessMark>
         </article>
         <article>
-          <div><strong><Cpu size={15} />真实执行链</strong><span>Nano Banana 2 · 1K · 单候选</span></div>
-          <ReadinessMark ok={readiness.provider.configured && ["GRANTED", "AVAILABLE"].includes(readiness.provider.image_model_access)}>图片模型 {readiness.provider.image_model_access}</ReadinessMark>
+          <div><strong><Cpu size={15} />真实执行链</strong><span>所选模型 · 1K · 单候选</span></div>
+          <ReadinessMark ok={readiness.provider.usable_image_model_count > 0}>可用图片模型 {readiness.provider.usable_image_model_count} 个 · 已验证 {readiness.provider.auto_image_model_count} 个</ReadinessMark>
           <ReadinessMark ok={readiness.worker.can_execute}>{readiness.worker.executor} · {readiness.worker.queue_mode}</ReadinessMark>
           <small>{readiness.estimated_cost_note}</small>
         </article>

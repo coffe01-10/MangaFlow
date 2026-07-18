@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from threading import Lock
 
+from fastapi import HTTPException
 from PIL import Image
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
@@ -10,9 +11,14 @@ from sqlalchemy.exc import IntegrityError
 from app.config import get_settings
 from app.database import SessionLocal
 from app.domain.states import JobStatus, PageStatus
-from app.model_adapters.base import ImageRequest, MultimodalRequest, StructuredRequest
-from app.model_adapters.vertex import VertexAdapterError, VertexImageAdapter, VertexTextAdapter
+from app.model_adapters.base import (
+    ImageRequest,
+    MultimodalRequest,
+    ProviderAdapterError,
+    StructuredRequest,
+)
 from app.models import (
+    AIModel,
     Asset,
     AssetCandidate,
     Beat,
@@ -23,11 +29,14 @@ from app.models import (
     GenerationJob,
     GenerationRecord,
     InspectionResult,
+    JobAssetReference,
     MangaPage,
     Outfit,
     PageCandidate,
     Panel,
     Project,
+    ProviderConnection,
+    ProviderProfile,
     RepairPlan,
     Scene,
     ScriptRevision,
@@ -37,9 +46,17 @@ from app.models import (
     utcnow,
 )
 from app.services.ai_schemas import PageInspectionOutput, StoryParseOutput, StyleAnalysisOutput
+from app.services.credential_crypto import mark_key_failure, mark_key_success
 from app.services.media import create_thumbnails, remove_thumbnails
-from app.services.model_registry import build_registry
+from app.services.model_router import (
+    AdapterBinding,
+    ResolvedModel,
+    bind_adapter,
+    get_catalog_model,
+    model_supports_resolution,
+)
 from app.services.prompt_compiler import PAGE_TEMPLATE_VERSION, compile_page_prompt
+from app.services.provider_presets import ensure_provider_presets
 
 ACTIVE_STATUSES = {
     JobStatus.PREPARING,
@@ -122,14 +139,137 @@ def _asset_path(asset: Asset) -> Path:
     return path
 
 
-def _adapter(alias: str):
-    settings = get_settings()
-    capability = build_registry(settings).get(alias)
-    if not capability:
-        raise VertexAdapterError("UNSUPPORTED_CAPABILITY", "未识别的模型选项")
-    if alias.startswith("image."):
-        return VertexImageAdapter(settings, capability)
-    return VertexTextAdapter(settings, capability)
+def _adapter(_alias: str):
+    """Legacy test seam retained while production calls use catalog bindings."""
+
+    return None
+
+
+def _binding(
+    db,
+    *,
+    operation: str,
+    project_id: str,
+    explicit_reference: str | None,
+    task_kind: str,
+) -> AdapterBinding:
+    legacy_adapter = _adapter(explicit_reference or "auto")
+    if legacy_adapter is not None:
+        settings = get_settings()
+        ensure_provider_presets(db, settings)
+        model = get_catalog_model(db, explicit_reference or "")
+        if model is None:
+            model = db.scalar(
+                select(AIModel).where(
+                    AIModel.model_type == ("IMAGE" if operation.startswith("image_") else "TEXT")
+                )
+            )
+        if model is None:
+            raise ProviderAdapterError("MODEL_ROUTE_UNAVAILABLE", "测试模型目录不存在")
+        connection = db.get(ProviderConnection, model.connection_id)
+        provider = db.get(ProviderProfile, connection.provider_id) if connection else None
+        if not connection or not provider:
+            raise ProviderAdapterError("MODEL_ROUTE_UNAVAILABLE", "测试模型连接不存在")
+        return AdapterBinding(
+            resolved=ResolvedModel(model=model, connection=connection, provider=provider),
+            adapter=legacy_adapter,
+            selected_key=None,
+        )
+    try:
+        return bind_adapter(
+            db,
+            get_settings(),
+            operation=operation,
+            explicit_reference=explicit_reference,
+            project_id=project_id,
+            task_kind=task_kind,
+        )
+    except HTTPException as error:
+        detail = error.detail if isinstance(error.detail, str) else "模型路由配置无效"
+        raise ProviderAdapterError("MODEL_ROUTE_UNAVAILABLE", detail) from error
+
+
+def _invoke_provider(db, binding: AdapterBinding, callback):
+    try:
+        result = callback(binding.adapter)
+    except ProviderAdapterError as error:
+        if binding.selected_key:
+            mark_key_failure(
+                db,
+                binding.selected_key.row,
+                error.code,
+                retry_after_seconds=error.retry_after_seconds,
+            )
+            if error.code in {"AUTHENTICATION", "PERMISSION", "RATE_LIMIT"}:
+                try:
+                    replacement = bind_adapter(
+                        db,
+                        get_settings(),
+                        operation=binding.resolved.model.operations[0],
+                        explicit_reference=binding.resolved.model.id,
+                    )
+                except HTTPException:
+                    replacement = None
+                if (
+                    replacement
+                    and replacement.selected_key
+                    and replacement.selected_key.row.id != binding.selected_key.row.id
+                ):
+                    try:
+                        result = callback(replacement.adapter)
+                    except ProviderAdapterError as retry_error:
+                        mark_key_failure(
+                            db,
+                            replacement.selected_key.row,
+                            retry_error.code,
+                            retry_after_seconds=retry_error.retry_after_seconds,
+                        )
+                        raise
+                    mark_key_success(db, replacement.selected_key.row)
+                    return result
+        raise
+    if binding.selected_key:
+        mark_key_success(db, binding.selected_key.row)
+    return result
+
+
+def _text_model_reference(job: GenerationJob, project: Project) -> str | None:
+    if job.catalog_model_id:
+        return job.catalog_model_id
+    if job.model_alias and job.model_alias != "text.fast":
+        return job.model_alias
+    return project.default_text_model_id or project.text_model_alias or job.model_alias
+
+
+def _validate_reference_capacity(binding: AdapterBinding, count: int) -> None:
+    configured = (binding.resolved.model.capabilities or {}).get("max_reference_images")
+    if configured is not None and count > int(configured):
+        raise ProviderAdapterError(
+            "UNSUPPORTED_CAPABILITY",
+            f"所选模型最多接收 {configured} 张参考图，本任务需要 {count} 张",
+        )
+
+
+def _lease_reference_assets(db, job: GenerationJob, asset_ids: list[str]) -> None:
+    unique_ids = list(dict.fromkeys(asset_ids))
+    active_ids = set(
+        db.scalars(
+            select(Asset.id).where(
+                Asset.id.in_(unique_ids),
+                Asset.project_id == job.project_id,
+                Asset.deleted_at.is_(None),
+            )
+        )
+    )
+    if active_ids != set(unique_ids):
+        raise RuntimeError("参考图已删除、失效或不属于当前项目，已停止模型调用")
+    db.execute(delete(JobAssetReference).where(JobAssetReference.job_id == job.id))
+    for asset_id in unique_ids:
+        db.add(JobAssetReference(job_id=job.id, asset_id=asset_id))
+    parameters = dict(job.request_parameters or {})
+    parameters["reference_asset_ids"] = unique_ids
+    job.request_parameters = parameters
+    db.commit()
 
 
 def _load_reference_assets(
@@ -144,6 +284,9 @@ def _load_reference_assets(
         for character_id in panel.characters
     }
     if reference_selections is not None:
+        unexpected_characters = set(reference_selections) - page_character_ids
+        if unexpected_characters:
+            raise RuntimeError("参考图选择包含不在当前页面中的人物")
         selected_ids = {
             asset_id
             for character_id in page_character_ids
@@ -166,6 +309,39 @@ def _load_reference_assets(
             if selected_ids
             else []
         )
+        loaded_ids = {asset.id for asset in references}
+        missing_ids = selected_ids - loaded_ids
+        if missing_ids:
+            raise RuntimeError(
+                "已确认的参考图已删除或失效，已在调用模型前停止任务："
+                + "、".join(sorted(missing_ids))
+            )
+        for character_id in page_character_ids:
+            selection = reference_selections.get(character_id) or {}
+            character_asset_id = selection.get("character_asset_id")
+            character_reference = (
+                db.scalar(
+                    select(CharacterReference).where(
+                        CharacterReference.character_id == character_id,
+                        CharacterReference.asset_id == character_asset_id,
+                    )
+                )
+                if character_asset_id
+                else None
+            )
+            if not character_reference:
+                raise RuntimeError("人物参考图绑定已变化，已在调用模型前停止任务")
+            outfit_id = selection.get("outfit_id")
+            outfit_asset_id = selection.get("outfit_asset_id")
+            if outfit_id:
+                outfit = db.get(Outfit, outfit_id)
+                if (
+                    not outfit
+                    or outfit.character_id != character_id
+                    or outfit.project_id != project.id
+                    or outfit_asset_id not in outfit.reference_asset_ids
+                ):
+                    raise RuntimeError("服装参考图绑定已变化，已在调用模型前停止任务")
     else:
         references = (
             list(
@@ -239,8 +415,7 @@ def _load_reference_assets(
             previous_asset = db.get(Asset, candidate.asset_id)
             if previous_asset:
                 references.append(previous_asset)
-    unique = list({asset.id: asset for asset in references}.values())
-    return unique[:14]
+    return list({asset.id: asset for asset in references}.values())
 
 
 def _save_generated_asset(db, candidate: PageCandidate, data: bytes) -> Asset:
@@ -284,7 +459,7 @@ def _save_generated_asset(db, candidate: PageCandidate, data: bytes) -> Asset:
                 sha256=digest,
                 width=width,
                 height=height,
-                source="VERTEX_GENERATED",
+                source="AI_GENERATED",
                 status="GENERATED",
             )
             db.add(asset)
@@ -354,7 +529,7 @@ def _save_asset_candidate(db, candidate: AssetCandidate, project_id: str, data: 
                 sha256=digest,
                 width=width,
                 height=height,
-                source="VERTEX_GENERATED",
+                source="AI_GENERATED",
                 status="GENERATED",
             )
             db.add(asset)
@@ -435,9 +610,10 @@ def _run_page_generate(db, job: GenerationJob) -> None:
     reference_types: list[str] = []
     for asset in reference_assets:
         path = _asset_path(asset)
-        if path.is_file():
-            reference_bytes.append(path.read_bytes())
-            reference_types.append(asset.mime_type)
+        if not path.is_file():
+            raise RuntimeError(f"参考图文件不存在：{asset.original_name}")
+        reference_bytes.append(path.read_bytes())
+        reference_types.append(asset.mime_type)
 
     reference_asset_ids = [asset.id for asset in reference_assets]
     if job.job_type in {"PAGE_REPAIR", "PAGE_UPSCALE"}:
@@ -481,16 +657,50 @@ def _run_page_generate(db, job: GenerationJob) -> None:
     snapshot["checksum"] = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
     candidate.prompt_snapshot = snapshot
 
+    binding = _binding(
+        db,
+        operation="image_edit" if reference_bytes else "image_generate",
+        project_id=project.id,
+        explicit_reference=(
+            candidate.catalog_model_id or job.catalog_model_id or candidate.model_alias
+        ),
+        task_kind=job.job_type,
+    )
+    candidate.catalog_model_id = binding.resolved.model.id
+    job.catalog_model_id = binding.resolved.model.id
+    if not model_supports_resolution(binding.resolved.model, candidate.resolution.value):
+        raise ProviderAdapterError(
+            "UNSUPPORTED_CAPABILITY", "所选模型不支持当前输出清晰度"
+        )
+    _validate_reference_capacity(binding, len(reference_bytes))
+    _lease_reference_assets(db, job, reference_asset_ids)
+    # Re-read every leased row after committing the guard. A concurrent delete or
+    # rebinding can no longer pass silently into the paid request.
+    current_assets = list(
+        db.scalars(
+            select(Asset).where(
+                Asset.id.in_(reference_asset_ids),
+                Asset.deleted_at.is_(None),
+            )
+        )
+    )
+    if {item.id for item in current_assets} != set(reference_asset_ids):
+        raise RuntimeError("参考图在生成前发生变化，已停止模型调用")
+
     job.status = JobStatus.GENERATING
     job.progress = 45
     db.commit()
-    response = _adapter(candidate.model_alias).generate_page(
-        ImageRequest(
-            prompt=prompt,
-            resolution=candidate.resolution.value,
-            aspect_ratio="3:4",
-            reference_images=tuple(reference_bytes[:14]),
-            reference_mime_types=tuple(reference_types[:14]),
+    response = _invoke_provider(
+        db,
+        binding,
+        lambda adapter: adapter.generate_page(
+            ImageRequest(
+                prompt=prompt,
+                resolution=candidate.resolution.value,
+                aspect_ratio="3:4",
+                reference_images=tuple(reference_bytes),
+                reference_mime_types=tuple(reference_types),
+            )
         )
     )
     _ensure_job_not_cancelled(db, job)
@@ -500,12 +710,19 @@ def _run_page_generate(db, job: GenerationJob) -> None:
     asset = _save_generated_asset(db, candidate, response.images[0])
     record = GenerationRecord(
         job_id=job.id,
+        provider=(binding.resolved.provider.preset_key or binding.resolved.provider.name)[:32],
         model_id=response.model_id,
-        location=get_settings().google_cloud_location,
+        catalog_model_id=binding.resolved.model.id,
+        location=str(
+            binding.resolved.connection.nonsecret_config.get("region", "global")
+        )[:64],
         parameters={
             "resolution": candidate.resolution.value,
             "aspect_ratio": "3:4",
             "operation": job.job_type,
+            "protocol": binding.resolved.connection.protocol,
+            "route_reason": binding.resolved.route_reason,
+            "route_score": binding.resolved.route_score,
         },
         prompt_template=PAGE_TEMPLATE_VERSION,
         prompt_version=PAGE_TEMPLATE_VERSION,
@@ -567,13 +784,25 @@ def _run_story_parse(db, job: GenerationJob) -> None:
 剧本人物称呼必须使用 primary_name；每个有对白的情节拍必须把说话人的 primary_name
 写入 speaker_name，旁白留空。
 输入：{json.dumps(source_payload, ensure_ascii=False)}"""
-    output = _adapter("text.fast").generate_structured(
-        StructuredRequest(
-            prompt=prompt,
-            system_instruction="你是忠实的漫画剧本结构化编辑，原文覆盖率优先于篇幅。",
-            temperature=0.15,
+    binding = _binding(
+        db,
+        operation="structured_text",
+        project_id=project.id,
+        explicit_reference=_text_model_reference(job, project),
+        task_kind=job.job_type,
+    )
+    job.catalog_model_id = binding.resolved.model.id
+    output = _invoke_provider(
+        db,
+        binding,
+        lambda adapter: adapter.generate_structured(
+            StructuredRequest(
+                prompt=prompt,
+                system_instruction="你是忠实的漫画剧本结构化编辑，原文覆盖率优先于篇幅。",
+                temperature=0.15,
+            ),
+            StoryParseOutput,
         ),
-        StoryParseOutput,
     )
     _ensure_job_not_cancelled(db, job)
     project_id = chapter.project_id
@@ -880,26 +1109,64 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
     job.status = JobStatus.GENERATING
     job.progress = 45
     db.commit()
-    reference_bytes = [_asset_path(asset).read_bytes() for asset in references[:14]]
-    reference_types = [asset.mime_type for asset in references[:14]]
-    response = _adapter(candidate.model_alias).generate_asset(
-        ImageRequest(
-            prompt=prompt,
-            resolution=candidate.resolution.value,
-            aspect_ratio=(
-                "4:3" if candidate.variant in {"SHEET", "OUTFIT_SHEET"} else "3:4"
-            ),
-            reference_images=tuple(reference_bytes),
-            reference_mime_types=tuple(reference_types),
+    reference_ids = [asset.id for asset in references]
+    _lease_reference_assets(db, job, reference_ids)
+    for asset in references:
+        if not _asset_path(asset).is_file():
+            raise RuntimeError(f"参考图文件不存在：{asset.original_name}")
+    reference_bytes = [_asset_path(asset).read_bytes() for asset in references]
+    reference_types = [asset.mime_type for asset in references]
+    binding = _binding(
+        db,
+        operation="image_edit" if reference_bytes else "image_generate",
+        project_id=batch.project_id,
+        explicit_reference=(
+            candidate.catalog_model_id or job.catalog_model_id or candidate.model_alias
+        ),
+        task_kind=job.job_type,
+    )
+    candidate.catalog_model_id = binding.resolved.model.id
+    job.catalog_model_id = binding.resolved.model.id
+    if not model_supports_resolution(binding.resolved.model, candidate.resolution.value):
+        raise ProviderAdapterError(
+            "UNSUPPORTED_CAPABILITY", "所选模型不支持当前输出清晰度"
+        )
+    _validate_reference_capacity(binding, len(reference_bytes))
+    db.commit()
+    response = _invoke_provider(
+        db,
+        binding,
+        lambda adapter: adapter.generate_asset(
+            ImageRequest(
+                prompt=prompt,
+                resolution=candidate.resolution.value,
+                aspect_ratio=(
+                    "4:3"
+                    if candidate.variant in {"SHEET", "OUTFIT_SHEET"}
+                    else "3:4"
+                ),
+                reference_images=tuple(reference_bytes),
+                reference_mime_types=tuple(reference_types),
+            )
         )
     )
     _ensure_job_not_cancelled(db, job)
     asset = _save_asset_candidate(db, candidate, batch.project_id, response.images[0])
     record = GenerationRecord(
         job_id=job.id,
+        provider=(binding.resolved.provider.preset_key or binding.resolved.provider.name)[:32],
         model_id=response.model_id,
-        location=get_settings().google_cloud_location,
-        parameters={"resolution": candidate.resolution.value, "variant": candidate.variant},
+        catalog_model_id=binding.resolved.model.id,
+        location=str(
+            binding.resolved.connection.nonsecret_config.get("region", "global")
+        )[:64],
+        parameters={
+            "resolution": candidate.resolution.value,
+            "variant": candidate.variant,
+            "protocol": binding.resolved.connection.protocol,
+            "route_reason": binding.resolved.route_reason,
+            "route_score": binding.resolved.route_score,
+        },
         prompt_template="asset-v1.1.0",
         prompt_version="asset-v1.1.0",
         prompt_checksum=checksum,
@@ -987,13 +1254,27 @@ def _run_style_analyze(db, job: GenerationJob) -> None:
 主色、辅助色、肤色、发色、环境色和光影色，并输出 color_rules。
 章节氛围补充：{atmosphere or '葬礼后的克制、潮湿京都与低饱和情绪'}。
 不要复制参考页中的文字或剧情。"""
-    output = _adapter("text.fast").analyze_multimodal(
-        MultimodalRequest(
-            prompt=prompt,
-            images=tuple(_asset_path(asset).read_bytes() for asset in references[:8]),
-            mime_types=tuple(asset.mime_type for asset in references[:8]),
+    _lease_reference_assets(db, job, [asset.id for asset in references[:8]])
+    project = db.get(Project, style.project_id)
+    binding = _binding(
+        db,
+        operation="multimodal_analysis",
+        project_id=style.project_id,
+        explicit_reference=_text_model_reference(job, project),
+        task_kind=job.job_type,
+    )
+    job.catalog_model_id = binding.resolved.model.id
+    output = _invoke_provider(
+        db,
+        binding,
+        lambda adapter: adapter.analyze_multimodal(
+            MultimodalRequest(
+                prompt=prompt,
+                images=tuple(_asset_path(asset).read_bytes() for asset in references[:8]),
+                mime_types=tuple(asset.mime_type for asset in references[:8]),
+            ),
+            StyleAnalysisOutput,
         ),
-        StyleAnalysisOutput,
     )
     _ensure_job_not_cancelled(db, job)
     analyzed = output.model_dump()
@@ -1045,13 +1326,26 @@ regions 使用 0 到 1 的归一化 x/y/width/height。"""
     job.status = JobStatus.CONSISTENCY_CHECKING
     job.progress = 45
     db.commit()
-    output = _adapter("text.fast").analyze_multimodal(
-        MultimodalRequest(
-            prompt=prompt,
-            images=(_asset_path(asset).read_bytes(),),
-            mime_types=(asset.mime_type,),
+    _lease_reference_assets(db, job, [asset.id])
+    binding = _binding(
+        db,
+        operation="multimodal_analysis",
+        project_id=project.id,
+        explicit_reference=_text_model_reference(job, project),
+        task_kind=job.job_type,
+    )
+    job.catalog_model_id = binding.resolved.model.id
+    output = _invoke_provider(
+        db,
+        binding,
+        lambda adapter: adapter.analyze_multimodal(
+            MultimodalRequest(
+                prompt=prompt,
+                images=(_asset_path(asset).read_bytes(),),
+                mime_types=(asset.mime_type,),
+            ),
+            PageInspectionOutput,
         ),
-        PageInspectionOutput,
     )
     _ensure_job_not_cancelled(db, job)
     needs_review = False
@@ -1189,7 +1483,7 @@ def execute_job(job_id: str) -> None:
 
             reconcile_run(db, job.request_parameters["workflow_run_id"])
         raise
-    except VertexAdapterError as error:
+    except ProviderAdapterError as error:
         db.rollback()
         job = db.get(GenerationJob, job_id)
         job.status = JobStatus.FAILED

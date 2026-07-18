@@ -146,7 +146,8 @@ def bind_reference(
         raise HTTPException(status_code=409, detail="参考图和角色不属于同一项目")
     allowed_generated_kinds = {"character", "outfit"}
     if asset.kind != "CHARACTER_REFERENCE" and not (
-        asset.source == "VERTEX_GENERATED" and asset.kind in allowed_generated_kinds
+        asset.source in {"VERTEX_GENERATED", "AI_GENERATED"}
+        and asset.kind in allowed_generated_kinds
     ):
         raise HTTPException(
             status_code=409,

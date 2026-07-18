@@ -13,17 +13,24 @@
 - 角色主要姓名、绰号、歧义冲突、参考图与服装/风格素材绑定。
 - 按原文长度动态分页，每页可选 3–5 格并支持动态错落版式，最多 8 个气泡、中文硬上限 180 字；总页数不设上限。
 - 分镜区分实际出镜、画外人物和仅被提及人物，道具独立保存；只有实际出镜人物要求人物与服装参考。
-- 页面统一 readiness 检查原文/剧本覆盖、人物与服装参考、彩色风格、Vertex 和实际执行器，未满足时返回结构化 `409 PAGE_NOT_READY`。
+- 页面统一 readiness 检查原文/剧本覆盖、人物与服装参考、彩色风格和实际执行器；供应商与模型能力由统一模型目录在排队前单独校验。
 - AI 概念设定图先作为草稿，人工确认后才同时成为人物与服装规范参考；彩色风格必须依次确认色板、测试图并激活。
 - 右至左分镜数据，以及原文、Scene、Beat、对白和页面之间的追溯关系。
-- Nano Banana 2 与 Nano Banana Pro 完全平级，每个候选显式选模型和分辨率。
+- 内置 20 余个供应商预设，可接入 OpenAI、Anthropic、Gemini、DeepSeek、OpenRouter、智谱 GLM、火山方舟、OpenCode Zen 等，也可新增自定义兼容供应商。
+- 文字模型与图片模型分目录管理；每个候选可显式选模型，也可从已验证模型中自动路由。
 - 同一页多批次、多候选、跨模型抽卡；收藏多个、采用一个，并可随时撤回采用而不删除候选或生成文件；采用版本才进入下一页连续性上下文。
 - 按“章节 → 页面 → 批次”读取素材库，支持页面、角色补图、服装图、风格测试和修复图批次。
 - 持久化任务、DAG、幂等、取消、重试、超时和并发限制；`AUTO` 在开发环境无 Redis 时使用本地执行器，`LOCAL` 强制本地执行，`REDIS` 不可用时任务安全停留在 `WAITING`。
-- Gemini 多模态视觉检查、分级视觉修复、人工文字校对，以及 PNG、PDF、项目 JSON 和素材清单导出。
-- Vertex 凭据只由 API/Worker 读取，浏览器不接触服务账号密钥。
+- 多供应商多模态视觉检查、分级视觉修复、人工文字校对，以及 PNG、PDF、项目 JSON 和素材清单导出。
+- Vertex 与各供应商 API Key 只由 API/Worker 读取；API Key 使用 AES-256-GCM 加密，浏览器只接收末四位提示。
 
-## Vertex AI 模型
+## AI 供应商与模型
+
+兼容连接只暴露两种协议：`OPENAI` 和 `ANTHROPIC`。Vertex AI 与 Gemini API 作为内置原生连接保留。OpenAI 协议连接可分别配置 `/models`、Chat Completions、Responses、图片生成与图片编辑端点；Anthropic 协议使用 Messages 端点。
+
+设置页支持预设供应商、自定义 Base URL、多 API Key 轮换、模型发现、手动模型、文字/视觉/图片能力测试、延迟基准和可选余额查询。名称推断的模型不会自动参与路由；模型必须完成对应能力测试并标记为 `VERIFIED`。第三方网关会显示风险标签，启用前应自行核对隐私、价格和数据保留政策。详细说明见 [`docs/provider-platform.md`](docs/provider-platform.md)。
+
+原有 Vertex 模型仍作为兼容预设存在：
 
 | 逻辑别名 | 模型 | Vertex 模型 ID | 用途 |
 | --- | --- | --- | --- |
@@ -31,7 +38,7 @@
 | `image.nano_banana_2` | Nano Banana 2 | `gemini-3.1-flash-image` | 页面、资产和修复图生成 |
 | `image.nano_banana_pro` | Nano Banana Pro | `gemini-3-pro-image-preview` | 页面、资产和修复图生成 |
 
-两个图像模型没有主次关系。项目只记录上次使用的模型；每次创建候选时必须重新显式传入模型。1K、2K、4K 均在能力注册表中声明，4K 标记为 Preview。
+两个 Vertex 图像模型没有主次关系。统一目录还会展示其他供应商已启用的图片模型；页面生成只显示支持 `image_edit` 的模型，避免把纯文字或纯文生图模型误用于人物参考流程。
 
 ## 本地启动（Windows PowerShell）
 
@@ -74,6 +81,7 @@ GOOGLE_APPLICATION_CREDENTIALS=D:/absolute/path/to/service-account-key.json
 REDIS_URL=redis://localhost:6379/0
 QUEUE_ENABLED=true
 MANGAFLOW_PROXY_URL=http://127.0.0.1:7897
+MANGAFLOW_CREDENTIAL_MASTER_KEY=replace-with-a-url-safe-base64-32-byte-key
 ```
 
 配置完成后运行：
@@ -82,7 +90,7 @@ MANGAFLOW_PROXY_URL=http://127.0.0.1:7897
 powershell -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1
 ```
 
-没有配置 Vertex 凭据时，工作台和已有数据仍能打开，但 AI 分析与图片生成不可用。Redis 是可选项：运行设置中的队列模式默认为 `AUTO`，检测不到 Redis 时自动切到本地执行器；选择 `LOCAL` 后不再探测 Redis；只有显式选择 `REDIS` 且 Redis 不可用时，新任务才保持 `WAITING`。
+没有配置 Vertex 凭据时，仍可使用其他已配置供应商。开发环境第一次从设置页保存 API Key 时，会在 `storage/.provider-credential-master-key` 自动创建本机主密钥；生产环境必须显式配置 `MANGAFLOW_CREDENTIAL_MASTER_KEY`。接口只保存加密值且不会把密钥退回浏览器。Redis 是可选项：运行设置中的队列模式默认为 `AUTO`，检测不到 Redis 时自动切到本地执行器；选择 `LOCAL` 后不再探测 Redis；只有显式选择 `REDIS` 且 Redis 不可用时，新任务才保持 `WAITING`。
 
 如果浏览器能访问 Google，但 API 显示 `DEGRADED / UPSTREAM`，可将 `MANGAFLOW_PROXY_URL` 设置为 Clash/Mihomo 的 HTTP 或 Mixed 端口。`scripts\start-dev.ps1` 会自动把它转换成 Python 网络库识别的 `HTTP_PROXY` / `HTTPS_PROXY`，并为 `localhost`、`127.0.0.1` 设置直连。不要填写仅支持 SOCKS 的端口。
 
@@ -147,7 +155,7 @@ PostgreSQL 与 Redis 的开发容器可用 `docker compose up -d` 启动；默�
 2. `storage/generated/`
 3. `uploads/`
 4. 如需保留已导出成品，再包含 `storage/exports/`
-5. 单独加密保存 `.env` 和 Vertex 凭据；不要把凭据放进普通项目归档
+5. 单独加密保存 `.env`、`storage/.provider-credential-master-key`（如存在）和 Vertex 凭据；不要把凭据放进普通项目归档
 
 复制数据库文件前应停止 API/Worker 写入，或使用 SQLite 在线备份工具生成一致性快照。迁移脚本产生的 `.db` 备份只保护数据库，不包含生成图和上传素材，因此不能替代完整备份。
 
@@ -163,12 +171,13 @@ PostgreSQL 与 Redis 的开发容器可用 `docker compose up -d` 启动；默�
 npm run check
 ```
 
-当前质量基线为 89 个后端测试和 4 个前端测试，并覆盖 Ruff、ESLint、TypeScript、Next.js 生产构建、Playwright 闭环和 Alembic 全新升级/回滚/再升级。文字由用户在采用候选前人工校对；系统不再创建文字自动检查或文字区域修复任务，也不会为了文字分数自动发起付费调用。
+当前质量基线包含 115 个后端测试和 4 个前端测试，并覆盖 Ruff、ESLint、TypeScript、Next.js 生产构建和 Alembic 全新升级/回滚/再升级。真实供应商图片调用不属于默认测试，避免意外费用。文字由用户在采用候选前人工校对；系统不再创建文字自动检查或文字区域修复任务。
 
 ## 安全说明
 
 - `.env`、服务账号 JSON、数据库、上传素材和生成结果均被 Git 忽略。
-- API 不返回凭据路径、服务账号邮箱、令牌或完整项目唯一标识。
+- API 不返回凭据明文、凭据路径、服务账号邮箱、令牌或完整项目唯一标识。
+- 自定义供应商默认要求 HTTPS，并在调用前阻止本机、链路本地、元数据和未显式允许的私有网络地址；重定向不会自动跟随。
 - 上传限制为 PNG/JPG/WEBP/TXT/Markdown、最大 20 MB，并校验图片文件内容。
 - 生成日志只保存脱敏错误和资产 ID，不记录认证头。
 - 普通查询不触发模型调用；所有 AI 创建接口返回 `202 + job_id`。
