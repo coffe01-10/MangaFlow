@@ -15,6 +15,19 @@ down_revision: str | None = "20260717_14"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+_CATALOG_REFERENCE_COLUMNS = {
+    "projects": [
+        ("fk_projects_default_text_model", "default_text_model_id"),
+        ("fk_projects_last_image_model", "last_image_model_id"),
+    ],
+    "generation_jobs": [("fk_generation_jobs_catalog_model", "catalog_model_id")],
+    "generation_records": [
+        ("fk_generation_records_catalog_model", "catalog_model_id")
+    ],
+    "page_candidates": [("fk_page_candidates_catalog_model", "catalog_model_id")],
+    "asset_candidates": [("fk_asset_candidates_catalog_model", "catalog_model_id")],
+}
+
 
 def _timestamps() -> list[sa.Column]:
     return [
@@ -25,6 +38,19 @@ def _timestamps() -> list[sa.Column]:
 
 
 def upgrade() -> None:
+    connection = op.get_bind()
+    if connection.dialect.name == "sqlite":
+        # SQLite batch mode temporarily drops and recreates referenced tables.
+        # Foreign-key enforcement must be suspended for that narrow operation;
+        # the migration validates the finished schema before turning it back on.
+        connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+        if connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() != 0:
+            raise RuntimeError("无法暂停 SQLite 外键检查，已停止迁移")
+        table_names = set(sa.inspect(connection).get_table_names())
+        for table in _CATALOG_REFERENCE_COLUMNS:
+            temporary = f"_alembic_tmp_{table}"
+            if table in table_names and temporary in table_names:
+                op.drop_table(temporary)
     op.create_table(
         "provider_profiles",
         sa.Column("id", sa.String(length=36), nullable=False),
@@ -264,7 +290,6 @@ def upgrade() -> None:
         ],
     }
     inspector = sa.inspect(op.get_bind())
-    added_columns: set[tuple[str, str]] = set()
     for table, columns in additions.items():
         existing_columns = {item["name"] for item in inspector.get_columns(table)}
         with op.batch_alter_table(table) as batch:
@@ -272,38 +297,51 @@ def upgrade() -> None:
                 if column.name in existing_columns:
                     continue
                 batch.add_column(column)
-                added_columns.add((table, column.name))
 
-    foreign_keys = {
-        "projects": [
-            ("fk_projects_default_text_model", "default_text_model_id"),
-            ("fk_projects_last_image_model", "last_image_model_id"),
-        ],
-        "generation_jobs": [("fk_generation_jobs_catalog_model", "catalog_model_id")],
-        "generation_records": [("fk_generation_records_catalog_model", "catalog_model_id")],
-        "page_candidates": [("fk_page_candidates_catalog_model", "catalog_model_id")],
-        "asset_candidates": [("fk_asset_candidates_catalog_model", "catalog_model_id")],
-    }
-    for table, values in foreign_keys.items():
+    # A previous interrupted SQLite migration may already have added the
+    # nullable columns while missing their FK/index batch. Inspect the actual
+    # schema so rerunning the revision repairs that state and remains idempotent.
+    for table, values in _CATALOG_REFERENCE_COLUMNS.items():
+        table_inspector = sa.inspect(connection)
+        foreign_key_columns = {
+            tuple(item.get("constrained_columns") or [])
+            for item in table_inspector.get_foreign_keys(table)
+        }
+        index_names = {
+            item["name"] for item in table_inspector.get_indexes(table) if item["name"]
+        }
+        missing_foreign_keys = [
+            (name, column)
+            for name, column in values
+            if (column,) not in foreign_key_columns
+        ]
+        missing_indexes = [
+            column
+            for _, column in values
+            if f"ix_{table}_{column}" not in index_names
+        ]
+        if not missing_foreign_keys and not missing_indexes:
+            continue
         with op.batch_alter_table(table) as batch:
-            for name, column in values:
-                if (table, column) not in added_columns:
-                    continue
+            for name, column in missing_foreign_keys:
                 batch.create_foreign_key(name, "ai_models", [column], ["id"], ondelete="SET NULL")
+            for column in missing_indexes:
                 batch.create_index(f"ix_{table}_{column}", [column])
+
+    if connection.dialect.name == "sqlite":
+        violations = list(connection.exec_driver_sql("PRAGMA foreign_key_check"))
+        if violations:
+            raise RuntimeError(f"多供应商迁移产生外键异常：{violations[:5]}")
+        connection.exec_driver_sql("PRAGMA foreign_keys=ON")
 
 
 def downgrade() -> None:
-    foreign_keys = {
-        "asset_candidates": [("fk_asset_candidates_catalog_model", "catalog_model_id")],
-        "page_candidates": [("fk_page_candidates_catalog_model", "catalog_model_id")],
-        "generation_records": [("fk_generation_records_catalog_model", "catalog_model_id")],
-        "generation_jobs": [("fk_generation_jobs_catalog_model", "catalog_model_id")],
-        "projects": [
-            ("fk_projects_default_text_model", "default_text_model_id"),
-            ("fk_projects_last_image_model", "last_image_model_id"),
-        ],
-    }
+    connection = op.get_bind()
+    if connection.dialect.name == "sqlite":
+        connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+        if connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() != 0:
+            raise RuntimeError("无法暂停 SQLite 外键检查，已停止回滚")
+    foreign_keys = dict(reversed(list(_CATALOG_REFERENCE_COLUMNS.items())))
     for table, values in foreign_keys.items():
         with op.batch_alter_table(table) as batch:
             for name, column in values:
@@ -336,3 +374,8 @@ def downgrade() -> None:
     op.drop_index("ix_provider_profiles_name", table_name="provider_profiles")
     op.drop_index("ix_provider_profiles_preset_key", table_name="provider_profiles")
     op.drop_table("provider_profiles")
+    if connection.dialect.name == "sqlite":
+        violations = list(connection.exec_driver_sql("PRAGMA foreign_key_check"))
+        if violations:
+            raise RuntimeError(f"多供应商回滚产生外键异常：{violations[:5]}")
+        connection.exec_driver_sql("PRAGMA foreign_keys=ON")

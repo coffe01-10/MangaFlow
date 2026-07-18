@@ -44,6 +44,66 @@ def test_empty_database_upgrade_downgrade_and_upgrade(tmp_path, monkeypatch):
     engine.dispose()
 
 
+def test_populated_database_upgrades_to_provider_platform(tmp_path, monkeypatch):
+    database_path = tmp_path / "populated-provider-migration.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    monkeypatch.setattr(get_settings(), "database_url", database_url)
+    config = Config("apps/api/alembic.ini")
+    command.upgrade(config, "20260717_14")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO projects (
+                    id, name, language, reading_direction, page_ratio,
+                    default_resolution, draft_resolution, workflow_mode,
+                    default_concurrency, ocr_enabled,
+                    consistency_check_enabled, default_style_id,
+                    text_model_alias, image_model_alias, deleted_at,
+                    created_at, updated_at, version
+                ) VALUES (
+                    'project-existing', '现有项目', 'zh-CN', 'rtl', 'b5_portrait',
+                    'STANDARD_2K', 'DRAFT_1K', 'SEMI_AUTO', 4, 0, 1, NULL,
+                    'text.fast', 'image.nano_banana_2', NULL,
+                    '2026-07-18 00:00:00', '2026-07-18 00:00:00', 1
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO chapters (
+                    id, project_id, title, ordinal, status,
+                    current_source_revision_id, created_at, updated_at,
+                    version, deleted_at
+                ) VALUES (
+                    'chapter-existing', 'project-existing', '第一章', 1,
+                    'IMPORTED', NULL, '2026-07-18 00:00:00',
+                    '2026-07-18 00:00:00', 1, NULL
+                )
+                """
+            )
+        )
+    engine.dispose()
+
+    command.upgrade(config, "head")
+
+    engine = create_engine(database_url)
+    with engine.connect() as connection:
+        assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+        assert connection.execute(text("SELECT count(*) FROM projects")).scalar_one() == 1
+        assert connection.execute(text("SELECT count(*) FROM chapters")).scalar_one() == 1
+    project_foreign_keys = inspect(engine).get_foreign_keys("projects")
+    assert {tuple(item["constrained_columns"]) for item in project_foreign_keys} >= {
+        ("default_text_model_id",),
+        ("last_image_model_id",),
+    }
+    engine.dispose()
+
+
 def test_upgrade_adopts_complete_schema_created_by_early_local_build(tmp_path, monkeypatch):
     database_path = tmp_path / "precreated-local.db"
     database_url = f"sqlite:///{database_path.as_posix()}"
