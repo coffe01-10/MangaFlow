@@ -262,14 +262,20 @@ function ProviderGroup({
   label,
   providers,
   models,
+  defaultExpanded,
+  forceExpanded,
 }: {
   label: string;
   providers: ProviderProfile[];
   models: ModelCapability[];
+  defaultExpanded: boolean;
+  forceExpanded: boolean;
 }) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
+  const shown = forceExpanded || expanded;
   return <section className="provider-group">
-    <header><span>{label}</span><strong>{providers.length}</strong></header>
-    {providers.length ? providers.map((provider) => <ProviderCard key={`${provider.id}:${provider.version}`} provider={provider} models={models} />) : <p className="provider-group-empty">当前筛选条件下没有供应商</p>}
+    <header><button className="provider-group-toggle" aria-expanded={shown} onClick={() => setExpanded((current) => !current)}>{shown ? <ChevronDown size={14} /> : <ChevronRight size={14} />}<span>{label}</span><strong>{providers.length}</strong></button></header>
+    {shown && (providers.length ? providers.map((provider) => <ProviderCard key={`${provider.id}:${provider.version}`} provider={provider} models={models} />) : <p className="provider-group-empty">当前筛选条件下没有供应商</p>)}
   </section>;
 }
 
@@ -307,6 +313,6 @@ export function ProviderManagement() {
       <form onSubmit={(event) => { event.preventDefault(); create.mutate(); }}><input value={name} onChange={(event) => setName(event.target.value)} placeholder="供应商名称" /><select value={protocol} onChange={(event) => setProtocol(event.target.value as "OPENAI" | "ANTHROPIC")}><option value="OPENAI">OpenAI 协议</option><option value="ANTHROPIC">Anthropic 协议</option></select><input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.example.com/v1" /><button disabled={!name.trim() || !baseUrl.trim() || create.isPending}><Plus size={14} />创建</button></form>
       {create.error && <p className="form-error"><CircleAlert size={14} />{create.error.message}</p>}
     </details>
-    {providers.isLoading || models.isLoading ? <div className="loading-panel"><LoaderCircle className="spin" />读取供应商与模型目录…</div> : <div className="provider-list"><ProviderGroup label="已启用" providers={grouped.enabled} models={models.data ?? []} /><ProviderGroup label="已停用" providers={grouped.disabled} models={models.data ?? []} /></div>}
+    {providers.isLoading || models.isLoading ? <div className="loading-panel"><LoaderCircle className="spin" />读取供应商与模型目录…</div> : <div className="provider-list"><ProviderGroup label="已启用" providers={grouped.enabled} models={models.data ?? []} defaultExpanded forceExpanded={Boolean(filter.trim())} /><ProviderGroup label="已停用" providers={grouped.disabled} models={models.data ?? []} defaultExpanded={false} forceExpanded={Boolean(filter.trim())} /></div>}
   </article>;
 }
