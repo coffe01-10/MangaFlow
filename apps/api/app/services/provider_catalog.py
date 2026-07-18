@@ -1,0 +1,691 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from time import perf_counter
+from typing import Any
+from urllib.parse import urljoin, urlparse
+
+import httpx
+from fastapi import HTTPException
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from app.config import Settings
+from app.model_adapters.base import ProviderAdapterError
+from app.model_adapters.compatible import validate_provider_url
+from app.models import (
+    AIModel,
+    ModelProbe,
+    ProviderConnection,
+    ProviderKey,
+    ProviderProfile,
+    RoutingPolicy,
+)
+from app.provider_schemas import (
+    ConnectionCreate,
+    ConnectionUpdate,
+    ProviderCreate,
+    ProviderKeyWrite,
+    ProviderModelCreate,
+    ProviderModelUpdate,
+    ProviderUpdate,
+    RoutingPolicyWrite,
+)
+from app.services.credential_crypto import (
+    encrypt_secret,
+    mark_key_failure,
+    mark_key_success,
+    secret_hint,
+    select_provider_key,
+)
+from app.services.provider_presets import (
+    ANTHROPIC_ENDPOINTS,
+    OPENAI_ENDPOINTS,
+    ensure_provider_presets,
+)
+
+_BLOCKED_HEADERS = {"authorization", "x-api-key", "host", "content-length"}
+
+
+def _validate_base_url_syntax(value: str) -> str:
+    normalized = value.strip().rstrip("/")
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise HTTPException(status_code=422, detail="供应商 Base URL 必须是 HTTP(S) 地址")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise HTTPException(status_code=422, detail="供应商 Base URL 不能包含凭据或查询参数")
+    if parsed.scheme != "https" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+        raise HTTPException(status_code=422, detail="供应商 Base URL 必须使用 HTTPS")
+    return normalized
+
+
+def _validate_endpoint_templates(templates: dict[str, str]) -> dict[str, str]:
+    for path in templates.values():
+        parsed = urlparse(str(path))
+        if (
+            not str(path).startswith("/")
+            or parsed.scheme
+            or parsed.netloc
+            or parsed.query
+            or parsed.fragment
+            or ".." in parsed.path.split("/")
+        ):
+            raise HTTPException(status_code=422, detail="端点模板必须是无查询参数的站内绝对路径")
+    return {str(key): str(value) for key, value in templates.items()}
+
+
+def _validate_headers(headers: dict[str, str]) -> dict[str, str]:
+    for key in headers:
+        if key.lower() in _BLOCKED_HEADERS:
+            raise HTTPException(status_code=422, detail=f"不能覆盖受保护请求头 {key}")
+        if "\r" in key or "\n" in key or "\r" in str(headers[key]) or "\n" in str(headers[key]):
+            raise HTTPException(status_code=422, detail="请求头不能包含换行符")
+    return {str(key): str(value) for key, value in headers.items()}
+
+
+def _default_endpoints(protocol: str) -> dict[str, str]:
+    return dict(ANTHROPIC_ENDPOINTS if protocol == "ANTHROPIC" else OPENAI_ENDPOINTS)
+
+
+def list_provider_views(db: Session, settings: Settings) -> list[dict]:
+    ensure_provider_presets(db, settings)
+    profiles = list(db.scalars(select(ProviderProfile).order_by(ProviderProfile.name)))
+    connections = list(
+        db.scalars(select(ProviderConnection).order_by(ProviderConnection.created_at))
+    )
+    keys = list(db.scalars(select(ProviderKey).order_by(ProviderKey.created_at)))
+    model_counts = dict(
+        db.execute(
+            select(AIModel.connection_id, func.count(AIModel.id)).group_by(AIModel.connection_id)
+        ).all()
+    )
+    connection_map: dict[str, list[ProviderConnection]] = {}
+    key_map: dict[str, list[ProviderKey]] = {}
+    for connection in connections:
+        connection_map.setdefault(connection.provider_id, []).append(connection)
+    for key in keys:
+        key_map.setdefault(key.connection_id, []).append(key)
+    result = []
+    for profile in profiles:
+        items = []
+        for connection in connection_map.get(profile.id, []):
+            connection_keys = key_map.get(connection.id, [])
+            native_configured = (
+                connection.protocol == "VERTEX_NATIVE" and settings.vertex_configured
+            )
+            items.append(
+                {
+                    "id": connection.id,
+                    "provider_id": profile.id,
+                    "name": connection.name,
+                    "protocol": connection.protocol,
+                    "base_url": connection.base_url,
+                    "enabled": connection.enabled,
+                    "configured": native_configured
+                    or any(key.enabled for key in connection_keys),
+                    "credential_writable": settings.provider_credentials_writable,
+                    "use_responses_api": connection.use_responses_api,
+                    "endpoint_templates": connection.endpoint_templates or {},
+                    "extra_headers": connection.extra_headers or {},
+                    "balance_config": connection.balance_config or {},
+                    "nonsecret_config": connection.nonsecret_config or {},
+                    "health_state": connection.health_state,
+                    "last_checked_at": connection.last_checked_at,
+                    "last_success_at": connection.last_success_at,
+                    "latency_ms": connection.latency_ms,
+                    "error_code": connection.error_code,
+                    "message": connection.message,
+                    "key_count": len(connection_keys),
+                    "model_count": int(model_counts.get(connection.id, 0)),
+                    "keys": connection_keys,
+                    "version": connection.version,
+                }
+            )
+        result.append(
+            {
+                "id": profile.id,
+                "preset_key": profile.preset_key,
+                "name": profile.name,
+                "category": profile.category,
+                "description": profile.description,
+                "built_in": profile.built_in,
+                "enabled": profile.enabled,
+                "risk_label": profile.risk_label,
+                "documentation_url": profile.documentation_url,
+                "connections": items,
+                "version": profile.version,
+            }
+        )
+    return result
+
+
+def create_custom_provider(
+    db: Session, payload: ProviderCreate
+) -> ProviderProfile:
+    profile = ProviderProfile(
+        name=payload.name,
+        category="CUSTOM",
+        description="用户自定义供应商",
+        built_in=False,
+        enabled=True,
+        risk_label="CUSTOM",
+    )
+    db.add(profile)
+    db.flush()
+    db.add(
+        ProviderConnection(
+            provider_id=profile.id,
+            name="默认连接",
+            protocol=payload.protocol,
+            base_url=_validate_base_url_syntax(payload.base_url),
+            enabled=False,
+            use_responses_api=payload.use_responses_api,
+            endpoint_templates=_default_endpoints(payload.protocol),
+            extra_headers={},
+            balance_config={},
+            nonsecret_config={"overridden_fields": ["base_url"]},
+            health_state="UNCONFIGURED",
+            message="等待录入 API Key",
+        )
+    )
+    db.commit()
+    db.refresh(profile)
+    return profile
+
+
+def update_provider(
+    db: Session, provider_id: str, payload: ProviderUpdate
+) -> ProviderProfile:
+    profile = db.get(ProviderProfile, provider_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="供应商不存在")
+    if profile.version != payload.version:
+        raise HTTPException(status_code=409, detail="供应商设置已更新，请刷新后重试")
+    changes = payload.model_dump(exclude_unset=True, exclude={"version"})
+    for key, value in changes.items():
+        setattr(profile, key, value)
+    profile.version += 1
+    db.commit()
+    db.refresh(profile)
+    return profile
+
+
+def add_connection(
+    db: Session, provider_id: str, payload: ConnectionCreate
+) -> ProviderConnection:
+    if db.get(ProviderProfile, provider_id) is None:
+        raise HTTPException(status_code=404, detail="供应商不存在")
+    connection = ProviderConnection(
+        provider_id=provider_id,
+        name=payload.name,
+        protocol=payload.protocol,
+        base_url=_validate_base_url_syntax(payload.base_url),
+        enabled=False,
+        use_responses_api=payload.use_responses_api,
+        endpoint_templates=_default_endpoints(payload.protocol),
+        extra_headers={},
+        balance_config={},
+        nonsecret_config={"overridden_fields": ["base_url", "protocol"]},
+        health_state="UNCONFIGURED",
+        message="等待录入 API Key",
+    )
+    db.add(connection)
+    db.commit()
+    db.refresh(connection)
+    return connection
+
+
+def update_connection(
+    db: Session, connection_id: str, payload: ConnectionUpdate
+) -> ProviderConnection:
+    connection = db.get(ProviderConnection, connection_id)
+    if connection is None:
+        raise HTTPException(status_code=404, detail="供应商连接不存在")
+    if connection.version != payload.version:
+        raise HTTPException(status_code=409, detail="连接设置已更新，请刷新后重试")
+    changes = payload.model_dump(exclude_unset=True, exclude={"version"})
+    if changes.get("base_url"):
+        changes["base_url"] = _validate_base_url_syntax(changes["base_url"])
+    if changes.get("extra_headers") is not None:
+        changes["extra_headers"] = _validate_headers(changes["extra_headers"])
+    if changes.get("endpoint_templates") is not None:
+        changes["endpoint_templates"] = _validate_endpoint_templates(
+            changes["endpoint_templates"]
+        )
+    for key, value in changes.items():
+        setattr(connection, key, value)
+    connection.version += 1
+    db.commit()
+    db.refresh(connection)
+    return connection
+
+
+def write_provider_key(
+    db: Session,
+    settings: Settings,
+    connection_id: str,
+    payload: ProviderKeyWrite,
+) -> ProviderKey:
+    connection = db.get(ProviderConnection, connection_id)
+    if connection is None:
+        raise HTTPException(status_code=404, detail="供应商连接不存在")
+    key = db.scalar(
+        select(ProviderKey).where(
+            ProviderKey.connection_id == connection_id,
+            ProviderKey.label == payload.label,
+        )
+    )
+    encrypted = encrypt_secret(settings, payload.api_key)
+    if key is None:
+        key = ProviderKey(
+            connection_id=connection_id,
+            label=payload.label,
+            encrypted_secret=encrypted,
+            key_hint=secret_hint(payload.api_key),
+            health_state="UNKNOWN",
+        )
+        db.add(key)
+    else:
+        key.encrypted_secret = encrypted
+        key.key_hint = secret_hint(payload.api_key)
+        key.enabled = True
+        key.health_state = "UNKNOWN"
+        key.cooldown_until = None
+        key.last_error_code = None
+        key.version += 1
+    connection.message = "凭据已保存，等待连接测试"
+    if not connection.enabled:
+        connection.enabled = True
+    db.commit()
+    db.refresh(key)
+    return key
+
+
+def delete_provider_key(db: Session, connection_id: str, key_id: str) -> None:
+    key = db.get(ProviderKey, key_id)
+    if key is None or key.connection_id != connection_id:
+        raise HTTPException(status_code=404, detail="API Key 不存在")
+    db.delete(key)
+    db.commit()
+
+
+def create_model(
+    db: Session, connection_id: str, payload: ProviderModelCreate
+) -> AIModel:
+    if db.get(ProviderConnection, connection_id) is None:
+        raise HTTPException(status_code=404, detail="供应商连接不存在")
+    duplicate = db.scalar(
+        select(AIModel).where(
+            AIModel.connection_id == connection_id,
+            AIModel.provider_model_id == payload.provider_model_id,
+        )
+    )
+    if duplicate:
+        raise HTTPException(status_code=409, detail="该连接已存在同名模型")
+    values = payload.model_dump()
+    display_name = values.pop("display_name") or payload.provider_model_id
+    model = AIModel(
+        connection_id=connection_id,
+        display_name=display_name,
+        source="MANUAL",
+        confidence="MANUAL",
+        **values,
+    )
+    db.add(model)
+    db.commit()
+    db.refresh(model)
+    return model
+
+
+def update_model(db: Session, model_id: str, payload: ProviderModelUpdate) -> AIModel:
+    model = db.get(AIModel, model_id)
+    if model is None:
+        raise HTTPException(status_code=404, detail="模型不存在")
+    if model.version != payload.version:
+        raise HTTPException(status_code=409, detail="模型设置已更新，请刷新后重试")
+    for key, value in payload.model_dump(exclude_unset=True, exclude={"version"}).items():
+        setattr(model, key, value)
+    model.source = "MANUAL"
+    model.confidence = "MANUAL"
+    model.version += 1
+    db.commit()
+    db.refresh(model)
+    return model
+
+
+def _request_headers(connection: ProviderConnection, api_key: str) -> dict[str, str]:
+    headers = _validate_headers(dict(connection.extra_headers or {}))
+    if connection.protocol == "ANTHROPIC":
+        headers["x-api-key"] = api_key
+        headers.setdefault("anthropic-version", "2023-06-01")
+    else:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
+
+
+def _validate_call_target(connection: ProviderConnection, settings: Settings) -> None:
+    if connection.protocol in {"VERTEX_NATIVE", "GOOGLE_NATIVE"}:
+        return
+    parsed = urlparse(connection.base_url)
+    allow_loopback = settings.environment == "development" and parsed.hostname in {
+        "localhost",
+        "127.0.0.1",
+        "::1",
+    }
+    validate_provider_url(
+        connection.base_url,
+        allow_private=settings.allow_private_provider_networks,
+        allow_http_loopback=allow_loopback,
+    )
+
+
+def discover_models(
+    db: Session,
+    settings: Settings,
+    connection_id: str,
+    *,
+    client: httpx.Client | None = None,
+) -> list[AIModel]:
+    connection = db.get(ProviderConnection, connection_id)
+    if connection is None:
+        raise HTTPException(status_code=404, detail="供应商连接不存在")
+    if connection.protocol == "VERTEX_NATIVE":
+        ensure_provider_presets(db, settings)
+        return list(
+            db.scalars(select(AIModel).where(AIModel.connection_id == connection.id))
+        )
+    selected = select_provider_key(db, settings, connection.id)
+    _validate_call_target(connection, settings)
+    started = perf_counter()
+    owned_client = client is None
+    http = client or httpx.Client(timeout=httpx.Timeout(30.0, connect=10.0))
+    try:
+        if connection.protocol == "GOOGLE_NATIVE":
+            from google import genai
+
+            google_client = genai.Client(api_key=selected.secret)
+            try:
+                entries = [
+                    {"id": item.name.removeprefix("models/"), "display_name": item.display_name}
+                    for item in google_client.models.list()
+                ]
+            finally:
+                close = getattr(google_client, "close", None)
+                if callable(close):
+                    close()
+        else:
+            path = (connection.endpoint_templates or {}).get("models", "/models")
+            response = http.get(
+                urljoin(f"{connection.base_url.rstrip('/')}/", path.lstrip("/")),
+                headers=_request_headers(connection, selected.secret),
+                follow_redirects=False,
+            )
+            if response.status_code >= 400:
+                raise _http_error(response.status_code)
+            if 300 <= response.status_code < 400:
+                raise ProviderAdapterError("UPSTREAM", "模型列表端点返回了未允许的重定向")
+            body = response.json()
+            if isinstance(body, list):
+                entries = body
+            elif isinstance(body, dict):
+                entries = body.get("data") or []
+            else:
+                raise ValueError("供应商模型列表响应格式无效")
+            if not isinstance(entries, list):
+                raise ValueError("供应商模型列表 data 字段必须是数组")
+        models = _upsert_discovered_models(db, connection, entries)
+        connection.health_state = "HEALTHY"
+        connection.last_checked_at = datetime.now(UTC)
+        connection.last_success_at = connection.last_checked_at
+        connection.latency_ms = round((perf_counter() - started) * 1000)
+        connection.error_code = None
+        connection.message = f"已发现 {len(models)} 个模型"
+        mark_key_success(db, selected.row)
+        return models
+    except (ProviderAdapterError, httpx.HTTPError, ValueError) as error:
+        code = getattr(error, "code", "UPSTREAM")
+        connection.health_state = "DEGRADED"
+        connection.last_checked_at = datetime.now(UTC)
+        connection.latency_ms = round((perf_counter() - started) * 1000)
+        connection.error_code = code
+        connection.message = _safe_error_message(code)
+        mark_key_failure(db, selected.row, code)
+        if isinstance(error, ProviderAdapterError):
+            raise HTTPException(status_code=502, detail=error.user_message) from error
+        raise HTTPException(status_code=502, detail="无法读取供应商模型列表") from error
+    finally:
+        if owned_client:
+            http.close()
+
+
+def _upsert_discovered_models(
+    db: Session, connection: ProviderConnection, entries: list[dict]
+) -> list[AIModel]:
+    existing = {
+        row.provider_model_id: row
+        for row in db.scalars(select(AIModel).where(AIModel.connection_id == connection.id))
+    }
+    result: list[AIModel] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        provider_model_id = str(entry.get("id") or entry.get("name") or "").removeprefix(
+            "models/"
+        )
+        if not provider_model_id:
+            continue
+        metadata = _infer_model(entry, provider_model_id, connection)
+        model = existing.get(provider_model_id)
+        if model is None:
+            model = AIModel(
+                connection_id=connection.id,
+                provider_model_id=provider_model_id,
+                display_name=str(
+                    entry.get("display_name") or entry.get("name") or provider_model_id
+                ),
+                source="DISCOVERED",
+                **metadata,
+            )
+            db.add(model)
+        elif model.source != "MANUAL":
+            model.display_name = str(
+                entry.get("display_name") or entry.get("name") or provider_model_id
+            )
+            for key, value in metadata.items():
+                setattr(model, key, value)
+        result.append(model)
+    db.flush()
+    return result
+
+
+def _infer_model(
+    entry: dict, provider_model_id: str, connection: ProviderConnection
+) -> dict[str, Any]:
+    lowered = provider_model_id.lower()
+    architecture = entry.get("architecture") or {}
+    inputs = [str(item).upper() for item in architecture.get("input_modalities") or []]
+    outputs = [str(item).upper() for item in architecture.get("output_modalities") or []]
+    declared = bool(inputs or outputs or entry.get("capabilities"))
+    image_output_name = any(
+        token in lowered
+        for token in ("image", "flux", "cogview", "seedream", "dall-e", "ideogram")
+    )
+    if not outputs:
+        outputs = ["IMAGE"] if image_output_name else ["TEXT"]
+    if not inputs:
+        vision_name = any(
+            token in lowered
+            for token in ("vision", "-vl", "4o", "gemini", "claude", "image")
+        )
+        inputs = ["TEXT", "IMAGE"] if vision_name else ["TEXT"]
+    model_type = "IMAGE" if "IMAGE" in outputs else "TEXT"
+    if model_type == "IMAGE":
+        operations = ["image_generate"]
+        if any(token in lowered for token in ("edit", "image", "flux")):
+            operations.append("image_edit")
+        surfaces = ["IMAGES"] if connection.protocol == "OPENAI" else []
+    else:
+        operations = ["structured_text"]
+        if "IMAGE" in inputs:
+            operations.append("multimodal_analysis")
+        surfaces = ["RESPONSES" if connection.use_responses_api else "CHAT"]
+    capabilities = {
+        "structured_output_mode": "JSON_MODE",
+        "supported_parameters": entry.get("supported_parameters") or [],
+        "context_length": entry.get("context_length"),
+    }
+    if model_type == "IMAGE":
+        capabilities.update(
+            {"resolutions": ["1K"], "max_reference_images": 1, "size_map": {"1K": "1024x1536"}}
+        )
+    return {
+        "model_type": model_type,
+        "input_modalities": inputs,
+        "output_modalities": outputs,
+        "operations": operations,
+        "api_surfaces": surfaces,
+        "capabilities": capabilities,
+        "pricing": entry.get("pricing") or {},
+        "confidence": "DECLARED" if declared else "INFERRED",
+        "enabled": True,
+        "priority": 50,
+    }
+
+
+def _http_error(status: int) -> ProviderAdapterError:
+    if status == 401:
+        return ProviderAdapterError("AUTHENTICATION", "供应商 API Key 无效")
+    if status == 403:
+        return ProviderAdapterError("PERMISSION", "供应商拒绝访问")
+    if status == 429:
+        return ProviderAdapterError("RATE_LIMIT", "供应商请求已达限制", retryable=True)
+    if status >= 500:
+        return ProviderAdapterError("UPSTREAM", "供应商服务暂时不可用", retryable=True)
+    return ProviderAdapterError("INVALID_INPUT", "供应商拒绝了当前请求")
+
+
+def _safe_error_message(code: str) -> str:
+    return {
+        "AUTHENTICATION": "API Key 无效",
+        "PERMISSION": "供应商拒绝访问",
+        "RATE_LIMIT": "供应商请求已达限制",
+        "MODEL_NOT_FOUND": "模型或端点不存在",
+    }.get(code, "供应商暂时无法连接")
+
+
+def _json_path(value: Any, path: str) -> Any:
+    current = value
+    for segment in path.split("."):
+        if isinstance(current, list) and segment.isdigit():
+            current = current[int(segment)]
+        elif isinstance(current, dict):
+            current = current.get(segment)
+        else:
+            return None
+    return current
+
+
+def read_balance(
+    db: Session,
+    settings: Settings,
+    connection_id: str,
+    *,
+    client: httpx.Client | None = None,
+) -> dict[str, Any]:
+    connection = db.get(ProviderConnection, connection_id)
+    if connection is None:
+        raise HTTPException(status_code=404, detail="供应商连接不存在")
+    config = connection.balance_config or {}
+    if not config.get("enabled") or not config.get("path"):
+        return {"configured": False, "value": None, "message": "该供应商未配置余额接口"}
+    selected = select_provider_key(db, settings, connection.id)
+    _validate_call_target(connection, settings)
+    owned_client = client is None
+    http = client or httpx.Client(timeout=httpx.Timeout(15.0, connect=5.0))
+    try:
+        response = http.get(
+            urljoin(f"{connection.base_url.rstrip('/')}/", str(config["path"]).lstrip("/")),
+            headers=_request_headers(connection, selected.secret),
+            follow_redirects=False,
+        )
+        if response.status_code >= 400:
+            raise _http_error(response.status_code)
+        if 300 <= response.status_code < 400:
+            raise ProviderAdapterError("UPSTREAM", "余额端点返回了未允许的重定向")
+        body = response.json()
+        mark_key_success(db, selected.row)
+        return {
+            "configured": True,
+            "value": _json_path(body, str(config.get("result_path") or "")),
+            "usage": _json_path(body, str(config.get("usage_path") or ""))
+            if config.get("usage_path")
+            else None,
+            "currency": config.get("currency"),
+            "message": "余额查询成功",
+        }
+    except ProviderAdapterError as error:
+        mark_key_failure(
+            db,
+            selected.row,
+            error.code,
+            retry_after_seconds=error.retry_after_seconds,
+        )
+        raise HTTPException(status_code=502, detail=error.user_message) from error
+    except Exception as error:
+        if isinstance(error, HTTPException):
+            raise
+        raise HTTPException(status_code=502, detail="余额查询失败") from error
+    finally:
+        if owned_client:
+            http.close()
+
+
+def create_probe(
+    db: Session,
+    *,
+    connection_id: str,
+    model_id: str | None,
+    probe_type: str,
+    status: str,
+    latency_ms: int | None,
+    metrics: dict | None = None,
+    error_code: str | None = None,
+    message: str = "",
+) -> ModelProbe:
+    probe = ModelProbe(
+        connection_id=connection_id,
+        model_id=model_id,
+        probe_type=probe_type,
+        status=status,
+        latency_ms=latency_ms,
+        metrics=metrics or {},
+        error_code=error_code,
+        message=message,
+    )
+    db.add(probe)
+    db.commit()
+    db.refresh(probe)
+    return probe
+
+
+def upsert_routing_policy(
+    db: Session, payload: RoutingPolicyWrite
+) -> RoutingPolicy:
+    policy = db.scalar(
+        select(RoutingPolicy).where(
+            RoutingPolicy.project_id == payload.project_id,
+            RoutingPolicy.task_kind == payload.task_kind,
+        )
+    )
+    if policy is None:
+        policy = RoutingPolicy(**payload.model_dump(exclude={"version"}))
+        db.add(policy)
+    else:
+        if payload.version is not None and policy.version != payload.version:
+            raise HTTPException(status_code=409, detail="路由策略已更新，请刷新后重试")
+        for key, value in payload.model_dump(exclude={"version"}).items():
+            setattr(policy, key, value)
+        policy.version += 1
+    db.commit()
+    db.refresh(policy)
+    return policy

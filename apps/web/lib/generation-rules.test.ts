@@ -11,7 +11,7 @@ const validPage = {
 describe("页面生成规则", () => {
   it("不会把项目上次使用的模型当成本次选择", () => {
     expect(getPageGenerationIssue(validPage, null)).toBe(
-      "请先选择 Nano Banana 2 或 Nano Banana Pro",
+      "请先选择一个支持当前任务的图片模型",
     );
   });
 
@@ -29,5 +29,6 @@ describe("页面生成规则", () => {
   it("完整来源且显式选模后允许生成", () => {
     expect(getPageGenerationIssue(validPage, "image.nano_banana_2")).toBeNull();
     expect(getPageGenerationIssue(validPage, "image.nano_banana_pro")).toBeNull();
+    expect(getPageGenerationIssue(validPage, "custom-image-model-id")).toBeNull();
   });
 });

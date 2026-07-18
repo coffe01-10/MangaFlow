@@ -1,3 +1,4 @@
+import base64
 from functools import lru_cache
 from pathlib import Path
 
@@ -23,6 +24,12 @@ class Settings(BaseSettings):
     vertex_text_model: str = "gemini-3.5-flash"
     vertex_image_model_nano_banana_2: str = "gemini-3.1-flash-image"
     vertex_image_model_nano_banana_pro: str = "gemini-3-pro-image-preview"
+
+    # Write-only provider credentials are encrypted with this server-side key.
+    # The value must be a URL-safe base64 encoded 32-byte key. Existing
+    # environment-managed Vertex credentials keep working when it is absent.
+    mangaflow_credential_master_key: str | None = None
+    allow_private_provider_networks: bool = False
 
     redis_url: str = "redis://localhost:6379/0"
     queue_name: str = "mangaflow"
@@ -52,6 +59,22 @@ class Settings(BaseSettings):
             and self.google_application_credentials
             and self.google_application_credentials.is_file()
         )
+
+    @property
+    def provider_credentials_writable(self) -> bool:
+        if not self.mangaflow_credential_master_key:
+            return False
+        try:
+            return (
+                len(
+                    base64.urlsafe_b64decode(
+                        self.mangaflow_credential_master_key.encode("ascii")
+                    )
+                )
+                == 32
+            )
+        except Exception:
+            return False
 
     def ensure_directories(self) -> None:
         self.storage_root.mkdir(parents=True, exist_ok=True)

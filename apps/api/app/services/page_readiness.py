@@ -288,25 +288,6 @@ def build_page_readiness(
         text_model_access=text_access,
         image_model_access=image_access,
     )
-    if not configured:
-        blockers.append(_block("VERTEX_NOT_CONFIGURED", "Vertex 凭据尚未就绪", "settings"))
-    if text_access != "GRANTED":
-        blockers.append(
-            _block(
-                "TEXT_MODEL_UNVERIFIED",
-                "Gemini 3.5 Flash 需要重新验证",
-                "settings",
-            )
-        )
-    if image_access != "GRANTED":
-        blockers.append(
-            _block(
-                "IMAGE_MODEL_UNVERIFIED",
-                "Nano Banana 2 需要执行 1K 模型验证",
-                "settings",
-            )
-        )
-
     execution = queue_execution_state(db, settings, probe_redis=True)
     worker = PageReadinessWorker(
         queue_mode=execution.queue_mode,

@@ -1,6 +1,8 @@
 alembic==1.18.5
+cryptography==49.0.0
 fastapi==0.139.0
 google-genai==1.75.0
+httpx==0.28.1
 pillow==12.3.0
 pydantic==2.13.4
 pydantic-settings==2.14.2

@@ -18,6 +18,8 @@ from app.models import (
     Asset,
     AssetStatus,
     CharacterReference,
+    GenerationJob,
+    JobAssetReference,
     Outfit,
     Project,
     StyleProfile,
@@ -37,6 +39,33 @@ ASSET_KINDS = {
     "OUTFIT_REFERENCE": "OUTFIT_REFERENCE",
     "STYLE_REFERENCE": "STYLE_REFERENCE",
 }
+ACTIVE_REFERENCE_STATUSES = {
+    "WAITING",
+    "QUEUED",
+    "PREPARING",
+    "UPLOADING_REFERENCES",
+    "GENERATING",
+    "OCR_CHECKING",
+    "CONSISTENCY_CHECKING",
+    "REPAIRING",
+}
+
+
+def _ensure_asset_not_in_active_job(db: Session, asset: Asset) -> None:
+    active_job_id = db.scalar(
+        select(GenerationJob.id)
+        .join(JobAssetReference, JobAssetReference.job_id == GenerationJob.id)
+        .where(
+            JobAssetReference.asset_id == asset.id,
+            GenerationJob.status.in_(ACTIVE_REFERENCE_STATUSES),
+        )
+        .limit(1)
+    )
+    if active_job_id:
+        raise HTTPException(
+            status_code=409,
+            detail="素材正被排队或执行中的生成任务使用，请先取消任务后再修改",
+        )
 
 
 def _detach_reference_asset(db: Session, asset: Asset) -> None:
@@ -212,6 +241,7 @@ def update_asset(asset_id: str, payload: AssetUpdate, db: Session = Depends(get_
         if asset.source != "USER_UPLOAD":
             raise HTTPException(status_code=409, detail="生成结果不能改成参考图")
         if payload.kind != asset.kind:
+            _ensure_asset_not_in_active_job(db, asset)
             _detach_reference_asset(db, asset)
             asset.kind = payload.kind
     if "display_name" in payload.model_fields_set:
@@ -229,6 +259,7 @@ def delete_asset(asset_id: str, db: Session = Depends(get_db)) -> None:
         raise HTTPException(status_code=404, detail="素材不存在")
     if asset.source != "USER_UPLOAD":
         raise HTTPException(status_code=409, detail="生成结果请在对应批次中删除")
+    _ensure_asset_not_in_active_job(db, asset)
     _detach_reference_asset(db, asset)
     asset.deleted_at = datetime.now(UTC)
     db.commit()

@@ -8,6 +8,7 @@ from app.api.router import api_router
 from app.config import get_settings
 from app.database import Base, SessionLocal, engine
 from app.services.job_service import recover_pending_jobs
+from app.services.provider_presets import ensure_provider_presets
 from app.services.runtime_settings import apply_runtime_overrides
 
 
@@ -22,6 +23,7 @@ async def lifespan(application: FastAPI):
         # SessionLocal still points at a developer database. Never recover that
         # unrelated database when dependency overrides are active.
         if not application.dependency_overrides:
+            ensure_provider_presets(db, settings)
             recover_pending_jobs(db)
     yield
 

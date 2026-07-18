@@ -10,17 +10,23 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.domain.states import JobStatus, Resolution
 from app.models import (
     Asset,
     Chapter,
+    Character,
+    CharacterReference,
     ExportBundle,
     GenerationBatch,
     GenerationJob,
     InspectionResult,
     JobDependency,
     MangaPage,
+    Outfit,
     PageCandidate,
+    Panel,
+    Project,
     ScriptRevision,
     SourceSegment,
     WorkflowDefinition,
@@ -30,6 +36,7 @@ from app.models import (
     utcnow,
 )
 from app.services.job_service import create_job, enqueue_job, mark_job_cancelled
+from app.services.model_router import resolve_model
 from app.workflow_schemas import (
     WorkflowGraph,
     WorkflowNodeDefinition,
@@ -185,8 +192,6 @@ NODE_TYPES: tuple[NodeTypeSpec, ...] = (
 )
 
 NODE_TYPE_MAP = {item.type: item for item in NODE_TYPES}
-TEXT_MODELS = {"text.fast"}
-IMAGE_MODELS = {"image.nano_banana_2", "image.nano_banana_pro"}
 CONDITION_OPERATORS = {"eq", "ne", "gt", "gte", "lt", "lte", "contains", "exists"}
 
 
@@ -333,21 +338,12 @@ def validate_graph(graph_value: WorkflowGraph | dict) -> WorkflowValidationRead:
                 )
             )
         alias = node.config.model_alias
-        if spec.model_family == "text" and alias not in TEXT_MODELS:
+        if spec.model_family == "text" and not alias:
             issues.append(
                 WorkflowValidationIssue(
                     severity="ERROR",
                     code="TEXT_MODEL_REQUIRED",
-                    message="该节点必须选择 Gemini 文本模型",
-                    node_id=node.id,
-                )
-            )
-        if spec.model_family == "image" and alias is not None and alias not in IMAGE_MODELS:
-            issues.append(
-                WorkflowValidationIssue(
-                    severity="ERROR",
-                    code="IMAGE_MODEL_REQUIRED",
-                    message="该节点必须选择 Nano Banana 2 或 Nano Banana Pro",
+                    message="该节点必须选择文字模型",
                     node_id=node.id,
                 )
             )
@@ -1107,8 +1103,8 @@ def approve_node(
     node = next(item for item in graph.nodes if item.id == node_id)
     spec = NODE_TYPE_MAP[node.type]
     if spec.barrier == "GENERATE":
-        if image_model_alias not in IMAGE_MODELS:
-            raise ValueError("每次生成候选都必须明确选择 Nano Banana 2 或 Nano Banana Pro")
+        if not image_model_alias:
+            raise ValueError("每次生成候选都必须明确选择图片模型")
         selected_resolution = resolution or node.config.resolution
         if selected_resolution not in {"1K", "2K", "4K"}:
             raise ValueError("每次生成候选都必须明确选择 1K、2K 或 4K")
@@ -1122,6 +1118,64 @@ def approve_node(
         chapter = db.get(Chapter, page.chapter_id)
         if not chapter or chapter.project_id != run.project_id:
             raise ValueError("页面不属于当前项目")
+        resolved_model = resolve_model(
+            db,
+            get_settings(),
+            operation="image_edit",
+            explicit_reference=image_model_alias,
+            project_id=run.project_id,
+            task_kind="PAGE_GENERATE",
+        )
+        panels = list(db.scalars(select(Panel).where(Panel.page_id == page.id)))
+        visible_character_ids = list(
+            dict.fromkeys(
+                character_id for panel in panels for character_id in panel.characters
+            )
+        )
+        reference_selections: dict[str, dict[str, str | None]] = {}
+        reference_asset_ids: list[str] = []
+        for character_id in visible_character_ids:
+            character_reference = db.scalar(
+                select(CharacterReference)
+                .join(Asset, Asset.id == CharacterReference.asset_id)
+                .where(
+                    CharacterReference.character_id == character_id,
+                    Asset.deleted_at.is_(None),
+                )
+                .order_by(CharacterReference.is_canonical.desc())
+            )
+            if not character_reference:
+                character = db.get(Character, character_id)
+                raise ValueError(
+                    f"人物 {character.primary_name if character else character_id} 缺少参考图"
+                )
+            outfit_ids = {
+                panel.outfits.get(character_id)
+                for panel in panels
+                if panel.outfits.get(character_id)
+            }
+            if len(outfit_ids) > 1:
+                raise ValueError("同一页同一人物存在多套服装，请先拆页")
+            outfit_id = next(iter(outfit_ids), None)
+            outfit = db.get(Outfit, outfit_id) if outfit_id else None
+            outfit_asset_id = None
+            if outfit:
+                outfit_asset_id = db.scalar(
+                    select(Asset.id).where(
+                        Asset.id.in_(outfit.reference_asset_ids),
+                        Asset.deleted_at.is_(None),
+                    )
+                )
+                if not outfit_asset_id:
+                    raise ValueError(f"服装 {outfit.name} 缺少可用参考图")
+            reference_selections[character_id] = {
+                "character_asset_id": character_reference.asset_id,
+                "outfit_id": outfit_id,
+                "outfit_asset_id": outfit_asset_id,
+            }
+            reference_asset_ids.append(character_reference.asset_id)
+            if outfit_asset_id:
+                reference_asset_ids.append(outfit_asset_id)
         ordinal = (
             db.scalar(
                 select(func.max(GenerationBatch.ordinal)).where(
@@ -1145,10 +1199,14 @@ def approve_node(
             page_id=page.id,
             ordinal=1,
             model_alias=image_model_alias,
+            catalog_model_id=resolved_model.model.id,
             resolution=Resolution(selected_resolution),
             status="QUEUED",
             based_on_storyboard_version=page.storyboard_version,
-            prompt_snapshot={"storyboard_version": page.storyboard_version},
+            prompt_snapshot={
+                "storyboard_version": page.storyboard_version,
+                "reference_selections": reference_selections,
+            },
         )
         db.add(candidate)
         db.flush()
@@ -1160,17 +1218,26 @@ def approve_node(
             target_id=candidate.id,
             job_type="PAGE_GENERATE",
             model_alias=candidate.model_alias,
+            catalog_model_id=resolved_model.model.id,
             request_parameters={
                 "resolution": candidate.resolution.value,
                 "storyboard_version": page.storyboard_version,
                 "workflow_run_id": run.id,
                 "workflow_node_id": node_id,
+                "reference_selections": reference_selections,
             },
+            reference_asset_ids=reference_asset_ids,
             max_attempts=node.config.max_attempts,
             idempotency_key=f"workflow:{run.id}:{node_id}:candidate",
             dependency_ids=dependency_ids,
         )
         candidate.job_id = job.id
+        project = db.get(Project, run.project_id)
+        if project:
+            project.last_image_model_alias = image_model_alias
+            project.image_model_alias = image_model_alias
+            project.last_image_model_id = resolved_model.model.id
+            project.version += 1
         node_run.job_id = job.id
         node_run.status = "RUNNING"
         node_run.started_at = utcnow()

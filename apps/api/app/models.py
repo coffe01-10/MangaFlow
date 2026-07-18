@@ -83,6 +83,12 @@ class Project(Timestamped, Base):
     last_image_model_alias: Mapped[str | None] = mapped_column(
         String(64), nullable=True, default=None
     )
+    default_text_model_id: Mapped[str | None] = mapped_column(
+        ForeignKey("ai_models.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    last_image_model_id: Mapped[str | None] = mapped_column(
+        ForeignKey("ai_models.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     chapters: Mapped[list["Chapter"]] = relationship(
@@ -352,6 +358,9 @@ class GenerationJob(Timestamped, Base):
     attempt_count: Mapped[int] = mapped_column(Integer, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, default=3)
     model_alias: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    catalog_model_id: Mapped[str | None] = mapped_column(
+        ForeignKey("ai_models.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     request_parameters: Mapped[dict] = mapped_column(JSON, default=dict)
     progress: Mapped[int] = mapped_column(Integer, default=0)
     idempotency_key: Mapped[str | None] = mapped_column(String(160), nullable=True, unique=True)
@@ -383,6 +392,20 @@ class JobDependency(Base):
     )
 
 
+class JobAssetReference(Base):
+    __tablename__ = "job_asset_references"
+    __table_args__ = (UniqueConstraint("job_id", "asset_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("generation_jobs.id", ondelete="CASCADE"), index=True
+    )
+    asset_id: Mapped[str] = mapped_column(
+        ForeignKey("assets.id", ondelete="RESTRICT"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class GenerationRecord(Base):
     __tablename__ = "generation_records"
 
@@ -392,6 +415,9 @@ class GenerationRecord(Base):
     )
     provider: Mapped[str] = mapped_column(String(32), default="vertex-ai")
     model_id: Mapped[str] = mapped_column(String(128))
+    catalog_model_id: Mapped[str | None] = mapped_column(
+        ForeignKey("ai_models.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     location: Mapped[str] = mapped_column(String(64))
     parameters: Mapped[dict] = mapped_column(JSON, default=dict)
     prompt_template: Mapped[str] = mapped_column(String(120))
@@ -544,6 +570,9 @@ class PageCandidate(Timestamped, Base):
     )
     ordinal: Mapped[int] = mapped_column(Integer)
     model_alias: Mapped[str] = mapped_column(String(64))
+    catalog_model_id: Mapped[str | None] = mapped_column(
+        ForeignKey("ai_models.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     resolution: Mapped[Resolution] = mapped_column(Enum(Resolution))
     status: Mapped[str] = mapped_column(String(32), default="QUEUED")
     asset_id: Mapped[str | None] = mapped_column(
@@ -572,6 +601,9 @@ class AssetCandidate(Timestamped, Base):
     )
     ordinal: Mapped[int] = mapped_column(Integer)
     model_alias: Mapped[str] = mapped_column(String(64))
+    catalog_model_id: Mapped[str | None] = mapped_column(
+        ForeignKey("ai_models.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     resolution: Mapped[Resolution] = mapped_column(Enum(Resolution))
     variant: Mapped[str] = mapped_column(String(48))
     instruction: Mapped[str] = mapped_column(Text, default="")
@@ -696,6 +728,152 @@ class WorkflowNodeRun(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ProviderProfile(Timestamped, Base):
+    __tablename__ = "provider_profiles"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    preset_key: Mapped[str | None] = mapped_column(
+        String(80), nullable=True, unique=True, index=True
+    )
+    name: Mapped[str] = mapped_column(String(120), index=True)
+    category: Mapped[str] = mapped_column(String(32), default="OFFICIAL")
+    description: Mapped[str] = mapped_column(Text, default="")
+    built_in: Mapped[bool] = mapped_column(Boolean, default=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    risk_label: Mapped[str] = mapped_column(String(32), default="OFFICIAL")
+    documentation_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
+class ProviderConnection(Timestamped, Base):
+    __tablename__ = "provider_connections"
+    __table_args__ = (
+        UniqueConstraint("provider_id", "name"),
+        Index("ix_provider_connections_provider_enabled", "provider_id", "enabled"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    provider_id: Mapped[str] = mapped_column(
+        ForeignKey("provider_profiles.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(120), default="默认连接")
+    protocol: Mapped[str] = mapped_column(String(24))
+    base_url: Mapped[str] = mapped_column(String(500))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    use_responses_api: Mapped[bool] = mapped_column(Boolean, default=False)
+    endpoint_templates: Mapped[dict] = mapped_column(JSON, default=dict)
+    extra_headers: Mapped[dict] = mapped_column(JSON, default=dict)
+    balance_config: Mapped[dict] = mapped_column(JSON, default=dict)
+    nonsecret_config: Mapped[dict] = mapped_column(JSON, default=dict)
+    health_state: Mapped[str] = mapped_column(String(32), default="UNCONFIGURED")
+    last_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_success_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    message: Mapped[str] = mapped_column(Text, default="")
+
+
+class ProviderKey(Timestamped, Base):
+    __tablename__ = "provider_keys"
+    __table_args__ = (
+        UniqueConstraint("connection_id", "label"),
+        Index("ix_provider_keys_connection_enabled", "connection_id", "enabled"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    connection_id: Mapped[str] = mapped_column(
+        ForeignKey("provider_connections.id", ondelete="CASCADE"), index=True
+    )
+    label: Mapped[str] = mapped_column(String(80), default="default")
+    encrypted_secret: Mapped[str] = mapped_column(Text)
+    key_hint: Mapped[str] = mapped_column(String(16), default="")
+    key_version: Mapped[int] = mapped_column(Integer, default=1)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    health_state: Mapped[str] = mapped_column(String(32), default="UNKNOWN")
+    cooldown_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class AIModel(Timestamped, Base):
+    __tablename__ = "ai_models"
+    __table_args__ = (
+        UniqueConstraint("connection_id", "provider_model_id"),
+        Index("ix_ai_models_type_enabled", "model_type", "enabled"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    connection_id: Mapped[str] = mapped_column(
+        ForeignKey("provider_connections.id", ondelete="CASCADE"), index=True
+    )
+    provider_model_id: Mapped[str] = mapped_column(String(200))
+    display_name: Mapped[str] = mapped_column(String(200))
+    legacy_alias: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, unique=True, index=True
+    )
+    model_type: Mapped[str] = mapped_column(String(24), default="TEXT")
+    input_modalities: Mapped[list] = mapped_column(JSON, default=lambda: ["TEXT"])
+    output_modalities: Mapped[list] = mapped_column(JSON, default=lambda: ["TEXT"])
+    operations: Mapped[list] = mapped_column(JSON, default=list)
+    api_surfaces: Mapped[list] = mapped_column(JSON, default=list)
+    capabilities: Mapped[dict] = mapped_column(JSON, default=dict)
+    pricing: Mapped[dict] = mapped_column(JSON, default=dict)
+    source: Mapped[str] = mapped_column(String(24), default="DISCOVERED")
+    confidence: Mapped[str] = mapped_column(String(24), default="DECLARED")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    priority: Mapped[int] = mapped_column(Integer, default=50)
+    success_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    median_latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class ModelProbe(Base):
+    __tablename__ = "model_probes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    connection_id: Mapped[str] = mapped_column(
+        ForeignKey("provider_connections.id", ondelete="CASCADE"), index=True
+    )
+    model_id: Mapped[str | None] = mapped_column(
+        ForeignKey("ai_models.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    probe_type: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(32))
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    message: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class RoutingPolicy(Timestamped, Base):
+    __tablename__ = "routing_policies"
+    __table_args__ = (UniqueConstraint("project_id", "task_kind"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    task_kind: Mapped[str] = mapped_column(String(48))
+    mode: Mapped[str] = mapped_column(String(24), default="AUTO")
+    required_operations: Mapped[list] = mapped_column(JSON, default=list)
+    weights: Mapped[dict] = mapped_column(
+        JSON,
+        default=lambda: {"reliability": 45, "priority": 25, "latency": 20, "cost": 10},
+    )
+    fallback_config: Mapped[dict] = mapped_column(JSON, default=dict)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
 class ProviderHealth(Timestamped, Base):

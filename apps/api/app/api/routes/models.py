@@ -1,10 +1,14 @@
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Body, Depends
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import get_db
+from app.models import AIModel, ProviderConnection, ProviderKey, ProviderProfile
 from app.schemas import ModelCapabilityRead
-from app.services.model_registry import build_registry
+from app.services.provider_presets import ensure_provider_presets
 from app.services.vertex_health import get_or_create_health, health_read, verify_vertex
 from app.settings_schemas import VertexHealthRead, VertexVerifyRequest
 
@@ -12,9 +16,61 @@ router = APIRouter()
 
 
 @router.get("", response_model=list[ModelCapabilityRead])
-def list_models() -> list[dict]:
-    registry = build_registry(get_settings())
-    return [capability.to_dict() for capability in registry.values()]
+def list_models(db: Session = Depends(get_db)) -> list[dict]:
+    settings = get_settings()
+    ensure_provider_presets(db, settings)
+    usable_key_connections = set(
+        db.scalars(
+            select(ProviderKey.connection_id).where(
+                ProviderKey.enabled.is_(True),
+                or_(
+                    ProviderKey.cooldown_until.is_(None),
+                    ProviderKey.cooldown_until <= datetime.now(UTC),
+                ),
+            )
+        )
+    )
+    rows = (
+        db.query(AIModel, ProviderConnection, ProviderProfile)
+        .join(ProviderConnection, AIModel.connection_id == ProviderConnection.id)
+        .join(ProviderProfile, ProviderConnection.provider_id == ProviderProfile.id)
+        .order_by(AIModel.model_type, AIModel.priority.desc(), AIModel.display_name)
+        .all()
+    )
+    return [
+        {
+            "catalog_id": model.id,
+            "connection_id": connection.id,
+            "provider": profile.name,
+            "protocol": connection.protocol,
+            "model_id": model.provider_model_id,
+            "logical_alias": model.legacy_alias or model.id,
+            "display_name": model.display_name,
+            "model_type": model.model_type,
+            "input_modalities": model.input_modalities or [],
+            "output_modalities": model.output_modalities or [],
+            "operations": model.operations or [],
+            "resolutions": (model.capabilities or {}).get("resolutions") or [],
+            "preview_resolutions": (model.capabilities or {}).get("preview_resolutions") or [],
+            "max_reference_images": int(
+                (model.capabilities or {}).get("max_reference_images") or 0
+            ),
+            "regions": (model.capabilities or {}).get("regions") or ["global"],
+            "confidence": model.confidence,
+            "enabled": model.enabled
+            and connection.enabled
+            and profile.enabled
+            and (
+                connection.protocol == "VERTEX_NATIVE"
+                or (
+                    settings.provider_credentials_writable
+                    and connection.id in usable_key_connections
+                )
+            ),
+            "priority": model.priority,
+        }
+        for model, connection, profile in rows
+    ]
 
 
 # Compatibility aliases retained for one release. Both use the persisted status

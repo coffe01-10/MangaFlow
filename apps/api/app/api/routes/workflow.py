@@ -68,10 +68,8 @@ from app.services.editor import (
     validate_character_ids,
 )
 from app.services.job_service import cancel_job, create_job, enqueue_job, reset_for_retry
-from app.services.model_registry import build_registry
+from app.services.model_router import resolve_model
 from app.services.page_readiness import (
-    FORMAL_IMAGE_MODEL,
-    FORMAL_RESOLUTION,
     build_page_readiness,
     ensure_page_ready,
 )
@@ -521,13 +519,6 @@ def create_candidate(
     batch = db.get(GenerationBatch, batch_id)
     if not batch or batch.status != "OPEN" or not batch.page_id:
         raise HTTPException(status_code=409, detail="抽卡批次不存在或已经关闭")
-    if payload.model_alias not in build_registry(get_settings()):
-        raise HTTPException(status_code=422, detail="未识别的图像模型")
-    if payload.model_alias != FORMAL_IMAGE_MODEL or payload.resolution.value != FORMAL_RESOLUTION:
-        raise HTTPException(
-            status_code=422,
-            detail="本轮正式页面只允许使用 Nano Banana 2 与 1K 清晰度",
-        )
     page = _page(db, batch.page_id)
     if payload.storyboard_version != page.storyboard_version:
         raise HTTPException(
@@ -541,6 +532,17 @@ def create_candidate(
         )
     ensure_page_ready(db, page, get_settings())
     project = _project_for_page(db, page)
+    resolved_model = resolve_model(
+        db,
+        get_settings(),
+        operation="image_edit",
+        explicit_reference=payload.model_alias,
+        project_id=project.id,
+        task_kind="PAGE_GENERATE",
+    )
+    supported_resolutions = resolved_model.model.capabilities.get("resolutions") or []
+    if supported_resolutions and payload.resolution.value not in supported_resolutions:
+        raise HTTPException(status_code=422, detail="所选模型不支持该输出清晰度")
     panels = list(db.scalars(select(Panel).where(Panel.page_id == page.id)))
     visible_character_ids = list(
         dict.fromkeys(character_id for panel in panels for character_id in panel.characters)
@@ -603,6 +605,7 @@ def create_candidate(
         page_id=page.id,
         ordinal=ordinal,
         model_alias=payload.model_alias,
+        catalog_model_id=resolved_model.model.id,
         resolution=payload.resolution,
         status="QUEUED",
         based_on_storyboard_version=page.storyboard_version,
@@ -614,6 +617,7 @@ def create_candidate(
     db.add(candidate)
     project.last_image_model_alias = payload.model_alias
     project.image_model_alias = payload.model_alias
+    project.last_image_model_id = resolved_model.model.id
     project.version += 1
     db.flush()
     job = create_job(
@@ -623,11 +627,21 @@ def create_candidate(
         target_id=candidate.id,
         job_type="PAGE_GENERATE",
         model_alias=payload.model_alias,
+        catalog_model_id=resolved_model.model.id,
         request_parameters={
             "resolution": payload.resolution.value,
             "storyboard_version": page.storyboard_version,
             "reference_selections": normalized_selections,
         },
+        reference_asset_ids=[
+            asset_id
+            for selection in normalized_selections.values()
+            for asset_id in (
+                selection.get("character_asset_id"),
+                selection.get("outfit_asset_id"),
+            )
+            if asset_id
+        ],
         idempotency_key=f"candidate:{candidate.id}",
     )
     candidate.job_id = job.id
@@ -1245,6 +1259,7 @@ def inspect_candidate(
         job_type="PAGE_INSPECT",
         model_alias="text.fast",
         request_parameters={"categories": payload.categories},
+        reference_asset_ids=[candidate.asset_id],
         idempotency_key=f"inspect:{candidate.id}:{candidate.version}",
     )
     return enqueue_job(db, job)
@@ -1324,8 +1339,18 @@ def repair_candidate(
     db.add(repair)
     db.flush()
     project = _project_for_page(db, page)
+    resolved_model = resolve_model(
+        db,
+        get_settings(),
+        operation="image_edit",
+        explicit_reference=payload.model_alias,
+        project_id=project.id,
+        task_kind="PAGE_REPAIR",
+    )
+    candidate.catalog_model_id = resolved_model.model.id
     project.last_image_model_alias = payload.model_alias
     project.image_model_alias = payload.model_alias
+    project.last_image_model_id = resolved_model.model.id
     project.version += 1
     job = create_job(
         db,
@@ -1334,6 +1359,7 @@ def repair_candidate(
         target_id=candidate.id,
         job_type="PAGE_REPAIR",
         model_alias=payload.model_alias,
+        catalog_model_id=resolved_model.model.id,
         request_parameters={
             "original_candidate_id": original.id,
             "repair_plan_id": repair.id,
@@ -1341,6 +1367,7 @@ def repair_candidate(
             "target_regions": payload.target_regions,
             "storyboard_version": page.storyboard_version,
         },
+        reference_asset_ids=[original.asset_id],
         idempotency_key=f"repair:{repair.id}",
     )
     candidate.job_id = job.id
@@ -1385,8 +1412,18 @@ def upscale_candidate(
     db.add(candidate)
     db.flush()
     project = _project_for_page(db, page)
+    resolved_model = resolve_model(
+        db,
+        get_settings(),
+        operation="image_edit",
+        explicit_reference=payload.model_alias,
+        project_id=project.id,
+        task_kind="PAGE_UPSCALE",
+    )
+    candidate.catalog_model_id = resolved_model.model.id
     project.last_image_model_alias = payload.model_alias
     project.image_model_alias = payload.model_alias
+    project.last_image_model_id = resolved_model.model.id
     project.version += 1
     job = create_job(
         db,
@@ -1395,6 +1432,7 @@ def upscale_candidate(
         target_id=candidate.id,
         job_type="PAGE_UPSCALE",
         model_alias=payload.model_alias,
+        catalog_model_id=resolved_model.model.id,
         request_parameters={
             "original_candidate_id": original.id,
             "preserve_structure": True,
@@ -1402,6 +1440,7 @@ def upscale_candidate(
             "target_resolution": payload.resolution.value,
             "storyboard_version": page.storyboard_version,
         },
+        reference_asset_ids=[original.asset_id],
         idempotency_key=f"upscale:{batch.id}:{payload.resolution.value}",
     )
     candidate.job_id = job.id
