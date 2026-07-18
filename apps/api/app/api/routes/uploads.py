@@ -1,4 +1,5 @@
 import hashlib
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -138,14 +139,14 @@ def upload_asset(
             )
         )
         if existing:
-            if existing.deleted_at is None:
+            old_path = (settings.upload_root / existing.storage_key).resolve()
+            safe_old_path = old_path.is_relative_to(settings.upload_root.resolve())
+            if existing.deleted_at is None and safe_old_path and old_path.is_file():
                 destination.unlink(missing_ok=True)
                 return asset_read(existing)
             if existing.source != "USER_UPLOAD":
                 raise HTTPException(status_code=409, detail="同内容的生成素材已存在")
 
-            old_path = (settings.upload_root / existing.storage_key).resolve()
-            safe_old_path = old_path.is_relative_to(settings.upload_root.resolve())
             remove_thumbnails(settings.upload_root, existing.id)
             thumbnail_asset_id = existing.id
             thumbnails = create_thumbnails(destination, settings.upload_root, existing.id)
@@ -164,7 +165,10 @@ def upload_asset(
             db.commit()
             db.refresh(existing)
             if safe_old_path and old_path != destination.resolve():
-                old_path.unlink(missing_ok=True)
+                # The database already points at the replacement. A locked stale
+                # file must not make the restored asset unusable.
+                with suppress(OSError):
+                    old_path.unlink(missing_ok=True)
             return asset_read(existing)
 
         thumbnails = create_thumbnails(destination, settings.upload_root, asset_id)

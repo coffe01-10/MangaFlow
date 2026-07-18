@@ -247,6 +247,14 @@ def test_run_pauses_before_single_page_generation_and_reuses_jobs(client, db_ses
         )
         assert duplicate.status_code == 409
         assert db_session.query(PageCandidate).count() == 1
+
+        cancelled = client.post(f"/api/v1/jobs/{generate['job_id']}/cancel")
+        assert cancelled.status_code == 200, cancelled.text
+        stopped = client.get(f"/api/v1/workflow-runs/{run['id']}")
+        assert stopped.status_code == 200
+        assert stopped.json()["status"] == "CANCELLED"
+        db_session.expire_all()
+        assert db_session.get(PageCandidate, candidate.id).status == "CANCELLED"
     finally:
         settings.queue_enabled = previous_queue
 

@@ -717,9 +717,13 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
     if not candidate:
         raise RuntimeError("资产候选不存在")
     batch = db.get(GenerationBatch, candidate.batch_id)
+    if not batch:
+        raise RuntimeError("资产生成批次不存在")
     references: list[Asset] = []
     if batch.target_type == "CHARACTER":
         character = db.get(Character, batch.target_id)
+        if not character:
+            raise RuntimeError("角色档案不存在")
         references = list(
             db.scalars(
                 select(Asset)
@@ -728,6 +732,7 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
                     CharacterReference.character_id == character.id,
                     Asset.deleted_at.is_(None),
                     Asset.project_id == batch.project_id,
+                    Asset.kind == "CHARACTER_REFERENCE",
                 )
                 .order_by(CharacterReference.is_canonical.desc())
             )
@@ -740,7 +745,11 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
         }
     elif batch.target_type == "OUTFIT":
         outfit = db.get(Outfit, batch.target_id)
+        if not outfit:
+            raise RuntimeError("服装档案不存在")
         character = db.get(Character, outfit.character_id)
+        if not character:
+            raise RuntimeError("服装所属角色不存在")
         character_references = list(
             db.scalars(
                 select(Asset)
@@ -749,6 +758,7 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
                     CharacterReference.character_id == character.id,
                     Asset.deleted_at.is_(None),
                     Asset.project_id == batch.project_id,
+                    Asset.kind == "CHARACTER_REFERENCE",
                 )
             )
         )
@@ -759,6 +769,7 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
                         Asset.id.in_(outfit.reference_asset_ids),
                         Asset.project_id == batch.project_id,
                         Asset.deleted_at.is_(None),
+                        Asset.kind == "OUTFIT_REFERENCE",
                     )
                 )
             )
@@ -775,6 +786,8 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
         }
     elif batch.target_type == "STYLE":
         style = db.get(StyleProfile, batch.target_id)
+        if not style:
+            raise RuntimeError("风格档案不存在")
         reference_ids = style.profile.get("reference_asset_ids", [])
         references = (
             list(
@@ -798,6 +811,15 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
         }
     else:
         raise RuntimeError("资产生成目标类型无效")
+    if batch.target_type == "CHARACTER" and not references:
+        raise RuntimeError("角色参考图已失效，请重新绑定后再生成")
+    if batch.target_type == "OUTFIT":
+        if not character_references:
+            raise RuntimeError("服装所属角色的参考图已失效，请重新绑定后再生成")
+        if not outfit_references:
+            raise RuntimeError("服装参考图已失效，请重新绑定后再生成")
+    if batch.target_type == "STYLE" and not references:
+        raise RuntimeError("漫画风格参考图已失效，请重新绑定后再生成")
     prompt_payload = {
         "target_type": batch.target_type,
         "variant": candidate.variant,
@@ -1108,6 +1130,16 @@ def execute_job(job_id: str) -> None:
             raise RuntimeError(f"未知任务类型：{job.job_type}")
         _ensure_job_not_cancelled(db, job)
         workflow_run_id = job.request_parameters.get("workflow_run_id")
+        db.expire(
+            job,
+            attribute_names=[
+                "status",
+                "progress",
+                "finished_at",
+                "error_code",
+                "error_message",
+            ],
+        )
         with db.no_autoflush:
             completed = db.execute(
                 update(GenerationJob)

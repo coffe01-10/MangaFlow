@@ -29,7 +29,7 @@ from app.models import (
     WorkflowVersion,
     utcnow,
 )
-from app.services.job_service import create_job, enqueue_job
+from app.services.job_service import create_job, enqueue_job, mark_job_cancelled
 from app.workflow_schemas import (
     WorkflowGraph,
     WorkflowNodeDefinition,
@@ -1251,9 +1251,7 @@ def cancel_run(db: Session, run: WorkflowRun) -> WorkflowRun:
             item.finished_at = utcnow()
         job = db.get(GenerationJob, item.job_id) if item.job_id else None
         if job and job.status not in {JobStatus.COMPLETED, JobStatus.CANCELLED}:
-            job.status = JobStatus.CANCELLED
-            job.cancelled_at = utcnow()
-            job.finished_at = utcnow()
+            mark_job_cancelled(db, job)
     run.status = "CANCELLED"
     run.finished_at = utcnow()
     run.version += 1

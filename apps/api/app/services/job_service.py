@@ -276,6 +276,15 @@ def mark_job_cancelled(db: Session, job: GenerationJob) -> GenerationJob:
 
 
 def cancel_job(db: Session, job: GenerationJob) -> GenerationJob:
+    node_run = db.scalar(select(WorkflowNodeRun).where(WorkflowNodeRun.job_id == job.id))
+    if node_run:
+        run = db.get(WorkflowRun, node_run.workflow_run_id)
+        if run and run.status not in {"COMPLETED", "CANCELLED", "FAILED"}:
+            from app.services.workflow_engine import cancel_run
+
+            cancel_run(db, run)
+            db.refresh(job)
+            return job
     mark_job_cancelled(db, job)
     db.commit()
     db.refresh(job)

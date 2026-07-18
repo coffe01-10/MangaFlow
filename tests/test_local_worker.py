@@ -1,9 +1,11 @@
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Lock
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -13,12 +15,15 @@ from app.database import Base
 from app.domain.states import JobStatus, PageStatus, Resolution
 from app.models import (
     AppSetting,
+    Asset,
+    AssetCandidate,
     Chapter,
     GenerationBatch,
     GenerationJob,
     MangaPage,
     PageCandidate,
     Project,
+    StyleProfile,
 )
 from app.services import job_service
 
@@ -130,6 +135,115 @@ def test_active_job_cancellation_is_not_overwritten(monkeypatch):
             assert cancelled.status == JobStatus.CANCELLED
             assert cancelled.cancelled_at is not None
         engine.dispose()
+
+
+def test_completed_job_persists_full_progress(monkeypatch):
+    with TemporaryDirectory() as directory:
+        engine = create_engine(
+            f"sqlite:///{Path(directory) / 'progress.db'}",
+            connect_args={"check_same_thread": False},
+        )
+        testing_session = sessionmaker(
+            bind=engine, autoflush=False, expire_on_commit=False
+        )
+        Base.metadata.create_all(engine)
+        with testing_session() as db:
+            project = Project(name="完成进度")
+            db.add(project)
+            db.flush()
+            job = GenerationJob(
+                project_id=project.id,
+                target_type="CHAPTER",
+                target_id="progress-target",
+                job_type="SOURCE_PARSE",
+                status=JobStatus.QUEUED,
+            )
+            db.add(job)
+            db.commit()
+            job_id = job.id
+
+        def fake_run(_db, active_job):
+            active_job.progress = 85
+
+        monkeypatch.setattr(worker_tasks, "SessionLocal", testing_session)
+        monkeypatch.setattr(worker_tasks, "_run_story_parse", fake_run)
+        worker_tasks.execute_job(job_id)
+
+        with testing_session() as db:
+            completed = db.get(GenerationJob, job_id)
+            assert completed.status == JobStatus.COMPLETED
+            assert completed.progress == 100
+        engine.dispose()
+
+
+def test_asset_generation_revalidates_deleted_style_reference(db_session, monkeypatch):
+    project = Project(name="引用失效")
+    db_session.add(project)
+    db_session.flush()
+    reference = Asset(
+        project_id=project.id,
+        kind="STYLE_REFERENCE",
+        original_name="style.png",
+        storage_key="style.png",
+        mime_type="image/png",
+        byte_size=10,
+        sha256="f" * 64,
+        source="USER_UPLOAD",
+        status="UPLOADED",
+        deleted_at=datetime.now(UTC),
+    )
+    db_session.add(reference)
+    db_session.flush()
+    style = StyleProfile(
+        project_id=project.id,
+        name="失效风格",
+        color_mode="color",
+        profile={"reference_asset_ids": [reference.id], "palette_confirmed": True},
+        status="DRAFT",
+    )
+    db_session.add(style)
+    db_session.flush()
+    batch = GenerationBatch(
+        project_id=project.id,
+        target_type="STYLE",
+        target_id=style.id,
+        generation_kind="STYLE_TEST",
+        ordinal=1,
+    )
+    db_session.add(batch)
+    db_session.flush()
+    candidate = AssetCandidate(
+        batch_id=batch.id,
+        ordinal=1,
+        model_alias="image.nano_banana_2",
+        resolution=Resolution.DRAFT_1K,
+        variant="STYLE_TEST",
+        status="QUEUED",
+    )
+    db_session.add(candidate)
+    db_session.flush()
+    job = GenerationJob(
+        project_id=project.id,
+        target_type="ASSET_CANDIDATE",
+        target_id=candidate.id,
+        job_type="ASSET_GENERATE",
+        model_alias="image.nano_banana_2",
+        status=JobStatus.QUEUED,
+    )
+    db_session.add(job)
+    db_session.commit()
+    provider_calls: list[object] = []
+
+    class FakeAdapter:
+        def generate_asset(self, request):
+            provider_calls.append(request)
+            raise AssertionError("provider must not be called")
+
+    monkeypatch.setattr(worker_tasks, "_adapter", lambda _alias: FakeAdapter())
+
+    with pytest.raises(RuntimeError, match="风格参考图已失效"):
+        worker_tasks._run_asset_generate(db_session, job)
+    assert provider_calls == []
 
 
 def test_cancelling_generation_resets_candidate_and_page(db_session):

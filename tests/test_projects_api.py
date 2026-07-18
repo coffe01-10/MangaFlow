@@ -134,3 +134,65 @@ def test_reference_upload_rejects_non_image_content(client):
         files={"file": ("notes.txt", b"not an image", "text/plain")},
     )
     assert response.status_code == 415
+
+
+def test_reupload_repairs_active_asset_with_missing_file(client, monkeypatch):
+    project = client.post("/api/v1/projects", json={"name": "素材自愈"}).json()
+    image_bytes = BytesIO()
+    Image.new("RGB", (24, 36), "white").save(image_bytes, format="PNG")
+
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        monkeypatch.setattr(get_settings(), "upload_root", root)
+        uploaded = client.post(
+            "/api/v1/assets/upload",
+            data={"project_id": project["id"], "kind": "character"},
+            files={"file": ("hero.png", image_bytes.getvalue(), "image/png")},
+        ).json()
+        next(root.rglob("*.png")).unlink()
+
+        repaired = client.post(
+            "/api/v1/assets/upload",
+            data={"project_id": project["id"], "kind": "character"},
+            files={"file": ("hero-again.png", image_bytes.getvalue(), "image/png")},
+        )
+
+        assert repaired.status_code == 201, repaired.text
+        assert repaired.json()["id"] == uploaded["id"]
+        assert client.get(repaired.json()["content_url"]).status_code == 200
+
+
+def test_restoring_asset_tolerates_locked_stale_file(client, monkeypatch):
+    project = client.post("/api/v1/projects", json={"name": "素材恢复"}).json()
+    image_bytes = BytesIO()
+    Image.new("RGB", (24, 36), "white").save(image_bytes, format="PNG")
+
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        monkeypatch.setattr(get_settings(), "upload_root", root)
+        uploaded = client.post(
+            "/api/v1/assets/upload",
+            data={"project_id": project["id"], "kind": "style"},
+            files={"file": ("style.png", image_bytes.getvalue(), "image/png")},
+        ).json()
+        stale_path = next(root.rglob("*.png")).resolve()
+        assert client.delete(f"/api/v1/assets/{uploaded['id']}").status_code == 204
+
+        original_unlink = Path.unlink
+
+        def locked_stale_file(path: Path, *args, **kwargs):
+            if path.resolve() == stale_path:
+                raise PermissionError("locked")
+            return original_unlink(path, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "unlink", locked_stale_file)
+            restored = client.post(
+                "/api/v1/assets/upload",
+                data={"project_id": project["id"], "kind": "style"},
+                files={"file": ("style-restored.png", image_bytes.getvalue(), "image/png")},
+            )
+
+        assert restored.status_code == 201, restored.text
+        assert restored.json()["id"] == uploaded["id"]
+        assert client.get(restored.json()["content_url"]).status_code == 200
