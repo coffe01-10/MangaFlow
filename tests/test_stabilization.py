@@ -5,13 +5,16 @@ from app.domain.states import JobStatus, PageStatus, Resolution
 from app.models import (
     Asset,
     Chapter,
+    Character,
     Dialogue,
     GenerationBatch,
     GenerationJob,
     MangaPage,
+    Outfit,
     PageCandidate,
     Panel,
     Project,
+    StyleProfile,
 )
 from app.worker_tasks import StaleStoryboardVersionError, _run_page_generate
 
@@ -376,6 +379,69 @@ def test_generated_and_uploaded_assets_support_display_names(client, db_session)
     assert client.patch(
         f"/api/v1/assets/{assets[0].id}", json={"display_name": "   "}
     ).status_code == 422
+
+
+def test_deleting_reference_detaches_outfit_and_style_bindings(client, db_session):
+    project = Project(name="引用清理")
+    db_session.add(project)
+    db_session.flush()
+    character = Character(project_id=project.id, primary_name="角色")
+    asset = Asset(
+        project_id=project.id,
+        kind="OUTFIT_REFERENCE",
+        original_name="reference.png",
+        storage_key="reference.png",
+        mime_type="image/png",
+        byte_size=1,
+        sha256="3" * 64,
+    )
+    db_session.add_all([character, asset])
+    db_session.flush()
+    outfit = Outfit(
+        project_id=project.id,
+        character_id=character.id,
+        name="服装",
+        reference_asset_ids=[asset.id],
+        status="CANONICAL",
+    )
+    style = StyleProfile(
+        project_id=project.id,
+        name="风格",
+        profile={
+            "reference_asset_ids": [asset.id],
+            "palette_confirmed": True,
+            "test_image_approved": True,
+        },
+        status="ACTIVE",
+    )
+    db_session.add_all([outfit, style])
+    db_session.commit()
+
+    response = client.delete(f"/api/v1/assets/{asset.id}")
+
+    assert response.status_code == 204
+    db_session.expire_all()
+    assert db_session.get(Outfit, outfit.id).reference_asset_ids == []
+    stored_style = db_session.get(StyleProfile, style.id)
+    assert stored_style.profile["reference_asset_ids"] == []
+    assert stored_style.profile["palette_confirmed"] is False
+    assert stored_style.profile["test_image_approved"] is False
+    assert client.post(
+        "/api/v1/asset-generation-batches",
+        json={
+            "target_type": "OUTFIT",
+            "target_id": outfit.id,
+            "generation_kind": "OUTFIT",
+        },
+    ).status_code == 409
+    assert client.post(
+        "/api/v1/asset-generation-batches",
+        json={
+            "target_type": "STYLE",
+            "target_id": style.id,
+            "generation_kind": "STYLE_TEST",
+        },
+    ).status_code == 409
 
 
 def test_bulk_archive_only_accepts_project_terminal_jobs(client, db_session):

@@ -8,8 +8,12 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.domain.states import JobStatus
 from app.models import (
+    AssetCandidate,
     GenerationJob,
     JobDependency,
+    MangaPage,
+    PageCandidate,
+    StyleProfile,
     WorkflowNodeRun,
     WorkflowRun,
     utcnow,
@@ -229,12 +233,50 @@ def recover_pending_jobs(db: Session) -> int:
     return recovered
 
 
-def cancel_job(db: Session, job: GenerationJob) -> GenerationJob:
-    if job.status in {JobStatus.COMPLETED, JobStatus.CANCELLED}:
+def mark_job_cancelled(db: Session, job: GenerationJob) -> GenerationJob:
+    """Mark a job and its visible target as cancelled without committing."""
+
+    if job.status == JobStatus.COMPLETED:
         return job
-    job.status = JobStatus.CANCELLED
-    job.cancelled_at = utcnow()
-    job.finished_at = utcnow()
+    if job.status != JobStatus.CANCELLED:
+        job.status = JobStatus.CANCELLED
+        job.cancelled_at = utcnow()
+        job.finished_at = utcnow()
+    page_candidate = db.scalar(select(PageCandidate).where(PageCandidate.job_id == job.id))
+    if page_candidate and page_candidate.status not in {"READY", "FAILED", "CANCELLED"}:
+        page_candidate.status = "CANCELLED"
+        page = db.get(MangaPage, page_candidate.page_id)
+        if page and page.status.value == "DRAFT_GENERATING":
+            other_ready = db.scalar(
+                select(PageCandidate.id).where(
+                    PageCandidate.page_id == page.id,
+                    PageCandidate.id != page_candidate.id,
+                    PageCandidate.status.in_({"READY", "INSPECTED", "NEEDS_REVIEW"}),
+                    PageCandidate.deleted_at.is_(None),
+                )
+            )
+            page.status = (
+                "DRAFT_READY" if page.selected_candidate_id or other_ready else "STORYBOARDED"
+            )
+    asset_candidate = db.scalar(select(AssetCandidate).where(AssetCandidate.job_id == job.id))
+    if asset_candidate and asset_candidate.status not in {"READY", "FAILED", "CANCELLED"}:
+        asset_candidate.status = "CANCELLED"
+
+    if job.job_type == "STYLE_ANALYZE":
+        style = db.get(StyleProfile, job.target_id)
+        if style and style.status.value == "ANALYZING":
+            style.status = "DRAFT"
+            style.version += 1
+
+    node_run = db.scalar(select(WorkflowNodeRun).where(WorkflowNodeRun.job_id == job.id))
+    if node_run and node_run.status not in {"COMPLETED", "FAILED", "CANCELLED"}:
+        node_run.status = "CANCELLED"
+        node_run.finished_at = utcnow()
+    return job
+
+
+def cancel_job(db: Session, job: GenerationJob) -> GenerationJob:
+    mark_job_cancelled(db, job)
     db.commit()
     db.refresh(job)
     return job

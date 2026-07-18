@@ -4,7 +4,7 @@ from pathlib import Path
 from threading import Lock
 
 from PIL import Image
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.config import get_settings
@@ -54,6 +54,16 @@ EXECUTION_RESERVATION_LOCK = Lock()
 
 class StaleStoryboardVersionError(RuntimeError):
     """Stop a queued image call when its storyboard input has already changed."""
+
+
+class JobCancelledError(RuntimeError):
+    """Stop persisting provider output after a concurrent cancellation."""
+
+
+def _ensure_job_not_cancelled(db, job: GenerationJob) -> None:
+    db.refresh(job, attribute_names=["status", "cancelled_at"])
+    if job.status == JobStatus.CANCELLED:
+        raise JobCancelledError("任务已取消，模型返回结果不再写入")
 
 
 def _normalize_name(value: str) -> str:
@@ -483,6 +493,7 @@ def _run_page_generate(db, job: GenerationJob) -> None:
             reference_mime_types=tuple(reference_types[:14]),
         )
     )
+    _ensure_job_not_cancelled(db, job)
     # An edit may arrive while the paid request is in flight. Keep the result, but
     # refresh the page so API consumers immediately expose it as a stale candidate.
     db.refresh(page, attribute_names=["storyboard_version"])
@@ -564,6 +575,7 @@ def _run_story_parse(db, job: GenerationJob) -> None:
         ),
         StoryParseOutput,
     )
+    _ensure_job_not_cancelled(db, job)
     project_id = chapter.project_id
     all_aliases: dict[str, str] = {}
     existing_characters = list(
@@ -712,7 +724,11 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
             db.scalars(
                 select(Asset)
                 .join(CharacterReference, CharacterReference.asset_id == Asset.id)
-                .where(CharacterReference.character_id == character.id)
+                .where(
+                    CharacterReference.character_id == character.id,
+                    Asset.deleted_at.is_(None),
+                    Asset.project_id == batch.project_id,
+                )
                 .order_by(CharacterReference.is_canonical.desc())
             )
         )
@@ -729,11 +745,23 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
             db.scalars(
                 select(Asset)
                 .join(CharacterReference, CharacterReference.asset_id == Asset.id)
-                .where(CharacterReference.character_id == character.id)
+                .where(
+                    CharacterReference.character_id == character.id,
+                    Asset.deleted_at.is_(None),
+                    Asset.project_id == batch.project_id,
+                )
             )
         )
         outfit_references = (
-            list(db.scalars(select(Asset).where(Asset.id.in_(outfit.reference_asset_ids))))
+            list(
+                db.scalars(
+                    select(Asset).where(
+                        Asset.id.in_(outfit.reference_asset_ids),
+                        Asset.project_id == batch.project_id,
+                        Asset.deleted_at.is_(None),
+                    )
+                )
+            )
             if outfit.reference_asset_ids
             else []
         )
@@ -749,7 +777,16 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
         style = db.get(StyleProfile, batch.target_id)
         reference_ids = style.profile.get("reference_asset_ids", [])
         references = (
-            list(db.scalars(select(Asset).where(Asset.id.in_(reference_ids))))
+            list(
+                db.scalars(
+                    select(Asset).where(
+                        Asset.id.in_(reference_ids),
+                        Asset.project_id == batch.project_id,
+                        Asset.deleted_at.is_(None),
+                        Asset.kind == "STYLE_REFERENCE",
+                    )
+                )
+            )
             if reference_ids
             else []
         )
@@ -834,6 +871,7 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
             reference_mime_types=tuple(reference_types),
         )
     )
+    _ensure_job_not_cancelled(db, job)
     asset = _save_asset_candidate(db, candidate, batch.project_id, response.images[0])
     record = GenerationRecord(
         job_id=job.id,
@@ -935,6 +973,7 @@ def _run_style_analyze(db, job: GenerationJob) -> None:
         ),
         StyleAnalysisOutput,
     )
+    _ensure_job_not_cancelled(db, job)
     analyzed = output.model_dump()
     analyzed["prompt_summary"] = _build_style_prompt_summary(analyzed, style.color_mode)
     analyzed["reference_asset_ids"] = reference_ids
@@ -992,6 +1031,7 @@ regions 使用 0 到 1 的归一化 x/y/width/height。"""
         ),
         PageInspectionOutput,
     )
+    _ensure_job_not_cancelled(db, job)
     needs_review = False
     for item in output.items:
         if item.outcome not in {"MATCH", "PASS", "ACCEPTABLE"}:
@@ -1022,6 +1062,12 @@ def execute_job(job_id: str) -> None:
         return
     try:
         project = db.get(Project, job.project_id)
+        if not project or project.deleted_at is not None:
+            from app.services.job_service import mark_job_cancelled
+
+            mark_job_cancelled(db, job)
+            db.commit()
+            return
         with EXECUTION_RESERVATION_LOCK:
             active = (
                 db.scalar(
@@ -1060,16 +1106,41 @@ def execute_job(job_id: str) -> None:
             execute_workflow_node(db, job)
         else:
             raise RuntimeError(f"未知任务类型：{job.job_type}")
-        job.status = JobStatus.COMPLETED
-        job.progress = 100
-        job.finished_at = utcnow()
-        job.error_code = None
-        job.error_message = None
+        _ensure_job_not_cancelled(db, job)
+        workflow_run_id = job.request_parameters.get("workflow_run_id")
+        with db.no_autoflush:
+            completed = db.execute(
+                update(GenerationJob)
+                .where(
+                    GenerationJob.id == job.id,
+                    GenerationJob.status != JobStatus.CANCELLED,
+                )
+                .values(
+                    status=JobStatus.COMPLETED,
+                    progress=100,
+                    finished_at=utcnow(),
+                    error_code=None,
+                    error_message=None,
+                )
+                .execution_options(synchronize_session=False)
+            )
+        if completed.rowcount != 1:
+            raise JobCancelledError("任务已取消，完成状态不再写入")
         db.commit()
-        if job.request_parameters.get("workflow_run_id"):
+        if workflow_run_id:
             from app.services.workflow_engine import reconcile_run
 
-            reconcile_run(db, job.request_parameters["workflow_run_id"])
+            reconcile_run(db, workflow_run_id)
+    except JobCancelledError:
+        db.rollback()
+        db.expire_all()
+        job = db.get(GenerationJob, job_id)
+        if job and job.status != JobStatus.COMPLETED:
+            from app.services.job_service import mark_job_cancelled
+
+            mark_job_cancelled(db, job)
+            db.commit()
+        return
     except StaleStoryboardVersionError as error:
         db.rollback()
         job = db.get(GenerationJob, job_id)

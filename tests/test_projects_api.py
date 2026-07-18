@@ -5,6 +5,8 @@ from tempfile import TemporaryDirectory
 from PIL import Image
 
 from app.config import get_settings
+from app.domain.states import JobStatus
+from app.models import GenerationJob
 
 
 def test_create_and_update_project(client):
@@ -38,6 +40,32 @@ def test_project_optimistic_lock(client):
         json={"version": 99, "name": "过期修改"},
     )
     assert response.status_code == 409
+
+
+def test_archiving_project_cancels_non_terminal_jobs(client, db_session):
+    project = client.post("/api/v1/projects", json={"name": "待删除项目"}).json()
+    jobs = [
+        GenerationJob(
+            project_id=project["id"],
+            target_type="CHAPTER",
+            target_id=f"target-{status.value}",
+            job_type="SOURCE_PARSE",
+            status=status,
+        )
+        for status in (JobStatus.WAITING, JobStatus.GENERATING, JobStatus.COMPLETED)
+    ]
+    db_session.add_all(jobs)
+    db_session.commit()
+
+    response = client.delete(
+        f"/api/v1/projects/{project['id']}", params={"confirm_name": "待删除项目"}
+    )
+
+    assert response.status_code == 204
+    db_session.expire_all()
+    assert db_session.get(GenerationJob, jobs[0].id).status == JobStatus.CANCELLED
+    assert db_session.get(GenerationJob, jobs[1].id).status == JobStatus.CANCELLED
+    assert db_session.get(GenerationJob, jobs[2].id).status == JobStatus.COMPLETED
 
 
 def test_model_registry_reports_preview_resolution(client):
@@ -83,5 +111,26 @@ def test_upload_image_is_validated_and_registered(client, monkeypatch):
         assert changed.json()["kind"] == "STYLE_REFERENCE"
         assert client.delete(f"/api/v1/assets/{asset['id']}").status_code == 204
         assert client.get(f"/api/v1/assets?project_id={project['id']}").json() == []
+        restored = client.post(
+            "/api/v1/assets/upload",
+            data={"project_id": project["id"], "kind": "style"},
+            files={"file": ("hero-restored.png", image_bytes.getvalue(), "image/png")},
+        )
+        assert restored.status_code == 201
+        assert restored.json()["id"] == asset["id"]
+        assert restored.json()["kind"] == "STYLE_REFERENCE"
+        assert [item["id"] for item in client.get(
+            f"/api/v1/assets?project_id={project['id']}"
+        ).json()] == [asset["id"]]
         assert list(Path(directory).rglob("*.png"))
     assert not Path(directory).exists()
+
+
+def test_reference_upload_rejects_non_image_content(client):
+    project = client.post("/api/v1/projects", json={"name": "文本素材"}).json()
+    response = client.post(
+        "/api/v1/assets/upload",
+        data={"project_id": project["id"], "kind": "STYLE_REFERENCE"},
+        files={"file": ("notes.txt", b"not an image", "text/plain")},
+    )
+    assert response.status_code == 415

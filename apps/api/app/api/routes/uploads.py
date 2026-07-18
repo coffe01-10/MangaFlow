@@ -13,12 +13,21 @@ from sqlalchemy.orm import Session
 from app.api.helpers import asset_read
 from app.config import get_settings
 from app.database import get_db
-from app.models import Asset, CharacterReference, Project
+from app.models import (
+    Asset,
+    AssetStatus,
+    CharacterReference,
+    Outfit,
+    Project,
+    StyleProfile,
+    StyleStatus,
+)
 from app.schemas import AssetRead, AssetUpdate
 from app.services.media import create_thumbnails, remove_thumbnails
 
 router = APIRouter()
 CHUNK_SIZE = 1024 * 1024
+REFERENCE_IMAGE_TYPES = {"image/png", "image/jpeg", "image/webp"}
 ASSET_KINDS = {
     "character": "CHARACTER_REFERENCE",
     "outfit": "OUTFIT_REFERENCE",
@@ -27,6 +36,37 @@ ASSET_KINDS = {
     "OUTFIT_REFERENCE": "OUTFIT_REFERENCE",
     "STYLE_REFERENCE": "STYLE_REFERENCE",
 }
+
+
+def _detach_reference_asset(db: Session, asset: Asset) -> None:
+    """Remove a reference asset from every structured binding in its project."""
+
+    db.execute(delete(CharacterReference).where(CharacterReference.asset_id == asset.id))
+    for outfit in db.scalars(select(Outfit).where(Outfit.project_id == asset.project_id)):
+        if asset.id not in outfit.reference_asset_ids:
+            continue
+        outfit.reference_asset_ids = [
+            asset_id for asset_id in outfit.reference_asset_ids if asset_id != asset.id
+        ]
+        outfit.status = AssetStatus.NEEDS_CONFIRMATION
+        outfit.version += 1
+    styles = db.scalars(
+        select(StyleProfile).where(StyleProfile.project_id == asset.project_id)
+    )
+    for style in styles:
+        profile = dict(style.profile)
+        reference_ids = list(profile.get("reference_asset_ids", []))
+        if asset.id not in reference_ids:
+            continue
+        profile["reference_asset_ids"] = [
+            asset_id for asset_id in reference_ids if asset_id != asset.id
+        ]
+        profile["palette_confirmed"] = False
+        profile["test_image_approved"] = False
+        profile.pop("test_candidate_id", None)
+        style.profile = profile
+        style.status = StyleStatus.DRAFT
+        style.version += 1
 
 
 @router.get("", response_model=list[AssetRead])
@@ -58,7 +98,10 @@ def upload_asset(
     project = db.get(Project, project_id)
     if not project or project.deleted_at is not None:
         raise HTTPException(status_code=404, detail="项目不存在")
-    if file.content_type not in settings.allowed_upload_types:
+    if (
+        file.content_type not in settings.allowed_upload_types
+        or file.content_type not in REFERENCE_IMAGE_TYPES
+    ):
         raise HTTPException(status_code=415, detail="不支持的文件类型")
 
     safe_name = Path(file.filename or "upload").name
@@ -67,6 +110,7 @@ def upload_asset(
     project_dir = settings.upload_root / project_id
     project_dir.mkdir(parents=True, exist_ok=True)
     destination = project_dir / f"{asset_id}{suffix}"
+    thumbnail_asset_id = asset_id
 
     digest = hashlib.sha256()
     byte_size = 0
@@ -79,6 +123,14 @@ def upload_asset(
                 digest.update(chunk)
                 output.write(chunk)
 
+        try:
+            with Image.open(destination) as image:
+                image.verify()
+            with Image.open(destination) as image:
+                width, height = image.size
+        except (UnidentifiedImageError, OSError) as error:
+            raise HTTPException(status_code=422, detail="图片文件损坏或格式不符") from error
+
         existing = db.scalar(
             select(Asset).where(
                 Asset.project_id == project_id,
@@ -86,18 +138,34 @@ def upload_asset(
             )
         )
         if existing:
-            destination.unlink(missing_ok=True)
-            return asset_read(existing)
+            if existing.deleted_at is None:
+                destination.unlink(missing_ok=True)
+                return asset_read(existing)
+            if existing.source != "USER_UPLOAD":
+                raise HTTPException(status_code=409, detail="同内容的生成素材已存在")
 
-        width = height = None
-        if file.content_type.startswith("image/"):
-            try:
-                with Image.open(destination) as image:
-                    image.verify()
-                with Image.open(destination) as image:
-                    width, height = image.size
-            except (UnidentifiedImageError, OSError) as error:
-                raise HTTPException(status_code=422, detail="图片文件损坏或格式不符") from error
+            old_path = (settings.upload_root / existing.storage_key).resolve()
+            safe_old_path = old_path.is_relative_to(settings.upload_root.resolve())
+            remove_thumbnails(settings.upload_root, existing.id)
+            thumbnail_asset_id = existing.id
+            thumbnails = create_thumbnails(destination, settings.upload_root, existing.id)
+            existing.kind = normalized_kind
+            existing.original_name = safe_name
+            existing.storage_key = destination.relative_to(settings.upload_root).as_posix()
+            existing.thumbnail_320_key = thumbnails[320]
+            existing.thumbnail_640_key = thumbnails[640]
+            existing.mime_type = file.content_type
+            existing.byte_size = byte_size
+            existing.width = width
+            existing.height = height
+            existing.status = AssetStatus.UPLOADED
+            existing.deleted_at = None
+            existing.version += 1
+            db.commit()
+            db.refresh(existing)
+            if safe_old_path and old_path != destination.resolve():
+                old_path.unlink(missing_ok=True)
+            return asset_read(existing)
 
         thumbnails = create_thumbnails(destination, settings.upload_root, asset_id)
         asset = Asset(
@@ -120,12 +188,12 @@ def upload_asset(
         return asset_read(asset)
     except HTTPException:
         destination.unlink(missing_ok=True)
-        remove_thumbnails(settings.upload_root, asset_id)
+        remove_thumbnails(settings.upload_root, thumbnail_asset_id)
         raise
     except (OSError, SQLAlchemyError) as error:
         db.rollback()
         destination.unlink(missing_ok=True)
-        remove_thumbnails(settings.upload_root, asset_id)
+        remove_thumbnails(settings.upload_root, thumbnail_asset_id)
         raise HTTPException(status_code=500, detail="文件保存失败") from error
     finally:
         file.file.close()
@@ -139,9 +207,9 @@ def update_asset(asset_id: str, payload: AssetUpdate, db: Session = Depends(get_
     if payload.kind is not None:
         if asset.source != "USER_UPLOAD":
             raise HTTPException(status_code=409, detail="生成结果不能改成参考图")
-        asset.kind = payload.kind
-        if payload.kind != "CHARACTER_REFERENCE":
-            db.execute(delete(CharacterReference).where(CharacterReference.asset_id == asset.id))
+        if payload.kind != asset.kind:
+            _detach_reference_asset(db, asset)
+            asset.kind = payload.kind
     if "display_name" in payload.model_fields_set:
         asset.display_name = payload.display_name
     asset.version += 1
@@ -157,7 +225,7 @@ def delete_asset(asset_id: str, db: Session = Depends(get_db)) -> None:
         raise HTTPException(status_code=404, detail="素材不存在")
     if asset.source != "USER_UPLOAD":
         raise HTTPException(status_code=409, detail="生成结果请在对应批次中删除")
-    db.execute(delete(CharacterReference).where(CharacterReference.asset_id == asset.id))
+    _detach_reference_asset(db, asset)
     asset.deleted_at = datetime.now(UTC)
     db.commit()
 

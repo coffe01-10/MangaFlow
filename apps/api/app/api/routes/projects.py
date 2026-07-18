@@ -26,6 +26,7 @@ from app.schemas import (
     ProjectRead,
     ProjectUpdate,
 )
+from app.services.job_service import mark_job_cancelled
 from app.settings_schemas import ProjectSummaryRead
 
 router = APIRouter()
@@ -456,6 +457,22 @@ def archive_project(
         raise HTTPException(status_code=404, detail="项目不存在")
     if confirm_name.strip() != project.name:
         raise HTTPException(status_code=409, detail="项目名称不匹配，未执行删除")
+    terminal_statuses = {
+        JobStatus.COMPLETED,
+        JobStatus.FAILED,
+        JobStatus.CANCELLED,
+        JobStatus.NEEDS_REVIEW,
+    }
+    active_jobs = list(
+        db.scalars(
+            select(GenerationJob).where(
+                GenerationJob.project_id == project_id,
+                GenerationJob.status.not_in(terminal_statuses),
+            )
+        )
+    )
+    for job in active_jobs:
+        mark_job_cancelled(db, job)
     project.deleted_at = utcnow()
     project.version += 1
     db.commit()

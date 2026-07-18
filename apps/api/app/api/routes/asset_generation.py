@@ -65,6 +65,23 @@ def _validate_reference_assets(
             )
 
 
+def _has_active_reference_assets(
+    db: Session, project_id: str, asset_ids: list[str]
+) -> bool:
+    if not asset_ids:
+        return False
+    return (
+        db.scalar(
+            select(func.count(Asset.id)).where(
+                Asset.id.in_(asset_ids),
+                Asset.project_id == project_id,
+                Asset.deleted_at.is_(None),
+            )
+        )
+        or 0
+    ) > 0
+
+
 @router.get("/projects/{project_id}/outfits", response_model=list[OutfitRead])
 def list_outfits(project_id: str, db: Session = Depends(get_db)) -> list[Outfit]:
     return list(
@@ -433,11 +450,13 @@ def start_asset_batch(
     if payload.target_type == "CHARACTER" and not character_references(db, target.id):
         raise HTTPException(status_code=409, detail="请先给角色绑定至少一张人物参考图")
     if payload.target_type == "OUTFIT":
-        if not target.reference_asset_ids:
+        if not _has_active_reference_assets(db, project_id, target.reference_asset_ids):
             raise HTTPException(status_code=409, detail="请先给服装档案绑定至少一张服装参考图")
         if not character_references(db, target.character_id):
             raise HTTPException(status_code=409, detail="请先给服装所属角色绑定人物参考图")
-    if payload.target_type == "STYLE" and not target.profile.get("reference_asset_ids", []):
+    if payload.target_type == "STYLE" and not _has_active_reference_assets(
+        db, project_id, target.profile.get("reference_asset_ids", [])
+    ):
         raise HTTPException(status_code=409, detail="请先给风格档案绑定至少一张漫画参考图")
     if payload.target_type == "STYLE" and not target.profile.get("palette_confirmed"):
         raise HTTPException(status_code=409, detail="请先确认彩色色板，再生成风格测试图")
