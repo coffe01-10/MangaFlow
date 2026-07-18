@@ -36,7 +36,7 @@ from app.models import (
     utcnow,
 )
 from app.services.job_service import create_job, enqueue_job, mark_job_cancelled
-from app.services.model_router import resolve_model
+from app.services.model_router import model_supports_resolution, resolve_model
 from app.workflow_schemas import (
     WorkflowGraph,
     WorkflowNodeDefinition,
@@ -1103,7 +1103,7 @@ def approve_node(
     node = next(item for item in graph.nodes if item.id == node_id)
     spec = NODE_TYPE_MAP[node.type]
     if spec.barrier == "GENERATE":
-        if not image_model_alias:
+        if not image_model_alias or image_model_alias.casefold() == "auto":
             raise ValueError("每次生成候选都必须明确选择图片模型")
         selected_resolution = resolution or node.config.resolution
         if selected_resolution not in {"1K", "2K", "4K"}:
@@ -1126,6 +1126,8 @@ def approve_node(
             project_id=run.project_id,
             task_kind="PAGE_GENERATE",
         )
+        if not model_supports_resolution(resolved_model.model, selected_resolution):
+            raise ValueError("所选图片模型不支持当前输出清晰度")
         panels = list(db.scalars(select(Panel).where(Panel.page_id == page.id)))
         visible_character_ids = list(
             dict.fromkeys(

@@ -85,7 +85,7 @@ export function ProductionReadiness({
         </article>
         <article>
           <div><strong><Cpu size={15} />真实执行链</strong><span>所选模型 · 1K · 单候选</span></div>
-          <ReadinessMark ok>供应商、协议与图片编辑能力在排队前校验</ReadinessMark>
+          <ReadinessMark ok={readiness.provider.usable_image_model_count > 0}>可用图片模型 {readiness.provider.usable_image_model_count} 个 · 已验证 {readiness.provider.auto_image_model_count} 个</ReadinessMark>
           <ReadinessMark ok={readiness.worker.can_execute}>{readiness.worker.executor} · {readiness.worker.queue_mode}</ReadinessMark>
           <small>{readiness.estimated_cost_note}</small>
         </article>

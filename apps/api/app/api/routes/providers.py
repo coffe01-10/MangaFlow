@@ -250,12 +250,16 @@ def test_connection(
     model = db.get(AIModel, payload.model_id)
     if model is None or model.connection_id != connection_id:
         raise HTTPException(status_code=404, detail="测试模型不存在")
+    image_probe_operation = (
+        "image_generate" if "image_generate" in (model.operations or []) else "image_edit"
+    )
     operation = {
         "TEXT": "structured_text",
         "VISION": "multimodal_analysis",
-        "IMAGE": "image_generate",
-        "BENCHMARK": "image_generate" if model.model_type == "IMAGE" else "structured_text",
+        "IMAGE": image_probe_operation,
+        "BENCHMARK": image_probe_operation if model.model_type == "IMAGE" else "structured_text",
     }[payload.test_type]
+    tested_operations = {operation}
     latencies: list[int] = []
     binding = None
     try:
@@ -289,13 +293,28 @@ def test_connection(
                     _SmokeResult,
                 )
             else:
-                binding.adapter.generate_asset(
-                    ImageRequest(
-                        prompt="一个简单黑色圆点，白色背景，无文字",
-                        resolution="1K",
-                        aspect_ratio="1:1",
+                image_buffer = io.BytesIO()
+                Image.new("RGB", (2, 2), "white").save(image_buffer, format="PNG")
+                if "image_generate" in (model.operations or []):
+                    binding.adapter.generate_asset(
+                        ImageRequest(
+                            prompt="一个简单黑色圆点，白色背景，无文字",
+                            resolution="1K",
+                            aspect_ratio="1:1",
+                        )
                     )
-                )
+                    tested_operations.add("image_generate")
+                if "image_edit" in (model.operations or []):
+                    binding.adapter.edit_region(
+                        ImageRequest(
+                            prompt="保持白色背景，在中心添加一个黑色圆点，无文字",
+                            resolution="1K",
+                            aspect_ratio="1:1",
+                            reference_images=(image_buffer.getvalue(),),
+                            reference_mime_types=("image/png",),
+                        )
+                    )
+                    tested_operations.add("image_edit")
             if binding.selected_key:
                 mark_key_success(db, binding.selected_key.row)
             latencies.append(round((perf_counter() - started) * 1000))
@@ -309,7 +328,16 @@ def test_connection(
             if model.success_rate is None
             else round(model.success_rate * 0.8 + 0.2, 4)
         )
-        model.confidence = "VERIFIED"
+        capabilities = dict(model.capabilities or {})
+        verified_operations = set(capabilities.get("verified_operations") or [])
+        verified_operations.update(tested_operations)
+        capabilities["verified_operations"] = sorted(verified_operations)
+        model.capabilities = capabilities
+        model.confidence = (
+            "VERIFIED"
+            if set(model.operations or []).issubset(verified_operations)
+            else "PARTIAL"
+        )
         connection.health_state = "HEALTHY"
         connection.latency_ms = model.median_latency_ms
         connection.error_code = None

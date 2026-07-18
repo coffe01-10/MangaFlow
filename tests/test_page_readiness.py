@@ -189,12 +189,16 @@ def test_readiness_only_requires_visible_cast_and_blockers_disappear(
     client, db_session, tmp_path, monkeypatch
 ):
     project, page, panel, characters = _base_page(db_session)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "google_cloud_project", None)
+    monkeypatch.setattr(settings, "google_application_credentials", None)
 
     initial = client.get(f"/api/v1/pages/{page.id}/readiness")
     assert initial.status_code == 200
     initial_payload = initial.json()
     blocker_codes = {item["code"] for item in initial_payload["blockers"]}
     assert "MISSING_CHARACTER_REFERENCE" in blocker_codes
+    assert "IMAGE_MODEL_UNAVAILABLE" in blocker_codes
     assert len(initial_payload["visible_characters"]) == 1
     assert initial_payload["visible_characters"][0]["primary_name"] == "我"
     assert {item["primary_name"] for item in initial_payload["mentioned_characters"]} == {
@@ -215,6 +219,7 @@ def test_readiness_only_requires_visible_cast_and_blockers_disappear(
     assert ready.status_code == 200
     assert ready.json()["ready"] is True
     assert ready.json()["blockers"] == []
+    assert ready.json()["provider"]["usable_image_model_count"] >= 1
 
     batch = client.post(f"/api/v1/pages/{page.id}/batches")
     assert batch.status_code == 201

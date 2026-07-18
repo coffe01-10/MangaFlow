@@ -152,6 +152,7 @@ class ModelCapabilityRead(BaseModel):
     regions: list[str]
     confidence: str = "VERIFIED"
     enabled: bool = True
+    auto_eligible: bool = False
     priority: int = 50
 
 
@@ -683,6 +684,8 @@ class PageReadinessProvider(BaseModel):
     text_model_access: str
     image_model_access: str
     image_model_alias: str = "image.nano_banana_2"
+    usable_image_model_count: int = 0
+    auto_image_model_count: int = 0
 
 
 class PageReadinessWorker(BaseModel):

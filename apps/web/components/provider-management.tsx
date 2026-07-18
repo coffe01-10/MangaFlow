@@ -172,17 +172,17 @@ function ConnectionPanel({
     <div className="provider-models">
       {connectionModels.map((model) => <article key={model.catalog_id}>
         <div><strong>{model.display_name}</strong><span>{model.model_type} · {model.model_id}</span><small>{model.confidence} · {model.operations.join(" / ")}</small></div>
-        <button className={model.model_type === "IMAGE" ? "paid-check" : ""} disabled={!connection.configured || pending} onClick={() => {
+        <button className={model.model_type === "IMAGE" ? "paid-check" : ""} disabled={!model.enabled || !connection.configured || pending || (connection.protocol === "ANTHROPIC" && model.model_type === "IMAGE")} onClick={() => {
           if (model.model_type === "IMAGE" && !window.confirm("图片能力测试会产生一次 1K 调用费用，是否继续？")) return;
           test.mutate({ model, testType: model.model_type === "IMAGE" ? "IMAGE" : "TEXT" });
-        }}><Activity size={13} />测试{model.model_type === "IMAGE" ? "图片" : "文本"}</button>
+        }}><Activity size={13} />{connection.protocol === "ANTHROPIC" && model.model_type === "IMAGE" ? "协议不支持" : `测试${model.model_type === "IMAGE" ? "图片" : "文本"}`}</button>
         {model.model_type === "TEXT" && model.operations.includes("multimodal_analysis") && <button disabled={!connection.configured || pending} onClick={() => test.mutate({ model, testType: "VISION" })}><Activity size={13} />测试视觉</button>}
       </article>)}
       {!connectionModels.length && <p>尚无模型。先同步模型列表，或手动添加供应商模型 ID。</p>}
     </div>
     <form className="provider-manual-model" onSubmit={(event) => { event.preventDefault(); addModel.mutate(); }}>
       <input value={manualId} onChange={(event) => setManualId(event.target.value)} placeholder="手动模型 ID" />
-      <select value={manualType} onChange={(event) => setManualType(event.target.value as "TEXT" | "IMAGE")}><option value="TEXT">文字模型</option><option value="IMAGE">图片模型</option></select>
+      <select value={manualType} onChange={(event) => setManualType(event.target.value as "TEXT" | "IMAGE")}><option value="TEXT">文字模型</option>{connection.protocol !== "ANTHROPIC" && <option value="IMAGE">图片模型</option>}</select>
       <button disabled={!manualId.trim() || pending}><Plus size={14} />添加</button>
     </form>
     {pending && <p className="settings-progress"><LoaderCircle className="spin" size={14} />正在访问供应商，请稍候…</p>}

@@ -97,7 +97,7 @@ export default function ProjectSettingsPage() {
             <p className="project-setting-note"><strong>文字由人工校对</strong><span>采用候选前必须明确确认页面文字，不再运行 OCR 或自动文字修复。</span></p>
           </section>
 
-          <aside className="project-setting-note"><span>MODEL POLICY</span><strong>图片模型按任务选择</strong><p>项目不绑定图片“主模型”。每次生成候选都可明确选择供应商模型，或使用仅限已验证模型的自动路由。</p></aside>
+          <aside className="project-setting-note"><span>MODEL POLICY</span><strong>图片模型按任务选择</strong><p>项目不绑定图片“主模型”。每次生成候选都必须明确选择供应商模型，以保持画风一致。</p></aside>
           <section className="project-setting-section">
             <header><Gauge size={18} /><div><span>TEXT MODEL</span><h2>文字任务默认路由</h2></div></header>
             <label className="project-inline-setting"><span><strong>剧本、风格分析与视觉检查</strong><small>自动路由只使用已完成能力测试的模型</small></span><select value={draft.default_text_model_id ?? draft.text_model_alias} onChange={(event) => {

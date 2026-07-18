@@ -8,7 +8,9 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
+import httpcore
 import httpx
+from httpcore._backends.sync import SyncBackend
 from pydantic import BaseModel
 
 from app.model_adapters.base import (
@@ -34,6 +36,10 @@ class CompatibleRuntime:
     extra_headers: dict[str, str] = field(default_factory=dict)
     use_responses_api: bool = False
     capabilities: dict[str, Any] = field(default_factory=dict)
+    allow_private_networks: bool = False
+    allow_http_loopback: bool = False
+    proxy_url: str | None = None
+    max_response_bytes: int = 20 * 1024 * 1024
 
     def endpoint(self, name: str) -> str:
         path = self.endpoint_templates.get(name)
@@ -50,7 +56,7 @@ def validate_provider_url(
     allow_private: bool = False,
     allow_http_loopback: bool = False,
     allow_query: bool = False,
-) -> None:
+) -> str:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("供应商地址必须是有效的 HTTP(S) URL")
@@ -80,6 +86,77 @@ def validate_provider_url(
             raise ValueError("供应商地址指向受保护的本机或元数据网络")
         if private and not allow_private and not (allow_http_loopback and ip.is_loopback):
             raise ValueError("供应商地址指向私有网络，当前未显式允许")
+    return sorted(addresses)[0]
+
+
+class _PinnedNetworkBackend(SyncBackend):
+    """Keep the validated DNS answer stable until the TCP connection is made."""
+
+    def __init__(self, hostname: str, address: str) -> None:
+        self.hostname = hostname.casefold()
+        self.address = address
+
+    def connect_tcp(self, host: str, *args, **kwargs):
+        target = self.address if host.casefold() == self.hostname else host
+        return super().connect_tcp(target, *args, **kwargs)
+
+
+class _PinnedHTTPTransport(httpx.HTTPTransport):
+    def __init__(self, hostname: str, address: str) -> None:
+        # Provider requests deliberately bypass process-wide proxies: otherwise the
+        # proxy would resolve the hostname again and reintroduce DNS rebinding.
+        super().__init__(trust_env=False)
+        self._pool.close()
+        self._pool = httpcore.ConnectionPool(
+            network_backend=_PinnedNetworkBackend(hostname, address)
+        )
+
+
+def _validated_proxy_url(value: str) -> str:
+    parsed = urlparse(value)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or parsed.hostname not in {"localhost", "127.0.0.1", "::1"}
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("MANGAFLOW_PROXY_URL 必须是无凭据的本机 HTTP(S) 代理地址")
+    return value
+
+
+def provider_http_client(
+    url: str,
+    *,
+    timeout: httpx.Timeout,
+    allow_private: bool = False,
+    allow_http_loopback: bool = False,
+    proxy_url: str | None = None,
+) -> httpx.Client:
+    parsed = urlparse(url)
+    if proxy_url:
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.fragment
+        ):
+            raise ValueError("代理目标必须是无凭据的 HTTPS URL")
+        transport = httpx.HTTPTransport(
+            proxy=_validated_proxy_url(proxy_url),
+            trust_env=False,
+        )
+    else:
+        resolved_address = validate_provider_url(
+            url,
+            allow_private=allow_private,
+            allow_http_loopback=allow_http_loopback,
+            allow_query=True,
+        )
+        transport = _PinnedHTTPTransport(parsed.hostname or "", resolved_address)
+    return httpx.Client(timeout=timeout, transport=transport, trust_env=False)
 
 
 def _safe_headers(runtime: CompatibleRuntime) -> dict[str, str]:
@@ -101,6 +178,30 @@ def _safe_extra_body(runtime: CompatibleRuntime) -> dict[str, Any]:
     if not isinstance(configured, dict):
         return {}
     return {key: value for key, value in configured.items() if key not in _RESERVED_BODY}
+
+
+def _supported_parameters(runtime: CompatibleRuntime) -> set[str] | None:
+    configured = runtime.capabilities.get("supported_parameters")
+    if not isinstance(configured, (list, tuple, set)) or not configured:
+        return None
+    return {str(item).strip().casefold() for item in configured if str(item).strip()}
+
+
+def _supports(runtime: CompatibleRuntime, *names: str) -> bool:
+    supported = _supported_parameters(runtime)
+    return supported is None or bool(supported.intersection(name.casefold() for name in names))
+
+
+def _schema_prompt(prompt: str, output_schema: type[BaseModel]) -> str:
+    schema = json.dumps(
+        output_schema.model_json_schema(),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return (
+        f"{prompt}\n只输出一个符合以下 JSON Schema 的 JSON 对象，"
+        f"不要使用 Markdown 代码块：{schema}"
+    )
 
 
 def _provider_error(response: httpx.Response) -> ProviderAdapterError:
@@ -136,10 +237,66 @@ class _CompatibleBase:
         self._injected_client = client
 
     def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
-        client = self._injected_client or httpx.Client(timeout=httpx.Timeout(90.0, connect=10.0))
+        if self._injected_client is None:
+            base = urlparse(self.runtime.base_url)
+            target = urlparse(url)
+            same_origin = (
+                base.scheme,
+                base.hostname,
+                base.port,
+            ) == (
+                target.scheme,
+                target.hostname,
+                target.port,
+            )
+            try:
+                client = provider_http_client(
+                    url,
+                    timeout=httpx.Timeout(90.0, connect=10.0),
+                    allow_private=self.runtime.allow_private_networks,
+                    allow_http_loopback=self.runtime.allow_http_loopback,
+                    proxy_url=self.runtime.proxy_url if same_origin else None,
+                )
+            except ValueError as error:
+                raise ProviderAdapterError(
+                    "INVALID_INPUT", "供应商请求地址指向了不允许的网络"
+                ) from error
+        else:
+            client = self._injected_client
         try:
             try:
-                response = client.request(method, url, follow_redirects=False, **kwargs)
+                request = client.build_request(method, url, **kwargs)
+                response = client.send(request, stream=True, follow_redirects=False)
+                try:
+                    if 300 <= response.status_code < 400:
+                        raise ProviderAdapterError("UPSTREAM", "供应商返回了未允许的重定向")
+                    if response.is_error:
+                        raise _provider_error(response)
+                    declared_size = response.headers.get("content-length")
+                    if (
+                        declared_size
+                        and declared_size.isdigit()
+                        and int(declared_size) > self.runtime.max_response_bytes
+                    ):
+                        raise ProviderAdapterError(
+                            "INVALID_OUTPUT", "供应商响应超过允许的大小"
+                        )
+                    content = bytearray()
+                    for chunk in response.iter_bytes():
+                        content.extend(chunk)
+                        if len(content) > self.runtime.max_response_bytes:
+                            raise ProviderAdapterError(
+                                "INVALID_OUTPUT", "供应商响应超过允许的大小"
+                            )
+                    return httpx.Response(
+                        response.status_code,
+                        headers=response.headers,
+                        content=bytes(content),
+                        request=request,
+                        extensions=response.extensions,
+                    )
+                finally:
+                    response.close()
             except httpx.TimeoutException as error:
                 raise ProviderAdapterError(
                     "TIMEOUT", "供应商请求超时", retryable=True
@@ -148,11 +305,6 @@ class _CompatibleBase:
                 raise ProviderAdapterError(
                     "UPSTREAM", "无法连接供应商服务", retryable=True
                 ) from error
-            if 300 <= response.status_code < 400:
-                raise ProviderAdapterError("UPSTREAM", "供应商返回了未允许的重定向")
-            if response.is_error:
-                raise _provider_error(response)
-            return response
         finally:
             if self._injected_client is None:
                 client.close()
@@ -165,20 +317,37 @@ class OpenAICompatibleAdapter(_CompatibleBase):
     def generate_structured(
         self, request: StructuredRequest, output_schema: type[BaseModel]
     ) -> BaseModel:
+        supports_schema = _supports(
+            self.runtime,
+            "response_format",
+            "json_schema",
+            "structured_outputs",
+        )
+        prompt = (
+            request.prompt
+            if supports_schema
+            else _schema_prompt(request.prompt, output_schema)
+        )
         if self.runtime.use_responses_api:
             payload: dict[str, Any] = {
                 "model": self.runtime.model_id,
-                "input": request.prompt,
-                "temperature": request.temperature,
-                "text": {
+                "input": prompt,
+            }
+            if _supports(self.runtime, "temperature"):
+                payload["temperature"] = request.temperature
+            if supports_schema:
+                payload["text"] = {
                     "format": {
                         "type": "json_schema",
                         "name": output_schema.__name__.lower(),
                         "schema": output_schema.model_json_schema(),
                         "strict": True,
                     }
-                },
-            }
+                }
+            if request.metadata.get("max_output_tokens") and _supports(
+                self.runtime, "max_output_tokens"
+            ):
+                payload["max_output_tokens"] = request.metadata["max_output_tokens"]
             if request.system_instruction:
                 payload["instructions"] = request.system_instruction
             payload.update(_safe_extra_body(self.runtime))
@@ -194,14 +363,18 @@ class OpenAICompatibleAdapter(_CompatibleBase):
             messages = []
             if request.system_instruction:
                 messages.append({"role": "system", "content": request.system_instruction})
-            messages.append({"role": "user", "content": request.prompt})
+            messages.append({"role": "user", "content": prompt})
             payload = {
                 "model": self.runtime.model_id,
                 "messages": messages,
-                "temperature": request.temperature,
-                "response_format": self._response_format(output_schema),
             }
-            if request.metadata.get("max_output_tokens"):
+            if _supports(self.runtime, "temperature"):
+                payload["temperature"] = request.temperature
+            if supports_schema:
+                payload["response_format"] = self._response_format(output_schema)
+            if request.metadata.get("max_output_tokens") and _supports(
+                self.runtime, "max_tokens", "max_output_tokens"
+            ):
                 payload["max_tokens"] = request.metadata["max_output_tokens"]
             payload.update(_safe_extra_body(self.runtime))
             response = self._request(
@@ -224,7 +397,18 @@ class OpenAICompatibleAdapter(_CompatibleBase):
     ) -> BaseModel:
         if len(request.images) != len(request.mime_types):
             raise ProviderAdapterError("INVALID_INPUT", "图片与 MIME 类型数量不一致")
-        content: list[dict[str, Any]] = [{"type": "text", "text": request.prompt}]
+        supports_schema = _supports(
+            self.runtime,
+            "response_format",
+            "json_schema",
+            "structured_outputs",
+        )
+        prompt = (
+            request.prompt
+            if supports_schema
+            else _schema_prompt(request.prompt, output_schema)
+        )
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
         for data, mime_type in zip(request.images, request.mime_types, strict=True):
             encoded = base64.b64encode(data).decode("ascii")
             content.append(
@@ -240,10 +424,16 @@ class OpenAICompatibleAdapter(_CompatibleBase):
         payload = {
             "model": self.runtime.model_id,
             "messages": messages,
-            "temperature": request.temperature,
-            "response_format": self._response_format(output_schema),
             **_safe_extra_body(self.runtime),
         }
+        if _supports(self.runtime, "temperature"):
+            payload["temperature"] = request.temperature
+        if supports_schema:
+            payload["response_format"] = self._response_format(output_schema)
+        if request.metadata.get("max_output_tokens") and _supports(
+            self.runtime, "max_tokens", "max_output_tokens"
+        ):
+            payload["max_tokens"] = request.metadata["max_output_tokens"]
         response = self._request(
             "POST",
             self.runtime.endpoint("chat"),

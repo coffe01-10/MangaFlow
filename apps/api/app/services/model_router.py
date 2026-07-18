@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import HTTPException
 from sqlalchemy import or_, select
@@ -23,7 +24,7 @@ from app.model_adapters.vertex import VertexImageAdapter, VertexTextAdapter
 from app.models import AIModel, ProviderConnection, ProviderKey, ProviderProfile, RoutingPolicy
 from app.services.credential_crypto import SelectedProviderKey, select_provider_key
 from app.services.model_registry import ModelCapability, build_registry
-from app.services.provider_presets import ensure_provider_presets
+from app.services.provider_presets import ensure_provider_presets, proxy_url_for_connection
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,18 @@ def get_catalog_model(db: Session, reference: str) -> AIModel | None:
     return db.scalar(select(AIModel).where(AIModel.legacy_alias == reference))
 
 
+def model_supports_resolution(model: AIModel, resolution: str) -> bool:
+    supported = (model.capabilities or {}).get("resolutions") or []
+    return not supported or resolution in supported
+
+
+def model_operation_verified(model: AIModel, operation: str) -> bool:
+    if model.confidence != "VERIFIED":
+        return False
+    verified_operations = (model.capabilities or {}).get("verified_operations")
+    return verified_operations is None or operation in verified_operations
+
+
 def resolve_model(
     db: Session,
     settings: Settings,
@@ -59,6 +72,13 @@ def resolve_model(
     task_kind: str | None = None,
 ) -> ResolvedModel:
     ensure_provider_presets(db, settings)
+    if operation.startswith("image_") and (
+        not explicit_reference or explicit_reference.casefold() == "auto"
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="图片任务必须显式选择模型，以保持项目画风一致",
+        )
     if explicit_reference and explicit_reference.lower() != "auto":
         model = get_catalog_model(db, explicit_reference)
         if model is None:
@@ -158,6 +178,16 @@ def bind_adapter(
                 },
                 use_responses_api=connection.use_responses_api,
                 capabilities=model.capabilities or {},
+                allow_private_networks=settings.allow_private_provider_networks,
+                max_response_bytes=settings.max_upload_bytes,
+                allow_http_loopback=(
+                    settings.environment.lower() == "development"
+                    and urlparse(connection.base_url).hostname
+                    in {"localhost", "127.0.0.1", "::1"}
+                ),
+                proxy_url=proxy_url_for_connection(
+                    resolved.provider, connection, settings
+                ),
             )
             adapter = (
                 AnthropicCompatibleAdapter(runtime)
@@ -188,7 +218,9 @@ def _require_eligible(
         raise HTTPException(status_code=409, detail="模型或供应商当前已停用")
     if operation not in (resolved.model.operations or []):
         raise HTTPException(status_code=422, detail="所选模型不支持当前任务")
-    if not explicit and resolved.model.confidence != "VERIFIED":
+    if resolved.connection.protocol == "ANTHROPIC" and operation.startswith("image_"):
+        raise HTTPException(status_code=422, detail="Anthropic 协议连接不支持图片生成任务")
+    if not explicit and not model_operation_verified(resolved.model, operation):
         raise HTTPException(status_code=409, detail="未经能力测试的模型不能参与自动路由")
     if not explicit and resolved.connection.health_state != "HEALTHY":
         raise HTTPException(status_code=409, detail="连接尚未通过健康验证")

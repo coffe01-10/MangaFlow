@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     # The value must be a URL-safe base64 encoded 32-byte key. Existing
     # environment-managed Vertex credentials keep working when it is absent.
     mangaflow_credential_master_key: str | None = None
+    mangaflow_proxy_url: str | None = None
     allow_private_provider_networks: bool = False
 
     redis_url: str = "redis://localhost:6379/0"

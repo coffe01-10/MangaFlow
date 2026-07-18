@@ -126,7 +126,7 @@ function CreateProjectPanel({ open, onClose }: { open: boolean; onClose: () => v
             ))}
           </div>
 
-          <p className="form-note"><Sparkles size={14} />图片模型不设默认主次；进入工作区后显式选择，或使用已验证模型自动路由。</p>
+          <p className="form-note"><Sparkles size={14} />图片模型不设默认主次；进入工作区后必须显式选择，以保持项目画风一致。</p>
 
           <label className="field-label">正式输出清晰度</label>
           <div className="resolution-row">
@@ -189,7 +189,7 @@ export default function HomePage() {
             <div><span>活跃项目</span><strong>{String(projectCount).padStart(2, "0")}</strong><small>PROJECTS</small></div>
             <div><span>漫画页面</span><strong>{String(dashboard.data?.totals.page_count ?? 0).padStart(2, "0")}</strong><small>{dashboard.data?.totals.selected_page_count ?? 0} 页已采用</small></div>
             <div><span>待复查</span><strong>{String(dashboard.data?.totals.review_page_count ?? 0).padStart(2, "0")}</strong><small>按页面去重</small></div>
-            <div className="metric-accent"><Gauge size={17} /><span>AI 模型目录</span><strong>{[...modelMap.values()].filter((model) => model.enabled).length} 个可用模型</strong><small>显式选择或自动路由</small></div>
+            <div className="metric-accent"><Gauge size={17} /><span>AI 模型目录</span><strong>{[...modelMap.values()].filter((model) => model.enabled).length} 个可用模型</strong><small>图片显式选择 · 文字可自动路由</small></div>
           </div>
 
           <section className="projects-section">

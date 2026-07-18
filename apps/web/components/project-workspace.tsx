@@ -28,6 +28,8 @@ import {
   Clapperboard,
   Check,
   CircleAlert,
+  ChevronDown,
+  ChevronUp,
   Download,
   FileImage,
   Heart,
@@ -239,13 +241,21 @@ export default function ProjectWorkspace({
   const currentAssetKind = assetView === "references" ? assetKind : assetKindByView[assetView];
   const [uploadError, setUploadError] = useState("");
   const [showArchivedJobs, setShowArchivedJobs] = useState(false);
+  const [queueDockHidden, setQueueDockHidden] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem("mangaflow.queue-dock-hidden") === "true";
+  });
   const [jobNotice, setJobNotice] = useState("");
   const [selectedJobIds, setSelectedJobIds] = useState<string[]>([]);
   const [sourceTitle, setSourceTitle] = useState("第一章");
   const [sourceText, setSourceText] = useState("");
   const [selectedChapterId, setSelectedChapterId] = useState<string | null>(null);
   const [selectedPageId, setSelectedPageId] = useState<string | null>(() => searchParams.get("page"));
-  const [drawModel, setDrawModel] = useState<ImageModelAlias | null>(null);
+  const [drawModel, setDrawModelState] = useState<ImageModelAlias | null>(() => {
+    if (typeof window === "undefined") return null;
+    const stored = window.localStorage.getItem(`mangaflow.image-model.${id}`);
+    return stored && stored !== "auto" ? stored : null;
+  });
   const [characterName, setCharacterName] = useState("");
   const [characterAliases, setCharacterAliases] = useState("");
   const [editCharacterName, setEditCharacterName] = useState("");
@@ -307,6 +317,14 @@ export default function ProjectWorkspace({
   const needsScript = ["source", "script"].includes(section);
   const projectPath = (target: string) =>
     target === "assets" ? `/projects/${id}/assets/characters` : `/projects/${id}/${target}`;
+  const setDrawModel = (model: ImageModelAlias) => {
+    setDrawModelState(model);
+    window.localStorage.setItem(`mangaflow.image-model.${id}`, model);
+  };
+  const toggleQueueDock = (hidden: boolean) => {
+    setQueueDockHidden(hidden);
+    window.localStorage.setItem("mangaflow.queue-dock-hidden", String(hidden));
+  };
 
   const project = useQuery({ queryKey: ["project", id], queryFn: () => api.project(id), staleTime: 30_000 });
   const models = useQuery({ queryKey: ["models"], queryFn: api.models, staleTime: 30_000 });
@@ -414,26 +432,25 @@ export default function ProjectWorkspace({
 
   const draft = localDraft ?? project.data ?? null;
   const modelOptions = useMemo(
-    () => [{
-      alias: "auto",
-      name: "自动路由",
-      id: "仅从已验证模型中按可靠性、延迟与成本选择",
-      provider: "MangaFlow",
-    }, ...(models.data ?? [])
-      .filter((model) => model.enabled && model.model_type === "IMAGE" && model.operations.includes("image_edit"))
-      .map((model) => ({
+    () => {
+      const available = (models.data ?? [])
+        .filter((model) => model.enabled && model.model_type === "IMAGE" && model.operations.includes("image_edit"));
+      return available.map((model) => ({
         alias: model.logical_alias,
         name: model.display_name,
         id: model.model_id,
         provider: model.provider,
-      }))],
+      }));
+    },
     [models.data],
   );
   const boundCharacter = characters.data?.find((item) => item.id === bindCharacterId) ?? null;
   const editingOutfit = outfits.data?.find((item) => item.id === editingOutfitId) ?? null;
   const selectedOutfitFiles = assets.data?.filter((item) => selectedOutfitAssets.includes(item.id)) ?? [];
   const selectedStyleFiles = assets.data?.filter((item) => selectedStyleAssets.includes(item.id)) ?? [];
-  const activeDrawModel = drawModel;
+  const activeDrawModel = drawModel && modelOptions.some((option) => option.alias === drawModel)
+    ? drawModel
+    : null;
   const visibleAssetKinds = assetView === "references"
     ? kinds
     : kinds.filter(([kind]) => kind === currentAssetKind);
@@ -1125,7 +1142,7 @@ export default function ProjectWorkspace({
                 {characters.data?.map((character) => <button key={character.id} className={bindCharacterId === character.id ? "character-chip active" : "character-chip"} onClick={() => { if (editingOutfitId) resetOutfitForm(); setBindCharacterId(character.id); setSelectedCharacterOutfitId(""); setEditCharacterName(character.primary_name); setEditCharacterAliases(character.aliases.join("，")); setEditLockedFeatures(character.locked_features.join("，")); setEditForbiddenChanges(character.forbidden_changes.join("，")); }}><strong>{character.primary_name}</strong><span>{character.aliases.length ? `又名 ${character.aliases.join(" / ")}` : "无绰号"}</span>{character.alias_conflict && <em>称呼冲突待确认</em>}<small>{character.references.length} 张参考图 · {character.locked_features.length} 项已锁定</small></button>)}
               </div>
               {boundCharacter && <div className="character-editor"><div><strong>规范姓名与一致性锁</strong><span>剧本统一使用主要姓名；固定特征和禁止改变项会进入每次生图提示。</span></div><input aria-label="编辑主要姓名" className="text-input" value={editCharacterName} onChange={(event) => setEditCharacterName(event.target.value)} /><input aria-label="编辑角色绰号" className="text-input" value={editCharacterAliases} onChange={(event) => setEditCharacterAliases(event.target.value)} placeholder="绰号，用逗号分隔" /><button className="button outline compact" disabled={!editCharacterName.trim() || updateCharacter.isPending} onClick={() => updateCharacter.mutate()}>{updateCharacter.isPending ? <LoaderCircle className="spin" size={13} /> : <Pencil size={13} />}保存角色规范</button><div className="character-lock-fields"><input aria-label="角色固定特征" className="text-input" value={editLockedFeatures} onChange={(event) => setEditLockedFeatures(event.target.value)} placeholder="固定特征：黑色长发、左眼泪痣…" /><input aria-label="角色禁止改变项" className="text-input" value={editForbiddenChanges} onChange={(event) => setEditForbiddenChanges(event.target.value)} placeholder="禁止改变：发色、瞳色、身高关系…" /></div>{boundCharacter.alias_conflict && <em><CircleAlert size={12} />当前称呼与其他角色冲突，请修改后保存</em>}</div>}
-              <ImageModelPicker selected={activeDrawModel} onSelect={setDrawModel} options={modelOptions} label="本次素材生成模型（按任务显式选择，不沿用上次结果）" />
+              <ImageModelPicker selected={activeDrawModel} onSelect={setDrawModel} options={modelOptions} label="项目视觉模型（必须显式选择，并在各生成页面保持一致）" />
               {boundCharacter && <CharacterConceptPanel key={boundCharacter.id} projectId={id} character={boundCharacter} model={activeDrawModel} onOpen={openPreview} />}
               </>}
               {assetView === "outfits" && <>
@@ -1322,7 +1339,7 @@ export default function ProjectWorkspace({
 
       {previewImage && <div className="image-lightbox" role="dialog" aria-modal="true" aria-label={previewImage.label} onClick={() => setPreviewImage(null)}><button type="button" className="lightbox-close" aria-label="关闭大图" onClick={() => setPreviewImage(null)}><X size={20} /></button><div className="lightbox-shell" onClick={(event) => event.stopPropagation()}><div className="lightbox-toolbar"><strong>{previewImage.label}</strong><div><button type="button" aria-label="缩小图片" disabled={previewZoom <= .5} onClick={() => setPreviewZoom((value) => Math.max(.5, value - .25))}><ZoomOut size={17} /></button><button type="button" onClick={() => setPreviewZoom(1)}>{Math.round(previewZoom * 100)}%</button><button type="button" aria-label="放大图片" disabled={previewZoom >= 2.5} onClick={() => setPreviewZoom((value) => Math.min(2.5, value + .25))}><ZoomIn size={17} /></button></div></div><div className="lightbox-stage"><Image style={{ transform: `scale(${previewZoom})` }} src={previewImage.url} alt={previewImage.label} width={1600} height={1600} unoptimized /></div><span>使用 ＋/－ 调整到 50%–250%，点击背景或右上角关闭</span></div></div>}
 
-      <Link className="queue-dock" href={projectPath("jobs")}><div><span className={queueStats.waiting ? "queue-light active" : "queue-light"} /><strong>打开任务中心</strong><small>{jobs.data?.[0] ? `${jobLabels[jobs.data[0].job_type] ?? jobs.data[0].job_type} · ${jobs.data[0].status}` : section === "jobs" || section === "generate" ? "当前没有任务" : "查看生成、解析与检查进度"}</small></div>{(section === "jobs" || section === "generate") && <div><span>并发上限 {draft.default_concurrency}</span><i /><span>{queueStats.waiting} 等待</span><i /><span>{queueStats.failed} 失败</span></div>}</Link>
+      {queueDockHidden ? <button type="button" className="queue-dock-reveal" aria-label="显示任务中心快捷栏" title="显示任务中心快捷栏" onClick={() => toggleQueueDock(false)}><ListTodo size={16} /><span className={queueStats.waiting ? "queue-light active" : "queue-light"} /><ChevronUp size={13} /></button> : <><Link className="queue-dock" href={projectPath("jobs")}><div><span className={queueStats.waiting ? "queue-light active" : "queue-light"} /><strong>打开任务中心</strong><small>{jobs.data?.[0] ? `${jobLabels[jobs.data[0].job_type] ?? jobs.data[0].job_type} · ${jobs.data[0].status}` : section === "jobs" || section === "generate" ? "当前没有任务" : "查看生成、解析与检查进度"}</small></div>{(section === "jobs" || section === "generate") && <div><span>并发上限 {draft.default_concurrency}</span><i /><span>{queueStats.waiting} 等待</span><i /><span>{queueStats.failed} 失败</span></div>}</Link><button type="button" className="queue-dock-hide" aria-label="隐藏任务中心快捷栏" title="隐藏任务中心快捷栏" onClick={() => toggleQueueDock(true)}><ChevronDown size={15} /></button></>}
     </AppShell>
   );
 }

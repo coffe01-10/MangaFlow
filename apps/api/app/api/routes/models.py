@@ -67,6 +67,18 @@ def list_models(db: Session = Depends(get_db)) -> list[dict]:
                     and connection.id in usable_key_connections
                 )
             ),
+            "auto_eligible": model.enabled
+            and connection.enabled
+            and profile.enabled
+            and model.confidence == "VERIFIED"
+            and connection.health_state == "HEALTHY"
+            and (
+                connection.protocol == "VERTEX_NATIVE"
+                or (
+                    settings.provider_credentials_writable
+                    and connection.id in usable_key_connections
+                )
+            ),
             "priority": model.priority,
         }
         for model, connection, profile in rows

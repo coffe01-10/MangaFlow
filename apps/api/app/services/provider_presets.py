@@ -269,6 +269,25 @@ def preset_dicts() -> list[dict]:
     ]
 
 
+def proxy_url_for_connection(
+    profile: ProviderProfile,
+    connection: ProviderConnection,
+    settings: Settings,
+) -> str | None:
+    """Only route unchanged built-in API origins through the operator proxy."""
+
+    if not settings.mangaflow_proxy_url or not profile.built_in or not profile.preset_key:
+        return None
+    preset = next((item for item in PRESETS if item.key == profile.preset_key), None)
+    if (
+        preset is None
+        or preset.protocol != connection.protocol
+        or preset.base_url.rstrip("/") != connection.base_url.rstrip("/")
+    ):
+        return None
+    return settings.mangaflow_proxy_url
+
+
 def ensure_provider_presets(db: Session, settings: Settings) -> None:
     existing = {
         row.preset_key: row

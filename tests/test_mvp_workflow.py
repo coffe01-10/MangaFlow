@@ -685,9 +685,49 @@ def test_candidate_requires_explicit_neutral_model(client, db_session, monkeypat
     batch = client.post(f"/api/v1/pages/{plan['pages'][0]['id']}/batches").json()
     response = client.post(
         f"/api/v1/batches/{batch['id']}/candidates",
-        json={"model_alias": "image.fast", "resolution": "1K"},
+        json={
+            "model_alias": "auto",
+            "resolution": "1K",
+            "storyboard_version": plan["pages"][0]["storyboard_version"],
+        },
     )
     assert response.status_code == 422
+    assert "显式选择" in response.text
+
+
+def test_character_concept_without_references_uses_generate_capability(
+    client, db_session, monkeypatch
+):
+    from app.api.routes import asset_generation
+
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    project = _project(client, "无参考概念图")
+    character = client.post(
+        f"/api/v1/projects/{project['id']}/characters",
+        json={"primary_name": "林澄", "aliases": []},
+    ).json()
+    operations: list[str] = []
+    original_resolve = asset_generation.resolve_model
+
+    def record_operation(*args, operation: str, **kwargs):
+        operations.append(operation)
+        return original_resolve(*args, operation=operation, **kwargs)
+
+    monkeypatch.setattr(asset_generation, "resolve_model", record_operation)
+    response = client.post(
+        f"/api/v1/characters/{character['id']}/complete-sheet",
+        json={
+            "model_alias": "image.nano_banana_2",
+            "resolution": "1K",
+            "generation_mode": "CONCEPT",
+            "appearance_description": "黑色短发，冷静克制",
+            "outfit_name": "日常制服",
+            "outfit_description": "深色简洁制服",
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    assert operations == ["image_generate"]
 
 
 def test_asset_generation_batches_join_library(client, db_session, monkeypatch):
@@ -724,6 +764,17 @@ def test_asset_generation_batches_join_library(client, db_session, monkeypatch):
         },
     )
     assert batch.status_code == 201
+    automatic = client.post(
+        f"/api/v1/asset-generation-batches/{batch.json()['id']}/candidates",
+        json={
+            "model_alias": "auto",
+            "resolution": "1K",
+            "variant": "SIDE",
+            "instruction": "",
+        },
+    )
+    assert automatic.status_code == 422
+    assert "必须显式选择" in automatic.text
     candidate = client.post(
         f"/api/v1/asset-generation-batches/{batch.json()['id']}/candidates",
         json={

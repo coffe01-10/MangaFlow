@@ -69,7 +69,7 @@ from app.services.editor import (
     validate_character_ids,
 )
 from app.services.job_service import cancel_job, create_job, enqueue_job, reset_for_retry
-from app.services.model_router import resolve_model
+from app.services.model_router import model_supports_resolution, resolve_model
 from app.services.page_readiness import (
     build_page_readiness,
     ensure_page_ready,
@@ -77,7 +77,7 @@ from app.services.page_readiness import (
 
 router = APIRouter()
 
-TERMINAL_JOB_STATUSES = {"COMPLETED", "FAILED", "CANCELLED"}
+TERMINAL_JOB_STATUSES = {"COMPLETED", "FAILED", "CANCELLED", "NEEDS_REVIEW"}
 DELETABLE_JOB_STATUSES = {"FAILED", "CANCELLED"}
 
 
@@ -603,8 +603,7 @@ def create_candidate(
         project_id=project.id,
         task_kind="PAGE_GENERATE",
     )
-    supported_resolutions = resolved_model.model.capabilities.get("resolutions") or []
-    if supported_resolutions and payload.resolution.value not in supported_resolutions:
+    if not model_supports_resolution(resolved_model.model, payload.resolution.value):
         raise HTTPException(status_code=422, detail="所选模型不支持该输出清晰度")
     panels = list(db.scalars(select(Panel).where(Panel.page_id == page.id)))
     visible_character_ids = list(
@@ -1410,6 +1409,8 @@ def repair_candidate(
         project_id=project.id,
         task_kind="PAGE_REPAIR",
     )
+    if not model_supports_resolution(resolved_model.model, payload.resolution.value):
+        raise HTTPException(status_code=422, detail="所选模型不支持该输出清晰度")
     candidate.catalog_model_id = resolved_model.model.id
     project.last_image_model_alias = payload.model_alias
     project.image_model_alias = payload.model_alias
@@ -1483,6 +1484,8 @@ def upscale_candidate(
         project_id=project.id,
         task_kind="PAGE_UPSCALE",
     )
+    if not model_supports_resolution(resolved_model.model, payload.resolution.value):
+        raise HTTPException(status_code=422, detail="所选模型不支持目标升清规格")
     candidate.catalog_model_id = resolved_model.model.id
     project.last_image_model_alias = payload.model_alias
     project.image_model_alias = payload.model_alias

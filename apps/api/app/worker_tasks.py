@@ -53,6 +53,7 @@ from app.services.model_router import (
     ResolvedModel,
     bind_adapter,
     get_catalog_model,
+    model_supports_resolution,
 )
 from app.services.prompt_compiler import PAGE_TEMPLATE_VERSION, compile_page_prompt
 from app.services.provider_presets import ensure_provider_presets
@@ -667,6 +668,10 @@ def _run_page_generate(db, job: GenerationJob) -> None:
     )
     candidate.catalog_model_id = binding.resolved.model.id
     job.catalog_model_id = binding.resolved.model.id
+    if not model_supports_resolution(binding.resolved.model, candidate.resolution.value):
+        raise ProviderAdapterError(
+            "UNSUPPORTED_CAPABILITY", "所选模型不支持当前输出清晰度"
+        )
     _validate_reference_capacity(binding, len(reference_bytes))
     _lease_reference_assets(db, job, reference_asset_ids)
     # Re-read every leased row after committing the guard. A concurrent delete or
@@ -1113,7 +1118,7 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
     reference_types = [asset.mime_type for asset in references]
     binding = _binding(
         db,
-        operation="image_edit",
+        operation="image_edit" if reference_bytes else "image_generate",
         project_id=batch.project_id,
         explicit_reference=(
             candidate.catalog_model_id or job.catalog_model_id or candidate.model_alias
@@ -1122,6 +1127,10 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
     )
     candidate.catalog_model_id = binding.resolved.model.id
     job.catalog_model_id = binding.resolved.model.id
+    if not model_supports_resolution(binding.resolved.model, candidate.resolution.value):
+        raise ProviderAdapterError(
+            "UNSUPPORTED_CAPABILITY", "所选模型不支持当前输出清晰度"
+        )
     _validate_reference_capacity(binding, len(reference_bytes))
     db.commit()
     response = _invoke_provider(

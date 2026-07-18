@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings
 from app.model_adapters.base import ProviderAdapterError
-from app.model_adapters.compatible import validate_provider_url
+from app.model_adapters.compatible import provider_http_client
 from app.models import (
     AIModel,
     ModelProbe,
@@ -42,6 +42,7 @@ from app.services.provider_presets import (
     ANTHROPIC_ENDPOINTS,
     OPENAI_ENDPOINTS,
     ensure_provider_presets,
+    proxy_url_for_connection,
 )
 
 _BLOCKED_HEADERS = {"authorization", "x-api-key", "host", "content-length"}
@@ -81,6 +82,26 @@ def _validate_headers(headers: dict[str, str]) -> dict[str, str]:
         if "\r" in key or "\n" in key or "\r" in str(headers[key]) or "\n" in str(headers[key]):
             raise HTTPException(status_code=422, detail="请求头不能包含换行符")
     return {str(key): str(value) for key, value in headers.items()}
+
+
+def _validate_balance_config(config: dict[str, Any]) -> dict[str, Any]:
+    value = dict(config)
+    path = value.get("path")
+    if path:
+        parsed = urlparse(str(path))
+        if (
+            not str(path).startswith("/")
+            or str(path).startswith("//")
+            or parsed.scheme
+            or parsed.netloc
+            or parsed.fragment
+            or ".." in parsed.path.split("/")
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="余额端点必须是同一供应商下的站内绝对路径",
+            )
+    return value
 
 
 def _default_endpoints(protocol: str) -> dict[str, str]:
@@ -202,6 +223,7 @@ def update_provider(
     if profile.version != payload.version:
         raise HTTPException(status_code=409, detail="供应商设置已更新，请刷新后重试")
     changes = payload.model_dump(exclude_unset=True, exclude={"version"})
+    changes = {key: value for key, value in changes.items() if value is not None}
     for key, value in changes.items():
         setattr(profile, key, value)
     profile.version += 1
@@ -251,6 +273,10 @@ def update_connection(
     if changes.get("endpoint_templates") is not None:
         changes["endpoint_templates"] = _validate_endpoint_templates(
             changes["endpoint_templates"]
+        )
+    if changes.get("balance_config") is not None:
+        changes["balance_config"] = _validate_balance_config(
+            changes["balance_config"]
         )
     for key, value in changes.items():
         setattr(connection, key, value)
@@ -312,8 +338,16 @@ def delete_provider_key(db: Session, connection_id: str, key_id: str) -> None:
 def create_model(
     db: Session, connection_id: str, payload: ProviderModelCreate
 ) -> AIModel:
-    if db.get(ProviderConnection, connection_id) is None:
+    connection = db.get(ProviderConnection, connection_id)
+    if connection is None:
         raise HTTPException(status_code=404, detail="供应商连接不存在")
+    _validate_protocol_capabilities(
+        connection,
+        payload.model_type,
+        payload.input_modalities,
+        payload.output_modalities,
+        payload.operations,
+    )
     duplicate = db.scalar(
         select(AIModel).where(
             AIModel.connection_id == connection_id,
@@ -343,7 +377,18 @@ def update_model(db: Session, model_id: str, payload: ProviderModelUpdate) -> AI
         raise HTTPException(status_code=404, detail="模型不存在")
     if model.version != payload.version:
         raise HTTPException(status_code=409, detail="模型设置已更新，请刷新后重试")
-    for key, value in payload.model_dump(exclude_unset=True, exclude={"version"}).items():
+    changes = payload.model_dump(exclude_unset=True, exclude={"version"})
+    connection = db.get(ProviderConnection, model.connection_id)
+    if connection is None:
+        raise HTTPException(status_code=409, detail="模型所属连接已不存在")
+    _validate_protocol_capabilities(
+        connection,
+        str(changes.get("model_type") or model.model_type),
+        list(changes.get("input_modalities") or model.input_modalities or []),
+        list(changes.get("output_modalities") or model.output_modalities or []),
+        list(changes.get("operations") or model.operations or []),
+    )
+    for key, value in changes.items():
         setattr(model, key, value)
     model.source = "MANUAL"
     model.confidence = "MANUAL"
@@ -351,6 +396,39 @@ def update_model(db: Session, model_id: str, payload: ProviderModelUpdate) -> AI
     db.commit()
     db.refresh(model)
     return model
+
+
+def _validate_protocol_capabilities(
+    connection: ProviderConnection,
+    model_type: str,
+    input_modalities: list[str],
+    output_modalities: list[str],
+    operations: list[str],
+) -> None:
+    if connection.protocol == "ANTHROPIC" and (
+        model_type == "IMAGE" or any(operation.startswith("image_") for operation in operations)
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="Anthropic 协议连接当前只支持文字与视觉理解模型",
+        )
+    allowed_operations = {
+        "TEXT": {"structured_text", "multimodal_analysis"},
+        "IMAGE": {"image_generate", "image_edit"},
+    }
+    unknown = set(operations) - allowed_operations[model_type]
+    if not operations or unknown:
+        raise HTTPException(status_code=422, detail="模型操作与模型类型不匹配")
+    if model_type == "TEXT" and "TEXT" not in output_modalities:
+        raise HTTPException(status_code=422, detail="文字模型必须声明 TEXT 输出")
+    if model_type == "IMAGE" and "IMAGE" not in output_modalities:
+        raise HTTPException(status_code=422, detail="图片模型必须声明 IMAGE 输出")
+    if "TEXT" not in input_modalities:
+        raise HTTPException(status_code=422, detail="当前支持的模型操作必须接受 TEXT 输入")
+    if (
+        "multimodal_analysis" in operations or "image_edit" in operations
+    ) and "IMAGE" not in input_modalities:
+        raise HTTPException(status_code=422, detail="视觉分析或图片编辑必须接受 IMAGE 输入")
 
 
 def _request_headers(connection: ProviderConnection, api_key: str) -> dict[str, str]:
@@ -363,19 +441,28 @@ def _request_headers(connection: ProviderConnection, api_key: str) -> dict[str, 
     return headers
 
 
-def _validate_call_target(connection: ProviderConnection, settings: Settings) -> None:
-    if connection.protocol in {"VERTEX_NATIVE", "GOOGLE_NATIVE"}:
-        return
-    parsed = urlparse(connection.base_url)
-    allow_loopback = settings.environment == "development" and parsed.hostname in {
+def _connection_http_client(
+    db: Session,
+    settings: Settings,
+    connection: ProviderConnection,
+    url: str,
+    timeout: httpx.Timeout,
+) -> httpx.Client:
+    profile = db.get(ProviderProfile, connection.provider_id)
+    parsed = urlparse(url)
+    allow_loopback = settings.environment.lower() == "development" and parsed.hostname in {
         "localhost",
         "127.0.0.1",
         "::1",
     }
-    validate_provider_url(
-        connection.base_url,
+    return provider_http_client(
+        url,
+        timeout=timeout,
         allow_private=settings.allow_private_provider_networks,
         allow_http_loopback=allow_loopback,
+        proxy_url=(
+            proxy_url_for_connection(profile, connection, settings) if profile else None
+        ),
     )
 
 
@@ -395,10 +482,9 @@ def discover_models(
             db.scalars(select(AIModel).where(AIModel.connection_id == connection.id))
         )
     selected = select_provider_key(db, settings, connection.id)
-    _validate_call_target(connection, settings)
     started = perf_counter()
-    owned_client = client is None
-    http = client or httpx.Client(timeout=httpx.Timeout(30.0, connect=10.0))
+    owned_client = False
+    http = client
     try:
         if connection.protocol == "GOOGLE_NATIVE":
             from google import genai
@@ -415,8 +501,20 @@ def discover_models(
                     close()
         else:
             path = (connection.endpoint_templates or {}).get("models", "/models")
+            target_url = urljoin(
+                f"{connection.base_url.rstrip('/')}/", path.lstrip("/")
+            )
+            if http is None:
+                http = _connection_http_client(
+                    db,
+                    settings,
+                    connection,
+                    target_url,
+                    httpx.Timeout(30.0, connect=10.0),
+                )
+                owned_client = True
             response = http.get(
-                urljoin(f"{connection.base_url.rstrip('/')}/", path.lstrip("/")),
+                target_url,
                 headers=_request_headers(connection, selected.secret),
                 follow_redirects=False,
             )
@@ -454,7 +552,7 @@ def discover_models(
             raise HTTPException(status_code=502, detail=error.user_message) from error
         raise HTTPException(status_code=502, detail="无法读取供应商模型列表") from error
     finally:
-        if owned_client:
+        if owned_client and http is not None:
             http.close()
 
 
@@ -488,6 +586,27 @@ def _upsert_discovered_models(
             )
             db.add(model)
         elif model.source != "MANUAL":
+            current_capabilities = dict(model.capabilities or {})
+            verified_operations = current_capabilities.pop("verified_operations", None)
+            preserve_verification = model.confidence in {"VERIFIED", "PARTIAL"} and all(
+                getattr(model, key) == metadata[key]
+                for key in (
+                    "model_type",
+                    "input_modalities",
+                    "output_modalities",
+                    "operations",
+                    "api_surfaces",
+                )
+            ) and current_capabilities == metadata["capabilities"]
+            if preserve_verification:
+                metadata["confidence"] = model.confidence
+                if verified_operations is not None:
+                    metadata["capabilities"] = {
+                        **metadata["capabilities"],
+                        "verified_operations": verified_operations,
+                    }
+            elif model.confidence in {"VERIFIED", "PARTIAL"}:
+                model.last_verified_at = None
             model.display_name = str(
                 entry.get("display_name") or entry.get("name") or provider_model_id
             )
@@ -520,10 +639,14 @@ def _infer_model(
         inputs = ["TEXT", "IMAGE"] if vision_name else ["TEXT"]
     model_type = "IMAGE" if "IMAGE" in outputs else "TEXT"
     if model_type == "IMAGE":
-        operations = ["image_generate"]
-        if any(token in lowered for token in ("edit", "image", "flux")):
-            operations.append("image_edit")
-        surfaces = ["IMAGES"] if connection.protocol == "OPENAI" else []
+        if connection.protocol == "ANTHROPIC":
+            operations = []
+            surfaces = []
+        else:
+            operations = ["image_generate"]
+            if any(token in lowered for token in ("edit", "image", "flux")):
+                operations.append("image_edit")
+            surfaces = ["IMAGES"] if connection.protocol == "OPENAI" else []
     else:
         operations = ["structured_text"]
         if "IMAGE" in inputs:
@@ -547,7 +670,7 @@ def _infer_model(
         "capabilities": capabilities,
         "pricing": entry.get("pricing") or {},
         "confidence": "DECLARED" if declared else "INFERRED",
-        "enabled": True,
+        "enabled": not (connection.protocol == "ANTHROPIC" and model_type == "IMAGE"),
         "priority": 50,
     }
 
@@ -595,16 +718,27 @@ def read_balance(
     connection = db.get(ProviderConnection, connection_id)
     if connection is None:
         raise HTTPException(status_code=404, detail="供应商连接不存在")
-    config = connection.balance_config or {}
+    config = _validate_balance_config(connection.balance_config or {})
     if not config.get("enabled") or not config.get("path"):
         return {"configured": False, "value": None, "message": "该供应商未配置余额接口"}
     selected = select_provider_key(db, settings, connection.id)
-    _validate_call_target(connection, settings)
-    owned_client = client is None
-    http = client or httpx.Client(timeout=httpx.Timeout(15.0, connect=5.0))
+    target_url = urljoin(
+        f"{connection.base_url.rstrip('/')}/", str(config["path"]).lstrip("/")
+    )
+    owned_client = False
+    http = client
     try:
+        if http is None:
+            http = _connection_http_client(
+                db,
+                settings,
+                connection,
+                target_url,
+                httpx.Timeout(15.0, connect=5.0),
+            )
+            owned_client = True
         response = http.get(
-            urljoin(f"{connection.base_url.rstrip('/')}/", str(config["path"]).lstrip("/")),
+            target_url,
             headers=_request_headers(connection, selected.secret),
             follow_redirects=False,
         )
@@ -636,7 +770,7 @@ def read_balance(
             raise
         raise HTTPException(status_code=502, detail="余额查询失败") from error
     finally:
-        if owned_client:
+        if owned_client and http is not None:
             http.close()
 
 

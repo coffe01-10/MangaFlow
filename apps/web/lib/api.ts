@@ -44,6 +44,7 @@ export interface ModelCapability {
   regions: string[];
   confidence: string;
   enabled: boolean;
+  auto_eligible: boolean;
   priority: number;
 }
 
@@ -425,6 +426,8 @@ export interface PageReadiness {
     text_model_access: string;
     image_model_access: string;
     image_model_alias: string;
+    usable_image_model_count: number;
+    auto_image_model_count: number;
   };
   worker: {
     queue_mode: string;

@@ -9,11 +9,12 @@ from pydantic import BaseModel
 
 from app.config import get_settings
 from app.domain.states import JobStatus
-from app.model_adapters.base import StructuredRequest
+from app.model_adapters.base import ProviderAdapterError, StructuredRequest
 from app.model_adapters.compatible import (
     AnthropicCompatibleAdapter,
     CompatibleRuntime,
     OpenAICompatibleAdapter,
+    provider_http_client,
 )
 from app.models import (
     AIModel,
@@ -37,8 +38,13 @@ from app.services.credential_crypto import (
     select_provider_key,
 )
 from app.services.job_service import cancel_job
-from app.services.model_router import resolve_model
-from app.services.provider_presets import ensure_provider_presets
+from app.services.model_router import (
+    model_operation_verified,
+    model_supports_resolution,
+    resolve_model,
+)
+from app.services.provider_catalog import _upsert_discovered_models
+from app.services.provider_presets import ensure_provider_presets, proxy_url_for_connection
 
 
 class SmokeResult(BaseModel):
@@ -220,6 +226,141 @@ def test_custom_provider_rejects_insecure_public_http(client):
     assert "HTTPS" in response.text
 
 
+def test_balance_endpoint_rejects_cross_origin_url(client):
+    provider = client.post(
+        "/api/v1/providers",
+        json={
+            "name": "余额路径保护",
+            "protocol": "OPENAI",
+            "base_url": "https://balance.example.com/v1",
+        },
+    ).json()
+    connection = provider["connections"][0]
+
+    response = client.patch(
+        f"/api/v1/providers/connections/{connection['id']}",
+        json={
+            "version": connection["version"],
+            "balance_config": {
+                "enabled": True,
+                "path": "http://127.0.0.1:8000/api/v1/settings/runtime",
+            },
+        },
+    )
+
+    assert response.status_code == 422
+    assert "站内绝对路径" in response.text
+
+
+def test_operator_proxy_is_limited_to_unchanged_builtin_origin(
+    db_session, monkeypatch
+):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "mangaflow_proxy_url", "http://127.0.0.1:7897")
+    ensure_provider_presets(db_session, settings)
+    profile = db_session.query(ProviderProfile).filter_by(preset_key="openai").one()
+    connection = (
+        db_session.query(ProviderConnection).filter_by(provider_id=profile.id).one()
+    )
+
+    assert proxy_url_for_connection(profile, connection, settings) == (
+        "http://127.0.0.1:7897"
+    )
+
+    connection.base_url = "https://custom.example.com/v1"
+    assert proxy_url_for_connection(profile, connection, settings) is None
+
+
+def test_provider_http_client_pins_validated_dns_answer(monkeypatch):
+    import app.model_adapters.compatible as compatible
+
+    captured: dict[str, str] = {}
+    monkeypatch.setattr(
+        compatible.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [
+            (2, 1, 6, "", ("93.184.216.34", 443)),
+        ],
+    )
+
+    def transport(hostname: str, address: str):
+        captured.update(hostname=hostname, address=address)
+        return httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"ok": True}, request=request)
+        )
+
+    monkeypatch.setattr(compatible, "_PinnedHTTPTransport", transport)
+    http = provider_http_client(
+        "https://provider.example.com/v1/models",
+        timeout=httpx.Timeout(5.0),
+    )
+    try:
+        assert http.get("https://provider.example.com/v1/models").status_code == 200
+    finally:
+        http.close()
+
+    assert captured == {
+        "hostname": "provider.example.com",
+        "address": "93.184.216.34",
+    }
+
+
+def test_trusted_builtin_proxy_does_not_require_local_target_dns(monkeypatch):
+    import app.model_adapters.compatible as compatible
+
+    monkeypatch.setattr(
+        compatible.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("代理目标不应在本机再次解析")
+        ),
+    )
+    http = provider_http_client(
+        "https://api.openai.com/v1/models",
+        timeout=httpx.Timeout(5.0),
+        proxy_url="http://127.0.0.1:7897",
+    )
+    http.close()
+
+
+def test_compatible_adapter_passes_operator_proxy_for_api_origin(monkeypatch):
+    import app.model_adapters.compatible as compatible
+
+    captured: dict[str, str | None] = {}
+
+    def client_factory(url: str, **kwargs):
+        captured["url"] = url
+        captured["proxy_url"] = kwargs.get("proxy_url")
+        return httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    200,
+                    json={"choices": [{"message": {"content": '{"ok": true}'}}]},
+                    request=request,
+                )
+            )
+        )
+
+    monkeypatch.setattr(compatible, "provider_http_client", client_factory)
+    adapter = OpenAICompatibleAdapter(
+        CompatibleRuntime(
+            provider_name="OpenAI",
+            protocol="OPENAI",
+            base_url="https://api.openai.com/v1",
+            api_key="openai-key",
+            model_id="text-model",
+            endpoint_templates={"chat": "/chat/completions"},
+            proxy_url="http://127.0.0.1:7897",
+        )
+    )
+
+    assert adapter.generate_structured(StructuredRequest(prompt="test"), SmokeResult).ok
+    assert captured == {
+        "url": "https://api.openai.com/v1/chat/completions",
+        "proxy_url": "http://127.0.0.1:7897",
+    }
+
+
 def test_openai_and_anthropic_protocol_adapters_emit_expected_requests():
     requests: list[httpx.Request] = []
 
@@ -271,7 +412,213 @@ def test_openai_and_anthropic_protocol_adapters_emit_expected_requests():
     client.close()
 
 
-def test_auto_routing_only_uses_verified_models(db_session):
+@pytest.mark.parametrize("use_responses_api", [False, True])
+def test_openai_adapter_omits_unsupported_optional_parameters(use_responses_api):
+    captured: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content))
+        if use_responses_api:
+            return httpx.Response(
+                200,
+                json={
+                    "output": [
+                        {
+                            "content": [
+                                {"type": "output_text", "text": '{"ok": true}'}
+                            ]
+                        }
+                    ]
+                },
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"ok": true}'}}]},
+            request=request,
+        )
+
+    http = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = OpenAICompatibleAdapter(
+        CompatibleRuntime(
+            provider_name="limited-compatible",
+            protocol="OPENAI",
+            base_url="https://limited.example.com/v1",
+            api_key="limited-key",
+            model_id="limited-model",
+            endpoint_templates={
+                "chat": "/chat/completions",
+                "responses": "/responses",
+            },
+            use_responses_api=use_responses_api,
+            capabilities={"supported_parameters": ["max_tokens"]},
+        ),
+        client=http,
+    )
+    try:
+        assert adapter.generate_structured(
+            StructuredRequest(prompt="test", metadata={"max_output_tokens": 32}),
+            SmokeResult,
+        ).ok
+    finally:
+        http.close()
+
+    payload = captured[0]
+    assert "temperature" not in payload
+    assert "response_format" not in payload
+    assert "text" not in payload
+    prompt = payload["input"] if use_responses_api else payload["messages"][-1]["content"]
+    assert "JSON Schema" in prompt
+    if use_responses_api:
+        assert "max_output_tokens" not in payload
+    else:
+        assert payload["max_tokens"] == 32
+
+
+def test_compatible_adapter_rejects_unapproved_loopback_target():
+    adapter = OpenAICompatibleAdapter(
+        CompatibleRuntime(
+            provider_name="unsafe-local",
+            protocol="OPENAI",
+            base_url="http://127.0.0.1:9/v1",
+            api_key="must-not-be-sent",
+            model_id="text-model",
+            endpoint_templates={"chat": "/chat/completions"},
+        )
+    )
+
+    with pytest.raises(ProviderAdapterError, match="不允许的网络"):
+        adapter.generate_structured(StructuredRequest(prompt="test"), SmokeResult)
+
+
+def test_compatible_adapter_caps_provider_response_size():
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, content=b"x" * 65, request=request)
+        )
+    )
+    adapter = OpenAICompatibleAdapter(
+        CompatibleRuntime(
+            provider_name="oversized-provider",
+            protocol="OPENAI",
+            base_url="https://oversized.example.com/v1",
+            api_key="secret",
+            model_id="text-model",
+            endpoint_templates={"chat": "/chat/completions"},
+            max_response_bytes=64,
+        ),
+        client=client,
+    )
+
+    with pytest.raises(ProviderAdapterError, match="超过允许的大小"):
+        adapter.generate_structured(StructuredRequest(prompt="test"), SmokeResult)
+    client.close()
+
+
+def test_model_resync_preserves_matching_verified_capabilities(db_session):
+    profile = ProviderProfile(name="同步供应商", category="CUSTOM", enabled=True)
+    db_session.add(profile)
+    db_session.flush()
+    connection = ProviderConnection(
+        provider_id=profile.id,
+        name="同步连接",
+        protocol="OPENAI",
+        base_url="https://sync.example.com/v1",
+        enabled=True,
+        health_state="HEALTHY",
+    )
+    db_session.add(connection)
+    db_session.flush()
+    model = _upsert_discovered_models(db_session, connection, [{"id": "gpt-4o"}])[0]
+    model.confidence = "VERIFIED"
+    model.last_verified_at = datetime.now(UTC)
+    db_session.commit()
+
+    refreshed = _upsert_discovered_models(db_session, connection, [{"id": "gpt-4o"}])[0]
+
+    assert refreshed.confidence == "VERIFIED"
+    assert refreshed.last_verified_at is not None
+
+
+def test_anthropic_connection_rejects_image_model_declaration(client):
+    provider = client.post(
+        "/api/v1/providers",
+        json={
+            "name": "Anthropic 图片误配",
+            "protocol": "ANTHROPIC",
+            "base_url": "https://anthropic-image.example.com/v1",
+        },
+    ).json()
+    connection_id = provider["connections"][0]["id"]
+
+    response = client.post(
+        f"/api/v1/providers/connections/{connection_id}/models",
+        json={
+            "provider_model_id": "image-model",
+            "model_type": "IMAGE",
+            "operations": ["image_generate", "image_edit"],
+        },
+    )
+
+    assert response.status_code == 422
+    assert "Anthropic" in response.text
+
+
+def test_model_creation_rejects_operations_that_do_not_match_model_type(client):
+    provider = client.post(
+        "/api/v1/providers",
+        json={
+            "name": "能力误配网关",
+            "protocol": "OPENAI",
+            "base_url": "https://capability-mismatch.example.com/v1",
+        },
+    ).json()
+    connection_id = provider["connections"][0]["id"]
+
+    response = client.post(
+        f"/api/v1/providers/connections/{connection_id}/models",
+        json={
+            "provider_model_id": "invalid-image-model",
+            "model_type": "IMAGE",
+            "input_modalities": ["TEXT", "IMAGE"],
+            "output_modalities": ["IMAGE"],
+            "operations": ["structured_text"],
+        },
+    )
+
+    assert response.status_code == 422
+    assert "模型操作与模型类型不匹配" in response.text
+
+
+def test_model_resolution_capability_is_enforced():
+    model = AIModel(
+        connection_id="connection",
+        provider_model_id="one-k-only",
+        display_name="One K",
+        model_type="IMAGE",
+        capabilities={"resolutions": ["1K"]},
+    )
+
+    assert model_supports_resolution(model, "1K") is True
+    assert model_supports_resolution(model, "2K") is False
+
+
+def test_operation_verification_is_scoped_to_the_tested_capability():
+    model = AIModel(
+        connection_id="connection",
+        provider_model_id="partially-verified-image",
+        display_name="Partially Verified Image",
+        model_type="IMAGE",
+        operations=["image_generate", "image_edit"],
+        confidence="VERIFIED",
+        capabilities={"verified_operations": ["image_generate"]},
+    )
+
+    assert model_operation_verified(model, "image_generate") is True
+    assert model_operation_verified(model, "image_edit") is False
+
+
+def test_text_auto_routing_only_uses_verified_models(db_session):
     profile = ProviderProfile(
         name="测试原生供应商",
         category="CUSTOM",
@@ -291,23 +638,23 @@ def test_auto_routing_only_uses_verified_models(db_session):
     db_session.flush()
     inferred = AIModel(
         connection_id=connection.id,
-        provider_model_id="inferred-image",
-        display_name="推断图片模型",
-        model_type="IMAGE",
-        input_modalities=["TEXT", "IMAGE"],
-        output_modalities=["IMAGE"],
-        operations=["image_generate", "image_edit"],
+        provider_model_id="inferred-text",
+        display_name="推断文字模型",
+        model_type="TEXT",
+        input_modalities=["TEXT"],
+        output_modalities=["TEXT"],
+        operations=["structured_text"],
         confidence="INFERRED",
         priority=100,
     )
     verified = AIModel(
         connection_id=connection.id,
-        provider_model_id="verified-image",
-        display_name="已验证图片模型",
-        model_type="IMAGE",
-        input_modalities=["TEXT", "IMAGE"],
-        output_modalities=["IMAGE"],
-        operations=["image_generate", "image_edit"],
+        provider_model_id="verified-text",
+        display_name="已验证文字模型",
+        model_type="TEXT",
+        input_modalities=["TEXT"],
+        output_modalities=["TEXT"],
+        operations=["structured_text"],
         confidence="VERIFIED",
         priority=10,
         last_verified_at=datetime.now(UTC),
@@ -318,7 +665,7 @@ def test_auto_routing_only_uses_verified_models(db_session):
     resolved = resolve_model(
         db_session,
         get_settings(),
-        operation="image_edit",
+        operation="structured_text",
         explicit_reference="auto",
         task_kind="PAGE_GENERATE",
     )
