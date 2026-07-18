@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import Settings
-from app.models import AIModel, ProviderConnection, ProviderProfile
+from app.models import AIModel, ProviderConnection, ProviderHealth, ProviderProfile
 
 OPENAI_ENDPOINTS = {
     "models": "/models",
@@ -316,24 +316,46 @@ def ensure_provider_presets(db: Session, settings: Settings) -> None:
             profile.category = preset.category
             profile.risk_label = preset.risk_label
             profile.documentation_url = preset.documentation_url
-            if preset.key == "vertex-ai":
-                connection = db.scalar(
-                    select(ProviderConnection).where(
-                        ProviderConnection.provider_id == profile.id
-                    )
-                )
-                if connection:
-                    connection.enabled = settings.vertex_configured
-                    if settings.vertex_configured and connection.health_state == "UNCONFIGURED":
-                        connection.health_state = "DEGRADED"
-                        connection.message = "Vertex 凭据已配置，等待能力验证"
-                    elif not settings.vertex_configured:
-                        connection.health_state = "UNCONFIGURED"
-                        connection.message = "等待配置 Vertex 服务账号"
 
     db.flush()
+    sync_vertex_connection_health(db, settings)
     _ensure_vertex_models(db, settings)
     db.commit()
+
+
+def sync_vertex_connection_health(
+    db: Session,
+    settings: Settings,
+    legacy_health: ProviderHealth | None = None,
+) -> None:
+    profile = db.scalar(
+        select(ProviderProfile).where(ProviderProfile.preset_key == "vertex-ai")
+    )
+    if profile is None:
+        return
+    connection = db.scalar(
+        select(ProviderConnection).where(ProviderConnection.provider_id == profile.id)
+    )
+    if connection is None:
+        return
+    connection.enabled = settings.vertex_configured
+    if not settings.vertex_configured:
+        connection.health_state = "UNCONFIGURED"
+        connection.message = "等待配置 Vertex 服务账号"
+        return
+    health = legacy_health or db.scalar(
+        select(ProviderHealth).where(ProviderHealth.provider == "vertex-ai")
+    )
+    if health is None:
+        connection.health_state = "DEGRADED"
+        connection.message = "Vertex 凭据已配置，等待能力验证"
+        return
+    connection.health_state = health.health_state
+    connection.last_checked_at = health.last_checked_at
+    connection.last_success_at = health.last_success_at
+    connection.latency_ms = health.latency_ms
+    connection.error_code = health.error_code
+    connection.message = health.message
 
 
 def _ensure_vertex_models(db: Session, settings: Settings) -> None:

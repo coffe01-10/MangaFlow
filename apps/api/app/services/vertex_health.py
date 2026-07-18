@@ -187,6 +187,9 @@ def verify_vertex(
     finally:
         health.last_checked_at = datetime.now(UTC)
         health.latency_ms = round((perf_counter() - started) * 1000)
+        from app.services.provider_presets import sync_vertex_connection_health
+
+        sync_vertex_connection_health(db, settings, health)
         db.commit()
         db.refresh(health)
     return health_read(health, settings)

@@ -56,7 +56,7 @@ export default function SystemSettingsPage() {
   });
   const verify = useMutation({
     mutationFn: ({ level, alias }: { level: "CREDENTIALS" | "TEXT_MODEL" | "IMAGE_MODEL"; alias?: ImageModelAlias }) => api.verifyVertex(level, alias),
-    onSuccess: (data) => { queryClient.setQueryData(["vertex-status"], data); diagnostics.refetch(); },
+    onSuccess: (data) => { queryClient.setQueryData(["vertex-status"], data); queryClient.invalidateQueries({ queryKey: ["providers"] }); diagnostics.refetch(); },
   });
   const update = <K extends keyof RuntimeSettings>(key: K, value: RuntimeSettings[K]) => { setLocalDraft((current) => ({ ...(current ?? draft!), [key]: value })); setNotice(""); };
 

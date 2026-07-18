@@ -22,6 +22,7 @@ from app.models import (
     JobAssetReference,
     Project,
     ProviderConnection,
+    ProviderHealth,
     ProviderKey,
     ProviderProfile,
     WorkflowDefinition,
@@ -36,6 +37,7 @@ from app.services.credential_crypto import (
 )
 from app.services.job_service import cancel_job
 from app.services.model_router import resolve_model
+from app.services.provider_presets import ensure_provider_presets
 
 
 class SmokeResult(BaseModel):
@@ -71,6 +73,37 @@ def test_presets_seed_default_provider_catalog(client):
         for provider in providers
         for connection in provider["connections"]
     )
+
+
+def test_vertex_catalog_connection_inherits_legacy_health(
+    db_session, monkeypatch, tmp_path
+):
+    settings = get_settings()
+    credential_path = tmp_path / "vertex.json"
+    credential_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(settings, "google_cloud_project", "test-project")
+    monkeypatch.setattr(settings, "google_application_credentials", credential_path)
+    health = ProviderHealth(
+        provider="vertex-ai",
+        configured=True,
+        credential_file_present=True,
+        health_state="HEALTHY",
+        message="旧版验证已通过",
+        latency_ms=321,
+    )
+    db_session.add(health)
+    db_session.commit()
+
+    ensure_provider_presets(db_session, settings)
+
+    profile = db_session.query(ProviderProfile).filter_by(preset_key="vertex-ai").one()
+    connection = (
+        db_session.query(ProviderConnection).filter_by(provider_id=profile.id).one()
+    )
+    assert connection.enabled is True
+    assert connection.health_state == "HEALTHY"
+    assert connection.message == "旧版验证已通过"
+    assert connection.latency_ms == 321
 
 
 def test_custom_provider_key_is_encrypted_and_never_returned(

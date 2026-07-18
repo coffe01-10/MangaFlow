@@ -160,7 +160,7 @@ export default function HomePage() {
   const providers = useQuery({ queryKey: ["providers"], queryFn: api.providers });
   const verify = useMutation({
     mutationFn: () => api.verifyVertex("CREDENTIALS"),
-    onSuccess: (result) => queryClient.setQueryData(["vertex-status"], result),
+    onSuccess: (result) => { queryClient.setQueryData(["vertex-status"], result); queryClient.invalidateQueries({ queryKey: ["providers"] }); },
   });
   const modelMap = useMemo(() => new Map(models.data?.map((model) => [model.logical_alias, model])), [models.data]);
   const projectCount = dashboard.data?.totals.project_count ?? 0;
