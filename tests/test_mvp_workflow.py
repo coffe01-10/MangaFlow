@@ -989,6 +989,68 @@ def test_eight_candidate_jobs_are_isolated(client, db_session, monkeypatch):
     assert all(jobs[job_id]["status"] == "WAITING" for job_id in job_ids[1:])
 
 
+def test_completed_image_job_exposes_clickable_result(client, db_session):
+    project = _project(client, "任务结果入口")
+    chapter, plan = _chapter_and_pages(client, db_session, project["id"], repeat=2)
+    page = db_session.get(MangaPage, plan["pages"][0]["id"])
+    batch = GenerationBatch(
+        project_id=project["id"],
+        chapter_id=chapter["id"],
+        page_id=page.id,
+        ordinal=1,
+        generation_kind="PAGE",
+        status="CLOSED",
+    )
+    asset = Asset(
+        project_id=project["id"],
+        kind="page_candidate",
+        original_name="job-result.png",
+        storage_key="generated/job-result.png",
+        mime_type="image/png",
+        byte_size=10,
+        sha256="9" * 64,
+        source="VERTEX_GENERATED",
+        status="GENERATED",
+    )
+    db_session.add_all([batch, asset])
+    db_session.flush()
+    candidate = PageCandidate(
+        batch_id=batch.id,
+        page_id=page.id,
+        ordinal=1,
+        model_alias="image.nano_banana_2",
+        resolution=Resolution.DRAFT_1K,
+        status="READY",
+        asset_id=asset.id,
+    )
+    db_session.add(candidate)
+    db_session.flush()
+    job = GenerationJob(
+        project_id=project["id"],
+        target_type="PAGE_CANDIDATE",
+        target_id=candidate.id,
+        job_type="PAGE_GENERATE",
+        status=JobStatus.COMPLETED,
+    )
+    db_session.add(job)
+    db_session.flush()
+    candidate.job_id = job.id
+    db_session.commit()
+
+    listed = client.get(f"/api/v1/projects/{project['id']}/jobs")
+
+    assert listed.status_code == 200
+    result = next(item for item in listed.json() if item["id"] == job.id)["result"]
+    assert result == {
+        "kind": "IMAGE",
+        "label": "页面候选 1 · 1K",
+        "candidate_id": candidate.id,
+        "page_id": page.id,
+        "content_url": f"/api/v1/assets/{asset.id}/content",
+        "thumbnail_url": f"/api/v1/assets/{asset.id}/thumbnail/640",
+    }
+
+
 def test_job_history_archive_restore_and_safe_delete(client, db_session):
     project = _project(client, "任务历史")
     completed = GenerationJob(

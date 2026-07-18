@@ -45,6 +45,7 @@ from app.schemas import (
     JobArchiveResult,
     JobBulkArchiveRequest,
     JobRead,
+    JobResultRead,
     KeepSelectedCandidateRequest,
     LibraryBatchRead,
     LibraryRead,
@@ -82,6 +83,7 @@ DELETABLE_JOB_STATUSES = {"FAILED", "CANCELLED"}
 
 def _job_reads(db: Session, jobs: list[GenerationJob]) -> list[JobRead]:
     job_ids = [job.id for job in jobs]
+    target_ids = [job.target_id for job in jobs]
     records = (
         list(
             db.scalars(
@@ -92,9 +94,70 @@ def _job_reads(db: Session, jobs: list[GenerationJob]) -> list[JobRead]:
         else []
     )
     usage_by_job = {record.job_id: record.usage for record in records}
+    page_candidates = (
+        list(
+            db.scalars(
+                select(PageCandidate).where(
+                    or_(
+                        PageCandidate.job_id.in_(job_ids),
+                        PageCandidate.id.in_(target_ids),
+                    )
+                )
+            )
+        )
+        if job_ids
+        else []
+    )
+    asset_candidates = (
+        list(
+            db.scalars(
+                select(AssetCandidate).where(
+                    or_(
+                        AssetCandidate.job_id.in_(job_ids),
+                        AssetCandidate.id.in_(target_ids),
+                    )
+                )
+            )
+        )
+        if job_ids
+        else []
+    )
+    page_by_job = {item.job_id: item for item in page_candidates if item.job_id}
+    page_by_id = {item.id: item for item in page_candidates}
+    asset_by_job = {item.job_id: item for item in asset_candidates if item.job_id}
+    asset_by_id = {item.id: item for item in asset_candidates}
+
+    def job_result(job: GenerationJob) -> JobResultRead | None:
+        page_candidate = page_by_job.get(job.id) or page_by_id.get(job.target_id)
+        if page_candidate and page_candidate.asset_id:
+            value = candidate_read(page_candidate)
+            return JobResultRead(
+                kind="IMAGE",
+                label=f"页面候选 {page_candidate.ordinal} · {page_candidate.resolution.value}",
+                candidate_id=page_candidate.id,
+                page_id=page_candidate.page_id,
+                content_url=value.content_url,
+                thumbnail_url=value.thumbnail_url,
+            )
+        asset_candidate = asset_by_job.get(job.id) or asset_by_id.get(job.target_id)
+        if asset_candidate and asset_candidate.asset_id:
+            value = asset_candidate_read(asset_candidate)
+            return JobResultRead(
+                kind="IMAGE",
+                label=f"素材候选 {asset_candidate.variant} · {asset_candidate.resolution.value}",
+                candidate_id=asset_candidate.id,
+                content_url=value.content_url,
+                thumbnail_url=value.thumbnail_url,
+            )
+        return None
+
     return [
         JobRead.model_validate(job).model_copy(
-            update={"usage_summary": usage_by_job.get(job.id, {}), "estimated_cost": None}
+            update={
+                "usage_summary": usage_by_job.get(job.id, {}),
+                "estimated_cost": None,
+                "result": job_result(job),
+            }
         )
         for job in jobs
     ]
@@ -1098,11 +1161,11 @@ def list_jobs(
 
 
 @router.get("/jobs/{job_id}", response_model=JobRead)
-def get_job(job_id: str, db: Session = Depends(get_db)) -> GenerationJob:
+def get_job(job_id: str, db: Session = Depends(get_db)) -> JobRead:
     job = db.get(GenerationJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
-    return job
+    return _job_reads(db, [job])[0]
 
 
 @router.post("/jobs/{job_id}/cancel", response_model=JobRead)

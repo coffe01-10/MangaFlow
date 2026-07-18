@@ -491,6 +491,14 @@ export interface Job {
   duration_ms: number | null;
   usage_summary: Record<string, unknown>;
   estimated_cost: number | null;
+  result: {
+    kind: "IMAGE";
+    label: string;
+    candidate_id: string | null;
+    page_id: string | null;
+    content_url: string;
+    thumbnail_url: string | null;
+  } | null;
   created_at: string;
   archived_at: string | null;
 }

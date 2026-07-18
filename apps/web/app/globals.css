@@ -653,6 +653,8 @@ a { color: inherit; text-decoration: none; }
 .job-notice { display: flex; align-items: center; gap: 6px; margin: -3px 0 12px; padding: 8px 10px; border-left: 2px solid var(--vermillion); background: rgba(192, 54, 38, .06); color: #6f423a; font-size: 8px; }
 .job-list { display: grid; gap: 8px; }
 .job-row { display: grid; grid-template-columns: 130px minmax(150px,1fr) minmax(160px,1fr) auto; gap: 14px; align-items: center; padding: 12px 14px; border: 1px solid var(--line); background: rgba(255,255,255,.5); }
+.job-row.has-result { cursor: pointer; transition: border-color .18s ease, background-color .18s ease, box-shadow .18s ease, transform .18s ease; }
+.job-row.has-result:hover { transform: translateY(-1px); border-color: var(--ink); background: rgba(255,255,255,.78); box-shadow: inset 3px 0 var(--vermillion), 4px 4px 0 rgba(21,21,18,.06); }
 .job-type, .job-detail { display: grid; gap: 4px; }
 .job-type span, .job-detail span { font-size: 9px; }
 .job-type strong { font-size: 10px; }
@@ -662,6 +664,7 @@ a { color: inherit; text-decoration: none; }
 .job-progress b { display: block; height: 100%; background: var(--vermillion); }
 .job-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
 .job-actions button { min-width: 72px; min-height: 38px; padding: 0 11px; display: flex; justify-content: center; gap: 5px; align-items: center; border: 1px solid var(--line-dark); background: rgba(255,255,255,.45); font-size: 9px; cursor: pointer; }
+.job-actions .job-result-action { border-color: var(--ink); background: var(--ink); color: var(--paper); }
 .queue-dock { cursor: pointer; }
 .next-page-row { display: flex; justify-content: space-between; align-items: center; margin-top: 20px; padding: 15px 0; border-top: 1px solid var(--line); }
 .next-page-row span { color: #777166; font-size: 9px; }

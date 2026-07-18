@@ -718,6 +718,15 @@ class GenerationWorkbenchRead(BaseModel):
     selected_candidate_state: str = "NONE"
 
 
+class JobResultRead(BaseModel):
+    kind: str
+    label: str
+    candidate_id: str | None = None
+    page_id: str | None = None
+    content_url: str
+    thumbnail_url: str | None = None
+
+
 class JobRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -742,6 +751,7 @@ class JobRead(BaseModel):
     request_parameters: dict = Field(default_factory=dict, exclude=True)
     usage_summary: dict = Field(default_factory=dict)
     estimated_cost: float | None = None
+    result: JobResultRead | None = None
 
     @computed_field
     @property
