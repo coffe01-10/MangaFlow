@@ -810,7 +810,8 @@ a { color: inherit; text-decoration: none; }
 .provider-key-list > span { padding: 4px 6px; display: flex; align-items: center; gap: 5px; border: 1px dotted var(--line-dark); color: #6f695f; font-size: 7px; }
 .provider-key-list button { min-height: auto; padding: 1px; border: 0; }
 .provider-actions { padding: 0 10px 9px; display: flex; flex-wrap: wrap; gap: 6px; }
-.provider-advanced { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.provider-advanced { margin: 0 10px 9px; border: 1px solid var(--line-dark); background: rgba(244,241,233,.58); box-shadow: 3px 3px 0 rgba(21,21,18,.04); }
+.provider-advanced[open] > summary { border-bottom: 1px solid var(--line); background: rgba(34,31,27,.04); }
 .provider-advanced label { padding: 0 10px 8px; display: grid; gap: 4px; color: #6f695f; font-size: 8px; }
 .provider-advanced textarea { height: 86px; padding: 8px; resize: vertical; font-family: var(--mono); }
 .provider-advanced .provider-check { display: flex; grid-template-columns: none; align-items: center; }
