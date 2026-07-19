@@ -73,10 +73,13 @@ class FakeAcceptanceAdapter:
 
     def generate_structured(self, request, output_schema):
         assert output_schema is StoryParseOutput
-        assert all(segment.id in request.prompt for segment in self.segments)
+        requested_segments = [
+            segment for segment in self.segments if segment.id in request.prompt
+        ]
+        assert requested_segments
         scenes = []
-        for scene_index, offset in enumerate(range(0, len(self.segments), 4), 1):
-            group = self.segments[offset : offset + 4]
+        for scene_index, offset in enumerate(range(0, len(requested_segments), 4), 1):
+            group = requested_segments[offset : offset + 4]
             scenes.append(
                 SceneDraft(
                     ordinal=scene_index,
@@ -108,13 +111,13 @@ class FakeAcceptanceAdapter:
                     primary_name="苏清白",
                     aliases=["小白"],
                     description="黑色长发、右眼下有泪痣的高中女生",
-                    source_segment_ids=[segment.id for segment in self.segments],
+                    source_segment_ids=[segment.id for segment in requested_segments],
                 ),
                 CharacterDraft(
                     primary_name="顾川",
                     aliases=["小川"],
                     description="短发、神情克制的高中男生",
-                    source_segment_ids=[segment.id for segment in self.segments],
+                    source_segment_ids=[segment.id for segment in requested_segments],
                 ),
             ],
             scenes=scenes,

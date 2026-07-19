@@ -9,7 +9,7 @@ import {
   type ScriptScene,
 } from "@/lib/api";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Check, CircleAlert, Pencil, Save, Shirt, X } from "lucide-react";
+import { Check, CircleAlert, LoaderCircle, Pencil, Save, Shirt, Trash2, X } from "lucide-react";
 import { useState } from "react";
 
 type SceneDraft = Pick<ScriptScene, "location" | "time_label" | "weather" | "purpose" | "emotional_arc">;
@@ -57,6 +57,14 @@ export function ScriptEditor({
       refresh();
     },
   });
+  const deleteScript = useMutation({
+    mutationFn: () => api.deleteScript(chapterId),
+    onSuccess: () => {
+      setNotice("");
+      refresh();
+      queryClient.invalidateQueries({ queryKey: ["chapters"] });
+    },
+  });
 
   function beginScene(scene: ScriptScene) {
     setEditingScene(scene.id);
@@ -89,9 +97,9 @@ export function ScriptEditor({
     setNotice("");
   }
 
-  const error = saveScene.error ?? saveBeat.error;
+  const error = saveScene.error ?? saveBeat.error ?? deleteScript.error;
   return <div className="script-scenes">
-    <div className="script-coverage"><strong>原文覆盖 {Math.round((script.coverage.ratio ?? 0) * 100)}%</strong><span>{script.coverage.covered ?? 0} / {script.coverage.expected ?? 0} 个原文片段 · {script.status}</span></div>
+    <div className="script-coverage"><div><strong>原文覆盖 {Math.round((script.coverage.ratio ?? 0) * 100)}%</strong><span>{script.coverage.covered ?? 0} / {script.coverage.expected ?? 0} 个原文片段 · {script.status}</span></div><button className="script-delete" type="button" disabled={deleteScript.isPending} onClick={() => { if (window.confirm("删除本章漫画剧本？分页、分镜和页面候选会同时从工作区移除；原文、素材文件与任务记录保留，之后可重新生成。")) deleteScript.mutate(); }}>{deleteScript.isPending ? <LoaderCircle className="spin" size={13} /> : <Trash2 size={13} />}删除剧本</button></div>
     <div className="revision-rule"><Pencil size={14} /><div><strong>导演修订模式</strong><span>场景与情节拍可直接修改；来源区间保持只读，避免剧情丢失。</span></div></div>
     {notice && <p className="edit-notice"><Check size={13} />{notice}</p>}
     {error && <p className="form-error"><CircleAlert size={14} />{error.message}</p>}

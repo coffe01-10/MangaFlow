@@ -67,6 +67,7 @@ ACTIVE_STATUSES = {
     JobStatus.REPAIRING,
 }
 EXECUTION_RESERVATION_LOCK = Lock()
+STORY_PARSE_CHUNK_MAX_CHARS = 800
 
 
 class StaleStoryboardVersionError(RuntimeError):
@@ -85,6 +86,50 @@ def _ensure_job_not_cancelled(db, job: GenerationJob) -> None:
 
 def _normalize_name(value: str) -> str:
     return "".join(value.split()).casefold()
+
+
+def _story_parse_chunks(segments: list[SourceSegment]) -> list[list[SourceSegment]]:
+    chunks: list[list[SourceSegment]] = []
+    current: list[SourceSegment] = []
+    current_size = 0
+    for segment in segments:
+        segment_size = len(segment.text)
+        if current and current_size + segment_size > STORY_PARSE_CHUNK_MAX_CHARS:
+            chunks.append(current)
+            current = []
+            current_size = 0
+        current.append(segment)
+        current_size += segment_size
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _merge_story_parse_outputs(outputs: list[StoryParseOutput]) -> StoryParseOutput:
+    characters = []
+    character_tokens: list[set[str]] = []
+    scenes = []
+    for output in outputs:
+        for draft in output.characters:
+            incoming = _character_tokens(draft.primary_name, draft.aliases)
+            match_index = next(
+                (index for index, tokens in enumerate(character_tokens) if incoming & tokens),
+                None,
+            )
+            if match_index is None:
+                characters.append(draft.model_copy(deep=True))
+                character_tokens.append(set(incoming))
+                continue
+            existing = characters[match_index]
+            existing.aliases = list(dict.fromkeys([*existing.aliases, *draft.aliases]))
+            existing.source_segment_ids = list(
+                dict.fromkeys([*existing.source_segment_ids, *draft.source_segment_ids])
+            )
+            existing.description = existing.description or draft.description
+            character_tokens[match_index].update(incoming)
+        for scene in output.scenes:
+            scenes.append(scene.model_copy(update={"ordinal": len(scenes) + 1}, deep=True))
+    return StoryParseOutput(characters=characters, scenes=scenes)
 
 
 def _character_tokens(primary_name: str, aliases: list[str]) -> set[str]:
@@ -760,9 +805,6 @@ def _run_story_parse(db, job: GenerationJob) -> None:
             .order_by(SourceSegment.ordinal)
         )
     )
-    source_payload = [
-        {"id": item.id, "ordinal": item.ordinal, "text": item.text} for item in segments
-    ]
     project = db.get(Project, chapter.project_id)
     mode_instruction = {
         "AUTO": (
@@ -773,7 +815,24 @@ def _run_story_parse(db, job: GenerationJob) -> None:
         ),
         "SEMI_AUTO": "半自动模式：补充镜头所需的动作、表情和环境细节，但不新增人物动机与剧情事实。",
     }[project.workflow_mode.value]
-    prompt = f"""逐段把以下中文小说改写成可直接分镜的完整漫画剧本，禁止总结、删除或合并关键内容。
+    binding = _binding(
+        db,
+        operation="structured_text",
+        project_id=project.id,
+        explicit_reference=_text_model_reference(job, project),
+        task_kind=job.job_type,
+    )
+    job.catalog_model_id = binding.resolved.model.id
+    chunk_outputs: list[StoryParseOutput] = []
+    chunks = _story_parse_chunks(segments)
+
+    def generate_chunk(
+        chunk: list[SourceSegment], chunk_label: str
+    ) -> StoryParseOutput:
+        source_payload = [
+            {"id": item.id, "ordinal": item.ordinal, "text": item.text} for item in chunk
+        ]
+        prompt = f"""逐段将以下中文小说改写成完整漫画剧本，禁止总结、删减或合并关键内容。
 {mode_instruction}
 提取角色主要姓名与绰号、场景地点/时间/天气/目的/情绪线，以及逐拍动作、原文对白、旁白、潜台词、情绪、重要度、
 是否必须画出、能否和相邻拍合并、是否适合作为翻页悬念。
@@ -783,27 +842,45 @@ def _run_story_parse(db, job: GenerationJob) -> None:
 所有场景和情节拍必须携带输入中的 source_segment_ids 并覆盖全部输入；
 剧本人物称呼必须使用 primary_name；每个有对白的情节拍必须把说话人的 primary_name
 写入 speaker_name，旁白留空。
+这是连续片段 {chunk_label}；只处理本次输入，不推测其他片段。
 输入：{json.dumps(source_payload, ensure_ascii=False)}"""
-    binding = _binding(
-        db,
-        operation="structured_text",
-        project_id=project.id,
-        explicit_reference=_text_model_reference(job, project),
-        task_kind=job.job_type,
-    )
-    job.catalog_model_id = binding.resolved.model.id
-    output = _invoke_provider(
-        db,
-        binding,
-        lambda adapter: adapter.generate_structured(
-            StructuredRequest(
-                prompt=prompt,
-                system_instruction="你是忠实的漫画剧本结构化编辑，原文覆盖率优先于篇幅。",
-                temperature=0.15,
+        return _invoke_provider(
+            db,
+            binding,
+            lambda adapter: adapter.generate_structured(
+                StructuredRequest(
+                    prompt=prompt,
+                    system_instruction="你是忠实的漫画剧本结构化编辑，原文覆盖率优先于篇幅。",
+                    temperature=0.15,
+                    metadata={"max_output_tokens": 8192, "thinking_budget": 0},
+                ),
+                StoryParseOutput,
             ),
-            StoryParseOutput,
-        ),
-    )
+        )
+
+    for chunk_index, chunk in enumerate(chunks, 1):
+        try:
+            chunk_outputs.append(generate_chunk(chunk, f"{chunk_index}/{len(chunks)}"))
+        except ProviderAdapterError as error:
+            if error.code not in {"PERMISSION", "CONTENT_POLICY"} or len(chunk) == 1:
+                ordinals = "、".join(str(item.ordinal) for item in chunk)
+                raise ProviderAdapterError(
+                    error.code,
+                    f"原文片段 {ordinals} 生成失败：{error.user_message}",
+                ) from error
+            for segment in chunk:
+                try:
+                    chunk_outputs.append(
+                        generate_chunk([segment], f"原文第 {segment.ordinal} 段")
+                    )
+                except ProviderAdapterError as segment_error:
+                    raise ProviderAdapterError(
+                        segment_error.code,
+                        f"原文第 {segment.ordinal} 段被 Vertex 拒绝："
+                        f"{segment_error.user_message}",
+                    ) from segment_error
+        _ensure_job_not_cancelled(db, job)
+    output = _merge_story_parse_outputs(chunk_outputs)
     _ensure_job_not_cancelled(db, job)
     project_id = chapter.project_id
     all_aliases: dict[str, str] = {}
@@ -1040,8 +1117,6 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
         }
     else:
         raise RuntimeError("资产生成目标类型无效")
-    if batch.target_type == "CHARACTER" and not references:
-        raise RuntimeError("角色参考图已失效，请重新绑定后再生成")
     if batch.target_type == "OUTFIT":
         if not character_references:
             raise RuntimeError("服装所属角色的参考图已失效，请重新绑定后再生成")

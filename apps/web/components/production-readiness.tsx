@@ -24,8 +24,24 @@ const stageRoutes: Record<string, string> = {
   WORKER: "settings",
 };
 
-function routeForStage(projectId: string, stage: string) {
-  return `/projects/${projectId}/${stageRoutes[stage.toUpperCase()] ?? "generate"}`;
+export function routeForBlocker(
+  projectId: string,
+  pageId: string,
+  blocker: PageReadiness["blockers"][number],
+) {
+  if (blocker.code === "MISSING_OUTFIT_ASSIGNMENT") {
+    return `/projects/${projectId}/storyboard?page=${encodeURIComponent(pageId)}&character=${encodeURIComponent(blocker.target_id ?? "")}&edit=outfit`;
+  }
+  if (blocker.code === "MISSING_CHARACTER_REFERENCE") {
+    return `/projects/${projectId}/assets/characters?character=${encodeURIComponent(blocker.target_id ?? "")}`;
+  }
+  if (blocker.code === "MISSING_OUTFIT_REFERENCE") {
+    return `/projects/${projectId}/assets/outfits?outfit=${encodeURIComponent(blocker.target_id ?? "")}`;
+  }
+  if (blocker.code.startsWith("STYLE_")) {
+    return `/projects/${projectId}/assets/style?style=${encodeURIComponent(blocker.target_id ?? "")}`;
+  }
+  return `/projects/${projectId}/${stageRoutes[blocker.stage.toUpperCase()] ?? "generate"}`;
 }
 
 function ReadinessMark({ ok, children }: { ok: boolean; children: ReactNode }) {
@@ -60,7 +76,7 @@ export function ProductionReadiness({
     {readiness ? <>
       {readiness.blockers.length ? <div className="workflow-warning readiness-blockers">
         <CircleAlert size={17} />
-        <div><strong>{readiness.blockers.length} 项准备工作未完成</strong><ul>{readiness.blockers.map((blocker) => <li key={`${blocker.code}-${blocker.target_id ?? "page"}`}><span>{blocker.message}</span><Link href={routeForStage(projectId, blocker.stage)}>去处理</Link></li>)}</ul></div>
+        <div><strong>{readiness.blockers.length} 项准备工作未完成</strong><ul>{readiness.blockers.map((blocker) => <li key={`${blocker.code}-${blocker.target_id ?? "page"}`}><span>{blocker.message}</span><Link href={routeForBlocker(projectId, readiness.page_id, blocker)}>去处理</Link></li>)}</ul></div>
       </div> : <p className="edit-notice"><Check size={13} />页面生产条件已全部满足，可以确认参考图后生成 1 个 1K 彩色候选。</p>}
 
       <details className="production-diagnostics" open={!readiness.ready}>

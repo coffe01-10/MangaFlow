@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel
 
 from app.config import get_settings
-from app.domain.states import JobStatus
+from app.domain.states import JobStatus, Resolution
 from app.model_adapters.base import ProviderAdapterError, StructuredRequest
 from app.model_adapters.compatible import (
     AnthropicCompatibleAdapter,
@@ -19,6 +19,8 @@ from app.model_adapters.compatible import (
 from app.models import (
     AIModel,
     Asset,
+    AssetCandidate,
+    GenerationBatch,
     GenerationJob,
     JobAssetReference,
     Project,
@@ -808,6 +810,49 @@ def test_active_job_reference_blocks_asset_deletion(client, db_session):
     db_session.commit()
     deleted = client.delete(f"/api/v1/assets/{asset.id}")
     assert deleted.status_code == 204
+
+
+def test_generated_asset_deletion_also_hides_its_asset_candidate(client, db_session):
+    project = client.post("/api/v1/projects", json={"name": "删除生成素材"}).json()
+    asset = Asset(
+        project_id=project["id"],
+        kind="CHARACTER_REFERENCE",
+        original_name="character-sheet.png",
+        storage_key="generated/character-sheet.png",
+        mime_type="image/png",
+        byte_size=1,
+        sha256="c" * 64,
+        source="GENERATED",
+        status="GENERATED",
+    )
+    batch = GenerationBatch(
+        project_id=project["id"],
+        target_type="CHARACTER",
+        target_id="character-id",
+        ordinal=1,
+        generation_kind="ASSET",
+    )
+    db_session.add_all([asset, batch])
+    db_session.flush()
+    candidate = AssetCandidate(
+        batch_id=batch.id,
+        ordinal=1,
+        model_alias="image.nano_banana_2",
+        resolution=Resolution.DRAFT_1K,
+        variant="SHEET",
+        status="READY",
+        asset_id=asset.id,
+    )
+    db_session.add(candidate)
+    db_session.commit()
+
+    deleted = client.delete(f"/api/v1/assets/{asset.id}")
+
+    assert deleted.status_code == 204
+    db_session.refresh(asset)
+    db_session.refresh(candidate)
+    assert asset.deleted_at is not None
+    assert candidate.deleted_at is not None
 
 
 def test_cancelling_completed_workflow_job_does_not_cancel_run(db_session):

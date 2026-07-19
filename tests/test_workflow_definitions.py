@@ -413,12 +413,16 @@ def test_default_dag_deterministic_full_run_to_export(
         generate_job = db_session.get(GenerationJob, generate_run.job_id)
         generate_job.status = JobStatus.FAILED
         generate_job.error_code = "UPSTREAM"
+        generate_job.started_at = generate_job.created_at
+        generate_job.finished_at = generate_job.created_at
         generate_run.status = "FAILED"
         run_record = db_session.get(WorkflowRun, run_id)
         run_record.status = "FAILED"
         db_session.commit()
         retried = client.post(f"/api/v1/jobs/{generate_job.id}/retry")
         assert retried.status_code == 200
+        assert retried.json()["started_at"] is None
+        assert retried.json()["finished_at"] is None
         assert db_session.get(WorkflowRun, run_id).status == "RUNNING"
         assert node_run("generate").status == "RUNNING"
         _complete_job(db_session, run_id, generate_job, _run_page_generate)

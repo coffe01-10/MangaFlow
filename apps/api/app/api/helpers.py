@@ -91,7 +91,11 @@ def character_references(db: Session, character_id: str) -> list[CharacterRefere
         CharacterReferenceRead.model_validate(item)
         for item in db.scalars(
             select(CharacterReference)
-            .where(CharacterReference.character_id == character_id)
+            .join(Asset, Asset.id == CharacterReference.asset_id)
+            .where(
+                CharacterReference.character_id == character_id,
+                Asset.deleted_at.is_(None),
+            )
             .order_by(CharacterReference.is_canonical.desc(), CharacterReference.created_at)
         )
     ]

@@ -306,6 +306,8 @@ def reset_for_retry(db: Session, job: GenerationJob) -> GenerationJob:
     job.error_code = None
     job.error_message = None
     job.progress = 0
+    job.started_at = None
+    job.finished_at = None
     job.scheduled_at = utcnow() + timedelta(seconds=1)
     workflow_run_id = job.request_parameters.get("workflow_run_id")
     if workflow_run_id:

@@ -13,6 +13,7 @@ from app.models import (
     Chapter,
     Dialogue,
     GenerationBatch,
+    GenerationJob,
     MangaPage,
     PageSourceSegment,
     Panel,
@@ -328,6 +329,50 @@ def get_script(chapter_id: str, db: Session = Depends(get_db)) -> ScriptRead:
         coverage=revision.coverage if revision else {},
         scenes=[SceneRead.model_validate(scene) for scene in scenes],
     )
+
+
+@router.delete("/chapters/{chapter_id}/script", status_code=status.HTTP_204_NO_CONTENT)
+def delete_script(chapter_id: str, db: Session = Depends(get_db)) -> None:
+    chapter = db.get(Chapter, chapter_id)
+    if not chapter or chapter.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="章节不存在")
+    page_ids = list(db.scalars(select(MangaPage.id).where(MangaPage.chapter_id == chapter_id)))
+    active_job = db.scalar(
+        select(GenerationJob.id)
+        .where(
+            GenerationJob.project_id == chapter.project_id,
+            GenerationJob.status.in_(
+                {
+                    "WAITING",
+                    "QUEUED",
+                    "PREPARING",
+                    "GENERATING",
+                    "UPLOADING",
+                    "CONSISTENCY_CHECKING",
+                }
+            ),
+        )
+        .limit(1)
+    )
+    if active_job:
+        raise HTTPException(
+            status_code=409,
+            detail="当前项目仍有任务正在执行，请先取消或等待任务结束后再删除",
+        )
+
+    if page_ids:
+        # Pages own storyboard panels, dialogues, source mappings, page batches and
+        # candidates through database cascades. Assets and task history remain as
+        # audit artifacts and can be managed separately.
+        db.execute(delete(MangaPage).where(MangaPage.id.in_(page_ids)))
+    scene_ids = list(db.scalars(select(Scene.id).where(Scene.chapter_id == chapter_id)))
+    if scene_ids:
+        db.execute(delete(Beat).where(Beat.scene_id.in_(scene_ids)))
+        db.execute(delete(Scene).where(Scene.id.in_(scene_ids)))
+    db.execute(delete(ScriptRevision).where(ScriptRevision.chapter_id == chapter_id))
+    chapter.status = "IMPORTED"
+    chapter.version += 1
+    db.commit()
 
 
 @router.patch("/scenes/{scene_id}", response_model=SceneRead)

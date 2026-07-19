@@ -36,6 +36,7 @@ class AdapterError(RuntimeError):
     [
         (ProviderError(401, "token expired"), "AUTHENTICATION", True),
         (ProviderError(403, "private detail must stay hidden"), "PERMISSION", False),
+        (ProviderError(403, "Model Armor blocked by safety"), "CONTENT_POLICY", False),
         (ProviderError(404, "model missing"), "MODEL_NOT_FOUND", False),
         (ProviderError(429, "quota"), "RATE_LIMIT", True),
         (ProviderError(503, "upstream"), "UPSTREAM", True),

@@ -9,6 +9,7 @@ from app.models import (
     Panel,
     Project,
     Scene,
+    ScriptRevision,
 )
 from app.domain.states import Resolution
 
@@ -135,6 +136,64 @@ def test_script_edits_are_versioned_and_preserve_generated_candidates(client, db
         json={"version": 1, "dialogue": "冲突修改"},
     )
     assert stale.status_code == 409
+
+
+def test_generated_script_can_be_deleted_before_pagination(client, db_session):
+    project = Project(name="删除剧本测试")
+    db_session.add(project)
+    db_session.commit()
+    imported = client.post(
+        f"/api/v1/projects/{project.id}/sources/import",
+        json={"title": "第一章", "text": "雨夜里，她推开旧书店的门。", "source_type": "PASTE"},
+    )
+    assert imported.status_code == 201
+    chapter_id = imported.json()["chapters"][0]["id"]
+    chapter = db_session.get(Chapter, chapter_id)
+    scene = Scene(chapter_id=chapter_id, ordinal=1, location="旧书店")
+    db_session.add_all(
+        [
+            scene,
+            ScriptRevision(
+                chapter_id=chapter_id,
+                source_revision_id=chapter.current_source_revision_id,
+                revision_no=1,
+                status="READY",
+                coverage={"ratio": 1},
+            ),
+        ]
+    )
+    chapter.status = "SCRIPT_READY"
+    db_session.commit()
+    db_session.add(Beat(scene_id=scene.id, ordinal=1, action="她推门而入"))
+    db_session.commit()
+    previous_version = chapter.version
+
+    response = client.delete(f"/api/v1/chapters/{chapter_id}/script")
+
+    assert response.status_code == 204
+    db_session.expire_all()
+    chapter = db_session.get(Chapter, chapter_id)
+    assert chapter.status == "IMPORTED"
+    assert chapter.version == previous_version + 1
+    assert db_session.query(Scene).filter_by(chapter_id=chapter_id).count() == 0
+    assert db_session.query(ScriptRevision).filter_by(chapter_id=chapter_id).count() == 0
+    script = client.get(f"/api/v1/chapters/{chapter_id}/script")
+    assert script.status_code == 200
+    assert script.json()["status"] == "NOT_CREATED"
+
+
+def test_generated_script_delete_cascades_pagination_and_candidates(client, db_session):
+    _, chapter, _, _, _, pages, _, _ = _editable_story(db_session)
+
+    response = client.delete(f"/api/v1/chapters/{chapter.id}/script")
+
+    assert response.status_code == 204
+    db_session.expire_all()
+    assert all(db_session.get(MangaPage, page.id) is None for page in pages)
+    assert db_session.query(GenerationBatch).filter_by(chapter_id=chapter.id).count() == 0
+    assert db_session.query(PageCandidate).count() == 0
+    assert db_session.query(Scene).filter_by(chapter_id=chapter.id).count() == 0
+    assert db_session.get(Chapter, chapter.id).status == "IMPORTED"
 
 
 def test_storyboard_panel_and_dialogue_are_editable(client, db_session):

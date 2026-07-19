@@ -11,7 +11,9 @@ from app.config import get_settings
 from app.database import get_db
 from app.domain.states import CharacterPresence, PageStatus, Resolution, ensure_unlocked
 from app.models import (
+    Asset,
     AssetCandidate,
+    AssetStatus,
     Chapter,
     Character,
     CharacterReference,
@@ -771,7 +773,57 @@ def delete_candidate(candidate_id: str, db: Session = Depends(get_db)) -> None:
         raise HTTPException(status_code=404, detail="候选不存在")
     if isinstance(candidate, PageCandidate) and candidate.is_selected:
         raise HTTPException(status_code=409, detail="当前采用版本不能删除")
-    candidate.deleted_at = utcnow()
+    deleted_at = utcnow()
+    if isinstance(candidate, AssetCandidate) and candidate.asset_id:
+        asset = db.get(Asset, candidate.asset_id)
+        affected_character_ids = list(
+            db.scalars(
+                select(CharacterReference.character_id).where(
+                    CharacterReference.asset_id == candidate.asset_id
+                )
+            )
+        )
+        db.execute(
+            CharacterReference.__table__.delete().where(
+                CharacterReference.asset_id == candidate.asset_id
+            )
+        )
+        if asset:
+            for outfit in db.scalars(
+                select(Outfit).where(Outfit.project_id == asset.project_id)
+            ):
+                if candidate.asset_id not in (outfit.reference_asset_ids or []):
+                    continue
+                outfit.reference_asset_ids = [
+                    asset_id
+                    for asset_id in outfit.reference_asset_ids
+                    if asset_id != candidate.asset_id
+                ]
+                outfit.status = (
+                    AssetStatus.CANONICAL
+                    if outfit.reference_asset_ids
+                    else AssetStatus.NEEDS_CONFIRMATION
+                )
+                outfit.version += 1
+            asset.deleted_at = deleted_at
+            asset.version += 1
+        for character_id in affected_character_ids:
+            character = db.get(Character, character_id)
+            if not character:
+                continue
+            has_other_reference = db.scalar(
+                select(CharacterReference.id)
+                .join(Asset, Asset.id == CharacterReference.asset_id)
+                .where(
+                    CharacterReference.character_id == character_id,
+                    Asset.deleted_at.is_(None),
+                )
+                .limit(1)
+            )
+            if not has_other_reference:
+                character.status = AssetStatus.NEEDS_CONFIRMATION
+            character.version += 1
+    candidate.deleted_at = deleted_at
     candidate.version += 1
     db.commit()
 
@@ -1030,10 +1082,12 @@ def library(
     page_filters = [
         PageCandidate.batch_id == GenerationBatch.id,
         PageCandidate.deleted_at.is_(None),
+        PageCandidate.status.not_in({"FAILED", "CANCELLED"}),
     ]
     asset_filters = [
         AssetCandidate.batch_id == GenerationBatch.id,
         AssetCandidate.deleted_at.is_(None),
+        AssetCandidate.status.not_in({"FAILED", "CANCELLED"}),
     ]
     if model_alias:
         page_filters.append(PageCandidate.model_alias == model_alias)
@@ -1097,10 +1151,12 @@ def library(
         page_query = select(PageCandidate).where(
             PageCandidate.batch_id.in_(batch_ids),
             PageCandidate.deleted_at.is_(None),
+            PageCandidate.status.not_in({"FAILED", "CANCELLED"}),
         )
         asset_query = select(AssetCandidate).where(
             AssetCandidate.batch_id.in_(batch_ids),
             AssetCandidate.deleted_at.is_(None),
+            AssetCandidate.status.not_in({"FAILED", "CANCELLED"}),
         )
         if model_alias:
             page_query = page_query.where(PageCandidate.model_alias == model_alias)

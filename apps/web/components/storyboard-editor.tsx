@@ -11,7 +11,7 @@ import {
 } from "@/lib/api";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, CircleAlert, Maximize2, MessageSquarePlus, Minimize2, Pencil, RotateCcw, Save, Trash2, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { CSSProperties } from "react";
 
 type PanelDraft = Pick<StoryboardPanel, "shot_type" | "camera_angle" | "camera_height" | "characters" | "character_presence" | "props" | "outfits" | "actions" | "expressions" | "background" | "sound_effects" | "bleed" | "borderless">;
@@ -64,6 +64,8 @@ export function StoryboardEditor({
   onReplan,
   replanPending,
   replanError,
+  initialPageId,
+  focusCharacterId,
 }: {
   chapterId: string;
   pages: MangaPage[];
@@ -72,9 +74,13 @@ export function StoryboardEditor({
   onReplan: (pageNumber: number) => void;
   replanPending: boolean;
   replanError?: Error | null;
+  initialPageId?: string | null;
+  focusCharacterId?: string | null;
 }) {
   const queryClient = useQueryClient();
-  const [pageId, setPageId] = useState(pages[0]?.id ?? "");
+  const [pageId, setPageId] = useState(
+    pages.some((page) => page.id === initialPageId) ? initialPageId! : pages[0]?.id ?? "",
+  );
   const currentPage = pages.find((page) => page.id === pageId) ?? pages[0];
   const storyboard = useQuery({
     queryKey: ["storyboard", currentPage?.id],
@@ -89,6 +95,7 @@ export function StoryboardEditor({
   const [newDialogue, setNewDialogue] = useState<DialogueDraft | null>(null);
   const [notice, setNotice] = useState("");
   const [focusMode, setFocusMode] = useState(false);
+  const [focusHandled, setFocusHandled] = useState(false);
   const [inspectorWidth, setInspectorWidth] = useState(() => {
     if (typeof window === "undefined") return 390;
     const stored = Number(window.localStorage.getItem("mangaflow.storyboard-inspector-width"));
@@ -171,6 +178,39 @@ export function StoryboardEditor({
     setNotice("");
   }
 
+  useEffect(() => {
+    if (focusHandled || !focusCharacterId || !storyboard.data?.panels.length) return;
+    const targetPanel = storyboard.data.panels.find((panel) => {
+      const presence = panel.character_presence?.[focusCharacterId]
+        ?? (panel.characters.includes(focusCharacterId) ? "VISIBLE" : null);
+      return presence === "VISIBLE" && !panel.outfits?.[focusCharacterId];
+    });
+    if (!targetPanel) return;
+    setPanelId(targetPanel.id);
+    setEditingPanel(true);
+    setPanelDraft({
+      shot_type: targetPanel.shot_type,
+      camera_angle: targetPanel.camera_angle,
+      camera_height: targetPanel.camera_height,
+      characters: [...targetPanel.characters],
+      character_presence: Object.keys(targetPanel.character_presence ?? {}).length
+        ? { ...targetPanel.character_presence }
+        : Object.fromEntries(
+          targetPanel.characters.map((characterId) => [characterId, "VISIBLE" as const]),
+        ),
+      props: [...(targetPanel.props ?? [])],
+      outfits: { ...targetPanel.outfits },
+      actions: { ...targetPanel.actions },
+      expressions: { ...targetPanel.expressions },
+      background: targetPanel.background,
+      sound_effects: [...targetPanel.sound_effects],
+      bleed: targetPanel.bleed,
+      borderless: targetPanel.borderless,
+    });
+    setNotice("已定位到缺少服装的出镜格，请在人物下方选择服装并保存本格分镜。");
+    setFocusHandled(true);
+  }, [focusCharacterId, focusHandled, storyboard.data?.panels]);
+
   function setPresence(characterId: string, presence: CharacterPresence | "NONE") {
     if (!panelDraft) return;
     const presenceNext = { ...panelDraft.character_presence };
@@ -202,7 +242,7 @@ export function StoryboardEditor({
       <div className="panel-contact-sheet">{storyboard.data?.panels.map((panel) => <button key={panel.id} style={{ left: `${(panel.bounds.x ?? 0) * 100}%`, top: `${(panel.bounds.y ?? 0) * 100}%`, width: `${(panel.bounds.width ?? 1) * 100}%`, height: `${(panel.bounds.height ?? 1) * 100}%` } as CSSProperties} className={panel.id === selectedPanel?.id ? "panel-proof active" : "panel-proof"} onClick={() => { setPanelId(panel.id); setEditingPanel(false); setPanelDraft(null); }}>
         <span>格 {String(panel.reading_order).padStart(2, "0")}</span><div className="panel-proof-frame"><i>{shotTypes.find(([value]) => value === panel.shot_type)?.[1] ?? panel.shot_type}</i><strong>{panel.actions.script_action || panel.actions.source_text || "动作待补充"}</strong><small>{panel.background || "背景待补充"}</small></div><em>{panel.dialogues.length} 气泡 · {panel.characters.length} 人物 · {panel.props?.length ?? 0} 道具</em>
       </button>)}</div>
-      {selectedPanel && <div className="panel-inspector-resizer" role="separator" aria-label="调整属性面板宽度" aria-orientation="vertical" tabIndex={0} onKeyDown={(event) => { if (event.key === "ArrowLeft") persistInspectorWidth(inspectorWidth + 16); if (event.key === "ArrowRight") persistInspectorWidth(inspectorWidth - 16); }} onPointerMove={(event) => { if (event.buttons !== 1) return; const worktable = event.currentTarget.parentElement?.getBoundingClientRect(); if (worktable) persistInspectorWidth(worktable.right - event.clientX); }}><span /></div>}
+      {selectedPanel && <div className="panel-inspector-resizer" role="separator" aria-label="调整属性面板宽度" aria-orientation="vertical" aria-valuemin={320} aria-valuemax={620} aria-valuenow={inspectorWidth} tabIndex={0} onKeyDown={(event) => { if (event.key === "ArrowLeft") persistInspectorWidth(inspectorWidth + 16); if (event.key === "ArrowRight") persistInspectorWidth(inspectorWidth - 16); }} onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); const worktable = event.currentTarget.parentElement?.getBoundingClientRect(); if (worktable) persistInspectorWidth(worktable.right - event.clientX); }} onPointerMove={(event) => { if (!event.currentTarget.hasPointerCapture(event.pointerId)) return; const worktable = event.currentTarget.parentElement?.getBoundingClientRect(); if (worktable) persistInspectorWidth(worktable.right - event.clientX); }} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }} onPointerCancel={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }}><span /></div>}
       {selectedPanel && <aside className="panel-inspector">
         <header><div><span>P.{String(currentPage.page_number).padStart(3, "0")} / PANEL {String(selectedPanel.reading_order).padStart(2, "0")}</span><strong>分镜导演台</strong></div>{editingPanel ? <button onClick={() => { setEditingPanel(false); setPanelDraft(null); }}><X size={12} />退出编辑</button> : <button onClick={() => beginPanel(selectedPanel)}><Pencil size={12} />编辑本格</button>}</header>
         {editingPanel && panelDraft ? <div className="panel-edit-form">
