@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
@@ -13,7 +15,11 @@ from app.models import (
     Character,
     CharacterReference,
     GenerationBatch,
+    GenerationJob,
+    JobAssetReference,
+    MangaPage,
     Outfit,
+    Panel,
     Project,
     Scene,
     StyleProfile,
@@ -42,6 +48,17 @@ from app.services.job_service import create_job, enqueue_job
 from app.services.model_router import model_supports_resolution, resolve_model
 
 router = APIRouter()
+
+ACTIVE_OUTFIT_JOB_STATUSES = {
+    "WAITING",
+    "QUEUED",
+    "PREPARING",
+    "UPLOADING_REFERENCES",
+    "GENERATING",
+    "OCR_CHECKING",
+    "CONSISTENCY_CHECKING",
+    "REPAIRING",
+}
 
 
 def _validate_reference_assets(
@@ -168,6 +185,119 @@ def update_outfit(
     db.commit()
     db.refresh(outfit)
     return outfit
+
+
+@router.delete("/outfits/{outfit_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_outfit(outfit_id: str, db: Session = Depends(get_db)) -> None:
+    outfit = db.get(Outfit, outfit_id)
+    if not outfit:
+        raise HTTPException(status_code=404, detail="服装档案不存在")
+
+    batches = list(
+        db.scalars(
+            select(GenerationBatch).where(
+                GenerationBatch.target_type == "OUTFIT",
+                GenerationBatch.target_id == outfit.id,
+            )
+        )
+    )
+    batch_ids = [batch.id for batch in batches]
+    candidates = (
+        list(db.scalars(select(AssetCandidate).where(AssetCandidate.batch_id.in_(batch_ids))))
+        if batch_ids
+        else []
+    )
+    candidate_job_ids = [candidate.job_id for candidate in candidates if candidate.job_id]
+    active_candidate_job = (
+        db.scalar(
+            select(GenerationJob.id).where(
+                GenerationJob.id.in_(candidate_job_ids),
+                GenerationJob.status.in_(ACTIVE_OUTFIT_JOB_STATUSES),
+            )
+        )
+        if candidate_job_ids
+        else None
+    )
+    reference_ids = set(outfit.reference_asset_ids or [])
+    active_reference_job = (
+        db.scalar(
+            select(JobAssetReference.job_id)
+            .join(GenerationJob, GenerationJob.id == JobAssetReference.job_id)
+            .where(
+                JobAssetReference.asset_id.in_(reference_ids),
+                GenerationJob.status.in_(ACTIVE_OUTFIT_JOB_STATUSES),
+            )
+            .limit(1)
+        )
+        if reference_ids
+        else None
+    )
+    if active_candidate_job or active_reference_job:
+        raise HTTPException(
+            status_code=409,
+            detail="服装档案或参考图正被生成任务使用，请先取消任务后再删除",
+        )
+
+    other_reference_ids = {
+        asset_id
+        for other in db.scalars(
+            select(Outfit).where(
+                Outfit.project_id == outfit.project_id,
+                Outfit.id != outfit.id,
+            )
+        )
+        for asset_id in (other.reference_asset_ids or [])
+    }
+    exclusive_reference_ids = reference_ids - other_reference_ids
+    generated_asset_ids = {
+        candidate.asset_id for candidate in candidates if candidate.asset_id
+    }
+    deleted_at = datetime.now(UTC)
+    for candidate in candidates:
+        if candidate.deleted_at is None:
+            candidate.deleted_at = deleted_at
+            candidate.version += 1
+    asset_ids_to_delete = exclusive_reference_ids | generated_asset_ids
+    if asset_ids_to_delete:
+        for asset in db.scalars(select(Asset).where(Asset.id.in_(asset_ids_to_delete))):
+            if asset.deleted_at is None:
+                asset.deleted_at = deleted_at
+                asset.version += 1
+
+    scenes = db.scalars(
+        select(Scene)
+        .join(Chapter, Chapter.id == Scene.chapter_id)
+        .where(Chapter.project_id == outfit.project_id)
+    )
+    for scene in scenes:
+        assignments = dict(scene.outfit_assignments or {})
+        cleaned = {
+            character_id: assigned_outfit_id
+            for character_id, assigned_outfit_id in assignments.items()
+            if assigned_outfit_id != outfit.id
+        }
+        if cleaned != assignments:
+            scene.outfit_assignments = cleaned
+            scene.version += 1
+    panels = db.scalars(
+        select(Panel)
+        .join(MangaPage, MangaPage.id == Panel.page_id)
+        .join(Chapter, Chapter.id == MangaPage.chapter_id)
+        .where(Chapter.project_id == outfit.project_id)
+    )
+    for panel in panels:
+        assignments = dict(panel.outfits or {})
+        cleaned = {
+            character_id: assigned_outfit_id
+            for character_id, assigned_outfit_id in assignments.items()
+            if assigned_outfit_id != outfit.id
+        }
+        if cleaned != assignments:
+            panel.outfits = cleaned
+            panel.version += 1
+
+    db.delete(outfit)
+    db.commit()
 
 
 @router.get("/projects/{project_id}/styles", response_model=list[StyleProfileRead])

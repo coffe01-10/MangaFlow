@@ -38,6 +38,21 @@ def classify_vertex_failure(error: Exception) -> VertexFailure:
     if status in {"INVALID_INPUT", "UNSUPPORTED_CAPABILITY"}:
         return VertexFailure("CONFIGURATION", "模型调用参数与当前能力不匹配", False)
 
+    if any(
+        token in raw
+        for token in (
+            "model armor",
+            "safety policy",
+            "prohibited content",
+            "blocked by safety",
+            "responsible ai",
+        )
+    ):
+        return VertexFailure(
+            "CONTENT_POLICY",
+            "请求被 Vertex 内容安全策略拦截，系统已缩小生成片段；请重试",
+            False,
+        )
     if status in (401,) or "401" in raw or "unauth" in raw or "invalid_grant" in raw:
         return VertexFailure(
             "AUTHENTICATION", "Vertex AI 凭据无效或令牌已过期", True, authentication=True

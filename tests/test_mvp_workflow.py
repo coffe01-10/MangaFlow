@@ -1,15 +1,20 @@
-from app.config import get_settings
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import pytest
+
+from app import worker_tasks
+from app.config import get_settings
 from app.domain.states import JobStatus, Resolution
 from app.models import (
     Asset,
+    AssetCandidate,
     Dialogue,
     GenerationBatch,
     GenerationJob,
     GenerationRecord,
     MangaPage,
+    Outfit,
     PageCandidate,
     Panel,
     Project,
@@ -29,7 +34,12 @@ from app.services.ai_schemas import (
     SceneDraft,
     StoryParseOutput,
 )
-from app.worker_tasks import _load_reference_assets, _run_story_parse
+from app.worker_tasks import (
+    _load_reference_assets,
+    _merge_story_parse_outputs,
+    _run_story_parse,
+    _story_parse_chunks,
+)
 
 
 def _project(client, name="长篇测试"):
@@ -238,6 +248,10 @@ def test_story_parse_worker_writes_complete_traceable_script(
         def generate_structured(self, request, schema):
             assert schema is StoryParseOutput
             assert all(segment.id in request.prompt for segment in segments)
+            assert request.metadata == {
+                "max_output_tokens": 8192,
+                "thinking_budget": 0,
+            }
             return StoryParseOutput(
                 characters=[CharacterDraft(primary_name="顾川", aliases=["小川"])],
                 scenes=[
@@ -272,6 +286,7 @@ def test_story_parse_worker_writes_complete_traceable_script(
     db_session.add(job)
     db_session.flush()
     _run_story_parse(db_session, job)
+
     db_session.commit()
 
     db_session.refresh(chapter)
@@ -284,6 +299,37 @@ def test_story_parse_worker_writes_complete_traceable_script(
     assert script.coverage["missing_segment_ids"] == []
     assert len(beats) == len(segments)
     assert beats[-1].speaker_name == "顾川"
+
+
+def test_story_parse_chunks_large_sources_and_merges_recurring_characters():
+    segments = [
+        SourceSegment(
+            source_revision_id="revision",
+            ordinal=index,
+            text="字" * size,
+            start_offset=0,
+            end_offset=size,
+            sha256=str(index),
+        )
+        for index, size in enumerate((500, 400, 300), 1)
+    ]
+    assert [len(chunk) for chunk in _story_parse_chunks(segments)] == [1, 2]
+
+    outputs = [
+        StoryParseOutput(
+            characters=[CharacterDraft(primary_name="顾川", aliases=["小川"])],
+            scenes=[SceneDraft(ordinal=9, beats=[])],
+        ),
+        StoryParseOutput(
+            characters=[CharacterDraft(primary_name="小川", aliases=["顾川"])],
+            scenes=[SceneDraft(ordinal=4, beats=[])],
+        ),
+    ]
+    merged = _merge_story_parse_outputs(outputs)
+
+    assert len(merged.characters) == 1
+    assert merged.characters[0].primary_name == "顾川"
+    assert [scene.ordinal for scene in merged.scenes] == [1, 2]
 
 
 def test_story_parse_reuses_user_character_when_model_returns_alias(
@@ -382,6 +428,111 @@ def test_page_plan_persists_rtl_storyboard_panels(client, db_session):
         .count()
     )
     assert len({(item.bounds["width"], item.bounds["height"]) for item in panels}) > 1
+    assert all(panel.actions["script_action"].strip() for panel in panels)
+    assert len({panel.actions["script_action"] for panel in panels}) == len(panels)
+    assert all(panel.background and panel.background != "延续当前场景" for panel in panels)
+
+
+def test_delete_outfit_cascades_exclusive_references_generated_images_and_bindings(
+    client, db_session
+):
+    project = _project(client, "服装档案级联删除")
+    character = Character(project_id=project["id"], primary_name="我")
+    exclusive_reference = Asset(
+        project_id=project["id"],
+        kind="OUTFIT_REFERENCE",
+        original_name="exclusive.png",
+        storage_key="exclusive.png",
+        mime_type="image/png",
+        byte_size=10,
+        sha256="1" * 64,
+    )
+    shared_reference = Asset(
+        project_id=project["id"],
+        kind="OUTFIT_REFERENCE",
+        original_name="shared.png",
+        storage_key="shared.png",
+        mime_type="image/png",
+        byte_size=10,
+        sha256="2" * 64,
+    )
+    generated_image = Asset(
+        project_id=project["id"],
+        kind="OUTFIT_REFERENCE",
+        original_name="generated.png",
+        storage_key="generated.png",
+        mime_type="image/png",
+        byte_size=10,
+        sha256="3" * 64,
+        source="GENERATED",
+    )
+    db_session.add_all(
+        [character, exclusive_reference, shared_reference, generated_image]
+    )
+    db_session.flush()
+    outfit = Outfit(
+        project_id=project["id"],
+        character_id=character.id,
+        name="葬礼正装",
+        reference_asset_ids=[exclusive_reference.id, shared_reference.id],
+    )
+    other_outfit = Outfit(
+        project_id=project["id"],
+        character_id=character.id,
+        name="共享参考",
+        reference_asset_ids=[shared_reference.id],
+    )
+    chapter = Chapter(project_id=project["id"], title="第一章", ordinal=1)
+    db_session.add_all([outfit, other_outfit, chapter])
+    db_session.flush()
+    scene = Scene(
+        chapter_id=chapter.id,
+        ordinal=1,
+        outfit_assignments={character.id: outfit.id},
+    )
+    page = MangaPage(chapter_id=chapter.id, page_number=1)
+    batch = GenerationBatch(
+        project_id=project["id"],
+        target_type="OUTFIT",
+        target_id=outfit.id,
+        ordinal=1,
+        generation_kind="OUTFIT",
+    )
+    db_session.add_all([scene, page, batch])
+    db_session.flush()
+    panel = Panel(
+        page_id=page.id,
+        reading_order=1,
+        outfits={character.id: outfit.id},
+    )
+    candidate = AssetCandidate(
+        batch_id=batch.id,
+        ordinal=1,
+        model_alias="image.fast",
+        resolution=Resolution.DRAFT_1K,
+        variant="OUTFIT",
+        asset_id=generated_image.id,
+        status="READY",
+    )
+    db_session.add_all([panel, candidate])
+    db_session.commit()
+
+    response = client.delete(f"/api/v1/outfits/{outfit.id}")
+
+    assert response.status_code == 204, response.text
+    assert db_session.get(Outfit, outfit.id) is None
+    db_session.refresh(exclusive_reference)
+    db_session.refresh(shared_reference)
+    db_session.refresh(generated_image)
+    db_session.refresh(candidate)
+    db_session.refresh(scene)
+    db_session.refresh(panel)
+    assert exclusive_reference.deleted_at is not None
+    assert generated_image.deleted_at is not None
+    assert candidate.deleted_at is not None
+    assert shared_reference.deleted_at is None
+    assert scene.outfit_assignments == {}
+    assert panel.outfits == {}
 
 
 def test_page_generation_only_loads_references_for_characters_on_page(
@@ -728,6 +879,19 @@ def test_character_concept_without_references_uses_generate_capability(
 
     assert response.status_code == 202, response.text
     assert operations == ["image_generate"]
+
+    class BindingReached(Exception):
+        pass
+
+    def stop_at_binding(*args, operation: str, **kwargs):
+        operations.append(operation)
+        raise BindingReached
+
+    monkeypatch.setattr(worker_tasks, "_binding", stop_at_binding)
+    job = db_session.get(GenerationJob, response.json()["job_id"])
+    with pytest.raises(BindingReached):
+        worker_tasks._run_asset_generate(db_session, job)
+    assert operations == ["image_generate", "image_generate"]
 
 
 def test_asset_generation_batches_join_library(client, db_session, monkeypatch):

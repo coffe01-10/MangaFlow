@@ -4,7 +4,7 @@ from uuid import uuid4
 from sqlalchemy import event, insert
 
 from app.domain.states import Resolution
-from app.models import Chapter, GenerationBatch, MangaPage, PageCandidate
+from app.models import AssetCandidate, Chapter, GenerationBatch, MangaPage, PageCandidate
 
 
 def test_library_uses_cursor_pagination_and_bulk_candidate_queries(client, db_session):
@@ -79,6 +79,65 @@ def test_library_rejects_invalid_cursor(client):
         f"/api/v1/projects/{project['id']}/library?cursor=not-a-cursor"
     )
     assert response.status_code == 422
+
+
+def test_library_excludes_failed_page_and_asset_candidates(client, db_session):
+    project = client.post("/api/v1/projects", json={"name": "只保留有效素材"}).json()
+    chapter = Chapter(project_id=project["id"], title="第一章", ordinal=1)
+    db_session.add(chapter)
+    db_session.flush()
+    page = MangaPage(chapter_id=chapter.id, page_number=1)
+    db_session.add(page)
+    db_session.flush()
+    batches = [
+        GenerationBatch(
+            project_id=project["id"],
+            chapter_id=chapter.id,
+            page_id=page.id if ordinal == 1 else None,
+            target_type="CHARACTER" if ordinal > 1 else None,
+            target_id="character-id" if ordinal > 1 else None,
+            ordinal=ordinal,
+        )
+        for ordinal in range(1, 4)
+    ]
+    db_session.add_all(batches)
+    db_session.flush()
+    db_session.add_all(
+        [
+            PageCandidate(
+                batch_id=batches[0].id,
+                page_id=page.id,
+                ordinal=1,
+                model_alias="image.nano_banana_2",
+                resolution=Resolution.DRAFT_1K,
+                status="FAILED",
+            ),
+            AssetCandidate(
+                batch_id=batches[1].id,
+                ordinal=1,
+                model_alias="image.nano_banana_2",
+                resolution=Resolution.DRAFT_1K,
+                variant="SHEET",
+                status="FAILED",
+            ),
+            AssetCandidate(
+                batch_id=batches[2].id,
+                ordinal=1,
+                model_alias="image.nano_banana_2",
+                resolution=Resolution.DRAFT_1K,
+                variant="SHEET",
+                status="READY",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    response = client.get(f"/api/v1/projects/{project['id']}/library")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [group["batch"]["id"] for group in payload["groups"]] == [batches[2].id]
+    assert payload["total_candidates"] == 1
 
 
 def test_library_filters_batches_by_chapter(client, db_session):

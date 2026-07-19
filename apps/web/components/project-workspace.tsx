@@ -62,7 +62,7 @@ import {
 import Link from "next/link";
 import Image from "next/image";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { ChangeEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, DragEvent, useEffect, useMemo, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 
 export type WorkspaceSection = "source" | "assets" | "script" | "storyboard" | "generate" | "library" | "jobs";
@@ -240,6 +240,7 @@ export default function ProjectWorkspace({
   const [assetKind, setAssetKind] = useState<AssetPurpose>("CHARACTER_REFERENCE");
   const currentAssetKind = assetView === "references" ? assetKind : assetKindByView[assetView];
   const [uploadError, setUploadError] = useState("");
+  const [assetDragActive, setAssetDragActive] = useState(false);
   const [showArchivedJobs, setShowArchivedJobs] = useState(false);
   const [queueDockHidden, setQueueDockHidden] = useState(() => {
     if (typeof window === "undefined") return false;
@@ -304,7 +305,8 @@ export default function ProjectWorkspace({
     return stored >= 188 && stored <= 360 ? stored : 214;
   });
   const [referenceSelections, setReferenceSelections] = useState<Record<string, { character_asset_id: string | null; outfit_id: string | null; outfit_asset_id: string | null }>>({});
-  const [confirmedReferencePageId, setConfirmedReferencePageId] = useState<string | null>(null);
+  const [referenceOverridePageId, setReferenceOverridePageId] = useState<string | null>(null);
+  const [viewedBatchId, setViewedBatchId] = useState<string | null>(null);
 
   const needsChapters = ["source", "script", "storyboard", "generate", "library"].includes(section);
   const needsCharacters = section === "assets"
@@ -382,7 +384,34 @@ export default function ProjectWorkspace({
   });
   const selectedPage = workbench.data?.page ?? selectedPageEntry;
   const currentBatch = workbench.data?.current_batch ?? null;
-  const candidates = { data: workbench.data?.candidates, isLoading: workbench.isLoading };
+  const pageBatches = useQuery({
+    queryKey: ["batches", selectedPageEntry?.id],
+    queryFn: () => api.batches(selectedPageEntry!.id),
+    enabled: section === "generate" && Boolean(selectedPageEntry),
+  });
+  const orderedPageBatches = useMemo(
+    () => [...(pageBatches.data ?? [])].sort((left, right) => left.ordinal - right.ordinal),
+    [pageBatches.data],
+  );
+  const latestBatch = currentBatch ?? orderedPageBatches[orderedPageBatches.length - 1] ?? null;
+  const viewedBatch = orderedPageBatches.find((batch) => batch.id === viewedBatchId) ?? latestBatch;
+  const viewedBatchIndex = viewedBatch
+    ? orderedPageBatches.findIndex((batch) => batch.id === viewedBatch.id)
+    : -1;
+  const previousBatch = viewedBatchIndex > 0 ? orderedPageBatches[viewedBatchIndex - 1] : null;
+  const nextBatch = viewedBatchIndex >= 0 && viewedBatchIndex < orderedPageBatches.length - 1
+    ? orderedPageBatches[viewedBatchIndex + 1]
+    : null;
+  const isViewingHistoricalBatch = Boolean(
+    viewedBatch && latestBatch && viewedBatch.id !== latestBatch.id,
+  );
+  const candidates = useQuery({
+    queryKey: ["candidates", viewedBatch?.id],
+    queryFn: () => api.candidates(viewedBatch!.id),
+    enabled: section === "generate" && Boolean(viewedBatch),
+    refetchInterval: (query) => (query.state.data ?? []).some((candidate) =>
+      ["WAITING", "QUEUED", "PREPARING", "GENERATING"].includes(candidate.status)) ? 3000 : false,
+  });
   const generationStoryboard = { data: workbench.data?.storyboard, isLoading: workbench.isLoading };
   const pageReadiness = { data: workbench.data?.readiness, isLoading: workbench.isLoading, error: workbench.error };
   const assetGenerationTarget = selectedCharacterOutfitId
@@ -485,7 +514,7 @@ export default function ProjectWorkspace({
     const outfit = outfits.data?.find((item) => item.id === selection.outfit_id);
     return !outfit || Boolean(outfit.reference_asset_ids.length && selection.outfit_asset_id);
   });
-  const referencesConfirmed = confirmedReferencePageId === selectedPage?.id;
+  const referenceOverrideOpen = referenceOverridePageId === selectedPage?.id;
   const targetDialogues = useMemo(
     () => (generationStoryboard.data?.panels ?? []).flatMap((panel) => panel.dialogues.map((dialogue) => dialogue.target_text)).filter(Boolean),
     [generationStoryboard.data?.panels],
@@ -564,9 +593,16 @@ export default function ProjectWorkspace({
 
   const deleteAsset = useMutation({
     mutationFn: (assetId: string) => api.deleteAsset(assetId),
-    onSuccess: () => {
+    onSuccess: (_, assetId) => {
+      setSelectedOutfitAssets((values) => values.filter((item) => item !== assetId));
+      setSelectedStyleAssets((values) => values.filter((item) => item !== assetId));
       queryClient.invalidateQueries({ queryKey: ["assets", id] });
       queryClient.invalidateQueries({ queryKey: ["characters", id] });
+      queryClient.invalidateQueries({ queryKey: ["outfits", id] });
+      queryClient.invalidateQueries({ queryKey: ["styles", id] });
+      queryClient.invalidateQueries({ queryKey: ["asset-candidates"] });
+      queryClient.invalidateQueries({ queryKey: ["candidates"] });
+      queryClient.invalidateQueries({ queryKey: ["page-readiness"] });
     },
   });
 
@@ -677,6 +713,26 @@ export default function ProjectWorkspace({
       setEditingOutfitId(null);
       queryClient.invalidateQueries({ queryKey: ["outfits", id] });
     },
+  });
+
+  const deleteOutfit = useMutation({
+    mutationFn: (outfit: Outfit) => api.deleteOutfit(outfit.id),
+    onSuccess: (_, outfit) => {
+      if (editingOutfitId === outfit.id) resetOutfitForm();
+      if (selectedCharacterOutfitId === outfit.id) setSelectedCharacterOutfitId("");
+      queryClient.invalidateQueries({ queryKey: ["outfits", id] });
+      queryClient.invalidateQueries({ queryKey: ["assets", id] });
+      queryClient.invalidateQueries({ queryKey: ["asset-batches"] });
+      queryClient.invalidateQueries({ queryKey: ["asset-candidates"] });
+      queryClient.invalidateQueries({ queryKey: ["library", id] });
+      queryClient.invalidateQueries({ queryKey: ["script", activeChapterId] });
+      queryClient.invalidateQueries({ queryKey: ["pages", activeChapterId] });
+      queryClient.invalidateQueries({ queryKey: ["storyboard"] });
+      setUploadError("");
+    },
+    onError: (reason) => setUploadError(
+      reason instanceof Error ? reason.message : "删除服装档案失败",
+    ),
   });
 
   const generateOutfitPreview = useMutation({
@@ -808,7 +864,12 @@ export default function ProjectWorkspace({
       if (issue) throw new Error(issue);
       return api.startBatch(selectedPage!.id);
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["generation-workbench", selectedPage?.id] }),
+    onSuccess: (batch) => {
+      setViewedBatchId(batch.id);
+      setReviewCandidateId(null);
+      queryClient.invalidateQueries({ queryKey: ["batches", selectedPage?.id] });
+      queryClient.invalidateQueries({ queryKey: ["generation-workbench", selectedPage?.id] });
+    },
   });
 
   const generate = useMutation({
@@ -817,7 +878,6 @@ export default function ProjectWorkspace({
       if (issue) throw new Error(issue);
       if (!pageReadiness.data?.ready) throw new Error(pageReadiness.isLoading ? "正在检查页面生产条件" : "页面生产准备尚未完成，请先处理阻塞项");
       if (!generationReferenceReady) throw new Error("请为本页每个入镜人物选择人物参考图，并补齐分镜指定服装的参考图");
-      if (!referencesConfirmed) throw new Error("请先确认本页人物、服装与参考图对应关系");
       const batch = currentBatch ?? await api.startBatch(selectedPage!.id);
       return api.generateCandidate(
         batch.id,
@@ -829,6 +889,7 @@ export default function ProjectWorkspace({
     },
     onSuccess: () => {
       setDraft(null);
+      setViewedBatchId(null);
       queryClient.invalidateQueries({ queryKey: ["batches", selectedPage?.id] });
       queryClient.invalidateQueries({ queryKey: ["candidates"] });
       queryClient.invalidateQueries({ queryKey: ["jobs", id] });
@@ -984,7 +1045,7 @@ export default function ProjectWorkspace({
     onSuccess: (next) => {
       setSelectedPageId(next.id);
       setReferenceSelections({});
-      setConfirmedReferencePageId(null);
+      setReferenceOverridePageId(null);
       queryClient.invalidateQueries({ queryKey: ["batches", next.id] });
     },
   });
@@ -1010,10 +1071,30 @@ export default function ProjectWorkspace({
     setAssetKind("OUTFIT_REFERENCE");
   }
 
+  function uploadReferenceFile(file?: File) {
+    if (!file || upload.isPending) return;
+    if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
+      setUploadError("只支持 PNG、JPEG 或 WebP 图片");
+      return;
+    }
+    setUploadError("");
+    upload.mutate(file);
+  }
+
   function chooseFile(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (file) upload.mutate(file);
+    uploadReferenceFile(event.target.files?.[0]);
     event.target.value = "";
+  }
+
+  function dropReferenceFile(event: DragEvent<HTMLLabelElement>) {
+    event.preventDefault();
+    setAssetDragActive(false);
+    uploadReferenceFile(event.dataTransfer.files?.[0]);
+  }
+
+  function confirmDeleteOutfit(outfit: Outfit) {
+    const message = `删除服装档案“${outfit.name}”？\n\n将同时删除绑定的 ${outfit.reference_asset_ids.length} 张参考图、已生成的穿着图，并清除剧本与分镜中的服装绑定。被其他档案共用的图片会保留。`;
+    if (window.confirm(message)) deleteOutfit.mutate(outfit);
   }
 
   function chooseSourceFile(event: ChangeEvent<HTMLInputElement>) {
@@ -1171,7 +1252,7 @@ export default function ProjectWorkspace({
                   <p className="binding-guide"><Link2 size={12} />上传服装参考后会自动加入当前档案；也可以在下方素材卡中加入、移除，再点击保存绑定。</p>
                   <div className="profile-records">{outfits.data?.map((outfit) => {
                     const owner = characters.data?.find((item) => item.id === outfit.character_id);
-                    return <article className={editingOutfitId === outfit.id ? "editing" : ""} key={outfit.id}><div className="profile-record-title"><span>WARDROBE</span><strong>{outfit.name}</strong><small>{outfit.locked_fields.length} 项锁定</small></div><div className="relationship-chain"><span>{owner?.primary_name ?? "未知角色"}</span><b>→</b><span>{outfit.name}</span><b>→</b><span>{outfit.reference_asset_ids.length} 张参考图</span></div><div className="profile-record-actions"><button type="button" onClick={() => beginOutfitEdit(outfit)}>{editingOutfitId === outfit.id ? "编辑中" : "管理参考图"}</button><button type="button" disabled={generateOutfitPreview.isPending || !activeDrawModel || !outfit.reference_asset_ids.length} onClick={() => generateOutfitPreview.mutate(outfit.id)}>生成穿着图</button></div></article>;
+                    return <article className={editingOutfitId === outfit.id ? "editing" : ""} key={outfit.id}><div className="profile-record-title"><span>WARDROBE</span><strong>{outfit.name}</strong><small>{outfit.locked_fields.length} 项锁定</small></div><div className="relationship-chain"><span>{owner?.primary_name ?? "未知角色"}</span><b>→</b><span>{outfit.name}</span><b>→</b><span>{outfit.reference_asset_ids.length} 张参考图</span></div><div className="profile-record-actions"><button className="danger-action" type="button" disabled={deleteOutfit.isPending} onClick={() => confirmDeleteOutfit(outfit)}><Trash2 size={11} />删除档案及图片</button><button type="button" onClick={() => beginOutfitEdit(outfit)}>{editingOutfitId === outfit.id ? "编辑中" : "管理参考图"}</button><button type="button" disabled={generateOutfitPreview.isPending || !activeDrawModel || !outfit.reference_asset_ids.length} onClick={() => generateOutfitPreview.mutate(outfit.id)}>生成穿着图</button></div></article>;
                   })}{!outfits.data?.length && <p className="profile-record-empty">还没有服装档案。完成上方 01–03 三步后建立。</p>}</div>
                 </section>}
                 {assetView === "style" && <>
@@ -1194,9 +1275,9 @@ export default function ProjectWorkspace({
               </div>
               {assetView === "references" && <header className="canvas-header"><div><span>REFERENCE INTAKE / 原始素材</span><h2>上传、分类与追溯原始参考图</h2></div><small>{assets.data?.length ?? 0} 个文件</small></header>}
               <div className="intake-toolbar"><div className="kind-switch">{assetView === "references" ? kinds.map(([value, label]) => <button key={value} className={assetKind === value ? "active" : ""} onClick={() => setAssetKind(value)}>{label}</button>) : <strong>{kinds.find(([value]) => value === currentAssetKind)?.[1]}</strong>}</div><span>{currentAssetKind === "CHARACTER_REFERENCE" ? (bindCharacterId ? "将绑定到选中的角色" : "请先选择要绑定的角色") : currentAssetKind === "OUTFIT_REFERENCE" ? (boundCharacter ? `当前绑定目标：${boundCharacter.primary_name} → ${outfitName.trim() || "未命名服装"}` : "先选择所属角色，再建立服装档案") : `当前分析目标：${styleColorMode === "monochrome" ? "黑白漫画" : "彩色漫画"}`}</span></div>
-              <label className={upload.isPending ? "upload-stage busy" : "upload-stage"}><input type="file" accept="image/png,image/jpeg,image/webp" onChange={chooseFile} disabled={upload.isPending} /><span className="upload-icon">{upload.isPending ? <LoaderCircle className="spin" /> : <Upload />}</span><strong>{upload.isPending ? "正在安全上传…" : `上传${kinds.find(([value]) => value === currentAssetKind)?.[1]}`}</strong><p>{currentAssetKind === "CHARACTER_REFERENCE" ? "人物图会和选中的主要姓名绑定，不会只依赖文件名猜测身份。" : currentAssetKind === "OUTFIT_REFERENCE" ? "上传后自动加入当前服装档案，保存时绑定到上方所选角色。" : `上传后自动加入当前${styleColorMode === "monochrome" ? "黑白" : "彩色"}风格档案，创建后再由默认视觉模型分析。`}</p></label>
+              <label className={`upload-stage${upload.isPending ? " busy" : ""}${assetDragActive ? " drag-active" : ""}`} onDragEnter={(event) => { event.preventDefault(); setAssetDragActive(true); }} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; setAssetDragActive(true); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setAssetDragActive(false); }} onDrop={dropReferenceFile}><input type="file" accept="image/png,image/jpeg,image/webp" onChange={chooseFile} disabled={upload.isPending} /><span className="upload-icon">{upload.isPending ? <LoaderCircle className="spin" /> : <Upload />}</span><strong>{upload.isPending ? "正在安全上传…" : assetDragActive ? "松开即可上传" : `拖拽图片到这里，或点击上传${kinds.find(([value]) => value === currentAssetKind)?.[1]}`}</strong><p>{currentAssetKind === "CHARACTER_REFERENCE" ? "人物图会和选中的主要姓名绑定，不会只依赖文件名猜测身份。" : currentAssetKind === "OUTFIT_REFERENCE" ? "上传后自动加入当前服装档案，保存时绑定到上方所选角色。" : `上传后自动加入当前${styleColorMode === "monochrome" ? "黑白" : "彩色"}风格档案，创建后再由默认视觉模型分析。`}</p></label>
               {uploadError && <p className="form-error"><CircleAlert size={15} />{uploadError}</p>}
-              {(bindExistingCharacterReference.isError || unbindExistingCharacterReference.isError) && <p className="form-error"><CircleAlert size={15} />{(bindExistingCharacterReference.error ?? unbindExistingCharacterReference.error)?.message}</p>}
+              {(deleteAsset.isError || reclassifyAsset.isError || bindExistingCharacterReference.isError || unbindExistingCharacterReference.isError) && <p className="form-error"><CircleAlert size={15} />{(deleteAsset.error ?? reclassifyAsset.error ?? bindExistingCharacterReference.error ?? unbindExistingCharacterReference.error)?.message}</p>}
               {(createOutfit.isError || updateOutfit.isError || createStyle.isError || updateStyleMode.isError) && <p className="form-error"><CircleAlert size={15} />{(createOutfit.error ?? updateOutfit.error ?? createStyle.error ?? updateStyleMode.error)?.message}</p>}
               {visibleAssetKinds.map(([kind, label]) => {
                 const grouped = assets.data?.filter((asset) => asset.kind === kind) ?? [];
@@ -1216,7 +1297,7 @@ export default function ProjectWorkspace({
                         {kind === "STYLE_REFERENCE" && <p className={linkedStyles.length ? "reference-binding bound" : "reference-binding"}><Link2 size={10} />{linkedStyles.length ? `已用于：${linkedStyles.map((style) => `${style.name}（${style.color_mode === "monochrome" ? "黑白" : "彩色"}）`).join("；")}` : "尚未写入风格档案"}</p>}
                         {kind === "CHARACTER_REFERENCE" && linkedCharacter && !characterReference ? <p className="reference-binding bound"><Link2 size={10} />当前绑定：{linkedCharacter.primary_name}</p> : null}
                         {kind === "CHARACTER_REFERENCE" ? <button className={characterReference ? "bind-purpose bound" : "bind-purpose"} disabled={!boundCharacter || bindExistingCharacterReference.isPending || unbindExistingCharacterReference.isPending} onClick={() => characterReference ? unbindExistingCharacterReference.mutate(characterReference.id) : bindExistingCharacterReference.mutate(asset.id)}>{!boundCharacter ? "先选择角色" : characterReference ? `解除与 ${boundCharacter.primary_name} 的绑定` : linkedCharacter ? `改绑到 ${boundCharacter.primary_name}（自动解除 ${linkedCharacter.primary_name}）` : `绑定到 ${boundCharacter.primary_name}`}</button> : <button className="bind-purpose" disabled={kind === "OUTFIT_REFERENCE" && !bindCharacterId} onClick={() => kind === "OUTFIT_REFERENCE" ? setSelectedOutfitAssets((values) => values.includes(asset.id) ? values.filter((item) => item !== asset.id) : [...values, asset.id]) : setSelectedStyleAssets((values) => values.includes(asset.id) ? values.filter((item) => item !== asset.id) : [...values, asset.id])}>{kind === "OUTFIT_REFERENCE" && !bindCharacterId ? "先选择所属角色" : selected ? "已选：保存后绑定" : kind === "OUTFIT_REFERENCE" ? "加入当前服装档案" : "加入当前风格档案"}</button>}
-                        <div className="asset-actions"><select aria-label="修改素材用途" value={asset.kind} onChange={(event) => reclassifyAsset.mutate({ assetId: asset.id, kind: event.target.value as AssetPurpose })}>{kinds.map(([value, option]) => <option key={value} value={value}>{option}</option>)}</select><button title="删除素材" onClick={() => { if (window.confirm("删除该导入素材并解除人物绑定？")) deleteAsset.mutate(asset.id); }}><Trash2 size={13} /></button></div>
+                        <div className="asset-actions"><select aria-label="修改素材用途" value={asset.kind} onChange={(event) => reclassifyAsset.mutate({ assetId: asset.id, kind: event.target.value as AssetPurpose })}>{kinds.map(([value, option]) => <option key={value} value={value}>{option}</option>)}</select><button title="删除素材" disabled={deleteAsset.isPending} onClick={() => { if (window.confirm("删除该素材及其候选记录，并解除已有绑定？")) deleteAsset.mutate(asset.id); }}><Trash2 size={13} /></button></div>
                       </div>
                     </article>;
                   })}</div>
@@ -1237,7 +1318,7 @@ export default function ProjectWorkspace({
             <>
               <header className="canvas-header"><div><span>PAGE CAPACITY / 动态分页</span><h2>内容有多少，页面就有多少</h2></div><div className="chapter-stage-control"><select aria-label="选择要编辑分镜的章节" value={activeChapterId ?? ""} onChange={(event) => setSelectedChapterId(event.target.value)}>{chapters.data?.map((chapter) => <option key={chapter.id} value={chapter.id}>{chapter.ordinal}. {chapter.title}</option>)}</select><small>{pages.data?.length ?? 0} 页</small></div></header>
               {invalidPlannedPageCount > 0 && <div className="workflow-warning"><CircleAlert size={17} /><div><strong>{invalidPlannedPageCount} 页缺少剧本与分镜来源</strong><p>这是旧版分页数据，不能直接生图。请先生成漫画剧本，再从第 1 页重新计算分页。</p></div><Link className="button outline compact" href={projectPath("script")}>前往漫画剧本</Link></div>}
-              {!pages.data?.length ? <div className="asset-empty tall"><PanelTop size={28} /><strong>尚未生成分页分镜</strong><p>先完成漫画剧本；系统按场景切换、动作复杂度、对白和气泡容量拆页。</p></div> : <StoryboardEditor chapterId={activeChapterId!} pages={pages.data} characters={characters.data ?? []} outfits={outfits.data ?? []} onReplan={(pageNumber) => replanPage.mutate(pageNumber)} replanPending={replanPage.isPending} replanError={replanPage.error} />}
+              {!pages.data?.length ? <div className="asset-empty tall"><PanelTop size={28} /><strong>尚未生成分页分镜</strong><p>先完成漫画剧本；系统按场景切换、动作复杂度、对白和气泡容量拆页。</p></div> : <StoryboardEditor chapterId={activeChapterId!} pages={pages.data} characters={characters.data ?? []} outfits={outfits.data ?? []} onReplan={(pageNumber) => replanPage.mutate(pageNumber)} replanPending={replanPage.isPending} replanError={replanPage.error} initialPageId={searchParams.get("page")} focusCharacterId={searchParams.get("character")} />}
             </>
           )}
 
@@ -1247,28 +1328,45 @@ export default function ProjectWorkspace({
               {selectedPage ? <>
                 {selectedPageStructureIssue && <div className="workflow-warning"><CircleAlert size={17} /><div><strong>当前页暂不能生成</strong><p>{selectedPageStructureIssue}</p></div><Link className="button outline compact" href={projectPath("script")}>前往漫画剧本</Link></div>}
                 {selectedPage.continuity_status === "NEEDS_REVIEW" && <div className="workflow-warning"><CircleAlert size={17} /><div><strong>剧本或分镜已修改</strong><p>历史候选仍然保留，但可能不再对应当前脚本。建议重新抽卡并执行连续性检查。</p></div><Link className="button outline compact" href={projectPath("storyboard")}>检查分镜</Link></div>}
-                {selectedWorkbenchCandidate && ["STALE", "LEGACY_UNKNOWN"].includes(selectedWorkbenchCandidate.version_state) && <div className="stale-candidate-banner"><div><span>版本需要决定</span><strong>旧候选基于 {selectedWorkbenchCandidate.based_on_storyboard_version ? `V${selectedWorkbenchCandidate.based_on_storyboard_version}` : "未知版本"}，当前分镜为 V{selectedPage.storyboard_version}</strong><p>旧图仍可查看和导出。请选择继续沿用，或按当前分镜重新生成。</p></div><div><button disabled={keepSelectedCandidate.isPending} onClick={() => keepSelectedCandidate.mutate(selectedWorkbenchCandidate.id)}><Check size={14} />继续使用旧候选</button><button className="primary" disabled={generate.isPending || !pageReadiness.data?.ready || !generationReferenceReady || !referencesConfirmed} onClick={() => generate.mutate()}><Sparkles size={14} />按当前 V{selectedPage.storyboard_version} 重新生成</button></div></div>}
-                <div className="draw-toolbar"><div className="page-picker">{pages.data?.map((page) => <button key={page.id} className={selectedPage.id === page.id ? "active" : ""} onClick={() => { setSelectedPageId(page.id); setReferenceSelections({}); setConfirmedReferencePageId(null); }}>{page.page_number}</button>)}</div><button className="button ghost compact" disabled={startBatch.isPending || Boolean(selectedPageStructureIssue) || !pageReadiness.data?.ready} onClick={() => startBatch.mutate()}><Plus size={14} />新批次</button></div>
+                {selectedWorkbenchCandidate && ["STALE", "LEGACY_UNKNOWN"].includes(selectedWorkbenchCandidate.version_state) && <div className="stale-candidate-banner"><div><span>版本需要决定</span><strong>旧候选基于 {selectedWorkbenchCandidate.based_on_storyboard_version ? `V${selectedWorkbenchCandidate.based_on_storyboard_version}` : "未知版本"}，当前分镜为 V{selectedPage.storyboard_version}</strong><p>旧图仍可查看和导出。请选择继续沿用，或按当前分镜重新生成。</p></div><div><button disabled={keepSelectedCandidate.isPending} onClick={() => keepSelectedCandidate.mutate(selectedWorkbenchCandidate.id)}><Check size={14} />继续使用旧候选</button><button className="primary" disabled={generate.isPending || !pageReadiness.data?.ready || !generationReferenceReady || isViewingHistoricalBatch} onClick={() => generate.mutate()}><Sparkles size={14} />{isViewingHistoricalBatch ? "先切回最新批次" : `按当前 V${selectedPage.storyboard_version} 重新生成`}</button></div></div>}
+                <div className="draw-toolbar">
+                  <div className="page-picker">{pages.data?.map((page) => <button key={page.id} className={selectedPage.id === page.id ? "active" : ""} onClick={() => { setSelectedPageId(page.id); setViewedBatchId(null); setReviewCandidateId(null); setReferenceSelections({}); setReferenceOverridePageId(null); }}>{page.page_number}</button>)}</div>
+                  <div className="batch-toolbar-actions">
+                    {viewedBatch && <div className="batch-switcher" aria-label="切换生成批次">
+                      <button type="button" title="查看上一批次" disabled={!previousBatch} onClick={() => { setViewedBatchId(previousBatch?.id ?? null); setReviewCandidateId(null); }}><ArrowLeft size={13} />上一批</button>
+                      <label><span>查看批次</span><select aria-label="选择要查看的生成批次" value={viewedBatch.id} onChange={(event) => { setViewedBatchId(event.target.value); setReviewCandidateId(null); }}>{[...orderedPageBatches].reverse().map((batch) => <option key={batch.id} value={batch.id}>批次 {batch.ordinal}{batch.id === latestBatch?.id ? " · 最新" : ""}</option>)}</select></label>
+                      <button type="button" title="查看下一批次" disabled={!nextBatch} onClick={() => { setViewedBatchId(nextBatch?.id ?? null); setReviewCandidateId(null); }}>下一批<ArrowRight size={13} /></button>
+                    </div>}
+                    <button className="button ghost compact" disabled={startBatch.isPending || Boolean(selectedPageStructureIssue) || !pageReadiness.data?.ready} onClick={() => startBatch.mutate()}><Plus size={14} />新批次</button>
+                  </div>
+                </div>
                 <div className="draw-context"><div><span>PAGE LOAD</span><strong>{selectedPage.estimated_text_chars} 字</strong><small>{selectedPage.panel_count} 格 / {selectedPage.estimated_bubbles} 气泡</small></div><p>{selectedPage.source_coverage.ranges?.map((item) => item.text).join("").slice(0, 180)}</p></div>
                 <ProductionReadiness projectId={id} readiness={pageReadiness.data} loading={pageReadiness.isLoading} error={pageReadiness.error} targetDialogues={targetDialogues} />
                 <ImageModelPicker selected={activeDrawModel} onSelect={setDrawModel} options={modelOptions} label="本次页面生成模型（仅显示支持图片编辑的已启用模型）" />
                 <section className="generation-reference-check">
-                  <header><div><span>CAST & REFERENCES</span><strong>生成前确认画面人物与参考图</strong></div><small>{visibleCharacterIds.length} 位入镜人物</small></header>
-                  {generationStoryboard.isLoading ? <p className="reference-check-loading"><LoaderCircle className="spin" size={15} />正在读取当前分镜…</p> : <div className="reference-check-grid">
+                  <header><div><span>CAST & REFERENCES</span><strong>自动继承已确认的人物与服装参考</strong></div><button type="button" className="reference-override-toggle" onClick={() => setReferenceOverridePageId(referenceOverrideOpen ? null : selectedPage.id)}><Pencil size={11} />{referenceOverrideOpen ? "收起选择" : "本页更换"}</button></header>
+                  {generationReferenceReady && !referenceOverrideOpen && <div className="reference-inheritance-summary">{visibleCharacterIds.map((characterId) => {
+                    const character = characters.data?.find((item) => item.id === characterId);
+                    const selection = effectiveReferenceSelections[characterId];
+                    const characterAsset = assets.data?.find((item) => item.id === selection?.character_asset_id);
+                    const outfit = outfits.data?.find((item) => item.id === selection?.outfit_id);
+                    const outfitAsset = assets.data?.find((item) => item.id === selection?.outfit_asset_id);
+                    return <article key={characterId}><Check size={14} /><div><strong>{character?.primary_name ?? characterId}{outfit ? ` · ${outfit.name}` : ""}</strong><span>已继承：{characterAsset ? assetName(characterAsset) : "人物主参考"}{outfitAsset ? ` ＋ ${assetName(outfitAsset)}` : ""}</span></div></article>;
+                  })}</div>}
+                  {generationStoryboard.isLoading ? <p className="reference-check-loading"><LoaderCircle className="spin" size={15} />正在读取当前分镜…</p> : (referenceOverrideOpen || !generationReferenceReady) && <div className="reference-check-grid">
                     {visibleCharacterIds.map((characterId) => {
                       const character = characters.data?.find((item) => item.id === characterId);
                       const selection = effectiveReferenceSelections[characterId];
                       const outfit = outfits.data?.find((item) => item.id === selection?.outfit_id);
-                      return <article key={characterId}><div><strong>{character?.primary_name ?? characterId}</strong><span>{outfit ? `穿着：${outfit.name}` : "分镜未指定服装"}</span></div><label><span>人物参考图</span><select value={selection?.character_asset_id ?? ""} onChange={(event) => { setConfirmedReferencePageId(null); setReferenceSelections((values) => ({ ...values, [characterId]: { ...(effectiveReferenceSelections[characterId] ?? { outfit_id: null, outfit_asset_id: null }), character_asset_id: event.target.value || null } })); }}><option value="">请选择人物参考</option>{character?.references.map((reference, referenceIndex) => { const asset = assets.data?.find((item) => item.id === reference.asset_id); return <option value={reference.asset_id} key={reference.id}>{character.primary_name} · {reference.is_canonical ? "主参考" : `人物参考 ${String(referenceIndex + 1).padStart(2, "0")}`} · {asset?.original_name ?? reference.asset_id}</option>; })}</select></label>{outfit && <label><span>该服装参考图</span><select value={selection?.outfit_asset_id ?? ""} onChange={(event) => { setConfirmedReferencePageId(null); setReferenceSelections((values) => ({ ...values, [characterId]: { ...effectiveReferenceSelections[characterId], outfit_asset_id: event.target.value || null } })); }}><option value="">请选择服装参考</option>{outfit.reference_asset_ids.map((assetId, assetIndex) => <option value={assetId} key={assetId}>{outfit.name} · 服装参考 {String(assetIndex + 1).padStart(2, "0")} · {assets.data?.find((item) => item.id === assetId)?.original_name ?? assetId}</option>)}</select></label>}</article>;
+                      return <article key={characterId}><div><strong>{character?.primary_name ?? characterId}</strong><span>{outfit ? `穿着：${outfit.name}` : "分镜未指定服装"}</span></div><label><span>人物参考图</span><select value={selection?.character_asset_id ?? ""} onChange={(event) => setReferenceSelections((values) => ({ ...values, [characterId]: { ...(effectiveReferenceSelections[characterId] ?? { outfit_id: null, outfit_asset_id: null }), character_asset_id: event.target.value || null } }))}><option value="">请选择人物参考</option>{character?.references.map((reference, referenceIndex) => { const asset = assets.data?.find((item) => item.id === reference.asset_id); return <option value={reference.asset_id} key={reference.id}>{character.primary_name} · {reference.is_canonical ? "主参考" : `人物参考 ${String(referenceIndex + 1).padStart(2, "0")}`} · {asset?.display_name ?? asset?.original_name ?? reference.asset_id} · {reference.asset_id.slice(0, 8)}</option>; })}</select></label>{outfit && <label><span>该服装参考图</span><select value={selection?.outfit_asset_id ?? ""} onChange={(event) => setReferenceSelections((values) => ({ ...values, [characterId]: { ...effectiveReferenceSelections[characterId], outfit_asset_id: event.target.value || null } }))}><option value="">请选择服装参考</option>{outfit.reference_asset_ids.map((assetId, assetIndex) => <option value={assetId} key={assetId}>{outfit.name} · 服装参考 {String(assetIndex + 1).padStart(2, "0")} · {assets.data?.find((item) => item.id === assetId)?.original_name ?? assetId}</option>)}</select></label>}</article>;
                     })}
                     {!visibleCharacterIds.length && <p className="reference-check-empty">当前分镜没有入镜人物，将只按场景、动作和风格生成。</p>}
                   </div>}
-                  <label className={referencesConfirmed ? "reference-confirmed" : ""}><input type="checkbox" checked={referencesConfirmed} disabled={!generationReferenceReady} onChange={(event) => setConfirmedReferencePageId(event.target.checked ? selectedPage.id : null)} /><span>我已确认人物姓名、人物参考与服装参考逐一对应</span></label>
                   {!generationReferenceReady && <p className="reference-check-warning"><CircleAlert size={13} />有角色缺少可用参考图，请先到“参考资产”绑定；分镜指定服装时也必须选择对应服装图。</p>}
                 </section>
-                <div className="generation-bar"><div className="generation-options"><div><span>正式模型</span><strong>{modelOptions.find((item) => item.alias === activeDrawModel)?.name ?? "尚未选择"}</strong></div><div><span>本次规格</span><strong>1K · 彩色 · 1 个候选</strong></div></div><button className="button ink generate-one" disabled={generate.isPending || Boolean(selectedPageGenerationIssue) || !pageReadiness.data?.ready || !generationReferenceReady || !referencesConfirmed} onClick={() => generate.mutate()}>{generate.isPending ? <LoaderCircle className="spin" size={17} /> : <Star size={17} />}{generate.isPending ? "正在加入 1 个正式任务" : selectedPageStructureIssue ? "请先补全剧本与分镜" : !activeDrawModel ? "先选择图片模型" : !pageReadiness.data?.ready ? "先完成页面生产准备" : !referencesConfirmed ? "先确认人物与参考图" : "生成 1 个 1K 彩色候选"}</button></div>
+                <div className="generation-bar"><div className="generation-options"><div><span>正式模型</span><strong>{modelOptions.find((item) => item.alias === activeDrawModel)?.name ?? "尚未选择"}</strong></div><div><span>本次规格</span><strong>1K · 彩色 · 1 个候选</strong></div></div><button className="button ink generate-one" disabled={generate.isPending || Boolean(selectedPageGenerationIssue) || !pageReadiness.data?.ready || !generationReferenceReady || isViewingHistoricalBatch} onClick={() => generate.mutate()}>{generate.isPending ? <LoaderCircle className="spin" size={17} /> : <Star size={17} />}{generate.isPending ? "正在加入 1 个正式任务" : isViewingHistoricalBatch ? "先切回最新批次再生成" : selectedPageStructureIssue ? "请先补全剧本与分镜" : !activeDrawModel ? "先选择图片模型" : !pageReadiness.data?.ready ? "先完成页面生产准备" : !generationReferenceReady ? "先补齐人物与服装参考" : "生成 1 个 1K 彩色候选"}</button></div>
                 {(generate.isError || startBatch.isError) && <p className="form-error"><CircleAlert size={14} />{(generate.error ?? startBatch.error)?.message}</p>}
-                <div className="batch-heading"><div><span>BATCH</span><strong>{currentBatch ? `批次 ${currentBatch.ordinal}` : "尚未开始批次"}</strong></div><small>每个候选记录实际供应商与模型 · 收藏不等于采用</small></div>
+                <div className="batch-heading"><div><span>{isViewingHistoricalBatch ? "HISTORY / 历史批次" : "BATCH / 当前批次"}</span><strong>{viewedBatch ? `批次 ${viewedBatch.ordinal}` : "尚未开始批次"}</strong></div><small>{isViewingHistoricalBatch ? `正在查看历史结果 · 共 ${orderedPageBatches.length} 个批次` : "每个候选记录实际供应商与模型 · 收藏不等于采用"}</small></div>
                 <div className="candidate-grid">{candidates.data?.map((candidate, candidateIndex) => <article className={`${candidate.is_selected ? "candidate-card selected" : "candidate-card"} version-${candidate.version_state.toLowerCase()}`} key={candidate.id}><CandidateArtwork contentUrl={candidate.content_url} thumbnailUrl={candidate.thumbnail_url} label={`候选 ${candidate.ordinal}`} eager={candidateIndex === 0} onOpen={(url, label) => setPreviewImage({ url, label })} /><div className="candidate-meta"><span>候选 {String(candidate.ordinal).padStart(2, "0")}</span><strong>{modelOptions.find((item) => item.alias === candidate.model_alias)?.name}</strong><small>{candidate.resolution} · {candidate.status}</small><em>{candidate.based_on_storyboard_version ? `生成依据 V${candidate.based_on_storyboard_version}` : "生成版本未知"} · {candidate.version_state}</em></div><div className="candidate-actions"><button className={candidate.is_favorite ? "favorited" : ""} onClick={() => favorite.mutate({ candidateId: candidate.id, value: !candidate.is_favorite })}><Heart size={14} fill={candidate.is_favorite ? "currentColor" : "none"} />收藏</button><button disabled={!candidate.asset_id || candidate.is_selected} onClick={() => { if (window.confirm("请人工确认页面文字已经校对。采用后仍可随时导出；是否继续？")) selectCandidate.mutate({ candidateId: candidate.id, manualTextConfirmed: true, acceptStale: candidate.version_state !== "CURRENT" }); }}><Check size={14} />{candidate.is_selected ? "已采用" : candidate.version_state === "CURRENT" ? "人工校对并采用" : "确认旧版本并采用"}</button><button className={reviewCandidateId === candidate.id ? "reviewing" : ""} disabled={!candidate.asset_id || inspectCandidate.isPending} onClick={() => { setReviewCandidateId(candidate.id); inspectCandidate.mutate(candidate.id); }}><CircleAlert size={14} />视觉检查</button>{candidate.asset_id && candidate.resolution === "1K" && <button disabled={upscaleCandidate.isPending || !activeDrawModel} onClick={() => upscaleCandidate.mutate({ candidateId: candidate.id, resolution: "2K" })}>升至 2K</button>}{candidate.asset_id && candidate.resolution !== "4K" && <button disabled={upscaleCandidate.isPending || !activeDrawModel} onClick={() => upscaleCandidate.mutate({ candidateId: candidate.id, resolution: "4K" })}>升至 4K</button>}<button className="danger-action" disabled={candidate.is_selected} onClick={() => { if (window.confirm("删除这个候选？收藏状态也会一并移除。")) deleteCandidate.mutate(candidate.id); }}><Trash2 size={14} />删除</button></div></article>)}</div>
                 {reviewCandidateId && <section className="inspection-panel">
                   <header><div><span>AI QUALITY CHECK</span><strong>候选视觉检查</strong><small>检查说话人归属、角色、服装、道具和连续性；文字由人工校对。</small></div><button onClick={() => setReviewCandidateId(null)}>关闭</button></header>

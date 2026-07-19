@@ -824,6 +824,7 @@ export const api = {
   deleteChapter: (chapterId: string) => request<void>(`/chapters/${chapterId}`, { method: "DELETE" }),
   restoreChapter: (chapterId: string) => request<Chapter>(`/chapters/${chapterId}/restore`, { method: "POST" }),
   script: (chapterId: string) => request<Script>(`/chapters/${chapterId}/script`),
+  deleteScript: (chapterId: string) => request<void>(`/chapters/${chapterId}/script`, { method: "DELETE" }),
   updateScene: (sceneId: string, payload: Partial<Pick<ScriptScene, "location" | "time_label" | "weather" | "purpose" | "emotional_arc">> & { version: number }) =>
     request<ScriptScene>(`/scenes/${sceneId}`, { method: "PATCH", body: JSON.stringify(payload) }),
   updateBeat: (beatId: string, payload: Partial<Pick<ScriptBeat, "action" | "speaker_name" | "dialogue" | "narration" | "subtext" | "emotion" | "importance" | "must_visualize" | "mergeable" | "page_turn_hook">> & { version: number }) =>
@@ -856,6 +857,8 @@ export const api = {
     request<Outfit>(`/outfits/${outfitId}`, {
       method: "PATCH", body: JSON.stringify(payload),
     }),
+  deleteOutfit: (outfitId: string) =>
+    request<void>(`/outfits/${outfitId}`, { method: "DELETE" }),
   styles: (projectId: string) => request<StyleProfile[]>(`/projects/${projectId}/styles`),
   createStyle: (projectId: string, name: string, colorMode: StyleProfile["color_mode"], referenceAssetIds: string[], lockedFields: string[]) =>
     request<StyleProfile>(`/projects/${projectId}/styles`, {

@@ -16,11 +16,13 @@ from app.config import get_settings
 from app.database import get_db
 from app.models import (
     Asset,
+    AssetCandidate,
     AssetStatus,
     CharacterReference,
     GenerationJob,
     JobAssetReference,
     Outfit,
+    PageCandidate,
     Project,
     StyleProfile,
     StyleStatus,
@@ -257,11 +259,31 @@ def delete_asset(asset_id: str, db: Session = Depends(get_db)) -> None:
     asset = db.get(Asset, asset_id)
     if not asset or asset.deleted_at is not None:
         raise HTTPException(status_code=404, detail="素材不存在")
-    if asset.source != "USER_UPLOAD":
-        raise HTTPException(status_code=409, detail="生成结果请在对应批次中删除")
     _ensure_asset_not_in_active_job(db, asset)
+    page_candidates = list(
+        db.scalars(
+            select(PageCandidate).where(
+                PageCandidate.asset_id == asset.id,
+                PageCandidate.deleted_at.is_(None),
+            )
+        )
+    )
+    if any(candidate.is_selected for candidate in page_candidates):
+        raise HTTPException(status_code=409, detail="当前采用的分页成图不能删除，请先改用其他候选")
     _detach_reference_asset(db, asset)
-    asset.deleted_at = datetime.now(UTC)
+    deleted_at = datetime.now(UTC)
+    for candidate in page_candidates:
+        candidate.deleted_at = deleted_at
+        candidate.version += 1
+    for candidate in db.scalars(
+        select(AssetCandidate).where(
+            AssetCandidate.asset_id == asset.id,
+            AssetCandidate.deleted_at.is_(None),
+        )
+    ):
+        candidate.deleted_at = deleted_at
+        candidate.version += 1
+    asset.deleted_at = deleted_at
     db.commit()
 
 

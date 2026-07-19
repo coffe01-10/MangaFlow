@@ -26,6 +26,7 @@ CHAPTER_HEADER = re.compile(
 )
 SENTENCE_BOUNDARY = re.compile(r"(?<=[。！？!?；;])")
 WHITESPACE = re.compile(r"\s+")
+ACTION_CLAUSE_BOUNDARY = re.compile(r"[，,。！？!?；;：:]+")
 
 SOFT_TEXT_LIMIT = 120
 HARD_TEXT_LIMIT = 180
@@ -493,14 +494,29 @@ def _populate_page_storyboard(
         page.page_number,
         page.source_coverage.get("layout_mode", "dynamic"),
     )
+    used_actions: set[str] = set()
+    supplemental_index = 0
     for panel_index in range(page.panel_count):
-        chunk = chunks[panel_index] if panel_index < len(chunks) else None
-        text = chunk.text if chunk else ""
-        beat = page_beats[panel_index] if panel_index < len(page_beats) else None
+        direct_chunk = chunks[panel_index] if panel_index < len(chunks) else None
+        direct_beat = page_beats[panel_index] if panel_index < len(page_beats) else None
+        visual_chunk = direct_chunk or (
+            chunks[min(panel_index * len(chunks) // page.panel_count, len(chunks) - 1)]
+            if chunks
+            else None
+        )
+        visual_beat = direct_beat or (
+            page_beats[
+                min(panel_index * len(page_beats) // page.panel_count, len(page_beats) - 1)
+            ]
+            if page_beats
+            else None
+        )
+        text = visual_chunk.text if visual_chunk else ""
+        base_action = (visual_beat.action if visual_beat else "").strip() or text.strip()
         character_presence, props = _resolve_panel_cast(
             page=page,
             text=text,
-            beat=beat,
+            beat=visual_beat,
             characters=characters,
         )
         character_ids = [
@@ -508,6 +524,44 @@ def _populate_page_storyboard(
             for character_id, presence in character_presence.items()
             if presence == CharacterPresence.VISIBLE.value
         ]
+        visible_names = [
+            character.primary_name
+            for character in characters
+            if character.id in character_ids and character.primary_name
+        ]
+        is_supplemental = (
+            direct_chunk is None and direct_beat is None
+        ) or base_action in used_actions
+        if is_supplemental:
+            background = page_scenes[0].location if page_scenes else "按原文场景"
+            clauses = [
+                clause.strip()
+                for clause in ACTION_CLAUSE_BOUNDARY.split(base_action)
+                if clause.strip()
+            ]
+            candidates: list[str] = []
+            if visible_names and visual_beat and visual_beat.emotion.strip():
+                candidates.append(
+                    f"人物反应：{'、'.join(visible_names)}呈现{visual_beat.emotion.strip()}。"
+                )
+            if props:
+                candidates.append(f"道具细节：镜头聚焦{props[0]}，承接当前情节。")
+            if background and background != "按原文场景":
+                candidates.append(f"环境过渡：镜头交代{background}的空间与氛围。")
+            candidates.extend(f"动作过程：{clause}。" for clause in clauses)
+            candidates.append("镜头过渡：从不同景别承接当前动作，不新增剧情信息。")
+            rotated_candidates = (
+                candidates[supplemental_index % len(candidates) :]
+                + candidates[: supplemental_index % len(candidates)]
+            )
+            action = next(
+                (candidate for candidate in rotated_candidates if candidate not in used_actions),
+                f"补充镜头 {supplemental_index + 1}：承接当前情节的不同视觉细节。",
+            )
+            supplemental_index += 1
+        else:
+            action = base_action
+        used_actions.add(action)
         panel_outfits = {
             character_id: outfit_id
             for scene in page_scenes
@@ -518,7 +572,7 @@ def _populate_page_storyboard(
             "establishing"
             if panel_index == 0
             else "extreme_close_up"
-            if beat and beat.page_turn_hook
+            if visual_beat and visual_beat.page_turn_hook
             else "wide_action"
             if page.page_function == "action" and panel_index % 2 == 0
             else "medium_close_up"
@@ -538,34 +592,38 @@ def _populate_page_storyboard(
             character_presence=character_presence,
             props=props,
             outfits=panel_outfits,
-            actions={"source_text": text, "script_action": beat.action if beat else ""},
-            expressions={character_id: beat.emotion for character_id in character_ids}
-            if beat
+            actions={"source_text": text, "script_action": action},
+            expressions={character_id: visual_beat.emotion for character_id in character_ids}
+            if visual_beat
             else {},
             background=(
-                page_scenes[0].location if panel_index == 0 and page_scenes else "延续当前场景"
+                page_scenes[0].location if page_scenes else "按原文场景"
             ),
             bubble_regions=[],
             sound_effects=[],
             bleed=page.page_function == "action" and panel_index == 0,
-            borderless=bool(beat and beat.page_turn_hook),
+            borderless=bool(visual_beat and visual_beat.page_turn_hook),
         )
         db.add(panel)
         db.flush()
-        target_text = (beat.dialogue or beat.narration or text) if beat else text
+        target_text = ""
+        if direct_beat:
+            target_text = direct_beat.dialogue or direct_beat.narration
+        if not target_text and direct_chunk:
+            target_text = direct_chunk.text
         if target_text:
             speaker = (
                 next(
                     (
                         character
                         for character in characters
-                        if beat
+                        if direct_beat
                         and _normalize_character_name(character.primary_name)
-                        == _normalize_character_name(beat.speaker_name)
+                        == _normalize_character_name(direct_beat.speaker_name)
                     ),
                     None,
                 )
-                if beat and beat.speaker_name
+                if direct_beat and direct_beat.speaker_name
                 else None
             )
             db.add(
