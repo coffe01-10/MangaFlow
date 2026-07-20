@@ -186,29 +186,36 @@ export function StoryboardEditor({
       return presence === "VISIBLE" && !panel.outfits?.[focusCharacterId];
     });
     if (!targetPanel) return;
-    setPanelId(targetPanel.id);
-    setEditingPanel(true);
-    setPanelDraft({
-      shot_type: targetPanel.shot_type,
-      camera_angle: targetPanel.camera_angle,
-      camera_height: targetPanel.camera_height,
-      characters: [...targetPanel.characters],
-      character_presence: Object.keys(targetPanel.character_presence ?? {}).length
-        ? { ...targetPanel.character_presence }
-        : Object.fromEntries(
-          targetPanel.characters.map((characterId) => [characterId, "VISIBLE" as const]),
-        ),
-      props: [...(targetPanel.props ?? [])],
-      outfits: { ...targetPanel.outfits },
-      actions: { ...targetPanel.actions },
-      expressions: { ...targetPanel.expressions },
-      background: targetPanel.background,
-      sound_effects: [...targetPanel.sound_effects],
-      bleed: targetPanel.bleed,
-      borderless: targetPanel.borderless,
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setPanelId(targetPanel.id);
+      setEditingPanel(true);
+      setPanelDraft({
+        shot_type: targetPanel.shot_type,
+        camera_angle: targetPanel.camera_angle,
+        camera_height: targetPanel.camera_height,
+        characters: [...targetPanel.characters],
+        character_presence: Object.keys(targetPanel.character_presence ?? {}).length
+          ? { ...targetPanel.character_presence }
+          : Object.fromEntries(
+            targetPanel.characters.map((characterId) => [characterId, "VISIBLE" as const]),
+          ),
+        props: [...(targetPanel.props ?? [])],
+        outfits: { ...targetPanel.outfits },
+        actions: { ...targetPanel.actions },
+        expressions: { ...targetPanel.expressions },
+        background: targetPanel.background,
+        sound_effects: [...targetPanel.sound_effects],
+        bleed: targetPanel.bleed,
+        borderless: targetPanel.borderless,
+      });
+      setNotice("已定位到缺少服装的出镜格，请在人物下方选择服装并保存本格分镜。");
+      setFocusHandled(true);
     });
-    setNotice("已定位到缺少服装的出镜格，请在人物下方选择服装并保存本格分镜。");
-    setFocusHandled(true);
+    return () => {
+      cancelled = true;
+    };
   }, [focusCharacterId, focusHandled, storyboard.data?.panels]);
 
   function setPresence(characterId: string, presence: CharacterPresence | "NONE") {
