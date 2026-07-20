@@ -1,6 +1,7 @@
 import pytest
 from sqlalchemy import text
 
+from app.config import get_settings
 from app.domain.states import JobStatus, PageStatus, Resolution
 from app.models import (
     Asset,
@@ -9,6 +10,7 @@ from app.models import (
     Dialogue,
     GenerationBatch,
     GenerationJob,
+    InspectionResult,
     MangaPage,
     Outfit,
     PageCandidate,
@@ -130,6 +132,153 @@ def test_candidate_version_states_and_keep_old_selection(client, db_session):
     )
     assert kept.status_code == 200
     assert kept.json()["selected_candidate_ack_version"] == 3
+
+
+def test_accepting_stale_inspected_candidate_still_requires_fresh_inspection(
+    client, db_session
+):
+    project = _project(client, "旧候选复检")
+    chapter = Chapter(project_id=project["id"], title="第一章", ordinal=1)
+    db_session.add(chapter)
+    db_session.flush()
+    page = MangaPage(chapter_id=chapter.id, page_number=1, storyboard_version=2)
+    db_session.add(page)
+    db_session.flush()
+    batch = GenerationBatch(
+        project_id=project["id"], chapter_id=chapter.id, page_id=page.id, ordinal=1
+    )
+    asset = Asset(
+        project_id=project["id"],
+        kind="page_candidate",
+        original_name="stale.png",
+        storage_key="generated/stale.png",
+        mime_type="image/png",
+        byte_size=10,
+        sha256="s" * 64,
+        source="VERTEX_GENERATED",
+        status="GENERATED",
+    )
+    db_session.add_all([batch, asset])
+    db_session.flush()
+    candidate = PageCandidate(
+        batch_id=batch.id,
+        page_id=page.id,
+        ordinal=1,
+        model_alias="image.nano_banana_2",
+        resolution=Resolution.DRAFT_1K,
+        status="INSPECTED",
+        asset_id=asset.id,
+        based_on_storyboard_version=1,
+    )
+    db_session.add(candidate)
+    db_session.flush()
+    for category in ("CHARACTER", "OUTFIT", "CONTINUITY"):
+        db_session.add(
+            InspectionResult(
+                candidate_id=candidate.id,
+                category=category,
+                outcome="PASS",
+                score=0.99,
+                severity="INFO",
+            )
+        )
+    db_session.commit()
+
+    selected = client.post(
+        f"/api/v1/pages/{page.id}/select-candidate",
+        json={
+            "candidate_id": candidate.id,
+            "manual_text_confirmed": True,
+            "accept_stale": True,
+        },
+    )
+
+    assert selected.status_code == 200, selected.json()
+    assert selected.json()["status"] == "FINAL_CHECKING"
+    assert selected.json()["continuity_status"] == "NOT_CHECKED"
+    readiness = client.get(f"/api/v1/pages/{page.id}/production-readiness")
+    assert readiness.json()["state"] == "AWAITING_INSPECTION"
+    assert readiness.json()["ready"] is False
+
+
+def test_keep_stale_candidate_invalidates_inspection_idempotency_key(
+    client, db_session, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    project = _project(client, "旧质检任务失效")
+    chapter = Chapter(project_id=project["id"], title="第一章", ordinal=1)
+    db_session.add(chapter)
+    db_session.flush()
+    page = MangaPage(
+        chapter_id=chapter.id,
+        page_number=1,
+        storyboard_version=2,
+        selected_candidate_ack_version=None,
+    )
+    db_session.add(page)
+    db_session.flush()
+    batch = GenerationBatch(
+        project_id=project["id"], chapter_id=chapter.id, page_id=page.id, ordinal=1
+    )
+    asset = Asset(
+        project_id=project["id"],
+        kind="page_candidate",
+        original_name="stale-recheck.png",
+        storage_key="generated/stale-recheck.png",
+        mime_type="image/png",
+        byte_size=10,
+        sha256="t" * 64,
+        source="VERTEX_GENERATED",
+        status="GENERATED",
+    )
+    db_session.add_all([batch, asset])
+    db_session.flush()
+    candidate = PageCandidate(
+        batch_id=batch.id,
+        page_id=page.id,
+        ordinal=1,
+        model_alias="image.nano_banana_2",
+        resolution=Resolution.DRAFT_1K,
+        status="INSPECTED",
+        asset_id=asset.id,
+        based_on_storyboard_version=1,
+        is_selected=True,
+    )
+    db_session.add(candidate)
+    db_session.flush()
+    page.selected_candidate_id = candidate.id
+    old_job = GenerationJob(
+        project_id=project["id"],
+        target_type="PAGE_CANDIDATE",
+        target_id=candidate.id,
+        job_type="PAGE_INSPECT",
+        status=JobStatus.COMPLETED,
+        idempotency_key=f"inspect:{candidate.id}:{candidate.version}",
+    )
+    db_session.add(old_job)
+    db_session.commit()
+    old_version = candidate.version
+
+    kept = client.post(
+        f"/api/v1/pages/{page.id}/selected-candidate/keep",
+        json={
+            "candidate_id": candidate.id,
+            "storyboard_version": page.storyboard_version,
+            "manual_text_confirmed": True,
+        },
+    )
+    assert kept.status_code == 200, kept.json()
+    db_session.refresh(candidate)
+    assert candidate.version == old_version + 1
+
+    inspection = client.post(
+        f"/api/v1/candidates/{candidate.id}/inspect",
+        json={"categories": ["CONTINUITY"]},
+    )
+    assert inspection.status_code == 202, inspection.json()
+    assert inspection.json()["id"] != old_job.id
+    new_job = db_session.get(GenerationJob, inspection.json()["id"])
+    assert new_job.idempotency_key == f"inspect:{candidate.id}:{candidate.version}"
 
 
 def test_retract_selected_candidate_preserves_candidate_and_marks_following_page(client, db_session):

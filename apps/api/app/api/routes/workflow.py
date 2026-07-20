@@ -945,7 +945,10 @@ def select_candidate(
     changed = page.selected_candidate_id and page.selected_candidate_id != candidate.id
     page.selected_candidate_id = candidate.id
     page.selected_candidate_ack_version = page.storyboard_version
-    if candidate.status == "INSPECTED":
+    # An inspection result is only valid for the storyboard version it was run
+    # against.  Explicitly accepting a stale/legacy candidate acknowledges the
+    # selection, but still requires a fresh inspection before production.
+    if candidate.status == "INSPECTED" and version_state == "CURRENT":
         page.status = PageStatus.FINAL_READY
         page.continuity_status = "PASSED"
     elif candidate.status == "NEEDS_REVIEW":
@@ -989,6 +992,11 @@ def keep_selected_candidate(
         raise HTTPException(status_code=409, detail="只能继续使用当前已采用的候选")
     if not payload.manual_text_confirmed:
         raise HTTPException(status_code=409, detail="请先人工校对页面文字")
+    # The candidate's version is part of the inspection idempotency key.  A
+    # storyboard edit makes the previous inspection obsolete, so bumping this
+    # version ensures the next inspection is submitted as a new job rather than
+    # reusing the already-completed job for the old storyboard.
+    candidate.version += 1
     page.selected_candidate_ack_version = page.storyboard_version
     page.status = PageStatus.FINAL_CHECKING
     page.continuity_status = "NEEDS_REVIEW"
