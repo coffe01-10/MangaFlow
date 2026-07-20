@@ -37,6 +37,10 @@ from app.models import (
 )
 from app.services.job_service import create_job, enqueue_job, mark_job_cancelled
 from app.services.model_router import model_supports_resolution, resolve_model
+from app.services.page_completion import (
+    build_chapter_production_readiness,
+    build_page_production_readiness,
+)
 from app.workflow_schemas import (
     WorkflowGraph,
     WorkflowNodeDefinition,
@@ -68,6 +72,15 @@ NODE_TYPES: tuple[NodeTypeSpec, ...] = (
         "读取项目中的章节原文与不可变修订。",
         (),
         (("source", "原始文本", "text", False),),
+        ("notes",),
+    ),
+    NodeTypeSpec(
+        "source.approved_pages",
+        "成品页面",
+        "INPUT",
+        "读取章节中全部已经通过质量检查的页面。",
+        (),
+        (("pages", "生产通过页面", "asset", False),),
         ("notes",),
     ),
     NodeTypeSpec(
@@ -181,11 +194,29 @@ NODE_TYPES: tuple[NodeTypeSpec, ...] = (
         "text",
     ),
     NodeTypeSpec(
-        "output.export",
-        "连续导出",
+        "output.page",
+        "单页成品",
         "OUTPUT",
-        "输出 PNG、PDF、JSON 与素材清单。",
+        "确认当前页面已经通过质量检查并结束单页生产流程。",
         (("page", "通过页面", "image", True),),
+        (("asset", "单页成品", "asset", False),),
+        ("notes",),
+    ),
+    NodeTypeSpec(
+        "output.export",
+        "连续导出（兼容）",
+        "OUTPUT",
+        "兼容旧版单页流程；新流程请使用单页成品或整章导出。",
+        (("page", "通过页面", "image", True),),
+        (("files", "导出文件", "asset", False),),
+        ("notes",),
+    ),
+    NodeTypeSpec(
+        "output.chapter_export",
+        "整章导出",
+        "OUTPUT",
+        "全部页面生产通过后输出整章 PNG、PDF、JSON 与素材清单。",
+        (("pages", "生产通过页面", "asset", True),),
         (("files", "导出文件", "asset", False),),
         ("notes",),
     ),
@@ -259,7 +290,7 @@ def default_graph() -> dict:
         ),
         _node("adopt", "control.approval", "采用候选", 1470, 250, requires_approval=True),
         _node("inspect", "quality.inspect", "质量检查", 1760, 250, model_alias="text.fast"),
-        _node("export", "output.export", "连续导出", 2050, 250),
+        _node("complete", "output.page", "单页成品", 2050, 250),
     ]
     edges = [
         _edge("chapter", "source", "parse", "source"),
@@ -269,8 +300,17 @@ def default_graph() -> dict:
         _edge("assets", "assets", "generate", "assets"),
         _edge("generate", "page", "adopt", "page"),
         _edge("adopt", "approved", "inspect", "page"),
-        _edge("inspect", "approved", "export", "page"),
+        _edge("inspect", "approved", "complete", "page"),
     ]
+    return WorkflowGraph(nodes=nodes, edges=edges).model_dump(mode="json")
+
+
+def chapter_export_graph() -> dict:
+    nodes = [
+        _node("pages", "source.approved_pages", "成品页面", 120, 220),
+        _node("export", "output.chapter_export", "整章导出", 470, 220),
+    ]
+    edges = [_edge("pages", "pages", "export", "pages")]
     return WorkflowGraph(nodes=nodes, edges=edges).model_dump(mode="json")
 
 
@@ -539,6 +579,17 @@ def create_workflow_run(
         raise ValueError("章节、页面或候选范围必须提供 scope_id")
     _validate_scope(db, workflow.project_id, scope_type, scope_id)
     selected = _selected_nodes(graph, start_node_ids, stop_node_ids)
+    selected_types = {node.type for node in graph.nodes if node.id in selected}
+    page_types = {"generator.page", "control.approval", "quality.inspect", "output.page"}
+    chapter_types = {"source.approved_pages", "output.chapter_export"}
+    if selected_types & page_types and scope_type != "PAGE":
+        raise ValueError("单页生产流程必须选择页面运行范围")
+    if (
+        selected_types & chapter_types
+        and not selected_types & page_types
+        and scope_type != "CHAPTER"
+    ):
+        raise ValueError("整章导出流程必须选择章节运行范围")
     run = WorkflowRun(
         workflow_id=workflow.id,
         workflow_version_id=version.id,
@@ -630,6 +681,19 @@ def _source_output_refs(db: Session, run: WorkflowRun, node: WorkflowNodeDefinit
             "segment_ids": segment_ids,
             "kind": "source",
             "available": True,
+        }
+    if node.type == "source.approved_pages":
+        chapter = _scope_chapter(db, run)
+        if not chapter:
+            return {"chapter_id": None, "page_ids": [], "kind": "pages", "available": False}
+        production = build_chapter_production_readiness(db, chapter)
+        return {
+            "chapter_id": chapter.id,
+            "page_ids": [item.page_id for item in production.pages if item.ready],
+            "kind": "pages",
+            "available": production.ready,
+            "ready_pages": production.ready_pages,
+            "total_pages": production.total_pages,
         }
     if node.type == "source.assets":
         asset_ids = list(
@@ -792,6 +856,13 @@ def _completed_output_refs(
         candidate = _candidate_for_run(db, run, node_runs)
         if not candidate:
             raise ValueError("质量检查节点找不到候选图片")
+        page = db.get(MangaPage, candidate.page_id)
+        if not page:
+            raise ValueError("质量检查节点找不到候选所属页面")
+        production = build_page_production_readiness(db, page)
+        if not production.ready:
+            messages = "；".join(item.message for item in production.blockers)
+            raise ValueError(f"质量检查未通过：{messages}")
         inspection_ids = list(
             db.scalars(
                 select(InspectionResult.id).where(InspectionResult.candidate_id == candidate.id)
@@ -1057,13 +1128,32 @@ def execute_workflow_node(db: Session, job: GenerationJob) -> None:
             "node_type": node_run.node_type,
             "merged": parent_payloads,
         }
-    elif node_run.node_type == "output.export":
+    elif node_run.node_type == "output.page" or (
+        node_run.node_type == "output.export" and run.scope_type == "PAGE"
+    ):
+        page = db.get(MangaPage, run.scope_id) if run.scope_id else None
+        if not page:
+            raise RuntimeError("UNSUPPORTED_INPUT: 单页成品节点需要页面运行范围")
+        production = build_page_production_readiness(db, page)
+        if not production.ready:
+            messages = "；".join(item.message for item in production.blockers)
+            raise RuntimeError(f"PAGE_NOT_PRODUCTION_READY: {messages}")
+        candidate = db.get(PageCandidate, page.selected_candidate_id)
+        node_run.output_refs = {
+            "job_id": job.id,
+            "node_type": node_run.node_type,
+            "page_id": page.id,
+            "candidate_id": candidate.id,
+            "asset_id": candidate.asset_id,
+            "download_url": f"/api/v1/pages/{page.id}/export.png",
+        }
+    elif node_run.node_type in {"output.export", "output.chapter_export"}:
         from app.api.routes.exports import create_export
         from app.schemas import ExportRequest
 
         chapter = _scope_chapter(db, run)
         if not chapter:
-            raise RuntimeError("UNSUPPORTED_INPUT: 导出节点需要章节、页面或候选范围")
+            raise RuntimeError("UNSUPPORTED_INPUT: 整章导出节点需要章节运行范围")
         bundle = create_export(chapter.id, ExportRequest(export_type="JSON"), db)
         if not isinstance(bundle, ExportBundle):
             raise RuntimeError("导出节点没有产生 ExportBundle")

@@ -62,7 +62,7 @@ Scene/Beat 逐片段保存地点、时间、动作、对白、旁白、人物和
 
 `GenerationBatch` 表示同一目标的一轮抽卡会话，目标可为页面、角色补图、服装图、风格测试或修复图。切换模型不关闭批次；进入下一页或手动新建批次时才关闭。
 
-`PageCandidate` 保存模型别名、真实模型 ID、分辨率、参数、参考资产、任务、输出资产、收藏与软删除状态。每页可收藏多个，但 `MangaPage.selected_candidate_id` 只能指向一个采用版本。`AssetCandidate` 为非页面批次提供同样的审计与素材库能力。
+`PageCandidate` 保存模型别名、真实模型 ID、分辨率、参数、参考资产、任务、输出资产、收藏与软删除状态。每页可收藏多个，但 `MangaPage.selected_candidate_id` 只能指向一个暂选版本；`selected_candidate_ack_version`、候选检查状态与 `continuity_status` 共同决定页面是否生产通过。`AssetCandidate` 为非页面批次提供同样的审计与素材库能力。AI 生成素材被服装档案复用时只新增 `reference_asset_ids` 关系，不改变原始 `Asset.kind/source`，删除服装也不会删除外部生成批次拥有的素材。
 
 ### GenerationJob、JobDependency、GenerationRecord
 

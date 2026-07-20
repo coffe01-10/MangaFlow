@@ -21,6 +21,10 @@ from app.models import (
     Project,
 )
 from app.schemas import ExportRead, ExportRequest
+from app.services.page_completion import (
+    build_page_production_readiness,
+    production_error_detail,
+)
 
 router = APIRouter()
 
@@ -46,8 +50,12 @@ def _selected_pages(db: Session, chapter: Chapter):
         raise HTTPException(status_code=409, detail="章节还没有页面规划")
     result = []
     for page in pages:
-        if not page.selected_candidate_id:
-            raise HTTPException(status_code=409, detail=f"第 {page.page_number} 页尚未采用候选")
+        production = build_page_production_readiness(db, page)
+        if not production.ready:
+            detail = production_error_detail(production)
+            detail["message"] = f"第 {page.page_number} 页尚未达到生产通过状态"
+            detail["page_number"] = page.page_number
+            raise HTTPException(status_code=409, detail=detail)
         candidate = db.get(PageCandidate, page.selected_candidate_id)
         asset = db.get(Asset, candidate.asset_id) if candidate and candidate.asset_id else None
         if not asset:
@@ -59,8 +67,11 @@ def _selected_pages(db: Session, chapter: Chapter):
 @router.get("/pages/{page_id}/export.png")
 def download_selected_page(page_id: str, db: Session = Depends(get_db)) -> FileResponse:
     page = db.get(MangaPage, page_id)
-    if not page or not page.selected_candidate_id:
-        raise HTTPException(status_code=409, detail="页面尚未采用候选")
+    if not page:
+        raise HTTPException(status_code=404, detail="页面不存在")
+    production = build_page_production_readiness(db, page)
+    if not production.ready:
+        raise HTTPException(status_code=409, detail=production_error_detail(production))
     candidate = db.get(PageCandidate, page.selected_candidate_id)
     asset = db.get(Asset, candidate.asset_id) if candidate and candidate.asset_id else None
     if not asset:

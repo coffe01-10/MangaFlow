@@ -156,8 +156,8 @@ def test_generated_asset_can_be_adopted_as_outfit_reference(client, db_session):
 
     assert adopted.status_code == 200
     assert adopted.json()["id"] == generated.id
-    assert adopted.json()["kind"] == "OUTFIT_REFERENCE"
-    assert client.post(f"/api/v1/assets/{generated.id}/adopt-reference").json()["kind"] == "OUTFIT_REFERENCE"
+    assert adopted.json()["kind"] == "page_candidate"
+    assert client.post(f"/api/v1/assets/{generated.id}/adopt-reference").json()["kind"] == "page_candidate"
     character = client.post(
         f"/api/v1/projects/{project['id']}/characters",
         json={"primary_name": "主角", "aliases": []},
@@ -172,6 +172,11 @@ def test_generated_asset_can_be_adopted_as_outfit_reference(client, db_session):
     )
     assert outfit.status_code == 201
     assert outfit.json()["reference_asset_ids"] == [generated.id]
+    deleted = client.delete(f"/api/v1/outfits/{outfit.json()['id']}")
+    assert deleted.status_code == 204
+    db_session.refresh(generated)
+    assert generated.deleted_at is None
+    assert generated.kind == "page_candidate"
 
 
 def test_uploaded_asset_cannot_be_adopted_from_generated_library(client, db_session):

@@ -1440,7 +1440,10 @@ regions 使用 0 到 1 的归一化 x/y/width/height。"""
             )
         )
     candidate.status = "NEEDS_REVIEW" if needs_review else "INSPECTED"
-    page.continuity_status = "NEEDS_REVIEW" if needs_review else "PASSED"
+    if page.selected_candidate_id == candidate.id and candidate.is_selected:
+        page.continuity_status = "NEEDS_REVIEW" if needs_review else "PASSED"
+        page.status = PageStatus.NEEDS_REPAIR if needs_review else PageStatus.FINAL_READY
+        page.version += 1
     job.status = JobStatus.CONSISTENCY_CHECKING
     job.progress = 85
 

@@ -14,6 +14,7 @@ from app.services.workflow_engine import (
     blank_graph,
     cancel_run,
     canonical_graph,
+    chapter_export_graph,
     create_workflow_run,
     default_graph,
     get_run,
@@ -96,11 +97,16 @@ def create_workflow(
     db: Session = Depends(get_db),
 ) -> WorkflowDefinition:
     _project(db, project_id)
+    template_graphs = {
+        "manga_default": default_graph,
+        "chapter_export": chapter_export_graph,
+        "blank": blank_graph,
+    }
     workflow = WorkflowDefinition(
         project_id=project_id,
         name=payload.name,
         description=payload.description,
-        draft_graph=default_graph() if payload.template == "manga_default" else blank_graph(),
+        draft_graph=template_graphs[payload.template](),
     )
     db.add(workflow)
     try:

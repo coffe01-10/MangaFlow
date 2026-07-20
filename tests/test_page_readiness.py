@@ -233,3 +233,27 @@ def test_readiness_only_requires_visible_cast_and_blockers_disappear(
         json={"model_alias": "image.nano_banana_2", "resolution": "2K"},
     )
     assert rejected_resolution.status_code == 422
+
+
+def test_readiness_allows_pages_without_visible_characters(
+    client, db_session, tmp_path, monkeypatch
+):
+    project, page, panel, characters = _base_page(db_session)
+    _enable_assets_style_provider(
+        db_session, tmp_path, monkeypatch, project, page, panel, characters
+    )
+    panel.characters = []
+    panel.character_presence = {
+        characters["妈妈"].id: CharacterPresence.OFFSCREEN.value,
+    }
+    panel.outfits = {}
+    db_session.commit()
+
+    response = client.get(f"/api/v1/pages/{page.id}/readiness")
+
+    assert response.status_code == 200
+    assert response.json()["ready"] is True
+    assert response.json()["visible_characters"] == []
+    assert "VISIBLE_CAST_EMPTY" not in {
+        item["code"] for item in response.json()["blockers"]
+    }

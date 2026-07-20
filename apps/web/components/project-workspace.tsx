@@ -370,6 +370,11 @@ export default function ProjectWorkspace({
   });
   const exportsQuery = useQuery({ queryKey: ["exports", id], queryFn: () => api.exports(id), enabled: section === "library" });
   const activeChapterId = selectedChapterId ?? chapters.data?.[0]?.id ?? null;
+  const chapterProduction = useQuery({
+    queryKey: ["chapter-production", activeChapterId],
+    queryFn: () => api.chapterProductionReadiness(activeChapterId!),
+    enabled: section === "library" && Boolean(activeChapterId),
+  });
   const pages = useQuery({
     queryKey: ["pages", activeChapterId],
     queryFn: () => api.pages(activeChapterId!),
@@ -386,7 +391,16 @@ export default function ProjectWorkspace({
     queryKey: ["generation-workbench", selectedPageEntry?.id],
     queryFn: () => api.generationWorkbench(selectedPageEntry!.id),
     enabled: section === "generate" && Boolean(selectedPageEntry),
-    refetchInterval: (query) => (query.state.data?.candidates ?? []).some((candidate) => ["WAITING", "QUEUED", "PREPARING", "GENERATING"].includes(candidate.status)) ? 3000 : false,
+    refetchInterval: (query) => {
+      const generating = (query.state.data?.candidates ?? []).some((candidate) =>
+        ["WAITING", "QUEUED", "PREPARING", "GENERATING"].includes(candidate.status));
+      const candidateIds = new Set((query.state.data?.candidates ?? []).map((candidate) => candidate.id));
+      const checking = (jobs.data ?? []).some((job) =>
+        job.job_type === "PAGE_INSPECT"
+        && candidateIds.has(job.target_id)
+        && !["COMPLETED", "FAILED", "CANCELLED"].includes(job.status));
+      return generating || checking ? 3000 : false;
+    },
   });
   const selectedPage = workbench.data?.page ?? selectedPageEntry;
   const currentBatch = workbench.data?.current_batch ?? null;
@@ -420,6 +434,7 @@ export default function ProjectWorkspace({
   });
   const generationStoryboard = { data: workbench.data?.storyboard, isLoading: workbench.isLoading };
   const pageReadiness = { data: workbench.data?.readiness, isLoading: workbench.isLoading, error: workbench.error };
+  const pageProduction = workbench.data?.production ?? null;
   const assetGenerationTarget = selectedCharacterOutfitId
     ? { type: "OUTFIT" as const, id: selectedCharacterOutfitId }
     : null;
@@ -439,7 +454,13 @@ export default function ProjectWorkspace({
     queryKey: ["inspections", reviewCandidateId],
     queryFn: () => api.inspections(reviewCandidateId!),
     enabled: section === "generate" && Boolean(reviewCandidateId),
-    refetchInterval: (query) => (query.state.data ?? []).length ? false : 4000,
+    refetchInterval: (query) => {
+      const checking = (jobs.data ?? []).some((job) =>
+        job.job_type === "PAGE_INSPECT"
+        && job.target_id === reviewCandidateId
+        && !["COMPLETED", "FAILED", "CANCELLED"].includes(job.status));
+      return checking || !(query.state.data ?? []).length ? 2500 : false;
+    },
   });
 
   const workspaceRouteReady = !project.isLoading
@@ -584,6 +605,7 @@ export default function ProjectWorkspace({
   const reviewCandidate = candidates.data?.find((item) => item.id === reviewCandidateId) ?? null;
   const reviewJob = jobs.data?.find((item) => item.target_id === reviewCandidateId && item.job_type === "PAGE_INSPECT") ?? null;
   const selectedWorkbenchCandidate = workbench.data?.selected_candidate ?? null;
+  const productionBlocker = pageProduction?.blockers[0] ?? null;
 
   const upload = useMutation({
     mutationFn: async (file: File) => {
@@ -1007,6 +1029,8 @@ export default function ProjectWorkspace({
       setReviewCandidateId(candidateId);
       queryClient.invalidateQueries({ queryKey: ["jobs", id] });
       queryClient.invalidateQueries({ queryKey: ["inspections", candidateId] });
+      queryClient.invalidateQueries({ queryKey: ["generation-workbench", selectedPage?.id] });
+      queryClient.invalidateQueries({ queryKey: ["chapter-production", activeChapterId] });
     },
   });
 
@@ -1024,6 +1048,8 @@ export default function ProjectWorkspace({
       queryClient.invalidateQueries({ queryKey: ["candidates"] });
       queryClient.invalidateQueries({ queryKey: ["jobs", id] });
       queryClient.invalidateQueries({ queryKey: ["library", id] });
+      queryClient.invalidateQueries({ queryKey: ["generation-workbench", selectedPage?.id] });
+      queryClient.invalidateQueries({ queryKey: ["chapter-production", activeChapterId] });
     },
   });
 
@@ -1046,6 +1072,7 @@ export default function ProjectWorkspace({
       queryClient.invalidateQueries({ queryKey: ["candidates"] });
       queryClient.invalidateQueries({ queryKey: ["library", id] });
       queryClient.invalidateQueries({ queryKey: ["generation-workbench", selectedPage?.id] });
+      queryClient.invalidateQueries({ queryKey: ["chapter-production", activeChapterId] });
     },
   });
 
@@ -1055,6 +1082,7 @@ export default function ProjectWorkspace({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["pages", activeChapterId] });
       queryClient.invalidateQueries({ queryKey: ["generation-workbench", selectedPage?.id] });
+      queryClient.invalidateQueries({ queryKey: ["chapter-production", activeChapterId] });
     },
   });
 
@@ -1065,6 +1093,7 @@ export default function ProjectWorkspace({
       queryClient.invalidateQueries({ queryKey: ["candidates"] });
       queryClient.invalidateQueries({ queryKey: ["library", id] });
       queryClient.invalidateQueries({ queryKey: ["generation-workbench"] });
+      queryClient.invalidateQueries({ queryKey: ["chapter-production", activeChapterId] });
     },
   });
 
@@ -1376,7 +1405,7 @@ export default function ProjectWorkspace({
               {selectedPage ? <>
                 {selectedPageStructureIssue && <div className="workflow-warning"><CircleAlert size={17} /><div><strong>当前页暂不能生成</strong><p>{selectedPageStructureIssue}</p></div><Link className="button outline compact" href={projectPath("script")}>前往漫画剧本</Link></div>}
                 {selectedPage.continuity_status === "NEEDS_REVIEW" && <div className="workflow-warning"><CircleAlert size={17} /><div><strong>剧本或分镜已修改</strong><p>历史候选仍然保留，但可能不再对应当前脚本。建议重新抽卡并执行连续性检查。</p></div><Link className="button outline compact" href={projectPath("storyboard")}>检查分镜</Link></div>}
-                {selectedWorkbenchCandidate && ["STALE", "LEGACY_UNKNOWN"].includes(selectedWorkbenchCandidate.version_state) && <div className="stale-candidate-banner"><div><span>版本需要决定</span><strong>旧候选基于 {selectedWorkbenchCandidate.based_on_storyboard_version ? `V${selectedWorkbenchCandidate.based_on_storyboard_version}` : "未知版本"}，当前分镜为 V{selectedPage.storyboard_version}</strong><p>旧图仍可查看和导出。请选择继续沿用，或按当前分镜重新生成。</p></div><div><button disabled={keepSelectedCandidate.isPending} onClick={() => keepSelectedCandidate.mutate(selectedWorkbenchCandidate.id)}><Check size={14} />继续使用旧候选</button><button className="primary" disabled={generate.isPending || !pageReadiness.data?.ready || !generationReferenceReady || isViewingHistoricalBatch} onClick={() => generate.mutate()}><Sparkles size={14} />{isViewingHistoricalBatch ? "先切回最新批次" : `按当前 V${selectedPage.storyboard_version} 重新生成`}</button></div></div>}
+                {selectedWorkbenchCandidate && ["STALE", "LEGACY_UNKNOWN"].includes(selectedWorkbenchCandidate.version_state) && <div className="stale-candidate-banner"><div><span>版本需要决定</span><strong>旧候选基于 {selectedWorkbenchCandidate.based_on_storyboard_version ? `V${selectedWorkbenchCandidate.based_on_storyboard_version}` : "未知版本"}，当前分镜为 V{selectedPage.storyboard_version}</strong><p>旧图可以继续查看，但必须确认版本并重新完成视觉检查后，才能进入下一页或导出。</p></div><div><button disabled={keepSelectedCandidate.isPending} onClick={() => keepSelectedCandidate.mutate(selectedWorkbenchCandidate.id)}><Check size={14} />沿用并重新检查</button><button className="primary" disabled={generate.isPending || !pageReadiness.data?.ready || !generationReferenceReady || isViewingHistoricalBatch} onClick={() => generate.mutate()}><Sparkles size={14} />{isViewingHistoricalBatch ? "先切回最新批次" : `按当前 V${selectedPage.storyboard_version} 重新生成`}</button></div></div>}
                 <div className="draw-toolbar">
                   <div className="page-picker">{pages.data?.map((page) => <button key={page.id} className={selectedPage.id === page.id ? "active" : ""} onClick={() => { setSelectedPageId(page.id); setViewedBatchId(null); setReviewCandidateId(null); setReferenceSelections({}); setReferenceOverridePageId(null); }}>{page.page_number}</button>)}</div>
                   <div className="batch-toolbar-actions">
@@ -1415,7 +1444,7 @@ export default function ProjectWorkspace({
                 <div className="generation-bar"><div className="generation-options"><div><span>正式模型</span><strong>{modelOptions.find((item) => item.alias === activeDrawModel)?.name ?? "尚未选择"}</strong></div><div><span>本次规格</span><strong>1K · 彩色 · 1 个候选</strong></div></div><button className="button ink generate-one" disabled={generate.isPending || Boolean(selectedPageGenerationIssue) || !pageReadiness.data?.ready || !generationReferenceReady || isViewingHistoricalBatch} onClick={() => generate.mutate()}>{generate.isPending ? <LoaderCircle className="spin" size={17} /> : <Star size={17} />}{generate.isPending ? "正在加入 1 个正式任务" : isViewingHistoricalBatch ? "先切回最新批次再生成" : selectedPageStructureIssue ? "请先补全剧本与分镜" : !activeDrawModel ? "先选择图片模型" : !pageReadiness.data?.ready ? "先完成页面生产准备" : !generationReferenceReady ? "先补齐人物与服装参考" : "生成 1 个 1K 彩色候选"}</button></div>
                 {(generate.isError || startBatch.isError) && <p className="form-error"><CircleAlert size={14} />{(generate.error ?? startBatch.error)?.message}</p>}
                 <div className="batch-heading"><div><span>{isViewingHistoricalBatch ? "HISTORY / 历史批次" : "BATCH / 当前批次"}</span><strong>{viewedBatch ? `批次 ${viewedBatch.ordinal}` : "尚未开始批次"}</strong></div><small>{isViewingHistoricalBatch ? `正在查看历史结果 · 共 ${orderedPageBatches.length} 个批次` : "每个候选记录实际供应商与模型 · 收藏不等于采用"}</small></div>
-                <div className="candidate-grid">{candidates.data?.map((candidate, candidateIndex) => <article className={`${candidate.is_selected ? "candidate-card selected" : "candidate-card"} version-${candidate.version_state.toLowerCase()}`} key={candidate.id}><CandidateArtwork contentUrl={candidate.content_url} thumbnailUrl={candidate.thumbnail_url} label={`候选 ${candidate.ordinal}`} eager={candidateIndex === 0} onOpen={(url, label) => setPreviewImage({ url, label })} /><div className="candidate-meta"><span>候选 {String(candidate.ordinal).padStart(2, "0")}</span><strong>{modelOptions.find((item) => item.alias === candidate.model_alias)?.name}</strong><small>{candidate.resolution} · {candidate.status}</small><em>{candidate.based_on_storyboard_version ? `生成依据 V${candidate.based_on_storyboard_version}` : "生成版本未知"} · {candidate.version_state}</em></div><div className="candidate-actions"><button className={candidate.is_favorite ? "favorited" : ""} onClick={() => favorite.mutate({ candidateId: candidate.id, value: !candidate.is_favorite })}><Heart size={14} fill={candidate.is_favorite ? "currentColor" : "none"} />收藏</button><button disabled={!candidate.asset_id || candidate.is_selected} onClick={() => { if (window.confirm("请人工确认页面文字已经校对。采用后仍可随时导出；是否继续？")) selectCandidate.mutate({ candidateId: candidate.id, manualTextConfirmed: true, acceptStale: candidate.version_state !== "CURRENT" }); }}><Check size={14} />{candidate.is_selected ? "已采用" : candidate.version_state === "CURRENT" ? "人工校对并采用" : "确认旧版本并采用"}</button><button className={reviewCandidateId === candidate.id ? "reviewing" : ""} disabled={!candidate.asset_id || inspectCandidate.isPending} onClick={() => { setReviewCandidateId(candidate.id); inspectCandidate.mutate(candidate.id); }}><CircleAlert size={14} />视觉检查</button>{candidate.asset_id && candidate.resolution === "1K" && <button disabled={upscaleCandidate.isPending || !activeDrawModel} onClick={() => upscaleCandidate.mutate({ candidateId: candidate.id, resolution: "2K" })}>升至 2K</button>}{candidate.asset_id && candidate.resolution !== "4K" && <button disabled={upscaleCandidate.isPending || !activeDrawModel} onClick={() => upscaleCandidate.mutate({ candidateId: candidate.id, resolution: "4K" })}>升至 4K</button>}<button className="danger-action" disabled={candidate.is_selected} onClick={() => { if (window.confirm("删除这个候选？收藏状态也会一并移除。")) deleteCandidate.mutate(candidate.id); }}><Trash2 size={14} />删除</button></div></article>)}</div>
+                <div className="candidate-grid">{candidates.data?.map((candidate, candidateIndex) => <article className={`${candidate.is_selected ? "candidate-card selected" : "candidate-card"} version-${candidate.version_state.toLowerCase()}`} key={candidate.id}><CandidateArtwork contentUrl={candidate.content_url} thumbnailUrl={candidate.thumbnail_url} label={`候选 ${candidate.ordinal}`} eager={candidateIndex === 0} onOpen={(url, label) => setPreviewImage({ url, label })} /><div className="candidate-meta"><span>候选 {String(candidate.ordinal).padStart(2, "0")}</span><strong>{modelOptions.find((item) => item.alias === candidate.model_alias)?.name}</strong><small>{candidate.resolution} · {candidate.status}</small><em>{candidate.based_on_storyboard_version ? `生成依据 V${candidate.based_on_storyboard_version}` : "生成版本未知"} · {candidate.version_state}</em></div><div className="candidate-actions"><button className={candidate.is_favorite ? "favorited" : ""} onClick={() => favorite.mutate({ candidateId: candidate.id, value: !candidate.is_favorite })}><Heart size={14} fill={candidate.is_favorite ? "currentColor" : "none"} />收藏</button><button disabled={!candidate.asset_id || candidate.is_selected} onClick={() => { if (window.confirm("请确认页面文字已人工校对。暂选后还需要完成视觉检查，才能进入下一页或导出。是否继续？")) selectCandidate.mutate({ candidateId: candidate.id, manualTextConfirmed: true, acceptStale: candidate.version_state !== "CURRENT" }); }}><Check size={14} />{candidate.is_selected ? "已暂选" : candidate.version_state === "CURRENT" ? "人工校对并暂选" : "确认旧版本并暂选"}</button><button className={reviewCandidateId === candidate.id ? "reviewing" : ""} disabled={!candidate.asset_id || inspectCandidate.isPending} onClick={() => { setReviewCandidateId(candidate.id); inspectCandidate.mutate(candidate.id); }}><CircleAlert size={14} />视觉检查</button>{candidate.asset_id && candidate.resolution === "1K" && <button disabled={upscaleCandidate.isPending || !activeDrawModel} onClick={() => upscaleCandidate.mutate({ candidateId: candidate.id, resolution: "2K" })}>升至 2K</button>}{candidate.asset_id && candidate.resolution !== "4K" && <button disabled={upscaleCandidate.isPending || !activeDrawModel} onClick={() => upscaleCandidate.mutate({ candidateId: candidate.id, resolution: "4K" })}>升至 4K</button>}<button className="danger-action" disabled={candidate.is_selected} onClick={() => { if (window.confirm("删除这个候选？收藏状态也会一并移除。")) deleteCandidate.mutate(candidate.id); }}><Trash2 size={14} />删除</button></div></article>)}</div>
                 {reviewCandidateId && <section className="inspection-panel">
                   <header><div><span>AI QUALITY CHECK</span><strong>候选视觉检查</strong><small>检查说话人归属、角色、服装、道具和连续性；文字由人工校对。</small></div><button onClick={() => setReviewCandidateId(null)}>关闭</button></header>
                   {!latestInspections.length ? <div className="inspection-wait"><LoaderCircle className={reviewJob && !["COMPLETED", "FAILED"].includes(reviewJob.status) ? "spin" : ""} size={18} /><span>{reviewJob ? `检查任务 ${reviewJob.status} · ${reviewJob.progress}%` : "正在读取检查结果"}</span></div> : <div className="inspection-results">{latestInspections.map((inspection) => {
@@ -1432,8 +1461,20 @@ export default function ProjectWorkspace({
                   })}</div>}
                   {(inspectCandidate.isError || repairCandidate.isError || upscaleCandidate.isError) && <p className="form-error"><CircleAlert size={14} />{(inspectCandidate.error ?? repairCandidate.error ?? upscaleCandidate.error)?.message}</p>}
                 </section>}
+                <section className={`production-gate ${pageProduction?.ready ? "ready" : "blocked"}`}>
+                  <header>
+                    <div><span>PRODUCTION GATE / 页面生产门禁</span><strong>{pageProduction?.ready ? "当前页已通过，可以进入下一页" : "当前页尚未生产通过"}</strong></div>
+                    <em>{pageProduction?.ready ? "READY" : pageProduction?.state ?? "LOADING"}</em>
+                  </header>
+                  <div className="production-gate-steps">
+                    <span className={selectedWorkbenchCandidate ? "done" : ""}><Check size={13} />人工校对并暂选</span>
+                    <span className={selectedWorkbenchCandidate && !["STALE", "LEGACY_UNKNOWN"].includes(selectedWorkbenchCandidate.version_state) ? "done" : ""}><Check size={13} />确认当前分镜版本</span>
+                    <span className={pageProduction?.ready ? "done" : ""}><Check size={13} />视觉检查通过</span>
+                  </div>
+                  {!pageProduction?.ready && <p><CircleAlert size={14} />{productionBlocker?.message ?? "正在读取当前页生产状态"}</p>}
+                </section>
                 {!candidates.data?.length && <div className="asset-empty"><ImagePlus size={25} /><strong>这个批次还没有候选</strong><p>完成生产准备并确认参考图后，使用本次选择的图片模型生成 1 张彩色页面。</p></div>}
-                <div className="next-page-row"><span>{selectedPage.selected_candidate_id ? "当前页已有采用版本，可以继续或单独导出" : "采用一个满意候选后才能进入下一页"}</span><div>{selectedPage.selected_candidate_id && <a className="button ghost compact" href={api.selectedPagePngUrl(selectedPage.id)!}><Download size={14} />单页 PNG</a>}<button className="button outline" disabled={!selectedPage.selected_candidate_id || goNext.isPending} onClick={() => goNext.mutate()}>生成下一页 <ArrowRight size={15} /></button></div></div>
+                <div className="next-page-row"><span>{pageProduction?.ready ? "人工校对、版本确认和视觉检查均已通过" : productionBlocker?.message ?? "完成页面生产门禁后才能继续"}</span><div>{pageProduction?.ready && <a className="button ghost compact" href={api.selectedPagePngUrl(selectedPage.id)!}><Download size={14} />单页 PNG</a>}<button className="button outline" disabled={!pageProduction?.ready || goNext.isPending} onClick={() => goNext.mutate()}>生成下一页 <ArrowRight size={15} /></button></div></div>
               </> : <div className="asset-empty tall"><Sparkles size={28} /><strong>没有可抽卡页面</strong><p>先完成动态分页。</p></div>}
             </>
           )}
@@ -1457,10 +1498,11 @@ export default function ProjectWorkspace({
                   <button onClick={() => { setLibraryChapter(""); setFavoriteOnly(false); setLibraryCharacter(""); setLibraryKind(""); setLibraryModel(""); setLibraryResolution(""); setLibraryDateFrom(""); setLibraryDateTo(""); setLibraryCursor(""); setLibraryHistory([]); }}><RotateCcw size={13} />重置</button>
                 </div>
               </div>
-              <div className="library-groups">{library.data?.groups.map((group, groupIndex) => { const columns = Math.min(Math.max(group.candidates.length, 1), 3); return <section className="library-group" style={{ "--batch-columns": columns } as CSSProperties} key={group.batch.id}><header><div><span>BATCH {String(group.batch.ordinal).padStart(3, "0")}</span><strong>{generationKindLabels[group.batch.generation_kind] ?? group.batch.generation_kind}</strong></div><small>{new Date(group.batch.created_at).toLocaleString("zh-CN")} · {group.candidates.length} 张</small></header><div className="library-candidates">{group.candidates.map((candidate, candidateIndex) => <article className={candidate.is_selected ? "is-selected" : undefined} key={candidate.id}><CandidateArtwork contentUrl={candidate.content_url} thumbnailUrl={candidate.thumbnail_url} label={`批次候选 ${candidate.ordinal}`} eager={groupIndex === 0 && candidateIndex === 0} onOpen={(url, label) => setPreviewImage({ url, label })} /><div><strong>{modelOptions.find((item) => item.alias === candidate.model_alias)?.name}</strong><span>{candidate.resolution} · {candidate.status}</span>{candidate.is_favorite && <Heart size={13} fill="currentColor" />}{candidate.is_selected && <div className="library-selection-row"><em><Check size={12} />已采用</em><button className="library-retract" disabled={!candidate.page_id || retractSelectedCandidate.isPending} onClick={() => { if (candidate.page_id && window.confirm("撤回采用后，候选图片和生成记录仍会保留，后续页面将标记为待复查。是否继续？")) retractSelectedCandidate.mutate(candidate.page_id); }}><RotateCcw size={13} />撤回</button></div>}{!candidate.is_selected && <button className="library-delete" title="从素材库软删除" disabled={deleteCandidate.isPending} onClick={() => { if (window.confirm("从素材库隐藏这个候选？生成文件和任务记录会保留。")) deleteCandidate.mutate(candidate.id); }}><Trash2 size={12} /></button>}</div></article>)}</div></section>; })}</div>
+              <div className="library-groups">{library.data?.groups.map((group, groupIndex) => { const columns = Math.min(Math.max(group.candidates.length, 1), 3); return <section className="library-group" style={{ "--batch-columns": columns } as CSSProperties} key={group.batch.id}><header><div><span>BATCH {String(group.batch.ordinal).padStart(3, "0")}</span><strong>{generationKindLabels[group.batch.generation_kind] ?? group.batch.generation_kind}</strong></div><small>{new Date(group.batch.created_at).toLocaleString("zh-CN")} · {group.candidates.length} 张</small></header><div className="library-candidates">{group.candidates.map((candidate, candidateIndex) => <article className={candidate.is_selected ? "is-selected" : undefined} key={candidate.id}><CandidateArtwork contentUrl={candidate.content_url} thumbnailUrl={candidate.thumbnail_url} label={`批次候选 ${candidate.ordinal}`} eager={groupIndex === 0 && candidateIndex === 0} onOpen={(url, label) => setPreviewImage({ url, label })} /><div><strong>{modelOptions.find((item) => item.alias === candidate.model_alias)?.name}</strong><span>{candidate.resolution} · {candidate.status}</span>{candidate.is_favorite && <Heart size={13} fill="currentColor" />}{candidate.is_selected && <div className="library-selection-row"><em><Check size={12} />已暂选</em><button className="library-retract" disabled={!candidate.page_id || retractSelectedCandidate.isPending} onClick={() => { if (candidate.page_id && window.confirm("撤回暂选后，候选图片和生成记录仍会保留，后续页面将标记为待复查。是否继续？")) retractSelectedCandidate.mutate(candidate.page_id); }}><RotateCcw size={13} />撤回</button></div>}{!candidate.is_selected && <button className="library-delete" title="从素材库软删除" disabled={deleteCandidate.isPending} onClick={() => { if (window.confirm("从素材库隐藏这个候选？生成文件和任务记录会保留。")) deleteCandidate.mutate(candidate.id); }}><Trash2 size={12} /></button>}</div></article>)}</div></section>; })}</div>
               {!library.data?.groups.length && <div className="asset-empty tall"><LibraryBig size={28} /><strong>素材库还是空的</strong><p>从单页抽卡开始，所有候选都会按批次保留。</p></div>}
               {(libraryHistory.length > 0 || library.data?.next_cursor) && <div className="library-pagination"><button disabled={!libraryHistory.length} onClick={() => { const previous = libraryHistory.at(-1) ?? ""; setLibraryHistory((items) => items.slice(0, -1)); setLibraryCursor(previous); }}><ArrowLeft size={13} />上一页</button><span>每页最多 {library.data?.limit ?? 30} 个批次</span><button disabled={!library.data?.next_cursor} onClick={() => { setLibraryHistory((items) => [...items, libraryCursor]); setLibraryCursor(library.data?.next_cursor ?? ""); }}>下一页<ArrowRight size={13} /></button></div>}
-              <div className="export-desk"><div><span>EXPORT / 导出</span><strong>采用全部页面后导出整章</strong></div><div>{(["PNG", "PDF", "JSON"] as const).map((type) => <button key={type} disabled={!activeChapterId || createExport.isPending} onClick={() => createExport.mutate(type)}><Download size={14} />{type}</button>)}</div></div>
+              <div className={`export-desk ${chapterProduction.data?.ready ? "ready" : "blocked"}`}><div><span>EXPORT / 整章导出门禁</span><strong>{chapterProduction.data ? `${chapterProduction.data.ready_pages}/${chapterProduction.data.total_pages} 页生产通过` : "正在核对章节生产状态"}</strong><small>{chapterProduction.data?.ready ? "全部页面已完成校对、版本确认和视觉检查" : chapterProduction.data?.pages.find((page) => !page.ready)?.blockers[0]?.message ?? "章节没有可导出的页面"}</small></div><div>{(["PNG", "PDF", "JSON"] as const).map((type) => <button key={type} disabled={!chapterProduction.data?.ready || createExport.isPending} onClick={() => createExport.mutate(type)}><Download size={14} />{type}</button>)}</div></div>
+              {chapterProduction.data && !chapterProduction.data.ready && <div className="chapter-production-blockers">{chapterProduction.data.pages.filter((page) => !page.ready).slice(0, 4).map((page) => { const pageNumber = pages.data?.find((item) => item.id === page.page_id)?.page_number; return <button key={page.page_id} onClick={() => { setSelectedPageId(page.page_id); rememberWorkspaceScroll(); router.push(projectPath("generate")); }}><span>第 {pageNumber ?? "—"} 页</span><strong>{page.blockers[0]?.message ?? "尚未通过"}</strong><ArrowRight size={14} /></button>; })}</div>}
               <div className="export-list">{exportsQuery.data?.map((item) => <a key={item.id} href={publicUrl(item.download_url)!}><FileImage size={14} /><span>{item.export_type} · {item.page_count} 页 · {formatBytes(item.byte_size)}</span><Download size={13} /></a>)}</div>
               {createExport.isError && <p className="form-error"><CircleAlert size={14} />{createExport.error.message}</p>}
             </>

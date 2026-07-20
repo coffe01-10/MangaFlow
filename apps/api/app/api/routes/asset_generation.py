@@ -74,7 +74,13 @@ def _validate_reference_assets(
             not asset
             or asset.deleted_at is not None
             or asset.project_id != project_id
-            or asset.kind != expected_kind
+            or (
+                asset.kind != expected_kind
+                and not (
+                    expected_kind == "OUTFIT_REFERENCE"
+                    and asset.source in {"AI_GENERATED", "VERTEX_GENERATED"}
+                )
+            )
         ):
             raise HTTPException(
                 status_code=409,
@@ -248,7 +254,22 @@ def delete_outfit(outfit_id: str, db: Session = Depends(get_db)) -> None:
         )
         for asset_id in (other.reference_asset_ids or [])
     }
-    exclusive_reference_ids = reference_ids - other_reference_ids
+    character_reference_ids = set(
+        db.scalars(
+            select(CharacterReference.asset_id)
+            .join(Character, Character.id == CharacterReference.character_id)
+            .where(Character.project_id == outfit.project_id)
+        )
+    )
+    style_reference_ids = {
+        asset_id
+        for style in db.scalars(
+            select(StyleProfile).where(StyleProfile.project_id == outfit.project_id)
+        )
+        for asset_id in style.profile.get("reference_asset_ids", [])
+    }
+    protected_reference_ids = other_reference_ids | character_reference_ids | style_reference_ids
+    exclusive_reference_ids = reference_ids - protected_reference_ids
     generated_asset_ids = {
         candidate.asset_id for candidate in candidates if candidate.asset_id
     }
@@ -257,7 +278,14 @@ def delete_outfit(outfit_id: str, db: Session = Depends(get_db)) -> None:
         if candidate.deleted_at is None:
             candidate.deleted_at = deleted_at
             candidate.version += 1
-    asset_ids_to_delete = exclusive_reference_ids | generated_asset_ids
+    user_owned_reference_ids = {
+        asset.id
+        for asset in db.scalars(select(Asset).where(Asset.id.in_(exclusive_reference_ids)))
+        if asset.source == "USER_UPLOAD"
+    }
+    asset_ids_to_delete = user_owned_reference_ids | (
+        generated_asset_ids - protected_reference_ids
+    )
     if asset_ids_to_delete:
         for asset in db.scalars(select(Asset).where(Asset.id.in_(asset_ids_to_delete))):
             if asset.deleted_at is None:

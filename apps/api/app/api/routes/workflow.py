@@ -35,6 +35,7 @@ from app.models import (
 from app.schemas import (
     CandidateCreate,
     CandidateQueuedRead,
+    ChapterProductionReadinessRead,
     DialogueCreate,
     DialogueDelete,
     DialogueRead,
@@ -53,6 +54,7 @@ from app.schemas import (
     LibraryRead,
     PageCandidateRead,
     PageLayoutUpdate,
+    PageProductionReadinessRead,
     PageRead,
     PageReadinessRead,
     PanelRead,
@@ -72,6 +74,11 @@ from app.services.editor import (
 )
 from app.services.job_service import cancel_job, create_job, enqueue_job, reset_for_retry
 from app.services.model_router import model_supports_resolution, resolve_model
+from app.services.page_completion import (
+    build_chapter_production_readiness,
+    build_page_production_readiness,
+    production_error_detail,
+)
 from app.services.page_readiness import (
     build_page_readiness,
     ensure_page_ready,
@@ -241,6 +248,31 @@ def get_page_readiness(
     return build_page_readiness(db, _page(db, page_id), get_settings())
 
 
+@router.get(
+    "/chapters/{chapter_id}/production-readiness",
+    response_model=ChapterProductionReadinessRead,
+)
+def get_chapter_production_readiness(
+    chapter_id: str,
+    db: Session = Depends(get_db),
+) -> ChapterProductionReadinessRead:
+    chapter = db.get(Chapter, chapter_id)
+    if not chapter or chapter.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="章节不存在")
+    return build_chapter_production_readiness(db, chapter)
+
+
+@router.get(
+    "/pages/{page_id}/production-readiness",
+    response_model=PageProductionReadinessRead,
+)
+def get_page_production_readiness(
+    page_id: str,
+    db: Session = Depends(get_db),
+) -> PageProductionReadinessRead:
+    return build_page_production_readiness(db, _page(db, page_id))
+
+
 @router.get("/pages/{page_id}/generation-workbench", response_model=GenerationWorkbenchRead)
 def get_generation_workbench(
     page_id: str,
@@ -285,6 +317,7 @@ def get_generation_workbench(
             candidate_count=_page_candidate_count(db, page.id),
         ),
         readiness=build_page_readiness(db, page, get_settings()),
+        production=build_page_production_readiness(db, page),
         current_batch=GenerationBatchRead.model_validate(batch) if batch else None,
         candidates=[candidate_read(item, page) for item in candidates],
         selected_candidate=selected_read,
@@ -912,7 +945,15 @@ def select_candidate(
     changed = page.selected_candidate_id and page.selected_candidate_id != candidate.id
     page.selected_candidate_id = candidate.id
     page.selected_candidate_ack_version = page.storyboard_version
-    page.status = PageStatus.APPROVED
+    if candidate.status == "INSPECTED":
+        page.status = PageStatus.FINAL_READY
+        page.continuity_status = "PASSED"
+    elif candidate.status == "NEEDS_REVIEW":
+        page.status = PageStatus.NEEDS_REPAIR
+        page.continuity_status = "NEEDS_REVIEW"
+    else:
+        page.status = PageStatus.FINAL_CHECKING
+        page.continuity_status = "NOT_CHECKED"
     page.version += 1
     if changed:
         db.execute(
@@ -949,6 +990,8 @@ def keep_selected_candidate(
     if not payload.manual_text_confirmed:
         raise HTTPException(status_code=409, detail="请先人工校对页面文字")
     page.selected_candidate_ack_version = page.storyboard_version
+    page.status = PageStatus.FINAL_CHECKING
+    page.continuity_status = "NEEDS_REVIEW"
     page.version += 1
     db.commit()
     db.refresh(page)
@@ -990,8 +1033,9 @@ def retract_selected_candidate(
 @router.post("/pages/{page_id}/next", response_model=PageRead)
 def next_page(page_id: str, db: Session = Depends(get_db)) -> MangaPage:
     page = _page(db, page_id)
-    if not page.selected_candidate_id:
-        raise HTTPException(status_code=409, detail="请先采用当前页的一个候选")
+    production = build_page_production_readiness(db, page)
+    if not production.ready:
+        raise HTTPException(status_code=409, detail=production_error_detail(production))
     db.execute(
         update(GenerationBatch)
         .where(

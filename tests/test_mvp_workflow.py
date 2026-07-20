@@ -1484,13 +1484,15 @@ def test_project_json_export_uses_selected_page_versions(
             ordinal=1,
             model_alias="image.nano_banana_2",
             resolution=Resolution.DRAFT_1K,
-            status="READY",
+            status="INSPECTED",
             asset_id=asset.id,
             is_selected=True,
         )
         db_session.add(candidate)
         db_session.flush()
         page.selected_candidate_id = candidate.id
+        page.selected_candidate_ack_version = page.storyboard_version
+        page.continuity_status = "PASSED"
     db_session.commit()
 
     with TemporaryDirectory() as directory:
