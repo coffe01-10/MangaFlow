@@ -221,15 +221,6 @@ def build_page_readiness(
         )
 
     visible, non_visible, props = _page_cast(db, page)
-    if not visible:
-        blockers.append(
-            _block(
-                "VISIBLE_CAST_EMPTY",
-                "请先确认本页实际出镜人物",
-                "storyboard",
-                target_id=page.id,
-            )
-        )
     for character in visible:
         if not character.character_reference_ids:
             blockers.append(

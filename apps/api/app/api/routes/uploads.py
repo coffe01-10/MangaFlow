@@ -261,14 +261,10 @@ def adopt_generated_asset_as_reference(asset_id: str, db: Session = Depends(get_
     asset = db.get(Asset, asset_id)
     if not asset or asset.deleted_at is not None:
         raise HTTPException(status_code=404, detail="素材不存在")
-    if asset.source != "AI_GENERATED":
+    if asset.source not in {"AI_GENERATED", "VERTEX_GENERATED"}:
         raise HTTPException(status_code=409, detail="只有生成素材可以导入为参考图")
-    if asset.kind != "OUTFIT_REFERENCE":
-        _ensure_asset_not_in_active_job(db, asset)
-        asset.kind = "OUTFIT_REFERENCE"
-        asset.version += 1
-        db.commit()
-        db.refresh(asset)
+    # Importing creates a new structured binding; it must not rewrite the source
+    # asset's role because page candidates and generation history still own it.
     return asset_read(asset)
 
 

@@ -440,6 +440,29 @@ export interface PageReadiness {
   estimated_cost_note: string;
 }
 
+export interface ProductionBlocker {
+  code: string;
+  message: string;
+  section: string;
+  candidate_id: string | null;
+}
+
+export interface PageProductionReadiness {
+  page_id: string;
+  state: "READY" | "NEEDS_REPAIR" | "STALE" | "AWAITING_INSPECTION" | "AWAITING_SELECTION";
+  ready: boolean;
+  selected_candidate_id: string | null;
+  blockers: ProductionBlocker[];
+}
+
+export interface ChapterProductionReadiness {
+  chapter_id: string;
+  ready: boolean;
+  total_pages: number;
+  ready_pages: number;
+  pages: PageProductionReadiness[];
+}
+
 export interface GenerationBatch {
   id: string;
   project_id: string;
@@ -534,6 +557,7 @@ export interface GenerationWorkbench {
   page: MangaPage;
   storyboard: Storyboard;
   readiness: PageReadiness;
+  production: PageProductionReadiness;
   current_batch: GenerationBatch | null;
   candidates: PageCandidate[];
   selected_candidate: PageCandidate | null;
@@ -742,7 +766,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({ detail: "请求失败" }));
-    const detail = typeof body.detail === "string" ? body.detail : "请求数据不符合要求";
+    const rawDetail = body.detail;
+    const detail = typeof rawDetail === "string"
+      ? rawDetail
+      : rawDetail && typeof rawDetail === "object" && !Array.isArray(rawDetail)
+        && typeof rawDetail.message === "string"
+        ? rawDetail.message
+        : Array.isArray(rawDetail) && typeof rawDetail[0]?.msg === "string"
+          ? rawDetail[0].msg
+          : typeof body.message === "string"
+            ? body.message
+            : "请求数据不符合要求";
     throw new Error(detail);
   }
   if (response.status === 204) return undefined as T;
@@ -838,6 +872,10 @@ export const api = {
   }),
   pages: (chapterId: string) => request<MangaPage[]>(`/chapters/${chapterId}/pages`),
   pageReadiness: (pageId: string) => request<PageReadiness>(`/pages/${pageId}/readiness`),
+  pageProductionReadiness: (pageId: string) =>
+    request<PageProductionReadiness>(`/pages/${pageId}/production-readiness`),
+  chapterProductionReadiness: (chapterId: string) =>
+    request<ChapterProductionReadiness>(`/chapters/${chapterId}/production-readiness`),
   generationWorkbench: (pageId: string) =>
     request<GenerationWorkbench>(`/pages/${pageId}/generation-workbench`),
   storyboard: (pageId: string) => request<Storyboard>(`/pages/${pageId}/storyboard`),
@@ -1016,7 +1054,7 @@ export const api = {
   selectedPagePngUrl: (pageId: string) => publicUrl(`/api/v1/pages/${pageId}/export.png`),
   workflowNodeTypes: () => request<WorkflowNodeType[]>("/workflow-node-types"),
   workflows: (projectId: string) => request<WorkflowDefinition[]>(`/projects/${projectId}/workflows`),
-  createWorkflow: (projectId: string, name = "默认漫画工作流", template: "manga_default" | "blank" = "manga_default") =>
+  createWorkflow: (projectId: string, name = "默认漫画工作流", template: "manga_default" | "chapter_export" | "blank" = "manga_default") =>
     request<WorkflowDefinition>(`/projects/${projectId}/workflows`, {
       method: "POST",
       body: JSON.stringify({ name, template, description: "" }),

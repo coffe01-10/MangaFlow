@@ -26,8 +26,10 @@ from app.models import (
 )
 from app.services.ai_schemas import InspectionItem, PageInspectionOutput
 from app.services.workflow_engine import (
+    chapter_export_graph,
     default_graph,
     execute_workflow_node,
+    node_type_catalog,
     reconcile_run,
     validate_graph,
 )
@@ -100,7 +102,7 @@ def test_default_graph_is_strict_and_valid():
     report = validate_graph(graph)
     assert report.valid is True
     assert report.topological_order[0] in {"chapter", "assets"}
-    assert report.topological_order[-1] == "export"
+    assert report.topological_order[-1] == "complete"
 
     invalid = deepcopy(graph)
     invalid["edges"][0]["target_port"] = "missing"
@@ -121,6 +123,29 @@ def test_default_graph_is_strict_and_valid():
     report = validate_graph(cyclic)
     assert report.valid is False
     assert {item.code for item in report.issues} >= {"PORT_TYPE_MISMATCH", "CYCLE_DETECTED"}
+
+
+def test_chapter_export_graph_is_separate_and_valid():
+    graph = chapter_export_graph()
+    report = validate_graph(graph)
+
+    assert report.valid is True
+    assert report.topological_order == ["pages", "export"]
+    assert {node["type"] for node in graph["nodes"]} == {
+        "source.approved_pages",
+        "output.chapter_export",
+    }
+
+
+def test_legacy_page_export_node_schema_remains_valid():
+    graph = default_graph()
+    legacy_spec = next(item for item in node_type_catalog() if item.type == "output.export")
+    complete = next(node for node in graph["nodes"] if node["id"] == "complete")
+    complete["type"] = "output.export"
+    complete["inputs"] = [item.model_dump(mode="json") for item in legacy_spec.inputs]
+    complete["outputs"] = [item.model_dump(mode="json") for item in legacy_spec.outputs]
+
+    assert validate_graph(graph).valid is True
 
 
 def test_workflow_crud_optimistic_lock_publish_restore_and_json(client, db_session):
@@ -446,21 +471,21 @@ def test_default_dag_deterministic_full_run_to_export(
 
         inspection_job = db_session.get(GenerationJob, node_run("inspect").job_id)
         _complete_job(db_session, run_id, inspection_job, _run_inspection)
-        export_job = db_session.get(GenerationJob, node_run("export").job_id)
-        _complete_job(db_session, run_id, export_job, execute_workflow_node)
+        complete_job = db_session.get(GenerationJob, node_run("complete").job_id)
+        _complete_job(db_session, run_id, complete_job, execute_workflow_node)
 
         completed = client.get(f"/api/v1/workflow-runs/{run_id}").json()
         assert completed["status"] == "COMPLETED"
         assert len(completed["node_runs"]) == len(default_graph()["nodes"])
         assert {item["status"] for item in completed["node_runs"]} == {"COMPLETED"}
-        assert node_run("export").output_refs["export_id"]
+        assert node_run("complete").output_refs["asset_id"] == candidate.asset_id
 
         dependencies = {
             (item.job_id, item.depends_on_job_id)
             for item in db_session.query(JobDependency).all()
         }
         assert (inspection_job.id, generate_job.id) in dependencies
-        assert (export_job.id, inspection_job.id) in dependencies
+        assert (complete_job.id, inspection_job.id) in dependencies
         job_count = db_session.query(GenerationJob).count()
         reconcile_run(db_session, run_id)
         reconcile_run(db_session, run_id)
@@ -472,7 +497,15 @@ def test_node_catalog_and_soft_delete(client):
     catalog = client.get("/api/v1/workflow-node-types")
     assert catalog.status_code == 200
     types = {item["type"] for item in catalog.json()}
-    assert {"source.chapter", "generator.page", "control.approval", "output.export"} <= types
+    assert {
+        "source.chapter",
+        "source.approved_pages",
+        "generator.page",
+        "control.approval",
+        "output.page",
+        "output.export",
+        "output.chapter_export",
+    } <= types
 
     project = _project(client)
     workflow = _workflow(client, project["id"])

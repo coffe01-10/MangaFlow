@@ -306,3 +306,14 @@ def test_candidate_selection_allows_manual_text_confirmation_and_blocks_severe_i
     )
     assert selected.status_code == 200, selected.json()
     assert selected.json()["selected_candidate_id"] == candidate.id
+    readiness = client.get(f"/api/v1/pages/{page.id}/production-readiness")
+    assert readiness.status_code == 200
+    assert readiness.json()["state"] == "NEEDS_REPAIR"
+    assert readiness.json()["ready"] is False
+    assert client.post(f"/api/v1/pages/{page.id}/next").status_code == 409
+    blocked_export = client.post(
+        f"/api/v1/chapters/{chapter.id}/exports",
+        json={"export_type": "JSON"},
+    )
+    assert blocked_export.status_code == 409
+    assert blocked_export.json()["detail"]["code"] == "PAGE_NOT_PRODUCTION_READY"

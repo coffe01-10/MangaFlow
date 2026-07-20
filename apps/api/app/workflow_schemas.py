@@ -66,7 +66,10 @@ class WorkflowGraph(BaseModel):
 class WorkflowCreate(BaseModel):
     name: str = Field(default="默认漫画工作流", min_length=1, max_length=160)
     description: str = Field(default="", max_length=10_000)
-    template: str = Field(default="manga_default", pattern=r"^(manga_default|blank)$")
+    template: str = Field(
+        default="manga_default",
+        pattern=r"^(manga_default|chapter_export|blank)$",
+    )
 
 
 class WorkflowUpdate(BaseModel):

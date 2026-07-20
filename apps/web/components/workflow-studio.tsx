@@ -181,7 +181,7 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
   const [future, setFuture] = useState<Snapshot[]>([]);
   const [validation, setValidation] = useState<string[]>([]);
   const [currentRun, setCurrentRun] = useState<WorkflowRun | null>(null);
-  const [scopeType, setScopeType] = useState<"CHAPTER" | "PAGE">("CHAPTER");
+  const [scopeType, setScopeType] = useState<"CHAPTER" | "PAGE">("PAGE");
   const [scopeId, setScopeId] = useState("");
   const [drawModel, setDrawModel] = useState<ImageModelAlias | "">("");
   const [drawResolution, setDrawResolution] = useState<Resolution>("1K");
@@ -227,9 +227,12 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
   useEffect(() => {
     if (!workflows.isSuccess || workflows.data.length || creating.current) return;
     creating.current = true;
-    api.createWorkflow(projectId).then((created) => {
-      queryClient.setQueryData<WorkflowDefinition[]>(["workflows", projectId], [created]);
-      setActiveId(created.id);
+    Promise.all([
+      api.createWorkflow(projectId, "单页生产流程", "manga_default"),
+      api.createWorkflow(projectId, "整章导出流程", "chapter_export"),
+    ]).then(([pageWorkflow, exportWorkflow]) => {
+      queryClient.setQueryData<WorkflowDefinition[]>(["workflows", projectId], [pageWorkflow, exportWorkflow]);
+      setActiveId(pageWorkflow.id);
     }).finally(() => { creating.current = false; });
   }, [projectId, queryClient, workflows.data, workflows.isSuccess]);
 
@@ -244,6 +247,10 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
     setValidation([]);
     setSelectedId(null);
     setSaveStatus("已保存");
+    const chapterOnly = activeWorkflow.draft_graph.nodes.some((node) => node.type === "source.approved_pages")
+      && !activeWorkflow.draft_graph.nodes.some((node) => node.type === "generator.page");
+    setScopeType(chapterOnly ? "CHAPTER" : "PAGE");
+    setScopeId("");
   }, [activeWorkflow]);
 
   useEffect(() => {
@@ -453,7 +460,7 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
         scope_type: scopeType,
         scope_id: effectiveScopeId,
         start_node_ids: range === "FULL" ? [] : selectedIds,
-        stop_node_ids: range === "NODE" ? selectedIds : scopeType === "CHAPTER" && range === "FULL" ? ["storyboard"] : [],
+        stop_node_ids: range === "NODE" ? selectedIds : [],
       });
     },
     onSuccess: (run) => { setCurrentRun(run); void runs.refetch(); },

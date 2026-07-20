@@ -711,10 +711,34 @@ class PageReadinessRead(BaseModel):
     estimated_cost_note: str = "将调用 1 次 Nano Banana 2 1K 生图"
 
 
+class ProductionBlocker(BaseModel):
+    code: str
+    message: str
+    section: str
+    candidate_id: str | None = None
+
+
+class PageProductionReadinessRead(BaseModel):
+    page_id: str
+    state: str
+    ready: bool
+    selected_candidate_id: str | None = None
+    blockers: list[ProductionBlocker] = Field(default_factory=list)
+
+
+class ChapterProductionReadinessRead(BaseModel):
+    chapter_id: str
+    ready: bool
+    total_pages: int
+    ready_pages: int
+    pages: list[PageProductionReadinessRead] = Field(default_factory=list)
+
+
 class GenerationWorkbenchRead(BaseModel):
     page: PageRead
     storyboard: StoryboardRead
     readiness: PageReadinessRead
+    production: PageProductionReadinessRead
     current_batch: GenerationBatchRead | None = None
     candidates: list[PageCandidateRead] = Field(default_factory=list)
     selected_candidate: PageCandidateRead | None = None
