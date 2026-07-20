@@ -4,7 +4,7 @@ from uuid import uuid4
 from sqlalchemy import event, insert
 
 from app.domain.states import Resolution
-from app.models import AssetCandidate, Chapter, GenerationBatch, MangaPage, PageCandidate
+from app.models import AssetCandidate, Chapter, GenerationBatch, MangaPage, PageCandidate, Panel
 
 
 def test_library_uses_cursor_pagination_and_bulk_candidate_queries(client, db_session):
@@ -185,6 +185,49 @@ def test_library_filters_batches_by_chapter(client, db_session):
         f"/api/v1/projects/{other_project['id']}/library",
         params={"chapter_id": chapters[0].id},
     ).status_code == 404
+
+
+def test_library_filters_page_candidates_by_character(client, db_session):
+    project = client.post("/api/v1/projects", json={"name": "角色素材筛选"}).json()
+    character = client.post(
+        f"/api/v1/projects/{project['id']}/characters",
+        json={"primary_name": "角色甲", "aliases": []},
+    ).json()
+    chapter = Chapter(project_id=project["id"], title="第一章", ordinal=1)
+    db_session.add(chapter)
+    db_session.flush()
+    page = MangaPage(chapter_id=chapter.id, page_number=1)
+    db_session.add(page)
+    db_session.flush()
+    db_session.add(
+        Panel(page_id=page.id, reading_order=1, characters=[character["id"]])
+    )
+    batch = GenerationBatch(
+        project_id=project["id"],
+        chapter_id=chapter.id,
+        page_id=page.id,
+        ordinal=1,
+    )
+    db_session.add(batch)
+    db_session.flush()
+    db_session.add(
+        PageCandidate(
+            batch_id=batch.id,
+            page_id=page.id,
+            ordinal=1,
+            model_alias="image.nano_banana_2",
+            resolution=Resolution.DRAFT_1K,
+        )
+    )
+    db_session.commit()
+
+    response = client.get(
+        f"/api/v1/projects/{project['id']}/library",
+        params={"character_id": character["id"]},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["total_candidates"] == 1
 
 
 def test_library_10000_candidate_hot_request_benchmark(client, db_session):

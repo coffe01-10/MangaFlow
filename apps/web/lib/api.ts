@@ -801,6 +801,8 @@ export const api = {
   updateAsset: (assetId: string, payload: { kind?: AssetPurpose; display_name?: string | null }) => request<Asset>(`/assets/${assetId}`, {
     method: "PATCH", body: JSON.stringify(payload),
   }),
+  adoptGeneratedAssetAsReference: (assetId: string) =>
+    request<Asset>(`/assets/${assetId}/adopt-reference`, { method: "POST" }),
   deleteAsset: (assetId: string) => request<void>(`/assets/${assetId}`, { method: "DELETE" }),
   chapters: (projectId: string) => request<Chapter[]>(`/projects/${projectId}/chapters`),
   importSource: (projectId: string, title: string, text: string) =>

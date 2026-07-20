@@ -6,7 +6,7 @@ from PIL import Image
 
 from app.config import get_settings
 from app.domain.states import JobStatus
-from app.models import GenerationJob
+from app.models import Asset, GenerationJob
 
 
 def test_create_and_update_project(client):
@@ -134,6 +134,66 @@ def test_reference_upload_rejects_non_image_content(client):
         files={"file": ("notes.txt", b"not an image", "text/plain")},
     )
     assert response.status_code == 415
+
+
+def test_generated_asset_can_be_adopted_as_outfit_reference(client, db_session):
+    project = client.post("/api/v1/projects", json={"name": "生成素材导入"}).json()
+    generated = Asset(
+        project_id=project["id"],
+        kind="page_candidate",
+        original_name="page-candidate.png",
+        storage_key="generated/page-candidate.png",
+        mime_type="image/png",
+        byte_size=128,
+        sha256="a" * 64,
+        source="AI_GENERATED",
+        status="GENERATED",
+    )
+    db_session.add(generated)
+    db_session.commit()
+
+    adopted = client.post(f"/api/v1/assets/{generated.id}/adopt-reference")
+
+    assert adopted.status_code == 200
+    assert adopted.json()["id"] == generated.id
+    assert adopted.json()["kind"] == "OUTFIT_REFERENCE"
+    assert client.post(f"/api/v1/assets/{generated.id}/adopt-reference").json()["kind"] == "OUTFIT_REFERENCE"
+    character = client.post(
+        f"/api/v1/projects/{project['id']}/characters",
+        json={"primary_name": "主角", "aliases": []},
+    ).json()
+    outfit = client.post(
+        f"/api/v1/projects/{project['id']}/outfits",
+        json={
+            "character_id": character["id"],
+            "name": "校服",
+            "reference_asset_ids": [generated.id],
+        },
+    )
+    assert outfit.status_code == 201
+    assert outfit.json()["reference_asset_ids"] == [generated.id]
+
+
+def test_uploaded_asset_cannot_be_adopted_from_generated_library(client, db_session):
+    project = client.post("/api/v1/projects", json={"name": "阻止错误导入"}).json()
+    uploaded = Asset(
+        project_id=project["id"],
+        kind="CHARACTER_REFERENCE",
+        original_name="uploaded.png",
+        storage_key="uploads/uploaded.png",
+        mime_type="image/png",
+        byte_size=128,
+        sha256="b" * 64,
+        source="USER_UPLOAD",
+        status="UPLOADED",
+    )
+    db_session.add(uploaded)
+    db_session.commit()
+
+    response = client.post(f"/api/v1/assets/{uploaded.id}/adopt-reference")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "只有生成素材可以导入为参考图"
 
 
 def test_reupload_repairs_active_asset_with_missing_file(client, monkeypatch):

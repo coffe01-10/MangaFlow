@@ -1060,7 +1060,7 @@ def library(
                 .join(Chapter, Chapter.id == MangaPage.chapter_id)
                 .where(Chapter.project_id == project_id)
             )
-            if character_id in panel.character_ids
+            if character_id in panel.characters
         }
         character_filters = [
             and_(

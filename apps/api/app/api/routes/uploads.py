@@ -254,6 +254,24 @@ def update_asset(asset_id: str, payload: AssetUpdate, db: Session = Depends(get_
     return asset_read(asset)
 
 
+@router.post("/{asset_id}/adopt-reference", response_model=AssetRead)
+def adopt_generated_asset_as_reference(asset_id: str, db: Session = Depends(get_db)) -> AssetRead:
+    """Make an AI-generated asset available for structured reference bindings."""
+
+    asset = db.get(Asset, asset_id)
+    if not asset or asset.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="素材不存在")
+    if asset.source != "AI_GENERATED":
+        raise HTTPException(status_code=409, detail="只有生成素材可以导入为参考图")
+    if asset.kind != "OUTFIT_REFERENCE":
+        _ensure_asset_not_in_active_job(db, asset)
+        asset.kind = "OUTFIT_REFERENCE"
+        asset.version += 1
+        db.commit()
+        db.refresh(asset)
+    return asset_read(asset)
+
+
 @router.delete("/{asset_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_asset(asset_id: str, db: Session = Depends(get_db)) -> None:
     asset = db.get(Asset, asset_id)

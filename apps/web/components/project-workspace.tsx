@@ -286,6 +286,7 @@ export default function ProjectWorkspace({
     return window.localStorage.getItem(`mangaflow.style-mode.${id}`) === "color" ? "color" : "monochrome";
   });
   const [selectedOutfitAssets, setSelectedOutfitAssets] = useState<string[]>([]);
+  const [showGeneratedReferencePicker, setShowGeneratedReferencePicker] = useState(false);
   const [selectedStyleAssets, setSelectedStyleAssets] = useState<string[]>([]);
   const [reviewCandidateId, setReviewCandidateId] = useState<string | null>(null);
   const [selectedCharacterOutfitId, setSelectedCharacterOutfitId] = useState("");
@@ -355,6 +356,11 @@ export default function ProjectWorkspace({
       limit: 30,
     }),
     enabled: section === "library",
+  });
+  const generatedReferenceLibrary = useQuery({
+    queryKey: ["generated-reference-library", id, bindCharacterId],
+    queryFn: () => api.library(id, { character_id: bindCharacterId, limit: 30 }),
+    enabled: section === "assets" && assetView === "outfits" && showGeneratedReferencePicker && Boolean(bindCharacterId),
   });
   const jobs = useQuery({
     queryKey: ["jobs", id, showArchivedJobs],
@@ -476,6 +482,16 @@ export default function ProjectWorkspace({
   const boundCharacter = characters.data?.find((item) => item.id === bindCharacterId) ?? null;
   const editingOutfit = outfits.data?.find((item) => item.id === editingOutfitId) ?? null;
   const selectedOutfitFiles = assets.data?.filter((item) => selectedOutfitAssets.includes(item.id)) ?? [];
+  const generatedReferenceCandidates = useMemo(
+    () => (generatedReferenceLibrary.data?.groups ?? [])
+      .flatMap((group) => group.candidates.map((candidate) => ({
+        candidate,
+        generationKind: group.batch.generation_kind,
+      })))
+      .filter(({ candidate }) => Boolean(candidate.asset_id && candidate.content_url))
+      .filter(({ candidate }, index, values) => values.findIndex((item) => item.candidate.asset_id === candidate.asset_id) === index),
+    [generatedReferenceLibrary.data],
+  );
   const selectedStyleFiles = assets.data?.filter((item) => selectedStyleAssets.includes(item.id)) ?? [];
   const activeDrawModel = drawModel && modelOptions.some((option) => option.alias === drawModel)
     ? drawModel
@@ -614,6 +630,16 @@ export default function ProjectWorkspace({
     },
   });
 
+  const adoptGeneratedReference = useMutation({
+    mutationFn: (assetId: string) => api.adoptGeneratedAssetAsReference(assetId),
+    onSuccess: (asset) => {
+      setSelectedOutfitAssets((values) => values.includes(asset.id) ? values : [...values, asset.id]);
+      queryClient.invalidateQueries({ queryKey: ["assets", id] });
+      queryClient.invalidateQueries({ queryKey: ["outfits", id] });
+      queryClient.invalidateQueries({ queryKey: ["generated-reference-library", id] });
+    },
+  });
+
   const renameAsset = useMutation({
     mutationFn: ({ assetId, displayName }: { assetId: string; displayName: string }) => api.updateAsset(assetId, { display_name: displayName }),
     onSuccess: () => {
@@ -692,6 +718,7 @@ export default function ProjectWorkspace({
       setOutfitLockedFields("");
       setSelectedOutfitAssets([]);
       setEditingOutfitId(null);
+      setShowGeneratedReferencePicker(false);
       queryClient.invalidateQueries({ queryKey: ["outfits", id] });
     },
   });
@@ -711,6 +738,7 @@ export default function ProjectWorkspace({
       setOutfitLockedFields("");
       setSelectedOutfitAssets([]);
       setEditingOutfitId(null);
+      setShowGeneratedReferencePicker(false);
       queryClient.invalidateQueries({ queryKey: ["outfits", id] });
     },
   });
@@ -1060,6 +1088,7 @@ export default function ProjectWorkspace({
     setOutfitName("");
     setOutfitLockedFields("");
     setSelectedOutfitAssets([]);
+    setShowGeneratedReferencePicker(false);
   }
 
   function beginOutfitEdit(outfit: Outfit) {
@@ -1068,6 +1097,7 @@ export default function ProjectWorkspace({
     setOutfitName(outfit.name);
     setOutfitLockedFields(outfit.locked_fields.join("，"));
     setSelectedOutfitAssets(outfit.reference_asset_ids);
+    setShowGeneratedReferencePicker(false);
     setAssetKind("OUTFIT_REFERENCE");
   }
 
@@ -1276,8 +1306,26 @@ export default function ProjectWorkspace({
               {assetView === "references" && <header className="canvas-header"><div><span>REFERENCE INTAKE / 原始素材</span><h2>上传、分类与追溯原始参考图</h2></div><small>{assets.data?.length ?? 0} 个文件</small></header>}
               <div className="intake-toolbar"><div className="kind-switch">{assetView === "references" ? kinds.map(([value, label]) => <button key={value} className={assetKind === value ? "active" : ""} onClick={() => setAssetKind(value)}>{label}</button>) : <strong>{kinds.find(([value]) => value === currentAssetKind)?.[1]}</strong>}</div><span>{currentAssetKind === "CHARACTER_REFERENCE" ? (bindCharacterId ? "将绑定到选中的角色" : "请先选择要绑定的角色") : currentAssetKind === "OUTFIT_REFERENCE" ? (boundCharacter ? `当前绑定目标：${boundCharacter.primary_name} → ${outfitName.trim() || "未命名服装"}` : "先选择所属角色，再建立服装档案") : `当前分析目标：${styleColorMode === "monochrome" ? "黑白漫画" : "彩色漫画"}`}</span></div>
               <label className={`upload-stage${upload.isPending ? " busy" : ""}${assetDragActive ? " drag-active" : ""}`} onDragEnter={(event) => { event.preventDefault(); setAssetDragActive(true); }} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; setAssetDragActive(true); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setAssetDragActive(false); }} onDrop={dropReferenceFile}><input type="file" accept="image/png,image/jpeg,image/webp" onChange={chooseFile} disabled={upload.isPending} /><span className="upload-icon">{upload.isPending ? <LoaderCircle className="spin" /> : <Upload />}</span><strong>{upload.isPending ? "正在安全上传…" : assetDragActive ? "松开即可上传" : `拖拽图片到这里，或点击上传${kinds.find(([value]) => value === currentAssetKind)?.[1]}`}</strong><p>{currentAssetKind === "CHARACTER_REFERENCE" ? "人物图会和选中的主要姓名绑定，不会只依赖文件名猜测身份。" : currentAssetKind === "OUTFIT_REFERENCE" ? "上传后自动加入当前服装档案，保存时绑定到上方所选角色。" : `上传后自动加入当前${styleColorMode === "monochrome" ? "黑白" : "彩色"}风格档案，创建后再由默认视觉模型分析。`}</p></label>
+              {assetView === "outfits" && <>
+                <div className="reference-source-actions">
+                  <button type="button" className="button outline compact" disabled={!bindCharacterId} onClick={() => setShowGeneratedReferencePicker((value) => !value)}><LibraryBig size={14} />{showGeneratedReferencePicker ? "收起生成素材" : "从生成素材库导入"}</button>
+                  {!bindCharacterId && <small>先选择所属角色，再导入生成素材</small>}
+                </div>
+                {showGeneratedReferencePicker && <section className="generated-reference-picker" aria-label="从生成素材库导入服装参考">
+                  <header><div><span>GENERATED ASSETS / 生成素材</span><strong>选择一张图加入待绑定服装参考</strong></div><button type="button" className="icon-button" aria-label="关闭生成素材选择" onClick={() => setShowGeneratedReferencePicker(false)}><X size={14} /></button></header>
+                  <p className="generated-reference-hint">只显示当前角色相关的已生成图片；导入后仍保留在生成素材库，可在上方待绑定列表中继续调整。</p>
+                  {generatedReferenceLibrary.isLoading && <p className="asset-result-empty">正在读取生成素材…</p>}
+                  {generatedReferenceLibrary.isError && <p className="form-error"><CircleAlert size={14} />{generatedReferenceLibrary.error.message}</p>}
+                  {!generatedReferenceLibrary.isLoading && !generatedReferenceLibrary.isError && !generatedReferenceCandidates.length && <p className="asset-result-empty">当前角色还没有可导入的生成图片。</p>}
+                  <div className="generated-reference-grid">{generatedReferenceCandidates.map(({ candidate, generationKind }, index) => {
+                    const imported = selectedOutfitAssets.includes(candidate.asset_id!);
+                    const importing = adoptGeneratedReference.isPending && adoptGeneratedReference.variables === candidate.asset_id;
+                    return <article key={candidate.asset_id} className={imported ? "imported" : undefined}><CandidateArtwork contentUrl={candidate.content_url} thumbnailUrl={candidate.thumbnail_url} label={`生成素材 ${candidate.ordinal}`} eager={index === 0} onOpen={openPreview} /><div><strong>{generationKindLabels[generationKind] ?? generationKind}</strong><span>{candidate.variant ?? "生成候选"} · {candidate.resolution} · {candidate.status}</span><button type="button" disabled={imported || adoptGeneratedReference.isPending} onClick={() => adoptGeneratedReference.mutate(candidate.asset_id!)}>{importing ? <LoaderCircle className="spin" size={13} /> : imported ? <Check size={13} /> : <ImagePlus size={13} />}{importing ? "正在导入…" : imported ? "已加入待绑定" : "加入待绑定"}</button></div></article>;
+                  })}</div>
+                </section>}
+              </>}
               {uploadError && <p className="form-error"><CircleAlert size={15} />{uploadError}</p>}
-              {(deleteAsset.isError || reclassifyAsset.isError || bindExistingCharacterReference.isError || unbindExistingCharacterReference.isError) && <p className="form-error"><CircleAlert size={15} />{(deleteAsset.error ?? reclassifyAsset.error ?? bindExistingCharacterReference.error ?? unbindExistingCharacterReference.error)?.message}</p>}
+              {(deleteAsset.isError || reclassifyAsset.isError || adoptGeneratedReference.isError || bindExistingCharacterReference.isError || unbindExistingCharacterReference.isError) && <p className="form-error"><CircleAlert size={15} />{(deleteAsset.error ?? reclassifyAsset.error ?? adoptGeneratedReference.error ?? bindExistingCharacterReference.error ?? unbindExistingCharacterReference.error)?.message}</p>}
               {(createOutfit.isError || updateOutfit.isError || createStyle.isError || updateStyleMode.isError) && <p className="form-error"><CircleAlert size={15} />{(createOutfit.error ?? updateOutfit.error ?? createStyle.error ?? updateStyleMode.error)?.message}</p>}
               {visibleAssetKinds.map(([kind, label]) => {
                 const grouped = assets.data?.filter((asset) => asset.kind === kind) ?? [];
