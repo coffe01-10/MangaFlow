@@ -1,22 +1,48 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
+from alembic.config import Config as AlembicConfig
+from alembic.migration import MigrationContext
+from alembic.script import ScriptDirectory
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import models  # noqa: F401
 from app.api.router import api_router
 from app.config import get_settings
-from app.database import Base, SessionLocal, engine
+from app.database import SessionLocal, engine
 from app.services.job_service import recover_pending_jobs
 from app.services.provider_presets import ensure_provider_presets
 from app.services.runtime_settings import apply_runtime_overrides
+
+
+def _assert_database_is_current() -> None:
+    """Fail closed when the database was not upgraded through Alembic."""
+
+    settings = get_settings()
+    alembic_config = AlembicConfig(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+    alembic_config.set_main_option("sqlalchemy.url", settings.database_url)
+    expected_heads = set(ScriptDirectory.from_config(alembic_config).get_heads())
+    with engine.connect() as connection:
+        current_heads = set(MigrationContext.configure(connection).get_current_heads())
+    if current_heads != expected_heads:
+        current = ", ".join(sorted(current_heads)) or "未初始化"
+        expected = ", ".join(sorted(expected_heads)) or "未知"
+        raise RuntimeError(
+            "数据库迁移版本不匹配；请先执行 "
+            f"alembic upgrade head（当前：{current}，需要：{expected}）"
+        )
 
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     settings = get_settings()
     settings.ensure_directories()
-    Base.metadata.create_all(bind=engine)
+    # Tests replace the request-scoped database and create their own schema.
+    # Production/development startup must use the checked-in Alembic schema;
+    # silently calling create_all would skip migrations and hide drift.
+    if not application.dependency_overrides:
+        _assert_database_is_current()
     with SessionLocal() as db:
         apply_runtime_overrides(db, settings)
         # Tests commonly replace the request-scoped database while the global

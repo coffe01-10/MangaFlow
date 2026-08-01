@@ -134,6 +134,73 @@ def test_candidate_version_states_and_keep_old_selection(client, db_session):
     assert kept.json()["selected_candidate_ack_version"] == 3
 
 
+def test_production_readiness_requires_all_visual_inspection_categories(
+    client, db_session
+):
+    project = _project(client, "完整视觉质检")
+    chapter = Chapter(project_id=project["id"], title="第一章", ordinal=1)
+    db_session.add(chapter)
+    db_session.flush()
+    page = MangaPage(
+        chapter_id=chapter.id,
+        page_number=1,
+        storyboard_version=1,
+        selected_candidate_ack_version=1,
+        continuity_status="PASSED",
+    )
+    db_session.add(page)
+    db_session.flush()
+    batch = GenerationBatch(
+        project_id=project["id"], chapter_id=chapter.id, page_id=page.id, ordinal=1
+    )
+    asset = Asset(
+        project_id=project["id"],
+        kind="page_candidate",
+        original_name="partial-inspection.png",
+        storage_key="generated/partial-inspection.png",
+        mime_type="image/png",
+        byte_size=10,
+        sha256="p" * 64,
+        source="VERTEX_GENERATED",
+        status="GENERATED",
+    )
+    db_session.add_all([batch, asset])
+    db_session.flush()
+    candidate = PageCandidate(
+        batch_id=batch.id,
+        page_id=page.id,
+        ordinal=1,
+        model_alias="image.nano_banana_2",
+        resolution=Resolution.DRAFT_1K,
+        status="INSPECTED",
+        asset_id=asset.id,
+        is_selected=True,
+    )
+    db_session.add(candidate)
+    db_session.flush()
+    page.selected_candidate_id = candidate.id
+    db_session.add(
+        InspectionResult(
+            candidate_id=candidate.id,
+            category="CONTINUITY",
+            outcome="PASS",
+            score=0.99,
+            severity="INFO",
+        )
+    )
+    db_session.commit()
+
+    readiness = client.get(f"/api/v1/pages/{page.id}/production-readiness")
+
+    assert readiness.status_code == 200
+    assert readiness.json()["ready"] is False
+    assert readiness.json()["state"] == "AWAITING_INSPECTION"
+    assert any(
+        item["code"] == "QUALITY_INSPECTION_REQUIRED"
+        for item in readiness.json()["blockers"]
+    )
+
+
 def test_accepting_stale_inspected_candidate_still_requires_fresh_inspection(
     client, db_session
 ):

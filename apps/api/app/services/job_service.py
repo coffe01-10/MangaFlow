@@ -3,6 +3,7 @@ from datetime import timedelta
 from threading import Event, Lock
 
 from sqlalchemy import and_, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -24,6 +25,14 @@ from app.services.runtime_settings import apply_runtime_overrides, read_queue_mo
 LOCAL_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="mangaflow-local")
 LOCAL_SUBMISSION_LOCK = Lock()
 LOCAL_SUBMITTED_JOB_IDS: set[str] = set()
+LEASED_JOB_STATUSES = {
+    JobStatus.PREPARING,
+    JobStatus.UPLOADING_REFERENCES,
+    JobStatus.GENERATING,
+    JobStatus.OCR_CHECKING,
+    JobStatus.CONSISTENCY_CHECKING,
+    JobStatus.REPAIRING,
+}
 
 
 def create_job(
@@ -61,8 +70,20 @@ def create_job(
         idempotency_key=idempotency_key,
         status=JobStatus.WAITING,
     )
-    db.add(job)
-    db.flush()
+    try:
+        # Keep the caller's pending work intact if another request won the
+        # idempotency race between the initial lookup and this insert.
+        with db.begin_nested():
+            db.add(job)
+            db.flush()
+    except IntegrityError:
+        if idempotency_key:
+            existing = db.scalar(
+                select(GenerationJob).where(GenerationJob.idempotency_key == idempotency_key)
+            )
+            if existing:
+                return existing
+        raise
     for dependency_id in dependency_ids or []:
         db.add(JobDependency(job_id=job.id, depends_on_job_id=dependency_id))
     for asset_id in dict.fromkeys(reference_asset_ids or []):
@@ -196,20 +217,49 @@ def _execute_locally(job_id: str) -> None:
 
 
 def recover_pending_jobs(db: Session) -> int:
-    """Re-enqueue jobs orphaned by an API restart in local-capable modes.
-
-    Only WAITING jobs and jobs previously handed to this process-local executor are
-    eligible. Active jobs are intentionally left alone because their lease handling
-    belongs to the worker layer.
-    """
+    """Reclaim expired worker leases and re-enqueue recoverable jobs."""
 
     settings = get_settings()
     apply_runtime_overrides(db, settings)
     if not settings.queue_enabled:
         return 0
-    queue_mode = read_queue_mode(db)
-    if queue_mode == "REDIS" or (queue_mode == "AUTO" and settings.environment != "development"):
-        return 0
+    now = utcnow()
+    expired_jobs = list(
+        db.scalars(
+            select(GenerationJob).where(
+                GenerationJob.status.in_(LEASED_JOB_STATUSES),
+                or_(
+                    GenerationJob.lease_expires_at.is_(None),
+                    GenerationJob.lease_expires_at <= now,
+                ),
+            )
+        )
+    )
+    workflow_run_ids: set[str] = set()
+    for job in expired_jobs:
+        job.lease_owner = None
+        job.lease_expires_at = None
+        if job.attempt_count >= job.max_attempts:
+            workflow_run_id = mark_job_failed(
+                db,
+                job,
+                "LEASE_EXPIRED",
+                "执行器租约已过期，且已达到最大尝试次数",
+            )
+            if workflow_run_id:
+                workflow_run_ids.add(workflow_run_id)
+        else:
+            job.status = JobStatus.WAITING
+            job.error_code = "LEASE_EXPIRED"
+            job.error_message = "执行器已退出，任务等待重新执行"
+            job.started_at = None
+            job.scheduled_at = now
+    if expired_jobs:
+        db.commit()
+    for workflow_run_id in workflow_run_ids:
+        from app.services.workflow_engine import reconcile_run
+
+        reconcile_run(db, workflow_run_id)
 
     jobs = list(
         db.scalars(
@@ -239,6 +289,47 @@ def recover_pending_jobs(db: Session) -> int:
     return recovered
 
 
+def mark_job_failed(
+    db: Session,
+    job: GenerationJob,
+    error_code: str,
+    error_message: str,
+    *,
+    candidate_status: str = "FAILED",
+) -> str | None:
+    """Mark a job and its visible targets as failed without committing."""
+
+    if job.status in {JobStatus.COMPLETED, JobStatus.CANCELLED}:
+        return None
+    now = utcnow()
+    job.status = JobStatus.FAILED
+    job.error_code = error_code
+    job.error_message = error_message[:500]
+    job.finished_at = now
+    job.lease_owner = None
+    job.lease_expires_at = None
+    page_candidate = db.get(PageCandidate, job.target_id)
+    if page_candidate:
+        page_candidate.status = candidate_status
+    asset_candidate = db.get(AssetCandidate, job.target_id)
+    if asset_candidate:
+        asset_candidate.status = "FAILED"
+    style = db.get(StyleProfile, job.target_id) if job.target_type == "STYLE" else None
+    if style:
+        style.status = "DRAFT"
+
+    node_run = db.scalar(select(WorkflowNodeRun).where(WorkflowNodeRun.job_id == job.id))
+    workflow_run_id = (job.request_parameters or {}).get("workflow_run_id")
+    if node_run:
+        workflow_run_id = workflow_run_id or node_run.workflow_run_id
+        if node_run.status not in {"COMPLETED", "FAILED", "CANCELLED"}:
+            node_run.status = "FAILED"
+            node_run.error_code = error_code
+            node_run.error_message = error_message[:500]
+            node_run.finished_at = now
+    return workflow_run_id
+
+
 def mark_job_cancelled(db: Session, job: GenerationJob) -> GenerationJob:
     """Mark a job and its visible target as cancelled without committing."""
 
@@ -248,6 +339,8 @@ def mark_job_cancelled(db: Session, job: GenerationJob) -> GenerationJob:
         job.status = JobStatus.CANCELLED
         job.cancelled_at = utcnow()
         job.finished_at = utcnow()
+    job.lease_owner = None
+    job.lease_expires_at = None
     page_candidate = db.scalar(select(PageCandidate).where(PageCandidate.job_id == job.id))
     if page_candidate and page_candidate.status not in {"READY", "FAILED", "CANCELLED"}:
         page_candidate.status = "CANCELLED"
@@ -308,6 +401,9 @@ def reset_for_retry(db: Session, job: GenerationJob) -> GenerationJob:
     job.progress = 0
     job.started_at = None
     job.finished_at = None
+    job.cancelled_at = None
+    job.lease_owner = None
+    job.lease_expires_at = None
     job.scheduled_at = utcnow() + timedelta(seconds=1)
     workflow_run_id = job.request_parameters.get("workflow_run_id")
     if workflow_run_id:

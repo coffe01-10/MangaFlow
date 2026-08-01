@@ -336,6 +336,7 @@ class GenerationJob(Timestamped, Base):
     __tablename__ = "generation_jobs"
     __table_args__ = (
         Index("ix_generation_jobs_project_status_created", "project_id", "status", "created_at"),
+        Index("ix_generation_jobs_status_lease", "status", "lease_expires_at"),
         Index(
             "ix_generation_jobs_project_archived_created",
             "project_id",

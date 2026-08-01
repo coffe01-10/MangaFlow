@@ -121,6 +121,18 @@ const repairTypeLabels = {
   PAGE: "整页",
 } as const;
 
+const activeJobStatuses = new Set([
+  "WAITING",
+  "QUEUED",
+  "PREPARING",
+  "UPLOADING_REFERENCES",
+  "GENERATING",
+  "OCR_CHECKING",
+  "CONSISTENCY_CHECKING",
+  "REPAIRING",
+  "RUNNING",
+]);
+
 function recommendedRepairType(category: string): "BUBBLE_REGION" | "PANEL" | "PAGE" {
   if (category === "SPEAKER") return "BUBBLE_REGION";
   if (["CHARACTER", "OUTFIT", "PROP"].includes(category)) return "PANEL";
@@ -366,7 +378,7 @@ export default function ProjectWorkspace({
     queryKey: ["jobs", id, showArchivedJobs],
     queryFn: () => api.jobs(id, showArchivedJobs),
     enabled: ["assets", "jobs", "generate"].includes(section),
-    refetchInterval: (query) => (query.state.data ?? []).some((job) => ["WAITING", "QUEUED", "PREPARING", "GENERATING", "RUNNING"].includes(job.status)) ? 3000 : false,
+    refetchInterval: (query) => (query.state.data ?? []).some((job) => activeJobStatuses.has(job.status)) ? 3000 : false,
   });
   const exportsQuery = useQuery({ queryKey: ["exports", id], queryFn: () => api.exports(id), enabled: section === "library" });
   const activeChapterId = selectedChapterId ?? chapters.data?.[0]?.id ?? null;
@@ -1172,7 +1184,6 @@ export default function ProjectWorkspace({
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  const activeJobStatuses = new Set(["WAITING", "QUEUED", "PREPARING", "UPLOADING_REFERENCES", "GENERATING", "CONSISTENCY_CHECKING", "REPAIRING"]);
   const activeJobs = (jobs.data ?? []).filter((job) => activeJobStatuses.has(job.status));
   const failedJobs = (jobs.data ?? []).filter((job) => job.status === "FAILED");
   const completedJobGroups = Object.entries(
@@ -1361,7 +1372,10 @@ export default function ProjectWorkspace({
               {(deleteAsset.isError || reclassifyAsset.isError || adoptGeneratedReference.isError || bindExistingCharacterReference.isError || unbindExistingCharacterReference.isError) && <p className="form-error"><CircleAlert size={15} />{(deleteAsset.error ?? reclassifyAsset.error ?? adoptGeneratedReference.error ?? bindExistingCharacterReference.error ?? unbindExistingCharacterReference.error)?.message}</p>}
               {(createOutfit.isError || updateOutfit.isError || createStyle.isError || updateStyleMode.isError) && <p className="form-error"><CircleAlert size={15} />{(createOutfit.error ?? updateOutfit.error ?? createStyle.error ?? updateStyleMode.error)?.message}</p>}
               {visibleAssetKinds.map(([kind, label]) => {
-                const grouped = assets.data?.filter((asset) => asset.kind === kind) ?? [];
+                const grouped = assets.data?.filter((asset) => asset.kind === kind || (
+                  kind === "OUTFIT_REFERENCE"
+                  && outfits.data?.some((outfit) => outfit.reference_asset_ids.includes(asset.id))
+                )) ?? [];
                 return <section className="asset-purpose-group" key={kind}>
                   <div className="asset-list-header"><span>{label}</span><small>{grouped.length} FILES</small></div>
                   <p className="purpose-explain">{{ CHARACTER_REFERENCE: "绑定主要姓名与绰号，用于保持脸、发型和体型一致。", OUTFIT_REFERENCE: "选择图片后，上方绑定流程会明确保存“角色 → 服装档案 → 参考图”的关系。", STYLE_REFERENCE: "选择后由默认视觉模型按所选的黑白或彩色模式总结可复用画面语言。" }[kind]}</p>
@@ -1378,7 +1392,7 @@ export default function ProjectWorkspace({
                         {kind === "STYLE_REFERENCE" && <p className={linkedStyles.length ? "reference-binding bound" : "reference-binding"}><Link2 size={10} />{linkedStyles.length ? `已用于：${linkedStyles.map((style) => `${style.name}（${style.color_mode === "monochrome" ? "黑白" : "彩色"}）`).join("；")}` : "尚未写入风格档案"}</p>}
                         {kind === "CHARACTER_REFERENCE" && linkedCharacter && !characterReference ? <p className="reference-binding bound"><Link2 size={10} />当前绑定：{linkedCharacter.primary_name}</p> : null}
                         {kind === "CHARACTER_REFERENCE" ? <button className={characterReference ? "bind-purpose bound" : "bind-purpose"} disabled={!boundCharacter || bindExistingCharacterReference.isPending || unbindExistingCharacterReference.isPending} onClick={() => characterReference ? unbindExistingCharacterReference.mutate(characterReference.id) : bindExistingCharacterReference.mutate(asset.id)}>{!boundCharacter ? "先选择角色" : characterReference ? `解除与 ${boundCharacter.primary_name} 的绑定` : linkedCharacter ? `改绑到 ${boundCharacter.primary_name}（自动解除 ${linkedCharacter.primary_name}）` : `绑定到 ${boundCharacter.primary_name}`}</button> : <button className="bind-purpose" disabled={kind === "OUTFIT_REFERENCE" && !bindCharacterId} onClick={() => kind === "OUTFIT_REFERENCE" ? setSelectedOutfitAssets((values) => values.includes(asset.id) ? values.filter((item) => item !== asset.id) : [...values, asset.id]) : setSelectedStyleAssets((values) => values.includes(asset.id) ? values.filter((item) => item !== asset.id) : [...values, asset.id])}>{kind === "OUTFIT_REFERENCE" && !bindCharacterId ? "先选择所属角色" : selected ? "已选：保存后绑定" : kind === "OUTFIT_REFERENCE" ? "加入当前服装档案" : "加入当前风格档案"}</button>}
-                        <div className="asset-actions"><select aria-label="修改素材用途" value={asset.kind} onChange={(event) => reclassifyAsset.mutate({ assetId: asset.id, kind: event.target.value as AssetPurpose })}>{kinds.map(([value, option]) => <option key={value} value={value}>{option}</option>)}</select><button title="删除素材" disabled={deleteAsset.isPending} onClick={() => { if (window.confirm("删除该素材及其候选记录，并解除已有绑定？")) deleteAsset.mutate(asset.id); }}><Trash2 size={13} /></button></div>
+                        <div className="asset-actions"><select aria-label="修改素材用途" value={kinds.some(([value]) => value === asset.kind) ? asset.kind : kind} onChange={(event) => reclassifyAsset.mutate({ assetId: asset.id, kind: event.target.value as AssetPurpose })}>{kinds.map(([value, option]) => <option key={value} value={value}>{option}</option>)}</select><button title="删除素材" disabled={deleteAsset.isPending} onClick={() => { if (window.confirm("删除该素材及其候选记录，并解除已有绑定？")) deleteAsset.mutate(asset.id); }}><Trash2 size={13} /></button></div>
                       </div>
                     </article>;
                   })}</div>

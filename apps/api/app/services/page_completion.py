@@ -1,7 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Asset, Chapter, MangaPage, PageCandidate
+from app.models import Asset, Chapter, InspectionResult, MangaPage, PageCandidate
 from app.schemas import (
     ChapterProductionReadinessRead,
     PageProductionReadinessRead,
@@ -21,6 +21,11 @@ def _block(
         section=section,
         candidate_id=candidate_id,
     )
+
+
+REQUIRED_VISUAL_INSPECTION_CATEGORIES = frozenset(
+    {"SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"}
+)
 
 
 def build_page_production_readiness(
@@ -62,7 +67,23 @@ def build_page_production_readiness(
                     candidate.id,
                 )
             )
-        if candidate.status == "NEEDS_REVIEW" or page.continuity_status == "NEEDS_REVIEW":
+        latest_inspections: dict[str, InspectionResult] = {}
+        for result in db.scalars(
+            select(InspectionResult)
+            .where(InspectionResult.candidate_id == candidate.id)
+            .order_by(InspectionResult.created_at.desc(), InspectionResult.id.desc())
+        ):
+            latest_inspections.setdefault(result.category.upper(), result)
+        missing_categories = REQUIRED_VISUAL_INSPECTION_CATEGORIES - set(latest_inspections)
+        failed_inspection = any(
+            result.outcome.upper() not in {"MATCH", "PASS", "ACCEPTABLE"}
+            for result in latest_inspections.values()
+        )
+        if (
+            candidate.status == "NEEDS_REVIEW"
+            or page.continuity_status == "NEEDS_REVIEW"
+            or failed_inspection
+        ):
             blockers.append(
                 _block(
                     "QUALITY_REVIEW_REQUIRED",
@@ -71,7 +92,11 @@ def build_page_production_readiness(
                     candidate.id,
                 )
             )
-        elif candidate.status != "INSPECTED" or page.continuity_status != "PASSED":
+        elif (
+            candidate.status != "INSPECTED"
+            or page.continuity_status != "PASSED"
+            or missing_categories
+        ):
             blockers.append(
                 _block(
                     "QUALITY_INSPECTION_REQUIRED",

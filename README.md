@@ -80,6 +80,7 @@ GOOGLE_CLOUD_LOCATION=global
 GOOGLE_APPLICATION_CREDENTIALS=D:/absolute/path/to/service-account-key.json
 REDIS_URL=redis://localhost:6379/0
 QUEUE_ENABLED=true
+JOB_LEASE_SECONDS=120
 MANGAFLOW_PROXY_URL=http://127.0.0.1:7897
 MANGAFLOW_CREDENTIAL_MASTER_KEY=replace-with-a-url-safe-base64-32-byte-key
 ```
