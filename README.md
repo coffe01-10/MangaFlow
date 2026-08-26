@@ -4,7 +4,7 @@
 
 `完整原文 → 无损分段 → 剧本任务 → 动态分页 → 单页抽卡 → 人工校对并暂选 → 视觉检查通过 → 单页成品 → 整章导出`
 
-完整需求见 [`plan.md`](plan.md)，实际完成度见 [`docs/development-progress.md`](docs/development-progress.md)。
+完整需求见 [`plan.md`](plan.md)，实际完成度见 [`docs/development-progress.md`](docs/development-progress.md)，主分支的后续优先级与稳定版本完成定义见 [`docs/roadmap.md`](docs/roadmap.md)。
 
 ## 已实现
 
@@ -171,7 +171,7 @@ PostgreSQL 与 Redis 的开发容器可用 `docker compose up -d` 启动；默�
 npm run check
 ```
 
-当前质量基线包含 115 个后端测试和 4 个前端测试，并覆盖 Ruff、ESLint、TypeScript、Next.js 生产构建和 Alembic 全新升级/回滚/再升级。真实供应商图片调用不属于默认测试，避免意外费用。文字由用户在采用候选前人工校对；系统不再创建文字自动检查或文字区域修复任务。
+2026-08-26 的主分支基线包含 145 个后端测试和 9 个前端测试，并覆盖 Ruff、ESLint、TypeScript、Next.js 生产构建和 Alembic 全新升级/回滚/再升级。`npm run check` 不包含 Playwright/Axe、Lighthouse 或工作流 FPS；浏览器门禁的当前结果和修复项见 [`docs/roadmap.md`](docs/roadmap.md)。真实供应商图片调用不属于默认测试，避免意外费用。文字由用户在采用候选前人工校对；系统不再创建文字自动检查或文字区域修复任务。
 
 ## 安全说明
 
