@@ -237,15 +237,23 @@ def _claim_job(db, job_id: str, owner: str) -> GenerationJob | None:
         .execution_options(synchronize_session=False)
     )
     if updated.rowcount != 1:
-        db.rollback()
-        current = db.get(GenerationJob, job_id)
-        if current and current.status in CLAIMABLE_STATUSES:
-            current.status = JobStatus.WAITING
-            current.error_code = "CONCURRENCY_LIMIT"
-            current.error_message = "等待项目并发名额"
-            current.lease_owner = None
-            current.lease_expires_at = None
-            db.commit()
+        # 在仍持有锁的事务中通过严格条件更新标记等待状态，绝不释放锁后无条件覆盖新租约
+        db.execute(
+            update(GenerationJob)
+            .where(
+                GenerationJob.id == job_id,
+                GenerationJob.status == expected_status,
+                GenerationJob.lease_owner.is_(None),
+                GenerationJob.lease_expires_at.is_(None),
+            )
+            .values(
+                status=JobStatus.WAITING,
+                error_code="CONCURRENCY_LIMIT",
+                error_message="等待项目并发名额",
+            )
+            .execution_options(synchronize_session=False)
+        )
+        db.commit()
         return None
     db.commit()
     db.expire_all()

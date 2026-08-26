@@ -931,3 +931,74 @@ def test_claim_job_uses_for_update_when_postgresql_dialect(db_session, monkeypat
     ]
     assert len(project_queries) == 1
 
+
+def test_claim_failure_does_not_overwrite_reclaimed_lease_with_concurrency_limit(
+    db_session,
+):
+    project = Project(name="失败抢占防覆盖测试", default_concurrency=1)
+    db_session.add(project)
+    db_session.flush()
+
+    # 模拟项目当前已有一个活跃任务占满了并发名额 (concurrency = 1)
+    active_job = GenerationJob(
+        project_id=project.id,
+        target_type="CHAPTER",
+        target_id="active-job-target",
+        job_type="SOURCE_PARSE",
+        status=JobStatus.GENERATING,
+        lease_owner="active-worker-x",
+        lease_expires_at=datetime.now(UTC) + timedelta(minutes=5),
+    )
+    db_session.add(active_job)
+    db_session.flush()
+
+    # 待抢占的目标任务
+    target_job = GenerationJob(
+        project_id=project.id,
+        target_type="CHAPTER",
+        target_id="queued-target",
+        job_type="SOURCE_PARSE",
+        status=JobStatus.QUEUED,
+    )
+    db_session.add(target_job)
+    db_session.commit()
+
+    # Worker A 尝试 claim target_job，但因 active_count >= 1 失败
+    owner_a = worker_tasks._worker_id()
+    claimed_a = worker_tasks._claim_job(db_session, target_job.id, owner_a)
+    assert claimed_a is None
+
+    db_session.expire_all()
+    reloaded = db_session.get(GenerationJob, target_job.id)
+    assert reloaded.status == JobStatus.WAITING
+    assert reloaded.error_code == "CONCURRENCY_LIMIT"
+
+    # 现在模拟活动任务完成释放了槽位，Worker B 成功抢占了 target_job
+    active_job.status = JobStatus.COMPLETED
+    active_job.lease_owner = None
+    active_job.lease_expires_at = None
+    db_session.commit()
+
+    owner_b = worker_tasks._worker_id()
+    claimed_b = worker_tasks._claim_job(db_session, target_job.id, owner_b)
+    assert claimed_b is not None
+    assert claimed_b.lease_owner == owner_b
+    assert claimed_b.status == JobStatus.PREPARING
+
+    # 模拟并发超额场景再次出现，另一个 Worker C 试图抢占 target_job
+    # 但 target_job 此时已经被 Worker B 接管 (status=PREPARING, owner=owner_b)
+    owner_c = worker_tasks._worker_id()
+    claimed_c = worker_tasks._claim_job(db_session, target_job.id, owner_c)
+    assert claimed_c is None
+
+    db_session.expire_all()
+    final_job = db_session.get(GenerationJob, target_job.id)
+    # 验证 Worker B 的有效租约和 PREPARING 状态完好无损，没有被 Worker C 覆盖为 WAITING
+    assert final_job.status == JobStatus.PREPARING
+    assert final_job.lease_owner == owner_b
+    expiry = (
+        final_job.lease_expires_at
+        if final_job.lease_expires_at.tzinfo
+        else final_job.lease_expires_at.replace(tzinfo=UTC)
+    )
+    assert expiry > datetime.now(UTC)
