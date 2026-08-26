@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 from threading import Event, Lock
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 
 from app import database, worker_tasks
@@ -655,3 +655,227 @@ def test_startup_recovery_marks_exhausted_target_and_workflow_failed(db_session,
     assert db_session.get(PageCandidate, candidate.id).status == "FAILED"
     assert db_session.get(WorkflowNodeRun, node_run.id).status == "FAILED"
     assert db_session.get(WorkflowRun, run.id).status == "FAILED"
+
+
+def test_worker_id_generates_unique_token_per_invocation():
+    tokens = [worker_tasks._worker_id() for _ in range(100)]
+    assert len(set(tokens)) == 100
+
+
+def test_expired_lease_in_same_process_cannot_be_mutated_by_old_worker(db_session):
+    project = Project(name="租约交接", default_concurrency=2)
+    db_session.add(project)
+    db_session.flush()
+    job = GenerationJob(
+        project_id=project.id,
+        target_type="CHAPTER",
+        target_id="target-handover",
+        job_type="SOURCE_PARSE",
+        status=JobStatus.QUEUED,
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    owner_a = worker_tasks._worker_id()
+    claimed_a = worker_tasks._claim_job(db_session, job.id, owner_a)
+    assert claimed_a is not None
+    assert claimed_a.lease_owner == owner_a
+
+    # 模拟 Worker A 超时导致租约过期
+    claimed_a.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    db_session.commit()
+
+    # 同一进程内的 Worker B 抢占任务
+    owner_b = worker_tasks._worker_id()
+    assert owner_b != owner_a
+    claimed_b = worker_tasks._claim_job(db_session, job.id, owner_b)
+    assert claimed_b is not None
+    assert claimed_b.lease_owner == owner_b
+    assert claimed_b.attempt_count == 2
+
+    # 1. 验证 Worker A 的心跳无法续租
+    heartbeat_a = worker_tasks._LeaseHeartbeat(job.id, owner_a)
+    heartbeat_a._run()
+    assert heartbeat_a.lost is True
+
+    # 2. 验证 Worker A 检查状态时被租约丢失拦截
+    db_session.info["job_lease_owner"] = owner_a
+    with pytest.raises(worker_tasks.JobLeaseLostError):
+        worker_tasks._ensure_job_not_cancelled(db_session, claimed_b)
+
+    # 3. 验证 Worker A 无法写回失败状态
+    marked, _ = worker_tasks._mark_worker_failure(
+        db_session,
+        job.id,
+        owner_a,
+        "WORKER_ERROR",
+        "旧 worker 晚返回",
+    )
+    assert marked is False
+    db_session.expire_all()
+    reloaded = db_session.get(GenerationJob, job.id)
+    assert reloaded.status == JobStatus.PREPARING
+    assert reloaded.lease_owner == owner_b
+
+
+def test_startup_recovery_interleaved_with_worker_claim_does_not_overwrite_new_lease(
+    db_session, monkeypatch
+):
+    _set_queue_mode(db_session, "LOCAL")
+    project = Project(name="恢复并发交错", default_concurrency=2)
+    db_session.add(project)
+    db_session.flush()
+    job = GenerationJob(
+        project_id=project.id,
+        target_type="CHAPTER",
+        target_id="interleaved-target",
+        job_type="SOURCE_PARSE",
+        status=JobStatus.GENERATING,
+        attempt_count=1,
+        lease_owner="old-dead-worker",
+        lease_expires_at=datetime.now(UTC) - timedelta(minutes=1),
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    # 在 recovery 执行前，Worker B 抢占了该任务
+    owner_b = worker_tasks._worker_id()
+    claimed = worker_tasks._claim_job(db_session, job.id, owner_b)
+    assert claimed is not None
+    assert claimed.lease_owner == owner_b
+
+    monkeypatch.setattr(
+        job_service, "get_settings", lambda: Settings(environment="development")
+    )
+    monkeypatch.setattr(job_service, "_submit_local", lambda _job_id: None)
+
+    # 执行 recovery 扫描
+    recovered = job_service.recover_pending_jobs(db_session)
+    assert recovered == 0
+
+    db_session.expire_all()
+    reloaded = db_session.get(GenerationJob, job.id)
+    # 验证新 Worker 的租约与状态没有被 recovery 覆盖
+    assert reloaded.status == JobStatus.PREPARING
+    expiry = (
+        reloaded.lease_expires_at
+        if reloaded.lease_expires_at.tzinfo
+        else reloaded.lease_expires_at.replace(tzinfo=UTC)
+    )
+    assert expiry > datetime.now(UTC)
+
+
+def test_worker_failure_interleaved_with_reclaimed_lease_does_not_mark_failed(db_session):
+    project = Project(name="失败写回并发交错", default_concurrency=2)
+    db_session.add(project)
+    db_session.flush()
+    chapter = Chapter(project_id=project.id, title="第一章", ordinal=1)
+    db_session.add(chapter)
+    db_session.flush()
+    page = MangaPage(chapter_id=chapter.id, page_number=1, status=PageStatus.DRAFT_GENERATING)
+    db_session.add(page)
+    db_session.flush()
+    batch = GenerationBatch(project_id=project.id, chapter_id=chapter.id, page_id=page.id, ordinal=1)
+    db_session.add(batch)
+    db_session.flush()
+    candidate = PageCandidate(
+        batch_id=batch.id,
+        page_id=page.id,
+        ordinal=1,
+        model_alias="image.nano_banana_2",
+        resolution=Resolution.DRAFT_1K,
+        status="GENERATING",
+    )
+    db_session.add(candidate)
+    db_session.flush()
+    job = GenerationJob(
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=candidate.id,
+        job_type="PAGE_GENERATE",
+        status=JobStatus.GENERATING,
+        attempt_count=1,
+        max_attempts=3,
+        lease_owner="old-worker-a",
+        lease_expires_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    # 新 Worker B 抢占成功
+    owner_b = worker_tasks._worker_id()
+    claimed = worker_tasks._claim_job(db_session, job.id, owner_b)
+    assert claimed is not None
+
+    # 旧 Worker A 尝试写入失败
+    marked, _ = worker_tasks._mark_worker_failure(
+        db_session,
+        job.id,
+        "old-worker-a",
+        "TIMEOUT",
+        "旧调用超时",
+    )
+    assert marked is False
+
+    db_session.expire_all()
+    assert db_session.get(GenerationJob, job.id).status == JobStatus.PREPARING
+    assert db_session.get(PageCandidate, candidate.id).status == "GENERATING"
+
+
+def test_multi_worker_claim_respects_project_concurrency_without_process_lock():
+    with TemporaryDirectory() as directory:
+        engine = create_engine(
+            f"sqlite:///{Path(directory) / 'concurrency.db'}",
+            connect_args={"check_same_thread": False},
+        )
+        testing_session = sessionmaker(
+            bind=engine, autoflush=False, expire_on_commit=False
+        )
+        Base.metadata.create_all(engine)
+
+        with testing_session() as db:
+            project = Project(name="多会话并发", default_concurrency=2)
+            db.add(project)
+            db.flush()
+            jobs = [
+                GenerationJob(
+                    project_id=project.id,
+                    target_type="CHAPTER",
+                    target_id=f"target-{i}",
+                    job_type="SOURCE_PARSE",
+                    status=JobStatus.QUEUED,
+                )
+                for i in range(6)
+            ]
+            db.add_all(jobs)
+            db.commit()
+            job_ids = [j.id for j in jobs]
+
+        results = []
+        lock = Lock()
+
+        def try_claim(job_id: str):
+            with testing_session() as db:
+                owner = worker_tasks._worker_id()
+                # 显式不使用 EXECUTION_RESERVATION_LOCK，验证数据库级子查询谓词
+                claimed = worker_tasks._claim_job(db, job_id, owner)
+                with lock:
+                    if claimed is not None:
+                        results.append(claimed.id)
+
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            futures = [executor.submit(try_claim, jid) for jid in job_ids]
+            for f in futures:
+                f.result(timeout=10)
+
+        assert len(results) == 2
+        with testing_session() as db:
+            active_count = db.scalar(
+                select(func.count(GenerationJob.id)).where(
+                    GenerationJob.project_id == project.id,
+                    GenerationJob.status.in_(worker_tasks.ACTIVE_STATUSES),
+                )
+            )
+            assert active_count == 2
+
+        engine.dispose()

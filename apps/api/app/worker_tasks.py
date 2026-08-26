@@ -5,6 +5,7 @@ import socket
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event, Lock, Thread
+from uuid import uuid4
 
 from fastapi import HTTPException
 from PIL import Image
@@ -46,6 +47,7 @@ from app.models import (
     SourceRevision,
     SourceSegment,
     StyleProfile,
+    WorkflowNodeRun,
     utcnow,
 )
 from app.services.ai_schemas import PageInspectionOutput, StoryParseOutput, StyleAnalysisOutput
@@ -87,7 +89,7 @@ class JobLeaseLostError(RuntimeError):
 
 
 def _worker_id() -> str:
-    return f"{socket.gethostname()}-{os.getpid()}-{Thread().ident or id(Thread())}"
+    return f"{socket.gethostname()}-{os.getpid()}-{uuid4().hex}"
 
 
 def _lease_duration() -> timedelta:
@@ -131,17 +133,21 @@ class _LeaseHeartbeat:
     def _run(self) -> None:
         while not self.stop.wait(self.interval):
             try:
+                now = utcnow()
                 with SessionLocal() as db:
                     updated = db.execute(
                         update(GenerationJob)
                         .where(
                             GenerationJob.id == self.job_id,
                             GenerationJob.lease_owner == self.owner,
+                            GenerationJob.lease_expires_at.is_not(None),
+                            GenerationJob.lease_expires_at > now,
+                            GenerationJob.status.in_(ACTIVE_STATUSES),
                             GenerationJob.status.not_in(
                                 {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED}
                             ),
                         )
-                        .values(lease_expires_at=utcnow() + self.duration)
+                        .values(lease_expires_at=now + self.duration)
                         .execution_options(synchronize_session=False)
                     )
                     db.commit()
@@ -171,42 +177,36 @@ def _claim_job(db, job_id: str, owner: str) -> GenerationJob | None:
     if not project or project.deleted_at is not None:
         return None
 
-    active = (
-        db.scalar(
-            select(func.count(GenerationJob.id)).where(
-                GenerationJob.project_id == project.id,
-                GenerationJob.id != job.id,
-                GenerationJob.status.in_(ACTIVE_STATUSES),
-                or_(
-                    GenerationJob.lease_expires_at.is_(None),
-                    GenerationJob.lease_expires_at > now,
-                ),
-            )
-        )
-        or 0
-    )
-    if active >= project.default_concurrency:
-        job.status = JobStatus.WAITING
-        job.error_code = "CONCURRENCY_LIMIT"
-        job.error_message = "等待项目并发名额"
-        job.lease_owner = None
-        job.lease_expires_at = None
-        db.commit()
-        return None
-
     expected_status = job.status
+    active_subquery = (
+        select(func.count(GenerationJob.id))
+        .where(
+            GenerationJob.project_id == project.id,
+            GenerationJob.id != job.id,
+            GenerationJob.status.in_(ACTIVE_STATUSES),
+            or_(
+                GenerationJob.lease_expires_at.is_(None),
+                GenerationJob.lease_expires_at > now,
+            ),
+        )
+        .scalar_subquery()
+    )
+
     claim_filter = [
         GenerationJob.id == job.id,
         GenerationJob.attempt_count < GenerationJob.max_attempts,
+        active_subquery < project.default_concurrency,
     ]
     if expired:
-        claim_filter.extend(
-            [
-                GenerationJob.status == expected_status,
-                GenerationJob.lease_owner == job.lease_owner,
-                GenerationJob.lease_expires_at <= now,
-            ]
-        )
+        claim_filter.append(GenerationJob.status == expected_status)
+        if job.lease_owner is not None:
+            claim_filter.append(GenerationJob.lease_owner == job.lease_owner)
+        else:
+            claim_filter.append(GenerationJob.lease_owner.is_(None))
+        if job.lease_expires_at is not None:
+            claim_filter.append(GenerationJob.lease_expires_at <= now)
+        else:
+            claim_filter.append(GenerationJob.lease_expires_at.is_(None))
     else:
         claim_filter.append(GenerationJob.status == expected_status)
     updated = db.execute(
@@ -226,8 +226,17 @@ def _claim_job(db, job_id: str, owner: str) -> GenerationJob | None:
     )
     if updated.rowcount != 1:
         db.rollback()
+        current = db.get(GenerationJob, job.id)
+        if current and current.status in CLAIMABLE_STATUSES:
+            current.status = JobStatus.WAITING
+            current.error_code = "CONCURRENCY_LIMIT"
+            current.error_message = "等待项目并发名额"
+            current.lease_owner = None
+            current.lease_expires_at = None
+            db.commit()
         return None
     db.commit()
+    db.expire_all()
     return db.get(GenerationJob, job.id)
 
 
@@ -1617,20 +1626,56 @@ def _mark_worker_failure(
     *,
     candidate_status: str = "FAILED",
 ) -> tuple[bool, str | None]:
-    """Persist failure output only while this worker still owns the lease."""
+    """Persist failure output only while this worker still owns the valid lease."""
+
+    now = utcnow()
+    updated = db.execute(
+        update(GenerationJob)
+        .where(
+            GenerationJob.id == job_id,
+            GenerationJob.lease_owner == owner,
+            GenerationJob.lease_expires_at.is_not(None),
+            GenerationJob.lease_expires_at > now,
+            GenerationJob.status.in_(ACTIVE_STATUSES),
+            GenerationJob.status != JobStatus.CANCELLED,
+        )
+        .values(
+            status=JobStatus.FAILED,
+            error_code=error_code,
+            error_message=error_message[:500],
+            finished_at=now,
+            lease_owner=None,
+            lease_expires_at=None,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if updated.rowcount != 1:
+        return False, None
 
     job = db.get(GenerationJob, job_id)
-    if not job or job.status == JobStatus.CANCELLED or job.lease_owner != owner:
-        return False, None
-    from app.services.job_service import mark_job_failed
+    if not job:
+        db.commit()
+        return True, None
 
-    workflow_run_id = mark_job_failed(
-        db,
-        job,
-        error_code,
-        error_message,
-        candidate_status=candidate_status,
-    )
+    page_candidate = db.get(PageCandidate, job.target_id)
+    if page_candidate:
+        page_candidate.status = candidate_status
+    asset_candidate = db.get(AssetCandidate, job.target_id)
+    if asset_candidate:
+        asset_candidate.status = "FAILED"
+    style = db.get(StyleProfile, job.target_id) if job.target_type == "STYLE" else None
+    if style:
+        style.status = "DRAFT"
+
+    node_run = db.scalar(select(WorkflowNodeRun).where(WorkflowNodeRun.job_id == job.id))
+    workflow_run_id = (job.request_parameters or {}).get("workflow_run_id")
+    if node_run:
+        workflow_run_id = workflow_run_id or node_run.workflow_run_id
+        if node_run.status not in {"COMPLETED", "FAILED", "CANCELLED"}:
+            node_run.status = "FAILED"
+            node_run.error_code = error_code
+            node_run.error_message = error_message[:500]
+            node_run.finished_at = now
     db.commit()
     return True, workflow_run_id
 

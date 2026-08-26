@@ -2,7 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from threading import Event, Lock
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -204,13 +204,13 @@ def _execute_locally(job_id: str) -> None:
 
             with SessionLocal() as db:
                 job = db.get(GenerationJob, job_id)
-                if (
-                    not job
-                    or job.status != JobStatus.WAITING
-                    or job.error_code != "CONCURRENCY_LIMIT"
-                ):
+                if not job or job.status in {
+                    JobStatus.COMPLETED,
+                    JobStatus.CANCELLED,
+                    JobStatus.FAILED,
+                }:
                     return
-            Event().wait(0.25)
+            Event().wait(0.1)
     finally:
         with LOCAL_SUBMISSION_LOCK:
             LOCAL_SUBMITTED_JOB_IDS.discard(job_id)
@@ -237,25 +237,80 @@ def recover_pending_jobs(db: Session) -> int:
     )
     workflow_run_ids: set[str] = set()
     for job in expired_jobs:
-        job.lease_owner = None
-        job.lease_expires_at = None
-        if job.attempt_count >= job.max_attempts:
-            workflow_run_id = mark_job_failed(
-                db,
-                job,
-                "LEASE_EXPIRED",
-                "执行器租约已过期，且已达到最大尝试次数",
-            )
-            if workflow_run_id:
-                workflow_run_ids.add(workflow_run_id)
+        observed_status = job.status
+        observed_owner = job.lease_owner
+
+        base_filter = [
+            GenerationJob.id == job.id,
+            GenerationJob.status == observed_status,
+        ]
+        if observed_owner is not None:
+            base_filter.append(GenerationJob.lease_owner == observed_owner)
         else:
-            job.status = JobStatus.WAITING
-            job.error_code = "LEASE_EXPIRED"
-            job.error_message = "执行器已退出，任务等待重新执行"
-            job.started_at = None
-            job.scheduled_at = now
+            base_filter.append(GenerationJob.lease_owner.is_(None))
+
+        base_filter.append(
+            or_(
+                GenerationJob.lease_expires_at.is_(None),
+                GenerationJob.lease_expires_at <= now,
+            )
+        )
+
+        if job.attempt_count >= job.max_attempts:
+            updated = db.execute(
+                update(GenerationJob)
+                .where(*base_filter)
+                .values(
+                    status=JobStatus.FAILED,
+                    error_code="LEASE_EXPIRED",
+                    error_message="执行器租约已过期，且已达到最大尝试次数",
+                    finished_at=now,
+                    lease_owner=None,
+                    lease_expires_at=None,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if updated.rowcount == 1:
+                page_candidate = db.get(PageCandidate, job.target_id)
+                if page_candidate:
+                    page_candidate.status = "FAILED"
+                asset_candidate = db.get(AssetCandidate, job.target_id)
+                if asset_candidate:
+                    asset_candidate.status = "FAILED"
+                style = db.get(StyleProfile, job.target_id) if job.target_type == "STYLE" else None
+                if style:
+                    style.status = "DRAFT"
+                node_run = db.scalar(
+                    select(WorkflowNodeRun).where(WorkflowNodeRun.job_id == job.id)
+                )
+                workflow_run_id = (job.request_parameters or {}).get("workflow_run_id")
+                if node_run:
+                    workflow_run_id = workflow_run_id or node_run.workflow_run_id
+                    if node_run.status not in {"COMPLETED", "FAILED", "CANCELLED"}:
+                        node_run.status = "FAILED"
+                        node_run.error_code = "LEASE_EXPIRED"
+                        node_run.error_message = "执行器租约已过期，且已达到最大尝试次数"
+                        node_run.finished_at = now
+                if workflow_run_id:
+                    workflow_run_ids.add(workflow_run_id)
+        else:
+            db.execute(
+                update(GenerationJob)
+                .where(*base_filter)
+                .values(
+                    status=JobStatus.WAITING,
+                    error_code="LEASE_EXPIRED",
+                    error_message="执行器已退出，任务等待重新执行",
+                    started_at=None,
+                    scheduled_at=now,
+                    lease_owner=None,
+                    lease_expires_at=None,
+                )
+                .execution_options(synchronize_session=False)
+            )
     if expired_jobs:
         db.commit()
+        db.expire_all()
     for workflow_run_id in workflow_run_ids:
         from app.services.workflow_engine import reconcile_run
 
