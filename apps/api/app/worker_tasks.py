@@ -1,11 +1,14 @@
 import hashlib
 import json
+import os
+import socket
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from threading import Lock
+from threading import Event, Lock, Thread
 
 from fastapi import HTTPException
 from PIL import Image
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.config import get_settings
@@ -66,6 +69,7 @@ ACTIVE_STATUSES = {
     JobStatus.CONSISTENCY_CHECKING,
     JobStatus.REPAIRING,
 }
+CLAIMABLE_STATUSES = {JobStatus.WAITING, JobStatus.QUEUED}
 EXECUTION_RESERVATION_LOCK = Lock()
 STORY_PARSE_CHUNK_MAX_CHARS = 800
 
@@ -78,10 +82,166 @@ class JobCancelledError(RuntimeError):
     """Stop persisting provider output after a concurrent cancellation."""
 
 
+class JobLeaseLostError(RuntimeError):
+    """Stop persisting provider output when another worker reclaimed the lease."""
+
+
+def _worker_id() -> str:
+    return f"{socket.gethostname()}-{os.getpid()}-{Thread().ident or id(Thread())}"
+
+
+def _lease_duration() -> timedelta:
+    return timedelta(seconds=get_settings().job_lease_seconds)
+
+
+def _lease_is_expired(expires_at: datetime | None) -> bool:
+    if expires_at is None:
+        return False
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    return expires_at <= utcnow()
+
+
+class _LeaseHeartbeat:
+    """Refresh a job lease without sharing the worker's SQLAlchemy session."""
+
+    def __init__(self, job_id: str, owner: str):
+        self.job_id = job_id
+        self.owner = owner
+        self.duration = _lease_duration()
+        self.interval = max(5.0, min(30.0, self.duration.total_seconds() / 3))
+        self.stop = Event()
+        self.lost = False
+        self.thread: Thread | None = None
+
+    def __enter__(self):
+        self.thread = Thread(
+            target=self._run,
+            name=f"mangaflow-lease-{self.job_id[:8]}",
+            daemon=True,
+        )
+        self.thread.start()
+        return self
+
+    def __exit__(self, _exc_type, _exc_value, _traceback):
+        self.stop.set()
+        if self.thread:
+            self.thread.join(timeout=max(1.0, self.interval))
+
+    def _run(self) -> None:
+        while not self.stop.wait(self.interval):
+            try:
+                with SessionLocal() as db:
+                    updated = db.execute(
+                        update(GenerationJob)
+                        .where(
+                            GenerationJob.id == self.job_id,
+                            GenerationJob.lease_owner == self.owner,
+                            GenerationJob.status.not_in(
+                                {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED}
+                            ),
+                        )
+                        .values(lease_expires_at=utcnow() + self.duration)
+                        .execution_options(synchronize_session=False)
+                    )
+                    db.commit()
+                    if updated.rowcount != 1:
+                        self.lost = True
+                        return
+            except Exception:
+                # A transient heartbeat failure should not turn a healthy
+                # provider call into a second paid request.  The lease itself
+                # remains the source of truth and will be reclaimed if it
+                # eventually expires.
+                if self.stop.wait(1.0):
+                    return
+
+
+def _claim_job(db, job_id: str, owner: str) -> GenerationJob | None:
+    """Atomically claim one queued/retryable job for this worker."""
+
+    job = db.get(GenerationJob, job_id)
+    if not job or job.status in {JobStatus.COMPLETED, JobStatus.CANCELLED}:
+        return None
+    now = utcnow()
+    expired = job.status in ACTIVE_STATUSES and _lease_is_expired(job.lease_expires_at)
+    if job.status not in CLAIMABLE_STATUSES and not expired:
+        return None
+    project = db.get(Project, job.project_id)
+    if not project or project.deleted_at is not None:
+        return None
+
+    active = (
+        db.scalar(
+            select(func.count(GenerationJob.id)).where(
+                GenerationJob.project_id == project.id,
+                GenerationJob.id != job.id,
+                GenerationJob.status.in_(ACTIVE_STATUSES),
+                or_(
+                    GenerationJob.lease_expires_at.is_(None),
+                    GenerationJob.lease_expires_at > now,
+                ),
+            )
+        )
+        or 0
+    )
+    if active >= project.default_concurrency:
+        job.status = JobStatus.WAITING
+        job.error_code = "CONCURRENCY_LIMIT"
+        job.error_message = "等待项目并发名额"
+        job.lease_owner = None
+        job.lease_expires_at = None
+        db.commit()
+        return None
+
+    expected_status = job.status
+    claim_filter = [
+        GenerationJob.id == job.id,
+        GenerationJob.attempt_count < GenerationJob.max_attempts,
+    ]
+    if expired:
+        claim_filter.extend(
+            [
+                GenerationJob.status == expected_status,
+                GenerationJob.lease_owner == job.lease_owner,
+                GenerationJob.lease_expires_at <= now,
+            ]
+        )
+    else:
+        claim_filter.append(GenerationJob.status == expected_status)
+    updated = db.execute(
+        update(GenerationJob)
+        .where(*claim_filter)
+        .values(
+            status=JobStatus.PREPARING,
+            progress=5,
+            attempt_count=GenerationJob.attempt_count + 1,
+            started_at=func.coalesce(GenerationJob.started_at, now),
+            error_code=None,
+            error_message=None,
+            lease_owner=owner,
+            lease_expires_at=now + _lease_duration(),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if updated.rowcount != 1:
+        db.rollback()
+        return None
+    db.commit()
+    return db.get(GenerationJob, job.id)
+
+
 def _ensure_job_not_cancelled(db, job: GenerationJob) -> None:
-    db.refresh(job, attribute_names=["status", "cancelled_at"])
+    db.refresh(job, attribute_names=["status", "cancelled_at", "lease_owner", "lease_expires_at"])
     if job.status == JobStatus.CANCELLED:
         raise JobCancelledError("任务已取消，模型返回结果不再写入")
+    owner = db.info.get("job_lease_owner")
+    if owner and (
+        job.lease_owner != owner
+        or job.lease_expires_at is None
+        or _lease_is_expired(job.lease_expires_at)
+    ):
+        raise JobLeaseLostError("任务租约已被其他执行器接管")
 
 
 def _normalize_name(value: str) -> str:
@@ -1448,13 +1608,41 @@ regions 使用 0 到 1 的归一化 x/y/width/height。"""
     job.progress = 85
 
 
+def _mark_worker_failure(
+    db,
+    job_id: str,
+    owner: str,
+    error_code: str,
+    error_message: str,
+    *,
+    candidate_status: str = "FAILED",
+) -> tuple[bool, str | None]:
+    """Persist failure output only while this worker still owns the lease."""
+
+    job = db.get(GenerationJob, job_id)
+    if not job or job.status == JobStatus.CANCELLED or job.lease_owner != owner:
+        return False, None
+    from app.services.job_service import mark_job_failed
+
+    workflow_run_id = mark_job_failed(
+        db,
+        job,
+        error_code,
+        error_message,
+        candidate_status=candidate_status,
+    )
+    db.commit()
+    return True, workflow_run_id
+
+
 def execute_job(job_id: str) -> None:
     db = SessionLocal()
-    job = db.get(GenerationJob, job_id)
-    if not job or job.status == JobStatus.CANCELLED:
-        db.close()
-        return
+    owner = _worker_id()
+    db.info["job_lease_owner"] = owner
     try:
+        job = db.get(GenerationJob, job_id)
+        if not job or job.status == JobStatus.CANCELLED:
+            return
         project = db.get(Project, job.project_id)
         if not project or project.deleted_at is not None:
             from app.services.job_service import mark_job_cancelled
@@ -1463,83 +1651,81 @@ def execute_job(job_id: str) -> None:
             db.commit()
             return
         with EXECUTION_RESERVATION_LOCK:
-            active = (
-                db.scalar(
-                    select(func.count(GenerationJob.id)).where(
-                        GenerationJob.project_id == job.project_id,
-                        GenerationJob.status.in_(ACTIVE_STATUSES),
-                        GenerationJob.id != job.id,
-                    )
-                )
-                or 0
-            )
-            if project and active >= project.default_concurrency:
-                job.status = JobStatus.WAITING
-                job.error_code = "CONCURRENCY_LIMIT"
-                job.error_message = "等待项目并发名额"
-                db.commit()
-                return
-            job.status = JobStatus.PREPARING
-            job.progress = 5
-            job.attempt_count += 1
-            job.started_at = job.started_at or utcnow()
-            db.commit()
-        if job.job_type in {"PAGE_GENERATE", "PAGE_REPAIR", "PAGE_UPSCALE"}:
-            _run_page_generate(db, job)
-        elif job.job_type == "ASSET_GENERATE":
-            _run_asset_generate(db, job)
-        elif job.job_type == "SOURCE_PARSE":
-            _run_story_parse(db, job)
-        elif job.job_type == "STYLE_ANALYZE":
-            _run_style_analyze(db, job)
-        elif job.job_type == "PAGE_INSPECT":
-            _run_inspection(db, job)
-        elif job.job_type == "WORKFLOW_NODE":
-            from app.services.workflow_engine import execute_workflow_node
+            job = _claim_job(db, job_id, owner)
+        if not job:
+            return
+        with _LeaseHeartbeat(job.id, owner) as heartbeat:
+            if job.job_type in {"PAGE_GENERATE", "PAGE_REPAIR", "PAGE_UPSCALE"}:
+                _run_page_generate(db, job)
+            elif job.job_type == "ASSET_GENERATE":
+                _run_asset_generate(db, job)
+            elif job.job_type == "SOURCE_PARSE":
+                _run_story_parse(db, job)
+            elif job.job_type == "STYLE_ANALYZE":
+                _run_style_analyze(db, job)
+            elif job.job_type == "PAGE_INSPECT":
+                _run_inspection(db, job)
+            elif job.job_type == "WORKFLOW_NODE":
+                from app.services.workflow_engine import execute_workflow_node
 
-            execute_workflow_node(db, job)
-        else:
-            raise RuntimeError(f"未知任务类型：{job.job_type}")
-        _ensure_job_not_cancelled(db, job)
-        workflow_run_id = job.request_parameters.get("workflow_run_id")
-        db.expire(
-            job,
-            attribute_names=[
-                "status",
-                "progress",
-                "finished_at",
-                "error_code",
-                "error_message",
-            ],
-        )
-        with db.no_autoflush:
-            completed = db.execute(
-                update(GenerationJob)
-                .where(
-                    GenerationJob.id == job.id,
-                    GenerationJob.status != JobStatus.CANCELLED,
-                )
-                .values(
-                    status=JobStatus.COMPLETED,
-                    progress=100,
-                    finished_at=utcnow(),
-                    error_code=None,
-                    error_message=None,
-                )
-                .execution_options(synchronize_session=False)
+                execute_workflow_node(db, job)
+            else:
+                raise RuntimeError(f"未知任务类型：{job.job_type}")
+            _ensure_job_not_cancelled(db, job)
+            if heartbeat.lost:
+                raise JobLeaseLostError("任务租约已被其他执行器接管")
+            workflow_run_id = job.request_parameters.get("workflow_run_id")
+            db.expire(
+                job,
+                attribute_names=[
+                    "status",
+                    "progress",
+                    "finished_at",
+                    "error_code",
+                    "error_message",
+                    "lease_owner",
+                    "lease_expires_at",
+                ],
             )
-        if completed.rowcount != 1:
-            raise JobCancelledError("任务已取消，完成状态不再写入")
-        db.commit()
+            with db.no_autoflush:
+                completed = db.execute(
+                    update(GenerationJob)
+                    .where(
+                        GenerationJob.id == job.id,
+                        GenerationJob.lease_owner == owner,
+                        GenerationJob.status != JobStatus.CANCELLED,
+                    )
+                    .values(
+                        status=JobStatus.COMPLETED,
+                        progress=100,
+                        finished_at=utcnow(),
+                        error_code=None,
+                        error_message=None,
+                        lease_owner=None,
+                        lease_expires_at=None,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+            if completed.rowcount != 1:
+                current = db.get(GenerationJob, job.id)
+                if current and current.status == JobStatus.CANCELLED:
+                    raise JobCancelledError("任务已取消，完成状态不再写入")
+                raise JobLeaseLostError("任务租约已被其他执行器接管")
+            db.commit()
         if workflow_run_id:
             from app.services.workflow_engine import reconcile_run
 
             reconcile_run(db, workflow_run_id)
+    except JobLeaseLostError:
+        db.rollback()
+        return
     except JobCancelledError:
         db.rollback()
         db.expire_all()
         job = db.get(GenerationJob, job_id)
-        if job and job.status != JobStatus.COMPLETED:
+        if job and job.status != JobStatus.COMPLETED and (
+            job.status == JobStatus.CANCELLED or job.lease_owner == owner
+        ):
             from app.services.job_service import mark_job_cancelled
 
             mark_job_cancelled(db, job)
@@ -1547,63 +1733,52 @@ def execute_job(job_id: str) -> None:
         return
     except StaleStoryboardVersionError as error:
         db.rollback()
-        job = db.get(GenerationJob, job_id)
-        job.status = JobStatus.FAILED
-        job.error_code = "STALE_STORYBOARD_VERSION"
-        job.error_message = str(error)
-        job.finished_at = utcnow()
-        candidate = db.get(PageCandidate, job.target_id)
-        if candidate:
-            candidate.status = "STALE"
-        db.commit()
-        if job.request_parameters.get("workflow_run_id"):
+        marked, workflow_run_id = _mark_worker_failure(
+            db,
+            job_id,
+            owner,
+            "STALE_STORYBOARD_VERSION",
+            str(error),
+            candidate_status="STALE",
+        )
+        if not marked:
+            return
+        if workflow_run_id:
             from app.services.workflow_engine import reconcile_run
 
-            reconcile_run(db, job.request_parameters["workflow_run_id"])
+            reconcile_run(db, workflow_run_id)
         raise
     except ProviderAdapterError as error:
         db.rollback()
-        job = db.get(GenerationJob, job_id)
-        job.status = JobStatus.FAILED
-        job.error_code = error.code
-        job.error_message = error.user_message
-        job.finished_at = utcnow()
-        candidate = db.get(PageCandidate, job.target_id)
-        if candidate:
-            candidate.status = "FAILED"
-        asset_candidate = db.get(AssetCandidate, job.target_id)
-        if asset_candidate:
-            asset_candidate.status = "FAILED"
-        style = db.get(StyleProfile, job.target_id) if job.target_type == "STYLE" else None
-        if style:
-            style.status = "DRAFT"
-        db.commit()
-        if job.request_parameters.get("workflow_run_id"):
+        marked, workflow_run_id = _mark_worker_failure(
+            db,
+            job_id,
+            owner,
+            error.code,
+            error.user_message,
+        )
+        if not marked:
+            return
+        if workflow_run_id:
             from app.services.workflow_engine import reconcile_run
 
-            reconcile_run(db, job.request_parameters["workflow_run_id"])
+            reconcile_run(db, workflow_run_id)
         raise
     except Exception as error:
         db.rollback()
-        job = db.get(GenerationJob, job_id)
-        job.status = JobStatus.FAILED
-        job.error_code = "WORKER_ERROR"
-        job.error_message = str(error)[:500]
-        job.finished_at = utcnow()
-        candidate = db.get(PageCandidate, job.target_id)
-        if candidate:
-            candidate.status = "FAILED"
-        asset_candidate = db.get(AssetCandidate, job.target_id)
-        if asset_candidate:
-            asset_candidate.status = "FAILED"
-        style = db.get(StyleProfile, job.target_id) if job.target_type == "STYLE" else None
-        if style:
-            style.status = "DRAFT"
-        db.commit()
-        if job.request_parameters.get("workflow_run_id"):
+        marked, workflow_run_id = _mark_worker_failure(
+            db,
+            job_id,
+            owner,
+            "WORKER_ERROR",
+            str(error),
+        )
+        if not marked:
+            return
+        if workflow_run_id:
             from app.services.workflow_engine import reconcile_run
 
-            reconcile_run(db, job.request_parameters["workflow_run_id"])
+            reconcile_run(db, workflow_run_id)
         raise
     finally:
         db.close()

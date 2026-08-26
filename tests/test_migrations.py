@@ -32,6 +32,9 @@ def test_empty_database_upgrade_downgrade_and_upgrade(tmp_path, monkeypatch):
     assert "archived_at" in {
         column["name"] for column in schema.get_columns("generation_jobs")
     }
+    assert "ix_generation_jobs_status_lease" in {
+        index["name"] for index in schema.get_indexes("generation_jobs")
+    }
     assert {"character_presence", "props"}.issubset(
         {column["name"] for column in schema.get_columns("panels")}
     )
@@ -41,6 +44,9 @@ def test_empty_database_upgrade_downgrade_and_upgrade(tmp_path, monkeypatch):
     command.upgrade(config, "head")
     engine = create_engine(database_url)
     assert "provider_health" in inspect(engine).get_table_names()
+    assert "ix_generation_jobs_status_lease" in {
+        index["name"] for index in schema.get_indexes("generation_jobs")
+    }
     engine.dispose()
 
 
@@ -200,4 +206,56 @@ def test_integrity_migration_cleans_orphans_and_repairs_page_references(
     assert {"character_presence", "props"}.issubset(
         {column["name"] for column in schema.get_columns("panels")}
     )
+    engine.dispose()
+
+
+def test_assert_database_is_current_fails_on_unmigrated_database(tmp_path, monkeypatch):
+    import pytest
+    from app import main
+
+    database_path = tmp_path / "unmigrated.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    monkeypatch.setattr(get_settings(), "database_url", database_url)
+    engine = create_engine(database_url)
+    monkeypatch.setattr(main, "engine", engine)
+
+    with pytest.raises(RuntimeError, match="数据库迁移版本不匹配") as exc_info:
+        main._assert_database_is_current()
+    assert "未初始化" in str(exc_info.value)
+    engine.dispose()
+
+
+def test_assert_database_is_current_fails_on_outdated_database(tmp_path, monkeypatch):
+    import pytest
+    from app import main
+
+    database_path = tmp_path / "outdated.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    monkeypatch.setattr(get_settings(), "database_url", database_url)
+    config = Config("apps/api/alembic.ini")
+    command.upgrade(config, "20260717_14")
+
+    engine = create_engine(database_url)
+    monkeypatch.setattr(main, "engine", engine)
+
+    with pytest.raises(RuntimeError, match="数据库迁移版本不匹配") as exc_info:
+        main._assert_database_is_current()
+    assert "20260717_14" in str(exc_info.value)
+    engine.dispose()
+
+
+def test_assert_database_is_current_succeeds_on_head(tmp_path, monkeypatch):
+    from app import main
+
+    database_path = tmp_path / "current.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    monkeypatch.setattr(get_settings(), "database_url", database_url)
+    config = Config("apps/api/alembic.ini")
+    command.upgrade(config, "head")
+
+    engine = create_engine(database_url)
+    monkeypatch.setattr(main, "engine", engine)
+
+    # Should not raise
+    main._assert_database_is_current()
     engine.dispose()

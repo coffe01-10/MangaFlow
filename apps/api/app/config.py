@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     queue_name: str = "mangaflow"
     queue_enabled: bool = True
     job_timeout_seconds: int = Field(default=900, ge=30, le=3600)
+    job_lease_seconds: int = Field(default=120, ge=30, le=3600)
     max_auto_repairs: int = Field(default=3, ge=0, le=10)
 
     max_upload_bytes: int = Field(default=20 * 1024 * 1024, ge=1)

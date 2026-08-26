@@ -1,6 +1,6 @@
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Lock
@@ -24,8 +24,13 @@ from app.models import (
     PageCandidate,
     Project,
     StyleProfile,
+    WorkflowDefinition,
+    WorkflowNodeRun,
+    WorkflowRun,
+    WorkflowVersion,
 )
 from app.services import job_service
+from app.services.workflow_engine import default_graph
 
 
 def test_local_worker_executes_eight_jobs_with_project_concurrency(monkeypatch):
@@ -85,6 +90,55 @@ def test_local_worker_executes_eight_jobs_with_project_concurrency(monkeypatch):
             assert all(job.status == JobStatus.COMPLETED for job in completed)
             assert all(job.attempt_count == 1 for job in completed)
         assert peak == 2
+        engine.dispose()
+
+
+def test_duplicate_worker_claim_executes_a_job_only_once(monkeypatch):
+    with TemporaryDirectory() as directory:
+        engine = create_engine(
+            f"sqlite:///{Path(directory) / 'duplicate.db'}",
+            connect_args={"check_same_thread": False},
+        )
+        testing_session = sessionmaker(
+            bind=engine, autoflush=False, expire_on_commit=False
+        )
+        Base.metadata.create_all(engine)
+        with testing_session() as db:
+            project = Project(name="重复执行", default_concurrency=2)
+            db.add(project)
+            db.flush()
+            job = GenerationJob(
+                project_id=project.id,
+                target_type="CHAPTER",
+                target_id="duplicate-target",
+                job_type="SOURCE_PARSE",
+                status=JobStatus.QUEUED,
+            )
+            db.add(job)
+            db.commit()
+            job_id = job.id
+
+        calls = 0
+        lock = Lock()
+
+        def fake_run(_db, _job):
+            nonlocal calls
+            with lock:
+                calls += 1
+            time.sleep(0.08)
+
+        monkeypatch.setattr(worker_tasks, "SessionLocal", testing_session)
+        monkeypatch.setattr(worker_tasks, "_run_story_parse", fake_run)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(worker_tasks.execute_job, job_id) for _ in range(2)]
+            for future in futures:
+                future.result(timeout=10)
+
+        with testing_session() as db:
+            persisted = db.get(GenerationJob, job_id)
+            assert persisted.status == JobStatus.COMPLETED
+            assert persisted.attempt_count == 1
+        assert calls == 1
         engine.dispose()
 
 
@@ -290,6 +344,46 @@ def test_cancelling_generation_resets_candidate_and_page(db_session):
     assert page.status == PageStatus.STORYBOARDED
 
 
+def test_create_job_reuses_the_winner_of_an_idempotency_race(db_session, monkeypatch):
+    project = Project(name="幂等竞态")
+    db_session.add(project)
+    db_session.flush()
+    winner = GenerationJob(
+        project_id=project.id,
+        target_type="CHAPTER",
+        target_id="winner",
+        job_type="SOURCE_PARSE",
+        status=JobStatus.WAITING,
+        idempotency_key="race-key",
+    )
+    db_session.add(winner)
+    db_session.commit()
+
+    original_scalar = db_session.scalar
+    scalar_calls = 0
+
+    def hide_the_first_lookup(statement, *args, **kwargs):
+        nonlocal scalar_calls
+        scalar_calls += 1
+        if scalar_calls == 1:
+            return None
+        return original_scalar(statement, *args, **kwargs)
+
+    monkeypatch.setattr(db_session, "scalar", hide_the_first_lookup)
+    result = job_service.create_job(
+        db_session,
+        project_id=project.id,
+        target_type="CHAPTER",
+        target_id="loser",
+        job_type="SOURCE_PARSE",
+        idempotency_key="race-key",
+    )
+
+    assert result.id == winner.id
+    assert scalar_calls >= 2
+    db_session.rollback()
+
+
 def _waiting_job(db_session, name: str = "队列模式") -> GenerationJob:
     project = Project(name=name)
     db_session.add(project)
@@ -392,3 +486,172 @@ def test_startup_recovery_requeues_waiting_jobs_in_local_mode(db_session, monkey
     assert submitted == [job.id]
     db_session.refresh(job)
     assert job.status == JobStatus.QUEUED
+
+
+def test_startup_recovery_reclaims_an_expired_worker_lease(db_session, monkeypatch):
+    _set_queue_mode(db_session, "LOCAL")
+    project = Project(name="租约恢复")
+    db_session.add(project)
+    db_session.flush()
+    job = GenerationJob(
+        project_id=project.id,
+        target_type="CHAPTER",
+        target_id="lease-target",
+        job_type="SOURCE_PARSE",
+        status=JobStatus.GENERATING,
+        attempt_count=1,
+        lease_owner="dead-worker",
+        lease_expires_at=datetime.now(UTC) - timedelta(minutes=1),
+    )
+    db_session.add(job)
+    db_session.commit()
+    submitted: list[str] = []
+    monkeypatch.setattr(
+        job_service, "get_settings", lambda: Settings(environment="development")
+    )
+    monkeypatch.setattr(
+        job_service, "_submit_local", lambda job_id: submitted.append(job_id)
+    )
+
+    recovered = job_service.recover_pending_jobs(db_session)
+
+    assert recovered == 1
+    assert submitted == [job.id]
+    db_session.refresh(job)
+    assert job.status == JobStatus.QUEUED
+    assert job.lease_owner is None
+    assert job.lease_expires_at is None
+
+
+def test_startup_recovery_reclaims_legacy_active_job_without_lease(db_session, monkeypatch):
+    _set_queue_mode(db_session, "LOCAL")
+    project = Project(name="旧租约恢复")
+    db_session.add(project)
+    db_session.flush()
+    job = GenerationJob(
+        project_id=project.id,
+        target_type="CHAPTER",
+        target_id="legacy-lease-target",
+        job_type="SOURCE_PARSE",
+        status=JobStatus.GENERATING,
+        attempt_count=1,
+        lease_owner="legacy-worker",
+        lease_expires_at=None,
+    )
+    db_session.add(job)
+    db_session.commit()
+    submitted: list[str] = []
+    monkeypatch.setattr(
+        job_service, "get_settings", lambda: Settings(environment="development")
+    )
+    monkeypatch.setattr(
+        job_service, "_submit_local", lambda job_id: submitted.append(job_id)
+    )
+
+    recovered = job_service.recover_pending_jobs(db_session)
+
+    assert recovered == 1
+    assert submitted == [job.id]
+    db_session.refresh(job)
+    assert job.status == JobStatus.QUEUED
+    assert job.lease_owner is None
+
+
+def test_startup_recovery_marks_exhausted_target_and_workflow_failed(db_session, monkeypatch):
+    _set_queue_mode(db_session, "LOCAL")
+    project = Project(name="耗尽任务清理")
+    db_session.add(project)
+    db_session.flush()
+    chapter = Chapter(project_id=project.id, title="第一章", ordinal=1)
+    db_session.add(chapter)
+    db_session.flush()
+    page = MangaPage(
+        chapter_id=chapter.id,
+        page_number=1,
+        status=PageStatus.DRAFT_GENERATING,
+    )
+    db_session.add(page)
+    db_session.flush()
+    batch = GenerationBatch(
+        project_id=project.id,
+        chapter_id=chapter.id,
+        page_id=page.id,
+        ordinal=1,
+    )
+    db_session.add(batch)
+    db_session.flush()
+    candidate = PageCandidate(
+        batch_id=batch.id,
+        page_id=page.id,
+        ordinal=1,
+        model_alias="image.nano_banana_2",
+        resolution=Resolution.DRAFT_1K,
+        status="GENERATING",
+    )
+    db_session.add(candidate)
+    db_session.flush()
+    workflow = WorkflowDefinition(
+        project_id=project.id,
+        name="耗尽任务工作流",
+        draft_graph=default_graph(),
+    )
+    db_session.add(workflow)
+    db_session.flush()
+    version = WorkflowVersion(
+        workflow_id=workflow.id,
+        revision=1,
+        graph=default_graph(),
+        graph_checksum="w" * 64,
+        validation_report={"valid": True},
+    )
+    db_session.add(version)
+    db_session.flush()
+    run = WorkflowRun(
+        workflow_id=workflow.id,
+        workflow_version_id=version.id,
+        project_id=project.id,
+        scope_type="PAGE",
+        scope_id=page.id,
+        status="RUNNING",
+    )
+    db_session.add(run)
+    db_session.flush()
+    node_run = WorkflowNodeRun(
+        workflow_run_id=run.id,
+        node_id="generate",
+        node_type="generator.page",
+        status="RUNNING",
+    )
+    db_session.add(node_run)
+    db_session.flush()
+    job = GenerationJob(
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=candidate.id,
+        job_type="PAGE_GENERATE",
+        status=JobStatus.GENERATING,
+        attempt_count=3,
+        max_attempts=3,
+        lease_owner="dead-worker",
+        lease_expires_at=datetime.now(UTC) - timedelta(minutes=1),
+        request_parameters={"workflow_run_id": run.id},
+    )
+    db_session.add(job)
+    db_session.flush()
+    candidate.job_id = job.id
+    node_run.job_id = job.id
+    db_session.commit()
+
+    monkeypatch.setattr(
+        job_service, "get_settings", lambda: Settings(environment="development")
+    )
+    monkeypatch.setattr(job_service, "_submit_local", lambda _job_id: None)
+
+    recovered = job_service.recover_pending_jobs(db_session)
+
+    assert recovered == 0
+    db_session.expire_all()
+    assert db_session.get(GenerationJob, job.id).status == JobStatus.FAILED
+    assert db_session.get(PageCandidate, candidate.id).status == "FAILED"
+    assert db_session.get(WorkflowNodeRun, node_run.id).status == "FAILED"
+    assert db_session.get(WorkflowRun, run.id).status == "FAILED"
