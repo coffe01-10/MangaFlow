@@ -1645,10 +1645,21 @@ def _mark_worker_failure(
     error_message: str,
     *,
     candidate_status: str = "FAILED",
-) -> tuple[bool, str | None]:
-    """Persist failure output only while this worker still owns the valid lease."""
+    retryable: bool = False,
+) -> tuple[bool, str | None, bool]:
+    """Persist failure output or reset for retry while worker holds valid lease.
+
+    Returns (updated, workflow_run_id, is_final_failure).
+    """
 
     now = utcnow()
+    job = db.get(GenerationJob, job_id)
+    if not job:
+        return False, None, False
+
+    is_retryable = bool(retryable and (job.attempt_count < job.max_attempts))
+    target_status = JobStatus.WAITING if is_retryable else JobStatus.FAILED
+
     updated = db.execute(
         update(GenerationJob)
         .where(
@@ -1660,44 +1671,43 @@ def _mark_worker_failure(
             GenerationJob.status != JobStatus.CANCELLED,
         )
         .values(
-            status=JobStatus.FAILED,
+            status=target_status,
             error_code=error_code,
             error_message=error_message[:500],
-            finished_at=now,
+            finished_at=None if is_retryable else now,
             lease_owner=None,
             lease_expires_at=None,
         )
         .execution_options(synchronize_session=False)
     )
     if updated.rowcount != 1:
-        return False, None
-
-    job = db.get(GenerationJob, job_id)
-    if not job:
-        db.commit()
-        return True, None
-
-    page_candidate = db.get(PageCandidate, job.target_id)
-    if page_candidate:
-        page_candidate.status = candidate_status
-    asset_candidate = db.get(AssetCandidate, job.target_id)
-    if asset_candidate:
-        asset_candidate.status = "FAILED"
-    style = db.get(StyleProfile, job.target_id) if job.target_type == "STYLE" else None
-    if style:
-        style.status = "DRAFT"
+        return False, None, False
 
     node_run = db.scalar(select(WorkflowNodeRun).where(WorkflowNodeRun.job_id == job.id))
     workflow_run_id = (job.request_parameters or {}).get("workflow_run_id")
     if node_run:
         workflow_run_id = workflow_run_id or node_run.workflow_run_id
-        if node_run.status not in {"COMPLETED", "FAILED", "CANCELLED"}:
+
+    if not is_retryable:
+        page_candidate = db.get(PageCandidate, job.target_id)
+        if page_candidate:
+            page_candidate.status = candidate_status
+        asset_candidate = db.get(AssetCandidate, job.target_id)
+        if asset_candidate:
+            asset_candidate.status = "FAILED"
+        style = db.get(StyleProfile, job.target_id) if job.target_type == "STYLE" else None
+        if style:
+            style.status = "DRAFT"
+
+        if node_run and node_run.status not in {"COMPLETED", "FAILED", "CANCELLED"}:
             node_run.status = "FAILED"
             node_run.error_code = error_code
             node_run.error_message = error_message[:500]
             node_run.finished_at = now
+
     db.commit()
-    return True, workflow_run_id
+    db.expire_all()
+    return True, workflow_run_id, not is_retryable
 
 
 def execute_job(job_id: str) -> None:
@@ -1798,49 +1808,53 @@ def execute_job(job_id: str) -> None:
         return
     except StaleStoryboardVersionError as error:
         db.rollback()
-        marked, workflow_run_id = _mark_worker_failure(
+        marked, workflow_run_id, is_final = _mark_worker_failure(
             db,
             job_id,
             owner,
             "STALE_STORYBOARD_VERSION",
             str(error),
             candidate_status="STALE",
+            retryable=False,
         )
         if not marked:
             return
-        if workflow_run_id:
+        if workflow_run_id and is_final:
             from app.services.workflow_engine import reconcile_run
 
             reconcile_run(db, workflow_run_id)
         raise
     except ProviderAdapterError as error:
         db.rollback()
-        marked, workflow_run_id = _mark_worker_failure(
+        is_retryable = getattr(error, "retryable", True)
+        marked, workflow_run_id, is_final = _mark_worker_failure(
             db,
             job_id,
             owner,
             error.code,
             error.user_message,
+            retryable=is_retryable,
         )
         if not marked:
             return
-        if workflow_run_id:
+        if workflow_run_id and is_final:
             from app.services.workflow_engine import reconcile_run
 
             reconcile_run(db, workflow_run_id)
         raise
     except Exception as error:
         db.rollback()
-        marked, workflow_run_id = _mark_worker_failure(
+        marked, workflow_run_id, is_final = _mark_worker_failure(
             db,
             job_id,
             owner,
             "WORKER_ERROR",
             str(error),
+            retryable=True,
         )
         if not marked:
             return
-        if workflow_run_id:
+        if workflow_run_id and is_final:
             from app.services.workflow_engine import reconcile_run
 
             reconcile_run(db, workflow_run_id)

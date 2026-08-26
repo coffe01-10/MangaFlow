@@ -704,7 +704,7 @@ def test_expired_lease_in_same_process_cannot_be_mutated_by_old_worker(db_sessio
         worker_tasks._ensure_job_not_cancelled(db_session, claimed_b)
 
     # 3. 验证 Worker A 无法写回失败状态
-    marked, _ = worker_tasks._mark_worker_failure(
+    marked, *_ = worker_tasks._mark_worker_failure(
         db_session,
         job.id,
         owner_a,
@@ -808,7 +808,7 @@ def test_worker_failure_interleaved_with_reclaimed_lease_does_not_mark_failed(db
     assert claimed is not None
 
     # 旧 Worker A 尝试写入失败
-    marked, _ = worker_tasks._mark_worker_failure(
+    marked, *_ = worker_tasks._mark_worker_failure(
         db_session,
         job.id,
         "old-worker-a",
@@ -1002,3 +1002,187 @@ def test_claim_failure_does_not_overwrite_reclaimed_lease_with_concurrency_limit
         else final_job.lease_expires_at.replace(tzinfo=UTC)
     )
     assert expiry > datetime.now(UTC)
+
+
+def test_retryable_failure_resets_job_to_waiting_for_rq_retry(db_session):
+    project = Project(name="RQ重试测试", default_concurrency=2)
+    db_session.add(project)
+    db_session.flush()
+    chapter = Chapter(project_id=project.id, title="第一章", ordinal=1)
+    db_session.add(chapter)
+    db_session.flush()
+    page = MangaPage(chapter_id=chapter.id, page_number=1, status=PageStatus.DRAFT_GENERATING)
+    db_session.add(page)
+    db_session.flush()
+    batch = GenerationBatch(project_id=project.id, chapter_id=chapter.id, page_id=page.id, ordinal=1)
+    db_session.add(batch)
+    db_session.flush()
+    candidate = PageCandidate(
+        batch_id=batch.id,
+        page_id=page.id,
+        ordinal=1,
+        model_alias="image.nano_banana_2",
+        resolution=Resolution.DRAFT_1K,
+        status="GENERATING",
+    )
+    db_session.add(candidate)
+    db_session.flush()
+    workflow = WorkflowDefinition(project_id=project.id, name="工作流", draft_graph=default_graph())
+    db_session.add(workflow)
+    db_session.flush()
+    version = WorkflowVersion(
+        workflow_id=workflow.id,
+        revision=1,
+        graph=default_graph(),
+        graph_checksum="v" * 64,
+        validation_report={"valid": True},
+    )
+    db_session.add(version)
+    db_session.flush()
+    run = WorkflowRun(
+        workflow_id=workflow.id,
+        workflow_version_id=version.id,
+        project_id=project.id,
+        scope_type="PAGE",
+        scope_id=page.id,
+        status="RUNNING",
+    )
+    db_session.add(run)
+    db_session.flush()
+    node_run = WorkflowNodeRun(
+        workflow_run_id=run.id,
+        node_id="generate",
+        node_type="generator.page",
+        status="RUNNING",
+    )
+    db_session.add(node_run)
+    db_session.flush()
+    job = GenerationJob(
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=candidate.id,
+        job_type="PAGE_GENERATE",
+        status=JobStatus.QUEUED,
+        max_attempts=3,
+        request_parameters={"workflow_run_id": run.id},
+    )
+    db_session.add(job)
+    db_session.flush()
+    candidate.job_id = job.id
+    node_run.job_id = job.id
+    db_session.commit()
+
+    # 1. 第一次尝试 claim (attempt 1)
+    owner_1 = worker_tasks._worker_id()
+    claimed = worker_tasks._claim_job(db_session, job.id, owner_1)
+    assert claimed is not None
+    assert claimed.attempt_count == 1
+    assert claimed.status == JobStatus.PREPARING
+
+    # 2. 模拟发生可重试的 Provider 异常
+    marked, workflow_run_id, is_final = worker_tasks._mark_worker_failure(
+        db_session,
+        job.id,
+        owner_1,
+        "UPSTREAM_TIMEOUT",
+        "504 Gateway Timeout",
+        retryable=True,
+    )
+    assert marked is True
+    assert is_final is False
+
+    db_session.expire_all()
+    job_after_fail = db_session.get(GenerationJob, job.id)
+    # 验证任务被重置为 WAITING，等待 RQ 再次执行，而不是 FAILED
+    assert job_after_fail.status == JobStatus.WAITING
+    assert job_after_fail.error_code == "UPSTREAM_TIMEOUT"
+    assert job_after_fail.lease_owner is None
+    assert job_after_fail.lease_expires_at is None
+    # 验证关联候选资源和工作流节点保持 RUNNING/GENERATING，未被误标记为 FAILED
+    assert db_session.get(PageCandidate, candidate.id).status == "GENERATING"
+    assert db_session.get(WorkflowNodeRun, node_run.id).status == "RUNNING"
+
+    # 3. 模拟 RQ 重试执行（第二次 claim）
+    owner_2 = worker_tasks._worker_id()
+    claimed_2 = worker_tasks._claim_job(db_session, job.id, owner_2)
+    assert claimed_2 is not None
+    assert claimed_2.attempt_count == 2
+    assert claimed_2.status == JobStatus.PREPARING
+    assert claimed_2.lease_owner == owner_2
+
+
+def test_terminal_failure_when_max_attempts_reached(db_session):
+    project = Project(name="重试耗尽测试", default_concurrency=2)
+    db_session.add(project)
+    db_session.flush()
+    job = GenerationJob(
+        project_id=project.id,
+        target_type="CHAPTER",
+        target_id="target-exhaust",
+        job_type="SOURCE_PARSE",
+        status=JobStatus.QUEUED,
+        max_attempts=2,
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    # 第一次 claim
+    owner_1 = worker_tasks._worker_id()
+    worker_tasks._claim_job(db_session, job.id, owner_1)
+    # 第一次失败 (retryable=True) -> 回到 WAITING
+    worker_tasks._mark_worker_failure(db_session, job.id, owner_1, "ERR", "msg", retryable=True)
+
+    # 第二次 claim (attempt_count = 2 == max_attempts)
+    owner_2 = worker_tasks._worker_id()
+    claimed_2 = worker_tasks._claim_job(db_session, job.id, owner_2)
+    assert claimed_2.attempt_count == 2
+
+    # 第二次失败 (retryable=True) -> 耗尽进入最终 FAILED
+    marked, _, is_final = worker_tasks._mark_worker_failure(
+        db_session,
+        job.id,
+        owner_2,
+        "ERR",
+        "msg",
+        retryable=True,
+    )
+    assert marked is True
+    assert is_final is True
+
+    db_session.expire_all()
+    assert db_session.get(GenerationJob, job.id).status == JobStatus.FAILED
+
+
+def test_non_retryable_error_immediately_marks_terminal_failure(db_session):
+    project = Project(name="不可重试错误测试", default_concurrency=2)
+    db_session.add(project)
+    db_session.flush()
+    job = GenerationJob(
+        project_id=project.id,
+        target_type="CHAPTER",
+        target_id="target-non-retryable",
+        job_type="SOURCE_PARSE",
+        status=JobStatus.QUEUED,
+        max_attempts=3,
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    owner = worker_tasks._worker_id()
+    worker_tasks._claim_job(db_session, job.id, owner)
+
+    # 遇到明确不可重试的错误 (retryable=False)
+    marked, _, is_final = worker_tasks._mark_worker_failure(
+        db_session,
+        job.id,
+        owner,
+        "INVALID_CONFIG",
+        "配置错误无法重试",
+        retryable=False,
+    )
+    assert marked is True
+    assert is_final is True
+
+    db_session.expire_all()
+    # 即使 attempt_count 仅为 1，也直接进入最终 FAILED
+    assert db_session.get(GenerationJob, job.id).status == JobStatus.FAILED
