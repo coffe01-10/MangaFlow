@@ -879,3 +879,55 @@ def test_multi_worker_claim_respects_project_concurrency_without_process_lock():
             assert active_count == 2
 
         engine.dispose()
+
+
+def test_claim_job_uses_for_update_when_postgresql_dialect(db_session, monkeypatch):
+    from unittest.mock import MagicMock
+
+    project = Project(name="PostgreSQL行锁测试", default_concurrency=2)
+    db_session.add(project)
+    db_session.flush()
+    job = GenerationJob(
+        project_id=project.id,
+        target_type="CHAPTER",
+        target_id="target-pg-lock",
+        job_type="SOURCE_PARSE",
+        status=JobStatus.QUEUED,
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    captured_statements = []
+    original_scalar = db_session.scalar
+
+    def mock_scalar(statement, *args, **kwargs):
+        captured_statements.append(statement)
+        if getattr(statement, "_for_update_arg", None) is not None:
+            stmt_clean = select(Project).where(Project.id == job.project_id)
+            return original_scalar(stmt_clean, *args, **kwargs)
+        return original_scalar(statement, *args, **kwargs)
+
+    real_bind = db_session.get_bind()
+    mock_dialect = MagicMock()
+    mock_dialect.name = "postgresql"
+
+    class ProxyBind:
+        def __getattr__(self, name):
+            if name == "dialect":
+                return mock_dialect
+            return getattr(real_bind, name)
+
+    monkeypatch.setattr(db_session, "get_bind", lambda *args, **kwargs: ProxyBind())
+    monkeypatch.setattr(db_session, "scalar", mock_scalar)
+
+    owner = worker_tasks._worker_id()
+    claimed = worker_tasks._claim_job(db_session, job.id, owner)
+    assert claimed is not None
+
+    # 验证在 postgresql 下对 Project 执行了 with_for_update
+    project_queries = [
+        stmt for stmt in captured_statements
+        if getattr(stmt, "_for_update_arg", None) is not None
+    ]
+    assert len(project_queries) == 1
+

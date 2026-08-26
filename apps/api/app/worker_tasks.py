@@ -173,7 +173,19 @@ def _claim_job(db, job_id: str, owner: str) -> GenerationJob | None:
     expired = job.status in ACTIVE_STATUSES and _lease_is_expired(job.lease_expires_at)
     if job.status not in CLAIMABLE_STATUSES and not expired:
         return None
-    project = db.get(Project, job.project_id)
+    bind = db.get_bind() if hasattr(db, "get_bind") else getattr(db, "bind", None)
+    dialect_name = getattr(getattr(bind, "dialect", None), "name", None)
+    is_postgres = dialect_name == "postgresql"
+
+    if is_postgres:
+        project = db.scalar(
+            select(Project)
+            .where(Project.id == job.project_id)
+            .with_for_update()
+        )
+    else:
+        project = db.get(Project, job.project_id)
+
     if not project or project.deleted_at is not None:
         return None
 
@@ -226,7 +238,7 @@ def _claim_job(db, job_id: str, owner: str) -> GenerationJob | None:
     )
     if updated.rowcount != 1:
         db.rollback()
-        current = db.get(GenerationJob, job.id)
+        current = db.get(GenerationJob, job_id)
         if current and current.status in CLAIMABLE_STATUSES:
             current.status = JobStatus.WAITING
             current.error_code = "CONCURRENCY_LIMIT"
@@ -237,7 +249,7 @@ def _claim_job(db, job_id: str, owner: str) -> GenerationJob | None:
         return None
     db.commit()
     db.expire_all()
-    return db.get(GenerationJob, job.id)
+    return db.get(GenerationJob, job_id)
 
 
 def _ensure_job_not_cancelled(db, job: GenerationJob) -> None:
