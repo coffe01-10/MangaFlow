@@ -1,0 +1,28 @@
+<!-- Pixel glyph attribution.
+MIT License
+
+Copyright (c) 2026 Keli (pkuwkl)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="122" height="24" viewBox="0 0 122 24" role="img" aria-label="Node.js 22 及以上">
+<title>Node.js 22 及以上</title>
+<desc>静态项目信息，不是实时 CI 状态。</desc>
+<g shape-rendering="crispEdges"><path d="M6,2H118V4H120V6H122V20H120V22H118V24H6V22H4V20H2V6H4V4H6Z" fill="#151512"/><path d="M4,0H116V2H118V4H120V18H118V20H116V22H4V20H2V18H0V4H2V2H4Z" fill="#d7d1c4"/><path d="M5,1H115V3H117V5H119V17H117V19H115V21H5V19H3V17H1V5H3V3H5Z" fill="#151512"/><rect x="66" y="3" width="48" height="16" fill="#47745a"/><g shape-rendering="crispEdges"><rect x="10" y="4" width="2" height="2" fill="#fcfbf7"/><rect x="18" y="4" width="2" height="2" fill="#fcfbf7"/><rect x="10" y="6" width="4" height="2" fill="#fcfbf7"/><rect x="18" y="6" width="2" height="2" fill="#fcfbf7"/><rect x="10" y="8" width="2" height="2" fill="#fcfbf7"/><rect x="14" y="8" width="2" height="2" fill="#fcfbf7"/><rect x="18" y="8" width="2" height="2" fill="#fcfbf7"/><rect x="10" y="10" width="2" height="2" fill="#fcfbf7"/><rect x="16" y="10" width="4" height="2" fill="#fcfbf7"/><rect x="10" y="12" width="2" height="2" fill="#fcfbf7"/><rect x="18" y="12" width="2" height="2" fill="#fcfbf7"/><rect x="10" y="14" width="2" height="2" fill="#fcfbf7"/><rect x="18" y="14" width="2" height="2" fill="#fcfbf7"/><rect x="10" y="16" width="2" height="2" fill="#fcfbf7"/><rect x="18" y="16" width="2" height="2" fill="#fcfbf7"/><rect x="24" y="4" width="6" height="2" fill="#fcfbf7"/><rect x="22" y="6" width="2" height="2" fill="#fcfbf7"/><rect x="30" y="6" width="2" height="2" fill="#fcfbf7"/><rect x="22" y="8" width="2" height="2" fill="#fcfbf7"/><rect x="30" y="8" width="2" height="2" fill="#fcfbf7"/><rect x="22" y="10" width="2" height="2" fill="#fcfbf7"/><rect x="30" y="10" width="2" height="2" fill="#fcfbf7"/><rect x="22" y="12" width="2" height="2" fill="#fcfbf7"/><rect x="30" y="12" width="2" height="2" fill="#fcfbf7"/><rect x="22" y="14" width="2" height="2" fill="#fcfbf7"/><rect x="30" y="14" width="2" height="2" fill="#fcfbf7"/><rect x="24" y="16" width="6" height="2" fill="#fcfbf7"/><rect x="34" y="4" width="8" height="2" fill="#fcfbf7"/><rect x="34" y="6" width="2" height="2" fill="#fcfbf7"/><rect x="42" y="6" width="2" height="2" fill="#fcfbf7"/><rect x="34" y="8" width="2" height="2" fill="#fcfbf7"/><rect x="42" y="8" width="2" height="2" fill="#fcfbf7"/><rect x="34" y="10" width="2" height="2" fill="#fcfbf7"/><rect x="42" y="10" width="2" height="2" fill="#fcfbf7"/><rect x="34" y="12" width="2" height="2" fill="#fcfbf7"/><rect x="42" y="12" width="2" height="2" fill="#fcfbf7"/><rect x="34" y="14" width="2" height="2" fill="#fcfbf7"/><rect x="42" y="14" width="2" height="2" fill="#fcfbf7"/><rect x="34" y="16" width="8" height="2" fill="#fcfbf7"/><rect x="46" y="4" width="10" height="2" fill="#fcfbf7"/><rect x="46" y="6" width="2" height="2" fill="#fcfbf7"/><rect x="46" y="8" width="2" height="2" fill="#fcfbf7"/><rect x="46" y="10" width="8" height="2" fill="#fcfbf7"/><rect x="46" y="12" width="2" height="2" fill="#fcfbf7"/><rect x="46" y="14" width="2" height="2" fill="#fcfbf7"/><rect x="46" y="16" width="10" height="2" fill="#fcfbf7"/></g><g shape-rendering="crispEdges"><rect x="75" y="4" width="6" height="2" fill="#fcfbf7"/><rect x="73" y="6" width="2" height="2" fill="#fcfbf7"/><rect x="81" y="6" width="2" height="2" fill="#fcfbf7"/><rect x="81" y="8" width="2" height="2" fill="#fcfbf7"/><rect x="79" y="10" width="2" height="2" fill="#fcfbf7"/><rect x="77" y="12" width="2" height="2" fill="#fcfbf7"/><rect x="75" y="14" width="2" height="2" fill="#fcfbf7"/><rect x="73" y="16" width="10" height="2" fill="#fcfbf7"/><rect x="87" y="4" width="6" height="2" fill="#fcfbf7"/><rect x="85" y="6" width="2" height="2" fill="#fcfbf7"/><rect x="93" y="6" width="2" height="2" fill="#fcfbf7"/><rect x="93" y="8" width="2" height="2" fill="#fcfbf7"/><rect x="91" y="10" width="2" height="2" fill="#fcfbf7"/><rect x="89" y="12" width="2" height="2" fill="#fcfbf7"/><rect x="87" y="14" width="2" height="2" fill="#fcfbf7"/><rect x="85" y="16" width="10" height="2" fill="#fcfbf7"/><rect x="101" y="6" width="2" height="2" fill="#fcfbf7"/><rect x="101" y="8" width="2" height="2" fill="#fcfbf7"/><rect x="97" y="10" width="10" height="2" fill="#fcfbf7"/><rect x="101" y="12" width="2" height="2" fill="#fcfbf7"/><rect x="101" y="14" width="2" height="2" fill="#fcfbf7"/></g></g>
+</svg>
