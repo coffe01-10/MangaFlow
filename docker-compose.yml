@@ -1,14 +1,18 @@
 name: mangaflow
 
+# Local data services only. Ports are bound to the loopback address so they
+# are not published on other network interfaces. Default passwords are for
+# single-user development; change them with ALTER USER / Redis AUTH on an
+# existing volume. Do not delete user data volumes to rotate credentials.
 services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: mangaflow
-      POSTGRES_USER: mangaflow
-      POSTGRES_PASSWORD: mangaflow
+      POSTGRES_DB: ${POSTGRES_DB:-mangaflow}
+      POSTGRES_USER: ${POSTGRES_USER:-mangaflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mangaflow}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - mangaflow-postgres:/var/lib/postgresql/data
     healthcheck:
@@ -20,13 +24,26 @@ services:
 
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "yes"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-mangaflow-dev}
+    command:
+      [
+        "redis-server",
+        "--appendonly",
+        "yes",
+        "--requirepass",
+        "${REDIS_PASSWORD:-mangaflow-dev}",
+      ]
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - mangaflow-redis:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test:
+        [
+          "CMD-SHELL",
+          'redis-cli -a "$$REDIS_PASSWORD" ping | grep PONG',
+        ]
       interval: 5s
       timeout: 3s
       retries: 10

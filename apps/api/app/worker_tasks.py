@@ -262,7 +262,7 @@ def _claim_job(db, job_id: str, owner: str) -> GenerationJob | None:
 
 def _ensure_job_not_cancelled(db, job: GenerationJob) -> None:
     db.refresh(job, attribute_names=["status", "cancelled_at", "lease_owner", "lease_expires_at"])
-    if job.status == JobStatus.CANCELLED:
+    if job.status == JobStatus.CANCELLED or job.cancelled_at is not None:
         raise JobCancelledError("任务已取消，模型返回结果不再写入")
     owner = db.info.get("job_lease_owner")
     if owner and (
@@ -271,6 +271,45 @@ def _ensure_job_not_cancelled(db, job: GenerationJob) -> None:
         or _lease_is_expired(job.lease_expires_at)
     ):
         raise JobLeaseLostError("任务租约已被其他执行器接管")
+
+
+def _commit_owned_progress(
+    db, job: GenerationJob, *, status: JobStatus, progress: int
+) -> None:
+    """Persist an intermediate status only while this worker still owns the job."""
+
+    _ensure_job_not_cancelled(db, job)
+    owner = db.info.get("job_lease_owner")
+    now = datetime.now(UTC)
+    filters = [
+        GenerationJob.id == job.id,
+        GenerationJob.cancelled_at.is_(None),
+        GenerationJob.status.not_in(
+            {JobStatus.CANCELLED, JobStatus.COMPLETED, JobStatus.FAILED}
+        ),
+    ]
+    if owner:
+        filters.extend(
+            [
+                GenerationJob.lease_owner == owner,
+                GenerationJob.lease_expires_at.is_not(None),
+                GenerationJob.lease_expires_at > now,
+            ]
+        )
+    updated = db.execute(
+        update(GenerationJob)
+        .where(*filters)
+        .values(status=status, progress=progress)
+        .execution_options(synchronize_session=False)
+    )
+    if updated.rowcount != 1:
+        db.rollback()
+        current = db.get(GenerationJob, job.id)
+        if current is not None:
+            _ensure_job_not_cancelled(db, current)
+        raise JobLeaseLostError("任务租约已被其他执行器接管")
+    db.commit()
+    db.refresh(job)
 
 
 def _normalize_name(value: str) -> str:
@@ -424,6 +463,11 @@ def _binding(
 
 
 def _invoke_provider(db, binding: AdapterBinding, callback):
+    job_id = db.info.get("job_id")
+    if job_id:
+        current = db.get(GenerationJob, job_id)
+        if current is not None:
+            _ensure_job_not_cancelled(db, current)
     try:
         result = callback(binding.adapter)
     except ProviderAdapterError as error:
@@ -835,9 +879,9 @@ def _run_page_generate(db, job: GenerationJob) -> None:
         )
     candidate.status = "GENERATING"
     page.status = PageStatus.DRAFT_GENERATING
-    job.status = JobStatus.UPLOADING_REFERENCES
-    job.progress = 20
-    db.commit()
+    _commit_owned_progress(
+        db, job, status=JobStatus.UPLOADING_REFERENCES, progress=20
+    )
 
     reference_assets = _load_reference_assets(db, page, project, reference_selections)
     reference_bytes: list[bytes] = []
@@ -921,9 +965,7 @@ def _run_page_generate(db, job: GenerationJob) -> None:
     if {item.id for item in current_assets} != set(reference_asset_ids):
         raise RuntimeError("参考图在生成前发生变化，已停止模型调用")
 
-    job.status = JobStatus.GENERATING
-    job.progress = 45
-    db.commit()
+    _commit_owned_progress(db, job, status=JobStatus.GENERATING, progress=45)
     response = _invoke_provider(
         db,
         binding,
@@ -1370,9 +1412,7 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
         "prompt_preview": prompt,
     }
     candidate.status = "GENERATING"
-    job.status = JobStatus.GENERATING
-    job.progress = 45
-    db.commit()
+    _commit_owned_progress(db, job, status=JobStatus.GENERATING, progress=45)
     reference_ids = [asset.id for asset in references]
     _lease_reference_assets(db, job, reference_ids)
     for asset in references:
@@ -1502,9 +1542,7 @@ def _run_style_analyze(db, job: GenerationJob) -> None:
     )
     if not references:
         raise RuntimeError("风格档案没有可用漫画参考图")
-    job.status = JobStatus.GENERATING
-    job.progress = 35
-    db.commit()
+    _commit_owned_progress(db, job, status=JobStatus.GENERATING, progress=35)
     visual_dimensions = (
         "线稿、网点、黑白对比、留白、人物画法、背景画法、光影"
         if style.color_mode == "monochrome"
@@ -1587,9 +1625,9 @@ PROP 检查关键道具；CONTINUITY 检查与页面结构、场景状态和前�
 outcome 只能用 PASS、ACCEPTABLE、MISMATCH、MISSING、EXTRA；
 details 必须写清 expected、observed 和 differences。
 regions 使用 0 到 1 的归一化 x/y/width/height。"""
-    job.status = JobStatus.CONSISTENCY_CHECKING
-    job.progress = 45
-    db.commit()
+    _commit_owned_progress(
+        db, job, status=JobStatus.CONSISTENCY_CHECKING, progress=45
+    )
     _lease_reference_assets(db, job, [asset.id])
     binding = _binding(
         db,
@@ -1612,9 +1650,26 @@ regions 使用 0 到 1 的归一化 x/y/width/height。"""
         ),
     )
     _ensure_job_not_cancelled(db, job)
+    valid_outcomes = {
+        "MATCH",
+        "PASS",
+        "ACCEPTABLE",
+        "MISMATCH",
+        "MISSING",
+        "EXTRA",
+    }
+    passing_outcomes = {"MATCH", "PASS", "ACCEPTABLE"}
+    requested = [str(item) for item in categories]
+    seen: dict[str, object] = {}
     needs_review = False
     for item in output.items:
-        if item.outcome not in {"MATCH", "PASS", "ACCEPTABLE"}:
+        category = str(item.category)
+        if category not in requested:
+            continue
+        if item.outcome not in valid_outcomes:
+            raise RuntimeError("质检结果包含非法 outcome")
+        seen[category] = item
+        if item.outcome not in passing_outcomes:
             needs_review = True
         db.add(
             InspectionResult(
@@ -1628,11 +1683,24 @@ regions 使用 0 到 1 的归一化 x/y/width/height。"""
                 severity=item.severity,
             )
         )
-    candidate.status = "NEEDS_REVIEW" if needs_review else "INSPECTED"
-    if page.selected_candidate_id == candidate.id and candidate.is_selected:
-        page.continuity_status = "NEEDS_REVIEW" if needs_review else "PASSED"
-        page.status = PageStatus.NEEDS_REPAIR if needs_review else PageStatus.FINAL_READY
-        page.version += 1
+    complete = bool(seen) and set(requested) <= set(seen)
+    if not complete:
+        candidate.status = "READY"
+        if page.selected_candidate_id == candidate.id and candidate.is_selected:
+            page.continuity_status = "NOT_CHECKED"
+            page.version += 1
+    elif needs_review:
+        candidate.status = "NEEDS_REVIEW"
+        if page.selected_candidate_id == candidate.id and candidate.is_selected:
+            page.continuity_status = "NEEDS_REVIEW"
+            page.status = PageStatus.NEEDS_REPAIR
+            page.version += 1
+    else:
+        candidate.status = "INSPECTED"
+        if page.selected_candidate_id == candidate.id and candidate.is_selected:
+            page.continuity_status = "PASSED"
+            page.status = PageStatus.FINAL_READY
+            page.version += 1
     job.status = JobStatus.CONSISTENCY_CHECKING
     job.progress = 85
 
@@ -1710,6 +1778,45 @@ def _mark_worker_failure(
     return True, workflow_run_id, not is_retryable
 
 
+def _defer_concurrency_wait(job_id: str) -> None:
+    """Keep a slot-wait job schedulable instead of silently succeeding out of RQ."""
+
+    settings = get_settings()
+    with SessionLocal() as db:
+        job = db.get(GenerationJob, job_id)
+        if (
+            job is None
+            or job.status != JobStatus.WAITING
+            or job.error_code != "CONCURRENCY_LIMIT"
+        ):
+            return
+    try:
+        from redis import Redis
+        from rq import Queue
+
+        connection = Redis.from_url(
+            settings.redis_url,
+            socket_connect_timeout=0.4,
+            socket_timeout=0.4,
+        )
+        try:
+            connection.ping()
+            Queue(settings.queue_name, connection=connection).enqueue_in(
+                timedelta(seconds=3),
+                "app.worker_tasks.execute_job",
+                job_id,
+                job_id=f"{job_id}:slot",
+                job_timeout=settings.job_timeout_seconds,
+            )
+        finally:
+            connection.close()
+    except Exception:
+        from app.services.job_service import LOCAL_SUBMITTED_JOB_IDS, _submit_local
+
+        if job_id not in LOCAL_SUBMITTED_JOB_IDS:
+            _submit_local(job_id)
+
+
 def execute_job(job_id: str) -> None:
     db = SessionLocal()
     owner = _worker_id()
@@ -1725,9 +1832,11 @@ def execute_job(job_id: str) -> None:
             mark_job_cancelled(db, job)
             db.commit()
             return
+        db.info["job_id"] = job_id
         with EXECUTION_RESERVATION_LOCK:
             job = _claim_job(db, job_id, owner)
         if not job:
+            _defer_concurrency_wait(job_id)
             return
         with _LeaseHeartbeat(job.id, owner) as heartbeat:
             if job.job_type in {"PAGE_GENERATE", "PAGE_REPAIR", "PAGE_UPSCALE"}:

@@ -1,12 +1,38 @@
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Asset, Chapter, MangaPage, PageCandidate
+from app.models import Asset, Chapter, InspectionResult, MangaPage, PageCandidate
 from app.schemas import (
     ChapterProductionReadinessRead,
     PageProductionReadinessRead,
     ProductionBlocker,
 )
+
+REQUIRED_QUALITY_CATEGORIES = (
+    "SPEAKER",
+    "CHARACTER",
+    "OUTFIT",
+    "PROP",
+    "CONTINUITY",
+)
+PASSING_QUALITY_OUTCOMES = {"MATCH", "PASS", "ACCEPTABLE"}
+
+
+def latest_inspections_by_category(
+    db: Session, candidate_id: str
+) -> dict[str, InspectionResult]:
+    rows = list(
+        db.scalars(
+            select(InspectionResult)
+            .where(InspectionResult.candidate_id == candidate_id)
+            .order_by(InspectionResult.created_at.desc(), InspectionResult.id.desc())
+        )
+    )
+    latest: dict[str, InspectionResult] = {}
+    for row in rows:
+        if row.category not in latest:
+            latest[row.category] = row
+    return latest
 
 
 def _block(
@@ -62,7 +88,19 @@ def build_page_production_readiness(
                     candidate.id,
                 )
             )
-        if candidate.status == "NEEDS_REVIEW" or page.continuity_status == "NEEDS_REVIEW":
+        latest = latest_inspections_by_category(db, candidate.id)
+        failed = [
+            category
+            for category in REQUIRED_QUALITY_CATEGORIES
+            if category in latest
+            and latest[category].outcome not in PASSING_QUALITY_OUTCOMES
+        ]
+        missing = [
+            category
+            for category in REQUIRED_QUALITY_CATEGORIES
+            if category not in latest
+        ]
+        if failed or candidate.status == "NEEDS_REVIEW" or page.continuity_status == "NEEDS_REVIEW":
             blockers.append(
                 _block(
                     "QUALITY_REVIEW_REQUIRED",
@@ -71,7 +109,11 @@ def build_page_production_readiness(
                     candidate.id,
                 )
             )
-        elif candidate.status != "INSPECTED" or page.continuity_status != "PASSED":
+        elif (
+            missing
+            or candidate.status != "INSPECTED"
+            or page.continuity_status != "PASSED"
+        ):
             blockers.append(
                 _block(
                     "QUALITY_INSPECTION_REQUIRED",

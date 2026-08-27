@@ -13,6 +13,7 @@ import httpx
 from httpcore._backends.sync import SyncBackend
 from pydantic import BaseModel
 
+from app.http_bounds import read_bounded_http_body
 from app.model_adapters.base import (
     ImageRequest,
     ModelResponse,
@@ -272,26 +273,13 @@ class _CompatibleBase:
                         raise ProviderAdapterError("UPSTREAM", "供应商返回了未允许的重定向")
                     if response.is_error:
                         raise _provider_error(response)
-                    declared_size = response.headers.get("content-length")
-                    if (
-                        declared_size
-                        and declared_size.isdigit()
-                        and int(declared_size) > self.runtime.max_response_bytes
-                    ):
-                        raise ProviderAdapterError(
-                            "INVALID_OUTPUT", "供应商响应超过允许的大小"
-                        )
-                    content = bytearray()
-                    for chunk in response.iter_bytes():
-                        content.extend(chunk)
-                        if len(content) > self.runtime.max_response_bytes:
-                            raise ProviderAdapterError(
-                                "INVALID_OUTPUT", "供应商响应超过允许的大小"
-                            )
+                    content = read_bounded_http_body(
+                        response, self.runtime.max_response_bytes
+                    )
                     return httpx.Response(
                         response.status_code,
                         headers=response.headers,
-                        content=bytes(content),
+                        content=content,
                         request=request,
                         extensions=response.extensions,
                     )

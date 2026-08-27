@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
@@ -23,6 +23,7 @@ from app.models import (
     SourceRevision,
     SourceSegment,
 )
+from app.request_limits import parse_single_file_form
 from app.schemas import (
     BeatRead,
     BeatUpdate,
@@ -95,14 +96,18 @@ def import_pasted_source(
     response_model=SourceImportRead,
     status_code=status.HTTP_201_CREATED,
 )
-def upload_source(
+async def upload_source(
     project_id: str,
-    title: str = Form(default="正文"),
-    file: UploadFile = File(),
+    request: Request,
     db: Session = Depends(get_db),
 ) -> SourceImportRead:
     _project(db, project_id)
     settings = get_settings()
+    parsed = await parse_single_file_form(
+        request, required_fields=(), optional_fields=("title",)
+    )
+    title = parsed.texts.get("title") or "正文"
+    file = parsed.file
     suffix = Path(file.filename or "source.txt").suffix.lower()
     if suffix not in {".txt", ".md", ".markdown"}:
         raise HTTPException(status_code=415, detail="仅支持 TXT 和 Markdown 原文")

@@ -4,9 +4,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse
-from PIL import Image, UnidentifiedImageError
 from sqlalchemy import delete, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -27,8 +26,9 @@ from app.models import (
     StyleProfile,
     StyleStatus,
 )
+from app.request_limits import parse_single_file_form
 from app.schemas import AssetRead, AssetUpdate
-from app.services.media import create_thumbnails, remove_thumbnails
+from app.services.media import create_thumbnails, inspect_upload_image, remove_thumbnails
 
 router = APIRouter()
 CHUNK_SIZE = 1024 * 1024
@@ -117,13 +117,17 @@ def list_assets(project_id: str, db: Session = Depends(get_db)) -> list[AssetRea
 
 
 @router.post("/upload", response_model=AssetRead, status_code=status.HTTP_201_CREATED)
-def upload_asset(
-    project_id: str = Form(),
-    kind: str = Form(),
-    file: UploadFile = File(),
+async def upload_asset(
+    request: Request,
     db: Session = Depends(get_db),
 ) -> AssetRead:
     settings = get_settings()
+    parsed = await parse_single_file_form(
+        request, required_fields=("project_id", "kind")
+    )
+    project_id = parsed.texts["project_id"]
+    kind = parsed.texts["kind"]
+    file = parsed.file
     normalized_kind = ASSET_KINDS.get(kind)
     if not normalized_kind:
         raise HTTPException(status_code=422, detail="请选择人物、服装或漫画风格参考用途")
@@ -151,17 +155,23 @@ def upload_asset(
             while chunk := file.file.read(CHUNK_SIZE):
                 byte_size += len(chunk)
                 if byte_size > settings.max_upload_bytes:
-                    raise HTTPException(status_code=413, detail="文件超过 20 MB 上限")
+                    raise HTTPException(status_code=413, detail="文件超过上传上限")
                 digest.update(chunk)
                 output.write(chunk)
 
         try:
-            with Image.open(destination) as image:
-                image.verify()
-            with Image.open(destination) as image:
-                width, height = image.size
-        except (UnidentifiedImageError, OSError) as error:
-            raise HTTPException(status_code=422, detail="图片文件损坏或格式不符") from error
+            width, height, mime_type, detected_suffix = inspect_upload_image(
+                destination,
+                max_pixels=settings.max_image_pixels,
+                max_side=settings.max_image_side,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        if detected_suffix != suffix:
+            renamed = destination.with_suffix(detected_suffix)
+            destination.rename(renamed)
+            destination = renamed
+            suffix = detected_suffix
 
         existing = db.scalar(
             select(Asset).where(
@@ -186,7 +196,7 @@ def upload_asset(
             existing.storage_key = destination.relative_to(settings.upload_root).as_posix()
             existing.thumbnail_320_key = thumbnails[320]
             existing.thumbnail_640_key = thumbnails[640]
-            existing.mime_type = file.content_type
+            existing.mime_type = mime_type
             existing.byte_size = byte_size
             existing.width = width
             existing.height = height
@@ -211,7 +221,7 @@ def upload_asset(
             storage_key=destination.relative_to(settings.upload_root).as_posix(),
             thumbnail_320_key=thumbnails[320],
             thumbnail_640_key=thumbnails[640],
-            mime_type=file.content_type,
+            mime_type=mime_type,
             byte_size=byte_size,
             sha256=digest.hexdigest(),
             width=width,
