@@ -107,6 +107,13 @@ def dependencies_complete(db: Session, job: GenerationJob) -> bool:
     return all(item.status == JobStatus.COMPLETED for item in dependencies)
 
 
+def rq_retry_policy(job: GenerationJob):
+    from rq import Retry
+
+    remaining_retries = job.max_attempts - job.attempt_count - 1
+    return Retry(max=remaining_retries, interval=[10, 30, 90]) if remaining_retries > 0 else None
+
+
 def enqueue_job(db: Session, job: GenerationJob) -> GenerationJob:
     settings = get_settings()
     apply_runtime_overrides(db, settings)
@@ -137,7 +144,7 @@ def enqueue_job(db: Session, job: GenerationJob) -> GenerationJob:
     connection = None
     try:
         from redis import Redis
-        from rq import Queue, Retry
+        from rq import Queue
 
         connection = Redis.from_url(
             settings.redis_url,
@@ -151,7 +158,7 @@ def enqueue_job(db: Session, job: GenerationJob) -> GenerationJob:
             job.id,
             job_id=job.id,
             job_timeout=settings.job_timeout_seconds,
-            retry=Retry(max=max(job.max_attempts - 1, 0), interval=[10, 30, 90]),
+            retry=rq_retry_policy(job),
         )
     except Exception:
         if queue_mode == "AUTO" and settings.environment == "development":

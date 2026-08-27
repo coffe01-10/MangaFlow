@@ -60,6 +60,11 @@ from app.services.model_router import (
     get_catalog_model,
     model_supports_resolution,
 )
+from app.services.page_completion import (
+    PASSING_QUALITY_OUTCOMES,
+    REQUIRED_QUALITY_CATEGORIES,
+    latest_inspections_by_category,
+)
 from app.services.prompt_compiler import PAGE_TEMPLATE_VERSION, compile_page_prompt
 from app.services.provider_presets import ensure_provider_presets
 
@@ -1609,6 +1614,7 @@ def _run_inspection(db, job: GenerationJob) -> None:
     page = db.get(MangaPage, candidate.page_id)
     asset = db.get(Asset, candidate.asset_id)
     project = db.get(Project, db.get(Chapter, page.chapter_id).project_id)
+    inspection_storyboard_version = page.storyboard_version
     _, snapshot = compile_page_prompt(db, page, project)
     categories = job.request_parameters.get(
         "categories",
@@ -1675,6 +1681,7 @@ regions 使用 0 到 1 的归一化 x/y/width/height。"""
             InspectionResult(
                 generation_record_id=candidate.generation_record_id,
                 candidate_id=candidate.id,
+                storyboard_version=inspection_storyboard_version,
                 category=item.category,
                 outcome=item.outcome,
                 score=item.score,
@@ -1683,7 +1690,23 @@ regions 使用 0 到 1 的归一化 x/y/width/height。"""
                 severity=item.severity,
             )
         )
-    complete = bool(seen) and set(requested) <= set(seen)
+    db.flush()
+    db.refresh(page)
+    if page.storyboard_version != inspection_storyboard_version:
+        # Preserve the audit result, but never pass a newer storyboard with an old response.
+        _commit_owned_progress(db, job, status=JobStatus.CONSISTENCY_CHECKING, progress=85)
+        return
+    latest = latest_inspections_by_category(db, candidate.id, inspection_storyboard_version)
+    complete = (
+        bool(seen)
+        and set(requested) <= set(seen)
+        and set(REQUIRED_QUALITY_CATEGORIES) <= set(latest)
+    )
+    needs_review = needs_review or any(
+        latest[category].outcome not in PASSING_QUALITY_OUTCOMES
+        for category in REQUIRED_QUALITY_CATEGORIES
+        if category in latest
+    )
     if not complete:
         candidate.status = "READY"
         if page.selected_candidate_id == candidate.id and candidate.is_selected:
@@ -1782,6 +1805,14 @@ def _mark_worker_failure(
 def _defer_concurrency_wait(job_id: str) -> None:
     """Keep a slot-wait job schedulable instead of silently succeeding out of RQ."""
 
+    from rq import Queue, get_current_job
+
+    from app.services.job_service import rq_retry_policy
+
+    current = get_current_job()
+    if current is None:
+        # LOCAL/AUTO's local executor already owns a bounded backoff loop.
+        return
     settings = get_settings()
     with SessionLocal() as db:
         job = db.get(GenerationJob, job_id)
@@ -1791,31 +1822,17 @@ def _defer_concurrency_wait(job_id: str) -> None:
             or job.error_code != "CONCURRENCY_LIMIT"
         ):
             return
-    try:
-        from redis import Redis
-        from rq import Queue
-
-        connection = Redis.from_url(
-            settings.redis_url,
-            socket_connect_timeout=0.4,
-            socket_timeout=0.4,
-        )
-        try:
-            connection.ping()
-            Queue(settings.queue_name, connection=connection).enqueue_in(
-                timedelta(seconds=3),
-                "app.worker_tasks.execute_job",
-                job_id,
-                job_id=f"{job_id}:slot",
-                job_timeout=settings.job_timeout_seconds,
-            )
-        finally:
-            connection.close()
-    except Exception:
-        from app.services.job_service import LOCAL_SUBMITTED_JOB_IDS, _submit_local
-
-        if job_id not in LOCAL_SUBMITTED_JOB_IDS:
-            _submit_local(job_id)
+        retry = rq_retry_policy(job)
+    # Use the running worker's queue/connection. A child-local thread cannot survive RQ exit.
+    # Let a scheduling failure reach RQ's retry/error handling instead of hiding it.
+    Queue(current.origin, connection=current.connection).enqueue_in(
+        timedelta(seconds=3),
+        "app.worker_tasks.execute_job",
+        job_id,
+        job_id=f"{job_id}-slot-{uuid4().hex}",
+        job_timeout=settings.job_timeout_seconds,
+        retry=retry,
+    )
 
 
 def execute_job(job_id: str) -> None:

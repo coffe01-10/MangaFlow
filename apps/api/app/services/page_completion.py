@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.orm import Session
 
 from app.models import Asset, Chapter, InspectionResult, MangaPage, PageCandidate
@@ -19,13 +19,21 @@ PASSING_QUALITY_OUTCOMES = {"MATCH", "PASS", "ACCEPTABLE"}
 
 
 def latest_inspections_by_category(
-    db: Session, candidate_id: str
+    db: Session, candidate_id: str, storyboard_version: int
 ) -> dict[str, InspectionResult]:
     rows = list(
         db.scalars(
             select(InspectionResult)
-            .where(InspectionResult.candidate_id == candidate_id)
-            .order_by(InspectionResult.created_at.desc(), InspectionResult.id.desc())
+            .where(
+                InspectionResult.candidate_id == candidate_id,
+                InspectionResult.storyboard_version == storyboard_version,
+            )
+            .order_by(
+                InspectionResult.created_at.desc(),
+                # UUID order is not chronology. Conflicting equal-time results fail closed.
+                case((InspectionResult.outcome.in_(PASSING_QUALITY_OUTCOMES), 1), else_=0),
+                InspectionResult.id.desc(),
+            )
         )
     )
     latest: dict[str, InspectionResult] = {}
@@ -88,7 +96,7 @@ def build_page_production_readiness(
                     candidate.id,
                 )
             )
-        latest = latest_inspections_by_category(db, candidate.id)
+        latest = latest_inspections_by_category(db, candidate.id, page.storyboard_version)
         failed = [
             category
             for category in REQUIRED_QUALITY_CATEGORIES

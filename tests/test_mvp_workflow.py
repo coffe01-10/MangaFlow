@@ -785,6 +785,7 @@ def test_batch_candidate_favorite_select_and_next(client, db_session, monkeypatc
         db_session.add(
             InspectionResult(
                 candidate_id=record.id,
+                storyboard_version=first_page["storyboard_version"],
                 category=category,
                 outcome="PASS",
                 score=score,
@@ -1381,6 +1382,7 @@ def test_inspection_repair_escalation_and_upscale_jobs(client, db_session, monke
     candidate.status = "READY"
     inspection = InspectionResult(
         candidate_id=candidate.id,
+        storyboard_version=db_session.get(MangaPage, candidate.page_id).storyboard_version,
         category="CHARACTER",
         outcome="MISMATCH",
         score=0.4,
@@ -1498,6 +1500,7 @@ def test_project_json_export_uses_selected_page_versions(
             db_session.add(
                 InspectionResult(
                     candidate_id=candidate.id,
+                    storyboard_version=page.storyboard_version,
                     category=category,
                     outcome="PASS",
                     score=0.99,

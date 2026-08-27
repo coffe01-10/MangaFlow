@@ -446,6 +446,7 @@ class InspectionResult(Base):
     candidate_id: Mapped[str | None] = mapped_column(
         ForeignKey("page_candidates.id", ondelete="CASCADE"), index=True, nullable=True
     )
+    storyboard_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     category: Mapped[str] = mapped_column(String(48))
     outcome: Mapped[str] = mapped_column(String(48))
     score: Mapped[float | None] = mapped_column(Float, nullable=True)

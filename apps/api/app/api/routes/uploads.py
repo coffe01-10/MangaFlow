@@ -1,4 +1,5 @@
 import hashlib
+from collections.abc import AsyncIterator
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,7 +27,7 @@ from app.models import (
     StyleProfile,
     StyleStatus,
 )
-from app.request_limits import ASSET_UPLOAD_OPENAPI, parse_single_file_form
+from app.request_limits import ASSET_UPLOAD_OPENAPI, ParsedUpload, parse_single_file_form
 from app.schemas import AssetRead, AssetUpdate
 from app.services.media import create_thumbnails, inspect_upload_image, remove_thumbnails
 
@@ -116,20 +117,25 @@ def list_assets(project_id: str, db: Session = Depends(get_db)) -> list[AssetRea
     return [asset_read(asset) for asset in assets]
 
 
+async def _parse_asset_upload(request: Request) -> AsyncIterator[ParsedUpload]:
+    parsed = await parse_single_file_form(request, required_fields=("project_id", "kind"))
+    try:
+        yield parsed
+    finally:
+        await parsed.file.close()
+
+
 @router.post(
     "/upload",
     response_model=AssetRead,
     status_code=status.HTTP_201_CREATED,
     openapi_extra=ASSET_UPLOAD_OPENAPI,
 )
-async def upload_asset(
-    request: Request,
+def upload_asset(
+    parsed: ParsedUpload = Depends(_parse_asset_upload),
     db: Session = Depends(get_db),
 ) -> AssetRead:
     settings = get_settings()
-    parsed = await parse_single_file_form(
-        request, required_fields=("project_id", "kind")
-    )
     project_id = parsed.texts["project_id"]
     kind = parsed.texts["kind"]
     file = parsed.file

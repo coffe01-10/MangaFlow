@@ -35,6 +35,9 @@ def test_empty_database_upgrade_downgrade_and_upgrade(tmp_path, monkeypatch):
     assert "ix_generation_jobs_status_lease" in {
         index["name"] for index in schema.get_indexes("generation_jobs")
     }
+    assert "storyboard_version" in {
+        column["name"] for column in schema.get_columns("inspection_results")
+    }
     assert {"character_presence", "props"}.issubset(
         {column["name"] for column in schema.get_columns("panels")}
     )
@@ -258,4 +261,39 @@ def test_assert_database_is_current_succeeds_on_head(tmp_path, monkeypatch):
 
     # Should not raise
     main._assert_database_is_current()
+    engine.dispose()
+
+
+def test_inspection_version_migration_preserves_unknown_legacy_results(tmp_path, monkeypatch):
+    database_url = f"sqlite:///{(tmp_path / 'inspection-version.db').as_posix()}"
+    monkeypatch.setattr(get_settings(), "database_url", database_url)
+    config = Config("apps/api/alembic.ini")
+    command.upgrade(config, "20260801_16")
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO inspection_results "
+            "(id, category, outcome, details, regions, severity, created_at) "
+            "VALUES ('legacy', 'CONTINUITY', 'PASS', '{}', '[]', 'INFO', CURRENT_TIMESTAMP)"
+        ))
+    engine.dispose()
+
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        row = connection.execute(text(
+            "SELECT id, storyboard_version FROM inspection_results WHERE id = 'legacy'"
+        )).one()
+        assert row.id == "legacy"
+        assert row.storyboard_version is None
+    engine.dispose()
+
+    command.downgrade(config, "20260801_16")
+    assert "storyboard_version" not in {
+        column["name"] for column in inspect(engine).get_columns("inspection_results")
+    }
+    engine.dispose()
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT count(*) FROM inspection_results")).scalar_one() == 1
+        assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
     engine.dispose()

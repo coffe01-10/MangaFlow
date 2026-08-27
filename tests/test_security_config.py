@@ -19,7 +19,7 @@ def test_dev_and_start_scripts_bind_loopback():
     assert "--hostname 127.0.0.1" in web["scripts"]["dev"]
     assert "--hostname 127.0.0.1" in web["scripts"]["start"]
     assert "--host 127.0.0.1" in root["scripts"]["dev:api"]
-    assert "--with-scheduler" in root["scripts"]["dev:worker"]
+    assert root["scripts"]["dev:worker"] == ".venv\\Scripts\\python.exe apps/api/run_worker.py"
     assert "--host 127.0.0.1" in root["scripts"]["serve:e2e:api"]
     assert "--hostname 127.0.0.1" in root["scripts"]["serve:e2e:web"]
     assert "0.0.0.0" not in web["scripts"]["dev"]

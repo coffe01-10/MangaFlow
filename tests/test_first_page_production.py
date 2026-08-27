@@ -276,6 +276,7 @@ def test_candidate_selection_allows_manual_text_confirmation_and_blocks_severe_i
         db_session.add(
             InspectionResult(
                 candidate_id=candidate.id,
+                storyboard_version=page.storyboard_version,
                 category=category,
                 outcome="PASS",
                 score=0.99,
@@ -285,6 +286,7 @@ def test_candidate_selection_allows_manual_text_confirmation_and_blocks_severe_i
     db_session.add(
         InspectionResult(
             candidate_id=candidate.id,
+            storyboard_version=page.storyboard_version,
             category="TEXT",
             outcome="MISMATCH",
             score=0.94,

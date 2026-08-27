@@ -856,6 +856,7 @@ class InspectionRead(BaseModel):
 
     id: str
     candidate_id: str | None
+    storyboard_version: int | None = None
     category: str
     outcome: str
     score: float | None

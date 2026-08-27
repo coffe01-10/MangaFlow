@@ -10,7 +10,7 @@
     "dev:full": "concurrently -n web,api,worker -c cyan,magenta,yellow \"npm run dev:web\" \"npm run dev:api\" \"npm run dev:worker\"",
     "dev:web": "npm run dev --workspace @mangaflow/web",
     "dev:api": ".venv\\Scripts\\python.exe -m uvicorn app.main:app --reload --app-dir apps/api --host 127.0.0.1 --port 8000",
-    "dev:worker": ".venv\\Scripts\\rq.exe worker --with-scheduler --path apps/api mangaflow",
+    "dev:worker": ".venv\\Scripts\\python.exe apps/api/run_worker.py",
     "build": "npm run build --workspace @mangaflow/web",
     "lint": "npm run lint --workspace @mangaflow/web && .venv\\Scripts\\python.exe -m ruff check apps/api tests",
     "test": ".venv\\Scripts\\python.exe -m pytest",

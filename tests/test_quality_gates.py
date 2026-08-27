@@ -1,3 +1,7 @@
+from datetime import timedelta
+
+from sqlalchemy import select
+
 from app.domain.states import PageStatus, Resolution
 from app.models import (
     Asset,
@@ -7,6 +11,7 @@ from app.models import (
     MangaPage,
     PageCandidate,
     Project,
+    utcnow,
 )
 from app.services.page_completion import build_page_production_readiness
 
@@ -67,10 +72,13 @@ def _ready_page(db_session, *, candidate_status="INSPECTED", continuity="PASSED"
 
 
 def _pass_all(db_session, candidate_id: str) -> None:
+    candidate = db_session.get(PageCandidate, candidate_id)
+    page = db_session.get(MangaPage, candidate.page_id)
     for category in ("SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"):
         db_session.add(
             InspectionResult(
                 candidate_id=candidate_id,
+                storyboard_version=page.storyboard_version,
                 category=category,
                 outcome="PASS",
                 severity="INFO",
@@ -83,7 +91,9 @@ def test_empty_inspections_are_not_production_ready(db_session):
     page, candidate = _ready_page(db_session)
     readiness = build_page_production_readiness(db_session, page)
     assert readiness.ready is False
-    assert any(item.code == "QUALITY_INSPECTION_REQUIRED" for item in readiness.blockers)
+    assert any(
+        item.code == "QUALITY_INSPECTION_REQUIRED" for item in readiness.blockers
+    )
 
 
 def test_single_category_pass_is_not_production_ready(db_session):
@@ -91,6 +101,7 @@ def test_single_category_pass_is_not_production_ready(db_session):
     db_session.add(
         InspectionResult(
             candidate_id=candidate.id,
+            storyboard_version=page.storyboard_version,
             category="CONTINUITY",
             outcome="PASS",
             severity="INFO",
@@ -100,7 +111,9 @@ def test_single_category_pass_is_not_production_ready(db_session):
     db_session.expire_all()
     readiness = build_page_production_readiness(db_session, page)
     assert readiness.ready is False
-    assert any(item.code == "QUALITY_INSPECTION_REQUIRED" for item in readiness.blockers)
+    assert any(
+        item.code == "QUALITY_INSPECTION_REQUIRED" for item in readiness.blockers
+    )
 
 
 def test_latest_failure_blocks_even_after_older_pass(db_session):
@@ -109,6 +122,7 @@ def test_latest_failure_blocks_even_after_older_pass(db_session):
     db_session.add(
         InspectionResult(
             candidate_id=candidate.id,
+            storyboard_version=page.storyboard_version,
             category="CHARACTER",
             outcome="MISMATCH",
             severity="ERROR",
@@ -126,3 +140,43 @@ def test_five_passing_categories_are_production_ready(db_session):
     readiness = build_page_production_readiness(db_session, page)
     assert readiness.ready is True
     assert readiness.blockers == []
+
+
+def test_equal_timestamp_failure_cannot_be_hidden_by_uuid_order(db_session):
+    page, candidate = _ready_page(db_session)
+    _pass_all(db_session, candidate.id)
+    passing = db_session.scalar(
+        select(InspectionResult).where(
+            InspectionResult.candidate_id == candidate.id,
+            InspectionResult.category == "CHARACTER",
+        )
+    )
+    passing.id = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+    db_session.add(
+        InspectionResult(
+            id="00000000-0000-0000-0000-000000000000",
+            candidate_id=candidate.id,
+            storyboard_version=page.storyboard_version,
+            category="CHARACTER",
+            outcome="MISMATCH",
+            created_at=passing.created_at,
+        )
+    )
+    db_session.commit()
+    assert not build_page_production_readiness(db_session, page).ready
+
+
+def test_newer_pass_can_replace_an_older_failure(db_session):
+    page, candidate = _ready_page(db_session)
+    db_session.add(
+        InspectionResult(
+            candidate_id=candidate.id,
+            storyboard_version=page.storyboard_version,
+            category="CHARACTER",
+            outcome="MISMATCH",
+            created_at=utcnow() - timedelta(days=1),
+        )
+    )
+    db_session.commit()
+    _pass_all(db_session, candidate.id)
+    assert build_page_production_readiness(db_session, page).ready

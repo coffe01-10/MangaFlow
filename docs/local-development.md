@@ -63,7 +63,9 @@ docker compose up -d
 npm run dev:full
 ```
 
-`start-dev.ps1` 会把 `.env` 中的 `REDIS_URL` 注入当前进程；`dev:worker` 使用 RQ 的 `REDIS_URL` 环境变量。API 与 Worker 的地址、密码和队列名必须一致。
+`dev:worker` 通过 `apps/api/run_worker.py` 启动，使用与 API 相同的 `Settings` 读取项目根目录 `.env` 中的 `REDIS_URL` 和 `QUEUE_NAME`；不需要先运行 `start-dev.ps1` 或手动导出密码。启动入口启用调度器，Windows 使用 RQ `SpawnWorker`，其他平台保持默认 Worker。密码只传入进程环境，不出现在命令行参数中。API 与 Worker 的地址、密码和队列名必须一致。
+
+升级到质检版本迁移 `20260827_17` 时，先运行正常的 `scripts/start-dev.ps1` 启动流程，或在停止旧 API/Worker 后执行 `.venv\Scripts\python.exe -m alembic -c apps/api/alembic.ini upgrade head`。新迁移只新增检查对应的分镜版本字段，不删除旧检查；没有版本信息的历史结果保留供查看，但不能再作为当前分镜的生产通过依据，需要重新执行五类检查。
 
 > 这些模式已存在，但不能据此保证所有取消、重试和并发等待场景可靠。当前任务状态与调度问题按 P1-7、P1-9～P1-11 跟踪，见[路线图](roadmap.md)。
 

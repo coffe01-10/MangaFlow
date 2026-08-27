@@ -1,3 +1,4 @@
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -23,7 +24,7 @@ from app.models import (
     SourceRevision,
     SourceSegment,
 )
-from app.request_limits import SOURCE_UPLOAD_OPENAPI, parse_single_file_form
+from app.request_limits import SOURCE_UPLOAD_OPENAPI, ParsedUpload, parse_single_file_form
 from app.schemas import (
     BeatRead,
     BeatUpdate,
@@ -91,22 +92,27 @@ def import_pasted_source(
     )
 
 
+async def _parse_source_upload(request: Request) -> AsyncIterator[ParsedUpload]:
+    parsed = await parse_single_file_form(request, required_fields=(), optional_fields=("title",))
+    try:
+        yield parsed
+    finally:
+        await parsed.file.close()
+
+
 @router.post(
     "/projects/{project_id}/sources/upload",
     response_model=SourceImportRead,
     status_code=status.HTTP_201_CREATED,
     openapi_extra=SOURCE_UPLOAD_OPENAPI,
 )
-async def upload_source(
+def upload_source(
     project_id: str,
-    request: Request,
+    parsed: ParsedUpload = Depends(_parse_source_upload),
     db: Session = Depends(get_db),
 ) -> SourceImportRead:
     _project(db, project_id)
     settings = get_settings()
-    parsed = await parse_single_file_form(
-        request, required_fields=(), optional_fields=("title",)
-    )
     title = parsed.texts.get("title") or "正文"
     file = parsed.file
     suffix = Path(file.filename or "source.txt").suffix.lower()
