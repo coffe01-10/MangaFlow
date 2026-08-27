@@ -93,8 +93,17 @@ class DashboardTotals(BaseModel):
     pending_job_count: int
 
 
+class DashboardAIOverview(BaseModel):
+    """首页徽标所需的最小模型/供应商摘要，避免额外的首屏请求。"""
+
+    enabled_model_count: int = 0
+    healthy_connection_count: int = 0
+    configured_connection_count: int = 0
+
+
 class ProjectDashboardRead(BaseModel):
     totals: DashboardTotals
+    ai_overview: DashboardAIOverview = DashboardAIOverview()
     projects: list[ProjectDashboardItem]
 
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { AppShell, GlobalNav } from "@/components/shell";
-import { api, type DashboardProject, type Project, type ProviderProfile, type VertexStatus } from "@/lib/api";
+import { api, type DashboardAIOverview, type DashboardProject, type Project, type VertexStatus } from "@/lib/api";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowRight,
@@ -17,15 +17,15 @@ import {
   X,
 } from "lucide-react";
 import Link from "next/link";
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useState } from "react";
 
 const modeLabel = { AUTO: "自动", DIRECTOR: "导演", SEMI_AUTO: "半自动" } as const;
 
-function ConnectionBadge({ status, providers }: { status?: VertexStatus; providers?: ProviderProfile[] }) {
-  const connections = providers?.flatMap((provider) => provider.connections) ?? [];
-  const healthy = connections.filter((connection) => connection.health_state === "HEALTHY").length;
+function ConnectionBadge({ status, summary }: { status?: VertexStatus; summary?: DashboardAIOverview }) {
+  const healthy = summary?.healthy_connection_count ?? 0;
+  const configured = summary?.configured_connection_count ?? 0;
   if (healthy) return <span className="status-chip success"><i />{healthy} 个 AI 连接健康</span>;
-  if (connections.some((connection) => connection.configured)) return <span className="status-chip warning"><i />供应商待验证</span>;
+  if (configured > 0) return <span className="status-chip warning"><i />供应商待验证</span>;
   if (!status) return <span className="status-chip muted"><i />检测中</span>;
   if (!status.configured) return <span className="status-chip danger"><i />未配置</span>;
   if (status.health_state === "HEALTHY") return <span className="status-chip success"><i />Vertex 已验证</span>;
@@ -156,13 +156,11 @@ export default function HomePage() {
   const queryClient = useQueryClient();
   const dashboard = useQuery({ queryKey: ["dashboard"], queryFn: api.dashboard });
   const vertex = useQuery({ queryKey: ["vertex-status"], queryFn: api.vertexStatus });
-  const models = useQuery({ queryKey: ["models"], queryFn: api.models });
-  const providers = useQuery({ queryKey: ["providers"], queryFn: api.providers });
   const verify = useMutation({
     mutationFn: () => api.verifyVertex("CREDENTIALS"),
-    onSuccess: (result) => { queryClient.setQueryData(["vertex-status"], result); queryClient.invalidateQueries({ queryKey: ["providers"] }); },
+    onSuccess: (result) => { queryClient.setQueryData(["vertex-status"], result); queryClient.invalidateQueries({ queryKey: ["dashboard"] }); },
   });
-  const modelMap = useMemo(() => new Map(models.data?.map((model) => [model.logical_alias, model])), [models.data]);
+  const aiOverview = dashboard.data?.ai_overview;
   const projectCount = dashboard.data?.totals.project_count ?? 0;
 
   return (
@@ -172,7 +170,7 @@ export default function HomePage() {
         <div className="topbar-title"><span>MANGAFLOW / PRODUCTION DESK</span><strong>漫画生产台</strong></div>
         <div className="topbar-actions">
           <GlobalNav />
-          <ConnectionBadge status={vertex.data} providers={providers.data} />
+          <ConnectionBadge status={vertex.data} summary={aiOverview} />
           <Link className="button ghost compact" href="/settings"><Settings size={16} />系统设置</Link>
           <button className="button ink compact" onClick={() => setCreating(true)}><Plus size={16} />新建项目</button>
         </div>
@@ -189,7 +187,7 @@ export default function HomePage() {
             <div><span>活跃项目</span><strong>{String(projectCount).padStart(2, "0")}</strong><small>PROJECTS</small></div>
             <div><span>漫画页面</span><strong>{String(dashboard.data?.totals.page_count ?? 0).padStart(2, "0")}</strong><small>{dashboard.data?.totals.selected_page_count ?? 0} 页已采用</small></div>
             <div><span>待复查</span><strong>{String(dashboard.data?.totals.review_page_count ?? 0).padStart(2, "0")}</strong><small>按页面去重</small></div>
-            <div className="metric-accent"><Gauge size={17} /><span>AI 模型目录</span><strong>{[...modelMap.values()].filter((model) => model.enabled).length} 个可用模型</strong><small>图片显式选择 · 文字可自动路由</small></div>
+            <div className="metric-accent"><Gauge size={17} /><span>AI 模型目录</span><strong>{aiOverview?.enabled_model_count ?? 0} 个可用模型</strong><small>图片显式选择 · 文字可自动路由</small></div>
           </div>
 
           <section className="projects-section">

@@ -544,7 +544,7 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
     <main className={styles.studio}>
       <header className={styles.topbar}>
         <div className={styles.crumb}><Link href={`/projects/${projectId}/source`}><ArrowLeft size={16} />项目</Link><i /><strong>{project.data?.name}</strong><span>流程编排</span></div>
-        <div className={styles.workflowSelect}><GitBranch size={15} /><select value={activeWorkflow.id} onChange={(event) => { initializedId.current = null; setActiveId(event.target.value); }}><option value={activeWorkflow.id}>{activeWorkflow.name}</option>{workflows.data?.filter((item) => item.id !== activeWorkflow.id).map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select><ChevronDown size={14} /></div>
+        <div className={styles.workflowSelect}><GitBranch size={15} /><select aria-label="选择工作流" value={activeWorkflow.id} onChange={(event) => { initializedId.current = null; setActiveId(event.target.value); }}><option value={activeWorkflow.id}>{activeWorkflow.name}</option>{workflows.data?.filter((item) => item.id !== activeWorkflow.id).map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select><ChevronDown size={14} /></div>
         <div className={styles.topActions}>
           <button onClick={() => downloadJson(`${activeWorkflow.name}.json`, { schema: "mangaflow.workflow.v2", name: activeWorkflow.name, description: activeWorkflow.description, graph: buildGraph() })}><Download size={14} />导出</button>
           <label><Upload size={14} />导入<input type="file" accept="application/json,.json" onChange={importFile} /></label>
@@ -560,7 +560,7 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
 
       <section className={`${styles.body} ${libraryOpen ? "" : styles.libraryClosed} ${inspectorOpen ? "" : styles.inspectorClosed}`}>
         <aside className={styles.library}>
-          <header><div><span>NODE LIBRARY</span><strong>节点库</strong></div><button onClick={() => setLibraryOpen(false)}><X size={14} /></button></header>
+          <header><div><span>NODE LIBRARY</span><strong>节点库</strong></div><button aria-label="关闭节点库" onClick={() => setLibraryOpen(false)}><X size={14} /></button></header>
           <div className={styles.libraryScroll}>{groupedCatalog.map(([category, items]) => <section key={category}><span>{categoryLabel[category] ?? category}</span>{items.map((item) => <button key={item.type} onClick={() => addNode(item)}><Plus size={13} /><div><strong>{item.label}</strong><small>{item.description}</small></div></button>)}</section>)}</div>
         </aside>
 
@@ -596,11 +596,11 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
             <MiniMap pannable zoomable className={styles.minimap} nodeColor={(node) => ({ input: "#397b68", control: "#b77c26", output: "#b94735", quality: "#7862a4", agent: "#326b91" })[nodeTone((node.data as StudioNodeData).graphNode.type)]} />
             <Controls showInteractive={false} />
           </ReactFlow>
-          {validation.length ? <div className={styles.validation}><CircleAlert size={15} /><div>{validation.map((message) => <span key={message}>{message}</span>)}</div><button onClick={() => setValidation([])}><X size={13} /></button></div> : null}
+          {validation.length ? <div className={styles.validation}><CircleAlert size={15} /><div>{validation.map((message) => <span key={message}>{message}</span>)}</div><button aria-label="清除校验提示" onClick={() => setValidation([])}><X size={13} /></button></div> : null}
         </section>
 
         <aside className={styles.inspector}>
-          <header><div><span>INSPECTOR</span><strong>属性面板</strong></div><button onClick={() => setInspectorOpen(false)}><X size={14} /></button></header>
+          <header><div><span>INSPECTOR</span><strong>属性面板</strong></div><button aria-label="关闭属性面板" onClick={() => setInspectorOpen(false)}><X size={14} /></button></header>
           {selected ? <div className={styles.inspectorForm}>
             <label>节点名称<input value={selected.data.graphNode.name} onChange={(event) => updateSelected({ name: event.target.value })} /></label>
             <label>节点类型<input value={selected.data.graphNode.type} disabled /></label>
@@ -618,7 +618,7 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
       </section>
 
       <footer className={styles.runner}>
-        <div className={styles.runScope}><span>运行范围</span><select value={scopeType} onChange={(event) => { const next = event.target.value as "CHAPTER" | "PAGE"; setScopeType(next); setScopeId(next === "CHAPTER" ? chapters.data?.[0]?.id ?? "" : pages.data?.[0]?.id ?? ""); }}><option value="CHAPTER">章节</option><option value="PAGE">页面</option></select><select value={effectiveScopeId} onChange={(event) => setScopeId(event.target.value)}>{scopeType === "CHAPTER" ? chapters.data?.map((chapter) => <option value={chapter.id} key={chapter.id}>{chapter.title}</option>) : pages.data?.map((page) => <option value={page.id} key={page.id}>第 {page.page_number} 页</option>)}</select></div>
+        <div className={styles.runScope}><span>运行范围</span><select aria-label="运行范围类型" value={scopeType} onChange={(event) => { const next = event.target.value as "CHAPTER" | "PAGE"; setScopeType(next); setScopeId(next === "CHAPTER" ? chapters.data?.[0]?.id ?? "" : pages.data?.[0]?.id ?? ""); }}><option value="CHAPTER">章节</option><option value="PAGE">页面</option></select><select aria-label="运行目标" value={effectiveScopeId} onChange={(event) => setScopeId(event.target.value)}>{scopeType === "CHAPTER" ? chapters.data?.map((chapter) => <option value={chapter.id} key={chapter.id}>{chapter.title}</option>) : pages.data?.map((page) => <option value={page.id} key={page.id}>第 {page.page_number} 页</option>)}</select></div>
         <div className={styles.runState}><i className={displayedRun?.status === "RUNNING" ? styles.running : ""} /><span>{displayedRun ? `运行 ${displayedRun.status} · ${displayedRun.node_runs.filter((item) => item.status === "COMPLETED").length}/${displayedRun.node_runs.length}` : "尚未运行已发布版本"}</span></div>
         <div className={styles.runActions}><button disabled={!selectedId || startRun.isPending} onClick={() => startRun.mutate("NODE")}><Play size={13} />运行节点</button><button disabled={!selectedId || startRun.isPending} onClick={() => startRun.mutate("FROM")}><Play size={13} />从这里运行</button>{displayedRun?.status === "RUNNING" ? <button onClick={async () => { const run = await api.cancelWorkflowRun(displayedRun.id); setCurrentRun(run); }}><Pause size={13} />取消</button> : null}<button className={styles.runPrimary} disabled={startRun.isPending} onClick={() => startRun.mutate("FULL")}><Play size={14} />运行工作流</button></div>
         {displayedRun?.node_runs.filter((run) => run.status === "WAITING_APPROVAL").map((run) => <div className={styles.approval} key={run.id}><strong>{run.node_type === "generator.page" ? "单页生成等待选择模型" : "采用候选后继续"}</strong>{run.node_type === "generator.page" ? <><select value={drawModel} onChange={(event) => setDrawModel(event.target.value as ImageModelAlias | "")}><option value="">选择图片模型</option>{imageModels.map((model) => <option key={model.catalog_id} value={model.logical_alias}>{model.provider} · {model.display_name}</option>)}</select><select value={drawResolution} onChange={(event) => setDrawResolution(event.target.value as Resolution)}><option>1K</option><option>2K</option><option>4K</option></select></> : <Link href={`/projects/${projectId}/generate`}>前往采用</Link>}<button disabled={approveNode.isPending || (run.node_type === "generator.page" && !drawModel)} onClick={() => approveNode.mutate(run)}>确认继续</button></div>)}

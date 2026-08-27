@@ -36,17 +36,17 @@
 .inspector { border-left: 1px solid var(--flow-line); }
 .library > header, .inspector > header { height: 53px; padding: 0 12px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--flow-line); }
 .library > header div, .inspector > header div { display: grid; gap: 2px; }
-.library > header span, .inspector > header span { color: #6f7972; font-size: 7px; letter-spacing: .15em; }
+.library > header span, .inspector > header span { color: #a4ada7; font-size: 7px; letter-spacing: .15em; }
 .library > header strong, .inspector > header strong { font-family: var(--serif); font-size: 13px; }
-.library header button, .inspector header button { border: 0; background: transparent; color: #727a75; cursor: pointer; }
+.library header button, .inspector header button { border: 0; background: transparent; color: #a4ada7; cursor: pointer; }
 .libraryScroll { height: calc(100% - 53px); overflow: auto; padding: 12px; }
 .libraryScroll section { display: grid; gap: 5px; margin-bottom: 16px; }
-.libraryScroll section > span { margin-bottom: 3px; color: #778079; font-size: 7px; letter-spacing: .13em; }
+.libraryScroll section > span { margin-bottom: 3px; color: #a4ada7; font-size: 7px; letter-spacing: .13em; }
 .libraryScroll button { min-height: 54px; display: grid; grid-template-columns: 22px 1fr; align-items: center; gap: 5px; padding: 8px; border: 1px solid var(--flow-line); background: #252a27; color: #e9e6dd; text-align: left; cursor: pointer; }
 .libraryScroll button:hover { border-color: #6e7771; background: #2b302d; }
 .libraryScroll button div { display: grid; gap: 4px; }
 .libraryScroll button strong { font-size: 9px; }
-.libraryScroll button small { color: #778079; font-size: 7px; line-height: 1.35; }
+.libraryScroll button small { color: #a4ada7; font-size: 7px; line-height: 1.35; }
 .canvas { position: relative; min-width: 0; background: #171a18; }
 .canvasToolbar { position: absolute; z-index: 8; top: 12px; left: 12px; display: flex; background: #232724; box-shadow: 0 5px 20px rgba(0,0,0,.2); }
 .canvasToolbar button { min-height: 31px; display: flex; gap: 5px; align-items: center; padding: 0 8px; border: 1px solid var(--flow-line); border-right: 0; background: transparent; color: #bfc4c0; cursor: pointer; font-size: 7px; }
@@ -81,7 +81,7 @@
 .inspectorForm label { display: grid; gap: 5px; margin-bottom: 11px; color: #89918c; font-size: 7px; }
 .inspectorForm input, .inspectorForm select, .inspectorForm textarea { width: 100%; min-height: 32px; padding: 7px 8px; border: 1px solid var(--flow-line); outline: 0; background: #191d1a; color: #e4e2db; font-size: 8px; }
 .inspectorForm textarea { min-height: 72px; resize: vertical; }
-.inspectorForm input:disabled { color: #727a75; }
+.inspectorForm input:disabled { color: #a4ada7; }
 .noSelection { min-height: 240px; display: grid; place-content: center; justify-items: center; gap: 8px; padding: 28px; color: #69716c; text-align: center; }
 .noSelection strong { color: #aaaFAA; font-family: var(--serif); font-size: 12px; }
 .noSelection ol { max-width: 210px; margin: 0; padding-left: 22px; color: #9aa39d; font-size: 12px; line-height: 1.9; text-align: left; }
@@ -91,12 +91,12 @@
 .nodeRuntime pre { max-height: 120px; margin: 0; padding: 8px; overflow: auto; background: #111411; color: #aeb8b1; font-size: 11px; white-space: pre-wrap; }
 .nodeRuntime em { color: #dc8b7e; font-size: 12px; font-style: normal; }
 .versionList { border-top: 1px solid var(--flow-line); }
-.versionList > header { height: 37px; padding: 0 10px; display: flex; justify-content: space-between; align-items: center; color: #808983; font-size: 7px; }
+.versionList > header { height: 37px; padding: 0 10px; display: flex; justify-content: space-between; align-items: center; color: #b8c0ba; font-size: 7px; }
 .versionList button { width: 100%; min-height: 32px; display: grid; grid-template-columns: 18px 36px 1fr; align-items: center; border: 0; border-top: 1px solid #303632; background: transparent; color: #b9bfbb; text-align: left; cursor: pointer; font-size: 7px; }
-.versionList small { color: #6f7772; text-align: right; padding-right: 8px; }
+.versionList small { color: #a4ada7; text-align: right; padding-right: 8px; }
 .runner { position: fixed; z-index: 20; left: 0; right: 0; bottom: 0; min-height: 60px; display: flex; align-items: center; gap: 14px; padding: 8px 14px; border-top: 1px solid #414640; background: #111311; box-shadow: 0 -8px 30px rgba(0,0,0,.25); }
 .runScope { display: flex; align-items: center; gap: 5px; }
-.runScope > span { color: #717973; font-size: 7px; }
+.runScope > span { color: #a4ada7; font-size: 7px; }
 .runScope select, .approval select { height: 30px; border: 1px solid #3b413d; background: #1c201d; color: #d5d8d5; font-size: 7px; }
 .runState { min-width: 150px; display: flex; align-items: center; gap: 7px; color: #8b938e; font-size: 7px; }
 .runState i { width: 7px; height: 7px; border-radius: 50%; background: #5d655f; }
