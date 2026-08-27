@@ -12,6 +12,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, CircleAlert, LoaderCircle, Palette, Plus, RotateCcw, Sparkles, Trash2 } from "lucide-react";
 import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
+import { activePollInterval } from "@/lib/task-status";
 
 interface CharacterConceptDraft {
   appearance: string;
@@ -102,12 +103,12 @@ export function CharacterConceptPanel({
     queryKey: ["asset-candidates", batch?.id],
     queryFn: () => api.candidates(batch!.id),
     enabled: Boolean(batch),
-    refetchInterval: (query) => (query.state.data ?? []).some((item) => ["WAITING", "QUEUED", "PREPARING", "GENERATING"].includes(item.status)) ? 2000 : false,
+    refetchInterval: (query) => activePollInterval(query.state.data, 2000),
   });
   const jobs = useQuery({
     queryKey: ["jobs", projectId, false],
     queryFn: () => api.jobs(projectId),
-    refetchInterval: (query) => (query.state.data ?? []).some((job) => ["WAITING", "QUEUED", "PREPARING", "GENERATING", "RUNNING"].includes(job.status)) ? 3000 : false,
+    refetchInterval: (query) => activePollInterval(query.state.data, 3000),
   });
 
   const queueConcept = () => {
@@ -233,7 +234,7 @@ export function StyleProductionPanel({
     queryKey: ["asset-candidates", batch?.id],
     queryFn: () => api.candidates(batch!.id),
     enabled: Boolean(batch),
-    refetchInterval: (query) => (query.state.data ?? []).some((item) => ["WAITING", "QUEUED", "PREPARING", "GENERATING"].includes(item.status)) ? 2000 : false,
+    refetchInterval: (query) => activePollInterval(query.state.data, 2000),
   });
   const hasReadyStyleTest = Boolean(candidates.data?.some((candidate) => candidate.variant === "STYLE_TEST" && candidate.status === "READY"));
   useEffect(() => {

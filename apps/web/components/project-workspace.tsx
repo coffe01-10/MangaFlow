@@ -19,6 +19,12 @@ import {
   type StyleProfile,
 } from "@/lib/api";
 import { getPageGenerationIssue, getPageStructureIssue } from "@/lib/generation-rules";
+import {
+  activePollInterval,
+  hasActiveItem,
+  isActiveTaskStatus,
+  isTerminalTaskStatus,
+} from "@/lib/task-status";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
@@ -366,7 +372,7 @@ export default function ProjectWorkspace({
     queryKey: ["jobs", id, showArchivedJobs],
     queryFn: () => api.jobs(id, showArchivedJobs),
     enabled: ["assets", "jobs", "generate"].includes(section),
-    refetchInterval: (query) => (query.state.data ?? []).some((job) => ["WAITING", "QUEUED", "PREPARING", "GENERATING", "RUNNING"].includes(job.status)) ? 3000 : false,
+    refetchInterval: (query) => activePollInterval(query.state.data, 3000),
   });
   const exportsQuery = useQuery({ queryKey: ["exports", id], queryFn: () => api.exports(id), enabled: section === "library" });
   const activeChapterId = selectedChapterId ?? chapters.data?.[0]?.id ?? null;
@@ -392,13 +398,12 @@ export default function ProjectWorkspace({
     queryFn: () => api.generationWorkbench(selectedPageEntry!.id),
     enabled: section === "generate" && Boolean(selectedPageEntry),
     refetchInterval: (query) => {
-      const generating = (query.state.data?.candidates ?? []).some((candidate) =>
-        ["WAITING", "QUEUED", "PREPARING", "GENERATING"].includes(candidate.status));
+      const generating = hasActiveItem(query.state.data?.candidates);
       const candidateIds = new Set((query.state.data?.candidates ?? []).map((candidate) => candidate.id));
       const checking = (jobs.data ?? []).some((job) =>
         job.job_type === "PAGE_INSPECT"
         && candidateIds.has(job.target_id)
-        && !["COMPLETED", "FAILED", "CANCELLED"].includes(job.status));
+        && !isTerminalTaskStatus(job.status));
       return generating || checking ? 3000 : false;
     },
   });
@@ -429,8 +434,7 @@ export default function ProjectWorkspace({
     queryKey: ["candidates", viewedBatch?.id],
     queryFn: () => api.candidates(viewedBatch!.id),
     enabled: section === "generate" && Boolean(viewedBatch),
-    refetchInterval: (query) => (query.state.data ?? []).some((candidate) =>
-      ["WAITING", "QUEUED", "PREPARING", "GENERATING"].includes(candidate.status)) ? 3000 : false,
+    refetchInterval: (query) => activePollInterval(query.state.data, 3000),
   });
   const generationStoryboard = { data: workbench.data?.storyboard, isLoading: workbench.isLoading };
   const pageReadiness = { data: workbench.data?.readiness, isLoading: workbench.isLoading, error: workbench.error };
@@ -448,7 +452,7 @@ export default function ProjectWorkspace({
     queryKey: ["asset-candidates", currentAssetBatch?.id],
     queryFn: () => api.candidates(currentAssetBatch!.id),
     enabled: section === "assets" && assetView === "outfits" && Boolean(currentAssetBatch),
-    refetchInterval: (query) => (query.state.data ?? []).some((candidate) => ["WAITING", "QUEUED", "PREPARING", "GENERATING"].includes(candidate.status)) ? 2000 : false,
+    refetchInterval: (query) => activePollInterval(query.state.data, 2000),
   });
   const inspections = useQuery({
     queryKey: ["inspections", reviewCandidateId],
@@ -458,7 +462,7 @@ export default function ProjectWorkspace({
       const checking = (jobs.data ?? []).some((job) =>
         job.job_type === "PAGE_INSPECT"
         && job.target_id === reviewCandidateId
-        && !["COMPLETED", "FAILED", "CANCELLED"].includes(job.status));
+        && !isTerminalTaskStatus(job.status));
       return checking || !(query.state.data ?? []).length ? 2500 : false;
     },
   });
@@ -1172,11 +1176,10 @@ export default function ProjectWorkspace({
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  const activeJobStatuses = new Set(["WAITING", "QUEUED", "PREPARING", "UPLOADING_REFERENCES", "GENERATING", "CONSISTENCY_CHECKING", "REPAIRING"]);
-  const activeJobs = (jobs.data ?? []).filter((job) => activeJobStatuses.has(job.status));
+  const activeJobs = (jobs.data ?? []).filter((job) => isActiveTaskStatus(job.status));
   const failedJobs = (jobs.data ?? []).filter((job) => job.status === "FAILED");
   const completedJobGroups = Object.entries(
-    (jobs.data ?? []).filter((job) => !activeJobStatuses.has(job.status) && job.status !== "FAILED").reduce<Record<string, Job[]>>((groups, job) => {
+    (jobs.data ?? []).filter((job) => !isActiveTaskStatus(job.status) && job.status !== "FAILED").reduce<Record<string, Job[]>>((groups, job) => {
       const date = new Date(job.created_at).toLocaleDateString("zh-CN");
       groups[date] = [...(groups[date] ?? []), job];
       return groups;
@@ -1194,7 +1197,7 @@ export default function ProjectWorkspace({
       <div className="job-type"><span>{jobLabels[job.job_type] ?? job.job_type}</span><strong>{job.status}</strong></div>
       {showProgress && <div className="job-progress"><i><b style={{ width: `${job.progress}%` }} /></i><span>{job.progress}% · 尝试 {job.attempt_count}/{job.max_attempts}</span></div>}
       <div className="job-detail"><span>{job.workflow_node_id ? `节点 ${job.workflow_node_id}` : job.model_alias ? modelOptions.find((item) => item.alias === job.model_alias)?.name ?? job.model_alias : "系统任务"}</span><small>{job.duration_ms === null ? "尚未完成" : `耗时 ${(job.duration_ms / 1000).toFixed(1)} 秒`} · {job.estimated_cost === null ? "费用暂不可估算" : `预估 ¥${job.estimated_cost.toFixed(3)}`}</small>{job.error_message && <em>{job.error_code ? `${job.error_code} · ` : ""}{job.error_message}</em>}</div>
-      <div className="job-actions" onClick={(event) => event.stopPropagation()}>{resultUrl && <button className="job-result-action" onClick={showResult}><Maximize2 size={12} />查看结果</button>}{!showArchivedJobs && activeJobStatuses.has(job.status) && <button onClick={() => cancelJob.mutate(job.id)}>取消</button>}{!showArchivedJobs && job.status === "FAILED" && <button onClick={() => retryJob.mutate(job.id)}><RotateCcw size={12} />重试</button>}{!showArchivedJobs && terminal && <button onClick={() => archiveJob.mutate(job.id)}><Archive size={12} />归档</button>}{showArchivedJobs && <button onClick={() => restoreJob.mutate(job.id)}><RotateCcw size={12} />恢复</button>}{showArchivedJobs && ["FAILED", "CANCELLED"].includes(job.status) && <button className="danger-action" onClick={() => { if (window.confirm("仅无候选、生成记录、工作流或任务依赖的失败任务可以彻底删除。继续吗？")) deleteJob.mutate(job.id); }}><Trash2 size={12} />彻底删除</button>}</div>
+      <div className="job-actions" onClick={(event) => event.stopPropagation()}>{resultUrl && <button className="job-result-action" onClick={showResult}><Maximize2 size={12} />查看结果</button>}{!showArchivedJobs && isActiveTaskStatus(job.status) && <button onClick={() => cancelJob.mutate(job.id)}>取消</button>}{!showArchivedJobs && job.status === "FAILED" && <button onClick={() => retryJob.mutate(job.id)}><RotateCcw size={12} />重试</button>}{!showArchivedJobs && terminal && <button onClick={() => archiveJob.mutate(job.id)}><Archive size={12} />归档</button>}{showArchivedJobs && <button onClick={() => restoreJob.mutate(job.id)}><RotateCcw size={12} />恢复</button>}{showArchivedJobs && ["FAILED", "CANCELLED"].includes(job.status) && <button className="danger-action" onClick={() => { if (window.confirm("仅无候选、生成记录、工作流或任务依赖的失败任务可以彻底删除。继续吗？")) deleteJob.mutate(job.id); }}><Trash2 size={12} />彻底删除</button>}</div>
     </article>;
   }
 
