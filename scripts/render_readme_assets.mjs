@@ -11,7 +11,12 @@ const args = process.argv.slice(2);
 if (args.some((arg) => !["--force", "--check"].includes(arg)) || args.length > 1) {
   throw new Error("Usage: node scripts/render_readme_assets.mjs [--force | --check]");
 }
-const specs = [["overview", 1840], ["overview-mobile", 860]];
+const specs = [
+  ["overview", 1840],
+  ["overview-mobile", 860],
+  ["overview-en", 1840],
+  ["overview-mobile-en", 860],
+];
 if (!args.length) {
   for (const [name] of specs) {
     const exists = await access(path.join(outputRoot, `${name}.png`)).then(() => true, () => false);

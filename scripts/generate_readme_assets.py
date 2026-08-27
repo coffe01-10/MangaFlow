@@ -179,8 +179,15 @@ STEPS = [
     ("校对与成品", "人工采用 / 视觉检查", "单页输出与整章导出", "HUMAN REVIEW", GREEN),
 ]
 
+ENGLISH_STEPS = [
+    ("Story & cast", "Import & trace source", "Cast / outfits / style", "INPUT", INK),
+    ("Storyboard", "Script / pages / panels", "Confirm board revision", "STORYBOARD", GREEN),
+    ("One page", "One candidate per run", "Choose model & refs", "GENERATION", RED),
+    ("Review & export", "Proofread / visual QA", "Page & chapter export", "HUMAN REVIEW", GREEN),
+]
 
-def overview(mobile=False):
+
+def overview(mobile=False, english=False):
     width, height = (430, 904) if mobile else (920, 620)
     body = (
         '<style>text{font-family:"Microsoft YaHei","Noto Sans CJK SC",'
@@ -195,7 +202,9 @@ def overview(mobile=False):
     body += text(
         margin,
         80,
-        "一段原文，一页漫画。" if mobile else "从一段原文，到一页漫画。",
+        ("From story to manga." if mobile else "From a story to a manga page.")
+        if english
+        else ("一段原文，一页漫画。" if mobile else "从一段原文，到一页漫画。"),
         27 if mobile else 36,
         INK,
         700,
@@ -203,13 +212,28 @@ def overview(mobile=False):
     body += text(
         margin,
         112,
-        "流程示意 · 非界面截图" if mobile else "AI 处理解析与绘图，你负责设定、校对与采用。",
-        16 if mobile else 18,
+        (
+            "Workflow diagram · not a screenshot"
+            if mobile
+            else "AI helps parse and draw. You shape, proofread and choose."
+        )
+        if english
+        else ("流程示意 · 非界面截图" if mobile else "AI 处理解析与绘图，你负责设定、校对与采用。"),
+        (14 if english else 16) if mobile else 18,
         MUTED,
     )
     if not mobile:
-        body += text(888, 36, "流程示意 · 非界面截图", 14, MUTED, anchor="end")
-    for index, (title, line1, line2, label, accent) in enumerate(STEPS):
+        body += text(
+            888,
+            36,
+            "Workflow diagram · not a screenshot" if english else "流程示意 · 非界面截图",
+            14,
+            MUTED,
+            anchor="end",
+        )
+    for index, (title, line1, line2, label, accent) in enumerate(
+        ENGLISH_STEPS if english else STEPS
+    ):
         x, y, w, h = (
             (24, 142 + index * 150, 382, 128) if mobile else (32 + index * 220, 144, 196, 280)
         )
@@ -217,7 +241,7 @@ def overview(mobile=False):
         body += rect(x, y, w, 4, accent)
         if mobile:
             body += text(x + 16, y + 34, f"0{index + 1}", 22, accent, 700)
-            body += text(x + 68, y + 35, title, 24, INK, 700)
+            body += text(x + 68, y + 35, title, 22 if english else 24, INK, 700)
             body += text(x + 68, y + 68, line1, 16, MUTED)
             body += text(x + 68, y + 95, line2, 16, MUTED)
             body += (
@@ -232,34 +256,99 @@ def overview(mobile=False):
             body += (
                 f'<g transform="translate({x + 58},{y + 49})">' + page_icon(index, accent) + "</g>"
             )
-            body += text(x + 16, y + 176, title, 25, INK, 700)
-            body += text(x + 16, y + 206, line1, 16, MUTED)
-            body += text(x + 16, y + 231, line2, 16, MUTED)
+            body += text(x + 16, y + 176, title, 20 if english else 25, INK, 700)
+            body += text(x + 16, y + 206, line1, 14 if english else 16, MUTED)
+            body += text(x + 16, y + 231, line2, 14 if english else 16, MUTED)
             body += text(x + 16, y + 261, label, 11, accent, 700)
             if index < 3:
                 body += path(f"M{x + w + 6} 282h12m-5-5 5 5-5 5", RED)
     if mobile:
-        body += text(24, 766, "本地：SQLite + 文件目录", 18, INK, 600)
-        body += text(24, 797, "调用：配置的外部模型服务", 18, INK, 600)
+        body += text(
+            24, 766, "Local: SQLite + files" if english else "本地：SQLite + 文件目录", 18, INK, 600
+        )
+        body += text(
+            24,
+            797,
+            "Calls: configured model providers" if english else "调用：配置的外部模型服务",
+            18,
+            INK,
+            600,
+        )
         body += path("M24 820H406", LINE, 1)
-        body += text(24, 851, "逐页确认，不自动生成整章。", 18, INK, 700)
-        body += text(24, 881, "可靠性加固中，当前限制见路线图。", 15, RED)
+        body += text(
+            24,
+            851,
+            "One page at a time. You decide." if english else "逐页确认，不自动生成整章。",
+            18,
+            INK,
+            700,
+        )
+        body += text(
+            24,
+            881,
+            "Reliability fixes ongoing. See roadmap."
+            if english
+            else "可靠性加固中，当前限制见路线图。",
+            14 if english else 15,
+            RED,
+        )
     else:
-        for x, heading, detail in [
-            (32, "本地数据 / SQLite + 文件目录", "项目、版本、任务、素材与导出"),
-            (470, "外部模型 / API 与 Worker 调用", "按配置向供应商发送所需文本与图片"),
-        ]:
+        summaries = (
+            [
+                (32, "Local data / SQLite + files", "Projects, versions, jobs, assets and exports"),
+                (470, "External models / API + Worker", "Task text and images go to your provider"),
+            ]
+            if english
+            else [
+                (32, "本地数据 / SQLite + 文件目录", "项目、版本、任务、素材与导出"),
+                (470, "外部模型 / API 与 Worker 调用", "按配置向供应商发送所需文本与图片"),
+            ]
+        )
+        for x, heading, detail in summaries:
             body += rect(x, 458, 418, 70, WHITE, LINE)
             body += text(x + 18, 486, heading, 19, INK, 600)
             body += text(x + 18, 512, detail, 16, MUTED)
-        body += text(32, 569, "每页由你推进。不是无人值守的整章生成器。", 20, INK, 700)
-        body += text(32, 600, "可靠性加固中 · 取消、保存与质检边界见路线图", 16, RED)
+        body += text(
+            32,
+            569,
+            "You move each page forward. No unattended chapter generation."
+            if english
+            else "每页由你推进。不是无人值守的整章生成器。",
+            20,
+            INK,
+            700,
+        )
+        body += text(
+            32,
+            600,
+            "Reliability work in progress · see the roadmap for known limits."
+            if english
+            else "可靠性加固中 · 取消、保存与质检边界见路线图",
+            16,
+            RED,
+        )
     description = (
-        "原文与人物服装风格设定，进入剧本分页和分镜，再逐页生成一个候选；"
-        "人工校对采用和视觉检查后输出。数据保存在本地，AI 调用使用外部供应商。"
-        "这是业务流程示意，不是运行截图；任务可靠性、保存与质检仍有待修复问题。"
+        (
+            "Import the story and cast, outfit and style references; create scripts and "
+            "storyboards; generate one page candidate, then proofread, select, inspect and export. "
+            "Data is stored locally; AI calls use configured external providers. This is a "
+            "workflow diagram, not a screenshot. Known reliability, saving and inspection "
+            "issues remain."
+        )
+        if english
+        else (
+            "原文与人物服装风格设定，进入剧本分页和分镜，再逐页生成一个候选；"
+            "人工校对采用和视觉检查后输出。数据保存在本地，AI 调用使用外部供应商。"
+            "这是业务流程示意，不是运行截图；任务可靠性、保存与质检仍有待修复问题。"
+        )
     )
-    return document(width, height, "MangaFlow 漫画创作流程概览", description, body)
+    return document(
+        width,
+        height,
+        "MangaFlow production workflow" if english else "MangaFlow 漫画创作流程概览",
+        description,
+        body,
+    )
 
 
 def outputs():
@@ -271,6 +360,8 @@ def outputs():
         "badges/stage.svg": badge("STAGE", "MVP", RED, "MVP 阶段，可靠性加固中"),
         "overview.svg": overview(),
         "overview-mobile.svg": overview(mobile=True),
+        "overview-en.svg": overview(english=True),
+        "overview-mobile-en.svg": overview(mobile=True, english=True),
     }
 
 
