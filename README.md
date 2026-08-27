@@ -169,4 +169,4 @@ The linked deep-dive documents are primarily in Simplified Chinese.
 
 The repository does not currently declare a project license. Do not assume that MangaFlow is MIT-licensed.
 
-The README structure takes inspiration from [agy-staff](https://github.com/keli-wen/agy-staff): a centered brand area, two rows of local badges, an overview, use cases, and onboarding. The manga-page emblem, palette, and workflow diagrams are tailored to MangaFlow. Pixel glyphs are adapted from its MIT-licensed artwork; see the full [pixel-font license](assets/readme/LICENSE.pixel-font.txt). That attribution covers the reused material and does not replace a project license for MangaFlow.
+The README structure : a centered brand area, two rows of local badges, an overview, use cases, and onboarding. The manga-page emblem, palette, and workflow diagrams are tailored to MangaFlow. Pixel glyphs are adapted from its MIT-licensed artwork; see the full [pixel-font license](assets/readme/LICENSE.pixel-font.txt). That attribution covers the reused material and does not replace a project license for MangaFlow.

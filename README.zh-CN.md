@@ -167,4 +167,4 @@ docs/                 架构、进度、路线图与操作说明
 
 仓库目前未声明项目许可证，不应默认视为 MIT 授权项目。
 
-README 的图文组织参考 [agy-staff](https://github.com/keli-wen/agy-staff)：居中品牌区、两行本地徽章、概览、使用场景和上手路径。漫画页图标、项目配色与业务图为 MangaFlow 定制；像素字形沿用其 MIT 授权素材，完整声明见[像素字形许可证](assets/readme/LICENSE.pixel-font.txt)。该许可仅说明所复用素材的来源，不替代 MangaFlow 的项目许可证。
+README 的图文组织参考：居中品牌区、两行本地徽章、概览、使用场景和上手路径。漫画页图标、项目配色与业务图为 MangaFlow 定制；像素字形沿用其 MIT 授权素材，完整声明见[像素字形许可证](assets/readme/LICENSE.pixel-font.txt)。该许可仅说明所复用素材的来源，不替代 MangaFlow 的项目许可证。
