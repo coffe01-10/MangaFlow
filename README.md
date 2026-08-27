@@ -1,183 +1,176 @@
-# MangaFlow AI
+<p align="center">
+  <img src="assets/readme/logo.svg" width="440" alt="MangaFlow AI: a manga-page emblem and pixel wordmark">
+</p>
+<p align="center">
+  <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
+</p>
+<p align="center">
+  <a href="package.json"><img src="assets/readme/badges/node.svg" height="24" alt="Runtime: Node.js 22 or later"></a>
+  <a href="apps/api/pyproject.toml"><img src="assets/readme/badges/python.svg" height="24" alt="Runtime: Python 3.12 or later"></a>
+</p>
+<p align="center">
+  <a href="scripts/start-dev.ps1"><img src="assets/readme/badges/windows.svg" height="24" alt="Development entry point: Windows PowerShell"></a>
+  <a href="docs/roadmap.md"><img src="assets/readme/badges/stage.svg" height="24" alt="Project stage: MVP, with reliability fixes in progress"></a>
+</p>
+<p align="center"><strong>Turn stories into manga. Keep creative decisions in your hands.</strong></p>
 
-面向小说作者与漫画创作者的私有 AI 漫画生产工作台。MVP 已接通完整闭环：
+MangaFlow AI is a private, single-user AI manga workbench for novelists and manga creators. Keep source text, character and outfit references, storyboards, and page candidates in one traceable workflow. AI helps parse and draw; you move page by page, proofread, and choose which version to use.
 
-`完整原文 → 无损分段 → 剧本任务 → 动态分页 → 单页抽卡 → 人工校对并暂选 → 视觉检查通过 → 单页成品 → 整章导出`
+The workbench UI is primarily in Chinese. This repository provides English and Simplified Chinese READMEs, not a fully localized application.
 
-完整需求见 [`plan.md`](plan.md)，实际完成度见 [`docs/development-progress.md`](docs/development-progress.md)，主分支的后续优先级与稳定版本完成定义见 [`docs/roadmap.md`](docs/roadmap.md)。
+[How it works](#how-it-works) · [Quick start](#quick-start) · [Development and checks](#development-and-checks) · [Documentation](#documentation)
 
-## 已实现
+> [!IMPORTANT]
+> Reliability work is ongoing. The main workflow is implemented, but confirmed issues remain in cancellation and job scheduling, workflow saving, and inspection completeness. Do not treat this as a production-stable release. See the [main-branch roadmap](docs/roadmap.md) for impact and priorities.
 
-- Next.js 16 + React 19 中文创作工作台，FastAPI + SQLAlchemy API。
-- 粘贴、TXT、Markdown 原作导入；不可变修订、来源区间、无损片段和覆盖率校验。
-- 角色主要姓名、绰号、歧义冲突、参考图与服装/风格素材绑定。
-- 按原文长度动态分页，每页可选 3–5 格并支持动态错落版式，最多 8 个气泡、中文硬上限 180 字；总页数不设上限。
-- 分镜区分实际出镜、画外人物和仅被提及人物，道具独立保存；只有实际出镜人物要求人物与服装参考。
-- 页面统一 readiness 检查原文/剧本覆盖、人物与服装参考、彩色风格和实际执行器；供应商与模型能力由统一模型目录在排队前单独校验。
-- AI 概念设定图先作为草稿，人工确认后才同时成为人物与服装规范参考；彩色风格必须依次确认色板、测试图并激活。
-- 右至左分镜数据，以及原文、Scene、Beat、对白和页面之间的追溯关系。
-- 内置 20 余个供应商预设，可接入 OpenAI、Anthropic、Gemini、DeepSeek、OpenRouter、智谱 GLM、火山方舟、OpenCode Zen 等，也可新增自定义兼容供应商。
-- 文字模型与图片模型分目录管理；每个候选可显式选模型，也可从已验证模型中自动路由。
-- 同一页多批次、多候选、跨模型抽卡；收藏多个、暂选一个，并可随时撤回而不删除候选或生成文件；只有分镜版本已确认且视觉检查通过的暂选版本，才可进入下一页或导出。
-- 按“章节 → 页面 → 批次”读取素材库，支持页面、角色补图、服装图、风格测试和修复图批次。
-- 持久化任务、DAG、幂等、取消、重试、超时和并发限制；`AUTO` 在开发环境无 Redis 时使用本地执行器，`LOCAL` 强制本地执行，`REDIS` 不可用时任务安全停留在 `WAITING`。
-- 多供应商多模态视觉检查、分级视觉修复、人工文字校对，以及通过章节生产门禁后的 PNG、PDF、项目 JSON 和素材清单导出。
-- Vertex 与各供应商 API Key 只由 API/Worker 读取；API Key 使用 AES-256-GCM 加密，浏览器只接收末四位提示。
+<picture>
+  <source media="(max-width: 600px)" srcset="assets/readme/overview-mobile-en.png">
+  <img src="assets/readme/overview-en.png" width="920" alt="Workflow diagram, not a screenshot: story and references → script and storyboard → one-page generation → human review and export. Data is local by default; AI calls use configured external model providers.">
+</picture>
 
-## AI 供应商与模型
+Story and references → script and storyboard → page candidate → human proofreading, selection, and visual checks → finished pages and chapter exports.
 
-兼容连接只暴露两种协议：`OPENAI` 和 `ANTHROPIC`。Vertex AI 与 Gemini API 作为内置原生连接保留。OpenAI 协议连接可分别配置 `/models`、Chat Completions、Responses、图片生成与图片编辑端点；Anthropic 协议使用 Messages 端点。
+This is a workflow diagram, not a product screenshot. MangaFlow is not an unattended whole-chapter generator: you decide when to start the next page.
 
-设置页支持预设供应商、自定义 Base URL、多 API Key 轮换、模型发现、手动模型、文字/视觉/图片能力测试、延迟基准和可选余额查询。名称推断的模型不会自动参与路由；模型必须完成对应能力测试并标记为 `VERIFIED`。第三方网关会显示风险标签，启用前应自行核对隐私、价格和数据保留政策。详细说明见 [`docs/provider-platform.md`](docs/provider-platform.md)。
+## How it works
 
-原有 Vertex 模型仍作为兼容预设存在：
+### Built around everyday creative decisions
 
-| 逻辑别名 | 模型 | Vertex 模型 ID | 用途 |
-| --- | --- | --- | --- |
-| `text.fast` | Gemini 3.5 Flash | `gemini-3.5-flash` | 解析、剧本、分页、分镜和检查 |
-| `image.nano_banana_2` | Nano Banana 2 | `gemini-3.1-flash-image` | 页面、资产和修复图生成 |
-| `image.nano_banana_pro` | Nano Banana Pro | `gemini-3-pro-image-preview` | 页面、资产和修复图生成 |
+- **Reach page ten without losing the source of a line.** Source revisions and text ranges stay linked to the storyboard, so you can revisit the story behind the image.
+- **Keep a costume change out of prompt guesswork.** Manage character, outfit, and style references separately and bind them before generation. Concept images start as drafts and require human confirmation before use.
+- **Try another version without giving up the choice.** Keep multiple batches and cross-model candidates for a page. Favorites and the selected candidate are separate; withdrawing a selection does not delete the original image.
 
-两个 Vertex 图像模型没有主次关系。统一目录还会展示其他供应商已启用的图片模型；页面生成只显示支持 `image_edit` 的模型，避免把纯文字或纯文生图模型误用于人物参考流程。
+### Existing capabilities
 
-## 本地启动（Windows PowerShell）
+| What you want to do | What the workbench provides |
+| --- | --- |
+| Turn a novel into traceable input | Paste, TXT, and Markdown import; source revisions, lossless segments, and coverage checks |
+| Organize the cast and visual references | Names and aliases, character and outfit references, style palettes, and test images |
+| Plan pages from text | Scripts, Scenes / Beats, dynamic pagination, and storyboards; distinguish on-screen, off-screen, and mentioned characters |
+| Explore versions of the same page | Explicit model selection or routing among verified models; candidate batches, favorites, and one selected version |
+| Review and package the result | Human text proofreading, multimodal visual checks and repair; PNG, PDF, project JSON, and asset-manifest exports |
+| Arrange repeatable creative steps | Editable, publishable, runnable DAG workflows; persisted jobs and human confirmation nodes |
 
-要求：Node.js 22+、Python 3.12+。Windows 本地开发不强制安装 Redis。
+These are implemented entry points, not a guarantee that every failure path has passed acceptance. A successful cancellation response does not yet guarantee that external calls have stopped, and an inspection summary alone does not prove that a page is ready for delivery. See the [roadmap](docs/roadmap.md) for the confirmed gaps.
 
-### 已有环境：日常启动
+## Quick start
 
-在 PowerShell 中执行：
+The commands below target **Windows PowerShell** and run from the repository root. Install Git, Node.js 22+, and Python 3.12+. SQLite is the default database; Redis is optional for local development. Version requirements come from [package.json](package.json) and [pyproject.toml](apps/api/pyproject.toml).
+
+### 1. Set up the environment
+
+For a new checkout:
 
 ```powershell
-cd "D:\自媒体\漫画工作流"
-powershell -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1
+git clone https://github.com/coffe01-10/MangaFlow.git
+cd MangaFlow
 ```
 
-启动脚本会先执行数据库迁移，再同时启动 Next.js 前端和 FastAPI。Redis 不可用时，`AUTO` 队列模式会自动使用受并发限制的本地后台执行器。
+If you already have the repository, open that directory instead of cloning it again.
 
-打开：
-
-- Web 工作台：`http://localhost:3000`
-- API 文档：`http://localhost:8000/api/docs`
-- API 健康检查：`http://localhost:8000/api/v1/health`
-
-停止项目时，在启动项目的 PowerShell 窗口按 `Ctrl+C`。如果提示 3000 或 8000 端口已被占用，请先关闭此前启动的开发服务。
-
-### 第一次安装
-
-新电脑、首次克隆仓库，或 `.venv`、`node_modules` 已被删除时，执行：
+> Setup downloads Node / Python dependencies, creates `.venv`, `node_modules`, `storage`, and `uploads`, copies `.env.example` to `.env` only if it is missing, and applies Alembic migrations. [Back up existing data first](docs/local-development.md#数据与备份). Setup does not call AI models as part of installation.
 
 ```powershell
-cd "D:\自媒体\漫画工作流"
 powershell -ExecutionPolicy Bypass -File .\scripts\setup-codex.ps1
 ```
 
-脚本会安装前后端依赖、创建 Python 虚拟环境、建立 `storage` / `uploads` 目录、创建 `.env` 并升级数据库。随后编辑 `.env`：
+Configuration options are listed in [.env.example](.env.example). Opening the workbench and checking the database does not require Vertex credentials. Configure a provider before using AI features; do not use example placeholders as real credentials.
 
-```env
-GOOGLE_CLOUD_PROJECT=your-project-id
-GOOGLE_CLOUD_LOCATION=global
-GOOGLE_APPLICATION_CREDENTIALS=D:/absolute/path/to/service-account-key.json
-REDIS_URL=redis://localhost:6379/0
-QUEUE_ENABLED=true
-MANGAFLOW_PROXY_URL=http://127.0.0.1:7897
-MANGAFLOW_CREDENTIAL_MASTER_KEY=replace-with-a-url-safe-base64-32-byte-key
-```
-
-配置完成后运行：
+### 2. Start the workbench
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1
 ```
 
-没有配置 Vertex 凭据时，仍可使用其他已配置供应商。开发环境第一次从设置页保存 API Key 时，会在 `storage/.provider-credential-master-key` 自动创建本机主密钥；生产环境必须显式配置 `MANGAFLOW_CREDENTIAL_MASTER_KEY`。接口只保存加密值且不会把密钥退回浏览器。Redis 是可选项：运行设置中的队列模式默认为 `AUTO`，检测不到 Redis 时自动切到本地执行器；选择 `LOCAL` 后不再探测 Redis；只有显式选择 `REDIS` 且 Redis 不可用时，新任务才保持 `WAITING`。
+Use this command for everyday startup once the environment is ready. It migrates the database before starting the Web and API services. In development, `AUTO` queue mode falls back to the local executor when Redis is unavailable.
 
-如果浏览器能访问 Google，但 API 显示 `DEGRADED / UPSTREAM`，可将 `MANGAFLOW_PROXY_URL` 设置为 Clash/Mihomo 的 HTTP 或 Mixed 端口。`scripts\start-dev.ps1` 会自动把它转换成 Python 网络库识别的 `HTTP_PROXY` / `HTTPS_PROXY`，并为 `localhost`、`127.0.0.1` 设置直连。不要填写仅支持 SOCKS 的端口。
+- [Open the workbench](http://127.0.0.1:3000)
+- [Browse the API documentation](http://127.0.0.1:8000/api/docs)
+- [Check the API and database connection](http://127.0.0.1:8000/api/v1/health)
 
-### 手动启动
+Development and production start scripts bind Web and API to `127.0.0.1`. This is a private single-user workbench with no accounts: anyone who can reach the ports can read and write projects. Do not expose it to untrusted networks until authentication is added. CORS is not access control.
 
-不使用启动脚本时，可以手动迁移数据库并启动前端和 API：
+### 3. Verify your first startup
 
-```powershell
-cd "D:\自媒体\漫画工作流"
-.venv\Scripts\python.exe -m alembic -c apps/api/alembic.ini upgrade head
-npm run dev
-```
-
-只有已经启动 Redis 且需要独立 RQ Worker 时才使用 `npm run dev:full`。日常本地使用推荐 `scripts\start-dev.ps1`。
-
-### Codex / Windows 一键环境
-
-在 Codex 的“创建本地环境 → Windows → 设置脚本”中填写：
+In a second PowerShell window:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "$env:CODEX_WORKTREE_PATH\scripts\setup-codex.ps1"
+Invoke-RestMethod http://127.0.0.1:8000/api/v1/health
 ```
 
-环境建立后，一键启动命令为：
+Expect `status: ok` and `database: ok`, and confirm that the workbench opens. This checks API and database connectivity only; it does not validate provider credentials or image generation.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1
+Press `Ctrl+C` in the startup window to stop. If a port is occupied, check whether a development service is already running. Proxy configuration, manual startup, Redis/RQ, and Codex setup are covered in the [local development and data guide](docs/local-development.md) (Chinese).
+
+## Create your first manga page
+
+> [!WARNING]
+> Capability tests, text parsing, image generation, and visual checks may send text or images to your configured provider and incur charges. Review the provider, pricing, and data-retention policy before starting. Default tests do not establish a production workflow with real paid providers.
+
+1. **Connect models.** Configure a provider and API key in Settings, then test the capabilities you need. Page generation requires an image model with `image_edit`; automatic routing uses only models marked `VERIFIED` for the relevant capability.
+2. **Build the creative context.** Create a project and chapter, import the source, and organize character, outfit, and style references. Confirm AI concept drafts before using them as canonical references.
+3. **Decide what this page should tell.** Parse the script, paginate, and edit the storyboard. Check the cast, dialogue, and source links; confirm the current storyboard revision and references before generating.
+4. **Generate one candidate.** Choose a model and start single-page generation. Keep the existing result and request another candidate if needed. This does not automatically generate the next page.
+5. **Proofread, then select.** Review text and visuals, run visual checks, and repair or regenerate when needed. The intended workflow requires complete, passing checks for speaker, character, outfit, prop, and continuity; current completeness gaps still require human review.
+6. **Package the result.** Confirm each page before moving on. Use chapter export once all pages are ready, and inspect the exported files before delivery.
+
+Text is proofread by a person; there is no promise of automatic OCR correction. This is not a layered drawing editor. The [development progress](docs/development-progress.md) and [roadmap](docs/roadmap.md) describe the current capabilities and unfinished work.
+
+## Models and data boundaries
+
+Compatible provider connections support the `OPENAI` and `ANTHROPIC` protocols. Vertex AI and Gemini API retain native connections. Settings includes provider presets, custom base URLs, model discovery, manual entries, and capability tests. **A preset or model appearing in a list does not mean it is usable by your account.** See the [provider and model platform guide](docs/provider-platform.md) for connection and routing rules.
+
+The default setup stores metadata in local SQLite and assets in local directories, but it is not fully offline software: API / Worker calls send the data needed for a task to the configured external service.
+
+- API keys are encrypted on the server. Development can generate a local master key when a key is first saved; production requires an explicit `MANGAFLOW_CREDENTIAL_MASTER_KEY`.
+- Defaults: `storage/mangaflow.db` for metadata, `storage/generated/` for generated images, `uploads/` for uploaded assets, and `storage/exports/` for exports.
+- Normal project or asset deletion is a soft delete, not immediate disk-space recovery. Withdrawing a candidate selection also leaves its original image intact.
+- A Git commit does not include this local data and is not a backup. Moving to another machine requires the database, assets, and keys needed for decryption; see the [backup guide](docs/local-development.md#数据与备份).
+
+The repository targets local, single-user use. Default listeners are loopback-only; do not publish the development server to other network interfaces or the public internet. Never commit `.env`, service-account JSON, keys, local databases, or generated media.
+
+Optional Docker Compose services for PostgreSQL and Redis bind to `127.0.0.1` only. Compose Redis uses AUTH (local default `mangaflow-dev`, not a production secret). Set `REDIS_URL=redis://:mangaflow-dev@127.0.0.1:6379/0` when using those containers. Change an existing database password with `ALTER USER`; do not delete user data volumes.
+
+## Development and checks
+
+The frontend uses Next.js 16 / React 19; the backend uses FastAPI / SQLAlchemy. Alembic manages database versions. Add a migration for schema changes instead of editing the database manually or relying on startup-time `create_all`.
+
+| Command | Actual scope |
+| --- | --- |
+| `npm run dev` | Start Web and API together; apply database migrations first when starting manually |
+| `npm run dev:full` | Also start an RQ Worker; use only with Redis ready and matching queue configuration |
+| `npm run check` | ESLint, Ruff, Pytest, Vitest, and a Next.js production build including TypeScript checks |
+| `npm run check:full` | The checks above plus Playwright browser tests; existing scenarios include Axe checks |
+
+Default checks do not make real Vertex image calls. They do not replace Lighthouse, workflow FPS, real-provider, or sustained-production acceptance. Historical results and current coverage gaps are kept in the [roadmap](docs/roadmap.md); a static “build passing” badge would not represent live CI status.
+
+```text
+apps/api/app/         API, services, domain rules, and model adapters
+apps/api/migrations/  Alembic database migrations
+apps/web/             Pages, components, and client utilities
+tests/                Python and browser tests
+scripts/              Setup, development, and documentation artwork scripts
+docs/                 Architecture, progress, roadmap, and operational guides
 ```
 
-开发模式没有 Redis 也能运行：任务会进入最多 8 线程的本地后台执行器，并继续遵守项目设置的 1–8 路并发上限。正式部署仍建议使用 Redis/RQ。
+Add regression tests for behavior changes and update documentation when architecture or data structures change. See [AGENTS.md](AGENTS.md) for contribution and review conventions.
 
-PostgreSQL 与 Redis 的开发容器可用 `docker compose up -d` 启动；默认数据库仍为 `storage/mangaflow.db`。
+## Documentation
 
-## 数据存储与备份
+The linked deep-dive documents are primarily in Simplified Chinese.
 
-默认部署是本地单用户工作台，采用“SQLite 元数据 + 本地文件目录”的双层存储。图片二进制不会写入数据库；数据库只保存资产 ID、相对 `storage_key`、版本状态和业务关系。
+| What you want to know | Start here |
+| --- | --- |
+| Current priorities and the remaining work for a stable release | [Main-branch roadmap](docs/roadmap.md) |
+| Implementation progress and history | [Development progress](docs/development-progress.md) |
+| Environment, proxy, standalone Worker, backup, and recovery | [Local development and data guide](docs/local-development.md) |
+| Provider connections, model capabilities, and automatic routing | [Provider and model platform](docs/provider-platform.md) |
+| Module boundaries and data relationships | [Architecture](docs/architecture.md) · [Data model](docs/data-model.md) |
+| Original product plan | [Requirements](plan.md); planned features are not necessarily implemented |
+| Logo, badges, diagrams, provenance, and regeneration | [README artwork notes](assets/readme/SOURCES.md) |
 
-| 数据 | 默认位置 | 说明 |
-| --- | --- | --- |
-| 项目与业务元数据 | `storage/mangaflow.db` | 项目、章节、原文修订、角色、服装、风格、分镜、候选、任务、工作流、检查与导出记录 |
-| AI 生成原图 | `storage/generated/<project_id>/<batch_id>/` | 页面候选、角色/服装设定图、风格测试、修复和升清结果 |
-| 生成图缩略图 | `storage/thumbnails/<asset_id>/` | 自动生成的 320px、640px WebP |
-| 用户上传原文件 | `uploads/<project_id>/` | 文件名规范化为 UUID，原始扩展名保留 |
-| 上传图缩略图 | `uploads/thumbnails/<asset_id>/` | 自动生成的 320px、640px WebP |
-| 导出文件 | `storage/exports/<project_id>/<chapter_id>/` | PNG、PDF、项目 JSON 和素材清单 |
-| 浏览器界面偏好 | `localStorage` / `sessionStorage` | 侧栏与检查器宽度、滚动位置、风格模式，以及尚未导入服务端的旧版工作流草稿 |
+## License and artwork
 
-主要项目数据由 API 写入 SQLite，所有应用 SQLite 连接都会启用外键检查和 5 秒 busy timeout。采用或撤回候选只改变数据库关系：撤回不会删除候选、任务、资产或图片文件。素材库普通删除是软删除，生成文件和任务记录继续保留。
+The repository does not currently declare a project license. Do not assume that MangaFlow is MIT-licensed.
 
-上传图和 AI 生成图都可以设置自定义显示名。显示名保存在数据库的 `assets.display_name`，不会改写 `original_name`、磁盘文件名或 `storage_key`，因此下载、追溯和去重关系不受影响。素材库可按 `generation_batches.chapter_id` 筛选章节批次；没有章节归属的角色、服装或风格素材仍归入项目级素材。
-
-设置页的“删除项目”同样采用软删除：必须输入完整项目名确认，成功后项目从首页和工作台列表隐藏，但数据库记录和生成文件不会立即物理删除。该操作用于防止误删，不等同于释放磁盘空间。
-
-清除浏览器缓存不会删除项目、分镜或素材，但会重置界面偏好，并可能移除尚未导入服务端的旧版工作流草稿。工作流正式版本、运行和节点运行记录保存在数据库中。
-
-> [!IMPORTANT]
-> `storage/`、`uploads/`、`.env` 和服务账号文件均被 Git 忽略。提交代码、切换分支或合并到 `master` 都不构成数据备份。
-
-完整备份至少应包含：
-
-1. `storage/mangaflow.db`
-2. `storage/generated/`
-3. `uploads/`
-4. 如需保留已导出成品，再包含 `storage/exports/`
-5. 单独加密保存 `.env`、`storage/.provider-credential-master-key`（如存在）和 Vertex 凭据；不要把凭据放进普通项目归档
-
-复制数据库文件前应停止 API/Worker 写入，或使用 SQLite 在线备份工具生成一致性快照。迁移脚本产生的 `.db` 备份只保护数据库，不包含生成图和上传素材，因此不能替代完整备份。
-
-如需迁移到另一台机器，应保持上述目录的相对结构；数据库中的 `storage_key` 使用相对路径，恢复文件后重新执行 Alembic 升级即可：
-
-```powershell
-.venv\Scripts\python.exe -m alembic -c apps/api/alembic.ini upgrade head
-```
-
-## 检查
-
-```powershell
-npm run check
-```
-
-2026-08-26 的主分支基线包含 145 个后端测试和 9 个前端测试，并覆盖 Ruff、ESLint、TypeScript、Next.js 生产构建和 Alembic 全新升级/回滚/再升级。`npm run check` 不包含 Playwright/Axe、Lighthouse 或工作流 FPS；浏览器门禁的当前结果和修复项见 [`docs/roadmap.md`](docs/roadmap.md)。真实供应商图片调用不属于默认测试，避免意外费用。文字由用户在采用候选前人工校对；系统不再创建文字自动检查或文字区域修复任务。
-
-## 安全说明
-
-- `.env`、服务账号 JSON、数据库、上传素材和生成结果均被 Git 忽略。
-- API 不返回凭据明文、凭据路径、服务账号邮箱、令牌或完整项目唯一标识。
-- 自定义供应商默认要求 HTTPS，并在调用前阻止本机、链路本地、元数据和未显式允许的私有网络地址；重定向不会自动跟随。
-- 上传限制为 PNG/JPG/WEBP/TXT/Markdown、最大 20 MB，并校验图片文件内容。
-- 生成日志只保存脱敏错误和资产 ID，不记录认证头。
-- 普通查询不触发模型调用；所有 AI 创建接口返回 `202 + job_id`。
+The README structure : a centered brand area, two rows of local badges, an overview, use cases, and onboarding. The manga-page emblem, palette, and workflow diagrams are tailored to MangaFlow. Pixel glyphs are adapted from its MIT-licensed artwork; see the full [pixel-font license](assets/readme/LICENSE.pixel-font.txt). That attribution covers the reused material and does not replace a project license for MangaFlow.
