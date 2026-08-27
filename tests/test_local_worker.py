@@ -662,7 +662,9 @@ def test_worker_id_generates_unique_token_per_invocation():
     assert len(set(tokens)) == 100
 
 
-def test_expired_lease_in_same_process_cannot_be_mutated_by_old_worker(db_session):
+def test_expired_lease_in_same_process_cannot_be_mutated_by_old_worker(
+    db_session, monkeypatch
+):
     project = Project(name="租约交接", default_concurrency=2)
     db_session.add(project)
     db_session.flush()
@@ -693,8 +695,12 @@ def test_expired_lease_in_same_process_cannot_be_mutated_by_old_worker(db_sessio
     assert claimed_b.lease_owner == owner_b
     assert claimed_b.attempt_count == 2
 
-    # 1. 验证 Worker A 的心跳无法续租
+    # 1. 验证 Worker A 的心跳无法续租。interval=0 避免 wait(30s)；
+    # SessionLocal 必须指向测试库，否则会打到空的开发 sqlite 并空转。
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    monkeypatch.setattr(worker_tasks, "SessionLocal", factory)
     heartbeat_a = worker_tasks._LeaseHeartbeat(job.id, owner_a)
+    heartbeat_a.interval = 0
     heartbeat_a._run()
     assert heartbeat_a.lost is True
 

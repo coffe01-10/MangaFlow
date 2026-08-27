@@ -19,21 +19,16 @@ def inspect_upload_image(
 ) -> tuple[int, int, str, str]:
     """Return width, height, MIME and suffix from the decoded image header."""
 
-    previous = Image.MAX_IMAGE_PIXELS
-    Image.MAX_IMAGE_PIXELS = max_pixels
     try:
-        try:
-            with Image.open(path) as image:
-                image.verify()
-            with Image.open(path) as image:
-                width, height = image.size
-                fmt = (image.format or "").upper()
-        except DecompressionBombError as error:
-            raise ValueError("图片像素数超过上限") from error
-        except (UnidentifiedImageError, OSError) as error:
-            raise ValueError("图片文件损坏或格式不符") from error
-    finally:
-        Image.MAX_IMAGE_PIXELS = previous
+        with Image.open(path) as image:
+            image.verify()
+        with Image.open(path) as image:
+            width, height = image.size
+            fmt = (image.format or "").upper()
+    except DecompressionBombError as error:
+        raise ValueError("图片像素数超过上限") from error
+    except (UnidentifiedImageError, OSError) as error:
+        raise ValueError("图片文件损坏或格式不符") from error
     if width <= 0 or height <= 0 or width > max_side or height > max_side:
         raise ValueError("图片宽高超过上限")
     if width * height > max_pixels:

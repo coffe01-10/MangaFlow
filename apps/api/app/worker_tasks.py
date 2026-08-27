@@ -1701,8 +1701,9 @@ regions 使用 0 到 1 的归一化 x/y/width/height。"""
             page.continuity_status = "PASSED"
             page.status = PageStatus.FINAL_READY
             page.version += 1
-    job.status = JobStatus.CONSISTENCY_CHECKING
-    job.progress = 85
+    _commit_owned_progress(
+        db, job, status=JobStatus.CONSISTENCY_CHECKING, progress=85
+    )
 
 
 def _mark_worker_failure(

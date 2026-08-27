@@ -12,6 +12,41 @@ from app.config import get_settings
 UPLOAD_PATH_SUFFIXES = ("/assets/upload", "/sources/upload")
 MAX_UPLOAD_FILES = 1
 MAX_UPLOAD_FIELDS = 8
+ASSET_UPLOAD_OPENAPI = {
+    "requestBody": {
+        "required": True,
+        "content": {
+            "multipart/form-data": {
+                "schema": {
+                    "type": "object",
+                    "required": ["project_id", "kind", "file"],
+                    "properties": {
+                        "project_id": {"type": "string"},
+                        "kind": {"type": "string"},
+                        "file": {"type": "string", "format": "binary"},
+                    },
+                }
+            }
+        },
+    }
+}
+SOURCE_UPLOAD_OPENAPI = {
+    "requestBody": {
+        "required": True,
+        "content": {
+            "multipart/form-data": {
+                "schema": {
+                    "type": "object",
+                    "required": ["file"],
+                    "properties": {
+                        "title": {"type": "string"},
+                        "file": {"type": "string", "format": "binary"},
+                    },
+                }
+            }
+        },
+    }
+}
 
 
 class BodyLimitExceeded(Exception):
@@ -56,7 +91,6 @@ class RequestBodyLimitMiddleware:
         }
         declared = headers.get("content-length")
         if declared and declared.isdigit() and int(declared) > limit:
-            await _drain(receive)
             await _send_json(send, 413, "请求体超过上传上限")
             return
 
@@ -125,13 +159,6 @@ async def parse_single_file_form(
     if missing:
         raise HTTPException(status_code=422, detail="缺少必要的表单字段")
     return ParsedUpload(texts=texts, file=files[0][1])
-
-
-async def _drain(receive: Receive) -> None:
-    while True:
-        message = await receive()
-        if message["type"] != "http.request" or not message.get("more_body"):
-            return
 
 
 async def _send_json(send: Send, status_code: int, detail: str) -> None:

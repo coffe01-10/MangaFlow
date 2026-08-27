@@ -127,3 +127,31 @@ def test_normal_upload_still_registers_small_png(client, monkeypatch, tmp_path):
     assert body["height"] == 12
     assert body["mime_type"] == "image/png"
     assert list(tmp_path.rglob("*.png"))
+
+
+def test_upload_openapi_documents_multipart_fields(client):
+    spec = client.get("/api/openapi.json").json()
+    asset_schema = spec["paths"]["/api/v1/assets/upload"]["post"]["requestBody"][
+        "content"
+    ]["multipart/form-data"]["schema"]
+    source_schema = spec["paths"]["/api/v1/projects/{project_id}/sources/upload"][
+        "post"
+    ]["requestBody"]["content"]["multipart/form-data"]["schema"]
+    assert set(asset_schema["required"]) == {"project_id", "kind", "file"}
+    assert asset_schema["properties"]["file"]["format"] == "binary"
+    assert "file" in source_schema["required"]
+    assert "title" in source_schema["properties"]
+
+
+def test_oversized_upload_keeps_cors_headers(client, monkeypatch, tmp_path):
+    _limit_uploads(monkeypatch, tmp_path)
+    project = client.post("/api/v1/projects", json={"name": "跨域超限"}).json()
+    origin = get_settings().web_origin
+    response = client.post(
+        "/api/v1/assets/upload",
+        data={"project_id": project["id"], "kind": "character"},
+        files={"file": ("big.png", b"x" * 4096, "image/png")},
+        headers={"Origin": origin},
+    )
+    assert response.status_code == 413
+    assert response.headers.get("access-control-allow-origin") == origin

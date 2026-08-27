@@ -10,8 +10,20 @@ from sqlalchemy.pool import StaticPool
 API_ROOT = Path(__file__).resolve().parents[1] / "apps" / "api"
 sys.path.insert(0, str(API_ROOT))
 
+from app.config import get_settings  # noqa: E402
 from app.database import Base, get_db  # noqa: E402
 from app.main import app  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _placeholder_vertex_credentials(tmp_path_factory, monkeypatch):
+    """Give tests a dummy Vertex file so model routes do not 409 offline."""
+
+    creds = tmp_path_factory.mktemp("vertex") / "placeholder.json"
+    creds.write_text("{}", encoding="utf-8")
+    settings = get_settings()
+    monkeypatch.setattr(settings, "google_cloud_project", "test-project")
+    monkeypatch.setattr(settings, "google_application_credentials", creds)
 
 
 @pytest.fixture

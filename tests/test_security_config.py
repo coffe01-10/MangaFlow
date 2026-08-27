@@ -19,6 +19,7 @@ def test_dev_and_start_scripts_bind_loopback():
     assert "--hostname 127.0.0.1" in web["scripts"]["dev"]
     assert "--hostname 127.0.0.1" in web["scripts"]["start"]
     assert "--host 127.0.0.1" in root["scripts"]["dev:api"]
+    assert "--with-scheduler" in root["scripts"]["dev:worker"]
     assert "--host 127.0.0.1" in root["scripts"]["serve:e2e:api"]
     assert "--hostname 127.0.0.1" in root["scripts"]["serve:e2e:web"]
     assert "0.0.0.0" not in web["scripts"]["dev"]
@@ -33,3 +34,5 @@ def test_compose_publishes_data_services_on_loopback_with_auth():
     assert "--requirepass" in compose
     assert '"5432:5432"' not in compose
     assert '"6379:6379"' not in compose
+    env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
+    assert "redis://:mangaflow-dev@127.0.0.1:6379/0" in env_example

@@ -776,9 +776,10 @@ def test_batch_candidate_favorite_select_and_next(client, db_session, monkeypatc
     record.asset_id = asset.id
     record.status = "INSPECTED"
     for category, score in [
-        ("TEXT", 0.95),
+        ("SPEAKER", 0.95),
         ("CHARACTER", 0.99),
         ("OUTFIT", 0.99),
+        ("PROP", 0.99),
         ("CONTINUITY", 0.99),
     ]:
         db_session.add(
@@ -1493,6 +1494,16 @@ def test_project_json_export_uses_selected_page_versions(
         page.selected_candidate_id = candidate.id
         page.selected_candidate_ack_version = page.storyboard_version
         page.continuity_status = "PASSED"
+        for category in ("SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"):
+            db_session.add(
+                InspectionResult(
+                    candidate_id=candidate.id,
+                    category=category,
+                    outcome="PASS",
+                    score=0.99,
+                    severity="INFO",
+                )
+            )
     db_session.commit()
 
     with TemporaryDirectory() as directory:

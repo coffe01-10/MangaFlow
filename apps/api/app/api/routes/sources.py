@@ -23,7 +23,7 @@ from app.models import (
     SourceRevision,
     SourceSegment,
 )
-from app.request_limits import parse_single_file_form
+from app.request_limits import SOURCE_UPLOAD_OPENAPI, parse_single_file_form
 from app.schemas import (
     BeatRead,
     BeatUpdate,
@@ -95,6 +95,7 @@ def import_pasted_source(
     "/projects/{project_id}/sources/upload",
     response_model=SourceImportRead,
     status_code=status.HTTP_201_CREATED,
+    openapi_extra=SOURCE_UPLOAD_OPENAPI,
 )
 async def upload_source(
     project_id: str,

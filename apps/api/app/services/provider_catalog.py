@@ -468,6 +468,27 @@ def _connection_http_client(
     )
 
 
+def _collect_google_model_entries(models, settings: Settings) -> list[dict[str, str]]:
+    entries: list[dict[str, str]] = []
+    approx_bytes = 2
+    for item in models:
+        ident = str(getattr(item, "name", "") or "").removeprefix("models/")
+        label = str(getattr(item, "display_name", "") or "")
+        if not ident:
+            continue
+        if len(ident) > 256 or len(label) > 256:
+            raise ValueError("供应商模型列表字段超过允许的大小")
+        entry = {"id": ident, "display_name": label}
+        encoded = json.dumps(entry, ensure_ascii=False)
+        approx_bytes += len(encoded.encode("utf-8")) + 1
+        if approx_bytes > settings.max_provider_metadata_bytes:
+            raise ValueError("供应商模型列表超过允许的大小")
+        if len(entries) >= settings.max_discovered_models:
+            raise ValueError("供应商模型列表超过允许的条目数")
+        entries.append(entry)
+    return entries
+
+
 def discover_models(
     db: Session,
     settings: Settings,
@@ -493,10 +514,9 @@ def discover_models(
 
             google_client = genai.Client(api_key=selected.secret)
             try:
-                entries = [
-                    {"id": item.name.removeprefix("models/"), "display_name": item.display_name}
-                    for item in google_client.models.list()
-                ]
+                entries = _collect_google_model_entries(
+                    google_client.models.list(), settings
+                )
             finally:
                 close = getattr(google_client, "close", None)
                 if callable(close):

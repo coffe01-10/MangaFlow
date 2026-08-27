@@ -148,3 +148,37 @@ def test_read_balance_rejects_oversized_payload(db_session, tmp_path):
 
     client.close()
     assert error.value.status_code == 502
+
+
+def test_google_native_discover_stops_at_entry_cap(db_session, tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    connection = _seed_connection(db_session, settings)
+    connection.protocol = "GOOGLE_NATIVE"
+    db_session.commit()
+
+    class FakeModel:
+        def __init__(self, index: int) -> None:
+            self.name = f"models/item-{index}"
+            self.display_name = f"Item {index}"
+
+    class FakeModels:
+        def list(self):
+            for index in range(8):
+                yield FakeModel(index)
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            self.models = FakeModels()
+
+        def close(self) -> None:
+            return None
+
+    import google.genai as genai
+
+    monkeypatch.setattr(genai, "Client", FakeClient)
+    with pytest.raises(HTTPException) as error:
+        discover_models(db_session, settings, connection.id)
+    db_session.refresh(connection)
+    assert error.value.status_code == 502
+    assert connection.health_state == "DEGRADED"
+    assert list(db_session.scalars(select(AIModel))) == []

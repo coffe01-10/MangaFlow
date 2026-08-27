@@ -67,6 +67,9 @@ app = FastAPI(
     openapi_url="/api/openapi.json",
     lifespan=lifespan,
 )
+# Last added middleware is outermost. CORS must wrap the upload limiter so
+# browser 413 responses still include Access-Control-Allow-Origin.
+app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=sorted(web_origins),
@@ -74,7 +77,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.add_middleware(RequestBodyLimitMiddleware)
 app.include_router(api_router, prefix=settings.api_prefix)
 
 

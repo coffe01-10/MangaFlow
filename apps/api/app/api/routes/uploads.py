@@ -26,7 +26,7 @@ from app.models import (
     StyleProfile,
     StyleStatus,
 )
-from app.request_limits import parse_single_file_form
+from app.request_limits import ASSET_UPLOAD_OPENAPI, parse_single_file_form
 from app.schemas import AssetRead, AssetUpdate
 from app.services.media import create_thumbnails, inspect_upload_image, remove_thumbnails
 
@@ -116,7 +116,12 @@ def list_assets(project_id: str, db: Session = Depends(get_db)) -> list[AssetRea
     return [asset_read(asset) for asset in assets]
 
 
-@router.post("/upload", response_model=AssetRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/upload",
+    response_model=AssetRead,
+    status_code=status.HTTP_201_CREATED,
+    openapi_extra=ASSET_UPLOAD_OPENAPI,
+)
 async def upload_asset(
     request: Request,
     db: Session = Depends(get_db),
