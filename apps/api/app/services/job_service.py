@@ -107,6 +107,13 @@ def dependencies_complete(db: Session, job: GenerationJob) -> bool:
     return all(item.status == JobStatus.COMPLETED for item in dependencies)
 
 
+def rq_retry_policy(job: GenerationJob):
+    from rq import Retry
+
+    remaining_retries = job.max_attempts - job.attempt_count - 1
+    return Retry(max=remaining_retries, interval=[10, 30, 90]) if remaining_retries > 0 else None
+
+
 def enqueue_job(db: Session, job: GenerationJob) -> GenerationJob:
     settings = get_settings()
     apply_runtime_overrides(db, settings)
@@ -128,10 +135,16 @@ def enqueue_job(db: Session, job: GenerationJob) -> GenerationJob:
     if queue_mode == "LOCAL":
         return _enqueue_locally(db, job, "本地后台执行器正在处理任务")
 
+    job.status = JobStatus.QUEUED
+    job.error_code = None
+    job.error_message = None
+    db.commit()
+    db.refresh(job)
+
     connection = None
     try:
         from redis import Redis
-        from rq import Queue, Retry
+        from rq import Queue
 
         connection = Redis.from_url(
             settings.redis_url,
@@ -145,25 +158,33 @@ def enqueue_job(db: Session, job: GenerationJob) -> GenerationJob:
             job.id,
             job_id=job.id,
             job_timeout=settings.job_timeout_seconds,
-            retry=Retry(max=max(job.max_attempts - 1, 0), interval=[10, 30, 90]),
+            retry=rq_retry_policy(job),
         )
-        job.status = JobStatus.QUEUED
-        job.error_code = None
-        job.error_message = None
     except Exception:
         if queue_mode == "AUTO" and settings.environment == "development":
             return _enqueue_locally(db, job, "Redis 不可用，已切换到本地后台执行")
-        job.status = JobStatus.WAITING
-        job.error_code = "QUEUE_UNAVAILABLE"
-        job.error_message = (
-            "任务已保存；REDIS 模式要求 Redis 可用"
-            if queue_mode == "REDIS"
-            else "任务已保存；Redis 队列暂时不可用"
+        db.execute(
+            update(GenerationJob)
+            .where(
+                GenerationJob.id == job.id,
+                GenerationJob.status == JobStatus.QUEUED,
+                GenerationJob.lease_owner.is_(None),
+            )
+            .values(
+                status=JobStatus.WAITING,
+                error_code="QUEUE_UNAVAILABLE",
+                error_message=(
+                    "任务已保存；REDIS 模式要求 Redis 可用"
+                    if queue_mode == "REDIS"
+                    else "任务已保存；Redis 队列暂时不可用"
+                ),
+            )
+            .execution_options(synchronize_session=False)
         )
+        db.commit()
     finally:
         if connection is not None:
             connection.close()
-    db.commit()
     db.refresh(job)
     return job
 
@@ -195,11 +216,21 @@ def _submit_local(job_id: str) -> bool:
 
 
 def _execute_locally(job_id: str) -> None:
-    from app.worker_tasks import execute_job
+    from app.model_adapters.base import ProviderAdapterError
+    from app.worker_tasks import JobCancelledError, JobLeaseLostError, execute_job
 
+    delay = 0.1
     try:
         while True:
-            execute_job(job_id)
+            try:
+                execute_job(job_id)
+            except (JobCancelledError, JobLeaseLostError):
+                return
+            except ProviderAdapterError as error:
+                if not getattr(error, "retryable", True):
+                    return
+            except Exception:
+                pass
             from app.database import SessionLocal
 
             with SessionLocal() as db:
@@ -210,7 +241,8 @@ def _execute_locally(job_id: str) -> None:
                     JobStatus.FAILED,
                 }:
                     return
-            Event().wait(0.1)
+            Event().wait(delay)
+            delay = min(delay * 2, 5.0)
     finally:
         with LOCAL_SUBMISSION_LOCK:
             LOCAL_SUBMITTED_JOB_IDS.discard(job_id)

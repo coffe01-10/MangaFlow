@@ -662,7 +662,9 @@ def test_worker_id_generates_unique_token_per_invocation():
     assert len(set(tokens)) == 100
 
 
-def test_expired_lease_in_same_process_cannot_be_mutated_by_old_worker(db_session):
+def test_expired_lease_in_same_process_cannot_be_mutated_by_old_worker(
+    db_session, monkeypatch
+):
     project = Project(name="租约交接", default_concurrency=2)
     db_session.add(project)
     db_session.flush()
@@ -693,8 +695,12 @@ def test_expired_lease_in_same_process_cannot_be_mutated_by_old_worker(db_sessio
     assert claimed_b.lease_owner == owner_b
     assert claimed_b.attempt_count == 2
 
-    # 1. 验证 Worker A 的心跳无法续租
+    # 1. 验证 Worker A 的心跳无法续租。interval=0 避免 wait(30s)；
+    # SessionLocal 必须指向测试库，否则会打到空的开发 sqlite 并空转。
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    monkeypatch.setattr(worker_tasks, "SessionLocal", factory)
     heartbeat_a = worker_tasks._LeaseHeartbeat(job.id, owner_a)
+    heartbeat_a.interval = 0
     heartbeat_a._run()
     assert heartbeat_a.lost is True
 
@@ -1186,3 +1192,212 @@ def test_non_retryable_error_immediately_marks_terminal_failure(db_session):
     db_session.expire_all()
     # 即使 attempt_count 仅为 1，也直接进入最终 FAILED
     assert db_session.get(GenerationJob, job.id).status == JobStatus.FAILED
+
+
+def test_cancelled_job_does_not_move_to_generating_or_call_provider(db_session):
+    from types import SimpleNamespace
+
+    from sqlalchemy.orm import sessionmaker
+
+    project = Project(name="取消后禁调用", default_concurrency=1)
+    db_session.add(project)
+    db_session.flush()
+    job = GenerationJob(
+        project_id=project.id,
+        target_type="CHAPTER",
+        target_id="cancel-dispatch",
+        job_type="SOURCE_PARSE",
+        status=JobStatus.QUEUED,
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    owner = worker_tasks._worker_id()
+    db_session.info["job_lease_owner"] = owner
+    db_session.info["job_id"] = job.id
+    claimed = worker_tasks._claim_job(db_session, job.id, owner)
+    assert claimed is not None
+
+    other_factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    with other_factory() as other:
+        row = other.get(GenerationJob, job.id)
+        job_service.mark_job_cancelled(other, row)
+        other.commit()
+
+    with pytest.raises(worker_tasks.JobCancelledError):
+        worker_tasks._commit_owned_progress(
+            db_session, claimed, status=JobStatus.GENERATING, progress=45
+        )
+    db_session.expire_all()
+    cancelled = db_session.get(GenerationJob, job.id)
+    assert cancelled.status == JobStatus.CANCELLED
+    assert cancelled.cancelled_at is not None
+
+    calls: list[int] = []
+    with pytest.raises(worker_tasks.JobCancelledError):
+        worker_tasks._invoke_provider(
+            db_session,
+            SimpleNamespace(adapter=object(), selected_key=None),
+            lambda adapter: calls.append(1) or adapter,
+        )
+    assert calls == []
+
+
+def test_redis_enqueue_does_not_overwrite_completed_job(monkeypatch):
+    directory = TemporaryDirectory(ignore_cleanup_errors=True)
+    engine = create_engine(
+        f"sqlite:///{Path(directory.name) / 'enqueue.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    Base.metadata.create_all(engine)
+    try:
+        with testing_session() as db:
+            project = Project(name="入队不回写", default_concurrency=1)
+            db.add(project)
+            db.flush()
+            job = GenerationJob(
+                project_id=project.id,
+                target_type="CHAPTER",
+                target_id="enqueue-complete",
+                job_type="SOURCE_PARSE",
+                status=JobStatus.WAITING,
+            )
+            db.add(job)
+            db.commit()
+            job_id = job.id
+
+        class FakeRedis:
+            def ping(self):
+                return True
+
+            def close(self):
+                return None
+
+            @classmethod
+            def from_url(cls, *args, **kwargs):
+                return cls()
+
+        class FakeQueue:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def enqueue(self, *args, **kwargs):
+                with testing_session() as other:
+                    row = other.get(GenerationJob, job_id)
+                    row.status = JobStatus.COMPLETED
+                    row.finished_at = datetime.now(UTC)
+                    row.lease_owner = "worker-b"
+                    other.commit()
+
+        class FakeRetry:
+            def __init__(self, *args, **kwargs):
+                pass
+
+        monkeypatch.setattr("redis.Redis", FakeRedis)
+        monkeypatch.setattr("rq.Queue", FakeQueue)
+        monkeypatch.setattr("rq.Retry", FakeRetry)
+        with testing_session() as db:
+            _set_queue_mode(db, "REDIS")
+            loaded = db.get(GenerationJob, job_id)
+            result = job_service.enqueue_job(db, loaded)
+            assert result.status == JobStatus.COMPLETED
+            assert result.lease_owner == "worker-b"
+    finally:
+        engine.dispose()
+        directory.cleanup()
+
+
+def test_local_retryable_failure_continues_without_restart(monkeypatch):
+    from app.model_adapters.base import ProviderAdapterError
+
+    directory = TemporaryDirectory(ignore_cleanup_errors=True)
+    engine = create_engine(
+        f"sqlite:///{Path(directory.name) / 'retry.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    Base.metadata.create_all(engine)
+    try:
+        with testing_session() as db:
+            project = Project(name="本地重试", default_concurrency=1)
+            db.add(project)
+            db.flush()
+            job = GenerationJob(
+                project_id=project.id,
+                target_type="CHAPTER",
+                target_id="local-retry",
+                job_type="SOURCE_PARSE",
+                status=JobStatus.WAITING,
+                max_attempts=3,
+            )
+            db.add(job)
+            db.commit()
+            job_id = job.id
+
+        monkeypatch.setattr(worker_tasks, "SessionLocal", testing_session)
+        monkeypatch.setattr(database, "SessionLocal", testing_session)
+        attempts = {"n": 0}
+
+        def fake_run(_db, _job):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise ProviderAdapterError("RATE_LIMIT", "稍后重试", retryable=True)
+
+        monkeypatch.setattr(worker_tasks, "_run_story_parse", fake_run)
+        with testing_session() as db:
+            _set_queue_mode(db, "LOCAL")
+            job_service.enqueue_job(db, db.get(GenerationJob, job_id))
+
+        deadline = time.time() + 8
+        status = None
+        while time.time() < deadline:
+            with testing_session() as db:
+                status = db.get(GenerationJob, job_id).status
+                if status == JobStatus.COMPLETED:
+                    break
+            time.sleep(0.05)
+        assert attempts["n"] >= 2
+        assert status == JobStatus.COMPLETED
+    finally:
+        engine.dispose()
+        directory.cleanup()
+
+
+def test_execute_job_defers_when_concurrency_slot_is_busy(db_session, monkeypatch):
+    project = Project(name="槽位等待", default_concurrency=1)
+    db_session.add(project)
+    db_session.flush()
+    busy = GenerationJob(
+        project_id=project.id,
+        target_type="CHAPTER",
+        target_id="busy",
+        job_type="SOURCE_PARSE",
+        status=JobStatus.GENERATING,
+        lease_owner="holder",
+        lease_expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        attempt_count=1,
+    )
+    waiting = GenerationJob(
+        project_id=project.id,
+        target_type="CHAPTER",
+        target_id="waiting",
+        job_type="SOURCE_PARSE",
+        status=JobStatus.QUEUED,
+    )
+    db_session.add_all([busy, waiting])
+    db_session.commit()
+
+    factory = sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)
+    monkeypatch.setattr(worker_tasks, "SessionLocal", factory)
+    deferred: list[str] = []
+    monkeypatch.setattr(
+        worker_tasks, "_defer_concurrency_wait", lambda job_id: deferred.append(job_id)
+    )
+    worker_tasks.execute_job(waiting.id)
+    assert deferred == [waiting.id]
+    db_session.expire_all()
+    held = db_session.get(GenerationJob, waiting.id)
+    assert held.status == JobStatus.WAITING
+    assert held.error_code == "CONCURRENCY_LIMIT"
+    assert held.attempt_count == 0

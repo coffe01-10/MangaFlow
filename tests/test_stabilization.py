@@ -176,6 +176,7 @@ def test_accepting_stale_inspected_candidate_still_requires_fresh_inspection(
         db_session.add(
             InspectionResult(
                 candidate_id=candidate.id,
+                storyboard_version=page.storyboard_version,
                 category=category,
                 outcome="PASS",
                 score=0.99,

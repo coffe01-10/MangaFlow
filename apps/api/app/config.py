@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     max_auto_repairs: int = Field(default=3, ge=0, le=10)
 
     max_upload_bytes: int = Field(default=20 * 1024 * 1024, ge=1)
+    upload_form_overhead_bytes: int = Field(default=64 * 1024, ge=0)
+    max_image_pixels: int = Field(default=40_000_000, ge=1)
+    max_image_side: int = Field(default=16_384, ge=1)
+    max_provider_metadata_bytes: int = Field(default=1 * 1024 * 1024, ge=1)
+    max_discovered_models: int = Field(default=500, ge=1)
     allowed_upload_types: tuple[str, ...] = (
         "image/png",
         "image/jpeg",

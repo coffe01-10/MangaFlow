@@ -27,7 +27,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1
 npm run dev
 ```
 
-默认入口为 [Web](http://localhost:3000)、[API 文档](http://localhost:8000/api/docs) 和 [健康检查](http://localhost:8000/api/v1/health)。端口被占用时先确认是否已有开发服务运行，不要直接终止不属于本项目的进程。
+默认入口为 [Web](http://127.0.0.1:3000)、[API 文档](http://127.0.0.1:8000/api/docs) 和 [健康检查](http://127.0.0.1:8000/api/v1/health)。Web 与 API 默认绑定 `127.0.0.1`，不是局域网共享服务。端口被占用时先确认是否已有开发服务运行，不要直接终止不属于本项目的进程。
 
 ## 配置供应商与代理
 
@@ -55,7 +55,7 @@ npm run dev
 docker compose up -d
 ```
 
-此命令需要 Docker Compose，会启动 PostgreSQL 与 Redis 容器并使用持久化卷，**不会启动 MangaFlow 应用，也不会自动把默认 SQLite 切换成 PostgreSQL**。更换数据库需检查 `DATABASE_URL` 并对目标库执行迁移。
+此命令需要 Docker Compose，会启动 PostgreSQL 与 Redis 容器并使用持久化卷，**不会启动 MangaFlow 应用，也不会自动把默认 SQLite 切换成 PostgreSQL**。端口只发布到 `127.0.0.1`。Compose Redis 启用 AUTH（默认密码 `mangaflow-dev`，仅供本机开发）；使用容器时把 `REDIS_URL` 设为 `redis://:mangaflow-dev@127.0.0.1:6379/0`。更换已有数据卷中的数据库密码请用 `ALTER USER`，不要删除用户数据卷。更换数据库还需检查 `DATABASE_URL` 并对目标库执行迁移。
 
 仅在 Redis 已启动、配置匹配且需要独立 RQ Worker 时使用：
 
@@ -63,7 +63,9 @@ docker compose up -d
 npm run dev:full
 ```
 
-当前 `dev:worker` 命令使用 `redis://localhost:6379/0` 与 `mangaflow` 队列，定义见 [package.json](../package.json)。如果修改 Redis 地址或队列名，API 与 Worker 必须一致；不要认为脚本会自动读取所有自定义值。
+`dev:worker` 通过 `apps/api/run_worker.py` 启动，使用与 API 相同的 `Settings` 读取项目根目录 `.env` 中的 `REDIS_URL` 和 `QUEUE_NAME`；不需要先运行 `start-dev.ps1` 或手动导出密码。启动入口启用调度器，Windows 使用 RQ `SpawnWorker`，其他平台保持默认 Worker。密码只传入进程环境，不出现在命令行参数中。API 与 Worker 的地址、密码和队列名必须一致。
+
+升级到质检版本迁移 `20260827_17` 时，先运行正常的 `scripts/start-dev.ps1` 启动流程，或在停止旧 API/Worker 后执行 `.venv\Scripts\python.exe -m alembic -c apps/api/alembic.ini upgrade head`。新迁移只新增检查对应的分镜版本字段，不删除旧检查；没有版本信息的历史结果保留供查看，但不能再作为当前分镜的生产通过依据，需要重新执行五类检查。
 
 > 这些模式已存在，但不能据此保证所有取消、重试和并发等待场景可靠。当前任务状态与调度问题按 P1-7、P1-9～P1-11 跟踪，见[路线图](roadmap.md)。
 

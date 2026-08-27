@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from time import perf_counter
 from typing import Any
@@ -11,6 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import Settings
+from app.http_bounds import read_bounded_http_body
 from app.model_adapters.base import ProviderAdapterError
 from app.model_adapters.compatible import provider_http_client
 from app.models import (
@@ -466,6 +468,27 @@ def _connection_http_client(
     )
 
 
+def _collect_google_model_entries(models, settings: Settings) -> list[dict[str, str]]:
+    entries: list[dict[str, str]] = []
+    approx_bytes = 2
+    for item in models:
+        ident = str(getattr(item, "name", "") or "").removeprefix("models/")
+        label = str(getattr(item, "display_name", "") or "")
+        if not ident:
+            continue
+        if len(ident) > 256 or len(label) > 256:
+            raise ValueError("供应商模型列表字段超过允许的大小")
+        entry = {"id": ident, "display_name": label}
+        encoded = json.dumps(entry, ensure_ascii=False)
+        approx_bytes += len(encoded.encode("utf-8")) + 1
+        if approx_bytes > settings.max_provider_metadata_bytes:
+            raise ValueError("供应商模型列表超过允许的大小")
+        if len(entries) >= settings.max_discovered_models:
+            raise ValueError("供应商模型列表超过允许的条目数")
+        entries.append(entry)
+    return entries
+
+
 def discover_models(
     db: Session,
     settings: Settings,
@@ -491,10 +514,9 @@ def discover_models(
 
             google_client = genai.Client(api_key=selected.secret)
             try:
-                entries = [
-                    {"id": item.name.removeprefix("models/"), "display_name": item.display_name}
-                    for item in google_client.models.list()
-                ]
+                entries = _collect_google_model_entries(
+                    google_client.models.list(), settings
+                )
             finally:
                 close = getattr(google_client, "close", None)
                 if callable(close):
@@ -513,16 +535,28 @@ def discover_models(
                     httpx.Timeout(30.0, connect=10.0),
                 )
                 owned_client = True
-            response = http.get(
+            request = http.build_request(
+                "GET",
                 target_url,
                 headers=_request_headers(connection, selected.secret),
-                follow_redirects=False,
             )
-            if response.status_code >= 400:
-                raise _http_error(response.status_code)
-            if 300 <= response.status_code < 400:
-                raise ProviderAdapterError("UPSTREAM", "模型列表端点返回了未允许的重定向")
-            body = response.json()
+            response = http.send(request, stream=True, follow_redirects=False)
+            try:
+                if response.status_code >= 400:
+                    raise _http_error(response.status_code)
+                if 300 <= response.status_code < 400:
+                    raise ProviderAdapterError(
+                        "UPSTREAM", "模型列表端点返回了未允许的重定向"
+                    )
+                raw = read_bounded_http_body(
+                    response, settings.max_provider_metadata_bytes
+                )
+            finally:
+                response.close()
+            try:
+                body = json.loads(raw)
+            except json.JSONDecodeError as error:
+                raise ValueError("供应商模型列表响应格式无效") from error
             if isinstance(body, list):
                 entries = body
             elif isinstance(body, dict):
@@ -531,6 +565,15 @@ def discover_models(
                 raise ValueError("供应商模型列表响应格式无效")
             if not isinstance(entries, list):
                 raise ValueError("供应商模型列表 data 字段必须是数组")
+            if len(entries) > settings.max_discovered_models:
+                raise ValueError("供应商模型列表超过允许的条目数")
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    raise ValueError("供应商模型列表条目必须是对象")
+                ident = str(entry.get("id") or entry.get("name") or "")
+                label = str(entry.get("display_name") or "")
+                if len(ident) > 256 or len(label) > 256:
+                    raise ValueError("供应商模型列表字段超过允许的大小")
         models = _upsert_discovered_models(db, connection, entries)
         connection.health_state = "HEALTHY"
         connection.last_checked_at = datetime.now(UTC)
@@ -737,16 +780,26 @@ def read_balance(
                 httpx.Timeout(15.0, connect=5.0),
             )
             owned_client = True
-        response = http.get(
+        request = http.build_request(
+            "GET",
             target_url,
             headers=_request_headers(connection, selected.secret),
-            follow_redirects=False,
         )
-        if response.status_code >= 400:
-            raise _http_error(response.status_code)
-        if 300 <= response.status_code < 400:
-            raise ProviderAdapterError("UPSTREAM", "余额端点返回了未允许的重定向")
-        body = response.json()
+        response = http.send(request, stream=True, follow_redirects=False)
+        try:
+            if response.status_code >= 400:
+                raise _http_error(response.status_code)
+            if 300 <= response.status_code < 400:
+                raise ProviderAdapterError("UPSTREAM", "余额端点返回了未允许的重定向")
+            raw = read_bounded_http_body(
+                response, settings.max_provider_metadata_bytes
+            )
+        finally:
+            response.close()
+        try:
+            body = json.loads(raw)
+        except json.JSONDecodeError as error:
+            raise ProviderAdapterError("UPSTREAM", "余额查询响应格式无效") from error
         mark_key_success(db, selected.row)
         return {
             "configured": True,

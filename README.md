@@ -84,16 +84,18 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1
 
 Use this command for everyday startup once the environment is ready. It migrates the database before starting the Web and API services. In development, `AUTO` queue mode falls back to the local executor when Redis is unavailable.
 
-- [Open the workbench](http://localhost:3000)
-- [Browse the API documentation](http://localhost:8000/api/docs)
-- [Check the API and database connection](http://localhost:8000/api/v1/health)
+- [Open the workbench](http://127.0.0.1:3000)
+- [Browse the API documentation](http://127.0.0.1:8000/api/docs)
+- [Check the API and database connection](http://127.0.0.1:8000/api/v1/health)
+
+Development and production start scripts bind Web and API to `127.0.0.1`. This is a private single-user workbench with no accounts: anyone who can reach the ports can read and write projects. Do not expose it to untrusted networks until authentication is added. CORS is not access control.
 
 ### 3. Verify your first startup
 
 In a second PowerShell window:
 
 ```powershell
-Invoke-RestMethod http://localhost:8000/api/v1/health
+Invoke-RestMethod http://127.0.0.1:8000/api/v1/health
 ```
 
 Expect `status: ok` and `database: ok`, and confirm that the workbench opens. This checks API and database connectivity only; it does not validate provider credentials or image generation.
@@ -125,7 +127,9 @@ The default setup stores metadata in local SQLite and assets in local directorie
 - Normal project or asset deletion is a soft delete, not immediate disk-space recovery. Withdrawing a candidate selection also leaves its original image intact.
 - A Git commit does not include this local data and is not a backup. Moving to another machine requires the database, assets, and keys needed for decryption; see the [backup guide](docs/local-development.md#数据与备份).
 
-The repository targets local, single-user use. Do not expose the development server directly to the public internet. Never commit `.env`, service-account JSON, keys, local databases, or generated media.
+The repository targets local, single-user use. Default listeners are loopback-only; do not publish the development server to other network interfaces or the public internet. Never commit `.env`, service-account JSON, keys, local databases, or generated media.
+
+Optional Docker Compose services for PostgreSQL and Redis bind to `127.0.0.1` only. Compose Redis uses AUTH (local default `mangaflow-dev`, not a production secret). Set `REDIS_URL=redis://:mangaflow-dev@127.0.0.1:6379/0` when using those containers. Change an existing database password with `ALTER USER`; do not delete user data volumes.
 
 ## Development and checks
 

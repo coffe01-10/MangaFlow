@@ -84,16 +84,18 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1
 
 日常已有环境直接运行这一条即可。脚本先迁移数据库，成功后启动 Web 与 API；在开发环境，`AUTO` 队列模式未连接 Redis 时使用本地执行器。
 
-- [打开工作台](http://localhost:3000)
-- [查看 API 文档](http://localhost:8000/api/docs)
-- [检查 API 与数据库连接](http://localhost:8000/api/v1/health)
+- [打开工作台](http://127.0.0.1:3000)
+- [查看 API 文档](http://127.0.0.1:8000/api/docs)
+- [检查 API 与数据库连接](http://127.0.0.1:8000/api/v1/health)
+
+开发与生产启动脚本默认把 Web 和 API 绑定到 `127.0.0.1`。当前是私有单用户工作台：没有账号体系，能访问这些端口的人都可以读写项目。未完成认证授权前，不要对非信任网络开放，也不要把 CORS 当作访问控制。
 
 ### 3. 确认第一次启动成功
 
 在另一个 PowerShell 窗口执行：
 
 ```powershell
-Invoke-RestMethod http://localhost:8000/api/v1/health
+Invoke-RestMethod http://127.0.0.1:8000/api/v1/health
 ```
 
 预期返回的两个字段为 `status: ok`、`database: ok`，同时工作台可以打开。此检查只验证 API 与数据库连通，不证明供应商凭据有效或图片生成可用。
@@ -125,7 +127,9 @@ Invoke-RestMethod http://localhost:8000/api/v1/health
 - 删除项目或素材通常是软删除，不等于立即释放磁盘空间。候选撤回也不删除原图。
 - Git 提交不包含这些本地数据，也不是备份。迁移机器要同时考虑数据库、素材和解密所需的密钥，见[备份说明](docs/local-development.md#数据与备份)。
 
-仓库按本地单用户使用设计，不把开发服务器直接暴露到公网。`.env`、服务账号 JSON、密钥、本地数据库和生成素材都不应提交。
+仓库按本地单用户使用设计，默认只监听回环地址；不要把开发服务器发布到其他网卡或公网。`.env`、服务账号 JSON、密钥、本地数据库和生成素材都不应提交。
+
+可选的 PostgreSQL / Redis 开发容器由 `docker compose up -d` 启动，端口只发布到 `127.0.0.1`。Compose 中的 Redis 启用了 AUTH（默认密码 `mangaflow-dev`，仅供本机开发）；使用这些容器时把 `REDIS_URL` 写成 `redis://:mangaflow-dev@127.0.0.1:6379/0`。更换已有数据卷中的数据库密码请用 `ALTER USER`，不要删除用户数据卷。默认业务数据库仍为 `storage/mangaflow.db`。
 
 ## 开发与验证
 

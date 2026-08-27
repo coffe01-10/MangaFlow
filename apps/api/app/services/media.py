@@ -1,7 +1,43 @@
 from pathlib import Path
 from shutil import rmtree
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, UnidentifiedImageError
+from PIL.Image import DecompressionBombError
+
+IMAGE_FORMAT_MIME = {
+    "PNG": ("image/png", ".png"),
+    "JPEG": ("image/jpeg", ".jpg"),
+    "WEBP": ("image/webp", ".webp"),
+}
+
+
+def inspect_upload_image(
+    path: Path,
+    *,
+    max_pixels: int,
+    max_side: int,
+) -> tuple[int, int, str, str]:
+    """Return width, height, MIME and suffix from the decoded image header."""
+
+    try:
+        with Image.open(path) as image:
+            image.verify()
+        with Image.open(path) as image:
+            width, height = image.size
+            fmt = (image.format or "").upper()
+    except DecompressionBombError as error:
+        raise ValueError("图片像素数超过上限") from error
+    except (UnidentifiedImageError, OSError) as error:
+        raise ValueError("图片文件损坏或格式不符") from error
+    if width <= 0 or height <= 0 or width > max_side or height > max_side:
+        raise ValueError("图片宽高超过上限")
+    if width * height > max_pixels:
+        raise ValueError("图片像素数超过上限")
+    mapped = IMAGE_FORMAT_MIME.get(fmt)
+    if mapped is None:
+        raise ValueError("不支持的图片格式")
+    mime, suffix = mapped
+    return width, height, mime, suffix
 
 
 def create_thumbnails(source: Path, root: Path, asset_id: str) -> dict[int, str]:

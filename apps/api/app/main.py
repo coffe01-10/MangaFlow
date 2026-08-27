@@ -11,6 +11,7 @@ from app import models  # noqa: F401
 from app.api.router import api_router
 from app.config import get_settings
 from app.database import SessionLocal, engine
+from app.request_limits import RequestBodyLimitMiddleware
 from app.services.job_service import recover_pending_jobs
 from app.services.provider_presets import ensure_provider_presets
 from app.services.runtime_settings import apply_runtime_overrides
@@ -44,11 +45,10 @@ async def lifespan(application: FastAPI):
     if not application.dependency_overrides:
         _assert_database_is_current()
     with SessionLocal() as db:
-        apply_runtime_overrides(db, settings)
-        # Tests commonly replace the request-scoped database while the global
-        # SessionLocal still points at a developer database. Never recover that
-        # unrelated database when dependency overrides are active.
+        # Tests replace the request-scoped database while SessionLocal still
+        # points at a developer database. Do not read or recover that database.
         if not application.dependency_overrides:
+            apply_runtime_overrides(db, settings)
             ensure_provider_presets(db, settings)
             recover_pending_jobs(db)
     yield
@@ -67,6 +67,9 @@ app = FastAPI(
     openapi_url="/api/openapi.json",
     lifespan=lifespan,
 )
+# Last added middleware is outermost. CORS must wrap the upload limiter so
+# browser 413 responses still include Access-Control-Allow-Origin.
+app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=sorted(web_origins),
