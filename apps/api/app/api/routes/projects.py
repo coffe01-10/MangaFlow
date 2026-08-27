@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.database import get_db
 from app.domain.states import JobStatus
 from app.models import (
@@ -13,12 +14,15 @@ from app.models import (
     MangaPage,
     PageCandidate,
     Project,
+    ProviderConnection,
+    ProviderKey,
     Scene,
     StyleProfile,
     StyleStatus,
     WorkflowDefinition,
 )
 from app.schemas import (
+    DashboardAIOverview,
     DashboardNextAction,
     DashboardTotals,
     ProjectCreate,
@@ -68,9 +72,39 @@ def get_project(project_id: str, db: Session = Depends(get_db)) -> Project:
     return project
 
 
+def _ai_overview(db: Session) -> DashboardAIOverview:
+    """Aggregate the provider/model facts shown on the homepage badges."""
+
+    enabled_model_count = (
+        db.scalar(select(func.count(AIModel.id)).where(AIModel.enabled.is_(True))) or 0
+    )
+    connections = db.execute(
+        select(
+            ProviderConnection.protocol,
+            ProviderConnection.health_state,
+            func.max(case((ProviderKey.enabled.is_(True), 1), else_=0)),
+        )
+        .outerjoin(ProviderKey, ProviderKey.connection_id == ProviderConnection.id)
+        .group_by(ProviderConnection.id)
+    ).all()
+    native_configured = get_settings().vertex_configured
+    healthy = sum(state == "HEALTHY" for _, state, _ in connections)
+    configured = sum(
+        bool(has_enabled_key)
+        or (protocol == "VERTEX_NATIVE" and native_configured)
+        for protocol, _, has_enabled_key in connections
+    )
+    return DashboardAIOverview(
+        enabled_model_count=enabled_model_count,
+        healthy_connection_count=healthy,
+        configured_connection_count=configured,
+    )
+
+
 def _get_dashboard_snapshot(db: Session) -> ProjectDashboardRead:
     """Return a consistent dashboard snapshot without per-project request waterfalls."""
 
+    ai_overview = _ai_overview(db)
     projects = list(
         db.scalars(
             select(Project).where(Project.deleted_at.is_(None)).order_by(Project.updated_at.desc())
@@ -85,6 +119,7 @@ def _get_dashboard_snapshot(db: Session) -> ProjectDashboardRead:
                 review_page_count=0,
                 pending_job_count=0,
             ),
+            ai_overview=ai_overview,
             projects=[],
         )
 
@@ -234,6 +269,7 @@ def _get_dashboard_snapshot(db: Session) -> ProjectDashboardRead:
             review_page_count=sum(item.review_page_count for item in items),
             pending_job_count=sum(item.pending_job_count for item in items),
         ),
+        ai_overview=ai_overview,
         projects=items,
     )
 

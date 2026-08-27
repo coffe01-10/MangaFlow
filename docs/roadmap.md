@@ -78,12 +78,19 @@ MangaFlow 已经具备私有单用户漫画生产工作台的主要功能面：�
 - 至少覆盖 `WAITING`、`QUEUED`、`PREPARING`、`UPLOADING_REFERENCES`、`GENERATING`、`OCR_CHECKING`（历史兼容）、`CONSISTENCY_CHECKING`、`REPAIRING`、`RUNNING`。
 - 增加组件测试，证明检查/修复期间继续轮询，进入终态后停止轮询。
 
-### P1-3 恢复浏览器验收基线
+### P1-3 恢复浏览器验收基线 ✅ 2026-08-27 完成
 
 本次 Playwright 失败证据：
 
 - 首页预算要求不超过 3 个 API 请求，实测 4 个：`/projects/dashboard`、`/settings/vertex/status`、`/models`、`/providers`。
 - Axe 在首页发现 1 类严重问题、4 个节点：`.empty-project > small` 对比度 3.75:1；生产闭环第 6/7 步编号 2.32:1；`.honesty-note` 4.49:1，均低于普通文字 4.5:1 要求。
+
+修复与结果：
+
+- `/projects/dashboard` 新增 `ai_overview` 摘要（可用模型数、健康连接数、已配置连接数），首页删除独立的 `/models`、`/providers` 首屏请求，首屏降至 dashboard + vertex status 共 2 个请求。
+- 对比度修复覆盖 Axe 实测暴露的全部页面：浅色系灰字统一替换为 `#66604f`（最差背景 5.03:1）；工作流深色面板灰绿统一为 `#a4ada7` / `#b8c0ba`（6.33:1+）；状态徽标琥珀/朱红改为 `#8f6117` / `#b23c25`（5.13:1+）；章节导航序号移除 `opacity:.6` 叠加。
+- Workflow 工作台补充可访问名称：3 个 `<select>` 增加 aria-label（选择工作流、运行范围类型、运行目标），节点库/属性面板关闭按钮与校验清除按钮增加 aria-label，设置页手动模型类型下拉增加 aria-label。
+- 重跑全部 4 项 Playwright E2E：全部通过。
 
 工作与验收：
 
@@ -91,7 +98,7 @@ MangaFlow 已经具备私有单用户漫画生产工作台的主要功能面：�
 - 调整对应文字颜色或字号/字重，确保 Axe 的 WCAG 2 AA serious/critical 结果为零。
 - 重跑全部 4 项 Playwright E2E；随后再跑 Lighthouse 和 100 节点工作流 FPS 门禁。
 
-### P1-4 把浏览器门禁纳入可见的完整检查
+### P1-4 把浏览器门禁纳入可见的完整检查 ✅ 2026-08-27 完成
 
 `npm run check` 当前只包含 lint、Python 测试、Vitest 和生产构建，不包含 Playwright、Axe、Lighthouse 或工作流 FPS；文档中的“完整质量门禁”不能继续与 `npm run check` 混为一谈。
 
@@ -153,7 +160,7 @@ MangaFlow 已经具备私有单用户漫画生产工作台的主要功能面：�
 
 1. ~~先在独立修复分支整合 P0-1～P0-2，补齐回归测试。~~（2026-08-27 完成）
 2. ~~合并 P1-1、P1-2~~，收口任务/序号并发语义；**剩余 P1-5 序号分配竞态，覆盖范围待确认**。
-3. 修复 P1-3，建立 P1-4 的完整浏览器门禁。
+3. ~~修复 P1-3，建立 P1-4 的完整浏览器门禁。~~（2026-08-27 完成；Lighthouse 与 FPS 门禁仍按稳定环境单独设门槛）
 4. 主分支通过全部离线门禁后，再做一次用户授权的单候选真实供应商验收。
 5. 最后按独立小提交推进 P2，避免可维护性重构干扰可靠性修复。
 

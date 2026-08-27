@@ -182,7 +182,7 @@ function ConnectionPanel({
     </div>
     <form className="provider-manual-model" onSubmit={(event) => { event.preventDefault(); addModel.mutate(); }}>
       <input value={manualId} onChange={(event) => setManualId(event.target.value)} placeholder="手动模型 ID" />
-      <select value={manualType} onChange={(event) => setManualType(event.target.value as "TEXT" | "IMAGE")}><option value="TEXT">文字模型</option>{connection.protocol !== "ANTHROPIC" && <option value="IMAGE">图片模型</option>}</select>
+      <select aria-label="模型类型" value={manualType} onChange={(event) => setManualType(event.target.value as "TEXT" | "IMAGE")}><option value="TEXT">文字模型</option>{connection.protocol !== "ANTHROPIC" && <option value="IMAGE">图片模型</option>}</select>
       <button disabled={!manualId.trim() || pending}><Plus size={14} />添加</button>
     </form>
     {pending && <p className="settings-progress"><LoaderCircle className="spin" size={14} />正在访问供应商，请稍候…</p>}

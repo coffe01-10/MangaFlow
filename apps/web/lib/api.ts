@@ -542,6 +542,12 @@ export interface DashboardProject {
   next_action: { section: string; label: string; reason: string };
 }
 
+export interface DashboardAIOverview {
+  enabled_model_count: number;
+  healthy_connection_count: number;
+  configured_connection_count: number;
+}
+
 export interface ProjectDashboard {
   totals: {
     project_count: number;
@@ -550,6 +556,7 @@ export interface ProjectDashboard {
     review_page_count: number;
     pending_job_count: number;
   };
+  ai_overview: DashboardAIOverview;
   projects: DashboardProject[];
 }
 
