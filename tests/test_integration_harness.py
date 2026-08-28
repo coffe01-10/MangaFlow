@@ -424,3 +424,308 @@ def test_redis_cleanup_does_not_mark_success_if_owner_delete_failed(redis_cleanu
     with pytest.raises(RuntimeError, match="marker was not removed"):
         resources.cleanup()
     assert not resources.cleaned
+
+
+# These run real lightweight Windows processes, but no database, Redis or supplier.
+@pytest.fixture
+def process_tree(tmp_path):
+    import os
+
+    from tests.integration.process_resources import OwnedProcessTree
+
+    if os.name != "nt":
+        pytest.skip("Windows Job Object process verification requires Windows")
+    with OwnedProcessTree(tmp_path) as tree:
+        yield tree
+
+
+def _wait_process_file(path, timeout=8):
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            content = path.read_text(encoding="utf-8")
+            if content:
+                return content
+        time.sleep(0.02)
+    raise AssertionError("Owned test process did not produce its readiness file")
+
+
+def test_owned_process_runs_in_isolated_environment_and_retains_nonzero_status(
+    process_tree, monkeypatch
+):
+    import json
+
+    monkeypatch.setenv("MANGAFLOW_TEST_PARENT_SECRET", "do-not-inherit")
+    output = process_tree.payload / "child result 中文.json"
+    child = process_tree.start_python(
+        "probe",
+        """import json, os, pathlib, sys
+pathlib.Path(sys.argv[1]).write_text(json.dumps({
+    "pid": os.getpid(), "cwd": os.getcwd(),
+    "secret": os.getenv("MANGAFLOW_TEST_PARENT_SECRET"),
+    "parent_env": os.getenv("DATABASE_URL"),
+    "argument": sys.argv[2],
+}), encoding="utf-8")
+raise SystemExit(7)
+""",
+        [str(output), "spaces ' and \" quotes 中文"],
+    )
+    assert child.wait(timeout=8) == 7
+    result = json.loads(output.read_text(encoding="utf-8"))
+    # Windows venv python.exe may be a redirector. Both belong to the same job.
+    assert isinstance(result["pid"], int) and result["pid"] > 0
+    assert Path(result["cwd"]) == process_tree.payload
+    assert result["secret"] is None and result["parent_env"] is None
+    assert result["argument"] == "spaces ' and \" quotes 中文"
+    process_tree.stop()
+    record = json.loads((process_tree.directory / "owner.json").read_text(encoding="utf-8"))
+    assert record["processes"][0]["exit_code"] == 7
+    assert "do-not-inherit" not in json.dumps(record)
+    with pytest.raises(RuntimeError, match="registration is closed"):
+        process_tree.start_python("late", "pass")
+
+
+def test_process_gate_does_not_execute_if_assignment_fails(process_tree, monkeypatch):
+    output = process_tree.payload / "must-not-exist"
+    monkeypatch.setattr(process_tree.api, "AssignProcessToJobObject", lambda *_: False)
+    with pytest.raises(OSError):
+        process_tree.start_python(
+            "rejected",
+            "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('unsafe')",
+            [str(output)],
+        )
+    assert not output.exists()
+    assert process_tree.processes[-1].poll() is not None
+
+
+def test_process_stop_kills_grandchild_after_direct_child_already_exited(process_tree):
+    from tests.integration.process_resources import _checked
+
+    pid_file = process_tree.payload / "grandchild.pid"
+    child = process_tree.start_python(
+        "parent",
+        """import pathlib, subprocess, sys
+child = subprocess.Popen([sys.executable, "-I", "-c", "import time; time.sleep(60)"])
+pathlib.Path(sys.argv[1]).write_text(str(child.pid), encoding="utf-8")
+""",
+        [str(pid_file)],
+    )
+    descendant_pid = int(_wait_process_file(pid_file))
+    assert child.wait(timeout=8) == 0
+    api = process_tree.api
+    handle = _checked(api.OpenProcess(0x100000, False, descendant_pid))
+    try:
+        assert api.WaitForSingleObject(handle, 0) == 258
+        process_tree.stop()
+        assert api.WaitForSingleObject(handle, 5000) == 0
+    finally:
+        _checked(api.CloseHandle(handle))
+
+
+def test_process_cleanup_retries_real_windows_sqlite_lock(process_tree):
+    import sqlite3
+
+    connection = sqlite3.connect(process_tree.payload / "locked.sqlite")
+    connection.execute("CREATE TABLE sentinel (value INTEGER)")
+    connection.commit()
+    try:
+        with pytest.raises(PermissionError):
+            process_tree.cleanup()
+        assert not process_tree.cleaned
+        assert (process_tree.directory / "owner.json").exists()
+    finally:
+        connection.close()
+    process_tree.cleanup()
+    assert process_tree.cleaned and not process_tree.directory.exists()
+
+
+def test_process_recovery_refuses_live_controller_even_without_children(process_tree):
+    from tests.integration.process_resources import recover_stopped_tree
+
+    with pytest.raises(RuntimeError, match="controller is still active"):
+        recover_stopped_tree(process_tree.directory, process_tree.token)
+    assert (process_tree.directory / "owner.json").exists()
+
+
+def test_process_cleanup_refuses_changed_owner(process_tree):
+    import json
+
+    owner = process_tree.directory / "owner.json"
+    original = owner.read_text(encoding="utf-8")
+    altered = json.loads(original)
+    altered["token"] = "e" * 32
+    owner.write_text(json.dumps(altered), encoding="utf-8")
+    try:
+        with pytest.raises(RuntimeError, match="ownership marker changed"):
+            process_tree.cleanup()
+        assert owner.exists() and not process_tree.cleaned
+    finally:
+        owner.write_text(original, encoding="utf-8")
+
+
+def test_process_stop_failure_is_not_completion_and_can_retry(process_tree, monkeypatch):
+    import json
+
+    terminate = process_tree.api.TerminateJobObject
+    monkeypatch.setattr(process_tree.api, "TerminateJobObject", lambda *_: False)
+    with pytest.raises(OSError):
+        process_tree.stop()
+    record = json.loads((process_tree.directory / "owner.json").read_text(encoding="utf-8"))
+    assert record["state"] == "stop_failed" and not process_tree.cleaned
+    monkeypatch.setattr(process_tree.api, "TerminateJobObject", terminate)
+    process_tree.cleanup()
+    assert not process_tree.directory.exists()
+
+
+@pytest.mark.parametrize("ending", ["kill", "abrupt"])
+def test_controller_death_kills_tree_and_journal_can_be_recovered(tmp_path, ending):
+    import json
+    import os
+    import subprocess
+    import sys
+
+    from tests.integration.process_resources import _checked, _kernel, recover_stopped_tree
+
+    if os.name != "nt":
+        pytest.skip("Windows process recovery test")
+    repo = str(Path(__file__).resolve().parents[1])
+    pointer = tmp_path / "tree.json"
+    # Controller imports the actual module from this checkout. No parent patches.
+    code = """import json, os, pathlib, sys, time
+sys.path.insert(0, sys.argv[1])
+from tests.integration.process_resources import OwnedProcessTree
+parent, pointer = pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
+tree = OwnedProcessTree(parent)
+tree.start_python("worker", '''import pathlib, subprocess, sys, time
+child = subprocess.Popen([sys.executable, "-I", "-c", "import time; time.sleep(60)"])
+pathlib.Path(sys.argv[1]).write_text(str(child.pid), encoding="utf-8")
+time.sleep(60)
+''', [str(tree.payload / "leaf.pid")])
+pointer.write_text(json.dumps({"directory": str(tree.directory), "token": tree.token}),
+                   encoding="utf-8")
+while not (parent / "exit-now").exists():
+    time.sleep(0.02)
+os._exit(23)
+"""
+    env = {key: os.environ[key] for key in ("SystemRoot", "WINDIR") if key in os.environ}
+    env.update(TEMP=str(tmp_path), TMP=str(tmp_path), PYTHONDONTWRITEBYTECODE="1")
+    controller = subprocess.Popen(
+        [sys.executable, "-I", "-B", "-c", code, repo, str(tmp_path), str(pointer)],
+        cwd=tmp_path,
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    api, handles, identity = _kernel(), [], None
+    try:
+        identity = json.loads(_wait_process_file(pointer))
+        directory = Path(identity["directory"])
+        leaf = int(_wait_process_file(directory / "payload" / "leaf.pid"))
+        record = json.loads((directory / "owner.json").read_text(encoding="utf-8"))
+        for pid in [record["processes"][0]["pid"], leaf]:
+            handles.append(_checked(api.OpenProcess(0x100000, False, pid)))
+        if ending == "kill":
+            controller.kill()  # Only the Popen handle created by this test.
+        else:
+            (tmp_path / "exit-now").touch()
+        assert controller.wait(timeout=8) != 0
+        assert all(api.WaitForSingleObject(handle, 5000) == 0 for handle in handles)
+        recover_stopped_tree(directory, identity["token"])
+        assert not directory.exists()
+    finally:
+        if controller.poll() is None:
+            controller.kill()
+            controller.wait(timeout=8)
+        for handle in handles:
+            _checked(api.CloseHandle(handle))
+        if identity and Path(identity["directory"]).exists():
+            recover_stopped_tree(Path(identity["directory"]), identity["token"])
+
+
+def test_suspended_launcher_and_execution_process_belong_to_job(process_tree, monkeypatch):
+    import ctypes
+    import time
+    from ctypes import wintypes
+
+    from tests.integration.process_resources import _checked
+
+    output = process_tree.payload / "execution.pid"
+    release = process_tree.payload / "release"
+    original_assign = process_tree.api.AssignProcessToJobObject
+
+    def delayed_assignment(job, handle):
+        time.sleep(0.1)
+        # Even the Windows venv redirector cannot execute before assignment.
+        assert process_tree.api.WaitForSingleObject(handle, 0) == 258
+        assert not output.exists()
+        return original_assign(job, handle)
+
+    monkeypatch.setattr(process_tree.api, "AssignProcessToJobObject", delayed_assignment)
+    child = process_tree.start_python(
+        "membership",
+        """import os, pathlib, sys, time
+pathlib.Path(sys.argv[1]).write_text(str(os.getpid()), encoding="utf-8")
+while not pathlib.Path(sys.argv[2]).exists():
+    time.sleep(0.02)
+""",
+        [str(output), str(release)],
+    )
+    execution_pid = int(_wait_process_file(output))
+    execution = _checked(process_tree.api.OpenProcess(0x1000, False, execution_pid))
+    try:
+        member = wintypes.BOOL()
+        _checked(
+            process_tree.api.IsProcessInJob(execution, process_tree.handle, ctypes.byref(member))
+        )
+        assert member.value
+    finally:
+        _checked(process_tree.api.CloseHandle(execution))
+    release.touch()
+    assert child.wait(timeout=8) == 0
+
+
+def test_process_body_and_cleanup_failures_both_reported(tmp_path):
+    import os
+    import sqlite3
+
+    from tests.integration.process_resources import OwnedProcessTree
+
+    if os.name != "nt":
+        pytest.skip("Windows lock behavior")
+    tree = OwnedProcessTree(tmp_path)
+    connection = sqlite3.connect(tree.payload / "locked.sqlite")
+    connection.execute("CREATE TABLE sentinel (value INTEGER)")
+    connection.commit()
+    try:
+        with pytest.raises(ExceptionGroup) as caught, tree:
+            raise ValueError("original test failure")
+        assert isinstance(caught.value.exceptions[0], ValueError)
+        assert isinstance(caught.value.exceptions[1], PermissionError)
+        assert not tree.cleaned and (tree.directory / "owner.json").exists()
+    finally:
+        connection.close()
+        tree.cleanup()
+
+
+def test_process_stop_can_retry_after_child_handles_closed(process_tree, monkeypatch):
+    child = process_tree.start_python("complete", "pass")
+    assert child.wait(timeout=8) == 0
+    close = process_tree.api.CloseHandle
+    fail_once = True
+
+    def close_handle(handle):
+        nonlocal fail_once
+        if handle == process_tree.handle and fail_once:
+            fail_once = False
+            return False
+        return close(handle)
+
+    monkeypatch.setattr(process_tree.api, "CloseHandle", close_handle)
+    with pytest.raises(OSError):
+        process_tree.stop()
+    assert child.handle is None and not process_tree.cleaned
+    process_tree.cleanup()
+    assert process_tree.cleaned

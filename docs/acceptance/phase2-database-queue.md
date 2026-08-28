@@ -117,3 +117,45 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-phase2-acceptance.ps1 -Dr
 跨进程清理恢复记录、多 worker 槽位释放/重试/取消失租、五类版本门禁、
 随机凭据和本次容器编排、真实 PostgreSQL/Redis 执行及全量复验。
 当前 live 入口继续 BLOCKED。
+
+
+## 2026-08-28 组长接管：Windows 进程监督准备
+
+在 `bdc9254` 之后新增 `tests/integration/process_resources.py`，并扩展已有离线
+harness。本次验证的是 Windows 进程树生命周期，**不是 RQ Worker 或队列业务验收**。
+该监督器尚未接入真实 RQ Worker/调度器及 Redis 资源清理器，不据此解除 live 阻塞。
+
+- 每次创建随机命名的 Windows Job Object，设置 KILL_ON_JOB_CLOSE，不允许 breakaway。
+  Python 启动器用 CREATE_SUSPENDED 创建，绑定本次 Job Object、持久化归属记录后，
+  才恢复线程执行；避免 Windows venv 启动器先产生未受监督的执行进程。
+- 持有自己创建的进程句柄，不通过保存的 PID 调用 taskkill。停止后查询 Job Object
+  的活动进程数，并等待直接启动的进程退出；子进程和孙进程都受本次 Job Object 约束。
+- 子进程不复制父进程的应用环境；使用独立临时工作目录，参数通过参数数组传递。
+  归属记录只有 token、控制器 PID/创建时间、子进程标签/PID、退出码和错误类型，
+  不保存命令正文、环境、数据库 URL 或密码。
+- 强退恢复只接受本次目录与 token，核对控制器创建时间以区分 PID 复用。
+  活动控制器或仍活动的 Job Object 拒绝接管；不通过伪造 Redis worker death 绕过清理。
+- payload 清理失败保留归属记录，不提前标记 cleaned，可在锁释放后重试。
+  同时出现测试体和清理异常时保留两者；部分进程句柄已经关闭后仍可重试。
+- Job Object 语义参照
+  [Microsoft Windows 官方文档](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)。
+  此模块面向受控的本地 Python 测试进程，不是通用恶意进程沙箱或容器安全审计。
+
+### 实际执行与发现
+
+- 当前本机安装 RQ **2.6.1**。直接读取源码和平台能力探针确认：
+  SpawnWorker 子进程仍调用 os.setpgrp，继承的监控/终止调用 os.wait4/os.killpg，
+  而本机 Windows 没有这些函数。因此不能仅改类名就声称 Windows SpawnWorker 可用；
+  仍需实现并验证兼容的独立 RQ 执行路径，不能退回 SimpleWorker 冒充。
+- 初次检查 **47 passed / 1 failed**：发现 venv 启动器 PID 与实际 Python PID 不同。
+  据此改用挂起创建，并增加实际执行进程归属检查，未把 PID 不同简单当作测试噪音。
+- 最终轻量 harness **51 passed / 1 条既有 Starlette 警告**，约 2.70s。
+  本次新增 12 项，包含真实小型 Python 子进程/孙进程、控制器 kill/os._exit、
+  实际 SQLite 锁文件清理重试，以及故障注入控制流检查。
+- 实际进程测试不连接 Redis/PostgreSQL，不执行供应商请求；这些结果不能计入
+  Redis 重试、租约、多 worker 槽位或 PostgreSQL 集成通过数。
+  临时目录由隔离入口及监督器清理，没有操作 Grok 的 runtime 或 3000/8000 端口。
+
+下一步仍为：把监督器接入独立 RQ Worker/调度器与退出证明、本地适配器及共享持久化
+证据，修复剩余队列业务和五类版本门禁，再完善随机资源/凭据编排。
+真实服务环境仍未获安装/下载授权；本 PR 未合并，master 验收尚未发生。
