@@ -17,6 +17,8 @@ import shutil
 import subprocess
 import sys
 import time
+# Ruff lints tests/ outside apps/api's py312 target; import the 3.11+ builtins explicitly.
+from builtins import BaseExceptionGroup
 from ctypes import wintypes
 from pathlib import Path
 from uuid import uuid4
@@ -230,6 +232,7 @@ class OwnedPythonProcess:
     def __init__(self, api, handle, pid):
         self.api, self.handle, self.pid = api, handle, pid
         self.returncode = None
+        self.assigned_to_job = False
 
     def poll(self):
         if self.returncode is not None:
@@ -355,6 +358,7 @@ class OwnedProcessTree:
         self.processes.append(child)
         try:
             _checked(self.api.AssignProcessToJobObject(self.handle, child.handle))
+            child.assigned_to_job = True
             self.record["processes"].append({"label": label, "pid": child.pid})
             self.record["state"] = "running"
             self._save()  # Durable ownership before executing even the venv launcher.
@@ -382,8 +386,10 @@ class OwnedProcessTree:
                         raise TimeoutError("Owned process tree did not exit")
                     time.sleep(0.02)
             for child in self.processes:
-                if child.poll() is None:
-                    child.terminate()  # Covers a failed assignment while still suspended.
+                if not child.assigned_to_job and child.poll() is None:
+                    child.terminate()  # Only failed assignment leaves a suspended outsider.
+                # Job active-count zero can precede HANDLE signaling. Wait for
+                # assigned members; a second TerminateProcess races exit (ERROR_ACCESS_DENIED).
                 child.wait(timeout=timeout)
             self.record["state"] = "stopped"
             for item in self.record["processes"]:

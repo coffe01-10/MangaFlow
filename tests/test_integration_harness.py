@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# Ruff lints tests/ outside apps/api's py312 target; import the 3.11+ builtin explicitly.
+from builtins import ExceptionGroup
 from pathlib import Path
 
 import pytest
@@ -498,6 +500,22 @@ def test_process_gate_does_not_execute_if_assignment_fails(process_tree, monkeyp
         )
     assert not output.exists()
     assert process_tree.processes[-1].poll() is not None
+
+
+def test_job_zero_active_waits_for_assigned_handles_without_terminating_twice(
+    process_tree, monkeypatch
+):
+    child = process_tree.start_python("wait-race", "import time; time.sleep(60)")
+    assert child.assigned_to_job
+    monkeypatch.setattr(
+        child,
+        "terminate",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("assigned member already terminated by job")
+        ),
+    )
+    process_tree.stop()
+    assert child.returncode is not None
 
 
 def test_process_stop_kills_grandchild_after_direct_child_already_exited(process_tree):
