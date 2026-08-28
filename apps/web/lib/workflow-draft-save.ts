@@ -95,16 +95,18 @@ export function createWorkflowDraftSaver<TGraph, TResult extends WorkflowDraftPe
         if (generation === savedGeneration) return true;
         return drain(runEpoch);
       });
-      inflight = queued.finally(() => {
-        if (inflight === queued) inflight = null;
+      const tracked = queued.finally(() => {
+        if (inflight === tracked) inflight = null;
       });
-      return queued;
+      inflight = tracked;
+      return tracked;
     }
     const run = drain(runEpoch);
-    inflight = run.finally(() => {
-      if (inflight === run) inflight = null;
+    const tracked = run.finally(() => {
+      if (inflight === tracked) inflight = null;
     });
-    return run;
+    inflight = tracked;
+    return tracked;
   }
 
   return {

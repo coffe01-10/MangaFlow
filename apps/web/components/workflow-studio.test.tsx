@@ -212,5 +212,15 @@ describe("WorkflowStudio 草稿保存与发布", () => {
     });
     await waitFor(() => expect(screen.getByText("草稿保存失败，未发布")).toBeInTheDocument());
     expect(publishSpy).toHaveBeenCalledTimes(1);
+
+    updateSpy.mockImplementation(async (_id, _version, payload) => workflow({
+      version: 4, draft_version: 4, draft_graph: payload.draft_graph as WorkflowGraph,
+    }));
+    await act(async () => {
+      screen.getByRole("button", { name: "发布" }).click();
+    });
+    await waitFor(() => expect(publishSpy).toHaveBeenCalledTimes(2));
+    expect(updateSpy.mock.calls.at(-1)?.[2].draft_graph?.nodes).toHaveLength(3);
+    expect(screen.getByText("保存状态").parentElement).toHaveTextContent("已保存");
   });
 });

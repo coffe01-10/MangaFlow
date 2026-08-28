@@ -1,11 +1,15 @@
 from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
+import sqlite3
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Barrier
 
 import pytest
 from PIL import Image
 from sqlalchemy import create_engine, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
 from app.config import get_settings
@@ -549,14 +553,144 @@ def _seed_publishable_workflow(factory) -> str:
         return workflow.id
 
 
+@pytest.fixture
+def publish_sessions(tmp_path):
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'concurrent-publish.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(engine)
+    try:
+        yield sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("invalid", [False, True])
+def test_publish_refreshes_and_validates_current_draft(publish_sessions, invalid):
+    factory = publish_sessions
+    workflow_id = _seed_publishable_workflow(factory)
+    with factory() as first:
+        stale = first.get(WorkflowDefinition, workflow_id)
+        with factory() as other:
+            current = other.get(WorkflowDefinition, workflow_id)
+            graph = deepcopy(current.draft_graph)
+            graph["nodes"][0]["name"] = "新草稿"
+            if invalid:
+                graph["nodes"][0]["type"] = "unknown.node"
+            current.draft_graph = graph
+            current.version += 1
+            other.commit()
+        if invalid:
+            with pytest.raises(ValueError, match="校验失败"):
+                publish_workflow(first, stale)
+        else:
+            published = publish_workflow(first, stale)
+            assert published.graph == graph
+            assert published.validation_report == validate_graph(graph).model_dump(
+                mode="json"
+            )
+    with factory() as db:
+        current = db.get(WorkflowDefinition, workflow_id)
+        assert current.version == (2 if invalid else 3)
+        if invalid:
+            assert current.published_version_id is None
+            assert list(db.scalars(select(WorkflowVersion))) == []
+
+
+def test_simultaneous_sqlite_publishes_are_controlled(publish_sessions, monkeypatch):
+    factory = publish_sessions
+    workflow_id = _seed_publishable_workflow(factory)
+    barrier = Barrier(2, timeout=10)
+    original = workflow_engine._next_revision
+
+    def allocate_together(db, target_id):
+        revision = original(db, target_id)
+        if not db.info.get("publish_synchronized"):
+            db.info["publish_synchronized"] = True
+            barrier.wait()
+        return revision
+
+    monkeypatch.setattr(workflow_engine, "_next_revision", allocate_together)
+
+    def publish_once():
+        with factory() as db:
+            try:
+                return publish_workflow(db, db.get(WorkflowDefinition, workflow_id))
+            except Exception as error:
+                return error
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _: publish_once(), range(2)))
+    assert all(
+        isinstance(item, (WorkflowVersion, PublishRevisionConflictError))
+        for item in results
+    ), results
+    assert any(isinstance(item, WorkflowVersion) for item in results)
+    with factory() as db:
+        versions = list(
+            db.scalars(select(WorkflowVersion).order_by(WorkflowVersion.revision))
+        )
+        assert [item.revision for item in versions] == list(range(1, len(versions) + 1))
+        current = db.get(WorkflowDefinition, workflow_id)
+        assert current.published_version_id == versions[-1].id
+        assert current.version == 1 + len(versions)
+
+
+@pytest.mark.parametrize("error_code", [sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED])
+def test_sqlite_lock_conflict_returns_409_and_allows_retry(
+    client, db_session, monkeypatch, error_code
+):
+    project = _project(client)
+    workflow = _workflow(client, project["id"])
+    first = client.post(f"/api/v1/workflows/{workflow['id']}/publish")
+    assert first.status_code == 200
+    calls = []
+
+    def fail_with_lock(_db, _workflow_id):
+        calls.append(True)
+        error = sqlite3.OperationalError("database is locked")
+        error.sqlite_errorcode = error_code
+        raise OperationalError("INSERT", {}, error)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(workflow_engine, "_next_revision", fail_with_lock)
+        conflicted = client.post(f"/api/v1/workflows/{workflow['id']}/publish")
+    assert conflicted.status_code == 409
+    assert len(calls) == workflow_engine.PUBLISH_REVISION_MAX_ATTEMPTS
+    current = db_session.get(WorkflowDefinition, workflow["id"])
+    assert current.published_version_id == first.json()["id"]
+    second = client.post(f"/api/v1/workflows/{workflow['id']}/publish")
+    assert second.status_code == 200, second.text
+    assert second.json()["revision"] == 2
+
+
+def test_publish_does_not_hide_unrelated_database_errors(publish_sessions, monkeypatch):
+    workflow_id = _seed_publishable_workflow(publish_sessions)
+    error = sqlite3.OperationalError("no such table")
+    error.sqlite_errorcode = sqlite3.SQLITE_ERROR
+
+    def fail(_db, _workflow_id):
+        raise OperationalError("SELECT", {}, error)
+
+    monkeypatch.setattr(workflow_engine, "_next_revision", fail)
+    with publish_sessions() as db:
+        with pytest.raises(OperationalError, match="no such table"):
+            publish_workflow(db, db.get(WorkflowDefinition, workflow_id))
+
+
 def test_independent_sessions_publish_successive_revisions():
     directory, factory = _file_session_factory()
     try:
         workflow_id = _seed_publishable_workflow(factory)
         with factory() as first:
-            first_version = publish_workflow(first, first.get(WorkflowDefinition, workflow_id))
+            first_version = publish_workflow(
+                first, first.get(WorkflowDefinition, workflow_id)
+            )
         with factory() as second:
-            second_version = publish_workflow(second, second.get(WorkflowDefinition, workflow_id))
+            second_version = publish_workflow(
+                second, second.get(WorkflowDefinition, workflow_id)
+            )
 
         assert first_version.revision == 1
         assert second_version.revision == 2

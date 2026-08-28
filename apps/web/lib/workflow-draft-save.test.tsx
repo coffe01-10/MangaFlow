@@ -61,6 +61,46 @@ afterEach(() => {
 });
 
 describe("工作流草稿保存队列", () => {
+  it.each([false, true])("失败后手动重试可恢复（并行等待者：%s）", async (withWaiter) => {
+    const harness = createHarness();
+    const first = deferred<Saved>();
+    const persist = vi.fn().mockImplementationOnce(() => first.promise)
+      .mockImplementation(async (snapshot: WorkflowDraftSnapshot<Graph>) => ({
+        id: snapshot.workflowId, version: 2, graph: snapshot.graph,
+      }));
+    harness.setPersist(persist);
+    harness.edit("A");
+    const save = harness.saver.saveNow();
+    const waiter = withWaiter ? harness.saver.saveNow() : save;
+    first.reject(new Error("网络中断"));
+    await expect(save).resolves.toBe(false);
+    await expect(waiter).resolves.toBe(false);
+    expect(harness.saver.isDirty()).toBe(true);
+
+    await expect(harness.saver.saveNow()).resolves.toBe(true);
+    expect(persist).toHaveBeenCalledTimes(2);
+    expect(harness.saver.isDirty()).toBe(false);
+    expect(harness.statuses.at(-1)).toBe("已保存");
+  });
+
+  it("保存失败后继续编辑仍能自动保存最新图", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness();
+    const persist = vi.fn().mockRejectedValueOnce(new Error("网络中断"))
+      .mockImplementation(async (snapshot: WorkflowDraftSnapshot<Graph>) => ({
+        id: snapshot.workflowId, version: 2, graph: snapshot.graph,
+      }));
+    harness.setPersist(persist);
+    harness.edit("A");
+    await expect(harness.saver.saveNow()).resolves.toBe(false);
+    harness.edit("B");
+    harness.saver.schedule();
+    await vi.advanceTimersByTimeAsync(800);
+    expect(persist).toHaveBeenCalledTimes(2);
+    expect(persist.mock.calls[1][0].graph).toEqual({ label: "B" });
+    expect(harness.saver.isDirty()).toBe(false);
+  });
+
   it("防抖期间继续编辑只持久化最新图", async () => {
     vi.useFakeTimers();
     const harness = createHarness();

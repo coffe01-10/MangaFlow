@@ -10,6 +10,8 @@
 
 ## 2. 关系总览
 
+工作流发布仍使用既有 `WorkflowVersion(workflow_id, revision)` 唯一约束，无新增迁移。每次发布的 graph、checksum 与 validation_report 来自事务内重新读取并校验的同一草稿；创建版本和更新 published_version_id 同事务完成。发生发布竞争时回滚并有限重试，失败不得移动已发布指针。
+
 ```mermaid
 erDiagram
     PROJECT ||--o{ CHAPTER : contains
