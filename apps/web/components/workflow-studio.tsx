@@ -32,6 +32,7 @@ import {
   type WorkflowNodeType,
   type WorkflowRun,
 } from "@/lib/api";
+import { createWorkflowDraftSaver, type WorkflowDraftSaver, type WorkflowSaveStatus } from "@/lib/workflow-draft-save";
 import {
   ArrowLeft,
   BoxSelect,
@@ -187,17 +188,15 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
   const [drawResolution, setDrawResolution] = useState<Resolution>("1K");
   const [legacyGraph, setLegacyGraph] = useState<WorkflowGraph | null>(null);
   const [notice, setNotice] = useState("");
-  const [saveStatus, setSaveStatus] = useState<"已保存" | "待保存" | "保存中" | "保存失败">("已保存");
+  const [saveStatus, setSaveStatus] = useState<WorkflowSaveStatus>("已保存");
   const initializedId = useRef<string | null>(null);
   const workflowRef = useRef<WorkflowDefinition | null>(null);
   const nodesRef = useRef(nodes);
   const edgesRef = useRef(edges);
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const saving = useRef(false);
-  const dirty = useRef(false);
   const dragging = useRef(false);
   const creating = useRef(false);
   const flowInstance = useRef<ReactFlowInstance<StudioNode, StudioEdge> | null>(null);
+  const draftSaver = useRef<WorkflowDraftSaver | null>(null);
 
   const project = useQuery({ queryKey: ["project", projectId], queryFn: () => api.project(projectId), staleTime: 60_000 });
   const workflows = useQuery({ queryKey: ["workflows", projectId], queryFn: () => api.workflows(projectId), staleTime: 20_000 });
@@ -246,6 +245,7 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
     setFuture([]);
     setValidation([]);
     setSelectedId(null);
+    draftSaver.current?.reset();
     setSaveStatus("已保存");
     const chapterOnly = activeWorkflow.draft_graph.nodes.some((node) => node.type === "source.approved_pages")
       && !activeWorkflow.draft_graph.nodes.some((node) => node.type === "generator.page");
@@ -276,45 +276,50 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
     })),
   }), []);
 
-  const saveNow = useCallback(async () => {
-    const workflow = workflowRef.current;
-    if (!workflow || saving.current || !dirty.current) return;
-    saving.current = true;
-    setSaveStatus("保存中");
-    try {
-      const updated = await api.updateWorkflow(workflow.id, workflow.version, { draft_graph: buildGraph() });
-      workflowRef.current = updated;
-      dirty.current = false;
-      setSaveStatus("已保存");
-      queryClient.setQueryData<WorkflowDefinition[]>(["workflows", projectId], (items = []) => items.map((item) => item.id === updated.id ? updated : item));
-      setNotice("草稿已保存");
-    } catch (error) {
-      setSaveStatus("保存失败");
-      setNotice(error instanceof Error ? error.message : "保存失败");
-    } finally {
-      saving.current = false;
-    }
-  }, [buildGraph, projectId, queryClient]);
+  const saveNow = useCallback(async () => draftSaver.current?.saveNow() ?? false, []);
 
   const scheduleSave = useCallback(() => {
-    dirty.current = true;
-    setSaveStatus("待保存");
+    const saver = draftSaver.current;
+    if (!saver) return;
+    saver.markDirty();
     if (dragging.current) return;
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => { void saveNow(); }, 800);
-  }, [saveNow]);
+    saver.schedule();
+  }, []);
 
   useEffect(() => {
-    const flush = () => { if (dirty.current) void saveNow(); };
+    const saver = createWorkflowDraftSaver<WorkflowGraph, WorkflowDefinition>({
+      debounceMs: 800,
+      getSnapshot: () => {
+        const workflow = workflowRef.current;
+        if (!workflow) return null;
+        return { workflowId: workflow.id, version: workflow.version, graph: buildGraph() };
+      },
+      persist: ({ workflowId, version, graph }) =>
+        api.updateWorkflow(workflowId, version, { draft_graph: graph }),
+      onStatusChange: setSaveStatus,
+      onPersisted: (updated) => {
+        if (workflowRef.current?.id === updated.id) workflowRef.current = updated;
+        queryClient.setQueryData<WorkflowDefinition[]>(["workflows", projectId], (items = []) =>
+          items.map((item) => item.id === updated.id ? updated : item),
+        );
+        setNotice("草稿已保存");
+      },
+      onError: (error) => {
+        setNotice(error instanceof Error ? error.message : "保存失败");
+      },
+    });
+    draftSaver.current = saver;
+    const flush = () => { if (saver.isDirty()) void saver.saveNow(); };
     const visibility = () => { if (document.visibilityState === "hidden") flush(); };
     window.addEventListener("beforeunload", flush);
     document.addEventListener("visibilitychange", visibility);
     return () => {
       window.removeEventListener("beforeunload", flush);
       document.removeEventListener("visibilitychange", visibility);
-      if (saveTimer.current) clearTimeout(saveTimer.current);
+      saver.dispose();
+      if (draftSaver.current === saver) draftSaver.current = null;
     };
-  }, [saveNow]);
+  }, [buildGraph, projectId, queryClient]);
 
   const selected = nodes.find((node) => node.id === selectedId) ?? null;
   const selectedTextModels = selected?.data.graphNode.type === "quality.inspect"
@@ -439,18 +444,25 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
 
   const validate = useMutation({
     mutationFn: async () => {
-      await saveNow();
-      return api.validateWorkflow(workflowRef.current!.id);
+      const saved = await saveNow();
+      if (!saved) throw new Error("草稿保存失败，未校验");
+      const workflow = workflowRef.current;
+      if (!workflow) throw new Error("工作流尚未载入");
+      return api.validateWorkflow(workflow.id);
     },
     onSuccess: (result) => setValidation(result.issues.map((issue) => issue.message)),
+    onError: (error) => setNotice(error instanceof Error ? error.message : "校验失败"),
   });
   const publish = useMutation({
     mutationFn: async () => {
-      await saveNow();
-      return api.publishWorkflow(workflowRef.current!.id);
+      const saved = await saveNow();
+      if (!saved) throw new Error("草稿保存失败，未发布");
+      const workflow = workflowRef.current;
+      if (!workflow) throw new Error("工作流尚未载入");
+      return api.publishWorkflow(workflow.id);
     },
     onSuccess: () => { setNotice("已发布不可变版本"); void versions.refetch(); void workflows.refetch(); },
-    onError: (error) => setNotice(error.message),
+    onError: (error) => setNotice(error instanceof Error ? error.message : "发布失败"),
   });
   const startRun = useMutation({
     mutationFn: (range: "FULL" | "NODE" | "FROM") => {

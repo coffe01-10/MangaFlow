@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import Project, WorkflowDefinition, WorkflowRun, WorkflowVersion, utcnow
 from app.services.workflow_engine import (
+    PublishRevisionConflictError,
     approve_node,
     blank_graph,
     cancel_run,
@@ -205,6 +206,8 @@ def validate_workflow(workflow_id: str, db: Session = Depends(get_db)) -> Workfl
 def publish(workflow_id: str, db: Session = Depends(get_db)) -> WorkflowVersion:
     try:
         return publish_workflow(db, _workflow(db, workflow_id))
+    except PublishRevisionConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except ValueError as error:
         raise _value_error(error, status_code=422) from error
 

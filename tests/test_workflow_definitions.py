@@ -1,11 +1,19 @@
 from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
+import sqlite3
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Barrier
 
+import pytest
 from PIL import Image
+from sqlalchemy import create_engine, select
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import sessionmaker
 
 from app.config import get_settings
+from app.database import Base
 from app.domain.states import JobStatus
 from app.model_adapters.base import ModelResponse
 from app.models import (
@@ -16,20 +24,25 @@ from app.models import (
     MangaPage,
     PageCandidate,
     Panel,
+    Project,
     Scene,
     ScriptRevision,
     SourceSegment,
+    WorkflowDefinition,
     WorkflowNodeRun,
     WorkflowRun,
     WorkflowVersion,
     utcnow,
 )
 from app.services.ai_schemas import InspectionItem, PageInspectionOutput
+from app.services import workflow_engine
 from app.services.workflow_engine import (
+    PublishRevisionConflictError,
     chapter_export_graph,
     default_graph,
     execute_workflow_node,
     node_type_catalog,
+    publish_workflow,
     reconcile_run,
     validate_graph,
 )
@@ -512,3 +525,276 @@ def test_node_catalog_and_soft_delete(client):
     deleted = client.delete(f"/api/v1/workflows/{workflow['id']}")
     assert deleted.status_code == 204
     assert client.get(f"/api/v1/workflows/{workflow['id']}").status_code == 404
+
+
+def _file_session_factory():
+    directory = TemporaryDirectory(ignore_cleanup_errors=True)
+    engine = create_engine(
+        f"sqlite:///{Path(directory.name) / 'publish.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    Base.metadata.create_all(engine)
+    return directory, factory
+
+
+def _seed_publishable_workflow(factory) -> str:
+    with factory() as db:
+        project = Project(name="并发发布")
+        db.add(project)
+        db.flush()
+        workflow = WorkflowDefinition(
+            project_id=project.id,
+            name="单页生产流程",
+            draft_graph=default_graph(),
+        )
+        db.add(workflow)
+        db.commit()
+        return workflow.id
+
+
+@pytest.fixture
+def publish_sessions(tmp_path):
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'concurrent-publish.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(engine)
+    try:
+        yield sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("invalid", [False, True])
+def test_publish_refreshes_and_validates_current_draft(publish_sessions, invalid):
+    factory = publish_sessions
+    workflow_id = _seed_publishable_workflow(factory)
+    with factory() as first:
+        stale = first.get(WorkflowDefinition, workflow_id)
+        with factory() as other:
+            current = other.get(WorkflowDefinition, workflow_id)
+            graph = deepcopy(current.draft_graph)
+            graph["nodes"][0]["name"] = "新草稿"
+            if invalid:
+                graph["nodes"][0]["type"] = "unknown.node"
+            current.draft_graph = graph
+            current.version += 1
+            other.commit()
+        if invalid:
+            with pytest.raises(ValueError, match="校验失败"):
+                publish_workflow(first, stale)
+        else:
+            published = publish_workflow(first, stale)
+            assert published.graph == graph
+            assert published.validation_report == validate_graph(graph).model_dump(
+                mode="json"
+            )
+    with factory() as db:
+        current = db.get(WorkflowDefinition, workflow_id)
+        assert current.version == (2 if invalid else 3)
+        if invalid:
+            assert current.published_version_id is None
+            assert list(db.scalars(select(WorkflowVersion))) == []
+
+
+def test_simultaneous_sqlite_publishes_are_controlled(publish_sessions, monkeypatch):
+    factory = publish_sessions
+    workflow_id = _seed_publishable_workflow(factory)
+    barrier = Barrier(2, timeout=10)
+    original = workflow_engine._next_revision
+
+    def allocate_together(db, target_id):
+        revision = original(db, target_id)
+        if not db.info.get("publish_synchronized"):
+            db.info["publish_synchronized"] = True
+            barrier.wait()
+        return revision
+
+    monkeypatch.setattr(workflow_engine, "_next_revision", allocate_together)
+
+    def publish_once():
+        with factory() as db:
+            try:
+                return publish_workflow(db, db.get(WorkflowDefinition, workflow_id))
+            except Exception as error:
+                return error
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _: publish_once(), range(2)))
+    assert all(
+        isinstance(item, (WorkflowVersion, PublishRevisionConflictError))
+        for item in results
+    ), results
+    assert any(isinstance(item, WorkflowVersion) for item in results)
+    with factory() as db:
+        versions = list(
+            db.scalars(select(WorkflowVersion).order_by(WorkflowVersion.revision))
+        )
+        assert [item.revision for item in versions] == list(range(1, len(versions) + 1))
+        current = db.get(WorkflowDefinition, workflow_id)
+        assert current.published_version_id == versions[-1].id
+        assert current.version == 1 + len(versions)
+
+
+@pytest.mark.parametrize("error_code", [sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED])
+def test_sqlite_lock_conflict_returns_409_and_allows_retry(
+    client, db_session, monkeypatch, error_code
+):
+    project = _project(client)
+    workflow = _workflow(client, project["id"])
+    first = client.post(f"/api/v1/workflows/{workflow['id']}/publish")
+    assert first.status_code == 200
+    calls = []
+
+    def fail_with_lock(_db, _workflow_id):
+        calls.append(True)
+        error = sqlite3.OperationalError("database is locked")
+        error.sqlite_errorcode = error_code
+        raise OperationalError("INSERT", {}, error)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(workflow_engine, "_next_revision", fail_with_lock)
+        conflicted = client.post(f"/api/v1/workflows/{workflow['id']}/publish")
+    assert conflicted.status_code == 409
+    assert len(calls) == workflow_engine.PUBLISH_REVISION_MAX_ATTEMPTS
+    current = db_session.get(WorkflowDefinition, workflow["id"])
+    assert current.published_version_id == first.json()["id"]
+    second = client.post(f"/api/v1/workflows/{workflow['id']}/publish")
+    assert second.status_code == 200, second.text
+    assert second.json()["revision"] == 2
+
+
+def test_publish_does_not_hide_unrelated_database_errors(publish_sessions, monkeypatch):
+    workflow_id = _seed_publishable_workflow(publish_sessions)
+    error = sqlite3.OperationalError("no such table")
+    error.sqlite_errorcode = sqlite3.SQLITE_ERROR
+
+    def fail(_db, _workflow_id):
+        raise OperationalError("SELECT", {}, error)
+
+    monkeypatch.setattr(workflow_engine, "_next_revision", fail)
+    with publish_sessions() as db:
+        with pytest.raises(OperationalError, match="no such table"):
+            publish_workflow(db, db.get(WorkflowDefinition, workflow_id))
+
+
+def test_independent_sessions_publish_successive_revisions():
+    directory, factory = _file_session_factory()
+    try:
+        workflow_id = _seed_publishable_workflow(factory)
+        with factory() as first:
+            first_version = publish_workflow(
+                first, first.get(WorkflowDefinition, workflow_id)
+            )
+        with factory() as second:
+            second_version = publish_workflow(
+                second, second.get(WorkflowDefinition, workflow_id)
+            )
+
+        assert first_version.revision == 1
+        assert second_version.revision == 2
+        with factory() as db:
+            revisions = sorted(
+                db.scalars(
+                    select(WorkflowVersion.revision).where(
+                        WorkflowVersion.workflow_id == workflow_id
+                    )
+                )
+            )
+            workflow = db.get(WorkflowDefinition, workflow_id)
+            assert revisions == [1, 2]
+            assert workflow.published_version_id == second_version.id
+    finally:
+        directory.cleanup()
+
+
+def test_publish_retries_unique_revision_after_integrity_error(monkeypatch):
+    directory, factory = _file_session_factory()
+    try:
+        workflow_id = _seed_publishable_workflow(factory)
+        with factory() as other:
+            first = publish_workflow(other, other.get(WorkflowDefinition, workflow_id))
+        original = workflow_engine._next_revision
+        calls = {"n": 0}
+
+        def collide_then_allocate(db, target_id):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return 1
+            return original(db, target_id)
+
+        monkeypatch.setattr(workflow_engine, "_next_revision", collide_then_allocate)
+
+        with factory() as db:
+            published = publish_workflow(db, db.get(WorkflowDefinition, workflow_id))
+
+        assert first.revision == 1
+        assert published.revision == 2
+        assert calls["n"] == 2
+        with factory() as db:
+            workflow = db.get(WorkflowDefinition, workflow_id)
+            revisions = sorted(
+                db.scalars(
+                    select(WorkflowVersion.revision).where(
+                        WorkflowVersion.workflow_id == workflow_id
+                    )
+                )
+            )
+            assert revisions == [1, 2]
+            assert workflow.published_version_id == published.id
+    finally:
+        directory.cleanup()
+
+
+def test_publish_revision_conflict_returns_409_and_keeps_pointer(client, db_session, monkeypatch):
+    project = _project(client)
+    workflow = _workflow(client, project["id"])
+    first = client.post(f"/api/v1/workflows/{workflow['id']}/publish")
+    assert first.status_code == 200, first.text
+    pointer = db_session.get(WorkflowDefinition, workflow["id"]).published_version_id
+    assert pointer == first.json()["id"]
+
+    monkeypatch.setattr(workflow_engine, "_next_revision", lambda _db, _workflow_id: 1)
+    conflicted = client.post(f"/api/v1/workflows/{workflow['id']}/publish")
+    assert conflicted.status_code == 409
+    assert conflicted.json()["detail"] == "工作流正在被其他请求发布，请稍后重试"
+
+    db_session.expire_all()
+    current = db_session.get(WorkflowDefinition, workflow["id"])
+    assert current.published_version_id == pointer
+    revisions = list(
+        db_session.scalars(
+            select(WorkflowVersion.revision).where(WorkflowVersion.workflow_id == workflow["id"])
+        )
+    )
+    assert revisions == [1]
+
+
+def test_exhausted_revision_retries_do_not_raise_unhandled_error(monkeypatch):
+    directory, factory = _file_session_factory()
+    try:
+        workflow_id = _seed_publishable_workflow(factory)
+        with factory() as db:
+            publish_workflow(db, db.get(WorkflowDefinition, workflow_id))
+
+        monkeypatch.setattr(workflow_engine, "_next_revision", lambda _db, _workflow_id: 1)
+        with factory() as db:
+            workflow = db.get(WorkflowDefinition, workflow_id)
+            pointer = workflow.published_version_id
+            original_version = workflow.version
+            with pytest.raises(PublishRevisionConflictError, match="请稍后重试"):
+                publish_workflow(db, workflow, max_attempts=2)
+            db.expire_all()
+            current = db.get(WorkflowDefinition, workflow_id)
+            assert current.published_version_id == pointer
+            assert current.version == original_version
+            assert list(
+                db.scalars(
+                    select(WorkflowVersion.revision).where(
+                        WorkflowVersion.workflow_id == workflow_id
+                    )
+                )
+            ) == [1]
+    finally:
+        directory.cleanup()

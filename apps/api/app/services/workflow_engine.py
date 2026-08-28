@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from collections import defaultdict, deque
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -495,33 +497,81 @@ def validate_graph(graph_value: WorkflowGraph | dict) -> WorkflowValidationRead:
     )
 
 
-def publish_workflow(db: Session, workflow: WorkflowDefinition) -> WorkflowVersion:
-    report = validate_graph(workflow.draft_graph)
-    if not report.valid:
-        raise ValueError("工作流校验失败，不能发布")
-    revision = (
-        db.scalar(
-            select(func.max(WorkflowVersion.revision)).where(
-                WorkflowVersion.workflow_id == workflow.id
-            )
-        )
-        or 0
-    ) + 1
-    graph = canonical_graph(workflow.draft_graph)
-    version = WorkflowVersion(
-        workflow_id=workflow.id,
-        revision=revision,
-        graph=deepcopy(graph),
-        graph_checksum=graph_checksum(graph),
-        validation_report=report.model_dump(mode="json"),
+class PublishRevisionConflictError(Exception):
+    """Raised when concurrent publishes cannot allocate a unique revision."""
+
+
+PUBLISH_REVISION_MAX_ATTEMPTS = 3
+
+
+def _lock_workflow(db: Session, workflow_id: str) -> WorkflowDefinition | None:
+    bind = db.get_bind() if hasattr(db, "get_bind") else getattr(db, "bind", None)
+    dialect_name = getattr(getattr(bind, "dialect", None), "name", None)
+    query = (
+        select(WorkflowDefinition)
+        .where(WorkflowDefinition.id == workflow_id)
+        .execution_options(populate_existing=True)
     )
-    db.add(version)
-    db.flush()
-    workflow.published_version_id = version.id
-    workflow.version += 1
-    db.commit()
-    db.refresh(version)
-    return version
+    if dialect_name == "postgresql":
+        query = query.with_for_update()
+    return db.scalar(query)
+
+
+def _next_revision(db: Session, workflow_id: str) -> int:
+    current = db.scalar(
+        select(func.max(WorkflowVersion.revision)).where(WorkflowVersion.workflow_id == workflow_id)
+    )
+    return (current or 0) + 1
+
+
+def publish_workflow(
+    db: Session,
+    workflow: WorkflowDefinition,
+    *,
+    max_attempts: int = PUBLISH_REVISION_MAX_ATTEMPTS,
+) -> WorkflowVersion:
+    workflow_id = workflow.id
+    last_error: BaseException | None = None
+    for _attempt in range(max_attempts):
+        try:
+            with db.begin_nested():
+                locked = _lock_workflow(db, workflow_id)
+                if locked is None or locked.deleted_at is not None:
+                    raise ValueError("工作流不存在")
+                graph = canonical_graph(locked.draft_graph)
+                report = validate_graph(graph)
+                if not report.valid:
+                    raise ValueError("工作流校验失败，不能发布")
+                revision = _next_revision(db, locked.id)
+                version = WorkflowVersion(
+                    workflow_id=locked.id,
+                    revision=revision,
+                    graph=deepcopy(graph),
+                    graph_checksum=graph_checksum(graph),
+                    validation_report=report.model_dump(mode="json"),
+                )
+                db.add(version)
+                db.flush()
+                locked.published_version_id = version.id
+                locked.version += 1
+            db.commit()
+        except IntegrityError as error:
+            last_error = error
+            db.rollback()
+        except OperationalError as error:
+            # SQLite readers can race while upgrading to a write transaction.
+            # Retry from a fresh transaction, not the same stale read snapshot.
+            code = getattr(error.orig, "sqlite_errorcode", None)
+            db.rollback()
+            if not isinstance(error.orig, sqlite3.OperationalError) or code is None:
+                raise
+            if code & 0xFF not in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+                raise
+            last_error = error
+        else:
+            db.refresh(version)
+            return version
+    raise PublishRevisionConflictError("工作流正在被其他请求发布，请稍后重试") from last_error
 
 
 def _selected_nodes(graph: WorkflowGraph, start_ids: list[str], stop_ids: list[str]) -> set[str]:
