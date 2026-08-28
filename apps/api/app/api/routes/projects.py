@@ -32,6 +32,7 @@ from app.schemas import (
     ProjectUpdate,
 )
 from app.services.job_service import mark_job_cancelled
+from app.services.model_availability import count_available_catalog_models
 from app.settings_schemas import ProjectSummaryRead
 
 router = APIRouter()
@@ -75,9 +76,8 @@ def get_project(project_id: str, db: Session = Depends(get_db)) -> Project:
 def _ai_overview(db: Session) -> DashboardAIOverview:
     """Aggregate the provider/model facts shown on the homepage badges."""
 
-    enabled_model_count = (
-        db.scalar(select(func.count(AIModel.id)).where(AIModel.enabled.is_(True))) or 0
-    )
+    settings = get_settings()
+    enabled_model_count = count_available_catalog_models(db, settings)
     connections = db.execute(
         select(
             ProviderConnection.protocol,
@@ -87,7 +87,7 @@ def _ai_overview(db: Session) -> DashboardAIOverview:
         .outerjoin(ProviderKey, ProviderKey.connection_id == ProviderConnection.id)
         .group_by(ProviderConnection.id)
     ).all()
-    native_configured = get_settings().vertex_configured
+    native_configured = settings.vertex_configured
     healthy = sum(state == "HEALTHY" for _, state, _ in connections)
     configured = sum(
         bool(has_enabled_key)
