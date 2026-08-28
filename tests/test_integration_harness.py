@@ -190,3 +190,56 @@ def test_live_fixture_blocks_all_opt_ins_before_connect(explicit, inherited, mon
     monkeypatch.setenv("MANGAFLOW_ENABLE_LIVE_INTEGRATION", inherited)
     with pytest.raises(pytest.fail.Exception, match="BLOCKED"):
         live_integration_enabled.__wrapped__(request)
+
+
+def test_postgres_cleanup_refuses_changed_ownership():
+    from unittest.mock import MagicMock
+
+    from tests.integration.postgres_resources import _drop_owned_schema
+
+    admin = MagicMock()
+    connection = admin.begin.return_value.__enter__.return_value
+    connection.scalar.return_value = "belongs-to-someone-else"
+    token = "a" * 32
+    with pytest.raises(RuntimeError, match="ownership marker"):
+        _drop_owned_schema(admin, f"acceptance_{token}", token)
+    connection.exec_driver_sql.assert_not_called()
+
+
+@pytest.mark.parametrize("stage", ["engine", "migration", "body"])
+def test_postgres_schema_cleanup_runs_after_each_failure(stage, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from tests.integration import postgres_resources as resources
+
+    token = "b" * 32
+    schema = f"acceptance_{token}"
+    admin = MagicMock()
+    admin.dialect.name = "postgresql"
+    admin.url.render_as_string.return_value = (
+        "postgresql://test:test@127.0.0.1:55432/mangaflow_acceptance"
+    )
+    admin_connection = admin.begin.return_value.__enter__.return_value
+    admin_connection.scalar.return_value = f"mangaflow-acceptance:{token}"
+    engine = MagicMock()
+    engine.begin.return_value.__enter__.return_value.scalar.return_value = schema
+    monkeypatch.setattr(resources, "uuid4", lambda: SimpleNamespace(hex=token))
+    create = MagicMock(return_value=engine)
+    migrate = MagicMock()
+    if stage == "engine":
+        create.side_effect = RuntimeError("injected lifecycle failure")
+    elif stage == "migration":
+        migrate.side_effect = RuntimeError("injected lifecycle failure")
+    monkeypatch.setattr(resources, "create_engine", create)
+    monkeypatch.setattr(resources.command, "upgrade", migrate)
+    with (
+        pytest.raises(RuntimeError, match="injected lifecycle failure"),
+        resources.isolated_postgres_schema(admin),
+    ):
+        raise RuntimeError("injected lifecycle failure")
+    commands = [call.args[0] for call in admin_connection.exec_driver_sql.call_args_list]
+    assert commands[0] == f'CREATE SCHEMA "{schema}"'
+    assert commands[-1] == f'DROP SCHEMA "{schema}" CASCADE'
+    if stage != "engine":
+        engine.dispose.assert_called_once()

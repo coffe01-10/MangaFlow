@@ -6,7 +6,6 @@ from collections.abc import Generator
 from typing import Any
 
 import pytest
-from app.database import Base
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -16,6 +15,7 @@ from scripts.acceptance_safety import (
     validate_safe_acceptance_pg_url,
     validate_safe_acceptance_redis_url,
 )
+from tests.integration.postgres_resources import isolated_postgres_schema
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -84,6 +84,7 @@ def live_postgres_admin_engine(
         pytest.skip("Live PostgreSQL acceptance is not requested; NOT RUN.")
 
     masked = mask_url(live_pg_url)
+    engine = None
     try:
         engine = create_engine(
             live_pg_url,
@@ -94,6 +95,8 @@ def live_postgres_admin_engine(
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
     except Exception as exc:
+        if engine is not None:
+            engine.dispose()
         pytest.fail(f"Live PostgreSQL connection failed at {masked}: {type(exc).__name__}.")
 
     try:
@@ -106,26 +109,8 @@ def live_postgres_admin_engine(
 def live_pg_isolated_schema(
     live_postgres_admin_engine: Engine,
 ) -> Generator[tuple[Engine, str], None, None]:
-    """Existing schema fixture; migration and failure cleanup still need repair."""
-    schema_name = f"acceptance_{uuid.uuid4().hex[:8]}"
-    with live_postgres_admin_engine.connect() as conn:
-        conn.execute(text(f'CREATE SCHEMA "{schema_name}"'))
-        conn.commit()
-
-    test_engine = create_engine(
-        live_postgres_admin_engine.url,
-        execution_options={"schema_translate_map": {None: schema_name}},
-        pool_pre_ping=True,
-    )
-
-    try:
-        Base.metadata.create_all(test_engine)
-        yield test_engine, schema_name
-    finally:
-        test_engine.dispose()
-        with live_postgres_admin_engine.connect() as conn:
-            conn.execute(text(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE'))
-            conn.commit()
+    with isolated_postgres_schema(live_postgres_admin_engine) as resource:
+        yield resource
 
 
 @pytest.fixture
@@ -152,9 +137,7 @@ def live_redis_connection(
         )
         client.ping()
     except Exception as exc:
-        pytest.fail(
-            f"Live Redis connection failed at {masked}: {type(exc).__name__}."
-        )
+        pytest.fail(f"Live Redis connection failed at {masked}: {type(exc).__name__}.")
 
     try:
         yield client

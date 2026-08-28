@@ -1,15 +1,10 @@
 from __future__ import annotations
 
-import random
 import time
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
 import pytest
-from fastapi import HTTPException
-from sqlalchemy import select
-from sqlalchemy.orm import Session, sessionmaker
-
 from app.domain.states import Resolution
 from app.models import (
     AppSetting,
@@ -27,6 +22,7 @@ from app.models import (
     StyleProfile,
     WorkflowDefinition,
     WorkflowNodeRun,
+    WorkflowRun,
     WorkflowVersion,
 )
 from app.schemas import CandidateCreate
@@ -35,16 +31,33 @@ from app.services.ordinal_allocator import (
     create_page_candidate,
 )
 from app.services.workflow_engine import (
-    PublishRevisionConflictError,
     approve_node,
     create_workflow_run,
     default_graph,
     publish_workflow,
 )
+from fastapi import HTTPException
+from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session, sessionmaker
+
+
+@pytest.fixture(autouse=True)
+def _isolate_queue_boundary_for_postgres_scenarios(monkeypatch):
+    from app.config import get_settings
+
+    # Exercise real readiness with LOCAL configuration; never actually dispatch.
+    # Worker/queue behavior belongs to the separate Redis/RQ live scenarios.
+    monkeypatch.setattr(get_settings(), "queue_enabled", True)
+    monkeypatch.setattr("app.services.workflow_engine.enqueue_job", lambda _db, job: job)
 
 
 def _seed_pg_project_hierarchy(session_factory: sessionmaker[Session]) -> dict[str, str]:
+    from app.config import get_settings
+    from app.services.provider_presets import ensure_provider_presets
+
     with session_factory() as db:
+        ensure_provider_presets(db, get_settings(), auto_commit=True)
         project = Project(name=f"PG验收项目_{time.time()}")
         db.add(project)
         db.flush()
@@ -151,7 +164,7 @@ def _seed_pg_project_hierarchy(session_factory: sessionmaker[Session]) -> dict[s
 
         existing_setting = db.scalar(select(AppSetting).where(AppSetting.key == "runtime"))
         if not existing_setting:
-            db.add(AppSetting(key="runtime", value={"queue_mode": "REDIS"}, version=1))
+            db.add(AppSetting(key="runtime", value={"queue_mode": "LOCAL"}, version=1))
 
         db.commit()
 
@@ -168,32 +181,33 @@ def _seed_pg_project_hierarchy(session_factory: sessionmaker[Session]) -> dict[s
 
 
 def test_pg_dialect_and_row_locking_capability(live_pg_session_factory):
-    """Verify PostgreSQL dialect and test real SELECT ... FOR UPDATE row-level locking."""
+    """A second independent PostgreSQL connection must fail NOWAIT while locked."""
     seeded = _seed_pg_project_hierarchy(live_pg_session_factory)
-    project_id = seeded["project_id"]
-
-    with live_pg_session_factory() as db:
-        locked_project = db.scalar(
-            select(Project).where(Project.id == project_id).with_for_update()
-        )
-        assert locked_project is not None
-        assert locked_project.id == project_id
+    with live_pg_session_factory() as owner, live_pg_session_factory() as contender:
+        assert owner.get_bind().dialect.name == "postgresql"
+        query = select(Project).where(Project.id == seeded["project_id"])
+        owner.scalar(query.with_for_update())
+        with pytest.raises(OperationalError) as caught:
+            contender.scalar(query.with_for_update(nowait=True))
+        assert (
+            getattr(caught.value.orig, "sqlstate", None)
+            or getattr(caught.value.orig, "pgcode", None)
+        ) == "55P03"
+        contender.rollback()
+        owner.rollback()
+        assert contender.scalar(query.with_for_update(nowait=True)).id == seeded["project_id"]
 
 
 def test_pg_concurrent_generation_batch_allocation(live_pg_session_factory):
-    """Verify PostgreSQL allocates strictly monotonic unique ordinals across concurrent worker threads with real persistence."""
     seeded = _seed_pg_project_hierarchy(live_pg_session_factory)
-    project_id = seeded["project_id"]
-    concurrency = 8
-    barrier = Barrier(concurrency)
+    barrier = Barrier(8)
 
-    def allocate_batch(worker_idx: int) -> int:
-        barrier.wait(timeout=10)
-        time.sleep(random.uniform(0.001, 0.01))
+    def allocate(_):
         with live_pg_session_factory() as db:
+            barrier.wait(timeout=10)
             batch = create_generation_batch(
                 db,
-                project_id=project_id,
+                project_id=seeded["project_id"],
                 chapter_id=seeded["chapter_id"],
                 page_id=seeded["page_id"],
                 generation_kind="PAGE",
@@ -201,29 +215,35 @@ def test_pg_concurrent_generation_batch_allocation(live_pg_session_factory):
             db.commit()
             return batch.ordinal
 
-    with ThreadPoolExecutor(max_workers=concurrency) as executor:
-        ordinals = list(executor.map(allocate_batch, range(concurrency)))
-
-    assert sorted(ordinals) == list(range(1, concurrency + 1))
-    assert len(set(ordinals)) == concurrency
-
-    # Verify real DB persistence in fresh independent Session
-    with live_pg_session_factory() as verify_db:
-        persisted_batches = list(
-            verify_db.scalars(
-                select(GenerationBatch)
-                .where(GenerationBatch.project_id == project_id)
-                .order_by(GenerationBatch.ordinal.asc())
-            )
-        )
-        assert len(persisted_batches) == concurrency
-        assert [b.ordinal for b in persisted_batches] == list(range(1, concurrency + 1))
-
-
-def test_pg_concurrent_page_candidate_allocation(live_pg_session_factory, monkeypatch):
-    """Verify PostgreSQL allocates strictly monotonic candidate ordinals concurrently within a batch and commits to DB."""
-    seeded = _seed_pg_project_hierarchy(live_pg_session_factory)
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        assert sorted(executor.map(allocate, range(8))) == list(range(1, 9))
     with live_pg_session_factory() as db:
+        assert list(
+            db.scalars(
+                select(GenerationBatch.ordinal)
+                .where(GenerationBatch.project_id == seeded["project_id"])
+                .order_by(GenerationBatch.ordinal)
+            )
+        ) == list(range(1, 9))
+
+
+def _candidate_payload(seeded):
+    return CandidateCreate(
+        model_alias="image.nano_banana_2",
+        resolution=Resolution.DRAFT_1K,
+        storyboard_version=1,
+        reference_selections={
+            seeded["character_id"]: {
+                "character_asset_id": seeded["character_asset_id"],
+                "outfit_id": seeded["outfit_id"],
+                "outfit_asset_id": seeded["outfit_asset_id"],
+            },
+        },
+    )
+
+
+def _batch_id(factory, seeded):
+    with factory() as db:
         batch = create_generation_batch(
             db,
             project_id=seeded["project_id"],
@@ -232,273 +252,267 @@ def test_pg_concurrent_page_candidate_allocation(live_pg_session_factory, monkey
             generation_kind="PAGE",
         )
         db.commit()
-        batch_id = batch.id
+        return batch.id
 
-    monkeypatch.setattr(
-        "app.services.ordinal_allocator.ensure_page_ready",
-        lambda *_args, **_kwargs: None,
-    )
 
-    concurrency = 6
-    barrier = Barrier(concurrency)
+def test_pg_concurrent_page_candidate_allocation(live_pg_session_factory):
+    seeded = _seed_pg_project_hierarchy(live_pg_session_factory)
+    batch_id = _batch_id(live_pg_session_factory, seeded)
+    barrier = Barrier(6)
 
-    def allocate_candidate(worker_idx: int) -> int:
-        barrier.wait(timeout=10)
-        time.sleep(random.uniform(0.001, 0.01))
+    def allocate(_):
         with live_pg_session_factory() as db:
+            barrier.wait(timeout=10)
             candidate, job = create_page_candidate(
                 db,
                 batch_id=batch_id,
-                payload=CandidateCreate(
-                    model_alias="image.nano_banana_2",
-                    resolution=Resolution.DRAFT_1K,
-                    storyboard_version=1,
-                    reference_selections={
-                        seeded["character_id"]: {
-                            "character_asset_id": seeded["character_asset_id"],
-                            "outfit_id": seeded["outfit_id"],
-                            "outfit_asset_id": seeded["outfit_asset_id"],
-                        }
-                    },
-                ),
+                payload=_candidate_payload(seeded),
             )
             db.commit()
+            assert candidate.job_id == job.id
             return candidate.ordinal
 
-    with ThreadPoolExecutor(max_workers=concurrency) as executor:
-        ordinals = list(executor.map(allocate_candidate, range(concurrency)))
-
-    assert sorted(ordinals) == list(range(1, concurrency + 1))
-
-    # Verify real DB persistence in fresh independent Session
-    with live_pg_session_factory() as verify_db:
-        persisted = list(
-            verify_db.scalars(
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        assert sorted(executor.map(allocate, range(6))) == list(range(1, 7))
+    with live_pg_session_factory() as db:
+        candidates = list(
+            db.scalars(
                 select(PageCandidate)
                 .where(PageCandidate.batch_id == batch_id)
-                .order_by(PageCandidate.ordinal.asc())
+                .order_by(PageCandidate.ordinal)
             )
         )
-        assert len(persisted) == concurrency
-        assert [c.ordinal for c in persisted] == list(range(1, concurrency + 1))
+        assert [candidate.ordinal for candidate in candidates] == list(range(1, 7))
+        for candidate in candidates:
+            assert db.get(GenerationJob, candidate.job_id).target_id == candidate.id
+
+
+def _workflow_id(factory, seeded):
+    with factory() as db:
+        workflow = WorkflowDefinition(
+            project_id=seeded["project_id"],
+            name="PG acceptance",
+            draft_graph=default_graph(),
+        )
+        db.add(workflow)
+        db.commit()
+        return workflow.id
 
 
 def test_pg_workflow_version_release_concurrency(live_pg_session_factory):
-    """Verify PostgreSQL FOR UPDATE and revision locking prevent race conditions during workflow publishing with explicit 409 assert."""
+    """Healthy row-lock serialization permits both publishers, at revisions 1/2."""
     seeded = _seed_pg_project_hierarchy(live_pg_session_factory)
-    with live_pg_session_factory() as db:
-        definition = WorkflowDefinition(
-            project_id=seeded["project_id"],
-            name="PG工作流发布测试",
-            draft_graph=default_graph(),
-        )
-        db.add(definition)
-        db.commit()
-        def_id = definition.id
-
+    workflow_id = _workflow_id(live_pg_session_factory, seeded)
     barrier = Barrier(2)
-    results = []
 
-    def publish_worker(idx: int):
-        barrier.wait(timeout=5)
+    def publish(_):
         with live_pg_session_factory() as db:
-            wf = db.get(WorkflowDefinition, def_id)
-            try:
-                version = publish_workflow(db, wf, max_attempts=1)
-                results.append(("SUCCESS", version.revision))
-            except PublishRevisionConflictError:
-                results.append(("CONFLICT", 409))
-            except Exception as e:
-                results.append(("OTHER_ERROR", str(e)))
+            workflow = db.get(WorkflowDefinition, workflow_id)
+            barrier.wait(timeout=10)
+            return publish_workflow(db, workflow, max_attempts=1).revision
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        list(executor.map(publish_worker, range(2)))
-
-    successes = [r for r in results if r[0] == "SUCCESS"]
-    conflicts = [r for r in results if r[0] == "CONFLICT"]
-    other_errors = [r for r in results if r[0] == "OTHER_ERROR"]
-
-    assert len(other_errors) == 0, f"Unexpected errors during workflow release: {other_errors}"
-    assert len(successes) == 1
-    assert successes[0][1] == 1
-    assert len(conflicts) == 1
-    assert conflicts[0][1] == 409
-
-    # Verify that in PostgreSQL, version incrementing and published_version_id are consistent
-    with live_pg_session_factory() as verify_db:
+        assert sorted(executor.map(publish, range(2))) == [1, 2]
+    with live_pg_session_factory() as db:
         versions = list(
-            verify_db.scalars(
+            db.scalars(
                 select(WorkflowVersion)
-                .where(WorkflowVersion.workflow_id == def_id)
-                .order_by(WorkflowVersion.revision.asc())
+                .where(WorkflowVersion.workflow_id == workflow_id)
+                .order_by(WorkflowVersion.revision)
             )
         )
-        assert len(versions) == 1
-        assert versions[0].revision == 1
+        assert [version.revision for version in versions] == [1, 2]
+        assert db.get(WorkflowDefinition, workflow_id).published_version_id == versions[1].id
+
+
+def test_pg_publish_real_unique_conflict_exhausts_to_409_then_recovers(
+    live_pg_session_factory,
+    monkeypatch,
+):
+    from app.api.routes.workflow_definitions import publish
+    from app.services import workflow_engine
+
+    seeded = _seed_pg_project_hierarchy(live_pg_session_factory)
+    workflow_id = _workflow_id(live_pg_session_factory, seeded)
+    with live_pg_session_factory() as db:
+        first = publish(workflow_id, db)
+        first_id = first.id
+        attempts = []
+
+        def collide(_db, _workflow_id):
+            attempts.append(_workflow_id)
+            # Force a real unique-constraint violation on the already committed row.
+            return 1
+
+        with monkeypatch.context() as patch:
+            patch.setattr(workflow_engine, "_next_revision", collide)
+            with pytest.raises(HTTPException) as caught:
+                publish(workflow_id, db)
+            assert caught.value.status_code == 409
+        assert len(attempts) == workflow_engine.PUBLISH_REVISION_MAX_ATTEMPTS
+        with live_pg_session_factory() as verify:
+            assert list(
+                verify.scalars(
+                    select(WorkflowVersion.revision).where(
+                        WorkflowVersion.workflow_id == workflow_id
+                    )
+                )
+            ) == [1]
+            assert verify.get(WorkflowDefinition, workflow_id).published_version_id == first_id
+        assert publish(workflow_id, db).revision == 2
+
+
+def _approval_state(db, seeded, run_id):
+    batches = list(
+        db.scalars(select(GenerationBatch).where(GenerationBatch.page_id == seeded["page_id"]))
+    )
+    candidates = list(
+        db.scalars(select(PageCandidate).where(PageCandidate.page_id == seeded["page_id"]))
+    )
+    jobs = list(
+        db.scalars(select(GenerationJob).where(GenerationJob.project_id == seeded["project_id"]))
+    )
+    node = db.scalar(
+        select(WorkflowNodeRun).where(
+            WorkflowNodeRun.workflow_run_id == run_id,
+            WorkflowNodeRun.node_id == "generate",
+        )
+    )
+    return batches, candidates, jobs, node, db.get(WorkflowRun, run_id)
 
 
 def test_pg_transaction_rollback_and_zero_residual_entities(live_pg_session_factory, monkeypatch):
-    """Verify that in PostgreSQL, an injected downstream failure in approve_node rolls back atomically with 0 residual entities and subsequent retry succeeds."""
+    """Fail only after the batch, candidate, job and run/node links are complete."""
     seeded = _seed_pg_project_hierarchy(live_pg_session_factory)
-    project_id = seeded["project_id"]
-    page_id = seeded["page_id"]
-
+    workflow_id = _workflow_id(live_pg_session_factory, seeded)
     with live_pg_session_factory() as db:
-        wf = WorkflowDefinition(
-            project_id=project_id,
-            name="PG审批回滚测试",
-            draft_graph=default_graph(),
-        )
-        db.add(wf)
-        db.flush()
-        publish_workflow(db, wf)
-
+        workflow = db.get(WorkflowDefinition, workflow_id)
+        publish_workflow(db, workflow)
         run = create_workflow_run(
             db,
-            wf,
+            workflow,
             scope_type="PAGE",
-            scope_id=page_id,
+            scope_id=seeded["page_id"],
             start_node_ids=["generate"],
             stop_node_ids=["generate"],
         )
-        db.flush()
         run_id = run.id
-
-        node_run = db.scalar(
-            select(WorkflowNodeRun).where(
-                WorkflowNodeRun.workflow_run_id == run.id,
-                WorkflowNodeRun.status == "WAITING_APPROVAL",
-            )
-        )
-        assert node_run is not None
-        node_id = node_run.node_id
+        assert _approval_state(db, seeded, run_id)[3].status == "WAITING_APPROVAL"
         db.commit()
 
-    # Inject failure into job creation step within real approve_node flow
-    monkeypatch.setattr(
-        "app.services.workflow_engine.create_job",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("Injected PG downstream failure")),
-    )
-
     with live_pg_session_factory() as db:
-        with pytest.raises(RuntimeError, match="Injected PG downstream failure"):
+        reached_final_commit = []
+
+        def fail_final_commit():
+            db.flush()
+            batches, candidates, jobs, node, run = _approval_state(db, seeded, run_id)
+            assert len(batches) == len(candidates) == len(jobs) == 1
+            assert candidates[0].job_id == node.job_id == jobs[0].id
+            assert jobs[0].target_id == candidates[0].id
+            assert node.output_refs == {
+                "candidate_id": candidates[0].id,
+                "batch_id": batches[0].id,
+            }
+            assert node.status == run.status == "RUNNING"
+            reached_final_commit.append(True)
+            raise RuntimeError("Injected final approval commit failure")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(db, "commit", fail_final_commit)
+            with pytest.raises(RuntimeError, match="Injected final approval commit failure"):
+                approve_node(
+                    db, run_id, "generate", image_model_alias="image.nano_banana_2", resolution="1K"
+                )
+            db.rollback()
+        assert reached_final_commit == [True]
+        with live_pg_session_factory() as verify:
+            batches, candidates, jobs, node, run = _approval_state(verify, seeded, run_id)
+            assert batches == candidates == jobs == []
+            assert node.status == "WAITING_APPROVAL" and node.job_id is None
+            assert run.status == "PAUSED"
+        # Reuse the rolled-back Session as an additional session recovery check.
+        assert (
             approve_node(
-                db,
-                run_id=run_id,
-                node_id=node_id,
-                image_model_alias="image.nano_banana_2",
-                resolution="1K",
-            )
-
-    # Verify in fresh session that no orphan batch, candidate, or job persisted
-    with live_pg_session_factory() as verify_db:
-        batches = list(
-            verify_db.scalars(
-                select(GenerationBatch).where(GenerationBatch.page_id == page_id)
-            )
+                db, run_id, "generate", image_model_alias="image.nano_banana_2", resolution="1K"
+            ).status
+            == "RUNNING"
         )
-        candidates = list(
-            verify_db.scalars(
-                select(PageCandidate).where(PageCandidate.page_id == page_id)
-            )
-        )
-        jobs = list(
-            verify_db.scalars(
-                select(GenerationJob).where(GenerationJob.project_id == project_id)
-            )
-        )
-        reloaded_node_run = verify_db.scalar(
-            select(WorkflowNodeRun).where(
-                WorkflowNodeRun.workflow_run_id == run_id,
-                WorkflowNodeRun.node_id == node_id,
-            )
-        )
-
-        assert len(batches) == 0
-        assert len(candidates) == 0
-        assert len(jobs) == 0
-        assert reloaded_node_run.status == "WAITING_APPROVAL"
-
-    # Remove mock and verify that retry succeeds cleanly
-    monkeypatch.undo()
-    with live_pg_session_factory() as db:
-        approve_node(
-            db,
-            run_id=run_id,
-            node_id=node_id,
-            image_model_alias="image.nano_banana_2",
-            resolution="1K",
-        )
-
-    with live_pg_session_factory() as verify_db:
-        batches = list(
-            verify_db.scalars(
-                select(GenerationBatch).where(GenerationBatch.page_id == page_id)
-            )
-        )
-        candidates = list(
-            verify_db.scalars(
-                select(PageCandidate).where(PageCandidate.page_id == page_id)
-            )
-        )
-        jobs = list(
-            verify_db.scalars(
-                select(GenerationJob).where(GenerationJob.project_id == project_id)
-            )
-        )
-        reloaded_node_run = verify_db.scalar(
-            select(WorkflowNodeRun).where(
-                WorkflowNodeRun.workflow_run_id == run_id,
-                WorkflowNodeRun.node_id == node_id,
-            )
-        )
-
-        assert len(batches) == 1
-        assert len(candidates) == 1
-        assert len(jobs) == 1
-        assert reloaded_node_run.status == "RUNNING"
+    with live_pg_session_factory() as verify:
+        batches, candidates, jobs, node, run = _approval_state(verify, seeded, run_id)
+        assert len(batches) == len(candidates) == len(jobs) == 1
+        assert candidates[0].job_id == node.job_id == jobs[0].id
+        assert node.status == run.status == "RUNNING"
 
 
 def test_pg_candidate_creation_blocked_when_batch_closed(live_pg_session_factory):
-    """Verify that attempting to create a candidate for a closed batch raises 409 with 0 dirty rows."""
     seeded = _seed_pg_project_hierarchy(live_pg_session_factory)
+    batch_id = _batch_id(live_pg_session_factory, seeded)
+    # Load a stale OPEN entity before the independent closer commits.
     with live_pg_session_factory() as db:
-        batch = create_generation_batch(
-            db,
-            project_id=seeded["project_id"],
-            chapter_id=seeded["chapter_id"],
-            page_id=seeded["page_id"],
-            generation_kind="PAGE",
+        stale = db.get(GenerationBatch, batch_id)
+        assert stale.status == "OPEN"
+        with live_pg_session_factory() as closer:
+            closer.get(GenerationBatch, batch_id).status = "CLOSED"
+            closer.commit()
+        with pytest.raises(HTTPException) as caught:
+            create_page_candidate(db, batch_id=batch_id, payload=_candidate_payload(seeded))
+        assert caught.value.status_code == 409
+        assert caught.value.detail == "抽卡批次不存在或已经关闭"
+        db.rollback()
+    with live_pg_session_factory() as verify:
+        assert (
+            list(
+                verify.scalars(
+                    select(PageCandidate).where(
+                        PageCandidate.batch_id == batch_id,
+                    )
+                )
+            )
+            == []
         )
+        assert (
+            list(
+                verify.scalars(
+                    select(GenerationJob).where(
+                        GenerationJob.project_id == seeded["project_id"],
+                    )
+                )
+            )
+            == []
+        )
+
+
+def test_pg_schema_migrations_preserve_neighbor_and_cleanup_owned_resources(
+    live_postgres_admin_engine,
+    live_pg_isolated_schema,
+):
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+    from sqlalchemy import text
+
+    from tests.integration.postgres_resources import ROOT, isolated_postgres_schema
+
+    sentinel_engine, sentinel_schema = live_pg_isolated_schema
+    with Session(sentinel_engine) as db:
+        sentinel = Project(name="neighbor sentinel")
+        db.add(sentinel)
         db.commit()
-        batch_id = batch.id
-
-    # Session 2 closes the batch
-    with live_pg_session_factory() as close_db:
-        b = close_db.get(GenerationBatch, batch_id)
-        b.status = "CLOSED"
-        close_db.commit()
-
-    # Session 1 attempts candidate creation
-    with live_pg_session_factory() as db:
-        with pytest.raises(HTTPException) as exc_info:
-            create_page_candidate(
-                db,
-                batch_id=batch_id,
-                payload=CandidateCreate(
-                    model_alias="image.nano_banana_2",
-                    resolution=Resolution.DRAFT_1K,
-                    storyboard_version=1,
-                    reference_selections={},
-                ),
+        sentinel_id = sentinel.id
+    with isolated_postgres_schema(live_postgres_admin_engine) as (engine, schema):
+        assert schema != sentinel_schema
+        with engine.connect() as connection:
+            head = ScriptDirectory.from_config(
+                Config(str(ROOT / "apps/api/alembic.ini"))
+            ).get_current_head()
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == head
+            assert connection.scalar(text("SELECT count(*) FROM projects")) == 0
+    with live_postgres_admin_engine.connect() as connection:
+        assert (
+            connection.scalar(
+                text("SELECT count(*) FROM pg_namespace WHERE nspname=:schema"),
+                {"schema": schema},
             )
-        assert exc_info.value.status_code == 409
-        assert "抽卡批次不存在或已经关闭" in str(exc_info.value.detail)
-
-    with live_pg_session_factory() as verify_db:
-        candidates = list(
-            verify_db.scalars(
-                select(PageCandidate).where(PageCandidate.batch_id == batch_id)
-            )
+            == 0
         )
-        assert len(candidates) == 0
+    with Session(sentinel_engine) as db:
+        assert db.get(Project, sentinel_id).name == "neighbor sentinel"
