@@ -21,6 +21,11 @@ export default defineConfig({
       url: "http://127.0.0.1:8000/api/v1/health",
       reuseExistingServer,
       timeout: 120_000,
+      env: {
+        ...process.env,
+        MANGAFLOW_DISABLE_DOTENV: "1",
+        MANGAFLOW_E2E_SEED: "1",
+      },
     },
     {
       command: "npm run serve:e2e:web",

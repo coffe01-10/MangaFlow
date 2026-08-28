@@ -84,6 +84,17 @@ try {
   }
 } finally {
   if (browser) await browser.close();
-  if (workflow) await fetch(`${apiOrigin}/workflows/${workflow.id}`, { method: "DELETE" }).catch(() => undefined);
-  await fetch(`${apiOrigin}/projects/${project.id}`, { method: "DELETE" }).catch(() => undefined);
+  if (workflow) {
+    const deletedWorkflow = await fetch(`${apiOrigin}/workflows/${workflow.id}`, { method: "DELETE" });
+    if (![200, 204, 404].includes(deletedWorkflow.status)) {
+      throw new Error(`cleanup workflow failed: ${deletedWorkflow.status} ${await deletedWorkflow.text()}`);
+    }
+  }
+  const deletedProject = await fetch(
+    `${apiOrigin}/projects/${project.id}?confirm_name=${encodeURIComponent(project.name)}`,
+    { method: "DELETE" },
+  );
+  if (![200, 204, 404].includes(deletedProject.status)) {
+    throw new Error(`cleanup project failed: ${deletedProject.status} ${await deletedProject.text()}`);
+  }
 }

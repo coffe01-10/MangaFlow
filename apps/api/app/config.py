@@ -1,9 +1,12 @@
 import base64
+import os
 from functools import lru_cache
 from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_ENV_FILE = None if os.environ.get("MANGAFLOW_DISABLE_DOTENV") == "1" else ".env"
 
 
 class Settings(BaseSettings):
@@ -52,9 +55,10 @@ class Settings(BaseSettings):
         "text/plain",
         "text/markdown",
     )
+    e2e_run_id: str | None = None
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
     )

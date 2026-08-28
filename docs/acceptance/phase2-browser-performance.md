@@ -116,6 +116,20 @@ npx playwright test
 
 第 2 轮 1% low 明显低于第 1 轮，仍高于 45。两次都记录，没有只保留最好一次。门禁脚本删除临时项目时 API 返回 422（删除需要 `confirm_name`）；数据只存在隔离库，随后已清理。
 
+## 第1轮返工（PR #15 review）
+
+针对隔离 dotenv 泄漏、未知服务写入、空态门禁和 FPS 删除 422：
+
+- `MANGAFLOW_DISABLE_DOTENV=1` 在导入 Settings 前禁用 `.env`；每次运行唯一临时库，拒绝复用已有 db，进程结束清理。
+- 伪 `.env` 探针：`GOOGLE_CLOUD_PROJECT` / `MANGAFLOW_PROXY_URL` 不得进入 Settings。
+- 性能 runner：占用端口失败关闭、health 必须带回本次 `e2e_run_id`、子进程先退出则失败、只停止本 run 拥有的 PID、异常仍写 summary。
+- 门禁夹具含页面+候选：缺项 / 检查失败 / 分镜过期阻断，全通过才启用下一页和导出。
+- 发布后 GET `/workflows/{id}/versions` 核对 published graph 节点位置。
+- Lighthouse 使用 `e2e-lighthouse-workbench`（1 页、1 候选、5 类检查通过）。
+- FPS 删除带 `confirm_name`，非 204/404 视为清理失败。
+
+完整 `npm run check:full` 与两轮性能在本返工提交上重跑；脱敏原始摘要见 `docs/acceptance/phase2-metrics.json`。
+
 ## 清理
 
 - 已停止 3000/8000 上的本次服务
