@@ -289,7 +289,7 @@ def proxy_url_for_connection(
 
 
 def ensure_provider_presets(
-    db: Session, settings: Settings, *, auto_commit: bool = False
+    db: Session, settings: Settings, *, auto_commit: bool = True
 ) -> None:
     existing = {
         row.preset_key: row

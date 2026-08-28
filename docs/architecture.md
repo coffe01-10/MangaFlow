@@ -128,3 +128,14 @@ Worker 启动统一经过 `apps/api/run_worker.py` / `app.worker`，与 API 共�
 自动检查入口为 `npm run check`，包括 Ruff、ESLint、Pytest 和 Next.js 生产构建；迁移另做 SQLite 升级/回滚验证。真实 Vertex 图片调用不属于默认测试，避免意外费用。
 
 浏览器与性能门禁分别位于 `tests/e2e/platform-v2.spec.ts`、`apps/web/scripts/lighthouse-gate.mjs` 和 `apps/web/scripts/workflow-fps-gate.mjs`。后两者要求本地 Web/API 已启动；工作流 FPS 脚本会创建临时 100 节点项目，完成 10 秒拖动/缩放采样后立即删除临时工作流和项目。
+
+
+## 10. 序号分配与事务所有权（P1-5）
+
+章节、原文修订、生成批次和页面/素材候选的序号使用既有唯一约束，分配逻辑集中在服务层。PostgreSQL 按项目、章节或页面、批次的顺序获取相关行锁；不使用进程内互斥锁冒充跨 Worker 并发控制。
+
+SQLite 的 legacy 事务模式不会为 SELECT/SAVEPOINT 自动开启物理外层事务。序号尝试显式确保 BEGIN，在保存点内通过不修改任何数据行的 UPDATE 取得数据库写锁，再读取 MAX 与校验状态；RELEASE 保存点不会提前提交整个操作。每次失败仅回滚自身保存点，并刷新 ORM 缓存，调用方已 flush 的修改不会被辅助函数悄悄丢弃。默认最多尝试 5 次，退避有上限；已有旧读快照无法升级时返回受控 409，调用方须回滚并重新发起完整操作。
+
+候选与 GenerationJob、工作流审批运行/节点状态在同一外层事务提交，成功后才入队；create_job 的 auto_commit=False 用于这些调用。模型解析和页面就绪校验显式禁止预设初始化内部提交，独立查询与启动初始化保留原有提交行为。最终提交发生数据库锁/唯一约束冲突时回滚整个操作并返回 409，不在丢掉调用方工作后盲目继续局部重试。
+
+此修复无数据库结构或迁移变更。验收覆盖隔离 SQLite 的独立 Session 并发、唯一键碰撞、失败回滚、最终提交失败及恢复；真实 PostgreSQL/Redis、浏览器和供应商调用不属于本轮已完成的验证。

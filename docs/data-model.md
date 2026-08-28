@@ -10,6 +10,8 @@
 
 ## 2. 关系总览
 
+P1-5 保留既有 Chapter(project_id, ordinal)、SourceRevision(chapter_id, revision)、GenerationBatch(project_id, ordinal)、PageCandidate(batch_id, ordinal) 与 AssetCandidate(batch_id, ordinal) 唯一约束，不新增迁移。分配尝试在真实外层事务中的保存点完成，唯一键冲突不得回滚调用方其他有效修改；候选、job_id、GenerationJob 及审批运行/节点状态整体提交。原文修订的旧页面清理、段落与修订指针更新也在同一外层事务内完成，最终提交失败不得残留半成品。SQLite 写锁与 PostgreSQL 行锁策略见 architecture.md 的 P1-5 事务章节。
+
 工作流发布仍使用既有 `WorkflowVersion(workflow_id, revision)` 唯一约束，无新增迁移。每次发布的 graph、checksum 与 validation_report 来自事务内重新读取并校验的同一草稿；创建版本和更新 published_version_id 同事务完成。发生发布竞争时回滚并有限重试，失败不得移动已发布指针。
 
 ```mermaid

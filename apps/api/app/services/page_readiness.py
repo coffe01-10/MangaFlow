@@ -185,7 +185,7 @@ def build_page_readiness(
     page: MangaPage,
     settings: Settings,
 ) -> PageReadinessRead:
-    ensure_provider_presets(db, settings)
+    ensure_provider_presets(db, settings, auto_commit=False)
     chapter = db.get(Chapter, page.chapter_id)
     project = db.get(Project, chapter.project_id)
     blockers: list[PageReadinessBlocker] = []

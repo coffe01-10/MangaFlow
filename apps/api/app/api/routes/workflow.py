@@ -77,6 +77,7 @@ from app.services.model_router import model_supports_resolution, resolve_model
 from app.services.ordinal_allocator import (
     BatchOrdinalConflictError,
     CandidateOrdinalConflictError,
+    commit_ordinal_transaction,
     create_generation_batch,
     create_page_candidate,
 )
@@ -206,7 +207,7 @@ def _new_batch(
             generation_kind=generation_kind,
             close_open_page_batches=True,
         )
-        db.commit()
+        commit_ordinal_transaction(db, BatchOrdinalConflictError)
         db.refresh(batch)
         return batch
     except BatchOrdinalConflictError as error:

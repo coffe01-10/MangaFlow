@@ -44,10 +44,10 @@ from app.schemas import (
     StyleTestApproval,
 )
 from app.services.job_service import create_job, enqueue_job
-from app.services.model_router import resolve_model  # noqa: F401
 from app.services.ordinal_allocator import (
     BatchOrdinalConflictError,
     CandidateOrdinalConflictError,
+    commit_ordinal_transaction,
     create_asset_candidate,
     create_generation_batch,
 )
@@ -633,7 +633,7 @@ def start_asset_batch(
             target_type=payload.target_type,
             target_id=payload.target_id,
         )
-        db.commit()
+        commit_ordinal_transaction(db, BatchOrdinalConflictError)
         db.refresh(batch)
         return batch
     except BatchOrdinalConflictError as error:

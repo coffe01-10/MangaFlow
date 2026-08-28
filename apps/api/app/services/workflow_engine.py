@@ -38,7 +38,11 @@ from app.models import (
 )
 from app.services.job_service import create_job, enqueue_job, mark_job_cancelled
 from app.services.model_router import model_supports_resolution, resolve_model
-from app.services.ordinal_allocator import create_generation_batch
+from app.services.ordinal_allocator import (
+    BatchOrdinalConflictError,
+    commit_ordinal_transaction,
+    create_generation_batch,
+)
 from app.services.page_completion import (
     build_chapter_production_readiness,
     build_page_production_readiness,
@@ -1375,7 +1379,7 @@ def approve_node(
         node_run.started_at = utcnow()
         node_run.output_refs = {"candidate_id": candidate.id, "batch_id": batch.id}
         run.status = "RUNNING"
-        db.commit()
+        commit_ordinal_transaction(db, BatchOrdinalConflictError)
         enqueue_job(db, job)
     elif spec.barrier == "APPROVE":
         if run.scope_type != "PAGE" or not run.scope_id:

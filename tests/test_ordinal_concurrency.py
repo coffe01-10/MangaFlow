@@ -1,10 +1,10 @@
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier
+from threading import Barrier, Event
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
@@ -26,7 +26,6 @@ from app.models import (
     SourceRevision,
     SourceSegment,
     StyleProfile,
-    utcnow,
 )
 from app.schemas import AssetCandidateCreate, CandidateCreate
 from app.services.content_workflow import import_source, revise_chapter_source
@@ -36,7 +35,6 @@ from app.services.ordinal_allocator import (
     CandidateOrdinalConflictError,
     ChapterOrdinalConflictError,
     SourceRevisionConflictError,
-    _next_page_candidate_ordinal,
     create_asset_candidate,
     create_generation_batch,
     create_page_candidate,
@@ -668,25 +666,26 @@ def test_create_page_candidate_retry_rejects_stale_storyboard_version(file_sessi
         db.commit()
         batch_id = batch.id
 
-    attempt_count = 0
-    real_next_ordinal = _next_page_candidate_ordinal
+    from contextlib import contextmanager
+    from app.services import ordinal_allocator as allocator
 
-    def racing_next_ordinal(db_session, b_id):
-        nonlocal attempt_count
-        attempt_count += 1
-        if attempt_count == 1:
-            # Another session modifies storyboard_version during backoff gap
-            with factory() as other_db:
-                p = other_db.get(MangaPage, seeded["page_id"])
-                p.storyboard_version = 2
-                other_db.commit()
-            raise OperationalError("statement", {}, sqlite3.OperationalError("database is locked"))
-        return real_next_ordinal(db_session, b_id)
+    original_savepoint = allocator.ordinal_savepoint
+    attempts = 0
 
-    monkeypatch.setattr(
-        "app.services.ordinal_allocator._next_page_candidate_ordinal",
-        racing_next_ordinal,
-    )
+    @contextmanager
+    def race_before_reserving_writer(db):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            with factory() as other:
+                page = other.get(MangaPage, seeded["page_id"])
+                page.storyboard_version = 2
+                other.commit()
+            raise OperationalError("reserve writer", {}, sqlite3.OperationalError("database is locked"))
+        with original_savepoint(db):
+            yield
+
+    monkeypatch.setattr(allocator, "ordinal_savepoint", race_before_reserving_writer)
 
     with factory() as db:
         with pytest.raises(HTTPException) as exc_info:
@@ -866,119 +865,109 @@ def test_workflow_approve_node_downstream_failure_rolls_back_entire_unit(app_def
         assert reloaded_node_run.status == "WAITING_APPROVAL"
 
 
-def test_concurrent_batch_allocation_post_read_barrier_recovers_cleanly(app_default_sqlite_sessions):
-    """Verify that when 2 sessions hit a deterministic UNIQUE conflict (barrier after reading max), savepoint rolls back and attempt 2 succeeds without PendingRollbackError."""
+def test_concurrent_batch_allocation_serializes_before_read(
+    app_default_sqlite_sessions, monkeypatch
+):
+    """Two simultaneous requests reserve SQLite's writer before reading max."""
+    from contextlib import contextmanager
+    from app.services import ordinal_allocator as allocator
+
     factory = app_default_sqlite_sessions
     with factory() as db:
-        project = Project(name="双Session确定性批次竞争")
+        project = Project(name="Serialized batch allocation")
         db.add(project)
         db.commit()
         project_id = project.id
-
     barrier = Barrier(2)
-    read_count = 0
-    import app.services.ordinal_allocator as allocator_mod
-    real_next_batch = allocator_mod._next_batch_ordinal
+    original_savepoint = allocator.ordinal_savepoint
+    original_next = allocator._next_batch_ordinal
+    reads = []
 
-    def sync_next_batch(db_session, p_id):
-        nonlocal read_count
-        val = real_next_batch(db_session, p_id)
-        read_count += 1
-        if read_count <= 2:
-            try:
-                barrier.wait(timeout=5)
-            except Exception:
-                pass
-        return val
+    @contextmanager
+    def start_together(db):
+        barrier.wait(timeout=5)
+        with original_savepoint(db):
+            yield
 
-    allocator_mod._next_batch_ordinal = sync_next_batch
-    try:
-        def worker(thread_idx):
-            with factory() as db:
-                batch = create_generation_batch(
-                    db,
-                    project_id=project_id,
-                    generation_kind="PAGE",
-                )
-                db.commit()
-                return batch.ordinal, batch.id
+    def record_next(db, pid):
+        ordinal = original_next(db, pid)
+        reads.append(ordinal)
+        return ordinal
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            results = list(executor.map(worker, range(2)))
+    monkeypatch.setattr(allocator, "ordinal_savepoint", start_together)
+    monkeypatch.setattr(allocator, "_next_batch_ordinal", record_next)
 
-        ordinals = sorted(r[0] for r in results)
-        assert ordinals == [1, 2]
+    def worker(_):
+        with factory() as db:
+            batch = create_generation_batch(db, project_id=project_id)
+            db.commit()
+            return batch.ordinal
 
-        with factory() as verify_db:
-            batches = list(
-                verify_db.scalars(
-                    select(GenerationBatch)
-                    .where(GenerationBatch.project_id == project_id)
-                    .order_by(GenerationBatch.ordinal)
-                )
-            )
-            assert len(batches) == 2
-            assert [b.ordinal for b in batches] == [1, 2]
-    finally:
-        allocator_mod._next_batch_ordinal = real_next_batch
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        ordinals = list(executor.map(worker, range(2)))
+    assert sorted(ordinals) == [1, 2]
+    assert reads == [1, 2]
 
 
-def test_candidate_creation_blocked_when_batch_closed_during_validation(file_sessions, monkeypatch):
-    """Verify that if another session closes the batch during validation, candidate creation raises 409 and writes 0 candidates."""
-    factory = file_sessions
+def test_candidate_and_concurrent_close_commit_in_serial_order(
+    app_default_sqlite_sessions, monkeypatch
+):
+    """A close during validation cannot commit until candidate creation commits."""
+    from app.services import ordinal_allocator as allocator
+
+    factory = app_default_sqlite_sessions
     seeded = _seed_test_hierarchy(factory)
-
     with factory() as db:
         batch = create_generation_batch(
-            db,
-            project_id=seeded["project_id"],
-            chapter_id=seeded["chapter_id"],
+            db, project_id=seeded["project_id"], chapter_id=seeded["chapter_id"],
             page_id=seeded["page_id"],
-            generation_kind="PAGE",
         )
         db.commit()
         batch_id = batch.id
+    started = Event()
+    finished = Event()
+    original_resolve = allocator.resolve_model
+    close_future = None
 
-    from app.services import model_router
-    real_resolve = model_router.resolve_model
+    def close_batch():
+        with factory() as other:
+            started.set()
+            other.execute(
+                update(GenerationBatch).where(GenerationBatch.id == batch_id)
+                .values(status="CLOSED")
+            )
+            other.commit()
+            finished.set()
 
-    def racing_resolve(*args, **kwargs):
-        # Another session closes the batch right during model resolution
-        with factory() as other_db:
-            b = other_db.get(GenerationBatch, batch_id)
-            b.status = "CLOSED"
-            b.closed_at = utcnow()
-            other_db.commit()
-        return real_resolve(*args, **kwargs)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        def resolve_while_closing(*args, **kwargs):
+            nonlocal close_future
+            resolved = original_resolve(*args, **kwargs)
+            close_future = executor.submit(close_batch)
+            assert started.wait(timeout=2)
+            assert not finished.wait(timeout=0.05)
+            return resolved
 
-    monkeypatch.setattr("app.services.ordinal_allocator.resolve_model", racing_resolve)
-
-    with factory() as db:
-        with pytest.raises(HTTPException) as exc_info:
-            create_page_candidate(
-                db,
-                batch_id=batch_id,
+        monkeypatch.setattr(allocator, "resolve_model", resolve_while_closing)
+        with factory() as db:
+            candidate, job = create_page_candidate(
+                db, batch_id=batch_id,
                 payload=CandidateCreate(
-                    model_alias="image.nano_banana_2",
-                    resolution=Resolution.DRAFT_1K,
+                    model_alias="image.nano_banana_2", resolution=Resolution.DRAFT_1K,
                     storyboard_version=1,
-                    reference_selections={
-                        seeded["character_id"]: {
-                            "character_asset_id": seeded["character_asset_id"],
-                            "outfit_id": seeded["outfit_id"],
-                            "outfit_asset_id": seeded["outfit_asset_id"],
-                        }
-                    },
+                    reference_selections={seeded["character_id"]: {
+                        "character_asset_id": seeded["character_asset_id"],
+                        "outfit_id": seeded["outfit_id"],
+                        "outfit_asset_id": seeded["outfit_asset_id"],
+                    }},
                 ),
             )
-        assert exc_info.value.status_code == 409
-        assert "抽卡批次不存在或已经关闭" in str(exc_info.value.detail)
-
-    with factory() as verify_db:
-        candidates = list(
-            verify_db.scalars(select(PageCandidate).where(PageCandidate.batch_id == batch_id))
-        )
-        assert len(candidates) == 0
+            candidate_id, job_id = candidate.id, job.id
+        assert close_future is not None
+        close_future.result(timeout=5)
+    with factory() as db:
+        assert db.get(GenerationBatch, batch_id).status == "CLOSED"
+        assert db.get(PageCandidate, candidate_id).job_id == job_id
 
 
 def test_character_sheet_job_failure_rolls_back_batch_and_candidate_completely(app_default_sqlite_sessions, monkeypatch):
@@ -1167,3 +1156,144 @@ def test_is_sqlite_lock_error_identification():
     assert is_sqlite_lock_error(syntax_op) is False
 
     assert is_sqlite_lock_error(ValueError("unrelated error")) is False
+
+
+def test_batch_unique_retry_preserves_pending_caller_data(
+    app_default_sqlite_sessions, monkeypatch
+):
+    from app.services import ordinal_allocator as allocator
+
+    factory = app_default_sqlite_sessions
+    seeded = _seed_test_hierarchy(factory)
+    with factory() as db:
+        create_generation_batch(db, project_id=seeded["project_id"])
+        db.commit()
+    original_next = allocator._next_batch_ordinal
+    attempts = 0
+
+    def collide_once(db, project_id):
+        nonlocal attempts
+        attempts += 1
+        return 1 if attempts == 1 else original_next(db, project_id)
+
+    monkeypatch.setattr(allocator, "_next_batch_ordinal", collide_once)
+    with factory() as db:
+        pending = Character(project_id=seeded["project_id"], primary_name="Preserved caller data")
+        db.add(pending)
+        batch = create_generation_batch(db, project_id=seeded["project_id"])
+        pending_id = pending.id
+        assert batch.ordinal == 2
+        db.commit()
+    with factory() as db:
+        assert db.get(Character, pending_id).primary_name == "Preserved caller data"
+    assert attempts == 2
+
+
+def test_batch_exhaustion_does_not_rollback_callers_unit(
+    app_default_sqlite_sessions, monkeypatch
+):
+    from app.services import ordinal_allocator as allocator
+
+    factory = app_default_sqlite_sessions
+    seeded = _seed_test_hierarchy(factory)
+    with factory() as db:
+        create_generation_batch(db, project_id=seeded["project_id"])
+        db.commit()
+    monkeypatch.setattr(allocator, "_next_batch_ordinal", lambda *_: 1)
+    with factory() as db:
+        pending = Character(project_id=seeded["project_id"], primary_name="Caller owns rollback")
+        db.add(pending)
+        with pytest.raises(BatchOrdinalConflictError):
+            create_generation_batch(db, project_id=seeded["project_id"], max_attempts=2)
+        pending_id = pending.id
+        assert db.is_active
+        assert db.get(Character, pending_id) is pending
+        db.rollback()
+    with factory() as db:
+        assert db.get(Character, pending_id) is None
+
+
+def test_character_sheet_retry_preserves_new_batch(app_default_sqlite_sessions, monkeypatch):
+    from app.api.routes import asset_generation
+    from app.schemas import CharacterSheetCreate
+    from app.services import ordinal_allocator as allocator
+
+    factory = app_default_sqlite_sessions
+    seeded = _seed_test_hierarchy(factory)
+    original_create_job = allocator.create_job
+    attempts = 0
+
+    def fail_after_first_job(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        job = original_create_job(*args, **kwargs)
+        if attempts == 1:
+            raise OperationalError("injected job write", {}, sqlite3.OperationalError("database is locked"))
+        return job
+
+    monkeypatch.setattr(allocator, "create_job", fail_after_first_job)
+    monkeypatch.setattr(asset_generation, "enqueue_job", lambda db, job: job)
+    with factory() as db:
+        result = asset_generation.generate_complete_character_sheet(
+            seeded["character_id"],
+            CharacterSheetCreate(model_alias="image.nano_banana_2", resolution=Resolution.DRAFT_1K),
+            db,
+        )
+        job_id = result.job_id
+    with factory() as db:
+        assert len(list(db.scalars(select(GenerationBatch)))) == 1
+        candidates = list(db.scalars(select(AssetCandidate)))
+        assert len(candidates) == 1
+        assert candidates[0].job_id == job_id
+        assert len(list(db.scalars(select(GenerationJob)))) == 1
+    assert attempts == 2
+
+
+@pytest.mark.parametrize("operation", ["import", "revision"])
+def test_source_final_commit_failure_rolls_back_content(
+    app_default_sqlite_sessions, monkeypatch, operation
+):
+    factory = app_default_sqlite_sessions
+    seeded = _seed_test_hierarchy(factory)
+    with factory() as db:
+        def fail_commit():
+            raise RuntimeError("Injected final source commit failure")
+
+        monkeypatch.setattr(db, "commit", fail_commit)
+        with pytest.raises(RuntimeError, match="final source commit"):
+            if operation == "import":
+                import_source(
+                    db, project_id=seeded["project_id"], title="New chapter",
+                    text="New source content", source_type="TXT",
+                )
+            else:
+                revise_chapter_source(
+                    db, chapter_id=seeded["chapter_id"], title="Replacement title",
+                    text="Replacement source", source_type="TXT",
+                )
+        db.rollback()
+    with factory() as db:
+        assert len(list(db.scalars(select(Chapter)))) == 1
+        assert db.get(MangaPage, seeded["page_id"]) is not None
+        assert list(db.scalars(select(SourceRevision))) == []
+        assert list(db.scalars(select(SourceSegment))) == []
+
+
+def test_batch_final_commit_lock_failure_is_controlled_and_rolled_back(
+    app_default_sqlite_sessions, monkeypatch
+):
+    from app.services.ordinal_allocator import commit_ordinal_transaction
+
+    factory = app_default_sqlite_sessions
+    seeded = _seed_test_hierarchy(factory)
+    with factory() as db:
+        create_generation_batch(db, project_id=seeded["project_id"])
+        def fail_commit():
+            raise OperationalError("COMMIT", {}, sqlite3.OperationalError("database is locked"))
+
+        monkeypatch.setattr(db, "commit", fail_commit)
+        with pytest.raises(BatchOrdinalConflictError):
+            commit_ordinal_transaction(db, BatchOrdinalConflictError)
+        assert db.is_active
+    with factory() as db:
+        assert list(db.scalars(select(GenerationBatch))) == []

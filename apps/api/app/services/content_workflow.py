@@ -1,7 +1,5 @@
 import hashlib
-import random
 import re
-import time
 from dataclasses import dataclass
 
 from fastapi import HTTPException
@@ -29,8 +27,11 @@ from app.services.ordinal_allocator import (
     ORDINAL_ALLOCATION_MAX_ATTEMPTS,
     ChapterOrdinalConflictError,
     SourceRevisionConflictError,
+    commit_ordinal_transaction,
     is_sqlite_lock_error,
     lock_entity,
+    ordinal_savepoint,
+    pause_before_ordinal_retry,
 )
 
 CHAPTER_HEADER = re.compile(
@@ -140,11 +141,12 @@ def import_source(
     if not text.strip():
         raise HTTPException(status_code=422, detail="原文不能为空")
     chapter_payloads = split_chapters(title, text)
+    db.flush()
     last_error: BaseException | None = None
     for _attempt in range(max_attempts):
         try:
             chapters: list[Chapter] = []
-            with db.begin_nested():
+            with ordinal_savepoint(db):
                 project = lock_entity(db, Project, project_id)
                 if not project or project.deleted_at is not None:
                     raise HTTPException(status_code=404, detail="项目不存在")
@@ -178,18 +180,14 @@ def import_source(
                     create_source_segments(db, revision)
                     chapter.current_source_revision_id = revision.id
                     chapters.append(chapter)
-            db.commit()
-        except IntegrityError as error:
-            last_error = error
-            db.rollback()
-            time.sleep(0.01 * (2 ** _attempt) + random.uniform(0, 0.02))
-        except OperationalError as error:
-            db.rollback()
-            if not is_sqlite_lock_error(error):
+        except (IntegrityError, OperationalError) as error:
+            if isinstance(error, OperationalError) and not is_sqlite_lock_error(error):
                 raise
             last_error = error
-            time.sleep(0.02 * (2 ** _attempt) + random.uniform(0, 0.03))
+            db.expire_all()
+            pause_before_ordinal_retry(_attempt, max_attempts)
         else:
+            commit_ordinal_transaction(db, ChapterOrdinalConflictError)
             for chapter in chapters:
                 db.refresh(chapter)
             return chapters
@@ -207,10 +205,15 @@ def revise_chapter_source(
 ) -> SourceRevision:
     if not text.strip():
         raise HTTPException(status_code=422, detail="原文不能为空")
+    db.flush()
     last_error: BaseException | None = None
     for _attempt in range(max_attempts):
         try:
-            with db.begin_nested():
+            with ordinal_savepoint(db):
+                project_id = db.scalar(select(Chapter.project_id).where(Chapter.id == chapter_id))
+                project = lock_entity(db, Project, project_id) if project_id else None
+                if project is None or project.deleted_at is not None:
+                    raise HTTPException(status_code=404, detail="项目不存在")
                 chapter = lock_entity(db, Chapter, chapter_id)
                 if not chapter or chapter.deleted_at is not None:
                     raise HTTPException(status_code=404, detail="章节不存在")
@@ -267,18 +270,14 @@ def revise_chapter_source(
                 chapter.status = "IMPORTED"
                 chapter.title = title or chapter.title
                 chapter.version += 1
-            db.commit()
-        except IntegrityError as error:
-            last_error = error
-            db.rollback()
-            time.sleep(0.01 * (2 ** _attempt) + random.uniform(0, 0.02))
-        except OperationalError as error:
-            db.rollback()
-            if not is_sqlite_lock_error(error):
+        except (IntegrityError, OperationalError) as error:
+            if isinstance(error, OperationalError) and not is_sqlite_lock_error(error):
                 raise
             last_error = error
-            time.sleep(0.02 * (2 ** _attempt) + random.uniform(0, 0.03))
+            db.expire_all()
+            pause_before_ordinal_retry(_attempt, max_attempts)
         else:
+            commit_ordinal_transaction(db, SourceRevisionConflictError)
             db.refresh(revision)
             return revision
     raise SourceRevisionConflictError("章节原文正在被其他请求修改，请稍后重试") from last_error

@@ -3,6 +3,8 @@ from __future__ import annotations
 import random
 import sqlite3
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 from fastapi import HTTPException
 from sqlalchemy import func, select, update
@@ -30,7 +32,7 @@ from app.services.job_service import create_job
 from app.services.model_router import model_supports_resolution, resolve_model
 from app.services.page_readiness import ensure_page_ready
 
-ORDINAL_ALLOCATION_MAX_ATTEMPTS = 10
+ORDINAL_ALLOCATION_MAX_ATTEMPTS = 5
 
 
 class OrdinalConflictError(Exception):
@@ -83,6 +85,43 @@ def lock_entity(db: Session, model_cls, entity_id: str):
     if dialect_name == "postgresql":
         query = query.with_for_update()
     return db.scalar(query)
+
+
+@contextmanager
+def ordinal_savepoint(db: Session) -> Iterator[None]:
+    """Keep each attempt inside the caller's real transaction, including SQLite.
+
+    Legacy sqlite3 does not BEGIN for SELECT or SAVEPOINT. Reserve its single
+    writer before reading allocation state; RELEASE must never commit the outer
+    unit of work. The no-op UPDATE changes no rows and uses database locking,
+    not a process-local mutex. A caller with an old read snapshot may still get
+    a controlled conflict and must roll back/retry its complete operation.
+    """
+    connection = db.connection()
+    if connection.dialect.name == "sqlite":
+        raw_connection = connection.connection.dbapi_connection
+        if not raw_connection.in_transaction:
+            connection.exec_driver_sql("BEGIN")
+    with db.begin_nested():
+        if connection.dialect.name == "sqlite":
+            connection.exec_driver_sql("UPDATE projects SET version = version WHERE 0")
+        yield
+
+
+def pause_before_ordinal_retry(attempt: int, max_attempts: int) -> None:
+    if attempt + 1 < max_attempts:
+        time.sleep(min(0.03 * (2 ** attempt), 0.25) + random.uniform(0.01, 0.04))
+
+
+def commit_ordinal_transaction(db: Session, conflict_type: type[OrdinalConflictError]) -> None:
+    """Report a failed final commit without replaying a partially discarded unit."""
+    try:
+        db.commit()
+    except (IntegrityError, OperationalError) as error:
+        db.rollback()
+        if isinstance(error, OperationalError) and not is_sqlite_lock_error(error):
+            raise
+        raise conflict_type("序号操作提交冲突，请重试完整操作") from error
 
 
 def _next_batch_ordinal(db: Session, project_id: str) -> int:
@@ -143,9 +182,6 @@ def _generation_reference_ids(db: Session, batch: GenerationBatch) -> list[str]:
     return []
 
 
-get_generation_reference_ids = _generation_reference_ids
-
-
 def create_generation_batch(
     db: Session,
     *,
@@ -159,45 +195,47 @@ def create_generation_batch(
     max_attempts: int = ORDINAL_ALLOCATION_MAX_ATTEMPTS,
 ) -> GenerationBatch:
     """Create a new GenerationBatch with unique ordinal under caller's transaction."""
+    db.flush()
     last_error: BaseException | None = None
     for _attempt in range(max_attempts):
         try:
-            project = lock_entity(db, Project, project_id)
-            if project is None or project.deleted_at is not None:
-                raise HTTPException(status_code=404, detail="项目不存在")
-            if page_id:
-                page = lock_entity(db, MangaPage, page_id)
-                if page is None:
-                    raise HTTPException(status_code=404, detail="页面不存在")
-            if close_open_page_batches and page_id:
-                db.execute(
-                    update(GenerationBatch)
-                    .where(
-                        GenerationBatch.page_id == page_id,
-                        GenerationBatch.status == "OPEN",
+            with ordinal_savepoint(db):
+                project = lock_entity(db, Project, project_id)
+                if project is None or project.deleted_at is not None:
+                    raise HTTPException(status_code=404, detail="项目不存在")
+                if page_id:
+                    page = lock_entity(db, MangaPage, page_id)
+                    if page is None:
+                        raise HTTPException(status_code=404, detail="页面不存在")
+                if close_open_page_batches and page_id:
+                    db.execute(
+                        update(GenerationBatch)
+                        .where(
+                            GenerationBatch.page_id == page_id,
+                            GenerationBatch.status == "OPEN",
+                        )
+                        .values(status="CLOSED", closed_at=utcnow())
                     )
-                    .values(status="CLOSED", closed_at=utcnow())
+                ordinal = _next_batch_ordinal(db, project_id)
+                batch = GenerationBatch(
+                    project_id=project_id,
+                    chapter_id=chapter_id,
+                    page_id=page_id,
+                    target_type=target_type,
+                    target_id=target_id,
+                    ordinal=ordinal,
+                    generation_kind=generation_kind,
+                    status="OPEN",
                 )
-            ordinal = _next_batch_ordinal(db, project_id)
-            batch = GenerationBatch(
-                project_id=project_id,
-                chapter_id=chapter_id,
-                page_id=page_id,
-                target_type=target_type,
-                target_id=target_id,
-                ordinal=ordinal,
-                generation_kind=generation_kind,
-                status="OPEN",
-            )
-            db.add(batch)
-            db.flush()
-            return batch
+                db.add(batch)
+                db.flush()
+                return batch
         except (IntegrityError, OperationalError) as error:
             if isinstance(error, OperationalError) and not is_sqlite_lock_error(error):
                 raise
             last_error = error
-            db.rollback()
-            time.sleep(0.03 * (2 ** _attempt) + random.uniform(0.01, 0.04))
+            db.expire_all()
+            pause_before_ordinal_retry(_attempt, max_attempts)
     raise BatchOrdinalConflictError("抽卡批次分配冲突，请稍后重试") from last_error
 
 
@@ -272,103 +310,112 @@ def create_page_candidate(
     max_attempts: int = ORDINAL_ALLOCATION_MAX_ATTEMPTS,
 ) -> tuple[PageCandidate, GenerationJob]:
     """Create a PageCandidate and its associated GenerationJob atomically."""
+    db.flush()
     last_error: BaseException | None = None
     for _attempt in range(max_attempts):
         try:
-            target_batch = lock_entity(db, GenerationBatch, batch_id)
-            if not target_batch or target_batch.status != "OPEN" or not target_batch.page_id:
-                raise HTTPException(status_code=409, detail="抽卡批次不存在或已经关闭")
-            current_project = lock_entity(db, Project, target_batch.project_id)
-            if not current_project or current_project.deleted_at is not None:
-                raise HTTPException(status_code=404, detail="项目不存在")
-            current_page = lock_entity(db, MangaPage, target_batch.page_id)
-            if not current_page:
-                raise HTTPException(status_code=404, detail="页面不存在")
-            if payload.storyboard_version != current_page.storyboard_version:
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "code": "STALE_STORYBOARD_VERSION",
-                        "message": "分镜已更新，请刷新页面后重新确认参考图",
-                        "expected": payload.storyboard_version,
-                        "current": current_page.storyboard_version,
+            with ordinal_savepoint(db):
+                parent = db.execute(
+                    select(GenerationBatch.project_id, GenerationBatch.page_id)
+                    .where(GenerationBatch.id == batch_id)
+                ).one_or_none()
+                if parent is None or not parent.page_id:
+                    raise HTTPException(status_code=409, detail="抽卡批次不存在或已经关闭")
+                current_project = lock_entity(db, Project, parent.project_id)
+                if not current_project or current_project.deleted_at is not None:
+                    raise HTTPException(status_code=404, detail="项目不存在")
+                current_page = lock_entity(db, MangaPage, parent.page_id)
+                if not current_page:
+                    raise HTTPException(status_code=404, detail="页面不存在")
+                if payload.storyboard_version != current_page.storyboard_version:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "code": "STALE_STORYBOARD_VERSION",
+                            "message": "分镜已更新，请刷新页面后重新确认参考图",
+                            "expected": payload.storyboard_version,
+                            "current": current_page.storyboard_version,
+                        },
+                    )
+                ensure_page_ready(db, current_page, get_settings())
+                current_resolved_model = resolve_model(
+                    db,
+                    get_settings(),
+                    operation="image_edit",
+                    explicit_reference=payload.model_alias,
+                    project_id=current_project.id,
+                    task_kind="PAGE_GENERATE",
+                )
+                current_batch = lock_entity(db, GenerationBatch, batch_id)
+                if not current_batch or current_batch.status != "OPEN":
+                    raise HTTPException(status_code=409, detail="抽卡批次不存在或已经关闭")
+                if not model_supports_resolution(
+                    current_resolved_model.model, payload.resolution.value
+                ):
+                    raise HTTPException(status_code=422, detail="所选模型不支持该输出清晰度")
+                current_normalized_selections = validate_candidate_reference_selections(
+                    db, current_page, current_project, payload
+                )
+                ordinal = _next_page_candidate_ordinal(db, current_batch.id)
+                candidate = PageCandidate(
+                    batch_id=current_batch.id,
+                    page_id=current_page.id,
+                    ordinal=ordinal,
+                    model_alias=payload.model_alias,
+                    catalog_model_id=current_resolved_model.model.id,
+                    resolution=payload.resolution,
+                    status="QUEUED",
+                    based_on_storyboard_version=current_page.storyboard_version,
+                    prompt_snapshot={
+                        "reference_selections": current_normalized_selections,
+                        "storyboard_version": current_page.storyboard_version,
                     },
                 )
-            ensure_page_ready(db, current_page, get_settings())
-            current_resolved_model = resolve_model(
-                db,
-                get_settings(),
-                operation="image_edit",
-                explicit_reference=payload.model_alias,
-                project_id=current_project.id,
-                task_kind="PAGE_GENERATE",
-            )
-            current_batch = lock_entity(db, GenerationBatch, batch_id)
-            if not current_batch or current_batch.status != "OPEN":
-                raise HTTPException(status_code=409, detail="抽卡批次不存在或已经关闭")
-            if not model_supports_resolution(
-                current_resolved_model.model, payload.resolution.value
-            ):
-                raise HTTPException(status_code=422, detail="所选模型不支持该输出清晰度")
-            current_normalized_selections = validate_candidate_reference_selections(
-                db, current_page, current_project, payload
-            )
-            ordinal = _next_page_candidate_ordinal(db, current_batch.id)
-            candidate = PageCandidate(
-                batch_id=current_batch.id,
-                page_id=current_page.id,
-                ordinal=ordinal,
-                model_alias=payload.model_alias,
-                catalog_model_id=current_resolved_model.model.id,
-                resolution=payload.resolution,
-                status="QUEUED",
-                based_on_storyboard_version=current_page.storyboard_version,
-                prompt_snapshot={
-                    "reference_selections": current_normalized_selections,
-                    "storyboard_version": current_page.storyboard_version,
-                },
-            )
-            db.add(candidate)
-            db.flush()
-            current_project.last_image_model_alias = payload.model_alias
-            current_project.image_model_alias = payload.model_alias
-            current_project.last_image_model_id = current_resolved_model.model.id
-            current_project.version += 1
-            job = create_job(
-                db,
-                project_id=current_project.id,
-                target_type="PAGE_CANDIDATE",
-                target_id=candidate.id,
-                job_type="PAGE_GENERATE",
-                model_alias=payload.model_alias,
-                catalog_model_id=current_resolved_model.model.id,
-                request_parameters={
-                    "resolution": payload.resolution.value,
-                    "storyboard_version": current_page.storyboard_version,
-                    "reference_selections": current_normalized_selections,
-                },
-                reference_asset_ids=[
-                    asset_id
-                    for selection in current_normalized_selections.values()
-                    for asset_id in (
-                        selection.get("character_asset_id"),
-                        selection.get("outfit_asset_id"),
-                    )
-                    if asset_id
-                ],
-                idempotency_key=f"candidate:{candidate.id}",
-                auto_commit=False,
-            )
-            candidate.job_id = job.id
-            db.commit()
-            db.refresh(candidate)
-            return candidate, job
+                db.add(candidate)
+                db.flush()
+                current_project.last_image_model_alias = payload.model_alias
+                current_project.image_model_alias = payload.model_alias
+                current_project.last_image_model_id = current_resolved_model.model.id
+                current_project.version += 1
+                job = create_job(
+                    db,
+                    project_id=current_project.id,
+                    target_type="PAGE_CANDIDATE",
+                    target_id=candidate.id,
+                    job_type="PAGE_GENERATE",
+                    model_alias=payload.model_alias,
+                    catalog_model_id=current_resolved_model.model.id,
+                    request_parameters={
+                        "resolution": payload.resolution.value,
+                        "storyboard_version": current_page.storyboard_version,
+                        "reference_selections": current_normalized_selections,
+                    },
+                    reference_asset_ids=[
+                        asset_id
+                        for selection in current_normalized_selections.values()
+                        for asset_id in (
+                            selection.get("character_asset_id"),
+                            selection.get("outfit_asset_id"),
+                        )
+                        if asset_id
+                    ],
+                    idempotency_key=f"candidate:{candidate.id}",
+                    auto_commit=False,
+                )
+                candidate.job_id = job.id
+                db.flush()
         except (IntegrityError, OperationalError) as error:
             if isinstance(error, OperationalError) and not is_sqlite_lock_error(error):
                 raise
             last_error = error
-            db.rollback()
-            time.sleep(0.03 * (2 ** _attempt) + random.uniform(0.01, 0.04))
+            db.expire_all()
+            pause_before_ordinal_retry(_attempt, max_attempts)
+        else:
+            # The caller owns the entire unit, including a freshly created
+            # character-sheet batch. Do not retry after rolling that unit back.
+            commit_ordinal_transaction(db, CandidateOrdinalConflictError)
+            db.refresh(candidate)
+            return candidate, job
     raise CandidateOrdinalConflictError("页面候选分配冲突，请稍后重试") from last_error
 
 
@@ -380,88 +427,96 @@ def create_asset_candidate(
     max_attempts: int = ORDINAL_ALLOCATION_MAX_ATTEMPTS,
 ) -> tuple[AssetCandidate, GenerationJob]:
     """Create an AssetCandidate and its associated GenerationJob atomically."""
+    db.flush()
     last_error: BaseException | None = None
     for _attempt in range(max_attempts):
         try:
-            target_batch = lock_entity(db, GenerationBatch, batch_id)
-            if not target_batch:
-                raise HTTPException(status_code=409, detail="资产生成批次不存在或已关闭")
-            current_project = lock_entity(db, Project, target_batch.project_id)
-            if not current_project or current_project.deleted_at is not None:
-                raise HTTPException(status_code=404, detail="项目不存在")
-            current_batch = lock_entity(db, GenerationBatch, batch_id)
-            if (
-                not current_batch
-                or current_batch.status != "OPEN"
-                or not current_batch.target_type
-                or not current_batch.target_id
-            ):
-                raise HTTPException(status_code=409, detail="资产生成批次不存在或已关闭")
-            ref_ids = _generation_reference_ids(db, current_batch)
-            current_resolved_model = resolve_model(
-                db,
-                get_settings(),
-                operation="image_edit" if ref_ids else "image_generate",
-                explicit_reference=payload.model_alias,
-                project_id=current_project.id,
-                task_kind="ASSET_GENERATE",
-            )
-            current_batch = lock_entity(db, GenerationBatch, batch_id)
-            if not current_batch or current_batch.status != "OPEN":
-                raise HTTPException(status_code=409, detail="资产生成批次不存在或已关闭")
-            if not model_supports_resolution(
-                current_resolved_model.model, payload.resolution.value
-            ):
-                raise HTTPException(status_code=422, detail="所选模型不支持该输出清晰度")
-            allowed_variants = {
-                "CHARACTER": {"FRONT", "SIDE", "BACK", "EXPRESSION", "SHEET"},
-                "OUTFIT": {"OUTFIT", "OUTFIT_SHEET"},
-                "STYLE": {"STYLE_TEST"},
-            }
-            if payload.variant not in allowed_variants.get(current_batch.target_type, set()):
-                raise HTTPException(status_code=422, detail="资产生成角度与目标档案不匹配")
-            ordinal = _next_asset_candidate_ordinal(db, current_batch.id)
-            candidate = AssetCandidate(
-                batch_id=current_batch.id,
-                ordinal=ordinal,
-                model_alias=payload.model_alias,
-                catalog_model_id=current_resolved_model.model.id,
-                resolution=payload.resolution,
-                variant=payload.variant,
-                instruction=payload.instruction,
-                status="QUEUED",
-            )
-            db.add(candidate)
-            db.flush()
-            current_project.last_image_model_alias = payload.model_alias
-            current_project.image_model_alias = payload.model_alias
-            current_project.last_image_model_id = current_resolved_model.model.id
-            current_project.version += 1
-            job = create_job(
-                db,
-                project_id=current_project.id,
-                target_type="ASSET_CANDIDATE",
-                target_id=candidate.id,
-                job_type="ASSET_GENERATE",
-                model_alias=payload.model_alias,
-                catalog_model_id=current_resolved_model.model.id,
-                request_parameters={
-                    "variant": payload.variant,
-                    "instruction": payload.instruction,
-                    "resolution": payload.resolution.value,
-                },
-                reference_asset_ids=ref_ids,
-                idempotency_key=f"asset-candidate:{candidate.id}",
-                auto_commit=False,
-            )
-            candidate.job_id = job.id
-            db.commit()
-            db.refresh(candidate)
-            return candidate, job
+            with ordinal_savepoint(db):
+                project_id = db.scalar(
+                    select(GenerationBatch.project_id).where(GenerationBatch.id == batch_id)
+                )
+                if project_id is None:
+                    raise HTTPException(status_code=409, detail="资产生成批次不存在或已关闭")
+                current_project = lock_entity(db, Project, project_id)
+                if not current_project or current_project.deleted_at is not None:
+                    raise HTTPException(status_code=404, detail="项目不存在")
+                current_batch = lock_entity(db, GenerationBatch, batch_id)
+                if (
+                    not current_batch
+                    or current_batch.status != "OPEN"
+                    or not current_batch.target_type
+                    or not current_batch.target_id
+                ):
+                    raise HTTPException(status_code=409, detail="资产生成批次不存在或已关闭")
+                ref_ids = _generation_reference_ids(db, current_batch)
+                current_resolved_model = resolve_model(
+                    db,
+                    get_settings(),
+                    operation="image_edit" if ref_ids else "image_generate",
+                    explicit_reference=payload.model_alias,
+                    project_id=current_project.id,
+                    task_kind="ASSET_GENERATE",
+                )
+                current_batch = lock_entity(db, GenerationBatch, batch_id)
+                if not current_batch or current_batch.status != "OPEN":
+                    raise HTTPException(status_code=409, detail="资产生成批次不存在或已关闭")
+                if not model_supports_resolution(
+                    current_resolved_model.model, payload.resolution.value
+                ):
+                    raise HTTPException(status_code=422, detail="所选模型不支持该输出清晰度")
+                allowed_variants = {
+                    "CHARACTER": {"FRONT", "SIDE", "BACK", "EXPRESSION", "SHEET"},
+                    "OUTFIT": {"OUTFIT", "OUTFIT_SHEET"},
+                    "STYLE": {"STYLE_TEST"},
+                }
+                if payload.variant not in allowed_variants.get(current_batch.target_type, set()):
+                    raise HTTPException(status_code=422, detail="资产生成角度与目标档案不匹配")
+                ordinal = _next_asset_candidate_ordinal(db, current_batch.id)
+                candidate = AssetCandidate(
+                    batch_id=current_batch.id,
+                    ordinal=ordinal,
+                    model_alias=payload.model_alias,
+                    catalog_model_id=current_resolved_model.model.id,
+                    resolution=payload.resolution,
+                    variant=payload.variant,
+                    instruction=payload.instruction,
+                    status="QUEUED",
+                )
+                db.add(candidate)
+                db.flush()
+                current_project.last_image_model_alias = payload.model_alias
+                current_project.image_model_alias = payload.model_alias
+                current_project.last_image_model_id = current_resolved_model.model.id
+                current_project.version += 1
+                job = create_job(
+                    db,
+                    project_id=current_project.id,
+                    target_type="ASSET_CANDIDATE",
+                    target_id=candidate.id,
+                    job_type="ASSET_GENERATE",
+                    model_alias=payload.model_alias,
+                    catalog_model_id=current_resolved_model.model.id,
+                    request_parameters={
+                        "variant": payload.variant,
+                        "instruction": payload.instruction,
+                        "resolution": payload.resolution.value,
+                    },
+                    reference_asset_ids=ref_ids,
+                    idempotency_key=f"asset-candidate:{candidate.id}",
+                    auto_commit=False,
+                )
+                candidate.job_id = job.id
+                db.flush()
         except (IntegrityError, OperationalError) as error:
             if isinstance(error, OperationalError) and not is_sqlite_lock_error(error):
                 raise
             last_error = error
-            db.rollback()
-            time.sleep(0.03 * (2 ** _attempt) + random.uniform(0.01, 0.04))
+            db.expire_all()
+            pause_before_ordinal_retry(_attempt, max_attempts)
+        else:
+            # The caller owns the entire unit, including a freshly created
+            # character-sheet batch. Do not retry after rolling that unit back.
+            commit_ordinal_transaction(db, CandidateOrdinalConflictError)
+            db.refresh(candidate)
+            return candidate, job
     raise CandidateOrdinalConflictError("素材候选分配冲突，请稍后重试") from last_error
