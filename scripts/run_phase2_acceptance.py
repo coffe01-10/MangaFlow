@@ -1,7 +1,10 @@
-"""Safe preparation entry point while the live harness is under lead repair.
+"""Safe preparation entry point for the Phase 2 acceptance harness.
 
-No live test or container launch is authorized by this intermediate entry point.
-A nonzero BLOCKED result must not be presented as completed integration acceptance.
+The offline harness runs by default. Live pytest execution is available through
+pytest itself with explicit isolated URLs (--run-live-integration --pg-url ...
+--redis-url ...); the owner-scoped container orchestration behind
+--run-live/--start-containers is still not implemented, so those switches stay
+a nonzero BLOCKED result that must not be presented as live acceptance.
 """
 
 from __future__ import annotations
@@ -50,8 +53,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.run_live or args.start_containers or args.stop_containers:
         print(
-            "BLOCKED: live harness and owner-scoped orchestration are under lead repair. "
-            "No service was connected, started, or stopped.",
+            "BLOCKED: owner-scoped live orchestration is not implemented. Run pytest with "
+            "--run-live-integration and explicit isolated URLs instead. No service was "
+            "connected, started, or stopped by this entry point.",
             file=sys.stderr,
         )
         return 2
