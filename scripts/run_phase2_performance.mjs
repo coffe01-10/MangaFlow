@@ -25,8 +25,8 @@ function run(command, args, extra = {}) {
     const child = spawn(command, args, {
       cwd: ROOT,
       stdio: ["ignore", "pipe", "pipe"],
-      shell: false,
       windowsHide: true,
+      shell: extra.shell ?? false,
       ...extra,
     });
     let output = "";
@@ -93,11 +93,12 @@ async function main() {
     child: api,
   });
 
-  const web = spawnOwned(
-    process.platform === "win32" ? "npm.cmd" : "npm",
-    ["run", "serve:e2e:web"],
-    { cwd: ROOT, env: process.env },
-  );
+  const npmBin = process.platform === "win32" ? "npm.cmd" : "npm";
+  const web = spawnOwned(npmBin, ["run", "serve:e2e:web"], {
+    cwd: ROOT,
+    env: process.env,
+    shell: process.platform === "win32",
+  });
   children.push(web);
   const webStarted = Date.now();
   let webReady = false;
@@ -141,11 +142,11 @@ async function main() {
   };
 
   let failed = false;
-  const npmBin = process.platform === "win32" ? "npm.cmd" : "npm";
   for (const round of [1, 2]) {
     console.log(`\n--- Lighthouse round ${round} ---`);
     const result = await run(npmBin, ["run", "test:lighthouse", "--workspace", "@mangaflow/web"], {
       env: lighthouseEnv,
+      shell: process.platform === "win32",
     });
     summary.lighthouse.push({ round, exit_code: result.code, output: result.output.trim() });
     if (result.code !== 0) failed = true;
@@ -154,6 +155,7 @@ async function main() {
     console.log(`\n--- Workflow FPS round ${round} ---`);
     const result = await run(npmBin, ["run", "test:workflow-fps", "--workspace", "@mangaflow/web"], {
       env: fpsEnv,
+      shell: process.platform === "win32",
     });
     summary.fps.push({ round, exit_code: result.code, output: result.output.trim() });
     if (result.code !== 0) failed = true;

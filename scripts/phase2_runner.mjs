@@ -32,7 +32,7 @@ export function spawnOwned(command, args, options = {}) {
     cwd: options.cwd,
     env: options.env,
     windowsHide: true,
-    shell: false,
+    shell: options.shell ?? false,
   });
   child.owned = true;
   return child;

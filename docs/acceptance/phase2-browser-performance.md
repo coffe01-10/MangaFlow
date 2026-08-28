@@ -81,40 +81,40 @@ npx playwright test
 
 ## Lighthouse（阈值 performance>=85、accessibility>=90、best-practices>=90）
 
-测试项目 `987822d3-cdc8-4049-84a6-79ec01f22cf6`（已导入原文，无模型解析分页）。命令：`npm run test:lighthouse --workspace @mangaflow/web`，两轮全部 exit 0。未挑选最好一轮。
+返工后数据集：`e2e-lighthouse-workbench`（1 页、1 候选、5 类检查通过）。命令：隔离 runner 内 `npm run test:lighthouse --workspace @mangaflow/web`。阈值未降低。未挑选最好一轮。
 
-### Round 1
-
-| 路由 | performance | accessibility | best-practices |
-| --- | ---: | ---: | ---: |
-| `/` | 97 | 96 | 93 |
-| `/projects/{id}/storyboard` | 95 | 95 | 100 |
-| `/projects/{id}/generate` | 95 | 100 | 100 |
-| `/projects/{id}/workflow` | 93 | 100 | 100 |
-| `/settings` | 93 | 96 | 96 |
-
-### Round 2
+### Round 1（exit 0）
 
 | 路由 | performance | accessibility | best-practices |
 | --- | ---: | ---: | ---: |
 | `/` | 98 | 96 | 93 |
-| `/projects/{id}/storyboard` | 97 | 95 | 100 |
-| `/projects/{id}/generate` | 95 | 100 | 100 |
-| `/projects/{id}/workflow` | 91 | 100 | 100 |
-| `/settings` | 92 | 96 | 96 |
+| `/projects/{id}/storyboard` | 97 | 92 | 100 |
+| `/projects/{id}/generate`（有候选） | 88 | 96 | 100 |
+| `/projects/{id}/workflow` | 94 | 100 | 100 |
+| `/settings` | 93 | 96 | 96 |
 
-本机波动：工作流页 performance 93 → 91，首页 97 → 98。两轮均高于阈值。
+### Round 2（exit 1）
+
+| 路由 | performance | accessibility | best-practices |
+| --- | ---: | ---: | ---: |
+| `/` | 98 | 96 | 93 |
+| `/projects/{id}/storyboard` | 97 | 92 | 100 |
+| `/projects/{id}/generate`（有候选） | **73** | 96 | 100 |
+| `/projects/{id}/workflow` | 94 | 100 | 100 |
+| `/settings` | 93 | 96 | 96 |
+
+`/generate` 第 2 轮 performance=73 低于 85，未丢弃、未改阈值。空态生成页不再作为本门禁的通过依据。原始脱敏摘要：`docs/acceptance/phase2-metrics.json`。
 
 ## 100 节点 FPS（10s，平均>=55，1% low>=45）
 
-命令：`npm run test:workflow-fps --workspace @mangaflow/web`。两轮均渲染 100/100 节点，exit 0。
+命令：隔离 runner 内 `npm run test:workflow-fps --workspace @mangaflow/web`。两轮均渲染 100/100 节点，exit 0。删除使用 `confirm_name`，两次均为 204。
 
-| 轮次 | nodes | seconds | average_fps | one_percent_low_fps |
-| ---: | ---: | ---: | ---: | ---: |
-| 1 | 100 | 10 | 142.17 | 140.85 |
-| 2 | 100 | 10 | 141.00 | 72.46 |
+| 轮次 | nodes | seconds | average_fps | one_percent_low_fps | 删除 |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 100 | 10 | 133.21 | 48.08 | 204 |
+| 2 | 100 | 10 | 140.54 | 71.94 | 204 |
 
-第 2 轮 1% low 明显低于第 1 轮，仍高于 45。两次都记录，没有只保留最好一次。门禁脚本删除临时项目时 API 返回 422（删除需要 `confirm_name`）；数据只存在隔离库，随后已清理。
+第 1 轮 1% low 48.08 仍高于 45。未改阈值。
 
 ## 第1轮返工（PR #15 review）
 
@@ -140,5 +140,4 @@ npx playwright test
 
 - 未跑真实 Vertex / 付费兼容网关
 - 未跑 Redis / PostgreSQL / Docker 集成
-- 生成页 Lighthouse 在“没有可抽卡页面”空态，不是带候选的生产工作台
-- 未把 FPS 门禁的项目删除 422 改成产品修复（超出本任务后端范围）
+- `/generate` 有候选时 Lighthouse performance 第 2 轮 73 < 85；未在本轮做生成页性能重构
