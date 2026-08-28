@@ -19,10 +19,14 @@
 - `-DryRun` 仅做已提供 URL 的语法校验，不检查服务可达性或资源归属。
   缺 URL 明确输出 NOT_CONFIGURED；没有启动、停止或连接服务。
 - 默认运行会清除继承的 live 开关和 pytest 参数，禁用 dotenv，使用临时离线配置。
-- **临时安全措施**：`-RunLive`、`-StartContainers`、`-StopContainers` 当前均非零退出并报告 BLOCKED。
-  直接 pytest 的 live opt-in 也会失败。恢复前必须完成归属校验、清理与业务场景修复。
-- 旧 `docker-compose.acceptance.yml` 尚未修复固定资源名与凭据，不应直接运行。
-  不授权下载镜像、安装系统服务或访问任何外部服务。
+- **Live 门禁（2026-08-28 组长最终更新）**：pytest 层 live opt-in 已恢复为正常开关——
+  未 opt-in 时全部 live 测试以 NOT RUN 明确 skip；显式
+  `pytest tests/integration --run-live-integration --pg-url <隔离URL> --redis-url <隔离URL>`
+  时先做 URL/归属校验，服务不可用即快速响亮失败（脱敏），不以 skip 计通过。
+  `-RunLive`/`-StartContainers`/`-StopContainers` 在 runner 层仍为非零 BLOCKED
+  （owner 作用域容器编排未实现），错误信息已指向上述 direct pytest 路径。
+- 旧 `docker-compose.acceptance.yml` 的固定资源名与凭据仍未修复，不应直接运行。
+  用户已明确本轮不授权安装/下载 PostgreSQL/Redis/Docker/WSL，因此真实服务验收保持 BLOCKED。
 
 ```powershell
 # 离线入口；仅在已有解释器不是本 worktree .venv 时传 -Python
@@ -40,11 +44,57 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-phase2-acceptance.ps1 -Dr
 | PostgreSQL 并发 | 正常并发发布应允许序列化成功；另以确定冲突验证耗尽 409、恢复、持久化 | 断言已修复；尚未真实 PostgreSQL 验收 |
 | 原子性与门禁 | 真实 approve_node 最终 commit 失败与恢复；有效准备数据下的关闭/过期批次 | 覆盖不足；未验收 |
 | Redis 清理 | RQ queue/job/registry/result/execution/worker 等资源与全局集合成员的精准归属清理 | 覆盖不足；未验收 |
-| RQ 进程 | Windows 可用的独立 SpawnWorker；子进程确定性本地适配器；共享持久化证据 | 现有 SimpleWorker 不满足要求 |
-| 队列业务 | 多 worker 槽位释放后继续执行、延迟与重试、取消/失租交错、状态写回竞态 | 覆盖不足；未验收 |
-| 五类版本门禁 | 通过真实业务入口建立并验证对应矩阵 | 未完成 |
-| 编排入口 | 随机凭据/本次资源标签、端口预检、显式禁用 dotenv、只清理本次资源 | Live 入口暂时封闭 |
+| RQ 进程 | **已实现**：仓库级 `app/rq_windows.WindowsSpawnWorker`（Popen 马进程 + 句柄监控，无 setpgrp/wait4/killpg）；验收马进程走 `run_rq_horse` 身份校验 | 代码完成；离线控制流回归通过；真实服务执行 NOT RUN |
+| 队列业务 | **已实现** live 矩阵（独立 Worker 进程）：成功、RQ 计划重试（新马进程 PID 证据）、终态失败、执行中取消、双 Worker 槽位延迟（CONCURRENCY_LIMIT → enqueue_in）、强退后租约过期恢复、五类检查入队 | 代码完成；默认 skip；真实服务执行 NOT RUN |
+| 五类版本门禁 | **已实现**：本地确定性检查适配器（五类 PASS）+ PAGE_INSPECT 经真实队列执行；门禁放行逻辑由现有 e2e/单测覆盖 | 代码完成；真实服务执行 NOT RUN |
+| 编排入口 | 随机凭据/本次资源标签的容器编排未实现；`-RunLive` 保持 BLOCKED，live 用 direct pytest 入口 | 未完成（用户明确不安装环境） |
 | 主分支验收 | 审阅通过后的合并与 master 独立复验 | 未发生 |
+
+## 2026-08-28 组长最终轮：Windows 独立 Worker 与队列矩阵（本节为准）
+
+提交序列：`e9fd52b`（移植 PR15 的 assigned_to_job HANDLE 退出竞争修复 + 回归）、
+`aee3a38`（迁移 env 导入排序）、`d4db025`（WindowsSpawnWorker + 验收 Worker/马进程 +
+五类检查本地适配器 + 离线控制流回归）、`4bfa1c4`（live 矩阵测试 + live 门禁解封）、
+`e5aa43f`（runner BLOCKED 文案指向 direct pytest live 入口）。
+
+### 本轮实现
+
+1. **`apps/api/app/rq_windows.py`（产品代码）**：`WindowsSpawnWorker(Worker)`。
+   rq 2.6.1 的 SpawnWorker 马进程调用 `os.setpgrp`、父进程用 `os.wait4`/`os.killpg`/`os.WTERMSIG`，
+   三者在 Windows 均不存在——这是产品级缺口（`run_worker.py` 一直选用的 SpawnWorker 在 Windows 首个任务即崩）。
+   本实现用 `subprocess.Popen`（CREATE_NO_WINDOW）拉起马进程、轮询句柄监控、`Popen.kill()` 终止；
+   连接凭据经子进程环境变量传递，不出现在命令行。`run_worker.py` 在 win32 改用该类（同步更新
+   `test_pr6_regressions` 断言）。death penalty 依赖 rq 在无 SIGALRM 平台自动选择的 `TimerDeathPenalty`。
+2. **验收马进程**：`AcceptanceWorker._horse_spawn_command` 拉起 `run_rq_horse`
+   （重建 Worker/Job/Execution，校验 Redis 归属、worker 注册、job func/args/ID 归属后才 `perform_job`）。
+   Worker 子进程本身由 OwnedProcessTree（Windows Job Object）监督，马进程继承 Job 归属；
+   强退即全树退出，无孤儿。
+3. **五类检查**：`LocalImageFixture.analyze_multimodal` 输出确定性五类 PASS
+   （SPEAKER/CHARACTER/OUTFIT/PROP/CONTINUITY），使 PAGE_INSPECT 能经真实 RQ 路径用本地适配器执行。
+4. **live 矩阵测试（默认 skip，真实服务下执行）**：独立 Worker 成功路径（马进程 PID ≠ Worker PID 证据）、
+   可重试失败经 RQ 计划重试且两次进入不同马进程、终态失败 FAILED 且零输出、执行中取消零输出、
+   双 Worker + 项目并发 1 触发 `CONCURRENCY_LIMIT` → `enqueue_in` 延迟槽位任务 → 释放后完成、
+   强杀整树后租约过期 → `recover_pending_jobs` 恢复 → 第二个 Worker 以不同 PID 完成、
+   PAGE_GENERATE + PAGE_INSPECT 五类检查经队列完成。
+5. **live 门禁解封**：conftest 的 `live_integration_enabled` 恢复为显式开关
+   （默认 skip NOT RUN；显式 opt-in 无服务时快速响亮失败，0.21s 实测）。
+   harness 断言同步更新为新的开关语义。
+
+### 离线验证（组长独立执行）
+
+- 全量 `pytest`：**315 passed / 23 skipped**（23 = 16 既有 + 7 新 live 测试，skip 原因均为 NOT RUN）/ 23 条既有警告。
+- `tests/test_integration_harness.py`：**64 passed**（含新增 assigned_to_job 竞争回归、
+  WindowsSpawnWorker 马进程命令/凭据不出 argv、意外退出/超时 kill 监控、AcceptanceWorker 驱动身份）。
+- `ruff check apps/api tests`：通过；`git diff b7d89c0..HEAD --check`：干净。
+- 显式 opt-in 无服务路径实测：0.21s 快速失败（Security Violation: URL missing），无连接尝试。
+
+### 仍然 BLOCKED / 未完成
+
+- **真实 PostgreSQL / Redis / RQ 执行：NOT RUN。** 用户已明确本轮不授权安装
+  PostgreSQL/Redis/Docker/WSL。上述 live 矩阵只能在提供隔离服务（127.0.0.1:55432/56379，
+  归属校验通过）后运行；在真实服务上跑通之前，PR #14 不满足合并条件。
+- 容器编排（随机凭据/资源标签/端口预检/只清理本次资源）未实现；`-RunLive` 保持 BLOCKED。
+- 本轮无任何真实服务连接、无供应商调用、无凭据读取；临时数据已清理。
 
 ## 证据边界
 
