@@ -70,7 +70,8 @@ def child_environment(runtime, *, node: str) -> dict[str, str]:
         DATABASE_URL="sqlite:///" + (runtime.path / "offline" / "app.sqlite").as_posix(),
         STORAGE_ROOT=str(runtime.path / "offline" / "storage"),
         UPLOAD_ROOT=str(runtime.path / "offline" / "uploads"),
-        QUEUE_ENABLED="false",
+        # Queue isolation is per-service (serve_e2e_api.py); a controller-wide
+        # QUEUE_ENABLED leaks into `npm run check` pytest and fakes queue faults.
         PYTHONDONTWRITEBYTECODE="1",
         MANGAFLOW_SHA=os.environ.get("MANGAFLOW_SHA", ""),
         NEXT_TELEMETRY_DISABLED="1",
