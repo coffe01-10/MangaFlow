@@ -1,4 +1,4 @@
-﻿param(
+param(
     [switch]$RunLive,
     [switch]$StartContainers,
     [switch]$StopContainers,
@@ -28,12 +28,24 @@ if (-not (Test-Path -LiteralPath $python)) {
     $python = "python"
 }
 
-# 1. DryRun verification branch (pure read-only, ZERO side-effects)
+# 1. DryRun verification branch (validates URLs using Python validator, ZERO side-effects)
 if ($DryRun) {
     Write-Host "`n[DryRun] Validating configuration and URL formats..." -ForegroundColor Yellow
-    Write-Host "  Target PG URL    : $($PgUrl -replace ':[^:@]+@', ':***@')"
-    Write-Host "  Target Redis URL : $($RedisUrl -replace ':[^:@]+@', ':***@')"
-    
+    $valCode = @"
+import sys
+sys.path.insert(0, 'apps/api')
+from tests.integration.conftest import validate_safe_acceptance_pg_url, validate_safe_acceptance_redis_url, mask_url
+pg = validate_safe_acceptance_pg_url(r'$PgUrl')
+red = validate_safe_acceptance_redis_url(r'$RedisUrl')
+print(f'  Target PG URL    : {mask_url(pg)}')
+print(f'  Target Redis URL : {mask_url(red)}')
+"@
+    & $python -c "$valCode"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "DryRun configuration validation failed."
+        exit $LASTEXITCODE
+    }
+
     $dockerFound = (Get-Command docker -ErrorAction SilentlyContinue) -ne $null
     Write-Host "  Docker Available : $dockerFound"
     Write-Host "`nDryRun completed successfully. No containers or tests were executed." -ForegroundColor Green
@@ -100,6 +112,7 @@ try {
         }
     } else {
         Write-Host "  [NOTICE] -RunLive flag omitted. Running offline harness and skipped live tests..." -ForegroundColor DarkYellow
+        $env:MANGAFLOW_ENABLE_LIVE_INTEGRATION = "0"
         & $python -m pytest tests/test_integration_harness.py tests/integration/ -v
         $testExit = $LASTEXITCODE
     }

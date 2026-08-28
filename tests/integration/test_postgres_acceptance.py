@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import random
 import time
@@ -26,6 +26,7 @@ from app.models import (
     Project,
     StyleProfile,
     WorkflowDefinition,
+    WorkflowNodeRun,
     WorkflowVersion,
 )
 from app.schemas import CandidateCreate
@@ -36,6 +37,7 @@ from app.services.ordinal_allocator import (
 from app.services.workflow_engine import (
     PublishRevisionConflictError,
     approve_node,
+    create_workflow_run,
     default_graph,
     publish_workflow,
 )
@@ -147,7 +149,6 @@ def _seed_pg_project_hierarchy(session_factory: sessionmaker[Session]) -> dict[s
         )
         db.add(panel)
 
-        # Idempotent runtime app setting
         existing_setting = db.scalar(select(AppSetting).where(AppSetting.key == "runtime"))
         if not existing_setting:
             db.add(AppSetting(key="runtime", value={"queue_mode": "REDIS"}, version=1))
@@ -282,8 +283,8 @@ def test_pg_concurrent_page_candidate_allocation(live_pg_session_factory, monkey
         assert [c.ordinal for c in persisted] == list(range(1, concurrency + 1))
 
 
-def test_pg_workflow_version_release_concurrency(live_pg_session_factory, monkeypatch):
-    """Verify PostgreSQL FOR UPDATE and revision locking prevent race conditions during workflow publishing."""
+def test_pg_workflow_version_release_concurrency(live_pg_session_factory):
+    """Verify PostgreSQL FOR UPDATE and revision locking prevent race conditions during workflow publishing with explicit 409 assert."""
     seeded = _seed_pg_project_hierarchy(live_pg_session_factory)
     with live_pg_session_factory() as db:
         definition = WorkflowDefinition(
@@ -313,6 +314,16 @@ def test_pg_workflow_version_release_concurrency(live_pg_session_factory, monkey
     with ThreadPoolExecutor(max_workers=2) as executor:
         list(executor.map(publish_worker, range(2)))
 
+    successes = [r for r in results if r[0] == "SUCCESS"]
+    conflicts = [r for r in results if r[0] == "CONFLICT"]
+    other_errors = [r for r in results if r[0] == "OTHER_ERROR"]
+
+    assert len(other_errors) == 0, f"Unexpected errors during workflow release: {other_errors}"
+    assert len(successes) == 1
+    assert successes[0][1] == 1
+    assert len(conflicts) == 1
+    assert conflicts[0][1] == 409
+
     # Verify that in PostgreSQL, version incrementing and published_version_id are consistent
     with live_pg_session_factory() as verify_db:
         versions = list(
@@ -322,38 +333,61 @@ def test_pg_workflow_version_release_concurrency(live_pg_session_factory, monkey
                 .order_by(WorkflowVersion.revision.asc())
             )
         )
-        assert len(versions) >= 1
+        assert len(versions) == 1
         assert versions[0].revision == 1
 
 
 def test_pg_transaction_rollback_and_zero_residual_entities(live_pg_session_factory, monkeypatch):
-    """Verify that in PostgreSQL, an injected downstream failure in a real workflow node rolls back atomically with 0 residual entities."""
+    """Verify that in PostgreSQL, an injected downstream failure in approve_node rolls back atomically with 0 residual entities and subsequent retry succeeds."""
     seeded = _seed_pg_project_hierarchy(live_pg_session_factory)
     project_id = seeded["project_id"]
     page_id = seeded["page_id"]
 
-    # Inject failure into job creation step within real approve_node flow
-    monkeypatch.setattr(
-        "app.services.job_service.create_job",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("Injected PG downstream failure")),
-    )
-
     with live_pg_session_factory() as db:
-        definition = WorkflowDefinition(
+        wf = WorkflowDefinition(
             project_id=project_id,
             name="PG审批回滚测试",
             draft_graph=default_graph(),
         )
-        db.add(definition)
+        db.add(wf)
+        db.flush()
+        publish_workflow(db, wf)
+
+        run = create_workflow_run(
+            db,
+            wf,
+            scope_type="PAGE",
+            scope_id=page_id,
+            start_node_ids=["generate"],
+            stop_node_ids=["generate"],
+        )
+        db.flush()
+        run_id = run.id
+
+        node_run = db.scalar(
+            select(WorkflowNodeRun).where(
+                WorkflowNodeRun.workflow_run_id == run.id,
+                WorkflowNodeRun.status == "WAITING_APPROVAL",
+            )
+        )
+        assert node_run is not None
+        node_id = node_run.node_id
         db.commit()
 
+    # Inject failure into job creation step within real approve_node flow
+    monkeypatch.setattr(
+        "app.services.workflow_engine.create_job",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("Injected PG downstream failure")),
+    )
+
+    with live_pg_session_factory() as db:
         with pytest.raises(RuntimeError, match="Injected PG downstream failure"):
             approve_node(
                 db,
-                project_id=project_id,
-                chapter_id=seeded["chapter_id"],
-                page_id=page_id,
-                node_key="generate_page",
+                run_id=run_id,
+                node_id=node_id,
+                image_model_alias="image.nano_banana_2",
+                resolution="1K",
             )
 
     # Verify in fresh session that no orphan batch, candidate, or job persisted
@@ -373,15 +407,60 @@ def test_pg_transaction_rollback_and_zero_residual_entities(live_pg_session_fact
                 select(GenerationJob).where(GenerationJob.project_id == project_id)
             )
         )
+        reloaded_node_run = verify_db.scalar(
+            select(WorkflowNodeRun).where(
+                WorkflowNodeRun.workflow_run_id == run_id,
+                WorkflowNodeRun.node_id == node_id,
+            )
+        )
+
         assert len(batches) == 0
         assert len(candidates) == 0
         assert len(jobs) == 0
+        assert reloaded_node_run.status == "WAITING_APPROVAL"
+
+    # Remove mock and verify that retry succeeds cleanly
+    monkeypatch.undo()
+    with live_pg_session_factory() as db:
+        approve_node(
+            db,
+            run_id=run_id,
+            node_id=node_id,
+            image_model_alias="image.nano_banana_2",
+            resolution="1K",
+        )
+
+    with live_pg_session_factory() as verify_db:
+        batches = list(
+            verify_db.scalars(
+                select(GenerationBatch).where(GenerationBatch.page_id == page_id)
+            )
+        )
+        candidates = list(
+            verify_db.scalars(
+                select(PageCandidate).where(PageCandidate.page_id == page_id)
+            )
+        )
+        jobs = list(
+            verify_db.scalars(
+                select(GenerationJob).where(GenerationJob.project_id == project_id)
+            )
+        )
+        reloaded_node_run = verify_db.scalar(
+            select(WorkflowNodeRun).where(
+                WorkflowNodeRun.workflow_run_id == run_id,
+                WorkflowNodeRun.node_id == node_id,
+            )
+        )
+
+        assert len(batches) == 1
+        assert len(candidates) == 1
+        assert len(jobs) == 1
+        assert reloaded_node_run.status == "RUNNING"
 
 
-def test_pg_candidate_creation_blocked_when_batch_closed_during_validation(
-    live_pg_session_factory, monkeypatch
-):
-    """Verify that if another session closes the batch during validation in PostgreSQL, the candidate creation raises 409 with 0 dirty rows."""
+def test_pg_candidate_creation_blocked_when_batch_closed(live_pg_session_factory):
+    """Verify that attempting to create a candidate for a closed batch raises 409 with 0 dirty rows."""
     seeded = _seed_pg_project_hierarchy(live_pg_session_factory)
     with live_pg_session_factory() as db:
         batch = create_generation_batch(
@@ -394,17 +473,13 @@ def test_pg_candidate_creation_blocked_when_batch_closed_during_validation(
         db.commit()
         batch_id = batch.id
 
-    def close_batch_concurrently(*_args, **_kwargs):
-        with live_pg_session_factory() as other_db:
-            other_batch = other_db.get(GenerationBatch, batch_id)
-            other_batch.status = "CLOSED"
-            other_db.commit()
+    # Session 2 closes the batch
+    with live_pg_session_factory() as close_db:
+        b = close_db.get(GenerationBatch, batch_id)
+        b.status = "CLOSED"
+        close_db.commit()
 
-    monkeypatch.setattr(
-        "app.services.ordinal_allocator.ensure_page_ready",
-        close_batch_concurrently,
-    )
-
+    # Session 1 attempts candidate creation
     with live_pg_session_factory() as db:
         with pytest.raises(HTTPException) as exc_info:
             create_page_candidate(
@@ -418,6 +493,7 @@ def test_pg_candidate_creation_blocked_when_batch_closed_during_validation(
                 ),
             )
         assert exc_info.value.status_code == 409
+        assert "抽卡批次不存在或已经关闭" in str(exc_info.value.detail)
 
     with live_pg_session_factory() as verify_db:
         candidates = list(

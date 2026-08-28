@@ -7,7 +7,7 @@ from collections.abc import Generator
 from typing import Any
 
 import pytest
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -28,7 +28,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             "MANGAFLOW_ACCEPTANCE_PG_URL",
             "postgresql+psycopg://mangaflow_test:mangaflow_acceptance_pass_55432@127.0.0.1:55432/mangaflow_acceptance",
         ),
-        help="PostgreSQL connection URL for live acceptance testing (must be loopback 127.0.0.1:55432 with mangaflow_acceptance database).",
+        help="PostgreSQL connection URL for live acceptance testing (must be loopback 127.0.0.1:55432 with mangaflow_acceptance database and NO query overrides).",
     )
     parser.addoption(
         "--redis-url",
@@ -37,7 +37,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             "MANGAFLOW_ACCEPTANCE_REDIS_URL",
             "redis://:mangaflow_acceptance_redis_pass_56379@127.0.0.1:56379/15",
         ),
-        help="Redis connection URL for live acceptance testing (must be loopback 127.0.0.1:56379 with non-zero DB index, e.g. /15).",
+        help="Redis connection URL for live acceptance testing (must be loopback 127.0.0.1:56379 with non-zero DB index /15 and NO query overrides).",
     )
 
 
@@ -56,14 +56,14 @@ def mask_url(url: str) -> str:
         else:
             masked_netloc = netloc
         return urllib.parse.urlunparse(
-            (parsed.scheme, masked_netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
+            (parsed.scheme, masked_netloc, parsed.path, "", "", "")
         )
     except Exception:
         return "<masked-url>"
 
 
 def validate_safe_acceptance_pg_url(url: str) -> str:
-    """Validate that the PostgreSQL URL strictly targets an isolated local loopback endpoint on dedicated port 55432 and acceptance database."""
+    """Validate that the PostgreSQL URL strictly targets an isolated local loopback endpoint on dedicated port 55432 and acceptance database without query overrides."""
     parsed = urllib.parse.urlparse(url)
     scheme = (parsed.scheme or "").lower()
     if not (scheme == "postgresql" or scheme.startswith("postgresql+")):
@@ -86,20 +86,17 @@ def validate_safe_acceptance_pg_url(url: str) -> str:
             f"Security Violation: Target PostgreSQL database must start with 'mangaflow_acceptance', got '{dbname}'. Operating on arbitrary databases is prohibited."
         )
 
-    # Check for connection hijacking query parameters
-    query_params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
-    forbidden_params = {"host", "port", "sslhost", "dbname", "user", "password", "service"}
-    intersection = forbidden_params.intersection(query_params.keys())
-    if intersection:
+    # Strictly disallow all query parameters (prevent hostaddr, sslhost, dbname or other connection-hijacking overrides)
+    if parsed.query:
         raise ValueError(
-            f"Security Violation: PostgreSQL URL query parameter contains forbidden override: {intersection}"
+            f"Security Violation: Acceptance PostgreSQL URL must not contain query parameters, got '{parsed.query}'"
         )
 
     return url
 
 
 def validate_safe_acceptance_redis_url(url: str) -> str:
-    """Validate that the Redis URL strictly targets an isolated local loopback endpoint on dedicated port 56379 with an isolated non-zero DB index (1-15)."""
+    """Validate that the Redis URL strictly targets an isolated local loopback endpoint on dedicated port 56379 with an isolated non-zero DB index (1-15) and no query overrides."""
     parsed = urllib.parse.urlparse(url)
     scheme = (parsed.scheme or "").lower()
     if scheme not in {"redis", "rediss"}:
@@ -116,33 +113,28 @@ def validate_safe_acceptance_redis_url(url: str) -> str:
             f"Security Violation: Integration acceptance Redis port must be 56379, got {parsed.port}. Default port 6379 is strictly prohibited."
         )
 
-    # Parse DB index accurately from path and query
-    query_params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
-    forbidden_params = {"host", "port"}
-    if forbidden_params.intersection(query_params.keys()):
+    # Strictly disallow all query parameters (prevent ?db=0, ?host=... or ambiguous multi-db overrides)
+    if parsed.query:
         raise ValueError(
-            f"Security Violation: Redis URL query parameter contains forbidden override: {query_params}"
+            f"Security Violation: Acceptance Redis URL must not contain query parameters, got '{parsed.query}'"
         )
 
-    db_str = None
-    if "db" in query_params:
-        db_str = query_params["db"][-1]
-    else:
-        path_str = (parsed.path or "").strip("/")
-        if path_str:
-            db_str = path_str
+    path_str = (parsed.path or "").strip("/")
+    if not path_str:
+        raise ValueError("Security Violation: Redis URL must explicitly specify a database index in path (e.g. /15).")
 
-    if not db_str:
-        raise ValueError("Security Violation: Redis URL must explicitly specify a non-zero database index (e.g. /15).")
+    # Reject /00, /0, etc.
+    if path_str == "0" or path_str == "00" or set(path_str) == {"0"}:
+        raise ValueError("Security Violation: Redis DB 0 is strictly forbidden to prevent data loss.")
 
     try:
-        db_index = int(db_str)
+        db_index = int(path_str)
     except ValueError:
-        raise ValueError(f"Security Violation: Invalid Redis database index '{db_str}'.")
+        raise ValueError(f"Security Violation: Invalid Redis database index '{path_str}'.")
 
     if db_index <= 0 or db_index > 15:
         raise ValueError(
-            f"Security Violation: Redis acceptance database index must be between 1 and 15, got {db_index}. DB 0 is strictly forbidden to prevent data loss."
+            f"Security Violation: Redis acceptance database index must be between 1 and 15, got {db_index}."
         )
 
     return url
@@ -206,28 +198,23 @@ def live_postgres_admin_engine(
 def live_pg_isolated_schema(
     live_postgres_admin_engine: Engine,
 ) -> Generator[tuple[Engine, str], None, None]:
-    """Create a random isolated schema per test function and clean it up on finish, never touching public schema."""
+    """Create a random isolated schema per test function, run metadata DDL within it, and drop schema on finish."""
     schema_name = f"acceptance_{uuid.uuid4().hex[:8]}"
     with live_postgres_admin_engine.connect() as conn:
         conn.execute(text(f'CREATE SCHEMA "{schema_name}"'))
         conn.commit()
 
-    test_engine = live_postgres_admin_engine.execution_options(
-        schema_translate_map={None: schema_name}
+    test_engine = create_engine(
+        live_postgres_admin_engine.url,
+        execution_options={"schema_translate_map": {None: schema_name}},
+        pool_pre_ping=True,
     )
 
-    # Set search_path for all connections created by this test_engine
-    @event.listens_for(test_engine, "connect")
-    def _set_search_path(dbapi_connection, _connection_record):
-        cursor = dbapi_connection.cursor()
-        cursor.execute(f'SET search_path TO "{schema_name}"')
-        cursor.close()
-
-    Base.metadata.create_all(test_engine)
-
     try:
+        Base.metadata.create_all(test_engine)
         yield test_engine, schema_name
     finally:
+        test_engine.dispose()
         with live_postgres_admin_engine.connect() as conn:
             conn.execute(text(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE'))
             conn.commit()
@@ -275,18 +262,30 @@ def live_redis_connection(
 
 
 @pytest.fixture
-def live_redis_isolated_namespace(
+def live_redis_resource_tracker(
     live_redis_connection: Any,
-) -> Generator[str, None, None]:
-    """Provide a dedicated key namespace prefix and clean up only matching keys on teardown without flushdb."""
+) -> Generator[dict[str, Any], None, None]:
+    """Track created queues and jobs specifically, cleaning up all corresponding RQ keys on teardown without flushdb."""
     prefix = f"mangaflow:acceptance:{uuid.uuid4().hex[:8]}:"
+    tracker = {
+        "prefix": prefix,
+        "queues": set(),
+        "jobs": set(),
+    }
     try:
-        yield prefix
+        yield tracker
     finally:
         try:
-            # Scan and delete only keys belonging to this namespace
-            keys = list(live_redis_connection.scan_iter(match=f"{prefix}*", count=100))
-            if keys:
-                live_redis_connection.delete(*keys)
+            # 1. Clean up tracked queues
+            for q_name in tracker["queues"]:
+                live_redis_connection.delete(f"rq:queue:{q_name}")
+                live_redis_connection.srem("rq:queues", q_name)
+            # 2. Clean up tracked jobs
+            for j_id in tracker["jobs"]:
+                live_redis_connection.delete(f"rq:job:{j_id}")
+            # 3. Clean up any application keys matching prefix
+            app_keys = list(live_redis_connection.scan_iter(match=f"{prefix}*", count=100))
+            if app_keys:
+                live_redis_connection.delete(*app_keys)
         except Exception:
             pass
