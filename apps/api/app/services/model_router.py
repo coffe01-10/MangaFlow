@@ -71,7 +71,7 @@ def resolve_model(
     project_id: str | None = None,
     task_kind: str | None = None,
 ) -> ResolvedModel:
-    ensure_provider_presets(db, settings)
+    ensure_provider_presets(db, settings, auto_commit=False)
     if operation.startswith("image_") and (
         not explicit_reference or explicit_reference.casefold() == "auto"
     ):

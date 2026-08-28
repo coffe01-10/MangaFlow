@@ -50,6 +50,7 @@ def create_job(
     max_attempts: int = 3,
     idempotency_key: str | None = None,
     dependency_ids: list[str] | None = None,
+    auto_commit: bool = True,
 ) -> GenerationJob:
     if idempotency_key:
         existing = db.scalar(
@@ -88,8 +89,10 @@ def create_job(
         db.add(JobDependency(job_id=job.id, depends_on_job_id=dependency_id))
     for asset_id in dict.fromkeys(reference_asset_ids or []):
         db.add(JobAssetReference(job_id=job.id, asset_id=asset_id))
-    db.commit()
-    db.refresh(job)
+    db.flush()
+    if auto_commit:
+        db.commit()
+        db.refresh(job)
     return job
 
 

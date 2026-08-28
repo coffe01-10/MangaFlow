@@ -19,7 +19,7 @@ router = APIRouter()
 @router.get("", response_model=list[ModelCapabilityRead])
 def list_models(db: Session = Depends(get_db)) -> list[dict]:
     settings = get_settings()
-    ensure_provider_presets(db, settings)
+    ensure_provider_presets(db, settings, auto_commit=True)
     usable_key_connections = connection_ids_with_usable_keys(db)
     credentials_writable = settings.provider_credentials_writable
     rows = (

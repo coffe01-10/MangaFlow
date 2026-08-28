@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import Project, WorkflowDefinition, WorkflowRun, WorkflowVersion, utcnow
+from app.services.ordinal_allocator import OrdinalConflictError
 from app.services.workflow_engine import (
     PublishRevisionConflictError,
     approve_node,
@@ -276,6 +277,8 @@ def start_run(
             start_node_ids=payload.start_node_ids,
             stop_node_ids=payload.stop_node_ids,
         )
+    except OrdinalConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except ValueError as error:
         raise _value_error(error) from error
 
@@ -299,6 +302,8 @@ def stop_run(run_id: str, db: Session = Depends(get_db)) -> WorkflowRun:
 def rerun(run_id: str, db: Session = Depends(get_db)) -> WorkflowRun:
     try:
         return retry_run(db, _run(db, run_id))
+    except OrdinalConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except ValueError as error:
         raise _value_error(error) from error
 
@@ -322,5 +327,7 @@ def approve(
             payload.image_model_alias,
             payload.resolution,
         )
+    except OrdinalConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except ValueError as error:
         raise _value_error(error) from error

@@ -49,7 +49,7 @@ async def lifespan(application: FastAPI):
         # points at a developer database. Do not read or recover that database.
         if not application.dependency_overrides:
             apply_runtime_overrides(db, settings)
-            ensure_provider_presets(db, settings)
+            ensure_provider_presets(db, settings, auto_commit=True)
             recover_pending_jobs(db)
     yield
 

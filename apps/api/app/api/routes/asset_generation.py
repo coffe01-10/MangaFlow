@@ -5,7 +5,6 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.api.helpers import asset_candidate_read, character_references
-from app.config import get_settings
 from app.database import get_db
 from app.models import (
     Asset,
@@ -45,7 +44,13 @@ from app.schemas import (
     StyleTestApproval,
 )
 from app.services.job_service import create_job, enqueue_job
-from app.services.model_router import model_supports_resolution, resolve_model
+from app.services.ordinal_allocator import (
+    BatchOrdinalConflictError,
+    CandidateOrdinalConflictError,
+    commit_ordinal_transaction,
+    create_asset_candidate,
+    create_generation_batch,
+)
 
 router = APIRouter()
 
@@ -103,23 +108,6 @@ def _has_active_reference_assets(
         )
         or 0
     ) > 0
-
-
-def _generation_reference_ids(db: Session, batch: GenerationBatch) -> list[str]:
-    if batch.target_type == "CHARACTER":
-        return [item.asset_id for item in character_references(db, batch.target_id)]
-    if batch.target_type == "OUTFIT":
-        outfit = db.get(Outfit, batch.target_id)
-        if not outfit:
-            return []
-        character_ids = [
-            item.asset_id for item in character_references(db, outfit.character_id)
-        ]
-        return list(dict.fromkeys([*character_ids, *outfit.reference_asset_ids]))
-    if batch.target_type == "STYLE":
-        style = db.get(StyleProfile, batch.target_id)
-        return list(style.profile.get("reference_asset_ids", [])) if style else []
-    return []
 
 
 @router.get("/projects/{project_id}/outfits", response_model=list[OutfitRead])
@@ -637,26 +625,20 @@ def start_asset_batch(
         raise HTTPException(status_code=409, detail="请先给风格档案绑定至少一张漫画参考图")
     if payload.target_type == "STYLE" and not target.profile.get("palette_confirmed"):
         raise HTTPException(status_code=409, detail="请先确认彩色色板，再生成风格测试图")
-    ordinal = (
-        db.scalar(
-            select(func.max(GenerationBatch.ordinal)).where(
-                GenerationBatch.project_id == project_id
-            )
+    try:
+        batch = create_generation_batch(
+            db,
+            project_id=project_id,
+            generation_kind=payload.generation_kind,
+            target_type=payload.target_type,
+            target_id=payload.target_id,
         )
-        or 0
-    ) + 1
-    batch = GenerationBatch(
-        project_id=project_id,
-        ordinal=ordinal,
-        generation_kind=payload.generation_kind,
-        target_type=payload.target_type,
-        target_id=payload.target_id,
-        status="OPEN",
-    )
-    db.add(batch)
-    db.commit()
-    db.refresh(batch)
-    return batch
+        commit_ordinal_transaction(db, BatchOrdinalConflictError)
+        db.refresh(batch)
+        return batch
+    except BatchOrdinalConflictError as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.get("/asset-generation-batches", response_model=list[GenerationBatchRead])
@@ -697,69 +679,14 @@ def generate_asset_candidate(
             status_code=422,
             detail="参考资产必须显式选择图片模型，以保持项目画风一致",
         )
-    batch = db.get(GenerationBatch, batch_id)
-    if not batch or batch.status != "OPEN" or not batch.target_type or not batch.target_id:
-        raise HTTPException(status_code=409, detail="资产生成批次不存在或已关闭")
-    reference_asset_ids = _generation_reference_ids(db, batch)
-    resolved_model = resolve_model(
-        db,
-        get_settings(),
-        operation="image_edit" if reference_asset_ids else "image_generate",
-        explicit_reference=payload.model_alias,
-        project_id=batch.project_id,
-        task_kind="ASSET_GENERATE",
-    )
-    if not model_supports_resolution(resolved_model.model, payload.resolution.value):
-        raise HTTPException(status_code=422, detail="所选模型不支持该输出清晰度")
-    allowed_variants = {
-        "CHARACTER": {"FRONT", "SIDE", "BACK", "EXPRESSION", "SHEET"},
-        "OUTFIT": {"OUTFIT", "OUTFIT_SHEET"},
-        "STYLE": {"STYLE_TEST"},
-    }
-    if payload.variant not in allowed_variants[batch.target_type]:
-        raise HTTPException(status_code=422, detail="资产生成角度与目标档案不匹配")
-    ordinal = (
-        db.scalar(
-            select(func.max(AssetCandidate.ordinal)).where(AssetCandidate.batch_id == batch.id)
+    try:
+        candidate, job = create_asset_candidate(
+            db,
+            batch_id=batch_id,
+            payload=payload,
         )
-        or 0
-    ) + 1
-    candidate = AssetCandidate(
-        batch_id=batch.id,
-        ordinal=ordinal,
-        model_alias=payload.model_alias,
-        catalog_model_id=resolved_model.model.id,
-        resolution=payload.resolution,
-        variant=payload.variant,
-        instruction=payload.instruction,
-        status="QUEUED",
-    )
-    db.add(candidate)
-    project = db.get(Project, batch.project_id)
-    project.last_image_model_alias = payload.model_alias
-    project.image_model_alias = payload.model_alias
-    project.last_image_model_id = resolved_model.model.id
-    project.version += 1
-    db.flush()
-    job = create_job(
-        db,
-        project_id=batch.project_id,
-        target_type="ASSET_CANDIDATE",
-        target_id=candidate.id,
-        job_type="ASSET_GENERATE",
-        model_alias=payload.model_alias,
-        catalog_model_id=resolved_model.model.id,
-        request_parameters={
-            "variant": payload.variant,
-            "instruction": payload.instruction,
-            "resolution": payload.resolution.value,
-        },
-        reference_asset_ids=reference_asset_ids,
-        idempotency_key=f"asset-candidate:{candidate.id}",
-    )
-    candidate.job_id = job.id
-    db.commit()
-    db.refresh(candidate)
+    except CandidateOrdinalConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     job = enqueue_job(db, job)
     return CandidateQueuedRead(
         job_id=job.id,
@@ -784,25 +711,16 @@ def generate_complete_character_sheet(
     has_reference = bool(character_references(db, character_id))
     if payload.generation_mode == "REFERENCE" and not has_reference:
         raise HTTPException(status_code=409, detail="请先给角色绑定至少一张人物参考图")
-    ordinal = (
-        db.scalar(
-            select(func.max(GenerationBatch.ordinal)).where(
-                GenerationBatch.project_id == character.project_id
-            )
+    try:
+        batch = create_generation_batch(
+            db,
+            project_id=character.project_id,
+            generation_kind="CHARACTER",
+            target_type="CHARACTER",
+            target_id=character.id,
         )
-        or 0
-    ) + 1
-    batch = GenerationBatch(
-        project_id=character.project_id,
-        ordinal=ordinal,
-        generation_kind="CHARACTER",
-        target_type="CHARACTER",
-        target_id=character.id,
-        status="OPEN",
-    )
-    db.add(batch)
-    db.commit()
-    db.refresh(batch)
+    except BatchOrdinalConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     appearance = (
         payload.appearance_description.strip()
         or character.canonical_description

@@ -74,6 +74,13 @@ from app.services.editor import (
 )
 from app.services.job_service import cancel_job, create_job, enqueue_job, reset_for_retry
 from app.services.model_router import model_supports_resolution, resolve_model
+from app.services.ordinal_allocator import (
+    BatchOrdinalConflictError,
+    CandidateOrdinalConflictError,
+    commit_ordinal_transaction,
+    create_generation_batch,
+    create_page_candidate,
+)
 from app.services.page_completion import (
     build_chapter_production_readiness,
     build_page_production_readiness,
@@ -191,34 +198,21 @@ def _new_batch(
     generation_kind: str = "PAGE",
 ) -> GenerationBatch:
     project = _project_for_page(db, page)
-    db.execute(
-        update(GenerationBatch)
-        .where(
-            GenerationBatch.page_id == page.id,
-            GenerationBatch.status == "OPEN",
+    try:
+        batch = create_generation_batch(
+            db,
+            project_id=project.id,
+            chapter_id=page.chapter_id,
+            page_id=page.id,
+            generation_kind=generation_kind,
+            close_open_page_batches=True,
         )
-        .values(status="CLOSED", closed_at=utcnow())
-    )
-    ordinal = (
-        db.scalar(
-            select(func.max(GenerationBatch.ordinal)).where(
-                GenerationBatch.project_id == project.id
-            )
-        )
-        or 0
-    ) + 1
-    batch = GenerationBatch(
-        project_id=project.id,
-        chapter_id=page.chapter_id,
-        page_id=page.id,
-        ordinal=ordinal,
-        generation_kind=generation_kind,
-        status="OPEN",
-    )
-    db.add(batch)
-    db.commit()
-    db.refresh(batch)
-    return batch
+        commit_ordinal_transaction(db, BatchOrdinalConflictError)
+        db.refresh(batch)
+        return batch
+    except BatchOrdinalConflictError as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.get("/chapters/{chapter_id}/pages", response_model=list[PageRead])
@@ -614,137 +608,21 @@ def create_candidate(
     payload: CandidateCreate,
     db: Session = Depends(get_db),
 ) -> CandidateQueuedRead:
-    batch = db.get(GenerationBatch, batch_id)
-    if not batch or batch.status != "OPEN" or not batch.page_id:
-        raise HTTPException(status_code=409, detail="抽卡批次不存在或已经关闭")
-    page = _page(db, batch.page_id)
-    if payload.storyboard_version != page.storyboard_version:
+    if payload.model_alias.lower() == "auto":
         raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "STALE_STORYBOARD_VERSION",
-                "message": "分镜已更新，请刷新页面后重新确认参考图",
-                "expected": payload.storyboard_version,
-                "current": page.storyboard_version,
-            },
+            status_code=422,
+            detail="生图模型必须显式选择，不能使用 auto",
         )
-    ensure_page_ready(db, page, get_settings())
-    project = _project_for_page(db, page)
-    resolved_model = resolve_model(
-        db,
-        get_settings(),
-        operation="image_edit",
-        explicit_reference=payload.model_alias,
-        project_id=project.id,
-        task_kind="PAGE_GENERATE",
-    )
-    if not model_supports_resolution(resolved_model.model, payload.resolution.value):
-        raise HTTPException(status_code=422, detail="所选模型不支持该输出清晰度")
-    panels = list(db.scalars(select(Panel).where(Panel.page_id == page.id)))
-    visible_character_ids = list(
-        dict.fromkeys(character_id for panel in panels for character_id in panel.characters)
-    )
-    normalized_selections: dict[str, dict[str, str | None]] = {}
-    for character_id in visible_character_ids:
-        selection = payload.reference_selections.get(character_id, {})
-        character_asset_id = selection.get("character_asset_id")
-        valid_character_reference = (
-            db.scalar(
-                select(CharacterReference).where(
-                    CharacterReference.character_id == character_id,
-                    CharacterReference.asset_id == character_asset_id,
-                )
-            )
-            if character_asset_id
-            else None
+    try:
+        candidate, job = create_page_candidate(
+            db,
+            batch_id=batch_id,
+            payload=payload,
         )
-        if not valid_character_reference:
-            character = db.get(Character, character_id)
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "请为画面人物 "
-                    f"{character.primary_name if character else character_id} "
-                    "选择一张人物参考图"
-                ),
-            )
-        assigned_outfits = {
-            panel.outfits.get(character_id)
-            for panel in panels
-            if panel.outfits.get(character_id)
-        }
-        if len(assigned_outfits) > 1:
-            raise HTTPException(status_code=409, detail="同一页同一角色存在多套服装，请先拆页")
-        assigned_outfit_id = next(iter(assigned_outfits), None)
-        outfit_id = selection.get("outfit_id") or assigned_outfit_id
-        outfit_asset_id = selection.get("outfit_asset_id")
-        if assigned_outfit_id and outfit_id != assigned_outfit_id:
-            raise HTTPException(status_code=409, detail="参考确认中的服装与分镜指定服装不一致")
-        if outfit_id:
-            outfit = db.get(Outfit, outfit_id)
-            if not outfit or outfit.character_id != character_id or outfit.project_id != project.id:
-                raise HTTPException(status_code=409, detail="所选服装不属于当前人物")
-            if not outfit.reference_asset_ids:
-                raise HTTPException(status_code=409, detail="分镜指定服装还没有绑定参考图")
-            if outfit_asset_id not in outfit.reference_asset_ids:
-                raise HTTPException(status_code=409, detail="请为分镜服装选择一张已绑定参考图")
-        normalized_selections[character_id] = {
-            "character_asset_id": character_asset_id,
-            "outfit_id": outfit_id,
-            "outfit_asset_id": outfit_asset_id,
-        }
-    ordinal = (
-        db.scalar(select(func.max(PageCandidate.ordinal)).where(PageCandidate.batch_id == batch.id))
-        or 0
-    ) + 1
-    candidate = PageCandidate(
-        batch_id=batch.id,
-        page_id=page.id,
-        ordinal=ordinal,
-        model_alias=payload.model_alias,
-        catalog_model_id=resolved_model.model.id,
-        resolution=payload.resolution,
-        status="QUEUED",
-        based_on_storyboard_version=page.storyboard_version,
-        prompt_snapshot={
-            "reference_selections": normalized_selections,
-            "storyboard_version": page.storyboard_version,
-        },
-    )
-    db.add(candidate)
-    project.last_image_model_alias = payload.model_alias
-    project.image_model_alias = payload.model_alias
-    project.last_image_model_id = resolved_model.model.id
-    project.version += 1
-    db.flush()
-    job = create_job(
-        db,
-        project_id=project.id,
-        target_type="PAGE_CANDIDATE",
-        target_id=candidate.id,
-        job_type="PAGE_GENERATE",
-        model_alias=payload.model_alias,
-        catalog_model_id=resolved_model.model.id,
-        request_parameters={
-            "resolution": payload.resolution.value,
-            "storyboard_version": page.storyboard_version,
-            "reference_selections": normalized_selections,
-        },
-        reference_asset_ids=[
-            asset_id
-            for selection in normalized_selections.values()
-            for asset_id in (
-                selection.get("character_asset_id"),
-                selection.get("outfit_asset_id"),
-            )
-            if asset_id
-        ],
-        idempotency_key=f"candidate:{candidate.id}",
-    )
-    candidate.job_id = job.id
-    db.commit()
-    db.refresh(candidate)
+    except CandidateOrdinalConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     job = enqueue_job(db, job)
+    page = db.get(MangaPage, candidate.page_id)
     return CandidateQueuedRead(
         job_id=job.id,
         job_status=job.status,
