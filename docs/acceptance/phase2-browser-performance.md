@@ -2,7 +2,62 @@
 
 成员交付：Grok Build；当前由组长接管。分支：`codex/phase2-browser-performance-acceptance`。基线：`b7d89c0`。本文件保留成员历史报告；组长独立结果以最新接管章节为准。历史报告不代表当前代码已通过验收。
 
-## 组长接管后的安全入口修复（2026-08-28，本节优先）
+## 组长最终验收（2026-08-28，本节为准）
+
+状态：**浏览器回归与 Lighthouse/FPS 验收在最终代码 `ee73240` 上完成，两轮全过、无跳过、无降阈值。** PR 合并仍等待审阅；真实 PostgreSQL/Redis/RQ 不在本 PR 范围。
+
+### 本轮修复（组长接管后）
+
+1. `aa7ebe0` — **生成页 CLS 0.477 修复**。诊断方法：`lighthouse-gate.mjs` 新增 layout-shifts 审计导出（仅诊断，不改阈值），归因显示全部 CLS 来自单一元素 `section.generation-reference-check.production-readiness`：其加载态只有一行文字，workbench 查询返回后渲染阻塞列表加默认展开的诊断网格（384px 宽度下高约 1016px），把整个画布向下推。修复：`project-workspace.tsx` 在 workbench/批次/模型数据就绪前显示 `.generate-skeleton` 占位，数据就绪后一次性插入整个画布；插入点下方只有固定定位元素，因此不再产生位移。数据集、阈值、空态均未改动。
+2. `956e4d0` — 控制器子环境移除 `QUEUE_ENABLED=false`（队列隔离由 `serve_e2e_api.py` 按服务设置）。该变量曾泄漏进 `npm run check` 的 pytest，使 14 个队列相关测试误报 `QUEUE_DISABLED`。第一次全量运行（`f904c891` 报告）暴露并保留此失败。
+3. `5a7e96c` — `phase2_runner` 共享逻辑抽为 `scripts/phase2_runner_lib.cjs`。Playwright 以 CJS 转译加载 `playwright.config.ts`/`global-setup.ts`，直接 import ESM 的 `.mjs` 会在配置加载时崩溃（`import.meta` 不可用），第二次全量运行暴露并保留此失败。`.mjs` 保留为再导出，`run_phase2_performance.mjs` 与 Node helper 测试不受影响。
+4. `ee73240` — lib.cjs 内 `fileURLToPath(__filename)` 误用修正为 `__dirname`（CJS 下 `__filename` 不是 file URL）。由 `test_supervised_node_verifies_membership_and_child_api_configuration` 捕获。
+5. `52ac107` — `tests/test_e2e_isolation.py` 显式 `from builtins import ExceptionGroup`：根目录 Ruff 以默认 target 检查 `tests/`（pyproject 在 `apps/api` 下），3.11+ 内建名报 F821。
+
+### 最终门禁（代码 SHA `ee732403f54733e8d636f7a03c4c59772ac8d64f`）
+
+`npm run check:full`（外层控制器模式 `full`，报告 `output/playwright/owned-7fa0cbd9cfd74809ac2bcb1fd2a432ab/summary.json`，exit 0）：
+
+| 门禁 | 结果 |
+| --- | --- |
+| ESLint | 通过 |
+| Ruff | 通过 |
+| Pytest | **279 passed**（19 条既有警告，无 skip 计通过） |
+| Vitest | **27 passed** |
+| Next.js production build | 通过 |
+| Playwright / Axe | **8 passed**（含 Axe color-contrast 用例） |
+
+### 最终 Lighthouse / FPS（`npm run test:phase2-performance`，run_id `3d44d9df53894a9d94fc1ad623c7b417`，外层报告 exit 0、`runtime_removed=true`）
+
+数据集：`e2e-lighthouse-workbench`（1 页、1 候选、5 类检查通过），阈值 performance>=85 / accessibility>=90 / best-practices>=90，FPS 100 节点 10s 平均>=55、1% low>=45。
+
+Lighthouse（performance / accessibility / best-practices）：
+
+| 轮次 | `/` | storyboard | **generate（有候选）** | workflow | settings | exit |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 98/96/93 | 96/92/100 | **94**/96/100，cls=0.000，lcp=3060ms | 91/100/100 | 93/96/96 | 0 |
+| 2 | 98/96/93 | 96/92/100 | **94**/96/100，cls=0.000，lcp=3064ms | 92/100/100 | 92/96/96 | 0 |
+
+100 节点 FPS：
+
+| 轮次 | average | 1% low | 删除 |
+| ---: | ---: | ---: | ---: |
+| 1 | 142.41 | 140.85 | 204 |
+| 2 | 142.65 | 140.85 | 204 |
+
+### 保留的失败与诊断轮（未丢弃）
+
+- 成员历史失败：`53f3444` round 2 与 `8584ff5` 两轮 `/generate` performance=73、CLS=0.477（`docs/acceptance/phase2-lh-generate-audit.json`）。
+- 组长诊断轮 `009d7aa261a346608d3af7acc4e6c3cb`（修复前，`4c06cb4`）：`/generate` 58/72、CLS=0.477；layout-shifts 归因如上。
+- 修复后诊断轮 `8a811c5a0348455c9623d578303f7a1e`（`aa7ebe0` 工作树）：`/generate` 94/93、CLS=0.000。
+
+### 遗留观察
+
+- `/settings` 仍有 CLS 0.146，performance 92–93 仍高于 85 门槛；如实记录，未隐藏，未做进一步改动。
+- `/generate` LCP 仍约 3.0s（客户端查询链 chapters→pages→workbench→batches→candidates 串联）；CLS 修复后分数已达 94，按审阅要求未做大模块重构。
+- 历史上新控制器已在 `tests/test_e2e_isolation.py`（29 passed）与 Node helper（9 passed）复核；本轮四项配套修复后两组测试再次全部通过。
+
+## 组长接管后的安全入口修复（2026-08-28）
 
 状态：**中间修复，PR 未通过验收，禁止以本节定向结果替代浏览器/性能通过。**
 
@@ -49,6 +104,7 @@ Lighthouse / FPS 数字是成员历史报告，不能用于本节修改后的代
 
 ### 尚未验收
 
+（已在上方"组长最终验收"完成：`ee73240` 上 check:full 与两轮 Lighthouse/FPS 均通过；本节保留为历史记录。）
 新入口上的 `check:full`、Playwright、两轮 Lighthouse/FPS 尚未运行。
 有候选生成页的历史两轮 Lighthouse 仍为 **73 / 73，CLS=0.477**，没有降阈值、
 删数据或挑选新分数。下一步先复核最终控制器的完整运行，再定位实际布局偏移元素修复，
@@ -214,4 +270,4 @@ Windows 清理：不再把 `cleaned=True` 写在 `rmtree(ignore_errors=True)` �
 
 - 未跑真实 Vertex / 付费兼容网关
 - 未跑 Redis / PostgreSQL / Docker 集成
-- `/generate` 有候选时 Lighthouse performance 两轮均为 73 < 85，主因 CLS 0.477；最小布局预留未消除该位移。未降低阈值。最后一轮返工后仍阻塞，应交组长接手。
+- （已解决）`/generate` 有候选时 Lighthouse performance 曾两轮 73 < 85，主因 CLS 0.477；已在组长最终验收章节修复并通过。`/settings` 的 CLS 0.146 仍作为观察项记录。

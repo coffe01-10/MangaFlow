@@ -2,35 +2,25 @@
   "route": "/projects/{id}/generate",
   "dataset": "e2e-lighthouse-workbench, 1 page, 1 candidate, 5 inspections",
   "thresholds": { "performance": 85, "accessibility": 90, "best-practices": 90 },
-  "preserved_failure_53f3444": {
-    "round": 2,
-    "performance": 73
+  "final_leader_result": {
+    "sha": "ee732403f54733e8d636f7a03c4c59772ac8d64f",
+    "run_id": "3d44d9df53894a9d94fc1ad623c7b417",
+    "rounds": [
+      { "round": 1, "performance": 94, "accessibility": 96, "best-practices": 100, "fcp_ms": 914, "lcp_ms": 3060, "tbt_ms": 88, "cls": 0.0 },
+      { "round": 2, "performance": 94, "accessibility": 96, "best-practices": 100, "fcp_ms": 915, "lcp_ms": 3064, "tbt_ms": 91, "cls": 0.0 }
+    ]
   },
-  "latest_two_rounds": [
-    {
-      "round": 1,
-      "performance": 73,
-      "accessibility": 96,
-      "best-practices": 100,
-      "fcp_ms": 913,
-      "lcp_ms": 3053,
-      "tbt_ms": 84,
-      "cls": 0.477
-    },
-    {
-      "round": 2,
-      "performance": 73,
-      "accessibility": 96,
-      "best-practices": 100,
-      "fcp_ms": 915,
-      "lcp_ms": 3065,
-      "tbt_ms": 113,
-      "cls": 0.477
-    }
+  "root_cause_and_fix": {
+    "cause": "Layout-shifts audit (diagnostic export added to apps/web/scripts/lighthouse-gate.mjs) attributed the full CLS 0.477 to a single element: section.generation-reference-check.production-readiness. Its loading state was one short line; when the workbench query landed it rendered blockers plus a default-open diagnostics grid (~1016px tall at 384px width), pushing the whole canvas down.",
+    "fix": "Commit aa7ebe0: apps/web/components/project-workspace.tsx gates the generate workbench on workbench/batches/models data being loaded and inserts the entire canvas at once behind a .generate-skeleton placeholder; elements below the insertion point are fixed-position only, so the insert no longer shifts existing content. Thresholds, dataset and empty states were not changed."
+  },
+  "preserved_failures": [
+    { "sha": "8584ff5 (docs commit 0c59f05)", "rounds": [73, 73], "cls": 0.477, "lcp_ms": [3053, 3065], "tbt_ms": [84, 113] },
+    { "sha": "53f3444", "round": 2, "performance": 73 }
   ],
-  "primary_cause": "Cumulative Layout Shift 0.477 (not TBT). LCP stays ~3.0s after client workbench/candidate image appear. TBT 84-113ms is below the usual long-task penalty.",
   "notes": [
     "Local filesystem paths and project ids stripped.",
-    "Failed rounds were not discarded. Thresholds were not lowered."
+    "Failed rounds were not discarded. Thresholds were not lowered.",
+    "LCP remains ~3.0s (sequential client query chain: chapters -> pages -> workbench -> batches -> candidates); the CLS fix alone lifted the score to 94, and no further refactor was made."
   ]
 }
