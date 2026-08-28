@@ -136,7 +136,7 @@ Windows 清理：不再把 `cleaned=True` 写在 `rmtree(ignore_errors=True)` �
 
 生成页 Lighthouse：审计明细见 `docs/acceptance/phase2-lh-generate-audit.json`。有候选的 `/generate` 两轮均为 performance=73，主因 **CLS=0.477**，LCP≈3.0s，TBT 仅 84–113ms。保留 `53f3444` 的失败轮与本轮失败轮。阈值未降，未改空态，未挑选最好结果。最小修复（预生成缩略图、候选图 `fill`+预留 3:4、动态拆出剧本/分镜面板、`lucide-react` package import 优化、生成区 min-height）未能把 CLS 从 0.477 拉下来。这是正式第 2 轮、用户上限内最后一轮；生成页 85 分门槛仍阻塞，应交组长接手。
 
-本轮最终树 `npm run check:full`：ESLint/Ruff 通过；Pytest **257**；Vitest 27；Playwright 8 passed；Next production build 通过。
+本轮最终树 SHA `8584ff5` 上 `npm run check:full`：ESLint/Ruff 通过；Pytest **257**；Vitest 27；Playwright 8 passed；Next production build 通过。指标文件随后只补了该 SHA 字段。
 
 ### 本轮 Lighthouse（有候选，阈值未降）
 
