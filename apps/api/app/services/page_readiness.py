@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import UTC, datetime
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import Settings
@@ -19,7 +18,6 @@ from app.models import (
     Panel,
     Project,
     ProviderConnection,
-    ProviderKey,
     ProviderProfile,
     StyleProfile,
 )
@@ -30,6 +28,10 @@ from app.schemas import (
     PageReadinessRead,
     PageReadinessStyle,
     PageReadinessWorker,
+)
+from app.services.model_availability import (
+    catalog_model_is_available,
+    connection_ids_with_usable_keys,
 )
 from app.services.model_router import model_operation_verified
 from app.services.provider_presets import ensure_provider_presets
@@ -63,17 +65,8 @@ def _block(
 
 
 def _catalog_model_availability(db: Session, settings: Settings) -> dict[str, int]:
-    usable_key_connections = set(
-        db.scalars(
-            select(ProviderKey.connection_id).where(
-                ProviderKey.enabled.is_(True),
-                or_(
-                    ProviderKey.cooldown_until.is_(None),
-                    ProviderKey.cooldown_until <= datetime.now(UTC),
-                ),
-            )
-        )
-    )
+    usable_key_connections = connection_ids_with_usable_keys(db)
+    credentials_writable = settings.provider_credentials_writable
     rows = (
         db.query(AIModel, ProviderConnection, ProviderProfile)
         .join(ProviderConnection, AIModel.connection_id == ProviderConnection.id)
@@ -82,15 +75,12 @@ def _catalog_model_availability(db: Session, settings: Settings) -> dict[str, in
     )
     counts = {"text": 0, "image": 0, "auto_text": 0, "auto_image": 0}
     for model, connection, profile in rows:
-        has_credentials = connection.protocol == "VERTEX_NATIVE" or (
-            settings.provider_credentials_writable
-            and connection.id in usable_key_connections
-        )
-        available = (
-            model.enabled
-            and connection.enabled
-            and profile.enabled
-            and has_credentials
+        available = catalog_model_is_available(
+            model,
+            connection,
+            profile,
+            credentials_writable=credentials_writable,
+            has_usable_key=connection.id in usable_key_connections,
         )
         if not available:
             continue
