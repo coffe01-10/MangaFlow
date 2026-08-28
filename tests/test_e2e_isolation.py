@@ -5,6 +5,8 @@ import shutil
 import subprocess
 import sys
 import time
+# Ruff lints this file outside apps/api's py312 target; import the 3.11+ builtin explicitly.
+from builtins import ExceptionGroup
 from pathlib import Path
 
 import pytest
