@@ -44,6 +44,7 @@ def write_worker_config(
     redis_url: str | None = None,
     redis_token: str | None = None,
     queue_name: str | None = None,
+    lease_seconds: int | None = None,
 ) -> Path:
     _validate_directory(tree.directory, tree.token)
     record = {
@@ -61,6 +62,8 @@ def write_worker_config(
             redis_token=redis_token,
             queue_name=queue_name,
         )
+    if lease_seconds is not None:
+        record["lease_seconds"] = lease_seconds
     path = tree.payload / "worker.json"
     _validate_config(tree.directory, record)
     with path.open("x", encoding="utf-8") as file:
@@ -93,6 +96,9 @@ def _validate_config(directory: Path, record: dict) -> None:
             raise ValueError("Invalid Redis ownership token")
         if not re.fullmatch(rf"acceptance_{token}_[a-zA-Z0-9_-]+", record["queue_name"] or ""):
             raise ValueError("Queue does not belong to the configured Redis owner")
+        lease = record.get("lease_seconds")
+        if lease is not None and (type(lease) is not int or not 1 <= lease <= 600):
+            raise ValueError("Lease seconds must be an integer between 1 and 600")
     else:
         raise ValueError("Unsupported worker mode")
 
@@ -178,8 +184,33 @@ class LocalImageFixture:
     def generate_structured(self, *args, **kwargs):
         raise RuntimeError("Text operations are not implemented by this local image fixture")
 
-    def analyze_multimodal(self, *args, **kwargs):
-        raise RuntimeError("Text operations are not implemented by this local image fixture")
+    def analyze_multimodal(self, request, output_schema):
+        """Deterministic five-category inspection so PAGE_INSPECT can run locally."""
+        from app.services.ai_schemas import InspectionDetails, InspectionItem, PageInspectionOutput
+
+        job_id = self._job_id()
+        self._event(job_id, "inspected")
+        if output_schema is not PageInspectionOutput:
+            raise RuntimeError("Local fixture only supports page inspection output")
+        return output_schema.model_validate(
+            {
+                "items": [
+                    InspectionItem(
+                        category=category,
+                        outcome="PASS",
+                        score=1.0,
+                        severity="INFO",
+                        details=InspectionDetails(
+                            expected="local acceptance baseline",
+                            observed="local acceptance baseline",
+                            differences=[],
+                        ),
+                        regions=[],
+                    )
+                    for category in ("SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY")
+                ]
+            }
+        )
 
 
 def configure_child(path: Path, *, probe_job: str | None = None):
@@ -207,6 +238,9 @@ def configure_child(path: Path, *, probe_job: str | None = None):
             return (init_settings,)  # No environment, dotenv or secrets-directory source.
 
     db_path = _safe_path(payload, str(payload / "probe.sqlite"))
+    settings_kwargs: dict = {}
+    if record["mode"] == "live-rq" and "lease_seconds" in record:
+        settings_kwargs["job_lease_seconds"] = record["lease_seconds"]
     settings = IsolatedSettings(
         _env_file=None,
         environment="development",
@@ -220,6 +254,7 @@ def configure_child(path: Path, *, probe_job: str | None = None):
         google_application_credentials=None,
         mangaflow_credential_master_key=None,
         mangaflow_proxy_url=None,
+        **settings_kwargs,
     )
     config.get_settings = lambda: settings
     from app import database
@@ -331,4 +366,93 @@ def run_rq_horse(path: Path, worker_name: str, rq_job_id: str, execution_id: str
         worker.perform_job(job, Queue(queue_name, connection=client))
     finally:
         client.close()
+        engine.dispose()
+
+
+ACCEPTANCE_HORSE_DRIVER = """
+import sys
+
+root, config_path, worker_name, rq_job_id, execution_id = sys.argv[1:6]
+sys.path.insert(0, root)
+sys.path.insert(0, root + "/apps/api")
+from tests.integration.worker_runtime import run_rq_horse
+
+run_rq_horse(config_path, worker_name, rq_job_id, execution_id)
+"""
+
+
+def _acceptance_worker_base():
+    # Resolved lazily: importing app.rq_windows pulls in rq, which is safe but
+    # should not happen merely by importing this module in a fresh child.
+    from app.rq_windows import WindowsSpawnWorker
+
+    return WindowsSpawnWorker
+
+
+class AcceptanceWorker(_acceptance_worker_base()):
+    """Windows-safe RQ worker whose horse runs the verified run_rq_horse entry."""
+
+    def __init__(self, *args, config_path: Path, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.config_path = config_path
+
+    def _horse_spawn_command(self, job, queue) -> list[str]:
+        return [
+            sys.executable,
+            "-c",
+            ACCEPTANCE_HORSE_DRIVER,
+            str(ROOT),
+            str(self.config_path),
+            self.name,
+            job.id,
+            self.execution.id,
+        ]
+
+
+def run_acceptance_worker(
+    path: Path,
+    worker_suffix: str,
+    *,
+    burst: bool = False,
+    with_scheduler: bool = True,
+) -> None:
+    """Run a real RQ worker loop inside this supervised process (live mode only)."""
+    record, _settings, engine, _adapter = configure_child(path)
+    if record["mode"] != "live-rq":
+        engine.dispose()
+        raise RuntimeError("Acceptance worker requires the explicit owned live configuration")
+    client = None
+    try:
+        from redis import Redis
+
+        client = Redis.from_url(
+            record["redis_url"], socket_connect_timeout=2, socket_timeout=10
+        )
+        token = record["redis_token"]
+        if client.get(f"mangaflow:acceptance:{token}:owner") != token.encode():
+            raise RuntimeError("Redis ownership changed before worker startup")
+        if not re.fullmatch(r"acceptance_[a-zA-Z0-9_-]+", worker_suffix):
+            raise ValueError("Unowned worker name suffix")
+        worker_name = f"acceptance_{token}_{worker_suffix}"
+
+        class _BoundAcceptanceWorker(AcceptanceWorker):
+            def _horse_environment(self) -> dict[str, str]:
+                # The horse entry derives everything from worker.json; keep the
+                # environment minimal and free of connection credentials.
+                return {
+                    key: os.environ[key]
+                    for key in ("SYSTEMROOT", "WINDIR", "PATH", "PATHEXT")
+                    if key in os.environ
+                }
+
+        worker = _BoundAcceptanceWorker(
+            [record["queue_name"]],
+            name=worker_name,
+            connection=client,
+            config_path=path,
+        )
+        worker.work(burst=burst, with_scheduler=with_scheduler)
+    finally:
+        if client is not None:
+            client.close()
         engine.dispose()

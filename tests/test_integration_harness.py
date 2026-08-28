@@ -941,3 +941,180 @@ def test_worker_configuration_rejects_live_endpoint_override_before_writing(proc
             queue_name="acceptance_" + "b" * 32 + "_main",
         )
     assert not (process_tree.payload / "worker.json").exists()
+
+
+class _FakeConnection:
+    """Connection stand-in exposing only the kwargs the horse environment reads."""
+
+    class _Pool:
+        connection_kwargs = {"host": "127.0.0.1", "port": 56379, "password": "sekret", "retry": "x"}
+
+    connection_pool = _Pool()
+
+
+class _FakeQueue:
+    name = "acceptance_main"
+
+    class key:  # noqa: N801 - rq workers treat this as an opaque string attribute
+        def __str__(self):
+            return "rq:queue:acceptance_main"
+
+
+class _FakeHorse:
+    """Minimal Popen stand-in for the WindowsSpawnWorker monitor loop."""
+
+    def __init__(self, exit_code, *, alive=False):
+        self.pid = 4242
+        # alive=True models a running horse; otherwise it has already exited.
+        self.returncode = None if alive else exit_code
+        self._exit_code = exit_code
+        self.killed = False
+
+    def poll(self):
+        return self.returncode
+
+    def kill(self):
+        self.killed = True
+        self.returncode = self._exit_code
+
+    def wait(self):
+        if self.returncode is None:
+            self.returncode = self._exit_code
+        return self.returncode
+
+
+def _bare_windows_worker(horse, calls, monitoring_interval=3600):
+    """Construct WindowsSpawnWorker without Redis for pure control-flow checks."""
+    from types import SimpleNamespace
+
+    from app.rq_windows import WindowsSpawnWorker
+
+    worker = WindowsSpawnWorker.__new__(WindowsSpawnWorker)
+    worker._horse_popen = horse
+    worker._stopped_job_id = None
+    worker.execution = SimpleNamespace(id="exec-1")
+    worker.death_penalty_class = object()
+    worker.job_monitoring_interval = monitoring_interval
+    worker.current_job_working_time = 0
+    worker.set_current_job_working_time = lambda value: (
+        calls.append(("working_time", value)),
+        setattr(worker, "current_job_working_time", value),
+    )
+    worker.heartbeat = lambda *args: calls.append(("heartbeat", args))
+    worker.maintain_heartbeats = lambda job: calls.append(("maintain", job.id))
+    worker.handle_work_horse_killed = lambda job, pid, code, rusage: calls.append(
+        ("horse_killed", code)
+    )
+    worker.handle_job_failure = lambda job, queue, exc_string: calls.append(
+        ("job_failure", exc_string)
+    )
+    return worker
+
+
+def _fake_job():
+    from types import SimpleNamespace
+
+    from rq.job import JobStatus
+
+    return SimpleNamespace(
+        id="job-1",
+        started_at=None,
+        timeout=-1,
+        ended_at=None,
+        stopped_callback=None,
+        get_status=lambda: JobStatus.STARTED,
+    )
+
+
+def test_horse_spawn_keeps_credentials_out_of_argv(monkeypatch):
+    import json
+    import sys
+    from types import SimpleNamespace
+
+    from app import rq_windows
+
+    captured = {}
+
+    class _RecordingPopen(_FakeHorse):
+        def __init__(self, command, env=None, creationflags=None):
+            captured["command"] = command
+            captured["env"] = env
+            super().__init__(0)
+
+    monkeypatch.setattr(rq_windows.subprocess, "Popen", _RecordingPopen)
+    worker = _bare_windows_worker(_FakeHorse(0), [])
+    worker.connection = _FakeConnection()
+    worker.execution = SimpleNamespace(id="exec-1")
+    worker.name = "acceptance_" + "b" * 32 + "_main"
+    job, queue = _fake_job(), _FakeQueue()
+    worker.fork_work_horse(job, queue)
+    assert captured["command"][:2] == [sys.executable, "-c"]
+    # Credentials travel in the child environment, never in the command line.
+    assert "sekret" not in json.dumps(captured["command"])
+    horse_env = json.loads(captured["env"]["RQ_HORSE_REDIS_KWARGS"])
+    assert horse_env["password"] == "sekret"
+    assert "retry" not in horse_env
+    assert captured["env"]["RQ_QUEUE_NAME"] == "acceptance_main"
+
+
+def test_monitor_returns_cleanly_when_horse_exits_zero():
+    from rq.job import JobStatus
+
+    calls: list = []
+    job = _fake_job()
+    job.get_status = lambda: JobStatus.FINISHED
+    worker = _bare_windows_worker(_FakeHorse(0), calls)
+    worker.monitor_work_horse(job, _FakeQueue())
+    # Only the post-loop working-time reset is recorded; no failure handling.
+    assert calls == [("working_time", 0)]
+    assert worker._horse_pid == 0
+
+
+def test_monitor_reports_unexpected_horse_death_without_posix_apis():
+    calls: list = []
+    worker = _bare_windows_worker(_FakeHorse(1), calls)
+    worker.monitor_work_horse(_fake_job(), _FakeQueue())
+    assert ("horse_killed", 1) in calls
+    failure = next(item for item in calls if item[0] == "job_failure")
+    assert "return code 1" in failure[1]
+
+
+def test_monitor_kills_horse_after_job_timeout():
+    calls: list = []
+    horse = _FakeHorse(1, alive=True)
+    worker = _bare_windows_worker(horse, calls, monitoring_interval=0)
+    worker.current_job_working_time = 0
+
+    def set_working_time(value):
+        calls.append(("working_time", value))
+        # Elapsed seconds stay near zero in a fast test; inject an over-limit
+        # value so the timeout branch is exercised without waiting 61s.
+        worker.current_job_working_time = 999
+
+    worker.set_current_job_working_time = set_working_time
+    job = _fake_job()
+    job.timeout = 1
+    worker.monitor_work_horse(job, _FakeQueue())
+    assert horse.killed is True
+    assert any(item[0] == "job_failure" for item in calls)
+
+
+def test_acceptance_worker_horse_uses_verified_runtime_entry(tmp_path):
+    import sys
+    from types import SimpleNamespace
+
+    from tests.integration.worker_runtime import AcceptanceWorker
+
+    worker = AcceptanceWorker.__new__(AcceptanceWorker)
+    worker.config_path = tmp_path / "worker.json"
+    worker.name = "acceptance_" + "b" * 32 + "_main"
+    worker.execution = SimpleNamespace(id="exec-1")
+    job, queue = _fake_job(), _FakeQueue()
+    command = worker._horse_spawn_command(job, queue)
+    assert command[0] == sys.executable and command[1] == "-c"
+    assert "run_rq_horse" in command[2]
+    from tests.integration.worker_runtime import ROOT
+
+    # Identity travels as argv values; no connection credentials are involved.
+    assert command[3] == str(ROOT)
+    assert command[4:] == [str(tmp_path / "worker.json"), worker.name, "job-1", "exec-1"]
