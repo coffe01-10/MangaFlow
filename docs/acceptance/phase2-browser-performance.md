@@ -28,23 +28,56 @@
    - 任务 `CONSISTENCY_CHECKING` / `REPAIRING` 持续轮询，`COMPLETED` 后停止
    - 未生产通过时整章 PNG/PDF/JSON 导出按钮禁用，生成页无“生成下一页”
 
-## `npm run check:full`
+## 失败里程碑：`npm run check:full` Axe color-contrast
 
-首次在本分支对最新代码执行：
+**命令**（worktree `D:\自媒体\漫画工作流-grok`，`PYTHONPATH` 指向本树 `apps/api`）：
 
-- ESLint / Ruff：通过
-- Pytest：250 passed
-- Vitest：27 passed
-- Next.js production build：通过
-- Playwright 初跑：4 failed（工作流对比度；新行为选择器/终态可见性）
+```
+npm run check:full
+```
 
-对比度与选择器最小修复后：
+**退出码：** 1（约 403.9s）  
+**未跳过 Axe，未降低 serious/critical 阈值。**
+
+### 各门禁
+
+| 门禁 | 结果 |
+| --- | --- |
+| ESLint | 通过 |
+| Ruff | 通过 |
+| Pytest | 250 passed |
+| Vitest | 27 passed |
+| Next.js production build | 通过 |
+| Playwright / Axe | **失败**（8 项中 4 failed / 4 passed） |
+
+Playwright 当时已通过：首页导航、项目深链、首屏请求预算、生产门禁/导出阻断。  
+失败项：Axe 对比度；以及当时仍在调试的慢保存/保存失败/任务轮询选择器（随后同样修好，不作为对比度豁免）。
+
+### Axe 失败路由与元素
+
+测试：`tests/e2e/platform-v2.spec.ts`「核心页面没有严重或致命 Axe 问题」  
+失败路由：`/projects/b2087056-ac97-4244-b27c-04d361fb78ea/workflow`  
+规则：`color-contrast`，impact `serious`，3 个节点。断言信息：`/projects/{id}/workflow：color-contrast(3)`。
+
+原失败证据（Axe 4.12 / Playwright，WCAG 2 AA 4.5:1，未改阈值）：
+
+| 元素 | 选择器 | 前景 | 背景 | 实测对比度 | 要求 |
+| --- | --- | --- | --- | --- | --- |
+| `<small>json</small>` | `div[data-id="adapt"] > … > small` | `#69726c` | `#242a27` | 2.94 | 4.5:1 |
+| `<span>director.storyboard</span>` | `div[data-id="storyboard"] > … > header > span` | `#829087` | `#242a27` | 4.38 | 4.5:1 |
+| `<small>json</small>` | `div[data-id="storyboard"] > … > small` | `#69726c` | `#242a27` | 4.5:1 未达标（2.94） | 4.5:1 |
+
+对应源码：`workflow-studio.module.css` 的 `.node header span`（原 `#829087`）与 `.ports small`（原 `#69726c`），叠在 `.node` 背景 `#242a27` 上。
+
+最小修复：两处改为已有暗色面板灰 `#a4ada7`。未 disable Axe 规则，未缩小扫描路由。
+
+复跑：
 
 ```
 npx playwright test
 ```
 
-8 passed（约 56.5s，exit 0）。未再整段重跑 Pytest/Vitest：后端与前端单测未改。
+8 passed，exit 0（约 56.5s），含原 Axe 用例。之后才进入 Lighthouse / 100 节点 FPS。
 
 ## Lighthouse（阈值 performance>=85、accessibility>=90、best-practices>=90）
 
