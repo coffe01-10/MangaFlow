@@ -4,6 +4,9 @@ const apiOrigin = process.env.MANGAFLOW_API_ORIGIN ?? "http://127.0.0.1:8000";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  experimental: {
+    optimizePackageImports: ["lucide-react"],
+  },
   // `next dev` and `next build` can run during the same acceptance session.
   // Keep their manifests and compiled CSS separate so a production build
   // cannot make the live development server serve stale assets.

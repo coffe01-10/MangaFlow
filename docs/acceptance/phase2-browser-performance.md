@@ -36,7 +36,7 @@
 npm run check:full
 ```
 
-**退出码：** 1（约 403.9s）  
+**退出码：** 1（约 403.9s）
 **未跳过 Axe，未降低 serious/critical 阈值。**
 
 ### 各门禁
@@ -45,18 +45,18 @@ npm run check:full
 | --- | --- |
 | ESLint | 通过 |
 | Ruff | 通过 |
-| Pytest | 250 passed |
+| Pytest | 250 passed（当时；后续隔离测试增加到 257） |
 | Vitest | 27 passed |
 | Next.js production build | 通过 |
 | Playwright / Axe | **失败**（8 项中 4 failed / 4 passed） |
 
-Playwright 当时已通过：首页导航、项目深链、首屏请求预算、生产门禁/导出阻断。  
+Playwright 当时已通过：首页导航、项目深链、首屏请求预算、生产门禁/导出阻断。
 失败项：Axe 对比度；以及当时仍在调试的慢保存/保存失败/任务轮询选择器（随后同样修好，不作为对比度豁免）。
 
 ### Axe 失败路由与元素
 
-测试：`tests/e2e/platform-v2.spec.ts`「核心页面没有严重或致命 Axe 问题」  
-失败路由：`/projects/b2087056-ac97-4244-b27c-04d361fb78ea/workflow`  
+测试：`tests/e2e/platform-v2.spec.ts`「核心页面没有严重或致命 Axe 问题」
+失败路由：`/projects/b2087056-ac97-4244-b27c-04d361fb78ea/workflow`
 规则：`color-contrast`，impact `serious`，3 个节点。断言信息：`/projects/{id}/workflow：color-contrast(3)`。
 
 原失败证据（Axe 4.12 / Playwright，WCAG 2 AA 4.5:1，未改阈值）：
@@ -130,6 +130,28 @@ npx playwright test
 
 完整 `npm run check:full` 与两轮性能在本返工提交上重跑；脱敏原始摘要见 `docs/acceptance/phase2-metrics.json`。
 
+## 第2轮返工（PR #15 review 5049878461，受审 `0049bb0`）
+
+Windows 清理：不再把 `cleaned=True` 写在 `rmtree(ignore_errors=True)` 之前。控制器创建并记录本次 runtime/`owner.pid`，`stopOwned` 检查 taskkill 退出码（0 或 128），等待子进程树后再删目录；清理失败写入最终 summary 且非零退出。Playwright `globalTeardown` 先停本次 API pid，再 `removeOwnedRuntime`。回归覆盖锁文件、taskkill /F 跳过 Python finally、失败重试、summary 落盘。指标 run_id `2cf64f6b495145ef879810fa37afb0e8` 的临时目录事后已删除，确认不存在。未做临时目录通配符删除，未复用未知实例。
+
+生成页 Lighthouse：审计明细见 `docs/acceptance/phase2-lh-generate-audit.json`。有候选的 `/generate` 两轮均为 performance=73，主因 **CLS=0.477**，LCP≈3.0s，TBT 仅 84–113ms。保留 `53f3444` 的失败轮与本轮失败轮。阈值未降，未改空态，未挑选最好结果。最小修复（预生成缩略图、候选图 `fill`+预留 3:4、动态拆出剧本/分镜面板、`lucide-react` package import 优化、生成区 min-height）未能把 CLS 从 0.477 拉下来。这是正式第 2 轮、用户上限内最后一轮；生成页 85 分门槛仍阻塞，应交组长接手。
+
+本轮最终树 `npm run check:full`：ESLint/Ruff 通过；Pytest **257**；Vitest 27；Playwright 8 passed；Next production build 通过。
+
+### 本轮 Lighthouse（有候选，阈值未降）
+
+| 轮次 | `/` | storyboard | **generate** | workflow | settings | exit |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 98/96/93 | 96/92/100 | **73**/96/100，cls=0.477 | 92/100/100 | 93/96/96 | 1 |
+| 2 | 98/96/93 | 97/92/100 | **73**/96/100，cls=0.477 | 92/100/100 | 92/96/96 | 1 |
+
+### 本轮 FPS
+
+| 轮次 | average | 1% low | 删除 |
+| ---: | ---: | ---: | ---: |
+| 1 | 142.53 | 140.85 | 204 |
+| 2 | 142.41 | 140.85 | 204 |
+
 ## 清理
 
 - 已停止 3000/8000 上的本次服务
@@ -140,4 +162,4 @@ npx playwright test
 
 - 未跑真实 Vertex / 付费兼容网关
 - 未跑 Redis / PostgreSQL / Docker 集成
-- `/generate` 有候选时 Lighthouse performance 第 2 轮 73 < 85；未在本轮做生成页性能重构
+- `/generate` 有候选时 Lighthouse performance 两轮均为 73 < 85，主因 CLS 0.477；最小布局预留未消除该位移。未降低阈值。最后一轮返工后仍阻塞，应交组长接手。

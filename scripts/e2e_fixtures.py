@@ -51,6 +51,12 @@ def _asset(session: Session, project: Project, storage_root: Path, digest: str) 
     )
     session.add(asset)
     session.flush()
+    from app.services.media import create_thumbnails
+
+    thumbs = create_thumbnails(storage_root / key, storage_root, asset.id)
+    asset.thumbnail_320_key = thumbs[320]
+    asset.thumbnail_640_key = thumbs[640]
+    session.flush()
     return asset
 
 

@@ -7,8 +7,11 @@ import {
   API_ORIGIN,
   WEB_URL,
   assertPortFree,
+  createOwnedRuntime,
   defaultPython,
+  finalizeOwnedRun,
   json,
+  removeOwnedRuntime,
   spawnOwned,
   stopOwned,
   waitForOwnedHealth,
@@ -19,6 +22,7 @@ const ROOT = process.cwd();
 const PYTHON = defaultPython(ROOT);
 const OUT_DIR = path.join(ROOT, "output", "playwright", "phase2");
 const RUN_ID = process.env.MANGAFLOW_E2E_RUN_ID || crypto.randomUUID().replaceAll("-", "");
+let runtimeDir = "";
 
 function run(command, args, extra = {}) {
   return new Promise((resolve, reject) => {
@@ -54,6 +58,11 @@ const summary = {
   errors: [],
 };
 
+async function writeSummary() {
+  await mkdir(OUT_DIR, { recursive: true });
+  await writeFile(path.join(OUT_DIR, "summary.json"), JSON.stringify(summary, null, 2));
+}
+
 async function cleanup() {
   for (const child of [...children].reverse()) {
     try {
@@ -66,8 +75,18 @@ async function cleanup() {
   try {
     await waitUntilPortFree(8000);
     await waitUntilPortFree(3000);
+    await new Promise((resolve) => setTimeout(resolve, 400));
   } catch (error) {
     summary.errors.push(String(error));
+  }
+  if (runtimeDir) {
+    try {
+      await removeOwnedRuntime(runtimeDir, RUN_ID);
+      summary.runtime_removed = true;
+    } catch (error) {
+      summary.runtime_removed = false;
+      summary.errors.push(String(error));
+    }
   }
 }
 
@@ -75,10 +94,13 @@ async function main() {
   await assertPortFree(8000);
   await assertPortFree(3000);
   await mkdir(OUT_DIR, { recursive: true });
+  runtimeDir = await createOwnedRuntime(RUN_ID);
+  summary.runtime_dir = `mangaflow-e2e-${RUN_ID}`;
 
   const apiEnv = {
     ...process.env,
     MANGAFLOW_E2E_RUN_ID: RUN_ID,
+    MANGAFLOW_E2E_RUNTIME: runtimeDir,
     MANGAFLOW_E2E_SEED: "1",
     MANGAFLOW_DISABLE_DOTENV: "1",
   };
@@ -103,6 +125,9 @@ async function main() {
   const webStarted = Date.now();
   let webReady = false;
   while (Date.now() - webStarted < 120_000) {
+    if (web.spawnError) {
+      throw new Error(`web process failed to spawn: ${web.spawnError}`);
+    }
     if (web.exitCode !== null && web.exitCode !== undefined) {
       throw new Error(`web process exited ${web.exitCode}`);
     }
@@ -134,6 +159,7 @@ async function main() {
     ...process.env,
     MANGAFLOW_WEB_URL: WEB_URL,
     MANGAFLOW_PROJECT_ID: lighthouseProject.id,
+    MANGAFLOW_LH_AUDIT_DIR: path.join(OUT_DIR, "lh"),
   };
   const fpsEnv = {
     ...process.env,
@@ -161,20 +187,19 @@ async function main() {
     if (result.code !== 0) failed = true;
   }
   summary.finished_at = new Date().toISOString();
-  await writeFile(path.join(OUT_DIR, "summary.json"), JSON.stringify(summary, null, 2));
-  console.log(`Wrote ${path.join(OUT_DIR, "summary.json")}`);
-  if (failed || summary.errors.length) process.exitCode = 1;
+  if (failed) summary.errors.push("lighthouse or fps gate failed");
 }
 
 try {
   await main();
 } catch (error) {
   summary.errors.push(String(error));
-  summary.finished_at = new Date().toISOString();
-  await mkdir(OUT_DIR, { recursive: true });
-  await writeFile(path.join(OUT_DIR, "summary.json"), JSON.stringify(summary, null, 2));
   console.error(error);
-  process.exitCode = 1;
 } finally {
-  await cleanup();
+  process.exitCode = await finalizeOwnedRun({
+    summary,
+    cleanup,
+    writeSummary,
+  });
+  console.log(`Wrote ${path.join(OUT_DIR, "summary.json")}`);
 }

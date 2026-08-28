@@ -1,5 +1,9 @@
 import { spawn } from "node:child_process";
+import { mkdir, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import net from "node:net";
+import os from "node:os";
+import path from "node:path";
 import process from "node:process";
 
 export const WEB_URL = "http://127.0.0.1:3000";
@@ -35,7 +39,42 @@ export function spawnOwned(command, args, options = {}) {
     shell: options.shell ?? false,
   });
   child.owned = true;
+  child.spawnError = null;
+  child.once("error", (error) => {
+    child.spawnError = error;
+  });
   return child;
+}
+
+export async function createOwnedRuntime(runId, {
+  tmpdir = os.tmpdir(),
+  mkdirImpl = mkdir,
+} = {}) {
+  const runtime = path.join(tmpdir, `mangaflow-e2e-${runId}`);
+  await mkdirImpl(runtime, { recursive: true });
+  return runtime;
+}
+
+export async function removeOwnedRuntime(runtimePath, runId, {
+  rmImpl = rm,
+  existsImpl = existsSync,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  retries = 16,
+} = {}) {
+  if (!runtimePath || !runId || !String(runtimePath).includes(`mangaflow-e2e-${runId}`)) {
+    throw new Error("refusing to delete a path this run does not own");
+  }
+  let lastError = "";
+  for (let attempt = 0; attempt < retries; attempt += 1) {
+    try {
+      await rmImpl(runtimePath, { recursive: true, force: true });
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+    if (!existsImpl(runtimePath)) return;
+    await sleep(250 * (attempt + 1));
+  }
+  throw new Error(`failed to remove owned runtime ${runtimePath}: ${lastError}`);
 }
 
 export async function waitForOwnedHealth({
@@ -50,6 +89,9 @@ export async function waitForOwnedHealth({
   const started = now();
   let lastError = "";
   while (now() - started < timeoutMs) {
+    if (child.spawnError) {
+      throw new Error(`owned process failed to spawn: ${child.spawnError}`);
+    }
     if (child.exitCode !== null && child.exitCode !== undefined) {
       throw new Error(`owned process exited ${child.exitCode} before health: ${lastError}`);
     }
@@ -76,6 +118,35 @@ export async function waitForOwnedHealth({
   throw new Error(`timed out waiting for owned health at ${url}: ${lastError}`);
 }
 
+export async function stopPidTree(pid, {
+  platform = process.platform,
+  spawnImpl = spawn,
+  killImpl = process.kill,
+  waitForExit = defaultWaitForExit,
+  timeoutMs = 15_000,
+} = {}) {
+  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) {
+    throw new Error("refusing to stop an invalid pid");
+  }
+  if (platform === "win32") {
+    const killer = spawnImpl("taskkill", ["/pid", String(pid), "/t", "/f"], {
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: false,
+      windowsHide: true,
+    });
+    const killed = await waitForExit(killer, timeoutMs);
+    if (killed.code !== 0 && killed.code !== 128) {
+      throw new Error(`taskkill exited ${killed.code}: ${killed.stderr ?? ""}`.trim());
+    }
+    return;
+  }
+  try {
+    killImpl(pid, "SIGTERM");
+  } catch {
+    // already gone
+  }
+}
+
 export async function stopOwned(child, {
   platform = process.platform,
   spawnImpl = spawn,
@@ -83,28 +154,39 @@ export async function stopOwned(child, {
   waitForExit = defaultWaitForExit,
   timeoutMs = 15_000,
 } = {}) {
-  if (!child?.owned || !child.pid) {
+  if (!child?.owned) {
     throw new Error("refusing to stop a process that this run does not own");
   }
-  if (platform === "win32") {
-    spawnImpl("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", shell: false });
-  } else if (!child.killed) {
-    try {
-      killImpl(child.pid, "SIGTERM");
-    } catch {
-      // already gone
-    }
+  if (child.spawnError) {
+    throw new Error(`owned process failed to spawn: ${child.spawnError}`);
   }
+  if (!child.pid) {
+    throw new Error("owned process has no pid");
+  }
+  await stopPidTree(child.pid, { platform, spawnImpl, killImpl, waitForExit, timeoutMs });
   await waitForExit(child, timeoutMs);
 }
 
 function defaultWaitForExit(child, timeoutMs) {
-  if (child.exitCode !== null && child.exitCode !== undefined) return Promise.resolve();
+  if (child.exitCode !== null && child.exitCode !== undefined) {
+    return Promise.resolve({ code: child.exitCode, stderr: "" });
+  }
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`owned pid ${child.pid} did not exit`)), timeoutMs);
-    child.once("exit", () => {
+    let stderr = "";
+    child.stderr?.on?.("data", (chunk) => {
+      stderr += chunk;
+    });
+    const timer = setTimeout(
+      () => reject(new Error(`owned pid ${child.pid ?? "unknown"} did not exit`)),
+      timeoutMs,
+    );
+    child.once("exit", (code) => {
       clearTimeout(timer);
-      resolve();
+      resolve({ code: code ?? 1, stderr });
+    });
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
     });
   });
 }
@@ -125,6 +207,18 @@ export async function waitUntilPortFree(port, {
     }
   }
   throw new Error(`port ${port} still occupied after owned process stop`);
+}
+
+export async function finalizeOwnedRun({ summary, cleanup, writeSummary }) {
+  try {
+    await cleanup();
+  } catch (error) {
+    summary.errors.push(String(error));
+    summary.runtime_removed = false;
+  }
+  summary.finished_at = new Date().toISOString();
+  await writeSummary(summary);
+  return summary.errors.length ? 1 : 0;
 }
 
 export async function json(url, init, fetchImpl = fetch) {

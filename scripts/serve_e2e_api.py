@@ -7,12 +7,14 @@ variables, and never reuses a previous runtime directory.
 from __future__ import annotations
 
 import atexit
+import json
 import os
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,18 +46,36 @@ class IsolatedRuntime:
     cleaned: bool = False
 
     def cleanup(self) -> None:
-        if self.cleaned:
+        if not self.path.exists():
+            self.cleaned = True
             return
-        self.cleaned = True
-        shutil.rmtree(self.path, ignore_errors=True)
+        last_error: Exception | None = None
+        for attempt in range(8):
+            try:
+                shutil.rmtree(self.path)
+            except OSError as error:
+                last_error = error
+            if not self.path.exists():
+                self.cleaned = True
+                return
+            time.sleep(0.15 * (attempt + 1))
+        self.cleaned = False
+        raise RuntimeError(f"failed to remove runtime {self.path}: {last_error}")
 
 
 def create_runtime(base_dir: Path | None = None) -> IsolatedRuntime:
     run_id = os.environ.get("MANGAFLOW_E2E_RUN_ID") or uuid.uuid4().hex
-    parent = Path(base_dir or tempfile.gettempdir())
-    path = Path(tempfile.mkdtemp(prefix=f"mangaflow-e2e-{run_id}-", dir=str(parent)))
-    (path / "storage").mkdir()
-    (path / "uploads").mkdir()
+    assigned = os.environ.get("MANGAFLOW_E2E_RUNTIME")
+    if assigned:
+        path = Path(assigned)
+        if run_id not in path.name:
+            raise RuntimeError("runtime path does not belong to this run")
+        path.mkdir(parents=True, exist_ok=True)
+    else:
+        parent = Path(base_dir or tempfile.gettempdir())
+        path = Path(tempfile.mkdtemp(prefix=f"mangaflow-e2e-{run_id}-", dir=str(parent)))
+    (path / "storage").mkdir(exist_ok=True)
+    (path / "uploads").mkdir(exist_ok=True)
     return IsolatedRuntime(run_id=run_id, path=path)
 
 
@@ -108,6 +128,22 @@ def migrate(env: dict[str, str], cwd: Path) -> None:
     )
 
 
+def _record_owned_pointer(runtime: IsolatedRuntime) -> None:
+    pointer = ROOT / "output" / "playwright" / "owned-runtime.json"
+    pointer.parent.mkdir(parents=True, exist_ok=True)
+    payload: dict = {}
+    if pointer.exists():
+        try:
+            loaded = json.loads(pointer.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                payload = loaded
+        except json.JSONDecodeError:
+            payload = {}
+    payload.update({"runtime": str(runtime.path), "runId": runtime.run_id, "pid": os.getpid()})
+    pointer.write_text(json.dumps(payload), encoding="utf-8")
+    (runtime.path / "owner.pid").write_text(str(os.getpid()), encoding="utf-8")
+
+
 def _install_cleanup(runtime: IsolatedRuntime) -> None:
     atexit.register(runtime.cleanup)
 
@@ -124,34 +160,30 @@ def main() -> None:
     sys.path.insert(0, str(API_ROOT))
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     runtime = create_runtime()
-    _install_cleanup(runtime)
+    controller_owned = bool(os.environ.get("MANGAFLOW_E2E_RUNTIME"))
+    _record_owned_pointer(runtime)
+    if not controller_owned:
+        _install_cleanup(runtime)
     env = build_isolated_env(runtime, seed=os.environ.get("MANGAFLOW_E2E_SEED", "1") != "0")
+    for key in VENDOR_ENV:
+        os.environ.pop(key, None)
+    os.environ.update(env)
+    os.chdir(ROOT)
     try:
-        migrate(env, cwd=runtime.path)
+        migrate(env, cwd=ROOT)
         if env.get("MANGAFLOW_E2E_SEED") == "1":
             from e2e_fixtures import seed_gate_projects
 
             seed_gate_projects(env["DATABASE_URL"], Path(env["STORAGE_ROOT"]))
-        raise SystemExit(
-            subprocess.call(
-                [
-                    sys.executable,
-                    "-m",
-                    "uvicorn",
-                    "app.main:app",
-                    "--app-dir",
-                    str(API_ROOT),
-                    "--host",
-                    "127.0.0.1",
-                    "--port",
-                    "8000",
-                ],
-                cwd=str(runtime.path),
-                env=env,
-            )
-        )
+        # Run uvicorn in this process so Windows taskkill /T /F (or Playwright
+        # stopping the webServer PID) cannot leave an orphan child holding SQLite.
+        # Do not chdir into the runtime directory; that locks the folder on Windows.
+        import uvicorn
+
+        uvicorn.run("app.main:app", host="127.0.0.1", port=8000)
     finally:
-        runtime.cleanup()
+        if not controller_owned:
+            runtime.cleanup()
 
 
 if __name__ == "__main__":

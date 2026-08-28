@@ -1,0 +1,36 @@
+{
+  "route": "/projects/{id}/generate",
+  "dataset": "e2e-lighthouse-workbench, 1 page, 1 candidate, 5 inspections",
+  "thresholds": { "performance": 85, "accessibility": 90, "best-practices": 90 },
+  "preserved_failure_53f3444": {
+    "round": 2,
+    "performance": 73
+  },
+  "latest_two_rounds": [
+    {
+      "round": 1,
+      "performance": 73,
+      "accessibility": 96,
+      "best-practices": 100,
+      "fcp_ms": 913,
+      "lcp_ms": 3053,
+      "tbt_ms": 84,
+      "cls": 0.477
+    },
+    {
+      "round": 2,
+      "performance": 73,
+      "accessibility": 96,
+      "best-practices": 100,
+      "fcp_ms": 915,
+      "lcp_ms": 3065,
+      "tbt_ms": 113,
+      "cls": 0.477
+    }
+  ],
+  "primary_cause": "Cumulative Layout Shift 0.477 (not TBT). LCP stays ~3.0s after client workbench/candidate image appear. TBT 84-113ms is below the usual long-task penalty.",
+  "notes": [
+    "Local filesystem paths and project ids stripped.",
+    "Failed rounds were not discarded. Thresholds were not lowered."
+  ]
+}

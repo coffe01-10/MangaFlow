@@ -1,8 +1,8 @@
 {
-  "sha": "53f3444",
+  "sha": "PENDING_COMMIT",
   "node": "v22.16.0",
   "chrome": "151.0.7922.174",
-  "run_id": "2cf64f6b495145ef879810fa37afb0e8",
+  "run_id": "5bbee7135e6144b5b076d9e701ce2e94",
   "dataset": {
     "lighthouse_project": "e2e-lighthouse-workbench",
     "pages": 1,
@@ -13,15 +13,22 @@
     "lighthouse": { "performance": 85, "accessibility": 90, "best-practices": 90 },
     "fps": { "nodes": 100, "seconds": 10, "average": 55, "one_percent_low": 45 }
   },
+  "preserved_failure": {
+    "sha": "53f3444",
+    "run_id": "2cf64f6b495145ef879810fa37afb0e8",
+    "round": 2,
+    "generate_performance": 73,
+    "note": "Original blocking round kept. Temporary directory mangaflow-e2e-2cf64f6b495145ef879810fa37afb0e8-xj79aa_6 was later removed; it no longer exists."
+  },
   "lighthouse": [
     {
       "round": 1,
-      "exit_code": 0,
+      "exit_code": 1,
       "routes": {
         "/": { "performance": 98, "accessibility": 96, "best-practices": 93 },
-        "/storyboard": { "performance": 97, "accessibility": 92, "best-practices": 100 },
-        "/generate": { "performance": 88, "accessibility": 96, "best-practices": 100 },
-        "/workflow": { "performance": 94, "accessibility": 100, "best-practices": 100 },
+        "/storyboard": { "performance": 96, "accessibility": 92, "best-practices": 100 },
+        "/generate": { "performance": 73, "accessibility": 96, "best-practices": 100, "fcp_ms": 913, "lcp_ms": 3053, "tbt_ms": 84, "cls": 0.477 },
+        "/workflow": { "performance": 92, "accessibility": 100, "best-practices": 100 },
         "/settings": { "performance": 93, "accessibility": 96, "best-practices": 96 }
       }
     },
@@ -31,9 +38,9 @@
       "routes": {
         "/": { "performance": 98, "accessibility": 96, "best-practices": 93 },
         "/storyboard": { "performance": 97, "accessibility": 92, "best-practices": 100 },
-        "/generate": { "performance": 73, "accessibility": 96, "best-practices": 100 },
-        "/workflow": { "performance": 94, "accessibility": 100, "best-practices": 100 },
-        "/settings": { "performance": 93, "accessibility": 96, "best-practices": 96 }
+        "/generate": { "performance": 73, "accessibility": 96, "best-practices": 100, "fcp_ms": 915, "lcp_ms": 3065, "tbt_ms": 113, "cls": 0.477 },
+        "/workflow": { "performance": 92, "accessibility": 100, "best-practices": 100 },
+        "/settings": { "performance": 92, "accessibility": 96, "best-practices": 96 }
       }
     }
   ],
@@ -43,8 +50,8 @@
       "exit_code": 0,
       "nodes": 100,
       "seconds": 10,
-      "average_fps": 133.21,
-      "one_percent_low_fps": 48.08,
+      "average_fps": 142.53,
+      "one_percent_low_fps": 140.85,
       "project_delete": 204
     },
     {
@@ -52,14 +59,19 @@
       "exit_code": 0,
       "nodes": 100,
       "seconds": 10,
-      "average_fps": 140.54,
-      "one_percent_low_fps": 71.94,
+      "average_fps": 142.41,
+      "one_percent_low_fps": 140.85,
       "project_delete": 204
     }
   ],
+  "cleanup": {
+    "runtime_removed": true,
+    "run_id": "5bbee7135e6144b5b076d9e701ce2e94"
+  },
   "notes": [
     "Generate route used a seeded page with one candidate and five passing inspections, not the empty workbench.",
-    "Round 2 /generate performance=73 is below 85 and was not discarded.",
+    "Preserved 53f3444 round 2 /generate performance=73. Latest two rounds are also 73 and were not discarded.",
+    "Audit cause: CLS 0.477 and LCP ~3.0s. TBT 84-113ms is not the limiter.",
     "Local filesystem paths were stripped from this copy."
   ]
 }
