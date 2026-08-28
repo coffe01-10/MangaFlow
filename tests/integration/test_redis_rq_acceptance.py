@@ -1,12 +1,8 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import time
 from datetime import timedelta
 from typing import Any
-
-from rq import Queue, SimpleWorker
-from sqlalchemy import select
-from sqlalchemy.orm import Session, sessionmaker
 
 from app import database, worker_tasks
 from app.config import get_settings
@@ -24,6 +20,11 @@ from app.models import (
 )
 from app.services.job_service import create_job, enqueue_job, recover_pending_jobs
 from app.worker_tasks import execute_job
+from rq import Queue, SimpleWorker
+from sqlalchemy import select
+from sqlalchemy.orm import Session, sessionmaker
+
+from tests.integration.redis_resources import RedisAcceptanceResources
 
 
 def _seed_redis_acceptance_hierarchy(session_factory: sessionmaker[Session]) -> dict[str, str]:
@@ -79,11 +80,11 @@ def _seed_redis_acceptance_hierarchy(session_factory: sessionmaker[Session]) -> 
 
 def test_redis_connection_and_namespace_isolation(
     live_redis_connection: Any,
-    live_redis_resource_tracker: dict[str, Any],
+    live_redis_resource_tracker: RedisAcceptanceResources,
 ):
     """Verify live Redis connection is responsive and isolated to test prefix without flushdb."""
     assert live_redis_connection.ping() is True
-    test_key = f"{live_redis_resource_tracker['prefix']}ping_test"
+    test_key = live_redis_resource_tracker.app_key("ping_test")
     live_redis_connection.set(test_key, "pong", ex=30)
     assert live_redis_connection.get(test_key).decode("utf-8") == "pong"
 
@@ -92,14 +93,13 @@ def test_redis_rq_enqueue_and_worker_execution(
     live_pg_session_factory: sessionmaker[Session],
     live_redis_connection: Any,
     live_redis_url: str | None,
-    live_redis_resource_tracker: dict[str, Any],
+    live_redis_resource_tracker: RedisAcceptanceResources,
     monkeypatch: Any,
 ):
     """Verify real Redis queueing and worker execution with deterministic fake provider output."""
     seeded = _seed_redis_acceptance_hierarchy(live_pg_session_factory)
     project_id = seeded["project_id"]
-    queue_name = f"acceptance_queue_{live_redis_resource_tracker['prefix'].replace(':', '_').strip('_')}"
-    live_redis_resource_tracker["queues"].add(queue_name)
+    queue_name = live_redis_resource_tracker.queue_name()
 
     settings = get_settings()
     monkeypatch.setattr(settings, "redis_url", live_redis_url)
@@ -136,7 +136,7 @@ def test_redis_rq_enqueue_and_worker_execution(
             model_alias="image.nano_banana_2",
             auto_commit=True,
         )
-        live_redis_resource_tracker["jobs"].add(job.id)
+        live_redis_resource_tracker.track_job(job.id)
         enqueued_job = enqueue_job(db, job)
         assert enqueued_job.status == JobStatus.QUEUED
 
@@ -144,7 +144,11 @@ def test_redis_rq_enqueue_and_worker_execution(
     assert len(queue) >= 1
 
     # Use SimpleWorker for safe direct execution on Windows without unsupported os.fork
-    worker = SimpleWorker([queue], connection=live_redis_connection)
+    worker = SimpleWorker(
+        [queue],
+        connection=live_redis_connection,
+        name=live_redis_resource_tracker.worker_name("simple"),
+    )
     worker.work(burst=True)
 
     with live_pg_session_factory() as verify_db:
@@ -164,13 +168,12 @@ def test_redis_rq_state_isolation_no_clobber(
     live_pg_session_factory: sessionmaker[Session],
     live_redis_connection: Any,
     live_redis_url: str | None,
-    live_redis_resource_tracker: dict[str, Any],
+    live_redis_resource_tracker: RedisAcceptanceResources,
     monkeypatch: Any,
 ):
-    """Verify calling enqueue_job while a job is actively leased/executing does not overwrite active status or duplicate queue tasks."""
+    """Existing state setup; real enqueue/writeback race still needs a process test."""
     seeded = _seed_redis_acceptance_hierarchy(live_pg_session_factory)
-    queue_name = f"acceptance_queue_{live_redis_resource_tracker['prefix'].replace(':', '_').strip('_')}"
-    live_redis_resource_tracker["queues"].add(queue_name)
+    queue_name = live_redis_resource_tracker.queue_name()
 
     settings = get_settings()
     monkeypatch.setattr(settings, "redis_url", live_redis_url)
@@ -186,7 +189,7 @@ def test_redis_rq_state_isolation_no_clobber(
             job_type="PAGE_GENERATE",
             auto_commit=True,
         )
-        live_redis_resource_tracker["jobs"].add(job.id)
+        live_redis_resource_tracker.track_job(job.id)
         job.status = JobStatus.GENERATING
         job.lease_owner = "active-worker-pid-1001"
         job.lease_expires_at = utcnow() + timedelta(minutes=5)
@@ -208,14 +211,13 @@ def test_redis_rq_concurrency_quota_and_deferred_execution(
     live_pg_session_factory: sessionmaker[Session],
     live_redis_connection: Any,
     live_redis_url: str | None,
-    live_redis_resource_tracker: dict[str, Any],
+    live_redis_resource_tracker: RedisAcceptanceResources,
     monkeypatch: Any,
 ):
-    """Verify that multiple enqueued jobs respect project concurrency limit (default 2) and defer excess jobs."""
+    """Existing quota precheck; deferred completion still needs independent workers."""
     seeded = _seed_redis_acceptance_hierarchy(live_pg_session_factory)
     project_id = seeded["project_id"]
-    queue_name = f"acceptance_queue_{live_redis_resource_tracker['prefix'].replace(':', '_').strip('_')}"
-    live_redis_resource_tracker["queues"].add(queue_name)
+    queue_name = live_redis_resource_tracker.queue_name()
 
     settings = get_settings()
     monkeypatch.setattr(settings, "redis_url", live_redis_url)
@@ -237,7 +239,7 @@ def test_redis_rq_concurrency_quota_and_deferred_execution(
             for i in range(3)
         ]
         for j in jobs:
-            live_redis_resource_tracker["jobs"].add(j.id)
+            live_redis_resource_tracker.track_job(j.id)
 
         # Saturate 2 concurrency slots
         jobs[0].status = JobStatus.GENERATING
@@ -261,14 +263,13 @@ def test_redis_rq_retryable_and_terminal_failures(
     live_pg_session_factory: sessionmaker[Session],
     live_redis_connection: Any,
     live_redis_url: str | None,
-    live_redis_resource_tracker: dict[str, Any],
+    live_redis_resource_tracker: RedisAcceptanceResources,
     monkeypatch: Any,
 ):
-    """Verify that retryable adapter errors reset job to WAITING for RQ retry, while non-retryable errors immediately mark FAILED."""
+    """Existing direct-call probe; real RQ retry behavior still needs repair."""
     seeded = _seed_redis_acceptance_hierarchy(live_pg_session_factory)
     project_id = seeded["project_id"]
-    queue_name = f"acceptance_queue_{live_redis_resource_tracker['prefix'].replace(':', '_').strip('_')}"
-    live_redis_resource_tracker["queues"].add(queue_name)
+    queue_name = live_redis_resource_tracker.queue_name()
 
     settings = get_settings()
     monkeypatch.setattr(settings, "redis_url", live_redis_url)
@@ -294,7 +295,7 @@ def test_redis_rq_retryable_and_terminal_failures(
             max_attempts=3,
             auto_commit=True,
         )
-        live_redis_resource_tracker["jobs"].add(job_retry.id)
+        live_redis_resource_tracker.track_job(job_retry.id)
         execute_job(job_retry.id)
 
     with live_pg_session_factory() as verify_db:
@@ -314,7 +315,7 @@ def test_redis_rq_retryable_and_terminal_failures(
             max_attempts=3,
             auto_commit=True,
         )
-        live_redis_resource_tracker["jobs"].add(job_term.id)
+        live_redis_resource_tracker.track_job(job_term.id)
         execute_job(job_term.id)
 
     with live_pg_session_factory() as verify_db:
@@ -327,13 +328,12 @@ def test_redis_rq_lease_expiration_and_recovery(
     live_pg_session_factory: sessionmaker[Session],
     live_redis_connection: Any,
     live_redis_url: str | None,
-    live_redis_resource_tracker: dict[str, Any],
+    live_redis_resource_tracker: RedisAcceptanceResources,
     monkeypatch: Any,
 ):
     """Verify expired job leases are safely reclaimed and re-queued by recover_pending_jobs."""
     seeded = _seed_redis_acceptance_hierarchy(live_pg_session_factory)
-    queue_name = f"acceptance_queue_{live_redis_resource_tracker['prefix'].replace(':', '_').strip('_')}"
-    live_redis_resource_tracker["queues"].add(queue_name)
+    queue_name = live_redis_resource_tracker.queue_name()
 
     settings = get_settings()
     monkeypatch.setattr(settings, "redis_url", live_redis_url)
@@ -350,7 +350,7 @@ def test_redis_rq_lease_expiration_and_recovery(
             max_attempts=3,
             auto_commit=True,
         )
-        live_redis_resource_tracker["jobs"].add(job.id)
+        live_redis_resource_tracker.track_job(job.id)
         job.status = JobStatus.GENERATING
         job.attempt_count = 1
         job.lease_owner = "dead-worker-pid-999"
@@ -370,13 +370,12 @@ def test_redis_rq_cancellation_protection(
     live_pg_session_factory: sessionmaker[Session],
     live_redis_connection: Any,
     live_redis_url: str | None,
-    live_redis_resource_tracker: dict[str, Any],
+    live_redis_resource_tracker: RedisAcceptanceResources,
     monkeypatch: Any,
 ):
-    """Verify that cancelled jobs safely abort execution without calling provider adapters or generating dirty output rows."""
+    """Existing pre-cancelled check; cancellation during execution still needs coverage."""
     seeded = _seed_redis_acceptance_hierarchy(live_pg_session_factory)
-    queue_name = f"acceptance_queue_{live_redis_resource_tracker['prefix'].replace(':', '_').strip('_')}"
-    live_redis_resource_tracker["queues"].add(queue_name)
+    queue_name = live_redis_resource_tracker.queue_name()
 
     settings = get_settings()
     monkeypatch.setattr(settings, "redis_url", live_redis_url)
@@ -401,7 +400,7 @@ def test_redis_rq_cancellation_protection(
             job_type="PAGE_GENERATE",
             auto_commit=True,
         )
-        live_redis_resource_tracker["jobs"].add(job.id)
+        live_redis_resource_tracker.track_job(job.id)
         job.status = JobStatus.CANCELLED
         db.commit()
 
@@ -419,3 +418,76 @@ def test_redis_rq_cancellation_protection(
             )
         )
         assert len(candidates) == 0
+
+
+def test_redis_resource_cleanup_preserves_neighbor_namespace(
+    live_redis_connection,
+    live_redis_resource_tracker,
+):
+    """Real Redis/RQ resource APIs only; not independent worker execution evidence."""
+    from uuid import uuid4
+
+    from rq import Worker
+    from rq.executions import Execution
+    from rq.registry import FinishedJobRegistry
+    from rq.results import Result
+
+    resources = live_redis_resource_tracker
+    client = live_redis_connection
+    neighbor = RedisAcceptanceResources(client)
+    neighbor.claim()
+    try:
+        own_name = resources.queue_name()
+        other_name = neighbor.queue_name("neighbor")
+        own_queue = Queue(own_name, connection=client)
+        other_queue = Queue(other_name, connection=client)
+        own_id, other_id = uuid4().hex, uuid4().hex
+        resources.track_job(own_id)
+        neighbor.track_job(other_id)
+        job = own_queue.enqueue("builtins.len", [1], job_id=own_id)
+        other_job = other_queue.enqueue("builtins.len", [1, 2], job_id=other_id)
+        sentinel = neighbor.app_key("sentinel")
+        client.set(sentinel, "preserve")
+
+        # Produce genuine RQ stream/execution/registry keys, without calling a supplier.
+        Result.create(job, Result.Type.SUCCESSFUL, ttl=300, return_value=1)
+        with client.pipeline() as pipe:
+            execution = Execution.create(job, ttl=300, pipeline=pipe)
+            pipe.execute()
+        FinishedJobRegistry(name=own_name, connection=client).add(job, ttl=300)
+        own_worker = Worker(
+            [own_queue],
+            connection=client,
+            name=resources.worker_name("registry"),
+        )
+        other_worker = Worker(
+            [other_queue],
+            connection=client,
+            name=neighbor.worker_name("neighbor"),
+        )
+        own_worker.register_birth()
+        own_worker.register_death()
+        # The other registered worker must not be deleted or unregistered.
+        other_worker.register_birth()
+        try:
+            resources.cleanup()
+            assert (
+                client.exists(
+                    job.key,
+                    Result.get_key(own_id),
+                    execution.key,
+                    f"rq:executions:{own_id}",
+                    own_queue.key,
+                    own_worker.key,
+                )
+                == 0
+            )
+            assert not client.sismember("rq:queues", own_queue.key)
+            assert client.get(sentinel) == b"preserve"
+            assert client.exists(other_job.key) == 1
+            assert client.sismember("rq:queues", other_queue.key)
+            assert client.sismember("rq:workers", other_worker.key)
+        finally:
+            other_worker.register_death()
+    finally:
+        neighbor.cleanup()

@@ -85,3 +85,35 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-phase2-acceptance.ps1 -Dr
 - 本次修改 Python 文件的 Ruff 检查通过。临时探针和临时数据库已清理。
 - 真实 PostgreSQL schema / Alembic / NOWAIT / 并发 / sentinel 测试仍 NOT RUN。
   全量 npm check、Redis/RQ 进程矩阵、编排随机资源与凭据仍未完成；live 入口继续封闭。
+
+
+## 2026-08-28 组长接管：Redis/RQ 清理准备
+
+在 `a3bcdf8` 之后新增 `tests/integration/redis_resources.py`，替代旧的字典加
+`except: pass` 清理器。此提交仍是准备工作，**不是 Redis/RQ 集成验收通过**。
+
+- 校验实际 Redis client 的 host/port/db；用随机 token 和 SET NX 建立本次归属。
+  队列、job、worker 必须先注册，拒绝接管已存在的资源。
+- 根据当前安装的 RQ API 收集 queue/intermediate/first_seen、六类 registry、
+  job/依赖、results、executions、worker、scheduler/maintenance key。
+  `rq:queues` 与 `rq:workers` 仅移除本次完整 key 成员，不删除全局集合。
+- 只发现已登记 application job 派生的 `-slot-<uuid>` 延迟任务，包含 job hash
+  过期后仍留在 results/executions 或队列 registry 的资源；不扫描或删除任意 job。
+- 清理前 WATCH 并校验归属、job origin、全局集合类型、队列成员、
+  worker death 与 scheduler lock。不明 job/外来 worker、活动或未确认终止的
+  worker/调度器均拒删；worker key 过期也不等同于确认退出。
+- 清理失败不吞异常、不标记完成，保留归属用于重试；确认相关 key 和全局成员已移除后，
+  最后删除归属标记。不存在任何 FLUSHDB/FLUSHALL。
+- 补充真实 Redis 下使用 RQ Queue、Result、Execution、Worker 注册 API 创建资源后，
+  验证本次清理与邻接 namespace/global membership 保留的测试。该测试尚未运行；
+  它验证资源清理，不等于独立进程 Worker 执行。
+
+实际执行：离线 harness **39 passed**（1 条既有 Starlette 警告），本次四个 Python
+文件 Ruff 通过。默认运行 `tests/integration/` 为 **16 skipped**，明确 NOT RUN；
+这些 skip 不能计为通过。新增离线检查是 mock 协议/控制流验证，没有使用 fakeredis，
+也没有连接任何真实服务。临时测试配置均已清理。
+
+仍需完成：SpawnWorker 子进程监督与本地适配器、强退后 PID/调度器退出证明、
+跨进程清理恢复记录、多 worker 槽位释放/重试/取消失租、五类版本门禁、
+随机凭据和本次容器编排、真实 PostgreSQL/Redis 执行及全量复验。
+当前 live 入口继续 BLOCKED。

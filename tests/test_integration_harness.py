@@ -243,3 +243,184 @@ def test_postgres_schema_cleanup_runs_after_each_failure(stage, monkeypatch):
     assert commands[-1] == f'DROP SCHEMA "{schema}" CASCADE'
     if stage != "engine":
         engine.dispose.assert_called_once()
+
+
+@pytest.fixture
+def redis_cleanup_mock():
+    """Only protocol/control-flow verification; no Redis server is simulated."""
+    from unittest.mock import MagicMock
+
+    from tests.integration.redis_resources import RedisAcceptanceResources
+
+    client = MagicMock()
+    client.connection_pool.connection_kwargs = {"host": "127.0.0.1", "port": 56379, "db": 15}
+    client.set.return_value = True
+    client.exists.return_value = 0
+    client.sismember.return_value = False
+    client.type.return_value = b"set"
+    client.hget.side_effect = lambda key, field: b"done" if field == "death" else None
+    client.smembers.return_value = set()
+    client.lrange.return_value = []
+    client.zrange.return_value = []
+    client.scan_iter.return_value = []
+    client.pipeline.return_value.__enter__.return_value = client
+    client.execute.return_value = [1]
+    resources = RedisAcceptanceResources(client, token="c" * 32)
+    client.get.side_effect = lambda key: (
+        resources.token.encode() if key == resources.owner_key else None
+    )
+    resources.claim()
+    return resources, client
+
+
+def test_redis_cleanup_covers_rq_resource_families_and_exact_global_members(redis_cleanup_mock):
+    from rq.job import Job
+    from rq.registry import StartedJobRegistry
+
+    resources, client = redis_cleanup_mock
+    queue = resources.queue_name()
+    job_id = "test-job"
+    resources.track_job(job_id)
+    worker = resources.worker_name("one")
+    execution = f"rq:execution:{job_id}:execution-one"
+    app_key = resources.app_key("control")
+    first_seen = f"rq:queue:{queue}:intermediate:first_seen:{job_id}"
+    families = {
+        f"rq:execution:{job_id}:*": [execution.encode()],
+        resources.prefix + "app:*": [app_key.encode()],
+        f"rq:queue:{queue}:intermediate:first_seen:*": [first_seen.encode()],
+    }
+    client.scan_iter.side_effect = lambda **kwargs: families.get(kwargs["match"], [])
+    client.hget.side_effect = lambda key, field: (
+        queue.encode() if field == "origin" else b"done" if field == "death" else None
+    )
+    resources.cleanup()
+    deleted = set(client.delete.call_args_list[0].args)
+    assert {
+        f"rq:queue:{queue}",
+        f"rq:queue:{queue}:intermediate",
+        f"rq:clean_registries:{queue}",
+        f"rq:workers:{queue}",
+        f"rq:scheduler:{queue}",
+        f"rq:scheduler-lock:{queue}",
+        StartedJobRegistry.key_template.format(queue),
+        f"rq:finished:{queue}",
+        f"rq:failed:{queue}",
+        f"rq:deferred:{queue}",
+        f"rq:scheduled:{queue}",
+        f"rq:canceled:{queue}",
+        f"rq:job:{job_id}",
+        f"rq:job:{job_id}:dependents",
+        Job(id=job_id, connection=client).dependencies_key,
+        f"rq:results:{job_id}",
+        f"rq:executions:{job_id}",
+        f"rq:worker:{worker}",
+        execution,
+        app_key,
+        first_seen,
+    } <= deleted
+    assert "rq:queues" not in deleted and "rq:workers" not in deleted
+    assert client.srem.call_args_list[0].args == ("rq:queues", f"rq:queue:{queue}")
+    assert client.srem.call_args_list[1].args == ("rq:workers", f"rq:worker:{worker}")
+    assert client.delete.call_args_list[-1].args == (resources.owner_key,)
+    assert resources.cleaned
+
+
+def test_redis_cleanup_finds_slot_results_after_job_hash_expired(redis_cleanup_mock):
+    resources, client = redis_cleanup_mock
+    resources.queue_name()
+    resources.track_job("root-job")
+    slot_id = "root-job-slot-" + "d" * 32
+    result_key = f"rq:results:{slot_id}"
+    client.scan_iter.side_effect = lambda **kwargs: (
+        [result_key.encode()] if kwargs["match"] == "rq:results:root-job-slot-*" else []
+    )
+    resources.cleanup()
+    assert result_key in client.delete.call_args_list[0].args
+    assert "rq:job:foreign-job" not in client.delete.call_args_list[0].args
+
+
+@pytest.mark.parametrize(
+    "case", ["owner", "worker", "origin", "untracked", "registry_type", "scheduler"]
+)
+def test_redis_cleanup_refuses_unowned_or_active_resources(redis_cleanup_mock, case):
+    resources, client = redis_cleanup_mock
+    resources.queue_name()
+    resources.track_job("owned-job")
+    resources.worker_name("one")
+    if case == "owner":
+        client.get.side_effect = lambda key: b"someone-else"
+    elif case == "worker":
+        client.hget.side_effect = lambda key, field: None
+    elif case == "origin":
+        client.hget.side_effect = lambda key, field: b"foreign-queue"
+    elif case == "untracked":
+        client.lrange.return_value = [b"unknown-job"]
+    elif case == "scheduler":
+        client.get.side_effect = lambda key: (
+            resources.token.encode() if key == resources.owner_key else b"123"
+        )
+    else:
+        client.type.return_value = b"string"
+    messages = {
+        "owner": "ownership changed",
+        "worker": "Worker has not confirmed",
+        "origin": "another queue",
+        "untracked": "Untracked job",
+        "registry_type": "registry type",
+        "scheduler": "Scheduler lock",
+    }
+    with pytest.raises(RuntimeError, match=messages[case]):
+        resources.cleanup()
+    client.delete.assert_not_called()
+    assert not resources.cleaned
+    with pytest.raises(RuntimeError, match="registration is closed"):
+        resources.track_job("late-job")
+
+
+def test_redis_cleanup_failure_keeps_owner_and_allows_retry(redis_cleanup_mock):
+    resources, client = redis_cleanup_mock
+    resources.queue_name()
+    resources.track_job("owned-job")
+    client.execute.side_effect = [ConnectionError("injected"), [1], [1]]
+    with pytest.raises(ConnectionError, match="injected"):
+        resources.cleanup()
+    assert not resources.cleaned
+    assert all(call.args != (resources.owner_key,) for call in client.delete.call_args_list)
+    resources.cleanup()
+    assert resources.cleaned
+
+
+def test_redis_cleanup_refuses_to_adopt_existing_job(redis_cleanup_mock):
+    resources, client = redis_cleanup_mock
+    client.exists.return_value = 1
+    with pytest.raises(RuntimeError, match="preexisting RQ job"):
+        resources.track_job("someone-elses-job")
+    assert resources.jobs == set()
+    client.delete.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"host": "127.0.0.1", "port": 6379, "db": 15},
+        {"host": "127.0.0.1", "port": 56379, "db": 0},
+        {"host": "example.invalid", "port": 56379, "db": 15},
+    ],
+)
+def test_redis_claim_checks_actual_connection_not_only_url(redis_cleanup_mock, options):
+    resources, client = redis_cleanup_mock
+    client.set.reset_mock()
+    client.connection_pool.connection_kwargs = options
+    with pytest.raises(ValueError, match="isolated acceptance endpoint"):
+        resources.claim()
+    client.set.assert_not_called()
+
+
+def test_redis_cleanup_does_not_mark_success_if_owner_delete_failed(redis_cleanup_mock):
+    resources, client = redis_cleanup_mock
+    resources.queue_name()
+    client.execute.side_effect = [[1], [0]]
+    with pytest.raises(RuntimeError, match="marker was not removed"):
+        resources.cleanup()
+    assert not resources.cleaned

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import uuid
 from collections.abc import Generator
 from typing import Any
 
@@ -16,6 +15,7 @@ from scripts.acceptance_safety import (
     validate_safe_acceptance_redis_url,
 )
 from tests.integration.postgres_resources import isolated_postgres_schema
+from tests.integration.redis_resources import RedisAcceptanceResources
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -127,6 +127,7 @@ def live_redis_connection(
         pytest.skip("Live Redis/RQ acceptance is not requested; NOT RUN.")
 
     masked = mask_url(live_redis_url)
+    client = None
     try:
         from redis import Redis
 
@@ -137,6 +138,8 @@ def live_redis_connection(
         )
         client.ping()
     except Exception as exc:
+        if client is not None:
+            client.close()
         pytest.fail(f"Live Redis connection failed at {masked}: {type(exc).__name__}.")
 
     try:
@@ -148,28 +151,10 @@ def live_redis_connection(
 @pytest.fixture
 def live_redis_resource_tracker(
     live_redis_connection: Any,
-) -> Generator[dict[str, Any], None, None]:
-    """Existing partial tracker; RQ resource cleanup still needs repair."""
-    prefix = f"mangaflow:acceptance:{uuid.uuid4().hex[:8]}:"
-    tracker = {
-        "prefix": prefix,
-        "queues": set(),
-        "jobs": set(),
-    }
+) -> Generator[RedisAcceptanceResources, None, None]:
+    resources = RedisAcceptanceResources(live_redis_connection)
+    resources.claim()
     try:
-        yield tracker
+        yield resources
     finally:
-        try:
-            # 1. Clean up tracked queues
-            for q_name in tracker["queues"]:
-                live_redis_connection.delete(f"rq:queue:{q_name}")
-                live_redis_connection.srem("rq:queues", q_name)
-            # 2. Clean up tracked jobs
-            for j_id in tracker["jobs"]:
-                live_redis_connection.delete(f"rq:job:{j_id}")
-            # 3. Clean up any application keys matching prefix
-            app_keys = list(live_redis_connection.scan_iter(match=f"{prefix}*", count=100))
-            if app_keys:
-                live_redis_connection.delete(*app_keys)
-        except Exception:
-            pass
+        resources.cleanup()
