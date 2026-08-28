@@ -426,6 +426,11 @@ export default function ProjectWorkspace({
     queryFn: () => api.batches(selectedPageEntry!.id),
     enabled: section === "generate" && Boolean(selectedPageEntry),
   });
+  // The workbench inserts tall blocks (readiness panel, reference check) whose
+  // height is unknown until the workbench query lands; rendering them in stages
+  // pushed the whole canvas down (measured CLS 0.477). Show one skeleton until
+  // the workbench, batch and model data exist, then insert the canvas at once.
+  const generateWorkbenchReady = !workbench.isLoading && !pageBatches.isLoading && !models.isLoading;
   const orderedPageBatches = useMemo(
     () => [...(pageBatches.data ?? [])].sort((left, right) => left.ordinal - right.ordinal),
     [pageBatches.data],
@@ -1421,7 +1426,7 @@ export default function ProjectWorkspace({
           {section === "generate" && (
             <div className="generate-workbench">
               <header className="canvas-header"><div><span>DRAW / 单页抽卡</span><h2>{selectedPage ? `第 ${selectedPage.page_number} 页候选` : "选择一页开始"}</h2></div><small>每次只生成 1 页</small></header>
-              {selectedPage ? <>
+              {selectedPage ? !generateWorkbenchReady ? <div className="generate-skeleton" role="status" aria-label="正在载入生成工作台"><LoaderCircle className="spin" size={22} /><span>正在载入生成工作台…</span></div> : <>
                 {selectedPageStructureIssue && <div className="workflow-warning"><CircleAlert size={17} /><div><strong>当前页暂不能生成</strong><p>{selectedPageStructureIssue}</p></div><Link className="button outline compact" href={projectPath("script")}>前往漫画剧本</Link></div>}
                 {selectedPage.continuity_status === "NEEDS_REVIEW" && <div className="workflow-warning"><CircleAlert size={17} /><div><strong>剧本或分镜已修改</strong><p>历史候选仍然保留，但可能不再对应当前脚本。建议重新抽卡并执行连续性检查。</p></div><Link className="button outline compact" href={projectPath("storyboard")}>检查分镜</Link></div>}
                 {selectedWorkbenchCandidate && ["STALE", "LEGACY_UNKNOWN"].includes(selectedWorkbenchCandidate.version_state) && <div className="stale-candidate-banner"><div><span>版本需要决定</span><strong>旧候选基于 {selectedWorkbenchCandidate.based_on_storyboard_version ? `V${selectedWorkbenchCandidate.based_on_storyboard_version}` : "未知版本"}，当前分镜为 V{selectedPage.storyboard_version}</strong><p>旧图可以继续查看，但必须确认版本并重新完成视觉检查后，才能进入下一页或导出。</p></div><div><button disabled={keepSelectedCandidate.isPending} onClick={() => keepSelectedCandidate.mutate(selectedWorkbenchCandidate.id)}><Check size={14} />沿用并重新检查</button><button className="primary" disabled={generate.isPending || !pageReadiness.data?.ready || !generationReferenceReady || isViewingHistoricalBatch} onClick={() => generate.mutate()}><Sparkles size={14} />{isViewingHistoricalBatch ? "先切回最新批次" : `按当前 V${selectedPage.storyboard_version} 重新生成`}</button></div></div>}

@@ -68,7 +68,18 @@ try {
       const slug = route.replaceAll("/", "_") || "_root";
       await writeFile(
         path.join(auditDir, `${slug}.json`),
-        JSON.stringify({ route, scores, metrics, opportunities, lcp: result.lhr.audits["largest-contentful-paint"]?.details ?? null }, null, 2),
+        JSON.stringify(
+          {
+            route,
+            scores,
+            metrics,
+            opportunities,
+            lcp: result.lhr.audits["largest-contentful-paint"]?.details ?? null,
+            layoutShifts: result.lhr.audits["layout-shifts"]?.details ?? null,
+          },
+          null,
+          2,
+        ),
       );
     }
     for (const [category, minimum] of Object.entries(minimums)) {
