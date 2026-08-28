@@ -16,12 +16,18 @@ async function projectByName(request: APIRequestContext, name: string): Promise<
   return match!.id;
 }
 
-async function publishedGraph(request: APIRequestContext, projectId: string) {
+async function pageWorkflowId(request: APIRequestContext, projectId: string): Promise<string> {
   const workflows = await request.get(`http://127.0.0.1:8000/api/v1/projects/${projectId}/workflows`);
   expect(workflows.ok()).toBeTruthy();
-  const items = await workflows.json() as { id: string }[];
-  expect(items.length).toBeGreaterThan(0);
-  const versions = await request.get(`http://127.0.0.1:8000/api/v1/workflows/${items[0].id}/versions`);
+  const items = await workflows.json() as { id: string; name: string }[];
+  const match = items.find((item) => item.name === "单页生产流程") ?? items[0];
+  expect(match, "单页生产流程").toBeTruthy();
+  return match.id;
+}
+
+async function publishedGraph(request: APIRequestContext, projectId: string) {
+  const workflowId = await pageWorkflowId(request, projectId);
+  const versions = await request.get(`http://127.0.0.1:8000/api/v1/workflows/${workflowId}/versions`);
   expect(versions.ok()).toBeTruthy();
   const published = await versions.json() as { graph: { nodes: Array<{ id: string; position: { x: number; y: number } }> } }[];
   return published[0] ?? null;
