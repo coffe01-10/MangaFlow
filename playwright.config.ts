@@ -1,6 +1,6 @@
 import { defineConfig } from "@playwright/test";
 import path from "node:path";
-import { assertSupervised, defaultPython } from "./scripts/phase2_runner.mjs";
+import { assertSupervised, defaultPython } from "./scripts/phase2_runner_lib.cjs";
 
 const owned = assertSupervised();
 const python = defaultPython(process.cwd());

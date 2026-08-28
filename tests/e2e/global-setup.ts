@@ -1,4 +1,4 @@
-import { assertSupervised, waitForOwnedHealth } from "../../scripts/phase2_runner.mjs";
+import { assertSupervised, waitForOwnedHealth } from "../../scripts/phase2_runner_lib.cjs";
 
 export default async function globalSetup() {
   const { runId } = assertSupervised(8000);
