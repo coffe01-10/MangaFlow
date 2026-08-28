@@ -1361,6 +1361,7 @@ def approve_node(
             max_attempts=node.config.max_attempts,
             idempotency_key=f"workflow:{run.id}:{node_id}:candidate",
             dependency_ids=dependency_ids,
+            auto_commit=False,
         )
         candidate.job_id = job.id
         project = db.get(Project, run.project_id)

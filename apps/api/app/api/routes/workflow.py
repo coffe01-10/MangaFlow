@@ -607,98 +607,21 @@ def create_candidate(
     payload: CandidateCreate,
     db: Session = Depends(get_db),
 ) -> CandidateQueuedRead:
-    batch = db.get(GenerationBatch, batch_id)
-    if not batch or batch.status != "OPEN" or not batch.page_id:
-        raise HTTPException(status_code=409, detail="抽卡批次不存在或已经关闭")
-    page = _page(db, batch.page_id)
-    if payload.storyboard_version != page.storyboard_version:
+    if payload.model_alias.lower() == "auto":
         raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "STALE_STORYBOARD_VERSION",
-                "message": "分镜已更新，请刷新页面后重新确认参考图",
-                "expected": payload.storyboard_version,
-                "current": page.storyboard_version,
-            },
+            status_code=422,
+            detail="生图模型必须显式选择，不能使用 auto",
         )
-    ensure_page_ready(db, page, get_settings())
-    project = _project_for_page(db, page)
-    resolved_model = resolve_model(
-        db,
-        get_settings(),
-        operation="image_edit",
-        explicit_reference=payload.model_alias,
-        project_id=project.id,
-        task_kind="PAGE_GENERATE",
-    )
-    if not model_supports_resolution(resolved_model.model, payload.resolution.value):
-        raise HTTPException(status_code=422, detail="所选模型不支持该输出清晰度")
-    panels = list(db.scalars(select(Panel).where(Panel.page_id == page.id)))
-    visible_character_ids = list(
-        dict.fromkeys(character_id for panel in panels for character_id in panel.characters)
-    )
-    normalized_selections: dict[str, dict[str, str | None]] = {}
-    for character_id in visible_character_ids:
-        selection = payload.reference_selections.get(character_id, {})
-        character_asset_id = selection.get("character_asset_id")
-        valid_character_reference = (
-            db.scalar(
-                select(CharacterReference).where(
-                    CharacterReference.character_id == character_id,
-                    CharacterReference.asset_id == character_asset_id,
-                )
-            )
-            if character_asset_id
-            else None
-        )
-        if not valid_character_reference:
-            character = db.get(Character, character_id)
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "请为画面人物 "
-                    f"{character.primary_name if character else character_id} "
-                    "选择一张人物参考图"
-                ),
-            )
-        assigned_outfits = {
-            panel.outfits.get(character_id)
-            for panel in panels
-            if panel.outfits.get(character_id)
-        }
-        if len(assigned_outfits) > 1:
-            raise HTTPException(status_code=409, detail="同一页同一角色存在多套服装，请先拆页")
-        assigned_outfit_id = next(iter(assigned_outfits), None)
-        outfit_id = selection.get("outfit_id") or assigned_outfit_id
-        outfit_asset_id = selection.get("outfit_asset_id")
-        if assigned_outfit_id and outfit_id != assigned_outfit_id:
-            raise HTTPException(status_code=409, detail="参考确认中的服装与分镜指定服装不一致")
-        if outfit_id:
-            outfit = db.get(Outfit, outfit_id)
-            if not outfit or outfit.character_id != character_id or outfit.project_id != project.id:
-                raise HTTPException(status_code=409, detail="所选服装不属于当前人物")
-            if not outfit.reference_asset_ids:
-                raise HTTPException(status_code=409, detail="分镜指定服装还没有绑定参考图")
-            if outfit_asset_id not in outfit.reference_asset_ids:
-                raise HTTPException(status_code=409, detail="请为分镜服装选择一张已绑定参考图")
-        normalized_selections[character_id] = {
-            "character_asset_id": character_asset_id,
-            "outfit_id": outfit_id,
-            "outfit_asset_id": outfit_asset_id,
-        }
     try:
         candidate, job = create_page_candidate(
             db,
-            batch=batch,
-            page=page,
-            project=project,
-            resolved_model=resolved_model,
-            normalized_selections=normalized_selections,
+            batch_id=batch_id,
             payload=payload,
         )
     except CandidateOrdinalConflictError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     job = enqueue_job(db, job)
+    page = db.get(MangaPage, candidate.page_id)
     return CandidateQueuedRead(
         job_id=job.id,
         job_status=job.status,

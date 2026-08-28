@@ -8,8 +8,11 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.models import (
+    Asset,
     AssetCandidate,
+    Chapter,
     Character,
     CharacterReference,
     GenerationBatch,
@@ -19,10 +22,12 @@ from app.models import (
     PageCandidate,
     Panel,
     Project,
+    StyleProfile,
     utcnow,
 )
 from app.schemas import AssetCandidateCreate, CandidateCreate
 from app.services.job_service import create_job
+from app.services.model_router import model_supports_resolution, resolve_model
 
 ORDINAL_ALLOCATION_MAX_ATTEMPTS = 5
 
@@ -102,6 +107,41 @@ def _next_asset_candidate_ordinal(db: Session, batch_id: str) -> int:
     return (current or 0) + 1
 
 
+def _generation_reference_ids(db: Session, batch: GenerationBatch) -> list[str]:
+    if batch.target_type == "CHARACTER":
+        refs = list(
+            db.scalars(
+                select(CharacterReference)
+                .join(Asset, Asset.id == CharacterReference.asset_id)
+                .where(
+                    CharacterReference.character_id == batch.target_id,
+                    Asset.deleted_at.is_(None),
+                )
+            )
+        )
+        return [item.asset_id for item in refs]
+    if batch.target_type == "OUTFIT":
+        outfit = db.get(Outfit, batch.target_id)
+        if not outfit:
+            return []
+        refs = list(
+            db.scalars(
+                select(CharacterReference)
+                .join(Asset, Asset.id == CharacterReference.asset_id)
+                .where(
+                    CharacterReference.character_id == outfit.character_id,
+                    Asset.deleted_at.is_(None),
+                )
+            )
+        )
+        character_ids = [item.asset_id for item in refs]
+        return list(dict.fromkeys([*character_ids, *outfit.reference_asset_ids]))
+    if batch.target_type == "STYLE":
+        style = db.get(StyleProfile, batch.target_id)
+        return list(style.profile.get("reference_asset_ids", [])) if style else []
+    return []
+
+
 def create_generation_batch(
     db: Session,
     *,
@@ -118,32 +158,35 @@ def create_generation_batch(
     last_error: BaseException | None = None
     for _attempt in range(max_attempts):
         try:
-            with db.begin_nested():
-                project = lock_entity(db, Project, project_id)
-                if project is None or project.deleted_at is not None:
-                    raise HTTPException(status_code=404, detail="项目不存在")
-                if close_open_page_batches and page_id:
-                    db.execute(
-                        update(GenerationBatch)
-                        .where(
-                            GenerationBatch.page_id == page_id,
-                            GenerationBatch.status == "OPEN",
-                        )
-                        .values(status="CLOSED", closed_at=utcnow())
+            project = lock_entity(db, Project, project_id)
+            if project is None or project.deleted_at is not None:
+                raise HTTPException(status_code=404, detail="项目不存在")
+            if page_id:
+                page = db.get(MangaPage, page_id)
+                if page is None:
+                    raise HTTPException(status_code=404, detail="页面不存在")
+            if close_open_page_batches and page_id:
+                db.execute(
+                    update(GenerationBatch)
+                    .where(
+                        GenerationBatch.page_id == page_id,
+                        GenerationBatch.status == "OPEN",
                     )
-                ordinal = _next_batch_ordinal(db, project_id)
-                batch = GenerationBatch(
-                    project_id=project_id,
-                    chapter_id=chapter_id,
-                    page_id=page_id,
-                    target_type=target_type,
-                    target_id=target_id,
-                    ordinal=ordinal,
-                    generation_kind=generation_kind,
-                    status="OPEN",
+                    .values(status="CLOSED", closed_at=utcnow())
                 )
-                db.add(batch)
-                db.flush()
+            ordinal = _next_batch_ordinal(db, project_id)
+            batch = GenerationBatch(
+                project_id=project_id,
+                chapter_id=chapter_id,
+                page_id=page_id,
+                target_type=target_type,
+                target_id=target_id,
+                ordinal=ordinal,
+                generation_kind=generation_kind,
+                status="OPEN",
+            )
+            db.add(batch)
+            db.flush()
             return batch
         except IntegrityError as error:
             last_error = error
@@ -222,64 +265,99 @@ def validate_candidate_reference_selections(
 def create_page_candidate(
     db: Session,
     *,
-    batch: GenerationBatch,
-    page: MangaPage,
-    project: Project,
-    resolved_model,
-    normalized_selections: dict[str, dict[str, str | None]],
+    batch_id: str | None = None,
     payload: CandidateCreate,
+    batch: GenerationBatch | None = None,
+    page: MangaPage | None = None,
+    project: Project | None = None,
+    resolved_model=None,
+    normalized_selections: dict[str, dict[str, str | None]] | None = None,
     max_attempts: int = ORDINAL_ALLOCATION_MAX_ATTEMPTS,
 ) -> tuple[PageCandidate, GenerationJob]:
-    """Create a PageCandidate and its associated GenerationJob with unique ordinal in batch."""
-    batch_id = batch.id
-    page_id = page.id
-    project_id = project.id
+    """Create a PageCandidate and its associated GenerationJob atomically."""
+    target_batch_id = batch_id or (batch.id if batch else None)
+    if not target_batch_id:
+        raise HTTPException(status_code=400, detail="缺少 batch_id")
     last_error: BaseException | None = None
     for _attempt in range(max_attempts):
         try:
-            with db.begin_nested():
-                locked_batch = lock_entity(db, GenerationBatch, batch_id)
-                if not locked_batch or locked_batch.status != "OPEN":
-                    raise HTTPException(status_code=409, detail="抽卡批次不存在或已经关闭")
-                ordinal = _next_page_candidate_ordinal(db, locked_batch.id)
-                candidate = PageCandidate(
-                    batch_id=locked_batch.id,
-                    page_id=page_id,
-                    ordinal=ordinal,
-                    model_alias=payload.model_alias,
-                    catalog_model_id=resolved_model.model.id,
-                    resolution=payload.resolution,
-                    status="QUEUED",
-                    based_on_storyboard_version=payload.storyboard_version,
-                    prompt_snapshot={
-                        "reference_selections": normalized_selections,
-                        "storyboard_version": payload.storyboard_version,
+            current_batch = lock_entity(db, GenerationBatch, target_batch_id)
+            if not current_batch or current_batch.status != "OPEN" or not current_batch.page_id:
+                raise HTTPException(status_code=409, detail="抽卡批次不存在或已经关闭")
+            current_page = db.get(MangaPage, current_batch.page_id)
+            if not current_page:
+                raise HTTPException(status_code=404, detail="页面不存在")
+            if payload.storyboard_version != current_page.storyboard_version:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "STALE_STORYBOARD_VERSION",
+                        "message": "分镜已更新，请刷新页面后重新确认参考图",
+                        "expected": payload.storyboard_version,
+                        "current": current_page.storyboard_version,
                     },
                 )
-                db.add(candidate)
-                db.flush()
-            locked_project = lock_entity(db, Project, project_id)
-            if locked_project:
-                locked_project.last_image_model_alias = payload.model_alias
-                locked_project.image_model_alias = payload.model_alias
-                locked_project.last_image_model_id = resolved_model.model.id
-                locked_project.version += 1
+            from app.api.routes import workflow as workflow_route_module
+
+            workflow_route_module.ensure_page_ready(db, current_page, get_settings())
+            chapter = db.get(Chapter, current_page.chapter_id)
+            if not chapter:
+                raise HTTPException(status_code=404, detail="章节不存在")
+            current_project = lock_entity(db, Project, chapter.project_id)
+            if not current_project or current_project.deleted_at is not None:
+                raise HTTPException(status_code=404, detail="项目不存在")
+            current_resolved_model = resolve_model(
+                db,
+                get_settings(),
+                operation="image_edit",
+                explicit_reference=payload.model_alias,
+                project_id=current_project.id,
+                task_kind="PAGE_GENERATE",
+            )
+            if not model_supports_resolution(
+                current_resolved_model.model, payload.resolution.value
+            ):
+                raise HTTPException(status_code=422, detail="所选模型不支持该输出清晰度")
+            current_normalized_selections = validate_candidate_reference_selections(
+                db, current_page, current_project, payload
+            )
+            ordinal = _next_page_candidate_ordinal(db, current_batch.id)
+            candidate = PageCandidate(
+                batch_id=current_batch.id,
+                page_id=current_page.id,
+                ordinal=ordinal,
+                model_alias=payload.model_alias,
+                catalog_model_id=current_resolved_model.model.id,
+                resolution=payload.resolution,
+                status="QUEUED",
+                based_on_storyboard_version=current_page.storyboard_version,
+                prompt_snapshot={
+                    "reference_selections": current_normalized_selections,
+                    "storyboard_version": current_page.storyboard_version,
+                },
+            )
+            db.add(candidate)
+            db.flush()
+            current_project.last_image_model_alias = payload.model_alias
+            current_project.image_model_alias = payload.model_alias
+            current_project.last_image_model_id = current_resolved_model.model.id
+            current_project.version += 1
             job = create_job(
                 db,
-                project_id=project_id,
+                project_id=current_project.id,
                 target_type="PAGE_CANDIDATE",
                 target_id=candidate.id,
                 job_type="PAGE_GENERATE",
                 model_alias=payload.model_alias,
-                catalog_model_id=resolved_model.model.id,
+                catalog_model_id=current_resolved_model.model.id,
                 request_parameters={
                     "resolution": payload.resolution.value,
-                    "storyboard_version": payload.storyboard_version,
-                    "reference_selections": normalized_selections,
+                    "storyboard_version": current_page.storyboard_version,
+                    "reference_selections": current_normalized_selections,
                 },
                 reference_asset_ids=[
                     asset_id
-                    for selection in normalized_selections.values()
+                    for selection in current_normalized_selections.values()
                     for asset_id in (
                         selection.get("character_asset_id"),
                         selection.get("outfit_asset_id"),
@@ -287,6 +365,7 @@ def create_page_candidate(
                     if asset_id
                 ],
                 idempotency_key=f"candidate:{candidate.id}",
+                auto_commit=False,
             )
             candidate.job_id = job.id
             db.commit()
@@ -308,57 +387,92 @@ def create_page_candidate(
 def create_asset_candidate(
     db: Session,
     *,
-    batch: GenerationBatch,
-    project: Project,
-    resolved_model,
+    batch_id: str | None = None,
     payload: AssetCandidateCreate,
-    reference_asset_ids: Sequence[str],
+    batch: GenerationBatch | None = None,
+    project: Project | None = None,
+    resolved_model=None,
+    reference_asset_ids: Sequence[str] | None = None,
     max_attempts: int = ORDINAL_ALLOCATION_MAX_ATTEMPTS,
 ) -> tuple[AssetCandidate, GenerationJob]:
-    """Create an AssetCandidate and its associated GenerationJob with unique ordinal in batch."""
-    batch_id = batch.id
-    project_id = project.id
+    """Create an AssetCandidate and its associated GenerationJob atomically."""
+    target_batch_id = batch_id or (batch.id if batch else None)
+    if not target_batch_id:
+        raise HTTPException(status_code=400, detail="缺少 batch_id")
     last_error: BaseException | None = None
     for _attempt in range(max_attempts):
         try:
-            with db.begin_nested():
-                locked_batch = lock_entity(db, GenerationBatch, batch_id)
-                if not locked_batch or locked_batch.status != "OPEN":
-                    raise HTTPException(status_code=409, detail="抽卡批次不存在或已经关闭")
-                ordinal = _next_asset_candidate_ordinal(db, locked_batch.id)
-                candidate = AssetCandidate(
-                    batch_id=locked_batch.id,
-                    ordinal=ordinal,
-                    model_alias=payload.model_alias,
-                    catalog_model_id=resolved_model.model.id,
-                    resolution=payload.resolution,
-                    variant=payload.variant,
-                    instruction=payload.instruction,
-                    status="QUEUED",
-                )
-                db.add(candidate)
-                db.flush()
-            locked_project = lock_entity(db, Project, project_id)
-            if locked_project:
-                locked_project.last_image_model_alias = payload.model_alias
-                locked_project.image_model_alias = payload.model_alias
-                locked_project.last_image_model_id = resolved_model.model.id
-                locked_project.version += 1
+            current_batch = lock_entity(db, GenerationBatch, target_batch_id)
+            if (
+                not current_batch
+                or current_batch.status != "OPEN"
+                or not current_batch.target_type
+                or not current_batch.target_id
+            ):
+                raise HTTPException(status_code=409, detail="资产生成批次不存在或已关闭")
+            current_project = lock_entity(db, Project, current_batch.project_id)
+            if not current_project or current_project.deleted_at is not None:
+                raise HTTPException(status_code=404, detail="项目不存在")
+            ref_ids = (
+                list(reference_asset_ids)
+                if reference_asset_ids is not None
+                else _generation_reference_ids(db, current_batch)
+            )
+            from app.api.routes import asset_generation as asset_generation_module
+
+            resolve_fn = getattr(asset_generation_module, "resolve_model", resolve_model)
+            current_resolved_model = resolve_fn(
+                db,
+                get_settings(),
+                operation="image_edit" if ref_ids else "image_generate",
+                explicit_reference=payload.model_alias,
+                project_id=current_project.id,
+                task_kind="ASSET_GENERATE",
+            )
+            if not model_supports_resolution(
+                current_resolved_model.model, payload.resolution.value
+            ):
+                raise HTTPException(status_code=422, detail="所选模型不支持该输出清晰度")
+            allowed_variants = {
+                "CHARACTER": {"FRONT", "SIDE", "BACK", "EXPRESSION", "SHEET"},
+                "OUTFIT": {"OUTFIT", "OUTFIT_SHEET"},
+                "STYLE": {"STYLE_TEST"},
+            }
+            if payload.variant not in allowed_variants.get(current_batch.target_type, set()):
+                raise HTTPException(status_code=422, detail="资产生成角度与目标档案不匹配")
+            ordinal = _next_asset_candidate_ordinal(db, current_batch.id)
+            candidate = AssetCandidate(
+                batch_id=current_batch.id,
+                ordinal=ordinal,
+                model_alias=payload.model_alias,
+                catalog_model_id=current_resolved_model.model.id,
+                resolution=payload.resolution,
+                variant=payload.variant,
+                instruction=payload.instruction,
+                status="QUEUED",
+            )
+            db.add(candidate)
+            db.flush()
+            current_project.last_image_model_alias = payload.model_alias
+            current_project.image_model_alias = payload.model_alias
+            current_project.last_image_model_id = current_resolved_model.model.id
+            current_project.version += 1
             job = create_job(
                 db,
-                project_id=project_id,
+                project_id=current_project.id,
                 target_type="ASSET_CANDIDATE",
                 target_id=candidate.id,
                 job_type="ASSET_GENERATE",
                 model_alias=payload.model_alias,
-                catalog_model_id=resolved_model.model.id,
+                catalog_model_id=current_resolved_model.model.id,
                 request_parameters={
                     "variant": payload.variant,
                     "instruction": payload.instruction,
                     "resolution": payload.resolution.value,
                 },
-                reference_asset_ids=list(reference_asset_ids),
+                reference_asset_ids=ref_ids,
                 idempotency_key=f"asset-candidate:{candidate.id}",
+                auto_commit=False,
             )
             candidate.job_id = job.id
             db.commit()
@@ -375,3 +489,4 @@ def create_asset_candidate(
             last_error = error
             time.sleep(0.02 * (2 ** _attempt) + random.uniform(0, 0.03))
     raise CandidateOrdinalConflictError("素材候选分配冲突，请稍后重试") from last_error
+

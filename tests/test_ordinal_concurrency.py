@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import create_engine, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
@@ -24,14 +25,17 @@ from app.models import (
     Project,
     SourceRevision,
     SourceSegment,
+    StyleProfile,
 )
 from app.schemas import AssetCandidateCreate, CandidateCreate
 from app.services.content_workflow import import_source, revise_chapter_source
+from app.services.job_service import create_job
 from app.services.ordinal_allocator import (
     BatchOrdinalConflictError,
     CandidateOrdinalConflictError,
     ChapterOrdinalConflictError,
     SourceRevisionConflictError,
+    _next_page_candidate_ordinal,
     create_asset_candidate,
     create_generation_batch,
     create_page_candidate,
@@ -150,6 +154,21 @@ def _seed_test_hierarchy(factory):
         )
         db.add(outfit)
         db.flush()
+
+        style = StyleProfile(
+            project_id=project.id,
+            name="默认日漫风格",
+            color_mode="color",
+            status="ACTIVE",
+            profile={
+                "palette_confirmed": True,
+                "test_image_approved": True,
+                "reference_asset_ids": [asset.id],
+            },
+        )
+        db.add(style)
+        db.flush()
+        project.default_style_id = style.id
 
         panel = Panel(
             page_id=page.id,
@@ -550,6 +569,213 @@ def test_chapter_ordinal_exhaustion_raises_conflict_error(file_sessions, monkeyp
             )
 
 
+@pytest.fixture
+def app_default_sqlite_sessions(tmp_path):
+    """Provide a standard SQLite database using the project's exact app.database configuration."""
+    from sqlalchemy import event
+
+    db_path = tmp_path / "app_default.db"
+    engine = create_engine(
+        f"sqlite:///{db_path}",
+        connect_args={"check_same_thread": False},
+    )
+
+    @event.listens_for(engine, "connect")
+    def enable_sqlite_integrity(dbapi_connection, _connection_record) -> None:
+        if not isinstance(dbapi_connection, sqlite3.Connection):
+            return
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.close()
+
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    try:
+        yield factory
+    finally:
+        engine.dispose()
+
+
+def test_default_sqlite_batch_rollback_leaves_zero_orphan_batches(app_default_sqlite_sessions):
+    """Verify that on default SQLite configuration, outer db.rollback() leaves zero orphan batches."""
+    factory = app_default_sqlite_sessions
+    seeded = _seed_test_hierarchy(factory)
+
+    db = factory()
+    try:
+        _batch = create_generation_batch(
+            db,
+            project_id=seeded["project_id"],
+            chapter_id=seeded["chapter_id"],
+            page_id=seeded["page_id"],
+            generation_kind="PAGE",
+        )
+        raise RuntimeError("Simulated workflow downstream error")
+    except RuntimeError:
+        db.rollback()
+    finally:
+        db.close()
+
+    with factory() as verify_db:
+        batches = list(
+            verify_db.scalars(
+                select(GenerationBatch).where(
+                    GenerationBatch.project_id == seeded["project_id"]
+                )
+            )
+        )
+        assert len(batches) == 0
+
+
+def test_default_sqlite_create_job_failure_rolls_back_candidate_and_job(app_default_sqlite_sessions):
+    """Verify that when create_job uses auto_commit=False and downstream fails, candidate and job are rolled back cleanly."""
+    factory = app_default_sqlite_sessions
+    seeded = _seed_test_hierarchy(factory)
+
+    db = factory()
+    try:
+        batch = create_generation_batch(
+            db,
+            project_id=seeded["project_id"],
+            chapter_id=seeded["chapter_id"],
+            page_id=seeded["page_id"],
+            generation_kind="PAGE",
+        )
+        candidate = PageCandidate(
+            batch_id=batch.id,
+            page_id=seeded["page_id"],
+            ordinal=1,
+            model_alias="image.fast",
+            resolution=Resolution.STANDARD_2K,
+            status="QUEUED",
+            based_on_storyboard_version=1,
+            prompt_snapshot={},
+        )
+        db.add(candidate)
+        db.flush()
+        job = create_job(
+            db,
+            project_id=seeded["project_id"],
+            target_type="PAGE_CANDIDATE",
+            target_id=candidate.id,
+            job_type="PAGE_GENERATE",
+            model_alias="image.fast",
+            auto_commit=False,
+        )
+        candidate.job_id = job.id
+        db.flush()
+        raise RuntimeError("Simulated failure after create_job before final commit")
+    except RuntimeError:
+        db.rollback()
+    finally:
+        db.close()
+
+    with factory() as verify_db:
+        candidates = list(verify_db.scalars(select(PageCandidate)))
+        jobs = list(verify_db.scalars(select(GenerationJob)))
+        batches = list(verify_db.scalars(select(GenerationBatch)))
+        assert len(candidates) == 0
+        assert len(jobs) == 0
+        assert len(batches) == 0
+
+
+def test_create_page_candidate_retry_rejects_stale_storyboard_version(file_sessions, monkeypatch):
+    """Verify that during retry backoff if another session bumps storyboard_version, candidate creation is rejected."""
+    factory = file_sessions
+    seeded = _seed_test_hierarchy(factory)
+
+    with factory() as db:
+        batch = create_generation_batch(
+            db,
+            project_id=seeded["project_id"],
+            chapter_id=seeded["chapter_id"],
+            page_id=seeded["page_id"],
+            generation_kind="PAGE",
+        )
+        db.commit()
+        batch_id = batch.id
+
+    attempt_count = 0
+    real_next_ordinal = _next_page_candidate_ordinal
+
+    def racing_next_ordinal(db_session, b_id):
+        nonlocal attempt_count
+        attempt_count += 1
+        if attempt_count == 1:
+            # Another session modifies storyboard_version during backoff gap
+            with factory() as other_db:
+                p = other_db.get(MangaPage, seeded["page_id"])
+                p.storyboard_version = 2
+                other_db.commit()
+            raise OperationalError("statement", {}, sqlite3.OperationalError("database is locked"))
+        return real_next_ordinal(db_session, b_id)
+
+    monkeypatch.setattr(
+        "app.services.ordinal_allocator._next_page_candidate_ordinal",
+        racing_next_ordinal,
+    )
+
+    with factory() as db:
+        with pytest.raises(HTTPException) as exc_info:
+            create_page_candidate(
+                db,
+                batch_id=batch_id,
+                payload=CandidateCreate(
+                    model_alias="image.nano_banana_2",
+                    resolution=Resolution.DRAFT_1K,
+                    storyboard_version=1,
+                    reference_selections={
+                        seeded["character_id"]: {
+                            "character_asset_id": seeded["character_asset_id"],
+                            "outfit_id": seeded["outfit_id"],
+                            "outfit_asset_id": seeded["outfit_asset_id"],
+                        }
+                    },
+                ),
+            )
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail.get("code") == "STALE_STORYBOARD_VERSION"
+
+    with factory() as verify_db:
+        candidates = list(
+            verify_db.scalars(select(PageCandidate).where(PageCandidate.batch_id == batch_id))
+        )
+        assert len(candidates) == 0
+
+
+def test_workflow_approval_endpoint_maps_ordinal_conflict_to_409(monkeypatch):
+    """Verify that BatchOrdinalConflictError from approve_node is mapped to HTTP 409 in the route."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app.api.routes.workflow_definitions import router as workflow_router
+    from app.database import get_db
+
+    app = FastAPI()
+    app.include_router(workflow_router)
+
+    def fake_db():
+        yield None
+
+    app.dependency_overrides[get_db] = fake_db
+
+    def mock_approve_node(*_args, **_kwargs):
+        raise BatchOrdinalConflictError("抽卡批次分配冲突，请稍后重试")
+
+    monkeypatch.setattr(
+        "app.api.routes.workflow_definitions.approve_node",
+        mock_approve_node,
+    )
+
+    client = TestClient(app)
+    response = client.post(
+        "/workflow-runs/run-123/nodes/node-generate/approve",
+        json={"image_model_alias": "image.fast", "resolution": "2K"},
+    )
+    assert response.status_code == 409
+    assert "抽卡批次分配冲突" in response.json()["detail"]
+
+
 def test_workflow_approval_failure_rolls_back_batch_atomically(file_sessions):
     """Verify that if subsequent work in an atomic unit of work fails, rolling back the session leaves zero orphan batches."""
     factory = file_sessions
@@ -584,6 +810,90 @@ def test_workflow_approval_failure_rolls_back_batch_atomically(file_sessions):
         assert len(batches) == 0
 
 
+def test_workflow_approve_node_downstream_failure_rolls_back_entire_unit(app_default_sqlite_sessions, monkeypatch):
+    """Verify that if approve_node fails during or before final commit, the entire unit (batch, candidate, job, run status) rolls back cleanly on default SQLite."""
+    from app.models import WorkflowDefinition, WorkflowNodeRun
+    from app.services.workflow_engine import approve_node, create_workflow_run, default_graph
+
+    factory = app_default_sqlite_sessions
+    seeded = _seed_test_hierarchy(factory)
+
+    with factory() as db:
+        wf = WorkflowDefinition(
+            project_id=seeded["project_id"],
+            name="单页审批工作流",
+            draft_graph=default_graph(),
+            is_active=True,
+        )
+        db.add(wf)
+        db.commit()
+        from app.services.workflow_engine import publish_workflow
+        publish_workflow(db, wf)
+
+        run = create_workflow_run(
+            db,
+            wf,
+            scope_type="PAGE",
+            scope_id=seeded["page_id"],
+            start_node_ids=["generate"],
+            stop_node_ids=["generate"],
+        )
+        run_id = run.id
+
+        node_run = db.scalar(
+            select(WorkflowNodeRun).where(
+                WorkflowNodeRun.workflow_run_id == run.id,
+                WorkflowNodeRun.status == "WAITING_APPROVAL",
+            )
+        )
+        assert node_run is not None
+        node_id = node_run.node_id
+
+    with factory() as db:
+        def fail_create_job(*_args, **_kwargs):
+            raise RuntimeError("Simulated job creation failure before final commit")
+
+        monkeypatch.setattr("app.services.workflow_engine.create_job", fail_create_job)
+
+        try:
+            approve_node(
+                db,
+                run_id,
+                node_id,
+                image_model_alias="image.nano_banana_2",
+                resolution="1K",
+            )
+        except RuntimeError:
+            db.rollback()
+
+    with factory() as verify_db:
+        batches = list(
+            verify_db.scalars(
+                select(GenerationBatch).where(GenerationBatch.project_id == seeded["project_id"])
+            )
+        )
+        candidates = list(
+            verify_db.scalars(
+                select(PageCandidate).where(PageCandidate.page_id == seeded["page_id"])
+            )
+        )
+        jobs = list(
+            verify_db.scalars(
+                select(GenerationJob).where(GenerationJob.project_id == seeded["project_id"])
+            )
+        )
+        reloaded_node_run = verify_db.scalar(
+            select(WorkflowNodeRun).where(
+                WorkflowNodeRun.workflow_run_id == run_id,
+                WorkflowNodeRun.node_id == node_id,
+            )
+        )
+        assert len(batches) == 0
+        assert len(candidates) == 0
+        assert len(jobs) == 0
+        assert reloaded_node_run.status == "WAITING_APPROVAL"
+
+
 def test_is_sqlite_lock_error_identification():
     """Verify is_sqlite_lock_error correctly identifies busy and locked sqlite errors and excludes others."""
     busy_op = OperationalError(
@@ -600,3 +910,4 @@ def test_is_sqlite_lock_error_identification():
     assert is_sqlite_lock_error(syntax_op) is False
 
     assert is_sqlite_lock_error(ValueError("unrelated error")) is False
+

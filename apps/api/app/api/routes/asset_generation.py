@@ -5,7 +5,6 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.api.helpers import asset_candidate_read, character_references
-from app.config import get_settings
 from app.database import get_db
 from app.models import (
     Asset,
@@ -45,7 +44,7 @@ from app.schemas import (
     StyleTestApproval,
 )
 from app.services.job_service import create_job, enqueue_job
-from app.services.model_router import model_supports_resolution, resolve_model
+from app.services.model_router import resolve_model  # noqa: F401
 from app.services.ordinal_allocator import (
     BatchOrdinalConflictError,
     CandidateOrdinalConflictError,
@@ -697,39 +696,11 @@ def generate_asset_candidate(
             status_code=422,
             detail="参考资产必须显式选择图片模型，以保持项目画风一致",
         )
-    batch = db.get(GenerationBatch, batch_id)
-    if not batch or batch.status != "OPEN" or not batch.target_type or not batch.target_id:
-        raise HTTPException(status_code=409, detail="资产生成批次不存在或已关闭")
-    reference_asset_ids = _generation_reference_ids(db, batch)
-    project = db.get(Project, batch.project_id)
-    if not project or project.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="项目不存在")
-    resolved_model = resolve_model(
-        db,
-        get_settings(),
-        operation="image_edit" if reference_asset_ids else "image_generate",
-        explicit_reference=payload.model_alias,
-        project_id=batch.project_id,
-        task_kind="ASSET_GENERATE",
-    )
-    if not model_supports_resolution(resolved_model.model, payload.resolution.value):
-        raise HTTPException(status_code=422, detail="所选模型不支持该输出清晰度")
-    allowed_variants = {
-        "CHARACTER": {"FRONT", "SIDE", "BACK", "EXPRESSION", "SHEET"},
-        "OUTFIT": {"OUTFIT", "OUTFIT_SHEET"},
-        "STYLE": {"STYLE_TEST"},
-    }
-    variants_for_type = allowed_variants.get(batch.target_type, set())
-    if payload.variant not in variants_for_type:
-        raise HTTPException(status_code=422, detail="资产生成角度与目标档案不匹配")
     try:
         candidate, job = create_asset_candidate(
             db,
-            batch=batch,
-            project=project,
-            resolved_model=resolved_model,
+            batch_id=batch_id,
             payload=payload,
-            reference_asset_ids=reference_asset_ids,
         )
     except CandidateOrdinalConflictError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
