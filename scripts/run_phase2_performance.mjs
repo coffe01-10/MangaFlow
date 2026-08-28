@@ -7,22 +7,20 @@ import {
   API_ORIGIN,
   WEB_URL,
   assertPortFree,
-  createOwnedRuntime,
+  assertSupervised,
   defaultPython,
   finalizeOwnedRun,
   json,
-  removeOwnedRuntime,
   spawnOwned,
-  stopOwned,
   waitForOwnedHealth,
-  waitUntilPortFree,
 } from "./phase2_runner.mjs";
 
 const ROOT = process.cwd();
 const PYTHON = defaultPython(ROOT);
-const OUT_DIR = path.join(ROOT, "output", "playwright", "phase2");
-const RUN_ID = process.env.MANGAFLOW_E2E_RUN_ID || crypto.randomUUID().replaceAll("-", "");
-let runtimeDir = "";
+const owned = assertSupervised();
+const RUN_ID = owned.runId;
+const runtimeDir = owned.runtime;
+const OUT_DIR = path.join(ROOT, "output", "playwright", "phase2", RUN_ID);
 
 function run(command, args, extra = {}) {
   return new Promise((resolve, reject) => {
@@ -64,37 +62,16 @@ async function writeSummary() {
 }
 
 async function cleanup() {
-  for (const child of [...children].reverse()) {
-    try {
-      await stopOwned(child);
-    } catch (error) {
-      summary.errors.push(String(error));
-    }
-  }
-  children.length = 0;
-  try {
-    await waitUntilPortFree(8000);
-    await waitUntilPortFree(3000);
-    await new Promise((resolve) => setTimeout(resolve, 400));
-  } catch (error) {
-    summary.errors.push(String(error));
-  }
-  if (runtimeDir) {
-    try {
-      await removeOwnedRuntime(runtimeDir, RUN_ID);
-      summary.runtime_removed = true;
-    } catch (error) {
-      summary.runtime_removed = false;
-      summary.errors.push(String(error));
-    }
-  }
+  // The controller appends the authoritative exit/cleanup result after this Node
+  // process exits. Never delete a directory while an API or browser is alive.
+  summary.cleanup_owner = "run_e2e_owned.py";
+  summary.runtime_removed = false;
 }
 
 async function main() {
   await assertPortFree(8000);
   await assertPortFree(3000);
   await mkdir(OUT_DIR, { recursive: true });
-  runtimeDir = await createOwnedRuntime(RUN_ID);
   summary.runtime_dir = `mangaflow-e2e-${RUN_ID}`;
 
   const apiEnv = {
@@ -115,11 +92,11 @@ async function main() {
     child: api,
   });
 
-  const npmBin = process.platform === "win32" ? "npm.cmd" : "npm";
-  const web = spawnOwned(npmBin, ["run", "serve:e2e:web"], {
+  assertSupervised(8000);
+  const web = spawnOwned(process.execPath, [path.join(ROOT, "node_modules", "next", "dist", "bin", "next"), "start", path.join(ROOT, "apps", "web"), "--hostname", "127.0.0.1"], {
     cwd: ROOT,
     env: process.env,
-    shell: process.platform === "win32",
+    shell: false,
   });
   children.push(web);
   const webStarted = Date.now();
@@ -143,6 +120,7 @@ async function main() {
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   if (!webReady) throw new Error("timed out waiting for owned web server");
+  assertSupervised(3000);
 
   const projects = await json(`${API_ORIGIN}/projects`);
   const lighthouseProject = projects.find((item) => item.name === "e2e-lighthouse-workbench");
@@ -170,18 +148,18 @@ async function main() {
   let failed = false;
   for (const round of [1, 2]) {
     console.log(`\n--- Lighthouse round ${round} ---`);
-    const result = await run(npmBin, ["run", "test:lighthouse", "--workspace", "@mangaflow/web"], {
+    const result = await run(process.execPath, [path.join(ROOT, "apps", "web", "scripts", "lighthouse-gate.mjs")], {
       env: lighthouseEnv,
-      shell: process.platform === "win32",
+      shell: false,
     });
     summary.lighthouse.push({ round, exit_code: result.code, output: result.output.trim() });
     if (result.code !== 0) failed = true;
   }
   for (const round of [1, 2]) {
     console.log(`\n--- Workflow FPS round ${round} ---`);
-    const result = await run(npmBin, ["run", "test:workflow-fps", "--workspace", "@mangaflow/web"], {
+    const result = await run(process.execPath, [path.join(ROOT, "apps", "web", "scripts", "workflow-fps-gate.mjs")], {
       env: fpsEnv,
-      shell: process.platform === "win32",
+      shell: false,
     });
     summary.fps.push({ round, exit_code: result.code, output: result.output.trim() });
     if (result.code !== 0) failed = true;

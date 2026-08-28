@@ -1,8 +1,6 @@
-import { spawn } from "node:child_process";
-import { mkdir, rm } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import net from "node:net";
-import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
@@ -17,13 +15,17 @@ export function defaultPython(root, platform = process.platform) {
 }
 
 export async function assertPortFree(port, connect = net.connect) {
-  const inUse = await new Promise((resolve) => {
+  const inUse = await new Promise((resolve, reject) => {
     const socket = connect({ host: "127.0.0.1", port });
     socket.once("connect", () => {
       socket.end();
       resolve(true);
     });
-    socket.once("error", () => resolve(false));
+    socket.once("error", (error) => {
+      if (error.code === "ECONNREFUSED") resolve(false);
+      else reject(error);
+    });
+    socket.setTimeout?.(2000, () => { socket.destroy(); reject(new Error("port probe timeout")); });
   });
   if (inUse) {
     throw new Error(`port ${port} is occupied; refusing to use an unknown instance`);
@@ -31,6 +33,7 @@ export async function assertPortFree(port, connect = net.connect) {
 }
 
 export function spawnOwned(command, args, options = {}) {
+  assertSupervised();
   const child = spawn(command, args, {
     stdio: options.stdio ?? "inherit",
     cwd: options.cwd,
@@ -38,6 +41,7 @@ export function spawnOwned(command, args, options = {}) {
     windowsHide: true,
     shell: options.shell ?? false,
   });
+  child.unref(); // The outer Job Object controller owns final shutdown.
   child.owned = true;
   child.spawnError = null;
   child.once("error", (error) => {
@@ -46,35 +50,20 @@ export function spawnOwned(command, args, options = {}) {
   return child;
 }
 
-export async function createOwnedRuntime(runId, {
-  tmpdir = os.tmpdir(),
-  mkdirImpl = mkdir,
-} = {}) {
-  const runtime = path.join(tmpdir, `mangaflow-e2e-${runId}`);
-  await mkdirImpl(runtime, { recursive: true });
-  return runtime;
-}
-
-export async function removeOwnedRuntime(runtimePath, runId, {
-  rmImpl = rm,
-  existsImpl = existsSync,
-  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  retries = 16,
-} = {}) {
-  if (!runtimePath || !runId || !String(runtimePath).includes(`mangaflow-e2e-${runId}`)) {
-    throw new Error("refusing to delete a path this run does not own");
+// The Python verifier checks canonical path, owner, controller creation time
+// and actual Windows Job Object membership. No raw PID or path deletion API.
+export function assertSupervised(port) {
+  if (!/^[0-9a-f]{32}$/.test(process.env.MANGAFLOW_E2E_RUN_ID ?? "")) {
+    throw new Error("Use scripts/run_e2e_owned.py: acceptance requires its controller");
   }
-  let lastError = "";
-  for (let attempt = 0; attempt < retries; attempt += 1) {
-    try {
-      await rmImpl(runtimePath, { recursive: true, force: true });
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error);
-    }
-    if (!existsImpl(runtimePath)) return;
-    await sleep(250 * (attempt + 1));
-  }
-  throw new Error(`failed to remove owned runtime ${runtimePath}: ${lastError}`);
+  const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+  const output = execFileSync(
+    defaultPython(root),
+    ["-I", "-B", path.join(root, "scripts", "run_e2e_owned.py"), "verify",
+      ...(port === undefined ? [] : ["--port", String(port)])],
+    { encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] },
+  );
+  return JSON.parse(output);
 }
 
 export async function waitForOwnedHealth({
@@ -116,97 +105,6 @@ export async function waitForOwnedHealth({
     await sleep(250);
   }
   throw new Error(`timed out waiting for owned health at ${url}: ${lastError}`);
-}
-
-export async function stopPidTree(pid, {
-  platform = process.platform,
-  spawnImpl = spawn,
-  killImpl = process.kill,
-  waitForExit = defaultWaitForExit,
-  timeoutMs = 15_000,
-} = {}) {
-  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) {
-    throw new Error("refusing to stop an invalid pid");
-  }
-  if (platform === "win32") {
-    const killer = spawnImpl("taskkill", ["/pid", String(pid), "/t", "/f"], {
-      stdio: ["ignore", "pipe", "pipe"],
-      shell: false,
-      windowsHide: true,
-    });
-    const killed = await waitForExit(killer, timeoutMs);
-    if (killed.code !== 0 && killed.code !== 128) {
-      throw new Error(`taskkill exited ${killed.code}: ${killed.stderr ?? ""}`.trim());
-    }
-    return;
-  }
-  try {
-    killImpl(pid, "SIGTERM");
-  } catch {
-    // already gone
-  }
-}
-
-export async function stopOwned(child, {
-  platform = process.platform,
-  spawnImpl = spawn,
-  killImpl = process.kill,
-  waitForExit = defaultWaitForExit,
-  timeoutMs = 15_000,
-} = {}) {
-  if (!child?.owned) {
-    throw new Error("refusing to stop a process that this run does not own");
-  }
-  if (child.spawnError) {
-    throw new Error(`owned process failed to spawn: ${child.spawnError}`);
-  }
-  if (!child.pid) {
-    throw new Error("owned process has no pid");
-  }
-  await stopPidTree(child.pid, { platform, spawnImpl, killImpl, waitForExit, timeoutMs });
-  await waitForExit(child, timeoutMs);
-}
-
-function defaultWaitForExit(child, timeoutMs) {
-  if (child.exitCode !== null && child.exitCode !== undefined) {
-    return Promise.resolve({ code: child.exitCode, stderr: "" });
-  }
-  return new Promise((resolve, reject) => {
-    let stderr = "";
-    child.stderr?.on?.("data", (chunk) => {
-      stderr += chunk;
-    });
-    const timer = setTimeout(
-      () => reject(new Error(`owned pid ${child.pid ?? "unknown"} did not exit`)),
-      timeoutMs,
-    );
-    child.once("exit", (code) => {
-      clearTimeout(timer);
-      resolve({ code: code ?? 1, stderr });
-    });
-    child.once("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-  });
-}
-
-export async function waitUntilPortFree(port, {
-  timeoutMs = 15_000,
-  connect = net.connect,
-  now = Date.now,
-  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-} = {}) {
-  const started = now();
-  while (now() - started < timeoutMs) {
-    try {
-      await assertPortFree(port, connect);
-      return;
-    } catch {
-      await sleep(100);
-    }
-  }
-  throw new Error(`port ${port} still occupied after owned process stop`);
 }
 
 export async function finalizeOwnedRun({ summary, cleanup, writeSummary }) {

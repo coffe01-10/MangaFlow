@@ -1,6 +1,58 @@
 # Phase 2 浏览器回归与 Lighthouse/FPS 验收
 
-负责人：Grok Build。分支：`codex/phase2-browser-performance-acceptance`。基线：`b7d89c0`。本文件记录当前代码的独立验收，不引用 `cb324e3` 的旧通过记录。
+成员交付：Grok Build；当前由组长接管。分支：`codex/phase2-browser-performance-acceptance`。基线：`b7d89c0`。本文件保留成员历史报告；组长独立结果以最新接管章节为准。历史报告不代表当前代码已通过验收。
+
+## 组长接管后的安全入口修复（2026-08-28，本节优先）
+
+状态：**中间修复，PR 未通过验收，禁止以本节定向结果替代浏览器/性能通过。**
+
+第二轮成员交付 `0c59f05`（代码 `8584ff5`）已在审阅
+[5050356909](https://github.com/coffe01-10/MangaFlow/pull/15#pullrequestreview-5050356909)
+被阻塞并由组长接管。下文保留的 257 Python / 27 Vitest / 8 Playwright、
+Lighthouse / FPS 数字是成员历史报告，不能用于本节修改后的代码。
+
+### 本轮修改
+
+- `scripts/run_e2e_owned.py` 是 Windows 验收的统一外层控制器。随机目录和 owner 排他创建，
+  使用 Windows Job Object 挂起创建、先归属后恢复执行，持有进程 HANDLE。
+  API、Node、Next、浏览器及所有后代必须退出后才清理 payload；不读取共享 PID 指针、不按 PID taskkill。
+- `owned_processes.py` 基础来自 PR14 的 `6086155`。实际 API 冒烟额外发现：
+  Job 的 active 计数归零可能先于进程 HANDLE 完成信号；已归属成员不能再调用 TerminateProcess，
+  应等待 HANDLE。首次回归 24 passed / 1 failed（WinError 5），修复并补回归后通过。
+  PR14 的对应模块尚未带入本次退出竞争修复，后续需同步该修复和回归。
+- `e2e_runtime.py` 校验规范绝对路径、owner token、控制器创建时间和实际 Job 成员身份。
+  子进程无权删除运行目录。监听端口通过只读查询获取 PID，再打开 HANDLE 验证属于本次 Job，
+  未知实例不能用健康页或网页响应冒充。
+- Python 环境采用允许列表并禁 dotenv。Next 的 `__NEXT_PROCESSED_ENV` 本身仍读取 dotenv，
+  因此本次 Node 进程专用 preload 替换 `@next/env` 的加载入口；临时哨兵测试断言无 dotenv 读取。
+  不修改全局 Node 配置。
+- `npm run test:e2e`、`npm run check:full` 和 `npm run test:phase2-performance` 都进入控制器；
+  完整检查仍执行 `npm run check`（包括生产构建）再运行 Playwright，不降低门禁。
+  E2E 单独执行时先构建；不再重复完整检查后的构建。
+- 权威最终报告为 `output/playwright/owned-<token>/summary.json`，包含 body/cleanup 错误、
+  进程树停止和目录删除状态，失败非零；同目录日志保留。性能子报告位于
+  `output/playwright/phase2/<token>/summary.json`，其运行结束先于外层清理，
+  **必须和外层最终报告一起读取**。清理失败保留 owner，可通过同一控制器的 recover 模式恢复；
+  活动控制器或 Job 一律拒绝恢复。
+
+### 组长独立验证
+
+最终：`tests/test_e2e_isolation.py` **29 passed / 1 条既有 Starlette 警告 / 13.72s**。
+其中包含 Node helper 回归、真实 Windows 子进程/孙进程、控制器强退和异常退出、
+实际 SQLite 文件锁、失败后重试、Job/监听归属拒绝、伪 dotenv 不读取、
+真实 API 迁移/种子/健康身份/项目读取及实际 API 进程退出证明。
+外层控制器也用实际轻量命令验证成功/非零失败、停止后续命令、最终报告和清理。
+这些命令探针不是 Playwright 或性能测试。Ruff 本轮 Python 文件、Node 语法及 diff 检查通过。
+
+临时数据全部归属本次测试并已清理；API 冒烟使用随机回环端口。
+未读取真实 dotenv/凭据、未连接 PostgreSQL/Redis、未调用供应商。
+
+### 尚未验收
+
+新入口上的 `check:full`、Playwright、两轮 Lighthouse/FPS 尚未运行。
+有候选生成页的历史两轮 Lighthouse 仍为 **73 / 73，CLS=0.477**，没有降阈值、
+删数据或挑选新分数。下一步先复核最终控制器的完整运行，再定位实际布局偏移元素修复，
+对最终 SHA 独立全量与性能测量。Windows 以外的监督能力没有声明验证。
 
 ## 环境
 

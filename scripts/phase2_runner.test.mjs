@@ -5,9 +5,7 @@ import test from "node:test";
 import {
   assertPortFree,
   finalizeOwnedRun,
-  removeOwnedRuntime,
-  stopOwned,
-  stopPidTree,
+  assertSupervised,
   waitForOwnedHealth,
 } from "./phase2_runner.mjs";
 
@@ -72,82 +70,30 @@ test("dead child is not treated as a healthy owned API", async () => {
   );
 });
 
-test("stopPidTree refuses the current process", async () => {
-  await assert.rejects(() => stopPidTree(process.pid), /invalid pid/);
-  await assert.rejects(() => stopPidTree(0), /invalid pid/);
+test("unsafe raw PID and path deletion APIs no longer exist", async () => {
+  const helpers = await import("./phase2_runner.mjs");
+  assert.equal("stopPidTree" in helpers, false);
+  assert.equal("removeOwnedRuntime" in helpers, false);
+  assert.equal("createOwnedRuntime" in helpers, false);
 });
 
-test("stopOwned refuses unknown pids and waits for owned exit", async () => {
-  await assert.rejects(() => stopOwned({ pid: 1 }), /does not own/);
-  const child = new EventEmitter();
-  child.owned = true;
-  child.pid = 77;
-  child.killed = false;
-  const waited = stopOwned(child, {
-    platform: "linux",
-    spawnImpl: () => {
-      throw new Error("should not taskkill");
-    },
-    killImpl: () => undefined,
-    waitForExit: async (target) => {
-      assert.equal(target.pid, 77);
-    },
-  });
-  await waited;
+test("uncontrolled entry fails before launching services", () => {
+  const original = process.env.MANGAFLOW_E2E_RUN_ID;
+  delete process.env.MANGAFLOW_E2E_RUN_ID;
+  try {
+    assert.throws(() => assertSupervised(), /requires its controller/);
+  } finally {
+    if (original !== undefined) process.env.MANGAFLOW_E2E_RUN_ID = original;
+  }
 });
 
-test("taskkill non-zero exit fails stopOwned", async () => {
-  const child = { owned: true, pid: 88, spawnError: null };
-  const killer = new EventEmitter();
-  killer.stderr = new EventEmitter();
-  await assert.rejects(
-    () => stopOwned(child, {
-      platform: "win32",
-      spawnImpl: () => {
-        queueMicrotask(() => killer.emit("exit", 1));
-        return killer;
-      },
-      waitForExit: async (target) => {
-        if (target === killer) return { code: 1, stderr: "access denied" };
-        return { code: 0, stderr: "" };
-      },
-    }),
-    /taskkill exited 1/,
-  );
-});
-
-test("removeOwnedRuntime refuses foreign paths and retries until gone", async () => {
-  await assert.rejects(
-    () => removeOwnedRuntime("C:\\\\Temp\\\\other", "abc"),
-    /does not own/,
-  );
-  let exists = true;
-  let attempts = 0;
-  await removeOwnedRuntime("C:\\\\Temp\\\\mangaflow-e2e-abc", "abc", {
-    retries: 3,
-    existsImpl: () => {
-      attempts += 1;
-      if (attempts >= 2) exists = false;
-      return exists;
-    },
-    rmImpl: async () => undefined,
-    sleep: async () => undefined,
-  });
-  assert.equal(attempts >= 2, true);
-});
-
-test("removeOwnedRuntime failure stays failed after retries", async () => {
-  await assert.rejects(
-    () => removeOwnedRuntime("/tmp/mangaflow-e2e-xyz", "xyz", {
-      retries: 2,
-      existsImpl: () => true,
-      rmImpl: async () => {
-        throw new Error("busy");
-      },
-      sleep: async () => undefined,
-    }),
-    /failed to remove owned runtime/,
-  );
+test("unexpected port errors do not count as a free endpoint", async () => {
+  const connect = () => {
+    const socket = new EventEmitter();
+    queueMicrotask(() => socket.emit("error", Object.assign(new Error("denied"), { code: "EACCES" })));
+    return socket;
+  };
+  await assert.rejects(() => assertPortFree(8000, connect), /denied/);
 });
 
 test("cleanup errors land in the final summary and fail the run", async () => {
