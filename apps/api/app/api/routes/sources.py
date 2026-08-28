@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -12,12 +12,8 @@ from app.domain.states import ensure_unlocked
 from app.models import (
     Beat,
     Chapter,
-    Dialogue,
-    GenerationBatch,
     GenerationJob,
     MangaPage,
-    PageSourceSegment,
-    Panel,
     Project,
     Scene,
     ScriptRevision,
@@ -43,14 +39,16 @@ from app.schemas import (
 )
 from app.services.content_workflow import (
     chapter_metrics,
-    create_source_segments,
     import_source,
-    meaningful_characters,
     plan_chapter_pages,
-    sha256_text,
+    revise_chapter_source,
 )
 from app.services.editor import canonical_speaker_name, mark_pages_for_review
 from app.services.job_service import create_job, enqueue_job
+from app.services.ordinal_allocator import (
+    ChapterOrdinalConflictError,
+    SourceRevisionConflictError,
+)
 
 router = APIRouter()
 
@@ -77,13 +75,16 @@ def import_pasted_source(
     db: Session = Depends(get_db),
 ) -> SourceImportRead:
     _project(db, project_id)
-    chapters = import_source(
-        db,
-        project_id=project_id,
-        title=payload.title,
-        text=payload.text,
-        source_type=payload.source_type,
-    )
+    try:
+        chapters = import_source(
+            db,
+            project_id=project_id,
+            title=payload.title,
+            text=payload.text,
+            source_type=payload.source_type,
+        )
+    except ChapterOrdinalConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     return SourceImportRead(
         chapters=[_chapter_read(db, chapter) for chapter in chapters],
         total_characters=sum(
@@ -127,13 +128,16 @@ def upload_source(
     except UnicodeDecodeError as error:
         raise HTTPException(status_code=422, detail="原文文件必须使用 UTF-8 编码") from error
     source_type = "MARKDOWN" if suffix in {".md", ".markdown"} else "TXT"
-    chapters = import_source(
-        db,
-        project_id=project_id,
-        title=title,
-        text=text,
-        source_type=source_type,
-    )
+    try:
+        chapters = import_source(
+            db,
+            project_id=project_id,
+            title=title,
+            text=text,
+            source_type=source_type,
+        )
+    except ChapterOrdinalConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     return SourceImportRead(
         chapters=[_chapter_read(db, chapter) for chapter in chapters],
         total_characters=sum(
@@ -247,52 +251,16 @@ def list_revisions(chapter_id: str, db: Session = Depends(get_db)) -> list[Sourc
 def revise_source(
     chapter_id: str, payload: SourceRevisionCreate, db: Session = Depends(get_db)
 ) -> SourceRevision:
-    chapter = db.get(Chapter, chapter_id)
-    if not chapter or chapter.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="章节不存在")
-    page_ids = list(db.scalars(select(MangaPage.id).where(MangaPage.chapter_id == chapter_id)))
-    if page_ids and db.scalar(
-        select(func.count(GenerationBatch.id)).where(GenerationBatch.page_id.in_(page_ids))
-    ):
-        raise HTTPException(
-            status_code=409, detail="已有页面进入抽卡流程，请先删除相关候选后再修改原文"
+    try:
+        return revise_chapter_source(
+            db,
+            chapter_id=chapter_id,
+            title=payload.title,
+            text=payload.text,
+            source_type=payload.source_type,
         )
-    if page_ids:
-        panel_ids = list(db.scalars(select(Panel.id).where(Panel.page_id.in_(page_ids))))
-        if panel_ids:
-            db.execute(delete(Dialogue).where(Dialogue.panel_id.in_(panel_ids)))
-            db.execute(delete(Panel).where(Panel.id.in_(panel_ids)))
-        db.execute(delete(PageSourceSegment).where(PageSourceSegment.page_id.in_(page_ids)))
-        db.execute(delete(MangaPage).where(MangaPage.id.in_(page_ids)))
-    scene_ids = list(db.scalars(select(Scene.id).where(Scene.chapter_id == chapter_id)))
-    if scene_ids:
-        db.execute(delete(Beat).where(Beat.scene_id.in_(scene_ids)))
-        db.execute(delete(Scene).where(Scene.id.in_(scene_ids)))
-    db.execute(delete(ScriptRevision).where(ScriptRevision.chapter_id == chapter_id))
-    latest = (
-        db.scalar(
-            select(func.max(SourceRevision.revision)).where(SourceRevision.chapter_id == chapter_id)
-        )
-        or 0
-    )
-    revision = SourceRevision(
-        chapter_id=chapter_id,
-        revision=latest + 1,
-        source_type=payload.source_type,
-        original_text=payload.text,
-        sha256=sha256_text(payload.text),
-        character_count=meaningful_characters(payload.text),
-    )
-    db.add(revision)
-    db.flush()
-    create_source_segments(db, revision)
-    chapter.current_source_revision_id = revision.id
-    chapter.status = "IMPORTED"
-    chapter.title = payload.title or chapter.title
-    chapter.version += 1
-    db.commit()
-    db.refresh(revision)
-    return revision
+    except SourceRevisionConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.delete("/chapters/{chapter_id}", status_code=status.HTTP_204_NO_CONTENT)

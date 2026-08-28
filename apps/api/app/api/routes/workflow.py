@@ -74,6 +74,12 @@ from app.services.editor import (
 )
 from app.services.job_service import cancel_job, create_job, enqueue_job, reset_for_retry
 from app.services.model_router import model_supports_resolution, resolve_model
+from app.services.ordinal_allocator import (
+    BatchOrdinalConflictError,
+    CandidateOrdinalConflictError,
+    create_generation_batch,
+    create_page_candidate,
+)
 from app.services.page_completion import (
     build_chapter_production_readiness,
     build_page_production_readiness,
@@ -191,34 +197,21 @@ def _new_batch(
     generation_kind: str = "PAGE",
 ) -> GenerationBatch:
     project = _project_for_page(db, page)
-    db.execute(
-        update(GenerationBatch)
-        .where(
-            GenerationBatch.page_id == page.id,
-            GenerationBatch.status == "OPEN",
+    try:
+        batch = create_generation_batch(
+            db,
+            project_id=project.id,
+            chapter_id=page.chapter_id,
+            page_id=page.id,
+            generation_kind=generation_kind,
+            close_open_page_batches=True,
         )
-        .values(status="CLOSED", closed_at=utcnow())
-    )
-    ordinal = (
-        db.scalar(
-            select(func.max(GenerationBatch.ordinal)).where(
-                GenerationBatch.project_id == project.id
-            )
-        )
-        or 0
-    ) + 1
-    batch = GenerationBatch(
-        project_id=project.id,
-        chapter_id=page.chapter_id,
-        page_id=page.id,
-        ordinal=ordinal,
-        generation_kind=generation_kind,
-        status="OPEN",
-    )
-    db.add(batch)
-    db.commit()
-    db.refresh(batch)
-    return batch
+        db.commit()
+        db.refresh(batch)
+        return batch
+    except BatchOrdinalConflictError as error:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.get("/chapters/{chapter_id}/pages", response_model=list[PageRead])
@@ -693,57 +686,18 @@ def create_candidate(
             "outfit_id": outfit_id,
             "outfit_asset_id": outfit_asset_id,
         }
-    ordinal = (
-        db.scalar(select(func.max(PageCandidate.ordinal)).where(PageCandidate.batch_id == batch.id))
-        or 0
-    ) + 1
-    candidate = PageCandidate(
-        batch_id=batch.id,
-        page_id=page.id,
-        ordinal=ordinal,
-        model_alias=payload.model_alias,
-        catalog_model_id=resolved_model.model.id,
-        resolution=payload.resolution,
-        status="QUEUED",
-        based_on_storyboard_version=page.storyboard_version,
-        prompt_snapshot={
-            "reference_selections": normalized_selections,
-            "storyboard_version": page.storyboard_version,
-        },
-    )
-    db.add(candidate)
-    project.last_image_model_alias = payload.model_alias
-    project.image_model_alias = payload.model_alias
-    project.last_image_model_id = resolved_model.model.id
-    project.version += 1
-    db.flush()
-    job = create_job(
-        db,
-        project_id=project.id,
-        target_type="PAGE_CANDIDATE",
-        target_id=candidate.id,
-        job_type="PAGE_GENERATE",
-        model_alias=payload.model_alias,
-        catalog_model_id=resolved_model.model.id,
-        request_parameters={
-            "resolution": payload.resolution.value,
-            "storyboard_version": page.storyboard_version,
-            "reference_selections": normalized_selections,
-        },
-        reference_asset_ids=[
-            asset_id
-            for selection in normalized_selections.values()
-            for asset_id in (
-                selection.get("character_asset_id"),
-                selection.get("outfit_asset_id"),
-            )
-            if asset_id
-        ],
-        idempotency_key=f"candidate:{candidate.id}",
-    )
-    candidate.job_id = job.id
-    db.commit()
-    db.refresh(candidate)
+    try:
+        candidate, job = create_page_candidate(
+            db,
+            batch=batch,
+            page=page,
+            project=project,
+            resolved_model=resolved_model,
+            normalized_selections=normalized_selections,
+            payload=payload,
+        )
+    except CandidateOrdinalConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     job = enqueue_job(db, job)
     return CandidateQueuedRead(
         job_id=job.id,

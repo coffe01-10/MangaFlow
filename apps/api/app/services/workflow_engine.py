@@ -20,7 +20,6 @@ from app.models import (
     Character,
     CharacterReference,
     ExportBundle,
-    GenerationBatch,
     GenerationJob,
     InspectionResult,
     JobDependency,
@@ -39,6 +38,7 @@ from app.models import (
 )
 from app.services.job_service import create_job, enqueue_job, mark_job_cancelled
 from app.services.model_router import model_supports_resolution, resolve_model
+from app.services.ordinal_allocator import create_generation_batch
 from app.services.page_completion import (
     build_chapter_production_readiness,
     build_page_production_readiness,
@@ -1318,24 +1318,13 @@ def approve_node(
             reference_asset_ids.append(character_reference.asset_id)
             if outfit_asset_id:
                 reference_asset_ids.append(outfit_asset_id)
-        ordinal = (
-            db.scalar(
-                select(func.max(GenerationBatch.ordinal)).where(
-                    GenerationBatch.project_id == run.project_id
-                )
-            )
-            or 0
-        ) + 1
-        batch = GenerationBatch(
+        batch = create_generation_batch(
+            db,
             project_id=run.project_id,
             chapter_id=chapter.id,
             page_id=page.id,
-            ordinal=ordinal,
             generation_kind="PAGE",
-            status="OPEN",
         )
-        db.add(batch)
-        db.flush()
         candidate = PageCandidate(
             batch_id=batch.id,
             page_id=page.id,

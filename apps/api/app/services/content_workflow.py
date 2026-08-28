@@ -1,9 +1,12 @@
 import hashlib
+import random
 import re
+import time
 from dataclasses import dataclass
 
 from fastapi import HTTPException
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from app.domain.states import CharacterPresence
@@ -16,9 +19,18 @@ from app.models import (
     MangaPage,
     PageSourceSegment,
     Panel,
+    Project,
     Scene,
+    ScriptRevision,
     SourceRevision,
     SourceSegment,
+)
+from app.services.ordinal_allocator import (
+    ORDINAL_ALLOCATION_MAX_ATTEMPTS,
+    ChapterOrdinalConflictError,
+    SourceRevisionConflictError,
+    is_sqlite_lock_error,
+    lock_entity,
 )
 
 CHAPTER_HEADER = re.compile(
@@ -123,39 +135,153 @@ def import_source(
     title: str,
     text: str,
     source_type: str,
+    max_attempts: int = ORDINAL_ALLOCATION_MAX_ATTEMPTS,
 ) -> list[Chapter]:
     if not text.strip():
         raise HTTPException(status_code=422, detail="原文不能为空")
-    current_max = (
-        db.scalar(select(func.max(Chapter.ordinal)).where(Chapter.project_id == project_id)) or 0
-    )
-    chapters: list[Chapter] = []
-    for offset, (chapter_title, chapter_text) in enumerate(split_chapters(title, text), 1):
-        chapter = Chapter(
-            project_id=project_id,
-            title=chapter_title,
-            ordinal=current_max + offset,
-            status="IMPORTED",
-        )
-        db.add(chapter)
-        db.flush()
-        revision = SourceRevision(
-            chapter_id=chapter.id,
-            revision=1,
-            source_type=source_type,
-            original_text=chapter_text,
-            sha256=sha256_text(chapter_text),
-            character_count=meaningful_characters(chapter_text),
-        )
-        db.add(revision)
-        db.flush()
-        create_source_segments(db, revision)
-        chapter.current_source_revision_id = revision.id
-        chapters.append(chapter)
-    db.commit()
-    for chapter in chapters:
-        db.refresh(chapter)
-    return chapters
+    chapter_payloads = split_chapters(title, text)
+    last_error: BaseException | None = None
+    for _attempt in range(max_attempts):
+        try:
+            chapters: list[Chapter] = []
+            with db.begin_nested():
+                project = lock_entity(db, Project, project_id)
+                if not project or project.deleted_at is not None:
+                    raise HTTPException(status_code=404, detail="项目不存在")
+                current_max = (
+                    db.scalar(
+                        select(func.max(Chapter.ordinal)).where(
+                            Chapter.project_id == project_id
+                        )
+                    )
+                    or 0
+                )
+                for offset, (chapter_title, chapter_text) in enumerate(chapter_payloads, 1):
+                    chapter = Chapter(
+                        project_id=project_id,
+                        title=chapter_title,
+                        ordinal=current_max + offset,
+                        status="IMPORTED",
+                    )
+                    db.add(chapter)
+                    db.flush()
+                    revision = SourceRevision(
+                        chapter_id=chapter.id,
+                        revision=1,
+                        source_type=source_type,
+                        original_text=chapter_text,
+                        sha256=sha256_text(chapter_text),
+                        character_count=meaningful_characters(chapter_text),
+                    )
+                    db.add(revision)
+                    db.flush()
+                    create_source_segments(db, revision)
+                    chapter.current_source_revision_id = revision.id
+                    chapters.append(chapter)
+            db.commit()
+        except IntegrityError as error:
+            last_error = error
+            db.rollback()
+            time.sleep(0.01 * (2 ** _attempt) + random.uniform(0, 0.02))
+        except OperationalError as error:
+            db.rollback()
+            if not is_sqlite_lock_error(error):
+                raise
+            last_error = error
+            time.sleep(0.02 * (2 ** _attempt) + random.uniform(0, 0.03))
+        else:
+            for chapter in chapters:
+                db.refresh(chapter)
+            return chapters
+    raise ChapterOrdinalConflictError("项目正在导入其他章节，请稍后重试") from last_error
+
+
+def revise_chapter_source(
+    db: Session,
+    *,
+    chapter_id: str,
+    title: str | None,
+    text: str,
+    source_type: str,
+    max_attempts: int = ORDINAL_ALLOCATION_MAX_ATTEMPTS,
+) -> SourceRevision:
+    if not text.strip():
+        raise HTTPException(status_code=422, detail="原文不能为空")
+    last_error: BaseException | None = None
+    for _attempt in range(max_attempts):
+        try:
+            with db.begin_nested():
+                chapter = lock_entity(db, Chapter, chapter_id)
+                if not chapter or chapter.deleted_at is not None:
+                    raise HTTPException(status_code=404, detail="章节不存在")
+                page_ids = list(
+                    db.scalars(select(MangaPage.id).where(MangaPage.chapter_id == chapter_id))
+                )
+                if page_ids and db.scalar(
+                    select(func.count(GenerationBatch.id)).where(
+                        GenerationBatch.page_id.in_(page_ids)
+                    )
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="已有页面进入抽卡流程，请先删除相关候选后再修改原文",
+                    )
+                if page_ids:
+                    panel_ids = list(
+                        db.scalars(select(Panel.id).where(Panel.page_id.in_(page_ids)))
+                    )
+                    if panel_ids:
+                        db.execute(delete(Dialogue).where(Dialogue.panel_id.in_(panel_ids)))
+                        db.execute(delete(Panel).where(Panel.id.in_(panel_ids)))
+                    db.execute(
+                        delete(PageSourceSegment).where(PageSourceSegment.page_id.in_(page_ids))
+                    )
+                    db.execute(delete(MangaPage).where(MangaPage.id.in_(page_ids)))
+                scene_ids = list(
+                    db.scalars(select(Scene.id).where(Scene.chapter_id == chapter_id))
+                )
+                if scene_ids:
+                    db.execute(delete(Beat).where(Beat.scene_id.in_(scene_ids)))
+                    db.execute(delete(Scene).where(Scene.id.in_(scene_ids)))
+                db.execute(delete(ScriptRevision).where(ScriptRevision.chapter_id == chapter_id))
+                latest = (
+                    db.scalar(
+                        select(func.max(SourceRevision.revision)).where(
+                            SourceRevision.chapter_id == chapter_id
+                        )
+                    )
+                    or 0
+                )
+                revision = SourceRevision(
+                    chapter_id=chapter_id,
+                    revision=latest + 1,
+                    source_type=source_type,
+                    original_text=text,
+                    sha256=sha256_text(text),
+                    character_count=meaningful_characters(text),
+                )
+                db.add(revision)
+                db.flush()
+                create_source_segments(db, revision)
+                chapter.current_source_revision_id = revision.id
+                chapter.status = "IMPORTED"
+                chapter.title = title or chapter.title
+                chapter.version += 1
+            db.commit()
+        except IntegrityError as error:
+            last_error = error
+            db.rollback()
+            time.sleep(0.01 * (2 ** _attempt) + random.uniform(0, 0.02))
+        except OperationalError as error:
+            db.rollback()
+            if not is_sqlite_lock_error(error):
+                raise
+            last_error = error
+            time.sleep(0.02 * (2 ** _attempt) + random.uniform(0, 0.03))
+        else:
+            db.refresh(revision)
+            return revision
+    raise SourceRevisionConflictError("章节原文正在被其他请求修改，请稍后重试") from last_error
 
 
 @dataclass(frozen=True)
