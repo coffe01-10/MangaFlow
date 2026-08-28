@@ -55,7 +55,7 @@
 .node { width: 224px; min-height: 118px; border: 1px solid #52605a; background: #242a27; box-shadow: 5px 6px 0 rgba(0,0,0,.2); }
 .node.selected { outline: 2px solid #e7e2d7; outline-offset: 2px; }
 .node header { height: 29px; padding: 0 9px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #3c4641; }
-.node header span { color: #829087; font-family: monospace; font-size: 7px; }
+.node header span { color: #a4ada7; font-family: monospace; font-size: 7px; }
 .node header i { color: #9aa39d; font-size: 6px; font-style: normal; letter-spacing: .08em; }
 .node > strong { display: block; padding: 11px 10px 8px; font-family: var(--serif); font-size: 14px; }
 .node.input { border-top: 3px solid #397b68; }
@@ -69,7 +69,7 @@
 .ports label { position: static; min-height: 21px; display: flex; align-items: center; gap: 4px; color: #b5bcb7; font-size: 7px; }
 .ports > div:last-child label { justify-content: end; }
 .ports label span { display: grid; }
-.ports small { color: #69726c; font-size: 5px; }
+.ports small { color: #a4ada7; font-size: 5px; }
 .handle { width: 8px !important; height: 8px !important; position: absolute !important; border: 1px solid #161917 !important; background: #77847c !important; }
 .handle.text { background: #3c8d78 !important; }.handle.json { background: #3c7698 !important; }.handle.image { background: #b84a38 !important; }.handle.asset { background: #a07b39 !important; }.handle.report { background: #8067a5 !important; }.handle.boolean { background: #d0c65e !important; }
 .minimap { border: 1px solid #3f4642; background: #202421 !important; }
