@@ -47,17 +47,13 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 @pytest.fixture(scope="session")
 def live_integration_enabled(request: pytest.FixtureRequest) -> bool:
-    enabled = bool(
+    # Live execution stays opt-in: default runs skip with NOT RUN, and an
+    # explicit opt-in with unavailable services fails loudly (masked) instead
+    # of silently reporting success.
+    return bool(
         request.config.getoption("--run-live-integration")
         or os.getenv("MANGAFLOW_ENABLE_LIVE_INTEGRATION", "").lower() in {"1", "true", "yes"}
     )
-    if enabled:
-        pytest.fail(
-            "BLOCKED: live harness is under lead repair; resource ownership and "
-            "process acceptance are not ready. No service was connected.",
-            pytrace=False,
-        )
-    return False
 
 
 @pytest.fixture(scope="session")

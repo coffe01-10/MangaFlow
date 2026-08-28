@@ -122,7 +122,9 @@ def test_worker_entrypoint_loads_dotenv_auth_and_queue(tmp_path, monkeypatch, pl
     assert kwargs["password"] == "offline-test"
     assert kwargs["port"] == 16379
     assert kwargs["db"] == 4
-    assert ("rq.worker.SpawnWorker" in args) == (platform == "win32")
+    # rq's SpawnWorker horse crashes on Windows; the repository ships a
+    # Windows-safe variant used on win32 only.
+    assert ("app.rq_windows.WindowsSpawnWorker" in args) == (platform == "win32")
 
 
 def _inspect(db, monkeypatch, page, candidate, categories, *, during_call=None):

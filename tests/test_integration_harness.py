@@ -182,16 +182,18 @@ def test_incomplete_live_entry_is_blocked_before_any_service_operation(monkeypat
     assert "No service was connected" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("explicit, inherited", [(True, "0"), (False, "1")])
-def test_live_fixture_blocks_all_opt_ins_before_connect(explicit, inherited, monkeypatch):
+@pytest.mark.parametrize(
+    "explicit, inherited, expected",
+    [(True, "0", True), (False, "1", True), (False, "0", False), (False, "", False)],
+)
+def test_live_fixture_opt_in_is_explicit_or_inherited(explicit, inherited, expected, monkeypatch):
     from types import SimpleNamespace
 
     from tests.integration.conftest import live_integration_enabled
 
     request = SimpleNamespace(config=SimpleNamespace(getoption=lambda _: explicit))
     monkeypatch.setenv("MANGAFLOW_ENABLE_LIVE_INTEGRATION", inherited)
-    with pytest.raises(pytest.fail.Exception, match="BLOCKED"):
-        live_integration_enabled.__wrapped__(request)
+    assert live_integration_enabled.__wrapped__(request) is expected
 
 
 def test_postgres_cleanup_refuses_changed_ownership():
