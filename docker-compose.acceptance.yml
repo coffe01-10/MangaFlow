@@ -1,57 +1,54 @@
 ﻿name: mangaflow-acceptance
 
 # Isolated data services dedicated to Phase 2 automated integration acceptance.
-# Ports are bound exclusively to loopback (127.0.0.1) on dedicated non-default ports
-# (PostgreSQL: 55432, Redis: 56379) with independent named volumes and credentials.
-# Strictly isolated from standard development (5432/6379) and production environments.
+# Explicitly isolated from any development .env or default environment variables.
+# Loopback only (127.0.0.1) on dedicated non-default ports (PG: 55432, Redis: 56379).
 
 services:
   acceptance-postgres:
     image: postgres:16-alpine
     container_name: mangaflow-acceptance-postgres
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-mangaflow_acceptance}
-      POSTGRES_USER: ${POSTGRES_USER:-mangaflow_test}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mangaflow_test_pass}
+      POSTGRES_DB: mangaflow_acceptance
+      POSTGRES_USER: mangaflow_test
+      POSTGRES_PASSWORD: ${MANGAFLOW_ACCEPTANCE_PG_PASSWORD:-mangaflow_acceptance_pass_55432}
     ports:
       - "127.0.0.1:55432:5432"
     volumes:
-      - mangaflow-acceptance-postgres-data:/var/lib/postgresql/data
+      - mangaflow-acceptance-postgres-vol:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mangaflow_test -d mangaflow_acceptance"]
-      interval: 3s
+      interval: 2s
       timeout: 3s
-      retries: 10
+      retries: 15
     restart: "no"
 
   acceptance-redis:
     image: redis:7-alpine
     container_name: mangaflow-acceptance-redis
-    environment:
-      REDIS_PASSWORD: ${REDIS_PASSWORD:-mangaflow_redis_test_pass}
     command:
       [
         "redis-server",
         "--appendonly",
         "no",
         "--requirepass",
-        "${REDIS_PASSWORD:-mangaflow_redis_test_pass}",
+        "${MANGAFLOW_ACCEPTANCE_REDIS_PASSWORD:-mangaflow_acceptance_redis_pass_56379}",
       ]
     ports:
       - "127.0.0.1:56379:6379"
     volumes:
-      - mangaflow-acceptance-redis-data:/data
+      - mangaflow-acceptance-redis-vol:/data
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          'redis-cli -a "$$REDIS_PASSWORD" ping | grep PONG',
+          'redis-cli -a "${MANGAFLOW_ACCEPTANCE_REDIS_PASSWORD:-mangaflow_acceptance_redis_pass_56379}" ping | grep PONG',
         ]
-      interval: 3s
+      interval: 2s
       timeout: 3s
-      retries: 10
+      retries: 15
     restart: "no"
 
 volumes:
-  mangaflow-acceptance-postgres-data:
-  mangaflow-acceptance-redis-data:
+  mangaflow-acceptance-postgres-vol:
+  mangaflow-acceptance-redis-vol:

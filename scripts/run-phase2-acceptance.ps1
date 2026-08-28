@@ -1,18 +1,19 @@
 ﻿param(
-    [string]$PgUrl = $env:MANGAFLOW_ACCEPTANCE_PG_URL,
-    [string]$RedisUrl = $env:MANGAFLOW_ACCEPTANCE_REDIS_URL,
+    [switch]$RunLive,
     [switch]$StartContainers,
     [switch]$StopContainers,
-    [switch]$DryRun
+    [switch]$DryRun,
+    [string]$PgUrl = $env:MANGAFLOW_ACCEPTANCE_PG_URL,
+    [string]$RedisUrl = $env:MANGAFLOW_ACCEPTANCE_REDIS_URL
 )
 
 $ErrorActionPreference = "Stop"
 
 if (-not $PgUrl) {
-    $PgUrl = "postgresql+psycopg://mangaflow_test:mangaflow_test_pass@127.0.0.1:55432/mangaflow_acceptance"
+    $PgUrl = "postgresql+psycopg://mangaflow_test:mangaflow_acceptance_pass_55432@127.0.0.1:55432/mangaflow_acceptance"
 }
 if (-not $RedisUrl) {
-    $RedisUrl = "redis://:mangaflow_redis_test_pass@127.0.0.1:56379/15"
+    $RedisUrl = "redis://:mangaflow_acceptance_redis_pass_56379@127.0.0.1:56379/15"
 }
 
 Write-Host "================================================================" -ForegroundColor Cyan
@@ -27,61 +28,94 @@ if (-not (Test-Path -LiteralPath $python)) {
     $python = "python"
 }
 
-Write-Host "`n[1/4] Environment Diagnostics:" -ForegroundColor Yellow
-$dockerCmd = Get-Command docker -ErrorAction SilentlyContinue
-$dockerComposeCmd = Get-Command docker-compose -ErrorAction SilentlyContinue
-$hasDocker = ($dockerCmd -ne $null) -or ($dockerComposeCmd -ne $null)
-
-Write-Host ("  Docker / Compose : " + $(if ($hasDocker) { "Available" } else { "Not Found (Missing)" }))
-$pgConn = Get-NetTCPConnection -LocalPort 55432 -ErrorAction SilentlyContinue
-$redisConn = Get-NetTCPConnection -LocalPort 56379 -ErrorAction SilentlyContinue
-
-Write-Host ("  PostgreSQL 55432 : " + $(if ($pgConn) { "Listening (Available)" } else { "Closed / Not Listening" }))
-Write-Host ("  Redis 56379      : " + $(if ($redisConn) { "Listening (Available)" } else { "Closed / Not Listening" }))
-
-if ($StartContainers -and $hasDocker) {
-    Write-Host "`n[2/4] Starting isolated acceptance containers..." -ForegroundColor Yellow
-    docker compose -f docker-compose.acceptance.yml up -d
-    Start-Sleep -Seconds 3
-}
-
-$canRunLive = ($pgConn -ne $null) -and ($redisConn -ne $null)
-
+# 1. DryRun verification branch (pure read-only, ZERO side-effects)
 if ($DryRun) {
-    Write-Host "`n[3/4] DryRun diagnostics complete. Status: $(if ($canRunLive) { 'READY_FOR_LIVE' } else { 'BLOCKED_MISSING_SERVICES' })" -ForegroundColor Cyan
+    Write-Host "`n[DryRun] Validating configuration and URL formats..." -ForegroundColor Yellow
+    Write-Host "  Target PG URL    : $($PgUrl -replace ':[^:@]+@', ':***@')"
+    Write-Host "  Target Redis URL : $($RedisUrl -replace ':[^:@]+@', ':***@')"
+    
+    $dockerFound = (Get-Command docker -ErrorAction SilentlyContinue) -ne $null
+    Write-Host "  Docker Available : $dockerFound"
+    Write-Host "`nDryRun completed successfully. No containers or tests were executed." -ForegroundColor Green
     exit 0
 }
 
-Write-Host "`n[3/4] Executing Test Harness & Acceptance Suite:" -ForegroundColor Yellow
+$startedContainersByScript = $false
+$testExit = 0
 
-if (-not $canRunLive) {
-    Write-Host "  [NOTICE] Live external services not running on 127.0.0.1:55432 / 56379." -ForegroundColor DarkYellow
-    Write-Host "  Executing integration harness validation & skipped regression checks..." -ForegroundColor DarkYellow
-    
-    & $python -m pytest tests/test_integration_harness.py tests/integration/ -v
-    $testExit = $LASTEXITCODE
+try {
+    Write-Host "`n[1/3] Environment Diagnostics:" -ForegroundColor Yellow
+    $dockerCmd = Get-Command docker -ErrorAction SilentlyContinue
+    $dockerComposeCmd = Get-Command docker-compose -ErrorAction SilentlyContinue
+    $hasDocker = ($dockerCmd -ne $null) -or ($dockerComposeCmd -ne $null)
+    Write-Host ("  Docker / Compose : " + $(if ($hasDocker) { "Available" } else { "Not Found (Missing)" }))
 
-    Write-Host "`n================================================================" -ForegroundColor Yellow
-    Write-Host "  STATUS: BLOCKED (Environment Missing: Docker/Postgres/Redis)  " -ForegroundColor Yellow
-    Write-Host "  Integration harness tests PASSED; live integration deferred. " -ForegroundColor Yellow
-    Write-Host "  To run live tests when Docker is installed:" -ForegroundColor Yellow
-    Write-Host "    1. docker compose -f docker-compose.acceptance.yml up -d" -ForegroundColor Yellow
-    Write-Host "    2. powershell -File scripts\run-phase2-acceptance.ps1" -ForegroundColor Yellow
-    Write-Host "================================================================" -ForegroundColor Yellow
-    exit $testExit
-}
+    if ($StartContainers) {
+        if (-not $hasDocker) {
+            Write-Error "Cannot start containers: docker command was not found on PATH."
+            exit 1
+        }
+        Write-Host "`nStarting isolated acceptance containers via docker compose..." -ForegroundColor Yellow
+        & docker compose -f docker-compose.acceptance.yml up -d
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "Failed to start acceptance containers."
+            exit $LASTEXITCODE
+        }
+        $startedContainersByScript = $true
 
-Write-Host "  Services detected! Running full live PostgreSQL and Redis/RQ acceptance..." -ForegroundColor Green
-$env:MANGAFLOW_ENABLE_LIVE_INTEGRATION = "1"
-$env:MANGAFLOW_ACCEPTANCE_PG_URL = $PgUrl
-$env:MANGAFLOW_ACCEPTANCE_REDIS_URL = $RedisUrl
+        Write-Host "Waiting for container healthchecks..." -ForegroundColor Yellow
+        $waitCount = 0
+        $servicesHealthy = $false
+        while ($waitCount -lt 15) {
+            Start-Sleep -Seconds 2
+            $pgConn = Get-NetTCPConnection -LocalPort 55432 -State Listen -ErrorAction SilentlyContinue
+            $redisConn = Get-NetTCPConnection -LocalPort 56379 -State Listen -ErrorAction SilentlyContinue
+            if ($pgConn -and $redisConn) {
+                $servicesHealthy = $true
+                break
+            }
+            $waitCount++
+        }
+        if (-not $servicesHealthy) {
+            Write-Warning "Timeout waiting for PostgreSQL 55432 and Redis 56379 to enter Listen state."
+        }
+    }
 
-& $python -m pytest tests/test_integration_harness.py tests/integration/ -v --run-live-integration --pg-url "$PgUrl" --redis-url "$RedisUrl"
-$testExit = $LASTEXITCODE
+    $pgConn = Get-NetTCPConnection -LocalPort 55432 -State Listen -ErrorAction SilentlyContinue
+    $redisConn = Get-NetTCPConnection -LocalPort 56379 -State Listen -ErrorAction SilentlyContinue
+    Write-Host ("  PostgreSQL 55432 : " + $(if ($pgConn) { "Listening (Available)" } else { "Closed / Not Listening" }))
+    Write-Host ("  Redis 56379      : " + $(if ($redisConn) { "Listening (Available)" } else { "Closed / Not Listening" }))
 
-if ($StopContainers -and $hasDocker) {
-    Write-Host "`n[4/4] Stopping isolated acceptance containers..." -ForegroundColor Yellow
-    docker compose -f docker-compose.acceptance.yml down
+    Write-Host "`n[2/3] Executing Acceptance Suite:" -ForegroundColor Yellow
+
+    if ($RunLive) {
+        if (-not ($pgConn -and $redisConn)) {
+            Write-Host "  [ERROR] -RunLive requested but required services are not listening on 55432 / 56379." -ForegroundColor Red
+            & $python -m pytest tests/test_integration_harness.py tests/integration/ -v --run-live-integration --pg-url "$PgUrl" --redis-url "$RedisUrl"
+            $testExit = $LASTEXITCODE
+        } else {
+            Write-Host "  Services ready. Running live PostgreSQL and Redis/RQ acceptance tests..." -ForegroundColor Green
+            & $python -m pytest tests/test_integration_harness.py tests/integration/ -v --run-live-integration --pg-url "$PgUrl" --redis-url "$RedisUrl"
+            $testExit = $LASTEXITCODE
+        }
+    } else {
+        Write-Host "  [NOTICE] -RunLive flag omitted. Running offline harness and skipped live tests..." -ForegroundColor DarkYellow
+        & $python -m pytest tests/test_integration_harness.py tests/integration/ -v
+        $testExit = $LASTEXITCODE
+    }
+
+    Write-Host "`n[3/3] Execution Summary:" -ForegroundColor Yellow
+    if ($testExit -eq 0) {
+        Write-Host "  Harness and unit tests passed successfully." -ForegroundColor Green
+    } else {
+        Write-Host "  Test execution completed with non-zero exit code: $testExit" -ForegroundColor Red
+    }
+
+} finally {
+    if ($StopContainers -and $startedContainersByScript) {
+        Write-Host "`nCleaning up isolated acceptance containers..." -ForegroundColor Yellow
+        & docker compose -f docker-compose.acceptance.yml down
+    }
 }
 
 exit $testExit
