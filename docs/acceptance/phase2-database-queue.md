@@ -159,3 +159,32 @@ harness。本次验证的是 Windows 进程树生命周期，**不是 RQ Worker 
 下一步仍为：把监督器接入独立 RQ Worker/调度器与退出证明、本地适配器及共享持久化
 证据，修复剩余队列业务和五类版本门禁，再完善随机资源/凭据编排。
 真实服务环境仍未获安装/下载授权；本 PR 未合并，master 验收尚未发生。
+
+
+## 2026-08-28 组长接管：子进程配置与本地适配器准备
+
+在 `6086155` 之后，新增 `tests/integration/worker_runtime.py`，继续推进实际执行入口：
+
+- 新进程在导入 app.database / worker_tasks 之前安装隔离 Settings，仅接受显式初始化值，
+  不读取父环境、dotenv 或 secrets-directory；配置和存储路径须处于已验证归属的 payload。
+- 本地图像适配器在执行进程内安装，不依赖父进程 monkeypatch。进入调用、返回、可重试
+  或终态失败事件以独立文件落盘，包含实际执行 PID 和 application job ID，不记录提示词或凭据。
+- 首次失败标记用排他创建文件保存，支持新进程读取同一标记；可阻塞的本地调用为后续
+  取消/失租交错测试预留入口。未实现的文本操作明确失败，不退回真实供应商。
+- 准备了真实 RQ horse 入口：重建 Worker/Job/Execution，核对 Redis owner、队列、
+  已登记 application job 与 slot 派生 ID，调用 RQ perform_job。
+  PostgreSQL 子进程配置限定本次 schema 并校验 COMMENT/current_schema。
+  **该 live 路径尚未执行，兼容的父 Worker/调度器及退出清理仍待接入。**
+- 独立 offline application probe 禁止 Python socket 连接，只执行当前 worktree 的
+  实际 execute_job。它使用新建临时 SQLite，不是 PostgreSQL 或 Redis 替身验收。
+
+实际检查：离线 harness **56 passed / 1 条既有 Starlette 警告 / 12.01s**。
+新增 5 项覆盖子进程实际页面生成成功、终态失败、两个不同进程的失败后再次执行、
+假 dotenv/父环境哨兵隔离，以及 live URL 覆盖在配置落盘前被拒绝。
+父进程以新 Session 验证 candidate、asset、generation record 与 job 完成状态，
+并检查本次生成文件和子进程事件。第二次执行由测试显式启动，**不代表 RQ 自动重试**。
+本轮两个 Python 文件 Ruff 通过；临时库、图片和进程目录均由夹具清理。
+
+没有开启 live 入口、连接 PostgreSQL/Redis、安装或更改共享依赖，也没有真实供应商调用。
+RQ 2.6.1 的 Windows 父进程兼容问题仍未修复；默认应用 Worker 启动路径也尚未验收。
+本 PR 仍不能合并，后续必须接上独立 Worker/调度器和真实队列业务矩阵。

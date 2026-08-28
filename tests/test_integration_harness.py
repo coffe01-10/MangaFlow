@@ -729,3 +729,197 @@ def test_process_stop_can_retry_after_child_handles_closed(process_tree, monkeyp
     assert child.handle is None and not process_tree.cleaned
     process_tree.cleanup()
     assert process_tree.cleaned
+
+
+@pytest.fixture
+def offline_application_process(process_tree):
+    """Real child application execution using disposable SQLite, NOT RQ/PG evidence."""
+    from app.database import Base
+    from app.domain.states import Resolution
+    from app.model_adapters.fake_acceptance import _generate_fake_png_bytes
+    from app.models import Asset, GenerationBatch, PageCandidate
+    from app.services.job_service import create_job
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.orm import sessionmaker
+
+    from tests.integration.test_postgres_acceptance import _seed_pg_project_hierarchy
+
+    engine = create_engine(f"sqlite:///{process_tree.payload / 'probe.sqlite'}")
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    Base.metadata.create_all(engine)
+    try:
+        seeded = _seed_pg_project_hierarchy(factory)
+        with factory() as db:
+            # Only newly created test assets; materialize their PNGs in the owned payload.
+            for asset in db.scalars(select(Asset)):
+                path = process_tree.payload / "uploads" / asset.storage_key
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(_generate_fake_png_bytes())
+            batch = GenerationBatch(
+                project_id=seeded["project_id"],
+                page_id=seeded["page_id"],
+                chapter_id=seeded["chapter_id"],
+                ordinal=1,
+                status="OPEN",
+            )
+            db.add(batch)
+            db.flush()
+            candidate = PageCandidate(
+                batch_id=batch.id,
+                page_id=seeded["page_id"],
+                ordinal=1,
+                model_alias="image.nano_banana_2",
+                resolution=Resolution.DRAFT_1K,
+                based_on_storyboard_version=1,
+                status="QUEUED",
+                prompt_snapshot={
+                    "reference_selections": {
+                        seeded["character_id"]: {
+                            "character_asset_id": seeded["character_asset_id"],
+                            "outfit_id": seeded["outfit_id"],
+                            "outfit_asset_id": seeded["outfit_asset_id"],
+                        }
+                    }
+                },
+            )
+            db.add(candidate)
+            db.flush()
+            job = create_job(
+                db,
+                project_id=seeded["project_id"],
+                target_type="PAGE_CANDIDATE",
+                target_id=candidate.id,
+                job_type="PAGE_GENERATE",
+                model_alias="image.nano_banana_2",
+                max_attempts=3,
+                auto_commit=False,
+            )
+            candidate.job_id = job.id
+            db.commit()
+            yield process_tree, factory, job.id, candidate.id
+    finally:
+        engine.dispose()
+
+
+def _start_application_probe(tree, config, job_id, label):
+    root = Path(__file__).resolve().parents[1]
+    return tree.start_python(
+        label,
+        """import pathlib, sys
+sys.path[:0] = [sys.argv[1], str(pathlib.Path(sys.argv[1]) / "apps" / "api")]
+from tests.integration.worker_runtime import run_offline_application_probe
+run_offline_application_probe(pathlib.Path(sys.argv[2]), sys.argv[3])
+""",
+        [str(root), str(config), job_id],
+    )
+
+
+@pytest.mark.parametrize("mode", ["ok", "terminal", "retry_once"])
+def test_child_executes_actual_page_task_with_persisted_local_fixture(
+    offline_application_process, mode
+):
+    import json
+
+    from app.domain.states import JobStatus
+    from app.models import Asset, GenerationJob, GenerationRecord, PageCandidate
+
+    from tests.integration.worker_runtime import write_worker_config
+
+    tree, factory, job_id, candidate_id = offline_application_process
+    config = write_worker_config(tree, {job_id: mode})
+    first = _start_application_probe(tree, config, job_id, "first")
+    first_code = first.wait(timeout=15)
+    with factory() as db:
+        job = db.get(GenerationJob, job_id)
+        if mode == "ok":
+            assert first_code == 0, (job.status, job.error_code, job.error_message)
+        else:
+            assert first_code != 0
+            assert job.error_code == ("RATE_LIMIT" if mode == "retry_once" else "INVALID_PROMPT")
+            assert job.status == (JobStatus.WAITING if mode == "retry_once" else JobStatus.FAILED)
+        assert job.attempt_count == 1
+
+    if mode == "retry_once":
+        # New OS process, not an in-memory counter. This is NOT automatic RQ retry evidence.
+        second = _start_application_probe(tree, config, job_id, "second")
+        assert second.wait(timeout=15) == 0
+
+    events = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in (tree.payload / "events").glob("event-*.json")
+    ]
+    entered = [event for event in events if event["event"] == "entered"]
+    assert len(entered) == (2 if mode == "retry_once" else 1)
+    if mode == "retry_once":
+        assert len({event["pid"] for event in entered}) == 2
+    with factory() as db:
+        job = db.get(GenerationJob, job_id)
+        candidate = db.get(PageCandidate, candidate_id)
+        if mode == "terminal":
+            assert candidate.asset_id is None and job.status == JobStatus.FAILED
+        else:
+            assert job.status == JobStatus.COMPLETED and candidate.status == "READY"
+            assert job.attempt_count == (2 if mode == "retry_once" else 1)
+            asset = db.get(Asset, candidate.asset_id)
+            record = db.get(GenerationRecord, candidate.generation_record_id)
+            assert record.job_id == job_id and record.provider_request_id.startswith("local-")
+            assert (tree.payload / "storage" / asset.storage_key).is_file()
+
+
+def test_child_config_ignores_dotenv_and_inherited_application_environment(process_tree):
+    import json
+
+    from tests.integration.worker_runtime import write_worker_config
+
+    root = Path(__file__).resolve().parents[1]
+    config = write_worker_config(process_tree, {"probe": "ok"})
+    (process_tree.payload / ".env").write_text(
+        "GOOGLE_CLOUD_PROJECT=dotenv-sentinel\nMANGAFLOW_PROXY_URL=http://invalid.example\n",
+        encoding="utf-8",
+    )
+    output = process_tree.payload / "probe-settings.json"
+    child = process_tree.start_python(
+        "config",
+        """import json, pathlib, sys
+sys.path[:0] = [sys.argv[1], str(pathlib.Path(sys.argv[1]) / "apps" / "api")]
+from tests.integration.worker_runtime import configure_child
+record, settings, engine, adapter = configure_child(pathlib.Path(sys.argv[2]), probe_job="probe")
+try:
+    pathlib.Path(sys.argv[3]).write_text(json.dumps({
+        "project": settings.google_cloud_project,
+        "credential": str(settings.google_application_credentials),
+        "proxy": settings.mangaflow_proxy_url,
+        "queue_enabled": settings.queue_enabled,
+        "storage": str(settings.storage_root),
+    }), encoding="utf-8")
+finally:
+    engine.dispose()
+""",
+        [str(root), str(config), str(output)],
+        environment={
+            "GOOGLE_CLOUD_PROJECT": "environment-sentinel",
+            "DATABASE_URL": "not-a-database",
+            "QUEUE_ENABLED": "true",
+        },
+    )
+    assert child.wait(timeout=15) == 0
+    result = json.loads(output.read_text(encoding="utf-8"))
+    assert result["project"] is None and result["proxy"] is None
+    assert result["credential"] == "None" and result["queue_enabled"] is False
+    assert Path(result["storage"]) == process_tree.payload / "storage"
+
+
+def test_worker_configuration_rejects_live_endpoint_override_before_writing(process_tree):
+    from tests.integration.worker_runtime import write_worker_config
+
+    with pytest.raises(ValueError, match="query parameters"):
+        write_worker_config(
+            process_tree,
+            {"job": "ok"},
+            pg_url="postgresql://test:test@127.0.0.1:55432/mangaflow_acceptance?host=outside",
+            schema="acceptance_" + "a" * 32,
+            redis_url="redis://127.0.0.1:56379/15",
+            redis_token="b" * 32,
+            queue_name="acceptance_" + "b" * 32 + "_main",
+        )
+    assert not (process_tree.payload / "worker.json").exists()
