@@ -6,7 +6,6 @@
 const { execFileSync, spawn } = require("node:child_process");
 const net = require("node:net");
 const path = require("node:path");
-const { fileURLToPath } = require("node:url");
 
 const WEB_URL = "http://127.0.0.1:3000";
 const API_ORIGIN = "http://127.0.0.1:8000/api/v1";
@@ -60,7 +59,7 @@ function assertSupervised(port) {
   if (!/^[0-9a-f]{32}$/.test(process.env.MANGAFLOW_E2E_RUN_ID ?? "")) {
     throw new Error("Use scripts/run_e2e_owned.py: acceptance requires its controller");
   }
-  const root = path.dirname(path.dirname(fileURLToPath(__filename)));
+  const root = path.dirname(__dirname); // scripts/ lives directly under the repo root.
   const output = execFileSync(
     defaultPython(root),
     ["-I", "-B", path.join(root, "scripts", "run_e2e_owned.py"), "verify",
