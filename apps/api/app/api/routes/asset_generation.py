@@ -110,23 +110,6 @@ def _has_active_reference_assets(
     ) > 0
 
 
-def _generation_reference_ids(db: Session, batch: GenerationBatch) -> list[str]:
-    if batch.target_type == "CHARACTER":
-        return [item.asset_id for item in character_references(db, batch.target_id)]
-    if batch.target_type == "OUTFIT":
-        outfit = db.get(Outfit, batch.target_id)
-        if not outfit:
-            return []
-        character_ids = [
-            item.asset_id for item in character_references(db, outfit.character_id)
-        ]
-        return list(dict.fromkeys([*character_ids, *outfit.reference_asset_ids]))
-    if batch.target_type == "STYLE":
-        style = db.get(StyleProfile, batch.target_id)
-        return list(style.profile.get("reference_asset_ids", [])) if style else []
-    return []
-
-
 @router.get("/projects/{project_id}/outfits", response_model=list[OutfitRead])
 def list_outfits(project_id: str, db: Session = Depends(get_db)) -> list[Outfit]:
     return list(

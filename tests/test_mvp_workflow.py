@@ -48,6 +48,14 @@ def _project(client, name="长篇测试"):
 
 def _skip_page_readiness(monkeypatch) -> None:
     monkeypatch.setattr(
+        "app.services.page_readiness.ensure_page_ready",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "app.services.ordinal_allocator.ensure_page_ready",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
         "app.api.routes.workflow.ensure_page_ready",
         lambda *_args, **_kwargs: None,
     )
@@ -851,7 +859,7 @@ def test_candidate_requires_explicit_neutral_model(client, db_session, monkeypat
 def test_character_concept_without_references_uses_generate_capability(
     client, db_session, monkeypatch
 ):
-    from app.api.routes import asset_generation
+    from app.services import model_router
 
     monkeypatch.setattr(get_settings(), "queue_enabled", False)
     project = _project(client, "无参考概念图")
@@ -860,13 +868,14 @@ def test_character_concept_without_references_uses_generate_capability(
         json={"primary_name": "林澄", "aliases": []},
     ).json()
     operations: list[str] = []
-    original_resolve = asset_generation.resolve_model
+    original_resolve = model_router.resolve_model
 
     def record_operation(*args, operation: str, **kwargs):
         operations.append(operation)
         return original_resolve(*args, operation=operation, **kwargs)
 
-    monkeypatch.setattr(asset_generation, "resolve_model", record_operation)
+    monkeypatch.setattr("app.services.ordinal_allocator.resolve_model", record_operation)
+    monkeypatch.setattr("app.services.model_router.resolve_model", record_operation)
     response = client.post(
         f"/api/v1/characters/{character['id']}/complete-sheet",
         json={

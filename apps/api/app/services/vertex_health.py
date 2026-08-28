@@ -35,7 +35,9 @@ def _file_present(settings: Settings) -> bool:
     )
 
 
-def get_or_create_health(db: Session, settings: Settings) -> ProviderHealth:
+def get_or_create_health(
+    db: Session, settings: Settings, *, auto_commit: bool = False
+) -> ProviderHealth:
     health = db.query(ProviderHealth).filter_by(provider=PROVIDER).one_or_none()
     configured = _configured(settings)
     present = _file_present(settings)
@@ -52,8 +54,10 @@ def get_or_create_health(db: Session, settings: Settings) -> ProviderHealth:
             ),
         )
         db.add(health)
-        db.commit()
-        db.refresh(health)
+        db.flush()
+        if auto_commit:
+            db.commit()
+            db.refresh(health)
         return health
 
     changed = health.configured != configured or health.credential_file_present != present
@@ -65,8 +69,10 @@ def get_or_create_health(db: Session, settings: Settings) -> ProviderHealth:
         health.message = "凭据文件不存在" if configured else "请在服务端配置 Vertex AI 服务账号"
         changed = True
     if changed:
-        db.commit()
-        db.refresh(health)
+        db.flush()
+        if auto_commit:
+            db.commit()
+            db.refresh(health)
     return health
 
 

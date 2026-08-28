@@ -189,6 +189,10 @@ def test_1500_to_3000_character_full_manga_acceptance(
             "app.api.routes.workflow.ensure_page_ready",
             lambda *_args, **_kwargs: None,
         )
+        monkeypatch.setattr(
+            "app.services.ordinal_allocator.ensure_page_ready",
+            lambda *_args, **_kwargs: None,
+        )
 
         project_response = client.post(
             "/api/v1/projects",
@@ -275,6 +279,9 @@ def test_1500_to_3000_character_full_manga_acceptance(
         outfit_asset = upload_reference(
             "OUTFIT_REFERENCE", "uniform.png", _png_bytes((180, 180, 180))
         )
+        other_outfit_asset = upload_reference(
+            "OUTFIT_REFERENCE", "casual.png", _png_bytes((190, 190, 190))
+        )
         style_asset = upload_reference(
             "STYLE_REFERENCE", "style.png", _png_bytes((80, 80, 80))
         )
@@ -303,6 +310,14 @@ def test_1500_to_3000_character_full_manga_acceptance(
                 "state_rules": {"rain": "外套肩部微湿"},
                 "locked_fields": ["领结", "裙长", "鞋型"],
                 "reference_asset_ids": [outfit_asset["id"]],
+            },
+        ).json()
+        other_outfit = client.post(
+            f"/api/v1/projects/{project['id']}/outfits",
+            json={
+                "character_id": other_character["id"],
+                "name": "便服",
+                "reference_asset_ids": [other_outfit_asset["id"]],
             },
         ).json()
         style = client.post(
@@ -397,7 +412,7 @@ def test_1500_to_3000_character_full_manga_acceptance(
         for scene in script["scenes"]:
             assigned = client.patch(
                 f"/api/v1/scenes/{scene['id']}/outfits",
-                json={"assignments": {character["id"]: outfit["id"]}},
+                json={"assignments": {character["id"]: outfit["id"], other_character["id"]: other_outfit["id"]}},
             )
             assert assigned.status_code == 200
 
@@ -424,22 +439,22 @@ def test_1500_to_3000_character_full_manga_acceptance(
             model_alias = "image.nano_banana_2"
             queued_response = client.post(
                 f"/api/v1/batches/{batch_response.json()['id']}/candidates",
-                    json={
-                        "model_alias": model_alias,
-                        "resolution": "1K",
-                        "storyboard_version": page["storyboard_version"],
-                        "reference_selections": {
-                            character["id"]: {
-                                "character_asset_id": character_asset["id"],
-                                "outfit_id": outfit["id"],
-                                "outfit_asset_id": outfit_asset["id"],
-                            },
-                            other_character["id"]: {
-                                "character_asset_id": other_character_asset["id"],
-                                "outfit_id": None,
-                                "outfit_asset_id": None,
-                            },
+                json={
+                    "model_alias": model_alias,
+                    "resolution": "1K",
+                    "storyboard_version": page["storyboard_version"],
+                    "reference_selections": {
+                        character["id"]: {
+                            "character_asset_id": character_asset["id"],
+                            "outfit_id": outfit["id"],
+                            "outfit_asset_id": outfit_asset["id"],
                         },
+                        other_character["id"]: {
+                            "character_asset_id": other_character_asset["id"],
+                            "outfit_id": other_outfit["id"],
+                            "outfit_asset_id": other_outfit_asset["id"],
+                        },
+                    },
                 },
             )
             assert queued_response.status_code == 202, queued_response.json()

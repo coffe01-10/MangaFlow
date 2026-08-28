@@ -1,7 +1,8 @@
+from __future__ import annotations
+
 import random
 import sqlite3
 import time
-from collections.abc import Sequence
 
 from fastapi import HTTPException
 from sqlalchemy import func, select, update
@@ -12,7 +13,6 @@ from app.config import get_settings
 from app.models import (
     Asset,
     AssetCandidate,
-    Chapter,
     Character,
     CharacterReference,
     GenerationBatch,
@@ -28,8 +28,9 @@ from app.models import (
 from app.schemas import AssetCandidateCreate, CandidateCreate
 from app.services.job_service import create_job
 from app.services.model_router import model_supports_resolution, resolve_model
+from app.services.page_readiness import ensure_page_ready
 
-ORDINAL_ALLOCATION_MAX_ATTEMPTS = 5
+ORDINAL_ALLOCATION_MAX_ATTEMPTS = 10
 
 
 class OrdinalConflictError(Exception):
@@ -142,6 +143,9 @@ def _generation_reference_ids(db: Session, batch: GenerationBatch) -> list[str]:
     return []
 
 
+get_generation_reference_ids = _generation_reference_ids
+
+
 def create_generation_batch(
     db: Session,
     *,
@@ -162,7 +166,7 @@ def create_generation_batch(
             if project is None or project.deleted_at is not None:
                 raise HTTPException(status_code=404, detail="项目不存在")
             if page_id:
-                page = db.get(MangaPage, page_id)
+                page = lock_entity(db, MangaPage, page_id)
                 if page is None:
                     raise HTTPException(status_code=404, detail="页面不存在")
             if close_open_page_batches and page_id:
@@ -188,14 +192,12 @@ def create_generation_batch(
             db.add(batch)
             db.flush()
             return batch
-        except IntegrityError as error:
-            last_error = error
-            time.sleep(0.01 * (2 ** _attempt) + random.uniform(0, 0.02))
-        except OperationalError as error:
-            if not is_sqlite_lock_error(error):
+        except (IntegrityError, OperationalError) as error:
+            if isinstance(error, OperationalError) and not is_sqlite_lock_error(error):
                 raise
             last_error = error
-            time.sleep(0.02 * (2 ** _attempt) + random.uniform(0, 0.03))
+            db.rollback()
+            time.sleep(0.03 * (2 ** _attempt) + random.uniform(0.01, 0.04))
     raise BatchOrdinalConflictError("抽卡批次分配冲突，请稍后重试") from last_error
 
 
@@ -265,26 +267,21 @@ def validate_candidate_reference_selections(
 def create_page_candidate(
     db: Session,
     *,
-    batch_id: str | None = None,
+    batch_id: str,
     payload: CandidateCreate,
-    batch: GenerationBatch | None = None,
-    page: MangaPage | None = None,
-    project: Project | None = None,
-    resolved_model=None,
-    normalized_selections: dict[str, dict[str, str | None]] | None = None,
     max_attempts: int = ORDINAL_ALLOCATION_MAX_ATTEMPTS,
 ) -> tuple[PageCandidate, GenerationJob]:
     """Create a PageCandidate and its associated GenerationJob atomically."""
-    target_batch_id = batch_id or (batch.id if batch else None)
-    if not target_batch_id:
-        raise HTTPException(status_code=400, detail="缺少 batch_id")
     last_error: BaseException | None = None
     for _attempt in range(max_attempts):
         try:
-            current_batch = lock_entity(db, GenerationBatch, target_batch_id)
-            if not current_batch or current_batch.status != "OPEN" or not current_batch.page_id:
+            target_batch = lock_entity(db, GenerationBatch, batch_id)
+            if not target_batch or target_batch.status != "OPEN" or not target_batch.page_id:
                 raise HTTPException(status_code=409, detail="抽卡批次不存在或已经关闭")
-            current_page = db.get(MangaPage, current_batch.page_id)
+            current_project = lock_entity(db, Project, target_batch.project_id)
+            if not current_project or current_project.deleted_at is not None:
+                raise HTTPException(status_code=404, detail="项目不存在")
+            current_page = lock_entity(db, MangaPage, target_batch.page_id)
             if not current_page:
                 raise HTTPException(status_code=404, detail="页面不存在")
             if payload.storyboard_version != current_page.storyboard_version:
@@ -297,15 +294,7 @@ def create_page_candidate(
                         "current": current_page.storyboard_version,
                     },
                 )
-            from app.api.routes import workflow as workflow_route_module
-
-            workflow_route_module.ensure_page_ready(db, current_page, get_settings())
-            chapter = db.get(Chapter, current_page.chapter_id)
-            if not chapter:
-                raise HTTPException(status_code=404, detail="章节不存在")
-            current_project = lock_entity(db, Project, chapter.project_id)
-            if not current_project or current_project.deleted_at is not None:
-                raise HTTPException(status_code=404, detail="项目不存在")
+            ensure_page_ready(db, current_page, get_settings())
             current_resolved_model = resolve_model(
                 db,
                 get_settings(),
@@ -314,6 +303,9 @@ def create_page_candidate(
                 project_id=current_project.id,
                 task_kind="PAGE_GENERATE",
             )
+            current_batch = lock_entity(db, GenerationBatch, batch_id)
+            if not current_batch or current_batch.status != "OPEN":
+                raise HTTPException(status_code=409, detail="抽卡批次不存在或已经关闭")
             if not model_supports_resolution(
                 current_resolved_model.model, payload.resolution.value
             ):
@@ -371,38 +363,33 @@ def create_page_candidate(
             db.commit()
             db.refresh(candidate)
             return candidate, job
-        except IntegrityError as error:
-            last_error = error
-            db.rollback()
-            time.sleep(0.01 * (2 ** _attempt) + random.uniform(0, 0.02))
-        except OperationalError as error:
-            db.rollback()
-            if not is_sqlite_lock_error(error):
+        except (IntegrityError, OperationalError) as error:
+            if isinstance(error, OperationalError) and not is_sqlite_lock_error(error):
                 raise
             last_error = error
-            time.sleep(0.02 * (2 ** _attempt) + random.uniform(0, 0.03))
+            db.rollback()
+            time.sleep(0.03 * (2 ** _attempt) + random.uniform(0.01, 0.04))
     raise CandidateOrdinalConflictError("页面候选分配冲突，请稍后重试") from last_error
 
 
 def create_asset_candidate(
     db: Session,
     *,
-    batch_id: str | None = None,
+    batch_id: str,
     payload: AssetCandidateCreate,
-    batch: GenerationBatch | None = None,
-    project: Project | None = None,
-    resolved_model=None,
-    reference_asset_ids: Sequence[str] | None = None,
     max_attempts: int = ORDINAL_ALLOCATION_MAX_ATTEMPTS,
 ) -> tuple[AssetCandidate, GenerationJob]:
     """Create an AssetCandidate and its associated GenerationJob atomically."""
-    target_batch_id = batch_id or (batch.id if batch else None)
-    if not target_batch_id:
-        raise HTTPException(status_code=400, detail="缺少 batch_id")
     last_error: BaseException | None = None
     for _attempt in range(max_attempts):
         try:
-            current_batch = lock_entity(db, GenerationBatch, target_batch_id)
+            target_batch = lock_entity(db, GenerationBatch, batch_id)
+            if not target_batch:
+                raise HTTPException(status_code=409, detail="资产生成批次不存在或已关闭")
+            current_project = lock_entity(db, Project, target_batch.project_id)
+            if not current_project or current_project.deleted_at is not None:
+                raise HTTPException(status_code=404, detail="项目不存在")
+            current_batch = lock_entity(db, GenerationBatch, batch_id)
             if (
                 not current_batch
                 or current_batch.status != "OPEN"
@@ -410,18 +397,8 @@ def create_asset_candidate(
                 or not current_batch.target_id
             ):
                 raise HTTPException(status_code=409, detail="资产生成批次不存在或已关闭")
-            current_project = lock_entity(db, Project, current_batch.project_id)
-            if not current_project or current_project.deleted_at is not None:
-                raise HTTPException(status_code=404, detail="项目不存在")
-            ref_ids = (
-                list(reference_asset_ids)
-                if reference_asset_ids is not None
-                else _generation_reference_ids(db, current_batch)
-            )
-            from app.api.routes import asset_generation as asset_generation_module
-
-            resolve_fn = getattr(asset_generation_module, "resolve_model", resolve_model)
-            current_resolved_model = resolve_fn(
+            ref_ids = _generation_reference_ids(db, current_batch)
+            current_resolved_model = resolve_model(
                 db,
                 get_settings(),
                 operation="image_edit" if ref_ids else "image_generate",
@@ -429,6 +406,9 @@ def create_asset_candidate(
                 project_id=current_project.id,
                 task_kind="ASSET_GENERATE",
             )
+            current_batch = lock_entity(db, GenerationBatch, batch_id)
+            if not current_batch or current_batch.status != "OPEN":
+                raise HTTPException(status_code=409, detail="资产生成批次不存在或已关闭")
             if not model_supports_resolution(
                 current_resolved_model.model, payload.resolution.value
             ):
@@ -478,15 +458,10 @@ def create_asset_candidate(
             db.commit()
             db.refresh(candidate)
             return candidate, job
-        except IntegrityError as error:
-            last_error = error
-            db.rollback()
-            time.sleep(0.01 * (2 ** _attempt) + random.uniform(0, 0.02))
-        except OperationalError as error:
-            db.rollback()
-            if not is_sqlite_lock_error(error):
+        except (IntegrityError, OperationalError) as error:
+            if isinstance(error, OperationalError) and not is_sqlite_lock_error(error):
                 raise
             last_error = error
-            time.sleep(0.02 * (2 ** _attempt) + random.uniform(0, 0.03))
+            db.rollback()
+            time.sleep(0.03 * (2 ** _attempt) + random.uniform(0.01, 0.04))
     raise CandidateOrdinalConflictError("素材候选分配冲突，请稍后重试") from last_error
-

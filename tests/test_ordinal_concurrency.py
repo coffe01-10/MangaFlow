@@ -26,6 +26,7 @@ from app.models import (
     SourceRevision,
     SourceSegment,
     StyleProfile,
+    utcnow,
 )
 from app.schemas import AssetCandidateCreate, CandidateCreate
 from app.services.content_workflow import import_source, revise_chapter_source
@@ -78,7 +79,11 @@ def file_sessions(tmp_path):
 
 def _seed_test_hierarchy(factory):
     """Seed project, chapter, page, character, and outfit for candidate tests."""
+    from app.config import get_settings
+    from app.services.provider_presets import ensure_provider_presets
+
     with factory() as db:
+        ensure_provider_presets(db, get_settings(), auto_commit=True)
         project = Project(name="序号并发测试项目")
         db.add(project)
         db.flush()
@@ -253,14 +258,6 @@ def test_concurrent_page_candidate_allocation(file_sessions):
     def create_candidate_worker(thread_idx):
         barrier.wait()
         with factory() as db:
-            batch = db.get(GenerationBatch, batch_id)
-            page = db.get(MangaPage, seeded["page_id"])
-            project = db.get(Project, seeded["project_id"])
-            resolved_model = type(
-                "ResolvedModelDummy",
-                (),
-                {"model": type("ModelDummy", (), {"id": None})()},
-            )()
             payload = CandidateCreate(
                 model_alias="image.nano_banana_2",
                 resolution=Resolution.DRAFT_1K,
@@ -275,11 +272,7 @@ def test_concurrent_page_candidate_allocation(file_sessions):
             )
             candidate, job = create_page_candidate(
                 db,
-                batch=batch,
-                page=page,
-                project=project,
-                resolved_model=resolved_model,
-                normalized_selections=payload.reference_selections,
+                batch_id=batch_id,
                 payload=payload,
             )
             return candidate.ordinal, job.id
@@ -327,13 +320,6 @@ def test_concurrent_asset_candidate_allocation(file_sessions):
     def create_asset_candidate_worker(thread_idx):
         barrier.wait()
         with factory() as db:
-            batch = db.get(GenerationBatch, batch_id)
-            project = db.get(Project, seeded["project_id"])
-            resolved_model = type(
-                "ResolvedModelDummy",
-                (),
-                {"model": type("ModelDummy", (), {"id": None})()},
-            )()
             payload = AssetCandidateCreate(
                 model_alias="image.nano_banana_2",
                 resolution=Resolution.DRAFT_1K,
@@ -342,11 +328,8 @@ def test_concurrent_asset_candidate_allocation(file_sessions):
             )
             candidate, job = create_asset_candidate(
                 db,
-                batch=batch,
-                project=project,
-                resolved_model=resolved_model,
+                batch_id=batch_id,
                 payload=payload,
-                reference_asset_ids=[seeded["character_asset_id"]],
             )
             return candidate.ordinal, job.id
 
@@ -489,13 +472,6 @@ def test_candidate_ordinal_exhaustion_raises_conflict_error(file_sessions, monke
             generation_kind="PAGE",
         )
         db.commit()
-        page = db.get(MangaPage, seeded["page_id"])
-        project = db.get(Project, seeded["project_id"])
-        resolved_model = type(
-            "ResolvedModelDummy",
-            (),
-            {"model": type("ModelDummy", (), {"id": None})()},
-        )()
         payload = CandidateCreate(
             model_alias="image.nano_banana_2",
             resolution=Resolution.DRAFT_1K,
@@ -511,11 +487,7 @@ def test_candidate_ordinal_exhaustion_raises_conflict_error(file_sessions, monke
         with pytest.raises(CandidateOrdinalConflictError):
             create_page_candidate(
                 db,
-                batch=batch,
-                page=page,
-                project=project,
-                resolved_model=resolved_model,
-                normalized_selections={},
+                batch_id=batch.id,
                 payload=payload,
                 max_attempts=2,
             )
@@ -894,6 +866,291 @@ def test_workflow_approve_node_downstream_failure_rolls_back_entire_unit(app_def
         assert reloaded_node_run.status == "WAITING_APPROVAL"
 
 
+def test_concurrent_batch_allocation_post_read_barrier_recovers_cleanly(app_default_sqlite_sessions):
+    """Verify that when 2 sessions hit a deterministic UNIQUE conflict (barrier after reading max), savepoint rolls back and attempt 2 succeeds without PendingRollbackError."""
+    factory = app_default_sqlite_sessions
+    with factory() as db:
+        project = Project(name="双Session确定性批次竞争")
+        db.add(project)
+        db.commit()
+        project_id = project.id
+
+    barrier = Barrier(2)
+    read_count = 0
+    import app.services.ordinal_allocator as allocator_mod
+    real_next_batch = allocator_mod._next_batch_ordinal
+
+    def sync_next_batch(db_session, p_id):
+        nonlocal read_count
+        val = real_next_batch(db_session, p_id)
+        read_count += 1
+        if read_count <= 2:
+            try:
+                barrier.wait(timeout=5)
+            except Exception:
+                pass
+        return val
+
+    allocator_mod._next_batch_ordinal = sync_next_batch
+    try:
+        def worker(thread_idx):
+            with factory() as db:
+                batch = create_generation_batch(
+                    db,
+                    project_id=project_id,
+                    generation_kind="PAGE",
+                )
+                db.commit()
+                return batch.ordinal, batch.id
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(worker, range(2)))
+
+        ordinals = sorted(r[0] for r in results)
+        assert ordinals == [1, 2]
+
+        with factory() as verify_db:
+            batches = list(
+                verify_db.scalars(
+                    select(GenerationBatch)
+                    .where(GenerationBatch.project_id == project_id)
+                    .order_by(GenerationBatch.ordinal)
+                )
+            )
+            assert len(batches) == 2
+            assert [b.ordinal for b in batches] == [1, 2]
+    finally:
+        allocator_mod._next_batch_ordinal = real_next_batch
+
+
+def test_candidate_creation_blocked_when_batch_closed_during_validation(file_sessions, monkeypatch):
+    """Verify that if another session closes the batch during validation, candidate creation raises 409 and writes 0 candidates."""
+    factory = file_sessions
+    seeded = _seed_test_hierarchy(factory)
+
+    with factory() as db:
+        batch = create_generation_batch(
+            db,
+            project_id=seeded["project_id"],
+            chapter_id=seeded["chapter_id"],
+            page_id=seeded["page_id"],
+            generation_kind="PAGE",
+        )
+        db.commit()
+        batch_id = batch.id
+
+    from app.services import model_router
+    real_resolve = model_router.resolve_model
+
+    def racing_resolve(*args, **kwargs):
+        # Another session closes the batch right during model resolution
+        with factory() as other_db:
+            b = other_db.get(GenerationBatch, batch_id)
+            b.status = "CLOSED"
+            b.closed_at = utcnow()
+            other_db.commit()
+        return real_resolve(*args, **kwargs)
+
+    monkeypatch.setattr("app.services.ordinal_allocator.resolve_model", racing_resolve)
+
+    with factory() as db:
+        with pytest.raises(HTTPException) as exc_info:
+            create_page_candidate(
+                db,
+                batch_id=batch_id,
+                payload=CandidateCreate(
+                    model_alias="image.nano_banana_2",
+                    resolution=Resolution.DRAFT_1K,
+                    storyboard_version=1,
+                    reference_selections={
+                        seeded["character_id"]: {
+                            "character_asset_id": seeded["character_asset_id"],
+                            "outfit_id": seeded["outfit_id"],
+                            "outfit_asset_id": seeded["outfit_asset_id"],
+                        }
+                    },
+                ),
+            )
+        assert exc_info.value.status_code == 409
+        assert "抽卡批次不存在或已经关闭" in str(exc_info.value.detail)
+
+    with factory() as verify_db:
+        candidates = list(
+            verify_db.scalars(select(PageCandidate).where(PageCandidate.batch_id == batch_id))
+        )
+        assert len(candidates) == 0
+
+
+def test_character_sheet_job_failure_rolls_back_batch_and_candidate_completely(app_default_sqlite_sessions, monkeypatch):
+    """Verify that in generate_complete_character_sheet, if create_job fails before commit, rollback leaves zero extra batches or candidates."""
+    from app.api.routes.asset_generation import generate_complete_character_sheet
+    from app.schemas import CharacterSheetCreate
+
+    factory = app_default_sqlite_sessions
+    seeded = _seed_test_hierarchy(factory)
+
+    def fail_create_job(*_args, **_kwargs):
+        raise RuntimeError("Simulated create_job failure in sheet generation")
+
+    monkeypatch.setattr("app.services.ordinal_allocator.create_job", fail_create_job)
+
+    with factory() as db:
+        with pytest.raises(RuntimeError):
+            try:
+                generate_complete_character_sheet(
+                    character_id=seeded["character_id"],
+                    payload=CharacterSheetCreate(
+                        model_alias="image.nano_banana_2",
+                        resolution=Resolution.DRAFT_1K,
+                        generation_mode="CONCEPT",
+                        appearance_description="测试外观",
+                        outfit_name="日常制服",
+                        outfit_description="日常制服描述",
+                    ),
+                    db=db,
+                )
+            except Exception:
+                db.rollback()
+                raise
+
+    with factory() as verify_db:
+        batches = list(
+            verify_db.scalars(
+                select(GenerationBatch).where(
+                    GenerationBatch.project_id == seeded["project_id"],
+                    GenerationBatch.target_type == "CHARACTER",
+                )
+            )
+        )
+        candidates = list(verify_db.scalars(select(AssetCandidate)))
+        jobs = list(verify_db.scalars(select(GenerationJob)))
+        assert len(batches) == 0
+        assert len(candidates) == 0
+        assert len(jobs) == 0
+
+
+def test_approve_node_final_commit_failure_rolls_back_and_allows_subsequent_retry(app_default_sqlite_sessions):
+    """Verify that if approve_node's final db.commit() fails after job creation, rollback leaves zero orphan records, run status is preserved, and subsequent retry succeeds."""
+    from app.models import WorkflowDefinition, WorkflowNodeRun
+    from app.services.workflow_engine import approve_node, create_workflow_run, default_graph, publish_workflow
+
+    factory = app_default_sqlite_sessions
+    seeded = _seed_test_hierarchy(factory)
+
+    with factory() as db:
+        wf = WorkflowDefinition(
+            project_id=seeded["project_id"],
+            name="单页审批工作流",
+            draft_graph=default_graph(),
+            is_active=True,
+        )
+        db.add(wf)
+        db.commit()
+        publish_workflow(db, wf)
+
+        run = create_workflow_run(
+            db,
+            wf,
+            scope_type="PAGE",
+            scope_id=seeded["page_id"],
+            start_node_ids=["generate"],
+            stop_node_ids=["generate"],
+        )
+        run_id = run.id
+
+        node_run = db.scalar(
+            select(WorkflowNodeRun).where(
+                WorkflowNodeRun.workflow_run_id == run.id,
+                WorkflowNodeRun.status == "WAITING_APPROVAL",
+            )
+        )
+        assert node_run is not None
+        node_id = node_run.node_id
+
+    # Attempt 1: Injected final commit failure
+    with factory() as db:
+        def failing_commit():
+            raise RuntimeError("Simulated final database commit crash")
+
+        db.commit = failing_commit
+
+        try:
+            approve_node(
+                db,
+                run_id,
+                node_id,
+                image_model_alias="image.nano_banana_2",
+                resolution="1K",
+            )
+        except RuntimeError:
+            db.rollback()
+
+    with factory() as verify_db:
+        batches = list(
+            verify_db.scalars(
+                select(GenerationBatch).where(GenerationBatch.project_id == seeded["project_id"])
+            )
+        )
+        candidates = list(
+            verify_db.scalars(
+                select(PageCandidate).where(PageCandidate.page_id == seeded["page_id"])
+            )
+        )
+        jobs = list(
+            verify_db.scalars(
+                select(GenerationJob).where(GenerationJob.project_id == seeded["project_id"])
+            )
+        )
+        reloaded_node_run = verify_db.scalar(
+            select(WorkflowNodeRun).where(
+                WorkflowNodeRun.workflow_run_id == run_id,
+                WorkflowNodeRun.node_id == node_id,
+            )
+        )
+        assert len(batches) == 0
+        assert len(candidates) == 0
+        assert len(jobs) == 0
+        assert reloaded_node_run.status == "WAITING_APPROVAL"
+
+    # Attempt 2: Successful retry
+    with factory() as db:
+        run_result = approve_node(
+            db,
+            run_id,
+            node_id,
+            image_model_alias="image.nano_banana_2",
+            resolution="1K",
+        )
+        assert run_result.status == "RUNNING"
+
+    with factory() as verify_db:
+        batches = list(
+            verify_db.scalars(
+                select(GenerationBatch).where(GenerationBatch.project_id == seeded["project_id"])
+            )
+        )
+        candidates = list(
+            verify_db.scalars(
+                select(PageCandidate).where(PageCandidate.page_id == seeded["page_id"])
+            )
+        )
+        jobs = list(
+            verify_db.scalars(
+                select(GenerationJob).where(GenerationJob.project_id == seeded["project_id"])
+            )
+        )
+        reloaded_node_run = verify_db.scalar(
+            select(WorkflowNodeRun).where(
+                WorkflowNodeRun.workflow_run_id == run_id,
+                WorkflowNodeRun.node_id == node_id,
+            )
+        )
+        assert len(batches) == 1
+        assert len(candidates) == 1
+        assert len(jobs) == 1
+        assert reloaded_node_run.status == "RUNNING"
+
+
 def test_is_sqlite_lock_error_identification():
     """Verify is_sqlite_lock_error correctly identifies busy and locked sqlite errors and excludes others."""
     busy_op = OperationalError(
@@ -910,4 +1167,3 @@ def test_is_sqlite_lock_error_identification():
     assert is_sqlite_lock_error(syntax_op) is False
 
     assert is_sqlite_lock_error(ValueError("unrelated error")) is False
-

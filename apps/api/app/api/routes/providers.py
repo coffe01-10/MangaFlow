@@ -400,7 +400,7 @@ def probes(
 
 @routing_router.get("", response_model=list[RoutingPolicyRead])
 def routing_policies(db: Session = Depends(get_db)) -> list[RoutingPolicy]:
-    ensure_provider_presets(db, get_settings())
+    ensure_provider_presets(db, get_settings(), auto_commit=True)
     return list(db.scalars(select(RoutingPolicy).order_by(RoutingPolicy.task_kind)))
 
 

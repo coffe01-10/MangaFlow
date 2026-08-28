@@ -288,7 +288,9 @@ def proxy_url_for_connection(
     return settings.mangaflow_proxy_url
 
 
-def ensure_provider_presets(db: Session, settings: Settings) -> None:
+def ensure_provider_presets(
+    db: Session, settings: Settings, *, auto_commit: bool = False
+) -> None:
     existing = {
         row.preset_key: row
         for row in db.scalars(
@@ -339,7 +341,9 @@ def ensure_provider_presets(db: Session, settings: Settings) -> None:
     db.flush()
     sync_vertex_connection_health(db, settings)
     _ensure_vertex_models(db, settings)
-    db.commit()
+    db.flush()
+    if auto_commit:
+        db.commit()
 
 
 def sync_vertex_connection_health(
