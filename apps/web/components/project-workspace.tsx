@@ -5,7 +5,6 @@ import { ProductionReadiness } from "@/components/production-readiness";
 import {
   api,
   publicUrl,
-  type Asset,
   type ImageModelAlias,
   type AssetPurpose,
   type InspectionResult,
@@ -22,6 +21,26 @@ import {
   isActiveTaskStatus,
   isTerminalTaskStatus,
 } from "@/lib/task-status";
+import {
+  assetKindByView,
+  generationKindLabels,
+  inspectionLabels,
+  jobLabels,
+  kinds,
+  navigationItems,
+  repairTypeLabels,
+} from "./project-workspace/labels";
+import {
+  assetName,
+  formatBytes,
+  inspectionBubbleDiffs,
+  inspectionSummary,
+  promptPreview,
+  queueStatsOf,
+  recommendedRepairType,
+} from "./project-workspace/display";
+import { AssetNameEditor, CandidateArtwork, ComicModeSwitch, ImageModelPicker } from "./project-workspace/shared";
+import type { AssetWorkspaceView, WorkspaceSection } from "./project-workspace/types";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
@@ -56,7 +75,6 @@ import {
   Star,
   Trash2,
   Upload,
-  Users,
   Palette,
   Settings,
   Workflow,
@@ -78,169 +96,7 @@ const StyleProductionPanel = dynamic(
   () => import("@/components/asset-production-panel").then((mod) => mod.StyleProductionPanel),
 );
 
-export type WorkspaceSection = "source" | "assets" | "script" | "storyboard" | "generate" | "library" | "jobs";
-export type AssetWorkspaceView = "characters" | "outfits" | "style" | "references";
-
-const navigationItems = [
-  ["source", "原作与修订", "导入、修改、撤回", "01", BookOpenText],
-  ["assets", "参考资产", "人物 / 服装 / 风格", "02", Users],
-  ["script", "漫画剧本", "场景、情节拍、对白", "03", Clapperboard],
-  ["storyboard", "分页与分镜", "场景切页、格子脚本", "04", PanelTop],
-  ["generate", "单页生成", "抽卡、收藏、采用", "05", Sparkles],
-  ["library", "生成素材库", "按类型和批次归档", "06", LibraryBig],
-  ["jobs", "任务中心", "进度、失败、取消重试", "07", ListTodo],
-] as const;
-
-const kinds = [
-  ["CHARACTER_REFERENCE", "人物参考"],
-  ["OUTFIT_REFERENCE", "服装参考"],
-  ["STYLE_REFERENCE", "漫画风格"],
-] as const;
-
-const assetKindByView: Record<Exclude<AssetWorkspaceView, "references">, AssetPurpose> = {
-  characters: "CHARACTER_REFERENCE",
-  outfits: "OUTFIT_REFERENCE",
-  style: "STYLE_REFERENCE",
-};
-
-const jobLabels: Record<string, string> = {
-  SOURCE_PARSE: "解析剧本", PAGE_GENERATE: "生成页面", PAGE_REPAIR: "修复页面",
-  PAGE_UPSCALE: "保持结构升清", ASSET_GENERATE: "生成角色/服装素材",
-  PAGE_INSPECT: "检查页面", STYLE_ANALYZE: "分析漫画风格",
-  WORKFLOW_NODE: "执行工作流节点",
-};
-
-const generationKindLabels: Record<string, string> = {
-  PAGE: "页面抽卡",
-  REPAIR: "页面修复",
-  CHARACTER: "角色形象补全",
-  OUTFIT: "角色服装形象",
-  STYLE_TEST: "漫画风格测试",
-  UPSCALE: "保持结构升清",
-};
-
-const inspectionLabels: Record<string, string> = {
-  TEXT: "文字",
-  SPEAKER: "说话人",
-  CHARACTER: "角色",
-  OUTFIT: "服装",
-  PROP: "道具",
-  CONTINUITY: "连续性",
-};
-
-const repairTypeLabels = {
-  BUBBLE_REGION: "气泡区域",
-  PANEL: "单格",
-  PAGE: "整页",
-} as const;
-
-function recommendedRepairType(category: string): "BUBBLE_REGION" | "PANEL" | "PAGE" {
-  if (category === "SPEAKER") return "BUBBLE_REGION";
-  if (["CHARACTER", "OUTFIT", "PROP"].includes(category)) return "PANEL";
-  return "PAGE";
-}
-
-function inspectionSummary(details: Record<string, unknown>) {
-  const expected = typeof details.expected === "string" ? details.expected : "";
-  const observed = typeof details.observed === "string" ? details.observed : "";
-  if (expected || observed) return [expected && `应为：${expected}`, observed && `实为：${observed}`].filter(Boolean).join("；");
-  return Object.entries(details).map(([key, value]) => `${key}: ${String(value)}`).join("；") || "模型未补充说明";
-}
-
-function inspectionBubbleDiffs(details: Record<string, unknown>) {
-  if (!Array.isArray(details.bubble_diffs)) return [];
-  return details.bubble_diffs.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object");
-}
-
-function ImageModelPicker({
-  selected,
-  onSelect,
-  options,
-  label,
-}: {
-  selected: ImageModelAlias | null;
-  onSelect: (model: ImageModelAlias) => void;
-  options: { alias: ImageModelAlias; name: string; id: string; provider: string }[];
-  label?: string;
-}) {
-  return <div className="model-picker">
-    {label && <p>{label}</p>}
-    <div className="model-duel">{options.map((option) => <button type="button" aria-pressed={selected === option.alias} key={option.alias} className={selected === option.alias ? "model-choice active" : "model-choice"} onClick={() => onSelect(option.alias)}><Sparkles size={18} /><span><strong>{option.name}</strong><small>{option.provider} · {option.id}</small></span>{selected === option.alias && <Check size={15} />}</button>)}</div>
-    {!options.length && <p className="form-error"><CircleAlert size={14} />暂无已启用且支持参考图编辑的图片模型，请先到系统设置配置供应商。</p>}
-  </div>;
-}
-
-function ComicModeSwitch({
-  value,
-  onChange,
-  compact = false,
-  disabled = false,
-}: {
-  value: StyleProfile["color_mode"];
-  onChange: (mode: StyleProfile["color_mode"]) => void;
-  compact?: boolean;
-  disabled?: boolean;
-}) {
-  return <div className={compact ? "comic-mode-switch compact" : "comic-mode-switch"} role="group" aria-label="漫画色彩模式">
-    <button type="button" aria-pressed={value === "monochrome"} className={value === "monochrome" ? "active monochrome" : "monochrome"} disabled={disabled} onClick={() => onChange("monochrome")}><i />黑白漫画</button>
-    <button type="button" aria-pressed={value === "color"} className={value === "color" ? "active color" : "color"} disabled={disabled} onClick={() => onChange("color")}><i />彩色漫画</button>
-  </div>;
-}
-
-function formatBytes(value: number) {
-  if (value < 1024 * 1024) return `${Math.ceil(value / 1024)} KB`;
-  return `${(value / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function assetName(asset: Asset | undefined) {
-  return asset?.display_name?.trim() || asset?.original_name || "未命名素材";
-}
-
-function AssetNameEditor({ asset, pending, onSave }: { asset: Asset; pending: boolean; onSave: (displayName: string) => void }) {
-  const [editing, setEditing] = useState(false);
-  const [value, setValue] = useState(asset.display_name ?? asset.original_name);
-  const visibleName = asset.display_name?.trim() || asset.original_name;
-
-  if (editing) {
-    return <form className="asset-name-edit" onSubmit={(event) => {
-      event.preventDefault();
-      const next = value.trim();
-      if (!next) return;
-      onSave(next);
-      setEditing(false);
-    }}>
-      <input aria-label={`重命名 ${visibleName}`} maxLength={120} autoFocus value={value} onChange={(event) => setValue(event.target.value)} />
-      <button type="submit" aria-label="保存素材名称" disabled={pending || !value.trim()}><Check size={14} /></button>
-      <button type="button" aria-label="取消重命名" onClick={() => { setValue(visibleName); setEditing(false); }}><X size={14} /></button>
-    </form>;
-  }
-
-  return <div className="asset-name-row">
-    <strong title={`原始文件名：${asset.original_name}`}>{visibleName}</strong>
-    <button type="button" aria-label={`重命名 ${visibleName}`} title="自定义素材名称" onClick={() => { setValue(visibleName); setEditing(true); }}><Pencil size={13} /></button>
-  </div>;
-}
-
-function promptPreview(candidate: { prompt_snapshot: Record<string, unknown> }) {
-  return typeof candidate.prompt_snapshot.prompt_preview === "string"
-    ? candidate.prompt_snapshot.prompt_preview
-    : "任务排队后会在这里保存本次实际提示词。";
-}
-
-function CandidateArtwork({ contentUrl, thumbnailUrl, label, onOpen, eager = false }: { contentUrl: string | null; thumbnailUrl?: string | null; label: string; onOpen?: (url: string, label: string) => void; eager?: boolean }) {
-  const url = publicUrl(thumbnailUrl ?? contentUrl);
-  const fullUrl = publicUrl(contentUrl ?? thumbnailUrl ?? null);
-  return (
-    <button type="button" className="candidate-artwork" aria-label={url ? `放大查看${label}` : label} onClick={() => fullUrl && onOpen?.(fullUrl, label)}>
-      {url ? (
-        <Image className="candidate-image" src={url} alt={label} fill sizes="(max-width: 900px) 46vw, 280px" priority={eager} fetchPriority={eager ? "high" : "auto"} loading={eager ? "eager" : "lazy"} unoptimized />
-      ) : (
-        <span className="candidate-placeholder"><LoaderCircle size={22} /><span>等待 Worker 生成</span></span>
-      )}
-      {url ? <span className="candidate-zoom"><Maximize2 size={15} />放大</span> : null}
-    </button>
-  );
-}
+export type { AssetWorkspaceView, WorkspaceSection } from "./project-workspace/types";
 
 export default function ProjectWorkspace({
   section,
@@ -609,13 +465,7 @@ export default function ProjectWorkspace({
     if (!activeDrawModel) throw new Error("请先选择一个支持参考图编辑的图片模型");
     return activeDrawModel;
   }
-  const queueStats = useMemo(() => {
-    const values = jobs.data ?? [];
-    return {
-      waiting: values.filter((item) => ["WAITING", "QUEUED"].includes(item.status)).length,
-      failed: values.filter((item) => item.status === "FAILED").length,
-    };
-  }, [jobs.data]);
+  const queueStats = useMemo(() => queueStatsOf(jobs.data ?? []), [jobs.data]);
   const latestInspections = useMemo(() => {
     const latest = new Map<string, InspectionResult>();
     for (const item of inspections.data ?? []) {
