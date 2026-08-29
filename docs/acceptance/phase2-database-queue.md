@@ -2,12 +2,24 @@
 
 - Issue: [#12](https://github.com/coffe01-10/MangaFlow/issues/12)
 - PR: [#14](https://github.com/coffe01-10/MangaFlow/pull/14)
-- 基线: `b7d89c0a0e8b7e80abb7293b561d9213bc79ee3d`
+- 原始派工基线: `b7d89c0a0e8b7e80abb7293b561d9213bc79ee3d`
+- 已整合最新 master: `40d861753ff7f96ffeb866bc27ff15ef4030680b`（PR #15 合并后）
 - 2026-08-28：成员第二轮返工提交 `20f2419567131375a910d55825ecbd126709b8d3` 仍有阻塞，组长接手修复。
 - **代码状态：修复中，未批准合并。真实 PostgreSQL / Redis / RQ 验收：NOT RUN / 环境 BLOCKED。**
 
 本文件取代此前“完整套件”“全部 Validated”“100% 数据安全”等无充分证据的表述。
 离线 URL 校验通过不能证明资源清理、进程执行或真实服务集成正确。
+
+## 2026-08-29 合并前独立复验（本节为准）
+
+- 分支已普通合入最新 `master@40d8617`，无冲突、无强推。
+- `npm run check`：ESLint/Ruff、**345 Python passed / 23 live skipped / 23 warnings**、**27 Vitest**、TypeScript 与 Next.js production build 全部通过。
+- `tests/test_integration_harness.py`：**64 passed**；本机 RQ 2.6.1 的 `Execution.fetch`、`Worker.find_by_key`、监控接口与 `WindowsSpawnWorker` 实现签名一致。
+- 默认 `tests/integration`：**23 skipped**，均为明确 NOT RUN；没有连接 PostgreSQL/Redis/RQ。
+- 环境复查：Docker/Podman/psql/pg_isready/redis-server/redis-cli 均不存在，WSL 无发行版；55432/56379 无监听。
+- 删除了固定容器名、固定卷与默认密码的 `docker-compose.acceptance.yml`。它不满足资源归属标准且 runner 不会使用，保留只会诱导误运行。后续如需自动编排，应另行实现随机项目名/凭据/标签、端口归属验证和仅清理本次资源。
+
+**结论：离线代码审阅与回归通过；真实 PostgreSQL/Redis/RQ 仍 NOT RUN。由于 PR 改动 Windows 生产 Worker，真实服务跑通前不批准合并、不关闭 Issue #12。**
 
 ## 当前可用入口
 
@@ -25,8 +37,7 @@
   时先做 URL/归属校验，服务不可用即快速响亮失败（脱敏），不以 skip 计通过。
   `-RunLive`/`-StartContainers`/`-StopContainers` 在 runner 层仍为非零 BLOCKED
   （owner 作用域容器编排未实现），错误信息已指向上述 direct pytest 路径。
-- 旧 `docker-compose.acceptance.yml` 的固定资源名与凭据仍未修复，不应直接运行。
-  用户已明确本轮不授权安装/下载 PostgreSQL/Redis/Docker/WSL，因此真实服务验收保持 BLOCKED。
+- 不安全的旧 Compose 已从本 PR 删除；用户未授权安装/下载 PostgreSQL/Redis/Docker/WSL，真实服务验收保持 BLOCKED。
 
 ```powershell
 # 离线入口；仅在已有解释器不是本 worktree .venv 时传 -Python
@@ -47,7 +58,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-phase2-acceptance.ps1 -Dr
 | RQ 进程 | **已实现**：仓库级 `app/rq_windows.WindowsSpawnWorker`（Popen 马进程 + 句柄监控，无 setpgrp/wait4/killpg）；验收马进程走 `run_rq_horse` 身份校验 | 代码完成；离线控制流回归通过；真实服务执行 NOT RUN |
 | 队列业务 | **已实现** live 矩阵（独立 Worker 进程）：成功、RQ 计划重试（新马进程 PID 证据）、终态失败、执行中取消、双 Worker 槽位延迟（CONCURRENCY_LIMIT → enqueue_in）、强退后租约过期恢复、五类检查入队 | 代码完成；默认 skip；真实服务执行 NOT RUN |
 | 五类版本门禁 | **已实现**：本地确定性检查适配器（五类 PASS）+ PAGE_INSPECT 经真实队列执行；门禁放行逻辑由现有 e2e/单测覆盖 | 代码完成；真实服务执行 NOT RUN |
-| 编排入口 | 随机凭据/本次资源标签的容器编排未实现；`-RunLive` 保持 BLOCKED，live 用 direct pytest 入口 | 未完成（用户明确不安装环境） |
+| 编排入口 | 不安全的固定 Compose 已删除；随机凭据/本次资源标签的容器编排未实现，`-RunLive` 保持 BLOCKED，live 用 direct pytest 入口 | 未完成（用户明确不安装环境） |
 | 主分支验收 | 审阅通过后的合并与 master 独立复验 | 未发生 |
 
 ## 2026-08-28 组长最终轮：Windows 独立 Worker 与队列矩阵（本节为准）
