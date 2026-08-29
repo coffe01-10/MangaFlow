@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import defaultdict
 from typing import Any
 
 from sqlalchemy import select
@@ -23,7 +22,6 @@ from app.models import (
     WorkflowDefinition,
     WorkflowNodeRun,
     WorkflowRun,
-    WorkflowVersion,
     utcnow,
 )
 from app.services.job_service import create_job, enqueue_job, mark_job_cancelled
@@ -46,6 +44,7 @@ from app.services.workflow_engine.catalog import (
     graph_checksum,
     node_type_catalog,
 )
+from app.services.workflow_engine.planning import create_workflow_run
 from app.services.workflow_engine.publish import (
     PUBLISH_REVISION_MAX_ATTEMPTS,
     PublishRevisionConflictError,
@@ -62,16 +61,9 @@ from app.services.workflow_engine.scope import (
     _graph_for_run,
     _latest_script,
     _scope_chapter,
-    _scope_snapshot,
-    _selected_nodes,
-    _source_output_refs,
-    _validate_scope,
 )
 from app.services.workflow_engine.validation import validate_graph
-from app.workflow_schemas import (
-    WorkflowGraph,
-    WorkflowNodeDefinition,
-)
+from app.workflow_schemas import WorkflowGraph
 
 __all__ = [
     "CONDITION_OPERATORS",
@@ -101,147 +93,6 @@ __all__ = [
     "retry_run",
     "validate_graph",
 ]
-
-
-def create_workflow_run(
-    db: Session,
-    workflow: WorkflowDefinition,
-    *,
-    scope_type: str,
-    scope_id: str | None,
-    start_node_ids: list[str],
-    stop_node_ids: list[str],
-) -> WorkflowRun:
-    if not workflow.published_version_id:
-        raise ValueError("请先发布工作流")
-    version = db.get(WorkflowVersion, workflow.published_version_id)
-    graph = WorkflowGraph.model_validate(version.graph)
-    report = validate_graph(graph)
-    if not report.valid:
-        raise ValueError("已发布版本校验失败")
-    if scope_type != "PROJECT" and not scope_id:
-        raise ValueError("章节、页面或候选范围必须提供 scope_id")
-    _validate_scope(db, workflow.project_id, scope_type, scope_id)
-    selected = _selected_nodes(graph, start_node_ids, stop_node_ids)
-    selected_types = {node.type for node in graph.nodes if node.id in selected}
-    page_types = {"generator.page", "control.approval", "quality.inspect", "output.page"}
-    chapter_types = {"source.approved_pages", "output.chapter_export"}
-    if selected_types & page_types and scope_type != "PAGE":
-        raise ValueError("单页生产流程必须选择页面运行范围")
-    if (
-        selected_types & chapter_types
-        and not selected_types & page_types
-        and scope_type != "CHAPTER"
-    ):
-        raise ValueError("整章导出流程必须选择章节运行范围")
-    run = WorkflowRun(
-        workflow_id=workflow.id,
-        workflow_version_id=version.id,
-        project_id=workflow.project_id,
-        scope_type=scope_type,
-        scope_id=scope_id,
-        status="RUNNING",
-        start_node_ids=start_node_ids,
-        stop_node_ids=stop_node_ids,
-        started_at=utcnow(),
-    )
-    db.add(run)
-    db.flush()
-    node_map = {node.id: node for node in graph.nodes}
-    job_by_node: dict[str, GenerationJob] = {}
-    incoming: dict[str, list[str]] = defaultdict(list)
-    for edge in graph.edges:
-        incoming[edge.target_node].append(edge.source_node)
-
-    for node_id in report.topological_order:
-        if node_id not in selected:
-            continue
-        node = node_map[node_id]
-        spec = NODE_TYPE_MAP[node.type]
-        node_run = WorkflowNodeRun(
-            workflow_run_id=run.id,
-            node_id=node.id,
-            node_type=node.type,
-            status="WAITING",
-            input_snapshot=_scope_snapshot(run, node),
-            output_refs={},
-            attempt_count=1,
-        )
-        db.add(node_run)
-        db.flush()
-        if not node.inputs:
-            node_run.status = "COMPLETED"
-            node_run.started_at = run.started_at
-            node_run.finished_at = utcnow()
-            node_run.output_refs = _source_output_refs(db, run, node)
-            job = create_job(
-                db,
-                project_id=run.project_id,
-                target_type="WORKFLOW_NODE",
-                target_id=node_run.id,
-                job_type="WORKFLOW_NODE",
-                request_parameters={
-                    "workflow_run_id": run.id,
-                    "node_id": node.id,
-                    "node_type": node.type,
-                },
-                idempotency_key=f"workflow:{run.id}:{node.id}:1",
-            )
-            job.status = JobStatus.COMPLETED
-            job.progress = 100
-            job.started_at = run.started_at
-            job.finished_at = node_run.finished_at
-            node_run.job_id = job.id
-            job_by_node[node.id] = job
-        elif spec.barrier or node.type == "quality.inspect":
-            continue
-        else:
-            dependencies = [
-                job_by_node[item].id for item in incoming[node.id] if item in job_by_node
-            ]
-            job = _create_node_job(db, run, node_run, node, dependencies)
-            node_run.job_id = job.id
-            job_by_node[node.id] = job
-    db.commit()
-    reconcile_run(db, run.id)
-    return get_run(db, run.id)
-
-
-def _create_node_job(
-    db: Session,
-    run: WorkflowRun,
-    node_run: WorkflowNodeRun,
-    node: WorkflowNodeDefinition,
-    dependency_ids: list[str],
-) -> GenerationJob:
-    target_type = "WORKFLOW_NODE"
-    target_id = node_run.id
-    job_type = "WORKFLOW_NODE"
-    if node.type == "agent.parse":
-        chapter = _scope_chapter(db, run)
-        if not chapter or not chapter.current_source_revision_id:
-            raise ValueError("剧情解析节点需要包含原文修订的章节运行范围")
-        target_type = "CHAPTER"
-        target_id = chapter.id
-        job_type = "SOURCE_PARSE"
-    return create_job(
-        db,
-        project_id=run.project_id,
-        target_type=target_type,
-        target_id=target_id,
-        job_type=job_type,
-        model_alias=node.config.model_alias,
-        request_parameters={
-            "workflow_run_id": run.id,
-            "workflow_node_run_id": node_run.id,
-            "node_id": node.id,
-            "node_type": node.type,
-            "config": node.config.model_dump(mode="json"),
-        },
-        max_attempts=node.config.max_attempts,
-        idempotency_key=f"workflow:{run.id}:{node.id}:1",
-        dependency_ids=dependency_ids,
-    )
 
 
 def _condition_value(payload: dict[str, Any], path: str) -> Any:
