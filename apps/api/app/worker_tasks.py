@@ -2,12 +2,10 @@ import hashlib
 import json
 import os
 import socket
-from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from datetime import timedelta
 from threading import Event, Lock, Thread
 from uuid import uuid4
 
-from fastapi import HTTPException
 from PIL import Image
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
@@ -22,7 +20,6 @@ from app.model_adapters.base import (
     StructuredRequest,
 )
 from app.models import (
-    AIModel,
     Asset,
     AssetCandidate,
     Beat,
@@ -33,14 +30,11 @@ from app.models import (
     GenerationJob,
     GenerationRecord,
     InspectionResult,
-    JobAssetReference,
     MangaPage,
     Outfit,
     PageCandidate,
     Panel,
     Project,
-    ProviderConnection,
-    ProviderProfile,
     RepairPlan,
     Scene,
     ScriptRevision,
@@ -51,22 +45,31 @@ from app.models import (
     utcnow,
 )
 from app.services.ai_schemas import PageInspectionOutput, StoryParseOutput, StyleAnalysisOutput
-from app.services.credential_crypto import mark_key_failure, mark_key_success
 from app.services.media import create_thumbnails, remove_thumbnails
-from app.services.model_router import (
-    AdapterBinding,
-    ResolvedModel,
-    bind_adapter,
-    get_catalog_model,
-    model_supports_resolution,
-)
+from app.services.model_router import model_supports_resolution
 from app.services.page_completion import (
     PASSING_QUALITY_OUTCOMES,
     REQUIRED_QUALITY_CATEGORIES,
     latest_inspections_by_category,
 )
 from app.services.prompt_compiler import PAGE_TEMPLATE_VERSION, compile_page_prompt
-from app.services.provider_presets import ensure_provider_presets
+from app.services.worker_handlers import provider
+from app.services.worker_handlers.execution import (
+    JobCancelledError,
+    JobLeaseLostError,
+    StaleStoryboardVersionError,
+    _commit_owned_progress,
+    _ensure_job_not_cancelled,
+    _lease_is_expired,
+)
+from app.services.worker_handlers.provider import (
+    _asset_path,
+    _binding,
+    _invoke_provider,
+    _lease_reference_assets,
+    _text_model_reference,
+    _validate_reference_capacity,
+)
 
 ACTIVE_STATUSES = {
     JobStatus.PREPARING,
@@ -81,16 +84,15 @@ EXECUTION_RESERVATION_LOCK = Lock()
 STORY_PARSE_CHUNK_MAX_CHARS = 800
 
 
-class StaleStoryboardVersionError(RuntimeError):
-    """Stop a queued image call when its storyboard input has already changed."""
+def _adapter(_alias: str):
+    """Legacy test seam retained while production calls use catalog bindings."""
+
+    return None
 
 
-class JobCancelledError(RuntimeError):
-    """Stop persisting provider output after a concurrent cancellation."""
-
-
-class JobLeaseLostError(RuntimeError):
-    """Stop persisting provider output when another worker reclaimed the lease."""
+# Handlers bind models through ``provider._binding``; bridge this module's
+# ``_adapter`` seam at call time so existing monkeypatches keep steering it.
+provider.install_legacy_adapter_lookup(lambda alias: _adapter(alias))
 
 
 def _worker_id() -> str:
@@ -99,14 +101,6 @@ def _worker_id() -> str:
 
 def _lease_duration() -> timedelta:
     return timedelta(seconds=get_settings().job_lease_seconds)
-
-
-def _lease_is_expired(expires_at: datetime | None) -> bool:
-    if expires_at is None:
-        return False
-    if expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=UTC)
-    return expires_at <= utcnow()
 
 
 class _LeaseHeartbeat:
@@ -265,58 +259,6 @@ def _claim_job(db, job_id: str, owner: str) -> GenerationJob | None:
     return db.get(GenerationJob, job_id)
 
 
-def _ensure_job_not_cancelled(db, job: GenerationJob) -> None:
-    db.refresh(job, attribute_names=["status", "cancelled_at", "lease_owner", "lease_expires_at"])
-    if job.status == JobStatus.CANCELLED or job.cancelled_at is not None:
-        raise JobCancelledError("任务已取消，模型返回结果不再写入")
-    owner = db.info.get("job_lease_owner")
-    if owner and (
-        job.lease_owner != owner
-        or job.lease_expires_at is None
-        or _lease_is_expired(job.lease_expires_at)
-    ):
-        raise JobLeaseLostError("任务租约已被其他执行器接管")
-
-
-def _commit_owned_progress(
-    db, job: GenerationJob, *, status: JobStatus, progress: int
-) -> None:
-    """Persist an intermediate status only while this worker still owns the job."""
-
-    _ensure_job_not_cancelled(db, job)
-    owner = db.info.get("job_lease_owner")
-    now = datetime.now(UTC)
-    filters = [
-        GenerationJob.id == job.id,
-        GenerationJob.cancelled_at.is_(None),
-        GenerationJob.status.not_in(
-            {JobStatus.CANCELLED, JobStatus.COMPLETED, JobStatus.FAILED}
-        ),
-    ]
-    if owner:
-        filters.extend(
-            [
-                GenerationJob.lease_owner == owner,
-                GenerationJob.lease_expires_at.is_not(None),
-                GenerationJob.lease_expires_at > now,
-            ]
-        )
-    updated = db.execute(
-        update(GenerationJob)
-        .where(*filters)
-        .values(status=status, progress=progress)
-        .execution_options(synchronize_session=False)
-    )
-    if updated.rowcount != 1:
-        db.rollback()
-        current = db.get(GenerationJob, job.id)
-        if current is not None:
-            _ensure_job_not_cancelled(db, current)
-        raise JobLeaseLostError("任务租约已被其他执行器接管")
-    db.commit()
-    db.refresh(job)
-
-
 def _normalize_name(value: str) -> str:
     return "".join(value.split()).casefold()
 
@@ -406,153 +348,6 @@ def _match_existing_character(
         )
 
     return min(matches, key=rank)
-
-
-def _asset_path(asset: Asset) -> Path:
-    settings = get_settings()
-    root = settings.upload_root if asset.source == "USER_UPLOAD" else settings.storage_root
-    path = (root / asset.storage_key).resolve()
-    if not path.is_relative_to(root.resolve()):
-        raise RuntimeError("素材路径越界")
-    return path
-
-
-def _adapter(_alias: str):
-    """Legacy test seam retained while production calls use catalog bindings."""
-
-    return None
-
-
-def _binding(
-    db,
-    *,
-    operation: str,
-    project_id: str,
-    explicit_reference: str | None,
-    task_kind: str,
-) -> AdapterBinding:
-    legacy_adapter = _adapter(explicit_reference or "auto")
-    if legacy_adapter is not None:
-        settings = get_settings()
-        ensure_provider_presets(db, settings)
-        model = get_catalog_model(db, explicit_reference or "")
-        if model is None:
-            model = db.scalar(
-                select(AIModel).where(
-                    AIModel.model_type == ("IMAGE" if operation.startswith("image_") else "TEXT")
-                )
-            )
-        if model is None:
-            raise ProviderAdapterError("MODEL_ROUTE_UNAVAILABLE", "测试模型目录不存在")
-        connection = db.get(ProviderConnection, model.connection_id)
-        provider = db.get(ProviderProfile, connection.provider_id) if connection else None
-        if not connection or not provider:
-            raise ProviderAdapterError("MODEL_ROUTE_UNAVAILABLE", "测试模型连接不存在")
-        return AdapterBinding(
-            resolved=ResolvedModel(model=model, connection=connection, provider=provider),
-            adapter=legacy_adapter,
-            selected_key=None,
-        )
-    try:
-        return bind_adapter(
-            db,
-            get_settings(),
-            operation=operation,
-            explicit_reference=explicit_reference,
-            project_id=project_id,
-            task_kind=task_kind,
-        )
-    except HTTPException as error:
-        detail = error.detail if isinstance(error.detail, str) else "模型路由配置无效"
-        raise ProviderAdapterError("MODEL_ROUTE_UNAVAILABLE", detail) from error
-
-
-def _invoke_provider(db, binding: AdapterBinding, callback):
-    job_id = db.info.get("job_id")
-    if job_id:
-        current = db.get(GenerationJob, job_id)
-        if current is not None:
-            _ensure_job_not_cancelled(db, current)
-    try:
-        result = callback(binding.adapter)
-    except ProviderAdapterError as error:
-        if binding.selected_key:
-            mark_key_failure(
-                db,
-                binding.selected_key.row,
-                error.code,
-                retry_after_seconds=error.retry_after_seconds,
-            )
-            if error.code in {"AUTHENTICATION", "PERMISSION", "RATE_LIMIT"}:
-                try:
-                    replacement = bind_adapter(
-                        db,
-                        get_settings(),
-                        operation=binding.resolved.model.operations[0],
-                        explicit_reference=binding.resolved.model.id,
-                    )
-                except HTTPException:
-                    replacement = None
-                if (
-                    replacement
-                    and replacement.selected_key
-                    and replacement.selected_key.row.id != binding.selected_key.row.id
-                ):
-                    try:
-                        result = callback(replacement.adapter)
-                    except ProviderAdapterError as retry_error:
-                        mark_key_failure(
-                            db,
-                            replacement.selected_key.row,
-                            retry_error.code,
-                            retry_after_seconds=retry_error.retry_after_seconds,
-                        )
-                        raise
-                    mark_key_success(db, replacement.selected_key.row)
-                    return result
-        raise
-    if binding.selected_key:
-        mark_key_success(db, binding.selected_key.row)
-    return result
-
-
-def _text_model_reference(job: GenerationJob, project: Project) -> str | None:
-    if job.catalog_model_id:
-        return job.catalog_model_id
-    if job.model_alias and job.model_alias != "text.fast":
-        return job.model_alias
-    return project.default_text_model_id or project.text_model_alias or job.model_alias
-
-
-def _validate_reference_capacity(binding: AdapterBinding, count: int) -> None:
-    configured = (binding.resolved.model.capabilities or {}).get("max_reference_images")
-    if configured is not None and count > int(configured):
-        raise ProviderAdapterError(
-            "UNSUPPORTED_CAPABILITY",
-            f"所选模型最多接收 {configured} 张参考图，本任务需要 {count} 张",
-        )
-
-
-def _lease_reference_assets(db, job: GenerationJob, asset_ids: list[str]) -> None:
-    unique_ids = list(dict.fromkeys(asset_ids))
-    active_ids = set(
-        db.scalars(
-            select(Asset.id).where(
-                Asset.id.in_(unique_ids),
-                Asset.project_id == job.project_id,
-                Asset.deleted_at.is_(None),
-            )
-        )
-    )
-    if active_ids != set(unique_ids):
-        raise RuntimeError("参考图已删除、失效或不属于当前项目，已停止模型调用")
-    db.execute(delete(JobAssetReference).where(JobAssetReference.job_id == job.id))
-    for asset_id in unique_ids:
-        db.add(JobAssetReference(job_id=job.id, asset_id=asset_id))
-    parameters = dict(job.request_parameters or {})
-    parameters["reference_asset_ids"] = unique_ids
-    job.request_parameters = parameters
-    db.commit()
 
 
 def _load_reference_assets(
