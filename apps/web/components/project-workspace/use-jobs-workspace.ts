@@ -1,13 +1,34 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 import { api, type Job } from "@/lib/api";
 import { activePollInterval, isActiveTaskStatus } from "@/lib/task-status";
 
 import { queueStatsOf } from "./display";
 import type { WorkspaceSection } from "./types";
+
+function usePerJobMutation(mutationFn: (jobId: string) => Promise<Job>, onSuccess: () => void) {
+  const inFlight = useRef(new Set<string>());
+  const [pendingIds, setPendingIds] = useState<string[]>([]);
+  const mutation = useMutation({
+    mutationFn,
+    onSuccess,
+    onSettled: (_data, _error, jobId) => {
+      inFlight.current.delete(jobId);
+      setPendingIds((ids) => ids.filter((id) => id !== jobId));
+    },
+  });
+  const request = (jobId: string) => {
+    if (inFlight.current.has(jobId)) return;
+    inFlight.current.add(jobId);
+    setPendingIds((ids) => (ids.includes(jobId) ? ids : [...ids, jobId]));
+    mutation.mutate(jobId);
+  };
+  const isPending = (jobId: string) => pendingIds.includes(jobId);
+  return { mutation, request, isPending };
+}
 
 /**
  * Jobs domain: archive filter, selection and notices, the jobs query with its
@@ -33,14 +54,11 @@ export function useJobsWorkspace({
     refetchInterval: (query) => activePollInterval(query.state.data, 3000),
   });
 
-  const cancelJob = useMutation({
-    mutationFn: (jobId: string) => api.cancelJob(jobId),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["jobs", id] }),
-  });
-  const retryJob = useMutation({
-    mutationFn: (jobId: string) => api.retryJob(jobId),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["jobs", id] }),
-  });
+  const invalidateJobs = () => queryClient.invalidateQueries({ queryKey: ["jobs", id] });
+  const cancelAction = usePerJobMutation((jobId) => api.cancelJob(jobId), invalidateJobs);
+  const retryAction = usePerJobMutation((jobId) => api.retryJob(jobId), invalidateJobs);
+  const cancelJob = cancelAction.mutation;
+  const retryJob = retryAction.mutation;
   const archiveJob = useMutation({
     mutationFn: (jobId: string) => api.archiveJob(jobId),
     onSuccess: () => {
@@ -104,6 +122,10 @@ export function useJobsWorkspace({
     setSelectedJobIds,
     cancelJob,
     retryJob,
+    requestCancel: cancelAction.request,
+    requestRetry: retryAction.request,
+    isCancelPending: cancelAction.isPending,
+    isRetryPending: retryAction.isPending,
     archiveJob,
     restoreJob,
     archiveCompletedJobs,

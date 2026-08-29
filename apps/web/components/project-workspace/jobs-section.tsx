@@ -34,8 +34,10 @@ export function JobsSection({
     setJobNotice,
     selectedJobIds,
     setSelectedJobIds,
-    cancelJob,
-    retryJob,
+    requestCancel,
+    requestRetry,
+    isCancelPending,
+    isRetryPending,
     archiveJob,
     restoreJob,
     archiveCompletedJobs,
@@ -57,7 +59,7 @@ export function JobsSection({
       <div className="job-type"><span>{jobLabels[job.job_type] ?? job.job_type}</span><strong>{job.status}</strong></div>
       {showProgress && <div className="job-progress"><i><b style={{ width: `${job.progress}%` }} /></i><span>{job.progress}% · 尝试 {job.attempt_count}/{job.max_attempts}</span></div>}
       <div className="job-detail"><span>{job.workflow_node_id ? `节点 ${job.workflow_node_id}` : job.model_alias ? modelOptions.find((item) => item.alias === job.model_alias)?.name ?? job.model_alias : "系统任务"}</span><small>{job.duration_ms === null ? "尚未完成" : `耗时 ${(job.duration_ms / 1000).toFixed(1)} 秒`} · {job.estimated_cost === null ? "费用暂不可估算" : `预估 ¥${job.estimated_cost.toFixed(3)}`}</small>{job.error_message && <em>{job.error_code ? `${job.error_code} · ` : ""}{job.error_message}</em>}</div>
-      <div className="job-actions" onClick={(event) => event.stopPropagation()}>{resultUrl && <button className="job-result-action" onClick={showResult}><Maximize2 size={12} />查看结果</button>}{!showArchivedJobs && isActiveTaskStatus(job.status) && <button onClick={() => cancelJob.mutate(job.id)}>取消</button>}{!showArchivedJobs && job.status === "FAILED" && <button onClick={() => retryJob.mutate(job.id)}><RotateCcw size={12} />重试</button>}{!showArchivedJobs && terminal && <button onClick={() => archiveJob.mutate(job.id)}><Archive size={12} />归档</button>}{showArchivedJobs && <button onClick={() => restoreJob.mutate(job.id)}><RotateCcw size={12} />恢复</button>}{showArchivedJobs && ["FAILED", "CANCELLED"].includes(job.status) && <button className="danger-action" onClick={() => { if (window.confirm("仅无候选、生成记录、工作流或任务依赖的失败任务可以彻底删除。继续吗？")) deleteJob.mutate(job.id); }}><Trash2 size={12} />彻底删除</button>}</div>
+      <div className="job-actions" onClick={(event) => event.stopPropagation()}>{resultUrl && <button className="job-result-action" onClick={showResult}><Maximize2 size={12} />查看结果</button>}{!showArchivedJobs && isActiveTaskStatus(job.status) && <button disabled={isCancelPending(job.id)} onClick={() => requestCancel(job.id)}>取消</button>}{!showArchivedJobs && job.status === "FAILED" && <button disabled={isRetryPending(job.id)} onClick={() => requestRetry(job.id)}><RotateCcw size={12} />重试</button>}{!showArchivedJobs && terminal && <button onClick={() => archiveJob.mutate(job.id)}><Archive size={12} />归档</button>}{showArchivedJobs && <button onClick={() => restoreJob.mutate(job.id)}><RotateCcw size={12} />恢复</button>}{showArchivedJobs && ["FAILED", "CANCELLED"].includes(job.status) && <button className="danger-action" onClick={() => { if (window.confirm("仅无候选、生成记录、工作流或任务依赖的失败任务可以彻底删除。继续吗？")) deleteJob.mutate(job.id); }}><Trash2 size={12} />彻底删除</button>}</div>
     </article>;
   }
 
