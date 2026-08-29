@@ -57,7 +57,7 @@ def _skip_page_readiness(monkeypatch) -> None:
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "app.api.routes.workflow.ensure_page_ready",
+        "app.api.routes.workflow.generation.ensure_page_ready",
         lambda *_args, **_kwargs: None,
     )
 
