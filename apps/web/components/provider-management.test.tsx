@@ -132,6 +132,7 @@ describe("ProviderManagement 错误展示", () => {
       expect(testConnection).toHaveBeenCalledWith("conn-1", { test_type: "CREDENTIALS" });
       expect(screen.getByText("上游返回 401")).toBeInTheDocument();
     });
-    expect(screen.getByText("上游返回 401").textContent).not.toContain("sk-live-secret");
+    expect(document.body.textContent).toContain("上游返回 401");
+    expect(document.body.textContent).not.toContain("sk-live-secret-should-not-render");
   });
 });

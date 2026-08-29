@@ -399,6 +399,75 @@ describe("GenerateSection 关键行为", () => {
     }
   });
 
+  it("修复任务非终态时持续拉取 workbench 与候选，FAILED 后停止", async () => {
+    vi.useFakeTimers();
+    try {
+      const repairing = candidateFixture({
+        id: "candidate-2",
+        ordinal: 2,
+        status: "REPAIRING",
+        is_selected: false,
+        job_id: "job-repair",
+      });
+      const repairingWorkbench = workbenchFixture({
+        candidates: [repairing],
+        selected_candidate: candidateFixture(),
+      });
+      workbenchApi.mockResolvedValue(repairingWorkbench);
+      candidatesApi.mockResolvedValue([repairing]);
+      jobsApi.mockResolvedValue([
+        jobFixture({
+          id: "job-repair",
+          job_type: "PAGE_REPAIR",
+          target_id: "candidate-2",
+          status: "REPAIRING",
+          progress: 35,
+        }),
+      ]);
+      const client = createClient();
+      const wrapper = ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      );
+      const view = render(<GenerateHarness />, { wrapper });
+      await vi.advanceTimersByTimeAsync(80);
+      const workbenchDuring = workbenchApi.mock.calls.length;
+      const candidatesDuring = candidatesApi.mock.calls.length;
+      expect(workbenchDuring).toBeGreaterThanOrEqual(1);
+      expect(candidatesDuring).toBeGreaterThanOrEqual(1);
+      await vi.advanceTimersByTimeAsync(9000);
+      expect(workbenchApi.mock.calls.length).toBeGreaterThan(workbenchDuring);
+      expect(candidatesApi.mock.calls.length).toBeGreaterThan(candidatesDuring);
+
+      const failed = { ...repairing, status: "FAILED" };
+      const failedWorkbench = workbenchFixture({
+        candidates: [failed],
+        selected_candidate: candidateFixture(),
+      });
+      const failedJob = jobFixture({
+        id: "job-repair",
+        job_type: "PAGE_REPAIR",
+        target_id: "candidate-2",
+        status: "FAILED",
+        progress: 100,
+      });
+      workbenchApi.mockResolvedValue(failedWorkbench);
+      candidatesApi.mockResolvedValue([failed]);
+      jobsApi.mockResolvedValue([failedJob]);
+      client.setQueryData(["generation-workbench", "page-1"], failedWorkbench);
+      client.setQueryData(["candidates", "batch-1"], [failed]);
+      client.setQueryData(["jobs", "project-1", false], [failedJob]);
+      await vi.advanceTimersByTimeAsync(200);
+      const workbenchStopped = workbenchApi.mock.calls.length;
+      const candidatesStopped = candidatesApi.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(9000);
+      expect(workbenchApi.mock.calls.length).toBe(workbenchStopped);
+      expect(candidatesApi.mock.calls.length).toBe(candidatesStopped);
+      view.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("视觉检查失败时展示用户可见错误，成功后可发起修复", async () => {
     const candidate = candidateFixture();
     workbenchApi.mockResolvedValue(workbenchFixture({

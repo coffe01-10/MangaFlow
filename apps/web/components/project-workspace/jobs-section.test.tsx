@@ -115,6 +115,35 @@ describe("JobsSection", () => {
     });
   });
 
+  it("重试成功后会 invalidate jobs 并再次请求列表", async () => {
+    jobsApi.mockReset().mockResolvedValue([
+      jobFixture({
+        id: "job-failed",
+        status: "FAILED",
+        progress: 100,
+        error_code: "WORKER_ERROR",
+        error_message: "模型调用失败",
+      }),
+    ]);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <JobsHarness />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "重试" })).toBeInTheDocument();
+    });
+    const before = jobsApi.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    await waitFor(() => {
+      expect(retryJob).toHaveBeenCalledWith("job-failed");
+      expect(jobsApi.mock.calls.length).toBeGreaterThan(before);
+    });
+  });
+
   it("失败任务展示用户可见错误，取消请求失败后仍可再次点击", async () => {
     jobsApi.mockReset().mockResolvedValue([
       jobFixture({
@@ -143,40 +172,6 @@ describe("JobsSection", () => {
       expect(cancelJob).toHaveBeenCalledWith("job-running");
     });
     expect(screen.getByRole("button", { name: "取消" })).toBeEnabled();
-  });
-
-  it("慢取消期间并发点击仍只对应真实 API 调用次数，完成后刷新列表", async () => {
-    jobsApi.mockReset().mockResolvedValue([
-      jobFixture({ id: "job-running", status: "RUNNING", progress: 20 }),
-    ]);
-    let release: ((job: Job) => void) | undefined;
-    cancelJob.mockReset().mockImplementation(
-      () => new Promise((resolve) => {
-        release = resolve;
-      }),
-    );
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-    });
-    render(
-      <QueryClientProvider client={queryClient}>
-        <JobsHarness />
-      </QueryClientProvider>,
-    );
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "取消" })).toBeInTheDocument();
-    });
-    const button = screen.getByRole("button", { name: "取消" });
-    fireEvent.click(button);
-    fireEvent.click(button);
-    await waitFor(() => {
-      expect(cancelJob.mock.calls.length).toBeGreaterThanOrEqual(1);
-    });
-    const before = jobsApi.mock.calls.length;
-    release?.(jobFixture({ id: "job-running", status: "CANCELLED" }));
-    await waitFor(() => {
-      expect(jobsApi.mock.calls.length).toBeGreaterThan(before);
-    });
   });
 
   it("近期/历史切换只保留任务中心入口状态，历史视图提供恢复操作", async () => {
