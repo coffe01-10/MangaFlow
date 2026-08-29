@@ -215,9 +215,13 @@ def refuse_overlap(left: Path, right: Path, *, label: str) -> None:
     first = left.expanduser().absolute()
     second = right.expanduser().absolute()
     if os.path.normcase(str(first)) == os.path.normcase(str(second)):
-        raise BackupRestoreError("PATH_OVERLAP", f"{label} overlap: {first} and {second}")
+        raise BackupRestoreError(
+            "PATH_OVERLAP", f"{label} overlap: {first} and {second}"
+        )
     if first == second or first.is_relative_to(second) or second.is_relative_to(first):
-        raise BackupRestoreError("PATH_OVERLAP", f"{label} overlap: {first} and {second}")
+        raise BackupRestoreError(
+            "PATH_OVERLAP", f"{label} overlap: {first} and {second}"
+        )
 
 
 def is_excluded(relative: str) -> bool:
@@ -236,21 +240,39 @@ def _posix(relative: Path) -> str:
 
 def parse_manifest_relative(relative: object) -> str:
     if not isinstance(relative, str) or not relative:
-        raise BackupRestoreError("PATH_INVALID", "manifest path must be a non-empty string")
-    if relative.strip() != relative or any(ord(character) < 32 for character in relative):
-        raise BackupRestoreError("PATH_INVALID", "manifest path contains whitespace or control data")
-    if "\\" in relative or ":" in relative or relative.startswith("/") or relative.startswith("//"):
+        raise BackupRestoreError(
+            "PATH_INVALID", "manifest path must be a non-empty string"
+        )
+    if relative.strip() != relative or any(
+        ord(character) < 32 for character in relative
+    ):
+        raise BackupRestoreError(
+            "PATH_INVALID", "manifest path contains whitespace or control data"
+        )
+    if (
+        "\\" in relative
+        or ":" in relative
+        or relative.startswith("/")
+        or relative.startswith("//")
+    ):
         raise BackupRestoreError(
             "PATH_INVALID",
             f"manifest path must be a relative POSIX path without drive, UNC, ADS, or root: {relative}",
         )
     if unicodedata.normalize("NFC", relative) != relative:
-        raise BackupRestoreError("PATH_INVALID", f"manifest path must be Unicode NFC: {relative}")
+        raise BackupRestoreError(
+            "PATH_INVALID", f"manifest path must be Unicode NFC: {relative}"
+        )
     parts = relative.split("/")
     if any(part in {"", ".", ".."} for part in parts):
-        raise BackupRestoreError("PATH_INVALID", f"manifest path has empty, dot, or parent segments: {relative}")
+        raise BackupRestoreError(
+            "PATH_INVALID",
+            f"manifest path has empty, dot, or parent segments: {relative}",
+        )
     if is_excluded(relative):
-        raise BackupRestoreError("PATH_INVALID", f"manifest includes an excluded path: {relative}")
+        raise BackupRestoreError(
+            "PATH_INVALID", f"manifest includes an excluded path: {relative}"
+        )
     return relative
 
 
@@ -274,7 +296,9 @@ def resolve_manifest_target(
         )
     target = root.joinpath(*relative.split("/")).absolute()
     if not target.is_relative_to(root):
-        raise BackupRestoreError("PATH_INVALID", f"manifest target escaped destination: {relative}")
+        raise BackupRestoreError(
+            "PATH_INVALID", f"manifest target escaped destination: {relative}"
+        )
     for hop in _path_chain(target):
         if hop == root.parent:
             break
@@ -293,19 +317,55 @@ def resolve_manifest_target(
     return target
 
 
-def validate_manifest_paths(root: Path, manifest: dict[str, object]) -> list[tuple[str, Path, dict[str, object]]]:
+def validate_manifest_paths(
+    root: Path, manifest: dict[str, object]
+) -> list[tuple[str, Path, dict[str, object]]]:
     files = manifest.get("files")
     if not isinstance(files, list) or not files:
         raise BackupRestoreError("MANIFEST_INVALID", "manifest files list is missing")
     seen_relative: dict[str, str] = {}
     seen_target: dict[str, str] = {}
     resolved: list[tuple[str, Path, dict[str, object]]] = []
+    database_entries = 0
     for entry in files:
         if not isinstance(entry, dict):
-            raise BackupRestoreError("MANIFEST_INVALID", "manifest file entry is invalid")
+            raise BackupRestoreError(
+                "MANIFEST_INVALID", "manifest file entry is invalid"
+            )
         relative = parse_manifest_relative(entry.get("path"))
         target = resolve_manifest_target(root, relative, seen_relative, seen_target)
+        if relative == DATABASE_REL:
+            database_entries += 1
+        elif not (
+            relative.startswith(GENERATED_REL + "/")
+            or relative.startswith(UPLOADS_REL + "/")
+        ):
+            raise BackupRestoreError(
+                "MANIFEST_INVALID",
+                f"manifest path is outside the backup scope: {relative}",
+            )
+        digest = entry.get("sha256")
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest.lower())
+        ):
+            raise BackupRestoreError(
+                "MANIFEST_INVALID",
+                f"manifest sha256 is invalid for {relative}",
+            )
+        size = entry.get("bytes")
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            raise BackupRestoreError(
+                "MANIFEST_INVALID",
+                f"manifest byte count is invalid for {relative}",
+            )
         resolved.append((relative, target, entry))
+    if database_entries != 1:
+        raise BackupRestoreError(
+            "MANIFEST_INVALID",
+            "manifest must contain exactly one storage/mangaflow.db entry",
+        )
     return resolved
 
 
@@ -350,7 +410,9 @@ def assert_unchanged(
 ) -> None:
     after = snapshot_files(root, relatives)
     if after != before:
-        raise BackupRestoreError("SOURCE_CHANGED", "source tree changed during the operation")
+        raise BackupRestoreError(
+            "SOURCE_CHANGED", "source tree changed during the operation"
+        )
 
 
 def read_schema_revision(database: Path) -> str:
@@ -358,18 +420,24 @@ def read_schema_revision(database: Path) -> str:
     try:
         rows = connection.execute("SELECT version_num FROM alembic_version").fetchall()
     except sqlite3.Error as exc:
-        raise BackupRestoreError("SCHEMA_REVISION_INVALID", f"cannot read alembic_version: {exc}") from exc
+        raise BackupRestoreError(
+            "SCHEMA_REVISION_INVALID", f"cannot read alembic_version: {exc}"
+        ) from exc
     finally:
         connection.close()
     if len(rows) != 1 or not rows[0][0]:
-        raise BackupRestoreError("SCHEMA_REVISION_INVALID", "alembic_version must contain one revision")
+        raise BackupRestoreError(
+            "SCHEMA_REVISION_INVALID", "alembic_version must contain one revision"
+        )
     return str(rows[0][0])
 
 
 def sqlite_consistent_backup(source: Path, destination: Path) -> None:
     _reject_reparse(source, label="database")
     if destination.exists() or destination.is_symlink() or destination.is_junction():
-        raise BackupRestoreError("DESTINATION_EXISTS", f"refusing to overwrite {destination}")
+        raise BackupRestoreError(
+            "DESTINATION_EXISTS", f"refusing to overwrite {destination}"
+        )
     destination.parent.mkdir(parents=True, exist_ok=True)
     _reject_reparse(destination.parent, label="database parent")
     source_conn = sqlite3.connect(f"file:{source.as_posix()}?mode=ro", uri=True)
@@ -393,7 +461,9 @@ def foreign_key_violations(database: Path) -> list[tuple]:
 
 
 def isolated_process_env(destination: Path, repo_root: Path) -> dict[str, str]:
-    env = {key: value for key, value in os.environ.items() if key.upper() in _ENV_ALLOWLIST}
+    env = {
+        key: value for key, value in os.environ.items() if key.upper() in _ENV_ALLOWLIST
+    }
     database = destination / "storage" / "mangaflow.db"
     env.update(
         PYTHONPATH=str(repo_root / "apps" / "api"),
@@ -411,16 +481,29 @@ def isolated_process_env(destination: Path, repo_root: Path) -> dict[str, str]:
 def run_alembic_upgrade(destination: Path, repo_root: Path) -> str:
     alembic_ini = repo_root / "apps" / "api" / "alembic.ini"
     if not alembic_ini.is_file():
-        raise BackupRestoreError("ALEMBIC_MISSING", f"alembic.ini not found at {alembic_ini}")
-    result = subprocess.run(
-        [sys.executable, "-m", "alembic", "-c", str(alembic_ini), "upgrade", "head"],
-        cwd=str(repo_root),
-        env=isolated_process_env(destination, repo_root),
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
-    )
+        raise BackupRestoreError(
+            "ALEMBIC_MISSING", f"alembic.ini not found at {alembic_ini}"
+        )
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "alembic",
+                "-c",
+                str(alembic_ini),
+                "upgrade",
+                "head",
+            ],
+            cwd=str(repo_root),
+            env=isolated_process_env(destination, repo_root),
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise BackupRestoreError("ALEMBIC_FAILED", "alembic upgrade timed out") from exc
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "alembic failed").strip()[-1500:]
         raise BackupRestoreError("ALEMBIC_FAILED", detail)
@@ -446,16 +529,39 @@ def iter_scoped_files(source_root: Path) -> tuple[list[tuple[str, Path]], list[s
                     excluded.append(relative)
                     continue
                 if not child.is_file():
-                    raise BackupRestoreError("PATH_INVALID", f"refusing non-regular file: {child}")
+                    raise BackupRestoreError(
+                        "PATH_INVALID", f"refusing non-regular file: {child}"
+                    )
                 selected.append((relative, child))
     selected.sort(key=lambda item: item[0])
+    excluded.sort()
     return selected, excluded
+
+
+def assert_scoped_inventory_unchanged(
+    root: Path,
+    before: dict[str, dict[str, int | str]],
+    selected_relatives: list[str],
+    excluded_relatives: list[str],
+) -> None:
+    current_selected, current_excluded = iter_scoped_files(root)
+    current_relatives = [relative for relative, _path in current_selected]
+    if (
+        current_relatives != selected_relatives
+        or current_excluded != excluded_relatives
+    ):
+        raise BackupRestoreError(
+            "SOURCE_CHANGED", "source inventory changed during the operation"
+        )
+    assert_unchanged(root, before, [DATABASE_REL, *selected_relatives])
 
 
 def _copy_file(source: Path, destination: Path, *, root: Path) -> tuple[str, int]:
     _reject_reparse(source, label="copy source")
     if destination.exists() or destination.is_symlink() or destination.is_junction():
-        raise BackupRestoreError("DESTINATION_EXISTS", f"refusing to overwrite {destination}")
+        raise BackupRestoreError(
+            "DESTINATION_EXISTS", f"refusing to overwrite {destination}"
+        )
     destination.parent.mkdir(parents=True, exist_ok=True)
     _reject_reparse(destination.parent, label="copy parent")
     digest = hashlib.sha256()
@@ -470,12 +576,18 @@ def _copy_file(source: Path, destination: Path, *, root: Path) -> tuple[str, int
     _reject_reparse(destination, label="copy destination")
     copied = destination.resolve(strict=True)
     if not copied.is_relative_to(root.resolve(strict=True)):
-        raise BackupRestoreError("REPARSE", f"copied file escaped destination: {copied}")
+        raise BackupRestoreError(
+            "REPARSE", f"copied file escaped destination: {copied}"
+        )
     return digest.hexdigest(), size
 
 
 def _maybe_interrupt(
-    copied: int, interrupt_after: int | None, hook: CopyHook | None, source: Path, dest: Path
+    copied: int,
+    interrupt_after: int | None,
+    hook: CopyHook | None,
+    source: Path,
+    dest: Path,
 ) -> None:
     if hook is not None:
         hook(source, dest)
@@ -487,7 +599,10 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
     if path.exists() or path.is_symlink() or path.is_junction():
         raise BackupRestoreError("DESTINATION_EXISTS", f"refusing to overwrite {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
-    serialized = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    _reject_reparse(path.parent, label="JSON parent")
+    serialized = (
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    )
     with path.open("x", encoding="utf-8", newline="\n") as handle:
         handle.write(serialized)
         handle.flush()
@@ -510,46 +625,85 @@ def write_owner_marker(destination: Path, report: Report, *, status: str) -> Non
 def update_owner_marker(destination: Path, report: Report, *, status: str) -> None:
     marker = destination / OWNER_MARKER_NAME
     if is_link_or_reparse(marker) or not marker.is_file():
-        return
+        raise BackupRestoreError(
+            "OWNER_MARKER_INVALID", "owner marker is missing or unsafe"
+        )
     try:
         payload = json.loads(marker.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise BackupRestoreError(
+            "OWNER_MARKER_INVALID", "owner marker is unreadable"
+        ) from exc
     if payload.get("kind") != OWNER_KIND or payload.get("run_id") != report.run_id:
-        return
+        raise BackupRestoreError(
+            "OWNER_MARKER_INVALID", "owner marker does not belong to this run"
+        )
     payload["status"] = status
     pending = destination / (OWNER_MARKER_NAME + ".pending")
     if pending.exists() or pending.is_symlink() or pending.is_junction():
-        return
-    serialized = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    with pending.open("x", encoding="utf-8", newline="\n") as handle:
-        handle.write(serialized)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(pending, marker)
+        raise BackupRestoreError(
+            "OWNER_MARKER_INVALID", "stale owner marker update exists"
+        )
+    try:
+        _write_json(pending, payload)
+        os.replace(pending, marker)
+        confirmed = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise BackupRestoreError("OWNER_MARKER_UPDATE_FAILED", str(exc)) from exc
+    if (
+        confirmed.get("kind") != OWNER_KIND
+        or confirmed.get("run_id") != report.run_id
+        or confirmed.get("status") != status
+    ):
+        raise BackupRestoreError(
+            "OWNER_MARKER_UPDATE_FAILED", "owner marker update was not durable"
+        )
 
 
 def mark_incomplete(report: Report, destination: Path | None) -> None:
     report.incomplete = True
     report.outcome = "failed"
     report.checks["incomplete"] = "INCOMPLETE"
-    if destination is not None and report.destination_created:
+    if destination is None or not report.destination_created:
+        return
+    try:
         update_owner_marker(destination, report, status="incomplete")
+    except BackupRestoreError as exc:
+        report.checks["owner_marker"] = "failed"
+        report.errors.append({"code": "OWNER_MARKER_FAILED", "message": str(exc)})
+
+
+def prepare_report_path(
+    report_path: Path | None, *, protected_roots: tuple[Path, ...] = ()
+) -> Path | None:
+    if report_path is None:
+        return None
+    if not str(report_path).strip():
+        raise BackupRestoreError("PATH_INVALID", "report path is missing")
+    absolute = report_path.expanduser().absolute()
+    parent = canonicalize_existing(absolute.parent, label="report parent")
+    target = parent / absolute.name
+    if target.exists() or target.is_symlink() or target.is_junction():
+        raise BackupRestoreError(
+            "DESTINATION_EXISTS",
+            "report path already exists; refuse to overwrite it",
+        )
+    _reject_reparse(target, label="report path")
+    for protected in protected_roots:
+        canonical = canonicalize_existing(protected, label="protected report root")
+        if target == canonical or target.is_relative_to(canonical):
+            raise BackupRestoreError(
+                "PATH_OVERLAP",
+                f"report path is inside a protected tree: {target}",
+            )
+    return target
 
 
 def write_report(report: Report, report_path: Path | None) -> None:
     report.finished_at = datetime.now(UTC).isoformat()
     if report.dry_run or report_path is None:
         return
-    absolute = report_path.expanduser().absolute()
-    parent = canonicalize_existing(absolute.parent, label="report parent")
-    target = parent / absolute.name
-    _reject_reparse(target, label="report path")
-    target.write_text(
-        json.dumps(report.to_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
+    _write_json(report_path, report.to_dict())
 
 
 def _finish(report: Report, report_path: Path | None) -> Report:
@@ -570,48 +724,58 @@ def _created_destination(report: Report) -> Path | None:
     return None
 
 
-def _run(action: Callable[[Report], None], report: Report, report_path: Path | None) -> Report:
+def _run(
+    action: Callable[[Report], None], report: Report, report_path: Path | None
+) -> Report:
+    pending_error: BackupRestoreError | None = None
     try:
         action(report)
         if report.outcome == "running":
             report.outcome = "success"
         if report.destination_created and report.outcome == "success":
             update_owner_marker(Path(report.destination), report, status="complete")
-        return _finish(report, report_path)
     except KeyboardInterrupt:
-        report.fail("INTERRUPTED", "operation interrupted")
-        mark_incomplete(report, _created_destination(report))
+        pending_error = BackupRestoreError("INTERRUPTED", "operation interrupted")
+    except BackupRestoreError as exc:
+        pending_error = exc
+    except OSError as exc:
+        pending_error = BackupRestoreError("IO_FAILED", str(exc))
+
+    if pending_error is not None:
+        if not any(item["code"] == pending_error.code for item in report.errors):
+            report.fail(pending_error.code, str(pending_error))
+        if report.destination_created:
+            mark_incomplete(report, _created_destination(report))
+
+    try:
         _finish(report, report_path)
-        error = BackupRestoreError("INTERRUPTED", "operation interrupted")
-        error.report = report
-        raise error from None
     except BackupRestoreError as exc:
         if not any(item["code"] == exc.code for item in report.errors):
             report.fail(exc.code, str(exc))
-        if report.destination_created:
+        if report.destination_created and not report.incomplete:
             mark_incomplete(report, _created_destination(report))
-        _finish(report, report_path)
         exc.report = report
         raise
-    except OSError as exc:
-        report.fail("IO_FAILED", str(exc))
-        if report.destination_created:
-            mark_incomplete(report, _created_destination(report))
-        _finish(report, report_path)
-        error = BackupRestoreError("IO_FAILED", str(exc))
-        error.report = report
-        raise error from exc
+
+    if pending_error is not None:
+        pending_error.report = report
+        raise pending_error
+    return report
 
 
 def _source_layout(source_root: Path) -> tuple[Path, Path, Path, Path]:
     root = canonicalize_existing(source_root, label="source root")
-    database = canonicalize_existing(root / "storage" / "mangaflow.db", label="database")
+    database = canonicalize_existing(
+        root / "storage" / "mangaflow.db", label="database"
+    )
     generated = canonicalize_existing(root / "storage" / "generated", label="generated")
     uploads = canonicalize_existing(root / "uploads", label="uploads")
     if not database.is_file():
         raise BackupRestoreError("PATH_INVALID", f"database is not a file: {database}")
     if not generated.is_dir() or not uploads.is_dir():
-        raise BackupRestoreError("PATH_INVALID", "generated and uploads must be directories")
+        raise BackupRestoreError(
+            "PATH_INVALID", "generated and uploads must be directories"
+        )
     return root, database, generated, uploads
 
 
@@ -620,9 +784,29 @@ def _load_manifest(archive: Path) -> dict[str, object]:
     _reject_reparse(manifest_path, label="manifest")
     if not manifest_path.is_file():
         raise BackupRestoreError("MANIFEST_INVALID", "manifest must be a regular file")
-    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise BackupRestoreError(
+            "MANIFEST_INVALID", "manifest is unreadable or invalid JSON"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise BackupRestoreError("MANIFEST_INVALID", "manifest root must be an object")
     if payload.get("kind") != BACKUP_KIND or payload.get("version") != 1:
-        raise BackupRestoreError("MANIFEST_INVALID", "manifest kind or version mismatch")
+        raise BackupRestoreError(
+            "MANIFEST_INVALID", "manifest kind or version mismatch"
+        )
+    if not isinstance(payload.get("created_at"), str) or not payload["created_at"]:
+        raise BackupRestoreError(
+            "MANIFEST_INVALID", "manifest creation metadata is missing"
+        )
+    if (
+        not isinstance(payload.get("schema_revision"), str)
+        or not payload["schema_revision"]
+    ):
+        raise BackupRestoreError(
+            "MANIFEST_INVALID", "manifest schema revision is missing"
+        )
     return payload
 
 
@@ -641,20 +825,26 @@ def verify_tree_bytes(
             raise BackupRestoreError("MISSING_FILE", f"missing {relative}")
         _reject_reparse(target, label="manifest file")
         if not target.is_file():
-            raise BackupRestoreError("PATH_INVALID", f"manifest file is not a regular file: {relative}")
+            raise BackupRestoreError(
+                "PATH_INVALID", f"manifest file is not a regular file: {relative}"
+            )
         resolved = target.resolve(strict=True)
         if not resolved.is_relative_to(root):
             raise BackupRestoreError("REPARSE", f"file escaped tree: {relative}")
         if relative in skipped:
             report.files.append(
-                {"path": relative, "sha256": "not_compared_after_alembic", "bytes": resolved.stat().st_size}
+                {
+                    "path": relative,
+                    "sha256": "not_compared_after_alembic",
+                    "bytes": resolved.stat().st_size,
+                }
             )
             continue
         expected = str(entry.get("sha256", ""))
         digest, size = hash_file(resolved)
         if digest != expected:
             raise BackupRestoreError("HASH_MISMATCH", f"hash mismatch for {relative}")
-        if entry.get("bytes") not in {None, size} and int(entry["bytes"]) != size:
+        if entry["bytes"] != size:
             raise BackupRestoreError("HASH_MISMATCH", f"size mismatch for {relative}")
         report.files.append({"path": relative, "sha256": digest, "bytes": size})
         if relative == DATABASE_REL:
@@ -675,8 +865,10 @@ def _copy_archive(
     for relative, source, entry in validate_manifest_paths(archive, manifest):
         target = destination.joinpath(*relative.split("/"))
         digest, size = _copy_file(source, target, root=destination)
-        if digest != entry["sha256"] or (entry.get("bytes") not in {None, size} and int(entry["bytes"]) != size):
-            raise BackupRestoreError("HASH_MISMATCH", f"restore hash mismatch for {relative}")
+        if digest != entry["sha256"] or entry["bytes"] != size:
+            raise BackupRestoreError(
+                "HASH_MISMATCH", f"restore hash mismatch for {relative}"
+            )
         copied += 1
         _maybe_interrupt(copied, interrupt_after, after_file, source, target)
     _write_json(destination / MANIFEST_NAME, manifest)
@@ -701,27 +893,37 @@ def offline_page_export(destination: Path) -> dict[str, object]:
     finally:
         connection.close()
     if row is None:
-        raise BackupRestoreError("EXPORT_FAILED", "restored database has no selected page to export")
+        raise BackupRestoreError(
+            "EXPORT_FAILED", "restored database has no selected page to export"
+        )
     page_id, page_number, storage_key, source, sha256, mime_type = row
     parse_manifest_relative(str(storage_key).replace("\\", "/"))
     root = destination / ("uploads" if source == "USER_UPLOAD" else "storage")
     asset_path = canonicalize_existing(root / storage_key, label="export asset")
     if not asset_path.is_relative_to(root.resolve(strict=True)):
-        raise BackupRestoreError("REPARSE", f"asset escaped storage root: {storage_key}")
+        raise BackupRestoreError(
+            "REPARSE", f"asset escaped storage root: {storage_key}"
+        )
     digest, size = hash_file(asset_path)
     if digest != sha256:
-        raise BackupRestoreError("HASH_MISMATCH", f"selected asset hash mismatch for {storage_key}")
+        raise BackupRestoreError(
+            "HASH_MISMATCH", f"selected asset hash mismatch for {storage_key}"
+        )
     export_dir = destination / EXPORT_REL
     if export_dir.exists() or export_dir.is_symlink() or export_dir.is_junction():
         export_dir = canonicalize_existing(export_dir, label="export dir")
         if not export_dir.is_dir():
-            raise BackupRestoreError("PATH_INVALID", f"export path is not a directory: {export_dir}")
+            raise BackupRestoreError(
+                "PATH_INVALID", f"export path is not a directory: {export_dir}"
+            )
     else:
         export_dir.mkdir(parents=True, exist_ok=False)
     png_name = f"page-{int(page_number):04d}.png"
     exported = export_dir / png_name
     if exported.exists() or exported.is_symlink() or exported.is_junction():
-        existing_hash, existing_size = hash_file(canonicalize_existing(exported, label="export png"))
+        existing_hash, existing_size = hash_file(
+            canonicalize_existing(exported, label="export png")
+        )
         if existing_hash != digest or existing_size != size:
             raise BackupRestoreError(
                 "DESTINATION_EXISTS",
@@ -741,9 +943,13 @@ def offline_page_export(destination: Path) -> dict[str, object]:
         "file": png_name,
     }
     sidecar = export_dir / "page-export.json"
-    serialized = json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    serialized = (
+        json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    )
     if sidecar.exists() or sidecar.is_symlink() or sidecar.is_junction():
-        existing = canonicalize_existing(sidecar, label="export json").read_text(encoding="utf-8")
+        existing = canonicalize_existing(sidecar, label="export json").read_text(
+            encoding="utf-8"
+        )
         if existing != serialized:
             raise BackupRestoreError(
                 "DESTINATION_EXISTS",
@@ -764,29 +970,38 @@ def backup(
     after_file: CopyHook | None = None,
 ) -> Report:
     report = Report(action="backup", dry_run=dry_run)
+    source = canonicalize_existing(source_root, label="source root")
+    safe_report = prepare_report_path(report_path, protected_roots=(source,))
 
     def body(current: Report) -> None:
-        root, database, _generated, _uploads = _source_layout(source_root)
+        root, database, _generated, _uploads = _source_layout(source)
         current.source = str(root)
         dest = require_absent_destination(destination)
         refuse_overlap(root, dest, label="source and backup destination")
         current.destination = str(dest)
         scoped, excluded = iter_scoped_files(root)
         current.excluded = excluded
-        planned_relatives = [DATABASE_REL, *[relative for relative, _ in scoped]]
-        before = snapshot_files(root, planned_relatives + excluded)
+        selected_relatives = [relative for relative, _ in scoped]
+        planned_relatives = [DATABASE_REL, *selected_relatives]
+        before = snapshot_files(root, planned_relatives)
         current.schema_revision = read_schema_revision(database)
         current.checks["path_safety"] = "passed"
         current.checks["dry_run"] = "passed" if dry_run else "not_applicable"
         if dry_run:
             current.files = [
-                {"path": DATABASE_REL, "bytes": database.stat().st_size, "planned": True},
+                {
+                    "path": DATABASE_REL,
+                    "bytes": database.stat().st_size,
+                    "planned": True,
+                },
                 *[
                     {"path": relative, "bytes": path.stat().st_size, "planned": True}
                     for relative, path in scoped
                 ],
             ]
-            assert_unchanged(root, before, planned_relatives + excluded)
+            assert_scoped_inventory_unchanged(
+                root, before, selected_relatives, excluded
+            )
             current.checks["source_unchanged"] = "passed"
             current.checks["writes"] = "none"
             return
@@ -796,25 +1011,41 @@ def backup(
         write_owner_marker(created, current, status="in_progress")
         copied = 0
         if file_identity(database) != before[DATABASE_REL]:
-            raise BackupRestoreError("SOURCE_CHANGED", "database changed before snapshot copy")
+            raise BackupRestoreError(
+                "SOURCE_CHANGED", "database changed before snapshot copy"
+            )
         sqlite_consistent_backup(database, created / "storage" / "mangaflow.db")
         db_hash, db_size = hash_file(created / "storage" / "mangaflow.db")
-        current.files.append({"path": DATABASE_REL, "sha256": db_hash, "bytes": db_size})
+        current.files.append(
+            {"path": DATABASE_REL, "sha256": db_hash, "bytes": db_size}
+        )
         copied += 1
         _maybe_interrupt(
-            copied, interrupt_after, after_file, database, created / "storage" / "mangaflow.db"
+            copied,
+            interrupt_after,
+            after_file,
+            database,
+            created / "storage" / "mangaflow.db",
         )
         for relative, path in scoped:
             if file_identity(path) != before[relative]:
-                raise BackupRestoreError("SOURCE_CHANGED", f"source file changed during backup: {relative}")
+                raise BackupRestoreError(
+                    "SOURCE_CHANGED", f"source file changed during backup: {relative}"
+                )
             target = created / relative
             digest, size = _copy_file(path, target, root=created)
-            if digest != before[relative]["sha256"] or size != before[relative]["bytes"]:
-                raise BackupRestoreError("SOURCE_CHANGED", f"copied bytes diverged from source snapshot: {relative}")
+            if (
+                digest != before[relative]["sha256"]
+                or size != before[relative]["bytes"]
+            ):
+                raise BackupRestoreError(
+                    "SOURCE_CHANGED",
+                    f"copied bytes diverged from source snapshot: {relative}",
+                )
             current.files.append({"path": relative, "sha256": digest, "bytes": size})
             copied += 1
             _maybe_interrupt(copied, interrupt_after, after_file, path, target)
-        assert_unchanged(root, before, planned_relatives + excluded)
+        assert_scoped_inventory_unchanged(root, before, selected_relatives, excluded)
         current.checks["source_unchanged"] = "passed"
         manifest = {
             "version": 1,
@@ -823,13 +1054,15 @@ def backup(
             "schema_revision": current.schema_revision,
             "files": current.files,
             "excluded": excluded,
-            "excluded_patterns": sorted(EXCLUDED_NAMES) + list(EXCLUDED_SUFFIXES) + [".env*"],
+            "excluded_patterns": sorted(EXCLUDED_NAMES)
+            + list(EXCLUDED_SUFFIXES)
+            + [".env*"],
         }
         _write_json(created / MANIFEST_NAME, manifest)
         current.checks["manifest"] = "written"
         current.archive = str(created)
 
-    return _run(body, report, report_path)
+    return _run(body, report, safe_report)
 
 
 def restore(
@@ -843,9 +1076,11 @@ def restore(
     after_file: CopyHook | None = None,
 ) -> Report:
     report = Report(action="restore", dry_run=dry_run)
+    archive_source = canonicalize_existing(archive, label="archive")
+    safe_report = prepare_report_path(report_path, protected_roots=(archive_source,))
 
     def body(current: Report) -> None:
-        archive_root = canonicalize_existing(archive, label="archive")
+        archive_root = canonicalize_existing(archive_source, label="archive")
         current.archive = str(archive_root)
         repo = canonicalize_existing(repo_root, label="repo root")
         dest = require_absent_destination(destination)
@@ -855,7 +1090,9 @@ def restore(
         current.schema_revision = str(manifest.get("schema_revision") or "")
         validate_manifest_paths(dest, manifest)
         current.checks["manifest_paths"] = "passed"
-        relatives = [parse_manifest_relative(entry.get("path")) for entry in manifest["files"]]
+        relatives = [
+            parse_manifest_relative(entry.get("path")) for entry in manifest["files"]
+        ]
         source_snapshot = snapshot_files(archive_root, relatives)
         db_digest = verify_tree_bytes(archive_root, manifest, current)
         current.pre_alembic_db_sha256 = db_digest
@@ -873,7 +1110,9 @@ def restore(
         current.checks["copy"] = "passed"
         copied_digest = verify_tree_bytes(created, manifest, current)
         if copied_digest != current.pre_alembic_db_sha256:
-            raise BackupRestoreError("HASH_MISMATCH", "copied database hash does not match archive")
+            raise BackupRestoreError(
+                "HASH_MISMATCH", "copied database hash does not match archive"
+            )
         current.pre_alembic_db_sha256 = copied_digest
         current.checks["pre_alembic_bytes"] = "passed"
         upgraded = run_alembic_upgrade(created, repo)
@@ -885,14 +1124,16 @@ def restore(
         current.checks["post_alembic_db"] = post_digest
         violations = foreign_key_violations(db_path)
         if violations:
-            raise BackupRestoreError("FOREIGN_KEY_CHECK", f"foreign_key_check failed: {violations!r}")
+            raise BackupRestoreError(
+                "FOREIGN_KEY_CHECK", f"foreign_key_check failed: {violations!r}"
+            )
         current.checks["foreign_keys"] = "passed"
         export = offline_page_export(created)
         current.checks["page_export"] = str(export["page_id"])
         assert_unchanged(archive_root, source_snapshot, relatives)
         current.checks["source_unchanged"] = "passed"
 
-    return _run(body, report, report_path)
+    return _run(body, report, safe_report)
 
 
 def verify_restored(
@@ -902,9 +1143,13 @@ def verify_restored(
     report_path: Path | None = None,
 ) -> Report:
     report = Report(action="verify", dry_run=False)
+    verified_destination = canonicalize_existing(destination, label="destination")
+    safe_report = prepare_report_path(
+        report_path, protected_roots=(verified_destination,)
+    )
 
     def body(current: Report) -> None:
-        dest = canonicalize_existing(destination, label="destination")
+        dest = canonicalize_existing(verified_destination, label="destination")
         current.destination = str(dest)
         canonicalize_existing(repo_root, label="repo root")
         manifest = _load_manifest(dest)
@@ -918,13 +1163,15 @@ def verify_restored(
         current.checks["post_alembic_db"] = current.post_alembic_db_sha256
         violations = foreign_key_violations(db_path)
         if violations:
-            raise BackupRestoreError("FOREIGN_KEY_CHECK", f"foreign_key_check failed: {violations!r}")
+            raise BackupRestoreError(
+                "FOREIGN_KEY_CHECK", f"foreign_key_check failed: {violations!r}"
+            )
         current.checks["foreign_keys"] = "passed"
         export = offline_page_export(dest)
         current.checks["page_export"] = str(export["page_id"])
         current.checks["path_safety"] = "passed"
 
-    return _run(body, report, report_path)
+    return _run(body, report, safe_report)
 
 
 def cleanup_owned_fixture(root: Path) -> None:
@@ -932,8 +1179,14 @@ def cleanup_owned_fixture(root: Path) -> None:
     if root is None or not str(root).strip():
         raise BackupRestoreError("CLEANUP_REFUSED", "cleanup path is missing")
     absolute = root.expanduser().absolute()
-    if not absolute.exists() and not absolute.is_symlink() and not absolute.is_junction():
-        raise BackupRestoreError("CLEANUP_REFUSED", f"cleanup path does not exist: {absolute}")
+    if (
+        not absolute.exists()
+        and not absolute.is_symlink()
+        and not absolute.is_junction()
+    ):
+        raise BackupRestoreError(
+            "CLEANUP_REFUSED", f"cleanup path does not exist: {absolute}"
+        )
     canonical = canonicalize_existing(absolute, label="fixture root")
     marker = canonical / FIXTURE_MARKER_NAME
     if is_link_or_reparse(marker) or not marker.is_file():
@@ -944,16 +1197,22 @@ def cleanup_owned_fixture(root: Path) -> None:
     try:
         payload = json.loads(marker.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise BackupRestoreError("CLEANUP_REFUSED", "fixture marker is unreadable") from exc
+        raise BackupRestoreError(
+            "CLEANUP_REFUSED", "fixture marker is unreadable"
+        ) from exc
     if payload.get("kind") != FIXTURE_KIND or payload.get("version") != 1:
         raise BackupRestoreError("CLEANUP_REFUSED", "fixture marker mismatch")
     _reject_tree_reparse(canonical)
     try:
         shutil.rmtree(canonical)
     except OSError as exc:
-        raise BackupRestoreError("CLEANUP_FAILED", f"owned fixture cleanup failed: {exc}") from exc
+        raise BackupRestoreError(
+            "CLEANUP_FAILED", f"owned fixture cleanup failed: {exc}"
+        ) from exc
     if canonical.exists():
-        raise BackupRestoreError("CLEANUP_FAILED", "owned fixture still exists after cleanup")
+        raise BackupRestoreError(
+            "CLEANUP_FAILED", "owned fixture still exists after cleanup"
+        )
 
 
 def _default_repo_root() -> Path:
@@ -961,7 +1220,9 @@ def _default_repo_root() -> Path:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="MangaFlow consistency backup and restore drill")
+    parser = argparse.ArgumentParser(
+        description="MangaFlow consistency backup and restore drill"
+    )
     parser.add_argument("--repo-root", type=Path, default=_default_repo_root())
     sub = parser.add_subparsers(dest="action", required=True)
 
@@ -1024,7 +1285,11 @@ def main(argv: list[str] | None = None) -> int:
             report.checks["fixture"] = "created"
             _finish(report, args.report)
         if args.report is None or report.dry_run:
-            print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2, sort_keys=True))
+            print(
+                json.dumps(
+                    report.to_dict(), ensure_ascii=False, indent=2, sort_keys=True
+                )
+            )
         else:
             print(f"{report.action} {report.outcome}", file=sys.stderr)
         return 0 if report.outcome == "success" else 1

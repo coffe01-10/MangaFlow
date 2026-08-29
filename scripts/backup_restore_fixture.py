@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 import sys
 from io import BytesIO
 from pathlib import Path
@@ -14,6 +15,8 @@ from PIL import Image
 from backup_restore import (
     FIXTURE_KIND,
     FIXTURE_MARKER_NAME,
+    BackupRestoreError,
+    _write_json,
     create_new_directory,
     read_schema_revision,
     run_alembic_upgrade,
@@ -37,8 +40,36 @@ def _write_bytes(path: Path, data: bytes) -> None:
     path.write_bytes(data)
 
 
+def _complete_fixture_marker(marker_path: Path, marker: dict[str, object]) -> None:
+    pending = marker_path.with_name(marker_path.name + ".pending")
+    completed = {**marker, "status": "complete"}
+    try:
+        _write_json(pending, completed)
+        os.replace(pending, marker_path)
+        confirmed = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise BackupRestoreError("OWNER_MARKER_UPDATE_FAILED", str(exc)) from exc
+    if (
+        confirmed.get("kind") != FIXTURE_KIND
+        or confirmed.get("run_id") != marker["run_id"]
+        or confirmed.get("status") != "complete"
+    ):
+        raise BackupRestoreError(
+            "OWNER_MARKER_UPDATE_FAILED",
+            "fixture marker update was not durable",
+        )
+
+
 def create_isolated_fixture(destination: Path, *, repo_root: Path) -> dict[str, str]:
     dest = create_new_directory(destination)
+    marker_path = dest / FIXTURE_MARKER_NAME
+    marker: dict[str, object] = {
+        "version": 1,
+        "kind": FIXTURE_KIND,
+        "run_id": secrets.token_hex(32),
+        "status": "in_progress",
+    }
+    _write_json(marker_path, marker)
     (dest / "storage" / "generated").mkdir(parents=True)
     (dest / "uploads").mkdir(parents=True)
     run_alembic_upgrade(dest, repo_root)
@@ -173,24 +204,25 @@ def create_isolated_fixture(destination: Path, *, repo_root: Path) -> dict[str, 
         }
 
     engine.dispose()
-    (dest / ".env").write_text("GOOGLE_CLOUD_PROJECT=must-not-be-copied\n", encoding="utf-8")
-    (dest / "storage" / ".provider-credential-master-key").write_text("must-not-be-copied\n", encoding="utf-8")
-    (dest / "uploads" / ".env.local").write_text("SECRET=must-not-be-copied\n", encoding="utf-8")
+    (dest / ".env").write_text(
+        "GOOGLE_CLOUD_PROJECT=must-not-be-copied\n", encoding="utf-8"
+    )
+    (dest / "storage" / ".provider-credential-master-key").write_text(
+        "must-not-be-copied\n", encoding="utf-8"
+    )
+    (dest / "uploads" / ".env.local").write_text(
+        "SECRET=must-not-be-copied\n", encoding="utf-8"
+    )
     (dest / "uploads" / "credentials.json").write_text("{}\n", encoding="utf-8")
     (dest / "storage" / "generated" / ".provider-credential-master-key").write_text(
         "must-not-be-copied\n", encoding="utf-8"
     )
 
-    marker = {
-        "version": 1,
-        "kind": FIXTURE_KIND,
-        "page_id": ids["page_id"],
-        "project_id": ids["project_id"],
-        "chapter_id": ids["chapter_id"],
-    }
-    (dest / FIXTURE_MARKER_NAME).write_text(
-        json.dumps(marker, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    marker.update(
+        page_id=ids["page_id"],
+        project_id=ids["project_id"],
+        chapter_id=ids["chapter_id"],
     )
+    _complete_fixture_marker(marker_path, marker)
     ids["schema_revision"] = read_schema_revision(database)
     return ids

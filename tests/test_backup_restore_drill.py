@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import backup_restore as backup_restore_mod  # noqa: E402
+import backup_restore_fixture as backup_restore_fixture_mod  # noqa: E402
 from backup_restore import (  # noqa: E402
     DATABASE_REL,
     OWNER_MARKER_NAME,
@@ -113,7 +114,9 @@ def test_backup_restore_roundtrip_preserves_source_and_exports(tmp_path, fixture
     backup_report = tmp_path / "backup-report.json"
     restore_report = tmp_path / "restore-report.json"
 
-    backup_result = backup(source_root=source, destination=archive, report_path=backup_report)
+    backup_result = backup(
+        source_root=source, destination=archive, report_path=backup_report
+    )
     restore_result = restore(
         archive=archive,
         destination=restored,
@@ -142,13 +145,15 @@ def test_backup_restore_roundtrip_preserves_source_and_exports(tmp_path, fixture
     assert exported.is_file()
     assert hash_file(exported)[0] == hash_file(generated)[0]
     sidecar = json.loads(
-        (restored / "storage" / "exports" / "_restore-drill" / "page-export.json").read_text(
-            encoding="utf-8"
-        )
+        (
+            restored / "storage" / "exports" / "_restore-drill" / "page-export.json"
+        ).read_text(encoding="utf-8")
     )
     assert sidecar["page_id"] == meta["page_id"]
     verify_result = verify_restored(
-        destination=restored, repo_root=ROOT, report_path=tmp_path / "verify-report.json"
+        destination=restored,
+        repo_root=ROOT,
+        report_path=tmp_path / "verify-report.json",
     )
     assert verify_result.outcome == "success"
     assert json.loads(restore_report.read_text(encoding="utf-8"))["errors"] == []
@@ -162,7 +167,9 @@ def test_dry_run_validates_without_any_writes(tmp_path, fixture_root):
     archive = tmp_path / "archive"
     report_path = tmp_path / "dry-run.json"
     before = _fingerprint(tmp_path)
-    result = backup(source_root=source, destination=archive, dry_run=True, report_path=report_path)
+    result = backup(
+        source_root=source, destination=archive, dry_run=True, report_path=report_path
+    )
     assert result.outcome == "success"
     assert result.checks["writes"] == "none"
     assert not archive.exists()
@@ -170,7 +177,11 @@ def test_dry_run_validates_without_any_writes(tmp_path, fixture_root):
     assert _fingerprint(tmp_path) == before
 
     filled = tmp_path / "filled-archive"
-    backup(source_root=source, destination=filled, report_path=tmp_path / "filled-report.json")
+    backup(
+        source_root=source,
+        destination=filled,
+        report_path=tmp_path / "filled-report.json",
+    )
     restore_dest = tmp_path / "restored"
     restore_report = tmp_path / "restore-dry-run.json"
     after_backup = _fingerprint(tmp_path)
@@ -191,7 +202,9 @@ def test_dry_run_validates_without_any_writes(tmp_path, fixture_root):
 def test_restore_refuses_existing_destination(tmp_path, fixture_root):
     source, _meta = fixture_root
     archive = tmp_path / "archive"
-    backup(source_root=source, destination=archive, report_path=tmp_path / "backup.json")
+    backup(
+        source_root=source, destination=archive, report_path=tmp_path / "backup.json"
+    )
     existing = tmp_path / "already-there"
     existing.mkdir()
     (existing / "keep.txt").write_text("do-not-delete", encoding="utf-8")
@@ -213,13 +226,20 @@ def test_hash_mismatch_fail_closed(tmp_path, fixture_root):
     source, meta = fixture_root
     before = _snapshot(source)
     archive = tmp_path / "archive"
-    backup(source_root=source, destination=archive, report_path=tmp_path / "backup.json")
+    backup(
+        source_root=source, destination=archive, report_path=tmp_path / "backup.json"
+    )
     target = archive / "storage" / meta["generated_key"]
     target.write_bytes(target.read_bytes() + b"\x00")
     restored = tmp_path / "restored"
     report_path = tmp_path / "restore.json"
     with pytest.raises(BackupRestoreError) as raised:
-        restore(archive=archive, destination=restored, repo_root=ROOT, report_path=report_path)
+        restore(
+            archive=archive,
+            destination=restored,
+            repo_root=ROOT,
+            report_path=report_path,
+        )
     assert raised.value.code == "HASH_MISMATCH"
     assert not restored.exists()
     assert _snapshot(source) == before
@@ -233,12 +253,19 @@ def test_missing_file_fail_closed(tmp_path, fixture_root):
     source, meta = fixture_root
     before = _snapshot(source)
     archive = tmp_path / "archive"
-    backup(source_root=source, destination=archive, report_path=tmp_path / "backup.json")
+    backup(
+        source_root=source, destination=archive, report_path=tmp_path / "backup.json"
+    )
     (archive / "storage" / meta["generated_key"]).unlink()
     restored = tmp_path / "restored"
     report_path = tmp_path / "restore.json"
     with pytest.raises(BackupRestoreError) as raised:
-        restore(archive=archive, destination=restored, repo_root=ROOT, report_path=report_path)
+        restore(
+            archive=archive,
+            destination=restored,
+            repo_root=ROOT,
+            report_path=report_path,
+        )
     assert raised.value.code == "MISSING_FILE"
     assert not restored.exists()
     assert _snapshot(source) == before
@@ -268,7 +295,11 @@ def test_interrupted_copy_fail_closed(tmp_path, fixture_root):
     assert _owner(archive)["status"] == "incomplete"
     assert _owner(archive)["run_id"] == payload["run_id"]
     with pytest.raises(BackupRestoreError) as repeated:
-        backup(source_root=source, destination=archive, report_path=tmp_path / "backup-2.json")
+        backup(
+            source_root=source,
+            destination=archive,
+            report_path=tmp_path / "backup-2.json",
+        )
     assert repeated.value.code == "DESTINATION_EXISTS"
     assert _owner(archive)["status"] == "incomplete"
     assert _snapshot(source) == before
@@ -277,7 +308,9 @@ def test_interrupted_copy_fail_closed(tmp_path, fixture_root):
 def test_interrupted_restore_fail_closed(tmp_path, fixture_root):
     source, _meta = fixture_root
     archive = tmp_path / "archive"
-    backup(source_root=source, destination=archive, report_path=tmp_path / "backup.json")
+    backup(
+        source_root=source, destination=archive, report_path=tmp_path / "backup.json"
+    )
     archive_before = _snapshot(archive)
     restored = tmp_path / "restored"
     report_path = tmp_path / "restore.json"
@@ -310,7 +343,9 @@ def test_repeated_restore_to_same_destination_refused(tmp_path, fixture_root):
     source, _meta = fixture_root
     archive = tmp_path / "archive"
     restored = tmp_path / "restored"
-    backup(source_root=source, destination=archive, report_path=tmp_path / "backup.json")
+    backup(
+        source_root=source, destination=archive, report_path=tmp_path / "backup.json"
+    )
     first = restore(
         archive=archive,
         destination=restored,
@@ -346,7 +381,11 @@ def test_reparse_point_rejected_even_without_escape(tmp_path, fixture_root):
     _make_junction(source / "storage" / "generated" / "alias", inside)
     archive = tmp_path / "archive"
     with pytest.raises(BackupRestoreError) as raised:
-        backup(source_root=source, destination=archive, report_path=tmp_path / "backup.json")
+        backup(
+            source_root=source,
+            destination=archive,
+            report_path=tmp_path / "backup.json",
+        )
     assert raised.value.code == "REPARSE"
     assert not archive.exists()
 
@@ -359,7 +398,11 @@ def test_reparse_point_escape_rejected(tmp_path, fixture_root):
     _make_junction(source / "storage" / "generated" / "escape", outside)
     archive = tmp_path / "archive"
     with pytest.raises(BackupRestoreError) as raised:
-        backup(source_root=source, destination=archive, report_path=tmp_path / "backup.json")
+        backup(
+            source_root=source,
+            destination=archive,
+            report_path=tmp_path / "backup.json",
+        )
     assert raised.value.code == "REPARSE"
     assert not archive.exists()
     assert (outside / "secret.txt").read_text(encoding="utf-8") == "leave-me"
@@ -368,7 +411,9 @@ def test_reparse_point_escape_rejected(tmp_path, fixture_root):
 def test_secrets_are_excluded_from_archive(tmp_path, fixture_root):
     source, _meta = fixture_root
     archive = tmp_path / "archive"
-    result = backup(source_root=source, destination=archive, report_path=tmp_path / "backup.json")
+    result = backup(
+        source_root=source, destination=archive, report_path=tmp_path / "backup.json"
+    )
     assert "uploads/.env.local" in result.excluded
     assert "uploads/credentials.json" in result.excluded
     assert "storage/generated/.provider-credential-master-key" in result.excluded
@@ -431,14 +476,21 @@ def test_backup_refuses_overlapping_destination(tmp_path, fixture_root):
 def test_restore_rejects_unsafe_manifest_paths(tmp_path, fixture_root, bad_path):
     source, _meta = fixture_root
     archive = tmp_path / "archive"
-    backup(source_root=source, destination=archive, report_path=tmp_path / "backup.json")
+    backup(
+        source_root=source, destination=archive, report_path=tmp_path / "backup.json"
+    )
     manifest_path = archive / "manifest.json"
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     payload["files"].append({"path": bad_path, "sha256": "0" * 64, "bytes": 1})
     manifest_path.write_text(json.dumps(payload), encoding="utf-8")
     restored = tmp_path / "restored"
     with pytest.raises(BackupRestoreError) as raised:
-        restore(archive=archive, destination=restored, repo_root=ROOT, report_path=tmp_path / "r.json")
+        restore(
+            archive=archive,
+            destination=restored,
+            repo_root=ROOT,
+            report_path=tmp_path / "r.json",
+        )
     assert raised.value.code in {"PATH_INVALID", "PATH_CONFLICT"}
     assert not restored.exists()
 
@@ -446,7 +498,9 @@ def test_restore_rejects_unsafe_manifest_paths(tmp_path, fixture_root, bad_path)
 def test_restore_rejects_duplicate_and_case_colliding_paths(tmp_path, fixture_root):
     source, _meta = fixture_root
     archive = tmp_path / "archive"
-    backup(source_root=source, destination=archive, report_path=tmp_path / "backup.json")
+    backup(
+        source_root=source, destination=archive, report_path=tmp_path / "backup.json"
+    )
     manifest_path = archive / "manifest.json"
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     duplicate = dict(payload["files"][0])
@@ -481,14 +535,20 @@ def test_restore_rejects_duplicate_and_case_colliding_paths(tmp_path, fixture_ro
 def test_restore_verifies_bytes_before_alembic(tmp_path, fixture_root, monkeypatch):
     source, _meta = fixture_root
     archive = tmp_path / "archive"
-    backup(source_root=source, destination=archive, report_path=tmp_path / "backup.json")
+    backup(
+        source_root=source, destination=archive, report_path=tmp_path / "backup.json"
+    )
     original = backup_restore_mod.run_alembic_upgrade
     seen = {}
 
     def wrapped(destination: Path, repo_root: Path) -> str:
         db = destination / "storage" / "mangaflow.db"
-        manifest = json.loads((destination / "manifest.json").read_text(encoding="utf-8"))
-        expected = next(item["sha256"] for item in manifest["files"] if item["path"] == DATABASE_REL)
+        manifest = json.loads(
+            (destination / "manifest.json").read_text(encoding="utf-8")
+        )
+        expected = next(
+            item["sha256"] for item in manifest["files"] if item["path"] == DATABASE_REL
+        )
         assert hash_file(db)[0] == expected
         seen["pre"] = expected
         revision = original(destination, repo_root)
@@ -515,7 +575,9 @@ def test_restore_verifies_bytes_before_alembic(tmp_path, fixture_root, monkeypat
     assert result.pre_alembic_db_sha256 == seen["pre"]
     assert result.post_alembic_db_sha256 == seen["post"]
     assert result.post_alembic_db_sha256 != result.pre_alembic_db_sha256
-    verify = verify_restored(destination=restored, repo_root=ROOT, report_path=tmp_path / "v.json")
+    verify = verify_restored(
+        destination=restored, repo_root=ROOT, report_path=tmp_path / "v.json"
+    )
     assert verify.outcome == "success"
     assert verify.post_alembic_db_sha256 == seen["post"]
 
@@ -551,7 +613,10 @@ def test_powershell_wrapper_dry_run_zero_writes(tmp_path, fixture_root):
     archive = tmp_path / "archive"
     report = tmp_path / "ps-dry-run.json"
     before = _fingerprint(tmp_path)
-    powershell = Path(os.environ["SYSTEMROOT"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    powershell = (
+        Path(os.environ["SYSTEMROOT"])
+        / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    )
     completed = subprocess.run(
         [
             str(powershell),
@@ -589,7 +654,9 @@ def test_powershell_wrapper_dry_run_zero_writes(tmp_path, fixture_root):
 def test_cli_nonzero_on_existing_destination(tmp_path, fixture_root):
     source, _meta = fixture_root
     archive = tmp_path / "archive"
-    backup(source_root=source, destination=archive, report_path=tmp_path / "backup.json")
+    backup(
+        source_root=source, destination=archive, report_path=tmp_path / "backup.json"
+    )
     existing = tmp_path / "keep"
     existing.mkdir()
     (existing / "file.txt").write_text("keep", encoding="utf-8")
@@ -624,3 +691,187 @@ def test_fixture_stays_inside_tmp_path(tmp_path, fixture_root):
     assert not source.is_relative_to(ROOT / "storage")
     assert not source.is_relative_to(ROOT / "uploads")
     assert source.resolve() != (ROOT / ".env").resolve()
+
+
+def test_report_refuses_existing_file_and_protected_source(tmp_path, fixture_root):
+    source, _meta = fixture_root
+    existing = tmp_path / "existing-report.json"
+    existing.write_text("KEEP\n", encoding="utf-8")
+    source_before = _fingerprint(source)
+
+    with pytest.raises(BackupRestoreError) as existing_error:
+        backup(
+            source_root=source,
+            destination=tmp_path / "archive-existing-report",
+            report_path=existing,
+        )
+    assert existing_error.value.code == "DESTINATION_EXISTS"
+    assert existing.read_text(encoding="utf-8") == "KEEP\n"
+    assert not (tmp_path / "archive-existing-report").exists()
+    assert _fingerprint(source) == source_before
+
+    protected_report = source / "uploads" / "operation-report.json"
+    with pytest.raises(BackupRestoreError) as overlap_error:
+        backup(
+            source_root=source,
+            destination=tmp_path / "archive-protected-report",
+            report_path=protected_report,
+        )
+    assert overlap_error.value.code == "PATH_OVERLAP"
+    assert not protected_report.exists()
+    assert not (tmp_path / "archive-protected-report").exists()
+    assert _fingerprint(source) == source_before
+
+
+def test_new_file_during_backup_invalidates_inventory(tmp_path, fixture_root):
+    source, _meta = fixture_root
+    late = source / "uploads" / "late.png"
+
+    def add_late(_source: Path, _destination: Path) -> None:
+        if not late.exists():
+            late.write_bytes(b"late")
+
+    archive = tmp_path / "archive"
+    report = tmp_path / "report.json"
+    with pytest.raises(BackupRestoreError) as raised:
+        backup(
+            source_root=source,
+            destination=archive,
+            report_path=report,
+            after_file=add_late,
+        )
+    assert raised.value.code == "SOURCE_CHANGED"
+    assert late.is_file()
+    assert archive.is_dir()
+    assert not (archive / "manifest.json").exists()
+    assert _owner(archive)["status"] == "incomplete"
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["outcome"] == "failed"
+    assert payload["checks"]["source_changed"] == "failed"
+
+
+def test_excluded_secret_contents_are_never_hashed(tmp_path, fixture_root, monkeypatch):
+    source, _meta = fixture_root
+    original_hash = backup_restore_mod.hash_file
+
+    def guarded_hash(path: Path):
+        if backup_restore_mod.is_excluded(path.name):
+            raise AssertionError(f"excluded content was read: {path}")
+        return original_hash(path)
+
+    monkeypatch.setattr(backup_restore_mod, "hash_file", guarded_hash)
+    result = backup(
+        source_root=source,
+        destination=tmp_path / "archive",
+        dry_run=True,
+        report_path=tmp_path / "dry-run-report.json",
+    )
+    assert result.outcome == "success"
+    assert "uploads/.env.local" in result.excluded
+    assert "uploads/credentials.json" in result.excluded
+    assert "storage/generated/.provider-credential-master-key" in result.excluded
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["invalid_json", "missing_hash", "negative_bytes", "out_of_scope"],
+)
+def test_malformed_manifest_has_structured_failure_report(tmp_path, fixture_root, case):
+    source, _meta = fixture_root
+    archive = tmp_path / "archive"
+    backup(
+        source_root=source, destination=archive, report_path=tmp_path / "backup.json"
+    )
+    manifest_path = archive / "manifest.json"
+    if case == "invalid_json":
+        manifest_path.write_text("{", encoding="utf-8")
+    else:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if case == "missing_hash":
+            payload["files"][0].pop("sha256")
+        elif case == "negative_bytes":
+            payload["files"][0]["bytes"] = -1
+        else:
+            payload["files"][-1]["path"] = "storage/exports/out-of-scope.png"
+        manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    destination = tmp_path / "restored"
+    report = tmp_path / "restore-report.json"
+    with pytest.raises(BackupRestoreError) as raised:
+        restore(
+            archive=archive,
+            destination=destination,
+            repo_root=ROOT,
+            report_path=report,
+        )
+    assert raised.value.code == "MANIFEST_INVALID"
+    assert not destination.exists()
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["outcome"] == "failed"
+    assert payload["errors"][0]["code"] == "MANIFEST_INVALID"
+
+
+def test_owner_marker_update_failure_fails_closed(tmp_path, fixture_root, monkeypatch):
+    source, _meta = fixture_root
+    archive = tmp_path / "archive"
+    report = tmp_path / "report.json"
+    original_replace = backup_restore_mod.os.replace
+
+    def fail_owner_replace(source_path, destination_path):
+        if Path(destination_path).name == OWNER_MARKER_NAME:
+            raise OSError("simulated owner marker lock")
+        return original_replace(source_path, destination_path)
+
+    monkeypatch.setattr(backup_restore_mod.os, "replace", fail_owner_replace)
+    with pytest.raises(BackupRestoreError) as raised:
+        backup(source_root=source, destination=archive, report_path=report)
+    assert raised.value.code == "OWNER_MARKER_UPDATE_FAILED"
+    assert archive.is_dir()
+    assert _owner(archive)["status"] == "in_progress"
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["outcome"] == "failed"
+    assert payload["incomplete"] is True
+    assert any(error["code"] == "OWNER_MARKER_FAILED" for error in payload["errors"])
+
+
+def test_failed_fixture_is_owned_and_cleanup_remains_available(tmp_path, monkeypatch):
+    destination = tmp_path / "failed-fixture"
+
+    def fail_migration(_destination: Path, _repo_root: Path) -> str:
+        raise BackupRestoreError("ALEMBIC_FAILED", "simulated migration failure")
+
+    monkeypatch.setattr(
+        backup_restore_fixture_mod,
+        "run_alembic_upgrade",
+        fail_migration,
+    )
+    with pytest.raises(BackupRestoreError):
+        create_isolated_fixture(destination, repo_root=ROOT)
+    marker = json.loads((destination / FIXTURE_MARKER_NAME).read_text(encoding="utf-8"))
+    assert marker["kind"] == backup_restore_mod.FIXTURE_KIND
+    assert marker["status"] == "in_progress"
+    cleanup_owned_fixture(destination)
+    assert not destination.exists()
+
+
+def test_report_write_failure_marks_completed_destination_incomplete(
+    tmp_path, fixture_root, monkeypatch
+):
+    source, _meta = fixture_root
+    archive = tmp_path / "archive"
+
+    def fail_report(_report, _report_path):
+        raise BackupRestoreError("REPORT_WRITE_FAILED", "simulated report lock")
+
+    monkeypatch.setattr(backup_restore_mod, "write_report", fail_report)
+    with pytest.raises(BackupRestoreError) as raised:
+        backup(
+            source_root=source,
+            destination=archive,
+            report_path=tmp_path / "report.json",
+        )
+    assert raised.value.code == "REPORT_WRITE_FAILED"
+    assert raised.value.report is not None
+    assert raised.value.report.outcome == "failed"
+    assert raised.value.report.incomplete is True
+    assert _owner(archive)["status"] == "incomplete"
