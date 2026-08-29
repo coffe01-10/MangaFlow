@@ -108,8 +108,32 @@ Git 忽略本地数据与凭据。提交代码、推送分支或合并到 `maste
 
 仅包含 `.db` 的迁移备份不包含上传和生成图片，不能替代上述完整备份。
 
+### 一致性备份与恢复演练
+
+仓库提供 Windows 入口 [`scripts/backup-restore.ps1`](../scripts/backup-restore.ps1) 和实现 [`scripts/backup_restore.py`](../scripts/backup_restore.py)。脚本只处理 SQLite、`storage/generated` 与 `uploads`，用 SQLite backup API 做只读一致性快照，并写入含 sha256、字节数、Alembic revision 与创建时间的 `manifest.json`。`.env`、`storage/.provider-credential-master-key`、服务账号 JSON 和其它凭据文件名会被排除，不会进入归档。
+
+目的地必须尚不存在，由本次运行创建；已存在的目录无论是否为空都会被拒绝，脚本也不会删除既有目标。源目录保持只读。`--dry-run` 会做完路径规范化、reparse/symlink 逃逸检查和计划清单，但不 `mkdir`、不拷贝、不写目的地。
+
+```powershell
+# 备份到一个还不存在的新目录（先自己建好父目录）
+powershell -ExecutionPolicy Bypass -File .\scripts\backup-restore.ps1 `
+  -Action backup -SourceRoot . -Destination D:\mangaflow-backups\run-1
+
+# 只校验、零写入
+powershell -ExecutionPolicy Bypass -File .\scripts\backup-restore.ps1 `
+  -Action backup -SourceRoot . -Destination D:\mangaflow-backups\run-1 -DryRun
+
+# 恢复到另一个还不存在的新目录，并做 Alembic / 外键 / hash / 离线页导出检查
+powershell -ExecutionPolicy Bypass -File .\scripts\backup-restore.ps1 `
+  -Action restore -Archive D:\mangaflow-backups\run-1 -Destination D:\mangaflow-restore\run-1
+```
+
+自动化测试和演练只使用本任务新建的隔离 fixture（`create-fixture` / pytest `tmp_path`），不读取仓库里的真实 `storage/`、`uploads/`、`.env` 或凭据。恢复校验在隔离环境执行 `alembic upgrade head`、`PRAGMA foreign_key_check`，并用占位 PNG 做离线页导出；不启动开发服务，也不调用真实供应商。
+
+中断、hash mismatch、缺失文件、重复恢复到同一目的地、以及仅针对带 `.mangaflow-backup-fixture` 标记目录的清理失败，都会 fail-closed，错误写入报告。操作路径不会对源或既有目标做 `rmtree`。
+
 ### 恢复检查
 
-恢复到另一台机器时，保留数据目录相对结构，重新配置本机路径、依赖与密钥，并备份恢复副本后执行 Alembic 升级。不要把“迁移成功”当成完整恢复验收：还应打开项目、读取原图、确认候选与分镜关系、检查导出文件和供应商密钥能否正常解密。
+恢复到另一台机器时，保留数据目录相对结构，重新配置本机路径、依赖与密钥，并在新目录恢复后再执行 Alembic 升级。不要把“迁移成功”当成完整恢复验收：还应打开项目、读取原图、确认候选与分镜关系、检查导出文件。密钥与 `.env` 不在本脚本范围内，需要单独保存；丢失主密钥时已保存的 API Key 可能无法解密。
 
-此处提供操作边界，不声称已完成跨机器恢复演练。演练任务在[路线图 P2-5](roadmap.md)跟踪。
+本脚本未覆盖云上传、调度、加密密钥管理、跨机器真数据演练或真实供应商调用。
