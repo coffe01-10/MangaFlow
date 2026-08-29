@@ -49,41 +49,77 @@ try {
   const pane = page.locator(".react-flow__pane");
   const bounds = await pane.boundingBox();
   if (!bounds) throw new Error("找不到工作流画布");
+  let direction = 1;
+  const exerciseCanvas = async (durationMs) => {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < durationMs) {
+      const centerX = bounds.x + bounds.width / 2;
+      const centerY = bounds.y + bounds.height / 2;
+      await page.mouse.move(centerX, centerY);
+      await page.mouse.down();
+      await page.mouse.move(centerX + direction * 90, centerY + direction * 45, { steps: 8 });
+      await page.mouse.up();
+      await page.mouse.wheel(0, direction * 220);
+      direction *= -1;
+    }
+  };
+
+  // Warm the fresh browser/JIT and React Flow gesture handlers before measuring
+  // steady-state interaction. The measured window below remains a full 10s.
+  await exerciseCanvas(2_000);
+  await page.waitForTimeout(250);
   await page.evaluate(() => {
     window.__mangaflowFrameTimes = [];
+    window.__mangaflowSampling = true;
     let previous = performance.now();
     const sample = (time) => {
+      if (!window.__mangaflowSampling) return;
       window.__mangaflowFrameTimes.push(time - previous);
       previous = time;
-      if (window.__mangaflowFrameTimes.length < 1200) requestAnimationFrame(sample);
+      requestAnimationFrame(sample);
     };
     requestAnimationFrame(sample);
   });
 
-  const start = Date.now();
-  let direction = 1;
-  while (Date.now() - start < 10_000) {
-    const centerX = bounds.x + bounds.width / 2;
-    const centerY = bounds.y + bounds.height / 2;
-    await page.mouse.move(centerX, centerY);
-    await page.mouse.down();
-    await page.mouse.move(centerX + direction * 90, centerY + direction * 45, { steps: 8 });
-    await page.mouse.up();
-    await page.mouse.wheel(0, direction * 220);
-    direction *= -1;
-  }
-
+  await exerciseCanvas(10_000);
+  await page.evaluate(() => {
+    window.__mangaflowSampling = false;
+  });
   const frameTimes = await page.evaluate(() => window.__mangaflowFrameTimes.slice(10));
+  if (frameTimes.length < 300) throw new Error(`FPS 样本不足：${frameTimes.length}`);
   const sorted = [...frameTimes].sort((left, right) => left - right);
-  const averageFps = 1000 / (frameTimes.reduce((sum, value) => sum + value, 0) / frameTimes.length);
+  const measuredMs = frameTimes.reduce((sum, value) => sum + value, 0);
+  const averageFps = 1000 / (measuredMs / frameTimes.length);
+  const p95FrameTime = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))];
   const p99FrameTime = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.99))];
   const onePercentLowFps = 1000 / p99FrameTime;
-  console.log(JSON.stringify({ nodes: rendered, seconds: 10, average_fps: averageFps, one_percent_low_fps: onePercentLowFps }, null, 2));
+  console.log(JSON.stringify({
+    nodes: rendered,
+    seconds: 10,
+    samples: frameTimes.length,
+    measured_ms: measuredMs,
+    average_fps: averageFps,
+    one_percent_low_fps: onePercentLowFps,
+    p95_frame_ms: p95FrameTime,
+    p99_frame_ms: p99FrameTime,
+    max_frame_ms: sorted.at(-1),
+  }, null, 2));
   if (averageFps < 55 || onePercentLowFps < 45) {
     throw new Error(`工作流 FPS 未达标：平均 ${averageFps.toFixed(1)}，1% low ${onePercentLowFps.toFixed(1)}`);
   }
 } finally {
   if (browser) await browser.close();
-  if (workflow) await fetch(`${apiOrigin}/workflows/${workflow.id}`, { method: "DELETE" }).catch(() => undefined);
-  await fetch(`${apiOrigin}/projects/${project.id}`, { method: "DELETE" }).catch(() => undefined);
+  if (workflow) {
+    const deletedWorkflow = await fetch(`${apiOrigin}/workflows/${workflow.id}`, { method: "DELETE" });
+    if (![200, 204, 404].includes(deletedWorkflow.status)) {
+      throw new Error(`cleanup workflow failed: ${deletedWorkflow.status} ${await deletedWorkflow.text()}`);
+    }
+  }
+  const deletedProject = await fetch(
+    `${apiOrigin}/projects/${project.id}?confirm_name=${encodeURIComponent(project.name)}`,
+    { method: "DELETE" },
+  );
+  if (![200, 204, 404].includes(deletedProject.status)) {
+    throw new Error(`cleanup project failed: ${deletedProject.status} ${await deletedProject.text()}`);
+  }
 }

@@ -17,9 +17,10 @@
     "test:web": "npm run test --workspace @mangaflow/web",
     "serve:e2e:web": "npm run start --workspace @mangaflow/web -- --hostname 127.0.0.1",
     "serve:e2e:api": ".venv\\Scripts\\python.exe -m uvicorn app.main:app --app-dir apps/api --host 127.0.0.1 --port 8000",
-    "test:e2e": "npm run build && playwright test",
+    "test:e2e": ".venv\\Scripts\\python.exe scripts/run_e2e_owned.py playwright",
     "check": "npm run lint && npm run test && npm run test:web && npm run build",
-    "check:full": "npm run check && npm run test:e2e"
+    "check:full": ".venv\\Scripts\\python.exe scripts/run_e2e_owned.py full",
+    "test:phase2-performance": ".venv\\Scripts\\python.exe scripts/run_e2e_owned.py performance"
   },
   "devDependencies": {
     "concurrently": "10.0.3"
