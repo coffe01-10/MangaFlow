@@ -112,7 +112,9 @@ Git 忽略本地数据与凭据。提交代码、推送分支或合并到 `maste
 
 仓库提供 Windows 入口 [`scripts/backup-restore.ps1`](../scripts/backup-restore.ps1) 和实现 [`scripts/backup_restore.py`](../scripts/backup_restore.py)。脚本只处理 SQLite、`storage/generated` 与 `uploads`，用 SQLite backup API 做只读一致性快照，并写入含 sha256、字节数、Alembic revision 与创建时间的 `manifest.json`。`.env`、`storage/.provider-credential-master-key`、服务账号 JSON 和其它凭据文件名会被排除，不会进入归档。
 
-目的地必须尚不存在，由本次运行创建；已存在的目录无论是否为空都会被拒绝，脚本也不会删除既有目标。源目录保持只读。`--dry-run` 会做完路径规范化、reparse/symlink 逃逸检查和计划清单，但不 `mkdir`、不拷贝、不写目的地。
+目的地必须尚不存在，由本次运行创建；已存在的目录无论是否为空都会被拒绝，脚本也不会删除既有目标。源目录与备份目的地不得重叠。`--dry-run` 只把结构化报告打到 stdout/内存：不创建 destination、report 文件、owner marker、临时副本或日志。枚举到任何 symlink / junction / reparse 都直接拒绝，不只在 resolve 逃出声明根之后才失败。
+
+恢复时先按恢复端规则重验 manifest 相对路径（拒绝绝对路径、盘符、UNC、`..`、空段、ADS、大小写/Unicode 冲突和重复目标），再核对所有复制字节（含数据库）与备份 hash 一致，然后才执行 Alembic。迁移后单独记录新 schema revision、`foreign_key_check` 和迁移后数据库摘要，不用迁移后的 DB 去比对原始备份 hash。复制期间源文件大小/mtime/hash 变化会 fail-closed，不会写出看似成功的混合时点 manifest。失败可保留本次新建的不完整目的地取证，但会写入不可伪造的本次 owner marker 并在报告中标明 `INCOMPLETE`；重复调用仍拒绝，不会自动 `rmtree`。
 
 ```powershell
 # 备份到一个还不存在的新目录（先自己建好父目录）
@@ -130,7 +132,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\backup-restore.ps1 `
 
 自动化测试和演练只使用本任务新建的隔离 fixture（`create-fixture` / pytest `tmp_path`），不读取仓库里的真实 `storage/`、`uploads/`、`.env` 或凭据。恢复校验在隔离环境执行 `alembic upgrade head`、`PRAGMA foreign_key_check`，并用占位 PNG 做离线页导出；不启动开发服务，也不调用真实供应商。
 
-中断、hash mismatch、缺失文件、重复恢复到同一目的地、以及仅针对带 `.mangaflow-backup-fixture` 标记目录的清理失败，都会 fail-closed，错误写入报告。操作路径不会对源或既有目标做 `rmtree`。
+中断、hash mismatch、缺失文件、源并发变化、重复恢复到同一目的地、以及仅针对带 `.mangaflow-backup-fixture` 标记目录的清理失败，都会 fail-closed；非 dry-run 的错误进入报告，dry-run 只留在内存/stdout。操作路径不会对源或既有目标做 `rmtree`。
 
 ### 恢复检查
 
