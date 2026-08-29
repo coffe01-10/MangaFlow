@@ -144,6 +144,104 @@ describe("JobsSection", () => {
     });
   });
 
+  it("同一任务取消 pending 时重复点击只请求一次，其他行仍可取消，成功后刷新列表", async () => {
+    jobsApi.mockReset().mockResolvedValue([
+      jobFixture({ id: "job-a", status: "RUNNING", progress: 20 }),
+      jobFixture({ id: "job-b", status: "RUNNING", progress: 45 }),
+    ]);
+    const resolvers: Partial<Record<string, (job: Job) => void>> = {};
+    cancelJob.mockReset().mockImplementation(
+      (jobId: string) => new Promise((resolve) => {
+        resolvers[jobId] = resolve;
+      }),
+    );
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <JobsHarness />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => {
+      expect(screen.getAllByRole("button", { name: "取消" })).toHaveLength(2);
+    });
+    const [firstCancel, otherCancel] = screen.getAllByRole("button", { name: "取消" });
+    fireEvent.click(firstCancel);
+    fireEvent.click(firstCancel);
+    await waitFor(() => {
+      expect(cancelJob).toHaveBeenCalledTimes(1);
+      expect(cancelJob).toHaveBeenCalledWith("job-a");
+      expect(firstCancel).toBeDisabled();
+      expect(otherCancel).toBeEnabled();
+    });
+    const before = jobsApi.mock.calls.length;
+    fireEvent.click(otherCancel);
+    await waitFor(() => {
+      expect(cancelJob).toHaveBeenCalledTimes(2);
+      expect(cancelJob).toHaveBeenCalledWith("job-b");
+    });
+    resolvers["job-a"]?.(jobFixture({ id: "job-a", status: "CANCELLED" }));
+    await waitFor(() => {
+      expect(jobsApi.mock.calls.length).toBeGreaterThan(before);
+    });
+  });
+
+  it("同一任务重试 pending 时重复点击只请求一次，其他行仍可重试，成功后刷新列表", async () => {
+    jobsApi.mockReset().mockResolvedValue([
+      jobFixture({
+        id: "job-a",
+        status: "FAILED",
+        progress: 100,
+        error_code: "WORKER_ERROR",
+        error_message: "第一次失败",
+      }),
+      jobFixture({
+        id: "job-b",
+        status: "FAILED",
+        progress: 100,
+        error_code: "WORKER_ERROR",
+        error_message: "第二次失败",
+      }),
+    ]);
+    const resolvers: Partial<Record<string, (job: Job) => void>> = {};
+    retryJob.mockReset().mockImplementation(
+      (jobId: string) => new Promise((resolve) => {
+        resolvers[jobId] = resolve;
+      }),
+    );
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <JobsHarness />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => {
+      expect(screen.getAllByRole("button", { name: "重试" })).toHaveLength(2);
+    });
+    const [firstRetry, otherRetry] = screen.getAllByRole("button", { name: "重试" });
+    fireEvent.click(firstRetry);
+    fireEvent.click(firstRetry);
+    await waitFor(() => {
+      expect(retryJob).toHaveBeenCalledTimes(1);
+      expect(retryJob).toHaveBeenCalledWith("job-a");
+      expect(firstRetry).toBeDisabled();
+      expect(otherRetry).toBeEnabled();
+    });
+    const before = jobsApi.mock.calls.length;
+    fireEvent.click(otherRetry);
+    await waitFor(() => {
+      expect(retryJob).toHaveBeenCalledTimes(2);
+      expect(retryJob).toHaveBeenCalledWith("job-b");
+    });
+    resolvers["job-a"]?.(jobFixture({ id: "job-a", status: "WAITING" }));
+    await waitFor(() => {
+      expect(jobsApi.mock.calls.length).toBeGreaterThan(before);
+    });
+  });
+
   it("失败任务展示用户可见错误，取消请求失败后仍可再次点击", async () => {
     jobsApi.mockReset().mockResolvedValue([
       jobFixture({
