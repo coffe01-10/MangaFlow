@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -7,6 +8,18 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+# Offline suite must not read a developer .env or inherit live credential env.
+os.environ["MANGAFLOW_DISABLE_DOTENV"] = "1"
+for _live_name in (
+    "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_CLOUD_LOCATION",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_GENAI_USE_VERTEXAI",
+    "MANGAFLOW_CREDENTIAL_MASTER_KEY",
+    "MANGAFLOW_PROXY_URL",
+):
+    os.environ.pop(_live_name, None)
+
 API_ROOT = Path(__file__).resolve().parents[1] / "apps" / "api"
 sys.path.insert(0, str(API_ROOT))
 
@@ -14,16 +27,26 @@ from app.config import get_settings  # noqa: E402
 from app.database import Base, get_db  # noqa: E402
 from app.main import app  # noqa: E402
 
+OFFLINE_PROVIDER_PROJECT = "test-project"
+
 
 @pytest.fixture(autouse=True)
-def _placeholder_vertex_credentials(tmp_path_factory, monkeypatch):
-    """Give tests a dummy Vertex file so model routes do not 409 offline."""
+def _offline_configured_provider_premise(tmp_path_factory, monkeypatch):
+    """Explicit placeholder provider premise for offline API tests.
 
-    creds = tmp_path_factory.mktemp("vertex") / "placeholder.json"
+    Supplies a non-secret configured Vertex path (empty JSON + test project)
+    without reading `.env` or a real service-account file. This is not a live
+    provider call and does not load developer credentials.
+    """
+
+    creds = tmp_path_factory.mktemp("offline-provider") / "placeholder.json"
     creds.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("MANGAFLOW_DISABLE_DOTENV", "1")
     settings = get_settings()
-    monkeypatch.setattr(settings, "google_cloud_project", "test-project")
+    monkeypatch.setattr(settings, "google_cloud_project", OFFLINE_PROVIDER_PROJECT)
     monkeypatch.setattr(settings, "google_application_credentials", creds)
+    monkeypatch.setattr(settings, "google_genai_use_vertexai", False)
+    return creds
 
 
 @pytest.fixture
