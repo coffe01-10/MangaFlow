@@ -327,7 +327,7 @@ PR #5 审查时有 17 个 Vitest 测试、165 个 Python 测试；仍需按关�
 - 优先覆盖生产门禁提示、旧候选复检、检查/修复轮询、导出阻塞、任务取消/重试和供应商错误展示。
 - 对错误、空数据、慢任务和并发 mutation 建立稳定的用户可见回归测试。
 - [x] PR #33 / Issue #23：使用真实 hooks/components、QueryClient、API spies、受控 Promise 与 fake timers 覆盖生产门禁、旧候选复检、检查/修复轮询终止、导出阻塞、任务取消/重试刷新、供应商错误及空数据/慢请求/并发 mutation。返工后由组长接管 fresh-interpreter 回归，直接执行 `tests/conftest.py`，确认临时 `.env` 与继承的凭据/代理哨兵不会进入离线设置。最终 SHA `5ef77db` 的 `npm run check` 独立通过：394 项 Python 通过、23 项真实集成跳过、117 项 Vitest 通过，Next.js 生产构建通过；合并后 master 再验证 17 项前端行为和 22 项离线配置回归。Playwright、真实 PostgreSQL/Redis/RQ 与供应商调用仍为 NOT RUN。
-- [ ] Issue #34：审阅 #23 时独立复现任务取消按钮在首个请求 pending 期间双击会发送 2 次 `cancelJob` 请求；产品修复已单独建项，不混入测试 PR。
+- [x] PR #35 / Issue #34：取消与重试使用按 job id 隔离的同步 in-flight 去重和 pending UI；同一任务 pending 期间重复点击只发送 1 次请求，匹配按钮禁用，其他可操作任务不受影响，成功后继续刷新 jobs 查询，失败 settle 后恢复操作。组长按准确 SHA 独立审阅并在合并后的 master 运行 7 项真实 hook/component 行为回归与前端 lint；未运行全量门禁、Playwright、真实服务或供应商调用。
 
 ### P2-3 模型调用审计与成本可见性
 
