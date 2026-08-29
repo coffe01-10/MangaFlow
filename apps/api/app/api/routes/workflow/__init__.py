@@ -7,6 +7,13 @@ from sqlalchemy import and_, exists, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.api.helpers import asset_candidate_read, candidate_read, candidate_version_state
+from app.api.routes.workflow.common import (
+    _new_batch,
+    _page,
+    _page_candidate_count,
+    _panel_read,
+    _project_for_page,
+)
 from app.config import get_settings
 from app.database import get_db
 from app.domain.states import CharacterPresence, PageStatus, Resolution, ensure_unlocked
@@ -75,10 +82,7 @@ from app.services.editor import (
 from app.services.job_service import cancel_job, create_job, enqueue_job, reset_for_retry
 from app.services.model_router import model_supports_resolution, resolve_model
 from app.services.ordinal_allocator import (
-    BatchOrdinalConflictError,
     CandidateOrdinalConflictError,
-    commit_ordinal_transaction,
-    create_generation_batch,
     create_page_candidate,
 )
 from app.services.page_completion import (
@@ -177,42 +181,6 @@ def _job_reads(db: Session, jobs: list[GenerationJob]) -> list[JobRead]:
         )
         for job in jobs
     ]
-
-
-def _page(db: Session, page_id: str) -> MangaPage:
-    page = db.get(MangaPage, page_id)
-    if not page:
-        raise HTTPException(status_code=404, detail="页面不存在")
-    return page
-
-
-def _project_for_page(db: Session, page: MangaPage) -> Project:
-    chapter = db.get(Chapter, page.chapter_id)
-    return db.get(Project, chapter.project_id)
-
-
-def _new_batch(
-    db: Session,
-    page: MangaPage,
-    *,
-    generation_kind: str = "PAGE",
-) -> GenerationBatch:
-    project = _project_for_page(db, page)
-    try:
-        batch = create_generation_batch(
-            db,
-            project_id=project.id,
-            chapter_id=page.chapter_id,
-            page_id=page.id,
-            generation_kind=generation_kind,
-            close_open_page_batches=True,
-        )
-        commit_ordinal_transaction(db, BatchOrdinalConflictError)
-        db.refresh(batch)
-        return batch
-    except BatchOrdinalConflictError as error:
-        db.rollback()
-        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @router.get("/chapters/{chapter_id}/pages", response_model=list[PageRead])
@@ -319,33 +287,12 @@ def get_generation_workbench(
     )
 
 
-def _panel_read(db: Session, panel: Panel) -> PanelRead:
-    panel.dialogues = list(
-        db.scalars(
-            select(Dialogue).where(Dialogue.panel_id == panel.id).order_by(Dialogue.reading_order)
-        )
-    )
-    return PanelRead.model_validate(panel)
-
-
 def _panel_context(db: Session, panel_id: str) -> tuple[Panel, MangaPage, str]:
     panel = db.get(Panel, panel_id)
     if not panel:
         raise HTTPException(status_code=404, detail="分镜格不存在")
     page = _page(db, panel.page_id)
     return panel, page, project_id_for_page(db, page)
-
-
-def _page_candidate_count(db: Session, page_id: str) -> int:
-    return (
-        db.scalar(
-            select(func.count(PageCandidate.id)).where(
-                PageCandidate.page_id == page_id,
-                PageCandidate.deleted_at.is_(None),
-            )
-        )
-        or 0
-    )
 
 
 def _validate_dialogue_speaker(
