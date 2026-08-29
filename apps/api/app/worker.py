@@ -17,6 +17,8 @@ def main() -> None:
     os.environ["REDIS_URL"] = settings.redis_url
     args = ["worker", "--with-scheduler", "--path", str(api_root)]
     if sys.platform == "win32":
-        args.extend(["--worker-class", "rq.worker.SpawnWorker"])
+        # rq's SpawnWorker horse crashes on Windows (os.setpgrp/wait4/killpg are
+        # POSIX-only); use the repository's process-handle-based variant instead.
+        args.extend(["--worker-class", "app.rq_windows.WindowsSpawnWorker"])
     args.append(settings.queue_name)
     rq_cli.main(args=args, prog_name="mangaflow-worker")

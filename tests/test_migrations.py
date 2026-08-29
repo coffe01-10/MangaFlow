@@ -1,11 +1,10 @@
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect, text
-from sqlalchemy.orm import Session
-
 from app.config import get_settings
 from app.database import Base
 from app.models import Beat, Chapter, Dialogue, MangaPage, Panel, Project, Scene
+from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.orm import Session
 
 
 def test_empty_database_upgrade_downgrade_and_upgrade(tmp_path, monkeypatch):
@@ -297,3 +296,36 @@ def test_inspection_version_migration_preserves_unknown_legacy_results(tmp_path,
         assert connection.execute(text("SELECT count(*) FROM inspection_results")).scalar_one() == 1
         assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
     engine.dispose()
+
+def test_programmatic_migrations_use_supplied_connection_without_default_engine(
+    tmp_path, monkeypatch
+):
+    import sqlalchemy
+    from alembic.script import ScriptDirectory
+
+    database_url = f"sqlite:///{(tmp_path / 'supplied-connection.db').as_posix()}"
+    engine = create_engine(database_url)
+    config = Config("apps/api/alembic.ini")
+    # Any attempt to fall back to the default URL/engine must fail this test.
+    monkeypatch.setattr(get_settings(), "database_url", "not-a-database")
+
+    def reject_default_engine(*args, **kwargs):
+        raise AssertionError("Migration tried to create an unowned default engine")
+
+    monkeypatch.setattr(sqlalchemy, "engine_from_config", reject_default_engine)
+    try:
+        with engine.connect() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "head")
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+                ScriptDirectory.from_config(config).get_current_head()
+            )
+            assert "workflow_node_runs" in inspect(connection).get_table_names()
+            connection.commit()
+            command.downgrade(config, "base")
+            assert "projects" not in inspect(connection).get_table_names()
+            connection.commit()
+            command.upgrade(config, "head")
+            assert not connection.closed
+    finally:
+        engine.dispose()
