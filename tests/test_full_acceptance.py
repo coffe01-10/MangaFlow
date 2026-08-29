@@ -186,7 +186,7 @@ def test_1500_to_3000_character_full_manga_acceptance(
         monkeypatch.setattr(settings, "storage_root", root / "storage")
         monkeypatch.setattr(settings, "upload_root", root / "uploads")
         monkeypatch.setattr(
-            "app.api.routes.workflow.ensure_page_ready",
+            "app.api.routes.workflow.generation.ensure_page_ready",
             lambda *_args, **_kwargs: None,
         )
         monkeypatch.setattr(
