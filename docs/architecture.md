@@ -38,7 +38,8 @@ flowchart LR
 │       ├── app/api/routes/          # REST 接口
 │       ├── app/model_adapters/      # 原生与 OpenAI/Anthropic 兼容适配器
 │       ├── app/services/            # 分段、分页、任务、提示词服务
-│       ├── app/worker_tasks.py      # RQ 任务执行器
+│       ├── app/services/worker_handlers/  # 按任务类型拆分的 Worker 业务 handler
+│       ├── app/worker_tasks.py      # RQ 任务执行外壳（claim/租约/取消/重试收敛与 dispatch）
 │       └── migrations/              # Alembic
 ├── docs/
 ├── storage/
