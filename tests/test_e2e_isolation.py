@@ -658,6 +658,33 @@ else:
         assert "does not belong" in result.read_text(encoding="utf-8")
 
 
+def test_controller_forwards_mixed_encoding_log_as_raw_bytes():
+    from run_e2e_owned import forward_log_chunk
+
+    class Buffer:
+        def __init__(self):
+            self.written = bytearray()
+            self.flushed = False
+
+        def write(self, chunk):
+            self.written.extend(chunk)
+
+        def flush(self):
+            self.flushed = True
+
+    class TextTarget:
+        def __init__(self):
+            self.buffer = Buffer()
+
+        def write(self, _text):
+            raise AssertionError("log forwarding must not use text encoding")
+
+    target = TextTarget()
+    chunk = b"pytest path: \xff\xfe\xe4\xb8\xad\xe6\x96\x87\n"
+    forward_log_chunk(chunk, stdout=target)
+    assert bytes(target.buffer.written) == chunk
+    assert target.buffer.flushed
+
 @pytest.mark.parametrize("first_exit", [0, 7])
 def test_outer_controller_runs_real_commands_and_preserves_failure(
     tmp_path, monkeypatch, first_exit

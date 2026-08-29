@@ -46,6 +46,14 @@ def assert_ports_free() -> None:
                 raise RuntimeError(f"Port {port} is unavailable; refusing unknown service") from exc
 
 
+
+def forward_log_chunk(chunk: bytes, *, stdout=None) -> None:
+    """Forward mixed-encoding child output without a lossy text round-trip."""
+    target = stdout or sys.stdout
+    target.buffer.write(chunk)
+    target.buffer.flush()
+
+
 def child_environment(runtime, *, node: str) -> dict[str, str]:
     # Do not inherit application secrets, proxies, Python/Node options or dotenv.
     allowed = (
@@ -163,8 +171,12 @@ def run(mode: str, timeout: float = 2400) -> int:
                     chunk = stream.read()
                     offset = stream.tell()
                 if chunk:
-                    sys.stdout.write(chunk.decode("utf-8", errors="replace"))
-                    sys.stdout.flush()
+                    # The child log can contain output encoded with the active
+                    # Windows code page as well as UTF-8 from Node. Decoding it
+                    # here and re-encoding through a different parent console
+                    # can raise UnicodeEncodeError on non-ASCII repo paths.
+                    # Forward bytes unchanged; the outer terminal owns display.
+                    forward_log_chunk(chunk)
             time.sleep(0.1)
         code = child.wait()
         if not result.exists():
