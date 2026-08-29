@@ -106,17 +106,14 @@ def test_fresh_interpreter_loads_env_sentinels_when_disable_flag_absent(tmp_path
 
 def test_fresh_interpreter_disable_dotenv_before_config_blocks_sentinels(tmp_path):
     credential = _write_sentinels(tmp_path)
-    strip = ", ".join(repr(name) for name in _STRIP_NAMES)
     result = _run_fresh(
         tmp_path,
         (
-            "import os\n"
+            "import os, runpy, sys\n"
+            "namespace = runpy.run_path(os.environ['MANGAFLOW_REVIEW_CONFTEST'])\n"
+            "config = sys.modules['app.config']\n"
+            "s = namespace['get_settings']()\n"
             "assert os.environ.get('MANGAFLOW_DISABLE_DOTENV') == '1'\n"
-            f"for name in ({strip}):\n"
-            "    os.environ.pop(name, None)\n"
-            "import app.config as config\n"
-            "from app.config import get_settings\n"
-            "s = get_settings()\n"
             "assert config._ENV_FILE is None, config._ENV_FILE\n"
             "assert s.google_cloud_project is None\n"
             "assert s.mangaflow_proxy_url is None\n"
@@ -124,11 +121,11 @@ def test_fresh_interpreter_disable_dotenv_before_config_blocks_sentinels(tmp_pat
             "print('BOOT_OK', config._ENV_FILE, s.google_cloud_project, s.mangaflow_proxy_url)\n"
         ),
         _allowlist_env(
-            PYTHONPATH=str(API_ROOT),
-            MANGAFLOW_DISABLE_DOTENV="1",
+            MANGAFLOW_REVIEW_CONFTEST=str(ROOT / "tests" / "conftest.py"),
             GOOGLE_CLOUD_PROJECT=_ENV_PROJECT,
             GOOGLE_APPLICATION_CREDENTIALS=str(credential),
             MANGAFLOW_PROXY_URL=_DOTENV_PROXY,
+            MANGAFLOW_CREDENTIAL_MASTER_KEY="credential-master-key-sentinel",
         ),
     )
     assert result.returncode == 0, result.stderr + result.stdout
