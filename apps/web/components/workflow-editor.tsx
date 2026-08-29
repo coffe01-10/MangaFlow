@@ -2,7 +2,6 @@
 
 import {
   Activity,
-  AlignCenter,
   Box,
   Check,
   ChevronDown,
@@ -11,24 +10,16 @@ import {
   Download,
   Link2,
   LockKeyhole,
-  Maximize2,
   Minus,
-  MoreHorizontal,
-  MousePointer2,
   PanelRightClose,
   Play,
-  Plus,
   Redo2,
   RotateCcw,
   Save,
-  Search,
   Settings2,
   Trash2,
   Undo2,
-  Unplug,
   Workflow,
-  ZoomIn,
-  ZoomOut,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -51,17 +42,12 @@ import {
   initialEdges,
   initialNodes,
   kindIcon,
-  paletteGroups,
   statusLabel,
   templateMap,
 } from "./workflow-editor/graph-model";
-import {
-  clamp,
-  getPortPoint,
-  nodeTypeClass,
-  pathBetween,
-  portTypeClass,
-} from "./workflow-editor/geometry";
+import { clamp } from "./workflow-editor/geometry";
+import { NodePalette } from "./workflow-editor/node-palette";
+import { FlowCanvas } from "./workflow-editor/flow-canvas";
 import { useWorkflowPersistence } from "./workflow-editor/use-workflow-persistence";
 import { useViewportInteractions } from "./workflow-editor/use-viewport-interactions";
 import type { FlowEdge, FlowNode } from "./workflow-editor/types";
@@ -257,11 +243,6 @@ export function WorkflowEditor() {
     showToast("工作流 JSON 已导出");
   }
 
-  const visibleGroups = paletteGroups.map((group) => ({
-    ...group,
-    items: group.items.filter((item) => `${item.title}${item.description}`.toLowerCase().includes(search.toLowerCase())),
-  })).filter((group) => group.items.length > 0);
-
   const completedCount = nodes.filter((node) => node.status === "done").length;
   const runningNode = nodes.find((node) => node.status === "running");
   const assetCount = assetsQuery.data?.length ?? 0;
@@ -277,6 +258,10 @@ export function WorkflowEditor() {
       : selectedIsChapterSource
         ? `${chapterCount} 章项目原作可从“原始文本”端口传给下游节点。`
         : "继承当前项目范围，但只处理端口实际连入的数据，不会自动读取全部资产。";
+
+  const centerSelectedNode = useCallback(() => {
+    if (selectedNode) setPan({ x: 360 - selectedNode.x * zoom, y: 260 - selectedNode.y * zoom });
+  }, [selectedNode, setPan, zoom]);
 
   return (
     <div className={styles.editor}>
@@ -310,211 +295,45 @@ export function WorkflowEditor() {
       </header>
 
       <div className={`${styles.body} ${inspectorOpen ? "" : styles.inspectorClosed}`}>
-        <aside className={styles.palette}>
-          <div className={styles.paletteHeader}>
-            <div><span>NODE LIBRARY</span><strong>节点库</strong></div>
-            <button className={styles.iconButton} onClick={() => addNode("parser")} title="添加节点"><Plus size={16} /></button>
-          </div>
-          <label className={styles.searchBox}>
-            <Search size={14} />
-            <input aria-label="搜索节点" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索节点…" />
-            <kbd>/</kbd>
-          </label>
-          <div className={styles.paletteScroll}>
-            {visibleGroups.map((group) => {
-              const isCollapsed = collapsedGroups.includes(group.label) && !search.trim();
-              return (
-                <section className={styles.paletteGroup} key={group.label}>
-                  <button className={styles.paletteGroupHeader} aria-expanded={!isCollapsed} onClick={() => togglePaletteGroup(group.label)}>
-                    <span>{group.label}</span><ChevronDown className={isCollapsed ? styles.chevronCollapsed : ""} size={13} />
-                  </button>
-                  {!isCollapsed && <div className={styles.paletteItems}>
-                  {group.items.map((item) => {
-                    const Icon = item.icon;
-                    return (
-                      <button
-                        key={item.key}
-                        draggable
-                        className={`${styles.paletteItem} ${styles[`palette_${item.kind}`]}`}
-                        onClick={() => addNode(item.key)}
-                        onDragStart={(event) => {
-                          event.dataTransfer.setData("application/x-mangaflow-node", item.key);
-                          event.dataTransfer.effectAllowed = "copy";
-                        }}
-                      >
-                        <span><Icon size={15} /></span>
-                        <div><strong>{item.title}</strong><small>{item.description}</small></div>
-                        <Plus size={13} />
-                      </button>
-                    );
-                  })}
-                  </div>}
-                </section>
-              );
-            })}
-          </div>
-          <div className={styles.paletteHint}><MousePointer2 size={14} /><span>拖到画布添加节点<br /><small>或单击快速添加</small></span></div>
-        </aside>
+        <NodePalette
+          search={search}
+          setSearch={setSearch}
+          collapsedGroups={collapsedGroups}
+          togglePaletteGroup={togglePaletteGroup}
+          addNode={addNode}
+        />
 
-        <main className={styles.canvasShell}>
-          <div className={styles.canvasToolbar}>
-            <div className={styles.toolGroup}>
-              <button className={`${styles.canvasTool} ${styles.active}`} title="选择"><MousePointer2 size={15} /></button>
-              <button className={styles.canvasTool} title="居中选中节点" onClick={() => selectedNode && setPan({ x: 360 - selectedNode.x * zoom, y: 260 - selectedNode.y * zoom })}><AlignCenter size={15} /></button>
-              <i />
-              <button className={styles.canvasTool} title="断开选中连线" disabled={!selectedEdgeId} onClick={deleteSelection}><Unplug size={15} /></button>
-              <button className={styles.canvasTool} title="删除选中项" disabled={!selectedNodeId && !selectedEdgeId} onClick={deleteSelection}><Trash2 size={15} /></button>
-            </div>
-            <div className={styles.canvasMeta} title={activeProject ? `已连接 ${activeProject.name}：${chapterCount} 章，${assetCount} 项资产` : "尚未连接项目"}>
-              <span className={`${styles.liveDot} ${projectDataError || !activeProject ? styles.projectErrorDot : ""}`} />
-              <span className={styles.projectMetaText}>{activeProject ? `${activeProject.name} · ${assetCount} 资产` : projectsQuery.isLoading ? "连接项目…" : "未连接项目"}</span>
-              <i />{nodes.length} 节点<i />{edges.length} 连线
-            </div>
-          </div>
-
-          <div
-            ref={viewportRef}
-            className={`${styles.viewport} ${connectionAnchor?.side === "output" ? styles.connectingFromOutput : ""} ${connectionAnchor?.side === "input" ? styles.connectingFromInput : ""}`}
-            style={{
-              backgroundPosition: `${pan.x}px ${pan.y}px`,
-              backgroundSize: `${24 * zoom}px ${24 * zoom}px`,
-            }}
-            onPointerDown={beginPan}
-            onWheel={handleWheel}
-            onDragOver={(event) => event.preventDefault()}
-            onDrop={handleDrop}
-          >
-            <div className={styles.world} style={{ width: WORLD_WIDTH, height: WORLD_HEIGHT, transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}>
-              <svg className={styles.edges} width={WORLD_WIDTH} height={WORLD_HEIGHT} aria-hidden="true">
-                {edges.map((item) => {
-                  const source = nodeMap.get(item.source);
-                  const target = nodeMap.get(item.target);
-                  if (!source || !target) return null;
-                  const start = getPortPoint(source, item.sourcePort, "output");
-                  const end = getPortPoint(target, item.targetPort, "input");
-                  const selected = selectedEdgeId === item.id;
-                  return (
-                    <g
-                      key={item.id}
-                      data-flow-edge="true"
-                      data-edge-id={item.id}
-                      data-source-node={item.source}
-                      data-source-port={item.sourcePort}
-                      data-target-node={item.target}
-                      data-target-port={item.targetPort}
-                      onPointerDown={(event) => {
-                      event.stopPropagation();
-                      setSelectedEdgeId(item.id);
-                      setSelectedNodeId(null);
-                    }}
-                    >
-                      <path className={styles.edgeHit} d={pathBetween(start, end)} />
-                      <path className={selected ? styles.edgeSelected : styles.edgeLine} d={pathBetween(start, end)} />
-                    </g>
-                  );
-                })}
-                {draftEnd && connectionAnchor && (() => {
-                  const anchorNode = nodeMap.get(connectionAnchor.nodeId);
-                  if (!anchorNode) return null;
-                  const anchorPoint = getPortPoint(anchorNode, connectionAnchor.portId, connectionAnchor.side);
-                  return <path className={styles.edgeDraft} d={connectionAnchor.side === "output" ? pathBetween(anchorPoint, draftEnd) : pathBetween(draftEnd, anchorPoint)} />;
-                })()}
-              </svg>
-
-              {nodes.map((node) => {
-                const Icon = kindIcon[node.kind];
-                const selected = node.id === selectedNodeId;
-                const isAssetSource = node.outputs.some((item) => item.id === "assets" && item.dataType === "asset");
-                const isChapterSource = node.outputs.some((item) => item.id === "source" && item.dataType === "text");
-                return (
-                  <article
-                    key={node.id}
-                    data-flow-node="true"
-                    className={`${nodeTypeClass(node.kind)} ${selected ? styles.selectedNode : ""}`}
-                    style={{ transform: `translate(${node.x}px, ${node.y}px)` }}
-                    onPointerDown={(event) => {
-                      event.stopPropagation();
-                      setSelectedNodeId(node.id);
-                      setSelectedEdgeId(null);
-                    }}
-                  >
-                    <header className={styles.nodeHeader} onPointerDown={(event) => beginNodeDrag(event, node)}>
-                      <span className={styles.nodeIcon}><Icon size={16} /></span>
-                      <div><small>{node.eyebrow}</small><strong>{node.title}</strong></div>
-                      <button title="更多操作" onPointerDown={(event) => event.stopPropagation()}><MoreHorizontal size={15} /></button>
-                    </header>
-                    <p className={styles.nodeDescription}>{node.description}</p>
-                    <div className={styles.nodeStatus}><span className={styles[`status_${node.status}`]} />{statusLabel[node.status]}</div>
-
-                    <div className={styles.inputPorts}>
-                      {node.inputs.map((item) => (
-                        <div className={styles.portRow} key={item.id}>
-                          <button
-                            aria-label={`${node.title} 输入 ${item.label}`}
-                            className={portTypeClass(item.dataType)}
-                            data-node-id={node.id}
-                            data-input-port={item.id}
-                            data-connected={edges.some((edgeItem) => edgeItem.target === node.id && edgeItem.targetPort === item.id) ? "true" : "false"}
-                            onPointerDown={(event) => beginInputConnection(event, node.id, item.id)}
-                            title={edges.some((edgeItem) => edgeItem.target === node.id && edgeItem.targetPort === item.id) ? "拖动以更换来源；释放到空白处断开" : "拖到任意输出端口建立连接"}
-                          />
-                          <span>{item.label}</span>
-                        </div>
-                      ))}
-                    </div>
-                    <div className={styles.outputPorts}>
-                      {node.outputs.map((item) => (
-                        <div className={styles.portRow} key={item.id}>
-                          <span>{isAssetSource && item.id === "assets"
-                            ? `${item.label} · ${assetsQuery.isLoading ? "…" : assetCount}`
-                            : isChapterSource && item.id === "source"
-                              ? `${item.label} · ${chaptersQuery.isLoading ? "…" : chapterCount}章`
-                              : item.label}</span>
-                          <button
-                            aria-label={`${node.title} 输出 ${item.label}`}
-                            className={portTypeClass(item.dataType)}
-                            data-node-id={node.id}
-                            data-output-port={item.id}
-                            onPointerDown={(event) => beginOutputConnection(event, node.id, item.id)}
-                            title={`拖到任意输入端口连接 ${item.label}`}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                    <footer className={styles.nodeFooter}>
-                      <span className={styles.nodeModel}>{node.settings.model}</span>
-                      <span className={`${styles.nodeProjectBadge} ${activeProject && !projectDataError ? "" : styles.nodeProjectBadgeOff}`} title={activeProject ? `已绑定项目：${activeProject.name}；数据仍需通过端口传递` : "未绑定项目"}>
-                        <Link2 size={9} />{activeProject ? "项目" : "未绑定"}
-                      </span>
-                      {node.settings.locked && <LockKeyhole size={11} />}
-                      <small>#{node.id.split("-").at(-1)}</small>
-                    </footer>
-                  </article>
-                );
-              })}
-            </div>
-
-            <div className={connectionAnchor ? `${styles.canvasHint} ${styles.canvasHintActive}` : styles.canvasHint}>
-              <MousePointer2 size={13} />
-              {connectionAnchor?.side === "output" && "正在连线：释放到任意输入端口"}
-              {connectionAnchor?.side === "input" && "正在换源：释放到任意输出端口；放到空白处断开"}
-              {!connectionAnchor && "自由连线：拖动任意端口 · 选中连线后按 Delete 删除"}
-            </div>
-            <div className={styles.zoomControls}>
-              <button onClick={() => zoomBy(1.15)} title="放大"><ZoomIn size={15} /></button>
-              <span>{Math.round(zoom * 100)}%</span>
-              <button onClick={() => zoomBy(0.87)} title="缩小"><ZoomOut size={15} /></button>
-              <i />
-              <button onClick={fitToView} title="适应画布"><Maximize2 size={15} /></button>
-            </div>
-
-            <div className={styles.minimap} aria-label="工作流缩略图">
-              <div className={styles.minimapViewport} />
-              {nodes.map((node) => (
-                <i key={node.id} className={styles[`mini_${node.kind}`]} style={{ left: `${node.x / WORLD_WIDTH * 100}%`, top: `${node.y / WORLD_HEIGHT * 100}%` }} />
-              ))}
-            </div>
-
+        <FlowCanvas
+          viewportRef={viewportRef}
+          nodes={nodes}
+          edges={edges}
+          nodeMap={nodeMap}
+          selectedNodeId={selectedNodeId}
+          selectedEdgeId={selectedEdgeId}
+          setSelectedNodeId={setSelectedNodeId}
+          setSelectedEdgeId={setSelectedEdgeId}
+          activeProject={activeProject}
+          projectDataError={projectDataError}
+          projectsLoading={projectsQuery.isLoading}
+          assetCount={assetCount}
+          chapterCount={chapterCount}
+          assetsLoading={assetsQuery.isLoading}
+          chaptersLoading={chaptersQuery.isLoading}
+          pan={pan}
+          zoom={zoom}
+          draftEnd={draftEnd}
+          connectionAnchor={connectionAnchor}
+          beginPan={beginPan}
+          handleWheel={handleWheel}
+          handleDrop={handleDrop}
+          beginNodeDrag={beginNodeDrag}
+          beginOutputConnection={beginOutputConnection}
+          beginInputConnection={beginInputConnection}
+          deleteSelection={deleteSelection}
+          onCenterSelectedNode={centerSelectedNode}
+          zoomBy={zoomBy}
+          fitToView={fitToView}
+          runMonitor={(
             <section className={logOpen ? styles.runLog : `${styles.runLog} ${styles.runLogCollapsed}`}>
                 <header>
                   <div><Activity size={14} /><strong>运行监视器</strong><span>{isRunning ? "LIVE" : "IDLE"}</span></div>
@@ -532,8 +351,8 @@ export function WorkflowEditor() {
                   <div className={styles.logStats}><span><i className={styles.green} />成功 {completedCount}</span><span><i className={styles.amber} />警告 {nodes.filter((node) => node.status === "warning").length}</span><span><i />等待 {nodes.filter((node) => ["idle", "ready"].includes(node.status)).length}</span></div>
                 </div>}
               </section>
-          </div>
-        </main>
+          )}
+        />
 
         {inspectorOpen ? (
           <aside className={styles.inspector}>
