@@ -9,7 +9,7 @@ import { useLibraryWorkspace } from "./use-library-workspace";
 import { useWorkspaceQueries } from "./use-workspace-queries";
 
 vi.mock("next/image", () => ({
-  default: ({ alt }: { alt: string }) => <img alt={alt} />,
+  default: ({ alt }: { alt: string }) => <span role="img" aria-label={alt} />,
 }));
 
 const projectApi = vi.spyOn(api, "project");

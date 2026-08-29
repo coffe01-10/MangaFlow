@@ -11,7 +11,7 @@ import { useJobsWorkspace } from "./use-jobs-workspace";
 import { useWorkspaceQueries } from "./use-workspace-queries";
 
 vi.mock("next/image", () => ({
-  default: ({ alt }: { alt: string }) => <img alt={alt} />,
+  default: ({ alt }: { alt: string }) => <span role="img" aria-label={alt} />,
 }));
 vi.mock("next/link", () => ({
   default: ({ href, children }: { href: string; children: ReactNode }) => <a href={href}>{children}</a>,
@@ -200,7 +200,7 @@ function GenerateHarness() {
     selectedChapterId: "chapter-1",
   });
   const jobsWorkspace = useJobsWorkspace({ id: "project-1", section: "generate" });
-  const [selectedPageId, setSelectedPageId] = useState("page-1");
+  const [selectedPageId, setSelectedPageId] = useState<string | null>("page-1");
   const workspace = useGenerationWorkspace({
     id: "project-1",
     section: "generate",
