@@ -34,8 +34,8 @@ from app.services.ai_schemas import (
     SceneDraft,
     StoryParseOutput,
 )
+from app.services.worker_handlers.page_generate import _load_reference_assets
 from app.worker_tasks import (
-    _load_reference_assets,
     _merge_story_parse_outputs,
     _run_story_parse,
     _story_parse_chunks,
