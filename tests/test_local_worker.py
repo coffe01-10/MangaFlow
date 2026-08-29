@@ -13,6 +13,7 @@ from app import database, worker_tasks
 from app.config import Settings
 from app.database import Base
 from app.domain.states import JobStatus, PageStatus, Resolution
+from app.services.worker_handlers import execution, provider
 from app.models import (
     AppSetting,
     Asset,
@@ -1225,7 +1226,7 @@ def test_cancelled_job_does_not_move_to_generating_or_call_provider(db_session):
         other.commit()
 
     with pytest.raises(worker_tasks.JobCancelledError):
-        worker_tasks._commit_owned_progress(
+        execution._commit_owned_progress(
             db_session, claimed, status=JobStatus.GENERATING, progress=45
         )
     db_session.expire_all()
@@ -1235,7 +1236,7 @@ def test_cancelled_job_does_not_move_to_generating_or_call_provider(db_session):
 
     calls: list[int] = []
     with pytest.raises(worker_tasks.JobCancelledError):
-        worker_tasks._invoke_provider(
+        provider._invoke_provider(
             db_session,
             SimpleNamespace(adapter=object(), selected_key=None),
             lambda adapter: calls.append(1) or adapter,

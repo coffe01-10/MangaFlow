@@ -17,6 +17,8 @@ from app.schemas import KeepSelectedCandidateRequest
 from app.services import job_service
 from app.services.ai_schemas import PageInspectionOutput
 from app.services.page_completion import build_page_production_readiness
+from app.services.worker_handlers import provider
+from app.services.worker_handlers.inspection import _run_inspection
 from test_quality_gates import _pass_all, _ready_page
 
 
@@ -165,15 +167,16 @@ def _inspect(db, monkeypatch, page, candidate, categories, *, during_call=None):
         selected_key=None,
     )
     monkeypatch.setattr(
-        worker_tasks, "compile_page_prompt", lambda *args: ("", {"input": {}})
+        "app.services.worker_handlers.inspection.compile_page_prompt",
+        lambda *args: ("", {"input": {}}),
     )
-    monkeypatch.setattr(worker_tasks, "_binding", lambda *args, **kwargs: binding)
+    monkeypatch.setattr(provider, "_binding", lambda *args, **kwargs: binding)
     monkeypatch.setattr(
-        worker_tasks,
+        provider,
         "_asset_path",
         lambda asset: SimpleNamespace(read_bytes=lambda: b"offline"),
     )
-    worker_tasks._run_inspection(db, job)
+    _run_inspection(db, job)
 
 
 def test_new_storyboard_partial_check_cannot_reuse_old_categories(
