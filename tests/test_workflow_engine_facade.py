@@ -31,35 +31,48 @@ from app.services.workflow_engine import (
     publish_workflow,
 )
 
-PUBLIC_SURFACE = [
-    "NodeTypeSpec",
+APPROVED_FACADE_ALL = [
+    "CONDITION_OPERATORS",
     "NODE_TYPES",
     "NODE_TYPE_MAP",
-    "CONDITION_OPERATORS",
-    "node_type_catalog",
-    "default_graph",
-    "chapter_export_graph",
-    "blank_graph",
-    "canonical_graph",
-    "graph_checksum",
-    "validate_graph",
-    "PublishRevisionConflictError",
+    "NodeTypeSpec",
     "PUBLISH_REVISION_MAX_ATTEMPTS",
-    "publish_workflow",
-    "create_workflow_run",
-    "get_run",
-    "reconcile_run",
-    "execute_workflow_node",
+    "PublishRevisionConflictError",
+    "_next_revision",
     "approve_node",
+    "blank_graph",
     "cancel_run",
+    "canonical_graph",
+    "chapter_export_graph",
+    "create_workflow_run",
+    "create_job",
+    "default_graph",
+    "enqueue_job",
+    "execute_workflow_node",
+    "get_run",
+    "graph_checksum",
+    "mark_job_cancelled",
+    "node_type_catalog",
+    "publish_workflow",
+    "reconcile_run",
     "retry_run",
+    "validate_graph",
 ]
 
 SEAM_NAMES = ["create_job", "enqueue_job", "_next_revision", "mark_job_cancelled"]
 
 
-def test_facade_exports_exact_public_surface():
-    for name in PUBLIC_SURFACE:
+def test_facade_all_matches_approved_surface_exactly():
+    exported = list(workflow_engine.__all__)
+    assert len(exported) == len(set(exported)), "facade __all__ contains duplicates"
+    assert sorted(exported) == sorted(APPROVED_FACADE_ALL), (
+        "facade __all__ drifted from the approved surface: "
+        f"missing={sorted(set(APPROVED_FACADE_ALL) - set(exported))} "
+        f"extra={sorted(set(exported) - set(APPROVED_FACADE_ALL))}"
+    )
+    assert len(exported) == 25
+
+    for name in APPROVED_FACADE_ALL:
         assert hasattr(workflow_engine, name), f"facade lost export: {name}"
     for name in SEAM_NAMES:
         assert hasattr(workflow_engine, name), f"facade lost seam attribute: {name}"

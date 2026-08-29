@@ -30,7 +30,6 @@ from app.services.workflow_engine.planning import create_workflow_run
 from app.services.workflow_engine.publish import (
     PUBLISH_REVISION_MAX_ATTEMPTS,
     PublishRevisionConflictError,
-    _lock_workflow,
     _next_revision,
     publish_workflow,
 )
@@ -44,7 +43,6 @@ __all__ = [
     "NodeTypeSpec",
     "PUBLISH_REVISION_MAX_ATTEMPTS",
     "PublishRevisionConflictError",
-    "_lock_workflow",
     "_next_revision",
     "approve_node",
     "blank_graph",
