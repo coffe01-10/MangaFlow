@@ -34,8 +34,9 @@ from app.services.ai_schemas import (
     SceneDraft,
     StoryParseOutput,
 )
-from app.worker_tasks import (
-    _load_reference_assets,
+from app.services.worker_handlers import provider
+from app.services.worker_handlers.page_generate import _load_reference_assets
+from app.services.worker_handlers.story_parse import (
     _merge_story_parse_outputs,
     _run_story_parse,
     _story_parse_chunks,
@@ -898,7 +899,7 @@ def test_character_concept_without_references_uses_generate_capability(
         operations.append(operation)
         raise BindingReached
 
-    monkeypatch.setattr(worker_tasks, "_binding", stop_at_binding)
+    monkeypatch.setattr(provider, "_binding", stop_at_binding)
     job = db_session.get(GenerationJob, response.json()["job_id"])
     with pytest.raises(BindingReached):
         worker_tasks._run_asset_generate(db_session, job)
