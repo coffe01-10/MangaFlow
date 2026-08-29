@@ -1,7 +1,7 @@
 # MangaFlow 主分支后续工作清单
 
 更新时间：2026-08-29
-当前主分支代码合并基线：`master` / `eab5b97`（PR #29，2026-08-29）。PR #18、#19、#29 已完成 P2-1 的 Worker handler、项目工作台与 workflow editor 三个拆分边界；真实 PostgreSQL/Redis/RQ 和供应商边界仍按各自验收记录保留。
+当前主分支代码合并基线：`master` / `3a8e0e1`（PR #30，2026-08-29）。PR #18、#19、#29、#30 已完成 P2-1 的 Worker handler、项目工作台、workflow editor 与 workflow API 路由四个拆分边界；真实 PostgreSQL/Redis/RQ 和供应商边界仍按各自验收记录保留。
 最近 `check:full` 历史基线：`master` / `cb324e3`（2026-08-27；相对 PR #5 合并提交 `d5d32ec` 仅增加任务文档），不代表 PR #6 / #7 / #10 / #11 已重跑浏览器验收。
 深审历史基线：`master` / `f085327`。当时新增 6 项 P1 修复与 1 项 P2 改进；PR #6 已合并其中 P1-7、P1-9～P1-12 的代码修复。P1-8、P2-8 已随 PR #7 合并，独立 Redis/RQ、PostgreSQL 与浏览器验收仍待完成。
 安全审查历史基线：`master` / `7635cf7`。P0-3、P1-13～P1-15、P2-4、P2-9 的代码修复现已合并，真实服务/容器及完整依赖审计边界仍保留。
@@ -312,12 +312,12 @@ P1-7～P1-12 共同完成条件：每项先保留失败复现为自动回归，�
 
 ### P2-1 拆分超大模块（部分完成）
 
-当前剩余热点：`workflow-editor.tsx` 约 1018 行、`workflow.py` 约 1506 行、`workflow_engine.py` 约 1476 行。已拆分的顶层文件为 `project-workspace.tsx` 约 358 行、`worker_tasks.py` 约 481 行。
+当前剩余热点：`workflow_engine.py` 约 1476 行。`worker_tasks.py`、`project-workspace.tsx`、`workflow-editor.tsx` 与 `workflow.py` 的既定拆分边界已完成。
 
 - [x] PR #18 / Issue #16：按任务类型提取 `services/worker_handlers/`；`execute_job`、claim、lease、heartbeat、取消、并发、失败/重试收敛与 dispatch 保留在统一执行外壳。组长按准确 SHA 对照 35 个移动函数/类并独立运行 Ruff 与 92 项定向回归后合并。
 - [x] PR #19 / Issue #17：把项目工作台拆为常驻 domain hooks、纯展示 section、共享组件与纯逻辑模块；查询/轮询/mutation 配置及 52 个状态/effect 调用完成 AST 对照。独立前端 lint 与 52 项 Vitest 通过；Playwright/Lighthouse/FPS 不属于本结构重构验收。
 - [x] PR #29 / Issue #20：`workflow-editor.tsx` 从 1018 行降至 291 行，模型/几何、持久化、手势、画布、调色板、顶栏、检查器与监视器按单向依赖拆分；组长按准确 SHA 对照手势状态机并独立验证 50 项接缝测试、102 项前端回归、ESLint 与 TypeScript 后合并。Playwright/Lighthouse/FPS 不属于本结构重构验收。
-- [ ] Issue #21：在 #20 合并后拆分 `workflow.py`，保持路由、HTTP 与事务语义。
+- [x] PR #30 / Issue #21：把 1506 行 `workflow.py` 拆为稳定聚合 router 与 7 个职责模块；组长对 45 个函数、36 条路由及 `_new_batch` 做源码/AST 对照，独立运行 Ruff、108 项分支定向回归，并在合并后 master 复验 40 项关键回归。路由顺序、OpenAPI、HTTP 与事务语义保持一致；真实 PostgreSQL/Redis/RQ 和供应商调用不属于本结构重构验收。
 - [ ] Issue #22：在 #21 合并后拆分 `workflow_engine.py`；这是 L3 结构重构，先审设计再编辑。
 
 ### P2-2 补足前端行为测试
