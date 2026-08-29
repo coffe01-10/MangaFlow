@@ -186,7 +186,7 @@ def test_new_storyboard_partial_check_cannot_reuse_old_categories(
     _pass_all(db_session, candidate.id)
     page.storyboard_version += 1
     db_session.commit()
-    workflow.keep_selected_candidate(
+    workflow.generation.keep_selected_candidate(
         page.id,
         KeepSelectedCandidateRequest(
             candidate_id=candidate.id,
