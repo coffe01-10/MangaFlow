@@ -36,7 +36,7 @@ from app.services.ai_schemas import (
 )
 from app.services.worker_handlers import provider
 from app.services.worker_handlers.page_generate import _load_reference_assets
-from app.worker_tasks import (
+from app.services.worker_handlers.story_parse import (
     _merge_story_parse_outputs,
     _run_story_parse,
     _story_parse_chunks,
