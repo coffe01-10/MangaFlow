@@ -41,13 +41,16 @@ import {
 } from "./project-workspace/display";
 import { AssetNameEditor, CandidateArtwork, ComicModeSwitch, ImageModelPicker } from "./project-workspace/shared";
 import type { AssetWorkspaceView, WorkspaceSection } from "./project-workspace/types";
+import { useWorkspaceQueries } from "./project-workspace/use-workspace-queries";
+import { useSourceWorkspace } from "./project-workspace/use-source-workspace";
+import { SourceSection } from "./project-workspace/source-section";
+import { ScriptSection } from "./project-workspace/script-section";
+import { StoryboardSection } from "./project-workspace/storyboard-section";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
   ArrowRight,
   Archive,
-  BookOpenText,
-  Clapperboard,
   Check,
   CircleAlert,
   ChevronDown,
@@ -65,11 +68,9 @@ import {
   ZoomIn,
   ZoomOut,
   Menu,
-  PanelTop,
   Plus,
   Pencil,
   RotateCcw,
-  Save,
   Shirt,
   Sparkles,
   Star,
@@ -87,8 +88,6 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { ChangeEvent, DragEvent, useEffect, useMemo, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 
-const ScriptEditor = dynamic(() => import("@/components/script-editor").then((mod) => mod.ScriptEditor));
-const StoryboardEditor = dynamic(() => import("@/components/storyboard-editor").then((mod) => mod.StoryboardEditor));
 const CharacterConceptPanel = dynamic(
   () => import("@/components/asset-production-panel").then((mod) => mod.CharacterConceptPanel),
 );
@@ -122,8 +121,6 @@ export default function ProjectWorkspace({
   });
   const [jobNotice, setJobNotice] = useState("");
   const [selectedJobIds, setSelectedJobIds] = useState<string[]>([]);
-  const [sourceTitle, setSourceTitle] = useState("第一章");
-  const [sourceText, setSourceText] = useState("");
   const [selectedChapterId, setSelectedChapterId] = useState<string | null>(null);
   const [selectedPageId, setSelectedPageId] = useState<string | null>(() => searchParams.get("page"));
   const [drawModel, setDrawModelState] = useState<ImageModelAlias | null>(() => {
@@ -148,8 +145,6 @@ export default function ProjectWorkspace({
   const [libraryDateTo, setLibraryDateTo] = useState("");
   const [libraryCursor, setLibraryCursor] = useState("");
   const [libraryHistory, setLibraryHistory] = useState<string[]>([]);
-  const [editingChapterId, setEditingChapterId] = useState<string | null>(null);
-  const [deletedChapterId, setDeletedChapterId] = useState<string | null>(null);
   const [outfitName, setOutfitName] = useState("");
   const [outfitLockedFields, setOutfitLockedFields] = useState("");
   const [editingOutfitId, setEditingOutfitId] = useState<string | null>(null);
@@ -183,15 +178,24 @@ export default function ProjectWorkspace({
   const [referenceOverridePageId, setReferenceOverridePageId] = useState<string | null>(null);
   const [viewedBatchId, setViewedBatchId] = useState<string | null>(null);
 
-  const needsChapters = ["source", "script", "storyboard", "generate", "library"].includes(section);
-  const needsCharacters = section === "assets"
-    ? assetView !== "style"
-    : ["script", "storyboard", "generate", "library"].includes(section);
-  const needsOutfits = section === "assets"
-    ? ["outfits", "references"].includes(assetView)
-    : ["script", "storyboard", "generate"].includes(section);
-  const needsPages = ["storyboard", "generate"].includes(section);
-  const needsScript = ["source", "script"].includes(section);
+  const workspaceQueries = useWorkspaceQueries({ id, section, assetView, selectedChapterId });
+  const {
+    project,
+    models,
+    assets,
+    chapters,
+    characters,
+    outfits,
+    pages,
+    script,
+    activeChapterId,
+    needsChapters,
+    needsCharacters,
+    needsOutfits,
+    needsPages,
+    needsScript,
+  } = workspaceQueries;
+
   const projectPath = (target: string) =>
     target === "assets" ? `/projects/${id}/assets/characters` : `/projects/${id}/${target}`;
   const setDrawModel = (model: ImageModelAlias) => {
@@ -203,12 +207,15 @@ export default function ProjectWorkspace({
     window.localStorage.setItem("mangaflow.queue-dock-hidden", String(hidden));
   };
 
-  const project = useQuery({ queryKey: ["project", id], queryFn: () => api.project(id), staleTime: 30_000 });
-  const models = useQuery({ queryKey: ["models"], queryFn: api.models, staleTime: 30_000 });
-  const assets = useQuery({ queryKey: ["assets", id], queryFn: () => api.assets(id), enabled: ["assets", "generate"].includes(section) });
-  const chapters = useQuery({ queryKey: ["chapters", id], queryFn: () => api.chapters(id), enabled: needsChapters });
-  const characters = useQuery({ queryKey: ["characters", id], queryFn: () => api.characters(id), enabled: needsCharacters });
-  const outfits = useQuery({ queryKey: ["outfits", id], queryFn: () => api.outfits(id), enabled: needsOutfits });
+  const source = useSourceWorkspace({
+    id,
+    projectPath,
+    router,
+    activeChapterId,
+    setSelectedChapterId,
+    setSelectedPageId,
+  });
+
   const styles = useQuery({
     queryKey: ["styles", id],
     queryFn: () => api.styles(id),
@@ -243,22 +250,10 @@ export default function ProjectWorkspace({
     refetchInterval: (query) => activePollInterval(query.state.data, 3000),
   });
   const exportsQuery = useQuery({ queryKey: ["exports", id], queryFn: () => api.exports(id), enabled: section === "library" });
-  const activeChapterId = selectedChapterId ?? chapters.data?.[0]?.id ?? null;
   const chapterProduction = useQuery({
     queryKey: ["chapter-production", activeChapterId],
     queryFn: () => api.chapterProductionReadiness(activeChapterId!),
     enabled: section === "library" && Boolean(activeChapterId),
-  });
-  const pages = useQuery({
-    queryKey: ["pages", activeChapterId],
-    queryFn: () => api.pages(activeChapterId!),
-    enabled: needsPages && Boolean(activeChapterId),
-  });
-  const script = useQuery({
-    queryKey: ["script", activeChapterId],
-    queryFn: () => api.script(activeChapterId!),
-    enabled: needsScript && Boolean(activeChapterId),
-    refetchInterval: (query) => query.state.data?.status === "PROCESSING" ? 4000 : false,
   });
   const selectedPageEntry = pages.data?.find((item) => item.id === selectedPageId) ?? pages.data?.[0] ?? null;
   const workbench = useQuery({
@@ -399,7 +394,6 @@ export default function ProjectWorkspace({
     : kinds.filter(([kind]) => kind === currentAssetKind);
   const selectedPageStructureIssue = getPageStructureIssue(selectedPage);
   const selectedPageGenerationIssue = getPageGenerationIssue(selectedPage, activeDrawModel);
-  const invalidPlannedPageCount = (pages.data ?? []).filter((page) => getPageStructureIssue(page)).length;
   const visibleCharacterIds = useMemo(
     () => Array.from(new Set((generationStoryboard.data?.panels ?? []).flatMap((panel) => panel.characters))),
     [generationStoryboard.data?.panels],
@@ -700,74 +694,6 @@ export default function ProjectWorkspace({
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["script", activeChapterId] }),
   });
 
-  const importSource = useMutation({
-    mutationFn: () => editingChapterId
-      ? api.reviseSource(editingChapterId, sourceTitle.trim(), sourceText).then(() => ({ chapters: [], total_characters: 0 }))
-      : api.importSource(id, sourceTitle.trim(), sourceText),
-    onSuccess: (result) => {
-      setSelectedChapterId(result.chapters[0]?.id ?? editingChapterId);
-      setEditingChapterId(null);
-      setSourceText("");
-      queryClient.invalidateQueries({ queryKey: ["chapters", id] });
-      queryClient.invalidateQueries({ queryKey: ["revisions"] });
-      queryClient.invalidateQueries({ queryKey: ["script"] });
-      queryClient.invalidateQueries({ queryKey: ["pages"] });
-    },
-  });
-
-  const importSourceFile = useMutation({
-    mutationFn: (file: File) => api.uploadSource(
-      id,
-      sourceTitle.trim() || file.name.replace(/\.(txt|md|markdown)$/i, ""),
-      file,
-    ),
-    onSuccess: (result) => {
-      setSelectedChapterId(result.chapters[0]?.id ?? null);
-      setEditingChapterId(null);
-      setSourceText("");
-      queryClient.invalidateQueries({ queryKey: ["chapters", id] });
-      queryClient.invalidateQueries({ queryKey: ["revisions"] });
-      queryClient.invalidateQueries({ queryKey: ["script"] });
-      queryClient.invalidateQueries({ queryKey: ["pages"] });
-    },
-  });
-
-  const deleteChapter = useMutation({
-    mutationFn: (chapterId: string) => api.deleteChapter(chapterId),
-    onSuccess: (_, chapterId) => {
-      setDeletedChapterId(chapterId);
-      setSelectedChapterId(null);
-      queryClient.invalidateQueries({ queryKey: ["chapters", id] });
-    },
-  });
-
-  const restoreChapter = useMutation({
-    mutationFn: (chapterId: string) => api.restoreChapter(chapterId),
-    onSuccess: (chapter) => {
-      setDeletedChapterId(null);
-      setSelectedChapterId(chapter.id);
-      queryClient.invalidateQueries({ queryKey: ["chapters", id] });
-    },
-  });
-
-  const parseChapter = useMutation({
-    mutationFn: () => api.parseChapter(activeChapterId!),
-    onSuccess: () => {
-      router.push(projectPath("jobs"));
-      queryClient.invalidateQueries({ queryKey: ["jobs", id] });
-    },
-  });
-
-  const planChapter = useMutation({
-    mutationFn: () => api.planChapter(activeChapterId!),
-    onSuccess: (result) => {
-      setSelectedPageId(result.pages[0]?.id ?? null);
-      router.push(projectPath("storyboard"));
-      queryClient.invalidateQueries({ queryKey: ["pages", activeChapterId] });
-      queryClient.invalidateQueries({ queryKey: ["chapters", id] });
-    },
-  });
-
   const replanPage = useMutation({
     mutationFn: (pageNumber: number) => api.planChapter(activeChapterId!, pageNumber),
     onSuccess: (result, pageNumber) => {
@@ -1027,22 +953,6 @@ export default function ProjectWorkspace({
     if (window.confirm(message)) deleteOutfit.mutate(outfit);
   }
 
-  function chooseSourceFile(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (file) importSourceFile.mutate(file);
-    event.target.value = "";
-  }
-
-  async function beginEditChapter(chapterId: string, title: string) {
-    setSelectedChapterId(chapterId);
-    const values = await queryClient.fetchQuery({ queryKey: ["revisions", chapterId], queryFn: () => api.revisions(chapterId) });
-    const revision = values[0];
-    setEditingChapterId(chapterId);
-    setSourceTitle(title);
-    setSourceText(revision?.original_text ?? "");
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  }
-
   const activeJobs = (jobs.data ?? []).filter((job) => isActiveTaskStatus(job.status));
   const failedJobs = (jobs.data ?? []).filter((job) => job.status === "FAILED");
   const completedJobGroups = Object.entries(
@@ -1097,29 +1007,14 @@ export default function ProjectWorkspace({
 
         <section className="workspace-canvas">
           {section === "source" && (
-            <>
-              <header className="canvas-header"><div><span>SOURCE / 原作</span><h2>完整导入，不压缩故事</h2></div><small>{chapters.data?.length ?? 0} 个章节</small></header>
-              <div className="source-compose">
-                <input className="text-input" value={sourceTitle} onChange={(event) => setSourceTitle(event.target.value)} placeholder="章节标题" />
-                <textarea value={sourceText} onChange={(event) => setSourceText(event.target.value)} placeholder="粘贴完整章节。系统先无损分段，再根据文字和剧本长度动态计算页数。" />
-                <div><span>{editingChapterId ? "保存后生成新修订，旧版本仍保留" : "不会限制总页数 · 单页硬上限 180 个中文字符"}</span><span className="compose-actions">{!editingChapterId && <label className={importSourceFile.isPending ? "button outline compact source-file-button pending" : "button outline compact source-file-button"}><input type="file" accept=".txt,.md,.markdown,text/plain,text/markdown" onChange={chooseSourceFile} disabled={importSourceFile.isPending} />{importSourceFile.isPending ? <LoaderCircle className="spin" size={15} /> : <FileImage size={15} />}{importSourceFile.isPending ? "正在导入…" : "选择 TXT / MD"}</label>}{editingChapterId && <button className="button ghost compact" onClick={() => { setEditingChapterId(null); setSourceText(""); }}>取消修改</button>}<button className="button ink" disabled={!sourceText.trim() || importSource.isPending} onClick={() => importSource.mutate()}>{importSource.isPending ? <LoaderCircle className="spin" size={16} /> : editingChapterId ? <Save size={16} /> : <Upload size={16} />}{editingChapterId ? "保存新修订" : "导入粘贴原文"}</button></span></div>
-                {importSource.isError && <p className="form-error"><CircleAlert size={14} />{importSource.error.message}</p>}
-                {importSourceFile.isError && <p className="form-error"><CircleAlert size={14} />{importSourceFile.error.message}</p>}
-              </div>
-              <div className="chapter-register">
-                {chapters.data?.map((chapter) => (
-                  <div key={chapter.id} className={activeChapterId === chapter.id ? "chapter-row active" : "chapter-row"} onClick={() => setSelectedChapterId(chapter.id)}>
-                    <span>{String(chapter.ordinal).padStart(2, "0")}</span><div><strong>{chapter.title}</strong><small>{chapter.source_character_count} 字 · {chapter.segment_count} 段 · {chapter.page_count} 页 · {chapter.status}</small></div><em>{Math.round(chapter.coverage_ratio * 100)}% 覆盖</em><div className="row-actions"><button title="修改原文" onClick={(event) => { event.stopPropagation(); beginEditChapter(chapter.id, chapter.title); }}><Pencil size={13} /></button><button title="删除章节" onClick={(event) => { event.stopPropagation(); if (window.confirm("删除后会暂时隐藏该章节，可立即撤回。继续吗？")) deleteChapter.mutate(chapter.id); }}><Trash2 size={13} /></button></div>
-                  </div>
-                ))}
-                {!chapters.data?.length && <div className="asset-empty"><BookOpenText size={24} /><strong>尚未导入原作</strong><p>粘贴一个完整章节开始工作。</p></div>}
-              </div>
-              {deletedChapterId && <div className="undo-banner"><span>章节已移入回收状态</span><button onClick={() => restoreChapter.mutate(deletedChapterId)}><RotateCcw size={13} />撤回删除</button></div>}
-              {activeChapterId && <div className="workflow-actions"><button className="button outline" disabled={parseChapter.isPending} onClick={() => parseChapter.mutate()}><Sparkles size={15} />生成漫画剧本</button><button className="button ink" disabled={planChapter.isPending || script.data?.status !== "READY"} onClick={() => planChapter.mutate()}>{planChapter.isPending ? <LoaderCircle className="spin" size={15} /> : <PanelTop size={15} />}从剧本计算分页</button></div>}
-              {planChapter.isError && <p className="form-error"><CircleAlert size={14} />{planChapter.error.message}</p>}
-            </>
+            <SourceSection
+              chapters={chapters}
+              script={script}
+              activeChapterId={activeChapterId}
+              setSelectedChapterId={setSelectedChapterId}
+              source={source}
+            />
           )}
-
           {section === "assets" && (
             <>
               <nav className="asset-subnav" aria-label="参考资产分类">
@@ -1259,20 +1154,31 @@ export default function ProjectWorkspace({
           )}
 
           {section === "script" && (
-            <>
-              <header className="canvas-header"><div><span>SCREENPLAY / 漫画剧本</span><h2>先写场景与情节拍，再进入分页</h2></div><div className="chapter-stage-control"><select aria-label="选择要编辑剧本的章节" value={activeChapterId ?? ""} onChange={(event) => setSelectedChapterId(event.target.value)}>{chapters.data?.map((chapter) => <option key={chapter.id} value={chapter.id}>{chapter.ordinal}. {chapter.title}</option>)}</select><small>{script.data?.scenes.length ?? 0} 个场景</small></div></header>
-              {!activeChapterId ? <div className="asset-empty tall"><Clapperboard size={28} /><strong>请先导入原作</strong></div> : !script.data?.scenes.length ? <div className="script-empty"><Clapperboard size={30} /><strong>本章还没有漫画剧本</strong><p>点击“生成漫画剧本”，默认文字模型会逐段补充可视化动作、场景、对白、旁白、情绪和翻页悬念，不会压缩原文。</p><button className="button ink" disabled={parseChapter.isPending} onClick={() => parseChapter.mutate()}><Sparkles size={15} />生成漫画剧本</button></div> : <ScriptEditor chapterId={activeChapterId} script={script.data} characters={characters.data ?? []} outfits={outfits.data ?? []} onAssignOutfit={(sceneId, assignments) => assignOutfit.mutate({ sceneId, assignments })} />}
-            </>
+            <ScriptSection
+              chapters={chapters}
+              script={script}
+              characters={characters}
+              outfits={outfits}
+              activeChapterId={activeChapterId}
+              setSelectedChapterId={setSelectedChapterId}
+              parseChapter={source.parseChapter}
+              assignOutfit={assignOutfit}
+            />
           )}
-
           {section === "storyboard" && (
-            <>
-              <header className="canvas-header"><div><span>PAGE CAPACITY / 动态分页</span><h2>内容有多少，页面就有多少</h2></div><div className="chapter-stage-control"><select aria-label="选择要编辑分镜的章节" value={activeChapterId ?? ""} onChange={(event) => setSelectedChapterId(event.target.value)}>{chapters.data?.map((chapter) => <option key={chapter.id} value={chapter.id}>{chapter.ordinal}. {chapter.title}</option>)}</select><small>{pages.data?.length ?? 0} 页</small></div></header>
-              {invalidPlannedPageCount > 0 && <div className="workflow-warning"><CircleAlert size={17} /><div><strong>{invalidPlannedPageCount} 页缺少剧本与分镜来源</strong><p>这是旧版分页数据，不能直接生图。请先生成漫画剧本，再从第 1 页重新计算分页。</p></div><Link className="button outline compact" href={projectPath("script")}>前往漫画剧本</Link></div>}
-              {!pages.data?.length ? <div className="asset-empty tall"><PanelTop size={28} /><strong>尚未生成分页分镜</strong><p>先完成漫画剧本；系统按场景切换、动作复杂度、对白和气泡容量拆页。</p></div> : <StoryboardEditor chapterId={activeChapterId!} pages={pages.data} characters={characters.data ?? []} outfits={outfits.data ?? []} onReplan={(pageNumber) => replanPage.mutate(pageNumber)} replanPending={replanPage.isPending} replanError={replanPage.error} initialPageId={searchParams.get("page")} focusCharacterId={searchParams.get("character")} />}
-            </>
+            <StoryboardSection
+              chapters={chapters}
+              pages={pages}
+              characters={characters}
+              outfits={outfits}
+              activeChapterId={activeChapterId}
+              setSelectedChapterId={setSelectedChapterId}
+              replanPage={replanPage}
+              projectPath={projectPath}
+              initialPageId={searchParams.get("page")}
+              focusCharacterId={searchParams.get("character")}
+            />
           )}
-
           {section === "generate" && (
             <div className="generate-workbench">
               <header className="canvas-header"><div><span>DRAW / 单页抽卡</span><h2>{selectedPage ? `第 ${selectedPage.page_number} 页候选` : "选择一页开始"}</h2></div><small>每次只生成 1 页</small></header>
