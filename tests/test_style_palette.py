@@ -1,4 +1,7 @@
-from app.worker_tasks import _build_color_palette, _build_style_prompt_summary
+from app.services.worker_handlers.style_analyze import (
+    _build_color_palette,
+    _build_style_prompt_summary,
+)
 
 
 def test_color_palette_falls_back_to_structured_editable_fields() -> None:
