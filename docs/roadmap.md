@@ -1,7 +1,7 @@
 # MangaFlow 主分支后续工作清单
 
-更新时间：2026-08-28
-当前主分支合并基线：`master` / `c405cfa`（PR #11，2026-08-28）；首批 P2-6 与 P1-5 均已合并并完成主分支独立验收，`npm run check` 通过。P1-8、P2-8 的既有修复保留；真实 PostgreSQL/Redis、浏览器和供应商边界仍未验证。
+更新时间：2026-08-29
+当前主分支代码合并基线：`master` / `59c440c`（PR #19，2026-08-29）。PR #18、#19 已完成 P2-1 的 Worker handler 与项目工作台两个拆分边界；真实 PostgreSQL/Redis/RQ 和供应商边界仍按各自验收记录保留。
 最近 `check:full` 历史基线：`master` / `cb324e3`（2026-08-27；相对 PR #5 合并提交 `d5d32ec` 仅增加任务文档），不代表 PR #6 / #7 / #10 / #11 已重跑浏览器验收。
 深审历史基线：`master` / `f085327`。当时新增 6 项 P1 修复与 1 项 P2 改进；PR #6 已合并其中 P1-7、P1-9～P1-12 的代码修复。P1-8、P2-8 已随 PR #7 合并，独立 Redis/RQ、PostgreSQL 与浏览器验收仍待完成。
 安全审查历史基线：`master` / `7635cf7`。P0-3、P1-13～P1-15、P2-4、P2-9 的代码修复现已合并，真实服务/容器及完整依赖审计边界仍保留。
@@ -310,13 +310,13 @@ P1-7～P1-12 共同完成条件：每项先保留失败复现为自动回归，�
 
 ## P2：可维护性与运营完善
 
-### P2-1 拆分超大模块
+### P2-1 拆分超大模块（部分完成）
 
-当前主要热点：`project-workspace.tsx` 约 1491 行、`workflow-editor.tsx` 约 1018 行、`worker_tasks.py` 约 1606 行、`workflow.py` 约 1576 行、`workflow_engine.py` 约 1342 行。
+当前剩余热点：`workflow-editor.tsx` 约 1018 行、`workflow.py` 约 1506 行、`workflow_engine.py` 约 1476 行。已拆分的顶层文件为 `project-workspace.tsx` 约 358 行、`worker_tasks.py` 约 481 行。
 
-- 前端按章节选择、资产绑定、生成工作台、质检修复、任务中心拆分组件与 hooks。
-- 后端按任务类型拆分 handler，把 claim/lease/failure convergence 留在统一执行外壳。
-- 每次只拆一个边界并补回归测试，不与 P0 状态语义修复混在同一提交。
+- [x] PR #18 / Issue #16：按任务类型提取 `services/worker_handlers/`；`execute_job`、claim、lease、heartbeat、取消、并发、失败/重试收敛与 dispatch 保留在统一执行外壳。组长按准确 SHA 对照 35 个移动函数/类并独立运行 Ruff 与 92 项定向回归后合并。
+- [x] PR #19 / Issue #17：把项目工作台拆为常驻 domain hooks、纯展示 section、共享组件与纯逻辑模块；查询/轮询/mutation 配置及 52 个状态/effect 调用完成 AST 对照。独立前端 lint 与 52 项 Vitest 通过；Playwright/Lighthouse/FPS 不属于本结构重构验收。
+- [ ] 后续分别拆分 `workflow-editor.tsx`、`workflow.py` 与 `workflow_engine.py`；每次只处理一个可验证边界，不与状态语义修复、API 改动或迁移混在同一 PR。
 
 ### P2-2 补足前端行为测试
 
