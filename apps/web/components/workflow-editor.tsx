@@ -50,7 +50,6 @@ import {
   MAX_ZOOM,
   NODE_HEIGHT,
   NODE_WIDTH,
-  STORAGE_KEY,
   WORLD_HEIGHT,
   WORLD_WIDTH,
   createNode,
@@ -69,6 +68,7 @@ import {
   pathBetween,
   portTypeClass,
 } from "./workflow-editor/geometry";
+import { useWorkflowPersistence } from "./workflow-editor/use-workflow-persistence";
 import type { ConnectionAnchor, FlowEdge, FlowNode, Gesture } from "./workflow-editor/types";
 
 export function WorkflowEditor() {
@@ -87,12 +87,10 @@ export function WorkflowEditor() {
   const [draftEnd, setDraftEnd] = useState<{ x: number; y: number } | null>(null);
   const [connectionAnchor, setConnectionAnchor] = useState<ConnectionAnchor | null>(null);
   const [isRunning, setIsRunning] = useState(false);
-  const [saved, setSaved] = useState(true);
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [logOpen, setLogOpen] = useState(true);
   const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]);
   const [search, setSearch] = useState("");
-  const [toast, setToast] = useState("");
 
   const projectsQuery = useQuery({ queryKey: ["workflow-projects"], queryFn: api.projects });
   const resolvedProjectId = projectsQuery.data?.some((project) => project.id === activeProjectId)
@@ -110,6 +108,14 @@ export function WorkflowEditor() {
     enabled: Boolean(resolvedProjectId),
   });
 
+  const { saved, setSaved, toast, showToast, saveFlow } = useWorkflowPersistence({
+    resolvedProjectId,
+    nodes,
+    edges,
+    setNodes,
+    setEdges,
+  });
+
   const selectedNode = nodes.find((node) => node.id === selectedNodeId) ?? null;
   const nodeMap = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
 
@@ -120,31 +126,6 @@ export function WorkflowEditor() {
       y: ((clientY - (rect?.top ?? 0)) - pan.y) / zoom,
     };
   }, [pan.x, pan.y, zoom]);
-
-  const showToast = useCallback((message: string) => {
-    setToast(message);
-    window.setTimeout(() => setToast(""), 1800);
-  }, []);
-
-  const saveFlow = useCallback(() => {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ projectId: resolvedProjectId || null, nodes, edges }));
-    setSaved(true);
-    showToast("工作流已保存到本机");
-  }, [edges, nodes, resolvedProjectId, showToast]);
-
-  useEffect(() => {
-    try {
-      const stored = window.localStorage.getItem(STORAGE_KEY);
-      if (!stored) return;
-      const parsed = JSON.parse(stored) as { nodes?: FlowNode[]; edges?: FlowEdge[] };
-      window.queueMicrotask(() => {
-        if (parsed.nodes?.length) setNodes(parsed.nodes);
-        if (parsed.edges) setEdges(parsed.edges);
-      });
-    } catch {
-      window.localStorage.removeItem(STORAGE_KEY);
-    }
-  }, []);
 
   const deleteSelection = useCallback(() => {
     if (selectedNodeId) {
@@ -159,7 +140,7 @@ export function WorkflowEditor() {
       setSelectedEdgeId(null);
       setSaved(false);
     }
-  }, [selectedEdgeId, selectedNodeId]);
+  }, [selectedEdgeId, selectedNodeId, setSaved]);
 
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
@@ -241,7 +222,7 @@ export function WorkflowEditor() {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
     };
-  }, [worldPoint, zoom]);
+  }, [worldPoint, zoom, setSaved]);
 
   function beginNodeDrag(event: ReactPointerEvent, node: FlowNode) {
     if (event.button !== 0) return;
