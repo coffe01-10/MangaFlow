@@ -131,7 +131,12 @@ def _audit_meta(db, binding: AdapterBinding) -> ModelCallAttemptMeta | None:
 
 
 def _begin_or_fail(meta: ModelCallAttemptMeta | None) -> str | None:
-    """Begin an audit row, failing closed so the paid call never runs without one."""
+    """Begin an audit row, failing closed so the paid call never runs without one.
+
+    The user-visible message is a fixed sanitized string: the raw driver error
+    (which can embed SQL, local paths or connection details) is preserved only
+    as the exception chain for logging, never as stored or returned text.
+    """
 
     if meta is None:
         return None
@@ -140,14 +145,15 @@ def _begin_or_fail(meta: ModelCallAttemptMeta | None) -> str | None:
     except Exception as error:
         raise ProviderAdapterError(
             "AUDIT_PERSISTENCE_FAILED",
-            f"无法写入模型调用审计，已停止调用：{error}",
+            "无法写入模型调用审计，已停止本次模型调用",
             retryable=False,
         ) from error
 
 
 def _finalize_or_fail(attempt_id: str | None, **kwargs) -> None:
     """Finalize an audit row; persistence failure surfaces as non-retryable and
-    never triggers another provider call."""
+    never triggers another provider call. Same sanitized-message rule as
+    ``_begin_or_fail``: the raw driver error stays in the exception chain only."""
 
     if attempt_id is None:
         return
@@ -156,7 +162,7 @@ def _finalize_or_fail(attempt_id: str | None, **kwargs) -> None:
     except Exception as error:
         raise ProviderAdapterError(
             "AUDIT_PERSISTENCE_FAILED",
-            f"无法更新模型调用审计：{error}",
+            "无法更新模型调用审计，已保留诊断现场",
             retryable=False,
         ) from error
 

@@ -232,6 +232,43 @@ def test_begin_failure_blocks_provider_call(env, monkeypatch):
     assert adapter.calls == 0
 
 
+def test_audit_persistence_failure_sanitizes_user_message(env, monkeypatch):
+    """Raw driver errors (SQL, paths, secrets) must never reach the propagated
+    user_message or the persisted job-facing error_message."""
+
+    caller_factory, rows = env
+    adapter = _FakeAdapter()
+    sentinel = "SECRET-SENTINEL /Users/me/.config/gcloud/application_default_credentials.json"
+
+    def leaking_begin(meta):
+        raise RuntimeError(f"insert failed on connection postgresql://user:{sentinel}")
+
+    monkeypatch.setattr(provider, "begin_model_call_attempt", leaking_begin)
+
+    with caller_factory() as db:
+        db.info["job_id"] = rows["job"].id
+        with pytest.raises(ProviderAdapterError) as exc_info:
+            provider._invoke_provider(db, _binding(rows, adapter), lambda a: a.generate_page(None))
+
+    assert exc_info.value.code == "AUDIT_PERSISTENCE_FAILED"
+    assert sentinel not in exc_info.value.user_message
+    assert sentinel not in str(exc_info.value)
+
+    # Simulate the worker persisting the propagated user message to the job.
+    with caller_factory() as db:
+        job = db.get(GenerationJob, rows["job"].id)
+        job.error_code = exc_info.value.code
+        job.error_message = exc_info.value.user_message
+        db.commit()
+
+    with caller_factory() as db:
+        persisted = db.get(GenerationJob, rows["job"].id)
+    assert persisted.error_code == "AUDIT_PERSISTENCE_FAILED"
+    assert persisted.error_message is not None
+    assert sentinel not in persisted.error_message
+    assert adapter.calls == 0
+
+
 def test_finalize_failure_never_repeats_paid_call(env, monkeypatch):
     caller_factory, rows = env
 
