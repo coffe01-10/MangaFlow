@@ -797,6 +797,20 @@ class JobRead(BaseModel):
         end = self.finished_at or self.updated_at
         return max(0, int((end - self.started_at).total_seconds() * 1000))
 
+    @computed_field
+    @property
+    def workflow_run_id(self) -> str | None:
+        value = self.request_parameters.get("workflow_run_id")
+        return value if isinstance(value, str) else None
+
+    @computed_field
+    @property
+    def workflow_node_id(self) -> str | None:
+        value = self.request_parameters.get("node_id") or self.request_parameters.get(
+            "workflow_node_id"
+        )
+        return value if isinstance(value, str) else None
+
 
 class ModelCallAttemptRead(BaseModel):
     """Read-only view of one provider dispatch attempt.
@@ -828,20 +842,6 @@ class ModelCallAttemptRead(BaseModel):
     route_score: float | None
     error_code: str | None
     error_message: str | None
-
-    @computed_field
-    @property
-    def workflow_run_id(self) -> str | None:
-        value = self.request_parameters.get("workflow_run_id")
-        return value if isinstance(value, str) else None
-
-    @computed_field
-    @property
-    def workflow_node_id(self) -> str | None:
-        value = self.request_parameters.get("node_id") or self.request_parameters.get(
-            "workflow_node_id"
-        )
-        return value if isinstance(value, str) else None
 
 
 class JobArchiveResult(BaseModel):

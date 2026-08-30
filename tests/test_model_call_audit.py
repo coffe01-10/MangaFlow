@@ -6,6 +6,8 @@ begin/finalize are exercised for real (real rows, real commits) while staying
 deterministic and offline.
 """
 
+import json as jsonlib
+
 import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
@@ -19,6 +21,7 @@ from app.models import (
     Project,
     Chapter,
 )
+from app.schemas import ModelCallAttemptRead
 from app.services.worker_handlers.model_call_audit import (
     ModelCallAttemptMeta,
     begin_model_call_attempt,
@@ -202,10 +205,7 @@ def test_read_model_redacts_sensitive_material(audit_sessions):
     """The read schema must never expose secrets, credential paths, headers or
     request payloads — only redacted metadata and opaque row references."""
 
-    import json as jsonlib
-
     from app.models import ProviderConnection, ProviderKey, ProviderProfile
-    from app.schemas import ModelCallAttemptRead
 
     job = _seed_job(audit_sessions)
     with audit_sessions() as db:
@@ -254,3 +254,51 @@ def test_read_model_redacts_sensitive_material(audit_sessions):
     # The ledger schema itself carries no credential-path or payload columns.
     column_names = {column.name for column in ModelCallAttempt.__table__.columns}
     assert not {"credentials", "credential_path", "request_body", "headers"} & column_names
+
+
+def test_model_call_attempts_endpoint_returns_exact_redacted_surface(
+    db_session, client
+):
+    from app.domain.states import JobStatus
+
+    project = Project(name="账本端点项目")
+    db_session.add(project)
+    db_session.flush()
+    job = GenerationJob(
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id="page-1",
+        job_type="PAGE_GENERATE",
+        status=JobStatus.GENERATING,
+        attempt_count=1,
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    attempt_id = begin_model_call_attempt(
+        _meta(job, selected_key_id=None, connection_id=None)
+    )
+    finalize_model_call_attempt(
+        attempt_id,
+        outcome="SUCCEEDED",
+        model_id="reported-model",
+        request_id="req-endpoint",
+        usage={"input_tokens": 4},
+    )
+
+    response = client.get(f"/api/v1/jobs/{job.id}/model-call-attempts")
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert set(body[0]) == set(ModelCallAttemptRead.model_fields)
+    assert body[0]["outcome"] == "SUCCEEDED"
+    assert body[0]["request_id"] == "req-endpoint"
+    assert body[0]["usage"] == {"input_tokens": 4}
+    assert body[0]["selected_key_id"] is None
+    assert body[0]["error_code"] is None
+    blob = jsonlib.dumps(body).lower()
+    for forbidden in ("secret", "encrypted", "api_key", "authorization", "prompt"):
+        assert forbidden not in blob, f"endpoint leaked sensitive material: {forbidden}"
+
+    missing = client.get("/api/v1/jobs/missing-job/model-call-attempts")
+    assert missing.status_code == 404
