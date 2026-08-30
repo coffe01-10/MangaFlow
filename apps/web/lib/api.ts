@@ -820,6 +820,8 @@ export const api = {
     request<ProviderProfile>("/providers", { method: "POST", body: JSON.stringify(payload) }),
   updateProvider: (id: string, payload: { version: number; name?: string; enabled?: boolean }) =>
     request<ProviderProfile>(`/providers/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  deleteProvider: (id: string) =>
+    request<void>(`/providers/${id}`, { method: "DELETE" }),
   updateProviderConnection: (id: string, payload: Partial<Pick<ProviderConnection, "name" | "base_url" | "enabled" | "use_responses_api" | "endpoint_templates" | "extra_headers" | "balance_config" | "nonsecret_config">> & { version: number }) =>
     request<ProviderConnection>(`/providers/connections/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   saveProviderKey: (connectionId: string, label: string, apiKey: string) =>
