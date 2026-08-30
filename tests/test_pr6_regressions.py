@@ -136,6 +136,7 @@ def _inspect(db, monkeypatch, page, candidate, categories, *, during_call=None):
         target_id=candidate.id,
         job_type="PAGE_INSPECT",
         status=JobStatus.PREPARING,
+        attempt_count=1,
         request_parameters={"categories": categories},
         lease_owner="offline-owner",
         lease_expires_at=utcnow() + timedelta(minutes=5),
@@ -162,7 +163,13 @@ def _inspect(db, monkeypatch, page, candidate, categories, *, during_call=None):
         return output
 
     binding = SimpleNamespace(
-        resolved=SimpleNamespace(model=SimpleNamespace(id=None)),
+        resolved=SimpleNamespace(
+            model=SimpleNamespace(id=None, provider_model_id="pm-fake"),
+            connection=SimpleNamespace(id=None),
+            provider=SimpleNamespace(preset_key=None, name="离线测试供应商"),
+            route_reason="EXPLICIT",
+            route_score=None,
+        ),
         adapter=SimpleNamespace(analyze_multimodal=analyze),
         selected_key=None,
     )
