@@ -14,10 +14,17 @@ class ModelCapability:
     preview_resolutions: tuple[str, ...] = ()
     max_reference_images: int = 0
     regions: tuple[str, ...] = ("global",)
+    supported_parameters: tuple[str, ...] = ()
 
     def to_dict(self) -> dict:
         value = asdict(self)
-        for key in ("operations", "resolutions", "preview_resolutions", "regions"):
+        for key in (
+            "operations",
+            "resolutions",
+            "preview_resolutions",
+            "regions",
+            "supported_parameters",
+        ):
             value[key] = list(value[key])
         return value
 
@@ -30,6 +37,10 @@ def build_registry(settings: Settings) -> dict[str, ModelCapability]:
             logical_alias="text.fast",
             display_name="Gemini 3.5 Flash",
             operations=("structured_text", "multimodal_analysis"),
+            # Request metadata the native text adapter actually consumes
+            # (app/model_adapters/vertex.py). Declared here so callers can
+            # negotiate parameters from capability data instead of hardcoding.
+            supported_parameters=("max_output_tokens", "thinking_budget"),
         ),
         "image.nano_banana_2": ModelCapability(
             provider="vertex-ai",
