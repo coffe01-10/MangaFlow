@@ -6,7 +6,7 @@
 > - 基线提交：`2613d978f64a2faee0282c6250501a453c13df0f`（`origin/master`）
 > - 工作分支：`codex/v02-53a-desktop-shell-evaluation`（worktree `D:\自媒体\漫画工作流-deepseek-v02-53a`）
 > - 约束：不修改代码/迁移/配置/测试/`docs/roadmap.md`/`docs/development-progress.md`/`plan.md`；不读取凭据、不安装软件、不调用真实供应商
-> - 一手资料访问日期：**2026-08-30**（来源见 §10，仅官方页面）
+> - 一手资料访问日期：**2026-08-30**（来源见 §8，仅官方页面）
 > - 修订记录：（由 lead 接管收口时填写）
 
 ---
@@ -48,10 +48,10 @@
 | **内存** | 共享系统 WebView2（与 Edge 硬链接，官方：磁盘/内存双优化）；Rust core 占用小 | 每 app 独立 Chromium 进程树；官方性能文档强调减少 renderer、避免 main 阻塞 | 中——两者都跑同一 Next.js 前端，WebView 渲染差异小 |
 | **WebView 兼容** | **Evergreen WebView2**：版本由系统更新（官方要求 app 做 API feature-detect）；Fixed Version 可固定但 +250MB | **Chromium 版本固定**（随 app 分发），前端兼容完全可控 | 中高——Canvas 分镜编辑器/动画需要稳定渲染 |
 | **前端服务** | 需额外 sidecar `node.exe` 跑 `next start`，或静态导出（rewrites 失效需改前端） | **自带 Node**，main 进程可直接 spawn `next start`（前端零改动） | **高** |
-| **Python sidecar** | 官方 `externalBin` 面向**单个外部二进制**（target triple 后缀、需 capability 权限、仅 `.msi` bundle）；Python 目录形态需 embeddable/PyInstaller 单文件特殊处理 | Node `child_process` 官方能力 + 打包任意目录文件（安装版可捆绑 Python runtime 目录） | **高** |
+| **Python sidecar** | 官方 `externalBin` 面向**单个外部二进制**（target triple 后缀、需 capability 权限）；该机制不限定 MSI/NSIS，但 Python 目录形态仍需 embeddable/PyInstaller 或资源目录方案 | Node `child_process` 官方能力 + 打包任意目录文件（安装版可捆绑 Python runtime 目录） | **高** |
 | **进程所有权** | Rust 侧 `std::process::Command` + 需自行接 Windows Job Object（或调用 Python helper） | Node `child_process` + 可调用既有 Python `owned_processes.py` helper（同侧语言） | **高** |
 | **自动更新** | **官方 updater plugin**：签名强制（`tauri signer`），Windows MSI/NSIS + `.sig`，静态 JSON/动态服务器，安装时 app 自动退出 | **官方 Squirrel.Windows + `autoUpdater`**（+ `update.electronjs.org` 服务，需 public GitHub + signed）；官方文档不提社区 electron-updater | 中（Tauri 更一体，Electron 官方路径较老） |
-| **代码签名** | 需 Windows 代码签名（app + sidecar 一起签） | 需 Windows 代码签名；官方 `@electron/windows-sign`（2023-06 起 Microsoft 只认 EV 证书） | 同（都需 EV 证书 + 硬件 FIPS） |
+| **代码签名** | Windows 发布应对 app 与 sidecar 签名；Tauri 更新产物另有强制更新签名 | Windows 发布应签名；官方提供 `@electron/windows-sign`。Windows 证书类型与 SmartScreen 信誉要求应在发布 PoC 中验证 | 同（真实证书与发布信誉均 NOT RUN） |
 | **崩溃恢复** | Rust panic + WebView2 崩溃处理 | main/renderer crash 事件、`app.relaunch` | 同 |
 | **凭据存储** | 无官方 keyring 插件；沿用应用自身加密 | 同（keytar 已弃用） | 同——两者都宜沿用现有 AES-GCM 文件主密钥模式 |
 | **离线能力** | 需系统 WebView2 Runtime（Win11 内置、Win10 大多已装；离线环境需 Standalone Installer） | 全打包，无外部 WebView 依赖 | 低（Win11 为安装目标） |
@@ -62,8 +62,8 @@
 - **Tauri 2 sidecar**（`v2.tauri.app/develop/sidecar`）：`externalBin` 声明外部二进制，需 `-$TARGET_TRIPLE` 后缀（Windows 加 `.exe`）；执行需 capability 权限（`shell:allow-execute`）；**面向单二进制**。
 - **Tauri 2 updater**（`v2.tauri.app/plugin/updater`）：签名强制不可关闭；Windows 产物 MSI/NSIS + `.sig`；安装时 Windows 强制 app 退出（`on_before_exit`）；`installMode` passive/basicUi/quiet。
 - **Electron 官方架构/体积**（`electronjs.org/de/blog/webview2`）：Electron 从 Chromium 构建、不共享 DLL、**每 app 打包自己的 Electron**；WebView2 可选共享运行时、Windows 11 内置。
-- **Electron 代码签名**（`electronjs.org/docs/latest/tutorial/code-signing`）：Windows 默认阻止未签名；2023-06 起 Microsoft 只认 EV 证书（硬件 FIPS 140-2/EAL4+）；官方 `@electron/windows-sign`。
-- **Electron 自动更新**（`electronjs.org/docs/latest/tutorial/updates`）：官方路径 Squirrel + `autoUpdater`；Windows 用 Squirrel.Windows `RELEASES`；`update.electronjs.org` 仅限 public GitHub + signed。
+- **Electron 代码签名**（`electronjs.org/docs/latest/tutorial/code-signing`）：官方说明 Windows 与 macOS 分发需要代码签名，并提供 `@electron/windows-sign`；证书类型、硬件保存及 SmartScreen 信誉以发布 PoC 的当期 Microsoft 要求为准。
+- **Electron 自动更新**（`electronjs.org/docs/latest/tutorial/updates`）：官方路径 Squirrel + `autoUpdater`；Windows 用 Squirrel.Windows `RELEASES`；`update.electronjs.org` 仅限 public GitHub，官方页面列出的签名前提针对 macOS，不外推为 Windows 服务端前提。
 - **Microsoft WebView2 分发**（`learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution`）：Evergreen（自动更新、共享、Windows 11 内置）vs Fixed Version（**>250MB**）；Bootstrapper ~2MB（在线）vs Standalone（离线）；生产只能用 WebView2 Runtime（不能用 Edge Stable）；检测注册表 `pv` 键或 API。
 - **Next.js 静态导出**（`nextjs.org/docs/app/guides/static-exports`）：`output: 'export'` → `out/`；**rewrites/proxy/ISR/Server Actions 等不支持**。
 
@@ -81,8 +81,8 @@
 
 1. **体积/内存/安全维护符合单用户本地工作台**：共享系统 WebView2（Windows 11 内置、Evergreen 安全更新由 Microsoft 推送），Rust core 占用小；capability 权限模型（IPC Router 逐权限）适合「本地 API + 外部供应商」的信任边界。
 2. **官方自动更新一体**：Tauri 官方 updater 签名强制、Windows MSI/NSIS + `.sig`，一条链路；Electron 官方 Squirrel 路径较老、社区 electron-updater 超出官方一手范围。
-3. **进程所有权有成熟先例**：仓库 `owned_processes.py` 已是 Windows Job Object 的完整实现；Tauri 侧只需以独立 Python helper 调用它（壳与 helper 的语言边界不改变方案）。
-4. **Next.js 前端已按静态托管兼容方向演进**：前端可用静态导出 + 直连 API（`MANGAFLOW_API_ORIGIN` 已是配置点），Tauri 2 分发静态 `out/` 资源（`resources` 目录）比捆绑 Node runtime 更轻；`rewrites` 失效的影响面在 PoC 中验证并收口。
+3. **进程所有权有成熟先例**：仓库 `owned_processes.py` 已实现 Windows Job Object、所有权令牌与 journal，可作为实现参考；桌面壳仍须成为 helper 的直接父级并建立可验证的所有权握手，不能把“调用现有脚本”等同于自动获得所有权。
+4. **静态前端路线可被限定验证**：前端可改为静态导出 + 直连 API，但当前 `MANGAFLOW_API_ORIGIN` 只服务 Next.js rewrite，不是 WebView 运行时注入机制；PoC 必须实现并验证 §4.2 的启动握手和运行时 origin 注入。
 
 **否决条件（PoC 证实任一条则转向 Electron）：**
 
@@ -113,7 +113,7 @@ Electron 是有效备选：自带 Node（`next start` 零改动）、目录捆�
 
 ### 4.2 前端服务形态（PoC 最高风险之一）
 
-- **方案 A（推荐先验）**：静态导出 `out/` + 前端直连 `127.0.0.1:<api_port>`。需要验证：`MANGAFLOW_API_ORIGIN`/base URL 注入、CORS（API 需允许 webview 源）、相对路径资源。改动面在前端 `lib/api.ts` 的 base URL 一处 + API CORS。
+- **方案 A（推荐先验）**：静态导出 `out/` + 前端直连 `127.0.0.1:<api_port>`。启动协议冻结为：壳先启动 API helper；helper 绑定动态端口后，通过仅本次启动有效的所有权令牌和本地握手通道返回 `{pid, api_origin, owner_token, journal_path}`；壳验证 PID、令牌与 journal 后，才创建 WebView。WebView 首次业务请求前，通过 Tauri command/invoke（Electron 则用 preload/contextBridge）读取 `api_origin`，调用 `lib/api.ts` 的运行时 setter。不得依赖构建期 `NEXT_PUBLIC_*`，也不得把 `MANGAFLOW_API_ORIGIN` 当作运行时配置，因为后者当前只控制 Next.js rewrite。API CORS 只允许该桌面 origin 与回环动态端口。
 - **方案 B**：安装版捆绑 Node 运行 `next start`（保留 `rewrites`，前端零改动）。Tauri 需额外 `node.exe` sidecar；Electron 自带 Node。
 - PoC 先验 A；A 失败则 B。
 
@@ -121,12 +121,12 @@ Electron 是有效备选：自带 Node（`next start` 零改动）、目录捆�
 
 - **形态**：PyInstaller `--onefile` 单二进制（与 Tauri `externalBin` target triple 命名兼容）或 Windows Python embeddable 目录 + 预装 site-packages（CI 冻结版本构建）。
 - **必须稳定**：`alembic upgrade head`、SQLite 读写、FastAPI 启动、RQ worker 本地模式、上传 Pillow 安全面（像素/解压炸弹）、`storage`/`uploads` 目录定位（相对用户数据目录而非安装目录）。
-- **进程归属**：壳 spawn helper（Job Object），`owned_processes.py` 复用。
+- **进程归属**：壳直接 spawn helper，并把 helper 加入由壳持有、设置 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的根 Job Object；helper 通过带 owner token 的 readiness 握手返回真实 PID/journal，壳验证后才允许 helper 启动 API/Worker/前端。`owned_processes.py` 是可复用的实现模式，不代表被调用后天然具备壳级所有权。
 
 ### 4.4 进程所有权与端口
 
-- 复用 `owned_processes.py`（Windows Job Object）作为**独立 helper**；壳（无论 Tauri/Electron）spawn 它管理 API/Worker/前端子进程。
-- 端口：启动时绑定 `127.0.0.1` 随机端口（`uvicorn --port 0` 或端口探测），API base URL 注入前端；Web 端口同理；单实例互斥体防多开。
+- 以 `owned_processes.py` 的 Job Object、owner token、journal 和恢复逻辑为实现参考；壳必须直接拥有 helper，并以根 Job Object 的 `KILL_ON_JOB_CLOSE` 覆盖壳异常退出。helper 只能在 readiness 握手被壳验证后启动其子进程，避免出现壳尚未取得所有权便留下孤儿进程的窗口。
+- 端口：helper 让服务直接绑定 `127.0.0.1:0` 并从已绑定 socket/服务回报取得实际端口，禁止“先探测空闲端口、释放、再绑定”的 TOCTOU 流程。API origin 按 §4.2 注入前端；单实例互斥体防多开。
 
 ### 4.5 凭据、日志、崩溃恢复
 
@@ -165,7 +165,7 @@ Electron 是有效备选：自带 Node（`next start` 零改动）、目录捆�
 
 ### 5.4 发布风险
 
-- **签名**：未签名安装包触发 SmartScreen/未知发布者警告（官方确认）；EV 证书成本与 CI 签名集成需授权采购。→ NOT RUN（真实签名未验证）。
+- **签名**：未签名安装包可能触发 SmartScreen/未知发布者警告；适用证书类型、信誉建立与 CI 签名集成需在发布 PoC 中按当期 Microsoft 要求验证。→ NOT RUN（真实签名未验证）。
 - **自动更新**：Tauri 官方 updater 依赖自有更新服务器 + 签名密钥管理；Electron 官方 Squirrel 依赖 RELEASES 托管。→ 更新服务器行为 NOT RUN。
 - **WebView2 缺失（Tauri）**：Windows 10 少数机器需 Bootstrapper/Standalone 安装（离线需打包 ~100MB+ standalone）。→ 安装行为 NOT RUN。
 - **Python sidecar 兼容**：PyInstaller/embeddable 打包后第三方依赖（SQLAlchemy/Pillow）平台行为差异。→ 需 PoC 验证，标记高风险。
@@ -178,8 +178,8 @@ Electron 是有效备选：自带 Node（`next start` 零改动）、目录捆�
 | --- | --- | --- | --- |
 | D1 | 打包 | 壳可构建 Windows 安装包；安装/卸载/重装不删用户数据 | PoC 手动 + 脚本 |
 | D2 | Python sidecar | 打包后 API 启动、`alembic upgrade head`、SQLite 读写、RQ 本地 worker 运行；假模型闭环「生成→候选→检查」 | PoC 自动 |
-| D3 | 进程生命周期 | 壳 spawn API/Worker/前端；退出无残留；崩溃自动重启；Job Object 归组验证 | PoC 自动（复用 `owned_processes` 测试模式） |
-| D4 | 端口/单实例 | 动态端口、冲突处理、单实例互斥、API base URL 注入生效 | PoC 自动 |
+| D3 | 进程生命周期 | 壳直接拥有 helper；根 Job Object 启用 `KILL_ON_JOB_CLOSE`；带 owner token 的 PID/journal readiness 握手通过后才启动子服务；正常退出、壳崩溃、helper 崩溃均无残留 | PoC 自动（复用 `owned_processes` 的实现模式与测试夹具） |
+| D4 | 端口/单实例 | 服务原子绑定动态端口、并发启动无 TOCTOU；单实例互斥；WebView 首次请求前通过 invoke/preload 注入运行时 API origin；不依赖 `NEXT_PUBLIC_*` 或 Next rewrite | PoC 自动 |
 | D5 | 前端形态 | 静态导出加载 + 直连 API（CORS 验证）；或 next start + rewrites 保留 | PoC 自动 |
 | D6 | 凭据/日志/数据 | 主密钥文件 ACL；日志轮转导出；用户数据目录定位 | PoC 自动 |
 | D7 | 性能门禁 | 冷启动、空闲内存、安装包体积、100 节点画布 FPS（固定采样窗口） | PoC 自动（`architecture.md:131` 窗口语义） |
@@ -191,7 +191,7 @@ Electron 是有效备选：自带 Node（`next start` 零改动）、目录捆�
 
 ## 7. NOT RUN / UNKNOWN 边界（如实标记）
 
-1. **真实 Windows 签名未验证**：EV 证书采购、`signtool`/Tauri signer/`@electron/windows-sign` 的真实签名行为 NOT RUN。
+1. **真实 Windows 签名未验证**：证书采购、`signtool`/Tauri signer/`@electron/windows-sign` 的真实签名与 SmartScreen 信誉行为 NOT RUN。
 2. **真实自动更新未验证**：Tauri updater 服务器、Squirrel RELEASES 托管、`update.electronjs.org`（需 public GitHub）均 NOT RUN。
 3. **真实安装/升级/卸载未验证**：NSIS/WiX MSI/Squirrel 安装器行为、WebView2 Runtime 缺失时 Bootstrapper/Standalone 安装、离线环境均 NOT RUN（本环境未安装任何框架、未构建安装包）。
 4. **真实性能数字未验证**：本 ADR 的验收指标是**建议门槛**，非实测；Tauri/Electron 的实测内存/体积/FPS 需 PoC 固定窗口测量。
@@ -207,7 +207,7 @@ Electron 是有效备选：自带 Node（`next start` 零改动）、目录捆�
 | Tauri 2 官方 | `https://v2.tauri.app/develop/sidecar/` | sidecar 机制、target triple、capability 权限 |
 | Tauri 2 官方 | `https://v2.tauri.app/plugin/updater/` | 自动更新、签名强制、Windows 产物/安装行为 |
 | Electron 官方 | `https://www.electronjs.org/de/blog/webview2` | 架构/体积/进程模型（每 app 自带 Chromium） |
-| Electron 官方 | `https://www.electronjs.org/docs/latest/tutorial/code-signing` | Windows 代码签名、EV 证书、`@electron/windows-sign` |
+| Electron 官方 | `https://www.electronjs.org/docs/latest/tutorial/code-signing` | Windows 代码签名与 `@electron/windows-sign` |
 | Electron 官方 | `https://www.electronjs.org/docs/latest/tutorial/updates` | Squirrel + autoUpdater、update.electronjs.org、Windows RELEASES |
 | Electron 官方 | `https://www.electronjs.org/docs/latest/tutorial/performance` | 内存/主进程不阻塞/打包指导 |
 | Microsoft 官方 | `https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution` | WebView2 Evergreen/Fixed Version、Bootstrapper/Standalone、检测、生产限制 |
