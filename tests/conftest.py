@@ -67,6 +67,23 @@ def db_session():
         Base.metadata.drop_all(engine)
 
 
+@pytest.fixture(autouse=True)
+def _audit_session_isolated_to_test_database(db_session, monkeypatch):
+    """Point the model-call-audit independent session at the test database.
+
+    The audit service deliberately opens its own ``SessionLocal`` so ledger
+    rows survive caller rollbacks; without this fixture that session would hit
+    the configured development database instead of the per-test database.
+    """
+
+    from app.services.worker_handlers import model_call_audit
+
+    audit_factory = sessionmaker(
+        bind=db_session.get_bind(), autoflush=False, expire_on_commit=False
+    )
+    monkeypatch.setattr(model_call_audit, "SessionLocal", audit_factory)
+
+
 @pytest.fixture
 def client(db_session):
     def override_db():
