@@ -1,0 +1,16 @@
+# Generated baseline; remove a path when its final allowed hit is removed.
+apps/api/app/api/routes/projects.py
+apps/api/app/api/routes/settings.py
+apps/api/app/config.py
+apps/api/app/model_adapters/vertex.py
+apps/api/app/models.py
+apps/api/app/services/credential_source.py
+apps/api/app/services/model_availability.py
+apps/api/app/services/model_registry.py
+apps/api/app/services/model_router.py
+apps/api/app/services/provider_catalog.py
+apps/api/app/services/provider_presets.py
+apps/api/app/services/vertex_health.py
+apps/web/components/project-workspace/generate-section.test.tsx
+apps/web/components/provider-management.tsx
+apps/web/lib/api.ts
