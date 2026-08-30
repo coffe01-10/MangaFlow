@@ -117,6 +117,16 @@ def test_presets_seed_default_provider_catalog(client):
         for provider in providers
         for connection in provider["connections"]
     )
+    connections = [connection for provider in providers for connection in provider["connections"]]
+    assert all(
+        connection["credential_source"] in {"CONNECTION_KEY", "ENV_SERVICE_ACCOUNT"}
+        for connection in connections
+    )
+    assert all(connection["supported_model_types"] for connection in connections)
+    anthropic = next(provider for provider in providers if provider["preset_key"] == "anthropic")
+    assert anthropic["connections"][0]["supported_model_types"] == ["TEXT"]
+    vertex = next(provider for provider in providers if provider["preset_key"] == "vertex-ai")
+    assert vertex["connections"][0]["credential_source"] == "ENV_SERVICE_ACCOUNT"
 
 
 def test_vertex_catalog_connection_inherits_legacy_health(

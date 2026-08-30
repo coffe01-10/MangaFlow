@@ -109,7 +109,9 @@ export interface ProviderConnection {
   base_url: string;
   enabled: boolean;
   configured: boolean;
+  credential_source: "CONNECTION_KEY" | "ENV_SERVICE_ACCOUNT";
   credential_writable: boolean;
+  supported_model_types: ("TEXT" | "IMAGE")[];
   use_responses_api: boolean;
   endpoint_templates: Record<string, string>;
   extra_headers: Record<string, string>;

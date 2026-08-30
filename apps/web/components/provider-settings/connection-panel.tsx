@@ -90,13 +90,6 @@ export function ConnectionPanel({
       refresh();
     },
   });
-  const discover = useMutation({
-    mutationFn: () => api.discoverProviderModels(connection.id),
-    onSuccess: (items) => {
-      setNotice(`已同步 ${items.length} 个模型；名称推断结果需验证后才参与自动路由`);
-      refresh();
-    },
-  });
   const test = useMutation({
     mutationFn: ({ model, testType }: {
       model?: ModelCapability;
@@ -112,9 +105,20 @@ export function ConnectionPanel({
         : { test_type: testType },
     ),
     onSuccess: (probe) => {
-      setNotice(`${probe.probe_type}：${probe.status} · ${probe.latency_ms ?? "—"} ms`);
+      setNotice(
+        probe.probe_type === "CREDENTIALS"
+          ? `连接测试完成 · ${probe.latency_ms ?? "—"} ms`
+          : `${probe.status === "PASSED" ? "测试通过" : "测试完成"} · ${probe.latency_ms ?? "—"} ms`,
+      );
       refresh();
     },
+  });
+  const toggleConnection = useMutation({
+    mutationFn: () => api.updateProviderConnection(connection.id, {
+      version: connection.version,
+      enabled: !connection.enabled,
+    }),
+    onSuccess: refresh,
   });
   const balance = useMutation({
     mutationFn: () => api.providerBalance(connection.id),
@@ -152,10 +156,10 @@ export function ConnectionPanel({
     onSuccess: refresh,
   });
 
-  const pending = saveKey.isPending || discover.isPending || test.isPending
-    || balance.isPending || addModel.isPending || removeKey.isPending;
+  const pending = saveKey.isPending || test.isPending || balance.isPending
+    || addModel.isPending || removeKey.isPending || toggleConnection.isPending;
   const keyError = saveKey.error ?? removeKey.error;
-  const actionError = test.error ?? discover.error ?? balance.error;
+  const actionError = test.error ?? balance.error ?? toggleConnection.error;
   const manualError = addModel.error;
 
   return (
@@ -175,7 +179,7 @@ export function ConnectionPanel({
         <span>{connection.latency_ms === null ? "延迟未测" : `${connection.latency_ms} ms`}</span>
         <span>{connection.message}</span>
       </div>
-      {connection.protocol !== "VERTEX_NATIVE" && (
+      {connection.credential_source === "CONNECTION_KEY" ? (
         <>
           <div className="provider-key-form">
             <input
@@ -235,6 +239,8 @@ export function ConnectionPanel({
             </p>
           )}
         </>
+      ) : (
+        <p className="provider-field-hint">凭据由服务端环境管理，不在此处录入密钥。</p>
       )}
       <div className="provider-actions">
         <button
@@ -242,14 +248,14 @@ export function ConnectionPanel({
           disabled={!connection.configured || pending}
           onClick={() => test.mutate({ testType: "CREDENTIALS" })}
         >
-          <ShieldCheck size={14} />验证凭据
+          <ShieldCheck size={14} />测试连接并同步目录
         </button>
         <button
           type="button"
-          disabled={!connection.configured || pending}
-          onClick={() => discover.mutate()}
+          disabled={pending}
+          onClick={() => toggleConnection.mutate()}
         >
-          <RefreshCw size={14} />同步模型
+          <RefreshCw size={14} />{connection.enabled ? "停用连接" : "启用连接"}
         </button>
         <button
           type="button"
@@ -285,7 +291,8 @@ export function ConnectionPanel({
         {modelsStatus === "ready" && visibleModels.map((model) => {
           const operations = model.operations.map(mapOperation);
           const extra = operations.length > 3 ? operations.length - 3 : 0;
-          const showImage = model.model_type === "IMAGE" && connection.protocol !== "ANTHROPIC";
+          const showImage = model.model_type === "IMAGE"
+            && (model.operations.includes("image_generate") || model.operations.includes("image_edit"));
           const showText = model.model_type === "TEXT";
           const showVision = model.model_type === "TEXT" && model.operations.includes("multimodal_analysis");
           return (
@@ -364,7 +371,7 @@ export function ConnectionPanel({
           onChange={(event) => setManualType(event.target.value as "TEXT" | "IMAGE")}
         >
           <option value="TEXT">文字模型</option>
-          {connection.protocol !== "ANTHROPIC" && <option value="IMAGE">图片模型</option>}
+          {connection.supported_model_types.includes("IMAGE") && <option value="IMAGE">图片模型</option>}
         </select>
         <button type="submit" disabled={!manualId.trim() || pending}>
           <Plus size={14} />添加模型

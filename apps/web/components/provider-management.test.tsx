@@ -34,7 +34,9 @@ function makeConnection(overrides: Partial<ProviderConnection> = {}): ProviderCo
     base_url: "https://api.openai.com/v1",
     enabled: true,
     configured: true,
+    credential_source: "CONNECTION_KEY",
     credential_writable: true,
+    supported_model_types: ["TEXT", "IMAGE"],
     use_responses_api: false,
     endpoint_templates: {},
     extra_headers: {},
@@ -168,18 +170,68 @@ describe("ProviderManagement 错误展示", () => {
     testConnection.mockRejectedValue(new Error("上游返回 401"));
     renderPlatform();
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "验证凭据" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "测试连接并同步目录" })).toBeEnabled();
     });
     fireEvent.change(screen.getByPlaceholderText("输入 API Key（不会回显）"), {
       target: { value: "sk-live-secret-should-not-render" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "验证凭据" }));
+    fireEvent.click(screen.getByRole("button", { name: "测试连接并同步目录" }));
     await waitFor(() => {
       expect(testConnection).toHaveBeenCalledWith("conn-1", { test_type: "CREDENTIALS" });
       expect(screen.getByText("上游返回 401")).toBeInTheDocument();
     });
     expect(document.body.textContent).toContain("上游返回 401");
     expect(document.body.textContent).not.toContain("sk-live-secret-should-not-render");
+  });
+
+  it("组合连接测试只调用一次后端动作，不额外触发模型发现", async () => {
+    const discoverModels = vi.spyOn(api, "discoverProviderModels").mockResolvedValue([]);
+    testConnection.mockResolvedValueOnce({
+      id: "probe-1",
+      connection_id: "conn-1",
+      model_id: null,
+      probe_type: "CREDENTIALS",
+      status: "PASSED",
+      latency_ms: 12,
+      metrics: { discovered_models: 2 },
+      error_code: null,
+      message: "ok",
+      created_at: new Date().toISOString(),
+    });
+    renderPlatform();
+    fireEvent.click(await screen.findByRole("button", { name: "测试连接并同步目录" }));
+    await waitFor(() => {
+      expect(testConnection).toHaveBeenCalledTimes(1);
+      expect(discoverModels).not.toHaveBeenCalled();
+    });
+    discoverModels.mockRestore();
+  });
+
+  it("账号型凭据按 credential_source 渲染，不依赖协议字符串", async () => {
+    providersApi.mockResolvedValueOnce([makeProvider({
+      connections: [makeConnection({
+        protocol: "OPENAI",
+        credential_source: "ENV_SERVICE_ACCOUNT",
+        credential_writable: false,
+        keys: [],
+        key_count: 0,
+      })],
+    })]);
+    renderPlatform();
+    expect(await screen.findByText("凭据由服务端环境管理，不在此处录入密钥。")).toBeInTheDocument();
+    expect(screen.queryByLabelText("API Key")).not.toBeInTheDocument();
+  });
+
+  it("连接启停携带版本并调用统一更新接口", async () => {
+    updateConnection.mockResolvedValueOnce(makeConnection({ enabled: false, version: 2 }));
+    renderPlatform();
+    fireEvent.click(await screen.findByRole("button", { name: "停用连接" }));
+    await waitFor(() => {
+      expect(updateConnection).toHaveBeenCalledWith("conn-1", {
+        version: 1,
+        enabled: false,
+      });
+    });
   });
 });
 
