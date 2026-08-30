@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Body, Depends
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -10,8 +10,6 @@ from app.services.model_availability import (
     connection_ids_with_usable_keys,
 )
 from app.services.provider_presets import ensure_provider_presets
-from app.services.vertex_health import get_or_create_health, health_read, verify_vertex
-from app.settings_schemas import VertexHealthRead, VertexVerifyRequest
 
 router = APIRouter()
 
@@ -69,19 +67,3 @@ def list_models(db: Session = Depends(get_db)) -> list[dict]:
             }
         )
     return catalog
-
-
-# Compatibility aliases retained for one release. Both use the persisted status
-# and never perform a model call on GET.
-@router.get("/vertex/status", response_model=VertexHealthRead)
-def vertex_status(db: Session = Depends(get_db)) -> VertexHealthRead:
-    settings = get_settings()
-    return health_read(get_or_create_health(db, settings), settings)
-
-
-@router.post("/vertex/verify", response_model=VertexHealthRead)
-def verify_vertex_credentials(
-    payload: VertexVerifyRequest | None = Body(default=None),
-    db: Session = Depends(get_db),
-) -> VertexHealthRead:
-    return verify_vertex(db, get_settings(), payload or VertexVerifyRequest())

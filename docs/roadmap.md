@@ -45,7 +45,7 @@
 
 - [ ] **V02-10（L2/L3）：移除 Vertex 的产品级首选地位。** Vertex/Gemini API、OpenAI/Anthropic 兼容供应商和后续 CLI 通道在模型目录、任务创建、自动路由、Dashboard 和空状态中使用同一套能力、健康度、凭据与用户优先级规则；不得把 Vertex 设为隐藏默认或兜底。保留原生适配器的技术差异，但不转化为 UI 排名优势。
   - [x] **V02-10A（L2，Issue #41）：契约地基。** 已落地 `credential_source` 派生层、协议错误分类器拆分、原生能力声明和 PowerShell 5.1 平权门禁；未改变现有任务路由行为。真实供应商未调用。
-  - [ ] **V02-10B（L2 后端，GLM 优先）：统一连接健康与验证。** 新增连接级 health/verify，按 capability 处理发现与 `MODEL_SMOKE`，保留旧端点兼容转发；不得调用真实供应商。依赖：V02-10A；验收：M1、M2、M4、M8。
+  - [x] **V02-10B（L2 后端）：统一连接健康与验证。** 已新增连接级 health/verify、协议能力声明和 `MODEL_SMOKE`；连接验证与目录同步分离，不支持发现的协议不再回显本地模型。旧设置端点转发统一服务，`/models/vertex/*` 已移除；73 项供应商/平台定向回归通过，未调用真实供应商。
   - [ ] **V02-10C（L3 迁移，组长设计/GLM 实现）：默认值、路由与 grandfather。** 仅进行已批准的项目别名可空性迁移，落实 legacy 规范化、目录优先、`auto_enable_pending` 与新旧安装规则；真实 PostgreSQL 升降级单独验收。依赖：V02-10A/B；验收：M3、M5–M7、M9。
   - [ ] **V02-10D（L2 前端/收尾）：删除产品级 Vertex 入口。** Dashboard、设置、帮助和项目选模改用统一连接/目录契约，删除前端专属请求与硬编码模型文案，更新架构/平台文档并收紧 allowlist。依赖：V02-10B/C；验收：M8–M14。
 - [ ] **V02-11（L2，Grok UI 优先）：重做供应商填写模块。** 前置审计已由 Issue #40 完成并随 `3bac6da` 合并，详见 `docs/v02-provider-settings-ui-audit.md`；V02-11A 已实现，B/C 仍待完成。

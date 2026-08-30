@@ -165,16 +165,6 @@ class ModelCapabilityRead(BaseModel):
     priority: int = 50
 
 
-class VertexStatusRead(BaseModel):
-    configured: bool
-    credential_file_present: bool
-    location: str
-    text_model: str
-    image_models: list[str]
-    verification: str
-    message: str
-
-
 class SourceImportRequest(BaseModel):
     title: str = Field(default="正文", min_length=1, max_length=200)
     text: str = Field(min_length=1, max_length=2_000_000)

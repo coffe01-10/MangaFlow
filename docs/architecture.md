@@ -102,15 +102,15 @@ Worker 启动统一经过 `apps/api/run_worker.py` / `app.worker`，与 API 共�
 
 ## 7. 多供应商模型适配
 
-`ProviderProfile → ProviderConnection → ProviderKey / AIModel` 构成供应商目录。连接定义协议、Base URL、端点模板、非敏感请求头、余额规则和健康状态；模型定义文字/图片类型、模态、操作、能力置信度与探测指标。兼容协议只允许 OpenAI 与 Anthropic；Vertex/Gemini 原生适配用于兼容已有部署。详细规则见 [`provider-platform.md`](provider-platform.md)。
+`ProviderProfile → ProviderConnection → ProviderKey / AIModel` 构成供应商目录。连接定义协议、Base URL、端点模板、非敏感请求头、余额规则和唯一健康状态；协议能力声明模型发现与支持的模型类型，凭据来源声明为连接 Key 或服务端环境账号。模型定义文字/图片类型、模态、操作、能力置信度与探测指标。OpenAI/Anthropic 兼容连接和 Vertex/Gemini 原生适配使用相同的连接健康、目录与验证契约，适配器内部仍保留真实传输差异。详细规则见 [`provider-platform.md`](provider-platform.md)。
 
-| 逻辑别名 | 默认 Vertex 模型 ID | 说明 |
+| 历史逻辑别名 | 兼容模型 ID | 说明 |
 | --- | --- | --- |
 | `text.fast` | `gemini-3.5-flash` | 结构化解析、剧本和多模态检查 |
 | `image.nano_banana_2` | `gemini-3.1-flash-image` | 与 Pro 平级的页面/资产/修复模型 |
 | `image.nano_banana_pro` | `gemini-3-pro-image-preview` | 与 NB2 平级的页面/资产/修复模型 |
 
-旧逻辑别名仍可用，但新任务会解析到目录模型 ID。自动路由只使用已完成能力测试的模型。模型错误统一归类为认证、权限、配额、限流、模型不可用、能力不支持、内容安全、超时、无效输出或上游错误。
+旧逻辑别名仍可用，但只作为历史解析入口；新任务记录目录模型 ID。连接凭据验证不生成内容，模型冒烟结果写入统一连接健康与 `ModelProbe`。模型发现只在协议能力声明允许时出现，不支持发现的连接使用预设或手动目录。自动路由只使用已完成能力测试的模型。模型错误统一归类为认证、权限、配额、限流、模型不可用、能力不支持、内容安全、超时、无效输出或上游错误。
 
 ## 8. 安全与可观测性
 

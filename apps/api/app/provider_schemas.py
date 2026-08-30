@@ -49,6 +49,8 @@ class ProviderConnectionRead(BaseModel):
     configured: bool
     credential_source: Literal["CONNECTION_KEY", "ENV_SERVICE_ACCOUNT"]
     credential_writable: bool
+    supports_model_discovery: bool
+    supports_balance: bool
     supported_model_types: list[Literal["TEXT", "IMAGE"]]
     use_responses_api: bool
     endpoint_templates: dict[str, str]
@@ -265,6 +267,40 @@ class ConnectionTestRequest(BaseModel):
         return self
 
 
+class ConnectionHealthRead(BaseModel):
+    connection_id: str
+    configured: bool
+    credential_source: Literal["CONNECTION_KEY", "ENV_SERVICE_ACCOUNT"]
+    supports_model_discovery: bool
+    supports_balance: bool
+    supported_model_types: list[Literal["TEXT", "IMAGE"]]
+    health_state: Literal[
+        "UNCONFIGURED", "CHECKING", "HEALTHY", "DEGRADED", "OFFLINE"
+    ]
+    last_checked_at: datetime | None
+    last_success_at: datetime | None
+    latency_ms: int | None
+    error_code: str | None
+    message: str
+
+
+class ConnectionVerifyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    level: Literal["CREDENTIALS", "MODEL_SMOKE"] = "CREDENTIALS"
+    catalog_model_id: str | None = None
+    acknowledge_cost: bool = False
+    runs: int = Field(default=1, ge=1, le=3)
+
+    @model_validator(mode="after")
+    def validate_level(self):
+        if self.level == "MODEL_SMOKE" and not self.catalog_model_id:
+            raise ValueError("模型冒烟测试必须选择目录模型")
+        if self.level == "CREDENTIALS" and self.catalog_model_id is not None:
+            raise ValueError("凭据验证不接受模型参数")
+        return self
+
+
 class ModelProbeRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -278,6 +314,11 @@ class ModelProbeRead(BaseModel):
     error_code: str | None
     message: str
     created_at: datetime
+
+
+class ConnectionVerifyResult(BaseModel):
+    health: ConnectionHealthRead
+    probe: ModelProbeRead
 
 
 class BalanceRead(BaseModel):

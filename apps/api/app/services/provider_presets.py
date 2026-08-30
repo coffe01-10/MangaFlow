@@ -7,6 +7,10 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings
 from app.models import AIModel, ProviderConnection, ProviderHealth, ProviderProfile
+from app.services.credential_source import (
+    ENV_SERVICE_ACCOUNT,
+    credential_source_for_protocol,
+)
 
 OPENAI_ENDPOINTS = {
     "models": "/models",
@@ -312,12 +316,17 @@ def ensure_provider_presets(
             )
             db.add(profile)
             db.flush()
+            environment_credentials_ready = (
+                credential_source_for_protocol(preset.protocol)
+                == ENV_SERVICE_ACCOUNT
+                and settings.vertex_configured
+            )
             connection = ProviderConnection(
                 provider_id=profile.id,
                 name="默认连接",
                 protocol=preset.protocol,
                 base_url=preset.base_url,
-                enabled=preset.key == "vertex-ai" and settings.vertex_configured,
+                enabled=environment_credentials_ready,
                 use_responses_api=preset.use_responses_api,
                 endpoint_templates=dict(preset.endpoint_templates),
                 extra_headers=dict(preset.extra_headers),
@@ -325,7 +334,7 @@ def ensure_provider_presets(
                 nonsecret_config={"preset_version": 1, "overridden_fields": []},
                 health_state=(
                     "DEGRADED"
-                    if preset.key == "vertex-ai" and settings.vertex_configured
+                    if environment_credentials_ready
                     else "UNCONFIGURED"
                 ),
                 message="等待配置与验证",
@@ -402,7 +411,10 @@ def _ensure_vertex_models(db: Session, settings: Settings) -> None:
             "output_modalities": ["TEXT"],
             "operations": ["structured_text", "multimodal_analysis"],
             "api_surfaces": ["GOOGLE_GENERATE_CONTENT"],
-            "capabilities": {"structured_output_mode": "STRICT_SCHEMA"},
+            "capabilities": {
+                "structured_output_mode": "STRICT_SCHEMA",
+                "supported_parameters": ["thinking_budget"],
+            },
         },
         {
             "legacy_alias": "image.nano_banana_2",
@@ -449,6 +461,3 @@ def _ensure_vertex_models(db: Session, settings: Settings) -> None:
                 **definition,
             )
             db.add(model)
-        else:
-            for key, value in definition.items():
-                setattr(model, key, value)
