@@ -94,10 +94,10 @@ V02-11 §9.2 问题 7（「不可用但仍设置为展示」的模型如何表�
 
 | 项 | 内容 |
 | --- | --- |
-| 请求 | `ModelVisibilityBatchUpdate: { model_ids: list[str]（1..100）, display_enabled: bool }` |
-| 响应 | HTTP 200，`ModelVisibilityBatchResult: { updated: list[str], failed: list[{ model_id, error_code, message }] }` |
+| 请求 | `ModelVisibilityBatchUpdate: { items: list[{ model_id: str, expected_version: int }]（1..100）, display_enabled: bool }` |
+| 响应 | HTTP 200，`ModelVisibilityBatchResult: { updated: list[{ model_id, version }], failed: list[{ model_id, error_code, message, current_version? }] }` |
 | 语义 | 幂等：把指定模型的展示偏好统一设为 `display_enabled`；每个模型独立 savepoint 更新，失败不回滚成功项 |
-| 乐观锁 | 不带 `version`：批量语义是「设为 X」，重复执行结果一致，无需版本校验；失败项返回错误码，前端刷新后重试 |
+| 乐观锁 | 每项必须携带 `expected_version`。版本不匹配返回该项 `VERSION_CONFLICT` 与 `current_version`，不得覆盖并发修改；若目标值已经相同，仍按幂等成功返回当前版本且不额外递增 |
 | 上限 | `model_ids` 1–100；超限 422 |
 | 禁止 | 不得接受/写入 `enabled` 或任何能力字段，不得重置 source/confidence |
 
@@ -106,6 +106,7 @@ V02-11 §9.2 问题 7（「不可用但仍设置为展示」的模型如何表�
 - 服务端对每个 model_id 独立 `begin_nested()`；失败原因归类：
   - `MODEL_NOT_FOUND`（404）：模型不存在或已被删除。
   - `CONNECTION_MISSING`：模型所属连接已被删除（理论罕见，防御性兜底）。
+  - `VERSION_CONFLICT`：`expected_version` 已过期；返回当前版本，前端刷新该行后由用户决定是否重试。
 - 单个失败不影响其他项；成功的写入各自独立提交。
 - 前端批量条（V02-11 §2.2 E3）：部分失败时保留勾选、逐行展示失败原因、提供「重试」；成功项从勾选移除。不得把部分失败升级为整体失败或静默吞掉。
 
@@ -136,6 +137,13 @@ def upgrade() -> None:
         )
 
 def downgrade() -> None:
+    hidden_count = op.get_bind().execute(
+        sa.text("SELECT COUNT(*) FROM ai_models WHERE display_enabled = false")
+    ).scalar_one()
+    if hidden_count:
+        raise RuntimeError(
+            "refusing downgrade: reset hidden model preferences before removing the column"
+        )
     op.drop_column("ai_models", "display_enabled")
 ```
 
@@ -143,7 +151,7 @@ def downgrade() -> None:
 
 - **零数据重写**：仅新增一列 + `server_default=true` 回填，不触碰任何既有列值、不读取凭据、不 import `Settings`（对齐 V02-02 的 M7 禁止条款）。
 - SQLite 兼容：新增 `NOT NULL + server_default` 列是 SQLite 直接支持的 `ADD COLUMN` 形式（无需 batch_alter 重建表）；`sa.true()` 与项目既有 `sa.false()` 用法（`20260714_01_revised_mvp_workflow.py:43`）一致。布尔列 `server_default=sa.true()` 对 PostgreSQL 与 SQLite 3.23+ 均有效。
-- **回滚语义**：`downgrade` 直接 drop 列，无数据保护要求（展示偏好是新增功能，回滚即撤销功能；用户隐藏偏好随之丢失属预期）。不需要「存在 NULL 拒绝降级」之类的保护（该模式只适用于可空化迁移的数据保护，见 V02-02 §5 Phase C）。
+- **回滚语义**：down 前必须确认所有行均为默认 `display_enabled=true`；存在任何隐藏偏好时以明确错误拒绝降级，要求先导出或显式恢复为显示。这样不会把用户配置静默丢弃。该列为 `NOT NULL`，迁移测试同时验证不存在 NULL；不得通过临时填值绕过保护。
 - 迁移通过前不编辑（本任务只给设计）；真实 PostgreSQL 升降级验收独立记录 `NOT RUN` 边界（沿用项目既有 PG 边界）。
 - 新列**不加索引**：设置页按 `connection_id`（已有 index，`models.py:960`）过滤模型，展示偏好数据量小且不参与筛选谓词。
 
@@ -213,6 +221,8 @@ def downgrade() -> None:
 - **V02-11（`2ab048f`）待决项收口**：本设计回答了 §9.2 问题 1（持久位置 = `AIModel.display_enabled`）、问题 2（管理读端点 = `GET /providers/connections/{id}/models`）、问题 3（批量端点 + 部分失败响应 = `PATCH /providers/models/visibility`）、问题 7（不可用但展示的模型 = 创作界面不出现、设置页显示「未就绪」）。
 - V02-11B 将「接入 V02-12 展示偏好」——其依赖 V02-12B 本契约落地；实现顺序为 V02-12B → V02-12C，V02-11B 等待二者。
 
+路由注册红线：静态 `PATCH /providers/models/visibility` 必须注册在现有动态 `PATCH /providers/models/{model_id}` 之前，否则 FastAPI 会把 `visibility` 当作模型 ID。M5 必须通过真实 ASGI 路由调用覆盖该顺序，不能只测 service。
+
 ---
 
 ## 6. 边界与非目标
@@ -231,10 +241,10 @@ def downgrade() -> None:
 | 编号 | 层 | 场景 | 类型 | 覆盖 |
 | --- | --- | --- | --- | --- |
 | M1 | 迁移 | 空库与含历史行库 `upgrade → downgrade → upgrade` 往返；`ai_models` 既有行回填 `display_enabled=true`，其他列逐字段不变；`model_call_attempts`/`generation_jobs` 等既有表结构不动 | 新增 pytest（迁移往返，沿用 `20260827_17` 风格） | B |
-| M2 | 迁移 | `downgrade` 后列消失、`upgrade` 后列恢复且默认 true | 新增 pytest | B |
+| M2 | 迁移 | 全部为 true 时 downgrade 后列消失、upgrade 后恢复且默认 true；存在任一 false 时 downgrade 明确拒绝且数据/列保持完整 | 新增 pytest | B |
 | M3 | 后端 | 隐藏模型仍可调用：`display_enabled=false` 的模型在 `resolve_model` 显式选择、`/models` 可用性、自动路由候选、任务创建中与隐藏前行为一致；`GenerationRecord`/`ModelCallAttempt` 真实 provider/model ID 不改写 | 新增 pytest（扩展 `test_multi_provider_platform`/`test_model_call_audit`） | B |
 | M4 | 后端 | 单条 PATCH 仅含 `display_enabled`：不重置 source/confidence，`VERIFIED` 保持自动路由资格；version 递增；与能力字段混合时按既有逻辑重置 MANUAL | 新增 pytest | B |
-| M5 | 后端 | 批量端点：全成功；部分失败（含 `MODEL_NOT_FOUND`、`CONNECTION_MISSING`）返回 `updated`/`failed` 明细且成功项已提交；`model_ids` 空或 >100 返回 422；幂等（重复调用结果一致）；载荷含 `enabled`/能力字段被拒绝（extra forbid） | 新增 pytest | B |
+| M5 | 后端 | 批量端点：全成功；部分失败（含 `MODEL_NOT_FOUND`、`CONNECTION_MISSING`、`VERSION_CONFLICT`）返回 `updated`/`failed` 明细且成功项已提交；items 空或 >100 返回 422；相同目标值重试不递增 version；过期 version 不覆盖；载荷含 `enabled`/能力字段被拒绝（extra forbid）；ASGI 测试确认静态 visibility 路由未被 `{model_id}` 截获 | 新增 pytest | B |
 | M6 | 后端 | 独立端点 `GET /providers/connections/{id}/models`：返回来源、confidence、last_verified_at、enabled、display_enabled；connection 不存在 404 | 新增 pytest | B |
 | M7 | 前端 | 生成台/工作流/项目设置过滤：`enabled && display_enabled` 才出现；当前已选隐藏模型豁免显示并可改选 | 修改 `generate-section.test.tsx`、`workflow-studio.test.tsx`、项目设置测试 | C |
 | M8 | 前端 | 三态分离（V02-11 V4）：分别构造展示隐藏、`AIModel.enabled=false`、派生 `/models.enabled=false`，断言 UI 与写入目标不混淆 | 修改 `provider-management.test.tsx` | C |
