@@ -7,6 +7,7 @@ import { ArrowLeft, Check, CircleAlert, Gauge, LoaderCircle, Save, ShieldCheck, 
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useState } from "react";
+import { creatorVisibleModels } from "@/lib/model-visibility";
 
 type ProjectDraft = Pick<Project, "workflow_mode" | "draft_resolution" | "default_resolution" | "default_concurrency" | "consistency_check_enabled" | "default_text_model_id" | "text_model_alias">;
 
@@ -28,6 +29,19 @@ export default function ProjectSettingsPage() {
       default_text_model_id: project.data.default_text_model_id,
       text_model_alias: project.data.text_model_alias,
     } : null);
+  const textModels = draft ? creatorVisibleModels(
+    (models.data ?? []).filter((model) => model.model_type === "TEXT" && model.operations.includes("structured_text") && model.operations.includes("multimodal_analysis")),
+    {
+      catalogIds: [draft.default_text_model_id],
+      logicalAliases: [draft.text_model_alias],
+    },
+  ) : [];
+  const currentTextModelValue = draft?.default_text_model_id ?? draft?.text_model_alias ?? "auto";
+  const textModelOptionValue = (catalogId: string, logicalAlias: string) =>
+    draft?.default_text_model_id === catalogId ? catalogId : logicalAlias === draft?.text_model_alias ? logicalAlias : catalogId;
+  const currentTextModelMissing = currentTextModelValue !== "auto" && !textModels.some((model) =>
+    textModelOptionValue(model.catalog_id, model.logical_alias) === currentTextModelValue,
+  );
 
   const save = useMutation({
     mutationFn: () => {
@@ -104,7 +118,7 @@ export default function ProjectSettingsPage() {
               const value = event.target.value;
               update("default_text_model_id", value === "auto" || value === "text.fast" ? null : value);
               update("text_model_alias", value === "auto" ? "auto" : "text.fast");
-            }}><option value="text.fast">兼容默认 · Gemini 3.5 Flash</option><option value="auto">自动路由 · 已验证文字/视觉模型</option>{(models.data ?? []).filter((model) => model.enabled && model.model_type === "TEXT" && model.operations.includes("structured_text") && model.operations.includes("multimodal_analysis") && model.logical_alias !== "text.fast").map((model) => <option key={model.catalog_id} value={model.catalog_id}>{model.provider} · {model.display_name}</option>)}</select></label>
+            }}><option value="auto">自动路由 · 已验证文字/视觉模型</option>{currentTextModelMissing ? <option value={currentTextModelValue}>当前配置 · {currentTextModelValue}</option> : null}{textModels.map((model) => <option key={model.catalog_id} value={textModelOptionValue(model.catalog_id, model.logical_alias)}>{model.provider} · {model.display_name}{!model.display_enabled ? "（已隐藏）" : ""}</option>)}</select></label>
           </section>
         </div> : <div className="loading-panel"><LoaderCircle className="spin" />读取项目设置…</div>}
         {saved && <p className="save-success floating"><Check size={15} />项目设置已保存</p>}

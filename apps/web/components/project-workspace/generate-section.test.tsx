@@ -229,6 +229,12 @@ function GenerateHarness() {
         id: "nano-2",
         provider: "vertex-ai",
       }]}
+      catalogModelOptions={[{
+        alias: "image.nano_banana_2",
+        name: "Nano Banana 2",
+        id: "nano-2",
+        provider: "vertex-ai",
+      }]}
       activeDrawModel="image.nano_banana_2"
       setDrawModel={() => undefined}
       openPreview={() => undefined}

@@ -33,6 +33,7 @@ import {
   type WorkflowRun,
 } from "@/lib/api";
 import { createWorkflowDraftSaver, type WorkflowDraftSaver, type WorkflowSaveStatus } from "@/lib/workflow-draft-save";
+import { creatorVisibleModels } from "@/lib/model-visibility";
 import {
   ArrowLeft,
   BoxSelect,
@@ -202,8 +203,6 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
   const workflows = useQuery({ queryKey: ["workflows", projectId], queryFn: () => api.workflows(projectId), staleTime: 20_000 });
   const catalog = useQuery({ queryKey: ["workflow-node-types"], queryFn: api.workflowNodeTypes, staleTime: 60 * 60_000 });
   const models = useQuery({ queryKey: ["models"], queryFn: api.models, staleTime: 30_000 });
-  const textModels = (models.data ?? []).filter((model) => model.enabled && model.model_type === "TEXT" && model.operations.includes("structured_text"));
-  const imageModels = (models.data ?? []).filter((model) => model.enabled && model.model_type === "IMAGE" && model.operations.includes("image_edit"));
   const chapters = useQuery({ queryKey: ["chapters", projectId], queryFn: () => api.chapters(projectId), staleTime: 20_000 });
   const activeChapter = scopeType === "CHAPTER" ? (scopeId || chapters.data?.[0]?.id || "") : chapters.data?.[0]?.id ?? "";
   const pages = useQuery({ queryKey: ["pages", activeChapter], queryFn: () => api.pages(activeChapter), enabled: Boolean(activeChapter), staleTime: 10_000 });
@@ -322,6 +321,14 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
   }, [buildGraph, projectId, queryClient]);
 
   const selected = nodes.find((node) => node.id === selectedId) ?? null;
+  const textModels = creatorVisibleModels(
+    (models.data ?? []).filter((model) => model.model_type === "TEXT" && model.operations.includes("structured_text")),
+    { logicalAliases: [selected?.data.graphNode.config.model_alias] },
+  );
+  const imageModels = creatorVisibleModels(
+    (models.data ?? []).filter((model) => model.model_type === "IMAGE" && model.operations.includes("image_edit")),
+    { logicalAliases: [drawModel] },
+  );
   const selectedTextModels = selected?.data.graphNode.type === "quality.inspect"
     ? textModels.filter((model) => model.operations.includes("multimodal_analysis"))
     : textModels;
