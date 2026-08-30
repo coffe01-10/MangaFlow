@@ -1,7 +1,7 @@
 # MangaFlow 主分支后续工作清单
 
 更新时间：2026-08-30
-当前主分支代码合并基线：`master` / `6bee9c1`（PR #36，2026-08-30）。P2-1 的五个拆分边界、P2-2 关键行为覆盖与 P2-3 模型调用尝试账本已合并；真实 PostgreSQL/Redis/RQ 和供应商边界仍按各自验收记录保留。
+当前主分支代码合并基线：`master` / `1e34b5a`（PR #37，2026-08-30）。P2-1 的五个拆分边界、P2-2 关键行为覆盖，以及 P2-3 模型调用尝试账本与版本化成本估算均已合并；真实 PostgreSQL/Redis/RQ 和供应商边界仍按各自验收记录保留。
 最近 `check:full` 历史基线：`master` / `cb324e3`（2026-08-27；相对 PR #5 合并提交 `d5d32ec` 仅增加任务文档），不代表 PR #6 / #7 / #10 / #11 已重跑浏览器验收。
 深审历史基线：`master` / `f085327`。当时新增 6 项 P1 修复与 1 项 P2 改进；PR #6 已合并其中 P1-7、P1-9～P1-12 的代码修复。P1-8、P2-8 已随 PR #7 合并，独立 Redis/RQ、PostgreSQL 与浏览器验收仍待完成。
 安全审查历史基线：`master` / `7635cf7`。P0-3、P1-13～P1-15、P2-4、P2-9 的代码修复现已合并，真实服务/容器及完整依赖审计边界仍保留。
@@ -331,13 +331,13 @@ PR #5 审查时有 17 个 Vitest 测试、165 个 Python 测试；仍需按关�
 
 ### P2-3 模型调用审计与成本可见性
 
-`ModelCallAttempt` 已能独立记录成功、失败、重试和路由切换中的每次实际供应商派发；任务列表的 `estimated_cost` 仍返回 `None`，版本化价格与估算展示继续由 Issue #25 跟踪。
+`ModelCallAttempt` 已能独立记录成功、失败、重试和路由切换中的每次实际供应商派发；任务列表现按调用发生时生效的不可变价格版本计算估算，并明确返回币种、完整度、价格版本与非账单说明。
 
 - 记录每次调用尝试的供应商、模型、request id、开始/结束时间、耗时、usage、错误码、是否重试和关联 job。
 - 根据供应商定价配置提供“估算”而非伪精确成本，并在 UI 中区分估算值与账单值。
 - 日志和导出继续禁止保存密钥、认证头和完整凭据路径。
 - [x] PR #36 / Issue #24：实现脱敏 `ModelCallAttempt` 账本、独立审计事务、只读 API 与 Alembic 迁移。GLM 一轮返工后，组长接管并统一 ORM/Alembic 索引、补完整 schema 所有权校验；合并后 master 的迁移 11 项和审计/provider/route-manifest/Worker 51 项定向回归通过。真实 PostgreSQL/Redis/RQ、供应商与浏览器门禁均为 NOT RUN。
-- [ ] Issue #25：实现版本化价格配置、估算 API 与明确标注“估算”的 UI。
+- [x] PR #37 / Issue #25：新增不可变的版本化价格配置与 Alembic 迁移，按每次实际派发时间估算输入/输出 token、输出图片及单次请求成本；重试和路由切换分别计入，缺少 usage/价格或混合币种时明确返回 `PARTIAL` / `UNAVAILABLE`，不伪造零成本或汇率。任务 API 与 UI 保留 `estimated_cost` 兼容面并增加币种、状态、价格版本和“估算值不等于供应商账单”说明。分支唯一一次 `npm run check` 通过：426 项 Python 通过、23 项真实集成跳过、120 项 Vitest 通过，ESLint/Ruff/TypeScript/Next.js 构建通过；合并后 master 再验证价格/迁移 22 项与任务面板 8 项。Playwright、真实 PostgreSQL/Redis/RQ 和供应商调用均为 NOT RUN。
 
 ### P2-4 上传与图片资源硬化
 
