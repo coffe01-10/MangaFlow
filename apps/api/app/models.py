@@ -5,6 +5,7 @@ from uuid import uuid4
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     DateTime,
     Enum,
     Float,
@@ -434,6 +435,69 @@ class GenerationRecord(Base):
     status: Mapped[str] = mapped_column(String(32), default="STARTED")
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ModelCallAttempt(Timestamped, Base):
+    """Durable, redacted audit row for one actual provider dispatch attempt.
+
+    Independent of the successful ``GenerationRecord``: a row is created before
+    the paid call and finalized afterwards. ``outcome`` stays ``NULL`` only when
+    a crash or unknown result left the attempt unfinalized.
+    """
+
+    __tablename__ = "model_call_attempts"
+    __table_args__ = (
+        UniqueConstraint("job_id", "job_attempt", "dispatch_no"),
+        Index("ix_model_call_attempts_job_started", "job_id", "started_at"),
+        Index("ix_model_call_attempts_outcome_started", "outcome", "started_at"),
+        Index("ix_model_call_attempts_catalog_model", "catalog_model_id"),
+        CheckConstraint(
+            "outcome IS NULL OR outcome IN ('SUCCEEDED', 'FAILED')",
+            name="ck_model_call_attempts_outcome",
+        ),
+        CheckConstraint("dispatch_no >= 1", name="ck_model_call_attempts_dispatch_no"),
+        CheckConstraint("job_attempt >= 1", name="ck_model_call_attempts_job_attempt"),
+        CheckConstraint(
+            "duration_ms IS NULL OR duration_ms >= 0",
+            name="ck_model_call_attempts_duration",
+        ),
+        CheckConstraint(
+            "NOT route_switched OR dispatch_no >= 2",
+            name="ck_model_call_attempts_route_switch",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("generation_jobs.id", ondelete="RESTRICT"), index=True
+    )
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    job_attempt: Mapped[int] = mapped_column(Integer)
+    dispatch_no: Mapped[int] = mapped_column(Integer)
+    route_switched: Mapped[bool] = mapped_column(Boolean, default=False)
+    outcome: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    provider: Mapped[str] = mapped_column(String(120))
+    model_id: Mapped[str] = mapped_column(String(128))
+    catalog_model_id: Mapped[str | None] = mapped_column(
+        ForeignKey("ai_models.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    connection_id: Mapped[str | None] = mapped_column(
+        ForeignKey("provider_connections.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    selected_key_id: Mapped[str | None] = mapped_column(
+        ForeignKey("provider_keys.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    request_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    usage: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    route_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    route_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
 class InspectionResult(Base):

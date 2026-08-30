@@ -291,11 +291,149 @@ def test_inspection_version_migration_preserves_unknown_legacy_results(tmp_path,
         column["name"] for column in inspect(engine).get_columns("inspection_results")
     }
     engine.dispose()
+
     command.upgrade(config, "head")
     with engine.connect() as connection:
         assert connection.execute(text("SELECT count(*) FROM inspection_results")).scalar_one() == 1
         assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
     engine.dispose()
+
+
+def test_model_call_attempts_migration_roundtrip(tmp_path, monkeypatch):
+    database_url = f"sqlite:///{(tmp_path / 'model-call-attempts.db').as_posix()}"
+    monkeypatch.setattr(get_settings(), "database_url", database_url)
+    config = Config("apps/api/alembic.ini")
+
+    command.upgrade(config, "20260827_17")
+    engine = create_engine(database_url)
+    assert "model_call_attempts" not in inspect(engine).get_table_names()
+    engine.dispose()
+
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    schema = inspect(engine)
+    assert "model_call_attempts" in schema.get_table_names()
+    assert {column["name"] for column in schema.get_columns("model_call_attempts")} >= {
+        "id",
+        "job_id",
+        "project_id",
+        "job_attempt",
+        "dispatch_no",
+        "route_switched",
+        "outcome",
+        "provider",
+        "model_id",
+        "catalog_model_id",
+        "connection_id",
+        "selected_key_id",
+        "request_id",
+        "started_at",
+        "finished_at",
+        "duration_ms",
+        "usage",
+        "route_reason",
+        "route_score",
+        "error_code",
+        "error_message",
+        "created_at",
+        "updated_at",
+    }
+    job_foreign_keys = {
+        tuple(item["constrained_columns"]): item
+        for item in schema.get_foreign_keys("model_call_attempts")
+    }
+    assert job_foreign_keys[("job_id",)]["options"].get("ondelete") == "RESTRICT"
+    indexes = {
+        index["name"]: set(index["column_names"])
+        for index in schema.get_indexes("model_call_attempts")
+    }
+    assert indexes["ix_model_call_attempts_job_started"] == {"job_id", "started_at"}
+    assert indexes["ix_model_call_attempts_outcome_started"] == {"outcome", "started_at"}
+    assert indexes["ix_model_call_attempts_catalog_model"] == {"catalog_model_id"}
+    unique = {
+        tuple(item["column_names"])
+        for item in schema.get_unique_constraints("model_call_attempts")
+    }
+    assert ("job_id", "job_attempt", "dispatch_no") in unique
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO projects (
+                    id, name, language, reading_direction, page_ratio,
+                    default_resolution, draft_resolution, workflow_mode,
+                    default_concurrency, ocr_enabled,
+                    consistency_check_enabled, default_style_id,
+                    text_model_alias, image_model_alias, deleted_at,
+                    created_at, updated_at, version
+                ) VALUES (
+                    'project-1', '账本迁移项目', 'zh-CN', 'rtl', 'b5_portrait',
+                    'STANDARD_2K', 'DRAFT_1K', 'SEMI_AUTO', 2, 0, 1, NULL,
+                    'text.fast', 'image.nano_banana_2', NULL,
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO generation_jobs (
+                    id, project_id, target_type, target_id, job_type, status,
+                    priority, attempt_count, max_attempts, request_parameters,
+                    progress, created_at, updated_at, version
+                ) VALUES (
+                    'job-1', 'project-1', 'WORKFLOW_NODE', 'node-1',
+                    'WORKFLOW_NODE', 'COMPLETED', 50, 1, 3, '{}', 100,
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO model_call_attempts (
+                    id, job_id, project_id, job_attempt, dispatch_no,
+                    route_switched, outcome, provider, model_id,
+                    started_at, finished_at, duration_ms, usage,
+                    created_at, updated_at
+                ) VALUES (
+                    'attempt-1', 'job-1', 'project-1', 1, 1,
+                    0, 'SUCCEEDED', 'preset', 'model-1',
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 120, NULL,
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO model_call_attempts (
+                    id, job_id, project_id, job_attempt, dispatch_no,
+                    route_switched, provider, model_id, started_at,
+                    created_at, updated_at
+                ) VALUES (
+                    'attempt-2', 'job-1', 'project-1', 1, 2,
+                    1, 'preset', 'model-1', CURRENT_TIMESTAMP,
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """
+            )
+        )
+    engine.dispose()
+
+    command.downgrade(config, "20260827_17")
+    engine = create_engine(database_url)
+    assert "model_call_attempts" not in inspect(engine).get_table_names()
+    engine.dispose()
+
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    assert "model_call_attempts" in inspect(engine).get_table_names()
+    engine.dispose()
+
 
 def test_programmatic_migrations_use_supplied_connection_without_default_engine(
     tmp_path, monkeypatch
