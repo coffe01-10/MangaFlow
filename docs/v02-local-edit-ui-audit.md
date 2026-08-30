@@ -127,7 +127,9 @@
 
 不得把局部确认接到现有 `generateCandidate`（整页）或把「修复 PAGE」当默认降级。
 
-若 V02-44 判定模型 **仅支持整图**：
+入口不得只检查笼统的 `image_edit`。它必须根据本次交互分别要求模型级 `accepts_explicit_mask` 或 `supports_instruction_region_edit`；需要区域外像素保证时还必须有 `preserves_outside_region=true`。UNKNOWN 与不支持均不得发起付费局部请求。
+
+若 V02-44 判定模型 **仅支持整图参考重绘**：
 
 - 预览写：「当前模型不能按选区重绘。可选：① 换支持 mask/edit 的模型；② 取消；③ **明确确认**整格/整页重绘（会丢掉未选区域的像素保证）。」
 - ③ 必须单独 confirm，文案含「不是局部编辑」。
