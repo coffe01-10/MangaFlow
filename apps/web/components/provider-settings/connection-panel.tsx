@@ -2,6 +2,7 @@
 
 import {
   api,
+  type ModelCapability,
   type ModelVisibilityBatchResult,
   type ProviderConnection,
   type ProviderModel,
@@ -37,6 +38,7 @@ export function ConnectionPanel({
   capability,
   verifiedOnly,
   showHidden,
+  catalog,
   autoFocusKey,
   onKeyFocused,
 }: {
@@ -45,6 +47,7 @@ export function ConnectionPanel({
   capability: CapabilityFilter;
   verifiedOnly: boolean;
   showHidden: boolean;
+  catalog: ModelCapability[];
   autoFocusKey: boolean;
   onKeyFocused: () => void;
 }) {
@@ -388,6 +391,8 @@ export function ConnectionPanel({
           </div>
         )}
         {visibleModels.map((model) => {
+          const capabilityModel = catalog.find((item) => item.catalog_id === model.id);
+          const derivedUnavailable = capabilityModel?.enabled === false;
           const operations = model.operations.map(mapOperation);
           const extra = operations.length > 3 ? operations.length - 3 : 0;
           const isImage = model.output_modalities.includes("IMAGE")
@@ -421,6 +426,7 @@ export function ConnectionPanel({
                   {model.model_type === "IMAGE" ? "图片" : "文字"} · {model.provider_model_id}
                   {!model.display_enabled ? " · 已隐藏" : ""}
                   {!model.enabled ? " · 不可调用" : ""}
+                  {model.enabled && derivedUnavailable ? " · 未就绪" : ""}
                 </span>
                 <small>
                   {mapConfidence(model.confidence)} · 来源 {model.source}
@@ -440,7 +446,7 @@ export function ConnectionPanel({
                 <button
                   type="button"
                   className={isImage ? "paid-check" : undefined}
-                  disabled={!model.enabled || !connection.configured || modelActionPending}
+                  disabled={!model.enabled || derivedUnavailable || !connection.configured || modelActionPending}
                   onClick={(event) => {
                     if (isImage) {
                       triggerRef.current = event.currentTarget;

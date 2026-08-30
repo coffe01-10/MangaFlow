@@ -32,6 +32,8 @@ const discoverModels = vi.spyOn(api, "discoverProviderModels");
 const updateVisibility = vi.spyOn(api, "updateProviderModelVisibility");
 const updateVisibilityBatch = vi.spyOn(api, "updateProviderModelVisibilityBatch");
 const updateConnection = vi.spyOn(api, "updateProviderConnection");
+const saveProviderKey = vi.spyOn(api, "saveProviderKey");
+const createProviderModel = vi.spyOn(api, "createProviderModel");
 
 const stylesheet = readFileSync(resolve(process.cwd(), "app/globals.css"), "utf8");
 const settingsPageSource = readFileSync(resolve(process.cwd(), "app/settings/page.tsx"), "utf8");
@@ -188,6 +190,8 @@ beforeEach(() => {
   discoverModels.mockReset();
   updateVisibility.mockReset();
   updateVisibilityBatch.mockReset();
+  saveProviderKey.mockReset();
+  createProviderModel.mockReset();
 });
 
 describe("ProviderManagement 错误展示", () => {
@@ -482,6 +486,124 @@ describe("V02-11B 统一连接与模型目录", () => {
     expect(settingsPageSource).not.toContain("VERTEX AI / PROVIDER");
     expect(settingsPageSource).not.toContain("Nano Banana");
   });
+
+  it("C4 同步发现结果后显示推断模型与待验证状态", async () => {
+    const inferred = makeProviderModel({
+      id: "inferred-1",
+      provider_model_id: "inferred-1",
+      display_name: "Inferred One",
+      confidence: "INFERRED",
+    });
+    discoverModels.mockImplementation(async () => {
+      providerModelsApi.mockResolvedValue([inferred]);
+      return [inferred];
+    });
+    renderPlatform();
+    fireEvent.click(await screen.findByRole("button", { name: "同步模型" }));
+    expect(await screen.findByText("Inferred One")).toBeInTheDocument();
+    expect(screen.getByText(/推断\/待验证/)).toBeInTheDocument();
+  });
+
+  it("C6 手工添加模型后清空 ID，并可被仅已验证筛掉", async () => {
+    const manual = makeProviderModel({
+      id: "manual-1",
+      provider_model_id: "manual-text-1",
+      display_name: "Manual Text",
+      confidence: "MANUAL",
+      source: "MANUAL",
+    });
+    createProviderModel.mockImplementation(async () => {
+      providerModelsApi.mockResolvedValue([manual]);
+      return manual;
+    });
+    renderPlatform();
+    const idInput = await screen.findByLabelText("上游模型 ID");
+    fireEvent.change(idInput, { target: { value: "manual-text-1" } });
+    fireEvent.change(screen.getByLabelText("显示名"), { target: { value: "Manual Text" } });
+    fireEvent.click(screen.getByRole("button", { name: "添加模型" }));
+    await waitFor(() => {
+      expect(createProviderModel).toHaveBeenCalledWith("conn-1", expect.objectContaining({
+        provider_model_id: "manual-text-1",
+        display_name: "Manual Text",
+        model_type: "TEXT",
+      }));
+      expect(idInput).toHaveValue("");
+      expect(idInput).toHaveFocus();
+    });
+    expect(await screen.findByText("Manual Text")).toBeInTheDocument();
+    expect(screen.getByText(/待验证/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("checkbox", { name: "仅已验证" }));
+    expect(screen.queryByText("Manual Text")).not.toBeInTheDocument();
+  });
+
+  it("C7 图片测试取消时不发请求，确认时才携带费用确认", async () => {
+    providerModelsApi.mockResolvedValue([makeProviderModel({
+      id: "image-1",
+      provider_model_id: "image-1",
+      display_name: "Image One",
+      model_type: "IMAGE",
+      output_modalities: ["IMAGE"],
+      operations: ["image_generate"],
+    })]);
+    renderPlatform();
+    fireEvent.click(await screen.findByRole("button", { name: "测试图片" }));
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(verifyConnection).not.toHaveBeenCalled();
+  });
+
+  it("C8 Anthropic 文字连接不提供图片模型类型或图片测试", async () => {
+    providersApi.mockResolvedValue([makeProvider({
+      connections: [makeConnection({
+        protocol: "ANTHROPIC",
+        supported_model_types: ["TEXT"],
+      })],
+    })]);
+    providerModelsApi.mockResolvedValue([makeProviderModel()]);
+    renderPlatform();
+    const type = await screen.findByLabelText("模型类型");
+    expect(within(type).queryByRole("option", { name: "图片模型" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "测试图片" })).not.toBeInTheDocument();
+  });
+
+  it("V4 分开展示隐藏、持久停用和派生未就绪三种状态", async () => {
+    const hidden = makeProviderModel({ id: "hidden", provider_model_id: "hidden", display_name: "Hidden", display_enabled: false });
+    const disabled = makeProviderModel({ id: "disabled", provider_model_id: "disabled", display_name: "Disabled", enabled: false });
+    const unready = makeProviderModel({ id: "unready", provider_model_id: "unready", display_name: "Unready", enabled: true });
+    providerModelsApi.mockResolvedValue([hidden, disabled, unready]);
+    modelsApi.mockResolvedValue([
+      makeModel({ catalog_id: "hidden", model_id: "hidden", display_enabled: false }),
+      makeModel({ catalog_id: "disabled", model_id: "disabled", enabled: false }),
+      makeModel({ catalog_id: "unready", model_id: "unready", enabled: false }),
+    ]);
+    renderPlatform();
+    expect(await screen.findByText("Disabled")).toBeInTheDocument();
+    expect(screen.getByText(/disabled · 不可调用/)).toBeInTheDocument();
+    const unreadyRow = screen.getByText("Unready").closest("article");
+    expect(unreadyRow).not.toBeNull();
+    expect(within(unreadyRow!).getByText(/unready · 未就绪/)).toBeInTheDocument();
+    expect(within(unreadyRow!).getByRole("button", { name: "测试文本" })).toBeDisabled();
+    expect(screen.queryByText("Hidden")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("checkbox", { name: "显示已隐藏" }));
+    expect(await screen.findByText("Hidden")).toBeInTheDocument();
+    expect(screen.getByText(/hidden · 已隐藏/)).toBeInTheDocument();
+  });
+
+  it("S1-S5 密钥只显示 hint，输入为密码且保存后清空明文", async () => {
+    saveProviderKey.mockResolvedValue(makeConnection().keys[0]);
+    renderPlatform();
+    expect(await screen.findByText(/sk-\*\*\*\*1234/)).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("sk-live-");
+    const input = screen.getByLabelText("API Key");
+    expect(input).toHaveAttribute("type", "password");
+    fireEvent.change(input, { target: { value: "sk-live-never-render" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存密钥" }));
+    await waitFor(() => {
+      expect(saveProviderKey).toHaveBeenCalledWith("conn-1", "default", "sk-live-never-render");
+      expect(input).toHaveValue("");
+      expect(screen.getByText("密钥已保存")).toBeInTheDocument();
+    });
+    expect(document.body.textContent).not.toContain("sk-live-never-render");
+  });
 });
 
 describe("供应商生命周期", () => {
@@ -687,6 +809,44 @@ describe("供应商生命周期", () => {
     await waitFor(() => {
       expect(screen.getByText("内置供应商只能停用，不能删除")).toBeInTheDocument();
     });
+  });
+
+  it("P12 人工停用账号型连接只发送显式 enabled=false", async () => {
+    providersApi.mockResolvedValue([makeProvider({
+      connections: [makeConnection({
+        credential_source: "ENV_SERVICE_ACCOUNT",
+        credential_writable: false,
+        keys: [],
+        key_count: 0,
+      })],
+    })]);
+    updateConnection.mockResolvedValue(makeConnection({ enabled: false, version: 2 }));
+    renderPlatform();
+    fireEvent.click(await screen.findByRole("button", { name: "停用连接" }));
+    await waitFor(() => {
+      expect(updateConnection).toHaveBeenCalledWith("conn-1", { version: 1, enabled: false });
+    });
+  });
+
+  it("P13 账号型凭据暂不可见时保持启用且不擅自 PATCH", async () => {
+    providersApi.mockResolvedValue([makeProvider({
+      connections: [makeConnection({
+        enabled: true,
+        configured: false,
+        credential_source: "ENV_SERVICE_ACCOUNT",
+        credential_writable: false,
+        health_state: "DEGRADED",
+        message: "服务账号暂不可见",
+        keys: [],
+        key_count: 0,
+      })],
+    })]);
+    renderPlatform();
+    fireEvent.click(await screen.findByRole("button", { name: /未配置/ }));
+    fireEvent.click(screen.getByRole("button", { name: /OpenAI/ }));
+    expect(await screen.findByText(/凭据由服务端环境管理；当前未就绪/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "停用连接" })).toBeInTheDocument();
+    expect(updateConnection).not.toHaveBeenCalled();
   });
 });
 

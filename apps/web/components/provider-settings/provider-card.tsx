@@ -1,6 +1,6 @@
 "use client";
 
-import type { ProviderProfile } from "@/lib/api";
+import type { ModelCapability, ProviderProfile } from "@/lib/api";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useState } from "react";
 
@@ -18,6 +18,7 @@ export function ProviderCard({
   capability,
   verifiedOnly,
   showHidden,
+  catalog,
   autoFocusKey,
   onKeyFocused,
 }: {
@@ -28,6 +29,7 @@ export function ProviderCard({
   capability: CapabilityFilter;
   verifiedOnly: boolean;
   showHidden: boolean;
+  catalog: ModelCapability[];
   autoFocusKey: boolean;
   onKeyFocused: () => void;
 }) {
@@ -85,6 +87,7 @@ export function ProviderCard({
               capability={capability}
               verifiedOnly={verifiedOnly}
               showHidden={showHidden}
+              catalog={catalog}
               autoFocusKey={autoFocusKey}
               onKeyFocused={onKeyFocused}
             />

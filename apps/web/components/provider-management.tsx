@@ -100,6 +100,7 @@ export function ProviderManagement() {
           capability={capability}
           verifiedOnly={verifiedOnly}
           showHidden={showHidden}
+          catalog={catalog}
           focusProviderId={focusProviderId}
           onKeyFocused={clearFocus}
         />
@@ -115,6 +116,7 @@ export function ProviderManagement() {
           capability={capability}
           verifiedOnly={verifiedOnly}
           showHidden={showHidden}
+          catalog={catalog}
           focusProviderId={focusProviderId}
           onKeyFocused={clearFocus}
         />
@@ -130,6 +132,7 @@ export function ProviderManagement() {
           capability={capability}
           verifiedOnly={verifiedOnly}
           showHidden={showHidden}
+          catalog={catalog}
           focusProviderId={focusProviderId}
           onKeyFocused={clearFocus}
         />
