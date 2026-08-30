@@ -99,8 +99,8 @@ UI 文案（对齐 V02-11 文案原则，枚举不进主界面）：`未安装` 
 
 ### 4.4 启用语义
 
-- 通道 `enabled` 由探测驱动：首次探测 `AVAILABLE` → `enabled=true`（`confidence=DECLARED`）；探测 `UNAVAILABLE/UNAUTHENTICATED/UNSUPPORTED` → `enabled=false` 并持久化原因。
-- 人工 `enable/disable` 覆盖探测结果（用户可显式停用通道）；探测失败不自动 `enabled=true→false`（对齐账号型"凭据暂时缺失不自动停用"的既有语义）。
+- 新通道初始 `enabled=false`；探测 AVAILABLE 只更新 readiness/confidence，用户明确启用后才可调度。后续探测失败只把 readiness 置为不可用并持久化原因，不修改人工 enabled；临时不可见恢复后也不得自行启用。
+- 人工 enable/disable 始终是唯一 enabled 写入来源；调度资格为 `enabled && readiness=AVAILABLE`。
 
 ---
 
@@ -121,7 +121,7 @@ storage/cli_runs/{run_id}/
 ```
 
 - 目录创建后写入随机 `token` 到 `journal.json`；后续所有路径解析（输入/输出/回收）用 token 校验目录归属，拒绝 symlink/junction 逃逸（§9.3）。
-- **允许访问范围**：CLI 进程只能看到 `workspace/`（cwd）+ `input/`（只读）；**不得**把 `uploads/`、`storage/generated/`、源码目录、凭据文件等任何项目路径传入。参考图通过 `input/references/` 受控复制（sha256 去重 + 尺寸上限复用 `Asset` 安全面）。
+- **传参范围而非安全沙箱**：执行器只把 workspace/input 路径传给 CLI，并受控复制参考图；cwd 不能限制同一 Windows 用户令牌对其他目录的访问。首发必须明确标注“目录约定隔离”，不能声称 CLI 只能看到该目录。若要求强文件系统隔离，需另立受限令牌/AppContainer/ACL 方案并做安全验收。
 
 ### 5.2 输入输出文件所有权
 
@@ -167,7 +167,7 @@ storage/cli_runs/{run_id}/
 
 ### 6.3 stdout/stderr 编码与日志脱敏
 
-- **编码强制 UTF-8**：Windows PowerShell 5.1/部分 CLI 默认 GBK/CP936，命令输出需以 `errors="replace"` + UTF-8 解码读取，防止混合编码损坏日志（V02-02 已记录 Windows 混合编码陷阱；对齐 AGENTS.md 对 Grok 的混合编码审查项）。
+- **编码保真**：先按 bytes 保存限长诊断副本；每个 CLI 适配器声明输出编码，BOM/明确配置优先，Windows 遗留工具可回退 CP936。不得把 GBK 强制按 UTF-8 `errors=replace` 后丢失证据；无法判定时展示替换文本但保留原始 bytes checksum。
 - **日志脱敏**：
   - 命令字符串只记录**参数化后的 argv 摘要**（`<cli> <op> <run_id>`），不记录完整命令行含秘密参数；
   - stdout/stderr 截断（≤8KB）并跳过疑似 token 行（含 `sk-`、`token`、`authorization` 前缀，复用 `secret_hint`/脱敏模式）；
@@ -190,13 +190,14 @@ storage/cli_runs/{run_id}/
 ### 7.3 退出码与崩溃
 
 - 退出码 `0` + `result.json SUCCEEDED` = 成功；非零退出码映射到统一错误分类器（`CONFIGURATION`/`UPSTREAM`/`RATE_LIMIT` 等，复用码集）；**退出码为 0 但 `result.json` 缺失/无效** = `FAILED(UNKNOWN_RESULT)`（§7.4）。
-- 崩溃（无退出码、进程消失）：journal 标记 `state=crashed`，工作目录保留证据；`ModelCallAttempt.outcome=NULL`（crash 未收尾），下次启动 `recover_stopped_tree` 类恢复扫描。
+- child 崩溃但 controller 仍存活并检测到退出：finalize 为 FAILED(CRASH)。只有 controller 自身死亡、无法执行 finalize 时 attempt 才保持 outcome=NULL，并由恢复扫描标记为未知待核对。
 
 ### 7.4 失败与部分输出语义
 
 | 场景 | 判定 | 采用 |
 | --- | --- | --- |
-| 崩溃/挂起 | `FAILED(CRASH)` / `FAILED(TIMEOUT)` | 不采用 |
+| child 崩溃/挂起且 controller 存活 | `FAILED(CRASH)` / `FAILED(TIMEOUT)` | 不采用 |
+| controller 死亡无法 finalize | `outcome=NULL`（unknown） | 不采用，等待恢复扫描 |
 | 部分输出（result.json 成功但 images 缺失/数量不足） | `FAILED(PARTIAL_OUTPUT)` | 不采用部分图 |
 | 无效 JSON（result.json 解析失败） | `FAILED(INVALID_OUTPUT)` | 不采用 |
 | 未知结果（进程退出但无 result.json） | `FAILED(UNKNOWN_RESULT)` | 不采用，保留工作目录证据 |
@@ -251,7 +252,7 @@ storage/cli_runs/{run_id}/
 
 ### 10.2 环境变量
 
-- CLI 进程 env 用**显式白名单**构造（SystemRoot/WINDIR/TEMP/TMP/PYTHONDONTWRITEBYTECODE + 最小 PATH），**不继承完整父环境**；禁止覆盖受保护键（对齐 `owned_processes.py:335-340`）。
+- CLI 进程 env 用显式白名单构造，不继承完整父环境。除 SystemRoot/WINDIR/TEMP/TMP/PATH 外，每个 CLI 适配器必须声明其只读会话发现需求；需要 USERPROFILE/APPDATA/LOCALAPPDATA 时按该 CLI 单独放行，不能一边拒绝这些路径一边期待复用登录态。应用不读取其中 token，只把已批准的发现根传给子进程。
 - 代理/镜像变量（HTTP_PROXY 等）按项目既有设置决定是否注入，不默认继承。
 
 ### 10.3 命令注入
