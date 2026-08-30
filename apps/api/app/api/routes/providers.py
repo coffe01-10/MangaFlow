@@ -27,6 +27,8 @@ from app.provider_schemas import (
     ModelPricingVersionCreate,
     ModelPricingVersionRead,
     ModelProbeRead,
+    ModelVisibilityBatchResult,
+    ModelVisibilityBatchUpdate,
     ProviderConnectionRead,
     ProviderCreate,
     ProviderKeyRead,
@@ -54,8 +56,10 @@ from app.services.provider_catalog import (
     create_model,
     delete_provider_key,
     discover_models,
+    list_models_for_connection,
     list_provider_views,
     read_balance,
+    set_model_visibility_bulk,
     update_connection,
     update_model,
     update_provider,
@@ -239,6 +243,26 @@ def post_model(
     connection_id: str, payload: ProviderModelCreate, db: Session = Depends(get_db)
 ) -> AIModel:
     return create_model(db, connection_id, payload)
+
+
+@router.get(
+    "/connections/{connection_id}/models",
+    response_model=list[ProviderModelRead],
+)
+def get_connection_models(
+    connection_id: str, db: Session = Depends(get_db)
+) -> list[AIModel]:
+    return list_models_for_connection(db, connection_id)
+
+
+@router.patch(
+    "/models/visibility",
+    response_model=ModelVisibilityBatchResult,
+)
+def patch_model_visibility(
+    payload: ModelVisibilityBatchUpdate, db: Session = Depends(get_db)
+) -> dict[str, list[dict[str, object]]]:
+    return set_model_visibility_bulk(db, payload)
 
 
 @router.patch("/models/{model_id}", response_model=ProviderModelRead)

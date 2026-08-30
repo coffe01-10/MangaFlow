@@ -148,6 +148,7 @@ class ProviderModelRead(BaseModel):
     source: str
     confidence: str
     enabled: bool
+    display_enabled: bool
     priority: int
     success_rate: float | None
     median_latency_ms: int | None
@@ -182,8 +183,42 @@ class ProviderModelUpdate(BaseModel):
     capabilities: dict[str, Any] | None = None
     pricing: dict[str, Any] | None = None
     enabled: bool | None = None
+    display_enabled: bool | None = None
     priority: int | None = Field(default=None, ge=0, le=100)
     version: int = Field(ge=1)
+
+
+class ModelVisibilityBatchItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model_id: str = Field(min_length=1, max_length=36)
+    expected_version: int = Field(ge=1)
+
+
+class ModelVisibilityBatchUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[ModelVisibilityBatchItem] = Field(min_length=1, max_length=100)
+    display_enabled: bool
+
+
+class ModelVisibilityUpdatedItem(BaseModel):
+    model_id: str
+    version: int
+
+
+class ModelVisibilityFailedItem(BaseModel):
+    model_id: str
+    error_code: Literal[
+        "MODEL_NOT_FOUND", "CONNECTION_MISSING", "VERSION_CONFLICT"
+    ]
+    message: str
+    current_version: int | None = None
+
+
+class ModelVisibilityBatchResult(BaseModel):
+    updated: list[ModelVisibilityUpdatedItem]
+    failed: list[ModelVisibilityFailedItem]
 
 
 class _ModelPricingVersionFields(BaseModel):

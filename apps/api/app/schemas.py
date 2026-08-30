@@ -161,6 +161,7 @@ class ModelCapabilityRead(BaseModel):
     regions: list[str]
     confidence: str = "VERIFIED"
     enabled: bool = True
+    display_enabled: bool = True
     auto_eligible: bool = False
     priority: int = 50
 

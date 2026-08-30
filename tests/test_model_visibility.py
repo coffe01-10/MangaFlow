@@ -1,0 +1,245 @@
+from datetime import UTC, datetime
+
+from app.config import get_settings
+from app.models import AIModel, ProviderConnection, ProviderProfile
+from app.services.model_router import resolve_model
+
+
+def _connection(db_session, *, protocol: str = "OPENAI") -> ProviderConnection:
+    profile = ProviderProfile(
+        name=f"展示偏好供应商-{protocol}",
+        category="CUSTOM",
+        enabled=True,
+    )
+    db_session.add(profile)
+    db_session.flush()
+    connection = ProviderConnection(
+        provider_id=profile.id,
+        name="展示偏好连接",
+        protocol=protocol,
+        base_url=(
+            "vertex://visibility-test"
+            if protocol == "VERTEX_NATIVE"
+            else "https://visibility.example.com/v1"
+        ),
+        enabled=True,
+        health_state="HEALTHY",
+    )
+    db_session.add(connection)
+    db_session.flush()
+    return connection
+
+
+def _model(
+    db_session,
+    connection: ProviderConnection,
+    provider_model_id: str,
+    *,
+    display_enabled: bool = True,
+    version: int = 1,
+) -> AIModel:
+    model = AIModel(
+        connection_id=connection.id,
+        provider_model_id=provider_model_id,
+        display_name=provider_model_id,
+        model_type="TEXT",
+        input_modalities=["TEXT"],
+        output_modalities=["TEXT"],
+        operations=["structured_text"],
+        source="DISCOVERED",
+        confidence="VERIFIED",
+        enabled=True,
+        display_enabled=display_enabled,
+        priority=100,
+        version=version,
+        last_verified_at=datetime.now(UTC),
+    )
+    db_session.add(model)
+    db_session.commit()
+    return model
+
+
+def test_single_visibility_patch_preserves_capability_metadata(client, db_session):
+    connection = _connection(db_session)
+    model = _model(db_session, connection, "single-visibility")
+
+    hidden = client.patch(
+        f"/api/v1/providers/models/{model.id}",
+        json={"display_enabled": False, "version": model.version},
+    )
+
+    assert hidden.status_code == 200
+    hidden_body = hidden.json()
+    assert hidden_body["display_enabled"] is False
+    assert hidden_body["version"] == 2
+    assert hidden_body["source"] == "DISCOVERED"
+    assert hidden_body["confidence"] == "VERIFIED"
+
+    mixed = client.patch(
+        f"/api/v1/providers/models/{model.id}",
+        json={
+            "display_enabled": True,
+            "display_name": "手工名称",
+            "version": hidden_body["version"],
+        },
+    )
+
+    assert mixed.status_code == 200
+    mixed_body = mixed.json()
+    assert mixed_body["display_enabled"] is True
+    assert mixed_body["display_name"] == "手工名称"
+    assert mixed_body["source"] == "MANUAL"
+    assert mixed_body["confidence"] == "MANUAL"
+
+
+def test_connection_model_management_list_includes_visibility(client, db_session):
+    connection = _connection(db_session)
+    hidden = _model(
+        db_session,
+        connection,
+        "managed-hidden",
+        display_enabled=False,
+    )
+
+    response = client.get(
+        f"/api/v1/providers/connections/{connection.id}/models"
+    )
+
+    assert response.status_code == 200
+    row = next(item for item in response.json() if item["id"] == hidden.id)
+    assert row["display_enabled"] is False
+    assert row["enabled"] is True
+    assert row["source"] == "DISCOVERED"
+    assert row["confidence"] == "VERIFIED"
+    assert row["last_verified_at"] is not None
+    missing = client.get(
+        "/api/v1/providers/connections/missing-connection/models"
+    )
+    assert missing.status_code == 404
+
+
+def test_visibility_batch_partially_succeeds_and_is_idempotent(client, db_session):
+    connection = _connection(db_session)
+    changed = _model(db_session, connection, "batch-change")
+    already_hidden = _model(
+        db_session,
+        connection,
+        "batch-idempotent",
+        display_enabled=False,
+        version=3,
+    )
+    stale = _model(db_session, connection, "batch-stale", version=2)
+    orphan = _model(db_session, connection, "batch-orphan")
+
+    raw_connection = db_session.connection()
+    raw_connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+    raw_connection.exec_driver_sql(
+        "UPDATE ai_models SET connection_id = ? WHERE id = ?",
+        ("missing-connection", orphan.id),
+    )
+    db_session.commit()
+    raw_connection = db_session.connection()
+    raw_connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+    db_session.commit()
+    db_session.expire_all()
+
+    response = client.patch(
+        "/api/v1/providers/models/visibility",
+        json={
+            "items": [
+                {"model_id": changed.id, "expected_version": 1},
+                {"model_id": already_hidden.id, "expected_version": 1},
+                {"model_id": stale.id, "expected_version": 1},
+                {"model_id": "missing-model", "expected_version": 1},
+                {"model_id": orphan.id, "expected_version": 1},
+            ],
+            "display_enabled": False,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert {item["model_id"]: item["version"] for item in body["updated"]} == {
+        changed.id: 2,
+        already_hidden.id: 3,
+    }
+    failures = {item["model_id"]: item for item in body["failed"]}
+    assert failures[stale.id]["error_code"] == "VERSION_CONFLICT"
+    assert failures[stale.id]["current_version"] == 2
+    assert failures["missing-model"]["error_code"] == "MODEL_NOT_FOUND"
+    assert failures[orphan.id]["error_code"] == "CONNECTION_MISSING"
+
+    db_session.expire_all()
+    assert db_session.get(AIModel, changed.id).display_enabled is False
+    assert db_session.get(AIModel, changed.id).version == 2
+    assert db_session.get(AIModel, stale.id).display_enabled is True
+
+    retried = client.patch(
+        "/api/v1/providers/models/visibility",
+        json={
+            "items": [{"model_id": changed.id, "expected_version": 1}],
+            "display_enabled": False,
+        },
+    )
+    assert retried.status_code == 200
+    assert retried.json() == {
+        "updated": [{"model_id": changed.id, "version": 2}],
+        "failed": [],
+    }
+
+
+def test_visibility_batch_rejects_invalid_or_expanded_payloads(client):
+    assert client.patch(
+        "/api/v1/providers/models/visibility",
+        json={"items": [], "display_enabled": False},
+    ).status_code == 422
+    assert client.patch(
+        "/api/v1/providers/models/visibility",
+        json={
+            "items": [
+                {"model_id": f"model-{index}", "expected_version": 1}
+                for index in range(101)
+            ],
+            "display_enabled": False,
+        },
+    ).status_code == 422
+    assert client.patch(
+        "/api/v1/providers/models/visibility",
+        json={
+            "items": [{"model_id": "model", "expected_version": 1}],
+            "display_enabled": False,
+            "enabled": False,
+        },
+    ).status_code == 422
+
+
+def test_hidden_model_remains_available_and_routable(client, db_session):
+    connection = _connection(db_session, protocol="VERTEX_NATIVE")
+    model = _model(
+        db_session,
+        connection,
+        "hidden-but-routable",
+        display_enabled=False,
+    )
+
+    catalog = client.get("/api/v1/models")
+    assert catalog.status_code == 200
+    row = next(item for item in catalog.json() if item["catalog_id"] == model.id)
+    assert row["enabled"] is True
+    assert row["display_enabled"] is False
+
+    explicit = resolve_model(
+        db_session,
+        get_settings(),
+        operation="structured_text",
+        explicit_reference=model.id,
+    )
+    automatic = resolve_model(
+        db_session,
+        get_settings(),
+        operation="structured_text",
+        explicit_reference="auto",
+        task_kind="VISIBILITY_TEST",
+    )
+    assert explicit.model.id == model.id
+    assert automatic.model.id == model.id

@@ -451,6 +451,8 @@ def _ensure_vertex_models(db: Session, settings: Settings) -> None:
         model = db.scalar(
             select(AIModel).where(AIModel.legacy_alias == definition["legacy_alias"])
         )
+        # Existing rows are user-owned. In particular, startup seeding must
+        # never overwrite enabled, display_enabled, priority, or verification.
         if model is None:
             model = AIModel(
                 connection_id=connection.id,

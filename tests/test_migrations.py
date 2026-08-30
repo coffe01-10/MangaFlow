@@ -556,6 +556,175 @@ def test_model_pricing_migration_refuses_incomplete_existing_table(
     engine.dispose()
 
 
+def _insert_preference_migration_fixture(database_url: str) -> None:
+    engine = create_engine(database_url)
+    timestamp = "2026-08-30 00:00:00"
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO provider_profiles (
+                    id, preset_key, name, category, description, built_in,
+                    enabled, risk_label, documentation_url,
+                    created_at, updated_at, version
+                ) VALUES (
+                    'preference-provider', NULL, 'Preference Provider',
+                    'CUSTOM', 'migration fixture', 0, 1, 'LOW', NULL,
+                    :timestamp, :timestamp, 4
+                )
+                """
+            ),
+            {"timestamp": timestamp},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO provider_connections (
+                    id, provider_id, name, protocol, base_url, enabled,
+                    use_responses_api, endpoint_templates, extra_headers,
+                    balance_config, nonsecret_config, health_state,
+                    last_checked_at, last_success_at, latency_ms, error_code,
+                    message, created_at, updated_at, version
+                ) VALUES (
+                    'preference-connection', 'preference-provider', 'Primary',
+                    'OPENAI', 'https://preference.example.com/v1', 1, 0,
+                    '{}', '{}', '{}', '{}', 'HEALTHY', NULL, NULL, 25, NULL,
+                    'ready', :timestamp, :timestamp, 5
+                )
+                """
+            ),
+            {"timestamp": timestamp},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO ai_models (
+                    id, connection_id, provider_model_id, display_name,
+                    legacy_alias, model_type, input_modalities,
+                    output_modalities, operations, api_surfaces,
+                    capabilities, pricing, source, confidence, enabled,
+                    priority, success_rate, median_latency_ms,
+                    last_verified_at, created_at, updated_at, version
+                ) VALUES (
+                    'preference-model', 'preference-connection', 'model-v1',
+                    'Model V1', NULL, 'TEXT', '["TEXT"]', '["TEXT"]',
+                    '["structured_text"]', '["CHAT_COMPLETIONS"]',
+                    '{"context": 128000}', '{"input": 1}', 'DISCOVERED',
+                    'VERIFIED', 1, 77, 0.98, 321, :timestamp,
+                    :timestamp, :timestamp, 6
+                )
+                """
+            ),
+            {"timestamp": timestamp},
+        )
+    engine.dispose()
+
+
+def test_model_display_preference_migration_preserves_existing_model(
+    tmp_path, monkeypatch
+):
+    database_url = f"sqlite:///{(tmp_path / 'model-preference.db').as_posix()}"
+    monkeypatch.setattr(get_settings(), "database_url", database_url)
+    config = Config("apps/api/alembic.ini")
+    command.upgrade(config, "20260830_19")
+    _insert_preference_migration_fixture(database_url)
+
+    engine = create_engine(database_url)
+    with engine.connect() as connection:
+        before = dict(
+            connection.execute(
+                text("SELECT * FROM ai_models WHERE id = 'preference-model'")
+            ).mappings().one()
+        )
+    engine.dispose()
+
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    schema = inspect(engine)
+    columns = {column["name"]: column for column in schema.get_columns("ai_models")}
+    assert columns["display_enabled"]["nullable"] is False
+    with engine.connect() as connection:
+        after = dict(
+            connection.execute(
+                text("SELECT * FROM ai_models WHERE id = 'preference-model'")
+            ).mappings().one()
+        )
+    assert after.pop("display_enabled") == 1
+    assert after == before
+    engine.dispose()
+
+    command.downgrade(config, "20260830_19")
+    engine = create_engine(database_url)
+    assert "display_enabled" not in {
+        column["name"] for column in inspect(engine).get_columns("ai_models")
+    }
+    with engine.connect() as connection:
+        assert connection.scalar(
+            text("SELECT COUNT(*) FROM ai_models WHERE id = 'preference-model'")
+        ) == 1
+    engine.dispose()
+
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    with engine.connect() as connection:
+        assert connection.scalar(
+            text(
+                "SELECT display_enabled FROM ai_models "
+                "WHERE id = 'preference-model'"
+            )
+        ) == 1
+    engine.dispose()
+
+
+def test_model_display_preference_downgrade_refuses_hidden_values(
+    tmp_path, monkeypatch
+):
+    database_url = f"sqlite:///{(tmp_path / 'hidden-preference.db').as_posix()}"
+    monkeypatch.setattr(get_settings(), "database_url", database_url)
+    config = Config("apps/api/alembic.ini")
+    command.upgrade(config, "20260830_19")
+    _insert_preference_migration_fixture(database_url)
+    command.upgrade(config, "head")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE ai_models SET display_enabled = false "
+                "WHERE id = 'preference-model'"
+            )
+        )
+    engine.dispose()
+
+    with pytest.raises(RuntimeError, match="refusing downgrade"):
+        command.downgrade(config, "20260830_19")
+
+    engine = create_engine(database_url)
+    assert "display_enabled" in {
+        column["name"] for column in inspect(engine).get_columns("ai_models")
+    }
+    with engine.connect() as connection:
+        assert connection.scalar(
+            text(
+                "SELECT display_enabled FROM ai_models "
+                "WHERE id = 'preference-model'"
+            )
+        ) == 0
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+            "20260830_20"
+        )
+    with engine.begin() as connection:
+        connection.execute(text("UPDATE ai_models SET display_enabled = true"))
+    engine.dispose()
+
+    command.downgrade(config, "20260830_19")
+    engine = create_engine(database_url)
+    assert "display_enabled" not in {
+        column["name"] for column in inspect(engine).get_columns("ai_models")
+    }
+    engine.dispose()
+
+
 def test_programmatic_migrations_use_supplied_connection_without_default_engine(
     tmp_path, monkeypatch
 ):

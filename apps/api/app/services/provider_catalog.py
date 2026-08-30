@@ -26,6 +26,7 @@ from app.models import (
 from app.provider_schemas import (
     ConnectionCreate,
     ConnectionUpdate,
+    ModelVisibilityBatchUpdate,
     ProviderCreate,
     ProviderKeyWrite,
     ProviderModelCreate,
@@ -416,6 +417,19 @@ def create_model(
     return model
 
 
+def list_models_for_connection(db: Session, connection_id: str) -> list[AIModel]:
+    connection = db.get(ProviderConnection, connection_id)
+    if connection is None:
+        raise HTTPException(status_code=404, detail="供应商连接不存在")
+    return list(
+        db.scalars(
+            select(AIModel)
+            .where(AIModel.connection_id == connection_id)
+            .order_by(AIModel.model_type, AIModel.priority.desc(), AIModel.display_name)
+        )
+    )
+
+
 def update_model(db: Session, model_id: str, payload: ProviderModelUpdate) -> AIModel:
     model = db.get(AIModel, model_id)
     if model is None:
@@ -423,6 +437,16 @@ def update_model(db: Session, model_id: str, payload: ProviderModelUpdate) -> AI
     if model.version != payload.version:
         raise HTTPException(status_code=409, detail="模型设置已更新，请刷新后重试")
     changes = payload.model_dump(exclude_unset=True, exclude={"version"})
+    display_requested = "display_enabled" in changes
+    display_enabled = changes.pop("display_enabled", None)
+    if display_requested and display_enabled is None:
+        raise HTTPException(status_code=422, detail="模型展示偏好不能为 null")
+    if display_requested and not changes:
+        model.display_enabled = bool(display_enabled)
+        model.version += 1
+        db.commit()
+        db.refresh(model)
+        return model
     connection = db.get(ProviderConnection, model.connection_id)
     if connection is None:
         raise HTTPException(status_code=409, detail="模型所属连接已不存在")
@@ -435,12 +459,70 @@ def update_model(db: Session, model_id: str, payload: ProviderModelUpdate) -> AI
     )
     for key, value in changes.items():
         setattr(model, key, value)
+    if display_requested:
+        model.display_enabled = bool(display_enabled)
     model.source = "MANUAL"
     model.confidence = "MANUAL"
     model.version += 1
     db.commit()
     db.refresh(model)
     return model
+
+
+def set_model_visibility_bulk(
+    db: Session, payload: ModelVisibilityBatchUpdate
+) -> dict[str, list[dict[str, object]]]:
+    """Persist independent model display preferences with partial success."""
+
+    updated: list[dict[str, object]] = []
+    failed: list[dict[str, object]] = []
+    for item in payload.items:
+        model = db.get(AIModel, item.model_id)
+        if model is None:
+            failed.append(
+                {
+                    "model_id": item.model_id,
+                    "error_code": "MODEL_NOT_FOUND",
+                    "message": "模型不存在或已被删除",
+                }
+            )
+            continue
+        connection = db.get(ProviderConnection, model.connection_id)
+        if connection is None:
+            failed.append(
+                {
+                    "model_id": item.model_id,
+                    "error_code": "CONNECTION_MISSING",
+                    "message": "模型所属连接已不存在",
+                }
+            )
+            continue
+        if model.display_enabled == payload.display_enabled:
+            updated.append({"model_id": model.id, "version": model.version})
+            continue
+        if model.version != item.expected_version:
+            failed.append(
+                {
+                    "model_id": item.model_id,
+                    "error_code": "VERSION_CONFLICT",
+                    "message": "模型设置已更新，请刷新后重试",
+                    "current_version": model.version,
+                }
+            )
+            continue
+        with db.begin_nested():
+            model.display_enabled = payload.display_enabled
+            model.version += 1
+            db.flush()
+        db.commit()
+        db.refresh(model)
+        updated.append({"model_id": model.id, "version": model.version})
+
+    # The final item may have been a read-only failure or idempotent success.
+    # Close that transaction without changing independently committed successes.
+    if db.in_transaction():
+        db.rollback()
+    return {"updated": updated, "failed": failed}
 
 
 def _validate_protocol_capabilities(

@@ -974,6 +974,9 @@ class AIModel(Timestamped, Base):
     source: Mapped[str] = mapped_column(String(24), default="DISCOVERED")
     confidence: Mapped[str] = mapped_column(String(24), default="DECLARED")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Creator-facing display preference only. It must not participate in
+    # availability, routing, or provider-preset synchronization.
+    display_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     priority: Mapped[int] = mapped_column(Integer, default=50)
     success_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
     median_latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)

@@ -58,6 +58,7 @@ def list_models(db: Session = Depends(get_db)) -> list[dict]:
                 "regions": (model.capabilities or {}).get("regions") or ["global"],
                 "confidence": model.confidence,
                 "enabled": available,
+                "display_enabled": model.display_enabled,
                 "auto_eligible": (
                     available
                     and model.confidence == "VERIFIED"
