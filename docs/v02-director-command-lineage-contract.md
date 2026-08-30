@@ -63,9 +63,11 @@
     "page_id": "页级命令必填",
     "panel_id": "格/气泡命令必填",
     "dialogue_id": "气泡命令必填",
+    "scene_id": "场景上下文命令必填",
     "asset_id": "仅局部重抽卡引用 mask/参考时出现"
   },
-  "expected_version": {"scope": "panel|page|storyboard", "value": 12},
+  "expected_version": {"scope": "panel|page|storyboard|scene", "value": 12},
+  "retry_of_command_id": "仅重试失败命令时出现",
   "operation": "update_panel_shot|update_panel_cast|update_panel_layout|update_scene_context|update_dialogue|move_dialogue|regenerate_region|update_page_layout",
   "payload": {"仅声明于 §4 操作白名单内的字段"},
   "source": {
@@ -80,7 +82,7 @@
 规则：
 
 - `command_id` 是幂等键：同一 `command_id` 重复提交返回**首次结果**（成功或校验错误），不产生第二条命令——与 `GenerationJob.idempotency_key`（`models.py:370`）同语义。
-- `expected_version` 按 `scope` 映射：`panel` → `Panel.version`；`page` → `MangaPage.version`；`storyboard` → `MangaPage.storyboard_version`。不匹配返回 409 并附当前值（沿用 `storyboard.py:94-95` 行为）。
+- `expected_version` 按 `scope` 映射：`panel` → `Panel.version`；`page` → `MangaPage.version`；`storyboard` → `MangaPage.storyboard_version`；`scene` → `Scene.version`。不匹配返回 409 并附当前值（沿用 `storyboard.py:94-95` 行为）。
 - `target` 的所有 id 必须属于 `project_id`（复用 `validate_character_ids` 同款项目归属校验，`editor.py:36-54`）；跨项目/不存在 → 422。
 - 一个命令只允许一个非空目标层级；批量变更多目标时拆成多条命令放入同一 `command_group_id`，逐条独立接受/拒绝。
 - `payload` 大小上限 16KB；未知字段一律拒绝（模型输出不可信，见 §9）。
@@ -93,12 +95,12 @@
 | | `update_panel_layout` | `bounds`, `reading_order`, `bleed`, `borderless` | `Panel` 字段（`models.py:291-306`）；`reading_order` 冲突 → 409 |
 | 镜头 | `update_panel_shot` | `shot_type`, `camera_angle`, `camera_height`, `background`, `sound_effects` | 枚举/长度白名单；`Panel:293-295,302,304` |
 | 角色姿态/表情 | `update_panel_cast` | `characters`, `character_presence`, `outfits`, `expressions`, `actions` | 必须复用 `storyboard.py:101-165` 的全部校验：项目内角色（:103）、服装归属角色与项目（:136-142）、表情归属（:143-146）、`actions.source_text` 保留（:160-165）；字段锁经 `ensure_unlocked` |
-| 场景/时间/天气 | `update_scene_context` | `scene_id`, `location`, `time_label`, `weather`, `background` | `Scene:222-224`；`scene_id` 必须在 `page.scene_ids`（`models.py:269`）内 |
+| 场景/时间/天气 | `update_scene_context` | `location`, `time_label`, `weather`, `background` | target 必须携带 `scene_id` 且 expected scope=`scene`；Scene 属于项目并被目标页引用；写入后从引用该 Scene 的最早页面开始失效，不得只处理当前页 |
 | 气泡位置/大小/文字 | `update_dialogue` | `target_text`, `text_direction`, `region`, `speaker_character_id`, `rewrite_forbidden` | 说话人规范化/歧义 409（`editor.py:17-33,42-49`）；空文字 422（`storyboard.py:230-231`）；`rewrite_forbidden` 缺省 true（`models.py:323`） |
 | | `move_dialogue` | `reading_order`, `region` | panel 内唯一约束（`models.py:314`） |
 | 局部重抽卡 | `regenerate_region` | `instruction`, `target_regions`, `mask`（见 §7）, `model_alias`, `resolution` | 产生派生候选任务（§7）；指令进入提示词，mask 由服务端生成存储 |
 
-所有格/气泡命令执行后必须级联现有联动：`refresh_page_text_metrics`（气泡类）、`panel.version += 1`、`mark_storyboard_changed`、`mark_pages_for_review`——即**命令执行器 = 现有服务层**，不重写失效逻辑。
+结构化格/气泡命令执行后按现有编辑服务级联 `refresh_page_text_metrics`（气泡类）、对象 version、`mark_storyboard_changed` 与 `mark_pages_for_review`。`regenerate_region` 只创建派生候选，不修改分镜对象或 `storyboard_version`；`update_scene_context` 递增 `Scene.version`，并复用 scene 引用扫描找到所有引用页中的最早页。
 
 ## 5. 预览、diff、逐条接受、确认、撤销与重做
 
@@ -132,7 +134,7 @@ PROPOSED ──校验通过──> PREVIEWED ──逐条接受──> PARTIALLY
 1. **幂等**：`command_id` 与派生任务幂等键（`repair:{repair_plan_id}` 模式，`inspection.py:166`）两级去重；命令表唯一键 `(project_id, command_id)`。
 2. **乐观并发**：见 §3 `expected_version`；命令执行失败 409 时命令组内该条回到 `PREVIEWED` 并携带当前版本，不自动重试。
 3. **过期版本**：预览与执行之间分镜可能变化——执行前重读版本，不匹配即 409；`regenerate_region` 另受 `based_on_storyboard_version` 前置检查（`page_generate.py:262-265`）。
-4. **重复提交**：同 `command_id` 重复 POST 返回首次执行结果（HTTP 200 + `idempotent_replay: true` 标记）；不同 `command_id` 对同一 target 的并发提交由 `expected_version` 自然串行化。
+4. **重复提交与重试**：同 `command_id` 重复 POST 返回首次执行结果（HTTP 200 + `idempotent_replay: true` 标记）；对失败结果重试必须生成新 `command_id` 并携带 `retry_of_command_id`，或重试原已存在 Job，不得用同一命令 ID 假装重新执行；不同 command_id 对同一 target 的并发提交由 `expected_version` 串行化。
 5. **事务边界**：单条命令的"校验+落库+失效联动+version 递增"在一个事务内（沿用 `storyboard.py:166-171` 模式）；派生候选+RepairPlan/血缘记录+任务在同一事务创建，`enqueue` 在事务提交后（沿用 `inspection.py:111-171` 模式，符合 `docs/architecture.md:140` 的事务所有权约定）。命令 journal 与业务变更同事务写入。
 
 ## 7. 候选血缘模型（设计，不实现）
@@ -143,7 +145,7 @@ PROPOSED ──校验通过──> PREVIEWED ──逐条接受──> PARTIALLY
 CandidateLineage
   id
   child_candidate_id  → page_candidates.id（唯一）
-  parent_candidate_id → page_candidates.id（SET NULL 可空）
+  parent_candidate_id → page_candidates.id（RESTRICT；候选采用软删除，不允许物理清理仍被引用的父候选）
   lineage_kind        = GENERATED | REPAIRED | UPSCALED | REGION_REGENERATED
   source_command_id   → command journal（可空）
   mask_asset_id       → assets.id（可空，仅 REGION_REGENERATED）
@@ -154,7 +156,7 @@ CandidateLineage
 - **mask 载体**：`Asset(kind="region_mask", source="AI_GENERATED", mime_type="image/png")`，由服务端按 `target_regions`/前端笔刷栅格化生成；存储路径沿用 `storage/generated/...` 规则（`page_generate.py:202-210`），禁止模型或客户端提供路径。多边形 JSON 副本存于 `payload`（限 64 点/区域）。
 - **参考资产**：沿用 `JobAssetReference` 租约（`models.py:399-410`）；父候选输出资产自动成为派生任务首张参考（现状 `inspection.py:165,240` 的行为一等化）。
 - **模型参数**：`model_alias/catalog_model_id/resolution` 已在候选列（`models.py:716-720`）；`prompt_snapshot` 增补 `lineage` 段（`operation/parent/mask checksum`），保持现有 snapshot 键（`page_generate.py:351-356`）不变。
-- **采用状态**：血缘不改变采用语义——只有 `MangaPage.selected_candidate_id`（`models.py:275`）生效；派生候选继承 `is_favorite=false`，收藏互不影响。
+- **采用状态**：血缘不改变采用语义。采用、撤回与换选必须在同一事务维持双字段不变量：`MangaPage.selected_candidate_id` 指向的候选必须是同页唯一 `PageCandidate.is_selected=true`；页面无暂选时同页所有候选均为 false。派生候选继承 `is_favorite=false`，收藏互不影响。
 - **局部编辑不变式**（红线）：
   1. 派生候选永远写入新 batch/新 ordinal（现状已满足：`inspection.py:111-121`），禁止覆盖父候选的 `asset_id/prompt_snapshot/status`。
   2. 禁止隐式整页重生：`REGION_REGENERATED` 任务的提示词必须包含 mask 区域约束（现修复文本约束 `page_generate.py:338-343` 的强化版），且任务参数必须携带 `mask_asset_id`；无 mask 的整页重生必须显式声明 `REPAIRED(FULL_PAGE)` 并重新走完整检查失效。
@@ -163,7 +165,7 @@ CandidateLineage
 ## 8. 旧 Worker、晚返回、取消、租约与资源所有权
 
 - **晚返回**：付费调用返回时重读 `storyboard_version`，变化则保留产物但候选暴露为过期（现状 `page_generate.py:402-405`）；血缘列的写入不受该分支影响（同事务收尾）。导演命令引入的 `command_id` 随候选持久化，过期候选仍可按血缘追溯到命令与父候选。
-- **取消**：取消标记在付费调用前后均有检查点（`worker_handlers/execution._ensure_job_not_cancelled`，`page_generate.py:402` 调用点）；取消的派生任务把候选留在 `QUEUED/CANCELLED`，血缘行保留（血缘是事实记录，不随任务取消删除）。
+- **取消**：调用前取消不创建 attempt；调用期间取消且供应商已返回时，attempt 可为 SUCCEEDED，但取消检查发生在资产保存前，因此无 GenerationRecord、无持久输出，候选最终为 CANCELLED。血缘行作为已创建任务事实保留，不把未落盘结果描述成“无归属产物”。
 - **租约失效**：租约到期由执行外壳重新调度或判死（`architecture.md:67`）；血缘行不参与租约，Worker 崩溃后重试在同一 `child_candidate_id` 上继续（幂等键不变）。
 - **失败恢复**：资产写入失败时清理半成品文件与缩略图（现状 `page_generate.py:250-253`）；血缘行在候选达到终态（READY/FAILED）时才对查询可见（`visible` 标志或状态过滤），避免悬空引用。
 - **资源所有权**：mask 与输出资产归属 project（`Asset.project_id`）；孤儿 mask 的清理复用素材清理策略，不在本契约内新造删除通道。
@@ -185,8 +187,9 @@ CandidateLineage
 | 气泡文字（不超余量） | ++ | 失效（文字在图内） | 保持已通过 | 失效（现状） | 收紧候选：后续页保持有效 |
 | 气泡位置/大小 | ++ | 失效 | 失效 | 失效（现状） | 收紧候选：后续页保持有效 |
 | 镜头/布局/角色/场景 | ++ | 失效 | 失效 | 失效（现状） | 视觉输入实质变化 |
-| `regenerate_region` | ++（不改动结构时仍 ++，因产出新候选需重检） | 新候选按新 `based_on_storyboard_version` 重检 | 失效 | 失效（现状） | 与 `STORYBOARD_VERSION_UNCONFIRMED` 一致（`page_completion.py:90-98`） |
-| 无关页面 | 不变 | 不变 | 不变 | 不变 | 命令目标外的页面零接触；`mark_pages_for_review` 只从目标页起（`editor.py:87-89`） |
+| `regenerate_region` | 不变 | 新候选独立待检；当前采用候选保持 | 当前采用状态不变 | 当前采用状态不变 | 仅在用户采用派生候选时按既有规则使后续连续性待复查 |
+| `update_scene_context` | 引用页各自 ++ | 引用该 Scene 的页面失效 | 失效 | 从最早引用页起失效 | Scene 是共享对象，不能声称目标页外零接触 |
+| 其他无关页面 | 不变 | 不变 | 不变 | 不变 | 不引用共享目标且不在失效范围内的页面保持 |
 
 "哪些无关页面保持有效"：目标页之前的所有页面、未被 `mark_pages_for_review` 波及的后续页（若收紧方案获批）以及非同章节页面——现状实现已保证目标页之前页面不动（`editor.py:87-89` 从 `page_number >= start` 才标记）。
 
