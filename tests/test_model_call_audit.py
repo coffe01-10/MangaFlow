@@ -196,3 +196,61 @@ def test_failed_audit_survives_worker_rollback(audit_sessions, monkeypatch):
 def test_unknown_attempt_finalize_raises(audit_sessions):
     with pytest.raises(RuntimeError, match="审计行不存在"):
         finalize_model_call_attempt("missing-attempt-id", outcome="FAILED")
+
+
+def test_read_model_redacts_sensitive_material(audit_sessions):
+    """The read schema must never expose secrets, credential paths, headers or
+    request payloads — only redacted metadata and opaque row references."""
+
+    import json as jsonlib
+
+    from app.models import ProviderConnection, ProviderKey, ProviderProfile
+    from app.schemas import ModelCallAttemptRead
+
+    job = _seed_job(audit_sessions)
+    with audit_sessions() as db:
+        profile = ProviderProfile(preset_key="preset-provider", name="测试供应商")
+        db.add(profile)
+        db.flush()
+        connection = ProviderConnection(
+            provider_id=profile.id, name="默认连接", protocol="test", base_url="https://x"
+        )
+        db.add(connection)
+        db.flush()
+        key = ProviderKey(connection_id=connection.id, label="primary", encrypted_secret="enc")
+        db.add(key)
+        db.commit()
+        connection_id = connection.id
+        key_id = key.id
+    attempt_id = begin_model_call_attempt(
+        _meta(job, selected_key_id=key_id, connection_id=connection_id)
+    )
+    finalize_model_call_attempt(
+        attempt_id,
+        outcome="FAILED",
+        error_code="AUTHENTICATION",
+        error_message="凭据无效，请检查密钥配置",
+        usage={"input_tokens": 3},
+    )
+
+    with audit_sessions() as db:
+        row = db.get(ModelCallAttempt, attempt_id)
+    payload = ModelCallAttemptRead.model_validate(row).model_dump(mode="json")
+    blob = jsonlib.dumps(payload, ensure_ascii=False).lower()
+
+    # Opaque references only: key/connection ids, never key material or hints.
+    assert payload["selected_key_id"] == key_id
+    assert payload["connection_id"] == connection_id
+    for forbidden in (
+        "secret",
+        "encrypted",
+        "api_key",
+        "authorization",
+        "extra_headers",
+        "base_url",
+        "prompt",
+    ):
+        assert forbidden not in blob, f"read model leaked sensitive material: {forbidden}"
+    # The ledger schema itself carries no credential-path or payload columns.
+    column_names = {column.name for column in ModelCallAttempt.__table__.columns}
+    assert not {"credentials", "credential_path", "request_body", "headers"} & column_names
