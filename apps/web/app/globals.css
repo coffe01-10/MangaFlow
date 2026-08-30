@@ -974,6 +974,7 @@ a { color: inherit; text-decoration: none; }
 .switch-setting strong { font-size: 9px; }
 .switch-setting small { color: #66604f; font-size: 7px; }
 .switch-setting i { width: 35px; height: 19px; padding: 2px; display: block; border: 1px solid var(--line-dark); background: #ddd7cb; }
+/* #66604f keeps the closed thumb above 3:1 against the #ddd7cb track. */
 .switch-setting i::after { content: ""; display: block; width: 13px; height: 13px; background: #66604f; transition: transform .18s ease; }
 .switch-setting.on i { background: rgba(71,116,90,.18); border-color: var(--green); }
 .switch-setting.on i::after { background: var(--green); transform: translateX(16px); }
