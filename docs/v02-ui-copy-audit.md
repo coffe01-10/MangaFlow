@@ -100,7 +100,7 @@
 | C-023 | `apps/web/components/project-workspace/labels.ts:45` | 项目工作区 / 生成类型 | `PAGE: "页面抽卡"` | REFINE | `PAGE: "单页候选生成"` | 统一规范术语 | 低 |
 | C-024 | `apps/web/components/project-workspace/source-section.tsx:41` | 原作导入 / 标题 | `SOURCE / 原作` · `完整导入，不压缩故事` | REFINE | `原作与修订` · `导入章节原文` | 消除口号式副标 | 低 |
 | C-025 | `apps/web/components/project-workspace/source-section.tsx:44` | 原作导入 / 输入框占位符 | `粘贴完整章节。系统先无损分段，再根据文字和剧本长度动态计算页数。` | REFINE | `粘贴或上传章节文本（支持 TXT、Markdown）` | 移除对分段计算算法的自我解释 | 低 |
-| C-026 | `apps/web/components/project-workspace/source-section.tsx:45` | 原作导入 / 提示 | `不会限制总页数 · 单页硬上限 180 个中文字符` | REFINE | `支持长章节导入；单页建议不超过 180 字` | 变技术硬约束说教为用户建议 | 低 |
+| C-026 | `apps/web/components/project-workspace/source-section.tsx:45` | 原作导入 / 提示 | `不会限制总页数 · 单页硬上限 180 个中文字符` | REFINE | `支持长章节导入；每页最多 180 字` | 保留服务端真实硬上限，避免把阻断条件误写成建议 | 低 |
 | C-027 | `apps/web/components/project-workspace/source-section.tsx:52` | 原作导入 / 删除章节 | `window.confirm("删除后会暂时隐藏该章节，可立即撤回。继续吗？")` | REFINE | 确认弹窗：`删除章节“{title}”？剧本与分镜将一并移入回收站。` | 明确删除范围与后果 | 中 |
 | C-028 | `apps/web/components/project-workspace/script-section.tsx:31` | 漫画剧本 / 标题 | `SCREENPLAY / 漫画剧本` · `先写场景与情节拍，再进入分页` | REFINE | `漫画剧本` · `场景与情节拍编排` | 消除步骤说教 | 低 |
 | C-029 | `apps/web/components/project-workspace/script-section.tsx:32` | 漫画剧本 / 空状态说明 | `点击“生成漫画剧本”，默认文字模型会逐段补充可视化动作、场景、对白、旁白、情绪和翻页悬念，不会压缩原文。` | REFINE | `基于章节原文自动生成场景划分、情节拍动作与对白。` | 删除冗长的生成特性自我陈述 | 低 |
@@ -117,8 +117,8 @@
 | C-040 | `apps/web/components/project-workspace/generate-section.tsx:99` | 单页生成 / 标题 | `DRAW / 单页抽卡` · `每次只生成 1 页` | REFINE | `单页生成` · `生成与采纳页面候选` | 统一术语，删除小标 | 低 |
 | C-041 | `apps/web/components/project-workspace/generate-section.tsx:141` | 单页生成 / 批次信息 | `每个候选记录实际供应商与模型 · 收藏不等于采用` | DELETE | *(删除)* | 嘀咕式内部规则陈述 | 低 |
 | C-042 | `apps/web/components/project-workspace/generate-section.tsx:142` | 单页生成 / 候选卡片版本 | `{candidate.version_state}` (如 `CURRENT`/`STALE`) | REFINE | 映射为中文徽章：`当前版本` / `分镜已更新(待复查)` / `历史版本` | 消除英文枚举直出 | 低 |
-| C-043 | `apps/web/components/project-workspace/generate-section.tsx:142` | 单页生成 / 暂选候选 | `window.confirm("请确认页面文字已人工校对。暂选后还需要完成视觉检查，才能进入下一页或导出。是否继续？")` | REFINE | 确认弹窗：`采用候选：请确认文字对白无误。采用后将触发视觉一致性检查。` | 规范门禁确认文案 | 高 |
-| C-044 | `apps/web/components/project-workspace/generate-section.tsx:142` | 单页生成 / 删除候选 | `window.confirm("删除这个候选？收藏状态也会一并移除。")` | REFINE | 确认弹窗：`删除候选 P.{num} #{ordinal}？生成图片与记录将被清除。` | 明确删除对象 | 中 |
+| C-043 | `apps/web/components/project-workspace/generate-section.tsx:142` | 单页生成 / 暂选候选 | `window.confirm("请确认页面文字已人工校对。暂选后还需要完成视觉检查，才能进入下一页或导出。是否继续？")` | REFINE | 确认弹窗：`暂选候选：请确认文字对白无误。暂选后仍需通过视觉检查才能导出。` | 保留暂选与最终生产就绪的差异 | 高 |
+| C-044 | `apps/web/components/project-workspace/generate-section.tsx:142` | 单页生成 / 删除候选 | `window.confirm("删除这个候选？收藏状态也会一并移除。")` | REFINE | 确认弹窗：`从候选列表隐藏 P.{num} #{ordinal}？生成文件和任务记录仍会保留。` | 对齐当前软删除语义，不声称物理清除图片与审计记录 | 中 |
 | C-045 | `apps/web/components/project-workspace/generate-section.tsx:154` | 单页生成 / 门禁状态 | `{pageProduction?.ready ? "READY" : pageProduction?.state ?? "LOADING"}` | REFINE | 映射为中文：`生产就绪` / `待质检` / `待采用` / `待修复` | 消除技术枚举直出 | 低 |
 | C-046 | `apps/web/components/project-workspace/inspection-panel.tsx:25` | 质检面板 / 标题 | `AI QUALITY CHECK` · `候选视觉检查`<br>`检查说话人归属、角色、服装、道具和连续性；文字由人工校对。` | REFINE | `视觉一致性检查` | 移除英文大标和冗长副标 | 低 |
 | C-047 | `apps/web/components/project-workspace/inspection-panel.tsx:31` | 质检面板 / 结果标签 | `{inspection.outcome}` (如 `PASS` / `FAIL`) | REFINE | 映射为中文：`通过` / `符合预期` / `存在差异(需修复)` | 消除英文枚举直出 | 低 |
@@ -244,7 +244,7 @@
 | T-06 | **已验证** | 冒烟成功、已测试通过 | `VERIFIED` | 通过连通性与能力测试，具备自动路由资格的模型置信度状态 | 否 |
 | T-07 | **待验证** | 未测试、推断模型 | `MANUAL`, `DECLARED`, `INFERRED` | 手工添加或目录推断得到、尚未通过测试的模型（推断型显示为“推断/待验证”） | 否 |
 | T-08 | **候选** | 抽卡结果、生成图、草图 | `Candidate`, `PageCandidate` | 单次生图任务产生的单张画面成果 | 否 |
-| T-09 | **采用** | 选定、暂选、确认、通过 | `Adopt`, `SelectCandidate` | 用户人工确认将某一候选作为当前分镜/页面的正式采纳版本 | 否 |
+| T-09 | **暂选 / 采用** | 选定、确认、通过 | `SelectCandidate`, `Adopt` | 暂选是人工校对后选中候选但仍待视觉检查；采用/生产就绪仅用于全部门禁通过后的页面状态，两者不得混写 | 否 |
 | T-10 | **页面** | 页、Page | `Page`, `MangaPage` | 漫画成品的基本物理页单元 | 否 |
 | T-11 | **格子** | 分镜框、Panel、格 | `Panel`, `StoryboardPanel` | 页面内的单个漫画画面分镜分块 | 否 |
 | T-12 | **场景资产** | 地点、环境参考、场景 | `SceneAsset` | 表达地点、光照、天气、季节的一级视觉参考资产（V02-20） | 否 |
@@ -311,7 +311,7 @@
 ### 8.4 原作导入与修订 (`source-section.tsx`)
 - **操作文案**：
   - 主操作：【导入章节原文】、【保存新修订】、【选择 TXT / MD】。
-  - 删除算法原理解释，单页字数提示改为建议性：“单页建议不超过 180 字”。
+  - 删除算法原理解释，但保留真实硬约束：“每页最多 180 字”。
 
 ### 8.5 漫画剧本与分镜编辑器 (`script-section.tsx`, `storyboard-section.tsx`, `storyboard-editor.tsx`)
 - **剧本空状态**：
@@ -330,7 +330,7 @@
 - **生成动作**：
   - 规范术语：【生成 1 个 1K 彩色候选】（禁止出现“抽卡”）。
 - **门禁与采纳确认**：
-  - 替换 `window.confirm` 为规范对话框模态：`采用候选：请确认文字对白无误。采用后将触发视觉一致性检查。`
+  - 替换 `window.confirm` 为规范对话框模态：`暂选候选：请确认文字对白无误。暂选后仍需通过视觉检查才能导出。`
   - 门禁状态徽章：统一为【生产就绪】、【待质检】、【待采用】、【待修复】。
 
 ### 8.8 质量检查与任务中心 (`inspection-panel.tsx`, `jobs-section.tsx`)
