@@ -378,7 +378,7 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
       outputs: type.outputs,
       config: {
         ...EMPTY_CONFIG,
-        model_alias: type.type.startsWith("agent.") || type.type.startsWith("quality.") || type.type.startsWith("director.") ? "text.fast" : null,
+        model_alias: type.type.startsWith("agent.") || type.type.startsWith("quality.") || type.type.startsWith("director.") ? "auto" : null,
         resolution: type.type === "generator.page" ? "1K" : null,
         requires_approval: ["generator.page", "control.approval"].includes(type.type),
       },

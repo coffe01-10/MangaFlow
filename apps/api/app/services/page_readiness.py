@@ -81,6 +81,7 @@ def _catalog_model_availability(db: Session, settings: Settings) -> dict[str, in
             profile,
             credentials_writable=credentials_writable,
             has_usable_key=connection.id in usable_key_connections,
+            environment_credentials_ready=settings.vertex_configured,
         )
         if not available:
             continue

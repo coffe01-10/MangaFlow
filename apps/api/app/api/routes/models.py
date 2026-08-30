@@ -35,6 +35,7 @@ def list_models(db: Session = Depends(get_db)) -> list[dict]:
             profile,
             credentials_writable=credentials_writable,
             has_usable_key=connection.id in usable_key_connections,
+            environment_credentials_ready=settings.vertex_configured,
         )
         catalog.append(
             {

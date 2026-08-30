@@ -116,6 +116,17 @@ def test_default_graph_is_strict_and_valid():
     assert report.valid is True
     assert report.topological_order[0] in {"chapter", "assets"}
     assert report.topological_order[-1] == "complete"
+    text_nodes = {
+        "agent.parse",
+        "agent.adapt",
+        "director.storyboard",
+        "quality.inspect",
+    }
+    assert {
+        node["config"]["model_alias"]
+        for node in graph["nodes"]
+        if node["type"] in text_nodes
+    } == {"auto"}
 
     invalid = deepcopy(graph)
     invalid["edges"][0]["target_port"] = "missing"

@@ -324,6 +324,14 @@ def update_connection(
         changes["balance_config"] = _validate_balance_config(
             changes["balance_config"]
         )
+    if "enabled" in changes:
+        source_config = changes.get("nonsecret_config", connection.nonsecret_config)
+        nonsecret_config = dict(source_config or {})
+        nonsecret_config.pop("auto_enable_pending", None)
+        if "nonsecret_config" in changes:
+            changes["nonsecret_config"] = nonsecret_config
+        else:
+            connection.nonsecret_config = nonsecret_config
     for key, value in changes.items():
         setattr(connection, key, value)
     connection.version += 1

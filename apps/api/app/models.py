@@ -79,10 +79,10 @@ class Project(Timestamped, Base):
     ocr_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     consistency_check_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     default_style_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    text_model_alias: Mapped[str] = mapped_column(String(64), default="text.fast")
+    text_model_alias: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Kept for a one-migration compatibility window. New code uses the neutral
     # last-used value and requires every generation request to choose a model.
-    image_model_alias: Mapped[str] = mapped_column(String(64), default="image.nano_banana_2")
+    image_model_alias: Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_image_model_alias: Mapped[str | None] = mapped_column(
         String(64), nullable=True, default=None
     )
@@ -417,7 +417,7 @@ class GenerationRecord(Base):
     job_id: Mapped[str] = mapped_column(
         ForeignKey("generation_jobs.id", ondelete="CASCADE"), index=True
     )
-    provider: Mapped[str] = mapped_column(String(32), default="vertex-ai")
+    provider: Mapped[str] = mapped_column(String(32))
     model_id: Mapped[str] = mapped_column(String(128))
     catalog_model_id: Mapped[str | None] = mapped_column(
         ForeignKey("ai_models.id", ondelete="SET NULL"), nullable=True, index=True

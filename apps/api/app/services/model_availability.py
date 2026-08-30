@@ -5,8 +5,10 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings
 from app.models import AIModel, ProviderConnection, ProviderKey, ProviderProfile
-
-VERTEX_NATIVE_PROTOCOL = "VERTEX_NATIVE"
+from app.services.credential_source import (
+    ENV_SERVICE_ACCOUNT,
+    connection_credential_source,
+)
 
 
 def catalog_model_is_available(
@@ -16,19 +18,20 @@ def catalog_model_is_available(
     *,
     credentials_writable: bool,
     has_usable_key: bool,
+    environment_credentials_ready: bool,
 ) -> bool:
     """Return whether a catalog model should be treated as enabled.
 
     Matches `/models` `enabled`: the model, connection, and provider must be
-    enabled. Compatible protocols also need writable credentials and at least
-    one enabled key that is not in cooldown. Native Vertex keeps that branch
-    and does not require keys here.
+    enabled. Environment-account protocols require their runtime credentials
+    to be ready. Connection-key protocols require writable encrypted storage
+    and at least one enabled key that is not in cooldown.
     """
 
     if not (model.enabled and connection.enabled and profile.enabled):
         return False
-    if connection.protocol == VERTEX_NATIVE_PROTOCOL:
-        return True
+    if connection_credential_source(connection) == ENV_SERVICE_ACCOUNT:
+        return environment_credentials_ready
     return credentials_writable and has_usable_key
 
 
@@ -68,5 +71,6 @@ def count_available_catalog_models(db: Session, settings: Settings) -> int:
             profile,
             credentials_writable=credentials_writable,
             has_usable_key=connection.id in usable_key_connections,
+            environment_credentials_ready=settings.vertex_configured,
         )
     )

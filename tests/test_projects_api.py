@@ -35,6 +35,7 @@ def test_create_and_update_project(client):
 def test_project_optimistic_lock(client):
     project = client.post("/api/v1/projects", json={"name": "测试项目"}).json()
     assert project["last_image_model_alias"] is None
+    assert project["text_model_alias"] is None
     response = client.patch(
         f"/api/v1/projects/{project['id']}",
         json={"version": 99, "name": "过期修改"},

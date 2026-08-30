@@ -23,8 +23,17 @@ from app.model_adapters.google import (
 from app.model_adapters.vertex import VertexImageAdapter, VertexTextAdapter
 from app.models import AIModel, ProviderConnection, ProviderKey, ProviderProfile, RoutingPolicy
 from app.services.credential_crypto import SelectedProviderKey, select_provider_key
+from app.services.credential_source import (
+    ENV_SERVICE_ACCOUNT,
+    connection_credential_source,
+)
 from app.services.model_registry import ModelCapability, build_registry
 from app.services.provider_presets import ensure_provider_presets, proxy_url_for_connection
+
+ALIAS_ALIASES = {
+    "image.fast": "image.nano_banana_2",
+    "image.quality": "image.nano_banana_pro",
+}
 
 
 @dataclass(frozen=True)
@@ -47,7 +56,13 @@ def get_catalog_model(db: Session, reference: str) -> AIModel | None:
     model = db.get(AIModel, reference)
     if model is not None:
         return model
-    return db.scalar(select(AIModel).where(AIModel.legacy_alias == reference))
+    normalized_reference = ALIAS_ALIASES.get(reference, reference)
+    model = db.get(AIModel, normalized_reference)
+    if model is not None:
+        return model
+    return db.scalar(
+        select(AIModel).where(AIModel.legacy_alias == normalized_reference)
+    )
 
 
 def model_supports_resolution(model: AIModel, resolution: str) -> bool:
@@ -142,9 +157,11 @@ def bind_adapter(
     connection = resolved.connection
     settings_key: SelectedProviderKey | None = None
     if connection.protocol == "VERTEX_NATIVE":
-        capability = build_registry(settings).get(model.legacy_alias or "")
-        if capability is None:
-            capability = _legacy_capability(model, resolved.provider.name)
+        capability = _catalog_capability(
+            model,
+            resolved.provider.name,
+            build_registry(settings).get(model.legacy_alias or ""),
+        )
         adapter = (
             VertexImageAdapter(settings, capability)
             if model.model_type == "IMAGE"
@@ -233,7 +250,12 @@ def _require_available_credentials(
     *,
     explicit: bool,
 ) -> None:
-    if resolved.connection.protocol == "VERTEX_NATIVE":
+    if connection_credential_source(resolved.connection) == ENV_SERVICE_ACCOUNT:
+        if not settings.vertex_configured:
+            raise HTTPException(
+                status_code=409,
+                detail="供应商连接的环境凭据尚未配置完整",
+            )
         return
     if not settings.provider_credentials_writable:
         raise HTTPException(
@@ -297,15 +319,32 @@ def _route_score(model: AIModel, policy: RoutingPolicy | None) -> float:
     ) / 100
 
 
-def _legacy_capability(model: AIModel, provider_name: str) -> ModelCapability:
+def _catalog_capability(
+    model: AIModel,
+    provider_name: str,
+    fallback: ModelCapability | None = None,
+) -> ModelCapability:
     capabilities = model.capabilities or {}
+    fallback_resolutions = fallback.resolutions if fallback else ()
+    fallback_preview_resolutions = fallback.preview_resolutions if fallback else ()
+    fallback_max_references = fallback.max_reference_images if fallback else 0
+    fallback_regions = fallback.regions if fallback else ("global",)
+    fallback_parameters = fallback.supported_parameters if fallback else ()
     return ModelCapability(
         provider=provider_name,
         model_id=model.provider_model_id,
         logical_alias=model.legacy_alias or model.id,
         display_name=model.display_name,
         operations=tuple(model.operations or []),
-        resolutions=tuple(capabilities.get("resolutions") or []),
-        preview_resolutions=tuple(capabilities.get("preview_resolutions") or []),
-        max_reference_images=int(capabilities.get("max_reference_images") or 0),
+        resolutions=tuple(capabilities.get("resolutions", fallback_resolutions) or ()),
+        preview_resolutions=tuple(
+            capabilities.get("preview_resolutions", fallback_preview_resolutions) or ()
+        ),
+        max_reference_images=int(
+            capabilities.get("max_reference_images", fallback_max_references) or 0
+        ),
+        regions=tuple(capabilities.get("regions", fallback_regions) or ()),
+        supported_parameters=tuple(
+            capabilities.get("supported_parameters", fallback_parameters) or ()
+        ),
     )

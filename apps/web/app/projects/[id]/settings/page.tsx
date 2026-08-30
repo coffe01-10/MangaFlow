@@ -114,10 +114,12 @@ export default function ProjectSettingsPage() {
           <aside className="project-setting-note"><span>MODEL POLICY</span><strong>图片模型按任务选择</strong><p>项目不绑定图片“主模型”。每次生成候选都必须明确选择供应商模型，以保持画风一致。</p></aside>
           <section className="project-setting-section">
             <header><Gauge size={18} /><div><span>TEXT MODEL</span><h2>文字任务默认路由</h2></div></header>
-            <label className="project-inline-setting"><span><strong>剧本、风格分析与视觉检查</strong><small>自动路由只使用已完成能力测试的模型</small></span><select value={draft.default_text_model_id ?? draft.text_model_alias} onChange={(event) => {
+            <label className="project-inline-setting"><span><strong>剧本、风格分析与视觉检查</strong><small>自动路由只使用已完成能力测试的模型</small></span><select value={currentTextModelValue} onChange={(event) => {
               const value = event.target.value;
-              update("default_text_model_id", value === "auto" || value === "text.fast" ? null : value);
-              update("text_model_alias", value === "auto" ? "auto" : "text.fast");
+              const selected = textModels.find((model) => textModelOptionValue(model.catalog_id, model.logical_alias) === value);
+              const selectingLegacyAlias = Boolean(selected && value === selected.logical_alias && value !== selected.catalog_id);
+              update("default_text_model_id", value === "auto" || selectingLegacyAlias ? null : value);
+              update("text_model_alias", selectingLegacyAlias ? value : null);
             }}><option value="auto">自动路由 · 已验证文字/视觉模型</option>{currentTextModelMissing ? <option value={currentTextModelValue}>当前配置 · {currentTextModelValue}</option> : null}{textModels.map((model) => <option key={model.catalog_id} value={textModelOptionValue(model.catalog_id, model.logical_alias)}>{model.provider} · {model.display_name}{!model.display_enabled ? "（已隐藏）" : ""}</option>)}</select></label>
           </section>
         </div> : <div className="loading-panel"><LoaderCircle className="spin" />读取项目设置…</div>}

@@ -17,7 +17,7 @@ export interface Project {
   default_concurrency: number;
   default_style_id: string | null;
   consistency_check_enabled: boolean;
-  text_model_alias: string;
+  text_model_alias: string | null;
   last_image_model_alias: ImageModelAlias | null;
   default_text_model_id: string | null;
   last_image_model_id: string | null;

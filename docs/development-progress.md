@@ -4,6 +4,14 @@
 
 本文件记录修订版 MVP 计划的实际完成度。
 
+## V02-10C 默认值、路由与 grandfather 已实现（2026-08-31）
+
+- 新项目的文字/图片 legacy 别名改为可空且不再带供应商默认；风格分析、原文解析、视觉检查和默认工作流文字节点统一使用 `auto`。`GenerationRecord.provider` 必须由实际绑定显式写入。
+- `image.fast` / `image.quality` 仅在解析时归一化到现行 legacy alias，不重写历史任务；目录 ID、目录模型字段和真实 provider/model ID 优先，旧 registry 只补目录缺失的可选能力。
+- Vertex 新安装在环境凭据未就绪时持久化一次性 `auto_enable_pending`，就绪后只启用一次并清标记；旧连接及人工启停保持原值，凭据后来缺失只改变健康态。新预设模型以 `DECLARED` 创建，需模型冒烟后才参与自动路由。
+- 新增项目别名可空迁移。SQLite 回归发现并修复 batch 重建 `projects` 触发外键级联的风险；迁移现在窄范围暂停外键、重建后执行 `foreign_key_check`。历史项目升降级逐字段不变，存在 NULL 项目时 downgrade 明确拒绝且数据保留。
+- Ruff、ESLint、TypeScript、187 项 Vitest、Next.js 生产构建及排除 Windows 专属模块后的 368 项 Python（47 项集成环境跳过）通过。完整 Python 其余失败/错误来自既有 Windows junction、PowerShell 与 Job Object 边界；真实 PostgreSQL 和完整 PowerShell 门禁 `NOT RUN`，未调用真实供应商。
+
 ## V02-11C 设置页验收进行中（2026-08-31）
 
 - Issue #40 的 P/C/F/V/A/S/L/N 组件矩阵已补齐：供应商设置定向回归由 58 项增至 66 项，新增账号型连接降级、手工模型、发现置信度、图片费用取消、密钥脱敏/清空和展示/调用/派生可用性三态测试。

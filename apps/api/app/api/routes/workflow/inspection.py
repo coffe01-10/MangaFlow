@@ -50,7 +50,7 @@ def inspect_candidate(
         target_type="PAGE_CANDIDATE",
         target_id=candidate.id,
         job_type="PAGE_INSPECT",
-        model_alias="text.fast",
+        model_alias="auto",
         request_parameters={"categories": payload.categories},
         reference_asset_ids=[candidate.asset_id],
         idempotency_key=f"inspect:{candidate.id}:{candidate.version}",

@@ -31,6 +31,10 @@ from app.schemas import (
     ProjectRead,
     ProjectUpdate,
 )
+from app.services.credential_source import (
+    ENV_SERVICE_ACCOUNT,
+    credential_source_for_protocol,
+)
 from app.services.job_service import mark_job_cancelled
 from app.services.model_availability import count_available_catalog_models
 from app.settings_schemas import ProjectSummaryRead
@@ -57,7 +61,7 @@ def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> Pro
     values = payload.model_dump()
     project = Project(
         **values,
-        image_model_alias=values["last_image_model_alias"] or "image.nano_banana_2",
+        image_model_alias=values["last_image_model_alias"],
     )
     db.add(project)
     db.commit()
@@ -91,7 +95,10 @@ def _ai_overview(db: Session) -> DashboardAIOverview:
     healthy = sum(state == "HEALTHY" for _, state, _ in connections)
     configured = sum(
         bool(has_enabled_key)
-        or (protocol == "VERTEX_NATIVE" and native_configured)
+        or (
+            credential_source_for_protocol(protocol) == ENV_SERVICE_ACCOUNT
+            and native_configured
+        )
         for protocol, _, has_enabled_key in connections
     )
     return DashboardAIOverview(

@@ -725,6 +725,130 @@ def test_model_display_preference_downgrade_refuses_hidden_values(
     engine.dispose()
 
 
+def _insert_phase_c_project(
+    database_url: str,
+    *,
+    project_id: str,
+    text_model_alias: str | None,
+    image_model_alias: str | None,
+) -> None:
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO projects (
+                    id, name, language, reading_direction, page_ratio,
+                    default_resolution, draft_resolution, workflow_mode,
+                    default_concurrency, ocr_enabled,
+                    consistency_check_enabled, default_style_id,
+                    text_model_alias, image_model_alias, deleted_at,
+                    created_at, updated_at, version
+                ) VALUES (
+                    :project_id, 'Phase C fixture', 'zh-CN', 'rtl',
+                    'b5_portrait', 'STANDARD_2K', 'DRAFT_1K', 'SEMI_AUTO',
+                    4, 0, 1, NULL, :text_model_alias, :image_model_alias,
+                    NULL, '2026-08-31 00:00:00',
+                    '2026-08-31 00:00:00', 7
+                )
+                """
+            ),
+            {
+                "project_id": project_id,
+                "text_model_alias": text_model_alias,
+                "image_model_alias": image_model_alias,
+            },
+        )
+    engine.dispose()
+
+
+def test_provider_neutral_alias_migration_roundtrip_preserves_historical_project(
+    tmp_path, monkeypatch
+):
+    database_url = f"sqlite:///{(tmp_path / 'neutral-alias-roundtrip.db').as_posix()}"
+    monkeypatch.setattr(get_settings(), "database_url", database_url)
+    config = Config("apps/api/alembic.ini")
+    command.upgrade(config, "20260830_20")
+    _insert_phase_c_project(
+        database_url,
+        project_id="legacy-project",
+        text_model_alias="text.fast",
+        image_model_alias="image.nano_banana_2",
+    )
+
+    engine = create_engine(database_url)
+    with engine.connect() as connection:
+        before = dict(
+            connection.execute(
+                text("SELECT * FROM projects WHERE id = 'legacy-project'")
+            ).mappings().one()
+        )
+    engine.dispose()
+
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    columns = {column["name"]: column for column in inspect(engine).get_columns("projects")}
+    assert columns["text_model_alias"]["nullable"] is True
+    assert columns["image_model_alias"]["nullable"] is True
+    with engine.connect() as connection:
+        assert dict(
+            connection.execute(
+                text("SELECT * FROM projects WHERE id = 'legacy-project'")
+            ).mappings().one()
+        ) == before
+    engine.dispose()
+
+    command.downgrade(config, "20260830_20")
+    engine = create_engine(database_url)
+    columns = {column["name"]: column for column in inspect(engine).get_columns("projects")}
+    assert columns["text_model_alias"]["nullable"] is False
+    assert columns["image_model_alias"]["nullable"] is False
+    with engine.connect() as connection:
+        assert dict(
+            connection.execute(
+                text("SELECT * FROM projects WHERE id = 'legacy-project'")
+            ).mappings().one()
+        ) == before
+    engine.dispose()
+
+    command.upgrade(config, "head")
+
+
+def test_provider_neutral_alias_downgrade_refuses_null_project_without_data_loss(
+    tmp_path, monkeypatch
+):
+    database_url = f"sqlite:///{(tmp_path / 'neutral-alias-null.db').as_posix()}"
+    monkeypatch.setattr(get_settings(), "database_url", database_url)
+    config = Config("apps/api/alembic.ini")
+    command.upgrade(config, "head")
+    _insert_phase_c_project(
+        database_url,
+        project_id="neutral-project",
+        text_model_alias=None,
+        image_model_alias=None,
+    )
+
+    with pytest.raises(RuntimeError, match="projects with NULL legacy model aliases"):
+        command.downgrade(config, "20260830_20")
+
+    engine = create_engine(database_url)
+    columns = {column["name"]: column for column in inspect(engine).get_columns("projects")}
+    assert columns["text_model_alias"]["nullable"] is True
+    assert columns["image_model_alias"]["nullable"] is True
+    with engine.connect() as connection:
+        row = connection.execute(
+            text(
+                "SELECT text_model_alias, image_model_alias, version "
+                "FROM projects WHERE id = 'neutral-project'"
+            )
+        ).one()
+        assert tuple(row) == (None, None, 7)
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+            "20260831_21"
+        )
+    engine.dispose()
+
+
 def test_programmatic_migrations_use_supplied_connection_without_default_engine(
     tmp_path, monkeypatch
 ):

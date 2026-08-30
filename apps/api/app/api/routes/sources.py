@@ -196,7 +196,7 @@ def parse_chapter(chapter_id: str, db: Session = Depends(get_db)):
         target_type="CHAPTER",
         target_id=chapter.id,
         job_type="SOURCE_PARSE",
-        model_alias="text.fast",
+        model_alias="auto",
         idempotency_key=f"source-parse:{chapter.id}:{chapter.version}",
     )
     return enqueue_job(db, job)

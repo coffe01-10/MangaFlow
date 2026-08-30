@@ -113,7 +113,7 @@ def _create_inspection_job(
         target_type="PAGE_CANDIDATE",
         target_id=candidate.id,
         job_type="PAGE_INSPECT",
-        model_alias=node.config.model_alias or "text.fast",
+        model_alias=node.config.model_alias or "auto",
         request_parameters={
             "categories": ["SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"],
             "workflow_run_id": run.id,
