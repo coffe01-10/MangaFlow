@@ -797,6 +797,38 @@ class JobRead(BaseModel):
         end = self.finished_at or self.updated_at
         return max(0, int((end - self.started_at).total_seconds() * 1000))
 
+
+class ModelCallAttemptRead(BaseModel):
+    """Read-only view of one provider dispatch attempt.
+
+    Redacted by construction: carries no credentials, headers, endpoints,
+    credential paths or request payloads. ``selected_key_id`` is an opaque row
+    reference for traceability only.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    job_id: str
+    job_attempt: int
+    dispatch_no: int
+    route_switched: bool
+    outcome: str | None
+    provider: str
+    model_id: str
+    catalog_model_id: str | None
+    connection_id: str | None
+    selected_key_id: str | None
+    request_id: str | None
+    started_at: datetime
+    finished_at: datetime | None
+    duration_ms: int | None
+    usage: dict | None
+    route_reason: str | None
+    route_score: float | None
+    error_code: str | None
+    error_message: str | None
+
     @computed_field
     @property
     def workflow_run_id(self) -> str | None:

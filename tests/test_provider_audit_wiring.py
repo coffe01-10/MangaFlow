@@ -263,6 +263,38 @@ def test_finalize_failure_never_repeats_paid_call(env, monkeypatch):
     assert attempts[0].outcome is None
 
 
+def test_job_with_ledger_is_blocked_from_delete_but_can_archive(env):
+    from fastapi import HTTPException
+
+    from app.api.routes.workflow.jobs import archive_job, delete_job
+    from app.domain.states import JobStatus
+
+    caller_factory, rows = env
+    adapter = _FakeAdapter()
+    with caller_factory() as db:
+        db.info["job_id"] = rows["job"].id
+        provider._invoke_provider(db, _binding(rows, adapter), lambda a: a.generate_page(None))
+
+    with caller_factory() as db:
+        job = db.get(GenerationJob, rows["job"].id)
+        job.status = JobStatus.FAILED
+        db.commit()
+
+    with caller_factory() as db:
+        with pytest.raises(HTTPException) as exc_info:
+            delete_job(rows["job"].id, db)
+        assert exc_info.value.status_code == 409
+        assert "只能归档" in exc_info.value.detail
+
+    with caller_factory() as db:
+        archived = archive_job(rows["job"].id, db)
+        assert archived.archived_at is not None
+
+    with caller_factory() as db:
+        assert db.get(GenerationJob, rows["job"].id) is not None
+        assert len(_rows_for_job(caller_factory, rows["job"].id)) == 1
+
+
 def test_multi_chunk_calls_then_route_switch_numbering(env, monkeypatch):
     caller_factory, rows = env
     monkeypatch.setattr(provider, "mark_key_failure", lambda *a, **k: None)

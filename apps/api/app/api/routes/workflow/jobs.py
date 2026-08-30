@@ -11,6 +11,7 @@ from app.models import (
     GenerationJob,
     GenerationRecord,
     JobDependency,
+    ModelCallAttempt,
     PageCandidate,
     WorkflowNodeRun,
     utcnow,
@@ -20,6 +21,7 @@ from app.schemas import (
     JobBulkArchiveRequest,
     JobRead,
     JobResultRead,
+    ModelCallAttemptRead,
 )
 from app.services.job_service import cancel_job, reset_for_retry
 
@@ -249,6 +251,7 @@ def _job_has_references(db: Session, job_id: str) -> bool:
         select(PageCandidate.id).where(PageCandidate.job_id == job_id),
         select(AssetCandidate.id).where(AssetCandidate.job_id == job_id),
         select(WorkflowNodeRun.id).where(WorkflowNodeRun.job_id == job_id),
+        select(ModelCallAttempt.id).where(ModelCallAttempt.job_id == job_id),
         select(JobDependency.id).where(
             or_(
                 JobDependency.job_id == job_id,
@@ -270,3 +273,19 @@ def delete_job(job_id: str, db: Session = Depends(get_db)) -> None:
         raise HTTPException(status_code=409, detail="任务仍被候选、生成记录或工作流引用，只能归档")
     db.delete(job)
     db.commit()
+
+
+@router.get("/jobs/{job_id}/model-call-attempts", response_model=list[ModelCallAttemptRead])
+def list_model_call_attempts(
+    job_id: str, db: Session = Depends(get_db)
+) -> list[ModelCallAttempt]:
+    job = db.get(GenerationJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return list(
+        db.scalars(
+            select(ModelCallAttempt)
+            .where(ModelCallAttempt.job_id == job_id)
+            .order_by(ModelCallAttempt.started_at, ModelCallAttempt.dispatch_no)
+        )
+    )
