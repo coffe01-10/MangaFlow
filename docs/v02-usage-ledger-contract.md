@@ -58,6 +58,8 @@ output_image_dims   JSON NULL                            # [{asset_id,width,heig
 output_asset_ids    JSON NULL                            # 关联输出资产，计费单位追溯
 ```
 
+`output_asset_ids/output_image_dims` 不能在 provider finalize 时一次写完：上游响应早于资产落盘。新增幂等 `attach_attempt_outputs(attempt_id, asset_ids, dims)` 第二阶段更新，仅在资产事务提交后调用。落盘失败保持 attempt SUCCEEDED 但输出为空，并记录持久化失败事件，不伪造资产 ID。
+
 规则：
 
 - **缓存**：`cached_input_tokens` 是 `input_tokens` 的子集（命中部分），计费按"未缓存输入价 + 缓存价"拆分——价格版本扩展 `cached_input_tokens_per_million`（可空，NULL=按全价估算并降级 PARTIAL，与 `_estimate_attempt`:245-254 的缺率语义一致）。别名归一增加 `cached_content_token_count`（Gemini）与 `prompt_tokens_details.cached_tokens`（OpenAI，取嵌套值）。
@@ -87,15 +89,16 @@ output_asset_ids    JSON NULL                            # 关联输出资产，
 
 ```text
 ProviderUsageReconciliation
-  id, provider, model_id, channel,
+  id, provider, model_id, channel, connection_id,
+  billing_account_id, import_batch_id, idempotency_key,
   period_start / period_end,
   currency, billed_amount Numeric(20,8),
   source_note (脱敏, ≤500 字符),
   entered_by / created_at
-  UNIQUE (provider, model_id, channel, period_start, period_end)
+  UNIQUE (billing_account_id, import_batch_id, idempotency_key)
 ```
 
-- 手工录入（CLI/API 管理端点），**不自动抓取账单**；对账行不细拆到 attempt，聚合视图按区间把 `estimated` 与 `billed` 并排对比，差值即展示，不做分摊。
+- 手工录入，不自动抓取账单。相同 billing account + provider/model/channel 的周期不得重叠：PostgreSQL 用 exclusion constraint，SQLite 由同事务区间查询与串行化测试保证。任意查询区间首发只纳入完整账期，不做隐式分摊。
 - 真实账单核对未运行前，一切 billed 数据不存在，账本输出恒为 estimated/unknown——**标记 NOT RUN**（§8）。
 
 ### 2.6 通道统一边界（HTTP API 与 CLI）
@@ -112,14 +115,14 @@ ProviderUsageReconciliation
 
 ### 2.8 幂等、唯一键、并发与旧 Worker
 
-- 幂等：attempt 唯一键 `(job_id, job_attempt, dispatch_no)`（:451-457）即天然幂等闸；对账表唯一键见 §2.5；回填按同一键 `INSERT OR IGNORE` 语义幂等。
+- 幂等：`dispatch_no=MAX+1` 只是序号分配，不是业务幂等。begin 必须接收稳定 `dispatch_request_id` 并建立唯一约束；相同派发重放返回既有 attempt。对账 POST 必须携带 idempotency_key。SQLite 使用 `ON CONFLICT DO NOTHING`/显式查询，PostgreSQL 使用对应 dialect；禁止把 `INSERT OR IGNORE` 写成跨库契约。
 - 并发：begin/finalize 的独立会话事务（`model_call_audit.py:47,93`）保持；finalize 是**按 attempt_id 的单行 UPDATE**，无读改写竞态；dispatch_no 分配依赖唯一约束失败重取（现状注释 :42-44）。
 - 旧 Worker：全部新增列可空，旧 finalize 不写新列 → `usage_status` 由回填/读取端推导，行为向后兼容（docstring :87-91 已定义"未提供不写入"语义）。
 
 ### 2.9 迁移、回填、回滚与保留
 
 - 迁移（V02-15 实现 PR）：①新增 attempt 列（全部 NULL 允许）；②新增 `channel`（`server_default="HTTP_API"`）与维度列；③新增 `ProviderUsageReconciliation` 表与价格版本 `cached_input_tokens_per_million` 列。禁止改动既有列语义。
-- 回填：一次性脚本按 `_USAGE_ALIASES` 同规则把 `usage` JSON 拆列并写 `usage_status/usage_source=ADAPTER_ESTIMATED`；无法解析的键保留 JSON 并置 PARTIAL。回填幂等（按 attempt id + 内容 checksum 跳过）。
+- 回填：现有 attempt.usage 来自适配器透传供应商响应，能解析的行写 `usage_source=PROVIDER_REPORTED`；只有明确由本地规则推算的字段才是 ADAPTER_ESTIMATED。无法判断来源时标 UNKNOWN，不得统一降格为 estimated。回填按 attempt id + 内容 checksum 幂等。
 - 回滚：down 分支仅删除新增列/表；已回填数据随列删除，不保留影子表（单用户产品可接受，写明）。
 - 保留策略：单用户产品默认**永久保留**账本；如需清理仅允许按归档导出后整批删除 attempt 行，禁止静默过期。
 
