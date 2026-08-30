@@ -4,6 +4,13 @@
 
 本文件记录修订版 MVP 计划的实际完成度。
 
+## V02-10D 产品级供应商入口已中性化（2026-08-31）
+
+- 首页删除专属状态请求与验证卡，改为单一 Dashboard 聚合请求和通用 AI 连接摘要；设置、帮助、项目默认模型与工作流节点统一消费凭据来源及模型目录，当前历史绑定仍保留显示。
+- 环境账号是否就绪集中由凭据适配层回答；Dashboard、`/models`、readiness 和目录服务不再各自读取供应商专属配置。Worker 拒绝文案、架构协议能力表、平台和数据模型示例已中性化。
+- 平权 allowlist 从 15 个路径收紧到 10 个，仅保留原生适配、环境凭据兼容、历史模型 registry/预设、单版本旧健康桥及协议类型。旧 `ProviderHealth` 当前仍服务 `/settings/vertex/*` 兼容端点，产品前端已无读方；待兼容端点退役时一并删除，避免本轮破坏旧客户端。
+- Ruff 与 85 项供应商/Dashboard/readiness/原文解析定向 Python 回归通过；Web ESLint、TypeScript、26 个文件 188 项 Vitest 和 Next.js 生产构建通过，`git diff --check` 与 Linux 等价平权扫描通过。M14 与 PowerShell 完整门禁仍需 Windows 环境，未调用真实供应商。
+
 ## V02-10C 默认值、路由与 grandfather 已实现（2026-08-31）
 
 - 新项目的文字/图片 legacy 别名改为可空且不再带供应商默认；风格分析、原文解析、视觉检查和默认工作流文字节点统一使用 `auto`。`GenerationRecord.provider` 必须由实际绑定显式写入。

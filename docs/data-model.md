@@ -117,9 +117,12 @@ stateDiagram-v2
 
 ```json
 {
-  "provider": "vertex-ai",
-  "model_id": "gemini-3.1-flash-image",
-  "logical_alias": "image.nano_banana_2",
+  "provider": "example-image-provider",
+  "protocol": "OPENAI",
+  "credential_source": "CONNECTION_KEY",
+  "catalog_id": "model_01",
+  "model_id": "image-model-v2",
+  "logical_alias": null,
   "display_enabled": true,
   "operations": ["image_generate", "image_edit"],
   "resolutions": ["1K", "2K", "4K"],
@@ -128,7 +131,7 @@ stateDiagram-v2
 }
 ```
 
-Nano Banana Pro 使用同构能力记录和别名 `image.nano_banana_pro`；UI 依据 API 能力渲染，不在客户端自造模型优先级。
+历史别名继续通过唯一兼容解析层指向目录模型；新模型无需别名。UI 依据 API 能力和展示偏好渲染，不在客户端自造模型优先级。
 
 ## 6. 主要约束与索引
 

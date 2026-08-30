@@ -8,6 +8,7 @@ from app.models import AIModel, ProviderConnection, ProviderKey, ProviderProfile
 from app.services.credential_source import (
     ENV_SERVICE_ACCOUNT,
     connection_credential_source,
+    environment_credentials_ready,
 )
 
 
@@ -71,6 +72,8 @@ def count_available_catalog_models(db: Session, settings: Settings) -> int:
             profile,
             credentials_writable=credentials_writable,
             has_usable_key=connection.id in usable_key_connections,
-            environment_credentials_ready=settings.vertex_configured,
+            environment_credentials_ready=environment_credentials_ready(
+                settings, connection.protocol
+            ),
         )
     )

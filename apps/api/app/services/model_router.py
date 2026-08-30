@@ -26,6 +26,7 @@ from app.services.credential_crypto import SelectedProviderKey, select_provider_
 from app.services.credential_source import (
     ENV_SERVICE_ACCOUNT,
     connection_credential_source,
+    environment_credentials_ready,
 )
 from app.services.model_registry import ModelCapability, build_registry
 from app.services.provider_presets import ensure_provider_presets, proxy_url_for_connection
@@ -251,7 +252,7 @@ def _require_available_credentials(
     explicit: bool,
 ) -> None:
     if connection_credential_source(resolved.connection) == ENV_SERVICE_ACCOUNT:
-        if not settings.vertex_configured:
+        if not environment_credentials_ready(settings, resolved.connection.protocol):
             raise HTTPException(
                 status_code=409,
                 detail="供应商连接的环境凭据尚未配置完整",

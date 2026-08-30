@@ -708,7 +708,7 @@ class PageReadinessRead(BaseModel):
     worker: PageReadinessWorker
     blockers: list[PageReadinessBlocker] = Field(default_factory=list)
     estimated_image_calls: int = 1
-    estimated_cost_note: str = "将调用 1 次 Nano Banana 2 1K 生图"
+    estimated_cost_note: str = "将调用 1 次所选图片模型的 1K 生图"
 
 
 class ProductionBlocker(BaseModel):

@@ -17,9 +17,7 @@ flowchart LR
     Q --> R["Redis / RQ Worker"]
     L --> M["模型适配层"]
     R --> M
-    M --> V["Vertex / Gemini 原生"]
-    M --> O["OpenAI 兼容 API"]
-    M --> N["Anthropic 兼容 API"]
+    M --> P["目录声明的原生 / 兼容协议"]
     L --> D
     L --> F
     R --> D
@@ -102,15 +100,18 @@ Worker 启动统一经过 `apps/api/run_worker.py` / `app.worker`，与 API 共�
 
 ## 7. 多供应商模型适配
 
-`ProviderProfile → ProviderConnection → ProviderKey / AIModel` 构成供应商目录。连接定义协议、Base URL、端点模板、非敏感请求头、余额规则和唯一健康状态；协议能力声明模型发现与支持的模型类型，凭据来源声明为连接 Key 或服务端环境账号。模型定义文字/图片类型、模态、操作、能力置信度与探测指标。OpenAI/Anthropic 兼容连接和 Vertex/Gemini 原生适配使用相同的连接健康、目录与验证契约，适配器内部仍保留真实传输差异。详细规则见 [`provider-platform.md`](provider-platform.md)。
+`ProviderProfile → ProviderConnection → ProviderKey / AIModel` 构成供应商目录。连接定义协议、Base URL、端点模板、非敏感请求头、余额规则和唯一健康状态；协议能力声明模型发现与支持的模型类型，凭据来源声明为连接 Key 或服务端环境账号。模型定义文字/图片类型、模态、操作、能力置信度与探测指标。所有协议使用相同的连接健康、目录、验证和任务绑定契约；适配器内部保留真实传输差异，但不形成 UI 排名、默认模型或自动路由加分。详细规则见 [`provider-platform.md`](provider-platform.md)。
 
-| 历史逻辑别名 | 兼容模型 ID | 说明 |
-| --- | --- | --- |
-| `text.fast` | `gemini-3.5-flash` | 结构化解析、剧本和多模态检查 |
-| `image.nano_banana_2` | `gemini-3.1-flash-image` | 与 Pro 平级的页面/资产/修复模型 |
-| `image.nano_banana_pro` | `gemini-3-pro-image-preview` | 与 NB2 平级的页面/资产/修复模型 |
+| 协议 | 凭据来源 | 模型发现 | 目录模型类型 |
+| --- | --- | --- | --- |
+| `OPENAI` | 连接 API Key | 支持 | 文字、图片 |
+| `ANTHROPIC` | 连接 API Key | 不支持 | 文字 |
+| `GOOGLE_NATIVE` | 连接 API Key | 支持 | 文字、图片 |
+| `VERTEX_NATIVE` | 服务端环境账号 | 不支持 | 文字、图片 |
 
-旧逻辑别名仍可用，但只作为历史解析入口；新任务记录目录模型 ID。连接凭据验证不生成内容，模型冒烟结果写入统一连接健康与 `ModelProbe`。模型发现只在协议能力声明允许时出现，不支持发现的连接使用预设或手动目录。自动路由只使用已完成能力测试的模型。模型错误统一归类为认证、权限、配额、限流、模型不可用、能力不支持、内容安全、超时、无效输出或上游错误。
+旧逻辑别名仍可用，但只作为历史解析入口；新任务记录目录模型 ID。新项目和工作流不预选任何供应商模型：文字任务使用 `auto`，图片任务要求显式选择目录模型。连接凭据验证不生成内容，模型冒烟结果写入统一连接健康与 `ModelProbe`。模型发现只在协议能力声明允许时出现，不支持发现的连接使用预设或手动目录。自动路由只使用已完成能力测试的模型。模型错误统一归类为认证、权限、配额、限流、模型不可用、能力不支持、内容安全、超时、无效输出或上游错误。
+
+旧 `ProviderHealth` 仅为 `/settings/vertex/*` 单版本兼容端点保留并由统一连接健康桥接；产品前端不读取它。删除兼容端点时可连同该表及桥接服务一并迁移移除，当前阶段不提前破坏旧客户端。
 
 ## 8. 安全与可观测性
 
@@ -126,7 +127,7 @@ Worker 启动统一经过 `apps/api/run_worker.py` / `app.worker`，与 API 共�
 
 开发模式可直接用 `npm run dev` 启动 Web 和 API；默认 `AUTO` 会在无 Redis 时使用本地执行器。需要验证独立 RQ 时使用 `npm run dev:full`；Docker Compose 提供 PostgreSQL 与 Redis。数据库迁移由 Alembic 管理，生产启动只检查版本，不自动升级。
 
-自动检查入口为 `npm run check`，包括 Ruff、ESLint、Pytest 和 Next.js 生产构建；迁移另做 SQLite 升级/回滚验证。真实 Vertex 图片调用不属于默认测试，避免意外费用。
+自动检查入口为 `npm run check`，包括 Ruff、ESLint、Pytest 和 Next.js 生产构建；迁移另做 SQLite 升级/回滚验证。真实供应商和任何可能计费的模型调用不属于默认测试，避免意外费用。
 
 浏览器与性能门禁分别位于 `tests/e2e/platform-v2.spec.ts`、`apps/web/scripts/lighthouse-gate.mjs` 和 `apps/web/scripts/workflow-fps-gate.mjs`。后两者要求本地 Web/API 已启动；工作流 FPS 脚本会创建临时 100 节点项目，完成 10 秒拖动/缩放采样后立即删除临时工作流和项目。
 

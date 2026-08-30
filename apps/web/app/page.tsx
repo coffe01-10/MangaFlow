@@ -1,7 +1,7 @@
 "use client";
 
 import { AppShell, GlobalNav } from "@/components/shell";
-import { api, type DashboardAIOverview, type DashboardProject, type Project, type VertexStatus } from "@/lib/api";
+import { api, type DashboardAIOverview, type DashboardProject, type Project } from "@/lib/api";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowRight,
@@ -21,17 +21,13 @@ import { FormEvent, useState } from "react";
 
 const modeLabel = { AUTO: "自动", DIRECTOR: "导演", SEMI_AUTO: "半自动" } as const;
 
-function ConnectionBadge({ status, summary }: { status?: VertexStatus; summary?: DashboardAIOverview }) {
+function ConnectionBadge({ summary }: { summary?: DashboardAIOverview }) {
   const healthy = summary?.healthy_connection_count ?? 0;
   const configured = summary?.configured_connection_count ?? 0;
   if (healthy) return <span className="status-chip success"><i />{healthy} 个 AI 连接健康</span>;
   if (configured > 0) return <span className="status-chip warning"><i />供应商待验证</span>;
-  if (!status) return <span className="status-chip muted"><i />检测中</span>;
-  if (!status.configured) return <span className="status-chip danger"><i />未配置</span>;
-  if (status.health_state === "HEALTHY") return <span className="status-chip success"><i />Vertex 已验证</span>;
-  if (status.health_state === "CHECKING") return <span className="status-chip muted"><i />正在验证</span>;
-  if (status.health_state === "DEGRADED") return <span className="status-chip warning"><i />连接降级</span>;
-  return <span className="status-chip danger"><i />Vertex 离线</span>;
+  if (!summary) return <span className="status-chip muted"><i />检测中</span>;
+  return <span className="status-chip danger"><i />未配置</span>;
 }
 
 function EmptyProjects({ onCreate }: { onCreate: () => void }) {
@@ -153,13 +149,7 @@ function CreateProjectPanel({ open, onClose }: { open: boolean; onClose: () => v
 
 export default function HomePage() {
   const [creating, setCreating] = useState(false);
-  const queryClient = useQueryClient();
   const dashboard = useQuery({ queryKey: ["dashboard"], queryFn: api.dashboard });
-  const vertex = useQuery({ queryKey: ["vertex-status"], queryFn: api.vertexStatus });
-  const verify = useMutation({
-    mutationFn: () => api.verifyVertex("CREDENTIALS"),
-    onSuccess: (result) => { queryClient.setQueryData(["vertex-status"], result); queryClient.invalidateQueries({ queryKey: ["dashboard"] }); },
-  });
   const aiOverview = dashboard.data?.ai_overview;
   const projectCount = dashboard.data?.totals.project_count ?? 0;
 
@@ -170,7 +160,7 @@ export default function HomePage() {
         <div className="topbar-title"><span>MANGAFLOW / PRODUCTION DESK</span><strong>漫画生产台</strong></div>
         <div className="topbar-actions">
           <GlobalNav />
-          <ConnectionBadge status={vertex.data} summary={aiOverview} />
+          <ConnectionBadge summary={aiOverview} />
           <Link className="button ghost compact" href="/settings"><Settings size={16} />系统设置</Link>
           <button className="button ink compact" onClick={() => setCreating(true)}><Plus size={16} />新建项目</button>
         </div>
@@ -206,20 +196,17 @@ export default function HomePage() {
         </section>
 
         <aside className="dashboard-side">
-          <section className="side-card vertex-card">
-            <header><span><CloudCog size={17} />VERTEX AI / LEGACY</span><ConnectionBadge status={vertex.data} /></header>
-            <div className="vertex-signal"><i className={vertex.data?.configured ? "on" : ""} /><i className={vertex.data?.credential_file_present ? "on" : ""} /><i className={vertex.data?.health_state === "HEALTHY" ? "on" : ""} /></div>
-            <h3>{vertex.data?.configured ? "服务端凭据已接入" : "等待服务端配置"}</h3>
-            <p>{vertex.data?.message ?? "正在检查本地配置…"}</p>
+          <section className="side-card connection-card">
+            <header><span><CloudCog size={17} />AI 连接 / CONNECTIONS</span><ConnectionBadge summary={aiOverview} /></header>
+            <div className="connection-signal"><i className={(aiOverview?.configured_connection_count ?? 0) > 0 ? "on" : ""} /><i className={(aiOverview?.healthy_connection_count ?? 0) > 0 ? "on" : ""} /><i className={(aiOverview?.enabled_model_count ?? 0) > 0 ? "on" : ""} /></div>
+            <h3>{(aiOverview?.healthy_connection_count ?? 0) > 0 ? "AI 连接已就绪" : (aiOverview?.configured_connection_count ?? 0) > 0 ? "连接等待验证" : "等待添加供应商"}</h3>
+            <p>统一管理账号型凭据与 API Key 连接；模型能力以目录验证结果为准。</p>
             <dl>
-              <div><dt>区域</dt><dd>{vertex.data?.location ?? "—"}</dd></div>
-              <div><dt>文本模型</dt><dd>Gemini 3.5 Flash</dd></div>
-              <div><dt>生图模型</dt><dd>NB 2 / NB Pro</dd></div>
+              <div><dt>已配置连接</dt><dd>{aiOverview?.configured_connection_count ?? 0}</dd></div>
+              <div><dt>健康连接</dt><dd>{aiOverview?.healthy_connection_count ?? 0}</dd></div>
+              <div><dt>可用模型</dt><dd>{aiOverview?.enabled_model_count ?? 0}</dd></div>
             </dl>
-            <button className="button outline full" disabled={!vertex.data?.configured || verify.isPending} onClick={() => verify.mutate()}>
-              {verify.isPending ? <LoaderCircle className="spin" size={16} /> : <ShieldCheck size={16} />}{vertex.data?.health_state === "HEALTHY" ? "重新验证" : "联网验证凭据"}
-            </button>
-            {verify.isError && <p className="inline-error">{verify.error.message}</p>}
+            <Link className="button outline full" href="/settings"><ShieldCheck size={16} />管理连接与验证</Link>
           </section>
 
           <section className="side-card flow-card">

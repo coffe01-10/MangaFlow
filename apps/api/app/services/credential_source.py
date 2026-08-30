@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final, Literal
 
+from app.config import Settings
 from app.models import ProviderConnection
 
 CredentialSource = Literal["CONNECTION_KEY", "ENV_SERVICE_ACCOUNT"]
@@ -64,6 +65,19 @@ def connection_credential_source(connection: ProviderConnection) -> CredentialSo
     """Return the credential shape for a connection's current protocol."""
 
     return credential_source_for_protocol(connection.protocol)
+
+
+def environment_credentials_ready(settings: Settings, protocol: str) -> bool:
+    """Return whether an environment-account protocol can authenticate.
+
+    Product callers deliberately ask this adapter instead of reading a
+    provider-specific setting. The compatibility setting remains confined to
+    the credential boundary until the legacy environment contract is retired.
+    """
+
+    if credential_source_for_protocol(protocol) != ENV_SERVICE_ACCOUNT:
+        return False
+    return settings.vertex_configured
 
 
 def capabilities_for_protocol(protocol: str) -> ProtocolCapabilities:

@@ -167,7 +167,7 @@ export function ProviderManagement() {
         createOpen={createOpen}
         onToggleCreate={() => setCreateOpen((current) => !current)}
       />
-      <p className="provider-toolbar-hint">可添加 OpenAI 或 Anthropic 兼容连接。Vertex 使用同一供应商卡片，凭据为服务账号而非 API Key。</p>
+      <p className="provider-toolbar-hint">可添加兼容连接；账号型连接由服务端环境管理凭据，Key 型连接在各自连接卡内录入。</p>
       <ProviderCreateForm
         open={createOpen}
         onCreated={(provider) => {

@@ -49,25 +49,6 @@ export interface ModelCapability {
   priority: number;
 }
 
-export interface VertexStatus {
-  configured: boolean;
-  health_state: "UNCONFIGURED" | "CHECKING" | "HEALTHY" | "DEGRADED" | "OFFLINE";
-  credential_file_present: boolean;
-  project: string | null;
-  location: string;
-  text_model: string;
-  image_models: string[];
-  last_checked_at: string | null;
-  last_success_at: string | null;
-  token_expires_at: string | null;
-  consecutive_failures: number;
-  latency_ms: number | null;
-  error_code: string | null;
-  message: string;
-  text_model_access: string;
-  image_model_access: Record<string, string>;
-}
-
 export interface RuntimeSettings {
   queue_mode: "AUTO" | "LOCAL" | "REDIS";
   job_timeout_seconds: number;
@@ -841,12 +822,6 @@ export const api = {
   deleteProject: (id: string, confirmName: string) =>
     request<void>(`/projects/${id}?confirm_name=${encodeURIComponent(confirmName)}`, { method: "DELETE" }),
   models: () => request<ModelCapability[]>("/models"),
-  vertexStatus: () => request<VertexStatus>("/settings/vertex/status"),
-  verifyVertex: (level: "CREDENTIALS" | "TEXT_MODEL" | "IMAGE_MODEL" = "CREDENTIALS", imageModelAlias?: ImageModelAlias) =>
-    request<VertexStatus>("/settings/vertex/verify", {
-      method: "POST",
-      body: JSON.stringify({ level, image_model_alias: imageModelAlias }),
-    }),
   runtimeSettings: () => request<RuntimeSettings>("/settings/runtime"),
   updateRuntimeSettings: (payload: Partial<RuntimeSettings> & { version: number }) =>
     request<RuntimeSettings>("/settings/runtime", { method: "PATCH", body: JSON.stringify(payload) }),

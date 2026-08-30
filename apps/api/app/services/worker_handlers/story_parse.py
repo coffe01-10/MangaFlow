@@ -202,7 +202,7 @@ def _run_story_parse(db, job: GenerationJob) -> None:
                 except ProviderAdapterError as segment_error:
                     raise ProviderAdapterError(
                         segment_error.code,
-                        f"原文第 {segment.ordinal} 段被 Vertex 拒绝："
+                        f"原文第 {segment.ordinal} 段被上游模型拒绝："
                         f"{segment_error.user_message}",
                     ) from segment_error
         execution._ensure_job_not_cancelled(db, job)

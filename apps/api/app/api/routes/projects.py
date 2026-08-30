@@ -34,6 +34,7 @@ from app.schemas import (
 from app.services.credential_source import (
     ENV_SERVICE_ACCOUNT,
     credential_source_for_protocol,
+    environment_credentials_ready,
 )
 from app.services.job_service import mark_job_cancelled
 from app.services.model_availability import count_available_catalog_models
@@ -91,13 +92,12 @@ def _ai_overview(db: Session) -> DashboardAIOverview:
         .outerjoin(ProviderKey, ProviderKey.connection_id == ProviderConnection.id)
         .group_by(ProviderConnection.id)
     ).all()
-    native_configured = settings.vertex_configured
     healthy = sum(state == "HEALTHY" for _, state, _ in connections)
     configured = sum(
         bool(has_enabled_key)
         or (
             credential_source_for_protocol(protocol) == ENV_SERVICE_ACCOUNT
-            and native_configured
+            and environment_credentials_ready(settings, protocol)
         )
         for protocol, _, has_enabled_key in connections
     )

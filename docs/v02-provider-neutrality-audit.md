@@ -362,6 +362,7 @@ Health (统一在 Connection 上)
 ### Phase E：文档与收尾
 
 - 内容：更新 `architecture.md`（第 7 节重写为协议能力表）、`provider-platform.md`（第 5 行重写）、`data-model.md`（示例改协议中立 + 新增 credential_source）；`story_parse.py:205` 文案去供应商名（H10）；grep 门禁收紧为阻断级（允许清单仅剩适配器层与 legacy 解析层）；`ProviderHealth` 表退役评估（若 Phase B 后无写入方则随本阶段出迁移删表或保留只读）。
+- 2026-08-31 实施结论：上述文档、Worker 文案与 allowlist 收紧已落地；`ProviderHealth` 仍被单版本 `/settings/vertex/*` 兼容端点读写并与统一连接健康桥接，因此本阶段保留，不新增迁移。产品前端已无读方，待兼容端点按版本策略删除时连同表、schema 和桥接服务一次退役。
 - 风险：低。文档变更不触代码路径；`roadmap.md`/`development-progress.md` 由 lead 维护，本阶段不触碰。
 - 回滚点：纯文档 + 文案，独立 revert。
 

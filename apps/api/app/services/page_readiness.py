@@ -29,6 +29,7 @@ from app.schemas import (
     PageReadinessStyle,
     PageReadinessWorker,
 )
+from app.services.credential_source import environment_credentials_ready
 from app.services.model_availability import (
     catalog_model_is_available,
     connection_ids_with_usable_keys,
@@ -81,7 +82,9 @@ def _catalog_model_availability(db: Session, settings: Settings) -> dict[str, in
             profile,
             credentials_writable=credentials_writable,
             has_usable_key=connection.id in usable_key_connections,
-            environment_credentials_ready=settings.vertex_configured,
+            environment_credentials_ready=environment_credentials_ready(
+                settings, connection.protocol
+            ),
         )
         if not available:
             continue

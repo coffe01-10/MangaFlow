@@ -46,6 +46,7 @@ from app.services.credential_source import (
     ENV_SERVICE_ACCOUNT,
     connection_credential_source,
     connection_protocol_capabilities,
+    environment_credentials_ready,
 )
 from app.services.provider_presets import (
     ANTHROPIC_ENDPOINTS,
@@ -75,7 +76,7 @@ def connection_is_configured(
 
     source = connection_credential_source(connection)
     if source == ENV_SERVICE_ACCOUNT:
-        return settings.vertex_configured
+        return environment_credentials_ready(settings, connection.protocol)
     now = datetime.now(UTC)
     return any(_enabled_key_is_usable(key, now) for key in keys)
 

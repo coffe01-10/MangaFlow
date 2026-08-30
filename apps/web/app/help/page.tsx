@@ -19,7 +19,7 @@ export default function HelpPage() {
       <main className="help-page">
         <section className="help-hero"><span className="section-index">HELP / 01</span><CircleHelp size={32} /><h1>把复杂的漫画生产，<br /><em>拆成可确认的每一步。</em></h1><p>项目侧栏就是完整生产路径。每个入口都拥有独立网址，可以刷新、收藏和通过浏览器前进后退。</p></section>
         <section className="help-stage-grid">{stages.map(([index, title, detail, Icon]) => <article key={index}><span>{index}</span><Icon size={22} /><h2>{title}</h2><p>{detail}</p></article>)}</section>
-        <section className="help-troubleshoot"><div><CloudCog size={22} /><span>VERTEX AI / 故障排查</span><h2>凭据显示断开时怎么办？</h2></div><ol><li>打开“设置”，确认凭据文件仍存在。</li><li>先运行无付费的连接诊断，再按需验证文本模型。</li><li>网络波动会显示为连接降级，不会清除服务端配置。</li></ol><Link className="button ink" href="/settings">打开系统设置 <ArrowRight size={15} /></Link></section>
+        <section className="help-troubleshoot"><div><CloudCog size={22} /><span>AI 连接 / 故障排查</span><h2>供应商连接显示断开时怎么办？</h2></div><ol><li>打开“设置”，确认账号型环境凭据或连接 API Key 已就绪。</li><li>先运行无生成费用的凭据验证，再按需执行模型能力测试。</li><li>网络波动会显示为连接降级，不会清除人工启停与服务端配置。</li></ol><Link className="button ink" href="/settings">打开系统设置 <ArrowRight size={15} /></Link></section>
       </main>
     </AppShell>
   );

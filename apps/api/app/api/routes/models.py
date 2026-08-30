@@ -5,6 +5,7 @@ from app.config import get_settings
 from app.database import get_db
 from app.models import AIModel, ProviderConnection, ProviderProfile
 from app.schemas import ModelCapabilityRead
+from app.services.credential_source import environment_credentials_ready
 from app.services.model_availability import (
     catalog_model_is_available,
     connection_ids_with_usable_keys,
@@ -35,7 +36,9 @@ def list_models(db: Session = Depends(get_db)) -> list[dict]:
             profile,
             credentials_writable=credentials_writable,
             has_usable_key=connection.id in usable_key_connections,
-            environment_credentials_ready=settings.vertex_configured,
+            environment_credentials_ready=environment_credentials_ready(
+                settings, connection.protocol
+            ),
         )
         catalog.append(
             {
