@@ -17,7 +17,7 @@
 
 **红线：迁移零数据重写**。既有 `scenes.location` 文本原样保留、`scene_asset_id` 置 NULL、不回填虚构资产；历史行为不变。升级到资产是 V02-21 UI 的显式用户动作（「从 location 创建资产」），不是自动迁移副作用。
 
-**后端调度零改动**：`model_router.py`、`model_availability.py`、Worker 租约机制（`JobAssetReference`）、候选版本锁定全部复用既有设施，仅扩展消费函数与候选快照字段。
+**路由选择策略不变**：`model_router.py` 与 `model_availability.py` 不改。任务创建、`JobAssetReference` 租约、生成消费函数、候选快照与 `GenerationRecord.input_versions` 必须扩展以纳入场景引用，因此不能笼统称为“后端调度零改动”。
 
 ---
 
@@ -103,7 +103,7 @@ scene_assets  (实体资产)
   version: int (Timestamped)
 
   Index ix_scene_assets_project_deleted_created (project_id, deleted_at, created_at)
-  UniqueConstraint (project_id, name)    # 同项目资产名唯一
+  活跃名称唯一 (project_id, normalized_name) WHERE deleted_at IS NULL
 
 scene_asset_references  (参考图绑定)
   id: str(36) PK
@@ -120,12 +120,19 @@ scene_asset_variants  (场景变体：时间/天气/光照)
   scene_asset_id: FK scene_assets.id CASCADE, index
   name: String(120)                      # 如「清晨教室」「雨夜街道」
   structured_overrides: JSON default {}  # 覆盖 4.2 中 time_of_day/weather/lighting/palette 子集
-  reference_asset_ids: JSON default []   # 变体级参考图（复用 asset 池）
+  # 变体级参考图通过下方关系表表达，禁止 JSON 裸 ID
   is_canonical: bool default False       # 默认变体
   deleted_at: datetime nullable
   version: int
 
   Index ix_scene_asset_variants_asset_canonical (scene_asset_id, is_canonical)
+
+scene_asset_variant_references
+  id: str(36) PK
+  variant_id: FK scene_asset_variants.id CASCADE, index
+  asset_id: FK assets.id RESTRICT, index
+  role: String(32), sort_order: int, created_at
+  UniqueConstraint (variant_id, asset_id, role)
 ```
 
 `scenes` 表变更（**只加列，不删不改 location**）：
@@ -137,6 +144,8 @@ scenes ADD
 ```
 
 语义：`Scene.scene_asset_id` 表示「当前采用的场景资产」，跟随资产最新版本（不锁版本）；**版本锁定发生在生成边界**（§6），不是场景引用层。`scene_asset_variant_id` 表示当前生效变体。
+
+服务端绑定不变量：Scene、SceneAsset 必须属于同一 project；variant 非空时必须属于所给 SceneAsset；软删资产/变体不得绑定。违反任一条件返回 422，不能依赖前端过滤。
 
 ### 4.2 structured 结构化字段契约
 
@@ -223,14 +232,14 @@ scenes ADD
 
 - `Scene.scene_asset_id` → `SceneAsset`（FK `SET NULL`）：场景资产被软删/物理删除时场景回退到 `location` 文本兜底，**不产生孤儿外键**。
 - `SceneAssetReference.asset_id` → `Asset`（FK `RESTRICT`）：参考图被活动任务租约占用时，删除资产被 409 拦截（复用 `_ensure_asset_not_in_active_job`）。
-- `_detach_reference_asset`（`uploads.py:74-102`）扩展：删除被引用的 `Asset` 时，同时从 `SceneAssetReference` 解绑，并重置对应 `SceneAsset.status = NEEDS_CONFIRMATION`（对齐 Outfit/Style 重置语义）。
+- `_detach_reference_asset` 扩展：删除被引用的 Asset 时，同时处理 `SceneAssetReference` 与 `SceneAssetVariantReference`；活动任务租约仍先返回 409。解绑后重算对应 `SceneAsset.status`，不得留下变体关系中的悬空 ID。
 - 删除 `SceneAsset` 时其 `references` / `variants` 级联删除（CASCADE）。
 
 ---
 
 ## 8. 资产租约、任务执行中删除、旧 Worker 晚返回
 
-- **租约**：场景参考图在任务排队/执行期间进入 `JobAssetReference`（V02-20 在创建引用场景的生成任务时，将 `SceneAssetReference.asset_id` 全部写入租约）。`_ensure_asset_not_in_active_job` 对该类任务同样生效——任务执行中删除参考图返回 409「素材正被排队或执行中的生成任务使用」。
+- **租约**：场景参考图在任务排队/执行期间进入 `JobAssetReference`；租约集合必须同时包含资产级与当前变体关系表中的 asset_id。任务执行中删除任一参考图返回 409。
 - **任务执行中删除**：软删除的 `Asset`/`SceneAsset` 仍可被在途任务读取（`storage_key` 有效），但不得被新任务绑定；任务完成前不物理删除文件（对齐既有 `Asset` 软删语义）。
 - **旧 Worker 晚返回**：租约失效/取消后 Worker 不得写回候选或状态（既有 P1-7/P1-9 机制，本设计不重复实现）。场景版本锁定在候选 `prompt_snapshot`（生成时快照），旧 Worker 晚返回不改变候选已锁定的版本事实；若晚返回结果被采用，`resolve_scene_background` 只影响**新**生成，历史候选版本不变。
 - **变体版本锁定**：同 §6，候选快照含 `scene_asset_variant_id` 与其 `structured_overrides` 副本，变体后续修改不影响历史候选。
@@ -294,15 +303,17 @@ upgrade:
   1. create_table scene_assets（§4.1）
   2. create_table scene_asset_references（§4.1）
   3. create_table scene_asset_variants（§4.1）
-  4. add_column scenes.scene_asset_id   nullable=True（不填值）
-  5. add_column scenes.scene_asset_variant_id  nullable=True（不填值）
-  6. add_index 上述外键与复合索引
+  4. create_table scene_asset_variant_references（§4.1）
+  5. add_column scenes.scene_asset_id   nullable=True（不填值）
+  6. add_column scenes.scene_asset_variant_id  nullable=True（不填值）
+  7. add_index 上述外键与复合索引
   （backfill：无数据操作。location 文本零触碰。）
 
 downgrade:
-  1. drop scenes.scene_asset_variant_id / scenes.scene_asset_id
-  2. drop_table scene_asset_variants / scene_asset_references / scene_assets
-  3. （无需数据保护：downgrade 仅移除新功能列/表，location 原样）
+  1. 预检 scenes 两个新 FK 全为 NULL，且四张新表均为空；任一条件不满足即明确拒绝 downgrade
+  2. drop scenes.scene_asset_variant_id / scenes.scene_asset_id
+  3. drop_table scene_asset_variant_references / scene_asset_variants / scene_asset_references / scene_assets
+  4. 禁止为通过 down 临时删除、回填或改写用户场景资产；location 原样
 ```
 
 - 迁移内禁止 import `Settings`、禁止读凭据、禁止任何对既有行的 `UPDATE`（对齐 V02-02 M7 禁止条款）。
