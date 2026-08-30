@@ -334,6 +334,46 @@ def test_route_switch_without_job_context_keeps_original_behavior(env, monkeypat
         assert db.scalars(select(ModelCallAttempt.id)).first() is None
 
 
+def test_successful_audit_survives_caller_rollback(env):
+    """Design-approved invariant: a successful paid call is finalized durably in
+    the independent audit transaction. A later caller-owned rollback (e.g. a
+    candidate/GenerationRecord write failure) must leave outcome='SUCCEEDED'
+    while the caller-owned business row is absent."""
+
+    caller_factory, rows = env
+    adapter = _FakeAdapter()
+
+    with caller_factory() as db:
+        db.info["job_id"] = rows["job"].id
+        result = provider._invoke_provider(
+            db, _binding(rows, adapter), lambda a: a.generate_page(None)
+        )
+        # Caller-owned business write in the same session/transaction...
+        from app.models import GenerationRecord
+
+        record = GenerationRecord(
+            job_id=rows["job"].id,
+            provider="preset-provider",
+            model_id=result.model_id,
+            location="global",
+            prompt_template="PAGE",
+            prompt_version="v1",
+            prompt_checksum="checksum",
+        )
+        db.add(record)
+        db.flush()
+        # ...then the caller rolls back exactly like a real output-write failure.
+        db.rollback()
+
+    # Separate connection: the audit row survived; the caller-owned row did not.
+    attempts = _rows_for_job(caller_factory, rows["job"].id)
+    assert len(attempts) == 1
+    assert attempts[0].outcome == "SUCCEEDED"
+    assert attempts[0].request_id == "req-1"
+    with caller_factory() as db:
+        assert db.scalars(select(GenerationRecord.id)).first() is None
+
+
 def test_job_with_ledger_is_blocked_from_delete_but_can_archive(env):
     from fastapi import HTTPException
 
