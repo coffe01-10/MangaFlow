@@ -58,13 +58,13 @@
 
 | 结果 | 触发点 | 账本证据 | 候选/产物 | 恢复行为 |
 | --- | --- | --- | --- | --- |
-| 请求前失败（分镜过期/参考失效/能力不匹配/无 Key） | `page_generate.py:258-271,317-324,374-386`、`execution.py:16` | attempt：无（未进入 `_invoke_provider`）或 FAILED（能力错误在调用 lambda 内） | 候选停留 QUEUED，无产物 | 任务按 `max_attempts` 重试或 FAILED；用户按当前分镜重建 |
+| 请求前失败（分镜过期/参考失效/能力不匹配/无 Key） | `page_generate.py:258-271,317-324,374-386`、`execution.py:16` | attempt：无（未进入 `_invoke_provider`）或 FAILED（能力错误在调用 lambda 内） | Worker 失败收敛后候选 FAILED，无产物 | 仅 retryable 错误按 `max_attempts` 重试；确定性输入/能力错误不自动重试 |
 | 请求后未知结果（崩溃/断网） | 进程死亡，finalize 未执行 | attempt `outcome IS NULL`（`model_call_audit.py:44-47` docstring 承认） | 候选停留 GENERATING | 无补偿扫描（缺口）；人工 `reset_for_retry`（`job_service.py:485+`）；费用不可知 → 账本 unknown（依赖 #49 草案） |
 | 部分产物成功（多图返回） | `page_generate.py:406` 取 `response.images[0]` | GenerationRecord.usage/output_asset_ids 只含采用图 :434-436 | 其余图片丢弃，不落盘 | 无缺口修复需求；如需保留多候选需新契约（待决） |
 | 下载失败（URL 结果） | `compatible.py:499-511` → `INVALID_OUTPUT` | attempt FAILED + error_code；无 usage（响应未成图） | 无产物 | Job FAILED → 手动重试 |
-| 落盘失败 | `_save_generated_asset` 异常清理 :250-253 / `asset_generate.py:98-102` | attempt 已 SUCCEEDED（调用成功）、GenerationRecord 未建 → 记录悬空（缺口：attempt 与产物不一致时账本无法区分"已生成未落盘"） | 候选停留 GENERATING | Job FAILED → 重试会重新付费（现状，标注为已知成本风险） |
-| 取消 | `cancel_job`（`job_service.py:467-485`）+ 调用前后检查点（`page_generate.py:402`、`asset_generate.py:310`） | attempt FAILED（error CANCELLED）或成功收尾（在途取消保留产物 :402-405 语义） | 取消中候选置 `CANCELLED`（`job_service.py:435-436`）；在途完成产物正常落库 | 无退款；产物归属正常 |
-| 超时 | `httpx.Timeout(90)`（`compatible.py:256`）/ `job_timeout_seconds`（`config.py:41`） | 同"请求后未知"或 FAILED | 同上 | 租约到期由执行外壳收敛（`architecture.md:67`） |
+| 落盘失败 | `_save_generated_asset` 异常清理 :250-253 / `asset_generate.py:98-102` | attempt 已 SUCCEEDED、GenerationRecord 未建 | Worker 失败收敛后候选 FAILED，半成品清理 | 重试会重新付费；账本必须标识“上游成功、产物持久化失败” |
+| 取消 | `cancel_job` + 调用前后检查点 | 调用前取消无 attempt；调用期间取消且上游已返回时 attempt 可为 SUCCEEDED | 取消检查早于资产保存：无 GenerationRecord、无持久输出，候选 CANCELLED | 无退款；不得声称产物正常落库 |
+| 超时 | `httpx.Timeout(90)` / `job_timeout_seconds` | 客户端明确抛出的 timeout → FAILED；controller/进程死亡未 finalize → outcome NULL | 可观测 timeout 候选 FAILED；仅无法 finalize 的进程死亡保持未知 | 租约恢复不得把明确 FAILED 改写成 unknown |
 
 账本与费用证据要求（设计约束，依赖 #49 草案未批准）：上述每种结果下 attempt 行必须存在且携带 `outcome/error_code/usage(可得时)/duration_ms`；**费用证据 = attempt 粒度逐次保留**（重试与换 Key 替代派发不合并，`provider.py:248-276`）；未决行的费用标 unknown 禁止 0。
 
@@ -87,7 +87,7 @@
 ## 7. UNKNOWN / NOT RUN 清单
 
 1. `UNKNOWN`：OpenAI 兼容供应商的 mask/seed/尺寸枚举/多参考上限（官方文档未取得）；GOOGLE_NATIVE 参考图数量上限；各具体模型版本的分辨率枚举（仓库只声明 1K/2K/4K）。
-2. `UNKNOWN`：mask 能力位应挂接在协议层还是模型层（生态同时存在 mask-free 与 mask-based 两种编辑范式，Vertex overview 证实）。
+2. **冻结决策**：编辑能力挂在具体目录模型上，协议/适配器只声明可表达的请求表面。模型字段至少拆分 `accepts_explicit_mask`、`supports_instruction_region_edit`、`preserves_outside_region`、`whole_image_reference_only`，每项带 `source=DECLARED|DISCOVERED|VERIFIED`；未知值不得按 false 或 true 猜测。
 3. `NOT RUN`：未调用任何真实供应商（无 mask/inpaint 实测、无计费实测）；未运行真实 PostgreSQL/Redis/生产 Worker；未运行浏览器 E2E。
 4. "落盘失败后重试重新付费"与"未决 attempt 无补偿扫描"为现状已知缺口，本轮只记录不修复。
 
