@@ -10,16 +10,15 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from app.config import Settings
+from app.services.provider_errors import ProviderFailure
 
 T = TypeVar("T")
 
-
-@dataclass(frozen=True)
-class VertexFailure:
-    code: str
-    message: str
-    retryable: bool
-    authentication: bool = False
+# Compatibility re-export of the shared provider-neutral failure type. Fields
+# and runtime behavior are identical to the previous Vertex-local dataclass;
+# keeping the historical name avoids breaking importers while the code set
+# lives in one place (docs/v02-provider-neutrality-audit.md C5).
+VertexFailure = ProviderFailure
 
 
 def classify_vertex_failure(error: Exception) -> VertexFailure:
