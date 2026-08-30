@@ -73,8 +73,8 @@
 | 并发编辑（分镜 vs 生成） | 调用后重读版本，保留产物并标记过期（`page_generate.py:402-405`）；`STALE_CANDIDATE_CONFIRMATION_REQUIRED`（`generation.py:245-255`） | 局部编辑引入后"区域内容 + 分镜结构"双版本锚点未定义（结构变则区域作废的粒度待契约） |
 | 重复提交 | `idempotency_key` 唯一（`models.py:370`；`repair:{repair_plan_id}` `inspection.py:166`）；候选序号冲突 409（`generation.py:90`） | 前端无防抖幂等提示层（双击修复会创建两个 RepairPlan——repair id 不同则不拦截） |
 | 刷新恢复 | 候选状态即真源（QUEUED/GENERATING/READY），前端轮询 workbench（`use-generation-workspace.ts:23` 注释列举全部动作） | mask 选区是纯前端瞬时状态，刷新即丢（未来功能需草稿持久化） |
-| 取消 | `cancel_job`（`job_service.py:467-485`）+ 调用前后检查点 | 付费调用进行中的取消不退款、产物保留无归属（现状语义，局部编辑需继承并写明） |
-| 超时 | `job_timeout_seconds`/租约（`models.py:374-377`，`config.py:41-42`） | 未决 attempt（outcome NULL）无补偿扫描（`model_call_audit.py` docstring 承认存在） |
+| 取消 | `cancel_job`（`job_service.py:467-485`）+ 调用前后检查点 | 调用期间取消且上游已返回时：attempt 可为 SUCCEEDED，但取消检查早于资产保存；无 GenerationRecord/持久输出，候选最终 CANCELLED，不存在“无归属产物” |
+| 超时 | HTTP 客户端可观测 timeout 收敛 FAILED；Worker/controller 死亡且 finalize 未执行时才留下 outcome NULL | 未决 attempt 无补偿扫描（`model_call_audit.py` docstring承认存在） |
 | 失败重试 | `max_attempts` + `reset_for_retry`；Key 失败轮换（`provider.py:186-235`） | 重试整页重画，无"复用已成功区域"的增量语义 |
 
 ## 6. 红线：历史 provider/model/catalog_model_id 不改写
@@ -87,7 +87,7 @@
 
 - 现状：`PAGE_REPAIR`/`ASSET_GENERATE` 对一切支持 `image_edit` 操作的模型发同样的"首图为原图"请求（`page_generate.py:317-324`、`asset_generate.py:276-291`）；模型能力仅有 `resolutions/max_reference_images`（`provider_catalog.py:703-706`）与操作白名单（`provider_catalog.py:417-423`），**没有 mask/inpaint 能力位**。
 - 后果：不支持原生 mask 的模型会静默按整图编辑处理——用户以为只改了区域，实际全图重绘，违反"不得静默退化"。
-- 需求：能力矩阵（依赖 Issue #52 的 V02-44A 交付）必须把 `native_mask_edit` 声明为显式能力位；不支持时 API 返回确定性错误（复用 `UNSUPPORTED_CAPABILITY` 家族，`vertex.py:136-140` 先例），前端把"局部重抽卡"入口置灰并说明原因，而不是退化为整页重生。半修半整的降级方案只能作为用户显式选择的选项。
+- 需求：能力必须落在具体目录模型而不是笼统协议上，并至少分离 `accepts_explicit_mask`、`supports_instruction_region_edit`、`preserves_outside_region`、`whole_image_reference_only`，同时携带来源与验证状态。局部入口按所需能力组合判断；不匹配时返回确定性 `UNSUPPORTED_CAPABILITY`，不得把普通 image-to-image 当局部编辑。整格/整页降级只能由用户显式另选。
 
 ## 8. 测试矩阵（可拆契约/后端/前端/验收 Issue）
 
