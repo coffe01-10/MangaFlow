@@ -9,6 +9,7 @@ from app.models import (
     Dialogue,
     MangaPage,
     ModelCallAttempt,
+    ModelPricingVersion,
     Panel,
     Project,
     Scene,
@@ -56,6 +57,7 @@ def test_empty_database_upgrade_downgrade_and_upgrade(tmp_path, monkeypatch):
     command.upgrade(config, "head")
     engine = create_engine(database_url)
     assert "provider_health" in inspect(engine).get_table_names()
+    assert "model_pricing_versions" in inspect(engine).get_table_names()
     assert "ix_generation_jobs_status_lease" in {
         index["name"] for index in schema.get_indexes("generation_jobs")
     }
@@ -492,6 +494,65 @@ def test_model_call_attempts_migration_fails_loudly_on_partial_table(
     assert "ix_model_call_attempts_project_id" in {
         index["name"] for index in schema.get_indexes("model_call_attempts")
     }
+    engine.dispose()
+
+
+
+def test_model_pricing_versions_migration_roundtrip(tmp_path, monkeypatch):
+    database_url = f"sqlite:///{(tmp_path / 'model-pricing.db').as_posix()}"
+    monkeypatch.setattr(get_settings(), "database_url", database_url)
+    config = Config("apps/api/alembic.ini")
+
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    schema = inspect(engine)
+    assert "model_pricing_versions" in schema.get_table_names()
+    assert {index["name"] for index in schema.get_indexes("model_pricing_versions")} == {
+        "ix_model_pricing_versions_lookup"
+    }
+    engine.dispose()
+
+    command.downgrade(config, "20260829_18")
+    engine = create_engine(database_url)
+    assert "model_pricing_versions" not in inspect(engine).get_table_names()
+    engine.dispose()
+
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    assert "model_pricing_versions" in inspect(engine).get_table_names()
+    engine.dispose()
+
+
+
+def test_model_pricing_migration_refuses_incomplete_existing_table(
+    tmp_path, monkeypatch
+):
+    database_url = f"sqlite:///{(tmp_path / 'partial-pricing.db').as_posix()}"
+    monkeypatch.setattr(get_settings(), "database_url", database_url)
+    config = Config("apps/api/alembic.ini")
+    command.upgrade(config, "20260829_18")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        ModelPricingVersion.__table__.create(connection)
+        connection.execute(text("DROP INDEX ix_model_pricing_versions_lookup"))
+    engine.dispose()
+
+    with pytest.raises(RuntimeError, match="结构与本迁移不匹配"):
+        command.upgrade(config, "head")
+
+    engine = create_engine(database_url)
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+            "20260829_18"
+        )
+    with engine.begin() as connection:
+        connection.execute(text("DROP TABLE model_pricing_versions"))
+    engine.dispose()
+
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    assert "model_pricing_versions" in inspect(engine).get_table_names()
     engine.dispose()
 
 

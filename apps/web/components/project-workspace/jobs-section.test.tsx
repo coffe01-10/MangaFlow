@@ -55,6 +55,43 @@ describe("JobsSection", () => {
     retryJob.mockReset().mockResolvedValue(jobFixture({ id: "retried-job", status: "WAITING" }));
   });
 
+  it("明确区分完整估算、部分估算与不可用，且不冒充供应商账单", async () => {
+    jobsApi.mockReset().mockResolvedValue([
+      jobFixture({
+        id: "job-partial-cost",
+        status: "COMPLETED",
+        estimated_cost: 0.125,
+        estimated_cost_currency: "USD",
+        estimated_cost_status: "PARTIAL",
+        estimated_cost_pricing_versions: ["provider/model:v1"],
+        estimated_cost_note: "仅完整估算 1/2 次调用；其余调用缺少 usage 或价格，估算值不等于供应商账单",
+      }),
+      jobFixture({
+        id: "job-no-cost",
+        status: "FAILED",
+        estimated_cost: null,
+        estimated_cost_currency: null,
+        estimated_cost_status: "UNAVAILABLE",
+        estimated_cost_pricing_versions: [],
+        estimated_cost_note: "缺少调用 usage 或对应价格版本，费用不可估算；估算值不等于供应商账单",
+      }),
+    ]);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <JobsHarness />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText(/部分估算.*USD.*0\.125/)).toBeInTheDocument();
+    expect(screen.getByText(/仅完整估算 1\/2 次调用/)).toBeInTheDocument();
+    expect(screen.getByText(/缺少调用 usage 或对应价格版本/)).toBeInTheDocument();
+    expect(screen.getAllByText(/估算值不等于供应商账单/)).toHaveLength(2);
+  });
+
   it("运行中的任务提供取消，失败任务提供重试，且调用对应接口", async () => {
     jobsApi.mockReset().mockResolvedValue([
       jobFixture({ id: "job-running", status: "RUNNING", progress: 55 }),

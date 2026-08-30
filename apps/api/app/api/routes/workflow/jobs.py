@@ -24,6 +24,7 @@ from app.schemas import (
     ModelCallAttemptRead,
 )
 from app.services.job_service import cancel_job, reset_for_retry
+from app.services.model_costs import estimate_jobs
 
 router = APIRouter()
 
@@ -44,6 +45,7 @@ def _job_reads(db: Session, jobs: list[GenerationJob]) -> list[JobRead]:
         else []
     )
     usage_by_job = {record.job_id: record.usage for record in records}
+    estimates_by_job = estimate_jobs(db, job_ids)
     page_candidates = (
         list(
             db.scalars(
@@ -101,16 +103,27 @@ def _job_reads(db: Session, jobs: list[GenerationJob]) -> list[JobRead]:
             )
         return None
 
-    return [
-        JobRead.model_validate(job).model_copy(
-            update={
-                "usage_summary": usage_by_job.get(job.id, {}),
-                "estimated_cost": None,
-                "result": job_result(job),
-            }
+    result: list[JobRead] = []
+    for job in jobs:
+        estimate = estimates_by_job[job.id]
+        result.append(
+            JobRead.model_validate(job).model_copy(
+                update={
+                    "usage_summary": usage_by_job.get(job.id, {}),
+                    "estimated_cost": (
+                        float(estimate.value) if estimate.value is not None else None
+                    ),
+                    "estimated_cost_currency": estimate.currency,
+                    "estimated_cost_status": estimate.status,
+                    "estimated_cost_pricing_versions": list(
+                        estimate.pricing_versions
+                    ),
+                    "estimated_cost_note": estimate.note,
+                    "result": job_result(job),
+                }
+            )
         )
-        for job in jobs
-    ]
+    return result
 
 
 @router.get("/projects/{project_id}/jobs", response_model=list[JobRead])

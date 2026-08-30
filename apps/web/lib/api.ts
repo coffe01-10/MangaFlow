@@ -517,6 +517,10 @@ export interface Job {
   duration_ms: number | null;
   usage_summary: Record<string, unknown>;
   estimated_cost: number | null;
+  estimated_cost_currency?: string | null;
+  estimated_cost_status?: "AVAILABLE" | "PARTIAL" | "UNAVAILABLE";
+  estimated_cost_pricing_versions?: string[];
+  estimated_cost_note?: string;
   result: {
     kind: "IMAGE";
     label: string;

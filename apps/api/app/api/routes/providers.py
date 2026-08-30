@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from statistics import median
 from time import perf_counter
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from PIL import Image
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -23,6 +23,7 @@ from app.model_adapters.base import (
 from app.models import (
     AIModel,
     GenerationJob,
+    ModelPricingVersion,
     ModelProbe,
     ProviderConnection,
     ProviderProfile,
@@ -33,6 +34,8 @@ from app.provider_schemas import (
     ConnectionCreate,
     ConnectionTestRequest,
     ConnectionUpdate,
+    ModelPricingVersionCreate,
+    ModelPricingVersionRead,
     ModelProbeRead,
     ProviderConnectionRead,
     ProviderCreate,
@@ -48,6 +51,10 @@ from app.provider_schemas import (
     RoutingPolicyWrite,
 )
 from app.services.credential_crypto import mark_key_failure, mark_key_success
+from app.services.model_costs import (
+    create_pricing_version,
+    list_pricing_versions,
+)
 from app.services.model_router import bind_adapter
 from app.services.provider_catalog import (
     add_connection,
@@ -102,6 +109,27 @@ def providers(db: Session = Depends(get_db)) -> list[dict]:
 def post_provider(payload: ProviderCreate, db: Session = Depends(get_db)) -> dict:
     profile = create_custom_provider(db, payload)
     return _profile_view(db, profile.id)
+
+
+@router.get(
+    "/pricing-versions", response_model=list[ModelPricingVersionRead]
+)
+def get_pricing_versions(
+    provider: str | None = Query(default=None, max_length=120),
+    model_id: str | None = Query(default=None, max_length=128),
+    db: Session = Depends(get_db),
+) -> list[ModelPricingVersion]:
+    return list_pricing_versions(db, provider=provider, model_id=model_id)
+
+
+@router.post(
+    "/pricing-versions", response_model=ModelPricingVersionRead, status_code=201
+)
+def post_pricing_version(
+    payload: ModelPricingVersionCreate,
+    db: Session = Depends(get_db),
+) -> ModelPricingVersion:
+    return create_pricing_version(db, payload)
 
 
 @router.patch("/{provider_id}", response_model=ProviderProfileRead)
