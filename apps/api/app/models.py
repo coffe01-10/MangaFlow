@@ -447,10 +447,16 @@ class ModelCallAttempt(Timestamped, Base):
 
     __tablename__ = "model_call_attempts"
     __table_args__ = (
-        UniqueConstraint("job_id", "job_attempt", "dispatch_no"),
+        UniqueConstraint(
+            "job_id",
+            "job_attempt",
+            "dispatch_no",
+            name="uq_model_call_attempts_job_attempt_dispatch",
+        ),
         Index("ix_model_call_attempts_job_started", "job_id", "started_at"),
         Index("ix_model_call_attempts_outcome_started", "outcome", "started_at"),
         Index("ix_model_call_attempts_catalog_model", "catalog_model_id"),
+        Index("ix_model_call_attempts_project_id", "project_id"),
         CheckConstraint(
             "outcome IS NULL OR outcome IN ('SUCCEEDED', 'FAILED')",
             name="ck_model_call_attempts_outcome",
@@ -469,10 +475,10 @@ class ModelCallAttempt(Timestamped, Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     job_id: Mapped[str] = mapped_column(
-        ForeignKey("generation_jobs.id", ondelete="RESTRICT"), index=True
+        ForeignKey("generation_jobs.id", ondelete="RESTRICT")
     )
     project_id: Mapped[str] = mapped_column(
-        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+        ForeignKey("projects.id", ondelete="CASCADE")
     )
     job_attempt: Mapped[int] = mapped_column(Integer)
     dispatch_no: Mapped[int] = mapped_column(Integer)
@@ -481,13 +487,13 @@ class ModelCallAttempt(Timestamped, Base):
     provider: Mapped[str] = mapped_column(String(120))
     model_id: Mapped[str] = mapped_column(String(128))
     catalog_model_id: Mapped[str | None] = mapped_column(
-        ForeignKey("ai_models.id", ondelete="SET NULL"), nullable=True, index=True
+        ForeignKey("ai_models.id", ondelete="SET NULL"), nullable=True
     )
     connection_id: Mapped[str | None] = mapped_column(
-        ForeignKey("provider_connections.id", ondelete="SET NULL"), nullable=True, index=True
+        ForeignKey("provider_connections.id", ondelete="SET NULL"), nullable=True
     )
     selected_key_id: Mapped[str | None] = mapped_column(
-        ForeignKey("provider_keys.id", ondelete="SET NULL"), nullable=True, index=True
+        ForeignKey("provider_keys.id", ondelete="SET NULL"), nullable=True
     )
     request_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

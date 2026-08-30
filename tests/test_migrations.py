@@ -3,7 +3,16 @@ from alembic import command
 from alembic.config import Config
 from app.config import get_settings
 from app.database import Base
-from app.models import Beat, Chapter, Dialogue, MangaPage, Panel, Project, Scene
+from app.models import (
+    Beat,
+    Chapter,
+    Dialogue,
+    MangaPage,
+    ModelCallAttempt,
+    Panel,
+    Project,
+    Scene,
+)
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session
 
@@ -447,16 +456,30 @@ def test_model_call_attempts_migration_fails_loudly_on_partial_table(
 
     engine = create_engine(database_url)
     with engine.begin() as connection:
-        connection.execute(
-            text("CREATE TABLE model_call_attempts (id VARCHAR(36) PRIMARY KEY)")
-        )
+        ModelCallAttempt.__table__.create(connection)
+        connection.execute(text("DROP INDEX ix_model_call_attempts_project_id"))
     engine.dispose()
 
-    # A foreign/partial table must fail loudly instead of being stamped over.
-    with pytest.raises(Exception, match="结构与本迁移不匹配"):
+    # Matching columns alone are insufficient: a missing owned index must keep
+    # Alembic from stamping this revision over an incomplete schema.
+    with pytest.raises(RuntimeError, match="结构与本迁移不匹配"):
         command.upgrade(config, "head")
 
     engine = create_engine(database_url)
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+            "20260827_17"
+        )
+        columns = inspect(connection).get_columns("model_call_attempts")
+        assert {column["name"] for column in columns} == {
+            column.name for column in ModelCallAttempt.__table__.columns
+        }
+        indexes = {
+            index["name"]
+            for index in inspect(connection).get_indexes("model_call_attempts")
+        }
+        assert "ix_model_call_attempts_project_id" not in indexes
+
     with engine.begin() as connection:
         connection.execute(text("DROP TABLE model_call_attempts"))
     engine.dispose()
@@ -464,7 +487,11 @@ def test_model_call_attempts_migration_fails_loudly_on_partial_table(
     # After the obstacle is removed the upgrade completes normally.
     command.upgrade(config, "head")
     engine = create_engine(database_url)
-    assert "model_call_attempts" in inspect(engine).get_table_names()
+    schema = inspect(engine)
+    assert "model_call_attempts" in schema.get_table_names()
+    assert "ix_model_call_attempts_project_id" in {
+        index["name"] for index in schema.get_indexes("model_call_attempts")
+    }
     engine.dispose()
 
 

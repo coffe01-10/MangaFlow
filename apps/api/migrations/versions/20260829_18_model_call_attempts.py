@@ -10,7 +10,7 @@ Create Date: 2026-08-29
 
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy import inspect
+from sqlalchemy.engine.reflection import Inspector
 
 revision = "20260829_18"
 down_revision = "20260827_17"
@@ -18,47 +18,127 @@ branch_labels = None
 depends_on = None
 
 _OWNED_COLUMNS = {
-    "id",
-    "job_id",
-    "project_id",
-    "job_attempt",
-    "dispatch_no",
-    "route_switched",
-    "outcome",
-    "provider",
-    "model_id",
-    "catalog_model_id",
-    "connection_id",
-    "selected_key_id",
-    "request_id",
-    "started_at",
-    "finished_at",
-    "duration_ms",
-    "usage",
-    "route_reason",
-    "route_score",
-    "error_code",
-    "error_message",
-    "created_at",
-    "updated_at",
-    "version",
+    "id": ("string", 36, False),
+    "job_id": ("string", 36, False),
+    "project_id": ("string", 36, False),
+    "job_attempt": ("integer", None, False),
+    "dispatch_no": ("integer", None, False),
+    "route_switched": ("boolean", None, False),
+    "outcome": ("string", 16, True),
+    "provider": ("string", 120, False),
+    "model_id": ("string", 128, False),
+    "catalog_model_id": ("string", 36, True),
+    "connection_id": ("string", 36, True),
+    "selected_key_id": ("string", 36, True),
+    "request_id": ("string", 200, True),
+    "started_at": ("datetime", None, False),
+    "finished_at": ("datetime", None, True),
+    "duration_ms": ("integer", None, True),
+    "usage": ("json", None, True),
+    "route_reason": ("string", 32, True),
+    "route_score": ("float", None, True),
+    "error_code": ("string", 64, True),
+    "error_message": ("string", 500, True),
+    "created_at": ("datetime", None, False),
+    "updated_at": ("datetime", None, False),
+    "version": ("integer", None, False),
+}
+_OWNED_INDEXES = {
+    "ix_model_call_attempts_job_started": ("job_id", "started_at"),
+    "ix_model_call_attempts_outcome_started": ("outcome", "started_at"),
+    "ix_model_call_attempts_catalog_model": ("catalog_model_id",),
+    "ix_model_call_attempts_project_id": ("project_id",),
+}
+_OWNED_FOREIGN_KEYS = {
+    ("job_id",): ("generation_jobs", ("id",), "RESTRICT"),
+    ("project_id",): ("projects", ("id",), "CASCADE"),
+    ("catalog_model_id",): ("ai_models", ("id",), "SET NULL"),
+    ("connection_id",): ("provider_connections", ("id",), "SET NULL"),
+    ("selected_key_id",): ("provider_keys", ("id",), "SET NULL"),
+}
+_OWNED_CHECKS = {
+    "ck_model_call_attempts_outcome",
+    "ck_model_call_attempts_dispatch_no",
+    "ck_model_call_attempts_job_attempt",
+    "ck_model_call_attempts_duration",
+    "ck_model_call_attempts_route_switch",
 }
 
 
+def _column_family(column_type: sa.types.TypeEngine) -> str:
+    if isinstance(column_type, sa.String):
+        return "string"
+    if isinstance(column_type, sa.Boolean):
+        return "boolean"
+    if isinstance(column_type, sa.Integer):
+        return "integer"
+    if isinstance(column_type, sa.DateTime):
+        return "datetime"
+    if isinstance(column_type, sa.JSON):
+        return "json"
+    if isinstance(column_type, sa.Float):
+        return "float"
+    return type(column_type).__name__.lower()
+
+
+def _has_owned_schema(inspector: Inspector) -> bool:
+    columns = {
+        column["name"]: (
+            _column_family(column["type"]),
+            getattr(column["type"], "length", None),
+            bool(column["nullable"]),
+        )
+        for column in inspector.get_columns("model_call_attempts")
+    }
+    if columns != _OWNED_COLUMNS:
+        return False
+
+    primary_key = inspector.get_pk_constraint("model_call_attempts")
+    if tuple(primary_key.get("constrained_columns") or ()) != ("id",):
+        return False
+
+    unique_constraints = {
+        tuple(constraint.get("column_names") or ())
+        for constraint in inspector.get_unique_constraints("model_call_attempts")
+    }
+    if unique_constraints != {("job_id", "job_attempt", "dispatch_no")}:
+        return False
+
+    indexes = {
+        index["name"]: tuple(index.get("column_names") or ())
+        for index in inspector.get_indexes("model_call_attempts")
+        if not index.get("unique")
+    }
+    if indexes != _OWNED_INDEXES:
+        return False
+
+    foreign_keys = {
+        tuple(foreign_key.get("constrained_columns") or ()): (
+            foreign_key.get("referred_table"),
+            tuple(foreign_key.get("referred_columns") or ()),
+            str((foreign_key.get("options") or {}).get("ondelete", "")).upper(),
+        )
+        for foreign_key in inspector.get_foreign_keys("model_call_attempts")
+    }
+    if foreign_keys != _OWNED_FOREIGN_KEYS:
+        return False
+
+    checks = {
+        constraint.get("name")
+        for constraint in inspector.get_check_constraints("model_call_attempts")
+    }
+    return checks == _OWNED_CHECKS
+
+
 def upgrade() -> None:
-    tables = set(inspect(op.get_bind()).get_table_names())
-    if "model_call_attempts" in tables:
-        # Fail loudly on a foreign or partial table instead of stamping this
-        # revision over a schema we do not own.
-        columns = {
-            column["name"]
-            for column in inspect(op.get_bind()).get_columns("model_call_attempts")
-        }
-        if columns != _OWNED_COLUMNS:
+    inspector = sa.inspect(op.get_bind())
+    if "model_call_attempts" in inspector.get_table_names():
+        if not _has_owned_schema(inspector):
             raise RuntimeError(
                 "model_call_attempts 已存在但结构与本迁移不匹配，请人工处理后再升级"
             )
         return
+
     op.create_table(
         "model_call_attempts",
         sa.Column("id", sa.String(length=36), primary_key=True),
@@ -150,9 +230,15 @@ def upgrade() -> None:
         "model_call_attempts",
         ["catalog_model_id"],
     )
+    op.create_index(
+        "ix_model_call_attempts_project_id",
+        "model_call_attempts",
+        ["project_id"],
+    )
 
 
 def downgrade() -> None:
+    op.drop_index("ix_model_call_attempts_project_id", table_name="model_call_attempts")
     op.drop_index("ix_model_call_attempts_catalog_model", table_name="model_call_attempts")
     op.drop_index("ix_model_call_attempts_outcome_started", table_name="model_call_attempts")
     op.drop_index("ix_model_call_attempts_job_started", table_name="model_call_attempts")
