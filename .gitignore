@@ -14,6 +14,7 @@ out/
 dist/
 coverage/
 output/playwright/
+.playwright-mcp/
 *.tsbuildinfo
 npm-debug.log*
 next-env.d.ts
