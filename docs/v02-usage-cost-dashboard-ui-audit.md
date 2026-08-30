@@ -14,7 +14,7 @@
 在 MangaFlow 0.1.0 MVP 基线中，AI 模型调用的 Token 消耗与计费数据仅以极简估算值零散附着在任务记录（`Job.metrics.estimated_cost`）中。用户与创作者面临以下核心痛点：
 
 1. **成本黑盒与缺乏汇总**：系统设置与首页中完全没有全站或多项目的用量统计看板，创作者无法获知当月总花费、各供应商（OpenAI / Anthropic / Vertex / 网关）消耗占比及异常激增原因。
-2. **虚假精确度与状态混淆**：界面将本地规则预估值（基于字数换算）与供应商真实返回的 Token 账单等同展示，未对“真实计费”、“预估费用”、“本地免费 CLI 通道”及“供应商未返回 Usage”进行视觉隔离。
+2. **虚假精确度与状态混淆**：供应商返回 usage 只代表数量为 reported，按本地价格表计算的金额仍是 estimated；只有运营对账导入才是 billed。CLI 通道成本默认 unknown/not applicable，不能推断为免费。
 3. **无法下钻追溯（No Drill-down）**：当某批次生成费用异常偏高时，用户无法从汇总卡片下钻到具体的工作流节点、单页生成记录（`GenerationRecord`）乃至底层单次重试尝试（`ModelCallAttempt`）。
 4. **缺少时间与多维筛选**：无法按时间周期（今日/本周/自定义）、项目维度、模型类型（文字/图片/质检）进行交叉筛选与成本审计。
 
@@ -54,10 +54,10 @@
 
 | 状态类型 | 判定条件 | UI 展示格式 | 视觉标志 | 示例 |
 | --- | --- | --- | --- | --- |
-| **① 确切计费 (BILLED)** | 供应商 API 明确返回 usage，且匹配到当前生效的官方计费单价 | `¥ 0.2450` / `$ 0.0350` | 绿色实心徽标 `[已核算]` | OpenAI GPT-4o 文本调用返回精确 token 账单 |
+| **① 账单事实 (BILLED)** | 已导入运营对账记录 `OPERATOR_BILLED` | 按原币种显示 | 绿色实心徽标 `[账单]` | 对账周期账单，不伪装成 attempt 精确费用 |
 | **② 规则估算 (ESTIMATED)** | 供应商仅返回 token 数或仅本地计算字数，按预设价格表换算 | `≈ ¥ 0.1200` | 橙色虚线框 `[预估]` (带 Tooltip 说明) | Gemini Vertex 按照字符数估算 / 1K 图像标准单价估算 |
 | **③ 仅用量无单价 (USAGE_ONLY)** | 统计到了准确 Token/图数，但未配置该模型的计价规则 | `1,420 Tokens (单价未配置)` | 灰色中立徽标 `[未定价]` | 用户自建网关或未知开源模型 |
-| **④ 离线/免费通道 (NOT_APPLICABLE)** | 本地推理、Codex CLI 转发或离线 Mock 通道 | `0.00 (本地通道)` | 蓝色徽标 `[本地免费]` | 本地 Ollama 实例 / CLI 测试通道 |
+| **④ 不适用/未知 (NOT_APPLICABLE/UNKNOWN)** | Mock 明确不计费可标不适用；CLI 未提供账单时为未知 | `—` | 灰色徽标 `[不适用]` / `[成本未知]` | 不把 CLI 登录订阅或外部额度推断为免费 |
 | **⑤ 未返回用量 (UNAVAILABLE)** | 供应商调用成功但未返回 usage 字段，且无法本地推算 | `— (供应商未提供)` | 黄色警示徽标 `[无用量返回]` | 部分第三方代理网关剥离了 usage 响应 |
 
 ### 3.1 货币与精度规则
@@ -188,13 +188,13 @@ Level 1: 全局用量看板 (Global Overview)
 本前端设计依赖以下由后端任务（`V02-15A`）交付的统计与明细接口，本设计不越权决定服务端数据库 schema：
 
 1. **用量聚合统计接口**：
-   - `GET /api/v1/metrics/usage/summary?from={date}&to={date}&project_id={id}&provider={name}`
-   - 返回结构：`total_cost_cny`, `total_tokens`, `image_counts_by_res`, `trend_points: []`。
+   - `GET /api/v1/usage/summary?from={date}&to={date}&project_id={id}&provider={name}`
+   - 金额按原币种分组返回 `costs_by_currency`，不得无汇率版本地汇总成 `total_cost_cny`。
 2. **调用明细分页接口**：
-   - `GET /api/v1/metrics/usage/calls?page={n}&limit={m}&status={status}`
-   - 返回结构包含：`call_attempt_id`, `job_id`, `provider`, `model_alias`, `model_physical_id`, `tokens_in`, `tokens_out`, `cost_amount`, `cost_mode` (`BILLED`/`ESTIMATED`/`FREE`), `latency_ms`。
+   - `GET /api/v1/usage/calls?cursor={cursor}&limit={m}&status={status}`
+   - 返回字段与 V02-15A ledger read schema 完全一致，使用 keyset cursor；`cost_mode` 为 BILLED/ESTIMATED/UNKNOWN/NOT_APPLICABLE，不存在笼统 FREE。
 3. **Trace 级别物理尝试接口**：
-   - `GET /api/v1/metrics/usage/attempts/{attempt_id}`
+   - `GET /api/v1/usage/attempts/{attempt_id}`
 
 ---
 
@@ -220,7 +220,7 @@ Level 1: 全局用量看板 (Global Overview)
 | 测试用例 ID | 测试目标 | 关键断言 |
 | --- | --- | --- |
 | `TEST-COST-01` | 看板加载与多维 KPI 渲染 | 正确计算并展示总花费金额；币种符号（¥/$）准确展示；环比标签正确高亮 |
-| `TEST-COST-02` | 5 种成本类型视觉隔离 | `BILLED` 展示绿色实心徽标；`ESTIMATED` 带有波浪号 `≈`；`FREE` 显示蓝色本地免费；`UNAVAILABLE` 显示横杠与警示 |
+| `TEST-COST-02` | 成本类型视觉隔离 | BILLED 仅来自对账并显示账单徽标；ESTIMATED 带 `≈`；CLI 未提供费用时显示成本未知；NOT_APPLICABLE 仅用于明确不计费的 mock |
 | `TEST-COST-03` | 时间与多维度筛选联动 | 切换“近 7 天”触发 API 重新请求并更新趋势图；选择指定项目后表格仅保留该项目记录 |
 | `TEST-COST-04` | 列表下钻到单次调用尝试抽屉 | 点击明细表格行，右侧抽屉滑出并正确回显 Request ID、输入输出 Token 与重试链 |
 | `TEST-COST-05` | 异常与未定价状态容错 | 模型无单价时显示 `Token (未定价)` 且不抛出 NaN/Null 错误；API 500 时展示标准错误重试条 |
