@@ -17,10 +17,47 @@ down_revision = "20260827_17"
 branch_labels = None
 depends_on = None
 
+_OWNED_COLUMNS = {
+    "id",
+    "job_id",
+    "project_id",
+    "job_attempt",
+    "dispatch_no",
+    "route_switched",
+    "outcome",
+    "provider",
+    "model_id",
+    "catalog_model_id",
+    "connection_id",
+    "selected_key_id",
+    "request_id",
+    "started_at",
+    "finished_at",
+    "duration_ms",
+    "usage",
+    "route_reason",
+    "route_score",
+    "error_code",
+    "error_message",
+    "created_at",
+    "updated_at",
+    "version",
+}
+
 
 def upgrade() -> None:
     tables = set(inspect(op.get_bind()).get_table_names())
     if "model_call_attempts" in tables:
+        # Fail loudly on a foreign or partial table instead of stamping this
+        # revision over a schema we do not own.
+        columns = {
+            column["name"]
+            for column in inspect(op.get_bind()).get_columns("model_call_attempts")
+        }
+        if columns != _OWNED_COLUMNS:
+            raise RuntimeError(
+                "model_call_attempts 已存在但结构与本迁移不匹配，请人工处理后再升级"
+            )
         return
     op.create_table(
         "model_call_attempts",
@@ -72,6 +109,7 @@ def upgrade() -> None:
         sa.Column("error_message", sa.String(length=500), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("version", sa.Integer(), nullable=False),
         sa.CheckConstraint(
             "outcome IS NULL OR outcome IN ('SUCCEEDED', 'FAILED')",
             name="ck_model_call_attempts_outcome",

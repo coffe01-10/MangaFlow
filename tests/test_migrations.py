@@ -1,3 +1,4 @@
+import pytest
 from alembic import command
 from alembic.config import Config
 from app.config import get_settings
@@ -337,6 +338,7 @@ def test_model_call_attempts_migration_roundtrip(tmp_path, monkeypatch):
         "error_message",
         "created_at",
         "updated_at",
+        "version",
     }
     job_foreign_keys = {
         tuple(item["constrained_columns"]): item
@@ -397,12 +399,12 @@ def test_model_call_attempts_migration_roundtrip(tmp_path, monkeypatch):
                     id, job_id, project_id, job_attempt, dispatch_no,
                     route_switched, outcome, provider, model_id,
                     started_at, finished_at, duration_ms, usage,
-                    created_at, updated_at
+                    created_at, updated_at, version
                 ) VALUES (
                     'attempt-1', 'job-1', 'project-1', 1, 1,
                     0, 'SUCCEEDED', 'preset', 'model-1',
                     CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 120, NULL,
-                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1
                 )
                 """
             )
@@ -413,11 +415,11 @@ def test_model_call_attempts_migration_roundtrip(tmp_path, monkeypatch):
                 INSERT INTO model_call_attempts (
                     id, job_id, project_id, job_attempt, dispatch_no,
                     route_switched, provider, model_id, started_at,
-                    created_at, updated_at
+                    created_at, updated_at, version
                 ) VALUES (
                     'attempt-2', 'job-1', 'project-1', 1, 2,
                     1, 'preset', 'model-1', CURRENT_TIMESTAMP,
-                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1
                 )
                 """
             )
@@ -429,6 +431,37 @@ def test_model_call_attempts_migration_roundtrip(tmp_path, monkeypatch):
     assert "model_call_attempts" not in inspect(engine).get_table_names()
     engine.dispose()
 
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    assert "model_call_attempts" in inspect(engine).get_table_names()
+    engine.dispose()
+
+
+def test_model_call_attempts_migration_fails_loudly_on_partial_table(
+    tmp_path, monkeypatch
+):
+    database_url = f"sqlite:///{(tmp_path / 'partial-ledger.db').as_posix()}"
+    monkeypatch.setattr(get_settings(), "database_url", database_url)
+    config = Config("apps/api/alembic.ini")
+    command.upgrade(config, "20260827_17")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text("CREATE TABLE model_call_attempts (id VARCHAR(36) PRIMARY KEY)")
+        )
+    engine.dispose()
+
+    # A foreign/partial table must fail loudly instead of being stamped over.
+    with pytest.raises(Exception, match="结构与本迁移不匹配"):
+        command.upgrade(config, "head")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(text("DROP TABLE model_call_attempts"))
+    engine.dispose()
+
+    # After the obstacle is removed the upgrade completes normally.
     command.upgrade(config, "head")
     engine = create_engine(database_url)
     assert "model_call_attempts" in inspect(engine).get_table_names()
