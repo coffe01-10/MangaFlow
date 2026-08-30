@@ -300,6 +300,40 @@ def test_finalize_failure_never_repeats_paid_call(env, monkeypatch):
     assert attempts[0].outcome is None
 
 
+def test_route_switch_without_job_context_keeps_original_behavior(env, monkeypatch):
+    """No job context: original pre-ledger behavior must hold — two callback
+    attempts succeed via the replacement, with zero audit rows written."""
+
+    caller_factory, rows = env
+    monkeypatch.setattr(provider, "mark_key_failure", lambda *a, **k: None)
+    monkeypatch.setattr(provider, "mark_key_success", lambda *a, **k: None)
+
+    class _SwitchingAdapter:
+        def __init__(self):
+            self.calls = 0
+
+        def generate_page(self, request):
+            self.calls += 1
+            if self.calls == 1:
+                raise ProviderAdapterError("AUTHENTICATION", "密钥无效")
+            return ModelResponse(model_id="fallback-model", request_id="req-nc", usage={"tokens": 2})
+
+    adapter = _SwitchingAdapter()
+    replacement_binding = _binding(rows, adapter, key=rows["key2"], replacement=True)
+    monkeypatch.setattr(provider, "bind_adapter", lambda *a, **k: replacement_binding)
+
+    with caller_factory() as db:
+        # Deliberately no db.info["job_id"]: legacy no-job dispatch context.
+        result = provider._invoke_provider(
+            db, _binding(rows, adapter), lambda a: a.generate_page(None)
+        )
+    assert adapter.calls == 2
+    assert result.request_id == "req-nc"
+    assert _rows_for_job(caller_factory, "no-job") == []
+    with caller_factory() as db:
+        assert db.scalars(select(ModelCallAttempt.id)).first() is None
+
+
 def test_job_with_ledger_is_blocked_from_delete_but_can_archive(env):
     from fastapi import HTTPException
 

@@ -247,10 +247,16 @@ def _invoke_provider(db, binding: AdapterBinding, callback):
 
 def _replacement_meta(
     db, binding: AdapterBinding, replacement: AdapterBinding
-) -> ModelCallAttemptMeta:
-    """Scalar metadata for a route-switch replacement dispatch (attempt 2+)."""
+) -> ModelCallAttemptMeta | None:
+    """Scalar metadata for a route-switch replacement dispatch (attempt 2+).
+
+    Returns ``None`` outside a job context: the original pre-ledger route-switch
+    behavior (two callback attempts, zero audit rows) must keep working there.
+    """
 
     original = _audit_meta(db, binding)
+    if original is None:
+        return None
     return ModelCallAttemptMeta(
         job_id=original.job_id,
         project_id=original.project_id,
