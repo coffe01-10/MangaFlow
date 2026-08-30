@@ -787,6 +787,12 @@ class JobRead(BaseModel):
     request_parameters: dict = Field(default_factory=dict, exclude=True)
     usage_summary: dict = Field(default_factory=dict)
     estimated_cost: float | None = None
+    estimated_cost_currency: str | None = None
+    estimated_cost_status: str = "UNAVAILABLE"
+    estimated_cost_pricing_versions: list[str] = Field(default_factory=list)
+    estimated_cost_note: str = (
+        "费用暂不可估算；估算值不等于供应商账单"
+    )
     result: JobResultRead | None = None
 
     @computed_field

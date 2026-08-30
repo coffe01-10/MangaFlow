@@ -1,7 +1,14 @@
-from datetime import datetime
+from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 class ProviderPresetRead(BaseModel):
@@ -173,6 +180,68 @@ class ProviderModelUpdate(BaseModel):
     enabled: bool | None = None
     priority: int | None = Field(default=None, ge=0, le=100)
     version: int = Field(ge=1)
+
+
+class _ModelPricingVersionFields(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str = Field(min_length=1, max_length=120)
+    model_id: str = Field(min_length=1, max_length=128)
+    pricing_version: str = Field(min_length=1, max_length=64)
+    currency: str = Field(pattern=r"^[A-Z]{3}$")
+    effective_from: datetime
+    effective_to: datetime | None = None
+    input_tokens_per_million: Decimal | None = Field(
+        default=None, ge=0, max_digits=20, decimal_places=8
+    )
+    output_tokens_per_million: Decimal | None = Field(
+        default=None, ge=0, max_digits=20, decimal_places=8
+    )
+    output_image_each: Decimal | None = Field(
+        default=None, ge=0, max_digits=20, decimal_places=8
+    )
+    request_each: Decimal | None = Field(
+        default=None, ge=0, max_digits=20, decimal_places=8
+    )
+
+
+class ModelPricingVersionCreate(_ModelPricingVersionFields):
+    @model_validator(mode="after")
+    def validate_window_and_rates(self):
+        if self.effective_from.utcoffset() is None or (
+            self.effective_to is not None and self.effective_to.utcoffset() is None
+        ):
+            raise ValueError("价格生效时间必须包含明确时区")
+        self.effective_from = self.effective_from.astimezone(UTC)
+        if self.effective_to is not None:
+            self.effective_to = self.effective_to.astimezone(UTC)
+        if self.effective_to is not None and self.effective_to <= self.effective_from:
+            raise ValueError("价格结束时间必须晚于开始时间")
+        if all(
+            rate is None
+            for rate in (
+                self.input_tokens_per_million,
+                self.output_tokens_per_million,
+                self.output_image_each,
+                self.request_each,
+            )
+        ):
+            raise ValueError("至少配置一种明确计价单位")
+        return self
+
+
+class ModelPricingVersionRead(_ModelPricingVersionFields):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    created_at: datetime
+
+    @field_validator("effective_from", "effective_to", "created_at", mode="before")
+    @classmethod
+    def restore_utc_for_naive_database_values(cls, value):
+        if isinstance(value, datetime) and value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value
 
 
 class ConnectionTestRequest(BaseModel):

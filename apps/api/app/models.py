@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from decimal import Decimal
 from enum import StrEnum
 from uuid import uuid4
 
@@ -12,6 +13,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -504,6 +506,76 @@ class ModelCallAttempt(Timestamped, Base):
     route_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
+class ModelPricingVersion(Base):
+    """Immutable, effective-dated rates used only for explicit cost estimates."""
+
+    __tablename__ = "model_pricing_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "provider",
+            "model_id",
+            "pricing_version",
+            name="uq_model_pricing_versions_provider_model_version",
+        ),
+        Index(
+            "ix_model_pricing_versions_lookup",
+            "provider",
+            "model_id",
+            "effective_from",
+        ),
+        CheckConstraint(
+            "effective_to IS NULL OR effective_to > effective_from",
+            name="ck_model_pricing_versions_window",
+        ),
+        CheckConstraint(
+            "input_tokens_per_million IS NULL OR input_tokens_per_million >= 0",
+            name="ck_model_pricing_versions_input_rate",
+        ),
+        CheckConstraint(
+            "output_tokens_per_million IS NULL OR output_tokens_per_million >= 0",
+            name="ck_model_pricing_versions_output_rate",
+        ),
+        CheckConstraint(
+            "output_image_each IS NULL OR output_image_each >= 0",
+            name="ck_model_pricing_versions_image_rate",
+        ),
+        CheckConstraint(
+            "request_each IS NULL OR request_each >= 0",
+            name="ck_model_pricing_versions_request_rate",
+        ),
+        CheckConstraint(
+            "input_tokens_per_million IS NOT NULL "
+            "OR output_tokens_per_million IS NOT NULL "
+            "OR output_image_each IS NOT NULL "
+            "OR request_each IS NOT NULL",
+            name="ck_model_pricing_versions_has_rate",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    provider: Mapped[str] = mapped_column(String(120))
+    model_id: Mapped[str] = mapped_column(String(128))
+    pricing_version: Mapped[str] = mapped_column(String(64))
+    currency: Mapped[str] = mapped_column(String(3))
+    effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    effective_to: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    input_tokens_per_million: Mapped[Decimal | None] = mapped_column(
+        Numeric(20, 8), nullable=True
+    )
+    output_tokens_per_million: Mapped[Decimal | None] = mapped_column(
+        Numeric(20, 8), nullable=True
+    )
+    output_image_each: Mapped[Decimal | None] = mapped_column(
+        Numeric(20, 8), nullable=True
+    )
+    request_each: Mapped[Decimal | None] = mapped_column(
+        Numeric(20, 8), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class InspectionResult(Base):
