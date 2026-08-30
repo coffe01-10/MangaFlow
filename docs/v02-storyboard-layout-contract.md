@@ -15,7 +15,7 @@
 
 本设计把布局几何升级为**规范化的结构契约**：页面画布（物理尺寸 + 出血/安全区）+ 归一化几何（格子矩形/未来多边形 + z-order + 阅读顺序）+ 结构化气泡（矩形/锚点/尾巴/文字区域/旋转）。**关键原则：几何坐标保持 0–1 归一化（分辨率无关），画布物理尺寸独立表达，方向（RTL/LTR）作为页面属性在渲染/导出层应用而非存进几何**。旧 `bounds`/`region` 全部无损保留为兜底，迁移零重写，消费函数优先读新结构。
 
-**红线**：迁移不重写任何既有 `bounds`/`region` 值；不新建命令历史表（撤销/重做为 V02-31 客户端交互）；`Panel.bounds`/`Dialogue.region` 列保持 JSON 列型，新结构是其**内部子结构**而非新表。后端调度与候选版本机制（`storyboard_version`）零改动，仅扩展 schema 与校验。
+**红线**：迁移不重写任何既有 `bounds`/`region` 值；不新建命令历史表。为保持滚动升级兼容，`Panel.bounds` 的扁平 `{x,y,width,height}` 形状永久保留；新 shape/rotation/z 信息进入新增 `Panel.geometry`，不得原地改变 bounds 响应形状。`Dialogue.region` 保留，结构化气泡进入新增 `Dialogue.bubble`。
 
 ---
 
@@ -68,13 +68,13 @@
 ### 3.2 方向
 
 - `reading_direction`（rtl/ltr）保留在 `MangaPage` 层；`Panel.reading_order`/`Dialogue.reading_order` 是**逻辑阅读序**（1,2,3…），与视觉位置解耦。
-- **几何存储不翻转**：`bounds` 始终用左→右抽象坐标（`x=0` 为左缘）。RTL 时阅读顺序编号在渲染/编辑器覆盖层从右到左展示（V02-31 的「阅读顺序编号覆盖层」），导出按方向翻转。现状 `content_workflow.py:485-486` 的生成时翻转收敛到渲染层，**不迁移既有 bounds 值**。
+- **坐标保持最终页面坐标**：`x=0` 为页面左缘，历史偶数页已镜像的 bounds 继续按原值渲染，导出层不得再次翻转。RTL/LTR 只决定阅读顺序编号和新布局生成顺序；新生成器继续写最终页面坐标。
 
 ---
 
 ## 4. 矩形和未来多边形格子
 
-`Panel.bounds` 升级为内部子结构 `PanelGeometry`（列型仍是 JSON）：
+新增 `Panel.geometry`（nullable JSON）承载扩展结构；`Panel.bounds` 继续返回扁平 rect：
 
 ```json
 {
@@ -86,7 +86,7 @@
 }
 ```
 
-- **兼容**：旧 `bounds={x,y,width,height}` 由 `_read_geometry` 在读取时归一化为 `{type:"rect", rect:{x,y,width,height}, rotation:0, z_order:reading_order}`（**读取期映射，不写库**）；写入时若旧结构（无 type 键）则按 §10 无损升级为规范结构。
+- **兼容**：geometry 缺失时由读取器从扁平 bounds 派生 `{type:"rect", rotation:0, z_order:reading_order}`，但 API 的 bounds 字段本身仍保持扁平。写扩展几何时同时校验 `geometry.rect == bounds`，避免两份矩形事实分叉。
 - **约束**：rect 的 x/width 与 y/height 均在 `[0,1]`；`width/height ≥ 0.03`（≈5mm）；polygon 顶点 `3 ≤ n ≤ 32` 且所有顶点在 `[0,1]` 内；`rotation` 对 rect 可用、对 polygon 首版禁用（V02-31 不做旋转 UI，schema 预留）。
 - 多边形为**未来能力预留**：V02-31 首版只实现 rect 编辑；`type="polygon"` 只在读取期兼容保留、不提供写入 UI。
 
@@ -96,8 +96,8 @@
 
 - **`z_order`**（整数 ≥1）：格子重叠时的绘制顺序（值大者在上）。`z_order` 不与 `reading_order` 绑定——允许"后读的格压住先读的格"这类漫画惯例。
 - **重叠规则**：
-  - 普通格不得相互重叠（服务端校验：两 rect 相交 → 409，除非一方 `bleed=true` 或 `borderless=true`）。
-  - 出血/无边框格可与邻格重叠，靠 `z_order` 决定覆盖关系。
+  - 格子允许重叠，统一靠 `z_order` 决定覆盖关系；不得因为普通格相交返回 409。
+  - `bleed`/`borderless` 控制边框和出血语义，不作为是否允许重叠的开关。
   - 重叠格之间**不做内容裁切**（各格独立渲染，绘制序决定遮挡）。
 - **裁切**：格子边界裁切内容由渲染层按形状实现（`clip-path`/canvas clip），数据层不存裁切参数。
 - **默认**：读取期旧 bounds → `z_order=reading_order`（顺序布局天然无重叠）。
@@ -150,7 +150,7 @@
 
 | 对象 | 规则 |
 | --- | --- |
-| 格子 rect | 0–1 内；`width/height ≥ 0.03`；普通格不得与邻格重叠（§5）；`bleed` 格可越界到出血框（几何仍在 0–1，越界由渲染外扩） |
+| 格子 rect | 0–1 内；`width/height ≥ 0.03`；格子允许重叠并由 `z_order` 决定绘制序（§5）；`bleed` 格可越过安全区，物理出血由渲染层外扩 |
 | 格子 polygon | 顶点 3–32，均在 0–1 内 |
 | 气泡 rect | 在页面 0–1 内；`text_region ⊂ rect` |
 | 气泡 anchor/tail | 允许跨格（尾巴惯例） |
@@ -159,7 +159,7 @@
 ### 9.2 吸附与对齐（V02-31 UI 行为，不持久化）
 
 - 吸附是对齐到网格（1/2、1/3）、相邻格边、出血/安全线——**吸附结果是坐标值，落库即普通坐标**，不存"吸附到 X"的语义。
-- 约束（snap 后的最终校验）由服务端 §9.1 执行；UI 拖动时预览可用性（变红表示将 409），保存才发请求。
+- 约束（snap 后的最终校验）由服务端 §9.1 执行；UI 拖动时可预览越界、最小尺寸等非法状态（变红表示保存会被拒绝）。格子相交本身是合法状态，不得显示为冲突。
 
 ---
 
@@ -173,13 +173,13 @@
 
 ### 10.2 命令幂等
 
-- 编辑 API 语义是**目标状态覆盖**（"设置 bounds 为 X"），重复执行结果一致——无需命令 id 或命令表。幂等靠 `exclude_unset` 的 PATCH 语义 + 乐观锁（409 时客户端刷新重放）。
+- 单对象 PATCH 是目标状态覆盖。整包 PUT 额外携带 `request_id`；服务端保存 `(page_id, request_id, payload_hash, resulting_storyboard_version)`，响应丢失后的相同 payload 重试返回首次结果，不因版本已递增而误报冲突。相同 request_id 不同 hash 返回 409。
 - 不新增「命令队列/命令表」表：批量几何保存（§10.3）整包原子覆盖。
 
 ### 10.3 保存接口
 
 - **单对象微调**：`PATCH /panels/{id}`（扩展 `bounds`）、`PATCH /dialogues/{id}`（扩展 `bubble`）、`PATCH /pages/{page_id}/reading-order`（重排顺序）。
-- **画布整包保存**：新增 `PUT /pages/{page_id}/storyboard-geometry`，载荷 `{ storyboard_version, panels: [{panel_id, bounds, reading_order}], dialogues: [{dialogue_id, bubble, reading_order}] }`，**单事务**原子落库 + `mark_storyboard_changed`，返回 `StoryboardRead`。用于 V02-31 一次拖动/调整会话后的批量落盘。
+- **画布整包保存**：新增 `PUT /pages/{page_id}/storyboard-geometry`，载荷 `{ request_id, storyboard_version, panels: [{panel_id, bounds, geometry, reading_order}], dialogues: [{dialogue_id, bubble, reading_order}] }`，单事务原子落库。panel/dialogue ID 必须唯一、全部属于该页；载荷是完整快照，不得漏掉现存对象或夹带其他页对象。返回 `StoryboardRead`。
 
 ### 10.4 撤销/重做需要保存什么
 
@@ -196,7 +196,7 @@
 
 | 旧数据 | 映射（读取期，不写库） |
 | --- | --- |
-| `Panel.bounds={x,y,width,height}` | `{type:"rect", rect:{x,y,width,height}, rotation:0, z_order:reading_order}` |
+| `Panel.bounds={x,y,width,height}` | bounds 原样返回；缺失的 geometry 读取期派生 `{type:"rect", rotation:0, z_order:reading_order}` |
 | `Dialogue.region={"preferred":"upper_inner"}` | `bubble` 几何（锚点表映射）+ `mapped_from_legacy:true` |
 | `Dialogue.region` 其他自由 dict | `region` 原样兜底（`bubble` 缺失时消费） |
 | `MangaPage` 无 canvas | 消费函数按 `page_ratio` 生成默认画布 |
@@ -226,6 +226,7 @@
 ```text
 upgrade:
   manga_pages  ADD COLUMN canvas  JSON nullable      # 不写入数据（惰性默认）
+  panels       ADD COLUMN geometry JSON nullable     # bounds 保持扁平原样
   dialogues    ADD COLUMN bubble  JSON nullable      # 不写入数据（region 兜底）
   # 不触碰 panel.bounds / dialogue.region / sound_effects 原值
 backfill:
@@ -233,6 +234,7 @@ backfill:
   canvas 由消费函数按 page_ratio 生成默认（§3.1）。
 downgrade:
   dialogues  DROP COLUMN bubble
+  panels     DROP COLUMN geometry
   manga_pages DROP COLUMN canvas
 ```
 
@@ -248,11 +250,11 @@ downgrade:
 
 | 端点 | 变更 |
 | --- | --- |
-| `PATCH /panels/{id}` | `PanelUpdate` 新增 `bounds`（`PanelGeometry` 结构，§4） |
+| `PATCH /panels/{id}` | `PanelUpdate` 新增扁平 bounds 与可选 geometry；两者 rect 必须一致 |
 | `PATCH /dialogues/{id}` | `DialogueUpdate` 新增 `bubble`（§7） |
 | `PATCH /pages/{page_id}/reading-order` | 新增：整页 `reading_order` 重排 |
 | `PUT /pages/{page_id}/storyboard-geometry` | 新增：整包几何保存（`storyboard_version` + panels + dialogues） |
-| `GET /pages/{id}/storyboard` | `PanelRead.bounds`/`DialogueRead` 返回规范结构；`PageRead` 新增 `canvas` |
+| `GET /pages/{id}/storyboard` | `PanelRead.bounds` 保持扁平并新增 geometry；DialogueRead 保留 region 并新增 bubble；PageRead 新增 canvas |
 | `PATCH /pages/{id}/layout` | `PageLayoutUpdate.panel_count` 上限 3–5 → **3–8**（对齐 V02-32「3–8 格」门禁）；`layout_mode` 保留 |
 
 `PanelGeometry`/`BubbleGeometry`/`SoundEffect` 为新增 Pydantic schema，`extra="forbid"`。
@@ -262,9 +264,9 @@ downgrade:
 | 项 | 值 |
 | --- | --- |
 | 每页格数 | 3–8 |
-| 每页气泡数 | ≤ 8/格（沿用 data-model 既有每页最多 8 气泡的硬上限上限语义，按页校验） |
+| 每页气泡数 | ≤ 8/页（保持既有硬上限） |
 | 每页拟声词 | ≤ 32 |
-| **单页几何节点上限** | **128**（8 格 + 120 气泡/拟声 的容限；对齐 V02-32 的 100 节点压力场景） |
+| **持久化单页几何节点上限** | 产品数据按 8 格 + 8 气泡 + 合法拟声词计数；100 节点性能压力使用不落库的合成渲染 fixture，不得绕过产品门禁写入数据库 |
 | 坐标精度 | 4 位小数（1/10000） |
 | polygon 顶点 | 3–32 |
 | rotation | -360..360 |
@@ -288,11 +290,11 @@ downgrade:
 | 编号 | 场景 | 类型 |
 | --- | --- | --- |
 | L1 | 迁移：空库与含旧分镜库 `upgrade→downgrade→upgrade` 往返；`bounds`/`region`/`sound_effects` 原值逐字段不变；`canvas`/`bubble` 列新增后为 NULL | 新增 pytest（对齐 `20260717_11` 列级迁移风格） |
-| L2 | 读取期映射：旧 bounds → `{type:rect, z_order:reading_order}`；旧 region preferred → bubble 几何 + `mapped_from_legacy`；`canvas` 缺省 → 按 page_ratio 默认 | 新增 pytest |
-| L3 | 几何校验：rect 越界/最小尺寸/重叠（普通格 409，bleed 格豁免）；polygon 顶点 3–32；坐标精度 round 4；bubble text_region ⊄ rect → 422 | 新增 pytest |
-| L4 | API：`PATCH /panels/{id}` bounds 乐观锁 409；`PATCH /dialogues/{id}` bubble 走 panel_version 409；`PUT storyboard-geometry` 原子整包 + storyboard_version 不匹配 409 | 新增 pytest |
-| L5 | 阅读顺序重排：`PATCH reading-order` 单事务交换不破坏 `(page_id, reading_order)` 唯一约束；RTL 几何不翻转（bounds 原值不变） | 新增 pytest |
-| L6 | 上限：格数 3–8、节点 ≤128、响应 >200KB 拒绝；`extra="forbid"` 拒绝未知几何键 | 新增 pytest |
+| L2 | 读取期映射：旧 bounds 原样返回并派生 geometry；旧 region preferred → bubble 几何；canvas 缺省 → 按 page_ratio 默认 | 新增 pytest |
+| L3 | 几何校验：rect 越界/最小尺寸；重叠合法且 z_order 决定绘制；polygon 顶点 3–32；bubble text_region ⊄ rect → 422 | 新增 pytest |
+| L4 | API：PATCH bounds/geometry 乐观锁；PUT 校验完整成员集合、重复/跨页 ID、request_id 同 payload 安全重放、同 ID 不同 payload 409 | 新增 pytest |
+| L5 | 阅读顺序重排不破坏唯一约束；历史偶数页与新页面都按最终页面坐标渲染，RTL 只影响编号/生成顺序，不二次镜像 | 新增 pytest |
+| L6 | 上限：格数 3–8、气泡每页 ≤8；100 节点仅合成渲染性能 fixture；`extra="forbid"` 拒绝未知几何键 | 新增 pytest |
 | L7 | 版本失效：几何保存后 `storyboard_version +1`、`selected_candidate_ack_version=NULL`、旧候选基于旧版本不通过生产门禁（既有 `mark_storyboard_changed` 行为回归） | 扩展既有测试 |
 | L8 | 拟声词：旧字符串读取期包装；新结构化元素校验 rotation/x/y/size | 新增 pytest |
 
@@ -313,8 +315,8 @@ downgrade:
 | 编号 | 场景 | 类型 |
 | --- | --- | --- |
 | P1 | 常见页面尺寸 + 3–8 格回归：布局生成、保存、读取往返 | 浏览器回归 |
-| P2 | 重叠/越界：普通格重叠 409、出血格重叠合法、z_order 绘制序 | 浏览器回归 |
-| P3 | RTL 阅读顺序：编号覆盖层方向正确、几何不翻转 | 浏览器回归 |
+| P2 | 重叠/越界：重叠合法、z_order 绘制序稳定，超页面/最小尺寸仍拒绝 | 浏览器回归 |
+| P3 | RTL 阅读顺序：编号覆盖层方向正确；历史偶数页不发生二次镜像 | 浏览器回归 |
 | P4 | 键盘可达性与触控板：拖动/缩放无焦点丢失、无位移漂移 | 浏览器回归 |
 | P5 | **100 节点压力**：固定采样窗口测拖拽/缩放 FPS 与保存延迟；记录完整运行不挑最好结果 | 浏览器性能门禁 |
 | P6 | 保存失败分叉：断网/500 后画布与服务端状态一致、可重试 | 浏览器回归 |
