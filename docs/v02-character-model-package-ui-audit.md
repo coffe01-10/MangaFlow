@@ -18,7 +18,7 @@
 3. **角色与服装关系松散**：服装档案独立存在，用户无法在一个统一的视窗内查看该角色在不同章节/时段的所有合法服装形态。
 4. **生产门禁对角色就绪度无结构化度量**：系统只要检测到角色存在 1 张参考图就判定生产就绪，无法拦截“缺少四视图”、“缺少核心表情”或“草稿未确认”的不合格资产流向生产。
 
-本设计提出**角色模型包（Character Model Package）**概念，将身份锚点、四视图、核心表情库、体型比例、服装集与负面约束聚合成一等资产包。通过直观的完整度度量（Completeness Gauge）、版本差异对比器（Diff Viewer）和不可变版本锁定，确保角色在整部漫画全生命周期中保持高度一致。
+本设计提出**角色模型包（Character Model Package）**作为既有 `Character` 的一对一扩展视图：`Character.id` 继续是分镜、服装、参考图、Worker 与历史候选的事实锚点，不替换或重编号现有实体。模型包聚合身份锚点、参考图、表情、体型、服装与负面约束；`StyleProfile` 仍为项目级风格资产，只能关联使用，不能被角色包私有化。
 
 ---
 
@@ -77,9 +77,9 @@ CharacterModelPackage (角色模型包本体，如：林澈 / 艾莉卡)
 - **核心表情集**：20 分（自然 5分 + 喜悦 5分 + 愤怒 5分 + 悲伤/惊恐 5分）
 - **已绑定服装**：20 分（至少绑定 1 套已确认的服装档案）
 
-> **门禁硬规则**：
-> - 完整度 < 60% 时，角色包状态强制为 `DRAFT`（草稿），生产门禁拦截并标红报错；
-> - 完整度 ≥ 60% 且人工核对通过后，方可点击【发布为已确认版本】（`READY`）；
+> **兼容规则**：
+> - 完整度是指导性指标，不改变现有“一张有效角色参考图即可生成”的生产门禁；低于 60% 显示补全建议，但不得阻断历史项目。
+> - 新建角色包可在完整度达到建议阈值后发布；升级前已有 Character 自动 grandfather 为可继续生产，除非其原有参考图已经失效。
 > - 已有页面采纳该版本后，状态变为 `IN_PRODUCTION`，自动冻结编辑，修改必须【派生新版本】（如 V1.1）。
 
 ---
@@ -203,6 +203,9 @@ CharacterModelPackage (角色模型包本体，如：林澈 / 艾莉卡)
 本前端设计依赖以下由后端 L3 任务（`V02-22`）交付的数据结构与接口，本设计不越权决定数据库底层字段：
 
 1. **`CharacterModelPackage` 模型**：包含 `id`、`project_id`、`name`、`aliases`、`identity_spec`、`negative_constraints`、`current_version_id`、`status`。
+   - 必须以 `character_id UNIQUE NOT NULL` 一对一关联现有 Character；所有既有外部 API、Panel JSON 与 Worker 继续使用 character_id。
+   - upgrade 为每个既有 Character 建立 V1 包装快照，现有 CharacterReference/Outfit 原样关联进入 V1，不复制或改写 Asset/Outfit ID；StyleProfile 保持项目级。
+   - 旧候选、prompt_snapshot 与 GenerationRecord 继续引用当时的真实 Character/Asset/Outfit ID；发布新包版本不回写历史记录。
 2. **`PackageVersion` 模型**：包含 `id`、`package_id`、`version_number`（如 "1.0"）、`completeness_score`、`multi_view_assets`（四视图字典）、`expression_assets`（表情字典）、`assigned_outfit_ids`、`is_locked`。
 3. **版本差异比对接口**：
    - `GET /api/v1/projects/{id}/characters/{pkg_id}/diff?base={v1}&target={v2}`
@@ -238,7 +241,8 @@ CharacterModelPackage (角色模型包本体，如：林澈 / 艾莉卡)
 | `TEST-PKG-03` | 四视图画廊交互与单图替换 | 点击四视图卡片能上传或发起生成；替换参考图后对应视角缩略图即时更新 |
 | `TEST-PKG-04` | 版本锁定与派生分叉 | 点击发布后当前版本变为 `READY` 且表单锁定为只读；点击【派生新版本】成功生成 `V2.0 Draft` 并解除锁定 |
 | `TEST-PKG-05` | 版本差异对比器 (Diff) | 切换两版本对比时，准确标高发型、服装或参考图的差异项 |
-| `TEST-PKG-06` | 单页生成生产门禁硬拦截 | 当页面出镜角色处于 `DRAFT` 或完整度不足时，生成面板出现标红拦截警告并禁用生图按钮 |
+| `TEST-PKG-06` | 门禁兼容 | 历史 Character 仅有一张有效规范参考图时升级后仍可生成；完整度不足只提示补全。仅既有 readiness 条件失败时才禁用生图 |
+| `TEST-PKG-07` | 升级与历史不变性 | 既有 Character/CharacterReference/Outfit ID、旧候选 prompt_snapshot 与重放结果逐字段不变；V1 包装可读取 |
 
 ---
 
