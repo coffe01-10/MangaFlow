@@ -44,6 +44,7 @@ export interface ModelCapability {
   regions: string[];
   confidence: string;
   enabled: boolean;
+  display_enabled: boolean;
   auto_eligible: boolean;
   priority: number;
 }
@@ -111,6 +112,8 @@ export interface ProviderConnection {
   configured: boolean;
   credential_source: "CONNECTION_KEY" | "ENV_SERVICE_ACCOUNT";
   credential_writable: boolean;
+  supports_model_discovery: boolean;
+  supports_balance: boolean;
   supported_model_types: ("TEXT" | "IMAGE")[];
   use_responses_api: boolean;
   endpoint_templates: Record<string, string>;
@@ -156,6 +159,7 @@ export interface ProviderModel {
   api_surfaces: string[];
   capabilities: Record<string, unknown>;
   enabled: boolean;
+  display_enabled: boolean;
   priority: number;
   confidence: string;
   source: string;
@@ -179,6 +183,36 @@ export interface ModelProbe {
   error_code: string | null;
   message: string;
   created_at: string;
+}
+
+export interface ConnectionHealth {
+  connection_id: string;
+  configured: boolean;
+  credential_source: "CONNECTION_KEY" | "ENV_SERVICE_ACCOUNT";
+  supports_model_discovery: boolean;
+  supports_balance: boolean;
+  supported_model_types: ("TEXT" | "IMAGE")[];
+  health_state: "UNCONFIGURED" | "CHECKING" | "HEALTHY" | "DEGRADED" | "OFFLINE";
+  last_checked_at: string | null;
+  last_success_at: string | null;
+  latency_ms: number | null;
+  error_code: string | null;
+  message: string;
+}
+
+export interface ConnectionVerifyResult {
+  health: ConnectionHealth;
+  probe: ModelProbe;
+}
+
+export interface ModelVisibilityBatchResult {
+  updated: { model_id: string; version: number }[];
+  failed: {
+    model_id: string;
+    error_code: "MODEL_NOT_FOUND" | "CONNECTION_MISSING" | "VERSION_CONFLICT";
+    message: string;
+    current_version: number | null;
+  }[];
 }
 
 export interface Diagnostics {
@@ -832,8 +866,22 @@ export const api = {
     request<void>(`/providers/connections/${connectionId}/keys/${keyId}`, { method: "DELETE" }),
   discoverProviderModels: (connectionId: string) =>
     request<ProviderModel[]>(`/providers/connections/${connectionId}/discover`, { method: "POST" }),
+  providerModels: (connectionId: string) =>
+    request<ProviderModel[]>(`/providers/connections/${connectionId}/models`),
   createProviderModel: (connectionId: string, payload: { provider_model_id: string; display_name?: string; model_type: "TEXT" | "IMAGE"; input_modalities: string[]; output_modalities: string[]; operations: string[]; api_surfaces: string[]; capabilities: Record<string, unknown> }) =>
     request<ProviderModel>(`/providers/connections/${connectionId}/models`, { method: "POST", body: JSON.stringify(payload) }),
+  verifyProviderConnection: (connectionId: string, payload: { level: "CREDENTIALS" | "MODEL_SMOKE"; catalog_model_id?: string; acknowledge_cost?: boolean; runs?: number }) =>
+    request<ConnectionVerifyResult>(`/providers/connections/${connectionId}/verify`, { method: "POST", body: JSON.stringify(payload) }),
+  updateProviderModelVisibility: (modelId: string, displayEnabled: boolean, version: number) =>
+    request<ProviderModel>(`/providers/models/${modelId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ display_enabled: displayEnabled, version }),
+    }),
+  updateProviderModelVisibilityBatch: (items: { model_id: string; expected_version: number }[], displayEnabled: boolean) =>
+    request<ModelVisibilityBatchResult>("/providers/models/visibility", {
+      method: "PATCH",
+      body: JSON.stringify({ items, display_enabled: displayEnabled }),
+    }),
   testProviderConnection: (connectionId: string, payload: { test_type: "CREDENTIALS" | "TEXT" | "VISION" | "IMAGE" | "BENCHMARK"; model_id?: string; acknowledge_cost?: boolean; runs?: number }) =>
     request<ModelProbe>(`/providers/connections/${connectionId}/test`, { method: "POST", body: JSON.stringify(payload) }),
   providerBalance: (connectionId: string) =>

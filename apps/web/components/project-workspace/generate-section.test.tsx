@@ -289,6 +289,7 @@ describe("GenerateSection 关键行为", () => {
       regions: [],
       confidence: "HIGH",
       enabled: true,
+      display_enabled: true,
       auto_eligible: true,
       priority: 1,
     }]);

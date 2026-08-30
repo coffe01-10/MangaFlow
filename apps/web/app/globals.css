@@ -904,12 +904,17 @@ a { color: inherit; text-decoration: none; }
 .provider-create .provider-check input { width: 14px; height: 14px; min-height: 14px; }
 .provider-advanced-panel > button { margin: 0 10px 10px; }
 .provider-models { display: grid; }
-.provider-models article { padding: 9px 10px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; border-bottom: 1px dotted var(--line); }
+.provider-models article { padding: 9px 10px; display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 10px; border-bottom: 1px dotted var(--line); }
 .provider-models article > div { min-width: 0; display: grid; gap: 3px; }
 .provider-models article strong { font-size: 12px; }
 .provider-models article span, .provider-models article small { overflow: hidden; min-width: 0; color: #66604f; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .provider-model-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
 .provider-models article .paid-check { border-style: dashed; color: #9b4b39; }
+.provider-model-select { display: grid; place-items: center; }
+.provider-model-select input { width: 15px; height: 15px; margin: 0; }
+.provider-model-hidden { background: rgba(34,31,27,.045); }
+.provider-model-batch { padding: 8px 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; border-bottom: 1px solid var(--line); background: rgba(183,124,38,.08); }
+.provider-model-batch strong { margin-right: auto; font-size: 12px; }
 .provider-models > p { margin: 10px; color: #66604f; font-size: 12px; display: grid; gap: 6px; }
 .provider-manual-model { padding: 9px 10px; display: grid; grid-template-columns: 1fr 1fr 110px auto; gap: 7px; background: rgba(34,31,27,.025); }
 .provider-dialog-backdrop { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; background: rgba(21,21,18,.38); }
@@ -1178,8 +1183,9 @@ a { color: inherit; text-decoration: none; }
 @media (max-width: 900px) {
   .provider-create-form,
   .provider-key-form,
-  .provider-manual-model,
-  .provider-models article { grid-template-columns: 1fr; }
+  .provider-manual-model { grid-template-columns: 1fr; }
+  .provider-models article { grid-template-columns: 20px 1fr; }
+  .provider-model-actions { grid-column: 2; }
   .provider-card > header { flex-wrap: wrap; align-items: flex-start; }
   .provider-card-toggle { grid-template-columns: 20px minmax(0, 1fr); }
   .provider-card-counts { display: flex; width: 100%; padding: 4px 0 0 28px; }

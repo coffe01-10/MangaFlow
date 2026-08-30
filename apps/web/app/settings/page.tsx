@@ -5,32 +5,24 @@ import { ProviderManagement } from "@/components/provider-management";
 import {
   api,
   type DiagnosticCheck,
-  type ImageModelAlias,
   type RuntimeSettings,
-  type VertexStatus,
 } from "@/lib/api";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
   CheckCircle2,
   CircleAlert,
-  CloudCog,
   Database,
   HardDrive,
   LoaderCircle,
   RefreshCw,
   Save,
   ServerCog,
-  ShieldCheck,
-  Sparkles,
   TriangleAlert,
 } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 
-const healthLabels: Record<VertexStatus["health_state"], string> = {
-  UNCONFIGURED: "未配置", CHECKING: "检查中", HEALTHY: "健康", DEGRADED: "连接降级", OFFLINE: "离线",
-};
 const diagnosticIcons: Record<DiagnosticCheck["status"], typeof CheckCircle2> = {
   OK: CheckCircle2, WARNING: TriangleAlert, FAILED: CircleAlert, NOT_CHECKED: RefreshCw,
 };
@@ -43,7 +35,6 @@ function timeLabel(value: string | null) {
 export default function SystemSettingsPage() {
   const queryClient = useQueryClient();
   const runtime = useQuery({ queryKey: ["runtime-settings"], queryFn: api.runtimeSettings });
-  const vertex = useQuery({ queryKey: ["vertex-status"], queryFn: api.vertexStatus });
   const providers = useQuery({ queryKey: ["providers"], queryFn: api.providers });
   const diagnostics = useQuery({ queryKey: ["diagnostics"], queryFn: api.diagnostics });
   const [localDraft, setLocalDraft] = useState<RuntimeSettings | null>(null);
@@ -53,10 +44,6 @@ export default function SystemSettingsPage() {
   const save = useMutation({
     mutationFn: () => { if (!draft) throw new Error("运行设置尚未加载"); return api.updateRuntimeSettings(draft); },
     onSuccess: (data) => { queryClient.setQueryData(["runtime-settings"], data); setLocalDraft(data); setNotice("运行设置已保存并应用到后续任务"); diagnostics.refetch(); },
-  });
-  const verify = useMutation({
-    mutationFn: ({ level, alias }: { level: "CREDENTIALS" | "TEXT_MODEL" | "IMAGE_MODEL"; alias?: ImageModelAlias }) => api.verifyVertex(level, alias),
-    onSuccess: (data) => { queryClient.setQueryData(["vertex-status"], data); queryClient.invalidateQueries({ queryKey: ["providers"] }); diagnostics.refetch(); },
   });
   const update = <K extends keyof RuntimeSettings>(key: K, value: RuntimeSettings[K]) => { setLocalDraft((current) => ({ ...(current ?? draft!), [key]: value })); setNotice(""); };
 
@@ -78,20 +65,6 @@ export default function SystemSettingsPage() {
         <div className="settings-board">
           <section className="settings-primary">
             <ProviderManagement />
-            <article className="control-card vertex-control">
-              <header><div><CloudCog size={18} /><span>VERTEX AI / PROVIDER</span></div><strong className={`health-pill ${vertex.data?.health_state.toLowerCase() ?? "checking"}`}>{vertex.data ? healthLabels[vertex.data.health_state] : "读取中"}</strong></header>
-              {vertex.data ? <>
-                <div className="provider-summary"><div><small>PROJECT</small><strong>{vertex.data.project ?? "未配置"}</strong></div><div><small>REGION</small><strong>{vertex.data.location}</strong></div><div><small>LAST SUCCESS</small><strong>{timeLabel(vertex.data.last_success_at)}</strong></div><div><small>LATENCY</small><strong>{vertex.data.latency_ms === null ? "—" : `${vertex.data.latency_ms} ms`}</strong></div></div>
-                <div className="provider-message">{vertex.data.health_state === "DEGRADED" ? <TriangleAlert size={18} /> : <ShieldCheck size={18} />}<div><strong>{vertex.data.message}</strong><span>连续失败 {vertex.data.consecutive_failures} 次 · {vertex.data.error_code ?? "NO ERROR"}</span></div></div>
-                <div className="verification-grid">
-                  <button disabled={!vertex.data.configured || verify.isPending} onClick={() => verify.mutate({ level: "CREDENTIALS" })}><ShieldCheck size={17} /><span><strong>验证凭据</strong><small>只刷新 OAuth，不调用模型</small></span></button>
-                  <button disabled={!vertex.data.configured || verify.isPending} onClick={() => verify.mutate({ level: "TEXT_MODEL" })}><Sparkles size={17} /><span><strong>验证 Gemini 3.5 Flash</strong><small>一次低 token 文本调用</small></span></button>
-                  <button className="paid-check" disabled={!vertex.data.configured || verify.isPending} onClick={() => verify.mutate({ level: "IMAGE_MODEL", alias: "image.nano_banana_2" })}><Sparkles size={17} /><span><strong>验证 Nano Banana 2</strong><small>会产生一次 1K 图片调用</small></span></button>
-                  <button className="paid-check" disabled={!vertex.data.configured || verify.isPending} onClick={() => verify.mutate({ level: "IMAGE_MODEL", alias: "image.nano_banana_pro" })}><Sparkles size={17} /><span><strong>验证 Nano Banana Pro</strong><small>会产生一次 1K 图片调用</small></span></button>
-                </div>
-                {verify.isPending && <p className="settings-progress"><LoaderCircle className="spin" size={15} />正在执行显式验证，请勿关闭页面…</p>}{verify.isError && <p className="form-error"><CircleAlert size={15} />{verify.error.message}</p>}
-              </> : <div className="loading-panel"><LoaderCircle className="spin" />读取持久状态…</div>}
-            </article>
             <article className="control-card">
               <header><div><ServerCog size={18} /><span>WORKER / RUNTIME</span></div><small>非敏感动态设置</small></header>
               {draft ? <div className="runtime-form">

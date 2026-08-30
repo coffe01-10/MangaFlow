@@ -15,6 +15,8 @@ export function ProviderToolbar({
   onCapabilityChange,
   verifiedOnly,
   onVerifiedOnlyChange,
+  showHidden,
+  onShowHiddenChange,
   sort,
   onSortChange,
   createOpen,
@@ -30,6 +32,8 @@ export function ProviderToolbar({
   onCapabilityChange: (value: CapabilityFilter) => void;
   verifiedOnly: boolean;
   onVerifiedOnlyChange: (value: boolean) => void;
+  showHidden: boolean;
+  onShowHiddenChange: (value: boolean) => void;
   sort: ProviderSort;
   onSortChange: (value: ProviderSort) => void;
   createOpen: boolean;
@@ -88,6 +92,14 @@ export function ProviderToolbar({
             onChange={(event) => onVerifiedOnlyChange(event.target.checked)}
           />
           仅已验证
+        </label>
+        <label className="provider-check" title="隐藏只影响创作界面的模型选择，不影响调用或路由">
+          <input
+            type="checkbox"
+            checked={showHidden}
+            onChange={(event) => onShowHiddenChange(event.target.checked)}
+          />
+          显示已隐藏
         </label>
         <label>
           <ArrowDownAZ size={14} />

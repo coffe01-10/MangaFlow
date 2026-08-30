@@ -29,6 +29,7 @@ export function ProviderManagement() {
   const [modelType, setModelType] = useState<ModelTypeFilter>("ALL");
   const [capability, setCapability] = useState<CapabilityFilter>("ALL");
   const [verifiedOnly, setVerifiedOnly] = useState(false);
+  const [showHidden, setShowHidden] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [focusProviderId, setFocusProviderId] = useState<string | null>(null);
   const [pinnedProviderId, setPinnedProviderId] = useState<string | null>(null);
@@ -45,8 +46,6 @@ export function ProviderManagement() {
   const visibleCount = grouped.configured.length + grouped.unconfigured.length + grouped.disabled.length;
   const configuredCount = (providers.data ?? []).filter(providerConfigured).length;
   const searching = Boolean(filter.trim());
-  const modelsStatus = models.isPending ? "loading" : models.isError ? "error" : "ready";
-
   const jumpToResults = useCallback(() => {
     const first = grouped.configured[0] ?? grouped.unconfigured[0] ?? grouped.disabled[0];
     if (!first) return;
@@ -93,8 +92,6 @@ export function ProviderManagement() {
           id="configured"
           label="已配置"
           providers={grouped.configured}
-          models={catalog}
-          modelsStatus={modelsStatus}
           defaultExpanded
           forceExpanded={searching || grouped.configured.some((provider) => provider.id === pinnedProviderId)}
           forceExpandCards={searching}
@@ -102,16 +99,14 @@ export function ProviderManagement() {
           modelType={modelType}
           capability={capability}
           verifiedOnly={verifiedOnly}
+          showHidden={showHidden}
           focusProviderId={focusProviderId}
           onKeyFocused={clearFocus}
-          onRetryModels={() => models.refetch()}
         />
         <ProviderGroup
           id="unconfigured"
           label="未配置"
           providers={grouped.unconfigured}
-          models={catalog}
-          modelsStatus={modelsStatus}
           defaultExpanded={false}
           forceExpanded={searching || grouped.unconfigured.some((provider) => provider.id === pinnedProviderId)}
           forceExpandCards={searching}
@@ -119,16 +114,14 @@ export function ProviderManagement() {
           modelType={modelType}
           capability={capability}
           verifiedOnly={verifiedOnly}
+          showHidden={showHidden}
           focusProviderId={focusProviderId}
           onKeyFocused={clearFocus}
-          onRetryModels={() => models.refetch()}
         />
         <ProviderGroup
           id="disabled"
           label="已停用"
           providers={grouped.disabled}
-          models={catalog}
-          modelsStatus={modelsStatus}
           defaultExpanded={false}
           forceExpanded={searching || grouped.disabled.some((provider) => provider.id === pinnedProviderId)}
           forceExpandCards={searching}
@@ -136,9 +129,9 @@ export function ProviderManagement() {
           modelType={modelType}
           capability={capability}
           verifiedOnly={verifiedOnly}
+          showHidden={showHidden}
           focusProviderId={focusProviderId}
           onKeyFocused={clearFocus}
-          onRetryModels={() => models.refetch()}
         />
       </div>
     );
@@ -164,6 +157,8 @@ export function ProviderManagement() {
         onCapabilityChange={setCapability}
         verifiedOnly={verifiedOnly}
         onVerifiedOnlyChange={setVerifiedOnly}
+        showHidden={showHidden}
+        onShowHiddenChange={setShowHidden}
         sort={sort}
         onSortChange={setSort}
         createOpen={createOpen}

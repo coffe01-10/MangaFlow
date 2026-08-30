@@ -1,6 +1,6 @@
 "use client";
 
-import type { ModelCapability, ProviderProfile } from "@/lib/api";
+import type { ProviderProfile } from "@/lib/api";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useState } from "react";
 
@@ -11,8 +11,6 @@ export function ProviderGroup({
   id,
   label,
   providers,
-  models,
-  modelsStatus,
   defaultExpanded,
   forceExpanded,
   forceExpandCards,
@@ -20,15 +18,13 @@ export function ProviderGroup({
   modelType,
   capability,
   verifiedOnly,
+  showHidden,
   focusProviderId,
   onKeyFocused,
-  onRetryModels,
 }: {
   id: string;
   label: string;
   providers: ProviderProfile[];
-  models: ModelCapability[];
-  modelsStatus: "loading" | "error" | "ready";
   defaultExpanded: boolean;
   forceExpanded: boolean;
   forceExpandCards: boolean;
@@ -36,9 +32,9 @@ export function ProviderGroup({
   modelType: ModelTypeFilter;
   capability: CapabilityFilter;
   verifiedOnly: boolean;
+  showHidden: boolean;
   focusProviderId: string | null;
   onKeyFocused: () => void;
-  onRetryModels: () => void;
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const shown = forceExpanded || expanded;
@@ -66,16 +62,14 @@ export function ProviderGroup({
             <ProviderCard
               key={provider.id}
               provider={provider}
-              models={models}
-              modelsStatus={modelsStatus}
               forceExpanded={forceExpandCards}
               preferExpanded={pinnedProviderId === provider.id}
               modelType={modelType}
               capability={capability}
               verifiedOnly={verifiedOnly}
+              showHidden={showHidden}
               autoFocusKey={focusProviderId === provider.id}
               onKeyFocused={onKeyFocused}
-              onRetryModels={onRetryModels}
             />
           ))}
         </div>

@@ -1,6 +1,6 @@
 "use client";
 
-import type { ModelCapability, ProviderProfile } from "@/lib/api";
+import type { ProviderProfile } from "@/lib/api";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useState } from "react";
 
@@ -12,28 +12,24 @@ import { ProviderLifecycleControls } from "./provider-lifecycle-controls";
 
 export function ProviderCard({
   provider,
-  models,
-  modelsStatus,
   forceExpanded,
   preferExpanded,
   modelType,
   capability,
   verifiedOnly,
+  showHidden,
   autoFocusKey,
   onKeyFocused,
-  onRetryModels,
 }: {
   provider: ProviderProfile;
-  models: ModelCapability[];
-  modelsStatus: "loading" | "error" | "ready";
   forceExpanded: boolean;
   preferExpanded: boolean;
   modelType: ModelTypeFilter;
   capability: CapabilityFilter;
   verifiedOnly: boolean;
+  showHidden: boolean;
   autoFocusKey: boolean;
   onKeyFocused: () => void;
-  onRetryModels: () => void;
 }) {
   const [expanded, setExpanded] = useState(
     preferExpanded || provider.connections.some((connection) => connection.configured),
@@ -85,14 +81,12 @@ export function ProviderCard({
             <ConnectionPanel
               key={connection.id}
               connection={connection}
-              models={models}
-              modelsStatus={modelsStatus}
               modelType={modelType}
               capability={capability}
               verifiedOnly={verifiedOnly}
+              showHidden={showHidden}
               autoFocusKey={autoFocusKey}
               onKeyFocused={onKeyFocused}
-              onRetryModels={onRetryModels}
             />
           ))}
         </div>
