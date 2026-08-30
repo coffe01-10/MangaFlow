@@ -47,7 +47,9 @@ class ProviderConnectionRead(BaseModel):
     base_url: str
     enabled: bool
     configured: bool
+    credential_source: Literal["CONNECTION_KEY", "ENV_SERVICE_ACCOUNT"]
     credential_writable: bool
+    supported_model_types: list[Literal["TEXT", "IMAGE"]]
     use_responses_api: bool
     endpoint_templates: dict[str, str]
     extra_headers: dict[str, str]

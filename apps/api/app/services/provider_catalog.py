@@ -40,6 +40,10 @@ from app.services.credential_crypto import (
     secret_hint,
     select_provider_key,
 )
+from app.services.credential_source import (
+    CONNECTION_KEY,
+    connection_credential_source,
+)
 from app.services.provider_presets import (
     ANTHROPIC_ENDPOINTS,
     OPENAI_ENDPOINTS,
@@ -133,6 +137,7 @@ def list_provider_views(db: Session, settings: Settings) -> list[dict]:
         items = []
         for connection in connection_map.get(profile.id, []):
             connection_keys = key_map.get(connection.id, [])
+            credential_source = connection_credential_source(connection)
             native_configured = (
                 connection.protocol == "VERTEX_NATIVE" and settings.vertex_configured
             )
@@ -146,7 +151,14 @@ def list_provider_views(db: Session, settings: Settings) -> list[dict]:
                     "enabled": connection.enabled,
                     "configured": native_configured
                     or any(key.enabled for key in connection_keys),
-                    "credential_writable": settings.provider_credentials_writable,
+                    "credential_source": credential_source,
+                    "credential_writable": (
+                        credential_source == CONNECTION_KEY
+                        and settings.provider_credentials_writable
+                    ),
+                    "supported_model_types": (
+                        ["TEXT"] if connection.protocol == "ANTHROPIC" else ["TEXT", "IMAGE"]
+                    ),
                     "use_responses_api": connection.use_responses_api,
                     "endpoint_templates": connection.endpoint_templates or {},
                     "extra_headers": connection.extra_headers or {},
