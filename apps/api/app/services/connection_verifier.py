@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.config import Settings
 from app.model_adapters.base import (
     ImageRequest,
+    MultimodalRequest,
     ProviderAdapterError,
     StructuredRequest,
 )
@@ -127,6 +128,17 @@ def _verify_credentials(
             metrics = probe_connection_credentials(db, settings, connection)
         except HTTPException as error:
             db.refresh(connection)
+            if connection.health_state == "CHECKING":
+                connection.health_state = (
+                    "UNCONFIGURED" if error.status_code == 409 else "DEGRADED"
+                )
+                connection.last_checked_at = datetime.now(UTC)
+                connection.error_code = (
+                    "NO_USABLE_KEY" if error.status_code == 409 else "CONNECTION_FAILED"
+                )
+                connection.message = str(error.detail)
+                connection.latency_ms = round((perf_counter() - started) * 1000)
+                db.commit()
             return _failed_probe(
                 db,
                 connection,
@@ -224,6 +236,21 @@ def _image_bytes() -> bytes:
     return buffer.getvalue()
 
 
+def _smoke_operation(model: AIModel, requested: str | None) -> str:
+    operations = set(model.operations or [])
+    operation = requested
+    if operation is None:
+        preferences = (
+            ("structured_text", "multimodal_analysis")
+            if model.model_type == "TEXT"
+            else ("image_generate", "image_edit")
+        )
+        operation = next((item for item in preferences if item in operations), None)
+    if operation is None or operation not in operations:
+        raise HTTPException(status_code=422, detail="所选模型不支持请求的冒烟操作")
+    return operation
+
+
 def _verify_model_smoke(
     db: Session,
     settings: Settings,
@@ -237,21 +264,21 @@ def _verify_model_smoke(
             detail="图片模型冒烟测试可能计费，必须明确确认",
         )
 
+    operation = _smoke_operation(model, payload.operation)
     tested_operations: set[str] = set()
     latencies: list[int] = []
     binding = None
-    current_operation = "structured_text"
+    current_operation = operation
     try:
         for _ in range(payload.runs):
-            if model.model_type == "TEXT":
-                current_operation = "structured_text"
-                binding = bind_adapter(
-                    db,
-                    settings,
-                    operation=current_operation,
-                    explicit_reference=model.id,
-                )
-                started = perf_counter()
+            binding = bind_adapter(
+                db,
+                settings,
+                operation=current_operation,
+                explicit_reference=model.id,
+            )
+            started = perf_counter()
+            if current_operation == "structured_text":
                 binding.adapter.generate_structured(
                     StructuredRequest(
                         prompt='只返回 {"ok": true}',
@@ -260,43 +287,38 @@ def _verify_model_smoke(
                     ),
                     _SmokeResult,
                 )
-                tested_operations.add(current_operation)
-                latencies.append(round((perf_counter() - started) * 1000))
+            elif current_operation == "multimodal_analysis":
+                image = _image_bytes()
+                binding.adapter.analyze_multimodal(
+                    MultimodalRequest(
+                        prompt='检查图片并只返回 {"ok": true}',
+                        images=(image,),
+                        mime_types=("image/png",),
+                        temperature=0,
+                    ),
+                    _SmokeResult,
+                )
+            elif current_operation == "image_generate":
+                binding.adapter.generate_asset(
+                    ImageRequest(
+                        prompt="一个简单黑色圆点，白色背景，无文字",
+                        resolution="1K",
+                        aspect_ratio="1:1",
+                    )
+                )
             else:
                 image = _image_bytes()
-                started = perf_counter()
-                for operation in (
-                    item
-                    for item in ("image_generate", "image_edit")
-                    if item in (model.operations or [])
-                ):
-                    current_operation = operation
-                    binding = bind_adapter(
-                        db,
-                        settings,
-                        operation=operation,
-                        explicit_reference=model.id,
+                binding.adapter.edit_region(
+                    ImageRequest(
+                        prompt="保持白色背景，在中心添加一个黑色圆点，无文字",
+                        resolution="1K",
+                        aspect_ratio="1:1",
+                        reference_images=(image,),
+                        reference_mime_types=("image/png",),
                     )
-                    if operation == "image_generate":
-                        binding.adapter.generate_asset(
-                            ImageRequest(
-                                prompt="一个简单黑色圆点，白色背景，无文字",
-                                resolution="1K",
-                                aspect_ratio="1:1",
-                            )
-                        )
-                    else:
-                        binding.adapter.edit_region(
-                            ImageRequest(
-                                prompt="保持白色背景，在中心添加一个黑色圆点，无文字",
-                                resolution="1K",
-                                aspect_ratio="1:1",
-                                reference_images=(image,),
-                                reference_mime_types=("image/png",),
-                            )
-                        )
-                    tested_operations.add(operation)
-                latencies.append(round((perf_counter() - started) * 1000))
+                )
+            tested_operations.add(current_operation)
+            latencies.append(round((perf_counter() - started) * 1000))
             if binding and binding.selected_key:
                 mark_key_success(db, binding.selected_key.row)
 

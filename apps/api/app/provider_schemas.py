@@ -324,6 +324,12 @@ class ConnectionVerifyRequest(BaseModel):
 
     level: Literal["CREDENTIALS", "MODEL_SMOKE"] = "CREDENTIALS"
     catalog_model_id: str | None = None
+    operation: Literal[
+        "structured_text",
+        "multimodal_analysis",
+        "image_generate",
+        "image_edit",
+    ] | None = None
     acknowledge_cost: bool = False
     runs: int = Field(default=1, ge=1, le=3)
 
@@ -333,6 +339,8 @@ class ConnectionVerifyRequest(BaseModel):
             raise ValueError("模型冒烟测试必须选择目录模型")
         if self.level == "CREDENTIALS" and self.catalog_model_id is not None:
             raise ValueError("凭据验证不接受模型参数")
+        if self.level == "CREDENTIALS" and self.operation is not None:
+            raise ValueError("凭据验证不接受模型操作")
         return self
 
 

@@ -41,6 +41,7 @@
 ## V02-10B 统一连接健康与验证已实现（2026-08-30）
 
 - 新增协议中立的连接健康与验证端点；`CREDENTIALS` 不生成内容，`MODEL_SMOKE` 使用目录模型并写入 `ModelProbe`，图片测试继续要求费用确认。
+- PR 复审补修：旧 `VISION` 请求现在保留 `multimodal_analysis` 操作；每次已确认的图片冒烟只调用一种能力；无可用 Key 时失败探针会把连接从 `CHECKING` 收敛到 `UNCONFIGURED`。文字/视觉分别验证后累积能力置信度。
 - 模型发现改由协议能力声明控制；验证与目录同步拆开，不支持发现的连接使用预设或手工目录。预设刷新不再覆盖用户修改过的模型定义、验证结果或启停状态。
 - `/settings/vertex/status|verify` 保留一版兼容并转发统一服务；无人调用的 `/models/vertex/*` 兼容别名与死 schema 已删除。诊断页按实际连接动态生成检查项，不再固定写入 Google OAuth/Gemini 模型项。
 - Ruff 与 73 项供应商、健康、Dashboard、平台契约定向回归通过。Linux 全量 Pytest 达到 390 passed / 60 skipped；其余失败均来自仓库既有的 Windows Job Object、junction、PowerShell 专用验收，当前环境无法执行。未调用真实供应商、未读取凭据、未产生费用。

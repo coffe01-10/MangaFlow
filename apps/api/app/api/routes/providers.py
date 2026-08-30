@@ -291,6 +291,10 @@ def test_connection(
                 else "MODEL_SMOKE"
             ),
             catalog_model_id=payload.model_id,
+            operation={
+                "TEXT": "structured_text",
+                "VISION": "multimodal_analysis",
+            }.get(payload.test_type),
             acknowledge_cost=payload.acknowledge_cost,
             runs=payload.runs,
         ),
