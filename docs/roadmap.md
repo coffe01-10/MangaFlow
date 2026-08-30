@@ -1,7 +1,7 @@
 # MangaFlow 主分支后续工作清单
 
-更新时间：2026-08-29
-当前主分支代码合并基线：`master` / `d57b94f`（PR #32，2026-08-29）。PR #18、#19、#29、#30、#32 已完成 P2-1 的 Worker handler、项目工作台、workflow editor、workflow API 路由与 workflow engine 五个拆分边界；真实 PostgreSQL/Redis/RQ 和供应商边界仍按各自验收记录保留。
+更新时间：2026-08-30
+当前主分支代码合并基线：`master` / `6bee9c1`（PR #36，2026-08-30）。P2-1 的五个拆分边界、P2-2 关键行为覆盖与 P2-3 模型调用尝试账本已合并；真实 PostgreSQL/Redis/RQ 和供应商边界仍按各自验收记录保留。
 最近 `check:full` 历史基线：`master` / `cb324e3`（2026-08-27；相对 PR #5 合并提交 `d5d32ec` 仅增加任务文档），不代表 PR #6 / #7 / #10 / #11 已重跑浏览器验收。
 深审历史基线：`master` / `f085327`。当时新增 6 项 P1 修复与 1 项 P2 改进；PR #6 已合并其中 P1-7、P1-9～P1-12 的代码修复。P1-8、P2-8 已随 PR #7 合并，独立 Redis/RQ、PostgreSQL 与浏览器验收仍待完成。
 安全审查历史基线：`master` / `7635cf7`。P0-3、P1-13～P1-15、P2-4、P2-9 的代码修复现已合并，真实服务/容器及完整依赖审计边界仍保留。
@@ -331,13 +331,13 @@ PR #5 审查时有 17 个 Vitest 测试、165 个 Python 测试；仍需按关�
 
 ### P2-3 模型调用审计与成本可见性
 
-`GenerationRecord` 能保存成功调用的 usage，但当前没有独立的 `ModelCallAttempt`；任务列表的 `estimated_cost` 仍返回 `None`。失败、重试、路由切换和每次尝试的成本不可完整追溯。
+`ModelCallAttempt` 已能独立记录成功、失败、重试和路由切换中的每次实际供应商派发；任务列表的 `estimated_cost` 仍返回 `None`，版本化价格与估算展示继续由 Issue #25 跟踪。
 
 - 记录每次调用尝试的供应商、模型、request id、开始/结束时间、耗时、usage、错误码、是否重试和关联 job。
 - 根据供应商定价配置提供“估算”而非伪精确成本，并在 UI 中区分估算值与账单值。
 - 日志和导出继续禁止保存密钥、认证头和完整凭据路径。
-- [ ] Issue #24：先实现每次模型调用尝试的脱敏审计账本、迁移与离线回归。
-- [ ] Issue #25：待 #24 合并后，再实现版本化价格配置、估算 API 与明确标注“估算”的 UI。
+- [x] PR #36 / Issue #24：实现脱敏 `ModelCallAttempt` 账本、独立审计事务、只读 API 与 Alembic 迁移。GLM 一轮返工后，组长接管并统一 ORM/Alembic 索引、补完整 schema 所有权校验；合并后 master 的迁移 11 项和审计/provider/route-manifest/Worker 51 项定向回归通过。真实 PostgreSQL/Redis/RQ、供应商与浏览器门禁均为 NOT RUN。
+- [ ] Issue #25：实现版本化价格配置、估算 API 与明确标注“估算”的 UI。
 
 ### P2-4 上传与图片资源硬化
 
