@@ -1,6 +1,7 @@
 """Offline V02-14A acceptance for the Codex CLI image channel."""
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -269,6 +270,14 @@ def _cli_rows(db_session, tmp_path):
 
 
 class _SuccessfulCodexRunner:
+    """Fake CLI agent that resolves paths the way the task text mandates.
+
+    Registered ``output/`` paths are relative to the run root, so from the
+    workspace cwd they must be written with a ``../`` prefix; ``result.json``
+    keeps the original registered strings. Writing anywhere else makes the
+    controller reject the output, so this runner cannot mask a wrong mapping.
+    """
+
     def __init__(self):
         self.calls = 0
 
@@ -293,19 +302,22 @@ class _SuccessfulCodexRunner:
             "TEMP",
             "TMP",
         }
-        request = json.loads((cwd.parent / "input/request.json").read_text("utf-8"))
+        task = argv[-1]
+        assert "registered relative to the run root" in task
+        assert "prefixed with ../" in task
+        request = json.loads((cwd / "../input/request.json").read_text("utf-8"))
         assert request["operation"] == "image_edit"
         assert request["prompt"] == "漫画私密提示"
         assert request["reference_images"][0].startswith("input/references/")
-        output = cwd.parent / "output"
-        image_path = output / "images/out_001.png"
-        image_path.write_bytes(_png_bytes())
-        (output / "result.json").write_text(
+        registered = request["output_spec"]["images"]
+        for path in registered:
+            (cwd / ".." / path).write_bytes(_png_bytes())
+        (cwd / "../output/result.json").write_text(
             json.dumps(
                 {
                     "schema_version": 1,
                     "status": "SUCCEEDED",
-                    "images": ["output/images/out_001.png"],
+                    "images": list(registered),
                 }
             ),
             encoding="utf-8",
@@ -322,7 +334,7 @@ class _FailingCodexRunner:
         return CLIProcessOutcome(2, stderr=b"upstream failed")
 
 
-def _adapter(factory, settings, connection, model, runner):
+def _adapter(factory, settings, connection, model, runner, executable_resolver=None):
     return CodexCLIImageAdapter(
         CodexCLIRuntime(
             settings=settings,
@@ -333,8 +345,18 @@ def _adapter(factory, settings, connection, model, runner):
         ),
         controller=CLIExecutionController(settings, factory),
         runner_factory=lambda: runner,
-        executable_resolver=lambda _value: "C:/tools/codex.exe",
+        executable_resolver=executable_resolver
+        or (lambda _value: "C:/tools/codex.exe"),
     )
+
+
+class _ArgvCaptureRunner:
+    def __init__(self):
+        self.argv: tuple[str, ...] | None = None
+
+    def run(self, *, argv, **_kwargs):
+        self.argv = argv
+        return CLIProcessOutcome(2, stderr=b"captured")
 
 
 def test_codex_image_edit_maps_request_and_registered_output_through_controller(
@@ -406,3 +428,182 @@ def test_codex_failure_finalizes_one_audit_without_http_fallback(db_session, tmp
     run = db_session.scalar(select(CLIExecutionRun))
     assert (attempt.outcome, attempt.error_code) == ("FAILED", "UPSTREAM")
     assert (run.state, run.cleanup_state) == ("FAILED", "CLEANED")
+
+
+def test_codex_task_instructions_map_outputs_to_run_root_and_preserve_registration(
+    db_session, tmp_path
+):
+    factory, settings, _profile, connection, model, job = _cli_rows(db_session, tmp_path)
+    attempt = ModelCallAttempt(
+        job_id=job.id,
+        project_id=job.project_id,
+        job_attempt=1,
+        dispatch_no=1,
+        provider="codex-cli",
+        model_id=model.provider_model_id,
+        catalog_model_id=model.id,
+        connection_id=connection.id,
+    )
+    db_session.add(attempt)
+    db_session.commit()
+    runner = _ArgvCaptureRunner()
+    adapter = _adapter(factory, settings, connection, model, runner)
+    adapter.bind_execution_context(
+        job_id=job.id,
+        model_call_attempt_id=attempt.id,
+        lease_owner=None,
+    )
+
+    with pytest.raises(ProviderAdapterError):
+        adapter.edit_region(
+            ImageRequest(
+                prompt="漫画私密提示",
+                reference_images=(_png_bytes(),),
+                reference_mime_types=("image/png",),
+            )
+        )
+
+    task = runner.argv[-1]
+    # Write mapping: registered output/ paths belong to the run root, so a
+    # conforming agent must write them from the workspace with the ../ prefix.
+    assert "registered relative to the run root" in task
+    assert "prefixed with ../" in task
+    assert "output/images/out_001.png is written as ../output/images/out_001.png" in task
+    # result.json constraint: the original registered strings stay unchanged.
+    assert "keep the registered output_spec.images strings unchanged" in task
+    assert "start with output/ and never carry the ../ prefix" in task
+    assert "../output/result.json" in task
+
+
+def test_codex_cleanup_retry_after_transient_failure_cleans_without_warning(
+    db_session, tmp_path, monkeypatch
+):
+    factory, settings, profile, connection, model, job = _cli_rows(db_session, tmp_path)
+    runner = _SuccessfulCodexRunner()
+    adapter = _adapter(factory, settings, connection, model, runner)
+    binding = AdapterBinding(
+        resolved=ResolvedModel(model=model, connection=connection, provider=profile),
+        adapter=adapter,
+        selected_key=None,
+    )
+    db_session.info["job_id"] = job.id
+    real_rmtree = shutil.rmtree
+    cleanup_attempts = {"count": 0}
+
+    def flaky_rmtree(path, *args, **kwargs):
+        cleanup_attempts["count"] += 1
+        if cleanup_attempts["count"] == 1:
+            raise PermissionError(32, "transient lock")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr("app.services.cli_executor.shutil.rmtree", flaky_rmtree)
+
+    def invoke(bound_adapter):
+        return bound_adapter.edit_region(
+            ImageRequest(
+                prompt="漫画私密提示",
+                reference_images=(_png_bytes(),),
+                reference_mime_types=("image/png",),
+            )
+        )
+
+    response = provider_handler._invoke_provider(db_session, binding, invoke)
+
+    assert runner.calls == 1 and response.images
+    assert "cleanup_warning" not in response.usage
+    assert cleanup_attempts["count"] == 2
+    run = db_session.scalar(select(CLIExecutionRun))
+    assert (run.state, run.cleanup_state, run.lease_slot) == (
+        "COMPLETED",
+        "CLEANED",
+        None,
+    )
+    assert not (settings.storage_root / "cli_runs" / run.id).exists()
+    attempt = db_session.scalar(select(ModelCallAttempt))
+    assert attempt.outcome == "SUCCEEDED"
+    assert "cleanup_warning" not in (attempt.usage or {})
+
+
+def test_codex_persistent_cleanup_failure_keeps_success_with_redacted_warning(
+    db_session, tmp_path, monkeypatch
+):
+    factory, settings, profile, connection, model, job = _cli_rows(db_session, tmp_path)
+    runner = _SuccessfulCodexRunner()
+    adapter = _adapter(factory, settings, connection, model, runner)
+    binding = AdapterBinding(
+        resolved=ResolvedModel(model=model, connection=connection, provider=profile),
+        adapter=adapter,
+        selected_key=None,
+    )
+    db_session.info["job_id"] = job.id
+
+    def locked_rmtree(path, *args, **kwargs):
+        raise PermissionError(32, "locked")
+
+    monkeypatch.setattr("app.services.cli_executor.shutil.rmtree", locked_rmtree)
+
+    def invoke(bound_adapter):
+        return bound_adapter.edit_region(
+            ImageRequest(
+                prompt="漫画私密提示",
+                reference_images=(_png_bytes(),),
+                reference_mime_types=("image/png",),
+            )
+        )
+
+    response = provider_handler._invoke_provider(db_session, binding, invoke)
+
+    assert runner.calls == 1 and response.images
+    assert response.usage["cleanup_warning"] == {"error_type": "PermissionError"}
+    attempt = db_session.scalar(select(ModelCallAttempt))
+    run = db_session.scalar(select(CLIExecutionRun))
+    assert attempt.outcome == "SUCCEEDED"
+    assert attempt.usage["cleanup_warning"] == {"error_type": "PermissionError"}
+    assert attempt.error_message is None
+    assert (run.state, run.cleanup_state) == ("COMPLETED", "FAILED")
+    blob = json.dumps(attempt.usage, ensure_ascii=False)
+    assert "漫画私密提示" not in blob
+    assert "out_001" not in blob
+    assert "cli_runs" not in blob
+    assert str(settings.storage_root) not in blob
+
+
+@pytest.mark.parametrize(
+    "resolver_error",
+    [FileNotFoundError(2, "codex.exe removed"), ValueError("invalid executable name")],
+    ids=["file-not-found", "value-error"],
+)
+def test_codex_unresolvable_executable_finalizes_audit_without_run(
+    db_session, tmp_path, resolver_error
+):
+    factory, settings, profile, connection, model, job = _cli_rows(db_session, tmp_path)
+    runner = _FailingCodexRunner()
+
+    def broken_resolver(_value):
+        raise resolver_error
+
+    adapter = _adapter(
+        factory, settings, connection, model, runner, executable_resolver=broken_resolver
+    )
+    binding = AdapterBinding(
+        resolved=ResolvedModel(model=model, connection=connection, provider=profile),
+        adapter=adapter,
+        selected_key=None,
+    )
+    db_session.info["job_id"] = job.id
+    callback_calls = 0
+
+    def invoke(bound_adapter):
+        nonlocal callback_calls
+        callback_calls += 1
+        return bound_adapter.generate_asset(ImageRequest(prompt="消失测试"))
+
+    with pytest.raises(ProviderAdapterError) as caught:
+        provider_handler._invoke_provider(db_session, binding, invoke)
+
+    assert caught.value.code == "UNAVAILABLE" and not caught.value.retryable
+    assert callback_calls == 1 and runner.calls == 0
+    attempt = db_session.scalar(select(ModelCallAttempt))
+    assert (attempt.outcome, attempt.error_code) == ("FAILED", "UNAVAILABLE")
+    assert db_session.scalar(select(CLIExecutionRun)) is None
+    assert not (settings.storage_root / "cli_runs").exists()

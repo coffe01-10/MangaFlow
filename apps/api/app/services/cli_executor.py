@@ -233,6 +233,11 @@ class CLIExecutionController:
                 stderr_checksum=stderr_checksum,
             )
             cleanup_error = self._cleanup(run_id, retain=False)
+            if cleanup_error is not None:
+                # Contract §9.4: one immediate, bounded retry for a successful
+                # run (no sleep, no queue); token, canonical-path and link
+                # revalidation rerun inside _cleanup itself.
+                cleanup_error = self._cleanup(run_id, retain=False)
             if cleanup_error is None:
                 return result
             return CLIExecutionResult(
