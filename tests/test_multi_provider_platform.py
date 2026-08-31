@@ -104,6 +104,7 @@ def test_presets_seed_default_provider_catalog(client):
     assert {
         "vertex-ai",
         "codex-cli",
+        "antigravity-cli",
         "openai",
         "anthropic",
         "deepseek",
@@ -122,6 +123,7 @@ def test_presets_seed_default_provider_catalog(client):
             "VERTEX_NATIVE",
             "GOOGLE_NATIVE",
             "CLI_CODEX",
+            "CLI_ANTIGRAVITY",
         }
         for provider in providers
         for connection in provider["connections"]
@@ -148,6 +150,12 @@ def test_presets_seed_default_provider_catalog(client):
     assert [(item["provider_model_id"], item["confidence"]) for item in models] == [
         ("codex-imagegen", "DECLARED")
     ]
+    antigravity = next(
+        provider for provider in providers if provider["preset_key"] == "antigravity-cli"
+    )
+    antigravity_connection = antigravity["connections"][0]
+    assert antigravity_connection["credential_source"] == "CLI_SESSION"
+    assert antigravity_connection["nonsecret_config"]["cli_executable"] == "agy"
 
 
 def test_new_vertex_preset_uses_one_shot_auto_enable_and_declared_models(

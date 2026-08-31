@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import Settings
+from app.model_adapters.antigravity_cli import AntigravityCLIProbeAdapter
 from app.model_adapters.base import (
     ImageRequest,
     MultimodalRequest,
@@ -128,7 +129,12 @@ def _verify_credentials(
     source = connection_credential_source(connection)
     if source == CLI_SESSION:
         config = connection.nonsecret_config or {}
-        if connection.protocol != "CLI_CODEX":
+        cli_probes = {
+            "CLI_CODEX": (CodexCLIProbeAdapter, "codex"),
+            "CLI_ANTIGRAVITY": (AntigravityCLIProbeAdapter, "agy"),
+        }
+        probe_definition = cli_probes.get(connection.protocol)
+        if probe_definition is None:
             connection.health_state = "UNSUPPORTED"
             connection.last_checked_at = datetime.now(UTC)
             connection.error_code = "UNSUPPORTED"
@@ -143,9 +149,10 @@ def _verify_credentials(
                 message=connection.message,
                 latency_ms=_elapsed_ms(started),
             )
-        adapter = CodexCLIProbeAdapter(
+        adapter_class, default_executable = probe_definition
+        adapter = adapter_class(
             settings,
-            executable=str(config.get("cli_executable") or "codex"),
+            executable=str(config.get("cli_executable") or default_executable),
         )
         probe_cli_connection(db, connection.id, adapter, auto_commit=True)
         probe = db.scalar(
@@ -157,7 +164,7 @@ def _verify_credentials(
             .order_by(ModelProbe.created_at.desc(), ModelProbe.id.desc())
         )
         if probe is None:
-            raise RuntimeError("Codex CLI capability probe was not persisted")
+            raise RuntimeError("CLI capability probe was not persisted")
         return probe
     if source == CONNECTION_KEY:
         try:

@@ -70,6 +70,8 @@ class CLIProcessOutcome:
     stderr_checksum: str | None = None
     timed_out: bool = False
     cancelled: bool = False
+    error_code: str | None = None
+    error_message: str | None = None
 
 
 @dataclass(frozen=True)
@@ -194,6 +196,7 @@ class CLIExecutionController:
         runner: CLIProcessRunner,
         argv: tuple[str, ...],
         allowed_environment: tuple[str, ...] = (),
+        environment_overrides: dict[str, str] | None = None,
         output_encoding: str = "utf-8",
         cancel_requested: Callable[[], bool] = lambda: False,
     ) -> CLIExecutionResult:
@@ -209,7 +212,9 @@ class CLIExecutionController:
                 argv=argv,
                 cwd=run_directory / "workspace",
                 environment=self._environment(
-                    run_directory / "workspace", allowed_environment
+                    run_directory / "workspace",
+                    allowed_environment,
+                    environment_overrides,
                 ),
                 timeout_seconds=self.settings.cli_run_timeout_seconds,
                 cancel_requested=cancel_requested,
@@ -221,6 +226,14 @@ class CLIExecutionController:
                 raise ProviderAdapterError("CANCELLED", "CLI 任务已取消")
             if outcome.timed_out:
                 raise ProviderAdapterError("TIMEOUT", "CLI 图片任务执行超时", retryable=True)
+            if outcome.error_code:
+                if outcome.error_code not in CLI_FAILURE_CODES:
+                    raise ProviderAdapterError("INVALID_OUTPUT", "CLI 返回了无效错误码")
+                raise ProviderAdapterError(
+                    outcome.error_code,
+                    _sanitize_message(outcome.error_message or "CLI 图片任务执行失败"),
+                    retryable=outcome.error_code in _RETRYABLE,
+                )
             if outcome.exit_code:
                 raise ProviderAdapterError("UPSTREAM", "CLI 图片任务执行失败", retryable=True)
             result = self._read_result(run_id, run_directory)
@@ -479,8 +492,13 @@ class CLIExecutionController:
             journal["controller_created"] = identity["created"]
         _write_json(run_directory / "journal.json", journal)
 
-    def _environment(self, workspace: Path, allowed: tuple[str, ...]) -> dict[str, str]:
-        return build_cli_environment(workspace, allowed)
+    def _environment(
+        self,
+        workspace: Path,
+        allowed: tuple[str, ...],
+        overrides: dict[str, str] | None,
+    ) -> dict[str, str]:
+        return build_cli_environment(workspace, allowed, overrides)
 
     def _diagnostics(
         self, run_directory: Path, outcome: CLIProcessOutcome, encoding: str
@@ -687,7 +705,11 @@ def _validate_request(request: CLIExecutionRequest) -> None:
             raise ProviderAdapterError("CONFIGURATION", "CLI 输出清单路径无效")
 
 
-def build_cli_environment(workspace: Path, allowed: tuple[str, ...]) -> dict[str, str]:
+def build_cli_environment(
+    workspace: Path,
+    allowed: tuple[str, ...],
+    overrides: dict[str, str] | None = None,
+) -> dict[str, str]:
     """Build the explicit environment shared by run and read-only probe processes."""
 
     protected = {"PYTHONHOME", "PYTHONPATH"}
@@ -699,6 +721,14 @@ def build_cli_environment(workspace: Path, allowed: tuple[str, ...]) -> dict[str
         for name in names
         if name in os.environ and name.upper() not in protected
     }
+    allowed_names = {name.upper(): name for name in allowed}
+    for name, value in (overrides or {}).items():
+        normalized = name.upper()
+        if normalized not in allowed_names or normalized in protected:
+            raise ProviderAdapterError("CONFIGURATION", "CLI 环境覆盖变量不在白名单")
+        if not isinstance(value, str) or not value or len(value) > 2000 or "\0" in value:
+            raise ProviderAdapterError("CONFIGURATION", "CLI 环境覆盖值无效")
+        environment[allowed_names[normalized]] = value
     environment.update(TEMP=str(workspace), TMP=str(workspace))
     return environment
 

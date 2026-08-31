@@ -27,8 +27,24 @@ from app.services.cli_executor import (
     CLIExecutionController,
     CLIExecutionRequest,
     CLIProcessOutcome,
+    build_cli_environment,
 )
 from app.services.cli_probe import CLIProbeObservation, probe_cli_connection
+
+
+def test_cli_environment_overrides_require_explicit_non_python_whitelist(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    environment = build_cli_environment(
+        workspace,
+        ("HOME",),
+        {"HOME": str(workspace / "private-home")},
+    )
+    assert environment["HOME"] == str(workspace / "private-home")
+    with pytest.raises(ProviderAdapterError, match="白名单"):
+        build_cli_environment(workspace, (), {"HOME": "hidden"})
+    with pytest.raises(ProviderAdapterError, match="受保护"):
+        build_cli_environment(workspace, ("PYTHONPATH",), {"PYTHONPATH": "hidden"})
 
 
 @pytest.fixture

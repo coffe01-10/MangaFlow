@@ -25,6 +25,10 @@ CLI_SESSION: Final[CredentialSource] = "CLI_SESSION"
 # protocol only. GOOGLE_NATIVE stays key-based: the Gemini API authenticates
 # with an API key like any other compatible provider.
 _ENV_SERVICE_ACCOUNT_PROTOCOLS: Final[frozenset[str]] = frozenset({"VERTEX_NATIVE"})
+_CLI_DEFAULT_EXECUTABLES: Final[dict[str, str]] = {
+    "CLI_ANTIGRAVITY": "agy",
+    "CLI_CODEX": "codex",
+}
 
 
 @dataclass(frozen=True)
@@ -62,6 +66,12 @@ def credential_source_for_protocol(protocol: str) -> CredentialSource:
     if protocol in _ENV_SERVICE_ACCOUNT_PROTOCOLS:
         return ENV_SERVICE_ACCOUNT
     return CONNECTION_KEY
+
+
+def default_cli_executable_for_protocol(protocol: str) -> str:
+    """Return the provider-neutral bare command for a supported CLI protocol."""
+
+    return _CLI_DEFAULT_EXECUTABLES.get(protocol, "codex")
 
 
 def connection_credential_source(connection: ProviderConnection) -> CredentialSource:
