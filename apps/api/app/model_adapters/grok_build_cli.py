@@ -55,6 +55,7 @@ _EXPECTED_TOOLS = {
 _PROMPT_FILE = "mangaflow-prompt.txt"
 _MAX_STREAM_LINES = 5000
 _MAX_INSPECT_BYTES = 1024 * 1024
+_MAX_SESSION_NAMESPACES = 4096
 
 
 @dataclass(frozen=True)
@@ -264,6 +265,8 @@ class GrokBuildArtifactRunner:
     def run(self, **kwargs) -> CLIProcessOutcome:
         cwd: Path = kwargs["cwd"]
         environment: dict[str, str] = kwargs["environment"]
+        run_id = cwd.parent.name
+        deadline = perf_counter() + float(kwargs["timeout_seconds"])
         try:
             _prepare_workspace_boundary(cwd)
             inspect_kwargs = dict(kwargs)
@@ -313,48 +316,101 @@ class GrokBuildArtifactRunner:
                 error_code=error.code,
                 error_message=error.user_message,
             )
-        outcome = self.delegate.run(**kwargs)
+        remaining_seconds = deadline - perf_counter()
+        if remaining_seconds <= 0:
+            return self._failure_outcome(
+                CLIProcessOutcome(124, timed_out=True),
+                environment,
+                run_id,
+                inspect_stdout_checksum,
+                inspect_stderr_checksum,
+            )
+        media_kwargs = dict(kwargs)
+        media_kwargs["timeout_seconds"] = remaining_seconds
+        try:
+            outcome = self.delegate.run(**media_kwargs)
+        except BaseException as error:
+            cleanup_warning = _cleanup_run_sessions(environment, run_id)
+            if cleanup_warning:
+                error.add_note("Grok Build failed-session cleanup did not complete")
+            raise
         raw_stdout = outcome.stdout
         raw_stderr = outcome.stderr
         stdout_checksum = outcome.stdout_checksum or hashlib.sha256(raw_stdout).hexdigest()
         stderr_checksum = outcome.stderr_checksum or hashlib.sha256(raw_stderr).hexdigest()
         if outcome.cancelled or outcome.timed_out:
-            return replace(
+            return self._failure_outcome(
                 outcome,
-                stdout=b"",
-                stderr=b"",
-                stdout_checksum=stdout_checksum,
-                stderr_checksum=stderr_checksum,
+                environment,
+                run_id,
+                stdout_checksum,
+                stderr_checksum,
             )
         if outcome.exit_code:
             code, message, _retryable = _map_failure(_decode_bytes(raw_stdout + raw_stderr))
-            return replace(
+            return self._failure_outcome(
                 outcome,
-                stdout=b"",
-                stderr=b"",
-                stdout_checksum=stdout_checksum,
-                stderr_checksum=stderr_checksum,
-                error_code=code,
-                error_message=message,
+                environment,
+                run_id,
+                stdout_checksum,
+                stderr_checksum,
+                code,
+                message,
             )
         try:
             summary = self._adopt(cwd, environment, raw_stdout)
         except ProviderAdapterError as error:
-            return replace(
+            return self._failure_outcome(
                 outcome,
-                stdout=b"",
-                stderr=b"",
-                stdout_checksum=stdout_checksum,
-                stderr_checksum=stderr_checksum,
-                error_code=error.code,
-                error_message=error.user_message,
+                environment,
+                run_id,
+                stdout_checksum,
+                stderr_checksum,
+                error.code,
+                error.user_message,
             )
+        except BaseException as error:
+            cleanup_warning = _cleanup_run_sessions(environment, run_id)
+            if cleanup_warning:
+                error.add_note("Grok Build failed-session cleanup did not complete")
+            raise
         return replace(
             outcome,
             stdout=json.dumps(summary, sort_keys=True, separators=(",", ":")).encode(),
             stderr=b"",
             stdout_checksum=stdout_checksum,
             stderr_checksum=stderr_checksum,
+        )
+
+    @staticmethod
+    def _failure_outcome(
+        outcome: CLIProcessOutcome,
+        environment: dict[str, str],
+        run_id: str,
+        stdout_checksum: str,
+        stderr_checksum: str,
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ) -> CLIProcessOutcome:
+        cleanup_warning = _cleanup_run_sessions(environment, run_id)
+        safe_stderr = b""
+        resolved_message = error_message if error_message is not None else outcome.error_message
+        if cleanup_warning:
+            safe_stderr = json.dumps(
+                {"grok_session_cleanup_warning": cleanup_warning},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+            if resolved_message:
+                resolved_message += "；Grok Build 失败会话清理未完成"
+        return replace(
+            outcome,
+            stdout=b"",
+            stderr=safe_stderr,
+            stdout_checksum=stdout_checksum,
+            stderr_checksum=stderr_checksum,
+            error_code=error_code if error_code is not None else outcome.error_code,
+            error_message=resolved_message,
         )
 
     def _adopt(
@@ -735,19 +791,7 @@ def _validate_grok_media_path(
     candidate = Path(raw_path)
     if not candidate.is_absolute():
         raise ProviderAdapterError("INVALID_OUTPUT", "Grok Build 图片路径不是绝对路径")
-    grok_home_value = environment.get("GROK_HOME")
-    if grok_home_value:
-        grok_home = Path(grok_home_value)
-    else:
-        user_profile = environment.get("USERPROFILE") or environment.get("HOME")
-        if not user_profile:
-            raise ProviderAdapterError("CONFIGURATION", "Grok Build CLI 缺少用户目录")
-        grok_home = Path(user_profile) / ".grok"
-    if not grok_home.is_absolute():
-        raise ProviderAdapterError("CONFIGURATION", "Grok Build CLI 状态目录不是绝对路径")
-    if grok_home.is_symlink() or grok_home.is_junction():
-        raise ProviderAdapterError("INVALID_OUTPUT", "Grok Build CLI 状态目录不能是链接")
-    sessions = grok_home / "sessions"
+    sessions = _grok_sessions_path(environment)
     _reject_link_chain(candidate, sessions)
     try:
         root = sessions.resolve(strict=True)
@@ -768,6 +812,54 @@ def _validate_grok_media_path(
     ):
         raise ProviderAdapterError("INVALID_OUTPUT", "Grok Build 图片不属于当前唯一会话")
     return resolved, resolved.parent.parent, root
+
+
+def _grok_sessions_path(environment: dict[str, str]) -> Path:
+    grok_home_value = environment.get("GROK_HOME")
+    if grok_home_value:
+        grok_home = Path(grok_home_value)
+    else:
+        user_profile = environment.get("USERPROFILE") or environment.get("HOME")
+        if not user_profile:
+            raise ProviderAdapterError("CONFIGURATION", "Grok Build CLI 缺少用户目录")
+        grok_home = Path(user_profile) / ".grok"
+    if not grok_home.is_absolute():
+        raise ProviderAdapterError("CONFIGURATION", "Grok Build CLI 状态目录不是绝对路径")
+    if grok_home.is_symlink() or grok_home.is_junction():
+        raise ProviderAdapterError("INVALID_OUTPUT", "Grok Build CLI 状态目录不能是链接")
+    return grok_home / "sessions"
+
+
+def _cleanup_run_sessions(environment: dict[str, str], run_id: str) -> dict[str, str] | None:
+    """Find and remove only sessions whose exact ID belongs to this controller run."""
+
+    try:
+        sessions = _grok_sessions_path(environment)
+        if not sessions.exists():
+            return None
+        if sessions.is_symlink() or sessions.is_junction():
+            raise ProviderAdapterError("INVALID_OUTPUT", "Grok Build sessions 目录不能是链接")
+        root = sessions.resolve(strict=True)
+        cleanup_warning = None
+        with os.scandir(root) as entries:
+            for index, entry in enumerate(entries, start=1):
+                if index > _MAX_SESSION_NAMESPACES:
+                    raise ProviderAdapterError("INVALID_OUTPUT", "Grok Build sessions 命名空间过多")
+                namespace = Path(entry.path)
+                if namespace.is_symlink() or namespace.is_junction():
+                    continue
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
+                candidate = namespace / run_id
+                if not (candidate.exists() or candidate.is_symlink() or candidate.is_junction()):
+                    continue
+                warning = _cleanup_owned_session(candidate, root, run_id)
+                if warning and cleanup_warning is None:
+                    cleanup_warning = warning
+        return cleanup_warning
+    except (OSError, ProviderAdapterError) as error:
+        error_type = type(error).__name__
+        return {"error_type": error_type if _SAFE_ERROR_TYPE.fullmatch(error_type) else "OSError"}
 
 
 def _cleanup_owned_session(
@@ -793,7 +885,7 @@ def _cleanup_owned_session(
             except OSError:
                 if attempt:
                     raise
-    except OSError as error:
+    except (OSError, ProviderAdapterError) as error:
         error_type = type(error).__name__
         return {"error_type": error_type if _SAFE_ERROR_TYPE.fullmatch(error_type) else "OSError"}
     return None

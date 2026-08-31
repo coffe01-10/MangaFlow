@@ -301,13 +301,15 @@ def _cli_rows(db_session, tmp_path):
 class _SuccessfulGrokRunner:
     def __init__(self, *, duplicate=False, wrong_tool=False, out_of_root=False):
         self.calls = 0
+        self.timeouts = []
         self.duplicate = duplicate
         self.wrong_tool = wrong_tool
         self.out_of_root = out_of_root
         self.prompt_text = ""
 
-    def run(self, *, argv, cwd: Path, environment, **_kwargs):
+    def run(self, *, argv, cwd: Path, environment, timeout_seconds, **_kwargs):
         self.calls += 1
+        self.timeouts.append(timeout_seconds)
         assert argv[0] == "C:/tools/grok.exe"
         if argv[1:] == ("inspect", "--json"):
             assert (cwd / ".git").is_dir()
@@ -467,6 +469,30 @@ def test_grok_build_image_edit_adopts_one_typed_session_artifact(
     assert not list((grok_home / "sessions").glob(f"*/{run.id}"))
 
 
+def test_grok_build_inspect_and_media_share_one_timeout_deadline(
+    db_session, tmp_path, monkeypatch
+):
+    factory, settings, _profile, connection, model, job, attempt = _cli_rows(
+        db_session, tmp_path
+    )
+    monkeypatch.setenv("GROK_HOME", str(tmp_path / "grok-home"))
+    clock = iter((100.0, 112.5))
+    monkeypatch.setattr(
+        "app.model_adapters.grok_build_cli.perf_counter", lambda: next(clock)
+    )
+    runner = _SuccessfulGrokRunner()
+    adapter = _adapter(factory, settings, connection, model, runner)
+    adapter.bind_execution_context(
+        job_id=job.id,
+        model_call_attempt_id=attempt.id,
+        lease_owner=None,
+    )
+
+    adapter.generate_asset(ImageRequest(prompt="漫画私密提示"))
+
+    assert runner.timeouts == [30, pytest.approx(17.5)]
+
+
 @pytest.mark.parametrize(
     ("runner", "expected"),
     [
@@ -482,7 +508,8 @@ def test_grok_build_rejects_unowned_or_ambiguous_tool_output(
     factory, settings, _profile, connection, model, job, attempt = _cli_rows(
         db_session, tmp_path
     )
-    monkeypatch.setenv("GROK_HOME", str(tmp_path / "grok-home"))
+    grok_home = tmp_path / "grok-home"
+    monkeypatch.setenv("GROK_HOME", str(grok_home))
     adapter = _adapter(factory, settings, connection, model, runner)
     adapter.bind_execution_context(
         job_id=job.id,
@@ -500,6 +527,39 @@ def test_grok_build_rejects_unowned_or_ambiguous_tool_output(
         expected,
         "RETAINED",
     )
+    assert not list((grok_home / "sessions").glob(f"*/{run.id}"))
+    if runner.out_of_root:
+        assert list((grok_home / "sessions").glob("*/other-run"))
+
+
+def test_grok_build_failed_session_cleanup_warning_is_safely_propagated(
+    db_session, tmp_path, monkeypatch
+):
+    factory, settings, _profile, connection, model, job, attempt = _cli_rows(
+        db_session, tmp_path
+    )
+    monkeypatch.setenv("GROK_HOME", str(tmp_path / "grok-home"))
+    monkeypatch.setattr(
+        "app.model_adapters.grok_build_cli._cleanup_owned_session",
+        lambda *_args: {"error_type": "PermissionError"},
+    )
+    runner = _SuccessfulGrokRunner(wrong_tool=True)
+    adapter = _adapter(factory, settings, connection, model, runner)
+    adapter.bind_execution_context(
+        job_id=job.id,
+        model_call_attempt_id=attempt.id,
+        lease_owner=None,
+    )
+
+    with pytest.raises(ProviderAdapterError) as caught:
+        adapter.generate_asset(ImageRequest(prompt="漫画私密提示"))
+
+    assert caught.value.code == "INVALID_OUTPUT"
+    assert "失败会话清理未完成" in caught.value.user_message
+    run = db_session.scalar(select(CLIExecutionRun))
+    stderr = settings.storage_root / "cli_runs" / run.id / "output" / "stderr.log"
+    assert "PermissionError" in stderr.read_text("utf-8")
+    assert "漫画私密提示" not in stderr.read_text("utf-8")
 
 
 def test_grok_build_failure_finalizes_audit_without_http_fallback(
@@ -519,6 +579,17 @@ def test_grok_build_failure_finalizes_audit_without_http_fallback(
             self.calls += 1
             if kwargs["argv"][1:] == ("inspect", "--json"):
                 return CLIProcessOutcome(0, stdout=b'{"hooks":[]}')
+            run_id = kwargs["cwd"].parent.name
+            partial = (
+                Path(kwargs["environment"]["GROK_HOME"])
+                / "sessions"
+                / "encoded-workspace"
+                / run_id
+                / "images"
+                / "partial.jpg"
+            )
+            partial.parent.mkdir(parents=True)
+            partial.write_bytes(_jpeg_bytes())
             return CLIProcessOutcome(1, stderr=b"You are not authenticated")
 
     runner = Runner()
@@ -542,6 +613,8 @@ def test_grok_build_failure_finalizes_audit_without_http_fallback(
     assert callback_calls == 1 and runner.calls == 2
     attempt = db_session.scalar(select(ModelCallAttempt))
     assert (attempt.outcome, attempt.error_code) == ("FAILED", "UNAUTHENTICATED")
+    run = db_session.scalar(select(CLIExecutionRun))
+    assert not list((tmp_path / "grok-home" / "sessions").glob(f"*/{run.id}"))
 
 
 def test_grok_build_runtime_rejects_hooks_before_writing_prompt_or_calling_image_tool(
