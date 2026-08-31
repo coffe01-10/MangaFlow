@@ -224,7 +224,9 @@ def test_reference_is_copied_without_exposing_source_name(cli_context):
     _png(source)
     run_id = _prepare(controller, ids, reference_files=(source,))
     request = json.loads(
-        (settings.storage_root / "cli_runs" / run_id / "input/request.json").read_text()
+        (settings.storage_root / "cli_runs" / run_id / "input/request.json").read_text(
+            encoding="utf-8"
+        )
     )
     name = request["reference_images"][0]
     assert name.startswith("input/references/") and "private-name" not in name
@@ -258,6 +260,8 @@ class ProbeAdapter:
     def _result(self, step, **metrics):
         if self.fail_at == step:
             return CLIProbeObservation(status="FAILED", error_code="FAILED", message=step)
+        if self.fail_at == f"unknown-{step}":
+            return CLIProbeObservation(status="UNKNOWN", message=f"unknown-{step}")
         return CLIProbeObservation(status="PASSED", metrics=metrics)
 
     def presence(self):
@@ -280,6 +284,7 @@ class ProbeAdapter:
         ("presence", "UNAVAILABLE"),
         ("login", "UNAUTHENTICATED"),
         ("capability", "UNSUPPORTED"),
+        ("unknown-version", "UNKNOWN"),
     ],
 )
 def test_probe_state_machine_persists_every_step(cli_context, fail_at, state):

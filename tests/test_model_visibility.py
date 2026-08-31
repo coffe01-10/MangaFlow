@@ -1,5 +1,7 @@
 from datetime import UTC, datetime
 
+from sqlalchemy import update
+
 from app.config import get_settings
 from app.models import AIModel, ProviderConnection, ProviderProfile
 from app.services.model_router import resolve_model
@@ -90,6 +92,31 @@ def test_single_visibility_patch_preserves_capability_metadata(client, db_sessio
     assert mixed_body["display_name"] == "手工名称"
     assert mixed_body["source"] == "MANUAL"
     assert mixed_body["confidence"] == "MANUAL"
+
+
+def test_single_visibility_patch_cannot_overwrite_concurrent_version(client, db_session):
+    connection = _connection(db_session)
+    model = _model(db_session, connection, "concurrent-visibility")
+
+    db_session.execute(
+        update(AIModel)
+        .where(AIModel.id == model.id)
+        .values(display_name="并发修改", version=2)
+        .execution_options(synchronize_session=False)
+    )
+    db_session.commit()
+
+    response = client.patch(
+        f"/api/v1/providers/models/{model.id}",
+        json={"display_enabled": False, "version": 1},
+    )
+
+    assert response.status_code == 409
+    db_session.expire_all()
+    current = db_session.get(AIModel, model.id)
+    assert current.display_name == "并发修改"
+    assert current.display_enabled is True
+    assert current.version == 2
 
 
 def test_connection_model_management_list_includes_visibility(client, db_session):

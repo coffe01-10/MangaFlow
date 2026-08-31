@@ -8,7 +8,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.config import Settings
@@ -454,9 +454,20 @@ def update_model(db: Session, model_id: str, payload: ProviderModelUpdate) -> AI
     if display_requested and display_enabled is None:
         raise HTTPException(status_code=422, detail="模型展示偏好不能为 null")
     if display_requested and not changes:
-        model.display_enabled = bool(display_enabled)
-        model.version += 1
+        result = db.execute(
+            update(AIModel)
+            .where(AIModel.id == model.id, AIModel.version == payload.version)
+            .values(
+                display_enabled=bool(display_enabled),
+                version=AIModel.version + 1,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="模型设置已更新，请刷新后重试")
         db.commit()
+        db.expire(model)
         db.refresh(model)
         return model
     connection = db.get(ProviderConnection, model.connection_id)
@@ -522,11 +533,33 @@ def set_model_visibility_bulk(
                 }
             )
             continue
-        with db.begin_nested():
-            model.display_enabled = payload.display_enabled
-            model.version += 1
-            db.flush()
+        result = db.execute(
+            update(AIModel)
+            .where(AIModel.id == model.id, AIModel.version == item.expected_version)
+            .values(
+                display_enabled=payload.display_enabled,
+                version=AIModel.version + 1,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            db.rollback()
+            db.expire(model)
+            db.refresh(model)
+            if model.display_enabled == payload.display_enabled:
+                updated.append({"model_id": model.id, "version": model.version})
+            else:
+                failed.append(
+                    {
+                        "model_id": item.model_id,
+                        "error_code": "VERSION_CONFLICT",
+                        "message": "模型设置已更新，请刷新后重试",
+                        "current_version": model.version,
+                    }
+                )
+            continue
         db.commit()
+        db.expire(model)
         db.refresh(model)
         updated.append({"model_id": model.id, "version": model.version})
 

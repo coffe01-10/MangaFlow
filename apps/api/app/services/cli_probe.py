@@ -76,7 +76,11 @@ def probe_cli_connection(
         ((kind, item) for kind, item in observations if item.status == "FAILED"),
         None,
     )
-    if failed is None:
+    unknown = next(
+        ((kind, item) for kind, item in observations if item.status == "UNKNOWN"),
+        None,
+    )
+    if failed is None and unknown is None:
         connection.health_state = "AVAILABLE"
         connection.error_code = None
         connection.message = "CLI 通道就绪"
@@ -88,14 +92,18 @@ def probe_cli_connection(
             }
         connection.last_success_at = datetime.now(UTC)
     else:
-        kind, item = failed
+        terminal_observation = failed if failed is not None else unknown
+        assert terminal_observation is not None
+        kind, item = terminal_observation
         connection.health_state = {
             "CLI_PRESENCE": "UNAVAILABLE",
             "CLI_LOGIN": "UNAUTHENTICATED",
             "CLI_CAPABILITY": "UNSUPPORTED",
-        }.get(kind, "UNAVAILABLE")
-        connection.error_code = item.error_code
-        connection.message = item.message
+        }.get(kind, "UNKNOWN") if failed is not None else "UNKNOWN"
+        connection.error_code = item.error_code or (
+            "CLI_PROBE_INCONCLUSIVE" if failed is None else None
+        )
+        connection.message = item.message or "CLI 探测结果不完整"
     connection.last_checked_at = datetime.now(UTC)
     if auto_commit:
         db.commit()
