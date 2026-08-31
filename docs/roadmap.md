@@ -68,7 +68,7 @@
 
 #### 下一实现窗口
 
-1. V02-14A / Issue #62 已由 PR #63 合并，V02-14B / Issue #64 已由 PR #65 合并。下一实现项是 V02-14C Grok Build；仍需独立 Issue/PR，不能把 Codex 或 Antigravity 的离线证据替代 Grok Build 实机验收。
+1. V02-14A / Issue #62 已由 PR #63 合并，V02-14B / Issue #64 已由 PR #65 合并。V02-14C / Issue #67 已在独立分支完成代码与离线验证，等待审阅和独立 PR；不能把 Codex 或 Antigravity 的证据替代 Grok Build 实机验收。
 2. 资产、分镜、导演、CLI、用量和桌面端均先从各自已批准的 A 级设计文档拆出实现 Issue；不得把审计文档的合并当作功能交付。
 3. 所有实现 Issue 必须引用对应契约，写明迁移/事务/资源所有权，并标注真实供应商、CLI、PostgreSQL、Redis/RQ、浏览器或桌面环境的 `RUN`、`NOT RUN`、`BLOCKED`。
 - [x] **V02-13（L3）：建立 CLI 图像通道公共执行器。** 将 Codex CLI、Antigravity CLI、Grok Build 视为可选执行通道，而不是假装成普通 HTTP API。
@@ -77,7 +77,7 @@
 - [ ] **V02-14A / V02-14B / V02-14C（每项 L3，依次实施）：分别接入 Codex CLI、Antigravity CLI、Grok Build。** 三个通道拆成独立 Issue/PR，共用 V02-13 契约，但不得在同一 PR 同时承担三个外部工具的生命周期风险。
   - [x] **V02-14A / Issue #62：Codex CLI。** 禁用态预设、四步只读探测、原生二进制解析、`codex exec` 图片生成/编辑映射、持久任务/审计绑定、参考图/输出校验和设置页能力门禁已由 PR #63 合并为 `ee8fb8e`。Windows 实机确认 `0.149.1` 的版本与安全参数解析通过，登录返回 `Not logged in`，因此连接保持不可用；真实图片生成/编辑、账号权限、费用、取消/超时进程树及 PostgreSQL 为 `NOT RUN`。
   - [x] **V02-14B / Issue #64：Antigravity CLI。** 禁用态 `CLI_ANTIGRAVITY` 预设、原生 `agy.exe` 四步只读探测、sandbox/JSON print 图片生成与单参考图编辑映射、run-owned 私有 HOME artifact 收养、统一审计/错误/清理和协议化设置页已由 PR #65 合并为 `575b4e0`。Windows 实机确认 `agy 1.1.22` 及安全参数可解析，只读 `models` 明确返回未登录。最终门禁为 511 项 Python、191 项 Vitest、供应商平权、Ruff、ESLint、TypeScript 与生产构建通过；真实生图/编辑、账号权限/费用、真实取消/超时进程树、PostgreSQL/Redis/RQ 和浏览器 E2E 为 `NOT RUN`。
-  - [ ] **V02-14C：Grok Build。** 尚未开始，必须独立 Issue/PR。
+  - [ ] **V02-14C / Issue #67：Grok Build（代码完成，待审阅合并）。** `CLI_GROK_BUILD` 禁用态预设、原生 `grok.exe` 四步只读探测、图片生成/最多五参考图编辑映射、typed session 图片收养、外部 hook 安全预检、公共审计/错误/清理和协议化设置页已实现为 `750886f`。Windows 实机确认 `grok 1.0.13`；登录为 `UNAUTHENTICATED`，当前全局插件 hooks 令能力门禁返回 `UNSUPPORTED`，因此未调用图片工具。有效门禁为 525 项 Python、192 项 Vitest、供应商平权、Ruff、ESLint、TypeScript 与生产构建通过；真实生图/编辑、账号权限/费用、真实取消/超时进程树、PostgreSQL/Redis/RQ 和浏览器 E2E 为 `NOT RUN`。完成状态须等精确 SHA 审阅并合并后勾选。
 - [ ] **V02-15（L3 数据、L2 UI）：扩展模型调用账本。**
   - [x] **V02-15A / Issue #49（设计）：** 已合并 `docs/v02-usage-ledger-contract.md`，冻结 attempt/输出二阶段挂接、幂等、价格区间、对账来源与多数据库约束。
   - [ ] **V02-15B（实现）：** 实现迁移、写入/查询/对账 API 和 SQLite/PostgreSQL 验收；缺少计量时必须保留 `unknown`。
