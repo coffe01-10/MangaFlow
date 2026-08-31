@@ -1,8 +1,8 @@
 # MangaFlow 主分支后续工作清单
 
 更新时间：2026-08-31
-当前实现合并树：`master` / `e918b28`（PR #61，2026-08-31）。V02-10B/D、V02-11B、V02-12B/C、V02-13B 与 V02-10C 的代码/SQLite 切片已经实现并经组长复审；其余 A 级交付仍仅代表设计、审计、能力矩阵或验收计划完成，不能据此宣称功能已经实现。Windows 环境完整 `npm run check` 已通过；真实 PostgreSQL/Redis/RQ、真实供应商/CLI、浏览器 E2E/性能及桌面安装边界仍按各任务标记为 `NOT RUN`。
-当前开发分支：`codex/v02-14a-codex-cli` / Issue #62。Codex CLI 实现与离线验收已完成，等待独立 PR 审阅合并；不得把该分支状态写成 `master` 已交付。
+当前实现合并树：`master` / `575b4e0`（PR #65，2026-08-31）。V02-14A Codex CLI 与 V02-14B Antigravity CLI 已分别完成独立审阅并合并；真实图片生成/编辑、账号权限、费用、PostgreSQL/Redis/RQ、浏览器 E2E 与真实取消/超时进程树等边界仍按任务标记为 `NOT RUN`。
+当前无开发中分支。下一项为 V02-14C Grok Build，必须新建独立 Issue/分支/PR，不复用 V02-14A/B 的任务边界。
 最近 `check:full` 历史基线：`master` / `cb324e3`（2026-08-27；相对 PR #5 合并提交 `d5d32ec` 仅增加任务文档），不代表 PR #6 / #7 / #10 / #11 已重跑浏览器验收。
 深审历史基线：`master` / `f085327`。当时新增 6 项 P1 修复与 1 项 P2 改进；PR #6 已合并其中 P1-7、P1-9～P1-12 的代码修复。P1-8、P2-8 已随 PR #7 合并，独立 Redis/RQ、PostgreSQL 与浏览器验收仍待完成。
 安全审查历史基线：`master` / `7635cf7`。P0-3、P1-13～P1-15、P2-4、P2-9 的代码修复现已合并，真实服务/容器及完整依赖审计边界仍保留。
@@ -68,15 +68,15 @@
 
 #### 下一实现窗口
 
-1. V02-14A / Issue #62 已完成 Codex CLI 实现、离线回归和 Windows 只读版本/参数探测，当前等待独立 PR 审阅合并；本机 CLI 未登录，真实生图/编辑与费用仍为 `NOT RUN`。V02-14B/C 继续保持独立 Issue/PR，不提前混入本分支。
+1. V02-14A / Issue #62 已由 PR #63 合并，V02-14B / Issue #64 已由 PR #65 合并。下一实现项是 V02-14C Grok Build；仍需独立 Issue/PR，不能把 Codex 或 Antigravity 的离线证据替代 Grok Build 实机验收。
 2. 资产、分镜、导演、CLI、用量和桌面端均先从各自已批准的 A 级设计文档拆出实现 Issue；不得把审计文档的合并当作功能交付。
 3. 所有实现 Issue 必须引用对应契约，写明迁移/事务/资源所有权，并标注真实供应商、CLI、PostgreSQL、Redis/RQ、浏览器或桌面环境的 `RUN`、`NOT RUN`、`BLOCKED`。
 - [x] **V02-13（L3）：建立 CLI 图像通道公共执行器。** 将 Codex CLI、Antigravity CLI、Grok Build 视为可选执行通道，而不是假装成普通 HTTP API。
   - [x] **V02-13A / Issue #53（设计）：** 已合并 `docs/v02-cli-executor-contract.md`，冻结能力探测、版本记录、工作目录约定、结构化 I/O、超时/取消、进程树、输出归属、脱敏日志和失败恢复；未运行任何真实 CLI。
   - [x] **V02-13B（实现）：** 已实现公共 controller、`CLIExecutionRun` 迁移、硬并发槽位、结构化 I/O、输出归属/脱敏/清理/恢复、四步探测和 Windows Job Object runner。真实 CLI、Windows 实机进程树与 PostgreSQL 标记 `NOT RUN`。
 - [ ] **V02-14A / V02-14B / V02-14C（每项 L3，依次实施）：分别接入 Codex CLI、Antigravity CLI、Grok Build。** 三个通道拆成独立 Issue/PR，共用 V02-13 契约，但不得在同一 PR 同时承担三个外部工具的生命周期风险。
-  - [ ] **V02-14A / Issue #62：Codex CLI。** 实现分支已增加禁用态预设、四步只读探测、原生二进制解析、`codex exec` 图片生成/编辑映射、持久任务/审计绑定、参考图/输出校验和设置页能力门禁。Windows 实机确认 `0.149.1` 的版本与安全参数解析通过，登录返回 `Not logged in`，因此连接保持不可用；真实图片生成/编辑、账号权限、费用、取消/超时进程树及 PostgreSQL 为 `NOT RUN`。等待 PR 审阅合并后勾选。
-  - [ ] **V02-14B：Antigravity CLI。** 尚未开始，必须独立 Issue/PR。
+  - [x] **V02-14A / Issue #62：Codex CLI。** 禁用态预设、四步只读探测、原生二进制解析、`codex exec` 图片生成/编辑映射、持久任务/审计绑定、参考图/输出校验和设置页能力门禁已由 PR #63 合并为 `ee8fb8e`。Windows 实机确认 `0.149.1` 的版本与安全参数解析通过，登录返回 `Not logged in`，因此连接保持不可用；真实图片生成/编辑、账号权限、费用、取消/超时进程树及 PostgreSQL 为 `NOT RUN`。
+  - [x] **V02-14B / Issue #64：Antigravity CLI。** 禁用态 `CLI_ANTIGRAVITY` 预设、原生 `agy.exe` 四步只读探测、sandbox/JSON print 图片生成与单参考图编辑映射、run-owned 私有 HOME artifact 收养、统一审计/错误/清理和协议化设置页已由 PR #65 合并为 `575b4e0`。Windows 实机确认 `agy 1.1.22` 及安全参数可解析，只读 `models` 明确返回未登录。最终门禁为 511 项 Python、191 项 Vitest、供应商平权、Ruff、ESLint、TypeScript 与生产构建通过；真实生图/编辑、账号权限/费用、真实取消/超时进程树、PostgreSQL/Redis/RQ 和浏览器 E2E 为 `NOT RUN`。
   - [ ] **V02-14C：Grok Build。** 尚未开始，必须独立 Issue/PR。
 - [ ] **V02-15（L3 数据、L2 UI）：扩展模型调用账本。**
   - [x] **V02-15A / Issue #49（设计）：** 已合并 `docs/v02-usage-ledger-contract.md`，冻结 attempt/输出二阶段挂接、幂等、价格区间、对账来源与多数据库约束。

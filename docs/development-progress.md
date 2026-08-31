@@ -4,12 +4,21 @@
 
 本文件记录修订版 MVP 计划的实际完成度。
 
-## V02-14A Codex CLI 已实现，等待审阅合并（2026-08-31）
+## V02-14B Antigravity CLI 已审阅合并（2026-08-31）
+
+- Issue #64 / `codex/v02-14b-antigravity-cli` 已接入 `CLI_ANTIGRAVITY`：内置连接和 `antigravity-imagegen` 声明模型默认不可调度，四步只读探测成功后仍需用户显式启用；设置页按协议保存 `agy` 或绝对原生路径，不执行 wrapper、安装、更新、登录、退出或付费冒烟。
+- 图片生成和单参考图编辑复用公共 controller 与 Windows Job Object runner。固定 argv 使用 sandbox、禁用 slash 扩展、受控 input 目录、JSON print 和 CLI/进程双重超时；用户 prompt 只进入校验和保护的 request。每次 run 使用私有 HOME，只从受控 Antigravity brain artifact 树采用唯一图片，拒绝链接/junction、越界、歧义、过量、坏格式和超限输出。
+- Windows 实机只读确认原生 Google 签名 `agy.exe 1.1.22` 及 `--sandbox`、`--disable-slash-commands`、`--add-dir`、`--output-format`、`--json-schema`、`--print-timeout`、`--print` 参数。`agy models` 明确返回未登录，因此未发起任何模型或图片调用，连接按设计保持 `UNAUTHENTICATED`。
+- 最终完整 `npm run check` 通过：供应商平权、ESLint、Ruff、511 项 Python 通过、24 项真实集成跳过、191 项 Vitest 通过，TypeScript 与 Next.js 生产构建成功。真实图片生成/编辑、账号权限与费用、真实取消/超时进程树、PostgreSQL、Redis/RQ 和浏览器 E2E 为 `NOT RUN`；未读取或复制凭据，未产生供应商费用。
+- 精确实现提交 `93f8006` 已由 PR #65 合并为 `575b4e0`，Issue #64 自动关闭；本地 `master` 与 `origin/master` 已同步。所有登记 worktree 均干净且无未合并领先提交，未强制同步或删除历史 worktree。
+
+## V02-14A Codex CLI 已审阅合并（2026-08-31）
 
 - Issue #62 / `codex/v02-14a-codex-cli` 已接入 `CLI_CODEX`：内置连接默认禁用，四步探测成功后仍需用户显式启用；设置页可保存 `codex` 或绝对原生路径，但不安装 CLI、不登录账号，也不从设置页发起付费图片冒烟。
 - Codex 图片生成/编辑复用 V02-13 公共 controller 与 Windows Job Object runner。用户提示词只进入校验和保护的结构化 request，不进入 argv；参考图和结果使用受控相对路径，调用绑定持久化 `GenerationJob` / `ModelCallAttempt`，失败不回退 HTTP，费用保持 unknown。
 - 主审用真实 Codex CLI 发现并修复全局参数误放在 `exec` 后的退出码 2 缺陷；随后以 Job Object 只读探测确认 `codex-cli 0.149.1`、版本和安全自动化参数解析通过。CLI 登录状态真实返回 `Not logged in`，连接按设计派生为 `UNAUTHENTICATED`，探测目录已清理。
 - 完整 `npm run check` 通过：供应商平权、ESLint、Ruff、488 项 Python 通过、24 项真实集成跳过、190 项 Vitest 通过，TypeScript 与 Next.js 生产构建成功。真实图片生成/编辑、账号权限/费用、取消或超时的真实子孙进程终止、PostgreSQL、Redis/RQ 和浏览器 E2E 为 `NOT RUN`；未读取凭据内容，未产生供应商费用。
+- 修复后的精确实现提交 `2cd3c77` 已由 PR #63 合并为 `ee8fb8e`；Issue #62 已关闭，V02-14A 已进入 `master`。
 
 ## PR #61 已复审并合并（2026-08-31）
 
