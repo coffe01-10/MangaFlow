@@ -26,6 +26,10 @@ from app.model_adapters.google import (
     GoogleRuntime,
     GoogleTextAdapter,
 )
+from app.model_adapters.grok_build_cli import (
+    GrokBuildCLIImageAdapter,
+    GrokBuildCLIRuntime,
+)
 from app.model_adapters.vertex import VertexImageAdapter, VertexTextAdapter
 from app.models import AIModel, ProviderConnection, ProviderKey, ProviderProfile, RoutingPolicy
 from app.services.credential_crypto import SelectedProviderKey, select_provider_key
@@ -201,6 +205,19 @@ def bind_adapter(
             session_factory=SessionLocal,
         )
         adapter = AntigravityCLIImageAdapter(runtime)
+    elif connection.protocol == "CLI_GROK_BUILD":
+        config = connection.nonsecret_config or {}
+        executable = str(config.get("cli_executable") or "grok")
+        runtime = GrokBuildCLIRuntime(
+            settings=settings,
+            connection_id=connection.id,
+            catalog_model_id=model.id,
+            provider_model_id=model.provider_model_id,
+            executable=executable,
+            capabilities=model.capabilities or {},
+            session_factory=SessionLocal,
+        )
+        adapter = GrokBuildCLIImageAdapter(runtime)
     else:
         settings_key = select_provider_key(db, settings, connection.id)
         if connection.protocol == "GOOGLE_NATIVE":

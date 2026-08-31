@@ -4,6 +4,14 @@
 
 本文件记录修订版 MVP 计划的实际完成度。
 
+## V02-14C Grok Build CLI 代码完成待审阅（2026-08-31）
+
+- Issue #67 / PR #68 / `codex/v02-14c-grok-build` 已实现 `CLI_GROK_BUILD`：内置连接和 `grok-build-imagine` 声明模型默认不可调度，设置页保存 `grok` 或原生绝对路径，不显示 API Key，也不安装、更新、登录、退出或从设置页发起付费冒烟。
+- 图片生成和最多五张参考图编辑复用公共 controller 与 Windows Job Object runner。每个 run 以审计 ID 绑定 Grok session，只向子进程开放匹配的 `image_gen` 或 `image_edit`；提示词留在 run-owned 文件，streaming JSON 仅采用当前 session 的唯一 typed 图片，完成路径、链接、会话、格式、像素、大小和清理复验，失败不回退 HTTP。
+- 针对 Grok Build 会加载外部配置的边界，workspace 使用私有 Git 标记阻断项目指令发现，连接能力探测与每次图片执行前都检查 `inspect --json`；发现任何外部 hook 或无法确认状态时，在图片工具调用前返回 `UNSUPPORTED`，原始 inspect/streaming 输出不落盘。
+- Windows 实机只读确认原生 `grok.exe 1.0.13`。本机登录检查返回 `UNAUTHENTICATED`，并检测到全局插件 hooks，安全能力检查按设计返回 `UNSUPPORTED`；因此没有执行真实图片生成/编辑，没有读取或复制凭据，也没有产生供应商费用。
+- 精确实现提交为 `750886f`，首轮 review 修复提交为 `b7ac5e4`：预检与媒体进程现在共享一个截止时间，非零退出、超时、取消和无效输出均执行 run-owned Grok session 清理，清理失败以脱敏诊断传播且不误删其他 session。完整 `npm run check` 一次通过：Ruff、ESLint、供应商平权、527 项 Pytest、192 项 Vitest、TypeScript 与 Next.js 生产构建成功，24 项真实集成按环境跳过。真实图片调用、账号等级/费用、真实取消/超时进程树、PostgreSQL、Redis/RQ 和浏览器 E2E 为 `NOT RUN`。PR #68 尚未合并，V02-14C 保持未勾选。
+
 ## V02-14B Antigravity CLI 已审阅合并（2026-08-31）
 
 - Issue #64 / `codex/v02-14b-antigravity-cli` 已接入 `CLI_ANTIGRAVITY`：内置连接和 `antigravity-imagegen` 声明模型默认不可调度，四步只读探测成功后仍需用户显式启用；设置页按协议保存 `agy` 或绝对原生路径，不执行 wrapper、安装、更新、登录、退出或付费冒烟。

@@ -2,7 +2,7 @@
 
 ## 协议与预设
 
-目录当前声明 `OPENAI`、`ANTHROPIC`、`GOOGLE_NATIVE`、`VERTEX_NATIVE`、`CLI_CODEX` 和 `CLI_ANTIGRAVITY` 六种传输协议。用户可创建前两类兼容连接；原生 HTTP 协议与两个 CLI 通道由内置预设提供。OpenAI 协议支持模型列表、Chat Completions、Responses、图片生成和图片编辑端点模板；Anthropic 协议支持 Messages 文本与多模态请求；两个 CLI 协议只声明图片生成/编辑，不伪装成 HTTP API。协议只决定传输、凭据形态和能力声明，不决定产品排序、默认选择或路由优先级。
+目录当前声明 `OPENAI`、`ANTHROPIC`、`GOOGLE_NATIVE`、`VERTEX_NATIVE`、`CLI_CODEX`、`CLI_ANTIGRAVITY` 和 `CLI_GROK_BUILD` 七种传输协议。用户可创建前两类兼容连接；原生 HTTP 协议与三个 CLI 通道由内置预设提供。OpenAI 协议支持模型列表、Chat Completions、Responses、图片生成和图片编辑端点模板；Anthropic 协议支持 Messages 文本与多模态请求；三个 CLI 协议只声明图片生成/编辑，不伪装成 HTTP API。协议只决定传输、凭据形态和能力声明，不决定产品排序、默认选择或路由优先级。
 
 系统预置多种官方与兼容连接。预设只提供非敏感 URL、端点与声明能力；未录入凭据时不会发送请求，新预设模型以 `DECLARED` 进入目录，必须经过对应操作的冒烟验证后才可参与自动路由。第三方聚合网关标记为 `THIRD_PARTY`。设置页按用户筛选与名称展示目录，不给任何预设固定置顶或默认模型。
 
@@ -24,7 +24,7 @@ API Key 使用 AES-256-GCM 加密写入 `provider_keys`。设置页只显示标�
 
 所有连接共用 `GET /providers/connections/{id}/health` 与 `POST /providers/connections/{id}/verify`。`CREDENTIALS` 只验证环境凭据或 API Key/目录访问，不生成文字或图片；`MODEL_SMOKE` 必须绑定目录模型，结果同时更新连接健康和 `model_probes`。每次图片冒烟只执行一种操作，并要求显式费用确认。旧 `/settings/vertex/status|verify` 在过渡期内部转发统一验证服务；产品前端不再调用该入口，已无人使用的 `/models/vertex/*` 别名已经移除。旧 `ProviderHealth` 表只为这一单版本兼容入口保留，不再作为产品状态事实来源。
 
-`CLI_SESSION` 表示登录态由外部 CLI 管理。应用不显示密钥表单、不读取或复制会话 token，也不安装 CLI、不代用户登录；presence/version/login/capability 四步探测分别写入 `ModelProbe`，连接据此派生为 `AVAILABLE`、`UNAVAILABLE`、`UNAUTHENTICATED` 或 `UNSUPPORTED`。只有 `AVAILABLE` 且由用户启用的 CLI 连接可调用，探测不会替用户启停连接。设置页按协议只接受 `codex`、`agy` 或对应原生可执行文件的绝对路径；路径变化会把健康状态重置为 `UNKNOWN`，必须重新探测。
+`CLI_SESSION` 表示登录态由外部 CLI 管理。应用不显示密钥表单、不读取或复制会话 token，也不安装 CLI、不代用户登录；presence/version/login/capability 四步探测分别写入 `ModelProbe`，连接据此派生为 `AVAILABLE`、`UNAVAILABLE`、`UNAUTHENTICATED` 或 `UNSUPPORTED`。只有 `AVAILABLE` 且由用户启用的 CLI 连接可调用，探测不会替用户启停连接。设置页按协议只接受 `codex`、`agy`、`grok` 或对应原生可执行文件的绝对路径；路径变化会把健康状态重置为 `UNKNOWN`，必须重新探测。
 
 ### Codex CLI 图片通道
 
@@ -37,6 +37,12 @@ API Key 使用 AES-256-GCM 加密写入 `provider_keys`。设置页只显示标�
 内置 `antigravity-cli` 连接默认禁用，目录种子 `antigravity-imagegen` 以 `DECLARED` 声明图片生成、图片编辑和最多 1 张参考图，费用保持 `CLI_EXTERNAL / UNKNOWN`。应用只解析 PATH 或用户配置绝对路径中的原生 `agy.exe`，不执行 IDE wrapper、`.cmd`、安装、更新、登录或退出命令。
 
 运行使用 `--sandbox`、`--disable-slash-commands`、受控 `--add-dir`、JSON print 与双重超时；用户 prompt 和参考图只进入公共结构化 request。每次 run 把 Antigravity HOME 指向 workspace 下的私有目录，保留系统安全钥匙串发现能力但不继承全量环境，也不读取用户设置或凭据内容。适配器先验证官方 JSON envelope，再仅扫描私有 `~/.gemini/antigravity-cli/brain`；目录遍历拒绝链接、junction、越界和过量条目，只采用唯一合法图片并归一化为公共 `result.json`。权限软拒绝、未登录、额度、坏 JSON 和歧义产物分别映射为统一错误，均不回退 HTTP。真实图片调用和费用默认门禁不执行。
+
+### Grok Build CLI 图片通道
+
+内置 `grok-build-cli` 连接默认禁用，目录种子 `grok-build-imagine` 以 `DECLARED` 声明图片生成、图片编辑和最多 5 张参考图，费用保持 `CLI_EXTERNAL / UNKNOWN`。应用只解析 PATH 或用户配置绝对路径中的原生 `grok.exe`，不执行 shell wrapper、安装、更新、登录或退出命令，也不把 `XAI_API_KEY` 传入子进程。
+
+每个 run 使用公共审计 ID 作为 Grok session ID，提示词写入 run-owned 文件而不进入 argv。workspace 内的私有 `.git` 边界阻断 MangaFlow 项目级指令发现；连接能力探测和每次执行都通过 `inspect --json` 检查外部 hooks，发现 hooks 或无法确认检查结果时，在图片工具调用前以 `UNSUPPORTED` 失败。通过预检后只开放当前操作对应的 `image_gen` 或 `image_edit`，禁用子代理和网页搜索并拒绝 MCP 工具；预检与媒体进程共享同一任务截止时间，媒体进程只获得剩余预算。适配器只接受 streaming JSON 中唯一的匹配工具调用，以及 `GROK_HOME/sessions/<workspace>/<run-id>/images/1.jpg` 的 typed 输出；路径、链接、会话归属、格式、像素和大小全部验证后才写入公共 `result.json`。成功、非零退出、超时、取消和无效输出都会在有界命名空间内查找精确 run ID，并只清理归属已复验的 Grok session；清理失败写入脱敏诊断且不掩盖原错误。原始 streaming 输出不落盘，只保存校验和与脱敏摘要；失败不回退 HTTP。真实图片调用、账号等级和费用默认门禁不执行。
 
 连接验证与目录同步是两个独立动作，避免一次点击重复请求模型列表。旧 `/connections/{id}/test` 仍兼容现有客户端，但内部使用统一验证服务。探测记录保存在 `model_probes`，连接和模型同步保存最近成功时间与中位延迟。
 

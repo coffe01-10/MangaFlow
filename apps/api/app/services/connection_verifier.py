@@ -20,6 +20,7 @@ from app.model_adapters.base import (
     StructuredRequest,
 )
 from app.model_adapters.codex_cli import CodexCLIProbeAdapter
+from app.model_adapters.grok_build_cli import GrokBuildCLIProbeAdapter
 from app.models import AIModel, ModelProbe, ProviderConnection, ProviderKey
 from app.provider_schemas import ConnectionVerifyRequest
 from app.services.cli_probe import probe_cli_connection
@@ -132,6 +133,7 @@ def _verify_credentials(
         cli_probes = {
             "CLI_CODEX": (CodexCLIProbeAdapter, "codex"),
             "CLI_ANTIGRAVITY": (AntigravityCLIProbeAdapter, "agy"),
+            "CLI_GROK_BUILD": (GrokBuildCLIProbeAdapter, "grok"),
         }
         probe_definition = cli_probes.get(connection.protocol)
         if probe_definition is None:
