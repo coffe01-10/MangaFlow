@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from time import perf_counter
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -316,6 +317,9 @@ def update_connection(
     if connection.version != payload.version:
         raise HTTPException(status_code=409, detail="连接设置已更新，请刷新后重试")
     changes = payload.model_dump(exclude_unset=True, exclude={"version"})
+    previous_cli_executable = str(
+        (connection.nonsecret_config or {}).get("cli_executable") or "codex"
+    )
     if changes.get("base_url"):
         changes["base_url"] = _validate_base_url_syntax(changes["base_url"])
     if changes.get("extra_headers") is not None:
@@ -328,6 +332,33 @@ def update_connection(
         changes["balance_config"] = _validate_balance_config(
             changes["balance_config"]
         )
+    if (
+        changes.get("nonsecret_config") is not None
+        and connection_credential_source(connection) == CLI_SESSION
+    ):
+        config = dict(changes["nonsecret_config"])
+        executable = config.get("cli_executable", "codex")
+        if (
+            not isinstance(executable, str)
+            or not executable.strip()
+            or len(executable) > 500
+            or "\0" in executable
+        ):
+            raise HTTPException(status_code=422, detail="CLI 可执行文件配置无效")
+        executable = executable.strip()
+        if executable.casefold() != "codex" and not Path(executable).is_absolute():
+            raise HTTPException(
+                status_code=422,
+                detail="CLI 可执行文件必须是 codex 或绝对路径",
+            )
+        config["cli_executable"] = executable
+        changes["nonsecret_config"] = config
+    cli_executable_changed = (
+        connection_credential_source(connection) == CLI_SESSION
+        and changes.get("nonsecret_config") is not None
+        and str(changes["nonsecret_config"].get("cli_executable") or "codex")
+        != previous_cli_executable
+    )
     if "enabled" in changes:
         source_config = changes.get("nonsecret_config", connection.nonsecret_config)
         nonsecret_config = dict(source_config or {})
@@ -338,6 +369,10 @@ def update_connection(
             connection.nonsecret_config = nonsecret_config
     for key, value in changes.items():
         setattr(connection, key, value)
+    if cli_executable_changed:
+        connection.health_state = "UNKNOWN"
+        connection.error_code = None
+        connection.message = "Codex CLI 路径已更改，等待重新探测"
     connection.version += 1
     db.commit()
     db.refresh(connection)

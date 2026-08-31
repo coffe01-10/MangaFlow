@@ -55,6 +55,8 @@ class CLIExecutionRequest:
     prompt: str
     parameters: dict = field(default_factory=dict)
     reference_files: tuple[Path, ...] = ()
+    reference_payloads: tuple[bytes, ...] = ()
+    reference_mime_types: tuple[str, ...] = ()
     output_images: tuple[str, ...] = ("output/images/out_001.png",)
     max_images: int = 1
 
@@ -110,6 +112,13 @@ class CLIExecutionController:
         run_directory = self._create_directory(run_id)
         try:
             references = self._copy_references(run_directory, request.reference_files)
+            references.extend(
+                self._copy_reference_payloads(
+                    run_directory,
+                    request.reference_payloads,
+                    request.reference_mime_types,
+                )
+            )
             payload = {
                 "schema_version": 1,
                 "operation": request.operation,
@@ -151,6 +160,32 @@ class CLIExecutionController:
                 _make_inputs_writable(run_directory)
                 shutil.rmtree(run_directory)
             raise
+
+    def request_manifest(self, run_id: str) -> dict:
+        """Return the immutable, checksum-verified request for adapter argv mapping."""
+
+        row = self._load(run_id)
+        run_directory, _journal = self._validate_directory(row)
+        request_path = run_directory / "input" / "request.json"
+        _reject_link(request_path)
+        try:
+            encoded = request_path.read_bytes()
+            payload = json.loads(encoded)
+        except (OSError, json.JSONDecodeError) as error:
+            raise ProviderAdapterError("CONFIGURATION", "CLI 结构化请求无法读取") from error
+        if hashlib.sha256(encoded).hexdigest() != row.request_checksum:
+            raise ProviderAdapterError("CONFIGURATION", "CLI 结构化请求已被修改")
+        if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+            raise ProviderAdapterError("CONFIGURATION", "CLI 结构化请求 schema 无效")
+        return payload
+
+    def fail_prepared(self, run_id: str, error: ProviderAdapterError) -> None:
+        """Close a prepared run when adapter-specific argv mapping cannot continue."""
+
+        self._finish_failure(run_id, error, None)
+        cleanup_error = self._cleanup(run_id, retain=error.code in _RETAIN)
+        if cleanup_error:
+            error.add_note(f"CLI run cleanup failed: {type(cleanup_error).__name__}")
 
     def execute(
         self,
@@ -310,6 +345,44 @@ class CLIExecutionController:
             names.append(name)
         return names
 
+    def _copy_reference_payloads(
+        self,
+        run_directory: Path,
+        payloads: tuple[bytes, ...],
+        mime_types: tuple[str, ...],
+    ) -> list[str]:
+        if mime_types and len(mime_types) != len(payloads):
+            raise ProviderAdapterError("CONFIGURATION", "CLI 参考图类型数量不匹配")
+        names: list[str] = []
+        for index, payload in enumerate(payloads):
+            if not payload or len(payload) > self.settings.max_upload_bytes:
+                raise ProviderAdapterError("CONFIGURATION", "CLI 参考图大小无效")
+            digest = hashlib.sha256(payload).hexdigest()
+            pending = run_directory / "input" / "references" / f"{digest}.image"
+            _write_bytes(pending, payload)
+            try:
+                _width, _height, detected_mime, suffix = inspect_upload_image(
+                    pending,
+                    max_pixels=self.settings.max_image_pixels,
+                    max_side=self.settings.max_image_side,
+                )
+            except ValueError as error:
+                pending.unlink(missing_ok=True)
+                raise ProviderAdapterError("CONFIGURATION", str(error)) from error
+            expected_mime = mime_types[index] if mime_types else None
+            if expected_mime and expected_mime != detected_mime:
+                pending.unlink(missing_ok=True)
+                raise ProviderAdapterError("CONFIGURATION", "CLI 参考图类型与内容不一致")
+            relative = f"input/references/{digest}{suffix}"
+            target = run_directory / relative
+            if target.exists():
+                pending.unlink()
+            else:
+                pending.replace(target)
+                target.chmod(stat.S_IREAD)
+            names.append(relative)
+        return names
+
     def _claim(self, **values) -> None:
         last_error: IntegrityError | None = None
         for slot in range(1, self.settings.cli_channel_max_concurrency + 1):
@@ -402,17 +475,7 @@ class CLIExecutionController:
         _write_json(run_directory / "journal.json", journal)
 
     def _environment(self, workspace: Path, allowed: tuple[str, ...]) -> dict[str, str]:
-        protected = {"PYTHONHOME", "PYTHONPATH"}
-        if any(name.upper() in protected for name in allowed):
-            raise ProviderAdapterError("CONFIGURATION", "CLI 环境白名单包含受保护变量")
-        names = {"PATH", "SYSTEMROOT", "WINDIR", *allowed}
-        environment = {
-            name: os.environ[name]
-            for name in names
-            if name in os.environ and name.upper() not in protected
-        }
-        environment.update(TEMP=str(workspace), TMP=str(workspace))
-        return environment
+        return build_cli_environment(workspace, allowed)
 
     def _diagnostics(
         self, run_directory: Path, outcome: CLIProcessOutcome, encoding: str
@@ -600,6 +663,10 @@ def _validate_request(request: CLIExecutionRequest) -> None:
         raise ProviderAdapterError("CONFIGURATION", "CLI 操作类型不受支持")
     if not request.prompt.strip():
         raise ProviderAdapterError("CONFIGURATION", "CLI 图片提示词不能为空")
+    if request.reference_files and request.reference_payloads:
+        raise ProviderAdapterError("CONFIGURATION", "CLI 参考图来源不能混用")
+    if request.reference_mime_types and not request.reference_payloads:
+        raise ProviderAdapterError("CONFIGURATION", "CLI 参考图类型缺少对应内容")
     if not 1 <= request.max_images <= 4:
         raise ProviderAdapterError("CONFIGURATION", "CLI 输出图片数量不受支持")
     if not request.output_images or len(request.output_images) > request.max_images:
@@ -613,6 +680,22 @@ def _validate_request(request: CLIExecutionRequest) -> None:
             or path.parts[:2] != ("output", "images")
         ):
             raise ProviderAdapterError("CONFIGURATION", "CLI 输出清单路径无效")
+
+
+def build_cli_environment(workspace: Path, allowed: tuple[str, ...]) -> dict[str, str]:
+    """Build the explicit environment shared by run and read-only probe processes."""
+
+    protected = {"PYTHONHOME", "PYTHONPATH"}
+    if any(name.upper() in protected for name in allowed):
+        raise ProviderAdapterError("CONFIGURATION", "CLI 环境白名单包含受保护变量")
+    names = {"PATH", "SYSTEMROOT", "WINDIR", *allowed}
+    environment = {
+        name: os.environ[name]
+        for name in names
+        if name in os.environ and name.upper() not in protected
+    }
+    environment.update(TEMP=str(workspace), TMP=str(workspace))
+    return environment
 
 
 def _validate_argv(argv: tuple[str, ...]) -> None:

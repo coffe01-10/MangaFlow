@@ -330,6 +330,78 @@ describe("ProviderManagement 错误展示", () => {
     expect(mapHealth("UNSUPPORTED")).toBe("不支持图片生成");
   });
 
+  it("V02-14A 未就绪 Codex CLI 仍可只读探测，图片冒烟仅在任务中验证", async () => {
+    providersApi.mockResolvedValue([makeProvider({
+      preset_key: "codex-cli",
+      name: "Codex CLI",
+      connections: [makeConnection({
+        protocol: "CLI_CODEX",
+        base_url: "cli://codex",
+        credential_source: "CLI_SESSION",
+        health_state: "UNKNOWN",
+        configured: false,
+        credential_writable: false,
+        supports_model_discovery: false,
+        nonsecret_config: { cli_executable: "codex" },
+        keys: [],
+        key_count: 0,
+      })],
+    })]);
+    providerModelsApi.mockResolvedValue([makeProviderModel({
+      provider_model_id: "codex-imagegen",
+      display_name: "Codex CLI ImageGen",
+      model_type: "IMAGE",
+      input_modalities: ["TEXT", "IMAGE"],
+      output_modalities: ["IMAGE"],
+      operations: ["image_generate", "image_edit"],
+      confidence: "DECLARED",
+    })]);
+    verifyConnection.mockResolvedValue({
+      health: {
+        connection_id: "conn-1",
+        configured: true,
+        credential_source: "CLI_SESSION",
+        supports_model_discovery: false,
+        supports_balance: false,
+        supported_model_types: ["IMAGE"],
+        health_state: "AVAILABLE",
+        last_checked_at: new Date().toISOString(),
+        last_success_at: new Date().toISOString(),
+        latency_ms: 5,
+        error_code: null,
+        message: "CLI 通道就绪",
+      },
+      probe: {
+        id: "probe-cli",
+        connection_id: "conn-1",
+        model_id: null,
+        probe_type: "CLI_CAPABILITY",
+        status: "PASSED",
+        latency_ms: 5,
+        metrics: { operations: ["image_generate", "image_edit"] },
+        error_code: null,
+        message: "Codex CLI 图片生成与编辑入口可用",
+        created_at: new Date().toISOString(),
+      },
+    });
+
+    renderPlatform();
+    fireEvent.click(await screen.findByRole("button", { name: /未配置/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /Codex CLI/ }));
+    const probe = await screen.findByRole("button", { name: "测试连接" });
+    expect(probe).toBeEnabled();
+    fireEvent.click(probe);
+    await waitFor(() => {
+      expect(verifyConnection).toHaveBeenCalledWith("conn-1", { level: "CREDENTIALS" });
+    });
+    expect(await screen.findByText(/CLI 探测完成/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "任务中验证" })).toBeDisabled();
+    expect(screen.queryByLabelText("上游模型 ID")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "连接与端点" }));
+    expect(screen.getByLabelText("Codex CLI 可执行文件")).toHaveValue("codex");
+    expect(screen.queryByLabelText("Base URL")).not.toBeInTheDocument();
+  });
+
   it("连接启停携带版本并调用统一更新接口", async () => {
     updateConnection.mockResolvedValueOnce(makeConnection({ enabled: false, version: 2 }));
     renderPlatform();

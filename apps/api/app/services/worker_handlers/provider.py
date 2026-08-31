@@ -175,6 +175,18 @@ def _invoke_provider(db, binding: AdapterBinding, callback):
             _ensure_job_not_cancelled(db, current)
     attempt_id = _begin_or_fail(_audit_meta(db, binding))
     try:
+        bind_context = getattr(binding.adapter, "bind_execution_context", None)
+        if callable(bind_context):
+            if not job_id or not attempt_id:
+                raise ProviderAdapterError(
+                    "AUDIT_PERSISTENCE_FAILED",
+                    "CLI 图片调用必须绑定持久化任务与审计行",
+                )
+            bind_context(
+                job_id=job_id,
+                model_call_attempt_id=attempt_id,
+                lease_owner=db.info.get("job_lease_owner"),
+            )
         result = callback(binding.adapter)
     except ProviderAdapterError as error:
         _finalize_or_fail(

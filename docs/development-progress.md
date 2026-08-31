@@ -4,6 +4,13 @@
 
 本文件记录修订版 MVP 计划的实际完成度。
 
+## V02-14A Codex CLI 已实现，等待审阅合并（2026-08-31）
+
+- Issue #62 / `codex/v02-14a-codex-cli` 已接入 `CLI_CODEX`：内置连接默认禁用，四步探测成功后仍需用户显式启用；设置页可保存 `codex` 或绝对原生路径，但不安装 CLI、不登录账号，也不从设置页发起付费图片冒烟。
+- Codex 图片生成/编辑复用 V02-13 公共 controller 与 Windows Job Object runner。用户提示词只进入校验和保护的结构化 request，不进入 argv；参考图和结果使用受控相对路径，调用绑定持久化 `GenerationJob` / `ModelCallAttempt`，失败不回退 HTTP，费用保持 unknown。
+- 主审用真实 Codex CLI 发现并修复全局参数误放在 `exec` 后的退出码 2 缺陷；随后以 Job Object 只读探测确认 `codex-cli 0.149.1`、版本和安全自动化参数解析通过。CLI 登录状态真实返回 `Not logged in`，连接按设计派生为 `UNAUTHENTICATED`，探测目录已清理。
+- 完整 `npm run check` 通过：供应商平权、ESLint、Ruff、488 项 Python 通过、24 项真实集成跳过、190 项 Vitest 通过，TypeScript 与 Next.js 生产构建成功。真实图片生成/编辑、账号权限/费用、取消或超时的真实子孙进程终止、PostgreSQL、Redis/RQ 和浏览器 E2E 为 `NOT RUN`；未读取凭据内容，未产生供应商费用。
+
 ## PR #61 已复审并合并（2026-08-31）
 
 - PR #61 的 V02-10B/C/D、V02-11B/C 测试切片、V02-12B/C 与 V02-13B 实现已由组长按最终 SHA `75460a0` 复审，并以 `e918b28` 合并到 `master`。
