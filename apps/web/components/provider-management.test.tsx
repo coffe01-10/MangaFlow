@@ -395,11 +395,54 @@ describe("ProviderManagement 错误展示", () => {
       expect(verifyConnection).toHaveBeenCalledWith("conn-1", { level: "CREDENTIALS" });
     });
     expect(await screen.findByText(/CLI 探测完成/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "任务中验证" })).toBeDisabled();
+    expect(
+      await screen.findByRole("button", { name: "任务中验证" }),
+    ).toBeDisabled();
     expect(screen.queryByLabelText("上游模型 ID")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "连接与端点" }));
     expect(screen.getByLabelText("Codex CLI 可执行文件")).toHaveValue("codex");
     expect(screen.queryByLabelText("Base URL")).not.toBeInTheDocument();
+  });
+
+  it("V02-14B Antigravity CLI 使用 agy 原生命令并复用只读探测入口", async () => {
+    providersApi.mockResolvedValue([makeProvider({
+      preset_key: "antigravity-cli",
+      name: "Antigravity CLI",
+      connections: [makeConnection({
+        protocol: "CLI_ANTIGRAVITY",
+        base_url: "cli://antigravity",
+        credential_source: "CLI_SESSION",
+        health_state: "UNKNOWN",
+        configured: false,
+        credential_writable: false,
+        supports_model_discovery: false,
+        nonsecret_config: { cli_executable: "agy" },
+        keys: [],
+        key_count: 0,
+      })],
+    })]);
+    providerModelsApi.mockResolvedValue([makeProviderModel({
+      provider_model_id: "antigravity-imagegen",
+      display_name: "Antigravity CLI ImageGen",
+      model_type: "IMAGE",
+      input_modalities: ["TEXT", "IMAGE"],
+      output_modalities: ["IMAGE"],
+      operations: ["image_generate", "image_edit"],
+      confidence: "DECLARED",
+    })]);
+
+    renderPlatform();
+    fireEvent.click(await screen.findByRole("button", { name: /未配置/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /Antigravity CLI/ }));
+    expect(await screen.findByRole("button", { name: "测试连接" })).toBeEnabled();
+    expect(
+      await screen.findByRole("button", { name: "任务中验证" }),
+    ).toBeDisabled();
+    expect(screen.queryByLabelText("API Key")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "连接与端点" }));
+    expect(screen.getByLabelText("Antigravity CLI 可执行文件")).toHaveValue("agy");
+    expect(screen.getByPlaceholderText("agy 或绝对路径")).toBeInTheDocument();
+    expect(screen.getByText(/应用不会安装 CLI，也不会代你登录/)).toBeInTheDocument();
   });
 
   it("连接启停携带版本并调用统一更新接口", async () => {

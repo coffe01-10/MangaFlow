@@ -11,6 +11,7 @@ from app.services.credential_source import (
     CLI_SESSION,
     ENV_SERVICE_ACCOUNT,
     credential_source_for_protocol,
+    default_cli_executable_for_protocol,
 )
 
 OPENAI_ENDPOINTS = {
@@ -92,6 +93,13 @@ PRESETS: tuple[ProviderPreset, ...] = (
         protocol="CLI_CODEX",
         base_url="cli://codex",
         documentation_url="https://developers.openai.com/codex/cli",
+    ),
+    ProviderPreset(
+        key="antigravity-cli",
+        name="Antigravity CLI",
+        protocol="CLI_ANTIGRAVITY",
+        base_url="cli://antigravity",
+        documentation_url="https://antigravity.google/docs/cli/headless/",
     ),
     ProviderPreset(
         key="anthropic",
@@ -337,7 +345,9 @@ def ensure_provider_presets(
             if credential_source == ENV_SERVICE_ACCOUNT and not environment_credentials_ready:
                 nonsecret_config["auto_enable_pending"] = True
             if credential_source == CLI_SESSION:
-                nonsecret_config["cli_executable"] = "codex"
+                nonsecret_config["cli_executable"] = default_cli_executable_for_protocol(
+                    preset.protocol
+                )
             connection = ProviderConnection(
                 provider_id=profile.id,
                 name="默认连接",
@@ -357,7 +367,7 @@ def ensure_provider_presets(
                     else "UNCONFIGURED"
                 ),
                 message=(
-                    "等待 Codex CLI 探测"
+                    "等待 CLI 探测"
                     if credential_source == CLI_SESSION
                     else "等待配置与验证"
                 ),
@@ -375,6 +385,7 @@ def ensure_provider_presets(
     if created_vertex_profile and provider_catalog_empty:
         _ensure_vertex_models(db, settings)
     _ensure_codex_cli_model(db)
+    _ensure_antigravity_cli_model(db)
     db.flush()
     if auto_commit:
         db.commit()
@@ -526,6 +537,49 @@ def _ensure_codex_cli_model(db: Session) -> None:
             capabilities={
                 "resolutions": ["1K"],
                 "max_reference_images": 5,
+                "cost_source": "CLI_EXTERNAL",
+            },
+            pricing={"mode": "UNKNOWN"},
+            source="PRESET",
+            confidence="DECLARED",
+            enabled=True,
+            priority=50,
+        )
+    )
+
+
+def _ensure_antigravity_cli_model(db: Session) -> None:
+    profile = db.scalar(
+        select(ProviderProfile).where(ProviderProfile.preset_key == "antigravity-cli")
+    )
+    if profile is None:
+        return
+    connection = db.scalar(
+        select(ProviderConnection).where(ProviderConnection.provider_id == profile.id)
+    )
+    if connection is None:
+        return
+    existing = db.scalar(
+        select(AIModel).where(
+            AIModel.connection_id == connection.id,
+            AIModel.provider_model_id == "antigravity-imagegen",
+        )
+    )
+    if existing is not None:
+        return
+    db.add(
+        AIModel(
+            connection_id=connection.id,
+            provider_model_id="antigravity-imagegen",
+            display_name="Antigravity CLI ImageGen",
+            model_type="IMAGE",
+            input_modalities=["TEXT", "IMAGE"],
+            output_modalities=["IMAGE"],
+            operations=["image_generate", "image_edit"],
+            api_surfaces=["ANTIGRAVITY_HEADLESS_GENERATE_IMAGE"],
+            capabilities={
+                "resolutions": ["1K"],
+                "max_reference_images": 1,
                 "cost_source": "CLI_EXTERNAL",
             },
             pricing={"mode": "UNKNOWN"},

@@ -8,6 +8,12 @@ import { useEffect, useRef, useState } from "react";
 import { mapOptimisticConflict } from "./provider-copy";
 import { validateJsonRecord } from "./provider-json";
 
+function cliDisplay(connection: ProviderConnection) {
+  return connection.protocol === "CLI_ANTIGRAVITY"
+    ? { name: "Antigravity CLI", command: "agy" }
+    : { name: "Codex CLI", command: "codex" };
+}
+
 export function ConnectionAdvanced({
   connection,
   busy,
@@ -16,6 +22,7 @@ export function ConnectionAdvanced({
   busy: boolean;
 }) {
   const queryClient = useQueryClient();
+  const cli = cliDisplay(connection);
   const [open, setOpen] = useState(false);
   const [baseUrl, setBaseUrl] = useState(connection.base_url);
   const [responses, setResponses] = useState(connection.use_responses_api);
@@ -27,7 +34,7 @@ export function ConnectionAdvanced({
   );
   const [status, setStatus] = useState("");
   const [cliExecutable, setCliExecutable] = useState(
-    String(connection.nonsecret_config.cli_executable ?? "codex"),
+    String(connection.nonsecret_config.cli_executable ?? cli.command),
   );
   const isCLI = connection.credential_source === "CLI_SESSION";
   const panelId = `connection-advanced-${connection.id}`;
@@ -70,7 +77,7 @@ export function ConnectionAdvanced({
       },
     }),
     onSuccess: (saved) => {
-      setCliExecutable(String(saved.nonsecret_config.cli_executable ?? "codex"));
+      setCliExecutable(String(saved.nonsecret_config.cli_executable ?? cli.command));
       setStatus("CLI 路径已保存，请重新探测");
       queryClient.invalidateQueries({ queryKey: ["providers"] });
     },
@@ -86,7 +93,7 @@ export function ConnectionAdvanced({
     setResponses(connection.use_responses_api);
     setEndpointText(JSON.stringify(connection.endpoint_templates, null, 2));
     setHeaderText(JSON.stringify(connection.extra_headers, null, 2));
-    setCliExecutable(String(connection.nonsecret_config.cli_executable ?? "codex"));
+    setCliExecutable(String(connection.nonsecret_config.cli_executable ?? cli.command));
     saveConnection.reset();
     saveCLI.reset();
     queryClient.invalidateQueries({ queryKey: ["providers"] });
@@ -108,17 +115,17 @@ export function ConnectionAdvanced({
           {isCLI ? (
             <>
               <label>
-                <span>Codex CLI 可执行文件</span>
+                <span>{cli.name} 可执行文件</span>
                 <input
                   ref={baseUrlRef}
-                  aria-label="Codex CLI 可执行文件"
+                  aria-label={`${cli.name} 可执行文件`}
                   value={cliExecutable}
                   onChange={(event) => setCliExecutable(event.target.value)}
-                  placeholder="codex 或绝对路径"
+                  placeholder={`${cli.command} 或绝对路径`}
                 />
               </label>
               <p className="provider-field-hint">
-                只接受命令名 codex 或绝对路径；应用不会安装 CLI，也不会代你登录。
+                只接受命令名 {cli.command} 或绝对路径；应用不会安装 CLI，也不会代你登录。
               </p>
               <button
                 type="button"

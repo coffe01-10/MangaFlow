@@ -164,6 +164,7 @@ storage/cli_runs/{run_id}/
 ```
 
 - **业务数据只从 `result.json` 解析**；stdout/stderr 是诊断日志，不承载业务语义（防 CLI 混入 ANSI/进度文本）。
+- 若供应商官方 headless 接口只在 stdout 返回有界的机器 JSON，供应商适配器可先严格解析该 transport envelope，并在进入公共 controller 结果读取前归一化写入 `result.json`；普通文本 stdout/stderr 仍只作诊断，公共 controller 仍只信任 `result.json` 和已登记输出。
 
 ### 6.3 stdout/stderr 编码与日志脱敏
 

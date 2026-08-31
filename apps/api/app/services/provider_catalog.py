@@ -48,6 +48,7 @@ from app.services.credential_source import (
     ENV_SERVICE_ACCOUNT,
     connection_credential_source,
     connection_protocol_capabilities,
+    default_cli_executable_for_protocol,
     environment_credentials_ready,
 )
 from app.services.provider_presets import (
@@ -317,8 +318,10 @@ def update_connection(
     if connection.version != payload.version:
         raise HTTPException(status_code=409, detail="连接设置已更新，请刷新后重试")
     changes = payload.model_dump(exclude_unset=True, exclude={"version"})
+    default_cli_executable = default_cli_executable_for_protocol(connection.protocol)
     previous_cli_executable = str(
-        (connection.nonsecret_config or {}).get("cli_executable") or "codex"
+        (connection.nonsecret_config or {}).get("cli_executable")
+        or default_cli_executable
     )
     if changes.get("base_url"):
         changes["base_url"] = _validate_base_url_syntax(changes["base_url"])
@@ -337,7 +340,7 @@ def update_connection(
         and connection_credential_source(connection) == CLI_SESSION
     ):
         config = dict(changes["nonsecret_config"])
-        executable = config.get("cli_executable", "codex")
+        executable = config.get("cli_executable", default_cli_executable)
         if (
             not isinstance(executable, str)
             or not executable.strip()
@@ -346,17 +349,25 @@ def update_connection(
         ):
             raise HTTPException(status_code=422, detail="CLI 可执行文件配置无效")
         executable = executable.strip()
-        if executable.casefold() != "codex" and not Path(executable).is_absolute():
+        if (
+            executable.casefold() != default_cli_executable
+            and not Path(executable).is_absolute()
+        ):
             raise HTTPException(
                 status_code=422,
-                detail="CLI 可执行文件必须是 codex 或绝对路径",
+                detail=(
+                    f"CLI 可执行文件必须是 {default_cli_executable} 或绝对路径"
+                ),
             )
         config["cli_executable"] = executable
         changes["nonsecret_config"] = config
     cli_executable_changed = (
         connection_credential_source(connection) == CLI_SESSION
         and changes.get("nonsecret_config") is not None
-        and str(changes["nonsecret_config"].get("cli_executable") or "codex")
+        and str(
+            changes["nonsecret_config"].get("cli_executable")
+            or default_cli_executable
+        )
         != previous_cli_executable
     )
     if "enabled" in changes:
@@ -372,7 +383,7 @@ def update_connection(
     if cli_executable_changed:
         connection.health_state = "UNKNOWN"
         connection.error_code = None
-        connection.message = "Codex CLI 路径已更改，等待重新探测"
+        connection.message = "CLI 路径已更改，等待重新探测"
     connection.version += 1
     db.commit()
     db.refresh(connection)
