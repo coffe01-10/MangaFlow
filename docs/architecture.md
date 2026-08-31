@@ -110,12 +110,13 @@ Worker 启动统一经过 `apps/api/run_worker.py` / `app.worker`，与 API 共�
 | `VERTEX_NATIVE` | 服务端环境账号 | 不支持 | 文字、图片 |
 | `CLI_CODEX` | 外部 CLI 会话 | 不支持 | 图片 |
 | `CLI_ANTIGRAVITY` | 外部 CLI 会话 | 不支持 | 图片 |
+| `CLI_GROK_BUILD` | 外部 CLI 会话 | 不支持 | 图片 |
 
 旧逻辑别名仍可用，但只作为历史解析入口；新任务记录目录模型 ID。新项目和工作流不预选任何供应商模型：文字任务使用 `auto`，图片任务要求显式选择目录模型。连接凭据验证不生成内容，模型冒烟结果写入统一连接健康与 `ModelProbe`。模型发现只在协议能力声明允许时出现，不支持发现的连接使用预设或手动目录。自动路由只使用已完成能力测试的模型。模型错误统一归类为认证、权限、配额、限流、模型不可用、能力不支持、内容安全、超时、无效输出或上游错误。
 
 旧 `ProviderHealth` 仅为 `/settings/vertex/*` 单版本兼容端点保留并由统一连接健康桥接；产品前端不读取它。删除兼容端点时可连同该表及桥接服务一并迁移移除，当前阶段不提前破坏旧客户端。
 
-可选 CLI 图像通道走独立外部进程边界，不伪装成 HTTP API。公共 controller 按 run 建立受控目录、结构化请求/结果和输出清单，并关联 `ModelCallAttempt`；Windows runner 在子进程执行前将其加入 kill-on-close Job Object，取消和超时终止整棵进程树。数据库唯一槽位限制每连接并发，恢复仅在 controller 与 Job Object 均确认停止后释放；公共层不会静默切换到 HTTP 通道。Codex 适配器只执行原生 `codex.exe`，把用户 prompt 留在校验和保护的 request 文件而非 argv，以 `workspace-write`、无审批、临时会话及忽略用户配置的 `codex exec` 调用 `$imagegen`。Antigravity 适配器只执行原生 `agy.exe`，使用 sandbox、禁用 slash 扩展、限时 JSON print 模式和 run-owned 私有 HOME；官方 JSON envelope 由适配器归一化为公共 `result.json`，只从该私有 HOME 的 artifact 树采用唯一且通过链接、路径、数量、格式、像素和大小校验的图片。两个通道的设置页都只做只读登录/版本/参数能力探测，付费图片验证必须复用真实任务和审计链。
+可选 CLI 图像通道走独立外部进程边界，不伪装成 HTTP API。公共 controller 按 run 建立受控目录、结构化请求/结果和输出清单，并关联 `ModelCallAttempt`；Windows runner 在子进程执行前将其加入 kill-on-close Job Object，取消和超时终止整棵进程树。数据库唯一槽位限制每连接并发，恢复仅在 controller 与 Job Object 均确认停止后释放；公共层不会静默切换到 HTTP 通道。Codex 适配器只执行原生 `codex.exe`，把用户 prompt 留在校验和保护的 request 文件而非 argv，以 `workspace-write`、无审批、临时会话及忽略用户配置的 `codex exec` 调用 `$imagegen`。Antigravity 适配器只执行原生 `agy.exe`，使用 sandbox、禁用 slash 扩展、限时 JSON print 模式和 run-owned 私有 HOME；官方 JSON envelope 由适配器归一化为公共 `result.json`，只从该私有 HOME 的 artifact 树采用唯一且通过链接、路径、数量、格式、像素和大小校验的图片。Grok Build 适配器只执行原生 `grok.exe`，用私有 Git 边界阻断项目级指令发现，并在每次图片调用前读取 `inspect --json`；发现任何外部 hook 或无法确认安全状态时，在付费工具调用前拒绝执行。通过预检后只开放与操作匹配的 `image_gen` 或 `image_edit`，采用当前 run 的唯一 typed session 图片并清理该会话目录。三个通道的设置页都只做只读登录、版本和参数能力探测，付费图片验证必须复用真实任务和审计链。
 
 ## 8. 安全与可观测性
 

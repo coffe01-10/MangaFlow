@@ -105,6 +105,7 @@ def test_presets_seed_default_provider_catalog(client):
         "vertex-ai",
         "codex-cli",
         "antigravity-cli",
+        "grok-build-cli",
         "openai",
         "anthropic",
         "deepseek",
@@ -124,6 +125,7 @@ def test_presets_seed_default_provider_catalog(client):
             "GOOGLE_NATIVE",
             "CLI_CODEX",
             "CLI_ANTIGRAVITY",
+            "CLI_GROK_BUILD",
         }
         for provider in providers
         for connection in provider["connections"]

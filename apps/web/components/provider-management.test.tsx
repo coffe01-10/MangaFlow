@@ -445,6 +445,44 @@ describe("ProviderManagement 错误展示", () => {
     expect(screen.getByText(/应用不会安装 CLI，也不会代你登录/)).toBeInTheDocument();
   });
 
+  it("V02-14C Grok Build CLI 使用 grok 原生命令且不显示密钥表单", async () => {
+    providersApi.mockResolvedValue([makeProvider({
+      preset_key: "grok-build-cli",
+      name: "Grok Build CLI",
+      connections: [makeConnection({
+        protocol: "CLI_GROK_BUILD",
+        base_url: "cli://grok-build",
+        credential_source: "CLI_SESSION",
+        health_state: "UNKNOWN",
+        configured: false,
+        credential_writable: false,
+        supports_model_discovery: false,
+        nonsecret_config: { cli_executable: "grok" },
+        keys: [],
+        key_count: 0,
+      })],
+    })]);
+    providerModelsApi.mockResolvedValue([makeProviderModel({
+      provider_model_id: "grok-build-imagine",
+      display_name: "Grok Build Imagine",
+      model_type: "IMAGE",
+      input_modalities: ["TEXT", "IMAGE"],
+      output_modalities: ["IMAGE"],
+      operations: ["image_generate", "image_edit"],
+      confidence: "DECLARED",
+    })]);
+
+    renderPlatform();
+    fireEvent.click(await screen.findByRole("button", { name: /未配置/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /Grok Build CLI/ }));
+    expect(await screen.findByRole("button", { name: "测试连接" })).toBeEnabled();
+    expect(await screen.findByRole("button", { name: "任务中验证" })).toBeDisabled();
+    expect(screen.queryByLabelText("API Key")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "连接与端点" }));
+    expect(screen.getByLabelText("Grok Build CLI 可执行文件")).toHaveValue("grok");
+    expect(screen.getByPlaceholderText("grok 或绝对路径")).toBeInTheDocument();
+  });
+
   it("连接启停携带版本并调用统一更新接口", async () => {
     updateConnection.mockResolvedValueOnce(makeConnection({ enabled: false, version: 2 }));
     renderPlatform();

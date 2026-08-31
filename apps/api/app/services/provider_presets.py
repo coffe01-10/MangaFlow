@@ -102,6 +102,13 @@ PRESETS: tuple[ProviderPreset, ...] = (
         documentation_url="https://antigravity.google/docs/cli/headless/",
     ),
     ProviderPreset(
+        key="grok-build-cli",
+        name="Grok Build CLI",
+        protocol="CLI_GROK_BUILD",
+        base_url="cli://grok-build",
+        documentation_url="https://docs.x.ai/build/overview",
+    ),
+    ProviderPreset(
         key="anthropic",
         name="Anthropic",
         protocol="ANTHROPIC",
@@ -386,6 +393,7 @@ def ensure_provider_presets(
         _ensure_vertex_models(db, settings)
     _ensure_codex_cli_model(db)
     _ensure_antigravity_cli_model(db)
+    _ensure_grok_build_cli_model(db)
     db.flush()
     if auto_commit:
         db.commit()
@@ -580,6 +588,49 @@ def _ensure_antigravity_cli_model(db: Session) -> None:
             capabilities={
                 "resolutions": ["1K"],
                 "max_reference_images": 1,
+                "cost_source": "CLI_EXTERNAL",
+            },
+            pricing={"mode": "UNKNOWN"},
+            source="PRESET",
+            confidence="DECLARED",
+            enabled=True,
+            priority=50,
+        )
+    )
+
+
+def _ensure_grok_build_cli_model(db: Session) -> None:
+    profile = db.scalar(
+        select(ProviderProfile).where(ProviderProfile.preset_key == "grok-build-cli")
+    )
+    if profile is None:
+        return
+    connection = db.scalar(
+        select(ProviderConnection).where(ProviderConnection.provider_id == profile.id)
+    )
+    if connection is None:
+        return
+    existing = db.scalar(
+        select(AIModel).where(
+            AIModel.connection_id == connection.id,
+            AIModel.provider_model_id == "grok-build-imagine",
+        )
+    )
+    if existing is not None:
+        return
+    db.add(
+        AIModel(
+            connection_id=connection.id,
+            provider_model_id="grok-build-imagine",
+            display_name="Grok Build Imagine",
+            model_type="IMAGE",
+            input_modalities=["TEXT", "IMAGE"],
+            output_modalities=["IMAGE"],
+            operations=["image_generate", "image_edit"],
+            api_surfaces=["GROK_BUILD_MEDIA_TOOLS"],
+            capabilities={
+                "resolutions": ["1K"],
+                "max_reference_images": 5,
                 "cost_source": "CLI_EXTERNAL",
             },
             pricing={"mode": "UNKNOWN"},

@@ -28,6 +28,7 @@ _ENV_SERVICE_ACCOUNT_PROTOCOLS: Final[frozenset[str]] = frozenset({"VERTEX_NATIV
 _CLI_DEFAULT_EXECUTABLES: Final[dict[str, str]] = {
     "CLI_ANTIGRAVITY": "agy",
     "CLI_CODEX": "codex",
+    "CLI_GROK_BUILD": "grok",
 }
 
 

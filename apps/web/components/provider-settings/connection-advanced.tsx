@@ -9,9 +9,13 @@ import { mapOptimisticConflict } from "./provider-copy";
 import { validateJsonRecord } from "./provider-json";
 
 function cliDisplay(connection: ProviderConnection) {
-  return connection.protocol === "CLI_ANTIGRAVITY"
-    ? { name: "Antigravity CLI", command: "agy" }
-    : { name: "Codex CLI", command: "codex" };
+  if (connection.protocol === "CLI_ANTIGRAVITY") {
+    return { name: "Antigravity CLI", command: "agy" };
+  }
+  if (connection.protocol === "CLI_GROK_BUILD") {
+    return { name: "Grok Build CLI", command: "grok" };
+  }
+  return { name: "Codex CLI", command: "codex" };
 }
 
 export function ConnectionAdvanced({
