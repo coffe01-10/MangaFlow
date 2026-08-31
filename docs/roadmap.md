@@ -2,7 +2,7 @@
 
 更新时间：2026-08-31
 当前实现合并树：`master` / `575b4e0`（PR #65，2026-08-31）。V02-14A Codex CLI 与 V02-14B Antigravity CLI 已分别完成独立审阅并合并；真实图片生成/编辑、账号权限、费用、PostgreSQL/Redis/RQ、浏览器 E2E 与真实取消/超时进程树等边界仍按任务标记为 `NOT RUN`。
-当前无开发中分支。下一项为 V02-14C Grok Build，必须新建独立 Issue/分支/PR，不复用 V02-14A/B 的任务边界。
+当前开发中分支为 `codex/v02-14c-grok-build`，Issue #67 / PR #68 已完成首轮 review 修复，等待合并。合并后的下一实现项为 V02-15B。
 最近 `check:full` 历史基线：`master` / `cb324e3`（2026-08-27；相对 PR #5 合并提交 `d5d32ec` 仅增加任务文档），不代表 PR #6 / #7 / #10 / #11 已重跑浏览器验收。
 深审历史基线：`master` / `f085327`。当时新增 6 项 P1 修复与 1 项 P2 改进；PR #6 已合并其中 P1-7、P1-9～P1-12 的代码修复。P1-8、P2-8 已随 PR #7 合并，独立 Redis/RQ、PostgreSQL 与浏览器验收仍待完成。
 安全审查历史基线：`master` / `7635cf7`。P0-3、P1-13～P1-15、P2-4、P2-9 的代码修复现已合并，真实服务/容器及完整依赖审计边界仍保留。
@@ -77,7 +77,7 @@
 - [ ] **V02-14A / V02-14B / V02-14C（每项 L3，依次实施）：分别接入 Codex CLI、Antigravity CLI、Grok Build。** 三个通道拆成独立 Issue/PR，共用 V02-13 契约，但不得在同一 PR 同时承担三个外部工具的生命周期风险。
   - [x] **V02-14A / Issue #62：Codex CLI。** 禁用态预设、四步只读探测、原生二进制解析、`codex exec` 图片生成/编辑映射、持久任务/审计绑定、参考图/输出校验和设置页能力门禁已由 PR #63 合并为 `ee8fb8e`。Windows 实机确认 `0.149.1` 的版本与安全参数解析通过，登录返回 `Not logged in`，因此连接保持不可用；真实图片生成/编辑、账号权限、费用、取消/超时进程树及 PostgreSQL 为 `NOT RUN`。
   - [x] **V02-14B / Issue #64：Antigravity CLI。** 禁用态 `CLI_ANTIGRAVITY` 预设、原生 `agy.exe` 四步只读探测、sandbox/JSON print 图片生成与单参考图编辑映射、run-owned 私有 HOME artifact 收养、统一审计/错误/清理和协议化设置页已由 PR #65 合并为 `575b4e0`。Windows 实机确认 `agy 1.1.22` 及安全参数可解析，只读 `models` 明确返回未登录。最终门禁为 511 项 Python、191 项 Vitest、供应商平权、Ruff、ESLint、TypeScript 与生产构建通过；真实生图/编辑、账号权限/费用、真实取消/超时进程树、PostgreSQL/Redis/RQ 和浏览器 E2E 为 `NOT RUN`。
-  - [ ] **V02-14C / Issue #67 / PR #68：Grok Build（代码完成，待审阅合并）。** `CLI_GROK_BUILD` 禁用态预设、原生 `grok.exe` 四步只读探测、图片生成/最多五参考图编辑映射、typed session 图片收养、外部 hook 安全预检、公共审计/错误/清理和协议化设置页已实现为 `750886f`。Windows 实机确认 `grok 1.0.13`；登录为 `UNAUTHENTICATED`，当前全局插件 hooks 令能力门禁返回 `UNSUPPORTED`，因此未调用图片工具。有效门禁为 525 项 Python、192 项 Vitest、供应商平权、Ruff、ESLint、TypeScript 与生产构建通过；真实生图/编辑、账号权限/费用、真实取消/超时进程树、PostgreSQL/Redis/RQ 和浏览器 E2E 为 `NOT RUN`。完成状态须等精确 SHA 审阅并合并后勾选。
+  - [ ] **V02-14C / Issue #67 / PR #68：Grok Build（代码完成，待合并）。** `CLI_GROK_BUILD` 禁用态预设、原生 `grok.exe` 四步只读探测、图片生成/最多五参考图编辑映射、typed session 图片收养、外部 hook 安全预检、公共审计/错误/清理和协议化设置页已实现为 `750886f`，首轮 review 的共享超时预算与失败 session 清理修复为 `b7ac5e4`。Windows 实机确认 `grok 1.0.13`；登录为 `UNAUTHENTICATED`，当前全局插件 hooks 令能力门禁返回 `UNSUPPORTED`，因此未调用图片工具。最终门禁为 527 项 Python、192 项 Vitest、供应商平权、Ruff、ESLint、TypeScript 与生产构建通过；24 项真实集成按环境跳过，真实生图/编辑、账号权限/费用、真实取消/超时进程树、PostgreSQL/Redis/RQ 和浏览器 E2E 为 `NOT RUN`。完成状态须等精确 SHA 合并后勾选。
 - [ ] **V02-15（L3 数据、L2 UI）：扩展模型调用账本。**
   - [x] **V02-15A / Issue #49（设计）：** 已合并 `docs/v02-usage-ledger-contract.md`，冻结 attempt/输出二阶段挂接、幂等、价格区间、对账来源与多数据库约束。
   - [ ] **V02-15B（实现）：** 实现迁移、写入/查询/对账 API 和 SQLite/PostgreSQL 验收；缺少计量时必须保留 `unknown`。

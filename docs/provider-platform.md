@@ -42,7 +42,7 @@ API Key 使用 AES-256-GCM 加密写入 `provider_keys`。设置页只显示标�
 
 内置 `grok-build-cli` 连接默认禁用，目录种子 `grok-build-imagine` 以 `DECLARED` 声明图片生成、图片编辑和最多 5 张参考图，费用保持 `CLI_EXTERNAL / UNKNOWN`。应用只解析 PATH 或用户配置绝对路径中的原生 `grok.exe`，不执行 shell wrapper、安装、更新、登录或退出命令，也不把 `XAI_API_KEY` 传入子进程。
 
-每个 run 使用公共审计 ID 作为 Grok session ID，提示词写入 run-owned 文件而不进入 argv。workspace 内的私有 `.git` 边界阻断 MangaFlow 项目级指令发现；连接能力探测和每次执行都通过 `inspect --json` 检查外部 hooks，发现 hooks 或无法确认检查结果时，在图片工具调用前以 `UNSUPPORTED` 失败。通过预检后只开放当前操作对应的 `image_gen` 或 `image_edit`，禁用子代理和网页搜索并拒绝 MCP 工具。适配器只接受 streaming JSON 中唯一的匹配工具调用，以及 `GROK_HOME/sessions/<workspace>/<run-id>/images/1.jpg` 的 typed 输出；路径、链接、会话归属、格式、像素和大小全部验证后才写入公共 `result.json`，随后仅清理当前 run 的 Grok session。原始 streaming 输出不落盘，只保存校验和与脱敏摘要；失败不回退 HTTP。真实图片调用、账号等级和费用默认门禁不执行。
+每个 run 使用公共审计 ID 作为 Grok session ID，提示词写入 run-owned 文件而不进入 argv。workspace 内的私有 `.git` 边界阻断 MangaFlow 项目级指令发现；连接能力探测和每次执行都通过 `inspect --json` 检查外部 hooks，发现 hooks 或无法确认检查结果时，在图片工具调用前以 `UNSUPPORTED` 失败。通过预检后只开放当前操作对应的 `image_gen` 或 `image_edit`，禁用子代理和网页搜索并拒绝 MCP 工具；预检与媒体进程共享同一任务截止时间，媒体进程只获得剩余预算。适配器只接受 streaming JSON 中唯一的匹配工具调用，以及 `GROK_HOME/sessions/<workspace>/<run-id>/images/1.jpg` 的 typed 输出；路径、链接、会话归属、格式、像素和大小全部验证后才写入公共 `result.json`。成功、非零退出、超时、取消和无效输出都会在有界命名空间内查找精确 run ID，并只清理归属已复验的 Grok session；清理失败写入脱敏诊断且不掩盖原错误。原始 streaming 输出不落盘，只保存校验和与脱敏摘要；失败不回退 HTTP。真实图片调用、账号等级和费用默认门禁不执行。
 
 连接验证与目录同步是两个独立动作，避免一次点击重复请求模型列表。旧 `/connections/{id}/test` 仍兼容现有客户端，但内部使用统一验证服务。探测记录保存在 `model_probes`，连接和模型同步保存最近成功时间与中位延迟。
 
