@@ -32,6 +32,7 @@ from app.schemas import (
     ProjectUpdate,
 )
 from app.services.credential_source import (
+    CLI_SESSION,
     ENV_SERVICE_ACCOUNT,
     credential_source_for_protocol,
     environment_credentials_ready,
@@ -92,14 +93,18 @@ def _ai_overview(db: Session) -> DashboardAIOverview:
         .outerjoin(ProviderKey, ProviderKey.connection_id == ProviderConnection.id)
         .group_by(ProviderConnection.id)
     ).all()
-    healthy = sum(state == "HEALTHY" for _, state, _ in connections)
+    healthy = sum(state in {"HEALTHY", "AVAILABLE"} for _, state, _ in connections)
     configured = sum(
         bool(has_enabled_key)
         or (
             credential_source_for_protocol(protocol) == ENV_SERVICE_ACCOUNT
             and environment_credentials_ready(settings, protocol)
         )
-        for protocol, _, has_enabled_key in connections
+        or (
+            credential_source_for_protocol(protocol) == CLI_SESSION
+            and state == "AVAILABLE"
+        )
+        for protocol, state, has_enabled_key in connections
     )
     return DashboardAIOverview(
         enabled_model_count=enabled_model_count,

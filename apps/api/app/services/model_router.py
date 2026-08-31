@@ -24,6 +24,7 @@ from app.model_adapters.vertex import VertexImageAdapter, VertexTextAdapter
 from app.models import AIModel, ProviderConnection, ProviderKey, ProviderProfile, RoutingPolicy
 from app.services.credential_crypto import SelectedProviderKey, select_provider_key
 from app.services.credential_source import (
+    CLI_SESSION,
     ENV_SERVICE_ACCOUNT,
     connection_credential_source,
     environment_credentials_ready,
@@ -251,7 +252,15 @@ def _require_available_credentials(
     *,
     explicit: bool,
 ) -> None:
-    if connection_credential_source(resolved.connection) == ENV_SERVICE_ACCOUNT:
+    credential_source = connection_credential_source(resolved.connection)
+    if credential_source == CLI_SESSION:
+        if resolved.connection.health_state != "AVAILABLE":
+            raise HTTPException(
+                status_code=409,
+                detail="CLI 通道尚未通过安装、登录与能力探测",
+            )
+        return
+    if credential_source == ENV_SERVICE_ACCOUNT:
         if not environment_credentials_ready(settings, resolved.connection.protocol):
             raise HTTPException(
                 status_code=409,

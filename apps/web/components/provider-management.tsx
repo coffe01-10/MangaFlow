@@ -167,7 +167,7 @@ export function ProviderManagement() {
         createOpen={createOpen}
         onToggleCreate={() => setCreateOpen((current) => !current)}
       />
-      <p className="provider-toolbar-hint">可添加兼容连接；账号型连接由服务端环境管理凭据，Key 型连接在各自连接卡内录入。</p>
+      <p className="provider-toolbar-hint">可添加兼容连接；账号型凭据由服务端环境管理，CLI 登录由外部工具管理，Key 型连接在各自连接卡内录入。</p>
       <ProviderCreateForm
         open={createOpen}
         onCreated={(provider) => {

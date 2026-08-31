@@ -24,6 +24,8 @@ API Key 使用 AES-256-GCM 加密写入 `provider_keys`。设置页只显示标�
 
 所有连接共用 `GET /providers/connections/{id}/health` 与 `POST /providers/connections/{id}/verify`。`CREDENTIALS` 只验证环境凭据或 API Key/目录访问，不生成文字或图片；`MODEL_SMOKE` 必须绑定目录模型，结果同时更新连接健康和 `model_probes`。每次图片冒烟只执行一种操作，并要求显式费用确认。旧 `/settings/vertex/status|verify` 在过渡期内部转发统一验证服务；产品前端不再调用该入口，已无人使用的 `/models/vertex/*` 别名已经移除。旧 `ProviderHealth` 表只为这一单版本兼容入口保留，不再作为产品状态事实来源。
 
+`CLI_SESSION` 表示登录态由外部 CLI 管理。应用不显示密钥表单、不读取或复制会话 token，也不代用户登录；presence/version/login/capability 四步探测分别写入 `ModelProbe`，连接据此派生为 `AVAILABLE`、`UNAVAILABLE`、`UNAUTHENTICATED` 或 `UNSUPPORTED`。只有 `AVAILABLE` 的 CLI 连接可调用，探测不会替用户启停连接；具体 CLI 仍由 V02-14 分项注册。
+
 连接验证与目录同步是两个独立动作，避免一次点击重复请求模型列表。旧 `/connections/{id}/test` 仍兼容现有客户端，但内部使用统一验证服务。探测记录保存在 `model_probes`，连接和模型同步保存最近成功时间与中位延迟。
 
 ## 模型展示偏好

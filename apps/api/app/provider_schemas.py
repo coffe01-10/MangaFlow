@@ -47,7 +47,7 @@ class ProviderConnectionRead(BaseModel):
     base_url: str
     enabled: bool
     configured: bool
-    credential_source: Literal["CONNECTION_KEY", "ENV_SERVICE_ACCOUNT"]
+    credential_source: Literal["CONNECTION_KEY", "ENV_SERVICE_ACCOUNT", "CLI_SESSION"]
     credential_writable: bool
     supports_model_discovery: bool
     supports_balance: bool
@@ -305,12 +305,22 @@ class ConnectionTestRequest(BaseModel):
 class ConnectionHealthRead(BaseModel):
     connection_id: str
     configured: bool
-    credential_source: Literal["CONNECTION_KEY", "ENV_SERVICE_ACCOUNT"]
+    credential_source: Literal["CONNECTION_KEY", "ENV_SERVICE_ACCOUNT", "CLI_SESSION"]
     supports_model_discovery: bool
     supports_balance: bool
     supported_model_types: list[Literal["TEXT", "IMAGE"]]
     health_state: Literal[
-        "UNCONFIGURED", "CHECKING", "HEALTHY", "DEGRADED", "OFFLINE"
+        "UNCONFIGURED",
+        "CHECKING",
+        "HEALTHY",
+        "DEGRADED",
+        "OFFLINE",
+        "UNKNOWN",
+        "PROBING",
+        "AVAILABLE",
+        "UNAVAILABLE",
+        "UNAUTHENTICATED",
+        "UNSUPPORTED",
     ]
     last_checked_at: datetime | None
     last_success_at: datetime | None

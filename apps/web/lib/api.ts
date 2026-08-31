@@ -87,11 +87,11 @@ export interface ProviderConnection {
   id: string;
   provider_id: string;
   name: string;
-  protocol: "OPENAI" | "ANTHROPIC" | "VERTEX_NATIVE" | "GOOGLE_NATIVE";
+  protocol: "OPENAI" | "ANTHROPIC" | "VERTEX_NATIVE" | "GOOGLE_NATIVE" | `CLI_${string}`;
   base_url: string;
   enabled: boolean;
   configured: boolean;
-  credential_source: "CONNECTION_KEY" | "ENV_SERVICE_ACCOUNT";
+  credential_source: "CONNECTION_KEY" | "ENV_SERVICE_ACCOUNT" | "CLI_SESSION";
   credential_writable: boolean;
   supports_model_discovery: boolean;
   supports_balance: boolean;
@@ -169,11 +169,11 @@ export interface ModelProbe {
 export interface ConnectionHealth {
   connection_id: string;
   configured: boolean;
-  credential_source: "CONNECTION_KEY" | "ENV_SERVICE_ACCOUNT";
+  credential_source: "CONNECTION_KEY" | "ENV_SERVICE_ACCOUNT" | "CLI_SESSION";
   supports_model_discovery: boolean;
   supports_balance: boolean;
   supported_model_types: ("TEXT" | "IMAGE")[];
-  health_state: "UNCONFIGURED" | "CHECKING" | "HEALTHY" | "DEGRADED" | "OFFLINE";
+  health_state: "UNCONFIGURED" | "CHECKING" | "HEALTHY" | "DEGRADED" | "OFFLINE" | "UNKNOWN" | "PROBING" | "AVAILABLE" | "UNAVAILABLE" | "UNAUTHENTICATED" | "UNSUPPORTED";
   last_checked_at: string | null;
   last_success_at: string | null;
   latency_ms: number | null;

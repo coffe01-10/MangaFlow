@@ -13,7 +13,7 @@ import {
 } from "@/lib/api";
 
 import { ProviderManagement } from "./provider-management";
-import { mapConfidence } from "./provider-settings/provider-copy";
+import { mapConfidence, mapHealth } from "./provider-settings/provider-copy";
 import {
   filterModels,
   providerMatchesQuery,
@@ -306,6 +306,28 @@ describe("ProviderManagement 错误展示", () => {
     renderPlatform();
     expect(await screen.findByText(/凭据由服务端环境管理/)).toBeInTheDocument();
     expect(screen.queryByLabelText("API Key")).not.toBeInTheDocument();
+  });
+
+  it("CLI 会话不渲染密钥表单并显示探测状态", async () => {
+    providersApi.mockResolvedValueOnce([makeProvider({
+      connections: [makeConnection({
+        protocol: "CLI_FAKE",
+        credential_source: "CLI_SESSION",
+        health_state: "UNAUTHENTICATED",
+        configured: false,
+        credential_writable: false,
+        keys: [],
+        key_count: 0,
+      })],
+    })]);
+    renderPlatform();
+    fireEvent.click(await screen.findByRole("button", { name: /未配置/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /OpenAI/ }));
+    expect(await screen.findByText(/登录由外部 CLI 会话管理/)).toBeInTheDocument();
+    expect(screen.getByText("未登录 CLI")).toBeInTheDocument();
+    expect(screen.queryByLabelText("API Key")).not.toBeInTheDocument();
+    expect(mapHealth("UNAVAILABLE")).toBe("未安装");
+    expect(mapHealth("UNSUPPORTED")).toBe("不支持图片生成");
   });
 
   it("连接启停携带版本并调用统一更新接口", async () => {

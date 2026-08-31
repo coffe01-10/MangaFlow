@@ -4,6 +4,13 @@
 
 本文件记录修订版 MVP 计划的实际完成度。
 
+## V02-13B CLI 公共执行器已实现（2026-08-31）
+
+- 新增 provider-neutral CLI controller 与 `CLIExecutionRun` 持久状态；每次派发关联唯一 `ModelCallAttempt`，数据库唯一槽位限制单通道并发，迁移存在审计行时拒绝降级。
+- 参考图受控复制，prompt 只进入结构化 request；结果只采用已登记且通过路径、大小、像素与格式校验的图片。日志和错误脱敏，费用保持 unknown，失败不会静默改走 HTTP。
+- 四步探测写入 `ModelProbe`；`CLI_SESSION` 不显示密钥表单、不读取会话凭据。Windows runner 使用 suspended create + kill-on-close Job Object，先归组和持久登记再恢复进程。
+- Ruff、53 项 CLI/迁移/供应商 Python 回归、Web ESLint、TypeScript、26 个文件 189 项 Vitest、Next.js 生产构建与 `git diff --check` 通过。真实 CLI、真实供应商、Windows 实机进程树与 PostgreSQL 均未运行，也未产生费用。
+
 ## V02-10D 产品级供应商入口已中性化（2026-08-31）
 
 - 首页删除专属状态请求与验证卡，改为单一 Dashboard 聚合请求和通用 AI 连接摘要；设置、帮助、项目默认模型与工作流节点统一消费凭据来源及模型目录，当前历史绑定仍保留显示。

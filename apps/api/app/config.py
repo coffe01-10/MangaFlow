@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     job_timeout_seconds: int = Field(default=900, ge=30, le=3600)
     job_lease_seconds: int = Field(default=120, ge=30, le=3600)
     max_auto_repairs: int = Field(default=3, ge=0, le=10)
+    cli_run_timeout_seconds: int = Field(default=120, ge=10, le=3600)
+    cli_run_timeout_grace_seconds: int = Field(default=5, ge=0, le=60)
+    cli_channel_max_concurrency: int = Field(default=1, ge=1, le=16)
 
     max_upload_bytes: int = Field(default=20 * 1024 * 1024, ge=1)
     upload_form_overhead_bytes: int = Field(default=64 * 1024, ge=0)

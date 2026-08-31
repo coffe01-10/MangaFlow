@@ -67,12 +67,12 @@
 
 #### 下一实现窗口
 
-1. V02-10B/D、V02-12B/C、V02-11B 与 V02-10C 代码/SQLite 切片已实现；V02-11C/V02-10D 浏览器验收、V02-10C 真实 PostgreSQL 及 Windows 门禁保留为环境项。下一代码项按依赖进入 V02-13B CLI 公共执行器。
+1. V02-10B/D、V02-12B/C、V02-11B、V02-10C 与 V02-13B 代码/SQLite 切片已实现；浏览器验收、真实 PostgreSQL 及 Windows 实机门禁保留为环境项。V02-14A～C 仍须分开实现并独立验收。
 2. 资产、分镜、导演、CLI、用量和桌面端均先从各自已批准的 A 级设计文档拆出实现 Issue；不得把审计文档的合并当作功能交付。
 3. 所有实现 Issue 必须引用对应契约，写明迁移/事务/资源所有权，并标注真实供应商、CLI、PostgreSQL、Redis/RQ、浏览器或桌面环境的 `RUN`、`NOT RUN`、`BLOCKED`。
-- [ ] **V02-13（L3）：建立 CLI 图像通道公共执行器。** 将 Codex CLI、Antigravity CLI、Grok Build 视为可选执行通道，而不是假装成普通 HTTP API。
+- [x] **V02-13（L3）：建立 CLI 图像通道公共执行器。** 将 Codex CLI、Antigravity CLI、Grok Build 视为可选执行通道，而不是假装成普通 HTTP API。
   - [x] **V02-13A / Issue #53（设计）：** 已合并 `docs/v02-cli-executor-contract.md`，冻结能力探测、版本记录、工作目录约定、结构化 I/O、超时/取消、进程树、输出归属、脱敏日志和失败恢复；未运行任何真实 CLI。
-  - [ ] **V02-13B（实现）：** 按批准契约实现公共 controller、持久化状态与离线测试，再分别开放 V02-14A～C。
+  - [x] **V02-13B（实现）：** 已实现公共 controller、`CLIExecutionRun` 迁移、硬并发槽位、结构化 I/O、输出归属/脱敏/清理/恢复、四步探测和 Windows Job Object runner。真实 CLI、Windows 实机进程树与 PostgreSQL 标记 `NOT RUN`。
 - [ ] **V02-14A / V02-14B / V02-14C（每项 L3，依次实施）：分别接入 Codex CLI、Antigravity CLI、Grok Build。** 三个通道拆成独立 Issue/PR，共用 V02-13 契约，但不得在同一 PR 同时承担三个外部工具的生命周期风险。每项先做真实版本的能力探针，再实现生图/编辑能力映射；不支持的能力在 UI 中禁用并说明原因，不能伪造“已支持”。真实调用、账号权限和费用验收单独记录为 `RUN`、`NOT RUN` 或 `BLOCKED`。
 - [ ] **V02-15（L3 数据、L2 UI）：扩展模型调用账本。**
   - [x] **V02-15A / Issue #49（设计）：** 已合并 `docs/v02-usage-ledger-contract.md`，冻结 attempt/输出二阶段挂接、幂等、价格区间、对账来源与多数据库约束。

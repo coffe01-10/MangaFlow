@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.config import Settings
 from app.models import AIModel, ProviderConnection, ProviderKey, ProviderProfile
 from app.services.credential_source import (
+    CLI_SESSION,
     ENV_SERVICE_ACCOUNT,
     connection_credential_source,
     environment_credentials_ready,
@@ -33,6 +34,8 @@ def catalog_model_is_available(
         return False
     if connection_credential_source(connection) == ENV_SERVICE_ACCOUNT:
         return environment_credentials_ready
+    if connection_credential_source(connection) == CLI_SESSION:
+        return connection.health_state == "AVAILABLE"
     return credentials_writable and has_usable_key
 
 

@@ -508,6 +508,64 @@ class ModelCallAttempt(Timestamped, Base):
     error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
+class CLIExecutionRun(Timestamped, Base):
+    """Durable ownership and lifecycle record for one external CLI dispatch."""
+
+    __tablename__ = "cli_execution_runs"
+    __table_args__ = (
+        UniqueConstraint("model_call_attempt_id"),
+        UniqueConstraint("run_token"),
+        UniqueConstraint("relative_path"),
+        UniqueConstraint(
+            "connection_id", "lease_slot", name="uq_cli_execution_runs_connection_slot"
+        ),
+        Index("ix_cli_execution_runs_job_created", "job_id", "created_at"),
+        Index("ix_cli_execution_runs_state_updated", "state", "updated_at"),
+        Index("ix_cli_execution_runs_connection_state", "connection_id", "state"),
+        CheckConstraint(
+            "state IN ('QUEUED', 'PREPARING', 'RUNNING', 'COMPLETED', 'FAILED')",
+            name="ck_cli_execution_runs_state",
+        ),
+        CheckConstraint(
+            "cleanup_state IN ('PENDING', 'CLEANED', 'RETAINED', 'FAILED')",
+            name="ck_cli_execution_runs_cleanup_state",
+        ),
+        CheckConstraint(
+            "lease_slot IS NULL OR lease_slot >= 1",
+            name="ck_cli_execution_runs_lease_slot",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("generation_jobs.id", ondelete="RESTRICT")
+    )
+    model_call_attempt_id: Mapped[str] = mapped_column(
+        ForeignKey("model_call_attempts.id", ondelete="RESTRICT"), index=True
+    )
+    connection_id: Mapped[str | None] = mapped_column(
+        ForeignKey("provider_connections.id", ondelete="SET NULL"), nullable=True
+    )
+    catalog_model_id: Mapped[str | None] = mapped_column(
+        ForeignKey("ai_models.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    run_token: Mapped[str] = mapped_column(String(32))
+    relative_path: Mapped[str] = mapped_column(String(160))
+    operation: Mapped[str] = mapped_column(String(32))
+    state: Mapped[str] = mapped_column(String(16), default="QUEUED")
+    cleanup_state: Mapped[str] = mapped_column(String(16), default="PENDING")
+    lease_slot: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    request_checksum: Mapped[str] = mapped_column(String(64))
+    output_manifest: Mapped[dict] = mapped_column(JSON, default=dict)
+    exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stdout_checksum: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    stderr_checksum: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
 class ModelPricingVersion(Base):
     """Immutable, effective-dated rates used only for explicit cost estimates."""
 

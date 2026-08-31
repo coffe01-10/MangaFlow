@@ -15,10 +15,11 @@ from typing import Final, Literal
 from app.config import Settings
 from app.models import ProviderConnection
 
-CredentialSource = Literal["CONNECTION_KEY", "ENV_SERVICE_ACCOUNT"]
+CredentialSource = Literal["CONNECTION_KEY", "ENV_SERVICE_ACCOUNT", "CLI_SESSION"]
 
 CONNECTION_KEY: Final[CredentialSource] = "CONNECTION_KEY"
 ENV_SERVICE_ACCOUNT: Final[CredentialSource] = "ENV_SERVICE_ACCOUNT"
+CLI_SESSION: Final[CredentialSource] = "CLI_SESSION"
 
 # Transport protocols whose credentials live outside the database, keyed by
 # protocol only. GOOGLE_NATIVE stays key-based: the Gemini API authenticates
@@ -56,6 +57,8 @@ _DEFAULT_PROTOCOL_CAPABILITIES: Final[ProtocolCapabilities] = ProtocolCapabiliti
 def credential_source_for_protocol(protocol: str) -> CredentialSource:
     """Return the credential shape required by a transport protocol."""
 
+    if protocol.startswith("CLI_"):
+        return CLI_SESSION
     if protocol in _ENV_SERVICE_ACCOUNT_PROTOCOLS:
         return ENV_SERVICE_ACCOUNT
     return CONNECTION_KEY
@@ -83,6 +86,8 @@ def environment_credentials_ready(settings: Settings, protocol: str) -> bool:
 def capabilities_for_protocol(protocol: str) -> ProtocolCapabilities:
     """Return declared product capabilities for a transport protocol."""
 
+    if protocol.startswith("CLI_"):
+        return ProtocolCapabilities(False, ("IMAGE",))
     return _PROTOCOL_CAPABILITIES.get(protocol, _DEFAULT_PROTOCOL_CAPABILITIES)
 
 

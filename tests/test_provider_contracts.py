@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 from app.config import Settings
 from app.services.credential_source import (
+    CLI_SESSION,
     CONNECTION_KEY,
     ENV_SERVICE_ACCOUNT,
     connection_credential_source,
@@ -27,6 +28,7 @@ def test_credential_source_depends_only_on_protocol():
     assert credential_source_for_protocol("OPENAI") == CONNECTION_KEY
     assert credential_source_for_protocol("ANTHROPIC") == CONNECTION_KEY
     assert credential_source_for_protocol("SOME_FUTURE_PROTOCOL") == CONNECTION_KEY
+    assert credential_source_for_protocol("CLI_FAKE") == CLI_SESSION
 
 
 def test_connection_credential_source_ignores_provider_identity():

@@ -304,7 +304,9 @@ export function ConnectionPanel({
         </>
       ) : (
         <p className="provider-field-hint">
-          凭据由服务端环境管理；当前{connection.configured ? "已就绪" : "未就绪"}，不会显示凭据路径或内容。
+          {connection.credential_source === "CLI_SESSION"
+            ? `登录由外部 CLI 会话管理；当前${connection.configured ? "已就绪" : "未就绪"}，应用不会读取或代理登录凭据。`
+            : `凭据由服务端环境管理；当前${connection.configured ? "已就绪" : "未就绪"}，不会显示凭据路径或内容。`}
         </p>
       )}
       <div className="provider-actions">

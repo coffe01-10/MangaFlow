@@ -42,6 +42,7 @@ from app.services.credential_crypto import (
     select_provider_key,
 )
 from app.services.credential_source import (
+    CLI_SESSION,
     CONNECTION_KEY,
     ENV_SERVICE_ACCOUNT,
     connection_credential_source,
@@ -77,6 +78,8 @@ def connection_is_configured(
     source = connection_credential_source(connection)
     if source == ENV_SERVICE_ACCOUNT:
         return environment_credentials_ready(settings, connection.protocol)
+    if source == CLI_SESSION:
+        return connection.health_state == "AVAILABLE"
     now = datetime.now(UTC)
     return any(_enabled_key_is_usable(key, now) for key in keys)
 
