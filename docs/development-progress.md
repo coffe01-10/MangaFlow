@@ -4,6 +4,13 @@
 
 本文件记录修订版 MVP 计划的实际完成度。
 
+## PR #61 已复审并合并（2026-08-31）
+
+- PR #61 的 V02-10B/C/D、V02-11B/C 测试切片、V02-12B/C 与 V02-13B 实现已由组长按最终 SHA `75460a0` 复审，并以 `e918b28` 合并到 `master`。
+- 复审补修模型展示偏好的条件更新，防止并发请求绕过 version 门禁；CLI 四步探测现在只有全部 `PASSED` 才进入 `AVAILABLE`，`UNKNOWN` 结果保持不可用；Windows 测试显式按 UTF-8 读取结构化请求。
+- Windows 环境完整 `npm run check` 通过：供应商平权门禁、ESLint、Ruff、479 项 Python、189 项 Vitest、TypeScript 与 Next.js 生产构建全部通过；24 项真实集成或实机环境测试按条件跳过。
+- 真实 PostgreSQL、Redis/RQ、真实供应商、真实 Codex/Antigravity/Grok Build CLI、浏览器 E2E 与 Windows 真实 CLI 进程树仍为 `NOT RUN`；未读取凭据、未产生供应商费用。所有登记 worktree 均干净且提交已包含于 `master`，当前无开放 PR。
+
 ## V02-13B CLI 公共执行器已实现（2026-08-31）
 
 - 新增 provider-neutral CLI controller 与 `CLIExecutionRun` 持久状态；每次派发关联唯一 `ModelCallAttempt`，数据库唯一槽位限制单通道并发，迁移存在审计行时拒绝降级。
