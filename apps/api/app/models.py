@@ -79,10 +79,10 @@ class Project(Timestamped, Base):
     ocr_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     consistency_check_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     default_style_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    text_model_alias: Mapped[str] = mapped_column(String(64), default="text.fast")
+    text_model_alias: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Kept for a one-migration compatibility window. New code uses the neutral
     # last-used value and requires every generation request to choose a model.
-    image_model_alias: Mapped[str] = mapped_column(String(64), default="image.nano_banana_2")
+    image_model_alias: Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_image_model_alias: Mapped[str | None] = mapped_column(
         String(64), nullable=True, default=None
     )
@@ -417,7 +417,7 @@ class GenerationRecord(Base):
     job_id: Mapped[str] = mapped_column(
         ForeignKey("generation_jobs.id", ondelete="CASCADE"), index=True
     )
-    provider: Mapped[str] = mapped_column(String(32), default="vertex-ai")
+    provider: Mapped[str] = mapped_column(String(32))
     model_id: Mapped[str] = mapped_column(String(128))
     catalog_model_id: Mapped[str | None] = mapped_column(
         ForeignKey("ai_models.id", ondelete="SET NULL"), nullable=True, index=True
@@ -504,6 +504,64 @@ class ModelCallAttempt(Timestamped, Base):
     usage: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     route_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
     route_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
+class CLIExecutionRun(Timestamped, Base):
+    """Durable ownership and lifecycle record for one external CLI dispatch."""
+
+    __tablename__ = "cli_execution_runs"
+    __table_args__ = (
+        UniqueConstraint("model_call_attempt_id"),
+        UniqueConstraint("run_token"),
+        UniqueConstraint("relative_path"),
+        UniqueConstraint(
+            "connection_id", "lease_slot", name="uq_cli_execution_runs_connection_slot"
+        ),
+        Index("ix_cli_execution_runs_job_created", "job_id", "created_at"),
+        Index("ix_cli_execution_runs_state_updated", "state", "updated_at"),
+        Index("ix_cli_execution_runs_connection_state", "connection_id", "state"),
+        CheckConstraint(
+            "state IN ('QUEUED', 'PREPARING', 'RUNNING', 'COMPLETED', 'FAILED')",
+            name="ck_cli_execution_runs_state",
+        ),
+        CheckConstraint(
+            "cleanup_state IN ('PENDING', 'CLEANED', 'RETAINED', 'FAILED')",
+            name="ck_cli_execution_runs_cleanup_state",
+        ),
+        CheckConstraint(
+            "lease_slot IS NULL OR lease_slot >= 1",
+            name="ck_cli_execution_runs_lease_slot",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("generation_jobs.id", ondelete="RESTRICT")
+    )
+    model_call_attempt_id: Mapped[str] = mapped_column(
+        ForeignKey("model_call_attempts.id", ondelete="RESTRICT"), index=True
+    )
+    connection_id: Mapped[str | None] = mapped_column(
+        ForeignKey("provider_connections.id", ondelete="SET NULL"), nullable=True
+    )
+    catalog_model_id: Mapped[str | None] = mapped_column(
+        ForeignKey("ai_models.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    run_token: Mapped[str] = mapped_column(String(32))
+    relative_path: Mapped[str] = mapped_column(String(160))
+    operation: Mapped[str] = mapped_column(String(32))
+    state: Mapped[str] = mapped_column(String(16), default="QUEUED")
+    cleanup_state: Mapped[str] = mapped_column(String(16), default="PENDING")
+    lease_slot: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    request_checksum: Mapped[str] = mapped_column(String(64))
+    output_manifest: Mapped[dict] = mapped_column(JSON, default=dict)
+    exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stdout_checksum: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    stderr_checksum: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
@@ -974,6 +1032,9 @@ class AIModel(Timestamped, Base):
     source: Mapped[str] = mapped_column(String(24), default="DISCOVERED")
     confidence: Mapped[str] = mapped_column(String(24), default="DECLARED")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Creator-facing display preference only. It must not participate in
+    # availability, routing, or provider-preset synchronization.
+    display_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     priority: Mapped[int] = mapped_column(Integer, default=50)
     success_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
     median_latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)

@@ -8,7 +8,7 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.config import Settings
@@ -26,6 +26,7 @@ from app.models import (
 from app.provider_schemas import (
     ConnectionCreate,
     ConnectionUpdate,
+    ModelVisibilityBatchUpdate,
     ProviderCreate,
     ProviderKeyWrite,
     ProviderModelCreate,
@@ -41,8 +42,12 @@ from app.services.credential_crypto import (
     select_provider_key,
 )
 from app.services.credential_source import (
+    CLI_SESSION,
     CONNECTION_KEY,
+    ENV_SERVICE_ACCOUNT,
     connection_credential_source,
+    connection_protocol_capabilities,
+    environment_credentials_ready,
 )
 from app.services.provider_presets import (
     ANTHROPIC_ENDPOINTS,
@@ -52,6 +57,31 @@ from app.services.provider_presets import (
 )
 
 _BLOCKED_HEADERS = {"authorization", "x-api-key", "host", "content-length"}
+
+
+def _enabled_key_is_usable(key: ProviderKey, now: datetime) -> bool:
+    cooldown_until = key.cooldown_until
+    if cooldown_until is not None and cooldown_until.tzinfo is None:
+        cooldown_until = cooldown_until.replace(tzinfo=UTC)
+    return bool(
+        key.enabled and (cooldown_until is None or cooldown_until <= now)
+    )
+
+
+def connection_is_configured(
+    settings: Settings,
+    connection: ProviderConnection,
+    keys: list[ProviderKey],
+) -> bool:
+    """Return the protocol-neutral credential readiness for a connection."""
+
+    source = connection_credential_source(connection)
+    if source == ENV_SERVICE_ACCOUNT:
+        return environment_credentials_ready(settings, connection.protocol)
+    if source == CLI_SESSION:
+        return connection.health_state == "AVAILABLE"
+    now = datetime.now(UTC)
+    return any(_enabled_key_is_usable(key, now) for key in keys)
 
 
 def _validate_base_url_syntax(value: str) -> str:
@@ -138,9 +168,7 @@ def list_provider_views(db: Session, settings: Settings) -> list[dict]:
         for connection in connection_map.get(profile.id, []):
             connection_keys = key_map.get(connection.id, [])
             credential_source = connection_credential_source(connection)
-            native_configured = (
-                connection.protocol == "VERTEX_NATIVE" and settings.vertex_configured
-            )
+            protocol_capabilities = connection_protocol_capabilities(connection)
             items.append(
                 {
                     "id": connection.id,
@@ -149,15 +177,23 @@ def list_provider_views(db: Session, settings: Settings) -> list[dict]:
                     "protocol": connection.protocol,
                     "base_url": connection.base_url,
                     "enabled": connection.enabled,
-                    "configured": native_configured
-                    or any(key.enabled for key in connection_keys),
+                    "configured": connection_is_configured(
+                        settings, connection, connection_keys
+                    ),
                     "credential_source": credential_source,
                     "credential_writable": (
                         credential_source == CONNECTION_KEY
                         and settings.provider_credentials_writable
                     ),
-                    "supported_model_types": (
-                        ["TEXT"] if connection.protocol == "ANTHROPIC" else ["TEXT", "IMAGE"]
+                    "supports_model_discovery": (
+                        protocol_capabilities.supports_model_discovery
+                    ),
+                    "supports_balance": bool(
+                        (connection.balance_config or {}).get("enabled")
+                        and (connection.balance_config or {}).get("path")
+                    ),
+                    "supported_model_types": list(
+                        protocol_capabilities.supported_model_types
                     ),
                     "use_responses_api": connection.use_responses_api,
                     "endpoint_templates": connection.endpoint_templates or {},
@@ -292,6 +328,14 @@ def update_connection(
         changes["balance_config"] = _validate_balance_config(
             changes["balance_config"]
         )
+    if "enabled" in changes:
+        source_config = changes.get("nonsecret_config", connection.nonsecret_config)
+        nonsecret_config = dict(source_config or {})
+        nonsecret_config.pop("auto_enable_pending", None)
+        if "nonsecret_config" in changes:
+            changes["nonsecret_config"] = nonsecret_config
+        else:
+            connection.nonsecret_config = nonsecret_config
     for key, value in changes.items():
         setattr(connection, key, value)
     connection.version += 1
@@ -385,6 +429,19 @@ def create_model(
     return model
 
 
+def list_models_for_connection(db: Session, connection_id: str) -> list[AIModel]:
+    connection = db.get(ProviderConnection, connection_id)
+    if connection is None:
+        raise HTTPException(status_code=404, detail="供应商连接不存在")
+    return list(
+        db.scalars(
+            select(AIModel)
+            .where(AIModel.connection_id == connection_id)
+            .order_by(AIModel.model_type, AIModel.priority.desc(), AIModel.display_name)
+        )
+    )
+
+
 def update_model(db: Session, model_id: str, payload: ProviderModelUpdate) -> AIModel:
     model = db.get(AIModel, model_id)
     if model is None:
@@ -392,6 +449,27 @@ def update_model(db: Session, model_id: str, payload: ProviderModelUpdate) -> AI
     if model.version != payload.version:
         raise HTTPException(status_code=409, detail="模型设置已更新，请刷新后重试")
     changes = payload.model_dump(exclude_unset=True, exclude={"version"})
+    display_requested = "display_enabled" in changes
+    display_enabled = changes.pop("display_enabled", None)
+    if display_requested and display_enabled is None:
+        raise HTTPException(status_code=422, detail="模型展示偏好不能为 null")
+    if display_requested and not changes:
+        result = db.execute(
+            update(AIModel)
+            .where(AIModel.id == model.id, AIModel.version == payload.version)
+            .values(
+                display_enabled=bool(display_enabled),
+                version=AIModel.version + 1,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="模型设置已更新，请刷新后重试")
+        db.commit()
+        db.expire(model)
+        db.refresh(model)
+        return model
     connection = db.get(ProviderConnection, model.connection_id)
     if connection is None:
         raise HTTPException(status_code=409, detail="模型所属连接已不存在")
@@ -404,12 +482,92 @@ def update_model(db: Session, model_id: str, payload: ProviderModelUpdate) -> AI
     )
     for key, value in changes.items():
         setattr(model, key, value)
+    if display_requested:
+        model.display_enabled = bool(display_enabled)
     model.source = "MANUAL"
     model.confidence = "MANUAL"
     model.version += 1
     db.commit()
     db.refresh(model)
     return model
+
+
+def set_model_visibility_bulk(
+    db: Session, payload: ModelVisibilityBatchUpdate
+) -> dict[str, list[dict[str, object]]]:
+    """Persist independent model display preferences with partial success."""
+
+    updated: list[dict[str, object]] = []
+    failed: list[dict[str, object]] = []
+    for item in payload.items:
+        model = db.get(AIModel, item.model_id)
+        if model is None:
+            failed.append(
+                {
+                    "model_id": item.model_id,
+                    "error_code": "MODEL_NOT_FOUND",
+                    "message": "模型不存在或已被删除",
+                }
+            )
+            continue
+        connection = db.get(ProviderConnection, model.connection_id)
+        if connection is None:
+            failed.append(
+                {
+                    "model_id": item.model_id,
+                    "error_code": "CONNECTION_MISSING",
+                    "message": "模型所属连接已不存在",
+                }
+            )
+            continue
+        if model.display_enabled == payload.display_enabled:
+            updated.append({"model_id": model.id, "version": model.version})
+            continue
+        if model.version != item.expected_version:
+            failed.append(
+                {
+                    "model_id": item.model_id,
+                    "error_code": "VERSION_CONFLICT",
+                    "message": "模型设置已更新，请刷新后重试",
+                    "current_version": model.version,
+                }
+            )
+            continue
+        result = db.execute(
+            update(AIModel)
+            .where(AIModel.id == model.id, AIModel.version == item.expected_version)
+            .values(
+                display_enabled=payload.display_enabled,
+                version=AIModel.version + 1,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            db.rollback()
+            db.expire(model)
+            db.refresh(model)
+            if model.display_enabled == payload.display_enabled:
+                updated.append({"model_id": model.id, "version": model.version})
+            else:
+                failed.append(
+                    {
+                        "model_id": item.model_id,
+                        "error_code": "VERSION_CONFLICT",
+                        "message": "模型设置已更新，请刷新后重试",
+                        "current_version": model.version,
+                    }
+                )
+            continue
+        db.commit()
+        db.expire(model)
+        db.refresh(model)
+        updated.append({"model_id": model.id, "version": model.version})
+
+    # The final item may have been a read-only failure or idempotent success.
+    # Close that transaction without changing independently committed successes.
+    if db.in_transaction():
+        db.rollback()
+    return {"updated": updated, "failed": failed}
 
 
 def _validate_protocol_capabilities(
@@ -501,22 +659,16 @@ def _collect_google_model_entries(models, settings: Settings) -> list[dict[str, 
     return entries
 
 
-def discover_models(
+def _fetch_model_entries(
     db: Session,
     settings: Settings,
-    connection_id: str,
+    connection: ProviderConnection,
+    secret: str,
     *,
     client: httpx.Client | None = None,
-) -> list[AIModel]:
-    connection = db.get(ProviderConnection, connection_id)
-    if connection is None:
-        raise HTTPException(status_code=404, detail="供应商连接不存在")
-    if connection.protocol == "VERTEX_NATIVE":
-        ensure_provider_presets(db, settings)
-        return list(
-            db.scalars(select(AIModel).where(AIModel.connection_id == connection.id))
-        )
-    selected = select_provider_key(db, settings, connection.id)
+) -> tuple[list[dict], int]:
+    """Read and validate a model listing without mutating the catalog."""
+
     started = perf_counter()
     owned_client = False
     http = client
@@ -524,7 +676,7 @@ def discover_models(
         if connection.protocol == "GOOGLE_NATIVE":
             from google import genai
 
-            google_client = genai.Client(api_key=selected.secret)
+            google_client = genai.Client(api_key=secret)
             try:
                 entries = _collect_google_model_entries(
                     google_client.models.list(), settings
@@ -550,7 +702,7 @@ def discover_models(
             request = http.build_request(
                 "GET",
                 target_url,
-                headers=_request_headers(connection, selected.secret),
+                headers=_request_headers(connection, secret),
             )
             response = http.send(request, stream=True, follow_redirects=False)
             try:
@@ -586,29 +738,108 @@ def discover_models(
                 label = str(entry.get("display_name") or "")
                 if len(ident) > 256 or len(label) > 256:
                     raise ValueError("供应商模型列表字段超过允许的大小")
+        return entries, round((perf_counter() - started) * 1000)
+    finally:
+        if owned_client and http is not None:
+            http.close()
+
+
+def _record_connection_failure(
+    db: Session,
+    connection: ProviderConnection,
+    selected,
+    error: Exception,
+    started: float,
+) -> None:
+    code = str(getattr(error, "code", "UPSTREAM"))
+    connection.health_state = "DEGRADED"
+    connection.last_checked_at = datetime.now(UTC)
+    connection.latency_ms = round((perf_counter() - started) * 1000)
+    connection.error_code = code
+    connection.message = _safe_error_message(code)
+    mark_key_failure(db, selected.row, code)
+
+
+def probe_connection_credentials(
+    db: Session,
+    settings: Settings,
+    connection: ProviderConnection,
+    *,
+    client: httpx.Client | None = None,
+) -> dict[str, Any]:
+    """Verify a key-backed connection without generating model output.
+
+    Discovery-capable protocols validate the key against their model-list
+    endpoint but deliberately do not write the returned entries. Protocols
+    without a safe discovery endpoint only prove that the stored credential is
+    readable; their connection remains degraded until a model smoke test.
+    """
+
+    selected = select_provider_key(db, settings, connection.id)
+    capabilities = connection_protocol_capabilities(connection)
+    started = perf_counter()
+    if not capabilities.supports_model_discovery:
+        connection.health_state = "DEGRADED"
+        connection.last_checked_at = datetime.now(UTC)
+        connection.latency_ms = round((perf_counter() - started) * 1000)
+        connection.error_code = None
+        connection.message = "凭据可读取；该协议需通过模型冒烟验证远端权限"
+        db.commit()
+        return {"remote_verified": False, "discovered_models": None}
+    try:
+        entries, latency_ms = _fetch_model_entries(
+            db, settings, connection, selected.secret, client=client
+        )
+        connection.health_state = "HEALTHY"
+        connection.last_checked_at = datetime.now(UTC)
+        connection.last_success_at = connection.last_checked_at
+        connection.latency_ms = latency_ms
+        connection.error_code = None
+        connection.message = "凭据与模型目录连接验证成功"
+        mark_key_success(db, selected.row)
+        return {"remote_verified": True, "discovered_models": len(entries)}
+    except (ProviderAdapterError, httpx.HTTPError, ValueError) as error:
+        _record_connection_failure(db, connection, selected, error, started)
+        if isinstance(error, ProviderAdapterError):
+            raise HTTPException(status_code=502, detail=error.user_message) from error
+        raise HTTPException(status_code=502, detail="无法验证供应商凭据") from error
+
+
+def discover_models(
+    db: Session,
+    settings: Settings,
+    connection_id: str,
+    *,
+    client: httpx.Client | None = None,
+) -> list[AIModel]:
+    connection = db.get(ProviderConnection, connection_id)
+    if connection is None:
+        raise HTTPException(status_code=404, detail="供应商连接不存在")
+    if not connection_protocol_capabilities(connection).supports_model_discovery:
+        raise HTTPException(
+            status_code=422,
+            detail="该连接不支持模型发现，请使用预设目录或手动添加模型",
+        )
+    selected = select_provider_key(db, settings, connection.id)
+    started = perf_counter()
+    try:
+        entries, latency_ms = _fetch_model_entries(
+            db, settings, connection, selected.secret, client=client
+        )
         models = _upsert_discovered_models(db, connection, entries)
         connection.health_state = "HEALTHY"
         connection.last_checked_at = datetime.now(UTC)
         connection.last_success_at = connection.last_checked_at
-        connection.latency_ms = round((perf_counter() - started) * 1000)
+        connection.latency_ms = latency_ms
         connection.error_code = None
         connection.message = f"已发现 {len(models)} 个模型"
         mark_key_success(db, selected.row)
         return models
     except (ProviderAdapterError, httpx.HTTPError, ValueError) as error:
-        code = getattr(error, "code", "UPSTREAM")
-        connection.health_state = "DEGRADED"
-        connection.last_checked_at = datetime.now(UTC)
-        connection.latency_ms = round((perf_counter() - started) * 1000)
-        connection.error_code = code
-        connection.message = _safe_error_message(code)
-        mark_key_failure(db, selected.row, code)
+        _record_connection_failure(db, connection, selected, error, started)
         if isinstance(error, ProviderAdapterError):
             raise HTTPException(status_code=502, detail=error.user_message) from error
         raise HTTPException(status_code=502, detail="无法读取供应商模型列表") from error
-    finally:
-        if owned_client and http is not None:
-            http.close()
 
 
 def _upsert_discovered_models(

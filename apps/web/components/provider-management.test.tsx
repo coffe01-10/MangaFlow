@@ -1,13 +1,19 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api, type ModelCapability, type ProviderConnection, type ProviderProfile } from "@/lib/api";
+import {
+  api,
+  type ModelCapability,
+  type ProviderConnection,
+  type ProviderModel,
+  type ProviderProfile,
+} from "@/lib/api";
 
 import { ProviderManagement } from "./provider-management";
-import { mapConfidence } from "./provider-settings/provider-copy";
+import { mapConfidence, mapHealth } from "./provider-settings/provider-copy";
 import {
   filterModels,
   providerMatchesQuery,
@@ -20,10 +26,17 @@ const modelsApi = vi.spyOn(api, "models");
 const createProvider = vi.spyOn(api, "createProvider");
 const updateProvider = vi.spyOn(api, "updateProvider");
 const deleteProvider = vi.spyOn(api, "deleteProvider");
-const testConnection = vi.spyOn(api, "testProviderConnection");
+const providerModelsApi = vi.spyOn(api, "providerModels");
+const verifyConnection = vi.spyOn(api, "verifyProviderConnection");
+const discoverModels = vi.spyOn(api, "discoverProviderModels");
+const updateVisibility = vi.spyOn(api, "updateProviderModelVisibility");
+const updateVisibilityBatch = vi.spyOn(api, "updateProviderModelVisibilityBatch");
 const updateConnection = vi.spyOn(api, "updateProviderConnection");
+const saveProviderKey = vi.spyOn(api, "saveProviderKey");
+const createProviderModel = vi.spyOn(api, "createProviderModel");
 
 const stylesheet = readFileSync(resolve(process.cwd(), "app/globals.css"), "utf8");
+const settingsPageSource = readFileSync(resolve(process.cwd(), "app/settings/page.tsx"), "utf8");
 
 function makeConnection(overrides: Partial<ProviderConnection> = {}): ProviderConnection {
   return {
@@ -36,6 +49,8 @@ function makeConnection(overrides: Partial<ProviderConnection> = {}): ProviderCo
     configured: true,
     credential_source: "CONNECTION_KEY",
     credential_writable: true,
+    supports_model_discovery: true,
+    supports_balance: false,
     supported_model_types: ["TEXT", "IMAGE"],
     use_responses_api: false,
     endpoint_templates: {},
@@ -105,10 +120,58 @@ function makeModel(overrides: Partial<ModelCapability> = {}): ModelCapability {
     regions: [],
     confidence: "VERIFIED",
     enabled: true,
+    display_enabled: true,
     auto_eligible: true,
     priority: 0,
     ...overrides,
   };
+}
+
+function makeProviderModel(overrides: Partial<ProviderModel> = {}): ProviderModel {
+  const providerModelId = overrides.provider_model_id ?? "gpt-4.1-mini";
+  return {
+    id: overrides.id ?? "cat-1",
+    connection_id: "conn-1",
+    provider_model_id: providerModelId,
+    display_name: overrides.display_name ?? providerModelId,
+    legacy_alias: null,
+    model_type: "TEXT",
+    input_modalities: ["TEXT"],
+    output_modalities: ["TEXT"],
+    operations: ["structured_text"],
+    api_surfaces: ["CHAT"],
+    capabilities: {},
+    enabled: true,
+    display_enabled: true,
+    priority: 0,
+    confidence: "VERIFIED",
+    source: "DISCOVERED",
+    pricing: {},
+    success_rate: null,
+    median_latency_ms: null,
+    last_verified_at: null,
+    created_at: "2026-08-30T00:00:00Z",
+    updated_at: "2026-08-30T00:00:00Z",
+    version: 1,
+    ...overrides,
+  };
+}
+
+function toProviderModel(model: ModelCapability): ProviderModel {
+  return makeProviderModel({
+    id: model.catalog_id,
+    connection_id: model.connection_id,
+    provider_model_id: model.model_id,
+    display_name: model.display_name,
+    model_type: model.model_type,
+    input_modalities: model.input_modalities,
+    output_modalities: model.output_modalities,
+    operations: model.operations,
+    enabled: model.enabled,
+    display_enabled: model.display_enabled,
+    priority: model.priority,
+    confidence: model.confidence,
+  });
 }
 
 function renderPlatform() {
@@ -121,6 +184,16 @@ function renderPlatform() {
   );
 }
 
+beforeEach(() => {
+  providerModelsApi.mockReset().mockResolvedValue([]);
+  verifyConnection.mockReset();
+  discoverModels.mockReset();
+  updateVisibility.mockReset();
+  updateVisibilityBatch.mockReset();
+  saveProviderKey.mockReset();
+  createProviderModel.mockReset();
+});
+
 describe("ProviderManagement 错误展示", () => {
   beforeEach(() => {
     providersApi.mockReset().mockResolvedValue([makeProvider()]);
@@ -128,7 +201,6 @@ describe("ProviderManagement 错误展示", () => {
     createProvider.mockReset();
     updateProvider.mockReset();
     deleteProvider.mockReset();
-    testConnection.mockReset();
     updateConnection.mockReset();
   });
 
@@ -167,17 +239,17 @@ describe("ProviderManagement 错误展示", () => {
   });
 
   it("凭据测试失败展示用户可见错误，不出现输入密钥", async () => {
-    testConnection.mockRejectedValue(new Error("上游返回 401"));
+    verifyConnection.mockRejectedValue(new Error("上游返回 401"));
     renderPlatform();
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "测试连接并同步目录" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "测试连接" })).toBeEnabled();
     });
     fireEvent.change(screen.getByPlaceholderText("输入 API Key（不会回显）"), {
       target: { value: "sk-live-secret-should-not-render" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "测试连接并同步目录" }));
+    fireEvent.click(screen.getByRole("button", { name: "测试连接" }));
     await waitFor(() => {
-      expect(testConnection).toHaveBeenCalledWith("conn-1", { test_type: "CREDENTIALS" });
+      expect(verifyConnection).toHaveBeenCalledWith("conn-1", { level: "CREDENTIALS" });
       expect(screen.getByText("上游返回 401")).toBeInTheDocument();
     });
     expect(document.body.textContent).toContain("上游返回 401");
@@ -185,26 +257,40 @@ describe("ProviderManagement 错误展示", () => {
   });
 
   it("组合连接测试只调用一次后端动作，不额外触发模型发现", async () => {
-    const discoverModels = vi.spyOn(api, "discoverProviderModels").mockResolvedValue([]);
-    testConnection.mockResolvedValueOnce({
-      id: "probe-1",
-      connection_id: "conn-1",
-      model_id: null,
-      probe_type: "CREDENTIALS",
-      status: "PASSED",
-      latency_ms: 12,
-      metrics: { discovered_models: 2 },
-      error_code: null,
-      message: "ok",
-      created_at: new Date().toISOString(),
+    verifyConnection.mockResolvedValueOnce({
+      health: {
+        connection_id: "conn-1",
+        configured: true,
+        credential_source: "CONNECTION_KEY",
+        supports_model_discovery: true,
+        supports_balance: false,
+        supported_model_types: ["TEXT", "IMAGE"],
+        health_state: "HEALTHY",
+        last_checked_at: new Date().toISOString(),
+        last_success_at: new Date().toISOString(),
+        latency_ms: 12,
+        error_code: null,
+        message: "ok",
+      },
+      probe: {
+        id: "probe-1",
+        connection_id: "conn-1",
+        model_id: null,
+        probe_type: "CREDENTIALS",
+        status: "PASSED",
+        latency_ms: 12,
+        metrics: {},
+        error_code: null,
+        message: "ok",
+        created_at: new Date().toISOString(),
+      },
     });
     renderPlatform();
-    fireEvent.click(await screen.findByRole("button", { name: "测试连接并同步目录" }));
+    fireEvent.click(await screen.findByRole("button", { name: "测试连接" }));
     await waitFor(() => {
-      expect(testConnection).toHaveBeenCalledTimes(1);
+      expect(verifyConnection).toHaveBeenCalledTimes(1);
       expect(discoverModels).not.toHaveBeenCalled();
     });
-    discoverModels.mockRestore();
   });
 
   it("账号型凭据按 credential_source 渲染，不依赖协议字符串", async () => {
@@ -218,8 +304,30 @@ describe("ProviderManagement 错误展示", () => {
       })],
     })]);
     renderPlatform();
-    expect(await screen.findByText("凭据由服务端环境管理，不在此处录入密钥。")).toBeInTheDocument();
+    expect(await screen.findByText(/凭据由服务端环境管理/)).toBeInTheDocument();
     expect(screen.queryByLabelText("API Key")).not.toBeInTheDocument();
+  });
+
+  it("CLI 会话不渲染密钥表单并显示探测状态", async () => {
+    providersApi.mockResolvedValueOnce([makeProvider({
+      connections: [makeConnection({
+        protocol: "CLI_FAKE",
+        credential_source: "CLI_SESSION",
+        health_state: "UNAUTHENTICATED",
+        configured: false,
+        credential_writable: false,
+        keys: [],
+        key_count: 0,
+      })],
+    })]);
+    renderPlatform();
+    fireEvent.click(await screen.findByRole("button", { name: /未配置/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /OpenAI/ }));
+    expect(await screen.findByText(/登录由外部 CLI 会话管理/)).toBeInTheDocument();
+    expect(screen.getByText("未登录 CLI")).toBeInTheDocument();
+    expect(screen.queryByLabelText("API Key")).not.toBeInTheDocument();
+    expect(mapHealth("UNAVAILABLE")).toBe("未安装");
+    expect(mapHealth("UNSUPPORTED")).toBe("不支持图片生成");
   });
 
   it("连接启停携带版本并调用统一更新接口", async () => {
@@ -235,6 +343,291 @@ describe("ProviderManagement 错误展示", () => {
   });
 });
 
+describe("V02-11B 统一连接与模型目录", () => {
+  beforeEach(() => {
+    providersApi.mockReset().mockResolvedValue([makeProvider()]);
+    modelsApi.mockReset().mockResolvedValue([]);
+    createProvider.mockReset();
+    updateProvider.mockReset();
+    deleteProvider.mockReset();
+    updateConnection.mockReset();
+  });
+
+  it("发现和余额按钮只按连接 capability 渲染", async () => {
+    providersApi.mockResolvedValue([makeProvider({
+      connections: [makeConnection({
+        supports_model_discovery: false,
+        supports_balance: false,
+      })],
+    })]);
+    renderPlatform();
+    expect(await screen.findByText("此连接不支持自动发现模型，请手工添加上游 ID。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "测试连接" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "同步模型" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "查询余额" })).not.toBeInTheDocument();
+  });
+
+  it("同步模型只调用一次独立发现端点", async () => {
+    discoverModels.mockResolvedValue([makeProviderModel()]);
+    renderPlatform();
+    fireEvent.click(await screen.findByRole("button", { name: "同步模型" }));
+    await waitFor(() => {
+      expect(discoverModels).toHaveBeenCalledTimes(1);
+      expect(discoverModels).toHaveBeenCalledWith("conn-1");
+      expect(verifyConnection).not.toHaveBeenCalled();
+    });
+  });
+
+  it("目录模型通过统一 MODEL_SMOKE 验证，图片测试显式确认费用", async () => {
+    const textModel = makeProviderModel({ id: "text-1", provider_model_id: "text-1" });
+    const imageModel = makeProviderModel({
+      id: "image-1",
+      provider_model_id: "image-1",
+      display_name: "Image One",
+      model_type: "IMAGE",
+      output_modalities: ["IMAGE"],
+      operations: ["image_generate"],
+    });
+    providerModelsApi.mockResolvedValue([textModel, imageModel]);
+    verifyConnection.mockResolvedValue({
+      health: {
+        connection_id: "conn-1",
+        configured: true,
+        credential_source: "CONNECTION_KEY",
+        supports_model_discovery: true,
+        supports_balance: false,
+        supported_model_types: ["TEXT", "IMAGE"],
+        health_state: "HEALTHY",
+        last_checked_at: null,
+        last_success_at: null,
+        latency_ms: 9,
+        error_code: null,
+        message: "ok",
+      },
+      probe: {
+        id: "probe-1",
+        connection_id: "conn-1",
+        model_id: "text-1",
+        probe_type: "MODEL_SMOKE",
+        status: "PASSED",
+        latency_ms: 9,
+        metrics: {},
+        error_code: null,
+        message: "ok",
+        created_at: "2026-08-30T00:00:00Z",
+      },
+    });
+    renderPlatform();
+    fireEvent.click(await screen.findByRole("button", { name: "测试文本" }));
+    await waitFor(() => {
+      expect(verifyConnection).toHaveBeenCalledWith("conn-1", {
+        level: "MODEL_SMOKE",
+        catalog_model_id: "text-1",
+        acknowledge_cost: false,
+      });
+    });
+
+    const imageTrigger = await screen.findByRole("button", { name: "测试图片" });
+    fireEvent.click(imageTrigger);
+    expect(screen.getByRole("dialog")).toHaveTextContent("图片能力测试可能产生费用");
+    fireEvent.click(screen.getByRole("button", { name: "确认测试" }));
+    await waitFor(() => {
+      expect(verifyConnection).toHaveBeenLastCalledWith("conn-1", {
+        level: "MODEL_SMOKE",
+        catalog_model_id: "image-1",
+        acknowledge_cost: true,
+      });
+    });
+  });
+
+  it("默认隐藏展示偏好关闭的模型，开启管理开关后可单条显示或隐藏", async () => {
+    const visible = makeProviderModel({
+      id: "visible-1",
+      provider_model_id: "visible-1",
+      display_name: "Visible One",
+      version: 3,
+    });
+    const hidden = makeProviderModel({
+      id: "hidden-1",
+      provider_model_id: "hidden-1",
+      display_name: "Hidden One",
+      display_enabled: false,
+      version: 4,
+    });
+    providerModelsApi.mockResolvedValue([visible, hidden]);
+    updateVisibility.mockResolvedValue({ ...visible, display_enabled: false, version: 4 });
+    renderPlatform();
+    expect(await screen.findByText("Visible One")).toBeInTheDocument();
+    expect(screen.queryByText("Hidden One")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "显示已隐藏" }));
+    expect(await screen.findByText("Hidden One")).toBeInTheDocument();
+    const visibleRow = screen.getByText("Visible One").closest("article");
+    expect(visibleRow).not.toBeNull();
+    fireEvent.click(within(visibleRow!).getByRole("button", { name: "隐藏" }));
+    await waitFor(() => {
+      expect(updateVisibility).toHaveBeenCalledWith("visible-1", false, 3);
+    });
+    expect(updateConnection).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ enabled: false }));
+  });
+
+  it("批量显隐使用逐项版本，部分失败后只保留失败项选择", async () => {
+    const first = makeProviderModel({ id: "model-1", provider_model_id: "model-1", display_name: "Model One", version: 2 });
+    const second = makeProviderModel({ id: "model-2", provider_model_id: "model-2", display_name: "Model Two", version: 7 });
+    providerModelsApi.mockResolvedValue([first, second]);
+    updateVisibilityBatch.mockResolvedValue({
+      updated: [{ model_id: "model-1", version: 3 }],
+      failed: [{
+        model_id: "model-2",
+        error_code: "VERSION_CONFLICT",
+        message: "模型已更新，请刷新后重试",
+        current_version: 8,
+      }],
+    });
+    renderPlatform();
+    fireEvent.click(await screen.findByRole("checkbox", { name: "选择 Model One" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "选择 Model Two" }));
+    expect(screen.getByText("已选 2 个模型")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "隐藏所选" }));
+    await waitFor(() => {
+      expect(updateVisibilityBatch).toHaveBeenCalledWith([
+        { model_id: "model-1", expected_version: 2 },
+        { model_id: "model-2", expected_version: 7 },
+      ], false);
+      expect(screen.getByText("已选 1 个模型")).toBeInTheDocument();
+      expect(screen.getByText("已更新 1 个模型，1 个失败并保留选择")).toBeInTheDocument();
+      expect(screen.getByText("Model Two：模型已更新，请刷新后重试")).toBeInTheDocument();
+    });
+    expect(screen.getByRole("checkbox", { name: "选择 Model One" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "选择 Model Two" })).toBeChecked();
+  });
+
+  it("设置页不再保留 Vertex 专属查询、卡片或硬编码模型按钮", () => {
+    expect(settingsPageSource).not.toContain("vertexStatus");
+    expect(settingsPageSource).not.toContain("verifyVertex");
+    expect(settingsPageSource).not.toContain("VERTEX AI / PROVIDER");
+    expect(settingsPageSource).not.toContain("Nano Banana");
+  });
+
+  it("C4 同步发现结果后显示推断模型与待验证状态", async () => {
+    const inferred = makeProviderModel({
+      id: "inferred-1",
+      provider_model_id: "inferred-1",
+      display_name: "Inferred One",
+      confidence: "INFERRED",
+    });
+    discoverModels.mockImplementation(async () => {
+      providerModelsApi.mockResolvedValue([inferred]);
+      return [inferred];
+    });
+    renderPlatform();
+    fireEvent.click(await screen.findByRole("button", { name: "同步模型" }));
+    expect(await screen.findByText("Inferred One")).toBeInTheDocument();
+    expect(screen.getByText(/推断\/待验证/)).toBeInTheDocument();
+  });
+
+  it("C6 手工添加模型后清空 ID，并可被仅已验证筛掉", async () => {
+    const manual = makeProviderModel({
+      id: "manual-1",
+      provider_model_id: "manual-text-1",
+      display_name: "Manual Text",
+      confidence: "MANUAL",
+      source: "MANUAL",
+    });
+    createProviderModel.mockImplementation(async () => {
+      providerModelsApi.mockResolvedValue([manual]);
+      return manual;
+    });
+    renderPlatform();
+    const idInput = await screen.findByLabelText("上游模型 ID");
+    fireEvent.change(idInput, { target: { value: "manual-text-1" } });
+    fireEvent.change(screen.getByLabelText("显示名"), { target: { value: "Manual Text" } });
+    fireEvent.click(screen.getByRole("button", { name: "添加模型" }));
+    await waitFor(() => {
+      expect(createProviderModel).toHaveBeenCalledWith("conn-1", expect.objectContaining({
+        provider_model_id: "manual-text-1",
+        display_name: "Manual Text",
+        model_type: "TEXT",
+      }));
+      expect(idInput).toHaveValue("");
+      expect(idInput).toHaveFocus();
+    });
+    expect(await screen.findByText("Manual Text")).toBeInTheDocument();
+    expect(screen.getByText(/待验证/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("checkbox", { name: "仅已验证" }));
+    expect(screen.queryByText("Manual Text")).not.toBeInTheDocument();
+  });
+
+  it("C7 图片测试取消时不发请求，确认时才携带费用确认", async () => {
+    providerModelsApi.mockResolvedValue([makeProviderModel({
+      id: "image-1",
+      provider_model_id: "image-1",
+      display_name: "Image One",
+      model_type: "IMAGE",
+      output_modalities: ["IMAGE"],
+      operations: ["image_generate"],
+    })]);
+    renderPlatform();
+    fireEvent.click(await screen.findByRole("button", { name: "测试图片" }));
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(verifyConnection).not.toHaveBeenCalled();
+  });
+
+  it("C8 Anthropic 文字连接不提供图片模型类型或图片测试", async () => {
+    providersApi.mockResolvedValue([makeProvider({
+      connections: [makeConnection({
+        protocol: "ANTHROPIC",
+        supported_model_types: ["TEXT"],
+      })],
+    })]);
+    providerModelsApi.mockResolvedValue([makeProviderModel()]);
+    renderPlatform();
+    const type = await screen.findByLabelText("模型类型");
+    expect(within(type).queryByRole("option", { name: "图片模型" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "测试图片" })).not.toBeInTheDocument();
+  });
+
+  it("V4 分开展示隐藏、持久停用和派生未就绪三种状态", async () => {
+    const hidden = makeProviderModel({ id: "hidden", provider_model_id: "hidden", display_name: "Hidden", display_enabled: false });
+    const disabled = makeProviderModel({ id: "disabled", provider_model_id: "disabled", display_name: "Disabled", enabled: false });
+    const unready = makeProviderModel({ id: "unready", provider_model_id: "unready", display_name: "Unready", enabled: true });
+    providerModelsApi.mockResolvedValue([hidden, disabled, unready]);
+    modelsApi.mockResolvedValue([
+      makeModel({ catalog_id: "hidden", model_id: "hidden", display_enabled: false }),
+      makeModel({ catalog_id: "disabled", model_id: "disabled", enabled: false }),
+      makeModel({ catalog_id: "unready", model_id: "unready", enabled: false }),
+    ]);
+    renderPlatform();
+    expect(await screen.findByText("Disabled")).toBeInTheDocument();
+    expect(screen.getByText(/disabled · 不可调用/)).toBeInTheDocument();
+    const unreadyRow = screen.getByText("Unready").closest("article");
+    expect(unreadyRow).not.toBeNull();
+    expect(within(unreadyRow!).getByText(/unready · 未就绪/)).toBeInTheDocument();
+    expect(within(unreadyRow!).getByRole("button", { name: "测试文本" })).toBeDisabled();
+    expect(screen.queryByText("Hidden")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("checkbox", { name: "显示已隐藏" }));
+    expect(await screen.findByText("Hidden")).toBeInTheDocument();
+    expect(screen.getByText(/hidden · 已隐藏/)).toBeInTheDocument();
+  });
+
+  it("S1-S5 密钥只显示 hint，输入为密码且保存后清空明文", async () => {
+    saveProviderKey.mockResolvedValue(makeConnection().keys[0]);
+    renderPlatform();
+    expect(await screen.findByText(/sk-\*\*\*\*1234/)).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("sk-live-");
+    const input = screen.getByLabelText("API Key");
+    expect(input).toHaveAttribute("type", "password");
+    fireEvent.change(input, { target: { value: "sk-live-never-render" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存密钥" }));
+    await waitFor(() => {
+      expect(saveProviderKey).toHaveBeenCalledWith("conn-1", "default", "sk-live-never-render");
+      expect(input).toHaveValue("");
+      expect(screen.getByText("密钥已保存")).toBeInTheDocument();
+    });
+    expect(document.body.textContent).not.toContain("sk-live-never-render");
+  });
+});
+
 describe("供应商生命周期", () => {
   beforeEach(() => {
     providersApi.mockReset().mockResolvedValue([makeProvider()]);
@@ -242,7 +635,6 @@ describe("供应商生命周期", () => {
     createProvider.mockReset();
     updateProvider.mockReset();
     deleteProvider.mockReset();
-    testConnection.mockReset();
     updateConnection.mockReset();
   });
 
@@ -440,6 +832,44 @@ describe("供应商生命周期", () => {
       expect(screen.getByText("内置供应商只能停用，不能删除")).toBeInTheDocument();
     });
   });
+
+  it("P12 人工停用账号型连接只发送显式 enabled=false", async () => {
+    providersApi.mockResolvedValue([makeProvider({
+      connections: [makeConnection({
+        credential_source: "ENV_SERVICE_ACCOUNT",
+        credential_writable: false,
+        keys: [],
+        key_count: 0,
+      })],
+    })]);
+    updateConnection.mockResolvedValue(makeConnection({ enabled: false, version: 2 }));
+    renderPlatform();
+    fireEvent.click(await screen.findByRole("button", { name: "停用连接" }));
+    await waitFor(() => {
+      expect(updateConnection).toHaveBeenCalledWith("conn-1", { version: 1, enabled: false });
+    });
+  });
+
+  it("P13 账号型凭据暂不可见时保持启用且不擅自 PATCH", async () => {
+    providersApi.mockResolvedValue([makeProvider({
+      connections: [makeConnection({
+        enabled: true,
+        configured: false,
+        credential_source: "ENV_SERVICE_ACCOUNT",
+        credential_writable: false,
+        health_state: "DEGRADED",
+        message: "服务账号暂不可见",
+        keys: [],
+        key_count: 0,
+      })],
+    })]);
+    renderPlatform();
+    fireEvent.click(await screen.findByRole("button", { name: /未配置/ }));
+    fireEvent.click(screen.getByRole("button", { name: /OpenAI/ }));
+    expect(await screen.findByText(/凭据由服务端环境管理；当前未就绪/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "停用连接" })).toBeInTheDocument();
+    expect(updateConnection).not.toHaveBeenCalled();
+  });
 });
 
 describe("搜索筛选排序与 confidence", () => {
@@ -455,6 +885,7 @@ describe("搜索筛选排序与 confidence", () => {
       model_id: "dall-e-3",
       display_name: "DALL-E 3",
       model_type: "IMAGE",
+      output_modalities: ["IMAGE"],
       confidence: "VERIFIED",
       operations: ["image_generate"],
     }),
@@ -485,10 +916,12 @@ describe("搜索筛选排序与 confidence", () => {
       }),
     ]);
     modelsApi.mockReset().mockResolvedValue(models);
+    providerModelsApi.mockImplementation(async (connectionId) => (
+      connectionId === "conn-1" ? models.map(toProviderModel) : []
+    ));
     createProvider.mockReset();
     updateProvider.mockReset();
     deleteProvider.mockReset();
-    testConnection.mockReset();
     updateConnection.mockReset();
   });
 
@@ -560,6 +993,7 @@ describe("搜索筛选排序与 confidence", () => {
 
   it("F7 类型、已验证和搜索同时生效", async () => {
     renderPlatform();
+    await screen.findByText("DALL-E 3");
     fireEvent.change(await screen.findByLabelText("筛选供应商"), { target: { value: "openai" } });
     fireEvent.click(screen.getByRole("button", { name: "图片" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "仅已验证" }));
@@ -623,13 +1057,23 @@ describe("键盘焦点与错误关联", () => {
         model_id: "dall-e-3",
         display_name: "DALL-E 3",
         model_type: "IMAGE",
+        output_modalities: ["IMAGE"],
+        operations: ["image_generate"],
+      }),
+    ]);
+    providerModelsApi.mockResolvedValue([
+      makeProviderModel({
+        id: "img-1",
+        provider_model_id: "dall-e-3",
+        display_name: "DALL-E 3",
+        model_type: "IMAGE",
+        output_modalities: ["IMAGE"],
         operations: ["image_generate"],
       }),
     ]);
     createProvider.mockReset();
     updateProvider.mockReset();
     deleteProvider.mockReset();
-    testConnection.mockReset();
     updateConnection.mockReset();
   });
 
@@ -724,7 +1168,6 @@ describe("加载空错误与 JSON 校验", () => {
     createProvider.mockReset();
     updateProvider.mockReset();
     deleteProvider.mockReset();
-    testConnection.mockReset();
     updateConnection.mockReset();
   });
 
@@ -748,18 +1191,20 @@ describe("加载空错误与 JSON 校验", () => {
 
   it("L3 models reject 时连接头可见且模型区报错", async () => {
     providersApi.mockResolvedValue([makeProvider()]);
-    modelsApi.mockRejectedValue(new Error("模型目录失败"));
+    modelsApi.mockResolvedValue([]);
+    providerModelsApi.mockRejectedValue(new Error("模型目录失败"));
     renderPlatform();
     expect(await screen.findByText("密钥无效")).toBeInTheDocument();
-    expect(screen.getByText("模型目录读取失败")).toBeInTheDocument();
-    expect(screen.queryByText("还没有模型。同步目录，或手工添加上游 ID。")).not.toBeInTheDocument();
+    expect(await screen.findByText("模型目录读取失败")).toBeInTheDocument();
+    expect(screen.queryByText("还没有模型。先同步模型列表，或手工添加上游 ID。")).not.toBeInTheDocument();
   });
 
   it("L4 模型空数组时展示真空间态", async () => {
     providersApi.mockResolvedValue([makeProvider()]);
     modelsApi.mockResolvedValue([]);
+    providerModelsApi.mockResolvedValue([]);
     renderPlatform();
-    expect(await screen.findByText("还没有模型。同步目录，或手工添加上游 ID。")).toBeInTheDocument();
+    expect(await screen.findByText("还没有模型。先同步模型列表，或手工添加上游 ID。")).toBeInTheDocument();
   });
 
   it("L5 主密钥不可写时保存禁用并说明", async () => {
@@ -867,7 +1312,7 @@ describe("窄桌面布局", () => {
 
   it("N2 900px 创建和密钥表单单列且按钮不小于 32px", () => {
     const start = stylesheet.indexOf("@media (max-width: 900px)");
-    const body = stylesheet.slice(start, start + 700);
+    const body = stylesheet.slice(start, start + 1000);
     expect(body).toContain(".provider-create-form");
     expect(body).toContain(".provider-key-form");
     expect(body).toContain("grid-template-columns: 1fr");

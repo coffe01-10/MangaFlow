@@ -26,7 +26,7 @@ class ProjectCreate(BaseModel):
     last_image_model_alias: str | None = Field(default=None, pattern=MODEL_REFERENCE_PATTERN)
     default_text_model_id: str | None = Field(default=None, max_length=36)
     last_image_model_id: str | None = Field(default=None, max_length=36)
-    text_model_alias: str = Field(default="text.fast", pattern=MODEL_REFERENCE_PATTERN)
+    text_model_alias: str | None = Field(default=None, pattern=MODEL_REFERENCE_PATTERN)
 
 
 class ProjectUpdate(BaseModel):
@@ -56,7 +56,7 @@ class ProjectRead(BaseModel):
     workflow_mode: WorkflowMode
     default_concurrency: int
     consistency_check_enabled: bool
-    text_model_alias: str
+    text_model_alias: str | None
     last_image_model_alias: str | None
     default_text_model_id: str | None
     last_image_model_id: str | None
@@ -161,18 +161,9 @@ class ModelCapabilityRead(BaseModel):
     regions: list[str]
     confidence: str = "VERIFIED"
     enabled: bool = True
+    display_enabled: bool = True
     auto_eligible: bool = False
     priority: int = 50
-
-
-class VertexStatusRead(BaseModel):
-    configured: bool
-    credential_file_present: bool
-    location: str
-    text_model: str
-    image_models: list[str]
-    verification: str
-    message: str
 
 
 class SourceImportRequest(BaseModel):
@@ -692,7 +683,7 @@ class PageReadinessProvider(BaseModel):
     health_state: str
     text_model_access: str
     image_model_access: str
-    image_model_alias: str = "image.nano_banana_2"
+    image_model_alias: str | None = None
     usable_image_model_count: int = 0
     auto_image_model_count: int = 0
 
@@ -717,7 +708,7 @@ class PageReadinessRead(BaseModel):
     worker: PageReadinessWorker
     blockers: list[PageReadinessBlocker] = Field(default_factory=list)
     estimated_image_calls: int = 1
-    estimated_cost_note: str = "将调用 1 次 Nano Banana 2 1K 生图"
+    estimated_cost_note: str = "将调用 1 次所选图片模型的 1K 生图"
 
 
 class ProductionBlocker(BaseModel):

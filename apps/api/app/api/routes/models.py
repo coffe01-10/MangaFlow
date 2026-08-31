@@ -1,17 +1,16 @@
-from fastapi import APIRouter, Body, Depends
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import get_db
 from app.models import AIModel, ProviderConnection, ProviderProfile
 from app.schemas import ModelCapabilityRead
+from app.services.credential_source import environment_credentials_ready
 from app.services.model_availability import (
     catalog_model_is_available,
     connection_ids_with_usable_keys,
 )
 from app.services.provider_presets import ensure_provider_presets
-from app.services.vertex_health import get_or_create_health, health_read, verify_vertex
-from app.settings_schemas import VertexHealthRead, VertexVerifyRequest
 
 router = APIRouter()
 
@@ -37,6 +36,9 @@ def list_models(db: Session = Depends(get_db)) -> list[dict]:
             profile,
             credentials_writable=credentials_writable,
             has_usable_key=connection.id in usable_key_connections,
+            environment_credentials_ready=environment_credentials_ready(
+                settings, connection.protocol
+            ),
         )
         catalog.append(
             {
@@ -60,6 +62,7 @@ def list_models(db: Session = Depends(get_db)) -> list[dict]:
                 "regions": (model.capabilities or {}).get("regions") or ["global"],
                 "confidence": model.confidence,
                 "enabled": available,
+                "display_enabled": model.display_enabled,
                 "auto_eligible": (
                     available
                     and model.confidence == "VERIFIED"
@@ -69,19 +72,3 @@ def list_models(db: Session = Depends(get_db)) -> list[dict]:
             }
         )
     return catalog
-
-
-# Compatibility aliases retained for one release. Both use the persisted status
-# and never perform a model call on GET.
-@router.get("/vertex/status", response_model=VertexHealthRead)
-def vertex_status(db: Session = Depends(get_db)) -> VertexHealthRead:
-    settings = get_settings()
-    return health_read(get_or_create_health(db, settings), settings)
-
-
-@router.post("/vertex/verify", response_model=VertexHealthRead)
-def verify_vertex_credentials(
-    payload: VertexVerifyRequest | None = Body(default=None),
-    db: Session = Depends(get_db),
-) -> VertexHealthRead:
-    return verify_vertex(db, get_settings(), payload or VertexVerifyRequest())

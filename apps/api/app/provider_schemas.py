@@ -47,8 +47,10 @@ class ProviderConnectionRead(BaseModel):
     base_url: str
     enabled: bool
     configured: bool
-    credential_source: Literal["CONNECTION_KEY", "ENV_SERVICE_ACCOUNT"]
+    credential_source: Literal["CONNECTION_KEY", "ENV_SERVICE_ACCOUNT", "CLI_SESSION"]
     credential_writable: bool
+    supports_model_discovery: bool
+    supports_balance: bool
     supported_model_types: list[Literal["TEXT", "IMAGE"]]
     use_responses_api: bool
     endpoint_templates: dict[str, str]
@@ -146,6 +148,7 @@ class ProviderModelRead(BaseModel):
     source: str
     confidence: str
     enabled: bool
+    display_enabled: bool
     priority: int
     success_rate: float | None
     median_latency_ms: int | None
@@ -180,8 +183,42 @@ class ProviderModelUpdate(BaseModel):
     capabilities: dict[str, Any] | None = None
     pricing: dict[str, Any] | None = None
     enabled: bool | None = None
+    display_enabled: bool | None = None
     priority: int | None = Field(default=None, ge=0, le=100)
     version: int = Field(ge=1)
+
+
+class ModelVisibilityBatchItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model_id: str = Field(min_length=1, max_length=36)
+    expected_version: int = Field(ge=1)
+
+
+class ModelVisibilityBatchUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[ModelVisibilityBatchItem] = Field(min_length=1, max_length=100)
+    display_enabled: bool
+
+
+class ModelVisibilityUpdatedItem(BaseModel):
+    model_id: str
+    version: int
+
+
+class ModelVisibilityFailedItem(BaseModel):
+    model_id: str
+    error_code: Literal[
+        "MODEL_NOT_FOUND", "CONNECTION_MISSING", "VERSION_CONFLICT"
+    ]
+    message: str
+    current_version: int | None = None
+
+
+class ModelVisibilityBatchResult(BaseModel):
+    updated: list[ModelVisibilityUpdatedItem]
+    failed: list[ModelVisibilityFailedItem]
 
 
 class _ModelPricingVersionFields(BaseModel):
@@ -265,6 +302,58 @@ class ConnectionTestRequest(BaseModel):
         return self
 
 
+class ConnectionHealthRead(BaseModel):
+    connection_id: str
+    configured: bool
+    credential_source: Literal["CONNECTION_KEY", "ENV_SERVICE_ACCOUNT", "CLI_SESSION"]
+    supports_model_discovery: bool
+    supports_balance: bool
+    supported_model_types: list[Literal["TEXT", "IMAGE"]]
+    health_state: Literal[
+        "UNCONFIGURED",
+        "CHECKING",
+        "HEALTHY",
+        "DEGRADED",
+        "OFFLINE",
+        "UNKNOWN",
+        "PROBING",
+        "AVAILABLE",
+        "UNAVAILABLE",
+        "UNAUTHENTICATED",
+        "UNSUPPORTED",
+    ]
+    last_checked_at: datetime | None
+    last_success_at: datetime | None
+    latency_ms: int | None
+    error_code: str | None
+    message: str
+
+
+class ConnectionVerifyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    level: Literal["CREDENTIALS", "MODEL_SMOKE"] = "CREDENTIALS"
+    catalog_model_id: str | None = None
+    operation: Literal[
+        "structured_text",
+        "multimodal_analysis",
+        "image_generate",
+        "image_edit",
+    ] | None = None
+    acknowledge_cost: bool = False
+    runs: int = Field(default=1, ge=1, le=3)
+
+    @model_validator(mode="after")
+    def validate_level(self):
+        if self.level == "MODEL_SMOKE" and not self.catalog_model_id:
+            raise ValueError("模型冒烟测试必须选择目录模型")
+        if self.level == "CREDENTIALS" and self.catalog_model_id is not None:
+            raise ValueError("凭据验证不接受模型参数")
+        if self.level == "CREDENTIALS" and self.operation is not None:
+            raise ValueError("凭据验证不接受模型操作")
+        return self
+
+
 class ModelProbeRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -278,6 +367,11 @@ class ModelProbeRead(BaseModel):
     error_code: str | None
     message: str
     created_at: datetime
+
+
+class ConnectionVerifyResult(BaseModel):
+    health: ConnectionHealthRead
+    probe: ModelProbeRead
 
 
 class BalanceRead(BaseModel):

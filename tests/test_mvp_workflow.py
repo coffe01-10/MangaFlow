@@ -1313,6 +1313,7 @@ def test_job_history_archive_restore_and_safe_delete(client, db_session):
     db_session.add(
         GenerationRecord(
             job_id=failed_referenced.id,
+            provider="fake-provider",
             model_id="fake-image-model",
             location="global",
             parameters={},

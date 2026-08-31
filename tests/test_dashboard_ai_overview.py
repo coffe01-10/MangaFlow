@@ -308,12 +308,15 @@ def test_dashboard_does_not_double_count_mixed_models_and_keys(client, db_sessio
     _assert_matches_catalog(client, listed)
 
 
-def test_homepage_keeps_dashboard_and_vertex_status_queries():
+def test_homepage_uses_dashboard_overview_without_provider_specific_queries():
     source = (Path(__file__).resolve().parents[1] / "apps" / "web" / "app" / "page.tsx").read_text(
         encoding="utf-8"
     )
     assert 'queryKey: ["dashboard"]' in source
-    assert 'queryKey: ["vertex-status"]' in source
+    assert 'queryKey: ["vertex-status"]' not in source
+    assert "api.vertexStatus" not in source
+    assert "api.verifyVertex" not in source
+    assert "VERTEX AI" not in source
     assert 'queryKey: ["models"]' not in source
     assert 'queryKey: ["providers"]' not in source
     assert "api.models" not in source

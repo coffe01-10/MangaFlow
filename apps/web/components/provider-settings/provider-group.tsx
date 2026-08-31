@@ -11,8 +11,6 @@ export function ProviderGroup({
   id,
   label,
   providers,
-  models,
-  modelsStatus,
   defaultExpanded,
   forceExpanded,
   forceExpandCards,
@@ -20,15 +18,14 @@ export function ProviderGroup({
   modelType,
   capability,
   verifiedOnly,
+  showHidden,
+  catalog,
   focusProviderId,
   onKeyFocused,
-  onRetryModels,
 }: {
   id: string;
   label: string;
   providers: ProviderProfile[];
-  models: ModelCapability[];
-  modelsStatus: "loading" | "error" | "ready";
   defaultExpanded: boolean;
   forceExpanded: boolean;
   forceExpandCards: boolean;
@@ -36,9 +33,10 @@ export function ProviderGroup({
   modelType: ModelTypeFilter;
   capability: CapabilityFilter;
   verifiedOnly: boolean;
+  showHidden: boolean;
+  catalog: ModelCapability[];
   focusProviderId: string | null;
   onKeyFocused: () => void;
-  onRetryModels: () => void;
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const shown = forceExpanded || expanded;
@@ -66,16 +64,15 @@ export function ProviderGroup({
             <ProviderCard
               key={provider.id}
               provider={provider}
-              models={models}
-              modelsStatus={modelsStatus}
               forceExpanded={forceExpandCards}
               preferExpanded={pinnedProviderId === provider.id}
               modelType={modelType}
               capability={capability}
               verifiedOnly={verifiedOnly}
+              showHidden={showHidden}
+              catalog={catalog}
               autoFocusKey={focusProviderId === provider.id}
               onKeyFocused={onKeyFocused}
-              onRetryModels={onRetryModels}
             />
           ))}
         </div>

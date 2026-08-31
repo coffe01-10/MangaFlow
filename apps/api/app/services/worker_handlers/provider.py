@@ -279,9 +279,9 @@ def _replacement_meta(
 def _text_model_reference(job: GenerationJob, project: Project) -> str | None:
     if job.catalog_model_id:
         return job.catalog_model_id
-    if job.model_alias and job.model_alias != "text.fast":
+    if job.model_alias:
         return job.model_alias
-    return project.default_text_model_id or project.text_model_alias or job.model_alias
+    return project.default_text_model_id or project.text_model_alias or "auto"
 
 
 def _validate_reference_capacity(binding: AdapterBinding, count: int) -> None:

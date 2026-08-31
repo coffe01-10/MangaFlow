@@ -2,6 +2,7 @@
 
 import { AppShell } from "@/components/shell";
 import { api, type ImageModelAlias, type Project } from "@/lib/api";
+import { creatorVisibleModels } from "@/lib/model-visibility";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { CircleAlert, LoaderCircle } from "lucide-react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
@@ -107,10 +108,10 @@ export default function ProjectWorkspace({
   };
 
   const draft = localDraft ?? project.data ?? null;
-  const modelOptions = useMemo(
+  const catalogModelOptions = useMemo(
     () => {
       const available = (models.data ?? [])
-        .filter((model) => model.enabled && model.model_type === "IMAGE" && model.operations.includes("image_edit"));
+        .filter((model) => model.model_type === "IMAGE" && model.operations.includes("image_edit"));
       return available.map((model) => ({
         alias: model.logical_alias,
         name: model.display_name,
@@ -119,6 +120,18 @@ export default function ProjectWorkspace({
       }));
     },
     [models.data],
+  );
+  const modelOptions = useMemo(
+    () => creatorVisibleModels(
+      (models.data ?? []).filter((model) => model.model_type === "IMAGE" && model.operations.includes("image_edit")),
+      { logicalAliases: [drawModel] },
+    ).map((model) => ({
+      alias: model.logical_alias,
+      name: model.display_name,
+      id: model.model_id,
+      provider: model.provider,
+    })),
+    [drawModel, models.data],
   );
   const activeDrawModel = drawModel && modelOptions.some((option) => option.alias === drawModel)
     ? drawModel
@@ -308,6 +321,7 @@ export default function ProjectWorkspace({
               characters={characters}
               outfits={outfits}
               modelOptions={modelOptions}
+              catalogModelOptions={catalogModelOptions}
               activeDrawModel={activeDrawModel}
               setDrawModel={setDrawModel}
               openPreview={openPreview}
@@ -321,7 +335,7 @@ export default function ProjectWorkspace({
               pages={pages}
               chapters={chapters}
               characters={characters}
-              modelOptions={modelOptions}
+              modelOptions={catalogModelOptions}
               openPreview={openPreview}
               router={router}
               projectPath={projectPath}
@@ -335,7 +349,7 @@ export default function ProjectWorkspace({
             <JobsSection
               jobs={jobs}
               workspace={jobsWorkspace}
-              modelOptions={modelOptions}
+              modelOptions={catalogModelOptions}
               openPreview={openPreview}
             />
           )}

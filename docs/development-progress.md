@@ -1,13 +1,69 @@
 # MangaFlow AI 开发进度
 
-更新时间：2026-08-30
+更新时间：2026-08-31
 
 本文件记录修订版 MVP 计划的实际完成度。
+
+## V02-13B CLI 公共执行器已实现（2026-08-31）
+
+- 新增 provider-neutral CLI controller 与 `CLIExecutionRun` 持久状态；每次派发关联唯一 `ModelCallAttempt`，数据库唯一槽位限制单通道并发，迁移存在审计行时拒绝降级。
+- 参考图受控复制，prompt 只进入结构化 request；结果只采用已登记且通过路径、大小、像素与格式校验的图片。日志和错误脱敏，费用保持 unknown，失败不会静默改走 HTTP。
+- 四步探测写入 `ModelProbe`；`CLI_SESSION` 不显示密钥表单、不读取会话凭据。Windows runner 使用 suspended create + kill-on-close Job Object，先归组和持久登记再恢复进程。
+- Ruff、53 项 CLI/迁移/供应商 Python 回归、Web ESLint、TypeScript、26 个文件 189 项 Vitest、Next.js 生产构建与 `git diff --check` 通过。真实 CLI、真实供应商、Windows 实机进程树与 PostgreSQL 均未运行，也未产生费用。
+
+## V02-10D 产品级供应商入口已中性化（2026-08-31）
+
+- 首页删除专属状态请求与验证卡，改为单一 Dashboard 聚合请求和通用 AI 连接摘要；设置、帮助、项目默认模型与工作流节点统一消费凭据来源及模型目录，当前历史绑定仍保留显示。
+- 环境账号是否就绪集中由凭据适配层回答；Dashboard、`/models`、readiness 和目录服务不再各自读取供应商专属配置。Worker 拒绝文案、架构协议能力表、平台和数据模型示例已中性化。
+- 平权 allowlist 从 15 个路径收紧到 10 个，仅保留原生适配、环境凭据兼容、历史模型 registry/预设、单版本旧健康桥及协议类型。旧 `ProviderHealth` 当前仍服务 `/settings/vertex/*` 兼容端点，产品前端已无读方；待兼容端点退役时一并删除，避免本轮破坏旧客户端。
+- Ruff 与 85 项供应商/Dashboard/readiness/原文解析定向 Python 回归通过；Web ESLint、TypeScript、26 个文件 188 项 Vitest 和 Next.js 生产构建通过，`git diff --check` 与 Linux 等价平权扫描通过。M14 与 PowerShell 完整门禁仍需 Windows 环境，未调用真实供应商。
+
+## V02-10C 默认值、路由与 grandfather 已实现（2026-08-31）
+
+- 新项目的文字/图片 legacy 别名改为可空且不再带供应商默认；风格分析、原文解析、视觉检查和默认工作流文字节点统一使用 `auto`。`GenerationRecord.provider` 必须由实际绑定显式写入。
+- `image.fast` / `image.quality` 仅在解析时归一化到现行 legacy alias，不重写历史任务；目录 ID、目录模型字段和真实 provider/model ID 优先，旧 registry 只补目录缺失的可选能力。
+- Vertex 新安装在环境凭据未就绪时持久化一次性 `auto_enable_pending`，就绪后只启用一次并清标记；旧连接及人工启停保持原值，凭据后来缺失只改变健康态。新预设模型以 `DECLARED` 创建，需模型冒烟后才参与自动路由。
+- 新增项目别名可空迁移。SQLite 回归发现并修复 batch 重建 `projects` 触发外键级联的风险；迁移现在窄范围暂停外键、重建后执行 `foreign_key_check`。历史项目升降级逐字段不变，存在 NULL 项目时 downgrade 明确拒绝且数据保留。
+- Ruff、ESLint、TypeScript、187 项 Vitest、Next.js 生产构建及排除 Windows 专属模块后的 368 项 Python（47 项集成环境跳过）通过。完整 Python 其余失败/错误来自既有 Windows junction、PowerShell 与 Job Object 边界；真实 PostgreSQL 和完整 PowerShell 门禁 `NOT RUN`，未调用真实供应商。
+
+## V02-11C 设置页验收进行中（2026-08-31）
+
+- Issue #40 的 P/C/F/V/A/S/L/N 组件矩阵已补齐：供应商设置定向回归由 58 项增至 66 项，新增账号型连接降级、手工模型、发现置信度、图片费用取消、密钥脱敏/清空和展示/调用/派生可用性三态测试。
+- 三态回归发现并修复派生不可用模型缺少状态的问题：设置页现标为「未就绪」并禁止冒烟测试，仍与持久停用的「不可调用」及展示偏好的「已隐藏」分离。
+- 已新增离线假供应商浏览器用例，覆盖 UI 创建连接、手工添加模型及显隐偏好，明确断言未触发 verify/discover/balance；用例通过独立 TypeScript 检查。Web ESLint、TypeScript、25 个文件 187 项 Vitest 和 Next.js 生产构建通过。
+- 浏览器执行 `BLOCKED`：仓库验收入口依赖 Windows `SO_EXCLUSIVEADDRUSE` 与 Job Object，当前 Linux 在启动任何服务前安全失败；未绕过进程归属保护。完整 `npm run check` 仍由缺少 PowerShell 阻断。因此 V02-11C 保持未完成，待 Windows 环境运行离线 E2E 与完整门禁；未调用真实供应商。
+
+## V02-12C 下游模型展示偏好已统一（2026-08-31）
+
+- 生成台、资产生成、工作流节点/审批和项目默认文字模型选择器统一只提供 `enabled && display_enabled` 的新选择；当前已选或已绑定的隐藏模型继续保留，项目设置明确标注“已隐藏”。
+- 生成候选、素材库和任务记录使用完整图片模型目录解析历史模型名称；目录缺失时回退真实逻辑别名，不因展示偏好丢失历史身份。过滤仅在前端选择器发生，未修改任务创建、自动路由、调用能力、审计或重放。
+- 新增共享过滤规则及项目设置回归；Web ESLint、TypeScript、25 个文件 179 项 Vitest 与 Next.js 16.3.3 生产构建通过。浏览器 E2E 与真实供应商未运行。
+
+## V02-11B 统一连接与模型目录已实现（2026-08-30）
+
+- 设置页已使用连接级管理目录和统一连接验证，并按凭据来源及能力渲染发现、余额和模型冒烟；Vertex 专属卡与硬编码模型按钮已删除。
+- 已接入单条/批量展示偏好、隐藏筛选、逐项版本与部分失败保留选择，且不修改模型调用开关。Web ESLint、TypeScript、176 项 Vitest 与生产构建通过；真实供应商和浏览器 E2E 未运行。
+
+## V02-12B 模型展示偏好后端已实现（2026-08-30）
+
+- `ai_models.display_enabled` 独立于持久调用开关与派生可用性；既有和新建模型默认展示，隐藏不影响显式调用、自动路由、任务引用或审计 ID。
+- 新增连接模型管理列表、单条显隐更新和最多 100 项的批量显隐端点。批量按模型独立提交，返回缺失、孤立连接与版本冲突明细；相同目标值重试保持版本不变。
+- 仅修改展示偏好时保留 `source`/`confidence` 且跳过能力校验；与能力字段混合更新时继续沿用原有 `MANUAL` 语义。预设刷新不会覆盖用户偏好。
+- 48 项迁移/供应商定向回归、Ruff、Web ESLint、170 项 Vitest 和 Next.js 生产构建通过。Linux 全量 Pytest 为 397 passed / 60 skipped；6 failed / 10 errors 均是仓库既有的 Windows junction、PowerShell/OEM 编码与 Job Object 验收，当前环境无法执行。
+- SQLite 已覆盖历史行无损回填、升降级往返与隐藏值降级保护；真实 PostgreSQL、浏览器 E2E 与真实供应商未运行。设置页管理能力已由 V02-11B 完成，下游创作选择器消费已由 V02-12C 完成。
+
+## V02-10B 统一连接健康与验证已实现（2026-08-30）
+
+- 新增协议中立的连接健康与验证端点；`CREDENTIALS` 不生成内容，`MODEL_SMOKE` 使用目录模型并写入 `ModelProbe`，图片测试继续要求费用确认。
+- PR 复审补修：旧 `VISION` 请求现在保留 `multimodal_analysis` 操作；每次已确认的图片冒烟只调用一种能力；无可用 Key 时失败探针会把连接从 `CHECKING` 收敛到 `UNCONFIGURED`。文字/视觉分别验证后累积能力置信度。
+- 模型发现改由协议能力声明控制；验证与目录同步拆开，不支持发现的连接使用预设或手工目录。预设刷新不再覆盖用户修改过的模型定义、验证结果或启停状态。
+- `/settings/vertex/status|verify` 保留一版兼容并转发统一服务；无人调用的 `/models/vertex/*` 兼容别名与死 schema 已删除。诊断页按实际连接动态生成检查项，不再固定写入 Google OAuth/Gemini 模型项。
+- Ruff 与 73 项供应商、健康、Dashboard、平台契约定向回归通过。Linux 全量 Pytest 达到 390 passed / 60 skipped；其余失败均来自仓库既有的 Windows Job Object、junction、PowerShell 专用验收，当前环境无法执行。未调用真实供应商、未读取凭据、未产生费用。
 
 ## 0.2.0 首批扩展交付已集中验收（2026-08-30）
 
 - 供应商实现切片 V02-10A/V02-11A 与 18 项设计、审计、能力矩阵和验收计划已由组长逐项复审、直接修复并按依赖顺序合入本地 `master`；20 项合并树为 `01fd82a`。缺失的 V02-12A、V02-50 Issue 已补建为 #59、#60，所有交付均有独立 Issue、分支、worktree 与验收边界。
-- 已实现：`credential_source` 派生、共享供应商错误分类、PowerShell 5.1 平权门禁，以及供应商设置 UI 基础（生命周期、搜索/筛选/排序/折叠、显式凭据来源、连接测试与目录同步、连接启停、加载/错误/空状态和回归测试）。V02-12 展示偏好、统一健康、迁移与下游选模仍属于后续实现，不提前记为完成。
+- 已实现：`credential_source` 派生、共享供应商错误分类、PowerShell 5.1 平权门禁、统一连接健康/验证、模型展示偏好后端，以及供应商设置 UI 基础（生命周期、搜索/筛选/排序/折叠、显式凭据来源、连接测试与目录同步、连接启停、加载/错误/空状态和回归测试）。V02-12 下游选模与 V02-11B 设置页统一仍属于后续实现。
 - 已冻结：模型展示偏好、CLI controller、用量账本/看板、场景资产、角色模型包工作区、分镜 geometry/bubble/canvas、导演命令血缘、局部重抽卡、模型级图片编辑能力、全局文案、桌面工作区、性能门禁和桌面壳 ADR。TodoList 已将完成的 A 级设计/审计与待实现的 B 级任务分列。
 - 合并后在具备 Windows Job Object/监听归属权限的环境执行完整 `npm run check`，退出码 0：供应商平权脚本、ESLint、Ruff、439 项 Python、170 项 Vitest、TypeScript 与 Next.js 16.3.3 生产构建全部通过；23 项真实 PostgreSQL/Redis/RQ 集成因环境未提供而跳过，36 条既有弃用警告保留。
 - 首次受限沙箱运行曾因 `.ruff_cache`/`.next/trace` ACL 和 `Get-NetTCPConnection` 权限中断；`ruff --no-cache`、沙箱外 2 项 Windows 归属测试与生产构建分别通过，随后同一沙箱外环境完整门禁一次性通过。该过程记录为环境边界，不修改项目配置或测试断言规避失败。

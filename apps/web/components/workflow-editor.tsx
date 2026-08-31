@@ -49,6 +49,7 @@ export function WorkflowEditor() {
   const [search, setSearch] = useState("");
 
   const projectsQuery = useQuery({ queryKey: ["workflow-projects"], queryFn: api.projects });
+  const modelsQuery = useQuery({ queryKey: ["models"], queryFn: api.models });
   const resolvedProjectId = projectsQuery.data?.some((project) => project.id === activeProjectId)
     ? activeProjectId
     : projectsQuery.data?.[0]?.id ?? "";
@@ -299,6 +300,8 @@ export function WorkflowEditor() {
           projectDataError={projectDataError}
           assetCount={assetCount}
           chapterCount={chapterCount}
+          models={modelsQuery.data ?? []}
+          modelsLoading={modelsQuery.isLoading}
           inspectorOpen={inspectorOpen}
           setInspectorOpen={setInspectorOpen}
           updateNode={updateNode}

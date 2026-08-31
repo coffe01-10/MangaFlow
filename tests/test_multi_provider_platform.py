@@ -41,12 +41,19 @@ from app.services.credential_crypto import (
 )
 from app.services.job_service import cancel_job
 from app.services.model_router import (
+    _catalog_capability,
+    get_catalog_model,
     model_operation_verified,
     model_supports_resolution,
     resolve_model,
 )
+from app.services.model_registry import ModelCapability
 from app.services.provider_catalog import _upsert_discovered_models
-from app.services.provider_presets import ensure_provider_presets, proxy_url_for_connection
+from app.services.provider_presets import (
+    ensure_provider_presets,
+    proxy_url_for_connection,
+)
+from app.services.worker_handlers import provider as worker_provider
 
 
 class SmokeResult(BaseModel):
@@ -127,6 +134,208 @@ def test_presets_seed_default_provider_catalog(client):
     assert anthropic["connections"][0]["supported_model_types"] == ["TEXT"]
     vertex = next(provider for provider in providers if provider["preset_key"] == "vertex-ai")
     assert vertex["connections"][0]["credential_source"] == "ENV_SERVICE_ACCOUNT"
+
+
+def test_new_vertex_preset_uses_one_shot_auto_enable_and_declared_models(
+    db_session, monkeypatch, tmp_path
+):
+    settings = get_settings()
+    missing_credentials = tmp_path / "missing-vertex.json"
+    monkeypatch.setattr(settings, "google_cloud_project", None)
+    monkeypatch.setattr(settings, "google_application_credentials", missing_credentials)
+
+    ensure_provider_presets(db_session, settings)
+
+    profile = db_session.query(ProviderProfile).filter_by(preset_key="vertex-ai").one()
+    connection = db_session.query(ProviderConnection).filter_by(
+        provider_id=profile.id
+    ).one()
+    assert connection.enabled is False
+    assert connection.nonsecret_config["auto_enable_pending"] is True
+    assert {
+        model.confidence
+        for model in db_session.query(AIModel).filter_by(connection_id=connection.id)
+    } == {"DECLARED"}
+
+    missing_credentials.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(settings, "google_cloud_project", "new-install")
+    ensure_provider_presets(db_session, settings)
+    db_session.refresh(connection)
+    assert connection.enabled is True
+    assert "auto_enable_pending" not in connection.nonsecret_config
+
+    monkeypatch.setattr(settings, "google_cloud_project", None)
+    ensure_provider_presets(db_session, settings)
+    db_session.refresh(connection)
+    assert connection.enabled is True
+
+
+def test_vertex_models_are_not_injected_into_nonempty_provider_catalog(db_session):
+    db_session.add(ProviderProfile(name="Existing custom provider"))
+    db_session.commit()
+
+    ensure_provider_presets(db_session, get_settings())
+
+    vertex = db_session.query(ProviderProfile).filter_by(preset_key="vertex-ai").one()
+    vertex_connection = db_session.query(ProviderConnection).filter_by(
+        provider_id=vertex.id
+    ).one()
+    assert db_session.query(AIModel).filter_by(
+        connection_id=vertex_connection.id
+    ).count() == 0
+
+
+@pytest.mark.parametrize("original_enabled", [True, False])
+def test_existing_vertex_connection_keeps_manual_enabled_state(
+    db_session, monkeypatch, tmp_path, original_enabled
+):
+    settings = get_settings()
+    profile = ProviderProfile(
+        preset_key="vertex-ai", name="Existing Vertex", built_in=True
+    )
+    db_session.add(profile)
+    db_session.flush()
+    connection = ProviderConnection(
+        provider_id=profile.id,
+        protocol="VERTEX_NATIVE",
+        base_url="vertex://existing",
+        enabled=original_enabled,
+        nonsecret_config={"installed": "before-phase-c"},
+    )
+    db_session.add(connection)
+    db_session.commit()
+
+    credentials = tmp_path / "existing-vertex.json"
+    credentials.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(settings, "google_application_credentials", credentials)
+    monkeypatch.setattr(settings, "google_cloud_project", "existing-install")
+    ensure_provider_presets(db_session, settings)
+    db_session.refresh(connection)
+
+    assert connection.enabled is original_enabled
+    assert connection.nonsecret_config == {"installed": "before-phase-c"}
+    assert db_session.query(AIModel).filter_by(connection_id=connection.id).count() == 0
+
+
+def test_manual_connection_toggle_clears_auto_enable_pending(
+    client, db_session, monkeypatch, tmp_path
+):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "google_cloud_project", None)
+    monkeypatch.setattr(
+        settings, "google_application_credentials", tmp_path / "not-configured.json"
+    )
+    ensure_provider_presets(db_session, settings)
+    connection = db_session.query(ProviderConnection).filter_by(
+        protocol="VERTEX_NATIVE"
+    ).one()
+
+    response = client.patch(
+        f"/api/v1/providers/connections/{connection.id}",
+        json={"version": connection.version, "enabled": False},
+    )
+
+    assert response.status_code == 200, response.text
+    assert "auto_enable_pending" not in response.json()["nonsecret_config"]
+    credentials = tmp_path / "configured-later.json"
+    credentials.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(settings, "google_application_credentials", credentials)
+    monkeypatch.setattr(settings, "google_cloud_project", "configured-later")
+    ensure_provider_presets(db_session, settings)
+    db_session.refresh(connection)
+    assert connection.enabled is False
+
+
+def test_legacy_model_aliases_resolve_without_rewriting_storage(db_session):
+    ensure_provider_presets(db_session, get_settings())
+    direct = get_catalog_model(db_session, "image.nano_banana_2")
+    assert direct is not None
+
+    project = Project(
+        name="Legacy aliases",
+        text_model_alias="text.fast",
+        image_model_alias="image.nano_banana_2",
+    )
+    db_session.add(project)
+    db_session.flush()
+    job = GenerationJob(
+        project_id=project.id,
+        target_type="PROJECT",
+        target_id=project.id,
+        job_type="PAGE_GENERATE",
+        model_alias="image.fast",
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    assert get_catalog_model(db_session, direct.id) is direct
+    assert get_catalog_model(db_session, job.model_alias) is direct
+    assert get_catalog_model(db_session, "image.quality").legacy_alias == (
+        "image.nano_banana_pro"
+    )
+    db_session.refresh(job)
+    assert job.model_alias == "image.fast"
+    assert direct.legacy_alias == "image.nano_banana_2"
+
+
+def test_text_reference_keeps_historical_alias_but_new_jobs_use_auto():
+    historical_project = Project(name="Historical", text_model_alias="text.fast")
+    historical_job = GenerationJob(
+        project_id="historical",
+        target_type="PROJECT",
+        target_id="historical",
+        job_type="SOURCE_PARSE",
+        model_alias="text.fast",
+    )
+    neutral_project = Project(name="Neutral")
+    neutral_job = GenerationJob(
+        project_id="neutral",
+        target_type="PROJECT",
+        target_id="neutral",
+        job_type="SOURCE_PARSE",
+    )
+
+    assert worker_provider._text_model_reference(
+        historical_job, historical_project
+    ) == "text.fast"
+    assert worker_provider._text_model_reference(neutral_job, neutral_project) == "auto"
+
+
+def test_catalog_capability_fields_override_legacy_registry_fallback():
+    model = AIModel(
+        id="catalog-model",
+        connection_id="connection",
+        provider_model_id="directory-model-v2",
+        display_name="Directory Name",
+        legacy_alias="text.fast",
+        operations=["directory-operation"],
+        capabilities={
+            "regions": ["asia-east1"],
+            "resolutions": [],
+            "max_reference_images": 0,
+        },
+    )
+    legacy = ModelCapability(
+        provider="legacy-provider",
+        model_id="legacy-model",
+        logical_alias="text.fast",
+        display_name="Legacy Name",
+        operations=("legacy-operation",),
+        resolutions=("4K",),
+        max_reference_images=14,
+        supported_parameters=("thinking_budget",),
+    )
+
+    capability = _catalog_capability(model, "Directory Provider", legacy)
+
+    assert capability.provider == "Directory Provider"
+    assert capability.model_id == "directory-model-v2"
+    assert capability.display_name == "Directory Name"
+    assert capability.operations == ("directory-operation",)
+    assert capability.regions == ("asia-east1",)
+    assert capability.resolutions == ()
+    assert capability.max_reference_images == 0
+    assert capability.supported_parameters == ("thinking_budget",)
 
 
 def test_vertex_catalog_connection_inherits_legacy_health(

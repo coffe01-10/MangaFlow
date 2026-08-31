@@ -40,7 +40,7 @@ describe("createNode", () => {
       status: "idle",
     });
     expect(node.settings).toEqual({
-      model: "Gemini 3.5 Flash",
+      model: "auto",
       resolution: "1K 草稿",
       concurrency: 2,
       locked: false,
@@ -48,8 +48,8 @@ describe("createNode", () => {
     });
   });
 
-  it("生成器节点默认使用 Nano Banana 2", () => {
-    expect(createNode("generator", "generator-9", 0, 0).settings.model).toBe("Nano Banana 2");
+  it("生成器节点等待用户显式选择目录图片模型", () => {
+    expect(createNode("generator", "generator-9", 0, 0).settings.model).toBe("");
   });
 
   it("overrides 覆盖模板默认值", () => {

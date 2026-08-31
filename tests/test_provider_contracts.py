@@ -10,10 +10,12 @@ from types import SimpleNamespace
 
 from app.config import Settings
 from app.services.credential_source import (
+    CLI_SESSION,
     CONNECTION_KEY,
     ENV_SERVICE_ACCOUNT,
     connection_credential_source,
     credential_source_for_protocol,
+    environment_credentials_ready,
 )
 from app.services.model_registry import build_registry
 from app.services.provider_errors import PROVIDER_ERROR_CODES, ProviderFailure
@@ -26,6 +28,7 @@ def test_credential_source_depends_only_on_protocol():
     assert credential_source_for_protocol("OPENAI") == CONNECTION_KEY
     assert credential_source_for_protocol("ANTHROPIC") == CONNECTION_KEY
     assert credential_source_for_protocol("SOME_FUTURE_PROTOCOL") == CONNECTION_KEY
+    assert credential_source_for_protocol("CLI_FAKE") == CLI_SESSION
 
 
 def test_connection_credential_source_ignores_provider_identity():
@@ -37,6 +40,18 @@ def test_connection_credential_source_ignores_provider_identity():
     assert connection_credential_source(keyed_a) == connection_credential_source(keyed_b)
     assert connection_credential_source(keyed_a) == CONNECTION_KEY
     assert connection_credential_source(account_a) == ENV_SERVICE_ACCOUNT
+
+
+def test_environment_credential_readiness_stays_in_credential_adapter():
+    configured = Settings(
+        google_cloud_project="test-project",
+        google_application_credentials=Path(__file__),
+    )
+    unconfigured = Settings()
+
+    assert environment_credentials_ready(configured, "VERTEX_NATIVE") is True
+    assert environment_credentials_ready(unconfigured, "VERTEX_NATIVE") is False
+    assert environment_credentials_ready(configured, "OPENAI") is False
 
 
 def test_provider_error_codes_contract_is_stable():

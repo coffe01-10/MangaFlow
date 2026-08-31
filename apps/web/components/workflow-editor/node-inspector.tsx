@@ -3,7 +3,8 @@
 import { Box, ChevronDown, CircleDot, Link2, LockKeyhole, PanelRightClose, RotateCcw, Settings2, Trash2 } from "lucide-react";
 import type { Dispatch, SetStateAction } from "react";
 
-import type { Project } from "@/lib/api";
+import type { ModelCapability, Project } from "@/lib/api";
+import { creatorVisibleModels } from "@/lib/model-visibility";
 import { kindIcon, statusLabel } from "./graph-model";
 import styles from "../workflow-editor.module.css";
 import type { FlowNode } from "./types";
@@ -15,6 +16,8 @@ export function NodeInspector({
   projectDataError,
   assetCount,
   chapterCount,
+  models,
+  modelsLoading,
   inspectorOpen,
   setInspectorOpen,
   updateNode,
@@ -27,6 +30,8 @@ export function NodeInspector({
   projectDataError: boolean;
   assetCount: number;
   chapterCount: number;
+  models: ModelCapability[];
+  modelsLoading: boolean;
   inspectorOpen: boolean;
   setInspectorOpen: Dispatch<SetStateAction<boolean>>;
   updateNode: (patch: Partial<FlowNode>) => void;
@@ -46,6 +51,25 @@ export function NodeInspector({
       : selectedIsChapterSource
         ? `${chapterCount} 章项目原作可从“原始文本”端口传给下游节点。`
         : "继承当前项目范围，但只处理端口实际连入的数据，不会自动读取全部资产。";
+  const usesModel = selectedNode
+    ? ["agent", "director", "generator", "quality"].includes(selectedNode.kind)
+    : false;
+  const modelType = selectedNode?.kind === "generator" ? "IMAGE" : "TEXT";
+  const modelOptions = selectedNode
+    ? creatorVisibleModels(
+        models.filter((model) => model.model_type === modelType),
+        {
+          catalogIds: [selectedNode.settings.model],
+          logicalAliases: [selectedNode.settings.model],
+        },
+      )
+    : [];
+  const currentModelMissing = Boolean(
+    usesModel
+      && selectedNode?.settings.model
+      && selectedNode.settings.model !== "auto"
+      && !modelOptions.some((model) => model.catalog_id === selectedNode.settings.model),
+  );
 
   return (
     <aside className={styles.inspector}>
@@ -84,10 +108,10 @@ export function NodeInspector({
             <h2>执行设置 <span>RUNTIME</span></h2>
             <label className={styles.fieldLabel} htmlFor={`flow-model-${selectedNode.id}`}>使用模型</label>
             <label className={styles.selectBox}>
-              <select id={`flow-model-${selectedNode.id}`} value={selectedNode.settings.model} onChange={(event) => updateSettings({ model: event.target.value })}>
-                <option>Gemini 3.5 Flash</option>
-                <option>Nano Banana 2</option>
-                <option>Nano Banana Pro</option>
+              <select id={`flow-model-${selectedNode.id}`} value={usesModel ? selectedNode.settings.model : "none"} disabled={!usesModel || modelsLoading} onChange={(event) => updateSettings({ model: event.target.value })}>
+                {!usesModel ? <option value="none">此节点不调用模型</option> : modelType === "TEXT" ? <option value="auto">自动路由 · 已验证文字模型</option> : <option value="">请选择图片模型</option>}
+                {currentModelMissing ? <option value={selectedNode.settings.model}>当前配置 · {selectedNode.settings.model}</option> : null}
+                {modelOptions.map((model) => <option key={model.catalog_id} value={model.catalog_id}>{model.provider} · {model.display_name}{!model.display_enabled ? "（已隐藏）" : ""}</option>)}
               </select>
               <ChevronDown size={14} />
             </label>

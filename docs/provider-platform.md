@@ -2,9 +2,9 @@
 
 ## 协议与预设
 
-用户可创建两类兼容连接：`OPENAI` 与 `ANTHROPIC`。OpenAI 协议支持模型列表、Chat Completions、Responses、图片生成和图片编辑端点模板；Anthropic 协议支持 Messages 文本与多模态请求。Vertex AI 和 Gemini API 是已有工作流的内置原生连接，不属于用户可新增协议。
+目录当前声明 `OPENAI`、`ANTHROPIC`、`GOOGLE_NATIVE` 和 `VERTEX_NATIVE` 四种传输协议。用户可创建前两类兼容连接；后两类原生协议由内置预设提供。OpenAI 协议支持模型列表、Chat Completions、Responses、图片生成和图片编辑端点模板；Anthropic 协议支持 Messages 文本与多模态请求。协议只决定传输、凭据形态和能力声明，不决定产品排序、默认选择或路由优先级。
 
-系统预置 OpenAI、Anthropic、Gemini API、DeepSeek、OpenRouter、OpenCode Zen、硅基流动、Vercel AI Gateway、阿里云百炼、火山方舟、月之暗面、智谱 GLM、阶跃星辰、腾讯混元、xAI、MiniMax、MIMO、302.AI、AiHubMix、TokenPony、随想、AckAI 等连接。预设只提供非敏感 URL 和端点；未录入凭据时不会发送请求。第三方聚合网关标记为 `THIRD_PARTY`。
+系统预置多种官方与兼容连接。预设只提供非敏感 URL、端点与声明能力；未录入凭据时不会发送请求，新预设模型以 `DECLARED` 进入目录，必须经过对应操作的冒烟验证后才可参与自动路由。第三方聚合网关标记为 `THIRD_PARTY`。设置页按用户筛选与名称展示目录，不给任何预设固定置顶或默认模型。
 
 ## 凭据配置
 
@@ -20,9 +20,19 @@ API Key 使用 AES-256-GCM 加密写入 `provider_keys`。设置页只显示标�
 
 ## 模型发现与能力
 
-“同步模型”读取供应商 `/models`，记录文字/图片类型、输入输出模态、可用操作、API surface、上下文和价格元数据。无法从上游声明中确认的能力标记为 `INFERRED`，必须人工修正并执行能力测试。自动路由只使用 `VERIFIED` 模型；显式选择仍会校验模型、连接、供应商是否启用及是否支持当前操作。
+连接按传输协议声明 `supports_model_discovery` 与支持的模型类型，不再根据供应商名称猜测功能。“同步模型”只在协议明确支持发现时读取上游目录，记录文字/图片类型、输入输出模态、可用操作、API surface、上下文和价格元数据；不支持发现的连接使用预设种子或手动添加，不会把本地已有模型伪装成一次同步结果。无法从上游声明中确认的能力标记为 `INFERRED`，必须人工修正并执行能力测试。自动路由只使用 `VERIFIED` 模型；显式选择仍会校验模型、连接、供应商是否启用及是否支持当前操作。
 
-测试分四层：凭据/模型列表、结构化文字、图片输入视觉、图片输出。图片测试会产生一次 1K 调用，界面要求明确确认。探测记录保存在 `model_probes`，连接和模型同步保存最近成功时间与中位延迟。
+所有连接共用 `GET /providers/connections/{id}/health` 与 `POST /providers/connections/{id}/verify`。`CREDENTIALS` 只验证环境凭据或 API Key/目录访问，不生成文字或图片；`MODEL_SMOKE` 必须绑定目录模型，结果同时更新连接健康和 `model_probes`。每次图片冒烟只执行一种操作，并要求显式费用确认。旧 `/settings/vertex/status|verify` 在过渡期内部转发统一验证服务；产品前端不再调用该入口，已无人使用的 `/models/vertex/*` 别名已经移除。旧 `ProviderHealth` 表只为这一单版本兼容入口保留，不再作为产品状态事实来源。
+
+`CLI_SESSION` 表示登录态由外部 CLI 管理。应用不显示密钥表单、不读取或复制会话 token，也不代用户登录；presence/version/login/capability 四步探测分别写入 `ModelProbe`，连接据此派生为 `AVAILABLE`、`UNAVAILABLE`、`UNAUTHENTICATED` 或 `UNSUPPORTED`。只有 `AVAILABLE` 的 CLI 连接可调用，探测不会替用户启停连接；具体 CLI 仍由 V02-14 分项注册。
+
+连接验证与目录同步是两个独立动作，避免一次点击重复请求模型列表。旧 `/connections/{id}/test` 仍兼容现有客户端，但内部使用统一验证服务。探测记录保存在 `model_probes`，连接和模型同步保存最近成功时间与中位延迟。
+
+## 模型展示偏好
+
+模型的调用开关、当前可用性与创作界面展示偏好是三个独立状态。`AIModel.enabled` 决定模型是否允许调用，`GET /models` 的 `enabled` 是结合供应商、连接和凭据派生的当前可用性，`AIModel.display_enabled` 只决定模型是否应出现在创作界面的新选择列表。隐藏模型不会退出自动路由，仍可被已有项目、工作流和历史任务按真实目录 ID 引用。
+
+设置页通过 `GET /providers/connections/{id}/models` 读取连接下的完整管理目录。单行偏好沿用 `PATCH /providers/models/{id}` 的乐观版本锁；批量偏好使用 `PATCH /providers/models/visibility`，每项携带期望版本并独立提交。批量响应分别列出成功项以及模型缺失、连接缺失、版本冲突项；重复写入相同目标值不会增加版本。`GET /models` 始终返回包含隐藏模型的完整目录，并分别提供 `enabled` 与 `display_enabled`。
 
 ## 路由与审计
 

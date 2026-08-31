@@ -236,9 +236,9 @@ def default_graph() -> dict:
     nodes = [
         _node("chapter", "source.chapter", "原作章节", 40, 180, notes="当前章节不可变修订"),
         _node("assets", "source.assets", "参考资产", 610, 430, notes="人物、服装、风格"),
-        _node("parse", "agent.parse", "剧情解析", 330, 160, model_alias="text.fast"),
-        _node("adapt", "agent.adapt", "漫画改编", 610, 160, model_alias="text.fast"),
-        _node("storyboard", "director.storyboard", "分页与分镜", 890, 160, model_alias="text.fast"),
+        _node("parse", "agent.parse", "剧情解析", 330, 160, model_alias="auto"),
+        _node("adapt", "agent.adapt", "漫画改编", 610, 160, model_alias="auto"),
+        _node("storyboard", "director.storyboard", "分页与分镜", 890, 160, model_alias="auto"),
         _node(
             "generate",
             "generator.page",
@@ -250,7 +250,7 @@ def default_graph() -> dict:
             requires_approval=True,
         ),
         _node("adopt", "control.approval", "采用候选", 1470, 250, requires_approval=True),
-        _node("inspect", "quality.inspect", "质量检查", 1760, 250, model_alias="text.fast"),
+        _node("inspect", "quality.inspect", "质量检查", 1760, 250, model_alias="auto"),
         _node("complete", "output.page", "单页成品", 2050, 250),
     ]
     edges = [

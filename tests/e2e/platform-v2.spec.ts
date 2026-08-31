@@ -29,6 +29,42 @@ test("首页、帮助和设置使用统一的真实导航", async ({ page }) => 
   await expect(page.getByRole("heading", { name: /把复杂的漫画生产/ })).toBeVisible();
 });
 
+test("设置页用离线假供应商完成创建、手工模型与展示显隐", async ({ page }) => {
+  const providerName = `E2E Fake Provider ${Date.now()}`;
+  const modelId = `e2e-fake-text-${Date.now()}`;
+  const forbiddenCalls: string[] = [];
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (/\/providers\/connections\/[^/]+\/(verify|discover|balance)$/.test(path)) {
+      forbiddenCalls.push(`${request.method()} ${path}`);
+    }
+  });
+
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "添加供应商" }).click();
+  const createPanel = page.locator("#provider-create-panel");
+  await createPanel.getByLabel("供应商名称").fill(providerName);
+  await createPanel.getByLabel("Base URL").fill("https://offline.invalid/v1");
+  await createPanel.getByRole("button", { name: "创建" }).click();
+
+  const card = page.locator(".provider-card").filter({ hasText: providerName });
+  await expect(card).toBeVisible();
+  await expect(card.getByLabel("API Key")).toBeFocused();
+  await card.getByLabel("上游模型 ID").fill(modelId);
+  await card.getByLabel("显示名").fill("E2E Fake Text");
+  await card.getByRole("button", { name: "添加模型" }).click();
+
+  const modelRow = card.locator(".provider-models article").filter({ hasText: "E2E Fake Text" });
+  await expect(modelRow).toContainText("待验证");
+  await modelRow.getByRole("button", { name: "隐藏" }).click();
+  await expect(modelRow).toHaveCount(0);
+
+  await page.getByRole("checkbox", { name: "显示已隐藏" }).check();
+  const hiddenRow = card.locator(".provider-models article").filter({ hasText: "E2E Fake Text" });
+  await expect(hiddenRow).toContainText("已隐藏");
+  expect(forbiddenCalls).toEqual([]);
+});
+
 test("项目阶段可深链、后退、刷新并进入真实工作流", async ({ page, request }) => {
   const id = await projectId(request);
   await page.goto(`/projects/${id}/source`);

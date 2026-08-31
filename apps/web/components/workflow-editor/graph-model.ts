@@ -111,7 +111,7 @@ export function createNode(
     inputs: template.inputs,
     outputs: template.outputs,
     settings: {
-      model: template.kind === "generator" ? "Nano Banana 2" : "Gemini 3.5 Flash",
+      model: template.kind === "generator" ? "" : "auto",
       resolution: "1K 草稿",
       concurrency: 2,
       locked: false,

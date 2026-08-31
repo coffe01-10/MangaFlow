@@ -13,6 +13,11 @@ const HEALTH_LABELS: Record<string, string> = {
   UNCONFIGURED: "未配置",
   CHECKING: "检查中",
   OFFLINE: "离线",
+  PROBING: "探测中",
+  AVAILABLE: "就绪",
+  UNAVAILABLE: "未安装",
+  UNAUTHENTICATED: "未登录 CLI",
+  UNSUPPORTED: "不支持图片生成",
 };
 
 const CATEGORY_LABELS: Record<string, string> = {

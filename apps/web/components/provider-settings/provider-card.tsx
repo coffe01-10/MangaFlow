@@ -12,28 +12,26 @@ import { ProviderLifecycleControls } from "./provider-lifecycle-controls";
 
 export function ProviderCard({
   provider,
-  models,
-  modelsStatus,
   forceExpanded,
   preferExpanded,
   modelType,
   capability,
   verifiedOnly,
+  showHidden,
+  catalog,
   autoFocusKey,
   onKeyFocused,
-  onRetryModels,
 }: {
   provider: ProviderProfile;
-  models: ModelCapability[];
-  modelsStatus: "loading" | "error" | "ready";
   forceExpanded: boolean;
   preferExpanded: boolean;
   modelType: ModelTypeFilter;
   capability: CapabilityFilter;
   verifiedOnly: boolean;
+  showHidden: boolean;
+  catalog: ModelCapability[];
   autoFocusKey: boolean;
   onKeyFocused: () => void;
-  onRetryModels: () => void;
 }) {
   const [expanded, setExpanded] = useState(
     preferExpanded || provider.connections.some((connection) => connection.configured),
@@ -85,14 +83,13 @@ export function ProviderCard({
             <ConnectionPanel
               key={connection.id}
               connection={connection}
-              models={models}
-              modelsStatus={modelsStatus}
               modelType={modelType}
               capability={capability}
               verifiedOnly={verifiedOnly}
+              showHidden={showHidden}
+              catalog={catalog}
               autoFocusKey={autoFocusKey}
               onKeyFocused={onKeyFocused}
-              onRetryModels={onRetryModels}
             />
           ))}
         </div>

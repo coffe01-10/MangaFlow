@@ -86,15 +86,20 @@ export function providerMatchesQuery(
   ));
 }
 
-export function filterModels(
-  models: ModelCapability[],
+export function filterModels<T extends Pick<
+  ModelCapability,
+  "model_type" | "operations" | "confidence" | "display_enabled"
+>>(
+  models: T[],
   options: {
     modelType: ModelTypeFilter;
     capability: CapabilityFilter;
     verifiedOnly: boolean;
+    showHidden?: boolean;
   },
 ) {
   return models.filter((model) => {
+    if (!options.showHidden && !model.display_enabled) return false;
     if (options.modelType !== "ALL" && model.model_type !== options.modelType) return false;
     if (options.capability !== "ALL" && !model.operations.includes(options.capability)) return false;
     if (options.verifiedOnly && model.confidence !== "VERIFIED") return false;

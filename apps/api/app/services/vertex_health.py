@@ -1,27 +1,18 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from time import perf_counter
-
-from pydantic import BaseModel
+from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import Settings
-from app.model_adapters.base import ImageRequest, StructuredRequest
-from app.model_adapters.vertex import VertexImageAdapter, VertexTextAdapter
-from app.models import ProviderHealth
-from app.services.model_registry import build_registry
-from app.services.vertex_credentials import (
-    classify_vertex_failure,
-    get_vertex_credential_manager,
-)
+from app.models import AIModel, ProviderConnection, ProviderHealth, ProviderProfile
+from app.provider_schemas import ConnectionVerifyRequest
+from app.services.vertex_credentials import get_vertex_credential_manager
 from app.settings_schemas import VertexHealthRead, VertexVerifyRequest
 
+__all__ = ["get_vertex_credential_manager"]
+
 PROVIDER = "vertex-ai"
-
-
-class _TextSmokeResult(BaseModel):
-    ok: bool
 
 
 def _configured(settings: Settings) -> bool:
@@ -94,102 +85,99 @@ def health_read(health: ProviderHealth, settings: Settings) -> VertexHealthRead:
     )
 
 
+def sync_connection_to_legacy_health(
+    db: Session,
+    settings: Settings,
+    connection: ProviderConnection,
+) -> ProviderHealth:
+    """Mirror unified connection health into the one-release legacy shape."""
+
+    health = get_or_create_health(db, settings)
+    is_new_result = health.last_checked_at != connection.last_checked_at
+    health.health_state = connection.health_state
+    health.last_checked_at = connection.last_checked_at
+    health.last_success_at = connection.last_success_at
+    health.latency_ms = connection.latency_ms
+    health.error_code = connection.error_code
+    health.message = connection.message
+    if connection.health_state == "HEALTHY":
+        health.consecutive_failures = 0
+    elif connection.error_code and is_new_result:
+        health.consecutive_failures += 1
+    db.flush()
+    return health
+
+
 def verify_vertex(
     db: Session, settings: Settings, payload: VertexVerifyRequest
 ) -> VertexHealthRead:
-    health = get_or_create_health(db, settings)
-    if not health.configured or not health.credential_file_present:
-        return health_read(health, settings)
-    if payload.level == "IMAGE_MODEL" and payload.image_model_alias is None:
-        from fastapi import HTTPException
+    from app.services.connection_verifier import verify_connection
+    from app.services.provider_presets import ensure_provider_presets
 
-        raise HTTPException(status_code=422, detail="图片验证必须明确选择 Nano Banana 2 或 Pro")
-
-    health.health_state = "CHECKING"
-    health.last_checked_at = datetime.now(UTC)
-    health.message = "正在执行显式联网验证"
-    db.commit()
-    started = perf_counter()
-    manager = get_vertex_credential_manager()
-    try:
-        if payload.level == "CREDENTIALS":
-            # Creating the client refreshes OAuth when required but never calls a model.
-            manager.execute(settings, lambda _client: True)
-            # A successful OAuth refresh proves the previous network outage is over, but
-            # it does not prove model access. Clear only transient results; permanent
-            # permission denials remain visible until that model is explicitly verified.
-            if health.text_model_access == "UNAVAILABLE":
-                health.text_model_access = "NOT_CHECKED"
-            access = dict(health.image_model_access or {})
-            health.image_model_access = {
-                alias: ("NOT_CHECKED" if state == "UNAVAILABLE" else state)
-                for alias, state in access.items()
-            }
-            message = "Vertex AI 服务账号验证成功"
-        elif payload.level == "TEXT_MODEL":
-            adapter = VertexTextAdapter(settings, build_registry(settings)["text.fast"])
-            adapter.generate_structured(
-                StructuredRequest(
-                    prompt='只返回 {"ok": true}',
-                    temperature=0,
-                    metadata={"max_output_tokens": 64, "thinking_budget": 0},
-                ),
-                _TextSmokeResult,
+    ensure_provider_presets(db, settings, auto_commit=True)
+    profile = db.scalar(
+        select(ProviderProfile).where(ProviderProfile.preset_key == PROVIDER)
+    )
+    connection = (
+        db.scalar(
+            select(ProviderConnection).where(
+                ProviderConnection.provider_id == profile.id
             )
-            health.text_model_access = "GRANTED"
-            message = "Gemini 3.5 Flash 低 token 验证成功"
-        else:
-            assert payload.image_model_alias is not None
-            adapter = VertexImageAdapter(
-                settings, build_registry(settings)[payload.image_model_alias]
-            )
-            adapter.generate_asset(
-                ImageRequest(
-                    prompt="一枚简单的黑色圆点，白色背景，无文字",
-                    resolution="1K",
-                    aspect_ratio="1:1",
-                )
-            )
-            access = dict(health.image_model_access or {})
-            access[payload.image_model_alias] = "GRANTED"
-            health.image_model_access = access
-            message = "所选图片模型 1K 验证成功"
-
-        now = datetime.now(UTC)
-        health.health_state = "HEALTHY"
-        health.last_success_at = now
-        health.consecutive_failures = 0
-        health.error_code = None
-        health.message = message
-        health.token_expires_at = manager.token_expiry(settings)
-    except Exception as error:
-        failure = classify_vertex_failure(error)
-        health.consecutive_failures += 1
-        health.error_code = failure.code
-        health.message = failure.message
-        # A provider/network failure does not erase a valid local configuration.
-        health.health_state = (
-            "DEGRADED"
-            if health.last_success_at is not None
-            or failure.code in {"PERMISSION", "RATE_LIMIT", "TIMEOUT", "UPSTREAM"}
-            else "OFFLINE"
         )
-        if payload.level == "TEXT_MODEL":
-            health.text_model_access = (
-                "DENIED" if failure.code in {"PERMISSION", "MODEL_NOT_FOUND"} else "UNAVAILABLE"
-            )
-        elif payload.level == "IMAGE_MODEL" and payload.image_model_alias:
-            access = dict(health.image_model_access or {})
-            access[payload.image_model_alias] = (
-                "DENIED" if failure.code in {"PERMISSION", "MODEL_NOT_FOUND"} else "UNAVAILABLE"
-            )
-            health.image_model_access = access
-    finally:
-        health.last_checked_at = datetime.now(UTC)
-        health.latency_ms = round((perf_counter() - started) * 1000)
-        from app.services.provider_presets import sync_vertex_connection_health
+        if profile
+        else None
+    )
+    if connection is None:
+        raise HTTPException(status_code=404, detail="Vertex 兼容连接不存在")
 
-        sync_vertex_connection_health(db, settings, health)
-        db.commit()
-        db.refresh(health)
+    catalog_model_id = None
+    acknowledge_cost = False
+    if payload.level != "CREDENTIALS":
+        alias = (
+            "text.fast"
+            if payload.level == "TEXT_MODEL"
+            else payload.image_model_alias
+        )
+        if alias is None:
+            raise HTTPException(status_code=422, detail="图片验证必须明确选择模型")
+        model = db.scalar(select(AIModel).where(AIModel.legacy_alias == alias))
+        if model is None:
+            raise HTTPException(status_code=404, detail="兼容验证模型不存在")
+        catalog_model_id = model.id
+        acknowledge_cost = model.model_type == "IMAGE"
+
+    verify_connection(
+        db,
+        settings,
+        connection.id,
+        ConnectionVerifyRequest(
+            level="CREDENTIALS" if payload.level == "CREDENTIALS" else "MODEL_SMOKE",
+            catalog_model_id=catalog_model_id,
+            acknowledge_cost=acknowledge_cost,
+        ),
+    )
+    health = sync_connection_to_legacy_health(db, settings, connection)
+    if payload.level == "CREDENTIALS" and connection.health_state == "HEALTHY":
+        if health.text_model_access == "UNAVAILABLE":
+            health.text_model_access = "NOT_CHECKED"
+        access = dict(health.image_model_access or {})
+        health.image_model_access = {
+            alias: ("NOT_CHECKED" if state == "UNAVAILABLE" else state)
+            for alias, state in access.items()
+        }
+        health.token_expires_at = get_vertex_credential_manager().token_expiry(
+            settings
+        )
+    elif payload.level == "TEXT_MODEL":
+        health.text_model_access = (
+            "GRANTED" if connection.health_state == "HEALTHY" else "UNAVAILABLE"
+        )
+    elif payload.level == "IMAGE_MODEL" and payload.image_model_alias:
+        access = dict(health.image_model_access or {})
+        access[payload.image_model_alias] = (
+            "GRANTED" if connection.health_state == "HEALTHY" else "UNAVAILABLE"
+        )
+        health.image_model_access = access
+    db.commit()
+    db.refresh(health)
     return health_read(health, settings)

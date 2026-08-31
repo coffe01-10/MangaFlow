@@ -20,6 +20,31 @@ function renderInspector(overrides: Partial<Parameters<typeof NodeInspector>[0]>
       projectDataError={false}
       assetCount={3}
       chapterCount={5}
+      models={[
+        {
+          catalog_id: "text-model",
+          connection_id: "connection-1",
+          provider: "Example",
+          protocol: "OPENAI",
+          model_id: "example-text",
+          logical_alias: "text.example",
+          display_name: "Example Text",
+          model_type: "TEXT",
+          input_modalities: ["TEXT", "IMAGE"],
+          output_modalities: ["TEXT"],
+          operations: ["structured_text", "multimodal_analysis"],
+          resolutions: [],
+          preview_resolutions: [],
+          max_reference_images: 1,
+          regions: [],
+          confidence: "VERIFIED",
+          enabled: true,
+          display_enabled: true,
+          auto_eligible: true,
+          priority: 100,
+        },
+      ]}
+      modelsLoading={false}
       inspectorOpen={true}
       setInspectorOpen={setInspectorOpen}
       updateNode={updateNode}
@@ -56,8 +81,8 @@ describe("NodeInspector", () => {
   it("模型、清晰度、并发数与锁定开关回调 updateSettings", () => {
     const { updateSettings } = renderInspector();
 
-    fireEvent.change(screen.getByLabelText("使用模型"), { target: { value: "Nano Banana Pro" } });
-    expect(updateSettings).toHaveBeenLastCalledWith({ model: "Nano Banana Pro" });
+    fireEvent.change(screen.getByLabelText("使用模型"), { target: { value: "text-model" } });
+    expect(updateSettings).toHaveBeenLastCalledWith({ model: "text-model" });
 
     fireEvent.change(screen.getByLabelText("清晰度"), { target: { value: "4K 高清" } });
     expect(updateSettings).toHaveBeenLastCalledWith({ resolution: "4K 高清" });

@@ -458,7 +458,7 @@ def analyze_style(style_id: str, db: Session = Depends(get_db)):
         target_type="STYLE",
         target_id=style.id,
         job_type="STYLE_ANALYZE",
-        model_alias="text.fast",
+        model_alias="auto",
         reference_asset_ids=reference_ids,
         idempotency_key=f"style-analyze:{style.id}:{style.version}",
     )
@@ -491,7 +491,7 @@ def draft_style_palette(
         target_type="STYLE",
         target_id=style.id,
         job_type="STYLE_ANALYZE",
-        model_alias="text.fast",
+        model_alias="auto",
         request_parameters={"palette_atmosphere": payload.atmosphere},
         reference_asset_ids=list(style.profile.get("reference_asset_ids", [])),
         idempotency_key=f"style-palette:{style.id}:{style.version}",

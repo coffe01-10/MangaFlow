@@ -4,12 +4,12 @@ from datetime import UTC, datetime
 from time import perf_counter
 
 from fastapi import APIRouter, Body, Depends
-from sqlalchemy import select, text
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import get_db
-from app.models import ProviderHealth
+from app.services.provider_catalog import list_provider_views
 from app.services.runtime_settings import (
     queue_execution_state,
     read_runtime_settings,
@@ -73,7 +73,6 @@ def _check(check_id: str, label: str, operation) -> DiagnosticCheckRead:
 @router.get("/diagnostics", response_model=DiagnosticsRead)
 def diagnostics(db: Session = Depends(get_db)) -> DiagnosticsRead:
     settings = get_settings()
-    health = db.scalar(select(ProviderHealth).where(ProviderHealth.provider == "vertex-ai"))
     queue_state = queue_execution_state(db, settings)
 
     def database_check():
@@ -91,40 +90,43 @@ def diagnostics(db: Session = Depends(get_db)) -> DiagnosticsRead:
             return "WARNING", "后台执行器被环境级维护开关停用，新任务将保留等待"
         return "WARNING", f"{queue_state.queue_mode} 模式；Redis 暂不可用，新任务将保留等待"
 
-    def oauth_check():
-        if not settings.google_cloud_project or not settings.google_application_credentials:
-            return "FAILED", "Vertex 服务账号尚未配置"
-        if not settings.google_application_credentials.is_file():
-            return "FAILED", "服务账号文件不存在"
-        if health and health.health_state == "HEALTHY":
-            return "OK", "最近一次 OAuth 验证成功"
-        if health and health.health_state == "DEGRADED":
-            return "WARNING", health.message
-        return "NOT_CHECKED", "凭据文件存在，尚未执行显式联网验证"
-
-    def text_check():
-        access = health.text_model_access if health else "NOT_CHECKED"
-        if access == "GRANTED":
-            return "OK", "Gemini 3.5 Flash 最近一次验证成功"
-        if access == "DENIED":
-            return "WARNING", "文本模型权限被拒绝，请检查项目、区域和模型权限"
-        if access == "UNAVAILABLE":
-            if health and health.health_state == "HEALTHY":
-                return "NOT_CHECKED", "连接已经恢复，请按需重新验证文本模型"
-            return "WARNING", "上次文本验证遇到网络或上游故障，尚未证明模型不可用"
-        if health and health.health_state == "HEALTHY":
-            return "NOT_CHECKED", "Vertex 凭据健康；文本模型需要重新验证"
-        return "NOT_CHECKED", "尚未执行低 token 文本模型验证"
-
     checks = [
         DiagnosticCheckRead(
             id="api", label="MangaFlow API", status="OK", message="API 正常响应", latency_ms=0
         ),
         _check("database", "数据库", database_check),
         _check("queue", "Worker 与队列", queue_check),
-        _check("oauth", "Google OAuth", oauth_check),
-        _check("text-model", "文本模型", text_check),
     ]
+    for profile in list_provider_views(db, settings):
+        for connection in profile["connections"]:
+            if not (
+                connection["enabled"]
+                or connection["configured"]
+                or connection["health_state"] != "UNCONFIGURED"
+            ):
+                continue
+            state = connection["health_state"]
+            if not connection["configured"]:
+                status = "FAILED"
+                message = "凭据尚未配置"
+            elif state == "HEALTHY":
+                status = "OK"
+                message = connection["message"] or "最近一次连接验证成功"
+            elif state in {"DEGRADED", "OFFLINE"}:
+                status = "WARNING"
+                message = connection["message"] or "连接需要重新验证"
+            else:
+                status = "NOT_CHECKED"
+                message = connection["message"] or "尚未执行连接验证"
+            checks.append(
+                DiagnosticCheckRead(
+                    id=f"provider-{connection['id']}",
+                    label=f"{profile['name']} · {connection['name']}",
+                    status=status,
+                    message=message,
+                    latency_ms=connection["latency_ms"],
+                )
+            )
     return DiagnosticsRead(
         checks=checks,
         checked_at=datetime.now(UTC),

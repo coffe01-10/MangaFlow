@@ -7,6 +7,10 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings
 from app.models import AIModel, ProviderConnection, ProviderHealth, ProviderProfile
+from app.services.credential_source import (
+    ENV_SERVICE_ACCOUNT,
+    credential_source_for_protocol,
+)
 
 OPENAI_ENDPOINTS = {
     "models": "/models",
@@ -291,12 +295,14 @@ def proxy_url_for_connection(
 def ensure_provider_presets(
     db: Session, settings: Settings, *, auto_commit: bool = True
 ) -> None:
+    provider_catalog_empty = db.scalar(select(ProviderProfile.id).limit(1)) is None
     existing = {
         row.preset_key: row
         for row in db.scalars(
             select(ProviderProfile).where(ProviderProfile.preset_key.is_not(None))
         )
     }
+    created_vertex_profile = False
     for preset in PRESETS:
         profile = existing.get(preset.key)
         if profile is None:
@@ -312,20 +318,30 @@ def ensure_provider_presets(
             )
             db.add(profile)
             db.flush()
+            if preset.key == "vertex-ai":
+                created_vertex_profile = True
+            credential_source = credential_source_for_protocol(preset.protocol)
+            environment_credentials_ready = (
+                credential_source == ENV_SERVICE_ACCOUNT
+                and settings.vertex_configured
+            )
+            nonsecret_config = {"preset_version": 1, "overridden_fields": []}
+            if credential_source == ENV_SERVICE_ACCOUNT and not environment_credentials_ready:
+                nonsecret_config["auto_enable_pending"] = True
             connection = ProviderConnection(
                 provider_id=profile.id,
                 name="默认连接",
                 protocol=preset.protocol,
                 base_url=preset.base_url,
-                enabled=preset.key == "vertex-ai" and settings.vertex_configured,
+                enabled=environment_credentials_ready,
                 use_responses_api=preset.use_responses_api,
                 endpoint_templates=dict(preset.endpoint_templates),
                 extra_headers=dict(preset.extra_headers),
                 balance_config=dict(preset.balance_config),
-                nonsecret_config={"preset_version": 1, "overridden_fields": []},
+                nonsecret_config=nonsecret_config,
                 health_state=(
                     "DEGRADED"
-                    if preset.key == "vertex-ai" and settings.vertex_configured
+                    if environment_credentials_ready
                     else "UNCONFIGURED"
                 ),
                 message="等待配置与验证",
@@ -340,7 +356,8 @@ def ensure_provider_presets(
 
     db.flush()
     sync_vertex_connection_health(db, settings)
-    _ensure_vertex_models(db, settings)
+    if created_vertex_profile and provider_catalog_empty:
+        _ensure_vertex_models(db, settings)
     db.flush()
     if auto_commit:
         db.commit()
@@ -361,7 +378,11 @@ def sync_vertex_connection_health(
     )
     if connection is None:
         return
-    connection.enabled = settings.vertex_configured
+    nonsecret_config = dict(connection.nonsecret_config or {})
+    if nonsecret_config.get("auto_enable_pending") and settings.vertex_configured:
+        connection.enabled = True
+        nonsecret_config.pop("auto_enable_pending", None)
+        connection.nonsecret_config = nonsecret_config
     if not settings.vertex_configured:
         connection.health_state = "UNCONFIGURED"
         connection.message = "等待配置 Vertex 服务账号"
@@ -402,7 +423,10 @@ def _ensure_vertex_models(db: Session, settings: Settings) -> None:
             "output_modalities": ["TEXT"],
             "operations": ["structured_text", "multimodal_analysis"],
             "api_surfaces": ["GOOGLE_GENERATE_CONTENT"],
-            "capabilities": {"structured_output_mode": "STRICT_SCHEMA"},
+            "capabilities": {
+                "structured_output_mode": "STRICT_SCHEMA",
+                "supported_parameters": ["thinking_budget"],
+            },
         },
         {
             "legacy_alias": "image.nano_banana_2",
@@ -439,16 +463,15 @@ def _ensure_vertex_models(db: Session, settings: Settings) -> None:
         model = db.scalar(
             select(AIModel).where(AIModel.legacy_alias == definition["legacy_alias"])
         )
+        # Existing rows are user-owned. In particular, startup seeding must
+        # never overwrite enabled, display_enabled, priority, or verification.
         if model is None:
             model = AIModel(
                 connection_id=connection.id,
                 source="PRESET",
-                confidence="VERIFIED",
+                confidence="DECLARED",
                 enabled=True,
                 priority=90,
                 **definition,
             )
             db.add(model)
-        else:
-            for key, value in definition.items():
-                setattr(model, key, value)

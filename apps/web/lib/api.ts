@@ -17,7 +17,7 @@ export interface Project {
   default_concurrency: number;
   default_style_id: string | null;
   consistency_check_enabled: boolean;
-  text_model_alias: string;
+  text_model_alias: string | null;
   last_image_model_alias: ImageModelAlias | null;
   default_text_model_id: string | null;
   last_image_model_id: string | null;
@@ -44,27 +44,9 @@ export interface ModelCapability {
   regions: string[];
   confidence: string;
   enabled: boolean;
+  display_enabled: boolean;
   auto_eligible: boolean;
   priority: number;
-}
-
-export interface VertexStatus {
-  configured: boolean;
-  health_state: "UNCONFIGURED" | "CHECKING" | "HEALTHY" | "DEGRADED" | "OFFLINE";
-  credential_file_present: boolean;
-  project: string | null;
-  location: string;
-  text_model: string;
-  image_models: string[];
-  last_checked_at: string | null;
-  last_success_at: string | null;
-  token_expires_at: string | null;
-  consecutive_failures: number;
-  latency_ms: number | null;
-  error_code: string | null;
-  message: string;
-  text_model_access: string;
-  image_model_access: Record<string, string>;
 }
 
 export interface RuntimeSettings {
@@ -105,12 +87,14 @@ export interface ProviderConnection {
   id: string;
   provider_id: string;
   name: string;
-  protocol: "OPENAI" | "ANTHROPIC" | "VERTEX_NATIVE" | "GOOGLE_NATIVE";
+  protocol: "OPENAI" | "ANTHROPIC" | "VERTEX_NATIVE" | "GOOGLE_NATIVE" | `CLI_${string}`;
   base_url: string;
   enabled: boolean;
   configured: boolean;
-  credential_source: "CONNECTION_KEY" | "ENV_SERVICE_ACCOUNT";
+  credential_source: "CONNECTION_KEY" | "ENV_SERVICE_ACCOUNT" | "CLI_SESSION";
   credential_writable: boolean;
+  supports_model_discovery: boolean;
+  supports_balance: boolean;
   supported_model_types: ("TEXT" | "IMAGE")[];
   use_responses_api: boolean;
   endpoint_templates: Record<string, string>;
@@ -156,6 +140,7 @@ export interface ProviderModel {
   api_surfaces: string[];
   capabilities: Record<string, unknown>;
   enabled: boolean;
+  display_enabled: boolean;
   priority: number;
   confidence: string;
   source: string;
@@ -179,6 +164,36 @@ export interface ModelProbe {
   error_code: string | null;
   message: string;
   created_at: string;
+}
+
+export interface ConnectionHealth {
+  connection_id: string;
+  configured: boolean;
+  credential_source: "CONNECTION_KEY" | "ENV_SERVICE_ACCOUNT" | "CLI_SESSION";
+  supports_model_discovery: boolean;
+  supports_balance: boolean;
+  supported_model_types: ("TEXT" | "IMAGE")[];
+  health_state: "UNCONFIGURED" | "CHECKING" | "HEALTHY" | "DEGRADED" | "OFFLINE" | "UNKNOWN" | "PROBING" | "AVAILABLE" | "UNAVAILABLE" | "UNAUTHENTICATED" | "UNSUPPORTED";
+  last_checked_at: string | null;
+  last_success_at: string | null;
+  latency_ms: number | null;
+  error_code: string | null;
+  message: string;
+}
+
+export interface ConnectionVerifyResult {
+  health: ConnectionHealth;
+  probe: ModelProbe;
+}
+
+export interface ModelVisibilityBatchResult {
+  updated: { model_id: string; version: number }[];
+  failed: {
+    model_id: string;
+    error_code: "MODEL_NOT_FOUND" | "CONNECTION_MISSING" | "VERSION_CONFLICT";
+    message: string;
+    current_version: number | null;
+  }[];
 }
 
 export interface Diagnostics {
@@ -807,12 +822,6 @@ export const api = {
   deleteProject: (id: string, confirmName: string) =>
     request<void>(`/projects/${id}?confirm_name=${encodeURIComponent(confirmName)}`, { method: "DELETE" }),
   models: () => request<ModelCapability[]>("/models"),
-  vertexStatus: () => request<VertexStatus>("/settings/vertex/status"),
-  verifyVertex: (level: "CREDENTIALS" | "TEXT_MODEL" | "IMAGE_MODEL" = "CREDENTIALS", imageModelAlias?: ImageModelAlias) =>
-    request<VertexStatus>("/settings/vertex/verify", {
-      method: "POST",
-      body: JSON.stringify({ level, image_model_alias: imageModelAlias }),
-    }),
   runtimeSettings: () => request<RuntimeSettings>("/settings/runtime"),
   updateRuntimeSettings: (payload: Partial<RuntimeSettings> & { version: number }) =>
     request<RuntimeSettings>("/settings/runtime", { method: "PATCH", body: JSON.stringify(payload) }),
@@ -832,8 +841,22 @@ export const api = {
     request<void>(`/providers/connections/${connectionId}/keys/${keyId}`, { method: "DELETE" }),
   discoverProviderModels: (connectionId: string) =>
     request<ProviderModel[]>(`/providers/connections/${connectionId}/discover`, { method: "POST" }),
+  providerModels: (connectionId: string) =>
+    request<ProviderModel[]>(`/providers/connections/${connectionId}/models`),
   createProviderModel: (connectionId: string, payload: { provider_model_id: string; display_name?: string; model_type: "TEXT" | "IMAGE"; input_modalities: string[]; output_modalities: string[]; operations: string[]; api_surfaces: string[]; capabilities: Record<string, unknown> }) =>
     request<ProviderModel>(`/providers/connections/${connectionId}/models`, { method: "POST", body: JSON.stringify(payload) }),
+  verifyProviderConnection: (connectionId: string, payload: { level: "CREDENTIALS" | "MODEL_SMOKE"; catalog_model_id?: string; acknowledge_cost?: boolean; runs?: number }) =>
+    request<ConnectionVerifyResult>(`/providers/connections/${connectionId}/verify`, { method: "POST", body: JSON.stringify(payload) }),
+  updateProviderModelVisibility: (modelId: string, displayEnabled: boolean, version: number) =>
+    request<ProviderModel>(`/providers/models/${modelId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ display_enabled: displayEnabled, version }),
+    }),
+  updateProviderModelVisibilityBatch: (items: { model_id: string; expected_version: number }[], displayEnabled: boolean) =>
+    request<ModelVisibilityBatchResult>("/providers/models/visibility", {
+      method: "PATCH",
+      body: JSON.stringify({ items, display_enabled: displayEnabled }),
+    }),
   testProviderConnection: (connectionId: string, payload: { test_type: "CREDENTIALS" | "TEXT" | "VISION" | "IMAGE" | "BENCHMARK"; model_id?: string; acknowledge_cost?: boolean; runs?: number }) =>
     request<ModelProbe>(`/providers/connections/${connectionId}/test`, { method: "POST", body: JSON.stringify(payload) }),
   providerBalance: (connectionId: string) =>

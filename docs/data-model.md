@@ -111,13 +111,21 @@ stateDiagram-v2
 
 ## 5. 供应商与模型能力数据
 
-`ProviderProfile` 保存内置或自定义供应商及风险标签；`ProviderConnection` 保存协议、Base URL、端点模板和健康状态；`ProviderKey` 保存 AES-GCM 密文、末四位提示与轮换/冷却状态；`AIModel` 区分文字和图片模型、输入输出模态、操作、能力来源和验证置信度；`ModelProbe` 保存连接、文字、视觉、图片和基准测试结果；`RoutingPolicy` 保存任务级自动路由权重。
+`ProviderProfile` 保存内置或自定义供应商及风险标签；`ProviderConnection` 保存协议、Base URL、端点模板和健康状态；`ProviderKey` 保存 AES-GCM 密文、末四位提示与轮换/冷却状态；`AIModel` 区分文字和图片模型、输入输出模态、操作、能力来源和验证置信度，并以 `display_enabled` 独立保存创作界面的展示偏好；`ModelProbe` 保存连接、文字、视觉、图片和基准测试结果；`RoutingPolicy` 保存任务级自动路由权重。
+
+`AIModel.enabled` 是持久的调用开关，目录响应的 `enabled` 是当前可用性的派生值，`display_enabled` 只是 UI 展示偏好。三者不得互相覆盖；隐藏模型仍保留真实目录 ID、路由资格、任务引用和审计历史。既有模型经 `20260830_20` 迁移默认回填为展示，新建与发现模型也默认展示。存在隐藏偏好时迁移拒绝降级，避免静默丢失用户设置。
+
+`CLIExecutionRun` 保存一次外部 CLI 派发的持久状态，并关联 `GenerationJob`、唯一的 `ModelCallAttempt`、连接和目录模型。数据库只保存 run token、相对目录、请求 checksum、输出清单、日志 checksum、退出码、错误与清理状态；prompt、参考图和诊断正文留在受控 run 目录。`(connection_id, lease_slot)` 唯一约束提供硬并发名额，终态释放槽位。迁移 `20260831_22` 新建该表；存在审计行时拒绝降级。
 
 ```json
 {
-  "provider": "vertex-ai",
-  "model_id": "gemini-3.1-flash-image",
-  "logical_alias": "image.nano_banana_2",
+  "provider": "example-image-provider",
+  "protocol": "OPENAI",
+  "credential_source": "CONNECTION_KEY",
+  "catalog_id": "model_01",
+  "model_id": "image-model-v2",
+  "logical_alias": null,
+  "display_enabled": true,
   "operations": ["image_generate", "image_edit"],
   "resolutions": ["1K", "2K", "4K"],
   "preview_resolutions": ["4K"],
@@ -125,7 +133,7 @@ stateDiagram-v2
 }
 ```
 
-Nano Banana Pro 使用同构能力记录和别名 `image.nano_banana_pro`；UI 依据 API 能力渲染，不在客户端自造模型优先级。
+历史别名继续通过唯一兼容解析层指向目录模型；新模型无需别名。UI 依据 API 能力和展示偏好渲染，不在客户端自造模型优先级。
 
 ## 6. 主要约束与索引
 
