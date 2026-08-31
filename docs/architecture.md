@@ -113,7 +113,7 @@ Worker 启动统一经过 `apps/api/run_worker.py` / `app.worker`，与 API 共�
 
 旧 `ProviderHealth` 仅为 `/settings/vertex/*` 单版本兼容端点保留并由统一连接健康桥接；产品前端不读取它。删除兼容端点时可连同该表及桥接服务一并迁移移除，当前阶段不提前破坏旧客户端。
 
-可选 CLI 图像通道走独立外部进程边界，不伪装成 HTTP API。公共 controller 按 run 建立受控目录、结构化请求/结果和输出清单，并关联 `ModelCallAttempt`；Windows runner 在子进程执行前将其加入 kill-on-close Job Object，取消和超时终止整棵进程树。数据库唯一槽位限制每连接并发，恢复仅在 controller 与 Job Object 均确认停止后释放；公共层不会静默切换到 HTTP 通道。
+可选 CLI 图像通道走独立外部进程边界，不伪装成 HTTP API。公共 controller 按 run 建立受控目录、结构化请求/结果和输出清单，并关联 `ModelCallAttempt`；Windows runner 在子进程执行前将其加入 kill-on-close Job Object，取消和超时终止整棵进程树。数据库唯一槽位限制每连接并发，恢复仅在 controller 与 Job Object 均确认停止后释放；公共层不会静默切换到 HTTP 通道。Codex 适配器只执行原生 `codex.exe`，把用户 prompt 留在校验和保护的 request 文件而非 argv，以 `workspace-write`、无审批、临时会话及忽略用户配置的 `codex exec` 调用 `$imagegen`；设置页只做只读登录/版本/参数能力探测，付费图片验证必须复用真实任务和审计链。
 
 ## 8. 安全与可观测性
 

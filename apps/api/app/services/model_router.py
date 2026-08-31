@@ -10,6 +10,8 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.config import Settings
+from app.database import SessionLocal
+from app.model_adapters.codex_cli import CodexCLIImageAdapter, CodexCLIRuntime
 from app.model_adapters.compatible import (
     AnthropicCompatibleAdapter,
     CompatibleRuntime,
@@ -169,6 +171,19 @@ def bind_adapter(
             if model.model_type == "IMAGE"
             else VertexTextAdapter(settings, capability)
         )
+    elif connection.protocol == "CLI_CODEX":
+        config = connection.nonsecret_config or {}
+        executable = str(config.get("cli_executable") or "codex")
+        runtime = CodexCLIRuntime(
+            settings=settings,
+            connection_id=connection.id,
+            catalog_model_id=model.id,
+            provider_model_id=model.provider_model_id,
+            executable=executable,
+            capabilities=model.capabilities or {},
+            session_factory=SessionLocal,
+        )
+        adapter = CodexCLIImageAdapter(runtime)
     else:
         settings_key = select_provider_key(db, settings, connection.id)
         if connection.protocol == "GOOGLE_NATIVE":

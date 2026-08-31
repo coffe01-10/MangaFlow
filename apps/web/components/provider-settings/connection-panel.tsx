@@ -122,7 +122,9 @@ export function ConnectionPanel({
     ),
     onSuccess: (result) => {
       setNotice(
-        result.probe.probe_type === "CREDENTIALS"
+        result.probe.probe_type.startsWith("CLI_")
+          ? `CLI 探测完成 · ${result.probe.status === "PASSED" ? "就绪" : "未就绪"}`
+          : result.probe.probe_type === "CREDENTIALS"
           ? `连接测试完成 · ${result.probe.latency_ms ?? "—"} ms`
           : `${result.probe.status === "PASSED" ? "模型测试通过" : "模型测试完成"} · ${result.probe.latency_ms ?? "—"} ms`,
       );
@@ -223,6 +225,7 @@ export function ConnectionPanel({
       : bulkVisibility.isPending || visibility.isPending
         ? "正在保存模型展示偏好…"
         : "正在访问供应商，请稍候…";
+  const isCLI = connection.credential_source === "CLI_SESSION";
 
   return (
     <section className="provider-connection" aria-busy={pending}>
@@ -312,7 +315,7 @@ export function ConnectionPanel({
       <div className="provider-actions">
         <button
           type="button"
-          disabled={!connection.configured || connectionActionPending}
+          disabled={(!isCLI && !connection.configured) || connectionActionPending}
           onClick={() => verify.mutate(undefined)}
         >
           <ShieldCheck size={14} />测试连接
@@ -400,7 +403,7 @@ export function ConnectionPanel({
           const isImage = model.output_modalities.includes("IMAGE")
             && (model.operations.includes("image_generate") || model.operations.includes("image_edit"));
           const probeLabel = isImage
-            ? "测试图片"
+            ? isCLI ? "任务中验证" : "测试图片"
             : model.operations.includes("multimodal_analysis")
               ? "测试视觉"
               : "测试文本";
@@ -448,7 +451,8 @@ export function ConnectionPanel({
                 <button
                   type="button"
                   className={isImage ? "paid-check" : undefined}
-                  disabled={!model.enabled || derivedUnavailable || !connection.configured || modelActionPending}
+                  title={isCLI ? "CLI 图片能力只在有持久任务与审计行的生成流程中验证" : undefined}
+                  disabled={isCLI || !model.enabled || derivedUnavailable || !connection.configured || modelActionPending}
                   onClick={(event) => {
                     if (isImage) {
                       triggerRef.current = event.currentTarget;
@@ -479,7 +483,7 @@ export function ConnectionPanel({
           );
         })}
       </div>
-      <form
+      {!isCLI && <form
         className="provider-manual-model"
         onSubmit={(event) => {
           event.preventDefault();
@@ -511,8 +515,8 @@ export function ConnectionPanel({
         <button type="submit" disabled={!manualId.trim() || addModel.isPending}>
           <Plus size={14} />添加模型
         </button>
-      </form>
-      {manualError && (
+      </form>}
+      {!isCLI && manualError && (
         <p id={`connection-${connection.id}-manual-error`} className="form-error" role="alert">
           <CircleAlert size={14} />{manualError.message}
         </p>

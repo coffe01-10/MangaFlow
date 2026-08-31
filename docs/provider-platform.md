@@ -2,7 +2,7 @@
 
 ## 协议与预设
 
-目录当前声明 `OPENAI`、`ANTHROPIC`、`GOOGLE_NATIVE` 和 `VERTEX_NATIVE` 四种传输协议。用户可创建前两类兼容连接；后两类原生协议由内置预设提供。OpenAI 协议支持模型列表、Chat Completions、Responses、图片生成和图片编辑端点模板；Anthropic 协议支持 Messages 文本与多模态请求。协议只决定传输、凭据形态和能力声明，不决定产品排序、默认选择或路由优先级。
+目录当前声明 `OPENAI`、`ANTHROPIC`、`GOOGLE_NATIVE`、`VERTEX_NATIVE` 和 `CLI_CODEX` 五种传输协议。用户可创建前两类兼容连接；原生 HTTP 协议和 Codex CLI 通道由内置预设提供。OpenAI 协议支持模型列表、Chat Completions、Responses、图片生成和图片编辑端点模板；Anthropic 协议支持 Messages 文本与多模态请求；`CLI_CODEX` 只声明图片生成/编辑，不伪装成 HTTP API。协议只决定传输、凭据形态和能力声明，不决定产品排序、默认选择或路由优先级。
 
 系统预置多种官方与兼容连接。预设只提供非敏感 URL、端点与声明能力；未录入凭据时不会发送请求，新预设模型以 `DECLARED` 进入目录，必须经过对应操作的冒烟验证后才可参与自动路由。第三方聚合网关标记为 `THIRD_PARTY`。设置页按用户筛选与名称展示目录，不给任何预设固定置顶或默认模型。
 
@@ -24,7 +24,13 @@ API Key 使用 AES-256-GCM 加密写入 `provider_keys`。设置页只显示标�
 
 所有连接共用 `GET /providers/connections/{id}/health` 与 `POST /providers/connections/{id}/verify`。`CREDENTIALS` 只验证环境凭据或 API Key/目录访问，不生成文字或图片；`MODEL_SMOKE` 必须绑定目录模型，结果同时更新连接健康和 `model_probes`。每次图片冒烟只执行一种操作，并要求显式费用确认。旧 `/settings/vertex/status|verify` 在过渡期内部转发统一验证服务；产品前端不再调用该入口，已无人使用的 `/models/vertex/*` 别名已经移除。旧 `ProviderHealth` 表只为这一单版本兼容入口保留，不再作为产品状态事实来源。
 
-`CLI_SESSION` 表示登录态由外部 CLI 管理。应用不显示密钥表单、不读取或复制会话 token，也不代用户登录；presence/version/login/capability 四步探测分别写入 `ModelProbe`，连接据此派生为 `AVAILABLE`、`UNAVAILABLE`、`UNAUTHENTICATED` 或 `UNSUPPORTED`。只有 `AVAILABLE` 的 CLI 连接可调用，探测不会替用户启停连接；具体 CLI 仍由 V02-14 分项注册。
+`CLI_SESSION` 表示登录态由外部 CLI 管理。应用不显示密钥表单、不读取或复制会话 token，也不安装 CLI、不代用户登录；presence/version/login/capability 四步探测分别写入 `ModelProbe`，连接据此派生为 `AVAILABLE`、`UNAVAILABLE`、`UNAUTHENTICATED` 或 `UNSUPPORTED`。只有 `AVAILABLE` 且由用户启用的 CLI 连接可调用，探测不会替用户启停连接。设置页只能保存 `codex` 或原生可执行文件的绝对路径；路径变化会把健康状态重置为 `UNKNOWN`，必须重新探测。
+
+### Codex CLI 图片通道
+
+内置 `codex-cli` 连接默认禁用，目录种子 `codex-imagegen` 只声明 `image_generate`、`image_edit` 与最多 5 张参考图，费用来源保持 `CLI_EXTERNAL / UNKNOWN`。设置页的模型冒烟按钮不会直接发起可能计费的 CLI 调用；真实能力只能通过已有持久化任务和 `ModelCallAttempt` 验证。
+
+调用只解析原生 `codex.exe`；Windows npm 的 `.cmd` / `.ps1` shim 仅用于定位官方架构包内的有界原生二进制，不交给 shell 执行。公共 controller 把提示词和参考图写入校验和保护的结构化输入，argv 只包含固定任务说明、受控相对路径与 Codex 安全参数。Codex 以 `workspace-write`、`approval=never`、`ephemeral`、忽略用户配置的非交互模式运行；全局参数在 `exec` 前、子命令参数在 `exec` 后，真实 CLI 参数解析探测和离线回归共同锁定这一边界。输出仍需经过公共 controller 的登记路径、大小、像素、格式和清理校验，失败不切换到 HTTP 供应商。
 
 连接验证与目录同步是两个独立动作，避免一次点击重复请求模型列表。旧 `/connections/{id}/test` 仍兼容现有客户端，但内部使用统一验证服务。探测记录保存在 `model_probes`，连接和模型同步保存最近成功时间与中位延迟。
 

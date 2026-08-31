@@ -18,10 +18,13 @@ from app.model_adapters.base import (
     ProviderAdapterError,
     StructuredRequest,
 )
+from app.model_adapters.codex_cli import CodexCLIProbeAdapter
 from app.models import AIModel, ModelProbe, ProviderConnection, ProviderKey
 from app.provider_schemas import ConnectionVerifyRequest
+from app.services.cli_probe import probe_cli_connection
 from app.services.credential_crypto import mark_key_failure, mark_key_success
 from app.services.credential_source import (
+    CLI_SESSION,
     CONNECTION_KEY,
     connection_credential_source,
     connection_protocol_capabilities,
@@ -123,6 +126,39 @@ def _verify_credentials(
 ) -> ModelProbe:
     started = perf_counter()
     source = connection_credential_source(connection)
+    if source == CLI_SESSION:
+        config = connection.nonsecret_config or {}
+        if connection.protocol != "CLI_CODEX":
+            connection.health_state = "UNSUPPORTED"
+            connection.last_checked_at = datetime.now(UTC)
+            connection.error_code = "UNSUPPORTED"
+            connection.message = "此 CLI 协议尚未注册探测适配器"
+            db.commit()
+            return _failed_probe(
+                db,
+                connection,
+                model_id=None,
+                probe_type="CLI_CAPABILITY",
+                error_code="UNSUPPORTED",
+                message=connection.message,
+                latency_ms=_elapsed_ms(started),
+            )
+        adapter = CodexCLIProbeAdapter(
+            settings,
+            executable=str(config.get("cli_executable") or "codex"),
+        )
+        probe_cli_connection(db, connection.id, adapter, auto_commit=True)
+        probe = db.scalar(
+            select(ModelProbe)
+            .where(
+                ModelProbe.connection_id == connection.id,
+                ModelProbe.probe_type == "CLI_CAPABILITY",
+            )
+            .order_by(ModelProbe.created_at.desc(), ModelProbe.id.desc())
+        )
+        if probe is None:
+            raise RuntimeError("Codex CLI capability probe was not persisted")
+        return probe
     if source == CONNECTION_KEY:
         try:
             metrics = probe_connection_credentials(db, settings, connection)
@@ -258,6 +294,11 @@ def _verify_model_smoke(
     model: AIModel,
     payload: ConnectionVerifyRequest,
 ) -> ModelProbe:
+    if connection_credential_source(connection) == CLI_SESSION:
+        raise HTTPException(
+            status_code=409,
+            detail="CLI 图片通道请在生成任务中显式验证；设置页不会发起独立付费调用",
+        )
     if model.model_type == "IMAGE" and not payload.acknowledge_cost:
         raise HTTPException(
             status_code=422,
@@ -445,3 +486,7 @@ def verify_connection(
 
     db.refresh(connection)
     return connection_health_view(db, settings, connection), probe
+
+
+def _elapsed_ms(started: float) -> int:
+    return max(0, round((perf_counter() - started) * 1000))

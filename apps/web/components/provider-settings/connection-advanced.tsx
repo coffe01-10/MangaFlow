@@ -26,6 +26,10 @@ export function ConnectionAdvanced({
     JSON.stringify(connection.extra_headers, null, 2),
   );
   const [status, setStatus] = useState("");
+  const [cliExecutable, setCliExecutable] = useState(
+    String(connection.nonsecret_config.cli_executable ?? "codex"),
+  );
+  const isCLI = connection.credential_source === "CLI_SESSION";
   const panelId = `connection-advanced-${connection.id}`;
   const baseUrlRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
@@ -57,9 +61,24 @@ export function ConnectionAdvanced({
       queryClient.invalidateQueries({ queryKey: ["providers"] });
     },
   });
+  const saveCLI = useMutation({
+    mutationFn: () => api.updateProviderConnection(connection.id, {
+      version: connection.version,
+      nonsecret_config: {
+        ...connection.nonsecret_config,
+        cli_executable: cliExecutable.trim(),
+      },
+    }),
+    onSuccess: (saved) => {
+      setCliExecutable(String(saved.nonsecret_config.cli_executable ?? "codex"));
+      setStatus("CLI 路径已保存，请重新探测");
+      queryClient.invalidateQueries({ queryKey: ["providers"] });
+    },
+  });
 
-  const conflict = saveConnection.error
-    ? mapOptimisticConflict(saveConnection.error.message, "connection")
+  const saveError = saveConnection.error ?? saveCLI.error;
+  const conflict = saveError
+    ? mapOptimisticConflict(saveError.message, "connection")
     : "";
 
   function discardDraft() {
@@ -67,7 +86,9 @@ export function ConnectionAdvanced({
     setResponses(connection.use_responses_api);
     setEndpointText(JSON.stringify(connection.endpoint_templates, null, 2));
     setHeaderText(JSON.stringify(connection.extra_headers, null, 2));
+    setCliExecutable(String(connection.nonsecret_config.cli_executable ?? "codex"));
     saveConnection.reset();
+    saveCLI.reset();
     queryClient.invalidateQueries({ queryKey: ["providers"] });
   }
 
@@ -84,71 +105,98 @@ export function ConnectionAdvanced({
       </button>
       {open && (
         <div id={panelId} className="provider-advanced-panel">
-          <label>
-            <span>Base URL</span>
-            <input
-              ref={baseUrlRef}
-              aria-label="Base URL"
-              value={baseUrl}
-              onChange={(event) => setBaseUrl(event.target.value)}
-            />
-          </label>
-          {connection.protocol === "OPENAI" && (
-            <label className="provider-check">
-              <input
-                type="checkbox"
-                checked={responses}
-                onChange={(event) => setResponses(event.target.checked)}
-              />
-              文本优先使用 Responses API
-            </label>
+          {isCLI ? (
+            <>
+              <label>
+                <span>Codex CLI 可执行文件</span>
+                <input
+                  ref={baseUrlRef}
+                  aria-label="Codex CLI 可执行文件"
+                  value={cliExecutable}
+                  onChange={(event) => setCliExecutable(event.target.value)}
+                  placeholder="codex 或绝对路径"
+                />
+              </label>
+              <p className="provider-field-hint">
+                只接受命令名 codex 或绝对路径；应用不会安装 CLI，也不会代你登录。
+              </p>
+              <button
+                type="button"
+                disabled={!cliExecutable.trim() || busy || saveCLI.isPending}
+                onClick={() => saveCLI.mutate()}
+              >
+                <Save size={14} />保存 CLI 路径
+              </button>
+            </>
+          ) : (
+            <>
+              <label>
+                <span>Base URL</span>
+                <input
+                  ref={baseUrlRef}
+                  aria-label="Base URL"
+                  value={baseUrl}
+                  onChange={(event) => setBaseUrl(event.target.value)}
+                />
+              </label>
+              {connection.protocol === "OPENAI" && (
+                <label className="provider-check">
+                  <input
+                    type="checkbox"
+                    checked={responses}
+                    onChange={(event) => setResponses(event.target.checked)}
+                  />
+                  文本优先使用 Responses API
+                </label>
+              )}
+              <label>
+                <span>端点模板（JSON）</span>
+                <textarea
+                  aria-label="端点模板"
+                  aria-invalid={!endpointResult.ok}
+                  aria-describedby={!endpointResult.ok ? `connection-${connection.id}-endpoint-error` : undefined}
+                  value={endpointText}
+                  onChange={(event) => setEndpointText(event.target.value)}
+                />
+              </label>
+              {!endpointResult.ok && (
+                <p
+                  id={`connection-${connection.id}-endpoint-error`}
+                  className="form-error"
+                  role="alert"
+                >
+                  <CircleAlert size={14} />{endpointResult.message}
+                </p>
+              )}
+              <label>
+                <span>额外请求头（禁止 Authorization、x-api-key、Host、Content-Length）</span>
+                <textarea
+                  aria-label="额外请求头"
+                  aria-invalid={!headerResult.ok}
+                  aria-describedby={!headerResult.ok ? `connection-${connection.id}-header-error` : undefined}
+                  value={headerText}
+                  onChange={(event) => setHeaderText(event.target.value)}
+                />
+              </label>
+              {!headerResult.ok && (
+                <p
+                  id={`connection-${connection.id}-header-error`}
+                  className="form-error"
+                  role="alert"
+                >
+                  <CircleAlert size={14} />{headerResult.message}
+                </p>
+              )}
+              <button
+                type="button"
+                disabled={!canSave || busy || saveConnection.isPending}
+                onClick={() => saveConnection.mutate()}
+              >
+                <Save size={14} />保存连接
+              </button>
+            </>
           )}
-          <label>
-            <span>端点模板（JSON）</span>
-            <textarea
-              aria-label="端点模板"
-              aria-invalid={!endpointResult.ok}
-              aria-describedby={!endpointResult.ok ? `connection-${connection.id}-endpoint-error` : undefined}
-              value={endpointText}
-              onChange={(event) => setEndpointText(event.target.value)}
-            />
-          </label>
-          {!endpointResult.ok && (
-            <p
-              id={`connection-${connection.id}-endpoint-error`}
-              className="form-error"
-              role="alert"
-            >
-              <CircleAlert size={14} />{endpointResult.message}
-            </p>
-          )}
-          <label>
-            <span>额外请求头（禁止 Authorization、x-api-key、Host、Content-Length）</span>
-            <textarea
-              aria-label="额外请求头"
-              aria-invalid={!headerResult.ok}
-              aria-describedby={!headerResult.ok ? `connection-${connection.id}-header-error` : undefined}
-              value={headerText}
-              onChange={(event) => setHeaderText(event.target.value)}
-            />
-          </label>
-          {!headerResult.ok && (
-            <p
-              id={`connection-${connection.id}-header-error`}
-              className="form-error"
-              role="alert"
-            >
-              <CircleAlert size={14} />{headerResult.message}
-            </p>
-          )}
-          <button
-            type="button"
-            disabled={!canSave || busy || saveConnection.isPending}
-            onClick={() => saveConnection.mutate()}
-          >
-            <Save size={14} />保存连接
-          </button>
-          {status && !saveConnection.error && (
+          {status && !saveError && (
             <p className="save-success" role="status">{status}</p>
           )}
           {conflict && (

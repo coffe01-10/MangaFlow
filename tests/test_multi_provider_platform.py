@@ -103,6 +103,7 @@ def test_presets_seed_default_provider_catalog(client):
     keys = {item["preset_key"] for item in providers}
     assert {
         "vertex-ai",
+        "codex-cli",
         "openai",
         "anthropic",
         "deepseek",
@@ -120,13 +121,15 @@ def test_presets_seed_default_provider_catalog(client):
             "ANTHROPIC",
             "VERTEX_NATIVE",
             "GOOGLE_NATIVE",
+            "CLI_CODEX",
         }
         for provider in providers
         for connection in provider["connections"]
     )
     connections = [connection for provider in providers for connection in provider["connections"]]
     assert all(
-        connection["credential_source"] in {"CONNECTION_KEY", "ENV_SERVICE_ACCOUNT"}
+        connection["credential_source"]
+        in {"CONNECTION_KEY", "ENV_SERVICE_ACCOUNT", "CLI_SESSION"}
         for connection in connections
     )
     assert all(connection["supported_model_types"] for connection in connections)
@@ -134,6 +137,17 @@ def test_presets_seed_default_provider_catalog(client):
     assert anthropic["connections"][0]["supported_model_types"] == ["TEXT"]
     vertex = next(provider for provider in providers if provider["preset_key"] == "vertex-ai")
     assert vertex["connections"][0]["credential_source"] == "ENV_SERVICE_ACCOUNT"
+    codex = next(provider for provider in providers if provider["preset_key"] == "codex-cli")
+    codex_connection = codex["connections"][0]
+    assert codex_connection["credential_source"] == "CLI_SESSION"
+    assert codex_connection["enabled"] is False
+    assert codex_connection["health_state"] == "UNKNOWN"
+    models = client.get(
+        f"/api/v1/providers/connections/{codex_connection['id']}/models"
+    ).json()
+    assert [(item["provider_model_id"], item["confidence"]) for item in models] == [
+        ("codex-imagegen", "DECLARED")
+    ]
 
 
 def test_new_vertex_preset_uses_one_shot_auto_enable_and_declared_models(
