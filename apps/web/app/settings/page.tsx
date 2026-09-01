@@ -52,7 +52,11 @@ export default function SystemSettingsPage() {
       <div className="paper-texture" />
       <header className="topbar settings-topbar">
         <div className="topbar-title"><span>SYSTEM / CONTROL ROOM</span><strong>系统设置与运行诊断</strong></div>
-        <div className="topbar-actions"><Link className="button ghost compact" href="/"><ArrowLeft size={16} />返回项目</Link><button className="button ink compact" disabled={!draft || save.isPending} onClick={() => save.mutate()}>{save.isPending ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />}保存运行设置</button></div>
+        <div className="topbar-actions">
+          <Link className="button ghost compact" href="/settings/usage">用量与成本看板</Link>
+          <Link className="button ghost compact" href="/"><ArrowLeft size={16} />返回项目</Link>
+          <button className="button ink compact" disabled={!draft || save.isPending} onClick={() => save.mutate()}>{save.isPending ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />}保存运行设置</button>
+        </div>
       </header>
       <main className="settings-page">
         <section className="system-status-strip" aria-label="当前运行状态">

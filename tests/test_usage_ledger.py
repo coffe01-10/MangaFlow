@@ -327,6 +327,71 @@ def test_usage_attempt_pagination_summary_and_unknown_semantics(
     ]
 
 
+def test_usage_read_filters_narrow_by_model_id(db_session, client):
+    job, _candidate = _seed_page_job(db_session)
+    started = datetime(2026, 9, 1, 10, tzinfo=UTC)
+    for dispatch_no, model_id in enumerate(("model-a", "model-b"), start=1):
+        db_session.add(
+            ModelCallAttempt(
+                job_id=job.id,
+                project_id=job.project_id,
+                job_attempt=1,
+                dispatch_no=dispatch_no,
+                outcome="SUCCEEDED",
+                channel="HTTP_API",
+                provider="provider-a",
+                model_id=model_id,
+                started_at=started,
+                usage_status="COMPLETE",
+                input_tokens=10,
+            )
+        )
+    db_session.add(
+        ProviderUsageReconciliation(
+            provider="provider-a",
+            model_id="model-a",
+            channel="HTTP_API",
+            billing_account_id="account-a",
+            import_batch_id="batch-a",
+            idempotency_key="line-1",
+            period_start=started - timedelta(days=1),
+            period_end=started + timedelta(days=1),
+            currency="USD",
+            billed_amount=Decimal("12.5"),
+            entered_by="operator",
+        )
+    )
+    db_session.commit()
+
+    filtered = client.get(
+        "/api/v1/usage/attempts",
+        params={"project_id": job.project_id, "model_id": "model-b"},
+    )
+    assert filtered.status_code == 200, filtered.text
+    items = filtered.json()["items"]
+    assert len(items) == 1
+    assert items[0]["model_id"] == "model-b"
+
+    summary = client.get(
+        "/api/v1/usage/summary",
+        params={"project_id": job.project_id, "model_id": "model-b"},
+    )
+    assert summary.status_code == 200, summary.text
+    body = summary.json()
+    assert [group["model_id"] for group in body["groups"]] == ["model-b"]
+    assert body["billed"] == []
+
+    billed_only = client.get("/api/v1/usage/summary", params={"model_id": "model-a"})
+    assert billed_only.status_code == 200, billed_only.text
+    assert len(billed_only.json()["billed"]) == 1
+
+    # Without a model filter the reconciliation list must stay complete.
+    unfiltered = client.get("/api/v1/usage/summary")
+    assert unfiltered.status_code == 200, unfiltered.text
+    assert len(unfiltered.json()["billed"]) == 1
+    assert len(unfiltered.json()["groups"]) == 2
+
+
 def test_reconciliation_is_idempotent_rejects_overlap_and_stays_separate(
     db_session, client
 ):
