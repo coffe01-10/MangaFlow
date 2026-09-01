@@ -348,6 +348,12 @@ class SceneAssetVariantReferenceRead(BaseModel):
     created_at: datetime
 
 
+class SceneAssetVariantReferenceCreate(BaseModel):
+    asset_id: str
+    role: str = Field(default="main", max_length=32)
+    sort_order: int = Field(default=0, ge=0, le=1000)
+
+
 class SceneAssetVariantCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     structured_overrides: dict = Field(default_factory=dict)

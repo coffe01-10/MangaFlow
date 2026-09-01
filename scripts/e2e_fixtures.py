@@ -22,6 +22,9 @@ from app.models import (
     Panel,
     Project,
     ProviderUsageReconciliation,
+    Scene,
+    ScriptRevision,
+    SourceRevision,
 )
 
 MISSING_NAME = "e2e-gate-missing"
@@ -136,6 +139,38 @@ def _page_with_candidate(
             )
         )
     return page
+
+
+def _seed_script_scene(session: Session, page: MangaPage, location: str) -> Scene:
+    source = SourceRevision(
+        chapter_id=page.chapter_id,
+        revision=1,
+        source_type="PASTE",
+        original_text=location,
+        sha256="f" * 64,
+        character_count=len(location),
+    )
+    session.add(source)
+    session.flush()
+    scene = Scene(chapter_id=page.chapter_id, ordinal=1, location=location)
+    session.add(scene)
+    session.flush()
+    session.add(
+        ScriptRevision(
+            chapter_id=page.chapter_id,
+            source_revision_id=source.id,
+            revision_no=1,
+            status="READY",
+            coverage={
+                "expected": 0,
+                "covered": 0,
+                "ratio": 1,
+                "missing_segment_ids": [],
+            },
+        )
+    )
+    page.scene_ids = [scene.id]
+    return scene
 
 
 def seed_usage_ledger(session: Session, project: Project) -> None:
@@ -334,7 +369,7 @@ def seed_gate_projects(database_url: str, storage_root: Path) -> dict[str, str]:
             continuity="PASSED",
             inspections={category: "PASS" for category in _CATEGORIES},
         )
-        _page_with_candidate(
+        ready_page = _page_with_candidate(
             session,
             project=ready,
             title="全通过",
@@ -361,6 +396,7 @@ def seed_gate_projects(database_url: str, storage_root: Path) -> dict[str, str]:
             inspections={category: "PASS" for category in _CATEGORIES},
         )
         seed_usage_ledger(session, ready)
+        _seed_script_scene(session, ready_page, location="学校天台")
         session.commit()
         ids = {
             "missing": missing.id,

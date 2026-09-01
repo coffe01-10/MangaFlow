@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 const assetViews = new Set<AssetWorkspaceView>([
   "characters",
   "outfits",
+  "scenes",
   "style",
   "references",
 ]);

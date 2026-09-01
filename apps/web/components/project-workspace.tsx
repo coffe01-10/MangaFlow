@@ -70,12 +70,14 @@ export default function ProjectWorkspace({
     outfits,
     pages,
     script,
+    sceneAssets,
     activeChapterId,
     needsChapters,
     needsCharacters,
     needsOutfits,
     needsPages,
     needsScript,
+    needsSceneAssets,
   } = workspaceQueries;
 
   const projectPath = (target: string) =>
@@ -213,6 +215,7 @@ export default function ProjectWorkspace({
     && (!needsOutfits || !outfits.isLoading)
     && (!needsPages || !pages.isLoading)
     && (!needsScript || !script.isLoading)
+    && (!needsSceneAssets || !sceneAssets.isLoading)
     && (section !== "assets" || !assets.isLoading)
     && (section !== "library" || !library.isLoading)
     && (section !== "jobs" || !jobs.isLoading);
@@ -289,10 +292,12 @@ export default function ProjectWorkspace({
           )}
           {section === "script" && (
             <ScriptSection
+              projectId={id}
               chapters={chapters}
               script={script}
               characters={characters}
               outfits={outfits}
+              sceneAssets={sceneAssets}
               activeChapterId={activeChapterId}
               setSelectedChapterId={setSelectedChapterId}
               parseChapter={source.parseChapter}
@@ -320,6 +325,8 @@ export default function ProjectWorkspace({
               assets={assets}
               characters={characters}
               outfits={outfits}
+              script={script}
+              sceneAssets={sceneAssets}
               modelOptions={modelOptions}
               catalogModelOptions={catalogModelOptions}
               activeDrawModel={activeDrawModel}

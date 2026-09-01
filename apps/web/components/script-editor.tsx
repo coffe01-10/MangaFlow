@@ -4,6 +4,7 @@ import {
   api,
   type Character,
   type Outfit,
+  type SceneAsset,
   type Script,
   type ScriptBeat,
   type ScriptScene,
@@ -12,20 +13,26 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Check, CircleAlert, LoaderCircle, Pencil, Save, Shirt, Trash2, X } from "lucide-react";
 import { useState } from "react";
 
+import { ScenePicker } from "./project-workspace/scene-picker";
+
 type SceneDraft = Pick<ScriptScene, "location" | "time_label" | "weather" | "purpose" | "emotional_arc">;
 type BeatDraft = Pick<ScriptBeat, "action" | "speaker_name" | "dialogue" | "narration" | "subtext" | "emotion" | "importance" | "must_visualize" | "mergeable" | "page_turn_hook">;
 
 export function ScriptEditor({
   chapterId,
+  projectId,
   script,
   characters,
   outfits,
+  sceneAssets,
   onAssignOutfit,
 }: {
   chapterId: string;
+  projectId: string;
   script: Script;
   characters: Character[];
   outfits: Outfit[];
+  sceneAssets: SceneAsset[];
   onAssignOutfit: (sceneId: string, assignments: Record<string, string>) => void;
 }) {
   const queryClient = useQueryClient();
@@ -107,7 +114,7 @@ export function ScriptEditor({
       {editingScene === scene.id && sceneDraft ? <div className="scene-edit-sheet">
         <header><div><span>SCENE {String(scene.ordinal).padStart(2, "0")} / 修订</span><strong>场景调度单</strong></div><div><button type="button" onClick={() => { setEditingScene(null); setSceneDraft(null); }}><X size={13} />取消</button><button type="button" className="save-edit" disabled={saveScene.isPending} onClick={() => saveScene.mutate(scene)}><Save size={13} />保存场景</button></div></header>
         <div className="scene-edit-grid">
-          <label><span>地点</span><input value={sceneDraft.location} onChange={(event) => setSceneDraft({ ...sceneDraft, location: event.target.value })} /></label>
+          <label><span>地点（历史兜底，绑定资产时不会清空）</span><input value={sceneDraft.location} onChange={(event) => setSceneDraft({ ...sceneDraft, location: event.target.value })} /></label>
           <label><span>时间</span><input value={sceneDraft.time_label} onChange={(event) => setSceneDraft({ ...sceneDraft, time_label: event.target.value })} /></label>
           <label><span>天气 / 氛围</span><input value={sceneDraft.weather} onChange={(event) => setSceneDraft({ ...sceneDraft, weather: event.target.value })} /></label>
           <label className="wide"><span>本场目的</span><textarea value={sceneDraft.purpose} onChange={(event) => setSceneDraft({ ...sceneDraft, purpose: event.target.value })} /></label>
@@ -115,6 +122,7 @@ export function ScriptEditor({
         </div>
       </div> : <header><span>SCENE {String(scene.ordinal).padStart(2, "0")}</span><strong>{scene.location || "未命名场景"} · {scene.time_label || "时间未定"}</strong><small>{scene.purpose}</small><button className="edit-mark" type="button" onClick={() => beginScene(scene)}><Pencil size={12} />编辑场景</button></header>}
       {editingScene !== scene.id && <p className="emotion-arc">情绪线：{scene.emotional_arc || "待补充"}{scene.weather ? ` · ${scene.weather}` : ""}</p>}
+      <ScenePicker projectId={projectId} scene={scene} sceneAssets={sceneAssets} />
       <div className="scene-wardrobe"><strong><Shirt size={13} />本场服装指定</strong><div>{characters.map((character) => {
         const options = outfits.filter((outfit) => outfit.character_id === character.id);
         if (!options.length) return null;

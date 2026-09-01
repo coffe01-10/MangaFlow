@@ -33,6 +33,7 @@ from app.schemas import (
     SceneAssetUpdate,
     SceneAssetVariantCreate,
     SceneAssetVariantRead,
+    SceneAssetVariantReferenceCreate,
     SceneAssetVariantReferenceRead,
     SceneAssetVariantUpdate,
     SceneBindAssetRequest,
@@ -297,20 +298,7 @@ def bind_scene_asset_reference(
     db: Session = Depends(get_db),
 ) -> SceneAssetReference:
     asset = _scene_asset(db, project_id, asset_id)
-    reference_asset = db.get(Asset, payload.asset_id)
-    if not reference_asset or reference_asset.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="素材不存在")
-    if reference_asset.project_id != project_id:
-        raise HTTPException(status_code=422, detail="参考图和场景资产不属于同一项目")
-    allowed_generated_sources = {"AI_GENERATED", "VERTEX_GENERATED"}
-    if (
-        reference_asset.kind != "SCENE_REFERENCE"
-        and reference_asset.source not in allowed_generated_sources
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail="只有场景参考图或已生成的图片可以绑定为场景参考",
-        )
+    reference_asset = _scene_reference_file(db, project_id, payload.asset_id)
     binding = SceneAssetReference(
         scene_asset_id=asset.id,
         asset_id=reference_asset.id,
@@ -462,6 +450,87 @@ def delete_scene_asset_variant(
     variant.deleted_at = utcnow()
     variant.version += 1
     mark_pages_for_scene_asset_review(db, asset_id)
+    db.commit()
+
+
+def _scene_reference_file(db: Session, project_id: str, asset_id: str) -> Asset:
+    reference_asset = db.get(Asset, asset_id)
+    if not reference_asset or reference_asset.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="素材不存在")
+    if reference_asset.project_id != project_id:
+        raise HTTPException(status_code=422, detail="参考图和场景资产不属于同一项目")
+    allowed_generated_sources = {"AI_GENERATED", "VERTEX_GENERATED"}
+    if (
+        reference_asset.kind != "SCENE_REFERENCE"
+        and reference_asset.source not in allowed_generated_sources
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="只有场景参考图或已生成的图片可以绑定为场景参考",
+        )
+    return reference_asset
+
+
+@router.post(
+    "/projects/{project_id}/scene-assets/{asset_id}/variants/{variant_id}/references",
+    response_model=SceneAssetVariantReferenceRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def bind_scene_asset_variant_reference(
+    project_id: str,
+    asset_id: str,
+    variant_id: str,
+    payload: SceneAssetVariantReferenceCreate,
+    db: Session = Depends(get_db),
+) -> SceneAssetVariantReference:
+    asset = _scene_asset(db, project_id, asset_id)
+    variant = db.get(SceneAssetVariant, variant_id)
+    if not variant or variant.scene_asset_id != asset.id:
+        raise HTTPException(status_code=404, detail="场景变体不存在")
+    if variant.deleted_at is not None:
+        raise HTTPException(status_code=422, detail="场景变体已归档，请先恢复")
+    reference_asset = _scene_reference_file(db, project_id, payload.asset_id)
+    binding = SceneAssetVariantReference(
+        variant_id=variant.id,
+        asset_id=reference_asset.id,
+        role=payload.role,
+        sort_order=payload.sort_order,
+    )
+    db.add(binding)
+    mark_pages_for_scene_asset_review(db, asset.id)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="该参考图已绑定在当前场景变体") from None
+    db.refresh(binding)
+    return binding
+
+
+@router.delete(
+    "/projects/{project_id}/scene-assets/{asset_id}/variants/{variant_id}/references/{reference_asset_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def unbind_scene_asset_variant_reference(
+    project_id: str,
+    asset_id: str,
+    variant_id: str,
+    reference_asset_id: str,
+    db: Session = Depends(get_db),
+) -> None:
+    asset = _scene_asset(db, project_id, asset_id)
+    variant = db.get(SceneAssetVariant, variant_id)
+    if not variant or variant.scene_asset_id != asset.id:
+        raise HTTPException(status_code=404, detail="场景变体不存在")
+    deleted = db.execute(
+        delete(SceneAssetVariantReference).where(
+            SceneAssetVariantReference.variant_id == variant_id,
+            SceneAssetVariantReference.asset_id == reference_asset_id,
+        )
+    )
+    if not deleted.rowcount:
+        raise HTTPException(status_code=404, detail="变体参考绑定不存在")
+    mark_pages_for_scene_asset_review(db, asset.id)
     db.commit()
 
 

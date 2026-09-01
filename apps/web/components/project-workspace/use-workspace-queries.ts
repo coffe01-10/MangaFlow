@@ -24,13 +24,14 @@ export function useWorkspaceQueries({
 }) {
   const needsChapters = ["source", "script", "storyboard", "generate", "library"].includes(section);
   const needsCharacters = section === "assets"
-    ? assetView !== "style"
+    ? !["style", "scenes"].includes(assetView)
     : ["script", "storyboard", "generate", "library"].includes(section);
   const needsOutfits = section === "assets"
     ? ["outfits", "references"].includes(assetView)
     : ["script", "storyboard", "generate"].includes(section);
   const needsPages = ["storyboard", "generate"].includes(section);
-  const needsScript = ["source", "script"].includes(section);
+  const needsScript = ["source", "script", "generate"].includes(section);
+  const needsSceneAssets = section === "script" || section === "generate";
 
   const project = useQuery({ queryKey: ["project", id], queryFn: () => api.project(id), staleTime: 30_000 });
   const models = useQuery({ queryKey: ["models"], queryFn: api.models, staleTime: 30_000 });
@@ -50,6 +51,11 @@ export function useWorkspaceQueries({
     enabled: needsScript && Boolean(activeChapterId),
     refetchInterval: (query) => query.state.data?.status === "PROCESSING" ? 4000 : false,
   });
+  const sceneAssets = useQuery({
+    queryKey: ["scene-assets", id],
+    queryFn: () => api.sceneAssets(id, { limit: 200 }),
+    enabled: needsSceneAssets,
+  });
 
   return {
     project,
@@ -60,12 +66,14 @@ export function useWorkspaceQueries({
     outfits,
     pages,
     script,
+    sceneAssets,
     activeChapterId,
     needsChapters,
     needsCharacters,
     needsOutfits,
     needsPages,
     needsScript,
+    needsSceneAssets,
   };
 }
 

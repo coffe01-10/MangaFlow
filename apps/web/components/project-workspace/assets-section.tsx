@@ -26,6 +26,7 @@ import { publicUrl, type AssetPurpose, type ImageModelAlias } from "@/lib/api";
 import { assetName, formatBytes, promptPreview } from "./display";
 import { generationKindLabels, kinds } from "./labels";
 import { AssetNameEditor, CandidateArtwork, ComicModeSwitch, ImageModelPicker } from "./shared";
+import { SceneWorkspace } from "./scene-workspace";
 import type { AssetWorkspaceView } from "./types";
 import type { AssetsWorkspace } from "./use-assets-workspace";
 import type { WorkspaceQueries } from "./use-workspace-queries";
@@ -144,6 +145,7 @@ export function AssetsSection({
         {([
           ["characters", "人物设定"],
           ["outfits", "服装档案"],
+          ["scenes", "场景资产"],
           ["style", "漫画风格"],
           ["references", "原始参考素材"],
         ] as const).map(([view, label]) => (
@@ -159,6 +161,10 @@ export function AssetsSection({
           </Link>
         ))}
       </nav>
+      {assetView === "scenes" && (
+        <SceneWorkspace projectId={id} assets={assets.data ?? []} openPreview={openPreview} />
+      )}
+      {assetView !== "scenes" && <>
       {assetView === "characters" && <>
       <header className="canvas-header"><div><span>CHARACTER BIBLE / 角色资产</span><h2>姓名、绰号与参考图绑定</h2></div><small>{characters.data?.length ?? 0} 个角色</small></header>
       <div className="character-create">
@@ -225,8 +231,8 @@ export function AssetsSection({
         </section></>}
       </div>
       {assetView === "references" && <header className="canvas-header"><div><span>REFERENCE INTAKE / 原始素材</span><h2>上传、分类与追溯原始参考图</h2></div><small>{assets.data?.length ?? 0} 个文件</small></header>}
-      <div className="intake-toolbar"><div className="kind-switch">{assetView === "references" ? kinds.map(([value, label]) => <button key={value} className={assetKind === value ? "active" : ""} onClick={() => setAssetKind(value)}>{label}</button>) : <strong>{kinds.find(([value]) => value === currentAssetKind)?.[1]}</strong>}</div><span>{currentAssetKind === "CHARACTER_REFERENCE" ? (bindCharacterId ? "将绑定到选中的角色" : "请先选择要绑定的角色") : currentAssetKind === "OUTFIT_REFERENCE" ? (boundCharacter ? `当前绑定目标：${boundCharacter.primary_name} → ${outfitName.trim() || "未命名服装"}` : "先选择所属角色，再建立服装档案") : `当前分析目标：${styleColorMode === "monochrome" ? "黑白漫画" : "彩色漫画"}`}</span></div>
-      <label className={`upload-stage${upload.isPending ? " busy" : ""}${assetDragActive ? " drag-active" : ""}`} onDragEnter={(event) => { event.preventDefault(); setAssetDragActive(true); }} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; setAssetDragActive(true); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setAssetDragActive(false); }} onDrop={dropReferenceFile}><input type="file" accept="image/png,image/jpeg,image/webp" onChange={chooseFile} disabled={upload.isPending} /><span className="upload-icon">{upload.isPending ? <LoaderCircle className="spin" /> : <Upload />}</span><strong>{upload.isPending ? "正在安全上传…" : assetDragActive ? "松开即可上传" : `拖拽图片到这里，或点击上传${kinds.find(([value]) => value === currentAssetKind)?.[1]}`}</strong><p>{currentAssetKind === "CHARACTER_REFERENCE" ? "人物图会和选中的主要姓名绑定，不会只依赖文件名猜测身份。" : currentAssetKind === "OUTFIT_REFERENCE" ? "上传后自动加入当前服装档案，保存时绑定到上方所选角色。" : `上传后自动加入当前${styleColorMode === "monochrome" ? "黑白" : "彩色"}风格档案，创建后再由默认视觉模型分析。`}</p></label>
+      <div className="intake-toolbar"><div className="kind-switch">{assetView === "references" ? kinds.map(([value, label]) => <button key={value} className={assetKind === value ? "active" : ""} onClick={() => setAssetKind(value)}>{label}</button>) : <strong>{kinds.find(([value]) => value === currentAssetKind)?.[1]}</strong>}</div><span>{currentAssetKind === "CHARACTER_REFERENCE" ? (bindCharacterId ? "将绑定到选中的角色" : "请先选择要绑定的角色") : currentAssetKind === "OUTFIT_REFERENCE" ? (boundCharacter ? `当前绑定目标：${boundCharacter.primary_name} → ${outfitName.trim() || "未命名服装"}` : "先选择所属角色，再建立服装档案") : currentAssetKind === "SCENE_REFERENCE" ? "上传后请到场景资产工作区绑定地点" : `当前分析目标：${styleColorMode === "monochrome" ? "黑白漫画" : "彩色漫画"}`}</span></div>
+      <label className={`upload-stage${upload.isPending ? " busy" : ""}${assetDragActive ? " drag-active" : ""}`} onDragEnter={(event) => { event.preventDefault(); setAssetDragActive(true); }} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; setAssetDragActive(true); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setAssetDragActive(false); }} onDrop={dropReferenceFile}><input type="file" accept="image/png,image/jpeg,image/webp" onChange={chooseFile} disabled={upload.isPending} /><span className="upload-icon">{upload.isPending ? <LoaderCircle className="spin" /> : <Upload />}</span><strong>{upload.isPending ? "正在安全上传…" : assetDragActive ? "松开即可上传" : `拖拽图片到这里，或点击上传${kinds.find(([value]) => value === currentAssetKind)?.[1]}`}</strong><p>{currentAssetKind === "CHARACTER_REFERENCE" ? "人物图会和选中的主要姓名绑定，不会只依赖文件名猜测身份。" : currentAssetKind === "OUTFIT_REFERENCE" ? "上传后自动加入当前服装档案，保存时绑定到上方所选角色。" : currentAssetKind === "SCENE_REFERENCE" ? "场景参考图走同一套文件类型、尺寸和安全校验；绑定关系请在场景资产中建立。" : `上传后自动加入当前${styleColorMode === "monochrome" ? "黑白" : "彩色"}风格档案，创建后再由默认视觉模型分析。`}</p></label>
       {assetView === "outfits" && <>
         <div className="reference-source-actions">
           <button type="button" className="button outline compact" disabled={!bindCharacterId} onClick={() => setShowGeneratedReferencePicker((value) => !value)}><LibraryBig size={14} />{showGeneratedReferencePicker ? "收起生成素材" : "从生成素材库导入"}</button>
@@ -252,11 +258,11 @@ export function AssetsSection({
         const grouped = assets.data?.filter((asset) => asset.kind === kind) ?? [];
         return <section className="asset-purpose-group" key={kind}>
           <div className="asset-list-header"><span>{label}</span><small>{grouped.length} FILES</small></div>
-          <p className="purpose-explain">{{ CHARACTER_REFERENCE: "绑定主要姓名与绰号，用于保持脸、发型和体型一致。", OUTFIT_REFERENCE: "选择图片后，上方绑定流程会明确保存“角色 → 服装档案 → 参考图”的关系。", STYLE_REFERENCE: "选择后由默认视觉模型按所选的黑白或彩色模式总结可复用画面语言。" }[kind]}</p>
+          <p className="purpose-explain">{{ CHARACTER_REFERENCE: "绑定主要姓名与绰号，用于保持脸、发型和体型一致。", OUTFIT_REFERENCE: "选择图片后，上方绑定流程会明确保存“角色 → 服装档案 → 参考图”的关系。", STYLE_REFERENCE: "选择后由默认视觉模型按所选的黑白或彩色模式总结可复用画面语言。", SCENE_REFERENCE: "用于固定地点结构、空间透视和环境基调，请在场景资产中绑定到具体地点。" }[kind]}</p>
           <div className="asset-grid">{grouped.map((asset, index) => {
             const characterReference = kind === "CHARACTER_REFERENCE" ? boundCharacter?.references.find((reference) => reference.asset_id === asset.id) : undefined;
             const linkedCharacter = kind === "CHARACTER_REFERENCE" ? characters.data?.find((character) => character.references.some((reference) => reference.asset_id === asset.id)) : undefined;
-            const selected = kind === "CHARACTER_REFERENCE" ? Boolean(characterReference) : kind === "OUTFIT_REFERENCE" ? selectedOutfitAssets.includes(asset.id) : selectedStyleAssets.includes(asset.id);
+            const selected = kind === "CHARACTER_REFERENCE" ? Boolean(characterReference) : kind === "OUTFIT_REFERENCE" ? selectedOutfitAssets.includes(asset.id) : kind === "STYLE_REFERENCE" ? selectedStyleAssets.includes(asset.id) : false;
             const linkedOutfits = kind === "OUTFIT_REFERENCE" ? outfits.data?.filter((outfit) => outfit.reference_asset_ids.includes(asset.id)) ?? [] : [];
             const linkedStyles = kind === "STYLE_REFERENCE" ? styles.data?.filter((style) => style.profile.reference_asset_ids?.includes(asset.id)) ?? [] : [];
             return <article className={selected ? "asset-card selected" : "asset-card"} key={asset.id}>
@@ -265,7 +271,7 @@ export function AssetsSection({
                 {kind === "OUTFIT_REFERENCE" && <p className={linkedOutfits.length ? "reference-binding bound" : "reference-binding"}><Link2 size={10} />{linkedOutfits.length ? `已绑定：${linkedOutfits.map((outfit) => `${characters.data?.find((character) => character.id === outfit.character_id)?.primary_name ?? "未知角色"} → ${outfit.name}`).join("；")}` : "尚未写入服装档案"}</p>}
                 {kind === "STYLE_REFERENCE" && <p className={linkedStyles.length ? "reference-binding bound" : "reference-binding"}><Link2 size={10} />{linkedStyles.length ? `已用于：${linkedStyles.map((style) => `${style.name}（${style.color_mode === "monochrome" ? "黑白" : "彩色"}）`).join("；")}` : "尚未写入风格档案"}</p>}
                 {kind === "CHARACTER_REFERENCE" && linkedCharacter && !characterReference ? <p className="reference-binding bound"><Link2 size={10} />当前绑定：{linkedCharacter.primary_name}</p> : null}
-                {kind === "CHARACTER_REFERENCE" ? <button className={characterReference ? "bind-purpose bound" : "bind-purpose"} disabled={!boundCharacter || bindExistingCharacterReference.isPending || unbindExistingCharacterReference.isPending} onClick={() => characterReference ? unbindExistingCharacterReference.mutate(characterReference.id) : bindExistingCharacterReference.mutate(asset.id)}>{!boundCharacter ? "先选择角色" : characterReference ? `解除与 ${boundCharacter.primary_name} 的绑定` : linkedCharacter ? `改绑到 ${boundCharacter.primary_name}（自动解除 ${linkedCharacter.primary_name}）` : `绑定到 ${boundCharacter.primary_name}`}</button> : <button className="bind-purpose" disabled={kind === "OUTFIT_REFERENCE" && !bindCharacterId} onClick={() => kind === "OUTFIT_REFERENCE" ? setSelectedOutfitAssets((values) => values.includes(asset.id) ? values.filter((item) => item !== asset.id) : [...values, asset.id]) : setSelectedStyleAssets((values) => values.includes(asset.id) ? values.filter((item) => item !== asset.id) : [...values, asset.id])}>{kind === "OUTFIT_REFERENCE" && !bindCharacterId ? "先选择所属角色" : selected ? "已选：保存后绑定" : kind === "OUTFIT_REFERENCE" ? "加入当前服装档案" : "加入当前风格档案"}</button>}
+                {kind === "CHARACTER_REFERENCE" ? <button className={characterReference ? "bind-purpose bound" : "bind-purpose"} disabled={!boundCharacter || bindExistingCharacterReference.isPending || unbindExistingCharacterReference.isPending} onClick={() => characterReference ? unbindExistingCharacterReference.mutate(characterReference.id) : bindExistingCharacterReference.mutate(asset.id)}>{!boundCharacter ? "先选择角色" : characterReference ? `解除与 ${boundCharacter.primary_name} 的绑定` : linkedCharacter ? `改绑到 ${boundCharacter.primary_name}（自动解除 ${linkedCharacter.primary_name}）` : `绑定到 ${boundCharacter.primary_name}`}</button> : kind === "SCENE_REFERENCE" ? <p className="reference-binding">请到场景资产工作区绑定地点，不在此建立假绑定。</p> : <button className="bind-purpose" disabled={kind === "OUTFIT_REFERENCE" && !bindCharacterId} onClick={() => kind === "OUTFIT_REFERENCE" ? setSelectedOutfitAssets((values) => values.includes(asset.id) ? values.filter((item) => item !== asset.id) : [...values, asset.id]) : setSelectedStyleAssets((values) => values.includes(asset.id) ? values.filter((item) => item !== asset.id) : [...values, asset.id])}>{kind === "OUTFIT_REFERENCE" && !bindCharacterId ? "先选择所属角色" : selected ? "已选：保存后绑定" : kind === "OUTFIT_REFERENCE" ? "加入当前服装档案" : "加入当前风格档案"}</button>}
                 <div className="asset-actions"><select aria-label="修改素材用途" value={asset.kind} onChange={(event) => reclassifyAsset.mutate({ assetId: asset.id, kind: event.target.value as AssetPurpose })}>{kinds.map(([value, option]) => <option key={value} value={value}>{option}</option>)}</select><button title="删除素材" disabled={deleteAsset.isPending} onClick={() => { if (window.confirm("删除该素材及其候选记录，并解除已有绑定？")) deleteAsset.mutate(asset.id); }}><Trash2 size={13} /></button></div>
               </div>
             </article>;
@@ -273,6 +279,7 @@ export function AssetsSection({
           {!grouped.length && <div className="purpose-empty">尚无{label}</div>}
         </section>;
       })}
+      </>}
     </>
   );
 }
