@@ -236,6 +236,9 @@ class _ModelPricingVersionFields(BaseModel):
     output_tokens_per_million: Decimal | None = Field(
         default=None, ge=0, max_digits=20, decimal_places=8
     )
+    cached_input_tokens_per_million: Decimal | None = Field(
+        default=None, ge=0, max_digits=20, decimal_places=8
+    )
     output_image_each: Decimal | None = Field(
         default=None, ge=0, max_digits=20, decimal_places=8
     )

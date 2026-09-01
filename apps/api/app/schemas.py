@@ -820,21 +820,39 @@ class ModelCallAttemptRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
-    job_id: str
+    job_id: str | None
+    project_id: str | None
     job_attempt: int
     dispatch_no: int
+    dispatch_request_id: str | None
     route_switched: bool
     outcome: str | None
+    channel: str
     provider: str
     model_id: str
     catalog_model_id: str | None
     connection_id: str | None
     selected_key_id: str | None
     request_id: str | None
+    probe_id: str | None
+    chapter_id: str | None
+    page_id: str | None
+    panel_id: str | None
+    candidate_id: str | None
     started_at: datetime
     finished_at: datetime | None
     duration_ms: int | None
     usage: dict | None
+    usage_status: str | None
+    usage_source: str | None
+    unit_kind: str | None
+    input_tokens: int | None
+    output_tokens: int | None
+    cached_input_tokens: int | None
+    cache_hit: bool | None
+    output_images: int | None
+    output_image_dims: list | None
+    output_asset_ids: list | None
     route_reason: str | None
     route_score: float | None
     error_code: str | None

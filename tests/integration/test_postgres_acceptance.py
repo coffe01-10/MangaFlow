@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from threading import Barrier
 
 import pytest
+from alembic import command
+from alembic.config import Config
 from app.domain.states import Resolution
 from app.models import (
     AppSetting,
@@ -15,10 +19,12 @@ from app.models import (
     GenerationBatch,
     GenerationJob,
     MangaPage,
+    ModelCallAttempt,
     Outfit,
     PageCandidate,
     Panel,
     Project,
+    ProviderUsageReconciliation,
     StyleProfile,
     WorkflowDefinition,
     WorkflowNodeRun,
@@ -26,6 +32,14 @@ from app.models import (
     WorkflowVersion,
 )
 from app.schemas import CandidateCreate
+from app.services.usage_ledger import create_reconciliation
+from app.services.worker_handlers import model_call_audit
+from app.services.worker_handlers.model_call_audit import (
+    ModelCallAttemptMeta,
+    begin_model_call_attempt,
+    finalize_model_call_attempt,
+)
+from app.usage_schemas import ProviderUsageReconciliationCreate
 from app.services.ordinal_allocator import (
     create_generation_batch,
     create_page_candidate,
@@ -37,9 +51,134 @@ from app.services.workflow_engine import (
     publish_workflow,
 )
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
+
+
+def test_pg_usage_migration_roundtrip(live_pg_isolated_schema):
+    engine, _schema = live_pg_isolated_schema
+    config = Config("apps/api/alembic.ini")
+    with engine.begin() as connection:
+        config.attributes["connection"] = connection
+        command.downgrade(config, "20260831_22")
+        assert "provider_usage_reconciliations" not in inspect(
+            connection
+        ).get_table_names()
+        command.upgrade(config, "head")
+        assert "provider_usage_reconciliations" in inspect(
+            connection
+        ).get_table_names()
+
+
+def test_pg_model_call_begin_and_finalize_are_concurrency_safe(
+    live_pg_session_factory, monkeypatch
+):
+    with live_pg_session_factory() as db:
+        project = Project(name="PG 用量并发验收")
+        db.add(project)
+        db.flush()
+        job = GenerationJob(
+            project_id=project.id,
+            target_type="PROJECT",
+            target_id=project.id,
+            job_type="SCRIPT_PARSE",
+            status="GENERATING",
+            attempt_count=1,
+        )
+        db.add(job)
+        db.commit()
+        job_id = job.id
+        project_id = project.id
+
+    monkeypatch.setattr(model_call_audit, "SessionLocal", live_pg_session_factory)
+    meta = ModelCallAttemptMeta(
+        job_id=job_id,
+        project_id=project_id,
+        job_attempt=1,
+        provider="provider-pg",
+        model_id="model-pg",
+        dispatch_request_id="pg-stable-dispatch",
+    )
+    begin_barrier = Barrier(2)
+
+    def begin(_index):
+        begin_barrier.wait(timeout=10)
+        return begin_model_call_attempt(meta)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        attempt_ids = list(executor.map(begin, range(2)))
+    assert len(set(attempt_ids)) == 1
+
+    finalize_barrier = Barrier(2)
+
+    def finalize(_index):
+        finalize_barrier.wait(timeout=10)
+        finalize_model_call_attempt(
+            attempt_ids[0],
+            outcome="SUCCEEDED",
+            usage={"input_tokens": 10, "output_tokens": 2},
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        list(executor.map(finalize, range(2)))
+    with live_pg_session_factory() as db:
+        rows = list(db.scalars(select(ModelCallAttempt)))
+        assert len(rows) == 1
+        assert rows[0].outcome == "SUCCEEDED"
+
+
+def test_pg_usage_reconciliation_serializes_overlap_and_replays_idempotently(
+    live_pg_session_factory,
+):
+    """Concurrent imports for one billing dimension must not both commit."""
+
+    started = datetime(2026, 9, 1, tzinfo=UTC)
+    base = {
+        "provider": "provider-pg",
+        "model_id": "model-pg",
+        "channel": "HTTP_API",
+        "billing_account_id": "acceptance-account",
+        "period_start": started,
+        "period_end": started + timedelta(days=1),
+        "currency": "USD",
+        "billed_amount": Decimal("1.25"),
+        "source_note": "isolated acceptance fixture",
+        "entered_by": "pytest",
+    }
+    payloads = [
+        ProviderUsageReconciliationCreate(
+            **base,
+            connection_id=f"connection-{index}",
+            import_batch_id=f"batch-{index}",
+            idempotency_key=f"key-{index}",
+        )
+        for index in range(2)
+    ]
+    barrier = Barrier(2)
+
+    def insert(payload):
+        with live_pg_session_factory() as db:
+            barrier.wait(timeout=10)
+            try:
+                row = create_reconciliation(db, payload)
+            except HTTPException as error:
+                return "conflict", error.status_code
+            return "created", row.id
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(insert, payloads))
+    assert sorted(item[0] for item in results) == ["conflict", "created"]
+    assert next(item[1] for item in results if item[0] == "conflict") == 409
+
+    created_id = next(item[1] for item in results if item[0] == "created")
+    created_payload = payloads[
+        next(index for index, item in enumerate(results) if item[0] == "created")
+    ]
+    with live_pg_session_factory() as db:
+        replay = create_reconciliation(db, created_payload)
+        assert replay.id == created_id
+        assert len(list(db.scalars(select(ProviderUsageReconciliation)))) == 1
 
 
 @pytest.fixture(autouse=True)

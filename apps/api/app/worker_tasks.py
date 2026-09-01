@@ -405,6 +405,7 @@ def execute_job(job_id: str) -> None:
                     raise JobCancelledError("任务已取消，完成状态不再写入")
                 raise JobLeaseLostError("任务租约已被其他执行器接管")
             db.commit()
+            provider.flush_staged_attempt_outputs(db)
         if workflow_run_id:
             from app.services.workflow_engine import reconcile_run
 
