@@ -128,7 +128,7 @@ class AssetRead(BaseModel):
 class AssetUpdate(BaseModel):
     kind: str | None = Field(
         default=None,
-        pattern="^(CHARACTER_REFERENCE|OUTFIT_REFERENCE|STYLE_REFERENCE)$",
+        pattern="^(CHARACTER_REFERENCE|OUTFIT_REFERENCE|STYLE_REFERENCE|SCENE_REFERENCE)$",
     )
     display_name: str | None = Field(default=None, min_length=1, max_length=120)
 
@@ -259,6 +259,8 @@ class SceneRead(BaseModel):
     chapter_id: str
     ordinal: int
     location: str
+    scene_asset_id: str | None = None
+    scene_asset_variant_id: str | None = None
     time_label: str
     weather: str
     purpose: str
@@ -277,6 +279,122 @@ class SceneUpdate(BaseModel):
     purpose: str | None = Field(default=None, max_length=8000)
     emotional_arc: str | None = Field(default=None, max_length=8000)
     version: int = Field(ge=1)
+
+
+class SceneAssetStructured(BaseModel):
+    """Normalized structured fields for a scene asset.
+
+    Keys are fixed by the contract; unknown keys are rejected so typos cannot
+    silently change prompt compilation.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    place: str = Field(default="", max_length=200)
+    subareas: list[str] = Field(default_factory=list, max_length=20)
+    interior: bool | None = None
+    time_of_day: str = Field(default="", pattern="^(dawn|day|dusk|night|)$")
+    weather: str = Field(default="", max_length=120)
+    season: str = Field(default="", max_length=120)
+    lighting: str = Field(default="", max_length=120)
+    palette: dict = Field(default_factory=dict)
+    fixed_props: list[str] = Field(default_factory=list, max_length=40)
+    spatial_relations: list[dict] = Field(default_factory=list, max_length=20)
+
+
+class SceneAssetCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=8000)
+    location_hint: str = Field(default="", max_length=200)
+    structured: SceneAssetStructured = Field(default_factory=SceneAssetStructured)
+
+
+class SceneAssetUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=8000)
+    structured: SceneAssetStructured | None = None
+    status: str | None = Field(
+        default=None,
+        pattern="^(UPLOADED|ANALYZED|GENERATED|NEEDS_CONFIRMATION|CANONICAL|ARCHIVED)$",
+    )
+    version: int = Field(ge=1)
+
+
+class SceneAssetReferenceRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    scene_asset_id: str
+    asset_id: str
+    role: str
+    is_canonical: bool
+    created_at: datetime
+
+
+class SceneAssetReferenceCreate(BaseModel):
+    asset_id: str
+    role: str = Field(default="main", max_length=32)
+    is_canonical: bool = False
+
+
+class SceneAssetVariantReferenceRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    variant_id: str
+    asset_id: str
+    role: str
+    sort_order: int
+    created_at: datetime
+
+
+class SceneAssetVariantCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    structured_overrides: dict = Field(default_factory=dict)
+    is_canonical: bool = False
+
+
+class SceneAssetVariantUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    structured_overrides: dict | None = None
+    is_canonical: bool | None = None
+    version: int = Field(ge=1)
+
+
+class SceneAssetVariantRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    scene_asset_id: str
+    name: str
+    structured_overrides: dict
+    is_canonical: bool
+    deleted_at: datetime | None = None
+    version: int
+    references: list[SceneAssetVariantReferenceRead] = Field(default_factory=list)
+
+
+class SceneAssetRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    project_id: str
+    name: str
+    description: str
+    location_hint: str
+    structured: dict
+    status: str
+    deleted_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+    version: int
+    references: list[SceneAssetReferenceRead] = Field(default_factory=list)
+    variants: list[SceneAssetVariantRead] = Field(default_factory=list)
+
+
+class SceneBindAssetRequest(BaseModel):
+    scene_asset_id: str | None = None
+    scene_asset_variant_id: str | None = None
 
 
 class ScriptRead(BaseModel):

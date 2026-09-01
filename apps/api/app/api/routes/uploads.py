@@ -24,6 +24,10 @@ from app.models import (
     Outfit,
     PageCandidate,
     Project,
+    SceneAsset,
+    SceneAssetReference,
+    SceneAssetVariant,
+    SceneAssetVariantReference,
     StyleProfile,
     StyleStatus,
 )
@@ -38,9 +42,11 @@ ASSET_KINDS = {
     "character": "CHARACTER_REFERENCE",
     "outfit": "OUTFIT_REFERENCE",
     "style": "STYLE_REFERENCE",
+    "scene": "SCENE_REFERENCE",
     "CHARACTER_REFERENCE": "CHARACTER_REFERENCE",
     "OUTFIT_REFERENCE": "OUTFIT_REFERENCE",
     "STYLE_REFERENCE": "STYLE_REFERENCE",
+    "SCENE_REFERENCE": "SCENE_REFERENCE",
 }
 ACTIVE_REFERENCE_STATUSES = {
     "WAITING",
@@ -100,6 +106,37 @@ def _detach_reference_asset(db: Session, asset: Asset) -> None:
         style.profile = profile
         style.status = StyleStatus.DRAFT
         style.version += 1
+    affected_scene_asset_ids = set(
+        db.scalars(
+            select(SceneAssetReference.scene_asset_id).where(
+                SceneAssetReference.asset_id == asset.id
+            )
+        )
+    )
+    affected_scene_asset_ids |= set(
+        db.scalars(
+            select(SceneAssetVariant.scene_asset_id)
+            .join(
+                SceneAssetVariantReference,
+                SceneAssetVariantReference.variant_id == SceneAssetVariant.id,
+            )
+            .where(SceneAssetVariantReference.asset_id == asset.id)
+        )
+    )
+    db.execute(
+        delete(SceneAssetReference).where(SceneAssetReference.asset_id == asset.id)
+    )
+    db.execute(
+        delete(SceneAssetVariantReference).where(
+            SceneAssetVariantReference.asset_id == asset.id
+        )
+    )
+    for scene_asset_id in affected_scene_asset_ids:
+        scene_asset = db.get(SceneAsset, scene_asset_id)
+        if not scene_asset:
+            continue
+        scene_asset.status = AssetStatus.NEEDS_CONFIRMATION
+        scene_asset.version += 1
 
 
 @router.get("", response_model=list[AssetRead])
@@ -141,7 +178,7 @@ def upload_asset(
     file = parsed.file
     normalized_kind = ASSET_KINDS.get(kind)
     if not normalized_kind:
-        raise HTTPException(status_code=422, detail="请选择人物、服装或漫画风格参考用途")
+        raise HTTPException(status_code=422, detail="请选择人物、服装、漫画风格或场景参考用途")
     project = db.get(Project, project_id)
     if not project or project.deleted_at is not None:
         raise HTTPException(status_code=404, detail="项目不存在")

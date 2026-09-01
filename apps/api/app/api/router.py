@@ -8,6 +8,7 @@ from app.api.routes import (
     models,
     projects,
     providers,
+    scene_assets,
     settings,
     sources,
     uploads,
@@ -25,6 +26,7 @@ api_router.include_router(providers.router, tags=["providers"])
 api_router.include_router(providers.routing_router, tags=["routing-policies"])
 api_router.include_router(sources.router, tags=["sources"])
 api_router.include_router(characters.router, tags=["characters"])
+api_router.include_router(scene_assets.router, tags=["scene-assets"])
 api_router.include_router(workflow.router, tags=["workflow"])
 api_router.include_router(exports.router, tags=["exports"])
 api_router.include_router(asset_generation.router, tags=["asset-generation"])

@@ -20,11 +20,17 @@ erDiagram
     PROJECT ||--o{ CHARACTER : owns
     PROJECT ||--o{ OUTFIT : owns
     PROJECT ||--o{ STYLE_PROFILE : owns
+    PROJECT ||--o{ SCENE_ASSET : owns
     PROJECT ||--o{ GENERATION_JOB : queues
     CHAPTER ||--o{ SOURCE_REVISION : preserves
     SOURCE_REVISION ||--o{ SOURCE_SEGMENT : splits
     CHAPTER ||--o{ SCENE : adapts
     SCENE ||--o{ BEAT : contains
+    SCENE }o--o| SCENE_ASSET : binds
+    SCENE }o--o| SCENE_ASSET_VARIANT : binds
+    SCENE_ASSET ||--o{ SCENE_ASSET_REFERENCE : references
+    SCENE_ASSET ||--o{ SCENE_ASSET_VARIANT : variants
+    SCENE_ASSET_VARIANT ||--o{ SCENE_ASSET_VARIANT_REFERENCE : references
     CHAPTER ||--o{ MANGA_PAGE : plans
     SOURCE_SEGMENT }o--o{ MANGA_PAGE : maps_to
     MANGA_PAGE ||--o{ PANEL : contains
@@ -53,9 +59,15 @@ erDiagram
 
 `Character` 使用 `primary_name` 和 `aliases`，同时保存规范化别名与冲突标记。原文可以用绰号识别角色，剧本与对白的说话人统一写主要姓名。`CharacterReference` 将参考资产绑定到角色和参考类型；服装与风格资产可建立各自的生成批次。
 
+### SceneAsset、SceneAssetReference、SceneAssetVariant
+
+`SceneAsset` 把地点升级为一级资产：结构化字段（`structured` 的 place/subareas/interior/time_of_day/weather/lighting/palette 等固定键集合）、兜底 `description`、`location_hint`（迁移来源展示，只读）、状态、字段锁定与软删除。`SceneAssetReference` 把参考图从 `Asset` 文件池绑定到资产（`(scene_asset_id, asset_id, role)` 唯一）；`SceneAssetVariant` 只允许覆盖时间/天气/光照/色调/季节（`structured_overrides` 键白名单），每资产至多一个 `is_canonical`，`SceneAssetVariantReference` 表达变体级参考图。活跃名称唯一约束为 `(project_id, normalized_name) WHERE deleted_at IS NULL` 部分唯一索引。
+
+`Scene.scene_asset_id` / `scene_asset_variant_id` 是当前采用引用（FK `SET NULL`），**不锁版本**；版本锁定发生在生成边界（候选 `prompt_snapshot`）。历史 `Scene.location` 原样保留、不改写、不回填；绑定校验（项目归属、变体归属、软删状态）由服务端强制执行，非法绑定返回 422。
+
 ### Scene、Beat、ScriptRevision
 
-Scene/Beat 逐片段保存地点、时间、动作、对白、旁白、人物和原文来源。`ScriptRevision` 保存剧本修订、结构化内容和来源区间，不允许把整章压缩为少量页面摘要。
+Scene/Beat 逐片段保存地点、时间、动作、对白、旁白、人物和原文来源。`ScriptRevision` 保存剧本修订、结构化内容和来源区间，不允许把整章压缩为少量页面摘要。场景背景消费优先级为：`structured`（变体覆盖后）编译 → 资产 `description` → 历史 `location` 文本；软删或缺失资产与未绑定场景行为一致。
 
 ### MangaPage、Panel、Dialogue
 
@@ -68,6 +80,8 @@ Scene/Beat 逐片段保存地点、时间、动作、对白、旁白、人物和
 `GenerationBatch` 表示同一目标的一轮抽卡会话，目标可为页面、角色补图、服装图、风格测试或修复图。切换模型不关闭批次；进入下一页或手动新建批次时才关闭。
 
 `PageCandidate` 保存模型别名、真实模型 ID、分辨率、参数、参考资产、任务、输出资产、收藏与软删除状态。每页可收藏多个，但 `MangaPage.selected_candidate_id` 只能指向一个暂选版本；`selected_candidate_ack_version`、候选检查状态与 `continuity_status` 共同决定页面是否生产通过。`AssetCandidate` 为非页面批次提供同样的审计与素材库能力。AI 生成素材被服装档案复用时只新增 `reference_asset_ids` 关系，不改变原始 `Asset.kind/source`，删除服装也不会删除外部生成批次拥有的素材。
+
+`PageCandidate.prompt_snapshot` 在生成边界固化场景资产版本事实：`scene_asset` 快照包含 `scene_asset_id`、`scene_asset_version`、`scene_asset_variant_id`、变体 `structured_overrides` 与编译后的背景文本；资产后续修订不改变历史候选快照，与 `based_on_storyboard_version` 同款不可变语义。`GenerationRecord.input_versions` 记录同一份快照。
 
 ### GenerationJob、JobDependency、GenerationRecord
 
@@ -154,7 +168,8 @@ stateDiagram-v2
 - 每页最多一个当前采用候选；收藏数量不限。
 - 任务幂等键在有效范围内唯一；每项目执行中任务不得超过并发上限。
 - 新任务接受目录模型 ID、兼容旧别名或 `auto`；运行前必须验证类型、操作、连接状态和凭据。
-- `JobAssetReference` 锁定排队/执行任务正在使用的参考资产，避免验证后被删除或改用途。
+- `JobAssetReference` 锁定排队/执行任务正在使用的参考资产，避免验证后被删除或改用途；场景参考图租约集合同时包含资产级与当前变体关系表中的 `asset_id`。
+- 场景资产活跃名称在项目内唯一（`deleted_at IS NULL` 部分索引）；变体结构化覆盖只允许时间/天气/光照/色调/季节键；每资产至多一个规范变体。
 - 模型调用派发 ID 全局唯一；对账幂等键不得对应不同内容，同一账单维度的周期不得重叠。
 - 对项目/状态/优先级、章节/页码、批次/时间、候选/模型/收藏、资产/哈希建立复合索引。
 
@@ -163,3 +178,5 @@ stateDiagram-v2
 Alembic 同时支持 SQLite 与 PostgreSQL。修订版迁移把 `image.fast` 映射为 `image.nano_banana_2`、把 `image.quality` 映射为 `image.nano_banana_pro`，并新增来源、批次、候选、任务和导出表。生产启动只检查迁移版本，不自动执行升级。
 
 迁移 `20260901_23` 扩展 attempt/价格列并新建对账表，对可识别的旧 usage JSON 做幂等结构化回填，无法确定的数量不伪造为 0。降级只删除新表/列；存在无任务归属的付费探测 attempt 时拒绝恢复 `job_id/project_id NOT NULL`，防止静默丢失账本。
+
+迁移 `20260901_24` 新建 `scene_assets` / `scene_asset_references` / `scene_asset_variants` / `scene_asset_variant_references` 四张表，并为 `scenes` 增加两个可空 FK（`SET NULL`）。迁移不做任何数据操作：历史 `location` 文本零触碰、不回填资产行、`scene_asset_id` 保持 NULL；降级在存在场景绑定或新表行时明确拒绝。

@@ -2,7 +2,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Chapter, Character, Dialogue, MangaPage, Panel
+from app.models import Chapter, Character, Dialogue, MangaPage, Panel, Scene
 
 
 def mark_storyboard_changed(page: MangaPage) -> None:
@@ -80,8 +80,25 @@ def mark_pages_for_review(
         return
     start = from_page_number
     if start is None and reference_id:
-        field = "scene_ids" if reference_kind == "scene" else "beat_ids"
-        referenced = [page.page_number for page in pages if reference_id in getattr(page, field)]
+        if reference_kind == "scene_asset":
+            scene_ids = set(
+                db.scalars(
+                    select(Scene.id).where(
+                        Scene.chapter_id == chapter_id,
+                        Scene.scene_asset_id == reference_id,
+                    )
+                )
+            )
+            referenced = [
+                page.page_number
+                for page in pages
+                if scene_ids & set(page.scene_ids)
+            ]
+        else:
+            field = "scene_ids" if reference_kind == "scene" else "beat_ids"
+            referenced = [
+                page.page_number for page in pages if reference_id in getattr(page, field)
+            ]
         start = min(referenced) if referenced else pages[0].page_number
     start = start or pages[0].page_number
     for page in pages:

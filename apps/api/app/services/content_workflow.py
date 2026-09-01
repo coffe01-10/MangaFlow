@@ -33,6 +33,7 @@ from app.services.ordinal_allocator import (
     ordinal_savepoint,
     pause_before_ordinal_retry,
 )
+from app.services.scene_assets import resolve_scene_background
 
 CHAPTER_HEADER = re.compile(
     r"(?m)^\s*(第[零一二三四五六七八九十百千万两0-9]+[章节回卷][^\r\n]*)\s*$"
@@ -658,7 +659,9 @@ def _populate_page_storyboard(
             direct_chunk is None and direct_beat is None
         ) or base_action in used_actions
         if is_supplemental:
-            background = page_scenes[0].location if page_scenes else "按原文场景"
+            background = (
+                resolve_scene_background(db, page_scenes[0]) if page_scenes else "按原文场景"
+            )
             clauses = [
                 clause.strip()
                 for clause in ACTION_CLAUSE_BOUNDARY.split(base_action)
@@ -722,7 +725,9 @@ def _populate_page_storyboard(
             if visual_beat
             else {},
             background=(
-                page_scenes[0].location if page_scenes else "按原文场景"
+                resolve_scene_background(db, page_scenes[0])
+                if page_scenes
+                else "按原文场景"
             ),
             bubble_regions=[],
             sound_effects=[],
