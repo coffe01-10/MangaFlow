@@ -196,7 +196,14 @@ def update_scene_asset(
     db: Session = Depends(get_db),
 ) -> SceneAssetRead:
     asset = _scene_asset(db, project_id, asset_id)
-    if asset.version != payload.version:
+    # Claim the row with an atomic conditional update so concurrent PATCHes
+    # cannot both pass an in-memory version comparison.
+    claimed = db.execute(
+        update(SceneAsset)
+        .where(SceneAsset.id == asset.id, SceneAsset.version == payload.version)
+        .values(version=payload.version + 1)
+    )
+    if not claimed.rowcount:
         raise HTTPException(status_code=409, detail="场景资产已被更新，请刷新后重试")
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
     if "name" in values:
@@ -209,7 +216,7 @@ def update_scene_asset(
     for key, value in values.items():
         if value is not None:
             setattr(asset, key, value)
-    asset.version += 1
+    asset.version = payload.version + 1
     mark_pages_for_scene_asset_review(db, asset.id)
     try:
         db.commit()
@@ -365,6 +372,9 @@ def create_scene_asset_variant(
             )
             .values(is_canonical=False)
         )
+        # Installing a default variant changes the effective scene input for
+        # every scene without an explicit variant binding.
+        mark_pages_for_scene_asset_review(db, asset.id)
     variant = SceneAssetVariant(
         scene_asset_id=asset.id,
         name=payload.name.strip(),
@@ -396,7 +406,16 @@ def update_scene_asset_variant(
     variant = db.get(SceneAssetVariant, variant_id)
     if not variant or variant.scene_asset_id != asset.id:
         raise HTTPException(status_code=404, detail="场景变体不存在")
-    if variant.version != payload.version:
+    # Atomic conditional version claim so concurrent PATCHes cannot both pass.
+    claimed = db.execute(
+        update(SceneAssetVariant)
+        .where(
+            SceneAssetVariant.id == variant.id,
+            SceneAssetVariant.version == payload.version,
+        )
+        .values(version=payload.version + 1)
+    )
+    if not claimed.rowcount:
         raise HTTPException(status_code=409, detail="场景变体已被更新，请刷新后重试")
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
     if values.get("structured_overrides") is not None:
@@ -415,7 +434,7 @@ def update_scene_asset_variant(
     for key, value in values.items():
         if value is not None:
             setattr(variant, key, value.strip() if isinstance(value, str) else value)
-    variant.version += 1
+    variant.version = payload.version + 1
     mark_pages_for_scene_asset_review(db, asset.id)
     try:
         db.commit()

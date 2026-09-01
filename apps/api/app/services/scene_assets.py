@@ -27,6 +27,9 @@ from app.models import (
 
 TIME_OF_DAY_LABELS = {"dawn": "黎明", "day": "白天", "dusk": "黄昏", "night": "夜晚"}
 VARIANT_OVERRIDE_KEYS = {"time_of_day", "weather", "lighting", "palette", "season"}
+ALLOWED_TIME_OF_DAY = {"dawn", "day", "dusk", "night", ""}
+TEXT_OVERRIDE_KEYS = {"weather", "season", "lighting"}
+TEXT_OVERRIDE_LENGTH = 120
 
 
 def normalized_name(value: str) -> str:
@@ -34,6 +37,13 @@ def normalized_name(value: str) -> str:
 
 
 def validate_variant_overrides(value: dict) -> None:
+    """Validate both the key set and the typed values of variant overrides.
+
+    An invalid ``time_of_day`` would silently drop the dimension during
+    compilation, and a non-dict palette would break JSON snapshots, so each
+    value mirrors the corresponding ``SceneAssetStructured`` field.
+    """
+
     if not isinstance(value, dict):
         raise HTTPException(status_code=422, detail="变体覆盖必须是对象")
     unknown = set(value) - VARIANT_OVERRIDE_KEYS
@@ -42,6 +52,21 @@ def validate_variant_overrides(value: dict) -> None:
             status_code=422,
             detail="变体只允许覆盖时间、天气、光照、色调或季节字段",
         )
+    time_of_day = value.get("time_of_day")
+    if time_of_day is not None and time_of_day not in ALLOWED_TIME_OF_DAY:
+        raise HTTPException(
+            status_code=422, detail="变体时间字段只支持 dawn/day/dusk/night 或空"
+        )
+    for key in TEXT_OVERRIDE_KEYS:
+        raw = value.get(key)
+        if raw is None:
+            continue
+        if not isinstance(raw, str):
+            raise HTTPException(status_code=422, detail=f"变体 {key} 字段必须是文本")
+        if len(raw) > TEXT_OVERRIDE_LENGTH:
+            raise HTTPException(status_code=422, detail=f"变体 {key} 字段超出长度上限")
+    if "palette" in value and not isinstance(value["palette"], dict):
+        raise HTTPException(status_code=422, detail="变体色调字段必须是对象")
 
 
 def _applied_variant(

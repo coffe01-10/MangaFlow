@@ -98,7 +98,7 @@ Worker 启动统一经过 `apps/api/run_worker.py` / `app.worker`，与 API 共�
 
 页面规划可以一次完成，但图片只允许逐页生成。`GenerationBatch` 是同一页的一轮抽卡会话，`PageCandidate` 是一次模型调用的候选。收藏和暂选互相独立；暂选只表达人工选择，不代表成品。只有候选图存在、分镜版本已确认、视觉检查通过三项同时成立，页面才进入生产通过状态并成为下一页的连续性输入。默认 DAG 终点是单页成品；整章导出使用独立 DAG，并要求章节内所有页面生产通过。
 
-场景背景由 `resolve_scene_background` 统一解析：`SceneAsset.structured`（当前变体 `structured_overrides` 覆盖后）编译 → 资产 `description` → 历史 `Scene.location` 兜底；软删/缺失资产与未绑定场景行为一致。编译文本只写入 `Panel.background` 文本快照（生成候选不可变），不写回 Scene。绑定/解绑资产或编辑资产后，`mark_pages_for_review` 以 `scene_asset` 引用类型把相关页面标记 `NEEDS_REVIEW`。候选创建与生成边界把 `scene_asset_id/scene_asset_version/scene_asset_variant_id` 及变体覆盖写入 `prompt_snapshot` 与 `GenerationRecord.input_versions`；场景参考图（资产级 + 变体级）进入 `JobAssetReference` 租约，排队/执行期间删除任一参考图返回 409。
+场景背景由 `resolve_scene_background` 统一解析：`SceneAsset.structured`（生效变体 `structured_overrides` 覆盖后）编译 → 资产 `description` → 历史 `Scene.location` 兜底；软删/缺失资产与未绑定场景行为一致。未显式绑定变体时采用资产默认 `is_canonical` 变体。编译文本写入 `Panel.background` 快照（分镜构建时），候选排队时把场景资产版本/变体/覆盖与引用图 ID 冻结进 `prompt_snapshot`，生成提示词按冻结快照编译，`Panel.background` 保持不可变。绑定/解绑资产、编辑/安装规范变体、归档/恢复后，`mark_pages_for_review` 以 `scene_asset` 引用类型把相关页面标记 `NEEDS_REVIEW`。`GenerationRecord.input_versions` 记录同一份冻结快照；场景参考图（资产级 + 生效变体级）在排队时进入 `JobAssetReference` 租约，执行期按排队时的引用集加载，排队/执行期间删除任一参考图返回 409。
 
 视觉检查按 `candidate_id + storyboard_version` 隔离，五类各自最新结果必须全部通过。局部复检只补齐同一分镜版本的类别，不能借用旧分镜结果；检查期间分镜变化时只保存旧版本审计记录，不把新分镜标记通过。同一类别、同一时间戳的冲突结果按失败优先处理，不能用随机 UUID 排序推断检查先后；时间上更新的通过结果仍可解除旧失败。
 

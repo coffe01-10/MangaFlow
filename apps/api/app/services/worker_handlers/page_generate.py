@@ -289,10 +289,17 @@ def _run_page_generate(db, job: GenerationJob) -> None:
         raise RuntimeError("页面原文覆盖不完整，禁止生成")
 
     reference_selections = candidate.prompt_snapshot.get("reference_selections", {})
-    prompt, snapshot = compile_page_prompt(db, page, project)
     # The queue-time snapshot is the immutable input contract of this
     # candidate; later asset or variant edits must not rewrite it.
     queued_scene_snapshot = (candidate.prompt_snapshot or {}).get("scene_asset") or {}
+    queued_scene_background = (
+        queued_scene_snapshot.get("compiled_background")
+        if queued_scene_snapshot.get("scene_asset_id") is not None
+        else None
+    )
+    prompt, snapshot = compile_page_prompt(
+        db, page, project, scene_background=queued_scene_background
+    )
     reference_bindings: list[dict[str, str | None]] = []
     for character_id, selection in reference_selections.items():
         character = db.get(Character, character_id)

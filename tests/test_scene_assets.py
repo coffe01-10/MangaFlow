@@ -688,6 +688,21 @@ def test_scene_bind_asset_marks_pages_for_review(client, db_session):
     db_session.refresh(page)
     assert page.continuity_status == "NEEDS_REVIEW"
 
+    # Installing a canonical default variant re-flags pages bound via default.
+    page.continuity_status = "PASSED"
+    db_session.commit()
+    canonical = client.post(
+        f"/api/v1/projects/{project['id']}/scene-assets/{scene_asset['id']}/variants",
+        json={
+            "name": "晨间",
+            "structured_overrides": {"time_of_day": "dawn"},
+            "is_canonical": True,
+        },
+    )
+    assert canonical.status_code == 201
+    db_session.refresh(page)
+    assert page.continuity_status == "NEEDS_REVIEW"
+
     other_asset = _create_scene_asset(client, project["id"], name="其他教室")
     mismatch = client.patch(
         f"/api/v1/scenes/{scene.id}/bind-asset",
@@ -895,6 +910,24 @@ def test_variant_override_keys_and_canonical_uniqueness(client, db_session):
         json={"name": "不可变", "structured_overrides": {"place": "新地点"}},
     )
     assert forbidden.status_code == 422
+
+    bad_time = client.post(
+        f"/api/v1/projects/{project['id']}/scene-assets/{scene_asset['id']}/variants",
+        json={"name": "错误时间", "structured_overrides": {"time_of_day": "midnight"}},
+    )
+    assert bad_time.status_code == 422
+
+    bad_shape = client.post(
+        f"/api/v1/projects/{project['id']}/scene-assets/{scene_asset['id']}/variants",
+        json={"name": "错误形状", "structured_overrides": {"weather": ["rain", "fog"]}},
+    )
+    assert bad_shape.status_code == 422
+
+    bad_palette = client.post(
+        f"/api/v1/projects/{project['id']}/scene-assets/{scene_asset['id']}/variants",
+        json={"name": "错误色调", "structured_overrides": {"palette": ["#fff"]}},
+    )
+    assert bad_palette.status_code == 422
 
     first = client.post(
         f"/api/v1/projects/{project['id']}/scene-assets/{scene_asset['id']}/variants",
@@ -1174,6 +1207,7 @@ def test_delete_asset_detaches_scene_bindings_and_resets_status(
 
 def test_storyboard_panel_background_uses_resolved_scene(client, db_session):
     from app.services.content_workflow import update_page_layout
+    from app.services.prompt_compiler import compile_page_prompt
 
     project = _project(client)
     chapter, plan, scene, page = _chapter_and_page(client, db_session, project["id"])
@@ -1182,6 +1216,18 @@ def test_storyboard_panel_background_uses_resolved_scene(client, db_session):
         f"/api/v1/scenes/{scene.id}/bind-asset",
         json={"scene_asset_id": scene_asset["id"]},
     )
+    # Panels still hold the pre-bind storyboard text; the compile-time override
+    # feeds the frozen resolved facts into the prompt without rewriting panels.
+    project_row = db_session.get(Project, project["id"])
+    resolved = resolve_scene_background(db_session, db_session.get(Scene, scene.id))
+    _, compiled = compile_page_prompt(
+        db_session, page, project_row, scene_background=resolved
+    )
+    assert all(
+        item["background"] == resolved
+        for item in compiled["input"]["page"]["layout"]
+    )
+
     rebuilt = update_page_layout(
         db_session, page, panel_count=page.panel_count, layout_mode="dynamic"
     )

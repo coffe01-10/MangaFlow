@@ -9,7 +9,20 @@ from app.models import Character, Dialogue, MangaPage, Outfit, Panel, Project, S
 PAGE_TEMPLATE_VERSION = "page-v2.1.0"
 
 
-def compile_page_prompt(db: Session, page: MangaPage, project: Project) -> tuple[str, dict]:
+def compile_page_prompt(
+    db: Session,
+    page: MangaPage,
+    project: Project,
+    scene_background: str | None = None,
+) -> tuple[str, dict]:
+    """Compile the generation prompt for one page.
+
+    ``scene_background`` replaces the panel-bound background text when the
+    queue-time snapshot holds scene asset facts: the frozen snapshot is the
+    compile-time contract (docs/v02-scene-asset-contract.md §5), while
+    ``Panel.background`` stays untouched as the storyboard snapshot.
+    """
+
     characters = list(
         db.scalars(
             select(Character)
@@ -74,7 +87,7 @@ def compile_page_prompt(db: Session, page: MangaPage, project: Project) -> tuple
                 "props": panel.props,
                 "actions": panel.actions,
                 "expressions": panel.expressions,
-                "background": panel.background,
+                "background": scene_background or panel.background,
                 "dialogues": [
                     {
                         "speaker": character_names.get(item.speaker_character_id, "旁白"),
