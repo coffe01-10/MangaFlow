@@ -55,6 +55,7 @@ flowchart LR
 - `story/pages`：Scene、Beat、剧本、动态分页、右至左分镜和来源映射。
 - `batches/candidates`：页面或资产批次、候选、收藏、采用、下一页和软删除。
 - `jobs`：任务提交、DAG、幂等、取消、重试、超时、租约和并发限制。
+- `usage-ledger`：HTTP/CLI 逐次派发计量、版本化成本估算、资产输出挂接与人工账单对账。
 - `inspection/repair`：文字、说话人、角色、服装、道具和连续性检查及分级修复；文字识别是人工校对辅助项，不自动触发付费修图，采用时需显式人工确认。
 - `library/exports`：批次素材库、PNG、PDF、项目 JSON 和素材清单。
 
@@ -118,6 +119,12 @@ Worker 启动统一经过 `apps/api/run_worker.py` / `app.worker`，与 API 共�
 
 可选 CLI 图像通道走独立外部进程边界，不伪装成 HTTP API。公共 controller 按 run 建立受控目录、结构化请求/结果和输出清单，并关联 `ModelCallAttempt`；Windows runner 在子进程执行前将其加入 kill-on-close Job Object，取消和超时终止整棵进程树。数据库唯一槽位限制每连接并发，恢复仅在 controller 与 Job Object 均确认停止后释放；公共层不会静默切换到 HTTP 通道。Codex 适配器只执行原生 `codex.exe`，把用户 prompt 留在校验和保护的 request 文件而非 argv，以 `workspace-write`、无审批、临时会话及忽略用户配置的 `codex exec` 调用 `$imagegen`。Antigravity 适配器只执行原生 `agy.exe`，使用 sandbox、禁用 slash 扩展、限时 JSON print 模式和 run-owned 私有 HOME；官方 JSON envelope 由适配器归一化为公共 `result.json`，只从该私有 HOME 的 artifact 树采用唯一且通过链接、路径、数量、格式、像素和大小校验的图片。Grok Build 适配器只执行原生 `grok.exe`，用私有 Git 边界阻断项目级指令发现，并在每次图片调用前读取 `inspect --json`；发现任何外部 hook 或无法确认安全状态时，在付费工具调用前拒绝执行。通过预检后只开放与操作匹配的 `image_gen` 或 `image_edit`，采用当前 run 的唯一 typed session 图片并清理该会话目录。三个通道的设置页都只做只读登录、版本和参数能力探测，付费图片验证必须复用真实任务和审计链。
 
+### 用量账本与对账
+
+付费模型调用在真实派发前以独立事务创建 `ModelCallAttempt`，上游返回后以条件单行 UPDATE 写入终态和结构化 usage。重试、换 Key 与 CLI 派发均保留独立行，缺失计量是 unknown，不是 0；未决 attempt 不进入成本估算。输出资产在其自身事务提交后再幂等挂接到 attempt，不使用尚未持久化的资产 ID。
+
+读端通过 `/api/v1/usage/attempts` 的 keyset 分页和 `/api/v1/usage/summary` 的日/provider/model/channel 聚合消费同一账本。Estimated 金额只使用 attempt 时刻生效的价格版本；运营者录入的 billed 对账记录永不与 estimated 相加。SQLite 以事务内区间查询拒绝重叠账期，PostgreSQL 使用 advisory transaction lock 和 `btree_gist` exclusion constraint 封住并发窗口。
+
 ## 8. 安全与可观测性
 
 - 服务账号 JSON 和 AES-256-GCM 加密的供应商 API Key 仅由 API/Worker 读取。
@@ -126,7 +133,7 @@ Worker 启动统一经过 `apps/api/run_worker.py` / `app.worker`，与 API 共�
 - API 只返回配置状态与脱敏错误，不返回凭据路径、邮箱、令牌或认证头。
 - 上传执行扩展名、MIME、大小、文件头、哈希去重和路径穿越检查。
 - 上传表单由异步依赖限量解析并确保关闭文件；同步路由在 FastAPI 线程池中执行图片处理、正文导入和数据库操作，不占用事件循环执行耗时同步业务。
-- 每次模型调用记录任务、模型、参数摘要、提示词版本、参考资产、时间、输出、重试次数和脱敏错误。
+- 每次模型调用记录任务/探测、模型、HTTP/CLI 通道、计量来源、时间、输出资产、重试次数和脱敏错误；不写入 prompt、凭据或参考图内容。
 
 ## 9. 部署与验证
 

@@ -334,6 +334,7 @@ def test_reconciliation_is_idempotent_rejects_overlap_and_stays_separate(
         "provider": "provider-a",
         "model_id": "model-a",
         "channel": "HTTP_API",
+        "connection_id": "connection-a",
         "billing_account_id": "account-a",
         "import_batch_id": "batch-a",
         "idempotency_key": "line-1",
@@ -360,6 +361,7 @@ def test_reconciliation_is_idempotent_rejects_overlap_and_stays_separate(
         **payload,
         "import_batch_id": "batch-b",
         "idempotency_key": "line-2",
+        "connection_id": "connection-b",
         "period_start": "2026-08-15T00:00:00Z",
         "period_end": "2026-09-15T00:00:00Z",
     }

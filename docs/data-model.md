@@ -35,6 +35,7 @@ erDiagram
     CHARACTER ||--o{ CHARACTER_REFERENCE : binds
     GENERATION_JOB }o--o{ GENERATION_JOB : depends_on
     GENERATION_JOB ||--o{ GENERATION_RECORD : audits
+    GENERATION_JOB ||--o{ MODEL_CALL_ATTEMPT : dispatches
     PAGE_CANDIDATE ||--o{ INSPECTION_RESULT : inspected_by
 ```
 
@@ -71,6 +72,16 @@ Scene/Beat 逐片段保存地点、时间、动作、对白、旁白、人物和
 ### GenerationJob、JobDependency、GenerationRecord
 
 任务保存类型、目标、状态、进度、幂等键、计划/开始/结束时间、租约、取消、尝试次数、超时、模型、参数和脱敏错误。依赖表表达 DAG。`GenerationRecord` 记录不可变的模型、提示词版本、输入版本、参考资产、用量和输出。
+
+### ModelCallAttempt、ModelPricingVersion、ProviderUsageReconciliation
+
+`ModelCallAttempt` 是每次真实上游派发的脱敏账本行，包括 HTTP API 和 CLI 通道、任务/探测关联、章节/页/格/候选维度、终态、延迟与用量来源。`dispatch_request_id` 全局唯一，相同派发重放返回既有行；`outcome=NULL` 表示崩溃或结果未知，不得作为零费用。
+
+结构化计量列为 `input_tokens`、`output_tokens`、`cached_input_tokens`、`output_images` 及 `usage_status/source/unit_kind`。缺失值保持 `NULL + UNKNOWN/PARTIAL`，只有上游明确上报 0 才保存为 0。资产落库晚于上游返回，因此 `output_asset_ids/output_image_dims` 在资产事务提交后以幂等第二阶段挂接；挂接失败保留成功 attempt，并写入脱敏修复标记。
+
+`ModelPricingVersion` 以生效区间保存版本化估算费率。缓存输入按“未缓存输入价 + `cached_input_tokens_per_million`”拆分；缺缓存价时按全价估算并降级为 `PARTIAL`。
+
+`ProviderUsageReconciliation` 保存运营者录入的账单事实，与 estimated 金额分开展示。`(billing_account_id, import_batch_id, idempotency_key)` 唯一；同一账单账号 + provider + model + channel 的周期不得重叠，`connection_id` 只作追溯字段，不拆分账单维度。SQLite 在同一事务内预查，PostgreSQL 另以 `btree_gist` 排他约束作为数据库级竞态保护。
 
 ### InspectionResult、RepairPlan、ExportBundle
 
@@ -144,8 +155,11 @@ stateDiagram-v2
 - 任务幂等键在有效范围内唯一；每项目执行中任务不得超过并发上限。
 - 新任务接受目录模型 ID、兼容旧别名或 `auto`；运行前必须验证类型、操作、连接状态和凭据。
 - `JobAssetReference` 锁定排队/执行任务正在使用的参考资产，避免验证后被删除或改用途。
+- 模型调用派发 ID 全局唯一；对账幂等键不得对应不同内容，同一账单维度的周期不得重叠。
 - 对项目/状态/优先级、章节/页码、批次/时间、候选/模型/收藏、资产/哈希建立复合索引。
 
 ## 7. 迁移策略
 
 Alembic 同时支持 SQLite 与 PostgreSQL。修订版迁移把 `image.fast` 映射为 `image.nano_banana_2`、把 `image.quality` 映射为 `image.nano_banana_pro`，并新增来源、批次、候选、任务和导出表。生产启动只检查迁移版本，不自动执行升级。
+
+迁移 `20260901_23` 扩展 attempt/价格列并新建对账表，对可识别的旧 usage JSON 做幂等结构化回填，无法确定的数量不伪造为 0。降级只删除新表/列；存在无任务归属的付费探测 attempt 时拒绝恢复 `job_id/project_id NOT NULL`，防止静默丢失账本。

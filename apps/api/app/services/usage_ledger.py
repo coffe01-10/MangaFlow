@@ -343,11 +343,6 @@ def create_reconciliation(
             return existing
         raise HTTPException(status_code=409, detail="对账幂等键已用于不同内容")
 
-    same_connection = (
-        ProviderUsageReconciliation.connection_id.is_(None)
-        if payload.connection_id is None
-        else ProviderUsageReconciliation.connection_id == payload.connection_id
-    )
     overlap = db.scalar(
         select(ProviderUsageReconciliation.id)
         .where(
@@ -356,7 +351,6 @@ def create_reconciliation(
             ProviderUsageReconciliation.provider == payload.provider,
             ProviderUsageReconciliation.model_id == payload.model_id,
             ProviderUsageReconciliation.channel == payload.channel,
-            same_connection,
             ProviderUsageReconciliation.period_start < payload.period_end,
             ProviderUsageReconciliation.period_end > payload.period_start,
         )
