@@ -4,6 +4,14 @@
 
 本文件记录修订版 MVP 计划的实际完成度。
 
+## V02-20B 场景一级资产后端已审阅合并（2026-09-01）
+
+- Issue #74 / PR #75 / `codex/v02-20b-scene-assets` 已完成场景一级资产后端：新增 SceneAsset、SceneAssetReference、SceneAssetVariant、SceneAssetVariantReference 及可回滚迁移；Scene 通过可空外键绑定资产与变体，历史 `location` 原样保留且不伪造回填。
+- 项目级 API 支持资产、参考图、变体、确认、软删除与恢复；绑定校验覆盖项目归属、变体归属和软删除状态。统一 `resolve_scene_background` 按结构化字段与变体覆盖、描述、历史 `Scene.location` 的顺序解析背景。
+- 生成链路将场景资产版本、变体和覆盖字段冻结到 `PageCandidate.prompt_snapshot` 与 `GenerationRecord.input_versions`，并通过 `JobAssetReference` 租约资产级和变体级参考图；资产编辑会把相关页面标记为需要复查。
+- Codex 自动 review 的冻结队列快照、变体不变量、不可哈希覆盖值和 canonical 降级版本问题已在后续提交修复。定向测试 41 项、全量 Pytest 552 项、Vitest 218 项、ESLint、Ruff、供应商平权扫描和 Next.js 生产构建通过。
+- PR #75 已合并为 `6453a40`；`docs/architecture.md` 与 `docs/data-model.md` 已同步。真实 PostgreSQL 升降级与所有权校验、真实 Worker/供应商场景图调用、V02-21 前端工作台、浏览器和性能门禁为 `NOT RUN`。
+
 ## V02-16B 用量与成本看板已审阅合并（2026-09-01）
 
 - Issue #72 / PR #73 / `glm/v02-16b-usage-dashboard` 以当前实际契约（`GET /usage/summary`、`GET /usage/attempts`、`GET /usage/attempts/{attempt_id}`、`GET/POST /usage/reconciliations`）实现 `/settings/usage` 看板：时间/项目/供应商/模型/通道筛选、KPI、按日趋势（含无障碍数据表）、供应商/模型分解、attempt 明细 keyset 分页与详情抽屉、按币种分行的 CSV 导出和本地预算提醒；系统设置页提供入口。设计旧稿中的 `/usage/calls` 未被伪造。
