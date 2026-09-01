@@ -198,7 +198,7 @@ function PageSceneInheritance({
   if (script.isLoading || sceneAssets.isLoading) {
     return (
       <section className="generation-scene-context" aria-label="本页场景资产">
-        <header><div><span>SCENE ASSETS</span><strong>本页继承的场景资产与参考图</strong></div></header>
+        <header><div><span>SCENE ASSETS</span><strong>本页主场景将进入生成输入</strong></div></header>
         <p className="reference-check-loading"><LoaderCircle className="spin" size={15} />正在读取场景绑定…</p>
       </section>
     );
@@ -206,58 +206,61 @@ function PageSceneInheritance({
   if (script.isError || sceneAssets.isError) {
     return (
       <section className="generation-scene-context" aria-label="本页场景资产">
-        <header><div><span>SCENE ASSETS</span><strong>本页继承的场景资产与参考图</strong></div></header>
+        <header><div><span>SCENE ASSETS</span><strong>本页主场景将进入生成输入</strong></div></header>
         <p className="reference-check-warning"><CircleAlert size={13} />{(script.error ?? sceneAssets.error)?.message ?? "无法读取场景资产"}</p>
       </section>
     );
   }
-  const pageScenes = (script.data?.scenes ?? []).filter((scene) => page.scene_ids.includes(scene.id));
+  const orderedScenes = page.scene_ids
+    .map((sceneId) => (script.data?.scenes ?? []).find((scene) => scene.id === sceneId))
+    .filter((scene): scene is NonNullable<typeof scene> => Boolean(scene));
+  const primary = orderedScenes[0] ?? null;
+  const extraCount = Math.max(0, page.scene_ids.length - (primary ? 1 : 0));
+  const asset = primary
+    ? sceneAssets.data?.find((item) => item.id === primary.scene_asset_id)
+    : undefined;
+  const variant = asset?.variants.find((item) => item.id === primary?.scene_asset_variant_id)
+    ?? asset?.variants.find((item) => item.is_canonical && item.deleted_at == null);
+  const status = sceneAssetStatusMeta(asset?.status);
+  const references = [
+    ...(asset?.references ?? []),
+    ...(variant?.deleted_at ? [] : variant?.references ?? []),
+  ];
   return (
     <section className="generation-scene-context" aria-label="本页场景资产">
-      <header><div><span>SCENE ASSETS</span><strong>本页继承的场景资产与参考图</strong></div></header>
+      <header><div><span>SCENE ASSETS</span><strong>本页主场景将进入生成输入</strong></div></header>
       {!page.scene_ids.length ? (
         <p className="reference-check-empty">本页未关联剧本场景。</p>
-      ) : !pageScenes.length ? (
+      ) : !primary ? (
         <p className="reference-check-warning"><CircleAlert size={13} />页面记录了场景 id，但当前剧本中找不到对应场景，不能视为已就绪。</p>
       ) : (
         <div className="scene-inheritance-list">
-          {pageScenes.map((scene) => {
-            const asset = sceneAssets.data?.find((item) => item.id === scene.scene_asset_id);
-            const variant = asset?.variants.find((item) => item.id === scene.scene_asset_variant_id) ?? asset?.variants.find((item) => item.is_canonical && item.deleted_at == null);
-            if (!scene.scene_asset_id) {
-              return <article key={scene.id}><strong>第 {scene.ordinal} 场 · 未绑定场景资产</strong><span>将使用地点文本兜底：{scene.location || "（空）"}</span></article>;
-            }
-            if (!asset) {
-              return <article key={scene.id}><strong>第 {scene.ordinal} 场</strong><span>引用的场景资产不可用，不能视为已就绪。</span></article>;
-            }
-            if (asset.deleted_at) {
-              return <article key={scene.id}><strong>第 {scene.ordinal} 场 · {asset.name}</strong><span>场景资产已归档，不会作为已就绪参考。地点文本仍保留作兜底。</span></article>;
-            }
-            const status = sceneAssetStatusMeta(asset.status);
-            const references = [
-              ...asset.references,
-              ...(variant?.deleted_at ? [] : variant?.references ?? []),
-            ];
-            return (
-              <article key={scene.id}>
-                <strong>第 {scene.ordinal} 场 · {asset.name} · {interiorLabel(asset.structured.interior)}</strong>
-                <span>{status.ready ? status.label : status.label}{variant && !variant.deleted_at ? ` · 变体 ${variant.name}` : variant?.deleted_at ? " · 变体已归档，回退资产默认" : ""}</span>
-                <div className="scene-inheritance-thumbs">
-                  {references.map((reference) => {
-                    const file = assets.data?.find((item) => item.id === reference.asset_id);
-                    if (!file?.content_url) return <em key={reference.id}>参考图不可用</em>;
-                    const label = `${asset.name}${variant ? ` 环境变体 - ${variant.name}` : " 主空间参考图"}`;
-                    return (
-                      <button key={reference.id} type="button" onClick={() => openPreview(publicUrl(file.content_url)!, label)}>
-                        <Image src={publicUrl(file.thumbnail_url ?? file.content_url)!} alt={label} width={56} height={56} unoptimized />
-                      </button>
-                    );
-                  })}
-                  {!references.length && <em>尚未绑定可用参考图</em>}
-                </div>
-              </article>
-            );
-          })}
+          {!primary.scene_asset_id ? (
+            <article><strong>第 {primary.ordinal} 场 · 未绑定场景资产</strong><span>将使用地点文本兜底：{primary.location || "（空）"}</span></article>
+          ) : !asset ? (
+            <article><strong>第 {primary.ordinal} 场</strong><span>引用的场景资产不可用，不能视为已就绪。</span></article>
+          ) : asset.deleted_at ? (
+            <article><strong>第 {primary.ordinal} 场 · {asset.name}</strong><span>场景资产已归档，不会作为已就绪参考。地点文本仍保留作兜底。</span></article>
+          ) : (
+            <article>
+              <strong>第 {primary.ordinal} 场 · {asset.name} · {interiorLabel(asset.structured.interior)}</strong>
+              <span>{status.label}{variant && !variant.deleted_at ? ` · 变体 ${variant.name}` : variant?.deleted_at ? " · 变体已归档，回退资产默认" : ""}</span>
+              <div className="scene-inheritance-thumbs">
+                {references.map((reference) => {
+                  const file = assets.data?.find((item) => item.id === reference.asset_id);
+                  if (!file?.content_url) return <em key={reference.id}>参考图不可用</em>;
+                  const label = `${asset.name}${variant ? ` 环境变体 - ${variant.name}` : " 主空间参考图"}`;
+                  return (
+                    <button key={reference.id} type="button" onClick={() => openPreview(publicUrl(file.content_url)!, label)}>
+                      <Image src={publicUrl(file.thumbnail_url ?? file.content_url)!} alt={label} width={56} height={56} unoptimized />
+                    </button>
+                  );
+                })}
+                {!references.length && <em>尚未绑定可用参考图</em>}
+              </div>
+            </article>
+          )}
+          {extraCount > 0 ? <p className="scene-picker-note">本页另外关联了 {extraCount} 个场景，它们不进入本次生成输入。</p> : null}
         </div>
       )}
     </section>

@@ -1261,16 +1261,20 @@ def test_storyboard_panel_background_uses_resolved_scene(client, db_session):
     assert all(panel.background == "老教学楼" for panel in panels)
 
 
-def test_scene_asset_patch_updates_location_hint(client):
+def test_scene_asset_patch_does_not_rewrite_location_hint(client):
     project = _project(client)
     created = _create_scene_asset(client, project["id"], location_hint="原文地点")
     updated = client.patch(
         f"/api/v1/projects/{project['id']}/scene-assets/{created['id']}",
-        json={"location_hint": "修订后的地点提示", "version": created["version"]},
+        json={
+            "description": "修订描述",
+            "location_hint": "篡改来源地点",
+            "version": created["version"],
+        },
     )
     assert updated.status_code == 200, updated.text
-    assert updated.json()["location_hint"] == "修订后的地点提示"
-    assert updated.json()["version"] == created["version"] + 1
+    assert updated.json()["description"] == "修订描述"
+    assert updated.json()["location_hint"] == "原文地点"
 
 
 def test_variant_reference_bind_unbind_persists_and_rejects_duplicates(client, db_session):
@@ -1318,6 +1322,45 @@ def test_variant_reference_bind_unbind_persists_and_rejects_duplicates(client, d
         item for item in refreshed["variants"] if item["id"] == variant.json()["id"]
     )
     assert variant_row["references"] == []
+
+
+def test_variant_reference_bind_unbind_marks_pages_for_review(client, db_session):
+    project = _project(client)
+    chapter, plan, scene, page = _chapter_and_page(client, db_session, project["id"])
+    scene_asset = _create_scene_asset(client, project["id"])
+    variant = client.post(
+        f"/api/v1/projects/{project['id']}/scene-assets/{scene_asset['id']}/variants",
+        json={"name": "暴雨黄昏", "structured_overrides": {"weather": "rain"}},
+    ).json()
+    client.patch(
+        f"/api/v1/scenes/{scene.id}/bind-asset",
+        json={
+            "scene_asset_id": scene_asset["id"],
+            "scene_asset_variant_id": variant["id"],
+        },
+    )
+    page.continuity_status = "PASSED"
+    db_session.commit()
+    reference = _reference_asset(db_session, project["id"])
+
+    bound = client.post(
+        f"/api/v1/projects/{project['id']}/scene-assets/{scene_asset['id']}"
+        f"/variants/{variant['id']}/references",
+        json={"asset_id": reference.id, "role": "overview"},
+    )
+    assert bound.status_code == 201, bound.text
+    db_session.refresh(page)
+    assert page.continuity_status == "NEEDS_REVIEW"
+
+    page.continuity_status = "PASSED"
+    db_session.commit()
+    unbound = client.delete(
+        f"/api/v1/projects/{project['id']}/scene-assets/{scene_asset['id']}"
+        f"/variants/{variant['id']}/references/{reference.id}"
+    )
+    assert unbound.status_code == 204
+    db_session.refresh(page)
+    assert page.continuity_status == "NEEDS_REVIEW"
 
 
 def test_variant_reference_bind_rejects_archived_variant_and_foreign_asset(

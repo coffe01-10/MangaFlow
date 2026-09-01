@@ -312,7 +312,6 @@ class SceneAssetCreate(BaseModel):
 class SceneAssetUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=8000)
-    location_hint: str | None = Field(default=None, max_length=200)
     structured: SceneAssetStructured | None = None
     status: str | None = Field(
         default=None,

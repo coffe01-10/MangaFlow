@@ -112,6 +112,23 @@ describe("SceneWorkspace", () => {
     expect(await screen.findByRole("option", { name: /林间木屋/ })).toHaveAttribute("aria-selected", "true");
   });
 
+  it("编辑对话框输入时焦点不会被拉回名称框", async () => {
+    listApi.mockResolvedValue([]);
+    renderWorkspace();
+    fireEvent.click(await screen.findByRole("button", { name: "新建场景" }));
+    const dialog = screen.getByRole("dialog", { name: "新建场景资产" });
+    const description = within(dialog).getByLabelText("场景描述");
+    description.focus();
+    fireEvent.change(description, { target: { value: "壁炉在正北墙面" } });
+    expect(description).toHaveFocus();
+  });
+
+  it("没有规范参考图时不能把资产标为已就绪", async () => {
+    listApi.mockResolvedValue([assetFixture({ status: "UPLOADED", references: [] })]);
+    renderWorkspace();
+    expect(await screen.findByRole("button", { name: "设为规范参考" })).toBeDisabled();
+  });
+
   it("TEST-SCENE-03 上传后调用真实绑定接口，并可把资产标为 CANONICAL", async () => {
     const uploaded = {
       id: "file-1",
@@ -161,6 +178,9 @@ describe("SceneWorkspace", () => {
         asset_id: "file-1",
       }));
     });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "设为规范参考" })).toBeEnabled();
+    });
     fireEvent.click(screen.getByRole("button", { name: "设为规范参考" }));
     await waitFor(() => {
       expect(updateApi).toHaveBeenCalledWith("project-1", "asset-1", expect.objectContaining({
@@ -206,7 +226,16 @@ describe("SceneWorkspace", () => {
   });
 
   it("409 乐观锁展示刷新而不是静默覆盖", async () => {
-    listApi.mockResolvedValue([assetFixture()]);
+    listApi.mockResolvedValue([assetFixture({
+      references: [{
+        id: "ref-1",
+        scene_asset_id: "asset-1",
+        asset_id: "file-1",
+        role: "main",
+        is_canonical: true,
+        created_at: "2026-09-01T00:00:00Z",
+      }],
+    })]);
     updateApi.mockRejectedValue(new ApiError("场景资产已被更新，请刷新后重试", 409));
     renderWorkspace();
     fireEvent.click(await screen.findByRole("button", { name: "设为规范参考" }));

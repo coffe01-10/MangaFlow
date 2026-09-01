@@ -663,10 +663,11 @@ describe("GenerateSection 关键行为", () => {
     }));
     renderGenerate();
     await waitFor(() => {
-      expect(screen.getByText("本页继承的场景资产与参考图")).toBeInTheDocument();
+      expect(screen.getByText("本页主场景将进入生成输入")).toBeInTheDocument();
     });
     expect(screen.getByText(/场景资产已归档，不会作为已就绪参考/)).toBeInTheDocument();
-    expect(screen.getByText(/引用的场景资产不可用/)).toBeInTheDocument();
+    expect(screen.getByText(/本页另外关联了 1 个场景，它们不进入本次生成输入/)).toBeInTheDocument();
+    expect(screen.queryByText(/引用的场景资产不可用/)).not.toBeInTheDocument();
     expect(screen.queryByText("已就绪 · 可直接用于剧本与分镜")).not.toBeInTheDocument();
   });
 });

@@ -267,7 +267,6 @@ export function SceneWorkspace({
         version: selected.version,
         name: draft.name.trim(),
         description: draft.description,
-        location_hint: draft.location_hint,
         structured: pickStructured(draft.structured),
       });
     },
@@ -650,7 +649,7 @@ export function SceneWorkspace({
                   <button
                     type="button"
                     className="button ink compact"
-                    disabled={setStatus.isPending || selected.status === "CANONICAL"}
+                    disabled={setStatus.isPending || selected.status === "CANONICAL" || !selected.references.some((item) => item.is_canonical)}
                     onClick={() => setStatus.mutate("CANONICAL")}
                   >
                     <Check size={13} />设为规范参考
@@ -777,10 +776,14 @@ export function SceneWorkspace({
               <span>名称</span>
               <input required aria-label="场景名称" value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
             </label>
-            <label>
-              <span>来源地点提示</span>
-              <input aria-label="来源地点提示" value={draft.location_hint} onChange={(event) => setDraft({ ...draft, location_hint: event.target.value })} />
-            </label>
+            {showCreate ? (
+              <label>
+                <span>来源地点提示</span>
+                <input aria-label="来源地点提示" value={draft.location_hint} onChange={(event) => setDraft({ ...draft, location_hint: event.target.value })} />
+              </label>
+            ) : draft.location_hint ? (
+              <p className="scene-location-hint">来源地点（只读）：{draft.location_hint}</p>
+            ) : null}
             <label className="wide">
               <span>描述</span>
               <textarea aria-label="场景描述" rows={3} value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} />

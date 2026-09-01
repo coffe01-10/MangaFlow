@@ -497,6 +497,7 @@ def bind_scene_asset_variant_reference(
         sort_order=payload.sort_order,
     )
     db.add(binding)
+    mark_pages_for_scene_asset_review(db, asset.id)
     try:
         db.commit()
     except IntegrityError:
@@ -529,6 +530,7 @@ def unbind_scene_asset_variant_reference(
     )
     if not deleted.rowcount:
         raise HTTPException(status_code=404, detail="变体参考绑定不存在")
+    mark_pages_for_scene_asset_review(db, asset.id)
     db.commit()
 
 

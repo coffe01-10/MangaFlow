@@ -362,7 +362,6 @@ export interface SceneAssetUpdateRequest {
   version: number;
   name?: string;
   description?: string;
-  location_hint?: string;
   structured?: SceneAssetStructured;
   status?: SceneAssetStatus;
 }

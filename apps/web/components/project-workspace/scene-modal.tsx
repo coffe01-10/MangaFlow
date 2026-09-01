@@ -19,6 +19,11 @@ export function SceneModal({
 }) {
   const titleId = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
     const previouslyFocused = document.activeElement as HTMLElement | null;
@@ -29,7 +34,7 @@ export function SceneModal({
     function onKey(event: KeyboardEvent) {
       if (event.key === "Escape") {
         event.preventDefault();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (event.key !== "Tab") return;
@@ -51,10 +56,11 @@ export function SceneModal({
       document.removeEventListener("keydown", onKey);
       (triggerNode ?? previouslyFocused)?.focus?.();
     };
-  }, [onClose, triggerRef]);
+    // Mount-only: parent re-renders pass a new onClose every keystroke.
+  }, [triggerRef]);
 
   return (
-    <div className="provider-dialog-backdrop" onClick={onClose}>
+    <div className="provider-dialog-backdrop" onClick={() => onCloseRef.current()}>
       <div
         ref={dialogRef}
         role="dialog"
