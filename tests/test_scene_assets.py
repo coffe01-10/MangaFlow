@@ -917,6 +917,12 @@ def test_variant_override_keys_and_canonical_uniqueness(client, db_session):
     )
     assert bad_time.status_code == 422
 
+    unhashable_time = client.post(
+        f"/api/v1/projects/{project['id']}/scene-assets/{scene_asset['id']}/variants",
+        json={"name": "错误形状时间", "structured_overrides": {"time_of_day": []}},
+    )
+    assert unhashable_time.status_code == 422
+
     bad_shape = client.post(
         f"/api/v1/projects/{project['id']}/scene-assets/{scene_asset['id']}/variants",
         json={"name": "错误形状", "structured_overrides": {"weather": ["rain", "fog"]}},
@@ -953,11 +959,18 @@ def test_variant_override_keys_and_canonical_uniqueness(client, db_session):
     ).json()
     canonical_ids = [item["id"] for item in detail["variants"] if item["is_canonical"]]
     assert canonical_ids == [second.json()["id"]]
+    first_details = next(
+        item for item in detail["variants"] if item["id"] == first.json()["id"]
+    )
+    # Demoting the previous canonical variant bumps its version in the same
+    # transaction so a stale client PATCH is rejected.
+    assert first_details["version"] == first.json()["version"] + 1
+    first_version = first_details["version"]
 
     stale = client.patch(
         f"/api/v1/projects/{project['id']}/scene-assets/"
         f"{scene_asset['id']}/variants/{first.json()['id']}",
-        json={"name": "清晨（修订）", "version": first.json()["version"] + 2},
+        json={"name": "清晨（修订）", "version": first_version + 2},
     )
     assert stale.status_code == 409
 
@@ -967,7 +980,7 @@ def test_variant_override_keys_and_canonical_uniqueness(client, db_session):
         json={
             "name": "清晨（修订）",
             "structured_overrides": {"time_of_day": "dawn", "weather": "fog"},
-            "version": first.json()["version"],
+            "version": first_version,
         },
     )
     assert updated.status_code == 200

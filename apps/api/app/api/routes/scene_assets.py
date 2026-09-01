@@ -370,7 +370,7 @@ def create_scene_asset_variant(
                 SceneAssetVariant.deleted_at.is_(None),
                 SceneAssetVariant.is_canonical.is_(True),
             )
-            .values(is_canonical=False)
+            .values(is_canonical=False, version=SceneAssetVariant.version + 1)
         )
         # Installing a default variant changes the effective scene input for
         # every scene without an explicit variant binding.
@@ -429,7 +429,7 @@ def update_scene_asset_variant(
                 SceneAssetVariant.deleted_at.is_(None),
                 SceneAssetVariant.is_canonical.is_(True),
             )
-            .values(is_canonical=False)
+            .values(is_canonical=False, version=SceneAssetVariant.version + 1)
         )
     for key, value in values.items():
         if value is not None:

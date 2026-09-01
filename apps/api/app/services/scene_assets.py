@@ -53,7 +53,9 @@ def validate_variant_overrides(value: dict) -> None:
             detail="变体只允许覆盖时间、天气、光照、色调或季节字段",
         )
     time_of_day = value.get("time_of_day")
-    if time_of_day is not None and time_of_day not in ALLOWED_TIME_OF_DAY:
+    if time_of_day is not None and (
+        not isinstance(time_of_day, str) or time_of_day not in ALLOWED_TIME_OF_DAY
+    ):
         raise HTTPException(
             status_code=422, detail="变体时间字段只支持 dawn/day/dusk/night 或空"
         )
