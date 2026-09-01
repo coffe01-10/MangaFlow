@@ -1,8 +1,22 @@
 # MangaFlow AI 开发进度
 
-更新时间：2026-08-31
+更新时间：2026-09-01
 
 本文件记录修订版 MVP 计划的实际完成度。
+
+## V02-16B 用量与成本看板已审阅合并（2026-09-01）
+
+- Issue #72 / PR #73 / `glm/v02-16b-usage-dashboard` 以当前实际契约（`GET /usage/summary`、`GET /usage/attempts`、`GET /usage/attempts/{attempt_id}`、`GET/POST /usage/reconciliations`）实现 `/settings/usage` 看板：时间/项目/供应商/模型/通道筛选、KPI、按日趋势（含无障碍数据表）、供应商/模型分解、attempt 明细 keyset 分页与详情抽屉、按币种分行的 CSV 导出和本地预算提醒；系统设置页提供入口。设计旧稿中的 `/usage/calls` 未被伪造。
+- 成本语义红线贯穿 UI：billed 与 estimated 永不相加、不同币种不隐式换算（CSV 亦按币种分行）、单次 attempt 金额不猜测（明细接口不返回，抽屉明示）、unknown 不显示为 0、CLI 不显示为免费；UNAVAILABLE 仅用于成功且未返回用量的调用，失败/未决归 UNKNOWN。
+- 读取侧最小扩展：`/usage/attempts` 与 `/usage/summary` 新增可选 `model_id` 精确筛选（keyset 分页下客户端过滤会破坏游标语义）；顺带修复 `summarize_usage` 循环变量遮蔽新参数导致无模型过滤时 billed 列表被清空的回归。写入路径、迁移与计量语义未改动。
+- e2e 种子新增离线用量账本（两个价格版本、六类 attempt、一条 CNY 对账记录），日期相对当前时间生成。离线 Playwright 16/16 通过（一次性隔离 SQLite、`QUEUE_ENABLED=false`，无真实供应商调用）。
+- 首轮 Codex review 的 6 条意见（仅 billed 场景的渲染门槛、预算提醒缺失、attempt 徽标改中性「仅计量」、UNAVAILABLE 归类、翻页失败错误隔离、CSV 公式注入转义）已在 `d614b0a` 修复并逐条回复。
+- 完整 `npm run check` 通过：供应商平权、ESLint、Ruff、535 项 Pytest、218 项 Vitest、TypeScript 与 Next.js 生产构建成功。真实供应商账单核对、PostgreSQL、Redis/RQ、真实 CLI 通道与性能门禁为 `NOT RUN`；未读取凭据、未产生供应商费用。PR #73 已合并为 `fec8d7f`，Issue #72 自动关闭；主 worktree 干净并与 `origin/master` 同步。
+
+## V02-15B 模型调用账本已实现（2026-09-01）
+
+- PR #71 / `codex/v02-15b-usage-ledger` 已实现结构化用量账本：`ModelCallAttempt` 计量列迁移与回填（usage_status / usage_source / unit_kind、缓存与图片维度、输出资产二阶段挂接）、`normalize_usage` 归一与 finalize 写入路径、`GET /usage/attempts`（keyset cursor）、`GET /usage/summary` 与 `ProviderUsageReconciliation` 对账 API（幂等键与区间重叠 409）；缺少计量时保留 `unknown`，任何缺失不折算为 0。
+- 真实 PostgreSQL 迁移往返与双 Worker 并发、真实供应商账单核对为 `NOT RUN`。
 
 ## V02-14C Grok Build CLI 已审阅合并（2026-08-31）
 
