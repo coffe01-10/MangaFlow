@@ -312,6 +312,7 @@ class SceneAssetCreate(BaseModel):
 class SceneAssetUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=8000)
+    location_hint: str | None = Field(default=None, max_length=200)
     structured: SceneAssetStructured | None = None
     status: str | None = Field(
         default=None,
@@ -346,6 +347,12 @@ class SceneAssetVariantReferenceRead(BaseModel):
     role: str
     sort_order: int
     created_at: datetime
+
+
+class SceneAssetVariantReferenceCreate(BaseModel):
+    asset_id: str
+    role: str = Field(default="main", max_length=32)
+    sort_order: int = Field(default=0, ge=0, le=1000)
 
 
 class SceneAssetVariantCreate(BaseModel):

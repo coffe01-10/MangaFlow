@@ -14,7 +14,7 @@ import type { AssetWorkspaceView } from "./types";
 
 export const navigationItems = [
   ["source", "原作与修订", "导入、修改、撤回", "01", BookOpenText],
-  ["assets", "参考资产", "人物 / 服装 / 风格", "02", Users],
+  ["assets", "参考资产", "人物 / 服装 / 场景 / 风格", "02", Users],
   ["script", "漫画剧本", "场景、情节拍、对白", "03", Clapperboard],
   ["storyboard", "分页与分镜", "场景切页、格子脚本", "04", PanelTop],
   ["generate", "单页生成", "抽卡、收藏、采用", "05", Sparkles],
@@ -26,11 +26,13 @@ export const kinds = [
   ["CHARACTER_REFERENCE", "人物参考"],
   ["OUTFIT_REFERENCE", "服装参考"],
   ["STYLE_REFERENCE", "漫画风格"],
+  ["SCENE_REFERENCE", "场景参考"],
 ] as const;
 
 export const assetKindByView: Record<Exclude<AssetWorkspaceView, "references">, AssetPurpose> = {
   characters: "CHARACTER_REFERENCE",
   outfits: "OUTFIT_REFERENCE",
+  scenes: "SCENE_REFERENCE",
   style: "STYLE_REFERENCE",
 };
 

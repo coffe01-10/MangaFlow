@@ -1259,3 +1259,97 @@ def test_storyboard_panel_background_uses_resolved_scene(client, db_session):
     )
     panels = list(db_session.scalars(select(Panel).where(Panel.page_id == updated.id)))
     assert all(panel.background == "老教学楼" for panel in panels)
+
+
+def test_scene_asset_patch_updates_location_hint(client):
+    project = _project(client)
+    created = _create_scene_asset(client, project["id"], location_hint="原文地点")
+    updated = client.patch(
+        f"/api/v1/projects/{project['id']}/scene-assets/{created['id']}",
+        json={"location_hint": "修订后的地点提示", "version": created["version"]},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["location_hint"] == "修订后的地点提示"
+    assert updated.json()["version"] == created["version"] + 1
+
+
+def test_variant_reference_bind_unbind_persists_and_rejects_duplicates(client, db_session):
+    project = _project(client)
+    scene_asset = _create_scene_asset(client, project["id"])
+    variant = client.post(
+        f"/api/v1/projects/{project['id']}/scene-assets/{scene_asset['id']}/variants",
+        json={"name": "暴雨黄昏", "structured_overrides": {"weather": "rain"}},
+    )
+    assert variant.status_code == 201, variant.text
+    reference = _reference_asset(db_session, project["id"])
+
+    bound = client.post(
+        f"/api/v1/projects/{project['id']}/scene-assets/{scene_asset['id']}"
+        f"/variants/{variant.json()['id']}/references",
+        json={"asset_id": reference.id, "role": "overview"},
+    )
+    assert bound.status_code == 201, bound.text
+    assert bound.json()["asset_id"] == reference.id
+    assert bound.json()["variant_id"] == variant.json()["id"]
+
+    detail = client.get(
+        f"/api/v1/projects/{project['id']}/scene-assets/{scene_asset['id']}"
+    ).json()
+    variant_row = next(item for item in detail["variants"] if item["id"] == variant.json()["id"])
+    assert [item["asset_id"] for item in variant_row["references"]] == [reference.id]
+
+    duplicate = client.post(
+        f"/api/v1/projects/{project['id']}/scene-assets/{scene_asset['id']}"
+        f"/variants/{variant.json()['id']}/references",
+        json={"asset_id": reference.id, "role": "overview"},
+    )
+    assert duplicate.status_code == 409
+
+    unbound = client.delete(
+        f"/api/v1/projects/{project['id']}/scene-assets/{scene_asset['id']}"
+        f"/variants/{variant.json()['id']}/references/{reference.id}"
+    )
+    assert unbound.status_code == 204
+    assert db_session.get(Asset, reference.id) is not None
+    refreshed = client.get(
+        f"/api/v1/projects/{project['id']}/scene-assets/{scene_asset['id']}"
+    ).json()
+    variant_row = next(
+        item for item in refreshed["variants"] if item["id"] == variant.json()["id"]
+    )
+    assert variant_row["references"] == []
+
+
+def test_variant_reference_bind_rejects_archived_variant_and_foreign_asset(
+    client, db_session
+):
+    project = _project(client)
+    other = _project(client, name="其他项目")
+    scene_asset = _create_scene_asset(client, project["id"])
+    variant = client.post(
+        f"/api/v1/projects/{project['id']}/scene-assets/{scene_asset['id']}/variants",
+        json={"name": "深夜", "structured_overrides": {"time_of_day": "night"}},
+    ).json()
+    client.delete(
+        f"/api/v1/projects/{project['id']}/scene-assets/{scene_asset['id']}"
+        f"/variants/{variant['id']}"
+    )
+    local_asset = _reference_asset(db_session, project["id"])
+    archived = client.post(
+        f"/api/v1/projects/{project['id']}/scene-assets/{scene_asset['id']}"
+        f"/variants/{variant['id']}/references",
+        json={"asset_id": local_asset.id},
+    )
+    assert archived.status_code == 422
+
+    live = client.post(
+        f"/api/v1/projects/{project['id']}/scene-assets/{scene_asset['id']}/variants",
+        json={"name": "清晨", "structured_overrides": {"time_of_day": "dawn"}},
+    ).json()
+    foreign = _reference_asset(db_session, other["id"])
+    mismatched = client.post(
+        f"/api/v1/projects/{project['id']}/scene-assets/{scene_asset['id']}"
+        f"/variants/{live['id']}/references",
+        json={"asset_id": foreign.id},
+    )
+    assert mismatched.status_code == 422

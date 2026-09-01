@@ -223,7 +223,14 @@ export interface Asset {
   thumbnail_url: string | null;
 }
 
-export type AssetPurpose = "CHARACTER_REFERENCE" | "OUTFIT_REFERENCE" | "STYLE_REFERENCE";
+export type AssetPurpose = "CHARACTER_REFERENCE" | "OUTFIT_REFERENCE" | "STYLE_REFERENCE" | "SCENE_REFERENCE";
+export type SceneAssetStatus =
+  | "UPLOADED"
+  | "ANALYZED"
+  | "GENERATED"
+  | "NEEDS_CONFIRMATION"
+  | "CANONICAL"
+  | "ARCHIVED";
 
 export interface Chapter {
   id: string;
@@ -273,6 +280,8 @@ export interface ScriptScene {
   id: string;
   ordinal: number;
   location: string;
+  scene_asset_id: string | null;
+  scene_asset_variant_id: string | null;
   time_label: string;
   weather: string;
   purpose: string;
@@ -282,6 +291,94 @@ export interface ScriptScene {
   locked_fields: string[];
   version: number;
   beats: ScriptBeat[];
+}
+
+export interface SceneAssetStructured {
+  place?: string;
+  subareas?: string[];
+  interior?: boolean | null;
+  time_of_day?: "dawn" | "day" | "dusk" | "night" | "";
+  weather?: string;
+  season?: string;
+  lighting?: string;
+  palette?: { dominant?: string[]; mood?: string } & Record<string, unknown>;
+  fixed_props?: string[];
+  spatial_relations?: Array<{ from?: string; to?: string; relation?: string } & Record<string, unknown>>;
+}
+
+export interface SceneAssetReference {
+  id: string;
+  scene_asset_id: string;
+  asset_id: string;
+  role: string;
+  is_canonical: boolean;
+  created_at: string;
+}
+
+export interface SceneAssetVariantReference {
+  id: string;
+  variant_id: string;
+  asset_id: string;
+  role: string;
+  sort_order: number;
+  created_at: string;
+}
+
+export interface SceneAssetVariant {
+  id: string;
+  scene_asset_id: string;
+  name: string;
+  structured_overrides: Record<string, unknown>;
+  is_canonical: boolean;
+  deleted_at: string | null;
+  version: number;
+  references: SceneAssetVariantReference[];
+}
+
+export interface SceneAsset {
+  id: string;
+  project_id: string;
+  name: string;
+  description: string;
+  location_hint: string;
+  structured: SceneAssetStructured;
+  status: string;
+  deleted_at: string | null;
+  created_at: string;
+  updated_at: string;
+  version: number;
+  references: SceneAssetReference[];
+  variants: SceneAssetVariant[];
+}
+
+export interface SceneAssetCreateRequest {
+  name: string;
+  description?: string;
+  location_hint?: string;
+  structured?: SceneAssetStructured;
+}
+
+export interface SceneAssetUpdateRequest {
+  version: number;
+  name?: string;
+  description?: string;
+  location_hint?: string;
+  structured?: SceneAssetStructured;
+  status?: SceneAssetStatus;
+}
+
+export interface SceneBindAssetRequest {
+  scene_asset_id?: string | null;
+  scene_asset_variant_id?: string | null;
+}
+
+export interface SceneAssetListQuery {
+  status?: string;
+  include_deleted?: boolean;
+  place?: string;
+  interior?: boolean;
+  limit?: number;
+  offset?: number;
 }
 
 export interface Outfit {
@@ -907,10 +1004,40 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
           : typeof body.message === "string"
             ? body.message
             : "请求数据不符合要求";
-    throw new Error(detail);
+    throw new ApiError(detail, response.status);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
+}
+
+export class ApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
+export function isConflictError(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 409;
+}
+
+export function isUnprocessableError(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 422;
+}
+
+export function sceneAssetQueryString(query: SceneAssetListQuery = {}): string {
+  const params = new URLSearchParams();
+  if (query.status) params.set("status", query.status);
+  if (query.include_deleted) params.set("include_deleted", "true");
+  if (query.place) params.set("place", query.place);
+  if (query.interior !== undefined) params.set("interior", String(query.interior));
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  if (query.offset !== undefined) params.set("offset", String(query.offset));
+  const suffix = params.toString();
+  return suffix ? `?${suffix}` : "";
 }
 
 export const api = {
@@ -1097,6 +1224,65 @@ export const api = {
   assignSceneOutfits: (sceneId: string, assignments: Record<string, string>) =>
     request<{ scene_id: string; assignments: Record<string, string> }>(`/scenes/${sceneId}/outfits`, {
       method: "PATCH", body: JSON.stringify({ assignments }),
+    }),
+  sceneAssets: (projectId: string, query: SceneAssetListQuery = {}) =>
+    request<SceneAsset[]>(`/projects/${projectId}/scene-assets${sceneAssetQueryString(query)}`),
+  sceneAsset: (projectId: string, assetId: string) =>
+    request<SceneAsset>(`/projects/${projectId}/scene-assets/${assetId}`),
+  createSceneAsset: (projectId: string, payload: SceneAssetCreateRequest) =>
+    request<SceneAsset>(`/projects/${projectId}/scene-assets`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  updateSceneAsset: (projectId: string, assetId: string, payload: SceneAssetUpdateRequest) =>
+    request<SceneAsset>(`/projects/${projectId}/scene-assets/${assetId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  deleteSceneAsset: (projectId: string, assetId: string) =>
+    request<void>(`/projects/${projectId}/scene-assets/${assetId}`, { method: "DELETE" }),
+  restoreSceneAsset: (projectId: string, assetId: string) =>
+    request<SceneAsset>(`/projects/${projectId}/scene-assets/${assetId}/restore`, { method: "POST" }),
+  bindSceneAssetReference: (projectId: string, assetId: string, payload: { asset_id: string; role?: string; is_canonical?: boolean }) =>
+    request<SceneAssetReference>(`/projects/${projectId}/scene-assets/${assetId}/references`, {
+      method: "POST",
+      body: JSON.stringify({ role: "main", is_canonical: false, ...payload }),
+    }),
+  unbindSceneAssetReference: (projectId: string, assetId: string, referenceAssetId: string) =>
+    request<void>(`/projects/${projectId}/scene-assets/${assetId}/references/${referenceAssetId}`, {
+      method: "DELETE",
+    }),
+  createSceneAssetVariant: (projectId: string, assetId: string, payload: { name: string; structured_overrides?: Record<string, unknown>; is_canonical?: boolean }) =>
+    request<SceneAssetVariant>(`/projects/${projectId}/scene-assets/${assetId}/variants`, {
+      method: "POST",
+      body: JSON.stringify({ structured_overrides: {}, is_canonical: false, ...payload }),
+    }),
+  updateSceneAssetVariant: (projectId: string, assetId: string, variantId: string, payload: { version: number; name?: string; structured_overrides?: Record<string, unknown>; is_canonical?: boolean }) =>
+    request<SceneAssetVariant>(`/projects/${projectId}/scene-assets/${assetId}/variants/${variantId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  deleteSceneAssetVariant: (projectId: string, assetId: string, variantId: string) =>
+    request<void>(`/projects/${projectId}/scene-assets/${assetId}/variants/${variantId}`, {
+      method: "DELETE",
+    }),
+  bindSceneAssetVariantReference: (projectId: string, assetId: string, variantId: string, payload: { asset_id: string; role?: string; sort_order?: number }) =>
+    request<SceneAssetVariantReference>(
+      `/projects/${projectId}/scene-assets/${assetId}/variants/${variantId}/references`,
+      {
+        method: "POST",
+        body: JSON.stringify({ role: "main", sort_order: 0, ...payload }),
+      },
+    ),
+  unbindSceneAssetVariantReference: (projectId: string, assetId: string, variantId: string, referenceAssetId: string) =>
+    request<void>(
+      `/projects/${projectId}/scene-assets/${assetId}/variants/${variantId}/references/${referenceAssetId}`,
+      { method: "DELETE" },
+    ),
+  bindSceneAsset: (sceneId: string, payload: SceneBindAssetRequest) =>
+    request<ScriptScene>(`/scenes/${sceneId}/bind-asset`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
     }),
   createCharacter: (projectId: string, primaryName: string, aliases: string[]) =>
     request<Character>(`/projects/${projectId}/characters`, {

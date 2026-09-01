@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -18,9 +19,10 @@ import {
 } from "lucide-react";
 
 import { ProductionReadiness } from "@/components/production-readiness";
-import { api, type ImageModelAlias } from "@/lib/api";
+import { api, publicUrl, type ImageModelAlias, type MangaPage } from "@/lib/api";
 
 import { assetName } from "./display";
+import { interiorLabel, sceneAssetStatusMeta } from "./scene-status";
 import { CandidateArtwork, ImageModelPicker } from "./shared";
 import { InspectionPanel } from "./inspection-panel";
 import type { GenerationWorkspace } from "./use-generation-workspace";
@@ -32,6 +34,8 @@ export function GenerateSection({
   assets,
   characters,
   outfits,
+  script,
+  sceneAssets,
   modelOptions,
   catalogModelOptions,
   activeDrawModel,
@@ -46,6 +50,8 @@ export function GenerateSection({
   assets: WorkspaceQueries["assets"];
   characters: WorkspaceQueries["characters"];
   outfits: WorkspaceQueries["outfits"];
+  script: WorkspaceQueries["script"];
+  sceneAssets: WorkspaceQueries["sceneAssets"];
   modelOptions: { alias: ImageModelAlias; name: string; id: string; provider: string }[];
   catalogModelOptions: { alias: ImageModelAlias; name: string; id: string; provider: string }[];
   activeDrawModel: ImageModelAlias | null;
@@ -117,6 +123,13 @@ export function GenerateSection({
         <div className="draw-context"><div><span>PAGE LOAD</span><strong>{selectedPage.estimated_text_chars} 字</strong><small>{selectedPage.panel_count} 格 / {selectedPage.estimated_bubbles} 气泡</small></div><p>{selectedPage.source_coverage.ranges?.map((item) => item.text).join("").slice(0, 180)}</p></div>
         <ProductionReadiness projectId={id} readiness={pageReadiness.data} loading={pageReadiness.isLoading} error={pageReadiness.error} targetDialogues={targetDialogues} />
         <ImageModelPicker selected={activeDrawModel} onSelect={setDrawModel} options={modelOptions} label="本次页面生成模型（仅显示支持图片编辑的已启用模型）" />
+        <PageSceneInheritance
+          page={selectedPage}
+          script={script}
+          sceneAssets={sceneAssets}
+          assets={assets}
+          openPreview={openPreview}
+        />
         <section className="generation-reference-check">
           <header><div><span>CAST & REFERENCES</span><strong>自动继承已确认的人物与服装参考</strong></div><button type="button" className="reference-override-toggle" onClick={() => setReferenceOverridePageId(referenceOverrideOpen ? null : selectedPage.id)}><Pencil size={11} />{referenceOverrideOpen ? "收起选择" : "本页更换"}</button></header>
           {generationReferenceReady && !referenceOverrideOpen && <div className="reference-inheritance-summary">{visibleCharacterIds.map((characterId) => {
@@ -166,5 +179,87 @@ export function GenerateSection({
         <div className="next-page-row"><span>{pageProduction?.ready ? "人工校对、版本确认和视觉检查均已通过" : productionBlocker?.message ?? "完成页面生产门禁后才能继续"}</span><div>{pageProduction?.ready && <a className="button ghost compact" href={api.selectedPagePngUrl(selectedPage.id)!}><Download size={14} />单页 PNG</a>}<button className="button outline" disabled={!pageProduction?.ready || goNext.isPending} onClick={() => goNext.mutate()}>生成下一页 <ArrowRight size={15} /></button></div></div>
       </> : pages.isLoading || pages.data === undefined ? null : <div className="asset-empty tall"><Sparkles size={28} /><strong>没有可抽卡页面</strong><p>先完成动态分页。</p></div>}
     </div>
+  );
+}
+
+function PageSceneInheritance({
+  page,
+  script,
+  sceneAssets,
+  assets,
+  openPreview,
+}: {
+  page: MangaPage;
+  script: WorkspaceQueries["script"];
+  sceneAssets: WorkspaceQueries["sceneAssets"];
+  assets: WorkspaceQueries["assets"];
+  openPreview: (url: string, label: string) => void;
+}) {
+  if (script.isLoading || sceneAssets.isLoading) {
+    return (
+      <section className="generation-scene-context" aria-label="本页场景资产">
+        <header><div><span>SCENE ASSETS</span><strong>本页继承的场景资产与参考图</strong></div></header>
+        <p className="reference-check-loading"><LoaderCircle className="spin" size={15} />正在读取场景绑定…</p>
+      </section>
+    );
+  }
+  if (script.isError || sceneAssets.isError) {
+    return (
+      <section className="generation-scene-context" aria-label="本页场景资产">
+        <header><div><span>SCENE ASSETS</span><strong>本页继承的场景资产与参考图</strong></div></header>
+        <p className="reference-check-warning"><CircleAlert size={13} />{(script.error ?? sceneAssets.error)?.message ?? "无法读取场景资产"}</p>
+      </section>
+    );
+  }
+  const pageScenes = (script.data?.scenes ?? []).filter((scene) => page.scene_ids.includes(scene.id));
+  return (
+    <section className="generation-scene-context" aria-label="本页场景资产">
+      <header><div><span>SCENE ASSETS</span><strong>本页继承的场景资产与参考图</strong></div></header>
+      {!page.scene_ids.length ? (
+        <p className="reference-check-empty">本页未关联剧本场景。</p>
+      ) : !pageScenes.length ? (
+        <p className="reference-check-warning"><CircleAlert size={13} />页面记录了场景 id，但当前剧本中找不到对应场景，不能视为已就绪。</p>
+      ) : (
+        <div className="scene-inheritance-list">
+          {pageScenes.map((scene) => {
+            const asset = sceneAssets.data?.find((item) => item.id === scene.scene_asset_id);
+            const variant = asset?.variants.find((item) => item.id === scene.scene_asset_variant_id) ?? asset?.variants.find((item) => item.is_canonical && item.deleted_at == null);
+            if (!scene.scene_asset_id) {
+              return <article key={scene.id}><strong>第 {scene.ordinal} 场 · 未绑定场景资产</strong><span>将使用地点文本兜底：{scene.location || "（空）"}</span></article>;
+            }
+            if (!asset) {
+              return <article key={scene.id}><strong>第 {scene.ordinal} 场</strong><span>引用的场景资产不可用，不能视为已就绪。</span></article>;
+            }
+            if (asset.deleted_at) {
+              return <article key={scene.id}><strong>第 {scene.ordinal} 场 · {asset.name}</strong><span>场景资产已归档，不会作为已就绪参考。地点文本仍保留作兜底。</span></article>;
+            }
+            const status = sceneAssetStatusMeta(asset.status);
+            const references = [
+              ...asset.references,
+              ...(variant?.deleted_at ? [] : variant?.references ?? []),
+            ];
+            return (
+              <article key={scene.id}>
+                <strong>第 {scene.ordinal} 场 · {asset.name} · {interiorLabel(asset.structured.interior)}</strong>
+                <span>{status.ready ? status.label : status.label}{variant && !variant.deleted_at ? ` · 变体 ${variant.name}` : variant?.deleted_at ? " · 变体已归档，回退资产默认" : ""}</span>
+                <div className="scene-inheritance-thumbs">
+                  {references.map((reference) => {
+                    const file = assets.data?.find((item) => item.id === reference.asset_id);
+                    if (!file?.content_url) return <em key={reference.id}>参考图不可用</em>;
+                    const label = `${asset.name}${variant ? ` 环境变体 - ${variant.name}` : " 主空间参考图"}`;
+                    return (
+                      <button key={reference.id} type="button" onClick={() => openPreview(publicUrl(file.content_url)!, label)}>
+                        <Image src={publicUrl(file.thumbnail_url ?? file.content_url)!} alt={label} width={56} height={56} unoptimized />
+                      </button>
+                    );
+                  })}
+                  {!references.length && <em>尚未绑定可用参考图</em>}
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </section>
   );
 }

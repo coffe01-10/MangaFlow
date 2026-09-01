@@ -104,7 +104,7 @@ test("核心路由遵守首屏 API 请求预算", async ({ page, request }) => {
     [`/projects/${id}/assets/characters`, 6],
     [`/projects/${id}/storyboard`, 6],
     [`/projects/${id}/jobs`, 6],
-    [`/projects/${id}/generate`, 8],
+    [`/projects/${id}/generate`, 10],
   ] as const) {
     await page.goto("about:blank");
     apiRequests = 0;

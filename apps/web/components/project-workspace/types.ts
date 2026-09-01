@@ -7,4 +7,4 @@ export type WorkspaceSection =
   | "library"
   | "jobs";
 
-export type AssetWorkspaceView = "characters" | "outfits" | "style" | "references";
+export type AssetWorkspaceView = "characters" | "outfits" | "scenes" | "style" | "references";

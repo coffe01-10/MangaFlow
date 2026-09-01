@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api, type GenerationWorkbench, type InspectionResult, type Job, type MangaPage, type PageCandidate } from "@/lib/api";
+import { api, type GenerationWorkbench, type InspectionResult, type Job, type MangaPage, type PageCandidate, type SceneAsset, type Script } from "@/lib/api";
 
 import { GenerateSection } from "./generate-section";
 import { useGenerationWorkspace } from "./use-generation-workspace";
@@ -23,6 +23,8 @@ const assetsApi = vi.spyOn(api, "assets");
 const chaptersApi = vi.spyOn(api, "chapters");
 const charactersApi = vi.spyOn(api, "characters");
 const outfitsApi = vi.spyOn(api, "outfits");
+const scriptApi = vi.spyOn(api, "script");
+const sceneAssetsApi = vi.spyOn(api, "sceneAssets");
 const pagesApi = vi.spyOn(api, "pages");
 const jobsApi = vi.spyOn(api, "jobs");
 const workbenchApi = vi.spyOn(api, "generationWorkbench");
@@ -223,6 +225,8 @@ function GenerateHarness() {
       assets={queries.assets}
       characters={queries.characters}
       outfits={queries.outfits}
+      script={queries.script}
+      sceneAssets={queries.sceneAssets}
       modelOptions={[{
         alias: "image.nano_banana_2",
         name: "Nano Banana 2",
@@ -317,6 +321,14 @@ describe("GenerateSection 关键行为", () => {
     }]);
     charactersApi.mockReset().mockResolvedValue([]);
     outfitsApi.mockReset().mockResolvedValue([]);
+    scriptApi.mockReset().mockResolvedValue({
+      chapter_id: "chapter-1",
+      status: "READY",
+      revision_no: 1,
+      coverage: {},
+      scenes: [],
+    } satisfies Script);
+    sceneAssetsApi.mockReset().mockResolvedValue([] satisfies SceneAsset[]);
     pagesApi.mockReset().mockResolvedValue([pageFixture()]);
     jobsApi.mockReset().mockResolvedValue([]);
     batchesApi.mockReset().mockResolvedValue([]);
@@ -581,5 +593,80 @@ describe("GenerateSection 关键行为", () => {
       expect(generateCandidate).toHaveBeenCalled();
       expect(screen.getByText("供应商返回 429")).toBeInTheDocument();
     });
+  });
+
+  it("TEST-SCENE-06 生成区展示持久化场景绑定，归档引用不显示为已就绪", async () => {
+    scriptApi.mockResolvedValue({
+      chapter_id: "chapter-1",
+      status: "READY",
+      revision_no: 1,
+      coverage: {},
+      scenes: [{
+        id: "scene-1",
+        ordinal: 1,
+        location: "学校天台",
+        scene_asset_id: "scene-asset-1",
+        scene_asset_variant_id: "variant-1",
+        time_label: "黄昏",
+        weather: "雨",
+        purpose: "",
+        emotional_arc: "",
+        source_range: {},
+        outfit_assignments: {},
+        locked_fields: [],
+        version: 1,
+        beats: [],
+      }, {
+        id: "scene-2",
+        ordinal: 2,
+        location: "旧教学楼",
+        scene_asset_id: "missing-asset",
+        scene_asset_variant_id: null,
+        time_label: "",
+        weather: "",
+        purpose: "",
+        emotional_arc: "",
+        source_range: {},
+        outfit_assignments: {},
+        locked_fields: [],
+        version: 1,
+        beats: [],
+      }],
+    });
+    sceneAssetsApi.mockResolvedValue([{
+      id: "scene-asset-1",
+      project_id: "project-1",
+      name: "学校天台",
+      description: "",
+      location_hint: "学校天台",
+      structured: { interior: false, place: "校园" },
+      status: "CANONICAL",
+      deleted_at: "2026-09-01T00:00:00Z",
+      created_at: "2026-09-01T00:00:00Z",
+      updated_at: "2026-09-01T00:00:00Z",
+      version: 2,
+      references: [],
+      variants: [{
+        id: "variant-1",
+        scene_asset_id: "scene-asset-1",
+        name: "暴雨黄昏",
+        structured_overrides: { weather: "rain" },
+        is_canonical: true,
+        deleted_at: null,
+        version: 1,
+        references: [],
+      }],
+    }]);
+    pagesApi.mockResolvedValue([pageFixture({ scene_ids: ["scene-1", "scene-2"] })]);
+    workbenchApi.mockResolvedValue(workbenchFixture({
+      page: pageFixture({ scene_ids: ["scene-1", "scene-2"] }),
+    }));
+    renderGenerate();
+    await waitFor(() => {
+      expect(screen.getByText("本页继承的场景资产与参考图")).toBeInTheDocument();
+    });
+    expect(screen.getByText(/场景资产已归档，不会作为已就绪参考/)).toBeInTheDocument();
+    expect(screen.getByText(/引用的场景资产不可用/)).toBeInTheDocument();
+    expect(screen.queryByText("已就绪 · 可直接用于剧本与分镜")).not.toBeInTheDocument();
   });
 });
