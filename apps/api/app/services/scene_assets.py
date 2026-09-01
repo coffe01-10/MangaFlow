@@ -1,9 +1,13 @@
 """Scene asset service: background resolution, snapshots and reference lease.
 
 Consumption rule follows docs/v02-scene-asset-contract.md §5: structured
-fields (variant overrides applied) -> asset description -> Scene.location
+fields (applied variant overrides) -> asset description -> Scene.location
 historical text. The compiled text is never stored back on the Scene; it only
 upgrades prompt input quality at storyboard build time.
+
+A scene without an explicit variant binding uses the asset's active canonical
+variant as the default; an explicit binding to a deleted or foreign variant
+also falls back to the canonical variant (contract §9).
 """
 
 from fastapi import HTTPException
@@ -38,6 +42,53 @@ def validate_variant_overrides(value: dict) -> None:
             status_code=422,
             detail="变体只允许覆盖时间、天气、光照、色调或季节字段",
         )
+
+
+def _applied_variant(
+    db: Session, asset: SceneAsset, variant_id: str | None
+) -> SceneAssetVariant | None:
+    """Resolve the variant that actually applies to this scene binding.
+
+    An explicit, live binding wins; otherwise the asset's active canonical
+    variant is the default. A deleted or foreign explicit binding falls back
+    to the canonical variant as well.
+    """
+
+    if variant_id:
+        variant = db.get(SceneAssetVariant, variant_id)
+        if variant and variant.scene_asset_id == asset.id and variant.deleted_at is None:
+            return variant
+    return db.scalar(
+        select(SceneAssetVariant)
+        .where(
+            SceneAssetVariant.scene_asset_id == asset.id,
+            SceneAssetVariant.deleted_at.is_(None),
+            SceneAssetVariant.is_canonical.is_(True),
+        )
+        .order_by(SceneAssetVariant.created_at, SceneAssetVariant.id)
+        .limit(1)
+    )
+
+
+def _scene_reference_ids(
+    db: Session, asset: SceneAsset, variant: SceneAssetVariant | None
+) -> list[str]:
+    asset_ids = set(
+        db.scalars(
+            select(SceneAssetReference.asset_id).where(
+                SceneAssetReference.scene_asset_id == asset.id
+            )
+        )
+    )
+    if variant:
+        asset_ids.update(
+            db.scalars(
+                select(SceneAssetVariantReference.asset_id).where(
+                    SceneAssetVariantReference.variant_id == variant.id
+                )
+            )
+        )
+    return sorted(asset_ids)
 
 
 def _structured_background(structured: dict) -> str:
@@ -84,15 +135,10 @@ def resolve_scene_background(db: Session, scene: Scene | None) -> str:
     asset = db.get(SceneAsset, scene.scene_asset_id)
     if not asset or asset.deleted_at is not None:
         return scene.location
+    variant = _applied_variant(db, asset, scene.scene_asset_variant_id)
     structured = dict(asset.structured or {})
-    if scene.scene_asset_variant_id:
-        variant = db.get(SceneAssetVariant, scene.scene_asset_variant_id)
-        if (
-            variant
-            and variant.scene_asset_id == asset.id
-            and variant.deleted_at is None
-        ):
-            structured.update(dict(variant.structured_overrides or {}))
+    if variant:
+        structured.update(dict(variant.structured_overrides or {}))
     background = _structured_background(structured)
     if background:
         return background
@@ -113,12 +159,12 @@ def page_primary_scene(db: Session, page: MangaPage) -> Scene | None:
 
 
 def scene_asset_snapshot(db: Session, page: MangaPage) -> dict:
-    """Snapshot the asset/version facts used at the generation boundary.
+    """Snapshot the asset/version facts at candidate creation time.
 
-    The snapshot is a copy: later asset revisions never change it, mirroring
-    ``based_on_storyboard_version``. Scenes without a bound asset record a
-    ``scene_asset_id=None`` marker so consumers can distinguish "no asset"
-    from "asset snapshot failed to load".
+    The snapshot is immutable: later asset revisions never change it, and the
+    worker must keep this queue-time snapshot instead of recomputing it.
+    Scenes without a bound asset record a ``scene_asset_id=None`` marker so
+    consumers can distinguish "no asset" from "asset snapshot failed to load".
     """
 
     snapshot: dict = {"scene_asset_id": None, "scene_asset_version": None}
@@ -133,24 +179,22 @@ def scene_asset_snapshot(db: Session, page: MangaPage) -> dict:
     if not asset or asset.deleted_at is not None:
         snapshot["compiled_background"] = scene.location
         return snapshot
+    variant = _applied_variant(db, asset, scene.scene_asset_variant_id)
     snapshot["scene_asset_id"] = asset.id
     snapshot["scene_asset_version"] = asset.version
+    snapshot["reference_asset_ids"] = _scene_reference_ids(db, asset, variant)
     snapshot["compiled_background"] = resolve_scene_background(db, scene)
-    if scene.scene_asset_variant_id:
-        variant = db.get(SceneAssetVariant, scene.scene_asset_variant_id)
-        if variant and variant.scene_asset_id == asset.id and variant.deleted_at is None:
-            snapshot["scene_asset_variant_id"] = variant.id
-            snapshot["scene_asset_variant_version"] = variant.version
-            snapshot["variant_structured_overrides"] = dict(
-                variant.structured_overrides or {}
-            )
+    if variant:
+        snapshot["scene_asset_variant_id"] = variant.id
+        snapshot["scene_asset_variant_version"] = variant.version
+        snapshot["variant_structured_overrides"] = dict(variant.structured_overrides or {})
     return snapshot
 
 
 def scene_reference_assets(db: Session, page: MangaPage) -> list[Asset]:
-    """Reference files leased for the page's primary scene.
+    """Reference files for the page's primary scene at candidate creation time.
 
-    The lease set covers both asset-level and bound-variant-level references
+    The lease set covers both asset-level and applied-variant-level references
     (contract §8): a running job must keep every scene reference image locked.
     """
 
@@ -160,23 +204,8 @@ def scene_reference_assets(db: Session, page: MangaPage) -> list[Asset]:
     asset = db.get(SceneAsset, scene.scene_asset_id)
     if not asset or asset.deleted_at is not None:
         return []
-    asset_ids = set(
-        db.scalars(
-            select(SceneAssetReference.asset_id).where(
-                SceneAssetReference.scene_asset_id == asset.id
-            )
-        )
-    )
-    if scene.scene_asset_variant_id:
-        variant = db.get(SceneAssetVariant, scene.scene_asset_variant_id)
-        if variant and variant.scene_asset_id == asset.id and variant.deleted_at is None:
-            asset_ids.update(
-                db.scalars(
-                    select(SceneAssetVariantReference.asset_id).where(
-                        SceneAssetVariantReference.variant_id == variant.id
-                    )
-                )
-            )
+    variant = _applied_variant(db, asset, scene.scene_asset_variant_id)
+    asset_ids = _scene_reference_ids(db, asset, variant)
     if not asset_ids:
         return []
     return list(

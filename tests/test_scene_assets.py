@@ -278,6 +278,10 @@ def test_migration_upgrade_preserves_legacy_location(tmp_path, monkeypatch):
     index_names = {index["name"] for index in schema.get_indexes("scene_assets")}
     assert "uq_scene_assets_project_active_name" in index_names
     assert "ix_scene_assets_project_deleted_created" in index_names
+    variant_index_names = {
+        index["name"] for index in schema.get_indexes("scene_asset_variants")
+    }
+    assert "uq_scene_asset_variants_asset_canonical" in variant_index_names
     assert "ix_scenes_scene_asset_id" in {
         index["name"] for index in schema.get_indexes("scenes")
     }
@@ -488,7 +492,13 @@ def test_resolve_scene_background_applies_variant_overrides(db_session):
     assert "rain" in overridden
     assert "校园·教学楼" in overridden
 
+    # A scene without an explicit variant binding uses the canonical default.
+    scene.scene_asset_variant_id = None
+    db_session.commit()
+    assert "黄昏" in resolve_scene_background(db_session, scene)
+
     # Soft-deleted variant does not participate in compilation.
+    scene.scene_asset_variant_id = variant.id
     variant.deleted_at = utcnow()
     db_session.commit()
     assert "白天" in resolve_scene_background(db_session, scene)
@@ -554,18 +564,22 @@ def test_scene_asset_reference_binding_unbinding(client, db_session):
     )
     assert adopted.status_code == 201
 
+    # Unbinding removes every role binding of the asset; the file stays alive.
     unbound = client.delete(
         f"/api/v1/projects/{project['id']}/scene-assets/"
         f"{scene_asset['id']}/references/{reference_asset.id}"
     )
     assert unbound.status_code == 204
     assert db_session.get(Asset, reference_asset.id).deleted_at is None
-    # Deleting by asset id removes every role binding for that asset.
+    detail = client.get(
+        f"/api/v1/projects/{project['id']}/scene-assets/{scene_asset['id']}"
+    ).json()
+    assert reference_asset.id not in {item["asset_id"] for item in detail["references"]}
     again = client.delete(
         f"/api/v1/projects/{project['id']}/scene-assets/"
         f"{scene_asset['id']}/references/{reference_asset.id}"
     )
-    assert again.status_code == 204
+    assert again.status_code == 404
     missing = client.delete(
         f"/api/v1/projects/{project['id']}/scene-assets/"
         f"{scene_asset['id']}/references/{foreign_asset.id}"
@@ -599,6 +613,8 @@ def test_scene_asset_soft_delete_restore_and_job_guard(client, db_session):
         f"/api/v1/projects/{project['id']}/scene-assets/{scene_asset['id']}"
     )
     assert deleted.status_code == 204
+    db_session.refresh(page)
+    assert page.continuity_status == "NEEDS_REVIEW"
     refreshed = db_session.get(Scene, scene.id)
     assert resolve_scene_background(db_session, refreshed) == "老教学楼"
 
@@ -612,6 +628,8 @@ def test_scene_asset_soft_delete_restore_and_job_guard(client, db_session):
         f"/api/v1/projects/{project['id']}/scene-assets/{scene_asset['id']}/restore"
     )
     assert restored.status_code == 200
+    db_session.refresh(page)
+    assert page.continuity_status == "NEEDS_REVIEW"
     refreshed = db_session.get(Scene, scene.id)
     assert "校园·教学楼" in resolve_scene_background(db_session, refreshed)
 
@@ -690,6 +708,15 @@ def test_scene_bind_asset_marks_pages_for_review(client, db_session):
         json={"scene_asset_id": foreign_asset["id"]},
     )
     assert cross.status_code == 422
+
+    # Archiving a bound variant also flags the affected pages for review.
+    removed_variant = client.delete(
+        f"/api/v1/projects/{project['id']}/scene-assets/"
+        f"{scene_asset['id']}/variants/{variant.id}"
+    )
+    assert removed_variant.status_code == 204
+    db_session.refresh(page)
+    assert page.continuity_status == "NEEDS_REVIEW"
 
     unbound = client.patch(
         f"/api/v1/scenes/{scene.id}/bind-asset",
@@ -783,6 +810,7 @@ def test_candidate_prompt_snapshot_locks_scene_version(
 
     fresh = scene_asset_snapshot(db_session, page)
     assert fresh["scene_asset_version"] == scene_asset["version"] + 1
+    assert fresh["reference_asset_ids"] == []
 
 
 # --- S7: scene reference images enter the job lease -------------------------

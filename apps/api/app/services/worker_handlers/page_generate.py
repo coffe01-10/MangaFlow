@@ -36,10 +36,6 @@ from app.models import (
 from app.services.media import create_thumbnails, remove_thumbnails
 from app.services.model_router import model_supports_resolution
 from app.services.prompt_compiler import PAGE_TEMPLATE_VERSION, compile_page_prompt
-from app.services.scene_assets import (
-    scene_asset_snapshot,
-    scene_reference_assets,
-)
 from app.services.worker_handlers import execution, provider
 from app.services.worker_handlers.execution import StaleStoryboardVersionError
 
@@ -49,6 +45,7 @@ def _load_reference_assets(
     page: MangaPage,
     project: Project,
     reference_selections: dict[str, dict[str, str | None]] | None = None,
+    scene_reference_ids: list[str] | None = None,
 ) -> list[Asset]:
     page_character_ids = {
         character_id
@@ -160,9 +157,23 @@ def _load_reference_assets(
                         )
                     )
                 )
-    scene_reference_assets_for_page = scene_reference_assets(db, page)
-    if scene_reference_assets_for_page:
-        references.extend(scene_reference_assets_for_page)
+    if scene_reference_ids:
+        scene_references = list(
+            db.scalars(
+                select(Asset).where(
+                    Asset.id.in_(scene_reference_ids),
+                    Asset.project_id == project.id,
+                    Asset.deleted_at.is_(None),
+                )
+            )
+        )
+        loaded_scene_ids = {item.id for item in scene_references}
+        if loaded_scene_ids != set(scene_reference_ids):
+            missing = sorted(set(scene_reference_ids) - loaded_scene_ids)
+            raise RuntimeError(
+                "场景参考图已删除或失效，已在调用模型前停止任务：" + "、".join(missing)
+            )
+        references.extend(scene_references)
     style = (
         db.get(StyleProfile, page.style_id or project.default_style_id)
         if page.style_id or project.default_style_id
@@ -279,6 +290,9 @@ def _run_page_generate(db, job: GenerationJob) -> None:
 
     reference_selections = candidate.prompt_snapshot.get("reference_selections", {})
     prompt, snapshot = compile_page_prompt(db, page, project)
+    # The queue-time snapshot is the immutable input contract of this
+    # candidate; later asset or variant edits must not rewrite it.
+    queued_scene_snapshot = (candidate.prompt_snapshot or {}).get("scene_asset") or {}
     reference_bindings: list[dict[str, str | None]] = []
     for character_id, selection in reference_selections.items():
         character = db.get(Character, character_id)
@@ -310,7 +324,13 @@ def _run_page_generate(db, job: GenerationJob) -> None:
         db, job, status=JobStatus.UPLOADING_REFERENCES, progress=20
     )
 
-    reference_assets = _load_reference_assets(db, page, project, reference_selections)
+    reference_assets = _load_reference_assets(
+        db,
+        page,
+        project,
+        reference_selections,
+        queued_scene_snapshot.get("reference_asset_ids") or [],
+    )
     reference_bytes: list[bytes] = []
     reference_types: list[str] = []
     for asset in reference_assets:
@@ -358,7 +378,7 @@ def _run_page_generate(db, job: GenerationJob) -> None:
     snapshot["operation"] = job.job_type
     snapshot["reference_selections"] = reference_selections
     snapshot["reference_bindings"] = reference_bindings
-    snapshot["scene_asset"] = scene_asset_snapshot(db, page)
+    snapshot["scene_asset"] = queued_scene_snapshot
     snapshot["prompt_preview"] = prompt
     snapshot["checksum"] = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
     candidate.prompt_snapshot = snapshot

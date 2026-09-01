@@ -69,7 +69,10 @@ _OWNED_INDEXES = {
         "ix_scene_assets_project_deleted_created",
     },
     "scene_asset_references": {"ix_scene_asset_references_scene_asset_id"},
-    "scene_asset_variants": {"ix_scene_asset_variants_asset_canonical"},
+    "scene_asset_variants": {
+        "ix_scene_asset_variants_asset_canonical",
+        "uq_scene_asset_variants_asset_canonical",
+    },
     "scene_asset_variant_references": {"ix_scene_asset_variant_references_variant_id"},
 }
 
@@ -195,6 +198,14 @@ def upgrade() -> None:
             "ix_scene_asset_variants_asset_canonical",
             "scene_asset_variants",
             ["scene_asset_id", "is_canonical"],
+        )
+        op.create_index(
+            "uq_scene_asset_variants_asset_canonical",
+            "scene_asset_variants",
+            ["scene_asset_id"],
+            unique=True,
+            postgresql_where=sa.text("is_canonical AND deleted_at IS NULL"),
+            sqlite_where=sa.text("is_canonical AND deleted_at IS NULL"),
         )
     if "scene_asset_variant_references" not in inspector.get_table_names():
         op.create_table(

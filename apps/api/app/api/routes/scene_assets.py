@@ -7,7 +7,7 @@ and name conflicts return 409.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -232,6 +232,7 @@ def restore_scene_asset(
         return _scene_asset_read(db, asset)
     asset.deleted_at = None
     asset.version += 1
+    mark_pages_for_scene_asset_review(db, asset.id)
     try:
         db.commit()
     except IntegrityError:
@@ -271,6 +272,7 @@ def delete_scene_asset(project_id: str, asset_id: str, db: Session = Depends(get
         reference_asset = db.get(Asset, reference_asset_id)
         if reference_asset is not None:
             _ensure_asset_not_in_active_job(db, reference_asset)
+    mark_pages_for_scene_asset_review(db, asset.id)
     asset.deleted_at = utcnow()
     asset.version += 1
     db.commit()
@@ -329,15 +331,14 @@ def unbind_scene_asset_reference(
     db: Session = Depends(get_db),
 ) -> None:
     _scene_asset(db, project_id, asset_id)
-    binding = db.scalar(
-        select(SceneAssetReference).where(
+    deleted = db.execute(
+        delete(SceneAssetReference).where(
             SceneAssetReference.scene_asset_id == asset_id,
             SceneAssetReference.asset_id == reference_asset_id,
         )
     )
-    if not binding:
+    if not deleted.rowcount:
         raise HTTPException(status_code=404, detail="场景参考绑定不存在")
-    db.delete(binding)
     db.commit()
 
 
@@ -371,7 +372,11 @@ def create_scene_asset_variant(
         is_canonical=payload.is_canonical,
     )
     db.add(variant)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="当前资产已有默认变体") from None
     db.refresh(variant)
     return _variant_read(db, variant)
 
@@ -412,7 +417,11 @@ def update_scene_asset_variant(
             setattr(variant, key, value.strip() if isinstance(value, str) else value)
     variant.version += 1
     mark_pages_for_scene_asset_review(db, asset.id)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="当前资产已有默认变体") from None
     db.refresh(variant)
     return _variant_read(db, variant)
 
@@ -433,6 +442,7 @@ def delete_scene_asset_variant(
         raise HTTPException(status_code=404, detail="场景变体不存在")
     variant.deleted_at = utcnow()
     variant.version += 1
+    mark_pages_for_scene_asset_review(db, asset_id)
     db.commit()
 
 

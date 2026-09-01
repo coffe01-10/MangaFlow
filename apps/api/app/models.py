@@ -282,6 +282,13 @@ class SceneAssetVariant(Timestamped, Base):
     __tablename__ = "scene_asset_variants"
     __table_args__ = (
         Index("ix_scene_asset_variants_asset_canonical", "scene_asset_id", "is_canonical"),
+        Index(
+            "uq_scene_asset_variants_asset_canonical",
+            "scene_asset_id",
+            unique=True,
+            postgresql_where=text("is_canonical AND deleted_at IS NULL"),
+            sqlite_where=text("is_canonical AND deleted_at IS NULL"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
