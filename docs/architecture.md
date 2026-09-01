@@ -52,6 +52,7 @@ flowchart LR
 - `projects`：项目配置、上次使用模型、乐观锁和软删除。
 - `sources`：粘贴/TXT/Markdown 导入、不可变修订、章节、无损片段和来源覆盖率。
 - `characters`：主要姓名、绰号、冲突、参考图、服装和字段锁定。
+- `scene-assets`：场景资产、参考图绑定、时空光变体、软删/恢复与场景绑定（`bind-asset`）；背景消费走 `resolve_scene_background`。
 - `story/pages`：Scene、Beat、剧本、动态分页、右至左分镜和来源映射。
 - `batches/candidates`：页面或资产批次、候选、收藏、采用、下一页和软删除。
 - `jobs`：任务提交、DAG、幂等、取消、重试、超时、租约和并发限制。
@@ -96,6 +97,8 @@ Worker 启动统一经过 `apps/api/run_worker.py` / `app.worker`，与 API 共�
 原作先拆为带字符区间和哈希的 `SourceSegment`，再映射到 Scene、Beat、剧本和 `MangaPage`。容量估算使用每页 3–5 格、最多 8 个气泡，中文对白/旁白软上限 120 字、硬上限 180 字；溢出时继续拆页，不压缩或删除情节。格内人物用 `VISIBLE/OFFSCREEN/MENTIONED` 表示，道具独立保存；没有实际出镜人物的场景页是合法页面。任何来源片段未映射、已有实际出镜人物却缺参考、场景服装缺失或正式风格未确认时，统一 readiness 服务拒绝候选请求。
 
 页面规划可以一次完成，但图片只允许逐页生成。`GenerationBatch` 是同一页的一轮抽卡会话，`PageCandidate` 是一次模型调用的候选。收藏和暂选互相独立；暂选只表达人工选择，不代表成品。只有候选图存在、分镜版本已确认、视觉检查通过三项同时成立，页面才进入生产通过状态并成为下一页的连续性输入。默认 DAG 终点是单页成品；整章导出使用独立 DAG，并要求章节内所有页面生产通过。
+
+场景背景由 `resolve_scene_background` 统一解析：`SceneAsset.structured`（当前变体 `structured_overrides` 覆盖后）编译 → 资产 `description` → 历史 `Scene.location` 兜底；软删/缺失资产与未绑定场景行为一致。编译文本只写入 `Panel.background` 文本快照（生成候选不可变），不写回 Scene。绑定/解绑资产或编辑资产后，`mark_pages_for_review` 以 `scene_asset` 引用类型把相关页面标记 `NEEDS_REVIEW`。候选创建与生成边界把 `scene_asset_id/scene_asset_version/scene_asset_variant_id` 及变体覆盖写入 `prompt_snapshot` 与 `GenerationRecord.input_versions`；场景参考图（资产级 + 变体级）进入 `JobAssetReference` 租约，排队/执行期间删除任一参考图返回 409。
 
 视觉检查按 `candidate_id + storyboard_version` 隔离，五类各自最新结果必须全部通过。局部复检只补齐同一分镜版本的类别，不能借用旧分镜结果；检查期间分镜变化时只保存旧版本审计记录，不把新分镜标记通过。同一类别、同一时间戳的冲突结果按失败优先处理，不能用随机 UUID 排序推断检查先后；时间上更新的通过结果仍可解除旧失败。
 

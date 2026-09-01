@@ -31,6 +31,7 @@ from app.schemas import AssetCandidateCreate, CandidateCreate
 from app.services.job_service import create_job
 from app.services.model_router import model_supports_resolution, resolve_model
 from app.services.page_readiness import ensure_page_ready
+from app.services.scene_assets import scene_asset_snapshot, scene_reference_assets
 
 ORDINAL_ALLOCATION_MAX_ATTEMPTS = 5
 
@@ -357,6 +358,7 @@ def create_page_candidate(
                     db, current_page, current_project, payload
                 )
                 ordinal = _next_page_candidate_ordinal(db, current_batch.id)
+                current_scene_snapshot = scene_asset_snapshot(db, current_page)
                 candidate = PageCandidate(
                     batch_id=current_batch.id,
                     page_id=current_page.id,
@@ -369,6 +371,7 @@ def create_page_candidate(
                     prompt_snapshot={
                         "reference_selections": current_normalized_selections,
                         "storyboard_version": current_page.storyboard_version,
+                        "scene_asset": current_scene_snapshot,
                     },
                 )
                 db.add(candidate)
@@ -377,6 +380,9 @@ def create_page_candidate(
                 current_project.image_model_alias = payload.model_alias
                 current_project.last_image_model_id = current_resolved_model.model.id
                 current_project.version += 1
+                scene_reference_ids = [
+                    item.id for item in scene_reference_assets(db, current_page)
+                ]
                 job = create_job(
                     db,
                     project_id=current_project.id,
@@ -391,13 +397,16 @@ def create_page_candidate(
                         "reference_selections": current_normalized_selections,
                     },
                     reference_asset_ids=[
-                        asset_id
-                        for selection in current_normalized_selections.values()
-                        for asset_id in (
-                            selection.get("character_asset_id"),
-                            selection.get("outfit_asset_id"),
-                        )
-                        if asset_id
+                        *(
+                            asset_id
+                            for selection in current_normalized_selections.values()
+                            for asset_id in (
+                                selection.get("character_asset_id"),
+                                selection.get("outfit_asset_id"),
+                            )
+                            if asset_id
+                        ),
+                        *scene_reference_ids,
                     ],
                     idempotency_key=f"candidate:{candidate.id}",
                     auto_commit=False,

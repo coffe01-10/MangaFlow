@@ -36,6 +36,10 @@ from app.models import (
 from app.services.media import create_thumbnails, remove_thumbnails
 from app.services.model_router import model_supports_resolution
 from app.services.prompt_compiler import PAGE_TEMPLATE_VERSION, compile_page_prompt
+from app.services.scene_assets import (
+    scene_asset_snapshot,
+    scene_reference_assets,
+)
 from app.services.worker_handlers import execution, provider
 from app.services.worker_handlers.execution import StaleStoryboardVersionError
 
@@ -156,6 +160,9 @@ def _load_reference_assets(
                         )
                     )
                 )
+    scene_reference_assets_for_page = scene_reference_assets(db, page)
+    if scene_reference_assets_for_page:
+        references.extend(scene_reference_assets_for_page)
     style = (
         db.get(StyleProfile, page.style_id or project.default_style_id)
         if page.style_id or project.default_style_id
@@ -351,6 +358,7 @@ def _run_page_generate(db, job: GenerationJob) -> None:
     snapshot["operation"] = job.job_type
     snapshot["reference_selections"] = reference_selections
     snapshot["reference_bindings"] = reference_bindings
+    snapshot["scene_asset"] = scene_asset_snapshot(db, page)
     snapshot["prompt_preview"] = prompt
     snapshot["checksum"] = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
     candidate.prompt_snapshot = snapshot
@@ -427,6 +435,7 @@ def _run_page_generate(db, job: GenerationJob) -> None:
             "page": page.version,
             "page_revision": page.revision_no,
             "storyboard": candidate.based_on_storyboard_version,
+            "scene_asset": snapshot.get("scene_asset") or {},
         },
         reference_asset_ids=list(dict.fromkeys(reference_asset_ids)),
         provider_request_id=response.request_id,

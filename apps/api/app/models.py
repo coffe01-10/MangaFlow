@@ -17,6 +17,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -211,6 +212,116 @@ class Asset(Timestamped, Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class SceneAsset(Timestamped, Base):
+    """First-class location asset: structured fields plus a reference file pool.
+
+    Mirrors the Character/Outfit entity-asset pattern: the entity owns
+    structured data and lifecycle, while the actual images stay in ``Asset``.
+    """
+
+    __tablename__ = "scene_assets"
+    __table_args__ = (
+        Index(
+            "uq_scene_assets_project_active_name",
+            "project_id",
+            "normalized_name",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+            sqlite_where=text("deleted_at IS NULL"),
+        ),
+        Index("ix_scene_assets_project_deleted_created", "project_id", "deleted_at", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(120))
+    normalized_name: Mapped[str] = mapped_column(String(120))
+    description: Mapped[str] = mapped_column(Text, default="")
+    location_hint: Mapped[str] = mapped_column(String(200), default="")
+    structured: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[AssetStatus] = mapped_column(Enum(AssetStatus), default=AssetStatus.UPLOADED)
+    locked_fields: Mapped[list] = mapped_column(JSON, default=list)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    references: Mapped[list["SceneAssetReference"]] = relationship(
+        back_populates="scene_asset", cascade="all, delete-orphan"
+    )
+    variants: Mapped[list["SceneAssetVariant"]] = relationship(
+        back_populates="scene_asset", cascade="all, delete-orphan"
+    )
+
+
+class SceneAssetReference(Base):
+    __tablename__ = "scene_asset_references"
+    __table_args__ = (
+        UniqueConstraint(
+            "scene_asset_id",
+            "asset_id",
+            "role",
+            name="uq_scene_asset_reference_asset_role",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    scene_asset_id: Mapped[str] = mapped_column(
+        ForeignKey("scene_assets.id", ondelete="CASCADE"), index=True
+    )
+    asset_id: Mapped[str] = mapped_column(ForeignKey("assets.id", ondelete="RESTRICT"), index=True)
+    role: Mapped[str] = mapped_column(String(32), default="main")
+    is_canonical: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    scene_asset: Mapped[SceneAsset] = relationship(back_populates="references")
+
+
+class SceneAssetVariant(Timestamped, Base):
+    """Time/weather/lighting overlay on a SceneAsset; structure stays fixed."""
+
+    __tablename__ = "scene_asset_variants"
+    __table_args__ = (
+        Index("ix_scene_asset_variants_asset_canonical", "scene_asset_id", "is_canonical"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    scene_asset_id: Mapped[str] = mapped_column(
+        ForeignKey("scene_assets.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(120))
+    structured_overrides: Mapped[dict] = mapped_column(JSON, default=dict)
+    is_canonical: Mapped[bool] = mapped_column(Boolean, default=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    scene_asset: Mapped[SceneAsset] = relationship(back_populates="variants")
+    references: Mapped[list["SceneAssetVariantReference"]] = relationship(
+        cascade="all, delete-orphan"
+    )
+
+
+class SceneAssetVariantReference(Base):
+    __tablename__ = "scene_asset_variant_references"
+    __table_args__ = (
+        UniqueConstraint(
+            "variant_id",
+            "asset_id",
+            "role",
+            name="uq_scene_asset_variant_reference_asset_role",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    variant_id: Mapped[str] = mapped_column(
+        ForeignKey("scene_asset_variants.id", ondelete="CASCADE"), index=True
+    )
+    asset_id: Mapped[str] = mapped_column(ForeignKey("assets.id", ondelete="RESTRICT"), index=True)
+    role: Mapped[str] = mapped_column(String(32), default="main")
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    variant: Mapped[SceneAssetVariant] = relationship(back_populates="references")
+
+
 class Scene(Timestamped, Base):
     __tablename__ = "scenes"
 
@@ -220,6 +331,14 @@ class Scene(Timestamped, Base):
     )
     ordinal: Mapped[int] = mapped_column(Integer)
     location: Mapped[str] = mapped_column(String(200), default="")
+    # Current binding (follows latest asset version). Left NULL for legacy
+    # scenes; ``location`` stays the fallback and is never rewritten.
+    scene_asset_id: Mapped[str | None] = mapped_column(
+        ForeignKey("scene_assets.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    scene_asset_variant_id: Mapped[str | None] = mapped_column(
+        ForeignKey("scene_asset_variants.id", ondelete="SET NULL"), nullable=True
+    )
     time_label: Mapped[str] = mapped_column(String(120), default="")
     weather: Mapped[str] = mapped_column(String(120), default="")
     purpose: Mapped[str] = mapped_column(Text, default="")
