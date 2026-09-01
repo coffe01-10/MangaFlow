@@ -78,12 +78,12 @@
   - [x] **V02-14A / Issue #62：Codex CLI。** 禁用态预设、四步只读探测、原生二进制解析、`codex exec` 图片生成/编辑映射、持久任务/审计绑定、参考图/输出校验和设置页能力门禁已由 PR #63 合并为 `ee8fb8e`。Windows 实机确认 `0.149.1` 的版本与安全参数解析通过，登录返回 `Not logged in`，因此连接保持不可用；真实图片生成/编辑、账号权限、费用、取消/超时进程树及 PostgreSQL 为 `NOT RUN`。
   - [x] **V02-14B / Issue #64：Antigravity CLI。** 禁用态 `CLI_ANTIGRAVITY` 预设、原生 `agy.exe` 四步只读探测、sandbox/JSON print 图片生成与单参考图编辑映射、run-owned 私有 HOME artifact 收养、统一审计/错误/清理和协议化设置页已由 PR #65 合并为 `575b4e0`。Windows 实机确认 `agy 1.1.22` 及安全参数可解析，只读 `models` 明确返回未登录。最终门禁为 511 项 Python、191 项 Vitest、供应商平权、Ruff、ESLint、TypeScript 与生产构建通过；真实生图/编辑、账号权限/费用、真实取消/超时进程树、PostgreSQL/Redis/RQ 和浏览器 E2E 为 `NOT RUN`。
   - [x] **V02-14C / Issue #67 / PR #68：Grok Build。** `CLI_GROK_BUILD` 禁用态预设、原生 `grok.exe` 四步只读探测、图片生成/最多五参考图编辑映射、typed session 图片收养、外部 hook 安全预检、公共审计/错误/清理和协议化设置页已实现为 `750886f`，首轮 review 的共享超时预算与失败 session 清理修复为 `b7ac5e4`，最终由 PR #68 合并为 `8479a19`。Windows 实机确认 `grok 1.0.13`；登录为 `UNAUTHENTICATED`，当前全局插件 hooks 令能力门禁返回 `UNSUPPORTED`，因此未调用图片工具。最终门禁为 527 项 Python、192 项 Vitest、供应商平权、Ruff、ESLint、TypeScript 与生产构建通过；24 项真实集成按环境跳过，真实生图/编辑、账号权限/费用、真实取消/超时进程树、PostgreSQL/Redis/RQ 和浏览器 E2E 为 `NOT RUN`。
-- [ ] **V02-15（L3 数据、L2 UI）：扩展模型调用账本。**
+- [x] **V02-15（L3 数据、L2 UI）：扩展模型调用账本。**
   - [x] **V02-15A / Issue #49（设计）：** 已合并 `docs/v02-usage-ledger-contract.md`，冻结 attempt/输出二阶段挂接、幂等、价格区间、对账来源与多数据库约束。
-  - [ ] **V02-15B（实现）：** 实现迁移、写入/查询/对账 API 和 SQLite/PostgreSQL 验收；缺少计量时必须保留 `unknown`。
-- [ ] **V02-16（L2）：增加用量与成本看板。**
+  - [x] **V02-15B（实现）：** 已由 PR #71 合并（合并提交 `7af5b59`）：结构化计量列迁移与回填、`normalize_usage`/finalize 写入路径、`GET /usage/attempts`（keyset cursor）、`GET /usage/summary` 与对账 API；缺少计量保留 `unknown`；真实 PostgreSQL 迁移往返与双 Worker 并发、真实供应商账单为 `NOT RUN`。
+- [x] **V02-16（L2）：增加用量与成本看板。**
   - [x] **V02-16A / Issue #52（设计）：** 已合并 `docs/v02-usage-cost-dashboard-ui-audit.md`，明确原币种分组、estimated/reported/billed/unknown 视觉语义和 keyset API。
-  - [ ] **V02-16B（实现）：** 在 V02-15B 后实现筛选、趋势、明细、预算提醒和浏览器回归。
+  - [x] **V02-16B / Issue #72（实现）：** 已由 PR #73 合并（合并提交 `fec8d7f`）：`/settings/usage` 看板实现时间/项目/供应商/模型/通道筛选、KPI、按日趋势、供应商/模型分解、attempt 明细 keyset 分页与详情抽屉、CSV 导出（按币种分行并防公式注入）、本地预算提醒，附 Vitest 与离线浏览器回归；billed 与 estimated 永不相加、多币种不换算、unknown ≠ 0、CLI 不显示为免费；真实账单核对、PostgreSQL/Redis-RQ、真实 CLI 通道与性能门禁为 `NOT RUN`。
 
 ### M2：场景资产与角色模型包
 
