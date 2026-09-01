@@ -389,6 +389,7 @@ def usage_attempt_query(
     job_id: str | None,
     channel: str | None,
     provider: str | None,
+    model_id: str | None,
     since: datetime | None,
     until: datetime | None,
 ):
@@ -401,6 +402,8 @@ def usage_attempt_query(
         query = query.where(ModelCallAttempt.channel == channel)
     if provider:
         query = query.where(ModelCallAttempt.provider == provider)
+    if model_id:
+        query = query.where(ModelCallAttempt.model_id == model_id)
     if since:
         query = query.where(ModelCallAttempt.started_at >= since)
     if until:
@@ -419,6 +422,7 @@ def summarize_usage(
     *,
     project_id: str | None = None,
     provider: str | None = None,
+    model_id: str | None = None,
     since: datetime | None = None,
     until: datetime | None = None,
 ) -> UsageSummaryRead:
@@ -435,6 +439,7 @@ def summarize_usage(
                 job_id=None,
                 channel=None,
                 provider=provider,
+                model_id=model_id,
                 since=since,
                 until=until,
             ).order_by(ModelCallAttempt.started_at, ModelCallAttempt.id)
@@ -478,7 +483,7 @@ def summarize_usage(
         buckets[key].append(attempt)
 
     groups: list[UsageSummaryGroup] = []
-    for (day, item_provider, model_id, channel), items in sorted(buckets.items()):
+    for (day, item_provider, item_model, channel), items in sorted(buckets.items()):
         status_counts = {"UNKNOWN": 0, "PARTIAL": 0, "COMPLETE": 0}
         estimated: dict[str, Decimal] = defaultdict(Decimal)
         for item in items:
@@ -499,7 +504,7 @@ def summarize_usage(
             UsageSummaryGroup(
                 day=day,
                 provider=item_provider,
-                model_id=model_id,
+                model_id=item_model,
                 channel=channel,
                 attempt_count=len(items),
                 succeeded_count=sum(item.outcome == "SUCCEEDED" for item in items),
@@ -524,6 +529,10 @@ def summarize_usage(
     if provider:
         billed_query = billed_query.where(
             ProviderUsageReconciliation.provider == provider
+        )
+    if model_id:
+        billed_query = billed_query.where(
+            ProviderUsageReconciliation.model_id == model_id
         )
     if since:
         billed_query = billed_query.where(

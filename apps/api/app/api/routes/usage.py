@@ -72,6 +72,7 @@ def list_usage_attempts(
     job_id: str | None = None,
     channel: str | None = Query(default=None, pattern="^(HTTP_API|CLI)$"),
     provider: str | None = None,
+    model_id: str | None = None,
     since: datetime | None = None,
     until: datetime | None = None,
     cursor: str | None = None,
@@ -87,6 +88,7 @@ def list_usage_attempts(
         job_id=job_id,
         channel=channel,
         provider=provider,
+        model_id=model_id,
         since=since,
         until=until,
     )
@@ -132,6 +134,7 @@ def get_usage_attempt(
 def get_usage_summary(
     project_id: str | None = None,
     provider: str | None = None,
+    model_id: str | None = None,
     from_: datetime | None = Query(default=None, alias="from"),
     to: datetime | None = None,
     db: Session = Depends(get_db),
@@ -144,6 +147,7 @@ def get_usage_summary(
         db,
         project_id=project_id,
         provider=provider,
+        model_id=model_id,
         since=since,
         until=until,
     )

@@ -550,6 +550,108 @@ export interface Job {
   archived_at: string | null;
 }
 
+export type UsageChannel = "HTTP_API" | "CLI";
+
+export interface UsageCurrencyAmount {
+  currency: string;
+  amount: string;
+}
+
+export interface UsageSummaryGroup {
+  day: string;
+  provider: string;
+  model_id: string;
+  channel: UsageChannel;
+  attempt_count: number;
+  succeeded_count: number;
+  failed_count: number;
+  pending_count: number;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cached_input_tokens: number | null;
+  output_images: number | null;
+  usage_status_counts: Record<string, number>;
+  estimated_costs: UsageCurrencyAmount[];
+}
+
+export interface UsageReconciliation {
+  id: string;
+  provider: string;
+  model_id: string;
+  channel: UsageChannel;
+  connection_id: string | null;
+  billing_account_id: string;
+  import_batch_id: string;
+  idempotency_key: string;
+  period_start: string;
+  period_end: string;
+  currency: string;
+  billed_amount: string;
+  source_note: string;
+  entered_by: string;
+  created_at: string;
+}
+
+export interface UsageSummary {
+  groups: UsageSummaryGroup[];
+  billed: UsageReconciliation[];
+}
+
+export interface ModelCallAttempt {
+  id: string;
+  job_id: string | null;
+  project_id: string | null;
+  job_attempt: number;
+  dispatch_no: number;
+  dispatch_request_id: string | null;
+  route_switched: boolean;
+  outcome: string | null;
+  channel: UsageChannel;
+  provider: string;
+  model_id: string;
+  catalog_model_id: string | null;
+  connection_id: string | null;
+  selected_key_id: string | null;
+  request_id: string | null;
+  probe_id: string | null;
+  chapter_id: string | null;
+  page_id: string | null;
+  panel_id: string | null;
+  candidate_id: string | null;
+  started_at: string;
+  finished_at: string | null;
+  duration_ms: number | null;
+  usage: Record<string, unknown> | null;
+  usage_status: string | null;
+  usage_source: string | null;
+  unit_kind: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cached_input_tokens: number | null;
+  cache_hit: boolean | null;
+  output_images: number | null;
+  output_image_dims: Array<Record<string, unknown>> | null;
+  output_asset_ids: string[] | null;
+  route_reason: string | null;
+  route_score: number | null;
+  error_code: string | null;
+  error_message: string | null;
+}
+
+export interface UsageAttemptPage {
+  items: ModelCallAttempt[];
+  next_cursor: string | null;
+}
+
+export interface UsageFilters {
+  project_id?: string;
+  provider?: string;
+  model_id?: string;
+  channel?: UsageChannel | "";
+  since?: string;
+  until?: string;
+}
+
 export interface DashboardProject {
   project: Project;
   chapter_count: number;
@@ -826,6 +928,40 @@ export const api = {
   updateRuntimeSettings: (payload: Partial<RuntimeSettings> & { version: number }) =>
     request<RuntimeSettings>("/settings/runtime", { method: "PATCH", body: JSON.stringify(payload) }),
   diagnostics: () => request<Diagnostics>("/settings/diagnostics"),
+  usageSummary: (filters: UsageFilters = {}) => {
+    const query = new URLSearchParams();
+    if (filters.project_id) query.set("project_id", filters.project_id);
+    if (filters.provider) query.set("provider", filters.provider);
+    if (filters.model_id) query.set("model_id", filters.model_id);
+    if (filters.since) query.set("from", filters.since);
+    if (filters.until) query.set("to", filters.until);
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    return request<UsageSummary>(`/usage/summary${suffix}`);
+  },
+  usageAttempts: (filters: UsageFilters = {}, cursor?: string, limit = 50) => {
+    const query = new URLSearchParams();
+    if (filters.project_id) query.set("project_id", filters.project_id);
+    if (filters.provider) query.set("provider", filters.provider);
+    if (filters.model_id) query.set("model_id", filters.model_id);
+    if (filters.channel) query.set("channel", filters.channel);
+    if (filters.since) query.set("since", filters.since);
+    if (filters.until) query.set("until", filters.until);
+    if (cursor) query.set("cursor", cursor);
+    query.set("limit", String(limit));
+    return request<UsageAttemptPage>(`/usage/attempts?${query.toString()}`);
+  },
+  usageAttempt: (attemptId: string) =>
+    request<ModelCallAttempt>(`/usage/attempts/${encodeURIComponent(attemptId)}`),
+  usageReconciliations: (filters: Pick<UsageFilters, "provider" | "model_id" | "channel" | "since" | "until"> = {}) => {
+    const query = new URLSearchParams();
+    if (filters.provider) query.set("provider", filters.provider);
+    if (filters.model_id) query.set("model_id", filters.model_id);
+    if (filters.channel) query.set("channel", filters.channel);
+    if (filters.since) query.set("since", filters.since);
+    if (filters.until) query.set("until", filters.until);
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    return request<UsageReconciliation[]>(`/usage/reconciliations${suffix}`);
+  },
   providers: () => request<ProviderProfile[]>("/providers"),
   createProvider: (payload: { name: string; protocol: "OPENAI" | "ANTHROPIC"; base_url: string; use_responses_api: boolean }) =>
     request<ProviderProfile>("/providers", { method: "POST", body: JSON.stringify(payload) }),
