@@ -25,7 +25,7 @@ test.describe("用量与成本看板（离线种子数据）", () => {
 
     const breakdown = page.getByLabel("供应商与模型分解");
     const cliRow = breakdown.locator("tbody tr").filter({ hasText: "e2e-gate-cli-codex" });
-    await expect(cliRow.getByText("未定价")).toBeVisible();
+    await expect(cliRow.getByText("仅计量")).toBeVisible();
     await expect(cliRow.getByRole("cell", { name: "CLI", exact: true })).toBeVisible();
 
     // 未返回用量的一次调用在明细行显示“无用量返回”，绝不显示为 0 成本；
@@ -33,6 +33,21 @@ test.describe("用量与成本看板（离线种子数据）", () => {
     const attempts = page.getByLabel("调用明细");
     await expect(attempts.getByText("无用量返回").first()).toBeVisible();
     await expect(breakdown.getByText("预估").first()).toBeVisible();
+  });
+
+  test("预算超出时显示提醒", async ({ page }) => {
+    await page.goto("/settings/usage");
+    await expect(page.getByLabel("预算提醒")).toBeVisible();
+    await expect(page.getByText("尚未设置预算提醒")).toBeVisible();
+
+    await page.getByRole("button", { name: "设置预算" }).click();
+    await page.getByLabel("预算币种").fill("CNY");
+    await page.getByLabel("预算金额").fill("0.01");
+    await page.getByRole("button", { name: "保存" }).click();
+
+    const status = page.locator(".usage-budget-status");
+    await expect(status).toContainText("已超出预算 ¥0.01");
+    await expect(status).toContainText("估算支出 ¥0.15");
   });
 
   test("明细行打开抽屉回显 Request ID 与换路标记，Esc 关闭", async ({ page }) => {

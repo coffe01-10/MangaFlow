@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -26,7 +26,7 @@ function makeAttempt(overrides: Partial<ModelCallAttempt> = {}): ModelCallAttemp
     route_switched: false,
     outcome: "SUCCEEDED",
     channel: "HTTP_API",
-    provider: "vertex-ai",
+    provider: "usage-provider",
     model_id: "imagen-3.0-generate-002",
     catalog_model_id: null,
     connection_id: null,
@@ -63,7 +63,7 @@ const populatedSummary: UsageSummary = {
   groups: [
     {
       day: "2026-09-01",
-      provider: "vertex-ai",
+      provider: "usage-provider",
       model_id: "imagen-3.0-generate-002",
       channel: "HTTP_API",
       attempt_count: 2,
@@ -113,7 +113,7 @@ const populatedSummary: UsageSummary = {
   billed: [
     {
       id: "recon-1",
-      provider: "vertex-ai",
+      provider: "usage-provider",
       model_id: "imagen-3.0-generate-002",
       channel: "HTTP_API",
       connection_id: null,
@@ -170,6 +170,7 @@ function renderDashboard() {
 }
 
 beforeEach(() => {
+  window.localStorage.clear();
   projectsApi.mockResolvedValue([]);
   usageAttemptsApi.mockResolvedValue(page(attemptsPayload(), null));
   usageSummaryApi.mockResolvedValue(populatedSummary);
@@ -202,11 +203,11 @@ describe("UsageDashboard cost semantics", () => {
     expect(within(breakdown).queryByText("0 / 0")).toBeNull();
   });
 
-  it("marks CLI rows unpriced instead of free", async () => {
+  it("marks CLI rows with neutral measured-only semantics instead of free", async () => {
     renderDashboard();
     await waitFor(() => expect(screen.getAllByText("codex-cli").length).toBeGreaterThan(0));
     const breakdown = screen.getByLabelText("供应商与模型分解");
-    expect(within(breakdown).getAllByText("未定价").length).toBeGreaterThan(0);
+    expect(within(breakdown).getAllByText("仅计量").length).toBeGreaterThan(0);
   });
 
   it("opens the attempt drawer from a row and closes on Escape with focus moved to the close button", async () => {
@@ -247,6 +248,77 @@ describe("UsageDashboard cost semantics", () => {
     renderDashboard();
     await waitFor(() => expect(screen.getByText("暂无调用记录")).toBeTruthy());
     expect(screen.getByText("发起剧本分析或单页生成后即可在此查看用量统计")).toBeTruthy();
+  });
+
+  it("renders the reconciliation table when a period has bills but no attempt groups", async () => {
+    usageSummaryApi.mockResolvedValue({ groups: [], billed: populatedSummary.billed });
+    usageAttemptsApi.mockResolvedValue(page([], null));
+    renderDashboard();
+    await waitFor(() => expect(screen.getByLabelText("用量概览指标")).toBeTruthy());
+    // The KPI stays visible with honest empty values instead of the empty gate.
+    expect(within(screen.getByLabelText("用量概览指标")).getByText("¥66.00")).toBeTruthy();
+    expect(within(screen.getByLabelText("用量概览指标")).getByText("无估算数据")).toBeTruthy();
+    const billedPanel = screen.getByLabelText("账单对账记录");
+    expect(within(billedPanel).getByText("8 月账单")).toBeTruthy();
+    // The attempts table shows its own empty row, not a page-level empty gate.
+    expect(screen.getByText("该范围暂无调用尝试记录")).toBeTruthy();
+  });
+
+  it("keeps the dashboard visible when loading the next attempts page fails", async () => {
+    usageAttemptsApi
+      .mockResolvedValueOnce(page(attemptsPayload(), "cursor-1"))
+      .mockRejectedValueOnce(new Error("cursor boom"));
+    renderDashboard();
+    await waitFor(() => expect(screen.getByText("调用明细")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "加载更多" }));
+    // The pagination error surfaces inside the attempts table…
+    await waitFor(() =>
+      expect(screen.getByText(/调用明细加载失败：cursor boom/)).toBeTruthy(),
+    );
+    // …and the rest of the dashboard is untouched.
+    expect(screen.getByLabelText("用量概览指标")).toBeTruthy();
+    expect(screen.getByLabelText("账单对账记录")).toBeTruthy();
+    expect(screen.queryByText(/用量数据加载失败/)).toBeNull();
+  });
+
+  it("warns when estimated spend exceeds the configured budget", async () => {
+    renderDashboard();
+    await waitFor(() => expect(screen.getByLabelText("预算提醒")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "设置预算" }));
+    fireEvent.change(screen.getByLabelText("预算币种"), {
+      target: { value: "CNY" },
+    });
+    fireEvent.change(screen.getByLabelText("预算金额"), {
+      target: { value: "1.00" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    // Estimated CNY spend is 1.20 > 1.00 → over-budget alert.
+    expect(
+      screen.getByText(/估算支出 ¥1\.20 已超出预算 ¥1\.00/),
+    ).toBeTruthy();
+    // The threshold survives a remount (localStorage persistence).
+    cleanup();
+    renderDashboard();
+    await waitFor(() =>
+      expect(screen.getByText(/已超出预算 ¥1\.00/)).toBeTruthy(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "设置预算" }));
+    fireEvent.click(screen.getByRole("button", { name: "清除" }));
+    expect(screen.getByText("尚未设置预算提醒")).toBeTruthy();
+  });
+
+  it("stays quiet when estimated spend stays within the budget", async () => {
+    renderDashboard();
+    await waitFor(() => expect(screen.getByLabelText("预算提醒")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "设置预算" }));
+    fireEvent.change(screen.getByLabelText("预算币种"), {
+      target: { value: "CNY" },
+    });
+    fireEvent.change(screen.getByLabelText("预算金额"), {
+      target: { value: "99.00" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    expect(screen.getByText(/在预算 ¥99\.00 内/)).toBeTruthy();
   });
 
   it("shows the filtered empty state with a reset action when filters exclude everything", async () => {

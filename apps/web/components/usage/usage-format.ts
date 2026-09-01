@@ -26,9 +26,9 @@ export const COST_MODE_META: Record<
     hint: "按本地价格表推算，估算值不等于供应商账单",
   },
   USAGE_ONLY: {
-    label: "未定价",
+    label: "仅计量",
     badge: "usage-badge usage-only",
-    hint: "已统计到用量，但该模型未配置单价",
+    hint: "已统计到用量；单次金额需以汇总层估算为准（该范围可能未配置单价）",
   },
   UNKNOWN: {
     label: "成本未知",
@@ -110,8 +110,9 @@ function hasQuantities(values: Array<number | null | undefined>) {
   return values.some((value) => value !== null && value !== undefined);
 }
 
-/** Single-attempt cost semantics. The API exposes no per-attempt amount, so
- * ESTIMATED never applies here — amounts exist only at summary granularity. */
+/** Single-attempt cost semantics. The API exposes no per-attempt amount or
+ * pricing metadata, so ESTIMATED never applies here — amounts exist only at
+ * summary granularity, and "no price configured" cannot be inferred. */
 export function attemptCostMode(attempt: ModelCallAttempt): UsageCostMode {
   if (attempt.usage_source === "OPERATOR_BILLED") return "BILLED";
   if (
@@ -124,7 +125,11 @@ export function attemptCostMode(attempt: ModelCallAttempt): UsageCostMode {
   ) {
     return "USAGE_ONLY";
   }
-  if (attempt.usage === null) return "UNAVAILABLE";
+  // Only a successful call can "omit" usage; failed/pending attempts have no
+  // usage because no successful provider response ever existed.
+  if (attempt.usage === null && attempt.outcome === "SUCCEEDED") {
+    return "UNAVAILABLE";
+  }
   return "UNKNOWN";
 }
 
@@ -300,9 +305,12 @@ export function buildDailyTrend(
   return { days: rows.map((row) => row.day), series, rows };
 }
 
+/** Neutralize spreadsheet formulas: cells starting with = + - @ (or tab) get a
+ * leading apostrophe so opening the CSV cannot execute a formula. */
 function csvCell(value: string | number | null) {
   const text = value === null ? "" : String(value);
-  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  const safe = /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
+  return /[",\r\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
 }
 
 /** CSV of summary groups. One physical row per currency so amounts from

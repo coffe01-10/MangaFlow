@@ -7,6 +7,7 @@ import { api, type UsageChannel, type UsageFilters, type ModelCallAttempt } from
 import { UsageAttemptDrawer } from "./usage-attempt-drawer";
 import { UsageAttemptsTable } from "./usage-attempts-table";
 import { UsageBreakdownTable } from "./usage-breakdown-table";
+import { UsageBudgetBanner } from "./usage-budget-banner";
 import { UsageKpiGrid } from "./usage-kpi-grid";
 import { UsageTrendChart } from "./usage-trend-chart";
 import { buildUsageCsv } from "./usage-format";
@@ -127,8 +128,12 @@ export function UsageDashboard() {
   };
 
   const isLoading = summary.isLoading || attempts.isLoading || facets.isLoading;
-  const errorMessage = summary.error?.message ?? attempts.error?.message ?? null;
-  const showDashboard = Boolean(summaryData && summaryData.groups.length > 0);
+  // A failed fetchNextPage must not wipe the whole dashboard; pagination
+  // errors render inside the attempts table via its own error prop.
+  const errorMessage = summary.error?.message ?? null;
+  const showDashboard = Boolean(
+    summaryData && (summaryData.groups.length > 0 || summaryData.billed.length > 0),
+  );
 
   return (
     <div className="usage-dashboard">
@@ -211,20 +216,23 @@ export function UsageDashboard() {
           <p>用量数据加载失败：{errorMessage}</p>
           <button type="button" className="button ink compact" onClick={refresh}>重试</button>
         </div>
-      ) : !hasEverBeenCalled ? (
-        <div className="usage-state empty">
-          <p>暂无调用记录</p>
-          <small>发起剧本分析或单页生成后即可在此查看用量统计</small>
-        </div>
       ) : !showDashboard ? (
-        <div className="usage-state empty">
-          <p>未找到匹配的调用记录</p>
-          <small>请尝试调整时间范围或清除筛选条件</small>
-          <button type="button" className="button ghost compact" onClick={resetFilters}>重置筛选</button>
-        </div>
+        hasEverBeenCalled ? (
+          <div className="usage-state empty">
+            <p>未找到匹配的调用记录</p>
+            <small>请尝试调整时间范围或清除筛选条件</small>
+            <button type="button" className="button ghost compact" onClick={resetFilters}>重置筛选</button>
+          </div>
+        ) : (
+          <div className="usage-state empty">
+            <p>暂无调用记录</p>
+            <small>发起剧本分析或单页生成后即可在此查看用量统计</small>
+          </div>
+        )
       ) : summaryData ? (
         <>
           <UsageKpiGrid summary={summaryData} />
+          <UsageBudgetBanner groups={summaryData.groups} />
           <UsageTrendChart groups={summaryData.groups} />
           <UsageBreakdownTable groups={summaryData.groups} />
           <UsageAttemptsTable

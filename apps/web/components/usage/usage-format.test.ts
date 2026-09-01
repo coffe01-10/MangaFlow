@@ -15,7 +15,7 @@ import {
 export function makeGroup(overrides: Partial<UsageSummaryGroup> = {}): UsageSummaryGroup {
   return {
     day: "2026-09-01",
-    provider: "vertex-ai",
+    provider: "usage-provider",
     model_id: "imagen-3.0-generate-002",
     channel: "HTTP_API",
     attempt_count: 2,
@@ -43,7 +43,7 @@ function makeAttempt(overrides: Partial<ModelCallAttempt> = {}): ModelCallAttemp
     route_switched: false,
     outcome: "SUCCEEDED",
     channel: "HTTP_API",
-    provider: "vertex-ai",
+    provider: "usage-provider",
     model_id: "imagen-3.0-generate-002",
     catalog_model_id: null,
     connection_id: null,
@@ -77,11 +77,18 @@ function makeAttempt(overrides: Partial<ModelCallAttempt> = {}): ModelCallAttemp
 }
 
 describe("cost mode derivation", () => {
-  it("maps attempts with usage to USAGE_ONLY and missing usage to UNAVAILABLE", () => {
+  it("maps attempts with usage to USAGE_ONLY and successful calls without usage to UNAVAILABLE", () => {
     expect(attemptCostMode(makeAttempt({ usage_status: "COMPLETE", input_tokens: 10 }))).toBe("USAGE_ONLY");
-    expect(attemptCostMode(makeAttempt({ usage: null, usage_status: "UNKNOWN" }))).toBe("UNAVAILABLE");
+    expect(
+      attemptCostMode(makeAttempt({ usage: null, usage_status: "UNKNOWN", outcome: "SUCCEEDED" })),
+    ).toBe("UNAVAILABLE");
     expect(attemptCostMode(makeAttempt({ usage: { odd_key: 3 }, usage_status: "PARTIAL" }))).toBe("UNKNOWN");
     expect(attemptCostMode(makeAttempt({ usage_source: "OPERATOR_BILLED" }))).toBe("BILLED");
+  });
+
+  it("keeps failed and pending attempts out of UNAVAILABLE (no usage exists yet, none omitted)", () => {
+    expect(attemptCostMode(makeAttempt({ usage: null, outcome: "FAILED" }))).toBe("UNKNOWN");
+    expect(attemptCostMode(makeAttempt({ usage: null, outcome: null }))).toBe("UNKNOWN");
   });
 
   it("never applies ESTIMATED at attempt granularity (no per-attempt amounts in API)", () => {
@@ -135,13 +142,13 @@ describe("buildDailyTrend", () => {
     const groups = [
       makeGroup({
         day: "2026-09-01",
-        provider: "vertex-ai",
+        provider: "usage-provider",
         input_tokens: 100,
         output_tokens: 20,
       }),
       makeGroup({
         day: "2026-09-03",
-        provider: "vertex-ai",
+        provider: "usage-provider",
         attempt_count: 1,
         succeeded_count: 1,
         failed_count: 0,
@@ -151,9 +158,9 @@ describe("buildDailyTrend", () => {
     ];
     const { rows } = buildDailyTrend(groups, "tokens");
     expect(rows.map((row) => row.day)).toEqual(["2026-09-01", "2026-09-02", "2026-09-03"]);
-    expect(rows[0].series.get("vertex-ai")).toBe(120);
-    expect(rows[1].series.get("vertex-ai")).toBe(0);
-    expect(rows[2].series.get("vertex-ai")).toBeNull();
+    expect(rows[0].series.get("usage-provider")).toBe(120);
+    expect(rows[1].series.get("usage-provider")).toBe(0);
+    expect(rows[2].series.get("usage-provider")).toBeNull();
   });
 
   it("keeps amount series unknown on days without estimates", () => {
@@ -164,7 +171,7 @@ describe("buildDailyTrend", () => {
       }),
       makeGroup({
         day: "2026-09-02",
-        provider: "vertex-ai",
+        provider: "usage-provider",
         model_id: "imagen-3.0-generate-002",
         channel: "HTTP_API",
       }),
@@ -181,7 +188,7 @@ describe("buildUsageCsv", () => {
     const csv = buildUsageCsv([
       makeGroup({
         day: "2026-09-01",
-        provider: "vertex-ai",
+        provider: "usage-provider",
         model_id: "imagen-3.0-generate-002",
         channel: "HTTP_API",
         attempt_count: 2,
@@ -204,5 +211,21 @@ describe("buildUsageCsv", () => {
   it("marks groups without estimates instead of writing 0 amounts", () => {
     const csv = buildUsageCsv([makeGroup({ estimated_costs: [] })]);
     expect(csv).toContain("无估算数据");
+  });
+
+  it("neutralizes spreadsheet formulas in text cells", () => {
+    const csv = buildUsageCsv([
+      makeGroup({ provider: "=SUM(A1:A2)", model_id: "+cmd|powershell" }),
+      makeGroup({ provider: "@x", model_id: "-y" }),
+    ]);
+    expect(csv).toContain("'=SUM(A1:A2)");
+    expect(csv).toContain("'+cmd|powershell");
+    expect(csv).toContain("'@x");
+    expect(csv).toContain("'-y");
+    // Values are unchanged apart from the leading apostrophe.
+    expect(csv).not.toContain(",=SUM");
+    // Regular cells (dates, channels) stay untouched.
+    expect(csv).toContain("2026-09-01,'=SUM");
+    expect(csv).toContain("HTTP_API,");
   });
 });

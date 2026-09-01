@@ -58,6 +58,11 @@ export function UsageAttemptsTable({
             </tr>
           </thead>
           <tbody>
+            {items.length === 0 && !loading && !error ? (
+              <tr className="usage-attempts-empty">
+                <td colSpan={9}>该范围暂无调用尝试记录</td>
+              </tr>
+            ) : null}
             {items.map((attempt) => {
               const mode = attemptCostMode(attempt);
               const meta = COST_MODE_META[mode];
