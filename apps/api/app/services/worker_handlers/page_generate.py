@@ -442,3 +442,8 @@ def _run_page_generate(db, job: GenerationJob) -> None:
     candidate.status = "READY"
     page.status = PageStatus.DRAFT_READY
     page.version += 1
+    provider.stage_attempt_output(
+        db,
+        asset,
+        quality=candidate.resolution.value,
+    )

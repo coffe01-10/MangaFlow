@@ -455,10 +455,19 @@ class ModelCallAttempt(Timestamped, Base):
             "dispatch_no",
             name="uq_model_call_attempts_job_attempt_dispatch",
         ),
+        UniqueConstraint(
+            "dispatch_request_id",
+            name="uq_model_call_attempts_dispatch_request_id",
+        ),
         Index("ix_model_call_attempts_job_started", "job_id", "started_at"),
         Index("ix_model_call_attempts_outcome_started", "outcome", "started_at"),
         Index("ix_model_call_attempts_catalog_model", "catalog_model_id"),
         Index("ix_model_call_attempts_project_id", "project_id"),
+        Index("ix_model_call_attempts_project_started", "project_id", "started_at"),
+        Index("ix_model_call_attempts_channel_started", "channel", "started_at"),
+        Index("ix_model_call_attempts_chapter_started", "chapter_id", "started_at"),
+        Index("ix_model_call_attempts_page_started", "page_id", "started_at"),
+        Index("ix_model_call_attempts_candidate_started", "candidate_id", "started_at"),
         CheckConstraint(
             "outcome IS NULL OR outcome IN ('SUCCEEDED', 'FAILED')",
             name="ck_model_call_attempts_outcome",
@@ -473,19 +482,57 @@ class ModelCallAttempt(Timestamped, Base):
             "NOT route_switched OR dispatch_no >= 2",
             name="ck_model_call_attempts_route_switch",
         ),
+        CheckConstraint(
+            "channel IN ('HTTP_API', 'CLI')",
+            name="ck_model_call_attempts_channel",
+        ),
+        CheckConstraint(
+            "usage_status IS NULL OR usage_status IN ('UNKNOWN', 'PARTIAL', 'COMPLETE')",
+            name="ck_model_call_attempts_usage_status",
+        ),
+        CheckConstraint(
+            "usage_source IS NULL OR usage_source IN "
+            "('ADAPTER_ESTIMATED', 'PROVIDER_REPORTED', 'OPERATOR_BILLED')",
+            name="ck_model_call_attempts_usage_source",
+        ),
+        CheckConstraint(
+            "unit_kind IS NULL OR unit_kind IN "
+            "('TEXT_TOKENS', 'IMAGES', 'MIXED', 'UNKNOWN')",
+            name="ck_model_call_attempts_unit_kind",
+        ),
+        CheckConstraint(
+            "input_tokens IS NULL OR input_tokens >= 0",
+            name="ck_model_call_attempts_input_tokens",
+        ),
+        CheckConstraint(
+            "output_tokens IS NULL OR output_tokens >= 0",
+            name="ck_model_call_attempts_output_tokens",
+        ),
+        CheckConstraint(
+            "cached_input_tokens IS NULL OR cached_input_tokens >= 0",
+            name="ck_model_call_attempts_cached_input_tokens",
+        ),
+        CheckConstraint(
+            "output_images IS NULL OR output_images >= 0",
+            name="ck_model_call_attempts_output_images",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    job_id: Mapped[str] = mapped_column(
-        ForeignKey("generation_jobs.id", ondelete="RESTRICT")
+    job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("generation_jobs.id", ondelete="RESTRICT"), nullable=True
     )
-    project_id: Mapped[str] = mapped_column(
-        ForeignKey("projects.id", ondelete="CASCADE")
+    project_id: Mapped[str | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=True
     )
     job_attempt: Mapped[int] = mapped_column(Integer)
     dispatch_no: Mapped[int] = mapped_column(Integer)
+    dispatch_request_id: Mapped[str | None] = mapped_column(
+        String(160), nullable=True
+    )
     route_switched: Mapped[bool] = mapped_column(Boolean, default=False)
     outcome: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    channel: Mapped[str] = mapped_column(String(16), default="HTTP_API")
     provider: Mapped[str] = mapped_column(String(120))
     model_id: Mapped[str] = mapped_column(String(128))
     catalog_model_id: Mapped[str | None] = mapped_column(
@@ -498,10 +545,27 @@ class ModelCallAttempt(Timestamped, Base):
         ForeignKey("provider_keys.id", ondelete="SET NULL"), nullable=True
     )
     request_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    probe_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    chapter_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    page_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    panel_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    candidate_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     usage: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    usage_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    usage_source: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    unit_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    input_tokens: Mapped[Decimal | None] = mapped_column(Numeric(20, 0), nullable=True)
+    output_tokens: Mapped[Decimal | None] = mapped_column(Numeric(20, 0), nullable=True)
+    cached_input_tokens: Mapped[Decimal | None] = mapped_column(
+        Numeric(20, 0), nullable=True
+    )
+    cache_hit: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    output_images: Mapped[Decimal | None] = mapped_column(Numeric(20, 0), nullable=True)
+    output_image_dims: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    output_asset_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
     route_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
     route_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -596,6 +660,11 @@ class ModelPricingVersion(Base):
             name="ck_model_pricing_versions_output_rate",
         ),
         CheckConstraint(
+            "cached_input_tokens_per_million IS NULL "
+            "OR cached_input_tokens_per_million >= 0",
+            name="ck_model_pricing_versions_cached_input_rate",
+        ),
+        CheckConstraint(
             "output_image_each IS NULL OR output_image_each >= 0",
             name="ck_model_pricing_versions_image_rate",
         ),
@@ -627,12 +696,64 @@ class ModelPricingVersion(Base):
     output_tokens_per_million: Mapped[Decimal | None] = mapped_column(
         Numeric(20, 8), nullable=True
     )
+    cached_input_tokens_per_million: Mapped[Decimal | None] = mapped_column(
+        Numeric(20, 8), nullable=True
+    )
     output_image_each: Mapped[Decimal | None] = mapped_column(
         Numeric(20, 8), nullable=True
     )
     request_each: Mapped[Decimal | None] = mapped_column(
         Numeric(20, 8), nullable=True
     )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ProviderUsageReconciliation(Base):
+    """Operator-entered provider billing fact, kept separate from estimates."""
+
+    __tablename__ = "provider_usage_reconciliations"
+    __table_args__ = (
+        UniqueConstraint(
+            "billing_account_id",
+            "import_batch_id",
+            "idempotency_key",
+            name="uq_usage_reconciliations_idempotency",
+        ),
+        Index(
+            "ix_usage_reconciliations_lookup",
+            "provider",
+            "model_id",
+            "channel",
+            "period_start",
+        ),
+        CheckConstraint(
+            "channel IN ('HTTP_API', 'CLI')",
+            name="ck_usage_reconciliations_channel",
+        ),
+        CheckConstraint(
+            "period_end > period_start",
+            name="ck_usage_reconciliations_window",
+        ),
+        CheckConstraint(
+            "billed_amount >= 0",
+            name="ck_usage_reconciliations_amount",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    provider: Mapped[str] = mapped_column(String(120))
+    model_id: Mapped[str] = mapped_column(String(128))
+    channel: Mapped[str] = mapped_column(String(16))
+    connection_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    billing_account_id: Mapped[str] = mapped_column(String(160))
+    import_batch_id: Mapped[str] = mapped_column(String(160))
+    idempotency_key: Mapped[str] = mapped_column(String(160))
+    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    currency: Mapped[str] = mapped_column(String(3))
+    billed_amount: Mapped[Decimal] = mapped_column(Numeric(20, 8))
+    source_note: Mapped[str] = mapped_column(String(500), default="")
+    entered_by: Mapped[str] = mapped_column(String(120))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

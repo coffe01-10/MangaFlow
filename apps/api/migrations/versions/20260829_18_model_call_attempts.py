@@ -63,6 +63,25 @@ _OWNED_CHECKS = {
     "ck_model_call_attempts_duration",
     "ck_model_call_attempts_route_switch",
 }
+_KNOWN_LATER_COLUMNS = {
+    "dispatch_request_id",
+    "channel",
+    "probe_id",
+    "chapter_id",
+    "page_id",
+    "panel_id",
+    "candidate_id",
+    "usage_status",
+    "usage_source",
+    "unit_kind",
+    "input_tokens",
+    "output_tokens",
+    "cached_input_tokens",
+    "cache_hit",
+    "output_images",
+    "output_image_dims",
+    "output_asset_ids",
+}
 
 
 def _column_family(column_type: sa.types.TypeEngine) -> str:
@@ -90,7 +109,22 @@ def _has_owned_schema(inspector: Inspector) -> bool:
         )
         for column in inspector.get_columns("model_call_attempts")
     }
-    if columns != _OWNED_COLUMNS:
+    if not set(_OWNED_COLUMNS) <= set(columns):
+        return False
+    if set(columns) - set(_OWNED_COLUMNS) - _KNOWN_LATER_COLUMNS:
+        return False
+    future_schema = "dispatch_request_id" in columns
+    for name, expected in _OWNED_COLUMNS.items():
+        actual = columns[name]
+        if actual == expected:
+            continue
+        if (
+            future_schema
+            and name in {"job_id", "project_id"}
+            and actual[:2] == expected[:2]
+            and actual[2] is True
+        ):
+            continue
         return False
 
     primary_key = inspector.get_pk_constraint("model_call_attempts")
@@ -101,7 +135,7 @@ def _has_owned_schema(inspector: Inspector) -> bool:
         tuple(constraint.get("column_names") or ())
         for constraint in inspector.get_unique_constraints("model_call_attempts")
     }
-    if unique_constraints != {("job_id", "job_attempt", "dispatch_no")}:
+    if ("job_id", "job_attempt", "dispatch_no") not in unique_constraints:
         return False
 
     indexes = {
@@ -109,8 +143,9 @@ def _has_owned_schema(inspector: Inspector) -> bool:
         for index in inspector.get_indexes("model_call_attempts")
         if not index.get("unique")
     }
-    if indexes != _OWNED_INDEXES:
-        return False
+    for name, columns in _OWNED_INDEXES.items():
+        if indexes.get(name) != columns:
+            return False
 
     foreign_keys = {
         tuple(foreign_key.get("constrained_columns") or ()): (
@@ -120,14 +155,15 @@ def _has_owned_schema(inspector: Inspector) -> bool:
         )
         for foreign_key in inspector.get_foreign_keys("model_call_attempts")
     }
-    if foreign_keys != _OWNED_FOREIGN_KEYS:
-        return False
+    for columns, expected in _OWNED_FOREIGN_KEYS.items():
+        if foreign_keys.get(columns) != expected:
+            return False
 
     checks = {
         constraint.get("name")
         for constraint in inspector.get_check_constraints("model_call_attempts")
     }
-    return checks == _OWNED_CHECKS
+    return checks >= _OWNED_CHECKS
 
 
 def upgrade() -> None:

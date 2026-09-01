@@ -33,6 +33,12 @@ _KNOWN_USAGE_KEYS = {
     alias for aliases in _USAGE_ALIASES.values() for alias in aliases
 }
 _AGGREGATE_USAGE_KEYS = {"total_tokens", "total_token_count"}
+_CACHED_USAGE_KEYS = {
+    "cached_input_tokens",
+    "cached_content_token_count",
+    "cache_read_input_tokens",
+    "prompt_tokens_details",
+}
 
 
 @dataclass(frozen=True)
@@ -130,7 +136,8 @@ def estimate_jobs(db: Session, job_ids: list[str]) -> dict[str, JobCostEstimate]
     for price in prices:
         prices_by_pair.setdefault((price.provider, price.model_id), []).append(price)
     attempts_by_job: dict[str, list[ModelCallAttempt]] = {}
-    for attempt in attempts:
+    billable_attempts = [attempt for attempt in attempts if attempt.outcome is not None]
+    for attempt in billable_attempts:
         attempts_by_job.setdefault(attempt.job_id, []).append(attempt)
     return {
         job_id: _estimate_attempts(
@@ -165,7 +172,7 @@ def _estimate_attempts(
         )
         if price is None:
             continue
-        amount, complete = _estimate_attempt(attempt.usage, price)
+        amount, complete = _estimate_attempt(_usage_for_attempt(attempt), price)
         currencies.add(price.currency)
         version_labels.add(
             f"{price.provider}/{price.model_id}:{price.pricing_version}"
@@ -200,7 +207,10 @@ def _estimate_attempts(
             currency=currency,
             status="AVAILABLE",
             pricing_versions=versions,
-            note=f"基于 {len(attempts)} 次实际调用和生效价格版本估算，不等于供应商账单",
+            note=(
+                f"基于 {len(attempts)} 次实际调用和生效价格版本估算，"
+                "不等于供应商账单"
+            ),
         )
     return JobCostEstimate(
         value=value,
@@ -237,8 +247,39 @@ def _estimate_attempt(
     if price.request_each is not None:
         amount += Decimal(price.request_each)
         has_amount = True
+    input_tokens = quantities.get("input_tokens")
+    cached_tokens = quantities.get("cached_input_tokens")
+    if cached_tokens is not None and input_tokens is None:
+        complete = False
+    if input_tokens is not None and cached_tokens is not None:
+        if cached_tokens > input_tokens:
+            complete = False
+        elif price.input_tokens_per_million is None:
+            if input_tokens > 0:
+                complete = False
+        else:
+            cached_rate = price.cached_input_tokens_per_million
+            if cached_rate is None:
+                amount += input_tokens * Decimal(price.input_tokens_per_million) / _MILLION
+                has_amount = True
+                complete = False
+            else:
+                amount += (
+                    (input_tokens - cached_tokens)
+                    * Decimal(price.input_tokens_per_million)
+                    / _MILLION
+                )
+                amount += cached_tokens * Decimal(cached_rate) / _MILLION
+                has_amount = True
+    elif input_tokens is not None and price.input_tokens_per_million is not None:
+        amount += input_tokens * Decimal(price.input_tokens_per_million) / _MILLION
+        has_amount = True
+    elif (
+        input_tokens is None and price.input_tokens_per_million is not None
+    ) or (input_tokens is not None and input_tokens > 0):
+        complete = False
+
     components = (
-        ("input_tokens", price.input_tokens_per_million, _MILLION),
         ("output_tokens", price.output_tokens_per_million, _MILLION),
         ("output_images", price.output_image_each, Decimal(1)),
     )
@@ -267,13 +308,45 @@ def _normalized_usage(usage: dict | None) -> tuple[dict[str, Decimal], bool]:
             if value is not None:
                 normalized[unit] = value
                 break
+    cached = None
+    for alias in (
+        "cached_input_tokens",
+        "cached_content_token_count",
+        "cache_read_input_tokens",
+    ):
+        if alias in usage:
+            cached = _nonnegative_decimal(usage[alias])
+            if cached is not None:
+                break
+    details = usage.get("prompt_tokens_details")
+    if cached is None and isinstance(details, dict):
+        cached = _nonnegative_decimal(details.get("cached_tokens"))
+    if cached is not None:
+        normalized["cached_input_tokens"] = cached
     has_unmapped_usage = any(
         key not in _KNOWN_USAGE_KEYS
+        and key not in _CACHED_USAGE_KEYS
         and key not in _AGGREGATE_USAGE_KEYS
         and (_nonnegative_decimal(value) or Decimal(0)) > 0
         for key, value in usage.items()
     )
     return normalized, has_unmapped_usage
+
+
+def _usage_for_attempt(attempt: ModelCallAttempt) -> dict | None:
+    usage = dict(attempt.usage) if isinstance(attempt.usage, dict) else {}
+    structured = {
+        "input_tokens": attempt.input_tokens,
+        "output_tokens": attempt.output_tokens,
+        "cached_input_tokens": attempt.cached_input_tokens,
+        "output_images": attempt.output_images,
+    }
+    for key, value in structured.items():
+        if value is not None and not any(
+            alias in usage for alias in _USAGE_ALIASES.get(key, (key,))
+        ):
+            usage[key] = value
+    return usage or None
 
 
 def _nonnegative_decimal(value: object) -> Decimal | None:

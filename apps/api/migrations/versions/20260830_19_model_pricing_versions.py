@@ -36,6 +36,9 @@ _OWNED_CHECKS = {
     "ck_model_pricing_versions_request_rate",
     "ck_model_pricing_versions_has_rate",
 }
+_KNOWN_LATER_COLUMNS = {
+    "cached_input_tokens_per_million": ("numeric", None, 20, 8, True),
+}
 
 
 def _column_family(column_type: sa.types.TypeEngine) -> str:
@@ -59,7 +62,17 @@ def _has_owned_schema(inspector: Inspector) -> bool:
         )
         for column in inspector.get_columns("model_pricing_versions")
     }
-    if columns != _OWNED_COLUMNS:
+    if not set(_OWNED_COLUMNS) <= set(columns):
+        return False
+    if set(columns) - set(_OWNED_COLUMNS) - set(_KNOWN_LATER_COLUMNS):
+        return False
+    if any(columns[name] != expected for name, expected in _OWNED_COLUMNS.items()):
+        return False
+    if any(
+        columns.get(name) != expected
+        for name, expected in _KNOWN_LATER_COLUMNS.items()
+        if name in columns
+    ):
         return False
     if tuple(
         inspector.get_pk_constraint("model_pricing_versions").get(
@@ -72,26 +85,24 @@ def _has_owned_schema(inspector: Inspector) -> bool:
         tuple(constraint.get("column_names") or ())
         for constraint in inspector.get_unique_constraints("model_pricing_versions")
     }
-    if unique_constraints != {("provider", "model_id", "pricing_version")}:
+    if ("provider", "model_id", "pricing_version") not in unique_constraints:
         return False
     indexes = {
         index["name"]: tuple(index.get("column_names") or ())
         for index in inspector.get_indexes("model_pricing_versions")
         if not index.get("unique")
     }
-    if indexes != {
-        "ix_model_pricing_versions_lookup": (
-            "provider",
-            "model_id",
-            "effective_from",
-        )
-    }:
+    if indexes.get("ix_model_pricing_versions_lookup") != (
+        "provider",
+        "model_id",
+        "effective_from",
+    ):
         return False
     checks = {
         constraint.get("name")
         for constraint in inspector.get_check_constraints("model_pricing_versions")
     }
-    return checks == _OWNED_CHECKS
+    return checks >= _OWNED_CHECKS
 
 
 def upgrade() -> None:

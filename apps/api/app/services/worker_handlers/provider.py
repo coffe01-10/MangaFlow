@@ -5,6 +5,7 @@ module installs the lookup below so patches of ``app.worker_tasks._adapter``
 keep steering every handler's model binding.
 """
 
+import hashlib
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -31,11 +32,14 @@ from app.services.model_router import (
     get_catalog_model,
 )
 from app.services.provider_presets import ensure_provider_presets
+from app.services.usage_ledger import resolve_usage_dimensions
 from app.services.worker_handlers.execution import _ensure_job_not_cancelled
 from app.services.worker_handlers.model_call_audit import (
     ModelCallAttemptMeta,
+    attach_attempt_outputs,
     begin_model_call_attempt,
     finalize_model_call_attempt,
+    record_output_attachment_failure,
 )
 
 
@@ -103,7 +107,9 @@ def _binding(
         raise ProviderAdapterError("MODEL_ROUTE_UNAVAILABLE", detail) from error
 
 
-def _audit_meta(db, binding: AdapterBinding) -> ModelCallAttemptMeta | None:
+def _audit_meta(
+    db, binding: AdapterBinding, *, route_switched: bool = False
+) -> ModelCallAttemptMeta | None:
     """Scalar audit metadata for the current job, or None outside a job."""
 
     job_id = db.info.get("job_id")
@@ -112,21 +118,50 @@ def _audit_meta(db, binding: AdapterBinding) -> ModelCallAttemptMeta | None:
     job = db.get(GenerationJob, job_id)
     if job is None:
         return None
+    sequence = int(db.info.get("model_call_dispatch_sequence", 0)) + 1
+    db.info["model_call_dispatch_sequence"] = sequence
+    provider_id = (
+        binding.resolved.provider.preset_key or binding.resolved.provider.name
+    )
+    connection_id = getattr(binding.resolved.connection, "id", None)
+    catalog_model_id = getattr(binding.resolved.model, "id", None)
+    dispatch_request_id = hashlib.sha256(
+        "|".join(
+            (
+                job.id,
+                str(job.attempt_count),
+                str(sequence),
+                str(connection_id or provider_id),
+                str(catalog_model_id or binding.resolved.model.provider_model_id),
+                "switch" if route_switched else "primary",
+            )
+        ).encode("utf-8")
+    ).hexdigest()
+    dimensions = resolve_usage_dimensions(db, job)
     return ModelCallAttemptMeta(
         job_id=job.id,
         project_id=job.project_id,
         job_attempt=job.attempt_count,
-        provider=(
-            binding.resolved.provider.preset_key or binding.resolved.provider.name
-        ),
+        provider=provider_id,
         model_id=binding.resolved.model.provider_model_id,
-        catalog_model_id=binding.resolved.model.id,
-        connection_id=binding.resolved.connection.id,
+        catalog_model_id=catalog_model_id,
+        connection_id=connection_id,
         selected_key_id=(
             binding.selected_key.row.id if binding.selected_key else None
         ),
         route_reason=binding.resolved.route_reason,
         route_score=binding.resolved.route_score,
+        route_switched=route_switched,
+        dispatch_request_id=dispatch_request_id,
+        channel=(
+            "CLI"
+            if getattr(binding.resolved.connection, "protocol", "").startswith("CLI_")
+            else "HTTP_API"
+        ),
+        chapter_id=dimensions.chapter_id,
+        page_id=dimensions.page_id,
+        panel_id=dimensions.panel_id,
+        candidate_id=dimensions.candidate_id,
     )
 
 
@@ -241,7 +276,9 @@ def _invoke_provider(db, binding: AdapterBinding, callback):
                         model_id=getattr(result, "model_id", None),
                         request_id=getattr(result, "request_id", None),
                         usage=getattr(result, "usage", None),
+                        output_image_count=_output_image_count(result),
                     )
+                    db.info["last_model_call_attempt_id"] = replacement_id
                     mark_key_success(db, replacement.selected_key.row)
                     return result
         raise
@@ -251,7 +288,9 @@ def _invoke_provider(db, binding: AdapterBinding, callback):
         model_id=getattr(result, "model_id", None),
         request_id=getattr(result, "request_id", None),
         usage=getattr(result, "usage", None),
+        output_image_count=_output_image_count(result),
     )
+    db.info["last_model_call_attempt_id"] = attempt_id
     if binding.selected_key:
         mark_key_success(db, binding.selected_key.row)
     return result
@@ -266,26 +305,50 @@ def _replacement_meta(
     behavior (two callback attempts, zero audit rows) must keep working there.
     """
 
-    original = _audit_meta(db, binding)
-    if original is None:
-        return None
-    return ModelCallAttemptMeta(
-        job_id=original.job_id,
-        project_id=original.project_id,
-        job_attempt=original.job_attempt,
-        provider=(
-            replacement.resolved.provider.preset_key or replacement.resolved.provider.name
-        ),
-        model_id=replacement.resolved.model.provider_model_id,
-        catalog_model_id=replacement.resolved.model.id,
-        connection_id=replacement.resolved.connection.id,
-        selected_key_id=(
-            replacement.selected_key.row.id if replacement.selected_key else None
-        ),
-        route_reason=replacement.resolved.route_reason,
-        route_score=replacement.resolved.route_score,
-        route_switched=True,
+    return _audit_meta(db, replacement, route_switched=True)
+
+
+def _output_image_count(result: object) -> int | None:
+    images = getattr(result, "images", None)
+    return len(images) if isinstance(images, (list, tuple)) else None
+
+
+def stage_attempt_output(db, asset: Asset, *, quality: str | None = None) -> None:
+    """Stage an output link; the worker flushes it only after output commit."""
+
+    attempt_id = db.info.get("last_model_call_attempt_id")
+    if not attempt_id:
+        return
+    pending = db.info.setdefault("pending_model_call_outputs", {})
+    item = pending.setdefault(attempt_id, {"asset_ids": [], "dimensions": []})
+    if asset.id in item["asset_ids"]:
+        return
+    item["asset_ids"].append(asset.id)
+    item["dimensions"].append(
+        {
+            "asset_id": asset.id,
+            "width": asset.width,
+            "height": asset.height,
+            "quality": quality,
+        }
     )
+
+
+def flush_staged_attempt_outputs(db) -> None:
+    """Attach staged assets after the caller's output transaction commits."""
+
+    pending = db.info.pop("pending_model_call_outputs", {})
+    for attempt_id, item in pending.items():
+        try:
+            attach_attempt_outputs(
+                attempt_id,
+                asset_ids=item["asset_ids"],
+                dimensions=item["dimensions"],
+            )
+        except Exception:
+            # The asset transaction already committed. Preserve the successful
+            # provider outcome and record a redacted, durable repair signal.
+            record_output_attachment_failure(attempt_id)
 
 
 def _text_model_reference(job: GenerationJob, project: Project) -> str | None:

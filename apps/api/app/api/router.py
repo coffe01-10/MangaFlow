@@ -11,6 +11,7 @@ from app.api.routes import (
     settings,
     sources,
     uploads,
+    usage,
     workflow,
     workflow_definitions,
 )
@@ -29,3 +30,4 @@ api_router.include_router(exports.router, tags=["exports"])
 api_router.include_router(asset_generation.router, tags=["asset-generation"])
 api_router.include_router(workflow_definitions.router, tags=["workflow-definitions"])
 api_router.include_router(settings.router, tags=["settings"])
+api_router.include_router(usage.router, tags=["usage"])

@@ -4,6 +4,7 @@ import io
 from datetime import UTC, datetime
 from statistics import median
 from time import perf_counter
+from uuid import uuid4
 
 from fastapi import HTTPException
 from PIL import Image
@@ -21,7 +22,13 @@ from app.model_adapters.base import (
 )
 from app.model_adapters.codex_cli import CodexCLIProbeAdapter
 from app.model_adapters.grok_build_cli import GrokBuildCLIProbeAdapter
-from app.models import AIModel, ModelProbe, ProviderConnection, ProviderKey
+from app.models import (
+    AIModel,
+    ModelProbe,
+    ProviderConnection,
+    ProviderKey,
+    ProviderProfile,
+)
 from app.provider_schemas import ConnectionVerifyRequest
 from app.services.cli_probe import probe_cli_connection
 from app.services.credential_crypto import mark_key_failure, mark_key_success
@@ -39,6 +46,12 @@ from app.services.provider_catalog import (
 )
 from app.services.vertex_credentials import (
     classify_vertex_failure,
+)
+from app.services.worker_handlers.model_call_audit import (
+    ModelCallAttemptMeta,
+    attach_attempt_probe,
+    begin_model_call_attempt,
+    finalize_model_call_attempt,
 )
 
 
@@ -319,17 +332,45 @@ def _verify_model_smoke(
     latencies: list[int] = []
     binding = None
     current_operation = operation
+    attempt_ids: list[str] = []
+    request_token = uuid4().hex
+    provider_profile = db.get(ProviderProfile, connection.provider_id)
+    provider_name = (
+        provider_profile.preset_key or provider_profile.name
+        if provider_profile is not None
+        else connection.name
+    )
     try:
-        for _ in range(payload.runs):
+        for run_index in range(payload.runs):
             binding = bind_adapter(
                 db,
                 settings,
                 operation=current_operation,
                 explicit_reference=model.id,
             )
+            attempt_id = begin_model_call_attempt(
+                ModelCallAttemptMeta(
+                    job_id=None,
+                    project_id=None,
+                    job_attempt=1,
+                    provider=provider_name,
+                    model_id=model.provider_model_id,
+                    catalog_model_id=model.id,
+                    connection_id=connection.id,
+                    selected_key_id=(
+                        binding.selected_key.row.id if binding.selected_key else None
+                    ),
+                    route_reason="MODEL_SMOKE",
+                    dispatch_request_id=(
+                        f"probe:{request_token}:{run_index + 1}"
+                    ),
+                    channel="HTTP_API",
+                )
+            )
+            attempt_ids.append(attempt_id)
             started = perf_counter()
             if current_operation == "structured_text":
-                binding.adapter.generate_structured(
+                result = binding.adapter.generate_structured(
                     StructuredRequest(
                         prompt='只返回 {"ok": true}',
                         temperature=0,
@@ -339,7 +380,7 @@ def _verify_model_smoke(
                 )
             elif current_operation == "multimodal_analysis":
                 image = _image_bytes()
-                binding.adapter.analyze_multimodal(
+                result = binding.adapter.analyze_multimodal(
                     MultimodalRequest(
                         prompt='检查图片并只返回 {"ok": true}',
                         images=(image,),
@@ -349,7 +390,7 @@ def _verify_model_smoke(
                     _SmokeResult,
                 )
             elif current_operation == "image_generate":
-                binding.adapter.generate_asset(
+                result = binding.adapter.generate_asset(
                     ImageRequest(
                         prompt="一个简单黑色圆点，白色背景，无文字",
                         resolution="1K",
@@ -358,7 +399,7 @@ def _verify_model_smoke(
                 )
             else:
                 image = _image_bytes()
-                binding.adapter.edit_region(
+                result = binding.adapter.edit_region(
                     ImageRequest(
                         prompt="保持白色背景，在中心添加一个黑色圆点，无文字",
                         resolution="1K",
@@ -367,6 +408,17 @@ def _verify_model_smoke(
                         reference_mime_types=("image/png",),
                     )
                 )
+            images = getattr(result, "images", None)
+            finalize_model_call_attempt(
+                attempt_id,
+                outcome="SUCCEEDED",
+                model_id=getattr(result, "model_id", None),
+                request_id=getattr(result, "request_id", None),
+                usage=getattr(result, "usage", None),
+                output_image_count=(
+                    len(images) if isinstance(images, (list, tuple)) else None
+                ),
+            )
             tested_operations.add(current_operation)
             latencies.append(round((perf_counter() - started) * 1000))
             if binding and binding.selected_key:
@@ -398,7 +450,7 @@ def _verify_model_smoke(
         connection.message = "模型能力测试通过"
         db.commit()
         _sync_legacy_health(db, settings, connection)
-        return create_probe(
+        probe = create_probe(
             db,
             connection_id=connection.id,
             model_id=model.id,
@@ -413,7 +465,16 @@ def _verify_model_smoke(
             },
             message="模型测试通过",
         )
+        attach_attempt_probe(attempt_ids, probe.id)
+        return probe
     except ProviderAdapterError as error:
+        if attempt_ids:
+            finalize_model_call_attempt(
+                attempt_ids[-1],
+                outcome="FAILED",
+                error_code=error.code,
+                error_message=error.user_message,
+            )
         if binding and binding.selected_key:
             mark_key_failure(
                 db,
@@ -430,7 +491,7 @@ def _verify_model_smoke(
         connection.message = error.user_message
         db.commit()
         _sync_legacy_health(db, settings, connection)
-        return _failed_probe(
+        probe = _failed_probe(
             db,
             connection,
             model_id=model.id,
@@ -439,6 +500,8 @@ def _verify_model_smoke(
             message=error.user_message,
             latency_ms=None,
         )
+        attach_attempt_probe(attempt_ids, probe.id)
+        return probe
 
 
 def verify_connection(

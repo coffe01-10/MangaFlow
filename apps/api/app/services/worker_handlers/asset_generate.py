@@ -340,6 +340,11 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
     candidate.asset_id = asset.id
     candidate.generation_record_id = record.id
     candidate.status = "READY"
+    provider.stage_attempt_output(
+        db,
+        asset,
+        quality=candidate.resolution.value,
+    )
     if batch.target_type == "STYLE" and candidate.variant == "STYLE_TEST":
         style = db.get(StyleProfile, batch.target_id)
         if style:
