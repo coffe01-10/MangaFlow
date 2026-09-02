@@ -13,6 +13,7 @@ import {
   collectVisibleCharacterIds,
   isGenerationReferenceReady,
   mergeReferenceSelections,
+  type PublishedPackageVersions,
   type ReferenceSelections,
 } from "./reference-selection";
 import type { WorkspaceSection } from "./types";
@@ -130,14 +131,32 @@ export function useGenerationWorkspace({
     () => collectVisibleCharacterIds(generationStoryboard.data?.panels ?? []),
     [generationStoryboard.data?.panels],
   );
+  // Package summaries feed default inheritance (contract §8.1): characters
+  // with an ACTIVE package + published version resolve their reference image
+  // server-side from the version matrix, so no legacy asset id is sent.
+  const characterPackages = useQuery({
+    queryKey: ["character-packages", id],
+    queryFn: () => api.characterPackages(id),
+    enabled: section === "generate",
+  });
+  const publishedPackageVersions = useMemo<PublishedPackageVersions>(() => {
+    const map: PublishedPackageVersions = {};
+    for (const item of characterPackages.data ?? []) {
+      if (item.status === "ACTIVE" && item.published_version_id) {
+        map[item.character_id] = item.published_version_id;
+      }
+    }
+    return map;
+  }, [characterPackages.data]);
   const defaultReferenceSelections = useMemo(
     () => buildDefaultReferenceSelections(
       visibleCharacterIds,
       characters.data,
       outfits.data,
       generationStoryboard.data?.panels ?? [],
+      publishedPackageVersions,
     ),
-    [characters.data, generationStoryboard.data?.panels, outfits.data, visibleCharacterIds],
+    [characters.data, generationStoryboard.data?.panels, outfits.data, publishedPackageVersions, visibleCharacterIds],
   );
   const effectiveReferenceSelections = useMemo(
     () => mergeReferenceSelections(defaultReferenceSelections, referenceSelections),
@@ -147,6 +166,7 @@ export function useGenerationWorkspace({
     effectiveReferenceSelections,
     visibleCharacterIds,
     outfits.data,
+    publishedPackageVersions,
   );
   const referenceOverrideOpen = referenceOverridePageId === selectedPage?.id;
   const targetDialogues = useMemo(
@@ -318,6 +338,8 @@ export function useGenerationWorkspace({
     setReferenceSelections,
     referenceOverridePageId,
     setReferenceOverridePageId,
+    characterPackages,
+    publishedPackageVersions,
     selectedPageEntry,
     selectedPage,
     workbench,

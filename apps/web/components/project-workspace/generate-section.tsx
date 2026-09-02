@@ -22,8 +22,10 @@ import { ProductionReadiness } from "@/components/production-readiness";
 import { api, publicUrl, type ImageModelAlias, type MangaPage } from "@/lib/api";
 
 import { assetName } from "./display";
+import { isPackageModeSelection } from "./reference-selection";
 import { interiorLabel, sceneAssetStatusMeta } from "./scene-status";
 import { CandidateArtwork, ImageModelPicker } from "./shared";
+import { CharacterPackagePicker } from "./character-package-picker";
 import { InspectionPanel } from "./inspection-panel";
 import type { GenerationWorkspace } from "./use-generation-workspace";
 import type { WorkspaceQueries } from "./use-workspace-queries";
@@ -67,6 +69,7 @@ export function GenerateSection({
     setReviewCandidateId,
     setReferenceSelections,
     setReferenceOverridePageId,
+    publishedPackageVersions,
     selectedPage,
     candidates,
     generateWorkbenchReady,
@@ -135,17 +138,19 @@ export function GenerateSection({
           {generationReferenceReady && !referenceOverrideOpen && <div className="reference-inheritance-summary">{visibleCharacterIds.map((characterId) => {
             const character = characters.data?.find((item) => item.id === characterId);
             const selection = effectiveReferenceSelections[characterId];
+            const packageMode = isPackageModeSelection(characterId, effectiveReferenceSelections, publishedPackageVersions);
             const characterAsset = assets.data?.find((item) => item.id === selection?.character_asset_id);
             const outfit = outfits.data?.find((item) => item.id === selection?.outfit_id);
             const outfitAsset = assets.data?.find((item) => item.id === selection?.outfit_asset_id);
-            return <article key={characterId}><Check size={14} /><div><strong>{character?.primary_name ?? characterId}{outfit ? ` · ${outfit.name}` : ""}</strong><span>已继承：{characterAsset ? assetName(characterAsset) : "人物主参考"}{outfitAsset ? ` ＋ ${assetName(outfitAsset)}` : ""}</span></div></article>;
+            return <article key={characterId}><Check size={14} /><div><strong>{character?.primary_name ?? characterId}{outfit ? ` · ${outfit.name}` : ""}</strong><span>{packageMode ? "已继承：角色模型包版本矩阵（服务端按正面 → 封面 → 首张自动选图）" : `已继承：${characterAsset ? assetName(characterAsset) : "人物主参考"}${outfitAsset ? ` ＋ ${assetName(outfitAsset)}` : ""}`}</span></div></article>;
           })}</div>}
           {generationStoryboard.isLoading ? <p className="reference-check-loading"><LoaderCircle className="spin" size={15} />正在读取当前分镜…</p> : (referenceOverrideOpen || !generationReferenceReady) && <div className="reference-check-grid">
             {visibleCharacterIds.map((characterId) => {
               const character = characters.data?.find((item) => item.id === characterId);
               const selection = effectiveReferenceSelections[characterId];
               const outfit = outfits.data?.find((item) => item.id === selection?.outfit_id);
-              return <article key={characterId}><div><strong>{character?.primary_name ?? characterId}</strong><span>{outfit ? `穿着：${outfit.name}` : "分镜未指定服装"}</span></div><label><span>人物参考图</span><select value={selection?.character_asset_id ?? ""} onChange={(event) => setReferenceSelections((values) => ({ ...values, [characterId]: { ...(effectiveReferenceSelections[characterId] ?? { outfit_id: null, outfit_asset_id: null }), character_asset_id: event.target.value || null } }))}><option value="">请选择人物参考</option>{character?.references.map((reference, referenceIndex) => { const asset = assets.data?.find((item) => item.id === reference.asset_id); return <option value={reference.asset_id} key={reference.id}>{character.primary_name} · {reference.is_canonical ? "主参考" : `人物参考 ${String(referenceIndex + 1).padStart(2, "0")}`} · {asset?.display_name ?? asset?.original_name ?? reference.asset_id} · {reference.asset_id.slice(0, 8)}</option>; })}</select></label>{outfit && <label><span>该服装参考图</span><select value={selection?.outfit_asset_id ?? ""} onChange={(event) => setReferenceSelections((values) => ({ ...values, [characterId]: { ...effectiveReferenceSelections[characterId], outfit_asset_id: event.target.value || null } }))}><option value="">请选择服装参考</option>{outfit.reference_asset_ids.map((assetId, assetIndex) => <option value={assetId} key={assetId}>{outfit.name} · 服装参考 {String(assetIndex + 1).padStart(2, "0")} · {assets.data?.find((item) => item.id === assetId)?.original_name ?? assetId}</option>)}</select></label>}</article>;
+              const packageMode = isPackageModeSelection(characterId, effectiveReferenceSelections, publishedPackageVersions);
+              return <article key={characterId}><div><strong>{character?.primary_name ?? characterId}</strong><span>{outfit ? `穿着：${outfit.name}` : "分镜未指定服装"}</span></div>{packageMode ? <CharacterPackagePicker projectId={id} characterId={characterId} characterName={character?.primary_name ?? characterId} value={selection?.package_version_id ?? null} onChange={(versionId) => setReferenceSelections((values) => ({ ...values, [characterId]: { ...(effectiveReferenceSelections[characterId] ?? { character_asset_id: null, outfit_id: null, outfit_asset_id: null }), character_asset_id: null, package_version_id: versionId } }))} /> : <label><span>人物参考图</span><select value={selection?.character_asset_id ?? ""} onChange={(event) => setReferenceSelections((values) => ({ ...values, [characterId]: { ...(effectiveReferenceSelections[characterId] ?? { outfit_id: null, outfit_asset_id: null }), character_asset_id: event.target.value || null } }))}><option value="">请选择人物参考</option>{character?.references.map((reference, referenceIndex) => { const asset = assets.data?.find((item) => item.id === reference.asset_id); return <option value={reference.asset_id} key={reference.id}>{character.primary_name} · {reference.is_canonical ? "主参考" : `人物参考 ${String(referenceIndex + 1).padStart(2, "0")}`} · {asset?.display_name ?? asset?.original_name ?? reference.asset_id} · {reference.asset_id.slice(0, 8)}</option>; })}</select></label>}{outfit && <label><span>该服装参考图</span><select value={selection?.outfit_asset_id ?? ""} onChange={(event) => setReferenceSelections((values) => ({ ...values, [characterId]: { ...effectiveReferenceSelections[characterId], outfit_asset_id: event.target.value || null } }))}><option value="">{packageMode ? "自动选择服装参考" : "请选择服装参考"}</option>{outfit.reference_asset_ids.map((assetId, assetIndex) => <option value={assetId} key={assetId}>{outfit.name} · 服装参考 {String(assetIndex + 1).padStart(2, "0")} · {assets.data?.find((item) => item.id === assetId)?.original_name ?? assetId}</option>)}</select></label>}</article>;
             })}
             {!visibleCharacterIds.length && <p className="reference-check-empty">当前分镜没有入镜人物，将只按场景、动作和风格生成。</p>}
           </div>}

@@ -26,6 +26,7 @@ import { publicUrl, type AssetPurpose, type ImageModelAlias } from "@/lib/api";
 import { assetName, formatBytes, promptPreview } from "./display";
 import { generationKindLabels, kinds } from "./labels";
 import { AssetNameEditor, CandidateArtwork, ComicModeSwitch, ImageModelPicker } from "./shared";
+import { CharacterPackageWorkspace } from "./character-package-workspace";
 import { SceneWorkspace } from "./scene-workspace";
 import type { AssetWorkspaceView } from "./types";
 import type { AssetsWorkspace } from "./use-assets-workspace";
@@ -178,6 +179,7 @@ export function AssetsSection({
       {boundCharacter && <div className="character-editor"><div><strong>规范姓名与一致性锁</strong><span>剧本统一使用主要姓名；固定特征和禁止改变项会进入每次生图提示。</span></div><input aria-label="编辑主要姓名" className="text-input" value={editCharacterName} onChange={(event) => setEditCharacterName(event.target.value)} /><input aria-label="编辑角色绰号" className="text-input" value={editCharacterAliases} onChange={(event) => setEditCharacterAliases(event.target.value)} placeholder="绰号，用逗号分隔" /><button className="button outline compact" disabled={!editCharacterName.trim() || updateCharacter.isPending} onClick={() => updateCharacter.mutate()}>{updateCharacter.isPending ? <LoaderCircle className="spin" size={13} /> : <Pencil size={13} />}保存角色规范</button><div className="character-lock-fields"><input aria-label="角色固定特征" className="text-input" value={editLockedFeatures} onChange={(event) => setEditLockedFeatures(event.target.value)} placeholder="固定特征：黑色长发、左眼泪痣…" /><input aria-label="角色禁止改变项" className="text-input" value={editForbiddenChanges} onChange={(event) => setEditForbiddenChanges(event.target.value)} placeholder="禁止改变：发色、瞳色、身高关系…" /></div>{boundCharacter.alias_conflict && <em><CircleAlert size={12} />当前称呼与其他角色冲突，请修改后保存</em>}</div>}
       <ImageModelPicker selected={activeDrawModel} onSelect={setDrawModel} options={modelOptions} label="项目视觉模型（必须显式选择，并在各生成页面保持一致）" />
       {boundCharacter && <CharacterConceptPanel key={boundCharacter.id} projectId={id} character={boundCharacter} model={activeDrawModel} onOpen={openPreview} />}
+      <CharacterPackageWorkspace projectId={id} characters={characters.data ?? []} assets={assets.data ?? []} />
       </>}
       {assetView === "outfits" && <>
       <header className="canvas-header"><div><span>WARDROBE / 服装档案</span><h2>角色、服装与参考图逐一绑定</h2></div><small>{outfits.data?.length ?? 0} 份档案</small></header>

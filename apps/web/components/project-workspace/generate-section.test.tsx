@@ -36,6 +36,7 @@ const inspectCandidate = vi.spyOn(api, "inspectCandidate");
 const repairCandidate = vi.spyOn(api, "repairCandidate");
 const generateCandidate = vi.spyOn(api, "generateCandidate");
 const startBatch = vi.spyOn(api, "startBatch");
+const characterPackagesApi = vi.spyOn(api, "characterPackages");
 
 function pageFixture(overrides: Partial<MangaPage> = {}): MangaPage {
   return {
@@ -339,6 +340,7 @@ describe("GenerateSection 关键行为", () => {
     repairCandidate.mockReset();
     generateCandidate.mockReset();
     startBatch.mockReset();
+    characterPackagesApi.mockReset().mockResolvedValue([]);
     workbenchApi.mockReset().mockResolvedValue(workbenchFixture());
   });
 
