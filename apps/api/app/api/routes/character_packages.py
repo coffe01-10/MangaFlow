@@ -257,8 +257,10 @@ def update_character_package(
     payload: CharacterModelPackageUpdate,
     db: Session = Depends(get_db),
 ) -> PackageRead:
+    # exclude_unset: PATCH must only replace the blocks the client actually
+    # sent; omitted optional spec blocks keep their stored values.
     package = update_package_workspace(
-        db, project_id, character_id, payload.model_dump()
+        db, project_id, character_id, payload.model_dump(exclude_unset=True)
     )
     return _package_read(db, package)
 

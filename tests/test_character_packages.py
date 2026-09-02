@@ -965,6 +965,28 @@ def test_package_explicit_version_ownership_enforced(client, db_session, monkeyp
     assert queued.status_code == 409
 
 
+def test_package_patch_keeps_omitted_blocks(client):
+    """Round-2 P1: a partial PATCH must not erase the omitted spec blocks."""
+    project = _project(client)
+    character = _character(client, project["id"])
+    package = _create_package(
+        client,
+        project["id"],
+        character["id"],
+        identity_spec={"gender": "男"},
+        visual_spec={"hair": "黑发"},
+        negative_constraints=["不要现代服饰"],
+    )
+    patched = client.patch(
+        _package_url(project["id"], character["id"]),
+        json={"identity_spec": {"gender": "女"}, "version": package["version"]},
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["identity_spec"] == {"gender": "女"}
+    assert patched.json()["visual_spec"] == {"hair": "黑发"}
+    assert patched.json()["negative_constraints"] == ["不要现代服饰"]
+
+
 def test_package_worker_consumes_queue_snapshot(client, db_session, monkeypatch):
     from pathlib import Path
     from tempfile import TemporaryDirectory
@@ -1307,6 +1329,46 @@ def test_package_repair_candidate_inherits_queued_snapshot(
             )
         )
         assert {front["id"], o_asset["id"], original.asset_id} <= leased
+
+
+def test_package_prompt_speaker_uses_frozen_name(client, db_session):
+    """Round-2 P2: dialogue speakers come from the frozen package fact."""
+    from app.models import Dialogue, Panel, Project
+    from app.services.prompt_compiler import compile_page_prompt
+
+    project = _project(client)
+    character = _character(client, project["id"])
+    _chapter, page = _generation_page(db_session, project["id"], character["id"])
+    panel = db_session.scalars(
+        select(Panel).where(Panel.page_id == page.id)
+    ).first()
+    db_session.add(
+        Dialogue(
+            panel_id=panel.id,
+            speaker_character_id=character["id"],
+            target_text="我想一个人待一会儿。",
+            reading_order=1,
+        )
+    )
+    db_session.commit()
+    project_row = db_session.get(Project, project["id"])
+    prompt, _snapshot = compile_page_prompt(
+        db_session,
+        page,
+        project_row,
+        character_package_facts={
+            character["id"]: {
+                "primary_name": "冻结林澈",
+                "aliases": [],
+                "identity_spec": {},
+                "visual_spec": {},
+                "negative_constraints": [],
+            }
+        },
+    )
+    assert "冻结林澈" in prompt
+    assert '"speaker":"冻结林澈"' in prompt
+    assert "林澈" not in prompt.replace("冻结林澈", "")
 
 
 def test_package_diff_reports_slot_and_spec_changes(client):

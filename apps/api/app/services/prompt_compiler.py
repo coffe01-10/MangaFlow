@@ -70,7 +70,14 @@ def compile_page_prompt(
                     "forbidden_changes": item.forbidden_changes,
                 }
             )
-    character_names = {item.id: item.primary_name for item in characters}
+    character_names = {
+        item.id: (
+            frozen_facts[item.id].get("primary_name") or item.primary_name
+            if item.id in frozen_facts
+            else item.primary_name
+        )
+        for item in characters
+    }
     scenes = (
         list(db.scalars(select(Scene).where(Scene.id.in_(page.scene_ids))))
         if page.scene_ids
