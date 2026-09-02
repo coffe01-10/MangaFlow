@@ -15,6 +15,10 @@ from app.models import (
     Asset,
     Chapter,
     Character,
+    CharacterModelPackage,
+    CharacterModelPackageVersion,
+    CharacterModelPackageVersionOutfit,
+    CharacterModelPackageVersionReference,
     CharacterReference,
     GenerationBatch,
     GenerationJob,
@@ -51,8 +55,8 @@ from app.services.workflow_engine import (
     publish_workflow,
 )
 from fastapi import HTTPException
-from sqlalchemy import inspect, select
-from sqlalchemy.exc import OperationalError
+from sqlalchemy import inspect, select, text
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 
@@ -655,3 +659,369 @@ def test_pg_schema_migrations_preserve_neighbor_and_cleanup_owned_resources(
         )
     with Session(sentinel_engine) as db:
         assert db.get(Project, sentinel_id).name == "neighbor sentinel"
+
+
+
+def _package_draft(session_factory: sessionmaker[Session], seeded: dict[str, str]):
+    from app.services.character_packages import bind_outfit, bind_reference, create_package
+
+    with session_factory() as db:
+        package = create_package(db, seeded["project_id"], seeded["character_id"], {})
+        version = db.scalar(
+            select(CharacterModelPackageVersion).where(
+                CharacterModelPackageVersion.package_id == package.id
+            )
+        )
+        bind_reference(
+            db,
+            seeded["project_id"],
+            seeded["character_id"],
+            version.id,
+            asset_id=seeded["character_asset_id"],
+            role="front",
+            token=version.version,
+        )
+        db.expire_all()
+        version = db.get(CharacterModelPackageVersion, version.id)
+        bind_outfit(
+            db,
+            seeded["project_id"],
+            seeded["character_id"],
+            version.id,
+            outfit_id=seeded["outfit_id"],
+            is_default=True,
+            token=version.version,
+        )
+        return {
+            **seeded,
+            "package_id": package.id,
+            "version_id": version.id,
+        }
+
+
+def test_pg_pkg_s14_package_migration_roundtrip_and_two_phase_fk(live_pg_isolated_schema):
+    """PKG-S14: PostgreSQL two-phase published_version FK and child-first downgrade."""
+    engine, _schema = live_pg_isolated_schema
+    config = Config("apps/api/alembic.ini")
+    package_tables = {
+        "character_model_packages",
+        "character_model_package_versions",
+        "character_model_package_version_references",
+        "character_model_package_version_outfits",
+    }
+    with engine.begin() as connection:
+        names = set(inspect(connection).get_table_names())
+        assert package_tables <= names
+        fk_names = {
+            fk["name"]
+            for fk in inspect(connection).get_foreign_keys("character_model_packages")
+        }
+        assert "fk_character_model_packages_published_version" in fk_names
+        indexes = {
+            index["name"]: index
+            for index in inspect(connection).get_indexes("character_model_package_versions")
+        }
+        assert indexes["uq_character_model_package_versions_one_draft"]["unique"]
+        outfit_indexes = {
+            index["name"]: index
+            for index in inspect(connection).get_indexes(
+                "character_model_package_version_outfits"
+            )
+        }
+        assert outfit_indexes["uq_character_model_package_version_outfit_default"]["unique"]
+        config.attributes["connection"] = connection
+        command.downgrade(config, "20260901_24")
+        remaining = set(inspect(connection).get_table_names())
+        assert package_tables.isdisjoint(remaining)
+        command.upgrade(config, "head")
+        restored = set(inspect(connection).get_table_names())
+        assert package_tables <= restored
+        fk_names = {
+            fk["name"]
+            for fk in inspect(connection).get_foreign_keys("character_model_packages")
+        }
+        assert "fk_character_model_packages_published_version" in fk_names
+
+
+def test_pg_pkg_s14_downgrade_refuses_published_packages(live_pg_session_factory):
+    """PKG-S14: downgrade stays refuse-closed once a version leaves the migration draft."""
+    from app.services.character_packages import publish_version
+
+    seeded = _package_draft(live_pg_session_factory, _seed_pg_project_hierarchy(live_pg_session_factory))
+    with live_pg_session_factory() as db:
+        publish_version(
+            db, seeded["project_id"], seeded["character_id"], seeded["version_id"]
+        )
+    with live_pg_session_factory() as db:
+        engine = db.get_bind()
+    config = Config("apps/api/alembic.ini")
+    with engine.begin() as connection:
+        config.attributes["connection"] = connection
+        with pytest.raises(RuntimeError, match="refusing downgrade"):
+            command.downgrade(config, "20260901_24")
+        assert "character_model_packages" in inspect(connection).get_table_names()
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260902_25"
+
+
+def test_pg_pkg_s14_partial_unique_indexes_and_restrict(live_pg_session_factory):
+    """PKG-S14: one DRAFT, one default outfit, and RESTRICT delete protection."""
+    seeded = _package_draft(live_pg_session_factory, _seed_pg_project_hierarchy(live_pg_session_factory))
+    with live_pg_session_factory() as db:
+        with pytest.raises(IntegrityError):
+            db.add(
+                CharacterModelPackageVersion(
+                    package_id=seeded["package_id"],
+                    version_number=99,
+                    status="DRAFT",
+                    spec_snapshot={"frozen_from": "test"},
+                )
+            )
+            db.flush()
+        db.rollback()
+
+    with live_pg_session_factory() as db:
+        extra = Outfit(
+            project_id=seeded["project_id"],
+            character_id=seeded["character_id"],
+            name="第二套",
+            reference_asset_ids=[seeded["outfit_asset_id"]],
+            status="CANONICAL",
+        )
+        db.add(extra)
+        db.flush()
+        db.add(
+            CharacterModelPackageVersionOutfit(
+                version_id=seeded["version_id"],
+                outfit_id=extra.id,
+                is_default=True,
+                sort_order=1,
+            )
+        )
+        with pytest.raises(IntegrityError):
+            db.flush()
+        db.rollback()
+
+    with live_pg_session_factory() as db:
+        with pytest.raises(IntegrityError):
+            db.execute(
+                text("DELETE FROM outfits WHERE id = :outfit_id"),
+                {"outfit_id": seeded["outfit_id"]},
+            )
+            db.flush()
+        db.rollback()
+        with pytest.raises(IntegrityError):
+            db.execute(
+                text("DELETE FROM assets WHERE id = :asset_id"),
+                {"asset_id": seeded["character_asset_id"]},
+            )
+            db.flush()
+        db.rollback()
+        assert db.get(Outfit, seeded["outfit_id"]) is not None
+        assert db.get(Asset, seeded["character_asset_id"]) is not None
+
+
+def test_pg_pkg_s14_for_update_package_lock(live_pg_session_factory):
+    """PKG-S14: package writers take FOR UPDATE; a second connection cannot steal it."""
+    seeded = _package_draft(live_pg_session_factory, _seed_pg_project_hierarchy(live_pg_session_factory))
+    with live_pg_session_factory() as owner, live_pg_session_factory() as contender:
+        query = select(CharacterModelPackage).where(
+            CharacterModelPackage.id == seeded["package_id"]
+        )
+        owner.scalar(query.with_for_update())
+        with pytest.raises(OperationalError) as caught:
+            contender.scalar(query.with_for_update(nowait=True))
+        assert (
+            getattr(caught.value.orig, "sqlstate", None)
+            or getattr(caught.value.orig, "pgcode", None)
+        ) == "55P03"
+        contender.rollback()
+        owner.rollback()
+
+
+def test_pg_pkg_s14_concurrent_publish_one_winner(live_pg_session_factory):
+    """PKG-S14: the same DRAFT cannot publish twice under the package row lock."""
+    from app.services.character_packages import publish_version
+
+    seeded = _package_draft(live_pg_session_factory, _seed_pg_project_hierarchy(live_pg_session_factory))
+    barrier = Barrier(2)
+    errors: list[int] = []
+
+    def publish(_index):
+        with live_pg_session_factory() as db:
+            barrier.wait(timeout=10)
+            try:
+                return publish_version(
+                    db, seeded["project_id"], seeded["character_id"], seeded["version_id"]
+                ).id
+            except HTTPException as error:
+                errors.append(error.status_code)
+                return None
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(publish, range(2)))
+    winners = [item for item in results if item is not None]
+    assert len(winners) == 1
+    assert errors == [409]
+    with live_pg_session_factory() as db:
+        package = db.get(CharacterModelPackage, seeded["package_id"])
+        version = db.get(CharacterModelPackageVersion, seeded["version_id"])
+        assert package.published_version_id == seeded["version_id"]
+        assert version.status == "READY"
+
+
+def test_pg_pkg_s14_archive_v2_versus_activate_v2(live_pg_session_factory):
+    """PKG-S14 §5.3-8: archive V2 vs activate V2 cannot point at ARCHIVED."""
+    from app.services.character_packages import (
+        activate_version,
+        archive_version,
+        derive_version,
+        publish_version,
+    )
+
+    seeded = _package_draft(live_pg_session_factory, _seed_pg_project_hierarchy(live_pg_session_factory))
+    with live_pg_session_factory() as db:
+        v1 = publish_version(
+            db, seeded["project_id"], seeded["character_id"], seeded["version_id"]
+        )
+        v2 = derive_version(db, seeded["project_id"], seeded["character_id"], v1.id)
+        publish_version(db, seeded["project_id"], seeded["character_id"], v2.id)
+        activate_version(
+            db,
+            seeded["project_id"],
+            seeded["character_id"],
+            v1.id,
+            expected_published_version_id=v2.id,
+        )
+        v1_id, v2_id = v1.id, v2.id
+        project_id, character_id = seeded["project_id"], seeded["character_id"]
+        package_id = seeded["package_id"]
+
+    barrier = Barrier(2)
+    outcomes: dict[str, int | str] = {}
+
+    def archive(_):
+        with live_pg_session_factory() as db:
+            barrier.wait(timeout=10)
+            try:
+                archive_version(db, project_id, character_id, v2_id)
+                outcomes["archive"] = "ok"
+            except HTTPException as error:
+                outcomes["archive"] = error.status_code
+
+    def activate(_):
+        with live_pg_session_factory() as db:
+            barrier.wait(timeout=10)
+            try:
+                activate_version(
+                    db,
+                    project_id,
+                    character_id,
+                    v2_id,
+                    expected_published_version_id=v1_id,
+                )
+                outcomes["activate"] = "ok"
+            except HTTPException as error:
+                outcomes["activate"] = error.status_code
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        list(executor.map(lambda fn: fn(None), (archive, activate)))
+
+    assert set(outcomes) == {"archive", "activate"}
+    assert outcomes["archive"] in {"ok", 409}
+    assert outcomes["activate"] in {"ok", 409}
+    assert {"ok", 409} <= set(outcomes.values()) or set(outcomes.values()) == {"ok", 409}
+    # Exactly one may succeed; both succeeding would let the pointer land on ARCHIVED.
+    assert list(outcomes.values()).count("ok") == 1
+    with live_pg_session_factory() as db:
+        package = db.get(CharacterModelPackage, package_id)
+        v2 = db.get(CharacterModelPackageVersion, v2_id)
+        published = db.get(CharacterModelPackageVersion, package.published_version_id)
+        assert published.status != "ARCHIVED"
+        if outcomes["activate"] == "ok":
+            assert package.published_version_id == v2_id
+            assert v2.status in {"READY", "IN_PRODUCTION"}
+        else:
+            assert package.published_version_id == v1_id
+            assert v2.status == "ARCHIVED"
+
+
+def test_pg_pkg_s14_concurrent_asset_bind_single_winner(live_pg_session_factory):
+    """PKG-S14: FOR UPDATE on Asset serializes cross-character bind races."""
+    from app.services.character_packages import bind_reference, create_package
+
+    first = _seed_pg_project_hierarchy(live_pg_session_factory)
+    with live_pg_session_factory() as db:
+        other = Character(project_id=first["project_id"], primary_name="第二角色")
+        db.add(other)
+        db.flush()
+        other_id = other.id
+        shared = Asset(
+            project_id=first["project_id"],
+            kind="CHARACTER_REFERENCE",
+            original_name="shared.png",
+            storage_key=f"test/pg_shared_{time.time()}.png",
+            mime_type="image/png",
+            byte_size=1024,
+            width=64,
+            height=64,
+            sha256=f"pg-shared-{time.time()}",
+        )
+        db.add(shared)
+        db.commit()
+        shared_id = shared.id
+        first_pkg = create_package(db, first["project_id"], first["character_id"], {})
+        other_pkg = create_package(db, first["project_id"], other_id, {})
+        first_version = db.scalar(
+            select(CharacterModelPackageVersion).where(
+                CharacterModelPackageVersion.package_id == first_pkg.id
+            )
+        )
+        other_version = db.scalar(
+            select(CharacterModelPackageVersion).where(
+                CharacterModelPackageVersion.package_id == other_pkg.id
+            )
+        )
+        first_version_id, other_version_id = first_version.id, other_version.id
+        first_token, other_token = first_version.version, other_version.version
+
+    barrier = Barrier(2)
+    errors: list[int] = []
+
+    def bind(character_id, version_id, token):
+        with live_pg_session_factory() as db:
+            barrier.wait(timeout=10)
+            try:
+                return bind_reference(
+                    db,
+                    first["project_id"],
+                    character_id,
+                    version_id,
+                    asset_id=shared_id,
+                    role="front",
+                    token=token,
+                ).id
+            except HTTPException as error:
+                errors.append(error.status_code)
+                return None
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda args: bind(*args),
+                (
+                    (first["character_id"], first_version_id, first_token),
+                    (other_id, other_version_id, other_token),
+                ),
+            )
+        )
+    assert len([item for item in results if item is not None]) == 1
+    assert errors == [409]
+    with live_pg_session_factory() as db:
+        refs = list(
+            db.scalars(
+                select(CharacterModelPackageVersionReference).where(
+                    CharacterModelPackageVersionReference.asset_id == shared_id
+                )
+            )
+        )
+        assert len(refs) == 1

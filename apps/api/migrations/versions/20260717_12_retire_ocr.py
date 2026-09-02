@@ -18,7 +18,11 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     connection = op.get_bind()
-    connection.execute(sa.text("UPDATE projects SET ocr_enabled = 0 WHERE ocr_enabled != 0"))
+    # Boolean columns are 0/1 on SQLite and true/false on PostgreSQL.
+    projects = sa.table("projects", sa.column("ocr_enabled", sa.Boolean()))
+    connection.execute(
+        projects.update().where(projects.c.ocr_enabled.is_(True)).values(ocr_enabled=False)
+    )
     connection.execute(
         sa.text(
             """

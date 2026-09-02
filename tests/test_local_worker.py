@@ -1309,6 +1309,46 @@ def test_redis_enqueue_does_not_overwrite_completed_job(monkeypatch):
         directory.cleanup()
 
 
+
+def test_enqueue_does_not_overwrite_generating_job(db_session, monkeypatch):
+    """P1-9: enqueue must not revert a worker-advanced GENERATING row."""
+    _set_queue_mode(db_session, "REDIS")
+    job = _waiting_job(db_session, "clobber")
+    job.status = JobStatus.GENERATING
+    job.lease_owner = "active-worker"
+    job.lease_expires_at = datetime.now(UTC) + timedelta(minutes=5)
+    db_session.commit()
+    monkeypatch.setattr(
+        job_service, "get_settings", lambda: Settings(environment="development")
+    )
+    enqueued = []
+
+    class FakeRedis:
+        def ping(self):
+            return True
+
+        def close(self):
+            return None
+
+        @classmethod
+        def from_url(cls, *args, **kwargs):
+            return cls()
+
+    class FakeQueue:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def enqueue(self, *args, **kwargs):
+            enqueued.append(args)
+
+    monkeypatch.setattr("redis.Redis", FakeRedis)
+    monkeypatch.setattr("rq.Queue", FakeQueue)
+    result = job_service.enqueue_job(db_session, job)
+    assert result.status == JobStatus.GENERATING
+    assert result.lease_owner == "active-worker"
+    assert enqueued == []
+
+
 def test_local_retryable_failure_continues_without_restart(monkeypatch):
     from app.model_adapters.base import ProviderAdapterError
 

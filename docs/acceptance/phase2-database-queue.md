@@ -1,6 +1,35 @@
 # Phase 2: PostgreSQL 与 Redis/RQ 验收状态
 
 - Issue: [#12](https://github.com/coffe01-10/MangaFlow/issues/12)
+- 2026-09-02 Linux 隔离 live（本节为准，不改写下方历史 BLOCKED 记录）：起始 `master` / `f961774`，分支 `env/postgres-redis-acceptance`。
+- **真实 PostgreSQL：18 passed**（`127.0.0.1:55432` / `mangaflow_acceptance` / `psycopg`）。含 Alembic 邻接清理、用量账本、并发序号/发布/409、PKG-S14 七项。
+- **真实 Redis/RQ SimpleWorker：8 passed / 7 skipped**（`127.0.0.1:56379/15`）。P1-9 入队不覆盖、P1-11 槽位延迟、重试/取消/租约/命名空间清理通过。7 项 `test_live_independent_worker_*` 非 win32 skip，Windows Job Object 独立 Worker 进程矩阵仍 NOT RUN。
+- 代码修复：OCR 迁移 PostgreSQL 布尔比较；`enqueue_job` 条件更新（P1-9）；生产依赖 `psycopg[binary]==3.3.5`。
+- 未启动默认 `docker-compose.yml` 的 5432/6379；未恢复已删除的 `docker-compose.acceptance.yml`。浏览器 E2E、付费供应商、真实 CLI 生图仍 NOT RUN。
+
+## 2026-09-02 Linux 隔离 live 命令与计数
+
+```text
+pytest tests/integration/test_postgres_acceptance.py \
+  --run-live-integration \
+  --pg-url 'postgresql+psycopg://mangaflow:mangaflow@127.0.0.1:55432/mangaflow_acceptance' \
+  --redis-url 'redis://:mangaflow-dev@127.0.0.1:56379/15'
+# 18 passed in 26.63s
+
+pytest tests/integration/test_redis_rq_acceptance.py \
+  --run-live-integration \
+  --pg-url 'postgresql+psycopg://mangaflow:mangaflow@127.0.0.1:55432/mangaflow_acceptance' \
+  --redis-url 'redis://:mangaflow-dev@127.0.0.1:56379/15'
+# 8 passed, 7 skipped in 17.15s
+```
+
+Linux 等价门禁：供应商平权 0 违规；Ruff 通过；默认 pytest 542 passed / 70 skipped（Windows JO / CLI 可执行文件 / 备份 reparse 等平台项失败或 ERROR，不记为 Linux 验收）；Vitest 239 passed；ESLint；Next.js 生产构建通过。
+
+---
+
+## 历史记录（2026-08，环境当时 BLOCKED）
+
+- Issue: [#12](https://github.com/coffe01-10/MangaFlow/issues/12)
 - PR: [#14](https://github.com/coffe01-10/MangaFlow/pull/14)
 - 原始派工基线: `b7d89c0a0e8b7e80abb7293b561d9213bc79ee3d`
 - 已整合最新 master: `40d861753ff7f96ffeb866bc27ff15ef4030680b`（PR #15 合并后）

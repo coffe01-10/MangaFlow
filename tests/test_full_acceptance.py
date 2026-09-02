@@ -43,6 +43,8 @@ def _png_bytes(color: tuple[int, int, int]) -> bytes:
 def _finish_job(db_session, job_id: str, runner) -> None:
     job = db_session.get(GenerationJob, job_id)
     assert job is not None
+    if job.status in {JobStatus.COMPLETED, JobStatus.CANCELLED, JobStatus.FAILED}:
+        return
     job.status = JobStatus.PREPARING
     job.error_code = None
     job.error_message = None
