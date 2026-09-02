@@ -881,3 +881,497 @@ def test_programmatic_migrations_use_supplied_connection_without_default_engine(
             assert not connection.closed
     finally:
         engine.dispose()
+
+
+_PKG_SEED_ROWS = [
+    """
+    INSERT INTO projects (
+        id, name, language, reading_direction, page_ratio,
+        default_resolution, draft_resolution, workflow_mode,
+        default_concurrency, ocr_enabled, consistency_check_enabled,
+        default_style_id, text_model_alias, image_model_alias,
+        deleted_at, created_at, updated_at, version
+    ) VALUES (
+        'project-pkg', '角色包升级项目', 'zh-CN', 'rtl', 'b5_portrait',
+        'STANDARD_2K', 'DRAFT_1K', 'SEMI_AUTO', 4, 0, 1, NULL,
+        'text.fast', 'image.nano_banana_2', NULL,
+        '2026-08-01 10:00:00', '2026-08-01 10:00:00', 1
+    )
+    """,
+    """
+    INSERT INTO characters (
+        id, project_id, primary_name, aliases, aliases_normalized,
+        alias_conflict, canonical_description, locked_features,
+        forbidden_changes, status, created_at, updated_at, version
+    ) VALUES
+        ('char-a', 'project-pkg', '林澈', '["阿澈"]', '["阿澈"]',
+         0, '主角', '["发型"]', '[]', 'CANONICAL',
+         '2026-08-01 10:00:00', '2026-08-01 10:00:00', 1),
+        ('char-b', 'project-pkg', '陈昊', '[]', '[]',
+         0, '第二主角', '[]', '[]', 'UPLOADED',
+         '2026-08-01 10:01:00', '2026-08-01 10:01:00', 1),
+        ('char-c', 'project-pkg', '无参考', '[]', '[]',
+         0, '', '[]', '[]', 'UPLOADED',
+         '2026-08-01 10:02:00', '2026-08-01 10:02:00', 1)
+    """,
+    """
+    INSERT INTO assets (
+        id, project_id, kind, original_name, display_name, storage_key,
+        thumbnail_320_key, thumbnail_640_key, mime_type, byte_size, sha256,
+        width, height, source, status, deleted_at, created_at, updated_at, version
+    ) VALUES
+        ('asset-live', 'project-pkg', 'CHARACTER_REFERENCE', 'front.png', NULL,
+         'project-pkg/asset-live.png', NULL, NULL, 'image/png', 100,
+         'a000000000000000000000000000000000000000000000000000000000000000',
+         64, 64, 'USER_UPLOAD', 'UPLOADED', NULL,
+         '2026-08-01 10:00:00', '2026-08-01 10:00:00', 1),
+        ('asset-dup1', 'project-pkg', 'CHARACTER_REFERENCE', 'dup1.png', NULL,
+         'project-pkg/asset-dup1.png', NULL, NULL, 'image/png', 100,
+         'b000000000000000000000000000000000000000000000000000000000000000',
+         64, 64, 'USER_UPLOAD', 'UPLOADED', NULL,
+         '2026-08-01 10:00:00', '2026-08-01 10:00:00', 1),
+        ('asset-dup2', 'project-pkg', 'CHARACTER_REFERENCE', 'dup2.png', NULL,
+         'project-pkg/asset-dup2.png', NULL, NULL, 'image/png', 100,
+         'c000000000000000000000000000000000000000000000000000000000000000',
+         64, 64, 'USER_UPLOAD', 'UPLOADED', NULL,
+         '2026-08-01 10:00:00', '2026-08-01 10:00:00', 1),
+        ('asset-unspecified', 'project-pkg', 'CHARACTER_REFERENCE', 'unspec.png', NULL,
+         'project-pkg/asset-unspec.png', NULL, NULL, 'image/png', 100,
+         'd000000000000000000000000000000000000000000000000000000000000000',
+         64, 64, 'USER_UPLOAD', 'UPLOADED', NULL,
+         '2026-08-01 10:00:00', '2026-08-01 10:00:00', 1),
+        ('asset-deleted', 'project-pkg', 'CHARACTER_REFERENCE', 'gone.png', NULL,
+         'project-pkg/asset-gone.png', NULL, NULL, 'image/png', 100,
+         'e000000000000000000000000000000000000000000000000000000000000000',
+         64, 64, 'USER_UPLOAD', 'UPLOADED',
+         '2026-08-01 10:00:00', '2026-08-01 10:00:00', '2026-08-01 10:00:00', 1),
+        ('asset-outfit', 'project-pkg', 'OUTFIT_REFERENCE', 'outfit.png', NULL,
+         'project-pkg/asset-outfit.png', NULL, NULL, 'image/png', 100,
+         'f000000000000000000000000000000000000000000000000000000000000000',
+         64, 64, 'USER_UPLOAD', 'UPLOADED', NULL,
+         '2026-08-01 10:00:00', '2026-08-01 10:00:00', 1)
+    """,
+    """
+    INSERT INTO character_references (
+        id, character_id, asset_id, angle, is_canonical, created_at
+    ) VALUES
+        ('ref-a1', 'char-a', 'asset-live', 'front', 1, '2026-08-01 10:00:00'),
+        ('ref-b1', 'char-b', 'asset-dup1', 'front', 0, '2026-08-01 10:00:00'),
+        ('ref-b2', 'char-b', 'asset-dup2', 'front', 0, '2026-08-01 10:00:01'),
+        ('ref-b3', 'char-b', 'asset-unspecified', 'unspecified', 0,
+         '2026-08-01 10:00:02'),
+        ('ref-c1', 'char-c', 'asset-deleted', 'side', 0, '2026-08-01 10:00:00')
+    """,
+    """
+    INSERT INTO outfits (
+        id, project_id, character_id, name, components, state_rules,
+        locked_fields, reference_asset_ids, status, created_at, updated_at, version
+    ) VALUES
+        ('outfit-a', 'project-pkg', 'char-a', '校服', '{"top": "衬衫"}', '{}',
+         '[]', '["asset-outfit"]', 'CANONICAL',
+         '2026-08-01 10:00:00', '2026-08-01 10:00:00', 1),
+        ('outfit-b', 'project-pkg', 'char-b', '便服', '{}', '{}',
+         '[]', '[]', 'UPLOADED',
+         '2026-08-01 10:00:00', '2026-08-01 10:00:00', 1)
+    """,
+    """
+    INSERT INTO style_profiles (
+        id, project_id, name, color_mode, profile, locked_fields,
+        status, created_at, updated_at, version
+    ) VALUES (
+        'style-pkg', 'project-pkg', '日漫彩稿', 'color',
+        '{"reference_asset_ids": ["asset-outfit"], "palette_confirmed": true}',
+        '[]', 'ACTIVE', '2026-08-01 10:00:00', '2026-08-01 10:00:00', 3
+    )
+    """,
+    """
+    INSERT INTO chapters (
+        id, project_id, title, ordinal, status, current_source_revision_id,
+        deleted_at, created_at, updated_at, version
+    ) VALUES (
+        'chapter-pkg', 'project-pkg', '第一章', 1, 'SCRIPT_READY', NULL, NULL,
+        '2026-08-01 10:00:00', '2026-08-01 10:00:00', 1
+    )
+    """,
+    """
+    INSERT INTO manga_pages (
+        id, chapter_id, page_number, revision_no, page_function, panel_count,
+        reading_direction, resolution, style_id, status, scene_ids, beat_ids,
+        locked_fields, estimated_text_chars, estimated_bubbles,
+        source_coverage, selected_candidate_id, storyboard_version,
+        selected_candidate_ack_version, continuity_status,
+        created_at, updated_at, version
+    ) VALUES (
+        'page-pkg', 'chapter-pkg', 1, 1, 'dialogue', 4, 'rtl', 'DRAFT_1K',
+        NULL, 'STORYBOARDED', '[]', '[]', '[]', 80, 6,
+        '{"complete": true, "ranges": []}', NULL, 2, NULL, 'NOT_CHECKED',
+        '2026-08-01 10:00:00', '2026-08-01 10:00:00', 1
+    )
+    """,
+    """
+    INSERT INTO generation_batches (
+        id, project_id, chapter_id, page_id, target_type, target_id, ordinal,
+        generation_kind, status, closed_at, created_at, updated_at, version
+    ) VALUES (
+        'batch-pkg', 'project-pkg', 'chapter-pkg', 'page-pkg', NULL, NULL, 1,
+        'PAGE', 'CLOSED', '2026-08-01 11:00:00',
+        '2026-08-01 10:00:00', '2026-08-01 11:00:00', 1
+    )
+    """,
+    """
+    INSERT INTO generation_jobs (
+        id, project_id, target_type, target_id, job_type, priority, status,
+        attempt_count, max_attempts, model_alias, catalog_model_id,
+        request_parameters, progress, idempotency_key, scheduled_at,
+        started_at, finished_at, lease_owner, lease_expires_at, error_code,
+        error_message, cancelled_at, archived_at, created_at, updated_at, version
+    ) VALUES (
+        'job-pkg', 'project-pkg', 'PAGE_CANDIDATE', 'cand-pkg', 'PAGE_GENERATE',
+        50, 'COMPLETED', 1, 3, 'image.nano_banana_2', NULL, '{}', 100, NULL,
+        NULL, '2026-08-01 10:30:00', '2026-08-01 10:31:00', NULL, NULL,
+        NULL, NULL, NULL, NULL, '2026-08-01 10:00:00', '2026-08-01 10:31:00', 1
+    )
+    """,
+    """
+    INSERT INTO page_candidates (
+        id, batch_id, page_id, ordinal, model_alias, catalog_model_id,
+        resolution, status, asset_id, job_id, generation_record_id,
+        based_on_storyboard_version, is_favorite, is_selected,
+        prompt_snapshot, deleted_at, created_at, updated_at, version
+    ) VALUES (
+        'cand-pkg', 'batch-pkg', 'page-pkg', 1, 'image.nano_banana_2', NULL,
+        'DRAFT_1K', 'READY', NULL, 'job-pkg', NULL, 2, 0, 0,
+        '{"reference_selections": {"char-a": {"character_asset_id": "asset-live", "outfit_id": "outfit-a", "outfit_asset_id": "asset-outfit"}}, "storyboard_version": 2, "scene_asset": {"scene_asset_id": null, "scene_asset_version": null}}',
+        NULL, '2026-08-01 10:00:00', '2026-08-01 10:31:00', 1
+    )
+    """,
+    """
+    INSERT INTO generation_records (
+        id, job_id, provider, model_id, catalog_model_id, location,
+        parameters, prompt_template, prompt_version, prompt_checksum,
+        input_versions, reference_asset_ids, provider_request_id, started_at,
+        finished_at, usage, output_asset_ids, status, error_code, error_message
+    ) VALUES (
+        'record-pkg', 'job-pkg', 'vertex', 'image-model', NULL, 'us-central1',
+        '{"resolution": "1K"}', 'page-v2.1.0', 'page-v2.1.0',
+        'deadbeef', '{"page": 1, "storyboard": 2}',
+        '["asset-live", "asset-outfit"]', NULL, '2026-08-01 10:30:00',
+        '2026-08-01 10:31:00', '{}', '[]', 'COMPLETED', NULL, NULL
+    )
+    """,
+]
+
+_PKG_SNAPSHOT_TABLES = (
+    "characters",
+    "character_references",
+    "outfits",
+    "style_profiles",
+    "assets",
+    "page_candidates",
+    "generation_records",
+)
+
+
+def _seed_package_upgrade_database(database_url: str) -> None:
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        for statement in _PKG_SEED_ROWS:
+            connection.execute(text(statement))
+    engine.dispose()
+
+
+def _table_rows(connection, table: str) -> list[tuple]:
+    return [tuple(row) for row in connection.execute(text(f"SELECT * FROM {table}"))]
+
+
+def test_character_package_migration_backfills_compat_packages(tmp_path, monkeypatch):
+    """PKG-S1/S2: upgrade is loss-free and keeps every existing id byte-identical."""
+    import json as _json
+
+    database_url = f"sqlite:///{(tmp_path / 'pkg-backfill.db').as_posix()}"
+    monkeypatch.setattr(get_settings(), "database_url", database_url)
+    config = Config("apps/api/alembic.ini")
+    command.upgrade(config, "20260901_24")
+    _seed_package_upgrade_database(database_url)
+
+    engine = create_engine(database_url)
+    with engine.connect() as connection:
+        before = {table: _table_rows(connection, table) for table in _PKG_SNAPSHOT_TABLES}
+        prompt_before = connection.execute(
+            text("SELECT prompt_snapshot FROM page_candidates WHERE id = 'cand-pkg'")
+        ).scalar_one()
+        versions_before = connection.execute(
+            text("SELECT input_versions FROM generation_records WHERE id = 'record-pkg'")
+        ).scalar_one()
+    engine.dispose()
+
+    command.upgrade(config, "head")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+        after = {table: _table_rows(connection, table) for table in _PKG_SNAPSHOT_TABLES}
+        for table in _PKG_SNAPSHOT_TABLES:
+            assert before[table] == after[table], f"{table} 行被迁移改写"
+        assert connection.execute(
+            text("SELECT prompt_snapshot FROM page_candidates WHERE id = 'cand-pkg'")
+        ).scalar_one() == prompt_before
+        assert connection.execute(
+            text("SELECT input_versions FROM generation_records WHERE id = 'record-pkg'")
+        ).scalar_one() == versions_before
+
+        packages = [
+            dict(row)
+            for row in connection.execute(
+                text(
+                    "SELECT id, character_id, project_id, identity_spec, visual_spec, "
+                    "negative_constraints, published_version_id, status, version "
+                    "FROM character_model_packages ORDER BY character_id"
+                )
+            ).mappings()
+        ]
+        assert [item["character_id"] for item in packages] == ["char-a", "char-b", "char-c"]
+        package_by_character = {item["character_id"]: item for item in packages}
+        for item in packages:
+            assert item["status"] == "ACTIVE"
+            assert item["published_version_id"] is None
+            assert item["version"] == 1
+            assert _json.loads(item["identity_spec"]) == {}
+            assert _json.loads(item["visual_spec"]) == {}
+            assert _json.loads(item["negative_constraints"]) == []
+
+        versions = [
+            dict(row)
+            for row in connection.execute(
+                text(
+                    "SELECT v.id, v.package_id, v.version_number, v.status, "
+                    "v.spec_snapshot, v.derived_from_version_id, v.published_at "
+                    "FROM character_model_package_versions v ORDER BY v.package_id"
+                )
+            ).mappings()
+        ]
+        assert len(versions) == 3
+        for item in versions:
+            assert item["version_number"] == 1
+            assert item["status"] == "DRAFT"
+            assert item["derived_from_version_id"] is None
+            assert item["published_at"] is None
+            snapshot = _json.loads(item["spec_snapshot"]) if isinstance(
+                item["spec_snapshot"], str
+            ) else item["spec_snapshot"]
+            assert snapshot == {
+                "identity_spec": {},
+                "visual_spec": {},
+                "negative_constraints": [],
+                "frozen_from": "migration",
+            }
+
+        references = [
+            dict(row)
+            for row in connection.execute(
+                text(
+                    "SELECT r.version_id, r.asset_id, r.role, r.label, r.sort_order "
+                    "FROM character_model_package_version_references r "
+                    "JOIN character_model_package_versions v ON v.id = r.version_id "
+                    "ORDER BY v.package_id, r.created_at"
+                )
+            ).mappings()
+        ]
+        char_a_package = package_by_character["char-a"]["id"]
+        char_b_package = package_by_character["char-b"]["id"]
+        version_by_package = {item["package_id"]: item["id"] for item in versions}
+        char_a_version = version_by_package[char_a_package]
+        char_b_version = version_by_package[char_b_package]
+        by_package = {
+            "char-a": [
+                (item["asset_id"], item["role"], item["label"], item["sort_order"])
+                for item in references
+                if item["version_id"] == char_a_version
+            ],
+            "char-b": [
+                (item["asset_id"], item["role"], item["label"], item["sort_order"])
+                for item in references
+                if item["version_id"] == char_b_version
+            ],
+        }
+        assert by_package["char-a"] == [
+            ("asset-live", "front", "", 0)
+        ]
+        # dup front degrades to extra with suffix; unspecified stays extra.
+        assert by_package["char-b"] == [
+            ("asset-dup1", "front", "", 0),
+            ("asset-dup2", "extra", "front", 0),
+            ("asset-unspecified", "extra", "unspecified", 0),
+        ]
+        # char-c only bound the soft-deleted asset: its matrix must be empty.
+        assert sum(
+            1 for item in references if item["version_id"] not in {char_a_version, char_b_version}
+        ) == 0
+
+        outfit_rows = [
+            dict(row)
+            for row in connection.execute(
+                text(
+                    "SELECT o.version_id, o.outfit_id, o.is_default, o.sort_order "
+                    "FROM character_model_package_version_outfits o "
+                    "JOIN character_model_package_versions v ON v.id = o.version_id "
+                    "ORDER BY v.package_id, o.sort_order"
+                )
+            ).mappings()
+        ]
+        assert sorted(
+            (item["outfit_id"], item["is_default"], item["sort_order"])
+            for item in outfit_rows
+        ) == [
+            ("outfit-a", 0, 0),
+            ("outfit-b", 0, 0),
+        ]
+    schema = inspect(engine)
+    assert {index["name"] for index in schema.get_indexes("character_model_package_versions")} >= {
+        "ix_character_model_package_versions_package_status",
+        "uq_character_model_package_versions_one_draft",
+    }
+    assert {index["name"] for index in schema.get_indexes("character_model_package_version_outfits")} >= {
+        "uq_character_model_package_version_outfit_default",
+    }
+    engine.dispose()
+
+
+def test_character_package_migration_downgrade_roundtrip(tmp_path, monkeypatch):
+    """PKG-S13: a pure migration-shaped database round-trips downgrade->upgrade."""
+    database_url = f"sqlite:///{(tmp_path / 'pkg-roundtrip.db').as_posix()}"
+    monkeypatch.setattr(get_settings(), "database_url", database_url)
+    config = Config("apps/api/alembic.ini")
+    command.upgrade(config, "20260901_24")
+    _seed_package_upgrade_database(database_url)
+    command.upgrade(config, "head")
+
+    command.downgrade(config, "20260901_24")
+    engine = create_engine(database_url)
+    with engine.connect() as connection:
+        assert "character_model_packages" not in inspect(connection).get_table_names()
+    engine.dispose()
+
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        assert connection.execute(
+            text("SELECT COUNT(*) FROM character_model_packages")
+        ).scalar_one() == 3
+        assert connection.execute(
+            text("SELECT COUNT(*) FROM character_model_package_versions")
+        ).scalar_one() == 3
+        assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+    engine.dispose()
+
+
+def test_character_package_migration_downgrade_refuses_evolved_shape(tmp_path, monkeypatch):
+    """PKG-S13: publish, second version or archived package blocks downgrade intact."""
+    database_url = f"sqlite:///{(tmp_path / 'pkg-refuse.db').as_posix()}"
+    monkeypatch.setattr(get_settings(), "database_url", database_url)
+    config = Config("apps/api/alembic.ini")
+    command.upgrade(config, "20260901_24")
+    _seed_package_upgrade_database(database_url)
+    command.upgrade(config, "head")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        package_id = connection.execute(
+            text("SELECT id FROM character_model_packages WHERE character_id = 'char-a'")
+        ).scalar_one()
+        version_id = connection.execute(
+            text(
+                "SELECT id FROM character_model_package_versions WHERE package_id = :pkg"
+            ),
+            {"pkg": package_id},
+        ).scalar_one()
+        connection.execute(
+            text(
+                "UPDATE character_model_package_versions SET status = 'READY', "
+                "published_at = '2026-08-02 10:00:00' WHERE id = :vid"
+            ),
+            {"vid": version_id},
+        )
+        connection.execute(
+            text(
+                "UPDATE character_model_packages SET published_version_id = :vid "
+                "WHERE id = :pkg"
+            ),
+            {"vid": version_id, "pkg": package_id},
+        )
+    engine.dispose()
+    with pytest.raises(RuntimeError, match="published or used in production"):
+        command.downgrade(config, "20260901_24")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        assert connection.execute(
+            text("SELECT COUNT(*) FROM character_model_packages")
+        ).scalar_one() == 3
+        assert connection.execute(
+            text(
+                "SELECT published_version_id FROM character_model_packages "
+                "WHERE character_id = 'char-a'"
+            )
+        ).scalar_one() == version_id
+    engine.dispose()
+
+    database_url = f"sqlite:///{(tmp_path / 'pkg-refuse-multi.db').as_posix()}"
+    monkeypatch.setattr(get_settings(), "database_url", database_url)
+    command.upgrade(config, "20260901_24")
+    _seed_package_upgrade_database(database_url)
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        # The one-DRAFT partial index makes two DRAFT versions unconstructible
+        # through normal paths, so remove it to exercise the guard itself.
+        connection.execute(
+            text("DROP INDEX uq_character_model_package_versions_one_draft")
+        )
+        connection.execute(
+            text(
+                "INSERT INTO character_model_package_versions ("
+                "id, package_id, version_number, status, spec_snapshot, "
+                "created_at, updated_at, version"
+                ") SELECT 'version-2-b', id, 2, 'DRAFT', '{}', "
+                "'2026-08-02 10:00:00', '2026-08-02 10:00:00', 1 "
+                "FROM character_model_packages WHERE character_id = 'char-b'"
+            )
+        )
+    engine.dispose()
+    with pytest.raises(RuntimeError, match="more than one version"):
+        command.downgrade(config, "20260901_24")
+
+    database_url = f"sqlite:///{(tmp_path / 'pkg-refuse-archived.db').as_posix()}"
+    monkeypatch.setattr(get_settings(), "database_url", database_url)
+    command.upgrade(config, "20260901_24")
+    _seed_package_upgrade_database(database_url)
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE character_model_packages SET status = 'ARCHIVED' "
+                "WHERE character_id = 'char-c'"
+            )
+        )
+    engine.dispose()
+    with pytest.raises(RuntimeError, match="archived packages exist"):
+        command.downgrade(config, "20260901_24")
+
+
+def test_character_package_migration_refuses_partial_schema(tmp_path, monkeypatch):
+    database_url = f"sqlite:///{(tmp_path / 'pkg-partial.db').as_posix()}"
+    monkeypatch.setattr(get_settings(), "database_url", database_url)
+    config = Config("apps/api/alembic.ini")
+    command.upgrade(config, "20260901_24")
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE character_model_packages (id VARCHAR(36) PRIMARY KEY)"
+            )
+        )
+    engine.dispose()
+    with pytest.raises(RuntimeError, match="已存在但结构与本迁移不匹配"):
+        command.upgrade(config, "head")

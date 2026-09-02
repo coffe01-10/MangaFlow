@@ -188,6 +188,7 @@ def build_page_readiness(
     db: Session,
     page: MangaPage,
     settings: Settings,
+    package_gate: dict[str, bool] | None = None,
 ) -> PageReadinessRead:
     ensure_provider_presets(db, settings, auto_commit=False)
     chapter = db.get(Chapter, page.chapter_id)
@@ -226,14 +227,15 @@ def build_page_readiness(
                 )
             )
         if not character.outfit_id:
-            blockers.append(
-                _block(
-                    "MISSING_OUTFIT_ASSIGNMENT",
-                    f"出镜人物“{character.primary_name}”尚未指定本页服装",
-                    "storyboard",
-                    target_id=character.character_id,
+            if not (package_gate or {}).get(character.character_id):
+                blockers.append(
+                    _block(
+                        "MISSING_OUTFIT_ASSIGNMENT",
+                        f"出镜人物“{character.primary_name}”尚未指定本页服装",
+                        "storyboard",
+                        target_id=character.character_id,
+                    )
                 )
-            )
         elif not character.outfit_reference_ids:
             blockers.append(
                 _block(
@@ -360,8 +362,10 @@ def build_page_readiness(
     )
 
 
-def ensure_page_ready(db: Session, page: MangaPage, settings: Settings) -> PageReadinessRead:
-    readiness = build_page_readiness(db, page, settings)
+def ensure_page_ready(
+    db: Session, page: MangaPage, settings: Settings, package_gate: dict[str, bool] | None = None
+) -> PageReadinessRead:
+    readiness = build_page_readiness(db, page, settings, package_gate=package_gate)
     if readiness.ready:
         return readiness
     from fastapi import HTTPException

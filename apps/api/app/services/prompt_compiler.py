@@ -14,6 +14,7 @@ def compile_page_prompt(
     page: MangaPage,
     project: Project,
     scene_background: str | None = None,
+    character_package_facts: dict[str, dict] | None = None,
 ) -> tuple[str, dict]:
     """Compile the generation prompt for one page.
 
@@ -21,6 +22,11 @@ def compile_page_prompt(
     queue-time snapshot holds scene asset facts: the frozen snapshot is the
     compile-time contract (docs/v02-scene-asset-contract.md §5), while
     ``Panel.background`` stays untouched as the storyboard snapshot.
+
+    ``character_package_facts`` carries the queue-time ``character_packages``
+    snapshot block: bible entries for those characters use the frozen name and
+    the frozen identity/visual/negative specs instead of live Character rows
+    (contract §8.5). Characters without facts keep the live reads.
     """
 
     characters = list(
@@ -32,17 +38,35 @@ def compile_page_prompt(
     )
     source_ranges = page.source_coverage.get("ranges", [])
     source_text = "\n".join(item.get("text", "") for item in source_ranges)
-    character_bible = [
-        {
-            "id": item.id,
-            "primary_name": item.primary_name,
-            "aliases": item.aliases,
-            "description": item.canonical_description,
-            "locked_features": item.locked_features,
-            "forbidden_changes": item.forbidden_changes,
-        }
-        for item in characters
-    ]
+    frozen_facts = character_package_facts or {}
+    character_bible = []
+    for item in characters:
+        fact = frozen_facts.get(item.id)
+        if fact:
+            character_bible.append(
+                {
+                    "id": item.id,
+                    "primary_name": fact.get("primary_name") or item.primary_name,
+                    "aliases": fact.get("aliases") or item.aliases,
+                    "description": item.canonical_description,
+                    "locked_features": item.locked_features,
+                    "forbidden_changes": item.forbidden_changes,
+                    "identity_spec": fact.get("identity_spec") or {},
+                    "visual_spec": fact.get("visual_spec") or {},
+                    "negative_constraints": fact.get("negative_constraints") or [],
+                }
+            )
+        else:
+            character_bible.append(
+                {
+                    "id": item.id,
+                    "primary_name": item.primary_name,
+                    "aliases": item.aliases,
+                    "description": item.canonical_description,
+                    "locked_features": item.locked_features,
+                    "forbidden_changes": item.forbidden_changes,
+                }
+            )
     character_names = {item.id: item.primary_name for item in characters}
     scenes = (
         list(db.scalars(select(Scene).where(Scene.id.in_(page.scene_ids))))

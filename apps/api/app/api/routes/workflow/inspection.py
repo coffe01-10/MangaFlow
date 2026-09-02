@@ -117,7 +117,9 @@ def repair_candidate(
         resolution=payload.resolution,
         status="QUEUED",
         based_on_storyboard_version=page.storyboard_version,
-        prompt_snapshot={"storyboard_version": page.storyboard_version},
+        # Contract §8.6-3: repairs inherit the original candidate's complete
+        # queue-time snapshot, including character_packages, without re-resolving.
+        prompt_snapshot=dict(original.prompt_snapshot or {}),
     )
     db.add(candidate)
     repair = RepairPlan(
@@ -202,7 +204,9 @@ def upscale_candidate(
         resolution=payload.resolution,
         status="QUEUED",
         based_on_storyboard_version=page.storyboard_version,
-        prompt_snapshot={"storyboard_version": page.storyboard_version},
+        # Contract §8.6-3: upscales inherit the original candidate's complete
+        # queue-time snapshot, including character_packages, without re-resolving.
+        prompt_snapshot=dict(original.prompt_snapshot or {}),
     )
     db.add(candidate)
     db.flush()

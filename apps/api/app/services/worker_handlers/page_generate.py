@@ -19,6 +19,7 @@ from app.models import (
     Asset,
     Chapter,
     Character,
+    CharacterModelPackageVersion,
     CharacterReference,
     GenerationJob,
     GenerationRecord,
@@ -46,12 +47,14 @@ def _load_reference_assets(
     project: Project,
     reference_selections: dict[str, dict[str, str | None]] | None = None,
     scene_reference_ids: list[str] | None = None,
+    queued_character_packages: dict[str, dict] | None = None,
 ) -> list[Asset]:
     page_character_ids = {
         character_id
         for panel in db.scalars(select(Panel).where(Panel.page_id == page.id))
         for character_id in panel.characters
     }
+    package_facts = queued_character_packages or {}
     if reference_selections is not None:
         unexpected_characters = set(reference_selections) - page_character_ids
         if unexpected_characters:
@@ -86,6 +89,10 @@ def _load_reference_assets(
                 + "、".join(sorted(missing_ids))
             )
         for character_id in page_character_ids:
+            if character_id in package_facts:
+                # Contract §8.5: package candidates consume the queue-time
+                # snapshot; version bindings are never re-validated here.
+                continue
             selection = reference_selections.get(character_id) or {}
             character_asset_id = selection.get("character_asset_id")
             character_reference = (
@@ -297,12 +304,30 @@ def _run_page_generate(db, job: GenerationJob) -> None:
         if queued_scene_snapshot.get("scene_asset_id") is not None
         else None
     )
+    # Contract §8.3: the compiled snapshot below replaces the queue-time one, so
+    # the frozen character package facts must be captured before that replace.
+    queued_character_packages = dict(
+        (candidate.prompt_snapshot or {}).get("character_packages") or {}
+    )
+    for package_fact in queued_character_packages.values():
+        # Contract §8.5-b: referenced version rows cannot be physically deleted
+        # (server invariant), so any absence is corruption, not a recoverable state.
+        if (
+            package_fact.get("package_version_id")
+            and db.get(CharacterModelPackageVersion, package_fact["package_version_id"]) is None
+        ):
+            raise RuntimeError("角色模型包版本已不存在，已在调用模型前停止任务")
     prompt, snapshot = compile_page_prompt(
-        db, page, project, scene_background=queued_scene_background
+        db,
+        page,
+        project,
+        scene_background=queued_scene_background,
+        character_package_facts=queued_character_packages or None,
     )
     reference_bindings: list[dict[str, str | None]] = []
     for character_id, selection in reference_selections.items():
         character = db.get(Character, character_id)
+        package_fact = queued_character_packages.get(character_id) or {}
         outfit = db.get(Outfit, selection.get("outfit_id")) if selection.get("outfit_id") else None
         character_asset = db.get(Asset, selection.get("character_asset_id"))
         outfit_asset = (
@@ -312,7 +337,10 @@ def _run_page_generate(db, job: GenerationJob) -> None:
         )
         reference_bindings.append(
             {
-                "character": character.primary_name if character else character_id,
+                "character": (
+                    package_fact.get("primary_name")
+                    or (character.primary_name if character else character_id)
+                ),
                 "character_reference": (
                     character_asset.original_name if character_asset else None
                 ),
@@ -337,6 +365,7 @@ def _run_page_generate(db, job: GenerationJob) -> None:
         project,
         reference_selections,
         queued_scene_snapshot.get("reference_asset_ids") or [],
+        queued_character_packages=queued_character_packages or None,
     )
     reference_bytes: list[bytes] = []
     reference_types: list[str] = []
@@ -386,6 +415,10 @@ def _run_page_generate(db, job: GenerationJob) -> None:
     snapshot["reference_selections"] = reference_selections
     snapshot["reference_bindings"] = reference_bindings
     snapshot["scene_asset"] = queued_scene_snapshot
+    if queued_character_packages:
+        # Merged from the preserved queue-time capture: the frozen facts stay on
+        # the candidate even after the compiled snapshot replaces the input.
+        snapshot["character_packages"] = queued_character_packages
     snapshot["prompt_preview"] = prompt
     snapshot["checksum"] = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
     candidate.prompt_snapshot = snapshot
@@ -463,6 +496,21 @@ def _run_page_generate(db, job: GenerationJob) -> None:
             "page_revision": page.revision_no,
             "storyboard": candidate.based_on_storyboard_version,
             "scene_asset": snapshot.get("scene_asset") or {},
+            **(
+                {
+                    "character_packages": {
+                        character_id: {
+                            "package_id": fact.get("package_id"),
+                            "package_version_id": fact.get("package_version_id"),
+                            "version_number": fact.get("version_number"),
+                            "spec_fingerprint": fact.get("spec_fingerprint"),
+                        }
+                        for character_id, fact in queued_character_packages.items()
+                    }
+                }
+                if queued_character_packages
+                else {}
+            ),
         },
         reference_asset_ids=list(dict.fromkeys(reference_asset_ids)),
         provider_request_id=response.request_id,

@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
@@ -1088,3 +1089,245 @@ class ExportRead(BaseModel):
                 "download_url": f"/api/v1/exports/{value.id}/download",
             }
         return value
+
+
+class PackageIdentitySpec(BaseModel):
+    """Fixed-key identity block; unknown keys are rejected so typos cannot
+    silently change prompt compilation (contract §4.1)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    age_appearance: str | None = Field(default=None, max_length=120)
+    gender: str | None = Field(default=None, max_length=32)
+    personality: str | None = Field(default=None, max_length=800)
+    identity_notes: str | None = Field(default=None, max_length=2000)
+
+
+class PackageVisualSpec(BaseModel):
+    """Fixed-key visual block; unknown keys are rejected (contract §4.1)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    hair: str | None = Field(default=None, max_length=400)
+    hair_color: str | None = Field(default=None, max_length=400)
+    face: str | None = Field(default=None, max_length=400)
+    eyes: str | None = Field(default=None, max_length=400)
+    body: str | None = Field(default=None, max_length=400)
+    distinguishing_marks: str | None = Field(default=None, max_length=400)
+
+
+PackageConstraintItem = Annotated[str, Field(min_length=1, max_length=120)]
+
+
+class CharacterModelPackageCreate(BaseModel):
+    identity_spec: PackageIdentitySpec = Field(default_factory=PackageIdentitySpec)
+    visual_spec: PackageVisualSpec = Field(default_factory=PackageVisualSpec)
+    negative_constraints: list[PackageConstraintItem] = Field(
+        default_factory=list, max_length=20
+    )
+
+
+class CharacterModelPackageUpdate(BaseModel):
+    identity_spec: PackageIdentitySpec | None = None
+    visual_spec: PackageVisualSpec | None = None
+    negative_constraints: list[PackageConstraintItem] | None = Field(
+        default=None, max_length=20
+    )
+    version: int = Field(ge=1)
+
+
+class PackageReferenceCreate(BaseModel):
+    asset_id: str = Field(min_length=1, max_length=36)
+    role: str = Field(min_length=1, max_length=32)
+    label: str = Field(default="", max_length=48)
+    sort_order: int = Field(default=0, ge=0, le=1000)
+    version: int = Field(ge=1)
+
+
+class PackageCoverCreate(BaseModel):
+    asset_id: str = Field(min_length=1, max_length=36)
+    version: int = Field(ge=1)
+
+
+class PackageReferenceDelete(BaseModel):
+    version: int = Field(ge=1)
+
+
+class PackageOutfitCreate(BaseModel):
+    outfit_id: str = Field(min_length=1, max_length=36)
+    is_default: bool = False
+    sort_order: int = Field(default=0, ge=0, le=1000)
+    version: int = Field(ge=1)
+
+
+class PackageOutfitDefaultUpdate(BaseModel):
+    is_default: bool
+    version: int = Field(ge=1)
+
+
+class PackageOutfitDelete(BaseModel):
+    version: int = Field(ge=1)
+
+
+class PackageVersionDerive(BaseModel):
+    base_version_id: str | None = Field(default=None, max_length=36)
+
+
+class PackageActivateRequest(BaseModel):
+    version_id: str = Field(min_length=1, max_length=36)
+    # Required CAS token: pass null when the package currently has no published
+    # version. Omission is a payload-shape error (contract §5.3-8).
+    expected_published_version_id: str | None
+
+
+class PackageReferenceRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    version_id: str
+    asset_id: str
+    role: str
+    label: str
+    sort_order: int
+    created_at: datetime
+
+
+class PackageOutfitRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    version_id: str
+    outfit_id: str
+    is_default: bool
+    sort_order: int
+    created_at: datetime
+
+
+class PackageCompletenessMissing(BaseModel):
+    code: str
+    field: str
+    message: str
+    suggestion: str
+
+
+class PackageCompletenessRead(BaseModel):
+    score: int
+    missing: list[PackageCompletenessMissing] = Field(default_factory=list)
+
+
+class PackageVersionRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    package_id: str
+    version_number: int
+    status: str
+    spec_snapshot: dict
+    derived_from_version_id: str | None = None
+    published_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+    version: int
+    references: list[PackageReferenceRead] = Field(default_factory=list)
+    outfits: list[PackageOutfitRead] = Field(default_factory=list)
+    completeness: PackageCompletenessRead | None = None
+
+
+class PackageCharacterSummary(BaseModel):
+    id: str
+    primary_name: str
+    aliases: list[str]
+    alias_conflict: bool
+
+
+class PackageRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    character_id: str
+    project_id: str
+    identity_spec: dict
+    visual_spec: dict
+    negative_constraints: list
+    published_version_id: str | None = None
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    version: int
+    versions: list[PackageVersionRead] = Field(default_factory=list)
+    completeness: PackageCompletenessRead | None = None
+
+
+class PackageSummaryRead(BaseModel):
+    id: str
+    character_id: str
+    project_id: str
+    status: str
+    published_version_id: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    version: int
+    character: PackageCharacterSummary
+    published_version_number: int | None = None
+    published_completeness: PackageCompletenessRead | None = None
+
+
+class PackageSpecFieldChange(BaseModel):
+    field: str
+    base_value: str | None = None
+    target_value: str | None = None
+
+
+class PackageSpecBlockDiff(BaseModel):
+    added: dict[str, str] = Field(default_factory=dict)
+    removed: dict[str, str] = Field(default_factory=dict)
+    changed: list[PackageSpecFieldChange] = Field(default_factory=list)
+
+
+class PackageListDiff(BaseModel):
+    added: list[str] = Field(default_factory=list)
+    removed: list[str] = Field(default_factory=list)
+
+
+class PackageReferenceSlot(BaseModel):
+    role: str
+    label: str
+    asset_id: str | None = None
+    asset_deleted: bool = False
+
+
+class PackageReferenceSlotChange(BaseModel):
+    role: str
+    label: str
+    base_asset_id: str | None = None
+    target_asset_id: str | None = None
+    base_asset_deleted: bool = False
+    target_asset_deleted: bool = False
+
+
+class PackageReferenceDiff(BaseModel):
+    added: list[PackageReferenceSlot] = Field(default_factory=list)
+    removed: list[PackageReferenceSlot] = Field(default_factory=list)
+    changed: list[PackageReferenceSlotChange] = Field(default_factory=list)
+
+
+class PackageOutfitDiffItem(BaseModel):
+    outfit_id: str
+    is_default: bool
+    sort_order: int
+
+
+class PackageOutfitDiff(BaseModel):
+    added: list[PackageOutfitDiffItem] = Field(default_factory=list)
+    removed: list[PackageOutfitDiffItem] = Field(default_factory=list)
+    changed: list[PackageOutfitDiffItem] = Field(default_factory=list)
+
+
+class PackageDiffRead(BaseModel):
+    base_version_id: str
+    target_version_id: str
+    identity_spec: PackageSpecBlockDiff
+    visual_spec: PackageSpecBlockDiff
+    negative_constraints: PackageListDiff
+    references: PackageReferenceDiff
+    outfits: PackageOutfitDiff
