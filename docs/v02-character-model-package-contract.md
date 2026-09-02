@@ -205,9 +205,9 @@
 ### 5.3 操作定义（十个场景逐一冻结）
 
 1. **创建兼容包** `POST /characters/{character_id}/package`：单事务创建 `CharacterModelPackage(ACTIVE)` + `V1 DRAFT`（`spec_snapshot` 初始化为 `{"identity_spec": {...payload}, "visual_spec": {...}, "negative_constraints": [...], "frozen_from": "package"}` 的空/初始副本，`published_at=NULL`）。包已存在 → 409；项目或角色不存在/项目已软删 → 404。
-2. **编辑草稿** `PATCH package`（规格）与关系 bind/unbind（§9）：规格编辑要求携带 `package.version`（乐观锁，不一致 409，对齐 `update_character` 的 `characters.py:105-106`）；无 DRAFT 时规格编辑 409（状态冲突沿用既有惯例，提示"请先派生新版本"）。关系操作要求携带 DRAFT 的 `version.version`。全部单事务。
+2. **编辑草稿** `PATCH package`（规格）与关系 bind/unbind（§9）：规格编辑要求携带 `package.version`（乐观锁，不一致 409，对齐 `update_character` 的 `characters.py:105-106`）；无 DRAFT 时规格编辑 409（状态冲突沿用既有惯例，提示"请先派生新版本"）。**关系变更在同一事务内对 DRAFT 版本的 `version` 执行 compare-and-increment**：请求携带的令牌必须等于当前值，通过后校验、写入关系并在同事务递增 `version.version`（`Timestamped.version` 不会自动递增，必须显式 +1）——两个携带同一令牌的并发关系变更只有第一个成功，其余 409，不会静默覆盖。全部单事务。
 3. **发布版本** `POST versions/{id}/publish`：单事务：锁包行 → 重读 DRAFT 及关系 → 校验（目标非 DRAFT → 409；活跃参考关系为 0 → 422）→ 把包工作集规格写入 `spec_snapshot`（`frozen_from: "package"`）→ `status='READY'`、`published_at=now` → `published_version_id=id`。**发布不要求完整度阈值**（完整度仅建议，§7.5）。并发发布同一草稿：后到者在行锁/条件更新处 409；发布与派生竞争：派生要求无 DRAFT，二者在包锁内串行。失败整体回滚，**不存在半发布状态**（指针与状态同事务落库）。
-4. **派生新版本** `POST versions {base_version_id?}`：要求当前无 DRAFT（409）；`base` 缺省取 `published_version_id`，显式指定可为任何非 DRAFT 版本（404 不存在）。单事务：分配 V(n+1)；新 DRAFT `spec_snapshot = base.spec_snapshot`（`frozen_from: "derive"`）、`derived_from_version_id=base.id`；复制 base 全部关系行（同 asset/role/label/sort_order/is_default）；包工作集三字段重置为 `base.spec_snapshot` 对应内容（UI 从基线继续编辑）。
+4. **派生新版本** `POST versions {base_version_id?}`：要求当前无 DRAFT（409）；`base` 缺省取 `published_version_id`，显式指定可为任何非 DRAFT 版本，但**必须属于当前包**（`base.package_id == package.id`，否则 409/404——外键不约束同包归属，服务端必须校验，防止把其他角色的身份与关系复制进来）；base 为 DRAFT 422。单事务：分配 V(n+1)；新 DRAFT `spec_snapshot = base.spec_snapshot`（`frozen_from: "derive"`）、`derived_from_version_id=base.id`；复制 base 全部关系行（同 asset/role/label/sort_order/is_default）；包工作集三字段重置为 `base.spec_snapshot` 对应内容（UI 从基线继续编辑）。
 5. **生产使用后的冻结**：见 §5.2 IN_PRODUCTION 置入规则。置入失败（如版本被并发归档）不阻塞候选创建——条件更新影响 0 行即跳过，快照事实不受影响。
 6. **归档与恢复**：版本 `ARCHIVED`：从 READY/IN_PRODUCTION 可达；`version == package.published_version_id` 时 409（"先切换发布版本"）。恢复 `POST restore` → READY（不自动恢复指针）。包 `POST .../package/archive`（ACTIVE→ARCHIVED）/`POST .../package/restore`（ARCHIVED→ACTIVE）：随时可做；归档后该角色退出默认继承（§8.1），Character 及既有页面不受影响；归档不清 `published_version_id`（历史事实）。
 7. **删除或解绑参考图/服装**：关系仅 DRAFT 可变；非 DRAFT 409。解绑 = 物理删除关系行。Asset 软删路径见 §10.1。DRAFT 版本整体删除（§10.1）级联清关系。
@@ -235,7 +235,11 @@
 
 ### 6.1 upgrade
 
-1. 建四张表与全部索引（DDL = §4，含两库部分唯一索引）。
+1. **建表（含循环外键的两阶段创建，冻结）**：`character_model_packages.published_version_id` 与 `character_model_package_versions.package_id` 构成双向引用，任一表都无法先于对方带全量约束创建——
+   - **PostgreSQL**：先建 `character_model_packages`（`published_version_id` 仅作普通可空列，无 FK）→ 建 `character_model_package_versions`（`package_id` FK CASCADE 内联）→ 最后 `ALTER TABLE character_model_packages ADD CONSTRAINT fk_character_model_packages_published_version FOREIGN KEY (published_version_id) REFERENCES character_model_package_versions(id) ON DELETE SET NULL`；
+   - **SQLite**：`character_model_packages` 直接内联该 FK（SQLite 允许前向引用同事务内稍后创建的表，FK 在 DML 时才解析；回填 INSERT 前两张表均已存在），无需 ADD CONSTRAINT（SQLite 不支持）；
+   - 两库最终逻辑 schema 一致；差异仅是约束创建路径（§6.4）。
+2. 建全部索引（DDL = §4，含两库部分唯一索引）。
 2. **回填（仅 INSERT 新表）**，对每个既有 `Character`（无其他过滤条件，包括 `alias_conflict` 角色与零参考图角色）：
    - 创建 `character_model_packages(ACTIVE, published_version_id=NULL, 空规格工作集)`；
    - 创建 `V1 DRAFT`：`spec_snapshot={"identity_spec":{}, "visual_spec":{}, "negative_constraints":[], "frozen_from":"migration"}`，`derived_from_version_id=NULL`；
@@ -265,8 +269,7 @@
 
 | 面 | 处理 |
 | --- | --- |
-| 建表 | 全部为新表，两库同一 DDL；无 `ALTER` 既有表，无 batch_alter 需求 |
-| 部分唯一索引 | 同时声明 `postgresql_where` / `sqlite_where`（对齐 `20260901_24`；两处 WHERE 表达式相同） |
+| 建表 | 新表；**`published_version_id` 循环 FK 两阶段创建**：PostgreSQL 先建表后 `ADD CONSTRAINT`，SQLite 内联前向引用（同事务建齐两表）| 部分唯一索引 | 同时声明 `postgresql_where` / `sqlite_where`（对齐 `20260901_24`；两处 WHERE 表达式相同） |
 | 外键 | SQLite 依赖项目已启用的 `PRAGMA foreign_keys=ON`；`CASCADE`/`RESTRICT`/`SET NULL` 两库语义一致 |
 | 回填 | 迁移内 Python 循环 + 参数化 INSERT（服务器端游标），在同一迁移事务内；两库行为一致 |
 | 并发 | 迁移串行执行，不涉及 §5 锁机制 |
@@ -376,7 +379,7 @@ Worker 对命中 `character_packages` 的候选：只读取排队快照中的规
 
 ## 9. API 契约（为 V02-23B 冻结最小集）
 
-统一约定：路径挂载在既有 `/api/v1` 前缀下；全部项目作用域（项目不存在/已软删 404，对齐 `list_assets`）；包以 `character_id` 寻址（锚点 A1）；响应模型 `*_Read` 含 `created_at/updated_at/version`；分页用 `limit`（默认 50，≤200）/`offset`。除注明外，**任何包端点都不调用 `mark_pages_for_review`，不产生页面 NEEDS_REVIEW**（§9.2）。
+统一约定：路径挂载在既有 `/api/v1` 前缀下；全部项目作用域（项目不存在/已软删 404，对齐 `list_assets`）；包以 `character_id` 寻址（锚点 A1）；响应模型字段——`PackageRead`/`VersionRead` 含 `created_at/updated_at/version`（Timestamped），**关系读取模型 `ReferenceRead`/`VersionOutfitRead` 只含各自列与 `created_at`、无独立 `version`**（关系变更的并发守卫是父 DRAFT 版本的 compare-and-increment，§5.3-2）；分页用 `limit`（默认 50，≤200）/`offset`。除注明外，**任何包端点都不调用 `mark_pages_for_review`，不产生页面 NEEDS_REVIEW**（§9.2）。
 
 ### 9.1 端点表
 
@@ -394,12 +397,12 @@ Worker 对命中 `character_packages` 的候选：只读取排队快照中的规
 | `POST .../package/versions/{version_id}/restore` | `{}` → `VersionRead` | ARCHIVED→READY |
 | `POST .../package/activate` | `{version_id, expected_published_version_id}` → `PackageRead` | 切换发布指针（§5.3-8，CAS 令牌必填）；404/409（指针已被并发切换） |
 | `DELETE .../package/versions/{version_id}` | → 204 | 仅 DRAFT 可物理删除；409 其他状态 |
-| `POST .../package/versions/{version_id}/references` | `{asset_id, role, label?, sort_order?, version}` → `ReferenceRead` | 绑定（DRAFT only，`version` 为 DRAFT 版本乐观锁令牌）；404 Asset 不存在或已软删；409 非 DRAFT/重复槽/Asset 跨项目/资格不符（沿用 `bind_reference` 惯例，`characters.py:141-155`） |
-| `PUT .../package/versions/{version_id}/cover` | `{asset_id, version}` → `ReferenceRead` | 设置封面：`role=cover` 槽的绑定/替换语义（已存在封面时同一事务先解绑旧行再绑新行）；DRAFT only；等价于 references 端点的受限形式，单列成端点以匹配 UI 动作 |
-| `DELETE .../package/versions/{version_id}/references/{reference_id}` | body `{version}` → 204 | 解绑（DRAFT only，`version` 为 DRAFT 版本乐观锁令牌，对齐 `DialogueDelete` 携带 `panel_version` 的既有 DELETE-body 惯例） |
-| `POST .../package/versions/{version_id}/outfits` | `{outfit_id, is_default?, sort_order?, version}` → `VersionOutfitRead` | 绑定服装（DRAFT only，`version` 令牌）；409 跨角色/重复/非 DRAFT |
-| `PATCH .../package/versions/{version_id}/outfits/{outfit_id}` | `{is_default, version}` → `VersionOutfitRead` | 设默认（部分唯一索引封并发双默认；置默认不自动清旧——由索引与应用层在同事务互斥更新保证） |
-| `DELETE .../package/versions/{version_id}/outfits/{outfit_id}` | body `{version}` → 204 | 解绑（DRAFT only，`version` 令牌） |
+| `POST .../package/versions/{version_id}/references` | `{asset_id, role, label?, sort_order?, version}` → `ReferenceRead` | 绑定（DRAFT only；`version` 为 DRAFT 令牌，同事务校验并递增父版本，§5.3-2）；404 Asset 不存在或已软删；409 非 DRAFT/重复槽/Asset 跨项目/资格不符（沿用 `bind_reference` 惯例，`characters.py:141-155`） |
+| `PUT .../package/versions/{version_id}/cover` | `{asset_id, version}` → `ReferenceRead` | 设置封面：`role=cover` 槽的绑定/替换语义（已存在封面时同一事务先解绑旧行再绑新行）；DRAFT only，令牌校验并递增；等价于 references 端点的受限形式，单列成端点以匹配 UI 动作 |
+| `DELETE .../package/versions/{version_id}/references/{reference_id}` | body `{version}` → 204 | 解绑（DRAFT only，令牌校验并递增，对齐 `DialogueDelete` 的 DELETE-body 惯例） |
+| `POST .../package/versions/{version_id}/outfits` | `{outfit_id, is_default?, sort_order?, version}` → `VersionOutfitRead` | 绑定服装（DRAFT only，令牌校验并递增）；409 跨角色/重复/非 DRAFT |
+| `PATCH .../package/versions/{version_id}/outfits/{outfit_id}` | `{is_default, version}` → `VersionOutfitRead` | 设默认（部分唯一索引封并发双默认；置默认不自动清旧——由索引与应用层在同事务互斥更新保证）；令牌校验并递增 |
+| `DELETE .../package/versions/{version_id}/outfits/{outfit_id}` | body `{version}` → 204 | 解绑（DRAFT only，令牌校验并递增） |
 | `GET .../package/diff` | `?base_version_id=&target_version_id=` → `PackageDiffRead` | 逐槽结构化差异：规格三块字段级、参考图按 `(role,label)` 对比 Asset 与状态、服装集合与默认位变化 |
 | `GET .../package/versions/{version_id}/completeness` | → `{score, missing[]}` | §7；同时内嵌于版本读取模型 |
 
@@ -444,7 +447,7 @@ Worker 对命中 `character_packages` 的候选：只读取排队快照中的规
 | --- | --- | --- | --- |
 | PKG-S1 | 既有 Character 无损升级 | SQLite 迁移测试（扩展 `test_migrations.py` 往返模式） | 迁移后每个 Character 有包 + V1 DRAFT；`published_version_id` 全 NULL；Character/Reference/Outfit/Style/Asset 行逐字段不变；`prompt_snapshot`/`input_versions` 逐字节不变 |
 | PKG-S2 | ID 不变 | SQLite 单元 | 升级前后 `Character.id`/`CharacterReference.asset_id`/`Outfit.id`/`Asset.id` 集合相等；V1 关系引用同一批 Asset ID；不新建 Asset/Outfit 行 |
-| PKG-S3 | 草稿编辑与乐观锁 | SQLite 单元（新 `test_character_packages.py`） | 规格编辑 `version` 不匹配 409；未知 spec 键 422；无 DRAFT 编辑 409；关系绑定校验角色/项目归属 |
+| PKG-S3 | 草稿编辑与乐观锁 | SQLite 单元（新 `test_character_packages.py`） | 规格编辑 `version` 不匹配 409；未知 spec 键 422；无 DRAFT 编辑 409；两个携带同一 DRAFT 令牌的并发关系变更恰好一个成功、其余 409（compare-and-increment，§5.3-2）；关系绑定校验角色/项目归属 |
 | PKG-S4 | 并发发布唯一性 | SQLite 双 Session（对齐 P2-8 模式） | 同一 DRAFT 并发发布：恰好一个成功，`published_version_id` 唯一且指向该版本；失败方 409；派生与发布竞争串行化 |
 | PKG-S5 | 派生版本与旧版本不可变 | SQLite 单元 | 派生后 base 的 `spec_snapshot`/关系逐字段不变；新 DRAFT 复制关系；旧版本所有变更端点 409 |
 | PKG-S6 | 完整度确定性与 grandfather | SQLite 单元 | 同一行状态两次计算分数一致；草稿规格编辑后 DRAFT 分数即时变化（读包工作集，§7.2）；失效参考图后分数下降且缺失项列出该槽；无包/未发布角色 `ensure_page_ready` 行为与升级前一致；分数不阻断生成 |
