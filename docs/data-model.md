@@ -39,6 +39,10 @@ erDiagram
     GENERATION_BATCH ||--o{ PAGE_CANDIDATE : produces
     GENERATION_BATCH ||--o{ ASSET_CANDIDATE : produces
     CHARACTER ||--o{ CHARACTER_REFERENCE : binds
+    CHARACTER ||--o| CHARACTER_MODEL_PACKAGE : extends
+    CHARACTER_MODEL_PACKAGE ||--o{ CHARACTER_MODEL_PACKAGE_VERSION : versions
+    CHARACTER_MODEL_PACKAGE_VERSION ||--o{ CHARACTER_MODEL_PACKAGE_VERSION_REFERENCE : references
+    CHARACTER_MODEL_PACKAGE_VERSION ||--o{ CHARACTER_MODEL_PACKAGE_VERSION_OUTFIT : outfits
     GENERATION_JOB }o--o{ GENERATION_JOB : depends_on
     GENERATION_JOB ||--o{ GENERATION_RECORD : audits
     GENERATION_JOB ||--o{ MODEL_CALL_ATTEMPT : dispatches
@@ -58,6 +62,10 @@ erDiagram
 ### Character、CharacterReference、Outfit
 
 `Character` 使用 `primary_name` 和 `aliases`，同时保存规范化别名与冲突标记。原文可以用绰号识别角色，剧本与对白的说话人统一写主要姓名。`CharacterReference` 将参考资产绑定到角色和参考类型；服装与风格资产可建立各自的生成批次。
+
+### CharacterModelPackage、CharacterModelPackageVersion（V02-22A 契约冻结，V02-22B 实现前不生效）
+
+`CharacterModelPackage` 与 Character 一对一（`character_id` 唯一，FK CASCADE），是既有角色资产的版本化扩展层：`identity_spec`/`visual_spec`/`negative_constraints` 为固定键集合的包级可编辑工作集；`published_version_id` 是唯一的"当前发布版本"指针（FK SET NULL）；包状态 `ACTIVE/ARCHIVED` 只控制默认继承资格，不影响 Character。`CharacterModelPackageVersion` 以单调 `version_number` 表达不可变版本：状态机 `DRAFT → READY → IN_PRODUCTION → ARCHIVED`（每包至多一个 DRAFT），发布时把包工作集冻结为 `spec_snapshot`，此后规格与关系一律只读；`IN_PRODUCTION` 在首个引用候选的同一事务内条件置入（持久状态，非派生）。`CharacterModelPackageVersionReference`（`role ∈ cover/front/side/back/three_quarter/expression/pose/extra` + `label`）与 `CharacterModelPackageVersionOutfit`（每版至多一个 `is_default`）用关系表表达矩阵槽位与服装集，`asset_id`/`outfit_id` FK RESTRICT 指向既有 Asset/Outfit，不复制实体、文件或服装参考图集合；逻辑槽唯一约束为 `(version_id, role, label)`。版本选择只发生在生成候选层（`prompt_snapshot["character_packages"]` 冻结快照），Scene/Panel/Page 不持有包版本；完整度为服务端读取路径确定性计算的建议指标，不落库、不进入生产门禁。契约详见 `docs/v02-character-model-package-contract.md`。
 
 ### SceneAsset、SceneAssetReference、SceneAssetVariant
 
@@ -170,6 +178,7 @@ stateDiagram-v2
 - 新任务接受目录模型 ID、兼容旧别名或 `auto`；运行前必须验证类型、操作、连接状态和凭据。
 - `JobAssetReference` 锁定排队/执行任务正在使用的参考资产，避免验证后被删除或改用途；场景参考图租约集合同时包含资产级与当前变体关系表中的 `asset_id`。
 - 场景资产活跃名称在项目内唯一（`deleted_at IS NULL` 部分索引）；变体结构化覆盖只允许时间/天气/光照/色调/季节键；每资产至多一个规范变体。
+- 角色模型包（V02-22A 契约冻结）：包与 Character 一对一唯一；每包至多一个 DRAFT 版本（部分唯一索引）且 `(package_id, version_number)` 唯一；版本参考图逻辑槽 `(version_id, role, label)` 唯一；每版至多一个默认服装（部分唯一索引）；READY 后版本不可变，被历史候选引用的版本不可物理删除。
 - 模型调用派发 ID 全局唯一；对账幂等键不得对应不同内容，同一账单维度的周期不得重叠。
 - 对项目/状态/优先级、章节/页码、批次/时间、候选/模型/收藏、资产/哈希建立复合索引。
 
@@ -180,3 +189,5 @@ Alembic 同时支持 SQLite 与 PostgreSQL。修订版迁移把 `image.fast` 映
 迁移 `20260901_23` 扩展 attempt/价格列并新建对账表，对可识别的旧 usage JSON 做幂等结构化回填，无法确定的数量不伪造为 0。降级只删除新表/列；存在无任务归属的付费探测 attempt 时拒绝恢复 `job_id/project_id NOT NULL`，防止静默丢失账本。
 
 迁移 `20260901_24` 新建 `scene_assets` / `scene_asset_references` / `scene_asset_variants` / `scene_asset_variant_references` 四张表，并为 `scenes` 增加两个可空 FK（`SET NULL`）。迁移不做任何数据操作：历史 `location` 文本零触碰、不回填资产行、`scene_asset_id` 保持 NULL；降级在存在场景绑定或新表行时明确拒绝。
+
+迁移 `20260902_25`（角色模型包，**V02-22A 契约冻结、尚未实现**）将新建 `character_model_packages` 等四张表，并为每个既有 Character 回填兼容包与 V1 草稿快照（不发布、指针 NULL、不改写任何既有行）；降级在存在发布指针、多版本或归档包时拒绝。实现与验收以 `docs/v02-character-model-package-contract.md` 为准。
