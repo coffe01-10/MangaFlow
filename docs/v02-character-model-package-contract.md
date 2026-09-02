@@ -320,7 +320,9 @@
 2. 否则角色存在 `status='ACTIVE'` 的包且 `published_version_id` 非空且目标版本 ∈ {READY, IN_PRODUCTION} → 用该版本；
 3. 否则（无包/包归档/未发布）→ **legacy 路径**，校验与今天逐字段一致（`validate_candidate_reference_selections` 原逻辑）。
 
-命中包版本时，排队校验替换为：`character_asset_id` 必须是该版本中 `role` 任意、`Asset` 未删的参考关系行（缺省时按默认继承自动选择：`front` 槽 → `cover` 槽 → 任一 `sort_order` 最小者；全部为空 409 提示选择参考图）；`outfit_id` 解析顺序 = 显式选择 > 分镜 `panel.outfits` > 版本默认服装（`is_default`）；命中包版本的服装必须是该版本的活跃服装关系成员（409 同既有文案风格）；`outfit_asset_id` 必须 ∈ `outfit.reference_asset_ids` 且未删。**门禁联动（需组长批准，§12 #1）**：`MISSING_OUTFIT_ASSIGNMENT` 增加一条替代满足路径——分镜未指派但解析出的包版本存在带有效参考图的默认服装时不再阻断，排队自动选默认服装；其余两个角色类 blocker 与全部风格/模型/Worker 条件不变。无包角色不受任何影响（grandfather 完整）。
+命中包版本时，排队校验替换为：`character_asset_id` 必须是该版本中 `role` 任意、`Asset` 未删的参考关系行（缺省时按默认继承自动选择：`front` 槽 → `cover` 槽 → 任一 `sort_order` 最小者；全部为空 409 提示选择参考图）；`outfit_id` 解析顺序 = 显式选择 > 分镜 `panel.outfits` > 版本默认服装（`is_default`）；命中包版本的服装必须是该版本的活跃服装关系成员（409 同既有文案风格）；`outfit_asset_id` 必须 ∈ `outfit.reference_asset_ids` 且未删。
+
+**门禁联动与解析上下文（冻结；需组长批准事项见 §12 #1）**：`MISSING_OUTFIT_ASSIGNMENT` 增加一条替代满足路径——分镜未指派但**当前解析上下文中的版本**存在带有效参考图的默认服装时不再阻断；其余两个角色类 blocker 与全部风格/模型/Worker 条件不变；无包角色不受任何影响（grandfather 完整）。由于 `ensure_page_ready` 在两个调用点可得的解析上下文不同，冻结如下：`start_batch`（`generation.py:51-54`，尚无候选载荷）以"ACTIVE 包 + 发布指针版本"做门禁时解析；`create_page_candidate`（`ordinal_allocator.py:341`）**先执行 §8.1 的完整版本解析（含显式 `package_version_id`，可为 ARCHIVED 版本），再把解析结果作为上下文传入 `ensure_page_ready`**——`ensure_page_ready` 增加可选的排队解析上下文参数，`MISSING_OUTFIT_ASSIGNMENT` 的包替代路径按该上下文判定。两个调用点都不会出现"门禁用发布指针、排队用显式版本"的判定分叉；显式选择带有效默认服装的旧版本可以正常通过排队。
 
 ### 8.2 排队快照（`prompt_snapshot["character_packages"]`，冻结）
 
@@ -401,7 +403,7 @@ Worker 对命中 `character_packages` 的候选：只读取排队快照中的规
 | `PUT .../package/versions/{version_id}/cover` | `{asset_id, version}` → `ReferenceRead` | 设置封面：`role=cover` 槽的绑定/替换语义（已存在封面时同一事务先解绑旧行再绑新行）；DRAFT only，令牌校验并递增；等价于 references 端点的受限形式，单列成端点以匹配 UI 动作 |
 | `DELETE .../package/versions/{version_id}/references/{reference_id}` | body `{version}` → 204 | 解绑（DRAFT only，令牌校验并递增，对齐 `DialogueDelete` 的 DELETE-body 惯例） |
 | `POST .../package/versions/{version_id}/outfits` | `{outfit_id, is_default?, sort_order?, version}` → `VersionOutfitRead` | 绑定服装（DRAFT only，令牌校验并递增）；409 跨角色/重复/非 DRAFT |
-| `PATCH .../package/versions/{version_id}/outfits/{outfit_id}` | `{is_default, version}` → `VersionOutfitRead` | 设默认（部分唯一索引封并发双默认；置默认不自动清旧——由索引与应用层在同事务互斥更新保证）；令牌校验并递增 |
+| `PATCH .../package/versions/{version_id}/outfits/{outfit_id}` | `{is_default, version}` → `VersionOutfitRead` | 设默认（**原子替换**：锁版本、令牌 compare-and-increment，同一事务清旧默认并设新默认——实现可用单条 `UPDATE ... SET is_default = CASE ... END` 完成清旧设新，部分唯一索引仅作数据库兜底）；仅支持 `is_default=true` 的替换语义，"取消默认"通过解绑该关系实现；非 DRAFT 409 |
 | `DELETE .../package/versions/{version_id}/outfits/{outfit_id}` | body `{version}` → 204 | 解绑（DRAFT only，令牌校验并递增） |
 | `GET .../package/diff` | `?base_version_id=&target_version_id=` → `PackageDiffRead` | 逐槽结构化差异：规格三块字段级、参考图按 `(role,label)` 对比 Asset 与状态、服装集合与默认位变化 |
 | `GET .../package/versions/{version_id}/completeness` | → `{score, missing[]}` | §7；同时内嵌于版本读取模型 |
@@ -452,7 +454,7 @@ Worker 对命中 `character_packages` 的候选：只读取排队快照中的规
 | PKG-S5 | 派生版本与旧版本不可变 | SQLite 单元 | 派生后 base 的 `spec_snapshot`/关系逐字段不变；新 DRAFT 复制关系；旧版本所有变更端点 409 |
 | PKG-S6 | 完整度确定性与 grandfather | SQLite 单元 | 同一行状态两次计算分数一致；草稿规格编辑后 DRAFT 分数即时变化（读包工作集，§7.2）；失效参考图后分数下降且缺失项列出该槽；无包/未发布角色 `ensure_page_ready` 行为与升级前一致；分数不阻断生成 |
 | PKG-S7 | 参考图角色及项目归属校验 | SQLite 单元 | 绑定跨项目 Asset 409；Asset 已软删 404（对齐 `bind_reference`）；`role/label` 组合非法 422；核心槽重复 409；同一逻辑槽换绑前旧行未解绑 409；被其他角色包版本引用的素材跨角色换绑 409（§10.3a） |
-| PKG-S8 | 默认服装唯一性 | SQLite 单元 + 并发双设 | 部分唯一索引使并发双默认只成功一个；解绑默认后可再设 |
+| PKG-S8 | 默认服装唯一性 | SQLite 单元 + 并发双设 | 换默认为原子替换：同事务清旧设新（旧行不再 `is_default`，无需两次请求）；并发双设恰好一胜；解绑默认后可再设 |
 | PKG-S9 | 排队快照和 Worker 读取一致 | SQLite 单元 + 本地执行器 + 假供应商 | 排队后修改版本/关系/Character 行，Worker 仍按快照生成；显式 `package_version_id` 属于其他角色或其他项目时 409（§8.1-1）；`prompt_snapshot["character_packages"]` 与 `input_versions["character_packages"]` 的 package_version_id/version_number/fingerprint 一致；租约集合含版本解析出的实际 Asset |
 | PKG-S10 | JobAssetReference 租约与删除保护 | SQLite 单元 | 排队/执行期间删除被租约 Asset 409；DRAFT 关系解绑不影响在途任务 |
 | PKG-S11 | 历史候选和重放逐字段不变 | SQLite 单元 | 发布新版本后：旧候选 `prompt_snapshot` 逐字节不变；重试/修复/升清沿用原快照；无 `character_packages` 键的旧候选重放走 legacy 路径且结果不变 |
