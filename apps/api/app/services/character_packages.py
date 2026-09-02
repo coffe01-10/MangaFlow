@@ -279,9 +279,10 @@ def run_package_transaction(
 ):
     """Run ``fn(package)`` under the package row lock with limited retries.
 
-    All writers use the same lock order: the package row first, then its
-    versions/relations. A failed final commit rolls the whole operation back
-    and surfaces a controlled 409; there is no half-published state.
+    All writers use the same lock order: the package row first, then the
+    bound Asset row for reference changes, then versions/relations. A failed
+    final commit rolls the whole operation back and surfaces a controlled 409;
+    there is no half-published state.
     """
 
     last_error: BaseException | None = None
@@ -305,6 +306,41 @@ def run_package_transaction(
             db.expire_all()
             pause_before_ordinal_retry(attempt, max_attempts)
     raise HTTPException(status_code=409, detail="模型包操作冲突，请稍后重试") from last_error
+
+
+def run_lock_retry(
+    db: Session,
+    fn,
+    *,
+    conflict_detail: str,
+    max_attempts: int = ORDINAL_ALLOCATION_MAX_ATTEMPTS,
+    commit: bool = False,
+):
+    """Retry ``fn()`` on SQLite lock/busy with a full rollback.
+
+    Callers that take ``lock_asset_for_ownership`` outside
+    ``run_package_transaction`` must use this so ``SQLITE_BUSY`` becomes a
+    controlled 409 instead of an unhandled 500. ``fn`` must be the first
+    writer in the caller's unit: a failed attempt rolls back the session.
+    """
+
+    last_error: BaseException | None = None
+    for attempt in range(max_attempts):
+        try:
+            with ordinal_savepoint(db):
+                result = fn()
+                db.flush()
+            if commit:
+                db.commit()
+            return result
+        except (IntegrityError, OperationalError) as error:
+            if isinstance(error, OperationalError) and not is_sqlite_lock_error(error):
+                raise
+            last_error = error
+            db.rollback()
+            db.expire_all()
+            pause_before_ordinal_retry(attempt, max_attempts)
+    raise HTTPException(status_code=409, detail=conflict_detail) from last_error
 
 
 def create_package(
@@ -648,6 +684,29 @@ def delete_draft_version(
     return run_package_transaction(db, package.id, _delete)
 
 
+def lock_asset_for_ownership(db: Session, asset_id: str) -> Asset | None:
+    """Serialize cross-character binding and DRAFT cleanup on one Asset row.
+
+    Package writers already lock the package row first; this lock is taken
+    afterwards so bind/rebind/cleanup cannot both observe the asset as free.
+    PostgreSQL uses ``FOR UPDATE``; SQLite issues a no-op row UPDATE so two
+    WAL readers cannot both insert a relation for the same previously unowned
+    asset. Callers outside ``run_package_transaction`` must wrap this in
+    ``run_lock_retry``. Real PostgreSQL race coverage stays PKG-S14 / NOT RUN.
+    """
+
+    asset = lock_entity(db, Asset, asset_id)
+    if asset is None:
+        return None
+    bind = db.get_bind() if hasattr(db, "get_bind") else getattr(db, "bind", None)
+    dialect_name = getattr(getattr(bind, "dialect", None), "name", None)
+    if dialect_name == "sqlite":
+        db.execute(update(Asset).where(Asset.id == asset_id).values(version=Asset.version))
+        db.flush()
+        asset = db.get(Asset, asset_id)
+    return asset
+
+
 def _check_asset_binding_eligible(
     db: Session,
     *,
@@ -656,7 +715,7 @@ def _check_asset_binding_eligible(
     asset_id: str,
     label: str = "参考素材",
 ) -> Asset:
-    asset = db.get(Asset, asset_id)
+    asset = lock_asset_for_ownership(db, asset_id)
     if not asset or asset.deleted_at is not None:
         raise HTTPException(status_code=404, detail=f"{label}不存在")
     if asset.project_id != project_id:
@@ -1388,6 +1447,28 @@ def _mark_in_production(db: Session, version_id: str) -> bool:
     return changed.rowcount == 1
 
 
+def _accept_production_version(
+    db: Session, version_id: str, *, from_default: bool
+) -> bool:
+    """READY→IN_PRODUCTION, or accept an already-usable published version.
+
+    Contract §5.2/§5.3-5: the conditional update is idempotent. A later
+    default-inherited candidate must keep using an unchanged IN_PRODUCTION
+    published version instead of treating zero updated rows as a conflict.
+    Explicit selections also accept ARCHIVED (and a still-READY row whose
+    update lost a race).
+    """
+
+    if _mark_in_production(db, version_id):
+        return True
+    version = db.get(CharacterModelPackageVersion, version_id)
+    if version is None:
+        return False
+    if version.status == VERSION_IN_PRODUCTION:
+        return True
+    return not from_default and version.status in {VERSION_READY, VERSION_ARCHIVED}
+
+
 def _resolve_one_character(
     db: Session,
     *,
@@ -1485,8 +1566,21 @@ def _resolve_one_character(
         outfit = db.get(Outfit, outfit_id)
         if not outfit or outfit.character_id != character.id or outfit.project_id != project.id:
             raise HTTPException(status_code=409, detail="所选服装不属于当前人物")
+        live_outfit_ids = _live_asset_ids(db, list(outfit.reference_asset_ids or []))
         outfit_asset_id = selection.get("outfit_asset_id")
-        if outfit_asset_id not in (outfit.reference_asset_ids or []):
+        if not outfit_asset_id:
+            # Workflow GENERATE and default inheritance omit the asset id;
+            # pick the first live reference on the resolved outfit, matching
+            # the character_asset_id default chain.
+            outfit_asset_id = next(
+                (
+                    item
+                    for item in (outfit.reference_asset_ids or [])
+                    if item in live_outfit_ids
+                ),
+                None,
+            )
+        elif outfit_asset_id not in (outfit.reference_asset_ids or []):
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -1494,9 +1588,15 @@ def _resolve_one_character(
                     "的服装选择一张已绑定参考图"
                 ),
             )
-        outfit_asset = db.get(Asset, outfit_asset_id)
+        outfit_asset = db.get(Asset, outfit_asset_id) if outfit_asset_id else None
         if not outfit_asset or outfit_asset.deleted_at is not None:
-            raise HTTPException(status_code=409, detail="服装参考图已失效，请重新选择")
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"请为画面人物 {character.primary_name} "
+                    "的服装选择一张已绑定参考图"
+                ),
+            )
 
     default_outfit_has_live_reference = False
     if default_relation:
@@ -1593,21 +1693,21 @@ def resolve_package_selections(
                 or package_now.published_version_id != version_id
             ):
                 eligible = False
-        marked = _mark_in_production(db, version_id) if eligible else False
-        if not marked and not from_default:
-            # Explicit selection: the conditional update only marks READY
-            # versions; an already IN_PRODUCTION or ARCHIVED one is fine for
-            # the snapshot and must not be re-resolved (§5.3-5).
-            version = db.get(CharacterModelPackageVersion, version_id)
-            if version and version.status in {
-                VERSION_READY,
-                VERSION_IN_PRODUCTION,
-                VERSION_ARCHIVED,
-            }:
-                marked = True
-        if not marked:
+        accepted = (
+            _accept_production_version(db, version_id, from_default=from_default)
+            if eligible
+            else False
+        )
+        if not accepted and not from_default:
+            raise HTTPException(
+                status_code=409,
+                detail="角色模型包版本已被并发归档或切换，请刷新后重试",
+            )
+        if not accepted:
             # Default path: re-resolve once; a simultaneously archived or
-            # re-published package must not be silently used.
+            # re-published package must not be silently used. An unchanged
+            # IN_PRODUCTION published version is accepted above and never
+            # reaches this retry.
             retry = _resolve_one_character(
                 db,
                 project=project,
@@ -1634,7 +1734,9 @@ def resolve_package_selections(
                     status_code=409,
                     detail="角色模型包版本已被并发归档或切换，请刷新后重试",
                 )
-            if not _mark_in_production(db, resolution.version.id):
+            if not _accept_production_version(
+                db, resolution.version.id, from_default=True
+            ):
                 raise HTTPException(
                     status_code=409,
                     detail="角色模型包版本已被并发归档或切换，请刷新后重试",
@@ -1680,20 +1782,28 @@ def detach_draft_package_references_for_asset(db: Session, asset_id: str) -> Non
     """Contract §10.3: soft-deleting an asset physically clears DRAFT slot rows.
 
     READY+ relation rows keep the frozen fact; consumers filter by
-    ``Asset.deleted_at`` at read time.
+    ``Asset.deleted_at`` at read time. Must be the first writer in the
+    caller's unit so lock contention can roll back and retry.
     """
 
-    for reference in db.scalars(
-        select(CharacterModelPackageVersionReference).where(
-            CharacterModelPackageVersionReference.asset_id == asset_id
-        )
-    ):
-        version = db.get(CharacterModelPackageVersion, reference.version_id)
-        if not version:
-            continue
-        if version.status == VERSION_DRAFT:
-            db.delete(reference)
-            # Editing a draft requires the parent token; the system must not
-            # silently mutate drafts without bumping it.
-            version.version += 1
-    db.flush()
+    def _detach() -> None:
+        lock_asset_for_ownership(db, asset_id)
+        for reference in db.scalars(
+            select(CharacterModelPackageVersionReference).where(
+                CharacterModelPackageVersionReference.asset_id == asset_id
+            )
+        ):
+            version = db.get(CharacterModelPackageVersion, reference.version_id)
+            if not version:
+                continue
+            if version.status == VERSION_DRAFT:
+                db.delete(reference)
+                # Editing a draft requires the parent token; the system must not
+                # silently mutate drafts without bumping it.
+                version.version += 1
+
+    run_lock_retry(
+        db,
+        _detach,
+        conflict_detail="素材绑定清理冲突，请稍后重试",
+    )
