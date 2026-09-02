@@ -205,12 +205,12 @@
 ### 5.3 操作定义（十个场景逐一冻结）
 
 1. **创建兼容包** `POST /characters/{character_id}/package`：单事务创建 `CharacterModelPackage(ACTIVE)` + `V1 DRAFT`（`spec_snapshot` 初始化为 `{"identity_spec": {...payload}, "visual_spec": {...}, "negative_constraints": [...], "frozen_from": "package"}` 的空/初始副本，`published_at=NULL`）。包已存在 → 409；项目或角色不存在/项目已软删 → 404。
-2. **编辑草稿** `PATCH package`（规格）与关系 bind/unbind（§9）：规格编辑要求携带 `package.version`（乐观锁，不一致 409，对齐 `update_character` 的 `characters.py:105-106`）；无 DRAFT 时规格编辑 409（状态冲突沿用既有惯例，提示"请先派生新版本"）。**关系变更在同一事务内对 DRAFT 版本的 `version` 执行 compare-and-increment**：请求携带的令牌必须等于当前值，通过后校验、写入关系并在同事务递增 `version.version`（`Timestamped.version` 不会自动递增，必须显式 +1）——两个携带同一令牌的并发关系变更只有第一个成功，其余 409，不会静默覆盖。全部单事务。
-3. **发布版本** `POST versions/{id}/publish`：单事务：锁包行 → 重读 DRAFT 及关系 → 校验（目标非 DRAFT → 409；活跃参考关系为 0 → 422）→ 把包工作集规格写入 `spec_snapshot`（`frozen_from: "package"`）→ `status='READY'`、`published_at=now` → `published_version_id=id`。**发布不要求完整度阈值**（完整度仅建议，§7.5）。并发发布同一草稿：后到者在行锁/条件更新处 409；发布与派生竞争：派生要求无 DRAFT，二者在包锁内串行。失败整体回滚，**不存在半发布状态**（指针与状态同事务落库）。
+2. **编辑草稿** `PATCH package`（规格）与关系 bind/unbind（§9）：规格编辑对 `package.version` 执行**同事务 compare-and-increment**（请求携带令牌 = 当前值，通过后写入规格并显式 +1——`Timestamped.version` 不会自动递增；两个携带同一令牌的并发规格编辑只有第一个成功，其余 409，对齐 `update_character` 的 `characters.py:105-123` 惯例）；无 DRAFT 时规格编辑 409（状态冲突沿用既有惯例，提示"请先派生新版本"）。**关系变更在同一事务内对 DRAFT 版本的 `version` 执行 compare-and-increment**：请求携带的令牌必须等于当前值，通过后校验、写入关系并在同事务递增 `version.version`——两个携带同一令牌的并发关系变更只有第一个成功，其余 409，不会静默覆盖。全部单事务。
+3. **发布版本** `POST versions/{id}/publish`：单事务：锁包行 → 重读 DRAFT 及关系 → 校验（目标必须属于 URL 寻址的包：`version.package_id == package.id`，否则 404/409——与派生/激活同规则，防止把 A 包工作集冻结进 B 包草稿、再把 A 指针指向 B 版本；目标非 DRAFT → 409；活跃参考关系为 0 → 422）→ 把包工作集规格写入 `spec_snapshot`（`frozen_from: "package"`）→ `status='READY'`、`published_at=now` → `published_version_id=id`。**发布不要求完整度阈值**（完整度仅建议，§7.5）。并发发布同一草稿：后到者在行锁/条件更新处 409；发布与派生竞争：派生要求无 DRAFT，二者在包锁内串行。失败整体回滚，**不存在半发布状态**（指针与状态同事务落库）。
 4. **派生新版本** `POST versions {base_version_id?}`：要求当前无 DRAFT（409）；`base` 缺省取 `published_version_id`，显式指定可为任何非 DRAFT 版本，但**必须属于当前包**（`base.package_id == package.id`，否则 409/404——外键不约束同包归属，服务端必须校验，防止把其他角色的身份与关系复制进来）；base 为 DRAFT 422。单事务：分配 V(n+1)；新 DRAFT `spec_snapshot = base.spec_snapshot`（`frozen_from: "derive"`）、`derived_from_version_id=base.id`；复制 base 全部关系行（同 asset/role/label/sort_order/is_default）；包工作集三字段重置为 `base.spec_snapshot` 对应内容（UI 从基线继续编辑）；**同事务递增 `package.version`**——工作集被整体替换，持有旧令牌的规格编辑请求（PATCH package）随之失效 409，不得覆盖新草稿。
 5. **生产使用后的冻结**：见 §5.2 IN_PRODUCTION 置入规则。置入失败（如版本被并发归档）不阻塞候选创建——条件更新影响 0 行即跳过，快照事实不受影响。
 6. **归档与恢复**：版本 `ARCHIVED`：从 READY/IN_PRODUCTION 可达；`version == package.published_version_id` 时 409（"先切换发布版本"）。恢复 `POST restore` → READY（不自动恢复指针）。包 `POST .../package/archive`（ACTIVE→ARCHIVED）/`POST .../package/restore`（ARCHIVED→ACTIVE）：随时可做；归档后该角色退出默认继承（§8.1），Character 及既有页面不受影响；归档不清 `published_version_id`（历史事实）。
-7. **删除或解绑参考图/服装**：关系仅 DRAFT 可变；非 DRAFT 409。解绑 = 物理删除关系行。Asset 软删路径见 §10.1。DRAFT 版本整体删除（§10.1）级联清关系。
+7. **删除或解绑参考图/服装**：关系仅 DRAFT 可变；非 DRAFT 409。解绑 = 物理删除关系行。Asset 软删路径见 §10.3。DRAFT 版本整体删除（§10.1）级联清关系，**但包的最后一个版本不可删除**（409，"包至少保留一个版本；如需弃用请归档包"）——否则未发布包将陷入不可恢复态：建包 409（已存在）、派生无 base（`published_version_id` 为 NULL 且无其他版本）、包又无删除端点。
 8. **切换当前发布版本** `POST activate {version_id, expected_published_version_id}`：目标必须属于当前包（`target.package_id == package.id`，FK 只保证版本存在、不约束同包归属，服务端强校验，否则 404/409）且状态为 READY 或 IN_PRODUCTION（ARCHIVED 需先恢复，否则 409）；`expected_published_version_id` 是**必填**的 CAS 令牌——单事务锁包行后校验 `package.published_version_id == expected_published_version_id`，不一致 409（后到者不得静默覆盖先到者的切换）；通过后 `published_version_id` 指向目标，目标状态不变。
 9. **并发发布两个草稿**：每包至多一个 DRAFT（部分唯一索引）+ 派生守卫，使"两个不同草稿"不可构造；同一草稿的两个并发发布由包行锁 + 条件更新收敛为一个成功、一个 409。SQLite BUSY/LOCKED 回滚整个事务并按 §5.1 重试。
 10. **失败回滚**：创建/派生/发布/切换/归档均为单事务；任何 IntegrityError/锁异常 → 回滚该操作全部写入（包括已分配的 version_number 与关系副本），调用方得到 409；不残留指针移动或状态跃迁。
@@ -263,7 +263,7 @@
 3. 存在多于一个版本的包（发生过派生）→ 拒绝；
 4. 存在 `status='ARCHIVED'` 的包 → 拒绝。
 
-全部通过（即所有包仍处于"迁移-created V1 草稿"形态，用户至多编辑过草稿内容）时，按序删除：**PostgreSQL 必须先 `ALTER TABLE character_model_packages DROP CONSTRAINT fk_character_model_packages_published_version`**（两阶段创建的延迟约束与 versions→packages FK 构成 schema 级循环，先删约束才能删除任一父表），随后按 `character_model_packages` → `character_model_package_versions` → 两张关系表的顺序 DROP；SQLite 直接按序 DROP 四张表（无独立约束对象）。**允许无损降级的论证**：Character/CharacterReference/Outfit/StyleProfile/Asset/候选/记录从未被迁移触碰，删除包行至多丢弃"未发布的草稿编辑"（规格文字、槽位调整），事实源全部保留。V1 关系行的删除不影响既有绑定。存在新版本或发布指针时拒绝降级且数据保持原样（不做级联删除兜底）。
+全部通过（即所有包仍处于"迁移-created V1 草稿"形态，用户至多编辑过草稿内容）时，按**子表优先**的依赖序删除：**PostgreSQL 必须先 `ALTER TABLE character_model_packages DROP CONSTRAINT fk_character_model_packages_published_version`**（解除两阶段创建的 packages→versions 指针约束），随后依次 DROP `character_model_package_version_references` → `character_model_package_version_outfits` → `character_model_package_versions`（其 `package_id` FK 依赖 packages，必须先于 packages 删除）→ `character_model_packages`；SQLite 无独立约束对象，按同一子表优先顺序直接 DROP 四张表。**允许无损降级的论证**：Character/CharacterReference/Outfit/StyleProfile/Asset/候选/记录从未被迁移触碰，删除包行至多丢弃"未发布的草稿编辑"（规格文字、槽位调整），事实源全部保留。V1 关系行的删除不影响既有绑定。存在新版本或发布指针时拒绝降级且数据保持原样（不做级联删除兜底）。
 
 ### 6.4 PostgreSQL 与 SQLite 差异（冻结）
 
@@ -392,13 +392,13 @@ Worker 对命中 `character_packages` 的候选：只读取排队快照中的规
 | `GET /projects/{project_id}/characters/{character_id}/package` | `?include_versions=true` → `PackageRead`（详情，含版本数组与关系） | 只读 |
 | `PATCH /projects/{project_id}/characters/{character_id}/package` | 规格三字段 + `version` → `PackageRead` | 编辑草稿工作集；409 乐观锁不一致或无 DRAFT（状态冲突沿用既有 409 惯例） |
 | `POST .../package/versions` | `{base_version_id?}` → `VersionRead`（新 DRAFT） | 派生（§5.3-4，含同包归属校验与 `package.version` 递增）；409 已有 DRAFT/跨包 base |
-| `POST .../package/versions/{version_id}/publish` | `{}` → `VersionRead` | 发布（§5.3-3）；409 非 DRAFT/锁耗尽/已是指针；422 零参考关系 |
+| `POST .../package/versions/{version_id}/publish` | `{}` → `VersionRead` | 发布（§5.3-3）；404/409 目标跨包、非 DRAFT、锁耗尽/已是指针；422 零参考关系 |
 | `POST .../package/archive` | `{}` → `PackageRead` | 包 ACTIVE→ARCHIVED（§5.3-6）：退出默认继承，不影响 Character 与既有候选；无前置条件 |
 | `POST .../package/restore` | `{}` → `PackageRead` | 包 ARCHIVED→ACTIVE；恢复默认继承资格（发布指针不变） |
 | `POST .../package/versions/{version_id}/archive` | `{}` → `VersionRead` | 409 目标为发布指针 |
 | `POST .../package/versions/{version_id}/restore` | `{}` → `VersionRead` | ARCHIVED→READY |
 | `POST .../package/activate` | `{version_id, expected_published_version_id}` → `PackageRead` | 切换发布指针（§5.3-8，CAS 令牌必填 + 同包归属校验）；404/409（指针已被并发切换/跨包目标） |
-| `DELETE .../package/versions/{version_id}` | → 204 | 仅 DRAFT 可物理删除；409 其他状态 |
+| `DELETE .../package/versions/{version_id}` | → 204 | 仅 DRAFT 可物理删除；409 其他状态；409 目标是该包唯一版本（§5.3-7，防止不可恢复态） |
 | `POST .../package/versions/{version_id}/references` | `{asset_id, role, label?, sort_order?, version}` → `ReferenceRead` | 绑定（DRAFT only；`version` 为 DRAFT 令牌，同事务校验并递增父版本，§5.3-2）；404 Asset 不存在或已软删；409 非 DRAFT/重复槽/Asset 跨项目/资格不符（沿用 `bind_reference` 惯例，`characters.py:141-155`） |
 | `PUT .../package/versions/{version_id}/cover` | `{asset_id, version}` → `ReferenceRead` | 设置封面：`role=cover` 槽的绑定/替换语义（已存在封面时同一事务先解绑旧行再绑新行）；DRAFT only，令牌校验并递增；等价于 references 端点的受限形式，单列成端点以匹配 UI 动作 |
 | `DELETE .../package/versions/{version_id}/references/{reference_id}` | body `{version}` → 204 | 解绑（DRAFT only，令牌校验并递增，对齐 `DialogueDelete` 的 DELETE-body 惯例） |
@@ -433,7 +433,7 @@ Worker 对命中 `character_packages` 的候选：只读取排队快照中的规
 
 ## 10. 软删除与资源所有权（冻结）
 
-1. **删除/恢复语义**：Package——无删除端点，仅 `status` ACTIVE↔ARCHIVED；Version——DRAFT 可物理删除（级联关系行），READY/IN_PRODUCTION/ARCHIVED 只能归档/恢复，**永不物理删除**；reference/outfit 关系——仅 DRAFT 可解绑（物理删除行）；Outfit 关系成员的 Outfit 本体删除见第 4 条。
+1. **删除/恢复语义**：Package——无删除端点，仅 `status` ACTIVE↔ARCHIVED；Version——DRAFT 可物理删除（级联关系行），但包的最后一个版本不可删（§5.3-7），READY/IN_PRODUCTION/ARCHIVED 只能归档/恢复，**永不物理删除**；reference/outfit 关系——仅 DRAFT 可解绑（物理删除行）；Outfit 关系成员的 Outfit 本体删除见第 4 条。
 2. **被历史候选引用的版本**：禁止物理删除（上面已冻结"非 DRAFT 不可删"）。该不变式使 Worker 的 `package_version_id` 存在性校验（§8.5）无需处理悬空。
 3. **被活动 JobAssetReference 租约的 Asset**：删除被 409（既有 `_ensure_asset_not_in_active_job`，不改）；资产软删对**未租约**场景的影响按版本状态二选一（冻结，消除二义性）：**DRAFT 版本关系行随资产删除被物理清除**（V02-22B 扩展 `_detach_reference_asset`，与该函数对既有 `CharacterReference` 行的物理删除语义一致，草稿槽位回到"空缺"，用户可重新绑定）；**READY+ 版本关系行原样保留**（冻结事实，消费方按 `Asset.deleted_at` 过滤，槽位显示"已失效"，完整度重算确定性降分，§7.2）。旧 Worker 晚返回/租约失效语义沿用既有 P1-7/P1-9 机制，本契约不重复实现。
 3a. **跨角色换绑守卫（冻结，V02-22B 必须实现）**：`bind_reference`（`characters.py:129-188`）把素材换绑到角色 B（删除角色 A 的 `CharacterReference` 并为 B 重建）之前，必须校验该 Asset 未被**任何其他角色的**包版本参考关系（DRAFT 或 READY+，未解绑行）引用；命中即 409（"该素材已被角色模型包版本引用，请先在对应版本中解绑或放弃换绑"）。理由：包版本关系直接指向 Asset（§4.3），若不设守卫，A 的已发布版本与 B 的角色绑定会同时指向同一张图，生成时造成身份混合，且 READY+ 关系不可变、无法自动解除。素材属于同一角色的包关系时不拦截（换绑前后角色一致，无身份混合）。此守卫与既有"asset 全局唯一"约束共同保证"一张人物参考图至多服务一个角色"在包时代继续成立。
