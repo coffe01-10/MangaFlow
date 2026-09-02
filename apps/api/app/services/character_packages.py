@@ -1549,15 +1549,14 @@ def resolve_package_selections(
         resolution, snapshot, from_default = resolved
         version_id = resolution.version.id
         marked = _mark_in_production(db, version_id)
+        if not marked and not from_default:
+            # Explicit selection: the conditional update only marks READY
+            # versions; an already IN_PRODUCTION or ARCHIVED one is fine for
+            # the snapshot and must not be re-resolved (§5.3-5).
+            version = db.get(CharacterModelPackageVersion, version_id)
+            if version and version.status in {VERSION_READY, VERSION_IN_PRODUCTION, VERSION_ARCHIVED}:
+                marked = True
         if not marked:
-            if not from_default:
-                # Explicit selection of a live version: the conditional update
-                # only marks READY versions; an already IN_PRODUCTION or
-                # ARCHIVED one is fine for the snapshot.
-                version = db.get(CharacterModelPackageVersion, version_id)
-                if version and version.status in {VERSION_READY, VERSION_IN_PRODUCTION}:
-                    marked = True
-            if not marked:
                 # Default path: re-resolve once; a simultaneously archived or
                 # re-published package must not be silently used.
                 retry = _resolve_one_character(

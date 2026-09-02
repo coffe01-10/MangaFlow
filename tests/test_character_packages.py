@@ -1139,6 +1139,56 @@ def test_package_legacy_candidate_replays_without_facts(client, db_session, monk
     assert prompt_a == prompt_b
 
 
+def test_package_explicit_archived_version_usable_for_generation(
+    client, db_session, monkeypatch
+):
+    """§8.1: an explicitly selected ARCHIVED version stays selectable."""
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    _skip_page_readiness(monkeypatch)
+    project, character, front, outfit, o_asset, version_id = _package_published_fixture(
+        client, db_session, monkeypatch
+    )
+    derived = client.post(
+        f"{_package_url(project['id'], character['id'])}/versions", json={}
+    )
+    assert derived.status_code == 201, derived.text
+    v2_id = derived.json()["id"]
+    publish_v2 = client.post(
+        f"{_package_url(project['id'], character['id'])}/versions/{v2_id}/publish",
+        json={},
+    )
+    assert publish_v2.status_code == 200, publish_v2.text
+    archived = client.post(
+        f"{_package_url(project['id'], character['id'])}/versions/{version_id}/archive",
+        json={},
+    )
+    assert archived.status_code == 200, archived.text
+    assert archived.json()["status"] == "ARCHIVED"
+
+    _chapter, page = _generation_page(db_session, project["id"], character["id"])
+    batch = client.post(f"/api/v1/pages/{page.id}/batches")
+    assert batch.status_code == 201, batch.text
+    queued = client.post(
+        f"/api/v1/batches/{batch.json()['id']}/candidates",
+        json={
+            "model_alias": "image.nano_banana_2",
+            "resolution": "1K",
+            "storyboard_version": page.storyboard_version,
+            "reference_selections": {
+                character["id"]: {
+                    "package_version_id": version_id,
+                    "outfit_id": outfit["id"],
+                    "outfit_asset_id": o_asset["id"],
+                }
+            },
+        },
+    )
+    assert queued.status_code == 202, queued.text
+    facts = queued.json()["candidate"]["prompt_snapshot"]["character_packages"][character["id"]]
+    assert facts["package_version_id"] == version_id
+    assert facts["version_number"] == 1
+
+
 def test_package_repair_candidate_inherits_queued_snapshot(
     client, db_session, monkeypatch
 ):

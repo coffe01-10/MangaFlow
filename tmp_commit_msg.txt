@@ -1,0 +1,6 @@
+Allow explicitly selected ARCHIVED versions on the generation path
+
+The IN_PRODUCTION guard of an explicit selection must skip the
+conditional update for ARCHIVED versions (contract §5.3-5) instead of
+falling into the default-path re-resolution and returning a spurious 409.
+Covers the regression with a generation test.
