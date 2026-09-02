@@ -1,8 +1,15 @@
 # MangaFlow AI 开发进度
 
-更新时间：2026-09-01
+更新时间：2026-09-02
 
 本文件记录修订版 MVP 计划的实际完成度。
+
+## V02-22A 角色模型包数据契约已合并（2026-09-02）
+
+- Issue #78 / PR #79 / `glm/v02-22a-character-package-contract` 已冻结角色模型包数据与生成契约：新增 `docs/v02-character-model-package-contract.md`，并同步 `docs/data-model.md`（ER 图、实体小节、约束、迁移策略）与 `docs/architecture.md`（模块职责、生成边界），两处均标注"契约冻结，V02-22B 实现前不生效"。
+- 契约要点：`Character.id` 继续作为唯一兼容锚点，包 API 以 character_id 寻址；包/版本/版本参考图/版本服装四张新表用关系表表达（逻辑槽唯一 `(version_id, role, label)`、每版至多一个默认服装、每包至多一个 DRAFT）；版本状态机 `DRAFT → READY → IN_PRODUCTION → ARCHIVED`，publish/activate/archive/restore 共享包行锁并在锁内重验目标状态与发布指针；迁移为每个既有 Character 建兼容包与 V1 草稿（不发布、不改写既有行、不触碰候选快照），降级按子表优先删表并在存在发布指针/多版本/归档包时拒绝；完整度为服务端确定性计算的建议指标，不进入 `ensure_page_ready` 生产门禁；候选排队把版本与规格冻结进 `prompt_snapshot["character_packages"]`，Worker 只消费排队快照，发布新版本不改变历史候选、不触发页面复核。
+- Codex Review 八轮共 27 条意见（11 P1 + 16 P2）全部修复并逐条回复；末轮复审 0 P1，2 条 P2（排队快照保留值、默认解析与归档竞态重验）合并前修复。`git diff --check` 通过；本任务为设计文档，未运行 `npm run check` 充当契约验收，未创建迁移或修改任何业务代码，未调用真实供应商。
+- PR #79 已合并为 `6298be1`，Issue #78 自动关闭；主 worktree 已与 `origin/master` 同步，`output/` 等未跟踪文件未触碰。真实 PostgreSQL 升降级与并发（PKG-S14）、Redis/RQ 集成、真实供应商调用与浏览器 E2E 为 `NOT RUN`。V02-22B 实现任务按契约 §12.4 拆分建议另行创建。
 
 ## V02-20B 场景一级资产后端已审阅合并（2026-09-01）
 
