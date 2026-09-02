@@ -442,6 +442,16 @@ def test_package_archive_restore_package_roundtrip(client):
     archived = client.post(f"{url}/archive", json={})
     assert archived.status_code == 200, archived.text
     assert archived.json()["status"] == "ARCHIVED"
+    active_only = client.get(
+        "/api/v1/projects/{0}/character-packages".format(project["id"]),
+        params={"status": "ACTIVE"},
+    ).json()
+    assert active_only == []
+    archived_only = client.get(
+        "/api/v1/projects/{0}/character-packages".format(project["id"]),
+        params={"status": "ARCHIVED"},
+    ).json()
+    assert [item["character_id"] for item in archived_only] == [character["id"]]
     restored = client.post(f"{url}/restore", json={})
     assert restored.status_code == 200
     assert restored.json()["status"] == "ACTIVE"
