@@ -68,7 +68,7 @@
 
 #### 下一实现窗口
 
-1. V02-14A / Issue #62 已由 PR #63 合并，V02-14B / Issue #64 已由 PR #65 合并，V02-14C / Issue #67 已由 PR #68 合并。下一实现项为 V02-15B，仍需按 L3 数据任务建立独立 Issue/分支/PR。
+1. V02-14A / Issue #62 已由 PR #63 合并，V02-14B / Issue #64 已由 PR #65 合并，V02-14C / Issue #67 已由 PR #68 合并；V02-15B 已由 PR #71 合并（`7af5b59`），V02-16B 已由 PR #73 合并（`fec8d7f`），V02-21B 已由 PR #77 合并（`7c10d27`），V02-22A / Issue #78 已由 PR #79 合并（`6298be1`）。下一实现项为 V02-22B（按角色模型包契约 §12.4 拆分），仍需按 L3 数据任务建立独立 Issue/分支/PR。
 2. 资产、分镜、导演、CLI、用量和桌面端均先从各自已批准的 A 级设计文档拆出实现 Issue；不得把审计文档的合并当作功能交付。
 3. 所有实现 Issue 必须引用对应契约，写明迁移/事务/资源所有权，并标注真实供应商、CLI、PostgreSQL、Redis/RQ、浏览器或桌面环境的 `RUN`、`NOT RUN`、`BLOCKED`。
 - [x] **V02-13（L3）：建立 CLI 图像通道公共执行器。** 将 Codex CLI、Antigravity CLI、Grok Build 视为可选执行通道，而不是假装成普通 HTTP API。
@@ -90,9 +90,9 @@
 - [x] **V02-20（L3）：把场景升级为一级资产。**
   - [x] **V02-20A / Issue #44（设计）：** 已合并 `docs/v02-scene-asset-contract.md`，冻结 SceneAsset、版本、引用、租约、软删除及可回滚迁移边界；现有 `Scene.location` 保持描述兜底。
   - [x] **V02-20B / Issue #74（实现）：** 已由 PR #75 合并（合并提交 `6453a40`）：完成 SceneAsset/Reference/Variant 数据模型与迁移、项目级 API、统一背景解析、Scene 绑定校验、软删除/恢复、生成快照与引用租约，并同步架构与数据模型；SQLite 迁移和离线回归通过，真实 PostgreSQL 升降级、真实 Worker/供应商调用为 `NOT RUN`。
-- [ ] **V02-21（L2）：建设场景资产工作区。**
+- [x] **V02-21（L2）：建设场景资产工作区。**
   - [x] **V02-21A / Issue #43（设计）：** 已合并 `docs/v02-scene-workspace-ui-audit.md`，与 V02-20A 的状态、字段和引用关系对齐。
-  - [ ] **V02-21B（实现）：** 在 V02-20B 后实现创建、参考图/变体、确认、软删除/恢复、筛选和页面绑定。
+  - [x] **V02-21B（实现）：** 已由 PR #77 合并（合并提交 `7c10d27`）：实现场景工作区创建、参考图/变体、确认、软删除/恢复、筛选和页面绑定；其 NOT RUN 边界以该 PR 记录为准。
 - [ ] **V02-22（L3，组长设计、GLM 实现优先）：将角色参考资产升级为“角色模型包”。** 模型包聚合身份锚点、面部/发型、体型、四视图、表情、姿势、服装组合、比例/画风规则、负面约束和版本；现有 `Character`、`CharacterReference`、`Outfit`、`Style` 采用兼容迁移和适配层，不一次性破坏历史候选或引用。
   - [x] **V02-22A / Issue #78（设计）：** 已合并 `docs/v02-character-model-package-contract.md`（PR #79，合并提交 `6298be1`）：冻结 `Character.id` 一对一兼容锚点、包/版本/参考图/服装四表模型与逻辑槽唯一约束、版本状态机与包锁事务边界、可回滚迁移（兼容包 + V1 草稿、不发布、不改写既有行）、建议性完整度、排队快照 `character_packages` 与 Worker 快照消费、V02-23B 最小 API 及 PKG-S1～S14 测试矩阵；同步 `docs/data-model.md` 与 `docs/architecture.md`。Codex Review 八轮 27 条意见（11 P1 + 16 P2）全部修复并逐条回复。真实 PostgreSQL 升降级与并发、Redis/RQ 集成、真实供应商调用与浏览器 E2E 为 `NOT RUN`。
   - [ ] **V02-22B（实现）：** 按契约 §12.4 拆分建议实施：迁移+ORM → 包/版本/关系服务与 API → 排队快照与 Worker 消费 → 完整度与 diff；PKG-S14 真实 PostgreSQL 升降级与并发在独立环境验收。
