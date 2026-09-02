@@ -47,7 +47,10 @@ def compile_page_prompt(
                 {
                     "id": item.id,
                     "primary_name": fact.get("primary_name") or item.primary_name,
-                    "aliases": fact.get("aliases") or item.aliases,
+                    # get-with-default only falls back when the key is absent:
+                    # a deliberately frozen empty alias list must not fall back
+                    # to the live aliases (contract §8.2 frozen facts).
+                    "aliases": fact.get("aliases", item.aliases),
                     "description": item.canonical_description,
                     "locked_features": item.locked_features,
                     "forbidden_changes": item.forbidden_changes,

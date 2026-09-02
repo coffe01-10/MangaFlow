@@ -907,9 +907,10 @@ def test_package_gate_default_outfit_satisfies_assignment(client, db_session, mo
             "model_alias": "image.nano_banana_2",
             "resolution": "1K",
             "storyboard_version": page.storyboard_version,
+            # No explicit outfit_id: the version default outfit must be resolved
+            # into the normalized selection (contract §8.1 outfit chain).
             "reference_selections": {
                 character["id"]: {
-                    "outfit_id": outfit["id"],
                     "outfit_asset_id": o_asset["id"],
                 }
             },
@@ -917,6 +918,9 @@ def test_package_gate_default_outfit_satisfies_assignment(client, db_session, mo
     )
     assert queued.status_code == 202, queued.text
     snapshot = queued.json()["candidate"]["prompt_snapshot"]
+    facts = snapshot["character_packages"][character["id"]]
+    assert facts["outfit_id"] == outfit["id"]
+    assert snapshot["reference_selections"][character["id"]]["outfit_id"] == outfit["id"]
     facts = snapshot["character_packages"][character["id"]]
     assert facts["package_version_id"] == version_id
     assert facts["version_number"] == 1
@@ -1292,6 +1296,17 @@ def test_package_repair_candidate_inherits_queued_snapshot(
             snapshot["reference_selections"][character["id"]]["character_asset_id"]
             == front["id"]
         )
+        # The inherited reference assets enter the repair job's lease (§8.4).
+        from app.models import JobAssetReference
+
+        leased = set(
+            db_session.scalars(
+                select(JobAssetReference.asset_id).where(
+                    JobAssetReference.job_id == repair_candidate["job_id"]
+                )
+            )
+        )
+        assert {front["id"], o_asset["id"], original.asset_id} <= leased
 
 
 def test_package_diff_reports_slot_and_spec_changes(client):
@@ -1357,7 +1372,7 @@ def test_package_diff_reports_slot_and_spec_changes(client):
 
 
 def test_package_cross_character_rebind_guard(client):
-    """Contract §10.3a: a package-referenced asset cannot move to another character."""
+    """Contract §10.3a: a package-referenced asset cannot serve another character."""
     project = _project(client)
     character = _character(client, project["id"])
     other = _character(client, project["id"], name="陈昊")
@@ -1371,6 +1386,14 @@ def test_package_cross_character_rebind_guard(client):
         json={"asset_id": asset["id"], "role": "front", "version": token},
     )
     assert bind.status_code == 201, bind.text
+    # Binding the asset into another character's package matrix is refused.
+    other_package = _create_package(client, project["id"], other["id"])
+    other_version = other_package["versions"][0]["id"]
+    other_bind = client.post(
+        f"{_package_url(project['id'], other['id'])}/versions/{other_version}/references",
+        json={"asset_id": asset["id"], "role": "front", "version": 1},
+    )
+    assert other_bind.status_code == 409
     # The asset is not yet a CharacterReference: bind it to a second character
     # must be refused because the package version of the first one references it.
     rebound = client.post(

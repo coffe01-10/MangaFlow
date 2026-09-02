@@ -671,7 +671,10 @@ def _check_asset_binding_eligible(
             detail="只有人物参考图或已生成的角色/服装设定页可以绑定角色",
         )
     # One image may serve at most one character: a package version reference
-    # cannot point at an asset another character holds as its live reference.
+    # cannot point at an asset another character holds as its live reference,
+    # nor at an asset already bound inside another character's package matrix
+    # (contract §10.3a — an asset can enter a package without ever becoming a
+    # legacy CharacterReference).
     existing = db.scalar(
         select(CharacterReference).where(CharacterReference.asset_id == asset.id)
     )
@@ -679,6 +682,28 @@ def _check_asset_binding_eligible(
         raise HTTPException(
             status_code=409,
             detail="该素材已被其他角色引用，请先在其他角色中解绑",
+        )
+    foreign_package = db.scalar(
+        select(CharacterModelPackageVersionReference.id)
+        .join(
+            CharacterModelPackageVersion,
+            CharacterModelPackageVersion.id
+            == CharacterModelPackageVersionReference.version_id,
+        )
+        .join(
+            CharacterModelPackage,
+            CharacterModelPackage.id == CharacterModelPackageVersion.package_id,
+        )
+        .where(
+            CharacterModelPackageVersionReference.asset_id == asset.id,
+            CharacterModelPackage.character_id != character_id,
+        )
+        .limit(1)
+    )
+    if foreign_package:
+        raise HTTPException(
+            status_code=409,
+            detail="该素材已被其他角色的模型包版本引用，请先在对应版本中解绑",
         )
     return asset
 
@@ -1432,10 +1457,21 @@ def _resolve_one_character(
                 detail=f"请为画面人物 {character.primary_name} 选择一张人物参考图",
             )
         reference = ordered[0]
+    default_relation = db.scalar(
+        select(CharacterModelPackageVersionOutfit).where(
+            CharacterModelPackageVersionOutfit.version_id == version.id,
+            CharacterModelPackageVersionOutfit.is_default.is_(True),
+        )
+    )
     assigned_outfit_id = visible_panel_outfits.get(character.id)
+    # Contract §8.1 outfit chain: explicit selection > panel assignment >
+    # the version's default outfit. Resolving the default here keeps the
+    # normalized selection consistent with the readiness gate.
     outfit_id = selection.get("outfit_id") or assigned_outfit_id
     if assigned_outfit_id and outfit_id != assigned_outfit_id:
         raise HTTPException(status_code=409, detail="参考确认中的服装与分镜指定服装不一致")
+    if not outfit_id and default_relation:
+        outfit_id = default_relation.outfit_id
     outfit_asset_id = None
     if outfit_id:
         relation = db.scalar(
@@ -1463,12 +1499,6 @@ def _resolve_one_character(
             raise HTTPException(status_code=409, detail="服装参考图已失效，请重新选择")
 
     default_outfit_has_live_reference = False
-    default_relation = db.scalar(
-        select(CharacterModelPackageVersionOutfit).where(
-            CharacterModelPackageVersionOutfit.version_id == version.id,
-            CharacterModelPackageVersionOutfit.is_default.is_(True),
-        )
-    )
     if default_relation:
         default_outfit = db.get(Outfit, default_relation.outfit_id)
         if default_outfit and _live_asset_ids(db, list(default_outfit.reference_asset_ids or [])):
@@ -1548,37 +1578,67 @@ def resolve_package_selections(
             continue
         resolution, snapshot, from_default = resolved
         version_id = resolution.version.id
-        marked = _mark_in_production(db, version_id)
+        eligible = True
+        if from_default:
+            # Contract §5.3-5: default resolution serializes with archive and
+            # activate through the package row lock, and revalidates the
+            # package status and the publish pointer before the version is
+            # marked IN_PRODUCTION.
+            lock_entity(db, CharacterModelPackage, resolution.package.id)
+            db.expire_all()
+            package_now = db.get(CharacterModelPackage, resolution.package.id)
+            if (
+                not package_now
+                or package_now.status != PACKAGE_ACTIVE
+                or package_now.published_version_id != version_id
+            ):
+                eligible = False
+        marked = _mark_in_production(db, version_id) if eligible else False
         if not marked and not from_default:
             # Explicit selection: the conditional update only marks READY
             # versions; an already IN_PRODUCTION or ARCHIVED one is fine for
             # the snapshot and must not be re-resolved (§5.3-5).
             version = db.get(CharacterModelPackageVersion, version_id)
-            if version and version.status in {VERSION_READY, VERSION_IN_PRODUCTION, VERSION_ARCHIVED}:
+            if version and version.status in {
+                VERSION_READY,
+                VERSION_IN_PRODUCTION,
+                VERSION_ARCHIVED,
+            }:
                 marked = True
         if not marked:
-                # Default path: re-resolve once; a simultaneously archived or
-                # re-published package must not be silently used.
-                retry = _resolve_one_character(
-                    db,
-                    project=project,
-                    character=db.get(Character, character_id),
-                    visible_panel_outfits=_panel_outfit_map(panels, character_id),
-                    selection=selections.get(character_id, {}),
-                    style_id=style_id,
+            # Default path: re-resolve once; a simultaneously archived or
+            # re-published package must not be silently used.
+            retry = _resolve_one_character(
+                db,
+                project=project,
+                character=db.get(Character, character_id),
+                visible_panel_outfits=_panel_outfit_map(panels, character_id),
+                selection=selections.get(character_id, {}),
+                style_id=style_id,
+            )
+            if not retry:
+                raise HTTPException(
+                    status_code=409,
+                    detail="角色模型包版本已被并发归档或切换，请刷新后重试",
                 )
-                if not retry:
-                    raise HTTPException(
-                        status_code=409,
-                        detail="角色模型包版本已被并发归档或切换，请刷新后重试",
-                    )
-                resolution, snapshot, from_default = retry
-                marked = _mark_in_production(db, resolution.version.id)
-                if not marked:
-                    raise HTTPException(
-                        status_code=409,
-                        detail="角色模型包版本已被并发归档或切换，请刷新后重试",
-                    )
+            resolution, snapshot, from_default = retry
+            lock_entity(db, CharacterModelPackage, resolution.package.id)
+            db.expire_all()
+            package_now = db.get(CharacterModelPackage, resolution.package.id)
+            if (
+                not package_now
+                or package_now.status != PACKAGE_ACTIVE
+                or package_now.published_version_id != resolution.version.id
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="角色模型包版本已被并发归档或切换，请刷新后重试",
+                )
+            if not _mark_in_production(db, resolution.version.id):
+                raise HTTPException(
+                    status_code=409,
+                    detail="角色模型包版本已被并发归档或切换，请刷新后重试",
+                )
         batch.normalized[character_id] = {
             "character_asset_id": resolution.character_asset_id,
             "outfit_id": resolution.outfit_id,
