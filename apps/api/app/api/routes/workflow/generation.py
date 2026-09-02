@@ -162,6 +162,9 @@ def delete_candidate(candidate_id: str, db: Session = Depends(get_db)) -> None:
         raise HTTPException(status_code=409, detail="当前采用版本不能删除")
     deleted_at = utcnow()
     if isinstance(candidate, AssetCandidate) and candidate.asset_id:
+        # Lock/cleanup first so SQLITE_BUSY can roll back this unit and retry
+        # without discarding later writes in the same request.
+        detach_draft_package_references_for_asset(db, candidate.asset_id)
         asset = db.get(Asset, candidate.asset_id)
         affected_character_ids = list(
             db.scalars(
@@ -210,9 +213,6 @@ def delete_candidate(candidate_id: str, db: Session = Depends(get_db)) -> None:
             if not has_other_reference:
                 character.status = AssetStatus.NEEDS_CONFIRMATION
             character.version += 1
-        # Contract §10.3: DRAFT package slots referencing this asset are cleared
-        # physically; frozen (READY+) rows keep the fact.
-        detach_draft_package_references_for_asset(db, candidate.asset_id)
     candidate.deleted_at = deleted_at
     candidate.version += 1
     db.commit()

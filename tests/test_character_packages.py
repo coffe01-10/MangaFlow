@@ -2049,3 +2049,85 @@ def test_package_concurrent_cross_character_asset_bind_single_winner(file_sessio
     )
     assert len(refs) == 1
     verify.close()
+
+
+def test_package_detach_retries_sqlite_lock(client, db_session, monkeypatch):
+    """DRAFT cleanup must roll back and retry on SQLITE_BUSY instead of 500."""
+    import sqlite3
+
+    from sqlalchemy.exc import OperationalError
+
+    from app.services import character_packages as packages
+
+    project = _project(client)
+    asset = _upload_asset(client, project["id"])
+    calls = {"n": 0}
+    real = packages.lock_asset_for_ownership
+
+    def flaky(db, asset_id):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OperationalError(
+                "statement", {}, sqlite3.OperationalError("database is locked")
+            )
+        return real(db, asset_id)
+
+    monkeypatch.setattr(packages, "lock_asset_for_ownership", flaky)
+    packages.detach_draft_package_references_for_asset(db_session, asset["id"])
+    assert calls["n"] == 2
+
+
+def test_package_detach_lock_exhaustion_is_controlled_409(
+    client, db_session, monkeypatch
+):
+    import sqlite3
+
+    from sqlalchemy.exc import OperationalError
+
+    from app.services import character_packages as packages
+
+    project = _project(client)
+    asset = _upload_asset(client, project["id"])
+
+    def always_busy(db, asset_id):
+        raise OperationalError(
+            "statement", {}, sqlite3.OperationalError("database is locked")
+        )
+
+    monkeypatch.setattr(packages, "lock_asset_for_ownership", always_busy)
+    monkeypatch.setattr(packages, "pause_before_ordinal_retry", lambda *_args: None)
+    with pytest.raises(HTTPException) as raised:
+        packages.detach_draft_package_references_for_asset(db_session, asset["id"])
+    assert raised.value.status_code == 409
+    assert raised.value.detail == "素材绑定清理冲突，请稍后重试"
+
+
+def test_legacy_bind_retries_sqlite_lock(client, monkeypatch):
+    """Legacy CharacterReference bind shares the lock-retry boundary."""
+    import sqlite3
+
+    from sqlalchemy.exc import OperationalError
+
+    from app.api.routes import characters as characters_route
+
+    project = _project(client)
+    character = _character(client, project["id"])
+    asset = _upload_asset(client, project["id"])
+    calls = {"n": 0}
+    real = characters_route.lock_asset_for_ownership
+
+    def flaky(db, asset_id):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OperationalError(
+                "statement", {}, sqlite3.OperationalError("database is locked")
+            )
+        return real(db, asset_id)
+
+    monkeypatch.setattr(characters_route, "lock_asset_for_ownership", flaky)
+    bind = client.post(
+        f"/api/v1/characters/{character['id']}/references",
+        json={"asset_id": asset["id"], "angle": "front"},
+    )
+    assert bind.status_code == 201, bind.text
+    assert calls["n"] == 2

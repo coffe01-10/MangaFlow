@@ -19,7 +19,7 @@ from app.schemas import (
     CharacterReferenceRead,
     CharacterUpdate,
 )
-from app.services.character_packages import lock_asset_for_ownership
+from app.services.character_packages import lock_asset_for_ownership, run_lock_retry
 
 router = APIRouter()
 
@@ -147,76 +147,83 @@ def bind_reference(
     character = db.get(Character, character_id)
     if not character:
         raise HTTPException(status_code=404, detail="角色不存在")
-    asset = lock_asset_for_ownership(db, payload.asset_id)
-    if not asset or asset.deleted_at is not None:
-        raise HTTPException(status_code=404, detail="参考素材不存在")
-    if asset.project_id != character.project_id:
-        raise HTTPException(status_code=409, detail="参考图和角色不属于同一项目")
-    allowed_generated_kinds = {"character", "outfit"}
-    if asset.kind != "CHARACTER_REFERENCE" and not (
-        asset.source in {"VERTEX_GENERATED", "AI_GENERATED"}
-        and asset.kind in allowed_generated_kinds
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail="只有人物参考图或已生成的角色/服装设定页可以绑定角色",
+
+    def _bind() -> CharacterReference:
+        asset = lock_asset_for_ownership(db, payload.asset_id)
+        if not asset or asset.deleted_at is not None:
+            raise HTTPException(status_code=404, detail="参考素材不存在")
+        if asset.project_id != character.project_id:
+            raise HTTPException(status_code=409, detail="参考图和角色不属于同一项目")
+        allowed_generated_kinds = {"character", "outfit"}
+        if asset.kind != "CHARACTER_REFERENCE" and not (
+            asset.source in {"VERTEX_GENERATED", "AI_GENERATED"}
+            and asset.kind in allowed_generated_kinds
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="只有人物参考图或已生成的角色/服装设定页可以绑定角色",
+            )
+        # Contract §10.3a: an asset referenced by another character's package
+        # version matrix (DRAFT or frozen) cannot serve that character here,
+        # whether or not it already has a CharacterReference row.
+        foreign_package_reference = db.scalar(
+            select(CharacterModelPackageVersionReference.id)
+            .join(
+                CharacterModelPackageVersion,
+                CharacterModelPackageVersion.id
+                == CharacterModelPackageVersionReference.version_id,
+            )
+            .join(
+                CharacterModelPackage,
+                CharacterModelPackage.id == CharacterModelPackageVersion.package_id,
+            )
+            .where(
+                CharacterModelPackageVersionReference.asset_id == asset.id,
+                CharacterModelPackage.character_id != character_id,
+            )
+            .limit(1)
         )
-    # Contract §10.3a: an asset referenced by another character's package
-    # version matrix (DRAFT or frozen) cannot serve that character here,
-    # whether or not it already has a CharacterReference row.
-    foreign_package_reference = db.scalar(
-        select(CharacterModelPackageVersionReference.id)
-        .join(
-            CharacterModelPackageVersion,
-            CharacterModelPackageVersion.id
-            == CharacterModelPackageVersionReference.version_id,
+        if foreign_package_reference:
+            raise HTTPException(
+                status_code=409,
+                detail="该素材已被角色模型包版本引用，请先在对应版本中解绑或放弃换绑",
+            )
+        existing = db.scalar(
+            select(CharacterReference).where(CharacterReference.asset_id == asset.id)
         )
-        .join(
-            CharacterModelPackage,
-            CharacterModelPackage.id == CharacterModelPackageVersion.package_id,
+        if existing:
+            if existing.character_id == character_id:
+                if payload.is_canonical and not existing.is_canonical:
+                    db.execute(
+                        update(CharacterReference)
+                        .where(CharacterReference.character_id == character_id)
+                        .values(is_canonical=False)
+                    )
+                    existing.is_canonical = True
+                return existing
+            db.delete(existing)
+            db.flush()
+        if payload.is_canonical:
+            db.execute(
+                update(CharacterReference)
+                .where(CharacterReference.character_id == character_id)
+                .values(is_canonical=False)
+            )
+        reference = CharacterReference(
+            character_id=character_id,
+            asset_id=asset.id,
+            angle=payload.angle,
+            is_canonical=payload.is_canonical,
         )
-        .where(
-            CharacterModelPackageVersionReference.asset_id == asset.id,
-            CharacterModelPackage.character_id != character_id,
-        )
-        .limit(1)
+        db.add(reference)
+        return reference
+
+    reference = run_lock_retry(
+        db,
+        _bind,
+        conflict_detail="角色参考绑定冲突，请稍后重试",
+        commit=True,
     )
-    if foreign_package_reference:
-        raise HTTPException(
-            status_code=409,
-            detail="该素材已被角色模型包版本引用，请先在对应版本中解绑或放弃换绑",
-        )
-    existing = db.scalar(
-        select(CharacterReference).where(CharacterReference.asset_id == asset.id)
-    )
-    if existing:
-        if existing.character_id == character_id:
-            if payload.is_canonical and not existing.is_canonical:
-                db.execute(
-                    update(CharacterReference)
-                    .where(CharacterReference.character_id == character_id)
-                    .values(is_canonical=False)
-                )
-                existing.is_canonical = True
-                db.commit()
-                db.refresh(existing)
-            return existing
-        db.delete(existing)
-        db.flush()
-    if payload.is_canonical:
-        db.execute(
-            update(CharacterReference)
-            .where(CharacterReference.character_id == character_id)
-            .values(is_canonical=False)
-        )
-    reference = CharacterReference(
-        character_id=character_id,
-        asset_id=asset.id,
-        angle=payload.angle,
-        is_canonical=payload.is_canonical,
-    )
-    db.add(reference)
-    db.commit()
     db.refresh(reference)
     return reference
 

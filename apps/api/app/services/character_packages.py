@@ -308,6 +308,41 @@ def run_package_transaction(
     raise HTTPException(status_code=409, detail="模型包操作冲突，请稍后重试") from last_error
 
 
+def run_lock_retry(
+    db: Session,
+    fn,
+    *,
+    conflict_detail: str,
+    max_attempts: int = ORDINAL_ALLOCATION_MAX_ATTEMPTS,
+    commit: bool = False,
+):
+    """Retry ``fn()`` on SQLite lock/busy with a full rollback.
+
+    Callers that take ``lock_asset_for_ownership`` outside
+    ``run_package_transaction`` must use this so ``SQLITE_BUSY`` becomes a
+    controlled 409 instead of an unhandled 500. ``fn`` must be the first
+    writer in the caller's unit: a failed attempt rolls back the session.
+    """
+
+    last_error: BaseException | None = None
+    for attempt in range(max_attempts):
+        try:
+            with ordinal_savepoint(db):
+                result = fn()
+                db.flush()
+            if commit:
+                db.commit()
+            return result
+        except (IntegrityError, OperationalError) as error:
+            if isinstance(error, OperationalError) and not is_sqlite_lock_error(error):
+                raise
+            last_error = error
+            db.rollback()
+            db.expire_all()
+            pause_before_ordinal_retry(attempt, max_attempts)
+    raise HTTPException(status_code=409, detail=conflict_detail) from last_error
+
+
 def create_package(
     db: Session, project_id: str, character_id: str, payload: dict
 ) -> CharacterModelPackage:
@@ -656,7 +691,8 @@ def lock_asset_for_ownership(db: Session, asset_id: str) -> Asset | None:
     afterwards so bind/rebind/cleanup cannot both observe the asset as free.
     PostgreSQL uses ``FOR UPDATE``; SQLite issues a no-op row UPDATE so two
     WAL readers cannot both insert a relation for the same previously unowned
-    asset. Real PostgreSQL race coverage stays PKG-S14 / NOT RUN.
+    asset. Callers outside ``run_package_transaction`` must wrap this in
+    ``run_lock_retry``. Real PostgreSQL race coverage stays PKG-S14 / NOT RUN.
     """
 
     asset = lock_entity(db, Asset, asset_id)
@@ -1746,21 +1782,28 @@ def detach_draft_package_references_for_asset(db: Session, asset_id: str) -> Non
     """Contract §10.3: soft-deleting an asset physically clears DRAFT slot rows.
 
     READY+ relation rows keep the frozen fact; consumers filter by
-    ``Asset.deleted_at`` at read time.
+    ``Asset.deleted_at`` at read time. Must be the first writer in the
+    caller's unit so lock contention can roll back and retry.
     """
 
-    lock_asset_for_ownership(db, asset_id)
-    for reference in db.scalars(
-        select(CharacterModelPackageVersionReference).where(
-            CharacterModelPackageVersionReference.asset_id == asset_id
-        )
-    ):
-        version = db.get(CharacterModelPackageVersion, reference.version_id)
-        if not version:
-            continue
-        if version.status == VERSION_DRAFT:
-            db.delete(reference)
-            # Editing a draft requires the parent token; the system must not
-            # silently mutate drafts without bumping it.
-            version.version += 1
-    db.flush()
+    def _detach() -> None:
+        lock_asset_for_ownership(db, asset_id)
+        for reference in db.scalars(
+            select(CharacterModelPackageVersionReference).where(
+                CharacterModelPackageVersionReference.asset_id == asset_id
+            )
+        ):
+            version = db.get(CharacterModelPackageVersion, reference.version_id)
+            if not version:
+                continue
+            if version.status == VERSION_DRAFT:
+                db.delete(reference)
+                # Editing a draft requires the parent token; the system must not
+                # silently mutate drafts without bumping it.
+                version.version += 1
+
+    run_lock_retry(
+        db,
+        _detach,
+        conflict_detail="素材绑定清理冲突，请稍后重试",
+    )
