@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
+import sys
 import time
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
+
+import pytest
 
 from app import database, worker_tasks
 from app.config import get_settings
@@ -73,6 +77,11 @@ def _spawn_live_worker(
     from tests.integration.process_resources import OwnedProcessTree
     from tests.integration.worker_runtime import write_worker_config
 
+    if sys.platform != "win32":
+        pytest.skip(
+            "Independent RQ worker process-tree acceptance requires Windows "
+            "Job Objects; NOT RUN on Linux."
+        )
     tree = OwnedProcessTree(parent)
     try:
         config = write_worker_config(
@@ -376,7 +385,8 @@ def test_redis_rq_retryable_and_terminal_failures(
             auto_commit=True,
         )
         live_redis_resource_tracker.track_job(job_retry.id)
-        execute_job(job_retry.id)
+        with pytest.raises(ProviderAdapterError):
+            execute_job(job_retry.id)
 
     with live_pg_session_factory() as verify_db:
         reloaded_retry = verify_db.get(GenerationJob, job_retry.id)
@@ -396,7 +406,8 @@ def test_redis_rq_retryable_and_terminal_failures(
             auto_commit=True,
         )
         live_redis_resource_tracker.track_job(job_term.id)
-        execute_job(job_term.id)
+        with pytest.raises(ProviderAdapterError):
+            execute_job(job_term.id)
 
     with live_pg_session_factory() as verify_db:
         reloaded_term = verify_db.get(GenerationJob, job_term.id)
@@ -588,7 +599,7 @@ def _create_live_page_job(
             db,
             project_id=project_id,
             target_type="PAGE_CANDIDATE",
-            target_id=f"target-live-{label}-{time.time()}",
+            target_id=f"tl-{label}-{uuid4().hex[:8]}",
             job_type="PAGE_GENERATE",
             model_alias="image.nano_banana_2",
             max_attempts=max_attempts,

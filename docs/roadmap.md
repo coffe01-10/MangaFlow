@@ -1,9 +1,9 @@
 # MangaFlow 主分支后续工作清单
 
 更新时间：2026-09-02
-当前实现合并树：`master` / `6298be1`（PR #79，2026-09-02）。V02-21B 场景资产工作区与 V02-22A 角色模型包数据契约已分别完成独立审阅并合并；真实图片生成/编辑、账号权限、费用、PostgreSQL/Redis/RQ、浏览器 E2E 与真实取消/超时进程树等边界仍按任务标记为 `NOT RUN`。
-当前无开发中分支。下一实现项为 V02-22B。
-最近 `check:full` 历史基线：`master` / `cb324e3`（2026-08-27；相对 PR #5 合并提交 `d5d32ec` 仅增加任务文档），不代表 PR #6 / #7 / #10 / #11 已重跑浏览器验收。
+当前实现合并树：`master` / `f961774`（PR #83，2026-09-02）。V02-21B、V02-22A 与 V02-22B 角色模型包后端已分别完成独立审阅并合并。2026-09-02 在 Linux 隔离环境跑通 PostgreSQL live 18 项（含 PKG-S14）与 Redis/RQ SimpleWorker live 8 项；7 项 Windows Job Object 独立 Worker 仍 `BLOCKED`（笔记本无 Docker/PostgreSQL/Redis，用户明确不安装）。同日 Windows 笔记本 `LAPTOP-TV9KT8RC` 在 SHA `98b93a0`（分支 `fix/pr82-remaining-package-p1s`，该 SHA 为 `master`/`f961774` 祖先；E2E/perf **未**跑在 `c93e1b3`）以官方控制器 `scripts/run_e2e_owned.py` 将 Playwright E2E 与 Lighthouse/FPS 记为 `RUN`。真实图片生成/编辑、账号权限、费用与真实取消/超时进程树仍按任务标记为 `NOT RUN`。
+当前开发分支：`env/postgres-redis-acceptance`。下一实现项为 V02-23B。
+最近 `check:full` 历史基线：`master` / `cb324e3`（2026-08-27；相对 PR #5 合并提交 `d5d32ec` 仅增加任务文档），不代表 PR #6 / #7 / #10 / #11 已重跑浏览器验收。2026-09-02 Windows owned E2E 17/17 与 LH/FPS 4/4 证据在 `98b93a0` / `LAPTOP-TV9KT8RC`，见 `docs/development-progress.md`。
 深审历史基线：`master` / `f085327`。当时新增 6 项 P1 修复与 1 项 P2 改进；PR #6 已合并其中 P1-7、P1-9～P1-12 的代码修复。P1-8、P2-8 已随 PR #7 合并，独立 Redis/RQ、PostgreSQL 与浏览器验收仍待完成。
 安全审查历史基线：`master` / `7635cf7`。P0-3、P1-13～P1-15、P2-4、P2-9 的代码修复现已合并，真实服务/容器及完整依赖审计边界仍保留。
 
@@ -47,10 +47,10 @@
 - [ ] **V02-10（L2/L3）：移除 Vertex 的产品级首选地位。** Vertex/Gemini API、OpenAI/Anthropic 兼容供应商和后续 CLI 通道在模型目录、任务创建、自动路由、Dashboard 和空状态中使用同一套能力、健康度、凭据与用户优先级规则；不得把 Vertex 设为隐藏默认或兜底。保留原生适配器的技术差异，但不转化为 UI 排名优势。
   - [x] **V02-10A（L2，Issue #41）：契约地基。** 已落地 `credential_source` 派生层、协议错误分类器拆分、原生能力声明和 PowerShell 5.1 平权门禁；未改变现有任务路由行为。真实供应商未调用。
   - [x] **V02-10B（L2 后端）：统一连接健康与验证。** 已新增连接级 health/verify、协议能力声明和 `MODEL_SMOKE`；连接验证与目录同步分离，不支持发现的协议不再回显本地模型。旧设置端点转发统一服务，`/models/vertex/*` 已移除；73 项供应商/平台定向回归通过，未调用真实供应商。
-  - [ ] **V02-10C（L3 迁移，组长设计/GLM 实现）：默认值、路由与 grandfather。** 仅进行已批准的项目别名可空性迁移，落实 legacy 规范化、目录优先、`auto_enable_pending` 与新旧安装规则；真实 PostgreSQL 升降级单独验收。依赖：V02-10A/B；验收：M3、M5–M7、M9。
+  - [x] **V02-10C（L3 迁移，组长设计/GLM 实现）：默认值、路由与 grandfather。** 仅进行已批准的项目别名可空性迁移，落实 legacy 规范化、目录优先、`auto_enable_pending` 与新旧安装规则；真实 PostgreSQL 升降级单独验收。依赖：V02-10A/B；验收：M3、M5–M7、M9。
     - [x] ORM、API、任务和工作流默认值已中性化；legacy 别名只读归一化、目录字段优先、真实供应商/模型身份显式入账。SQLite 已覆盖历史项目无损升降级、NULL 降级拒绝及关联数据保全。
     - [x] 新 ENV_SERVICE_ACCOUNT 连接已使用一次性 `auto_enable_pending`；旧连接保持人工启停值，人工切换清除 pending，凭据后来缺失不反向停用；新预设模型以 `DECLARED` 初始化。
-    - [ ] Windows PowerShell 完整门禁已在 PR #61 复审修复提交 `75460a0` 通过；真实 PostgreSQL 升降级尚未运行，因此 V02-10C 保持未勾选。未调用真实供应商。
+    - [x] Windows PowerShell 完整门禁已在 PR #61 复审修复提交 `75460a0` 通过；2026-09-02 Linux 隔离 PostgreSQL Alembic/schema 往返（含用量账本）已运行。未调用真实供应商。
   - [ ] **V02-10D（L2 前端/收尾）：删除产品级 Vertex 入口。** Dashboard、设置、帮助和项目选模改用统一连接/目录契约，删除前端专属请求与硬编码模型文案，更新架构/平台文档并收紧 allowlist。依赖：V02-10B/C；验收：M8–M14。
     - [x] 首页只读取 Dashboard 聚合状态，设置、帮助、项目默认模型与工作流节点统一使用连接/目录契约；前端专属状态请求和供应商硬编码文案已删除，历史绑定模型继续兼容显示。
     - [x] 环境账号就绪判断集中到凭据适配层；产品级统计、目录与 readiness 不再直接读取专属配置。架构、平台、数据模型和 Worker 错误文案已中性化，平权 allowlist 由 15 个路径收紧到 10 个技术适配/兼容路径。
@@ -60,15 +60,15 @@
   - [x] **V02-11B（L2，Grok）：统一连接与模型目录。** 已按 `credential_source`/capability 渲染凭据、统一验证、独立发现、余额和目录驱动的模型冒烟，删除设置页 Vertex 专属卡；设置页已接入单条/批量展示偏好、隐藏筛选、逐项版本与部分失败语义。
   - [ ] **V02-11C（L2 验收）：设置页回归。** 完成 Issue #40 的 P/C/F/V/A/S/L/N 测试矩阵、假供应商设置页 E2E 与 `npm run check`；不运行真实供应商。
     - [x] 组件矩阵已补齐到 66 项设置页定向回归；三态断言促使设置页新增派生不可用的「未就绪」标识并禁用模型测试。完整 Web 为 25 个文件 187 项 Vitest，通过 ESLint、TypeScript 与生产构建。
-    - [ ] 离线假供应商 E2E 已编写并通过独立 TypeScript 检查；Windows 完整 `npm run check` 已通过，但该浏览器 E2E 本轮未实际启动服务执行，因此 V02-11C 仍不勾选。
+    - [ ] 2026-09-02 Windows owned Playwright E2E 17 passed / 0 failed / 0 skipped（`scripts/run_e2e_owned.py`，SHA `98b93a0`，`LAPTOP-TV9KT8RC`）。Issue #40 的 P/C/F/V/A/S/L/N 测试矩阵仍未完整核对，因此 V02-11C 仍不勾选。
 - [x] **V02-12（L3 数据、L2 UI）：把“可展示模型”作为服务端持久化偏好。** 偏好不能只存在浏览器本地状态，也不得复用 `AIModel.enabled` 或派生 `/models.enabled`；新任务、路由候选和历史记录仍保存真实模型 ID，不因隐藏模型而失去审计或重放信息。
   - [x] **V02-12A（L3 设计，Issue #59）：冻结展示偏好契约。** 已合并 `docs/v02-12a-model-visibility-contract.md`，明确持久位置、管理列表、单条/批量 API、乐观并发、默认值、迁移/回滚及下游消费规则；未编辑迁移。
-  - [x] **V02-12B（L3 实现）：迁移与 API。** 已新增 `display_enabled` 可回滚迁移、连接模型管理列表、单条/批量写入、逐项乐观锁与部分成功语义；单纯显隐不改能力来源/置信度，隐藏不改变调用或路由。SQLite 迁移与后端回归通过；真实 PostgreSQL 未运行。
+  - [x] **V02-12B（L3 实现）：迁移与 API。** 已新增 `display_enabled` 可回滚迁移、连接模型管理列表、单条/批量写入、逐项乐观锁与部分成功语义；单纯显隐不改能力来源/置信度，隐藏不改变调用或路由。SQLite 迁移与后端回归通过；2026-09-02 Linux 隔离 PostgreSQL schema/用量往返已覆盖。
   - [x] **V02-12C（L2 前端）：统一下游展示。** 设置页、生成台、工作流和项目默认模型选择器已消费同一偏好；新选择统一要求 `enabled && display_enabled`，当前绑定模型保留显示，历史候选与任务继续使用完整目录解析模型身份。隐藏不改变模型可调用性、历史审计或重放。
 
 #### 下一实现窗口
 
-1. V02-14A / Issue #62 已由 PR #63 合并，V02-14B / Issue #64 已由 PR #65 合并，V02-14C / Issue #67 已由 PR #68 合并；V02-15B 已由 PR #71 合并（`7af5b59`），V02-16B 已由 PR #73 合并（`fec8d7f`），V02-21B 已由 PR #77 合并（`7c10d27`），V02-22A / Issue #78 已由 PR #79 合并（`6298be1`）。下一实现项为 V02-22B（按角色模型包契约 §12.4 拆分），仍需按 L3 数据任务建立独立 Issue/分支/PR。
+1. V02-14A / Issue #62 已由 PR #63 合并，V02-14B / Issue #64 已由 PR #65 合并，V02-14C / Issue #67 已由 PR #68 合并；V02-15B 已由 PR #71 合并（`7af5b59`），V02-16B 已由 PR #73 合并（`fec8d7f`），V02-21B 已由 PR #77 合并（`7c10d27`），V02-22A / Issue #78 已由 PR #79 合并（`6298be1`），V02-22B 已由 PR #82 / #83 合并（`f961774`）。PKG-S14 真实 PostgreSQL 升降级与并发已在 2026-09-02 Linux 隔离环境跑通。下一实现项为 V02-23B。
 2. 资产、分镜、导演、CLI、用量和桌面端均先从各自已批准的 A 级设计文档拆出实现 Issue；不得把审计文档的合并当作功能交付。
 3. 所有实现 Issue 必须引用对应契约，写明迁移/事务/资源所有权，并标注真实供应商、CLI、PostgreSQL、Redis/RQ、浏览器或桌面环境的 `RUN`、`NOT RUN`、`BLOCKED`。
 - [x] **V02-13（L3）：建立 CLI 图像通道公共执行器。** 将 Codex CLI、Antigravity CLI、Grok Build 视为可选执行通道，而不是假装成普通 HTTP API。
@@ -80,7 +80,7 @@
   - [x] **V02-14C / Issue #67 / PR #68：Grok Build。** `CLI_GROK_BUILD` 禁用态预设、原生 `grok.exe` 四步只读探测、图片生成/最多五参考图编辑映射、typed session 图片收养、外部 hook 安全预检、公共审计/错误/清理和协议化设置页已实现为 `750886f`，首轮 review 的共享超时预算与失败 session 清理修复为 `b7ac5e4`，最终由 PR #68 合并为 `8479a19`。Windows 实机确认 `grok 1.0.13`；登录为 `UNAUTHENTICATED`，当前全局插件 hooks 令能力门禁返回 `UNSUPPORTED`，因此未调用图片工具。最终门禁为 527 项 Python、192 项 Vitest、供应商平权、Ruff、ESLint、TypeScript 与生产构建通过；24 项真实集成按环境跳过，真实生图/编辑、账号权限/费用、真实取消/超时进程树、PostgreSQL/Redis/RQ 和浏览器 E2E 为 `NOT RUN`。
 - [x] **V02-15（L3 数据、L2 UI）：扩展模型调用账本。**
   - [x] **V02-15A / Issue #49（设计）：** 已合并 `docs/v02-usage-ledger-contract.md`，冻结 attempt/输出二阶段挂接、幂等、价格区间、对账来源与多数据库约束。
-  - [x] **V02-15B（实现）：** 已由 PR #71 合并（合并提交 `7af5b59`）：结构化计量列迁移与回填、`normalize_usage`/finalize 写入路径、`GET /usage/attempts`（keyset cursor）、`GET /usage/summary` 与对账 API；缺少计量保留 `unknown`；真实 PostgreSQL 迁移往返与双 Worker 并发、真实供应商账单为 `NOT RUN`。
+  - [x] **V02-15B（实现）：** 已由 PR #71 合并（合并提交 `7af5b59`）：结构化计量列迁移与回填、`normalize_usage`/finalize 写入路径、`GET /usage/attempts`（keyset cursor）、`GET /usage/summary` 与对账 API；缺少计量保留 `unknown`；2026-09-02 Linux 隔离 PostgreSQL 已覆盖用量迁移往返、finalize 并发与对账重叠串行。真实供应商账单与 Redis 独立 Worker 进程树仍为 `NOT RUN`。
 - [x] **V02-16（L2）：增加用量与成本看板。**
   - [x] **V02-16A / Issue #52（设计）：** 已合并 `docs/v02-usage-cost-dashboard-ui-audit.md`，明确原币种分组、estimated/reported/billed/unknown 视觉语义和 keyset API。
   - [x] **V02-16B / Issue #72（实现）：** 已由 PR #73 合并（合并提交 `fec8d7f`）：`/settings/usage` 看板实现时间/项目/供应商/模型/通道筛选、KPI、按日趋势、供应商/模型分解、attempt 明细 keyset 分页与详情抽屉、CSV 导出（按币种分行并防公式注入）、本地预算提醒，附 Vitest 与离线浏览器回归；billed 与 estimated 永不相加、多币种不换算、unknown ≠ 0、CLI 不显示为免费；真实账单核对、PostgreSQL/Redis-RQ、真实 CLI 通道与性能门禁为 `NOT RUN`。
@@ -89,13 +89,13 @@
 
 - [x] **V02-20（L3）：把场景升级为一级资产。**
   - [x] **V02-20A / Issue #44（设计）：** 已合并 `docs/v02-scene-asset-contract.md`，冻结 SceneAsset、版本、引用、租约、软删除及可回滚迁移边界；现有 `Scene.location` 保持描述兜底。
-  - [x] **V02-20B / Issue #74（实现）：** 已由 PR #75 合并（合并提交 `6453a40`）：完成 SceneAsset/Reference/Variant 数据模型与迁移、项目级 API、统一背景解析、Scene 绑定校验、软删除/恢复、生成快照与引用租约，并同步架构与数据模型；SQLite 迁移和离线回归通过，真实 PostgreSQL 升降级、真实 Worker/供应商调用为 `NOT RUN`。
+  - [x] **V02-20B / Issue #74（实现）：** 已由 PR #75 合并（合并提交 `6453a40`）：完成 SceneAsset/Reference/Variant 数据模型与迁移、项目级 API、统一背景解析、Scene 绑定校验、软删除/恢复、生成快照与引用租约，并同步架构与数据模型；SQLite 迁移和离线回归通过；2026-09-02 Linux 隔离 PostgreSQL schema 往返已覆盖场景资产迁移。真实 Worker/供应商调用为 `NOT RUN`。
 - [x] **V02-21（L2）：建设场景资产工作区。**
   - [x] **V02-21A / Issue #43（设计）：** 已合并 `docs/v02-scene-workspace-ui-audit.md`，与 V02-20A 的状态、字段和引用关系对齐。
   - [x] **V02-21B（实现）：** 已由 PR #77 合并（合并提交 `7c10d27`）：实现场景工作区创建、参考图/变体、确认、软删除/恢复、筛选和页面绑定；其 NOT RUN 边界以该 PR 记录为准。
-- [ ] **V02-22（L3，组长设计、GLM 实现优先）：将角色参考资产升级为“角色模型包”。** 模型包聚合身份锚点、面部/发型、体型、四视图、表情、姿势、服装组合、比例/画风规则、负面约束和版本；现有 `Character`、`CharacterReference`、`Outfit`、`Style` 采用兼容迁移和适配层，不一次性破坏历史候选或引用。
-  - [x] **V02-22A / Issue #78（设计）：** 已合并 `docs/v02-character-model-package-contract.md`（PR #79，合并提交 `6298be1`）：冻结 `Character.id` 一对一兼容锚点、包/版本/参考图/服装四表模型与逻辑槽唯一约束、版本状态机与包锁事务边界、可回滚迁移（兼容包 + V1 草稿、不发布、不改写既有行）、建议性完整度、排队快照 `character_packages` 与 Worker 快照消费、V02-23B 最小 API 及 PKG-S1～S14 测试矩阵；同步 `docs/data-model.md` 与 `docs/architecture.md`。Codex Review 八轮 27 条意见（11 P1 + 16 P2）全部修复并逐条回复。真实 PostgreSQL 升降级与并发、Redis/RQ 集成、真实供应商调用与浏览器 E2E 为 `NOT RUN`。
-  - [ ] **V02-22B（实现）：** 按契约 §12.4 拆分建议实施：迁移+ORM → 包/版本/关系服务与 API → 排队快照与 Worker 消费 → 完整度与 diff；PKG-S14 真实 PostgreSQL 升降级与并发在独立环境验收。
+- [x] **V02-22（L3，组长设计、GLM 实现优先）：将角色参考资产升级为“角色模型包”。** 模型包聚合身份锚点、面部/发型、体型、四视图、表情、姿势、服装组合、比例/画风规则、负面约束和版本；现有 `Character`、`CharacterReference`、`Outfit`、`Style` 采用兼容迁移和适配层，不一次性破坏历史候选或引用。
+  - [x] **V02-22A / Issue #78（设计）：** 已合并 `docs/v02-character-model-package-contract.md`（PR #79，合并提交 `6298be1`）：冻结 `Character.id` 一对一兼容锚点、包/版本/参考图/服装四表模型与逻辑槽唯一约束、版本状态机与包锁事务边界、可回滚迁移（兼容包 + V1 草稿、不发布、不改写既有行）、建议性完整度、排队快照 `character_packages` 与 Worker 快照消费、V02-23B 最小 API 及 PKG-S1～S14 测试矩阵；同步 `docs/data-model.md` 与 `docs/architecture.md`。Codex Review 八轮 27 条意见（11 P1 + 16 P2）全部修复并逐条回复。PKG-S14 真实 PostgreSQL 升降级与并发已于 2026-09-02 Linux 隔离环境跑通；Redis/RQ SimpleWorker 集成 8 项通过，独立 Windows Worker 进程矩阵、真实供应商调用与浏览器 E2E 为 `NOT RUN`。
+  - [x] **V02-22B（实现）：** 已由 PR #82 / #83 合并（`f961774`）：迁移+ORM、包/版本/关系服务与 API、排队快照与 Worker 消费、完整度与 diff。PKG-S14 真实 PostgreSQL 升降级与并发已于 2026-09-02 Linux 隔离环境 7/7 通过。
 - [ ] **V02-23（L2）：建设角色模型包工作区与绑定流程。**
   - [x] **V02-23A / Issue #46（设计）：** 已合并 `docs/v02-character-model-package-ui-audit.md`，确认 Character ID 继续作为兼容锚点，完整度为建议而非历史硬门禁。
   - [ ] **V02-23B（实现）：** 数据契约已由 V02-22A 冻结；按 `docs/v02-character-model-package-contract.md` 实现包版本、封面、差异、页面绑定与生成版本锁定。
@@ -204,7 +204,7 @@
 
 MangaFlow 已经具备私有单用户漫画生产工作台的主要功能面：原作导入、结构化剧本、动态分页与分镜、人物/服装/风格资产、单页生成、人工采用、视觉检查、修复、多供应商模型平台、DAG 工作流和多种导出均有代码与自动测试。
 
-当前进入可靠性收口。PR #6 已合并取消/租约保护、入队状态防覆盖、本地重试、RQ 并发等待及分镜版本化质检门禁；P1-8 草稿保存/发布一致性与 P2-8 并发发布冲突已随 PR #7 合并。P1-5 其余序号范围已随 PR #11 收口；后续仍需独立性能和 Redis/RQ/PostgreSQL 集成验收。真实供应商闭环仍需用户另行授权，不把离线通过等同于全部生产验收完成。
+当前进入可靠性收口。PR #6 已合并取消/租约保护、入队状态防覆盖、本地重试、RQ 并发等待及分镜版本化质检门禁；P1-8 草稿保存/发布一致性与 P2-8 并发发布冲突已随 PR #7 合并。P1-5 其余序号范围已随 PR #11 收口；PostgreSQL 与 Redis/RQ SimpleWorker 隔离验收已于 2026-09-02 Linux 跑通。2026-09-02 Windows 笔记本 `LAPTOP-TV9KT8RC` / SHA `98b93a0` 已跑通 owned Playwright E2E 17/17 与 Lighthouse/FPS 4/4（脚本 2 轮，非 V02-52A N=20）。仍缺 Windows Job Object 独立 Worker 进程矩阵（`BLOCKED`：无 Docker/PostgreSQL/Redis，用户明确不安装）与真实供应商闭环。不把离线或本轮 live 子集等同于全部生产验收完成。
 
 安全修复已随 PR #6 合并：Next.js 16.3.3、默认回环绑定、Compose Redis AUTH、上传限制和供应商元数据有界读取。项目仍是无账号的单用户工作台，不应对非信任网络开放；容器运行、真实网络边界与完整依赖审计未由本轮离线门禁代替。后文旧复现和原验收清单保留供追溯，当前代码状态以本节和 TodoList 勾选为准。
 
@@ -238,11 +238,11 @@ MangaFlow 已经具备私有单用户漫画生产工作台的主要功能面：�
 
 - [x] **P1-7：取消与租约失效后禁止继续调用供应商或覆盖任务状态**（审查第 1 项）。
 - [x] **P1-8：工作流自动保存不丢修改，发布必须等待最新草稿保存成功**（审查第 2 项）。
-- [x] **P1-9：Redis 入队状态回写不得覆盖 Worker 已推进的状态**（审查第 3 项）。
+- [x] **P1-9：Redis 入队状态回写不得覆盖 Worker 已推进的状态**（审查第 3 项）。2026-09-02 live Redis 复现 GENERATING 被写回 QUEUED 后改为条件更新；`test_redis_rq_state_isolation_no_clobber` 通过。
 - [x] **P1-10：LOCAL/AUTO 回退路径真正执行可重试失败的后续调度**（审查第 4 项）。
-- [x] **P1-11：REDIS 多 Worker 等待并发名额时保留后续调度机会**（审查第 5 项）。SQLite 单元测试覆盖 defer；未跑独立 Redis/RQ 与 PostgreSQL 集成。
+- [x] **P1-11：REDIS 多 Worker 等待并发名额时保留后续调度机会**（审查第 5 项）。SQLite 覆盖 defer；2026-09-02 live Redis SimpleWorker 槽位延迟通过。Windows 双独立 Worker 进程矩阵仍 NOT RUN。
 - [x] **P1-12：空质检、缺项质检和失败记录不得被生产门禁放行**（审查第 6 项）。
-- [x] **P2-8：同一工作流并发发布的 revision 冲突受控处理**（审查第 7 项；关联 P1-5）。SQLite 覆盖重试与 409；未跑 PostgreSQL。
+- [x] **P2-8：同一工作流并发发布的 revision 冲突受控处理**（审查第 7 项；关联 P1-5）。SQLite 覆盖重试与 409；2026-09-02 真实 PostgreSQL 并发发布与 409 耗尽恢复已通过。
 
 复现证据与边界：深审完成 7 个后端隔离场景和 2 个前端保存时序场景；后端使用临时 SQLite、独立 Session 与假供应商/受控队列，前端执行从当前组件提取的实际回调，不是浏览器端到端复现。未运行真实 PostgreSQL、Redis 多进程或付费模型调用；未重跑全量门禁。已排除“达到最大次数仍能通过 API 手动重试”的假设，接口已有 409 拦截，不列为待办。复现脚本及临时数据库均已清理，后续修复需把场景固化为仓库回归测试。
 
@@ -358,12 +358,12 @@ P1-1～P1-4 已完成，下列相应段落保留修复前问题与原验收标�
 - [x] 26 项专项覆盖并发分配、真实唯一键冲突、调用方数据保留、完整角色设定页重试、批次关闭时的串行写入、过期分镜、工作流审批与原文最终提交失败/恢复；PR 分支与 master 全量门禁通过。
 - WorkflowVersion(workflow_id, revision) 的既有修复与验收仍见 P2-8；无新 schema/迁移。真实 PostgreSQL 并发验收尚未执行。
 
-### P1-6 主分支离线功能门禁已通过，独立性能门禁待完成
+### P1-6 主分支离线功能门禁已通过，独立性能门禁 4/4（2 轮，非 N=20）
 
 - [x] PR #2 及后续可靠性修复、PR #4 轮询修复、PR #5 浏览器基线修复已合并；本地主分支已同步至 `d5d32ec`。
 - 保留主分支已经合并的 production readiness、旧候选复检和 storyboard focus 修复，不通过一次大范围文件覆盖来“解决冲突”。
 - [x] 合并后主分支 `cb324e3` 已独立运行 `npm run check:full`：165 Python、17 Vitest、4 Playwright 全通过；包含迁移测试和假模型完整 DAG 至输出的证据。
-- [ ] 在稳定环境补跑 Lighthouse 与 100 节点工作流 FPS 门禁；PR #15 已保留生成路由两轮 Lighthouse 73、CLS 0.477 的失败证据，后续修复与复验见 Issue #28，用户重新授权性能窗口前不执行。
+- [x] 2026-09-02 Windows 笔记本 `LAPTOP-TV9KT8RC` / SHA `98b93a0`（`fix/pr82-remaining-package-p1s`，为 `master`/`f961774` 祖先；E2E/perf **未**跑在 `c93e1b3`）以 `scripts/run_e2e_owned.py performance` 通过 4/4 门禁（LH1、LH2、FPS1、FPS2），耗时 146.063s（19:33:41–19:36:07 CST）。脚本为 2 轮，**不是** V02-52A N=20。FPS round1 avg 143.75 / 1%low 140.85；round2 avg 143.85 / 1%low 140.85。Lighthouse 路由 `/`、storyboard、generate、workflow、settings：perf 89–98、a11y 92–100、BP 96–100。日志：`output/playwright/owned-349cb52c1fa94502803935fc849ae8ac/` 与 `output/playwright/phase2/349cb52c1fa94502803935fc849ae8ac/`。PR #15 曾保留生成路由两轮 Lighthouse 73、CLS 0.477 的失败证据，后续修复与复验见 Issue #28。
 - 删除或归档旧分支只能在主分支验证完成后进行。
 
 ### P1-7 取消与租约失效后禁止继续调用或覆盖状态（阻塞）
@@ -547,7 +547,7 @@ PR #5 审查时有 17 个 Vitest 测试、165 个 Python 测试；仍需按关�
 ## 推荐执行顺序
 
 1. P1-5 与 P2-6 首批已完成；保留 PostgreSQL/Redis、浏览器与真实供应商验收边界，后续任务需另行安排。
-2. 为已合并的 P1-7、P1-9～P1-12 补独立 Redis/RQ 与 PostgreSQL 集成验收，验证多 Worker 槽位等待、重试、取消和生产门禁，不重复开发已通过离线回归的修复。
+2. P1-9/P1-11 与 PostgreSQL 并发/迁移已在 2026-09-02 Linux 隔离 live 跑通（SimpleWorker）。仍需在 Windows 上补独立 Job Object Worker 进程矩阵（重试新马进程、双 Worker 槽位、强退租约、五类检查入队），不重复开发已通过的离线与 Linux live 修复。
 3. 重跑 `npm run check:full` 与浏览器交互，并补 P1-6 独立 Lighthouse/FPS 门禁；PR #6 的 `npm run check` 不能代替这些验收。
 4. 为已合并的安全修复补容器网络、实际监听边界和独立依赖审计；继续保持单用户/回环部署，不对非信任网络开放。
 5. P2-6 已随 PR #10 完成；后续以小提交处理 P2-7 样式范围，保留其他既有 P2 待办。

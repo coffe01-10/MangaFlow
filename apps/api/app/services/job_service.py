@@ -117,20 +117,71 @@ def rq_retry_policy(job: GenerationJob):
     return Retry(max=remaining_retries, interval=[10, 30, 90]) if remaining_retries > 0 else None
 
 
+def _job_already_advanced(job: GenerationJob) -> bool:
+    """True when a worker or terminal path already owns the job row."""
+    return (
+        job.status in LEASED_JOB_STATUSES
+        or job.status in {JobStatus.COMPLETED, JobStatus.CANCELLED, JobStatus.FAILED}
+        or job.lease_owner is not None
+        or job.cancelled_at is not None
+    )
+
+
+def _transition_waiting_to_queued(
+    db: Session,
+    job: GenerationJob,
+    *,
+    error_code: str | None,
+    error_message: str | None,
+) -> bool:
+    """Atomically mark WAITING as QUEUED. Returns False if another party advanced."""
+    updated = db.execute(
+        update(GenerationJob)
+        .where(
+            GenerationJob.id == job.id,
+            GenerationJob.status == JobStatus.WAITING,
+            GenerationJob.lease_owner.is_(None),
+            GenerationJob.cancelled_at.is_(None),
+        )
+        .values(
+            status=JobStatus.QUEUED,
+            error_code=error_code,
+            error_message=error_message,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    db.commit()
+    db.refresh(job)
+    return updated.rowcount == 1
+
+
 def enqueue_job(db: Session, job: GenerationJob) -> GenerationJob:
     settings = get_settings()
     apply_runtime_overrides(db, settings)
+    db.refresh(job)
+    if _job_already_advanced(job):
+        return job
     if not dependencies_complete(db, job):
-        job.status = JobStatus.WAITING
-        db.commit()
-        db.refresh(job)
         return job
     # Legacy environment-level maintenance switch. Runtime LOCAL no longer
     # toggles this flag, so selecting LOCAL still executes immediately.
     if not settings.queue_enabled:
-        job.status = JobStatus.WAITING
-        job.error_code = "QUEUE_DISABLED"
-        job.error_message = "任务已保存，后台执行器当前未启用"
+        if _job_already_advanced(job):
+            return job
+        db.execute(
+            update(GenerationJob)
+            .where(
+                GenerationJob.id == job.id,
+                GenerationJob.status == JobStatus.WAITING,
+                GenerationJob.lease_owner.is_(None),
+            )
+            .values(
+                status=JobStatus.WAITING,
+                error_code="QUEUE_DISABLED",
+                error_message="任务已保存，后台执行器当前未启用",
+            )
+            .execution_options(synchronize_session=False)
+        )
         db.commit()
         db.refresh(job)
         return job
@@ -138,11 +189,8 @@ def enqueue_job(db: Session, job: GenerationJob) -> GenerationJob:
     if queue_mode == "LOCAL":
         return _enqueue_locally(db, job, "本地后台执行器正在处理任务")
 
-    job.status = JobStatus.QUEUED
-    job.error_code = None
-    job.error_message = None
-    db.commit()
-    db.refresh(job)
+    if not _transition_waiting_to_queued(db, job, error_code=None, error_message=None):
+        return job
 
     connection = None
     try:
@@ -164,8 +212,11 @@ def enqueue_job(db: Session, job: GenerationJob) -> GenerationJob:
             retry=rq_retry_policy(job),
         )
     except Exception:
+        db.refresh(job)
+        if _job_already_advanced(job):
+            return job
         if queue_mode == "AUTO" and settings.environment == "development":
-            return _enqueue_locally(db, job, "Redis 不可用，已切换到本地后台执行")
+            return _adopt_queued_job_locally(db, job, "Redis 不可用，已切换到本地后台执行")
         db.execute(
             update(GenerationJob)
             .where(
@@ -193,12 +244,31 @@ def enqueue_job(db: Session, job: GenerationJob) -> GenerationJob:
 
 
 def _enqueue_locally(db: Session, job: GenerationJob, message: str) -> GenerationJob:
-    job.status = JobStatus.QUEUED
-    job.error_code = "LOCAL_WORKER"
-    job.error_message = message
+    if not _transition_waiting_to_queued(
+        db, job, error_code="LOCAL_WORKER", error_message=message
+    ):
+        return job
+    _submit_local(job.id)
+    return job
+
+
+def _adopt_queued_job_locally(db: Session, job: GenerationJob, message: str) -> GenerationJob:
+    """Keep a QUEUED row for local execution without clobbering a worker advance."""
+    db.execute(
+        update(GenerationJob)
+        .where(
+            GenerationJob.id == job.id,
+            GenerationJob.status == JobStatus.QUEUED,
+            GenerationJob.lease_owner.is_(None),
+            GenerationJob.cancelled_at.is_(None),
+        )
+        .values(error_code="LOCAL_WORKER", error_message=message)
+        .execution_options(synchronize_session=False)
+    )
     db.commit()
     db.refresh(job)
-    _submit_local(job.id)
+    if job.status == JobStatus.QUEUED and job.lease_owner is None:
+        _submit_local(job.id)
     return job
 
 

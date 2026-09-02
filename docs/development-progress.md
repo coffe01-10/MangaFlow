@@ -4,6 +4,25 @@
 
 本文件记录修订版 MVP 计划的实际完成度。
 
+## 2026-09-02 Windows owned Playwright E2E 与性能门禁
+
+- 机器：Windows 笔记本 `LAPTOP-TV9KT8RC`。SHA：`98b93a0`（分支 `fix/pr82-remaining-package-p1s`；该 SHA 是 `master`/`f961774` 的祖先；E2E/perf **未**跑在 `c93e1b3`）。官方控制器：`scripts/run_e2e_owned.py`。Windows 上无产品代码改动。未跟踪的 `output/` 原样保留。未安装 Windows 服务。
+- **Playwright E2E PASS**：17 passed / 0 failed / 0 skipped，102.95s（19:30:35–19:32:18 CST）。套件：critical-behaviors 4、platform-v2 5、scene-workspace 1、usage-dashboard 7。日志：`D:\自媒体\漫画工作流\output\playwright\owned-1f37aee8cc2b40719cffa6e18d6731de\`。
+- **Performance PASS**（脚本 2 轮，**不是** V02-52A N=20）：`run_e2e_owned.py performance` 146.063s（19:33:41–19:36:07 CST）。4/4 门禁（LH1、LH2、FPS1、FPS2）。FPS round1 avg 143.75 / 1%low 140.85；round2 avg 143.85 / 1%low 140.85。Lighthouse 路由 `/`、storyboard、generate、workflow、settings：perf 89–98、a11y 92–100、BP 96–100。日志：`output/playwright/owned-349cb52c1fa94502803935fc849ae8ac/` 与 `output/playwright/phase2/349cb52c1fa94502803935fc849ae8ac/`。
+- **Independent Worker live BLOCKED**：pytest 未启动。笔记本无 Docker/PostgreSQL/Redis；55432/56379 关闭。用户明确不安装。7 项 `test_live_independent_worker_*` 仍为 **NOT RUN**（不是假 skip）。
+
+## 2026-09-02 Linux 隔离 PostgreSQL / Redis 验收
+
+- 起始 SHA：`f961774`（`origin/master`，已含 PR #82 / #83 / V02-22B）。工作分支 `env/postgres-redis-acceptance`。
+- 隔离服务（未改 `docker-compose.yml` 的 5432/6379）：PostgreSQL 16 `127.0.0.1:55432` / `mangaflow_acceptance`；Redis 7 `127.0.0.1:56379` DB 15，口令 `mangaflow-dev`。驱动：生产依赖新增 `psycopg[binary]==3.3.5`。
+- Live 入口：`pytest tests/integration --run-live-integration --pg-url postgresql+psycopg://mangaflow:mangaflow@127.0.0.1:55432/mangaflow_acceptance --redis-url redis://:mangaflow-dev@127.0.0.1:56379/15`。
+- **PostgreSQL：18 passed**（约 26.6s）。覆盖 schema/Alembic 邻接清理、用量账本升降级与并发 finalize、对账重叠串行、行锁、批次/候选序号、工作流并发发布与 409 耗尽恢复、事务回滚、关闭批次拦截，以及 PKG-S14 七项（两阶段 FK 往返、已发布包拒绝降级、部分唯一索引与 RESTRICT、`FOR UPDATE` 包锁、并发 publish 单赢家、archive v2 vs activate v2、并发资产绑定单赢家）。
+- **Redis/RQ：8 passed / 7 skipped**（约 17.2s）。通过：连接隔离、SimpleWorker 入队执行、P1-9 入队不覆盖 GENERATING、P1-11 槽位延迟、可重试/终态失败、租约过期恢复、取消保护、邻接命名空间清理。7 项 `test_live_independent_worker_*` 在非 win32 明确 skip（Windows Job Object 独立 Worker 进程矩阵仍 NOT RUN）。
+- 真实失败修复：OCR 迁移 `ocr_enabled != 0` 在 PostgreSQL boolean 上失败，改为 `Boolean.is_(True)`；`enqueue_job` 仅在 `WAITING` 且无租约时写入 `QUEUED`，已推进/已租约/已取消的行直接返回（P1-9）；Redis 失败回退 LOCAL 只收养仍为 `QUEUED` 的行。SQLite 回归 `test_enqueue_does_not_overwrite_generating_job` 等 6 项通过。全漫画验收辅助跳过已终态的幂等 inspect 任务，避免再依赖“把 COMPLETED 写回 WAITING”。
+- Linux 等价门禁（Node v20.19.2，engines 声明 >=22，构建仍成功）：供应商平权 git grep 0 违规；Ruff 通过；默认 pytest 542 passed / 70 skipped，Windows Job Object / oem 编码 / 备份 reparse / CLI 可执行文件更新等平台项失败或 ERROR，不记为本轮 Linux 验收失败、也不改为假 skip；Vitest 32 文件 239 passed；ESLint；Next.js 16.3.3 生产构建通过。本 Linux 轮未跑 Playwright、Lighthouse/FPS（随后由 Windows owned 控制器在 `98b93a0` / `LAPTOP-TV9KT8RC` 跑通，见上一节）、付费供应商、真实 CLI 生图。
+- 未改 `docs/architecture.md` / `docs/data-model.md`（无新 schema 或模块边界）。Windows JO 独立 Worker 进程树仍 `BLOCKED`/`NOT RUN`；付费调用仍 NOT RUN。浏览器 E2E 与性能门禁见上一节 Windows owned 记录，不在此重复记为未跑。
+
+
 ## V02-22A 角色模型包数据契约已合并（2026-09-02）
 
 - Issue #78 / PR #79 / `glm/v02-22a-character-package-contract` 已冻结角色模型包数据与生成契约：新增 `docs/v02-character-model-package-contract.md`，并同步 `docs/data-model.md`（ER 图、实体小节、约束、迁移策略）与 `docs/architecture.md`（模块职责、生成边界），两处均标注"契约冻结，V02-22B 实现前不生效"。
