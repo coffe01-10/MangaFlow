@@ -51,7 +51,7 @@ flowchart LR
 
 - `projects`：项目配置、上次使用模型、乐观锁和软删除。
 - `sources`：粘贴/TXT/Markdown 导入、不可变修订、章节、无损片段和来源覆盖率。
-- `characters`：主要姓名、绰号、冲突、参考图、服装和字段锁定；角色模型包（V02-22A 契约冻结，V02-22B 实现）在 Character 之上提供一对一版本化扩展，`Character.id` 仍是一切既有引用的事实锚点。
+- `characters`：主要姓名、绰号、冲突、参考图、服装和字段锁定；`character-packages`（V02-22B 已实现）在 Character 之上提供一对一版本化扩展（包行锁 + 乐观令牌 + `prompt_snapshot["character_packages"]` 排队冻结），`Character.id` 仍是一切既有引用的事实锚点。
 - `scene-assets`：场景资产、参考图绑定、时空光变体、软删/恢复与场景绑定（`bind-asset`）；背景消费走 `resolve_scene_background`。
 - `story/pages`：Scene、Beat、剧本、动态分页、右至左分镜和来源映射。
 - `batches/candidates`：页面或资产批次、候选、收藏、采用、下一页和软删除。
@@ -100,7 +100,7 @@ Worker 启动统一经过 `apps/api/run_worker.py` / `app.worker`，与 API 共�
 
 场景背景由 `resolve_scene_background` 统一解析：`SceneAsset.structured`（生效变体 `structured_overrides` 覆盖后）编译 → 资产 `description` → 历史 `Scene.location` 兜底；软删/缺失资产与未绑定场景行为一致。未显式绑定变体时采用资产默认 `is_canonical` 变体。编译文本写入 `Panel.background` 快照（分镜构建时），候选排队时把场景资产版本/变体/覆盖与引用图 ID 冻结进 `prompt_snapshot`，生成提示词按冻结快照编译，`Panel.background` 保持不可变。绑定/解绑资产、编辑/安装规范变体、归档/恢复后，`mark_pages_for_review` 以 `scene_asset` 引用类型把相关页面标记 `NEEDS_REVIEW`。`GenerationRecord.input_versions` 记录同一份冻结快照；场景参考图（资产级 + 生效变体级）在排队时进入 `JobAssetReference` 租约，执行期按排队时的引用集加载，排队/执行期间删除任一参考图返回 409。
 
-角色模型包版本锁定遵循同一模式（V02-22A 契约冻结，V02-22B 实现）：候选排队时把所选包版本 ID、版本号、规格冻结副本与实际参考图/服装 Asset ID 冻结进 `prompt_snapshot["character_packages"]`，Worker 只消费排队快照而不读取"最新版本"；版本选择只发生在候选层，发布新版本不改变历史候选、不触发页面复核。
+角色模型包版本锁定遵循同一模式（V02-22B 已实现）：逐出镜角色按"请求显式 `package_version_id`（可为 ARCHIVED 版本，跨角色/跨项目 409）> ACTIVE 包发布指针版本（READY/IN_PRODUCTION）> legacy 校验"解析；命中包版本的字符在排队时把包 ID、版本号、规格全文冻结副本、`spec_fingerprint`、实际参考图/服装 Asset ID 与风格事实冻结进 `prompt_snapshot["character_packages"]`，首个引用版本在同一事务内条件置入 `IN_PRODUCTION`，Worker 只消费排队快照（不重读"最新版本"、不重校验版本绑定）并在 `GenerationRecord.input_versions["character_packages"]` 记录紧凑镜像；未命中的字符与无包角色的校验和提示词逐字段不变（grandfather）。发布/归档/恢复/切换指针均不触发页面复核，发布新版本不改变历史候选、重试或重放；`MISSING_OUTFIT_ASSIGNMENT` 在解析上下文中的版本存在带有效参考图的默认服装时改用默认服装满足（`start_batch` 用默认继承上下文、`create_page_candidate` 用完整解析上下文，两处不产生判定分叉）。参考图/服装与 Asset、Outfit 的删除保护：资产软删清除 DRAFT 关系行、保留 READY+ 冻结事实；`bind_reference` 跨角色换绑与 `delete_outfit` 被版本引用时前置 409。
 
 视觉检查按 `candidate_id + storyboard_version` 隔离，五类各自最新结果必须全部通过。局部复检只补齐同一分镜版本的类别，不能借用旧分镜结果；检查期间分镜变化时只保存旧版本审计记录，不把新分镜标记通过。同一类别、同一时间戳的冲突结果按失败优先处理，不能用随机 UUID 排序推断检查先后；时间上更新的通过结果仍可解除旧失败。
 

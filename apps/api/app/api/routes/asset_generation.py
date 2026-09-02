@@ -12,6 +12,7 @@ from app.models import (
     AssetStatus,
     Chapter,
     Character,
+    CharacterModelPackageVersionOutfit,
     CharacterReference,
     GenerationBatch,
     GenerationJob,
@@ -186,6 +187,17 @@ def delete_outfit(outfit_id: str, db: Session = Depends(get_db)) -> None:
     outfit = db.get(Outfit, outfit_id)
     if not outfit:
         raise HTTPException(status_code=404, detail="服装档案不存在")
+    # Contract §10.4: a package version cannot silently lose a bound outfit.
+    referenced = db.scalar(
+        select(CharacterModelPackageVersionOutfit.id).where(
+            CharacterModelPackageVersionOutfit.outfit_id == outfit.id
+        )
+    )
+    if referenced:
+        raise HTTPException(
+            status_code=409,
+            detail="服装被角色模型包版本引用，请先在对应版本中解绑",
+        )
 
     batches = list(
         db.scalars(

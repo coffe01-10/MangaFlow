@@ -978,6 +978,185 @@ class CharacterReference(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class CharacterModelPackage(Timestamped, Base):
+    """One-to-one versioned extension of Character (docs/v02-character-model-package-contract.md).
+
+    The package owns the editable workspec (identity/visual/negative
+    constraints) and a single ``published_version_id`` pointer. Character.id
+    stays the fact anchor for every existing API, storyboard and generation
+    path; the package id never enters existing URLs or panel structures.
+    """
+
+    __tablename__ = "character_model_packages"
+    __table_args__ = (
+        # Declared as a named unique index (not UniqueConstraint) so SQLite and
+        # PostgreSQL emit the same index names in create_all and in the checked-in
+        # migration; the schema ownership guard depends on that parity.
+        Index("uq_character_model_packages_character", "character_id", unique=True),
+        Index(
+            "ix_character_model_packages_project_status_created",
+            "project_id",
+            "status",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    character_id: Mapped[str] = mapped_column(ForeignKey("characters.id", ondelete="CASCADE"))
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    identity_spec: Mapped[dict] = mapped_column(JSON, default=dict)
+    visual_spec: Mapped[dict] = mapped_column(JSON, default=dict)
+    negative_constraints: Mapped[list] = mapped_column(JSON, default=list)
+    published_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey(
+            # Cyclic with versions.package_id: use_alter keeps create_all/drop_all
+            # sortable while SQLite still inlines the DDL foreign key.
+            "character_model_package_versions.id",
+            ondelete="SET NULL",
+            use_alter=True,
+        ),
+        nullable=True,
+    )
+    status: Mapped[str] = mapped_column(String(16), default="ACTIVE")
+
+    versions: Mapped[list["CharacterModelPackageVersion"]] = relationship(
+        back_populates="package",
+        cascade="all, delete-orphan",
+        foreign_keys="CharacterModelPackageVersion.package_id",
+    )
+
+
+class CharacterModelPackageVersion(Timestamped, Base):
+    """Immutable version of a character model package.
+
+    DRAFT: editable through the package workspec and relation bindings.
+    READY/IN_PRODUCTION/ARCHIVED: spec snapshot and relations are frozen; the
+    only allowed operations are read/diff/completeness/archive/restore/
+    activate/explicit selection for generation.
+    """
+
+    __tablename__ = "character_model_package_versions"
+    __table_args__ = (
+        Index(
+            "uq_character_model_package_versions_number",
+            "package_id",
+            "version_number",
+            unique=True,
+        ),
+        Index(
+            "ix_character_model_package_versions_package_status",
+            "package_id",
+            "status",
+        ),
+        Index(
+            "uq_character_model_package_versions_one_draft",
+            "package_id",
+            unique=True,
+            postgresql_where=text("status = 'DRAFT'"),
+            sqlite_where=text("status = 'DRAFT'"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    package_id: Mapped[str] = mapped_column(
+        ForeignKey("character_model_packages.id", ondelete="CASCADE"), index=True
+    )
+    version_number: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(16), default="DRAFT")
+    spec_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    derived_from_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("character_model_package_versions.id", ondelete="SET NULL"), nullable=True
+    )
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    package: Mapped[CharacterModelPackage] = relationship(
+        back_populates="versions",
+        foreign_keys="CharacterModelPackageVersion.package_id",
+    )
+    references: Mapped[list["CharacterModelPackageVersionReference"]] = relationship(
+        cascade="all, delete-orphan"
+    )
+    outfits: Mapped[list["CharacterModelPackageVersionOutfit"]] = relationship(
+        cascade="all, delete-orphan"
+    )
+
+
+class CharacterModelPackageVersionReference(Base):
+    """One slot in a version's reference image matrix.
+
+    The logical slot ``(version_id, role, label)`` is unique without
+    ``asset_id``: reshaping a slot requires an explicit unbind first. The row
+    references the existing Asset (contract: no shadow Asset, no copied file),
+    so one asset may occupy several slots of the same version.
+    """
+
+    __tablename__ = "character_model_package_version_references"
+    __table_args__ = (
+        Index(
+            "uq_character_model_package_version_reference_slot",
+            "version_id",
+            "role",
+            "label",
+            unique=True,
+        ),
+        CheckConstraint(
+            "(role IN ('cover','front','side','back','three_quarter') AND label = '') "
+            "OR (role IN ('expression','pose','extra') AND label <> '')",
+            name="ck_character_model_package_version_reference_role_label",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    version_id: Mapped[str] = mapped_column(
+        ForeignKey("character_model_package_versions.id", ondelete="CASCADE"), index=True
+    )
+    asset_id: Mapped[str] = mapped_column(ForeignKey("assets.id", ondelete="RESTRICT"), index=True)
+    role: Mapped[str] = mapped_column(String(32))
+    label: Mapped[str] = mapped_column(String(48), default="")
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    version: Mapped[CharacterModelPackageVersion] = relationship(back_populates="references")
+
+
+class CharacterModelPackageVersionOutfit(Base):
+    """Outfit membership of one version; the default outfit is unique per version."""
+
+    __tablename__ = "character_model_package_version_outfits"
+    __table_args__ = (
+        Index(
+            "uq_character_model_package_version_outfit",
+            "version_id",
+            "outfit_id",
+            unique=True,
+        ),
+        Index(
+            "uq_character_model_package_version_outfit_default",
+            "version_id",
+            unique=True,
+            postgresql_where=text("is_default"),
+            sqlite_where=text("is_default"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    version_id: Mapped[str] = mapped_column(
+        ForeignKey("character_model_package_versions.id", ondelete="CASCADE"), index=True
+    )
+    outfit_id: Mapped[str] = mapped_column(
+        ForeignKey("outfits.id", ondelete="RESTRICT"), index=True
+    )
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    version: Mapped[CharacterModelPackageVersion] = relationship(back_populates="outfits")
+
+
 class GenerationBatch(Timestamped, Base):
     __tablename__ = "generation_batches"
     __table_args__ = (

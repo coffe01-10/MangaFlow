@@ -4,7 +4,15 @@ from sqlalchemy.orm import Session
 
 from app.api.helpers import character_references
 from app.database import get_db
-from app.models import Asset, Character, CharacterReference, Project
+from app.models import (
+    Asset,
+    Character,
+    CharacterModelPackage,
+    CharacterModelPackageVersion,
+    CharacterModelPackageVersionReference,
+    CharacterReference,
+    Project,
+)
 from app.schemas import (
     CharacterCreate,
     CharacterRead,
@@ -152,6 +160,31 @@ def bind_reference(
         raise HTTPException(
             status_code=409,
             detail="只有人物参考图或已生成的角色/服装设定页可以绑定角色",
+        )
+    # Contract §10.3a: an asset referenced by another character's package
+    # version matrix (DRAFT or frozen) cannot serve that character here,
+    # whether or not it already has a CharacterReference row.
+    foreign_package_reference = db.scalar(
+        select(CharacterModelPackageVersionReference.id)
+        .join(
+            CharacterModelPackageVersion,
+            CharacterModelPackageVersion.id
+            == CharacterModelPackageVersionReference.version_id,
+        )
+        .join(
+            CharacterModelPackage,
+            CharacterModelPackage.id == CharacterModelPackageVersion.package_id,
+        )
+        .where(
+            CharacterModelPackageVersionReference.asset_id == asset.id,
+            CharacterModelPackage.character_id != character_id,
+        )
+        .limit(1)
+    )
+    if foreign_package_reference:
+        raise HTTPException(
+            status_code=409,
+            detail="该素材已被角色模型包版本引用，请先在对应版本中解绑或放弃换绑",
         )
     existing = db.scalar(
         select(CharacterReference).where(CharacterReference.asset_id == asset.id)

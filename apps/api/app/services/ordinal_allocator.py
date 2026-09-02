@@ -245,14 +245,23 @@ def validate_candidate_reference_selections(
     page: MangaPage,
     project: Project,
     payload: CandidateCreate,
+    excluded_character_ids: tuple[str, ...] = (),
 ) -> dict[str, dict[str, str | None]]:
-    """Validate character and outfit reference selections for page candidate generation."""
+    """Validate character and outfit reference selections for page candidate generation.
+
+    Characters covered by a resolved character model package are validated by
+    ``resolve_package_selections``; they are skipped here so both paths remain
+    bytewise distinct (contract §8.1).
+    """
     panels = list(db.scalars(select(Panel).where(Panel.page_id == page.id)))
     visible_character_ids = list(
         dict.fromkeys(character_id for panel in panels for character_id in panel.characters)
     )
+    excluded = set(excluded_character_ids)
     normalized_selections: dict[str, dict[str, str | None]] = {}
     for character_id in visible_character_ids:
+        if character_id in excluded:
+            continue
         selection = payload.reference_selections.get(character_id, {})
         character_asset_id = selection.get("character_asset_id")
         valid_character_reference = (
@@ -338,7 +347,23 @@ def create_page_candidate(
                             "current": current_page.storyboard_version,
                         },
                     )
-                ensure_page_ready(db, current_page, get_settings())
+                # Contract §8.1: full package resolution (including the explicit
+                # package_version_id, which may target an ARCHIVED version) runs
+                # before the readiness gate so both call points agree on context.
+                # Lazy import: character_packages re-uses the savepoint helpers
+                # from this module (shared lock primitives).
+                from app.services.character_packages import resolve_package_selections
+
+                package_batch = resolve_package_selections(
+                    db,
+                    project=current_project,
+                    page=current_page,
+                    selections=payload.reference_selections,
+                    style_id=current_page.style_id,
+                )
+                ensure_page_ready(
+                    db, current_page, get_settings(), package_gate=package_batch.gate
+                )
                 current_resolved_model = resolve_model(
                     db,
                     get_settings(),
@@ -354,11 +379,24 @@ def create_page_candidate(
                     current_resolved_model.model, payload.resolution.value
                 ):
                     raise HTTPException(status_code=422, detail="所选模型不支持该输出清晰度")
+                covered_characters = tuple(package_batch.normalized.keys())
                 current_normalized_selections = validate_candidate_reference_selections(
-                    db, current_page, current_project, payload
+                    db,
+                    current_page,
+                    current_project,
+                    payload,
+                    excluded_character_ids=covered_characters,
                 )
+                current_normalized_selections.update(package_batch.normalized)
                 ordinal = _next_page_candidate_ordinal(db, current_batch.id)
                 current_scene_snapshot = scene_asset_snapshot(db, current_page)
+                snapshot = {
+                    "reference_selections": current_normalized_selections,
+                    "storyboard_version": current_page.storyboard_version,
+                    "scene_asset": current_scene_snapshot,
+                }
+                if package_batch.snapshot:
+                    snapshot["character_packages"] = package_batch.snapshot
                 candidate = PageCandidate(
                     batch_id=current_batch.id,
                     page_id=current_page.id,
@@ -368,11 +406,7 @@ def create_page_candidate(
                     resolution=payload.resolution,
                     status="QUEUED",
                     based_on_storyboard_version=current_page.storyboard_version,
-                    prompt_snapshot={
-                        "reference_selections": current_normalized_selections,
-                        "storyboard_version": current_page.storyboard_version,
-                        "scene_asset": current_scene_snapshot,
-                    },
+                    prompt_snapshot=snapshot,
                 )
                 db.add(candidate)
                 db.flush()

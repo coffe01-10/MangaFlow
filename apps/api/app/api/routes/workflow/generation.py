@@ -32,6 +32,10 @@ from app.schemas import (
     PageRead,
     SelectCandidateRequest,
 )
+from app.services.character_packages import (
+    default_package_gate_context,
+    detach_draft_package_references_for_asset,
+)
 from app.services.job_service import enqueue_job
 from app.services.ordinal_allocator import (
     CandidateOrdinalConflictError,
@@ -50,7 +54,11 @@ router = APIRouter()
 )
 def start_batch(page_id: str, db: Session = Depends(get_db)) -> GenerationBatch:
     page = _page(db, page_id)
-    ensure_page_ready(db, page, get_settings())
+    # Contract §8.1: batch start gates on the default-inheritance package
+    # context (ACTIVE package + published version) when no payload exists yet.
+    ensure_page_ready(
+        db, page, get_settings(), package_gate=default_package_gate_context(db, page)
+    )
     return _new_batch(db, page)
 
 
@@ -202,6 +210,9 @@ def delete_candidate(candidate_id: str, db: Session = Depends(get_db)) -> None:
             if not has_other_reference:
                 character.status = AssetStatus.NEEDS_CONFIRMATION
             character.version += 1
+        # Contract §10.3: DRAFT package slots referencing this asset are cleared
+        # physically; frozen (READY+) rows keep the fact.
+        detach_draft_package_references_for_asset(db, candidate.asset_id)
     candidate.deleted_at = deleted_at
     candidate.version += 1
     db.commit()

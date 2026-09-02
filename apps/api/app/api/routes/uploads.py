@@ -33,6 +33,7 @@ from app.models import (
 )
 from app.request_limits import ASSET_UPLOAD_OPENAPI, ParsedUpload, parse_single_file_form
 from app.schemas import AssetRead, AssetUpdate
+from app.services.character_packages import detach_draft_package_references_for_asset
 from app.services.media import create_thumbnails, inspect_upload_image, remove_thumbnails
 
 router = APIRouter()
@@ -80,6 +81,9 @@ def _ensure_asset_not_in_active_job(db: Session, asset: Asset) -> None:
 def _detach_reference_asset(db: Session, asset: Asset) -> None:
     """Remove a reference asset from every structured binding in its project."""
 
+    # Contract §10.3: DRAFT package relation rows are physically cleared with the
+    # asset; READY+ rows keep the frozen fact and consumers filter by deleted_at.
+    detach_draft_package_references_for_asset(db, asset.id)
     db.execute(delete(CharacterReference).where(CharacterReference.asset_id == asset.id))
     for outfit in db.scalars(select(Outfit).where(Outfit.project_id == asset.project_id)):
         if asset.id not in outfit.reference_asset_ids:
