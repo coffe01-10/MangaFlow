@@ -5,7 +5,6 @@ from sqlalchemy.orm import Session
 from app.api.helpers import character_references
 from app.database import get_db
 from app.models import (
-    Asset,
     Character,
     CharacterModelPackage,
     CharacterModelPackageVersion,
@@ -20,6 +19,7 @@ from app.schemas import (
     CharacterReferenceRead,
     CharacterUpdate,
 )
+from app.services.character_packages import lock_asset_for_ownership
 
 router = APIRouter()
 
@@ -145,9 +145,9 @@ def bind_reference(
     db: Session = Depends(get_db),
 ) -> CharacterReference:
     character = db.get(Character, character_id)
-    asset = db.get(Asset, payload.asset_id)
     if not character:
         raise HTTPException(status_code=404, detail="角色不存在")
+    asset = lock_asset_for_ownership(db, payload.asset_id)
     if not asset or asset.deleted_at is not None:
         raise HTTPException(status_code=404, detail="参考素材不存在")
     if asset.project_id != character.project_id:

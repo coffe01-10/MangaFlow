@@ -21,6 +21,7 @@ from app.models import (
     WorkflowRun,
     utcnow,
 )
+from app.services.character_packages import resolve_package_selections
 from app.services.job_service import mark_job_cancelled
 from app.services.model_router import model_supports_resolution, resolve_model
 from app.services.ordinal_allocator import (
@@ -97,9 +98,35 @@ def approve_node(
                 character_id for panel in panels for character_id in panel.characters
             )
         )
-        reference_selections: dict[str, dict[str, str | None]] = {}
+        # Lock order matches create_page_candidate: project/page (batch) then
+        # package rows inside resolve_package_selections.
+        batch = create_generation_batch(
+            db,
+            project_id=run.project_id,
+            chapter_id=chapter.id,
+            page_id=page.id,
+            generation_kind="PAGE",
+        )
+        project = db.get(Project, run.project_id)
+        package_batch = resolve_package_selections(
+            db,
+            project=project,
+            page=page,
+            selections={},
+            style_id=page.style_id,
+        )
+        reference_selections: dict[str, dict[str, str | None]] = dict(
+            package_batch.normalized
+        )
         reference_asset_ids: list[str] = []
         for character_id in visible_character_ids:
+            if character_id in package_batch.normalized:
+                selection = package_batch.normalized[character_id]
+                if selection.get("character_asset_id"):
+                    reference_asset_ids.append(selection["character_asset_id"])
+                if selection.get("outfit_asset_id"):
+                    reference_asset_ids.append(selection["outfit_asset_id"])
+                continue
             character_reference = db.scalar(
                 select(CharacterReference)
                 .join(Asset, Asset.id == CharacterReference.asset_id)
@@ -141,13 +168,12 @@ def approve_node(
             reference_asset_ids.append(character_reference.asset_id)
             if outfit_asset_id:
                 reference_asset_ids.append(outfit_asset_id)
-        batch = create_generation_batch(
-            db,
-            project_id=run.project_id,
-            chapter_id=chapter.id,
-            page_id=page.id,
-            generation_kind="PAGE",
-        )
+        snapshot = {
+            "storyboard_version": page.storyboard_version,
+            "reference_selections": reference_selections,
+        }
+        if package_batch.snapshot:
+            snapshot["character_packages"] = package_batch.snapshot
         candidate = PageCandidate(
             batch_id=batch.id,
             page_id=page.id,
@@ -157,10 +183,7 @@ def approve_node(
             resolution=Resolution(selected_resolution),
             status="QUEUED",
             based_on_storyboard_version=page.storyboard_version,
-            prompt_snapshot={
-                "storyboard_version": page.storyboard_version,
-                "reference_selections": reference_selections,
-            },
+            prompt_snapshot=snapshot,
         )
         db.add(candidate)
         db.flush()

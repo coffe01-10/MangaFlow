@@ -1593,3 +1593,459 @@ def test_package_concurrent_default_outfit_one_winner(file_sessions):
     )
     assert len(defaults) == 1
     db.close()
+
+
+def test_package_second_default_candidate_keeps_in_production(
+    client, db_session, monkeypatch
+):
+    """Default inheritance must accept a published version already IN_PRODUCTION."""
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    _skip_page_readiness(monkeypatch)
+    project, character, _front, outfit, o_asset, version_id = _package_published_fixture(
+        client, db_session, monkeypatch
+    )
+    _chapter, page = _generation_page(db_session, project["id"], character["id"])
+    batch = client.post(f"/api/v1/pages/{page.id}/batches")
+    assert batch.status_code == 201, batch.text
+    payload = {
+        "model_alias": "image.nano_banana_2",
+        "resolution": "1K",
+        "storyboard_version": page.storyboard_version,
+        "reference_selections": {
+            character["id"]: {
+                "outfit_id": outfit["id"],
+                "outfit_asset_id": o_asset["id"],
+            }
+        },
+    }
+    first = client.post(f"/api/v1/batches/{batch.json()['id']}/candidates", json=payload)
+    assert first.status_code == 202, first.text
+    second = client.post(
+        f"/api/v1/batches/{batch.json()['id']}/candidates", json=payload
+    )
+    assert second.status_code == 202, second.text
+    db_session.expire_all()
+    from app.models import CharacterModelPackageVersion
+
+    assert (
+        db_session.get(CharacterModelPackageVersion, version_id).status
+        == "IN_PRODUCTION"
+    )
+    facts = second.json()["candidate"]["prompt_snapshot"]["character_packages"][
+        character["id"]
+    ]
+    assert facts["package_version_id"] == version_id
+
+
+def test_package_default_resolution_fills_omitted_outfit_asset(
+    client, db_session, monkeypatch
+):
+    """Omitted outfit_asset_id inherits the first live reference of the default outfit."""
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    _skip_page_readiness(monkeypatch)
+    project, character, _front, outfit, o_asset, _version_id = (
+        _package_published_fixture(client, db_session, monkeypatch)
+    )
+    _chapter, page = _generation_page(db_session, project["id"], character["id"])
+    batch = client.post(f"/api/v1/pages/{page.id}/batches")
+    assert batch.status_code == 201, batch.text
+    queued = client.post(
+        f"/api/v1/batches/{batch.json()['id']}/candidates",
+        json={
+            "model_alias": "image.nano_banana_2",
+            "resolution": "1K",
+            "storyboard_version": page.storyboard_version,
+            "reference_selections": {},
+        },
+    )
+    assert queued.status_code == 202, queued.text
+    selection = queued.json()["candidate"]["prompt_snapshot"]["reference_selections"][
+        character["id"]
+    ]
+    assert selection["outfit_id"] == outfit["id"]
+    assert selection["outfit_asset_id"] == o_asset["id"]
+
+
+def _workflow_generate_candidate(db_session, monkeypatch, page_id: str, project_id: str):
+    from app.config import get_settings
+    from app.services.provider_presets import ensure_provider_presets
+    from app.services.workflow_engine import (
+        approve_node,
+        create_workflow_run,
+        default_graph,
+        publish_workflow,
+    )
+    from app.models import WorkflowDefinition, WorkflowNodeRun
+
+    ensure_provider_presets(db_session, get_settings(), auto_commit=True)
+    workflow = WorkflowDefinition(
+        project_id=project_id,
+        name="角色包工作流生成",
+        draft_graph=default_graph(),
+        is_active=True,
+    )
+    db_session.add(workflow)
+    db_session.commit()
+    publish_workflow(db_session, workflow)
+    run = create_workflow_run(
+        db_session,
+        workflow,
+        scope_type="PAGE",
+        scope_id=page_id,
+        start_node_ids=["generate"],
+        stop_node_ids=["generate"],
+    )
+    node_run = db_session.scalar(
+        select(WorkflowNodeRun).where(
+            WorkflowNodeRun.workflow_run_id == run.id,
+            WorkflowNodeRun.status == "WAITING_APPROVAL",
+        )
+    )
+    assert node_run is not None
+    monkeypatch.setattr(
+        "app.services.workflow_engine.enqueue_job", lambda db, job: job
+    )
+    approve_node(
+        db_session,
+        run.id,
+        node_run.node_id,
+        image_model_alias="image.nano_banana_2",
+        resolution="1K",
+    )
+    from app.models import PageCandidate
+
+    return db_session.scalar(
+        select(PageCandidate).where(PageCandidate.page_id == page_id)
+    )
+
+
+def test_workflow_approve_freezes_published_package(
+    client, db_session, monkeypatch
+):
+    """Workflow GENERATE must freeze the published package, not live Character rows."""
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    project, character, front, outfit, o_asset, version_id = _package_published_fixture(
+        client, db_session, monkeypatch
+    )
+    _chapter, page = _generation_page(db_session, project["id"], character["id"])
+    candidate = _workflow_generate_candidate(
+        db_session, monkeypatch, page.id, project["id"]
+    )
+    assert candidate is not None
+    facts = candidate.prompt_snapshot["character_packages"][character["id"]]
+    assert facts["package_version_id"] == version_id
+    assert facts["character_asset_id"] == front["id"]
+    assert facts["outfit_id"] == outfit["id"]
+    assert facts["outfit_asset_id"] == o_asset["id"]
+    db_session.expire_all()
+    from app.models import CharacterModelPackageVersion
+
+    assert (
+        db_session.get(CharacterModelPackageVersion, version_id).status
+        == "IN_PRODUCTION"
+    )
+
+
+def test_workflow_approve_without_legacy_character_reference(
+    client, db_session, monkeypatch
+):
+    """A published package reference is enough; CharacterReference is not required."""
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    project, character, front, _outfit, _o_asset, version_id = (
+        _package_published_fixture(client, db_session, monkeypatch)
+    )
+    from app.models import CharacterReference
+
+    for reference in db_session.scalars(
+        select(CharacterReference).where(
+            CharacterReference.character_id == character["id"]
+        )
+    ):
+        db_session.delete(reference)
+    db_session.commit()
+    _chapter, page = _generation_page(db_session, project["id"], character["id"])
+    candidate = _workflow_generate_candidate(
+        db_session, monkeypatch, page.id, project["id"]
+    )
+    assert candidate is not None
+    facts = candidate.prompt_snapshot["character_packages"][character["id"]]
+    assert facts["package_version_id"] == version_id
+    assert facts["character_asset_id"] == front["id"]
+
+
+def test_legacy_character_bind_locks_asset(client, monkeypatch):
+    """The CharacterReference bind path shares the same asset ownership lock."""
+    from app.api.routes import characters as characters_route
+
+    locked: list[str] = []
+    real = characters_route.lock_asset_for_ownership
+
+    def wrapped(db, asset_id):
+        locked.append(asset_id)
+        return real(db, asset_id)
+
+    monkeypatch.setattr(characters_route, "lock_asset_for_ownership", wrapped)
+    project = _project(client)
+    character = _character(client, project["id"])
+    asset = _upload_asset(client, project["id"])
+    bind = client.post(
+        f"/api/v1/characters/{character['id']}/references",
+        json={"asset_id": asset["id"], "angle": "front"},
+    )
+    assert bind.status_code == 201, bind.text
+    assert locked == [asset["id"]]
+
+
+def test_package_bind_and_cleanup_lock_the_asset(client, db_session, monkeypatch):
+    """Bind and DRAFT cleanup must take the shared asset-level ownership lock."""
+    from app.services import character_packages as packages
+
+    locked: list[str] = []
+    real = packages.lock_asset_for_ownership
+
+    def wrapped(db, asset_id):
+        locked.append(asset_id)
+        return real(db, asset_id)
+
+    monkeypatch.setattr(packages, "lock_asset_for_ownership", wrapped)
+    project = _project(client)
+    character = _character(client, project["id"])
+    asset = _upload_asset(client, project["id"])
+    package = _create_package(client, project["id"], character["id"])
+    version_id = package["versions"][0]["id"]
+    token = package["versions"][0]["version"]
+    bind = client.post(
+        f"{_package_url(project['id'], character['id'])}/versions/{version_id}/references",
+        json={"asset_id": asset["id"], "role": "front", "version": token},
+    )
+    assert bind.status_code == 201, bind.text
+    assert asset["id"] in locked
+    locked.clear()
+    packages.detach_draft_package_references_for_asset(db_session, asset["id"])
+    db_session.commit()
+    assert locked == [asset["id"]]
+    remaining = db_session.scalar(
+        select(packages.CharacterModelPackageVersionReference.id).where(
+            packages.CharacterModelPackageVersionReference.asset_id == asset["id"]
+        )
+    )
+    assert remaining is None
+
+
+def test_package_bind_and_asset_delete_keep_draft_detached(file_sessions):
+    """Bind vs asset cleanup must not leave a DRAFT slot on a deleted asset."""
+    from app.models import (
+        Asset,
+        Character,
+        CharacterModelPackage,
+        CharacterModelPackageVersion,
+        CharacterModelPackageVersionReference,
+        Project,
+        utcnow,
+    )
+    from app.services.character_packages import (
+        bind_reference,
+        detach_draft_package_references_for_asset,
+    )
+
+    db = file_sessions()
+    project = Project(id="lock-project", name="资产锁项目")
+    character = Character(
+        id="lock-character",
+        project_id=project.id,
+        primary_name="锁角色",
+        aliases=[],
+        aliases_normalized=[],
+        status="UPLOADED",
+    )
+    asset = Asset(
+        id="lock-asset",
+        project_id=project.id,
+        kind="CHARACTER_REFERENCE",
+        original_name="front.png",
+        storage_key="lock/front.png",
+        mime_type="image/png",
+        byte_size=100,
+        sha256="d" * 64,
+        source="USER_UPLOAD",
+        status="UPLOADED",
+    )
+    db.add(project)
+    db.flush()
+    db.add(character)
+    db.flush()
+    db.add(asset)
+    db.flush()
+    package = CharacterModelPackage(
+        character_id=character.id,
+        project_id=project.id,
+        identity_spec={},
+        visual_spec={},
+        negative_constraints=[],
+        status="ACTIVE",
+    )
+    db.add(package)
+    db.flush()
+    version = CharacterModelPackageVersion(
+        package_id=package.id,
+        version_number=1,
+        status="DRAFT",
+        spec_snapshot={
+            "identity_spec": {},
+            "visual_spec": {},
+            "negative_constraints": [],
+            "frozen_from": "package",
+        },
+    )
+    db.add(version)
+    db.commit()
+    project_id, character_id, version_id, asset_id = (
+        project.id,
+        character.id,
+        version.id,
+        asset.id,
+    )
+    db.close()
+
+    errors: dict[str, HTTPException] = {}
+
+    def do_bind(session):
+        return bind_reference(
+            session,
+            project_id,
+            character_id,
+            version_id,
+            asset_id=asset_id,
+            role="front",
+            token=1,
+        )
+
+    def do_delete(session):
+        detach_draft_package_references_for_asset(session, asset_id)
+        row = session.get(Asset, asset_id)
+        row.deleted_at = utcnow()
+        session.commit()
+        return True
+
+    _concurrent_pair(file_sessions, do_bind, do_delete, errors)
+    verify = file_sessions()
+    gone = verify.get(Asset, asset_id)
+    refs = list(
+        verify.scalars(
+            select(CharacterModelPackageVersionReference).where(
+                CharacterModelPackageVersionReference.asset_id == asset_id
+            )
+        )
+    )
+    if gone is not None and gone.deleted_at is not None:
+        assert refs == []
+    verify.close()
+
+
+def test_package_concurrent_cross_character_asset_bind_single_winner(file_sessions):
+    """The same unbound asset cannot enter two characters' package matrices."""
+    from app.models import (
+        Asset,
+        Character,
+        CharacterModelPackage,
+        CharacterModelPackageVersion,
+        CharacterModelPackageVersionReference,
+        Project,
+    )
+    from app.services.character_packages import bind_reference
+
+    db = file_sessions()
+    project = Project(id="cross-lock-project", name="跨角色资产锁")
+    db.add(project)
+    db.flush()
+    characters = []
+    versions = []
+    for suffix in ("a", "b"):
+        character = Character(
+            id=f"cross-lock-character-{suffix}",
+            project_id=project.id,
+            primary_name=f"角色{suffix}",
+            aliases=[],
+            aliases_normalized=[],
+            status="UPLOADED",
+        )
+        db.add(character)
+        db.flush()
+        package = CharacterModelPackage(
+            character_id=character.id,
+            project_id=project.id,
+            identity_spec={},
+            visual_spec={},
+            negative_constraints=[],
+            status="ACTIVE",
+        )
+        db.add(package)
+        db.flush()
+        version = CharacterModelPackageVersion(
+            package_id=package.id,
+            version_number=1,
+            status="DRAFT",
+            spec_snapshot={
+                "identity_spec": {},
+                "visual_spec": {},
+                "negative_constraints": [],
+                "frozen_from": "package",
+            },
+        )
+        db.add(version)
+        db.flush()
+        characters.append(character.id)
+        versions.append(version.id)
+    asset = Asset(
+        id="cross-lock-asset",
+        project_id=project.id,
+        kind="CHARACTER_REFERENCE",
+        original_name="shared.png",
+        storage_key="cross/shared.png",
+        mime_type="image/png",
+        byte_size=100,
+        sha256="e" * 64,
+        source="USER_UPLOAD",
+        status="UPLOADED",
+    )
+    db.add(asset)
+    db.commit()
+    project_id = project.id
+    asset_id = asset.id
+    db.close()
+
+    errors: dict[str, HTTPException] = {}
+    results = _concurrent_pair(
+        file_sessions,
+        lambda session: bind_reference(
+            session,
+            project_id,
+            characters[0],
+            versions[0],
+            asset_id=asset_id,
+            role="front",
+            token=1,
+        ),
+        lambda session: bind_reference(
+            session,
+            project_id,
+            characters[1],
+            versions[1],
+            asset_id=asset_id,
+            role="front",
+            token=1,
+        ),
+        errors,
+    )
+    winners = [key for key, value in results.items() if value is not None]
+    assert len(winners) == 1, errors
+    verify = file_sessions()
+    refs = list(
+        verify.scalars(
+            select(CharacterModelPackageVersionReference).where(
+                CharacterModelPackageVersionReference.asset_id == asset_id
+            )
+        )
+    )
+    assert len(refs) == 1
+    verify.close()
