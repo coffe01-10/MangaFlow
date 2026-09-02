@@ -3,9 +3,9 @@
 - Issue: [#12](https://github.com/coffe01-10/MangaFlow/issues/12)
 - 2026-09-02 Linux 隔离 live（本节为准，不改写下方历史 BLOCKED 记录）：起始 `master` / `f961774`，分支 `env/postgres-redis-acceptance`。
 - **真实 PostgreSQL：18 passed**（`127.0.0.1:55432` / `mangaflow_acceptance` / `psycopg`）。含 Alembic 邻接清理、用量账本、并发序号/发布/409、PKG-S14 七项。
-- **真实 Redis/RQ SimpleWorker：8 passed / 7 skipped**（`127.0.0.1:56379/15`）。P1-9 入队不覆盖、P1-11 槽位延迟、重试/取消/租约/命名空间清理通过。7 项 `test_live_independent_worker_*` 非 win32 skip，Windows Job Object 独立 Worker 进程矩阵仍 NOT RUN。
+- **真实 Redis/RQ SimpleWorker：8 passed / 7 skipped**（`127.0.0.1:56379/15`）。P1-9 入队不覆盖、P1-11 槽位延迟、重试/取消/租约/命名空间清理通过。7 项 `test_live_independent_worker_*` 在 Linux 非 win32 skip；随后 Windows 笔记本尝试 live 时 **BLOCKED**（无 Docker/PostgreSQL/Redis，55432/56379 关闭，用户明确不安装，pytest 未启动），7 项仍为 NOT RUN，不是假 skip。
 - 代码修复：OCR 迁移 PostgreSQL 布尔比较；`enqueue_job` 条件更新（P1-9）；生产依赖 `psycopg[binary]==3.3.5`。
-- 未启动默认 `docker-compose.yml` 的 5432/6379；未恢复已删除的 `docker-compose.acceptance.yml`。浏览器 E2E、付费供应商、真实 CLI 生图仍 NOT RUN。
+- 未启动默认 `docker-compose.yml` 的 5432/6379；未恢复已删除的 `docker-compose.acceptance.yml`。2026-09-02 Windows 笔记本 `LAPTOP-TV9KT8RC` / SHA `98b93a0`（`fix/pr82-remaining-package-p1s`，为 `master`/`f961774` 祖先；未跑在 `c93e1b3`）：owned Playwright E2E **17/17**；performance **4/4**（脚本 2 轮，非 V02-52A N=20）。付费供应商、真实 CLI 生图仍 NOT RUN。独立 Worker 仍 BLOCKED。
 
 ## 2026-09-02 Linux 隔离 live 命令与计数
 

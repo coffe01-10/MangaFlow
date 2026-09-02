@@ -1,9 +1,9 @@
 # MangaFlow 主分支后续工作清单
 
 更新时间：2026-09-02
-当前实现合并树：`master` / `f961774`（PR #83，2026-09-02）。V02-21B、V02-22A 与 V02-22B 角色模型包后端已分别完成独立审阅并合并。2026-09-02 在 Linux 隔离环境跑通 PostgreSQL live 18 项（含 PKG-S14）与 Redis/RQ SimpleWorker live 8 项；7 项 Windows Job Object 独立 Worker 仍 skip。真实图片生成/编辑、账号权限、费用、浏览器 E2E、Lighthouse/FPS 与真实取消/超时进程树仍按任务标记为 `NOT RUN`。
+当前实现合并树：`master` / `f961774`（PR #83，2026-09-02）。V02-21B、V02-22A 与 V02-22B 角色模型包后端已分别完成独立审阅并合并。2026-09-02 在 Linux 隔离环境跑通 PostgreSQL live 18 项（含 PKG-S14）与 Redis/RQ SimpleWorker live 8 项；7 项 Windows Job Object 独立 Worker 仍 `BLOCKED`（笔记本无 Docker/PostgreSQL/Redis，用户明确不安装）。同日 Windows 笔记本 `LAPTOP-TV9KT8RC` 在 SHA `98b93a0`（分支 `fix/pr82-remaining-package-p1s`，该 SHA 为 `master`/`f961774` 祖先；E2E/perf **未**跑在 `c93e1b3`）以官方控制器 `scripts/run_e2e_owned.py` 将 Playwright E2E 与 Lighthouse/FPS 记为 `RUN`。真实图片生成/编辑、账号权限、费用与真实取消/超时进程树仍按任务标记为 `NOT RUN`。
 当前开发分支：`env/postgres-redis-acceptance`。下一实现项为 V02-23B。
-最近 `check:full` 历史基线：`master` / `cb324e3`（2026-08-27；相对 PR #5 合并提交 `d5d32ec` 仅增加任务文档），不代表 PR #6 / #7 / #10 / #11 已重跑浏览器验收。
+最近 `check:full` 历史基线：`master` / `cb324e3`（2026-08-27；相对 PR #5 合并提交 `d5d32ec` 仅增加任务文档），不代表 PR #6 / #7 / #10 / #11 已重跑浏览器验收。2026-09-02 Windows owned E2E 17/17 与 LH/FPS 4/4 证据在 `98b93a0` / `LAPTOP-TV9KT8RC`，见 `docs/development-progress.md`。
 深审历史基线：`master` / `f085327`。当时新增 6 项 P1 修复与 1 项 P2 改进；PR #6 已合并其中 P1-7、P1-9～P1-12 的代码修复。P1-8、P2-8 已随 PR #7 合并，独立 Redis/RQ、PostgreSQL 与浏览器验收仍待完成。
 安全审查历史基线：`master` / `7635cf7`。P0-3、P1-13～P1-15、P2-4、P2-9 的代码修复现已合并，真实服务/容器及完整依赖审计边界仍保留。
 
@@ -60,7 +60,7 @@
   - [x] **V02-11B（L2，Grok）：统一连接与模型目录。** 已按 `credential_source`/capability 渲染凭据、统一验证、独立发现、余额和目录驱动的模型冒烟，删除设置页 Vertex 专属卡；设置页已接入单条/批量展示偏好、隐藏筛选、逐项版本与部分失败语义。
   - [ ] **V02-11C（L2 验收）：设置页回归。** 完成 Issue #40 的 P/C/F/V/A/S/L/N 测试矩阵、假供应商设置页 E2E 与 `npm run check`；不运行真实供应商。
     - [x] 组件矩阵已补齐到 66 项设置页定向回归；三态断言促使设置页新增派生不可用的「未就绪」标识并禁用模型测试。完整 Web 为 25 个文件 187 项 Vitest，通过 ESLint、TypeScript 与生产构建。
-    - [ ] 离线假供应商 E2E 已编写并通过独立 TypeScript 检查；Windows 完整 `npm run check` 已通过，但该浏览器 E2E 本轮未实际启动服务执行，因此 V02-11C 仍不勾选。
+    - [ ] 2026-09-02 Windows owned Playwright E2E 17 passed / 0 failed / 0 skipped（`scripts/run_e2e_owned.py`，SHA `98b93a0`，`LAPTOP-TV9KT8RC`）。Issue #40 的 P/C/F/V/A/S/L/N 测试矩阵仍未完整核对，因此 V02-11C 仍不勾选。
 - [x] **V02-12（L3 数据、L2 UI）：把“可展示模型”作为服务端持久化偏好。** 偏好不能只存在浏览器本地状态，也不得复用 `AIModel.enabled` 或派生 `/models.enabled`；新任务、路由候选和历史记录仍保存真实模型 ID，不因隐藏模型而失去审计或重放信息。
   - [x] **V02-12A（L3 设计，Issue #59）：冻结展示偏好契约。** 已合并 `docs/v02-12a-model-visibility-contract.md`，明确持久位置、管理列表、单条/批量 API、乐观并发、默认值、迁移/回滚及下游消费规则；未编辑迁移。
   - [x] **V02-12B（L3 实现）：迁移与 API。** 已新增 `display_enabled` 可回滚迁移、连接模型管理列表、单条/批量写入、逐项乐观锁与部分成功语义；单纯显隐不改能力来源/置信度，隐藏不改变调用或路由。SQLite 迁移与后端回归通过；2026-09-02 Linux 隔离 PostgreSQL schema/用量往返已覆盖。
@@ -204,7 +204,7 @@
 
 MangaFlow 已经具备私有单用户漫画生产工作台的主要功能面：原作导入、结构化剧本、动态分页与分镜、人物/服装/风格资产、单页生成、人工采用、视觉检查、修复、多供应商模型平台、DAG 工作流和多种导出均有代码与自动测试。
 
-当前进入可靠性收口。PR #6 已合并取消/租约保护、入队状态防覆盖、本地重试、RQ 并发等待及分镜版本化质检门禁；P1-8 草稿保存/发布一致性与 P2-8 并发发布冲突已随 PR #7 合并。P1-5 其余序号范围已随 PR #11 收口；PostgreSQL 与 Redis/RQ SimpleWorker 隔离验收已于 2026-09-02 Linux 跑通；仍缺 Windows Job Object 独立 Worker 进程矩阵、浏览器 E2E、Lighthouse/FPS 与真实供应商闭环。不把离线或本轮 live 子集等同于全部生产验收完成。
+当前进入可靠性收口。PR #6 已合并取消/租约保护、入队状态防覆盖、本地重试、RQ 并发等待及分镜版本化质检门禁；P1-8 草稿保存/发布一致性与 P2-8 并发发布冲突已随 PR #7 合并。P1-5 其余序号范围已随 PR #11 收口；PostgreSQL 与 Redis/RQ SimpleWorker 隔离验收已于 2026-09-02 Linux 跑通。2026-09-02 Windows 笔记本 `LAPTOP-TV9KT8RC` / SHA `98b93a0` 已跑通 owned Playwright E2E 17/17 与 Lighthouse/FPS 4/4（脚本 2 轮，非 V02-52A N=20）。仍缺 Windows Job Object 独立 Worker 进程矩阵（`BLOCKED`：无 Docker/PostgreSQL/Redis，用户明确不安装）与真实供应商闭环。不把离线或本轮 live 子集等同于全部生产验收完成。
 
 安全修复已随 PR #6 合并：Next.js 16.3.3、默认回环绑定、Compose Redis AUTH、上传限制和供应商元数据有界读取。项目仍是无账号的单用户工作台，不应对非信任网络开放；容器运行、真实网络边界与完整依赖审计未由本轮离线门禁代替。后文旧复现和原验收清单保留供追溯，当前代码状态以本节和 TodoList 勾选为准。
 
@@ -358,12 +358,12 @@ P1-1～P1-4 已完成，下列相应段落保留修复前问题与原验收标�
 - [x] 26 项专项覆盖并发分配、真实唯一键冲突、调用方数据保留、完整角色设定页重试、批次关闭时的串行写入、过期分镜、工作流审批与原文最终提交失败/恢复；PR 分支与 master 全量门禁通过。
 - WorkflowVersion(workflow_id, revision) 的既有修复与验收仍见 P2-8；无新 schema/迁移。真实 PostgreSQL 并发验收尚未执行。
 
-### P1-6 主分支离线功能门禁已通过，独立性能门禁待完成
+### P1-6 主分支离线功能门禁已通过，独立性能门禁 4/4（2 轮，非 N=20）
 
 - [x] PR #2 及后续可靠性修复、PR #4 轮询修复、PR #5 浏览器基线修复已合并；本地主分支已同步至 `d5d32ec`。
 - 保留主分支已经合并的 production readiness、旧候选复检和 storyboard focus 修复，不通过一次大范围文件覆盖来“解决冲突”。
 - [x] 合并后主分支 `cb324e3` 已独立运行 `npm run check:full`：165 Python、17 Vitest、4 Playwright 全通过；包含迁移测试和假模型完整 DAG 至输出的证据。
-- [ ] 在稳定环境补跑 Lighthouse 与 100 节点工作流 FPS 门禁；PR #15 已保留生成路由两轮 Lighthouse 73、CLS 0.477 的失败证据，后续修复与复验见 Issue #28，用户重新授权性能窗口前不执行。
+- [x] 2026-09-02 Windows 笔记本 `LAPTOP-TV9KT8RC` / SHA `98b93a0`（`fix/pr82-remaining-package-p1s`，为 `master`/`f961774` 祖先；E2E/perf **未**跑在 `c93e1b3`）以 `scripts/run_e2e_owned.py performance` 通过 4/4 门禁（LH1、LH2、FPS1、FPS2），耗时 146.063s（19:33:41–19:36:07 CST）。脚本为 2 轮，**不是** V02-52A N=20。FPS round1 avg 143.75 / 1%low 140.85；round2 avg 143.85 / 1%low 140.85。Lighthouse 路由 `/`、storyboard、generate、workflow、settings：perf 89–98、a11y 92–100、BP 96–100。日志：`output/playwright/owned-349cb52c1fa94502803935fc849ae8ac/` 与 `output/playwright/phase2/349cb52c1fa94502803935fc849ae8ac/`。PR #15 曾保留生成路由两轮 Lighthouse 73、CLS 0.477 的失败证据，后续修复与复验见 Issue #28。
 - 删除或归档旧分支只能在主分支验证完成后进行。
 
 ### P1-7 取消与租约失效后禁止继续调用或覆盖状态（阻塞）
