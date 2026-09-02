@@ -167,7 +167,7 @@
 | `Scene` / `Panel` / `MangaPage` | 否 | 分镜只表达 `character_id` 出镜与 `panel.outfits` 服装指派（既有 JSON，不改）。 |
 | `CandidateCreate.reference_selections[char_id]` | 可选 `package_version_id`（显式覆盖） | 新增可选键，缺省走默认继承（§8.1）。 |
 | `PageCandidate.prompt_snapshot["character_packages"]` | 是（冻结事实） | 排队时写入，之后不可变（§8.2）。 |
-| `GenerationRecord.input_versions["character_packages"]` | 是（紧凑镜像） | 与快照同事务写入（§8.3）。 |
+| `GenerationRecord.input_versions["character_packages"]` | 是（紧凑镜像） | 由 Worker 创建记录时从不可变快照复制（§8.3）。 |
 
 否决"Scene/Panel 级版本指针"的理由：会引入第三类可变指针，且发布新版本时必须决定是否 `mark_pages_for_review`——而本契约冻结"发布不触发 NEEDS_REVIEW"（§9.2），分镜层存版本将使两者矛盾。
 
@@ -209,9 +209,9 @@
 3. **发布版本** `POST versions/{id}/publish`：单事务：锁包行 → 重读 DRAFT 及关系 → 校验（目标必须属于 URL 寻址的包：`version.package_id == package.id`，否则 404/409——与派生/激活同规则，防止把 A 包工作集冻结进 B 包草稿、再把 A 指针指向 B 版本；目标非 DRAFT → 409；活跃参考关系为 0 → 422）→ 把包工作集规格写入 `spec_snapshot`（`frozen_from: "package"`）→ `status='READY'`、`published_at=now` → `published_version_id=id`。**发布不要求完整度阈值**（完整度仅建议，§7.5）。并发发布同一草稿：后到者在行锁/条件更新处 409；发布与派生竞争：派生要求无 DRAFT，二者在包锁内串行。失败整体回滚，**不存在半发布状态**（指针与状态同事务落库）。
 4. **派生新版本** `POST versions {base_version_id?}`：要求当前无 DRAFT（409）；`base` 缺省取 `published_version_id`，显式指定可为任何非 DRAFT 版本，但**必须属于当前包**（`base.package_id == package.id`，否则 409/404——外键不约束同包归属，服务端必须校验，防止把其他角色的身份与关系复制进来）；base 为 DRAFT 422。单事务：分配 V(n+1)；新 DRAFT `spec_snapshot = base.spec_snapshot`（`frozen_from: "derive"`）、`derived_from_version_id=base.id`；复制 base 全部关系行（同 asset/role/label/sort_order/is_default）；包工作集三字段重置为 `base.spec_snapshot` 对应内容（UI 从基线继续编辑）；**同事务递增 `package.version`**——工作集被整体替换，持有旧令牌的规格编辑请求（PATCH package）随之失效 409，不得覆盖新草稿。
 5. **生产使用后的冻结**：见 §5.2 IN_PRODUCTION 置入规则。置入失败（如版本被并发归档）不阻塞候选创建——条件更新影响 0 行即跳过，快照事实不受影响。
-6. **归档与恢复**：版本 `ARCHIVED`：从 READY/IN_PRODUCTION 可达；`version == package.published_version_id` 时 409（"先切换发布版本"）。恢复 `POST restore` → READY（不自动恢复指针）。包 `POST .../package/archive`（ACTIVE→ARCHIVED）/`POST .../package/restore`（ARCHIVED→ACTIVE）：随时可做；归档后该角色退出默认继承（§8.1），Character 及既有页面不受影响；归档不清 `published_version_id`（历史事实）。
+6. **归档与恢复**：版本 `ARCHIVED`：从 READY/IN_PRODUCTION 可达；目标必须属于 URL 寻址的包（`target.package_id == package.id`，否则 404/409，与 publish/activate/derive 同规则）；**归档与激活共享包行锁并在锁内重验目标状态与发布指针**——`version == package.published_version_id` 时 409（"先切换发布版本"），该判定必须在取得包锁之后基于最新指针做出，防止与并发 activate 竞争后指针指向 ARCHIVED 版本。恢复 `POST restore` → READY（同样锁内重验，不自动恢复指针）。包 `POST .../package/archive`（ACTIVE→ARCHIVED）/`POST .../package/restore`（ARCHIVED→ACTIVE）：随时可做；归档后该角色退出默认继承（§8.1），Character 及既有页面不受影响；归档不清 `published_version_id`（历史事实）。
 7. **删除或解绑参考图/服装**：关系仅 DRAFT 可变；非 DRAFT 409。解绑 = 物理删除关系行。Asset 软删路径见 §10.3。DRAFT 版本整体删除（§10.1）级联清关系，**但包的最后一个版本不可删除**（409，"包至少保留一个版本；如需弃用请归档包"）——否则未发布包将陷入不可恢复态：建包 409（已存在）、派生无 base（`published_version_id` 为 NULL 且无其他版本）、包又无删除端点。
-8. **切换当前发布版本** `POST activate {version_id, expected_published_version_id}`：目标必须属于当前包（`target.package_id == package.id`，FK 只保证版本存在、不约束同包归属，服务端强校验，否则 404/409）且状态为 READY 或 IN_PRODUCTION（ARCHIVED 需先恢复，否则 409）；`expected_published_version_id` 是**必填**的 CAS 令牌——单事务锁包行后校验 `package.published_version_id == expected_published_version_id`，不一致 409（后到者不得静默覆盖先到者的切换）；通过后 `published_version_id` 指向目标，目标状态不变。
+8. **切换当前发布版本** `POST activate {version_id, expected_published_version_id}`：目标必须属于当前包（`target.package_id == package.id`，FK 只保证版本存在、不约束同包归属，服务端强校验，否则 404/409）且状态为 READY 或 IN_PRODUCTION（ARCHIVED 需先恢复，否则 409）；`expected_published_version_id` 是**必填**的 CAS 令牌。**publish / activate / archive / restore 共享同一包行锁（锁序唯一：一律先锁包行）并在锁内重验目标状态与最新发布指针**——防止"归档 V2 通过非指针检查、激活 V2 通过 READY/CAS 检查"的并发交错使 `published_version_id` 指向 ARCHIVED 版本；CAS 不一致 409（后到者不得静默覆盖先到者的切换）；通过后 `published_version_id` 指向目标，目标状态不变。
 9. **并发发布两个草稿**：每包至多一个 DRAFT（部分唯一索引）+ 派生守卫，使"两个不同草稿"不可构造；同一草稿的两个并发发布由包行锁 + 条件更新收敛为一个成功、一个 409。SQLite BUSY/LOCKED 回滚整个事务并按 §5.1 重试。
 10. **失败回滚**：创建/派生/发布/切换/归档均为单事务；任何 IntegrityError/锁异常 → 回滚该操作全部写入（包括已分配的 version_number 与关系副本），调用方得到 409；不残留指针移动或状态跃迁。
 
@@ -358,7 +358,7 @@
 
 ### 8.3 `GenerationRecord.input_versions`（冻结）
 
-同事务写入紧凑镜像：`input_versions["character_packages"] = {<character_id>: {"package_id", "package_version_id", "version_number", "spec_fingerprint"}}`。完整规格以 `prompt_snapshot` 为准（input_versions 保持既有"紧凑版本事实"定位，`page_generate.py:461-467`）。
+`GenerationRecord` 在 Worker 付费调用返回后才创建（`page_generate.py:442-474`），排队事务中不存在记录行——因此**由 Worker 在创建记录时，从不可变的 `prompt_snapshot["character_packages"]` 复制紧凑镜像**写入：`input_versions["character_packages"] = {<character_id>: {"package_id", "package_version_id", "version_number", "spec_fingerprint"}}`。快照自排队起不可变（§8.2），复制时机不影响事实一致性；完整规格以 `prompt_snapshot` 为准（input_versions 保持既有"紧凑版本事实"定位）。
 
 ### 8.4 JobAssetReference 租约（冻结）
 
@@ -395,8 +395,8 @@ Worker 对命中 `character_packages` 的候选：只读取排队快照中的规
 | `POST .../package/versions/{version_id}/publish` | `{}` → `VersionRead` | 发布（§5.3-3）；404/409 目标跨包、非 DRAFT、锁耗尽/已是指针；422 零参考关系 |
 | `POST .../package/archive` | `{}` → `PackageRead` | 包 ACTIVE→ARCHIVED（§5.3-6）：退出默认继承，不影响 Character 与既有候选；无前置条件 |
 | `POST .../package/restore` | `{}` → `PackageRead` | 包 ARCHIVED→ACTIVE；恢复默认继承资格（发布指针不变） |
-| `POST .../package/versions/{version_id}/archive` | `{}` → `VersionRead` | 409 目标为发布指针 |
-| `POST .../package/versions/{version_id}/restore` | `{}` → `VersionRead` | ARCHIVED→READY |
+| `POST .../package/versions/{version_id}/archive` | `{}` → `VersionRead` | 归档（§5.3-6：同包归属校验 + 共享包锁重验指针）；409 目标为发布指针/跨包 |
+| `POST .../package/versions/{version_id}/restore` | `{}` → `VersionRead` | 恢复 ARCHIVED→READY（同包归属校验 + 共享包锁）；不自动恢复发布指针 |
 | `POST .../package/activate` | `{version_id, expected_published_version_id}` → `PackageRead` | 切换发布指针（§5.3-8，CAS 令牌必填 + 同包归属校验）；404/409（指针已被并发切换/跨包目标） |
 | `DELETE .../package/versions/{version_id}` | → 204 | 仅 DRAFT 可物理删除；409 其他状态；409 目标是该包唯一版本（§5.3-7，防止不可恢复态） |
 | `POST .../package/versions/{version_id}/references` | `{asset_id, role, label?, sort_order?, version}` → `ReferenceRead` | 绑定（DRAFT only；`version` 为 DRAFT 令牌，同事务校验并递增父版本，§5.3-2）；404 Asset 不存在或已软删；409 非 DRAFT/重复槽/Asset 跨项目/资格不符（沿用 `bind_reference` 惯例，`characters.py:141-155`） |
@@ -460,7 +460,7 @@ Worker 对命中 `character_packages` 的候选：只读取排队快照中的规
 | PKG-S11 | 历史候选和重放逐字段不变 | SQLite 单元 | 发布新版本后：旧候选 `prompt_snapshot` 逐字节不变；重试/修复/升清沿用原快照；无 `character_packages` 键的旧候选重放走 legacy 路径且结果不变 |
 | PKG-S12 | 软删除、恢复和历史展示 | SQLite 单元 | 包归档/恢复后默认继承退出与恢复；DRAFT 删除级联关系；READY+ 版本不可删；Asset 软删后 DRAFT 关系行被物理清理、READY+ 槽位显示失效且完整度重算下降 |
 | PKG-S13 | 迁移升降级和拒绝降级 | SQLite 迁移测试 | upgrade→downgrade→upgrade 往返（原始态）；存在发布指针/多版本/归档包时 downgrade 拒绝且数据原样；外键检查为零 |
-| PKG-S14 | 真实 PostgreSQL 并发与约束验收 | **真实 PostgreSQL**（独立环境） | 升降级往返（含两阶段 FK 创建与先 DROP `fk_character_model_packages_published_version` 再删表的 downgrade）、部分唯一索引、`FOR UPDATE` 包锁下并发发布/派生/激活/切换、RESTRICT 删除保护；无 PG 环境时如实标注 `NOT RUN` |
+| PKG-S14 | 真实 PostgreSQL 并发与约束验收 | **真实 PostgreSQL**（独立环境） | 升降级往返（含两阶段 FK 创建与子表优先的 downgrade）、部分唯一索引、`FOR UPDATE` 包锁下并发发布/派生/激活/归档竞争（含"归档 V2 vs 激活 V2"交错用例，§5.3-8）、RESTRICT 删除保护；无 PG 环境时如实标注 `NOT RUN` |
 
 **环境分层声明（冻结）**：PKG-S1～S13 设计为 SQLite 单元/迁移测试 + 本地执行器 + 假供应商（离线，不调用真实供应商、不产生费用）；PKG-S14 必须真实 PostgreSQL。Redis/RQ 多 Worker 并发租约验证属独立集成验收（沿用 P1-11 边界），不在本契约测试矩阵内伪装；真实供应商 generate-views/expressions 调用为 `NOT RUN`。缺失环境一律如实标注，SQLite/fakeredis/mock 不替代。
 
