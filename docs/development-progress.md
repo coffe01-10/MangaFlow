@@ -4,6 +4,13 @@
 
 本文件记录修订版 MVP 计划的实际完成度。
 
+## V02-11C 设置页验收已审阅合并（2026-09-03）
+
+- **合并记录**：Issue #106 / PR #107 / 分支 `glm/v02-11c-settings-acceptance` / 合并提交 `d472f6e`（验收 head `3335fa6`；`d472f6e` 相对 `3335fa6` 仅增加文档与合并提交，apps/tests/scripts 代码树一致）。父项 V02-11（A/B/C）随本合并全部完成。
+- **验收证据**：沿用下节「V02-11C 设置页验收完成」记录——Issue #40 §8 P/C/F/V/A/S/L/N 矩阵逐行映射到 `provider-management.test.tsx` 72 项定向回归（head `3335fa6` 行号覆盖表见下节）；完整 Web Vitest 41 文件 381 项全过；ESLint、`tsc --noEmit`、Ruff、供应商平权扫描 0 违规与 Next.js 生产构建通过。
+- **假供应商设置页 E2E（RUN）**：2026-09-02 Windows owned Playwright 17/17（`98b93a0`）与本分支 2026-09-03 Linux 等价 harness 重跑 17/17（head `3335fa6`，run id `fd48ff8c0995416ead5efae033afd312`）均含「设置页用离线假供应商完成创建、手工模型与展示显隐」与含 `/settings` 的 Axe 检查。
+- **NOT RUN / 边界**：真实供应商、真实 Key、付费图片冒烟、PostgreSQL live、Lighthouse/FPS、V02-51B 视觉回归。
+
 ## V02-11C 设置页验收完成：Issue #40 矩阵逐项核对 + 假供应商 E2E 全绿（2026-09-03，Linux box）
 
 - **对应**：Issue #106 / 分支 `glm/v02-11c-settings-acceptance`（基线 `071ae2d`，验收 head `3335fa6`）。对照 `docs/v02-provider-settings-ui-audit.md` §8 把 P/C/F/V/A/S/L/N 每一行映射到 `apps/web/components/provider-management.test.tsx` 定向回归，全部有证据；审计 §8 要求保留的三条既有用例（健康错误可见、创建失败/刷新、凭据失败不回显）在 `:207/:216/:241`。
