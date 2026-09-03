@@ -34,6 +34,7 @@ import {
 import {
   buildRegionRegenerateEnvelope,
   candidateMatchesCommand,
+  catalogRegionSurfaceSummary,
   clampPoint,
   derivedCandidatePhase,
   eraseRegions,
@@ -108,6 +109,9 @@ export function LocalEditWorkspace({
 
   const capableModels = useMemo(() => maskCapableModels(models), [models]);
   const capabilityBlocked = capableModels.length === 0;
+  // V02-44B honesty: when blocked, name the surfaces the catalog actually
+  // declares (e.g. 仅整图参考编辑) instead of a generic refusal.
+  const declaredSurfaces = useMemo(() => catalogRegionSurfaceSummary(models), [models]);
   // Explicit choice wins while it stays mask-capable; otherwise derive the
   // default (active draw model if capable, else the first capable model) so
   // the selection can never rest on a model without the capability bit.
@@ -541,6 +545,9 @@ export function LocalEditWorkspace({
                   当前模型不能按选区重绘：目录中没有已启用且声明显式 mask 能力（accepts_explicit_mask）的模型。
                   可到系统设置启用或更换支持 mask 的模型，或取消本次局部编辑；不会按整页重绘静默降级。
                 </p>
+                {declaredSurfaces && (
+                  <p className="local-edit-blocked-detail">目录中已启用的编辑模型能力声明：{declaredSurfaces}。</p>
+                )}
                 <button type="button" className="button outline compact" onClick={onClose}>取消局部编辑</button>
               </div>
             )}

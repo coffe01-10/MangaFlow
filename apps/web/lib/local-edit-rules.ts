@@ -27,7 +27,18 @@ export interface MaskRegion {
 
 export type MaskModel = Pick<
   ModelCapability,
-  "logical_alias" | "display_name" | "provider" | "model_id" | "model_type" | "operations" | "enabled" | "accepts_explicit_mask" | "resolutions"
+  | "logical_alias"
+  | "display_name"
+  | "provider"
+  | "model_id"
+  | "model_type"
+  | "operations"
+  | "enabled"
+  | "accepts_explicit_mask"
+  | "supports_instruction_region_edit"
+  | "preserves_outside_region"
+  | "whole_image_reference_only"
+  | "resolutions"
 >;
 
 export interface MaskHistoryState {
@@ -237,6 +248,40 @@ export function maskCapableModels(models: MaskModel[]): MaskModel[] {
     && model.operations.includes("image_edit")
     && model.enabled
     && model.accepts_explicit_mask === true);
+}
+
+/**
+ * V02-44B (capability matrix §7): honest surface label for one model. The
+ * region-edit bits are declared per catalog model — explicit mask beats
+ * instruction-only beats whole-image-reference; anything undeclared stays
+ * "unsupported" instead of being guessed. A model that only edits the whole
+ * image (or only takes instructions) is never silently treated as a local
+ * editor.
+ */
+export function regionEditSurfaceLabel(model: MaskModel): string {
+  if (model.accepts_explicit_mask === true) return "显式 mask 局部编辑";
+  if (model.supports_instruction_region_edit === true)
+    return "仅 instruction 区域编辑（不支持选区 mask）";
+  if (model.whole_image_reference_only === true)
+    return "仅整图参考编辑（不保证区域外不变）";
+  return "未声明区域编辑能力（按不支持处理）";
+}
+
+/**
+ * Distinct declared surfaces across the catalog's enabled image-edit models,
+ * for the blocked-state explanation. Null once a genuinely mask-capable model
+ * exists (the picker can proceed without an honesty note).
+ */
+export function catalogRegionSurfaceSummary(models: MaskModel[]): string | null {
+  const editable = models.filter(
+    (model) => model.model_type === "IMAGE"
+      && model.operations.includes("image_edit")
+      && model.enabled);
+  if (!editable.length) return null;
+  const labels = Array.from(new Set(editable.map(regionEditSurfaceLabel)));
+  const allMaskCapable = editable.every((model) => model.accepts_explicit_mask === true);
+  if (allMaskCapable) return null;
+  return labels.join("；");
 }
 
 export function maskCapabilityNotice(models: MaskModel[]): string | null {

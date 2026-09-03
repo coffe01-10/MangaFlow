@@ -32,6 +32,7 @@ from app.model_adapters.grok_build_cli import (
 )
 from app.model_adapters.vertex import VertexImageAdapter, VertexTextAdapter
 from app.models import AIModel, ProviderConnection, ProviderKey, ProviderProfile, RoutingPolicy
+from app.services import model_capabilities
 from app.services.credential_crypto import SelectedProviderKey, select_provider_key
 from app.services.credential_source import (
     CLI_SESSION,
@@ -85,13 +86,13 @@ def model_supports_resolution(model: AIModel, resolution: str) -> bool:
 def model_supports_explicit_mask(model: AIModel) -> bool:
     """Catalog-level mask capability bit (V02-42B audit §7).
 
-    Absent or falsy means unsupported: region regeneration must fail closed
-    with UNSUPPORTED_CAPABILITY instead of silently degrading to a plain
-    image-to-image whole-page edit. Real-provider verification stays with
-    V02-44; tests use mock catalog rows.
+    Fail-closed: absent/UNKNOWN is unsupported, so region regeneration must
+    raise UNSUPPORTED_CAPABILITY instead of silently degrading to a plain
+    image-to-image whole-page edit. Semantics live in
+    ``services/model_capabilities.py`` (V02-44B §7.2 frozen bit set).
     """
 
-    return bool((model.capabilities or {}).get("accepts_explicit_mask"))
+    return model_capabilities.model_supports_explicit_mask(model)
 
 
 def model_operation_verified(model: AIModel, operation: str) -> bool:

@@ -44,6 +44,15 @@ export interface ModelCapability {
   regions: string[];
   /** V02-42B capability bit; absent rows are treated as unsupported. */
   accepts_explicit_mask?: boolean;
+  /**
+   * V02-44B frozen region-edit bits (capability matrix §7.2). Fail-closed:
+   * absent/unknown is never treated as true, and each bit carries readable
+   * provenance (DECLARED | DISCOVERED | VERIFIED | UNSPECIFIED).
+   */
+  supports_instruction_region_edit?: boolean;
+  preserves_outside_region?: boolean;
+  whole_image_reference_only?: boolean;
+  region_capability_sources?: Record<string, string>;
   confidence: string;
   enabled: boolean;
   display_enabled: boolean;

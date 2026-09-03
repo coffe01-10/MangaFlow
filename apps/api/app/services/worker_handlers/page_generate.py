@@ -35,6 +35,11 @@ from app.models import (
     utcnow,
 )
 from app.services.media import create_thumbnails, remove_thumbnails
+from app.services.model_capabilities import (
+    REGION_EDIT_SURFACE_LABELS,
+    model_region_edit_surface,
+    model_supports_explicit_mask,
+)
 from app.services.model_router import model_supports_resolution
 from app.services.prompt_compiler import PAGE_TEMPLATE_VERSION, compile_page_prompt
 from app.services.worker_handlers import execution, provider
@@ -455,6 +460,19 @@ def _run_page_generate(db, job: GenerationJob) -> None:
     )
     candidate.catalog_model_id = binding.resolved.model.id
     job.catalog_model_id = binding.resolved.model.id
+    if job.job_type == "PAGE_REGION_REGENERATE" and not model_supports_explicit_mask(
+        binding.resolved.model
+    ):
+        # V02-44B defense in depth: a region job whose model lost (or never
+        # had) the explicit-mask capability fails closed before the paid call
+        # — no attempt, no artifact, never a silent whole-page degrade and
+        # never a fallback onto another model/provider.
+        raise ProviderAdapterError(
+            "UNSUPPORTED_CAPABILITY",
+            "所选模型不具备显式 mask 局部编辑能力"
+            f"（当前目录声明：{REGION_EDIT_SURFACE_LABELS[model_region_edit_surface(binding.resolved.model)]}），"
+            "已在调用模型前停止局部重抽卡",
+        )
     if not model_supports_resolution(binding.resolved.model, candidate.resolution.value):
         raise ProviderAdapterError(
             "UNSUPPORTED_CAPABILITY", "所选模型不支持当前输出清晰度"

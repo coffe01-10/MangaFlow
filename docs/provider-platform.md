@@ -22,6 +22,8 @@ API Key 使用 AES-256-GCM 加密写入 `provider_keys`。设置页只显示标�
 
 连接按传输协议声明 `supports_model_discovery` 与支持的模型类型，不再根据供应商名称猜测功能。“同步模型”只在协议明确支持发现时读取上游目录，记录文字/图片类型、输入输出模态、可用操作、API surface、上下文和价格元数据；不支持发现的连接使用预设种子或手动添加，不会把本地已有模型伪装成一次同步结果。无法从上游声明中确认的能力标记为 `INFERRED`，必须人工修正并执行能力测试。自动路由只使用 `VERIFIED` 模型；显式选择仍会校验模型、连接、供应商是否启用及是否支持当前操作。
 
+区域编辑能力按 `docs/v02-image-edit-capability-matrix.md` §7 冻结决策挂在具体目录模型上：`accepts_explicit_mask`、`supports_instruction_region_edit`、`preserves_outside_region`、`whole_image_reference_only` 四个能力位全部 fail-closed，缺失或 UNKNOWN 一律按不支持处理，绝不猜成 true；每位带 `DECLARED / DISCOVERED / VERIFIED` 来源（未声明序列化为 `UNSPECIFIED`），随 `/models` 暴露给前端。当前所有预设图片适配器（Vertex/Gemini 原生、OpenAI 兼容 `images_edit`、三个 CLI 通道）只有整图参考编辑请求面，预设如实声明 `whole_image_reference_only=true`、原生 mask 相关位为 false；不支持 mask 的模型收到区域请求时，导演 accept 路径与 Worker 执行路径都会在付费调用前返回确定性 `UNSUPPORTED_CAPABILITY`，并禁止自动改用其它模型/供应商或静默整页重生。真实 mask/inpaint 能力未经供应商实测前不得声明为 true（V02-44B，实测 NOT RUN）。
+
 所有连接共用 `GET /providers/connections/{id}/health` 与 `POST /providers/connections/{id}/verify`。`CREDENTIALS` 只验证环境凭据或 API Key/目录访问，不生成文字或图片；`MODEL_SMOKE` 必须绑定目录模型，结果同时更新连接健康和 `model_probes`。每次图片冒烟只执行一种操作，并要求显式费用确认。旧 `/settings/vertex/status|verify` 在过渡期内部转发统一验证服务；产品前端不再调用该入口，已无人使用的 `/models/vertex/*` 别名已经移除。旧 `ProviderHealth` 表只为这一单版本兼容入口保留，不再作为产品状态事实来源。
 
 `CLI_SESSION` 表示登录态由外部 CLI 管理。应用不显示密钥表单、不读取或复制会话 token，也不安装 CLI、不代用户登录；presence/version/login/capability 四步探测分别写入 `ModelProbe`，连接据此派生为 `AVAILABLE`、`UNAVAILABLE`、`UNAUTHENTICATED` 或 `UNSUPPORTED`。只有 `AVAILABLE` 且由用户启用的 CLI 连接可调用，探测不会替用户启停连接。设置页按协议只接受 `codex`、`agy`、`grok` 或对应原生可执行文件的绝对路径；路径变化会把健康状态重置为 `UNKNOWN`，必须重新探测。

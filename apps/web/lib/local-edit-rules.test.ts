@@ -4,6 +4,7 @@ import type { ModelCapability } from "@/lib/api";
 import {
   buildRegionRegenerateEnvelope,
   candidateMatchesCommand,
+  catalogRegionSurfaceSummary,
   derivedCandidatePhase,
   eraseRegions,
   extendStroke,
@@ -19,6 +20,7 @@ import {
   pushMaskHistory,
   rectRegion,
   redoMask,
+  regionEditSurfaceLabel,
   simplifyStroke,
   strokeToRegion,
   undoMask,
@@ -150,6 +152,41 @@ describe("local-edit-rules 能力门禁", () => {
     expect(notice).toContain("accepts_explicit_mask");
     const unknownBit = modelFixture({ accepts_explicit_mask: undefined as unknown as boolean });
     expect(maskCapableModels([unknownBit])).toHaveLength(0);
+  });
+
+  // V02-44B（能力矩阵 §7）：显式 mask / 仅 instruction / 仅整图参考三个
+  // 表面分开声明；缺 mask 位的模型绝不静默升级为局部编辑入口。
+  it("仅 instruction 或仅整图参考的模型不能进入 mask 局部编辑，标签如实", () => {
+    const instructionOnly = modelFixture({
+      logical_alias: "instruction_only",
+      accepts_explicit_mask: false,
+      supports_instruction_region_edit: true,
+      region_capability_sources: { supports_instruction_region_edit: "DECLARED" },
+    });
+    const wholeImageOnly = modelFixture({
+      logical_alias: "whole_image_only",
+      accepts_explicit_mask: false,
+      whole_image_reference_only: true,
+    });
+    expect(maskCapableModels([instructionOnly, wholeImageOnly])).toHaveLength(0);
+    expect(regionEditSurfaceLabel(instructionOnly)).toContain("仅 instruction 区域编辑");
+    expect(regionEditSurfaceLabel(wholeImageOnly)).toContain("仅整图参考编辑");
+    const summary = catalogRegionSurfaceSummary([instructionOnly, wholeImageOnly]);
+    expect(summary).toContain("仅 instruction 区域编辑");
+    expect(summary).toContain("仅整图参考编辑");
+  });
+
+  it("未声明任何能力位的模型按不支持处理并有对应文案", () => {
+    const undeclared = modelFixture({ accepts_explicit_mask: undefined as unknown as boolean });
+    delete (undeclared as Partial<ModelCapability>).supports_instruction_region_edit;
+    delete (undeclared as Partial<ModelCapability>).whole_image_reference_only;
+    expect(maskCapableModels([undeclared])).toHaveLength(0);
+    expect(regionEditSurfaceLabel(undeclared)).toContain("未声明区域编辑能力");
+  });
+
+  it("全部声明 mask 能力时目录摘要为空，不额外解释", () => {
+    expect(catalogRegionSurfaceSummary([modelFixture()])).toBeNull();
+    expect(catalogRegionSurfaceSummary([])).toBeNull();
   });
 
   it("gate：空 mask / 无指令 / 源非采用候选均拒绝并解释", () => {

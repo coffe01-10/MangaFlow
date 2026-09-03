@@ -107,7 +107,7 @@ Worker 启动统一经过 `apps/api/run_worker.py` / `app.worker`，与 API 共�
 
 ## 7. 多供应商模型适配
 
-`ProviderProfile → ProviderConnection → ProviderKey / AIModel` 构成供应商目录。连接定义协议、Base URL、端点模板、非敏感请求头、余额规则和唯一健康状态；协议能力声明模型发现与支持的模型类型，凭据来源声明为连接 Key、服务端环境账号或第三方管理的 CLI 会话。模型定义文字/图片类型、模态、操作、能力置信度与探测指标。所有协议使用相同的连接健康、目录、验证和任务绑定契约；适配器内部保留真实传输差异，但不形成 UI 排名、默认模型或自动路由加分。详细规则见 [`provider-platform.md`](provider-platform.md)。
+`ProviderProfile → ProviderConnection → ProviderKey / AIModel` 构成供应商目录。连接定义协议、Base URL、端点模板、非敏感请求头、余额规则和唯一健康状态；协议能力声明模型发现与支持的模型类型，凭据来源声明为连接 Key、服务端环境账号或第三方管理的 CLI 会话。模型定义文字/图片类型、模态、操作、能力置信度与探测指标。区域编辑能力位（`accepts_explicit_mask` 等，见 `services/model_capabilities.py`）按模型逐位声明且 fail-closed，路由层与 Worker 在付费调用前按位门禁，缺能力一律确定性拒绝，不自动换模型或整页降级。所有协议使用相同的连接健康、目录、验证和任务绑定契约；适配器内部保留真实传输差异，但不形成 UI 排名、默认模型或自动路由加分。详细规则见 [`provider-platform.md`](provider-platform.md)。
 
 | 协议 | 凭据来源 | 模型发现 | 目录模型类型 |
 | --- | --- | --- | --- |

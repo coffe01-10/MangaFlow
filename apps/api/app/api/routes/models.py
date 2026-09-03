@@ -10,6 +10,11 @@ from app.services.model_availability import (
     catalog_model_is_available,
     connection_ids_with_usable_keys,
 )
+from app.services.model_capabilities import (
+    REGION_CAPABILITY_KEYS,
+    region_capability_enabled,
+    region_capability_source,
+)
 from app.services.provider_presets import ensure_provider_presets
 
 router = APIRouter()
@@ -60,9 +65,17 @@ def list_models(db: Session = Depends(get_db)) -> list[dict]:
                     (model.capabilities or {}).get("max_reference_images") or 0
                 ),
                 "regions": (model.capabilities or {}).get("regions") or ["global"],
-                "accepts_explicit_mask": bool(
-                    (model.capabilities or {}).get("accepts_explicit_mask")
-                ),
+                # V02-44B frozen region-edit bits (matrix §7.2): fail-closed,
+                # absent/UNKNOWN never serializes as true; every bit carries
+                # readable provenance.
+                **{
+                    key: region_capability_enabled(model.capabilities, key)
+                    for key in REGION_CAPABILITY_KEYS
+                },
+                "region_capability_sources": {
+                    key: region_capability_source(model.capabilities, key)
+                    for key in REGION_CAPABILITY_KEYS
+                },
                 "confidence": model.confidence,
                 "enabled": available,
                 "display_enabled": model.display_enabled,
