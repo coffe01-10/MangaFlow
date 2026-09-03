@@ -348,7 +348,12 @@ def execute_job(job_id: str) -> None:
             _defer_concurrency_wait(job_id)
             return
         with _LeaseHeartbeat(job.id, owner) as heartbeat:
-            if job.job_type in {"PAGE_GENERATE", "PAGE_REPAIR", "PAGE_UPSCALE"}:
+            if job.job_type in {
+                "PAGE_GENERATE",
+                "PAGE_REPAIR",
+                "PAGE_UPSCALE",
+                "PAGE_REGION_REGENERATE",
+            }:
                 _run_page_generate(db, job)
             elif job.job_type == "ASSET_GENERATE":
                 _run_asset_generate(db, job)

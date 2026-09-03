@@ -1292,6 +1292,48 @@ class PageCandidate(Timestamped, Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class LineageKind(StrEnum):
+    GENERATED = "GENERATED"
+    REPAIRED = "REPAIRED"
+    UPSCALED = "UPSCALED"
+    REGION_REGENERATED = "REGION_REGENERATED"
+
+
+class CandidateLineage(Base):
+    """Append-only parent→child candidate lineage (V02-42B, contract §7).
+
+    Rows are written once when the derived candidate is created. The
+    provider/model identity columns are copied from the child candidate at
+    creation and must never be rewritten afterwards; history stays in
+    GenerationRecord/ModelCallAttempt untouched.
+    """
+
+    __tablename__ = "candidate_lineage"
+    __table_args__ = (
+        UniqueConstraint("child_candidate_id", name="uq_candidate_lineage_child"),
+        Index("ix_candidate_lineage_parent_candidate_id", "parent_candidate_id"),
+        Index("ix_candidate_lineage_source_command_id", "source_command_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    child_candidate_id: Mapped[str] = mapped_column(
+        ForeignKey("page_candidates.id", ondelete="RESTRICT"), index=True
+    )
+    # Nullable only for GENERATED rows; every derived kind must carry a parent.
+    parent_candidate_id: Mapped[str | None] = mapped_column(
+        ForeignKey("page_candidates.id", ondelete="RESTRICT"), nullable=True
+    )
+    lineage_kind: Mapped[str] = mapped_column(String(32), default=LineageKind.GENERATED)
+    source_command_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    mask_asset_id: Mapped[str | None] = mapped_column(
+        ForeignKey("assets.id", ondelete="RESTRICT"), nullable=True
+    )
+    model_alias: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    catalog_model_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    resolution: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class AssetCandidate(Timestamped, Base):
     __tablename__ = "asset_candidates"
     __table_args__ = (UniqueConstraint("batch_id", "ordinal"),)

@@ -23,24 +23,11 @@ from app.schemas import (
     RepairRequest,
     UpscaleRequest,
 )
+from app.services.candidate_lineage import inherited_reference_ids
 from app.services.job_service import create_job, enqueue_job
 from app.services.model_router import model_supports_resolution, resolve_model
 
 router = APIRouter()
-
-
-def _inherited_reference_ids(snapshot: dict) -> list[str]:
-    """Reference assets the inherited snapshot will feed to the model (§8.4)."""
-    selections = snapshot.get("reference_selections") or {}
-    asset_ids = [
-        asset_id
-        for selection in selections.values()
-        for asset_id in (selection.get("character_asset_id"), selection.get("outfit_asset_id"))
-        if asset_id
-    ]
-    scene_snapshot = snapshot.get("scene_asset") or {}
-    asset_ids.extend(scene_snapshot.get("reference_asset_ids") or [])
-    return asset_ids
 
 
 @router.post(
@@ -180,7 +167,7 @@ def repair_candidate(
         },
         reference_asset_ids=[
             original.asset_id,
-            *_inherited_reference_ids(original.prompt_snapshot or {}),
+            *inherited_reference_ids(original.prompt_snapshot or {}),
         ],
         idempotency_key=f"repair:{repair.id}",
     )
@@ -260,7 +247,7 @@ def upscale_candidate(
         },
         reference_asset_ids=[
             original.asset_id,
-            *_inherited_reference_ids(original.prompt_snapshot or {}),
+            *inherited_reference_ids(original.prompt_snapshot or {}),
         ],
         idempotency_key=f"upscale:{batch.id}:{payload.resolution.value}",
     )

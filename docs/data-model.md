@@ -49,6 +49,9 @@ erDiagram
     GENERATION_JOB ||--o{ GENERATION_RECORD : audits
     GENERATION_JOB ||--o{ MODEL_CALL_ATTEMPT : dispatches
     PAGE_CANDIDATE ||--o{ INSPECTION_RESULT : inspected_by
+    PAGE_CANDIDATE ||--o| CANDIDATE_LINEAGE : derives_child
+    PAGE_CANDIDATE ||--o{ CANDIDATE_LINEAGE : derives_parent
+    ASSET ||--o| CANDIDATE_LINEAGE : region_mask
 ```
 
 ## 3. 关键实体
@@ -96,6 +99,12 @@ Scene/Beat 逐片段保存地点、时间、动作、对白、旁白、人物和
 `PageCandidate` 保存模型别名、真实模型 ID、分辨率、参数、参考资产、任务、输出资产、收藏与软删除状态。每页可收藏多个，但 `MangaPage.selected_candidate_id` 只能指向一个暂选版本；`selected_candidate_ack_version`、候选检查状态与 `continuity_status` 共同决定页面是否生产通过。`AssetCandidate` 为非页面批次提供同样的审计与素材库能力。AI 生成素材被服装档案复用时只新增 `reference_asset_ids` 关系，不改变原始 `Asset.kind/source`，删除服装也不会删除外部生成批次拥有的素材。
 
 `PageCandidate.prompt_snapshot` 在生成边界固化场景资产版本事实：`scene_asset` 快照包含 `scene_asset_id`、`scene_asset_version`、`scene_asset_variant_id`、变体 `structured_overrides` 与编译后的背景文本；资产后续修订不改变历史候选快照，与 `based_on_storyboard_version` 同款不可变语义。`GenerationRecord.input_versions` 记录同一份快照。
+
+`PageCandidate.prompt_snapshot` 在生成边界固化场景资产版本事实：`scene_asset` 快照包含 `scene_asset_id`、`scene_asset_version`、`scene_asset_variant_id`、变体 `structured_overrides` 与编译后的背景文本；资产后续修订不改变历史候选快照，与 `based_on_storyboard_version` 同款不可变语义。`GenerationRecord.input_versions` 记录同一份快照。
+
+### CandidateLineage（V02-42B 已实现）
+
+`candidate_lineage` 把派生候选（`REPAIRED` / `UPSCALED` / `REGION_REGENERATED`）的父子关系升级为一等血缘：`child_candidate_id` 唯一（每个候选至多一条血缘行）、`parent_candidate_id` 与 `mask_asset_id` 对 `page_candidates` / `assets` 为 RESTRICT（候选采用软删除，禁止物理清理仍被引用的父候选或 mask）、`source_command_id` 可空并指向导演命令 journal。行在派生候选创建时一次写入；`model_alias` / `catalog_model_id` / `resolution` 从子候选冗余复制，创建后不得改写，历史 `GenerationRecord` / `ModelCallAttempt` 的 provider/model ID 保持零改动。局部重抽卡红线：派生候选永远写入新 batch/新 ordinal，父候选 `asset_id` / `prompt_snapshot` / `status` 零改动且不改变 `storyboard_version` 与当前采用候选；`REGION_REGENERATED` 必须携带服务端生成的 `Asset(kind="region_mask")`（由校验后的命令多边形内容寻址存储，禁止客户端或模型提供路径），无 mask 的请求在创建 Job 前被 422 拒绝，缺目录级 `accepts_explicit_mask` 能力位的模型返回确定性 `UNSUPPORTED_CAPABILITY`。迁移 `20260903_28` 同时把历史 `request_parameters.original_candidate_id` 回填为血缘行（REPAIR→REPAIRED、UPSCALE→UPSCALED；父候选已缺失时 parent 保持 NULL）；采用状态仍只由 `select-candidate` 人工门槛维护，血缘不改变采用语义。
 
 ### GenerationJob、JobDependency、GenerationRecord
 
@@ -186,6 +195,7 @@ stateDiagram-v2
 - 场景资产活跃名称在项目内唯一（`deleted_at IS NULL` 部分索引）；变体结构化覆盖只允许时间/天气/光照/色调/季节键；每资产至多一个规范变体。
 - 角色模型包（V02-22B 已实现）：包与 Character 一对一唯一；每包至多一个 DRAFT 版本（部分唯一索引）且 `(package_id, version_number)` 唯一；版本参考图逻辑槽 `(version_id, role, label)` 唯一；每版至多一个默认服装（部分唯一索引）；READY 后版本不可变，被历史候选引用的版本不可物理删除。
 - 模型调用派发 ID 全局唯一；对账幂等键不得对应不同内容，同一账单维度的周期不得重叠。
+- 候选血缘（V02-42B）：每个派生候选至多一条血缘行（`child_candidate_id` 唯一）；父候选与 mask 资产为 RESTRICT 引用，软删除候选不得物理清理。
 - 对项目/状态/优先级、章节/页码、批次/时间、候选/模型/收藏、资产/哈希建立复合索引。
 
 ## 7. 迁移策略
@@ -197,3 +207,5 @@ Alembic 同时支持 SQLite 与 PostgreSQL。修订版迁移把 `image.fast` 映
 迁移 `20260901_24` 新建 `scene_assets` / `scene_asset_references` / `scene_asset_variants` / `scene_asset_variant_references` 四张表，并为 `scenes` 增加两个可空 FK（`SET NULL`）。迁移不做任何数据操作：历史 `location` 文本零触碰、不回填资产行、`scene_asset_id` 保持 NULL；降级在存在场景绑定或新表行时明确拒绝。
 
 迁移 `20260902_25` 新建 `character_model_packages` 等四张表（循环外键两阶段创建：PostgreSQL 先建表后 `ADD CONSTRAINT`，SQLite 内联前向引用；部分唯一索引同时声明两库 `WHERE`），并为每个既有 Character 回填兼容包与 V1 草稿快照（不发布、指针 NULL、只 INSERT 不改写任何既有行）；`CharacterReference.angle` 经确定性映射进入版本槽位（核心槽同名、expression/pose 带 `unspecified` 标签、其余落入 `extra`，碰撞按 `(created_at, id)` 序加 `-{n}` 后缀），软删 Asset 的绑定被跳过，全部服装按 `created_at` 序复制且 `is_default=False`；不复制图片文件，不修改候选/记录/批次。降级在存在发布指针、非 DRAFT 版本、多版本或归档包时拒绝（数据原样保留），子表优先删除（PostgreSQL 先解除 packages→versions 指针约束）。实现与验收以 `docs/v02-character-model-package-contract.md` 为准。
+
+迁移 `20260903_28` 新建 `candidate_lineage` 一等血缘表（child 唯一，parent/mask RESTRICT），并把既有 REPAIR/UPSCALE 候选中 `request_parameters.original_candidate_id` 的隐式父子约定回填为血缘行：只读既有 job JSON、只 INSERT，不改写任何历史 provider/model ID；父候选已物理缺失时 parent 保持 NULL。降级只删除新表；真实 PostgreSQL 升降级 NOT RUN。

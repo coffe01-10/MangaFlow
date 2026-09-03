@@ -1,4 +1,4 @@
-"""PAGE_GENERATE / PAGE_REPAIR / PAGE_UPSCALE handler.
+"""PAGE_GENERATE / PAGE_REPAIR / PAGE_UPSCALE / PAGE_REGION_REGENERATE handler.
 
 Owns storyboard guard, reference loading, prompt snapshot, the paid image
 call and candidate/asset persistence for page-level jobs.  Cancellation and
@@ -377,7 +377,7 @@ def _run_page_generate(db, job: GenerationJob) -> None:
         reference_types.append(asset.mime_type)
 
     reference_asset_ids = [asset.id for asset in reference_assets]
-    if job.job_type in {"PAGE_REPAIR", "PAGE_UPSCALE"}:
+    if job.job_type in {"PAGE_REPAIR", "PAGE_UPSCALE", "PAGE_REGION_REGENERATE"}:
         original = db.get(PageCandidate, job.request_parameters.get("original_candidate_id"))
         if not original or not original.asset_id:
             raise RuntimeError("修复或升清任务缺少原始候选图")
@@ -403,6 +403,27 @@ def _run_page_generate(db, job: GenerationJob) -> None:
                 f"{json.dumps(repair_context, ensure_ascii=False, separators=(',', ':'))}。"
                 "不得改动范围外的人物身份、服装、背景、格线、文字、镜头与构图；"
                 "修复后仍输出完整页面。"
+            )
+        elif job.job_type == "PAGE_REGION_REGENERATE":
+            # V02-42B red line: a region job without its server-side mask
+            # asset fails before the paid call instead of degrading to a
+            # whole-page image-to-image edit.
+            mask_asset_id = job.request_parameters.get("mask_asset_id")
+            target_regions = job.request_parameters.get("target_regions") or []
+            mask_asset = db.get(Asset, mask_asset_id) if mask_asset_id else None
+            if mask_asset is None or not target_regions:
+                raise RuntimeError("局部重抽卡任务缺少 mask 资产，已在调用模型前停止任务")
+            region_context = {
+                "instruction": job.request_parameters.get("instruction") or "",
+                "mask_asset_id": mask_asset.id,
+                "target_regions": target_regions,
+            }
+            prompt += (
+                "\n这是局部重抽卡任务。原始页是第一张参考图；只允许重绘以下 mask "
+                "区域内的内容："
+                f"{json.dumps(region_context, ensure_ascii=False, separators=(',', ':'))}。"
+                "mask 区域外的人物身份、服装、背景、格线、文字、镜头与构图必须与原图"
+                "保持一致；仍输出完整页面。"
             )
         else:
             prompt += (
