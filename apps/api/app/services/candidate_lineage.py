@@ -36,9 +36,13 @@ from app.models import (
     PageCandidate,
 )
 from app.services.job_service import create_job
+from app.services.model_capabilities import (
+    REGION_EDIT_SURFACE_LABELS,
+    model_region_edit_surface,
+    model_supports_explicit_mask,
+)
 from app.services.model_router import (
     get_catalog_model,
-    model_supports_explicit_mask,
     model_supports_resolution,
     resolve_model,
 )
@@ -159,8 +163,12 @@ def create_region_regeneration(
     if resolved_model is None:
         raise _http_422("未识别的模型")
     if not model_supports_explicit_mask(resolved_model):
+        # §7/§8-M2: the refusal names the declared surface so a whole-image
+        # reference or instruction-only model is never silently treated as a
+        # local editor, and nothing falls back to another model or provider.
         raise _http_422(
-            "UNSUPPORTED_CAPABILITY：所选模型不具备显式 mask 局部编辑能力，"
+            "UNSUPPORTED_CAPABILITY：所选模型不具备显式 mask 局部编辑能力"
+            f"（当前目录声明：{REGION_EDIT_SURFACE_LABELS[model_region_edit_surface(resolved_model)]}），"
             "不得按普通 image-to-image 整页重绘，已在调用前拒绝"
         )
     settings = get_settings()

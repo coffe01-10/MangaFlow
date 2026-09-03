@@ -13,6 +13,7 @@ from app.services.credential_source import (
     credential_source_for_protocol,
     default_cli_executable_for_protocol,
 )
+from app.services.model_capabilities import whole_image_reference_edit_capabilities
 
 OPENAI_ENDPOINTS = {
     "models": "/models",
@@ -477,6 +478,10 @@ def _ensure_vertex_models(db: Session, settings: Settings) -> None:
                 "resolutions": ["1K", "2K", "4K"],
                 "preview_resolutions": ["4K"],
                 "max_reference_images": 14,
+                # V02-44B matrix §1.2/§6: the adapter surface has no mask
+                # parameter, so the preset declares whole-image-reference-only
+                # instead of pretending native inpaint exists.
+                **whole_image_reference_edit_capabilities(),
             },
         },
         {
@@ -492,6 +497,7 @@ def _ensure_vertex_models(db: Session, settings: Settings) -> None:
                 "resolutions": ["1K", "2K", "4K"],
                 "preview_resolutions": ["4K"],
                 "max_reference_images": 14,
+                **whole_image_reference_edit_capabilities(),
             },
         },
     )
@@ -546,6 +552,9 @@ def _ensure_codex_cli_model(db: Session) -> None:
                 "resolutions": ["1K"],
                 "max_reference_images": 5,
                 "cost_source": "CLI_EXTERNAL",
+                # V02-44B: CLI image edit is a whole-image reference call with
+                # no mask request surface.
+                **whole_image_reference_edit_capabilities(),
             },
             pricing={"mode": "UNKNOWN"},
             source="PRESET",
@@ -589,6 +598,8 @@ def _ensure_antigravity_cli_model(db: Session) -> None:
                 "resolutions": ["1K"],
                 "max_reference_images": 1,
                 "cost_source": "CLI_EXTERNAL",
+                # V02-44B: single-reference whole-image edit, no mask surface.
+                **whole_image_reference_edit_capabilities(),
             },
             pricing={"mode": "UNKNOWN"},
             source="PRESET",
@@ -632,6 +643,9 @@ def _ensure_grok_build_cli_model(db: Session) -> None:
                 "resolutions": ["1K"],
                 "max_reference_images": 5,
                 "cost_source": "CLI_EXTERNAL",
+                # V02-44B: media-tool image edit is whole-image reference, no
+                # mask request surface.
+                **whole_image_reference_edit_capabilities(),
             },
             pricing={"mode": "UNKNOWN"},
             source="PRESET",

@@ -4,6 +4,12 @@
 
 本文件记录修订版 MVP 计划的实际完成度。
 
+## V02-43B 局部选区 UI 与并排比较已审阅合并（2026-09-03）
+
+- Issue #100 / PR #101 / `glm/v02-43b-local-edit-ui` / 合并提交 `047571b` / head `517191f`。生成台新增局部编辑工作区（`apps/web/components/project-workspace/local-edit-workspace.tsx` + 纯规则模块 `apps/web/lib/local-edit-rules.ts`）：mask 选区绘制并只构造 `regenerate_region` 结构化 envelope 走 propose→accept，绝不静默调用 `generateCandidate` 整页重生（Vitest 断言 propose-only）；派生候选按 `REGION_REGENERATED` 批次与 `prompt_snapshot.lineage` 与父候选并排比较。
+- 空 mask 调用前门禁；模型目录缺 `accepts_explicit_mask` 一律 fail-closed（选择器只列声明能力且已启用的 `image_edit` 模型，不匹配时禁用 + 中文原因 + 取消出口）；父候选当前采用保持不变。
+- NOT RUN：真实供应商、真实 mask/inpaint、Playwright、图像相似度。
+
 ## V02-42B 局部重抽卡候选链已审阅合并（2026-09-03）
 
 - Issue #98 / PR #99 / `glm/v02-42b-candidate-lineage` / 合并提交 `436f47d` / head `4009c56`。新增 `candidate_lineage` 血缘表（迁移 `20260903_28`，历史 REPAIR/UPSCALE 候选只读回填血缘行）；`regenerate_region` accept 在同一事务创建服务端 mask 资产、`REGION_REGENERATED` 派生候选与 `PAGE_REGION_REGENERATE` Job，enqueue 在事务提交后执行；propose 预览全程 savepoint 内回滚、绝不入队。

@@ -166,7 +166,14 @@ class ModelCapabilityRead(BaseModel):
     preview_resolutions: list[str]
     max_reference_images: int
     regions: list[str]
+    # V02-44B frozen region-edit capability bits (matrix §7.2). Fail-closed:
+    # the API never guesses a missing/UNKNOWN bit to true; sources carry the
+    # DECLARED/DISCOVERED/VERIFIED provenance, UNSPECIFIED when undeclared.
     accepts_explicit_mask: bool = False
+    supports_instruction_region_edit: bool = False
+    preserves_outside_region: bool = False
+    whole_image_reference_only: bool = False
+    region_capability_sources: dict[str, str] = Field(default_factory=dict)
     confidence: str = "VERIFIED"
     enabled: bool = True
     display_enabled: bool = True

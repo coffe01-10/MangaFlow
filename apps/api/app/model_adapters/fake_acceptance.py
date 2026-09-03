@@ -14,6 +14,7 @@ from app.model_adapters.base import (
     StructuredRequest,
     TextModelAdapter,
 )
+from app.services.model_capabilities import whole_image_reference_edit_capabilities
 
 
 def _generate_fake_png_bytes(
@@ -63,6 +64,9 @@ class FakeAcceptanceImageAdapter(ImageModelAdapter):
         return {
             "resolutions": ["1K", "2K", "4K"],
             "aspect_ratios": ["3:4", "16:9", "1:1"],
+            # V02-44B honesty: the fake "edit" is a whole-image reference call
+            # with no mask request surface, so it must not pretend otherwise.
+            **whole_image_reference_edit_capabilities(),
         }
 
 

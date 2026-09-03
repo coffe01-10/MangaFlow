@@ -442,6 +442,15 @@ class OpenAICompatibleAdapter(_CompatibleBase):
         return self._generate_image(request)
 
     def edit_region(self, request: ImageRequest) -> ModelResponse:
+        """Whole-image reference edit (V02-44A matrix §1.1).
+
+        The ``images_edit`` request body only carries model/prompt/size plus
+        the reference files — there is no mask field and no instruction-only
+        region surface, so region jobs are gated by the catalog capability
+        bits (``services/model_capabilities.py``) and must never be routed
+        here as a silent local-edit degrade.
+        """
+
         if not request.reference_images:
             raise ProviderAdapterError("INVALID_INPUT", "图片编辑至少需要一张参考图")
         return self._generate_image(request)

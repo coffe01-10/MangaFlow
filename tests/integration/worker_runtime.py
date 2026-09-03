@@ -179,7 +179,15 @@ class LocalImageFixture:
         return self._image(request, "edit_region")
 
     def capabilities(self):
-        return {"resolutions": ["1K", "2K", "4K"], "aspect_ratios": ["3:4", "16:9", "1:1"]}
+        from app.services.model_capabilities import whole_image_reference_edit_capabilities
+
+        return {
+            "resolutions": ["1K", "2K", "4K"],
+            "aspect_ratios": ["3:4", "16:9", "1:1"],
+            # V02-44B honesty: local fixture edits are whole-image reference
+            # calls with no mask surface.
+            **whole_image_reference_edit_capabilities(),
+        }
 
     def generate_structured(self, *args, **kwargs):
         raise RuntimeError("Text operations are not implemented by this local image fixture")

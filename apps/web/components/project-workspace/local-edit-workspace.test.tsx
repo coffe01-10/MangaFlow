@@ -357,6 +357,26 @@ describe("LocalEditWorkspace 局部选区编辑器（V02-43B）", () => {
     expect(generateCandidateApi).not.toHaveBeenCalled();
   });
 
+  it("V02-44B 目录只有整图参考模型：屏蔽态如实列出能力声明，不静默降级", () => {
+    renderEditor({
+      models: [
+        capableModelFixture({ accepts_explicit_mask: false, whole_image_reference_only: true }),
+        capableModelFixture({
+          logical_alias: "instruction_only",
+          model_id: "instruction-editor",
+          accepts_explicit_mask: false,
+          supports_instruction_region_edit: true,
+        }),
+      ],
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent("目录中已启用的编辑模型能力声明");
+    expect(screen.getByText(/仅整图参考编辑（不保证区域外不变）/)).toBeInTheDocument();
+    expect(screen.getByText(/仅 instruction 区域编辑（不支持选区 mask）/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "预览局部命令" })).toBeDisabled();
+    expect(proposeApi).not.toHaveBeenCalled();
+    expect(generateCandidateApi).not.toHaveBeenCalled();
+  });
+
   it("L5b 预览确认流：propose → 预览卡 → 确认生成才 accept", async () => {
     proposeApi.mockResolvedValue(previewGroupFixture("cmd-loc-1"));
     acceptApi.mockResolvedValue({
