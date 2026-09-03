@@ -454,6 +454,44 @@ export interface MangaPage {
   scene_ids: string[];
   beat_ids: string[];
   version: number;
+  canvas?: CanvasInfo | null;
+}
+
+export interface CanvasInfo {
+  width_mm: number;
+  height_mm: number;
+  bleed_mm: number;
+  safe_mm: number;
+  unit: string;
+}
+
+export interface NormalizedRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface GeometryPoint {
+  x: number;
+  y: number;
+}
+
+export interface PanelGeometryShape {
+  type: "rect" | "polygon";
+  rect?: NormalizedRect | null;
+  polygon?: GeometryPoint[] | null;
+  rotation: number;
+  z_order: number;
+}
+
+export interface BubbleGeometryShape {
+  type: "rect" | "ellipse";
+  rect: NormalizedRect;
+  anchor?: GeometryPoint | null;
+  tail_target?: GeometryPoint | null;
+  rotation: number;
+  text_region?: NormalizedRect | null;
 }
 
 export interface PanelDialogue {
@@ -465,6 +503,7 @@ export interface PanelDialogue {
   text_direction: "vertical" | "horizontal";
   region: Record<string, unknown>;
   rewrite_forbidden: boolean;
+  bubble?: (BubbleGeometryShape & { mapped_from_legacy?: boolean }) | null;
 }
 
 export interface StoryboardPanel {
@@ -488,6 +527,7 @@ export interface StoryboardPanel {
   borderless: boolean;
   locked_fields: string[];
   version: number;
+  geometry?: PanelGeometryShape | Record<string, unknown> | null;
   dialogues: PanelDialogue[];
 }
 
@@ -495,6 +535,26 @@ export interface Storyboard {
   page: MangaPage;
   panels: StoryboardPanel[];
   candidate_count: number;
+}
+
+export interface StoryboardGeometryPanelInput {
+  panel_id: string;
+  bounds: NormalizedRect;
+  geometry: PanelGeometryShape | null;
+  reading_order: number;
+}
+
+export interface StoryboardGeometryDialogueInput {
+  dialogue_id: string;
+  bubble: BubbleGeometryShape | null;
+  reading_order: number;
+}
+
+export interface StoryboardGeometrySavePayload {
+  request_id: string;
+  storyboard_version: number;
+  panels: StoryboardGeometryPanelInput[];
+  dialogues: StoryboardGeometryDialogueInput[];
 }
 
 export type CharacterPresence = "VISIBLE" | "OFFSCREEN" | "MENTIONED";
@@ -1367,6 +1427,11 @@ export const api = {
   generationWorkbench: (pageId: string) =>
     request<GenerationWorkbench>(`/pages/${pageId}/generation-workbench`),
   storyboard: (pageId: string) => request<Storyboard>(`/pages/${pageId}/storyboard`),
+  saveStoryboardGeometry: (pageId: string, payload: StoryboardGeometrySavePayload) =>
+    request<Storyboard>(`/pages/${pageId}/storyboard-geometry`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
   updatePanel: (panelId: string, payload: Partial<Pick<StoryboardPanel, "shot_type" | "camera_angle" | "camera_height" | "characters" | "character_presence" | "props" | "outfits" | "actions" | "expressions" | "background" | "sound_effects" | "bleed" | "borderless">> & { version: number }) =>
     request<StoryboardPanel>(`/panels/${panelId}`, { method: "PATCH", body: JSON.stringify(payload) }),
   createDialogue: (panelId: string, payload: Pick<PanelDialogue, "target_text" | "speaker_character_id" | "text_direction" | "rewrite_forbidden"> & { panel_version: number }) =>
