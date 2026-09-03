@@ -1867,7 +1867,7 @@ p { font-size: 14px !important; }
 .pkg-workspace { margin-top: 4px; }
 .pkg-create-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .pkg-create-row select { min-height: 40px; padding: 0 10px; border: 1px solid var(--line); background: var(--white); }
-.pkg-create-row small { color: #756f65; font-size: 11px; }
+.pkg-create-row small { color: #66604f; font-size: 11px; }
 .pkg-hint { margin: 0; padding: 8px 10px; border: 1px dashed var(--line); color: #5f594f; font-size: 12px; line-height: 1.6; }
 .pkg-completeness { display: grid; gap: 6px; }
 .pkg-completeness-summary { display: flex; align-items: center; gap: 10px; }

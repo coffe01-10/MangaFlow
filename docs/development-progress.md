@@ -4,6 +4,21 @@
 
 本文件记录修订版 MVP 计划的实际完成度。
 
+## V02-10D M14 离线浏览器 E2E 已全绿，V02-10D 勾选（2026-09-03，Linux box）
+
+- **入口与代码状态**：官方控制器 `scripts/run_e2e_owned.py` 依赖 Windows Job Objects（`scripts/owned_processes.py` 在非 Windows 直接拒绝），本机为 Linux box，故按 Issue #104 采用 **Linux 等价入口**：`.venv/bin/python output/playwright/linux-m14/m14_linux_harness.py run`（gitignore 的未跟踪 harness，未改仓库脚本），逐项复刻 owned 控制器契约：独占端口 3000/8000 预检、一次性 runtime 目录（新 32 位 run id + `runtime-owner.json` 标记，canonical 校验后 API 才写库、拒绝复用已有数据库）、`MANGAFLOW_DISABLE_DOTENV=1`、`NODE_OPTIONS --require scripts/e2e_node_bootstrap.cjs`、隔离 SQLite 由 Alembic 升到 `20260903_28` + 假模型种子（`MANGAFLOW_E2E_SEED=1` → `seed_gate_projects`）、`QUEUE_ENABLED=false`；命令与控制器一致（`next build apps/web` → 全套 Playwright，Chrome channel，自建 web/API 服务器，`reuseExistingServer: false`）。
+- **两轮结果**：①首轮（head `2ca22d6`，run id `eb58868707c34c239010bc730eb45cf8`）16/17，唯一失败为 Axe `color-contrast`（serious）：`/projects/{id}/assets/characters` 的 `.pkg-create-row > small`（`character-package-workspace.tsx:551`；`globals.css:1870`）`#756f65`/`#f4f1e9` = 4.41:1 < 4.5:1，确定性失败；该元素随 V02-23B（PR #86）合入、晚于上一轮 Windows E2E 证据 SHA `98b93a0`。②经测试总管 review 授权，`23faaf0` 仅将该一处选择器改为 P1-3 基线安全灰 `#66604f`（约 5.55:1），重跑全套 **17/17 全绿**（head `23faaf0`，run id `9814af94c60244ae9e311c113360d032`，51.2s，`platform-v2` 5/5、critical-behaviors 4/4、usage-dashboard 7/7、scene-workspace 1/1；Axe 用例 8.7s 通过）。
+- **配套证据（两轮均复核）**：T7 别名夹具 `generate-section.test.tsx` Vitest 15/15 通过（Phase C/D 后仍可解析）；供应商平权扫描（`git grep -n -I -F` 三模式 vs `scripts/provider-neutrality-allowlist.txt` 10 路径）**0 违规**、无新增产品偏置；前端无 `vertex-status`/`verifyVertex` 产品请求（唯一命中是 `provider-management.test.tsx:660` 的 `not.toContain("verifyVertex")` 负向断言）；`/settings/vertex/status|verify` 仅后端兼容端点保留，与 Phase E 记录一致；ESLint、`tsc --noEmit`、Ruff 通过。
+- **清理**：两轮 runtime 目录与隔离 SQLite/种子数据均已删除（`runtime_removed: true`）；端口 3000/8000 复查已释放；退出收尾只停止经 `/proc/<pid>/environ` run id 归属校验的本 run 监听，非本 run 资源只记录不触碰；日志与 trace 保留在 `output/playwright/linux-m14/`（gitignore）。
+- **NOT RUN / 边界**：真实供应商、Lighthouse/FPS、真实 PostgreSQL；Windows 完整形态 `npm run test:e2e`（PowerShell/Job Object 入口）本机不可运行，本次为 Linux 等价入口（差异仅为进程树收容方式，测试与服务器契约不变）；M14 契约中的 C/D 各一轮要求，D 轮以本轮两轮记录为准，C 轮沿用既有 Windows `98b93a0` 记录。
+
+## V02-44B 能力验收 fail-closed 门禁已审阅合并（2026-09-03）
+
+- Issue #102 / PR #103 / `glm/v02-44b-capability-acceptance` / 合并提交 `e2126a1` / head `84b5dc7`。新增 `apps/api/app/services/model_capabilities.py`：`accepts_explicit_mask`、`supports_instruction_region_edit`、`preserves_outside_region`、`whole_image_reference_only` 四位统一 fail-closed 读取（缺失/UNKNOWN 一律按不支持，绝不猜成 true），带 `DECLARED / DISCOVERED / VERIFIED` 来源语义与区域编辑表面分类；`GET /api/v1/models` 与 `ModelCapabilityRead` schema 同步暴露四位布尔与来源。
+- 预设诚实声明：Vertex 原生两张图片模型与三个 CLI 图片模型按适配器现状只声明 `whole_image_reference_only`，不假装有 mask/instruction 请求面；发现/手工模型的未知能力位保持不声明。区域请求打到不匹配表面在调用前确定性 `UNSUPPORTED_CAPABILITY`：导演 `regenerate_region` accept 路径无 Job/派生候选/mask 资产/attempt/付费；Worker 侧 `page_generate` 在 `_invoke_provider` 前重查 `accepts_explicit_mask`，不自动换模型/provider、不降级整页 `generate`；前端局部编辑器屏蔽态如实列出已启用编辑模型的声明表面（中文标签）并保留取消出口，不隐式整页 POST。
+- 门禁（`84b5dc7`，Linux 隔离）：新增 `tests/test_capability_acceptance.py` 7 项（/models 序列化、预设逐位、导演表面拒绝零副作用、Worker 能力失败无 attempt/产物、正向对照、取消）；全量 588 passed / 70 skipped（10 failed + 10 error 为既有 Linux 平台基线，已在干净基线 `047571b` 复现，非本分支引入）；Vitest 41 文件 379 passed；ESLint、`tsc --noEmit`、Ruff、Next.js 生产构建通过。
+- NOT RUN：真实供应商调用与 `VERIFIED` 来源实测、真实 mask/inpaint、计费核对、M5 未决 attempt 补偿、M6 双 Worker 租约、PostgreSQL live（本分支无迁移）、Playwright E2E / Lighthouse / FPS（本轮留给 V02-10D M14）。
+
 ## V02-43B 局部选区 UI 与并排比较已审阅合并（2026-09-03）
 
 - Issue #100 / PR #101 / `glm/v02-43b-local-edit-ui` / 合并提交 `047571b` / head `517191f`。生成台新增局部编辑工作区（`apps/web/components/project-workspace/local-edit-workspace.tsx` + 纯规则模块 `apps/web/lib/local-edit-rules.ts`）：mask 选区绘制并只构造 `regenerate_region` 结构化 envelope 走 propose→accept，绝不静默调用 `generateCandidate` 整页重生（Vitest 断言 propose-only）；派生候选按 `REGION_REGENERATED` 批次与 `prompt_snapshot.lineage` 与父候选并排比较。
