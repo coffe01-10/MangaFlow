@@ -1,8 +1,8 @@
 # MangaFlow 主分支后续工作清单
 
-更新时间：2026-09-02
-当前实现合并树：`master` / `f961774`（PR #83，2026-09-02）。V02-21B、V02-22A 与 V02-22B 角色模型包后端已分别完成独立审阅并合并。2026-09-02 在 Linux 隔离环境跑通 PostgreSQL live 18 项（含 PKG-S14）与 Redis/RQ SimpleWorker live 8 项；7 项 Windows Job Object 独立 Worker 仍 `BLOCKED`（笔记本无 Docker/PostgreSQL/Redis，用户明确不安装）。同日 Windows 笔记本 `LAPTOP-TV9KT8RC` 在 SHA `98b93a0`（分支 `fix/pr82-remaining-package-p1s`，该 SHA 为 `master`/`f961774` 祖先；E2E/perf **未**跑在 `c93e1b3`）以官方控制器 `scripts/run_e2e_owned.py` 将 Playwright E2E 与 Lighthouse/FPS 记为 `RUN`。真实图片生成/编辑、账号权限、费用与真实取消/超时进程树仍按任务标记为 `NOT RUN`。
-当前开发分支：`env/postgres-redis-acceptance`。下一实现项为 V02-23B。
+更新时间：2026-09-03
+当前实现合并树：`master` / `e2a12d2`（PR #88，2026-09-03）。V02-21B、V02-22A、V02-22B、V02-23B 与 V02-30B 已分别完成独立审阅并合并。2026-09-02 在 Linux 隔离环境跑通 PostgreSQL live 18 项（含 PKG-S14）与 Redis/RQ SimpleWorker live 8 项；7 项 Windows Job Object 独立 Worker 仍 `BLOCKED`（笔记本无 Docker/PostgreSQL/Redis，用户明确不安装）。同日 Windows 笔记本 `LAPTOP-TV9KT8RC` 在 SHA `98b93a0`（分支 `fix/pr82-remaining-package-p1s`，该 SHA 为 `master`/`f961774` 祖先；E2E/perf **未**跑在 `c93e1b3`）以官方控制器 `scripts/run_e2e_owned.py` 将 Playwright E2E 与 Lighthouse/FPS 记为 `RUN`。真实图片生成/编辑、账号权限、费用与真实取消/超时进程树仍按任务标记为 `NOT RUN`。
+当前开发分支：`env/postgres-redis-acceptance`。下一实现项为 V02-31B。
 最近 `check:full` 历史基线：`master` / `cb324e3`（2026-08-27；相对 PR #5 合并提交 `d5d32ec` 仅增加任务文档），不代表 PR #6 / #7 / #10 / #11 已重跑浏览器验收。2026-09-02 Windows owned E2E 17/17 与 LH/FPS 4/4 证据在 `98b93a0` / `LAPTOP-TV9KT8RC`，见 `docs/development-progress.md`。
 深审历史基线：`master` / `f085327`。当时新增 6 项 P1 修复与 1 项 P2 改进；PR #6 已合并其中 P1-7、P1-9～P1-12 的代码修复。P1-8、P2-8 已随 PR #7 合并，独立 Redis/RQ、PostgreSQL 与浏览器验收仍待完成。
 安全审查历史基线：`master` / `7635cf7`。P0-3、P1-13～P1-15、P2-4、P2-9 的代码修复现已合并，真实服务/容器及完整依赖审计边界仍保留。
@@ -68,7 +68,7 @@
 
 #### 下一实现窗口
 
-1. V02-14A / Issue #62 已由 PR #63 合并，V02-14B / Issue #64 已由 PR #65 合并，V02-14C / Issue #67 已由 PR #68 合并；V02-15B 已由 PR #71 合并（`7af5b59`），V02-16B 已由 PR #73 合并（`fec8d7f`），V02-21B 已由 PR #77 合并（`7c10d27`），V02-22A / Issue #78 已由 PR #79 合并（`6298be1`），V02-22B 已由 PR #82 / #83 合并（`f961774`）。PKG-S14 真实 PostgreSQL 升降级与并发已在 2026-09-02 Linux 隔离环境跑通。下一实现项为 V02-23B。
+1. V02-14A / Issue #62 已由 PR #63 合并，V02-14B / Issue #64 已由 PR #65 合并，V02-14C / Issue #67 已由 PR #68 合并；V02-15B 已由 PR #71 合并（`7af5b59`），V02-16B 已由 PR #73 合并（`fec8d7f`），V02-21B 已由 PR #77 合并（`7c10d27`），V02-22A / Issue #78 已由 PR #79 合并（`6298be1`），V02-22B 已由 PR #82 / #83 合并（`f961774`）。V02-23B 已由 PR #86 合并（`6d09e78`），V02-30B / Issue #87 已由 PR #88 合并（`e2a12d2`）。PKG-S14 真实 PostgreSQL 升降级与并发已在 2026-09-02 Linux 隔离环境跑通。下一实现项为 V02-31B。
 2. 资产、分镜、导演、CLI、用量和桌面端均先从各自已批准的 A 级设计文档拆出实现 Issue；不得把审计文档的合并当作功能交付。
 3. 所有实现 Issue 必须引用对应契约，写明迁移/事务/资源所有权，并标注真实供应商、CLI、PostgreSQL、Redis/RQ、浏览器或桌面环境的 `RUN`、`NOT RUN`、`BLOCKED`。
 - [x] **V02-13（L3）：建立 CLI 图像通道公共执行器。** 将 Codex CLI、Antigravity CLI、Grok Build 视为可选执行通道，而不是假装成普通 HTTP API。
@@ -96,13 +96,14 @@
 - [x] **V02-22（L3，组长设计、GLM 实现优先）：将角色参考资产升级为“角色模型包”。** 模型包聚合身份锚点、面部/发型、体型、四视图、表情、姿势、服装组合、比例/画风规则、负面约束和版本；现有 `Character`、`CharacterReference`、`Outfit`、`Style` 采用兼容迁移和适配层，不一次性破坏历史候选或引用。
   - [x] **V02-22A / Issue #78（设计）：** 已合并 `docs/v02-character-model-package-contract.md`（PR #79，合并提交 `6298be1`）：冻结 `Character.id` 一对一兼容锚点、包/版本/参考图/服装四表模型与逻辑槽唯一约束、版本状态机与包锁事务边界、可回滚迁移（兼容包 + V1 草稿、不发布、不改写既有行）、建议性完整度、排队快照 `character_packages` 与 Worker 快照消费、V02-23B 最小 API 及 PKG-S1～S14 测试矩阵；同步 `docs/data-model.md` 与 `docs/architecture.md`。Codex Review 八轮 27 条意见（11 P1 + 16 P2）全部修复并逐条回复。PKG-S14 真实 PostgreSQL 升降级与并发已于 2026-09-02 Linux 隔离环境跑通；Redis/RQ SimpleWorker 集成 8 项通过，独立 Windows Worker 进程矩阵、真实供应商调用与浏览器 E2E 为 `NOT RUN`。
   - [x] **V02-22B（实现）：** 已由 PR #82 / #83 合并（`f961774`）：迁移+ORM、包/版本/关系服务与 API、排队快照与 Worker 消费、完整度与 diff。PKG-S14 真实 PostgreSQL 升降级与并发已于 2026-09-02 Linux 隔离环境 7/7 通过。
-- [ ] **V02-23（L2）：建设角色模型包工作区与绑定流程。**
+- [x] **V02-23（L2）：建设角色模型包工作区与绑定流程。**
   - [x] **V02-23A / Issue #46（设计）：** 已合并 `docs/v02-character-model-package-ui-audit.md`，确认 Character ID 继续作为兼容锚点，完整度为建议而非历史硬门禁。
-  - [ ] **V02-23B（实现）：** 数据契约已由 V02-22A 冻结；按 `docs/v02-character-model-package-contract.md` 实现包版本、封面、差异、页面绑定与生成版本锁定。
+  - [x] **V02-23B / Issue #85（实现，PR #86 / 合并提交 `6d09e78`，head `cc4de3f`）：** 数据契约已由 V02-22A 冻结；角色模型包工作区、页面绑定与 `package_version_id` picker 已进 master。P1 生成台 packages 未就绪 fail-open 已修；P2 分页 200、归档 picker、发布后只读矩阵已合并。NOT RUN：真实供应商、Playwright、PostgreSQL live。
 
 ### M3：真正的视觉分镜编辑器
 
-- [x] **V02-30A / Issue #48（L3 数据契约）：扩展分镜布局模型。** 已合并 `docs/v02-storyboard-layout-contract.md`：保留扁平 bounds，新增 geometry/bubble/canvas，坐标为最终页面坐标，允许 z-order 重叠，画布使用带 request_id 的整页原子保存；迁移尚未实现。
+- [x] **V02-30A / Issue #48（L3 数据契约）：扩展分镜布局模型。** 已合并 `docs/v02-storyboard-layout-contract.md`：保留扁平 bounds，新增 geometry/bubble/canvas，坐标为最终页面坐标，允许 z-order 重叠，画布使用带 request_id 的整页原子保存；迁移已由 V02-30B 落地。
+- [x] **V02-30B / Issue #87（实现，PR #88 / `e2a12d2`）：** nullable JSON `manga_pages.canvas` / `geometry_save_command`、`panels.geometry`、`dialogues.bubble`；读路径派生 canvas/geometry/bubble，旧 bounds/region 零改写；PATCH panels bounds+geometry、PATCH dialogues bubble、reading-order 重排、PUT storyboard-geometry + 页上 `request_id` 重放；layout 3–8。L1–L8 SQLite。NOT RUN：真实 PostgreSQL、Playwright、V02-31 画布。
 - [ ] **V02-31（L2）：实现视觉画布编辑器。**
   - [x] **V02-31A / Issue #45（审计/设计）：** 已合并 `docs/v02-storyboard-editor-ui-audit.md`，保存语义与 V02-30A 对齐，首发不支持跨格移动气泡。
   - [ ] **V02-31B（实现）：** 先实现 V02-30B 数据/API，再实现拖拽、resize、气泡、缩放/平移、吸附、阅读顺序、出血/安全区与撤销/重做。
