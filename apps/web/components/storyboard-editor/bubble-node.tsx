@@ -14,6 +14,7 @@ export function BubbleNode({
   selected,
   interactive,
   onPointerDown,
+  elementRef,
 }: {
   dialogue: PanelDialogue;
   rect: NormalizedRect;
@@ -21,6 +22,7 @@ export function BubbleNode({
   selected: boolean;
   interactive: boolean;
   onPointerDown?: (dialogue: PanelDialogue, event: ReactPointerEvent<HTMLDivElement>) => void;
+  elementRef?: (element: HTMLDivElement | null) => void;
 }) {
   const style: CSSProperties = {
     left: `${rect.x * 100}%`,
@@ -30,6 +32,7 @@ export function BubbleNode({
   };
   return <div
     id={`canvas-bubble-${dialogue.id}`}
+    ref={elementRef}
     role="button"
     aria-label={`气泡 ${dialogue.reading_order}`}
     aria-current={selected ? "true" : undefined}

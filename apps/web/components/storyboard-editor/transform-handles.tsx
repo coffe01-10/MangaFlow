@@ -3,7 +3,7 @@
 // Resize / tail / anchor handles for the current canvas selection.
 // Only the selected object mounts DOM handles (audit §4).
 import type { NormalizedRect } from "@/lib/api";
-import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
+import type { CSSProperties, PointerEvent as ReactPointerEvent, RefObject } from "react";
 
 import { handleCornerLabels, storyboardCopy } from "./storyboard-copy";
 
@@ -27,12 +27,29 @@ const handleStyle = (left: number, top: number): CSSProperties => ({
   top: `${top * 100}%`,
 });
 
+/** Page-space positions for every mounted handle of a selection. Shared by the
+ * React render and the imperative drag preview so both stay in sync. */
+export function handlePositions(
+  rect: NormalizedRect,
+  kind: "panel" | "bubble",
+  anchor?: { x: number; y: number } | null,
+  tailTarget?: { x: number; y: number } | null,
+): Map<string, { left: number; top: number }> {
+  const names = kind === "panel" ? allHandles : cornerHandles;
+  const positions = new Map<string, { left: number; top: number }>();
+  for (const name of names) positions.set(name, anchorPosition(rect, name));
+  if (kind === "bubble" && anchor) positions.set("anchor", { left: anchor.x, top: anchor.y });
+  if (kind === "bubble" && tailTarget) positions.set("tail", { left: tailTarget.x, top: tailTarget.y });
+  return positions;
+}
+
 export function TransformHandles({
   rect,
   kind,
   disabled,
   anchor,
   tailTarget,
+  innerRef,
   onHandlePointerDown,
 }: {
   rect: NormalizedRect | null;
@@ -40,11 +57,13 @@ export function TransformHandles({
   disabled: boolean;
   anchor?: { x: number; y: number } | null;
   tailTarget?: { x: number; y: number } | null;
+  /** Lets the drag preview reposition handles imperatively (audit §4). */
+  innerRef?: RefObject<HTMLDivElement | null>;
   onHandlePointerDown?: (handle: HandleName | "tail" | "anchor", event: ReactPointerEvent<HTMLDivElement>) => void;
 }) {
   if (!rect) return null;
   const names = kind === "panel" ? [...allHandles] : [...cornerHandles];
-  return <div className="canvas-handles" aria-hidden={false}>
+  return <div className="canvas-handles" ref={innerRef} aria-hidden={false}>
     {names.map((name) => {
       const position = anchorPosition(rect, name);
       return <div

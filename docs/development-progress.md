@@ -23,6 +23,12 @@
 - 未改 `docs/architecture.md` / `docs/data-model.md`（无新 schema 或模块边界）。Windows JO 独立 Worker 进程树仍 `BLOCKED`/`NOT RUN`；付费调用仍 NOT RUN。浏览器 E2E 与性能门禁见上一节 Windows owned 记录，不在此重复记为未跑。
 
 
+## V02-31B 视觉分镜画布已审阅合并（2026-09-03）
+
+- Issue #89 / PR #90 / `glm/v02-31b-storyboard-canvas` / 合并提交 `c4f0fc5` / head `fda5233`。`apps/web/components/storyboard-editor/` 以 DOM 页画布替换联系表：视口缩放/平移/适配/复位、拖拽与 resize、气泡框与尾巴、吸附对齐线、阅读序号、撤销/重做、离开保护与出血/安全区开关（无字段时禁用）。
+- 画布几何统一走 `PUT storyboard-geometry` 整包快照 + `request_id` 重放；S1–S20 及 S4b/S4c（多边形格在组拖动与方向键下只读）以 Vitest 覆盖。
+- NOT RUN：Playwright、Lighthouse/FPS、真实供应商。
+
 ## V02-30B 分镜布局数据/API 已审阅合并（2026-09-03）
 
 - Issue #87 / PR #88 / `glm/v02-30b-storyboard-layout` / 合并提交 `e2a12d2` / head `a22f94d`。按 `docs/v02-storyboard-layout-contract.md` 落地分镜布局数据与 API：`manga_pages` 新增 nullable JSON `canvas` 与 `geometry_save_command`，`panels` 新增 `geometry`，`dialogues` 新增 `bubble`；读路径对旧 `bounds`/`region` 派生规范几何，历史数据零改写。
