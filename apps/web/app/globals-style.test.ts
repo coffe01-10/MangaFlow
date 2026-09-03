@@ -46,3 +46,21 @@ describe("project settings switch styles", () => {
     );
   });
 });
+
+describe("director workspace styles (V02-41B)", () => {
+  it("D15 预览卡在 900px 以下升级为 modal（fixed 定位覆盖）", () => {
+    const inlinePreview = rule(".director-preview");
+    expect(inlinePreview).not.toContain("position: fixed");
+    const mediaBlocks = stylesheet.split(/@media\s*/).slice(1);
+    const modalBlock = mediaBlocks.find((block) => block.startsWith("(max-width: 900px)")
+      && /\.director-preview\s*\{[^}]*position:\s*fixed/.test(block));
+    expect(modalBlock).toBeTruthy();
+  });
+
+  it("导演模式开关与作用域芯片保持对比契约：active 使用 vermillion 描边", () => {
+    const activeChip = rule(".director-chip.active");
+    expect(activeChip).toContain("border-color: var(--vermillion)");
+    const switchActive = rule(".director-mode-switch button.active");
+    expect(switchActive).toContain("background: var(--ink)");
+  });
+});

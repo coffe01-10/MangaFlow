@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -38,6 +38,8 @@ const generateCandidate = vi.spyOn(api, "generateCandidate");
 const startBatch = vi.spyOn(api, "startBatch");
 const characterPackagesApi = vi.spyOn(api, "characterPackages");
 const characterPackageApi = vi.spyOn(api, "characterPackage");
+const directorGroupsApi = vi.spyOn(api, "directorCommandGroups");
+const directorProposeApi = vi.spyOn(api, "directorProposeCommandGroup");
 
 function pageFixture(overrides: Partial<MangaPage> = {}): MangaPage {
   return {
@@ -806,5 +808,64 @@ describe("GenerateSection 关键行为", () => {
     expect(await screen.findByLabelText("林澈的角色模型包版本")).toBeInTheDocument();
     // 归档包不参与默认继承：未显式选择版本时 legacy 人物参考选择仍然可用。
     expect(screen.getByLabelText("人物参考图")).toBeInTheDocument();
+  });
+
+  describe("导演模式（V02-41B）", () => {
+    beforeEach(() => {
+      directorGroupsApi.mockReset().mockResolvedValue([]);
+      directorProposeApi.mockReset();
+    });
+
+    it("D18 未开导演台时行为与今日相同，不出现导演命令栏", async () => {
+      renderGenerate();
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "生成 1 个 1K 彩色候选" })).toBeInTheDocument();
+      });
+      const group = screen.getByRole("group", { name: "生成台模式" });
+      expect(within(group).getByRole("button", { name: "抽卡" })).toHaveAttribute("aria-pressed", "true");
+      expect(within(group).getByRole("button", { name: "导演" })).toHaveAttribute("aria-pressed", "false");
+      expect(screen.queryByLabelText("导演指令")).not.toBeInTheDocument();
+      expect(directorGroupsApi).not.toHaveBeenCalled();
+      expect(directorProposeApi).not.toHaveBeenCalled();
+    });
+
+    it("D1 打开导演模式出现命令栏、历史与作用域芯片，抽卡按钮降为次要且可切回", async () => {
+      renderGenerate();
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: "生成 1 个 1K 彩色候选" })).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByRole("button", { name: "导演" }));
+      expect(await screen.findByLabelText("导演指令")).toBeInTheDocument();
+      expect(screen.getAllByText("规则解析，非模型").length).toBeGreaterThan(0);
+      expect(screen.getByText("HISTORY / 命令历史")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "整页" })).toBeInTheDocument();
+      const demoted = screen.getByRole("button", { name: /抽卡生成 1 个候选/ });
+      expect(demoted).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "生成 1 个 1K 彩色候选" })).not.toBeInTheDocument();
+      expect(directorGroupsApi).toHaveBeenCalledWith("project-1", "page-1");
+
+      fireEvent.click(within(screen.getByRole("group", { name: "生成台模式" })).getByRole("button", { name: "抽卡" }));
+      expect(screen.queryByLabelText("导演指令")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "生成 1 个 1K 彩色候选" })).toBeInTheDocument();
+    });
+
+    it("D11 页面生成进行中时导演整页口令被拦下，不发 propose", async () => {
+      const generating = candidateFixture({ status: "GENERATING", is_selected: false, job_id: "job-gen" });
+      workbenchApi.mockResolvedValue(workbenchFixture({
+        candidates: [generating],
+        selected_candidate: null,
+      }));
+      candidatesApi.mockResolvedValue([generating]);
+      const { client } = renderGenerate();
+      client.setQueryData(["candidates", "batch-1"], [generating]);
+      fireEvent.click(await screen.findByRole("button", { name: "导演" }));
+      const input = await screen.findByLabelText("导演指令");
+      fireEvent.change(input, { target: { value: "改成 6 格" } });
+      fireEvent.click(screen.getByRole("button", { name: "预览" }));
+      await waitFor(() => {
+        expect(document.querySelector(".director-shell")?.textContent).toContain("生成任务进行中");
+      });
+      expect(directorProposeApi).not.toHaveBeenCalled();
+    });
   });
 });

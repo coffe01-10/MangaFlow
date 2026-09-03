@@ -17,15 +17,18 @@ import {
   Star,
   Trash2,
 } from "lucide-react";
+import { useState } from "react";
 
 import { ProductionReadiness } from "@/components/production-readiness";
 import { api, publicUrl, type ImageModelAlias, type MangaPage } from "@/lib/api";
+import { hasActiveItem } from "@/lib/task-status";
 
 import { assetName } from "./display";
 import { isPackageModeSelection } from "./reference-selection";
 import { interiorLabel, sceneAssetStatusMeta } from "./scene-status";
 import { CandidateArtwork, ImageModelPicker } from "./shared";
 import { CharacterPackagePicker } from "./character-package-picker";
+import { DirectorWorkspace } from "./director-workspace";
 import { InspectionPanel } from "./inspection-panel";
 import type { GenerationWorkspace } from "./use-generation-workspace";
 import type { WorkspaceQueries } from "./use-workspace-queries";
@@ -108,9 +111,20 @@ export function GenerateSection({
     goNext,
   } = workspace;
 
+  const [directorMode, setDirectorMode] = useState(false);
+  const [directorBusy, setDirectorBusy] = useState(false);
+  const pageGenerationPending = generate.isPending || hasActiveItem(candidates.data);
+
   return (
     <div className="generate-workbench">
-      <header className="canvas-header"><div><span>DRAW / 单页抽卡</span><h2>{selectedPage ? `第 ${selectedPage.page_number} 页候选` : "选择一页开始"}</h2></div><small>每次只生成 1 页</small></header>
+      <header className="canvas-header">
+        <div><span>{directorMode ? "DIRECTOR / 导演台" : "DRAW / 单页抽卡"}</span><h2>{selectedPage ? `第 ${selectedPage.page_number} 页候选` : "选择一页开始"}</h2></div>
+        <div className="director-mode-switch" role="group" aria-label="生成台模式">
+          <button type="button" aria-pressed={!directorMode} className={!directorMode ? "active" : ""} onClick={() => setDirectorMode(false)}>抽卡</button>
+          <button type="button" aria-pressed={directorMode} className={directorMode ? "active" : ""} onClick={() => setDirectorMode(true)}>导演</button>
+        </div>
+        {!directorMode && <small>每次只生成 1 页</small>}
+      </header>
       {selectedPage ? characterPackages.isError ? (
         <div className="asset-empty" role="alert">
           <CircleAlert />
@@ -118,7 +132,24 @@ export function GenerateSection({
           <p>在确认各角色的模型包发布状态前，无法安全解析生成参考，已暂停生成。{characterPackages.error.message}</p>
           <button type="button" className="button outline compact" onClick={() => characterPackages.refetch()}>重试</button>
         </div>
-      ) : !generateWorkbenchReady ? <div className="generate-skeleton" role="status" aria-label="正在载入生成工作台"><LoaderCircle className="spin" size={22} /><span>正在载入生成工作台…</span></div> : <>
+      ) : !generateWorkbenchReady ? <div className="generate-skeleton" role="status" aria-label="正在载入生成工作台"><LoaderCircle className="spin" size={22} /><span>正在载入生成工作台…</span></div> : directorMode ? (
+        <div className="director-generate">
+          <div className="director-draw-row">
+            <span>导演命令只修改分镜字段，不消耗抽卡；整页重抽请切回抽卡。</span>
+            <button className="button ghost compact" disabled={generate.isPending || directorBusy || !generationPackagesReady || Boolean(selectedPageGenerationIssue) || !pageReadiness.data?.ready || !generationReferenceReady || isViewingHistoricalBatch} onClick={() => generate.mutate()}>{generate.isPending ? <LoaderCircle className="spin" size={15} /> : <Star size={15} />}{generate.isPending ? "正在加入正式任务" : isViewingHistoricalBatch ? "先切回最新批次再抽卡" : !activeDrawModel ? "抽卡：先选择图片模型" : !pageReadiness.data?.ready ? "抽卡：先完成页面生产准备" : !generationReferenceReady ? "抽卡：先补齐人物与服装参考" : "抽卡生成 1 个候选"}</button>
+          </div>
+          <DirectorWorkspace
+            id={id}
+            page={selectedPage}
+            panels={generationStoryboard.data?.panels ?? []}
+            scenes={script.data?.scenes ?? []}
+            characters={characters.data ?? []}
+            activeDrawModelName={modelOptions.find((item) => item.alias === activeDrawModel)?.name ?? null}
+            pageGenerationPending={pageGenerationPending}
+            onExecutingChange={setDirectorBusy}
+          />
+        </div>
+      ) : <>
         {selectedPageStructureIssue && <div className="workflow-warning"><CircleAlert size={17} /><div><strong>当前页暂不能生成</strong><p>{selectedPageStructureIssue}</p></div><Link className="button outline compact" href={projectPath("script")}>前往漫画剧本</Link></div>}
         {selectedPage.continuity_status === "NEEDS_REVIEW" && <div className="workflow-warning"><CircleAlert size={17} /><div><strong>剧本或分镜已修改</strong><p>历史候选仍然保留，但可能不再对应当前脚本。建议重新抽卡并执行连续性检查。</p></div><Link className="button outline compact" href={projectPath("storyboard")}>检查分镜</Link></div>}
         {selectedWorkbenchCandidate && ["STALE", "LEGACY_UNKNOWN"].includes(selectedWorkbenchCandidate.version_state) && <div className="stale-candidate-banner"><div><span>版本需要决定</span><strong>旧候选基于 {selectedWorkbenchCandidate.based_on_storyboard_version ? `V${selectedWorkbenchCandidate.based_on_storyboard_version}` : "未知版本"}，当前分镜为 V{selectedPage.storyboard_version}</strong><p>旧图可以继续查看，但必须确认版本并重新完成视觉检查后，才能进入下一页或导出。</p></div><div><button disabled={keepSelectedCandidate.isPending} onClick={() => keepSelectedCandidate.mutate(selectedWorkbenchCandidate.id)}><Check size={14} />沿用并重新检查</button><button className="primary" disabled={generate.isPending || !pageReadiness.data?.ready || !generationReferenceReady || isViewingHistoricalBatch} onClick={() => generate.mutate()}><Sparkles size={14} />{isViewingHistoricalBatch ? "先切回最新批次" : `按当前 V${selectedPage.storyboard_version} 重新生成`}</button></div></div>}

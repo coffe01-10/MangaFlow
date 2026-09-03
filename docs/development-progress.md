@@ -23,6 +23,12 @@
 - 未改 `docs/architecture.md` / `docs/data-model.md`（无新 schema 或模块边界）。Windows JO 独立 Worker 进程树仍 `BLOCKED`/`NOT RUN`；付费调用仍 NOT RUN。浏览器 E2E 与性能门禁见上一节 Windows owned 记录，不在此重复记为未跑。
 
 
+## V02-40 导演命令日记与执行器已审阅合并（2026-09-03）
+
+- Issue #94 / PR #95 / `fix/v02-40-director-command-layer` / 合并提交 `01e9c3f` / head `cbe4059`。新增独立 director 路由与迁移 `20260903_27_director_command_journal`：journal 表 `director_command_groups` / `director_commands`，`/projects/{id}/director/command-groups` 提议/列表/读取/丢弃与 command accept/reject/undo/redo。
+- propose 以 `command_group_id` 幂等重放；preview 在 savepoint 内执行并回滚，不落业务改动；accept 按 expected_version 校验后应用并记录 `storyboard_version_after`；undo/redo 以 inverse 命令与快照实现，分镜被并发更新时返回 SUPERSEDED；`regenerate_region` 在执行层 fail-closed，不触发付费调用或整页重生。
+- NOT RUN：真实供应商、NL 模型解析（propose 只接受结构化 `commands[]`）、V02-41 导演台 UI、V02-42 CandidateLineage。
+
 ## V02-32 分镜画布可用性与 100 节点夹具已审阅合并（2026-09-03）
 
 - Issue #91 / PR #92 / `glm/v02-32-storyboard-acceptance` / 合并提交 `23f5e28` / head `32487d1`。合成夹具 20 格 × 每格 4 气泡 = 100 个可命中对象，不落库（超出 3–8 格 / 每页 8 气泡 API 门禁）；`?stress=100` 渲染 `StressStoryboardCanvas`，无保存入口。
