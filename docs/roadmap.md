@@ -130,7 +130,7 @@
 - [x] **V02-50 / Issue #60（L1）：建立 UI 文案清单并删除“嘀咕”。** 已合并 `docs/v02-ui-copy-audit.md`，保留硬限制、费用、数据外发、不可逆操作和生产门禁；候选删除按软删除事实描述。具体页面替换继续作为各 UI 实现 PR 的验收项。
 - [ ] **V02-51（L2）：统一桌面工作台视觉与交互系统。**
   - [x] **V02-51A / Issue #50（审计）：** 已合并 `docs/v02-desktop-workspace-ux-audit.md`，形成视觉系统、状态、面板和高频路径清单。
-  - [ ] **V02-51B（实现）：** 分页面实施设计 token、布局、状态与低成本动效，并运行视觉回归。
+  - [x] **V02-51B（实现，Issue #108 / 分支 `glm/v02-51b-desktop-visual-system` / 实现 head `7c344db`）：** 按审计 §14 切片落地——①`:root` 设计 token（状态色、字号级谱、间距、z 刻度、阴影/缓动时长；修复被引用但未定义的 `--muted`/`--mono`）、reduced-motion 五段合并为一条全局契约（.01ms 冻结 + hover 位移取消 + 删除 `rotate(-4deg)` 装饰）、`focus-visible` 统一唯一 3px vermillion 焦点环；②模板 C：设置/项目设置板 ≤1279.98 单列、诊断列随页滚不再粘滞，供应商内部零改动；③模板 B：左导航 48px 图标轨折叠（`mangaflow.project-sidebar-collapsed` 持久化）、通用右槽 API `WorkspaceInspectorSlot`（≥1280 停靠 / 900–1279 右抽屉 / <900 底部抽屉）、侧栏拖宽边界收口 `lib/workspace-layout.ts`；④lightbox 补 Esc/＋－键/焦点陷阱/焦点归还，`originUrl` 让 lightbox 取原图而网格保持 `/thumbnail/640`，候选卡 `content-visibility` 过渡 + `windowing-rules` 阈值接缝留给 V02-52。门禁（Linux 等价）：Vitest 43 文件 408 项、ESLint、`tsc --noEmit`、Ruff、平权扫描 0 违规、Next 生产构建通过；U1–U10 矩阵逐条证据与 NOT RUN 边界见 `docs/development-progress.md`（Playwright/Axe、真实视口截图、字体加载、LH/FPS、真实供应商、PG live 为 NOT RUN）。
 - [ ] **V02-52（L2 性能）：建立桌面体验门禁。**
   - [x] **V02-52A / Issue #55（计划）：** 已合并 `docs/v02-desktop-performance-acceptance-plan.md`，固定环境清单、N=20、nearest-rank P95、10 秒持续窗口和资源所有权。
   - [ ] **V02-52B（执行）：** 在对应功能实现后运行全部样本并保留失败轮次；未实现的未来场景标记 `NOT_APPLICABLE`。
