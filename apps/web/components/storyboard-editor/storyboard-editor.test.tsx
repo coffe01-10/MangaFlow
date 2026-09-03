@@ -245,6 +245,75 @@ describe("StoryboardEditor canvas (V02-31B)", () => {
     expect(screen.getAllByText(storyboardCopy.polygonNote).length).toBeGreaterThan(0);
   });
 
+  it("S4b 多边形格多选拖动只读：多边形 bounds 不变且不重写为矩形", async () => {
+    const polygon = makePanel({
+      id: "panel-2",
+      reading_order: 2,
+      bounds: { x: 0.55, y: 0.2, width: 0.35, height: 0.25 },
+      geometry: {
+        type: "polygon",
+        polygon: [
+          { x: 0.55, y: 0.2 },
+          { x: 0.9, y: 0.2 },
+          { x: 0.7, y: 0.45 },
+        ],
+        rotation: 0,
+        z_order: 2,
+      },
+      actions: { script_action: "第二格动作" },
+    });
+    data = { page, candidate_count: 0, panels: [panel1, polygon] };
+    renderEditor();
+    stubRect(await screen.findByTestId("canvas-page"), 640, 903);
+
+    // 先选中多边形，再 Shift+按下矩形格成组拖动
+    fireEvent.pointerDown(panelEl("panel-2"), { button: 0, pointerId: 1, clientX: 500, clientY: 200 });
+    fireEvent.pointerUp(window, { pointerId: 1, clientX: 500, clientY: 200 });
+    fireEvent.pointerDown(panelEl("panel-1"), { button: 0, pointerId: 1, clientX: 100, clientY: 100, shiftKey: true });
+    fireEvent.pointerMove(window, { pointerId: 1, clientX: 164, clientY: 100 });
+    fireEvent.pointerUp(window, { pointerId: 1, clientX: 164, clientY: 100 });
+
+    fireEvent.click(screen.getByRole("button", { name: "保存本页" }));
+    await waitFor(() => expect(saveGeometry).toHaveBeenCalledTimes(1));
+    const payload = saveGeometry.mock.calls[0][1] as any;
+    expect(payloadPanel(payload, "panel-1").bounds.x).toBe(0.2);
+    expect(payloadPanel(payload, "panel-2").bounds).toEqual({ x: 0.55, y: 0.2, width: 0.35, height: 0.25 });
+    expect(payloadPanel(payload, "panel-2").geometry.type).toBe("polygon");
+    expect(payloadPanel(payload, "panel-2").geometry.polygon).toHaveLength(3);
+  });
+
+  it("S4c 仅多边形格选中时方向键不改几何，保存保持禁用", async () => {
+    const polygon = makePanel({
+      id: "panel-2",
+      reading_order: 2,
+      bounds: { x: 0.55, y: 0.2, width: 0.35, height: 0.25 },
+      geometry: {
+        type: "polygon",
+        polygon: [
+          { x: 0.55, y: 0.2 },
+          { x: 0.9, y: 0.2 },
+          { x: 0.7, y: 0.45 },
+        ],
+        rotation: 0,
+        z_order: 2,
+      },
+      actions: { script_action: "第二格动作" },
+    });
+    data = { page, candidate_count: 0, panels: [panel1, polygon] };
+    renderEditor();
+    stubRect(await screen.findByTestId("canvas-page"), 640, 903);
+
+    fireEvent.pointerDown(panelEl("panel-2"), { button: 0, pointerId: 1, clientX: 500, clientY: 200 });
+    fireEvent.pointerUp(window, { pointerId: 1, clientX: 500, clientY: 200 });
+    expect(panelEl("panel-2")).toHaveClass("selected");
+
+    fireEvent.keyDown(canvasPage(), { key: "ArrowRight" });
+
+    expect(Number.parseFloat(panelEl("panel-2").style.left)).toBeCloseTo(55, 6);
+    expect(screen.getByRole("button", { name: "保存本页" })).toHaveProperty("disabled", true);
+    expect(saveGeometry).not.toHaveBeenCalled();
+  });
+
   it("S5 滚轮区缩放/适配/复位为纯前端，不发 PATCH", async () => {
     renderEditor();
     await screen.findByTestId("canvas-page");

@@ -280,18 +280,18 @@ export function PageCanvas({
     if (event.button !== 0 || !interactive) return;
     event.stopPropagation();
     const additive = event.shiftKey;
-    const ids = additive && selectedPanelIds.length
+    const selectionIds = additive && selectedPanelIds.length
       ? (selectedPanelIds.includes(panel.id) ? selectedPanelIds : [...selectedPanelIds, panel.id])
       : [panel.id];
-    onSelectPanels(ids);
-    if (isPolygonPanel(panel)) return; // 多边形格只读：可选中外，不做矩形拖拽
+    onSelectPanels(selectionIds);
+    // 多边形格只读：可以保持选中，但绝不进入移动组（多选拖动不得改写其 bounds）。
+    const movableIds = panels
+      .filter((item) => selectionIds.includes(item.id) && !isPolygonPanel(item) && panelRects[item.id])
+      .map((item) => item.id);
+    if (!movableIds.length) return;
     const origin: Record<string, NormalizedRect> = {};
-    for (const id of ids) {
-      const rect = panelRects[id];
-      if (rect) origin[id] = rect;
-    }
-    if (!origin[panel.id]) return;
-    setGesture({ kind: "move-panels", start: pointerNorm(event), origin, ids });
+    for (const id of movableIds) origin[id] = panelRects[id];
+    setGesture({ kind: "move-panels", start: pointerNorm(event), origin, ids: movableIds });
   };
 
   const startPanelResize = (panelId: string, handle: HandleName, event: ReactPointerEvent<HTMLDivElement>) => {
@@ -384,10 +384,13 @@ export function PageCanvas({
       if (selectedPanelIds.length) {
         const changes: GeometryCommandChange[] = [];
         for (const id of selectedPanelIds) {
+          const panel = panels.find((item) => item.id === id);
+          if (!panel || isPolygonPanel(panel)) continue; // 多边形格只读：方向键不改写 bounds
           const before = panelRects[id];
           if (!before) continue;
           changes.push({ kind: "panel", id, before, after: translateRect(before, nx, ny) });
         }
+        // 仅多边形格被选中时不产生任何几何变更。
         if (changes.length) onCommand("方向键微调", changes);
         return;
       }
