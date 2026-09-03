@@ -1,8 +1,8 @@
 # MangaFlow 主分支后续工作清单
 
 更新时间：2026-09-03
-当前实现合并树：`master` / `c4f0fc5`（PR #90，2026-09-03）。V02-21B、V02-22A、V02-22B、V02-23B、V02-30B 与 V02-31B 已分别完成独立审阅并合并。2026-09-02 在 Linux 隔离环境跑通 PostgreSQL live 18 项（含 PKG-S14）与 Redis/RQ SimpleWorker live 8 项；7 项 Windows Job Object 独立 Worker 仍 `BLOCKED`（笔记本无 Docker/PostgreSQL/Redis，用户明确不安装）。同日 Windows 笔记本 `LAPTOP-TV9KT8RC` 在 SHA `98b93a0`（分支 `fix/pr82-remaining-package-p1s`，该 SHA 为 `master`/`f961774` 祖先；E2E/perf **未**跑在 `c93e1b3`）以官方控制器 `scripts/run_e2e_owned.py` 将 Playwright E2E 与 Lighthouse/FPS 记为 `RUN`。真实图片生成/编辑、账号权限、费用与真实取消/超时进程树仍按任务标记为 `NOT RUN`。
-当前开发分支：`env/postgres-redis-acceptance`。下一实现项为 V02-32。
+当前实现合并树：`master` / `23f5e28`（PR #92，2026-09-03）。V02-21B、V02-22A、V02-22B、V02-23B、V02-30B、V02-31B 与 V02-32 已分别完成独立审阅并合并。2026-09-02 在 Linux 隔离环境跑通 PostgreSQL live 18 项（含 PKG-S14）与 Redis/RQ SimpleWorker live 8 项；7 项 Windows Job Object 独立 Worker 仍 `BLOCKED`（笔记本无 Docker/PostgreSQL/Redis，用户明确不安装）。同日 Windows 笔记本 `LAPTOP-TV9KT8RC` 在 SHA `98b93a0`（分支 `fix/pr82-remaining-package-p1s`，该 SHA 为 `master`/`f961774` 祖先；E2E/perf **未**跑在 `c93e1b3`）以官方控制器 `scripts/run_e2e_owned.py` 将 Playwright E2E 与 Lighthouse/FPS 记为 `RUN`。真实图片生成/编辑、账号权限、费用与真实取消/超时进程树仍按任务标记为 `NOT RUN`。
+当前开发分支：`env/postgres-redis-acceptance`。下一实现项为 V02-40。
 最近 `check:full` 历史基线：`master` / `cb324e3`（2026-08-27；相对 PR #5 合并提交 `d5d32ec` 仅增加任务文档），不代表 PR #6 / #7 / #10 / #11 已重跑浏览器验收。2026-09-02 Windows owned E2E 17/17 与 LH/FPS 4/4 证据在 `98b93a0` / `LAPTOP-TV9KT8RC`，见 `docs/development-progress.md`。
 深审历史基线：`master` / `f085327`。当时新增 6 项 P1 修复与 1 项 P2 改进；PR #6 已合并其中 P1-7、P1-9～P1-12 的代码修复。P1-8、P2-8 已随 PR #7 合并，独立 Redis/RQ、PostgreSQL 与浏览器验收仍待完成。
 安全审查历史基线：`master` / `7635cf7`。P0-3、P1-13～P1-15、P2-4、P2-9 的代码修复现已合并，真实服务/容器及完整依赖审计边界仍保留。
@@ -68,7 +68,7 @@
 
 #### 下一实现窗口
 
-1. V02-14A / Issue #62 已由 PR #63 合并，V02-14B / Issue #64 已由 PR #65 合并，V02-14C / Issue #67 已由 PR #68 合并；V02-15B 已由 PR #71 合并（`7af5b59`），V02-16B 已由 PR #73 合并（`fec8d7f`），V02-21B 已由 PR #77 合并（`7c10d27`），V02-22A / Issue #78 已由 PR #79 合并（`6298be1`），V02-22B 已由 PR #82 / #83 合并（`f961774`）。V02-23B 已由 PR #86 合并（`6d09e78`），V02-30B / Issue #87 已由 PR #88 合并（`e2a12d2`），V02-31B / Issue #89 已由 PR #90 合并（`c4f0fc5`）。PKG-S14 真实 PostgreSQL 升降级与并发已在 2026-09-02 Linux 隔离环境跑通。下一实现项为 V02-32。
+1. V02-14A / Issue #62 已由 PR #63 合并，V02-14B / Issue #64 已由 PR #65 合并，V02-14C / Issue #67 已由 PR #68 合并；V02-15B 已由 PR #71 合并（`7af5b59`），V02-16B 已由 PR #73 合并（`fec8d7f`），V02-21B 已由 PR #77 合并（`7c10d27`），V02-22A / Issue #78 已由 PR #79 合并（`6298be1`），V02-22B 已由 PR #82 / #83 合并（`f961774`）。V02-23B 已由 PR #86 合并（`6d09e78`），V02-30B / Issue #87 已由 PR #88 合并（`e2a12d2`），V02-31B / Issue #89 已由 PR #90 合并（`c4f0fc5`），V02-32 / Issue #91 已由 PR #92 合并（`23f5e28`）。PKG-S14 真实 PostgreSQL 升降级与并发已在 2026-09-02 Linux 隔离环境跑通。下一实现项为 V02-40。
 2. 资产、分镜、导演、CLI、用量和桌面端均先从各自已批准的 A 级设计文档拆出实现 Issue；不得把审计文档的合并当作功能交付。
 3. 所有实现 Issue 必须引用对应契约，写明迁移/事务/资源所有权，并标注真实供应商、CLI、PostgreSQL、Redis/RQ、浏览器或桌面环境的 `RUN`、`NOT RUN`、`BLOCKED`。
 - [x] **V02-13（L3）：建立 CLI 图像通道公共执行器。** 将 Codex CLI、Antigravity CLI、Grok Build 视为可选执行通道，而不是假装成普通 HTTP API。
@@ -107,7 +107,7 @@
 - [x] **V02-31（L2）：实现视觉画布编辑器。**
   - [x] **V02-31A / Issue #45（审计/设计）：** 已合并 `docs/v02-storyboard-editor-ui-audit.md`，保存语义与 V02-30A 对齐，首发不支持跨格移动气泡。
   - [x] **V02-31B（实现，Issue #89 / PR #90 / 合并提交 `c4f0fc5`，head `fda5233`）：** 拖拽、resize、气泡、缩放/平移、吸附、阅读顺序、出血/安全区与撤销/重做已进 master：`apps/web/components/storyboard-editor/` DOM 画布、整包 PUT + `request_id` 重放、S1–S20 及 S4b/S4c 多边形格只读回归。NOT RUN：Playwright E2E、Lighthouse/FPS、真实供应商。
-- [ ] **V02-32（L2）：补齐视觉编辑器的可用性与性能门禁。** 为常见页面尺寸、3–8 格、重叠/越界、RTL 阅读顺序、键盘可达性和触控板操作建立回归；100 节点压力场景采用固定采样窗口，不挑最好结果，保存失败不得造成画布与服务端状态分叉。
+- [x] **V02-32（L2，Issue #91 / PR #92 / 合并提交 `23f5e28`，head `32487d1`）：补齐视觉编辑器的可用性与性能门禁。** 合成 100 节点夹具（20 格 × 每格 4 气泡，不落库；`?stress=100`）；超过命中测试上限后未选中对象走 SVG 矢量层，仅选中对象挂 DOM 手柄；拖动期间零 React 重渲染；RTL 阅读序号 overlay；3–8 格整包 PUT 与保存失败/409 不分叉回归。NOT RUN：真实触控板 FPS、Windows Playwright E2E、Lighthouse、V02-52A N=20、真实供应商。
 
 ### M4：自然语言导演与局部重抽卡
 

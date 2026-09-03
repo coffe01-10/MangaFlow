@@ -23,6 +23,13 @@
 - 未改 `docs/architecture.md` / `docs/data-model.md`（无新 schema 或模块边界）。Windows JO 独立 Worker 进程树仍 `BLOCKED`/`NOT RUN`；付费调用仍 NOT RUN。浏览器 E2E 与性能门禁见上一节 Windows owned 记录，不在此重复记为未跑。
 
 
+## V02-32 分镜画布可用性与 100 节点夹具已审阅合并（2026-09-03）
+
+- Issue #91 / PR #92 / `glm/v02-32-storyboard-acceptance` / 合并提交 `23f5e28` / head `32487d1`。合成夹具 20 格 × 每格 4 气泡 = 100 个可命中对象，不落库（超出 3–8 格 / 每页 8 气泡 API 门禁）；`?stress=100` 渲染 `StressStoryboardCanvas`，无保存入口。
+- 超过 `HIT_TEST_OBJECT_LIMIT` 后未选中对象改 SVG 矢量层 + 页级命中测试，仅选中对象挂 DOM 手柄；拖动期间零 React 重渲染；阅读序号 overlay + viewport culling，RTL 锚点随 `reading_direction`。
+- Vitest 覆盖宽高比、3/5/8 格整包 PUT、重叠/越界不分叉、保存失败放弃重载；S1–S20 保持绿。测量脚本 `storyboard-stress-fps-gate.mjs` 已加，本环境未跑真实 FPS。
+- NOT RUN：Windows Playwright E2E、Lighthouse、真实触控板 FPS、V02-52A N=20、真实供应商。
+
 ## V02-31B 视觉分镜画布已审阅合并（2026-09-03）
 
 - Issue #89 / PR #90 / `glm/v02-31b-storyboard-canvas` / 合并提交 `c4f0fc5` / head `fda5233`。`apps/web/components/storyboard-editor/` 以 DOM 页画布替换联系表：视口缩放/平移/适配/复位、拖拽与 resize、气泡框与尾巴、吸附对齐线、阅读序号、撤销/重做、离开保护与出血/安全区开关（无字段时禁用）。
