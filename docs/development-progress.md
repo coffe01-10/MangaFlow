@@ -1,6 +1,6 @@
 # MangaFlow AI 开发进度
 
-更新时间：2026-09-02
+更新时间：2026-09-03
 
 本文件记录修订版 MVP 计划的实际完成度。
 
@@ -22,6 +22,19 @@
 - Linux 等价门禁（Node v20.19.2，engines 声明 >=22，构建仍成功）：供应商平权 git grep 0 违规；Ruff 通过；默认 pytest 542 passed / 70 skipped，Windows Job Object / oem 编码 / 备份 reparse / CLI 可执行文件更新等平台项失败或 ERROR，不记为本轮 Linux 验收失败、也不改为假 skip；Vitest 32 文件 239 passed；ESLint；Next.js 16.3.3 生产构建通过。本 Linux 轮未跑 Playwright、Lighthouse/FPS（随后由 Windows owned 控制器在 `98b93a0` / `LAPTOP-TV9KT8RC` 跑通，见上一节）、付费供应商、真实 CLI 生图。
 - 未改 `docs/architecture.md` / `docs/data-model.md`（无新 schema 或模块边界）。Windows JO 独立 Worker 进程树仍 `BLOCKED`/`NOT RUN`；付费调用仍 NOT RUN。浏览器 E2E 与性能门禁见上一节 Windows owned 记录，不在此重复记为未跑。
 
+
+## V02-30B 分镜布局数据/API 已审阅合并（2026-09-03）
+
+- Issue #87 / PR #88 / `glm/v02-30b-storyboard-layout` / 合并提交 `e2a12d2` / head `a22f94d`。按 `docs/v02-storyboard-layout-contract.md` 落地分镜布局数据与 API：`manga_pages` 新增 nullable JSON `canvas` 与 `geometry_save_command`，`panels` 新增 `geometry`，`dialogues` 新增 `bubble`；读路径对旧 `bounds`/`region` 派生规范几何，历史数据零改写。
+- API 面：PATCH panels bounds+geometry（两侧矩形事实保持一致）、PATCH dialogues bubble、PATCH reading-order 整页重排、PUT `/pages/{id}/storyboard-geometry` 整包原子保存；layout `panel_count` 上限 3–8。L1–L8 契约测试矩阵以 SQLite 覆盖。
+- P1：`request_id` 重放从进程内 LRU 改为持久化到 `manga_pages.geometry_save_command`，响应丢失后跨进程安全重放，不重复递增 `storyboard_version`。
+- 真实 PostgreSQL 升降级、Playwright 与 V02-31 画布为 `NOT RUN`。
+
+## V02-23B 角色模型包工作区已审阅合并（2026-09-03）
+
+- Issue #85 / PR #86 / `glm/v02-23b-character-package-workspace` / 合并提交 `6d09e78` / head `cc4de3f`。实现角色模型包工作区、页面绑定与版本 picker，数据契约沿用 V02-22A。
+- P1：生成台 packages 未就绪时按 fail-open 处理，不阻塞既有选模路径；P2：包列表分页 200、归档版本 picker、发布后只读矩阵已进 master。
+- 真实供应商调用、Playwright 与 PostgreSQL live 为 `NOT RUN`。
 
 ## V02-22A 角色模型包数据契约已合并（2026-09-02）
 
