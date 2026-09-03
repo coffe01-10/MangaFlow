@@ -542,6 +542,49 @@ def test_put_request_id_replays_same_payload_and_rejects_different_payload(
     assert db_session.get(MangaPage, page.id).storyboard_version == version_after_save
 
 
+def test_put_replay_persists_across_process_restart_without_version_bump(
+    client, db_session
+):
+    """§10.2: a lost-response retry replays from the persisted row, not memory."""
+    _, _, page, _, _, _ = _storyboard_fixture(db_session)
+    original_version = page.storyboard_version
+    payload = _geometry_payload(db_session, page, request_id="replay-restart-1")
+
+    first = client.put(f"/api/v1/pages/{page.id}/storyboard-geometry", json=payload)
+    assert first.status_code == 200
+    saved_version = first.json()["page"]["storyboard_version"]
+    assert saved_version == original_version + 1
+
+    # simulate a fresh process: drop every ORM instance so the replay tuple
+    # can only come from the manga_pages row, not in-process memory
+    db_session.expire_all()
+
+    retry = client.put(
+        f"/api/v1/pages/{page.id}/storyboard-geometry",
+        json={**payload, "storyboard_version": original_version},
+    )
+    assert retry.status_code == 200
+    assert retry.json()["page"]["storyboard_version"] == saved_version
+
+    moved = {
+        **payload,
+        "panels": [
+            {**payload["panels"][0], "bounds": {"x": 0.2, "y": 0.2, "width": 0.4, "height": 0.3}},
+            *payload["panels"][1:],
+        ],
+    }
+    conflict = client.put(f"/api/v1/pages/{page.id}/storyboard-geometry", json=moved)
+    assert conflict.status_code == 409
+
+    db_session.expire_all()
+    stored_page = db_session.get(MangaPage, page.id)
+    command = stored_page.geometry_save_command
+    assert command["request_id"] == "replay-restart-1"
+    assert len(command["payload_hash"]) == 64
+    assert command["storyboard_version"] == saved_version
+    assert stored_page.storyboard_version == saved_version
+
+
 def test_put_storyboard_geometry_saves_snapshot_atomically(client, db_session):
     _, _, page, panels, dialogue, _ = _storyboard_fixture(db_session)
     version_before = page.storyboard_version

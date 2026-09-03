@@ -1392,6 +1392,7 @@ def test_storyboard_layout_columns_migration_roundtrip(tmp_path, monkeypatch):
     command.upgrade(config, "head")
     engine = create_engine(database_url)
     assert column_map(engine, "manga_pages")["canvas"] is True
+    assert column_map(engine, "manga_pages")["geometry_save_command"] is True
     assert column_map(engine, "panels")["geometry"] is True
     assert column_map(engine, "dialogues")["bubble"] is True
     engine.dispose()
@@ -1399,6 +1400,7 @@ def test_storyboard_layout_columns_migration_roundtrip(tmp_path, monkeypatch):
     command.downgrade(config, "20260902_25")
     engine = create_engine(database_url)
     assert "canvas" not in column_map(engine, "manga_pages")
+    assert "geometry_save_command" not in column_map(engine, "manga_pages")
     assert "geometry" not in column_map(engine, "panels")
     assert "bubble" not in column_map(engine, "dialogues")
     engine.dispose()
@@ -1406,6 +1408,7 @@ def test_storyboard_layout_columns_migration_roundtrip(tmp_path, monkeypatch):
     command.upgrade(config, "head")
     engine = create_engine(database_url)
     assert column_map(engine, "manga_pages")["canvas"] is True
+    assert column_map(engine, "manga_pages")["geometry_save_command"] is True
     assert column_map(engine, "panels")["geometry"] is True
     assert column_map(engine, "dialogues")["bubble"] is True
     engine.dispose()

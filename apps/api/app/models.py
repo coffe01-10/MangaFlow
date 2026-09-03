@@ -405,6 +405,9 @@ class MangaPage(Timestamped, Base):
     # V02-30 storyboard layout contract: physical canvas in mm. NULL keeps the
     # lazy page_ratio default; stored bounds/region remain the compat fields.
     canvas: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # V02-30 §10.2: last PUT storyboard-geometry command tuple
+    # {request_id, payload_hash, storyboard_version} for idempotent replay.
+    geometry_save_command: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     panels: Mapped[list["Panel"]] = relationship(cascade="all, delete-orphan")
 

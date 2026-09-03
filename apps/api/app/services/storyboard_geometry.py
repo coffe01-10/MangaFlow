@@ -1,9 +1,12 @@
 """Atomic storyboard geometry saves (V02-30 contract §10).
 
 The whole-page PUT is a full-snapshot overwrite guarded by the page-level
-``storyboard_version`` anchor. Idempotent replay is served from an in-process
-LRU of ``(page_id, request_id) -> payload digest``; the contract forbids a
-command-history table, so the replay window is per-process and bounded.
+``storyboard_version`` anchor. Idempotent replay (§10.2) is persisted as the
+last command tuple ``(request_id, payload_hash, resulting_storyboard_version)``
+on the ``MangaPage`` row itself — the contract forbids a command-history
+table, so only the latest PUT per page replays, and it does so across process
+restarts: a stored-hash match short-circuits before the version check and
+never bumps ``storyboard_version`` a second time.
 
 Reading-order renumbering shifts current orders out of the target range and
 flushes before assigning the final 1..n values, which keeps the
@@ -13,8 +16,6 @@ satisfied on both SQLite and PostgreSQL with immediate constraint checks.
 
 import hashlib
 import json
-import threading
-from collections import OrderedDict
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -30,37 +31,11 @@ from app.models import Dialogue, MangaPage, Panel
 from app.schemas import StoryboardGeometrySave
 from app.services.editor import mark_pages_for_review, mark_storyboard_changed
 
-_REPLAY_CACHE_LIMIT = 4096
-_REPLAY_LOCK = threading.Lock()
-_replay_cache: OrderedDict[tuple[str, str], str] = OrderedDict()
-
 
 def _payload_digest(payload: StoryboardGeometrySave) -> str:
     dump = payload.model_dump(mode="json", exclude={"request_id"})
     canonical = json.dumps(dump, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
-def _remember_replay(page_id: str, request_id: str, digest: str) -> None:
-    with _REPLAY_LOCK:
-        _replay_cache[(page_id, request_id)] = digest
-        _replay_cache.move_to_end((page_id, request_id))
-        while len(_replay_cache) > _REPLAY_CACHE_LIMIT:
-            _replay_cache.popitem(last=False)
-
-
-def _check_replay(page_id: str, request_id: str, digest: str) -> bool:
-    """Return True when the exact payload was already saved under this id."""
-    with _REPLAY_LOCK:
-        previous = _replay_cache.get((page_id, request_id))
-        if previous is None:
-            return False
-        if previous != digest:
-            raise HTTPException(
-                status_code=409, detail="request_id 已用于不同内容，请更换 request_id 后重试"
-            )
-        _replay_cache.move_to_end((page_id, request_id))
-        return True
 
 
 def reorder_page_panels(db: Session, page: MangaPage, panel_ids: list[str]) -> None:
@@ -91,20 +66,29 @@ def reorder_page_panels(db: Session, page: MangaPage, panel_ids: list[str]) -> N
 def save_storyboard_geometry(
     db: Session, page: MangaPage, payload: StoryboardGeometrySave
 ) -> None:
-    """Apply the atomic whole-page geometry snapshot (idempotent per request_id)."""
+    """Apply the atomic whole-page geometry snapshot (idempotent per request_id).
+
+    Replay resolves from the persisted tuple on the page row, so a retry after
+    a lost response succeeds even though ``storyboard_version`` already
+    incremented — including from a fresh process.
+    """
     digest = _payload_digest(payload)
-    if _check_replay(page.id, payload.request_id, digest):
+    stored = page.geometry_save_command
+    if stored and stored.get("request_id") == payload.request_id:
+        if stored.get("payload_hash") != digest:
+            raise HTTPException(
+                status_code=409, detail="request_id 已用于不同内容，请更换 request_id 后重试"
+            )
         return
     try:
-        _apply_storyboard_geometry(db, page, payload)
+        _apply_storyboard_geometry(db, page, payload, digest)
     except Exception:
         db.rollback()
         raise
-    _remember_replay(page.id, payload.request_id, digest)
 
 
 def _apply_storyboard_geometry(
-    db: Session, page: MangaPage, payload: StoryboardGeometrySave
+    db: Session, page: MangaPage, payload: StoryboardGeometrySave, digest: str
 ) -> None:
     if payload.storyboard_version != page.storyboard_version:
         raise HTTPException(status_code=409, detail="分镜版本已变化，请刷新画布后重试")
@@ -199,6 +183,13 @@ def _apply_storyboard_geometry(
     db.flush()
 
     mark_storyboard_changed(page)
+    # §10.2: persist the last command tuple in the same transaction as the
+    # save, so a lost-response retry replays from the row, not process memory.
+    page.geometry_save_command = {
+        "request_id": payload.request_id,
+        "payload_hash": digest,
+        "storyboard_version": page.storyboard_version,
+    }
     mark_pages_for_review(db, page.chapter_id, from_page_number=page.page_number)
     db.commit()
 
