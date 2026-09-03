@@ -4,6 +4,11 @@
 
 本文件记录修订版 MVP 计划的实际完成度。
 
+## V02-41B 生成台导演模式已审阅合并（2026-09-03）
+
+- Issue #96 / PR #97 / `glm/v02-41b-director-workspace` / 合并提交 `39cf6e4` / head `36437df`。生成台新增导演模式：作用域芯片、命令栏、结构化 diff 预览卡与命令历史（`apps/web/components/project-workspace/director-workspace.tsx` + `use-director-workspace.ts`），前端规则桩 `apps/web/lib/director-rules.ts` 把自然语言输入转为 V02-40 结构化命令并接 `/director` API；「在选区编辑」mask 入口保持禁用，导演台不静默整页重绘。
+- NOT RUN：真实 LLM 解析（propose 只接受结构化 `commands[]`）、mask 选区绘制、真实供应商。
+
 ## 2026-09-02 Windows owned Playwright E2E 与性能门禁
 
 - 机器：Windows 笔记本 `LAPTOP-TV9KT8RC`。SHA：`98b93a0`（分支 `fix/pr82-remaining-package-p1s`；该 SHA 是 `master`/`f961774` 的祖先；E2E/perf **未**跑在 `c93e1b3`）。官方控制器：`scripts/run_e2e_owned.py`。Windows 上无产品代码改动。未跟踪的 `output/` 原样保留。未安装 Windows 服务。
