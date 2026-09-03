@@ -59,6 +59,7 @@ flowchart LR
 - `usage-ledger`：HTTP/CLI 逐次派发计量、版本化成本估算、资产输出挂接与人工账单对账。
 - `inspection/repair`：文字、说话人、角色、服装、道具和连续性检查及分级修复；文字识别是人工校对辅助项，不自动触发付费修图，采用时需显式人工确认。
 - `library/exports`：批次素材库、PNG、PDF、项目 JSON 和素材清单。
+- `director`：自然语言导演命令 journal（V02-40）。模型只产出受 schema 约束的 envelope；服务端确定性校验、预览 diff、逐条接受/拒绝后，复用现有分镜/场景写入路径落库。命令与业务变更同事务；`command_id` 幂等。`regenerate_region` 在 mask/父候选缺失时 fail-closed，不发起付费调用。候选血缘表留给 V02-42。
 
 所有 AI 创建接口返回 `202 + job_id`；普通查询只读数据库和存储，不触发模型调用。
 

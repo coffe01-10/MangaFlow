@@ -6,14 +6,8 @@ from sqlalchemy.orm import Session
 
 from app.api.routes.workflow.common import _page, _panel_read, _storyboard_read
 from app.database import get_db
-from app.domain.states import CharacterPresence, ensure_unlocked
-from app.domain.storyboard_layout import (
-    canonical_bubble,
-    canonical_sound_effects,
-    read_bubble,
-    resolve_panel_shape,
-)
-from app.models import Dialogue, MangaPage, Outfit, Panel
+from app.domain.storyboard_layout import canonical_bubble, read_bubble
+from app.models import Dialogue, MangaPage, Panel
 from app.schemas import (
     DialogueCreate,
     DialogueDelete,
@@ -34,6 +28,7 @@ from app.services.editor import (
     refresh_page_text_metrics,
     validate_character_ids,
 )
+from app.services.storyboard_edits import apply_dialogue_fields, apply_panel_fields
 from app.services.storyboard_geometry import (
     reorder_page_panels,
     save_storyboard_geometry,
@@ -119,95 +114,7 @@ def update_panel(
     if panel.version != payload.version:
         raise HTTPException(status_code=409, detail="分镜格已被更新，请刷新后重试")
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
-    try:
-        ensure_unlocked(panel.locked_fields, list(values))
-    except ValueError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    if "character_presence" in values:
-        requested_presence = values.get("character_presence") or {}
-        validate_character_ids(db, project_id, list(requested_presence))
-        values["character_presence"] = {
-            character_id: str(getattr(presence, "value", presence))
-            for character_id, presence in requested_presence.items()
-        }
-        values["characters"] = [
-            character_id
-            for character_id, presence in values["character_presence"].items()
-            if presence == CharacterPresence.VISIBLE.value
-        ]
-    elif "characters" in values:
-        values["characters"] = validate_character_ids(db, project_id, values["characters"] or [])
-        values["character_presence"] = {
-            **{
-                character_id: presence
-                for character_id, presence in (panel.character_presence or {}).items()
-                if presence != CharacterPresence.VISIBLE.value
-            },
-            **{
-                character_id: CharacterPresence.VISIBLE.value
-                for character_id in values["characters"]
-            },
-        }
-    if "props" in values:
-        values["props"] = list(
-            dict.fromkeys(
-                str(item).strip()
-                for item in (values["props"] or [])
-                if str(item).strip()
-            )
-        )
-    if "sound_effects" in values:
-        values["sound_effects"] = canonical_sound_effects(values["sound_effects"] or [])
-    if "bounds" in values or "geometry" in values:
-        # bounds and geometry.rect are one rect fact: resolve keeps them equal.
-        resolved_bounds, resolved_geometry = resolve_panel_shape(
-            stored_bounds=panel.bounds,
-            stored_geometry=panel.geometry,
-            reading_order=panel.reading_order,
-            bounds=values.get("bounds"),
-            geometry=values.get("geometry"),
-            bounds_given="bounds" in values,
-            geometry_given="geometry" in values,
-        )
-        values["bounds"] = resolved_bounds
-        values["geometry"] = resolved_geometry
-    character_ids = values.get("characters", panel.characters)
-    if "outfits" in values:
-        assignments = values["outfits"] or {}
-        if any(character_id not in character_ids for character_id in assignments):
-            raise HTTPException(status_code=409, detail="服装只能指定给本格出现的角色")
-        for character_id, outfit_id in assignments.items():
-            outfit = db.get(Outfit, outfit_id)
-            if not outfit or outfit.project_id != project_id or outfit.character_id != character_id:
-                raise HTTPException(status_code=409, detail="分镜服装与角色或项目不匹配")
-    if "expressions" in values and any(
-        character_id not in character_ids for character_id in (values["expressions"] or {})
-    ):
-        raise HTTPException(status_code=409, detail="表情只能指定给本格出现的角色")
-    if "characters" in values:
-        if "outfits" not in values:
-            values["outfits"] = {
-                character_id: outfit_id
-                for character_id, outfit_id in (panel.outfits or {}).items()
-                if character_id in character_ids
-            }
-        if "expressions" not in values:
-            values["expressions"] = {
-                character_id: expression
-                for character_id, expression in (panel.expressions or {}).items()
-                if character_id in character_ids
-            }
-    if "actions" in values:
-        values["actions"] = {
-            **panel.actions,
-            **(values["actions"] or {}),
-            "source_text": panel.actions.get("source_text", ""),
-        }
-    for key, value in values.items():
-        setattr(panel, key, value.strip() if isinstance(value, str) else value)
-    panel.version += 1
-    mark_storyboard_changed(page)
-    mark_pages_for_review(db, page.chapter_id, from_page_number=page.page_number)
+    apply_panel_fields(db, panel, page, project_id, values)
     db.commit()
     db.refresh(panel)
     return _panel_read(db, panel)
@@ -267,21 +174,9 @@ def update_dialogue(
     if panel.version != payload.panel_version:
         raise HTTPException(status_code=409, detail="分镜格已被更新，请刷新后重试")
     values = payload.model_dump(exclude_unset=True, exclude={"panel_version"})
-    if "target_text" in values and not (values["target_text"] or "").strip():
-        raise HTTPException(status_code=422, detail="气泡文字不能为空")
     if "bubble" in values and values["bubble"] is not None:
         values["bubble"] = canonical_bubble(values["bubble"])
-    if "speaker_character_id" in values:
-        values["speaker_character_id"] = _validate_dialogue_speaker(
-            db, project_id, values["speaker_character_id"]
-        )
-    for key, value in values.items():
-        setattr(dialogue, key, value.strip() if isinstance(value, str) else value)
-    db.flush()
-    refresh_page_text_metrics(db, page)
-    panel.version += 1
-    mark_storyboard_changed(page)
-    mark_pages_for_review(db, page.chapter_id, from_page_number=page.page_number)
+    apply_dialogue_fields(db, dialogue, panel, page, project_id, values)
     db.commit()
     db.refresh(dialogue)
     return _dialogue_read(dialogue)

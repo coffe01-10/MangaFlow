@@ -806,14 +806,14 @@ def _populate_page_storyboard(
             )
 
 
-def update_page_layout(
+def apply_page_layout(
     db: Session,
     page: MangaPage,
     *,
     panel_count: int,
     layout_mode: str,
 ) -> MangaPage:
-    """Rebuild one page's storyboard from its preserved script/source trace."""
+    """Rebuild one page's storyboard. Flushes, never commits."""
     ranges = page.source_coverage.get("ranges", [])
     if not ranges or not page.beat_ids or not page.scene_ids:
         raise HTTPException(status_code=409, detail="当前页缺少剧本或原文追溯，不能调整格数")
@@ -869,6 +869,19 @@ def update_page_layout(
     page.version += 1
     db.flush()
     _populate_page_storyboard(db, page, chunks, page_scenes, page_beats, characters)
+    db.flush()
+    return page
+
+
+def update_page_layout(
+    db: Session,
+    page: MangaPage,
+    *,
+    panel_count: int,
+    layout_mode: str,
+) -> MangaPage:
+    """Route-facing layout rebuild: apply then commit."""
+    apply_page_layout(db, page, panel_count=panel_count, layout_mode=layout_mode)
     db.commit()
     db.refresh(page)
     return page

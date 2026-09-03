@@ -8,7 +8,6 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import get_db
-from app.domain.states import ensure_unlocked
 from app.models import (
     Beat,
     Chapter,
@@ -367,19 +366,9 @@ def update_scene(
     if scene.version != payload.version:
         raise HTTPException(status_code=409, detail="场景已被更新，请刷新后重试")
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
-    try:
-        ensure_unlocked(scene.locked_fields, list(values))
-    except ValueError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    for key, value in values.items():
-        setattr(scene, key, value.strip() if isinstance(value, str) else value)
-    scene.version += 1
-    mark_pages_for_review(
-        db,
-        scene.chapter_id,
-        reference_id=scene.id,
-        reference_kind="scene",
-    )
+    from app.services.storyboard_edits import apply_scene_fields
+
+    apply_scene_fields(db, scene, values, bump_storyboard=False)
     db.commit()
     db.refresh(scene)
     scene.beats = list(

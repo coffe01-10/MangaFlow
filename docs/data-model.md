@@ -35,6 +35,8 @@ erDiagram
     SOURCE_SEGMENT }o--o{ MANGA_PAGE : maps_to
     MANGA_PAGE ||--o{ PANEL : contains
     PANEL ||--o{ DIALOGUE : contains
+    PROJECT ||--o{ DIRECTOR_COMMAND_GROUP : journals
+    DIRECTOR_COMMAND_GROUP ||--o{ DIRECTOR_COMMAND : contains
     MANGA_PAGE ||--o{ GENERATION_BATCH : draws
     GENERATION_BATCH ||--o{ PAGE_CANDIDATE : produces
     GENERATION_BATCH ||--o{ ASSET_CANDIDATE : produces
@@ -82,6 +84,10 @@ Scene/Beat 逐片段保存地点、时间、动作、对白、旁白、人物和
 `MangaPage` 保存页码、修订号、预计字符/气泡/格数、覆盖率、当前采用候选与连续性状态。`Panel` 保存相对边界、右至左阅读序、镜头、人物、服装、动作和背景；`Dialogue` 保存主要姓名说话人、目标文字、顺序和气泡区域。
 
 坐标统一为 `{x, y, width, height}`，范围 0–1，供不同分辨率复用。
+
+### DirectorCommandGroup、DirectorCommand（V02-40）
+
+导演命令 journal 只追加。`DirectorCommandGroup` 以 `(project_id, command_group_id)` 唯一，状态机 `PROPOSED → PREVIEWED → PARTIALLY_ACCEPTED → COMMITTED / PARTIALLY_REJECTED`，全组校验失败为 `REJECTED`，用户放弃为 `DISCARDED`。`DirectorCommand` 以 `(project_id, command_id)` 唯一，同一 `command_id` 重放返回首次结果。payload 只允许契约 §4 白名单字段；未知字段拒绝。执行器不新增第二条写路径，结构化命令调用现有 panel/dialogue/scene/layout 服务。`regenerate_region` 可预览，无 mask 或父候选已删除时在调用前 422。逆命令占用新的 `command_id`；分镜在撤销前被更新则原命令标 `SUPERSEDED`。迁移 `20260903_27` 为可回滚建表。契约见 `docs/v02-director-command-lineage-contract.md`。
 
 ### GenerationBatch、PageCandidate、AssetCandidate
 

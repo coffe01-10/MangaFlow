@@ -51,6 +51,8 @@ def test_empty_database_upgrade_downgrade_and_upgrade(tmp_path, monkeypatch):
     assert {"character_presence", "props"}.issubset(
         {column["name"] for column in schema.get_columns("panels")}
     )
+    assert "director_command_groups" in schema.get_table_names()
+    assert "director_commands" in schema.get_table_names()
     engine.dispose()
 
     command.downgrade(config, "base")
