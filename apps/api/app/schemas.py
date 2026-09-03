@@ -1449,3 +1449,38 @@ class PackageDiffRead(BaseModel):
     negative_constraints: PackageListDiff
     references: PackageReferenceDiff
     outfits: PackageOutfitDiff
+
+
+class DirectorCommandPropose(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    command_group_id: str = Field(min_length=36, max_length=36)
+    commands: list[dict] = Field(min_length=1)
+
+
+class DirectorCommandRead(BaseModel):
+    command_id: str
+    command_group_id: str
+    operation: str
+    status: str
+    target: dict
+    expected_version: dict
+    payload: dict
+    source: dict
+    diff: dict | None = None
+    error: dict | None = None
+    retry_of_command_id: str | None = None
+    inverse_of_command_id: str | None = None
+    storyboard_version_after: int | None = None
+    version: int
+
+
+class DirectorCommandGroupRead(BaseModel):
+    id: str
+    project_id: str
+    command_group_id: str
+    page_id: str | None = None
+    status: str
+    idempotent_replay: bool = False
+    commands: list[DirectorCommandRead]
+    version: int

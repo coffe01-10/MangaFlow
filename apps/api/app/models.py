@@ -461,6 +461,67 @@ class Dialogue(Base):
     bubble: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
+class DirectorCommandGroup(Timestamped, Base):
+    """One director session / command group (V02-40 journal)."""
+
+    __tablename__ = "director_command_groups"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id",
+            "command_group_id",
+            name="uq_director_command_groups_project_group",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    command_group_id: Mapped[str] = mapped_column(String(36))
+    page_id: Mapped[str | None] = mapped_column(
+        ForeignKey("manga_pages.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), default="PROPOSED")
+    first_result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class DirectorCommand(Timestamped, Base):
+    """Append-only director command journal row (V02-40)."""
+
+    __tablename__ = "director_commands"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id",
+            "command_id",
+            name="uq_director_commands_project_command",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    group_id: Mapped[str] = mapped_column(
+        ForeignKey("director_command_groups.id", ondelete="CASCADE"), index=True
+    )
+    command_id: Mapped[str] = mapped_column(String(36))
+    command_group_id: Mapped[str] = mapped_column(String(36), index=True)
+    retry_of_command_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    inverse_of_command_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    operation: Mapped[str] = mapped_column(String(48))
+    status: Mapped[str] = mapped_column(String(32), default="PROPOSED")
+    target: Mapped[dict] = mapped_column(JSON, default=dict)
+    expected_version: Mapped[dict] = mapped_column(JSON, default=dict)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    source: Mapped[dict] = mapped_column(JSON, default=dict)
+    diff: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    inverse_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    before_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    storyboard_version_after: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    envelope_created_at: Mapped[str] = mapped_column(String(64), default="")
+
+
 class ContinuitySnapshot(Base):
     __tablename__ = "continuity_snapshots"
 

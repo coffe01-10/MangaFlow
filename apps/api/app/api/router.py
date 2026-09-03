@@ -4,6 +4,7 @@ from app.api.routes import (
     asset_generation,
     character_packages,
     characters,
+    director,
     exports,
     health,
     models,
@@ -35,3 +36,4 @@ api_router.include_router(asset_generation.router, tags=["asset-generation"])
 api_router.include_router(workflow_definitions.router, tags=["workflow-definitions"])
 api_router.include_router(settings.router, tags=["settings"])
 api_router.include_router(usage.router, tags=["usage"])
+api_router.include_router(director.router, tags=["director"])
