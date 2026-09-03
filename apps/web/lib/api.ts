@@ -1221,6 +1221,106 @@ export interface PackageDiff {
   outfits: PackageOutfitDiff;
 }
 
+// ---------------------------------------------------------------------------
+// Director command journal (V02-40, apps/api/app/domain/director_commands.py).
+// The propose endpoint accepts structured whitelisted commands only — the web
+// client compiles them in lib/director-rules.ts (rule stub, no model call).
+// ---------------------------------------------------------------------------
+
+export type DirectorOperation =
+  | "update_page_layout"
+  | "update_panel_layout"
+  | "update_panel_shot"
+  | "update_panel_cast"
+  | "update_scene_context"
+  | "update_dialogue"
+  | "move_dialogue"
+  | "regenerate_region";
+
+export type DirectorCommandStatus =
+  | "PROPOSED"
+  | "PREVIEWED"
+  | "ACCEPTED"
+  | "REJECTED"
+  | "EXECUTED"
+  | "SUPERSEDED"
+  | "DISCARDED"
+  | "FAILED";
+
+export interface DirectorCommandTarget {
+  project_id: string;
+  page_id?: string | null;
+  panel_id?: string | null;
+  dialogue_id?: string | null;
+  scene_id?: string | null;
+  asset_id?: string | null;
+}
+
+export interface DirectorExpectedVersion {
+  scope: "panel" | "page" | "storyboard" | "scene";
+  value: number;
+}
+
+export interface DirectorCommandSource {
+  user_prompt: string;
+  reference_asset_ids?: string[];
+  model?: {
+    provider?: string | null;
+    catalog_model_id?: string | null;
+    model_id?: string | null;
+  } | null;
+  raw_output_id?: string | null;
+}
+
+export interface DirectorCommandEnvelope {
+  schema_version: 1;
+  command_id: string;
+  command_group_id: string;
+  created_at: string;
+  target: DirectorCommandTarget;
+  expected_version: DirectorExpectedVersion;
+  retry_of_command_id?: string | null;
+  operation: DirectorOperation;
+  payload: Record<string, unknown>;
+  source: DirectorCommandSource;
+}
+
+export interface DirectorCommandError {
+  code?: string;
+  message?: string;
+  status?: number;
+  scope?: string;
+  current_version?: number | null;
+}
+
+export interface DirectorCommand {
+  command_id: string;
+  command_group_id: string;
+  operation: string;
+  status: DirectorCommandStatus | string;
+  target: DirectorCommandTarget;
+  expected_version: DirectorExpectedVersion;
+  payload: Record<string, unknown>;
+  source: DirectorCommandSource;
+  diff: Record<string, { before?: unknown; after?: unknown }> | null;
+  error: DirectorCommandError | null;
+  retry_of_command_id: string | null;
+  inverse_of_command_id: string | null;
+  storyboard_version_after: number | null;
+  version: number;
+}
+
+export interface DirectorCommandGroup {
+  id: string;
+  project_id: string;
+  command_group_id: string;
+  page_id: string | null;
+  status: string;
+  idempotent_replay: boolean;
+  commands: DirectorCommand[];
+  version: number;
+}
+
 export function publicUrl(path: string | null) {
   if (!path) return null;
   const previewPath = path.replace(
@@ -1855,4 +1955,35 @@ export const api = {
     method: "POST",
     body: JSON.stringify(payload),
   }),
+  directorProposeCommandGroup: (projectId: string, payload: { command_group_id: string; commands: DirectorCommandEnvelope[] }) =>
+    request<DirectorCommandGroup>(`/projects/${projectId}/director/command-groups`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  directorCommandGroups: (projectId: string, pageId?: string | null) => {
+    const suffix = pageId ? `?page_id=${encodeURIComponent(pageId)}` : "";
+    return request<DirectorCommandGroup[]>(`/projects/${projectId}/director/command-groups${suffix}`);
+  },
+  directorCommandGroup: (projectId: string, commandGroupId: string) =>
+    request<DirectorCommandGroup>(`/projects/${projectId}/director/command-groups/${encodeURIComponent(commandGroupId)}`),
+  directorDiscardCommandGroup: (projectId: string, commandGroupId: string) =>
+    request<DirectorCommandGroup>(`/projects/${projectId}/director/command-groups/${encodeURIComponent(commandGroupId)}/discard`, {
+      method: "POST",
+    }),
+  directorAcceptCommand: (projectId: string, commandId: string) =>
+    request<DirectorCommandGroup>(`/projects/${projectId}/director/commands/${encodeURIComponent(commandId)}/accept`, {
+      method: "POST",
+    }),
+  directorRejectCommand: (projectId: string, commandId: string) =>
+    request<DirectorCommandGroup>(`/projects/${projectId}/director/commands/${encodeURIComponent(commandId)}/reject`, {
+      method: "POST",
+    }),
+  directorUndoCommand: (projectId: string, commandId: string) =>
+    request<DirectorCommandGroup>(`/projects/${projectId}/director/commands/${encodeURIComponent(commandId)}/undo`, {
+      method: "POST",
+    }),
+  directorRedoCommand: (projectId: string, commandId: string) =>
+    request<DirectorCommandGroup>(`/projects/${projectId}/director/commands/${encodeURIComponent(commandId)}/redo`, {
+      method: "POST",
+    }),
 };
