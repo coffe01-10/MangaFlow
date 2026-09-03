@@ -3,6 +3,7 @@
 import { AppShell } from "@/components/shell";
 import { api, type ImageModelAlias, type PageCandidate, type Project } from "@/lib/api";
 import { creatorVisibleModels } from "@/lib/model-visibility";
+import { SIDEBAR_WIDTH_DEFAULT, clampSidebarWidth, storedSidebarWidth } from "@/lib/workspace-layout";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { CircleAlert, LoaderCircle } from "lucide-react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
@@ -45,6 +46,10 @@ export default function ProjectWorkspace({
   const searchParams = useSearchParams();
   const queryClient = useQueryClient();
   const [navOpen, setNavOpen] = useState(false);
+  const [navCollapsed, setNavCollapsed] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem("mangaflow.project-sidebar-collapsed") === "true";
+  });
   const [localDraft, setDraft] = useState<Project | null>(null);
   const [selectedChapterId, setSelectedChapterId] = useState<string | null>(null);
   const [selectedPageId, setSelectedPageId] = useState<string | null>(() => searchParams.get("page"));
@@ -56,9 +61,8 @@ export default function ProjectWorkspace({
   const [previewImage, setPreviewImage] = useState<{ url: string; label: string; candidate?: PageCandidate } | null>(null);
   const [localEditCandidate, setLocalEditCandidate] = useState<PageCandidate | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(() => {
-    if (typeof window === "undefined") return 214;
-    const stored = Number(window.localStorage.getItem("mangaflow.project-sidebar-width"));
-    return stored >= 188 && stored <= 360 ? stored : 214;
+    if (typeof window === "undefined") return SIDEBAR_WIDTH_DEFAULT;
+    return storedSidebarWidth(window.localStorage.getItem("mangaflow.project-sidebar-width"));
   });
 
   const workspaceQueries = useWorkspaceQueries({ id, section, assetView, selectedChapterId });
@@ -86,6 +90,12 @@ export default function ProjectWorkspace({
   const setDrawModel = (model: ImageModelAlias) => {
     setDrawModelState(model);
     window.localStorage.setItem(`mangaflow.image-model.${id}`, model);
+  };
+  // Template B (audit §4.2): the left nav collapse persists independently of
+  // the draggable width so a rail survives reloads without losing the width.
+  const toggleNavCollapsed = (collapsed: boolean) => {
+    setNavCollapsed(collapsed);
+    window.localStorage.setItem("mangaflow.project-sidebar-collapsed", String(collapsed));
   };
 
   const source = useSourceWorkspace({
@@ -204,9 +214,9 @@ export default function ProjectWorkspace({
     event.currentTarget.setPointerCapture(event.pointerId);
     const startX = event.clientX;
     const startWidth = sidebarWidth;
-    const move = (moveEvent: PointerEvent) => setSidebarWidth(Math.min(360, Math.max(188, startWidth + moveEvent.clientX - startX)));
+    const move = (moveEvent: PointerEvent) => setSidebarWidth(clampSidebarWidth(startWidth + moveEvent.clientX - startX));
     const stop = (stopEvent: PointerEvent) => {
-      const next = Math.min(360, Math.max(188, startWidth + stopEvent.clientX - startX));
+      const next = clampSidebarWidth(startWidth + stopEvent.clientX - startX);
       setSidebarWidth(next);
       window.localStorage.setItem("mangaflow.project-sidebar-width", String(next));
       window.removeEventListener("pointermove", move);
@@ -252,13 +262,19 @@ export default function ProjectWorkspace({
       <WorkspaceTopbar
         navOpen={navOpen}
         setNavOpen={setNavOpen}
+        navCollapsed={navCollapsed}
+        setNavCollapsed={toggleNavCollapsed}
         projectName={draft.name}
         projectPath={projectPath}
       />
 
-      <div className="workspace-layout" style={{ "--workspace-sidebar-width": `${sidebarWidth}px` } as CSSProperties}>
+      <div
+        className={navCollapsed ? "workspace-layout rail-left" : "workspace-layout"}
+        style={{ "--workspace-sidebar-width": `${sidebarWidth}px` } as CSSProperties}
+      >
         <WorkspaceSidebar
           navOpen={navOpen}
+          navCollapsed={navCollapsed}
           setNavOpen={setNavOpen}
           projectName={draft.name}
           chapterCount={chapters.data?.length ?? 0}

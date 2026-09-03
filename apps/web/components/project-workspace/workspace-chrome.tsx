@@ -8,13 +8,15 @@ import {
   ChevronUp,
   ListTodo,
   Menu,
+  PanelLeftClose,
+  PanelLeftOpen,
   Settings,
   Workflow,
   X,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 
 import { Pencil } from "lucide-react";
@@ -26,17 +28,21 @@ import type { WorkspaceSection } from "./types";
 export function WorkspaceTopbar({
   navOpen,
   setNavOpen,
+  navCollapsed,
+  setNavCollapsed,
   projectName,
   projectPath,
 }: {
   navOpen: boolean;
   setNavOpen: (open: boolean) => void;
+  navCollapsed: boolean;
+  setNavCollapsed: (collapsed: boolean) => void;
   projectName: string;
   projectPath: (target: string) => string;
 }) {
   return (
     <header className="workspace-topbar">
-      <div className="workspace-crumb"><button className="project-nav-toggle" aria-expanded={navOpen} aria-label={navOpen ? "关闭项目导航" : "打开项目导航"} onClick={() => setNavOpen(!navOpen)}>{navOpen ? <X size={17} /> : <Menu size={17} />}</button><Link href="/"><ArrowLeft size={17} />项目</Link><i /><span>{projectName}</span></div>
+      <div className="workspace-crumb"><button className="project-nav-toggle" aria-expanded={navOpen} aria-label={navOpen ? "关闭项目导航" : "打开项目导航"} onClick={() => setNavOpen(!navOpen)}>{navOpen ? <X size={17} /> : <Menu size={17} />}</button><button type="button" className="workspace-nav-collapse" aria-pressed={navCollapsed} aria-label={navCollapsed ? "展开项目侧边栏" : "把项目侧边栏折叠成图标轨"} title={navCollapsed ? "展开侧边栏" : "折叠成图标轨"} onClick={() => setNavCollapsed(!navCollapsed)}>{navCollapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}</button><Link href="/"><ArrowLeft size={17} />项目</Link><i /><span>{projectName}</span></div>
       <div className="workspace-status"><span><i />项目工作区</span><Link className="button outline compact" href={projectPath("workflow")}><Workflow size={15} />在工作流中查看</Link><Link className="button ink compact" href={projectPath("settings")}><Settings size={15} />项目设置</Link></div>
     </header>
   );
@@ -44,6 +50,7 @@ export function WorkspaceTopbar({
 
 export function WorkspaceSidebar({
   navOpen,
+  navCollapsed,
   setNavOpen,
   projectName,
   chapterCount,
@@ -56,6 +63,7 @@ export function WorkspaceSidebar({
   onSidebarResize,
 }: {
   navOpen: boolean;
+  navCollapsed: boolean;
   setNavOpen: (open: boolean) => void;
   projectName: string;
   chapterCount: number;
@@ -70,7 +78,7 @@ export function WorkspaceSidebar({
   return (
     <>
       <button className={navOpen ? "workspace-nav-backdrop show" : "workspace-nav-backdrop"} onClick={() => setNavOpen(false)} aria-label="关闭项目导航" />
-      <aside className={navOpen ? "workspace-left open" : "workspace-left"}>
+      <aside className={["workspace-left", navOpen ? "open" : "", navCollapsed ? "rail" : ""].filter(Boolean).join(" ")}>
         <button type="button" className="workspace-resizer" aria-label="拖动调整项目侧边栏宽度" onPointerDown={onSidebarResize} />
         <div className="workspace-project-title"><span>PROJECT / 01</span><h1>{projectName}</h1><p>{needsChapters ? `${chapterCount} 章` : "漫画生产工作区"}{needsPages ? ` · ${pageCount} 页已规划` : ""}</p></div>
         <nav className="workspace-steps">
@@ -94,8 +102,53 @@ export function ImageLightbox({
   onLocalEdit?: (candidate: PageCandidate) => void;
 }) {
   const [previewZoom, setPreviewZoom] = useState(1);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
 
-  return <div className="image-lightbox" role="dialog" aria-modal="true" aria-label={preview.label} onClick={onClose}><button type="button" className="lightbox-close" aria-label="关闭大图" onClick={onClose}><X size={20} /></button><div className="lightbox-shell" onClick={(event) => event.stopPropagation()}><div className="lightbox-toolbar"><strong>{preview.label}</strong><div>{preview.candidate && onLocalEdit && <button type="button" className="lightbox-local-edit" title="进入局部选区编辑器：画 mask 后按 regenerate_region 生成派生候选" onClick={() => onLocalEdit(preview.candidate!)}><Pencil size={15} />局部修改</button>}<button type="button" aria-label="缩小图片" disabled={previewZoom <= .5} onClick={() => setPreviewZoom((value) => Math.max(.5, value - .25))}><ZoomOut size={17} /></button><button type="button" onClick={() => setPreviewZoom(1)}>{Math.round(previewZoom * 100)}%</button><button type="button" aria-label="放大图片" disabled={previewZoom >= 2.5} onClick={() => setPreviewZoom((value) => Math.min(2.5, value + .25))}><ZoomIn size={17} /></button></div></div><div className="lightbox-stage"><Image style={{ transform: `scale(${previewZoom})` }} src={preview.url} alt={preview.label} width={1600} height={1600} unoptimized /></div><span>使用 ＋/－ 调整到 50%–250%，点击背景或右上角关闭</span></div></div>;
+  // V02-51B (audit §2.4/§7/U7): the lightbox is a dialog — Esc closes it, ＋/－
+  // zoom without reaching for the toolbar, Tab stays inside, and closing hands
+  // focus back to the thumbnail that opened it.
+  useEffect(() => {
+    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    closeRef.current?.focus();
+    return () => previouslyFocused?.focus();
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        onClose();
+        return;
+      }
+      if (event.key === "+" || event.key === "=") {
+        setPreviewZoom((value) => Math.min(2.5, value + .25));
+        return;
+      }
+      if (event.key === "-" || event.key === "_") {
+        setPreviewZoom((value) => Math.max(.5, value - .25));
+        return;
+      }
+      if (event.key === "Tab" && dialogRef.current) {
+        const focusables = Array.from(dialogRef.current.querySelectorAll<HTMLElement>("button:not([disabled])"));
+        if (!focusables.length) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        const active = document.activeElement;
+        if (event.shiftKey && (active === first || !(active instanceof Node) || !dialogRef.current.contains(active))) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && (active === last || !(active instanceof Node) || !dialogRef.current.contains(active))) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
+  }, [onClose]);
+
+  return <div ref={dialogRef} className="image-lightbox" role="dialog" aria-modal="true" aria-label={preview.label} onClick={onClose}><button ref={closeRef} type="button" className="lightbox-close" aria-label="关闭大图" onClick={onClose}><X size={20} /></button><div className="lightbox-shell" onClick={(event) => event.stopPropagation()}><div className="lightbox-toolbar"><strong>{preview.label}</strong><div>{preview.candidate && onLocalEdit && <button type="button" className="lightbox-local-edit" title="进入局部选区编辑器：画 mask 后按 regenerate_region 生成派生候选" onClick={() => onLocalEdit(preview.candidate!)}><Pencil size={15} />局部修改</button>}<button type="button" aria-label="缩小图片" disabled={previewZoom <= .5} onClick={() => setPreviewZoom((value) => Math.max(.5, value - .25))}><ZoomOut size={17} /></button><button type="button" onClick={() => setPreviewZoom(1)}>{Math.round(previewZoom * 100)}%</button><button type="button" aria-label="放大图片" disabled={previewZoom >= 2.5} onClick={() => setPreviewZoom((value) => Math.min(2.5, value + .25))}><ZoomIn size={17} /></button></div></div><div className="lightbox-stage"><Image style={{ transform: `scale(${previewZoom})` }} src={preview.url} alt={preview.label} width={1600} height={1600} unoptimized /></div><span>使用 ＋/－ 调整到 50%–250%，Esc 或点击背景关闭，关闭后回到原缩略图</span></div></div>;
 }
 
 export function QueueDock({

@@ -1332,13 +1332,21 @@ export interface DirectorCommandGroup {
   version: number;
 }
 
+// Prefix a stored asset path with the API origin without the thumbnail
+// rewrite. Grids and lists must go through publicUrl (thumbnails, audit §7);
+// dialogs that show the original pixels — the lightbox — use this.
+export function originUrl(path: string | null) {
+  if (!path) return null;
+  return path.startsWith("http") ? path : `${API_ORIGIN}${path}`;
+}
+
 export function publicUrl(path: string | null) {
   if (!path) return null;
   const previewPath = path.replace(
     /\/api\/v1\/assets\/([^/]+)\/content$/,
     "/api/v1/assets/$1/thumbnail/640",
   );
-  return previewPath.startsWith("http") ? previewPath : `${API_ORIGIN}${previewPath}`;
+  return originUrl(previewPath);
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

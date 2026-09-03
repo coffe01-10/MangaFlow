@@ -2,7 +2,7 @@ import Image from "next/image";
 import { Check, CircleAlert, LoaderCircle, Maximize2, Pencil, Sparkles, X } from "lucide-react";
 import { useState } from "react";
 
-import { publicUrl, type Asset, type ImageModelAlias, type StyleProfile } from "@/lib/api";
+import { originUrl, publicUrl, type Asset, type ImageModelAlias, type StyleProfile } from "@/lib/api";
 
 export function ImageModelPicker({
   selected,
@@ -66,7 +66,7 @@ export function AssetNameEditor({ asset, pending, onSave }: { asset: Asset; pend
 
 export function CandidateArtwork({ contentUrl, thumbnailUrl, label, onOpen, eager = false }: { contentUrl: string | null; thumbnailUrl?: string | null; label: string; onOpen?: (url: string, label: string) => void; eager?: boolean }) {
   const url = publicUrl(thumbnailUrl ?? contentUrl);
-  const fullUrl = publicUrl(contentUrl ?? thumbnailUrl ?? null);
+  const fullUrl = originUrl(contentUrl ?? thumbnailUrl ?? null);
   return (
     <button type="button" className="candidate-artwork" aria-label={url ? `放大查看${label}` : label} onClick={() => fullUrl && onOpen?.(fullUrl, label)}>
       {url ? (

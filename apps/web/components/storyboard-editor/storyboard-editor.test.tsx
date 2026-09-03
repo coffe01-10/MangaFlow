@@ -506,9 +506,14 @@ describe("StoryboardEditor canvas (V02-31B)", () => {
     expect(panelEl("panel-2")).toHaveClass("selected");
   });
 
-  it("S17 reduced motion：画布过渡与气泡位移被关闭（样式契约）", () => {
-    expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\) \{\s*\.canvas-panel, \.canvas-bubble/);
-    expect(css).toMatch(/\.dialogue-card:hover \{ transform: none; \}/);
+  it("S17 reduced motion：画布过渡与气泡位移随 V02-51B 全局单块契约关闭", () => {
+    const starts = css.match(/@media \(prefers-reduced-motion: reduce\) \{/g) ?? [];
+    expect(starts).toHaveLength(1);
+    const start = css.indexOf("@media (prefers-reduced-motion: reduce) {");
+    const block = css.slice(start, css.indexOf("\n}", start));
+    expect(block).toContain("transition-duration: .01ms !important");
+    expect(block).toContain(".dialogue-card:hover");
+    expect(block).toContain("transform: none");
   });
 
   it("S18 900-1099px：检查器底部抽屉，画布仍全宽可见（样式契约）", () => {
