@@ -4,6 +4,15 @@
 
 本文件记录修订版 MVP 计划的实际完成度。
 
+## V02-11C 设置页验收完成：Issue #40 矩阵逐项核对 + 假供应商 E2E 全绿（2026-09-03，Linux box）
+
+- **对应**：Issue #106 / 分支 `glm/v02-11c-settings-acceptance`（基线 `071ae2d`，验收 head `3335fa6`）。对照 `docs/v02-provider-settings-ui-audit.md` §8 把 P/C/F/V/A/S/L/N 每一行映射到 `apps/web/components/provider-management.test.tsx` 定向回归，全部有证据；审计 §8 要求保留的三条既有用例（健康错误可见、创建失败/刷新、凭据失败不回显）在 `:207/:216/:241`。
+- **缺口补齐（本轮新增，全部假供应商，不调真实 API）**：C2 补「连接测试完成 · 12 ms」中文成功状态含延迟、`CREDENTIALS` 仅调用一次且不触发 discover 断言（`:259`）；新增 V3「已隐藏的已验证模型不出现在默认列表，仅已验证也不带回，开启显示已隐藏才可见且标已隐藏」（`:768`）；新增 S5「服务端脱敏格式 `••••9876` 原样显示、完整密钥不出现」（`:804`）。设置页定向回归由 70 项增至 72 项。
+- **矩阵覆盖表（head `3335fa6` 行号，`provider-management.test.tsx`）**：P1–P13＝`:835/:847/:867/:883/:923/:938/:954/:968/:988/:995/:1013/:1030/:1047`（连接启停带版本 `:488`）；C1＝`CONNECTION_KEY` 密钥表单（`:787` 夹具）＋`ENV_SERVICE_ACCOUNT`/`CLI_SESSION` 按 `credential_source` 渲染、协议字符串不参与判定（`:298/:313`）；C2＝`:259`；C3＝`:241`；C4＝`:525`＋`:667`；C5＝`:511`；C6＝`:684`；C7＝取消不发请求 `:716`＋确认后 `acknowledge_cost: true` `:536`；C8＝`:731`；C9–C13＝`:1415/:1427/:1442/:1451/:1468`（纯函数 `:1479`）；F1–F9＝`:1132/:1142/:1149/:1156/:1164/:1173/:1188/:1199/:1213`，F6b＝`:1122`（搜索/筛选纯函数 `:1227`）；V1＝`:598`，V2＝`:629`，V3＝`:768`，V4＝`:745`；A1–A9＝`:1274`–`:1346`；S1–S4＝`:787`（错误 DOM 无明文另有 C3 `:241`），S5＝`:787`＋`:804`；L1–L5＝`:1368/:1376/:1386/:1396/:1404`；N1–N4＝`:1499/:1507/:1516/:1523`（按审计 §8 前言允许的 class/CSS 源断言，非真实视口渲染）。另有设置页无 Vertex 专属查询/卡片/硬编码模型（`:660`）与 V02-14A/B/C CLI 凭据源用例（`:335/:409/:450`）。
+- **门禁（Linux 等价 `npm run check`，head `3335fa6`）**：Web Vitest 41 文件 381 项全过；ESLint、`tsc --noEmit`、Ruff（`apps/api tests`）、Next.js 生产构建通过；供应商平权扫描（`VERTEX_NATIVE`/`vertex-ai`/`vertex_configured` 三模式 git grep vs allowlist 10 路径）0 违规。本分支未触及 API 代码，未重跑 Python 全量 pytest（既有记录中的 Linux 平台基线失败与本分支无关）。
+- **假供应商设置页 E2E（RUN）**：本分支 head `3335fa6` 以与 V02-10D 相同的 Linux 等价 harness 独占端口/一次性 runtime 重跑全套 Playwright **17/17 全绿**（run id `fd48ff8c0995416ead5efae033afd312`，52.0s；platform-v2 5/5，含「设置页用离线假供应商完成创建、手工模型与展示显隐」——断言 verify/discover/balance 零调用——与含 `/settings` 的 Axe serious/critical 零违规；critical-behaviors 4/4、scene-workspace 1/1、usage-dashboard 7/7）；runtime 目录已删除、端口 3000/8000 复查释放。Windows 完整形态 owned E2E 本轮未重跑，引用既有 `98b93a0`（`LAPTOP-TV9KT8RC`，17/17，platform-v2 5/5 含同一设置页用例）。
+- **NOT RUN / 边界**：真实供应商、真实 Key、付费图片冒烟、PostgreSQL live、Lighthouse/FPS、V02-51B 视觉回归。
+
 ## V02-10D M14 离线浏览器 E2E 已全绿，V02-10D 勾选（2026-09-03，Linux box）
 
 - **合并记录**：Issue #104 / PR #105 / `glm/v02-10d-m14-acceptance` / 合并提交 `071ae2d`（验收 head `23faaf0`；`071ae2d` 相对 `23faaf0` 仅增加文档与合并提交，apps/tests/scripts 代码树一致）。
