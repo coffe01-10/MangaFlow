@@ -54,7 +54,7 @@
   - [ ] **V02-10D（L2 前端/收尾）：删除产品级 Vertex 入口。** Dashboard、设置、帮助和项目选模改用统一连接/目录契约，删除前端专属请求与硬编码模型文案，更新架构/平台文档并收紧 allowlist。依赖：V02-10B/C；验收：M8–M14。
     - [x] 首页只读取 Dashboard 聚合状态，设置、帮助、项目默认模型与工作流节点统一使用连接/目录契约；前端专属状态请求和供应商硬编码文案已删除，历史绑定模型继续兼容显示。
     - [x] 环境账号就绪判断集中到凭据适配层；产品级统计、目录与 readiness 不再直接读取专属配置。架构、平台、数据模型和 Worker 错误文案已中性化，平权 allowlist 由 15 个路径收紧到 10 个技术适配/兼容路径。
-    - [ ] Windows PowerShell 完整门禁已通过；M14 离线浏览器验收尚未运行，因此 V02-10D 保持未勾选。未调用真实供应商。
+    - [ ] Windows PowerShell 完整门禁已通过；2026-09-03 在 Linux box 以 owned 控制器的 Linux 等价入口离线运行 M14 全套 Playwright：17 项中 16 项通过（platform-v2 4/5、critical-behaviors 4/4、usage-dashboard 7/7、scene-workspace 1/1）。唯一失败为 Axe color-contrast 严重项：`.pkg-create-row > small`（V02-23B 角色包工作区，`#756f65`/`#f4f1e9` = 4.41:1 < 4.5:1），不属于 V02-10D/平权范围，按 Issue #104 未在本分支修复，因此 V02-10D 继续保持未勾选。平权 allowlist 扫描 0 违规、前端无 `vertex-status`/`verifyVertex` 产品请求、T7 别名夹具可解析。未调用真实供应商。证据与入口详见 `docs/development-progress.md`。
 - [ ] **V02-11（L2，Grok UI 优先）：重做供应商填写模块。** 前置审计已由 Issue #40 完成并随 `3bac6da` 合并，详见 `docs/v02-provider-settings-ui-audit.md`；V02-11A/B 已实现，C 验收仍待完成。
   - [x] **V02-11A（L2，Issue #42）：独立 UI 基础。** 已完成供应商创建/重命名/停用/删除、精炼文案、加载/错误/空状态、搜索、类型/能力/已验证筛选、排序、折叠、键盘与窄桌面布局，并接入 V02-10A 的显式凭据来源/模型类型契约；未实现 V02-12 的展示偏好写入。
   - [x] **V02-11B（L2，Grok）：统一连接与模型目录。** 已按 `credential_source`/capability 渲染凭据、统一验证、独立发现、余额和目录驱动的模型冒烟，删除设置页 Vertex 专属卡；设置页已接入单条/批量展示偏好、隐藏筛选、逐项版本与部分失败语义。

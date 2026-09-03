@@ -4,6 +4,15 @@
 
 本文件记录修订版 MVP 计划的实际完成度。
 
+## V02-10D M14 离线浏览器 E2E 首轮：16/17，一项非平权回归待处置（2026-09-03，Linux box）
+
+- **入口与代码状态**：被测代码与 `master`/`e2126a1` 零差异（分支提交 `2ca22d6` 仅文档）。官方控制器 `scripts/run_e2e_owned.py` 依赖 Windows Job Objects（`scripts/owned_processes.py` 在非 Windows 直接拒绝），本机为 Linux box，故按 Issue #104 采用 **Linux 等价入口**：`.venv/bin/python output/playwright/linux-m14/m14_linux_harness.py run`（gitignore 的未跟踪 harness，未改任何仓库代码），逐项复刻 owned 控制器契约：独占端口 3000/8000 预检、一次性 runtime 目录（新 32 位 run id + `runtime-owner.json` 标记，canonical 校验后 API 才写库、拒绝复用已有数据库）、`MANGAFLOW_DISABLE_DOTENV=1`、`NODE_OPTIONS --require scripts/e2e_node_bootstrap.cjs`、隔离 SQLite 由 Alembic 升到 `20260903_28` + 假模型种子（`MANGAFLOW_E2E_SEED=1` → `seed_gate_projects`）、`QUEUE_ENABLED=false`；命令与控制器一致（`next build apps/web` → 全套 Playwright，Chrome channel，自建 web/API 服务器）。
+- **结果**：run id `eb58868707c34c239010bc730eb45cf8`，17 项 E2E **16 通过 / 1 失败**（48.0s）：critical-behaviors 4/4、platform-v2 4/5、scene-workspace 1/1、usage-dashboard 7/7。`platform-v2.spec.ts` 中导航统一、假供应商设置页、项目深链/工作流、首屏请求预算全部通过。
+- **唯一失败（非 V02-10D/平权）**：`platform-v2.spec.ts:118 核心页面没有严重或致命 Axe 问题` 在 `/projects/{id}/assets/characters` 报 `color-contrast`（serious）：`.pkg-create-row > small`（`character-package-workspace.tsx:551`；`globals.css:1870` `#756f65` on `#f4f1e9`，11px）对比度 **4.41:1 < 4.5:1**，确定性失败。该元素随 V02-23B（PR #86 / `6d09e78`）合入，晚于上一轮 Windows E2E 证据 SHA `98b93a0`，属角色包工作区回归。按 Issue #104「只修 V02-10D/平权相关失败」未在本分支修复；修复后重跑 M14 全绿即可勾选 V02-10D。
+- **配套证据**：T7 别名夹具 `generate-section.test.tsx` 15/15 通过（Phase C/D 后仍可解析）；供应商平权扫描（`git grep -n -I -F` 三模式 vs `scripts/provider-neutrality-allowlist.txt` 10 路径）**0 违规**、无新增产品偏置；前端仍无 `vertex-status`/`verifyVertex` 产品请求（唯一命中是 `provider-management.test.tsx:660` 的 `not.toContain("verifyVertex")` 负向断言）；`/settings/vertex/status|verify` 仅后端兼容端点保留，与 Phase E 记录一致。ESLint、`tsc --noEmit`、Ruff 通过。
+- **清理**：runtime 目录与隔离 SQLite/种子数据已删除（`runtime_removed: true`）；端口 3000/8000 复查已释放；浏览器 trace 与日志保留在 `output/playwright/linux-m14/`（gitignore）。
+- **NOT RUN / 边界**：真实供应商、Lighthouse/FPS、真实 PostgreSQL；Windows 完整形态 `npm run test:e2e`（PowerShell/Job Object 入口）本机不可运行，本次为 Linux 等价入口（差异仅为进程树收容方式，测试与服务器契约不变）。
+
 ## V02-44B 能力验收 fail-closed 门禁已审阅合并（2026-09-03）
 
 - Issue #102 / PR #103 / `glm/v02-44b-capability-acceptance` / 合并提交 `e2126a1` / head `84b5dc7`。新增 `apps/api/app/services/model_capabilities.py`：`accepts_explicit_mask`、`supports_instruction_region_edit`、`preserves_outside_region`、`whole_image_reference_only` 四位统一 fail-closed 读取（缺失/UNKNOWN 一律按不支持，绝不猜成 true），带 `DECLARED / DISCOVERED / VERIFIED` 来源语义与区域编辑表面分类；`GET /api/v1/models` 与 `ModelCapabilityRead` schema 同步暴露四位布尔与来源。
