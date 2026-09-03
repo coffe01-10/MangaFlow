@@ -53,6 +53,9 @@ def test_empty_database_upgrade_downgrade_and_upgrade(tmp_path, monkeypatch):
     )
     assert "director_command_groups" in schema.get_table_names()
     assert "director_commands" in schema.get_table_names()
+    lineage_indexes = {index["name"] for index in schema.get_indexes("candidate_lineage")}
+    assert "candidate_lineage" in schema.get_table_names()
+    assert {"ix_candidate_lineage_parent_candidate_id", "ix_candidate_lineage_source_command_id"} <= lineage_indexes
     engine.dispose()
 
     command.downgrade(config, "base")
@@ -60,6 +63,7 @@ def test_empty_database_upgrade_downgrade_and_upgrade(tmp_path, monkeypatch):
     engine = create_engine(database_url)
     assert "provider_health" in inspect(engine).get_table_names()
     assert "model_pricing_versions" in inspect(engine).get_table_names()
+    assert "candidate_lineage" in inspect(engine).get_table_names()
     assert "ix_generation_jobs_status_lease" in {
         index["name"] for index in schema.get_indexes("generation_jobs")
     }
@@ -1550,4 +1554,158 @@ def test_storyboard_layout_migration_preserves_legacy_storyboard_rows(
         assert connection.execute(
             text("SELECT geometry FROM panels WHERE id = 'panel-layout'")
         ).scalar_one() is None
+    engine.dispose()
+
+
+def test_candidate_lineage_backfills_repair_and_upscale_history(
+    tmp_path, monkeypatch
+):
+    """L4: request_parameters.original_candidate_id becomes lineage rows.
+
+    Missing parent candidates keep the lineage row with a NULL parent. Real
+    PostgreSQL upgrade/downgrade stays NOT RUN.
+    """
+
+    from datetime import UTC, datetime
+
+    from app.models import GenerationBatch, GenerationJob, MangaPage, PageCandidate
+
+    database_path = tmp_path / "lineage-backfill.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    monkeypatch.setattr(get_settings(), "database_url", database_url)
+    config = Config("apps/api/alembic.ini")
+    command.upgrade(config, "20260903_27")
+
+    engine = create_engine(database_url)
+    with Session(engine) as db:
+        project = Project(name="血缘回填")
+        db.add(project)
+        db.flush()
+        chapter = Chapter(project_id=project.id, title="第一章", ordinal=1)
+        db.add(chapter)
+        db.flush()
+        page = MangaPage(chapter_id=chapter.id, page_number=1, panel_count=3)
+        db.add(page)
+        db.flush()
+        page_batch = GenerationBatch(
+            project_id=project.id, page_id=page.id, ordinal=1, generation_kind="PAGE"
+        )
+        repair_batch = GenerationBatch(
+            project_id=project.id, page_id=page.id, ordinal=2, generation_kind="REPAIR"
+        )
+        upscale_batch = GenerationBatch(
+            project_id=project.id, page_id=page.id, ordinal=3, generation_kind="UPSCALE"
+        )
+        orphan_batch = GenerationBatch(
+            project_id=project.id, page_id=page.id, ordinal=4, generation_kind="REPAIR"
+        )
+        db.add_all([page_batch, repair_batch, upscale_batch, orphan_batch])
+        db.flush()
+        created = datetime.now(UTC)
+        parent = PageCandidate(
+            batch_id=page_batch.id,
+            page_id=page.id,
+            ordinal=1,
+            model_alias="image.fast",
+            resolution="1K",
+            status="READY",
+        )
+        repair_child = PageCandidate(
+            batch_id=repair_batch.id,
+            page_id=page.id,
+            ordinal=1,
+            model_alias="image.fast",
+            resolution="2K",
+            status="READY",
+        )
+        upscale_child = PageCandidate(
+            batch_id=upscale_batch.id,
+            page_id=page.id,
+            ordinal=1,
+            model_alias="image.quality",
+            resolution="4K",
+            status="READY",
+        )
+        orphan_child = PageCandidate(
+            batch_id=orphan_batch.id,
+            page_id=page.id,
+            ordinal=1,
+            model_alias="image.fast",
+            resolution="1K",
+            status="READY",
+        )
+        db.add_all([parent, repair_child, upscale_child, orphan_child])
+        db.flush()
+        repair_job = GenerationJob(
+            project_id=project.id,
+            target_type="PAGE_CANDIDATE",
+            target_id=repair_child.id,
+            job_type="PAGE_REPAIR",
+            request_parameters={"original_candidate_id": parent.id},
+        )
+        upscale_job = GenerationJob(
+            project_id=project.id,
+            target_type="PAGE_CANDIDATE",
+            target_id=upscale_child.id,
+            job_type="PAGE_UPSCALE",
+            request_parameters={"original_candidate_id": parent.id},
+        )
+        orphan_job = GenerationJob(
+            project_id=project.id,
+            target_type="PAGE_CANDIDATE",
+            target_id=orphan_child.id,
+            job_type="PAGE_REPAIR",
+            request_parameters={"original_candidate_id": "missing-parent"},
+        )
+        db.add_all([repair_job, upscale_job, orphan_job])
+        db.flush()
+        repair_child.job_id = repair_job.id
+        upscale_child.job_id = upscale_job.id
+        orphan_child.job_id = orphan_job.id
+        for candidate in (parent, repair_child, upscale_child, orphan_child):
+            candidate.created_at = created
+        db.commit()
+        ids = {
+            "parent": parent.id,
+            "repair_child": repair_child.id,
+            "upscale_child": upscale_child.id,
+            "orphan_child": orphan_child.id,
+        }
+    engine.dispose()
+
+    command.upgrade(config, "head")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+        rows = connection.execute(
+            text(
+                """
+                SELECT child_candidate_id, parent_candidate_id, lineage_kind,
+                       model_alias, resolution
+                FROM candidate_lineage
+                ORDER BY lineage_kind
+                """
+            )
+        ).all()
+    by_child = {row[0]: row for row in rows}
+    assert len(rows) == 3
+    repaired = by_child[ids["repair_child"]]
+    assert repaired[1] == ids["parent"]
+    assert repaired[2] == "REPAIRED"
+    assert repaired[4] == "STANDARD_2K"
+    upscaled = by_child[ids["upscale_child"]]
+    assert upscaled[1] == ids["parent"]
+    assert upscaled[2] == "UPSCALED"
+    assert upscaled[3] == "image.quality"
+    assert upscaled[4] == "HIGH_4K"
+    orphan = by_child[ids["orphan_child"]]
+    assert orphan[1] is None
+    assert orphan[2] == "REPAIRED"
+    assert orphan[3] == "image.fast"
+    engine.dispose()
+
+    command.downgrade(config, "20260903_27")
+    engine = create_engine(database_url)
+    assert "candidate_lineage" not in inspect(engine).get_table_names()
     engine.dispose()

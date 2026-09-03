@@ -19,17 +19,21 @@ from app.domain.director_commands import (
     CommandStatus,
 )
 from app.models import (
+    CandidateLineage,
     Dialogue,
     DirectorCommand,
     DirectorCommandGroup,
+    GenerationJob,
     MangaPage,
     PageCandidate,
     Panel,
     Project,
     Scene,
 )
+from app.services.candidate_lineage import create_region_regeneration
 from app.services.content_workflow import apply_page_layout
 from app.services.editor import project_id_for_page
+from app.services.job_service import enqueue_job
 from app.services.storyboard_edits import (
     DIALOGUE_RESTORE_FIELDS,
     PANEL_RESTORE_FIELDS,
@@ -501,7 +505,13 @@ def _restore_page_snapshot(db: Session, page: MangaPage, snapshot: dict) -> None
     db.flush()
 
 
-def _execute_regenerate(db: Session, envelope: CommandEnvelope) -> None:
+def _execute_regenerate(db: Session, row: DirectorCommand, envelope: CommandEnvelope) -> None:
+    """V02-42B: accept creates a derived candidate, never overwrites the parent.
+
+    All failures here happen before any Job or paid call exists. The job is
+    only enqueued after the accept transaction commits (see accept_command).
+    """
+
     payload = envelope.payload
     mask = payload.get("mask") or payload.get("target_regions")
     if not mask:
@@ -515,7 +525,7 @@ def _execute_regenerate(db: Session, envelope: CommandEnvelope) -> None:
         raise _http_422("父候选不存在或已删除，已在调用前拒绝")
     if parent.page_id != envelope.target.page_id:
         raise _http_422("父候选不属于目标页")
-    raise _http_422("派生候选血缘尚未落地，禁止付费调用或整页重生")
+    create_region_regeneration(db, row=row, envelope=envelope, page=page, parent=parent)
 
 
 def _execute_operation(db: Session, row: DirectorCommand, envelope: CommandEnvelope) -> None:
@@ -523,7 +533,7 @@ def _execute_operation(db: Session, row: DirectorCommand, envelope: CommandEnvel
     payload = dict(envelope.payload)
     page = _load_page(db, envelope.target.project_id, envelope.target.page_id)
     if operation == "regenerate_region":
-        _execute_regenerate(db, envelope)
+        _execute_regenerate(db, row, envelope)
         return
     if operation == "update_page_layout":
         row.before_snapshot = _page_snapshot(db, page)
@@ -797,7 +807,33 @@ def accept_command(db: Session, project_id: str, command_id: str) -> dict:
     row.error = None
     _refresh_group_status(db, group)
     db.commit()
+    _enqueue_region_job(db, row)
     return _group_read(db, group)
+
+
+def _enqueue_region_job(db: Session, row: DirectorCommand) -> None:
+    """Enqueue the derived-candidate job only after the accept commit (§6-5).
+
+    Preview execution must never reach the queue, so enqueue is deliberately
+    not part of the operation itself.
+    """
+
+    if row.operation != "regenerate_region":
+        return
+    lineage = db.scalar(
+        select(CandidateLineage).where(
+            CandidateLineage.source_command_id == row.command_id
+        )
+    )
+    if lineage is None:
+        return
+    child = db.get(PageCandidate, lineage.child_candidate_id)
+    if child is None or not child.job_id:
+        return
+    job = db.get(GenerationJob, child.job_id)
+    if job is None:
+        return
+    enqueue_job(db, job)
 
 
 def reject_command(db: Session, project_id: str, command_id: str) -> dict:

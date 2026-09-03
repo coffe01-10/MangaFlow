@@ -509,8 +509,39 @@ def test_e7_layout_undo_redo_does_not_empty_the_page(client, db_session):
     assert redone_panel.shot_type == "wide"
 
 
-def test_e9_regenerate_region_fails_closed_without_paid_call(client, db_session):
+def _ensure_mask_capable_model(db_session):
+    """Give the preset Vertex image model a declared explicit-mask capability.
+
+    Real provider mask verification is V02-44 (NOT RUN); the offline suite only
+    asserts the catalog gate, never a provider call.
+    """
+    from app.config import get_settings
+    from app.models import AIModel
+    from app.services.provider_presets import ensure_provider_presets
+
+    ensure_provider_presets(db_session, get_settings(), auto_commit=False)
+    db_session.commit()
+    model = db_session.scalar(
+        select(AIModel).where(AIModel.legacy_alias == "image.nano_banana_2")
+    )
+    model.capabilities = {
+        **(model.capabilities or {}),
+        "accepts_explicit_mask": True,
+    }
+    db_session.commit()
+    return model
+
+
+def test_e9_regenerate_region_fails_closed_without_paid_call(
+    client, db_session, tmp_path, monkeypatch
+):
+    from app.config import get_settings
+    from app.models import Asset, CandidateLineage
+
+    monkeypatch.setattr(get_settings(), "storage_root", tmp_path)
     ctx = _setup(client, db_session)
+    model = _ensure_mask_capable_model(db_session)
+
     missing_mask = _envelope(
         ctx,
         "regenerate_region",
@@ -533,6 +564,19 @@ def test_e9_regenerate_region_fails_closed_without_paid_call(client, db_session)
     )
     db_session.add(batch)
     db_session.flush()
+    parent_asset = Asset(
+        project_id=ctx["project"]["id"],
+        kind="page_candidate",
+        original_name="parent.png",
+        storage_key="generated/parent.png",
+        mime_type="image/png",
+        byte_size=10,
+        sha256="e" * 64,
+        source="VERTEX_GENERATED",
+        status="GENERATED",
+    )
+    db_session.add(parent_asset)
+    db_session.flush()
     candidate = PageCandidate(
         batch_id=batch.id,
         page_id=ctx["page"].id,
@@ -540,6 +584,7 @@ def test_e9_regenerate_region_fails_closed_without_paid_call(client, db_session)
         model_alias="image.fast",
         resolution=Resolution.DRAFT_1K,
         status="READY",
+        asset_id=parent_asset.id,
         deleted_at=datetime.now(UTC),
     )
     db_session.add(candidate)
@@ -576,11 +621,32 @@ def test_e9_regenerate_region_fails_closed_without_paid_call(client, db_session)
         model_alias="image.fast",
         resolution=Resolution.DRAFT_1K,
         status="READY",
+        asset_id=parent_asset.id,
     )
     db_session.add(live)
     db_session.flush()
     ctx["page"].selected_candidate_id = live.id
     db_session.commit()
+    parent_before = {
+        "asset_id": live.asset_id,
+        "prompt_snapshot": live.prompt_snapshot,
+        "status": live.status,
+        "batch_id": live.batch_id,
+        "ordinal": live.ordinal,
+        "is_selected": live.is_selected,
+        "deleted_at": live.deleted_at,
+    }
+    no_mask = _envelope(
+        ctx,
+        "regenerate_region",
+        {"instruction": "雨再大一点"},
+        group_id=_uid(),
+    )
+    proposed_no_mask = _propose(client, ctx, [no_mask])
+    assert proposed_no_mask.status_code == 200, proposed_no_mask.text
+    assert proposed_no_mask.json()["commands"][0]["status"] == "REJECTED"
+    assert "mask" in str(proposed_no_mask.json()["commands"][0]["error"]).lower()
+
     with_mask = _envelope(
         ctx,
         "regenerate_region",
@@ -592,14 +658,49 @@ def test_e9_regenerate_region_fails_closed_without_paid_call(client, db_session)
     )
     proposed_live = _propose(client, ctx, [with_mask])
     assert proposed_live.status_code == 200, proposed_live.text
-    assert proposed_live.json()["commands"][0]["status"] == "REJECTED"
-    assert "付费" in str(proposed_live.json()["commands"][0]["error"])
-    jobs_after = list(
-        db_session.scalars(
-            select(GenerationJob).where(GenerationJob.project_id == ctx["project"]["id"])
+    assert proposed_live.json()["commands"][0]["status"] == "PREVIEWED"
+    accepted = client.post(
+        f"/api/v1/projects/{ctx['project']['id']}/director/commands/"
+        f"{with_mask['command_id']}/accept"
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["commands"][0]["status"] == "EXECUTED"
+
+    db_session.refresh(ctx["page"])
+    db_session.refresh(live)
+    # Parent candidate zero-change and page adoption state unchanged (L2).
+    for field, value in parent_before.items():
+        assert getattr(live, field) == value, field
+    assert ctx["page"].storyboard_version == 1
+    assert ctx["page"].selected_candidate_id == live.id
+
+    lineage = db_session.scalar(
+        select(CandidateLineage).where(
+            CandidateLineage.source_command_id == with_mask["command_id"]
         )
     )
-    assert jobs_after == []
+    assert lineage is not None
+    assert lineage.parent_candidate_id == live.id
+    assert lineage.lineage_kind == "REGION_REGENERATED"
+    child = db_session.get(PageCandidate, lineage.child_candidate_id)
+    assert child is not None and child.id != live.id
+    child_batch = db_session.get(GenerationBatch, child.batch_id)
+    assert child_batch.generation_kind == "REGION_REGENERATED"
+    assert child_batch.ordinal > batch.ordinal
+    assert child.status == "QUEUED"
+    mask_asset = db_session.get(Asset, lineage.mask_asset_id)
+    assert mask_asset is not None
+    assert mask_asset.kind == "region_mask"
+
+    job = db_session.get(GenerationJob, child.job_id)
+    assert job is not None
+    assert job.job_type == "PAGE_REGION_REGENERATE"
+    assert job.request_parameters["mask_asset_id"] == mask_asset.id
+    assert job.request_parameters["original_candidate_id"] == live.id
+    # The paid worker never runs in the offline suite: no attempt rows exist.
+    attempts_after = list(db_session.scalars(select(ModelCallAttempt)))
+    assert attempts_after == []
+    assert model.capabilities["accepts_explicit_mask"] is True
 
 
 def test_propose_replays_frozen_first_result_and_duplicate_command_id(client, db_session):

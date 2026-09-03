@@ -82,6 +82,18 @@ def model_supports_resolution(model: AIModel, resolution: str) -> bool:
     return not supported or resolution in supported
 
 
+def model_supports_explicit_mask(model: AIModel) -> bool:
+    """Catalog-level mask capability bit (V02-42B audit §7).
+
+    Absent or falsy means unsupported: region regeneration must fail closed
+    with UNSUPPORTED_CAPABILITY instead of silently degrading to a plain
+    image-to-image whole-page edit. Real-provider verification stays with
+    V02-44; tests use mock catalog rows.
+    """
+
+    return bool((model.capabilities or {}).get("accepts_explicit_mask"))
+
+
 def model_operation_verified(model: AIModel, operation: str) -> bool:
     if model.confidence != "VERIFIED":
         return False
