@@ -1,7 +1,9 @@
 "use client";
 
 // Single panel outline on the page canvas. Panels render as lightweight
-// outlines only (audit §4): narrative detail lives in the inspector.
+// outlines only (audit §4): narrative detail lives in the inspector and the
+// reading-order badge lives in the culled overlay. In hit-test mode only the
+// selected panel mounts a node at all.
 import type { NormalizedRect } from "@/lib/api";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 
@@ -15,19 +17,17 @@ export function PanelNode({
   rect,
   selected,
   interactive,
-  readingDirection,
-  showReadingBadge,
   onPointerDown,
   onDoubleClick,
+  elementRef,
 }: {
   panel: StoryboardPanel;
   rect: NormalizedRect;
   selected: boolean;
   interactive: boolean;
-  readingDirection: string;
-  showReadingBadge: boolean;
   onPointerDown?: (panel: StoryboardPanel, event: ReactPointerEvent<HTMLDivElement>) => void;
   onDoubleClick?: () => void;
+  elementRef?: (element: HTMLDivElement | null) => void;
 }) {
   const polygon = isPolygonPanel(panel);
   const className = [
@@ -45,6 +45,7 @@ export function PanelNode({
   };
   return <div
     id={`canvas-panel-${panel.id}`}
+    ref={elementRef}
     role="button"
     aria-label={`格 ${String(panel.reading_order).padStart(2, "0")}`}
     aria-current={selected ? "true" : undefined}
@@ -53,10 +54,6 @@ export function PanelNode({
     onPointerDown={interactive ? (event) => onPointerDown?.(panel, event) : undefined}
     onDoubleClick={onDoubleClick}
   >
-    {showReadingBadge && <span
-      className="canvas-reading-badge"
-      style={readingDirection === "ltr" ? { left: 0, top: 0 } : { right: 0, top: 0 }}
-    >格 {String(panel.reading_order).padStart(2, "0")}</span>}
     {polygon && <span className="canvas-polygon-mark">{storyboardCopy.polygonNote}</span>}
   </div>;
 }

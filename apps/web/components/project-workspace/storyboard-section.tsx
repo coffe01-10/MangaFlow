@@ -3,12 +3,27 @@
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { CircleAlert, PanelTop } from "lucide-react";
+import { useSyncExternalStore } from "react";
 
 import { getPageStructureIssue } from "@/lib/generation-rules";
+
+import { STRESS_NODE_COUNT } from "@/components/storyboard-editor/stress-fixture";
 
 import type { WorkspaceQueries } from "./use-workspace-queries";
 
 const StoryboardEditor = dynamic(() => import("@/components/storyboard-editor").then((mod) => mod.StoryboardEditor));
+const StressStoryboardCanvas = dynamic(() =>
+  import("@/components/storyboard-editor/stress-canvas").then((mod) => mod.StressStoryboardCanvas),
+);
+
+/** `?stress=100` renders the synthetic client-only stress fixture instead of
+ * the editor (V02-32); it never reads or writes storyboard data. */
+function readStressParam(): boolean {
+  if (typeof window === "undefined") return false;
+  return Number(new URLSearchParams(window.location.search).get("stress")) === STRESS_NODE_COUNT;
+}
+
+const subscribeNoop = () => () => undefined;
 
 export function StoryboardSection({
   chapters,
@@ -37,7 +52,13 @@ export function StoryboardSection({
   initialPageId: string | null;
   focusCharacterId: string | null;
 }) {
+  // `?stress=100` renders the client-only stress fixture instead of the editor
+  // (V02-32). Read through useSyncExternalStore so SSR/hydration agree and no
+  // effect-time state set is needed; the param cannot change without a reload.
+  const stressMode = useSyncExternalStore(subscribeNoop, readStressParam, () => false);
   const invalidPlannedPageCount = (pages.data ?? []).filter((page) => getPageStructureIssue(page)).length;
+
+  if (stressMode) return <StressStoryboardCanvas />;
 
   return (
     <>

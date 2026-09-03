@@ -9,7 +9,8 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:lighthouse": "node scripts/lighthouse-gate.mjs",
-    "test:workflow-fps": "node scripts/workflow-fps-gate.mjs"
+    "test:workflow-fps": "node scripts/workflow-fps-gate.mjs",
+    "test:storyboard-fps": "node scripts/storyboard-stress-fps-gate.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "5.101.2",

@@ -433,7 +433,10 @@ export function StoryboardEditor({
     <div className="storyboard-status"><div><strong>第 {currentPage.page_number} 页 · {currentPage.estimated_text_chars}/180 字 · {currentPage.estimated_bubbles}/8 气泡</strong><span>来自漫画剧本：{currentPage.scene_ids.length} 个场景 · {currentPage.beat_ids.length} 个情节拍；修改不会删除已有候选。</span></div><button disabled={replanPending} onClick={() => onReplan(currentPage.page_number)}><RotateCcw size={12} />从本页重新计算</button></div>
     {notice && <p className="edit-notice"><Check size={13} />{notice}</p>}
     {conflict && <div className="storyboard-conflict" role="alert"><CircleAlert size={14} /><span>{storyboardCopy.conflict}</span><button type="button" onClick={discardDraft}>{storyboardCopy.discardReload}</button></div>}
-    {error && !conflict && <p className="form-error"><CircleAlert size={14} />{error.message}</p>}
+    {error && !conflict && <p className="form-error"><CircleAlert size={14} />{error.message}
+      {/* 几何保存失败（网络错误等）同样保留草稿：可放弃并重新加载，不假装已保存。 */}
+      {geometrySave.error && <button type="button" onClick={discardDraft}>{storyboardCopy.discardReload}</button>}
+    </p>}
     <StoryboardToolbar
       zoomLabel={`${Math.round(zoom * 100)}%`}
       toggles={toggles}
