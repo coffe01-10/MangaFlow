@@ -42,6 +42,8 @@ export interface ModelCapability {
   preview_resolutions: string[];
   max_reference_images: number;
   regions: string[];
+  /** V02-42B capability bit; absent rows are treated as unsupported. */
+  accepts_explicit_mask?: boolean;
   confidence: string;
   enabled: boolean;
   display_enabled: boolean;

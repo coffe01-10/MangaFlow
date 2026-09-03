@@ -4,6 +4,12 @@
 
 本文件记录修订版 MVP 计划的实际完成度。
 
+## V02-42B 局部重抽卡候选链已审阅合并（2026-09-03）
+
+- Issue #98 / PR #99 / `glm/v02-42b-candidate-lineage` / 合并提交 `436f47d` / head `4009c56`。新增 `candidate_lineage` 血缘表（迁移 `20260903_28`，历史 REPAIR/UPSCALE 候选只读回填血缘行）；`regenerate_region` accept 在同一事务创建服务端 mask 资产、`REGION_REGENERATED` 派生候选与 `PAGE_REGION_REGENERATE` Job，enqueue 在事务提交后执行；propose 预览全程 savepoint 内回滚、绝不入队。
+- 父候选零改动：不覆盖原图、不整页重生，当前采用候选不变，派生候选仍走既有 select-candidate 人工采用门槛；prompt_snapshot 只增补 `lineage` 段，历史 provider/model ID 不改写。无 mask 的 `REGION_REGENERATED` 调用前 422；目录模型缺 `accepts_explicit_mask` 能力位返回确定性 `UNSUPPORTED_CAPABILITY`；缺父候选/父已删/父无图/未识别模型/分辨率不支持全部调用前失败，无 Job、无付费。
+- NOT RUN：真实供应商、真实 mask/inpaint、PostgreSQL live（迁移回填仅 SQLite 验证）、Playwright。
+
 ## V02-41B 生成台导演模式已审阅合并（2026-09-03）
 
 - Issue #96 / PR #97 / `glm/v02-41b-director-workspace` / 合并提交 `39cf6e4` / head `36437df`。生成台新增导演模式：作用域芯片、命令栏、结构化 diff 预览卡与命令历史（`apps/web/components/project-workspace/director-workspace.tsx` + `use-director-workspace.ts`），前端规则桩 `apps/web/lib/director-rules.ts` 把自然语言输入转为 V02-40 结构化命令并接 `/director` API；「在选区编辑」mask 入口保持禁用，导演台不静默整页重绘。
@@ -32,7 +38,7 @@
 
 - Issue #94 / PR #95 / `fix/v02-40-director-command-layer` / 合并提交 `01e9c3f` / head `cbe4059`。新增独立 director 路由与迁移 `20260903_27_director_command_journal`：journal 表 `director_command_groups` / `director_commands`，`/projects/{id}/director/command-groups` 提议/列表/读取/丢弃与 command accept/reject/undo/redo。
 - propose 以 `command_group_id` 幂等重放；preview 在 savepoint 内执行并回滚，不落业务改动；accept 按 expected_version 校验后应用并记录 `storyboard_version_after`；undo/redo 以 inverse 命令与快照实现，分镜被并发更新时返回 SUPERSEDED；`regenerate_region` 在执行层 fail-closed，不触发付费调用或整页重生。
-- NOT RUN：真实供应商、NL 模型解析（propose 只接受结构化 `commands[]`）、V02-41 导演台 UI、V02-42 CandidateLineage。
+- NOT RUN：真实供应商、NL 模型解析（propose 只接受结构化 `commands[]`）。原文 NOT RUN 中的「V02-41 导演台 UI」已由 V02-41B 落地，「V02-42 CandidateLineage」已由 V02-42B 落地。
 
 ## V02-32 分镜画布可用性与 100 节点夹具已审阅合并（2026-09-03）
 

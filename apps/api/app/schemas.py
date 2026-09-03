@@ -166,6 +166,7 @@ class ModelCapabilityRead(BaseModel):
     preview_resolutions: list[str]
     max_reference_images: int
     regions: list[str]
+    accepts_explicit_mask: bool = False
     confidence: str = "VERIFIED"
     enabled: bool = True
     display_enabled: bool = True

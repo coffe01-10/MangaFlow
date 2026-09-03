@@ -61,6 +61,36 @@ def _model(
     return model
 
 
+def test_model_catalog_exposes_accepts_explicit_mask(client, db_session):
+    """V02-43B: the /models catalog carries the V02-42B mask capability bit."""
+    connection = _connection(db_session)
+    masked = AIModel(
+        connection_id=connection.id,
+        provider_model_id="mask-capable",
+        display_name="mask-capable",
+        model_type="IMAGE",
+        input_modalities=["TEXT", "IMAGE"],
+        output_modalities=["IMAGE"],
+        operations=["image_gen", "image_edit"],
+        capabilities={"accepts_explicit_mask": True, "resolutions": ["1K"]},
+        source="DISCOVERED",
+        confidence="VERIFIED",
+        enabled=True,
+        display_enabled=True,
+        priority=100,
+        last_verified_at=datetime.now(UTC),
+    )
+    plain = _model(db_session, connection, "no-mask-bit")
+    db_session.add(masked)
+    db_session.commit()
+
+    catalog = client.get("/api/v1/models")
+    assert catalog.status_code == 200
+    rows = {item["catalog_id"]: item for item in catalog.json()}
+    assert rows[masked.id]["accepts_explicit_mask"] is True
+    assert rows[plain.id]["accepts_explicit_mask"] is False
+
+
 def test_single_visibility_patch_preserves_capability_metadata(client, db_session):
     connection = _connection(db_session)
     model = _model(db_session, connection, "single-visibility")

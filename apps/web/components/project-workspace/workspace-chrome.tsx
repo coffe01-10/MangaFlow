@@ -17,7 +17,8 @@ import {
 import { useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 
-import type { Job } from "@/lib/api";
+import { Pencil } from "lucide-react";
+import type { Job, PageCandidate } from "@/lib/api";
 
 import { navigationItems } from "./labels";
 import type { WorkspaceSection } from "./types";
@@ -86,13 +87,15 @@ export function WorkspaceSidebar({
 export function ImageLightbox({
   preview,
   onClose,
+  onLocalEdit,
 }: {
-  preview: { url: string; label: string };
+  preview: { url: string; label: string; candidate?: PageCandidate };
   onClose: () => void;
+  onLocalEdit?: (candidate: PageCandidate) => void;
 }) {
   const [previewZoom, setPreviewZoom] = useState(1);
 
-  return <div className="image-lightbox" role="dialog" aria-modal="true" aria-label={preview.label} onClick={onClose}><button type="button" className="lightbox-close" aria-label="关闭大图" onClick={onClose}><X size={20} /></button><div className="lightbox-shell" onClick={(event) => event.stopPropagation()}><div className="lightbox-toolbar"><strong>{preview.label}</strong><div><button type="button" aria-label="缩小图片" disabled={previewZoom <= .5} onClick={() => setPreviewZoom((value) => Math.max(.5, value - .25))}><ZoomOut size={17} /></button><button type="button" onClick={() => setPreviewZoom(1)}>{Math.round(previewZoom * 100)}%</button><button type="button" aria-label="放大图片" disabled={previewZoom >= 2.5} onClick={() => setPreviewZoom((value) => Math.min(2.5, value + .25))}><ZoomIn size={17} /></button></div></div><div className="lightbox-stage"><Image style={{ transform: `scale(${previewZoom})` }} src={preview.url} alt={preview.label} width={1600} height={1600} unoptimized /></div><span>使用 ＋/－ 调整到 50%–250%，点击背景或右上角关闭</span></div></div>;
+  return <div className="image-lightbox" role="dialog" aria-modal="true" aria-label={preview.label} onClick={onClose}><button type="button" className="lightbox-close" aria-label="关闭大图" onClick={onClose}><X size={20} /></button><div className="lightbox-shell" onClick={(event) => event.stopPropagation()}><div className="lightbox-toolbar"><strong>{preview.label}</strong><div>{preview.candidate && onLocalEdit && <button type="button" className="lightbox-local-edit" title="进入局部选区编辑器：画 mask 后按 regenerate_region 生成派生候选" onClick={() => onLocalEdit(preview.candidate!)}><Pencil size={15} />局部修改</button>}<button type="button" aria-label="缩小图片" disabled={previewZoom <= .5} onClick={() => setPreviewZoom((value) => Math.max(.5, value - .25))}><ZoomOut size={17} /></button><button type="button" onClick={() => setPreviewZoom(1)}>{Math.round(previewZoom * 100)}%</button><button type="button" aria-label="放大图片" disabled={previewZoom >= 2.5} onClick={() => setPreviewZoom((value) => Math.min(2.5, value + .25))}><ZoomIn size={17} /></button></div></div><div className="lightbox-stage"><Image style={{ transform: `scale(${previewZoom})` }} src={preview.url} alt={preview.label} width={1600} height={1600} unoptimized /></div><span>使用 ＋/－ 调整到 50%–250%，点击背景或右上角关闭</span></div></div>;
 }
 
 export function QueueDock({

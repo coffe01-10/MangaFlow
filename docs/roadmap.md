@@ -1,8 +1,8 @@
 # MangaFlow 主分支后续工作清单
 
 更新时间：2026-09-03
-当前实现合并树：`master` / `39cf6e4`（PR #97，2026-09-03）。V02-21B、V02-22A、V02-22B、V02-23B、V02-30B、V02-31B、V02-32、V02-40 与 V02-41B 已分别完成独立审阅并合并。2026-09-02 在 Linux 隔离环境跑通 PostgreSQL live 18 项（含 PKG-S14）与 Redis/RQ SimpleWorker live 8 项；7 项 Windows Job Object 独立 Worker 仍 `BLOCKED`（笔记本无 Docker/PostgreSQL/Redis，用户明确不安装）。同日 Windows 笔记本 `LAPTOP-TV9KT8RC` 在 SHA `98b93a0`（分支 `fix/pr82-remaining-package-p1s`，该 SHA 为 `master`/`f961774` 祖先；E2E/perf **未**跑在 `c93e1b3`）以官方控制器 `scripts/run_e2e_owned.py` 将 Playwright E2E 与 Lighthouse/FPS 记为 `RUN`。真实图片生成/编辑、账号权限、费用与真实取消/超时进程树仍按任务标记为 `NOT RUN`。
-当前开发分支：`glm/v02-42b-candidate-lineage`。下一实现项为 V02-42B。
+当前实现合并树：`master` / `436f47d`（PR #99，2026-09-03）。V02-21B、V02-22A、V02-22B、V02-23B、V02-30B、V02-31B、V02-32、V02-40、V02-41B 与 V02-42B 已分别完成独立审阅并合并。2026-09-02 在 Linux 隔离环境跑通 PostgreSQL live 18 项（含 PKG-S14）与 Redis/RQ SimpleWorker live 8 项；7 项 Windows Job Object 独立 Worker 仍 `BLOCKED`（笔记本无 Docker/PostgreSQL/Redis，用户明确不安装）。同日 Windows 笔记本 `LAPTOP-TV9KT8RC` 在 SHA `98b93a0`（分支 `fix/pr82-remaining-package-p1s`，该 SHA 为 `master`/`f961774` 祖先；E2E/perf **未**跑在 `c93e1b3`）以官方控制器 `scripts/run_e2e_owned.py` 将 Playwright E2E 与 Lighthouse/FPS 记为 `RUN`。真实图片生成/编辑、账号权限、费用与真实取消/超时进程树仍按任务标记为 `NOT RUN`。
+当前开发分支：`glm/v02-43b-local-edit-ui`。下一实现项为 V02-43B。
 最近 `check:full` 历史基线：`master` / `cb324e3`（2026-08-27；相对 PR #5 合并提交 `d5d32ec` 仅增加任务文档），不代表 PR #6 / #7 / #10 / #11 已重跑浏览器验收。2026-09-02 Windows owned E2E 17/17 与 LH/FPS 4/4 证据在 `98b93a0` / `LAPTOP-TV9KT8RC`，见 `docs/development-progress.md`。
 深审历史基线：`master` / `f085327`。当时新增 6 项 P1 修复与 1 项 P2 改进；PR #6 已合并其中 P1-7、P1-9～P1-12 的代码修复。P1-8、P2-8 已随 PR #7 合并，独立 Redis/RQ、PostgreSQL 与浏览器验收仍待完成。
 安全审查历史基线：`master` / `7635cf7`。P0-3、P1-13～P1-15、P2-4、P2-9 的代码修复现已合并，真实服务/容器及完整依赖审计边界仍保留。
@@ -68,7 +68,7 @@
 
 #### 下一实现窗口
 
-1. V02-14A / Issue #62 已由 PR #63 合并，V02-14B / Issue #64 已由 PR #65 合并，V02-14C / Issue #67 已由 PR #68 合并；V02-15B 已由 PR #71 合并（`7af5b59`），V02-16B 已由 PR #73 合并（`fec8d7f`），V02-21B 已由 PR #77 合并（`7c10d27`），V02-22A / Issue #78 已由 PR #79 合并（`6298be1`），V02-22B 已由 PR #82 / #83 合并（`f961774`）。V02-23B 已由 PR #86 合并（`6d09e78`），V02-30B / Issue #87 已由 PR #88 合并（`e2a12d2`），V02-31B / Issue #89 已由 PR #90 合并（`c4f0fc5`），V02-32 / Issue #91 已由 PR #92 合并（`23f5e28`）。V02-40 / Issue #94 已由 PR #95 合并（`01e9c3f`）。V02-41B / Issue #96 已由 PR #97 合并（`39cf6e4`）。PKG-S14 真实 PostgreSQL 升降级与并发已在 2026-09-02 Linux 隔离环境跑通。下一实现项为 V02-42B。
+1. V02-14A / Issue #62 已由 PR #63 合并，V02-14B / Issue #64 已由 PR #65 合并，V02-14C / Issue #67 已由 PR #68 合并；V02-15B 已由 PR #71 合并（`7af5b59`），V02-16B 已由 PR #73 合并（`fec8d7f`），V02-21B 已由 PR #77 合并（`7c10d27`），V02-22A / Issue #78 已由 PR #79 合并（`6298be1`），V02-22B 已由 PR #82 / #83 合并（`f961774`）。V02-23B 已由 PR #86 合并（`6d09e78`），V02-30B / Issue #87 已由 PR #88 合并（`e2a12d2`），V02-31B / Issue #89 已由 PR #90 合并（`c4f0fc5`），V02-32 / Issue #91 已由 PR #92 合并（`23f5e28`）。V02-40 / Issue #94 已由 PR #95 合并（`01e9c3f`）。V02-41B / Issue #96 已由 PR #97 合并（`39cf6e4`），V02-42B / Issue #98 已由 PR #99 合并（`436f47d`）。PKG-S14 真实 PostgreSQL 升降级与并发已在 2026-09-02 Linux 隔离环境跑通。下一实现项为 V02-43B。
 2. 资产、分镜、导演、CLI、用量和桌面端均先从各自已批准的 A 级设计文档拆出实现 Issue；不得把审计文档的合并当作功能交付。
 3. 所有实现 Issue 必须引用对应契约，写明迁移/事务/资源所有权，并标注真实供应商、CLI、PostgreSQL、Redis/RQ、浏览器或桌面环境的 `RUN`、`NOT RUN`、`BLOCKED`。
 - [x] **V02-13（L3）：建立 CLI 图像通道公共执行器。** 将 Codex CLI、Antigravity CLI、Grok Build 视为可选执行通道，而不是假装成普通 HTTP API。
@@ -111,12 +111,12 @@
 
 ### M4：自然语言导演与局部重抽卡
 
-- [x] **V02-40（L3，Issue #94 / PR #95 / 合并提交 `01e9c3f`，head `cbe4059`）：建立自然语言导演命令层。** 独立 director 路由（command-groups 提议/列表/读取/丢弃与 command accept/reject/undo/redo）、journal 表 `director_command_groups` / `director_commands`（迁移 `20260903_27_director_command_journal`）、propose 以 `command_group_id` 幂等重放、preview 在 savepoint 内回滚执行、accept 按 expected_version 校验后落库、undo/redo 以 inverse 命令与快照实现；`regenerate_region` fail-closed，不触发付费调用或整页重生。NOT RUN：真实供应商、NL 模型解析（propose 只接受结构化 `commands[]`）、V02-42 CandidateLineage。原文 NOT RUN 中的「V02-41 导演台 UI」已由 V02-41B 落地。
+- [x] **V02-40（L3，Issue #94 / PR #95 / 合并提交 `01e9c3f`，head `cbe4059`）：建立自然语言导演命令层。** 独立 director 路由（command-groups 提议/列表/读取/丢弃与 command accept/reject/undo/redo）、journal 表 `director_command_groups` / `director_commands`（迁移 `20260903_27_director_command_journal`）、propose 以 `command_group_id` 幂等重放、preview 在 savepoint 内回滚执行、accept 按 expected_version 校验后落库、undo/redo 以 inverse 命令与快照实现；`regenerate_region` fail-closed，不触发付费调用或整页重生。NOT RUN：真实供应商、NL 模型解析（propose 只接受结构化 `commands[]`）。原文 NOT RUN 中的「V02-41 导演台 UI」已由 V02-41B 落地，「V02-42 CandidateLineage」已由 V02-42B 落地。
 - [x] **V02-41A / Issue #54（L2 设计）：导演工作区。** 已合并 `docs/v02-director-workspace-ui-audit.md`，冻结画布、选区、命令历史、结构化 diff 和歧义确认流程；UI 未实现。
 - [x] **V02-41B（实现，Issue #96 / PR #97 / 合并提交 `39cf6e4`，head `36437df`）：生成台导演模式、作用域芯片、命令栏、预览卡、历史；接 V02-40 API。** 生成台导演模式与前端规则桩已进 master，接 V02-40 director API；「在选区编辑」mask 入口保持禁用，不静默整页重绘。NOT RUN：真实 LLM 解析、mask 选区、真实供应商。
 - [ ] **V02-42（L3 后端）：实现局部重抽卡候选链。**
   - [x] **V02-42A / Issue #51（审计）：** 已合并 `docs/v02-local-redraw-pipeline-audit.md`，明确现有请求/任务/候选生命周期和需补的数据边界。
-  - [ ] **V02-42B（实现）：** 保存 mask、父候选、命令、参考资产和参数，结果只创建派生候选，不覆盖原图或整页重生。
+  - [x] **V02-42B（实现，Issue #98 / PR #99 / 合并提交 `436f47d`，head `4009c56`）：** 保存 mask、父候选、命令、参考资产和参数，结果只创建派生候选，不覆盖原图或整页重生。`candidate_lineage` 血缘表与 `regenerate_region` 派生候选已进 master；无 mask 调用前 422，目录模型缺 `accepts_explicit_mask` 返回确定性 `UNSUPPORTED_CAPABILITY`；父候选零改动，历史 provider/model ID 不改写。NOT RUN：真实供应商、真实 mask/inpaint、PostgreSQL live、Playwright。
 - [ ] **V02-43（L2）：实现局部选区与结果比较。**
   - [x] **V02-43A / Issue #58（设计）：** 已合并 `docs/v02-local-edit-ui-audit.md`，冻结 mask 工具、对比、重复抽卡、收藏/采用和能力门禁。
   - [ ] **V02-43B（实现）：** 依赖 V02-42B 与模型级能力字段，补组件、浏览器和失败恢复测试。

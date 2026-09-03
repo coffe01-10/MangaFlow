@@ -2062,3 +2062,83 @@ p { font-size: 14px !important; }
 @media (max-width: 900px) {
   .director-preview { position: fixed; z-index: 80; inset: 12px; overflow-y: auto; box-shadow: 0 18px 48px rgba(21,21,18,.32); }
 }
+
+/* ---------------------------------------------------------------------------
+ * V02-43B 局部选区编辑器（local edit shell）
+ * Mask overlay + tools + side-by-side compare over the V02-42B
+ * regenerate_region derived-candidate flow.
+ * ------------------------------------------------------------------------- */
+.local-edit-shell { display: grid; gap: 12px; padding: 14px; border: 1px solid var(--line); background: rgba(255,255,255,.55); }
+.local-edit-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.local-edit-header span { display: block; font-size: 9px; letter-spacing: .16em; font-weight: 800; color: #66604f; }
+.local-edit-header h3 { margin: 3px 0 0; font-family: var(--serif); font-size: 16px; }
+.local-edit-note { margin: 0; color: #66604f; font-size: 11px; line-height: 1.7; }
+.local-edit-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.local-edit-toolbar button { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; padding: 0 10px; border: 1px solid var(--line); background: rgba(255,255,255,.55); color: #5f5a52; font-size: 10px; font-weight: 700; cursor: pointer; }
+.local-edit-toolbar button:hover:not(:disabled) { border-color: var(--ink); color: var(--ink); }
+.local-edit-toolbar button.active { border-color: var(--vermillion); background: rgba(211,74,47,.1); color: var(--vermillion); box-shadow: 0 0 0 3px rgba(211,74,47,.12); }
+.local-edit-toolbar button:disabled { opacity: .45; cursor: not-allowed; }
+.local-edit-toolbar button:focus-visible { outline: 3px solid var(--vermillion); outline-offset: 2px; }
+.local-edit-toolbar-sep { width: 1px; height: 18px; background: var(--line-dark); }
+.local-edit-brush-size { font-size: 10px; color: #88827a; }
+.local-edit-body { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(300px, 1fr); gap: 14px; align-items: start; }
+.local-edit-stage { position: relative; overflow: hidden; border: 1px solid var(--line-dark); background: #f4f1ea; touch-action: none; }
+.local-edit-stage.locked { cursor: not-allowed; }
+.local-edit-inner { position: relative; width: 100%; transform-origin: center; }
+.local-edit-mask { position: absolute; inset: 0; width: 100%; height: 100%; }
+.local-edit-mask-region { fill: rgba(211,74,47,.35); stroke: var(--vermillion); stroke-width: 6; }
+.local-edit-mask-draft { fill: none; stroke: var(--vermillion); stroke-width: 5; stroke-dasharray: 10 8; }
+.local-edit-lock { position: absolute; left: 50%; top: 8px; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; background: rgba(21,21,18,.82); color: var(--white); font-size: 10px; font-weight: 700; }
+.local-edit-mask-stats { margin: 6px 0 0; font-size: 10px; color: #66604f; }
+.local-edit-side { display: grid; gap: 10px; align-content: start; }
+.local-edit-form { display: grid; gap: 8px; }
+.local-edit-form label { display: grid; gap: 4px; font-size: 10px; font-weight: 800; color: #66604f; }
+.local-edit-form textarea,
+.local-edit-form select { width: 100%; padding: 8px 10px; border: 1px solid var(--line-dark); background: var(--white); color: var(--ink); font-family: var(--serif); font-size: 12px; line-height: 1.6; resize: vertical; }
+.local-edit-form textarea:focus-visible,
+.local-edit-form select:focus-visible { outline: 3px solid var(--vermillion); outline-offset: 2px; }
+.local-edit-cost { margin: 0; font-size: 10px; color: #88827a; }
+.local-edit-blocked { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid var(--vermillion); background: rgba(211,74,47,.06); color: #8f2f1c; }
+.local-edit-blocked p { margin: 0; font-size: 11px; line-height: 1.7; }
+.local-edit-gate-note { display: flex; align-items: flex-start; gap: 6px; margin: 0; font-size: 10.5px; line-height: 1.6; color: #8f6117; }
+.local-edit-generate { justify-self: start; }
+.local-edit-hint { margin: 0; font-size: 10px; color: #88827a; }
+.local-edit-status { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: #66604f; }
+.local-edit-preview { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid var(--line-dark); background: rgba(255,255,255,.6); }
+.local-edit-preview header strong { font-size: 12px; }
+.local-edit-preview dl { margin: 0; display: grid; gap: 4px; }
+.local-edit-preview dl > div { display: flex; gap: 8px; font-size: 11px; }
+.local-edit-preview dt { flex: 0 0 84px; color: #66604f; font-weight: 700; }
+.local-edit-preview dd { margin: 0; color: var(--ink); overflow-wrap: anywhere; }
+.local-edit-preview-note { margin: 0; font-size: 10px; color: #88827a; line-height: 1.7; }
+.local-edit-preview footer { display: flex; gap: 8px; }
+.local-edit-job-row { display: flex; align-items: center; gap: 8px; font-size: 10px; color: #66604f; }
+.local-edit-compare { display: grid; gap: 8px; }
+.local-edit-compare > header { display: flex; align-items: center; justify-content: space-between; }
+.local-edit-compare > header strong { font-size: 12px; }
+.local-edit-compare [role="group"] { display: inline-flex; gap: 4px; }
+.local-edit-compare [role="group"] button { min-height: 24px; padding: 0 9px; border: 1px solid var(--line); background: rgba(255,255,255,.55); color: #5f5a52; font-size: 10px; font-weight: 700; cursor: pointer; }
+.local-edit-compare [role="group"] button.active { border-color: var(--vermillion); color: var(--vermillion); }
+.local-edit-slots { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.local-edit-slot { display: grid; gap: 6px; margin: 0; padding: 8px; border: 1px solid var(--line); background: var(--white); }
+.local-edit-slot figcaption { display: flex; flex-wrap: wrap; gap: 6px; min-height: 20px; }
+.local-edit-slot img { width: 100%; height: auto; object-fit: contain; }
+.local-edit-badge { display: inline-flex; align-items: center; padding: 2px 7px; border: 1px solid var(--line-dark); background: #f4f1ea; color: var(--ink); font-size: 9.5px; font-weight: 800; }
+.local-edit-badge.badge-source { border-color: var(--ink); }
+.local-edit-badge.badge-adopted { border-color: #2f6b3a; background: rgba(47,107,58,.08); color: #2f6b3a; }
+.local-edit-badge.badge-new { border-color: var(--vermillion); background: rgba(211,74,47,.07); color: var(--vermillion); }
+.local-edit-badge.badge-warn { border-color: #8f6117; background: rgba(143,97,23,.07); color: #8f6117; }
+.local-edit-slot-empty { display: grid; place-items: center; min-height: 160px; border: 1px dashed var(--line-dark); color: #88827a; font-size: 11px; text-align: center; padding: 8px; }
+.lightbox-local-edit { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border: 1px solid var(--vermillion); background: transparent; color: var(--vermillion); font-size: 11px; font-weight: 700; cursor: pointer; }
+.lightbox-local-edit:hover { background: rgba(211,74,47,.08); }
+
+/* L15: below 900px the editor stacks (canvas above parameters, source above
+ * new in the compare) and the toolbar scrolls instead of overflowing. */
+@media (max-width: 900px) {
+  .local-edit-body { grid-template-columns: 1fr; }
+  .local-edit-slots { grid-template-columns: 1fr; }
+  .local-edit-toolbar { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; }
+  .local-edit-brush-size { white-space: nowrap; }
+}
+.local-edit-toggle-adopted { min-height: 20px; padding: 0 7px; border: 1px dashed var(--line-dark); background: transparent; color: #5f5a52; font-size: 9.5px; font-weight: 700; cursor: pointer; }
+.local-edit-toggle-adopted:hover { border-color: var(--ink); color: var(--ink); }
