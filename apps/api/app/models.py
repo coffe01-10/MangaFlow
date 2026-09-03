@@ -402,6 +402,9 @@ class MangaPage(Timestamped, Base):
     storyboard_version: Mapped[int] = mapped_column(Integer, default=1)
     selected_candidate_ack_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     continuity_status: Mapped[str] = mapped_column(String(32), default="NOT_CHECKED")
+    # V02-30 storyboard layout contract: physical canvas in mm. NULL keeps the
+    # lazy page_ratio default; stored bounds/region remain the compat fields.
+    canvas: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     panels: Mapped[list["Panel"]] = relationship(cascade="all, delete-orphan")
 
@@ -431,6 +434,9 @@ class Panel(Timestamped, Base):
     bleed: Mapped[bool] = mapped_column(Boolean, default=False)
     borderless: Mapped[bool] = mapped_column(Boolean, default=False)
     locked_fields: Mapped[list] = mapped_column(JSON, default=list)
+    # V02-30 storyboard layout contract: normalized structural geometry. NULL
+    # derives the rect from the flat ``bounds`` at read time.
+    geometry: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     dialogues: Mapped[list["Dialogue"]] = relationship(cascade="all, delete-orphan")
 
@@ -447,6 +453,9 @@ class Dialogue(Base):
     text_direction: Mapped[str] = mapped_column(String(16), default="vertical")
     region: Mapped[dict] = mapped_column(JSON, default=dict)
     rewrite_forbidden: Mapped[bool] = mapped_column(Boolean, default=True)
+    # V02-30 storyboard layout contract: structured bubble geometry. NULL falls
+    # back to the legacy semantic ``region`` anchor at read time.
+    bubble: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class ContinuitySnapshot(Base):

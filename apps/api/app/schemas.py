@@ -10,6 +10,12 @@ from app.domain.states import (
     Resolution,
     WorkflowMode,
 )
+from app.domain.storyboard_layout import (
+    MAX_POLYGON_VERTICES,
+    MAX_ROTATION,
+    MIN_PANEL_SIZE,
+    MIN_POLYGON_VERTICES,
+)
 
 MODEL_REFERENCE_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$"
 
@@ -593,6 +599,9 @@ class PageRead(BaseModel):
     scene_ids: list
     beat_ids: list
     version: int
+    # V02-30 storyboard layout contract; filled by the storyboard read path
+    # from the stored canvas or the page_ratio default.
+    canvas: dict | None = None
 
 
 class DialogueRead(BaseModel):
@@ -606,6 +615,8 @@ class DialogueRead(BaseModel):
     text_direction: str
     region: dict
     rewrite_forbidden: bool
+    # Normalized structured bubble; None falls back to the legacy region.
+    bubble: dict | None = None
 
 
 class PanelRead(BaseModel):
@@ -631,6 +642,8 @@ class PanelRead(BaseModel):
     borderless: bool
     locked_fields: list
     version: int
+    # Normalized structural geometry derived from bounds when not stored.
+    geometry: dict | None = None
     dialogues: list[DialogueRead] = Field(default_factory=list)
 
 
@@ -638,6 +651,72 @@ class StoryboardRead(BaseModel):
     page: PageRead
     panels: list[PanelRead]
     candidate_count: int = 0
+
+
+class PanelBounds(BaseModel):
+    """Flat normalized panel rect; the permanent compatibility shape."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    x: float = Field(ge=0.0, le=1.0)
+    y: float = Field(ge=0.0, le=1.0)
+    width: float = Field(ge=MIN_PANEL_SIZE, le=1.0)
+    height: float = Field(ge=MIN_PANEL_SIZE, le=1.0)
+
+
+class GeometryPoint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    x: float = Field(ge=0.0, le=1.0)
+    y: float = Field(ge=0.0, le=1.0)
+
+
+class PanelGeometry(BaseModel):
+    """Structural panel geometry extension (contract §4)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: str = Field(pattern="^(rect|polygon)$")
+    rect: PanelBounds | None = None
+    polygon: list[GeometryPoint] | None = Field(
+        default=None, min_length=MIN_POLYGON_VERTICES, max_length=MAX_POLYGON_VERTICES
+    )
+    rotation: float = Field(default=0.0, ge=-MAX_ROTATION, le=MAX_ROTATION)
+    z_order: int = Field(default=1, ge=1)
+
+
+class BubbleRect(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    x: float = Field(ge=0.0, le=1.0)
+    y: float = Field(ge=0.0, le=1.0)
+    width: float = Field(gt=0.0, le=1.0)
+    height: float = Field(gt=0.0, le=1.0)
+
+
+class BubbleGeometry(BaseModel):
+    """Structured bubble geometry extension (contract §7)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: str = Field(default="rect", pattern="^(rect|ellipse)$")
+    rect: BubbleRect
+    anchor: GeometryPoint | None = None
+    tail_target: GeometryPoint | None = None
+    rotation: float = Field(default=0.0, ge=-MAX_ROTATION, le=MAX_ROTATION)
+    text_region: BubbleRect | None = None
+
+
+class SoundEffect(BaseModel):
+    """Structured sound-effect element (contract §12)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1, max_length=200)
+    x: float | None = Field(default=None, ge=0.0, le=1.0)
+    y: float | None = Field(default=None, ge=0.0, le=1.0)
+    rotation: float = Field(default=0.0, ge=-MAX_ROTATION, le=MAX_ROTATION)
+    size: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class PanelUpdate(BaseModel):
@@ -651,7 +730,9 @@ class PanelUpdate(BaseModel):
     actions: dict | None = None
     expressions: dict[str, str] | None = None
     background: str | None = Field(default=None, max_length=8000)
-    sound_effects: list | None = None
+    sound_effects: list[SoundEffect | str] | None = None
+    bounds: PanelBounds | None = None
+    geometry: PanelGeometry | None = None
     bleed: bool | None = None
     borderless: bool | None = None
     version: int = Field(ge=1)
@@ -671,6 +752,7 @@ class DialogueUpdate(BaseModel):
     speaker_character_id: str | None = None
     text_direction: str | None = Field(default=None, pattern="^(vertical|horizontal)$")
     region: dict | None = None
+    bubble: BubbleGeometry | None = None
     rewrite_forbidden: bool | None = None
     panel_version: int = Field(ge=1)
 
@@ -717,8 +799,44 @@ class CandidateCreate(BaseModel):
 
 
 class PageLayoutUpdate(BaseModel):
-    panel_count: int = Field(ge=3, le=5)
+    panel_count: int = Field(ge=3, le=8)
     layout_mode: str = Field(default="dynamic", pattern="^(dynamic|balanced)$")
+
+
+class ReadingOrderUpdate(BaseModel):
+    """Whole-page logical reading order re-numbering (contract §6)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    order: list[str] = Field(min_length=1)
+
+
+class StoryboardGeometryPanelItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    panel_id: str
+    bounds: PanelBounds
+    geometry: PanelGeometry | None = None
+    reading_order: int = Field(ge=1)
+
+
+class StoryboardGeometryDialogueItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    dialogue_id: str
+    bubble: BubbleGeometry | None = None
+    reading_order: int = Field(ge=1)
+
+
+class StoryboardGeometrySave(BaseModel):
+    """Atomic whole-page geometry snapshot (contract §10.3)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str = Field(min_length=1, max_length=128)
+    storyboard_version: int = Field(ge=1)
+    panels: list[StoryboardGeometryPanelItem]
+    dialogues: list[StoryboardGeometryDialogueItem] = Field(default_factory=list)
 
 
 class PageCandidateRead(BaseModel):
