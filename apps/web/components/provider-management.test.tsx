@@ -289,8 +289,10 @@ describe("ProviderManagement 错误展示", () => {
     fireEvent.click(await screen.findByRole("button", { name: "测试连接" }));
     await waitFor(() => {
       expect(verifyConnection).toHaveBeenCalledTimes(1);
+      expect(verifyConnection).toHaveBeenCalledWith("conn-1", { level: "CREDENTIALS" });
       expect(discoverModels).not.toHaveBeenCalled();
     });
+    expect(await screen.findByText("连接测试完成 · 12 ms")).toBeInTheDocument();
   });
 
   it("账号型凭据按 credential_source 渲染，不依赖协议字符串", async () => {
@@ -763,6 +765,25 @@ describe("V02-11B 统一连接与模型目录", () => {
     expect(screen.getByText(/hidden · 已隐藏/)).toBeInTheDocument();
   });
 
+  it("V3 已隐藏的已验证模型不出现在默认列表，仅已验证也不会把它带回", async () => {
+    providerModelsApi.mockResolvedValue([makeProviderModel({
+      id: "hv-1",
+      provider_model_id: "hv-1",
+      display_name: "Hidden Verified",
+      confidence: "VERIFIED",
+      display_enabled: false,
+    })]);
+    renderPlatform();
+    expect(await screen.findByText(/没有符合筛选的模型/)).toBeInTheDocument();
+    expect(screen.queryByText("Hidden Verified")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("checkbox", { name: "仅已验证" }));
+    expect(screen.queryByText("Hidden Verified")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("checkbox", { name: "显示已隐藏" }));
+    const row = (await screen.findByText("Hidden Verified")).closest("article");
+    expect(row).not.toBeNull();
+    expect(within(row!).getByText(/已隐藏/)).toBeInTheDocument();
+  });
+
   it("S1-S5 密钥只显示 hint，输入为密码且保存后清空明文", async () => {
     saveProviderKey.mockResolvedValue(makeConnection().keys[0]);
     renderPlatform();
@@ -778,6 +799,26 @@ describe("V02-11B 统一连接与模型目录", () => {
       expect(screen.getByText("密钥已保存")).toBeInTheDocument();
     });
     expect(document.body.textContent).not.toContain("sk-live-never-render");
+  });
+
+  it("S5 服务端脱敏格式 ••••9876 原样显示，不出现完整密钥", async () => {
+    providersApi.mockResolvedValueOnce([makeProvider({
+      connections: [makeConnection({
+        keys: [{
+          id: "key-prod",
+          label: "prod",
+          key_hint: "••••9876",
+          enabled: true,
+          health_state: "HEALTHY",
+          cooldown_until: null,
+          last_used_at: null,
+          last_error_code: null,
+        }],
+      })],
+    })]);
+    renderPlatform();
+    expect(await screen.findByText(/••••9876/)).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("sk-live-");
   });
 });
 

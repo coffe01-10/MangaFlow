@@ -1,8 +1,8 @@
 # MangaFlow 主分支后续工作清单
 
 更新时间：2026-09-03
-当前实现合并树：`master` / `e2126a1`（PR #103，2026-09-03）。V02-21B、V02-22A、V02-22B、V02-23B、V02-30B、V02-31B、V02-32、V02-40、V02-41B、V02-42B、V02-43B 与 V02-44B 已分别完成独立审阅并合并。2026-09-02 在 Linux 隔离环境跑通 PostgreSQL live 18 项（含 PKG-S14）与 Redis/RQ SimpleWorker live 8 项；7 项 Windows Job Object 独立 Worker 仍 `BLOCKED`（笔记本无 Docker/PostgreSQL/Redis，用户明确不安装）。同日 Windows 笔记本 `LAPTOP-TV9KT8RC` 在 SHA `98b93a0`（分支 `fix/pr82-remaining-package-p1s`，该 SHA 为 `master`/`f961774` 祖先；E2E/perf **未**跑在 `c93e1b3`）以官方控制器 `scripts/run_e2e_owned.py` 将 Playwright E2E 与 Lighthouse/FPS 记为 `RUN`。真实图片生成/编辑、账号权限、费用与真实取消/超时进程树仍按任务标记为 `NOT RUN`。
-当前开发分支：`glm/v02-10d-m14-acceptance`。下一实现项为 V02-10D（M14 收口）。
+当前实现合并树：`master` / `071ae2d`（PR #105，2026-09-03）。V02-21B、V02-22A、V02-22B、V02-23B、V02-30B、V02-31B、V02-32、V02-40、V02-41B、V02-42B、V02-43B、V02-44B 与 V02-10D 已分别完成独立审阅并合并。2026-09-02 在 Linux 隔离环境跑通 PostgreSQL live 18 项（含 PKG-S14）与 Redis/RQ SimpleWorker live 8 项；7 项 Windows Job Object 独立 Worker 仍 `BLOCKED`（笔记本无 Docker/PostgreSQL/Redis，用户明确不安装）。同日 Windows 笔记本 `LAPTOP-TV9KT8RC` 在 SHA `98b93a0`（分支 `fix/pr82-remaining-package-p1s`，该 SHA 为 `master`/`f961774` 祖先；E2E/perf **未**跑在 `c93e1b3`）以官方控制器 `scripts/run_e2e_owned.py` 将 Playwright E2E 与 Lighthouse/FPS 记为 `RUN`。真实图片生成/编辑、账号权限、费用与真实取消/超时进程树仍按任务标记为 `NOT RUN`。
+当前开发分支：`glm/v02-11c-settings-acceptance`。下一实现项为 V02-11C（设置页验收，Issue #106）。
 最近 `check:full` 历史基线：`master` / `cb324e3`（2026-08-27；相对 PR #5 合并提交 `d5d32ec` 仅增加任务文档），不代表 PR #6 / #7 / #10 / #11 已重跑浏览器验收。2026-09-02 Windows owned E2E 17/17 与 LH/FPS 4/4 证据在 `98b93a0` / `LAPTOP-TV9KT8RC`，见 `docs/development-progress.md`。
 深审历史基线：`master` / `f085327`。当时新增 6 项 P1 修复与 1 项 P2 改进；PR #6 已合并其中 P1-7、P1-9～P1-12 的代码修复。P1-8、P2-8 已随 PR #7 合并，独立 Redis/RQ、PostgreSQL 与浏览器验收仍待完成。
 安全审查历史基线：`master` / `7635cf7`。P0-3、P1-13～P1-15、P2-4、P2-9 的代码修复现已合并，真实服务/容器及完整依赖审计边界仍保留。
@@ -55,12 +55,13 @@
     - [x] 首页只读取 Dashboard 聚合状态，设置、帮助、项目默认模型与工作流节点统一使用连接/目录契约；前端专属状态请求和供应商硬编码文案已删除，历史绑定模型继续兼容显示。
     - [x] 环境账号就绪判断集中到凭据适配层；产品级统计、目录与 readiness 不再直接读取专属配置。架构、平台、数据模型和 Worker 错误文案已中性化，平权 allowlist 由 15 个路径收紧到 10 个技术适配/兼容路径。
     - [x] Windows PowerShell 完整门禁已通过；2026-09-03 在 Linux box 以 owned 控制器的 Linux 等价入口完成 M14 离线浏览器验收：首轮 16/17，唯一失败为 V02-23B 角色包 `.pkg-create-row > small` color-contrast（`#756f65`/`#f4f1e9` = 4.41:1）；经测试总管 review 授权，`23faaf0` 将该一处选择器改为基线安全灰 `#66604f`（约 5.55:1）后重跑全套 Playwright **17/17 全绿**（run id `9814af94c60244ae9e311c113360d032`，51.2s；隔离 SQLite Alembic 升至 `20260903_28` + 假种子；runtime 目录已删除、端口 3000/8000 复查已释放）。平权 allowlist 扫描 0 违规；前端无 `vertex-status`/`verifyVertex` 产品请求；T7 别名夹具可解析；ESLint、`tsc --noEmit`、Ruff 通过。未调用真实供应商。命令、环境与 NOT RUN 边界详见 `docs/development-progress.md`。
-- [ ] **V02-11（L2，Grok UI 优先）：重做供应商填写模块。** 前置审计已由 Issue #40 完成并随 `3bac6da` 合并，详见 `docs/v02-provider-settings-ui-audit.md`；V02-11A/B 已实现，C 验收仍待完成。
+- [ ] **V02-11（L2，Grok UI 优先）：重做供应商填写模块。** 前置审计已由 Issue #40 完成并随 `3bac6da` 合并，详见 `docs/v02-provider-settings-ui-audit.md`；V02-11A/B/C 已分别完成（C 验收见 2026-09-03 记录）。
   - [x] **V02-11A（L2，Issue #42）：独立 UI 基础。** 已完成供应商创建/重命名/停用/删除、精炼文案、加载/错误/空状态、搜索、类型/能力/已验证筛选、排序、折叠、键盘与窄桌面布局，并接入 V02-10A 的显式凭据来源/模型类型契约；未实现 V02-12 的展示偏好写入。
   - [x] **V02-11B（L2，Grok）：统一连接与模型目录。** 已按 `credential_source`/capability 渲染凭据、统一验证、独立发现、余额和目录驱动的模型冒烟，删除设置页 Vertex 专属卡；设置页已接入单条/批量展示偏好、隐藏筛选、逐项版本与部分失败语义。
-  - [ ] **V02-11C（L2 验收）：设置页回归。** 完成 Issue #40 的 P/C/F/V/A/S/L/N 测试矩阵、假供应商设置页 E2E 与 `npm run check`；不运行真实供应商。
-    - [x] 组件矩阵已补齐到 66 项设置页定向回归；三态断言促使设置页新增派生不可用的「未就绪」标识并禁用模型测试。完整 Web 为 25 个文件 187 项 Vitest，通过 ESLint、TypeScript 与生产构建。
-    - [ ] 2026-09-02 Windows owned Playwright E2E 17 passed / 0 failed / 0 skipped（`scripts/run_e2e_owned.py`，SHA `98b93a0`，`LAPTOP-TV9KT8RC`）。Issue #40 的 P/C/F/V/A/S/L/N 测试矩阵仍未完整核对，因此 V02-11C 仍不勾选。
+  - [x] **V02-11C（L2 验收）：设置页回归。** 完成 Issue #40 的 P/C/F/V/A/S/L/N 测试矩阵、假供应商设置页 E2E 与 `npm run check`；不运行真实供应商。
+    - [x] 组件矩阵已补齐到 66 项设置页定向回归；三态断言促使设置页新增派生不可用的「未就绪」标识并禁用模型测试。完整 Web 为 25 个文件 187 项 Vitest，通过 ESLint、TypeScript 与生产构建。（2026-08-31 记录）
+    - [x] 2026-09-03 完成 Issue #40 §8 矩阵逐项核对：P1–P13、C1–C13、F1–F9+F6b、V1–V4、A1–A9、S1–S5、L1–L5、N1–N4 全部映射到 `provider-management.test.tsx` 定向回归（覆盖表见 `docs/development-progress.md`）；补 3 处缺口（C2 成功状态含延迟、V3 隐藏×仅已验证正交、S5 服务端 `••••` 脱敏格式展示），设置页定向回归达 72 项；N1–N4 按审计 §8 允许的 class/CSS 源断言覆盖。完整 Web Vitest 41 文件 381 项、ESLint、`tsc --noEmit`、Ruff、平权 allowlist 0 违规与生产构建通过（head `3335fa6`）。
+    - [x] 假供应商设置页 E2E：2026-09-02 Windows owned Playwright 17/17（`98b93a0`）与本分支 2026-09-03 Linux 等价 harness 重跑 17/17（head `3335fa6`，run id `fd48ff8c0995416ead5efae033afd312`）均含「设置页用离线假供应商完成创建、手工模型与展示显隐」（断言 verify/discover/balance 零调用）与含 `/settings` 的 Axe 检查。NOT RUN：真实供应商、真实 Key、付费图片、PostgreSQL live、Lighthouse/FPS。
 - [x] **V02-12（L3 数据、L2 UI）：把“可展示模型”作为服务端持久化偏好。** 偏好不能只存在浏览器本地状态，也不得复用 `AIModel.enabled` 或派生 `/models.enabled`；新任务、路由候选和历史记录仍保存真实模型 ID，不因隐藏模型而失去审计或重放信息。
   - [x] **V02-12A（L3 设计，Issue #59）：冻结展示偏好契约。** 已合并 `docs/v02-12a-model-visibility-contract.md`，明确持久位置、管理列表、单条/批量 API、乐观并发、默认值、迁移/回滚及下游消费规则；未编辑迁移。
   - [x] **V02-12B（L3 实现）：迁移与 API。** 已新增 `display_enabled` 可回滚迁移、连接模型管理列表、单条/批量写入、逐项乐观锁与部分成功语义；单纯显隐不改能力来源/置信度，隐藏不改变调用或路由。SQLite 迁移与后端回归通过；2026-09-02 Linux 隔离 PostgreSQL schema/用量往返已覆盖。
@@ -68,7 +69,7 @@
 
 #### 下一实现窗口
 
-1. V02-14A / Issue #62 已由 PR #63 合并，V02-14B / Issue #64 已由 PR #65 合并，V02-14C / Issue #67 已由 PR #68 合并；V02-15B 已由 PR #71 合并（`7af5b59`），V02-16B 已由 PR #73 合并（`fec8d7f`），V02-21B 已由 PR #77 合并（`7c10d27`），V02-22A / Issue #78 已由 PR #79 合并（`6298be1`），V02-22B 已由 PR #82 / #83 合并（`f961774`）。V02-23B 已由 PR #86 合并（`6d09e78`），V02-30B / Issue #87 已由 PR #88 合并（`e2a12d2`），V02-31B / Issue #89 已由 PR #90 合并（`c4f0fc5`），V02-32 / Issue #91 已由 PR #92 合并（`23f5e28`）。V02-40 / Issue #94 已由 PR #95 合并（`01e9c3f`）。V02-41B / Issue #96 已由 PR #97 合并（`39cf6e4`），V02-42B / Issue #98 已由 PR #99 合并（`436f47d`），V02-43B / Issue #100 已由 PR #101 合并（`047571b`），V02-44B / Issue #102 已由 PR #103 合并（`e2126a1`）。PKG-S14 真实 PostgreSQL 升降级与并发已在 2026-09-02 Linux 隔离环境跑通。下一实现项为 V02-10D（M14 收口）。
+1. V02-14A / Issue #62 已由 PR #63 合并，V02-14B / Issue #64 已由 PR #65 合并，V02-14C / Issue #67 已由 PR #68 合并；V02-15B 已由 PR #71 合并（`7af5b59`），V02-16B 已由 PR #73 合并（`fec8d7f`），V02-21B 已由 PR #77 合并（`7c10d27`），V02-22A / Issue #78 已由 PR #79 合并（`6298be1`），V02-22B 已由 PR #82 / #83 合并（`f961774`）。V02-23B 已由 PR #86 合并（`6d09e78`），V02-30B / Issue #87 已由 PR #88 合并（`e2a12d2`），V02-31B / Issue #89 已由 PR #90 合并（`c4f0fc5`），V02-32 / Issue #91 已由 PR #92 合并（`23f5e28`）。V02-40 / Issue #94 已由 PR #95 合并（`01e9c3f`）。V02-41B / Issue #96 已由 PR #97 合并（`39cf6e4`），V02-42B / Issue #98 已由 PR #99 合并（`436f47d`），V02-43B / Issue #100 已由 PR #101 合并（`047571b`），V02-44B / Issue #102 已由 PR #103 合并（`e2126a1`）。PKG-S14 真实 PostgreSQL 升降级与并发已在 2026-09-02 Linux 隔离环境跑通。V02-10D / Issue #104 已由 PR #105 合并（`071ae2d`）。下一实现项为 V02-11C（设置页验收，Issue #106）。
 2. 资产、分镜、导演、CLI、用量和桌面端均先从各自已批准的 A 级设计文档拆出实现 Issue；不得把审计文档的合并当作功能交付。
 3. 所有实现 Issue 必须引用对应契约，写明迁移/事务/资源所有权，并标注真实供应商、CLI、PostgreSQL、Redis/RQ、浏览器或桌面环境的 `RUN`、`NOT RUN`、`BLOCKED`。
 - [x] **V02-13（L3）：建立 CLI 图像通道公共执行器。** 将 Codex CLI、Antigravity CLI、Grok Build 视为可选执行通道，而不是假装成普通 HTTP API。
