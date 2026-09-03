@@ -60,6 +60,9 @@ def list_models(db: Session = Depends(get_db)) -> list[dict]:
                     (model.capabilities or {}).get("max_reference_images") or 0
                 ),
                 "regions": (model.capabilities or {}).get("regions") or ["global"],
+                "accepts_explicit_mask": bool(
+                    (model.capabilities or {}).get("accepts_explicit_mask")
+                ),
                 "confidence": model.confidence,
                 "enabled": available,
                 "display_enabled": model.display_enabled,

@@ -20,7 +20,7 @@ import {
 import { useState } from "react";
 
 import { ProductionReadiness } from "@/components/production-readiness";
-import { api, publicUrl, type ImageModelAlias, type MangaPage } from "@/lib/api";
+import { api, publicUrl, type ImageModelAlias, type MangaPage, type PageCandidate } from "@/lib/api";
 import { hasActiveItem } from "@/lib/task-status";
 
 import { assetName } from "./display";
@@ -30,6 +30,7 @@ import { CandidateArtwork, ImageModelPicker } from "./shared";
 import { CharacterPackagePicker } from "./character-package-picker";
 import { DirectorWorkspace } from "./director-workspace";
 import { InspectionPanel } from "./inspection-panel";
+import { LocalEditWorkspace } from "./local-edit-workspace";
 import type { GenerationWorkspace } from "./use-generation-workspace";
 import type { WorkspaceQueries } from "./use-workspace-queries";
 
@@ -49,6 +50,10 @@ export function GenerateSection({
   projectPath,
   setSelectedPageId,
   workspace,
+  models,
+  localEditCandidate,
+  openLocalEdit,
+  closeLocalEdit,
 }: {
   id: string;
   pages: WorkspaceQueries["pages"];
@@ -57,14 +62,18 @@ export function GenerateSection({
   outfits: WorkspaceQueries["outfits"];
   script: WorkspaceQueries["script"];
   sceneAssets: WorkspaceQueries["sceneAssets"];
+  models: WorkspaceQueries["models"];
   modelOptions: { alias: ImageModelAlias; name: string; id: string; provider: string }[];
   catalogModelOptions: { alias: ImageModelAlias; name: string; id: string; provider: string }[];
   activeDrawModel: ImageModelAlias | null;
   setDrawModel: (model: ImageModelAlias) => void;
-  openPreview: (url: string, label: string) => void;
+  openPreview: (url: string, label: string, candidate?: PageCandidate) => void;
   projectPath: (target: string) => string;
   setSelectedPageId: (pageId: string | null) => void;
   workspace: GenerationWorkspace;
+  localEditCandidate: PageCandidate | null;
+  openLocalEdit: (candidate: PageCandidate) => void;
+  closeLocalEdit: () => void;
 }) {
   const {
     setViewedBatchId,
@@ -132,7 +141,17 @@ export function GenerateSection({
           <p>在确认各角色的模型包发布状态前，无法安全解析生成参考，已暂停生成。{characterPackages.error.message}</p>
           <button type="button" className="button outline compact" onClick={() => characterPackages.refetch()}>重试</button>
         </div>
-      ) : !generateWorkbenchReady ? <div className="generate-skeleton" role="status" aria-label="正在载入生成工作台"><LoaderCircle className="spin" size={22} /><span>正在载入生成工作台…</span></div> : directorMode ? (
+      ) : !generateWorkbenchReady ? <div className="generate-skeleton" role="status" aria-label="正在载入生成工作台"><LoaderCircle className="spin" size={22} /><span>正在载入生成工作台…</span></div> : localEditCandidate ? (
+        <LocalEditWorkspace
+          id={id}
+          page={selectedPage}
+          candidate={localEditCandidate}
+          adoptedCandidate={workspace.selectedWorkbenchCandidate}
+          models={models.data ?? []}
+          activeDrawModel={activeDrawModel}
+          onClose={closeLocalEdit}
+        />
+      ) : directorMode ? (
         <div className="director-generate">
           <div className="director-draw-row">
             <span>导演命令只修改分镜字段，不消耗抽卡；整页重抽请切回抽卡。</span>
@@ -147,6 +166,8 @@ export function GenerateSection({
             activeDrawModelName={modelOptions.find((item) => item.alias === activeDrawModel)?.name ?? null}
             pageGenerationPending={pageGenerationPending}
             onExecutingChange={setDirectorBusy}
+            localEditCandidate={workspace.selectedWorkbenchCandidate}
+            onOpenLocalEdit={openLocalEdit}
           />
         </div>
       ) : <>
@@ -211,7 +232,7 @@ export function GenerateSection({
         <div className="generation-bar"><div className="generation-options"><div><span>正式模型</span><strong>{modelOptions.find((item) => item.alias === activeDrawModel)?.name ?? "尚未选择"}</strong></div><div><span>本次规格</span><strong>1K · 彩色 · 1 个候选</strong></div></div><button className="button ink generate-one" disabled={generate.isPending || !generationPackagesReady || Boolean(selectedPageGenerationIssue) || !pageReadiness.data?.ready || !generationReferenceReady || isViewingHistoricalBatch} onClick={() => generate.mutate()}>{generate.isPending ? <LoaderCircle className="spin" size={17} /> : <Star size={17} />}{generate.isPending ? "正在加入 1 个正式任务" : isViewingHistoricalBatch ? "先切回最新批次再生成" : selectedPageStructureIssue ? "请先补全剧本与分镜" : !activeDrawModel ? "先选择图片模型" : !pageReadiness.data?.ready ? "先完成页面生产准备" : !generationReferenceReady ? "先补齐人物与服装参考" : "生成 1 个 1K 彩色候选"}</button></div>
         {(generate.isError || startBatch.isError) && <p className="form-error"><CircleAlert size={14} />{(generate.error ?? startBatch.error)?.message}</p>}
         <div className="batch-heading"><div><span>{isViewingHistoricalBatch ? "HISTORY / 历史批次" : "BATCH / 当前批次"}</span><strong>{viewedBatch ? `批次 ${viewedBatch.ordinal}` : "尚未开始批次"}</strong></div><small>{isViewingHistoricalBatch ? `正在查看历史结果 · 共 ${orderedPageBatches.length} 个批次` : "每个候选记录实际供应商与模型 · 收藏不等于采用"}</small></div>
-        <div className="candidate-grid">{!candidates.data && <article className="candidate-card" aria-hidden="true"><CandidateArtwork contentUrl={null} label="候选加载中" eager /></article>}{candidates.data?.map((candidate, candidateIndex) => <article className={`${candidate.is_selected ? "candidate-card selected" : "candidate-card"} version-${candidate.version_state.toLowerCase()}`} key={candidate.id}><CandidateArtwork contentUrl={candidate.content_url} thumbnailUrl={candidate.thumbnail_url} label={`候选 ${candidate.ordinal}`} eager={candidateIndex === 0} onOpen={(url, label) => openPreview(url, label)} /><div className="candidate-meta"><span>候选 {String(candidate.ordinal).padStart(2, "0")}</span><strong>{catalogModelOptions.find((item) => item.alias === candidate.model_alias)?.name ?? candidate.model_alias}</strong><small>{candidate.resolution} · {candidate.status}</small><em>{candidate.based_on_storyboard_version ? `生成依据 V${candidate.based_on_storyboard_version}` : "生成版本未知"} · {candidate.version_state}</em></div><div className="candidate-actions"><button className={candidate.is_favorite ? "favorited" : ""} onClick={() => favorite.mutate({ candidateId: candidate.id, value: !candidate.is_favorite })}><Heart size={14} fill={candidate.is_favorite ? "currentColor" : "none"} />收藏</button><button disabled={!candidate.asset_id || candidate.is_selected} onClick={() => { if (window.confirm("请确认页面文字已人工校对。暂选后还需要完成视觉检查，才能进入下一页或导出。是否继续？")) selectCandidate.mutate({ candidateId: candidate.id, manualTextConfirmed: true, acceptStale: candidate.version_state !== "CURRENT" }); }}><Check size={14} />{candidate.is_selected ? "已暂选" : candidate.version_state === "CURRENT" ? "人工校对并暂选" : "确认旧版本并暂选"}</button><button className={reviewCandidateId === candidate.id ? "reviewing" : ""} disabled={!candidate.asset_id || inspectCandidate.isPending} onClick={() => { setReviewCandidateId(candidate.id); inspectCandidate.mutate(candidate.id); }}><CircleAlert size={14} />视觉检查</button>{candidate.asset_id && candidate.resolution === "1K" && <button disabled={upscaleCandidate.isPending || !activeDrawModel} onClick={() => upscaleCandidate.mutate({ candidateId: candidate.id, resolution: "2K" })}>升至 2K</button>}{candidate.asset_id && candidate.resolution !== "4K" && <button disabled={upscaleCandidate.isPending || !activeDrawModel} onClick={() => upscaleCandidate.mutate({ candidateId: candidate.id, resolution: "4K" })}>升至 4K</button>}<button className="danger-action" disabled={candidate.is_selected} onClick={() => { if (window.confirm("删除这个候选？收藏状态也会一并移除。")) deleteCandidate.mutate(candidate.id); }}><Trash2 size={14} />删除</button></div></article>)}</div>
+        <div className="candidate-grid">{!candidates.data && <article className="candidate-card" aria-hidden="true"><CandidateArtwork contentUrl={null} label="候选加载中" eager /></article>}{candidates.data?.map((candidate, candidateIndex) => <article className={`${candidate.is_selected ? "candidate-card selected" : "candidate-card"} version-${candidate.version_state.toLowerCase()}`} key={candidate.id}><CandidateArtwork contentUrl={candidate.content_url} thumbnailUrl={candidate.thumbnail_url} label={`候选 ${candidate.ordinal}`} eager={candidateIndex === 0} onOpen={(url, label) => openPreview(url, label, candidate)} /><div className="candidate-meta"><span>候选 {String(candidate.ordinal).padStart(2, "0")}</span><strong>{catalogModelOptions.find((item) => item.alias === candidate.model_alias)?.name ?? candidate.model_alias}</strong><small>{candidate.resolution} · {candidate.status}</small><em>{candidate.based_on_storyboard_version ? `生成依据 V${candidate.based_on_storyboard_version}` : "生成版本未知"} · {candidate.version_state}</em></div><div className="candidate-actions"><button className={candidate.is_favorite ? "favorited" : ""} onClick={() => favorite.mutate({ candidateId: candidate.id, value: !candidate.is_favorite })}><Heart size={14} fill={candidate.is_favorite ? "currentColor" : "none"} />收藏</button><button disabled={!candidate.asset_id || candidate.is_selected} onClick={() => { if (window.confirm("请确认页面文字已人工校对。暂选后还需要完成视觉检查，才能进入下一页或导出。是否继续？")) selectCandidate.mutate({ candidateId: candidate.id, manualTextConfirmed: true, acceptStale: candidate.version_state !== "CURRENT" }); }}><Check size={14} />{candidate.is_selected ? "已暂选" : candidate.version_state === "CURRENT" ? "人工校对并暂选" : "确认旧版本并暂选"}</button><button className={reviewCandidateId === candidate.id ? "reviewing" : ""} disabled={!candidate.asset_id || inspectCandidate.isPending} onClick={() => { setReviewCandidateId(candidate.id); inspectCandidate.mutate(candidate.id); }}><CircleAlert size={14} />视觉检查</button>{candidate.asset_id && candidate.resolution === "1K" && <button disabled={upscaleCandidate.isPending || !activeDrawModel} onClick={() => upscaleCandidate.mutate({ candidateId: candidate.id, resolution: "2K" })}>升至 2K</button>}{candidate.asset_id && candidate.resolution !== "4K" && <button disabled={upscaleCandidate.isPending || !activeDrawModel} onClick={() => upscaleCandidate.mutate({ candidateId: candidate.id, resolution: "4K" })}>升至 4K</button>}{candidate.asset_id && <button title="在选区编辑：画 mask 后按 regenerate_region 生成派生候选" onClick={() => openLocalEdit(candidate)}><Pencil size={14} />局部修改</button>}<button className="danger-action" disabled={candidate.is_selected} onClick={() => { if (window.confirm("删除这个候选？收藏状态也会一并移除。")) deleteCandidate.mutate(candidate.id); }}><Trash2 size={14} />删除</button></div></article>)}</div>
         {reviewCandidateId && <InspectionPanel
           latestInspections={latestInspections}
           reviewJob={reviewJob}

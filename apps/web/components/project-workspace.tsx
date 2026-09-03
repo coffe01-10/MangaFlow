@@ -1,7 +1,7 @@
 "use client";
 
 import { AppShell } from "@/components/shell";
-import { api, type ImageModelAlias, type Project } from "@/lib/api";
+import { api, type ImageModelAlias, type PageCandidate, type Project } from "@/lib/api";
 import { creatorVisibleModels } from "@/lib/model-visibility";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { CircleAlert, LoaderCircle } from "lucide-react";
@@ -53,7 +53,8 @@ export default function ProjectWorkspace({
     const stored = window.localStorage.getItem(`mangaflow.image-model.${id}`);
     return stored && stored !== "auto" ? stored : null;
   });
-  const [previewImage, setPreviewImage] = useState<{ url: string; label: string } | null>(null);
+  const [previewImage, setPreviewImage] = useState<{ url: string; label: string; candidate?: PageCandidate } | null>(null);
+  const [localEditCandidate, setLocalEditCandidate] = useState<PageCandidate | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     if (typeof window === "undefined") return 214;
     const stored = Number(window.localStorage.getItem("mangaflow.project-sidebar-width"));
@@ -107,6 +108,12 @@ export default function ProjectWorkspace({
 
   const openPreview = (url: string, label: string) => {
     setPreviewImage({ url, label });
+  };
+
+  // Generate desk previews carry the candidate so the lightbox can offer
+  // 局部修改 entry into the V02-43B local edit shell.
+  const openPreviewWithCandidate = (url: string, label: string, candidate?: PageCandidate) => {
+    setPreviewImage({ url, label, candidate });
   };
 
   const draft = localDraft ?? project.data ?? null;
@@ -331,10 +338,14 @@ export default function ProjectWorkspace({
               catalogModelOptions={catalogModelOptions}
               activeDrawModel={activeDrawModel}
               setDrawModel={setDrawModel}
-              openPreview={openPreview}
+              openPreview={openPreviewWithCandidate}
               projectPath={projectPath}
               setSelectedPageId={setSelectedPageId}
               workspace={generationWorkspace}
+              models={models}
+              localEditCandidate={localEditCandidate}
+              openLocalEdit={setLocalEditCandidate}
+              closeLocalEdit={() => setLocalEditCandidate(null)}
             />
           )}
           {section === "library" && (
@@ -364,7 +375,14 @@ export default function ProjectWorkspace({
 
       </div>
 
-      {previewImage && <ImageLightbox preview={previewImage} onClose={() => setPreviewImage(null)} />}
+      {previewImage && <ImageLightbox
+        preview={previewImage}
+        onClose={() => setPreviewImage(null)}
+        onLocalEdit={previewImage.candidate ? (candidate) => {
+          setPreviewImage(null);
+          setLocalEditCandidate(candidate);
+        } : undefined}
+      />}
 
       <QueueDock
         queueStats={queueStats}

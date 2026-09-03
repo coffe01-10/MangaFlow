@@ -236,12 +236,13 @@ describe("director rules 规则桩（V02-41B）", () => {
     expect(plan.reason).toContain("生成任务进行中");
   });
 
-  it("D6/D13 重绘与 mask 意图被明确拒绝，不产出任何命令", () => {
+  it("D6/D13 重绘与 mask 意图指向局部编辑器，不产出任何命令", () => {
     for (const utterance of ["重画这一格", "把第三格局部重绘", "我想用蒙版涂一块"]) {
       const plan = compileDirectorCommand(baseInput({ utterance }));
       expect(plan.kind).toBe("unsupported");
       if (plan.kind !== "unsupported") continue;
-      expect(plan.reason).toContain("V02-42");
+      expect(plan.reason).toContain("在选区编辑");
+      expect(plan.reason).toContain("regenerate_region");
       expect(plan.reason).toContain("不会静默整页重绘");
     }
   });

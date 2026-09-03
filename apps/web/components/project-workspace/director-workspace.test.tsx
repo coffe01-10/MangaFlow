@@ -9,6 +9,7 @@ import {
   type DirectorCommand,
   type DirectorCommandGroup,
   type MangaPage,
+  type PageCandidate,
   type ScriptScene,
   type StoryboardPanel,
 } from "@/lib/api";
@@ -154,6 +155,31 @@ function groupFixture(overrides: Partial<DirectorCommandGroup> = {}): DirectorCo
   };
 }
 
+function candidateFixture(overrides: Partial<PageCandidate> = {}): PageCandidate {
+  return {
+    id: "candidate-1",
+    batch_id: "batch-1",
+    page_id: "page-1",
+    ordinal: 3,
+    model_alias: "gemini_image",
+    resolution: "1K",
+    status: "COMPLETED",
+    asset_id: "asset-1",
+    job_id: null,
+    is_favorite: false,
+    is_selected: true,
+    based_on_storyboard_version: 2,
+    version_state: "CURRENT",
+    staleness_reasons: [],
+    created_at: "2026-09-03T00:00:00Z",
+    variant: null,
+    prompt_snapshot: {},
+    content_url: "/api/v1/assets/asset-1/content",
+    thumbnail_url: "/api/v1/assets/asset-1/thumbnail/640",
+    ...overrides,
+  };
+}
+
 type DirectorProps = Parameters<typeof DirectorWorkspace>[0];
 
 function renderDirector(overrides: Partial<DirectorProps> = {}) {
@@ -169,6 +195,8 @@ function renderDirector(overrides: Partial<DirectorProps> = {}) {
     activeDrawModelName: "Nano Banana 2",
     pageGenerationPending: false,
     onExecutingChange: vi.fn(),
+    localEditCandidate: candidateFixture(),
+    onOpenLocalEdit: vi.fn(),
     ...overrides,
   };
   const view = render(
@@ -230,10 +258,19 @@ describe("DirectorWorkspace 导演台（V02-41B）", () => {
     expect(screen.getByRole("button", { name: "继续预览" })).toBeInTheDocument();
   });
 
-  it("D13 「在选区编辑」按钮禁用并说明 V02-43 未落地", () => {
-    renderDirector();
+  it("D13 有采用候选时「在选区编辑」可进入局部编辑器，无采用候选则禁用并说明", () => {
+    const onOpenLocalEdit = vi.fn();
+    const adopted = candidateFixture();
+    const { unmount } = renderDirector({ localEditCandidate: adopted, onOpenLocalEdit });
+    const button = screen.getByRole("button", { name: "在选区编辑（mask 局部重绘）" });
+    expect(button).toBeEnabled();
+    fireEvent.click(button);
+    expect(onOpenLocalEdit).toHaveBeenCalledWith(adopted);
+    expect(screen.getByText(/V02-42B 派生链/)).toBeInTheDocument();
+    unmount();
+    renderDirector({ localEditCandidate: null });
     expect(screen.getByRole("button", { name: "在选区编辑（mask 局部重绘）" })).toBeDisabled();
-    expect(screen.getByText(/V02-42 \/ V02-43/)).toBeInTheDocument();
+    expect(screen.getByTitle(/当前页还没有采用候选/)).toBeInTheDocument();
   });
 
   it("规则解析标签可见，且不出现「模型解析」承诺", () => {
@@ -499,13 +536,14 @@ describe("DirectorWorkspace 导演台（V02-41B）", () => {
     expect(proposeApi).not.toHaveBeenCalled();
   });
 
-  it("重绘口令在 UI 明确拒绝且不发请求", async () => {
+  it("重绘口令指向局部编辑器且不发请求（不静默整页重绘）", async () => {
     renderDirector();
     fireEvent.change(screen.getByLabelText("导演指令"), { target: { value: "重画这一格" } });
     fireEvent.click(screen.getByRole("button", { name: "预览" }));
     await waitFor(() => {
       expect(screen.getByRole("alert")).toHaveTextContent("局部重绘");
     });
+    expect(screen.getByRole("alert")).toHaveTextContent("在选区编辑");
     expect(proposeApi).not.toHaveBeenCalled();
   });
 });

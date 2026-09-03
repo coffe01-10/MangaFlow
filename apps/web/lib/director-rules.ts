@@ -324,14 +324,15 @@ export function compileDirectorCommand(input: DirectorRuleInput): DirectorPlan {
     return { kind: "clarify", reason: "请输入一句导演指令", options: [] };
   }
 
-  // Pixel redraw / mask intents: V02-42 lineage and V02-43 mask tools are not
-  // implemented, and V02-40 regenerate_region fails closed server-side. The
-  // stub refuses up front instead of silently falling back to a whole page.
+  // Pixel redraw / mask intents: the command bar only edits storyboard
+  // fields — mask strokes cannot ride on a text command. Point at the local
+  // edit shell (V02-43B) which compiles the drawn regions into a real
+  // regenerate_region command; never silently fall back to a whole page.
   if (/重画|重绘|重新生成|重新抽|重抽|局部|选区|蒙版|mask|涂/.test(utterance)) {
     return {
       kind: "unsupported",
       reason:
-        "局部重绘 / mask 选区编辑尚未上线（V02-42 候选血缘、V02-43 局部编辑都未实现）。导演台不会静默整页重绘；整页重抽请使用抽卡模式。",
+        "局部重绘需要在图上画选区，命令栏编不了 mask。请点击下方「在选区编辑（mask 局部重绘）」进入局部编辑器：画好选区并确认预览后，会按 regenerate_region 生成派生候选。导演台不会静默整页重绘。",
     };
   }
 

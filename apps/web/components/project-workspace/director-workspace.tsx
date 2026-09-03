@@ -18,6 +18,7 @@ import {
   type Character,
   type DirectorCommand,
   type MangaPage,
+  type PageCandidate,
   type ScriptScene,
   type StoryboardPanel,
 } from "@/lib/api";
@@ -90,6 +91,8 @@ export function DirectorWorkspace({
   activeDrawModelName,
   pageGenerationPending = false,
   onExecutingChange,
+  localEditCandidate,
+  onOpenLocalEdit,
 }: {
   id: string;
   page: MangaPage;
@@ -99,6 +102,8 @@ export function DirectorWorkspace({
   activeDrawModelName: string | null;
   pageGenerationPending?: boolean;
   onExecutingChange: (busy: boolean) => void;
+  localEditCandidate: PageCandidate | null;
+  onOpenLocalEdit: (candidate: PageCandidate) => void;
 }) {
   const director = useDirectorWorkspace({
     id,
@@ -361,8 +366,22 @@ export function DirectorWorkspace({
       })()}
 
       <div className="director-local-edit">
-        <button type="button" className="button outline compact" disabled title="V02-43 局部选区编辑尚未上线">在选区编辑（mask 局部重绘）</button>
-        <p>局部选区画笔与派生候选属于 V02-42 / V02-43，尚未实现；导演台不会静默整页重绘。</p>
+        {localEditCandidate ? (
+          <button
+            type="button"
+            className="button outline compact"
+            title="进入局部选区编辑器：画 mask 后走 regenerate_region 派生候选"
+            onClick={() => onOpenLocalEdit(localEditCandidate)}
+          >在选区编辑（mask 局部重绘）</button>
+        ) : (
+          <button
+            type="button"
+            className="button outline compact"
+            disabled
+            title="当前页还没有采用候选：先抽卡并暂选一张，再进入局部编辑"
+          >在选区编辑（mask 局部重绘）</button>
+        )}
+        <p>局部编辑基于当前采用候选（V02-42B 派生链）：画好选区后经导演命令预览确认才会生成，不会静默整页重绘。</p>
       </div>
 
       <section className="director-history" aria-label="命令历史">

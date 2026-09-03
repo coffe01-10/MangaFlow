@@ -257,6 +257,7 @@ function GenerateHarness() {
   });
   const jobsWorkspace = useJobsWorkspace({ id: "project-1", section: "generate" });
   const [selectedPageId, setSelectedPageId] = useState<string | null>("page-1");
+  const [localEditCandidate, setLocalEditCandidate] = useState<PageCandidate | null>(null);
   const workspace = useGenerationWorkspace({
     id: "project-1",
     section: "generate",
@@ -299,6 +300,10 @@ function GenerateHarness() {
       projectPath={(target) => `/projects/project-1/${target}`}
       setSelectedPageId={setSelectedPageId}
       workspace={workspace}
+      models={queries.models}
+      localEditCandidate={localEditCandidate}
+      openLocalEdit={setLocalEditCandidate}
+      closeLocalEdit={() => setLocalEditCandidate(null)}
     />
   );
 }
@@ -407,6 +412,25 @@ describe("GenerateSection 关键行为", () => {
     expect(screen.getByRole("button", { name: "生成下一页" })).toBeDisabled();
     expect(screen.getByText("这个批次还没有候选")).toBeInTheDocument();
     expect(generateCandidate).not.toHaveBeenCalled();
+  });
+
+  it("局部修改入口：候选卡片按钮打开局部编辑器，关闭返回网格", async () => {
+    const candidate = candidateFixture();
+    workbenchApi.mockResolvedValue(workbenchFixture({ candidates: [candidate], selected_candidate: candidate }));
+    candidatesApi.mockResolvedValue([candidate]);
+    renderGenerate();
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "局部修改" })).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "局部修改" }));
+    expect(await screen.findByLabelText("局部选区画布")).toBeInTheDocument();
+    expect(screen.getByText(/局部选区重绘 · 第 1 页/)).toBeInTheDocument();
+    expect(screen.getByText("源 · 候选 1")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "关闭局部编辑" }));
+    await waitFor(() => {
+      expect(screen.queryByLabelText("局部选区画布")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "局部修改" })).toBeInTheDocument();
+    });
   });
 
   it("旧候选横幅沿用并重新检查会调用 keepSelectedCandidate 并刷新 workbench", async () => {
