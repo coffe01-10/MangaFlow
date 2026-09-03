@@ -82,11 +82,25 @@ export function useGenerationWorkspace({
     queryFn: () => api.batches(selectedPageEntry!.id),
     enabled: section === "generate" && Boolean(selectedPageEntry),
   });
+  // Package summaries feed default inheritance (contract §8.1): characters
+  // with an ACTIVE package + published version resolve their reference image
+  // server-side from the version matrix, so no legacy asset id is sent.
+  // Fail-closed: while the list is loading or failed, an unknown package list
+  // must not fall back to legacy asset ids — the backend would still enter
+  // package mode from the published pointer and 409 on a non-matrix asset.
+  const characterPackages = useQuery({
+    queryKey: ["character-packages", id],
+    queryFn: () => api.characterPackages(id),
+    enabled: section === "generate",
+  });
+  const generationPackagesReady = !characterPackages.isLoading && !characterPackages.isError;
   // The workbench inserts tall blocks (readiness panel, reference check) whose
   // height is unknown until the workbench query lands; rendering them in stages
   // pushed the whole canvas down (measured CLS 0.477). Show one skeleton until
-  // the workbench, batch and model data exist, then insert the canvas at once.
-  const generateWorkbenchReady = !workbench.isLoading && !pageBatches.isLoading && !models.isLoading;
+  // the workbench, batch, model and package data exist, then insert the canvas
+  // at once.
+  const generateWorkbenchReady =
+    !workbench.isLoading && !pageBatches.isLoading && !models.isLoading && generationPackagesReady;
   const orderedPageBatches = useMemo(
     () => [...(pageBatches.data ?? [])].sort((left, right) => left.ordinal - right.ordinal),
     [pageBatches.data],
@@ -131,14 +145,6 @@ export function useGenerationWorkspace({
     () => collectVisibleCharacterIds(generationStoryboard.data?.panels ?? []),
     [generationStoryboard.data?.panels],
   );
-  // Package summaries feed default inheritance (contract §8.1): characters
-  // with an ACTIVE package + published version resolve their reference image
-  // server-side from the version matrix, so no legacy asset id is sent.
-  const characterPackages = useQuery({
-    queryKey: ["character-packages", id],
-    queryFn: () => api.characterPackages(id),
-    enabled: section === "generate",
-  });
   const publishedPackageVersions = useMemo<PublishedPackageVersions>(() => {
     const map: PublishedPackageVersions = {};
     for (const item of characterPackages.data ?? []) {
@@ -202,6 +208,11 @@ export function useGenerationWorkspace({
 
   const generate = useMutation({
     mutationFn: async () => {
+      // Defense in depth for the fail-closed package gate: the UI keeps the
+      // workbench skeleton/error up while the list is unknown, but a stale
+      // click must not send a legacy reference payload either.
+      if (characterPackages.isLoading) throw new Error("正在读取角色模型包，请稍候重试");
+      if (characterPackages.isError) throw new Error("角色模型包状态无法确认，请重试后再生成");
       const issue = getPageGenerationIssue(selectedPage, activeDrawModel);
       if (issue) throw new Error(issue);
       if (!pageReadiness.data?.ready) throw new Error(pageReadiness.isLoading ? "正在检查页面生产条件" : "页面生产准备尚未完成，请先处理阻塞项");
@@ -339,6 +350,7 @@ export function useGenerationWorkspace({
     referenceOverridePageId,
     setReferenceOverridePageId,
     characterPackages,
+    generationPackagesReady,
     publishedPackageVersions,
     selectedPageEntry,
     selectedPage,
