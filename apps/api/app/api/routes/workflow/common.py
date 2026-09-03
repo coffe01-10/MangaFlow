@@ -4,6 +4,12 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.domain.storyboard_layout import (
+    read_bubble,
+    read_canvas,
+    read_panel_geometry,
+    read_sound_effects,
+)
 from app.models import (
     Chapter,
     Dialogue,
@@ -13,7 +19,7 @@ from app.models import (
     Panel,
     Project,
 )
-from app.schemas import PanelRead
+from app.schemas import PageRead, PanelRead, StoryboardRead
 from app.services.ordinal_allocator import (
     BatchOrdinalConflictError,
     commit_ordinal_transaction,
@@ -57,13 +63,43 @@ def _new_batch(
         raise HTTPException(status_code=409, detail=str(error)) from error
 
 
+def _page_ratio(db: Session, page: MangaPage) -> str:
+    chapter = db.get(Chapter, page.chapter_id)
+    if not chapter:
+        return "b5_portrait"
+    project = db.get(Project, chapter.project_id)
+    return project.page_ratio if project else "b5_portrait"
+
+
+def _page_read(db: Session, page: MangaPage) -> PageRead:
+    read = PageRead.model_validate(page)
+    read.canvas = read_canvas(page, _page_ratio(db, page))
+    return read
+
+
 def _panel_read(db: Session, panel: Panel) -> PanelRead:
     panel.dialogues = list(
         db.scalars(
             select(Dialogue).where(Dialogue.panel_id == panel.id).order_by(Dialogue.reading_order)
         )
     )
-    return PanelRead.model_validate(panel)
+    read = PanelRead.model_validate(panel)
+    read.geometry = read_panel_geometry(panel)
+    read.sound_effects = read_sound_effects(panel)
+    for dialogue_read, dialogue in zip(read.dialogues, panel.dialogues, strict=True):
+        dialogue_read.bubble = read_bubble(dialogue)
+    return read
+
+
+def _storyboard_read(db: Session, page: MangaPage) -> StoryboardRead:
+    panels = list(
+        db.scalars(select(Panel).where(Panel.page_id == page.id).order_by(Panel.reading_order))
+    )
+    return StoryboardRead(
+        page=_page_read(db, page),
+        panels=[_panel_read(db, panel) for panel in panels],
+        candidate_count=_page_candidate_count(db, page.id),
+    )
 
 
 def _page_candidate_count(db: Session, page_id: str) -> int:

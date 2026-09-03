@@ -1375,3 +1375,177 @@ def test_character_package_migration_refuses_partial_schema(tmp_path, monkeypatc
     engine.dispose()
     with pytest.raises(RuntimeError, match="已存在但结构与本迁移不匹配"):
         command.upgrade(config, "head")
+
+
+def test_storyboard_layout_columns_migration_roundtrip(tmp_path, monkeypatch):
+    """L1: pure nullable JSON additions round-trip on an empty database."""
+    database_url = f"sqlite:///{(tmp_path / 'layout-columns.db').as_posix()}"
+    monkeypatch.setattr(get_settings(), "database_url", database_url)
+    config = Config("apps/api/alembic.ini")
+
+    def column_map(engine, table):
+        return {
+            column["name"]: column["nullable"]
+            for column in inspect(engine).get_columns(table)
+        }
+
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    assert column_map(engine, "manga_pages")["canvas"] is True
+    assert column_map(engine, "manga_pages")["geometry_save_command"] is True
+    assert column_map(engine, "panels")["geometry"] is True
+    assert column_map(engine, "dialogues")["bubble"] is True
+    engine.dispose()
+
+    command.downgrade(config, "20260902_25")
+    engine = create_engine(database_url)
+    assert "canvas" not in column_map(engine, "manga_pages")
+    assert "geometry_save_command" not in column_map(engine, "manga_pages")
+    assert "geometry" not in column_map(engine, "panels")
+    assert "bubble" not in column_map(engine, "dialogues")
+    engine.dispose()
+
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    assert column_map(engine, "manga_pages")["canvas"] is True
+    assert column_map(engine, "manga_pages")["geometry_save_command"] is True
+    assert column_map(engine, "panels")["geometry"] is True
+    assert column_map(engine, "dialogues")["bubble"] is True
+    engine.dispose()
+
+
+_LAYOUT_SEED_ROWS = [
+    """
+    INSERT INTO projects (
+        id, name, language, reading_direction, page_ratio,
+        default_resolution, draft_resolution, workflow_mode,
+        default_concurrency, ocr_enabled, consistency_check_enabled,
+        default_style_id, text_model_alias, image_model_alias,
+        deleted_at, created_at, updated_at, version
+    ) VALUES (
+        'project-layout', '分镜布局迁移项目', 'zh-CN', 'rtl', 'b5_portrait',
+        'STANDARD_2K', 'DRAFT_1K', 'SEMI_AUTO', 4, 0, 1, NULL,
+        'text.fast', 'image.nano_banana_2', NULL,
+        '2026-08-01 10:00:00', '2026-08-01 10:00:00', 1
+    )
+    """,
+    """
+    INSERT INTO chapters (
+        id, project_id, title, ordinal, status, current_source_revision_id,
+        deleted_at, created_at, updated_at, version
+    ) VALUES (
+        'chapter-layout', 'project-layout', '第一章', 1, 'SCRIPT_READY', NULL,
+        NULL, '2026-08-01 10:00:00', '2026-08-01 10:00:00', 1
+    )
+    """,
+    """
+    INSERT INTO manga_pages (
+        id, chapter_id, page_number, revision_no, page_function, panel_count,
+        reading_direction, resolution, style_id, status, scene_ids, beat_ids,
+        locked_fields, estimated_text_chars, estimated_bubbles,
+        source_coverage, selected_candidate_id, storyboard_version,
+        selected_candidate_ack_version, continuity_status,
+        created_at, updated_at, version
+    ) VALUES (
+        'page-layout', 'chapter-layout', 1, 1, 'dialogue', 3, 'rtl', 'DRAFT_1K',
+        NULL, 'STORYBOARDED', '[]', '[]', '[]', 4, 1,
+        '{"complete": true, "ranges": []}', NULL, 2, NULL, 'NOT_CHECKED',
+        '2026-08-01 10:00:00', '2026-08-01 10:00:00', 1
+    )
+    """,
+    """
+    INSERT INTO panels (
+        id, page_id, reading_order, bounds, shot_type, camera_angle,
+        camera_height, characters, character_presence, props, outfits,
+        actions, expressions, background, bubble_regions, sound_effects,
+        bleed, borderless, locked_fields, created_at, updated_at, version
+    ) VALUES (
+        'panel-layout', 'page-layout', 1,
+        '{"x": 0.012, "y": 0.012, "width": 0.976, "height": 0.448}',
+        'medium_close_up', 'eye_level', 'eye_level', '[]', '{}', '[]', '{}',
+        '{}', '{}', '教室', '[]', '["ドンッ"]', 0, 0, '[]',
+        '2026-08-01 10:00:00', '2026-08-01 10:00:00', 3
+    )
+    """,
+    """
+    INSERT INTO dialogues (
+        id, panel_id, speaker_character_id, target_text, reading_order,
+        text_direction, region, rewrite_forbidden
+    ) VALUES (
+        'dialogue-layout', 'panel-layout', NULL, '你来了。', 1, 'vertical',
+        '{"preferred": "upper_inner"}', 1
+    )
+    """,
+]
+
+_LAYOUT_LEGACY_TABLES = ("manga_pages", "panels", "dialogues")
+
+
+def test_storyboard_layout_migration_preserves_legacy_storyboard_rows(
+    tmp_path, monkeypatch
+):
+    """L1: upgrade adds NULL columns and never rewrites legacy storyboard data."""
+    database_url = f"sqlite:///{(tmp_path / 'layout-legacy.db').as_posix()}"
+    monkeypatch.setattr(get_settings(), "database_url", database_url)
+    config = Config("apps/api/alembic.ini")
+    command.upgrade(config, "20260902_25")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        for statement in _LAYOUT_SEED_ROWS:
+            connection.execute(text(statement))
+        before = {
+            table: [
+                dict(row._mapping)
+                for row in connection.execute(text(f"SELECT * FROM {table}"))
+            ]
+            for table in _LAYOUT_LEGACY_TABLES
+        }
+    engine.dispose()
+
+    command.upgrade(config, "head")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+        for table in _LAYOUT_LEGACY_TABLES:
+            after = [
+                dict(row._mapping)
+                for row in connection.execute(text(f"SELECT * FROM {table}"))
+            ]
+            assert len(after) == len(before[table])
+            for row_before, row_after in zip(before[table], after):
+                for column, value in row_before.items():
+                    assert row_after[column] == value, f"{table}.{column} 被迁移改写"
+        assert connection.execute(
+            text("SELECT canvas FROM manga_pages WHERE id = 'page-layout'")
+        ).scalar_one() is None
+        assert connection.execute(
+            text("SELECT geometry FROM panels WHERE id = 'panel-layout'")
+        ).scalar_one() is None
+        assert connection.execute(
+            text("SELECT bubble FROM dialogues WHERE id = 'dialogue-layout'")
+        ).scalar_one() is None
+    engine.dispose()
+
+    command.downgrade(config, "20260902_25")
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        assert connection.execute(
+            text("SELECT bounds FROM panels WHERE id = 'panel-layout'")
+        ).scalar_one() == '{"x": 0.012, "y": 0.012, "width": 0.976, "height": 0.448}'
+        assert connection.execute(
+            text("SELECT region FROM dialogues WHERE id = 'dialogue-layout'")
+        ).scalar_one() == '{"preferred": "upper_inner"}'
+        assert connection.execute(
+            text("SELECT sound_effects FROM panels WHERE id = 'panel-layout'")
+        ).scalar_one() == '["ドンッ"]'
+    engine.dispose()
+
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        assert connection.execute(
+            text("SELECT geometry FROM panels WHERE id = 'panel-layout'")
+        ).scalar_one() is None
+    engine.dispose()

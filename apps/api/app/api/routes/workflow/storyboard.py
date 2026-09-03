@@ -4,9 +4,15 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.api.routes.workflow.common import _page, _page_candidate_count, _panel_read
+from app.api.routes.workflow.common import _page, _panel_read, _storyboard_read
 from app.database import get_db
 from app.domain.states import CharacterPresence, ensure_unlocked
+from app.domain.storyboard_layout import (
+    canonical_bubble,
+    canonical_sound_effects,
+    read_bubble,
+    resolve_panel_shape,
+)
 from app.models import Dialogue, MangaPage, Outfit, Panel
 from app.schemas import (
     DialogueCreate,
@@ -14,9 +20,10 @@ from app.schemas import (
     DialogueRead,
     DialogueUpdate,
     PageLayoutUpdate,
-    PageRead,
     PanelRead,
     PanelUpdate,
+    ReadingOrderUpdate,
+    StoryboardGeometrySave,
     StoryboardRead,
 )
 from app.services.content_workflow import update_page_layout
@@ -26,6 +33,10 @@ from app.services.editor import (
     project_id_for_page,
     refresh_page_text_metrics,
     validate_character_ids,
+)
+from app.services.storyboard_geometry import (
+    reorder_page_panels,
+    save_storyboard_geometry,
 )
 
 router = APIRouter()
@@ -49,17 +60,16 @@ def _validate_dialogue_speaker(
     return validate_character_ids(db, project_id, [speaker_character_id])[0]
 
 
+def _dialogue_read(dialogue: Dialogue) -> DialogueRead:
+    read = DialogueRead.model_validate(dialogue)
+    read.bubble = read_bubble(dialogue)
+    return read
+
+
 @router.get("/pages/{page_id}/storyboard", response_model=StoryboardRead)
 def get_storyboard(page_id: str, db: Session = Depends(get_db)) -> StoryboardRead:
     page = _page(db, page_id)
-    panels = list(
-        db.scalars(select(Panel).where(Panel.page_id == page.id).order_by(Panel.reading_order))
-    )
-    return StoryboardRead(
-        page=PageRead.model_validate(page),
-        panels=[_panel_read(db, panel) for panel in panels],
-        candidate_count=_page_candidate_count(db, page.id),
-    )
+    return _storyboard_read(db, page)
 
 
 @router.patch("/pages/{page_id}/layout", response_model=StoryboardRead)
@@ -74,14 +84,29 @@ def patch_page_layout(
         panel_count=payload.panel_count,
         layout_mode=payload.layout_mode,
     )
-    panels = list(
-        db.scalars(select(Panel).where(Panel.page_id == page.id).order_by(Panel.reading_order))
-    )
-    return StoryboardRead(
-        page=PageRead.model_validate(page),
-        panels=[_panel_read(db, panel) for panel in panels],
-        candidate_count=_page_candidate_count(db, page.id),
-    )
+    return _storyboard_read(db, page)
+
+
+@router.patch("/pages/{page_id}/reading-order", response_model=StoryboardRead)
+def patch_page_reading_order(
+    page_id: str,
+    payload: ReadingOrderUpdate,
+    db: Session = Depends(get_db),
+) -> StoryboardRead:
+    page = _page(db, page_id)
+    reorder_page_panels(db, page, payload.order)
+    return _storyboard_read(db, page)
+
+
+@router.put("/pages/{page_id}/storyboard-geometry", response_model=StoryboardRead)
+def put_page_storyboard_geometry(
+    page_id: str,
+    payload: StoryboardGeometrySave,
+    db: Session = Depends(get_db),
+) -> StoryboardRead:
+    page = _page(db, page_id)
+    save_storyboard_geometry(db, page, payload)
+    return _storyboard_read(db, page)
 
 
 @router.patch("/panels/{panel_id}", response_model=PanelRead)
@@ -131,6 +156,21 @@ def update_panel(
                 if str(item).strip()
             )
         )
+    if "sound_effects" in values:
+        values["sound_effects"] = canonical_sound_effects(values["sound_effects"] or [])
+    if "bounds" in values or "geometry" in values:
+        # bounds and geometry.rect are one rect fact: resolve keeps them equal.
+        resolved_bounds, resolved_geometry = resolve_panel_shape(
+            stored_bounds=panel.bounds,
+            stored_geometry=panel.geometry,
+            reading_order=panel.reading_order,
+            bounds=values.get("bounds"),
+            geometry=values.get("geometry"),
+            bounds_given="bounds" in values,
+            geometry_given="geometry" in values,
+        )
+        values["bounds"] = resolved_bounds
+        values["geometry"] = resolved_geometry
     character_ids = values.get("characters", panel.characters)
     if "outfits" in values:
         assignments = values["outfits"] or {}
@@ -211,7 +251,7 @@ def create_dialogue(
     mark_pages_for_review(db, page.chapter_id, from_page_number=page.page_number)
     db.commit()
     db.refresh(dialogue)
-    return dialogue
+    return _dialogue_read(dialogue)
 
 
 @router.patch("/dialogues/{dialogue_id}", response_model=DialogueRead)
@@ -229,6 +269,8 @@ def update_dialogue(
     values = payload.model_dump(exclude_unset=True, exclude={"panel_version"})
     if "target_text" in values and not (values["target_text"] or "").strip():
         raise HTTPException(status_code=422, detail="气泡文字不能为空")
+    if "bubble" in values and values["bubble"] is not None:
+        values["bubble"] = canonical_bubble(values["bubble"])
     if "speaker_character_id" in values:
         values["speaker_character_id"] = _validate_dialogue_speaker(
             db, project_id, values["speaker_character_id"]
@@ -242,7 +284,7 @@ def update_dialogue(
     mark_pages_for_review(db, page.chapter_id, from_page_number=page.page_number)
     db.commit()
     db.refresh(dialogue)
-    return dialogue
+    return _dialogue_read(dialogue)
 
 
 @router.delete("/dialogues/{dialogue_id}", status_code=status.HTTP_204_NO_CONTENT)
