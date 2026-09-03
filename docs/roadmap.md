@@ -1,8 +1,8 @@
 # MangaFlow 主分支后续工作清单
 
 更新时间：2026-09-03
-当前实现合并树：`master` / `047571b`（PR #101，2026-09-03）。V02-21B、V02-22A、V02-22B、V02-23B、V02-30B、V02-31B、V02-32、V02-40、V02-41B、V02-42B 与 V02-43B 已分别完成独立审阅并合并。2026-09-02 在 Linux 隔离环境跑通 PostgreSQL live 18 项（含 PKG-S14）与 Redis/RQ SimpleWorker live 8 项；7 项 Windows Job Object 独立 Worker 仍 `BLOCKED`（笔记本无 Docker/PostgreSQL/Redis，用户明确不安装）。同日 Windows 笔记本 `LAPTOP-TV9KT8RC` 在 SHA `98b93a0`（分支 `fix/pr82-remaining-package-p1s`，该 SHA 为 `master`/`f961774` 祖先；E2E/perf **未**跑在 `c93e1b3`）以官方控制器 `scripts/run_e2e_owned.py` 将 Playwright E2E 与 Lighthouse/FPS 记为 `RUN`。真实图片生成/编辑、账号权限、费用与真实取消/超时进程树仍按任务标记为 `NOT RUN`。
-当前开发分支：`glm/v02-44b-capability-acceptance`。下一实现项为 V02-44B。
+当前实现合并树：`master` / `e2126a1`（PR #103，2026-09-03）。V02-21B、V02-22A、V02-22B、V02-23B、V02-30B、V02-31B、V02-32、V02-40、V02-41B、V02-42B、V02-43B 与 V02-44B 已分别完成独立审阅并合并。2026-09-02 在 Linux 隔离环境跑通 PostgreSQL live 18 项（含 PKG-S14）与 Redis/RQ SimpleWorker live 8 项；7 项 Windows Job Object 独立 Worker 仍 `BLOCKED`（笔记本无 Docker/PostgreSQL/Redis，用户明确不安装）。同日 Windows 笔记本 `LAPTOP-TV9KT8RC` 在 SHA `98b93a0`（分支 `fix/pr82-remaining-package-p1s`，该 SHA 为 `master`/`f961774` 祖先；E2E/perf **未**跑在 `c93e1b3`）以官方控制器 `scripts/run_e2e_owned.py` 将 Playwright E2E 与 Lighthouse/FPS 记为 `RUN`。真实图片生成/编辑、账号权限、费用与真实取消/超时进程树仍按任务标记为 `NOT RUN`。
+当前开发分支：`glm/v02-10d-m14-acceptance`。下一实现项为 V02-10D（M14 收口）。
 最近 `check:full` 历史基线：`master` / `cb324e3`（2026-08-27；相对 PR #5 合并提交 `d5d32ec` 仅增加任务文档），不代表 PR #6 / #7 / #10 / #11 已重跑浏览器验收。2026-09-02 Windows owned E2E 17/17 与 LH/FPS 4/4 证据在 `98b93a0` / `LAPTOP-TV9KT8RC`，见 `docs/development-progress.md`。
 深审历史基线：`master` / `f085327`。当时新增 6 项 P1 修复与 1 项 P2 改进；PR #6 已合并其中 P1-7、P1-9～P1-12 的代码修复。P1-8、P2-8 已随 PR #7 合并，独立 Redis/RQ、PostgreSQL 与浏览器验收仍待完成。
 安全审查历史基线：`master` / `7635cf7`。P0-3、P1-13～P1-15、P2-4、P2-9 的代码修复现已合并，真实服务/容器及完整依赖审计边界仍保留。
@@ -68,7 +68,7 @@
 
 #### 下一实现窗口
 
-1. V02-14A / Issue #62 已由 PR #63 合并，V02-14B / Issue #64 已由 PR #65 合并，V02-14C / Issue #67 已由 PR #68 合并；V02-15B 已由 PR #71 合并（`7af5b59`），V02-16B 已由 PR #73 合并（`fec8d7f`），V02-21B 已由 PR #77 合并（`7c10d27`），V02-22A / Issue #78 已由 PR #79 合并（`6298be1`），V02-22B 已由 PR #82 / #83 合并（`f961774`）。V02-23B 已由 PR #86 合并（`6d09e78`），V02-30B / Issue #87 已由 PR #88 合并（`e2a12d2`），V02-31B / Issue #89 已由 PR #90 合并（`c4f0fc5`），V02-32 / Issue #91 已由 PR #92 合并（`23f5e28`）。V02-40 / Issue #94 已由 PR #95 合并（`01e9c3f`）。V02-41B / Issue #96 已由 PR #97 合并（`39cf6e4`），V02-42B / Issue #98 已由 PR #99 合并（`436f47d`），V02-43B / Issue #100 已由 PR #101 合并（`047571b`）。PKG-S14 真实 PostgreSQL 升降级与并发已在 2026-09-02 Linux 隔离环境跑通。下一实现项为 V02-44B。
+1. V02-14A / Issue #62 已由 PR #63 合并，V02-14B / Issue #64 已由 PR #65 合并，V02-14C / Issue #67 已由 PR #68 合并；V02-15B 已由 PR #71 合并（`7af5b59`），V02-16B 已由 PR #73 合并（`fec8d7f`），V02-21B 已由 PR #77 合并（`7c10d27`），V02-22A / Issue #78 已由 PR #79 合并（`6298be1`），V02-22B 已由 PR #82 / #83 合并（`f961774`）。V02-23B 已由 PR #86 合并（`6d09e78`），V02-30B / Issue #87 已由 PR #88 合并（`e2a12d2`），V02-31B / Issue #89 已由 PR #90 合并（`c4f0fc5`），V02-32 / Issue #91 已由 PR #92 合并（`23f5e28`）。V02-40 / Issue #94 已由 PR #95 合并（`01e9c3f`）。V02-41B / Issue #96 已由 PR #97 合并（`39cf6e4`），V02-42B / Issue #98 已由 PR #99 合并（`436f47d`），V02-43B / Issue #100 已由 PR #101 合并（`047571b`），V02-44B / Issue #102 已由 PR #103 合并（`e2126a1`）。PKG-S14 真实 PostgreSQL 升降级与并发已在 2026-09-02 Linux 隔离环境跑通。下一实现项为 V02-10D（M14 收口）。
 2. 资产、分镜、导演、CLI、用量和桌面端均先从各自已批准的 A 级设计文档拆出实现 Issue；不得把审计文档的合并当作功能交付。
 3. 所有实现 Issue 必须引用对应契约，写明迁移/事务/资源所有权，并标注真实供应商、CLI、PostgreSQL、Redis/RQ、浏览器或桌面环境的 `RUN`、`NOT RUN`、`BLOCKED`。
 - [x] **V02-13（L3）：建立 CLI 图像通道公共执行器。** 将 Codex CLI、Antigravity CLI、Grok Build 视为可选执行通道，而不是假装成普通 HTTP API。
@@ -122,7 +122,7 @@
   - [x] **V02-43B（实现，Issue #100 / PR #101 / 合并提交 `047571b`，head `517191f`）：** 局部选区与结果比较已进 master：局部编辑工作区 mask 绘制、结构化 envelope 只走 `regenerate_region` propose→accept、派生候选与父候选并排比较、空 mask 调用前门禁、`accepts_explicit_mask` fail-closed（只列声明能力的已启用模型，禁用 + 中文原因 + 取消出口）、父候选当前采用不变。NOT RUN：真实供应商、Playwright、图像相似度。
 - [ ] **V02-44（L3 验收）：验证供应商能力差异和失败恢复。**
   - [x] **V02-44A / Issue #57（矩阵）：** 已合并 `docs/v02-image-edit-capability-matrix.md`，能力归属到具体模型并冻结取消/超时/晚返回事实。
-  - [ ] **V02-44B（实现验收）：** 在 V02-42B/43B 后验证原生 mask、instruction edit、整图参考与禁止静默降级。
+  - [x] **V02-44B（实现验收，Issue #102 / PR #103 / 合并提交 `e2126a1`，head `84b5dc7`）：** 在 V02-42B/43B 后验证原生 mask、instruction edit、整图参考与禁止静默降级。模型级能力四位（`accepts_explicit_mask`、`supports_instruction_region_edit`、`preserves_outside_region`、`whole_image_reference_only`）fail-closed 统一读取并暴露到 `GET /models` 与 schema，缺失/UNKNOWN 一律按不支持；预设按适配器现状诚实声明（Vertex 原生与 CLI 图片模型只声明整图参考，不假装有 mask 请求面）。区域请求打到不匹配表面在调用前确定性返回 `UNSUPPORTED_CAPABILITY`：导演 accept 路径无 Job/派生候选/mask 资产/attempt，Worker 侧 `_invoke_provider` 前重查能力位，不自动换模型/provider、不降级整页 `generate`；局部编辑器屏蔽态如实列出已启用编辑模型的声明表面并保留取消出口，不隐式整页 POST。NOT RUN：真实供应商（`VERIFIED` 来源无实测）、M5/M6、Playwright（本轮留给 V02-10D M14）、PostgreSQL live。
 
 ### M5：全局 UX、文案与桌面端
 

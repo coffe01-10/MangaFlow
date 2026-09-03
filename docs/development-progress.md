@@ -4,6 +4,13 @@
 
 本文件记录修订版 MVP 计划的实际完成度。
 
+## V02-44B 能力验收 fail-closed 门禁已审阅合并（2026-09-03）
+
+- Issue #102 / PR #103 / `glm/v02-44b-capability-acceptance` / 合并提交 `e2126a1` / head `84b5dc7`。新增 `apps/api/app/services/model_capabilities.py`：`accepts_explicit_mask`、`supports_instruction_region_edit`、`preserves_outside_region`、`whole_image_reference_only` 四位统一 fail-closed 读取（缺失/UNKNOWN 一律按不支持，绝不猜成 true），带 `DECLARED / DISCOVERED / VERIFIED` 来源语义与区域编辑表面分类；`GET /api/v1/models` 与 `ModelCapabilityRead` schema 同步暴露四位布尔与来源。
+- 预设诚实声明：Vertex 原生两张图片模型与三个 CLI 图片模型按适配器现状只声明 `whole_image_reference_only`，不假装有 mask/instruction 请求面；发现/手工模型的未知能力位保持不声明。区域请求打到不匹配表面在调用前确定性 `UNSUPPORTED_CAPABILITY`：导演 `regenerate_region` accept 路径无 Job/派生候选/mask 资产/attempt/付费；Worker 侧 `page_generate` 在 `_invoke_provider` 前重查 `accepts_explicit_mask`，不自动换模型/provider、不降级整页 `generate`；前端局部编辑器屏蔽态如实列出已启用编辑模型的声明表面（中文标签）并保留取消出口，不隐式整页 POST。
+- 门禁（`84b5dc7`，Linux 隔离）：新增 `tests/test_capability_acceptance.py` 7 项（/models 序列化、预设逐位、导演表面拒绝零副作用、Worker 能力失败无 attempt/产物、正向对照、取消）；全量 588 passed / 70 skipped（10 failed + 10 error 为既有 Linux 平台基线，已在干净基线 `047571b` 复现，非本分支引入）；Vitest 41 文件 379 passed；ESLint、`tsc --noEmit`、Ruff、Next.js 生产构建通过。
+- NOT RUN：真实供应商调用与 `VERIFIED` 来源实测、真实 mask/inpaint、计费核对、M5 未决 attempt 补偿、M6 双 Worker 租约、PostgreSQL live（本分支无迁移）、Playwright E2E / Lighthouse / FPS（本轮留给 V02-10D M14）。
+
 ## V02-43B 局部选区 UI 与并排比较已审阅合并（2026-09-03）
 
 - Issue #100 / PR #101 / `glm/v02-43b-local-edit-ui` / 合并提交 `047571b` / head `517191f`。生成台新增局部编辑工作区（`apps/web/components/project-workspace/local-edit-workspace.tsx` + 纯规则模块 `apps/web/lib/local-edit-rules.ts`）：mask 选区绘制并只构造 `regenerate_region` 结构化 envelope 走 propose→accept，绝不静默调用 `generateCandidate` 整页重生（Vitest 断言 propose-only）；派生候选按 `REGION_REGENERATED` 批次与 `prompt_snapshot.lineage` 与父候选并排比较。
