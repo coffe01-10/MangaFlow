@@ -973,6 +973,194 @@ export interface WorkflowRun {
   version: number;
 }
 
+// ---------------------------------------------------------------------------
+// Character model package (docs/v02-character-model-package-contract.md §9.1)
+// Addressed by character_id; the package id never enters existing URLs.
+// ---------------------------------------------------------------------------
+
+export type PackageStatus = "ACTIVE" | "ARCHIVED";
+export type PackageVersionStatus = "DRAFT" | "READY" | "IN_PRODUCTION" | "ARCHIVED";
+export type PackageRole =
+  | "cover"
+  | "front"
+  | "side"
+  | "back"
+  | "three_quarter"
+  | "expression"
+  | "pose"
+  | "extra";
+
+export interface PackageCompletenessMissing {
+  code: string;
+  field: string;
+  message: string;
+  suggestion: string;
+}
+
+export interface PackageCompleteness {
+  score: number;
+  missing: PackageCompletenessMissing[];
+}
+
+export interface PackageReference {
+  id: string;
+  version_id: string;
+  asset_id: string;
+  role: PackageRole | string;
+  label: string;
+  sort_order: number;
+  created_at: string;
+}
+
+export interface PackageOutfit {
+  id: string;
+  version_id: string;
+  outfit_id: string;
+  is_default: boolean;
+  sort_order: number;
+  created_at: string;
+}
+
+export interface PackageSpecSnapshot {
+  identity_spec?: Record<string, string | null>;
+  visual_spec?: Record<string, string | null>;
+  negative_constraints?: string[];
+  frozen_from?: string;
+}
+
+export interface PackageVersion {
+  id: string;
+  package_id: string;
+  version_number: number;
+  status: PackageVersionStatus;
+  spec_snapshot: PackageSpecSnapshot;
+  derived_from_version_id: string | null;
+  published_at: string | null;
+  created_at: string;
+  updated_at: string;
+  version: number;
+  references: PackageReference[];
+  outfits: PackageOutfit[];
+  completeness: PackageCompleteness | null;
+}
+
+export interface CharacterModelPackage {
+  id: string;
+  character_id: string;
+  project_id: string;
+  identity_spec: Record<string, string | null>;
+  visual_spec: Record<string, string | null>;
+  negative_constraints: string[];
+  published_version_id: string | null;
+  status: PackageStatus;
+  created_at: string;
+  updated_at: string;
+  version: number;
+  versions: PackageVersion[];
+  completeness: PackageCompleteness | null;
+}
+
+export interface PackageCharacterSummary {
+  id: string;
+  primary_name: string;
+  aliases: string[];
+  alias_conflict: boolean;
+}
+
+export interface CharacterPackageSummary {
+  id: string;
+  character_id: string;
+  project_id: string;
+  status: PackageStatus;
+  published_version_id: string | null;
+  created_at: string;
+  updated_at: string;
+  version: number;
+  character: PackageCharacterSummary;
+  published_version_number: number | null;
+  published_completeness: PackageCompleteness | null;
+}
+
+export interface CharacterPackageListQuery {
+  status?: PackageStatus;
+  limit?: number;
+  offset?: number;
+}
+
+export interface PackageSpecPayload {
+  identity_spec?: Partial<
+    Record<"age_appearance" | "gender" | "personality" | "identity_notes", string | null>
+  >;
+  visual_spec?: Partial<
+    Record<
+      "hair" | "hair_color" | "face" | "eyes" | "body" | "distinguishing_marks",
+      string | null
+    >
+  >;
+  negative_constraints?: string[];
+}
+
+export interface PackageSpecFieldChange {
+  field: string;
+  base_value: string | null;
+  target_value: string | null;
+}
+
+export interface PackageSpecBlockDiff {
+  added: Record<string, string>;
+  removed: Record<string, string>;
+  changed: PackageSpecFieldChange[];
+}
+
+export interface PackageListDiff {
+  added: string[];
+  removed: string[];
+}
+
+export interface PackageReferenceSlot {
+  role: string;
+  label: string;
+  asset_id: string | null;
+  asset_deleted: boolean;
+}
+
+export interface PackageReferenceSlotChange {
+  role: string;
+  label: string;
+  base_asset_id: string | null;
+  target_asset_id: string | null;
+  base_asset_deleted: boolean;
+  target_asset_deleted: boolean;
+}
+
+export interface PackageReferenceDiff {
+  added: PackageReferenceSlot[];
+  removed: PackageReferenceSlot[];
+  changed: PackageReferenceSlotChange[];
+}
+
+export interface PackageOutfitDiffItem {
+  outfit_id: string;
+  is_default: boolean;
+  sort_order: number;
+}
+
+export interface PackageOutfitDiff {
+  added: PackageOutfitDiffItem[];
+  removed: PackageOutfitDiffItem[];
+  changed: PackageOutfitDiffItem[];
+}
+
+export interface PackageDiff {
+  base_version_id: string;
+  target_version_id: string;
+  identity_spec: PackageSpecBlockDiff;
+  visual_spec: PackageSpecBlockDiff;
+  negative_constraints: PackageListDiff;
+  references: PackageReferenceDiff;
+  outfits: PackageOutfitDiff;
+}
+
 export function publicUrl(path: string | null) {
   if (!path) return null;
   const previewPath = path.replace(
@@ -1283,6 +1471,152 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(payload),
     }),
+  characterPackages: (projectId: string, query: CharacterPackageListQuery = {}) => {
+    const params = new URLSearchParams();
+    if (query.status) params.set("status", query.status);
+    if (query.limit !== undefined) params.set("limit", String(query.limit));
+    if (query.offset !== undefined) params.set("offset", String(query.offset));
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return request<CharacterPackageSummary[]>(
+      `/projects/${projectId}/character-packages${suffix}`,
+    );
+  },
+  // Contract §9.4 caps one page at 200 and defaults to 50, so a single
+  // unpaginated call silently truncates. All consumers need the complete
+  // list (package workspace, generate-side picker and default inheritance),
+  // so they page with the maximum limit until a short page ends the loop.
+  characterPackagesAll: async (projectId: string, status?: PackageStatus) => {
+    const limit = 200;
+    const all: CharacterPackageSummary[] = [];
+    let offset = 0;
+    for (;;) {
+      const page = await api.characterPackages(projectId, { limit, offset, ...(status ? { status } : {}) });
+      all.push(...page);
+      if (page.length < limit) return all;
+      offset += limit;
+    }
+  },
+  characterPackage: (projectId: string, characterId: string) =>
+    request<CharacterModelPackage>(`/projects/${projectId}/characters/${characterId}/package`),
+  createCharacterPackage: (projectId: string, characterId: string, payload: PackageSpecPayload = {}) =>
+    request<CharacterModelPackage>(`/projects/${projectId}/characters/${characterId}/package`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  updateCharacterPackage: (projectId: string, characterId: string, payload: PackageSpecPayload & { version: number }) =>
+    request<CharacterModelPackage>(`/projects/${projectId}/characters/${characterId}/package`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  deriveCharacterPackageVersion: (projectId: string, characterId: string, baseVersionId?: string | null) =>
+    request<PackageVersion>(`/projects/${projectId}/characters/${characterId}/package/versions`, {
+      method: "POST",
+      body: JSON.stringify({ base_version_id: baseVersionId ?? null }),
+    }),
+  publishCharacterPackageVersion: (projectId: string, characterId: string, versionId: string) =>
+    request<PackageVersion>(
+      `/projects/${projectId}/characters/${characterId}/package/versions/${versionId}/publish`,
+      { method: "POST", body: JSON.stringify({}) },
+    ),
+  archiveCharacterPackage: (projectId: string, characterId: string) =>
+    request<CharacterModelPackage>(`/projects/${projectId}/characters/${characterId}/package/archive`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+  restoreCharacterPackage: (projectId: string, characterId: string) =>
+    request<CharacterModelPackage>(`/projects/${projectId}/characters/${characterId}/package/restore`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+  archiveCharacterPackageVersion: (projectId: string, characterId: string, versionId: string) =>
+    request<PackageVersion>(
+      `/projects/${projectId}/characters/${characterId}/package/versions/${versionId}/archive`,
+      { method: "POST", body: JSON.stringify({}) },
+    ),
+  restoreCharacterPackageVersion: (projectId: string, characterId: string, versionId: string) =>
+    request<PackageVersion>(
+      `/projects/${projectId}/characters/${characterId}/package/versions/${versionId}/restore`,
+      { method: "POST", body: JSON.stringify({}) },
+    ),
+  activateCharacterPackageVersion: (
+    projectId: string,
+    characterId: string,
+    payload: { version_id: string; expected_published_version_id: string | null },
+  ) =>
+    request<CharacterModelPackage>(`/projects/${projectId}/characters/${characterId}/package/activate`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  deleteCharacterPackageVersion: (projectId: string, characterId: string, versionId: string) =>
+    request<void>(`/projects/${projectId}/characters/${characterId}/package/versions/${versionId}`, {
+      method: "DELETE",
+    }),
+  bindCharacterPackageReference: (
+    projectId: string,
+    characterId: string,
+    versionId: string,
+    payload: { asset_id: string; role: PackageRole; label?: string; sort_order?: number; version: number },
+  ) =>
+    request<PackageReference>(
+      `/projects/${projectId}/characters/${characterId}/package/versions/${versionId}/references`,
+      { method: "POST", body: JSON.stringify(payload) },
+    ),
+  setCharacterPackageCover: (projectId: string, characterId: string, versionId: string, payload: { asset_id: string; version: number }) =>
+    request<PackageReference>(
+      `/projects/${projectId}/characters/${characterId}/package/versions/${versionId}/cover`,
+      { method: "PUT", body: JSON.stringify(payload) },
+    ),
+  unbindCharacterPackageReference: (
+    projectId: string,
+    characterId: string,
+    versionId: string,
+    referenceId: string,
+    version: number,
+  ) =>
+    request<void>(
+      `/projects/${projectId}/characters/${characterId}/package/versions/${versionId}/references/${referenceId}`,
+      { method: "DELETE", body: JSON.stringify({ version }) },
+    ),
+  bindCharacterPackageOutfit: (
+    projectId: string,
+    characterId: string,
+    versionId: string,
+    payload: { outfit_id: string; is_default?: boolean; sort_order?: number; version: number },
+  ) =>
+    request<PackageOutfit>(
+      `/projects/${projectId}/characters/${characterId}/package/versions/${versionId}/outfits`,
+      { method: "POST", body: JSON.stringify(payload) },
+    ),
+  setCharacterPackageOutfitDefault: (
+    projectId: string,
+    characterId: string,
+    versionId: string,
+    outfitId: string,
+    payload: { is_default: boolean; version: number },
+  ) =>
+    request<PackageOutfit>(
+      `/projects/${projectId}/characters/${characterId}/package/versions/${versionId}/outfits/${outfitId}`,
+      { method: "PATCH", body: JSON.stringify(payload) },
+    ),
+  unbindCharacterPackageOutfit: (
+    projectId: string,
+    characterId: string,
+    versionId: string,
+    outfitId: string,
+    version: number,
+  ) =>
+    request<void>(
+      `/projects/${projectId}/characters/${characterId}/package/versions/${versionId}/outfits/${outfitId}`,
+      { method: "DELETE", body: JSON.stringify({ version }) },
+    ),
+  characterPackageDiff: (projectId: string, characterId: string, baseVersionId: string, targetVersionId: string) =>
+    request<PackageDiff>(
+      `/projects/${projectId}/characters/${characterId}/package/diff?base_version_id=${encodeURIComponent(baseVersionId)}&target_version_id=${encodeURIComponent(targetVersionId)}`,
+    ),
+  characterPackageVersionCompleteness: (projectId: string, characterId: string, versionId: string) =>
+    request<PackageCompleteness>(
+      `/projects/${projectId}/characters/${characterId}/package/versions/${versionId}/completeness`,
+    ),
   createCharacter: (projectId: string, primaryName: string, aliases: string[]) =>
     request<Character>(`/projects/${projectId}/characters`, {
       method: "POST",
@@ -1333,7 +1667,7 @@ export const api = {
   batches: (pageId: string) => request<GenerationBatch[]>(`/pages/${pageId}/batches`),
   startBatch: (pageId: string) => request<GenerationBatch>(`/pages/${pageId}/batches`, { method: "POST" }),
   candidates: (batchId: string) => request<PageCandidate[]>(`/batches/${batchId}/candidates`),
-  generateCandidate: (batchId: string, model_alias: ImageModelAlias, resolution: Resolution, storyboard_version: number, reference_selections: Record<string, { character_asset_id: string | null; outfit_id: string | null; outfit_asset_id: string | null }>) =>
+  generateCandidate: (batchId: string, model_alias: ImageModelAlias, resolution: Resolution, storyboard_version: number, reference_selections: Record<string, { character_asset_id: string | null; outfit_id: string | null; outfit_asset_id: string | null; package_version_id?: string | null }>) =>
     request<{ job_id: string; job_status: string; candidate: PageCandidate }>(`/batches/${batchId}/candidates`, {
       method: "POST",
       body: JSON.stringify({ model_alias, resolution, storyboard_version, reference_selections }),

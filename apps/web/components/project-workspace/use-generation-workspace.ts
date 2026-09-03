@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tan
 import { useMemo, useState } from "react";
 
 import { getPageGenerationIssue, getPageStructureIssue } from "@/lib/generation-rules";
-import { api, type ImageModelAlias, type InspectionResult, type Job } from "@/lib/api";
+import { api, type CharacterPackageSummary, type ImageModelAlias, type InspectionResult, type Job } from "@/lib/api";
 import { activePollInterval, hasActiveItem, isTerminalTaskStatus } from "@/lib/task-status";
 
 import { recommendedRepairType } from "./display";
@@ -13,6 +13,7 @@ import {
   collectVisibleCharacterIds,
   isGenerationReferenceReady,
   mergeReferenceSelections,
+  type PublishedPackageVersions,
   type ReferenceSelections,
 } from "./reference-selection";
 import type { WorkspaceSection } from "./types";
@@ -81,11 +82,25 @@ export function useGenerationWorkspace({
     queryFn: () => api.batches(selectedPageEntry!.id),
     enabled: section === "generate" && Boolean(selectedPageEntry),
   });
+  // Package summaries feed default inheritance (contract §8.1): characters
+  // with an ACTIVE package + published version resolve their reference image
+  // server-side from the version matrix, so no legacy asset id is sent.
+  // Fail-closed: while the list is loading or failed, an unknown package list
+  // must not fall back to legacy asset ids — the backend would still enter
+  // package mode from the published pointer and 409 on a non-matrix asset.
+  const characterPackages = useQuery({
+    queryKey: ["character-packages", id],
+    queryFn: () => api.characterPackagesAll(id),
+    enabled: section === "generate",
+  });
+  const generationPackagesReady = !characterPackages.isLoading && !characterPackages.isError;
   // The workbench inserts tall blocks (readiness panel, reference check) whose
   // height is unknown until the workbench query lands; rendering them in stages
   // pushed the whole canvas down (measured CLS 0.477). Show one skeleton until
-  // the workbench, batch and model data exist, then insert the canvas at once.
-  const generateWorkbenchReady = !workbench.isLoading && !pageBatches.isLoading && !models.isLoading;
+  // the workbench, batch, model and package data exist, then insert the canvas
+  // at once.
+  const generateWorkbenchReady =
+    !workbench.isLoading && !pageBatches.isLoading && !models.isLoading && generationPackagesReady;
   const orderedPageBatches = useMemo(
     () => [...(pageBatches.data ?? [])].sort((left, right) => left.ordinal - right.ordinal),
     [pageBatches.data],
@@ -130,14 +145,34 @@ export function useGenerationWorkspace({
     () => collectVisibleCharacterIds(generationStoryboard.data?.panels ?? []),
     [generationStoryboard.data?.panels],
   );
+  const publishedPackageVersions = useMemo<PublishedPackageVersions>(() => {
+    const map: PublishedPackageVersions = {};
+    for (const item of characterPackages.data ?? []) {
+      if (item.status === "ACTIVE" && item.published_version_id) {
+        map[item.character_id] = item.published_version_id;
+      }
+    }
+    return map;
+  }, [characterPackages.data]);
+  // Every package regardless of status: contract §8.1 allows explicitly
+  // selecting an ARCHIVED version, so the picker must mount even when the
+  // package cannot serve default inheritance.
+  const packageSummariesByCharacter = useMemo<Record<string, CharacterPackageSummary>>(() => {
+    const map: Record<string, CharacterPackageSummary> = {};
+    for (const item of characterPackages.data ?? []) {
+      map[item.character_id] = item;
+    }
+    return map;
+  }, [characterPackages.data]);
   const defaultReferenceSelections = useMemo(
     () => buildDefaultReferenceSelections(
       visibleCharacterIds,
       characters.data,
       outfits.data,
       generationStoryboard.data?.panels ?? [],
+      publishedPackageVersions,
     ),
-    [characters.data, generationStoryboard.data?.panels, outfits.data, visibleCharacterIds],
+    [characters.data, generationStoryboard.data?.panels, outfits.data, publishedPackageVersions, visibleCharacterIds],
   );
   const effectiveReferenceSelections = useMemo(
     () => mergeReferenceSelections(defaultReferenceSelections, referenceSelections),
@@ -147,6 +182,7 @@ export function useGenerationWorkspace({
     effectiveReferenceSelections,
     visibleCharacterIds,
     outfits.data,
+    publishedPackageVersions,
   );
   const referenceOverrideOpen = referenceOverridePageId === selectedPage?.id;
   const targetDialogues = useMemo(
@@ -182,6 +218,11 @@ export function useGenerationWorkspace({
 
   const generate = useMutation({
     mutationFn: async () => {
+      // Defense in depth for the fail-closed package gate: the UI keeps the
+      // workbench skeleton/error up while the list is unknown, but a stale
+      // click must not send a legacy reference payload either.
+      if (characterPackages.isLoading) throw new Error("正在读取角色模型包，请稍候重试");
+      if (characterPackages.isError) throw new Error("角色模型包状态无法确认，请重试后再生成");
       const issue = getPageGenerationIssue(selectedPage, activeDrawModel);
       if (issue) throw new Error(issue);
       if (!pageReadiness.data?.ready) throw new Error(pageReadiness.isLoading ? "正在检查页面生产条件" : "页面生产准备尚未完成，请先处理阻塞项");
@@ -318,6 +359,10 @@ export function useGenerationWorkspace({
     setReferenceSelections,
     referenceOverridePageId,
     setReferenceOverridePageId,
+    characterPackages,
+    generationPackagesReady,
+    publishedPackageVersions,
+    packageSummariesByCharacter,
     selectedPageEntry,
     selectedPage,
     workbench,

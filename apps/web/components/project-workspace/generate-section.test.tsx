@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api, type GenerationWorkbench, type InspectionResult, type Job, type MangaPage, type PageCandidate, type SceneAsset, type Script } from "@/lib/api";
+import { api, type Character, type GenerationWorkbench, type InspectionResult, type Job, type MangaPage, type PageCandidate, type SceneAsset, type Script, type StoryboardPanel } from "@/lib/api";
 
 import { GenerateSection } from "./generate-section";
 import { useGenerationWorkspace } from "./use-generation-workspace";
@@ -36,6 +36,8 @@ const inspectCandidate = vi.spyOn(api, "inspectCandidate");
 const repairCandidate = vi.spyOn(api, "repairCandidate");
 const generateCandidate = vi.spyOn(api, "generateCandidate");
 const startBatch = vi.spyOn(api, "startBatch");
+const characterPackagesApi = vi.spyOn(api, "characterPackages");
+const characterPackageApi = vi.spyOn(api, "characterPackage");
 
 function pageFixture(overrides: Partial<MangaPage> = {}): MangaPage {
   return {
@@ -184,6 +186,56 @@ function workbenchFixture(overrides: Partial<GenerationWorkbench> = {}): Generat
     candidates: [],
     selected_candidate: candidate,
     selected_candidate_state: candidate?.version_state ?? "NONE",
+    ...overrides,
+  };
+}
+
+function characterFixture(overrides: Partial<Character> = {}): Character {
+  return {
+    id: "character-1",
+    project_id: "project-1",
+    primary_name: "林澈",
+    aliases: [],
+    alias_conflict: false,
+    canonical_description: "",
+    locked_features: [],
+    forbidden_changes: [],
+    status: "ACTIVE",
+    version: 1,
+    references: [{
+      id: "cr-1",
+      character_id: "character-1",
+      asset_id: "asset-1",
+      angle: "front",
+      is_canonical: true,
+    }],
+    ...overrides,
+  };
+}
+
+function panelFixture(overrides: Partial<StoryboardPanel> = {}): StoryboardPanel {
+  return {
+    id: "panel-1",
+    page_id: "page-1",
+    reading_order: 1,
+    bounds: {},
+    shot_type: "MS",
+    camera_angle: "eye",
+    camera_height: "normal",
+    characters: ["character-1"],
+    character_presence: { "character-1": "VISIBLE" },
+    props: [],
+    outfits: {},
+    actions: {},
+    expressions: {},
+    background: "",
+    bubble_regions: [],
+    sound_effects: [],
+    bleed: false,
+    borderless: false,
+    locked_fields: [],
+    version: 1,
+    dialogues: [],
     ...overrides,
   };
 }
@@ -339,6 +391,8 @@ describe("GenerateSection 关键行为", () => {
     repairCandidate.mockReset();
     generateCandidate.mockReset();
     startBatch.mockReset();
+    characterPackagesApi.mockReset().mockResolvedValue([]);
+    characterPackageApi.mockReset();
     workbenchApi.mockReset().mockResolvedValue(workbenchFixture());
   });
 
@@ -669,5 +723,88 @@ describe("GenerateSection 关键行为", () => {
     expect(screen.getByText(/本页另外关联了 1 个场景，它们不进入本次生成输入/)).toBeInTheDocument();
     expect(screen.queryByText(/引用的场景资产不可用/)).not.toBeInTheDocument();
     expect(screen.queryByText("已就绪 · 可直接用于剧本与分镜")).not.toBeInTheDocument();
+  });
+
+  it("TEST-PKG-06 角色包列表未返回前保持骨架，不为已发布角色发送 legacy 参考载荷", async () => {
+    // 入镜角色带规范参考图：一旦在未知包状态下放行，默认载荷就会携带 legacy character_asset_id。
+    characterPackagesApi.mockImplementation(() => new Promise(() => undefined));
+    charactersApi.mockResolvedValue([characterFixture()]);
+    workbenchApi.mockResolvedValue(workbenchFixture({
+      storyboard: { page: pageFixture(), panels: [panelFixture()], candidate_count: 0 },
+    }));
+    renderGenerate();
+    expect(await screen.findByText("正在载入生成工作台…")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "生成 1 个 1K 彩色候选" })).not.toBeInTheDocument();
+    expect(generateCandidate).not.toHaveBeenCalled();
+    expect(startBatch).not.toHaveBeenCalled();
+  });
+
+  it("TEST-PKG-06 角色包列表加载失败时展示可重试错误，恢复后工作台可用", async () => {
+    characterPackagesApi.mockRejectedValue(new Error("角色模型包服务不可用"));
+    renderGenerate();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("角色模型包状态无法载入");
+    expect(alert).toHaveTextContent("角色模型包服务不可用");
+    expect(screen.queryByRole("button", { name: "生成 1 个 1K 彩色候选" })).not.toBeInTheDocument();
+    expect(generateCandidate).not.toHaveBeenCalled();
+
+    characterPackagesApi.mockResolvedValue([]);
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    expect(await screen.findByRole("button", { name: "生成 1 个 1K 彩色候选" })).toBeInTheDocument();
+    expect(generateCandidate).not.toHaveBeenCalled();
+  });
+
+  it("TEST-PKG-06 归档包角色在参考覆盖区显示版本选择器且保留 legacy 参考", async () => {
+    characterPackagesApi.mockResolvedValue([{
+      id: "pkg-1",
+      character_id: "character-1",
+      project_id: "project-1",
+      status: "ARCHIVED",
+      published_version_id: null,
+      created_at: "2026-09-01T00:00:00Z",
+      updated_at: "2026-09-01T00:00:00Z",
+      version: 1,
+      character: { id: "character-1", primary_name: "林澈", aliases: [], alias_conflict: false },
+      published_version_number: null,
+      published_completeness: null,
+    }]);
+    characterPackageApi.mockResolvedValue({
+      id: "pkg-1",
+      character_id: "character-1",
+      project_id: "project-1",
+      identity_spec: {},
+      visual_spec: {},
+      negative_constraints: [],
+      published_version_id: null,
+      status: "ARCHIVED",
+      created_at: "2026-09-01T00:00:00Z",
+      updated_at: "2026-09-01T00:00:00Z",
+      version: 1,
+      versions: [{
+        id: "version-1",
+        package_id: "pkg-1",
+        version_number: 1,
+        status: "ARCHIVED",
+        spec_snapshot: {},
+        derived_from_version_id: null,
+        published_at: "2026-09-01T01:00:00Z",
+        created_at: "2026-09-01T00:00:00Z",
+        updated_at: "2026-09-01T00:00:00Z",
+        version: 1,
+        references: [],
+        outfits: [],
+        completeness: { score: 40, missing: [] },
+      }],
+      completeness: null,
+    });
+    charactersApi.mockResolvedValue([characterFixture()]);
+    workbenchApi.mockResolvedValue(workbenchFixture({
+      storyboard: { page: pageFixture(), panels: [panelFixture()], candidate_count: 0 },
+    }));
+    renderGenerate();
+    fireEvent.click(await screen.findByRole("button", { name: "本页更换" }));
+    expect(await screen.findByLabelText("林澈的角色模型包版本")).toBeInTheDocument();
+    // 归档包不参与默认继承：未显式选择版本时 legacy 人物参考选择仍然可用。
+    expect(screen.getByLabelText("人物参考图")).toBeInTheDocument();
   });
 });
