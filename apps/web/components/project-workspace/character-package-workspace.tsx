@@ -59,6 +59,34 @@ const VISUAL_FIELDS: { key: string; label: string; placeholder: string }[] = [
   { key: "distinguishing_marks", label: "标识性特征", placeholder: "伤疤 / 眼镜 / 胎记…" },
 ];
 
+/** Read-only spec display for frozen versions (§9.2: locked versions are readable). */
+function FrozenSpecReadout({ spec }: { spec: PackageVersion["spec_snapshot"] }) {
+  const rows = [
+    ...Object.entries(spec.identity_spec ?? {}),
+    ...Object.entries(spec.visual_spec ?? {}),
+  ]
+    .filter(([, value]) => value)
+    .map(([key, value]) => ({
+      label: [...IDENTITY_FIELDS, ...VISUAL_FIELDS].find((field) => field.key === key)?.label ?? key,
+      value: String(value),
+    }));
+  const constraints = (spec.negative_constraints ?? []).filter(Boolean);
+  return (
+    <div className="pkg-frozen-spec">
+      {rows.length ? (
+        <dl>
+          {rows.map((row) => (
+            <div key={row.label}><dt>{row.label}</dt><dd>{row.value}</dd></div>
+          ))}
+        </dl>
+      ) : (
+        <p className="pkg-matrix-empty">该版本未填写规格文字。</p>
+      )}
+      {constraints.length > 0 && <p className="pkg-matrix-hint">负面约束：{constraints.join("；")}</p>}
+    </div>
+  );
+}
+
 /** Draft workspec editor: identity + visual specs and negative constraints. */
 function PackageSpecEditor({
   pkg,
@@ -168,7 +196,7 @@ export function CharacterPackageWorkspace({
 
   const list = useQuery({
     queryKey: ["character-packages", projectId],
-    queryFn: () => api.characterPackages(projectId),
+    queryFn: () => api.characterPackagesAll(projectId),
   });
   const packages = useMemo(() => list.data ?? [], [list.data]);
   const resolvedCharacterId = selectedCharacterId ?? packages[0]?.character_id ?? null;
@@ -448,6 +476,12 @@ export function CharacterPackageWorkspace({
   });
 
   const hasDraft = Boolean(draft);
+  // §9.2: locked versions stay readable. With no DRAFT, show the published
+  // pointer (or newest locked version) as a read-only frozen view.
+  const frozenVersion = !hasDraft && pkg
+    ? published ?? pkg.versions.find((item) => item.status !== "DRAFT") ?? null
+    : null;
+  const frozenMeta = packageVersionStatusMeta(frozenVersion?.status ?? "DRAFT");
   const charactersWithoutPackage = characters.filter(
     (item) => !packages.some((entry) => entry.character_id === item.id),
   );
@@ -619,7 +653,62 @@ export function CharacterPackageWorkspace({
                 </div>
               </header>
 
-              {!hasDraft && (
+              {!hasDraft && frozenVersion && (
+                <section className="pkg-draft-block" aria-label={`已冻结版本 V${frozenVersion.version_number}`}>
+                  <header>
+                    <div>
+                      <strong>已冻结版本 V{frozenVersion.version_number}</strong>
+                      <em className={`scene-status-tone ${frozenMeta.tone}`}>{frozenMeta.label} · 只读</em>
+                    </div>
+                    <small>发布版本冻结不可编辑；如需修改请派生新版本。</small>
+                  </header>
+                  <FrozenSpecReadout spec={frozenVersion.spec_snapshot} />
+                  <PackageViewMatrix
+                    version={frozenVersion}
+                    characterName={characterName}
+                    assets={assets}
+                    bindableAssets={bindableAssets}
+                    editable={false}
+                    busy={false}
+                    onBindSlot={() => undefined}
+                    onUnbind={() => undefined}
+                    onUploadSlot={() => undefined}
+                  />
+                  <PackageExpressionMatrix
+                    version={frozenVersion}
+                    characterName={characterName}
+                    assets={assets}
+                    bindableAssets={bindableAssets}
+                    editable={false}
+                    busy={false}
+                    onBindSlot={() => undefined}
+                    onUnbind={() => undefined}
+                    onUploadSlot={() => undefined}
+                  />
+                  <section className="pkg-matrix" aria-label="关联服装档案（已冻结）">
+                    <header><strong>关联服装档案（{frozenVersion.outfits.length}）</strong><small>服装集与默认位随版本冻结</small></header>
+                    {frozenVersion.outfits.length ? (
+                      <ul className="pkg-outfit-list">
+                        {frozenVersion.outfits.map((relation) => {
+                          const outfit = characterOutfits.find((item) => item.id === relation.outfit_id);
+                          return (
+                            <li key={relation.id}>
+                              <strong>{outfit?.name ?? relation.outfit_id}</strong>
+                              <span>
+                                {relation.is_default ? "默认服装" : "已关联"}
+                                {outfit ? ` · ${outfit.reference_asset_ids.length} 张参考图` : " · 服装档案缺失"}
+                              </span>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    ) : (
+                      <p className="pkg-matrix-empty">该版本未关联服装。</p>
+                    )}
+                  </section>
+                </section>
+              )}
+              {!hasDraft && !frozenVersion && (
                 <p className="pkg-hint">
                   当前没有草稿版本。规格与矩阵只能在草稿中修改；如需调整，请先派生新版本。
                 </p>

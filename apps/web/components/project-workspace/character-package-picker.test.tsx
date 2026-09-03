@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -126,6 +126,37 @@ describe("CharacterPackagePicker", () => {
     fireEvent.change(select, { target: { value: "" } });
     await waitFor(() => {
       expect(onChange).toHaveBeenCalledWith(null);
+    });
+  });
+
+  it("TEST-PKG-06 归档包仍显示版本选择器，可显式选择已归档版本（契约 §8.1）", async () => {
+    listApi.mockResolvedValue([summaryFixture({
+      status: "ARCHIVED",
+      published_version_id: null,
+      published_version_number: null,
+      published_completeness: null,
+    })]);
+    detailApi.mockResolvedValue(detailFixture({
+      status: "ARCHIVED",
+      published_version_id: null,
+      versions: [{
+        ...detailFixture().versions[0],
+        id: "version-1",
+        version_number: 1,
+        status: "ARCHIVED",
+        derived_from_version_id: null,
+        published_at: "2026-09-01T01:00:00Z",
+      }],
+    }));
+    const onChange = vi.fn();
+    renderPicker({ onChange });
+    const select = await screen.findByLabelText("林澈的角色模型包版本");
+    // 归档版本仍进入显式选择列表；默认项说明退回 legacy 路径而非默认继承。
+    expect(within(select).getByRole("option", { name: /V1 · 已归档/ })).toBeInTheDocument();
+    expect(within(select).getByRole("option", { name: "不指定版本（沿用人物参考图路径）" })).toBeInTheDocument();
+    fireEvent.change(select, { target: { value: "version-1" } });
+    await waitFor(() => {
+      expect(onChange).toHaveBeenCalledWith("version-1");
     });
   });
 });

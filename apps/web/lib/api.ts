@@ -1481,6 +1481,21 @@ export const api = {
       `/projects/${projectId}/character-packages${suffix}`,
     );
   },
+  // Contract §9.4 caps one page at 200 and defaults to 50, so a single
+  // unpaginated call silently truncates. All consumers need the complete
+  // list (package workspace, generate-side picker and default inheritance),
+  // so they page with the maximum limit until a short page ends the loop.
+  characterPackagesAll: async (projectId: string, status?: PackageStatus) => {
+    const limit = 200;
+    const all: CharacterPackageSummary[] = [];
+    let offset = 0;
+    for (;;) {
+      const page = await api.characterPackages(projectId, { limit, offset, ...(status ? { status } : {}) });
+      all.push(...page);
+      if (page.length < limit) return all;
+      offset += limit;
+    }
+  },
   characterPackage: (projectId: string, characterId: string) =>
     request<CharacterModelPackage>(`/projects/${projectId}/characters/${characterId}/package`),
   createCharacterPackage: (projectId: string, characterId: string, payload: PackageSpecPayload = {}) =>

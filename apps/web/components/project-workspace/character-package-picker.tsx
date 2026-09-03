@@ -29,7 +29,7 @@ export function CharacterPackagePicker({
 }) {
   const summaries = useQuery({
     queryKey: ["character-packages", projectId],
-    queryFn: () => api.characterPackages(projectId),
+    queryFn: () => api.characterPackagesAll(projectId),
   });
   const summary = (summaries.data ?? []).find((item) => item.character_id === characterId) ?? null;
 
@@ -57,7 +57,7 @@ export function CharacterPackagePicker({
         value={value ?? ""}
         onChange={(event) => onChange(event.target.value || null)}
       >
-        <option value="">默认：使用最新发布版本{summary.published_version_number ? `（V${summary.published_version_number}）` : "（未发布，走原有路径）"}</option>
+        <option value="">{summary.published_version_number ? `默认：使用最新发布版本（V${summary.published_version_number}）` : "不指定版本（沿用人物参考图路径）"}</option>
         {selectable.map((version) => (
           <option key={version.id} value={version.id}>
             V{version.version_number} · {packageVersionStatusMeta(version.status).label}{version.id === detail.data?.published_version_id ? " · 当前发布版本" : ""}

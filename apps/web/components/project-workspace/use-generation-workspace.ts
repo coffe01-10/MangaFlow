@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tan
 import { useMemo, useState } from "react";
 
 import { getPageGenerationIssue, getPageStructureIssue } from "@/lib/generation-rules";
-import { api, type ImageModelAlias, type InspectionResult, type Job } from "@/lib/api";
+import { api, type CharacterPackageSummary, type ImageModelAlias, type InspectionResult, type Job } from "@/lib/api";
 import { activePollInterval, hasActiveItem, isTerminalTaskStatus } from "@/lib/task-status";
 
 import { recommendedRepairType } from "./display";
@@ -90,7 +90,7 @@ export function useGenerationWorkspace({
   // package mode from the published pointer and 409 on a non-matrix asset.
   const characterPackages = useQuery({
     queryKey: ["character-packages", id],
-    queryFn: () => api.characterPackages(id),
+    queryFn: () => api.characterPackagesAll(id),
     enabled: section === "generate",
   });
   const generationPackagesReady = !characterPackages.isLoading && !characterPackages.isError;
@@ -151,6 +151,16 @@ export function useGenerationWorkspace({
       if (item.status === "ACTIVE" && item.published_version_id) {
         map[item.character_id] = item.published_version_id;
       }
+    }
+    return map;
+  }, [characterPackages.data]);
+  // Every package regardless of status: contract §8.1 allows explicitly
+  // selecting an ARCHIVED version, so the picker must mount even when the
+  // package cannot serve default inheritance.
+  const packageSummariesByCharacter = useMemo<Record<string, CharacterPackageSummary>>(() => {
+    const map: Record<string, CharacterPackageSummary> = {};
+    for (const item of characterPackages.data ?? []) {
+      map[item.character_id] = item;
     }
     return map;
   }, [characterPackages.data]);
@@ -352,6 +362,7 @@ export function useGenerationWorkspace({
     characterPackages,
     generationPackagesReady,
     publishedPackageVersions,
+    packageSummariesByCharacter,
     selectedPageEntry,
     selectedPage,
     workbench,

@@ -9,6 +9,7 @@ import {
   type Asset,
   type Character,
   type CharacterModelPackage,
+  type CharacterPackageListQuery,
   type CharacterPackageSummary,
   type Outfit,
   type PackageDiff,
@@ -223,6 +224,31 @@ describe("CharacterPackageWorkspace", () => {
     expect(createApi).not.toHaveBeenCalled();
   });
 
+  it("TEST-PKG-01 角色包列表分页拉取全部页，短页结束且第二页可选", async () => {
+    detailApi.mockResolvedValue(packageFixture());
+    const firstPage = Array.from({ length: 200 }, (_, index) => summaryFixture({
+      id: `pkg-${1000 + index}`,
+      character_id: `character-${1000 + index}`,
+      character: { id: `character-${1000 + index}`, primary_name: `角色${index}`, aliases: [], alias_conflict: false },
+      published_version_id: null,
+      published_version_number: null,
+      published_completeness: null,
+    }));
+    listApi.mockImplementation((_projectId: string, query?: CharacterPackageListQuery) =>
+      Promise.resolve((query?.offset ?? 0) === 0 ? firstPage : [summaryFixture()]));
+    renderWorkspace();
+    await waitFor(() => {
+      expect(listApi).toHaveBeenCalledTimes(2);
+    });
+    expect(listApi).toHaveBeenCalledWith("project-1", { limit: 200, offset: 0 });
+    expect(listApi).toHaveBeenLastCalledWith("project-1", { limit: 200, offset: 200 });
+    const listbox = await screen.findByRole("listbox", { name: "角色模型包列表" });
+    expect(within(listbox).getAllByRole("option")).toHaveLength(201);
+    fireEvent.click(within(listbox).getByRole("option", { name: /林澈/ }));
+    expect(await screen.findByRole("heading", { name: "林澈 的角色模型包" })).toBeInTheDocument();
+    expect(detailApi).toHaveBeenCalledWith("project-1", "character-1");
+  });
+
   it("TEST-PKG-02 完整度百分比来自 API 且缺失项可见；无参考图时阻止发布", async () => {
     listApi.mockResolvedValue([summaryFixture()]);
     detailApi.mockResolvedValue(packageFixture({
@@ -343,7 +369,14 @@ describe("CharacterPackageWorkspace", () => {
       current = {
         ...current,
         published_version_id: "version-1",
-        versions: [versionFixture({ id: "version-1", version_number: 1, status: "READY", published_at: "2026-09-01T02:00:00Z", references: [frontRef] })],
+        versions: [versionFixture({
+          id: "version-1",
+          version_number: 1,
+          status: "READY",
+          published_at: "2026-09-01T02:00:00Z",
+          references: [frontRef],
+          spec_snapshot: { identity_spec: { age_appearance: "17 岁高中生" }, visual_spec: {}, negative_constraints: ["禁止改变发色"], frozen_from: "package" },
+        })],
       };
       return current.versions[0];
     });
@@ -368,8 +401,14 @@ describe("CharacterPackageWorkspace", () => {
       expect(publishApi).toHaveBeenCalledWith("project-1", "character-1", "version-1");
     });
 
-    // 发布后草稿消失：规格编辑区被冻结移除，只剩派生动作。
-    expect(await screen.findByText("当前没有草稿版本。规格与矩阵只能在草稿中修改；如需调整，请先派生新版本。")).toBeInTheDocument();
+    // 发布后冻结版本仍可读（§9.2）：规格、矩阵与服装集只读展示，输入全部消失。
+    const frozenBlock = await screen.findByLabelText("已冻结版本 V1");
+    expect(within(frozenBlock).getByRole("img", { name: "林澈 V1 - 正面（主视）参考图" })).toBeInTheDocument();
+    expect(within(frozenBlock).getByText("17 岁高中生")).toBeInTheDocument();
+    expect(within(frozenBlock).getByText(/禁止改变发色/)).toBeInTheDocument();
+    expect(within(frozenBlock).queryByLabelText("上传正面（主视）参考图")).not.toBeInTheDocument();
+    expect(within(frozenBlock).queryByLabelText("表情标签")).not.toBeInTheDocument();
+    expect(within(frozenBlock).queryByRole("button", { name: "解绑" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("角色包规格工作集")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /派生新版本/ })).toBeEnabled();
 
@@ -377,6 +416,7 @@ describe("CharacterPackageWorkspace", () => {
     await waitFor(() => {
       expect(deriveApi).toHaveBeenCalledWith("project-1", "character-1", "version-1");
     });
+    expect(screen.queryByLabelText("已冻结版本 V1")).not.toBeInTheDocument();
     expect(await screen.findByText("草稿 V2")).toBeInTheDocument();
     expect(screen.getByLabelText("角色包规格工作集")).toBeInTheDocument();
   });

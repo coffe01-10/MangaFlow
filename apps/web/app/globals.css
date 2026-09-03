@@ -1864,3 +1864,8 @@ p { font-size: 14px !important; }
 .pkg-picker { display: grid; gap: 4px; font-size: 12px; font-weight: 700; color: #5f594f; }
 .pkg-picker select { min-height: 40px; padding: 0 10px; border: 1px solid var(--line); background: var(--white); }
 .pkg-picker-empty, .pkg-picker-loading { display: inline-flex; align-items: center; gap: 6px; color: #756f65; font-size: 12px; font-weight: 400; }
+.pkg-frozen-spec { display: grid; gap: 6px; }
+.pkg-frozen-spec dl { margin: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 6px 14px; }
+.pkg-frozen-spec dl div { display: grid; gap: 2px; }
+.pkg-frozen-spec dt { font-size: 11px; font-weight: 700; color: #756f65; }
+.pkg-frozen-spec dd { margin: 0; font-size: 12.5px; }
