@@ -230,7 +230,9 @@ describe("U6 reduced-motion 合并为一条全局契约", () => {
         }
       }
     }
-    expect(interactionTranslateSelectors.size).toBeGreaterThanOrEqual(26);
+    // 26 → 25: the dead .page-plan-card family (old page-plan storyboard UI)
+    // was removed together with its reduced-motion cancellation.
+    expect(interactionTranslateSelectors.size).toBeGreaterThanOrEqual(25);
     const block = mediaBlocks("(prefers-reduced-motion: reduce)")[0];
     for (const selector of interactionTranslateSelectors) {
       expect(block, `reduced-motion 块缺少对交互态位移的取消：${selector}`).toContain(selector);
