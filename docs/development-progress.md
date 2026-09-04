@@ -4,9 +4,17 @@
 
 本文件记录修订版 MVP 计划的实际完成度。
 
-## V02-54C 实现完成：桌面壳日志轮转（2026-09-04，Linux box，待审阅验收）
+## V02-54D 完成并验收：Windows 剩余项状态目录（2026-09-04，Linux box，docs-only；已经 lead 验收审阅后勾选，PR #120）
 
-- **对应**：Issue #117（Refs #114）/ 分支 `glm/v02-54c-log-rotation`（基线 `548b1d1` / PR #116 合并树）。实现提交：`0c913fd`（日志轮转）。范围仍限于 `apps/desktop/` 与 docs，`apps/api`/`apps/web` 业务代码零改动；契约 `docs/adr/v02-desktop-shell-evaluation.md` **仍为草案、选型未批准**。
+- **合并记录**：V02-54C（Issue #117 / 分支 `glm/v02-54c-log-rotation`）已经 lead 两轮修复审阅后在 roadmap 勾选，并由 PR #118 以合并提交 `efedb08` 合入 master（git 记录：`2849bf7` 勾选、`0857138`/`0fc8bea` 两轮修复）。**父项 V02-54 保持未勾**；不勾 V02-55 / V02-52B。
+- **验收记录（2026-09-04，lead P0/P1 验收审阅）**：V02-54D 已在 roadmap 勾选（P1 修复随 PR #120 推送）；**父项 V02-54 保持未勾**，不勾 V02-55 / V02-52B。本切片验收后 **Linux 可落地的桌面续作已尽**：当前无已派工的下一实现项，剩余项以 `docs/v02-windows-leftover-status.md` 为准（Windows 实机/安装器/签名/自动更新、Redis/RQ 桌面形态、V02-52A N=20、真实供应商、ADR lead 终批等），后续窗口待 lead 另行派工。ADR 仍为草案、选型未批准，未声称任何 Windows 剩余项 RUN。
+- **本轮范围**：Issue #119 / 分支 `glm/v02-54d-windows-status`（基线 `efedb08`）。V02-54C 合入后 **Linux 可落地的桌面续作已尽**（V02-54 第一轮 / 54B / 54C 均已勾选），本轮为 **docs-only 诚实状态目录**：把 V02-54/54B/54C 记录与 `apps/desktop/README.md` D1–D9 中仍 `NOT RUN` / `BLOCKED` 的 Windows 实机与发布项汇总为 `docs/v02-windows-leftover-status.md`——每项含 ID、描述、依赖环境、状态、阻塞原因与既有证据（明确不视作实机验收），共 22 项（NOT RUN 16、BLOCKED 6），至少覆盖 Job Object 实机、WebView2（渲染/缺失安装/工具页 invoke/CSP）、rfd 对话框实机、日志轮转实机、单实例多开、Windows sidecar 打包、MSI/NSIS 安装/升级/卸载、签名、自动更新、静态导出/方案 B、Redis/RQ 桌面形态、Independent Worker 矩阵、V02-52A N=20、真实供应商、ADR lead 终批与 V02-55 发布门禁；并显式声明 mock/SQLite/fakeredis/Linux 编译门禁与 Linux live 证据不得写成 Windows 实机已验收。不实现、不装 Docker/Postgres、不跑 V02-52B（缺 N=20）、不开 V02-55；`apps/api`/`apps/web`/shell-core 业务树与壳代码零改动（仅 README §7 增加一行目录指引）。
+- **门禁**：docs-only，无代码改动；`git diff --check` 通过。不重跑实现门禁（本分支未触碰任何被测代码）。
+- **NOT RUN / 边界**：本轮不闭合任何清单项；W-13/W-14（签名/更新）等用户资源决策项、W-16/W-17（Redis/PostgreSQL 基础设施）继续 BLOCKED，解除条件见目录 §7 维护规则。
+
+## V02-54C 实现完成：桌面壳日志轮转（2026-09-04，Linux box；已经 lead 两轮修复审阅后勾选，PR #118 合并为 `efedb08`）
+
+- **对应**：Issue #117（Refs #114）/ 分支 `glm/v02-54c-log-rotation`（基线 `548b1d1` / PR #116 合并树）。实现提交：`0c913fd`（日志轮转）；审查修复：`0857138`（修复轮一）、`0fc8bea`（修复轮二）；已由 PR #118 合并为 `efedb08`。范围仍限于 `apps/desktop/` 与 docs，`apps/api`/`apps/web` 业务代码零改动；契约 `docs/adr/v02-desktop-shell-evaluation.md` **仍为草案、选型未批准**。
 - **轮转策略（`shell-core/src/logs.rs`）**：`shell-*.log` / `helper-*.stderr.log` 单文件达 `ROTATION_THRESHOLD_BYTES`（12 MiB，本轮自选值、严格低于导出 64 MiB 上限；ADR 只要求「轮转」、未给出数值区间）即 rename 为带序号世代 `.1`–`.5`（`ROTATION_KEEP_GENERATIONS`），先删最旧世代再自新到旧逐级 shift（目标位刚腾空，普通 rename 在 Windows 无覆盖式 rename 语义下同样成立），超出保留数删最旧。**两种时机，取舍写明**：①壳 RunLog 会话内轮转——`RunLog::record` 写前检查，达阈值关句柄→shift 世代→重开同一 base 路径，轮转后打开路径继续可写（shift 失败降级继续追加、不丢里程碑行；重开失败该行以错误返回、下次 record 自动重试恢复句柄）；②helper stderr 句柄由 helper 进程持有整会话（Windows 无法 rename 他进程打开的文件、Unix rename 会把后续写脱接到新 base），采用**跨会话轮转**——每次会话启动 `RunLog::create` 在上批文件必然关闭的时机清扫 logs/；单会话内 helper stderr 超阈值由导出 64 MiB 上限兜底（跳过并记录）。
 - **路径安全**：只匹配 logs 根内固定文件名模式，世代名由匹配文件名派生，rename/删除目标结构上不可能越出 logs 根，rename 前另有 canonical 包含复查；符号链接一律不跟随（base 路径上的链接跳过不轮转、不移动链接本身；世代位上的链接 unlink，外链目标存活）；日志打开统一走 `open_append_regular` 拒绝挂在日志路径上的非常规条目（检查后打开的置换窗口与导出侧同款残余风险，user-data 为每用户目录，ACL 收紧 NOT RUN）。
 - **门禁（Linux 可跑部分全绿，2026-09-04）**：shell-core `cargo test` **33 项**全绿（26 项存量 + logs 单元 4：世代 shift/保留、符号链接不跟随与越根跳过、清扫只动超阈值 base 文件、RunLog 拒绝符号链接路径；`tests/log_rotation.rs` 集成 3：会话启动清扫上会话超阈值 shell/helper 日志、会话内轮转后打开路径继续写 + 世代保留 ≤5、世代文件随导出归档不触发 64 MiB 跳过；超阈值用稀疏文件 `set_len` 构造，真实 12 MiB 默认阈值零成本参与）；`cargo check --target x86_64-pc-windows-msvc` 于 shell-core 与 src-tauri 双双通过（rustup stable 1.98.1 + llvm-rc 19 用户态解包）；`run-sidecar-e2e.sh` 假闭环 1 passed（4.35s，验证改动后的握手与 helper stderr 重定向）；`ruff check apps/desktop` 通过；`tests/test_pytest_collection_gate.py` 通过。

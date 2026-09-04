@@ -287,6 +287,9 @@ cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml
 
 ## 7. NOT RUN 汇总（诚实边界）
 
+> 完整剩余项状态目录（每项 ID / 描述 / 依赖环境 / RUN·NOT RUN·BLOCKED / 阻塞原因，
+> 含打包、签名、更新、性能与治理项）见 `docs/v02-windows-leftover-status.md`（V02-54D）。
+
 1. Windows 实机全链路（Job Object 行为、WebView2、安装器、签名、更新、单实例多开）。
 2. RQ/Redis worker 进程形态与 Independent Worker（按 Issue 约束不装 Redis/Docker/Postgres；本地 LOCAL_EXECUTOR 已验）。
 3. V02-52A N=20 性能门禁、Lighthouse/FPS（归 V02-52B）。
