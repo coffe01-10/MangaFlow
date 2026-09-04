@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
 from pydantic import (
@@ -158,6 +158,54 @@ class ProviderModelRead(BaseModel):
     version: int
 
 
+_CAPABILITY_LIMIT_MAX = 100
+_CAPABILITY_LIST_MAX = 32
+
+
+def validate_model_capabilities_payload(
+    capabilities: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Reject malformed capability values at the admin write boundary.
+
+    Readers coerce-or-ignore malformed catalog rows
+    (``services/model_capabilities.py``), but a write that would poison
+    catalog serialization, worker binding and vertex binds must fail with a
+    422 instead of persisting. Only known risky keys are constrained;
+    the capability map stays extensible.
+    """
+
+    if capabilities is None:
+        return None
+    limit = capabilities.get("max_reference_images")
+    if limit is not None:
+        if isinstance(limit, bool):
+            raise ValueError("max_reference_images 必须是 0-100 的整数")
+        try:
+            number = Decimal(str(limit))
+        except (InvalidOperation, ValueError):
+            raise ValueError("max_reference_images 必须是 0-100 的整数") from None
+        if (
+            not number.is_finite()
+            or number < 0
+            or number > _CAPABILITY_LIMIT_MAX
+            or number != number.to_integral_value()
+        ):
+            raise ValueError("max_reference_images 必须是 0-100 的整数")
+    for key in ("resolutions", "preview_resolutions"):
+        declared = capabilities.get(key)
+        if declared is None or isinstance(declared, (list, tuple)):
+            if isinstance(declared, (list, tuple)) and (
+                len(declared) > _CAPABILITY_LIST_MAX
+                or any(not isinstance(item, str) for item in declared)
+            ):
+                raise ValueError(f"{key} 必须是字符串列表")
+        elif isinstance(declared, str):
+            capabilities[key] = [declared]
+        else:
+            raise ValueError(f"{key} 必须是字符串列表")
+    return capabilities
+
+
 class ProviderModelCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -169,6 +217,10 @@ class ProviderModelCreate(BaseModel):
     operations: list[str] = Field(default_factory=list)
     api_surfaces: list[str] = Field(default_factory=list)
     capabilities: dict[str, Any] = Field(default_factory=dict)
+
+    _validated_capabilities = field_validator("capabilities", mode="after")(
+        validate_model_capabilities_payload
+    )
 
 
 class ProviderModelUpdate(BaseModel):
@@ -186,6 +238,10 @@ class ProviderModelUpdate(BaseModel):
     display_enabled: bool | None = None
     priority: int | None = Field(default=None, ge=0, le=100)
     version: int = Field(ge=1)
+
+    _validated_capabilities = field_validator("capabilities", mode="after")(
+        validate_model_capabilities_payload
+    )
 
 
 class ModelVisibilityBatchItem(BaseModel):

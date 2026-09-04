@@ -25,6 +25,7 @@ from app.models import (
     ProviderProfile,
 )
 from app.services.credential_crypto import mark_key_failure, mark_key_success
+from app.services.model_capabilities import capability_reference_limit
 from app.services.model_router import (
     AdapterBinding,
     ResolvedModel,
@@ -385,8 +386,8 @@ def _text_model_reference(job: GenerationJob, project: Project) -> str | None:
 
 
 def _validate_reference_capacity(binding: AdapterBinding, count: int) -> None:
-    configured = (binding.resolved.model.capabilities or {}).get("max_reference_images")
-    if configured is not None and count > int(configured):
+    configured = capability_reference_limit(binding.resolved.model.capabilities)
+    if configured is not None and count > configured:
         raise ProviderAdapterError(
             "UNSUPPORTED_CAPABILITY",
             f"所选模型最多接收 {configured} 张参考图，本任务需要 {count} 张",
