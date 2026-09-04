@@ -1,11 +1,20 @@
 # MangaFlow AI 开发进度
 
-更新时间：2026-09-03
+更新时间：2026-09-04
 
 本文件记录修订版 MVP 计划的实际完成度。
 
+## V02-53B 桌面壳可丢弃 PoC 完成：Tauri 2 先验、启动协议/进程归属/假闭环实测（2026-09-04，Linux box）
+
+- **对应**：Issue #110 / 分支 `glm/v02-53b-desktop-shell-poc`（基线 `6f8a40d`，PoC head `3909729`）。契约 `docs/adr/v02-desktop-shell-evaluation.md`（V02-53A，**仍为草案**）。PoC 全部落于 `apps/desktop-poc/`（可丢弃目录），`apps/api`/`apps/web` 业务代码零改动；前端改动仅以可丢弃补丁（`patches/web-static-export.patch`）在一次性 worktree 验证，不合并。**不构成选型批准**，D1–D9 矩阵与复现命令见 `apps/desktop-poc/README.md`。
+- **启动协议（ADR §4.2/§4.4 冻结项）**：壳生成 32 位 owner token + `runtime/mangaflow-poc-<token>/` 运行目录，直接 spawn helper；helper 原子绑定 `127.0.0.1:0`（无 TOCTOU）→ `alembic upgrade head` → 原子写 journal（仅 token/pid/port/origin/状态身份字段）→ stdout `MANGAFLOW_READY`；壳校验 token/PID/journal/回环 origin 后才发 `MANGAFLOW_GO`（错误 token exit 75；GO 前 socket 零字节服务，有断言）；WebView 在握手全部通过后才创建，origin 以初始化脚本同步写 `window.__MANGAFLOW_API_ORIGIN__` + invoke `poc_get_api_origin` 双通道注入，不依赖 `NEXT_PUBLIC_*` 与 Next rewrite。
+- **证据（Linux 沙箱可跑部分全 RUN）**：① shell-core `cargo test` 9/9（协议校验 4 + 集成 5：握手全链、错误 GO 拒绝、并发双 helper 端口必异、`shell-sim` SIGABRT 崩溃后 helper+孙进程经 PDEATHSIG 链全灭、无协作者 SIGTERM→SIGKILL 升级）；② src-tauri 过 `cargo check --target x86_64-pc-windows-msvc`（llvm-rc 经 apt download+用户态解包提供；Job Object `KILL_ON_JOB_CLOSE` 代码编译验证）；③ 真实 API 假模型闭环 e2e 4.2s：`app.main:app` + 28 个 Alembic 迁移 + SQLite 落 user-data + 无 Redis 时 API 内 LOCAL_EXECUTOR（安装版默认形态）+ 假通道（复用 `app.worker_tasks._adapter` 验收缝，目录种子走生产 `credential_crypto` AES-GCM+文件主密钥路径），经 HTTP 完成 项目→导入→解析→角色锁定→参考/服装/画风→analyze→调色板→complete-sheet→候选 READY（approve-reference 200 探针）→新资产 PNG 可下载，`/jobs/{id}/model-call-attempts` 留痕，零真实供应商外呼；④ PyInstaller onedir 冻结 sidecar（116MB）冒烟全过（包内 Alembic→握手→GO→健康→dashboard API 200→优雅退出；`alembic.ini`/`migrations` 必须入 `_internal/` 是打包形态硬约束证据）；⑤ D5 浏览器级（Chromium）：静态导出页加载 + 注入 origin + 仪表盘直连动态端口 API（`/api/v1/projects/dashboard` 200，CORS 按桌面 origin 放行），静态服务器 `/api/*` 零命中、零页面错误。
+- **D5 核心发现（否决条件 3 输入）**：工作台子树无法只靠 flag 静态导出——`output:"export"` 要求每个动态段 ≥1 预渲染组合（真实项目 id 构建期不可知）且工作台组件树服务端预渲染崩溃；补丁以「poc 桩组合 + notFound stub + 删 3 个仅服务端页」换得壳级页面（仪表盘/设置/帮助）导出。方案 B（捆绑 node 跑 `next start` 保留 rewrites）未在本 PoC 验证。
+- **NOT RUN / 边界**：Windows 实机全链路（Job Object 运行时行为——生产壳须按 `owned_processes.py` 的 CREATE_SUSPENDED+assign+resume 收口 spawn→assign 窗口、WebView2 Evergreen 渲染兼容与缺失安装、MSI/NSIS 安装器、SmartScreen/签名、自动更新、单实例多开）；RQ/Redis worker 进程形态与 Independent Worker（按 Issue 约束不装 Redis/Docker/Postgres；PostgreSQL live 沿既有边界）；V02-52A N=20 性能门禁/LH/FPS（归 V02-52B，PoC 仅记录参考值 e2e 全程 4.2s ≪ 15s 冷启动建议线，非固定窗口测量）；真实供应商、真实凭据、Electron 对比壳（未构建镜像实现，体积/内存对比无从测起）。ADR §3.1 否决条件逐项核查表在 `apps/desktop-poc/README.md` §4——**均不足以当场否决或放行，最终选型由 lead 复核决定**。
+
 ## V02-51B 桌面视觉系统已实现：token/焦点/动效收口 + 模板 B/C 壳 + U1–U10 矩阵（2026-09-03，Linux box）
 
+- **合并记录（2026-09-04）**：Issue #108 / PR #109 / 分支 `glm/v02-51b-desktop-visual-system` / 合并提交 `6f8a40d`；父项 V02-51（A/B）随本合并完成并在 roadmap 勾选。
 - **对应**：Issue #108 / 分支 `glm/v02-51b-desktop-visual-system`（基线 `d472f6e`，实现 head `7c344db`）。契约 `docs/v02-desktop-workspace-ux-audit.md` §3/§4/§8/§11/§13/§14；不改 V02-11 供应商内部（`provider-management.tsx` 零改动），QueueDock 行为不变，相对基线 diff 仅 `apps/web` 与 `docs`。
 - **切片 1（token 与焦点/动效收口，§11）**：`globals.css :root` 补齐设计 token——状态色 `--danger/--muted/--success-bg/--warning-bg/--danger-bg/--focus`（其中 `--muted`、`--mono` 此前被组件引用但从未定义，本切片修复）、`--mono` 等宽族、字号级谱 `--text-display/title/body/ui/meta/micro`（最低 11px）、4px 间距谱、z 刻度（base/sticky/dock/overlay/dialog/lightbox）、`--radius: 3px`、`--shadow-card/pop`、`--ease-out`、`--duration-fast/base`；稳定化地板（body 14px、控件 12px/40px、按钮 44px）与卡片阴影、步骤缓动、sticky/dock 层级、按钮圆角改为同值 token 引用，不改布局语义。散落的四段（连同 V02-31B 段共五段）`prefers-reduced-motion` 合并为一条全局契约：动画/过渡 .01ms、iteration 1（spinner 可停）、hover 位移 `transform: none` 清单覆盖按钮图标/工作台步骤/对话卡/设置页悬停，并删除审计点名的诊断刷新按钮 `rotate(-4deg)` 装饰。`focus-visible` 统一为唯一 3px vermillion 焦点环：删除工作台步骤 1px inset、`pkg-slot-card` 2px ink、director/local-edit `outline-offset: 2px` 变体、usage 表格行 `outline: none`。
 - **切片 2（模板 C 设置壳，§4.3）**：`.settings-board`/`.project-settings-grid`/`.checks-section` 单列断点由 900px 提到 1279.98px，诊断/存储侧栏改随页滚动（`position: static; max-height: none; overflow: visible`），不再粘滞挤压主卡；≥1280 保持主栏+粘滞侧栏双列。设置控件字号 ≥12 由全局地板（`--text-meta`）保证。

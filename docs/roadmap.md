@@ -1,8 +1,8 @@
 # MangaFlow 主分支后续工作清单
 
-更新时间：2026-09-03
-当前实现合并树：`master` / `d472f6e`（PR #107，2026-09-03）。V02-21B、V02-22A、V02-22B、V02-23B、V02-30B、V02-31B、V02-32、V02-40、V02-41B、V02-42B、V02-43B、V02-44B、V02-10D 与 V02-11C 已分别完成独立审阅并合并。2026-09-02 在 Linux 隔离环境跑通 PostgreSQL live 18 项（含 PKG-S14）与 Redis/RQ SimpleWorker live 8 项；7 项 Windows Job Object 独立 Worker 仍 `BLOCKED`（笔记本无 Docker/PostgreSQL/Redis，用户明确不安装）。同日 Windows 笔记本 `LAPTOP-TV9KT8RC` 在 SHA `98b93a0`（分支 `fix/pr82-remaining-package-p1s`，该 SHA 为 `master`/`f961774` 祖先；E2E/perf **未**跑在 `c93e1b3`）以官方控制器 `scripts/run_e2e_owned.py` 将 Playwright E2E 与 Lighthouse/FPS 记为 `RUN`。真实图片生成/编辑、账号权限、费用与真实取消/超时进程树仍按任务标记为 `NOT RUN`。
-当前开发分支：`glm/v02-51b-desktop-visual-system`。下一实现项为 V02-51B（桌面工作台视觉系统实现，Issue #108）。
+更新时间：2026-09-04
+当前实现合并树：`master` / `6f8a40d`（PR #109，2026-09-04）。V02-21B、V02-22A、V02-22B、V02-23B、V02-30B、V02-31B、V02-32、V02-40、V02-41B、V02-42B、V02-43B、V02-44B、V02-10D 与 V02-11C 已分别完成独立审阅并合并。2026-09-02 在 Linux 隔离环境跑通 PostgreSQL live 18 项（含 PKG-S14）与 Redis/RQ SimpleWorker live 8 项；7 项 Windows Job Object 独立 Worker 仍 `BLOCKED`（笔记本无 Docker/PostgreSQL/Redis，用户明确不安装）。同日 Windows 笔记本 `LAPTOP-TV9KT8RC` 在 SHA `98b93a0`（分支 `fix/pr82-remaining-package-p1s`，该 SHA 为 `master`/`f961774` 祖先；E2E/perf **未**跑在 `c93e1b3`）以官方控制器 `scripts/run_e2e_owned.py` 将 Playwright E2E 与 Lighthouse/FPS 记为 `RUN`。真实图片生成/编辑、账号权限、费用与真实取消/超时进程树仍按任务标记为 `NOT RUN`。
+当前开发分支：`glm/v02-53b-desktop-shell-poc`。V02-53B 桌面壳 PoC 已合并证据（Issue #110 / PR #111）；下一实现项由 lead 依据 PoC 证据与 ADR 选型决议确定（候选：V02-54 桌面应用交付、V02-52B 性能门禁执行——后者仍需 V02-52A N=20 全样本）。
 最近 `check:full` 历史基线：`master` / `cb324e3`（2026-08-27；相对 PR #5 合并提交 `d5d32ec` 仅增加任务文档），不代表 PR #6 / #7 / #10 / #11 已重跑浏览器验收。2026-09-02 Windows owned E2E 17/17 与 LH/FPS 4/4 证据在 `98b93a0` / `LAPTOP-TV9KT8RC`，见 `docs/development-progress.md`。
 深审历史基线：`master` / `f085327`。当时新增 6 项 P1 修复与 1 项 P2 改进；PR #6 已合并其中 P1-7、P1-9～P1-12 的代码修复。P1-8、P2-8 已随 PR #7 合并，独立 Redis/RQ、PostgreSQL 与浏览器验收仍待完成。
 安全审查历史基线：`master` / `7635cf7`。P0-3、P1-13～P1-15、P2-4、P2-9 的代码修复现已合并，真实服务/容器及完整依赖审计边界仍保留。
@@ -35,12 +35,12 @@
   - [x] 供应商平权定义、迁移红线和 M1–M14 验收矩阵已由 V02-02 冻结（`5ac0383`）。
   - [x] 供应商设置目标信息架构、状态和 UI 测试矩阵已完成前置审计（`2ab048f`，随 `3bac6da` 合并）。
   - [x] 可展示模型、CLI 执行器、导演命令/候选血缘、场景资产、分镜几何、用量账本和桌面壳 ADR 已由本轮 A 级文档分别冻结。
-  - [x] 角色模型包的数据层契约已由 V02-22A 冻结（`6298be1`）；桌面进程真实 PoC（V02-53B）仍未完成；完成前 V02-01 不勾选。
+  - [x] 角色模型包的数据层契约已由 V02-22A 冻结（`6298be1`）；桌面进程可丢弃 PoC（V02-53B）已落地（Issue #110 / PR #111，Linux 实测），但 Windows Job Object 实机、安装形态与 WebView2 兼容仍 NOT RUN，最终选型未批准，V02-01 仍不勾选。
 - [x] **V02-02（L2，Issue #39）：盘点现有 Vertex 特判和跨模块耦合。** 已在 `docs/v02-provider-neutrality-audit.md` 形成可逐项删除的特判清单、统一 provider/model capability 契约、历史 ID/别名兼容红线、Phase A–E 与 M1–M14；提交 `5ac0383`。本项为审计完成，不代表 V02-10 实现完成。
 - [ ] **V02-03（L3，组长设计）：冻结编辑命令、候选血缘和桌面进程边界。** 确定导演命令的可校验 schema、预览/确认/撤销语义、区域 mask 与父候选关系、CLI 子进程身份/超时/取消/清理规则，以及桌面壳对 API、Worker、文件和凭据的所有权。设计通过前不得广泛编辑迁移、Worker 或启动器。
   - [x] **V02-03A / Issue #47：导演命令与候选血缘契约。** 已合并 `docs/v02-director-command-lineage-contract.md`；场景版本、重试身份、局部候选采用与失效边界已收口。
   - [x] **CLI 进程边界设计。** 已由 V02-13A 的执行器契约冻结目录约定、输出归属、超时/取消、controller/child 崩溃与环境白名单。
-  - [ ] **桌面壳进程边界 PoC。** V02-53A 已给出 ADR 与所有权协议，但真实 Job Object、动态端口注入和安装形态仍需 V02-53B PoC 证明后才能完成 V02-03。
+  - [ ] **桌面壳进程边界 PoC。** V02-53A 已给出 ADR 与所有权协议；V02-53B PoC（Issue #110 / PR #111，`apps/desktop-poc/`，可丢弃）已在 Linux 实测动态端口原子绑定、owner token/journal readiness 握手、PDEATHSIG 清树与假模型闭环，并以 Windows 目标 `cargo check` 编译验证 Job Object 代码；**Windows 实机 Job Object、安装器与 WebView2 仍 NOT RUN**（`apps/desktop-poc/README.md` D1–D9），本子项保持不勾，待 Windows 实机验收后才能完成 V02-03。
 
 ### M1：供应商平权、模型选择与调用可观测性
 
@@ -128,15 +128,15 @@
 ### M5：全局 UX、文案与桌面端
 
 - [x] **V02-50 / Issue #60（L1）：建立 UI 文案清单并删除“嘀咕”。** 已合并 `docs/v02-ui-copy-audit.md`，保留硬限制、费用、数据外发、不可逆操作和生产门禁；候选删除按软删除事实描述。具体页面替换继续作为各 UI 实现 PR 的验收项。
-- [ ] **V02-51（L2）：统一桌面工作台视觉与交互系统。**
+- [x] **V02-51（L2）：统一桌面工作台视觉与交互系统。**（A/B 均已合并，随 PR #109 关闭。）
   - [x] **V02-51A / Issue #50（审计）：** 已合并 `docs/v02-desktop-workspace-ux-audit.md`，形成视觉系统、状态、面板和高频路径清单。
-  - [x] **V02-51B（实现，Issue #108 / 分支 `glm/v02-51b-desktop-visual-system` / 实现 head `7c344db`）：** 按审计 §14 切片落地——①`:root` 设计 token（状态色、字号级谱、间距、z 刻度、阴影/缓动时长；修复被引用但未定义的 `--muted`/`--mono`）、reduced-motion 五段合并为一条全局契约（.01ms 冻结 + hover 位移取消 + 删除 `rotate(-4deg)` 装饰）、`focus-visible` 统一唯一 3px vermillion 焦点环；②模板 C：设置/项目设置板 ≤1279.98 单列、诊断列随页滚不再粘滞，供应商内部零改动；③模板 B：左导航 48px 图标轨折叠（`mangaflow.project-sidebar-collapsed` 持久化）、通用右槽 API `WorkspaceInspectorSlot`（≥1280 停靠 / 900–1279 右抽屉 / <900 底部抽屉）、侧栏拖宽边界收口 `lib/workspace-layout.ts`；④lightbox 补 Esc/＋－键/焦点陷阱/焦点归还，`originUrl` 让 lightbox 取原图而网格保持 `/thumbnail/640`，候选卡 `content-visibility` 过渡 + `windowing-rules` 阈值接缝留给 V02-52。门禁（Linux 等价）：Vitest 43 文件 408 项、ESLint、`tsc --noEmit`、Ruff、平权扫描 0 违规、Next 生产构建通过；U1–U10 矩阵逐条证据与 NOT RUN 边界见 `docs/development-progress.md`（Playwright/Axe、真实视口截图、字体加载、LH/FPS、真实供应商、PG live 为 NOT RUN）。
+  - [x] **V02-51B（实现，Issue #108 / PR #109 / 分支 `glm/v02-51b-desktop-visual-system` / 实现 head `7c344db` / 合并提交 `6f8a40d`）：** 按审计 §14 切片落地——①`:root` 设计 token（状态色、字号级谱、间距、z 刻度、阴影/缓动时长；修复被引用但未定义的 `--muted`/`--mono`）、reduced-motion 五段合并为一条全局契约（.01ms 冻结 + hover 位移取消 + 删除 `rotate(-4deg)` 装饰）、`focus-visible` 统一唯一 3px vermillion 焦点环；②模板 C：设置/项目设置板 ≤1279.98 单列、诊断列随页滚不再粘滞，供应商内部零改动；③模板 B：左导航 48px 图标轨折叠（`mangaflow.project-sidebar-collapsed` 持久化）、通用右槽 API `WorkspaceInspectorSlot`（≥1280 停靠 / 900–1279 右抽屉 / <900 底部抽屉）、侧栏拖宽边界收口 `lib/workspace-layout.ts`；④lightbox 补 Esc/＋－键/焦点陷阱/焦点归还，`originUrl` 让 lightbox 取原图而网格保持 `/thumbnail/640`，候选卡 `content-visibility` 过渡 + `windowing-rules` 阈值接缝留给 V02-52。门禁（Linux 等价）：Vitest 43 文件 408 项、ESLint、`tsc --noEmit`、Ruff、平权扫描 0 违规、Next 生产构建通过；U1–U10 矩阵逐条证据与 NOT RUN 边界见 `docs/development-progress.md`（Playwright/Axe、真实视口截图、字体加载、LH/FPS、真实供应商、PG live 为 NOT RUN）。
 - [ ] **V02-52（L2 性能）：建立桌面体验门禁。**
   - [x] **V02-52A / Issue #55（计划）：** 已合并 `docs/v02-desktop-performance-acceptance-plan.md`，固定环境清单、N=20、nearest-rank P95、10 秒持续窗口和资源所有权。
   - [ ] **V02-52B（执行）：** 在对应功能实现后运行全部样本并保留失败轮次；未实现的未来场景标记 `NOT_APPLICABLE`。
 - [ ] **V02-53（L3）：完成桌面壳技术验证。**
   - [x] **V02-53A / Issue #56（ADR）：** 已合并 `docs/adr/v02-desktop-shell-evaluation.md`，建议 Tauri 2 进入 PoC，并冻结动态 API origin 注入、根 Job Object 与带令牌 readiness 握手要求。
-  - [ ] **V02-53B（PoC）：** 构建可丢弃 Tauri/Electron 对比 PoC，验证 Python sidecar、WebView2、进程归属、安装/更新边界后再批准最终选型。
+  - [x] **V02-53B（PoC，Issue #110 / 分支 `glm/v02-53b-desktop-shell-poc` / head `3909729`）：** 可丢弃 Tauri 2 壳 PoC 落于 `apps/desktop-poc/`（业务树零改动）：冻结启动协议（原子绑定 127.0.0.1:0 + owner token/journal readiness + stdin GO 门控 + 回环 origin 运行时注入）Linux 实测；Rust shell-core 9 项测试（含壳崩溃清树、并发端口、GO 拒绝）全过，src-tauri 过 Windows 目标 `cargo check`；真实 API 假模型闭环「生成→候选→采用→PNG」4.2s；PyInstaller 冻结 sidecar（116MB）冒烟通过；D5 浏览器级验证静态导出页直连动态端口 API（发现：工作台子树无法仅靠 flag 静态导出——否决条件 3 关键输入）。Windows 实机（Job Object/WebView2/安装器/签名/更新）、Redis/RQ worker 形态、真实安装包 NOT RUN；ADR 保持草案，选型未批准，详见 `apps/desktop-poc/README.md` D1–D9 矩阵。
 - [ ] **V02-54（L3）：交付 Windows 桌面应用。** 桌面壳必须拥有并验证 API/Worker 子进程生命周期，使用可证明归属的运行目录和 PID/进程树，支持单实例、启动/退出清理、崩溃恢复、日志导出、本地文件选择和安全凭据存储；不得依靠“杀端口”清理未知进程。安装/升级/卸载不得删除用户数据库、素材或凭据。
 - [ ] **V02-55（L2/L3 验收）：完成 0.2.0 发布门禁并统一改版本。** 运行 `npm run check`、浏览器 E2E、固定性能门禁、全新安装/升级/卸载/恢复测试，以及授权范围内的真实 CLI/供应商验收；核对所有 worktree 无未合并改动后，统一将根包、Web、API 改为 `0.2.0` 并生成变更记录。缺失的真实环境只能标记 `NOT RUN`/`BLOCKED`，不能由 mock、SQLite 或 fakeredis 代替。
 
