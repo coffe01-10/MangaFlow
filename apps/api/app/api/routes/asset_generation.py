@@ -1,3 +1,4 @@
+import hashlib
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -449,6 +450,34 @@ def activate_style(project_id: str, style_id: str, db: Session = Depends(get_db)
     return style
 
 
+
+_STYLE_JOB_TERMINAL_STATUSES = ("COMPLETED", "FAILED", "CANCELLED", "NEEDS_REVIEW")
+
+
+def _reject_active_style_analysis(db: Session, style_id: str) -> None:
+    """Block duplicate paid analysis while one STYLE_ANALYZE job is open.
+
+    A client retry must not mint a second paid job; the idempotency key
+    alone cannot do that here because the route itself mutates
+    ``style.version`` (the key input) before enqueueing, so sequential
+    retries would always compute a fresh key. Failure and cancellation
+    keep the analysis re-runnable: the guard only sees open jobs.
+    """
+
+    active = db.scalar(
+        select(GenerationJob.id)
+        .where(
+            GenerationJob.target_type == "STYLE",
+            GenerationJob.target_id == style_id,
+            GenerationJob.job_type == "STYLE_ANALYZE",
+            GenerationJob.status.notin_(_STYLE_JOB_TERMINAL_STATUSES),
+        )
+        .limit(1)
+    )
+    if active:
+        raise HTTPException(status_code=409, detail="该风格档案已有进行中的分析任务")
+
+
 @router.post(
     "/styles/{style_id}/analyze",
     response_model=JobRead,
@@ -461,6 +490,8 @@ def analyze_style(style_id: str, db: Session = Depends(get_db)):
     reference_ids = style.profile.get("reference_asset_ids", [])
     if not reference_ids:
         raise HTTPException(status_code=409, detail="请先给风格档案绑定至少一张漫画参考图")
+    _reject_active_style_analysis(db, style.id)
+    version_before = style.version
     style.status = "ANALYZING"
     style.version += 1
     db.commit()
@@ -472,7 +503,10 @@ def analyze_style(style_id: str, db: Session = Depends(get_db)):
         job_type="STYLE_ANALYZE",
         model_alias="auto",
         reference_asset_ids=reference_ids,
-        idempotency_key=f"style-analyze:{style.id}:{style.version}",
+        # Key on the pre-bump version: keying on the already-incremented
+        # version made every duplicate POST mint a fresh key, so client
+        # retries enqueued duplicate paid analysis jobs.
+        idempotency_key=f"style-analyze:{style.id}:{version_before}",
     )
     return enqueue_job(db, job)
 
@@ -494,9 +528,14 @@ def draft_style_palette(
         raise HTTPException(status_code=409, detail="请先将风格档案切换为彩色漫画")
     if not style.profile.get("reference_asset_ids"):
         raise HTTPException(status_code=409, detail="请先绑定至少一张风格参考图")
+    _reject_active_style_analysis(db, style.id)
+    version_before = style.version
     style.status = StyleStatus.ANALYZING
     style.version += 1
     db.commit()
+    atmosphere_digest = hashlib.sha256(
+        payload.atmosphere.encode("utf-8")
+    ).hexdigest()[:16]
     job = create_job(
         db,
         project_id=style.project_id,
@@ -506,7 +545,9 @@ def draft_style_palette(
         model_alias="auto",
         request_parameters={"palette_atmosphere": payload.atmosphere},
         reference_asset_ids=list(style.profile.get("reference_asset_ids", [])),
-        idempotency_key=f"style-palette:{style.id}:{style.version}",
+        # Same pre-bump version rule as analyze, plus the atmosphere digest so
+        # distinct palette intents for one version never collapse into one job.
+        idempotency_key=f"style-palette:{style.id}:{version_before}:{atmosphere_digest}",
     )
     return enqueue_job(db, job)
 
