@@ -219,7 +219,13 @@ def enqueue_job(db: Session, job: GenerationJob) -> GenerationJob:
     if queue_mode == "LOCAL":
         return _enqueue_locally(db, job, "本地后台执行器正在处理任务")
 
-    if not _transition_waiting_to_queued(db, job, error_code=None, error_message=None):
+    # RQ_PENDING marks the crash window between the QUEUED commit and the
+    # Redis enqueue: a process death here used to strand the row as QUEUED
+    # with no payload and no recovery path. recover_pending_jobs re-enqueues
+    # stale RQ_PENDING rows; a successful enqueue clears the marker.
+    if not _transition_waiting_to_queued(
+        db, job, error_code="RQ_PENDING", error_message=None
+    ):
         return job
 
     connection = None
@@ -241,6 +247,17 @@ def enqueue_job(db: Session, job: GenerationJob) -> GenerationJob:
             job_timeout=settings.job_timeout_seconds,
             retry=rq_retry_policy(job),
         )
+        db.execute(
+            update(GenerationJob)
+            .where(
+                GenerationJob.id == job.id,
+                GenerationJob.status == JobStatus.QUEUED,
+                GenerationJob.error_code == "RQ_PENDING",
+            )
+            .values(error_code=None, error_message=None)
+            .execution_options(synchronize_session=False)
+        )
+        db.commit()
     except Exception:
         db.refresh(job)
         if _job_already_advanced(job):
@@ -522,6 +539,7 @@ def recover_pending_jobs(db: Session) -> int:
 
         reconcile_run(db, workflow_run_id)
 
+    rq_pending_cutoff = utcnow() - timedelta(seconds=10)
     jobs = list(
         db.scalars(
             select(GenerationJob)
@@ -531,6 +549,14 @@ def recover_pending_jobs(db: Session) -> int:
                     and_(
                         GenerationJob.status == JobStatus.QUEUED,
                         GenerationJob.error_code == "LOCAL_WORKER",
+                    ),
+                    # Stranded Redis handoffs: the QUEUED commit landed but
+                    # the process died before (or while) enqueueing. The age
+                    # threshold keeps this from racing the in-flight enqueue.
+                    and_(
+                        GenerationJob.status == JobStatus.QUEUED,
+                        GenerationJob.error_code == "RQ_PENDING",
+                        GenerationJob.updated_at < rq_pending_cutoff,
                     ),
                 )
             )
@@ -544,20 +570,20 @@ def recover_pending_jobs(db: Session) -> int:
         if already_submitted or not dependencies_complete(db, job):
             continue
         if job.status == JobStatus.QUEUED:
-            # Re-adopt a local-queue row without clobbering concurrent
-            # progress: if a worker already claimed the row, the conditional
-            # update misses and this round skips the job instead of writing
-            # WAITING over PREPARING.
+            # Re-adopt a local or stranded-Redis row without clobbering
+            # concurrent progress: if a worker already claimed the row, the
+            # conditional update misses and this round skips the job instead
+            # of writing WAITING over PREPARING.
             readopted = db.execute(
                 update(GenerationJob)
                 .where(
                     GenerationJob.id == job.id,
                     GenerationJob.status == JobStatus.QUEUED,
-                    GenerationJob.error_code == "LOCAL_WORKER",
+                    GenerationJob.error_code.in_(["LOCAL_WORKER", "RQ_PENDING"]),
                     GenerationJob.lease_owner.is_(None),
                     GenerationJob.cancelled_at.is_(None),
                 )
-                .values(status=JobStatus.WAITING)
+                .values(status=JobStatus.WAITING, error_code=None, error_message=None)
                 .execution_options(synchronize_session=False)
             )
             if readopted.rowcount != 1:
