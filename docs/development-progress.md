@@ -4,6 +4,12 @@
 
 本文件记录修订版 MVP 计划的实际完成度。
 
+## V02-54C 窗口开启：V02-54B 已合并（PR #116 / `548b1d1`），本轮实现桌面壳日志轮转（2026-09-04，Linux box）
+
+- **合并记录**：V02-54B（Issue #114 续作 / 分支 `glm/v02-54b-desktop-ux` / 实现提交 `3d5ebfb`）已由 PR #116 以合并提交 `548b1d1` 合入 master（经 P1 审阅后合入）；roadmap 已勾选 V02-54B，**父项 V02-54 保持未勾**；不勾 V02-55 / V02-52B。
+- **本轮范围**：Issue #117 / 分支 `glm/v02-54c-log-rotation`（基线 `548b1d1`）——在 `apps/desktop/shell-core` 为统一日志目录 `logs/` 实现**按大小轮转**：`shell-*.log` / `helper-*.stderr.log` 单文件达阈值（12 MiB，< 导出 64 MiB 上限）后 rename 为带序号世代（`.1`–`.5`），保留有限 5 代、超出删最旧；轮转不跟随符号链接，rename/删除不越 canonical logs 根；壳 RunLog 轮转后原打开路径继续可写，helper stderr 按会话 token 分文件、跨会话轮转（取舍写清）。范围仅 `apps/desktop/` 与 docs，`apps/api`/`apps/web` 业务代码零改动。实现与门禁证据待本轮收尾补记。
+- **沿袭边界**：Windows 实机项（Job Object/WebView2/MSI/NSIS 安装器/签名/自动更新/单实例多开、rfd 对话框实机行为）继续 NOT RUN；真实 Redis/RQ 桌面形态、V02-52A N=20、真实供应商 NOT RUN；ADR 仍为草案、选型未批准。
+
 ## V02-54B 实现完成：桌面日志导出 + 安全本地文件选择（2026-09-04，Linux box，待审阅验收）
 
 - **对应**：Issue #114 续作 / 分支 `glm/v02-54b-desktop-ux`（基线 `70639a2` / PR #115 合并树）。实现提交：`3d5ebfb`（日志导出 + 本地文件选择）。范围仍限于 `apps/desktop/` 与 docs，`apps/api`/`apps/web` 业务代码零改动；契约 `docs/adr/v02-desktop-shell-evaluation.md` **仍为草案、选型未批准**。
