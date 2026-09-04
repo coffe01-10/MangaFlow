@@ -57,6 +57,33 @@ def has_active_job(
     return db.scalar(select(GenerationJob.id).where(*filters).limit(1)) is not None
 
 
+def style_has_active_sibling_job(
+    db: Session,
+    *,
+    style_id: str,
+    exclude_job_id: str | None = None,
+) -> bool:
+    """True when another ACTIVE STYLE_ANALYZE job still targets the style.
+
+    Duplicate style jobs existed before the route guards (and a retried job is
+    active again), so the terminal-exit reset paths must only force the shared
+    style row back to DRAFT once no sibling is still analyzing it. The job
+    being finalized is excluded by id: terminal-exit paths claim the row via a
+    Core UPDATE with synchronize_session=False, and exclusion keeps the check
+    deterministic regardless of session/transaction visibility.
+    """
+
+    filters = [
+        GenerationJob.job_type == "STYLE_ANALYZE",
+        GenerationJob.target_type == "STYLE",
+        GenerationJob.target_id == style_id,
+        GenerationJob.status.in_(ACTIVE_JOB_STATUSES),
+    ]
+    if exclude_job_id is not None:
+        filters.append(GenerationJob.id != exclude_job_id)
+    return db.scalar(select(GenerationJob.id).where(*filters).limit(1)) is not None
+
+
 def create_job(
     db: Session,
     *,
@@ -509,7 +536,9 @@ def recover_pending_jobs(db: Session) -> int:
                 if asset_candidate:
                     asset_candidate.status = "FAILED"
                 style = db.get(StyleProfile, job.target_id) if job.target_type == "STYLE" else None
-                if style:
+                if style and not style_has_active_sibling_job(
+                    db, style_id=job.target_id, exclude_job_id=job.id
+                ):
                     style.status = "DRAFT"
                 node_run = db.scalar(
                     select(WorkflowNodeRun).where(WorkflowNodeRun.job_id == job.id)
@@ -678,7 +707,16 @@ def mark_job_cancelled(db: Session, job: GenerationJob) -> GenerationJob:
 
     if job.job_type == "STYLE_ANALYZE":
         style = db.get(StyleProfile, job.target_id)
-        if style and style.status.value == "ANALYZING":
+        if (
+            style
+            and style.status.value == "ANALYZING"
+            # A duplicate may still be analyzing the same style row; forcing
+            # DRAFT here would let the UI fire another paid analyze while the
+            # sibling runs (last-writer-wins on style.profile otherwise).
+            and not style_has_active_sibling_job(
+                db, style_id=job.target_id, exclude_job_id=job.id
+            )
+        ):
             style.status = "DRAFT"
             style.version += 1
 
