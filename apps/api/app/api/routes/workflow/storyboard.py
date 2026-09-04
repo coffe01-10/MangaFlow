@@ -1,7 +1,7 @@
 """Storyboard, layout, panel and dialogue routes."""
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.api.routes.workflow.common import _page, _panel_read, _storyboard_read
@@ -43,6 +43,23 @@ def _panel_context(db: Session, panel_id: str) -> tuple[Panel, MangaPage, str]:
         raise HTTPException(status_code=404, detail="分镜格不存在")
     page = _page(db, panel.page_id)
     return panel, page, project_id_for_page(db, page)
+
+
+def _claim_panel_version(db: Session, panel: Panel, expected: int) -> None:
+    """Claim the panel row with an atomic conditional update so concurrent
+    writers cannot both pass an in-memory version comparison and silently
+    overwrite each other (same pattern as scene asset PATCH). The claim lives
+    in the caller's transaction: a later validation failure rolls it back.
+    """
+
+    claimed = db.execute(
+        update(Panel)
+        .where(Panel.id == panel.id, Panel.version == expected)
+        .values(version=Panel.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if not claimed.rowcount:
+        raise HTTPException(status_code=409, detail="分镜格已被更新，请刷新后重试")
 
 
 def _validate_dialogue_speaker(
@@ -111,8 +128,7 @@ def update_panel(
     db: Session = Depends(get_db),
 ) -> PanelRead:
     panel, page, project_id = _panel_context(db, panel_id)
-    if panel.version != payload.version:
-        raise HTTPException(status_code=409, detail="分镜格已被更新，请刷新后重试")
+    _claim_panel_version(db, panel, payload.version)
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
     apply_panel_fields(db, panel, page, project_id, values)
     db.commit()
@@ -131,8 +147,7 @@ def create_dialogue(
     db: Session = Depends(get_db),
 ) -> Dialogue:
     panel, page, project_id = _panel_context(db, panel_id)
-    if panel.version != payload.panel_version:
-        raise HTTPException(status_code=409, detail="分镜格已被更新，请刷新后重试")
+    _claim_panel_version(db, panel, payload.panel_version)
     if not payload.target_text.strip():
         raise HTTPException(status_code=422, detail="气泡文字不能为空")
     reading_order = (
@@ -171,8 +186,7 @@ def update_dialogue(
     if not dialogue:
         raise HTTPException(status_code=404, detail="对白不存在")
     panel, page, project_id = _panel_context(db, dialogue.panel_id)
-    if panel.version != payload.panel_version:
-        raise HTTPException(status_code=409, detail="分镜格已被更新，请刷新后重试")
+    _claim_panel_version(db, panel, payload.panel_version)
     values = payload.model_dump(exclude_unset=True, exclude={"panel_version"})
     if "bubble" in values and values["bubble"] is not None:
         values["bubble"] = canonical_bubble(values["bubble"])
@@ -192,8 +206,7 @@ def delete_dialogue(
     if not dialogue:
         raise HTTPException(status_code=404, detail="对白不存在")
     panel, page, _ = _panel_context(db, dialogue.panel_id)
-    if panel.version != payload.panel_version:
-        raise HTTPException(status_code=409, detail="分镜格已被更新，请刷新后重试")
+    _claim_panel_version(db, panel, payload.panel_version)
     db.delete(dialogue)
     db.flush()
     refresh_page_text_metrics(db, page)

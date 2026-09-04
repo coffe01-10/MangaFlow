@@ -1,3 +1,6 @@
+import pytest
+from fastapi import HTTPException
+
 from app.models import (
     Beat,
     Chapter,
@@ -287,3 +290,56 @@ def test_storyboard_layout_can_reflow_three_to_five_panels_from_script(client, d
     assert balanced.status_code == 200
     assert balanced.json()["page"]["source_coverage"]["layout_mode"] == "balanced"
     assert len(balanced.json()["panels"]) == 3
+
+
+def test_panel_patch_claim_is_atomic_across_sessions(tmp_path):
+    """Two writers validating the same panel version must not both succeed:
+    the conditional claim UPDATE makes the loser get 409 instead of silently
+    overwriting the winner's edit (read-then-compare left both passing)."""
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.database import Base
+    from app.models import Chapter, MangaPage, Project
+
+    engine = create_engine(
+        f"sqlite:///{(tmp_path / 'panel-cas.db').as_posix()}",
+        connect_args={"check_same_thread": False},
+    )
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    Base.metadata.create_all(engine)
+    with factory() as db:
+        project = Project(name="CAS 并发")
+        db.add(project)
+        db.flush()
+        chapter = Chapter(project_id=project.id, ordinal=1, title="第一章")
+        db.add(chapter)
+        db.flush()
+        page = MangaPage(
+            chapter_id=chapter.id,
+            page_number=1,
+            source_coverage={"complete": True},
+        )
+        db.add(page)
+        db.flush()
+        panel = Panel(page_id=page.id, reading_order=1)
+        db.add(panel)
+        db.commit()
+        panel_id, expected = panel.id, panel.version
+
+    from app.api.routes.workflow.storyboard import _claim_panel_version
+
+    with factory() as first, factory() as second:
+        first_panel = first.get(Panel, panel_id)
+        second_panel = second.get(Panel, panel_id)
+        _claim_panel_version(first, first_panel, expected)
+        first.commit()
+
+        with pytest.raises(HTTPException) as conflict:
+            _claim_panel_version(second, second_panel, expected)
+        assert conflict.value.status_code == 409
+
+        first.rollback()
+        second.rollback()
+    engine.dispose()
