@@ -13,15 +13,26 @@ from __future__ import annotations
 
 import errno
 import json
+import logging
 import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 from rq.exceptions import InvalidJobOperation
 from rq.job import JobStatus
 from rq.utils import now
 from rq.worker import Worker
+from sqlalchemy import update
+
+LOGGER = logging.getLogger("mangaflow.worker")
+
+# Marker written when the monitor force-kills a horse past its RQ timeout.
+# The spawned horse dies without running any application cleanup, so lease
+# recovery must propagate this cause instead of reporting LEASE_EXPIRED.
+JOB_TIMEOUT_ERROR_CODE = "JOB_TIMEOUT"
+JOB_TIMEOUT_ERROR_MESSAGE = "生成超时，已由执行器强制终止"
 
 # SpawnWorker's inline horse entry, minus the POSIX os.setpgrp() call.
 _GENERIC_HORSE_CODE = """
@@ -43,6 +54,60 @@ worker.main_work_horse(job, queue)
 """
 
 
+def horse_environment(base_env: dict[str, str] | None = None) -> dict[str, str]:
+    """Base child environment for a spawn worker horse.
+
+    The horse runs ``python -c`` with the worker's working directory (the repo
+    root, which Settings relies on for its relative .env/./storage paths), so
+    ``sys.path[0]`` is that directory, not the API root. rq's ``--path`` option
+    only mutates the parent's ``sys.path``, so the horse needs the API root
+    (the parent directory of the ``app`` package) in PYTHONPATH; without it
+    every job dies on ``import app`` before ``execute_job`` can run and burns
+    its retry budget.
+    """
+    env = dict(base_env) if base_env is not None else dict(os.environ)
+    api_root = str(Path(__file__).resolve().parents[1])
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = f"{api_root}{os.pathsep}{existing}" if existing else api_root
+    return env
+
+
+def _persist_timeout_marker(job_id: str) -> None:
+    """Best-effort stamp the leased job row with the force-kill cause.
+
+    Killing the horse skips every in-horse ``finally``/failure handler, so the
+    parent monitor is the only witness of the timeout; without this marker the
+    later lease recovery reports LEASE_EXPIRED and the timeout never surfaces.
+    Must never raise: a database hiccup here cannot be allowed to break the
+    kill path that follows.
+    """
+    # Function-local imports: this module must stay importable as a bare
+    # rq worker class and the app graph is only needed on the kill path.
+    from app.database import SessionLocal
+    from app.models import GenerationJob
+    from app.services.job_service import LEASED_JOB_STATUSES
+
+    try:
+        with SessionLocal() as db:
+            db.execute(
+                update(GenerationJob)
+                .where(
+                    GenerationJob.id == job_id,
+                    GenerationJob.status.in_(LEASED_JOB_STATUSES),
+                )
+                .values(
+                    error_code=JOB_TIMEOUT_ERROR_CODE,
+                    error_message=JOB_TIMEOUT_ERROR_MESSAGE,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            db.commit()
+    except Exception:
+        LOGGER.warning(
+            "failed to persist the JOB_TIMEOUT marker for job %s", job_id, exc_info=True
+        )
+
+
 class WindowsSpawnWorker(Worker):
     """Worker whose horse is a plain child process, safe on Windows.
 
@@ -60,7 +125,7 @@ class WindowsSpawnWorker(Worker):
         return [sys.executable, "-c", _GENERIC_HORSE_CODE]
 
     def _horse_environment(self, queue) -> dict[str, str]:
-        env = dict(os.environ)
+        env = horse_environment()
         redis_kwargs = {
             key: value
             for key, value in self.connection.connection_pool.connection_kwargs.items()
@@ -113,6 +178,9 @@ class WindowsSpawnWorker(Worker):
                 self.set_current_job_working_time((now() - job.started_at).total_seconds())
                 if job.timeout != -1 and self.current_job_working_time > (job.timeout + 60):
                     self.heartbeat(self.job_monitoring_interval + 60)
+                    # Record why the horse is about to die while the parent can
+                    # still write it; the kill itself must happen regardless.
+                    _persist_timeout_marker(job.id)
                     self.kill_horse()
                     self._horse_popen.wait()
                     ret_val = self._horse_popen.returncode
