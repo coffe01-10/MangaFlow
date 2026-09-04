@@ -136,7 +136,7 @@
   - [ ] **V02-52B（执行）：** 在对应功能实现后运行全部样本并保留失败轮次；未实现的未来场景标记 `NOT_APPLICABLE`。
 - [ ] **V02-53（L3）：完成桌面壳技术验证。**
   - [x] **V02-53A / Issue #56（ADR）：** 已合并 `docs/adr/v02-desktop-shell-evaluation.md`，建议 Tauri 2 进入 PoC，并冻结动态 API origin 注入、根 Job Object 与带令牌 readiness 握手要求。
-  - [ ] **V02-53B（PoC）：** 构建可丢弃 Tauri/Electron 对比 PoC，验证 Python sidecar、WebView2、进程归属、安装/更新边界后再批准最终选型。
+  - [x] **V02-53B（PoC，Issue #110 / 分支 `glm/v02-53b-desktop-shell-poc` / head `3909729`）：** 可丢弃 Tauri 2 壳 PoC 落于 `apps/desktop-poc/`（业务树零改动）：冻结启动协议（原子绑定 127.0.0.1:0 + owner token/journal readiness + stdin GO 门控 + 回环 origin 运行时注入）Linux 实测；Rust shell-core 9 项测试（含壳崩溃清树、并发端口、GO 拒绝）全过，src-tauri 过 Windows 目标 `cargo check`；真实 API 假模型闭环「生成→候选→采用→PNG」4.2s；PyInstaller 冻结 sidecar（116MB）冒烟通过；D5 浏览器级验证静态导出页直连动态端口 API（发现：工作台子树无法仅靠 flag 静态导出——否决条件 3 关键输入）。Windows 实机（Job Object/WebView2/安装器/签名/更新）、Redis/RQ worker 形态、真实安装包 NOT RUN；ADR 保持草案，选型未批准，详见 `apps/desktop-poc/README.md` D1–D9 矩阵。
 - [ ] **V02-54（L3）：交付 Windows 桌面应用。** 桌面壳必须拥有并验证 API/Worker 子进程生命周期，使用可证明归属的运行目录和 PID/进程树，支持单实例、启动/退出清理、崩溃恢复、日志导出、本地文件选择和安全凭据存储；不得依靠“杀端口”清理未知进程。安装/升级/卸载不得删除用户数据库、素材或凭据。
 - [ ] **V02-55（L2/L3 验收）：完成 0.2.0 发布门禁并统一改版本。** 运行 `npm run check`、浏览器 E2E、固定性能门禁、全新安装/升级/卸载/恢复测试，以及授权范围内的真实 CLI/供应商验收；核对所有 worktree 无未合并改动后，统一将根包、Web、API 改为 `0.2.0` 并生成变更记录。缺失的真实环境只能标记 `NOT RUN`/`BLOCKED`，不能由 mock、SQLite 或 fakeredis 代替。
 
