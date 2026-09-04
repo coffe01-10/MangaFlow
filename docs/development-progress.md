@@ -1,11 +1,12 @@
 # MangaFlow AI 开发进度
 
-更新时间：2026-09-03
+更新时间：2026-09-04
 
 本文件记录修订版 MVP 计划的实际完成度。
 
 ## V02-51B 桌面视觉系统已实现：token/焦点/动效收口 + 模板 B/C 壳 + U1–U10 矩阵（2026-09-03，Linux box）
 
+- **合并记录（2026-09-04）**：Issue #108 / PR #109 / 分支 `glm/v02-51b-desktop-visual-system` / 合并提交 `6f8a40d`；父项 V02-51（A/B）随本合并完成并在 roadmap 勾选。
 - **对应**：Issue #108 / 分支 `glm/v02-51b-desktop-visual-system`（基线 `d472f6e`，实现 head `7c344db`）。契约 `docs/v02-desktop-workspace-ux-audit.md` §3/§4/§8/§11/§13/§14；不改 V02-11 供应商内部（`provider-management.tsx` 零改动），QueueDock 行为不变，相对基线 diff 仅 `apps/web` 与 `docs`。
 - **切片 1（token 与焦点/动效收口，§11）**：`globals.css :root` 补齐设计 token——状态色 `--danger/--muted/--success-bg/--warning-bg/--danger-bg/--focus`（其中 `--muted`、`--mono` 此前被组件引用但从未定义，本切片修复）、`--mono` 等宽族、字号级谱 `--text-display/title/body/ui/meta/micro`（最低 11px）、4px 间距谱、z 刻度（base/sticky/dock/overlay/dialog/lightbox）、`--radius: 3px`、`--shadow-card/pop`、`--ease-out`、`--duration-fast/base`；稳定化地板（body 14px、控件 12px/40px、按钮 44px）与卡片阴影、步骤缓动、sticky/dock 层级、按钮圆角改为同值 token 引用，不改布局语义。散落的四段（连同 V02-31B 段共五段）`prefers-reduced-motion` 合并为一条全局契约：动画/过渡 .01ms、iteration 1（spinner 可停）、hover 位移 `transform: none` 清单覆盖按钮图标/工作台步骤/对话卡/设置页悬停，并删除审计点名的诊断刷新按钮 `rotate(-4deg)` 装饰。`focus-visible` 统一为唯一 3px vermillion 焦点环：删除工作台步骤 1px inset、`pkg-slot-card` 2px ink、director/local-edit `outline-offset: 2px` 变体、usage 表格行 `outline: none`。
 - **切片 2（模板 C 设置壳，§4.3）**：`.settings-board`/`.project-settings-grid`/`.checks-section` 单列断点由 900px 提到 1279.98px，诊断/存储侧栏改随页滚动（`position: static; max-height: none; overflow: visible`），不再粘滞挤压主卡；≥1280 保持主栏+粘滞侧栏双列。设置控件字号 ≥12 由全局地板（`--text-meta`）保证。
