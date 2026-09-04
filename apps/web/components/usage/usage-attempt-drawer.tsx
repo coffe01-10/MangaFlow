@@ -10,6 +10,7 @@ import {
   formatDuration,
   formatQuantity,
   outcomeLabel,
+  usageStatusLabel,
 } from "./usage-format";
 
 interface UsageAttemptDrawerProps {
@@ -66,7 +67,7 @@ export function UsageAttemptDrawer({ attempt, onClose }: UsageAttemptDrawerProps
             <h3>计费与用量核算</h3>
             <dl>
               <div><dt>成本语义</dt><dd><span className={meta.badge} title={meta.hint}>{meta.label}</span></dd></div>
-              <div><dt>计量状态</dt><dd>{attempt.usage_status ?? "UNKNOWN"}{attempt.usage_source ? ` · ${attempt.usage_source}` : ""}</dd></div>
+              <div><dt>计量状态</dt><dd>{usageStatusLabel(attempt.usage_status)}{attempt.usage_source ? ` · ${attempt.usage_source}` : ""}</dd></div>
               <div><dt>计量单位</dt><dd>{attempt.unit_kind ?? "UNKNOWN"}</dd></div>
               <div><dt>单次金额</dt><dd className="usage-cost-none">单次尝试金额不在账本读取接口返回，估算金额仅在汇总层按币种展示</dd></div>
             </dl>
@@ -90,7 +91,7 @@ export function UsageAttemptDrawer({ attempt, onClose }: UsageAttemptDrawerProps
               <div><dt>缓存命中 Token</dt><dd>{formatQuantity(attempt.cached_input_tokens)}{attempt.cache_hit === null ? "" : attempt.cache_hit ? "（命中）" : "（未命中）"}</dd></div>
               <div><dt>输出图片</dt><dd>{attempt.output_images === null ? "未知" : `${formatQuantity(attempt.output_images)} 张`}</dd></div>
               {dims.length > 0 ? (
-                <div><dt>图片规格</dt><dd>{dims.map((dim) => `${dim.width ?? "?"}x${dim.height ?? "?"}`).join(" · ")}</dd></div>
+                <div><dt>图片规格</dt><dd>{dims.map((dim) => `${dim.width ?? "?"}×${dim.height ?? "?"}`).join(" · ")}</dd></div>
               ) : null}
               <div><dt>耗时</dt><dd>{formatDuration(attempt.duration_ms)}</dd></div>
               <div><dt>触发时间</dt><dd>{formatDateTime(attempt.started_at)} · 结束 {formatDateTime(attempt.finished_at)}</dd></div>

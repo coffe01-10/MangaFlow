@@ -66,3 +66,87 @@ export const repairTypeLabels = {
   PANEL: "单格",
   PAGE: "整页",
 } as const;
+
+// Status enum → Chinese label (values verified against apps/api domain/states.py
+// and status writers). Unknown values fall back to the raw enum at the call
+// site (`label ?? value`) so new backend statuses stay debuggable.
+export const jobStatusLabels: Record<string, string> = {
+  WAITING: "等待中",
+  QUEUED: "排队中",
+  PREPARING: "准备中",
+  UPLOADING_REFERENCES: "上传参考图",
+  GENERATING: "生成中",
+  OCR_CHECKING: "文字检查",
+  CONSISTENCY_CHECKING: "连续性检查",
+  REPAIRING: "修复中",
+  COMPLETED: "已完成",
+  FAILED: "已失败",
+  CANCELLED: "已取消",
+  NEEDS_REVIEW: "待复核",
+};
+
+export const candidateStatusLabels: Record<string, string> = {
+  QUEUED: "排队中",
+  GENERATING: "生成中",
+  READY: "已就绪",
+  STALE: "已过期",
+  INSPECTED: "已检查",
+  NEEDS_REVIEW: "待复核",
+  FAILED: "已失败",
+  CANCELLED: "已取消",
+};
+
+export const candidateVersionStateLabels: Record<string, string> = {
+  CURRENT: "当前版本",
+  STALE: "分镜已更新",
+  STALE_ACCEPTED: "已采用但分镜过期",
+  LEGACY_UNKNOWN: "版本未知",
+};
+
+export const chapterStatusLabels: Record<string, string> = {
+  IMPORTED: "已导入",
+  SCRIPT_READY: "剧本已生成",
+  SCRIPT_INCOMPLETE: "剧本不完整",
+  PAGES_PLANNED: "已分页",
+};
+
+export const assetStatusLabels: Record<string, string> = {
+  UPLOADED: "已上传",
+  ANALYZED: "已分析",
+  GENERATED: "已生成",
+  NEEDS_CONFIRMATION: "待确认",
+  CANONICAL: "已定稿",
+  ARCHIVED: "已归档",
+};
+
+export const styleStatusLabels: Record<string, string> = {
+  ANALYZING: "分析中",
+  DRAFT: "草稿",
+  TEST_GENERATED: "测试图已生成",
+  CONFIRMED: "已确认",
+  ACTIVE: "使用中",
+};
+
+export const scriptStatusLabels: Record<string, string> = {
+  NOT_CREATED: "未创建",
+  PROCESSING: "生成中",
+  READY: "已生成",
+  INCOMPLETE: "不完整",
+};
+
+export const inspectionOutcomeLabels: Record<string, string> = {
+  PASS: "通过",
+  ACCEPTABLE: "可接受",
+  MATCH: "匹配",
+  MISMATCH: "不匹配",
+  MISSING: "画面缺失",
+  EXTRA: "画面多余",
+};
+
+export const productionStateLabels: Record<string, string> = {
+  READY: "已通过",
+  NEEDS_REPAIR: "待修复",
+  STALE: "分镜已更新",
+  AWAITING_INSPECTION: "待视觉检查",
+  AWAITING_SELECTION: "待暂选",
+};

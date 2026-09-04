@@ -410,7 +410,7 @@ describe("GenerateSection 关键行为", () => {
     });
     expect(screen.getAllByText("请先人工校对文字并暂选一张当前页候选").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "生成下一页" })).toBeDisabled();
-    expect(screen.getByText("这个批次还没有候选")).toBeInTheDocument();
+    expect(await screen.findByText("这个批次还没有候选")).toBeInTheDocument();
     expect(generateCandidate).not.toHaveBeenCalled();
   });
 

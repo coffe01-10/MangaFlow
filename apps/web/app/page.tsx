@@ -17,7 +17,7 @@ import {
   X,
 } from "lucide-react";
 import Link from "next/link";
-import { FormEvent, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
 const modeLabel = { AUTO: "自动", DIRECTOR: "导演", SEMI_AUTO: "半自动" } as const;
 
@@ -59,11 +59,11 @@ function ProjectCard({ item, index }: { item: DashboardProject; index: number })
       <div className="project-meta">
         <div>
           <strong>{project.name}</strong>
-          <span>{modeLabel[project.workflow_mode]} · {project.default_resolution}</span>
+          <span>{modeLabel[project.workflow_mode] ?? project.workflow_mode} · {project.default_resolution}</span>
         </div>
         <ArrowRight size={17} />
       </div>
-      <div className="project-progress" aria-label={`制作进度 ${progress}%`}><i style={{ width: `${progress}%` }} /></div>
+      <div className="project-progress" role="progressbar" aria-label={`制作进度 ${progress}%`} aria-valuenow={progress} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${progress}%` }} /></div>
       <footer><span>{item.chapter_count} 章 · {item.page_count} 页 · {item.selected_page_count} 已采用</span><span>{item.next_action.label}</span></footer>
     </Link>
   );
@@ -75,6 +75,7 @@ function CreateProjectPanel({ open, onClose }: { open: boolean; onClose: () => v
   const [mode, setMode] = useState("SEMI_AUTO");
   const [resolution, setResolution] = useState("2K");
   const [error, setError] = useState("");
+  const drawerRef = useRef<HTMLElement | null>(null);
   const createProject = useMutation({
     mutationFn: () => api.createProject({
       name: name.trim(),
@@ -96,27 +97,64 @@ function CreateProjectPanel({ open, onClose }: { open: boolean; onClose: () => v
     createProject.mutate();
   }
 
+  // Dialog hygiene: Esc closes, Tab stays inside, and closing the drawer
+  // hands focus back to the control that opened it. Initial focus is set
+  // here (not via autoFocus) so the capture happens before the drawer input
+  // takes focus.
+  useEffect(() => {
+    if (!open) return;
+    const drawer = drawerRef.current;
+    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    drawer?.querySelector<HTMLElement>("input")?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        onClose();
+        return;
+      }
+      if (event.key === "Tab" && drawer) {
+        const focusables = Array.from(drawer.querySelectorAll<HTMLElement>("button:not([disabled]), input, select, textarea"));
+        if (!focusables.length) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        const active = document.activeElement;
+        if (event.shiftKey && (active === first || !(active instanceof Node) || !drawer.contains(active))) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && (active === last || !(active instanceof Node) || !drawer.contains(active))) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown, true);
+      if (previouslyFocused?.isConnected) previouslyFocused.focus();
+    };
+  }, [open, onClose]);
+
   return (
     <>
       {open && <>
       <button className="drawer-backdrop show" onClick={onClose} aria-label="关闭" />
-      <aside className="create-drawer open">
+      <aside className="create-drawer open" ref={drawerRef} role="dialog" aria-modal="true" aria-label="建立漫画项目">
         <header>
           <div><span>NEW PROJECT / 01</span><h2>建立漫画项目</h2></div>
           <button className="icon-button" onClick={onClose} aria-label="关闭创建面板"><X size={19} /></button>
         </header>
         <form onSubmit={submit}>
-          <label className="field-label">项目名称</label>
-          <input className="text-input title-input" value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：雨停之前" autoFocus={open} />
+          <label className="field-label" htmlFor="new-project-name">项目名称</label>
+          <input id="new-project-name" className="text-input title-input" value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：雨停之前" />
 
-          <label className="field-label">工作方式</label>
-          <div className="mode-grid">
+          <label className="field-label" id="new-project-mode-label">工作方式</label>
+          <div className="mode-grid" role="group" aria-labelledby="new-project-mode-label">
             {[
               ["SEMI_AUTO", "半自动", "推荐", "AI 先完成，可随时接管"],
               ["DIRECTOR", "导演", "逐步", "每个阶段等待确认"],
               ["AUTO", "自动", "快速", "自动运行到最终审核"],
             ].map(([value, label, tag, desc]) => (
-              <button type="button" key={value} className={mode === value ? "mode-option selected" : "mode-option"} onClick={() => setMode(value)}>
+              <button type="button" key={value} aria-pressed={mode === value} className={mode === value ? "mode-option selected" : "mode-option"} onClick={() => setMode(value)}>
                 <span>{label}<small>{tag}</small></span><p>{desc}</p>{mode === value && <Check size={16} />}
               </button>
             ))}
@@ -124,16 +162,16 @@ function CreateProjectPanel({ open, onClose }: { open: boolean; onClose: () => v
 
           <p className="form-note"><Sparkles size={14} />图片模型不设默认主次；进入工作区后必须显式选择，以保持项目画风一致。</p>
 
-          <label className="field-label">正式输出清晰度</label>
-          <div className="resolution-row">
+          <label className="field-label" id="new-project-resolution-label">正式输出清晰度</label>
+          <div className="resolution-row" role="group" aria-labelledby="new-project-resolution-label">
             {["1K", "2K", "4K"].map((item) => (
-              <button type="button" key={item} onClick={() => setResolution(item)} className={resolution === item ? "selected" : ""}>
+              <button type="button" key={item} aria-pressed={resolution === item} onClick={() => setResolution(item)} className={resolution === item ? "selected" : ""}>
                 {item}{item === "4K" && <small>Preview</small>}
               </button>
             ))}
           </div>
           <p className="form-note"><ShieldCheck size={14} />凭据仅保存在服务端，本项目不会把密钥发往浏览器。</p>
-          {error && <p className="form-error"><CircleAlert size={15} />{error}</p>}
+          {error && <p className="form-error" role="alert"><CircleAlert size={15} />{error}</p>}
           <div className="drawer-actions">
             <button type="button" className="button ghost" onClick={onClose}>取消</button>
             <button className="button ink" disabled={createProject.isPending}>
@@ -149,6 +187,7 @@ function CreateProjectPanel({ open, onClose }: { open: boolean; onClose: () => v
 
 export default function HomePage() {
   const [creating, setCreating] = useState(false);
+  const closeCreatePanel = useCallback(() => setCreating(false), []);
   const dashboard = useQuery({ queryKey: ["dashboard"], queryFn: api.dashboard });
   const aiOverview = dashboard.data?.ai_overview;
   const projectCount = dashboard.data?.totals.project_count ?? 0;
@@ -220,7 +259,7 @@ export default function HomePage() {
           </section>
         </aside>
       </div>
-      <CreateProjectPanel open={creating} onClose={() => setCreating(false)} />
+      <CreateProjectPanel open={creating} onClose={closeCreatePanel} />
     </AppShell>
   );
 }

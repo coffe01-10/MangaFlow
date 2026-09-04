@@ -42,7 +42,19 @@ export default function SystemSettingsPage() {
   const draft = localDraft ?? runtime.data ?? null;
 
   const save = useMutation({
-    mutationFn: () => { if (!draft) throw new Error("运行设置尚未加载"); return api.updateRuntimeSettings(draft); },
+    // RuntimeSettingsUpdate is extra="forbid" server-side; only send the editable keys.
+    mutationFn: () => {
+      if (!draft) throw new Error("运行设置尚未加载");
+      return api.updateRuntimeSettings({
+        version: draft.version,
+        queue_mode: draft.queue_mode,
+        job_timeout_seconds: draft.job_timeout_seconds,
+        max_auto_repairs: draft.max_auto_repairs,
+        default_concurrency: draft.default_concurrency,
+        health_check_interval_seconds: draft.health_check_interval_seconds,
+        ui_poll_interval_seconds: draft.ui_poll_interval_seconds,
+      });
+    },
     onSuccess: (data) => { queryClient.setQueryData(["runtime-settings"], data); setLocalDraft(data); setNotice("运行设置已保存并应用到后续任务"); diagnostics.refetch(); },
   });
   const update = <K extends keyof RuntimeSettings>(key: K, value: RuntimeSettings[K]) => { setLocalDraft((current) => ({ ...(current ?? draft!), [key]: value })); setNotice(""); };

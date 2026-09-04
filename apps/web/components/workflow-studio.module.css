@@ -1,5 +1,9 @@
 .studio { --flow-bg: #1a1d1b; --flow-panel: #202421; --flow-line: #383d39; min-height: 100vh; color: #e9e6dd; background: var(--flow-bg); font-size: 14px; overflow: hidden; }
-.loading { min-height: 100vh; display: grid; place-items: center; gap: 9px; color: #8b928d; background: #1a1d1b; }
+.loading { min-height: 100vh; display: grid; place-items: center; gap: 9px; color: #8b928d; background: #1a1d1b; text-align: center; padding: 24px; }
+.loading strong { color: #e8e6df; font-size: 15px; }
+.loading span { max-width: 52ch; line-height: 1.7; font-size: 13px; }
+.loading button { min-height: 36px; padding: 0 18px; justify-self: center; border: 1px solid #4a514c; background: transparent; color: #e8e6df; cursor: pointer; font-size: 13px; }
+.loading button:hover { border-color: #e8e6df; }
 .spin { animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .topbar { height: 58px; display: grid; grid-template-columns: minmax(300px, 1fr) auto minmax(360px, 1fr); align-items: center; border-bottom: 1px solid var(--flow-line); background: #efede5; color: #171815; }

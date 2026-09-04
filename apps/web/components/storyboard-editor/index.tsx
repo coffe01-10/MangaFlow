@@ -152,7 +152,18 @@ export function StoryboardEditor({
       ? panelOfDialogue(selection.dialogueId)
       : panels[0] ?? null;
 
-  const dirty = commandStack.index > 0;
+  // Leave protection covers geometry commands AND unsaved narrative drafts:
+  // typed dialogue text is the highest-effort content in the editor, so it must
+  // never vanish on page/section switch without confirmation. panelDraft only
+  // counts when it actually diverges from the server panel (opening the edit
+  // form alone is not an edit).
+  const panelDraftDirty = editingPanel && panelDraft && activePanel
+    ? JSON.stringify(panelDraft) !== JSON.stringify(makePanelDraft(activePanel))
+    : false;
+  const dirty = commandStack.index > 0
+    || Object.keys(dialogueDrafts).length > 0
+    || newDialogue !== null
+    || panelDraftDirty;
 
   const persistInspectorWidth = (value: number) => {
     const next = Math.min(620, Math.max(320, value));
@@ -394,6 +405,10 @@ export function StoryboardEditor({
     setSelection(null);
     setEditingPanel(false);
     setPanelDraft(null);
+    // Drafts belong to the previous page's dialogues; keeping them would leak
+    // stale text into the next page's editor.
+    setDialogueDrafts({});
+    setNewDialogue(null);
     setPageId(nextPageId);
   };
 

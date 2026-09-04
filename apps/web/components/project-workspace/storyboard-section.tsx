@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { CircleAlert, PanelTop } from "lucide-react";
+import { CircleAlert, LoaderCircle, PanelTop } from "lucide-react";
 import { useSyncExternalStore } from "react";
 
 import { getPageStructureIssue } from "@/lib/generation-rules";
@@ -64,7 +64,11 @@ export function StoryboardSection({
     <>
       <header className="canvas-header"><div><span>PAGE CAPACITY / 动态分页</span><h2>内容有多少，页面就有多少</h2></div><div className="chapter-stage-control"><select aria-label="选择要编辑分镜的章节" value={activeChapterId ?? ""} onChange={(event) => setSelectedChapterId(event.target.value)}>{chapters.data?.map((chapter) => <option key={chapter.id} value={chapter.id}>{chapter.ordinal}. {chapter.title}</option>)}</select><small>{pages.data?.length ?? 0} 页</small></div></header>
       {invalidPlannedPageCount > 0 && <div className="workflow-warning"><CircleAlert size={17} /><div><strong>{invalidPlannedPageCount} 页缺少剧本与分镜来源</strong><p>这是旧版分页数据，不能直接生图。请先到漫画剧本页删除分页，再重新生成剧本并计算分页。</p></div><Link className="button outline compact" href={projectPath("script")}>前往漫画剧本</Link></div>}
-      {!pages.data?.length ? <div className="asset-empty tall"><PanelTop size={28} /><strong>尚未生成分页分镜</strong><p>先完成漫画剧本；系统按场景切换、动作复杂度、对白和气泡容量拆页。</p></div> : <StoryboardEditor chapterId={activeChapterId!} pages={pages.data} characters={characters.data ?? []} outfits={outfits.data ?? []} onReplan={(pageNumber) => replanPage.mutate(pageNumber)} replanPending={replanPage.isPending} replanError={replanPage.error} initialPageId={initialPageId} focusCharacterId={focusCharacterId} />}
+      {pages.isLoading ? <div className="loading-panel"><LoaderCircle className="spin" size={16} />正在读取页面…</div>
+        : pages.isError ? <p className="form-error" role="alert"><CircleAlert size={15} />页面列表读取失败：{pages.error instanceof Error ? pages.error.message : "请稍后重试"}</p>
+        : pages.data === undefined ? <div className="loading-panel"><LoaderCircle className="spin" size={16} />正在读取页面…</div>
+        : !pages.data.length ? <div className="asset-empty tall"><PanelTop size={28} /><strong>尚未生成分页分镜</strong><p>先完成漫画剧本；系统按场景切换、动作复杂度、对白和气泡容量拆页。</p></div>
+        : <StoryboardEditor chapterId={activeChapterId!} pages={pages.data} characters={characters.data ?? []} outfits={outfits.data ?? []} onReplan={(pageNumber) => replanPage.mutate(pageNumber)} replanPending={replanPage.isPending} replanError={replanPage.error} initialPageId={initialPageId} focusCharacterId={focusCharacterId} />}
     </>
   );
 }

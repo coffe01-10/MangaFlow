@@ -140,7 +140,7 @@ export function useAssetsWorkspace({
       queryClient.invalidateQueries({ queryKey: ["styles", id] });
       queryClient.invalidateQueries({ queryKey: ["asset-candidates"] });
       queryClient.invalidateQueries({ queryKey: ["candidates"] });
-      queryClient.invalidateQueries({ queryKey: ["page-readiness"] });
+      queryClient.invalidateQueries({ queryKey: ["generation-workbench"] });
     },
   });
 

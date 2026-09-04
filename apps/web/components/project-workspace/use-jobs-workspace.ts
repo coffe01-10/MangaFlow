@@ -9,12 +9,17 @@ import { activePollInterval, isActiveTaskStatus } from "@/lib/task-status";
 import { queueStatsOf } from "./display";
 import type { WorkspaceSection } from "./types";
 
-function usePerJobMutation(mutationFn: (jobId: string) => Promise<Job>, onSuccess: () => void) {
+function usePerJobMutation(
+  mutationFn: (jobId: string) => Promise<Job>,
+  onSuccess: () => void,
+  onError?: (reason: unknown, jobId: string) => void,
+) {
   const inFlight = useRef(new Set<string>());
   const [pendingIds, setPendingIds] = useState<string[]>([]);
   const mutation = useMutation({
     mutationFn,
     onSuccess,
+    onError: (error, jobId) => onError?.(error, jobId),
     onSettled: (_data, _error, jobId) => {
       inFlight.current.delete(jobId);
       setPendingIds((ids) => ids.filter((id) => id !== jobId));
@@ -55,8 +60,12 @@ export function useJobsWorkspace({
   });
 
   const invalidateJobs = () => queryClient.invalidateQueries({ queryKey: ["jobs", id] });
-  const cancelAction = usePerJobMutation((jobId) => api.cancelJob(jobId), invalidateJobs);
-  const retryAction = usePerJobMutation((jobId) => api.retryJob(jobId), invalidateJobs);
+  // Cancel/retry failures must surface: canceling a paid RUNNING job or
+  // retrying a FAILED one silently no-ops otherwise.
+  const mutationNotice = (action: string) => (reason: unknown) =>
+    setJobNotice(reason instanceof Error ? `${action}失败：${reason.message}` : `${action}失败，请重试`);
+  const cancelAction = usePerJobMutation((jobId) => api.cancelJob(jobId), invalidateJobs, mutationNotice("取消任务"));
+  const retryAction = usePerJobMutation((jobId) => api.retryJob(jobId), invalidateJobs, mutationNotice("重试任务"));
   const cancelJob = cancelAction.mutation;
   const retryJob = retryAction.mutation;
   const archiveJob = useMutation({

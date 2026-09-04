@@ -2,6 +2,7 @@
 
 import {
   api,
+  isConflictError,
   type Character,
   type Outfit,
   type SceneAsset,
@@ -10,10 +11,11 @@ import {
   type ScriptScene,
 } from "@/lib/api";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Check, CircleAlert, LoaderCircle, Pencil, Save, Shirt, Trash2, X } from "lucide-react";
-import { useState } from "react";
+import { Check, CircleAlert, LoaderCircle, Pencil, RefreshCw, Save, Shirt, Trash2, X } from "lucide-react";
+import { useEffect, useState } from "react";
 
 import { ScenePicker } from "./project-workspace/scene-picker";
+import { scriptStatusLabels } from "./project-workspace/labels";
 
 type SceneDraft = Pick<ScriptScene, "location" | "time_label" | "weather" | "purpose" | "emotional_arc">;
 type BeatDraft = Pick<ScriptBeat, "action" | "speaker_name" | "dialogue" | "narration" | "subtext" | "emotion" | "importance" | "must_visualize" | "mergeable" | "page_turn_hook">;
@@ -26,6 +28,9 @@ export function ScriptEditor({
   outfits,
   sceneAssets,
   onAssignOutfit,
+  assignOutfitError,
+  assignOutfitPending,
+  onDirtyChange,
 }: {
   chapterId: string;
   projectId: string;
@@ -34,6 +39,9 @@ export function ScriptEditor({
   outfits: Outfit[];
   sceneAssets: SceneAsset[];
   onAssignOutfit: (sceneId: string, assignments: Record<string, string>) => void;
+  assignOutfitError?: Error | null;
+  assignOutfitPending?: boolean;
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const queryClient = useQueryClient();
   const [editingScene, setEditingScene] = useState<string | null>(null);
@@ -41,6 +49,8 @@ export function ScriptEditor({
   const [editingBeat, setEditingBeat] = useState<string | null>(null);
   const [beatDraft, setBeatDraft] = useState<BeatDraft | null>(null);
   const [notice, setNotice] = useState("");
+  const editorDirty = editingScene !== null || editingBeat !== null;
+  useEffect(() => { onDirtyChange?.(editorDirty); }, [editorDirty, onDirtyChange]);
 
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ["script", chapterId] });
@@ -104,12 +114,20 @@ export function ScriptEditor({
     setNotice("");
   }
 
-  const error = saveScene.error ?? saveBeat.error ?? deleteScript.error;
+  const error = saveScene.error ?? saveBeat.error ?? deleteScript.error ?? assignOutfitError ?? null;
+  const conflict = isConflictError(error);
+  const refreshScript = () => {
+    setEditingScene(null);
+    setSceneDraft(null);
+    setEditingBeat(null);
+    setBeatDraft(null);
+    void queryClient.invalidateQueries({ queryKey: ["script", chapterId] });
+  };
   return <div className="script-scenes">
-    <div className="script-coverage"><div><strong>原文覆盖 {Math.round((script.coverage.ratio ?? 0) * 100)}%</strong><span>{script.coverage.covered ?? 0} / {script.coverage.expected ?? 0} 个原文片段 · {script.status}</span></div><button className="script-delete" type="button" disabled={deleteScript.isPending} onClick={() => { if (window.confirm("删除本章漫画剧本？分页、分镜和页面候选会同时从工作区移除；原文、素材文件与任务记录保留，之后可重新生成。")) deleteScript.mutate(); }}>{deleteScript.isPending ? <LoaderCircle className="spin" size={13} /> : <Trash2 size={13} />}删除剧本</button></div>
+    <div className="script-coverage"><div><strong>原文覆盖 {Math.round((script.coverage.ratio ?? 0) * 100)}%</strong><span>{script.coverage.covered ?? 0} / {script.coverage.expected ?? 0} 个原文片段 · {scriptStatusLabels[script.status] ?? script.status}</span></div><button className="script-delete" type="button" disabled={deleteScript.isPending} onClick={() => { if (window.confirm("删除本章漫画剧本？分页、分镜和页面候选会同时从工作区移除；原文、素材文件与任务记录保留，之后可重新生成。")) deleteScript.mutate(); }}>{deleteScript.isPending ? <LoaderCircle className="spin" size={13} /> : <Trash2 size={13} />}删除剧本</button></div>
     <div className="revision-rule"><Pencil size={14} /><div><strong>导演修订模式</strong><span>场景与情节拍可直接修改；来源区间保持只读，避免剧情丢失。</span></div></div>
-    {notice && <p className="edit-notice"><Check size={13} />{notice}</p>}
-    {error && <p className="form-error"><CircleAlert size={14} />{error.message}</p>}
+    {notice && <p className="edit-notice" role="status"><Check size={13} />{notice}</p>}
+    {error && <p className="form-error" role="alert"><CircleAlert size={14} />{error.message}{conflict && <> · 内容已被其他页面修改。<button type="button" className="conflict-refresh" onClick={refreshScript}><RefreshCw size={12} />刷新数据</button>（将关闭当前编辑表单并载入最新版本）</>}</p>}
     {script.scenes.map((scene) => <section className={editingScene === scene.id ? "script-scene editing" : "script-scene"} key={scene.id}>
       {editingScene === scene.id && sceneDraft ? <div className="scene-edit-sheet">
         <header><div><span>SCENE {String(scene.ordinal).padStart(2, "0")} / 修订</span><strong>场景调度单</strong></div><div><button type="button" onClick={() => { setEditingScene(null); setSceneDraft(null); }}><X size={13} />取消</button><button type="button" className="save-edit" disabled={saveScene.isPending} onClick={() => saveScene.mutate(scene)}><Save size={13} />保存场景</button></div></header>
@@ -126,7 +144,7 @@ export function ScriptEditor({
       <div className="scene-wardrobe"><strong><Shirt size={13} />本场服装指定</strong><div>{characters.map((character) => {
         const options = outfits.filter((outfit) => outfit.character_id === character.id);
         if (!options.length) return null;
-        return <label key={character.id}><span>{character.primary_name}</span><select value={scene.outfit_assignments[character.id] ?? ""} onChange={(event) => {
+        return <label key={character.id}><span>{character.primary_name}</span><select value={scene.outfit_assignments[character.id] ?? ""} disabled={assignOutfitPending} onChange={(event) => {
           const assignments = { ...scene.outfit_assignments };
           if (event.target.value) assignments[character.id] = event.target.value;
           else delete assignments[character.id];
