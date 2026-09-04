@@ -1,6 +1,8 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
-from threading import Event, Lock
+from threading import Event, Lock, Thread
+import logging
+import time
 
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
@@ -21,6 +23,8 @@ from app.models import (
     utcnow,
 )
 from app.services.runtime_settings import apply_runtime_overrides, read_queue_mode
+
+LOGGER = logging.getLogger("mangaflow.jobs")
 
 LOCAL_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="mangaflow-local")
 LOCAL_SUBMISSION_LOCK = Lock()
@@ -303,7 +307,13 @@ def _execute_locally(job_id: str) -> None:
                 if not getattr(error, "retryable", True):
                     return
             except Exception:
-                pass
+                # The backoff loop still self-heals, but a silent pass would
+                # hide real failures (DB lock, programming error) with zero
+                # observability while the job appears stuck.
+                LOGGER.exception(
+                    "local executor retry loop hit an unexpected error for job %s",
+                    job_id,
+                )
             from app.database import SessionLocal
 
             with SessionLocal() as db:
@@ -319,6 +329,55 @@ def _execute_locally(job_id: str) -> None:
     finally:
         with LOCAL_SUBMISSION_LOCK:
             LOCAL_SUBMITTED_JOB_IDS.discard(job_id)
+
+
+def restore_page_after_generation_exit(db: Session, page_candidate: PageCandidate) -> None:
+    """Return a page from DRAFT_GENERATING to a stable status once its
+    generating candidate reached a terminal state (failed/cancelled).
+
+    Keeps the page operable instead of showing "generating" forever after a
+    paid call failure; mirrors the reset previously only done on cancellation.
+    """
+
+    page = db.get(MangaPage, page_candidate.page_id)
+    if page is None or str(getattr(page.status, "value", page.status)) != "DRAFT_GENERATING":
+        return
+    other_ready = db.scalar(
+        select(PageCandidate.id).where(
+            PageCandidate.page_id == page.id,
+            PageCandidate.id != page_candidate.id,
+            PageCandidate.status.in_({"READY", "INSPECTED", "NEEDS_REVIEW"}),
+            PageCandidate.deleted_at.is_(None),
+        )
+    )
+    page.status = "DRAFT_READY" if page.selected_candidate_id or other_ready else "STORYBOARDED"
+
+
+def start_periodic_recovery() -> Thread:
+    """Reclaim expired leases and re-enqueue waiting jobs while the API runs.
+
+    RQ retries fire within the lease window and then stop, so a killed REDIS
+    worker used to leave its job ACTIVE until the next API restart. A periodic
+    pass in the long-lived API process closes that gap (and re-enqueues jobs
+    parked as WAITING/QUEUE_UNAVAILABLE after a Redis outage).
+    """
+
+    def _loop() -> None:
+        from app.database import SessionLocal
+
+        settings = get_settings()
+        interval = max(30.0, settings.job_lease_seconds / 2)
+        while True:
+            time.sleep(interval)
+            try:
+                with SessionLocal() as db:
+                    recover_pending_jobs(db)
+            except Exception:
+                LOGGER.exception("periodic job recovery pass failed")
+
+    thread = Thread(target=_loop, name="mangaflow-job-recovery", daemon=True)
+    thread.start()
+    return thread
 
 
 def recover_pending_jobs(db: Session) -> int:
@@ -379,6 +438,7 @@ def recover_pending_jobs(db: Session) -> int:
                 page_candidate = db.get(PageCandidate, job.target_id)
                 if page_candidate:
                     page_candidate.status = "FAILED"
+                    restore_page_after_generation_exit(db, page_candidate)
                 asset_candidate = db.get(AssetCandidate, job.target_id)
                 if asset_candidate:
                     asset_candidate.status = "FAILED"
@@ -442,8 +502,27 @@ def recover_pending_jobs(db: Session) -> int:
             already_submitted = job.id in LOCAL_SUBMITTED_JOB_IDS
         if already_submitted or not dependencies_complete(db, job):
             continue
-        job.status = JobStatus.WAITING
-        db.commit()
+        if job.status == JobStatus.QUEUED:
+            # Re-adopt a local-queue row without clobbering concurrent
+            # progress: if a worker already claimed the row, the conditional
+            # update misses and this round skips the job instead of writing
+            # WAITING over PREPARING.
+            readopted = db.execute(
+                update(GenerationJob)
+                .where(
+                    GenerationJob.id == job.id,
+                    GenerationJob.status == JobStatus.QUEUED,
+                    GenerationJob.error_code == "LOCAL_WORKER",
+                    GenerationJob.lease_owner.is_(None),
+                    GenerationJob.cancelled_at.is_(None),
+                )
+                .values(status=JobStatus.WAITING)
+                .execution_options(synchronize_session=False)
+            )
+            if readopted.rowcount != 1:
+                continue
+            db.commit()
+            db.expire(job)
         enqueue_job(db, job)
         recovered += 1
     return recovered
@@ -471,6 +550,7 @@ def mark_job_failed(
     page_candidate = db.get(PageCandidate, job.target_id)
     if page_candidate:
         page_candidate.status = candidate_status
+        restore_page_after_generation_exit(db, page_candidate)
     asset_candidate = db.get(AssetCandidate, job.target_id)
     if asset_candidate:
         asset_candidate.status = "FAILED"
@@ -504,19 +584,7 @@ def mark_job_cancelled(db: Session, job: GenerationJob) -> GenerationJob:
     page_candidate = db.scalar(select(PageCandidate).where(PageCandidate.job_id == job.id))
     if page_candidate and page_candidate.status not in {"READY", "FAILED", "CANCELLED"}:
         page_candidate.status = "CANCELLED"
-        page = db.get(MangaPage, page_candidate.page_id)
-        if page and page.status.value == "DRAFT_GENERATING":
-            other_ready = db.scalar(
-                select(PageCandidate.id).where(
-                    PageCandidate.page_id == page.id,
-                    PageCandidate.id != page_candidate.id,
-                    PageCandidate.status.in_({"READY", "INSPECTED", "NEEDS_REVIEW"}),
-                    PageCandidate.deleted_at.is_(None),
-                )
-            )
-            page.status = (
-                "DRAFT_READY" if page.selected_candidate_id or other_ready else "STORYBOARDED"
-            )
+        restore_page_after_generation_exit(db, page_candidate)
     asset_candidate = db.scalar(select(AssetCandidate).where(AssetCandidate.job_id == job.id))
     if asset_candidate and asset_candidate.status not in {"READY", "FAILED", "CANCELLED"}:
         asset_candidate.status = "CANCELLED"

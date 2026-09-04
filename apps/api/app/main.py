@@ -12,7 +12,7 @@ from app.api.router import api_router
 from app.config import get_settings
 from app.database import SessionLocal, engine
 from app.request_limits import RequestBodyLimitMiddleware
-from app.services.job_service import recover_pending_jobs
+from app.services.job_service import recover_pending_jobs, start_periodic_recovery
 from app.services.provider_presets import ensure_provider_presets
 from app.services.runtime_settings import apply_runtime_overrides
 
@@ -51,6 +51,12 @@ async def lifespan(application: FastAPI):
             apply_runtime_overrides(db, settings)
             ensure_provider_presets(db, settings, auto_commit=True)
             recover_pending_jobs(db)
+    if not application.dependency_overrides:
+        # REDIS-mode RQ retries fire inside the lease window and then stop, so
+        # a dead worker's job would stay ACTIVE until the next API restart.
+        # The periodic pass keeps reclaiming expired leases and re-enqueueing
+        # parked WAITING jobs for the lifetime of the API process.
+        start_periodic_recovery()
     yield
 
 
