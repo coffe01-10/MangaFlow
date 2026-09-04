@@ -1545,7 +1545,9 @@ button, input, select, textarea { min-height: 40px; font-size: var(--text-meta);
 
 /* Single reduced-motion contract (audit §8, V02-51B): one global block freezes
    animation/transition to .01ms so spinners can stop, and cancels hover
-   translation. Component rules must not reopen motion here. */
+   translation. The transform:none override is !important and must list every
+   hover-translate source (the desktop-visual-system test enforces that), so
+   later tactile-feedback rules cannot reinstate motion. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     scroll-behavior: auto !important;
@@ -1554,11 +1556,15 @@ button, input, select, textarea { min-height: 40px; font-size: var(--text-meta);
     transition-duration: .01ms !important;
   }
   .route-transition, .image-lightbox { animation: none; }
+  button:hover:not(:disabled),
+  a.button:hover,
+  .button:hover:not(:disabled),
   button:hover:not(:disabled) > svg,
   .project-card:hover,
   .page-plan-card:hover,
   .job-row.has-result:hover,
   .dialogue-card:hover,
+  .candidate-artwork:hover .candidate-zoom,
   .workspace-steps a:hover:not(.active) > svg,
   .workspace-steps a:hover:not(.active) > span,
   .workspace-steps a:hover:not(.active) > i,
@@ -1570,7 +1576,7 @@ button, input, select, textarea { min-height: 40px; font-size: var(--text-meta);
   .settings-page .provider-enable-toggle:hover:not(:disabled),
   .settings-page .diagnostic-card > header button:hover:not(:disabled),
   .settings-page .diagnostic-row:hover,
-  .settings-page .storage-card dl div:hover { transform: none; }
+  .settings-page .storage-card dl div:hover { transform: none !important; }
 }
 
 /* Final interaction floor: later component selectors must not shrink controls. */
