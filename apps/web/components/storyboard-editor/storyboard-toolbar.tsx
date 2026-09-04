@@ -110,6 +110,7 @@ export function StoryboardToolbar({
       <button type="button" aria-label={storyboardCopy.redo} disabled={!canRedo} onClick={onRedo}><Redo2 size={14} /></button>
     </div>
     {overlayHint && <p className="toolbar-hint">{overlayHint}</p>}
+    {!overlayHint && <p className="toolbar-hint" aria-hidden="true">Tab 切换格子 · 方向键微调（Shift 加速） · 回车打开属性 · Delete 删除气泡</p>}
     <div className="toolbar-group toolbar-spacer" role="group" aria-label="保存与页操作">
       <div className="page-menu" ref={menuRef}>
         <button type="button" aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => setMenuOpen((open) => !open)}>

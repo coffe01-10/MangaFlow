@@ -567,7 +567,7 @@ export function SceneWorkspace({
       </div>
 
       {notice && (
-        <p className="form-error">
+        <p className="form-error" role="alert">
           <CircleAlert size={14} />{notice}
           {notice.includes("请刷新") ? (
             <button type="button" className="button outline compact" onClick={() => { setNotice(""); refreshLists(); }}>刷新</button>

@@ -20,13 +20,32 @@ interface UsageAttemptDrawerProps {
 
 export function UsageAttemptDrawer({ attempt, onClose }: UsageAttemptDrawerProps) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const drawerRef = useRef<HTMLElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     previousFocusRef.current = document.activeElement as HTMLElement | null;
     closeButtonRef.current?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") {
+        onClose();
+        return;
+      }
+      // aria-modal dialogs must keep Tab inside (same trap the scene modal uses).
+      if (event.key === "Tab" && drawerRef.current) {
+        const focusables = Array.from(drawerRef.current.querySelectorAll<HTMLElement>("button:not([disabled]), a[href]"));
+        if (!focusables.length) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        const active = document.activeElement;
+        if (event.shiftKey && (active === first || !drawerRef.current.contains(active))) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && (active === last || !drawerRef.current.contains(active))) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => {
@@ -42,6 +61,7 @@ export function UsageAttemptDrawer({ attempt, onClose }: UsageAttemptDrawerProps
   return (
     <div className="usage-drawer-backdrop" onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <aside
+        ref={drawerRef}
         className="usage-drawer"
         role="dialog"
         aria-modal="true"

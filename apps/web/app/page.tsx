@@ -30,7 +30,7 @@ function ConnectionBadge({ summary }: { summary?: DashboardAIOverview }) {
   return <span className="status-chip danger"><i />未配置</span>;
 }
 
-function EmptyProjects({ onCreate }: { onCreate: () => void }) {
+function EmptyProjects({ hasProjects, onCreate }: { hasProjects: boolean; onCreate: () => void }) {
   return (
     <button className="empty-project" onClick={onCreate}>
       <span className="empty-project-art" aria-hidden="true">
@@ -38,15 +38,15 @@ function EmptyProjects({ onCreate }: { onCreate: () => void }) {
         <i className="frame two" />
         <Plus size={23} />
       </span>
-      <strong>建立第一部漫画</strong>
-      <small>设置项目、模型与工作模式</small>
+      <strong>{hasProjects ? "新建下一个项目" : "建立第一部漫画"}</strong>
+      <small>{hasProjects ? "同样的三步配置，随时开始" : "设置项目、模型与工作模式"}</small>
     </button>
   );
 }
 
 function ProjectCard({ item, index }: { item: DashboardProject; index: number }) {
   const { project } = item;
-  const progress = item.page_count ? Math.round((item.selected_page_count / item.page_count) * 100) : 0;
+  const progress = item.page_count ? Math.min(100, Math.round((item.selected_page_count / item.page_count) * 100)) : 0;
   return (
     <Link href={`/projects/${project.id}/${item.next_action.section}`} className="project-card">
       <div className={`project-cover cover-${(index % 3) + 1}`}>
@@ -228,7 +228,7 @@ export default function HomePage() {
             ) : (
               <div className="project-grid">
                 {dashboard.data?.projects.map((item, index) => <ProjectCard key={item.project.id} item={item} index={index} />)}
-                <EmptyProjects onCreate={() => setCreating(true)} />
+                <EmptyProjects hasProjects={projectCount > 0} onCreate={() => setCreating(true)} />
               </div>
             )}
           </section>
