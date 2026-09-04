@@ -1396,3 +1396,53 @@ def test_variant_reference_bind_rejects_archived_variant_and_foreign_asset(
         json={"asset_id": foreign.id},
     )
     assert mismatched.status_code == 422
+
+
+def test_asset_level_reference_bind_unbind_marks_pages_for_review(client, db_session):
+    """Asset-level reference bind/unbind changes the scene reference set for
+    later generations and must flag bound pages like the variant-level path
+    (architecture §6); previously only variant binds marked pages."""
+
+    project = _project(client)
+    chapter, plan, scene, page = _chapter_and_page(client, db_session, project["id"])
+    scene_asset = _create_scene_asset(client, project["id"])
+    bind_scene = client.patch(
+        f"/api/v1/scenes/{scene.id}/bind-asset",
+        json={"scene_asset_id": scene_asset["id"]},
+    )
+    assert bind_scene.status_code == 200
+    db_session.refresh(page)
+    page.continuity_status = "PASSED"
+    db_session.commit()
+
+    asset = Asset(
+        project_id=project["id"],
+        kind="SCENE_REFERENCE",
+        original_name="room.png",
+        storage_key="generated/room.png",
+        mime_type="image/png",
+        byte_size=10,
+        sha256="f" * 64,
+        source="VERTEX_GENERATED",
+        status="GENERATED",
+    )
+    db_session.add(asset)
+    db_session.commit()
+
+    bound = client.post(
+        f"/api/v1/projects/{project['id']}/scene-assets/{scene_asset['id']}/references",
+        json={"asset_id": asset.id, "role": "reference", "is_canonical": True},
+    )
+    assert bound.status_code == 201, bound.json()
+    db_session.refresh(page)
+    assert page.continuity_status == "NEEDS_REVIEW"
+
+    page.continuity_status = "PASSED"
+    db_session.commit()
+    unbound = client.delete(
+        f"/api/v1/projects/{project['id']}/scene-assets/{scene_asset['id']}"
+        f"/references/{asset.id}"
+    )
+    assert unbound.status_code == 204
+    db_session.refresh(page)
+    assert page.continuity_status == "NEEDS_REVIEW"

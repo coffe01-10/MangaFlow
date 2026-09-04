@@ -305,11 +305,22 @@ def select_candidate(
     # An inspection result is only valid for the storyboard version it was run
     # against.  Explicitly accepting a stale/legacy candidate acknowledges the
     # selection, but still requires a fresh inspection before production.
-    if candidate.status == "INSPECTED" and version_state == "CURRENT":
+    # A page flagged NEEDS_REVIEW by a non-storyboard change (scene asset
+    # binding/variant edit, scene/beat edits) must also re-run inspection:
+    # the shortcut below used to clear the flag and push the page straight to
+    # FINAL_READY/PASSED, exporting against changed visual inputs.
+    if (
+        candidate.status == "INSPECTED"
+        and version_state == "CURRENT"
+        and page.continuity_status != "NEEDS_REVIEW"
+    ):
         page.status = PageStatus.FINAL_READY
         page.continuity_status = "PASSED"
     elif candidate.status == "NEEDS_REVIEW":
         page.status = PageStatus.NEEDS_REPAIR
+        page.continuity_status = "NEEDS_REVIEW"
+    elif page.continuity_status == "NEEDS_REVIEW":
+        page.status = PageStatus.FINAL_CHECKING
         page.continuity_status = "NEEDS_REVIEW"
     else:
         page.status = PageStatus.FINAL_CHECKING

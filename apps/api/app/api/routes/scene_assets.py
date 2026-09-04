@@ -306,6 +306,10 @@ def bind_scene_asset_reference(
         is_canonical=payload.is_canonical,
     )
     db.add(binding)
+    # Asset-level reference changes alter the scene reference set for later
+    # generations; flag bound pages for review like the variant-level path
+    # (architecture §6: bind/unbind marks related pages NEEDS_REVIEW).
+    mark_pages_for_scene_asset_review(db, asset.id)
     try:
         db.commit()
     except IntegrityError:
@@ -325,15 +329,16 @@ def unbind_scene_asset_reference(
     reference_asset_id: str,
     db: Session = Depends(get_db),
 ) -> None:
-    _scene_asset(db, project_id, asset_id)
+    asset = _scene_asset(db, project_id, asset_id)
     deleted = db.execute(
         delete(SceneAssetReference).where(
-            SceneAssetReference.scene_asset_id == asset_id,
+            SceneAssetReference.scene_asset_id == asset.id,
             SceneAssetReference.asset_id == reference_asset_id,
         )
     )
     if not deleted.rowcount:
         raise HTTPException(status_code=404, detail="场景参考绑定不存在")
+    mark_pages_for_scene_asset_review(db, asset.id)
     db.commit()
 
 
