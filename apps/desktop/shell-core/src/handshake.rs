@@ -10,6 +10,7 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
+use crate::logs::{helper_log_path, RunLog};
 use crate::ownership::{OwnedTree, OwnershipError};
 use crate::protocol::{
     verify_journal, verify_ready_line, ReadyPayload, RuntimeLayout, VerifyError, GO_PREFIX,
@@ -46,12 +47,22 @@ pub struct SpawnedHelper {
     pub tree: OwnedTree,
     pub ready: ReadyPayload,
     pub layout: RuntimeLayout,
+    /// Per-run shell milestone log (identity fields only).
+    pub log: RunLog,
 }
 
 /// Run the full handshake. On success the helper is verified, serving, and
 /// owned; the caller may create the WebView and inject `ready.api_origin`.
 pub fn spawn_helper(config: &HelperConfig, user_data: &Path) -> Result<SpawnedHelper, SpawnError> {
     let layout = RuntimeLayout::create(user_data)?;
+    let run_log = RunLog::create(user_data, &layout.token)?;
+    // The helper's stderr — which carries uvicorn/API/Worker output in the
+    // desktop form — lands in the unified logs directory instead of being
+    // inherited from a console a GUI shell does not have (ADR §4.5).
+    let helper_stderr = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(helper_log_path(user_data, &layout.token))?;
     let mut command = Command::new(&config.python);
     command
         .arg(&config.helper_script)
@@ -60,7 +71,8 @@ pub fn spawn_helper(config: &HelperConfig, user_data: &Path) -> Result<SpawnedHe
         .env("MANGAFLOW_DESKTOP_JOURNAL", layout.journal_path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
+        .stderr(Stdio::from(helper_stderr));
+    let _ = run_log.record("spawn", &serde_json::json!({ "token": layout.token }));
 
     let mut tree = OwnedTree::spawn(command)?;
     let stdout = tree.child.stdout.take().expect("piped stdout");
@@ -90,17 +102,24 @@ pub fn spawn_helper(config: &HelperConfig, user_data: &Path) -> Result<SpawnedHe
         .map_err(SpawnError::Io)?;
     let ready = verify_ready_line(&line, &layout.token, tree.pid()).map_err(SpawnError::Verify)?;
     verify_journal(&layout.journal_path(), &ready).map_err(SpawnError::Verify)?;
+    let _ = run_log.record(
+        "ready_verified",
+        &serde_json::json!({ "pid": ready.pid, "port": ready.port }),
+    );
 
     let stdin = tree.child.stdin.as_mut().expect("piped stdin");
     writeln!(stdin, "{GO_PREFIX}{}", layout.token).map_err(SpawnError::Io)?;
     stdin.flush().map_err(SpawnError::Io)?;
+    let _ = run_log.record("go_sent", &serde_json::json!({}));
 
     wait_for_health(&ready.api_origin, config.health_timeout)
         .map_err(|_| SpawnError::HealthTimeout)?;
+    let _ = run_log.record("healthy", &serde_json::json!({}));
     Ok(SpawnedHelper {
         tree,
         ready,
         layout,
+        log: run_log,
     })
 }
 

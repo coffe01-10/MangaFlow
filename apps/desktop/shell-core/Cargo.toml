@@ -5,6 +5,7 @@ edition = "2021"
 description = "MangaFlow desktop shell core: sidecar handshake + process-tree ownership (no GUI deps)"
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [target.'cfg(unix)'.dependencies]

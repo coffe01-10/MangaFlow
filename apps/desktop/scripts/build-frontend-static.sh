@@ -42,4 +42,6 @@ fi
 rm -rf "$DESKTOP_ROOT/dist/frontend"
 mkdir -p "$DESKTOP_ROOT/dist/frontend"
 cp -r out/. "$DESKTOP_ROOT/dist/frontend/"
+# The shell-owned tools page is not part of the web export; keep it shipped.
+cp "$DESKTOP_ROOT/shell/shell-tools.html" "$DESKTOP_ROOT/dist/frontend/"
 echo "static export copied to $DESKTOP_ROOT/dist/frontend"

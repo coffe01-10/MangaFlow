@@ -4,6 +4,21 @@
 
 本文件记录修订版 MVP 计划的实际完成度。
 
+## V02-54B 实现完成：桌面日志导出 + 安全本地文件选择（2026-09-04，Linux box，待审阅验收）
+
+- **对应**：Issue #114 续作 / 分支 `glm/v02-54b-desktop-ux`（基线 `70639a2` / PR #115 合并树）。实现提交：`3d5ebfb`（日志导出 + 本地文件选择）。范围仍限于 `apps/desktop/` 与 docs，`apps/api`/`apps/web` 业务代码零改动；契约 `docs/adr/v02-desktop-shell-evaluation.md` **仍为草案、选型未批准**。
+- **①统一日志目录 + 日志导出（ADR §4.5「统一写 logs、按进程分文件、可导出」）**：新增 `shell-core/src/logs.rs`（目录布局 + RunLog + 导出）与 `src/ziparch.rs`（零依赖 store-only ZIP 写入器 + CRC32 已知向量测试）。`handshake.rs` spawn 时把 helper stderr 重定向到 `<user-data>/logs/helper-<token>.stderr.log`（桌面形态下即 API/uvicorn/LOCAL_EXECUTOR Worker 输出；替换 V02-54 之前的 `Stdio::inherit()`——GUI 壳无控制台可继承），壳里程碑（spawn/ready_verified/go_sent/healthy/stopped，仅身份字段）写 `logs/shell-<token>.log`；退出路径 `stop_helper` 记 `stopped`。invoke `desktop_export_logs`（无参 → rfd 原生保存对话框；带 `destination` 走同一校验）产出 ZIP + `manifest.json`，先写 `*.pending` 再原子 rename。**双向路径安全**：成员只收 logs 根内常规文件（符号链接跳过不跟随、逐成员 canonical 包含校验、单文件 64 MiB 上限跳过并记录；**日志轮转未实现**，此为唯一体积护栏）；导出目标须绝对、无 `.`/`..`、父目录存在非链接、canonical 后**不得位于用户数据根之内**（防覆盖用户数据、防归档自我包含）。
+- **②本地文件/目录选择**：新增 `shell-core/src/picker.rs` + src-tauri 命令 `desktop_pick_file(kind)` / `desktop_pick_directory` / `desktop_read_picked_file(path)`（rfd 0.17 原生对话框；路径不经 WebView 表单，穿越无输入入口）。策略对齐既有上传边界：原作 TXT/Markdown（同 `sources.py` 后缀集）、素材 PNG/JPEG/WebP（同 `uploads.py REFERENCE_IMAGE_TYPES`），均 ≤ 20 MiB（同 `max_upload_bytes`）；像素/解压炸弹校验仍由 API 服务端执行，壳侧只做前置对齐。校验拒绝 `.`/`..` 成分、拒绝符号链接（含最终成分换名检测）、要求常规文件/目录；通过者进入会话级 `PickedRegistry`（canonical 路径为键的能力表），`desktop_read_picked_file` 每次重查能力表并重跑完整校验，未注册路径一律拒绝；页面取字节（base64）后仍走既有 `/uploads`、`/sources` 接口，服务端边界零改动。触发面为壳自带 `shell/shell-tools.html` 工具页（`build-frontend-static.sh` 随静态导出拷入 `dist/frontend/`，`withGlobalTauri` 已启用）。
+- **顺带修复**：V02-54 进度记录声称已入库的 `dist/frontend/index.html` 占位实际不在 `70639a2`（根 `.gitignore` 的 `dist/` 规则整树吞掉 `apps/desktop/dist/`，`apps/desktop/.gitignore` 的 `!dist/frontend/index.html` 反选因父目录被排除而无效），干净 clone 上 src-tauri Windows 编译门禁因此失败（`frontendDist` 不存在）；本轮补根 `.gitignore` `!apps/desktop/dist/` 放行并入库 `index.html` 与 `shell-tools.html` 两个占位。
+- **门禁（Linux 可跑部分全绿，2026-09-04）**：shell-core `cargo test` **26 项**全过（协议 5 + ziparch 3 + logs 2 + delivery contract 3 + `tests/log_export.rs` 3 + `tests/picker_policy.rs` 5 + 启动协议集成 5）；日志导出归档另经 **python3 `zipfile` 外部校验**（`testzip()` CRC + namelist + manifest，非写者自证）；`cargo check --target x86_64-pc-windows-msvc` 于 shell-core 与 src-tauri 均过（rustup stable 1.98.1 + llvm-rc 19 用户态解包，新增 rfd 0.17 依赖进锁文件）；`apps/desktop/scripts/run-sidecar-e2e.sh` 假闭环 1 passed（4.45s）；`ruff check apps/desktop` 通过；`tests/test_pytest_collection_gate.py` 通过。
+- **NOT RUN / 边界**：rfd 原生对话框 Windows 实机行为（COM 线程模型、与 WebView2 交互）——src-tauri 仅 Windows 目标编译门禁；WebView2 内工具页 invoke 实机验证；日志轮转（ADR D6 记录在案）；Windows 实机 Job Object/WebView2/MSI/NSIS 安装器/签名/自动更新/单实例多开；真实 Redis/RQ 桌面形态；V02-52A N=20；真实供应商。**父项 V02-54 与本子项 V02-54B 均保持未勾**（实现已落地，勾选待 lead 审阅验收）；不勾 V02-55 / V02-52B。
+
+## V02-54B 窗口开启：第一轮已合并（PR #115 / `70639a2`），本轮补日志导出与本地文件选择（2026-09-04，Linux box）
+
+- **合并记录**：V02-54 第一轮（Issue #114 / 分支 `glm/v02-54-desktop-app`）已由 PR #115 以合并提交 `70639a2` 合入 master；该轮交付（`apps/desktop/` 目录策略 A 提升、Windows `CREATE_SUSPENDED`+assign+resume 所有权、用户数据安装/升级/卸载安全契约）与门禁、NOT RUN 边界见下节。**父项 V02-54 保持未勾**；不勾 V02-55 / V02-52B。
+- **本轮范围（分支 `glm/v02-54b-desktop-ux`，基线 `70639a2`）**：只补第一轮 NOT RUN 中可在 Linux 落地的两块——①**日志导出**：统一日志目录（壳 + helper/API/Worker 日志，落 user-data `logs/`）由壳侧归档（ZIP）为用户可选路径，归档内容与目标路径均不得穿越用户数据根；②**本地文件选择**：安全文件/目录选择（打开原作/素材等）走壳 API，规范化路径校验 + 会话内已选路径能力表，策略对齐既有上传/原文边界（引用图 PNG/JPEG/WebP ≤ 20 MiB、原文 TXT/Markdown ≤ 20 MiB UTF-8），不引入任意路径遍历。实现与门禁证据见上节（2026-09-04 收尾补记）。
+- **沿袭边界**：不杀端口清未知进程；安装/升级/卸载不删用户 DB/素材/凭据；ADR 仍为草案、选型未批准。Windows 实机 Job Object/WebView2、MSI/NSIS 安装器、签名、自动更新、真实 Redis/RQ 桌面形态、V02-52A N=20、真实供应商均 NOT RUN。
+
 ## V02-54 桌面交付推进：PoC 提升为 `apps/desktop/`、Windows 挂起创建所有权、用户数据契约（2026-09-04，Linux box）
 
 - **对应**：Issue #114 / 分支 `glm/v02-54-desktop-app`（基线 `804244d`）。契约：`docs/adr/v02-desktop-shell-evaluation.md`（**仍为草案**；本 PR 已按 V02-53B D1–D9 补充 PoC 输入——PoC 建议继续 Tauri、否决条件 3 拿到工作台静态导出风险输入——**选型未批准，待 lead 终批**）。`apps/api`/`apps/web` 业务代码零改动。
