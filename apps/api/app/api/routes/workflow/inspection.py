@@ -10,8 +10,10 @@ from app.config import get_settings
 from app.database import get_db
 from app.domain.states import ensure_unlocked
 from app.models import (
+    CandidateLineage,
     GenerationJob,
     InspectionResult,
+    LineageKind,
     PageCandidate,
     RepairPlan,
 )
@@ -41,7 +43,7 @@ def inspect_candidate(
     db: Session = Depends(get_db),
 ) -> GenerationJob:
     candidate = db.get(PageCandidate, candidate_id)
-    if not candidate or not candidate.asset_id:
+    if not candidate or not candidate.asset_id or candidate.deleted_at is not None:
         raise HTTPException(status_code=409, detail="候选图片尚未生成")
     page = _page(db, candidate.page_id)
     project = _project_for_page(db, page)
@@ -82,7 +84,7 @@ def repair_candidate(
 ) -> CandidateQueuedRead:
     original = db.get(PageCandidate, candidate_id)
     inspection = db.get(InspectionResult, payload.inspection_result_id)
-    if not original or not original.asset_id:
+    if not original or not original.asset_id or original.deleted_at is not None:
         raise HTTPException(status_code=409, detail="原始候选图片不存在")
     if not inspection or inspection.candidate_id != original.id:
         raise HTTPException(status_code=409, detail="检查结果与候选不匹配")
@@ -123,6 +125,7 @@ def repair_candidate(
         prompt_snapshot=dict(original.prompt_snapshot or {}),
     )
     db.add(candidate)
+    db.flush()
     repair = RepairPlan(
         inspection_result_id=inspection.id,
         repair_type=payload.repair_type,
@@ -146,6 +149,19 @@ def repair_candidate(
     if not model_supports_resolution(resolved_model.model, payload.resolution.value):
         raise HTTPException(status_code=422, detail="所选模型不支持该输出清晰度")
     candidate.catalog_model_id = resolved_model.model.id
+    # Contract §7: every derived candidate records its parent lineage at
+    # creation time, in the same transaction as its job, mirroring the child's
+    # resolved provider/model identity.
+    db.add(
+        CandidateLineage(
+            child_candidate_id=candidate.id,
+            parent_candidate_id=original.id,
+            lineage_kind=LineageKind.REPAIRED,
+            model_alias=payload.model_alias,
+            catalog_model_id=resolved_model.model.id,
+            resolution=payload.resolution.name,
+        )
+    )
     project.last_image_model_alias = payload.model_alias
     project.image_model_alias = payload.model_alias
     project.last_image_model_id = resolved_model.model.id
@@ -193,7 +209,7 @@ def upscale_candidate(
     db: Session = Depends(get_db),
 ) -> CandidateQueuedRead:
     original = db.get(PageCandidate, candidate_id)
-    if not original or not original.asset_id:
+    if not original or not original.asset_id or original.deleted_at is not None:
         raise HTTPException(status_code=409, detail="原始候选图片不存在")
     resolution_rank = {"1K": 1, "2K": 2, "4K": 4}
     if resolution_rank[payload.resolution.value] <= resolution_rank[original.resolution.value]:
@@ -226,6 +242,19 @@ def upscale_candidate(
     if not model_supports_resolution(resolved_model.model, payload.resolution.value):
         raise HTTPException(status_code=422, detail="所选模型不支持目标升清规格")
     candidate.catalog_model_id = resolved_model.model.id
+    # Contract §7: every derived candidate records its parent lineage at
+    # creation time, in the same transaction as its job, mirroring the child's
+    # resolved provider/model identity.
+    db.add(
+        CandidateLineage(
+            child_candidate_id=candidate.id,
+            parent_candidate_id=original.id,
+            lineage_kind=LineageKind.UPSCALED,
+            model_alias=payload.model_alias,
+            catalog_model_id=resolved_model.model.id,
+            resolution=payload.resolution.name,
+        )
+    )
     project.last_image_model_alias = payload.model_alias
     project.image_model_alias = payload.model_alias
     project.last_image_model_id = resolved_model.model.id

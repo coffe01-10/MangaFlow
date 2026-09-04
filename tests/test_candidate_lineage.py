@@ -16,6 +16,7 @@ from app.models import (
     Chapter,
     GenerationBatch,
     GenerationJob,
+    InspectionResult,
     JobAssetReference,
     MangaPage,
     ModelCallAttempt,
@@ -379,3 +380,89 @@ def test_accept_after_parent_deleted_fails_without_job_or_lineage(
     assert list(db_session.scalars(select(CandidateLineage))) == []
     assert list(db_session.scalars(select(PageCandidate))) == [parent]
     assert list(db_session.scalars(select(GenerationJob))) == []
+
+
+def test_repair_and_upscale_routes_write_candidate_lineage(client, db_session):
+    """POST /candidates/{id}/repairs and /upscale must create the lineage row
+    in the same transaction as the derived candidate and its job (contract
+    §7); previously only REGION_REGENERATED wrote lineage, so derived-candidate
+    consumers saw a split history (backfilled legacy rows, no new rows)."""
+
+    ctx = _setup(client, db_session)
+    parent = _ready_parent(db_session, ctx, model_alias="image.nano_banana_2")
+    inspection = InspectionResult(
+        candidate_id=parent.id,
+        storyboard_version=ctx["page"].storyboard_version,
+        category="CHARACTER",
+        outcome="MISMATCH",
+        score=0.4,
+        details={"expected": {}, "observed": {}, "differences": []},
+        regions=[],
+        severity="HIGH",
+    )
+    db_session.add(inspection)
+    db_session.commit()
+
+    repaired = client.post(
+        f"/api/v1/candidates/{parent.id}/repairs",
+        json={
+            "inspection_result_id": inspection.id,
+            "repair_type": "PANEL",
+            "target_regions": [{"x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2}],
+            "target_fields": [],
+            "model_alias": "image.nano_banana_2",
+            "resolution": "1K",
+        },
+    )
+    assert repaired.status_code == 202, repaired.json()
+    repair_child_id = repaired.json()["candidate"]["id"]
+
+    upscaled = client.post(
+        f"/api/v1/candidates/{parent.id}/upscale",
+        json={"model_alias": "image.nano_banana_2", "resolution": "2K"},
+    )
+    assert upscaled.status_code == 202, upscaled.json()
+    upscale_child_id = upscaled.json()["candidate"]["id"]
+
+    rows = {
+        row.child_candidate_id: row
+        for row in db_session.query(CandidateLineage).all()
+    }
+    repair_row = rows[repair_child_id]
+    assert repair_row.parent_candidate_id == parent.id
+    assert repair_row.lineage_kind == "REPAIRED"
+    assert repair_row.resolution == "DRAFT_1K"
+    upscale_row = rows[upscale_child_id]
+    assert upscale_row.parent_candidate_id == parent.id
+    assert upscale_row.lineage_kind == "UPSCALED"
+    assert upscale_row.resolution == "STANDARD_2K"
+
+
+def test_inspection_family_rejects_soft_deleted_candidates(client, db_session):
+    """inspect/repair/upscale must not create paid jobs for candidates the
+    user already soft-deleted (parity with the director path)."""
+
+    ctx = _setup(client, db_session)
+    parent = _ready_parent(db_session, ctx, model_alias="image.nano_banana_2")
+    parent.deleted_at = datetime.now(UTC)
+    db_session.commit()
+
+    inspected = client.post(f"/api/v1/candidates/{parent.id}/inspect", json={})
+    assert inspected.status_code == 409
+
+    repaired = client.post(
+        f"/api/v1/candidates/{parent.id}/repairs",
+        json={
+            "inspection_result_id": "irrelevant",
+            "repair_type": "PANEL",
+            "model_alias": "image.nano_banana_2",
+            "resolution": "1K",
+        },
+    )
+    assert repaired.status_code == 409
+
+    upscaled = client.post(
+        f"/api/v1/candidates/{parent.id}/upscale",
+        json={"model_alias": "image.nano_banana_2", "resolution": "2K"},
+    )
+    assert upscaled.status_code == 409
