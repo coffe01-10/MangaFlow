@@ -26,6 +26,7 @@ import {
 import {
   api,
   isConflictError,
+  originUrl,
   publicUrl,
   type Asset,
   type SceneAsset,
@@ -680,7 +681,7 @@ export function SceneWorkspace({
                     return (
                       <article key={reference.id} className={reference.is_canonical ? "canonical" : undefined}>
                         {file?.content_url ? (
-                          <button type="button" className="scene-reference-thumb" onClick={() => openPreview(publicUrl(file.content_url)!, label)}>
+                          <button type="button" className="scene-reference-thumb" onClick={() => openPreview(originUrl(file.content_url)!, label)}>
                             <Image src={publicUrl(file.thumbnail_url ?? file.content_url)!} alt={label} width={160} height={160} unoptimized />
                           </button>
                         ) : <div className="scene-reference-missing">参考图文件不可用</div>}
@@ -725,7 +726,7 @@ export function SceneWorkspace({
                             return (
                               <div key={reference.id}>
                                 {file?.content_url ? (
-                                  <button type="button" onClick={() => openPreview(publicUrl(file.content_url)!, label)}>
+                                  <button type="button" onClick={() => openPreview(originUrl(file.content_url)!, label)}>
                                     <Image src={publicUrl(file.thumbnail_url ?? file.content_url)!} alt={label} width={72} height={72} unoptimized />
                                   </button>
                                 ) : <span>变体参考不可用</span>}

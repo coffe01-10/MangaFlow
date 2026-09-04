@@ -20,7 +20,7 @@ import {
 import { useState } from "react";
 
 import { ProductionReadiness } from "@/components/production-readiness";
-import { api, publicUrl, type ImageModelAlias, type MangaPage, type PageCandidate } from "@/lib/api";
+import { api, originUrl, publicUrl, type ImageModelAlias, type MangaPage, type PageCandidate } from "@/lib/api";
 import { hasActiveItem } from "@/lib/task-status";
 
 import { assetName } from "./display";
@@ -329,7 +329,7 @@ function PageSceneInheritance({
                   if (!file?.content_url) return <em key={reference.id}>参考图不可用</em>;
                   const label = `${asset.name}${variant ? ` 环境变体 - ${variant.name}` : " 主空间参考图"}`;
                   return (
-                    <button key={reference.id} type="button" onClick={() => openPreview(publicUrl(file.content_url)!, label)}>
+                    <button key={reference.id} type="button" onClick={() => openPreview(originUrl(file.content_url)!, label)}>
                       <Image src={publicUrl(file.thumbnail_url ?? file.content_url)!} alt={label} width={56} height={56} unoptimized />
                     </button>
                   );

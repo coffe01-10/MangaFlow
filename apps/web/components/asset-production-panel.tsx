@@ -2,6 +2,7 @@
 
 import {
   api,
+  originUrl,
   publicUrl,
   type Character,
   type ImageModelAlias,
@@ -27,7 +28,7 @@ function conceptDraftKey(projectId: string, characterId: string) {
 
 function CandidatePreview({ candidate, label, onOpen }: { candidate: PageCandidate; label: string; onOpen: (url: string, label: string) => void }) {
   const thumbnail = publicUrl(candidate.thumbnail_url ?? candidate.content_url);
-  const full = publicUrl(candidate.content_url ?? candidate.thumbnail_url);
+  const full = originUrl(candidate.content_url ?? candidate.thumbnail_url);
   return thumbnail ? <button type="button" className="production-candidate-image" onClick={() => full && onOpen(full, label)}><Image src={thumbnail} alt={label} width={640} height={640} loading="eager" unoptimized /><span>查看大图</span></button> : candidate.status === "FAILED" ? <div className="candidate-placeholder failed"><CircleAlert size={20} /><span>生成失败</span></div> : <div className="candidate-placeholder"><LoaderCircle className="spin" size={20} /><span>等待 Worker 生成</span></div>;
 }
 

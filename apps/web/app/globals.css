@@ -2244,6 +2244,8 @@ p { font-size: var(--text-body) !important; }
 .workspace-inspector-backdrop { display: none; }
 @media (min-width: 1280px) {
   .workspace-layout.has-inspector { grid-template-columns: var(--workspace-sidebar-width, 214px) minmax(0, 1fr) var(--workspace-inspector-width, 390px); }
+  /* Collapsed rail + docked inspector: the rail stays 48px in the first column. */
+  .workspace-layout.rail-left.has-inspector { grid-template-columns: 48px minmax(0, 1fr) var(--workspace-inspector-width, 390px); }
   .workspace-inspector { border-left: 1px solid var(--line); }
   .workspace-inspector-body { padding-bottom: 70px; }
 }

@@ -37,14 +37,14 @@ function jobFixture(overrides: Partial<Job>): Job {
   };
 }
 
-function JobsHarness() {
+function JobsHarness({ openPreview = () => undefined }: { openPreview?: (url: string, label: string) => void }) {
   const workspace = useJobsWorkspace({ id: "project-1", section: "jobs" });
   return (
     <JobsSection
       jobs={workspace.jobs}
       workspace={workspace}
       modelOptions={[]}
-      openPreview={() => undefined}
+      openPreview={openPreview}
     />
   );
 }
@@ -336,5 +336,41 @@ describe("JobsSection", () => {
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "恢复" })).toBeInTheDocument();
     });
+  });
+
+  it("任务结果入口把原图 content URL 交给 lightbox，不改写为缩略图（V02-51B §7）", async () => {
+    const openPreview = vi.fn();
+    jobsApi.mockReset().mockResolvedValue([
+      jobFixture({
+        id: "job-image-result",
+        status: "COMPLETED",
+        progress: 100,
+        result: {
+          kind: "IMAGE",
+          label: "候选 1",
+          candidate_id: "candidate-1",
+          page_id: "page-1",
+          content_url: "/api/v1/assets/asset-9/content",
+          thumbnail_url: "/api/v1/assets/asset-9/thumbnail/640",
+        },
+      }),
+    ]);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <JobsHarness openPreview={openPreview} />
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "查看结果" }));
+    await waitFor(() => {
+      expect(openPreview).toHaveBeenCalledTimes(1);
+    });
+    const [lightboxUrl] = openPreview.mock.calls[0];
+    expect(lightboxUrl).toContain("/api/v1/assets/asset-9/content");
+    expect(lightboxUrl).not.toContain("thumbnail/640");
   });
 });

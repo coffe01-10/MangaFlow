@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -33,6 +33,13 @@ function mediaBlocks(query: string) {
 function lastMediaBlock(query: string) {
   const blocks = mediaBlocks(query);
   return blocks[blocks.length - 1];
+}
+
+function walkSourceFiles(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = resolve(dir, entry.name);
+    return entry.isDirectory() ? walkSourceFiles(path) : path.endsWith(".tsx") || path.endsWith(".ts") ? [path] : [];
+  });
 }
 
 function rule(selector: string) {
@@ -104,6 +111,28 @@ describe("U1 ≥1280 工作台：左导航停靠且底栏不遮挡主栏", () =>
     expect(railBlock).toContain(".workspace-left.rail .workspace-project-title");
     expect(projectWorkspaceSource).toContain('window.localStorage.getItem("mangaflow.project-sidebar-collapsed")');
     expect(projectWorkspaceSource).toContain('window.localStorage.setItem("mangaflow.project-sidebar-collapsed"');
+  });
+
+  it("P1-C 模板 B：≥1280 图标轨 + 停靠右槽组合为 48px 三列", () => {
+    expect(lastMediaBlock("(min-width: 1280px)")).toContain(
+      ".workspace-layout.rail-left.has-inspector { grid-template-columns: 48px minmax(0, 1fr) var(--workspace-inspector-width, 390px); }",
+    );
+  });
+});
+
+describe("P1-B lightbox 原图契约（audit §7：lightbox 才用原图，网格继续 publicUrl）", () => {
+  it("任何组件不得把 publicUrl 结果直接交给 openPreview/onOpen", () => {
+    const offenders = walkSourceFiles(resolve(process.cwd(), "components")).filter((file) => {
+      const source = readFileSync(file, "utf8");
+      return /openPreview\(publicUrl/.test(source) || /onOpen\(publicUrl/.test(source);
+    });
+    expect(offenders).toEqual([]);
+  });
+
+  it("资产生产面板的 CandidatePreview 以 originUrl 取原图、publicUrl 取缩略图", () => {
+    const source = readFileSync(resolve(process.cwd(), "components/asset-production-panel.tsx"), "utf8");
+    expect(source).toContain("const full = originUrl(candidate.content_url ?? candidate.thumbnail_url);");
+    expect(source).toContain("const thumbnail = publicUrl(candidate.thumbnail_url ?? candidate.content_url);");
   });
 });
 
