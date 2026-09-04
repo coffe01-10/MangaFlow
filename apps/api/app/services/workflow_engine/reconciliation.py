@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.domain.states import JobStatus
@@ -273,17 +273,41 @@ def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
     if run.status in {"COMPLETED", "CANCELLED", "FAILED"}:
         return get_run(db, run.id)
     if failed:
-        run.status = "FAILED"
-        run.finished_at = utcnow()
+        final_status = "FAILED"
     elif all(item.status in {"COMPLETED", "SKIPPED"} for item in node_runs):
-        run.status = "COMPLETED"
-        run.finished_at = utcnow()
+        final_status = "COMPLETED"
     elif paused:
-        run.status = "PAUSED"
+        final_status = "PAUSED"
     else:
-        run.status = "RUNNING"
-    run.version += 1
+        final_status = "RUNNING"
+    # The stale-status guard above cannot cover the write itself: a cancel_run
+    # claim landing between the refresh and this write owns the row, and an
+    # unconditional ORM write would flip CANCELLED to the recomputed state
+    # (permanent — later reconciles early-return on terminal and retry_run
+    # creates a new run). Claim the row exactly like cancel_run does; on a
+    # lost claim the flushed node writes are rolled back too, which is correct
+    # because the canceller's own committed transaction already moved every
+    # non-terminal node (and its jobs) to CANCELLED.
+    final_values: dict = {"status": final_status, "version": WorkflowRun.version + 1}
+    if final_status in {"FAILED", "COMPLETED"}:
+        final_values["finished_at"] = utcnow()
+    db.flush()
+    claimed = db.execute(
+        update(WorkflowRun)
+        .where(
+            WorkflowRun.id == run.id,
+            WorkflowRun.status.not_in({"COMPLETED", "CANCELLED", "FAILED"}),
+        )
+        .values(**final_values)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
+        db.rollback()
+        return get_run(db, run.id)
     db.commit()
+    # synchronize_session=False leaves the identity-map row stale; refresh so
+    # get_run (same session) returns the claimed state, not the pre-write one.
+    db.refresh(run)
     return get_run(db, run.id)
 
 

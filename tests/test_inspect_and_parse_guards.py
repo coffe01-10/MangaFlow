@@ -521,6 +521,99 @@ def test_executed_adopted_inspect_job_reconciles_its_workflow_run(monkeypatch):
         engine.dispose()
 
 
+def test_reconcile_final_write_does_not_overwrite_concurrent_cancel(db_session, monkeypatch):
+    """A cancel_run claim landing between reconcile's status refresh and the
+    final run write owns the row: the final write must not flip the CANCELLED
+    run to its recomputed state (later reconciles early-return on terminal, so
+    the overwrite would be permanent)."""
+    project, page, candidate, _generate_job = _ready_candidate(db_session)
+    graph = WorkflowGraph(
+        nodes=[
+            WorkflowNodeDefinition(id="inspect", type="quality.inspect", name="质量检查")
+        ]
+    )
+    workflow = WorkflowDefinition(
+        project_id=project.id, name="取消不被覆盖", draft_graph=graph.model_dump(mode="json")
+    )
+    db_session.add(workflow)
+    db_session.flush()
+    version = WorkflowVersion(
+        workflow_id=workflow.id,
+        revision=1,
+        graph=graph.model_dump(mode="json"),
+        graph_checksum="cancel-claim",
+    )
+    db_session.add(version)
+    db_session.flush()
+    run = WorkflowRun(
+        workflow_id=workflow.id,
+        workflow_version_id=version.id,
+        project_id=project.id,
+        scope_type="PAGE",
+        scope_id=page.id,
+        status="RUNNING",
+    )
+    db_session.add(run)
+    db_session.flush()
+    completed_job = GenerationJob(
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=candidate.id,
+        job_type="PAGE_INSPECT",
+        status=JobStatus.COMPLETED,
+        finished_at=utcnow(),
+    )
+    db_session.add(completed_job)
+    db_session.flush()
+    node_run = WorkflowNodeRun(
+        workflow_run_id=run.id,
+        node_id="inspect",
+        node_type="quality.inspect",
+        status="COMPLETED",
+        job_id=completed_job.id,
+        finished_at=utcnow(),
+    )
+    db_session.add(node_run)
+    db_session.commit()
+    run_id = run.id
+    pre_cancel_version = run.version
+
+    original_refresh = db_session.refresh
+    cancelled = {"claimed": False}
+
+    def refresh_then_cancel(target, *args, **kwargs):
+        original_refresh(target, *args, **kwargs)
+        if (
+            not cancelled["claimed"]
+            and isinstance(target, WorkflowRun)
+            and target.id == run_id
+        ):
+            # Cancel lands in the window right after the refresh: same claim
+            # cancel_run uses (terminal rows excluded, version bumped).
+            cancelled["claimed"] = True
+            canceller = sessionmaker(
+                bind=db_session.get_bind(), autoflush=False, expire_on_commit=False
+            )()
+            try:
+                canceller.execute(
+                    update(WorkflowRun)
+                    .where(WorkflowRun.id == run_id)
+                    .values(
+                        status="CANCELLED",
+                        finished_at=utcnow(),
+                        version=WorkflowRun.version + 1,
+                    )
+                )
+                canceller.commit()
+            finally:
+                canceller.close()
+
+    monkeypatch.setattr(db_session, "refresh", refresh_then_cancel)
+    reconciled = reconcile_run(db_session, run_id)
+    assert reconciled.status == "CANCELLED"
+    assert reconciled.version == pre_cancel_version + 1
+
+
 def test_reset_for_retry_does_not_clobber_live_worker_claim(db_session, monkeypatch):
     """A worker claim landing between the retry route's read and the reset must
     win: reset_for_retry must not clobber the lease or requeue the job."""
