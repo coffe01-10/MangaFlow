@@ -14,7 +14,7 @@ import pytest
 from sqlalchemy import select
 
 from app.config import get_settings
-from app.domain.states import JobStatus, Resolution
+from app.domain.states import JobStatus, PageStatus, Resolution
 from app.models import (
     AIModel,
     Asset,
@@ -428,6 +428,8 @@ def _region_job(db_session, storage_root, *, model_alias="image.nano_banana_2"):
         based_on_storyboard_version=page.storyboard_version,
         prompt_snapshot={"reference_selections": {}},
     )
+    db_session.add(parent)
+    db_session.flush()
     child = PageCandidate(
         batch_id=batch.id,
         page_id=page.id,
@@ -436,9 +438,14 @@ def _region_job(db_session, storage_root, *, model_alias="image.nano_banana_2"):
         resolution=Resolution.DRAFT_1K,
         status="QUEUED",
         based_on_storyboard_version=page.storyboard_version,
-        prompt_snapshot={"lineage": {"parent_candidate_id": parent.id}},
+        prompt_snapshot={
+            "lineage": {
+                "parent_candidate_id": parent.id,
+                "source_command_id": "cmd-keep-lineage",
+            }
+        },
     )
-    db_session.add_all([parent, child])
+    db_session.add(child)
     db_session.flush()
     job = GenerationJob(
         project_id=project.id,
@@ -554,6 +561,8 @@ def test_region_job_with_declared_capability_keeps_ledger_consistent(
     # 父候选保持不变（无静默整页重生）。
     assert db_session.get(PageCandidate, parent.id).asset_id is not None
     assert db_session.get(PageCandidate, parent.id).status == "READY"
+    assert done.prompt_snapshot["lineage"]["parent_candidate_id"] == parent.id
+    assert done.prompt_snapshot["lineage"]["source_command_id"] == "cmd-keep-lineage"
 
 
 def test_cancelled_region_job_stops_before_paid_call(
@@ -584,3 +593,35 @@ def test_cancelled_region_job_stops_before_paid_call(
     assert list(db_session.scalars(select(ModelCallAttempt))) == []
     assert list(db_session.scalars(select(GenerationRecord))) == []
     assert db_session.get(PageCandidate, child.id).status == "QUEUED"
+
+
+def test_region_job_does_not_clobber_final_ready_page_status(
+    db_session, catalog, region_storage, monkeypatch
+):
+    from app.model_adapters.fake_acceptance import FakeAcceptanceImageAdapter
+    from app.worker_tasks import _run_page_generate
+
+    model = db_session.scalar(
+        select(AIModel).where(AIModel.legacy_alias == "image.nano_banana_2")
+    )
+    model.capabilities = {**(model.capabilities or {}), "accepts_explicit_mask": True}
+    db_session.commit()
+
+    adapter = FakeAcceptanceImageAdapter()
+    monkeypatch.setattr("app.worker_tasks._adapter", lambda alias: adapter)
+    parent, child, job = _region_job(db_session, region_storage)
+    page = db_session.get(MangaPage, parent.page_id)
+    page.status = PageStatus.FINAL_READY
+    page.selected_candidate_id = parent.id
+    page.version = 9
+    _own_lease(db_session, job)
+
+    _run_page_generate(db_session, job)
+    db_session.commit()
+    db_session.expire_all()
+
+    page = db_session.get(MangaPage, parent.page_id)
+    assert page.status == PageStatus.FINAL_READY
+    assert page.selected_candidate_id == parent.id
+    assert page.version == 9
+    assert db_session.get(PageCandidate, child.id).status == "READY"

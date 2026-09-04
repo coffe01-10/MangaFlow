@@ -20,6 +20,11 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    inspector = sa.inspect(op.get_bind())
+    existing = set(inspector.get_table_names())
+    if "director_command_groups" in existing and "director_commands" in existing:
+        # Adopted from Base.metadata.create_all on an early local database.
+        return
     op.create_table(
         "director_command_groups",
         sa.Column("id", sa.String(length=36), primary_key=True),

@@ -599,6 +599,12 @@ def assign_scene_outfits(
             raise HTTPException(status_code=409, detail="服装必须属于指定角色")
     scene.outfit_assignments = assignments
     scene.version += 1
+    from app.services.editor import mark_pages_for_review, mark_storyboard_changed
+
+    for page in db.scalars(select(MangaPage).where(MangaPage.chapter_id == chapter.id)):
+        if scene.id in (page.scene_ids or []):
+            mark_storyboard_changed(page)
+            mark_pages_for_review(db, chapter.id, from_page_number=page.page_number)
     db.commit()
     return {"scene_id": scene.id, "assignments": scene.outfit_assignments}
 

@@ -23,7 +23,7 @@ describe("页面生成规则", () => {
     });
 
     expect(issue).toContain("旧版规划");
-    expect(issue).toContain("重新分页");
+    expect(issue).toContain("删除分页");
   });
 
   it("完整来源且显式选模后允许生成", () => {

@@ -182,9 +182,28 @@ export function DirectorWorkspace({
   };
 
   const previewCommand: DirectorCommand | null = preview?.commands[0] ?? null;
-  const undoTargets = new Set(
-    (history.data ?? []).flatMap((group) => group.commands.map((command) => command.inverse_of_command_id)),
+
+  const historyOriginCommand = (commands: DirectorCommand[]) => (
+    commands.find((item) => !item.inverse_of_command_id) ?? commands[0] ?? null
   );
+  const historyActionIds = (commands: DirectorCommand[]) => {
+    const origin = commands.find((item) => !item.inverse_of_command_id) ?? null;
+    const latest = commands[commands.length - 1] ?? null;
+    if (!latest || latest.status !== "EXECUTED") return { undoId: null as string | null, redoId: null as string | null };
+    if (latest.operation === "regenerate_region") return { undoId: null, redoId: null };
+    if (!origin) {
+      return latest.inverse_of_command_id
+        ? { undoId: null, redoId: latest.command_id }
+        : { undoId: latest.command_id, redoId: null };
+    }
+    if (latest.command_id === origin.command_id) {
+      return { undoId: origin.command_id, redoId: null };
+    }
+    if (latest.inverse_of_command_id === origin.command_id) {
+      return { undoId: null, redoId: latest.command_id };
+    }
+    return { undoId: latest.command_id, redoId: null };
+  };
 
   return (
     <div className="director-shell">
@@ -396,7 +415,8 @@ export function DirectorWorkspace({
         )}
         <ol>
           {(history.data ?? []).map((group) => {
-            const command = group.commands[0];
+            const command = historyOriginCommand(group.commands);
+            const { undoId, redoId } = historyActionIds(group.commands);
             const failed = command?.status === "FAILED" || command?.status === "REJECTED";
             return (
               <li key={group.id} className={failed ? "director-history-item failed" : "director-history-item"}>
@@ -410,13 +430,13 @@ export function DirectorWorkspace({
                 {command?.error?.message && <p className="director-history-error">{command.error.message}</p>}
                 <div className="director-history-actions">
                   {group.status === "PREVIEWED" && <button type="button" onClick={() => reopenGroup(group)}>继续预览</button>}
-                  {command?.status === "EXECUTED" && !command.inverse_of_command_id && !undoTargets.has(command.command_id) && (
-                    <button type="button" disabled={undo.isPending} onClick={() => undo.mutate(command.command_id)}>
+                  {undoId && (
+                    <button type="button" disabled={undo.isPending} onClick={() => undo.mutate(undoId)}>
                       <RotateCcw size={12} />撤销
                     </button>
                   )}
-                  {command?.status === "EXECUTED" && Boolean(command.inverse_of_command_id) && (
-                    <button type="button" disabled={redo.isPending} onClick={() => redo.mutate(command.command_id)}>
+                  {redoId && (
+                    <button type="button" disabled={redo.isPending} onClick={() => redo.mutate(redoId)}>
                       <RotateCw size={12} />重做
                     </button>
                   )}

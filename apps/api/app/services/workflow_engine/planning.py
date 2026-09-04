@@ -115,6 +115,7 @@ def create_workflow_run(
                     "node_type": node.type,
                 },
                 idempotency_key=f"workflow:{run.id}:{node.id}:1",
+                auto_commit=False,
             )
             job.status = JobStatus.COMPLETED
             job.progress = 100
@@ -173,4 +174,5 @@ def _create_node_job(
         max_attempts=node.config.max_attempts,
         idempotency_key=f"workflow:{run.id}:{node.id}:1",
         dependency_ids=dependency_ids,
+        auto_commit=False,
     )

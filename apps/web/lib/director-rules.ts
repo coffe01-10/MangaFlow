@@ -492,9 +492,7 @@ export function compileDirectorCommand(input: DirectorRuleInput): DirectorPlan {
       }
       nextIds = [...currentIds, character.id];
       nextPresence = {
-        ...Object.fromEntries(
-          Object.entries(panel.character_presence ?? {}).filter(([, value]) => value !== "VISIBLE"),
-        ),
+        ...(panel.character_presence ?? {}),
         [character.id]: "VISIBLE",
       };
       intentLabel = "加入入镜角色";
@@ -539,7 +537,9 @@ export function compileDirectorCommand(input: DirectorRuleInput): DirectorPlan {
     }
     return buildPlan(input, {
       operation: "update_panel_cast",
-      payload: { expressions: { [character.id]: expression[1] } },
+      payload: {
+        expressions: { ...(panel.expressions ?? {}), [character.id]: expression[1] },
+      },
       target: {
         project_id: input.projectId,
         page_id: input.page.id,

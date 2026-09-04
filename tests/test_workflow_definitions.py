@@ -237,7 +237,13 @@ def test_workflow_crud_optimistic_lock_publish_restore_and_json(client, db_sessi
     assert imported.status_code == 201, imported.text
 
 
-def test_run_pauses_before_single_page_generation_and_reuses_jobs(client, db_session):
+def test_run_pauses_before_single_page_generation_and_reuses_jobs(
+    client, db_session, monkeypatch
+):
+    monkeypatch.setattr(
+        "app.services.page_readiness.ensure_page_ready",
+        lambda *_args, **_kwargs: None,
+    )
     project = _project(client)
     workflow = _workflow(client, project["id"])
     published = client.post(f"/api/v1/workflows/{workflow['id']}/publish")
@@ -354,6 +360,10 @@ def test_generation_gate_requires_explicit_equal_model_choice(client, db_session
 def test_default_dag_deterministic_full_run_to_export(
     client, db_session, monkeypatch
 ):
+    monkeypatch.setattr(
+        "app.services.page_readiness.ensure_page_ready",
+        lambda *_args, **_kwargs: None,
+    )
     with TemporaryDirectory() as directory:
         settings = get_settings()
         previous_queue = settings.queue_enabled

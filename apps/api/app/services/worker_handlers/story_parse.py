@@ -16,6 +16,7 @@ from app.models import (
     Chapter,
     Character,
     GenerationJob,
+    MangaPage,
     Project,
     Scene,
     ScriptRevision,
@@ -26,6 +27,34 @@ from app.services.ai_schemas import StoryParseOutput
 from app.services.worker_handlers import execution, provider
 
 STORY_PARSE_CHUNK_MAX_CHARS = 800
+
+
+def _chapter_has_pages(db, chapter_id: str) -> bool:
+    return (
+        db.scalar(select(MangaPage.id).where(MangaPage.chapter_id == chapter_id).limit(1))
+        is not None
+    )
+
+
+def _ready_script(db, chapter_id: str) -> ScriptRevision | None:
+    return db.scalar(
+        select(ScriptRevision)
+        .where(
+            ScriptRevision.chapter_id == chapter_id,
+            ScriptRevision.status == "READY",
+        )
+        .order_by(ScriptRevision.revision_no.desc())
+        .limit(1)
+    )
+
+
+def _reject_if_chapter_has_pages(db, chapter_id: str) -> None:
+    if _chapter_has_pages(db, chapter_id) and _ready_script(db, chapter_id) is None:
+        raise ProviderAdapterError(
+            "CHAPTER_HAS_PAGES",
+            "本章已有分页，请先删除分页后再重新生成剧本",
+            retryable=False,
+        )
 
 
 def _normalize_name(value: str) -> str:
@@ -123,7 +152,13 @@ def _run_story_parse(db, job: GenerationJob) -> None:
     chapter = db.get(Chapter, job.target_id)
     if not chapter or not chapter.current_source_revision_id:
         raise RuntimeError("章节原文不存在")
-    revision = db.get(SourceRevision, chapter.current_source_revision_id)
+    started_revision_id = chapter.current_source_revision_id
+    if _chapter_has_pages(db, chapter.id) and _ready_script(db, chapter.id) is not None:
+        # Default PAGE-scoped DAG still enqueues agent.parse after planning.
+        # Reuse the READY script instead of wiping Scene rows the pages point at.
+        return
+    _reject_if_chapter_has_pages(db, chapter.id)
+    revision = db.get(SourceRevision, started_revision_id)
     segments = list(
         db.scalars(
             select(SourceSegment)
@@ -272,6 +307,28 @@ def _run_story_parse(db, job: GenerationJob) -> None:
         character_map[_normalize_name(character.primary_name)] = character
         for alias in character.aliases:
             character_map[_normalize_name(alias)] = character
+    # Plan / revise can land during the paid call. Re-read identity before wipe.
+    db.refresh(chapter, attribute_names=["current_source_revision_id", "deleted_at"])
+    if chapter.deleted_at is not None:
+        raise ProviderAdapterError(
+            "CHAPTER_DELETED",
+            "章节已删除，已取消本次剧本生成",
+            retryable=False,
+        )
+    if chapter.current_source_revision_id != started_revision_id:
+        raise ProviderAdapterError(
+            "SOURCE_REVISED",
+            "原文已在解析过程中被修订，请按当前原文重新生成剧本",
+            retryable=False,
+        )
+    if _chapter_has_pages(db, chapter.id):
+        if _ready_script(db, chapter.id) is not None:
+            return
+        raise ProviderAdapterError(
+            "CHAPTER_HAS_PAGES",
+            "本章已有分页，请先删除分页后再重新生成剧本",
+            retryable=False,
+        )
     db.execute(delete(Scene).where(Scene.chapter_id == chapter.id))
     db.execute(delete(ScriptRevision).where(ScriptRevision.chapter_id == chapter.id))
     db.flush()

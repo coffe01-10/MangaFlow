@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from fastapi import HTTPException
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -21,6 +22,7 @@ from app.models import (
     WorkflowRun,
     utcnow,
 )
+from app.services import page_readiness as page_readiness_service
 from app.services.character_packages import resolve_package_selections
 from app.services.job_service import mark_job_cancelled
 from app.services.model_router import model_supports_resolution, resolve_model
@@ -29,6 +31,7 @@ from app.services.ordinal_allocator import (
     commit_ordinal_transaction,
     create_generation_batch,
 )
+from app.services.scene_assets import scene_asset_snapshot, scene_reference_assets
 from app.services.workflow_engine.catalog import NODE_TYPE_MAP
 from app.services.workflow_engine.planning import create_workflow_run
 from app.services.workflow_engine.reconciliation import (
@@ -115,6 +118,15 @@ def approve_node(
             selections={},
             style_id=page.style_id,
         )
+        try:
+            page_readiness_service.ensure_page_ready(
+                db, page, get_settings(), package_gate=package_batch.gate
+            )
+        except HTTPException as exc:
+            detail = exc.detail
+            if isinstance(detail, dict) and detail.get("message"):
+                raise ValueError(str(detail["message"])) from exc
+            raise ValueError(str(detail) or "页面生产准备尚未完成") from exc
         reference_selections: dict[str, dict[str, str | None]] = dict(
             package_batch.normalized
         )
@@ -168,9 +180,11 @@ def approve_node(
             reference_asset_ids.append(character_reference.asset_id)
             if outfit_asset_id:
                 reference_asset_ids.append(outfit_asset_id)
+        current_scene_snapshot = scene_asset_snapshot(db, page)
         snapshot = {
             "storyboard_version": page.storyboard_version,
             "reference_selections": reference_selections,
+            "scene_asset": current_scene_snapshot,
         }
         if package_batch.snapshot:
             snapshot["character_packages"] = package_batch.snapshot
@@ -187,6 +201,9 @@ def approve_node(
         )
         db.add(candidate)
         db.flush()
+        reference_asset_ids.extend(
+            item.id for item in scene_reference_assets(db, page)
+        )
         dependency_ids = _parent_job_ids(db, run, graph, node_id)
         job = engine.create_job(
             db,
@@ -216,12 +233,29 @@ def approve_node(
             project.image_model_alias = image_model_alias
             project.last_image_model_id = resolved_model.model.id
             project.version += 1
+        claimed = db.execute(
+            update(WorkflowRun)
+            .where(
+                WorkflowRun.id == run.id,
+                WorkflowRun.status.in_(("PAUSED", "RUNNING")),
+            )
+            .values(status="RUNNING")
+            .execution_options(synchronize_session=False)
+        )
+        if claimed.rowcount != 1:
+            db.rollback()
+            raise ValueError("当前运行已取消或已结束，未创建生成任务")
+        db.expire(run, ["status"])
         node_run.job_id = job.id
         node_run.status = "RUNNING"
         node_run.started_at = utcnow()
         node_run.output_refs = {"candidate_id": candidate.id, "batch_id": batch.id}
-        run.status = "RUNNING"
         commit_ordinal_transaction(db, BatchOrdinalConflictError)
+        db.refresh(run, attribute_names=["status"])
+        if run.status in {"CANCELLED", "FAILED", "COMPLETED"}:
+            mark_job_cancelled(db, job)
+            db.commit()
+            return get_run(db, run.id)
         engine.enqueue_job(db, job)
     elif spec.barrier == "APPROVE":
         if run.scope_type != "PAGE" or not run.scope_id:
@@ -231,18 +265,41 @@ def approve_node(
         candidate = db.get(PageCandidate, selected) if selected else None
         if not page or not candidate or candidate.page_id != page.id or not candidate.is_selected:
             raise ValueError("请先在单页生成页采用当前页的一个候选")
+        claimed = db.execute(
+            update(WorkflowRun)
+            .where(
+                WorkflowRun.id == run.id,
+                WorkflowRun.status.in_(("PAUSED", "RUNNING")),
+            )
+            .values(status="RUNNING")
+            .execution_options(synchronize_session=False)
+        )
+        if claimed.rowcount != 1:
+            db.rollback()
+            raise ValueError("当前运行已取消或已结束")
+        db.expire(run, ["status"])
         node_run.status = "COMPLETED"
         node_run.started_at = node_run.started_at or utcnow()
         node_run.finished_at = utcnow()
         node_run.output_refs = {"candidate_id": candidate.id, "page_id": page.id}
-        run.status = "RUNNING"
         db.commit()
     return reconcile_run(db, run.id)
 
 
 def cancel_run(db: Session, run: WorkflowRun) -> WorkflowRun:
-    if run.status in {"COMPLETED", "CANCELLED"}:
+    claimed = db.execute(
+        update(WorkflowRun)
+        .where(
+            WorkflowRun.id == run.id,
+            WorkflowRun.status.not_in({"COMPLETED", "CANCELLED", "FAILED"}),
+        )
+        .values(status="CANCELLED", finished_at=utcnow())
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
         return get_run(db, run.id)
+    db.refresh(run)
+    run.version += 1
     node_runs = list(
         db.scalars(select(WorkflowNodeRun).where(WorkflowNodeRun.workflow_run_id == run.id))
     )
@@ -253,9 +310,21 @@ def cancel_run(db: Session, run: WorkflowRun) -> WorkflowRun:
         job = db.get(GenerationJob, item.job_id) if item.job_id else None
         if job and job.status not in {JobStatus.COMPLETED, JobStatus.CANCELLED}:
             mark_job_cancelled(db, job)
-    run.status = "CANCELLED"
-    run.finished_at = utcnow()
-    run.version += 1
+    # Inspect jobs are created lazily in reconcile and may not be on node_run yet.
+    late_jobs = list(
+        db.scalars(
+            select(GenerationJob).where(
+                GenerationJob.project_id == run.project_id,
+                GenerationJob.status.not_in(
+                    {JobStatus.COMPLETED, JobStatus.CANCELLED, JobStatus.FAILED}
+                ),
+            )
+        )
+    )
+    for job in late_jobs:
+        params = job.request_parameters or {}
+        if params.get("workflow_run_id") == run.id:
+            mark_job_cancelled(db, job)
     db.commit()
     return get_run(db, run.id)
 

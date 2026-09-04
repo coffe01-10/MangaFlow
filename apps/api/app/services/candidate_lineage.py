@@ -52,6 +52,46 @@ REGION_JOB_TYPE = "PAGE_REGION_REGENERATE"
 REGION_BATCH_KIND = "REGION_REGENERATED"
 
 
+def attach_derived_lineage(
+    db: Session,
+    *,
+    child: PageCandidate,
+    parent: PageCandidate,
+    lineage_kind: LineageKind | str,
+    source_command_id: str | None = None,
+    mask_asset_id: str | None = None,
+) -> CandidateLineage:
+    """Write the one lineage row for a derived candidate (repair/upscale/region)."""
+
+    kind = LineageKind(lineage_kind) if not isinstance(lineage_kind, LineageKind) else lineage_kind
+    snapshot = dict(child.prompt_snapshot or {})
+    snapshot["lineage"] = {
+        **(snapshot.get("lineage") or {}),
+        "parent_candidate_id": parent.id,
+        "lineage_kind": kind.value,
+        "source_command_id": source_command_id,
+        "mask_asset_id": mask_asset_id,
+    }
+    child.prompt_snapshot = snapshot
+    lineage = CandidateLineage(
+        child_candidate_id=child.id,
+        parent_candidate_id=parent.id,
+        lineage_kind=kind,
+        source_command_id=source_command_id,
+        mask_asset_id=mask_asset_id,
+        model_alias=child.model_alias,
+        catalog_model_id=child.catalog_model_id,
+        resolution=(
+            child.resolution.name
+            if hasattr(child.resolution, "name")
+            else str(child.resolution)
+        ),
+    )
+    db.add(lineage)
+    db.flush()
+    return lineage
+
+
 def _http_422(detail: str) -> HTTPException:
     return HTTPException(status_code=422, detail=detail)
 

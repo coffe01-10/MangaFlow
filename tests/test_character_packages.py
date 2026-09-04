@@ -1705,6 +1705,10 @@ def _workflow_generate_candidate(db_session, monkeypatch, page_id: str, project_
     monkeypatch.setattr(
         "app.services.workflow_engine.enqueue_job", lambda db, job: job
     )
+    monkeypatch.setattr(
+        "app.services.page_readiness.ensure_page_ready",
+        lambda *_args, **_kwargs: None,
+    )
     approve_node(
         db_session,
         run.id,

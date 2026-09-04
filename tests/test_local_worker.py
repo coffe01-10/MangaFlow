@@ -192,6 +192,53 @@ def test_active_job_cancellation_is_not_overwritten(monkeypatch):
         engine.dispose()
 
 
+def test_stale_cancel_does_not_overwrite_completed_job(monkeypatch):
+    """Cancel session that loaded GENERATING must not clobber a later COMPLETED."""
+
+    with TemporaryDirectory() as directory:
+        engine = create_engine(
+            f"sqlite:///{Path(directory) / 'stale-cancel.db'}",
+            connect_args={"check_same_thread": False},
+        )
+        testing_session = sessionmaker(
+            bind=engine, autoflush=False, expire_on_commit=False
+        )
+        Base.metadata.create_all(engine)
+        with testing_session() as db:
+            project = Project(name="完成后取消")
+            db.add(project)
+            db.flush()
+            job = GenerationJob(
+                project_id=project.id,
+                target_type="CHAPTER",
+                target_id="stale-cancel-target",
+                job_type="SOURCE_PARSE",
+                status=JobStatus.QUEUED,
+            )
+            db.add(job)
+            db.commit()
+            job_id = job.id
+
+        def fake_run(_db, _job):
+            return None
+
+        monkeypatch.setattr(worker_tasks, "SessionLocal", testing_session)
+        monkeypatch.setattr(worker_tasks, "_run_story_parse", fake_run)
+        worker_tasks.execute_job(job_id)
+
+        with testing_session() as stale:
+            loaded = stale.get(GenerationJob, job_id)
+            assert loaded.status == JobStatus.COMPLETED
+            loaded.status = JobStatus.GENERATING
+            job_service.cancel_job(stale, loaded)
+
+        with testing_session() as db:
+            finished = db.get(GenerationJob, job_id)
+            assert finished.status == JobStatus.COMPLETED
+            assert finished.cancelled_at is None
+        engine.dispose()
+
+
 def test_completed_job_persists_full_progress(monkeypatch):
     with TemporaryDirectory() as directory:
         engine = create_engine(
