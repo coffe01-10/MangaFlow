@@ -282,6 +282,20 @@ def _invoke_provider(db, binding: AdapterBinding, callback):
                     mark_key_success(db, replacement.selected_key.row)
                     return result
         raise
+    except Exception as error:
+        # An adapter bug or an unclassified malformed response must not leave
+        # the paid attempt pending forever: converge the audit row to a
+        # terminal FAILED state, then let the worker's generic error path
+        # decide retry semantics from the original exception. A persistence
+        # failure inside finalize still surfaces as AUDIT_PERSISTENCE_FAILED
+        # (non-retryable), matching the ProviderAdapterError path above.
+        _finalize_or_fail(
+            attempt_id,
+            outcome="FAILED",
+            error_code="INVALID_OUTPUT",
+            error_message="模型通道出现未分类异常，已记录失败",
+        )
+        raise
     _finalize_or_fail(
         attempt_id,
         outcome="SUCCEEDED",
