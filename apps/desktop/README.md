@@ -104,7 +104,7 @@ cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml
 
 | 编号 | 层 | 结论 | 证据 / 边界 |
 | --- | --- | --- | --- |
-| D1 | 打包 | **RUN（部分）/ NOT RUN（安装器）** | `tauri build` 未跑（沙箱无 webkit2gtk/显示服务，见下）；bundle 配置（msi/nsis/图标）就位并经 Windows 目标 `cargo check` 校验配置合法性。安装/卸载/重装数据保留 NOT RUN。 |
+| D1 | 打包 | **RUN（部分）/ NOT RUN（安装器）** | `tauri build` 未跑（沙箱无 webkit2gtk/显示服务，见下）；bundle 配置（msi/nsis/图标）就位并经 Windows 目标 `cargo check` 校验配置合法性；卸载不删用户数据的配置契约由 `shell-core/tests/delivery_contract.rs` 冻结。安装/卸载/重装数据保留的实机验证 NOT RUN。 |
 | D2 | Python sidecar | **RUN（Linux 形态，含 PyInstaller 冻结产物）/ Windows 打包 NOT RUN**（V02-53B 证据） | `run-sidecar-e2e.sh`：真实 `app.main:app` 经 `alembic upgrade head`（28 个迁移到 head）+ SQLite 读写 + 本地 worker（无 Redis 时 API 内 LOCAL_EXECUTOR，即安装版默认形态）+ 假通道完成「生成→候选→采用→PNG 落盘→`/content` 可取」。PyInstaller onedir 冻结产物（116MB，含 alembic.ini+migrations 于 `_internal/`）实测通过完整握手→GO→健康→真实 dashboard API→优雅退出；`alembic.ini` 解析依赖冻结路径（`app.main.__file__`），故支持文件必须放 `_internal/`——这是打包形态的硬约束证据。**Windows PyInstaller/embeddable 形态 NOT RUN**；RQ/Redis Worker 进程形态 NOT RUN。 |
 | D3 | 进程生命周期 | **RUN（Linux 等价）/ Windows 路径已按 CREATE_SUSPENDED+assign+resume 实现、实机 NOT RUN** | `cargo test`（10 项）：握手全链、错误 GO 拒绝 exit 75、并发双 helper 端口不冲突、`shell-sim` 崩溃（SIGABRT）后 helper+孙进程全灭（PDEATHSIG 链）、无协作者 SIGTERM→SIGKILL 升级、壳在 spawn 前写入归属 journal。Windows 路径已按 `scripts/owned_processes.py` `start_python` 纪律重写：`CREATE_SUSPENDED` 挂起创建 → 建 Job（`KILL_ON_JOB_CLOSE`）→ assign 仍挂起的子进程 → 快照枚举初始线程后 `ResumeThread`；任一步失败即终止仍挂起的子进程，spawn→assign 竞争窗口已收口。**Windows 实机运行行为 NOT RUN**（本沙箱 Linux），合并前该路径只有编译门禁（`cargo check --target x86_64-pc-windows-msvc`）证据，实机 D3 复验仍欠。 |
 | D4 | 端口/单实例 | **RUN（端口+注入）/ 单实例 NOT RUN**（V02-53B 证据） | 原子绑定 `127.0.0.1:0`（socket 先绑后报，无 TOCTOU；并发测试两 helper 端口必异）；WebView 建立前完成握手；运行时注入 = 初始化脚本同步写 `window.__MANGAFLOW_API_ORIGIN__` + invoke `desktop_get_api_origin` 双通道，不依赖 `NEXT_PUBLIC_*`（浏览器断言 `api_origin_env_free`）/不依赖 Next rewrite（D5 实测直连）。单实例互斥体已接 `tauri-plugin-single-instance` 但**实机多开行为 NOT RUN**。 |
@@ -133,7 +133,27 @@ cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml
   3. 前端静态导出：**发现确定性阻塞**（动态段预渲染组合 + 工作台预渲染崩溃），静态导出非 flag 级改动；方案 B 未在本 PoC 验证 → 倾向「方案 B 或混合形态」输入，不构成否决。
   4. Rust 维护能力：壳核心逻辑集中在 shell-core（~600 行可测 Rust）+ src-tauri 粘合（~120 行）；成本判断留给 lead。
 
-## 5. NOT RUN 汇总（诚实边界）
+## 5. 用户数据安全（安装/升级/卸载契约）
+
+- **目录布局（安装版运行时）**：用户数据全部位于 Tauri `app_local_data_dir`
+  （Windows = `%LOCALAPPDATA%\com.mangaflow.desktop\`）：`data/`（SQLite 数据库）、
+  `storage/`（素材与凭据文件主密钥 `.provider-credential-master-key`）、`uploads/`、
+  `runtime/`（单次启动的 owned 运行目录）。安装目录只含程序文件，不存用户数据。
+- **升级**：安装器只替换安装目录内程序文件；数据库结构升级由 sidecar 启动时的
+  `alembic upgrade head` 原地完成，不删除、不重置用户数据库；回滚沿用仓库 Alembic
+  下行迁移边界。
+- **卸载**：NSIS/WiX 卸载器默认只移除安装目录、注册表项与快捷方式，不触碰
+  `%LOCALAPPDATA%` 用户数据。**契约：禁止任何 installer hook（NSIS
+  PREUNINSTALL/POSTUNINSTALL 等）删除 `data/`、`storage/`、`uploads/` 或凭据**；
+  删除用户数据的唯一途径是用户手动删除该目录。该契约由
+  `shell-core/tests/delivery_contract.rs` 冻结（无 installer hooks、bundle 配置无
+  删除指令、identifier 不被悄悄更换——它决定用户数据目录）。
+- **凭据**：模型 API Key 沿用生产 AES-GCM 加密（`credential_crypto.py`）+ 文件主密钥，
+  与数据库同在用户数据目录；journal 与日志只写身份字段，不写密钥/命令/env。
+- **边界**：真实 MSI/NSIS 安装/升级/卸载行为 NOT RUN（本环境无法构建 Windows 安装包）；
+  以上以配置契约与卸载器官方默认行为为据，实机验收（D1）欠。
+
+## 6. NOT RUN 汇总（诚实边界）
 
 1. Windows 实机全链路（Job Object 行为、WebView2、安装器、签名、更新、单实例多开）。
 2. RQ/Redis worker 进程形态与 Independent Worker（按 Issue 约束不装 Redis/Docker/Postgres；本地 LOCAL_EXECUTOR 已验）。
@@ -141,7 +161,7 @@ cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml
 4. 真实供应商、真实凭据、PostgreSQL live（沿项目既有边界；假模型闭环零外呼）。
 5. Electron 对比壳（ADR 建议 Tauri 2 进入 PoC；未构建 Electron 侧镜像实现，体积/内存对比无从测起）。
 
-## 6. 复现环境
+## 7. 复现环境
 
 - Linux 6.12 x64（Debian trixie 容器，uid 1000 无 sudo）、Python 3.13.5（.venv-desktop）、
   Node 20.19.2、rustup stable（1.98.1，含 x86_64-pc-windows-msvc std；系统 cargo 1.85
