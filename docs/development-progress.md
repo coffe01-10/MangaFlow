@@ -4,9 +4,10 @@
 
 本文件记录修订版 MVP 计划的实际完成度。
 
-## V02-54D 窗口开启：V02-54C 已合并（PR #118 / `efedb08`），本轮做 Windows 剩余项状态目录（2026-09-04，Linux box，docs-only）
+## V02-54D 完成并验收：Windows 剩余项状态目录（2026-09-04，Linux box，docs-only；已经 lead 验收审阅后勾选，PR #120）
 
 - **合并记录**：V02-54C（Issue #117 / 分支 `glm/v02-54c-log-rotation`）已经 lead 两轮修复审阅后在 roadmap 勾选，并由 PR #118 以合并提交 `efedb08` 合入 master（git 记录：`2849bf7` 勾选、`0857138`/`0fc8bea` 两轮修复）。**父项 V02-54 保持未勾**；不勾 V02-55 / V02-52B。
+- **验收记录（2026-09-04，lead P0/P1 验收审阅）**：V02-54D 已在 roadmap 勾选（P1 修复随 PR #120 推送）；**父项 V02-54 保持未勾**，不勾 V02-55 / V02-52B。本切片验收后 **Linux 可落地的桌面续作已尽**：当前无已派工的下一实现项，剩余项以 `docs/v02-windows-leftover-status.md` 为准（Windows 实机/安装器/签名/自动更新、Redis/RQ 桌面形态、V02-52A N=20、真实供应商、ADR lead 终批等），后续窗口待 lead 另行派工。ADR 仍为草案、选型未批准，未声称任何 Windows 剩余项 RUN。
 - **本轮范围**：Issue #119 / 分支 `glm/v02-54d-windows-status`（基线 `efedb08`）。V02-54C 合入后 **Linux 可落地的桌面续作已尽**（V02-54 第一轮 / 54B / 54C 均已勾选），本轮为 **docs-only 诚实状态目录**：把 V02-54/54B/54C 记录与 `apps/desktop/README.md` D1–D9 中仍 `NOT RUN` / `BLOCKED` 的 Windows 实机与发布项汇总为 `docs/v02-windows-leftover-status.md`——每项含 ID、描述、依赖环境、状态、阻塞原因与既有证据（明确不视作实机验收），共 22 项（NOT RUN 16、BLOCKED 6），至少覆盖 Job Object 实机、WebView2（渲染/缺失安装/工具页 invoke/CSP）、rfd 对话框实机、日志轮转实机、单实例多开、Windows sidecar 打包、MSI/NSIS 安装/升级/卸载、签名、自动更新、静态导出/方案 B、Redis/RQ 桌面形态、Independent Worker 矩阵、V02-52A N=20、真实供应商、ADR lead 终批与 V02-55 发布门禁；并显式声明 mock/SQLite/fakeredis/Linux 编译门禁与 Linux live 证据不得写成 Windows 实机已验收。不实现、不装 Docker/Postgres、不跑 V02-52B（缺 N=20）、不开 V02-55；`apps/api`/`apps/web`/shell-core 业务树与壳代码零改动（仅 README §7 增加一行目录指引）。
 - **门禁**：docs-only，无代码改动；`git diff --check` 通过。不重跑实现门禁（本分支未触碰任何被测代码）。
 - **NOT RUN / 边界**：本轮不闭合任何清单项；W-13/W-14（签名/更新）等用户资源决策项、W-16/W-17（Redis/PostgreSQL 基础设施）继续 BLOCKED，解除条件见目录 §7 维护规则。
