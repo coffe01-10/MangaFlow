@@ -4,6 +4,12 @@
 
 本文件记录修订版 MVP 计划的实际完成度。
 
+## V02-54B 窗口开启：第一轮已合并（PR #115 / `70639a2`），本轮补日志导出与本地文件选择（2026-09-04，Linux box）
+
+- **合并记录**：V02-54 第一轮（Issue #114 / 分支 `glm/v02-54-desktop-app`）已由 PR #115 以合并提交 `70639a2` 合入 master；该轮交付（`apps/desktop/` 目录策略 A 提升、Windows `CREATE_SUSPENDED`+assign+resume 所有权、用户数据安装/升级/卸载安全契约）与门禁、NOT RUN 边界见下节。**父项 V02-54 保持未勾**；不勾 V02-55 / V02-52B。
+- **本轮范围（分支 `glm/v02-54b-desktop-ux`，基线 `70639a2`）**：只补第一轮 NOT RUN 中可在 Linux 落地的两块——①**日志导出**：统一日志目录（壳 + helper/API/Worker 日志，落 user-data `logs/`）由壳侧归档（ZIP）为用户可选路径，归档内容与目标路径均不得穿越用户数据根；②**本地文件选择**：安全文件/目录选择（打开原作/素材等）走壳 API，规范化路径校验 + 会话内已选路径能力表，策略对齐既有上传/原文边界（引用图 PNG/JPEG/WebP ≤ 20 MiB、原文 TXT/Markdown ≤ 20 MiB UTF-8），不引入任意路径遍历。实现与门禁证据待本轮收尾时补记。
+- **沿袭边界**：不杀端口清未知进程；安装/升级/卸载不删用户 DB/素材/凭据；ADR 仍为草案、选型未批准。Windows 实机 Job Object/WebView2、MSI/NSIS 安装器、签名、自动更新、真实 Redis/RQ 桌面形态、V02-52A N=20、真实供应商均 NOT RUN。
+
 ## V02-54 桌面交付推进：PoC 提升为 `apps/desktop/`、Windows 挂起创建所有权、用户数据契约（2026-09-04，Linux box）
 
 - **对应**：Issue #114 / 分支 `glm/v02-54-desktop-app`（基线 `804244d`）。契约：`docs/adr/v02-desktop-shell-evaluation.md`（**仍为草案**；本 PR 已按 V02-53B D1–D9 补充 PoC 输入——PoC 建议继续 Tauri、否决条件 3 拿到工作台静态导出风险输入——**选型未批准，待 lead 终批**）。`apps/api`/`apps/web` 业务代码零改动。
