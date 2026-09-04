@@ -4,6 +4,15 @@
 
 本文件记录修订版 MVP 计划的实际完成度。
 
+## V02-54 桌面交付推进：PoC 提升为 `apps/desktop/`、Windows 挂起创建所有权、用户数据契约（2026-09-04，Linux box）
+
+- **对应**：Issue #114 / 分支 `glm/v02-54-desktop-app`（基线 `804244d`）。契约：`docs/adr/v02-desktop-shell-evaluation.md`（**仍为草案**；本 PR 已按 V02-53B D1–D9 补充 PoC 输入——PoC 建议继续 Tauri、否决条件 3 拿到工作台静态导出风险输入——**选型未批准，待 lead 终批**）。`apps/api`/`apps/web` 业务代码零改动。
+- **交付目录策略（二选一中的 A：提升为正式路径）**：`apps/desktop-poc/` 整体 `git mv` 为 `apps/desktop/`，crate 更名 `mangaflow-desktop-shell-core` / `mangaflow-desktop-shell`，协议标识同步由 poc 更名 desktop（runtime 目录 `mangaflow-desktop-<token>/`、env `MANGAFLOW_DESKTOP_*`、tauri productName `MangaFlow` / identifier `com.mangaflow.desktop`）；可回滚性 = 删除 `apps/desktop/` 整目录，业务树零改动（原 PoC 目录不再保留，git 历史可溯 PR #111）。
+- **进程所有权（本轮核心修复）**：`apps/desktop/shell-core/src/ownership.rs` Windows 路径按 `scripts/owned_processes.py` `start_python` 纪律重写，替换 V02-53B compile-only 骨架：`CREATE_SUSPENDED|CREATE_NO_WINDOW` 挂起创建 → 建 `KILL_ON_JOB_CLOSE` 根 Job Object → `AssignProcessToJobObject`（子进程仍挂起、未执行任何指令）→ Toolhelp 快照枚举初始线程后 `ResumeThread`；job 创建/assign/resume 任一步失败即终止仍挂起的子进程（fail-closed），V02-53B 的 spawn→assign 竞争窗口收口。壳侧 `RuntimeLayout::create` 在 spawn 之前原子写入归属 journal（`version/token/state=created/shell_pid/created_at`，仅身份字段），比 owned_processes 的「resume 前落盘」更早，可证明运行目录归属。**Windows 实机运行 NOT RUN**：该路径只有 Windows 目标编译门禁证据，实机 D3 复验仍欠。
+- **其余必须项**：启动握手（原子绑定 `127.0.0.1:0`、owner token、journal readiness、stdin GO 门控、运行时 API origin 注入——非 `NEXT_PUBLIC_*`、非 Next rewrite）沿用 PoC 冻结协议并在更名后全量复跑；单实例（`tauri-plugin-single-instance`，实机多开 NOT RUN）、启动/退出清理、崩溃清树（Unix PDEATHSIG 链实测 / Windows Job `KILL_ON_JOB_CLOSE` 编译验证）、禁止「杀端口」清理均保持；用户数据安全契约（升级只换程序文件 + Alembic 原地迁移、卸载默认与契约均不触碰 `%LOCALAPPDATA%` 下的 DB/素材/凭据、禁止 NSIS installer hooks 删除、identifier 固定防孤儿化）写入 `apps/desktop/README.md` §5 并由 `shell-core/tests/delivery_contract.rs`（3 项）冻结。
+- **门禁（本沙箱可跑部分全绿，2026-09-04）**：shell-core `cargo test` 13 项（5 单元含新增「spawn 前归属 journal」+ 5 集成 + 3 契约）；`cargo check --target x86_64-pc-windows-msvc` 于 shell-core 与 src-tauri 均过（rustup stable 1.98.1 + llvm-rc 用户态解包；另补齐此前未入库的 `dist/frontend/index.html` 占位，Windows 编译门禁现可从干净 clone 复现）；`apps/desktop/scripts/run-sidecar-e2e.sh` 真实 API + 假通道闭环 1 passed（4.43s：28 个 Alembic 迁移 + 生成→候选→采用→PNG 落盘可取，零供应商外呼）；`ruff check apps/desktop` 通过；`tests/test_pytest_collection_gate.py` 通过（默认 pytest 收集不进 `apps/desktop`）。
+- **NOT RUN / 未完成（V02-54 保持不勾的原因）**：Windows 实机 Job Object 行为（挂起创建路径仅编译验证）、WebView2 Evergreen 渲染兼容与缺失安装、MSI/NSIS 安装/升级/卸载实机（含数据保留实测）、代码签名/SmartScreen、自动更新签名服务器、真实 Redis/RQ 桌面 worker 形态、V02-52A N=20 性能门禁、真实供应商（假通道零外呼）；roadmap V02-54 要求中的「日志导出、本地文件选择」UI 尚未实现，留待后续轮次。
+
 ## PR #113 zcode-audit 生产审计修复合并（2026-09-04）
 
 - **合并记录**：分支 `zcode-audit` / 合并提交 `804244d`；分支内先与 PR #112（`b97dc80`）汇合（merge `d4a1ebe`）。以 merge commit 合入（非 squash），未 force-push。

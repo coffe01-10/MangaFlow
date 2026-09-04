@@ -90,7 +90,7 @@
 
 1. **Python sidecar 无法以 Tauri 形态打包**：PoC 无法把 FastAPI+Alembic+RQ Worker（依赖 Pillow 等）以可接受的单二进制（PyInstaller `--onefile`）或 embeddable 形态稳定启动、迁移与运行；且 Electron 的目录捆绑可稳定承载它。
 2. **WebView2 渲染兼容不可接受**：Next.js 16 前端（Canvas 分镜编辑器、动画）在目标用户机器上的 WebView2 Evergreen 版本渲染异常，feature-detect 无法规避；Electron 固定 Chromium 可规避。
-3. **前端静态导出改造不可行**：`rewrites` 失效后，前端 `/api/v1/*` 直连改造（base URL 注入）在 PoC 中证伪（如鉴权/CORS/相对路径问题无法收口），而 Electron 自带 Node 可零改动跑 `next start`。（V02-53B 实测输入：静态导出存在确定性阻塞——`output:"export"` 要求每个动态段 ≥1 构建期预渲染组合而真实项目 id 不可知，且工作台组件树服务端预渲染崩溃；方案 B 未验证。见 `apps/desktop-poc/README.md` §4。）
+3. **前端静态导出改造不可行**：`rewrites` 失效后，前端 `/api/v1/*` 直连改造（base URL 注入）在 PoC 中证伪（如鉴权/CORS/相对路径问题无法收口），而 Electron 自带 Node 可零改动跑 `next start`。（V02-53B 实测输入：静态导出存在确定性阻塞——`output:"export"` 要求每个动态段 ≥1 构建期预渲染组合而真实项目 id 不可知，且工作台组件树服务端预渲染崩溃；方案 B 未验证。见 `apps/desktop/README.md` §4（V02-54 起路径；PoC 时为 `apps/desktop-poc/README.md`）。）
 4. **Rust 维护能力不可接受**：项目团队无 Rust 维护能力，Tauri 壳层（升级、修复、签名）持续成本不可接受。
 
 ### 3.2 明确「不选 Electron」不等于「否决 Electron」
