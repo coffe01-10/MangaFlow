@@ -610,10 +610,15 @@ class CLIExecutionController:
             or not isinstance(max_images, int)
             or not isinstance(images, list)
             or not images
+            or len(images) != len(registered)
             or len(images) > max_images
+            or any(not isinstance(path, str) for path in images)
             or any(path not in registered for path in images)
         ):
+            # Contract §7.4: a SUCCEEDED envelope must carry every registered
+            # image — a strict subset is a partial output and is never adopted.
             raise ProviderAdapterError("PARTIAL_OUTPUT", "CLI 输出清单不完整")
+        _reject_link_chain(run_directory / "output", run_directory)
         output_root = (run_directory / "output").resolve(strict=True)
         payloads: list[bytes] = []
         metadata: list[dict] = []
@@ -807,6 +812,27 @@ def _validate_reference(source: Path, upload_root: Path, storage_root: Path) -> 
 def _reject_link(path: Path) -> None:
     if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
         raise ProviderAdapterError("CONFIGURATION", "CLI 路径不能是链接")
+
+
+def _reject_link_chain(path: Path, root: Path) -> None:
+    """Reject a path whose intermediate components are links, not just the leaf.
+
+    A junction or symlink at an interior component (e.g. ``<run>/output``
+    itself) is not a symlink at the leaf, so per-file ``_reject_link`` checks
+    pass while the resolved content lives outside the run directory.
+    """
+
+    try:
+        relative = path.absolute().relative_to(root.absolute())
+    except ValueError as error:
+        raise ProviderAdapterError("INVALID_OUTPUT", "CLI 路径越界") from error
+    current = root.absolute()
+    for part in relative.parts:
+        current /= part
+        if current.is_symlink() or (
+            hasattr(current, "is_junction") and current.is_junction()
+        ):
+            raise ProviderAdapterError("INVALID_OUTPUT", "CLI 路径不能经过链接")
 
 
 def _make_inputs_writable(run_directory: Path) -> None:
