@@ -21,6 +21,7 @@ from app.models import (
     MangaPage,
     PageCandidate,
     Project,
+    utcnow,
 )
 from app.schemas import ExportRead, ExportRequest
 from app.services.page_completion import (
@@ -29,6 +30,24 @@ from app.services.page_completion import (
 )
 
 router = APIRouter()
+
+
+
+def _safe_archive_name(original_name: str) -> str:
+    r"""Neutralize a stored asset name before it becomes a zip member.
+
+    ``Path(...).name`` at upload time strips ``/`` but keeps backslashes, so
+    a POSIX-hosted API can store ``..\..\evil.png``; Windows extractors
+    treat backslashes as separators and write outside the extraction
+    directory. Reduce to the final path component under either separator
+    and drop control characters.
+    """
+
+    flattened = original_name.replace("\\", "/").split("/")[-1]
+    cleaned = "".join(
+        character for character in flattened if character.isprintable()
+    ).strip()
+    return cleaned or "page.png"
 
 
 def _asset_path(asset: Asset) -> Path:
@@ -146,38 +165,35 @@ def create_export(
         "|".join(candidate.id for _, candidate, _ in selected).encode("utf-8")
     ).hexdigest()[:12]
 
+    serial = f"{utcnow().strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:8]}"
     if payload.export_type == "PNG":
-        destination = output_dir / f"{token}-pages.zip"
+        destination = output_dir / f"{token}-{serial}-pages.zip"
 
         def _write_zip(temp: Path) -> None:
             with zipfile.ZipFile(temp, "w", zipfile.ZIP_DEFLATED) as archive:
                 for page, _, asset in selected:
                     archive.write(
                         _asset_path(asset),
-                        arcname=f"{page.page_number:04d}-{asset.original_name}",
+                        arcname=f"{page.page_number:04d}-{_safe_archive_name(asset.original_name)}",
                     )
 
         _write_export_atomically(destination, _write_zip)
     elif payload.export_type == "PDF":
-        destination = output_dir / f"{token}-chapter.pdf"
-        # Lazy opens: Pillow encodes frames one at a time, so a 4K long
-        # chapter no longer decodes every page's bitmap into memory at once.
-        images = [Image.open(_asset_path(asset)) for _, _, asset in selected]
-        try:
-            first = images[0]
-            _write_export_atomically(
-                destination,
-                # format= is explicit because the temp filename's suffix is
-                # ".tmp", from which Pillow cannot infer the encoder.
-                lambda temp: first.save(
-                    temp, format="PDF", save_all=True, append_images=images[1:]
-                ),
-            )
-        finally:
-            for image in images:
-                image.close()
+        destination = output_dir / f"{token}-{serial}-chapter.pdf"
+
+        def _write_pdf(temp: Path) -> None:
+            # Encode page by page in append mode: save_all keeps every
+            # decoded bitmap referenced until the final write, so a long
+            # chapter's peak memory is one page, not the whole chapter.
+            for index, (_, _, asset) in enumerate(selected):
+                with Image.open(_asset_path(asset)) as page_image:
+                    # format= is explicit because the temp filename's suffix
+                    # is ".tmp", from which Pillow cannot infer the encoder.
+                    page_image.save(temp, format="PDF", append=index > 0)
+
+        _write_export_atomically(destination, _write_pdf)
     else:
-        destination = output_dir / f"{token}-project.json"
+        destination = output_dir / f"{token}-{serial}-project.json"
         manifest: dict[str, dict] = {}
         for _, candidate, asset in selected:
             related_ids = [asset.id]
