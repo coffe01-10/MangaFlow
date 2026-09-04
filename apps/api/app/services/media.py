@@ -27,7 +27,9 @@ def inspect_upload_image(
             fmt = (image.format or "").upper()
     except DecompressionBombError as error:
         raise ValueError("图片像素数超过上限") from error
-    except (UnidentifiedImageError, OSError) as error:
+    except (UnidentifiedImageError, OSError, SyntaxError) as error:
+        # Pillow raises SyntaxError for corrupt chunk CRCs in otherwise
+        # well-formed PNGs; without this it escapes upload handling as a 500.
         raise ValueError("图片文件损坏或格式不符") from error
     if width <= 0 or height <= 0 or width > max_side or height > max_side:
         raise ValueError("图片宽高超过上限")
@@ -92,3 +94,24 @@ def remove_thumbnails(root: Path, asset_id: str) -> None:
     output_dir = (thumbnails_root / asset_id).resolve()
     if output_dir.is_relative_to(thumbnails_root) and output_dir.is_dir():
         rmtree(output_dir)
+
+
+def sanitize_stored_filename(
+    value: str, *, max_length: int = 255, default: str = "upload"
+) -> str:
+    """Reduce a client-supplied filename to a safe stored display name.
+
+    ``Path(...).name`` strips ``/`` but keeps backslashes, control
+    characters, trailing dots/spaces (which Windows ignores) and over-long
+    values that overflow the column on PostgreSQL. The stored name flows
+    into zip members, Content-Disposition and the library UI, so it must be
+    safe in all three.
+    """
+
+    flattened = value.replace("\\", "/").split("/")[-1]
+    cleaned = (
+        "".join(character for character in flattened if character.isprintable())
+        .strip()
+        .rstrip(". ")
+    )
+    return cleaned[:max_length] or default

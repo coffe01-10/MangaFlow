@@ -8,7 +8,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse
 from sqlalchemy import delete, select
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.api.helpers import asset_read
@@ -34,7 +34,12 @@ from app.models import (
 from app.request_limits import ASSET_UPLOAD_OPENAPI, ParsedUpload, parse_single_file_form
 from app.schemas import AssetRead, AssetUpdate
 from app.services.character_packages import detach_draft_package_references_for_asset
-from app.services.media import create_thumbnails, inspect_upload_image, remove_thumbnails
+from app.services.media import (
+    create_thumbnails,
+    inspect_upload_image,
+    remove_thumbnails,
+    sanitize_stored_filename,
+)
 
 router = APIRouter()
 CHUNK_SIZE = 1024 * 1024
@@ -192,7 +197,7 @@ def upload_asset(
     ):
         raise HTTPException(status_code=415, detail="不支持的文件类型")
 
-    safe_name = Path(file.filename or "upload").name
+    safe_name = sanitize_stored_filename(file.filename or "upload")
     suffix = Path(safe_name).suffix.lower()
     asset_id = str(uuid4())
     project_dir = settings.upload_root / project_id
@@ -280,7 +285,26 @@ def upload_asset(
             height=height,
         )
         db.add(asset)
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            # A concurrent upload of the same bytes won the
+            # (project_id, sha256) unique slot; a routine duplicate must not
+            # surface as 文件保存失败.
+            db.rollback()
+            winner = db.scalar(
+                select(Asset).where(
+                    Asset.project_id == project_id,
+                    Asset.sha256 == digest.hexdigest(),
+                    Asset.deleted_at.is_(None),
+                )
+            )
+            destination.unlink(missing_ok=True)
+            remove_thumbnails(settings.upload_root, asset_id)
+            if winner is not None:
+                db.refresh(winner)
+                return asset_read(winner)
+            raise HTTPException(status_code=409, detail="同内容素材已存在") from None
         db.refresh(asset)
         return asset_read(asset)
     except HTTPException:

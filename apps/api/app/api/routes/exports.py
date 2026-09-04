@@ -24,6 +24,7 @@ from app.models import (
     utcnow,
 )
 from app.schemas import ExportRead, ExportRequest
+from app.services.media import sanitize_stored_filename
 from app.services.page_completion import (
     build_page_production_readiness,
     production_error_detail,
@@ -36,18 +37,12 @@ router = APIRouter()
 def _safe_archive_name(original_name: str) -> str:
     r"""Neutralize a stored asset name before it becomes a zip member.
 
-    ``Path(...).name`` at upload time strips ``/`` but keeps backslashes, so
-    a POSIX-hosted API can store ``..\..\evil.png``; Windows extractors
-    treat backslashes as separators and write outside the extraction
-    directory. Reduce to the final path component under either separator
-    and drop control characters.
+    Upload-side sanitizing only covers new uploads; legacy rows can still
+    carry backslash separators that Windows extractors treat as paths,
+    letting members extract outside the target directory.
     """
 
-    flattened = original_name.replace("\\", "/").split("/")[-1]
-    cleaned = "".join(
-        character for character in flattened if character.isprintable()
-    ).strip()
-    return cleaned or "page.png"
+    return sanitize_stored_filename(original_name, default="page.png")
 
 
 def _asset_path(asset: Asset) -> Path:
