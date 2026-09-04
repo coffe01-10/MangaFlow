@@ -159,9 +159,12 @@ class CLIExecutionController:
             )
             return run_id
         except BaseException:
+            # A locked leftover file (indexer, AV) must not replace the real
+            # error with an unrelated OSError; the orphaned directory is
+            # harmless (no DB row) and better leaked than masked.
             if run_directory.exists():
                 _make_inputs_writable(run_directory)
-                shutil.rmtree(run_directory)
+                shutil.rmtree(run_directory, ignore_errors=True)
             raise
 
     def request_manifest(self, run_id: str) -> dict:
