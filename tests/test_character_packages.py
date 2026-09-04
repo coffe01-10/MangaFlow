@@ -1709,6 +1709,7 @@ def _workflow_generate_candidate(db_session, monkeypatch, page_id: str, project_
     # test_approve_node_enforces_readiness_and_freezes_scene_snapshot 锁定。
     monkeypatch.setattr(
         "app.services.workflow_engine.lifecycle.ensure_page_ready",
+
         lambda *_args, **_kwargs: None,
     )
     approve_node(

@@ -5,11 +5,12 @@ call and candidate/asset persistence for page-level jobs.  Cancellation and
 lease checks stay owned by the execution shell via ``execution`` helpers.
 """
 
+import copy
 import hashlib
 import json
 
 from PIL import Image
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.config import get_settings
@@ -320,6 +321,7 @@ def _run_page_generate(db, job: GenerationJob) -> None:
     queued_character_packages = dict(
         (candidate.prompt_snapshot or {}).get("character_packages") or {}
     )
+    queued_lineage = copy.deepcopy((candidate.prompt_snapshot or {}).get("lineage"))
     for package_fact in queued_character_packages.values():
         # Contract §8.5-b: referenced version rows cannot be physically deleted
         # (server invariant), so any absence is corruption, not a recoverable state.
@@ -365,7 +367,32 @@ def _run_page_generate(db, job: GenerationJob) -> None:
             + json.dumps(reference_bindings, ensure_ascii=False, separators=(",", ":"))
         )
     candidate.status = "GENERATING"
-    page.status = PageStatus.DRAFT_GENERATING
+    derived_page_job = job.job_type in {
+        "PAGE_REPAIR",
+        "PAGE_UPSCALE",
+        "PAGE_REGION_REGENERATE",
+    }
+    # Derived jobs must not yank an adopted/final page back to draft. Fresh
+    # PAGE_GENERATE only occupies DRAFT_GENERATING when the page is still in
+    # a draft-like state; FINAL_* / selected pages stay put.
+    if not derived_page_job:
+        db.execute(
+            update(MangaPage)
+            .where(
+                MangaPage.id == page.id,
+                MangaPage.status.in_(
+                    {
+                        PageStatus.PLANNED,
+                        PageStatus.STORYBOARDED,
+                        PageStatus.DRAFT_READY,
+                        PageStatus.DRAFT_GENERATING,
+                    }
+                ),
+            )
+            .values(status=PageStatus.DRAFT_GENERATING)
+            .execution_options(synchronize_session=False)
+        )
+        db.refresh(page, attribute_names=["status", "selected_candidate_id", "version"])
     execution._commit_owned_progress(
         db, job, status=JobStatus.UPLOADING_REFERENCES, progress=20
     )
@@ -451,6 +478,11 @@ def _run_page_generate(db, job: GenerationJob) -> None:
         # Merged from the preserved queue-time capture: the frozen facts stay on
         # the candidate even after the compiled snapshot replaces the input.
         snapshot["character_packages"] = queued_character_packages
+    if queued_lineage:
+        # UI and accept-idempotency hang derived candidates off
+        # prompt_snapshot.lineage.source_command_id; dropping it on compile
+        # makes the local-edit workspace lose the in-flight child.
+        snapshot["lineage"] = queued_lineage
     snapshot["prompt_preview"] = prompt
     snapshot["checksum"] = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
     candidate.prompt_snapshot = snapshot
@@ -513,9 +545,13 @@ def _run_page_generate(db, job: GenerationJob) -> None:
         )
     )
     execution._ensure_job_not_cancelled(db, job)
-    # An edit may arrive while the paid request is in flight. Keep the result, but
-    # refresh the page so API consumers immediately expose it as a stale candidate.
-    db.refresh(page, attribute_names=["storyboard_version"])
+    # An edit or select-candidate may land while the paid request is in flight.
+    # Refresh status/selection before any page-row write so we cannot clobber
+    # FINAL_* with a stale DRAFT_GENERATING identity map.
+    db.refresh(
+        page,
+        attribute_names=["storyboard_version", "status", "selected_candidate_id", "version"],
+    )
     asset = _save_generated_asset(db, candidate, response.images[0])
     record = GenerationRecord(
         job_id=job.id,
@@ -569,8 +605,9 @@ def _run_page_generate(db, job: GenerationJob) -> None:
     candidate.asset_id = asset.id
     candidate.generation_record_id = record.id
     candidate.status = "READY"
-    page.status = PageStatus.DRAFT_READY
-    page.version += 1
+    if page.status == PageStatus.DRAFT_GENERATING and not page.selected_candidate_id:
+        page.status = PageStatus.DRAFT_READY
+        page.version += 1
     provider.stage_attempt_output(
         db,
         asset,

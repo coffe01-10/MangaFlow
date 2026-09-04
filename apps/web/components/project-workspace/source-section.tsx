@@ -58,7 +58,8 @@ export function SourceSection({
         {!chapters.data?.length && <div className="asset-empty"><BookOpenText size={24} /><strong>尚未导入原作</strong><p>粘贴一个完整章节开始工作。</p></div>}
       </div>
       {deletedChapterId && <div className="undo-banner"><span>章节已移入回收状态</span><button onClick={() => restoreChapter.mutate(deletedChapterId)}><RotateCcw size={13} />撤回删除</button></div>}
-      {activeChapterId && <div className="workflow-actions"><button className="button outline" disabled={parseChapter.isPending} onClick={() => parseChapter.mutate()}><Sparkles size={15} />生成漫画剧本</button><button className="button ink" disabled={planChapter.isPending || script.data?.status !== "READY"} onClick={() => planChapter.mutate()}>{planChapter.isPending ? <LoaderCircle className="spin" size={15} /> : <PanelTop size={15} />}从剧本计算分页</button></div>}
+      {activeChapterId && <div className="workflow-actions"><button className="button outline" disabled={parseChapter.isPending || (chapters.data?.find((chapter) => chapter.id === activeChapterId)?.page_count ?? 0) > 0} onClick={() => parseChapter.mutate()}><Sparkles size={15} />{(chapters.data?.find((chapter) => chapter.id === activeChapterId)?.page_count ?? 0) > 0 ? "已有分页，请先删除剧本" : "生成漫画剧本"}</button><button className="button ink" disabled={planChapter.isPending || parseChapter.isPending || script.data?.status !== "READY"} onClick={() => planChapter.mutate()}>{planChapter.isPending ? <LoaderCircle className="spin" size={15} /> : <PanelTop size={15} />}从剧本计算分页</button></div>}
+      {parseChapter.isError && <p className="form-error"><CircleAlert size={14} />{parseChapter.error.message}</p>}
       {planChapter.isError && <p className="form-error"><CircleAlert size={14} />{planChapter.error.message}</p>}
     </>
   );

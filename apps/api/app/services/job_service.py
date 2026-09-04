@@ -37,6 +37,24 @@ LEASED_JOB_STATUSES = {
     JobStatus.CONSISTENCY_CHECKING,
     JobStatus.REPAIRING,
 }
+ACTIVE_JOB_STATUSES = {JobStatus.WAITING, JobStatus.QUEUED, *LEASED_JOB_STATUSES}
+
+
+def has_active_job(
+    db: Session,
+    *,
+    job_type: str,
+    target_id: str,
+    target_type: str | None = None,
+) -> bool:
+    filters = [
+        GenerationJob.job_type == job_type,
+        GenerationJob.target_id == target_id,
+        GenerationJob.status.in_(ACTIVE_JOB_STATUSES),
+    ]
+    if target_type is not None:
+        filters.append(GenerationJob.target_type == target_type)
+    return db.scalar(select(GenerationJob.id).where(*filters).limit(1)) is not None
 
 
 def create_job(
@@ -61,7 +79,15 @@ def create_job(
             select(GenerationJob).where(GenerationJob.idempotency_key == idempotency_key)
         )
         if existing:
-            return existing
+            # Collapse in-flight and successful duplicates only. A FAILED or
+            # CANCELLED row must not poison retries (PAGE_INSPECT target_id is
+            # the inspected READY candidate; returning that terminal job makes
+            # re-inspect a silent no-op).
+            if existing.status in {JobStatus.FAILED, JobStatus.CANCELLED}:
+                existing.idempotency_key = f"closed:{existing.id}"
+                db.flush()
+            else:
+                return existing
     job = GenerationJob(
         project_id=project_id,
         target_type=target_type,
@@ -446,11 +472,15 @@ def recover_pending_jobs(db: Session) -> int:
                 .execution_options(synchronize_session=False)
             )
             if updated.rowcount == 1:
-                page_candidate = db.get(PageCandidate, job.target_id)
+                page_candidate = db.scalar(
+                    select(PageCandidate).where(PageCandidate.job_id == job.id)
+                )
                 if page_candidate:
                     page_candidate.status = "FAILED"
                     restore_page_after_generation_exit(db, page_candidate)
-                asset_candidate = db.get(AssetCandidate, job.target_id)
+                asset_candidate = db.scalar(
+                    select(AssetCandidate).where(AssetCandidate.job_id == job.id)
+                )
                 if asset_candidate:
                     asset_candidate.status = "FAILED"
                 style = db.get(StyleProfile, job.target_id) if job.target_type == "STYLE" else None
@@ -558,11 +588,13 @@ def mark_job_failed(
     job.finished_at = now
     job.lease_owner = None
     job.lease_expires_at = None
-    page_candidate = db.get(PageCandidate, job.target_id)
+    page_candidate = db.scalar(select(PageCandidate).where(PageCandidate.job_id == job.id))
     if page_candidate:
         page_candidate.status = candidate_status
         restore_page_after_generation_exit(db, page_candidate)
-    asset_candidate = db.get(AssetCandidate, job.target_id)
+    asset_candidate = db.scalar(
+        select(AssetCandidate).where(AssetCandidate.job_id == job.id)
+    )
     if asset_candidate:
         asset_candidate.status = "FAILED"
     style = db.get(StyleProfile, job.target_id) if job.target_type == "STYLE" else None
@@ -584,16 +616,35 @@ def mark_job_failed(
 def mark_job_cancelled(db: Session, job: GenerationJob) -> GenerationJob:
     """Mark a job and its visible target as cancelled without committing."""
 
-    if job.status == JobStatus.COMPLETED:
+    now = utcnow()
+    claimed = db.execute(
+        update(GenerationJob)
+        .where(
+            GenerationJob.id == job.id,
+            GenerationJob.status.not_in(
+                {JobStatus.COMPLETED, JobStatus.CANCELLED}
+            ),
+        )
+        .values(
+            status=JobStatus.CANCELLED,
+            cancelled_at=now,
+            finished_at=now,
+            lease_owner=None,
+            lease_expires_at=None,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    db.refresh(job)
+    if claimed.rowcount != 1:
         return job
-    if job.status != JobStatus.CANCELLED:
-        job.status = JobStatus.CANCELLED
-        job.cancelled_at = utcnow()
-        job.finished_at = utcnow()
-    job.lease_owner = None
-    job.lease_expires_at = None
     page_candidate = db.scalar(select(PageCandidate).where(PageCandidate.job_id == job.id))
-    if page_candidate and page_candidate.status not in {"READY", "FAILED", "CANCELLED"}:
+    if page_candidate and page_candidate.status not in {
+        "READY",
+        "FAILED",
+        "CANCELLED",
+        "INSPECTED",
+        "NEEDS_REVIEW",
+    }:
         page_candidate.status = "CANCELLED"
         restore_page_after_generation_exit(db, page_candidate)
     asset_candidate = db.scalar(select(AssetCandidate).where(AssetCandidate.job_id == job.id))

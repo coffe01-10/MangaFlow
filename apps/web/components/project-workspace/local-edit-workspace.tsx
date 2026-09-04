@@ -23,6 +23,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   api,
+  originUrl,
   publicUrl,
   type DirectorCommandEnvelope,
   type DirectorCommandGroup,
@@ -448,7 +449,15 @@ export function LocalEditWorkspace({
           <span>LOCAL EDIT / 在选区编辑</span>
           <h3>局部选区重绘 · 第 {page.page_number} 页</h3>
         </div>
-        <button type="button" className="icon-button" aria-label="关闭局部编辑" onClick={onClose}><X size={16} /></button>
+        <button
+          type="button"
+          className="icon-button"
+          aria-label="关闭局部编辑"
+          onClick={() => {
+            if (mask.present.length && !window.confirm("放弃当前选区并关闭局部编辑？")) return;
+            onClose();
+          }}
+        ><X size={16} /></button>
       </header>
       <p className="local-edit-note">
         选区 mask 相对源图像素。生成走导演命令 <strong>regenerate_region</strong>（V02-42B 派生候选链）：预览确认后才会入队，
@@ -486,7 +495,7 @@ export function LocalEditWorkspace({
               style={{ aspectRatio: `${imageDims.width} / ${imageDims.height}`, transform: `translate(${view.panX}px, ${view.panY}px) scale(${view.zoom})` }}
             >
               <Image
-                src={publicUrl(candidate.thumbnail_url ?? candidate.content_url) ?? ""}
+                src={originUrl(candidate.content_url) ?? publicUrl(candidate.thumbnail_url) ?? ""}
                 alt={`源 · 候选 ${candidate.ordinal}`}
                 fill
                 sizes="(max-width: 900px) 92vw, 560px"

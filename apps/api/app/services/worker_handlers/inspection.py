@@ -114,11 +114,9 @@ regions 使用 0 到 1 的归一化 x/y/width/height。"""
     db.flush()
     db.refresh(page)
     if page.storyboard_version != inspection_storyboard_version:
-        # Preserve the audit result, but never pass a newer storyboard with an old response.
-        execution._commit_owned_progress(
-            db, job, status=JobStatus.CONSISTENCY_CHECKING, progress=85
+        raise execution.StaleStoryboardVersionError(
+            "分镜版本已变化，已在调用模型前取消本次检查；请按当前分镜重新检查"
         )
-        return
     latest = latest_inspections_by_category(db, candidate.id, inspection_storyboard_version)
     complete = (
         bool(seen)
@@ -147,6 +145,6 @@ regions 使用 0 到 1 的归一化 x/y/width/height。"""
             page.continuity_status = "PASSED"
             page.status = PageStatus.FINAL_READY
             page.version += 1
-    execution._commit_owned_progress(
-        db, job, status=JobStatus.CONSISTENCY_CHECKING, progress=85
-    )
+    # Do not commit inspection rows / page status here. execute_job CAS to
+    # COMPLETED and commits the same session; a concurrent cancel then
+    # rolls this unit back instead of leaving INSPECTED + CANCELLED.

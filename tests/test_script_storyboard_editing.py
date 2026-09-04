@@ -7,6 +7,7 @@ from app.models import (
     Character,
     Dialogue,
     GenerationBatch,
+    GenerationJob,
     MangaPage,
     PageCandidate,
     Panel,
@@ -14,7 +15,7 @@ from app.models import (
     Scene,
     ScriptRevision,
 )
-from app.domain.states import Resolution
+from app.domain.states import JobStatus, Resolution
 
 
 def _editable_story(db_session):
@@ -183,6 +184,28 @@ def test_generated_script_can_be_deleted_before_pagination(client, db_session):
     script = client.get(f"/api/v1/chapters/{chapter_id}/script")
     assert script.status_code == 200
     assert script.json()["status"] == "NOT_CREATED"
+
+
+def test_delete_script_blocks_while_uploading_references(client, db_session):
+    _, chapter, _, _, _, pages, _, _ = _editable_story(db_session)
+    page_ids = [page.id for page in pages]
+    job = GenerationJob(
+        project_id=chapter.project_id,
+        target_type="PAGE_CANDIDATE",
+        target_id=pages[0].id,
+        job_type="PAGE_GENERATE",
+        status=JobStatus.UPLOADING_REFERENCES,
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    response = client.delete(f"/api/v1/chapters/{chapter.id}/script")
+
+    assert response.status_code == 409
+    assert "任务正在执行" in response.json()["detail"]
+    db_session.expire_all()
+    assert all(db_session.get(MangaPage, page_id) is not None for page_id in page_ids)
+    assert db_session.query(Scene).filter_by(chapter_id=chapter.id).count() == 1
 
 
 def test_generated_script_delete_cascades_pagination_and_candidates(client, db_session):
@@ -374,4 +397,4 @@ def test_revise_source_rejected_while_parse_is_running(client, db_session):
         json={"text": "改过的原文", "source_type": "PASTE"},
     )
     assert rejected.status_code == 409
-    assert "解析任务正在执行" in rejected.json()["detail"]
+    assert "正在生成剧本" in rejected.json()["detail"]

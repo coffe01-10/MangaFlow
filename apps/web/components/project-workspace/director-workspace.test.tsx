@@ -490,6 +490,126 @@ describe("DirectorWorkspace 导演台（V02-41B）", () => {
     });
   });
 
+  it("同一命令组追加撤销后对最后一条 inverse 命令重做", async () => {
+    groupsApi.mockResolvedValue([
+      groupFixture({
+        id: "row-same-group",
+        command_group_id: "group-same",
+        status: "PARTIALLY_ACCEPTED",
+        commands: [
+          {
+            command_id: "cmd-origin",
+            command_group_id: "group-same",
+            operation: "update_panel_shot",
+            status: "EXECUTED",
+            target: { project_id: "project-1", page_id: "page-1", panel_id: "panel-1" },
+            expected_version: { scope: "panel", value: 4 },
+            payload: {},
+            source: { user_prompt: "第 1 格改成远景", reference_asset_ids: [], model: null, raw_output_id: "rule_stub_v1" },
+            diff: null,
+            error: null,
+            retry_of_command_id: null,
+            inverse_of_command_id: null,
+            storyboard_version_after: 4,
+            version: 2,
+          },
+          {
+            command_id: "cmd-undo",
+            command_group_id: "group-same",
+            operation: "update_panel_shot",
+            status: "EXECUTED",
+            target: { project_id: "project-1", page_id: "page-1", panel_id: "panel-1" },
+            expected_version: { scope: "panel", value: 5 },
+            payload: {},
+            source: { user_prompt: "第 1 格改成远景（撤销）", reference_asset_ids: [], model: null, raw_output_id: "rule_stub_v1" },
+            diff: null,
+            error: null,
+            retry_of_command_id: null,
+            inverse_of_command_id: "cmd-origin",
+            storyboard_version_after: 5,
+            version: 3,
+          },
+        ],
+      }),
+    ]);
+    redoApi.mockResolvedValue(groupFixture({ status: "COMMITTED" }));
+    renderDirector();
+    await screen.findByText("第 1 格改成远景");
+    expect(screen.queryByRole("button", { name: /撤销/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /重做/ }));
+    await waitFor(() => {
+      expect(redoApi).toHaveBeenCalledWith("project-1", "cmd-undo");
+    });
+  });
+
+  it("同一命令组重做之后对末条 inverse 显示撤销而不是再点重做", async () => {
+    groupsApi.mockResolvedValue([
+      groupFixture({
+        id: "row-redo-chain",
+        command_group_id: "group-redo",
+        status: "COMMITTED",
+        commands: [
+          {
+            command_id: "cmd-origin",
+            command_group_id: "group-redo",
+            operation: "update_panel_shot",
+            status: "EXECUTED",
+            target: { project_id: "project-1", page_id: "page-1", panel_id: "panel-1" },
+            expected_version: { scope: "panel", value: 4 },
+            payload: {},
+            source: { user_prompt: "第 1 格改成远景", reference_asset_ids: [], model: null, raw_output_id: "rule_stub_v1" },
+            diff: null,
+            error: null,
+            retry_of_command_id: null,
+            inverse_of_command_id: null,
+            storyboard_version_after: 4,
+            version: 2,
+          },
+          {
+            command_id: "cmd-undo",
+            command_group_id: "group-redo",
+            operation: "update_panel_shot",
+            status: "EXECUTED",
+            target: { project_id: "project-1", page_id: "page-1", panel_id: "panel-1" },
+            expected_version: { scope: "panel", value: 5 },
+            payload: {},
+            source: { user_prompt: "第 1 格改成远景（撤销）", reference_asset_ids: [], model: null, raw_output_id: "rule_stub_v1" },
+            diff: null,
+            error: null,
+            retry_of_command_id: null,
+            inverse_of_command_id: "cmd-origin",
+            storyboard_version_after: 5,
+            version: 3,
+          },
+          {
+            command_id: "cmd-redo",
+            command_group_id: "group-redo",
+            operation: "update_panel_shot",
+            status: "EXECUTED",
+            target: { project_id: "project-1", page_id: "page-1", panel_id: "panel-1" },
+            expected_version: { scope: "panel", value: 6 },
+            payload: {},
+            source: { user_prompt: "第 1 格改成远景（重做）", reference_asset_ids: [], model: null, raw_output_id: "rule_stub_v1" },
+            diff: null,
+            error: null,
+            retry_of_command_id: null,
+            inverse_of_command_id: "cmd-undo",
+            storyboard_version_after: 6,
+            version: 4,
+          },
+        ],
+      }),
+    ]);
+    undoApi.mockResolvedValue(groupFixture({ status: "COMMITTED" }));
+    renderDirector();
+    await screen.findByText("第 1 格改成远景");
+    expect(screen.queryByRole("button", { name: /重做/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /撤销/ }));
+    await waitFor(() => {
+      expect(undoApi).toHaveBeenCalledWith("project-1", "cmd-redo");
+    });
+  });
+
   it("D14 Ctrl+K 聚焦命令框，Esc 关闭预览", async () => {
     proposeApi.mockResolvedValue(groupFixture());
     renderDirector();

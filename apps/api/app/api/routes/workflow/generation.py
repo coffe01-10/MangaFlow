@@ -369,7 +369,7 @@ def keep_selected_candidate(
     candidate.version += 1
     page.selected_candidate_ack_version = page.storyboard_version
     page.status = PageStatus.FINAL_CHECKING
-    page.continuity_status = "NEEDS_REVIEW"
+    page.continuity_status = "NOT_CHECKED"
     page.version += 1
     db.commit()
     db.refresh(page)

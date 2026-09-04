@@ -864,6 +864,7 @@ export interface GenerationWorkbench {
 export interface InspectionResult {
   id: string;
   candidate_id: string | null;
+  storyboard_version?: number | null;
   category: "TEXT" | "SPEAKER" | "CHARACTER" | "OUTFIT" | "PROP" | "CONTINUITY" | string;
   outcome: string;
   score: number | null;

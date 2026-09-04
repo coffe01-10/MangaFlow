@@ -5,12 +5,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.helpers import candidate_read
-from app.api.routes.workflow.common import _new_batch, _page, _project_for_page
+from app.api.routes.workflow.common import _page, _project_for_page
 from app.config import get_settings
 from app.database import get_db
 from app.domain.states import ensure_unlocked
 from app.models import (
-    CandidateLineage,
     GenerationJob,
     InspectionResult,
     LineageKind,
@@ -25,9 +24,10 @@ from app.schemas import (
     RepairRequest,
     UpscaleRequest,
 )
-from app.services.candidate_lineage import inherited_reference_ids
+from app.services.candidate_lineage import attach_derived_lineage, inherited_reference_ids
 from app.services.job_service import create_job, enqueue_job
 from app.services.model_router import model_supports_resolution, resolve_model
+from app.services.ordinal_allocator import create_generation_batch
 
 router = APIRouter()
 
@@ -111,7 +111,15 @@ def repair_candidate(
         ensure_unlocked(page.locked_fields, payload.target_fields)
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
-    batch = _new_batch(db, page, generation_kind="REPAIR")
+    project = _project_for_page(db, page)
+    batch = create_generation_batch(
+        db,
+        project_id=project.id,
+        chapter_id=page.chapter_id,
+        page_id=page.id,
+        generation_kind="REPAIR",
+        close_open_page_batches=True,
+    )
     candidate = PageCandidate(
         batch_id=batch.id,
         page_id=page.id,
@@ -150,17 +158,13 @@ def repair_candidate(
         raise HTTPException(status_code=422, detail="所选模型不支持该输出清晰度")
     candidate.catalog_model_id = resolved_model.model.id
     # Contract §7: every derived candidate records its parent lineage at
-    # creation time, in the same transaction as its job, mirroring the child's
-    # resolved provider/model identity.
-    db.add(
-        CandidateLineage(
-            child_candidate_id=candidate.id,
-            parent_candidate_id=original.id,
-            lineage_kind=LineageKind.REPAIRED,
-            model_alias=payload.model_alias,
-            catalog_model_id=resolved_model.model.id,
-            resolution=payload.resolution.name,
-        )
+    # creation time, in the same transaction as its job (helper also mirrors
+    # the link into prompt_snapshot.lineage for the local-edit tracker).
+    attach_derived_lineage(
+        db,
+        child=candidate,
+        parent=original,
+        lineage_kind=LineageKind.REPAIRED,
     )
     project.last_image_model_alias = payload.model_alias
     project.image_model_alias = payload.model_alias
@@ -186,6 +190,7 @@ def repair_candidate(
             *inherited_reference_ids(original.prompt_snapshot or {}),
         ],
         idempotency_key=f"repair:{repair.id}",
+        auto_commit=False,
     )
     candidate.job_id = job.id
     db.commit()
@@ -215,7 +220,15 @@ def upscale_candidate(
     if resolution_rank[payload.resolution.value] <= resolution_rank[original.resolution.value]:
         raise HTTPException(status_code=409, detail="升清目标必须高于当前候选清晰度")
     page = _page(db, original.page_id)
-    batch = _new_batch(db, page, generation_kind="UPSCALE")
+    project = _project_for_page(db, page)
+    batch = create_generation_batch(
+        db,
+        project_id=project.id,
+        chapter_id=page.chapter_id,
+        page_id=page.id,
+        generation_kind="UPSCALE",
+        close_open_page_batches=True,
+    )
     candidate = PageCandidate(
         batch_id=batch.id,
         page_id=page.id,
@@ -242,18 +255,11 @@ def upscale_candidate(
     if not model_supports_resolution(resolved_model.model, payload.resolution.value):
         raise HTTPException(status_code=422, detail="所选模型不支持目标升清规格")
     candidate.catalog_model_id = resolved_model.model.id
-    # Contract §7: every derived candidate records its parent lineage at
-    # creation time, in the same transaction as its job, mirroring the child's
-    # resolved provider/model identity.
-    db.add(
-        CandidateLineage(
-            child_candidate_id=candidate.id,
-            parent_candidate_id=original.id,
-            lineage_kind=LineageKind.UPSCALED,
-            model_alias=payload.model_alias,
-            catalog_model_id=resolved_model.model.id,
-            resolution=payload.resolution.name,
-        )
+    attach_derived_lineage(
+        db,
+        child=candidate,
+        parent=original,
+        lineage_kind=LineageKind.UPSCALED,
     )
     project.last_image_model_alias = payload.model_alias
     project.image_model_alias = payload.model_alias
@@ -279,6 +285,7 @@ def upscale_candidate(
             *inherited_reference_ids(original.prompt_snapshot or {}),
         ],
         idempotency_key=f"upscale:{batch.id}:{payload.resolution.value}",
+        auto_commit=False,
     )
     candidate.job_id = job.id
     db.commit()

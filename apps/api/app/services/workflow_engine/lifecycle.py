@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -80,8 +80,6 @@ def approve_node(
         # click, retry) both passed the read check above historically, then
         # raced into two candidates where the loser stayed an orphan QUEUED
         # row and could flip the node FAILED after a successful generation.
-        from sqlalchemy import update
-
         claimed = db.execute(
             update(WorkflowNodeRun)
             .where(
@@ -110,6 +108,7 @@ def approve_node(
             # resolution, ordinal conflict) leaves the node approvable again.
             db.rollback()
             raise
+
     elif spec.barrier == "APPROVE":
         if run.scope_type != "PAGE" or not run.scope_id:
             raise ValueError("采用候选节点必须使用 PAGE 运行范围")
@@ -118,11 +117,23 @@ def approve_node(
         candidate = db.get(PageCandidate, selected) if selected else None
         if not page or not candidate or candidate.page_id != page.id or not candidate.is_selected:
             raise ValueError("请先在单页生成页采用当前页的一个候选")
+        claimed = db.execute(
+            update(WorkflowRun)
+            .where(
+                WorkflowRun.id == run.id,
+                WorkflowRun.status.in_(("PAUSED", "RUNNING")),
+            )
+            .values(status="RUNNING")
+            .execution_options(synchronize_session=False)
+        )
+        if claimed.rowcount != 1:
+            db.rollback()
+            raise ValueError("当前运行已取消或已结束")
+        db.expire(run, ["status"])
         node_run.status = "COMPLETED"
         node_run.started_at = node_run.started_at or utcnow()
         node_run.finished_at = utcnow()
         node_run.output_refs = {"candidate_id": candidate.id, "page_id": page.id}
-        run.status = "RUNNING"
         db.commit()
     return reconcile_run(db, run.id)
 
@@ -295,18 +306,50 @@ def _approve_generate_node(
         project.image_model_alias = image_model_alias
         project.last_image_model_id = resolved_model.model.id
         project.version += 1
+    # #112: flip the run to RUNNING with a conditional claim so an approval
+    # racing cancel_run cannot resurrect a terminal run.
+    run_claimed = db.execute(
+        update(WorkflowRun)
+        .where(
+            WorkflowRun.id == run.id,
+            WorkflowRun.status.in_(("PAUSED", "RUNNING")),
+        )
+        .values(status="RUNNING")
+        .execution_options(synchronize_session=False)
+    )
+    if run_claimed.rowcount != 1:
+        db.rollback()
+        raise ValueError("当前运行已取消或已结束，未创建生成任务")
+    db.expire(run, ["status"])
     node_run.job_id = job.id
     node_run.status = "RUNNING"
     node_run.started_at = utcnow()
     node_run.output_refs = {"candidate_id": candidate.id, "batch_id": batch.id}
-    run.status = "RUNNING"
     commit_ordinal_transaction(db, BatchOrdinalConflictError)
+    db.refresh(run, attribute_names=["status"])
+    if run.status in {"CANCELLED", "FAILED", "COMPLETED"}:
+        # The run reached a terminal state while we were building the unit;
+        # do not enqueue the paid job.
+        mark_job_cancelled(db, job)
+        db.commit()
+        return
     engine.enqueue_job(db, job)
 
 
 def cancel_run(db: Session, run: WorkflowRun) -> WorkflowRun:
-    if run.status in {"COMPLETED", "CANCELLED"}:
+    claimed = db.execute(
+        update(WorkflowRun)
+        .where(
+            WorkflowRun.id == run.id,
+            WorkflowRun.status.not_in({"COMPLETED", "CANCELLED", "FAILED"}),
+        )
+        .values(status="CANCELLED", finished_at=utcnow())
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
         return get_run(db, run.id)
+    db.refresh(run)
+    run.version += 1
     node_runs = list(
         db.scalars(select(WorkflowNodeRun).where(WorkflowNodeRun.workflow_run_id == run.id))
     )
@@ -317,9 +360,21 @@ def cancel_run(db: Session, run: WorkflowRun) -> WorkflowRun:
         job = db.get(GenerationJob, item.job_id) if item.job_id else None
         if job and job.status not in {JobStatus.COMPLETED, JobStatus.CANCELLED}:
             mark_job_cancelled(db, job)
-    run.status = "CANCELLED"
-    run.finished_at = utcnow()
-    run.version += 1
+    # Inspect jobs are created lazily in reconcile and may not be on node_run yet.
+    late_jobs = list(
+        db.scalars(
+            select(GenerationJob).where(
+                GenerationJob.project_id == run.project_id,
+                GenerationJob.status.not_in(
+                    {JobStatus.COMPLETED, JobStatus.CANCELLED, JobStatus.FAILED}
+                ),
+            )
+        )
+    )
+    for job in late_jobs:
+        params = job.request_parameters or {}
+        if params.get("workflow_run_id") == run.id:
+            mark_job_cancelled(db, job)
     db.commit()
     return get_run(db, run.id)
 

@@ -278,7 +278,12 @@ def _mark_worker_failure(
         workflow_run_id = workflow_run_id or node_run.workflow_run_id
 
     if not is_retryable:
-        page_candidate = db.get(PageCandidate, job.target_id)
+        # Own the candidate this job produced (job_id), not the row named in
+        # target_id. PAGE_INSPECT points target_id at an existing READY
+        # candidate; stamping that row FAILED/STALE destroys adopted work.
+        page_candidate = db.scalar(
+            select(PageCandidate).where(PageCandidate.job_id == job.id)
+        )
         if page_candidate:
             page_candidate.status = candidate_status
             # A finally-failed generation must not leave the page stuck in
@@ -287,7 +292,9 @@ def _mark_worker_failure(
             from app.services.job_service import restore_page_after_generation_exit
 
             restore_page_after_generation_exit(db, page_candidate)
-        asset_candidate = db.get(AssetCandidate, job.target_id)
+        asset_candidate = db.scalar(
+            select(AssetCandidate).where(AssetCandidate.job_id == job.id)
+        )
         if asset_candidate:
             asset_candidate.status = "FAILED"
         style = db.get(StyleProfile, job.target_id) if job.target_type == "STYLE" else None

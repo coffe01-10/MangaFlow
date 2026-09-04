@@ -14,7 +14,6 @@ from app.models import (
     Character,
     Dialogue,
     GenerationBatch,
-    GenerationJob,
     MangaPage,
     PageSourceSegment,
     Panel,
@@ -24,6 +23,7 @@ from app.models import (
     SourceRevision,
     SourceSegment,
 )
+from app.services.job_service import has_active_job
 from app.services.ordinal_allocator import (
     ORDINAL_ALLOCATION_MAX_ATTEMPTS,
     ChapterOrdinalConflictError,
@@ -219,6 +219,16 @@ def revise_chapter_source(
                 chapter = lock_entity(db, Chapter, chapter_id)
                 if not chapter or chapter.deleted_at is not None:
                     raise HTTPException(status_code=404, detail="章节不存在")
+                if has_active_job(
+                    db,
+                    job_type="SOURCE_PARSE",
+                    target_id=chapter_id,
+                    target_type="CHAPTER",
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="本章正在生成剧本，请等待解析完成后再修改原文",
+                    )
                 page_ids = list(
                     db.scalars(select(MangaPage.id).where(MangaPage.chapter_id == chapter_id))
                 )
@@ -230,30 +240,6 @@ def revise_chapter_source(
                     raise HTTPException(
                         status_code=409,
                         detail="已有页面进入抽卡流程，请先删除相关候选后再修改原文",
-                    )
-                # A running parse snapshots the current revision; revising the
-                # text underneath it leaves dangling segment references and a
-                # new revision whose coverage can never be satisfied. Same
-                # guard shape as chapter deletion.
-                if db.scalar(
-                    select(GenerationJob.id).where(
-                        GenerationJob.project_id == project.id,
-                        GenerationJob.status.in_(
-                            {
-                                "WAITING",
-                                "QUEUED",
-                                "PREPARING",
-                                "GENERATING",
-                                "UPLOADING",
-                                "CONSISTENCY_CHECKING",
-                            }
-                        ),
-                        GenerationJob.job_type == "SOURCE_PARSE",
-                    ).limit(1)
-                ):
-                    raise HTTPException(
-                        status_code=409,
-                        detail="原文解析任务正在执行，请等待完成或取消后再修改原文",
                     )
                 if page_ids:
                     panel_ids = list(
@@ -921,6 +907,13 @@ def plan_chapter_pages(
 ) -> list[MangaPage]:
     if not chapter.current_source_revision_id:
         raise HTTPException(status_code=409, detail="章节没有可用原文")
+    if has_active_job(
+        db, job_type="SOURCE_PARSE", target_id=chapter.id, target_type="CHAPTER"
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="本章正在生成剧本，请等待解析完成后再计算分页",
+        )
     scenes = list(
         db.scalars(select(Scene).where(Scene.chapter_id == chapter.id).order_by(Scene.ordinal))
     )

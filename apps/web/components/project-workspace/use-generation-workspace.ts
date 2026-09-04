@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { getPageGenerationIssue, getPageStructureIssue } from "@/lib/generation-rules";
 import { api, type CharacterPackageSummary, type ImageModelAlias, type InspectionResult, type Job } from "@/lib/api";
@@ -130,14 +130,23 @@ export function useGenerationWorkspace({
     queryKey: ["inspections", reviewCandidateId],
     queryFn: () => api.inspections(reviewCandidateId!),
     enabled: section === "generate" && Boolean(reviewCandidateId),
-    refetchInterval: (query) => {
+    refetchInterval: () => {
       const checking = (jobs.data ?? []).some((job) =>
         job.job_type === "PAGE_INSPECT"
         && job.target_id === reviewCandidateId
         && !isTerminalTaskStatus(job.status));
-      return checking || !(query.state.data ?? []).length ? 2500 : false;
+      return checking ? 2500 : false;
     },
   });
+  const latestInspectJob = (jobs.data ?? []).find((job) =>
+    job.job_type === "PAGE_INSPECT" && job.target_id === reviewCandidateId);
+  const inspectJobTerminal = Boolean(
+    latestInspectJob && isTerminalTaskStatus(latestInspectJob.status),
+  );
+  useEffect(() => {
+    if (!inspectJobTerminal || !reviewCandidateId) return;
+    queryClient.invalidateQueries({ queryKey: ["inspections", reviewCandidateId] });
+  }, [latestInspectJob?.id, inspectJobTerminal, reviewCandidateId, queryClient]);
 
   const selectedPageStructureIssue = getPageStructureIssue(selectedPage);
   const selectedPageGenerationIssue = getPageGenerationIssue(selectedPage, activeDrawModel);
@@ -192,11 +201,19 @@ export function useGenerationWorkspace({
   const inspectionsData = inspections.data;
   const latestInspections = useMemo(() => {
     const latest = new Map<string, InspectionResult>();
+    const currentVersion = selectedPage?.storyboard_version;
     for (const item of inspectionsData ?? []) {
+      if (
+        currentVersion != null
+        && item.storyboard_version != null
+        && item.storyboard_version !== currentVersion
+      ) {
+        continue;
+      }
       if (!latest.has(item.category)) latest.set(item.category, item);
     }
     return [...latest.values()];
-  }, [inspectionsData]);
+  }, [inspectionsData, selectedPage?.storyboard_version]);
   const reviewCandidate = candidates.data?.find((item) => item.id === reviewCandidateId) ?? null;
   const reviewJob = jobs.data?.find((item) => item.target_id === reviewCandidateId && item.job_type === "PAGE_INSPECT") ?? null;
   const selectedWorkbenchCandidate = workbench.data?.selected_candidate ?? null;

@@ -320,6 +320,13 @@ describe("LocalEditWorkspace 局部选区编辑器（V02-43B）", () => {
     expect(screen.getByAltText("比较源图 · 候选 3")).toBeInTheDocument();
   });
 
+  it("画布使用原图像素 URL 而不是 640 缩略图", () => {
+    renderEditor();
+    const canvasImage = screen.getByAltText("源 · 候选 3");
+    expect(canvasImage.getAttribute("src") ?? "").toContain("/api/v1/assets/asset-1/content");
+    expect(canvasImage.getAttribute("src") ?? "").not.toContain("/thumbnail/640");
+  });
+
   it("L10 连点预览只发一次 propose；payload 是 regenerate_region 而非整页 generateCandidate", async () => {
     proposeApi.mockImplementation(() => new Promise<DirectorCommandGroup>(() => {}));
     renderEditor();
