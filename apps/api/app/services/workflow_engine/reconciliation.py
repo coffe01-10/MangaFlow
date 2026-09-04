@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.domain.states import JobStatus
@@ -253,16 +253,34 @@ def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
     if run.status in {"COMPLETED", "CANCELLED", "FAILED"}:
         return get_run(db, run.id)
     if failed:
-        run.status = "FAILED"
-        run.finished_at = utcnow()
+        desired = "FAILED"
     elif all(item.status in {"COMPLETED", "SKIPPED"} for item in node_runs):
-        run.status = "COMPLETED"
-        run.finished_at = utcnow()
+        desired = "COMPLETED"
     elif paused:
-        run.status = "PAUSED"
+        desired = "PAUSED"
     else:
-        run.status = "RUNNING"
-    run.version += 1
+        desired = "RUNNING"
+    if desired == "RUNNING":
+        run.version += 1
+        db.commit()
+        return get_run(db, run.id)
+    # Terminal and paused transitions must not overwrite a concurrently
+    # written terminal state: two reconcilers race routinely (worker
+    # finalize, recovery, approve), and a stale RUNNING write resurrects a
+    # FAILED/CANCELLED run that retry then refuses to touch (zombie run).
+    claimed = db.execute(
+        update(WorkflowRun)
+        .where(
+            WorkflowRun.id == run.id,
+            WorkflowRun.status.not_in(["COMPLETED", "CANCELLED", "FAILED"]),
+        )
+        .values(status=desired, version=WorkflowRun.version + 1,
+                finished_at=utcnow() if desired in {"COMPLETED", "FAILED"} else None)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
+        db.rollback()
+        return get_run(db, run.id)
     db.commit()
     return get_run(db, run.id)
 

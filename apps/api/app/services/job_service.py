@@ -685,16 +685,37 @@ def cancel_job(db: Session, job: GenerationJob) -> GenerationJob:
 def reset_for_retry(db: Session, job: GenerationJob) -> GenerationJob:
     if job.status not in {JobStatus.FAILED, JobStatus.NEEDS_REVIEW, JobStatus.WAITING}:
         return job
-    job.status = JobStatus.WAITING
-    job.error_code = None
-    job.error_message = None
-    job.progress = 0
-    job.started_at = None
-    job.finished_at = None
-    job.cancelled_at = None
-    job.lease_owner = None
-    job.lease_expires_at = None
-    job.scheduled_at = utcnow() + timedelta(seconds=1)
+    # Conditional on the observed state and an unowned lease: a plain
+    # read-then-write cleared a lease that a worker took between the check
+    # and the commit, discarding its in-flight paid output and re-enqueueing
+    # a second dispatch of the same candidate.
+    claimed = db.execute(
+        update(GenerationJob)
+        .where(
+            GenerationJob.id == job.id,
+            GenerationJob.status == job.status,
+            GenerationJob.lease_owner.is_(None),
+            GenerationJob.cancelled_at.is_(None),
+        )
+        .values(
+            status=JobStatus.WAITING,
+            error_code=None,
+            error_message=None,
+            progress=0,
+            started_at=None,
+            finished_at=None,
+            cancelled_at=None,
+            lease_owner=None,
+            lease_expires_at=None,
+            scheduled_at=utcnow() + timedelta(seconds=1),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
+        db.rollback()
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=409, detail="任务状态已变化，请刷新后重试")
     workflow_run_id = job.request_parameters.get("workflow_run_id")
     if workflow_run_id:
         run = db.get(WorkflowRun, workflow_run_id)
@@ -711,4 +732,5 @@ def reset_for_retry(db: Session, job: GenerationJob) -> GenerationJob:
             node_run.error_message = None
             node_run.finished_at = None
     db.commit()
+    db.refresh(job)
     return enqueue_job(db, job)
