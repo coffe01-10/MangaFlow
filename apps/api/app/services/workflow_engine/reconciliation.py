@@ -282,6 +282,9 @@ def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
         db.rollback()
         return get_run(db, run.id)
     db.commit()
+    # synchronize_session=False leaves the identity-map instance stale on
+    # sessions configured with expire_on_commit=False.
+    db.refresh(run)
     return get_run(db, run.id)
 
 
