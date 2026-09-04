@@ -1120,6 +1120,9 @@ def read_balance(
             selected.row,
             error.code,
             retry_after_seconds=error.retry_after_seconds,
+            # Balance failures are diagnostic: they must not disable a
+            # generation key that may be perfectly valid for paid calls.
+            degrade_only=True,
         )
         raise HTTPException(status_code=502, detail=error.user_message) from error
     except Exception as error:
