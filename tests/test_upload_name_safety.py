@@ -87,3 +87,14 @@ def test_sanitize_stored_filename_bounds():
     assert sanitize_stored_filename("inline/name.png") == "name.png"
     assert sanitize_stored_filename("keep.png", default="page.png") == "keep.png"
     assert sanitize_stored_filename("  ", default="page.png") == "page.png"
+
+
+def test_sanitizer_neutralizes_ads_and_truncation_edges():
+    # A colon would create an NTFS alternate data stream.
+    assert sanitize_stored_filename("file.png:ads") == "file.pngads"
+    assert sanitize_stored_filename("C:name.png") == "Cname.png"
+    # Truncation must not re-create the trailing dot/space it strips.
+    assert not sanitize_stored_filename("a" * 254 + "." + "z").endswith((".", " "))
+    assert not sanitize_stored_filename("a" * 254 + " " + "z").endswith((".", " "))
+    truncated = sanitize_stored_filename("b" * 254 + ". ")
+    assert truncated == "b" * 254

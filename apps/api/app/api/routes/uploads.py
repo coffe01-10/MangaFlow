@@ -287,10 +287,15 @@ def upload_asset(
         db.add(asset)
         try:
             db.commit()
-        except IntegrityError:
+        except IntegrityError as error:
             # A concurrent upload of the same bytes won the
             # (project_id, sha256) unique slot; a routine duplicate must not
-            # surface as 文件保存失败.
+            # surface as 文件保存失败. Only that constraint is deduped — any
+            # other integrity failure keeps its real cause.
+            if "unique" not in str(error.orig).lower() or "sha256" not in str(
+                error.orig
+            ).lower():
+                raise
             db.rollback()
             winner = db.scalar(
                 select(Asset).where(
@@ -302,7 +307,6 @@ def upload_asset(
             destination.unlink(missing_ok=True)
             remove_thumbnails(settings.upload_root, asset_id)
             if winner is not None:
-                db.refresh(winner)
                 return asset_read(winner)
             raise HTTPException(status_code=409, detail="同内容素材已存在") from None
         db.refresh(asset)

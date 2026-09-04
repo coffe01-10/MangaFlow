@@ -2,13 +2,14 @@ import hashlib
 import json
 import os
 import zipfile
+from contextlib import suppress
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
 from PIL import Image
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -111,10 +112,11 @@ def download_selected_page(page_id: str, db: Session = Depends(get_db)) -> FileR
 def _write_export_atomically(destination: Path, write):
     """Write through a unique temp file and rename into place.
 
-    The destination name is deterministic (candidate-set hash), so two
-    concurrent exports of the same chapter would otherwise interleave
+    Concurrent writes to the same destination would otherwise interleave
     truncate-mode writes and leave a permanently corrupt artifact whose
-    recorded sha256 never matches any complete output.
+    recorded sha256 never matches any complete output; destinations carry a
+    per-export serial so live bundles are never rewritten underneath a
+    download.
     """
 
     temp = destination.with_name(f".{destination.name}.{uuid4().hex}.tmp")
@@ -248,7 +250,53 @@ def create_export(
     db.add(bundle)
     db.commit()
     db.refresh(bundle)
+    _prune_superseded_exports(db, settings, chapter.id, payload.export_type, bundle.id)
     return bundle
+
+
+EXPORT_KEEP_PER_CHAPTER_TYPE = 20
+
+
+def _prune_superseded_exports(
+    db: Session, settings, chapter_id: str, export_type: str, keep_id: str
+) -> None:
+    """Bound export disk usage: keep the newest bundles per chapter+type.
+
+    Unique destination names mean every export owns its file forever, so a
+    repeated export button would otherwise grow storage without bound — no
+    other cleanup pass exists for these artifacts. Rows are removed first
+    (one commit); files are unlinked after, so a crash leaves at worst a
+    harmless orphan file, never a dangling bundle row.
+    """
+
+    superseded = list(
+        db.scalars(
+            select(ExportBundle)
+            .where(
+                ExportBundle.chapter_id == chapter_id,
+                ExportBundle.export_type == export_type,
+                ExportBundle.id != keep_id,
+            )
+            # The just-created bundle occupies one slot of the cap.
+            .order_by(ExportBundle.created_at.desc(), ExportBundle.id.desc())
+            .offset(EXPORT_KEEP_PER_CHAPTER_TYPE - 1)
+        )
+    )
+    if not superseded:
+        return
+    exports_root = (settings.storage_root / "exports").resolve()
+    removed_keys = [row.storage_key for row in superseded]
+    db.execute(
+        delete(ExportBundle).where(
+            ExportBundle.id.in_([row.id for row in superseded])
+        )
+    )
+    db.commit()
+    for key in removed_keys:
+        path = (settings.storage_root / key).resolve()
+        if path.is_relative_to(exports_root) and path.is_file():
+            with suppress(OSError):
+                path.unlink()
 
 
 @router.get("/projects/{project_id}/exports", response_model=list[ExportRead])

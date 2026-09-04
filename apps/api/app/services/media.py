@@ -109,9 +109,12 @@ def sanitize_stored_filename(
     """
 
     flattened = value.replace("\\", "/").split("/")[-1]
-    cleaned = (
-        "".join(character for character in flattened if character.isprintable())
-        .strip()
-        .rstrip(". ")
-    )
-    return cleaned[:max_length] or default
+    # A colon would turn the stored name into an NTFS alternate data stream
+    # (and Windows pathlib treats drive-suffixed names oddly), so it is
+    # replaced like any other separator.
+    cleaned = "".join(
+        character for character in flattened if character.isprintable() and character != ":"
+    ).strip()
+    # Strip AFTER truncation: a 255-char cut can otherwise re-create the
+    # trailing dot/space that Windows ignores.
+    return cleaned[:max_length].rstrip(". ") or default
