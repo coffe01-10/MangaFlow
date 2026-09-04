@@ -502,6 +502,40 @@ def _verify_model_smoke(
         )
         attach_attempt_probe(attempt_ids, probe.id)
         return probe
+    except Exception:
+        # A paid smoke run must not leave its attempt pending when the adapter
+        # raises an unclassified exception (e.g. malformed response handling).
+        if attempt_ids:
+            db.rollback()
+            try:
+                finalize_model_call_attempt(
+                    attempt_ids[-1],
+                    outcome="FAILED",
+                    error_code="UPSTREAM",
+                    error_message="模型冒烟测试异常中止",
+                )
+            except Exception:
+                db.rollback()
+        model.success_rate = (
+            0.0 if model.success_rate is None else round(model.success_rate * 0.8, 4)
+        )
+        connection.health_state = "DEGRADED"
+        connection.last_checked_at = datetime.now(UTC)
+        connection.error_code = "UPSTREAM"
+        connection.message = "模型冒烟测试异常中止"
+        db.commit()
+        _sync_legacy_health(db, settings, connection)
+        probe = _failed_probe(
+            db,
+            connection,
+            model_id=model.id,
+            probe_type="MODEL_SMOKE",
+            error_code="UPSTREAM",
+            message="模型冒烟测试异常中止",
+            latency_ms=None,
+        )
+        attach_attempt_probe(attempt_ids, probe.id)
+        return probe
 
 
 def verify_connection(

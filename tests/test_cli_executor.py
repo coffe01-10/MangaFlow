@@ -311,3 +311,92 @@ def test_probe_state_machine_persists_every_step(cli_context, fail_at, state):
         )
         assert connection.health_state == state and connection.enabled is True
         assert len(list(db.scalars(select(ModelProbe)))) == 4
+
+
+def test_abandoned_recovery_survives_incomplete_identity_rows(cli_context):
+    """A PREPARING row (crash between claim and _mark_running) or a liveness
+    probe failure must not abort the whole scan: fresh rows are skipped, rows
+    older than the grace window are released."""
+
+    settings, factory, controller, ids = cli_context
+    preparing_run = _prepare(controller, ids)
+    # Second run needs its own attempt row; reuse the slot-rejection pattern
+    # by finishing the first would release the slot, so instead verify the
+    # PREPARING row itself: journal exists but has no controller identity.
+    from datetime import UTC, datetime, timedelta
+
+    def _probe_raises(_row, _journal):
+        raise RuntimeError("CLI controller identity is incomplete")
+
+    # Fresh PREPARING row: skipped this pass, scan continues (no exception).
+    assert controller.recover_abandoned(controller_is_active=_probe_raises) == []
+    with factory() as db:
+        assert db.get(CLIExecutionRun, preparing_run).lease_slot is not None
+
+    # Same row aged beyond the grace window: released.
+    with factory() as db:
+        row = db.get(CLIExecutionRun, preparing_run)
+        row.created_at = datetime.now(UTC) - timedelta(seconds=600)
+        db.commit()
+    assert controller.recover_abandoned(controller_is_active=_probe_raises) == [
+        preparing_run
+    ]
+    with factory() as db:
+        row = db.get(CLIExecutionRun, preparing_run)
+        assert (row.state, row.lease_slot, row.error_code) == ("FAILED", None, "CRASH")
+
+
+def test_platform_recovery_entry_uses_posix_probe_when_not_windows():
+    """The POSIX liveness fallback must classify dead/live/unknown controllers
+    deterministically (pid + optional start time), and raise instead of
+    guessing when identity is missing."""
+
+    import subprocess
+    import sys
+
+    from app.services import cli_executor
+
+    assert sys.platform != "win32"
+
+    # dead pid: a process that already exited
+    exited = subprocess.Popen([sys.executable, "-c", "pass"])
+    exited.wait()
+    assert cli_executor.posix_controller_is_active(None, {"controller_pid": exited.pid}) is False
+
+    # live pid: this test process
+    import os
+
+    assert (
+        cli_executor.posix_controller_is_active(None, {"controller_pid": os.getpid()})
+        is True
+    )
+
+    # missing identity raises instead of guessing
+    with pytest.raises(RuntimeError):
+        cli_executor.posix_controller_is_active(None, {})
+
+
+def test_recover_abandoned_cli_runs_selects_platform_probe(monkeypatch):
+    """The production entry point must pick a working liveness probe for the
+    host platform (previously this function existed but nothing called it)."""
+
+    from app.config import Settings
+    from app.services import cli_executor
+
+    seen: dict[str, object] = {}
+
+    class _Recorder:
+        def recover_abandoned(self, *, controller_is_active):
+            seen["probe"] = controller_is_active
+            return []
+
+    monkeypatch.setattr(
+        cli_executor,
+        "CLIExecutionController",
+        lambda settings, factory: _Recorder(),
+    )
+    recovered = cli_executor.recover_abandoned_cli_runs(
+        Settings(), object()  # factory is forwarded, never used by the recorder
+    )
+    assert recovered == []
+    assert seen["probe"] is cli_executor.platform_controller_is_active

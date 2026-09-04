@@ -1705,8 +1705,11 @@ def _workflow_generate_candidate(db_session, monkeypatch, page_id: str, project_
     monkeypatch.setattr(
         "app.services.workflow_engine.enqueue_job", lambda db, job: job
     )
+    # 本辅助只验证包冻结语义；统一 readiness 门禁（无风格时 409）由
+    # test_approve_node_enforces_readiness_and_freezes_scene_snapshot 锁定。
     monkeypatch.setattr(
-        "app.services.page_readiness.ensure_page_ready",
+        "app.services.workflow_engine.lifecycle.ensure_page_ready",
+
         lambda *_args, **_kwargs: None,
     )
     approve_node(

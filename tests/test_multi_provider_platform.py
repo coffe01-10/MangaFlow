@@ -1151,3 +1151,122 @@ def test_cancelling_completed_workflow_job_does_not_cancel_run(db_session):
     assert returned.status == JobStatus.COMPLETED
     assert run.status == "RUNNING"
     assert node_run.status == "COMPLETED"
+
+
+def test_compatible_structured_wraps_malformed_success_body():
+    """A 200 with a non-JSON body must surface as INVALID_OUTPUT, not a raw
+    JSONDecodeError that would strand the paid ModelCallAttempt as pending."""
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200, text="<html>gateway error page</html>",
+                headers={"content-type": "text/html"},
+            )
+        )
+    )
+    adapter = OpenAICompatibleAdapter(
+        CompatibleRuntime(
+            provider_name="OpenAI-compatible",
+            protocol="OPENAI",
+            base_url="https://openai.example.com/v1",
+            api_key="openai-key",
+            model_id="text-model",
+            endpoint_templates={"chat": "/chat/completions"},
+        ),
+        client=client,
+    )
+
+    with pytest.raises(ProviderAdapterError) as excinfo:
+        adapter.generate_structured(StructuredRequest(prompt="test"), SmokeResult)
+    assert excinfo.value.code == "INVALID_OUTPUT"
+
+
+def test_compatible_image_wraps_corrupt_b64_payload():
+    from app.model_adapters.base import ImageRequest
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200, json={"data": [{"b64_json": "!!!not-base64!!!"}]}
+            )
+        )
+    )
+    adapter = OpenAICompatibleAdapter(
+        CompatibleRuntime(
+            provider_name="OpenAI-compatible",
+            protocol="OPENAI",
+            base_url="https://openai.example.com/v1",
+            api_key="openai-key",
+            model_id="image-model",
+            endpoint_templates={"images_generate": "/images/generations"},
+        ),
+        client=client,
+    )
+
+    with pytest.raises(ProviderAdapterError) as excinfo:
+        adapter.generate_asset(
+            ImageRequest(prompt="test", resolution="1K", aspect_ratio="1:1")
+        )
+    assert excinfo.value.code == "INVALID_OUTPUT"
+
+
+def test_google_adapters_wrap_response_postprocessing_failures(monkeypatch):
+    """Google text/image post-processing outside _execute must also converge to
+    ProviderAdapterError so paid attempts never end as unclassified crashes."""
+
+    from types import SimpleNamespace
+
+    from app.model_adapters.google import (
+        GoogleImageAdapter,
+        GoogleRuntime,
+        GoogleTextAdapter,
+    )
+    from app.model_adapters.base import ImageRequest as GoogleImageRequest
+
+    class _BrokenText:
+        @property
+        def text(self):
+            raise ValueError("multiple candidates with text parts")
+
+    class _FakeModels:
+        def generate_content(self, **kwargs):
+            if kwargs.get("contents") and isinstance(kwargs["contents"], list):
+                # Image path: candidate present but content is None (blocked).
+                return SimpleNamespace(
+                    candidates=[SimpleNamespace(content=None, finish_reason="STOP")],
+                    usage_metadata=None,
+                    response_id=None,
+                )
+            return _BrokenText()
+
+    class _FakeClient:
+        models = _FakeModels()
+
+        def close(self):
+            pass
+
+    runtime = GoogleRuntime(
+        api_key="google-key", model_id="gemini-test", display_name="Gemini"
+    )
+    monkeypatch.setattr(GoogleTextAdapter, "_client", lambda self: _FakeClient())
+    monkeypatch.setattr(GoogleImageAdapter, "_client", lambda self: _FakeClient())
+
+    text_adapter = GoogleTextAdapter(runtime)
+    with pytest.raises(ProviderAdapterError) as text_error:
+        text_adapter.generate_structured(StructuredRequest(prompt="t"), SmokeResult)
+    assert text_error.value.code == "INVALID_OUTPUT"
+
+    image_adapter = GoogleImageAdapter(
+        GoogleRuntime(
+            api_key="google-key",
+            model_id="gemini-image",
+            display_name="Gemini",
+            capabilities={"resolutions": ["1K"], "max_reference_images": 1},
+        )
+    )
+    with pytest.raises(ProviderAdapterError) as image_error:
+        image_adapter.generate_asset(
+            GoogleImageRequest(prompt="i", resolution="1K", aspect_ratio="1:1")
+        )
+    assert image_error.value.code == "INVALID_OUTPUT"

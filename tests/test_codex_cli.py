@@ -607,3 +607,21 @@ def test_codex_unresolvable_executable_finalizes_audit_without_run(
     assert (attempt.outcome, attempt.error_code) == ("FAILED", "UNAVAILABLE")
     assert db_session.scalar(select(CLIExecutionRun)) is None
     assert not (settings.storage_root / "cli_runs").exists()
+
+
+def test_codex_executable_resolution_pins_binary_name(tmp_path):
+    """An arbitrary absolute .exe must not be accepted as the Codex channel
+    binary (aligning with the agy/grok channels): only codex.exe or an npm
+    shim resolving into the pinned vendor tree is allowed."""
+
+    from app.model_adapters.codex_cli import resolve_codex_executable
+
+    imposter = tmp_path / "not-codex.exe"
+    imposter.write_bytes(b"MZ")
+    assert resolve_codex_executable(str(imposter)) is None
+
+    legit = tmp_path / "codex.exe"
+    legit.write_bytes(b"MZ")
+    resolved = resolve_codex_executable(str(legit))
+    assert resolved is not None
+    assert resolved.endswith("codex.exe")

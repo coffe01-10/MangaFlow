@@ -1,3 +1,4 @@
+import logging
 import os
 import socket
 from datetime import timedelta
@@ -32,6 +33,8 @@ from app.services.worker_handlers.inspection import _run_inspection
 from app.services.worker_handlers.page_generate import _run_page_generate
 from app.services.worker_handlers.story_parse import _run_story_parse
 from app.services.worker_handlers.style_analyze import _run_style_analyze
+
+LOGGER = logging.getLogger("mangaflow.worker")
 
 ACTIVE_STATUSES = {
     JobStatus.PREPARING,
@@ -119,6 +122,9 @@ class _LeaseHeartbeat:
                 # provider call into a second paid request.  The lease itself
                 # remains the source of truth and will be reclaimed if it
                 # eventually expires.
+                LOGGER.warning(
+                    "lease heartbeat failed for job %s", self.job_id, exc_info=True
+                )
                 if self.stop.wait(1.0):
                     return
 
@@ -280,6 +286,12 @@ def _mark_worker_failure(
         )
         if page_candidate:
             page_candidate.status = candidate_status
+            # A finally-failed generation must not leave the page stuck in
+            # DRAFT_GENERATING: restore a stable status so the UI and the next
+            # generation attempt stay operable (mirrors the cancel path).
+            from app.services.job_service import restore_page_after_generation_exit
+
+            restore_page_after_generation_exit(db, page_candidate)
         asset_candidate = db.scalar(
             select(AssetCandidate).where(AssetCandidate.job_id == job.id)
         )

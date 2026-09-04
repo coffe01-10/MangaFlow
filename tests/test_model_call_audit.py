@@ -302,3 +302,53 @@ def test_model_call_attempts_endpoint_returns_exact_redacted_surface(
 
     missing = client.get("/api/v1/jobs/missing-job/model-call-attempts")
     assert missing.status_code == 404
+
+
+def test_invoke_provider_finalizes_attempt_on_unclassified_exception(monkeypatch):
+    """A raw exception from an adapter must converge its audit row to FAILED.
+
+    Before this guard, a malformed response crashing an adapter outside its
+    ProviderAdapterError mapping left the ModelCallAttempt pending forever
+    while the worker retried and stacked more pending rows.
+    """
+
+    from types import SimpleNamespace
+
+    import app.services.worker_handlers.provider as provider_module
+
+    begin_calls: list[object] = []
+    finalize_calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        provider_module, "_audit_meta", lambda db, binding, **kw: SimpleNamespace()
+    )
+    monkeypatch.setattr(
+        provider_module,
+        "begin_model_call_attempt",
+        lambda meta: begin_calls.append(meta) or "attempt-unclassified",
+    )
+    monkeypatch.setattr(
+        provider_module,
+        "finalize_model_call_attempt",
+        lambda attempt_id, **kwargs: finalize_calls.append((attempt_id, kwargs)),
+    )
+
+    class _Db:
+        info: dict = {}
+
+    binding = SimpleNamespace(adapter=None, selected_key=None, resolved=None)
+
+    class _AdapterBug(RuntimeError):
+        pass
+
+    def _crash(_adapter):
+        raise _AdapterBug("response shape was not a dict")
+
+    with pytest.raises(_AdapterBug):
+        provider_module._invoke_provider(_Db(), binding, _crash)
+
+    assert len(begin_calls) == 1
+    assert len(finalize_calls) == 1
+    attempt_id, kwargs = finalize_calls[0]
+    assert attempt_id == "attempt-unclassified"
+    assert kwargs["outcome"] == "FAILED"
+    assert kwargs["error_code"] == "INVALID_OUTPUT"

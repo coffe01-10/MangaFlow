@@ -23,6 +23,7 @@ import "@xyflow/react/dist/style.css";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
+  ApiError,
   type ImageModelAlias,
   type Resolution,
   type WorkflowDefinition,
@@ -305,6 +306,13 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
       },
       onError: (error) => {
         setNotice(error instanceof Error ? error.message : "保存失败");
+        // A 409 means the local version fell behind (another tab published a
+        // revision, or a flushed save raced navigation). Refresh the list so
+        // the next save uses the server's current version instead of failing
+        // forever until a manual reload.
+        if (error instanceof ApiError && error.status === 409) {
+          void queryClient.invalidateQueries({ queryKey: ["workflows", projectId] });
+        }
       },
     });
     draftSaver.current = saver;
@@ -314,8 +322,15 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
     document.addEventListener("visibilitychange", visibility);
     return () => {
       window.removeEventListener("beforeunload", flush);
-      document.removeEventListener("visibilitychange", visibility);
-      saver.dispose();
+      window.removeEventListener("visibilitychange", visibility);
+      // SPA route unmount: beforeunload/visibility do not fire. Fire the
+      // save, keep the saver alive until it settles (dispose() would cancel
+      // the in-flight result and drop the cache update), then dispose.
+      if (saver.isDirty()) {
+        void saver.saveNow().finally(() => saver.dispose());
+      } else {
+        saver.dispose();
+      }
       if (draftSaver.current === saver) draftSaver.current = null;
     };
   }, [buildGraph, projectId, queryClient]);
@@ -563,7 +578,28 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
     <main className={styles.studio}>
       <header className={styles.topbar}>
         <div className={styles.crumb}><Link href={`/projects/${projectId}/source`}><ArrowLeft size={16} />项目</Link><i /><strong>{project.data?.name}</strong><span>流程编排</span></div>
-        <div className={styles.workflowSelect}><GitBranch size={15} /><select aria-label="选择工作流" value={activeWorkflow.id} onChange={(event) => { initializedId.current = null; setActiveId(event.target.value); }}><option value={activeWorkflow.id}>{activeWorkflow.name}</option>{workflows.data?.filter((item) => item.id !== activeWorkflow.id).map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select><ChevronDown size={14} /></div>
+        <div className={styles.workflowSelect}><GitBranch size={15} /><select aria-label="选择工作流" value={activeWorkflow.id} onChange={(event) => {
+          const next = event.target.value;
+          if (next === activeWorkflow.id) return;
+          const saver = draftSaver.current;
+          // Switching resets the saver and reloads from cache; flush the
+          // current draft first so edits are persisted AND the cache update
+          // lands before the next workflow is loaded from it. On failure,
+          // stay on the current workflow instead of dropping the edits.
+          if (saver?.isDirty()) {
+            void saver.saveNow().then((saved) => {
+              if (!saved) {
+                setNotice("当前工作流保存失败，已保持在原工作流，请重试后再切换");
+                return;
+              }
+              initializedId.current = null;
+              setActiveId(next);
+            });
+            return;
+          }
+          initializedId.current = null;
+          setActiveId(next);
+        }}><option value={activeWorkflow.id}>{activeWorkflow.name}</option>{workflows.data?.filter((item) => item.id !== activeWorkflow.id).map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select><ChevronDown size={14} /></div>
         <div className={styles.topActions}>
           <button onClick={() => downloadJson(`${activeWorkflow.name}.json`, { schema: "mangaflow.workflow.v2", name: activeWorkflow.name, description: activeWorkflow.description, graph: buildGraph() })}><Download size={14} />导出</button>
           <label><Upload size={14} />导入<input type="file" accept="application/json,.json" onChange={importFile} /></label>

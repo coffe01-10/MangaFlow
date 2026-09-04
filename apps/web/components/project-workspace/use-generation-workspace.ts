@@ -367,6 +367,20 @@ export function useGenerationWorkspace({
     },
   });
 
+  // Adoption/inspection/navigation actions used to fail with no surface at
+  // all: the buttons un-pended and the UI silently diverged from the server.
+  // Mutations reset their error on the next submit, so an aggregate derived
+  // value is enough for one shared, actionable message.
+  // inspect/repair/upscale 已在 InspectionPanel 内展示，不重复聚合。
+  const actionError =
+    favorite.error ??
+    deleteCandidate.error ??
+    selectCandidate.error ??
+    keepSelectedCandidate.error ??
+    retractSelectedCandidate.error ??
+    goNext.error ??
+    null;
+
   return {
     viewedBatchId,
     setViewedBatchId,
@@ -410,6 +424,7 @@ export function useGenerationWorkspace({
     productionBlocker,
     startBatch,
     generate,
+    actionError,
     favorite,
     deleteCandidate,
     inspectCandidate,

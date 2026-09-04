@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 from threading import Event, Lock
 
 import pytest
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, func, select, update
 from sqlalchemy.orm import sessionmaker
 
 from app import database, worker_tasks
@@ -1489,3 +1489,210 @@ def test_execute_job_defers_when_concurrency_slot_is_busy(db_session, monkeypatc
     assert held.status == JobStatus.WAITING
     assert held.error_code == "CONCURRENCY_LIMIT"
     assert held.attempt_count == 0
+
+
+def test_recover_pending_jobs_skips_job_claimed_by_concurrent_worker(monkeypatch):
+    """The recovery re-adopt step must not overwrite a concurrent claim.
+
+    A QUEUED+LOCAL_WORKER row that a worker already flipped to PREPARING with
+    a fresh lease must survive a recovery pass untouched; the previous
+    unconditional ``job.status = WAITING`` write clobbered the claim, broke
+    the worker's heartbeat and discarded its in-flight paid call.
+    """
+
+    with TemporaryDirectory() as directory:
+        engine = create_engine(
+            f"sqlite:///{Path(directory) / 'recover.db'}",
+            connect_args={"check_same_thread": False},
+        )
+        testing_session = sessionmaker(
+            bind=engine, autoflush=False, expire_on_commit=False
+        )
+        Base.metadata.create_all(engine)
+        with testing_session() as db:
+            project = Project(name="恢复并发", default_concurrency=1)
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, ordinal=1, title="第一章", status="DRAFT")
+            db.add(chapter)
+            db.flush()
+            page = MangaPage(
+                chapter_id=chapter.id,
+                page_number=1,
+                storyboard_version=1,
+                status=PageStatus.STORYBOARDED,
+                source_coverage={"complete": True},
+                scene_ids=[],
+                beat_ids=[],
+            )
+            db.add(page)
+            db.flush()
+            batch = GenerationBatch(
+                project_id=project.id,
+                chapter_id=chapter.id,
+                page_id=page.id,
+                ordinal=1,
+                generation_kind="PAGE",
+            )
+            db.add(batch)
+            db.flush()
+            candidate = PageCandidate(
+                batch_id=batch.id,
+                page_id=page.id,
+                ordinal=1,
+                model_alias="vertex-image",
+                resolution=Resolution("1K"),
+                status="QUEUED",
+            )
+            db.add(candidate)
+            db.flush()
+            queued = GenerationJob(
+                project_id=project.id,
+                target_type="PAGE_CANDIDATE",
+                target_id=candidate.id,
+                job_type="PAGE_GENERATE",
+                status=JobStatus.QUEUED,
+                error_code="LOCAL_WORKER",
+                error_message="本地后台执行器正在处理任务",
+            )
+            db.add(queued)
+            db.commit()
+            job_id = queued.id
+
+        # A concurrent worker claims the row between the recovery SELECT and
+        # its conditional re-adopt UPDATE.
+        original_dependencies = job_service.dependencies_complete
+
+        def _claim_then_report(_db, job):
+            with testing_session() as other:
+                claimed = other.execute(
+                    update(GenerationJob)
+                    .where(GenerationJob.id == job.id)
+                    .values(
+                        status=JobStatus.PREPARING,
+                        attempt_count=1,
+                        lease_owner="concurrent-worker",
+                        lease_expires_at=datetime.now(UTC) + timedelta(seconds=120),
+                    )
+                )
+                assert claimed.rowcount == 1
+                other.commit()
+            return original_dependencies(_db, job)
+
+        monkeypatch.setattr(job_service, "dependencies_complete", _claim_then_report)
+        with testing_session() as db:
+            recovered = job_service.recover_pending_jobs(db)
+        monkeypatch.undo()
+
+        with testing_session() as db:
+            row = db.get(GenerationJob, job_id)
+            assert row.status == JobStatus.PREPARING
+            assert row.lease_owner == "concurrent-worker"
+        assert recovered == 0
+        engine.dispose()
+
+
+def test_final_worker_failure_restores_page_from_draft_generating(monkeypatch):
+    """A finally-failed PAGE_GENERATE must not leave the page stuck in
+    DRAFT_GENERATING (UI shows "generating" forever while the candidate is
+    FAILED)."""
+
+    with TemporaryDirectory() as directory:
+        engine = create_engine(
+            f"sqlite:///{Path(directory) / 'pagefail.db'}",
+            connect_args={"check_same_thread": False},
+        )
+        testing_session = sessionmaker(
+            bind=engine, autoflush=False, expire_on_commit=False
+        )
+        Base.metadata.create_all(engine)
+        with testing_session() as db:
+            project = Project(name="失败回退", default_concurrency=1)
+            db.add(project)
+            db.flush()
+            chapter = Chapter(project_id=project.id, ordinal=1, title="第一章", status="DRAFT")
+            db.add(chapter)
+            db.flush()
+            page = MangaPage(
+                chapter_id=chapter.id,
+                page_number=1,
+                storyboard_version=1,
+                status=PageStatus.DRAFT_GENERATING,
+                source_coverage={"complete": True},
+                scene_ids=[],
+                beat_ids=[],
+            )
+            db.add(page)
+            db.flush()
+            batch = GenerationBatch(
+                project_id=project.id,
+                chapter_id=chapter.id,
+                page_id=page.id,
+                ordinal=1,
+                generation_kind="PAGE",
+            )
+            db.add(batch)
+            db.flush()
+            candidate = PageCandidate(
+                batch_id=batch.id,
+                page_id=page.id,
+                ordinal=1,
+                model_alias="vertex-image",
+                resolution=Resolution("1K"),
+                status="GENERATING",
+            )
+            db.add(candidate)
+            db.flush()
+            job = GenerationJob(
+                project_id=project.id,
+                target_type="PAGE_CANDIDATE",
+                target_id=candidate.id,
+                job_type="PAGE_GENERATE",
+                status=JobStatus.GENERATING,
+                attempt_count=1,
+                max_attempts=1,
+                lease_owner="dead-worker",
+                lease_expires_at=datetime.now(UTC) + timedelta(seconds=120),
+            )
+            db.add(job)
+            db.flush()
+            candidate.job_id = job.id
+            db.commit()
+            job_id, candidate_id, page_id = job.id, candidate.id, page.id
+
+        with testing_session() as db:
+            marked, _workflow_run_id, is_final = worker_tasks._mark_worker_failure(
+                db,
+                job_id,
+                "dead-worker",
+                "UPSTREAM",
+                "供应商上游服务暂时不可用",
+                retryable=False,
+            )
+            assert marked
+            assert is_final
+
+        with testing_session() as db:
+            assert db.get(PageCandidate, candidate_id).status == "FAILED"
+            assert str(getattr(db.get(MangaPage, page_id).status, "value", None)) == "STORYBOARDED"
+        engine.dispose()
+
+
+def test_start_periodic_recovery_runs_repeatedly(monkeypatch):
+    """The API-process recovery thread must keep running passes, closing the
+    REDIS-mode gap where a dead worker's job stayed ACTIVE until restart."""
+
+    calls = []
+    monkeypatch.setattr(job_service, "recover_pending_jobs", lambda db: calls.append(1) or 0)
+    real_sleep = time.sleep
+    monkeypatch.setattr(job_service.time, "sleep", lambda _seconds: real_sleep(0.02))
+    thread, stop = job_service.start_periodic_recovery()
+    try:
+        deadline = time.time() + 5
+        while len(calls) < 2 and time.time() < deadline:
+            real_sleep(0.02)
+        assert len(calls) >= 2
+    finally:
+        stop.set()
+        thread.join(timeout=2)
+        assert not thread.is_alive()

@@ -73,10 +73,16 @@ class GoogleTextAdapter(_GoogleBase):
                 ),
             )
         )
-        if not response.text:
+        try:
+            text = response.text
+        except Exception as error:
+            raise ProviderAdapterError(
+                "INVALID_OUTPUT", "Gemini API 返回结构无法解析", retryable=True
+            ) from error
+        if not text:
             raise ProviderAdapterError("INVALID_OUTPUT", "Gemini API 没有返回文本")
         try:
-            return output_schema.model_validate(json.loads(response.text))
+            return output_schema.model_validate(json.loads(text))
         except Exception as error:
             raise ProviderAdapterError(
                 "INVALID_OUTPUT", "Gemini API 返回结构无法验证"
@@ -105,10 +111,16 @@ class GoogleTextAdapter(_GoogleBase):
                 ),
             )
         )
-        if not response.text:
+        try:
+            text = response.text
+        except Exception as error:
+            raise ProviderAdapterError(
+                "INVALID_OUTPUT", "Gemini API 返回结构无法解析", retryable=True
+            ) from error
+        if not text:
             raise ProviderAdapterError("INVALID_OUTPUT", "Gemini API 没有返回分析结果")
         try:
-            return output_schema.model_validate(json.loads(response.text))
+            return output_schema.model_validate(json.loads(text))
         except Exception as error:
             raise ProviderAdapterError(
                 "INVALID_OUTPUT", "Gemini API 返回结构无法验证"
@@ -162,21 +174,28 @@ class GoogleImageAdapter(_GoogleBase):
                 ),
             )
         )
-        images: list[bytes] = []
-        texts: list[str] = []
-        for candidate in response.candidates or []:
-            for part in candidate.content.parts or []:
-                if part.inline_data and part.inline_data.data:
-                    images.append(part.inline_data.data)
-                elif part.text:
-                    texts.append(part.text)
+        try:
+            images: list[bytes] = []
+            texts: list[str] = []
+            for candidate in response.candidates or []:
+                for part in candidate.content.parts or []:
+                    if part.inline_data and part.inline_data.data:
+                        images.append(part.inline_data.data)
+                    elif part.text:
+                        texts.append(part.text)
+            usage = (
+                response.usage_metadata.model_dump(exclude_none=True)
+                if response.usage_metadata
+                else {}
+            )
+        except ProviderAdapterError:
+            raise
+        except Exception as error:
+            raise ProviderAdapterError(
+                "INVALID_OUTPUT", "Gemini API 图像响应结构无法解析", retryable=True
+            ) from error
         if not images:
             raise ProviderAdapterError("INVALID_OUTPUT", "Gemini API 未返回图像")
-        usage = (
-            response.usage_metadata.model_dump(exclude_none=True)
-            if response.usage_metadata
-            else {}
-        )
         return ModelResponse(
             model_id=self.runtime.model_id,
             request_id=getattr(response, "response_id", None),

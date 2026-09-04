@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     cli_run_timeout_grace_seconds: int = Field(default=5, ge=0, le=60)
     cli_channel_max_concurrency: int = Field(default=1, ge=1, le=16)
 
+    # Host-header allowlist (comma separated). Loopback-only by default: the
+    # API is unauthenticated and must not answer DNS-rebinded attacker hosts.
+    # Set to "*" only for isolated test environments, or add your deployment
+    # host when binding beyond loopback.
+    api_trusted_hosts: str = "localhost,127.0.0.1"
+
     max_upload_bytes: int = Field(default=20 * 1024 * 1024, ge=1)
     upload_form_overhead_bytes: int = Field(default=64 * 1024, ge=0)
     max_image_pixels: int = Field(default=40_000_000, ge=1)

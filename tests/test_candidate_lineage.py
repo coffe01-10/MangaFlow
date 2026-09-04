@@ -438,3 +438,33 @@ def test_repair_and_upscale_write_lineage_rows(
     assert upscale_lineage is not None
     assert upscale_lineage.parent_candidate_id == parent.id
     assert upscale_lineage.lineage_kind == LineageKind.UPSCALED
+
+
+def test_inspection_family_rejects_soft_deleted_candidates(client, db_session):
+    """inspect/repair/upscale must not create paid jobs for candidates the
+    user already soft-deleted (parity with the director path)."""
+
+    ctx = _setup(client, db_session)
+    parent = _ready_parent(db_session, ctx, model_alias="image.nano_banana_2")
+    parent.deleted_at = datetime.now(UTC)
+    db_session.commit()
+
+    inspected = client.post(f"/api/v1/candidates/{parent.id}/inspect", json={})
+    assert inspected.status_code == 409
+
+    repaired = client.post(
+        f"/api/v1/candidates/{parent.id}/repairs",
+        json={
+            "inspection_result_id": "irrelevant",
+            "repair_type": "PANEL",
+            "model_alias": "image.nano_banana_2",
+            "resolution": "1K",
+        },
+    )
+    assert repaired.status_code == 409
+
+    upscaled = client.post(
+        f"/api/v1/candidates/{parent.id}/upscale",
+        json={"model_alias": "image.nano_banana_2", "resolution": "2K"},
+    )
+    assert upscaled.status_code == 409

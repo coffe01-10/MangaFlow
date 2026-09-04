@@ -46,7 +46,7 @@ export function LibrarySection({
   rememberWorkspaceScroll: () => void;
   setSelectedPageId: (pageId: string | null) => void;
   libraryWorkspace: LibraryWorkspace;
-  generation: Pick<GenerationWorkspace, "deleteCandidate" | "retractSelectedCandidate">;
+  generation: Pick<GenerationWorkspace, "deleteCandidate" | "retractSelectedCandidate" | "actionError">;
 }) {
   const {
     favoriteOnly,
@@ -74,7 +74,7 @@ export function LibrarySection({
     chapterProduction,
     createExport,
   } = libraryWorkspace;
-  const { deleteCandidate, retractSelectedCandidate } = generation;
+  const { deleteCandidate, retractSelectedCandidate, actionError } = generation;
 
   return (
     <>
@@ -101,7 +101,7 @@ export function LibrarySection({
       <div className={`export-desk ${chapterProduction.data?.ready ? "ready" : "blocked"}`}><div><span>EXPORT / 整章导出门禁</span><strong>{chapterProduction.data ? `${chapterProduction.data.ready_pages}/${chapterProduction.data.total_pages} 页生产通过` : "正在核对章节生产状态"}</strong><small>{chapterProduction.data?.ready ? "全部页面已完成校对、版本确认和视觉检查" : chapterProduction.data?.pages.find((page) => !page.ready)?.blockers[0]?.message ?? "章节没有可导出的页面"}</small></div><div>{(["PNG", "PDF", "JSON"] as const).map((type) => <button key={type} disabled={!chapterProduction.data?.ready || createExport.isPending} onClick={() => createExport.mutate(type)}><Download size={14} />{type}</button>)}</div></div>
       {chapterProduction.data && !chapterProduction.data.ready && <div className="chapter-production-blockers">{chapterProduction.data.pages.filter((page) => !page.ready).slice(0, 4).map((page) => { const pageNumber = pages.data?.find((item) => item.id === page.page_id)?.page_number; return <button key={page.page_id} onClick={() => { setSelectedPageId(page.page_id); rememberWorkspaceScroll(); router.push(projectPath("generate")); }}><span>第 {pageNumber ?? "—"} 页</span><strong>{page.blockers[0]?.message ?? "尚未通过"}</strong><ArrowRight size={14} /></button>; })}</div>}
       <div className="export-list">{exportsQuery.data?.map((item) => <a key={item.id} href={publicUrl(item.download_url)!}><FileImage size={14} /><span>{item.export_type} · {item.page_count} 页 · {formatBytes(item.byte_size)}</span><Download size={13} /></a>)}</div>
-      {createExport.isError && <p className="form-error"><CircleAlert size={14} />{createExport.error.message}</p>}
+      {(createExport.isError || actionError) && <p className="form-error"><CircleAlert size={14} />{(createExport.error ?? actionError)?.message}</p>}
     </>
   );
 }

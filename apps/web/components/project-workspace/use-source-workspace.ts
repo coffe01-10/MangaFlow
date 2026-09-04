@@ -31,6 +31,10 @@ export function useSourceWorkspace({
   const [sourceText, setSourceText] = useState("");
   const [editingChapterId, setEditingChapterId] = useState<string | null>(null);
   const [deletedChapterId, setDeletedChapterId] = useState<string | null>(null);
+  // 修订加载失败/进行中：失败时此前是 unhandled rejection，用户点击“修改原文”
+  // 毫无反馈；加载期间提前输入的文本又会被晚到的响应覆盖。
+  const [revisionLoadError, setRevisionLoadError] = useState("");
+  const [revisionLoading, setRevisionLoading] = useState(false);
 
   const importSource = useMutation({
     mutationFn: () => editingChapterId
@@ -108,12 +112,21 @@ export function useSourceWorkspace({
 
   async function beginEditChapter(chapterId: string, title: string) {
     setSelectedChapterId(chapterId);
-    const values = await queryClient.fetchQuery({ queryKey: ["revisions", chapterId], queryFn: () => api.revisions(chapterId) });
-    const revision = values[0];
-    setEditingChapterId(chapterId);
-    setSourceTitle(title);
-    setSourceText(revision?.original_text ?? "");
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    setRevisionLoadError("");
+    setRevisionLoading(true);
+    try {
+      const values = await queryClient.fetchQuery({ queryKey: ["revisions", chapterId], queryFn: () => api.revisions(chapterId) });
+      const revision = values[0];
+      setEditingChapterId(chapterId);
+      setSourceTitle(title);
+      setSourceText(revision?.original_text ?? "");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch (error) {
+      setRevisionLoadError(error instanceof Error ? error.message : "原文修订加载失败，请重试");
+      setEditingChapterId(null);
+    } finally {
+      setRevisionLoading(false);
+    }
   }
 
   return {
@@ -123,6 +136,8 @@ export function useSourceWorkspace({
     setSourceText,
     editingChapterId,
     setEditingChapterId,
+    revisionLoadError,
+    revisionLoading,
     deletedChapterId,
     importSource,
     importSourceFile,

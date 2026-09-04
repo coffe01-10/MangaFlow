@@ -1545,3 +1545,110 @@ def test_project_json_export_uses_selected_page_versions(
         assert page_download.status_code == 200
         assert page_download.content == b"PNG_PAGE"
     assert not Path(directory).exists()
+
+
+def test_export_artifacts_are_written_atomically(
+    client, db_session, monkeypatch, tmp_path
+):
+    """Exports must never open the deterministic destination path in truncate
+    mode: two concurrent exports of the same candidate set used to interleave
+    into a permanently corrupt artifact whose recorded sha256 matched no
+    complete output. Writes go through a unique temp file and an atomic
+    rename; the recorded bundle must always match the artifact byte-for-byte."""
+
+    import hashlib
+    import zipfile as zipfile_module
+
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "storage_root", tmp_path)
+    project = _project(client, "原子导出")
+    chapter, plan = _chapter_and_pages(client, db_session, project["id"], repeat=1)
+    for page_data in plan["pages"]:
+        page = db_session.get(MangaPage, page_data["id"])
+        batch = GenerationBatch(
+            project_id=project["id"],
+            chapter_id=chapter["id"],
+            page_id=page.id,
+            ordinal=page.page_number,
+            generation_kind="PAGE",
+            status="CLOSED",
+        )
+        db_session.add(batch)
+        db_session.flush()
+        asset = Asset(
+            project_id=project["id"],
+            kind="page_candidate",
+            original_name="page-1.png",
+            storage_key="generated/page-1.png",
+            mime_type="image/png",
+            byte_size=10,
+            sha256=f"{page.page_number:064d}",
+            source="VERTEX_GENERATED",
+            status="GENERATED",
+        )
+        db_session.add(asset)
+        db_session.flush()
+        candidate = PageCandidate(
+            batch_id=batch.id,
+            page_id=page.id,
+            ordinal=1,
+            model_alias="image.nano_banana_2",
+            resolution=Resolution.DRAFT_1K,
+            status="INSPECTED",
+            asset_id=asset.id,
+            is_selected=True,
+        )
+        db_session.add(candidate)
+        db_session.flush()
+        page.selected_candidate_id = candidate.id
+        page.selected_candidate_ack_version = page.storyboard_version
+        page.continuity_status = "PASSED"
+        for category in ("SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"):
+            db_session.add(
+                InspectionResult(
+                    candidate_id=candidate.id,
+                    storyboard_version=page.storyboard_version,
+                    category=category,
+                    outcome="PASS",
+                    score=0.99,
+                    severity="INFO",
+                )
+            )
+    (tmp_path / "generated").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "generated" / "page-1.png").write_bytes(b"png-bytes-1")
+    db_session.commit()
+
+    real_zipfile_open = zipfile_module.ZipFile
+
+    def _guarded_open(file, mode="r", *args, **kwargs):
+        if "w" in mode and isinstance(file, (str, __import__("pathlib").Path)):
+            name = str(file)
+            if ".tmp" not in name:
+                raise AssertionError(f"truncate-mode write to final export path: {name}")
+        return real_zipfile_open(file, mode, *args, **kwargs)
+
+    import app.api.routes.exports as exports_module
+
+    monkeypatch.setattr(exports_module.zipfile, "ZipFile", _guarded_open)
+
+    first = client.post(
+        f"/api/v1/chapters/{chapter['id']}/exports", json={"export_type": "PNG"}
+    )
+    assert first.status_code == 201, first.json()
+    second = client.post(
+        f"/api/v1/chapters/{chapter['id']}/exports", json={"export_type": "PNG"}
+    )
+    assert second.status_code == 201, second.json()
+
+    for response in (first, second):
+        bundle = response.json()
+        from app.models import ExportBundle as ExportBundleModel
+
+        row = db_session.get(ExportBundleModel, bundle["id"])
+        path = tmp_path / row.storage_key
+        assert zipfile_module.is_zipfile(path)
+        data = path.read_bytes()
+        assert hashlib.sha256(data).hexdigest() == row.sha256
+        assert len(data) == row.byte_size
+

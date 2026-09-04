@@ -248,6 +248,7 @@ def test_panel_rect_validation_rejects_out_of_page_and_tiny_rects(client, db_ses
         {"x": 1.1, "y": 0.1, "width": 0.4, "height": 0.4},
     ]
     for bounds in invalid_bounds:
+        db_session.refresh(panel)
         response = client.patch(
             f"/api/v1/panels/{panel.id}",
             json={"version": panel.version, "bounds": bounds},
@@ -290,6 +291,7 @@ def test_polygon_vertex_and_rotation_rules(client, db_session):
         {"x": round(0.1 + index * 0.005, 4), "y": 0.2} for index in range(33)
     ]
 
+    db_session.refresh(panel)
     too_few = client.patch(
         f"/api/v1/panels/{panel.id}",
         json={
@@ -299,6 +301,7 @@ def test_polygon_vertex_and_rotation_rules(client, db_session):
     )
     assert too_few.status_code == 422
 
+    db_session.refresh(panel)
     too_many = client.patch(
         f"/api/v1/panels/{panel.id}",
         json={
@@ -308,6 +311,7 @@ def test_polygon_vertex_and_rotation_rules(client, db_session):
     )
     assert too_many.status_code == 422
 
+    db_session.refresh(panel)
     rotated = client.patch(
         f"/api/v1/panels/{panel.id}",
         json={
@@ -325,6 +329,7 @@ def test_polygon_vertex_and_rotation_rules(client, db_session):
     )
     assert rotated.status_code == 422
 
+    db_session.refresh(panel)
     valid = client.patch(
         f"/api/v1/panels/{panel.id}",
         json={
@@ -361,6 +366,7 @@ def test_bubble_text_region_must_stay_inside_bubble_rect(client, db_session):
     )
     assert outside.status_code == 422
 
+    db_session.refresh(panels[0])
     valid = client.patch(
         f"/api/v1/dialogues/{dialogue.id}",
         json={

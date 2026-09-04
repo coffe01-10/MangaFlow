@@ -165,6 +165,11 @@ def _safe_headers(runtime: CompatibleRuntime) -> dict[str, str]:
     for key, value in runtime.extra_headers.items():
         if key.lower() in _RESERVED_HEADERS:
             continue
+        # Connection-level headers are CRLF-validated at catalog write time;
+        # model capability headers reach the same sink and must obey the same
+        # rule instead of smuggling header splits into the request.
+        if "\r" in key or "\n" in key or "\r" in str(value) or "\n" in str(value):
+            raise ProviderAdapterError("INVALID_INPUT", "供应商自定义请求头包含非法字符")
         headers[key] = str(value)
     if runtime.protocol == "ANTHROPIC":
         headers["x-api-key"] = runtime.api_key
@@ -345,8 +350,15 @@ class OpenAICompatibleAdapter(_CompatibleBase):
                 headers=_safe_headers(self.runtime),
                 json=payload,
             )
-            body = response.json()
-            text = body.get("output_text") or self._responses_text(body)
+            try:
+                body = response.json()
+                text = body.get("output_text") or self._responses_text(body)
+            except ProviderAdapterError:
+                raise
+            except Exception as error:
+                raise ProviderAdapterError(
+                    "INVALID_OUTPUT", "模型已响应，但响应结构无法解析", retryable=True
+                ) from error
         else:
             messages = []
             if request.system_instruction:
@@ -371,8 +383,15 @@ class OpenAICompatibleAdapter(_CompatibleBase):
                 headers=_safe_headers(self.runtime),
                 json=payload,
             )
-            body = response.json()
-            text = self._chat_text(body)
+            try:
+                body = response.json()
+                text = self._chat_text(body)
+            except ProviderAdapterError:
+                raise
+            except Exception as error:
+                raise ProviderAdapterError(
+                    "INVALID_OUTPUT", "模型已响应，但响应结构无法解析", retryable=True
+                ) from error
         try:
             return output_schema.model_validate_json(text)
         except Exception as error:
@@ -490,8 +509,15 @@ class OpenAICompatibleAdapter(_CompatibleBase):
                 headers=headers,
                 json=payload,
             )
-        body = response.json()
-        images = tuple(self._image_bytes(item) for item in body.get("data") or [])
+        try:
+            body = response.json()
+            images = tuple(self._image_bytes(item) for item in body.get("data") or [])
+        except ProviderAdapterError:
+            raise
+        except Exception as error:
+            raise ProviderAdapterError(
+                "INVALID_OUTPUT", "图片模型已响应，但结果无法解析", retryable=True
+            ) from error
         if not images:
             raise ProviderAdapterError("INVALID_OUTPUT", "图片模型没有返回可用图片")
         return ModelResponse(

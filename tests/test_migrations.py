@@ -1709,3 +1709,104 @@ def test_candidate_lineage_backfills_repair_and_upscale_history(
     engine = create_engine(database_url)
     assert "candidate_lineage" not in inspect(engine).get_table_names()
     engine.dispose()
+
+
+def test_legacy_page_version_constraint_removed_with_data_preserved(
+    tmp_path, monkeypatch
+):
+    """Migration 20260904_29 drops the initial schema's UNIQUE
+    (chapter_id, page_number, version) — version is the optimistic-lock
+    counter, so it collided with the documented page-revision feature — and
+    drops the duplicate candidate_lineage child index. Rows survive the
+    SQLite table rebuild and the downgrade restores both artifacts."""
+
+    database_path = tmp_path / "legacy-constraint.db"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    monkeypatch.setattr(get_settings(), "database_url", database_url)
+    config = Config("apps/api/alembic.ini")
+
+    command.upgrade(config, "20260903_28")
+    engine = create_engine(database_url)
+    with Session(engine) as session:
+        project = Project(name="遗留约束验证")
+        session.add(project)
+        session.flush()
+        chapter = Chapter(project_id=project.id, ordinal=1, title="第一章")
+        session.add(chapter)
+        session.flush()
+        session.add(
+            MangaPage(chapter_id=chapter.id, page_number=1, revision_no=1, version=7)
+        )
+        session.commit()
+        chapter_id = chapter.id
+
+    with engine.connect() as connection:
+        ddl = connection.execute(
+            text("SELECT sql FROM sqlite_master WHERE name = 'manga_pages'")
+        ).scalar_one()
+        assert "page_number, version)" in ddl
+    engine.dispose()
+
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    with engine.connect() as connection:
+        ddl = connection.execute(
+            text("SELECT sql FROM sqlite_master WHERE name = 'manga_pages'")
+        ).scalar_one()
+        assert "page_number, version)" not in ddl
+        assert (
+            connection.execute(
+                text("SELECT 1 FROM sqlite_master WHERE name = 'uq_manga_pages_revision'")
+            ).scalar()
+            == 1
+        )
+        assert (
+            "ix_candidate_lineage_child_candidate_id"
+            not in {
+                row[0]
+                for row in connection.execute(
+                    text("SELECT name FROM sqlite_master WHERE type='index'")
+                )
+            }
+        )
+    with Session(engine) as session:
+        pages = session.query(MangaPage).filter_by(chapter_id=chapter_id).all()
+        assert len(pages) == 1
+        # Two revisions with equal optimistic-lock counters now coexist.
+        chapter = session.get(Chapter, chapter_id)
+        session.add(
+            MangaPage(chapter_id=chapter_id, page_number=1, revision_no=2, version=7)
+        )
+        session.commit()
+        assert session.query(MangaPage).filter_by(chapter_id=chapter_id).count() == 2
+        # Restoring the legacy constraint is impossible while violating rows
+        # exist; a guarded downgrade must leave the chapter consistent first.
+        session.query(MangaPage).filter_by(revision_no=2).delete()
+        session.commit()
+    engine.dispose()
+
+    command.downgrade(config, "20260903_28")
+    engine = create_engine(database_url)
+    with engine.connect() as connection:
+        ddl = connection.execute(
+            text("SELECT sql FROM sqlite_master WHERE name = 'manga_pages'")
+        ).scalar_one()
+        assert "page_number, version)" in ddl
+        with pytest.raises(Exception, match="UNIQUE constraint failed"):
+            connection.execute(
+                text(
+                    "INSERT INTO manga_pages (id, chapter_id, page_number,"
+                    " page_function, panel_count, reading_direction, resolution,"
+                    " status, scene_ids, beat_ids, locked_fields, created_at,"
+                    " updated_at, version, revision_no, estimated_text_chars,"
+                    " estimated_bubbles, source_coverage, continuity_status,"
+                    " storyboard_version)"
+                    " VALUES ('blocked','"
+                    + chapter_id
+                    + "', 1, 'dialogue', 4, 'rtl', 'draft_1k', 'PLANNED', '[]',"
+                    " '[]', '[]', '2026-01-01', '2026-01-01', 7, 2, 0, 0, '{}',"
+                    " 'NOT_CHECKED', 1)"
+                )
+            )
+        connection.rollback()
+    engine.dispose()

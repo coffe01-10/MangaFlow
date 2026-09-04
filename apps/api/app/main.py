@@ -6,13 +6,14 @@ from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 from app import models  # noqa: F401
 from app.api.router import api_router
 from app.config import get_settings
 from app.database import SessionLocal, engine
 from app.request_limits import RequestBodyLimitMiddleware
-from app.services.job_service import recover_pending_jobs
+from app.services.job_service import recover_pending_jobs, start_periodic_recovery
 from app.services.provider_presets import ensure_provider_presets
 from app.services.runtime_settings import apply_runtime_overrides
 
@@ -51,7 +52,31 @@ async def lifespan(application: FastAPI):
             apply_runtime_overrides(db, settings)
             ensure_provider_presets(db, settings, auto_commit=True)
             recover_pending_jobs(db)
+            _recover_cli_runs()
+    if not application.dependency_overrides:
+        # REDIS-mode RQ retries fire inside the lease window and then stop, so
+        # a dead worker's job would stay ACTIVE until the next API restart.
+        # The periodic pass keeps reclaiming expired leases and re-enqueueing
+        # parked WAITING jobs for the lifetime of the API process.
+        start_periodic_recovery()
     yield
+
+
+def _recover_cli_runs() -> None:
+    """Release CLI channel slots whose controller died mid-run (contract §9.3)."""
+
+    import logging
+
+    from app.services.cli_executor import recover_abandoned_cli_runs
+
+    logger = logging.getLogger("mangaflow.cli")
+    try:
+        recovered = recover_abandoned_cli_runs()
+    except Exception:
+        logger.exception("CLI run recovery failed at startup")
+        return
+    for run_id in recovered:
+        logger.warning("released abandoned CLI run %s", run_id)
 
 
 settings = get_settings()
@@ -67,8 +92,10 @@ app = FastAPI(
     openapi_url="/api/openapi.json",
     lifespan=lifespan,
 )
-# Last added middleware is outermost. CORS must wrap the upload limiter so
-# browser 413 responses still include Access-Control-Allow-Origin.
+# Middleware order note: the LAST added middleware is the OUTERMOST. Desired
+# chain: TrustedHost (outermost — reject rebinded hosts before anything else)
+# → CORS (must wrap the upload limiter so browser 413 responses still carry
+# Access-Control-Allow-Origin) → RequestBodyLimitMiddleware.
 app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
@@ -76,6 +103,16 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+)
+# The API is unauthenticated; without a Host allowlist a DNS-rebinded attacker
+# page reaches it same-origin, where CORS is irrelevant.
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=sorted(
+        host.strip()
+        for host in get_settings().api_trusted_hosts.split(",")
+        if host.strip()
+    ),
 )
 app.include_router(api_router, prefix=settings.api_prefix)
 

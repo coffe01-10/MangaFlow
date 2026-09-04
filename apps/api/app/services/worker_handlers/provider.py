@@ -270,6 +270,17 @@ def _invoke_provider(db, binding: AdapterBinding, callback):
                             retry_after_seconds=retry_error.retry_after_seconds,
                         )
                         raise
+                    except Exception:
+                        # Same convergence rule as the primary dispatch: an
+                        # unclassified exception in the key-replacement retry
+                        # must not leave its audit row pending forever.
+                        _finalize_or_fail(
+                            replacement_id,
+                            outcome="FAILED",
+                            error_code="INVALID_OUTPUT",
+                            error_message="模型通道出现未分类异常，已记录失败",
+                        )
+                        raise
                     _finalize_or_fail(
                         replacement_id,
                         outcome="SUCCEEDED",
@@ -281,6 +292,20 @@ def _invoke_provider(db, binding: AdapterBinding, callback):
                     db.info["last_model_call_attempt_id"] = replacement_id
                     mark_key_success(db, replacement.selected_key.row)
                     return result
+        raise
+    except Exception:
+        # An adapter bug or an unclassified malformed response must not leave
+        # the paid attempt pending forever: converge the audit row to a
+        # terminal FAILED state, then let the worker's generic error path
+        # decide retry semantics from the original exception. A persistence
+        # failure inside finalize still surfaces as AUDIT_PERSISTENCE_FAILED
+        # (non-retryable), matching the ProviderAdapterError path above.
+        _finalize_or_fail(
+            attempt_id,
+            outcome="FAILED",
+            error_code="INVALID_OUTPUT",
+            error_message="模型通道出现未分类异常，已记录失败",
+        )
         raise
     _finalize_or_fail(
         attempt_id,
