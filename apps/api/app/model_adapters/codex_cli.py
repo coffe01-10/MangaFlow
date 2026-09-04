@@ -427,18 +427,27 @@ def resolve_codex_executable(value: str) -> str | None:
         ):
             return None
         resolved = candidate.resolve(strict=True)
-        if resolved.suffix.casefold() == ".exe" and resolved.is_file():
-            return str(resolved)
-        return _resolve_npm_native(resolved)
+        if resolved.suffix.casefold() in {".cmd", ".ps1"}:
+            # Absolute npm shim: resolve to the pinned native codex.exe inside
+            # the package's vendor tree instead of executing the shim.
+            return _resolve_npm_native(resolved)
+        if resolved.name.casefold() != "codex.exe" or resolved.suffix.casefold() != ".exe":
+            # Pin the binary name like the agy/grok channels: an arbitrary
+            # absolute .exe would turn a connection setting into arbitrary
+            # program execution.
+            return None
+        return str(resolved) if resolved.is_file() else None
     if candidate.name != value or value.casefold() != "codex":
         raise ValueError("Codex CLI executable must be 'codex' or an absolute path")
     discovered = shutil.which(value)
     if not discovered:
         return None
     resolved = Path(discovered).resolve(strict=True)
-    if resolved.suffix.casefold() == ".exe" and resolved.is_file():
-        return str(resolved)
-    return _resolve_npm_native(resolved)
+    if resolved.suffix.casefold() != ".exe":
+        return _resolve_npm_native(resolved)
+    if resolved.name.casefold() != "codex.exe":
+        return None
+    return str(resolved) if resolved.is_file() else None
 
 
 def _resolve_npm_native(shim: Path) -> str | None:

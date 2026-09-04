@@ -262,7 +262,13 @@ def _save_generated_asset(db, candidate: PageCandidate, data: bytes) -> Asset:
             )
             db.add(asset)
             db.flush()
-            thumbnails = create_thumbnails(destination, settings.storage_root, asset.id)
+            thumbnails = create_thumbnails(
+                destination,
+                settings.storage_root,
+                asset.id,
+                max_pixels=settings.max_image_pixels,
+                max_side=settings.max_image_side,
+            )
             asset.thumbnail_320_key = thumbnails[320]
             asset.thumbnail_640_key = thumbnails[640]
         return asset

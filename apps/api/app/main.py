@@ -6,6 +6,7 @@ from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 from app import models  # noqa: F401
 from app.api.router import api_router
@@ -93,6 +94,17 @@ app = FastAPI(
 )
 # Last added middleware is outermost. CORS must wrap the upload limiter so
 # browser 413 responses still include Access-Control-Allow-Origin.
+# TrustedHost sits outside CORS: the API is unauthenticated, and without a
+# Host allowlist a DNS-rebinded attacker page reaches it same-origin, making
+# the CORS layer irrelevant.
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=sorted(
+        host.strip()
+        for host in get_settings().api_trusted_hosts.split(",")
+        if host.strip()
+    ),
+)
 app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,

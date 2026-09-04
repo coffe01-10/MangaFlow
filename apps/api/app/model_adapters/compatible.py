@@ -165,6 +165,11 @@ def _safe_headers(runtime: CompatibleRuntime) -> dict[str, str]:
     for key, value in runtime.extra_headers.items():
         if key.lower() in _RESERVED_HEADERS:
             continue
+        # Connection-level headers are CRLF-validated at catalog write time;
+        # model capability headers reach the same sink and must obey the same
+        # rule instead of smuggling header splits into the request.
+        if "\r" in key or "\n" in key or "\r" in str(value) or "\n" in str(value):
+            raise ProviderAdapterError("INVALID_INPUT", "供应商自定义请求头包含非法字符")
         headers[key] = str(value)
     if runtime.protocol == "ANTHROPIC":
         headers["x-api-key"] = runtime.api_key

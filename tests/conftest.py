@@ -10,6 +10,10 @@ from sqlalchemy.pool import StaticPool
 
 # Offline suite must not read a developer .env or inherit live credential env.
 os.environ["MANGAFLOW_DISABLE_DOTENV"] = "1"
+# The API's TrustedHost allowlist defaults to loopback hosts; the offline test
+# suite exercises the app through TestClient, whose synthetic host header is
+# "testserver". Loopback enforcement itself is pinned by dedicated tests.
+os.environ.setdefault("API_TRUSTED_HOSTS", "*")
 for _live_name in (
     "GOOGLE_CLOUD_PROJECT",
     "GOOGLE_CLOUD_LOCATION",

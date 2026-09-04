@@ -40,13 +40,33 @@ def inspect_upload_image(
     return width, height, mime, suffix
 
 
-def create_thumbnails(source: Path, root: Path, asset_id: str) -> dict[int, str]:
-    """Create bounded WebP previews beside the configured media root."""
+def create_thumbnails(
+    source: Path,
+    root: Path,
+    asset_id: str,
+    *,
+    max_pixels: int | None = None,
+    max_side: int | None = None,
+) -> dict[int, str]:
+    """Create bounded WebP previews beside the configured media root.
+
+    Generated provider payloads pass through here too, so callers should pass
+    the configured pixel/side caps: a hostile or broken endpoint returning an
+    oversized image must fail deterministically instead of exhausting CPU and
+    memory during thumbnailing.
+    """
 
     root = root.resolve()
     source = source.resolve()
     if not source.is_relative_to(root):
         raise ValueError("素材路径越界")
+    if max_pixels is not None or max_side is not None:
+        with Image.open(source) as probe:
+            width, height = probe.size
+        if max_pixels is not None and width * height > max_pixels:
+            raise ValueError("生成图片超出像素上限")
+        if max_side is not None and max(width, height) > max_side:
+            raise ValueError("生成图片超出边长上限")
     output_dir = root / "thumbnails" / asset_id
     output_dir.mkdir(parents=True, exist_ok=True)
     keys: dict[int, str] = {}
