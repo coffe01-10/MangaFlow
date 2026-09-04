@@ -7,6 +7,7 @@ seams keep taking effect. Attribute existence or object identity alone is not
 treated as proof of seam preservation.
 """
 
+import pytest
 from sqlalchemy import select
 
 import app.services.workflow_engine as workflow_engine
@@ -334,6 +335,12 @@ def _seed_page_hierarchy(db) -> dict:
 
 
 def test_approve_node_hits_facade_create_job_seam(db_session, monkeypatch):
+    # 该用例只验证 create_job 接缝；readiness 门禁由
+    # test_approve_node_enforces_page_readiness 单独锁定。
+    monkeypatch.setattr(
+        "app.services.workflow_engine.lifecycle.ensure_page_ready",
+        lambda *_args, **_kwargs: None,
+    )
     seeded = _seed_page_hierarchy(db_session)
     workflow = _seed_workflow(db_session, seeded["project_id"], default_graph())
     publish_workflow(db_session, workflow)
@@ -396,3 +403,109 @@ def test_lazy_consumers_resolve_engine_functions_through_facade():
     assert callable(workflow_engine.cancel_run)
     assert callable(workflow_engine.execute_workflow_node)
     assert callable(worker_tasks.execute_job)
+
+
+def test_approve_node_enforces_readiness_and_freezes_scene_snapshot(db_session):
+    """approve_node 的 GENERATE 审批必须与 create_page_candidate 共用同一组
+    不变量：readiness 门禁（未激活风格 → 409 PAGE_NOT_READY）、排队时冻结
+    scene_asset 快照、把场景参考图纳入 JobAssetReference 租约。"""
+
+    from fastapi import HTTPException
+
+    seeded = _seed_page_hierarchy(db_session)
+    workflow = _seed_workflow(db_session, seeded["project_id"], default_graph())
+    publish_workflow(db_session, workflow)
+
+    run = create_workflow_run(
+        db_session,
+        workflow,
+        scope_type="PAGE",
+        scope_id=seeded["page_id"],
+        start_node_ids=["generate"],
+        stop_node_ids=["generate"],
+    )
+    node_run = db_session.scalar(
+        select(WorkflowNodeRun).where(
+            WorkflowNodeRun.workflow_run_id == run.id,
+            WorkflowNodeRun.status == "WAITING_APPROVAL",
+        )
+    )
+    assert node_run is not None
+
+    # 未激活风格：统一 readiness 门禁必须拒绝付费生成。
+    with pytest.raises(HTTPException) as blocked:
+        approve_node(
+            db_session,
+            run.id,
+            node_run.node_id,
+            image_model_alias="image.nano_banana_2",
+            resolution="1K",
+        )
+    assert blocked.value.status_code == 409
+    assert blocked.value.detail["code"] == "PAGE_NOT_READY"
+
+    # 解除门禁后：scene_asset 快照冻结 + 场景参考图进入租约。
+    import app.services.workflow_engine.lifecycle as lifecycle
+
+    original_ready = lifecycle.ensure_page_ready
+    db_session.expire_all()
+    node_run = db_session.scalar(
+        select(WorkflowNodeRun).where(
+            WorkflowNodeRun.workflow_run_id == run.id,
+            WorkflowNodeRun.status == "WAITING_APPROVAL",
+        )
+    )
+    lifecycle.ensure_page_ready = lambda *_a, **_k: original_ready
+    try:
+        from app.models import Scene, SceneAsset
+
+        scene_asset = SceneAsset(
+            project_id=seeded["project_id"],
+            name="测试场景资产",
+            normalized_name="测试场景资产",
+            description="带参考图的场景",
+        )
+        db_session.add(scene_asset)
+        db_session.flush()
+        scene = Scene(
+            chapter_id=seeded["chapter_id"],
+            ordinal=1,
+            location="旧走廊",
+            scene_asset_id=scene_asset.id,
+        )
+        db_session.add(scene)
+        db_session.flush()
+        page = db_session.get(MangaPage, seeded["page_id"])
+        page.scene_ids = [scene.id]
+        db_session.commit()
+
+        job_holder: dict[str, object] = {}
+
+        def capture_create_job(*args, **kwargs):
+            job_holder["reference_asset_ids"] = kwargs.get("reference_asset_ids")
+            return real_create_job(*args, **kwargs)
+
+        from app.services import workflow_engine
+
+        real_create_job = workflow_engine.create_job
+        workflow_engine.create_job = capture_create_job
+        try:
+            approve_node(
+                db_session,
+                run.id,
+                node_run.node_id,
+                image_model_alias="image.nano_banana_2",
+                resolution="1K",
+            )
+        finally:
+            workflow_engine.create_job = real_create_job
+    finally:
+        lifecycle.ensure_page_ready = original_ready
+
+    candidate = db_session.scalar(
+        select(PageCandidate).where(PageCandidate.page_id == seeded["page_id"])
+    )
+    assert candidate is not None
+    snapshot = candidate.prompt_snapshot or {}
+    assert snapshot.get("scene_asset", {}).get("scene_asset_id") == scene_asset.id
+    assert snapshot["scene_asset"]["compiled_background"]

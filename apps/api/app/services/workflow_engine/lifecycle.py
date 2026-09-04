@@ -29,6 +29,8 @@ from app.services.ordinal_allocator import (
     commit_ordinal_transaction,
     create_generation_batch,
 )
+from app.services.page_readiness import ensure_page_ready
+from app.services.scene_assets import scene_asset_snapshot, scene_reference_assets
 from app.services.workflow_engine.catalog import NODE_TYPE_MAP
 from app.services.workflow_engine.planning import create_workflow_run
 from app.services.workflow_engine.reconciliation import (
@@ -115,6 +117,11 @@ def approve_node(
             selections={},
             style_id=page.style_id,
         )
+        # Same unified readiness gate as create_page_candidate (architecture
+        # §6): style activation, palette confirmation, test image approval,
+        # chapter status and worker availability must all hold before a paid
+        # workflow generation is queued.
+        ensure_page_ready(db, page, get_settings(), package_gate=package_batch.gate)
         reference_selections: dict[str, dict[str, str | None]] = dict(
             package_batch.normalized
         )
@@ -171,6 +178,10 @@ def approve_node(
         snapshot = {
             "storyboard_version": page.storyboard_version,
             "reference_selections": reference_selections,
+            # Freeze the queue-time scene asset facts like create_page_candidate
+            # so the worker compiles the background from the frozen snapshot
+            # instead of silently falling back to Panel.background.
+            "scene_asset": scene_asset_snapshot(db, page),
         }
         if package_batch.snapshot:
             snapshot["character_packages"] = package_batch.snapshot
@@ -188,6 +199,11 @@ def approve_node(
         db.add(candidate)
         db.flush()
         dependency_ids = _parent_job_ids(db, run, graph, node_id)
+        # Lease the scene reference images alongside character/outfit refs
+        # (contract §6): deleting a scene reference between queueing and
+        # execution must fail the job with 409 semantics, not silently
+        # generate against a degraded reference set.
+        scene_reference_ids = [item.id for item in scene_reference_assets(db, page)]
         job = engine.create_job(
             db,
             project_id=run.project_id,
@@ -203,7 +219,7 @@ def approve_node(
                 "workflow_node_id": node_id,
                 "reference_selections": reference_selections,
             },
-            reference_asset_ids=reference_asset_ids,
+            reference_asset_ids=[*reference_asset_ids, *scene_reference_ids],
             max_attempts=node.config.max_attempts,
             idempotency_key=f"workflow:{run.id}:{node_id}:candidate",
             dependency_ids=dependency_ids,
