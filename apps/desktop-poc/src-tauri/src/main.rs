@@ -88,8 +88,13 @@ fn run() {
                 .map_err(|error| format!("sidecar handshake failed: {error:?}"))?;
 
             // Synchronous injection: available before any page script runs.
+            // The origin is embedded as a JSON string literal so every byte is
+            // escaped by serde_json instead of raw format! interpolation.
             let origin = spawned.ready.api_origin.clone();
-            let initialization_script = format!("window.__MANGAFLOW_API_ORIGIN__ = '{origin}';\n");
+            let origin_literal =
+                serde_json::to_string(&origin).map_err(|error| error.to_string())?;
+            let initialization_script =
+                format!("window.__MANGAFLOW_API_ORIGIN__ = {origin_literal};\n");
 
             app.manage(ApiOrigin(origin));
             app.manage(HelperState(Mutex::new(Some(spawned))));

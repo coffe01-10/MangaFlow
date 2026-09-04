@@ -1,17 +1,19 @@
 //! Process-tree ownership for the PoC shell.
 //!
-//! Windows (compile-verified via `cargo check --target x86_64-pc-windows-msvc`,
-//! runtime NOT RUN in this Linux sandbox): the shell creates a root Job Object
-//! with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` and assigns the directly-spawned
-//! helper, so losing the shell kills the whole tree. Production must close the
-//! spawn→assign window with `CREATE_SUSPENDED` + assign + resume, exactly as
-//! `scripts/owned_processes.py` does; that hardening is recorded in the PoC
-//! README rather than silently assumed.
+//! **Windows path is a COMPILE-ONLY SKELETON (V02-53B).** It compiles under
+//! `cargo check --target x86_64-pc-windows-msvc` but its runtime behavior is
+//! NOT RUN, and — unlike `scripts/owned_processes.py` — the helper is NOT
+//! created suspended: `std::process::Command` cannot spawn suspended, so the
+//! helper runs its first instructions before `AssignProcessToJobObject`, and
+//! a shell crash in that window would leak the tree. This code must NOT be
+//! mistaken for a production launcher: a production shell implements
+//! `CreateProcessW(CREATE_SUSPENDED)` + assign + `ResumeThread` (see
+//! `scripts/owned_processes.py` `start_python`) and re-verifies on Windows.
 //!
-//! Unix (runtime-verified in this sandbox): the spawned helper gets
+//! Unix path (runtime-verified in this sandbox): the spawned helper gets
 //! `PR_SET_PDEATHSIG=SIGKILL` before its first instruction and puts itself
-//! into its own session, so a shell crash kills the helper immediately and the
-//! shell can signal the entire tree via the process group.
+//! into its own session, so a shell crash kills the helper immediately and
+//! the shell can signal the entire tree via the process group.
 
 use std::process::Child;
 use std::time::{Duration, Instant};
@@ -43,6 +45,13 @@ pub struct OwnedTree {
 }
 
 impl OwnedTree {
+    /// Spawn the helper into shell ownership.
+    ///
+    /// # Windows skeleton caveat (V02-53B)
+    ///
+    /// On Windows this assigns the ALREADY-RUNNING child to the job, leaving
+    /// a spawn→assign race window (compile-only skeleton; see module docs).
+    /// Do not ship this path as a production launcher.
     pub fn spawn(mut command: std::process::Command) -> Result<OwnedTree, OwnershipError> {
         #[cfg(unix)]
         {
@@ -61,6 +70,8 @@ impl OwnedTree {
         let child = command.spawn().map_err(OwnershipError::Spawn)?;
         #[cfg(windows)]
         {
+            // SKELETON: assign-after-spawn, NOT the suspended first-instruction
+            // assignment owned_processes.py uses. Windows runtime NOT RUN.
             let guard = TreeGuard::Windows {
                 job: create_kill_on_close_job()?,
             };

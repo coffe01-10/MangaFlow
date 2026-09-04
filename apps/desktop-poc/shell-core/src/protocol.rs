@@ -184,16 +184,16 @@ fn fill_random(buffer: &mut [u8]) {
     }
     #[cfg(windows)]
     {
-        // RtlGenRandom via oldcrypt is deprecated; for the PoC the shell is
-        // expected to use `getrandom`. Keep the Windows path explicit and
-        // simple: derive from process-unique entropy sources.
-        let seed = std::time::SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-            ^ (std::process::id() as u128) << 64;
-        for (index, byte) in buffer.iter_mut().enumerate() {
-            *byte = ((seed >> (index * 8)) & 0xff) as u8;
+        // Win32 CSPRNG via the CNG system-preferred provider; runtime behavior
+        // is exercised only on Windows (NOT RUN in the Linux sandbox).
+        use windows::Win32::Security::Cryptography::{
+            BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        };
+        unsafe {
+            let status = BCryptGenRandom(None, buffer, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+            if status.0 != 0 {
+                panic!("BCryptGenRandom failed with NTSTATUS {}", status.0);
+            }
         }
     }
 }

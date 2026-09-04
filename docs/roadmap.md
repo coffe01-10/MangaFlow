@@ -2,7 +2,7 @@
 
 更新时间：2026-09-04
 当前实现合并树：`master` / `6f8a40d`（PR #109，2026-09-04）。V02-21B、V02-22A、V02-22B、V02-23B、V02-30B、V02-31B、V02-32、V02-40、V02-41B、V02-42B、V02-43B、V02-44B、V02-10D 与 V02-11C 已分别完成独立审阅并合并。2026-09-02 在 Linux 隔离环境跑通 PostgreSQL live 18 项（含 PKG-S14）与 Redis/RQ SimpleWorker live 8 项；7 项 Windows Job Object 独立 Worker 仍 `BLOCKED`（笔记本无 Docker/PostgreSQL/Redis，用户明确不安装）。同日 Windows 笔记本 `LAPTOP-TV9KT8RC` 在 SHA `98b93a0`（分支 `fix/pr82-remaining-package-p1s`，该 SHA 为 `master`/`f961774` 祖先；E2E/perf **未**跑在 `c93e1b3`）以官方控制器 `scripts/run_e2e_owned.py` 将 Playwright E2E 与 Lighthouse/FPS 记为 `RUN`。真实图片生成/编辑、账号权限、费用与真实取消/超时进程树仍按任务标记为 `NOT RUN`。
-当前开发分支：`glm/v02-53b-desktop-shell-poc`。下一实现项为 V02-53B（桌面壳可丢弃 PoC，Issue #110）。
+当前开发分支：`glm/v02-53b-desktop-shell-poc`。V02-53B 桌面壳 PoC 已合并证据（Issue #110 / PR #111）；下一实现项由 lead 依据 PoC 证据与 ADR 选型决议确定（候选：V02-54 桌面应用交付、V02-52B 性能门禁执行——后者仍需 V02-52A N=20 全样本）。
 最近 `check:full` 历史基线：`master` / `cb324e3`（2026-08-27；相对 PR #5 合并提交 `d5d32ec` 仅增加任务文档），不代表 PR #6 / #7 / #10 / #11 已重跑浏览器验收。2026-09-02 Windows owned E2E 17/17 与 LH/FPS 4/4 证据在 `98b93a0` / `LAPTOP-TV9KT8RC`，见 `docs/development-progress.md`。
 深审历史基线：`master` / `f085327`。当时新增 6 项 P1 修复与 1 项 P2 改进；PR #6 已合并其中 P1-7、P1-9～P1-12 的代码修复。P1-8、P2-8 已随 PR #7 合并，独立 Redis/RQ、PostgreSQL 与浏览器验收仍待完成。
 安全审查历史基线：`master` / `7635cf7`。P0-3、P1-13～P1-15、P2-4、P2-9 的代码修复现已合并，真实服务/容器及完整依赖审计边界仍保留。
@@ -35,12 +35,12 @@
   - [x] 供应商平权定义、迁移红线和 M1–M14 验收矩阵已由 V02-02 冻结（`5ac0383`）。
   - [x] 供应商设置目标信息架构、状态和 UI 测试矩阵已完成前置审计（`2ab048f`，随 `3bac6da` 合并）。
   - [x] 可展示模型、CLI 执行器、导演命令/候选血缘、场景资产、分镜几何、用量账本和桌面壳 ADR 已由本轮 A 级文档分别冻结。
-  - [x] 角色模型包的数据层契约已由 V02-22A 冻结（`6298be1`）；桌面进程真实 PoC（V02-53B）仍未完成；完成前 V02-01 不勾选。
+  - [x] 角色模型包的数据层契约已由 V02-22A 冻结（`6298be1`）；桌面进程可丢弃 PoC（V02-53B）已落地（Issue #110 / PR #111，Linux 实测），但 Windows Job Object 实机、安装形态与 WebView2 兼容仍 NOT RUN，最终选型未批准，V02-01 仍不勾选。
 - [x] **V02-02（L2，Issue #39）：盘点现有 Vertex 特判和跨模块耦合。** 已在 `docs/v02-provider-neutrality-audit.md` 形成可逐项删除的特判清单、统一 provider/model capability 契约、历史 ID/别名兼容红线、Phase A–E 与 M1–M14；提交 `5ac0383`。本项为审计完成，不代表 V02-10 实现完成。
 - [ ] **V02-03（L3，组长设计）：冻结编辑命令、候选血缘和桌面进程边界。** 确定导演命令的可校验 schema、预览/确认/撤销语义、区域 mask 与父候选关系、CLI 子进程身份/超时/取消/清理规则，以及桌面壳对 API、Worker、文件和凭据的所有权。设计通过前不得广泛编辑迁移、Worker 或启动器。
   - [x] **V02-03A / Issue #47：导演命令与候选血缘契约。** 已合并 `docs/v02-director-command-lineage-contract.md`；场景版本、重试身份、局部候选采用与失效边界已收口。
   - [x] **CLI 进程边界设计。** 已由 V02-13A 的执行器契约冻结目录约定、输出归属、超时/取消、controller/child 崩溃与环境白名单。
-  - [ ] **桌面壳进程边界 PoC。** V02-53A 已给出 ADR 与所有权协议，但真实 Job Object、动态端口注入和安装形态仍需 V02-53B PoC 证明后才能完成 V02-03。
+  - [ ] **桌面壳进程边界 PoC。** V02-53A 已给出 ADR 与所有权协议；V02-53B PoC（Issue #110 / PR #111，`apps/desktop-poc/`，可丢弃）已在 Linux 实测动态端口原子绑定、owner token/journal readiness 握手、PDEATHSIG 清树与假模型闭环，并以 Windows 目标 `cargo check` 编译验证 Job Object 代码；**Windows 实机 Job Object、安装器与 WebView2 仍 NOT RUN**（`apps/desktop-poc/README.md` D1–D9），本子项保持不勾，待 Windows 实机验收后才能完成 V02-03。
 
 ### M1：供应商平权、模型选择与调用可观测性
 
