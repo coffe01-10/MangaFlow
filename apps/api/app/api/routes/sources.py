@@ -42,6 +42,8 @@ from app.schemas import (
 from app.services.content_workflow import (
     chapter_metrics,
     import_source,
+    normalize_chapter_title,
+    normalize_source_text,
     plan_chapter_pages,
     revise_chapter_source,
 )
@@ -116,7 +118,7 @@ def upload_source(
 ) -> SourceImportRead:
     _project(db, project_id)
     settings = get_settings()
-    title = parsed.texts.get("title") or "正文"
+    title = normalize_chapter_title(parsed.texts.get("title") or "正文") or "正文"
     file = parsed.file
     suffix = Path(file.filename or "source.txt").suffix.lower()
     if suffix not in {".txt", ".md", ".markdown"}:
@@ -129,6 +131,7 @@ def upload_source(
         text = data.decode("utf-8-sig")
     except UnicodeDecodeError as error:
         raise HTTPException(status_code=422, detail="原文文件必须使用 UTF-8 编码") from error
+    text = normalize_source_text(text)
     source_type = "MARKDOWN" if suffix in {".md", ".markdown"} else "TXT"
     try:
         chapters = import_source(
