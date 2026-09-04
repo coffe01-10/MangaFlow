@@ -12,6 +12,7 @@ from app.config import get_settings
 from app.domain.states import JobStatus, PageStatus
 from app.models import (
     AssetCandidate,
+    CandidateLineage,
     GenerationJob,
     JobAssetReference,
     JobDependency,
@@ -83,6 +84,52 @@ def style_has_active_sibling_job(
     if exclude_job_id is not None:
         filters.append(GenerationJob.id != exclude_job_id)
     return db.scalar(select(GenerationJob.id).where(*filters).limit(1)) is not None
+
+
+def has_active_derived_job(
+    db: Session,
+    *,
+    job_types: set[str] | str,
+    parent_candidate_id: str,
+    repair_type: str | None = None,
+    resolution: str | None = None,
+) -> bool:
+    """True when an ACTIVE derived-generation job still targets a child of the
+    given parent candidate.
+
+    Repair/upscale/region jobs point at the freshly created CHILD candidate, so
+    ``has_active_job(target_id=original.id)`` is vacuous for them and duplicate
+    requests each enqueued another paid job (the per-request idempotency keys —
+    ``repair:{plan_id}``, ``upscale:{batch_id}:{resolution}`` — are always
+    fresh). Match through CandidateLineage instead: the lineage row is written
+    in the same transaction as the child and its job, so any committed ACTIVE
+    job is reachable from its parent. JSON request_parameters matching (the
+    exact repair_type / target_resolution the routes store) stays in Python on
+    the small ACTIVE set, which keeps the query portable across SQLite and
+    PostgreSQL — no dialect-specific JSON containment operators.
+    """
+
+    if isinstance(job_types, str):
+        job_types = {job_types}
+    active_jobs = db.scalars(
+        select(GenerationJob)
+        .join(PageCandidate, PageCandidate.id == GenerationJob.target_id)
+        .join(CandidateLineage, CandidateLineage.child_candidate_id == PageCandidate.id)
+        .where(
+            GenerationJob.job_type.in_(set(job_types)),
+            GenerationJob.target_type == "PAGE_CANDIDATE",
+            GenerationJob.status.in_(ACTIVE_JOB_STATUSES),
+            CandidateLineage.parent_candidate_id == parent_candidate_id,
+        )
+    )
+    for job in active_jobs:
+        parameters = job.request_parameters or {}
+        if repair_type is not None and parameters.get("repair_type") != repair_type:
+            continue
+        if resolution is not None and parameters.get("target_resolution") != resolution:
+            continue
+        return True
+    return False
 
 
 def create_job(
