@@ -656,9 +656,18 @@ def recover_pending_jobs(db: Session) -> int:
         db.commit()
         db.expire_all()
     for workflow_run_id in workflow_run_ids:
-        from app.services.workflow_engine import reconcile_run
+        # One poisoned run must not skip the remaining reconciliations or the
+        # WAITING/QUEUED requeue below; this pass also runs inside the API
+        # lifespan at startup, where an unguarded raise would abort boot.
+        try:
+            from app.services.workflow_engine import reconcile_run
 
-        reconcile_run(db, workflow_run_id)
+            reconcile_run(db, workflow_run_id)
+        except Exception:
+            LOGGER.exception("workflow run %s reconcile failed during recovery", workflow_run_id)
+            # Drop partial writes from the failed reconcile so they cannot
+            # leak into the next run's pass or the requeue phase below.
+            db.rollback()
 
     jobs = list(
         db.scalars(
@@ -702,7 +711,15 @@ def recover_pending_jobs(db: Session) -> int:
                 continue
             db.commit()
             db.expire(job)
-        enqueue_job(db, job)
+        # enqueue_job refreshes the row first: a job deleted between the
+        # SELECT above and this call raises ObjectDeletedError, which used to
+        # starve the requeue of every remaining job in the pass.
+        try:
+            enqueue_job(db, job)
+        except Exception:
+            LOGGER.exception("job %s requeue failed during recovery", job.id)
+            db.rollback()
+            continue
         recovered += 1
     return recovered
 
