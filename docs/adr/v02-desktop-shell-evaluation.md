@@ -7,7 +7,9 @@
 > - 工作分支：`codex/v02-53a-desktop-shell-evaluation`（worktree `D:\自媒体\漫画工作流-deepseek-v02-53a`）
 > - 约束：不修改代码/迁移/配置/测试/`docs/roadmap.md`/`docs/development-progress.md`/`plan.md`；不读取凭据、不安装软件、不调用真实供应商
 > - 一手资料访问日期：**2026-08-30**（来源见 §8，仅官方页面）
-> - 修订记录：（由 lead 接管收口时填写）
+> - 修订记录：2026-09-04 V02-54（Issue #114）补充 V02-53B PoC 输入（见下）；**最终选型决议记录仍由 lead 收口时填写**
+>
+> **PoC 输入（V02-53B，2026-09-04，不构成批准）：** `apps/desktop-poc/`（Issue #110 / PR #111 / 合并提交 `203efad`）已在 Linux 实测冻结启动协议、进程归属与假模型闭环，其 D1–D9 结论**建议继续 Tauri 2**；否决条件 3（前端静态导出）拿到关键风险输入——工作台子树无法仅靠 flag 静态导出（动态段预渲染组合 + 工作台预渲染崩溃），方案 B（捆绑 node 跑 `next start`）未在 PoC 验证。本文件状态**仍为草案（DRAFT），技术选型未批准**，最终决策由 lead 复核 PoC 证据与本文后作出；Windows 实机验收（Job Object/WebView2/安装器/签名/更新）NOT RUN。
 
 ---
 
@@ -88,7 +90,7 @@
 
 1. **Python sidecar 无法以 Tauri 形态打包**：PoC 无法把 FastAPI+Alembic+RQ Worker（依赖 Pillow 等）以可接受的单二进制（PyInstaller `--onefile`）或 embeddable 形态稳定启动、迁移与运行；且 Electron 的目录捆绑可稳定承载它。
 2. **WebView2 渲染兼容不可接受**：Next.js 16 前端（Canvas 分镜编辑器、动画）在目标用户机器上的 WebView2 Evergreen 版本渲染异常，feature-detect 无法规避；Electron 固定 Chromium 可规避。
-3. **前端静态导出改造不可行**：`rewrites` 失效后，前端 `/api/v1/*` 直连改造（base URL 注入）在 PoC 中证伪（如鉴权/CORS/相对路径问题无法收口），而 Electron 自带 Node 可零改动跑 `next start`。
+3. **前端静态导出改造不可行**：`rewrites` 失效后，前端 `/api/v1/*` 直连改造（base URL 注入）在 PoC 中证伪（如鉴权/CORS/相对路径问题无法收口），而 Electron 自带 Node 可零改动跑 `next start`。（V02-53B 实测输入：静态导出存在确定性阻塞——`output:"export"` 要求每个动态段 ≥1 构建期预渲染组合而真实项目 id 不可知，且工作台组件树服务端预渲染崩溃；方案 B 未验证。见 `apps/desktop-poc/README.md` §4。）
 4. **Rust 维护能力不可接受**：项目团队无 Rust 维护能力，Tauri 壳层（升级、修复、签名）持续成本不可接受。
 
 ### 3.2 明确「不选 Electron」不等于「否决 Electron」
