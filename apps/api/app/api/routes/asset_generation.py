@@ -44,7 +44,7 @@ from app.schemas import (
     StyleProfileUpdate,
     StyleTestApproval,
 )
-from app.services.job_service import create_job, enqueue_job
+from app.services.job_service import create_job, enqueue_job, has_active_job
 from app.services.ordinal_allocator import (
     BatchOrdinalConflictError,
     CandidateOrdinalConflictError,
@@ -461,6 +461,19 @@ def analyze_style(style_id: str, db: Session = Depends(get_db)):
     reference_ids = style.profile.get("reference_asset_ids", [])
     if not reference_ids:
         raise HTTPException(status_code=409, detail="请先给风格档案绑定至少一张漫画参考图")
+    # The idempotency key below embeds the bumped style version, so sequential
+    # duplicates never collapse; guard on ACTIVE jobs (same pattern as the
+    # inspect route) so one style never runs two paid STYLE_ANALYZE calls.
+    if has_active_job(
+        db,
+        job_type="STYLE_ANALYZE",
+        target_id=str(style.id),
+        target_type="STYLE",
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="该风格已有进行中的分析任务，请等待完成后再重新分析",
+        )
     style.status = "ANALYZING"
     style.version += 1
     db.commit()
@@ -494,6 +507,19 @@ def draft_style_palette(
         raise HTTPException(status_code=409, detail="请先将风格档案切换为彩色漫画")
     if not style.profile.get("reference_asset_ids"):
         raise HTTPException(status_code=409, detail="请先绑定至少一张风格参考图")
+    # Palette drafting creates a STYLE_ANALYZE job against the same style row,
+    # so the same ACTIVE-job guard applies: analyzing and drafting must never
+    # run as two concurrent paid calls (nor overwrite each other's profile).
+    if has_active_job(
+        db,
+        job_type="STYLE_ANALYZE",
+        target_id=str(style.id),
+        target_type="STYLE",
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="该风格已有进行中的分析任务，请等待完成后再起草色板",
+        )
     style.status = StyleStatus.ANALYZING
     style.version += 1
     db.commit()

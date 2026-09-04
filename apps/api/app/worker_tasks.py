@@ -328,7 +328,15 @@ def _mark_worker_failure(
             asset_candidate.status = "FAILED"
         style = db.get(StyleProfile, job.target_id) if job.target_type == "STYLE" else None
         if style:
-            style.status = "DRAFT"
+            # The failing job was already claimed FAILED in-session above, but
+            # a duplicate STYLE_ANALYZE job may still be analyzing the same
+            # style row; only force DRAFT once no sibling remains active.
+            from app.services.job_service import style_has_active_sibling_job
+
+            if not style_has_active_sibling_job(
+                db, style_id=job.target_id, exclude_job_id=job.id
+            ):
+                style.status = "DRAFT"
 
         if node_run and node_run.status not in {"COMPLETED", "FAILED", "CANCELLED"}:
             node_run.status = "FAILED"

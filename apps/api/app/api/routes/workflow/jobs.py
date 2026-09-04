@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.api.helpers import asset_candidate_read, candidate_read
 from app.database import get_db
+from app.domain.states import JobStatus
 from app.models import (
     AssetCandidate,
     GenerationJob,
@@ -169,6 +170,10 @@ def retry(job_id: str, db: Session = Depends(get_db)) -> GenerationJob:
     job = db.get(GenerationJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
+    # reset_for_retry silently ignores every other status and would return the
+    # unchanged row as a 200 "success"; reject those no-ops up front.
+    if job.status not in {JobStatus.FAILED, JobStatus.NEEDS_REVIEW, JobStatus.WAITING}:
+        raise HTTPException(status_code=409, detail="当前状态的任务不能重试")
     if job.attempt_count >= job.max_attempts:
         raise HTTPException(status_code=409, detail="任务已达到最大重试次数")
     return reset_for_retry(db, job)
