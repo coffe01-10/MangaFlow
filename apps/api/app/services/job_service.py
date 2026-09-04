@@ -353,14 +353,17 @@ def restore_page_after_generation_exit(db: Session, page_candidate: PageCandidat
     page.status = "DRAFT_READY" if page.selected_candidate_id or other_ready else "STORYBOARDED"
 
 
-def start_periodic_recovery() -> Thread:
+def start_periodic_recovery() -> tuple[Thread, Event]:
     """Reclaim expired leases and re-enqueue waiting jobs while the API runs.
 
     RQ retries fire within the lease window and then stop, so a killed REDIS
     worker used to leave its job ACTIVE until the next API restart. A periodic
     pass in the long-lived API process closes that gap (and re-enqueues jobs
-    parked as WAITING/QUEUE_UNAVAILABLE after a Redis outage).
+    parked as WAITING/QUEUE_UNAVAILABLE after a Redis outage). Returns the
+    daemon thread with its stop event so embedders (tests) can park it.
     """
+
+    stop = Event()
 
     def _loop() -> None:
         from app.database import SessionLocal
@@ -370,6 +373,8 @@ def start_periodic_recovery() -> Thread:
         interval = max(30.0, settings.job_lease_seconds / 2)
         while True:
             time.sleep(interval)
+            if stop.is_set():
+                return
             try:
                 with SessionLocal() as db:
                     recover_pending_jobs(db)
@@ -383,7 +388,7 @@ def start_periodic_recovery() -> Thread:
 
     thread = Thread(target=_loop, name="mangaflow-job-recovery", daemon=True)
     thread.start()
-    return thread
+    return thread, stop
 
 
 def recover_pending_jobs(db: Session) -> int:

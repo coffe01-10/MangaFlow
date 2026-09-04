@@ -270,6 +270,17 @@ def _invoke_provider(db, binding: AdapterBinding, callback):
                             retry_after_seconds=retry_error.retry_after_seconds,
                         )
                         raise
+                    except Exception:
+                        # Same convergence rule as the primary dispatch: an
+                        # unclassified exception in the key-replacement retry
+                        # must not leave its audit row pending forever.
+                        _finalize_or_fail(
+                            replacement_id,
+                            outcome="FAILED",
+                            error_code="INVALID_OUTPUT",
+                            error_message="模型通道出现未分类异常，已记录失败",
+                        )
+                        raise
                     _finalize_or_fail(
                         replacement_id,
                         outcome="SUCCEEDED",

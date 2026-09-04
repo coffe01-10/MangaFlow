@@ -357,7 +357,7 @@ class OpenAICompatibleAdapter(_CompatibleBase):
                 raise
             except Exception as error:
                 raise ProviderAdapterError(
-                    "INVALID_OUTPUT", "模型已响应，但响应结构无法解析"
+                    "INVALID_OUTPUT", "模型已响应，但响应结构无法解析", retryable=True
                 ) from error
         else:
             messages = []
@@ -390,7 +390,7 @@ class OpenAICompatibleAdapter(_CompatibleBase):
                 raise
             except Exception as error:
                 raise ProviderAdapterError(
-                    "INVALID_OUTPUT", "模型已响应，但响应结构无法解析"
+                    "INVALID_OUTPUT", "模型已响应，但响应结构无法解析", retryable=True
                 ) from error
         try:
             return output_schema.model_validate_json(text)
@@ -516,7 +516,7 @@ class OpenAICompatibleAdapter(_CompatibleBase):
             raise
         except Exception as error:
             raise ProviderAdapterError(
-                "INVALID_OUTPUT", "图片模型已响应，但结果无法解析"
+                "INVALID_OUTPUT", "图片模型已响应，但结果无法解析", retryable=True
             ) from error
         if not images:
             raise ProviderAdapterError("INVALID_OUTPUT", "图片模型没有返回可用图片")

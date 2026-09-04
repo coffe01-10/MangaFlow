@@ -1,7 +1,9 @@
 import hashlib
 import json
+import os
 import zipfile
 from pathlib import Path
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
@@ -84,6 +86,34 @@ def download_selected_page(page_id: str, db: Session = Depends(get_db)) -> FileR
     )
 
 
+def _write_export_atomically(destination: Path, write):
+    """Write through a unique temp file and rename into place.
+
+    The destination name is deterministic (candidate-set hash), so two
+    concurrent exports of the same chapter would otherwise interleave
+    truncate-mode writes and leave a permanently corrupt artifact whose
+    recorded sha256 never matches any complete output.
+    """
+
+    temp = destination.with_name(f".{destination.name}.{uuid4().hex}.tmp")
+    try:
+        write(temp)
+        os.replace(temp, destination)
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise
+
+
+def _hash_file(path: Path) -> tuple[int, str]:
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+            size += len(chunk)
+    return size, digest.hexdigest()
+
+
 @router.post(
     "/chapters/{chapter_id}/exports",
     response_model=ExportRead,
@@ -108,17 +138,31 @@ def create_export(
 
     if payload.export_type == "PNG":
         destination = output_dir / f"{token}-pages.zip"
-        with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as archive:
-            for page, _, asset in selected:
-                archive.write(
-                    _asset_path(asset),
-                    arcname=f"{page.page_number:04d}-{asset.original_name}",
-                )
+
+        def _write_zip(temp: Path) -> None:
+            with zipfile.ZipFile(temp, "w", zipfile.ZIP_DEFLATED) as archive:
+                for page, _, asset in selected:
+                    archive.write(
+                        _asset_path(asset),
+                        arcname=f"{page.page_number:04d}-{asset.original_name}",
+                    )
+
+        _write_export_atomically(destination, _write_zip)
     elif payload.export_type == "PDF":
         destination = output_dir / f"{token}-chapter.pdf"
-        images = [Image.open(_asset_path(asset)).convert("RGB") for _, _, asset in selected]
+        # Lazy opens: Pillow encodes frames one at a time, so a 4K long
+        # chapter no longer decodes every page's bitmap into memory at once.
+        images = [Image.open(_asset_path(asset)) for _, _, asset in selected]
         try:
-            images[0].save(destination, save_all=True, append_images=images[1:])
+            first = images[0]
+            _write_export_atomically(
+                destination,
+                # format= is explicit because the temp filename's suffix is
+                # ".tmp", from which Pillow cannot infer the encoder.
+                lambda temp: first.save(
+                    temp, format="PDF", save_all=True, append_images=images[1:]
+                ),
+            )
         finally:
             for image in images:
                 image.close()
@@ -163,16 +207,21 @@ def create_export(
             ],
             "asset_manifest": list(manifest.values()),
         }
-        destination.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
+        payload_text = json.dumps(document, ensure_ascii=False, indent=2)
 
-    data = destination.read_bytes()
+        def _write_json(temp: Path) -> None:
+            temp.write_text(payload_text, encoding="utf-8")
+
+        _write_export_atomically(destination, _write_json)
+
+    byte_size, digest = _hash_file(destination)
     bundle = ExportBundle(
         project_id=project.id,
         chapter_id=chapter.id,
         export_type=payload.export_type,
         storage_key=destination.relative_to(settings.storage_root).as_posix(),
-        byte_size=len(data),
-        sha256=hashlib.sha256(data).hexdigest(),
+        byte_size=byte_size,
+        sha256=digest,
         page_count=len(selected),
     )
     db.add(bundle)

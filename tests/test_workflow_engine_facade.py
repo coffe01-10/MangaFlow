@@ -509,3 +509,56 @@ def test_approve_node_enforces_readiness_and_freezes_scene_snapshot(db_session):
     snapshot = candidate.prompt_snapshot or {}
     assert snapshot.get("scene_asset", {}).get("scene_asset_id") == scene_asset.id
     assert snapshot["scene_asset"]["compiled_background"]
+
+
+def test_approve_node_double_approve_leaves_single_candidate(db_session, monkeypatch):
+    """Two racing approvals of the same node must not create two candidates:
+    the conditional claim makes the loser fail cleanly instead of leaving an
+    orphan QUEUED candidate that later flipped the node FAILED."""
+
+    monkeypatch.setattr(
+        "app.services.workflow_engine.lifecycle.ensure_page_ready",
+        lambda *_args, **_kwargs: None,
+    )
+    seeded = _seed_page_hierarchy(db_session)
+    workflow = _seed_workflow(db_session, seeded["project_id"], default_graph())
+    publish_workflow(db_session, workflow)
+    run = create_workflow_run(
+        db_session,
+        workflow,
+        scope_type="PAGE",
+        scope_id=seeded["page_id"],
+        start_node_ids=["generate"],
+        stop_node_ids=["generate"],
+    )
+    node_run = db_session.scalar(
+        select(WorkflowNodeRun).where(
+            WorkflowNodeRun.workflow_run_id == run.id,
+            WorkflowNodeRun.status == "WAITING_APPROVAL",
+        )
+    )
+    monkeypatch.setattr(workflow_engine, "enqueue_job", lambda db, job: job)
+
+    approve_node(
+        db_session,
+        run.id,
+        node_run.node_id,
+        image_model_alias="image.nano_banana_2",
+        resolution="1K",
+    )
+
+    with pytest.raises(ValueError, match="已经生成过一个候选|节点当前不等待人工确认"):
+        approve_node(
+            db_session,
+            run.id,
+            node_run.node_id,
+            image_model_alias="image.nano_banana_2",
+            resolution="1K",
+        )
+
+    candidates = list(
+        db_session.scalars(
+            select(PageCandidate).where(PageCandidate.page_id == seeded["page_id"])
+        )
+    )
+    assert len(candidates) == 1

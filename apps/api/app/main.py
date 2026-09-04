@@ -92,19 +92,10 @@ app = FastAPI(
     openapi_url="/api/openapi.json",
     lifespan=lifespan,
 )
-# Last added middleware is outermost. CORS must wrap the upload limiter so
-# browser 413 responses still include Access-Control-Allow-Origin.
-# TrustedHost sits outside CORS: the API is unauthenticated, and without a
-# Host allowlist a DNS-rebinded attacker page reaches it same-origin, making
-# the CORS layer irrelevant.
-app.add_middleware(
-    TrustedHostMiddleware,
-    allowed_hosts=sorted(
-        host.strip()
-        for host in get_settings().api_trusted_hosts.split(",")
-        if host.strip()
-    ),
-)
+# Middleware order note: the LAST added middleware is the OUTERMOST. Desired
+# chain: TrustedHost (outermost — reject rebinded hosts before anything else)
+# → CORS (must wrap the upload limiter so browser 413 responses still carry
+# Access-Control-Allow-Origin) → RequestBodyLimitMiddleware.
 app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
@@ -112,6 +103,16 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+)
+# The API is unauthenticated; without a Host allowlist a DNS-rebinded attacker
+# page reaches it same-origin, where CORS is irrelevant.
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=sorted(
+        host.strip()
+        for host in get_settings().api_trusted_hosts.split(",")
+        if host.strip()
+    ),
 )
 app.include_router(api_router, prefix=settings.api_prefix)
 

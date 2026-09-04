@@ -1637,14 +1637,13 @@ def test_start_periodic_recovery_runs_repeatedly(monkeypatch):
     monkeypatch.setattr(job_service, "recover_pending_jobs", lambda db: calls.append(1) or 0)
     real_sleep = time.sleep
     monkeypatch.setattr(job_service.time, "sleep", lambda _seconds: real_sleep(0.02))
-    thread = job_service.start_periodic_recovery()
+    thread, stop = job_service.start_periodic_recovery()
     try:
         deadline = time.time() + 5
         while len(calls) < 2 and time.time() < deadline:
             real_sleep(0.02)
         assert len(calls) >= 2
     finally:
-        # Daemon thread: park it on a long real sleep so teardown is quiet.
-        monkeypatch.setattr(job_service.time, "sleep", lambda _seconds: real_sleep(600))
-        real_sleep(0.05)
-        assert thread.is_alive()
+        stop.set()
+        thread.join(timeout=2)
+        assert not thread.is_alive()

@@ -77,7 +77,7 @@ class GoogleTextAdapter(_GoogleBase):
             text = response.text
         except Exception as error:
             raise ProviderAdapterError(
-                "INVALID_OUTPUT", "Gemini API 返回结构无法解析"
+                "INVALID_OUTPUT", "Gemini API 返回结构无法解析", retryable=True
             ) from error
         if not text:
             raise ProviderAdapterError("INVALID_OUTPUT", "Gemini API 没有返回文本")
@@ -115,7 +115,7 @@ class GoogleTextAdapter(_GoogleBase):
             text = response.text
         except Exception as error:
             raise ProviderAdapterError(
-                "INVALID_OUTPUT", "Gemini API 返回结构无法解析"
+                "INVALID_OUTPUT", "Gemini API 返回结构无法解析", retryable=True
             ) from error
         if not text:
             raise ProviderAdapterError("INVALID_OUTPUT", "Gemini API 没有返回分析结果")
@@ -192,7 +192,7 @@ class GoogleImageAdapter(_GoogleBase):
             raise
         except Exception as error:
             raise ProviderAdapterError(
-                "INVALID_OUTPUT", "Gemini API 图像响应结构无法解析"
+                "INVALID_OUTPUT", "Gemini API 图像响应结构无法解析", retryable=True
             ) from error
         if not images:
             raise ProviderAdapterError("INVALID_OUTPUT", "Gemini API 未返回图像")

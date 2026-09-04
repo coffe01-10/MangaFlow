@@ -343,3 +343,35 @@ def test_panel_patch_claim_is_atomic_across_sessions(tmp_path):
         first.rollback()
         second.rollback()
     engine.dispose()
+
+
+def test_revise_source_rejected_while_parse_is_running(client, db_session):
+    """Revising text under a running SOURCE_PARSE leaves dangling segment
+    references and an uncoverable new revision; the guard must 409."""
+
+    from app.models import GenerationJob
+
+    project = Project(name="解析中改稿")
+    db_session.add(project)
+    db_session.flush()
+    chapter = Chapter(project_id=project.id, ordinal=1, title="第一章")
+    db_session.add(chapter)
+    db_session.commit()
+
+    db_session.add(
+        GenerationJob(
+            project_id=project.id,
+            target_type="CHAPTER",
+            target_id=chapter.id,
+            job_type="SOURCE_PARSE",
+            status="GENERATING",
+        )
+    )
+    db_session.commit()
+
+    rejected = client.post(
+        f"/api/v1/chapters/{chapter.id}/revisions",
+        json={"text": "改过的原文", "source_type": "PASTE"},
+    )
+    assert rejected.status_code == 409
+    assert "解析任务正在执行" in rejected.json()["detail"]

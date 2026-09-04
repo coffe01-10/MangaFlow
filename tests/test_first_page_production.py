@@ -390,3 +390,60 @@ def test_select_candidate_does_not_clear_scene_change_review_flag(client, db_ses
         json={"export_type": "JSON"},
     )
     assert blocked_export.status_code == 409
+
+
+def test_select_candidate_does_not_clear_upstream_recheck_flag(client, db_session):
+    """A downstream page flagged NEEDS_RECHECK by an upstream re-selection
+    must not reach FINAL_READY by re-selecting its INSPECTED candidate; the
+    continuity inputs changed, so a fresh inspection is required."""
+
+    project = _project(client, "上游重选复查")
+    chapter = Chapter(project_id=project["id"], ordinal=1, title="第一章")
+    db_session.add(chapter)
+    db_session.flush()
+    page = MangaPage(
+        chapter_id=chapter.id,
+        page_number=2,
+        source_coverage={"complete": True},
+        status="FINAL_READY",
+        continuity_status="NEEDS_RECHECK",
+        selected_candidate_ack_version=1,
+    )
+    db_session.add(page)
+    db_session.flush()
+    batch = GenerationBatch(
+        project_id=project["id"],
+        chapter_id=chapter.id,
+        page_id=page.id,
+        ordinal=1,
+        generation_kind="PAGE",
+    )
+    asset = _asset(project["id"], "recheck.png", "e", "page_candidate")
+    db_session.add_all([batch, asset])
+    db_session.flush()
+    candidate = PageCandidate(
+        batch_id=batch.id,
+        page_id=page.id,
+        ordinal=1,
+        model_alias="image.nano_banana_2",
+        resolution=Resolution.DRAFT_1K,
+        status="INSPECTED",
+        asset_id=asset.id,
+        is_selected=True,
+        based_on_storyboard_version=page.storyboard_version,
+    )
+    db_session.add(candidate)
+    db_session.flush()
+    page.selected_candidate_id = candidate.id
+    db_session.commit()
+
+    selected = client.post(
+        f"/api/v1/pages/{page.id}/select-candidate",
+        json={"candidate_id": candidate.id, "manual_text_confirmed": True},
+    )
+    assert selected.status_code == 200, selected.json()
+    assert selected.json()["status"] == "FINAL_CHECKING"
+    assert selected.json()["continuity_status"] == "NEEDS_RECHECK"
+
+    readiness = client.get(f"/api/v1/pages/{page.id}/production-readiness")
+    assert readiness.json()["ready"] is False

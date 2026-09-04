@@ -14,6 +14,7 @@ from app.models import (
     Character,
     Dialogue,
     GenerationBatch,
+    GenerationJob,
     MangaPage,
     PageSourceSegment,
     Panel,
@@ -229,6 +230,30 @@ def revise_chapter_source(
                     raise HTTPException(
                         status_code=409,
                         detail="已有页面进入抽卡流程，请先删除相关候选后再修改原文",
+                    )
+                # A running parse snapshots the current revision; revising the
+                # text underneath it leaves dangling segment references and a
+                # new revision whose coverage can never be satisfied. Same
+                # guard shape as chapter deletion.
+                if db.scalar(
+                    select(GenerationJob.id).where(
+                        GenerationJob.project_id == project.id,
+                        GenerationJob.status.in_(
+                            {
+                                "WAITING",
+                                "QUEUED",
+                                "PREPARING",
+                                "GENERATING",
+                                "UPLOADING",
+                                "CONSISTENCY_CHECKING",
+                            }
+                        ),
+                        GenerationJob.job_type == "SOURCE_PARSE",
+                    ).limit(1)
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="原文解析任务正在执行，请等待完成或取消后再修改原文",
                     )
                 if page_ids:
                     panel_ids = list(
