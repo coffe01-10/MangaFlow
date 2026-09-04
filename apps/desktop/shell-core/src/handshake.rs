@@ -10,7 +10,7 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use crate::logs::{helper_log_path, RunLog};
+use crate::logs::{helper_log_path, open_append_regular, RunLog};
 use crate::ownership::{OwnedTree, OwnershipError};
 use crate::protocol::{
     verify_journal, verify_ready_line, ReadyPayload, RuntimeLayout, VerifyError, GO_PREFIX,
@@ -59,10 +59,11 @@ pub fn spawn_helper(config: &HelperConfig, user_data: &Path) -> Result<SpawnedHe
     // The helper's stderr — which carries uvicorn/API/Worker output in the
     // desktop form — lands in the unified logs directory instead of being
     // inherited from a console a GUI shell does not have (ADR §4.5).
-    let helper_stderr = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(helper_log_path(user_data, &layout.token))?;
+    // open_append_regular refuses a non-regular entry planted at the path.
+    // In-session rotation is deliberately NOT attempted here: the helper
+    // process owns this handle for its lifetime, so helper stderr rotates
+    // across sessions (the RunLog::create sweep above, see logs.rs).
+    let helper_stderr = open_append_regular(&helper_log_path(user_data, &layout.token))?;
     let mut command = Command::new(&config.python);
     command
         .arg(&config.helper_script)
