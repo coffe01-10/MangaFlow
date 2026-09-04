@@ -25,7 +25,7 @@ from app.schemas import (
     UpscaleRequest,
 )
 from app.services.candidate_lineage import attach_derived_lineage, inherited_reference_ids
-from app.services.job_service import create_job, enqueue_job
+from app.services.job_service import create_job, enqueue_job, has_active_job
 from app.services.model_router import model_supports_resolution, resolve_model
 from app.services.ordinal_allocator import create_generation_batch
 
@@ -45,6 +45,20 @@ def inspect_candidate(
     candidate = db.get(PageCandidate, candidate_id)
     if not candidate or not candidate.asset_id or candidate.deleted_at is not None:
         raise HTTPException(status_code=409, detail="候选图片尚未生成")
+    # A retried FAILED inspect job (its idempotency key stays collapsed as
+    # closed:{id}) or a workflow-created inspect job is invisible to the
+    # idempotency key above; guard on ACTIVE jobs so one candidate never runs
+    # two paid PAGE_INSPECT calls at once.
+    if has_active_job(
+        db,
+        job_type="PAGE_INSPECT",
+        target_id=str(candidate.id),
+        target_type="PAGE_CANDIDATE",
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="该候选已有进行中的质检任务，请等待完成后再重新质检",
+        )
     page = _page(db, candidate.page_id)
     project = _project_for_page(db, page)
     job = create_job(
