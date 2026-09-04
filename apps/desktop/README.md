@@ -230,20 +230,29 @@ cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml
 ### 6.4 日志轮转（V02-54C，Linux 实测；Windows 实机 NOT RUN）
 
 - **策略**：`shell-*.log` / `helper-*.stderr.log` 单文件达
-  `ROTATION_THRESHOLD_BYTES`（12 MiB，ADR 建议 8–16 MiB 区间内，严格低于
-  导出 64 MiB 上限）即 rename 为带序号世代 `.1`–`.5`
-  （`ROTATION_KEEP_GENERATIONS`），每次轮转先删最旧世代再自新到旧逐级
-  shift——每个目标位都是刚腾空的，普通 rename 在 Windows（无覆盖式
-  rename）上同样成立。
+  `ROTATION_THRESHOLD_BYTES`（12 MiB，**本轮自选值**，严格低于导出 64 MiB
+  上限；ADR 只要求「轮转」，未给出数值区间）即 rename 为带序号世代
+  `.1`–`.5`（`ROTATION_KEEP_GENERATIONS`），每次轮转先删最旧世代再自新
+  到旧逐级 shift——每个目标位都是刚腾空的，普通 rename 在 Windows（无
+  覆盖式 rename）上同样成立。
 - **两种轮转时机，取舍写明**：①壳 RunLog（`shell-<token>.log`）**会话内
   轮转**——`RunLog::record` 写前检查活动文件大小，达阈值即关句柄、
-  shift 世代、重开同一 base 路径，轮转后打开路径继续可写（轮转失败不丢
-  里程碑行，降级为继续追加）；②helper stderr（`helper-<token>.stderr.log`）
+  shift 世代、重开同一 base 路径，轮转后打开路径继续可写（shift 失败
+  降级为继续追加、不丢里程碑行；重开失败则该行以错误返回且不写穿路径上
+  的可疑条目，下次 record 先自动重试恢复句柄，路径修复后写入自愈）；
+  ②helper stderr（`helper-<token>.stderr.log`）
   的句柄由 helper 进程持有整个会话（Windows 无法 rename 他进程打开的
   文件、Unix rename 会把 helper 后续写脱接到新 base），故采用**跨会话
   轮转**：每次会话启动（`RunLog::create`）在上一批文件必然关闭的时机清扫
   logs/ 并轮转超阈值文件。单会话内 helper stderr 仍可能超过阈值，此时由
   导出 64 MiB 上限兜底（跳过并记录）。
+- **并发假设**：会话启动清扫假设同一 user-data 上**无并发壳实例**（D4
+  单实例互斥体已接但实机多开 NOT RUN）；清扫无活跃性检查，若未来支持
+  多开，需先按 `runtime/` 归属 journal 排除仍活跃会话的 base 再轮转。
+- **清扫范围**：仅匹配 `shell-<32 hex>.log` 与 `helper-<32 hex>.stderr.log`
+  （复用 token 校验）；`shell-notes.log` 之类外来名、世代文件与非日志
+  文件一律不动（单元测试断言）。会话启动清扫 fail-soft：清扫失败不阻塞
+  会话启动。
 - **路径安全**：轮转只匹配 logs 根内的固定文件名模式，世代名由匹配到的
   文件名派生，rename/删除目标不可能越出 logs 根；rename 前有
   canonical 包含复查（与导出成员同款）。符号链接一律不跟随：base 路径
@@ -263,11 +272,18 @@ cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml
   默认阈值零成本参与）；shell-core 与 src-tauri 双双通过 Windows 目标
   `cargo check`（rustup stable 1.98.1 + llvm-rc 19）。**轮转 Windows
   实机行为 NOT RUN**（含 rename-on-open 的 Windows 语义实测），归入 §7。
-  **P1+P2 修复轮（同日，审阅后）**：写路径去 panic 化与 open 后复查落地，
+  **修复轮一（同日，审阅后）**：写路径去 panic 化与 open 后复查落地，
   新增锁毒恢复（人为投毒后 record 仍落盘）与 `open_append_regular`
-  越根/符号链接父目录拒绝（打开前不向外创建文件）两项单元测试，
-  shell-core `cargo test` 35 项全绿，双 crate Windows 目标 `cargo check`
-  复跑通过。
+  越根/符号链接父目录拒绝（打开前不向外创建文件）两项单元测试。
+  **修复轮二（superseding，同日）**：①重开失败不留死句柄——record 以
+  错误返回，下次 record 自动重试恢复句柄（测试：rotation 关句柄窗口期
+  在 base 植入符号链接 → record 返回 `Err` 不 panic 且不写穿链接，路径
+  修复后写入自愈）；②会话启动清扫 fail-soft（清扫失败不阻塞建会话）；
+  ③清扫模式收紧为 `shell-<32hex>.log` / `helper-<32hex>.stderr.log`
+  （`shell-notes.log` 等外来名不动，测试断言）；④12 MiB 阈值表述改为
+  「本轮自选值」，删除「ADR 建议 8–16 MiB」的不实表述（ADR 无数值
+  区间）；⑤记录清扫的「无并发壳」假设。shell-core `cargo test` **36 项**
+  全绿，双 crate Windows 目标 `cargo check` 复跑通过。
 
 ## 7. NOT RUN 汇总（诚实边界）
 

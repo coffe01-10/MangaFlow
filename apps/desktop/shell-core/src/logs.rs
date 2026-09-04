@@ -37,8 +37,12 @@
 //! candidates are matched against the fixed base patterns inside that
 //! directory, generation names derive from the matched file names, and a
 //! canonical-containment check runs before any rename. Rotation is
-//! housekeeping: a failed rotation never blocks a session start and never
-//! costs the milestone line that triggered it.
+//! housekeeping: a failed sweep never blocks a session start, and a failed
+//! in-session rotation is reported to the caller and retried on the next
+//! record (which first tries to recover the log handle) instead of panicking
+//! the shell. The sweep assumes no concurrent shell shares the user-data
+//! root — the single-instance mutex is NOT RUN on real hardware (D4) — so
+//! there is no liveness check that would exclude a live session's files.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -55,8 +59,9 @@ pub const LOGS_DIR_NAME: &str = "logs";
 /// well below this cap; it remains the guard for a helper log that outgrew
 /// the rotation threshold within a single session.
 pub const EXPORT_MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
-/// Rotate a log file once it reaches this size (12 MiB — inside the ADR's
-/// 8–16 MiB suggestion band and strictly below the 64 MiB export cap).
+/// Rotate a log file once it reaches this size. 12 MiB is this crate's own
+/// choice — the ADR requires rotation but names no numeric band — and is
+/// strictly below the 64 MiB export cap.
 pub const ROTATION_THRESHOLD_BYTES: u64 = 12 * 1024 * 1024;
 /// Number of rotated generations (`.1` = newest … `.<N>` = oldest) kept per
 /// log base; anything beyond is deleted.
@@ -129,14 +134,18 @@ pub(crate) fn open_append_regular(
     Ok(file)
 }
 
+/// Only the shell's and helper's own per-run base names rotate:
+/// `shell-<32 hex>.log` and `helper-<32 hex>.stderr.log`. Anything else in
+/// the logs directory — foreign, hand-placed, or legacy files — is left
+/// untouched.
 fn is_rotatable_base_name(name: &str) -> bool {
-    let shell = name.len() > "shell-".len() + ".log".len()
-        && name.starts_with("shell-")
-        && name.ends_with(".log");
-    let helper = name.len() > "helper-".len() + ".stderr.log".len()
-        && name.starts_with("helper-")
-        && name.ends_with(".stderr.log");
-    shell || helper
+    let shell_token = name
+        .strip_prefix("shell-")
+        .and_then(|rest| rest.strip_suffix(".log"));
+    let helper_token = name
+        .strip_prefix("helper-")
+        .and_then(|rest| rest.strip_suffix(".stderr.log"));
+    shell_token.or(helper_token).is_some_and(is_valid_token)
 }
 
 /// Generation `generation` of a log base file, derived from the base name —
@@ -229,10 +238,13 @@ fn sweep_logs_dir(
 }
 
 /// Session-start housekeeping: rotate logs left oversized by previous
-/// sessions (`shell-*.log` / `helper-*.stderr.log` alike) and prune old
-/// generations. Called from [`RunLog::create`] while nothing holds those
-/// files open, and public so callers/tests can sweep explicitly. Best-effort
-/// by design — a rotation failure must never block starting a session.
+/// sessions (`shell-<32 hex>.log` / `helper-<32 hex>.stderr.log` alike) and
+/// prune old generations. Called from [`RunLog::create`] while nothing holds
+/// those files open, and public so callers/tests can sweep explicitly.
+/// Best-effort by design — a rotation failure must never block starting a
+/// session. It assumes no concurrent shell shares the user-data root
+/// (single-instance mutex NOT RUN on real hardware, D4); there is no
+/// liveness check that would exclude a live session's files yet.
 pub fn rotate_logs(user_data: &Path) -> std::io::Result<()> {
     let logs = logs_dir(user_data);
     let Ok(logs_canonical) = logs.canonicalize() else {
@@ -265,18 +277,22 @@ struct RunLogFile {
 
 impl RunLogFile {
     fn rotate_if_large(&mut self) -> std::io::Result<()> {
-        let size = match self.file.as_ref() {
-            Some(file) => file.metadata()?.len(),
-            // A previous rotation's reopen failed: report it instead of
-            // panicking — every subsequent record reports the same failure.
-            None => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "run log file is unavailable",
-                ))
-            }
+        // A previous rotation's reopen may have failed and left no handle.
+        // Retry the open first, so logging resumes as soon as the base path
+        // is usable again instead of staying dead forever.
+        if self.file.is_none() {
+            self.file = Some(open_append_regular(
+                &self.base,
+                &self.logs_canonical,
+            )?);
+        }
+        let Some(file) = self.file.as_ref() else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "run log file is unavailable",
+            ));
         };
-        if size < self.max_file_bytes {
+        if file.metadata()?.len() < self.max_file_bytes {
             return Ok(());
         }
         // Close before renaming: Windows cannot rename a file that is open
@@ -291,14 +307,19 @@ impl RunLogFile {
         // Reopen the base path either way: fresh after a successful rotation,
         // still the old (oversized or unrotatable) file when rotation was
         // skipped or failed mid-way — the open path keeps accepting writes.
-        // If the reopen itself fails (planted non-regular entry, fs error)
-        // the file stays `None` and records fail with an error instead of
-        // panicking the shell.
-        self.file = Some(open_append_regular(
-            &self.base,
-            &self.logs_canonical,
-        )?);
-        rotated.map(|_| ())
+        match open_append_regular(&self.base, &self.logs_canonical) {
+            Ok(reopened) => {
+                self.file = Some(reopened);
+                rotated.map(|_| ())
+            }
+            Err(reopen_error) => {
+                // Never write through whatever now sits at the base path
+                // (e.g. a symlink planted while the handle was closed) and
+                // never panic the shell: report the error — the next record
+                // retries the recovery above once the path is fixed.
+                Err(reopen_error)
+            }
+        }
     }
 }
 
@@ -313,8 +334,9 @@ impl RunLog {
         // Session-start sweep first (no-op when the logs dir does not exist):
         // previous sessions' shell and helper logs are rotated while they are
         // guaranteed closed — see the module docs for the cross-session
-        // helper-stderr regime.
-        rotate_logs(user_data)?;
+        // helper-stderr regime. Fail-soft: a sweep failure (unreadable
+        // directory, stray fs error) must never block the session start.
+        let _ = rotate_logs(user_data);
         fs::create_dir_all(logs_dir(user_data))?;
         let base = shell_log_path(user_data, token);
         let logs_canonical = logs_dir(user_data).canonicalize()?;
@@ -750,11 +772,17 @@ mod tests {
         // A generation file must not be treated as a rotatable base.
         let generation = logs.join(format!("shell-{}.log.1", "4".repeat(32)));
         let unrelated = logs.join("unrelated.log");
+        // Foreign names that pattern-match loosely but carry no valid token
+        // are never rotated.
+        let foreign_shell = logs.join("shell-notes.log");
+        let foreign_helper = logs.join("helper-nothex.stderr.log");
         fs::write(&big_shell, "s".repeat(64)).unwrap();
         fs::write(&big_helper, "h".repeat(64)).unwrap();
         fs::write(&small_helper, "tiny").unwrap();
         fs::write(&generation, "old generation").unwrap();
         fs::write(&unrelated, "u".repeat(64)).unwrap();
+        fs::write(&foreign_shell, "n".repeat(64)).unwrap();
+        fs::write(&foreign_helper, "m".repeat(64)).unwrap();
 
         sweep_logs_dir(&logs, &logs_canonical, 32, 5).unwrap();
 
@@ -765,6 +793,8 @@ mod tests {
         assert_eq!(fs::read_to_string(&small_helper).unwrap(), "tiny");
         assert_eq!(fs::read_to_string(&generation).unwrap(), "old generation");
         assert_eq!(fs::read_to_string(&unrelated).unwrap(), "u".repeat(64));
+        assert_eq!(fs::read_to_string(&foreign_shell).unwrap(), "n".repeat(64));
+        assert_eq!(fs::read_to_string(&foreign_helper).unwrap(), "m".repeat(64));
         let _ = fs::remove_dir_all(&user_data);
     }
 
@@ -850,5 +880,51 @@ mod tests {
         let log = fs::read_to_string(shell_log_path(&user_data, &token)).unwrap();
         assert!(log.contains("\"after_poison\""), "{log}");
         let _ = fs::remove_dir_all(&user_data);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn run_log_recovers_after_a_failed_rotation_reopen() {
+        let user_data = temp_user_data("reopen");
+        let token = "ef".repeat(16);
+        let run_log = RunLog::create(&user_data, &token).unwrap();
+        let base = shell_log_path(&user_data, &token);
+        run_log.record("before", &serde_json::json!({})).unwrap();
+
+        // Force the in-session rotation on the next record, then plant a
+        // symlink at the base path. The held handle keeps pointing at the
+        // original inode, so the size check passes, the handle is closed,
+        // and the reopen now faces the planted link.
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&base)
+            .unwrap()
+            .set_len(ROTATION_THRESHOLD_BYTES)
+            .unwrap();
+        let link_target = std::env::temp_dir()
+            .join(format!("mfd-reopen-evil-{}.log", crate::protocol::new_token()));
+        fs::write(&link_target, "evil").unwrap();
+        fs::remove_file(&base).unwrap();
+        std::os::unix::fs::symlink(&link_target, &base).unwrap();
+
+        // The failed reopen must surface as an error — never a panic — and
+        // nothing may be written through the link.
+        let error = run_log
+            .record("during", &serde_json::json!({}))
+            .expect_err("reopen through a planted symlink must fail");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(fs::symlink_metadata(&base).unwrap().is_symlink());
+        assert_eq!(fs::read(&link_target).unwrap(), b"evil");
+
+        // Fix the path: the very next record retries the open, recovers the
+        // handle, and logging resumes on a fresh base file.
+        fs::remove_file(&base).unwrap();
+        run_log.record("after", &serde_json::json!({})).unwrap();
+        let active = fs::read_to_string(&base).unwrap();
+        assert!(active.contains("\"after\""), "{active}");
+        assert!(!active.contains("\"during\""));
+
+        let _ = fs::remove_dir_all(&user_data);
+        let _ = fs::remove_file(&link_target);
     }
 }
