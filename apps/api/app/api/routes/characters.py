@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from app.api.helpers import character_references
+from app.api.helpers import character_references, reject_required_nulls
 from app.database import get_db
 from app.models import (
     Character,
@@ -113,6 +113,7 @@ def update_character(
     if character.version != payload.version:
         raise HTTPException(status_code=409, detail="角色已被更新，请刷新后重试")
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
+    reject_required_nulls(Character, values)
     primary_name = values.get("primary_name", character.primary_name).strip()
     aliases = list(
         dict.fromkeys(

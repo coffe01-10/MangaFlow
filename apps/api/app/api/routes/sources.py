@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from app.api.helpers import reject_required_nulls
 from app.config import get_settings
 from app.database import get_db
 from app.models import (
@@ -378,6 +379,7 @@ def update_scene(
     if scene.version != payload.version:
         raise HTTPException(status_code=409, detail="场景已被更新，请刷新后重试")
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
+    reject_required_nulls(Scene, values)
     from app.services.storyboard_edits import apply_scene_fields
 
     apply_scene_fields(db, scene, values, bump_storyboard=False)
@@ -405,6 +407,7 @@ def update_beat(
     if not scene or not chapter:
         raise HTTPException(status_code=404, detail="情节拍所属章节不存在")
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
+    reject_required_nulls(Beat, values)
     if "speaker_name" in values:
         values["speaker_name"] = canonical_speaker_name(
             db,

@@ -1,8 +1,37 @@
+from collections.abc import Mapping
+from typing import Any
+
+from fastapi import HTTPException
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Asset, AssetCandidate, CharacterReference, MangaPage, PageCandidate
 from app.schemas import AssetRead, CharacterReferenceRead, PageCandidateRead
+
+
+def reject_required_nulls(model_cls: Any, changes: Mapping[str, Any]) -> None:
+    """Reject explicit ``null`` for NOT NULL columns with a 422.
+
+    ``exclude_unset`` keeps explicit nulls, and applying them to non-nullable
+    columns surfaced as raw IntegrityError / AttributeError / TypeError 500s
+    instead of a validation error. Nullable columns may still be cleared.
+    """
+
+    mapper = sa_inspect(model_cls)
+    offending = []
+    for key, value in changes.items():
+        if value is not None:
+            continue
+        prop = mapper.attrs.get(key)
+        columns = getattr(prop, "columns", None) if prop is not None else None
+        if columns and columns[0].nullable is False:
+            offending.append(key)
+    if offending:
+        raise HTTPException(
+            status_code=422,
+            detail=f"字段不能为 null：{', '.join(sorted(offending))}",
+        )
 
 
 def asset_read(asset: Asset) -> AssetRead:

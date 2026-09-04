@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from app.api.helpers import asset_candidate_read, character_references
+from app.api.helpers import asset_candidate_read, character_references, reject_required_nulls
 from app.database import get_db
 from app.models import (
     Asset,
@@ -163,6 +163,7 @@ def update_outfit(
     if outfit.version != payload.version:
         raise HTTPException(status_code=409, detail="服装档案已更新，请刷新后重试")
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
+    reject_required_nulls(Outfit, values)
     reference_asset_ids = values.get("reference_asset_ids")
     if reference_asset_ids is not None:
         _validate_reference_assets(
@@ -391,6 +392,7 @@ def update_style(
     if style.version != payload.version:
         raise HTTPException(status_code=409, detail="风格档案已更新，请刷新后重试")
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
+    reject_required_nulls(StyleProfile, values)
     reference_ids = values.pop("reference_asset_ids", None)
     if reference_ids is not None:
         _validate_reference_assets(
