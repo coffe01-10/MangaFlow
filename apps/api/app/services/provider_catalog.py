@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import PurePosixPath, PureWindowsPath
 from time import perf_counter
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -309,6 +309,21 @@ def add_connection(
     return connection
 
 
+
+def is_absolute_executable_path(value: str) -> bool:
+    """Platform-independent absolute-path check for configured CLI paths.
+
+    The product host is Windows, but this validation runs wherever the API
+    process lives (Linux development, containers): ``Path().is_absolute()``
+    alone accepts ``/usr/bin/agy`` and rejects ``C:\\tools\\agy.exe`` on
+    POSIX, and the reverse on Windows. Both syntaxes are absolute; the CLI
+    probe still fails closed when the file does not exist on the actual
+    host, so accepting the wider syntax here adds no execution surface.
+    """
+
+    return PureWindowsPath(value).is_absolute() or PurePosixPath(value).is_absolute()
+
+
 def update_connection(
     db: Session, connection_id: str, payload: ConnectionUpdate
 ) -> ProviderConnection:
@@ -351,7 +366,7 @@ def update_connection(
         executable = executable.strip()
         if (
             executable.casefold() != default_cli_executable
-            and not Path(executable).is_absolute()
+            and not is_absolute_executable_path(executable)
         ):
             raise HTTPException(
                 status_code=422,
