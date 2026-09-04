@@ -23,14 +23,27 @@ apps/desktop/
 │   ├── src/protocol.rs              # token/journal/READY 行校验、回环 origin 校验
 │   ├── src/ownership.rs             # 进程树所有权：Windows 根 Job Object
 │   │                                #   (KILL_ON_JOB_CLOSE) / Unix PDEATHSIG + 进程组
-│   ├── src/handshake.rs             # spawn → READY 校验 → GO → 健康探活 编排
+│   ├── src/handshake.rs             # spawn → READY 校验 → GO → 健康探活 编排；
+│   │                                #   helper stderr 重定向到统一日志目录（V02-54B）
+│   ├── src/logs.rs                  # 统一日志目录（logs/）+ RunLog 里程碑 +
+│   │                                #   ZIP 导出（V02-54B；目标/成员双向路径安全）
+│   ├── src/picker.rs                # 本地文件/目录选择校验 + 会话已选能力表（V02-54B）
+│   ├── src/ziparch.rs               # 零依赖 store-only ZIP 写入器 + CRC32（V02-54B）
 │   ├── src/bin/shell-sim.rs         # 壳崩溃模拟器（握手完成后 SIGABRT 自杀）
 │   └── tests/startup_protocol.rs    # 集成测试：握手/并发端口/拒绝/崩溃清树/强杀升级
+│       tests/delivery_contract.rs   # 安装/卸载用户数据契约
+│       tests/log_export.rs          # 日志导出矩阵（含 python3 zipfile 外部校验）
+│       tests/picker_policy.rs       # 选择策略/穿越拒绝/能力表矩阵
+├── shell/shell-tools.html           # 壳自带工具页（V02-54B）：日志导出/文件选择触发面
 ├── src-tauri/                       # Tauri 2 最小壳（Windows 侧 cargo check 编译验证）
 │   ├── src/main.rs                  # setup：握手成功后才建 WebView；初始化脚本注入
 │   │                                #   window.__MANGAFLOW_API_ORIGIN__ + invoke 命令
-│   │                                #   desktop_get_api_origin / desktop_health_probe；退出时停树
-│   ├── tauri.conf.json              # frontendDist=../dist/frontend；bundle msi+nsis（未构建）
+│   │                                #   desktop_get_api_origin / desktop_health_probe /
+│   │                                #   desktop_export_logs / desktop_pick_file /
+│   │                                #   desktop_pick_directory / desktop_read_picked_file
+│   │                                #   （rfd 原生对话框）；退出时停树并记 RunLog
+│   ├── tauri.conf.json              # frontendDist=../dist/frontend；withGlobalTauri；
+│   │                                #   bundle msi+nsis（未构建）
 │   └── capabilities/default.json    # core:default（自定义命令无需额外权限）
 ├── patches/web-static-export.patch  # 可丢弃前端补丁（静态导出 + 运行时 origin）
 ├── scripts/
@@ -39,7 +52,9 @@ apps/desktop/
 │   ├── build-frontend-static.sh     # 一次性 worktree 应用补丁 → next build 导出 → 拷入 dist/
 │   ├── verify-static-origin.mjs     # D5 浏览器级验证（Chromium）
 │   └── package-sidecar.sh           # PyInstaller 打包（Linux 形态）
-└── dist/                            # 构建产物（gitignore 除占位 index.html）
+└── dist/                            # 构建产物（gitignore 除占位 index.html 与
+                                     #   shell-tools.html；根 .gitignore 的 dist/ 规则
+                                     #   以 !apps/desktop/dist/ 显式放行本目录）
 ```
 
 ## 2. 冻结启动协议（ADR §4.2/§4.4）
@@ -109,10 +124,10 @@ cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml
 | D3 | 进程生命周期 | **RUN（Linux 等价）/ Windows 路径已按 CREATE_SUSPENDED+assign+resume 实现、实机 NOT RUN** | `cargo test`（10 项）：握手全链、错误 GO 拒绝 exit 75、并发双 helper 端口不冲突、`shell-sim` 崩溃（SIGABRT）后 helper+孙进程全灭（PDEATHSIG 链）、无协作者 SIGTERM→SIGKILL 升级、壳在 spawn 前写入归属 journal。Windows 路径已按 `scripts/owned_processes.py` `start_python` 纪律重写：`CREATE_SUSPENDED` 挂起创建 → 建 Job（`KILL_ON_JOB_CLOSE`）→ assign 仍挂起的子进程 → 快照枚举初始线程后 `ResumeThread`；任一步失败即终止仍挂起的子进程，spawn→assign 竞争窗口已收口。**Windows 实机运行行为 NOT RUN**（本沙箱 Linux），合并前该路径只有编译门禁（`cargo check --target x86_64-pc-windows-msvc`）证据，实机 D3 复验仍欠。 |
 | D4 | 端口/单实例 | **RUN（端口+注入）/ 单实例 NOT RUN**（V02-53B 证据） | 原子绑定 `127.0.0.1:0`（socket 先绑后报，无 TOCTOU；并发测试两 helper 端口必异）；WebView 建立前完成握手；运行时注入 = 初始化脚本同步写 `window.__MANGAFLOW_API_ORIGIN__` + invoke `desktop_get_api_origin` 双通道，不依赖 `NEXT_PUBLIC_*`（浏览器断言 `api_origin_env_free`）/不依赖 Next rewrite（D5 实测直连）。单实例互斥体已接 `tauri-plugin-single-instance` 但**实机多开行为 NOT RUN**。 |
 | D5 | 前端形态 | **RUN（机制验证，V02-53B 证据）/ 静态导出为「受限可行」** | `verify-static-origin.mjs`（Chromium）：静态导出页加载 → 注入 origin → 仪表盘**直连**动态端口 API（`/api/v1/projects/dashboard` 200，CORS 按桌面 origin 放行）→ 页面渲染，静态服务器 `/api/*` 零命中。**核心发现**：工作台子树无法只靠 flag 导出——`output:"export"` 要求每个动态段 ≥1 预渲染组合（真实项目 id 构建期不可知）且工作台组件树服务端预渲染崩溃；补丁以「poc 桩组合 + notFound stub + 删 3 个仅服务端页」换得壳级页面导出。**结论：静态导出路线需要正式的前端路由/组件改造（否决条件 3 的关键输入）；方案 B（捆绑 node 跑 next start，保留 rewrites）未被验证**。 |
-| D6 | 凭据/日志/数据 | **RUN（目录+日志+凭据路径）/ ACL NOT RUN** | 用户数据目录布局：`data/`（DB）、`storage/`、`uploads/` 均落 user-data（测试断言不落仓库）；helper stderr 落 runtime 日志文件；假通道密钥走生产 `credential_crypto` AES-GCM + 文件主密钥（`storage/.provider-credential-master-key` 自动生成）。Windows ACL 收紧 NOT RUN；日志轮转/导出 NOT RUN（对齐 V02-54）。 |
+| D6 | 凭据/日志/数据 | **RUN（目录+日志+凭据路径+日志导出）/ ACL NOT RUN** | 用户数据目录布局：`data/`（DB）、`storage/`、`uploads/` 均落 user-data（测试断言不落仓库）；V02-54B 起统一日志目录 `logs/`（壳 RunLog 里程碑 + helper/API/Worker stderr 按运行分文件），壳侧 `desktop_export_logs` 可归档（store-only ZIP + manifest.json）到用户可选路径；假通道密钥走生产 `credential_crypto` AES-GCM + 文件主密钥（`storage/.provider-credential-master-key` 自动生成）。Windows ACL 收紧 NOT RUN；**日志轮转未实现**（导出对单文件 64 MiB 上限跳过并在 manifest/report 记录）。 |
 | D7 | 性能门禁 | **NOT RUN（按约定）** | V02-52A N=20 全样本不存在、本轮明确不跑 V02-52B；仅记录参考值：假闭环 e2e 全程约 4.3s（含 28 个迁移），远优于 ADR 冷启动 ≤15s 建议线，但**非固定窗口测量、不作为门禁证据**。 |
 | D8 | 自动更新（未签名） | **NOT RUN** | 未接 updater 插件、无签名密钥、无更新服务器（Issue 禁止真实签名/服务器）。 |
-| D9 | 安全 | **RUN（PoC 面）/ 业务面沿用；CSP 有记录在案的债务** | journal 仅身份字段（测试断言字段集合，无命令/env/密钥）；token 由 OS CSPRNG 生成（Unix `/dev/urandom`、Windows `BCryptGenRandom`——后者编译验证、运行时 NOT RUN）；origin 回环强制（`verify_ready_line` 拒绝非 127.0.0.1）；GO 前零流量；注入串经 serde_json JSON 转义而非裸 format!；`tauri.conf.json` 设受限本地 CSP（`connect-src`/`img-src` 限 `self` + `http://127.0.0.1:*`，`object-src 'none'`、`frame-src 'none'`、`base-uri 'self'`）。**CSP 债务**：`script-src` 保留 `'unsafe-inline'`——Next 静态导出的内联引导脚本（`self.__next_f.push`）硬需求，去掉会白屏；WebView2 对该 CSP 的实际执行行为 NOT RUN（本机无 WebView）。上传像素/解压炸弹/总量等安全面未改动（沿用 P1-13 既有实现与测试）。 |
+| D9 | 安全 | **RUN（PoC 面）/ 业务面沿用；CSP 有记录在案的债务** | journal 仅身份字段（测试断言字段集合，无命令/env/密钥）；token 由 OS CSPRNG 生成（Unix `/dev/urandom`、Windows `BCryptGenRandom`——后者编译验证、运行时 NOT RUN）；origin 回环强制（`verify_ready_line` 拒绝非 127.0.0.1）；GO 前零流量；注入串经 serde_json JSON 转义而非裸 format!；`tauri.conf.json` 设受限本地 CSP（`connect-src`/`img-src` 限 `self` + `http://127.0.0.1:*`，`object-src 'none'`、`frame-src 'none'`、`base-uri 'self'`）。V02-54B：RunLog 与日志导出 manifest 只写身份字段（测试断言不含命令/env/脚本路径）；本地文件选择拒绝 `.`/`..` 成分与符号链接，读取仅限会话内已选能力表成员（测试矩阵见 `tests/picker_policy.rs`）。**CSP 债务**：`script-src` 保留 `'unsafe-inline'`——Next 静态导出的内联引导脚本（`self.__next_f.push`）硬需求，去掉会白屏；`withGlobalTauri` 使壳命令暴露给壳内页面（页面全部为本仓库产出的静态导出/工具页，无第三方内容；CSP `default-src 'self'` 限制外链）；WebView2 对该 CSP 的实际执行行为 NOT RUN（本机无 WebView）。上传像素/解压炸弹/总量等安全面未改动（沿用 P1-13 既有实现与测试）。 |
 
 说明：标注「V02-53B 证据」的行沿用 PoC 轮（PR #111 / `203efad`）实测记录，本目录提升
 时未重跑这些环境受限项；能在本沙箱复跑的门禁见 §5。
@@ -153,15 +168,71 @@ cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml
 - **边界**：真实 MSI/NSIS 安装/升级/卸载行为 NOT RUN（本环境无法构建 Windows 安装包）；
   以上以配置契约与卸载器官方默认行为为据，实机验收（D1）欠。
 
-## 6. NOT RUN 汇总（诚实边界）
+## 6. V02-54B：日志导出与本地文件选择（Linux 实测；Windows 实机 NOT RUN）
+
+### 6.1 统一日志目录与导出（ADR §4.5）
+
+- **目录**：`<user-data>/logs/`。每次运行的文件按 owner token 分名：
+  `shell-<token>.log`（壳里程碑，JSON lines：`spawn` / `ready_verified` / `go_sent` /
+  `healthy` / `stopped`，仅身份字段）与 `helper-<token>.stderr.log`
+  （helper stderr——桌面形态下即 API/uvicorn/LOCAL_EXECUTOR Worker 输出）。
+  壳在 spawn 时把 helper stderr 重定向到该文件（替换 V02-54 之前的
+  `Stdio::inherit()`——GUI 壳没有可继承的控制台）。
+- **导出**：invoke `desktop_export_logs`（无参 → rfd 原生保存对话框；带
+  `destination` 参数则走同一校验，供测试/未来 UI 使用）。产物为 store-only
+  ZIP（零依赖写入器 `ziparch.rs`，CRC32 有已知向量测试）+ `manifest.json`
+  （文件清单/跳过原因，仅身份字段）。写入先落 `*.pending` 再 rename，失败
+  不在目标路径留下半截归档。
+- **双向路径安全**（测试 `tests/log_export.rs`，归档另经 python3 `zipfile`
+  外部校验 CRC 与结构）：归档成员只收 `logs/` 内的常规文件——符号链接跳过
+  不跟随、每个成员 canonical 路径必须仍在 canonical logs 根之下、单文件
+  64 MiB 上限（超出跳过并记录，**轮转未实现**，这是唯一的体积护栏）；
+  导出目标必须为绝对路径、不含 `.`/`..` 成分、父目录存在且非符号链接，
+  canonical 化后**不得位于用户数据根之内**（既防止把用户数据当导出目标
+  覆盖，也防止归档自我包含）。
+
+### 6.2 本地文件/目录选择
+
+- **命令**：`desktop_pick_file(kind)`（`source_text` | `reference_image`）、
+  `desktop_pick_directory`、`desktop_read_picked_file(path)`；对话框用 rfd
+  原生实现，路径不经 WebView 表单输入——穿越在结构上无入口，校验再兜底。
+- **策略对齐既有上传边界**（`shell-core/src/picker.rs`）：原作/正文 =
+  TXT/Markdown（同 `sources.py` 后缀集）；参考图/素材 = PNG/JPEG/WebP
+  （同 `uploads.py REFERENCE_IMAGE_TYPES`）；两者 ≤ 20 MiB（同
+  `max_upload_bytes`）。像素/解压炸弹等图片校验仍由 API 服务端执行，壳侧
+  只是前置对齐，不是替代。
+- **能力表**：校验通过的路径（canonical 化、拒绝 `.`/`..`、拒绝符号链接、
+  最终成分换名检测）进入会话级 `PickedRegistry`；`desktop_read_picked_file`
+  每次调用都重查能力表并重跑完整校验，未注册路径一律拒绝——选择是一次
+  能力授予，不是对路径字符串的永久授权。页面拿到字节后仍走既有
+  `/uploads`、`/sources` 上传接口，服务端边界零改动。
+- **触发面**：`shell/shell-tools.html`（壳自带工具页，构建脚本随静态导出
+  一起拷入 `dist/frontend/`，壳内访问 `/shell-tools.html`；依赖
+  `withGlobalTauri`，已启用）。Web 前端内嵌入口属静态导出/方案 B 改造
+  （否决条件 3）范围，本轮不做。
+
+### 6.3 门禁（Linux 可跑部分全绿，2026-09-04）
+
+- shell-core `cargo test` 26 项（协议 5 + ziparch 3 + logs 2 + 契约 3 +
+  日志导出集成 3 + 选择策略集成 5 + 启动协议集成 5）；src-tauri 与
+  shell-core 过 Windows 目标 `cargo check`（新增 rfd 0.17 依赖）；
+  `run-sidecar-e2e.sh` 假闭环 1 passed；`ruff check apps/desktop` 通过；
+  `tests/test_pytest_collection_gate.py` 通过。
+- 修复：V02-54 记录的 `dist/frontend/index.html` 占位实际未入库（根
+  `.gitignore` 的 `dist/` 规则整树吞掉，`apps/desktop/.gitignore` 的
+  反选无效），Windows 编译门禁从干净 clone 会失败；本轮补 `!apps/desktop/dist/`
+  放行并入库占位页。
+
+## 7. NOT RUN 汇总（诚实边界）
 
 1. Windows 实机全链路（Job Object 行为、WebView2、安装器、签名、更新、单实例多开）。
 2. RQ/Redis worker 进程形态与 Independent Worker（按 Issue 约束不装 Redis/Docker/Postgres；本地 LOCAL_EXECUTOR 已验）。
 3. V02-52A N=20 性能门禁、Lighthouse/FPS（归 V02-52B）。
 4. 真实供应商、真实凭据、PostgreSQL live（沿项目既有边界；假模型闭环零外呼）。
 5. Electron 对比壳（ADR 建议 Tauri 2 进入 PoC；未构建 Electron 侧镜像实现，体积/内存对比无从测起）。
+6. V02-54B 新增面：rfd 原生对话框 Windows 实机行为（COM 线程/WebView2 交互）、WebView2 内工具页 invoke 实机验证、日志轮转——本沙箱仅 Linux 等价逻辑与 Windows 目标编译门禁。
 
-## 7. 复现环境
+## 8. 复现环境
 
 - Linux 6.12 x64（Debian trixie 容器，uid 1000 无 sudo）、Python 3.13.5（.venv-desktop）、
   Node 20.19.2、rustup stable（1.98.1，含 x86_64-pc-windows-msvc std；系统 cargo 1.85
