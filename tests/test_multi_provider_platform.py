@@ -1222,10 +1222,7 @@ def test_google_adapters_wrap_response_postprocessing_failures(monkeypatch):
         GoogleRuntime,
         GoogleTextAdapter,
     )
-    from app.model_adapters.base import (
-        ImageRequest as GoogleImageRequest,
-        MultimodalRequest,
-    )
+    from app.model_adapters.base import ImageRequest as GoogleImageRequest
 
     class _BrokenText:
         @property

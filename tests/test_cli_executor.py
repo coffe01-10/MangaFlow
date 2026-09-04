@@ -346,39 +346,57 @@ def test_abandoned_recovery_survives_incomplete_identity_rows(cli_context):
         assert (row.state, row.lease_slot, row.error_code) == ("FAILED", None, "CRASH")
 
 
-def test_platform_recovery_entry_uses_posix_probe_when_not_windows(monkeypatch):
-    """recover_abandoned_cli_runs must resolve a working liveness probe on the
-    host platform instead of being dead code."""
+def test_platform_recovery_entry_uses_posix_probe_when_not_windows():
+    """The POSIX liveness fallback must classify dead/live/unknown controllers
+    deterministically (pid + optional start time), and raise instead of
+    guessing when identity is missing."""
 
+    import subprocess
     import sys
 
     from app.services import cli_executor
 
-    calls: list[int] = []
+    assert sys.platform != "win32"
 
-    def _fake_entry(settings, factory):
-        controller = cli_executor.CLIExecutionController(settings, factory)
-        return controller.recover_abandoned(
-            controller_is_active=cli_executor.platform_controller_is_active,
-        )
-
-    monkeypatch.setattr(
-        cli_executor, "recover_abandoned_cli_runs", _fake_entry, raising=False
-    )
-    assert sys.platform != "win32" or True  # test host is POSIX in CI
-
-    # posix probe: dead pid reports inactive
-    import os as _os
-    import subprocess as _subprocess
-    import sys as _sys
-    exited = _subprocess.Popen([_sys.executable, "-c", "pass"])
+    # dead pid: a process that already exited
+    exited = subprocess.Popen([sys.executable, "-c", "pass"])
     exited.wait()
-    journal = {"controller_pid": exited.pid}
-    assert cli_executor.posix_controller_is_active(None, journal) is False
-    # live pid (this process) reports active
-    journal_live = {"controller_pid": __import__("os").getpid()}
-    assert cli_executor.posix_controller_is_active(None, journal_live) is True
+    assert cli_executor.posix_controller_is_active(None, {"controller_pid": exited.pid}) is False
+
+    # live pid: this test process
+    import os
+
+    assert (
+        cli_executor.posix_controller_is_active(None, {"controller_pid": os.getpid()})
+        is True
+    )
+
     # missing identity raises instead of guessing
     with pytest.raises(RuntimeError):
         cli_executor.posix_controller_is_active(None, {})
-    calls.clear()
+
+
+def test_recover_abandoned_cli_runs_selects_platform_probe(monkeypatch):
+    """The production entry point must pick a working liveness probe for the
+    host platform (previously this function existed but nothing called it)."""
+
+    from app.config import Settings
+    from app.services import cli_executor
+
+    seen: dict[str, object] = {}
+
+    class _Recorder:
+        def recover_abandoned(self, *, controller_is_active):
+            seen["probe"] = controller_is_active
+            return []
+
+    monkeypatch.setattr(
+        cli_executor,
+        "CLIExecutionController",
+        lambda settings, factory: _Recorder(),
+    )
+    recovered = cli_executor.recover_abandoned_cli_runs(
+        Settings(), object()  # factory is forwarded, never used by the recorder
+    )
+    assert recovered == []
+    assert seen["probe"] is cli_executor.platform_controller_is_active

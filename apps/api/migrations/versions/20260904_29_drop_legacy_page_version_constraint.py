@@ -91,7 +91,6 @@ def _manga_pages_target() -> sa.Table:
             unique=True,
         ),
     )
-    return target
 
 
 def _set_sqlite_foreign_keys(enabled: bool) -> None:
@@ -136,11 +135,16 @@ def upgrade() -> None:
                 pass
         finally:
             _set_sqlite_foreign_keys(True)
-        # The rebuild dropped and recreated the table; verify referential
-        # integrity the same way the earlier SQLite batch migrations do.
-        violations = bind.exec_driver_sql("PRAGMA foreign_key_check").fetchall()
+        # The rebuild dropped and recreated the table; verify its own outbound
+        # references survived. Scoped to manga_pages: pre-existing orphans in
+        # unrelated tables are owned by their own guarded migrations.
+        violations = bind.exec_driver_sql(
+            "PRAGMA foreign_key_check(manga_pages)"
+        ).fetchall()
         if violations:
-            raise RuntimeError(f"foreign_key_check failed after manga_pages rebuild: {violations[:3]}")
+            raise RuntimeError(
+                f"foreign_key_check failed after manga_pages rebuild: {violations[:3]}"
+            )
 
     index_name = "ix_candidate_lineage_child_candidate_id"
     inspector = sa.inspect(bind)
@@ -202,8 +206,11 @@ def downgrade() -> None:
                 pass
         finally:
             _set_sqlite_foreign_keys(True)
-        violations = bind.exec_driver_sql("PRAGMA foreign_key_check").fetchall()
+        violations = bind.exec_driver_sql(
+            "PRAGMA foreign_key_check(manga_pages)"
+        ).fetchall()
         if violations:
             raise RuntimeError(
-                f"foreign_key_check failed after manga_pages downgrade rebuild: {violations[:3]}"
+                "foreign_key_check failed after manga_pages downgrade rebuild: "
+                f"{violations[:3]}"
             )

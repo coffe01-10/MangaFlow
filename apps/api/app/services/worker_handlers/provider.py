@@ -282,7 +282,7 @@ def _invoke_provider(db, binding: AdapterBinding, callback):
                     mark_key_success(db, replacement.selected_key.row)
                     return result
         raise
-    except Exception as error:
+    except Exception:
         # An adapter bug or an unclassified malformed response must not leave
         # the paid attempt pending forever: converge the audit row to a
         # terminal FAILED state, then let the worker's generic error path

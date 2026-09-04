@@ -1,7 +1,7 @@
+import logging
 import os
 import socket
 from datetime import timedelta
-import logging
 from threading import Event, Lock, Thread
 from uuid import uuid4
 

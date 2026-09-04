@@ -1,8 +1,8 @@
+import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from threading import Event, Lock, Thread
-import logging
-import time
 
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError

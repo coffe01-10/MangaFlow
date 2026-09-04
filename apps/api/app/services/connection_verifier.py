@@ -502,7 +502,7 @@ def _verify_model_smoke(
         )
         attach_attempt_probe(attempt_ids, probe.id)
         return probe
-    except Exception as error:
+    except Exception:
         # A paid smoke run must not leave its attempt pending when the adapter
         # raises an unclassified exception (e.g. malformed response handling).
         if attempt_ids:
