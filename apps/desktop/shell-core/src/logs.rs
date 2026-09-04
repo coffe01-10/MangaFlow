@@ -81,12 +81,21 @@ pub fn shell_log_path(user_data: &Path, token: &str) -> PathBuf {
     logs_dir(user_data).join(format!("shell-{token}.log"))
 }
 
-/// Create/append a log file, refusing to write through a non-regular entry
-/// (e.g. a symlink) planted at the path — `OpenOptions` would follow it.
-/// The pre-check leaves a theoretical swap window; the logs directory lives
-/// in per-user data (ACL tightening NOT RUN, D6), the same accepted residual
-/// risk the exporter covers with its post-canonicalize re-check.
-pub(crate) fn open_append_regular(path: &Path) -> std::io::Result<std::fs::File> {
+/// Create/append a log file under the canonical logs root, refusing to
+/// write through a non-regular entry (e.g. a symlink) planted at the path —
+/// `OpenOptions` would follow it. Three layers: the final component must not
+/// be a non-regular entry, the parent must canonically resolve inside the
+/// logs root *before* anything is created through it, and after the open the
+/// handle is re-verified as a regular file whose path still canonicalizes
+/// inside the root — on refusal nothing is ever written through it. The
+/// check-then-open pattern leaves a theoretical swap window; the logs
+/// directory lives in per-user data (ACL tightening NOT RUN, D6), the same
+/// accepted residual risk the exporter covers with its post-canonicalize
+/// re-check.
+pub(crate) fn open_append_regular(
+    path: &Path,
+    logs_canonical: &Path,
+) -> std::io::Result<std::fs::File> {
     if let Ok(meta) = fs::symlink_metadata(path) {
         if meta.is_symlink() || !meta.is_file() {
             return Err(std::io::Error::new(
@@ -95,7 +104,29 @@ pub(crate) fn open_append_regular(path: &Path) -> std::io::Result<std::fs::File>
             ));
         }
     }
-    OpenOptions::new().create(true).append(true).open(path)
+    let parent_inside = path
+        .parent()
+        .and_then(|parent| parent.canonicalize().ok())
+        .is_some_and(|canonical| canonical.starts_with(logs_canonical));
+    if !parent_inside {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "log parent resolves outside the canonical logs root",
+        ));
+    }
+    let file = OpenOptions::new().create(true).append(true).open(path)?;
+    let opened = file.metadata().map(|meta| meta.is_file()).unwrap_or(false)
+        && path
+            .canonicalize()
+            .map(|canonical| canonical.starts_with(logs_canonical))
+            .unwrap_or(false);
+    if !opened {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "log path refused after open: not a regular file inside the logs root",
+        ));
+    }
+    Ok(file)
 }
 
 fn is_rotatable_base_name(name: &str) -> bool {
@@ -109,14 +140,12 @@ fn is_rotatable_base_name(name: &str) -> bool {
 }
 
 /// Generation `generation` of a log base file, derived from the base name —
-/// never from user input — so it cannot leave the logs directory.
-fn generation_path(base: &Path, generation: usize) -> PathBuf {
-    let mut name = base
-        .file_name()
-        .expect("rotation bases always have a file name")
-        .to_os_string();
+/// never from user input — so it cannot leave the logs directory. `None`
+/// only for a pathological base without a file name; rotation skips it.
+fn generation_path(base: &Path, generation: usize) -> Option<PathBuf> {
+    let mut name = base.file_name()?.to_os_string();
     name.push(format!(".{generation}"));
-    base.with_file_name(name)
+    Some(base.with_file_name(name))
 }
 
 /// Rotate one base file if it is an oversized regular file inside
@@ -149,19 +178,29 @@ fn rotate_file(
     }
     // Deleting the oldest generation is best-effort: if it cannot be removed,
     // the first shift below fails and the caller falls back to appending.
-    let _ = fs::remove_file(generation_path(base, keep));
+    if let Some(oldest) = generation_path(base, keep) {
+        let _ = fs::remove_file(oldest);
+    }
     for generation in (1..keep).rev() {
-        let source = generation_path(base, generation);
+        let Some(source) = generation_path(base, generation) else {
+            continue;
+        };
         let Ok(source_meta) = fs::symlink_metadata(&source) else {
             continue;
         };
         if source_meta.is_symlink() {
             fs::remove_file(&source)?;
         } else if source_meta.is_file() {
-            fs::rename(&source, generation_path(base, generation + 1))?;
+            let Some(destination) = generation_path(base, generation + 1) else {
+                continue;
+            };
+            fs::rename(&source, &destination)?;
         }
     }
-    fs::rename(base, generation_path(base, 1))?;
+    let Some(newest) = generation_path(base, 1) else {
+        return Ok(false);
+    };
+    fs::rename(base, newest)?;
     Ok(true)
 }
 
@@ -226,12 +265,17 @@ struct RunLogFile {
 
 impl RunLogFile {
     fn rotate_if_large(&mut self) -> std::io::Result<()> {
-        let size = self
-            .file
-            .as_ref()
-            .expect("run log file present between writes")
-            .metadata()?
-            .len();
+        let size = match self.file.as_ref() {
+            Some(file) => file.metadata()?.len(),
+            // A previous rotation's reopen failed: report it instead of
+            // panicking — every subsequent record reports the same failure.
+            None => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "run log file is unavailable",
+                ))
+            }
+        };
         if size < self.max_file_bytes {
             return Ok(());
         }
@@ -247,7 +291,13 @@ impl RunLogFile {
         // Reopen the base path either way: fresh after a successful rotation,
         // still the old (oversized or unrotatable) file when rotation was
         // skipped or failed mid-way — the open path keeps accepting writes.
-        self.file = Some(open_append_regular(&self.base)?);
+        // If the reopen itself fails (planted non-regular entry, fs error)
+        // the file stays `None` and records fail with an error instead of
+        // panicking the shell.
+        self.file = Some(open_append_regular(
+            &self.base,
+            &self.logs_canonical,
+        )?);
         rotated.map(|_| ())
     }
 }
@@ -268,7 +318,7 @@ impl RunLog {
         fs::create_dir_all(logs_dir(user_data))?;
         let base = shell_log_path(user_data, token);
         let logs_canonical = logs_dir(user_data).canonicalize()?;
-        let file = open_append_regular(&base)?;
+        let file = open_append_regular(&base, &logs_canonical)?;
         Ok(RunLog {
             inner: std::sync::Mutex::new(RunLogFile {
                 file: Some(file),
@@ -281,17 +331,29 @@ impl RunLog {
 
     pub fn record(&self, event: &str, fields: &serde_json::Value) -> std::io::Result<()> {
         let line = serde_json::json!({ "ts": unix_now(), "event": event, "fields": fields });
-        let mut active = self.inner.lock().expect("run log lock");
+        // Fallible serialization — a milestone must never panic the shell,
+        // even if serde_json were to refuse the payload.
+        let mut payload = serde_json::to_vec(&line).map_err(|error| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
+        })?;
+        payload.push(b'\n');
+        // Poison recovery: a panic in another thread while it held the lock
+        // must not take down the logging path — the state is recovered via
+        // into_inner instead of propagating the poison as a panic.
+        let mut active = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         // Rotation is housekeeping: a failed rotation must never cost the
         // milestone line, so its error is only reported after the write.
         let rotation = active.rotate_if_large();
-        let file = active
-            .file
-            .as_mut()
-            .expect("run log file reopened before write");
-        let written = file
-            .write_all(serde_json::to_string(&line).unwrap().as_bytes())
-            .and_then(|()| file.write_all(b"\n"));
+        let written = match active.file.as_mut() {
+            Some(file) => file.write_all(&payload),
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "run log file is unavailable",
+            )),
+        };
         rotation.and(written)
     }
 }
@@ -605,18 +667,18 @@ mod tests {
             assert!(!base.exists());
         }
         assert_eq!(
-            fs::read_to_string(generation_path(&base, 1)).unwrap(),
+            fs::read_to_string(generation_path(&base, 1).unwrap()).unwrap(),
             "round-6-".repeat(4)
         );
         assert_eq!(
-            fs::read_to_string(generation_path(&base, 2)).unwrap(),
+            fs::read_to_string(generation_path(&base, 2).unwrap()).unwrap(),
             "round-5-".repeat(4)
         );
         assert_eq!(
-            fs::read_to_string(generation_path(&base, 3)).unwrap(),
+            fs::read_to_string(generation_path(&base, 3).unwrap()).unwrap(),
             "round-4-".repeat(4)
         );
-        assert!(!generation_path(&base, 4).exists());
+        assert!(!generation_path(&base, 4).unwrap().exists());
         let _ = fs::remove_dir_all(&user_data);
     }
 
@@ -662,7 +724,7 @@ mod tests {
             let gen_target = std::env::temp_dir()
                 .join(format!("mfd-rotate-gen-{}.log", crate::protocol::new_token()));
             fs::write(&gen_target, "gen-target").unwrap();
-            let generation = generation_path(&base, 1);
+            let generation = generation_path(&base, 1).unwrap();
             std::os::unix::fs::symlink(&gen_target, &generation).unwrap();
             assert!(rotate_file(&base, &logs_canonical, 8, 5).unwrap());
             assert_eq!(fs::read(&gen_target).unwrap(), b"gen-target");
@@ -697,9 +759,9 @@ mod tests {
         sweep_logs_dir(&logs, &logs_canonical, 32, 5).unwrap();
 
         assert!(!big_shell.exists());
-        assert!(generation_path(&big_shell, 1).exists());
+        assert!(generation_path(&big_shell, 1).unwrap().exists());
         assert!(!big_helper.exists());
-        assert!(generation_path(&big_helper, 1).exists());
+        assert!(generation_path(&big_helper, 1).unwrap().exists());
         assert_eq!(fs::read_to_string(&small_helper).unwrap(), "tiny");
         assert_eq!(fs::read_to_string(&generation).unwrap(), "old generation");
         assert_eq!(fs::read_to_string(&unrelated).unwrap(), "u".repeat(64));
@@ -721,5 +783,72 @@ mod tests {
         assert_eq!(fs::read_to_string(&outside).unwrap(), "secret");
         let _ = fs::remove_dir_all(&user_data);
         let _ = fs::remove_file(&outside);
+    }
+
+    #[test]
+    fn open_append_regular_refuses_paths_outside_the_logs_root() {
+        let user_data = temp_user_data("containment");
+        let logs = logs_dir(&user_data);
+        fs::create_dir_all(&logs).unwrap();
+        let logs_canonical = logs.canonicalize().unwrap();
+
+        // A path outside the logs root is refused before anything is created
+        // through it, even though it is a perfectly regular target.
+        let outside = std::env::temp_dir()
+            .join(format!("mfd-open-outside-{}.log", crate::protocol::new_token()));
+        let error = open_append_regular(&outside, &logs_canonical).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(!outside.exists(), "nothing may be created outside the root");
+
+        // A path that only lexically sits inside the logs root but resolves
+        // elsewhere through a symlinked directory is refused as well.
+        #[cfg(unix)]
+        {
+            let outside_dir = std::env::temp_dir()
+                .join(format!("mfd-open-dir-{}", crate::protocol::new_token()));
+            fs::create_dir_all(&outside_dir).unwrap();
+            let planted = logs.join("planted-dir");
+            std::os::unix::fs::symlink(&outside_dir, &planted).unwrap();
+            let error =
+                open_append_regular(&planted.join("x.log"), &logs_canonical).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+            assert_eq!(
+                fs::read_dir(&outside_dir).unwrap().count(),
+                0,
+                "nothing may be written through the planted link"
+            );
+            let _ = fs::remove_dir_all(&outside_dir);
+        }
+
+        // The happy path still appends inside the logs root.
+        let inside = logs.join(format!("shell-{}.log", "d".repeat(32)));
+        open_append_regular(&inside, &logs_canonical).unwrap();
+        let _ = fs::remove_dir_all(&user_data);
+    }
+
+    #[test]
+    fn run_log_record_survives_mutex_poisoning() {
+        let user_data = temp_user_data("poison");
+        let token = "cd".repeat(16);
+        let run_log = RunLog::create(&user_data, &token).unwrap();
+
+        // Deliberately poison the mutex by panicking while the lock is held.
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = run_log.inner.lock().expect("hold the lock to poison it");
+            panic!("deliberate: poison the run log mutex");
+        }));
+        std::panic::set_hook(default_hook);
+        assert!(poisoned.is_err());
+
+        // The next milestone is still written: the poison is recovered via
+        // into_inner instead of panicking the caller.
+        run_log
+            .record("after_poison", &serde_json::json!({}))
+            .unwrap();
+        let log = fs::read_to_string(shell_log_path(&user_data, &token)).unwrap();
+        assert!(log.contains("\"after_poison\""), "{log}");
+        let _ = fs::remove_dir_all(&user_data);
     }
 }

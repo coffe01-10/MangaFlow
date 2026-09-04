@@ -248,9 +248,12 @@ cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml
   文件名派生，rename/删除目标不可能越出 logs 根；rename 前有
   canonical 包含复查（与导出成员同款）。符号链接一律不跟随：base 路径
   上的链接跳过不轮转（也不移动链接本身），世代位上的链接改为 unlink
-  （外链目标文件存活）。日志打开统一走 `open_append_regular`，拒绝写入
-  挂在日志路径上的非常规条目（检查后打开的置换窗口与导出侧同款残余
-  风险，user-data 为每用户目录，ACL 收紧 NOT RUN）。
+  （外链目标文件存活）。日志打开统一走 `open_append_regular`：打开前拒绝
+  非常规条目并要求父目录 canonical 在 logs 根内（不向外创建任何文件），
+  打开后复查句柄为常规文件且路径 canonical 仍在 logs 根内，不符即拒绝
+  写入（检查后打开的置换窗口与导出侧同款残余风险，user-data 为每用户
+  目录，ACL 收紧 NOT RUN）。RunLog 写路径全程无 panic：序列化 fallible、
+  互斥锁中毒经 `into_inner` 恢复、重开失败后 record 报错而非 panic。
 - **门禁（Linux 实测，2026-09-04）**：shell-core `cargo test` 33 项全绿
   （新增 logs 单元 4：世代 shift/保留、符号链接不跟随与越根跳过、清扫
   只动超阈值 base 文件、RunLog 拒绝符号链接路径；新增
@@ -260,6 +263,11 @@ cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml
   默认阈值零成本参与）；shell-core 与 src-tauri 双双通过 Windows 目标
   `cargo check`（rustup stable 1.98.1 + llvm-rc 19）。**轮转 Windows
   实机行为 NOT RUN**（含 rename-on-open 的 Windows 语义实测），归入 §7。
+  **P1+P2 修复轮（同日，审阅后）**：写路径去 panic 化与 open 后复查落地，
+  新增锁毒恢复（人为投毒后 record 仍落盘）与 `open_append_regular`
+  越根/符号链接父目录拒绝（打开前不向外创建文件）两项单元测试，
+  shell-core `cargo test` 35 项全绿，双 crate Windows 目标 `cargo check`
+  复跑通过。
 
 ## 7. NOT RUN 汇总（诚实边界）
 
