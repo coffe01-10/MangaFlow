@@ -1,5 +1,6 @@
 from pathlib import Path
 from shutil import rmtree
+from uuid import uuid4
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 from PIL.Image import DecompressionBombError
@@ -80,8 +81,18 @@ def create_thumbnails(
             if preview.mode not in {"RGB", "RGBA"}:
                 preview = preview.convert("RGBA" if "A" in preview.getbands() else "RGB")
             destination = output_dir / f"{size}.webp"
-            preview.save(destination, format="WEBP", quality=82, method=6)
-            preview.close()
+            # In-place writes raced the on-demand regeneration path: a
+            # concurrent reader could stream a half-written webp. Write to a
+            # unique temp file and replace atomically instead.
+            temp = output_dir / f".{size}.{uuid4().hex}.tmp"
+            try:
+                preview.save(temp, format="WEBP", quality=82, method=6)
+                temp.replace(destination)
+            except BaseException:
+                temp.unlink(missing_ok=True)
+                raise
+            finally:
+                preview.close()
             keys[size] = destination.relative_to(root).as_posix()
     return keys
 
