@@ -1663,12 +1663,6 @@ p { font-size: var(--text-body) !important; }
 .library-candidates em { font-size: 12px; }
 .library-candidates .library-delete { width: 40px; min-height: 40px; }
 
-.panel-contact-sheet {
-  width: min(100%, 560px);
-  min-height: 0;
-  justify-self: center;
-}
-.panel-proof-frame small,
 @media (min-width: 1440px) {
   .storyboard-desk:not(.focus-mode) .storyboard-page-strip {
     position: sticky;
