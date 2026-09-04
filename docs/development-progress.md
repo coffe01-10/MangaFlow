@@ -4,7 +4,20 @@
 
 本文件记录修订版 MVP 计划的实际完成度。
 
+## PR #113 zcode-audit 生产审计修复合并（2026-09-04）
+
+- **合并记录**：分支 `zcode-audit` / 合并提交 `804244d`；分支内先与 PR #112（`b97dc80`）汇合（merge `d4a1ebe`）。以 merge commit 合入（非 squash），未 force-push。
+- **修复方向（节选，详见 PR #113 描述）**：工作流/候选不变量、审批门槛与 lineage（repair/upscale）；Job lease 回收、CLI slot 与 adapter 未分类异常收敛；本地信任边界（host allowlist、codex 路径钉扎、图像上限）；版本检查原子化、遗留唯一约束清理、草稿 flush/采纳失败可见性；场景表单、源编辑器与本地编辑的隐藏失败暴露（`742cd2a`）；两轮审查修复收口（`a7ba210`）。第三轮大审查因额度收窄未做。
+
+## PR #112 inspect/parse/cancel 完整性加固合并（2026-09-04）
+
+- **合并记录**：合并提交 `b97dc80`（PR #112）。
+- **行为修复（详见 PR #112 描述）**：PAGE_INSPECT 失败不再把已采纳 READY 候选盖章为 FAILED/STALE，失败 inspect 任务可重试；分页完成后再解析被拒绝（HTTP 409）；工作流解析复用 READY 剧本而不再清空 Scene 行；SOURCE_PARSE 活跃期间 parse/plan/源修订互斥；工作流取消先认领 CANCELLED 再按 `workflow_run_id` 取消迟到的 inspect 任务；keep-selected 语义为「待检查」而非「审查失败」；任务实际上传参考图期间禁止删除剧本。
+- **门禁**：`npm run check` 通过（pytest 662 passed / 34 skipped、Vitest 418、Next 生产构建）。
+
 ## V02-53B 桌面壳可丢弃 PoC 完成：Tauri 2 先验、启动协议/进程归属/假闭环实测（2026-09-04，Linux box）
+
+- **合并记录（2026-09-04）**：Issue #110 / PR #111 / 分支 `glm/v02-53b-desktop-shell-poc` / 实现 head `3909729` / 合并提交 `203efad`；审查 P2 硬化随 PR #111 收口后合并。
 
 - **对应**：Issue #110 / 分支 `glm/v02-53b-desktop-shell-poc`（基线 `6f8a40d`，PoC head `3909729`）。契约 `docs/adr/v02-desktop-shell-evaluation.md`（V02-53A，**仍为草案**）。PoC 全部落于 `apps/desktop-poc/`（可丢弃目录），`apps/api`/`apps/web` 业务代码零改动；前端改动仅以可丢弃补丁（`patches/web-static-export.patch`）在一次性 worktree 验证，不合并。**不构成选型批准**，D1–D9 矩阵与复现命令见 `apps/desktop-poc/README.md`。
 - **启动协议（ADR §4.2/§4.4 冻结项）**：壳生成 32 位 owner token + `runtime/mangaflow-poc-<token>/` 运行目录，直接 spawn helper；helper 原子绑定 `127.0.0.1:0`（无 TOCTOU）→ `alembic upgrade head` → 原子写 journal（仅 token/pid/port/origin/状态身份字段）→ stdout `MANGAFLOW_READY`；壳校验 token/PID/journal/回环 origin 后才发 `MANGAFLOW_GO`（错误 token exit 75；GO 前 socket 零字节服务，有断言）；WebView 在握手全部通过后才创建，origin 以初始化脚本同步写 `window.__MANGAFLOW_API_ORIGIN__` + invoke `poc_get_api_origin` 双通道注入，不依赖 `NEXT_PUBLIC_*` 与 Next rewrite。
