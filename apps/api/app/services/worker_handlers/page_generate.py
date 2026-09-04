@@ -35,6 +35,7 @@ from app.models import (
     StyleProfile,
     utcnow,
 )
+from app.services.asset_dedupe import adopt_deleted_duplicate, live_duplicate
 from app.services.media import create_thumbnails, remove_thumbnails
 from app.services.model_capabilities import (
     REGION_EDIT_SURFACE_LABELS,
@@ -222,12 +223,7 @@ def _save_generated_asset(db, candidate: PageCandidate, data: bytes) -> Asset:
     page = db.get(MangaPage, candidate.page_id)
     chapter = db.get(Chapter, page.chapter_id)
     digest = hashlib.sha256(data).hexdigest()
-    existing = db.scalar(
-        select(Asset).where(
-            Asset.project_id == chapter.project_id,
-            Asset.sha256 == digest,
-        )
-    )
+    existing = live_duplicate(db, project_id=chapter.project_id, sha256=digest)
     if existing:
         return existing
     destination = (
@@ -275,11 +271,11 @@ def _save_generated_asset(db, candidate: PageCandidate, data: bytes) -> Asset:
         return asset
     except IntegrityError:
         destination.unlink(missing_ok=True)
-        existing = db.scalar(
-            select(Asset).where(
-                Asset.project_id == chapter.project_id,
-                Asset.sha256 == digest,
-            )
+        existing = live_duplicate(db, project_id=chapter.project_id, sha256=digest)
+        if existing:
+            return existing
+        existing = adopt_deleted_duplicate(
+            db, project_id=chapter.project_id, sha256=digest
         )
         if existing:
             return existing
