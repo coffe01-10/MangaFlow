@@ -24,7 +24,7 @@ from app.schemas import (
     JobResultRead,
     ModelCallAttemptRead,
 )
-from app.services.job_service import cancel_job, reset_for_retry
+from app.services.job_service import cancel_job, dependencies_complete, reset_for_retry
 from app.services.model_costs import estimate_jobs
 
 router = APIRouter()
@@ -176,6 +176,13 @@ def retry(job_id: str, db: Session = Depends(get_db)) -> GenerationJob:
         raise HTTPException(status_code=409, detail="当前状态的任务不能重试")
     if job.attempt_count >= job.max_attempts:
         raise HTTPException(status_code=409, detail="任务已达到最大重试次数")
+    # A dependency-blocked WAITING child (parent job not COMPLETED) must not
+    # reach reset_for_retry: it would revive a FAILED run to phantom RUNNING
+    # before enqueue_job's dependency gate refuses the enqueue, leaving the
+    # studio polling a run with nothing executing. FAILED/NEEDS_REVIEW jobs
+    # always have COMPLETED dependencies, so legitimate retries never hit this.
+    if not dependencies_complete(db, job):
+        raise HTTPException(status_code=409, detail="依赖任务未完成，不能重试")
     return reset_for_retry(db, job)
 
 

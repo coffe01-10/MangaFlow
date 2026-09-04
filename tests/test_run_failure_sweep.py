@@ -4,7 +4,9 @@ When reconcile_run claims the run FAILED, dependent child node_runs and their
 dependency-blocked WAITING jobs used to stay non-terminal forever: the script
 delete guard kept 409ing on ACTIVE_JOB_STATUSES, and the jobs list showed an
 unlabeled active row. The FAILED claim path must sweep the run's own children
-(mirroring cancel_run) inside the same transaction.
+(mirroring cancel_run) inside the same transaction, and the job retry route
+must refuse to revive dependency-blocked WAITING jobs (reset_for_retry would
+resurrect a FAILED run to phantom RUNNING).
 """
 
 from sqlalchemy import select
@@ -294,6 +296,79 @@ def test_lost_failed_claim_rolls_back_the_sweep(db_session, monkeypatch):
     db_session.refresh(waiting_job)
     assert waiting_node_run.status == "WAITING"
     assert waiting_job.status == JobStatus.WAITING
+
+
+def test_retry_route_refuses_dependency_blocked_waiting_job(client, db_session):
+    """T4a: retrying a WAITING child whose dependency is not COMPLETED must
+    409 — reset_for_retry would otherwise revive the FAILED run to phantom
+    RUNNING before enqueue_job's dependency gate refuses."""
+    _project, run, _failed_node, failed_job, _waiting_node, waiting_job = _seed_failed_chain(
+        db_session
+    )
+    db_session.refresh(run)
+    run.status = "FAILED"
+    run.finished_at = utcnow()
+    db_session.commit()
+
+    response = client.post(f"/api/v1/jobs/{waiting_job.id}/retry")
+
+    assert response.status_code == 409
+    assert "依赖" in response.json()["detail"]
+    db_session.refresh(run)
+    assert run.status == "FAILED"
+    db_session.refresh(waiting_job)
+    assert waiting_job.status == JobStatus.WAITING
+
+
+def test_retry_route_allows_failed_job_with_completed_dependencies(
+    client, db_session, monkeypatch
+):
+    """T4b: a FAILED job whose dependencies COMPLETED stays retryable."""
+    project, run = _seed_run(db_session)
+    parent_node_run, parent_job = _seed_node_job(
+        db_session,
+        project,
+        run,
+        "adapt",
+        "agent.adapt",
+        job_status=JobStatus.COMPLETED,
+        node_status="COMPLETED",
+    )
+    parent_job.finished_at = utcnow()
+    child_node_run, child_job = _seed_node_job(
+        db_session,
+        project,
+        run,
+        "page",
+        "generator.page",
+        job_status=JobStatus.FAILED,
+        node_status="FAILED",
+        depends_on=parent_job,
+        error_code="WORKER_ERROR",
+    )
+    child_job.finished_at = utcnow()
+    run.status = "FAILED"
+    run.finished_at = utcnow()
+    db_session.commit()
+
+    enqueued: list[str] = []
+    import app.services.job_service as job_service
+
+    monkeypatch.setattr(
+        job_service, "enqueue_job", lambda db, job: enqueued.append(job.id) or job
+    )
+
+    response = client.post(f"/api/v1/jobs/{child_job.id}/retry")
+
+    assert response.status_code == 200
+    db_session.refresh(child_job)
+    assert child_job.status == JobStatus.WAITING
+    assert enqueued == [child_job.id]
+    # The run revival on a legitimate retry is preserved.
+    db_session.refresh(run)
+    assert run.status == "RUNNING"
+    db_session.refresh(child_node_run)
+    assert child_node_run.status == "RUNNING"
 
 
 def test_failed_run_sweep_unblocks_project_active_job_guard(db_session):
