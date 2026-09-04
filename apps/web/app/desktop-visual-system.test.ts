@@ -175,11 +175,14 @@ describe("U6 reduced-motion 合并为一条全局契约", () => {
     expect(block).toContain("animation-iteration-count: 1 !important");
     expect(block).toContain("transition-duration: .01ms !important");
     expect(block).toContain("scroll-behavior: auto !important");
-    expect(block).toContain("button:hover:not(:disabled)");
-    expect(block).toContain("button:active:not(:disabled)");
-    expect(block).toContain("a.button:hover");
-    expect(block).toContain("a.button:active");
-    expect(block).toContain(".upload-stage.drag-active");
+    // Distinct list entries, asserted with the line prefix so the class
+    // variant (.button:…) cannot satisfy the bare-element assertions.
+    expect(block).toContain("\n  button:hover:not(:disabled),");
+    expect(block).toContain("\n  button:active:not(:disabled),");
+    expect(block).toContain("\n  a.button:hover,");
+    expect(block).toContain("\n  a.button:active,");
+    expect(block).toContain("\n  .button:hover:not(:disabled),");
+    expect(block).toContain("\n  .upload-stage.drag-active,");
     expect(block).toContain("transform: none !important");
     expect(stylesheet).not.toContain("rotate(-4deg)");
   });
