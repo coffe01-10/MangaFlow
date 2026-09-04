@@ -83,6 +83,13 @@ class UsageDimensions:
     candidate_id: str | None = None
 
 
+# Usage magnitudes above this are provider garbage, not real billing facts.
+# Storing them would overflow the numeric(20,0) ledger columns on PostgreSQL,
+# turning a paid success into a permanent AUDIT_PERSISTENCE_FAILED job; the
+# raw payload still lands in the attempt's JSON usage column for audit.
+USAGE_VALUE_CAP = Decimal(10) ** 15
+
+
 def _nonnegative_integer(value: object) -> Decimal | None:
     if isinstance(value, bool):
         return None
@@ -90,7 +97,12 @@ def _nonnegative_integer(value: object) -> Decimal | None:
         result = Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError):
         return None
-    if not result.is_finite() or result < 0 or result != result.to_integral_value():
+    if (
+        not result.is_finite()
+        or result < 0
+        or result > USAGE_VALUE_CAP
+        or result != result.to_integral_value()
+    ):
         return None
     return result
 

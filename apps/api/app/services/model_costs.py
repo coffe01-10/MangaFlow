@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation, localcontext
 
 from fastapi import HTTPException
 from sqlalchemy import or_, select, tuple_
@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.models import ModelCallAttempt, ModelPricingVersion
 from app.provider_schemas import ModelPricingVersionCreate
+from app.services.usage_ledger import USAGE_VALUE_CAP
 
 _MILLION = Decimal(1_000_000)
 _DISPLAY_QUANTUM = Decimal("0.000001")
@@ -200,7 +201,18 @@ def _estimate_attempts(
             pricing_versions=versions,
             note="缺少调用 usage 或对应价格版本，费用不可估算；估算值不等于供应商账单",
         )
-    value = total.quantize(_DISPLAY_QUANTUM, rounding=ROUND_HALF_UP)
+    try:
+        with localcontext() as context:
+            context.prec = 60
+            value = total.quantize(_DISPLAY_QUANTUM, rounding=ROUND_HALF_UP)
+    except InvalidOperation:
+        return JobCostEstimate(
+            value=None,
+            currency=currency,
+            status="UNAVAILABLE",
+            pricing_versions=versions,
+            note="调用用量超出可估算范围，费用不可估算；估算值不等于供应商账单",
+        )
     if complete_attempts == len(attempts):
         return JobCostEstimate(
             value=value,
@@ -356,7 +368,7 @@ def _nonnegative_decimal(value: object) -> Decimal | None:
         result = Decimal(str(value))
     except (InvalidOperation, ValueError):
         return None
-    if not result.is_finite() or result < 0:
+    if not result.is_finite() or result < 0 or result > USAGE_VALUE_CAP:
         return None
     return result
 
