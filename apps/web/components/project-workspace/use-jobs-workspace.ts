@@ -45,12 +45,19 @@ export function useJobsWorkspace({ id }: { id: string }) {
   const [jobNotice, setJobNotice] = useState("");
   const [selectedJobIds, setSelectedJobIds] = useState<string[]>([]);
 
-  // The queue dock renders on every section, so the query must stay live
-  // everywhere: gating it froze the dock's status light and latest-job copy
-  // on source/script/storyboard/library.
+  // The queue dock renders on every section, so its data must stay live
+  // everywhere AND pinned to the active-jobs view: the toggleable
+  // showArchivedJobs key would otherwise feed the dock archived jobs as the
+  // "latest" status after the user visits 历史记录. When the section list is
+  // on the active view both queries share one cache entry.
   const jobs = useQuery({
     queryKey: ["jobs", id, showArchivedJobs],
     queryFn: () => api.jobs(id, showArchivedJobs),
+    refetchInterval: (query) => activePollInterval(query.state.data, 3000),
+  });
+  const dockJobs = useQuery({
+    queryKey: ["jobs", id, false],
+    queryFn: () => api.jobs(id, false),
     refetchInterval: (query) => activePollInterval(query.state.data, 3000),
   });
 
@@ -72,7 +79,7 @@ export function useJobsWorkspace({ id }: { id: string }) {
       setSelectedJobIds((ids) => ids.filter((id) => id !== jobId));
       queryClient.invalidateQueries({ queryKey: ["jobs", id] });
     },
-    onError: (reason) => setJobNotice(reason instanceof Error ? reason.message : "归档失败"),
+    onError: (reason) => setJobNotice(reason instanceof Error ? `归档失败：${reason.message}` : "归档失败，请重试"),
   });
   const restoreJob = useMutation({
     mutationFn: (jobId: string) => api.restoreJob(jobId),
@@ -80,7 +87,7 @@ export function useJobsWorkspace({ id }: { id: string }) {
       setJobNotice("任务已恢复到近期记录");
       queryClient.invalidateQueries({ queryKey: ["jobs", id] });
     },
-    onError: (reason) => setJobNotice(reason instanceof Error ? reason.message : "恢复失败"),
+    onError: (reason) => setJobNotice(reason instanceof Error ? `恢复失败：${reason.message}` : "恢复失败，请重试"),
   });
   const archiveCompletedJobs = useMutation({
     mutationFn: () => api.archiveCompletedJobs(id),
@@ -88,7 +95,7 @@ export function useJobsWorkspace({ id }: { id: string }) {
       setJobNotice(result.archived_count ? `已归档 ${result.archived_count} 条已结束任务` : "没有可归档的已结束任务");
       queryClient.invalidateQueries({ queryKey: ["jobs", id] });
     },
-    onError: (reason) => setJobNotice(reason instanceof Error ? reason.message : "清空失败"),
+    onError: (reason) => setJobNotice(reason instanceof Error ? `清空失败：${reason.message}` : "清空失败，请重试"),
   });
   const bulkArchiveJobs = useMutation({
     mutationFn: () => api.bulkArchiveJobs(id, selectedJobIds),
@@ -97,7 +104,7 @@ export function useJobsWorkspace({ id }: { id: string }) {
       setSelectedJobIds([]);
       queryClient.invalidateQueries({ queryKey: ["jobs", id] });
     },
-    onError: (reason) => setJobNotice(reason instanceof Error ? reason.message : "批量归档失败"),
+    onError: (reason) => setJobNotice(reason instanceof Error ? `批量归档失败：${reason.message}` : "批量归档失败，请重试"),
   });
   const deleteJob = useMutation({
     mutationFn: (jobId: string) => api.deleteJob(jobId),
@@ -105,10 +112,10 @@ export function useJobsWorkspace({ id }: { id: string }) {
       setJobNotice("无引用任务已彻底删除");
       queryClient.invalidateQueries({ queryKey: ["jobs", id] });
     },
-    onError: (reason) => setJobNotice(reason instanceof Error ? reason.message : "删除失败"),
+    onError: (reason) => setJobNotice(reason instanceof Error ? `删除失败：${reason.message}` : "删除失败，请重试"),
   });
 
-  const queueStats = useMemo(() => queueStatsOf(jobs.data ?? []), [jobs.data]);
+  const queueStats = useMemo(() => queueStatsOf(dockJobs.data ?? []), [dockJobs.data]);
   const activeJobs = (jobs.data ?? []).filter((job) => isActiveTaskStatus(job.status));
   const failedJobs = (jobs.data ?? []).filter((job) => job.status === "FAILED");
   const completedJobGroups = Object.entries(
@@ -121,6 +128,7 @@ export function useJobsWorkspace({ id }: { id: string }) {
 
   return {
     jobs,
+    dockJobs,
     showArchivedJobs,
     setShowArchivedJobs,
     jobNotice,

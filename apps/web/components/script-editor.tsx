@@ -20,6 +20,27 @@ import { scriptStatusLabels } from "./project-workspace/labels";
 type SceneDraft = Pick<ScriptScene, "location" | "time_label" | "weather" | "purpose" | "emotional_arc">;
 type BeatDraft = Pick<ScriptBeat, "action" | "speaker_name" | "dialogue" | "narration" | "subtext" | "emotion" | "importance" | "must_visualize" | "mergeable" | "page_turn_hook">;
 
+function sceneDraftDiffers(scene: ScriptScene, draft: SceneDraft) {
+  return draft.location !== scene.location
+    || draft.time_label !== scene.time_label
+    || draft.weather !== scene.weather
+    || draft.purpose !== scene.purpose
+    || draft.emotional_arc !== scene.emotional_arc;
+}
+
+function beatDraftDiffers(beat: ScriptBeat, draft: BeatDraft) {
+  return draft.action !== beat.action
+    || draft.speaker_name !== beat.speaker_name
+    || draft.dialogue !== beat.dialogue
+    || draft.narration !== beat.narration
+    || draft.subtext !== beat.subtext
+    || draft.emotion !== beat.emotion
+    || draft.importance !== beat.importance
+    || draft.must_visualize !== beat.must_visualize
+    || draft.mergeable !== beat.mergeable
+    || draft.page_turn_hook !== beat.page_turn_hook;
+}
+
 export function ScriptEditor({
   chapterId,
   projectId,
@@ -49,7 +70,13 @@ export function ScriptEditor({
   const [editingBeat, setEditingBeat] = useState<string | null>(null);
   const [beatDraft, setBeatDraft] = useState<BeatDraft | null>(null);
   const [notice, setNotice] = useState("");
-  const editorDirty = editingScene !== null || editingBeat !== null;
+  // Mirrors the storyboard editor's rule: opening an edit form alone is not
+  // an edit — the leave guards arm only when a draft actually diverges from
+  // the server scene/beat.
+  const editorDirty = (editingScene !== null && sceneDraft !== null
+    && script.scenes.some((scene) => scene.id === editingScene && sceneDraftDiffers(scene, sceneDraft)))
+    || (editingBeat !== null && beatDraft !== null
+      && script.scenes.some((scene) => scene.beats.some((beat) => beat.id === editingBeat && beatDraftDiffers(beat, beatDraft))));
   useEffect(() => { onDirtyChange?.(editorDirty); }, [editorDirty, onDirtyChange]);
 
   // Leave protection mirrors storyboard-editor: typed dialogue / scene drafts

@@ -43,13 +43,24 @@ export function AssetNameEditor({ asset, pending, error, onSave }: { asset: Asse
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(asset.display_name ?? asset.original_name);
   const [submitted, setSubmitted] = useState(false);
+  // React Query flips `pending` asynchronously (notifyManager batches on a
+  // timer), so the first render after submit still sees pending=false. Track
+  // pending transitions with the previous-value snapshot pattern and settle
+  // only once pending has actually been observed (React-sanctioned state
+  // adjustment during render; converges in one pass).
+  const [prevPending, setPrevPending] = useState(pending);
+  const [sawPending, setSawPending] = useState(false);
+  if (prevPending !== pending) {
+    setPrevPending(pending);
+    if (pending) setSawPending(true);
+  }
   const visibleName = asset.display_name?.trim() || asset.original_name;
 
   // The form stays open until the rename settles: closing it immediately made
   // a failed rename look like a successful save (the name later "reverted").
-  // Settling during render (guarded by `submitted`) converges in one pass.
-  if (submitted && !pending) {
+  if (submitted && !pending && sawPending) {
     setSubmitted(false);
+    setSawPending(false);
     if (!error) setEditing(false);
   }
 
@@ -64,7 +75,7 @@ export function AssetNameEditor({ asset, pending, error, onSave }: { asset: Asse
       <input aria-label={`重命名 ${visibleName}`} maxLength={120} autoFocus value={value} onChange={(event) => setValue(event.target.value)} disabled={submitted && pending} />
       <button type="submit" aria-label="保存素材名称" disabled={pending || !value.trim()}><Check size={14} /></button>
       <button type="button" aria-label="取消重命名" onClick={() => { setValue(visibleName); setEditing(false); }}><X size={14} /></button>
-      {submitted && error && <em className="asset-name-error"><CircleAlert size={11} />{error.message}</em>}
+      {error && <em className="asset-name-error"><CircleAlert size={11} />{error.message}</em>}
     </form>;
   }
 

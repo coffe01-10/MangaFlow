@@ -177,6 +177,7 @@ export const styleStatusLabels: Record<string, string> = {
 
 export const scriptStatusLabels: Record<string, string> = {
   NOT_CREATED: "未创建",
+  DRAFT: "生成中",
   PROCESSING: "生成中",
   READY: "已生成",
   INCOMPLETE: "不完整",

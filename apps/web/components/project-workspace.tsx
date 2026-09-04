@@ -119,6 +119,7 @@ export default function ProjectWorkspace({
   const jobsWorkspace = useJobsWorkspace({ id });
   const {
     jobs,
+    dockJobs,
     queueStats,
   } = jobsWorkspace;
 
@@ -418,8 +419,8 @@ export default function ProjectWorkspace({
 
       <QueueDock
         queueStats={queueStats}
-        latestJob={jobs.data?.[0]}
-        latestJobLabel={jobs.data?.[0] ? jobLabels[jobs.data[0].job_type] ?? jobs.data[0].job_type : ""}
+        latestJob={dockJobs.data?.[0]}
+        latestJobLabel={dockJobs.data?.[0] ? jobLabels[dockJobs.data[0].job_type] ?? dockJobs.data[0].job_type : ""}
         section={section}
         concurrency={draft.default_concurrency}
         projectPath={projectPath}
