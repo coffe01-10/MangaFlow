@@ -26,6 +26,8 @@ apps/desktop/
 │   ├── src/handshake.rs             # spawn → READY 校验 → GO → 健康探活 编排；
 │   │                                #   helper stderr 重定向到统一日志目录（V02-54B）
 │   ├── src/logs.rs                  # 统一日志目录（logs/）+ RunLog 里程碑 +
+│   │                                #   按大小轮转（V02-54C：12 MiB 阈值、
+│   │                                #   .1–.5 世代、不跟随符号链接）+
 │   │                                #   ZIP 导出（V02-54B；目标/成员双向路径安全）
 │   ├── src/picker.rs                # 本地文件/目录选择校验 + 会话已选能力表（V02-54B）
 │   ├── src/ziparch.rs               # 零依赖 store-only ZIP 写入器 + CRC32（V02-54B）
@@ -33,6 +35,7 @@ apps/desktop/
 │   └── tests/startup_protocol.rs    # 集成测试：握手/并发端口/拒绝/崩溃清树/强杀升级
 │       tests/delivery_contract.rs   # 安装/卸载用户数据契约
 │       tests/log_export.rs          # 日志导出矩阵（含 python3 zipfile 外部校验）
+│       tests/log_rotation.rs        # 日志轮转矩阵（V02-54C：会话清扫/会话内轮转/世代保留）
 │       tests/picker_policy.rs       # 选择策略/穿越拒绝/能力表矩阵
 ├── shell/shell-tools.html           # 壳自带工具页（V02-54B）：日志导出/文件选择触发面
 ├── src-tauri/                       # Tauri 2 最小壳（Windows 侧 cargo check 编译验证）
@@ -124,7 +127,7 @@ cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml
 | D3 | 进程生命周期 | **RUN（Linux 等价）/ Windows 路径已按 CREATE_SUSPENDED+assign+resume 实现、实机 NOT RUN** | `cargo test`（10 项）：握手全链、错误 GO 拒绝 exit 75、并发双 helper 端口不冲突、`shell-sim` 崩溃（SIGABRT）后 helper+孙进程全灭（PDEATHSIG 链）、无协作者 SIGTERM→SIGKILL 升级、壳在 spawn 前写入归属 journal。Windows 路径已按 `scripts/owned_processes.py` `start_python` 纪律重写：`CREATE_SUSPENDED` 挂起创建 → 建 Job（`KILL_ON_JOB_CLOSE`）→ assign 仍挂起的子进程 → 快照枚举初始线程后 `ResumeThread`；任一步失败即终止仍挂起的子进程，spawn→assign 竞争窗口已收口。**Windows 实机运行行为 NOT RUN**（本沙箱 Linux），合并前该路径只有编译门禁（`cargo check --target x86_64-pc-windows-msvc`）证据，实机 D3 复验仍欠。 |
 | D4 | 端口/单实例 | **RUN（端口+注入）/ 单实例 NOT RUN**（V02-53B 证据） | 原子绑定 `127.0.0.1:0`（socket 先绑后报，无 TOCTOU；并发测试两 helper 端口必异）；WebView 建立前完成握手；运行时注入 = 初始化脚本同步写 `window.__MANGAFLOW_API_ORIGIN__` + invoke `desktop_get_api_origin` 双通道，不依赖 `NEXT_PUBLIC_*`（浏览器断言 `api_origin_env_free`）/不依赖 Next rewrite（D5 实测直连）。单实例互斥体已接 `tauri-plugin-single-instance` 但**实机多开行为 NOT RUN**。 |
 | D5 | 前端形态 | **RUN（机制验证，V02-53B 证据）/ 静态导出为「受限可行」** | `verify-static-origin.mjs`（Chromium）：静态导出页加载 → 注入 origin → 仪表盘**直连**动态端口 API（`/api/v1/projects/dashboard` 200，CORS 按桌面 origin 放行）→ 页面渲染，静态服务器 `/api/*` 零命中。**核心发现**：工作台子树无法只靠 flag 导出——`output:"export"` 要求每个动态段 ≥1 预渲染组合（真实项目 id 构建期不可知）且工作台组件树服务端预渲染崩溃；补丁以「poc 桩组合 + notFound stub + 删 3 个仅服务端页」换得壳级页面导出。**结论：静态导出路线需要正式的前端路由/组件改造（否决条件 3 的关键输入）；方案 B（捆绑 node 跑 next start，保留 rewrites）未被验证**。 |
-| D6 | 凭据/日志/数据 | **RUN（目录+日志+凭据路径+日志导出）/ ACL NOT RUN** | 用户数据目录布局：`data/`（DB）、`storage/`、`uploads/` 均落 user-data（测试断言不落仓库）；V02-54B 起统一日志目录 `logs/`（壳 RunLog 里程碑 + helper/API/Worker stderr 按运行分文件），壳侧 `desktop_export_logs` 可归档（store-only ZIP + manifest.json）到用户可选路径；假通道密钥走生产 `credential_crypto` AES-GCM + 文件主密钥（`storage/.provider-credential-master-key` 自动生成）。Windows ACL 收紧 NOT RUN；**日志轮转未实现**（导出对单文件 64 MiB 上限跳过并在 manifest/report 记录）。 |
+| D6 | 凭据/日志/数据 | **RUN（目录+日志+凭据路径+日志导出+日志轮转）/ ACL NOT RUN** | 用户数据目录布局：`data/`（DB）、`storage/`、`uploads/` 均落 user-data（测试断言不落仓库）；V02-54B 起统一日志目录 `logs/`（壳 RunLog 里程碑 + helper/API/Worker stderr 按运行分文件），壳侧 `desktop_export_logs` 可归档（store-only ZIP + manifest.json）到用户可选路径；V02-54C 起**按大小轮转**：`shell-*.log` / `helper-*.stderr.log` 单文件达 12 MiB（< 导出 64 MiB 上限）rename 为 `.1`–`.5` 世代、超出删最旧——壳 RunLog 会话内轮转（写前检查、轮转后原打开路径继续写），helper stderr 由 helper 进程持有 fd，采用**跨会话轮转**（新会话 `RunLog::create` 清扫，取舍见 §6.4）；轮转不跟随符号链接、rename/删除不越 canonical logs 根。假通道密钥走生产 `credential_crypto` AES-GCM + 文件主密钥（`storage/.provider-credential-master-key` 自动生成）。Windows ACL 收紧 NOT RUN；轮转 Windows 实机行为 NOT RUN（Linux 实测，见 §6.4）；导出对单文件 64 MiB 上限仍跳过并在 manifest/report 记录。 |
 | D7 | 性能门禁 | **NOT RUN（按约定）** | V02-52A N=20 全样本不存在、本轮明确不跑 V02-52B；仅记录参考值：假闭环 e2e 全程约 4.3s（含 28 个迁移），远优于 ADR 冷启动 ≤15s 建议线，但**非固定窗口测量、不作为门禁证据**。 |
 | D8 | 自动更新（未签名） | **NOT RUN** | 未接 updater 插件、无签名密钥、无更新服务器（Issue 禁止真实签名/服务器）。 |
 | D9 | 安全 | **RUN（PoC 面）/ 业务面沿用；CSP 有记录在案的债务** | journal 仅身份字段（测试断言字段集合，无命令/env/密钥）；token 由 OS CSPRNG 生成（Unix `/dev/urandom`、Windows `BCryptGenRandom`——后者编译验证、运行时 NOT RUN）；origin 回环强制（`verify_ready_line` 拒绝非 127.0.0.1）；GO 前零流量；注入串经 serde_json JSON 转义而非裸 format!；`tauri.conf.json` 设受限本地 CSP（`connect-src`/`img-src` 限 `self` + `http://127.0.0.1:*`，`object-src 'none'`、`frame-src 'none'`、`base-uri 'self'`）。V02-54B：RunLog 与日志导出 manifest 只写身份字段（测试断言不含命令/env/脚本路径）；本地文件选择拒绝 `.`/`..` 成分与符号链接，读取仅限会话内已选能力表成员（测试矩阵见 `tests/picker_policy.rs`）。**CSP 债务**：`script-src` 保留 `'unsafe-inline'`——Next 静态导出的内联引导脚本（`self.__next_f.push`）硬需求，去掉会白屏；`withGlobalTauri` 使壳命令暴露给壳内页面（页面全部为本仓库产出的静态导出/工具页，无第三方内容；CSP `default-src 'self'` 限制外链）；WebView2 对该 CSP 的实际执行行为 NOT RUN（本机无 WebView）。上传像素/解压炸弹/总量等安全面未改动（沿用 P1-13 既有实现与测试）。 |
@@ -168,7 +171,7 @@ cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml
 - **边界**：真实 MSI/NSIS 安装/升级/卸载行为 NOT RUN（本环境无法构建 Windows 安装包）；
   以上以配置契约与卸载器官方默认行为为据，实机验收（D1）欠。
 
-## 6. V02-54B：日志导出与本地文件选择（Linux 实测；Windows 实机 NOT RUN）
+## 6. V02-54B 日志导出与本地文件选择 + V02-54C 日志轮转（Linux 实测；Windows 实机 NOT RUN）
 
 ### 6.1 统一日志目录与导出（ADR §4.5）
 
@@ -186,10 +189,11 @@ cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml
 - **双向路径安全**（测试 `tests/log_export.rs`，归档另经 python3 `zipfile`
   外部校验 CRC 与结构）：归档成员只收 `logs/` 内的常规文件——符号链接跳过
   不跟随、每个成员 canonical 路径必须仍在 canonical logs 根之下、单文件
-  64 MiB 上限（超出跳过并记录，**轮转未实现**，这是唯一的体积护栏）；
-  导出目标必须为绝对路径、不含 `.`/`..` 成分、父目录存在且非符号链接，
+  64 MiB 上限（超出跳过并记录；V02-54C 起轮转让常规日志稳定低于该上限，
+  见 §6.4）；导出目标必须为绝对路径、不含 `.`/`..` 成分、父目录存在且非符号链接，
   canonical 化后**不得位于用户数据根之内**（既防止把用户数据当导出目标
-  覆盖，也防止归档自我包含）。
+  覆盖，也防止归档自我包含）。轮转产生的世代文件（`*.log.1`…）是普通
+  成员，随导出一起归档（测试 `tests/log_rotation.rs`）。
 
 ### 6.2 本地文件/目录选择
 
@@ -223,6 +227,64 @@ cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml
   反选无效），Windows 编译门禁从干净 clone 会失败；本轮补 `!apps/desktop/dist/`
   放行并入库占位页。
 
+### 6.4 日志轮转（V02-54C，Linux 实测；Windows 实机 NOT RUN）
+
+- **策略**：`shell-*.log` / `helper-*.stderr.log` 单文件达
+  `ROTATION_THRESHOLD_BYTES`（12 MiB，**本轮自选值**，严格低于导出 64 MiB
+  上限；ADR 只要求「轮转」，未给出数值区间）即 rename 为带序号世代
+  `.1`–`.5`（`ROTATION_KEEP_GENERATIONS`），每次轮转先删最旧世代再自新
+  到旧逐级 shift——每个目标位都是刚腾空的，普通 rename 在 Windows（无
+  覆盖式 rename）上同样成立。
+- **两种轮转时机，取舍写明**：①壳 RunLog（`shell-<token>.log`）**会话内
+  轮转**——`RunLog::record` 写前检查活动文件大小，达阈值即关句柄、
+  shift 世代、重开同一 base 路径，轮转后打开路径继续可写（shift 失败
+  降级为继续追加、不丢里程碑行；重开失败则该行以错误返回且不写穿路径上
+  的可疑条目，下次 record 先自动重试恢复句柄，路径修复后写入自愈）；
+  ②helper stderr（`helper-<token>.stderr.log`）
+  的句柄由 helper 进程持有整个会话（Windows 无法 rename 他进程打开的
+  文件、Unix rename 会把 helper 后续写脱接到新 base），故采用**跨会话
+  轮转**：每次会话启动（`RunLog::create`）在上一批文件必然关闭的时机清扫
+  logs/ 并轮转超阈值文件。单会话内 helper stderr 仍可能超过阈值，此时由
+  导出 64 MiB 上限兜底（跳过并记录）。
+- **并发假设**：会话启动清扫假设同一 user-data 上**无并发壳实例**（D4
+  单实例互斥体已接但实机多开 NOT RUN）；清扫无活跃性检查，若未来支持
+  多开，需先按 `runtime/` 归属 journal 排除仍活跃会话的 base 再轮转。
+- **清扫范围**：仅匹配 `shell-<32 hex>.log` 与 `helper-<32 hex>.stderr.log`
+  （复用 token 校验）；`shell-notes.log` 之类外来名、世代文件与非日志
+  文件一律不动（单元测试断言）。会话启动清扫 fail-soft：清扫失败不阻塞
+  会话启动。
+- **路径安全**：轮转只匹配 logs 根内的固定文件名模式，世代名由匹配到的
+  文件名派生，rename/删除目标不可能越出 logs 根；rename 前有
+  canonical 包含复查（与导出成员同款）。符号链接一律不跟随：base 路径
+  上的链接跳过不轮转（也不移动链接本身），世代位上的链接改为 unlink
+  （外链目标文件存活）。日志打开统一走 `open_append_regular`：打开前拒绝
+  非常规条目并要求父目录 canonical 在 logs 根内（不向外创建任何文件），
+  打开后复查句柄为常规文件且路径 canonical 仍在 logs 根内，不符即拒绝
+  写入（检查后打开的置换窗口与导出侧同款残余风险，user-data 为每用户
+  目录，ACL 收紧 NOT RUN）。RunLog 写路径全程无 panic：序列化 fallible、
+  互斥锁中毒经 `into_inner` 恢复、重开失败后 record 报错而非 panic。
+- **门禁（Linux 实测，2026-09-04）**：shell-core `cargo test` 33 项全绿
+  （新增 logs 单元 4：世代 shift/保留、符号链接不跟随与越根跳过、清扫
+  只动超阈值 base 文件、RunLog 拒绝符号链接路径；新增
+  `tests/log_rotation.rs` 集成 3：会话启动清扫上会话 shell/helper 超阈值
+  日志、会话内轮转后打开路径继续写 + 世代保留 ≤5、世代文件随导出归档
+  且不触发 64 MiB 跳过；超阈值用稀疏文件 `set_len` 构造，真实 12 MiB
+  默认阈值零成本参与）；shell-core 与 src-tauri 双双通过 Windows 目标
+  `cargo check`（rustup stable 1.98.1 + llvm-rc 19）。**轮转 Windows
+  实机行为 NOT RUN**（含 rename-on-open 的 Windows 语义实测），归入 §7。
+  **修复轮一（同日，审阅后）**：写路径去 panic 化与 open 后复查落地，
+  新增锁毒恢复（人为投毒后 record 仍落盘）与 `open_append_regular`
+  越根/符号链接父目录拒绝（打开前不向外创建文件）两项单元测试。
+  **修复轮二（superseding，同日）**：①重开失败不留死句柄——record 以
+  错误返回，下次 record 自动重试恢复句柄（测试：rotation 关句柄窗口期
+  在 base 植入符号链接 → record 返回 `Err` 不 panic 且不写穿链接，路径
+  修复后写入自愈）；②会话启动清扫 fail-soft（清扫失败不阻塞建会话）；
+  ③清扫模式收紧为 `shell-<32hex>.log` / `helper-<32hex>.stderr.log`
+  （`shell-notes.log` 等外来名不动，测试断言）；④12 MiB 阈值表述改为
+  「本轮自选值」，删除「ADR 建议 8–16 MiB」的不实表述（ADR 无数值
+  区间）；⑤记录清扫的「无并发壳」假设。shell-core `cargo test` **36 项**
+  全绿，双 crate Windows 目标 `cargo check` 复跑通过。
+
 ## 7. NOT RUN 汇总（诚实边界）
 
 1. Windows 实机全链路（Job Object 行为、WebView2、安装器、签名、更新、单实例多开）。
@@ -230,7 +292,8 @@ cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml
 3. V02-52A N=20 性能门禁、Lighthouse/FPS（归 V02-52B）。
 4. 真实供应商、真实凭据、PostgreSQL live（沿项目既有边界；假模型闭环零外呼）。
 5. Electron 对比壳（ADR 建议 Tauri 2 进入 PoC；未构建 Electron 侧镜像实现，体积/内存对比无从测起）。
-6. V02-54B 新增面：rfd 原生对话框 Windows 实机行为（COM 线程/WebView2 交互）、WebView2 内工具页 invoke 实机验证、日志轮转——本沙箱仅 Linux 等价逻辑与 Windows 目标编译门禁。
+6. V02-54B 新增面：rfd 原生对话框 Windows 实机行为（COM 线程/WebView2 交互）、WebView2 内工具页 invoke 实机验证——本沙箱仅 Linux 等价逻辑与 Windows 目标编译门禁。
+7. V02-54C 新增面：日志轮转已 Linux 实测（§6.4），**Windows 实机轮转行为 NOT RUN**（含对他进程打开文件的 rename 语义、ACL收紧前的符号链接种植场景实测）。
 
 ## 8. 复现环境
 

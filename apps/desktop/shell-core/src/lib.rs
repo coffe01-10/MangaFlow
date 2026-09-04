@@ -19,7 +19,10 @@ pub mod protocol;
 pub mod ziparch;
 
 pub use handshake::{spawn_helper, HelperConfig, SpawnedHelper};
-pub use logs::{export_logs_zip, ExportError, ExportReport, RunLog};
+pub use logs::{
+    export_logs_zip, rotate_logs, ExportError, ExportReport, RunLog, ROTATION_KEEP_GENERATIONS,
+    ROTATION_THRESHOLD_BYTES,
+};
 pub use ownership::OwnershipError;
 pub use picker::{
     read_registered_file, validate_picked_directory, validate_picked_file, PickError, PickKind,
