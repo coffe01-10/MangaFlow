@@ -1,0 +1,8 @@
+target/
+__pycache__/
+.pytest_cache/
+dist/sidecar/
+dist/frontend/*
+!dist/frontend/index.html
+dist/static-build.log
+src-tauri/gen/schemas/

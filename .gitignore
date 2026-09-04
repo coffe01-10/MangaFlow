@@ -43,3 +43,4 @@ uploads/*
 Thumbs.db
 .idea/
 .vscode/
+.venv-poc/

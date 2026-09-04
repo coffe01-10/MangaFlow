@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "PoC default capability: core windows/events plus the app's own origin command.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
