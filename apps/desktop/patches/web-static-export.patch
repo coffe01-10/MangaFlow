@@ -1,0 +1,155 @@
+# V02-53B disposable patch: static export + runtime API origin injection.
+#
+# Inert in normal development/builds: `output: "export"` only activates with
+# MANGAFLOW_STATIC_EXPORT=1, and the api.ts override only reads
+# window.__MANGAFLOW_API_ORIGIN__ when the desktop shell initialization
+# script has set it. ADR 4.2 frozen startup protocol: the origin is provided
+# at runtime by the shell - never through NEXT_PUBLIC_* at build time and
+# never through the Next.js rewrite at runtime.
+#
+# D5 finding (core PoC evidence): the client-driven workspace cannot be
+# statically exported by flag alone. `output: "export"` demands at least one
+# prerender combo per dynamic segment (project ids are unknowable at build
+# time) and the workspace component tree fails server prerender. The patch
+# therefore (a) exports the dynamic segment pages only as notFound stubs via
+# invalid whitelist combos, (b) supplies passthrough layouts where client
+# pages cannot carry route config, and (c) drops three server-prerender-only
+# pages (two pure redirects and the workflow studio) from the disposable
+# export worktree. The exported form covers shell-level pages (dashboard,
+# settings, help) only - a real static-export desktop form needs a routing
+# and component scheme change, which is exactly the veto-condition-3 input
+# for the lead's decision.
+#
+# Apply with: git apply apps/desktop/patches/web-static-export.patch
+diff --git a/apps/web/lib/api.ts b/apps/web/lib/api.ts
+index 08fed49..0fe19c5 100644
+--- a/apps/web/lib/api.ts
++++ b/apps/web/lib/api.ts
+@@ -1,4 +1,12 @@
+-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "/api/v1";
++// V02-53B disposable desktop-shell patch: prefer the origin injected at
++// runtime by the desktop shell (window.__MANGAFLOW_API_ORIGIN__, set by the
++// Tauri initialization script) over the build-time default. Build/SSG still
++// resolves the relative default so static export stays provider-agnostic.
++const API_URL =
++  typeof window !== "undefined" &&
++  (window as { __MANGAFLOW_API_ORIGIN__?: string }).__MANGAFLOW_API_ORIGIN__
++    ? `${(window as { __MANGAFLOW_API_ORIGIN__?: string }).__MANGAFLOW_API_ORIGIN__}/api/v1`
++    : process.env.NEXT_PUBLIC_API_URL ?? "/api/v1";
+ const API_ORIGIN = API_URL.replace(/\/api\/v1\/?$/, "");
+ 
+ export type Resolution = "1K" | "2K" | "4K";
+diff --git a/apps/web/next.config.ts b/apps/web/next.config.ts
+index f69656f..8786598 100644
+--- a/apps/web/next.config.ts
++++ b/apps/web/next.config.ts
+@@ -4,6 +4,14 @@ const apiOrigin = process.env.MANGAFLOW_API_ORIGIN ?? "http://127.0.0.1:8000";
+ 
+ const nextConfig: NextConfig = {
+   reactStrictMode: true,
++  // V02-53B disposable desktop-shell patch: static export only for the
++  // desktop PoC build; normal builds keep the Node-server rewrite below.
++  ...(process.env.MANGAFLOW_STATIC_EXPORT === "1"
++    ? {
++        output: "export" as const,
++        images: { unoptimized: true },
++      }
++    : {}),
+   experimental: {
+     optimizePackageImports: ["lucide-react"],
+   },
+diff --git a/apps/web/app/projects/[id]/[section]/page.tsx b/apps/web/app/projects/[id]/[section]/page.tsx
+index a86dd1c..6831c87 100644
+--- a/apps/web/app/projects/[id]/[section]/page.tsx
++++ b/apps/web/app/projects/[id]/[section]/page.tsx
+@@ -16,3 +16,14 @@ export default async function ProjectSectionPage({ params }: { params: Promise<{
+   if (!workspaceSections.has(section as WorkspaceSection)) notFound();
+   return <ProjectWorkspace section={section as WorkspaceSection} />;
+ }
++
++// V02-53B disposable desktop-shell patch: `output: "export"` needs at least
++// one prerender combo per dynamic segment, but real project ids are
++// unknowable at build time and the client workspace does not survive server
++// prerender. The stub combo deliberately fails the section whitelist so the
++// page exports as a notFound shell instead of pretending to work. Recorded
++// as D5 evidence for the desktop-shell PoC.
++export function generateStaticParams() {
++  return [{ id: "poc", section: "poc-invalid" }];
++}
++export const dynamicParams = false;
+diff --git a/apps/web/app/projects/[id]/assets/[view]/page.tsx b/apps/web/app/projects/[id]/assets/[view]/page.tsx
+index 7bc6518..10398ce 100644
+--- a/apps/web/app/projects/[id]/assets/[view]/page.tsx
++++ b/apps/web/app/projects/[id]/assets/[view]/page.tsx
+@@ -18,3 +18,9 @@ export default async function AssetViewPage({
+   if (!assetViews.has(view as AssetWorkspaceView)) notFound();
+   return <ProjectWorkspace section="assets" assetView={view as AssetWorkspaceView} />;
+ }
++
++// V02-53B disposable desktop-shell patch: see [section]/page.tsx.
++export function generateStaticParams() {
++  return [{ id: "poc", view: "poc-invalid" }];
++}
++export const dynamicParams = false;
+diff --git a/apps/web/app/projects/[id]/assets/page.tsx b/apps/web/app/projects/[id]/assets/page.tsx
+deleted file mode 100644
+index 23ed85f..0000000
+--- a/apps/web/app/projects/[id]/assets/page.tsx
++++ /dev/null
+@@ -1,6 +0,0 @@
+-import { redirect } from "next/navigation";
+-
+-export default async function AssetsPage({ params }: { params: Promise<{ id: string }> }) {
+-  const { id } = await params;
+-  redirect(`/projects/${id}/assets/characters`);
+-}
+diff --git a/apps/web/app/projects/[id]/page.tsx b/apps/web/app/projects/[id]/page.tsx
+deleted file mode 100644
+index 1e4140f..0000000
+--- a/apps/web/app/projects/[id]/page.tsx
++++ /dev/null
+@@ -1,6 +0,0 @@
+-import { redirect } from "next/navigation";
+-
+-export default async function ProjectPage({ params }: { params: Promise<{ id: string }> }) {
+-  const { id } = await params;
+-  redirect(`/projects/${id}/source`);
+-}
+diff --git a/apps/web/app/projects/[id]/settings/layout.tsx b/apps/web/app/projects/[id]/settings/layout.tsx
+new file mode 100644
+index 0000000..e3a8ce0
+--- /dev/null
++++ b/apps/web/app/projects/[id]/settings/layout.tsx
+@@ -0,0 +1,16 @@
++import type { ReactNode } from "react";
++
++// V02-53B disposable desktop-shell patch: the client settings page cannot
++// export route-segment config itself, so this passthrough layout supplies
++// the single "poc" stub combo required by `output: "export"` (dynamicParams
++// stays false; every real project id 404s in the exported form). Recorded
++// as D5 evidence for the desktop-shell PoC.
++export function generateStaticParams() {
++  return [{ id: "poc" }];
++}
++
++export const dynamicParams = false;
++
++export default function ProjectSettingsLayout({ children }: { children: ReactNode }) {
++  return children;
++}
+diff --git a/apps/web/app/projects/[id]/workflow/page.tsx b/apps/web/app/projects/[id]/workflow/page.tsx
+deleted file mode 100644
+index ef0e884..0000000
+--- a/apps/web/app/projects/[id]/workflow/page.tsx
++++ /dev/null
+@@ -1,10 +0,0 @@
+-import WorkflowStudio from "@/components/workflow-studio";
+-
+-export default async function ProjectWorkflowPage({
+-  params,
+-}: {
+-  params: Promise<{ id: string }>;
+-}) {
+-  const { id } = await params;
+-  return <WorkflowStudio projectId={id} />;
+-}
