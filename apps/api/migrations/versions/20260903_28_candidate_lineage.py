@@ -27,6 +27,13 @@ _BACKFILL_KINDS = {"REPAIR": "REPAIRED", "UPSCALE": "UPSCALED"}
 
 
 def upgrade() -> None:
+    inspector = sa.inspect(op.get_bind())
+    if "candidate_lineage" not in inspector.get_table_names():
+        _create_candidate_lineage_table()
+    _backfill_from_request_parameters()
+
+
+def _create_candidate_lineage_table() -> None:
     op.create_table(
         "candidate_lineage",
         sa.Column("id", sa.String(length=36), primary_key=True),
@@ -67,7 +74,6 @@ def upgrade() -> None:
         "candidate_lineage",
         ["source_command_id"],
     )
-    _backfill_from_request_parameters()
 
 
 def _backfill_from_request_parameters() -> None:

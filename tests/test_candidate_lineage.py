@@ -16,7 +16,9 @@ from app.models import (
     Chapter,
     GenerationBatch,
     GenerationJob,
+    InspectionResult,
     JobAssetReference,
+    LineageKind,
     MangaPage,
     ModelCallAttempt,
     PageCandidate,
@@ -379,3 +381,60 @@ def test_accept_after_parent_deleted_fails_without_job_or_lineage(
     assert list(db_session.scalars(select(CandidateLineage))) == []
     assert list(db_session.scalars(select(PageCandidate))) == [parent]
     assert list(db_session.scalars(select(GenerationJob))) == []
+
+
+def test_repair_and_upscale_write_lineage_rows(
+    client, db_session, monkeypatch, mask_capable_model
+):
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    ctx = _setup(client, db_session)
+    parent = _ready_parent(db_session, ctx, model_alias="image.nano_banana_2")
+    inspection = InspectionResult(
+        candidate_id=parent.id,
+        storyboard_version=ctx["page"].storyboard_version,
+        category="CHARACTER",
+        outcome="MISMATCH",
+        score=0.4,
+        severity="ERROR",
+        details={"expected": "一致", "observed": "偏离"},
+        regions=[{"x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2}],
+    )
+    db_session.add(inspection)
+    db_session.commit()
+
+    repaired = client.post(
+        f"/api/v1/candidates/{parent.id}/repairs",
+        json={
+            "inspection_result_id": inspection.id,
+            "repair_type": "PANEL",
+            "target_regions": [],
+            "target_fields": [],
+            "model_alias": "image.nano_banana_2",
+            "resolution": "1K",
+        },
+    )
+    assert repaired.status_code == 202, repaired.text
+    repair_child_id = repaired.json()["candidate"]["id"]
+    repair_lineage = db_session.scalar(
+        select(CandidateLineage).where(CandidateLineage.child_candidate_id == repair_child_id)
+    )
+    assert repair_lineage is not None
+    assert repair_lineage.parent_candidate_id == parent.id
+    assert repair_lineage.lineage_kind == LineageKind.REPAIRED
+    repair_child = db_session.get(PageCandidate, repair_child_id)
+    assert repair_child.prompt_snapshot["lineage"]["parent_candidate_id"] == parent.id
+
+    upscaled = client.post(
+        f"/api/v1/candidates/{parent.id}/upscale",
+        json={"model_alias": "image.nano_banana_2", "resolution": "2K"},
+    )
+    assert upscaled.status_code == 202, upscaled.text
+    upscale_child_id = upscaled.json()["candidate"]["id"]
+    upscale_lineage = db_session.scalar(
+        select(CandidateLineage).where(CandidateLineage.child_candidate_id == upscale_child_id)
+    )
+    assert upscale_lineage is not None
+    assert upscale_lineage.parent_candidate_id == parent.id
+    assert upscale_lineage.lineage_kind == LineageKind.UPSCALED

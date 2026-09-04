@@ -247,6 +247,41 @@ describe("director rules 规则桩（V02-41B）", () => {
     }
   });
 
+  it("加入入镜角色时保留格内已有 VISIBLE 角色", () => {
+    const plan = compileDirectorCommand(baseInput({
+      panels: [panelFixture({
+        characters: ["character-2"],
+        character_presence: { "character-2": "VISIBLE" },
+      })],
+      characters: [characterFixture(), characterFixture({ id: "character-2", primary_name: "苏离" })],
+      utterance: "让林澈出现在第 1 格",
+    }));
+    expect(plan.kind).toBe("command");
+    if (plan.kind !== "command") return;
+    expect(plan.envelope.payload).toEqual({
+      characters: ["character-2", "character-1"],
+      character_presence: { "character-2": "VISIBLE", "character-1": "VISIBLE" },
+    });
+  });
+
+  it("改单人表情时合并而不是覆盖整格 expressions", () => {
+    const plan = compileDirectorCommand(baseInput({
+      panels: [panelFixture({
+        characters: ["character-1", "character-2"],
+        character_presence: { "character-1": "VISIBLE", "character-2": "VISIBLE" },
+        expressions: { "character-1": "皱眉", "character-2": "微笑" },
+      })],
+      characters: [characterFixture(), characterFixture({ id: "character-2", primary_name: "苏离" })],
+      selection: { kind: "character", characterId: "character-1" },
+      utterance: "让他惊讶",
+    }));
+    expect(plan.kind).toBe("command");
+    if (plan.kind !== "command") return;
+    expect(plan.envelope.payload).toEqual({
+      expressions: { "character-1": "惊讶", "character-2": "微笑" },
+    });
+  });
+
   it("让角色加入第 2 格编成 update_panel_cast（characters + presence）", () => {
     const plan = compileDirectorCommand(baseInput({
       panels: [panelFixture(), panelFixture({ id: "panel-2", reading_order: 2, characters: [], character_presence: {} })],

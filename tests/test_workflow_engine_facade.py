@@ -26,6 +26,7 @@ from app.models import (
 )
 from app.services.workflow_engine import (
     approve_node,
+    cancel_run,
     create_workflow_run,
     default_graph,
     publish_workflow,
@@ -362,6 +363,10 @@ def test_approve_node_hits_facade_create_job_seam(db_session, monkeypatch):
         return real_create_job(*args, **kwargs)
 
     monkeypatch.setattr("app.services.workflow_engine.create_job", recorder)
+    monkeypatch.setattr(
+        "app.services.page_readiness.ensure_page_ready",
+        lambda *_args, **_kwargs: None,
+    )
 
     def no_enqueue(db, job):
         # 不调用真实 enqueue：避免本地执行器在测试后派发后台任务。
@@ -383,6 +388,53 @@ def test_approve_node_hits_facade_create_job_seam(db_session, monkeypatch):
     )
     assert candidate is not None
     assert candidate.job_id
+    assert "scene_asset" in (candidate.prompt_snapshot or {})
+
+
+def test_approve_node_after_cancel_does_not_create_generate_job(db_session, monkeypatch):
+    seeded = _seed_page_hierarchy(db_session)
+    workflow = _seed_workflow(db_session, seeded["project_id"], default_graph())
+    publish_workflow(db_session, workflow)
+    run = create_workflow_run(
+        db_session,
+        workflow,
+        scope_type="PAGE",
+        scope_id=seeded["page_id"],
+        start_node_ids=["generate"],
+        stop_node_ids=["generate"],
+    )
+    node_run = db_session.scalar(
+        select(WorkflowNodeRun).where(
+            WorkflowNodeRun.workflow_run_id == run.id,
+            WorkflowNodeRun.status == "WAITING_APPROVAL",
+        )
+    )
+    monkeypatch.setattr(
+        "app.services.page_readiness.ensure_page_ready",
+        lambda *_args, **_kwargs: None,
+    )
+    enqueued: list[str] = []
+    monkeypatch.setattr(
+        "app.services.workflow_engine.enqueue_job",
+        lambda db, job: enqueued.append(job.id) or job,
+    )
+
+    cancel_run(db_session, run)
+    try:
+        approve_node(
+            db_session,
+            run.id,
+            node_run.node_id,
+            image_model_alias="image.nano_banana_2",
+            resolution="1K",
+        )
+        raised = False
+    except ValueError as error:
+        raised = True
+        assert "取消" in str(error) or "结束" in str(error) or "确认" in str(error)
+    assert raised
+    assert enqueued == []
+    assert db_session.scalar(select(PageCandidate).where(PageCandidate.page_id == seeded["page_id"])) is None
 
 
 def test_lazy_consumers_resolve_engine_functions_through_facade():

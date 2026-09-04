@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 
 from fastapi import HTTPException
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -34,6 +34,7 @@ from app.services.candidate_lineage import create_region_regeneration
 from app.services.content_workflow import apply_page_layout
 from app.services.editor import project_id_for_page
 from app.services.job_service import enqueue_job
+from app.services.ordinal_allocator import lock_entity
 from app.services.storyboard_edits import (
     DIALOGUE_RESTORE_FIELDS,
     PANEL_RESTORE_FIELDS,
@@ -517,7 +518,17 @@ def _execute_regenerate(db: Session, row: DirectorCommand, envelope: CommandEnve
     if not mask:
         raise _http_422("局部重抽卡缺少 mask，已在调用前拒绝")
     page = db.get(MangaPage, envelope.target.page_id)
-    parent_id = page.selected_candidate_id if page else None
+    frozen_parent = None
+    if isinstance(row.diff, dict):
+        frozen_parent = (
+            ((row.diff.get("derived_candidate") or {}).get("after") or {}).get(
+                "parent_candidate_id"
+            )
+        )
+    selected_parent = page.selected_candidate_id if page else None
+    if frozen_parent and selected_parent and frozen_parent != selected_parent:
+        raise _http_409("采用候选已变化，请重新预览局部重绘")
+    parent_id = frozen_parent or selected_parent
     if not parent_id:
         raise _http_422("局部重抽卡缺少父候选")
     parent = db.get(PageCandidate, parent_id)
@@ -768,6 +779,7 @@ def accept_command(db: Session, project_id: str, command_id: str) -> dict:
     if row.status == CommandStatus.EXECUTED.value:
         result = _group_read(db, group)
         result["idempotent_replay"] = True
+        _enqueue_region_job(db, row)
         return result
     if row.status == CommandStatus.FAILED.value:
         raise HTTPException(
@@ -777,6 +789,10 @@ def accept_command(db: Session, project_id: str, command_id: str) -> dict:
     if row.status != CommandStatus.PREVIEWED.value:
         raise _http_409(f"命令状态 {row.status} 不能接受")
     envelope = _envelope_from_row(row)
+    if envelope.target.page_id:
+        lock_entity(db, MangaPage, envelope.target.page_id)
+    if envelope.target.panel_id:
+        lock_entity(db, Panel, envelope.target.panel_id)
     entity = _resolve_version_entity(db, envelope)
     current = _current_version(entity, envelope.expected_version.scope)
     if current != envelope.expected_version.value:
@@ -788,6 +804,24 @@ def accept_command(db: Session, project_id: str, command_id: str) -> dict:
         }
         db.commit()
         raise _http_409(row.error)
+    claimed = db.execute(
+        update(DirectorCommand)
+        .where(
+            DirectorCommand.id == row.id,
+            DirectorCommand.status == CommandStatus.PREVIEWED.value,
+        )
+        .values(status=CommandStatus.ACCEPTED.value)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
+        db.refresh(row)
+        if row.status == CommandStatus.EXECUTED.value:
+            result = _group_read(db, group)
+            result["idempotent_replay"] = True
+            _enqueue_region_job(db, row)
+            return result
+        raise _http_409(f"命令状态 {row.status} 不能接受")
+    db.refresh(row)
     try:
         with db.begin_nested():
             _execute_operation(db, row, envelope)
@@ -846,7 +880,23 @@ def reject_command(db: Session, project_id: str, command_id: str) -> dict:
         return result
     if row.status not in {CommandStatus.PREVIEWED.value, CommandStatus.PROPOSED.value}:
         raise _http_409(f"命令状态 {row.status} 不能拒绝")
-    row.status = CommandStatus.REJECTED.value
+    claimed = db.execute(
+        update(DirectorCommand)
+        .where(
+            DirectorCommand.id == row.id,
+            DirectorCommand.status.in_(
+                [CommandStatus.PREVIEWED.value, CommandStatus.PROPOSED.value]
+            ),
+        )
+        .values(status=CommandStatus.REJECTED.value)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
+        db.refresh(row)
+        result = _group_read(db, group)
+        result["idempotent_replay"] = True
+        return result
+    db.refresh(row)
     _refresh_group_status(db, group)
     db.commit()
     return _group_read(db, group)

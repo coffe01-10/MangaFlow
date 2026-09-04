@@ -112,6 +112,7 @@ def test_candidate_version_states_and_keep_old_selection(client, db_session):
     db_session.flush()
     page.selected_candidate_id = candidates[2].id
     page.selected_candidate_ack_version = 3
+    page.continuity_status = "PASSED"
     db_session.commit()
 
     response = client.get(f"/api/v1/batches/{batch.id}/candidates")
@@ -132,6 +133,12 @@ def test_candidate_version_states_and_keep_old_selection(client, db_session):
     )
     assert kept.status_code == 200
     assert kept.json()["selected_candidate_ack_version"] == 3
+    assert kept.json()["continuity_status"] == "NOT_CHECKED"
+    readiness = client.get(f"/api/v1/pages/{page.id}/production-readiness")
+    assert readiness.json()["state"] == "AWAITING_INSPECTION"
+    assert "视觉检查未通过" not in " ".join(
+        item["message"] for item in readiness.json()["blockers"]
+    )
 
 
 def test_accepting_stale_inspected_candidate_still_requires_fresh_inspection(

@@ -236,18 +236,18 @@ def test_storyboard_changed_during_inspection_does_not_get_passed(
         page.storyboard_version += 1
         db_session.commit()
 
-    _inspect(
-        db_session,
-        monkeypatch,
-        page,
-        candidate,
-        ["SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"],
-        during_call=change_storyboard,
-    )
+    from app.services.worker_handlers.execution import StaleStoryboardVersionError
+
+    with pytest.raises(StaleStoryboardVersionError):
+        _inspect(
+            db_session,
+            monkeypatch,
+            page,
+            candidate,
+            ["SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"],
+            during_call=change_storyboard,
+        )
     assert page.continuity_status != "PASSED"
-    assert {
-        row.storyboard_version for row in db_session.scalars(select(InspectionResult))
-    } == {1}
 
 
 @pytest.mark.parametrize("kind", ["asset", "source"])

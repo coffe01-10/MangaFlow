@@ -9,7 +9,7 @@ export function getPageStructureIssue(page: PageGenerationSource | null): string
   if (!page) return "请先选择要生成的页面";
   if (!page.source_coverage.complete) return "当前页没有完整覆盖原文，暂不能生成图片";
   if (!page.scene_ids.length || !page.beat_ids.length) {
-    return "当前分页是旧版规划，缺少剧本与分镜来源。请先生成漫画剧本，再重新分页";
+    return "当前分页是旧版规划，缺少剧本与分镜来源。请先到漫画剧本页删除分页，再重新生成剧本并计算分页";
   }
   return null;
 }

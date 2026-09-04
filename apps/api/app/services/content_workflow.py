@@ -23,6 +23,7 @@ from app.models import (
     SourceRevision,
     SourceSegment,
 )
+from app.services.job_service import has_active_job
 from app.services.ordinal_allocator import (
     ORDINAL_ALLOCATION_MAX_ATTEMPTS,
     ChapterOrdinalConflictError,
@@ -218,6 +219,16 @@ def revise_chapter_source(
                 chapter = lock_entity(db, Chapter, chapter_id)
                 if not chapter or chapter.deleted_at is not None:
                     raise HTTPException(status_code=404, detail="章节不存在")
+                if has_active_job(
+                    db,
+                    job_type="SOURCE_PARSE",
+                    target_id=chapter_id,
+                    target_type="CHAPTER",
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="本章正在生成剧本，请等待解析完成后再修改原文",
+                    )
                 page_ids = list(
                     db.scalars(select(MangaPage.id).where(MangaPage.chapter_id == chapter_id))
                 )
@@ -896,6 +907,13 @@ def plan_chapter_pages(
 ) -> list[MangaPage]:
     if not chapter.current_source_revision_id:
         raise HTTPException(status_code=409, detail="章节没有可用原文")
+    if has_active_job(
+        db, job_type="SOURCE_PARSE", target_id=chapter.id, target_type="CHAPTER"
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="本章正在生成剧本，请等待解析完成后再计算分页",
+        )
     scenes = list(
         db.scalars(select(Scene).where(Scene.chapter_id == chapter.id).order_by(Scene.ordinal))
     )

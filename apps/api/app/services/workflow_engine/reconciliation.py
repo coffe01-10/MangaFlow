@@ -124,6 +124,7 @@ def _create_inspection_job(
         max_attempts=node.config.max_attempts,
         idempotency_key=f"workflow:{run.id}:{node.id}:1",
         dependency_ids=_parent_job_ids(db, run, graph, node.id),
+        auto_commit=False,
     )
     node_run.job_id = job.id
     node_run.input_snapshot = {
@@ -210,6 +211,9 @@ def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
             item.input_snapshot = {**item.input_snapshot, "action": spec.barrier}
             paused = True
             continue
+        db.refresh(run, attribute_names=["status"])
+        if run.status in {"COMPLETED", "CANCELLED", "FAILED"}:
+            return get_run(db, run.id)
         if node_map[node_id].type == "quality.inspect" and not job:
             try:
                 job = _create_inspection_job(
@@ -222,11 +226,32 @@ def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
                 failed = True
                 continue
         if job:
+            db.refresh(run, attribute_names=["status"])
+            if run.status in {"COMPLETED", "CANCELLED", "FAILED"}:
+                from app.services.job_service import mark_job_cancelled
+
+                mark_job_cancelled(db, job)
+                item.status = "CANCELLED"
+                item.finished_at = utcnow()
+                db.commit()
+                return get_run(db, run.id)
             _sync_job_dependencies(db, job, _parent_job_ids(db, run, graph, node_id))
             item.status = "RUNNING"
             item.started_at = utcnow()
             engine.enqueue_job(db, job)
+            db.refresh(run, attribute_names=["status"])
+            if run.status in {"COMPLETED", "CANCELLED", "FAILED"}:
+                from app.services.job_service import mark_job_cancelled
 
+                mark_job_cancelled(db, job)
+                item.status = "CANCELLED"
+                item.finished_at = utcnow()
+                db.commit()
+                return get_run(db, run.id)
+
+    db.refresh(run, attribute_names=["status"])
+    if run.status in {"COMPLETED", "CANCELLED", "FAILED"}:
+        return get_run(db, run.id)
     if failed:
         run.status = "FAILED"
         run.finished_at = utcnow()

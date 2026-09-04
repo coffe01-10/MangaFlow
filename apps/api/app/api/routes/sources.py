@@ -10,9 +10,11 @@ from app.config import get_settings
 from app.database import get_db
 from app.models import (
     Beat,
+    CandidateLineage,
     Chapter,
     GenerationJob,
     MangaPage,
+    PageCandidate,
     Project,
     Scene,
     ScriptRevision,
@@ -43,7 +45,7 @@ from app.services.content_workflow import (
     revise_chapter_source,
 )
 from app.services.editor import canonical_speaker_name, mark_pages_for_review
-from app.services.job_service import create_job, enqueue_job
+from app.services.job_service import ACTIVE_JOB_STATUSES, create_job, enqueue_job
 from app.services.ordinal_allocator import (
     ChapterOrdinalConflictError,
     SourceRevisionConflictError,
@@ -189,6 +191,14 @@ def parse_chapter(chapter_id: str, db: Session = Depends(get_db)):
     chapter = db.get(Chapter, chapter_id)
     if not chapter or chapter.deleted_at is not None:
         raise HTTPException(status_code=404, detail="章节不存在")
+    existing_page = db.scalar(
+        select(MangaPage.id).where(MangaPage.chapter_id == chapter.id).limit(1)
+    )
+    if existing_page:
+        raise HTTPException(
+            status_code=409,
+            detail="本章已有分页，请先删除分页后再重新生成剧本",
+        )
     job = create_job(
         db,
         project_id=chapter.project_id,
@@ -320,16 +330,7 @@ def delete_script(chapter_id: str, db: Session = Depends(get_db)) -> None:
         select(GenerationJob.id)
         .where(
             GenerationJob.project_id == chapter.project_id,
-            GenerationJob.status.in_(
-                {
-                    "WAITING",
-                    "QUEUED",
-                    "PREPARING",
-                    "GENERATING",
-                    "UPLOADING",
-                    "CONSISTENCY_CHECKING",
-                }
-            ),
+            GenerationJob.status.in_(ACTIVE_JOB_STATUSES),
         )
         .limit(1)
     )
@@ -340,6 +341,17 @@ def delete_script(chapter_id: str, db: Session = Depends(get_db)) -> None:
         )
 
     if page_ids:
+        # Lineage RESTRICT blocks page/candidate CASCADE; drop those rows first.
+        candidate_ids = list(
+            db.scalars(select(PageCandidate.id).where(PageCandidate.page_id.in_(page_ids)))
+        )
+        if candidate_ids:
+            db.execute(
+                delete(CandidateLineage).where(
+                    CandidateLineage.child_candidate_id.in_(candidate_ids)
+                    | CandidateLineage.parent_candidate_id.in_(candidate_ids)
+                )
+            )
         # Pages own storyboard panels, dialogues, source mappings, page batches and
         # candidates through database cascades. Assets and task history remain as
         # audit artifacts and can be managed separately.

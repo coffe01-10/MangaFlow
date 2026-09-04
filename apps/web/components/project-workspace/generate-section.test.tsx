@@ -452,7 +452,12 @@ describe("GenerateSection 关键行为", () => {
       },
     }));
     candidatesApi.mockResolvedValue([stale]);
-    keepSelected.mockResolvedValue(pageFixture({ selected_candidate_id: stale.id }));
+    let resolveKeep: (page: ReturnType<typeof pageFixture>) => void = () => undefined;
+    keepSelected.mockImplementation(
+      () => new Promise((resolve) => {
+        resolveKeep = resolve;
+      }),
+    );
     renderGenerate();
     await waitFor(() => {
       expect(screen.getByText("版本需要决定")).toBeInTheDocument();
@@ -461,6 +466,11 @@ describe("GenerateSection 关键行为", () => {
     fireEvent.click(screen.getByRole("button", { name: "沿用并重新检查" }));
     await waitFor(() => {
       expect(keepSelected).toHaveBeenCalledWith("page-1", "candidate-1", 2);
+    });
+    expect(inspectCandidate).not.toHaveBeenCalled();
+    resolveKeep(pageFixture({ selected_candidate_id: stale.id }));
+    await waitFor(() => {
+      expect(inspectCandidate).toHaveBeenCalledWith("candidate-1");
     });
     await waitFor(() => {
       expect(workbenchApi.mock.calls.length).toBeGreaterThan(before);
