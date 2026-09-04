@@ -150,6 +150,8 @@ def favorite_candidate(
     candidate.version += 1
     db.commit()
     db.refresh(candidate)
+    if isinstance(candidate, AssetCandidate):
+        return asset_candidate_read(candidate)
     return candidate_read(candidate)
 
 
