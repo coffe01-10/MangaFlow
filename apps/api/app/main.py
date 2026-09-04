@@ -51,6 +51,7 @@ async def lifespan(application: FastAPI):
             apply_runtime_overrides(db, settings)
             ensure_provider_presets(db, settings, auto_commit=True)
             recover_pending_jobs(db)
+            _recover_cli_runs()
     if not application.dependency_overrides:
         # REDIS-mode RQ retries fire inside the lease window and then stop, so
         # a dead worker's job would stay ACTIVE until the next API restart.
@@ -58,6 +59,23 @@ async def lifespan(application: FastAPI):
         # parked WAITING jobs for the lifetime of the API process.
         start_periodic_recovery()
     yield
+
+
+def _recover_cli_runs() -> None:
+    """Release CLI channel slots whose controller died mid-run (contract §9.3)."""
+
+    import logging
+
+    from app.services.cli_executor import recover_abandoned_cli_runs
+
+    logger = logging.getLogger("mangaflow.cli")
+    try:
+        recovered = recover_abandoned_cli_runs()
+    except Exception:
+        logger.exception("CLI run recovery failed at startup")
+        return
+    for run_id in recovered:
+        logger.warning("released abandoned CLI run %s", run_id)
 
 
 settings = get_settings()

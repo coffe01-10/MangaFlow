@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import stat
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -276,9 +277,22 @@ class CLIExecutionController:
         self,
         *,
         controller_is_active: Callable[[CLIExecutionRun, dict], bool],
+        preparing_grace_seconds: float | None = None,
     ) -> list[str]:
-        """Release only runs whose recorded controller ownership is proven dead."""
+        """Release only runs whose recorded controller ownership is proven dead.
 
+        A row whose liveness probe raises (incomplete journal identity, e.g. a
+        PREPARING row that never reached ``_mark_running``) is decided by age:
+        a live controller spends at most seconds in PREPARING, so rows older
+        than the grace window are provably abandoned while fresh rows are
+        left for a later pass instead of aborting the whole scan.
+        """
+
+        grace = (
+            preparing_grace_seconds
+            if preparing_grace_seconds is not None
+            else float(max(getattr(self.settings, "job_lease_seconds", 120) * 2, 300))
+        )
         with self.session_factory() as db:
             rows = list(
                 db.scalars(
@@ -294,7 +308,7 @@ class CLIExecutionController:
         for row in rows:
             try:
                 run_directory, journal = self._validate_directory(row)
-            except ProviderAdapterError:
+            except (ProviderAdapterError, OSError):
                 self._finish(
                     row.id,
                     state="FAILED",
@@ -308,7 +322,20 @@ class CLIExecutionController:
                 self._set_cleanup(row.id, "FAILED")
                 recovered.append(row.id)
                 continue
-            if controller_is_active(row, journal):
+            try:
+                active = controller_is_active(row, journal)
+            except Exception:
+                created_at = getattr(row, "created_at", None)
+                age = None
+                if created_at is not None:
+                    if created_at.tzinfo is None:
+                        # SQLite returns naive datetimes despite timezone=True.
+                        created_at = created_at.replace(tzinfo=UTC)
+                    age = (datetime.now(UTC) - created_at).total_seconds()
+                if age is None or age < grace:
+                    continue
+                active = False
+            if active:
                 continue
             self._finish(
                 row.id,
@@ -822,3 +849,60 @@ def _sanitize_message(value: str | None) -> str:
     return " ".join(
         "[redacted]" if _TOKEN_LINE.search(line) else line for line in value.splitlines()
     )[:500]
+
+
+def posix_controller_is_active(_row: CLIExecutionRun, journal: dict) -> bool:
+    """Best-effort POSIX liveness probe mirroring the Windows identity check.
+
+    The product targets Windows CLI channels; this fallback keeps recovery
+    correct on POSIX dev/test hosts. PID existence is checked with
+    ``os.kill(pid, 0)``; when the journal recorded a controller start time it
+    is compared against ``/proc/<pid>/stat`` so a recycled PID is not mistaken
+    for the original controller.
+    """
+
+    pid = journal.get("controller_pid")
+    if type(pid) is not int or pid <= 0:
+        raise RuntimeError("CLI controller identity is incomplete")
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    created = journal.get("controller_created")
+    if type(created) is int:
+        stat_line = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        # Field 22 (1-based) is the process start time in clock ticks.
+        starttime = stat_line[stat_line.rindex(")") + 2 :].split()[19]
+        if int(starttime) != created:
+            return False
+    return True
+
+
+def platform_controller_is_active(row: CLIExecutionRun, journal: dict) -> bool:
+    if sys.platform == "win32":
+        from app.services.cli_process_windows import windows_controller_is_active
+
+        return windows_controller_is_active(row, journal)
+    return posix_controller_is_active(row, journal)
+
+
+def recover_abandoned_cli_runs(
+    settings: Settings | None = None,
+    session_factory: Callable[[], Session] | None = None,
+) -> list[str]:
+    """Production entry point for CLI slot recovery (contract §9.3).
+
+    Called at API startup and from the periodic recovery pass: without it, a
+    controller that died mid-run held its ``(connection_id, lease_slot)``
+    slot forever and every later CLI task failed with CONCURRENCY_LIMIT.
+    """
+
+    from app.config import get_settings
+    from app.database import SessionLocal
+
+    controller = CLIExecutionController(
+        settings or get_settings(), session_factory or SessionLocal
+    )
+    return controller.recover_abandoned(controller_is_active=platform_controller_is_active)

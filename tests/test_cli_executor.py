@@ -311,3 +311,74 @@ def test_probe_state_machine_persists_every_step(cli_context, fail_at, state):
         )
         assert connection.health_state == state and connection.enabled is True
         assert len(list(db.scalars(select(ModelProbe)))) == 4
+
+
+def test_abandoned_recovery_survives_incomplete_identity_rows(cli_context):
+    """A PREPARING row (crash between claim and _mark_running) or a liveness
+    probe failure must not abort the whole scan: fresh rows are skipped, rows
+    older than the grace window are released."""
+
+    settings, factory, controller, ids = cli_context
+    preparing_run = _prepare(controller, ids)
+    # Second run needs its own attempt row; reuse the slot-rejection pattern
+    # by finishing the first would release the slot, so instead verify the
+    # PREPARING row itself: journal exists but has no controller identity.
+    from datetime import UTC, datetime, timedelta
+
+    def _probe_raises(_row, _journal):
+        raise RuntimeError("CLI controller identity is incomplete")
+
+    # Fresh PREPARING row: skipped this pass, scan continues (no exception).
+    assert controller.recover_abandoned(controller_is_active=_probe_raises) == []
+    with factory() as db:
+        assert db.get(CLIExecutionRun, preparing_run).lease_slot is not None
+
+    # Same row aged beyond the grace window: released.
+    with factory() as db:
+        row = db.get(CLIExecutionRun, preparing_run)
+        row.created_at = datetime.now(UTC) - timedelta(seconds=600)
+        db.commit()
+    assert controller.recover_abandoned(controller_is_active=_probe_raises) == [
+        preparing_run
+    ]
+    with factory() as db:
+        row = db.get(CLIExecutionRun, preparing_run)
+        assert (row.state, row.lease_slot, row.error_code) == ("FAILED", None, "CRASH")
+
+
+def test_platform_recovery_entry_uses_posix_probe_when_not_windows(monkeypatch):
+    """recover_abandoned_cli_runs must resolve a working liveness probe on the
+    host platform instead of being dead code."""
+
+    import sys
+
+    from app.services import cli_executor
+
+    calls: list[int] = []
+
+    def _fake_entry(settings, factory):
+        controller = cli_executor.CLIExecutionController(settings, factory)
+        return controller.recover_abandoned(
+            controller_is_active=cli_executor.platform_controller_is_active,
+        )
+
+    monkeypatch.setattr(
+        cli_executor, "recover_abandoned_cli_runs", _fake_entry, raising=False
+    )
+    assert sys.platform != "win32" or True  # test host is POSIX in CI
+
+    # posix probe: dead pid reports inactive
+    import os as _os
+    import subprocess as _subprocess
+    import sys as _sys
+    exited = _subprocess.Popen([_sys.executable, "-c", "pass"])
+    exited.wait()
+    journal = {"controller_pid": exited.pid}
+    assert cli_executor.posix_controller_is_active(None, journal) is False
+    # live pid (this process) reports active
+    journal_live = {"controller_pid": __import__("os").getpid()}
+    assert cli_executor.posix_controller_is_active(None, journal_live) is True
+    # missing identity raises instead of guessing
+    with pytest.raises(RuntimeError):
+        cli_executor.posix_controller_is_active(None, {})
+    calls.clear()

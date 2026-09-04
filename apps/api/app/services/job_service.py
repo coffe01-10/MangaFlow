@@ -364,6 +364,7 @@ def start_periodic_recovery() -> Thread:
 
     def _loop() -> None:
         from app.database import SessionLocal
+        from app.services.cli_executor import recover_abandoned_cli_runs
 
         settings = get_settings()
         interval = max(30.0, settings.job_lease_seconds / 2)
@@ -374,6 +375,11 @@ def start_periodic_recovery() -> Thread:
                     recover_pending_jobs(db)
             except Exception:
                 LOGGER.exception("periodic job recovery pass failed")
+            try:
+                for run_id in recover_abandoned_cli_runs():
+                    LOGGER.warning("released abandoned CLI run %s", run_id)
+            except Exception:
+                LOGGER.exception("periodic CLI run recovery failed")
 
     thread = Thread(target=_loop, name="mangaflow-job-recovery", daemon=True)
     thread.start()
