@@ -472,9 +472,21 @@ def execute_job(job_id: str) -> None:
             db.commit()
             provider.flush_staged_attempt_outputs(db)
         if workflow_run_id:
-            from app.services.workflow_engine import reconcile_run
+            # The COMPLETED claim is already committed and its outputs
+            # flushed; a reconcile failure here must not fall through to the
+            # outer ``except Exception``: its failure claim only matches
+            # ACTIVE rows, so for a COMPLETED job it silently no-ops with
+            # zero logging and the node/run stall RUNNING forever (the
+            # studio polls the non-reconciling list endpoint). Log and
+            # continue — failing the job now would be wrong.
+            try:
+                from app.services.workflow_engine import reconcile_run
 
-            reconcile_run(db, workflow_run_id)
+                reconcile_run(db, workflow_run_id)
+            except Exception:
+                LOGGER.exception(
+                    "workflow run %s reconcile failed after job completion", workflow_run_id
+                )
     except JobLeaseLostError:
         db.rollback()
         return
