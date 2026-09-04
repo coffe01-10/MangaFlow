@@ -4,10 +4,18 @@
 
 本文件记录修订版 MVP 计划的实际完成度。
 
+## V02-54C 实现完成：桌面壳日志轮转（2026-09-04，Linux box，待审阅验收）
+
+- **对应**：Issue #117（Refs #114）/ 分支 `glm/v02-54c-log-rotation`（基线 `548b1d1` / PR #116 合并树）。实现提交：`0c913fd`（日志轮转）。范围仍限于 `apps/desktop/` 与 docs，`apps/api`/`apps/web` 业务代码零改动；契约 `docs/adr/v02-desktop-shell-evaluation.md` **仍为草案、选型未批准**。
+- **轮转策略（`shell-core/src/logs.rs`）**：`shell-*.log` / `helper-*.stderr.log` 单文件达 `ROTATION_THRESHOLD_BYTES`（12 MiB，ADR 建议 8–16 MiB 区间内、严格低于导出 64 MiB 上限）即 rename 为带序号世代 `.1`–`.5`（`ROTATION_KEEP_GENERATIONS`），先删最旧世代再自新到旧逐级 shift（目标位刚腾空，普通 rename 在 Windows 无覆盖式 rename 语义下同样成立），超出保留数删最旧。**两种时机，取舍写明**：①壳 RunLog 会话内轮转——`RunLog::record` 写前检查，达阈值关句柄→shift 世代→重开同一 base 路径，轮转后打开路径继续可写，轮转失败不丢里程碑行（降级继续追加）；②helper stderr 句柄由 helper 进程持有整会话（Windows 无法 rename 他进程打开的文件、Unix rename 会把后续写脱接到新 base），采用**跨会话轮转**——每次会话启动 `RunLog::create` 在上批文件必然关闭的时机清扫 logs/；单会话内 helper stderr 超阈值由导出 64 MiB 上限兜底（跳过并记录）。
+- **路径安全**：只匹配 logs 根内固定文件名模式，世代名由匹配文件名派生，rename/删除目标结构上不可能越出 logs 根，rename 前另有 canonical 包含复查；符号链接一律不跟随（base 路径上的链接跳过不轮转、不移动链接本身；世代位上的链接 unlink，外链目标存活）；日志打开统一走 `open_append_regular` 拒绝挂在日志路径上的非常规条目（检查后打开的置换窗口与导出侧同款残余风险，user-data 为每用户目录，ACL 收紧 NOT RUN）。
+- **门禁（Linux 可跑部分全绿，2026-09-04）**：shell-core `cargo test` **33 项**全绿（26 项存量 + logs 单元 4：世代 shift/保留、符号链接不跟随与越根跳过、清扫只动超阈值 base 文件、RunLog 拒绝符号链接路径；`tests/log_rotation.rs` 集成 3：会话启动清扫上会话超阈值 shell/helper 日志、会话内轮转后打开路径继续写 + 世代保留 ≤5、世代文件随导出归档不触发 64 MiB 跳过；超阈值用稀疏文件 `set_len` 构造，真实 12 MiB 默认阈值零成本参与）；`cargo check --target x86_64-pc-windows-msvc` 于 shell-core 与 src-tauri 双双通过（rustup stable 1.98.1 + llvm-rc 19 用户态解包）；`run-sidecar-e2e.sh` 假闭环 1 passed（4.35s，验证改动后的握手与 helper stderr 重定向）；`ruff check apps/desktop` 通过；`tests/test_pytest_collection_gate.py` 通过。
+- **NOT RUN / 边界**：**轮转 Windows 实机行为 NOT RUN**（含对他进程打开文件的 rename 语义、ACL 收紧前的符号链接种植场景实测）；沿袭 Windows 实机 Job Object/WebView2/MSI/NSIS 安装器/签名/自动更新/单实例多开、rfd 对话框实机行为、真实 Redis/RQ 桌面形态、V02-52A N=20、真实供应商。**V02-54C 与父项 V02-54 均保持未勾**（实现已落地，勾选待 lead 审阅验收）；不勾 V02-55 / V02-52B。
+
 ## V02-54C 窗口开启：V02-54B 已合并（PR #116 / `548b1d1`），本轮实现桌面壳日志轮转（2026-09-04，Linux box）
 
 - **合并记录**：V02-54B（Issue #114 续作 / 分支 `glm/v02-54b-desktop-ux` / 实现提交 `3d5ebfb`）已由 PR #116 以合并提交 `548b1d1` 合入 master（经 P1 审阅后合入）；roadmap 已勾选 V02-54B，**父项 V02-54 保持未勾**；不勾 V02-55 / V02-52B。
-- **本轮范围**：Issue #117 / 分支 `glm/v02-54c-log-rotation`（基线 `548b1d1`）——在 `apps/desktop/shell-core` 为统一日志目录 `logs/` 实现**按大小轮转**：`shell-*.log` / `helper-*.stderr.log` 单文件达阈值（12 MiB，< 导出 64 MiB 上限）后 rename 为带序号世代（`.1`–`.5`），保留有限 5 代、超出删最旧；轮转不跟随符号链接，rename/删除不越 canonical logs 根；壳 RunLog 轮转后原打开路径继续可写，helper stderr 按会话 token 分文件、跨会话轮转（取舍写清）。范围仅 `apps/desktop/` 与 docs，`apps/api`/`apps/web` 业务代码零改动。实现与门禁证据待本轮收尾补记。
+- **本轮范围**：Issue #117 / 分支 `glm/v02-54c-log-rotation`（基线 `548b1d1`）——在 `apps/desktop/shell-core` 为统一日志目录 `logs/` 实现**按大小轮转**：`shell-*.log` / `helper-*.stderr.log` 单文件达阈值（12 MiB，< 导出 64 MiB 上限）后 rename 为带序号世代（`.1`–`.5`），保留有限 5 代、超出删最旧；轮转不跟随符号链接，rename/删除不越 canonical logs 根；壳 RunLog 轮转后原打开路径继续可写，helper stderr 按会话 token 分文件、跨会话轮转（取舍写清）。范围仅 `apps/desktop/` 与 docs，`apps/api`/`apps/web` 业务代码零改动。实现与门禁证据见上节（2026-09-04 收尾补记）。
 - **沿袭边界**：Windows 实机项（Job Object/WebView2/MSI/NSIS 安装器/签名/自动更新/单实例多开、rfd 对话框实机行为）继续 NOT RUN；真实 Redis/RQ 桌面形态、V02-52A N=20、真实供应商 NOT RUN；ADR 仍为草案、选型未批准。
 
 ## V02-54B 实现完成：桌面日志导出 + 安全本地文件选择（2026-09-04，Linux box，待审阅验收）
