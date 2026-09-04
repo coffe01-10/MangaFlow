@@ -1,8 +1,8 @@
 # MangaFlow 主分支后续工作清单
 
 更新时间：2026-09-03
-当前实现合并树：`master` / `071ae2d`（PR #105，2026-09-03）。V02-21B、V02-22A、V02-22B、V02-23B、V02-30B、V02-31B、V02-32、V02-40、V02-41B、V02-42B、V02-43B、V02-44B 与 V02-10D 已分别完成独立审阅并合并。2026-09-02 在 Linux 隔离环境跑通 PostgreSQL live 18 项（含 PKG-S14）与 Redis/RQ SimpleWorker live 8 项；7 项 Windows Job Object 独立 Worker 仍 `BLOCKED`（笔记本无 Docker/PostgreSQL/Redis，用户明确不安装）。同日 Windows 笔记本 `LAPTOP-TV9KT8RC` 在 SHA `98b93a0`（分支 `fix/pr82-remaining-package-p1s`，该 SHA 为 `master`/`f961774` 祖先；E2E/perf **未**跑在 `c93e1b3`）以官方控制器 `scripts/run_e2e_owned.py` 将 Playwright E2E 与 Lighthouse/FPS 记为 `RUN`。真实图片生成/编辑、账号权限、费用与真实取消/超时进程树仍按任务标记为 `NOT RUN`。
-当前开发分支：`glm/v02-11c-settings-acceptance`。下一实现项为 V02-11C（设置页验收，Issue #106）。
+当前实现合并树：`master` / `d472f6e`（PR #107，2026-09-03）。V02-21B、V02-22A、V02-22B、V02-23B、V02-30B、V02-31B、V02-32、V02-40、V02-41B、V02-42B、V02-43B、V02-44B、V02-10D 与 V02-11C 已分别完成独立审阅并合并。2026-09-02 在 Linux 隔离环境跑通 PostgreSQL live 18 项（含 PKG-S14）与 Redis/RQ SimpleWorker live 8 项；7 项 Windows Job Object 独立 Worker 仍 `BLOCKED`（笔记本无 Docker/PostgreSQL/Redis，用户明确不安装）。同日 Windows 笔记本 `LAPTOP-TV9KT8RC` 在 SHA `98b93a0`（分支 `fix/pr82-remaining-package-p1s`，该 SHA 为 `master`/`f961774` 祖先；E2E/perf **未**跑在 `c93e1b3`）以官方控制器 `scripts/run_e2e_owned.py` 将 Playwright E2E 与 Lighthouse/FPS 记为 `RUN`。真实图片生成/编辑、账号权限、费用与真实取消/超时进程树仍按任务标记为 `NOT RUN`。
+当前开发分支：`glm/v02-51b-desktop-visual-system`。下一实现项为 V02-51B（桌面工作台视觉系统实现，Issue #108）。
 最近 `check:full` 历史基线：`master` / `cb324e3`（2026-08-27；相对 PR #5 合并提交 `d5d32ec` 仅增加任务文档），不代表 PR #6 / #7 / #10 / #11 已重跑浏览器验收。2026-09-02 Windows owned E2E 17/17 与 LH/FPS 4/4 证据在 `98b93a0` / `LAPTOP-TV9KT8RC`，见 `docs/development-progress.md`。
 深审历史基线：`master` / `f085327`。当时新增 6 项 P1 修复与 1 项 P2 改进；PR #6 已合并其中 P1-7、P1-9～P1-12 的代码修复。P1-8、P2-8 已随 PR #7 合并，独立 Redis/RQ、PostgreSQL 与浏览器验收仍待完成。
 安全审查历史基线：`master` / `7635cf7`。P0-3、P1-13～P1-15、P2-4、P2-9 的代码修复现已合并，真实服务/容器及完整依赖审计边界仍保留。
@@ -55,7 +55,7 @@
     - [x] 首页只读取 Dashboard 聚合状态，设置、帮助、项目默认模型与工作流节点统一使用连接/目录契约；前端专属状态请求和供应商硬编码文案已删除，历史绑定模型继续兼容显示。
     - [x] 环境账号就绪判断集中到凭据适配层；产品级统计、目录与 readiness 不再直接读取专属配置。架构、平台、数据模型和 Worker 错误文案已中性化，平权 allowlist 由 15 个路径收紧到 10 个技术适配/兼容路径。
     - [x] Windows PowerShell 完整门禁已通过；2026-09-03 在 Linux box 以 owned 控制器的 Linux 等价入口完成 M14 离线浏览器验收：首轮 16/17，唯一失败为 V02-23B 角色包 `.pkg-create-row > small` color-contrast（`#756f65`/`#f4f1e9` = 4.41:1）；经测试总管 review 授权，`23faaf0` 将该一处选择器改为基线安全灰 `#66604f`（约 5.55:1）后重跑全套 Playwright **17/17 全绿**（run id `9814af94c60244ae9e311c113360d032`，51.2s；隔离 SQLite Alembic 升至 `20260903_28` + 假种子；runtime 目录已删除、端口 3000/8000 复查已释放）。平权 allowlist 扫描 0 违规；前端无 `vertex-status`/`verifyVertex` 产品请求；T7 别名夹具可解析；ESLint、`tsc --noEmit`、Ruff 通过。未调用真实供应商。命令、环境与 NOT RUN 边界详见 `docs/development-progress.md`。
-- [ ] **V02-11（L2，Grok UI 优先）：重做供应商填写模块。** 前置审计已由 Issue #40 完成并随 `3bac6da` 合并，详见 `docs/v02-provider-settings-ui-audit.md`；V02-11A/B/C 已分别完成（C 验收见 2026-09-03 记录）。
+- [x] **V02-11（L2，Grok UI 优先）：重做供应商填写模块。** 前置审计已由 Issue #40 完成并随 `3bac6da` 合并，详见 `docs/v02-provider-settings-ui-audit.md`；V02-11A/B/C 已分别完成并全部合并（C 验收由 PR #107 合并，`d472f6e`），父项随 C 关闭。
   - [x] **V02-11A（L2，Issue #42）：独立 UI 基础。** 已完成供应商创建/重命名/停用/删除、精炼文案、加载/错误/空状态、搜索、类型/能力/已验证筛选、排序、折叠、键盘与窄桌面布局，并接入 V02-10A 的显式凭据来源/模型类型契约；未实现 V02-12 的展示偏好写入。
   - [x] **V02-11B（L2，Grok）：统一连接与模型目录。** 已按 `credential_source`/capability 渲染凭据、统一验证、独立发现、余额和目录驱动的模型冒烟，删除设置页 Vertex 专属卡；设置页已接入单条/批量展示偏好、隐藏筛选、逐项版本与部分失败语义。
   - [x] **V02-11C（L2 验收）：设置页回归。** 完成 Issue #40 的 P/C/F/V/A/S/L/N 测试矩阵、假供应商设置页 E2E 与 `npm run check`；不运行真实供应商。
@@ -69,7 +69,7 @@
 
 #### 下一实现窗口
 
-1. V02-14A / Issue #62 已由 PR #63 合并，V02-14B / Issue #64 已由 PR #65 合并，V02-14C / Issue #67 已由 PR #68 合并；V02-15B 已由 PR #71 合并（`7af5b59`），V02-16B 已由 PR #73 合并（`fec8d7f`），V02-21B 已由 PR #77 合并（`7c10d27`），V02-22A / Issue #78 已由 PR #79 合并（`6298be1`），V02-22B 已由 PR #82 / #83 合并（`f961774`）。V02-23B 已由 PR #86 合并（`6d09e78`），V02-30B / Issue #87 已由 PR #88 合并（`e2a12d2`），V02-31B / Issue #89 已由 PR #90 合并（`c4f0fc5`），V02-32 / Issue #91 已由 PR #92 合并（`23f5e28`）。V02-40 / Issue #94 已由 PR #95 合并（`01e9c3f`）。V02-41B / Issue #96 已由 PR #97 合并（`39cf6e4`），V02-42B / Issue #98 已由 PR #99 合并（`436f47d`），V02-43B / Issue #100 已由 PR #101 合并（`047571b`），V02-44B / Issue #102 已由 PR #103 合并（`e2126a1`）。PKG-S14 真实 PostgreSQL 升降级与并发已在 2026-09-02 Linux 隔离环境跑通。V02-10D / Issue #104 已由 PR #105 合并（`071ae2d`）。下一实现项为 V02-11C（设置页验收，Issue #106）。
+1. V02-14A / Issue #62 已由 PR #63 合并，V02-14B / Issue #64 已由 PR #65 合并，V02-14C / Issue #67 已由 PR #68 合并；V02-15B 已由 PR #71 合并（`7af5b59`），V02-16B 已由 PR #73 合并（`fec8d7f`），V02-21B 已由 PR #77 合并（`7c10d27`），V02-22A / Issue #78 已由 PR #79 合并（`6298be1`），V02-22B 已由 PR #82 / #83 合并（`f961774`）。V02-23B 已由 PR #86 合并（`6d09e78`），V02-30B / Issue #87 已由 PR #88 合并（`e2a12d2`），V02-31B / Issue #89 已由 PR #90 合并（`c4f0fc5`），V02-32 / Issue #91 已由 PR #92 合并（`23f5e28`）。V02-40 / Issue #94 已由 PR #95 合并（`01e9c3f`）。V02-41B / Issue #96 已由 PR #97 合并（`39cf6e4`），V02-42B / Issue #98 已由 PR #99 合并（`436f47d`），V02-43B / Issue #100 已由 PR #101 合并（`047571b`），V02-44B / Issue #102 已由 PR #103 合并（`e2126a1`）。PKG-S14 真实 PostgreSQL 升降级与并发已在 2026-09-02 Linux 隔离环境跑通。V02-10D / Issue #104 已由 PR #105 合并（`071ae2d`）。V02-11C / Issue #106 已由 PR #107 合并（`d472f6e`）。下一实现项为 V02-51B（桌面工作台视觉系统实现，Issue #108）。
 2. 资产、分镜、导演、CLI、用量和桌面端均先从各自已批准的 A 级设计文档拆出实现 Issue；不得把审计文档的合并当作功能交付。
 3. 所有实现 Issue 必须引用对应契约，写明迁移/事务/资源所有权，并标注真实供应商、CLI、PostgreSQL、Redis/RQ、浏览器或桌面环境的 `RUN`、`NOT RUN`、`BLOCKED`。
 - [x] **V02-13（L3）：建立 CLI 图像通道公共执行器。** 将 Codex CLI、Antigravity CLI、Grok Build 视为可选执行通道，而不是假装成普通 HTTP API。
@@ -130,7 +130,7 @@
 - [x] **V02-50 / Issue #60（L1）：建立 UI 文案清单并删除“嘀咕”。** 已合并 `docs/v02-ui-copy-audit.md`，保留硬限制、费用、数据外发、不可逆操作和生产门禁；候选删除按软删除事实描述。具体页面替换继续作为各 UI 实现 PR 的验收项。
 - [ ] **V02-51（L2）：统一桌面工作台视觉与交互系统。**
   - [x] **V02-51A / Issue #50（审计）：** 已合并 `docs/v02-desktop-workspace-ux-audit.md`，形成视觉系统、状态、面板和高频路径清单。
-  - [ ] **V02-51B（实现）：** 分页面实施设计 token、布局、状态与低成本动效，并运行视觉回归。
+  - [x] **V02-51B（实现，Issue #108 / 分支 `glm/v02-51b-desktop-visual-system` / 实现 head `7c344db`）：** 按审计 §14 切片落地——①`:root` 设计 token（状态色、字号级谱、间距、z 刻度、阴影/缓动时长；修复被引用但未定义的 `--muted`/`--mono`）、reduced-motion 五段合并为一条全局契约（.01ms 冻结 + hover 位移取消 + 删除 `rotate(-4deg)` 装饰）、`focus-visible` 统一唯一 3px vermillion 焦点环；②模板 C：设置/项目设置板 ≤1279.98 单列、诊断列随页滚不再粘滞，供应商内部零改动；③模板 B：左导航 48px 图标轨折叠（`mangaflow.project-sidebar-collapsed` 持久化）、通用右槽 API `WorkspaceInspectorSlot`（≥1280 停靠 / 900–1279 右抽屉 / <900 底部抽屉）、侧栏拖宽边界收口 `lib/workspace-layout.ts`；④lightbox 补 Esc/＋－键/焦点陷阱/焦点归还，`originUrl` 让 lightbox 取原图而网格保持 `/thumbnail/640`，候选卡 `content-visibility` 过渡 + `windowing-rules` 阈值接缝留给 V02-52。门禁（Linux 等价）：Vitest 43 文件 408 项、ESLint、`tsc --noEmit`、Ruff、平权扫描 0 违规、Next 生产构建通过；U1–U10 矩阵逐条证据与 NOT RUN 边界见 `docs/development-progress.md`（Playwright/Axe、真实视口截图、字体加载、LH/FPS、真实供应商、PG live 为 NOT RUN）。
 - [ ] **V02-52（L2 性能）：建立桌面体验门禁。**
   - [x] **V02-52A / Issue #55（计划）：** 已合并 `docs/v02-desktop-performance-acceptance-plan.md`，固定环境清单、N=20、nearest-rank P95、10 秒持续窗口和资源所有权。
   - [ ] **V02-52B（执行）：** 在对应功能实现后运行全部样本并保留失败轮次；未实现的未来场景标记 `NOT_APPLICABLE`。

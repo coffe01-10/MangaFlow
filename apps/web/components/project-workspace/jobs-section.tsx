@@ -10,7 +10,7 @@ import {
   Trash2,
 } from "lucide-react";
 
-import { publicUrl, type Job } from "@/lib/api";
+import { originUrl, type Job } from "@/lib/api";
 import { isActiveTaskStatus } from "@/lib/task-status";
 
 import { jobLabels } from "./labels";
@@ -66,7 +66,7 @@ export function JobsSection({
 
   function renderJob(job: Job, showProgress: boolean) {
     const terminal = ["COMPLETED", "FAILED", "CANCELLED", "NEEDS_REVIEW"].includes(job.status);
-    const resultUrl = publicUrl(job.result?.content_url ?? null);
+    const resultUrl = originUrl(job.result?.content_url ?? null);
     const showResult = () => {
       if (resultUrl && job.result) openPreview(resultUrl, job.result.label);
     };

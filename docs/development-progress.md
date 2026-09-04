@@ -4,6 +4,34 @@
 
 本文件记录修订版 MVP 计划的实际完成度。
 
+## V02-51B 桌面视觉系统已实现：token/焦点/动效收口 + 模板 B/C 壳 + U1–U10 矩阵（2026-09-03，Linux box）
+
+- **对应**：Issue #108 / 分支 `glm/v02-51b-desktop-visual-system`（基线 `d472f6e`，实现 head `7c344db`）。契约 `docs/v02-desktop-workspace-ux-audit.md` §3/§4/§8/§11/§13/§14；不改 V02-11 供应商内部（`provider-management.tsx` 零改动），QueueDock 行为不变，相对基线 diff 仅 `apps/web` 与 `docs`。
+- **切片 1（token 与焦点/动效收口，§11）**：`globals.css :root` 补齐设计 token——状态色 `--danger/--muted/--success-bg/--warning-bg/--danger-bg/--focus`（其中 `--muted`、`--mono` 此前被组件引用但从未定义，本切片修复）、`--mono` 等宽族、字号级谱 `--text-display/title/body/ui/meta/micro`（最低 11px）、4px 间距谱、z 刻度（base/sticky/dock/overlay/dialog/lightbox）、`--radius: 3px`、`--shadow-card/pop`、`--ease-out`、`--duration-fast/base`；稳定化地板（body 14px、控件 12px/40px、按钮 44px）与卡片阴影、步骤缓动、sticky/dock 层级、按钮圆角改为同值 token 引用，不改布局语义。散落的四段（连同 V02-31B 段共五段）`prefers-reduced-motion` 合并为一条全局契约：动画/过渡 .01ms、iteration 1（spinner 可停）、hover 位移 `transform: none` 清单覆盖按钮图标/工作台步骤/对话卡/设置页悬停，并删除审计点名的诊断刷新按钮 `rotate(-4deg)` 装饰。`focus-visible` 统一为唯一 3px vermillion 焦点环：删除工作台步骤 1px inset、`pkg-slot-card` 2px ink、director/local-edit `outline-offset: 2px` 变体、usage 表格行 `outline: none`。
+- **切片 2（模板 C 设置壳，§4.3）**：`.settings-board`/`.project-settings-grid`/`.checks-section` 单列断点由 900px 提到 1279.98px，诊断/存储侧栏改随页滚动（`position: static; max-height: none; overflow: visible`），不再粘滞挤压主卡；≥1280 保持主栏+粘滞侧栏双列。设置控件字号 ≥12 由全局地板（`--text-meta`）保证。
+- **切片 3（模板 B 工作台槽位，§4.2/§5）**：左导航新增 48px 图标轨折叠——顶栏 `workspace-nav-collapse` 切换按钮（仅 >760px 显示，不进 760 汉堡），`mangaflow.project-sidebar-collapsed` 持久化，rail 下隐藏标题/文字/拖宽把手、保留图标与当前步骤高亮；新增通用右槽 API `components/project-workspace/workspace-slots.tsx`（`WorkspaceInspectorSlot`：≥1280 以 `has-inspector` 三列网格停靠、900–1279 右抽屉、<900 底部抽屉，抽屉关闭即消失只发生在非停靠区）；侧栏拖宽边界收口为 `lib/workspace-layout.ts`（188–360，默认 214）供拖宽与存储恢复共用。storyboard 检查器既有抽屉断点（1100–1279 右抽屉 / 900–1099 底部抽屉）保持并被回归断言。
+- **切片 4（lightbox/缩略图/窗口化夹具，§2.4/§7）**：`ImageLightbox` 补 Esc 关闭、＋/− 键缩放（50%–250%）、Tab 焦点陷阱、打开时焦点进入对话框并在关闭后归还触发缩略图；新增 `originUrl`（`lib/api.ts`）使 lightbox 一律取原图 content，网格/列表继续走 `publicUrl`（改写 `/thumbnail/640`）——修复了此前 lightbox 与网格同样只拿到 640 缩略图的偏差；落实入口共五处并通过清扫守卫防再犯：`CandidateArtwork`（shared.tsx）、`asset-production-panel.tsx` 的 `CandidatePreview`（full=originUrl / thumbnail=publicUrl）、`generate-section.tsx` 场景继承参考图、`scene-workspace.tsx` 主空间与变体参考图两处、审查后续扫出的 `jobs-section.tsx` 任务结果入口；源码守卫断言任何组件不得把 `publicUrl` 结果直接交给 `openPreview/onOpen`，另有 jobs-section 组件级回归（点击「查看结果」断言 lightbox 收到 `/content` 原图而非缩略图）。候选卡加 `content-visibility: auto`（`contain-intrinsic-size` 460px）作 V02-52 前的低成本窗口化过渡；`lib/windowing-rules.ts` 固化阈值接缝（候选 24 / 库缩略图 60 / 任务行 80），本轮无消费方、不构成行为变化。
+- **门禁（实现 head `7c344db` + 审查修复至 `5df067e` 之后，Linux 等价 `npm run check`）**：Web Vitest 43 文件 413 项全过（新增 `app/desktop-visual-system.test.ts` 与 `components/project-workspace/workspace-chrome.test.tsx`，更新 storyboard S17 至合并后的单块 reduced-motion 契约，保证不弱化；审查轮补充 reduced-motion 交互态守卫、lightbox 原图入口清扫、jobs-section 原图组件回归与模板 B 图标轨+右槽组合规则断言）；ESLint、`tsc --noEmit`、Ruff（`apps/api tests`）、供应商平权扫描（`VERTEX_NATIVE`/`vertex-ai`/`vertex_configured` 三模式 git grep vs allowlist）0 违规、Next.js 生产构建通过。全量 pytest 588 passed / 70 skipped，10 failed + 10 errors 为既有 Linux 平台基线（Job Object、junction/reparse、PowerShell 包装、CLI 可执行文件更新等，集合与 V02-44B 记录一致）；本分支未改动任何 Python 文件，失败集合由基线树决定。
+- **U1–U10 矩阵（§13）证据**：
+  - **U1 RUN**：`desktop-visual-system.test.ts`「U1 ≥1280 工作台」断言 `.workspace-canvas` 保留 `padding: 28px 30px 70px`、`.queue-dock` 高 48px 且 `z-index: var(--z-dock)`（主栏不被底栏遮挡的既有回归）；左导航停靠为默认，可折叠图标轨持久化断言同文件。
+  - **U2 RUN**：断言汉堡抽屉规则（`.workspace-left { position: fixed`）仅存在于 `@media (max-width: 760px)`，761px/1280px/900–1279 各块均无；storyboard 检查器 1100–1279 右抽屉与 900–1099 底部抽屉的 `.drawer-open`/`:not(.drawer-open) { display: none }` 契约、通用右槽同断点降级均有断言（900–1279 检查器是抽屉而非消失）。
+  - **U3 RUN**：断言 ≥1280 `.settings-board` 双列基础规则与 `.settings-secondary` sticky；`--text-meta: 12px` 与最终地板 `button, input, select, textarea { … font-size: var(--text-meta) !important }`。
+  - **U4 RUN**：断言 `@media (max-width: 1279.98px)` 内 `.settings-board { grid-template-columns: 1fr }` 且 `.settings-secondary { position: static; max-height: none; overflow: visible }`（诊断不粘死）。
+  - **U5 RUN**：断言全表唯一一条 `:focus-visible` outline 规则 = `outline: 3px solid var(--vermillion); outline-offset: 3px`，无 1px/2px 变体、无 `outline: none` 吞键盘焦点；全局导航/步骤/主按钮均落在该规则（`globals-style.test.ts` 既有断言继续通过）。
+  - **U6 RUN**：断言 `prefers-reduced-motion` 全表仅一段；`.01ms` 冻结 + iteration 1（spinner 可停）；交互态位移取消用 `transform: none !important` 覆盖全部 26 个 translate 源——hover（含 `.button:hover:not(:disabled)` 与 tactile 块的 `button:hover:not(:disabled)` / `a.button:hover` 两个变体，该块位于合并块之后，无 `!important` 会按优先级反超）、按压（`button:active:not(:disabled)` / `a.button:active` / 工作台步骤 active）、拖拽（`.upload-stage.drag-active`）；U6 断言以行首精确匹配区分元素/class 变体（class 变体不能顺带满足元素断言），并有解析器守卫测试逐个核对全表 `:hover`/`:active`/`drag-active` + translate 选择器 ⊆ 覆盖清单；`rotate(-4deg)` 全表消失。
+  - **U7 RUN**：`workspace-chrome.test.tsx` 组件测试——Esc 关闭 lightbox、关闭后焦点回到触发按钮、＋/− 缩放至 50%–250%、Tab 焦点陷阱、`局部修改` 候选入口保留。
+  - **U8 RUN**：QueueDock 组件测试——隐藏写入 `mangaflow.queue-dock-hidden`，隐藏态重挂载仅显示恢复按钮，点击恢复并回写 `false`。
+  - **U9 RUN（纯函数级）**：`clampSidebarWidth`/`storedSidebarWidth` 边界测试（188–360、非法/越界回退 214）+ 源码断言 `project-workspace.tsx` 拖宽与恢复消费同一实现。指针拖拽的 PointerEvent capture 序列 jsdom 不可行，未做浏览器级拖拽。
+  - **U10 RUN（回退栈断言级）**：断言 `--sans/--serif/--mono` 均以通用族（`sans-serif`/`serif`/`monospace`）收尾，未加载 Noto 时回退系统字体可读。正式字体加载（next/font/@font-face）本切片未做，见 NOT RUN。
+- **NOT RUN / 边界**：Playwright/Axe 浏览器 E2E（官方 owned 控制器依赖 Windows Job Object，本 worktree 亦无既往 Linux 等价 harness，未自行搭设）；真实视口截图对比/视觉快照回归；next/font 正式字体加载与实机字体回退观察（本沙箱无字体源，避免破坏离线 `next build`）；Lighthouse/FPS/V02-52A N=20（按约不做）；真实供应商、真实 Key、付费图片冒烟；PostgreSQL live、Redis、Docker、Independent Worker；Tauri/Electron 选型（V02-53）。窗口化阈值本轮仅固化接缝，未在真实数据集上启用（留给 V02-52 门禁决策）。
+
+## V02-11C 设置页验收已审阅合并（2026-09-03）
+
+- **合并记录**：Issue #106 / PR #107 / 分支 `glm/v02-11c-settings-acceptance` / 合并提交 `d472f6e`（验收 head `3335fa6`；`d472f6e` 相对 `3335fa6` 仅增加文档与合并提交，apps/tests/scripts 代码树一致）。父项 V02-11（A/B/C）随本合并全部完成。
+- **验收证据**：沿用下节「V02-11C 设置页验收完成」记录——Issue #40 §8 P/C/F/V/A/S/L/N 矩阵逐行映射到 `provider-management.test.tsx` 72 项定向回归（head `3335fa6` 行号覆盖表见下节）；完整 Web Vitest 41 文件 381 项全过；ESLint、`tsc --noEmit`、Ruff、供应商平权扫描 0 违规与 Next.js 生产构建通过。
+- **假供应商设置页 E2E（RUN）**：2026-09-02 Windows owned Playwright 17/17（`98b93a0`）与本分支 2026-09-03 Linux 等价 harness 重跑 17/17（head `3335fa6`，run id `fd48ff8c0995416ead5efae033afd312`）均含「设置页用离线假供应商完成创建、手工模型与展示显隐」与含 `/settings` 的 Axe 检查。
+- **NOT RUN / 边界**：真实供应商、真实 Key、付费图片冒烟、PostgreSQL live、Lighthouse/FPS、V02-51B 视觉回归。
+
 ## V02-11C 设置页验收完成：Issue #40 矩阵逐项核对 + 假供应商 E2E 全绿（2026-09-03，Linux box）
 
 - **对应**：Issue #106 / 分支 `glm/v02-11c-settings-acceptance`（基线 `071ae2d`，验收 head `3335fa6`）。对照 `docs/v02-provider-settings-ui-audit.md` §8 把 P/C/F/V/A/S/L/N 每一行映射到 `apps/web/components/provider-management.test.tsx` 定向回归，全部有证据；审计 §8 要求保留的三条既有用例（健康错误可见、创建失败/刷新、凭据失败不回显）在 `:207/:216/:241`。
