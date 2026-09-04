@@ -1,21 +1,23 @@
 //! Process-tree ownership for the desktop shell.
 //!
-//! **Windows path is a COMPILE-ONLY SKELETON (V02-53B).** It compiles under
-//! `cargo check --target x86_64-pc-windows-msvc` but its runtime behavior is
-//! NOT RUN, and — unlike `scripts/owned_processes.py` — the helper is NOT
-//! created suspended: `std::process::Command` cannot spawn suspended, so the
-//! helper runs its first instructions before `AssignProcessToJobObject`, and
-//! a shell crash in that window would leak the tree. This code must NOT be
-//! mistaken for a production launcher: a production shell implements
-//! `CreateProcessW(CREATE_SUSPENDED)` + assign + `ResumeThread` (see
-//! `scripts/owned_processes.py` `start_python`) and re-verifies on Windows.
+//! **Windows path (V02-54): suspended creation, assignment before the first
+//! instruction, then resume — the `scripts/owned_processes.py` `start_python`
+//! discipline.** The helper is created `CREATE_SUSPENDED`, assigned to the
+//! root Job Object (`KILL_ON_JOB_CLOSE`) while it still has not executed a
+//! single instruction, and only then its initial thread is resumed. The
+//! spawn→assign race window of the V02-53B compile-only skeleton is gone:
+//! whatever happens (graceful exit, shell crash, timeout), the job handle
+//! closing kills the whole tree. The implementation compiles for
+//! `x86_64-pc-windows-msvc`, but its runtime behavior is **NOT RUN** (this
+//! sandbox is Linux): D3 must be re-verified on a real Windows machine before
+//! this path is called production-proven (see `apps/desktop/README.md`).
 //!
 //! Unix path (runtime-verified in this sandbox): the spawned helper gets
 //! `PR_SET_PDEATHSIG=SIGKILL` before its first instruction and puts itself
 //! into its own session, so a shell crash kills the helper immediately and
 //! the shell can signal the entire tree via the process group.
 
-use std::process::Child;
+use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
 /// Raw Win32 job handle. HANDLE is a plain integer handle valid across
@@ -36,6 +38,7 @@ pub enum TreeGuard {
 pub enum OwnershipError {
     Spawn(std::io::Error),
     JobAssignment(String),
+    Resume(String),
     StopFailed(String),
 }
 
@@ -47,12 +50,15 @@ pub struct OwnedTree {
 impl OwnedTree {
     /// Spawn the helper into shell ownership.
     ///
-    /// # Windows skeleton caveat (V02-53B)
+    /// # Windows ownership order (V02-54, mirrors `owned_processes.start_python`)
     ///
-    /// On Windows this assigns the ALREADY-RUNNING child to the job, leaving
-    /// a spawn→assign race window (compile-only skeleton; see module docs).
-    /// Do not ship this path as a production launcher.
-    pub fn spawn(mut command: std::process::Command) -> Result<OwnedTree, OwnershipError> {
+    /// `CREATE_SUSPENDED` spawn → create job (`KILL_ON_JOB_CLOSE`) → assign
+    /// the still-suspended child → resume the initial thread. Any failure
+    /// terminates the child while it is still suspended (it has executed
+    /// nothing). The shell-side ownership journal is written by
+    /// `RuntimeLayout::create` even earlier: before the process exists at
+    /// all. Windows runtime behavior remains NOT RUN (Linux sandbox).
+    pub fn spawn(mut command: Command) -> Result<OwnedTree, OwnershipError> {
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -67,16 +73,32 @@ impl OwnedTree {
                 });
             }
         }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            use windows::Win32::System::Threading::{CREATE_NO_WINDOW, CREATE_SUSPENDED};
+            // Suspended creation is the point: the helper cannot run a single
+            // instruction until it is inside the job. CREATE_NO_WINDOW keeps
+            // the GUI shell from flashing a console for the Python helper.
+            command.creation_flags(CREATE_SUSPENDED.0 | CREATE_NO_WINDOW.0);
+        }
         let child = command.spawn().map_err(OwnershipError::Spawn)?;
         #[cfg(windows)]
         {
-            // SKELETON: assign-after-spawn, NOT the suspended first-instruction
-            // assignment owned_processes.py uses. Windows runtime NOT RUN.
-            let guard = TreeGuard::Windows {
-                job: create_kill_on_close_job()?,
+            let job = match create_kill_on_close_job() {
+                Ok(job) => job,
+                Err(error) => return Err(fail_suspended(child, error)),
             };
-            assign_to_job(&guard, &child)?;
-            return Ok(OwnedTree { child, guard });
+            if let Err(error) = assign_process(&job, &child) {
+                return Err(fail_suspended(child, error));
+            }
+            if let Err(error) = resume_initial_thread(child.id()) {
+                return Err(fail_suspended(child, error));
+            }
+            return Ok(OwnedTree {
+                child,
+                guard: TreeGuard::Windows { job },
+            });
         }
         #[cfg(unix)]
         {
@@ -136,6 +158,61 @@ impl Drop for OwnedTree {
     }
 }
 
+#[cfg(windows)]
+fn fail_suspended(mut child: Child, error: OwnershipError) -> OwnershipError {
+    // Fail closed: the child is still suspended and has executed nothing.
+    let _ = child.kill();
+    let _ = child.wait();
+    error
+}
+
+#[cfg(windows)]
+fn resume_initial_thread(child_pid: u32) -> Result<(), OwnershipError> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+    };
+    use windows::Win32::System::Threading::{
+        OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
+    };
+
+    unsafe {
+        // A CREATE_SUSPENDED process has not executed a single instruction,
+        // so it owns exactly one thread: its initial thread. Thread IDs are
+        // not derivable from the PID, so enumerate a system snapshot.
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0)
+            .map_err(|error| OwnershipError::Resume(error.to_string()))?;
+        let mut entry = THREADENTRY32::default();
+        entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+        let mut thread_id = None;
+        if Thread32First(snapshot, &mut entry).is_ok() {
+            loop {
+                if entry.th32OwnerProcessID == child_pid {
+                    thread_id = Some(entry.th32ThreadID);
+                    break;
+                }
+                if Thread32Next(snapshot, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snapshot);
+        let thread_id = thread_id.ok_or_else(|| {
+            OwnershipError::Resume(format!("no initial thread found for pid {child_pid}"))
+        })?;
+        let thread = OpenThread(THREAD_SUSPEND_RESUME, false, thread_id)
+            .map_err(|error| OwnershipError::Resume(error.to_string()))?;
+        let previous_suspend_count = ResumeThread(thread);
+        let _ = CloseHandle(thread);
+        if previous_suspend_count == u32::MAX {
+            return Err(OwnershipError::Resume(
+                "ResumeThread failed on the initial thread".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[cfg(unix)]
 fn signal_tree(pid: u32, sig: i32) {
     // The helper calls setsid(), so its process group id equals its pid and
@@ -178,13 +255,12 @@ fn create_kill_on_close_job() -> Result<JobHandle, OwnershipError> {
 }
 
 #[cfg(windows)]
-fn assign_to_job(guard: &TreeGuard, child: &Child) -> Result<(), OwnershipError> {
+fn assign_process(job: &JobHandle, child: &Child) -> Result<(), OwnershipError> {
     use std::os::windows::io::AsRawHandle;
     use windows::Win32::System::JobObjects::AssignProcessToJobObject;
 
-    // Single-variant tree guard on the Windows target: the job handle is the
-    // root Job Object created with KILL_ON_JOB_CLOSE.
-    let TreeGuard::Windows { job } = guard;
+    // The child handle is the process HANDLE kept by std::process::Child;
+    // termination never needs a PID lookup.
     let handle = windows::Win32::Foundation::HANDLE(child.as_raw_handle());
     unsafe {
         AssignProcessToJobObject(job.0, handle)

@@ -120,7 +120,12 @@ pub struct RuntimeLayout {
 
 impl RuntimeLayout {
     /// Create a fresh runtime directory with a 32-hex owner token, mirroring
-    /// the canonical-path checks of `scripts/owned_processes.py`.
+    /// the canonical-path checks of `scripts/owned_processes.py`, and write
+    /// the shell-side ownership journal BEFORE anything is spawned.
+    /// `owned_processes.py` makes ownership durable before resuming the
+    /// suspended child; this shell writes its record even earlier — before
+    /// the child process exists at all. The helper overwrites this journal
+    /// atomically with the readiness state once it publishes readiness.
     pub fn create(user_data: &Path) -> std::io::Result<RuntimeLayout> {
         let token = new_token();
         let runtime = user_data
@@ -135,10 +140,21 @@ impl RuntimeLayout {
                 "runtime path/ownership mismatch",
             ));
         }
-        Ok(RuntimeLayout {
+        let layout = RuntimeLayout {
             user_data: user_data.to_path_buf(),
             token,
-        })
+        };
+        write_journal_atomic(
+            &layout.journal_path(),
+            &serde_json::json!({
+                "version": PROTOCOL_VERSION,
+                "token": layout.token,
+                "state": "created",
+                "shell_pid": std::process::id(),
+                "created_at": unix_now(),
+            }),
+        )?;
+        Ok(layout)
     }
 
     pub fn runtime_dir(&self) -> PathBuf {
@@ -163,9 +179,19 @@ impl RuntimeLayout {
         if let Some(code) = exit_code {
             value["exit_code"] = code.into();
         }
-        std::fs::write(&journal, serde_json::to_string(&value).unwrap())?;
-        Ok(())
+        write_journal_atomic(&journal, &value)
     }
+}
+
+/// Atomic journal write (pending file + rename, same shape as the helper and
+/// `owned_processes.py`). Identity fields only — never commands, env, secrets.
+fn write_journal_atomic(journal: &Path, record: &serde_json::Value) -> std::io::Result<()> {
+    let pending = journal.with_file_name(format!(
+        "{}.pending",
+        journal.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    std::fs::write(&pending, serde_json::to_string(record).unwrap())?;
+    std::fs::rename(&pending, journal)
 }
 
 pub fn new_token() -> String {
@@ -257,5 +283,32 @@ mod tests {
             verify_ready_line(&format!("{READY_PREFIX}not-json"), TOKEN, 1),
             Err(VerifyError::BadJson)
         ));
+    }
+
+    #[test]
+    fn runtime_layout_journals_ownership_before_any_spawn() {
+        let dir = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-journal-test-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let layout = RuntimeLayout::create(&dir).unwrap();
+
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(layout.journal_path()).unwrap())
+                .unwrap();
+        // The shell proves it owns the runtime directory before any child
+        // process exists (owned_processes writes its durable record before
+        // resuming; the shell writes it before even creating the process).
+        assert_eq!(value["state"], "created");
+        assert_eq!(value["token"], layout.token.as_str());
+        assert_eq!(value["version"], PROTOCOL_VERSION);
+        assert_eq!(value["shell_pid"], serde_json::json!(std::process::id()));
+        // Identity fields only.
+        assert!(value.get("command").is_none() && value.get("env").is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
