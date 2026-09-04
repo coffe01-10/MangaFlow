@@ -22,7 +22,6 @@ export function useWorkspaceQueries({
   assetView: AssetWorkspaceView;
   selectedChapterId: string | null;
 }) {
-  const needsChapters = ["source", "script", "storyboard", "generate", "library"].includes(section);
   const needsCharacters = section === "assets"
     ? !["style", "scenes"].includes(assetView)
     : ["script", "storyboard", "generate", "library"].includes(section);
@@ -36,7 +35,9 @@ export function useWorkspaceQueries({
   const project = useQuery({ queryKey: ["project", id], queryFn: () => api.project(id), staleTime: 30_000 });
   const models = useQuery({ queryKey: ["models"], queryFn: api.models, staleTime: 30_000 });
   const assets = useQuery({ queryKey: ["assets", id], queryFn: () => api.assets(id), enabled: ["assets", "generate"].includes(section) });
-  const chapters = useQuery({ queryKey: ["chapters", id], queryFn: () => api.chapters(id), enabled: needsChapters });
+  // Chapters feed the sidebar summary on every section, so the copy cannot
+  // flip between "N 章" and "漫画生产工作区" as the user navigates.
+  const chapters = useQuery({ queryKey: ["chapters", id], queryFn: () => api.chapters(id), staleTime: 15_000 });
   const characters = useQuery({ queryKey: ["characters", id], queryFn: () => api.characters(id), enabled: needsCharacters });
   const outfits = useQuery({ queryKey: ["outfits", id], queryFn: () => api.outfits(id), enabled: needsOutfits });
   const activeChapterId = selectedChapterId ?? chapters.data?.[0]?.id ?? null;
@@ -68,7 +69,6 @@ export function useWorkspaceQueries({
     script,
     sceneAssets,
     activeChapterId,
-    needsChapters,
     needsCharacters,
     needsOutfits,
     needsPages,

@@ -6,6 +6,7 @@ import { creatorVisibleModels } from "@/lib/model-visibility";
 import { SIDEBAR_WIDTH_DEFAULT, clampSidebarWidth, storedSidebarWidth } from "@/lib/workspace-layout";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { CircleAlert, LoaderCircle } from "lucide-react";
+import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
@@ -77,13 +78,21 @@ export default function ProjectWorkspace({
     script,
     sceneAssets,
     activeChapterId,
-    needsChapters,
     needsCharacters,
     needsOutfits,
     needsPages,
     needsScript,
     needsSceneAssets,
   } = workspaceQueries;
+
+  // Sidebar chrome is section-independent, so the summary must derive from
+  // cached chapter data instead of which section happens to enable a query.
+  const sidebarSummary = useMemo(() => {
+    const list = chapters.data;
+    if (!list?.length) return "漫画生产工作区";
+    const pageCount = list.reduce((sum, chapter) => sum + chapter.page_count, 0);
+    return `${list.length} 章 · ${pageCount} 页已规划`;
+  }, [chapters.data]);
 
   const projectPath = (target: string) =>
     target === "assets" ? `/projects/${id}/assets/characters` : `/projects/${id}/${target}`;
@@ -107,7 +116,7 @@ export default function ProjectWorkspace({
     setSelectedPageId,
   });
 
-  const jobsWorkspace = useJobsWorkspace({ id, section });
+  const jobsWorkspace = useJobsWorkspace({ id });
   const {
     jobs,
     queueStats,
@@ -227,7 +236,7 @@ export default function ProjectWorkspace({
   }
 
   const workspaceRouteReady = !project.isLoading
-    && (!needsChapters || !chapters.isLoading)
+    && !chapters.isLoading
     && (!needsCharacters || !characters.isLoading)
     && (!needsOutfits || !outfits.isLoading)
     && (!needsPages || !pages.isLoading)
@@ -254,7 +263,17 @@ export default function ProjectWorkspace({
     return <AppShell><div className="full-loading"><LoaderCircle className="spin" />加载项目工作区…</div></AppShell>;
   }
   if (project.isError) {
-    return <AppShell><div className="full-loading error"><CircleAlert />项目无法打开</div></AppShell>;
+    return <AppShell><div className="full-loading error">
+      <CircleAlert />
+      <div>
+        <strong>项目无法打开</strong>
+        <p>{project.error instanceof Error ? project.error.message : "读取项目失败，请稍后重试。"}</p>
+        <div className="full-loading-actions">
+          <button type="button" className="button outline compact" onClick={() => project.refetch()}>重试</button>
+          <Link className="button ghost compact" href="/">返回项目列表</Link>
+        </div>
+      </div>
+    </div></AppShell>;
   }
 
   return (
@@ -277,10 +296,7 @@ export default function ProjectWorkspace({
           navCollapsed={navCollapsed}
           setNavOpen={setNavOpen}
           projectName={draft.name}
-          chapterCount={chapters.data?.length ?? 0}
-          needsChapters={needsChapters}
-          pageCount={pages.data?.length ?? 0}
-          needsPages={needsPages}
+          summary={sidebarSummary}
           section={section}
           projectPath={projectPath}
           rememberWorkspaceScroll={rememberWorkspaceScroll}

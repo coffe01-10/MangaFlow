@@ -1,6 +1,6 @@
 import Image from "next/image";
 import { Check, CircleAlert, LoaderCircle, Maximize2, Pencil, Sparkles, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { originUrl, publicUrl, type Asset, type ImageModelAlias, type StyleProfile } from "@/lib/api";
 
@@ -39,10 +39,23 @@ export function ComicModeSwitch({
   </div>;
 }
 
-export function AssetNameEditor({ asset, pending, onSave }: { asset: Asset; pending: boolean; onSave: (displayName: string) => void }) {
+export function AssetNameEditor({ asset, pending, error, onSave }: { asset: Asset; pending: boolean; error?: Error | null; onSave: (displayName: string) => void }) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(asset.display_name ?? asset.original_name);
+  const [submitted, setSubmitted] = useState(false);
   const visibleName = asset.display_name?.trim() || asset.original_name;
+
+  // The form stays open until the rename settles: closing it immediately made
+  // a failed rename look like a successful save (the name later "reverted").
+  useEffect(() => {
+    if (!submitted || pending) return;
+    if (error) {
+      setSubmitted(false);
+      return;
+    }
+    setEditing(false);
+    setSubmitted(false);
+  }, [submitted, pending, error]);
 
   if (editing) {
     return <form className="asset-name-edit" onSubmit={(event) => {
@@ -50,11 +63,12 @@ export function AssetNameEditor({ asset, pending, onSave }: { asset: Asset; pend
       const next = value.trim();
       if (!next) return;
       onSave(next);
-      setEditing(false);
+      setSubmitted(true);
     }}>
-      <input aria-label={`重命名 ${visibleName}`} maxLength={120} autoFocus value={value} onChange={(event) => setValue(event.target.value)} />
+      <input aria-label={`重命名 ${visibleName}`} maxLength={120} autoFocus value={value} onChange={(event) => setValue(event.target.value)} disabled={submitted && pending} />
       <button type="submit" aria-label="保存素材名称" disabled={pending || !value.trim()}><Check size={14} /></button>
       <button type="button" aria-label="取消重命名" onClick={() => { setValue(visibleName); setEditing(false); }}><X size={14} /></button>
+      {submitted && error && <em className="asset-name-error"><CircleAlert size={11} />{error.message}</em>}
     </form>;
   }
 

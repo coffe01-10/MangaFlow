@@ -103,6 +103,54 @@ export const candidateVersionStateLabels: Record<string, string> = {
   LEGACY_UNKNOWN: "版本未知",
 };
 
+/** Workflow run / node-run statuses. Wording stays aligned with
+ * `jobStatusLabels` for overlapping values so the workflow footer and the
+ * jobs panel never label the same state two different ways. */
+export const workflowRunStatusLabels: Record<string, string> = {
+  WAITING: "等待中",
+  RUNNING: "运行中",
+  COMPLETED: "已完成",
+  WAITING_APPROVAL: "等待确认",
+  FAILED: "已失败",
+  SKIPPED: "已跳过",
+  CANCELLED: "已取消",
+};
+
+/** Provider / job error codes surfaced raw by the API; the label keeps the
+ * code prefix visible for debugging while adding the human explanation.
+ * Codes verified against apps/api ProviderAdapterError writers. */
+export const errorCodeLabels: Record<string, string> = {
+  MODEL_ROUTE_UNAVAILABLE: "没有已验证且满足任务能力的模型",
+  MODEL_NOT_FOUND: "模型不存在或已下线",
+  AUTHENTICATION: "供应商凭据验证失败",
+  UNAUTHENTICATED: "CLI 登录已失效，请重新登录",
+  CLI_LOGIN_UNKNOWN: "CLI 登录状态未知，请先运行登录",
+  CLI_VERSION_FAILED: "CLI 版本检查失败",
+  CLI_VERSION_UNKNOWN: "无法确认 CLI 版本",
+  PERMISSION: "供应商账号权限不足",
+  RATE_LIMIT: "供应商限流，请稍后重试",
+  TIMEOUT: "请求超时",
+  CONCURRENCY_LIMIT: "并发上限已满，请稍后重试",
+  UNAVAILABLE: "供应商连接不可用",
+  NOT_CONFIGURED: "供应商凭据尚未配置",
+  CREDENTIAL_FILE_MISSING: "服务端凭据文件缺失",
+  CONFIGURATION: "连接配置有误",
+  UNSUPPORTED: "当前连接不支持该操作",
+  INVALID_INPUT: "请求参数不符合供应商要求",
+  INVALID_OUTPUT: "供应商响应格式异常",
+  INVALID_NODE_OUTPUT: "工作流节点输出不符合要求",
+  PARTIAL_OUTPUT: "供应商只返回了部分结果",
+  UNKNOWN_RESULT: "任务结果未知，请重试",
+  CRASH: "执行进程异常退出",
+  LEASE_EXPIRED: "任务租约过期，已回到队列",
+  MISSING_CANDIDATE: "找不到对应的生成候选",
+  UPSTREAM: "上游服务异常",
+  QUEUE_UNAVAILABLE: "队列服务不可用",
+  QUEUE_DISABLED: "队列已停用",
+  OUTPUT_ATTACHMENT_FAILED: "生成结果保存失败",
+  LOCAL_WORKER: "本地执行器",
+};
+
 export const chapterStatusLabels: Record<string, string> = {
   IMPORTED: "已导入",
   SCRIPT_READY: "剧本已生成",

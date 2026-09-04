@@ -52,6 +52,35 @@ export function ScriptEditor({
   const editorDirty = editingScene !== null || editingBeat !== null;
   useEffect(() => { onDirtyChange?.(editorDirty); }, [editorDirty, onDirtyChange]);
 
+  // Leave protection mirrors storyboard-editor: typed dialogue / scene drafts
+  // are the highest-effort content here, so sidebar navigation and reloads
+  // must confirm instead of silently discarding the open edit forms.
+  useEffect(() => {
+    if (!editorDirty) return;
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    const click = (event: MouseEvent) => {
+      if (event.defaultPrevented) return;
+      const target = event.target;
+      const anchor = target instanceof Element ? target.closest("a[href]") : null;
+      if (!anchor) return;
+      const href = anchor.getAttribute("href") ?? "";
+      if (!href.startsWith("/") || href === window.location.pathname) return;
+      if (!window.confirm("当前场景 / 情节拍的修改尚未保存，离开页面会丢弃这些修改。仍要离开吗？")) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+    window.addEventListener("beforeunload", beforeUnload);
+    document.addEventListener("click", click, true);
+    return () => {
+      window.removeEventListener("beforeunload", beforeUnload);
+      document.removeEventListener("click", click, true);
+    };
+  }, [editorDirty]);
+
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ["script", chapterId] });
     queryClient.invalidateQueries({ queryKey: ["pages", chapterId] });

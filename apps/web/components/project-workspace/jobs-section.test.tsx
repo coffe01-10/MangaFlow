@@ -38,7 +38,7 @@ function jobFixture(overrides: Partial<Job>): Job {
 }
 
 function JobsHarness({ openPreview = () => undefined }: { openPreview?: (url: string, label: string) => void }) {
-  const workspace = useJobsWorkspace({ id: "project-1", section: "jobs" });
+  const workspace = useJobsWorkspace({ id: "project-1" });
   return (
     <JobsSection
       jobs={workspace.jobs}

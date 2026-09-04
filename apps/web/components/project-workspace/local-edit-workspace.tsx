@@ -411,7 +411,7 @@ export function LocalEditWorkspace({
       regions: mask.present,
       instruction,
       modelAlias,
-      resolution,
+      resolution: effectiveResolution,
     }), { onSettled: () => { submittingRef.current = false; } });
   };
 
@@ -441,6 +441,10 @@ export function LocalEditWorkspace({
   if (draftStroke && draftStroke.length >= 2) draftPreviewRegions.push({ points: draftStroke });
 
   const resolutionOptions = selectedModelOptions(resolution, capableModels, modelAlias);
+  // The <select> can only offer what the model declares; when the candidate's
+  // resolution is not among them the displayed option and the submitted
+  // payload must agree, so derive the effective value once and use it in both.
+  const effectiveResolution = resolutionOptions.includes(resolution) ? resolution : resolutionOptions[0];
 
   return (
     <div className="local-edit-shell">
@@ -544,7 +548,7 @@ export function LocalEditWorkspace({
             />
             <label>
               <span>输出清晰度</span>
-              <select value={resolution} onChange={(event) => setResolution(event.target.value)}>
+              <select value={effectiveResolution} onChange={(event) => setResolution(event.target.value)}>
                 {resolutionOptions.map((item) => <option key={item} value={item}>{item}</option>)}
               </select>
             </label>
@@ -601,7 +605,7 @@ export function LocalEditWorkspace({
                 <div><dt>父候选</dt><dd>{adoptedLabel ?? "当前采用候选"}</dd></div>
                 <div><dt>指令</dt><dd>{instruction}</dd></div>
                 <div><dt>选区块数</dt><dd>{regions.length}</dd></div>
-                <div><dt>模型 / 清晰度</dt><dd>{modelAlias ?? "未选择"} · {resolution}</dd></div>
+                <div><dt>模型 / 清晰度</dt><dd>{modelAlias ?? "未选择"} · {effectiveResolution}</dd></div>
               </dl>
               <p className="local-edit-preview-note">
                 确认后创建派生候选（REGION_REGENERATED）并入队；不覆盖源候选、不整页重生，源候选采用状态不变。

@@ -60,6 +60,7 @@ export function StoryboardEditor({
   replanError,
   initialPageId,
   focusCharacterId,
+  onDirtyChange,
 }: {
   chapterId: string;
   pages: MangaPage[];
@@ -70,6 +71,7 @@ export function StoryboardEditor({
   replanError?: Error | null;
   initialPageId?: string | null;
   focusCharacterId?: string | null;
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const queryClient = useQueryClient();
   const [pageId, setPageId] = useState(
@@ -164,6 +166,10 @@ export function StoryboardEditor({
     || Object.keys(dialogueDrafts).length > 0
     || newDialogue !== null
     || panelDraftDirty;
+  // The section-level chapter <select> cannot see editor state, so it needs
+  // the dirty flag lifted to guard chapter switches like the editor's own
+  // page switch does.
+  useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
 
   const persistInspectorWidth = (value: number) => {
     const next = Math.min(620, Math.max(320, value));

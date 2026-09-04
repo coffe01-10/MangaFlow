@@ -255,7 +255,7 @@ function GenerateHarness() {
     assetView: "characters",
     selectedChapterId: "chapter-1",
   });
-  const jobsWorkspace = useJobsWorkspace({ id: "project-1", section: "generate" });
+  const jobsWorkspace = useJobsWorkspace({ id: "project-1" });
   const [selectedPageId, setSelectedPageId] = useState<string | null>("page-1");
   const [localEditCandidate, setLocalEditCandidate] = useState<PageCandidate | null>(null);
   const workspace = useGenerationWorkspace({

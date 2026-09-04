@@ -27,7 +27,6 @@ export function SourceSection({
     revisionLoading,
     setSourceText,
     editingChapterId,
-    setEditingChapterId,
     deletedChapterId,
     importSource,
     importSourceFile,
@@ -37,6 +36,7 @@ export function SourceSection({
     planChapter,
     chooseSourceFile,
     beginEditChapter,
+    cancelEditChapter,
   } = source;
 
   return (
@@ -46,7 +46,7 @@ export function SourceSection({
         <input className="text-input" aria-label="章节标题" value={sourceTitle} onChange={(event) => setSourceTitle(event.target.value)} placeholder="章节标题" />
         <textarea value={sourceText} onChange={(event) => setSourceText(event.target.value)} disabled={revisionLoading} placeholder={revisionLoading ? "正在载入章节原文，请稍候…" : "粘贴完整章节。系统先无损分段，再根据文字和剧本长度动态计算页数。"} />
         {revisionLoadError && <p className="form-error" role="alert">原文修订加载失败：{revisionLoadError}</p>}
-        <div><span>{editingChapterId ? "保存后生成新修订，旧版本仍保留" : "不会限制总页数 · 单页硬上限 180 个中文字符"}</span><span className="compose-actions">{!editingChapterId && <label className={importSourceFile.isPending ? "button outline compact source-file-button pending" : "button outline compact source-file-button"}><input type="file" accept=".txt,.md,.markdown,text/plain,text/markdown" onChange={chooseSourceFile} disabled={importSourceFile.isPending} />{importSourceFile.isPending ? <LoaderCircle className="spin" size={15} /> : <FileImage size={15} />}{importSourceFile.isPending ? "正在导入…" : "选择 TXT / MD"}</label>}{editingChapterId && <button className="button ghost compact" onClick={() => { setEditingChapterId(null); setSourceText(""); }}>取消修改</button>}<button className="button ink" disabled={!sourceText.trim() || importSource.isPending} onClick={() => importSource.mutate()}>{importSource.isPending ? <LoaderCircle className="spin" size={16} /> : editingChapterId ? <Save size={16} /> : <Upload size={16} />}{editingChapterId ? "保存新修订" : "导入粘贴原文"}</button></span></div>
+        <div><span>{editingChapterId ? "保存后生成新修订，旧版本仍保留" : "不会限制总页数 · 单页硬上限 180 个中文字符"}</span><span className="compose-actions">{!editingChapterId && <label className={importSourceFile.isPending ? "button outline compact source-file-button pending" : "button outline compact source-file-button"}><input type="file" accept=".txt,.md,.markdown,text/plain,text/markdown" onChange={chooseSourceFile} disabled={importSourceFile.isPending} />{importSourceFile.isPending ? <LoaderCircle className="spin" size={15} /> : <FileImage size={15} />}{importSourceFile.isPending ? "正在导入…" : "选择 TXT / MD"}</label>}{editingChapterId && <button className="button ghost compact" onClick={cancelEditChapter}>取消修改</button>}<button className="button ink" disabled={!sourceText.trim() || importSource.isPending} onClick={() => importSource.mutate()}>{importSource.isPending ? <LoaderCircle className="spin" size={16} /> : editingChapterId ? <Save size={16} /> : <Upload size={16} />}{editingChapterId ? "保存新修订" : "导入粘贴原文"}</button></span></div>
         {importSource.isError && <p className="form-error" role="alert"><CircleAlert size={14} />{importSource.error.message}</p>}
         {importSourceFile.isError && <p className="form-error" role="alert"><CircleAlert size={14} />{importSourceFile.error.message}</p>}
       </div>
@@ -61,6 +61,7 @@ export function SourceSection({
         {!chapters.isLoading && !chapters.isError && !chapters.data?.length && <div className="asset-empty"><BookOpenText size={24} /><strong>尚未导入原作</strong><p>粘贴一个完整章节开始工作。</p></div>}
       </div>
       {deletedChapterId && <div className="undo-banner"><span>章节已移入回收状态</span><button disabled={restoreChapter.isPending} onClick={() => restoreChapter.mutate(deletedChapterId)}>{restoreChapter.isPending ? <LoaderCircle className="spin" size={13} /> : <RotateCcw size={13} />}撤回删除</button></div>}
+      {(deleteChapter.isError || restoreChapter.isError) && <p className="form-error" role="alert"><CircleAlert size={14} />{(deleteChapter.error ?? restoreChapter.error) instanceof Error ? ((deleteChapter.error ?? restoreChapter.error) as Error).message : "章节删除 / 撤回操作失败，请重试"}</p>}
       {activeChapterId && <div className="workflow-actions"><button className="button outline" disabled={parseChapter.isPending || (chapters.data?.find((chapter) => chapter.id === activeChapterId)?.page_count ?? 0) > 0} onClick={() => parseChapter.mutate()}><Sparkles size={15} />{(chapters.data?.find((chapter) => chapter.id === activeChapterId)?.page_count ?? 0) > 0 ? "已有分页，请先删除剧本" : "生成漫画剧本"}</button><button className="button ink" disabled={planChapter.isPending || parseChapter.isPending || script.data?.status !== "READY"} onClick={() => planChapter.mutate()}>{planChapter.isPending ? <LoaderCircle className="spin" size={15} /> : <PanelTop size={15} />}从剧本计算分页</button></div>}
       {parseChapter.isError && <p className="form-error" role="alert"><CircleAlert size={14} />{parseChapter.error.message}</p>}
       {planChapter.isError && <p className="form-error" role="alert"><CircleAlert size={14} />{planChapter.error.message}</p>}

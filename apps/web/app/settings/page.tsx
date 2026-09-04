@@ -29,7 +29,9 @@ const diagnosticIcons: Record<DiagnosticCheck["status"], typeof CheckCircle2> = 
 
 function timeLabel(value: string | null) {
   if (!value) return "尚未记录";
-  return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(value));
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "时间格式异常";
+  return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(date);
 }
 
 export default function SystemSettingsPage() {
@@ -72,8 +74,8 @@ export default function SystemSettingsPage() {
       </header>
       <main className="settings-page">
         <section className="system-status-strip" aria-label="当前运行状态">
-          <div><span>AI 连接</span><strong>{providers.data ? `${providers.data.flatMap((provider) => provider.connections).filter((connection) => connection.health_state === "HEALTHY").length} 健康` : "读取中"}</strong></div>
-          <div><span>执行器</span><strong>{diagnostics.data?.queue.actual_executor ?? "检测中"}</strong></div>
+          <div><span>AI 连接</span><strong>{providers.isError ? "读取失败" : providers.data ? `${providers.data.flatMap((provider) => provider.connections).filter((connection) => connection.health_state === "HEALTHY").length} 健康` : "读取中"}</strong></div>
+          <div><span>执行器</span><strong>{diagnostics.isError ? "检测失败" : diagnostics.data?.queue.actual_executor ?? "检测中"}</strong></div>
           <div><span>数据库</span><strong>{draft?.database_backend ?? "读取中"}</strong></div>
           <div><span>存储</span><strong>{draft?.storage_root ?? "读取中"}</strong></div>
           <div><span>最近检查</span><strong>{timeLabel(diagnostics.data?.checked_at ?? null)}</strong></div>
@@ -95,7 +97,7 @@ export default function SystemSettingsPage() {
             </article>
           </section>
           <aside className="settings-secondary">
-            <article className="diagnostic-card"><header><div><Database size={17} /><span>分层诊断</span></div><button onClick={() => diagnostics.refetch()} disabled={diagnostics.isFetching}><RefreshCw className={diagnostics.isFetching ? "spin" : ""} size={15} />重新检测</button></header><div className="diagnostic-list">{diagnostics.data?.checks.map((check) => { const Icon = diagnosticIcons[check.status]; return <div key={check.id} className={`diagnostic-row ${check.status.toLowerCase()}`}><Icon size={16} /><span><strong>{check.label}</strong><small>{check.message}</small></span><em>{check.latency_ms ?? "—"} ms</em></div>; }) ?? <div className="loading-panel"><LoaderCircle className="spin" />正在检测…</div>}</div></article>
+            <article className="diagnostic-card"><header><div><Database size={17} /><span>分层诊断</span></div><button onClick={() => diagnostics.refetch()} disabled={diagnostics.isFetching}><RefreshCw className={diagnostics.isFetching ? "spin" : ""} size={15} />重新检测</button></header>{diagnostics.isError ? <div className="diagnostic-list"><div className="diagnostic-row failed"><CircleAlert size={16} /><span><strong>诊断读取失败</strong><small>{diagnostics.error instanceof Error ? diagnostics.error.message : "请稍后重试"}</small></span></div></div> : <div className="diagnostic-list">{diagnostics.data?.checks.map((check) => { const Icon = diagnosticIcons[check.status]; return <div key={check.id} className={`diagnostic-row ${check.status.toLowerCase()}`}><Icon size={16} /><span><strong>{check.label}</strong><small>{check.message}</small></span><em>{check.latency_ms ?? "—"} ms</em></div>; }) ?? <div className="loading-panel"><LoaderCircle className="spin" />正在检测…</div>}</div>}</article>
             <article className="storage-card"><header><HardDrive size={17} /><span>本地存储</span></header><dl><div><dt>数据库</dt><dd>{draft?.database_backend ?? "—"}</dd></div><div><dt>生成内容</dt><dd>{draft?.storage_root ?? "—"}</dd></div><div><dt>用户上传</dt><dd>{draft?.upload_root ?? "—"}</dd></div></dl><p>凭据路径、私钥、令牌和 Redis 地址不会通过此接口返回。</p></article>
           </aside>
         </div>

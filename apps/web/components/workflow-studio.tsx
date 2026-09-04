@@ -35,6 +35,7 @@ import {
 } from "@/lib/api";
 import { createWorkflowDraftSaver, type WorkflowDraftSaver, type WorkflowSaveStatus } from "@/lib/workflow-draft-save";
 import { creatorVisibleModels } from "@/lib/model-visibility";
+import { workflowRunStatusLabels } from "./project-workspace/labels";
 import {
   ArrowLeft,
   BoxSelect,
@@ -93,15 +94,7 @@ const categoryLabel: Record<string, string> = {
   OUTPUT: "生成与输出",
 };
 
-const statusLabel: Record<string, string> = {
-  WAITING: "等待",
-  RUNNING: "运行中",
-  COMPLETED: "已完成",
-  WAITING_APPROVAL: "等待确认",
-  FAILED: "失败",
-  SKIPPED: "已跳过",
-  CANCELLED: "已取消",
-};
+const statusLabel = workflowRunStatusLabels;
 
 function nodeTone(type: string) {
   if (type.startsWith("source.")) return "input";
@@ -518,6 +511,29 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
     onError: (error) => setNotice(error.message),
   });
 
+  const restoreVersion = useMutation({
+    // Restoring overwrites the current draft graph with a published version;
+    // it is destructive enough to confirm, and failures must surface.
+    mutationFn: ({ versionId, revision }: { versionId: string; revision: number }) => {
+      const current = workflowRef.current;
+      if (!current) throw new Error("当前工作流尚未加载，无法恢复版本");
+      return api.restoreWorkflowVersion(versionId, current.version);
+    },
+    onSuccess: (restored) => {
+      workflowRef.current = restored;
+      initializedId.current = null;
+      void workflows.refetch();
+      setNotice(`已恢复发布版本到草稿（V${restored.version}）`);
+    },
+    onError: (error) => setNotice(error instanceof Error ? error.message : "恢复版本失败"),
+  });
+
+  const cancelRun = useMutation({
+    mutationFn: (runId: string) => api.cancelWorkflowRun(runId),
+    onSuccess: (run) => { setCurrentRun(run); void runs.refetch(); },
+    onError: (error) => setNotice(error instanceof Error ? error.message : "取消运行失败"),
+  });
+
   async function importFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -646,7 +662,7 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
       </header>
 
       {legacyGraph ? <section className={styles.legacy}><History size={17} /><div><strong>发现升级前保存在当前浏览器的工作流草稿</strong><span>它不影响现在的服务端草稿与已发布版本。需要保留时可另存导入；确认无用可永久忽略。</span></div><button onClick={importLegacy}>另存为新流程</button><button className={styles.ignoreLegacy} onClick={() => window.confirm("永久忽略这份旧版浏览器草稿？不会删除服务端流程。") && ignoreLegacy()}><X size={14} />永久忽略</button></section> : null}
-      {notice ? <button className={styles.notice} onClick={() => setNotice("")}>{notice}<X size={12} /></button> : null}
+      {notice ? <button className={styles.notice} role="status" aria-live="polite" onClick={() => setNotice("")}>{notice}<X size={12} /></button> : null}
       <section className={styles.workflowStatus} aria-live="polite"><div><span>草稿版本</span><strong>V{activeWorkflow.draft_version}</strong></div><div><span>已发布版本</span><strong>{versions.data?.[0] ? `V${versions.data[0].revision}` : "尚未发布"}</strong></div><div><span>保存状态</span><strong>{saveStatus}</strong></div><div><span>校验问题</span><strong>{validation.length} 项</strong></div><button onClick={() => startRun.mutate("FULL")} disabled={startRun.isPending}><Play size={14} />运行已发布流程</button></section>
 
       <section className={`${styles.body} ${libraryOpen ? "" : styles.libraryClosed} ${inspectorOpen ? "" : styles.inspectorClosed}`}>
@@ -682,12 +698,19 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
             minZoom={0.2}
             maxZoom={1.6}
             onlyRenderVisibleElements={nodes.length > 200}
+            ariaLabelConfig={{
+              "controls.ariaLabel": "画布控制",
+              "controls.zoomIn.ariaLabel": "放大",
+              "controls.zoomOut.ariaLabel": "缩小",
+              "controls.fitView.ariaLabel": "适应画布",
+              "minimap.ariaLabel": "工作流小地图",
+            }}
           >
             <Background variant={BackgroundVariant.Dots} gap={18} size={1} color="#4c514e" />
             <MiniMap pannable zoomable className={styles.minimap} nodeColor={(node) => ({ input: "#397b68", control: "#b77c26", output: "#b94735", quality: "#7862a4", agent: "#326b91" })[nodeTone((node.data as StudioNodeData).graphNode.type)]} />
             <Controls showInteractive={false} />
           </ReactFlow>
-          {validation.length ? <div className={styles.validation}><CircleAlert size={15} /><div>{validation.map((message) => <span key={message}>{message}</span>)}</div><button aria-label="清除校验提示" onClick={() => setValidation([])}><X size={13} /></button></div> : null}
+          {validation.length ? <div className={styles.validation}><CircleAlert size={15} /><div>{validation.map((message, index) => <span key={`${index}-${message}`}>{message}</span>)}</div><button aria-label="清除校验提示" onClick={() => setValidation([])}><X size={13} /></button></div> : null}
         </section>
 
         <aside className={styles.inspector}>
@@ -704,15 +727,15 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
             <label>备注<textarea value={selected.data.graphNode.config.notes} onChange={(event) => updateSelected({}, { notes: event.target.value })} /></label>
             {selectedNodeRun ? <section className={styles.nodeRuntime}><strong>{statusLabel[selectedNodeRun.status] ?? selectedNodeRun.status}</strong><span>{selectedNodeRun.started_at && selectedNodeRun.finished_at ? `耗时 ${((new Date(selectedNodeRun.finished_at).getTime() - new Date(selectedNodeRun.started_at).getTime()) / 1000).toFixed(1)} 秒` : "尚未产生完整耗时"}</span><pre>{JSON.stringify(selectedNodeRun.output_refs, null, 2)}</pre>{selectedNodeRun.error_message ? <em>{selectedNodeRun.error_code ? `${selectedNodeRun.error_code} · ` : ""}{selectedNodeRun.error_message}</em> : null}</section> : null}
           </div> : <div className={styles.noSelection}><GitBranch size={28} /><strong>从这里开始</strong><ol><li>选择节点查看配置</li><li>拖动端口建立连线</li><li>校验草稿并修复问题</li><li>发布不可变版本</li><li>选择范围后运行</li></ol></div>}
-          <section className={styles.versionList}><header><span>发布版本</span><strong>{versions.data?.length ?? 0}</strong></header>{versions.data?.slice(0, 4).map((version) => <button key={version.id} onClick={async () => { const restored = await api.restoreWorkflowVersion(version.id, workflowRef.current!.version); workflowRef.current = restored; initializedId.current = null; await workflows.refetch(); }}><RotateCcw size={12} />V{version.revision}<small>{new Date(version.published_at).toLocaleString("zh-CN")}</small></button>)}</section>
+          <section className={styles.versionList}><header><span>发布版本</span><strong>{versions.data?.length ?? 0}</strong></header>{versions.data?.slice(0, 4).map((version) => <button key={version.id} disabled={restoreVersion.isPending} onClick={() => { if (window.confirm(`用发布版本 V${version.revision} 覆盖当前草稿？未保存的草稿修改会丢失。`)) restoreVersion.mutate({ versionId: version.id, revision: version.revision }); }}><RotateCcw size={12} />V{version.revision}<small>{new Date(version.published_at).toLocaleString("zh-CN")}</small></button>)}</section>
         </aside>
       </section>
 
       <footer className={styles.runner}>
         <div className={styles.runScope}><span>运行范围</span><select aria-label="运行范围类型" value={scopeType} onChange={(event) => { const next = event.target.value as "CHAPTER" | "PAGE"; setScopeType(next); setScopeId(next === "CHAPTER" ? chapters.data?.[0]?.id ?? "" : pages.data?.[0]?.id ?? ""); }}><option value="CHAPTER">章节</option><option value="PAGE">页面</option></select><select aria-label="运行目标" value={effectiveScopeId} onChange={(event) => setScopeId(event.target.value)}>{scopeType === "CHAPTER" ? chapters.data?.map((chapter) => <option value={chapter.id} key={chapter.id}>{chapter.title}</option>) : pages.data?.map((page) => <option value={page.id} key={page.id}>第 {page.page_number} 页</option>)}</select></div>
         <div className={styles.runState}><i className={displayedRun?.status === "RUNNING" ? styles.running : ""} /><span>{displayedRun ? `运行 ${statusLabel[displayedRun.status] ?? displayedRun.status} · ${displayedRun.node_runs.filter((item) => item.status === "COMPLETED").length}/${displayedRun.node_runs.length}` : "尚未运行已发布版本"}</span></div>
-        <div className={styles.runActions}><button disabled={!selectedId || startRun.isPending} onClick={() => startRun.mutate("NODE")}><Play size={13} />运行节点</button><button disabled={!selectedId || startRun.isPending} onClick={() => startRun.mutate("FROM")}><Play size={13} />从这里运行</button>{displayedRun?.status === "RUNNING" ? <button onClick={async () => { const run = await api.cancelWorkflowRun(displayedRun.id); setCurrentRun(run); }}><Pause size={13} />取消</button> : null}<button className={styles.runPrimary} disabled={startRun.isPending} onClick={() => startRun.mutate("FULL")}><Play size={14} />运行工作流</button></div>
-        {displayedRun?.node_runs.filter((run) => run.status === "WAITING_APPROVAL").map((run) => <div className={styles.approval} key={run.id}><strong>{run.node_type === "generator.page" ? "单页生成等待选择模型" : "采用候选后继续"}</strong>{run.node_type === "generator.page" ? <><select value={drawModel} onChange={(event) => setDrawModel(event.target.value as ImageModelAlias | "")}><option value="">选择图片模型</option>{imageModels.map((model) => <option key={model.catalog_id} value={model.logical_alias}>{model.provider} · {model.display_name}</option>)}</select><select value={drawResolution} onChange={(event) => setDrawResolution(event.target.value as Resolution)}><option>1K</option><option>2K</option><option>4K</option></select></> : <Link href={`/projects/${projectId}/generate`}>前往采用</Link>}<button disabled={approveNode.isPending || (run.node_type === "generator.page" && !drawModel)} onClick={() => approveNode.mutate(run)}>确认继续</button></div>)}
+        <div className={styles.runActions}><button disabled={!selectedId || startRun.isPending} onClick={() => startRun.mutate("NODE")}><Play size={13} />运行节点</button><button disabled={!selectedId || startRun.isPending} onClick={() => startRun.mutate("FROM")}><Play size={13} />从这里运行</button>{displayedRun?.status === "RUNNING" ? <button disabled={cancelRun.isPending} onClick={() => cancelRun.mutate(displayedRun.id)}><Pause size={13} />取消</button> : null}<button className={styles.runPrimary} disabled={startRun.isPending} onClick={() => startRun.mutate("FULL")}><Play size={14} />运行工作流</button></div>
+        {displayedRun?.node_runs.filter((run) => run.status === "WAITING_APPROVAL").map((run) => <div className={styles.approval} key={run.id}><strong>{run.node_type === "generator.page" ? "单页生成等待选择模型" : "采用候选后继续"}</strong>{run.node_type === "generator.page" ? <><select aria-label="选择图片模型" value={drawModel} onChange={(event) => setDrawModel(event.target.value as ImageModelAlias | "")}><option value="">选择图片模型</option>{imageModels.map((model) => <option key={model.catalog_id} value={model.logical_alias}>{model.provider} · {model.display_name}</option>)}</select><select aria-label="选择图片清晰度" value={drawResolution} onChange={(event) => setDrawResolution(event.target.value as Resolution)}><option>1K</option><option>2K</option><option>4K</option></select></> : <Link href={`/projects/${projectId}/generate`}>前往采用</Link>}<button disabled={approveNode.isPending || (run.node_type === "generator.page" && !drawModel)} onClick={() => approveNode.mutate(run)}>确认继续</button></div>)}
       </footer>
     </main>
   );

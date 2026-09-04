@@ -97,7 +97,8 @@ export default function ProjectSettingsPage() {
       </header>
       <main className="project-settings-page">
         <header className="project-settings-hero"><span>PROJECT SETTINGS / 08</span><h1>控制每一次生成，<br />不是控制你的故事。</h1><p>这里仅保存当前项目的制作策略。图片模型仍在每个候选生成前单独选择，不设置主次。</p></header>
-        {draft ? <div className="project-settings-grid">
+        {project.isError ? <div className="error-panel"><CircleAlert /><div><strong>项目设置读取失败</strong><p>{project.error instanceof Error ? project.error.message : "请稍后重试"}</p><p><button className="button outline compact" onClick={() => project.refetch()}>重试</button></p></div></div>
+        : draft ? <div className="project-settings-grid">
           <section className="project-setting-section">
             <header><SlidersHorizontal size={18} /><div><span>WORKFLOW MODE</span><h2>工作方式</h2></div></header>
             <div className="project-choice-grid">{([

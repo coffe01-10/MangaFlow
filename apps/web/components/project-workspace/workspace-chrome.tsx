@@ -53,10 +53,7 @@ export function WorkspaceSidebar({
   navCollapsed,
   setNavOpen,
   projectName,
-  chapterCount,
-  needsChapters,
-  pageCount,
-  needsPages,
+  summary,
   section,
   projectPath,
   rememberWorkspaceScroll,
@@ -66,10 +63,7 @@ export function WorkspaceSidebar({
   navCollapsed: boolean;
   setNavOpen: (open: boolean) => void;
   projectName: string;
-  chapterCount: number;
-  needsChapters: boolean;
-  pageCount: number;
-  needsPages: boolean;
+  summary: string;
   section: WorkspaceSection;
   projectPath: (target: string) => string;
   rememberWorkspaceScroll: () => void;
@@ -80,7 +74,7 @@ export function WorkspaceSidebar({
       <button className={navOpen ? "workspace-nav-backdrop show" : "workspace-nav-backdrop"} onClick={() => setNavOpen(false)} aria-label="关闭项目导航" />
       <aside className={["workspace-left", navOpen ? "open" : "", navCollapsed ? "rail" : ""].filter(Boolean).join(" ")}>
         <button type="button" className="workspace-resizer" aria-label="拖动调整项目侧边栏宽度" onPointerDown={onSidebarResize} />
-        <div className="workspace-project-title"><span>PROJECT / 01</span><h1>{projectName}</h1><p>{needsChapters ? `${chapterCount} 章` : "漫画生产工作区"}{needsPages ? ` · ${pageCount} 页已规划` : ""}</p></div>
+        <div className="workspace-project-title"><span>PROJECT / 01</span><h1>{projectName}</h1><p>{summary}</p></div>
         <nav className="workspace-steps">
           {navigationItems.map(([target, label, , index, Icon]) => <Link scroll={false} key={target} href={projectPath(target)} className={section === target ? "active" : ""} aria-current={section === target ? "page" : undefined} onClick={rememberWorkspaceScroll}><Icon size={17} /><span>{label}</span><i>{index}</i></Link>)}
           <span className="workspace-nav-divider" />

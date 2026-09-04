@@ -7,7 +7,6 @@ import { api, type Job } from "@/lib/api";
 import { activePollInterval, isActiveTaskStatus } from "@/lib/task-status";
 
 import { queueStatsOf } from "./display";
-import type { WorkspaceSection } from "./types";
 
 function usePerJobMutation(
   mutationFn: (jobId: string) => Promise<Job>,
@@ -40,22 +39,18 @@ function usePerJobMutation(
  * active-task polling, and every job lifecycle mutation (cancel, retry,
  * archive, restore, bulk archive, delete).
  */
-export function useJobsWorkspace({
-  id,
-  section,
-}: {
-  id: string;
-  section: WorkspaceSection;
-}) {
+export function useJobsWorkspace({ id }: { id: string }) {
   const queryClient = useQueryClient();
   const [showArchivedJobs, setShowArchivedJobs] = useState(false);
   const [jobNotice, setJobNotice] = useState("");
   const [selectedJobIds, setSelectedJobIds] = useState<string[]>([]);
 
+  // The queue dock renders on every section, so the query must stay live
+  // everywhere: gating it froze the dock's status light and latest-job copy
+  // on source/script/storyboard/library.
   const jobs = useQuery({
     queryKey: ["jobs", id, showArchivedJobs],
     queryFn: () => api.jobs(id, showArchivedJobs),
-    enabled: ["assets", "jobs", "generate"].includes(section),
     refetchInterval: (query) => activePollInterval(query.state.data, 3000),
   });
 
@@ -70,8 +65,11 @@ export function useJobsWorkspace({
   const retryJob = retryAction.mutation;
   const archiveJob = useMutation({
     mutationFn: (jobId: string) => api.archiveJob(jobId),
-    onSuccess: () => {
+    onSuccess: (_result, jobId) => {
       setJobNotice("任务已移入历史记录");
+      // Keep the bulk-archive count honest when a selected row is archived
+      // individually.
+      setSelectedJobIds((ids) => ids.filter((id) => id !== jobId));
       queryClient.invalidateQueries({ queryKey: ["jobs", id] });
     },
     onError: (reason) => setJobNotice(reason instanceof Error ? reason.message : "归档失败"),
