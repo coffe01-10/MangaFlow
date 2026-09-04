@@ -189,6 +189,9 @@ export function SceneWorkspace({
   const [includeDeleted, setIncludeDeleted] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
+  // 模态内的表单错误必须渲染在 backdrop 之上：写入 notice 会被全屏遮罩盖住，
+  // 保存失败对用户完全不可见。
+  const [formError, setFormError] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
   const [showVariant, setShowVariant] = useState(false);
@@ -256,9 +259,10 @@ export function SceneWorkspace({
       setShowCreate(false);
       setSelectedId(asset.id);
       setNotice("");
+      setFormError("");
       refreshLists();
     },
-    onError: (error) => setNotice(conflictMessage(error, "创建场景资产失败")),
+    onError: (error) => setFormError(conflictMessage(error, "创建场景资产失败")),
   });
 
   const updateAsset = useMutation({
@@ -277,7 +281,7 @@ export function SceneWorkspace({
       setNotice("");
       refreshLists();
     },
-    onError: (error) => setNotice(conflictMessage(error, "保存场景资产失败")),
+    onError: (error) => setFormError(conflictMessage(error, "保存场景资产失败")),
   });
 
   const setStatus = useMutation({
@@ -344,9 +348,10 @@ export function SceneWorkspace({
       setShowVariant(false);
       setEditingVariantId(null);
       setNotice("");
+      setFormError("");
       refreshLists();
     },
-    onError: (error) => setNotice(conflictMessage(error, "保存环境变体失败")),
+    onError: (error) => setFormError(conflictMessage(error, "保存环境变体失败")),
   });
 
   const removeVariant = useMutation({
@@ -443,11 +448,13 @@ export function SceneWorkspace({
   });
 
   function openCreate() {
+    setFormError("");
     setDraft({ name: "", description: "", location_hint: "", structured: emptyStructured() });
     setShowCreate(true);
   }
 
   function openEdit() {
+    setFormError("");
     if (!selected) return;
     setDraft({
       name: selected.name,
@@ -472,6 +479,7 @@ export function SceneWorkspace({
       palette_mood: palette.mood ?? "",
       is_canonical: variant?.is_canonical ?? false,
     });
+    setFormError("");
     setShowVariant(true);
   }
 
@@ -790,8 +798,9 @@ export function SceneWorkspace({
               <textarea aria-label="场景描述" rows={3} value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} />
             </label>
             <StructuredFields value={draft.structured} onChange={(structured) => setDraft({ ...draft, structured })} />
+            {formError && <p className="form-error" role="alert"><CircleAlert size={14} />{formError}</p>}
             <div className="provider-dialog-actions">
-              <button type="button" onClick={() => { setShowCreate(false); setShowEdit(false); }}>取消</button>
+              <button type="button" onClick={() => { setShowCreate(false); setShowEdit(false); setFormError(""); }}>取消</button>
               <button type="submit" className="button ink compact" disabled={!draft.name.trim() || createAsset.isPending || updateAsset.isPending}>
                 {(createAsset.isPending || updateAsset.isPending) ? <LoaderCircle className="spin" size={13} /> : null}
                 保存
@@ -849,8 +858,9 @@ export function SceneWorkspace({
               <input type="checkbox" checked={variantDraft.is_canonical} onChange={(event) => setVariantDraft({ ...variantDraft, is_canonical: event.target.checked })} />
               设为默认变体
             </label>
+            {formError && <p className="form-error" role="alert"><CircleAlert size={14} />{formError}</p>}
             <div className="provider-dialog-actions">
-              <button type="button" onClick={() => { setShowVariant(false); setEditingVariantId(null); }}>取消</button>
+              <button type="button" onClick={() => { setShowVariant(false); setEditingVariantId(null); setFormError(""); }}>取消</button>
               <button type="submit" className="button ink compact" disabled={!variantDraft.name.trim() || saveVariant.isPending}>保存变体</button>
             </div>
           </form>

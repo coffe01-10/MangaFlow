@@ -22,6 +22,8 @@ export function SourceSection({
     sourceTitle,
     setSourceTitle,
     sourceText,
+    revisionLoadError,
+    revisionLoading,
     setSourceText,
     editingChapterId,
     setEditingChapterId,
@@ -41,7 +43,8 @@ export function SourceSection({
       <header className="canvas-header"><div><span>SOURCE / 原作</span><h2>完整导入，不压缩故事</h2></div><small>{chapters.data?.length ?? 0} 个章节</small></header>
       <div className="source-compose">
         <input className="text-input" value={sourceTitle} onChange={(event) => setSourceTitle(event.target.value)} placeholder="章节标题" />
-        <textarea value={sourceText} onChange={(event) => setSourceText(event.target.value)} placeholder="粘贴完整章节。系统先无损分段，再根据文字和剧本长度动态计算页数。" />
+        <textarea value={sourceText} onChange={(event) => setSourceText(event.target.value)} disabled={revisionLoading} placeholder={revisionLoading ? "正在载入章节原文，请稍候…" : "粘贴完整章节。系统先无损分段，再根据文字和剧本长度动态计算页数。"} />
+        {revisionLoadError && <p className="form-error" role="alert">原文修订加载失败：{revisionLoadError}</p>}
         <div><span>{editingChapterId ? "保存后生成新修订，旧版本仍保留" : "不会限制总页数 · 单页硬上限 180 个中文字符"}</span><span className="compose-actions">{!editingChapterId && <label className={importSourceFile.isPending ? "button outline compact source-file-button pending" : "button outline compact source-file-button"}><input type="file" accept=".txt,.md,.markdown,text/plain,text/markdown" onChange={chooseSourceFile} disabled={importSourceFile.isPending} />{importSourceFile.isPending ? <LoaderCircle className="spin" size={15} /> : <FileImage size={15} />}{importSourceFile.isPending ? "正在导入…" : "选择 TXT / MD"}</label>}{editingChapterId && <button className="button ghost compact" onClick={() => { setEditingChapterId(null); setSourceText(""); }}>取消修改</button>}<button className="button ink" disabled={!sourceText.trim() || importSource.isPending} onClick={() => importSource.mutate()}>{importSource.isPending ? <LoaderCircle className="spin" size={16} /> : editingChapterId ? <Save size={16} /> : <Upload size={16} />}{editingChapterId ? "保存新修订" : "导入粘贴原文"}</button></span></div>
         {importSource.isError && <p className="form-error"><CircleAlert size={14} />{importSource.error.message}</p>}
         {importSourceFile.isError && <p className="form-error"><CircleAlert size={14} />{importSourceFile.error.message}</p>}

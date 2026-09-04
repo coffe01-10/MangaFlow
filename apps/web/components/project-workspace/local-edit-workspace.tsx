@@ -429,7 +429,9 @@ export function LocalEditWorkspace({
             ? "任务已取消：mask 已保留，可调整后重新生成。"
             : capabilityBlocked
               ? "能力不足：当前不能按选区重绘。"
-              : "空闲";
+              : acceptedCommandId
+                ? "正在等待派生候选出现（任务排队或执行中）…"
+                : "空闲";
 
   const draftPreviewRegions: MaskRegion[] = [];
   if (draftRect) {
@@ -570,6 +572,12 @@ export function LocalEditWorkspace({
           </div>
 
           {notice && <p className="form-error" role="alert"><CircleAlert size={14} />{notice}</p>}
+          {derivedQuery.isError && acceptedCommandId && (
+            <p className="form-error" role="alert">
+              <CircleAlert size={14} />
+              派生候选状态跟踪失败：{derivedQuery.error instanceof Error ? derivedQuery.error.message : "网络异常"}
+            </p>
+          )}
           {(propose.error || accept.error || cancelJob.error) && (
             <p className="form-error" role="alert">
               <CircleAlert size={14} />
