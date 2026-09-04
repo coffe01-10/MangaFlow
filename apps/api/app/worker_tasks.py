@@ -226,6 +226,23 @@ def _claim_job(db, job_id: str, owner: str) -> GenerationJob | None:
     return db.get(GenerationJob, job_id)
 
 
+def _resolve_workflow_run_id(db, job: GenerationJob) -> str | None:
+    """workflow_run_id from request_parameters, falling back to the node link.
+
+    Adopted PAGE_INSPECT jobs (reconciliation binds a route-created job to a
+    workflow node) carry no workflow_run_id in request_parameters, and the
+    inspection handler rewrites request_parameters on lease; the
+    WorkflowNodeRun.job_id link is the durable run reference. Without it the
+    adopted job's completion or retry never revives its run.
+    """
+
+    node_run = db.scalar(select(WorkflowNodeRun).where(WorkflowNodeRun.job_id == job.id))
+    workflow_run_id = (job.request_parameters or {}).get("workflow_run_id")
+    if node_run:
+        workflow_run_id = workflow_run_id or node_run.workflow_run_id
+    return workflow_run_id
+
+
 def _mark_worker_failure(
     db,
     job_id: str,
@@ -391,7 +408,11 @@ def execute_job(job_id: str) -> None:
             _ensure_job_not_cancelled(db, job)
             if heartbeat.lost:
                 raise JobLeaseLostError("任务租约已被其他执行器接管")
-            workflow_run_id = job.request_parameters.get("workflow_run_id")
+            # Same resolution as the failure path: an adopted route-created
+            # inspect job has no workflow_run_id in request_parameters, so only
+            # the node link triggers reconcile_run on success; without it the
+            # completed node and run stall RUNNING forever.
+            workflow_run_id = _resolve_workflow_run_id(db, job)
             db.expire(
                 job,
                 attribute_names=[

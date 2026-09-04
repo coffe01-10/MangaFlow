@@ -720,12 +720,15 @@ def reset_for_retry(db: Session, job: GenerationJob) -> GenerationJob:
     # The claim above owns the job row, which serializes this revival against
     # concurrent cancel_run/worker claims on the same job, so the cross-table
     # writes below cannot clobber a concurrent terminal transition.
+    # Resolve the run via the node link too: an adopted route-created inspect
+    # job carries no workflow_run_id in request_parameters, and without the
+    # fallback its retry would skip the WorkflowRun/WorkflowNodeRun revival.
+    node_run = db.scalar(select(WorkflowNodeRun).where(WorkflowNodeRun.job_id == job.id))
     workflow_run_id = (job.request_parameters or {}).get("workflow_run_id")
+    if node_run:
+        workflow_run_id = workflow_run_id or node_run.workflow_run_id
     if workflow_run_id:
         run = db.get(WorkflowRun, workflow_run_id)
-        node_run = db.scalar(
-            select(WorkflowNodeRun).where(WorkflowNodeRun.job_id == job.id)
-        )
         if run and run.status == "FAILED":
             run.status = "RUNNING"
             run.finished_at = None

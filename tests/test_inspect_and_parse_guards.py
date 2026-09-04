@@ -1,12 +1,16 @@
 """Guards: inspect failure must not own the inspected candidate; re-parse must not wipe live pages."""
 
 from datetime import timedelta
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import create_engine, select, update
 from sqlalchemy.orm import sessionmaker
 
+from app import worker_tasks
 from app.config import get_settings
+from app.database import Base
 from app.domain.states import JobStatus, Resolution
 from app.model_adapters.base import ProviderAdapterError
 from app.models import (
@@ -14,6 +18,7 @@ from app.models import (
     Chapter,
     GenerationBatch,
     GenerationJob,
+    InspectionResult,
     MangaPage,
     PageCandidate,
     Project,
@@ -27,8 +32,9 @@ from app.models import (
 )
 from app.services import job_service
 from app.services.job_service import mark_job_failed
+from app.services.page_completion import REQUIRED_QUALITY_CATEGORIES
 from app.services.worker_handlers.story_parse import _run_story_parse
-from app.services.workflow_engine.reconciliation import _create_inspection_job
+from app.services.workflow_engine.reconciliation import _create_inspection_job, reconcile_run
 from app.worker_tasks import _mark_worker_failure
 from app.workflow_schemas import WorkflowGraph, WorkflowNodeDefinition
 
@@ -411,6 +417,108 @@ def test_create_inspection_job_adopts_route_created_active_inspect_job(
         )
     )
     assert list(duplicates) == [route_job.id]
+
+
+def test_executed_adopted_inspect_job_reconciles_its_workflow_run(monkeypatch):
+    """execute_job's success path must reconcile the run of an adopted
+    route-created inspect job: its request_parameters carry no workflow_run_id,
+    so the WorkflowNodeRun.job_id link is the only reference to the run.
+    Without that fallback the completed node and its run stall RUNNING forever
+    (the run-list endpoint never reconciles)."""
+    with TemporaryDirectory() as directory:
+        engine = create_engine(
+            f"sqlite:///{Path(directory) / 'adopt-success.db'}",
+            connect_args={"check_same_thread": False},
+        )
+        testing_session = sessionmaker(
+            bind=engine, autoflush=False, expire_on_commit=False
+        )
+        Base.metadata.create_all(engine)
+        with testing_session() as db:
+            project, page, candidate, _generate_job = _ready_candidate(db)
+            # Success-side page state the inspect node's completion gate needs.
+            page.selected_candidate_ack_version = page.storyboard_version
+            page.continuity_status = "PASSED"
+            graph = WorkflowGraph(
+                nodes=[
+                    WorkflowNodeDefinition(id="inspect", type="quality.inspect", name="质量检查")
+                ]
+            )
+            workflow = WorkflowDefinition(
+                project_id=project.id, name="收养成功推进", draft_graph=graph.model_dump(mode="json")
+            )
+            db.add(workflow)
+            db.flush()
+            version = WorkflowVersion(
+                workflow_id=workflow.id,
+                revision=1,
+                graph=graph.model_dump(mode="json"),
+                graph_checksum="adopt-success",
+            )
+            db.add(version)
+            db.flush()
+            run = WorkflowRun(
+                workflow_id=workflow.id,
+                workflow_version_id=version.id,
+                project_id=project.id,
+                scope_type="PAGE",
+                scope_id=page.id,
+                status="RUNNING",
+            )
+            db.add(run)
+            db.flush()
+            node_run = WorkflowNodeRun(
+                workflow_run_id=run.id,
+                node_id="inspect",
+                node_type="quality.inspect",
+                status="WAITING",
+            )
+            db.add(node_run)
+            db.flush()
+            route_job = GenerationJob(
+                project_id=project.id,
+                target_type="PAGE_CANDIDATE",
+                target_id=candidate.id,
+                job_type="PAGE_INSPECT",
+                status=JobStatus.QUEUED,
+            )
+            db.add(route_job)
+            db.flush()
+            adopted = _create_inspection_job(
+                db, run, graph, graph.nodes[0], node_run, [node_run]
+            )
+            assert adopted.id == route_job.id
+            db.commit()
+            job_id = route_job.id
+            run_id = run.id
+            node_run_id = node_run.id
+
+        def fake_inspection(db, job):
+            # Success effects of the real handler that the completion gate
+            # reads: passing results per required category, INSPECTED candidate.
+            inspected = db.get(PageCandidate, job.target_id)
+            inspected_page = db.get(MangaPage, inspected.page_id)
+            for category in REQUIRED_QUALITY_CATEGORIES:
+                db.add(
+                    InspectionResult(
+                        candidate_id=inspected.id,
+                        storyboard_version=inspected_page.storyboard_version,
+                        category=category,
+                        outcome="PASS",
+                    )
+                )
+            inspected.status = "INSPECTED"
+            db.commit()
+
+        monkeypatch.setattr(worker_tasks, "SessionLocal", testing_session)
+        monkeypatch.setattr(worker_tasks, "_run_inspection", fake_inspection)
+        worker_tasks.execute_job(job_id)
+
+        with testing_session() as db:
+            finished_run = db.get(WorkflowRun, run_id)
+            assert finished_run.status == "COMPLETED", finished_run.status
+            assert db.get(WorkflowNodeRun, node_run_id).status == "COMPLETED"
+        engine.dispose()
 
 
 def test_reset_for_retry_does_not_clobber_live_worker_claim(db_session, monkeypatch):
