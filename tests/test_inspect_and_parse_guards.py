@@ -11,7 +11,7 @@ from sqlalchemy.orm import sessionmaker
 from app import worker_tasks
 from app.config import get_settings
 from app.database import Base
-from app.domain.states import JobStatus, Resolution
+from app.domain.states import JobStatus, PageStatus, Resolution
 from app.model_adapters.base import ProviderAdapterError
 from app.models import (
     Asset,
@@ -170,6 +170,174 @@ def test_mark_job_failed_does_not_clobber_inspected_target(db_session):
     db_session.expire_all()
     assert db_session.get(GenerationJob, inspect_job.id).status == JobStatus.FAILED
     assert db_session.get(PageCandidate, candidate.id).status == "READY"
+
+
+def _adopt_candidate(page, candidate) -> None:
+    """Mirror select_candidate's post-adoption write: page parked in
+    FINAL_CHECKING until a fresh PAGE_INSPECT resolves it."""
+
+    page.selected_candidate_ack_version = page.storyboard_version
+    page.status = PageStatus.FINAL_CHECKING
+    page.continuity_status = "NOT_CHECKED"
+    page.version += 1
+
+
+def _extra_candidate(db, page, *, ordinal=2, is_selected=False, status="READY"):
+    batch = db.scalar(select(GenerationBatch).where(GenerationBatch.page_id == page.id))
+    candidate = PageCandidate(
+        batch_id=batch.id,
+        page_id=page.id,
+        ordinal=ordinal,
+        model_alias="image.nano_banana_2",
+        resolution=Resolution.DRAFT_1K,
+        status=status,
+        is_selected=is_selected,
+    )
+    db.add(candidate)
+    db.commit()
+    return candidate
+
+
+def _inspect_job(db, project, candidate) -> GenerationJob:
+    job = GenerationJob(
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=candidate.id,
+        job_type="PAGE_INSPECT",
+        status=JobStatus.CONSISTENCY_CHECKING,
+    )
+    db.add(job)
+    db.commit()
+    return job
+
+
+def test_terminal_inspect_failure_restores_final_checking_page(db_session):
+    """A terminal PAGE_INSPECT failure on the adopted candidate must converge
+    the page to NEEDS_REPAIR instead of leaving it stuck FINAL_CHECKING."""
+    project, page, candidate, _generate_job = _ready_candidate(db_session)
+    _adopt_candidate(page, candidate)
+    db_session.commit()
+    inspect_job = _inspect_job(db_session, project, candidate)
+    owner = _own_lease(db_session, inspect_job)
+    version_before = page.version
+
+    marked, _, is_final = _mark_worker_failure(
+        db_session,
+        inspect_job.id,
+        owner,
+        "WORKER_ERROR",
+        "质检执行器崩溃",
+        retryable=False,
+    )
+    assert marked is True and is_final is True
+    db_session.expire_all()
+    assert db_session.get(GenerationJob, inspect_job.id).status == JobStatus.FAILED
+    restored = db_session.get(MangaPage, page.id)
+    assert restored.status == PageStatus.NEEDS_REPAIR
+    assert restored.continuity_status == "NEEDS_REVIEW"
+    assert restored.version == version_before + 1
+    # The inspected candidate holds adopted work and must stay untouched.
+    assert db_session.get(PageCandidate, candidate.id).status == "READY"
+    assert db_session.get(PageCandidate, candidate.id).is_selected is True
+
+
+def test_cancelled_inspect_job_restores_final_checking_page(db_session):
+    """Cancelling a PAGE_INSPECT job must not leave the adopted page parked in
+    FINAL_CHECKING either (workflow cancel_run sweeps inspect jobs)."""
+    project, page, candidate, _generate_job = _ready_candidate(db_session)
+    _adopt_candidate(page, candidate)
+    db_session.commit()
+    inspect_job = _inspect_job(db_session, project, candidate)
+    version_before = page.version
+
+    job_service.mark_job_cancelled(db_session, inspect_job)
+    db_session.commit()
+    db_session.expire_all()
+    assert db_session.get(GenerationJob, inspect_job.id).status == JobStatus.CANCELLED
+    restored = db_session.get(MangaPage, page.id)
+    assert restored.status == PageStatus.NEEDS_REPAIR
+    assert restored.continuity_status == "NEEDS_REVIEW"
+    assert restored.version == version_before + 1
+    assert db_session.get(PageCandidate, candidate.id).status == "READY"
+
+
+def test_terminal_inspect_failure_ignores_non_selected_candidate(db_session):
+    """A terminal inspect failure on a non-adopted candidate must not touch the
+    page: the FINAL_CHECKING gate belongs to the selected candidate's run."""
+    project, page, selected, _generate_job = _ready_candidate(db_session)
+    other = _extra_candidate(db_session, page)
+    _adopt_candidate(page, selected)
+    db_session.commit()
+    inspect_job = _inspect_job(db_session, project, other)
+    owner = _own_lease(db_session, inspect_job)
+
+    marked, _, _ = _mark_worker_failure(
+        db_session,
+        inspect_job.id,
+        owner,
+        "WORKER_ERROR",
+        "质检执行器崩溃",
+        retryable=False,
+    )
+    assert marked is True
+    db_session.expire_all()
+    restored = db_session.get(MangaPage, page.id)
+    assert restored.status == PageStatus.FINAL_CHECKING
+    assert restored.continuity_status == "NOT_CHECKED"
+    assert db_session.get(PageCandidate, other.id).status == "READY"
+
+
+def test_terminal_inspect_failure_does_not_downgrade_final_ready_page(db_session):
+    """A failed re-inspection must not downgrade a page whose gate already
+    completed (FINAL_READY from a prior passing inspection)."""
+    project, page, candidate, _generate_job = _ready_candidate(db_session)
+    page.selected_candidate_ack_version = page.storyboard_version
+    page.status = PageStatus.FINAL_READY
+    page.continuity_status = "PASSED"
+    page.version += 1
+    db_session.commit()
+    inspect_job = _inspect_job(db_session, project, candidate)
+    owner = _own_lease(db_session, inspect_job)
+
+    marked, _, _ = _mark_worker_failure(
+        db_session,
+        inspect_job.id,
+        owner,
+        "WORKER_ERROR",
+        "质检执行器崩溃",
+        retryable=False,
+    )
+    assert marked is True
+    db_session.expire_all()
+    restored = db_session.get(MangaPage, page.id)
+    assert restored.status == PageStatus.FINAL_READY
+    assert restored.continuity_status == "PASSED"
+
+
+def test_terminal_inspect_failure_on_non_selected_non_checking_page_is_noop(db_session):
+    """Non-selected candidate plus a page outside FINAL_CHECKING: the exit
+    restore must be a complete no-op on both status and continuity."""
+    project, page, selected, _generate_job = _ready_candidate(db_session)
+    other = _extra_candidate(db_session, page)
+    page.status = PageStatus.DRAFT_READY
+    page.continuity_status = "NOT_CHECKED"
+    db_session.commit()
+    inspect_job = _inspect_job(db_session, project, other)
+    owner = _own_lease(db_session, inspect_job)
+
+    marked, _, _ = _mark_worker_failure(
+        db_session,
+        inspect_job.id,
+        owner,
+        "WORKER_ERROR",
+        "质检执行器崩溃",
+        retryable=False,
+    )
+    assert marked is True
+    db_session.expire_all()
+    restored = db_session.get(MangaPage, page.id)
+    assert restored.status == PageStatus.DRAFT_READY
+    assert restored.continuity_status == "NOT_CHECKED"
 
 
 def test_create_job_retries_after_failed_inspect_idempotency(db_session):

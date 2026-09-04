@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.domain.states import JobStatus
+from app.domain.states import JobStatus, PageStatus
 from app.models import (
     AssetCandidate,
     GenerationJob,
@@ -379,6 +379,31 @@ def restore_page_after_generation_exit(db: Session, page_candidate: PageCandidat
     page.status = "DRAFT_READY" if page.selected_candidate_id or other_ready else "STORYBOARDED"
 
 
+def restore_page_after_inspection_exit(db: Session, candidate: PageCandidate) -> None:
+    """Return a page from FINAL_CHECKING to NEEDS_REPAIR once the inspection of
+    its adopted candidate reached a terminal failure/cancel.
+
+    A PAGE_INSPECT job owns no PageCandidate row (``candidate.job_id`` is only
+    set for generation-type jobs), so ``restore_page_after_generation_exit``
+    never matches it and the page used to show "checking" forever, blocking
+    production readiness. Writes the same fields the inspection success path
+    writes for failing results (NEEDS_REPAIR + continuity NEEDS_REVIEW), a
+    terminal state the UI and readiness checks already render; the candidate
+    row itself is never touched here because it may hold adopted work.
+    """
+
+    if not candidate.is_selected:
+        return
+    page = db.get(MangaPage, candidate.page_id)
+    if page is None or page.selected_candidate_id != candidate.id:
+        return
+    if str(getattr(page.status, "value", page.status)) != "FINAL_CHECKING":
+        return
+    page.continuity_status = "NEEDS_REVIEW"
+    page.status = PageStatus.NEEDS_REPAIR
+    page.version += 1
+
+
 def start_periodic_recovery() -> tuple[Thread, Event]:
     """Reclaim expired leases and re-enqueue waiting jobs while the API runs.
 
@@ -656,6 +681,16 @@ def mark_job_cancelled(db: Session, job: GenerationJob) -> GenerationJob:
         if style and style.status.value == "ANALYZING":
             style.status = "DRAFT"
             style.version += 1
+
+    if job.job_type == "PAGE_INSPECT":
+        # The candidate/asset lookups above match nothing: an inspect job owns
+        # no PageCandidate row (job_id is only set for generation-type jobs)
+        # and its target_id names an existing candidate that must NOT be
+        # stamped CANCELLED — it may hold adopted work. Only the page state is
+        # restored, so a swept inspect job cannot leave the page FINAL_CHECKING.
+        inspected = db.get(PageCandidate, job.target_id)
+        if inspected:
+            restore_page_after_inspection_exit(db, inspected)
 
     node_run = db.scalar(select(WorkflowNodeRun).where(WorkflowNodeRun.job_id == job.id))
     if node_run and node_run.status not in {"COMPLETED", "FAILED", "CANCELLED"}:
