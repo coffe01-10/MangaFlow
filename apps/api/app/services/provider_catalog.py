@@ -737,7 +737,10 @@ def _fetch_model_entries(
         if connection.protocol == "GOOGLE_NATIVE":
             from google import genai
 
-            google_client = genai.Client(api_key=secret)
+            google_client = genai.Client(
+                api_key=secret,
+                http_options={"timeout": 90_000},
+            )
             try:
                 entries = _collect_google_model_entries(
                     google_client.models.list(), settings
