@@ -1,6 +1,6 @@
 import Image from "next/image";
 import { Check, CircleAlert, LoaderCircle, Maximize2, Pencil, Sparkles, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import { originUrl, publicUrl, type Asset, type ImageModelAlias, type StyleProfile } from "@/lib/api";
 
@@ -47,15 +47,11 @@ export function AssetNameEditor({ asset, pending, error, onSave }: { asset: Asse
 
   // The form stays open until the rename settles: closing it immediately made
   // a failed rename look like a successful save (the name later "reverted").
-  useEffect(() => {
-    if (!submitted || pending) return;
-    if (error) {
-      setSubmitted(false);
-      return;
-    }
-    setEditing(false);
+  // Settling during render (guarded by `submitted`) converges in one pass.
+  if (submitted && !pending) {
     setSubmitted(false);
-  }, [submitted, pending, error]);
+    if (!error) setEditing(false);
+  }
 
   if (editing) {
     return <form className="asset-name-edit" onSubmit={(event) => {

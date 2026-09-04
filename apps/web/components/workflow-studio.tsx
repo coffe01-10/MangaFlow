@@ -514,7 +514,7 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
   const restoreVersion = useMutation({
     // Restoring overwrites the current draft graph with a published version;
     // it is destructive enough to confirm, and failures must surface.
-    mutationFn: ({ versionId, revision }: { versionId: string; revision: number }) => {
+    mutationFn: (versionId: string) => {
       const current = workflowRef.current;
       if (!current) throw new Error("当前工作流尚未加载，无法恢复版本");
       return api.restoreWorkflowVersion(versionId, current.version);
@@ -727,7 +727,7 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
             <label>备注<textarea value={selected.data.graphNode.config.notes} onChange={(event) => updateSelected({}, { notes: event.target.value })} /></label>
             {selectedNodeRun ? <section className={styles.nodeRuntime}><strong>{statusLabel[selectedNodeRun.status] ?? selectedNodeRun.status}</strong><span>{selectedNodeRun.started_at && selectedNodeRun.finished_at ? `耗时 ${((new Date(selectedNodeRun.finished_at).getTime() - new Date(selectedNodeRun.started_at).getTime()) / 1000).toFixed(1)} 秒` : "尚未产生完整耗时"}</span><pre>{JSON.stringify(selectedNodeRun.output_refs, null, 2)}</pre>{selectedNodeRun.error_message ? <em>{selectedNodeRun.error_code ? `${selectedNodeRun.error_code} · ` : ""}{selectedNodeRun.error_message}</em> : null}</section> : null}
           </div> : <div className={styles.noSelection}><GitBranch size={28} /><strong>从这里开始</strong><ol><li>选择节点查看配置</li><li>拖动端口建立连线</li><li>校验草稿并修复问题</li><li>发布不可变版本</li><li>选择范围后运行</li></ol></div>}
-          <section className={styles.versionList}><header><span>发布版本</span><strong>{versions.data?.length ?? 0}</strong></header>{versions.data?.slice(0, 4).map((version) => <button key={version.id} disabled={restoreVersion.isPending} onClick={() => { if (window.confirm(`用发布版本 V${version.revision} 覆盖当前草稿？未保存的草稿修改会丢失。`)) restoreVersion.mutate({ versionId: version.id, revision: version.revision }); }}><RotateCcw size={12} />V{version.revision}<small>{new Date(version.published_at).toLocaleString("zh-CN")}</small></button>)}</section>
+          <section className={styles.versionList}><header><span>发布版本</span><strong>{versions.data?.length ?? 0}</strong></header>{versions.data?.slice(0, 4).map((version) => <button key={version.id} disabled={restoreVersion.isPending} onClick={() => { if (window.confirm(`用发布版本 V${version.revision} 覆盖当前草稿？未保存的草稿修改会丢失。`)) restoreVersion.mutate(version.id); }}><RotateCcw size={12} />V{version.revision}<small>{new Date(version.published_at).toLocaleString("zh-CN")}</small></button>)}</section>
         </aside>
       </section>
 
