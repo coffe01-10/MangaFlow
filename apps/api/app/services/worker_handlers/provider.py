@@ -253,6 +253,13 @@ def _invoke_provider(db, binding: AdapterBinding, callback):
                     and replacement.selected_key
                     and replacement.selected_key.row.id != binding.selected_key.row.id
                 ):
+                    # A cancellation that lands while the primary call is in
+                    # flight must not buy a second paid dispatch on the
+                    # replacement key.
+                    if job_id:
+                        current = db.get(GenerationJob, job_id)
+                        if current is not None:
+                            _ensure_job_not_cancelled(db, current)
                     replacement_meta = _replacement_meta(db, binding, replacement)
                     replacement_id = _begin_or_fail(replacement_meta)
                     try:
