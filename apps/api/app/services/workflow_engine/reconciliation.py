@@ -15,7 +15,7 @@ from app.models import (
     WorkflowRun,
     utcnow,
 )
-from app.services.job_service import ACTIVE_JOB_STATUSES
+from app.services.job_service import ACTIVE_JOB_STATUSES, mark_job_cancelled
 from app.services.page_completion import build_page_production_readiness
 from app.services.workflow_engine.catalog import NODE_TYPE_MAP
 from app.services.workflow_engine.scope import (
@@ -153,6 +153,50 @@ def _create_inspection_job(
         "asset_id": candidate.asset_id,
     }
     return job
+
+
+def _sweep_stranded_children(db: Session, run: WorkflowRun) -> None:
+    """Terminalize the run's remaining non-terminal children after a FAILED claim.
+
+    Mirrors cancel_run's sweep: a run claimed terminal-FAILED used to leave
+    downstream WAITING node_runs and their dependency-blocked jobs alive
+    forever (they keep ACTIVE_JOB_STATUSES, so project-scoped guards such as
+    the script delete 409 never clear, and jobless child nodes strand
+    WAITING). Strictly scoped to this run: node_run linkage plus the
+    request_parameters workflow_run_id match for late jobs. Must run inside
+    the claim's transaction so a lost claim rolls the sweep back with it.
+    """
+    node_runs = list(
+        db.scalars(select(WorkflowNodeRun).where(WorkflowNodeRun.workflow_run_id == run.id))
+    )
+    for item in node_runs:
+        if item.status not in {"COMPLETED", "FAILED", "CANCELLED"}:
+            item.status = "CANCELLED"
+            item.finished_at = utcnow()
+        job = db.get(GenerationJob, item.job_id) if item.job_id else None
+        # Unlike cancel_run (which retires even FAILED jobs because the whole
+        # run is cancelled), keep terminal FAILED jobs: this run failed
+        # because of them and the jobs list must keep showing the cause.
+        terminal = {JobStatus.COMPLETED, JobStatus.CANCELLED, JobStatus.FAILED}
+        if job and job.status not in terminal:
+            mark_job_cancelled(db, job)
+    # Inspect jobs are created lazily in reconcile and may not be on node_run
+    # yet; sweep them the same way cancel_run does (project-scoped query,
+    # filtered to this run's workflow_run_id parameter).
+    late_jobs = list(
+        db.scalars(
+            select(GenerationJob).where(
+                GenerationJob.project_id == run.project_id,
+                GenerationJob.status.not_in(
+                    {JobStatus.COMPLETED, JobStatus.CANCELLED, JobStatus.FAILED}
+                ),
+            )
+        )
+    )
+    for job in late_jobs:
+        params = job.request_parameters or {}
+        if params.get("workflow_run_id") == run.id:
+            mark_job_cancelled(db, job)
 
 
 def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
@@ -304,6 +348,13 @@ def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
     if claimed.rowcount != 1:
         db.rollback()
         return get_run(db, run.id)
+    if final_status == "FAILED":
+        # The claim owns the row, so sweep the stranded children in the same
+        # transaction: run transition and sweep commit atomically, and any
+        # sweep failure rolls the FAILED claim back for a later reconcile to
+        # redo cleanly (cancel_run sweeps its own CANCELLED claim the same
+        # way before committing).
+        _sweep_stranded_children(db, run)
     db.commit()
     # synchronize_session=False leaves the identity-map row stale; refresh so
     # get_run (same session) returns the claimed state, not the pre-write one.
