@@ -86,7 +86,7 @@
 .inspectorForm input, .inspectorForm select, .inspectorForm textarea { width: 100%; min-height: 32px; padding: 7px 8px; border: 1px solid var(--flow-line); outline: 0; background: #191d1a; color: #e4e2db; font-size: 8px; }
 .inspectorForm textarea { min-height: 72px; resize: vertical; }
 .inspectorForm input:disabled { color: #a4ada7; }
-.noSelection { min-height: 240px; display: grid; place-content: center; justify-items: center; gap: 8px; padding: 28px; color: #69716c; text-align: center; }
+.noSelection { min-height: 240px; display: grid; place-content: center; justify-items: center; gap: 8px; padding: 28px; color: #9aa39d; text-align: center; }
 .noSelection strong { color: #aaaFAA; font-family: var(--serif); font-size: 12px; }
 .noSelection ol { max-width: 210px; margin: 0; padding-left: 22px; color: #9aa39d; font-size: 12px; line-height: 1.9; text-align: left; }
 .nodeRuntime { padding: 10px; display: grid; gap: 7px; border: 1px solid #455049; background: #171b18; }
@@ -119,3 +119,17 @@
 .studio :is(button, select, input, textarea, a) { min-height: 40px !important; }
 .studio button { min-width: 40px; }
 .crumb a { display: inline-flex; align-items: center; }
+
+/* The global interaction floor in globals.css forces 40px controls with
+   !important; the dark studio keeps its compact canvas chrome instead. These
+   declarations re-assert this module's own intended densities. */
+.studio .topActions button, .studio .topActions label { min-height: 34px !important; }
+.studio .canvasToolbar button { min-height: 31px !important; }
+.studio .notice { min-height: 34px !important; }
+.studio .workflowSelect select { min-height: 0 !important; }
+.studio .validation button { min-height: 0 !important; }
+.studio .inspectorForm input, .studio .inspectorForm select, .studio .inspectorForm textarea { min-height: 32px !important; }
+
+/* Keyboard focus stays visible on the dark surface (outline:0 above removed it). */
+.studio .workflowSelect select:focus-visible { outline: 3px solid #e7e2d7; outline-offset: 2px; }
+.studio .inspectorForm input:focus-visible, .studio .inspectorForm select:focus-visible, .studio .inspectorForm textarea:focus-visible { outline: 3px solid #e7e2d7; outline-offset: 2px; }
