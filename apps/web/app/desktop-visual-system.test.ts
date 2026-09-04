@@ -169,34 +169,39 @@ describe("U6 reduced-motion 合并为一条全局契约", () => {
     expect(blocks).toHaveLength(1);
   });
 
-  it("动画冻结到 .01ms、spinner 可停，hover 位移一并取消", () => {
+  it("动画冻结到 .01ms、spinner 可停，hover/按压/拖拽位移一并取消", () => {
     const block = mediaBlocks("(prefers-reduced-motion: reduce)")[0];
     expect(block).toContain("animation-duration: .01ms !important");
     expect(block).toContain("animation-iteration-count: 1 !important");
     expect(block).toContain("transition-duration: .01ms !important");
     expect(block).toContain("scroll-behavior: auto !important");
     expect(block).toContain("button:hover:not(:disabled)");
+    expect(block).toContain("button:active:not(:disabled)");
     expect(block).toContain("a.button:hover");
+    expect(block).toContain("a.button:active");
+    expect(block).toContain(".upload-stage.drag-active");
     expect(block).toContain("transform: none !important");
     expect(stylesheet).not.toContain("rotate(-4deg)");
   });
 
-  it("每一条带 translate 的 hover 规则都被 reduced-motion 块取消（防再犯）", () => {
+  it("每一条带 translate 的交互态（hover/active/drag-active）规则都被取消（防再犯）", () => {
     const withoutComments = stylesheet.replace(/\/\*[\s\S]*?\*\//g, "");
     const rulePattern = /([^{}]+)\{([^{}]*)\}/g;
-    const hoverTranslateSelectors = new Set<string>();
+    const interactionTranslateSelectors = new Set<string>();
     for (const match of withoutComments.matchAll(rulePattern)) {
       const selectorGroup = match[1].slice(match[1].lastIndexOf("}") + 1);
       if (!/transform:[^;]*translate/.test(match[2])) continue;
       for (const part of selectorGroup.split(",")) {
         const selector = part.trim();
-        if (selector.includes(":hover")) hoverTranslateSelectors.add(selector);
+        if (selector.includes(":hover") || selector.includes(":active") || selector.includes("drag-active")) {
+          interactionTranslateSelectors.add(selector);
+        }
       }
     }
-    expect(hoverTranslateSelectors.size).toBeGreaterThanOrEqual(20);
+    expect(interactionTranslateSelectors.size).toBeGreaterThanOrEqual(26);
     const block = mediaBlocks("(prefers-reduced-motion: reduce)")[0];
-    for (const selector of hoverTranslateSelectors) {
-      expect(block, `reduced-motion 块缺少对 hover 位移的取消：${selector}`).toContain(selector);
+    for (const selector of interactionTranslateSelectors) {
+      expect(block, `reduced-motion 块缺少对交互态位移的取消：${selector}`).toContain(selector);
     }
   });
 });

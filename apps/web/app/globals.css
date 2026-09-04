@@ -1544,10 +1544,11 @@ button, input, select, textarea { min-height: 40px; font-size: var(--text-meta);
 }
 
 /* Single reduced-motion contract (audit §8, V02-51B): one global block freezes
-   animation/transition to .01ms so spinners can stop, and cancels hover
-   translation. The transform:none override is !important and must list every
-   hover-translate source (the desktop-visual-system test enforces that), so
-   later tactile-feedback rules cannot reinstate motion. */
+   animation/transition to .01ms so spinners can stop, and cancels interaction
+   displacement — hover, press (:active) and drag-over. The transform:none
+   override is !important and must list every translate source (the
+   desktop-visual-system test enforces that across :hover/:active/drag-active),
+   so later tactile-feedback rules cannot reinstate motion. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     scroll-behavior: auto !important;
@@ -1557,7 +1558,9 @@ button, input, select, textarea { min-height: 40px; font-size: var(--text-meta);
   }
   .route-transition, .image-lightbox { animation: none; }
   button:hover:not(:disabled),
+  button:active:not(:disabled),
   a.button:hover,
+  a.button:active,
   .button:hover:not(:disabled),
   button:hover:not(:disabled) > svg,
   .project-card:hover,
@@ -1565,9 +1568,13 @@ button, input, select, textarea { min-height: 40px; font-size: var(--text-meta);
   .job-row.has-result:hover,
   .dialogue-card:hover,
   .candidate-artwork:hover .candidate-zoom,
+  .upload-stage.drag-active,
   .workspace-steps a:hover:not(.active) > svg,
   .workspace-steps a:hover:not(.active) > span,
   .workspace-steps a:hover:not(.active) > i,
+  .workspace-steps a:active:not(.active) > svg,
+  .workspace-steps a:active:not(.active) > span,
+  .workspace-steps a:active:not(.active) > i,
   .settings-page .system-status-strip > div:hover,
   .settings-page .provider-group-toggle:hover > svg,
   .settings-page .provider-card-toggle:hover .provider-card-title > strong,
