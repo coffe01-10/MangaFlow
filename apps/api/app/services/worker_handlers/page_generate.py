@@ -222,12 +222,18 @@ def _save_generated_asset(db, candidate: PageCandidate, data: bytes) -> Asset:
     page = db.get(MangaPage, candidate.page_id)
     chapter = db.get(Chapter, page.chapter_id)
     digest = hashlib.sha256(data).hexdigest()
-    existing = db.scalar(
-        select(Asset).where(
-            Asset.project_id == chapter.project_id,
-            Asset.sha256 == digest,
-        )
+    # Dedupe must only consider live AI-generated page candidates. Asset holds
+    # a hard UNIQUE(project_id, sha256), so an unfiltered match can hand a new
+    # paid candidate a soft-deleted asset (content 404s) or a byte-identical
+    # user upload / another generation kind's row.
+    live_dedupe_filters = (
+        Asset.project_id == chapter.project_id,
+        Asset.sha256 == digest,
+        Asset.deleted_at.is_(None),
+        Asset.source == "AI_GENERATED",
+        Asset.kind == "page_candidate",
     )
+    existing = db.scalar(select(Asset).where(*live_dedupe_filters))
     if existing:
         return existing
     destination = (
@@ -274,15 +280,56 @@ def _save_generated_asset(db, candidate: PageCandidate, data: bytes) -> Asset:
             asset.thumbnail_640_key = thumbnails[640]
         return asset
     except IntegrityError:
-        destination.unlink(missing_ok=True)
-        existing = db.scalar(
+        # The insert can only collide on UNIQUE(project_id, sha256): a live
+        # matching row appeared concurrently, or a soft-deleted generated page
+        # candidate holds the digest (asset deletes unlink no files). Flush so
+        # the re-queries below observe every row this transaction can see.
+        db.flush()
+        existing = db.scalar(select(Asset).where(*live_dedupe_filters))
+        if existing:
+            destination.unlink(missing_ok=True)
+            return existing
+        deleted = db.scalar(
             select(Asset).where(
                 Asset.project_id == chapter.project_id,
                 Asset.sha256 == digest,
+                Asset.source == "AI_GENERATED",
+                Asset.kind == "page_candidate",
             )
         )
-        if existing:
-            return existing
+        if deleted:
+            # Revive in place — mirroring upload_asset — because the hard
+            # UNIQUE(project_id, sha256) makes a fresh row impossible. Keep the
+            # NEW file and repoint the row at it, regenerating thumbnails; the
+            # previous file stays on disk so a later rollback cannot orphan the
+            # row (and delete already left every byte in place).
+            remove_thumbnails(settings.storage_root, deleted.id)
+            thumbnails = create_thumbnails(
+                destination,
+                settings.storage_root,
+                deleted.id,
+                max_pixels=settings.max_image_pixels,
+                max_side=settings.max_image_side,
+            )
+            deleted.original_name = (
+                f"page-{page.page_number}-candidate-{candidate.ordinal}.png"
+            )
+            deleted.storage_key = destination.relative_to(
+                settings.storage_root
+            ).as_posix()
+            deleted.thumbnail_320_key = thumbnails[320]
+            deleted.thumbnail_640_key = thumbnails[640]
+            deleted.mime_type = mime_type
+            deleted.byte_size = len(data)
+            deleted.width = width
+            deleted.height = height
+            deleted.status = "GENERATED"
+            deleted.deleted_at = None
+            deleted.version += 1
+            return deleted
+        # A non-generated or wrong-kind row owns the digest and must never be
+        # attached to a page candidate; the constraint blocks a fresh row.
+        destination.unlink(missing_ok=True)
         raise
     except Exception:
         destination.unlink(missing_ok=True)

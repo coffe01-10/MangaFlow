@@ -65,7 +65,13 @@ class FakeAcceptanceAdapter:
         self.inspection_index = 0
 
     def _response(self) -> ModelResponse:
+        # Distinct bytes per request: real providers never emit two
+        # byte-identical images for different generation kinds, and the
+        # asset dedupe path treats a same-digest collision across kinds as
+        # an error instead of attaching the wrong asset.
         self.request_index += 1
+        shade = (240 + self.request_index) % 256
+        self.generated_image = _png_bytes((245, shade, 240))
         return ModelResponse(
             model_id="fake-vertex-image",
             request_id=f"fake-request-{self.request_index}",
