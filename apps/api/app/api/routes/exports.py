@@ -59,8 +59,12 @@ def _selected_pages(db: Session, chapter: Chapter):
             detail["page_number"] = page.page_number
             raise HTTPException(status_code=409, detail=detail)
         candidate = db.get(PageCandidate, page.selected_candidate_id)
-        asset = db.get(Asset, candidate.asset_id) if candidate and candidate.asset_id else None
-        if not asset:
+        asset = (
+            db.get(Asset, candidate.asset_id)
+            if candidate and candidate.asset_id and candidate.deleted_at is None
+            else None
+        )
+        if not asset or asset.deleted_at is not None:
             raise HTTPException(status_code=409, detail=f"第 {page.page_number} 页采用素材不存在")
         result.append((page, candidate, asset))
     return result
@@ -75,8 +79,12 @@ def download_selected_page(page_id: str, db: Session = Depends(get_db)) -> FileR
     if not production.ready:
         raise HTTPException(status_code=409, detail=production_error_detail(production))
     candidate = db.get(PageCandidate, page.selected_candidate_id)
-    asset = db.get(Asset, candidate.asset_id) if candidate and candidate.asset_id else None
-    if not asset:
+    asset = (
+        db.get(Asset, candidate.asset_id)
+        if candidate and candidate.asset_id and candidate.deleted_at is None
+        else None
+    )
+    if not asset or asset.deleted_at is not None:
         raise HTTPException(status_code=409, detail="页面采用素材不存在")
     path = _asset_path(asset)
     return FileResponse(
@@ -125,9 +133,11 @@ def create_export(
     db: Session = Depends(get_db),
 ) -> ExportBundle:
     chapter = db.get(Chapter, chapter_id)
-    if not chapter:
+    if not chapter or chapter.deleted_at is not None:
         raise HTTPException(status_code=404, detail="章节不存在")
     project = db.get(Project, chapter.project_id)
+    if not project or project.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="项目不存在")
     selected = _selected_pages(db, chapter)
     settings = get_settings()
     output_dir = settings.storage_root / "exports" / project.id / chapter.id

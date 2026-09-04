@@ -36,7 +36,7 @@ router = APIRouter()
 @router.get("/chapters/{chapter_id}/pages", response_model=list[PageRead])
 def list_pages(chapter_id: str, db: Session = Depends(get_db)) -> list[MangaPage]:
     chapter = db.get(Chapter, chapter_id)
-    if not chapter:
+    if not chapter or chapter.deleted_at is not None:
         raise HTTPException(status_code=404, detail="章节不存在")
     return list(
         db.scalars(
