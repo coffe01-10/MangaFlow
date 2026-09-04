@@ -909,8 +909,27 @@ def discard_group(db: Session, project_id: str, command_group_id: str) -> dict:
         raise HTTPException(status_code=404, detail="命令组不存在")
     rows = list(db.scalars(select(DirectorCommand).where(DirectorCommand.group_id == group.id)))
     for row in rows:
-        if row.status in {CommandStatus.PREVIEWED.value, CommandStatus.PROPOSED.value}:
-            row.status = CommandStatus.DISCARDED.value
+        # Conditional claim mirrors accept_command/reject_command: only rows
+        # still PREVIEWED/PROPOSED may flip to DISCARDED. A rowcount of 0
+        # means the row was concurrently accepted/executed or rejected
+        # between our read and this claim (accept_command defends the same
+        # race from its side). Leave its real status untouched so
+        # undo_command can still revert EXECUTED rows; refresh so the journal
+        # read below reports current state. The group itself still ends up
+        # DISCARDED (existing forced-discard behavior), but executed rows stay
+        # undoable.
+        db.execute(
+            update(DirectorCommand)
+            .where(
+                DirectorCommand.id == row.id,
+                DirectorCommand.status.in_(
+                    [CommandStatus.PREVIEWED.value, CommandStatus.PROPOSED.value]
+                ),
+            )
+            .values(status=CommandStatus.DISCARDED.value)
+            .execution_options(synchronize_session=False)
+        )
+        db.refresh(row)
     group.status = CommandGroupStatus.DISCARDED.value
     _refresh_group_status(db, group)
     group.status = CommandGroupStatus.DISCARDED.value
