@@ -541,6 +541,7 @@ def _run_page_generate(db, job: GenerationJob) -> None:
         )
     )
     execution._ensure_job_not_cancelled(db, job)
+    execution._ensure_candidate_live(db, candidate)
     # An edit or select-candidate may land while the paid request is in flight.
     # Refresh status/selection before any page-row write so we cannot clobber
     # FINAL_* with a stale DRAFT_GENERATING identity map.

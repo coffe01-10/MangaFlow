@@ -308,6 +308,7 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
         )
     )
     execution._ensure_job_not_cancelled(db, job)
+    execution._ensure_candidate_live(db, candidate)
     asset = _save_asset_candidate(db, candidate, batch.project_id, response.images[0])
     record = GenerationRecord(
         job_id=job.id,

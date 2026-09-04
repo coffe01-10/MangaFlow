@@ -33,6 +33,19 @@ def _lease_is_expired(expires_at: datetime | None) -> bool:
     return expires_at <= utcnow()
 
 
+def _ensure_candidate_live(db, candidate) -> None:
+    """Refuse to write paid output onto a candidate deleted mid-flight.
+
+    ``delete_candidate`` has no lease guard, so a candidate can disappear
+    while its generation runs; without this check the finalize path would
+    mark a tombstoned row READY with the paid audit trail attached.
+    """
+
+    db.refresh(candidate, attribute_names=["deleted_at"])
+    if candidate.deleted_at is not None:
+        raise JobCancelledError("候选已被删除，模型返回结果不再写入")
+
+
 def _ensure_job_not_cancelled(db, job: GenerationJob) -> None:
     db.refresh(job, attribute_names=["status", "cancelled_at", "lease_owner", "lease_expires_at"])
     if job.status == JobStatus.CANCELLED or job.cancelled_at is not None:

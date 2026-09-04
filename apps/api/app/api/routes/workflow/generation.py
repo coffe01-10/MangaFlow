@@ -1,7 +1,7 @@
 """Generation batch, page candidate and selection routes."""
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.api.helpers import asset_candidate_read, candidate_read, candidate_version_state
@@ -16,7 +16,9 @@ from app.models import (
     Character,
     CharacterReference,
     GenerationBatch,
+    GenerationJob,
     InspectionResult,
+    JobAssetReference,
     MangaPage,
     Outfit,
     PageCandidate,
@@ -43,6 +45,8 @@ from app.services.ordinal_allocator import (
 )
 from app.services.page_completion import build_page_production_readiness, production_error_detail
 from app.services.page_readiness import ensure_page_ready
+
+_JOB_TERMINAL_STATUSES = ("COMPLETED", "FAILED", "CANCELLED", "NEEDS_REVIEW")
 
 router = APIRouter()
 
@@ -162,6 +166,37 @@ def delete_candidate(candidate_id: str, db: Session = Depends(get_db)) -> None:
         raise HTTPException(status_code=404, detail="候选不存在")
     if isinstance(candidate, PageCandidate) and candidate.is_selected:
         raise HTTPException(status_code=409, detail="当前采用版本不能删除")
+    if isinstance(candidate, AssetCandidate) and candidate.asset_id:
+        asset = db.get(Asset, candidate.asset_id)
+        if asset and asset.deleted_at is None:
+            active_job_id = db.scalar(
+                select(GenerationJob.id)
+                .join(JobAssetReference, JobAssetReference.job_id == GenerationJob.id)
+                .where(
+                    JobAssetReference.asset_id == asset.id,
+                    GenerationJob.status.notin_(_JOB_TERMINAL_STATUSES),
+                )
+                .limit(1)
+            )
+            if active_job_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail="素材正被排队或执行中的生成任务使用，请先取消任务后再修改",
+                )
+            sibling_count = db.scalar(
+                select(func.count())
+                .select_from(AssetCandidate)
+                .where(
+                    AssetCandidate.asset_id == asset.id,
+                    AssetCandidate.deleted_at.is_(None),
+                    AssetCandidate.id != candidate.id,
+                )
+            )
+            if sibling_count:
+                raise HTTPException(
+                    status_code=409,
+                    detail="其他候选正在使用同一素材，请先删除对应候选",
+                )
     deleted_at = utcnow()
     if isinstance(candidate, AssetCandidate) and candidate.asset_id:
         # Lock/cleanup first so SQLITE_BUSY can roll back this unit and retry
