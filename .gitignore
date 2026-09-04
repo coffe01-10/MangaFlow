@@ -12,6 +12,10 @@ node_modules/
 .next-dev/
 out/
 dist/
+# Desktop shell build output is tracked for its committed placeholders
+# (index.html so `cargo check` passes from a clean clone, shell-tools.html)
+# and re-governed by apps/desktop/.gitignore.
+!apps/desktop/dist/
 coverage/
 output/playwright/
 .playwright-mcp/

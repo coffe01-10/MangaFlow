@@ -1,0 +1,117 @@
+<!doctype html>
+<!--
+  MangaFlow desktop shell tools page (V02-54B).
+  Shell-owned trigger surface for desktop_export_logs / desktop_pick_file /
+  desktop_pick_directory / desktop_read_picked_file. Kept inside
+  apps/desktop/ (zero apps/web changes) and copied into dist/frontend/ by
+  scripts/build-frontend-static.sh, so the packaged shell always ships it
+  next to the exported app. Reachable inside the WebView at
+  http://tauri.localhost/shell-tools.html; requires `withGlobalTauri`.
+-->
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MangaFlow 桌面壳工具</title>
+    <style>
+      :root { color-scheme: light; }
+      body { font-family: system-ui, sans-serif; margin: 24px auto; max-width: 640px; color: #33322e; }
+      h1 { font-size: 18px; } h2 { font-size: 15px; margin-top: 28px; }
+      button { font-size: 13px; padding: 8px 14px; margin: 4px 8px 4px 0; cursor: pointer; }
+      button:disabled { opacity: 0.5; cursor: default; }
+      pre { background: #f4f1e9; padding: 10px; min-height: 24px; white-space: pre-wrap; word-break: break-all; }
+      hr { border: 0; border-top: 1px solid #ddd7cb; margin: 24px 0; }
+      .note { color: #66604f; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <h1>MangaFlow 桌面壳工具</h1>
+    <p class="note">
+      本页由桌面壳自带（不属于 Web 前端），用于触发壳级能力：运行日志导出与本地文件选择。
+      路径校验与安全边界在壳进程内完成（不跟随符号链接、拒绝路径穿越、导出目标不得进入用户数据根）。
+    </p>
+
+    <h2>运行日志导出</h2>
+    <button id="export-logs">导出运行日志（ZIP）…</button>
+    <pre id="export-report">尚未导出。</pre>
+
+    <hr />
+
+    <h2>本地文件选择</h2>
+    <button data-kind="source_text">选择原作 / 正文（TXT/Markdown）</button>
+    <button data-kind="reference_image">选择图片素材（PNG/JPEG/WebP）</button>
+    <button id="pick-dir">选择目录</button>
+    <pre id="pick-result">尚未选择。</pre>
+    <button id="read-picked" disabled>读取已选文件（演示能力表校验）</button>
+    <pre id="read-result">尚未读取。</pre>
+
+    <script>
+      const report = (element, value) => {
+        element.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+      };
+      const exportReport = document.getElementById("export-report");
+      const pickResult = document.getElementById("pick-result");
+      const readResult = document.getElementById("read-result");
+      const readButton = document.getElementById("read-picked");
+      let pickedPath = null;
+
+      if (!window.__TAURI__ || !window.__TAURI__.core) {
+        report(exportReport, "此页面必须在 MangaFlow 桌面壳内打开（需要 window.__TAURI__）。");
+      } else {
+        const { invoke } = window.__TAURI__.core;
+
+        document.getElementById("export-logs").addEventListener("click", async () => {
+          report(exportReport, "正在导出…");
+          try {
+            const outcome = await invoke("desktop_export_logs", {});
+            report(exportReport, outcome === null ? "已取消。" : { 导出结果: outcome });
+          } catch (error) {
+            report(exportReport, `导出失败：${error}`);
+          }
+        });
+
+        for (const button of document.querySelectorAll("button[data-kind]")) {
+          button.addEventListener("click", async () => {
+            report(pickResult, "等待系统文件对话框…");
+            try {
+              const outcome = await invoke("desktop_pick_file", { kind: button.dataset.kind });
+              if (outcome === null) {
+                report(pickResult, "已取消。");
+              } else {
+                pickedPath = outcome.path;
+                readButton.disabled = false;
+                report(pickResult, { 选择结果: outcome });
+              }
+            } catch (error) {
+              report(pickResult, `选择被拒绝：${error}`);
+            }
+          });
+        }
+
+        document.getElementById("pick-dir").addEventListener("click", async () => {
+          report(pickResult, "等待系统目录对话框…");
+          try {
+            const outcome = await invoke("desktop_pick_directory", {});
+            report(pickResult, outcome === null ? "已取消。" : { 选择结果: outcome });
+          } catch (error) {
+            report(pickResult, `选择被拒绝：${error}`);
+          }
+        });
+
+        readButton.addEventListener("click", async () => {
+          if (!pickedPath) return;
+          try {
+            const outcome = await invoke("desktop_read_picked_file", { path: pickedPath });
+            report(
+              readResult,
+              `已读取 ${outcome.name}（${outcome.size_bytes} 字节；base64 ${outcome.content_base64.length} 字符）。` +
+                `页面随后经既有 /uploads、/sources 上传接口提交，服务端边界保持不变。`
+            );
+          } catch (error) {
+            report(readResult, `读取被拒绝：${error}`);
+          }
+        });
+      }
+    </script>
+  </body>
+</html>

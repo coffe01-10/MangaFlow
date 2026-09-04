@@ -4,5 +4,6 @@ __pycache__/
 dist/sidecar/
 dist/frontend/*
 !dist/frontend/index.html
+!dist/frontend/shell-tools.html
 dist/static-build.log
 src-tauri/gen/schemas/
