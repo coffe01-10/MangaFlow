@@ -11,6 +11,7 @@ import httpx
 from fastapi import HTTPException
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import ObjectDeletedError
 
 from app.config import Settings
 from app.http_bounds import read_bounded_http_body
@@ -541,13 +542,25 @@ def update_model(db: Session, model_id: str, payload: ProviderModelUpdate) -> AI
         list(changes.get("output_modalities") or model.output_modalities or []),
         list(changes.get("operations") or model.operations or []),
     )
+    # Claim the row with the expected version before applying general
+    # changes: the plain check-then-write above this line lost concurrent
+    # edits silently (two PATCHes at version N, second commit drops the
+    # first), the same race the display-only fast path already closes.
+    claimed = db.execute(
+        update(AIModel)
+        .where(AIModel.id == model.id, AIModel.version == payload.version)
+        .values(version=AIModel.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="模型设置已更新，请刷新后重试")
     for key, value in changes.items():
         setattr(model, key, value)
     if display_requested:
         model.display_enabled = bool(display_enabled)
     model.source = "MANUAL"
     model.confidence = "MANUAL"
-    model.version += 1
     db.commit()
     db.refresh(model)
     return model
@@ -582,7 +595,17 @@ def set_model_visibility_bulk(
             )
             continue
         if model.display_enabled == payload.display_enabled:
-            updated.append({"model_id": model.id, "version": model.version})
+            if model.version != item.expected_version:
+                failed.append(
+                    {
+                        "model_id": item.model_id,
+                        "error_code": "VERSION_CONFLICT",
+                        "message": "模型设置已更新，请刷新后重试",
+                        "current_version": model.version,
+                    }
+                )
+            else:
+                updated.append({"model_id": model.id, "version": model.version})
             continue
         if model.version != item.expected_version:
             failed.append(
@@ -606,7 +629,17 @@ def set_model_visibility_bulk(
         if result.rowcount != 1:
             db.rollback()
             db.expire(model)
-            db.refresh(model)
+            try:
+                db.refresh(model)
+            except ObjectDeletedError:
+                failed.append(
+                    {
+                        "model_id": item.model_id,
+                        "error_code": "MODEL_NOT_FOUND",
+                        "message": "模型已被删除",
+                    }
+                )
+                continue
             if model.display_enabled == payload.display_enabled:
                 updated.append({"model_id": model.id, "version": model.version})
             else:
