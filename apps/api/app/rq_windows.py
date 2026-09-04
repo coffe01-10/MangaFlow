@@ -17,6 +17,7 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 from rq.exceptions import InvalidJobOperation
 from rq.job import JobStatus
@@ -43,6 +44,24 @@ worker.main_work_horse(job, queue)
 """
 
 
+def horse_environment(base_env: dict[str, str] | None = None) -> dict[str, str]:
+    """Base child environment for a spawn worker horse.
+
+    The horse runs ``python -c`` with the worker's working directory (the repo
+    root, which Settings relies on for its relative .env/./storage paths), so
+    ``sys.path[0]`` is that directory, not the API root. rq's ``--path`` option
+    only mutates the parent's ``sys.path``, so the horse needs the API root
+    (the parent directory of the ``app`` package) in PYTHONPATH; without it
+    every job dies on ``import app`` before ``execute_job`` can run and burns
+    its retry budget.
+    """
+    env = dict(base_env) if base_env is not None else dict(os.environ)
+    api_root = str(Path(__file__).resolve().parents[1])
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = f"{api_root}{os.pathsep}{existing}" if existing else api_root
+    return env
+
+
 class WindowsSpawnWorker(Worker):
     """Worker whose horse is a plain child process, safe on Windows.
 
@@ -60,7 +79,7 @@ class WindowsSpawnWorker(Worker):
         return [sys.executable, "-c", _GENERIC_HORSE_CODE]
 
     def _horse_environment(self, queue) -> dict[str, str]:
-        env = dict(os.environ)
+        env = horse_environment()
         redis_kwargs = {
             key: value
             for key, value in self.connection.connection_pool.connection_kwargs.items()
