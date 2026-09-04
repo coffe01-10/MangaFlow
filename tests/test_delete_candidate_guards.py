@@ -127,3 +127,55 @@ def test_delete_candidate_alone_still_works(client, db_session):
     assert response.status_code == 204
     db_session.refresh(asset)
     assert asset.deleted_at is not None
+
+
+def test_delete_loses_to_concurrent_select(client, db_session):
+    """A select landing between the guards and the write turns the delete
+    into a 409 instead of tombstoning the newly adopted candidate."""
+
+    from app.models import Chapter, MangaPage, PageCandidate
+
+    project = Project(name="del-vs-select")
+    db_session.add(project)
+    db_session.flush()
+    chapter = Chapter(project_id=project.id, title="c1", ordinal=1)
+    db_session.add(chapter)
+    db_session.flush()
+    page = MangaPage(chapter_id=chapter.id, page_number=1)
+    batch = GenerationBatch(
+        project_id=project.id,
+        chapter_id=chapter.id,
+        page_id=page.id,
+        ordinal=1,
+    )
+    db_session.add_all([page, batch])
+    db_session.flush()
+    candidate = PageCandidate(
+        batch_id=batch.id,
+        page_id=page.id,
+        ordinal=1,
+        model_alias="image.test",
+        resolution="DRAFT_1K",
+        status="READY",
+    )
+    db_session.add(candidate)
+    db_session.commit()
+
+    # Simulate the concurrent adoption winning after the route's guards read
+    # the row: flip is_selected directly, leaving the in-memory copy stale.
+    from sqlalchemy import update as sa_update
+
+    db_session.execute(
+        sa_update(PageCandidate)
+        .where(PageCandidate.id == candidate.id)
+        .values(is_selected=True)
+    )
+    db_session.commit()
+
+    response = client.delete(f"/api/v1/candidates/{candidate.id}")
+    assert response.status_code == 409
+
+    db_session.expire_all()
+    row = db_session.get(PageCandidate, candidate.id)
+    assert row.deleted_at is None
+    assert row.is_selected is True

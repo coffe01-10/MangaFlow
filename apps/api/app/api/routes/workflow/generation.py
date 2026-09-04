@@ -198,8 +198,25 @@ def delete_candidate(candidate_id: str, db: Session = Depends(get_db)) -> None:
                     detail="其他候选正在使用同一素材，请先删除对应候选",
                 )
     deleted_at = utcnow()
+    # Claim the candidate with a conditional update before any dependent
+    # cleanup: a concurrent select-candidate flipping is_selected (or another
+    # delete winning) must turn this request into a 409 instead of
+    # tombstoning an adopted candidate or double-deleting.
+    candidate_model = type(candidate)
+    claim_filters = [candidate_model.deleted_at.is_(None)]
+    if isinstance(candidate, PageCandidate):
+        claim_filters.append(candidate_model.is_selected.is_(False))
+    claimed = db.execute(
+        update(candidate_model)
+        .where(candidate_model.id == candidate.id, *claim_filters)
+        .values(deleted_at=deleted_at, version=candidate_model.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="候选状态已变化，请刷新后重试")
     if isinstance(candidate, AssetCandidate) and candidate.asset_id:
-        # Lock/cleanup first so SQLITE_BUSY can roll back this unit and retry
+        # Cleanup follows so SQLITE_BUSY can roll back this unit and retry
         # without discarding later writes in the same request.
         detach_draft_package_references_for_asset(db, candidate.asset_id)
         asset = db.get(Asset, candidate.asset_id)
@@ -250,8 +267,6 @@ def delete_candidate(candidate_id: str, db: Session = Depends(get_db)) -> None:
             if not has_other_reference:
                 character.status = AssetStatus.NEEDS_CONFIRMATION
             character.version += 1
-    candidate.deleted_at = deleted_at
-    candidate.version += 1
     db.commit()
 
 
