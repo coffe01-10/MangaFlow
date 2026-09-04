@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api, type WorkflowDefinition, type WorkflowGraph, type WorkflowNodeType } from "@/lib/api";
@@ -222,5 +222,105 @@ describe("WorkflowStudio 草稿保存与发布", () => {
     await waitFor(() => expect(publishSpy).toHaveBeenCalledTimes(2));
     expect(updateSpy.mock.calls.at(-1)?.[2].draft_graph?.nodes).toHaveLength(3);
     expect(screen.getByText("保存状态").parentElement).toHaveTextContent("已保存");
+  });
+});
+
+describe("WorkflowStudio 草稿离开边界", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    projectSpy.mockReset().mockResolvedValue({
+      id: "project-1",
+      name: "测试项目",
+      language: "zh-CN",
+      reading_direction: "rtl",
+      page_ratio: "b5_portrait",
+      default_resolution: "2K",
+      draft_resolution: "1K",
+      workflow_mode: "SEMI_AUTO",
+      default_concurrency: 1,
+      default_style_id: null,
+      consistency_check_enabled: true,
+      text_model_alias: "text.fast",
+      last_image_model_alias: null,
+      default_text_model_id: null,
+      last_image_model_id: null,
+      created_at: "2026-08-27T00:00:00Z",
+      updated_at: "2026-08-27T00:00:00Z",
+      version: 1,
+    });
+    workflowsSpy.mockReset().mockResolvedValue([workflow()]);
+    catalogSpy.mockReset().mockResolvedValue([nodeType]);
+    modelsSpy.mockReset().mockResolvedValue([]);
+    chaptersSpy.mockReset().mockResolvedValue([]);
+    pagesSpy.mockReset().mockResolvedValue([]);
+    versionsSpy.mockReset().mockResolvedValue([]);
+    runsSpy.mockReset().mockResolvedValue([]);
+    updateSpy.mockReset();
+    publishSpy.mockReset();
+  });
+
+  it("SPA 卸载时会把防抖窗口内的未保存草稿提交到服务器", async () => {
+    updateSpy.mockImplementation(async (_id, _version, payload) => workflow({
+      version: 2,
+      draft_version: 2,
+      draft_graph: payload.draft_graph as WorkflowGraph,
+    }));
+
+    const view = renderStudio();
+    await screen.findByText("流程编排");
+    await act(async () => {
+      screen.getByRole("button", { name: /解析原作/ }).click();
+    });
+    expect(updateSpy).not.toHaveBeenCalled();
+
+    // 卸载发生在 800ms 防抖到期之前：清理函数必须补交这次保存。
+    view.unmount();
+    await waitFor(() => expect(updateSpy).toHaveBeenCalledTimes(1));
+    expect(updateSpy.mock.calls[0][2].draft_graph?.nodes).toHaveLength(1);
+  });
+
+  it("切换工作流前会先保存当前草稿；保存失败则保持原工作流", async () => {
+    workflowsSpy.mockResolvedValue([
+      workflow(),
+      workflow({ id: "wf-2", name: "整章导出流程" }),
+    ]);
+    updateSpy.mockImplementation(async (_id, _version, payload) => workflow({
+      version: 2,
+      draft_version: 2,
+      draft_graph: payload.draft_graph as WorkflowGraph,
+    }));
+
+    renderStudio();
+    await screen.findByText("流程编排");
+    await act(async () => {
+      screen.getByRole("button", { name: /解析原作/ }).click();
+    });
+
+    const select = screen.getByLabelText("选择工作流");
+    await act(async () => {
+      fireEvent.change(select, { target: { value: "wf-2" } });
+    });
+    // 切换前先把旧工作流的草稿落库。
+    await waitFor(() => expect(updateSpy).toHaveBeenCalledTimes(1));
+    expect(updateSpy.mock.calls[0][2].draft_graph?.nodes).toHaveLength(1);
+    await waitFor(() =>
+      expect(screen.getByLabelText("选择工作流")).toHaveProperty("value", "wf-2"),
+    );
+
+    // 保存失败：切换被阻止，停留在原工作流并提示。
+    await act(async () => {
+      screen.getByRole("button", { name: /解析原作/ }).click();
+    });
+    updateSpy.mockRejectedValueOnce(new Error("网络中断"));
+    const back = screen.getByLabelText("选择工作流");
+    await act(async () => {
+      fireEvent.change(back, { target: { value: "wf-1" } });
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByText("当前工作流保存失败，已保持在原工作流，请重试后再切换"),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.getByLabelText("选择工作流")).toHaveProperty("value", "wf-2");
   });
 });

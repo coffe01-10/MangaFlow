@@ -91,6 +91,7 @@ function LibraryHarness() {
       generation={{
         deleteCandidate: idleMutation as never,
         retractSelectedCandidate: idleMutation as never,
+        actionError: null,
       }}
     />
   );
