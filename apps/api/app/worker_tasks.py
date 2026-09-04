@@ -309,6 +309,18 @@ def _mark_worker_failure(
             from app.services.job_service import restore_page_after_generation_exit
 
             restore_page_after_generation_exit(db, page_candidate)
+        if job.job_type == "PAGE_INSPECT":
+            # The lookup above owns no row for inspect jobs (candidate.job_id
+            # is only set for generation-type jobs). Resolve the inspected
+            # candidate via target_id — deliberately without stamping it:
+            # that row may hold adopted READY/INSPECTED work. Only the page
+            # gets restored so a terminal inspect failure cannot leave it
+            # stuck FINAL_CHECKING.
+            inspected = db.get(PageCandidate, job.target_id)
+            if inspected:
+                from app.services.job_service import restore_page_after_inspection_exit
+
+                restore_page_after_inspection_exit(db, inspected)
         asset_candidate = db.scalar(
             select(AssetCandidate).where(AssetCandidate.job_id == job.id)
         )
