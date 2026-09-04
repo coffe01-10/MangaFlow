@@ -16,6 +16,7 @@ from app.models import (
     JobAssetReference,
     JobDependency,
     MangaPage,
+    ModelCallAttempt,
     PageCandidate,
     StyleProfile,
     WorkflowNodeRun,
@@ -444,6 +445,9 @@ def start_periodic_recovery() -> tuple[Thread, Event]:
 
 def recover_pending_jobs(db: Session) -> int:
     """Reclaim expired worker leases and re-enqueue recoverable jobs."""
+    # Lazy import: keeps rq off the API import graph and avoids a module-level
+    # cycle with the worker class that writes the timeout marker.
+    from app.rq_windows import JOB_TIMEOUT_ERROR_CODE, JOB_TIMEOUT_ERROR_MESSAGE
 
     settings = get_settings()
     apply_runtime_overrides(db, settings)
@@ -483,13 +487,23 @@ def recover_pending_jobs(db: Session) -> int:
         )
 
         if job.attempt_count >= job.max_attempts:
+            # A force-killed horse leaves JOB_TIMEOUT on the row while the RQ
+            # retry no-ops inside the live lease; surface that cause instead of
+            # the generic lease expiry. Status transitions stay identical.
+            timed_out = job.error_code == JOB_TIMEOUT_ERROR_CODE
+            terminal_code = JOB_TIMEOUT_ERROR_CODE if timed_out else "LEASE_EXPIRED"
+            terminal_message = (
+                JOB_TIMEOUT_ERROR_MESSAGE
+                if timed_out
+                else "执行器租约已过期，且已达到最大尝试次数"
+            )
             updated = db.execute(
                 update(GenerationJob)
                 .where(*base_filter)
                 .values(
                     status=JobStatus.FAILED,
-                    error_code="LEASE_EXPIRED",
-                    error_message="执行器租约已过期，且已达到最大尝试次数",
+                    error_code=terminal_code,
+                    error_message=terminal_message,
                     finished_at=now,
                     lease_owner=None,
                     lease_expires_at=None,
@@ -497,6 +511,24 @@ def recover_pending_jobs(db: Session) -> int:
                 .execution_options(synchronize_session=False)
             )
             if updated.rowcount == 1:
+                # Finalize attempts a killed horse never closed. Safe against
+                # live work: the conditional claim above just took the row from
+                # an expired lease, and an in-flight attempt only exists under
+                # a still-valid one, which this branch can never observe.
+                db.execute(
+                    update(ModelCallAttempt)
+                    .where(
+                        ModelCallAttempt.job_id == job.id,
+                        ModelCallAttempt.outcome.is_(None),
+                    )
+                    .values(
+                        outcome="FAILED",
+                        error_code=terminal_code,
+                        error_message=terminal_message,
+                        finished_at=now,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
                 page_candidate = db.scalar(
                     select(PageCandidate).where(PageCandidate.job_id == job.id)
                 )
@@ -519,19 +551,24 @@ def recover_pending_jobs(db: Session) -> int:
                     workflow_run_id = workflow_run_id or node_run.workflow_run_id
                     if node_run.status not in {"COMPLETED", "FAILED", "CANCELLED"}:
                         node_run.status = "FAILED"
-                        node_run.error_code = "LEASE_EXPIRED"
-                        node_run.error_message = "执行器租约已过期，且已达到最大尝试次数"
+                        node_run.error_code = terminal_code
+                        node_run.error_message = terminal_message
                         node_run.finished_at = now
                 if workflow_run_id:
                     workflow_run_ids.add(workflow_run_id)
         else:
+            timed_out = job.error_code == JOB_TIMEOUT_ERROR_CODE
             db.execute(
                 update(GenerationJob)
                 .where(*base_filter)
                 .values(
                     status=JobStatus.WAITING,
-                    error_code="LEASE_EXPIRED",
-                    error_message="执行器已退出，任务等待重新执行",
+                    error_code=JOB_TIMEOUT_ERROR_CODE if timed_out else "LEASE_EXPIRED",
+                    error_message=(
+                        JOB_TIMEOUT_ERROR_MESSAGE
+                        if timed_out
+                        else "执行器已退出，任务等待重新执行"
+                    ),
                     started_at=None,
                     scheduled_at=now,
                     lease_owner=None,
