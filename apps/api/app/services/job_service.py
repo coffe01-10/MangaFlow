@@ -685,17 +685,42 @@ def cancel_job(db: Session, job: GenerationJob) -> GenerationJob:
 def reset_for_retry(db: Session, job: GenerationJob) -> GenerationJob:
     if job.status not in {JobStatus.FAILED, JobStatus.NEEDS_REVIEW, JobStatus.WAITING}:
         return job
-    job.status = JobStatus.WAITING
-    job.error_code = None
-    job.error_message = None
-    job.progress = 0
-    job.started_at = None
-    job.finished_at = None
-    job.cancelled_at = None
-    job.lease_owner = None
-    job.lease_expires_at = None
-    job.scheduled_at = utcnow() + timedelta(seconds=1)
-    workflow_run_id = job.request_parameters.get("workflow_run_id")
+    # Single conditional claim instead of read-modify-write: a worker lease or
+    # a cancellation landing between the caller's read and this write must win
+    # over the retry (no clobbered lease, no resurrection), mirroring
+    # _transition_waiting_to_queued and mark_job_cancelled.
+    claimed = db.execute(
+        update(GenerationJob)
+        .where(
+            GenerationJob.id == job.id,
+            GenerationJob.status.in_(
+                [JobStatus.FAILED, JobStatus.NEEDS_REVIEW, JobStatus.WAITING]
+            ),
+            GenerationJob.lease_owner.is_(None),
+            GenerationJob.cancelled_at.is_(None),
+        )
+        .values(
+            status=JobStatus.WAITING,
+            error_code=None,
+            error_message=None,
+            progress=0,
+            started_at=None,
+            finished_at=None,
+            cancelled_at=None,
+            lease_owner=None,
+            lease_expires_at=None,
+            scheduled_at=utcnow() + timedelta(seconds=1),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
+        # Another party advanced the row; surface its current state as-is.
+        db.refresh(job)
+        return job
+    # The claim above owns the job row, which serializes this revival against
+    # concurrent cancel_run/worker claims on the same job, so the cross-table
+    # writes below cannot clobber a concurrent terminal transition.
+    workflow_run_id = (job.request_parameters or {}).get("workflow_run_id")
     if workflow_run_id:
         run = db.get(WorkflowRun, workflow_run_id)
         node_run = db.scalar(
@@ -711,4 +736,5 @@ def reset_for_retry(db: Session, job: GenerationJob) -> GenerationJob:
             node_run.error_message = None
             node_run.finished_at = None
     db.commit()
+    db.refresh(job)
     return enqueue_job(db, job)

@@ -3,7 +3,8 @@
 from datetime import timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.orm import sessionmaker
 
 from app.config import get_settings
 from app.domain.states import JobStatus, Resolution
@@ -249,6 +250,337 @@ def test_failed_inspect_http_retry_enqueues_new_job(client, db_session, monkeypa
     assert retried.status_code == 202, retried.json()
     assert retried.json()["id"] != failed.id
     assert retried.json()["job_type"] == "PAGE_INSPECT"
+
+
+def _active_inspect_job_ids(db, candidate_id) -> list[str]:
+    return list(
+        db.scalars(
+            select(GenerationJob.id).where(
+                GenerationJob.job_type == "PAGE_INSPECT",
+                GenerationJob.target_type == "PAGE_CANDIDATE",
+                GenerationJob.target_id == candidate_id,
+                GenerationJob.status.in_(job_service.ACTIVE_JOB_STATUSES),
+            )
+        )
+    )
+
+
+def test_inspect_rejects_while_retried_failed_job_is_still_active(
+    client, db_session, monkeypatch
+):
+    """A FAILED inspect job whose key was collapsed to closed:{id} and that was
+    then retried via reset_for_retry is ACTIVE again; re-inspect must not spawn
+    a second paid PAGE_INSPECT job for the same candidate."""
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    project, _page, candidate, _generate_job = _ready_candidate(db_session)
+    old = job_service.create_job(
+        db_session,
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=candidate.id,
+        job_type="PAGE_INSPECT",
+        idempotency_key=f"inspect:{candidate.id}:{candidate.version}",
+    )
+    old.status = JobStatus.FAILED
+    # Same rewrite create_job performs when it collapses a terminal duplicate.
+    old.idempotency_key = f"closed:{old.id}"
+    db_session.commit()
+
+    job_service.reset_for_retry(db_session, old)
+    db_session.expire_all()
+    assert db_session.get(GenerationJob, old.id).status == JobStatus.WAITING
+
+    response = client.post(
+        f"/api/v1/candidates/{candidate.id}/inspect",
+        json={"categories": ["CONTINUITY"]},
+    )
+    assert response.status_code == 409, response.json()
+    assert _active_inspect_job_ids(db_session, candidate.id) == [old.id]
+
+
+def test_inspect_rejects_while_queued_inspect_job_is_active(client, db_session):
+    """An in-flight (QUEUED) inspect job blocks a second inspect for the same
+    candidate instead of silently returning it or creating a duplicate."""
+    project, _page, candidate, _generate_job = _ready_candidate(db_session)
+    queued = GenerationJob(
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=candidate.id,
+        job_type="PAGE_INSPECT",
+        status=JobStatus.QUEUED,
+        idempotency_key=f"inspect:{candidate.id}:{candidate.version}",
+    )
+    db_session.add(queued)
+    db_session.commit()
+
+    response = client.post(
+        f"/api/v1/candidates/{candidate.id}/inspect",
+        json={"categories": ["CONTINUITY"]},
+    )
+    assert response.status_code == 409, response.json()
+    assert _active_inspect_job_ids(db_session, candidate.id) == [queued.id]
+
+
+def test_inspect_still_creates_new_job_after_unretried_terminal_failure(
+    client, db_session, monkeypatch
+):
+    """A terminal FAILED inspect with no active replacement keeps the
+    collapse+recreate path: re-inspect after failure must stay possible."""
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    project, _page, candidate, _generate_job = _ready_candidate(db_session)
+    failed = job_service.create_job(
+        db_session,
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=candidate.id,
+        job_type="PAGE_INSPECT",
+        idempotency_key=f"inspect:{candidate.id}:{candidate.version}",
+    )
+    failed.status = JobStatus.FAILED
+    failed.idempotency_key = f"closed:{failed.id}"
+    db_session.commit()
+
+    response = client.post(
+        f"/api/v1/candidates/{candidate.id}/inspect",
+        json={"categories": ["CONTINUITY"]},
+    )
+    assert response.status_code == 202, response.json()
+    assert response.json()["id"] != failed.id
+    assert _active_inspect_job_ids(db_session, candidate.id) == [response.json()["id"]]
+
+
+def test_create_inspection_job_adopts_route_created_active_inspect_job(
+    db_session, monkeypatch
+):
+    """The workflow reconcile path must adopt an already-active PAGE_INSPECT
+    job for the candidate instead of creating a second paid duplicate."""
+    project, page, candidate, _generate_job = _ready_candidate(db_session)
+    graph = WorkflowGraph(
+        nodes=[
+            WorkflowNodeDefinition(id="inspect", type="quality.inspect", name="质量检查")
+        ]
+    )
+    workflow = WorkflowDefinition(
+        project_id=project.id, name="质检收养", draft_graph=graph.model_dump(mode="json")
+    )
+    db_session.add(workflow)
+    db_session.flush()
+    version = WorkflowVersion(
+        workflow_id=workflow.id,
+        revision=1,
+        graph=graph.model_dump(mode="json"),
+        graph_checksum="inspect-adopt",
+    )
+    db_session.add(version)
+    db_session.flush()
+    run = WorkflowRun(
+        workflow_id=workflow.id,
+        workflow_version_id=version.id,
+        project_id=project.id,
+        scope_type="PAGE",
+        scope_id=page.id,
+        status="RUNNING",
+    )
+    db_session.add(run)
+    db_session.flush()
+    node_run = WorkflowNodeRun(
+        workflow_run_id=run.id,
+        node_id="inspect",
+        node_type="quality.inspect",
+        status="WAITING",
+    )
+    db_session.add(node_run)
+    db_session.flush()
+    route_job = GenerationJob(
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=candidate.id,
+        job_type="PAGE_INSPECT",
+        status=JobStatus.QUEUED,
+    )
+    db_session.add(route_job)
+    db_session.commit()
+
+    job = _create_inspection_job(db_session, run, graph, graph.nodes[0], node_run, [node_run])
+    assert job.id == route_job.id
+    assert node_run.job_id == route_job.id
+    duplicates = db_session.scalars(
+        select(GenerationJob.id).where(
+            GenerationJob.job_type == "PAGE_INSPECT",
+            GenerationJob.target_id == candidate.id,
+        )
+    )
+    assert list(duplicates) == [route_job.id]
+
+
+def test_reset_for_retry_does_not_clobber_live_worker_claim(db_session, monkeypatch):
+    """A worker claim landing between the retry route's read and the reset must
+    win: reset_for_retry must not clobber the lease or requeue the job."""
+    project, _page, candidate, _generate_job = _ready_candidate(db_session)
+    job = GenerationJob(
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=candidate.id,
+        job_type="PAGE_GENERATE",
+        status=JobStatus.FAILED,
+        error_code="WORKER_ERROR",
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    # Simulate a worker claim landing after the route read the row.
+    worker = sessionmaker(bind=db_session.get_bind(), autoflush=False, expire_on_commit=False)()
+    try:
+        worker.execute(
+            update(GenerationJob)
+            .where(GenerationJob.id == job.id)
+            .values(
+                status=JobStatus.GENERATING,
+                lease_owner="worker-1",
+                lease_expires_at=utcnow() + timedelta(minutes=5),
+            )
+        )
+        worker.commit()
+    finally:
+        worker.close()
+
+    enqueued: list[str] = []
+    monkeypatch.setattr(
+        job_service, "enqueue_job", lambda db, job: enqueued.append(job.id) or job
+    )
+    job_service.reset_for_retry(db_session, job)
+    db_session.expire_all()
+    row = db_session.get(GenerationJob, job.id)
+    assert row.status == JobStatus.GENERATING
+    assert row.lease_owner == "worker-1"
+    assert enqueued == []
+
+
+def test_reset_for_retry_does_not_resurrect_cancelled_job(db_session, monkeypatch):
+    """A job cancelled in the race window must stay cancelled: the retry reset
+    must not flip it back to WAITING and clear cancelled_at."""
+    project, _page, candidate, _generate_job = _ready_candidate(db_session)
+    job = GenerationJob(
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=candidate.id,
+        job_type="PAGE_GENERATE",
+        status=JobStatus.FAILED,
+        error_code="WORKER_ERROR",
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    cancelled_at = utcnow()
+    worker = sessionmaker(bind=db_session.get_bind(), autoflush=False, expire_on_commit=False)()
+    try:
+        worker.execute(
+            update(GenerationJob)
+            .where(GenerationJob.id == job.id)
+            .values(
+                status=JobStatus.CANCELLED,
+                cancelled_at=cancelled_at,
+                finished_at=cancelled_at,
+            )
+        )
+        worker.commit()
+    finally:
+        worker.close()
+
+    enqueued: list[str] = []
+    monkeypatch.setattr(
+        job_service, "enqueue_job", lambda db, job: enqueued.append(job.id) or job
+    )
+    job_service.reset_for_retry(db_session, job)
+    db_session.expire_all()
+    row = db_session.get(GenerationJob, job.id)
+    assert row.status == JobStatus.CANCELLED
+    assert row.cancelled_at is not None
+    assert enqueued == []
+
+
+def test_reset_for_retry_still_resets_job_and_revives_failed_workflow_run(
+    db_session, monkeypatch
+):
+    """Normal path stays intact: FAILED job becomes WAITING and enqueues, and a
+    FAILED workflow run/node pair linked to the job is revived to RUNNING."""
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    project, page, candidate, _generate_job = _ready_candidate(db_session)
+    graph = WorkflowGraph(
+        nodes=[
+            WorkflowNodeDefinition(id="inspect", type="quality.inspect", name="质量检查")
+        ]
+    )
+    workflow = WorkflowDefinition(
+        project_id=project.id, name="重试恢复", draft_graph=graph.model_dump(mode="json")
+    )
+    db_session.add(workflow)
+    db_session.flush()
+    version = WorkflowVersion(
+        workflow_id=workflow.id,
+        revision=1,
+        graph=graph.model_dump(mode="json"),
+        graph_checksum="retry-revive",
+    )
+    db_session.add(version)
+    db_session.flush()
+    run = WorkflowRun(
+        workflow_id=workflow.id,
+        workflow_version_id=version.id,
+        project_id=project.id,
+        scope_type="PAGE",
+        scope_id=page.id,
+        status="FAILED",
+        finished_at=utcnow(),
+    )
+    db_session.add(run)
+    db_session.flush()
+    job = GenerationJob(
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=candidate.id,
+        job_type="PAGE_INSPECT",
+        status=JobStatus.FAILED,
+        error_code="WORKER_ERROR",
+        error_message="质检失败",
+        progress=40,
+        request_parameters={"workflow_run_id": run.id},
+    )
+    db_session.add(job)
+    db_session.flush()
+    node_run = WorkflowNodeRun(
+        workflow_run_id=run.id,
+        node_id="inspect",
+        node_type="quality.inspect",
+        status="FAILED",
+        error_code="WORKER_ERROR",
+        error_message="质检失败",
+        job_id=job.id,
+    )
+    db_session.add(node_run)
+    db_session.commit()
+
+    enqueued: list[str] = []
+    real_enqueue = job_service.enqueue_job
+
+    def recording_enqueue(db, job):
+        enqueued.append(job.id)
+        return real_enqueue(db, job)
+
+    monkeypatch.setattr(job_service, "enqueue_job", recording_enqueue)
+    job_service.reset_for_retry(db_session, job)
+    db_session.expire_all()
+    row = db_session.get(GenerationJob, job.id)
+    assert row.status == JobStatus.WAITING
+    assert row.progress == 0
+    assert row.started_at is None
+    assert enqueued == [job.id]
+    revived_run = db_session.get(WorkflowRun, run.id)
+    assert revived_run.status == "RUNNING"
+    assert revived_run.finished_at is None
+    revived_node = db_session.get(WorkflowNodeRun, node_run.id)
+    assert revived_node.status == "RUNNING"
+    assert revived_node.error_code is None
 
 
 def test_workflow_inspect_job_does_not_auto_commit(db_session, monkeypatch):

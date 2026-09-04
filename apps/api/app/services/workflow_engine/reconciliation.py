@@ -15,6 +15,7 @@ from app.models import (
     WorkflowRun,
     utcnow,
 )
+from app.services.job_service import ACTIVE_JOB_STATUSES
 from app.services.page_completion import build_page_production_readiness
 from app.services.workflow_engine.catalog import NODE_TYPE_MAP
 from app.services.workflow_engine.scope import (
@@ -107,25 +108,44 @@ def _create_inspection_job(
     candidate = _candidate_for_run(db, run, node_runs)
     if not candidate or not candidate.asset_id:
         raise ValueError("质量检查必须等待已生成并采用的页面候选")
-    job = engine.create_job(
-        db,
-        project_id=run.project_id,
-        target_type="PAGE_CANDIDATE",
-        target_id=candidate.id,
-        job_type="PAGE_INSPECT",
-        model_alias=node.config.model_alias or "auto",
-        request_parameters={
-            "categories": ["SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"],
-            "workflow_run_id": run.id,
-            "workflow_node_run_id": node_run.id,
-            "node_id": node.id,
-            "node_type": node.type,
-        },
-        max_attempts=node.config.max_attempts,
-        idempotency_key=f"workflow:{run.id}:{node.id}:1",
-        dependency_ids=_parent_job_ids(db, run, graph, node.id),
-        auto_commit=False,
+    # Same active-job guard as the inspect route: the idempotency key below is
+    # workflow-scoped, so an ACTIVE PAGE_INSPECT job created through the route
+    # (or by a retried inspect) would otherwise run a second paid multimodal
+    # call on the same candidate. Adopt it, mirroring how reconcile handles a
+    # node that already carries a job.
+    active_job = db.scalar(
+        select(GenerationJob)
+        .where(
+            GenerationJob.job_type == "PAGE_INSPECT",
+            GenerationJob.target_type == "PAGE_CANDIDATE",
+            GenerationJob.target_id == candidate.id,
+            GenerationJob.status.in_(ACTIVE_JOB_STATUSES),
+        )
+        .order_by(GenerationJob.created_at, GenerationJob.id)
+        .limit(1)
     )
+    if active_job:
+        job = active_job
+    else:
+        job = engine.create_job(
+            db,
+            project_id=run.project_id,
+            target_type="PAGE_CANDIDATE",
+            target_id=candidate.id,
+            job_type="PAGE_INSPECT",
+            model_alias=node.config.model_alias or "auto",
+            request_parameters={
+                "categories": ["SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"],
+                "workflow_run_id": run.id,
+                "workflow_node_run_id": node_run.id,
+                "node_id": node.id,
+                "node_type": node.type,
+            },
+            max_attempts=node.config.max_attempts,
+            idempotency_key=f"workflow:{run.id}:{node.id}:1",
+            dependency_ids=_parent_job_ids(db, run, graph, node.id),
+            auto_commit=False,
+        )
     node_run.job_id = job.id
     node_run.input_snapshot = {
         **node_run.input_snapshot,
