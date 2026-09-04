@@ -13,6 +13,8 @@ from app.models import (
     Chapter,
     Character,
     Dialogue,
+    DirectorCommand,
+    DirectorCommandGroup,
     GenerationJob,
     MangaPage,
     ModelCallAttempt,
@@ -746,3 +748,90 @@ def test_patch_dialogue_blank_speaker_normalizes_to_none(client, db_session):
     )
     assert response.status_code == 200, response.text
     assert response.json()["speaker_character_id"] is None
+
+
+def test_discard_group_marks_previewed_rows_and_group_discarded(client, db_session):
+    ctx = _setup(client, db_session)
+    shot = _envelope(ctx, "update_panel_shot", {"shot_type": "wide"}, group_id=_uid())
+    proposed = _propose(client, ctx, [shot])
+    assert proposed.status_code == 200, proposed.text
+    response = client.post(
+        f"/api/v1/projects/{ctx['project']['id']}/director/command-groups/"
+        f"{shot['command_group_id']}/discard"
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "DISCARDED"
+    statuses = {item["command_id"]: item["status"] for item in response.json()["commands"]}
+    assert statuses[shot["command_id"]] == "DISCARDED"
+    db_session.expire_all()
+    row = db_session.scalar(
+        select(DirectorCommand).where(DirectorCommand.command_id == shot["command_id"])
+    )
+    group = db_session.scalar(
+        select(DirectorCommandGroup).where(
+            DirectorCommandGroup.command_group_id == shot["command_group_id"]
+        )
+    )
+    assert row.status == "DISCARDED"
+    assert group.status == "DISCARDED"
+
+
+def test_discard_group_keeps_concurrently_executed_row_undoable(client, db_session):
+    """discard must not overwrite a row that accept claimed after discard's read.
+
+    accept_command claims its row with a conditional UPDATE (and 409s when a
+    discard landed first), but discard wrote DISCARDED via a bare ORM setattr,
+    so under READ COMMITTED a concurrent accept (PREVIEWED -> ACCEPTED ->
+    EXECUTED) between discard's read and commit was overwritten to DISCARDED,
+    making undo_command permanently impossible. The stale PREVIEWED snapshot
+    that db_session keeps (expire_on_commit=False) stands in for discard's
+    read that happens before the concurrent accept commits.
+    """
+    from sqlalchemy.orm import sessionmaker
+
+    from app.services.director_commands import accept_command
+
+    ctx = _setup(client, db_session)
+    shot = _envelope(ctx, "update_panel_shot", {"shot_type": "wide"}, group_id=_uid())
+    proposed = _propose(client, ctx, [shot])
+    assert proposed.status_code == 200, proposed.text
+
+    stale = db_session.scalar(
+        select(DirectorCommand).where(DirectorCommand.command_id == shot["command_id"])
+    )
+    assert stale.status == "PREVIEWED"
+
+    # Concurrent transaction: another session claims and executes the command
+    # exactly the way accept_command does (real panel write + storyboard bump).
+    ConcurrentSession = sessionmaker(
+        bind=db_session.get_bind(), autoflush=False, expire_on_commit=False
+    )
+    with ConcurrentSession() as other:
+        accept_command(other, ctx["project"]["id"], shot["command_id"])
+
+    response = client.post(
+        f"/api/v1/projects/{ctx['project']['id']}/director/command-groups/"
+        f"{shot['command_group_id']}/discard"
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "DISCARDED"
+    statuses = {item["command_id"]: item["status"] for item in response.json()["commands"]}
+    assert statuses[shot["command_id"]] == "EXECUTED"
+
+    db_session.expire_all()
+    row = db_session.scalar(
+        select(DirectorCommand).where(DirectorCommand.command_id == shot["command_id"])
+    )
+    assert row.status == "EXECUTED"
+
+    undone = client.post(
+        f"/api/v1/projects/{ctx['project']['id']}/director/commands/"
+        f"{shot['command_id']}/undo"
+    )
+    assert undone.status_code == 200, undone.text
+    db_session.refresh(ctx["panel"])
+    assert ctx["panel"].shot_type == "medium_close_up"
+    assert any(
+        item["inverse_of_command_id"] == shot["command_id"]
+        for item in undone.json()["commands"]
+    )
