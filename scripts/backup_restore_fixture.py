@@ -7,6 +7,7 @@ import json
 import os
 import secrets
 import sys
+import zipfile
 from io import BytesIO
 from pathlib import Path
 
@@ -28,6 +29,12 @@ QUALITY_CATEGORIES = ("SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY")
 def _png(color: tuple[int, int, int, int]) -> bytes:
     buffer = BytesIO()
     Image.new("RGBA", (1, 1), color).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def _webp(color: tuple[int, int, int, int], side: int) -> bytes:
+    buffer = BytesIO()
+    Image.new("RGBA", (side, side), color).save(buffer, format="WEBP", quality=82)
     return buffer.getvalue()
 
 
@@ -71,6 +78,8 @@ def create_isolated_fixture(destination: Path, *, repo_root: Path) -> dict[str, 
     }
     _write_json(marker_path, marker)
     (dest / "storage" / "generated").mkdir(parents=True)
+    (dest / "storage" / "thumbnails").mkdir(parents=True)
+    (dest / "storage" / "exports").mkdir(parents=True)
     (dest / "uploads").mkdir(parents=True)
     run_alembic_upgrade(dest, repo_root)
 
@@ -90,6 +99,7 @@ def create_isolated_fixture(destination: Path, *, repo_root: Path) -> dict[str, 
     from app.models import (
         Asset,
         Chapter,
+        ExportBundle,
         GenerationBatch,
         InspectionResult,
         MangaPage,
@@ -169,6 +179,18 @@ def create_isolated_fixture(destination: Path, *, repo_root: Path) -> dict[str, 
         )
         session.add_all([generated_asset, upload_asset])
         session.flush()
+
+        # Real DB-referenced blobs outside the historical backup scope: webp
+        # thumbnails keyed by asset id (services/media.py create_thumbnails
+        # layout) and a committed ExportBundle artifact (api/routes/exports.py
+        # naming), so drills must cover them end to end.
+        thumbnail_320_key = f"thumbnails/{generated_asset.id}/320.webp"
+        thumbnail_640_key = f"thumbnails/{generated_asset.id}/640.webp"
+        _write_bytes(dest / "storage" / thumbnail_320_key, _webp((32, 32, 32, 255), 320))
+        _write_bytes(dest / "storage" / thumbnail_640_key, _webp((64, 64, 64, 255), 640))
+        generated_asset.thumbnail_320_key = thumbnail_320_key
+        generated_asset.thumbnail_640_key = thumbnail_640_key
+
         candidate = PageCandidate(
             batch_id=batch.id,
             page_id=page.id,
@@ -183,6 +205,29 @@ def create_isolated_fixture(destination: Path, *, repo_root: Path) -> dict[str, 
         session.add(candidate)
         session.flush()
         page.selected_candidate_id = candidate.id
+
+        export_token = hashlib.sha256(candidate.id.encode("utf-8")).hexdigest()[:12]
+        export_key = (
+            f"exports/{project.id}/{chapter.id}/"
+            f"{export_token}-20260905000000-pages.zip"
+        )
+        bundle_buffer = BytesIO()
+        with zipfile.ZipFile(bundle_buffer, "w", zipfile.ZIP_DEFLATED) as bundle_zip:
+            bundle_zip.writestr("0001-page.png", generated_png)
+        bundle_bytes = bundle_buffer.getvalue()
+        _write_bytes(dest / "storage" / export_key, bundle_bytes)
+        session.add(
+            ExportBundle(
+                project_id=project.id,
+                chapter_id=chapter.id,
+                export_type="PNG",
+                storage_key=export_key,
+                byte_size=len(bundle_bytes),
+                sha256=_sha256(bundle_bytes),
+                page_count=1,
+            )
+        )
+
         for category in QUALITY_CATEGORIES:
             session.add(
                 InspectionResult(
@@ -201,6 +246,10 @@ def create_isolated_fixture(destination: Path, *, repo_root: Path) -> dict[str, 
             "page_id": page.id,
             "generated_key": generated_key,
             "upload_key": upload_key,
+            "generated_asset_id": generated_asset.id,
+            "thumbnail_320_key": thumbnail_320_key,
+            "thumbnail_640_key": thumbnail_640_key,
+            "export_storage_key": export_key,
         }
 
     engine.dispose()
