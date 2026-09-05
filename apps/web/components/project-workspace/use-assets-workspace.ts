@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, DragEvent } from "react";
 
 import { activePollInterval } from "@/lib/task-status";
@@ -28,6 +28,7 @@ export function useAssetsWorkspace({
   characters,
   outfits,
   requireDrawModel,
+  initialCharacterId,
 }: {
   id: string;
   section: WorkspaceSection;
@@ -39,6 +40,7 @@ export function useAssetsWorkspace({
   characters: WorkspaceQueries["characters"];
   outfits: WorkspaceQueries["outfits"];
   requireDrawModel: () => ImageModelAlias;
+  initialCharacterId?: string | null;
 }) {
   const queryClient = useQueryClient();
   const [assetKind, setAssetKind] = useState<AssetPurpose>("CHARACTER_REFERENCE");
@@ -51,7 +53,7 @@ export function useAssetsWorkspace({
   const [editCharacterAliases, setEditCharacterAliases] = useState("");
   const [editLockedFeatures, setEditLockedFeatures] = useState("");
   const [editForbiddenChanges, setEditForbiddenChanges] = useState("");
-  const [bindCharacterId, setBindCharacterId] = useState("");
+  const [bindCharacterId, setBindCharacterId] = useState(initialCharacterId ?? "");
   const [outfitName, setOutfitName] = useState("");
   const [outfitLockedFields, setOutfitLockedFields] = useState("");
   const [editingOutfitId, setEditingOutfitId] = useState<string | null>(null);
@@ -78,6 +80,17 @@ export function useAssetsWorkspace({
     enabled: section === "assets" && assetView === "outfits" && showGeneratedReferencePicker && Boolean(bindCharacterId),
   });
   const boundCharacter = characters.data?.find((item) => item.id === bindCharacterId) ?? null;
+  // Deep links (?character=) preselect the character before the user clicks
+  // the chip; seed the edit form once so the panel is immediately usable.
+  const formSeededRef = useRef(false);
+  useEffect(() => {
+    if (formSeededRef.current || !boundCharacter) return;
+    formSeededRef.current = true;
+    setEditCharacterName(boundCharacter.primary_name);
+    setEditCharacterAliases(boundCharacter.aliases.join("，"));
+    setEditLockedFeatures(boundCharacter.locked_features.join("，"));
+    setEditForbiddenChanges(boundCharacter.forbidden_changes.join("，"));
+  }, [boundCharacter]);
   const editingOutfit = outfits.data?.find((item) => item.id === editingOutfitId) ?? null;
   const selectedOutfitFiles = assets.data?.filter((item) => selectedOutfitAssets.includes(item.id)) ?? [];
   const generatedReferenceCandidates = useMemo(
@@ -147,8 +160,15 @@ export function useAssetsWorkspace({
   const reclassifyAsset = useMutation({
     mutationFn: ({ assetId, kind }: { assetId: string; kind: AssetPurpose }) => api.updateAsset(assetId, { kind }),
     onSuccess: () => {
+      // Server-side reclassification detaches the asset from characters,
+      // outfits, styles and scene assets in one transaction; every list that
+      // can still show the old binding must refetch.
       queryClient.invalidateQueries({ queryKey: ["assets", id] });
       queryClient.invalidateQueries({ queryKey: ["characters", id] });
+      queryClient.invalidateQueries({ queryKey: ["outfits", id] });
+      queryClient.invalidateQueries({ queryKey: ["styles", id] });
+      queryClient.invalidateQueries({ queryKey: ["scene-assets", id] });
+      queryClient.invalidateQueries({ queryKey: ["pages", activeChapterId] });
     },
   });
 
@@ -208,9 +228,10 @@ export function useAssetsWorkspace({
   });
 
   const updateCharacter = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       if (!boundCharacter) throw new Error("请先选择角色");
-      return api.updateCharacter(
+      const targetId = boundCharacter.id;
+      const result = await api.updateCharacter(
         boundCharacter.id,
         boundCharacter.version,
         editCharacterName.trim(),
@@ -218,8 +239,12 @@ export function useAssetsWorkspace({
         editLockedFeatures.split(/[，,、]/).map((item) => item.trim()).filter(Boolean),
         editForbiddenChanges.split(/[，,、]/).map((item) => item.trim()).filter(Boolean),
       );
+      return { result, targetId };
     },
-    onSuccess: (result) => {
+    onSuccess: ({ result, targetId }) => {
+      // A late save of character A must not overwrite the edit form after the
+      // user has already switched the panel to character B.
+      if (targetId !== (boundCharacter?.id ?? null)) return;
       setEditCharacterName(result.primary_name);
       setEditCharacterAliases(result.aliases.join("，"));
       setEditLockedFeatures(result.locked_features.join("，"));
@@ -246,16 +271,21 @@ export function useAssetsWorkspace({
   });
 
   const updateOutfit = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       if (!editingOutfit) throw new Error("服装档案不存在，请刷新后重试");
-      return api.updateOutfit(editingOutfit.id, {
+      const targetId = editingOutfit.id;
+      await api.updateOutfit(editingOutfit.id, {
         version: editingOutfit.version,
         name: outfitName.trim(),
         reference_asset_ids: selectedOutfitAssets,
         locked_fields: outfitLockedFields.split(/[，,、]/).map((item) => item.trim()).filter(Boolean),
       });
+      return targetId;
     },
-    onSuccess: () => {
+    onSuccess: (targetId) => {
+      // Same guard as updateCharacter: don't wipe the form the user is now
+      // editing with a late result from a previously selected outfit.
+      if (targetId !== editingOutfitId) return;
       setOutfitName("");
       setOutfitLockedFields("");
       setSelectedOutfitAssets([]);
@@ -314,7 +344,10 @@ export function useAssetsWorkspace({
       // The auto-triggered analysis must not fail silently: an unhandled
       // rejection left the style stuck in DRAFT with no recovery hint.
       api.analyzeStyle(style.id)
-        .then(() => queryClient.invalidateQueries({ queryKey: ["jobs", id] }))
+        .then(() => {
+          queryClient.invalidateQueries({ queryKey: ["styles", id] });
+          queryClient.invalidateQueries({ queryKey: ["jobs", id] });
+        })
         .catch(() => setUploadError("风格分析任务启动失败；请在已保存档案中点击“重新分析画面语言”重试。"));
     },
   });
@@ -322,8 +355,12 @@ export function useAssetsWorkspace({
   const analyzeStyle = useMutation({
     mutationFn: (styleId: string) => api.analyzeStyle(styleId),
     onSuccess: () => {
-      router.push(projectPath("jobs"));
+      // The analyze POST flips the style to ANALYZING synchronously; without
+      // this invalidation the cached list still shows the old status, the
+      // ANALYZING poll never starts, and the finished profile never appears.
+      queryClient.invalidateQueries({ queryKey: ["styles", id] });
       queryClient.invalidateQueries({ queryKey: ["jobs", id] });
+      router.push(projectPath("jobs"));
     },
   });
 

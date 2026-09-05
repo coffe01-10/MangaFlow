@@ -37,6 +37,7 @@ import type { WorkspaceQueries } from "./use-workspace-queries";
 
 export function GenerateSection({
   id,
+  chapters,
   pages,
   assets,
   characters,
@@ -57,6 +58,7 @@ export function GenerateSection({
   closeLocalEdit,
 }: {
   id: string;
+  chapters: WorkspaceQueries["chapters"];
   pages: WorkspaceQueries["pages"];
   assets: WorkspaceQueries["assets"];
   characters: WorkspaceQueries["characters"];
@@ -261,7 +263,7 @@ const rowLocked = upscaleBusy; return <article className={`${candidate.is_select
         {candidates.isError && <div className="asset-empty" role="alert"><CircleAlert size={25} /><strong>候选列表读取失败</strong><p>{candidates.error instanceof Error ? candidates.error.message : "请稍后重试"}</p><button type="button" className="button outline compact" onClick={() => candidates.refetch()}>重试读取</button></div>}
         {!candidates.data?.length && !candidates.isError && !candidates.isLoading && <div className="asset-empty"><ImagePlus size={25} /><strong>这个批次还没有候选</strong><p>完成生产准备并确认参考图后，使用本次选择的图片模型生成 1 张彩色页面。</p></div>}
         <div className="next-page-row"><span>{pageProduction?.ready ? "人工校对、版本确认和视觉检查均已通过" : gateBlockerMessage(productionBlocker, latestInspections)}</span><div>{pageProduction?.ready && <a className="button ghost compact" href={api.selectedPagePngUrl(selectedPage.id)!}><Download size={14} />单页 PNG</a>}<button className="button outline" disabled={!pageProduction?.ready || goNext.isPending} onClick={() => goNext.mutate()}>生成下一页 <ArrowRight size={15} /></button></div></div>
-      </> : pages.isLoading ? <div className="generate-skeleton" role="status" aria-label="正在读取页面列表"><LoaderCircle className="spin" size={22} /><span>正在读取页面列表…</span></div> : pages.isError ? <div className="asset-empty tall" role="alert"><CircleAlert size={28} /><strong>页面列表读取失败</strong><p>{pages.error instanceof Error ? pages.error.message : "请稍后重试"}</p><button type="button" className="button outline compact" onClick={() => pages.refetch()}>重试</button></div> : pages.data === undefined ? <div className="generate-skeleton" role="status" aria-label="正在读取页面列表"><LoaderCircle className="spin" size={22} /><span>正在读取页面列表…</span></div> : <div className="asset-empty tall"><Sparkles size={28} /><strong>没有可抽卡页面</strong><p>先完成动态分页。</p></div>}
+      </> : chapters.isError ? <div className="asset-empty tall" role="alert"><CircleAlert size={28} /><strong>章节列表读取失败</strong><p>{chapters.error instanceof Error ? chapters.error.message : "请稍后重试"}</p><button type="button" className="button outline compact" onClick={() => chapters.refetch()}>重试</button></div> : pages.isLoading ? <div className="generate-skeleton" role="status" aria-label="正在读取页面列表"><LoaderCircle className="spin" size={22} /><span>正在读取页面列表…</span></div> : pages.isError ? <div className="asset-empty tall" role="alert"><CircleAlert size={28} /><strong>页面列表读取失败</strong><p>{pages.error instanceof Error ? pages.error.message : "请稍后重试"}</p><button type="button" className="button outline compact" onClick={() => pages.refetch()}>重试</button></div> : pages.data === undefined ? <div className="generate-skeleton" role="status" aria-label="正在读取页面列表"><LoaderCircle className="spin" size={22} /><span>正在读取页面列表…</span></div> : <div className="asset-empty tall"><Sparkles size={28} /><strong>没有可抽卡页面</strong><p>先完成动态分页。</p></div>}
     </div>
   );
 }

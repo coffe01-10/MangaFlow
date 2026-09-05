@@ -278,6 +278,7 @@ function GenerateHarness() {
   return (
     <GenerateSection
       id="project-1"
+      chapters={queries.chapters}
       pages={queries.pages}
       assets={queries.assets}
       characters={queries.characters}
