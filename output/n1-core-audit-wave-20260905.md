@@ -60,3 +60,31 @@ Fresh Reviewer（最终对抗审查，覆盖 c5179b7..HEAD 全部合并 diff + �
 - Windows SpawnWorker 真实 TerminateProcess kill 路径、真实 CLI/PowerShell 套件（平台不可达，基线失败集即其体现）；
 - Playwright e2e / npm run check（本轮为后端状态机范围）；
 - 所有 lock_entity FOR UPDATE 的真实 PostgreSQL 锁语义（离线仅 populate_existing 路径）。
+
+---
+
+# Wave 2/3 增补（同日后续轮次，基线延续至 758 passed / +129 回归测试）
+
+## 新增确认并修复合入
+22. **R-8（P2）**：LOCAL 模式无墙钟上限——心跳独立线程对卡死 handler 无限续租（lease 永不过期）；CONCURRENCY_LIMIT 等待者每 ≤5s 重写同一行且永久占死 8 线程池。修复：deadline-aware 心跳（超 budget 写一次性 LOCAL_TIMEOUT 标记并停止续租，恢复按标记透传原因并收口 NULL attempt）+ genai Client 补 `http_options` 超时（全库唯一无界调用，SDK 默认 timeout=None）+ 并发标记 write-once（`is_distinct_from` NULL 安全）+ 等待者 episode 上限（超时退出，依赖恢复重投递）。8 项 failing-first 测试。
+23. **W2-1（HIGH，Wave 1 引入的交互缺陷）**：被终态清扫 run 的任务重试会把 run 复活为 RUNNING 但留下 CANCELLED 尾巴 → reconcile 永远写 RUNNING → retry_run 与 duplicate-run 守卫双重锁死 scope。修复：reset_for_retry 在 FAILED run 复活块内同事务复活全部被清扫 CANCELLED 节点与 job（两层；安全论证：FAILED run 下 CANCELLED 子节点只能是清扫产物）。3 项 failing-first 测试。
+24. **W2-2（P2）**：CANCELLED/COMPLETED run 下的 FAILED 任务重试仍会付费执行（node 复活无 run 状态谓词）且 node 永久 RUNNING。修复：retry 路由对 CANCELLED/COMPLETED 所属 run 409 + execute_job claim 期兜底（死 run 的 job 直接取消，provider 永不触达）。
+25. **W2-5（P3）**：run 创建后的裸 reconcile 异常 → 500 + duplicate-run 守卫锁定 scope → 镜像完成路径隔离（log + rollback + 返回已提交 run）。
+26. **W3-1（MEDIUM，R-8 与既有清扫的连锁）**：LOCAL 超时后仍存活的线程中 provider 调用成功返回时，恢复清扫已把 attempt 盖为 FAILED → finalize 硬抛 AUDIT_PERSISTENCE_FAILED，付费图片丢弃且账本不记真实支出。修复：finalize 冲突分支对"清扫标记 error_code + usage 仍 NULL"的 FAILED 行允许 SUCCEEDED 升级（同一 values dict，零漂移），真实失败行仍硬拒；清扫的错误安全注释已纠正。
+27. **W3-2（MEDIUM）**：质检成功路径只校验 storyboard_version，把并发场景资产变更写入的 NEEDS_REVIEW 复审标志覆盖为 PASSED/FINAL_READY → 场景变更后的页面可静默导出（0fb94f4 修复类的漏网兄弟）。修复：handler 增加页面 version 基线并在调用后比对（误报审计：窗口内全部 version 写入者均应捕获）。
+28. **W3-3（LOW）**：keep/retract 选中候选路由缺页面锁（违反 select/delete_asset 已建立的锁约定）→ 补 lock_entity + 锁后重读（populate_existing 为 retract 的关键），钉死竞态后的诚实结果。
+29. **U-M2 测试强化**：双 approve 测试改为双 session 竞态注入（在受害者读取与 claim 之间提交真实 claim 形状），已验证在 claim 退化为 check-then-write 时会失败。
+
+## 新增验证后否决/降级
+- **S-P3（JSON 整列写）**：穷举 writer 后无同列并发对——唯一中期写入键 `reference_asset_ids` 全库零读者（真源是 JobAssetReference 行）；adoption 在 HEAD 上根本不写 params。降级 P3 卫生项（可删冗余写，不必须）。
+- **锁序环**：全库 lock_entity 枚举（Project→Page→Panel/Batch、WorkflowDefinition 为叶子）无反向边，无死锁环。
+
+## 剩余 P3 记录（未修，已定位）
+- W2-3：PG 专用锁序倒置（reset_for_retry job→run vs cancel_run run→job）可致瞬时 40P01 500，无损坏（SQLite 不可测）。
+- W2-4：Wave 1 之前遗留的终态 FAILED run + WAITING 子任务升级窗口僵尸——建议一次性启动清扫或迁移。
+- W2-6：duplicate-run 守卫在 SQLite 上无数据库兜底（生产 PG 有 FOR UPDATE）；可选 partial unique index。
+- W3-4：scene_assets 余下未 claim 的 check-then-write（restore/delete/bind）+ update_scene_asset 不查 deleted_at。
+- P3 前端：analyzeStyle 与 job retry/cancel 的 409 无呈现；director 非 tip 撤销按钮恒 409。
+
+## Wave 2/3 终态
+全量 758 passed（基线 629），失败集 = Windows 环境基线；ruff 干净。累计修复 38 项确认缺陷。
