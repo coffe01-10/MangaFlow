@@ -9,8 +9,10 @@ treated as proof of seam preservation.
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.orm import sessionmaker
 
 import app.services.workflow_engine as workflow_engine
+from app.services.workflow_engine.scope import _graph_for_run
 from app.models import (
     Asset,
     Chapter,
@@ -614,3 +616,87 @@ def test_approve_node_double_approve_leaves_single_candidate(db_session, monkeyp
         )
     )
     assert len(candidates) == 1
+
+
+def test_approve_claim_loses_to_a_concurrent_claim_commit(
+    db_session, monkeypatch
+):
+    """U-M2 strengthening: the approval claim must re-check committed state.
+
+    The sequential double-approve test above cannot detect a claim that
+    regressed to check-then-write: its second approve re-reads the already-
+    claimed row and raises before the claim executes. Here the racer commits
+    the real claim shape (WAITING_APPROVAL -> RUNNING) between the victim's
+    stale read and its claim, so only a rowcount-checked conditional UPDATE
+    stops the victim from minting an orphan candidate.
+    """
+
+    from concurrent.futures import ThreadPoolExecutor  # noqa: F401  (pattern parity)
+    from sqlalchemy import update as sa_update
+
+    monkeypatch.setattr(
+        "app.services.workflow_engine.lifecycle.ensure_page_ready",
+        lambda *_args, **_kwargs: None,
+    )
+    seeded = _seed_page_hierarchy(db_session)
+    workflow = _seed_workflow(db_session, seeded["project_id"], default_graph())
+    publish_workflow(db_session, workflow)
+    run = create_workflow_run(
+        db_session,
+        workflow,
+        scope_type="PAGE",
+        scope_id=seeded["page_id"],
+        start_node_ids=["generate"],
+        stop_node_ids=["generate"],
+    )
+    node_run = db_session.scalar(
+        select(WorkflowNodeRun).where(
+            WorkflowNodeRun.workflow_run_id == run.id,
+            WorkflowNodeRun.status == "WAITING_APPROVAL",
+        )
+    )
+    monkeypatch.setattr(workflow_engine, "enqueue_job", lambda db, job: job)
+
+    # The racer owns the claim transition and commits it while the victim's
+    # identity map still shows WAITING_APPROVAL (expire_on_commit=False).
+    racer_factory = sessionmaker(bind=db_session.get_bind())
+
+    def racer_claims_first(_db, _run):
+        with racer_factory() as racer:
+            racer.execute(
+                sa_update(WorkflowNodeRun)
+                .where(
+                    WorkflowNodeRun.id == node_run.id,
+                    WorkflowNodeRun.status == "WAITING_APPROVAL",
+                    WorkflowNodeRun.job_id.is_(None),
+                )
+                .values(status="RUNNING")
+            )
+            racer.commit()
+        # Serve the victim's graph lookup from its own session afterwards.
+        return _graph_for_run(db_session, run)
+
+    monkeypatch.setattr(
+        "app.services.workflow_engine.lifecycle._graph_for_run",
+        racer_claims_first,
+    )
+
+    with pytest.raises(ValueError, match="已经生成过一个候选"):
+        approve_node(
+            db_session,
+            run.id,
+            node_run.node_id,
+            image_model_alias="image.nano_banana_2",
+            resolution="1K",
+        )
+
+    db_session.expire_all()
+    # The victim minted nothing: no PAGE batch, no candidate.
+    remaining = list(
+        db_session.scalars(
+            select(PageCandidate).where(PageCandidate.page_id == seeded["page_id"])
+        )
+    )
+    assert remaining == []
+    final_node = db_session.get(WorkflowNodeRun, node_run.id)
+    assert final_node.status == "RUNNING"
