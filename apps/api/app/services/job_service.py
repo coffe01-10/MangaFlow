@@ -973,6 +973,45 @@ def reset_for_retry(db: Session, job: GenerationJob) -> GenerationJob:
             run.status = "RUNNING"
             run.finished_at = None
             run.version += 1
+            # Revive the swept CANCELLED tail together with the run. Under a
+            # FAILED run a CANCELLED node/job can ONLY be
+            # _sweep_stranded_children output: cancel_run terminalizes the
+            # whole run CANCELLED and cancel_job cancels the run, so neither
+            # can leave a CANCELLED child behind a FAILED run. Swept jobs
+            # never ran, so their idempotency keys are intact (the
+            # closed:{id} collapse only applies when create_job re-creates
+            # the row), and any candidate the sweep stamped CANCELLED is
+            # harmless on rerun — generation re-attaches the candidate by
+            # target_id and resets its status, while inspect jobs own no
+            # candidate row. Late inspect jobs with no node link stay
+            # CANCELLED on purpose: they have no node_run row to revive, and
+            # reconcile's _create_inspection_job re-creates a fresh one
+            # (create_job collapses the CANCELLED row's key). Without this
+            # revival the tail stays dead forever — reconcile only schedules
+            # WAITING nodes and the tail breaks the all-COMPLETED check, so
+            # the run falls through to a permanent RUNNING zombie whose
+            # scope can never start another run; revived barrier nodes
+            # re-barrier to WAITING_APPROVAL (run PAUSED), which is the
+            # correct resume semantics.
+            for stranded in db.scalars(
+                select(WorkflowNodeRun).where(
+                    WorkflowNodeRun.workflow_run_id == run.id,
+                    WorkflowNodeRun.status == "CANCELLED",
+                )
+            ):
+                stranded.status = "WAITING"
+                stranded.finished_at = None
+                stranded.error_code = None
+                stranded.error_message = None
+                stranded_job = (
+                    db.get(GenerationJob, stranded.job_id) if stranded.job_id else None
+                )
+                if stranded_job and stranded_job.status == JobStatus.CANCELLED:
+                    stranded_job.status = JobStatus.WAITING
+                    stranded_job.cancelled_at = None
+                    stranded_job.error_code = None
+                    stranded_job.error_message = None
+                    stranded_job.finished_at = None
         if node_run and node_run.status == "FAILED":
             node_run.status = "RUNNING"
             node_run.error_code = None

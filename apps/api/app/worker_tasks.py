@@ -19,6 +19,7 @@ from app.models import (
     Project,
     StyleProfile,
     WorkflowNodeRun,
+    WorkflowRun,
     utcnow,
 )
 from app.services.worker_handlers import provider
@@ -490,6 +491,24 @@ def execute_job(job_id: str) -> None:
         if not job:
             _defer_concurrency_wait(job_id)
             return
+        # Claim-time backstop for dead runs: the retry route's 409 gate cannot
+        # cover legacy stragglers (WAITING/QUEUED rows enqueued before their
+        # run ended) or non-route enqueue paths. cancel_run's sweep
+        # deliberately keeps terminal FAILED jobs, and lease recovery can put
+        # a row back in play under a run that was cancelled or completed
+        # meanwhile; executing it would be paid work for a dead run and its
+        # node_run would strand RUNNING forever inside the terminal run
+        # (reconcile early-returns on terminal runs). Cancel before any
+        # provider work; the run resolution mirrors the completion path.
+        workflow_run_id = _resolve_workflow_run_id(db, job)
+        if workflow_run_id:
+            run = db.get(WorkflowRun, workflow_run_id)
+            if run and run.status in {"CANCELLED", "COMPLETED"}:
+                from app.services.job_service import mark_job_cancelled
+
+                mark_job_cancelled(db, job)
+                db.commit()
+                return
         with _LeaseHeartbeat(job.id, owner) as heartbeat:
             if job.job_type in {
                 "PAGE_GENERATE",
