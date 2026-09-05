@@ -15,6 +15,7 @@ from app.models import (
     ModelCallAttempt,
     PageCandidate,
     WorkflowNodeRun,
+    WorkflowRun,
     utcnow,
 )
 from app.schemas import (
@@ -187,6 +188,19 @@ def retry(job_id: str, db: Session = Depends(get_db)) -> GenerationJob:
     # always have COMPLETED dependencies, so legitimate retries never hit this.
     if not dependencies_complete(db, job):
         raise HTTPException(status_code=409, detail="依赖任务未完成，不能重试")
+    # A job whose run already ended must not retry: reset_for_retry's node_run
+    # revival has no run-status predicate (only its FAILED-run revival gates),
+    # so the job would execute paid work for a dead run and strand its
+    # node_run RUNNING forever inside a terminal run (reconcile early-returns
+    # on terminal runs). Reachable through the non-atomic worker-failure/
+    # cancel window: cancel_run's sweep deliberately keeps terminal FAILED
+    # jobs. A COMPLETED run with a late lease-expiry-FAILED job has the
+    # identical orphan shape, so both terminal statuses are gated.
+    node_run = db.scalar(select(WorkflowNodeRun).where(WorkflowNodeRun.job_id == job.id))
+    if node_run:
+        run = db.get(WorkflowRun, node_run.workflow_run_id)
+        if run and run.status in {"CANCELLED", "COMPLETED"}:
+            raise HTTPException(status_code=409, detail="所属运行已取消或已结束，不能重试该任务")
     return reset_for_retry(db, job)
 
 
