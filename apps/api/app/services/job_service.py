@@ -4,7 +4,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from threading import Event, Lock, Thread
 
-from sqlalchemy import and_, inspect as sa_inspect, or_, select, update
+from sqlalchemy import and_, or_, select, update
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -16,6 +17,7 @@ from app.models import (
     JobAssetReference,
     JobDependency,
     MangaPage,
+    ModelCallAttempt,
     PageCandidate,
     StyleProfile,
     WorkflowNodeRun,
@@ -592,7 +594,47 @@ def recover_pending_jobs(db: Session) -> int:
             db.expire(job)
         enqueue_job(db, job)
         recovered += 1
-    return recovered
+    return recovered + sweep_lost_model_call_attempts(db)
+
+
+WORKER_LOST_MARGIN_SECONDS = 300
+
+
+def sweep_lost_model_call_attempts(db: Session) -> int:
+    """Converge unfinalized audit rows to FAILED after every deadline passed.
+
+    A worker killed between ``begin_model_call_attempt`` and finalize leaves
+    the row with ``outcome IS NULL`` forever: cost views exclude it (real
+    money invisible), the summary counts it as pending eternally, and no
+    operator signal distinguishes "in flight" from "lost in a crash". Once
+    the attempt is older than the job's hard timeout plus lease plus margin,
+    no live worker can still be planning to finalize it, so the row is
+    provably lost. The finalize CAS still wins if a straggler ever shows up.
+    """
+
+    settings = get_settings()
+    cutoff = utcnow() - timedelta(
+        seconds=settings.job_timeout_seconds
+        + settings.job_lease_seconds
+        + WORKER_LOST_MARGIN_SECONDS
+    )
+    updated = db.execute(
+        update(ModelCallAttempt)
+        .where(
+            ModelCallAttempt.outcome.is_(None),
+            ModelCallAttempt.started_at < cutoff,
+        )
+        .values(
+            outcome="FAILED",
+            error_code="WORKER_LOST",
+            error_message="执行器在调用期间丢失，审计行按失败收敛",
+            finished_at=utcnow(),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if updated.rowcount:
+        db.commit()
+    return updated.rowcount
 
 
 def mark_job_failed(
