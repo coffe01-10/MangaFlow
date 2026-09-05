@@ -186,6 +186,8 @@ export default function ProjectWorkspace({
     characters,
     outfits,
     requireDrawModel,
+    // 生产准备“去处理”深链带 ?character=：预选该角色，用户不必再手动点一次。
+    initialCharacterId: assetView === "characters" ? searchParams.get("character") : null,
   });
   const generationWorkspace = useGenerationWorkspace({
     id,
@@ -361,6 +363,7 @@ export default function ProjectWorkspace({
           {section === "generate" && (
             <GenerateSection
               id={id}
+              chapters={chapters}
               pages={pages}
               assets={assets}
               characters={characters}

@@ -165,6 +165,25 @@ export function AssetsSection({
       {assetView === "scenes" && (
         <SceneWorkspace projectId={id} assets={assets.data ?? []} openPreview={openPreview} />
       )}
+      {(assets.isError || characters.isError || outfits.isError) && (
+        <div className="asset-empty" role="alert">
+          <CircleAlert size={25} />
+          <strong>资产数据读取失败</strong>
+          <p>
+            {[
+              assets.isError ? `素材：${assets.error instanceof Error ? assets.error.message : "读取失败"}` : null,
+              characters.isError ? `角色：${characters.error instanceof Error ? characters.error.message : "读取失败"}` : null,
+              outfits.isError ? `服装：${outfits.error instanceof Error ? outfits.error.message : "读取失败"}` : null,
+            ].filter(Boolean).join("；")}
+          </p>
+          <div style={{ display: "flex", gap: 8 }}>
+            {assets.isError && <button type="button" className="button outline compact" onClick={() => assets.refetch()}>重读素材</button>}
+            {characters.isError && <button type="button" className="button outline compact" onClick={() => characters.refetch()}>重读角色</button>}
+            {outfits.isError && <button type="button" className="button outline compact" onClick={() => outfits.refetch()}>重读服装</button>}
+          </div>
+          <p><small>下方显示的是缓存内容，可能不是最新状态。</small></p>
+        </div>
+      )}
       {assetView !== "scenes" && <>
       {assetView === "characters" && <>
       <header className="canvas-header"><div><span>CHARACTER BIBLE / 角色资产</span><h2>姓名、绰号与参考图绑定</h2></div><small>{characters.data?.length ?? 0} 个角色</small></header>

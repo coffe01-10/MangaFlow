@@ -58,7 +58,7 @@ export function ScriptSection({
   return (
     <>
       <header className="canvas-header"><div><span>SCREENPLAY / 漫画剧本</span><h2>先写场景与情节拍，再进入分页</h2></div><div className="chapter-stage-control"><select aria-label="选择要编辑剧本的章节" value={activeChapterId ?? ""} onChange={(event) => switchChapter(event.target.value)}>{chapters.data?.map((chapter) => <option key={chapter.id} value={chapter.id}>{chapter.ordinal}. {chapter.title}</option>)}</select><small>{script.data?.scenes.length ?? 0} 个场景</small></div></header>
-      {!activeChapterId ? <div className="asset-empty tall"><Clapperboard size={28} /><strong>请先导入原作</strong></div>
+      {!activeChapterId ? chapters.isError ? <div className="asset-empty tall" role="alert"><CircleAlert size={28} /><strong>章节列表读取失败</strong><p>{chapters.error instanceof Error ? chapters.error.message : "请稍后重试"}</p><button type="button" className="button outline compact" onClick={() => chapters.refetch()}>重试</button></div> : <div className="asset-empty tall"><Clapperboard size={28} /><strong>请先导入原作</strong></div>
         : script.isLoading ? <div className="loading-panel"><LoaderCircle className="spin" size={16} />正在读取剧本…</div>
         : script.isError ? <p className="form-error" role="alert"><CircleAlert size={15} />剧本读取失败：{script.error instanceof Error ? script.error.message : "请稍后重试"}</p>
         : !script.data ? <div className="loading-panel"><LoaderCircle className="spin" size={16} />正在读取剧本…</div>
