@@ -8,7 +8,7 @@ from app.api.helpers import asset_candidate_read, candidate_read, candidate_vers
 from app.api.routes.workflow.common import _new_batch, _page
 from app.config import get_settings
 from app.database import get_db
-from app.domain.states import PageStatus
+from app.domain.states import JobStatus, PageStatus
 from app.models import (
     Asset,
     AssetCandidate,
@@ -16,6 +16,7 @@ from app.models import (
     Character,
     CharacterReference,
     GenerationBatch,
+    GenerationJob,
     InspectionResult,
     MangaPage,
     Outfit,
@@ -36,7 +37,7 @@ from app.services.character_packages import (
     default_package_gate_context,
     detach_draft_package_references_for_asset,
 )
-from app.services.job_service import enqueue_job
+from app.services.job_service import cancel_job, enqueue_job
 from app.services.ordinal_allocator import (
     CandidateOrdinalConflictError,
     create_page_candidate,
@@ -215,6 +216,21 @@ def delete_candidate(candidate_id: str, db: Session = Depends(get_db)) -> None:
             character.version += 1
     candidate.deleted_at = deleted_at
     candidate.version += 1
+    # The worker resolves its generation target without a deleted_at filter
+    # and would attach the paid result to this soft-deleted row, so an active
+    # job must be cancelled here (same guard for PageCandidate and
+    # AssetCandidate via their shared job_id).  Soft-delete first, then cancel:
+    # cancel_job commits, persisting the soft-delete above and the CANCELLED
+    # stamp as one final committed state.  The trailing commit is a no-op on
+    # that path and the real commit on the cancel_run path, which returns
+    # without committing.
+    job = db.get(GenerationJob, candidate.job_id) if candidate.job_id else None
+    if job is not None and job.status not in {
+        JobStatus.COMPLETED,
+        JobStatus.CANCELLED,
+        JobStatus.FAILED,
+    }:
+        cancel_job(db, job)
     db.commit()
 
 
