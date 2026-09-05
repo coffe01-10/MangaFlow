@@ -813,7 +813,7 @@ describe("DirectorWorkspace 导演台（V02-41B）", () => {
   });
 
   it("D20 页面切换后预览、草稿与作用域全部重置，不携带旧页状态漂移（#165）", async () => {
-    groupsApi.mockImplementation((_projectId: string, pageId: string) =>
+    groupsApi.mockImplementation((_projectId: string, pageId?: string | null) =>
       Promise.resolve(pageId === "page-1"
         ? [groupFixture({
             id: "row-prev",
