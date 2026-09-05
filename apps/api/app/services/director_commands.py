@@ -804,6 +804,32 @@ def accept_command(db: Session, project_id: str, command_id: str) -> dict:
         }
         db.commit()
         raise _http_409(row.error)
+    if envelope.operation == "update_scene_context" and "background" in envelope.payload:
+        # §6.3: execution writes scene fields AND panel.background, but the
+        # scene.version gate above cannot see a concurrent panel background
+        # PATCH (it moves panel.version and the storyboard counter, never
+        # scene.version — manual scene edits do not bump the storyboard
+        # either). Re-check the panel half against the propose-time diff. The
+        # panel is already locked above: background payloads require
+        # target.panel_id, so accept's page→panel lock block covers this read.
+        panel = (
+            db.get(Panel, envelope.target.panel_id) if envelope.target.panel_id else None
+        )
+        background_before = ((row.diff or {}).get("background") or {}).get("before")
+        if (
+            panel is None
+            or background_before is None
+            or panel.background != background_before
+        ):
+            conflict = {
+                "code": "VERSION_CONFLICT",
+                "message": "分镜背景已在预览后被更新，请刷新后重试",
+                "scope": "panel",
+                "current_version": None if panel is None else panel.version,
+            }
+            row.error = conflict
+            db.commit()
+            raise _http_409(conflict)
     claimed = db.execute(
         update(DirectorCommand)
         .where(

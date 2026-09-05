@@ -1005,6 +1005,64 @@ def test_undo_restore_failure_rolls_back_row_claim(client, db_session):
         assert page.storyboard_version == sbv_before
 
 
+def test_accept_scene_context_rechecks_panel_background(client, db_session):
+    """§6.3 between-preview-and-execution re-check must cover what execution
+    writes: update_scene_context is a compound write (scene fields plus
+    panel.background), but a panel background PATCH between propose and accept
+    moves only panel.version/storyboard_version, not scene.version, so the
+    scene.version gate alone silently overwrote the concurrent background."""
+    ctx = _setup(client, db_session)
+    conflicting = _envelope(
+        ctx,
+        "update_scene_context",
+        {"weather": "大雨", "background": "海边"},
+        group_id=_uid(),
+    )
+    conflicting["target"]["panel_id"] = ctx["panel"].id
+    proposed = _propose(client, ctx, [conflicting])
+    assert proposed.status_code == 200, proposed.text
+    assert proposed.json()["commands"][0]["status"] == "PREVIEWED"
+
+    db_session.refresh(ctx["panel"])
+    patch = client.patch(
+        f"/api/v1/panels/{ctx['panel'].id}",
+        json={"background": "山间", "version": ctx["panel"].version},
+    )
+    assert patch.status_code == 200, patch.text
+
+    accepted = client.post(
+        f"/api/v1/projects/{ctx['project']['id']}/director/commands/"
+        f"{conflicting['command_id']}/accept"
+    )
+    assert accepted.status_code == 409, accepted.text
+    assert accepted.json()["detail"]["code"] == "VERSION_CONFLICT"
+    assert accepted.json()["detail"]["scope"] == "panel"
+    db_session.refresh(ctx["panel"])
+    assert ctx["panel"].background == "山间"
+
+    # Control: without an intervening PATCH the same command shape accepts and
+    # applies the compound write (scene fields and panel background).
+    db_session.refresh(ctx["scene"])
+    control = _envelope(
+        ctx,
+        "update_scene_context",
+        {"weather": "大雨", "background": "海滩"},
+        group_id=_uid(),
+    )
+    control["target"]["panel_id"] = ctx["panel"].id
+    control_proposed = _propose(client, ctx, [control])
+    assert control_proposed.status_code == 200, control_proposed.text
+    control_accepted = client.post(
+        f"/api/v1/projects/{ctx['project']['id']}/director/commands/"
+        f"{control['command_id']}/accept"
+    )
+    assert control_accepted.status_code == 200, control_accepted.text
+    db_session.refresh(ctx["panel"])
+    db_session.refresh(ctx["scene"])
+    assert ctx["panel"].background == "海滩"
+    assert ctx["scene"].weather == "大雨"
+
+
 def test_discard_group_keeps_concurrently_executed_row_undoable(client, db_session):
     """discard must not overwrite a row that accept claimed after discard's read.
 
