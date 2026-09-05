@@ -536,6 +536,10 @@ class CLIExecutionController:
         journal.update(state="RUNNING", controller_pid=identity["pid"])
         if type(identity.get("created")) is int:
             journal["controller_created"] = identity["created"]
+        if sys.platform != "win32":
+            ticks = _posix_start_ticks(identity["pid"])
+            if ticks is not None:
+                journal["controller_start_ticks"] = ticks
         _write_json(run_directory / "journal.json", journal)
 
     def _environment(
@@ -918,7 +922,34 @@ def posix_controller_is_active(_row: CLIExecutionRun, journal: dict) -> bool:
         return False
     except PermissionError:
         return True
+    # Recycled-PID protection: when the journal recorded the POSIX process
+    # start ticks at mark time, a PID now belonging to a different process
+    # (different starttime) means the controller is gone even though the PID
+    # was reused. Without this, one recycled PID pins the connection's lease
+    # slot until manual surgery.
+    recorded = journal.get("controller_start_ticks")
+    if type(recorded) is int:
+        current = _posix_start_ticks(pid)
+        if current is not None and current != recorded:
+            return False
     return True
+
+
+def _posix_start_ticks(pid: int) -> int | None:
+    """Field 22 of ``/proc/<pid>/stat`` (starttime in clock ticks), if readable."""
+
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    # comm can contain spaces/parens; the reliable split point is the last ')'.
+    tail = stat.rpartition(")")[2].split()
+    if len(tail) < 20:
+        return None
+    try:
+        return int(tail[19])
+    except ValueError:
+        return None
 
 
 def platform_controller_is_active(row: CLIExecutionRun, journal: dict) -> bool:

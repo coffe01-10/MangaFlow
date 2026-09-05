@@ -1,6 +1,7 @@
 """Offline contract tests for the provider-neutral CLI controller."""
 
 import json
+import os
 import stat
 from dataclasses import replace
 from pathlib import Path
@@ -475,3 +476,25 @@ def test_output_directory_link_chain_is_rejected(cli_context):
         controller.execute(run_id, runner=LinkOutputRunner(), argv=("fake-cli",))
     assert caught.value.code == "INVALID_OUTPUT"
     assert (settings.storage_root / "cli_runs" / run_id).exists()
+
+
+def test_posix_probe_detects_recycled_pid(tmp_path):
+    from app.services import cli_executor
+    """A PID now owned by a different process (different /proc starttime)
+    reports the controller as dead instead of holding the lease slot."""
+
+    journal = {"controller_pid": os.getpid()}
+    assert cli_executor.posix_controller_is_active(None, journal) is True
+
+    ticks = cli_executor._posix_start_ticks(os.getpid())
+    assert ticks is not None  # /proc available on this host
+
+    recycled = dict(journal, controller_start_ticks=ticks + 100000)
+    assert cli_executor.posix_controller_is_active(None, recycled) is False
+
+    matching = dict(journal, controller_start_ticks=ticks)
+    assert cli_executor.posix_controller_is_active(None, matching) is True
+
+    # Unreadable /proc degrades to the pid-only probe, never a false dead.
+    unreadable = dict(journal, controller_start_ticks=ticks, controller_pid=99999999)
+    assert cli_executor.posix_controller_is_active(None, unreadable) is False
