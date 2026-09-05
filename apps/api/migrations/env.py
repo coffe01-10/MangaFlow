@@ -9,7 +9,11 @@ from app.database import Base
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False: fileConfig's default True disables every
+    # logger created before migrations run (e.g. mangaflow.* when the API
+    # process or the offline suite touches alembic), silencing app logging for
+    # the rest of the process.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 if config.attributes.get("connection") is None:
     config.set_main_option("sqlalchemy.url", get_settings().database_url)
 target_metadata = Base.metadata
