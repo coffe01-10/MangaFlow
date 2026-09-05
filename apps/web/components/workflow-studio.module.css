@@ -32,6 +32,10 @@
 .workflowStatus strong { font-size: 14px; }
 .workflowStatus button { margin-left: auto; min-height: 40px; padding: 0 14px; display: flex; align-items: center; gap: 6px; border: 1px solid #e8e4da; background: #e8e4da; color: #151714; cursor: pointer; font-size: 12px; }
 .body { height: calc(100vh - 168px); display: grid; grid-template-columns: 238px minmax(420px, 1fr) 286px; }
+/* The conditional legacy-draft banner (64px) is not part of the fixed budget
+   above while .studio is overflow:hidden and .runner is fixed — without this
+   adjustment the banner hides the bottom of every column behind the runner. */
+.studio:has(.legacy) .body { height: calc(100vh - 232px); }
 .body.libraryClosed { grid-template-columns: 0 minmax(420px, 1fr) 286px; }
 .body.inspectorClosed { grid-template-columns: 238px minmax(420px, 1fr) 0; }
 .body.libraryClosed.inspectorClosed { grid-template-columns: 0 minmax(420px, 1fr) 0; }
