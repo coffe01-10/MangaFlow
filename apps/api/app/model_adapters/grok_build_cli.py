@@ -916,12 +916,14 @@ def _map_failure(text: str) -> tuple[str, str, bool]:
         for value in ("not authenticated", "authentication required", "not logged", "sign in")
     ):
         return "UNAUTHENTICATED", "Grok Build CLI 尚未登录", False
-    if any(value in lowered for value in ("supergrok", "isn't available", "not available")):
+    # Account-capability denials only: "not available" alone also matches
+    # transient "temporarily not available" 5xx bodies, which §7.5 keeps
+    # retryable. Deterministic tool-grant refusals are enforced by the
+    # preflight/hook checks in code, not by stderr matching.
+    if any(value in lowered for value in ("supergrok", "isn't available", "not included")):
         return "UNSUPPORTED", "当前 Grok 账号不具备 Imagine 图片能力", False
     if any(value in lowered for value in ("quota", "rate limit", "too many requests")):
         return "RATE_LIMIT", "Grok Build CLI 当前额度或速率受限", True
-    if any(value in lowered for value in ("permission", "denied", "blocked")):
-        return "UNSUPPORTED", "Grok Build CLI 图片工具权限未获允许", False
     return "UPSTREAM", "Grok Build CLI 图片任务执行失败", True
 
 
