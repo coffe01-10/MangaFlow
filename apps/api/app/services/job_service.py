@@ -517,6 +517,31 @@ def start_periodic_recovery() -> tuple[Thread, Event]:
     return thread, stop
 
 
+def _workflow_node_blocks_recovery(db: Session, node_run_id: str) -> bool:
+    """True when the owning workflow node forbids recovery-side scheduling.
+
+    Recovery re-runs interrupted WORK: a legitimate requeue target's node_run
+    is RUNNING, because reconcile_run flips the node to RUNNING immediately
+    before enqueueing its job. A node_run still WAITING has never been
+    scheduled — enqueueing it here would duplicate (and race) reconcile's
+    scheduling role. The default graph makes that race catastrophic: the
+    output.page job is planned with zero dependency rows (its only upstream,
+    quality.inspect, gets no planning job), so its WAITING row looked
+    recoverable during any approval pause; executing it raises
+    PAGE_NOT_PRODUCTION_READY, retries burn, and reconcile flips the PAUSED
+    run to FAILED mid-approval. A PAUSED run is likewise never auto-advanced
+    by recovery, whatever the node's state.
+    """
+
+    node_run = db.get(WorkflowNodeRun, node_run_id)
+    if node_run is None:
+        return False
+    if node_run.status == "WAITING":
+        return True
+    run = db.get(WorkflowRun, node_run.workflow_run_id)
+    return run is not None and run.status == "PAUSED"
+
+
 def recover_pending_jobs(db: Session) -> int:
     """Reclaim expired worker leases and re-enqueue recoverable jobs."""
     # Lazy import: keeps rq off the API import graph and avoids a module-level
@@ -689,6 +714,12 @@ def recover_pending_jobs(db: Session) -> int:
         with LOCAL_SUBMISSION_LOCK:
             already_submitted = job.id in LOCAL_SUBMITTED_JOB_IDS
         if already_submitted or not dependencies_complete(db, job):
+            continue
+        node_run_id = (job.request_parameters or {}).get("workflow_node_run_id")
+        if node_run_id and _workflow_node_blocks_recovery(db, node_run_id):
+            # Unscheduled workflow nodes (and every node of a PAUSED run) are
+            # reconcile's to schedule, not recovery's. Skipped rows do not
+            # count as recovered.
             continue
         if job.status == JobStatus.QUEUED:
             # Re-adopt a local-queue row without clobbering concurrent
