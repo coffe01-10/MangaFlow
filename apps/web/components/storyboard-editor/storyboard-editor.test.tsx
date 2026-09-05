@@ -538,9 +538,13 @@ describe("StoryboardEditor canvas (V02-31B)", () => {
     expect(drawer).toContain(".canvas-viewport { min-height: clamp(320px, calc(100vh - 320px), 480px); }");
   });
 
-  it("S19 ≥1280px：画布与检查器并排（样式契约）", () => {
+  it("S19 ≥1280px：画布与检查器并排；停靠检查器内部滚动（样式契约）", () => {
     const wide = css.slice(css.indexOf("@media (min-width: 1280px)"));
     expect(wide).toContain(".storyboard-worktable { grid-template-columns: minmax(320px, 1fr) 10px var(--inspector-width, 390px); }");
+    // 停靠检查器高度封顶：720p 下底部内容可达；仅限 ≥1280 停靠布局，
+    // 堆叠/抽屉布局保持页面级滚动（不阻断触摸滚动链）。
+    const block = css.slice(css.indexOf("@media (min-width: 1280px)"), css.indexOf("\n}", css.indexOf("@media (min-width: 1280px)")));
+    expect(block).toContain(".panel-inspector { max-height: calc(100vh - 96px); overflow-y: auto; overscroll-behavior: contain; }");
   });
 
   it("S20 气泡几何：拖动/缩放/尾巴进入整包 PUT；旧 region 只读兜底；拖出格外回弹", async () => {
