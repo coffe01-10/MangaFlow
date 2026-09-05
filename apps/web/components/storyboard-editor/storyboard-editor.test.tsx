@@ -671,7 +671,7 @@ describe("StoryboardEditor canvas (V02-31B)", () => {
     saveGeometry.mockReset();
     saveGeometry.mockImplementation(() => new Promise((resolve) => {
       releaseSave = resolve;
-    }));
+    }) as never);
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     const client = new QueryClient();
     render(
