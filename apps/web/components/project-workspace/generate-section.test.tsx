@@ -255,7 +255,7 @@ function GenerateHarness() {
     assetView: "characters",
     selectedChapterId: "chapter-1",
   });
-  const jobsWorkspace = useJobsWorkspace({ id: "project-1", section: "generate" });
+  const jobsWorkspace = useJobsWorkspace({ id: "project-1" });
   const [selectedPageId, setSelectedPageId] = useState<string | null>("page-1");
   const [localEditCandidate, setLocalEditCandidate] = useState<PageCandidate | null>(null);
   const workspace = useGenerationWorkspace({
@@ -410,7 +410,7 @@ describe("GenerateSection 关键行为", () => {
     });
     expect(screen.getAllByText("请先人工校对文字并暂选一张当前页候选").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "生成下一页" })).toBeDisabled();
-    expect(screen.getByText("这个批次还没有候选")).toBeInTheDocument();
+    expect(await screen.findByText("这个批次还没有候选")).toBeInTheDocument();
     expect(generateCandidate).not.toHaveBeenCalled();
   });
 

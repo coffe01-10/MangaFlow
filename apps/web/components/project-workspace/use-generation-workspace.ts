@@ -261,7 +261,6 @@ export function useGenerationWorkspace({
       queryClient.invalidateQueries({ queryKey: ["jobs", id] });
       queryClient.invalidateQueries({ queryKey: ["project", id] });
       queryClient.invalidateQueries({ queryKey: ["library", id] });
-      queryClient.invalidateQueries({ queryKey: ["page-readiness", selectedPage?.id] });
       queryClient.invalidateQueries({ queryKey: ["generation-workbench", selectedPage?.id] });
     },
   });

@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+import postcss from "postcss";
 import { describe, expect, it } from "vitest";
 
 // V02-51B (Issue #108) visual-system contracts from
@@ -230,10 +231,26 @@ describe("U6 reduced-motion 合并为一条全局契约", () => {
         }
       }
     }
-    expect(interactionTranslateSelectors.size).toBeGreaterThanOrEqual(26);
+    // 26 → 25: the dead .page-plan-card family (old page-plan storyboard UI)
+    // was removed together with its reduced-motion cancellation.
+    expect(interactionTranslateSelectors.size).toBeGreaterThanOrEqual(25);
     const block = mediaBlocks("(prefers-reduced-motion: reduce)")[0];
     for (const selector of interactionTranslateSelectors) {
       expect(block, `reduced-motion 块缺少对交互态位移的取消：${selector}`).toContain(selector);
     }
+  });
+});
+
+describe("样式表结构完整性（死代码清理防再犯）", () => {
+  it("globals.css 里没有任何规则选择器吞掉 @ 规则（postcss 解析验证）", () => {
+    // Line-based dead-rule removal once left a dangling selector that merged
+    // with the following @media block, silently dropping the ≥1440px sticky
+    // storyboard strip. Substring tests cannot see this; a real parser can.
+    const root = postcss.parse(stylesheet);
+    const swallowed: string[] = [];
+    root.walkRules((rule) => {
+      if (rule.selector.includes("@")) swallowed.push(rule.selector.slice(0, 80));
+    });
+    expect(swallowed).toEqual([]);
   });
 });

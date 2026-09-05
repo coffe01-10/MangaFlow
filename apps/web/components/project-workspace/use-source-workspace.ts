@@ -2,7 +2,7 @@
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 
 import { api } from "@/lib/api";
@@ -35,6 +35,7 @@ export function useSourceWorkspace({
   // 毫无反馈；加载期间提前输入的文本又会被晚到的响应覆盖。
   const [revisionLoadError, setRevisionLoadError] = useState("");
   const [revisionLoading, setRevisionLoading] = useState(false);
+  const revisionSeqRef = useRef(0);
 
   const importSource = useMutation({
     mutationFn: () => editingChapterId
@@ -111,22 +112,33 @@ export function useSourceWorkspace({
   }
 
   async function beginEditChapter(chapterId: string, title: string) {
+    // Sequence token: two rapid “修改原文” clicks must not let the older
+    // response overwrite the form the newer click is loading.
+    const seq = ++revisionSeqRef.current;
     setSelectedChapterId(chapterId);
     setRevisionLoadError("");
     setRevisionLoading(true);
     try {
       const values = await queryClient.fetchQuery({ queryKey: ["revisions", chapterId], queryFn: () => api.revisions(chapterId) });
+      if (seq !== revisionSeqRef.current) return;
       const revision = values[0];
       setEditingChapterId(chapterId);
       setSourceTitle(title);
       setSourceText(revision?.original_text ?? "");
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (error) {
+      if (seq !== revisionSeqRef.current) return;
       setRevisionLoadError(error instanceof Error ? error.message : "原文修订加载失败，请重试");
       setEditingChapterId(null);
     } finally {
-      setRevisionLoading(false);
+      if (seq === revisionSeqRef.current) setRevisionLoading(false);
     }
+  }
+
+  function cancelEditChapter() {
+    setEditingChapterId(null);
+    setSourceText("");
+    setRevisionLoadError("");
   }
 
   return {
@@ -147,6 +159,7 @@ export function useSourceWorkspace({
     planChapter,
     chooseSourceFile,
     beginEditChapter,
+    cancelEditChapter,
   };
 }
 

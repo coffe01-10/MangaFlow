@@ -60,6 +60,7 @@ export function StoryboardEditor({
   replanError,
   initialPageId,
   focusCharacterId,
+  onDirtyChange,
 }: {
   chapterId: string;
   pages: MangaPage[];
@@ -70,6 +71,7 @@ export function StoryboardEditor({
   replanError?: Error | null;
   initialPageId?: string | null;
   focusCharacterId?: string | null;
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const queryClient = useQueryClient();
   const [pageId, setPageId] = useState(
@@ -152,7 +154,22 @@ export function StoryboardEditor({
       ? panelOfDialogue(selection.dialogueId)
       : panels[0] ?? null;
 
-  const dirty = commandStack.index > 0;
+  // Leave protection covers geometry commands AND unsaved narrative drafts:
+  // typed dialogue text is the highest-effort content in the editor, so it must
+  // never vanish on page/section switch without confirmation. panelDraft only
+  // counts when it actually diverges from the server panel (opening the edit
+  // form alone is not an edit).
+  const panelDraftDirty = editingPanel && panelDraft && activePanel
+    ? JSON.stringify(panelDraft) !== JSON.stringify(makePanelDraft(activePanel))
+    : false;
+  const dirty = commandStack.index > 0
+    || Object.keys(dialogueDrafts).length > 0
+    || newDialogue !== null
+    || panelDraftDirty;
+  // The section-level chapter <select> cannot see editor state, so it needs
+  // the dirty flag lifted to guard chapter switches like the editor's own
+  // page switch does.
+  useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
 
   const persistInspectorWidth = (value: number) => {
     const next = Math.min(620, Math.max(320, value));
@@ -394,6 +411,10 @@ export function StoryboardEditor({
     setSelection(null);
     setEditingPanel(false);
     setPanelDraft(null);
+    // Drafts belong to the previous page's dialogues; keeping them would leak
+    // stale text into the next page's editor.
+    setDialogueDrafts({});
+    setNewDialogue(null);
     setPageId(nextPageId);
   };
 
@@ -431,7 +452,7 @@ export function StoryboardEditor({
     <label className="storyboard-page-select"><span>当前页面</span><select value={currentPage.id} onChange={(event) => switchPage(event.target.value)}>{pages.map((page) => <option key={page.id} value={page.id}>第 {page.page_number} 页 · {page.panel_count} 格</option>)}</select></label>
     <div className="storyboard-page-strip">{pages.map((page) => <button key={page.id} className={page.id === currentPage.id ? "active" : ""} onClick={() => switchPage(page.id)}><span>P.{String(page.page_number).padStart(3, "0")}</span><strong>{page.panel_count} 格</strong><small>{page.continuity_status === "NEEDS_REVIEW" ? "待复查" : page.selected_candidate_id ? "已采用" : "已规划"}</small></button>)}</div>
     <div className="storyboard-status"><div><strong>第 {currentPage.page_number} 页 · {currentPage.estimated_text_chars}/180 字 · {currentPage.estimated_bubbles}/8 气泡</strong><span>来自漫画剧本：{currentPage.scene_ids.length} 个场景 · {currentPage.beat_ids.length} 个情节拍；修改不会删除已有候选。</span></div><button disabled={replanPending} onClick={() => onReplan(currentPage.page_number)}><RotateCcw size={12} />从本页重新计算</button></div>
-    {notice && <p className="edit-notice"><Check size={13} />{notice}</p>}
+    {notice && <p className="edit-notice" role="status"><Check size={13} />{notice}</p>}
     {conflict && <div className="storyboard-conflict" role="alert"><CircleAlert size={14} /><span>{storyboardCopy.conflict}</span><button type="button" onClick={discardDraft}>{storyboardCopy.discardReload}</button></div>}
     {error && !conflict && <p className="form-error"><CircleAlert size={14} />{error.message}
       {/* 几何保存失败（网络错误等）同样保留草稿：可放弃并重新加载，不假装已保存。 */}

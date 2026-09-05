@@ -282,9 +282,12 @@ export function ConnectionPanel({
               <span key={key.id}>
                 <KeyRound size={12} />
                 {key.label} {key.key_hint} · {mapHealth(key.health_state)}
-                {key.cooldown_until && (
-                  <em>冷却至 {new Date(key.cooldown_until).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</em>
-                )}
+                {key.cooldown_until && (() => {
+                  const date = new Date(key.cooldown_until);
+                  return Number.isNaN(date.getTime()) ? null : (
+                    <em>冷却至 {date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</em>
+                  );
+                })()}
                 <button
                   type="button"
                   aria-label={`删除 ${key.label}`}

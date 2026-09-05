@@ -24,7 +24,7 @@ import {
 import { publicUrl, type AssetPurpose, type ImageModelAlias } from "@/lib/api";
 
 import { assetName, formatBytes, promptPreview } from "./display";
-import { generationKindLabels, kinds } from "./labels";
+import { assetStatusLabels, candidateStatusLabels, generationKindLabels, kinds, styleStatusLabels } from "./labels";
 import { AssetNameEditor, CandidateArtwork, ComicModeSwitch, ImageModelPicker } from "./shared";
 import { CharacterPackageWorkspace } from "./character-package-workspace";
 import { SceneWorkspace } from "./scene-workspace";
@@ -169,8 +169,8 @@ export function AssetsSection({
       {assetView === "characters" && <>
       <header className="canvas-header"><div><span>CHARACTER BIBLE / 角色资产</span><h2>姓名、绰号与参考图绑定</h2></div><small>{characters.data?.length ?? 0} 个角色</small></header>
       <div className="character-create">
-        <input className="text-input" value={characterName} onChange={(event) => setCharacterName(event.target.value)} placeholder="主要姓名（剧本默认使用）" />
-        <input className="text-input" value={characterAliases} onChange={(event) => setCharacterAliases(event.target.value)} placeholder="绰号，用逗号分隔" />
+        <input className="text-input" aria-label="新角色主要姓名" value={characterName} onChange={(event) => setCharacterName(event.target.value)} placeholder="主要姓名（剧本默认使用）" />
+        <input className="text-input" aria-label="新角色绰号，用逗号分隔" value={characterAliases} onChange={(event) => setCharacterAliases(event.target.value)} placeholder="绰号，用逗号分隔" />
         <button className="button ink compact" disabled={!characterName.trim() || createCharacter.isPending} onClick={() => createCharacter.mutate()}><Plus size={14} />添加角色</button>
       </div>
       <div className="character-strip">
@@ -184,7 +184,7 @@ export function AssetsSection({
       {assetView === "outfits" && <>
       <header className="canvas-header"><div><span>WARDROBE / 服装档案</span><h2>角色、服装与参考图逐一绑定</h2></div><small>{outfits.data?.length ?? 0} 份档案</small></header>
       <ImageModelPicker selected={activeDrawModel} onSelect={setDrawModel} options={modelOptions} label="本次服装预览模型" />
-      {selectedCharacterOutfitId && <section className="asset-live-results"><header><div><span>LIVE RESULT</span><strong>服装穿着图实时结果</strong></div><small>{outfits.data?.find((outfit) => outfit.id === selectedCharacterOutfitId)?.name ?? "服装"}</small></header><div className="asset-result-grid">{assetCandidates.data?.map((candidate) => <article key={candidate.id}><CandidateArtwork contentUrl={candidate.content_url} thumbnailUrl={candidate.thumbnail_url} label={`服装穿着图 ${candidate.ordinal}`} onOpen={openPreview} /><div><strong>服装穿着预览</strong><span>{candidate.status} · {candidate.resolution}</span><details><summary>实际提示词</summary><p>{promptPreview(candidate)}</p></details></div></article>)}</div></section>}
+      {selectedCharacterOutfitId && <section className="asset-live-results"><header><div><span>LIVE RESULT</span><strong>服装穿着图实时结果</strong></div><small>{outfits.data?.find((outfit) => outfit.id === selectedCharacterOutfitId)?.name ?? "服装"}</small></header><div className="asset-result-grid">{assetCandidates.data?.map((candidate) => <article key={candidate.id}><CandidateArtwork contentUrl={candidate.content_url} thumbnailUrl={candidate.thumbnail_url} label={`服装穿着图 ${candidate.ordinal}`} onOpen={openPreview} /><div><strong>服装穿着预览</strong><span>{candidateStatusLabels[candidate.status] ?? candidate.status} · {candidate.resolution}</span><details><summary>实际提示词</summary><p>{promptPreview(candidate)}</p></details></div></article>)}</div></section>}
       </>}
       <div className="asset-workbench">
         {assetView === "outfits" &&
@@ -215,7 +215,7 @@ export function AssetsSection({
           })}{!outfits.data?.length && <p className="profile-record-empty">还没有服装档案。完成上方 01–03 三步后建立。</p>}</div>
         </section>}
         {assetView === "style" && <>
-        <header className="canvas-header"><div><span>STYLE SYSTEM / 漫画风格</span><h2>色板、画面语言与测试图</h2></div><small>{styles.data?.length ?? 0} 份档案</small></header>
+        <header className="canvas-header"><div><span>STYLE SYSTEM / 漫画风格</span><h2>色板、画面语言与测试图</h2></div><small>{styles.isLoading ? "读取中…" : `${styles.data?.length ?? 0} 份档案`}</small></header>
         <ImageModelPicker selected={activeDrawModel} onSelect={setDrawModel} options={modelOptions} label="本次风格测试模型" />
         <section className="profile-workbench style-profile-workbench">
           <header><Palette size={16} /><div><strong>创建新风格档案</strong><span>这里的模式只用于下面正在创建的新档案，并会记住本项目上次选择</span></div></header>
@@ -228,8 +228,8 @@ export function AssetsSection({
           <div className="profile-subsection-title"><div><span>已保存档案</span><strong>逐份修改与切换</strong></div><p>下方开关修改的是该档案本身，不会改变上方新档案表单。</p></div><div className="profile-records">{styles.data?.map((style) => {
             const isActive = draft.default_style_id === style.id && style.status === "ACTIVE";
             const referenceCount = style.profile.reference_asset_ids?.length ?? 0;
-            return <article className={isActive ? "active style-production-record" : "style-production-record"} key={style.id}><div className="profile-record-title"><span>{isActive ? "CURRENT STYLE" : "STYLE PROFILE"}</span><strong>{style.name}</strong><small>{style.status} · {referenceCount} 张参考 · {style.locked_fields.length} 项锁定</small></div><ComicModeSwitch compact value={style.color_mode} disabled={updateStyleMode.isPending} onChange={(colorMode) => updateStyleMode.mutate({ style, colorMode })} />{style.status === "DRAFT" && <p className="reanalyze-note">彩色风格必须依次确认色板和测试图，再激活用于正式页面。</p>}<div className="profile-record-actions"><button type="button" disabled={!referenceCount || analyzeStyle.isPending} onClick={() => analyzeStyle.mutate(style.id)}>重新分析画面语言</button></div><StyleProductionPanel key={`${style.id}:${style.version}`} projectId={id} style={style} model={activeDrawModel} active={isActive} onOpen={openPreview} /></article>;
-          })}{!styles.data?.length && <p className="profile-record-empty">选择色彩模式并绑定参考页，建立第一份漫画风格档案。</p>}</div>
+            return <article className={isActive ? "active style-production-record" : "style-production-record"} key={style.id}><div className="profile-record-title"><span>{isActive ? "CURRENT STYLE" : "STYLE PROFILE"}</span><strong>{style.name}</strong><small>{styleStatusLabels[style.status] ?? style.status} · {referenceCount} 张参考 · {style.locked_fields.length} 项锁定</small></div><ComicModeSwitch compact value={style.color_mode} disabled={updateStyleMode.isPending} onChange={(colorMode) => updateStyleMode.mutate({ style, colorMode })} />{style.status === "DRAFT" && <p className="reanalyze-note">彩色风格必须依次确认色板和测试图，再激活用于正式页面。</p>}<div className="profile-record-actions"><button type="button" disabled={!referenceCount || analyzeStyle.isPending} onClick={() => analyzeStyle.mutate(style.id)}>重新分析画面语言</button></div><StyleProductionPanel key={`${style.id}:${style.version}`} projectId={id} style={style} model={activeDrawModel} active={isActive} onOpen={openPreview} /></article>;
+          })}{!styles.data?.length && !styles.isLoading && <p className="profile-record-empty">选择色彩模式并绑定参考页，建立第一份漫画风格档案。</p>}</div>
         </section></>}
       </div>
       {assetView === "references" && <header className="canvas-header"><div><span>REFERENCE INTAKE / 原始素材</span><h2>上传、分类与追溯原始参考图</h2></div><small>{assets.data?.length ?? 0} 个文件</small></header>}
@@ -249,13 +249,14 @@ export function AssetsSection({
           <div className="generated-reference-grid">{generatedReferenceCandidates.map(({ candidate, generationKind }, index) => {
             const imported = selectedOutfitAssets.includes(candidate.asset_id!);
             const importing = adoptGeneratedReference.isPending && adoptGeneratedReference.variables === candidate.asset_id;
-            return <article key={candidate.asset_id} className={imported ? "imported" : undefined}><CandidateArtwork contentUrl={candidate.content_url} thumbnailUrl={candidate.thumbnail_url} label={`生成素材 ${candidate.ordinal}`} eager={index === 0} onOpen={openPreview} /><div><strong>{generationKindLabels[generationKind] ?? generationKind}</strong><span>{candidate.variant ?? "生成候选"} · {candidate.resolution} · {candidate.status}</span><button type="button" disabled={imported || adoptGeneratedReference.isPending} onClick={() => adoptGeneratedReference.mutate(candidate.asset_id!)}>{importing ? <LoaderCircle className="spin" size={13} /> : imported ? <Check size={13} /> : <ImagePlus size={13} />}{importing ? "正在导入…" : imported ? "已加入待绑定" : "加入待绑定"}</button></div></article>;
+            return <article key={candidate.asset_id} className={imported ? "imported" : undefined}><CandidateArtwork contentUrl={candidate.content_url} thumbnailUrl={candidate.thumbnail_url} label={`生成素材 ${candidate.ordinal}`} eager={index === 0} onOpen={openPreview} /><div><strong>{generationKindLabels[generationKind] ?? generationKind}</strong><span>{candidate.variant ?? "生成候选"} · {candidate.resolution} · {candidateStatusLabels[candidate.status] ?? candidate.status}</span><button type="button" disabled={imported || adoptGeneratedReference.isPending} onClick={() => adoptGeneratedReference.mutate(candidate.asset_id!)}>{importing ? <LoaderCircle className="spin" size={13} /> : imported ? <Check size={13} /> : <ImagePlus size={13} />}{importing ? "正在导入…" : imported ? "已加入待绑定" : "加入待绑定"}</button></div></article>;
           })}</div>
         </section>}
       </>}
-      {uploadError && <p className="form-error"><CircleAlert size={15} />{uploadError}</p>}
-      {(deleteAsset.isError || reclassifyAsset.isError || adoptGeneratedReference.isError || bindExistingCharacterReference.isError || unbindExistingCharacterReference.isError) && <p className="form-error"><CircleAlert size={15} />{(deleteAsset.error ?? reclassifyAsset.error ?? adoptGeneratedReference.error ?? bindExistingCharacterReference.error ?? unbindExistingCharacterReference.error)?.message}</p>}
-      {(createOutfit.isError || updateOutfit.isError || createStyle.isError || updateStyleMode.isError) && <p className="form-error"><CircleAlert size={15} />{(createOutfit.error ?? updateOutfit.error ?? createStyle.error ?? updateStyleMode.error)?.message}</p>}
+      {uploadError && <p className="form-error" role="alert"><CircleAlert size={15} />{uploadError}</p>}
+      {(deleteAsset.isError || reclassifyAsset.isError || renameAsset.isError || adoptGeneratedReference.isError || bindExistingCharacterReference.isError || unbindExistingCharacterReference.isError) && <p className="form-error" role="alert"><CircleAlert size={15} />{(deleteAsset.error ?? reclassifyAsset.error ?? renameAsset.error ?? adoptGeneratedReference.error ?? bindExistingCharacterReference.error ?? unbindExistingCharacterReference.error)?.message}</p>}
+      {(createOutfit.isError || updateOutfit.isError || deleteOutfit.isError || createStyle.isError || updateStyleMode.isError) && <p className="form-error" role="alert"><CircleAlert size={15} />{(createOutfit.error ?? updateOutfit.error ?? deleteOutfit.error ?? createStyle.error ?? updateStyleMode.error)?.message}</p>}
+      {(createCharacter.isError || updateCharacter.isError || generateOutfitPreview.isError || analyzeStyle.isError) && <p className="form-error" role="alert"><CircleAlert size={15} />{(createCharacter.error ?? updateCharacter.error ?? generateOutfitPreview.error ?? analyzeStyle.error)?.message}</p>}
       {visibleAssetKinds.map(([kind, label]) => {
         const grouped = assets.data?.filter((asset) => asset.kind === kind) ?? [];
         return <section className="asset-purpose-group" key={kind}>
@@ -269,7 +270,7 @@ export function AssetsSection({
             const linkedStyles = kind === "STYLE_REFERENCE" ? styles.data?.filter((style) => style.profile.reference_asset_ids?.includes(asset.id)) ?? [] : [];
             return <article className={selected ? "asset-card selected" : "asset-card"} key={asset.id}>
               <div className={`asset-thumb thumb-${(index % 3) + 1}`}>{asset.content_url ? <Image src={publicUrl(asset.content_url)!} alt={assetName(asset)} width={74} height={74} unoptimized /> : <FileImage size={27} />}<span>{asset.width && asset.height ? `${asset.width}×${asset.height}` : asset.mime_type}</span></div>
-              <div><AssetNameEditor asset={asset} pending={renameAsset.isPending} onSave={(displayName) => renameAsset.mutate({ assetId: asset.id, displayName })} /><p>{label} · {formatBytes(asset.byte_size)}</p><span className="tiny-status"><Check size={11} />{asset.status}</span>
+              <div><AssetNameEditor asset={asset} pending={renameAsset.isPending && renameAsset.variables?.assetId === asset.id} error={renameAsset.isError && renameAsset.variables?.assetId === asset.id ? renameAsset.error : null} onSave={(displayName) => renameAsset.mutate({ assetId: asset.id, displayName })} /><p>{label} · {formatBytes(asset.byte_size)}</p><span className="tiny-status"><Check size={11} />{assetStatusLabels[asset.status] ?? asset.status}</span>
                 {kind === "OUTFIT_REFERENCE" && <p className={linkedOutfits.length ? "reference-binding bound" : "reference-binding"}><Link2 size={10} />{linkedOutfits.length ? `已绑定：${linkedOutfits.map((outfit) => `${characters.data?.find((character) => character.id === outfit.character_id)?.primary_name ?? "未知角色"} → ${outfit.name}`).join("；")}` : "尚未写入服装档案"}</p>}
                 {kind === "STYLE_REFERENCE" && <p className={linkedStyles.length ? "reference-binding bound" : "reference-binding"}><Link2 size={10} />{linkedStyles.length ? `已用于：${linkedStyles.map((style) => `${style.name}（${style.color_mode === "monochrome" ? "黑白" : "彩色"}）`).join("；")}` : "尚未写入风格档案"}</p>}
                 {kind === "CHARACTER_REFERENCE" && linkedCharacter && !characterReference ? <p className="reference-binding bound"><Link2 size={10} />当前绑定：{linkedCharacter.primary_name}</p> : null}

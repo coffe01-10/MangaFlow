@@ -75,6 +75,19 @@ export interface RuntimeSettings {
   version: number;
 }
 
+export type RuntimeSettingsUpdate = Partial<
+  Pick<
+    RuntimeSettings,
+    | "queue_mode"
+    | "job_timeout_seconds"
+    | "max_auto_repairs"
+    | "default_concurrency"
+    | "health_check_interval_seconds"
+    | "ui_poll_interval_seconds"
+    | "workflow_autosave_ms"
+  >
+> & { version: number };
+
 export interface DiagnosticCheck {
   id: string;
   label: string;
@@ -1419,7 +1432,7 @@ export const api = {
     request<void>(`/projects/${id}?confirm_name=${encodeURIComponent(confirmName)}`, { method: "DELETE" }),
   models: () => request<ModelCapability[]>("/models"),
   runtimeSettings: () => request<RuntimeSettings>("/settings/runtime"),
-  updateRuntimeSettings: (payload: Partial<RuntimeSettings> & { version: number }) =>
+  updateRuntimeSettings: (payload: RuntimeSettingsUpdate) =>
     request<RuntimeSettings>("/settings/runtime", { method: "PATCH", body: JSON.stringify(payload) }),
   diagnostics: () => request<Diagnostics>("/settings/diagnostics"),
   usageSummary: (filters: UsageFilters = {}) => {

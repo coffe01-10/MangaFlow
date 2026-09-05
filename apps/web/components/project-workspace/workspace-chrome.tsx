@@ -22,7 +22,7 @@ import type { PointerEvent as ReactPointerEvent } from "react";
 import { Pencil } from "lucide-react";
 import type { Job, PageCandidate } from "@/lib/api";
 
-import { navigationItems } from "./labels";
+import { jobStatusLabels, navigationItems } from "./labels";
 import type { WorkspaceSection } from "./types";
 
 export function WorkspaceTopbar({
@@ -53,10 +53,7 @@ export function WorkspaceSidebar({
   navCollapsed,
   setNavOpen,
   projectName,
-  chapterCount,
-  needsChapters,
-  pageCount,
-  needsPages,
+  summary,
   section,
   projectPath,
   rememberWorkspaceScroll,
@@ -66,10 +63,7 @@ export function WorkspaceSidebar({
   navCollapsed: boolean;
   setNavOpen: (open: boolean) => void;
   projectName: string;
-  chapterCount: number;
-  needsChapters: boolean;
-  pageCount: number;
-  needsPages: boolean;
+  summary: string;
   section: WorkspaceSection;
   projectPath: (target: string) => string;
   rememberWorkspaceScroll: () => void;
@@ -80,7 +74,7 @@ export function WorkspaceSidebar({
       <button className={navOpen ? "workspace-nav-backdrop show" : "workspace-nav-backdrop"} onClick={() => setNavOpen(false)} aria-label="关闭项目导航" />
       <aside className={["workspace-left", navOpen ? "open" : "", navCollapsed ? "rail" : ""].filter(Boolean).join(" ")}>
         <button type="button" className="workspace-resizer" aria-label="拖动调整项目侧边栏宽度" onPointerDown={onSidebarResize} />
-        <div className="workspace-project-title"><span>PROJECT / 01</span><h1>{projectName}</h1><p>{needsChapters ? `${chapterCount} 章` : "漫画生产工作区"}{needsPages ? ` · ${pageCount} 页已规划` : ""}</p></div>
+        <div className="workspace-project-title"><span>PROJECT / 01</span><h1>{projectName}</h1><p>{summary}</p></div>
         <nav className="workspace-steps">
           {navigationItems.map(([target, label, , index, Icon]) => <Link scroll={false} key={target} href={projectPath(target)} className={section === target ? "active" : ""} aria-current={section === target ? "page" : undefined} onClick={rememberWorkspaceScroll}><Icon size={17} /><span>{label}</span><i>{index}</i></Link>)}
           <span className="workspace-nav-divider" />
@@ -175,5 +169,5 @@ export function QueueDock({
     window.localStorage.setItem("mangaflow.queue-dock-hidden", String(hidden));
   };
 
-  return queueDockHidden ? <button type="button" className="queue-dock-reveal" aria-label="显示任务中心快捷栏" title="显示任务中心快捷栏" onClick={() => toggleQueueDock(false)}><ListTodo size={16} /><span className={queueStats.waiting ? "queue-light active" : "queue-light"} /><ChevronUp size={13} /></button> : <><Link className="queue-dock" href={projectPath("jobs")}><div><span className={queueStats.waiting ? "queue-light active" : "queue-light"} /><strong>打开任务中心</strong><small>{latestJob ? `${latestJobLabel} · ${latestJob.status}` : section === "jobs" || section === "generate" ? "当前没有任务" : "查看生成、解析与检查进度"}</small></div>{(section === "jobs" || section === "generate") && <div><span>并发上限 {concurrency}</span><i /><span>{queueStats.waiting} 等待</span><i /><span>{queueStats.failed} 失败</span></div>}</Link><button type="button" className="queue-dock-hide" aria-label="隐藏任务中心快捷栏" title="隐藏任务中心快捷栏" onClick={() => toggleQueueDock(true)}><ChevronDown size={15} /></button></>;
+  return queueDockHidden ? <button type="button" className="queue-dock-reveal" aria-label="显示任务中心快捷栏" title="显示任务中心快捷栏" onClick={() => toggleQueueDock(false)}><ListTodo size={16} /><span className={queueStats.waiting ? "queue-light active" : "queue-light"} /><ChevronUp size={13} /></button> : <><Link className="queue-dock" href={projectPath("jobs")}><div><span className={queueStats.waiting ? "queue-light active" : "queue-light"} /><strong>打开任务中心</strong><small>{latestJob ? `${latestJobLabel} · ${jobStatusLabels[latestJob.status] ?? latestJob.status}` : section === "jobs" || section === "generate" ? "当前没有任务" : "查看生成、解析与检查进度"}</small></div>{(section === "jobs" || section === "generate") && <div><span>并发上限 {concurrency}</span><i /><span>{queueStats.waiting} 等待</span><i /><span>{queueStats.failed} 失败</span></div>}</Link><button type="button" className="queue-dock-hide" aria-label="隐藏任务中心快捷栏" title="隐藏任务中心快捷栏" onClick={() => toggleQueueDock(true)}><ChevronDown size={15} /></button></>;
 }

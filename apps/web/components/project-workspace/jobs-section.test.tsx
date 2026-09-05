@@ -38,14 +38,17 @@ function jobFixture(overrides: Partial<Job>): Job {
 }
 
 function JobsHarness({ openPreview = () => undefined }: { openPreview?: (url: string, label: string) => void }) {
-  const workspace = useJobsWorkspace({ id: "project-1", section: "jobs" });
+  const workspace = useJobsWorkspace({ id: "project-1" });
   return (
-    <JobsSection
-      jobs={workspace.jobs}
-      workspace={workspace}
-      modelOptions={[]}
-      openPreview={openPreview}
-    />
+    <>
+      <JobsSection
+        jobs={workspace.jobs}
+        workspace={workspace}
+        modelOptions={[]}
+        openPreview={openPreview}
+      />
+      <span data-testid="dock-latest">{workspace.dockJobs.data?.[0]?.id ?? "none"}</span>
+    </>
   );
 }
 
@@ -336,6 +339,38 @@ describe("JobsSection", () => {
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "恢复" })).toBeInTheDocument();
     });
+  });
+
+  it("历史视图下任务快捷栏仍读取近期视图：dock 不被归档筛选污染", async () => {
+    jobsApi.mockReset().mockImplementation((_projectId: string, archived?: boolean) =>
+      Promise.resolve(
+        archived
+          ? [jobFixture({ id: "job-archived", status: "FAILED", archived_at: "2026-08-28T00:00:00Z" })]
+          : [jobFixture({ id: "job-active", status: "RUNNING", progress: 60 })],
+      ),
+    );
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <JobsHarness />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("dock-latest")).toHaveTextContent("job-active");
+    });
+    fireEvent.click(screen.getByRole("button", { name: "历史记录" }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "恢复" })).toBeInTheDocument();
+    });
+
+    // The dock keeps reading the active view: the archived-only fetch that
+    // feeds the history list must never leak into the dock's latest-job line.
+    expect(screen.getByTestId("dock-latest")).toHaveTextContent("job-active");
+    expect(screen.getByTestId("dock-latest")).not.toHaveTextContent("job-archived");
   });
 
   it("任务结果入口把原图 content URL 交给 lightbox，不改写为缩略图（V02-51B §7）", async () => {

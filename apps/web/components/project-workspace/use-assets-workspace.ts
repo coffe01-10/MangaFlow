@@ -140,7 +140,7 @@ export function useAssetsWorkspace({
       queryClient.invalidateQueries({ queryKey: ["styles", id] });
       queryClient.invalidateQueries({ queryKey: ["asset-candidates"] });
       queryClient.invalidateQueries({ queryKey: ["candidates"] });
-      queryClient.invalidateQueries({ queryKey: ["page-readiness"] });
+      queryClient.invalidateQueries({ queryKey: ["generation-workbench"] });
     },
   });
 
@@ -311,7 +311,11 @@ export function useAssetsWorkspace({
       setSelectedStyleAssets([]);
       setStyleLockedFields("");
       queryClient.invalidateQueries({ queryKey: ["styles", id] });
-      api.analyzeStyle(style.id).then(() => queryClient.invalidateQueries({ queryKey: ["jobs", id] }));
+      // The auto-triggered analysis must not fail silently: an unhandled
+      // rejection left the style stuck in DRAFT with no recovery hint.
+      api.analyzeStyle(style.id)
+        .then(() => queryClient.invalidateQueries({ queryKey: ["jobs", id] }))
+        .catch(() => setUploadError("风格分析任务启动失败；请在已保存档案中点击“重新分析画面语言”重试。"));
     },
   });
 
