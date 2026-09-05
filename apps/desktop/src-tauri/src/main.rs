@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use mangaflow_desktop_shell_core::handshake::{get_status, spawn_helper, HelperConfig, SpawnedHelper};
-use mangaflow_desktop_shell_core::logs::export_logs_zip;
+use mangaflow_desktop_shell_core::logs::export_logs_zip_overwrite;
 use mangaflow_desktop_shell_core::picker::{
     read_registered_file, validate_picked_directory, validate_picked_file, PickError, PickKind,
     PickedFile, PickedRegistry,
@@ -81,35 +81,30 @@ fn desktop_health_probe(origin: tauri::State<ApiOrigin>) -> Result<u16, String> 
         .map_err(|error| error.to_string())
 }
 
-/// Export the unified logs directory to a ZIP archive. Without a
-/// `destination` argument a native save dialog lets the user choose the
-/// path; with one, the same shell-core validation applies (absolute, no
-/// `.`/`..`, never inside the user-data root). Returns `Ok(None)` when the
-/// user cancels the dialog.
+/// Export the unified logs directory to a ZIP archive through a native save
+/// dialog; `Ok(None)` means the user cancelled. #149: the destination is
+/// chosen exclusively by the user inside the `rfd` dialog — this command no
+/// longer accepts a renderer-supplied `destination` argument (an unguarded
+/// arbitrary-overwrite primitive), and shell-core refuses an existing
+/// destination unless the caller carries the dialog's overwrite
+/// confirmation. Returns `Ok(None)` when the user cancels the dialog.
 #[tauri::command]
-fn desktop_export_logs(
-    destination: Option<String>,
-    paths: tauri::State<ShellPaths>,
-) -> Result<Option<ExportReportDto>, String> {
-    let destination = match destination {
-        Some(raw) => PathBuf::from(raw),
-        None => {
-            return match rfd::FileDialog::new()
-                .set_title("导出运行日志")
-                .set_file_name("mangaflow-logs.zip")
-                .add_filter("ZIP 归档", &["zip"])
-                .save_file()
-            {
-                Some(path) => run_export(&paths.user_data, &path),
-                None => Ok(None),
-            }
-        }
+fn desktop_export_logs(paths: tauri::State<ShellPaths>) -> Result<Option<ExportReportDto>, String> {
+    let Some(path) = rfd::FileDialog::new()
+        .set_title("导出运行日志")
+        .set_file_name("mangaflow-logs.zip")
+        .add_filter("ZIP 归档", &["zip"])
+        .save_file()
+    else {
+        return Ok(None);
     };
-    run_export(&paths.user_data, &destination)
+    run_export(&paths.user_data, &path)
 }
 
 fn run_export(user_data: &Path, destination: &Path) -> Result<Option<ExportReportDto>, String> {
-    export_logs_zip(user_data, destination)
+    // The only sanctioned overwrite of an existing destination: the rfd save
+    // dialog above already prompted the user about replacing it (#149).
+    export_logs_zip_overwrite(user_data, destination)
         .map(|report| {
             Some(ExportReportDto {
                 destination: report.destination,
@@ -243,10 +238,18 @@ fn stop_helper(helper: &mut Option<SpawnedHelper>) {
             .stop(std::time::Duration::from_secs(5))
             .ok()
             .flatten();
-        let _ = spawned
+        // #150: a failing milestone or journal write at shutdown is no longer
+        // silently discarded — stderr is the one channel a broken logging
+        // system may still use without recursing into itself.
+        if let Err(error) = spawned
             .log
-            .record("stopped", &serde_json::json!({ "exit_code": exit_code }));
-        let _ = spawned.layout.mark_stopped(exit_code);
+            .record("stopped", &serde_json::json!({ "exit_code": exit_code }))
+        {
+            eprintln!("mangaflow-desktop: run log 'stopped' milestone failed: {error}");
+        }
+        if let Err(error) = spawned.layout.mark_stopped(exit_code) {
+            eprintln!("mangaflow-desktop: marking the ownership journal stopped failed: {error}");
+        }
     }
 }
 

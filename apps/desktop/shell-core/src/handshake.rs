@@ -43,6 +43,25 @@ impl HelperConfig {
     }
 }
 
+/// Force the helper's Python stdio/stderr encoding to UTF-8 regardless of
+/// the host's ANSI codepage (#150): on zh-CN Windows the default for
+/// redirected streams is GBK, which would mix encodings inside the
+/// otherwise-UTF-8 log tree the exporter ships. Kept as its own function so
+/// the encoding contract is unit-testable without spawning anything.
+pub(crate) fn force_helper_utf8(command: &mut Command) {
+    command.env("PYTHONUTF8", "1");
+    command.env("PYTHONIOENCODING", "utf-8");
+}
+
+/// Record a shell milestone, surfacing a failure on stderr instead of
+/// discarding it (#150). stderr — not the logger itself — is the only
+/// channel a failing logging system may use without recursing into itself.
+fn try_record(log: &RunLog, event: &str, fields: &serde_json::Value) {
+    if let Err(error) = log.record(event, fields) {
+        eprintln!("mangaflow-desktop: run log '{event}' milestone failed: {error}");
+    }
+}
+
 pub struct SpawnedHelper {
     pub tree: OwnedTree,
     pub ready: ReadyPayload,
@@ -77,7 +96,12 @@ pub fn spawn_helper(config: &HelperConfig, user_data: &Path) -> Result<SpawnedHe
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::from(helper_stderr));
-    let _ = run_log.record("spawn", &serde_json::json!({ "token": layout.token }));
+    force_helper_utf8(&mut command);
+    try_record(
+        &run_log,
+        "spawn",
+        &serde_json::json!({ "token": layout.token }),
+    );
 
     let mut tree = OwnedTree::spawn(command)?;
     let stdout = tree.child.stdout.take().expect("piped stdout");
@@ -107,7 +131,8 @@ pub fn spawn_helper(config: &HelperConfig, user_data: &Path) -> Result<SpawnedHe
         .map_err(SpawnError::Io)?;
     let ready = verify_ready_line(&line, &layout.token, tree.pid()).map_err(SpawnError::Verify)?;
     verify_journal(&layout.journal_path(), &ready).map_err(SpawnError::Verify)?;
-    let _ = run_log.record(
+    try_record(
+        &run_log,
         "ready_verified",
         &serde_json::json!({ "pid": ready.pid, "port": ready.port }),
     );
@@ -115,11 +140,11 @@ pub fn spawn_helper(config: &HelperConfig, user_data: &Path) -> Result<SpawnedHe
     let stdin = tree.child.stdin.as_mut().expect("piped stdin");
     writeln!(stdin, "{GO_PREFIX}{}", layout.token).map_err(SpawnError::Io)?;
     stdin.flush().map_err(SpawnError::Io)?;
-    let _ = run_log.record("go_sent", &serde_json::json!({}));
+    try_record(&run_log, "go_sent", &serde_json::json!({}));
 
     wait_for_health(&ready.api_origin, config.health_timeout)
         .map_err(|_| SpawnError::HealthTimeout)?;
-    let _ = run_log.record("healthy", &serde_json::json!({}));
+    try_record(&run_log, "healthy", &serde_json::json!({}));
     Ok(SpawnedHelper {
         tree,
         ready,
@@ -183,5 +208,33 @@ fn wait_for_health(origin: &str, timeout: Duration) -> std::io::Result<()> {
             ));
         }
         std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #150 regression: the helper command must force UTF-8 stdio encoding
+    /// (`PYTHONUTF8` + `PYTHONIOENCODING`) so its stderr never mixes GBK
+    /// bytes into the UTF-8 log tree on an ANSI-codepage Windows host.
+    #[test]
+    fn helper_command_forces_utf8_stdio_environment() {
+        let mut command = Command::new("irrelevant-binary");
+        force_helper_utf8(&mut command);
+        let envs: std::collections::BTreeMap<&std::ffi::OsStr, &std::ffi::OsStr> = command
+            .get_envs()
+            .filter_map(|(key, value)| value.map(|value| (key, value)))
+            .collect();
+        assert_eq!(
+            envs.get(std::ffi::OsStr::new("PYTHONUTF8")),
+            Some(&std::ffi::OsStr::new("1")),
+            "{envs:?}"
+        );
+        assert_eq!(
+            envs.get(std::ffi::OsStr::new("PYTHONIOENCODING")),
+            Some(&std::ffi::OsStr::new("utf-8")),
+            "{envs:?}"
+        );
     }
 }
