@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { useState, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api, type Character, type GenerationWorkbench, type InspectionResult, type Job, type MangaPage, type PageCandidate, type SceneAsset, type Script, type StoryboardPanel } from "@/lib/api";
+import { api, ApiError, type Character, type GenerationWorkbench, type InspectionResult, type Job, type MangaPage, type PageCandidate, type SceneAsset, type Script, type StoryboardPanel } from "@/lib/api";
 
 import { GenerateSection } from "./generate-section";
 import { useGenerationWorkspace } from "./use-generation-workspace";
@@ -40,6 +40,8 @@ const characterPackagesApi = vi.spyOn(api, "characterPackages");
 const characterPackageApi = vi.spyOn(api, "characterPackage");
 const directorGroupsApi = vi.spyOn(api, "directorCommandGroups");
 const directorProposeApi = vi.spyOn(api, "directorProposeCommandGroup");
+const upscaleApi = vi.spyOn(api, "upscaleCandidate");
+const selectApi = vi.spyOn(api, "selectCandidate");
 
 function pageFixture(overrides: Partial<MangaPage> = {}): MangaPage {
   return {
@@ -661,6 +663,121 @@ describe("GenerateSection 关键行为", () => {
     await waitFor(() => {
       expect(workbenchApi.mock.calls.length).toBeGreaterThan(before);
     });
+  });
+
+  it("检查任务进入终态后立即失效 workbench，门禁不依赖无关刷新", async () => {
+    const candidate = candidateFixture({ status: "COMPLETED", is_selected: true });
+    workbenchApi.mockResolvedValue(workbenchFixture({
+      candidates: [candidate],
+      selected_candidate: candidate,
+    }));
+    candidatesApi.mockResolvedValue([candidate]);
+    jobsApi.mockResolvedValue([jobFixture({ status: "CONSISTENCY_CHECKING", progress: 40 })]);
+    inspectCandidate.mockResolvedValue(jobFixture({ status: "CONSISTENCY_CHECKING" }));
+    const { client } = renderGenerate();
+    const inspectButton = await screen.findByRole("button", { name: "视觉检查" });
+    fireEvent.click(inspectButton);
+    await waitFor(() => {
+      expect(inspectCandidate).toHaveBeenCalledWith("candidate-1");
+    });
+    const before = workbenchApi.mock.calls.length;
+    jobsApi.mockResolvedValue([jobFixture({ status: "COMPLETED" })]);
+    client.setQueryData(["jobs", "project-1", false], [jobFixture({ status: "COMPLETED" })]);
+    // waitFor resolves within 1s — shorter than the 3s poll interval, so the
+    // refetch can only come from the terminal-state invalidation.
+    await waitFor(() => {
+      expect(workbenchApi.mock.calls.length).toBeGreaterThan(before);
+    });
+  });
+
+  it("F24 检查已通过但门禁要求复查时，文案解释输入已更新而不是检查失败", async () => {
+    const candidate = candidateFixture({ status: "INSPECTED", is_selected: true });
+    workbenchApi.mockResolvedValue(workbenchFixture({
+      candidates: [candidate],
+      selected_candidate: candidate,
+      production: {
+        page_id: "page-1",
+        state: "NEEDS_REPAIR",
+        ready: false,
+        selected_candidate_id: "candidate-1",
+        blockers: [{
+          code: "QUALITY_REVIEW_REQUIRED",
+          message: "视觉检查未通过，请修复或重新生成后再次检查",
+          section: "generate",
+          candidate_id: "candidate-1",
+        }],
+      },
+    }));
+    candidatesApi.mockResolvedValue([candidate]);
+    inspectCandidate.mockResolvedValue(jobFixture({ status: "COMPLETED" }));
+    inspectionsApi.mockResolvedValue(["SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"].map((category, index) => ({
+      id: `insp-${index}`,
+      candidate_id: "candidate-1",
+      category,
+      outcome: "PASS",
+      score: 0.9,
+      details: { summary: "一致" },
+      regions: [],
+      severity: "INFO",
+      created_at: "2026-08-29T10:00:00Z",
+    })));
+    renderGenerate();
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "视觉检查" })).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "视觉检查" }));
+    await waitFor(() => {
+      // The gate paragraph and the bottom next-page row both carry the copy.
+      expect(
+        screen.getAllByText("分镜、风格或参考已更新，请重新运行视觉检查，确认当前候选仍然有效").length,
+      ).toBeGreaterThan(0);
+    });
+    expect(screen.queryByText("视觉检查未通过，请修复或重新生成后再次检查")).toBeNull();
+  });
+
+  it("升至 2K 前必须确认计费，取消时不发起升清请求", async () => {
+    const candidate = candidateFixture({ status: "COMPLETED", is_selected: false });
+    workbenchApi.mockResolvedValue(workbenchFixture({
+      candidates: [candidate],
+      selected_candidate: candidate,
+    }));
+    candidatesApi.mockResolvedValue([candidate]);
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    renderGenerate();
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "升至 2K" })).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "升至 2K" }));
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(upscaleApi).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+
+  it("暂选被服务端拒绝时，409 blockers 逐条展示而不是一句泛化文案", async () => {
+    const candidate = candidateFixture({ status: "COMPLETED", is_selected: false });
+    workbenchApi.mockResolvedValue(workbenchFixture({
+      candidates: [candidate],
+      selected_candidate: null,
+    }));
+    candidatesApi.mockResolvedValue([candidate]);
+    selectApi.mockRejectedValueOnce(new ApiError("候选尚未达到采用标准", 409, {
+      code: "CANDIDATE_NOT_APPROVABLE",
+      message: "候选尚未达到采用标准",
+      blockers: [
+        { code: "SEVERE_CHARACTER_ISSUE", message: "CHARACTER 存在严重问题，不能采用" },
+        { code: "TEXT_REVIEW_REQUIRED", message: "请先人工校对页面中文并确认采用" },
+      ],
+    }));
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderGenerate();
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "人工校对并暂选" })).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "人工校对并暂选" }));
+    await waitFor(() => {
+      expect(screen.getByText(/CHARACTER 存在严重问题，不能采用；请先人工校对页面中文并确认采用/)).toBeInTheDocument();
+    });
+    confirmSpy.mockRestore();
   });
 
   it("生成 mutation 失败时展示用户可见错误", async () => {
