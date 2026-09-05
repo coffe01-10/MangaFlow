@@ -123,7 +123,22 @@ def create_export(
     chapter_id: str,
     payload: ExportRequest,
     db: Session = Depends(get_db),
+    reuse_existing: bool = False,
 ) -> ExportBundle:
+    """Export a chapter's selected pages into a bundle artifact.
+
+    ``reuse_existing`` is a worker-side idempotency switch (default off, so
+    direct HTTP callers keep the historical one-row-per-POST behavior). The
+    artifact path is deterministic given the selected candidate set, so an
+    existing row with the same (chapter, export_type, storage_key) proves this
+    exact artifact was already committed; it is returned as-is without
+    rewriting the file or inserting a duplicate row. The workflow export node
+    passes True because lease-expiry reclaim and RQ redelivery re-execute the
+    node after a previous attempt already committed the bundle row but before
+    the job completion CAS. The check-then-insert is not atomic: truly
+    concurrent double-execution would still need a DB unique constraint on
+    (chapter_id, export_type, storage_key), which requires a migration.
+    """
     chapter = db.get(Chapter, chapter_id)
     if not chapter:
         raise HTTPException(status_code=404, detail="章节不存在")
@@ -135,9 +150,32 @@ def create_export(
     token = hashlib.sha256(
         "|".join(candidate.id for _, candidate, _ in selected).encode("utf-8")
     ).hexdigest()[:12]
+    # The artifact path is deterministic given the selected candidate set, so
+    # it doubles as the idempotency key for worker-side re-execution.
+    destination = output_dir / {
+        "PNG": f"{token}-pages.zip",
+        "PDF": f"{token}-chapter.pdf",
+    }.get(payload.export_type, f"{token}-project.json")
+
+    if reuse_existing:
+        storage_key = destination.relative_to(settings.storage_root).as_posix()
+        existing = db.scalar(
+            select(ExportBundle)
+            .where(
+                ExportBundle.chapter_id == chapter.id,
+                ExportBundle.export_type == payload.export_type,
+                ExportBundle.storage_key == storage_key,
+            )
+            .order_by(ExportBundle.created_at.desc(), ExportBundle.id.desc())
+            .limit(1)
+        )
+        if existing is not None:
+            # The committed row is the idempotency marker: it is only written
+            # after the artifact has been renamed into place, so the file it
+            # points at is complete.
+            return existing
 
     if payload.export_type == "PNG":
-        destination = output_dir / f"{token}-pages.zip"
 
         def _write_zip(temp: Path) -> None:
             with zipfile.ZipFile(temp, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -149,7 +187,6 @@ def create_export(
 
         _write_export_atomically(destination, _write_zip)
     elif payload.export_type == "PDF":
-        destination = output_dir / f"{token}-chapter.pdf"
         # Lazy opens: Pillow encodes frames one at a time, so a 4K long
         # chapter no longer decodes every page's bitmap into memory at once.
         images = [Image.open(_asset_path(asset)) for _, _, asset in selected]
@@ -167,7 +204,6 @@ def create_export(
             for image in images:
                 image.close()
     else:
-        destination = output_dir / f"{token}-project.json"
         manifest: dict[str, dict] = {}
         for _, candidate, asset in selected:
             related_ids = [asset.id]
