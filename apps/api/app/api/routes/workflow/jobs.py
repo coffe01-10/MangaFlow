@@ -170,6 +170,10 @@ def retry(job_id: str, db: Session = Depends(get_db)) -> GenerationJob:
     job = db.get(GenerationJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
+    # An archived row is invisible in the default list; retrying it would
+    # re-run paid work the user filed away. Restore first, then retry.
+    if job.archived_at is not None:
+        raise HTTPException(status_code=409, detail="已归档的任务不能重试，请先恢复后再试")
     # reset_for_retry silently ignores every other status and would return the
     # unchanged row as a 200 "success"; reject those no-ops up front.
     if job.status not in {JobStatus.FAILED, JobStatus.NEEDS_REVIEW, JobStatus.WAITING}:

@@ -97,3 +97,27 @@ def test_retry_still_resets_failed_job(client, db_session, monkeypatch):
     assert row.status == JobStatus.WAITING
     assert row.started_at is None
     assert row.finished_at is None
+
+
+def test_retry_rejects_archived_failed_job(client, db_session):
+    """An archived FAILED job must be restored before it can retry.
+
+    Pre-fix the retry endpoint happily reset an archived row to WAITING and
+    re-enqueued paid work that is invisible in the default jobs list.
+    """
+
+    archived = _seed_job(
+        db_session,
+        JobStatus.FAILED,
+        finished_at=utcnow(),
+        archived_at=utcnow(),
+    )
+
+    response = client.post(f"/api/v1/jobs/{archived.id}/retry")
+
+    assert response.status_code == 409, response.json()
+    assert "归档" in response.json()["detail"]
+    db_session.expire_all()
+    row = db_session.get(GenerationJob, archived.id)
+    assert row.status == JobStatus.FAILED
+    assert row.archived_at is not None
