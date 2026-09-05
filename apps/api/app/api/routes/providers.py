@@ -71,6 +71,32 @@ from app.services.provider_presets import ensure_provider_presets, preset_dicts
 router = APIRouter(prefix="/providers")
 routing_router = APIRouter(prefix="/routing-policies")
 
+# Declared test type → real smoke operation in connection_verifier. IMAGE
+# keeps its paid generation semantics (acknowledge_cost is enforced by
+# ConnectionTestRequest). BENCHMARK has no verifier implementation yet.
+_CONNECTION_TEST_OPERATIONS: dict[str, str] = {
+    "TEXT": "structured_text",
+    "VISION": "multimodal_analysis",
+    "IMAGE": "image_generate",
+}
+
+
+def _connection_test_operation(test_type: str) -> str | None:
+    """Resolve the smoke operation behind a declared test type.
+
+    A declared type without an implementation must fail loudly with a 422
+    instead of falling through ``dict.get`` to the model's default probe —
+    that miss used to silently downgrade IMAGE/BENCHMARK requests to a free
+    TEXT probe.
+    """
+
+    if test_type == "BENCHMARK":
+        raise HTTPException(
+            status_code=422,
+            detail="BENCHMARK 测试暂未实现，请选择 CREDENTIALS、TEXT、VISION 或 IMAGE",
+        )
+    return _CONNECTION_TEST_OPERATIONS.get(test_type)
+
 
 def _profile_view(db: Session, provider_id: str) -> dict:
     view = next(
@@ -291,10 +317,7 @@ def test_connection(
                 else "MODEL_SMOKE"
             ),
             catalog_model_id=payload.model_id,
-            operation={
-                "TEXT": "structured_text",
-                "VISION": "multimodal_analysis",
-            }.get(payload.test_type),
+            operation=_connection_test_operation(payload.test_type),
             acknowledge_cost=payload.acknowledge_cost,
             runs=payload.runs,
         ),

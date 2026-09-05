@@ -35,7 +35,15 @@ def _safe_overrides(db: Session) -> tuple[dict[str, Any], int]:
     if not row:
         return {}, 1
     allowed = set(RuntimeSettingsUpdate.model_fields) - {"version"}
-    return {key: value for key, value in row.value.items() if key in allowed}, row.version
+    # None values are dropped too: rows persisted before the schema rejected
+    # explicit nulls must not crash reads (RuntimeSettingsRead requires int)
+    # or rehydrate the process Settings with None. Defense in depth — new
+    # writes are already rejected at the schema layer.
+    return {
+        key: value
+        for key, value in row.value.items()
+        if key in allowed and value is not None
+    }, row.version
 
 
 def read_runtime_settings(db: Session, settings: Settings) -> RuntimeSettingsRead:

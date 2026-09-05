@@ -60,6 +60,12 @@ class Settings(BaseSettings):
 
     max_upload_bytes: int = Field(default=20 * 1024 * 1024, ge=1)
     upload_form_overhead_bytes: int = Field(default=64 * 1024, ge=0)
+    # Generic JSON body budget for every non-upload POST/PUT/PATCH. The two
+    # large-text endpoints (sources import / chapter revisions) are capped
+    # semantically at 2M characters and are exempted up to the upload budget
+    # instead (request_limits.LARGE_TEXT_PATH_SUFFIXES).
+    max_json_body_bytes: int = Field(default=2 * 1024 * 1024, ge=1)
+    max_json_depth: int = Field(default=100, ge=1)
     max_image_pixels: int = Field(default=40_000_000, ge=1)
     max_image_side: int = Field(default=16_384, ge=1)
     max_provider_metadata_bytes: int = Field(default=1 * 1024 * 1024, ge=1)

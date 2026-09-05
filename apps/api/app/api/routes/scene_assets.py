@@ -11,6 +11,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.api.helpers import reject_required_nulls
 from app.api.routes.uploads import _ensure_asset_not_in_active_job
 from app.database import get_db
 from app.models import (
@@ -207,11 +208,17 @@ def update_scene_asset(
     if not claimed.rowcount:
         raise HTTPException(status_code=409, detail="场景资产已被更新，请刷新后重试")
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
+    # Same guard as the storyboard PATCHes: an explicit null for a NOT NULL
+    # column (name/structured/status) must 422 — the None-skip loop below
+    # used to hide it, and name reached None.strip() first. The claim above
+    # is rolled back with this transaction on failure.
+    reject_required_nulls(SceneAsset, values)
     if "name" in values:
         values["name"] = values["name"].strip()
         values["normalized_name"] = normalized_name(values["name"])
-    if "structured" in values and values["structured"] is not None:
-        values["structured"] = values["structured"].model_dump(exclude_unset=True)
+    # ``model_dump`` above already converted ``structured`` to a plain dict
+    # (recursively excluding unset keys); the former second ``.model_dump``
+    # here raised AttributeError on every structured PATCH.
     if "status" in values and values["status"] is not None:
         values["status"] = AssetStatus(values["status"])
     for key, value in values.items():
@@ -411,6 +418,9 @@ def update_scene_asset_variant(
     if not claimed.rowcount:
         raise HTTPException(status_code=409, detail="场景变体已被更新，请刷新后重试")
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
+    # Explicit null on a NOT NULL column (name/structured_overrides/
+    # is_canonical) is a 422, not a silent no-op skipped by the loop below.
+    reject_required_nulls(SceneAssetVariant, values)
     if values.get("structured_overrides") is not None:
         validate_variant_overrides(values["structured_overrides"])
     if values.get("is_canonical") is True:
