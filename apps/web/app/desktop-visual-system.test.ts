@@ -106,17 +106,17 @@ describe("U1 ≥1280 工作台：左导航停靠且底栏不遮挡主栏", () =>
     expect(rule(".queue-dock")).toContain("z-index: var(--z-dock)");
   });
 
-  it("左导航可折叠成 48px 图标轨且持久化到 localStorage", () => {
+  it("左导航可折叠成 64px 图标轨且持久化到 localStorage", () => {
     const railBlock = lastMediaBlock("(min-width: 761px)");
-    expect(railBlock).toContain(".workspace-layout.rail-left { grid-template-columns: 48px minmax(0, 1fr); }");
+    expect(railBlock).toContain(".workspace-layout.rail-left { grid-template-columns: 64px minmax(0, 1fr); }");
     expect(railBlock).toContain(".workspace-left.rail .workspace-project-title");
     expect(projectWorkspaceSource).toContain('window.localStorage.getItem("mangaflow.project-sidebar-collapsed")');
     expect(projectWorkspaceSource).toContain('window.localStorage.setItem("mangaflow.project-sidebar-collapsed"');
   });
 
-  it("P1-C 模板 B：≥1280 图标轨 + 停靠右槽组合为 48px 三列", () => {
+  it("P1-C 模板 B：≥1280 图标轨 + 停靠右槽组合为 64px 三列", () => {
     expect(lastMediaBlock("(min-width: 1280px)")).toContain(
-      ".workspace-layout.rail-left.has-inspector { grid-template-columns: 48px minmax(0, 1fr) var(--workspace-inspector-width, 390px); }",
+      ".workspace-layout.rail-left.has-inspector { grid-template-columns: 64px minmax(0, 1fr) var(--workspace-inspector-width, 390px); }",
     );
   });
 });

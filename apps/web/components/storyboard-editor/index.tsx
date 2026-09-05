@@ -479,15 +479,19 @@ export function StoryboardEditor({
     fitToViewport();
   };
 
+  // Attached once the canvas actually mounts: the storyboard query gates the
+  // viewport, so re-running when serverPage arrives re-attaches after the
+  // viewport exists (cold-cache visits included) instead of only on mount.
+  const hasServerPage = Boolean(serverPage);
   useEffect(() => {
     const viewport = viewportRef.current;
-    if (!viewport || typeof ResizeObserver === "undefined") return;
+    if (!viewport || !hasServerPage || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(() => {
       if (fitModeRef.current) fitRef.current();
     });
     observer.observe(viewport);
     return () => observer.disconnect();
-  }, [currentPage?.id]);
+  }, [hasServerPage, currentPage?.id]);
 
   const error = savePanel.error ?? saveDialogue.error ?? addDialogue.error ?? removeDialogue.error
     ?? geometrySave.error ?? updateLayout.error ?? replanError;
