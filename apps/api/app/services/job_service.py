@@ -405,6 +405,14 @@ def _execute_locally(job_id: str) -> None:
     from app.model_adapters.base import ProviderAdapterError
     from app.worker_tasks import JobCancelledError, JobLeaseLostError, execute_job
 
+    # Bounded-pin design: while the project sits at concurrency this loop
+    # would otherwise poll forever, pinning a LOCAL executor thread and
+    # rewriting the CONCURRENCY_LIMIT marker every pass. job_timeout_seconds
+    # is the same wall-clock budget a real execution gets. When it trips, the
+    # row is deliberately left WAITING+CONCURRENCY_LIMIT: this thread's id was
+    # discarded from LOCAL_SUBMITTED_JOB_IDS in the finally below, so the next
+    # recover_pending_jobs pass re-submits the job into a free slot.
+    wait_started = time.monotonic()
     delay = 0.1
     try:
         while True:
@@ -433,6 +441,19 @@ def _execute_locally(job_id: str) -> None:
                     JobStatus.FAILED,
                 }:
                     return
+                if (
+                    job.status == JobStatus.WAITING
+                    and job.error_code == "CONCURRENCY_LIMIT"
+                ):
+                    waited = time.monotonic() - wait_started
+                    if waited >= get_settings().job_timeout_seconds:
+                        LOGGER.warning(
+                            "job %s waited %.0fs for a project concurrency slot; "
+                            "releasing this executor so recovery can re-submit it",
+                            job_id,
+                            waited,
+                        )
+                        return
             Event().wait(delay)
             delay = min(delay * 2, 5.0)
     finally:

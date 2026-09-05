@@ -1,10 +1,15 @@
-"""LOCAL wall-clock cap regressions (R-8 sub-fix A).
+"""LOCAL wall-clock cap and concurrency-waiter regressions.
 
-The lease heartbeat carries a wall-clock deadline; past the job budget it
-stamps LOCAL_TIMEOUT once and stops renewing, recovery preserves the cause
-through reclaim/requeue (like RQ's JOB_TIMEOUT), and every genai.Client bounds
-a single HTTP request at the same budget (the heartbeat cannot interrupt a
-thread blocked inside one call).
+Covers the R-8 pair:
+
+- Sub-fix A: the lease heartbeat carries a wall-clock deadline; past the job
+  budget it stamps LOCAL_TIMEOUT once and stops renewing, recovery preserves
+  the cause through reclaim/requeue (like RQ's JOB_TIMEOUT), and every
+  genai.Client bounds a single HTTP request at the same budget (the heartbeat
+  cannot interrupt a thread blocked inside one call).
+- Sub-fix B: the CONCURRENCY_LIMIT marker is write-once, and the local
+  executor's slot-wait episode is bounded by job_timeout_seconds (the row is
+  left WAITING+CONCURRENCY_LIMIT for recovery's phase-2 requeue).
 
 Seeding follows tests/test_local_worker.py's harness: a per-test engine via
 the db_session fixture and monkeypatched SessionLocal factories.
@@ -17,7 +22,7 @@ from types import SimpleNamespace
 
 from sqlalchemy.orm import sessionmaker
 
-from app import worker_tasks
+from app import database, worker_tasks
 from app.config import Settings, get_settings
 from app.domain.states import JobStatus
 from app.model_adapters import google as google_adapter
@@ -321,3 +326,128 @@ def test_google_text_client_carries_timeout_into_real_genai_client():
         close = getattr(client, "close", None)
         if callable(close):
             close()
+
+
+def test_execute_locally_releases_executor_when_slot_wait_exhausts_budget(
+    db_session, monkeypatch
+):
+    """Bounded slot wait: _execute_locally exits, row stays WAITING+LIMIT.
+
+    Pre-fix this loop never exited; the wait guard converts that hang into a
+    hard failure (AssertionError on the 4th wait) instead of a frozen suite.
+    Post-fix the budget check trips before a single wait happens.
+    """
+
+    project = Project(name="并发等待上限", default_concurrency=1)
+    db_session.add(project)
+    db_session.flush()
+    holder = GenerationJob(
+        project_id=project.id,
+        target_type="CHAPTER",
+        target_id="slot-holder",
+        job_type="SOURCE_PARSE",
+        status=JobStatus.GENERATING,
+        attempt_count=1,
+        max_attempts=3,
+        lease_owner="busy-worker",
+        lease_expires_at=datetime.now(UTC) + timedelta(seconds=120),
+    )
+    waiter = GenerationJob(
+        project_id=project.id,
+        target_type="CHAPTER",
+        target_id="slot-waiter",
+        job_type="SOURCE_PARSE",
+        status=JobStatus.QUEUED,
+    )
+    db_session.add_all([holder, waiter])
+    db_session.commit()
+
+    factory = _session_factory(db_session)
+    monkeypatch.setattr(worker_tasks, "SessionLocal", factory)
+    monkeypatch.setattr(database, "SessionLocal", factory)
+    # settings.job_timeout_seconds is Field(ge=30); the trip must be immediate,
+    # so stand in a zero budget for job_service's own settings seam.
+    monkeypatch.setattr(
+        job_service, "get_settings", lambda: SimpleNamespace(job_timeout_seconds=0)
+    )
+    wait_guard = _BoundedWaits(
+        3, "waiter did not exit: _execute_locally kept polling the busy slot"
+    )
+    monkeypatch.setattr(job_service, "Event", lambda: wait_guard)
+
+    job_service._execute_locally(waiter.id)
+
+    db_session.expire_all()
+    row = db_session.get(GenerationJob, waiter.id)
+    # Left as-is on purpose: LOCAL_SUBMITTED_JOB_IDS was discarded in the
+    # finally, so recovery's phase-2 requeue re-submits this row later.
+    assert row.status == JobStatus.WAITING
+    assert row.error_code == "CONCURRENCY_LIMIT"
+    assert row.error_message == "等待项目并发名额"
+    assert wait_guard.calls == 0  # exited before ever sleeping
+
+    holder_row = db_session.get(GenerationJob, holder.id)
+    assert holder_row.status == JobStatus.GENERATING
+    assert holder_row.lease_owner == "busy-worker"
+
+
+def test_concurrency_limit_marker_is_write_once(db_session):
+    """A second failed claim must not rewrite the identical WAITING marker.
+
+    Observable via updated_at (Timestamped.onupdate=utcnow fires only when an
+    UPDATE actually matches a row). GenerationJob inherits Timestamped, whose
+    ``version: Mapped[int] = mapped_column(Integer, default=1)`` is a plain
+    default-1 column with no version_id_col — it never auto-increments, so
+    updated_at is the live rewrite indicator and version is asserted only to
+    pin that nothing else bumps it.
+    """
+
+    project = Project(name="标记只写一次", default_concurrency=1)
+    db_session.add(project)
+    db_session.flush()
+    holder = GenerationJob(
+        project_id=project.id,
+        target_type="CHAPTER",
+        target_id="marker-holder",
+        job_type="SOURCE_PARSE",
+        status=JobStatus.GENERATING,
+        attempt_count=1,
+        max_attempts=3,
+        lease_owner="busy-worker",
+        lease_expires_at=datetime.now(UTC) + timedelta(seconds=120),
+    )
+    waiter = GenerationJob(
+        project_id=project.id,
+        target_type="CHAPTER",
+        target_id="marker-waiter",
+        job_type="SOURCE_PARSE",
+        status=JobStatus.QUEUED,
+    )
+    db_session.add_all([holder, waiter])
+    db_session.commit()
+
+    first = worker_tasks._claim_job(db_session, waiter.id, "claimant-1")
+    assert first is None
+    db_session.expire_all()
+    marked = db_session.get(GenerationJob, waiter.id)
+    assert marked.status == JobStatus.WAITING
+    assert marked.error_code == "CONCURRENCY_LIMIT"
+    assert marked.error_message == "等待项目并发名额"
+    baseline = (
+        marked.error_code,
+        marked.error_message,
+        marked.updated_at,
+        marked.version,
+    )
+
+    second = worker_tasks._claim_job(db_session, waiter.id, "claimant-2")
+    assert second is None
+    db_session.expire_all()
+    again = db_session.get(GenerationJob, waiter.id)
+    assert (
+        again.error_code,
+        again.error_message,
+        again.updated_at,
+        again.version,
+    ) == baseline  # second marker write matched 0 rows: row untouched
+    assert again.version == 1

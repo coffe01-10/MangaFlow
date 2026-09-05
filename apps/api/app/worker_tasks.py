@@ -286,7 +286,10 @@ def _claim_job(db, job_id: str, owner: str) -> GenerationJob | None:
         .execution_options(synchronize_session=False)
     )
     if updated.rowcount != 1:
-        # 在仍持有锁的事务中通过严格条件更新标记等待状态，绝不释放锁后无条件覆盖新租约
+        # 在仍持有锁的事务中通过严格条件更新标记等待状态，绝不释放锁后无条件覆盖新租约。
+        # error_code 只写一次（NULL-safe 的 is_distinct_from 在 SQLite/PostgreSQL 均
+        # 正确处理 NULL）：本地执行器在并发受限期间每 ≤5s 重试一次，第 2..n 次失败
+        # 必须匹配 0 行，而不是每轮重写同一行。
         db.execute(
             update(GenerationJob)
             .where(
@@ -294,6 +297,7 @@ def _claim_job(db, job_id: str, owner: str) -> GenerationJob | None:
                 GenerationJob.status == expected_status,
                 GenerationJob.lease_owner.is_(None),
                 GenerationJob.lease_expires_at.is_(None),
+                GenerationJob.error_code.is_distinct_from("CONCURRENCY_LIMIT"),
             )
             .values(
                 status=JobStatus.WAITING,
