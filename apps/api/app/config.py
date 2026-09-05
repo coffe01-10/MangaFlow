@@ -40,6 +40,13 @@ class Settings(BaseSettings):
     queue_enabled: bool = True
     job_timeout_seconds: int = Field(default=900, ge=30, le=3600)
     job_lease_seconds: int = Field(default=120, ge=30, le=3600)
+    # Executor-silence fence for lease reclaim (issue #130). None derives the
+    # grace from the lease/heartbeat geometry — see
+    # job_service._lease_reclaim_grace_seconds, which also explains why an
+    # explicit 0 (fence disabled) or a larger value may be pinned per
+    # deployment. reclaim only after the lease has been expired for at least
+    # this many seconds.
+    job_lease_reclaim_grace_seconds: int | None = Field(default=None, ge=0, le=3600)
     max_auto_repairs: int = Field(default=3, ge=0, le=10)
     cli_run_timeout_seconds: int = Field(default=120, ge=10, le=3600)
     cli_run_timeout_grace_seconds: int = Field(default=5, ge=0, le=60)
@@ -53,6 +60,12 @@ class Settings(BaseSettings):
 
     max_upload_bytes: int = Field(default=20 * 1024 * 1024, ge=1)
     upload_form_overhead_bytes: int = Field(default=64 * 1024, ge=0)
+    # Generic JSON body budget for every non-upload POST/PUT/PATCH. The two
+    # large-text endpoints (sources import / chapter revisions) are capped
+    # semantically at 2M characters and are exempted up to the upload budget
+    # instead (request_limits.LARGE_TEXT_PATH_SUFFIXES).
+    max_json_body_bytes: int = Field(default=2 * 1024 * 1024, ge=1)
+    max_json_depth: int = Field(default=100, ge=1)
     max_image_pixels: int = Field(default=40_000_000, ge=1)
     max_image_side: int = Field(default=16_384, ge=1)
     max_provider_metadata_bytes: int = Field(default=1 * 1024 * 1024, ge=1)

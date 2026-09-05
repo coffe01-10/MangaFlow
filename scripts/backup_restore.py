@@ -1,4 +1,5 @@
-"""Consistency backup and restore drill for local SQLite + generated + uploads.
+"""Consistency backup/restore drill for SQLite + generated + thumbnails + exports
++ uploads.
 
 Operator and test entry point. Never deletes an existing destination, never walks
 unknown trees, and never loads `.env` or credentials. Tests must pass isolated
@@ -32,6 +33,8 @@ BACKUP_KIND = "mangaflow-consistency-backup"
 DATABASE_REL = "storage/mangaflow.db"
 GENERATED_REL = "storage/generated"
 UPLOADS_REL = "uploads"
+THUMBNAILS_REL = "storage/thumbnails"
+EXPORTS_REL = "storage/exports"
 EXPORT_REL = "storage/exports/_restore-drill"
 CHUNK_SIZE = 1024 * 1024
 FILE_ATTRIBUTE_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
@@ -339,6 +342,8 @@ def validate_manifest_paths(
         elif not (
             relative.startswith(GENERATED_REL + "/")
             or relative.startswith(UPLOADS_REL + "/")
+            or relative.startswith(THUMBNAILS_REL + "/")
+            or relative.startswith(EXPORTS_REL + "/")
         ):
             raise BackupRestoreError(
                 "MANIFEST_INVALID",
@@ -513,14 +518,23 @@ def run_alembic_upgrade(destination: Path, repo_root: Path) -> str:
 def iter_scoped_files(source_root: Path) -> tuple[list[tuple[str, Path]], list[str]]:
     selected: list[tuple[str, Path]] = []
     excluded: list[str] = []
-    for relative_root in (GENERATED_REL, UPLOADS_REL):
+    drill_export_dir = source_root / EXPORT_REL
+    for relative_root in (GENERATED_REL, UPLOADS_REL, THUMBNAILS_REL, EXPORTS_REL):
         folder = source_root / relative_root
         canonicalize_existing(folder, label=relative_root)
         for dirpath, dirnames, filenames in os.walk(folder, followlinks=False):
             current = Path(dirpath)
             _reject_reparse(current, label=relative_root)
             for name in list(dirnames):
-                _reject_reparse(current / name, label=relative_root)
+                child = current / name
+                _reject_reparse(child, label=relative_root)
+                if relative_root == EXPORTS_REL and child == drill_export_dir:
+                    # The drill's own re-export output (offline_page_export) is
+                    # self-produced machinery state, never workspace data: keep
+                    # it out of archives while still rejecting a reparse point
+                    # planted in its place.
+                    dirnames.remove(name)
+                    excluded.append(_posix(child.relative_to(source_root)))
             for name in filenames:
                 child = current / name
                 _reject_reparse(child, label=relative_root)
@@ -770,11 +784,19 @@ def _source_layout(source_root: Path) -> tuple[Path, Path, Path, Path]:
     )
     generated = canonicalize_existing(root / "storage" / "generated", label="generated")
     uploads = canonicalize_existing(root / "uploads", label="uploads")
+    thumbnails = canonicalize_existing(root / THUMBNAILS_REL, label="thumbnails")
+    exports = canonicalize_existing(root / EXPORTS_REL, label="exports")
     if not database.is_file():
         raise BackupRestoreError("PATH_INVALID", f"database is not a file: {database}")
-    if not generated.is_dir() or not uploads.is_dir():
+    if not (
+        generated.is_dir()
+        and uploads.is_dir()
+        and thumbnails.is_dir()
+        and exports.is_dir()
+    ):
         raise BackupRestoreError(
-            "PATH_INVALID", "generated and uploads must be directories"
+            "PATH_INVALID",
+            "generated, uploads, thumbnails, and exports must be directories",
         )
     return root, database, generated, uploads
 
@@ -872,6 +894,78 @@ def _copy_archive(
         copied += 1
         _maybe_interrupt(copied, interrupt_after, after_file, source, target)
     _write_json(destination / MANIFEST_NAME, manifest)
+
+
+def _require_db_blob(
+    destination: Path, key: str, *, uploads_root: bool, kind: str
+) -> Path:
+    relative = parse_manifest_relative(str(key).replace("\\", "/"))
+    root = destination / (UPLOADS_REL if uploads_root else "storage")
+    target = root.joinpath(*relative.split("/"))
+    if is_link_or_reparse(target) or not target.is_file():
+        raise BackupRestoreError(
+            "DB_BLOB_MISSING",
+            f"database references a {kind} missing from the tree: {relative}",
+        )
+    resolved = target.resolve(strict=True)
+    if not resolved.is_relative_to(root.resolve(strict=True)):
+        raise BackupRestoreError(
+            "REPARSE", f"database-referenced {kind} escaped its tree: {relative}"
+        )
+    return resolved
+
+
+def verify_db_blob_references(destination: Path) -> dict[str, int]:
+    """Fail unless every DB-referenced blob exists in the destination tree.
+
+    The key set is the explicit file-key columns (assets.storage_key with its
+    thumbnail keys, export_bundles.storage_key) rather than a generic *_key
+    scan: other *_key columns name providers or credentials, not files. A
+    USER_UPLOAD asset key resolves under uploads/, everything else under
+    storage/, matching offline_page_export and the API routes.
+    """
+    database = destination / "storage" / "mangaflow.db"
+    connection = sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True)
+    try:
+        asset_rows = connection.execute(
+            "SELECT source, storage_key, thumbnail_320_key, thumbnail_640_key "
+            "FROM assets WHERE deleted_at IS NULL"
+        ).fetchall()
+        export_rows = connection.execute(
+            "SELECT storage_key FROM export_bundles"
+        ).fetchall()
+    except sqlite3.Error as exc:
+        raise BackupRestoreError(
+            "DB_BLOB_SCAN_FAILED", f"cannot scan database blob references: {exc}"
+        ) from exc
+    finally:
+        connection.close()
+    thumbnails = 0
+    for source, storage_key, thumbnail_320_key, thumbnail_640_key in asset_rows:
+        _require_db_blob(
+            destination,
+            storage_key,
+            uploads_root=source == "USER_UPLOAD",
+            kind="asset blob",
+        )
+        for thumbnail_key in (thumbnail_320_key, thumbnail_640_key):
+            if thumbnail_key:
+                _require_db_blob(
+                    destination,
+                    thumbnail_key,
+                    uploads_root=False,
+                    kind="asset thumbnail",
+                )
+                thumbnails += 1
+    for (storage_key,) in export_rows:
+        _require_db_blob(
+            destination, storage_key, uploads_root=False, kind="export bundle"
+        )
+    return {
+        "assets": len(asset_rows),
+        "thumbnails": thumbnails,
+        "exports": len(export_rows),
+    }
 
 
 def offline_page_export(destination: Path) -> dict[str, object]:
@@ -1128,6 +1222,8 @@ def restore(
                 "FOREIGN_KEY_CHECK", f"foreign_key_check failed: {violations!r}"
             )
         current.checks["foreign_keys"] = "passed"
+        verify_db_blob_references(created)
+        current.checks["db_blobs"] = "passed"
         export = offline_page_export(created)
         current.checks["page_export"] = str(export["page_id"])
         assert_unchanged(archive_root, source_snapshot, relatives)
@@ -1167,6 +1263,8 @@ def verify_restored(
                 "FOREIGN_KEY_CHECK", f"foreign_key_check failed: {violations!r}"
             )
         current.checks["foreign_keys"] = "passed"
+        verify_db_blob_references(dest)
+        current.checks["db_blobs"] = "passed"
         export = offline_page_export(dest)
         current.checks["page_export"] = str(export["page_id"])
         current.checks["path_safety"] = "passed"

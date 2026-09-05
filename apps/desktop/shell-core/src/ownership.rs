@@ -27,6 +27,23 @@ pub struct JobHandle(windows::Win32::Foundation::HANDLE);
 #[cfg(windows)]
 unsafe impl Send for JobHandle {}
 
+/// #150: the kernel Job object is released exactly once on every path.
+/// Before this Drop impl, the assign/resume/SetInformation failure paths
+/// killed the still-suspended child but leaked the job handle per failed
+/// spawn; with Drop the release is unconditional and the failure paths need
+/// no manual cleanup. The handle is null-checked because `HANDLE::default()`
+/// (null) and invalid sentinel values must never reach `CloseHandle`.
+#[cfg(windows)]
+impl Drop for JobHandle {
+    fn drop(&mut self) {
+        if !self.0.is_invalid() && self.0 != windows::Win32::Foundation::HANDLE::default() {
+            unsafe {
+                let _ = windows::Win32::Foundation::CloseHandle(self.0);
+            }
+        }
+    }
+}
+
 pub enum TreeGuard {
     #[cfg(unix)]
     Unix,
@@ -149,12 +166,10 @@ impl Drop for OwnedTree {
         if self.alive() {
             let _ = self.stop(Duration::from_secs(3));
         }
-        #[cfg(windows)]
-        match &self.guard {
-            TreeGuard::Windows { job } => unsafe {
-                let _ = windows::Win32::Foundation::CloseHandle(job.0);
-            },
-        }
+        // The Windows job handle now closes via `JobHandle::drop` (#150):
+        // KILL_ON_JOB_CLOSE then kills anything that survived the graceful
+        // stop, and the failure paths of `spawn` release their handle the
+        // same way instead of leaking it.
     }
 }
 
@@ -267,4 +282,41 @@ fn assign_process(job: &JobHandle, child: &Child) -> Result<(), OwnershipError> 
             .map_err(|error| OwnershipError::JobAssignment(error.to_string()))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #150 regression: creating and dropping JobHandles must not leak
+    /// kernel objects — this is the release path the assign/resume failure
+    /// branches now rely on via `JobHandle::drop`. Measured by the owning
+    /// process handle count across a batch of create+drop cycles: a missing
+    /// close leaks one handle per cycle (+64), while correct behavior stays
+    /// at the baseline. Parallel test threads add bounded noise, so a small
+    /// slack band is allowed.
+    #[test]
+    #[cfg(windows)]
+    fn job_handle_drop_releases_the_kernel_object() {
+        use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
+
+        fn handle_count() -> u32 {
+            let mut count = 0u32;
+            unsafe { GetProcessHandleCount(GetCurrentProcess(), &mut count) }
+                .expect("GetProcessHandleCount");
+            count
+        }
+
+        const CYCLES: u32 = 64;
+        let before = handle_count();
+        for _ in 0..CYCLES {
+            drop(create_kill_on_close_job().expect("job object creation"));
+        }
+        let after = handle_count();
+        assert!(
+            after < before + CYCLES / 4,
+            "job handles leaked across {CYCLES} create+drop cycles: \
+             before={before} after={after}"
+        );
+    }
 }

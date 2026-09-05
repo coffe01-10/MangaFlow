@@ -113,6 +113,40 @@ def _group_read(db: Session, group: DirectorCommandGroup) -> dict:
     }
 
 
+def _net_revert_state(rows: list[DirectorCommand]) -> tuple[set[str], set[str]]:
+    """Net effect of the group's undo/redo chains on its original commands.
+
+    undo_command claims every chain member it reverts to SUPERSEDED, so each
+    inverse chain has at most one EXECUTED row: the live tip. An odd number of
+    inverse_of hops from the original command (undo) means the command's
+    effect is currently withdrawn; an even number (redo) puts it back in
+    effect.
+    """
+
+    by_command_id = {row.command_id: row for row in rows}
+    reverted: set[str] = set()
+    in_effect: set[str] = set()
+    for row in rows:
+        if not row.inverse_of_command_id:
+            if row.status == CommandStatus.EXECUTED.value:
+                in_effect.add(row.command_id)
+            continue
+        if row.status != CommandStatus.EXECUTED.value:
+            continue
+        original = row
+        hops = 0
+        while original is not None and original.inverse_of_command_id:
+            hops += 1
+            if hops > len(rows):  # defensive: chains are acyclic by construction
+                original = None
+                break
+            original = by_command_id.get(original.inverse_of_command_id)
+        if original is None:
+            continue
+        (reverted if hops % 2 else in_effect).add(original.command_id)
+    return reverted, in_effect
+
+
 def _refresh_group_status(db: Session, group: DirectorCommandGroup) -> None:
     rows = list(
         db.scalars(select(DirectorCommand).where(DirectorCommand.group_id == group.id))
@@ -135,6 +169,16 @@ def _refresh_group_status(db: Session, group: DirectorCommandGroup) -> None:
         group.status = CommandGroupStatus.PARTIALLY_ACCEPTED.value
         return
     if statuses <= TERMINAL_COMMAND:
+        reverted_ids, in_effect_ids = _net_revert_state(rows)
+        if reverted_ids and not in_effect_ids:
+            # #147-5: every executed command in this group is currently
+            # withdrawn by an inverse row, so neither COMMITTED (nothing is
+            # applied anymore) nor PARTIALLY_REJECTED (nothing was rejected)
+            # describes the group. CommandGroupStatus has no REVERTED member
+            # and the group column is a free String(32), so reuse the
+            # row-level vocabulary for "withdrawn by an inverse": SUPERSEDED.
+            group.status = CommandStatus.SUPERSEDED.value
+            return
         if CommandStatus.EXECUTED in statuses and (
             CommandStatus.REJECTED in statuses
             or CommandStatus.DISCARDED in statuses
@@ -393,7 +437,12 @@ def _page_snapshot(db: Session, page: MangaPage) -> dict:
         "layout_mode": (page.source_coverage or {}).get("layout_mode"),
         "estimated_text_chars": page.estimated_text_chars,
         "estimated_bubbles": page.estimated_bubbles,
-        "selected_candidate_ack_version": page.selected_candidate_ack_version,
+        # #147-4: selected_candidate_ack_version is deliberately NOT snapshotted.
+        # Every restore path calls mark_storyboard_changed, which bumps
+        # storyboard_version and nulls the ack (consumers only honor it while
+        # it equals the current storyboard_version), so a restored value would
+        # be immediately clobbered or resurrect a token against a storyboard
+        # version that no longer exists.
         "geometry_save_command": _copy_json(page.geometry_save_command),
         "panels": [
             {
@@ -440,7 +489,14 @@ def _page_snapshot(db: Session, page: MangaPage) -> dict:
 def _restore_page_snapshot(db: Session, page: MangaPage, snapshot: dict) -> None:
     from sqlalchemy import delete
 
-    panel_ids = list(db.scalars(select(Panel.id).where(Panel.page_id == page.id)))
+    # #147-3: capture the live per-panel version tokens before the delete so
+    # the restored rows can keep panel.version monotonic (see below).
+    current_panel_versions = dict(
+        db.execute(
+            select(Panel.id, Panel.version).where(Panel.page_id == page.id)
+        ).all()
+    )
+    panel_ids = list(current_panel_versions)
     if panel_ids:
         db.execute(delete(Dialogue).where(Dialogue.panel_id.in_(panel_ids)))
         db.execute(delete(Panel).where(Panel.id.in_(panel_ids)))
@@ -474,7 +530,15 @@ def _restore_page_snapshot(db: Session, page: MangaPage, snapshot: dict) -> None
             geometry=item.get("geometry"),
             bubble_regions=item.get("bubble_regions") or [],
         )
-        panel.version = item.get("version") or 1
+        # #147-3: version is an optimistic-concurrency token, not content.
+        # Rewinding it to the snapshot value would re-arm PREVIEWED commands
+        # proposed before the layout change, whose expected_version would
+        # match the restored panel again. PANEL_RESTORE_FIELDS excludes
+        # version for the same reason; advance past both the snapshot and any
+        # live value so the per-panel token never moves backwards.
+        panel.version = (
+            max(item.get("version") or 1, current_panel_versions.get(item["id"], 1)) + 1
+        )
         db.add(panel)
         restored_panels[panel.id] = panel
     db.flush()
@@ -708,6 +772,14 @@ def propose_command_group(db: Session, project_id: str, body: dict) -> dict:
                 db.add(row)
                 db.flush()
         except IntegrityError as error:
+            # #147-2: the conflicting row may live in this same uncommitted
+            # transaction (an in-body duplicate command_id). Replaying it
+            # inside the transaction returns a group the caller can never GET
+            # afterwards — get_db rolls the uncommitted work back, leaving a
+            # ghost 200. Roll back first so the re-query below only sees
+            # committed data; nothing found means the conflicting row never
+            # committed (our own in-flight duplicate), which is a plain 409.
+            db.rollback()
             original_row = db.scalar(
                 select(DirectorCommand).where(
                     DirectorCommand.project_id == project_id,
@@ -717,6 +789,8 @@ def propose_command_group(db: Session, project_id: str, body: dict) -> dict:
             if original_row is None:
                 raise _http_409("command_id 已存在") from error
             original = db.get(DirectorCommandGroup, original_row.group_id)
+            if original is None:
+                raise _http_409("command_id 已存在") from error
             return _replay_group(db, original)
     _refresh_group_status(db, group)
     result = _group_read(db, group)
@@ -861,6 +935,22 @@ def accept_command(db: Session, project_id: str, command_id: str) -> dict:
         _refresh_group_status(db, group)
         db.commit()
         raise
+    except Exception as exc:
+        # #146: terminalize non-HTTP execution failures too. #113's fix only
+        # covered HTTP-shaped errors; any other exception bubbled up
+        # unhandled, rolled back the ACCEPTED claim and left the row
+        # PREVIEWED, so every re-accept re-ran the same crash (a 500 loop).
+        # Persist the failure; the FAILED replay branch at the top of
+        # accept_command then returns the recorded error idempotently.
+        row.error = {
+            "code": "EXECUTION_ERROR",
+            "message": f"{type(exc).__name__}: {exc}"[:500],
+            "status": 500,
+        }
+        row.status = CommandStatus.FAILED.value
+        _refresh_group_status(db, group)
+        db.commit()
+        raise HTTPException(status_code=500, detail=row.error["message"]) from exc
     page = _load_page(db, project_id, envelope.target.page_id)
     row.status = CommandStatus.EXECUTED.value
     row.storyboard_version_after = page.storyboard_version if page else None

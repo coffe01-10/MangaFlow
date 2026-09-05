@@ -1,20 +1,31 @@
 import pytest
 
-from app.domain.states import (
-    PAGE_TRANSITIONS,
-    PageStatus,
-    ensure_transition,
-    ensure_unlocked,
-)
+import app.domain.states as states_module
+from app.domain.states import ensure_unlocked
 
 
-def test_page_happy_path_transition_is_allowed():
-    ensure_transition(PageStatus.PLANNED, PageStatus.STORYBOARDED, PAGE_TRANSITIONS)
+def test_states_module_exports_no_unused_transition_tables():
+    """Issue #128: the JOB/PAGE transition tables and ``ensure_transition``
+    were dead code — zero runtime call sites, so they documented guarantees
+    the runtime never enforced. They were removed; actual status-transition
+    semantics are guaranteed by each write point's conditional UPDATE (see
+    the module docstring in app/domain/states.py). This test pins the
+    removal so the stale tables cannot silently return as dead exports.
+    """
+
+    assert not hasattr(states_module, "JOB_TRANSITIONS")
+    assert not hasattr(states_module, "PAGE_TRANSITIONS")
+    assert not hasattr(states_module, "ensure_transition")
 
 
-def test_page_cannot_skip_review_states():
-    with pytest.raises(ValueError, match="非法状态迁移"):
-        ensure_transition(PageStatus.PLANNED, PageStatus.FINAL_READY, PAGE_TRANSITIONS)
+def test_states_module_keeps_runtime_used_helpers():
+    """``ensure_unlocked`` IS wired (inspection route guards locked fields),
+    so it must survive the dead-table removal.
+    """
+
+    assert callable(states_module.ensure_unlocked)
+    assert hasattr(states_module, "JobStatus")
+    assert hasattr(states_module, "PageStatus")
 
 
 def test_lock_blocks_child_and_parent_paths():

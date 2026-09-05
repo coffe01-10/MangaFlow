@@ -353,43 +353,54 @@ def create_package(
     project = lock_entity(db, Project, project_id)
     if project is None or project.deleted_at is not None:
         raise HTTPException(status_code=404, detail="项目不存在")
-    db.expire_all()
-    existing = db.scalar(
-        select(CharacterModelPackage.id).where(
-            CharacterModelPackage.character_id == character.id
+
+    def _create() -> CharacterModelPackage:
+        # Issue #145-A: the duplicate read, both INSERT flushes and the commit
+        # share one retry window. A concurrent create that slipped past the
+        # read surfaces as IntegrityError (uq_character_model_packages_character
+        # on PostgreSQL) or a SQLite busy/snapshot lock inside run_lock_retry;
+        # each failed attempt rolls back and re-runs the read, so the loser
+        # gets the designed 409 instead of an unhandled 500.
+        db.expire_all()
+        existing = db.scalar(
+            select(CharacterModelPackage.id).where(
+                CharacterModelPackage.character_id == character.id
+            )
         )
-    )
-    if existing:
-        raise HTTPException(status_code=409, detail="角色模型包已存在")
-    package = CharacterModelPackage(
-        character_id=character.id,
-        project_id=project_id,
-        identity_spec=normalized["identity_spec"],
-        visual_spec=normalized["visual_spec"],
-        negative_constraints=normalized["negative_constraints"],
-        status=PACKAGE_ACTIVE,
-    )
-    db.add(package)
-    db.flush()
-    db.add(
-        CharacterModelPackageVersion(
-            package_id=package.id,
-            version_number=1,
-            status=VERSION_DRAFT,
-            spec_snapshot={
-                "identity_spec": normalized["identity_spec"],
-                "visual_spec": normalized["visual_spec"],
-                "negative_constraints": normalized["negative_constraints"],
-                "frozen_from": "package",
-            },
+        if existing:
+            raise HTTPException(status_code=409, detail="角色模型包已存在")
+        package = CharacterModelPackage(
+            character_id=character.id,
+            project_id=project_id,
+            identity_spec=normalized["identity_spec"],
+            visual_spec=normalized["visual_spec"],
+            negative_constraints=normalized["negative_constraints"],
+            status=PACKAGE_ACTIVE,
         )
+        db.add(package)
+        db.flush()
+        db.add(
+            CharacterModelPackageVersion(
+                package_id=package.id,
+                version_number=1,
+                status=VERSION_DRAFT,
+                spec_snapshot={
+                    "identity_spec": normalized["identity_spec"],
+                    "visual_spec": normalized["visual_spec"],
+                    "negative_constraints": normalized["negative_constraints"],
+                    "frozen_from": "package",
+                },
+            )
+        )
+        db.flush()
+        return package
+
+    package = run_lock_retry(
+        db,
+        _create,
+        conflict_detail="角色模型包已存在",
+        commit=True,
     )
-    db.flush()
-    try:
-        db.commit()
-    except IntegrityError as error:
-        db.rollback()
-        raise HTTPException(status_code=409, detail="角色模型包已存在") from error
     db.refresh(package)
     return package
 
@@ -707,6 +718,53 @@ def lock_asset_for_ownership(db: Session, asset_id: str) -> Asset | None:
     return asset
 
 
+def _foreign_package_reference_id(
+    db: Session, *, character_id: str, asset_id: str
+) -> str | None:
+    """Contract §10.3a query: another character's package version for the asset.
+
+    The owning character's own package matrices never match; any OTHER
+    character's version reference (DRAFT or frozen) does.
+    """
+
+    return db.scalar(
+        select(CharacterModelPackageVersionReference.id)
+        .join(
+            CharacterModelPackageVersion,
+            CharacterModelPackageVersion.id
+            == CharacterModelPackageVersionReference.version_id,
+        )
+        .join(
+            CharacterModelPackage,
+            CharacterModelPackage.id == CharacterModelPackageVersion.package_id,
+        )
+        .where(
+            CharacterModelPackageVersionReference.asset_id == asset_id,
+            CharacterModelPackage.character_id != character_id,
+        )
+        .limit(1)
+    )
+
+
+def assert_asset_not_referenced_by_foreign_packages(
+    db: Session, *, character_id: str, asset_id: str
+) -> None:
+    """Contract §10.3a gate for bind paths outside this module (issue #157).
+
+    Raises 409 when any other character's package version references the
+    asset, so one reference image keeps serving at most one character even
+    when the caller creates a legacy CharacterReference directly (e.g.
+    approve_asset_reference). Shares the exact query ``_check_asset_binding_
+    eligible`` uses, excluding the binding character's own packages.
+    """
+
+    if _foreign_package_reference_id(db, character_id=character_id, asset_id=asset_id):
+        raise HTTPException(
+            status_code=409,
+            detail="该素材已被其他角色的模型包版本引用，请先在对应版本中解绑",
+        )
+
+
 def _check_asset_binding_eligible(
     db: Session,
     *,
@@ -742,24 +800,7 @@ def _check_asset_binding_eligible(
             status_code=409,
             detail="该素材已被其他角色引用，请先在其他角色中解绑",
         )
-    foreign_package = db.scalar(
-        select(CharacterModelPackageVersionReference.id)
-        .join(
-            CharacterModelPackageVersion,
-            CharacterModelPackageVersion.id
-            == CharacterModelPackageVersionReference.version_id,
-        )
-        .join(
-            CharacterModelPackage,
-            CharacterModelPackage.id == CharacterModelPackageVersion.package_id,
-        )
-        .where(
-            CharacterModelPackageVersionReference.asset_id == asset.id,
-            CharacterModelPackage.character_id != character_id,
-        )
-        .limit(1)
-    )
-    if foreign_package:
+    if _foreign_package_reference_id(db, character_id=character_id, asset_id=asset.id):
         raise HTTPException(
             status_code=409,
             detail="该素材已被其他角色的模型包版本引用，请先在对应版本中解绑",
@@ -1494,6 +1535,16 @@ def _resolve_one_character(
             raise HTTPException(status_code=409, detail="所选包版本不属于当前出镜人物")
         if package.project_id != project.id:
             raise HTTPException(status_code=409, detail="所选包版本不属于当前项目")
+        # Issue #145-C: the explicit path must revalidate the PACKAGE status
+        # the same way the default path does, so a package archived before (or
+        # concurrently with) the request cannot keep generating. Version-status
+        # ARCHIVED stays explicitly selectable (contract §5.2); this gate is
+        # about the owning package only.
+        if package.status != PACKAGE_ACTIVE:
+            raise HTTPException(
+                status_code=409,
+                detail="所选角色模型包已归档，请先恢复包或重新选择版本",
+            )
         if version.status == VERSION_DRAFT:
             raise HTTPException(status_code=422, detail="草稿版本不能用于生成")
         from_default = False
@@ -1784,10 +1835,35 @@ def detach_draft_package_references_for_asset(db: Session, asset_id: str) -> Non
     READY+ relation rows keep the frozen fact; consumers filter by
     ``Asset.deleted_at`` at read time. Must be the first writer in the
     caller's unit so lock contention can roll back and retry.
+
+    Lock order follows ``run_package_transaction`` (issue #145-B): the parent
+    package rows first, then the bound Asset row, then version/relation rows.
+    A pre-read discovers which packages own DRAFT references; the mutation
+    re-reads under both locks so a concurrent bind/unbind cannot interleave
+    into a lost version-token increment.
     """
 
     def _detach() -> None:
+        package_ids = sorted(
+            set(
+                db.scalars(
+                    select(CharacterModelPackageVersion.package_id)
+                    .join(
+                        CharacterModelPackageVersionReference,
+                        CharacterModelPackageVersionReference.version_id
+                        == CharacterModelPackageVersion.id,
+                    )
+                    .where(
+                        CharacterModelPackageVersionReference.asset_id == asset_id,
+                        CharacterModelPackageVersion.status == VERSION_DRAFT,
+                    )
+                )
+            )
+        )
+        for package_id in package_ids:
+            lock_entity(db, CharacterModelPackage, package_id)
         lock_asset_for_ownership(db, asset_id)
+        db.expire_all()
         for reference in db.scalars(
             select(CharacterModelPackageVersionReference).where(
                 CharacterModelPackageVersionReference.asset_id == asset_id

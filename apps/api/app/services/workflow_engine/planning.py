@@ -15,6 +15,7 @@ from app.models import (
     WorkflowVersion,
     utcnow,
 )
+from app.services.job_service import has_active_job
 from app.services.workflow_engine.catalog import NODE_TYPE_MAP
 from app.services.workflow_engine.reconciliation import get_run, reconcile_run
 from app.services.workflow_engine.scope import (
@@ -41,13 +42,24 @@ def create_workflow_run(
     scope_id: str | None,
     start_node_ids: list[str],
     stop_node_ids: list[str],
+    pinned_version_id: str | None = None,
 ) -> WorkflowRun:
     # `create_job` 是模块级 monkeypatch 接缝，必须在调用时经 facade 解析。
     from app.services import workflow_engine as engine
 
-    if not workflow.published_version_id:
-        raise ValueError("请先发布工作流")
-    version = db.get(WorkflowVersion, workflow.published_version_id)
+    if pinned_version_id is not None:
+        # retry_run clones a new run against the exact version the failed run
+        # executed (#153): resolving workflow.published_version_id fresh would
+        # silently swap in a newer revision, or 409 forever when the new
+        # revision dropped the old start nodes. Fresh starts keep resolving the
+        # latest published version.
+        version = db.get(WorkflowVersion, pinned_version_id)
+        if not version or version.workflow_id != workflow.id:
+            raise ValueError("工作流版本不存在")
+    else:
+        if not workflow.published_version_id:
+            raise ValueError("请先发布工作流")
+        version = db.get(WorkflowVersion, workflow.published_version_id)
     graph = WorkflowGraph.model_validate(version.graph)
     report = validate_graph(graph)
     if not report.valid:
@@ -192,6 +204,18 @@ def _create_node_job(
         chapter = _scope_chapter(db, run)
         if not chapter or not chapter.current_source_revision_id:
             raise ValueError("剧情解析节点需要包含原文修订的章节运行范围")
+        # Cross-entry mutex (#124): this job's idempotency key is
+        # workflow-scoped, so it can never collide with the route-side
+        # source-parse:{chapter}:{version} key — guard on the chapter target
+        # instead, mirroring the parse route, so an ACTIVE SOURCE_PARSE from
+        # EITHER entry blocks a second paid parse of the same chapter.
+        if has_active_job(
+            db,
+            job_type="SOURCE_PARSE",
+            target_id=chapter.id,
+            target_type="CHAPTER",
+        ):
+            raise ValueError("该章节已有进行中的解析任务")
         target_type = "CHAPTER"
         target_id = chapter.id
         job_type = "SOURCE_PARSE"

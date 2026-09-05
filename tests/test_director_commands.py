@@ -1122,3 +1122,274 @@ def test_discard_group_keeps_concurrently_executed_row_undoable(client, db_sessi
         item["inverse_of_command_id"] == shot["command_id"]
         for item in undone.json()["commands"]
     )
+
+
+def test_accept_non_http_execution_error_terminalizes_failed_and_replays(
+    client, db_session, monkeypatch
+):
+    """#146: a non-HTTP exception during accept execution must terminalize the
+    row as FAILED with the recorded error instead of leaving it PREVIEWED in a
+    re-accept 500 loop; re-accept replays the recorded error idempotently and
+    never re-executes."""
+    from app.services import director_commands
+
+    ctx = _setup(client, db_session)
+    shot = _envelope(ctx, "update_panel_shot", {"shot_type": "wide"}, group_id=_uid())
+    proposed = _propose(client, ctx, [shot])
+    assert proposed.status_code == 200, proposed.text
+    assert proposed.json()["commands"][0]["status"] == "PREVIEWED"
+
+    executions = {"count": 0}
+
+    def explode(db, row, envelope):
+        executions["count"] += 1
+        raise RuntimeError("worker exploded")
+
+    monkeypatch.setattr(director_commands, "_execute_operation", explode)
+
+    project_id = ctx["project"]["id"]
+    accept_url = (
+        f"/api/v1/projects/{project_id}/director/commands/"
+        f"{shot['command_id']}/accept"
+    )
+    first = client.post(accept_url)
+    assert first.status_code == 500, first.text
+
+    db_session.expire_all()
+    row = db_session.scalar(
+        select(DirectorCommand).where(DirectorCommand.command_id == shot["command_id"])
+    )
+    assert row.status == "FAILED"
+    assert row.error["code"] == "EXECUTION_ERROR"
+    assert row.error["status"] == 500
+    assert "worker exploded" in row.error["message"]
+    group = db_session.scalar(
+        select(DirectorCommandGroup).where(
+            DirectorCommandGroup.command_group_id == shot["command_group_id"]
+        )
+    )
+    assert group.status == "REJECTED"
+
+    replay = client.post(accept_url)
+    assert replay.status_code == 500, replay.text
+    assert replay.json()["detail"] == row.error["message"]
+    assert executions["count"] == 1
+
+
+def test_propose_in_body_duplicate_command_id_never_returns_ghost_replay(
+    client, db_session
+):
+    """#147-2: an in-body duplicate command_id must not replay the group this
+    same uncommitted transaction created; that 200 would reference a group the
+    caller can never GET again on PostgreSQL (get_db rolls the uncommitted
+    work back), producing a 404 retry loop.
+
+    SQLite/pysqlite caveat (test-stack boundary): the driver commits the
+    outer transaction when the first savepoint releases, so the empty group
+    row may be durable here even after the rollback — but the pending command
+    rows are discarded, which is what the 409 and the journal assertions
+    pin. The ghost itself (200 replay of data that later vanishes) needs
+    PostgreSQL transaction semantics and stays NOT RUN."""
+    ctx = _setup(client, db_session)
+    group_id = _uid()
+    command_id = _uid()
+    first = _envelope(
+        ctx,
+        "update_panel_shot",
+        {"shot_type": "wide"},
+        command_id=command_id,
+        group_id=group_id,
+    )
+    twin = _envelope(
+        ctx,
+        "update_panel_shot",
+        {"shot_type": "close_up"},
+        command_id=command_id,
+        group_id=group_id,
+    )
+    response = _propose(client, ctx, [first, twin])
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == "command_id 已存在"
+
+    db_session.expire_all()
+    assert (
+        db_session.scalar(
+            select(DirectorCommand).where(DirectorCommand.command_id == command_id)
+        )
+        is None
+    )
+
+
+def test_propose_integrity_error_replays_only_persisted_group(
+    client, db_session, monkeypatch
+):
+    """#147-2 committed-conflict half: when the unique violation points at a
+    committed command row, the replay must run after an explicit rollback and
+    return a group that survives an independent follow-up query."""
+    from app.services import director_commands
+
+    ctx = _setup(client, db_session)
+    conflict_group_id = _uid()
+    real_preview = director_commands._preview_command
+
+    def inject_committed_duplicate(db, envelope, row=None):
+        conflict_group = DirectorCommandGroup(
+            project_id=ctx["project"]["id"],
+            command_group_id=conflict_group_id,
+            page_id=ctx["page"].id,
+            status="PROPOSED",
+        )
+        db.add(conflict_group)
+        db.flush()
+        db.add(
+            DirectorCommand(
+                project_id=ctx["project"]["id"],
+                group_id=conflict_group.id,
+                command_id=envelope.command_id,
+                command_group_id=conflict_group_id,
+                operation=envelope.operation,
+                status="PREVIEWED",
+                target=envelope.target.model_dump(),
+                expected_version=envelope.expected_version.model_dump(),
+                payload=envelope.payload,
+                source=envelope.source.model_dump(),
+            )
+        )
+        db.commit()
+        return real_preview(db, envelope, row)
+
+    monkeypatch.setattr(director_commands, "_preview_command", inject_committed_duplicate)
+
+    envelope = _envelope(
+        ctx, "update_panel_shot", {"shot_type": "wide"}, group_id=_uid()
+    )
+    response = _propose(client, ctx, [envelope])
+    assert response.status_code == 200, response.text
+    assert response.json()["idempotent_replay"] is True
+    assert response.json()["command_group_id"] == conflict_group_id
+
+    gotten = client.get(
+        f"/api/v1/projects/{ctx['project']['id']}/director/command-groups/"
+        f"{conflict_group_id}"
+    )
+    assert gotten.status_code == 200, gotten.text
+    assert gotten.json()["commands"][0]["command_id"] == envelope["command_id"]
+
+    db_session.expire_all()
+    duplicates = list(
+        db_session.scalars(
+            select(DirectorCommand).where(
+                DirectorCommand.command_id == envelope["command_id"]
+            )
+        )
+    )
+    assert len(duplicates) == 1
+
+
+def test_layout_undo_keeps_panel_version_monotonic_and_no_stale_rearm(
+    client, db_session
+):
+    """#147-3/#147-4: layout undo restores snapshot content but never rewinds
+    panel.version to the pre-apply token (that would re-arm stale PREVIEWED
+    commands whose expected_version matches again), and the page snapshot no
+    longer captures selected_candidate_ack_version because every restore bumps
+    the storyboard version and nulls the ack."""
+    from app.services.director_commands import _page_snapshot
+
+    ctx = _setup(client, db_session)
+    snapshot_version = 7
+    ctx["panel"].version = snapshot_version
+    db_session.commit()
+
+    stale = _envelope(
+        ctx,
+        "update_panel_shot",
+        {"shot_type": "extreme_wide"},
+        group_id=_uid(),
+        version=snapshot_version,
+    )
+    proposed = _propose(client, ctx, [stale])
+    assert proposed.status_code == 200, proposed.text
+    assert proposed.json()["commands"][0]["status"] == "PREVIEWED"
+
+    snapshot = _page_snapshot(db_session, ctx["page"])
+    assert "selected_candidate_ack_version" not in snapshot
+
+    ctx["page"].selected_candidate_ack_version = ctx["page"].storyboard_version
+    db_session.commit()
+    db_session.refresh(ctx["page"])
+
+    group = DirectorCommandGroup(
+        project_id=ctx["project"]["id"],
+        command_group_id=_uid(),
+        page_id=ctx["page"].id,
+        status="COMMITTED",
+    )
+    db_session.add(group)
+    db_session.flush()
+    command = DirectorCommand(
+        project_id=ctx["project"]["id"],
+        group_id=group.id,
+        command_id=_uid(),
+        command_group_id=group.command_group_id,
+        operation="update_page_layout",
+        status="EXECUTED",
+        target={"project_id": ctx["project"]["id"], "page_id": ctx["page"].id},
+        expected_version={"scope": "page", "value": 1},
+        payload={"panel_count": 4, "layout_mode": "dynamic"},
+        source={"user_prompt": "改格数"},
+        before_snapshot=snapshot,
+        storyboard_version_after=ctx["page"].storyboard_version,
+    )
+    db_session.add(command)
+    db_session.commit()
+
+    undone = client.post(
+        f"/api/v1/projects/{ctx['project']['id']}/director/commands/"
+        f"{command.command_id}/undo"
+    )
+    assert undone.status_code == 200, undone.text
+    db_session.expire_all()
+    restored = db_session.get(Panel, ctx["panel"].id)
+    assert restored is not None
+    assert restored.version >= snapshot_version + 1
+
+    accept_stale = client.post(
+        f"/api/v1/projects/{ctx['project']['id']}/director/commands/"
+        f"{stale['command_id']}/accept"
+    )
+    assert accept_stale.status_code == 409, accept_stale.text
+    assert accept_stale.json()["detail"]["code"] == "VERSION_CONFLICT"
+    db_session.refresh(ctx["page"])
+    assert ctx["page"].selected_candidate_ack_version is None
+
+
+def test_undo_group_status_reflects_reverted_state(client, db_session):
+    """#147-5: after a successful undo the original row is flipped SUPERSEDED
+    and the inverse row is EXECUTED; the group read model must not label that
+    journal COMMITTED/PARTIALLY_REJECTED — the group maps to the reverted
+    (SUPERSEDED) vocabulary instead."""
+    ctx = _setup(client, db_session)
+    shot = _envelope(ctx, "update_panel_shot", {"shot_type": "wide"}, group_id=_uid())
+    proposed = _propose(client, ctx, [shot])
+    assert proposed.status_code == 200, proposed.text
+    project_id = ctx["project"]["id"]
+    accepted = client.post(
+        f"/api/v1/projects/{project_id}/director/commands/{shot['command_id']}/accept"
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["status"] == "COMMITTED"
+
+    undone = client.post(
+        f"/api/v1/projects/{project_id}/director/commands/{shot['command_id']}/undo"
+    )
+    assert undone.status_code == 200, undone.text
+    assert undone.json()["status"] == "SUPERSEDED"
+
+    db_session.expire_all()
+    group = db_session.scalar(
+        select(DirectorCommandGroup).where(
+            DirectorCommandGroup.command_group_id == shot["command_group_id"]
+        )
+    )
+    assert group.status == "SUPERSEDED"

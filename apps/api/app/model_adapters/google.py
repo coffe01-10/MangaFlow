@@ -12,11 +12,27 @@ from app.model_adapters.base import (
     MultimodalRequest,
     ProviderAdapterError,
     StructuredRequest,
+    strip_json_fences,
 )
 from app.services.model_capabilities import capability_reference_limit
 from app.services.vertex_credentials import classify_vertex_failure
 
 _GOOGLE_HTTP_TIMEOUT_MS = 90_000
+
+
+def _validate_structured_text(
+    text: str, output_schema: type[BaseModel], *, failure_message: str
+) -> BaseModel:
+    try:
+        payload = json.loads(strip_json_fences(text))
+    except ValueError as error:
+        raise ProviderAdapterError(
+            "INVALID_OUTPUT", "Gemini API 返回内容不是有效 JSON", retryable=True
+        ) from error
+    try:
+        return output_schema.model_validate(payload)
+    except Exception as error:
+        raise ProviderAdapterError("INVALID_OUTPUT", failure_message) from error
 
 
 @dataclass(frozen=True)
@@ -89,12 +105,9 @@ class GoogleTextAdapter(_GoogleBase):
             ) from error
         if not text:
             raise ProviderAdapterError("INVALID_OUTPUT", "Gemini API 没有返回文本")
-        try:
-            return output_schema.model_validate(json.loads(text))
-        except Exception as error:
-            raise ProviderAdapterError(
-                "INVALID_OUTPUT", "Gemini API 返回结构无法验证"
-            ) from error
+        return _validate_structured_text(
+            text, output_schema, failure_message="Gemini API 返回结构无法验证"
+        )
 
     def analyze_multimodal(
         self, request: MultimodalRequest, output_schema: type[BaseModel]
@@ -127,12 +140,9 @@ class GoogleTextAdapter(_GoogleBase):
             ) from error
         if not text:
             raise ProviderAdapterError("INVALID_OUTPUT", "Gemini API 没有返回分析结果")
-        try:
-            return output_schema.model_validate(json.loads(text))
-        except Exception as error:
-            raise ProviderAdapterError(
-                "INVALID_OUTPUT", "Gemini API 返回结构无法验证"
-            ) from error
+        return _validate_structured_text(
+            text, output_schema, failure_message="Gemini API 返回结构无法验证"
+        )
 
 
 class GoogleImageAdapter(_GoogleBase):

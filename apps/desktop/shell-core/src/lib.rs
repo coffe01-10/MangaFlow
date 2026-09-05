@@ -20,8 +20,8 @@ pub mod ziparch;
 
 pub use handshake::{spawn_helper, HelperConfig, SpawnedHelper};
 pub use logs::{
-    export_logs_zip, rotate_logs, ExportError, ExportReport, RunLog, ROTATION_KEEP_GENERATIONS,
-    ROTATION_THRESHOLD_BYTES,
+    export_logs_zip, export_logs_zip_overwrite, rotate_logs, ExportError, ExportReport, RunLog,
+    ROTATION_KEEP_GENERATIONS, ROTATION_MAX_CONSECUTIVE_FAILURES, ROTATION_THRESHOLD_BYTES,
 };
 pub use ownership::OwnershipError;
 pub use picker::{

@@ -334,6 +334,17 @@ def _approve_generate_node(
         db.commit()
         return
     engine.enqueue_job(db, job)
+    db.refresh(run, attribute_names=["status"])
+    if run.status in {"CANCELLED", "FAILED", "COMPLETED"}:
+        # Mirror reconcile_run's post-enqueue recheck (#129): a cancel_run
+        # claim committing between the refresh above and inside/after the
+        # enqueue escaped the canceller's late_jobs sweep; retire the late
+        # paid job and its node in the same transaction instead.
+        mark_job_cancelled(db, job)
+        node_run.status = "CANCELLED"
+        node_run.finished_at = utcnow()
+        db.commit()
+        return
 
 
 def cancel_run(db: Session, run: WorkflowRun) -> WorkflowRun:
@@ -383,6 +394,10 @@ def retry_run(db: Session, run: WorkflowRun) -> WorkflowRun:
     if run.status not in {"FAILED", "CANCELLED"}:
         raise ValueError("只有失败或已取消的运行可以重试")
     workflow = db.get(WorkflowDefinition, run.workflow_id)
+    if not workflow or workflow.deleted_at is not None:
+        # The start route blocks soft-deleted definitions via _workflow; retry
+        # used to bypass that and resurrect runs for a deleted workflow (#139).
+        raise ValueError("工作流不存在或已删除，无法重试")
     return create_workflow_run(
         db,
         workflow,
@@ -390,4 +405,7 @@ def retry_run(db: Session, run: WorkflowRun) -> WorkflowRun:
         scope_id=run.scope_id,
         start_node_ids=run.start_node_ids,
         stop_node_ids=run.stop_node_ids,
+        # Clone against the version the failed run actually executed, not the
+        # currently published one (#153).
+        pinned_version_id=run.workflow_version_id,
     )

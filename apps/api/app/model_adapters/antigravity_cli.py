@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -36,6 +37,7 @@ from app.services.media import inspect_upload_image
 AGY_ENVIRONMENT = ("USERPROFILE", "HOME")
 _VERSION = re.compile(r"^\s*([0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?)\s*$")
 _SAFE_ERROR_TYPE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,63}")
+_LOGGER = logging.getLogger("mangaflow.cli.antigravity")
 _IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp"})
 _MAX_ARTIFACT_ENTRIES = 1000
 _STATIC_IMAGE_TASK = (
@@ -472,18 +474,27 @@ class AntigravityCLIImageAdapter:
         )
 
     def _cancel_requested(self, context: _InvocationContext) -> bool:
-        with self.runtime.session_factory() as db:
-            job = db.get(GenerationJob, context.job_id)
-            if job is None or job.status == JobStatus.CANCELLED or job.cancelled_at is not None:
-                return True
-            if context.lease_owner and job.lease_owner != context.lease_owner:
-                return True
-            expires_at = job.lease_expires_at
-            if expires_at is not None:
-                if expires_at.tzinfo is None:
-                    expires_at = expires_at.replace(tzinfo=UTC)
-                if expires_at <= datetime.now(UTC):
+        try:
+            with self.runtime.session_factory() as db:
+                job = db.get(GenerationJob, context.job_id)
+                if job is None or job.status == JobStatus.CANCELLED or job.cancelled_at is not None:
                     return True
+                if context.lease_owner and job.lease_owner != context.lease_owner:
+                    return True
+                expires_at = job.lease_expires_at
+                if expires_at is not None:
+                    if expires_at.tzinfo is None:
+                        expires_at = expires_at.replace(tzinfo=UTC)
+                    if expires_at <= datetime.now(UTC):
+                        return True
+        except Exception:
+            # A controller-side probe failure (e.g. a transient DB error)
+            # must not kill the paid child run mid-generation as CRASH:
+            # assume the job is not cancelled and keep waiting. Cancellation
+            # is a deliberate user action, and the controller re-checks this
+            # probe after the process finishes (cli_executor.execute).
+            _LOGGER.exception("Cancel probe failed; treating job as not cancelled")
+            return False
         return False
 
 

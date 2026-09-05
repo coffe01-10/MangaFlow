@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
+from app.api.helpers import ensure_project_scope
 from app.database import get_db
 from app.models import ModelCallAttempt, ProviderUsageReconciliation
 from app.schemas import ModelCallAttemptRead
@@ -122,11 +123,16 @@ def list_usage_attempts(
 @router.get("/attempts/{attempt_id}", response_model=ModelCallAttemptRead)
 def get_usage_attempt(
     attempt_id: str,
+    project_id: str | None = None,
     db: Session = Depends(get_db),
 ) -> ModelCallAttempt:
     attempt = db.get(ModelCallAttempt, attempt_id)
     if attempt is None:
         raise HTTPException(status_code=404, detail="模型调用记录不存在")
+    # The ledger is cross-project by design (global usage view); an explicit
+    # project_id narrows the read to that project's attempts the same way the
+    # list endpoint's optional filter does.
+    ensure_project_scope(db, attempt, project_id, label="模型调用记录")
     return attempt
 
 

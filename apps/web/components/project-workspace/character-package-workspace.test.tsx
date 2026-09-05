@@ -502,14 +502,16 @@ describe("CharacterPackageWorkspace", () => {
     expect(screen.getByRole("button", { name: /发布当前版本 V1/ })).toBeDisabled();
   });
 
-  it("规格保存 409 乐观锁冲突时展示刷新提示", async () => {
+  it("规格保存 409 乐观锁冲突时透出后端语义提示（#156）", async () => {
     listApi.mockResolvedValue([summaryFixture()]);
     detailApi.mockResolvedValue(packageFixture());
     updateApi.mockRejectedValue(new ApiError("角色模型包已被更新，请刷新后重试", 409));
     renderWorkspace();
     await screen.findByText("草稿 V2");
     fireEvent.click(screen.getByRole("button", { name: /保存草稿规格/ }));
-    expect(await screen.findByText("数据已变化，请刷新后重试")).toBeInTheDocument();
+    // ae0c6ee 之后 ApiError.message 即后端 detail:语义化 409 原样透出。
+    expect(await screen.findByText("角色模型包已被更新，请刷新后重试")).toBeInTheDocument();
+    expect(screen.queryByText("数据已变化，请刷新后重试")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "刷新" })).toBeInTheDocument();
   });
 
@@ -628,5 +630,16 @@ describe("CharacterPackageWorkspace", () => {
       expect(uploadApi).toHaveBeenCalledWith("project-1", "CHARACTER_REFERENCE", file);
       expect(coverApi).toHaveBeenCalledWith("project-1", "character-1", "version-2", { asset_id: "asset-8", version: 7 });
     });
+  });
+
+  it("409 冲突透出后端语义 detail，而不是统一「数据已变化」提示（#156）", async () => {
+    // 角色已有模型包的 409 detail 是可行动的语义信息；通用刷新提示会让
+    // 用户刷新后撞进同一个冲突。
+    createApi.mockRejectedValue(new ApiError("角色模型包已存在", 409));
+    renderWorkspace();
+    fireEvent.change(await screen.findByLabelText("选择要创建模型包的角色"), { target: { value: "character-1" } });
+    fireEvent.click(screen.getByRole("button", { name: /创建角色模型包/ }));
+    expect(await screen.findByText("角色模型包已存在")).toBeInTheDocument();
+    expect(screen.queryByText("数据已变化，请刷新后重试")).not.toBeInTheDocument();
   });
 });

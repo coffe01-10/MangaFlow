@@ -4,7 +4,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from app.api.helpers import asset_candidate_read, candidate_read, candidate_version_state
+from app.api.helpers import (
+    asset_candidate_read,
+    candidate_read,
+    candidate_version_state,
+    ensure_project_scope,
+)
 from app.api.routes.workflow.common import _new_batch, _page
 from app.config import get_settings
 from app.database import get_db
@@ -87,6 +92,7 @@ def list_batches(page_id: str, db: Session = Depends(get_db)) -> list[Generation
 def create_candidate(
     batch_id: str,
     payload: CandidateCreate,
+    project_id: str | None = None,
     db: Session = Depends(get_db),
 ) -> CandidateQueuedRead:
     if payload.model_alias.lower() == "auto":
@@ -94,6 +100,10 @@ def create_candidate(
             status_code=422,
             detail="生图模型必须显式选择，不能使用 auto",
         )
+    batch = db.get(GenerationBatch, batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="抽卡批次不存在")
+    ensure_project_scope(db, batch, project_id, label="抽卡批次")
     try:
         candidate, job = create_page_candidate(
             db,
@@ -112,10 +122,13 @@ def create_candidate(
 
 
 @router.get("/batches/{batch_id}/candidates", response_model=list[PageCandidateRead])
-def list_candidates(batch_id: str, db: Session = Depends(get_db)) -> list[PageCandidateRead]:
+def list_candidates(
+    batch_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> list[PageCandidateRead]:
     batch = db.get(GenerationBatch, batch_id)
     if not batch:
         raise HTTPException(status_code=404, detail="抽卡批次不存在")
+    ensure_project_scope(db, batch, project_id, label="抽卡批次")
     if batch.target_type:
         candidates = list(
             db.scalars(
@@ -146,11 +159,13 @@ def list_candidates(batch_id: str, db: Session = Depends(get_db)) -> list[PageCa
 def favorite_candidate(
     candidate_id: str,
     payload: FavoriteUpdate,
+    project_id: str | None = None,
     db: Session = Depends(get_db),
 ) -> PageCandidateRead:
     candidate = db.get(PageCandidate, candidate_id) or db.get(AssetCandidate, candidate_id)
     if not candidate or candidate.deleted_at is not None:
         raise HTTPException(status_code=404, detail="候选不存在")
+    ensure_project_scope(db, candidate, project_id, label="候选")
     candidate.is_favorite = payload.is_favorite
     candidate.version += 1
     db.commit()
@@ -164,10 +179,13 @@ def favorite_candidate(
 
 
 @router.delete("/candidates/{candidate_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_candidate(candidate_id: str, db: Session = Depends(get_db)) -> None:
+def delete_candidate(
+    candidate_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> None:
     candidate = db.get(PageCandidate, candidate_id) or db.get(AssetCandidate, candidate_id)
     if not candidate or candidate.deleted_at is not None:
         raise HTTPException(status_code=404, detail="候选不存在")
+    ensure_project_scope(db, candidate, project_id, label="候选")
     if isinstance(candidate, PageCandidate) and candidate.is_selected:
         raise HTTPException(status_code=409, detail="当前采用版本不能删除")
     if isinstance(candidate, AssetCandidate) and candidate.asset_id:
@@ -414,7 +432,12 @@ def select_candidate(
                 MangaPage.page_number > page.page_number,
                 MangaPage.selected_candidate_id.is_not(None),
             )
-            .values(continuity_status="NEEDS_RECHECK")
+            # #136 route-side defense: the downstream re-check flag must also
+            # bump page.version so an in-flight PAGE_INSPECT whose baseline was
+            # captured before this selection sees the drift through the version
+            # guard (single-statement version=version+1 keeps the bump atomic
+            # with the flag write).
+            .values(continuity_status="NEEDS_RECHECK", version=MangaPage.version + 1)
         )
     db.commit()
     db.refresh(page)
@@ -464,6 +487,7 @@ def keep_selected_candidate(
 def retract_selected_candidate(
     page_id: str,
     db: Session = Depends(get_db),
+    candidate_id: str | None = None,
 ) -> MangaPage:
     page = _page(db, page_id)
     # Same page-lock convention as select_candidate/delete_asset: re-read the
@@ -473,6 +497,16 @@ def retract_selected_candidate(
     page = lock_entity(db, MangaPage, page.id)
     if not page.selected_candidate_id:
         raise HTTPException(status_code=409, detail="当前页面没有已采用候选")
+    # Optional target pin (#156): the library card renders a specific candidate
+    # and must not retract whatever the page currently has selected when the
+    # cached card is stale (cross-tab selection swap). When candidate_id is
+    # provided, refuse on mismatch instead of retracting the wrong object;
+    # omitting it keeps the legacy "retract current selection" behavior.
+    if candidate_id is not None and page.selected_candidate_id != candidate_id:
+        raise HTTPException(
+            status_code=409,
+            detail="该候选已不是页面当前采用的选择，请刷新素材库后重试",
+        )
 
     candidate = lock_entity(db, PageCandidate, page.selected_candidate_id)
     if candidate and candidate.page_id == page.id:
@@ -490,7 +524,10 @@ def retract_selected_candidate(
             MangaPage.page_number > page.page_number,
             MangaPage.selected_candidate_id.is_not(None),
         )
-        .values(continuity_status="NEEDS_RECHECK")
+        # #136 route-side defense (same as select_candidate): the re-check
+        # flag rides with a version bump so the inspection handler's page
+        # version baseline notices the mid-flight change.
+        .values(continuity_status="NEEDS_RECHECK", version=MangaPage.version + 1)
     )
     db.commit()
     db.refresh(page)

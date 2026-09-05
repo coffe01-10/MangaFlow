@@ -49,7 +49,12 @@ from app.services.content_workflow import (
     revise_chapter_source,
 )
 from app.services.editor import canonical_speaker_name, mark_pages_for_review
-from app.services.job_service import ACTIVE_JOB_STATUSES, create_job, enqueue_job
+from app.services.job_service import (
+    ACTIVE_JOB_STATUSES,
+    create_job,
+    enqueue_job,
+    has_active_job,
+)
 from app.services.ordinal_allocator import (
     ChapterOrdinalConflictError,
     SourceRevisionConflictError,
@@ -203,6 +208,22 @@ def parse_chapter(chapter_id: str, db: Session = Depends(get_db)):
         raise HTTPException(
             status_code=409,
             detail="本章已有分页，请先删除分页后再重新生成剧本",
+        )
+    # Cross-entry mutex (#124): a workflow agent.parse node mints jobs under
+    # its own idempotency-key namespace (workflow:{run}:{node}:1), so the
+    # route-side key (source-parse:{chapter}:{version}) never collides with
+    # it and both entries used to enqueue a second paid SOURCE_PARSE on the
+    # same chapter. Guard on the chapter target — like revise_chapter_source —
+    # so an ACTIVE parse from EITHER entry blocks this one.
+    if has_active_job(
+        db,
+        job_type="SOURCE_PARSE",
+        target_id=chapter.id,
+        target_type="CHAPTER",
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="该章节已有进行中的解析任务",
         )
     job = create_job(
         db,

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
-from app.api.helpers import asset_candidate_read, candidate_read
+from app.api.helpers import asset_candidate_read, candidate_read, ensure_project_scope
 from app.database import get_db
 from app.domain.states import JobStatus
 from app.models import (
@@ -151,26 +151,35 @@ def list_jobs(
 
 
 @router.get("/jobs/{job_id}", response_model=JobRead)
-def get_job(job_id: str, db: Session = Depends(get_db)) -> JobRead:
+def get_job(
+    job_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> JobRead:
     job = db.get(GenerationJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
+    ensure_project_scope(db, job, project_id, label="任务")
     return _job_reads(db, [job])[0]
 
 
 @router.post("/jobs/{job_id}/cancel", response_model=JobRead)
-def cancel(job_id: str, db: Session = Depends(get_db)) -> GenerationJob:
+def cancel(
+    job_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> GenerationJob:
     job = db.get(GenerationJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
+    ensure_project_scope(db, job, project_id, label="任务")
     return cancel_job(db, job)
 
 
 @router.post("/jobs/{job_id}/retry", response_model=JobRead)
-def retry(job_id: str, db: Session = Depends(get_db)) -> GenerationJob:
+def retry(
+    job_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> GenerationJob:
     job = db.get(GenerationJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
+    ensure_project_scope(db, job, project_id, label="任务")
     # An archived row is invisible in the default list; retrying it would
     # re-run paid work the user filed away. Restore first, then retry.
     if job.archived_at is not None:
@@ -205,10 +214,13 @@ def retry(job_id: str, db: Session = Depends(get_db)) -> GenerationJob:
 
 
 @router.post("/jobs/{job_id}/archive", response_model=JobRead)
-def archive_job(job_id: str, db: Session = Depends(get_db)) -> GenerationJob:
+def archive_job(
+    job_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> GenerationJob:
     job = db.get(GenerationJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
+    ensure_project_scope(db, job, project_id, label="任务")
     if job.status.value not in TERMINAL_JOB_STATUSES:
         raise HTTPException(status_code=409, detail="运行中的任务不能归档，请先取消")
     if job.archived_at is None:
@@ -220,10 +232,13 @@ def archive_job(job_id: str, db: Session = Depends(get_db)) -> GenerationJob:
 
 
 @router.post("/jobs/{job_id}/restore", response_model=JobRead)
-def restore_job(job_id: str, db: Session = Depends(get_db)) -> GenerationJob:
+def restore_job(
+    job_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> GenerationJob:
     job = db.get(GenerationJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
+    ensure_project_scope(db, job, project_id, label="任务")
     if job.archived_at is not None:
         job.archived_at = None
         job.version += 1
@@ -313,10 +328,13 @@ def _job_has_references(db: Session, job_id: str) -> bool:
 
 
 @router.delete("/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_job(job_id: str, db: Session = Depends(get_db)) -> None:
+def delete_job(
+    job_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> None:
     job = db.get(GenerationJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
+    ensure_project_scope(db, job, project_id, label="任务")
     if job.status.value not in DELETABLE_JOB_STATUSES:
         raise HTTPException(status_code=409, detail="只有失败或已取消任务可以彻底删除")
     if _job_has_references(db, job.id):
@@ -327,11 +345,12 @@ def delete_job(job_id: str, db: Session = Depends(get_db)) -> None:
 
 @router.get("/jobs/{job_id}/model-call-attempts", response_model=list[ModelCallAttemptRead])
 def list_model_call_attempts(
-    job_id: str, db: Session = Depends(get_db)
+    job_id: str, db: Session = Depends(get_db), project_id: str | None = None
 ) -> list[ModelCallAttempt]:
     job = db.get(GenerationJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
+    ensure_project_scope(db, job, project_id, label="任务")
     return list(
         db.scalars(
             select(ModelCallAttempt)

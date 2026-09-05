@@ -743,6 +743,193 @@ def test_layout_panel_count_supports_three_to_eight(client, db_session):
     assert too_many.status_code == 422
 
 
+# --- Red team #148 / #163 ---------------------------------------------------
+
+
+def _paged_chapter_fixture(db_session, *, page_count: int = 10, beats_per_page: int = 1):
+    project = Project(name="布局级联失效测试", page_ratio="b5_portrait")
+    db_session.add(project)
+    db_session.flush()
+    chapter = Chapter(project_id=project.id, title="第一章", ordinal=1, status="PAGES_PLANNED")
+    db_session.add(chapter)
+    db_session.flush()
+    scene = Scene(
+        chapter_id=chapter.id,
+        ordinal=1,
+        location="教室",
+        source_range={"segment_ids": ["source-1"]},
+    )
+    db_session.add(scene)
+    db_session.flush()
+    beats = []
+    for index in range(page_count * beats_per_page):
+        beat = Beat(
+            scene_id=scene.id,
+            ordinal=index + 1,
+            action=f"荻原桜动作{index + 1}",
+            speaker_name="荻原桜",
+            dialogue=f"「{index + 1}」",
+            source_range={"segment_ids": ["source-1"]},
+        )
+        db_session.add(beat)
+        beats.append(beat)
+    db_session.flush()
+    pages = []
+    for number in range(1, page_count + 1):
+        page = MangaPage(
+            chapter_id=chapter.id,
+            page_number=number,
+            scene_ids=[scene.id],
+            beat_ids=[
+                beat.id
+                for beat in beats[(number - 1) * beats_per_page : number * beats_per_page]
+            ],
+            panel_count=3,
+            status="FINAL_READY",
+            continuity_status="PASSED",
+            selected_candidate_ack_version=1,
+            source_coverage={
+                "complete": True,
+                "ranges": [
+                    {
+                        "segment_id": "source-1",
+                        "start_offset": 0,
+                        "end_offset": 4,
+                        "text": "荻原桜抬头。",
+                    }
+                ],
+            },
+        )
+        db_session.add(page)
+        pages.append(page)
+    db_session.flush()
+    for page in pages:
+        for reading_order in (1, 2, 3):
+            db_session.add(
+                Panel(
+                    page_id=page.id,
+                    reading_order=reading_order,
+                    bounds=LEGACY_BOUNDS[reading_order - 1],
+                    characters=[],
+                    actions={"source_text": "她抬头。"},
+                )
+            )
+    db_session.commit()
+    return project, chapter, pages
+
+
+def test_layout_rebuild_marks_downstream_pages_for_review(client, db_session):
+    """#148: a layout rebuild must invalidate every later page's continuity —
+    the same chapter-wide mark_pages_for_review cascade its own undo path
+    performs — instead of flagging only the rebuilt page."""
+    _, chapter, pages = _paged_chapter_fixture(db_session, page_count=10)
+    versions_before = {page.id: page.version for page in pages}
+    storyboard_version_before = pages[1].storyboard_version
+
+    response = client.patch(
+        f"/api/v1/pages/{pages[1].id}/layout",
+        json={"panel_count": 5, "layout_mode": "dynamic"},
+    )
+
+    assert response.status_code == 200, response.json()
+    assert len(response.json()["panels"]) == 5
+    db_session.expire_all()
+    refreshed = [db_session.get(MangaPage, page.id) for page in pages]
+    # Page 1 precedes the rebuilt page and keeps its PASSED continuity.
+    assert refreshed[0].continuity_status == "PASSED"
+    assert refreshed[0].version == versions_before[pages[0].id]
+    # The rebuilt page and every later page are invalidated (pages 2-10).
+    for page in refreshed[1:]:
+        assert page.continuity_status == "NEEDS_REVIEW"
+        assert page.version == versions_before[page.id] + 1
+    assert refreshed[1].storyboard_version == storyboard_version_before + 1
+    assert refreshed[1].selected_candidate_ack_version is None
+
+
+def test_layout_rebuild_refuses_fewer_panels_than_beats(client, db_session):
+    """#163: lowering panel_count below the page's beat count would orphan
+    the excess beats (their dialogue/presence silently vanish) — refuse with
+    409 before any panel is deleted."""
+    from sqlalchemy import func, select
+
+    _, _, pages = _paged_chapter_fixture(db_session, page_count=1, beats_per_page=5)
+
+    refused = client.patch(
+        f"/api/v1/pages/{pages[0].id}/layout",
+        json={"panel_count": 3, "layout_mode": "dynamic"},
+    )
+    assert refused.status_code == 409
+    assert "分格数少于情节拍数量" in refused.json()["detail"]
+    db_session.expire_all()
+    page = db_session.get(MangaPage, pages[0].id)
+    assert page.panel_count == 3
+    assert (
+        db_session.scalar(
+            select(func.count(Panel.id)).where(Panel.page_id == page.id)
+        )
+        == 3
+    ), "拒绝路径不得先行删除分镜格"
+
+    allowed = client.patch(
+        f"/api/v1/pages/{page.id}/layout",
+        json={"panel_count": 5, "layout_mode": "dynamic"},
+    )
+    assert allowed.status_code == 200, allowed.json()
+    assert len(allowed.json()["panels"]) == 5
+    db_session.expire_all()
+    dialogue_count = db_session.scalar(
+        select(func.count(Dialogue.id))
+        .join(Panel, Panel.id == Dialogue.panel_id)
+        .where(Panel.page_id == page.id)
+    )
+    assert dialogue_count == 5, "每拍都应获得对应气泡"
+    assert "orphan_beat_ids" not in db_session.get(MangaPage, page.id).source_coverage
+
+
+def test_readiness_surfaces_orphaned_beats_as_non_blocking_warning(
+    client, db_session, tmp_path, monkeypatch
+):
+    """#163: pages carrying more beats than panels surface a WARNING-level
+    readiness finding (visible, review-worthy) without blocking generation."""
+    from test_page_readiness import _base_page, _enable_assets_style_provider
+
+    project, page, panel, characters = _base_page(db_session)
+    _enable_assets_style_provider(
+        db_session, tmp_path, monkeypatch, project, page, panel, characters
+    )
+
+    baseline = client.get(f"/api/v1/pages/{page.id}/readiness").json()
+    assert baseline["ready"] is True
+    assert "ORPHANED_PAGE_BEATS" not in {item["code"] for item in baseline["blockers"]}
+
+    # Structural overflow: more beats than the 4 default panels (legacy page
+    # shape, no stored marker needed).
+    extra_beats = [
+        Beat(
+            scene_id=page.scene_ids[0],
+            ordinal=index,
+            action=f"动作{index}",
+            source_range={"segment_ids": ["segment-1"]},
+        )
+        for index in range(2, 6)
+    ]
+    db_session.add_all(extra_beats)
+    db_session.flush()
+    page.beat_ids = [*page.beat_ids, *[beat.id for beat in extra_beats]]
+    db_session.commit()
+
+    flagged = client.get(f"/api/v1/pages/{page.id}/readiness").json()
+    orphan_findings = [
+        item for item in flagged["blockers"] if item["code"] == "ORPHANED_PAGE_BEATS"
+    ]
+    assert len(orphan_findings) == 1
+    assert orphan_findings[0]["severity"] == "WARNING"
+    assert "情节拍未入板" in orphan_findings[0]["message"]
+    # The warning alone must not block production readiness.
+    assert flagged["ready"] is True
+    assert flagged["blockers"] == orphan_findings
+
+
 def test_geometry_schemas_reject_unknown_keys(client, db_session):
     _, _, page, panels, dialogue, _ = _storyboard_fixture(db_session)
 

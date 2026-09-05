@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from app.api.helpers import character_references, reject_required_nulls
+from app.api.helpers import character_references, ensure_project_scope, reject_required_nulls
 from app.database import get_db
 from app.models import (
     Character,
@@ -239,9 +239,12 @@ def bind_reference(
 
 
 @router.delete("/character-references/{reference_id}", status_code=status.HTTP_204_NO_CONTENT)
-def unbind_reference(reference_id: str, db: Session = Depends(get_db)) -> None:
+def unbind_reference(
+    reference_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> None:
     reference = db.get(CharacterReference, reference_id)
     if not reference:
         raise HTTPException(status_code=404, detail="角色参考绑定不存在")
+    ensure_project_scope(db, reference, project_id, label="角色参考绑定")
     db.delete(reference)
     db.commit()

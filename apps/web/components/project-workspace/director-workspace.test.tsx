@@ -155,6 +155,10 @@ function groupFixture(overrides: Partial<DirectorCommandGroup> = {}): DirectorCo
   };
 }
 
+function commandFixture(overrides: Partial<DirectorCommand> = {}): DirectorCommand {
+  return { ...baseCommand, ...overrides };
+}
+
 function candidateFixture(overrides: Partial<PageCandidate> = {}): PageCandidate {
   return {
     id: "candidate-1",
@@ -665,5 +669,199 @@ describe("DirectorWorkspace 导演台（V02-41B）", () => {
     });
     expect(screen.getByRole("alert")).toHaveTextContent("在选区编辑");
     expect(proposeApi).not.toHaveBeenCalled();
+  });
+
+  it("D17 五路 journal 操作任一在途时，预览与历史的执行按钮全部禁用（#165）", async () => {
+    groupsApi.mockResolvedValue([
+      groupFixture({
+        id: "row-exec",
+        command_group_id: "group-exec",
+        status: "COMMITTED",
+        commands: [commandFixture({
+          command_id: "cmd-exec-origin",
+          command_group_id: "group-exec",
+          status: "EXECUTED",
+          source: { user_prompt: "第 1 格改成远景", reference_asset_ids: [], model: null, raw_output_id: "rule_stub_v1" },
+        })],
+      }),
+      groupFixture({
+        id: "row-prev",
+        command_group_id: "group-prev",
+        status: "PREVIEWED",
+        commands: [commandFixture({
+          command_id: "cmd-prev",
+          command_group_id: "group-prev",
+          status: "PREVIEWED",
+        })],
+      }),
+    ]);
+    let resolveAccept: ((group: DirectorCommandGroup) => void) | null = null;
+    acceptApi.mockImplementation(() => new Promise<DirectorCommandGroup>((resolve) => {
+      resolveAccept = resolve;
+    }));
+    renderDirector();
+    // 从历史打开待确认组，点「确认执行」让 accept 挂起。
+    fireEvent.click(await screen.findByRole("button", { name: "继续预览" }));
+    fireEvent.click(await screen.findByRole("button", { name: "确认执行" }));
+    await waitFor(() => {
+      // 历史区的撤销/丢弃与预览卡上的拒绝/丢弃都必须被共享 executing 门禁
+      // 覆盖——accept 在途时历史撤销/丢弃仍可点会造成并发 journal 写入。
+      expect(screen.getByRole("button", { name: /撤销/ })).toBeDisabled();
+      screen.getAllByRole("button", { name: "丢弃" }).forEach((button) => expect(button).toBeDisabled());
+      expect(screen.getByRole("button", { name: "拒绝" })).toBeDisabled();
+    });
+    resolveAccept!(groupFixture({
+      status: "COMMITTED",
+      commands: [commandFixture({ status: "EXECUTED", storyboard_version_after: 3 })],
+    }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /撤销/ })).toBeEnabled();
+    });
+    screen.getAllByRole("button", { name: "丢弃" }).forEach((button) => expect(button).toBeEnabled());
+  });
+
+  it("D18 从历史丢弃无关组不关闭当前预览组（#165）", async () => {
+    groupsApi.mockResolvedValue([
+      groupFixture({
+        id: "row-a",
+        command_group_id: "group-a",
+        status: "PREVIEWED",
+        commands: [commandFixture({
+          command_id: "cmd-a",
+          command_group_id: "group-a",
+          status: "PREVIEWED",
+          source: { user_prompt: "格 1 改成近景（组 A）", reference_asset_ids: [], model: null, raw_output_id: "rule_stub_v1" },
+        })],
+      }),
+      groupFixture({
+        id: "row-b",
+        command_group_id: "group-b",
+        status: "PREVIEWED",
+        commands: [commandFixture({
+          command_id: "cmd-b",
+          command_group_id: "group-b",
+          status: "PREVIEWED",
+          source: { user_prompt: "台词改成「我没事」（组 B）", reference_asset_ids: [], model: null, raw_output_id: "rule_stub_v1" },
+        })],
+      }),
+    ]);
+    discardApi.mockResolvedValue(groupFixture({ status: "DISCARDED", command_group_id: "group-b" }));
+    renderDirector();
+    await screen.findByText("格 1 改成近景（组 A）");
+    const openButtons = screen.getAllByRole("button", { name: "继续预览" });
+    fireEvent.click(openButtons[0]);
+    expect(await screen.findByRole("region", { name: "命令预览" })).toHaveTextContent("格 1 改成近景（组 A）");
+    // 丢弃历史里的组 B：预览中的组 A 必须保持打开。
+    const discardButtons = screen.getAllByRole("button", { name: "丢弃" });
+    fireEvent.click(discardButtons[discardButtons.length - 1]);
+    await waitFor(() => {
+      expect(discardApi).toHaveBeenCalledWith("project-1", "group-b");
+    });
+    const region = await screen.findByRole("region", { name: "命令预览" });
+    expect(region).toHaveTextContent("格 1 改成近景（组 A）");
+  });
+
+  it("D19 撤销其他组后预览不再沿用旧命令的解析文案（#165 previewPlan 陈旧）", async () => {
+    proposeApi.mockResolvedValue(groupFixture());
+    groupsApi.mockResolvedValue([
+      groupFixture({
+        id: "row-dialogue",
+        command_group_id: "group-dialogue",
+        status: "COMMITTED",
+        commands: [commandFixture({
+          command_id: "cmd-dialogue",
+          command_group_id: "group-dialogue",
+          operation: "update_dialogue",
+          status: "EXECUTED",
+          target: { project_id: "project-1", page_id: "page-1", panel_id: "panel-1", dialogue_id: "dialogue-1" },
+          source: { user_prompt: "台词改成「我没事」", reference_asset_ids: [], model: null, raw_output_id: "rule_stub_v1" },
+        })],
+      }),
+    ]);
+    undoApi.mockResolvedValue(groupFixture({
+      id: "row-dialogue",
+      command_group_id: "group-dialogue",
+      status: "PARTIALLY_ACCEPTED",
+      commands: [commandFixture({
+        command_id: "cmd-dialogue",
+        command_group_id: "group-dialogue",
+        operation: "update_dialogue",
+        status: "EXECUTED",
+        target: { project_id: "project-1", page_id: "page-1", panel_id: "panel-1", dialogue_id: "dialogue-1" },
+        source: { user_prompt: "台词改成「我没事」", reference_asset_ids: [], model: null, raw_output_id: "rule_stub_v1" },
+      })],
+    }));
+    renderDirector();
+    // 先 propose 一个镜头景别命令，previewPlan 携带旧命令的解析文案。
+    await previewUtterance("第 1 格改成近景");
+    const region = await screen.findByRole("region", { name: "命令预览" });
+    await waitFor(() => {
+      expect(within(region).getByText("镜头景别")).toBeInTheDocument();
+    });
+    // 撤销历史里的台词命令：预览被替换为该组，表头/摘要必须回退到新命令的
+    // operation 标签与原文，而不是旧命令的解析文案。
+    fireEvent.click(screen.getByRole("button", { name: /撤销/ }));
+    await waitFor(() => {
+      expect(undoApi).toHaveBeenCalledWith("project-1", "cmd-dialogue");
+    });
+    await waitFor(() => {
+      expect(within(screen.getByRole("region", { name: "命令预览" })).getByText("气泡台词")).toBeInTheDocument();
+    });
+    const nextRegion = screen.getByRole("region", { name: "命令预览" });
+    expect(within(nextRegion).getByText("台词改成「我没事」")).toBeInTheDocument();
+    expect(within(nextRegion).queryByText("镜头景别")).not.toBeInTheDocument();
+  });
+
+  it("D20 页面切换后预览、草稿与作用域全部重置，不携带旧页状态漂移（#165）", async () => {
+    groupsApi.mockImplementation((_projectId: string, pageId?: string | null) =>
+      Promise.resolve(pageId === "page-1"
+        ? [groupFixture({
+            id: "row-prev",
+            command_group_id: "group-prev",
+            status: "PREVIEWED",
+            commands: [commandFixture({ command_id: "cmd-prev", command_group_id: "group-prev", status: "PREVIEWED" })],
+          })]
+        : []));
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const baseProps = {
+      id: "project-1",
+      panels: [panelFixture()],
+      scenes: [sceneFixture()],
+      characters: [characterFixture()],
+      activeDrawModelName: "Nano Banana 2",
+      pageGenerationPending: false,
+      onExecutingChange: vi.fn(),
+      localEditCandidate: candidateFixture(),
+      onOpenLocalEdit: vi.fn(),
+    };
+    const view = render(
+      <QueryClientProvider client={client}>
+        <DirectorWorkspace {...baseProps} page={pageFixture()} />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "继续预览" }));
+    expect(await screen.findByRole("region", { name: "命令预览" })).toBeInTheDocument();
+    const input = screen.getByLabelText("导演指令") as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "第 1 格改成近景" } });
+    fireEvent.click(screen.getByRole("button", { name: "格 1" }));
+    expect(screen.getByRole("button", { name: "格 1" })).toHaveAttribute("aria-pressed", "true");
+
+    // mid-session 换页(refetch 后 selectedPage 指针变化):旧页的预览/草稿/作用域
+    // 不能继续挂在新的 DirectorWorkspace 实例上。
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <DirectorWorkspace {...baseProps} page={pageFixture({ id: "page-2", page_number: 2 })} />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => {
+      expect(screen.queryByRole("region", { name: "命令预览" })).not.toBeInTheDocument();
+    });
+    expect((screen.getByLabelText("导演指令") as HTMLTextAreaElement).value).toBe("");
+    expect(screen.getByRole("button", { name: "格 1" })).toHaveAttribute("aria-pressed", "false");
+    await waitFor(() => {
+      expect(groupsApi).toHaveBeenCalledWith("project-1", "page-2");
+    });
   });
 });

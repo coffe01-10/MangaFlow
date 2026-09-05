@@ -8,7 +8,7 @@ from threading import Barrier
 
 import pytest
 from PIL import Image
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
@@ -81,6 +81,8 @@ class DeterministicWorkflowAdapter:
 
     def analyze_multimodal(self, _request, output_schema):
         assert output_schema is PageInspectionOutput
+        # #164: PRESENCE is always requested; the fake "sees" nobody because
+        # this DAG fixture's page has no cast, so the cross-check stays clean.
         return PageInspectionOutput(
             items=[
                 InspectionItem(
@@ -88,10 +90,21 @@ class DeterministicWorkflowAdapter:
                     outcome="PASS",
                     score=1.0,
                     severity="INFO",
-                    details={"expected": "deterministic", "observed": "deterministic"},
+                    details={
+                        "expected": "deterministic",
+                        "observed": "deterministic",
+                        "detected_characters": [],
+                    },
                     regions=[],
                 )
-                for category in ["SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"]
+                for category in [
+                    "SPEAKER",
+                    "CHARACTER",
+                    "OUTFIT",
+                    "PROP",
+                    "CONTINUITY",
+                    "PRESENCE",
+                ]
             ]
         )
 
@@ -313,6 +326,95 @@ def test_run_pauses_before_single_page_generation_and_reuses_jobs(
         assert stopped.json()["status"] == "CANCELLED"
         db_session.expire_all()
         assert db_session.get(PageCandidate, candidate.id).status == "CANCELLED"
+    finally:
+        settings.queue_enabled = previous_queue
+
+
+def test_approve_retires_late_job_when_cancel_lands_during_enqueue(
+    client, db_session, monkeypatch
+):
+    """#129 (failing-first): a cancel_run claim committing between approve's
+    pre-enqueue refresh and the enqueue itself escaped the canceller's
+    late_jobs sweep; the approve path must re-check the run after enqueue and
+    cancel the late paid job in the same transaction (reconcile mirror)."""
+    monkeypatch.setattr(
+        "app.services.workflow_engine.lifecycle.ensure_page_ready",
+        lambda *_args, **_kwargs: None,
+    )
+    project = _project(client)
+    workflow = _workflow(client, project["id"])
+    assert client.post(f"/api/v1/workflows/{workflow['id']}/publish").status_code == 200
+
+    chapter = Chapter(project_id=project["id"], title="第一章", ordinal=1, status="PAGES_PLANNED")
+    db_session.add(chapter)
+    db_session.flush()
+    page = MangaPage(
+        chapter_id=chapter.id,
+        page_number=1,
+        panel_count=4,
+        scene_ids=["scene"],
+        beat_ids=["beat"],
+        source_coverage={"complete": True},
+    )
+    db_session.add(page)
+    db_session.commit()
+
+    settings = get_settings()
+    previous_queue = settings.queue_enabled
+    settings.queue_enabled = False
+    try:
+        started = client.post(
+            f"/api/v1/workflows/{workflow['id']}/runs",
+            json={
+                "scope_type": "PAGE",
+                "scope_id": page.id,
+                "start_node_ids": ["generate"],
+                "stop_node_ids": ["generate"],
+            },
+        )
+        assert started.status_code == 202, started.text
+        run_id = started.json()["id"]
+
+        real_enqueue = workflow_engine.enqueue_job
+
+        def cancel_then_enqueue(db, job):
+            # cancel_run's claim lands inside the enqueue window — after the
+            # pre-enqueue refresh already passed (same claim shape cancel_run
+            # uses: terminal rows excluded, version bumped).
+            canceller = sessionmaker(
+                bind=db.get_bind(), autoflush=False, expire_on_commit=False
+            )()
+            try:
+                canceller.execute(
+                    update(WorkflowRun)
+                    .where(WorkflowRun.id == run_id)
+                    .values(
+                        status="CANCELLED",
+                        finished_at=utcnow(),
+                        version=WorkflowRun.version + 1,
+                    )
+                )
+                canceller.commit()
+            finally:
+                canceller.close()
+            return real_enqueue(db, job)
+
+        monkeypatch.setattr(workflow_engine, "enqueue_job", cancel_then_enqueue)
+
+        approved = client.post(
+            f"/api/v1/workflow-runs/{run_id}/nodes/generate/approve",
+            json={"image_model_alias": "image.nano_banana_pro", "resolution": "1K"},
+        )
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["status"] == "CANCELLED"
+        generate = next(
+            item for item in approved.json()["node_runs"] if item["node_id"] == "generate"
+        )
+        assert generate["status"] == "CANCELLED"
+        db_session.expire_all()
+        late_job = db_session.get(GenerationJob, generate["job_id"])
+        assert late_job.status == JobStatus.CANCELLED
+        assert late_job.cancelled_at is not None
     finally:
         settings.queue_enabled = previous_queue
 

@@ -11,7 +11,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.api.helpers import asset_read
+from app.api.helpers import asset_read, ensure_project_scope
 from app.config import get_settings
 from app.database import get_db
 from app.models import (
@@ -327,10 +327,16 @@ def upload_asset(
 
 
 @router.patch("/{asset_id}", response_model=AssetRead)
-def update_asset(asset_id: str, payload: AssetUpdate, db: Session = Depends(get_db)) -> AssetRead:
+def update_asset(
+    asset_id: str,
+    payload: AssetUpdate,
+    project_id: str | None = None,
+    db: Session = Depends(get_db),
+) -> AssetRead:
     asset = db.get(Asset, asset_id)
     if not asset or asset.deleted_at is not None:
         raise HTTPException(status_code=404, detail="素材不存在")
+    ensure_project_scope(db, asset, project_id, label="素材")
     if payload.kind is not None:
         if asset.source != "USER_UPLOAD":
             raise HTTPException(status_code=409, detail="生成结果不能改成参考图")
@@ -361,10 +367,13 @@ def adopt_generated_asset_as_reference(asset_id: str, db: Session = Depends(get_
 
 
 @router.delete("/{asset_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_asset(asset_id: str, db: Session = Depends(get_db)) -> None:
+def delete_asset(
+    asset_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> None:
     asset = db.get(Asset, asset_id)
     if not asset or asset.deleted_at is not None:
         raise HTTPException(status_code=404, detail="素材不存在")
+    ensure_project_scope(db, asset, project_id, label="素材")
     _ensure_asset_not_in_active_job(db, asset)
     page_candidates = list(
         db.scalars(
@@ -410,11 +419,14 @@ def delete_asset(asset_id: str, db: Session = Depends(get_db)) -> None:
 
 
 @router.get("/{asset_id}/content")
-def asset_content(asset_id: str, db: Session = Depends(get_db)) -> FileResponse:
+def asset_content(
+    asset_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> FileResponse:
     settings = get_settings()
     asset = db.get(Asset, asset_id)
     if not asset or asset.deleted_at is not None:
         raise HTTPException(status_code=404, detail="素材不存在")
+    ensure_project_scope(db, asset, project_id, label="素材")
     root = settings.upload_root if asset.source == "USER_UPLOAD" else settings.storage_root
     path = (root / asset.storage_key).resolve()
     if not path.is_relative_to(root.resolve()) or not path.is_file():
@@ -423,13 +435,19 @@ def asset_content(asset_id: str, db: Session = Depends(get_db)) -> FileResponse:
 
 
 @router.get("/{asset_id}/thumbnail/{size}")
-def asset_thumbnail(asset_id: str, size: int, db: Session = Depends(get_db)) -> FileResponse:
+def asset_thumbnail(
+    asset_id: str,
+    size: int,
+    project_id: str | None = None,
+    db: Session = Depends(get_db),
+) -> FileResponse:
     if size not in {320, 640}:
         raise HTTPException(status_code=422, detail="缩略图尺寸只支持 320 或 640")
     settings = get_settings()
     asset = db.get(Asset, asset_id)
     if not asset or asset.deleted_at is not None:
         raise HTTPException(status_code=404, detail="素材不存在")
+    ensure_project_scope(db, asset, project_id, label="素材")
     root = settings.upload_root if asset.source == "USER_UPLOAD" else settings.storage_root
     key = asset.thumbnail_320_key if size == 320 else asset.thumbnail_640_key
     path = (root / key).resolve() if key else None

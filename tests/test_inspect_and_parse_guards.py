@@ -34,6 +34,11 @@ from app.models import (
 from app.services import job_service
 from app.services.page_completion import REQUIRED_QUALITY_CATEGORIES
 from app.services.worker_handlers.story_parse import _run_story_parse
+from app.services.workflow_engine import (
+    create_workflow_run,
+    default_graph,
+    publish_workflow,
+)
 from app.services.workflow_engine.reconciliation import _create_inspection_job, reconcile_run
 from app.worker_tasks import _mark_worker_failure
 from app.workflow_schemas import WorkflowGraph, WorkflowNodeDefinition
@@ -1225,3 +1230,159 @@ def test_revise_source_rejects_while_source_parse_is_active(client, db_session):
     )
     assert response.status_code == 409
     assert "正在生成剧本" in response.json()["detail"]
+
+
+def _imported_chapter(client, project_name: str) -> tuple[dict, str]:
+    project = client.post("/api/v1/projects", json={"name": project_name}).json()
+    imported = client.post(
+        f"/api/v1/projects/{project['id']}/sources/import",
+        json={"title": "第一章", "text": "顾川推开门。"},
+    )
+    assert imported.status_code == 201, imported.text
+    return project, imported.json()["chapters"][0]["id"]
+
+
+def _chapter_parse_workflow(db, project_id: str) -> WorkflowDefinition:
+    """A minimal source.chapter → agent.parse graph (default-graph nodes)."""
+
+    graph = default_graph()
+    workflow = WorkflowDefinition(
+        project_id=project_id,
+        name="章节解析流程",
+        draft_graph={
+            "schema_version": graph.get("schema_version", 2),
+            "nodes": [
+                node for node in graph["nodes"] if node["id"] in {"chapter", "parse"}
+            ],
+            "edges": [
+                edge
+                for edge in graph["edges"]
+                if edge["source_node"] == "chapter" and edge["target_node"] == "parse"
+            ],
+        },
+    )
+    db.add(workflow)
+    db.commit()
+    publish_workflow(db, workflow)
+    db.refresh(workflow)
+    return workflow
+
+
+def _active_parse_job_ids(db, chapter_id: str) -> list[str]:
+    return list(
+        db.scalars(
+            select(GenerationJob.id).where(
+                GenerationJob.job_type == "SOURCE_PARSE",
+                GenerationJob.target_type == "CHAPTER",
+                GenerationJob.target_id == chapter_id,
+                GenerationJob.status.in_(job_service.ACTIVE_JOB_STATUSES),
+            )
+        )
+    )
+
+
+def test_parse_route_rejects_while_workflow_parse_job_is_active(client, db_session):
+    """#124 (failing-first): the parse route and the workflow agent.parse node
+    use disjoint idempotency-key namespaces; an ACTIVE workflow-side parse
+    must 409 the route instead of enqueueing a second paid SOURCE_PARSE."""
+    project, chapter_id = _imported_chapter(client, "解析跨入口互斥")
+    workflow_job = GenerationJob(
+        project_id=project["id"],
+        target_type="CHAPTER",
+        target_id=chapter_id,
+        job_type="SOURCE_PARSE",
+        status=JobStatus.PREPARING,
+        idempotency_key="workflow:some-run:parse:1",
+    )
+    db_session.add(workflow_job)
+    db_session.commit()
+
+    response = client.post(f"/api/v1/chapters/{chapter_id}/parse")
+    assert response.status_code == 409, response.text
+    assert "该章节已有进行中的解析任务" in response.json()["detail"]
+    assert _active_parse_job_ids(db_session, chapter_id) == [workflow_job.id]
+
+
+def test_parse_route_allows_new_parse_after_previous_job_finished(
+    client, db_session, monkeypatch
+):
+    """#124 guard rail: a terminal (CANCELLED) parse job never blocks a fresh
+    route parse."""
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    project, chapter_id = _imported_chapter(client, "解析结束后可重发")
+    finished = GenerationJob(
+        project_id=project["id"],
+        target_type="CHAPTER",
+        target_id=chapter_id,
+        job_type="SOURCE_PARSE",
+        status=JobStatus.CANCELLED,
+        idempotency_key=f"source-parse:{chapter_id}:1",
+    )
+    db_session.add(finished)
+    db_session.commit()
+
+    response = client.post(f"/api/v1/chapters/{chapter_id}/parse")
+    assert response.status_code == 202, response.text
+    assert response.json()["id"] != finished.id
+
+
+def test_workflow_parse_node_rejects_while_route_parse_job_is_active(
+    client, db_session, monkeypatch
+):
+    """#124 (failing-first): create_workflow_run's agent.parse node must
+    refuse to mint a second SOURCE_PARSE job while the route-created one
+    (source-parse:{chapter}:{version} key) is still ACTIVE."""
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    project, chapter_id = _imported_chapter(client, "工作流解析互斥")
+    workflow = _chapter_parse_workflow(db_session, project["id"])
+    chapter = db_session.get(Chapter, chapter_id)
+    route_job = GenerationJob(
+        project_id=project["id"],
+        target_type="CHAPTER",
+        target_id=chapter_id,
+        job_type="SOURCE_PARSE",
+        status=JobStatus.QUEUED,
+        idempotency_key=f"source-parse:{chapter_id}:{chapter.version}",
+    )
+    db_session.add(route_job)
+    db_session.commit()
+
+    with pytest.raises(ValueError, match="该章节已有进行中的解析任务"):
+        create_workflow_run(
+            db_session,
+            workflow,
+            scope_type="CHAPTER",
+            scope_id=chapter_id,
+            start_node_ids=[],
+            stop_node_ids=[],
+        )
+    # The rejected start leaves no run and no second parse job behind.
+    db_session.rollback()
+    assert (
+        db_session.scalars(
+            select(WorkflowRun).where(WorkflowRun.workflow_id == workflow.id)
+        ).all()
+        == []
+    )
+    assert _active_parse_job_ids(db_session, chapter_id) == [route_job.id]
+
+
+def test_workflow_run_creates_parse_job_when_chapter_is_idle(
+    client, db_session, monkeypatch
+):
+    """#124 guard rail: with no ACTIVE parse on the chapter the workflow start
+    still mints its SOURCE_PARSE job."""
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    project, chapter_id = _imported_chapter(client, "空闲章节可启动解析流程")
+    workflow = _chapter_parse_workflow(db_session, project["id"])
+
+    run = create_workflow_run(
+        db_session,
+        workflow,
+        scope_type="CHAPTER",
+        scope_id=chapter_id,
+        start_node_ids=[],
+        stop_node_ids=[],
+    )
+    assert run.status == "RUNNING"
+    assert len(_active_parse_job_ids(db_session, chapter_id)) == 1

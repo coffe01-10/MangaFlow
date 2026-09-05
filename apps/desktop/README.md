@@ -181,17 +181,19 @@ cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml
   （helper stderr——桌面形态下即 API/uvicorn/LOCAL_EXECUTOR Worker 输出）。
   壳在 spawn 时把 helper stderr 重定向到该文件（替换 V02-54 之前的
   `Stdio::inherit()`——GUI 壳没有可继承的控制台）。
-- **导出**：invoke `desktop_export_logs`（无参 → rfd 原生保存对话框；带
-  `destination` 参数则走同一校验，供测试/未来 UI 使用）。产物为 store-only
-  ZIP（零依赖写入器 `ziparch.rs`，CRC32 有已知向量测试）+ `manifest.json`
-  （文件清单/跳过原因，仅身份字段）。写入先落 `*.pending` 再 rename，失败
-  不在目标路径留下半截归档。
+- **导出**：invoke `desktop_export_logs`（**无参**——rfd 原生保存对话框是目标的唯一来源；
+  #149 修复后不再接受 renderer 传入的 `destination` 参数，shell-core 默认拒绝已存在的
+  目标文件，仅对话框确认覆盖后经由显式的 confirmed-overwrite 入口替换）。产物为
+  store-only ZIP（零依赖写入器 `ziparch.rs`，CRC32 有已知向量测试）+ `manifest.json`
+  （文件清单/跳过原因，仅身份字段）。写入先落 `*.pending` 再 rename（`.pending` 处
+  植入符号链接同样拒绝，#150），失败不在目标路径留下半截归档。
 - **双向路径安全**（测试 `tests/log_export.rs`，归档另经 python3 `zipfile`
   外部校验 CRC 与结构）：归档成员只收 `logs/` 内的常规文件——符号链接跳过
   不跟随、每个成员 canonical 路径必须仍在 canonical logs 根之下、单文件
   64 MiB 上限（超出跳过并记录；V02-54C 起轮转让常规日志稳定低于该上限，
-  见 §6.4）；导出目标必须为绝对路径、不含 `.`/`..` 成分、父目录存在且非符号链接，
-  canonical 化后**不得位于用户数据根之内**（既防止把用户数据当导出目标
+  见 §6.4）；导出目标必须为绝对路径、不含 `.`/`..` 成分、父目录存在且非符号链接、
+  **默认不得已存在**（未经用户确认覆盖）、canonical 化后**不得位于用户数据根之内**
+  （既防止把用户数据当导出目标
   覆盖，也防止归档自我包含）。轮转产生的世代文件（`*.log.1`…）是普通
   成员，随导出一起归档（测试 `tests/log_rotation.rs`）。
 

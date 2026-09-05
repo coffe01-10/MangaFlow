@@ -12,6 +12,7 @@ from PIL import Image
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from app.api.helpers import ensure_project_scope
 from app.config import get_settings
 from app.database import get_db
 from app.models import (
@@ -354,10 +355,13 @@ def list_exports(project_id: str, db: Session = Depends(get_db)) -> list[ExportB
 
 
 @router.get("/exports/{export_id}/download")
-def download_export(export_id: str, db: Session = Depends(get_db)) -> FileResponse:
+def download_export(
+    export_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> FileResponse:
     bundle = db.get(ExportBundle, export_id)
     if not bundle:
         raise HTTPException(status_code=404, detail="导出记录不存在")
+    ensure_project_scope(db, bundle, project_id, label="导出记录")
     root = get_settings().storage_root.resolve()
     path = (root / bundle.storage_key).resolve()
     if not path.is_relative_to(root) or not path.is_file():
