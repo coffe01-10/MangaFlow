@@ -10,6 +10,8 @@ from pydantic import (
     model_validator,
 )
 
+from app.schemas import VersionToken
+
 
 class ProviderPresetRead(BaseModel):
     key: str
@@ -97,7 +99,7 @@ class ProviderUpdate(BaseModel):
 
     name: str | None = Field(default=None, min_length=1, max_length=120)
     enabled: bool | None = None
-    version: int = Field(ge=1)
+    version: VersionToken
 
 
 class ConnectionCreate(BaseModel):
@@ -120,7 +122,7 @@ class ConnectionUpdate(BaseModel):
     extra_headers: dict[str, str] | None = None
     balance_config: dict[str, Any] | None = None
     nonsecret_config: dict[str, Any] | None = None
-    version: int = Field(ge=1)
+    version: VersionToken
 
 
 class ProviderKeyWrite(BaseModel):
@@ -237,7 +239,7 @@ class ProviderModelUpdate(BaseModel):
     enabled: bool | None = None
     display_enabled: bool | None = None
     priority: int | None = Field(default=None, ge=0, le=100)
-    version: int = Field(ge=1)
+    version: VersionToken
 
     _validated_capabilities = field_validator("capabilities", mode="after")(
         validate_model_capabilities_payload
@@ -248,7 +250,7 @@ class ModelVisibilityBatchItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     model_id: str = Field(min_length=1, max_length=36)
-    expected_version: int = Field(ge=1)
+    expected_version: VersionToken
 
 
 class ModelVisibilityBatchUpdate(BaseModel):

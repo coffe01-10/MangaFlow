@@ -122,10 +122,11 @@ def _run_inspection(db, job: GenerationJob) -> None:
     # The page version is the baseline that catches those overwrites.
     baseline_page_version = page.version
     # select/retract on an upstream page flags downstream pages NEEDS_RECHECK
-    # WITHOUT bumping page.version (generation.py), so the version baseline
-    # cannot see that class of drift. Snapshot the continuity flag too: a
-    # completion whose baseline no longer matches must not wipe the flag by
-    # writing PASSED/NOT_CHECKED over it (#136).
+    # together with a page.version bump (generation.py, #136 route side), so
+    # the version baseline above catches those writes mid-flight. The flag
+    # snapshot below stays as defense in depth: any flag change that slips
+    # past the version baseline must not be wiped by a completion writing
+    # PASSED/NOT_CHECKED over it (#136).
     baseline_continuity_status = page.continuity_status
     _, snapshot = compile_page_prompt(db, page, project)
     categories = list(
