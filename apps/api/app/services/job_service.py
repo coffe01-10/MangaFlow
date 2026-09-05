@@ -644,6 +644,17 @@ def recover_pending_jobs(db: Session) -> int:
                     db, style_id=job.target_id, exclude_job_id=job.id
                 ):
                     style.status = "DRAFT"
+                if job.job_type == "PAGE_INSPECT":
+                    # The candidate/asset lookups above match nothing: an inspect
+                    # job owns no PageCandidate row (job_id is only set for
+                    # generation-type jobs) and its target_id names the inspected
+                    # candidate, which must NOT be stamped FAILED — it may hold
+                    # adopted work. Only the page state is restored, so a swept
+                    # inspect lease cannot leave the page stuck FINAL_CHECKING
+                    # (same guard as the worker-failure and cancel paths).
+                    inspected = db.get(PageCandidate, job.target_id)
+                    if inspected:
+                        restore_page_after_inspection_exit(db, inspected)
                 node_run = db.scalar(
                     select(WorkflowNodeRun).where(WorkflowNodeRun.job_id == job.id)
                 )
