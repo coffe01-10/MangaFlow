@@ -784,50 +784,6 @@ def recover_pending_jobs(db: Session) -> int:
     return recovered
 
 
-def mark_job_failed(
-    db: Session,
-    job: GenerationJob,
-    error_code: str,
-    error_message: str,
-    *,
-    candidate_status: str = "FAILED",
-) -> str | None:
-    """Mark a job and its visible targets as failed without committing."""
-
-    if job.status in {JobStatus.COMPLETED, JobStatus.CANCELLED}:
-        return None
-    now = utcnow()
-    job.status = JobStatus.FAILED
-    job.error_code = error_code
-    job.error_message = error_message[:500]
-    job.finished_at = now
-    job.lease_owner = None
-    job.lease_expires_at = None
-    page_candidate = db.scalar(select(PageCandidate).where(PageCandidate.job_id == job.id))
-    if page_candidate:
-        page_candidate.status = candidate_status
-        restore_page_after_generation_exit(db, page_candidate)
-    asset_candidate = db.scalar(
-        select(AssetCandidate).where(AssetCandidate.job_id == job.id)
-    )
-    if asset_candidate:
-        asset_candidate.status = "FAILED"
-    style = db.get(StyleProfile, job.target_id) if job.target_type == "STYLE" else None
-    if style:
-        style.status = "DRAFT"
-
-    node_run = db.scalar(select(WorkflowNodeRun).where(WorkflowNodeRun.job_id == job.id))
-    workflow_run_id = (job.request_parameters or {}).get("workflow_run_id")
-    if node_run:
-        workflow_run_id = workflow_run_id or node_run.workflow_run_id
-        if node_run.status not in {"COMPLETED", "FAILED", "CANCELLED"}:
-            node_run.status = "FAILED"
-            node_run.error_code = error_code
-            node_run.error_message = error_message[:500]
-            node_run.finished_at = now
-    return workflow_run_id
-
-
 def mark_job_cancelled(db: Session, job: GenerationJob) -> GenerationJob:
     """Mark a job and its visible target as cancelled without committing."""
 

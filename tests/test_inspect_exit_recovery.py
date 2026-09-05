@@ -9,7 +9,6 @@ page stuck FINAL_CHECKING forever.
 
 from datetime import timedelta
 
-import pytest
 from sqlalchemy import select
 
 from app.config import Settings
@@ -26,6 +25,7 @@ from app.models import (
     utcnow,
 )
 from app.services import job_service
+from app.worker_tasks import _mark_worker_failure
 
 
 def _set_queue_mode(db_session, mode: str) -> None:
@@ -220,3 +220,42 @@ def test_recovery_terminal_failure_does_not_downgrade_final_ready_page(
     assert restored.status == PageStatus.FINAL_READY
     assert restored.continuity_status == "PASSED"
     assert restored.version == version_before
+
+
+def test_terminal_worker_failure_leaves_inspected_candidate_ready_by_default(db_session):
+    """T3 (converted from the deleted mark_job_failed helper): the dead helper's
+    pinned guarantee moves to the live worker-failure path — a terminal
+    PAGE_INSPECT failure with the default candidate_status must mark the job
+    FAILED while leaving the adopted candidate (and its generate-job link)
+    untouched."""
+    project, _page, candidate, generate_job = _ready_candidate(db_session)
+    inspect_job = GenerationJob(
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=candidate.id,
+        job_type="PAGE_INSPECT",
+        status=JobStatus.CONSISTENCY_CHECKING,
+    )
+    db_session.add(inspect_job)
+    db_session.commit()
+    owner = "owner-inspect-recovery"
+    inspect_job.lease_owner = owner
+    inspect_job.lease_expires_at = utcnow() + timedelta(minutes=5)
+    inspect_job.attempt_count = max(inspect_job.attempt_count or 0, 1)
+    db_session.commit()
+
+    marked, _, is_final = _mark_worker_failure(
+        db_session,
+        inspect_job.id,
+        owner,
+        "WORKER_ERROR",
+        "质检失败",
+        retryable=False,
+    )
+    assert marked is True and is_final is True
+    db_session.expire_all()
+    assert db_session.get(GenerationJob, inspect_job.id).status == JobStatus.FAILED
+    untouched = db_session.get(PageCandidate, candidate.id)
+    assert untouched.status == "READY"
+    assert untouched.is_selected is True
+    assert untouched.job_id == generate_job.id

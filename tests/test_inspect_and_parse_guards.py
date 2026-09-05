@@ -31,7 +31,6 @@ from app.models import (
     utcnow,
 )
 from app.services import job_service
-from app.services.job_service import mark_job_failed
 from app.services.page_completion import REQUIRED_QUALITY_CATEGORIES
 from app.services.worker_handlers.story_parse import _run_story_parse
 from app.services.workflow_engine.reconciliation import _create_inspection_job, reconcile_run
@@ -153,23 +152,12 @@ def test_page_generate_failure_still_marks_owned_candidate_failed(db_session):
     assert db_session.get(PageCandidate, candidate.id).status == "FAILED"
 
 
-def test_mark_job_failed_does_not_clobber_inspected_target(db_session):
-    project, _page, candidate, _generate_job = _ready_candidate(db_session)
-    inspect_job = GenerationJob(
-        project_id=project.id,
-        target_type="PAGE_CANDIDATE",
-        target_id=candidate.id,
-        job_type="PAGE_INSPECT",
-        status=JobStatus.CONSISTENCY_CHECKING,
-    )
-    db_session.add(inspect_job)
-    db_session.commit()
-
-    mark_job_failed(db_session, inspect_job, "WORKER_ERROR", "质检失败")
-    db_session.commit()
-    db_session.expire_all()
-    assert db_session.get(GenerationJob, inspect_job.id).status == JobStatus.FAILED
-    assert db_session.get(PageCandidate, candidate.id).status == "READY"
+# The former test_mark_job_failed_does_not_clobber_inspected_target pinned one
+# guarantee on the now-deleted dead helper mark_job_failed: a terminal PAGE_INSPECT
+# failure must not stamp the adopted candidate FAILED. That guarantee lives on the
+# live worker-failure path (test_inspect_failure_does_not_mark_ready_candidate_failed,
+# test_terminal_inspect_failure_restores_final_checking_page) and on the recovery
+# path (tests/test_inspect_exit_recovery.py).
 
 
 def _adopt_candidate(page, candidate) -> None:
