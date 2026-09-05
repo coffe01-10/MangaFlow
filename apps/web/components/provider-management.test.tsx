@@ -578,6 +578,7 @@ describe("V02-11B 统一连接与模型目录", () => {
       expect(verifyConnection).toHaveBeenCalledWith("conn-1", {
         level: "MODEL_SMOKE",
         catalog_model_id: "text-1",
+        operation: "structured_text",
         acknowledge_cost: false,
       });
     });
@@ -590,7 +591,65 @@ describe("V02-11B 统一连接与模型目录", () => {
       expect(verifyConnection).toHaveBeenLastCalledWith("conn-1", {
         level: "MODEL_SMOKE",
         catalog_model_id: "image-1",
+        operation: "image_generate",
         acknowledge_cost: true,
+      });
+    });
+  });
+
+  it("双能力文字模型逐操作验证：测试文本与测试视觉分别定向", async () => {
+    const dualModel = makeProviderModel({
+      id: "dual-1",
+      provider_model_id: "dual-1",
+      display_name: "Dual Text",
+      operations: ["structured_text", "multimodal_analysis"],
+    });
+    providerModelsApi.mockResolvedValue([dualModel]);
+    verifyConnection.mockResolvedValue({
+      health: {
+        connection_id: "conn-1",
+        configured: true,
+        credential_source: "CONNECTION_KEY",
+        supports_model_discovery: true,
+        supports_balance: false,
+        supported_model_types: ["TEXT"],
+        health_state: "HEALTHY",
+        last_checked_at: null,
+        last_success_at: null,
+        latency_ms: 9,
+        error_code: null,
+        message: "ok",
+      },
+      probe: {
+        id: "probe-1",
+        connection_id: "conn-1",
+        model_id: "dual-1",
+        probe_type: "MODEL_SMOKE",
+        status: "PASSED",
+        latency_ms: 9,
+        metrics: {},
+        error_code: null,
+        message: "ok",
+        created_at: "2026-08-30T00:00:00Z",
+      },
+    });
+    renderPlatform();
+    fireEvent.click(await screen.findByRole("button", { name: "测试文本" }));
+    await waitFor(() => {
+      expect(verifyConnection).toHaveBeenLastCalledWith("conn-1", {
+        level: "MODEL_SMOKE",
+        catalog_model_id: "dual-1",
+        operation: "structured_text",
+        acknowledge_cost: false,
+      });
+    });
+    fireEvent.click(screen.getByRole("button", { name: "测试视觉" }));
+    await waitFor(() => {
+      expect(verifyConnection).toHaveBeenLastCalledWith("conn-1", {
+        level: "MODEL_SMOKE",
+        catalog_model_id: "dual-1",
+        operation: "multimodal_analysis",
+        acknowledge_cost: false,
       });
     });
   });

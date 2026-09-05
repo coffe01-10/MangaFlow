@@ -67,7 +67,7 @@ export function ConnectionPanel({
     ModelVisibilityBatchResult["failed"]
   >([]);
   const [confirm, setConfirm] = useState<
-    | { type: "image"; model: ProviderModel }
+    | { type: "image"; model: ProviderModel; operation?: "image_generate" | "image_edit" }
     | { type: "key"; keyId: string; label: string }
     | null
   >(null);
@@ -110,13 +110,18 @@ export function ConnectionPanel({
     },
   });
   const verify = useMutation({
-    mutationFn: (model?: ProviderModel) => api.verifyProviderConnection(
+    // operation pinning: the backend smoke otherwise always picks its first
+    // preference (structured_text / image_generate), leaving a dual-capability
+    // model permanently PARTIAL and excluded from auto-routing.
+    mutationFn: (input?: { model: ProviderModel; operation?: "structured_text" | "multimodal_analysis" | "image_generate" | "image_edit" }) => api.verifyProviderConnection(
       connection.id,
-      model
+      input
         ? {
             level: "MODEL_SMOKE",
-            catalog_model_id: model.id,
-            acknowledge_cost: model.output_modalities.includes("IMAGE"),
+            catalog_model_id: input.model.id,
+            operation: input.operation,
+            // Backend gates the paid confirm on model_type, not modalities.
+            acknowledge_cost: input.model.model_type === "IMAGE",
           }
         : { level: "CREDENTIALS" },
     ),
@@ -403,13 +408,24 @@ export function ConnectionPanel({
           const derivedUnavailable = capabilityModel?.enabled === false;
           const operations = model.operations.map(mapOperation);
           const extra = operations.length > 3 ? operations.length - 3 : 0;
-          const isImage = model.output_modalities.includes("IMAGE")
-            && (model.operations.includes("image_generate") || model.operations.includes("image_edit"));
-          const probeLabel = isImage
-            ? isCLI ? "任务中验证" : "测试图片"
-            : model.operations.includes("multimodal_analysis")
-              ? "测试视觉"
-              : "测试文本";
+          // One probe button per declared operation: the backend smoke only
+          // verifies the operation it is asked for, so a dual-capability model
+          // needs each button (otherwise it stays PARTIAL and auto-routing
+          // keeps rejecting it even though the user "tested" it).
+          const probeButtons = isCLI
+            ? [{ operation: undefined as undefined | "image_generate", label: "任务中验证" }]
+            : (["structured_text", "multimodal_analysis", "image_generate", "image_edit"] as const)
+              .filter((operation) => model.operations.includes(operation))
+              .map((operation) => ({
+                operation: operation as "structured_text" | "multimodal_analysis" | "image_generate" | "image_edit",
+                label: {
+                  structured_text: "测试文本",
+                  multimodal_analysis: "测试视觉",
+                  image_generate: "测试图片",
+                  image_edit: "测试编辑",
+                }[operation],
+              }));
+          const probePaid = model.model_type === "IMAGE";
           return (
             <article key={model.id} className={model.display_enabled ? "" : "provider-model-hidden"}>
               <label className="provider-model-select">
@@ -451,22 +467,29 @@ export function ConnectionPanel({
                   {model.display_enabled ? <EyeOff size={13} /> : <Eye size={13} />}
                   {model.display_enabled ? "隐藏" : "显示"}
                 </button>
-                <button
-                  type="button"
-                  className={isImage ? "paid-check" : undefined}
-                  title={isCLI ? "CLI 图片能力只在有持久任务与审计行的生成流程中验证" : undefined}
-                  disabled={isCLI || !model.enabled || derivedUnavailable || !connection.configured || modelActionPending}
-                  onClick={(event) => {
-                    if (isImage) {
-                      triggerRef.current = event.currentTarget;
-                      setConfirm({ type: "image", model });
-                    } else {
-                      verify.mutate(model);
-                    }
-                  }}
-                >
-                  <Activity size={13} />{probeLabel}
-                </button>
+                {probeButtons.map(({ operation, label }) => (
+                  <button
+                    key={label}
+                    type="button"
+                    className={probePaid ? "paid-check" : undefined}
+                    title={isCLI
+                      ? "CLI 图片能力只在有持久任务与审计行的生成流程中验证"
+                      : probePaid
+                        ? "图片模型冒烟测试可能计费"
+                        : undefined}
+                    disabled={isCLI || !model.enabled || derivedUnavailable || !connection.configured || modelActionPending}
+                    onClick={(event) => {
+                      if (probePaid) {
+                        triggerRef.current = event.currentTarget;
+                        setConfirm({ type: "image", model, operation: operation === "image_edit" ? "image_edit" : "image_generate" });
+                        return;
+                      }
+                      verify.mutate({ model, operation });
+                    }}
+                  >
+                    <Activity size={13} />{label}
+                  </button>
+                ))}
               </div>
             </article>
           );
@@ -541,9 +564,9 @@ export function ConnectionPanel({
           confirmLabel="确认测试"
           onCancel={closeConfirm}
           onConfirm={() => {
-            const model = confirm.model;
+            const { model, operation } = confirm;
             closeConfirm();
-            verify.mutate(model);
+            verify.mutate({ model, operation });
           }}
         />
       )}

@@ -1505,7 +1505,7 @@ export const api = {
     request<ProviderModel[]>(`/providers/connections/${connectionId}/models`),
   createProviderModel: (connectionId: string, payload: { provider_model_id: string; display_name?: string; model_type: "TEXT" | "IMAGE"; input_modalities: string[]; output_modalities: string[]; operations: string[]; api_surfaces: string[]; capabilities: Record<string, unknown> }) =>
     request<ProviderModel>(`/providers/connections/${connectionId}/models`, { method: "POST", body: JSON.stringify(payload) }),
-  verifyProviderConnection: (connectionId: string, payload: { level: "CREDENTIALS" | "MODEL_SMOKE"; catalog_model_id?: string; acknowledge_cost?: boolean; runs?: number }) =>
+  verifyProviderConnection: (connectionId: string, payload: { level: "CREDENTIALS" | "MODEL_SMOKE"; catalog_model_id?: string; operation?: "structured_text" | "multimodal_analysis" | "image_generate" | "image_edit"; acknowledge_cost?: boolean; runs?: number }) =>
     request<ConnectionVerifyResult>(`/providers/connections/${connectionId}/verify`, { method: "POST", body: JSON.stringify(payload) }),
   updateProviderModelVisibility: (modelId: string, displayEnabled: boolean, version: number) =>
     request<ProviderModel>(`/providers/models/${modelId}`, {
