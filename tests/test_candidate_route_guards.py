@@ -2,12 +2,14 @@
 
 from app.domain.states import JobStatus, Resolution
 from app.models import (
+    Asset,
     Chapter,
     GenerationBatch,
     GenerationJob,
     MangaPage,
     PageCandidate,
     Project,
+    utcnow,
 )
 
 
@@ -88,3 +90,36 @@ def test_delete_candidate_leaves_terminal_job_untouched(client, db_session):
     db_session.refresh(job)
     assert candidate.deleted_at is not None
     assert job.status == JobStatus.COMPLETED
+
+
+def test_select_candidate_rejects_soft_deleted_asset(client, db_session):
+    """Selection must fail closed when the candidate's backing asset is gone."""
+
+    project, page, candidate, _job = _seed_page_candidate(db_session, with_job=False)
+    asset = Asset(
+        project_id=project.id,
+        kind="page_candidate",
+        original_name="deleted.png",
+        storage_key="generated/deleted.png",
+        mime_type="image/png",
+        byte_size=10,
+        sha256="b" * 64,
+        source="VERTEX_GENERATED",
+        status="GENERATED",
+        deleted_at=utcnow(),
+    )
+    db_session.add(asset)
+    db_session.flush()
+    candidate.asset_id = asset.id
+    candidate.status = "READY"
+    db_session.commit()
+
+    response = client.post(
+        f"/api/v1/pages/{page.id}/select-candidate",
+        json={"candidate_id": candidate.id, "manual_text_confirmed": True},
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == "该候选的图片素材已删除，请重新生成"
+    db_session.refresh(page)
+    assert page.selected_candidate_id is None

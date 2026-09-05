@@ -41,6 +41,7 @@ from app.services.job_service import cancel_job, enqueue_job
 from app.services.ordinal_allocator import (
     CandidateOrdinalConflictError,
     create_page_candidate,
+    lock_entity,
 )
 from app.services.page_completion import build_page_production_readiness, production_error_detail
 from app.services.page_readiness import ensure_page_ready
@@ -241,6 +242,10 @@ def select_candidate(
     db: Session = Depends(get_db),
 ) -> MangaPage:
     page = _page(db, page_id)
+    # Agreed deletion-vs-selection convention (mirrors delete_asset): take the
+    # page lock before reading the candidate so a concurrent soft-delete on the
+    # same page serializes against this selection.
+    page = lock_entity(db, MangaPage, page.id)
     candidate = db.get(PageCandidate, payload.candidate_id)
     if (
         not candidate
@@ -250,6 +255,9 @@ def select_candidate(
         or candidate.status not in {"READY", "INSPECTED", "NEEDS_REVIEW"}
     ):
         raise HTTPException(status_code=409, detail="该候选尚不能采用")
+    asset = db.get(Asset, candidate.asset_id)
+    if asset is None or asset.deleted_at is not None:
+        raise HTTPException(status_code=409, detail="该候选的图片素材已删除，请重新生成")
     inspections = list(
         db.scalars(
             select(InspectionResult)
