@@ -21,6 +21,7 @@ from app.models import (
     CharacterReference,
     GenerationJob,
     JobAssetReference,
+    MangaPage,
     Outfit,
     PageCandidate,
     Project,
@@ -35,6 +36,7 @@ from app.request_limits import ASSET_UPLOAD_OPENAPI, ParsedUpload, parse_single_
 from app.schemas import AssetRead, AssetUpdate
 from app.services.character_packages import detach_draft_package_references_for_asset
 from app.services.media import create_thumbnails, inspect_upload_image, remove_thumbnails
+from app.services.ordinal_allocator import lock_entity
 
 router = APIRouter()
 CHUNK_SIZE = 1024 * 1024
@@ -342,6 +344,22 @@ def delete_asset(asset_id: str, db: Session = Depends(get_db)) -> None:
                 PageCandidate.asset_id == asset.id,
                 PageCandidate.deleted_at.is_(None),
             )
+        )
+    )
+    # Agreed convention with select_candidate: both sides hold the page lock
+    # before their selected-guard reads, so a concurrent adopt cannot slip
+    # between this read and the soft delete below. The guard below runs on a
+    # post-lock re-read (populate_existing refreshes stale identity-map rows).
+    for page_id in sorted({candidate.page_id for candidate in page_candidates}):
+        lock_entity(db, MangaPage, page_id)
+    page_candidates = list(
+        db.scalars(
+            select(PageCandidate)
+            .where(
+                PageCandidate.asset_id == asset.id,
+                PageCandidate.deleted_at.is_(None),
+            )
+            .execution_options(populate_existing=True)
         )
     )
     if any(candidate.is_selected for candidate in page_candidates):
