@@ -26,6 +26,7 @@ from app.models import (
     GenerationRecord,
     Outfit,
     StyleProfile,
+    StyleStatus,
     utcnow,
 )
 from app.services.asset_dedupe import adopt_deleted_duplicate, live_duplicate
@@ -435,6 +436,10 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
     )
     if batch.target_type == "STYLE" and candidate.variant == "STYLE_TEST":
         style = db.get(StyleProfile, batch.target_id)
-        if style:
-            style.status = "TEST_GENERATED"
+        # TEST_GENERATED is only reachable from states still awaiting a test
+        # image (issue #138): old batches' jobs are closed, never cancelled,
+        # so a late STYLE_TEST completion must not regress a style that was
+        # already approved (CONFIRMED) or activated (ACTIVE).
+        if style and style.status in {StyleStatus.DRAFT, StyleStatus.ANALYZING}:
+            style.status = StyleStatus.TEST_GENERATED
             style.version += 1
