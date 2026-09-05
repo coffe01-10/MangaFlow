@@ -394,3 +394,102 @@ def test_asset_generation_requeries_references_after_lease(db_session, tmp_path,
     with pytest.raises(RuntimeError, match="参考图在生成前发生变化"):
         _run_asset_generate(db_session, job)
     assert provider_calls == []
+
+
+def test_delete_asset_rechecks_selected_guard_after_page_lock(db_session, client, monkeypatch):
+    """delete_asset must re-read the selected guard after taking the page
+    lock (the agreed convention with select_candidate): a select that commits
+    between the pre-lock read and the guard must win, returning 409 instead
+    of silently deleting the now-adopted candidate's asset."""
+
+    from sqlalchemy.orm import sessionmaker as make_session
+
+    from app.api.routes import uploads
+
+    project = Project(name="删除锁守卫")
+    db_session.add(project)
+    db_session.flush()
+    chapter = Chapter(project_id=project.id, ordinal=1, title="第一章", status="DRAFT")
+    db_session.add(chapter)
+    db_session.flush()
+    page = MangaPage(
+        chapter_id=chapter.id,
+        page_number=1,
+        status=PageStatus.STORYBOARDED,
+        source_coverage={"complete": True},
+        scene_ids=[],
+        beat_ids=[],
+    )
+    db_session.add(page)
+    db_session.flush()
+    asset = Asset(
+        project_id=project.id,
+        kind="page_candidate",
+        original_name="candidate.png",
+        storage_key="candidate.png",
+        mime_type="image/png",
+        byte_size=10,
+        sha256="c" * 64,
+        source="AI_GENERATED",
+        status="GENERATED",
+    )
+    db_session.add(asset)
+    db_session.flush()
+    batch = GenerationBatch(
+        project_id=project.id,
+        chapter_id=chapter.id,
+        page_id=page.id,
+        ordinal=1,
+        generation_kind="PAGE",
+    )
+    db_session.add(batch)
+    db_session.flush()
+    candidate = PageCandidate(
+        batch_id=batch.id,
+        page_id=page.id,
+        ordinal=1,
+        model_alias="image.nano_banana_2",
+        resolution=Resolution.DRAFT_1K,
+        status="READY",
+        asset_id=asset.id,
+        is_selected=False,
+        based_on_storyboard_version=page.storyboard_version,
+        prompt_snapshot={},
+    )
+    db_session.add(candidate)
+    db_session.commit()
+
+    real_lock = getattr(uploads, "lock_entity", None)
+
+    def lock_after_concurrent_select(db, model_cls, entity_id):
+        if model_cls is MangaPage:
+            # Deterministic in-process interleaving: the select-candidate
+            # session reads the candidate as not-selected, adopts it and
+            # commits right before delete_asset's post-lock re-read.
+            other = make_session(bind=db.get_bind(), expire_on_commit=False)()
+            try:
+                winner = other.get(PageCandidate, candidate.id)
+                winner.is_selected = True
+                winner.version += 1
+                page_row = other.get(MangaPage, page.id)
+                page_row.selected_candidate_id = candidate.id
+                other.commit()
+            finally:
+                other.close()
+        return real_lock(db, model_cls, entity_id)
+
+    monkeypatch.setattr(
+        uploads, "lock_entity", lock_after_concurrent_select, raising=False
+    )
+
+    response = client.delete(f"/api/v1/assets/{asset.id}")
+
+    assert response.status_code == 409
+    assert "当前采用的分页成图不能删除" in response.json()["detail"]
+    db_session.expire_all()
+    survivor = db_session.get(PageCandidate, candidate.id)
+    assert survivor.deleted_at is None
+    assert survivor.is_selected is True
+    assert db_session.get(Asset, asset.id).deleted_at is None
+    if real_lock is None:
+        pytest.fail("delete_asset never took the page lock (fix not applied)")
