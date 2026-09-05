@@ -3,6 +3,7 @@
 from app.domain.states import JobStatus, Resolution
 from app.models import (
     Asset,
+    AssetCandidate,
     Chapter,
     GenerationBatch,
     GenerationJob,
@@ -123,3 +124,48 @@ def test_select_candidate_rejects_soft_deleted_asset(client, db_session):
     assert response.json()["detail"] == "该候选的图片素材已删除，请重新生成"
     db_session.refresh(page)
     assert page.selected_candidate_id is None
+
+
+def test_favorite_asset_candidate_returns_asset_candidate_shape(client, db_session):
+    """Favorite must answer with the asset-candidate read shape, not 500.
+
+    The route commits, then builds a PageCandidateRead whose required
+    page_id/is_selected fields do not exist on AssetCandidate — the response
+    validation failed after the commit was already durable.
+    """
+
+    project = Project(name="资产候选收藏")
+    db_session.add(project)
+    db_session.flush()
+    batch = GenerationBatch(
+        project_id=project.id,
+        target_type="CHARACTER",
+        target_id="seed-character",
+        ordinal=1,
+    )
+    db_session.add(batch)
+    db_session.flush()
+    candidate = AssetCandidate(
+        batch_id=batch.id,
+        ordinal=1,
+        model_alias="image.nano_banana_2",
+        resolution=Resolution.DRAFT_1K,
+        variant="表情差分",
+        status="READY",
+    )
+    db_session.add(candidate)
+    db_session.commit()
+
+    response = client.patch(
+        f"/api/v1/candidates/{candidate.id}/favorite",
+        json={"is_favorite": True},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["is_favorite"] is True
+    assert body["page_id"] is None
+    assert body["is_selected"] is False
+    assert body["asset_id"] is None
+    db_session.refresh(candidate)
+    assert candidate.is_favorite is True

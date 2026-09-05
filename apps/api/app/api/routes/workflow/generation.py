@@ -152,6 +152,11 @@ def favorite_candidate(
     candidate.version += 1
     db.commit()
     db.refresh(candidate)
+    # The route resolves PageCandidate OR AssetCandidate; only the page shape
+    # can go through candidate_read, whose PageCandidateRead requires the
+    # page_id/is_selected fields an AssetCandidate does not have.
+    if isinstance(candidate, AssetCandidate):
+        return asset_candidate_read(candidate)
     return candidate_read(candidate)
 
 
