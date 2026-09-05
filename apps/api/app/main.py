@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -16,6 +17,8 @@ from app.request_limits import RequestBodyLimitMiddleware
 from app.services.job_service import recover_pending_jobs, start_periodic_recovery
 from app.services.provider_presets import ensure_provider_presets
 from app.services.runtime_settings import apply_runtime_overrides
+
+LOGGER = logging.getLogger("mangaflow.jobs")
 
 
 def _assert_database_is_current() -> None:
@@ -51,7 +54,13 @@ async def lifespan(application: FastAPI):
         if not application.dependency_overrides:
             apply_runtime_overrides(db, settings)
             ensure_provider_presets(db, settings, auto_commit=True)
-            recover_pending_jobs(db)
+            # A persistently poisoned run or job must not abort API startup:
+            # mirror the periodic loop's isolation and _recover_cli_runs
+            # below — log the recovery failure and keep booting.
+            try:
+                recover_pending_jobs(db)
+            except Exception:
+                LOGGER.exception("job recovery failed at startup")
             _recover_cli_runs()
     if not application.dependency_overrides:
         # REDIS-mode RQ retries fire inside the lease window and then stop, so

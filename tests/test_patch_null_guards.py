@@ -15,7 +15,6 @@ from app.models import Project
 
 
 def test_guard_flags_only_non_nullable_columns():
-    changes = {"name": None, "deleted_at": None, "description": None}
     reject_required_nulls(Project, {"description": None})
 
 

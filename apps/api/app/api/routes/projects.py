@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, select, update
 from sqlalchemy.orm import Session
 
 from app.api.helpers import reject_required_nulls
@@ -480,8 +480,6 @@ def update_project(
     project = db.get(Project, project_id)
     if not project or project.deleted_at is not None:
         raise HTTPException(status_code=404, detail="项目不存在")
-    if project.version != payload.version:
-        raise HTTPException(status_code=409, detail="项目已被其他操作更新，请刷新后重试")
 
     changes = payload.model_dump(exclude_unset=True, exclude={"version"})
     reject_required_nulls(Project, changes)
@@ -495,11 +493,22 @@ def update_project(
         model = db.get(AIModel, model_id)
         if not model or model.model_type != model_type or not model.enabled:
             raise HTTPException(status_code=422, detail=f"{field} 指向的模型不可用")
+    # Claim the row with an atomic conditional update so concurrent PATCHes
+    # cannot both pass an in-memory version comparison (same pattern as
+    # _claim_panel_version / scene asset PATCH).
+    claimed = db.execute(
+        update(Project)
+        .where(Project.id == project.id, Project.version == payload.version)
+        .values(version=Project.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if not claimed.rowcount:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="项目已被其他操作更新，请刷新后重试")
     for key, value in changes.items():
         setattr(project, key, value)
     if changes.get("last_image_model_alias"):
         project.image_model_alias = changes["last_image_model_alias"]
-    project.version += 1
     db.commit()
     db.refresh(project)
     return project

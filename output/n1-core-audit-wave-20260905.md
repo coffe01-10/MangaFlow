@@ -1,0 +1,104 @@
+# N1 Core Reliability Audit Wave — 2026-09-05（night/n1-core，基线 c5179b7 → 合并后 HEAD）
+
+最终全量：**730 passed**（基线 629，+101 个新回归测试），失败集与 Windows 环境基线逐字节一致；ruff 干净。
+
+范围：Job / Queue / Cancellation / Retry / Workflow / Director / Persistence / Idempotency / Candidate / Inspection / Generation Integrity。
+方法：8 组 fresh-context Hunter（A–H）→ 独立 Verifier（P1 双验证）→ Fix Worker（独立 worktree/branch、文件互斥、failing-first 回归测试）→ Critic/Fresh Reviewer 终审。
+本环境边界：Linux 离线 SQLite 套件；live PostgreSQL/Redis/RQ/真实 provider 验收 **NOT RUN**（无基础设施，按仓库政策标记 BLOCKED）。基线 8 failed + 10 errors 全部为 Windows 专属环境失败（backup_restore_drill / codex_cli / grok_build_cli / e2e_isolation / antigravity_cli），全天保持不变。
+
+## 终审
+
+Fresh Reviewer（最终对抗审查，覆盖 c5179b7..HEAD 全部合并 diff + 交叉修复交互 + 全量套件）：**SHIP，无阻塞项**。全量 707 passed（基线 629），失败集与基线逐字节一致；ruff 干净；每个 job 终态均有已验证的人工出口（cancel → delete → 重建），无三重死锁态。
+
+## 已确认并修复合入（按缺陷计 24 项）
+
+### P1
+1. **同一候选并发双份 PAGE_INSPECT（双倍付费）**——create_job 将 FAILED/CANCELLED job 幂等键改写为 `closed:{id}` 后重试不恢复键，且 inspect 路由无 has_active_job 防护；workflow 键空间（`workflow:{run}:{node}:1`）与路由键空间互不可见。修复：路由 409 防护 + reconcile 采用活跃 job + 成功路径经 node 链回溯触发 reconcile（否则采用 job 完成后 run 永久 RUNNING）。双验证确认。
+2. **repair 预算绕过 + 并发双份付费修复**——max_auto_repairs 预算读为锁前普通 SELECT，幂等键按次新建永不去重。修复：预算读移入 create_generation_batch 锁窗口 + 经 CandidateLineage 回溯父候选的同类修复/同分辨率放大 409 防护。双验证确认（并纠正：job target 是新子候选，直接 has_active_job 无效）。
+3. **审批门被恢复扫描确定性摧毁**——默认图 output.page 的 planning job 依赖为空（唯一上游 inspect 无 planning job），`dependencies_complete` 空真；队列启用（发行默认）下恢复扫描（≥30s 周期）在任意审批暂停期间入队执行它 → PAGE_NOT_PRODUCTION_READY 烧完重试 → run 从 PAUSED 翻 FAILED 且 retry_run 重建后再次落入同一陷阱。双验证确认，且比初报更严重：触发不需要暂停，run 创建约 1 分钟后即被杀死。修复：恢复第二阶段跳过 node_run 仍为 WAITING / run 为 PAUSED 的 workflow job，改为触发 reconcile_run（保留崩溃窗口自愈，reconcile 自身父门拒绝受控节点）。Lead 补充实现修复轮 + failing-first T5。
+4. **director undo/redo 为 check-then-write**——无 claim 无锁；并发 undo vs accept 静默丢失已提交写入（layout undo 还会 DELETE+重建全部面板），undo 与 redo 同行竞态数据不确定；单标签页可达（撤销按钮仅在 undo.isPending 时禁用）。修复：accept 同款锁序（page→panel）+ 条件 claim（EXECUTED + sbv 匹配 → SUPERSEDED，同一事务完成恢复），丢失 claim 回滚。双验证确认（D-F2“undo 链单发”同期被两验证者一致判定为合同设计的 tip-undo 模型，非缺陷；残余 P3 为前端对非 tip 组暴露必 409 按钮）。
+
+### HIGH/MEDIUM（P2）
+5. reset_for_retry check-then-write 可击穿活跃 worker lease / 复活已取消 job → 单条条件 UPDATE claim（双验证：机制成立，窗口毫秒级，定级 P2）。
+6. reconcile_run 终态写覆盖并发 CANCELLED（锁等待把窗口拉宽到 cancel 事务尾部，且永久不可自愈）→ 条件 claim + lost-claim 回滚，node 级写 flush 后原子提交。
+7. discard_group 无 claim → 并发 accept 后 journal 记 DISCARDED 而效果已应用且 undo 永久 409 → 逐行条件 claim（与 accept/reject 同模式）。
+8. 软删资产 sha256 去重把死资产/错类资产系到新付费候选（UNIQUE(project_id,sha256) 下新行不可行；字节相同即触发；选中后 export 409）→ 过滤 deleted_at + source + kind，命中软删同类行时原地复活（镜像 upload_asset 先例），跨类碰撞 raise。
+9. 页面卡死 FINAL_CHECKING——PAGE_INSPECT job 无候选行，worker 失败/取消/恢复路径都找不到页面 → 新增 restore_page_after_inspection_exit 并接入 _mark_worker_failure、mark_job_cancelled；后续测试审计再发现恢复终态分支同样缺失（T-G1）→ 补齐。
+10. Windows horse 无法 import app（官方 `npm run dev:worker` 路径确定性复现：`python -c` horse cwd=repo 根，rq `--path` 仅改父进程）→ horse_environment 注入 PYTHONPATH；QUEUED 行无任何恢复路径的问题随之大幅收窄。
+11. RQ 超时硬杀无任何应用级清理、重试在未过期 lease 内空转、错误面只报 LEASE_EXPIRED、NULL outcome 的 ModelCallAttempt 永不收口 → 监控 kill 前落 JOB_TIMEOUT 标记；恢复分支透传超时原因并在终态收口 NULL attempt。
+12. STYLE_ANALYZE 双份付费（version 进幂等键 + 无 active-job 防护，inspect P1 的同族）→ 两个风格路由 409 防护 + 失败/取消/恢复的风格重置全部加兄弟 job 存在性守卫。
+13. POST /jobs/{id}/retry 对不可重试状态静默 200 → 409。
+14. 吞掉的 reconcile 异常：完成路径异常零日志（run 卡 RUNNING，无自愈）；恢复循环一个坏 run 饿死整轮且启动调用无守卫（可致 API 无法启动）→ 完成路径独立 try/except + 日志；恢复循环逐项隔离 + 回滚；启动调用加守卫。
+15. run 终态 FAILED 时滞留的下游 WAITING 子 job/节点永久僵尸并阻塞整项目脚本删除 → FAILED claim 成功后同事务清扫（镜像 cancel_run，含 late-jobs），FAILED 原因保留；重试依赖未完成 → 409（防御）。
+16. delete_candidate 不取消活跃 job → worker 全额付费后把软删行复活为 READY；worker 侧无任何 target deleted_at 检查 → 路由侧取消活跃 job + worker 侧 claim 前与持久化前双重检查（付费后中止则回滚附加、用量行保持诚实）。
+17. asset_generate 缺 page_generate 的 lease 后参考图复检（静默使用用户已删参考）→ 镜像补齐。
+18. delete_asset vs select_candidate 无锁 TOCTOU 产生悬挂选中（readiness 阻断但工作台渲染 404 图）→ 双侧按约定 lock_entity(MangaPage) + 锁后复检（delete 侧）+ select 校验资产存活。
+19. favorite 对 AssetCandidate 提交后 500（schema 必填字段缺失）→ 按类型分支返回 asset_candidate_read。
+20. undo 接受复合写只校验 scene.version（panel.background 被静默覆盖）→ accept 时对含 background 的场景命令加面板一致性 409（复合检查；单纯 sbv 不够，因手动场景 PATCH 不动 sbv）。
+21. alembic fileConfig 默认 disable_existing_loggers 杀掉进程内全部既存 logger（离线套件测试污染的根因）→ disable_existing_loggers=False。
+22. 删除漂移死代码 mark_job_failed（无生产调用方、缺兄弟守卫、缺页面恢复、无 claim——未来接线即重引缺陷），其测试断言迁移到活跃路径。
+
+## 验证后否决（不修）
+- **D-F2“undo 链单发”**：两独立验证者一致——sbv 锚定的 tip-undo + SUPERSEDED 是合同 §5.3 明文设计；undo/redo 链可无限切换，仅非 tip 行不可直接撤销（fail-closed）。残余 P3：前端 historyActionIds 对非 tip 组渲染必 409 的撤销按钮。
+- **T-G3 幂等键重挂并发 500**：同值 UPDATE 在行锁下串行且无唯一冲突；真正抛错的是 loser 的 INSERT，恰在 begin_nested + IntegrityError 回退内，依赖/引用行严格在其后添加，无孤儿行。
+- **W-1 run_worker 路径计算错误**：HEAD 上 `parents[1]` 数学正确（指向 apps/api，chdir 到 repo 根），REFUTED。
+- **E-F5 页面回退 STORYBOARDED**：机制存在但终态良性等价（选择/重掷/就绪全部正常），降级 LOW，暂不修。
+
+## 遗留队列（已定位、未修复，按价值排序）
+1. ~~**C-F2/G-F2（P2 家族）**：9 处实体 PATCH 路由仍是"内存读版本→比较→无条件写"~~ → **已修复合并**：全部十处（scene/beat/character/outfit/style×3/project/workflow×2，含 restore_version）改为单条条件 UPDATE 原子 claim（`WHERE version == expected`，rowcount 0 → 409），10 个逐路由 lost-update 回归测试全部 failing-first 验证。
+2. ~~**C-F1（P2）**：workflow export 节点重执行时 create_export 非幂等~~ → **已修复合并**：`create_export(reuse_existing=True)` 仅在 export 节点处理器启用，以确定性 storage_key（选中候选集的纯函数）复用已提交 bundle 行；该行本身即幂等标记，可跨 create_export 提交与完成 CAS 之间的崩溃存活。残余（诚实记录）：真正并发的双执行仍可插入两行，彻底关闭需 `(chapter_id, export_type, storage_key)` 唯一约束（迁移，超本轮范围）。
+3. ~~**C-F3（P2）**：POST /workflows/{id}/runs 无幂等防护~~ → **已修复合并**：create_workflow_run 在 scope 校验后 lock_entity(WorkflowDefinition) + 同 workflow+scope 存在非终态 run 则 ValueError → 路由 409"该范围已有进行中的运行"。终态（FAILED/CANCELLED/COMPLETED）不阻塞 retry_run 与新起；不同 scope 并行不受影响。请求侧幂等令牌（需迁移+客户端配合）评估为不必要。
+4. ~~**F-F4（P2→P3）**：多图响应仅持久化 images[0] 但按 N 计费~~ → **已修复合并（降级 P3，发行预设 n=1 不可达）**：`"n"` 加入 _RESERVED_BODY（extra_body 无法再抬高张数）、images_edit 表单钉 `n=1`、Google 分支 `candidate_count=1`；两个 worker handler 对 N>1 响应打 WARNING。刻意不改账本——供应商确按 N 张计费，N 是诚实的支出记录；缺陷根因是"花钱不用"，已在请求源头钉死。
+5. **R-7（P2/P3）**：/jobs/{id}/* 全家无项目归属校验；archived job 可重试；列表硬上限 100 无分页。（API 本就无鉴权，属一致性缺口）
+6. **R-8（P2）**：LOCAL 模式无墙钟超时（job_timeout 仅挂在 RQ）；CONCURRENCY_LIMIT 等待者占死 8 线程池。
+7. **S-P3（P2）**：request_parameters / input_snapshot JSON 整列写与并发写者互相覆盖（_lease_reference_assets vs reconcile 参数合并）。
+8. **P3 前端提示缺口**（Fresh Reviewer 确认）：analyzeStyle 与 job retry/cancel 的 409 无错误呈现；director 非 tip 撤销按钮恒 409。
+9. **测试强化**：U-M2 双 approve 测试在 claim 回归时仍会通过；多连接真实并发（PG）覆盖整体缺失（NOT RUN 边界）。
+
+## NOT RUN / BLOCKED 汇总
+- tests/integration/test_postgres_acceptance.py、test_redis_rq_acceptance.py（需 live PG/Redis，本环境无）；
+- Windows SpawnWorker 真实 TerminateProcess kill 路径、真实 CLI/PowerShell 套件（平台不可达，基线失败集即其体现）；
+- Playwright e2e / npm run check（本轮为后端状态机范围）；
+- 所有 lock_entity FOR UPDATE 的真实 PostgreSQL 锁语义（离线仅 populate_existing 路径）。
+
+---
+
+# Wave 2/3 增补（同日后续轮次，基线延续至 758 passed / +129 回归测试）
+
+## 新增确认并修复合入
+22. **R-8（P2）**：LOCAL 模式无墙钟上限——心跳独立线程对卡死 handler 无限续租（lease 永不过期）；CONCURRENCY_LIMIT 等待者每 ≤5s 重写同一行且永久占死 8 线程池。修复：deadline-aware 心跳（超 budget 写一次性 LOCAL_TIMEOUT 标记并停止续租，恢复按标记透传原因并收口 NULL attempt）+ genai Client 补 `http_options` 超时（全库唯一无界调用，SDK 默认 timeout=None）+ 并发标记 write-once（`is_distinct_from` NULL 安全）+ 等待者 episode 上限（超时退出，依赖恢复重投递）。8 项 failing-first 测试。
+23. **W2-1（HIGH，Wave 1 引入的交互缺陷）**：被终态清扫 run 的任务重试会把 run 复活为 RUNNING 但留下 CANCELLED 尾巴 → reconcile 永远写 RUNNING → retry_run 与 duplicate-run 守卫双重锁死 scope。修复：reset_for_retry 在 FAILED run 复活块内同事务复活全部被清扫 CANCELLED 节点与 job（两层；安全论证：FAILED run 下 CANCELLED 子节点只能是清扫产物）。3 项 failing-first 测试。
+24. **W2-2（P2）**：CANCELLED/COMPLETED run 下的 FAILED 任务重试仍会付费执行（node 复活无 run 状态谓词）且 node 永久 RUNNING。修复：retry 路由对 CANCELLED/COMPLETED 所属 run 409 + execute_job claim 期兜底（死 run 的 job 直接取消，provider 永不触达）。
+25. **W2-5（P3）**：run 创建后的裸 reconcile 异常 → 500 + duplicate-run 守卫锁定 scope → 镜像完成路径隔离（log + rollback + 返回已提交 run）。
+26. **W3-1（MEDIUM，R-8 与既有清扫的连锁）**：LOCAL 超时后仍存活的线程中 provider 调用成功返回时，恢复清扫已把 attempt 盖为 FAILED → finalize 硬抛 AUDIT_PERSISTENCE_FAILED，付费图片丢弃且账本不记真实支出。修复：finalize 冲突分支对"清扫标记 error_code + usage 仍 NULL"的 FAILED 行允许 SUCCEEDED 升级（同一 values dict，零漂移），真实失败行仍硬拒；清扫的错误安全注释已纠正。
+27. **W3-2（MEDIUM）**：质检成功路径只校验 storyboard_version，把并发场景资产变更写入的 NEEDS_REVIEW 复审标志覆盖为 PASSED/FINAL_READY → 场景变更后的页面可静默导出（0fb94f4 修复类的漏网兄弟）。修复：handler 增加页面 version 基线并在调用后比对（误报审计：窗口内全部 version 写入者均应捕获）。
+28. **W3-3（LOW）**：keep/retract 选中候选路由缺页面锁（违反 select/delete_asset 已建立的锁约定）→ 补 lock_entity + 锁后重读（populate_existing 为 retract 的关键），钉死竞态后的诚实结果。
+29. **U-M2 测试强化**：双 approve 测试改为双 session 竞态注入（在受害者读取与 claim 之间提交真实 claim 形状），已验证在 claim 退化为 check-then-write 时会失败。
+
+## 新增验证后否决/降级
+- **S-P3（JSON 整列写）**：穷举 writer 后无同列并发对——唯一中期写入键 `reference_asset_ids` 全库零读者（真源是 JobAssetReference 行）；adoption 在 HEAD 上根本不写 params。降级 P3 卫生项（可删冗余写，不必须）。
+- **锁序环**：全库 lock_entity 枚举（Project→Page→Panel/Batch、WorkflowDefinition 为叶子）无反向边，无死锁环。
+
+## 剩余 P3 记录（未修，已定位）
+- W2-3：PG 专用锁序倒置（reset_for_retry job→run vs cancel_run run→job）可致瞬时 40P01 500，无损坏（SQLite 不可测）。
+- W2-4：Wave 1 之前遗留的终态 FAILED run + WAITING 子任务升级窗口僵尸——建议一次性启动清扫或迁移。
+- W2-6：duplicate-run 守卫在 SQLite 上无数据库兜底（生产 PG 有 FOR UPDATE）；可选 partial unique index。
+- W3-4：scene_assets 余下未 claim 的 check-then-write（restore/delete/bind）+ update_scene_asset 不查 deleted_at。
+- P3 前端：analyzeStyle 与 job retry/cancel 的 409 无呈现；director 非 tip 撤销按钮恒 409。
+
+## Wave 2/3 终态
+全量 758 passed（基线 629），失败集 = Windows 环境基线；ruff 干净。累计修复 38 项确认缺陷。
+
+## Wave 2/3 Fresh Reviewer 终审
+
+**SHIP，无阻塞。** 终审独立复核：per-attempt 超时语义与 RQ 对齐；标记在 lease 有效期内落盘且恢复分支正确透传；等待者退出后恢复重投递链路闭合；重试复活/worker 兜底/审计升级/页面漂移守卫全部确认；对抗探针（CONCURRENCY_LIMIT 标记覆盖超时标记）被论证反驳——覆盖后语义更准确、无消费方、且为修复前既有行为；变异测试证实强化测试能捕获 claim 退化。全量 758 passed + ruff 干净由终审自跑复核。
+
+## 收敛判定
+
+三轮独立对抗审查（Wave 1：8 组 Hunter 全面扫；Wave 2：异常组合 + 新代码再入；Wave 3：最薄覆盖面）后：
+- **P0/P1/高价值 P2 队列清零**——全部 38 项确认缺陷已修复合入，无一遗留；
+- 否决率显著上升（S-P3、W-1、D-F2、T-G3、E-F5、标记翻转等 7+ 候选被对抗验证反驳，10+ 主题被证伪），新发现严重度从 P1 收敛至 P3；
+- 剩余开放项全部为 P3 且带修复设计：W2-3（PG 瞬时 40P01，无损坏）、W2-4/W2-6（仅影响未发布分支的"升级窗口"，实际不存在遗留数据）、W3-4（scene_assets 同族机械修复）、前端 409 呈现（功能性问题，非美化）。
+- NOT RUN 边界保持诚实：live PostgreSQL/Redis/RQ/真实 provider/Windows 真实 kill 路径。
+
+结论：核心业务状态机的高价值缺陷面在本责任域内已收敛至 P3 尾部。后续轮次应从 W2-4/W2-6/W3-4 的机械收尾、前端错误呈现、以及合并 master 后的再入开始。

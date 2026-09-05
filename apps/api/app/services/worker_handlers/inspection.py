@@ -36,6 +36,11 @@ def _run_inspection(db, job: GenerationJob) -> None:
     asset = db.get(Asset, candidate.asset_id)
     project = db.get(Project, db.get(Chapter, page.chapter_id).project_id)
     inspection_storyboard_version = page.storyboard_version
+    # Scene writes deliberately never bump storyboard_version, so a review flag
+    # committed by mark_pages_for_review during the paid call (or an adoption
+    # change from select/keep/retract) is invisible to the sbv guard below.
+    # The page version is the baseline that catches those overwrites.
+    baseline_page_version = page.version
     _, snapshot = compile_page_prompt(db, page, project)
     categories = job.request_parameters.get(
         "categories",
@@ -116,6 +121,10 @@ regions 使用 0 到 1 的归一化 x/y/width/height。"""
     if page.storyboard_version != inspection_storyboard_version:
         raise execution.StaleStoryboardVersionError(
             "分镜版本已变化，已在调用模型前取消本次检查；请按当前分镜重新检查"
+        )
+    if page.version != baseline_page_version:
+        raise execution.StaleStoryboardVersionError(
+            "页面内容在检查期间已变化（场景或采用状态），已取消本次检查；请按当前页面状态重新检查"
         )
     latest = latest_inspections_by_category(db, candidate.id, inspection_storyboard_version)
     complete = (

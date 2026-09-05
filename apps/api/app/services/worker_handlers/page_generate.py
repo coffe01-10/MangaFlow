@@ -8,6 +8,7 @@ lease checks stay owned by the execution shell via ``execution`` helpers.
 import copy
 import hashlib
 import json
+import logging
 
 from PIL import Image
 from sqlalchemy import select, update
@@ -45,7 +46,12 @@ from app.services.model_capabilities import (
 from app.services.model_router import model_supports_resolution
 from app.services.prompt_compiler import PAGE_TEMPLATE_VERSION, compile_page_prompt
 from app.services.worker_handlers import execution, provider
-from app.services.worker_handlers.execution import StaleStoryboardVersionError
+from app.services.worker_handlers.execution import (
+    JobCancelledError,
+    StaleStoryboardVersionError,
+)
+
+LOGGER = logging.getLogger("mangaflow.worker.page_generate")
 
 
 def _load_reference_assets(
@@ -223,7 +229,17 @@ def _save_generated_asset(db, candidate: PageCandidate, data: bytes) -> Asset:
     page = db.get(MangaPage, candidate.page_id)
     chapter = db.get(Chapter, page.chapter_id)
     digest = hashlib.sha256(data).hexdigest()
-    existing = live_duplicate(db, project_id=chapter.project_id, sha256=digest)
+    # Dedupe must only consider live AI-generated page candidates. Asset holds
+    # a hard UNIQUE(project_id, sha256), so an unfiltered match can hand a new
+    # paid candidate a soft-deleted asset (content 404s) or a byte-identical
+    # user upload / another generation kind's row.
+    existing = live_duplicate(
+        db,
+        project_id=chapter.project_id,
+        sha256=digest,
+        source="AI_GENERATED",
+        kind="page_candidate",
+    )
     if existing:
         return existing
     destination = (
@@ -270,15 +286,61 @@ def _save_generated_asset(db, candidate: PageCandidate, data: bytes) -> Asset:
             asset.thumbnail_640_key = thumbnails[640]
         return asset
     except IntegrityError:
-        destination.unlink(missing_ok=True)
-        existing = live_duplicate(db, project_id=chapter.project_id, sha256=digest)
-        if existing:
-            return existing
-        existing = adopt_deleted_duplicate(
-            db, project_id=chapter.project_id, sha256=digest
+        # The insert can only collide on UNIQUE(project_id, sha256): a live
+        # matching row appeared concurrently, or a soft-deleted generated page
+        # candidate holds the digest (asset deletes unlink no files). Flush so
+        # the re-queries below observe every row this transaction can see.
+        db.flush()
+        existing = live_duplicate(
+            db,
+            project_id=chapter.project_id,
+            sha256=digest,
+            source="AI_GENERATED",
+            kind="page_candidate",
         )
         if existing:
+            destination.unlink(missing_ok=True)
             return existing
+        deleted = adopt_deleted_duplicate(
+            db,
+            project_id=chapter.project_id,
+            sha256=digest,
+            source="AI_GENERATED",
+            kind="page_candidate",
+        )
+        if deleted:
+            # Revive in place — mirroring upload_asset — because the hard
+            # UNIQUE(project_id, sha256) makes a fresh row impossible. Keep the
+            # NEW file and repoint the row at it, regenerating thumbnails; the
+            # previous file stays on disk so a later rollback cannot orphan the
+            # row (and delete already left every byte in place).
+            remove_thumbnails(settings.storage_root, deleted.id)
+            thumbnails = create_thumbnails(
+                destination,
+                settings.storage_root,
+                deleted.id,
+                max_pixels=settings.max_image_pixels,
+                max_side=settings.max_image_side,
+            )
+            deleted.original_name = (
+                f"page-{page.page_number}-candidate-{candidate.ordinal}.png"
+            )
+            deleted.storage_key = destination.relative_to(
+                settings.storage_root
+            ).as_posix()
+            deleted.thumbnail_320_key = thumbnails[320]
+            deleted.thumbnail_640_key = thumbnails[640]
+            deleted.mime_type = mime_type
+            deleted.byte_size = len(data)
+            deleted.width = width
+            deleted.height = height
+            deleted.status = "GENERATED"
+            deleted.deleted_at = None
+            deleted.version += 1
+            return deleted
+        # A non-generated or wrong-kind row owns the digest and must never be
+        # attached to a page candidate; the constraint blocks a fresh row.
+        destination.unlink(missing_ok=True)
         raise
     except Exception:
         destination.unlink(missing_ok=True)
@@ -291,6 +353,12 @@ def _run_page_generate(db, job: GenerationJob) -> None:
     candidate = db.get(PageCandidate, job.target_id)
     if not candidate:
         raise RuntimeError("候选记录不存在")
+    if candidate.deleted_at is not None:
+        # A soft-deleted candidate must never take a paid call, no matter
+        # which delete path landed after enqueueing. Raise the shell's
+        # cancellation error so execute_job rolls back and stamps the job
+        # CANCELLED; the deleted row is left untouched.
+        raise JobCancelledError("候选已删除，任务取消，不再调用模型")
     page = db.get(MangaPage, candidate.page_id)
     if candidate.based_on_storyboard_version != page.storyboard_version:
         raise StaleStoryboardVersionError(
@@ -549,6 +617,11 @@ def _run_page_generate(db, job: GenerationJob) -> None:
         page,
         attribute_names=["storyboard_version", "status", "selected_candidate_id", "version"],
     )
+    if len(response.images) > 1:
+        LOGGER.warning(
+            "模型返回 %d 张图片，仅持久化第 1 张（其余图片不落盘，用量按供应商返回如实记录）",
+            len(response.images),
+        )
     asset = _save_generated_asset(db, candidate, response.images[0])
     record = GenerationRecord(
         job_id=job.id,

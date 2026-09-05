@@ -8,7 +8,7 @@ from app.api.helpers import asset_candidate_read, candidate_read, candidate_vers
 from app.api.routes.workflow.common import _new_batch, _page
 from app.config import get_settings
 from app.database import get_db
-from app.domain.states import PageStatus
+from app.domain.states import JobStatus, PageStatus
 from app.models import (
     Asset,
     AssetCandidate,
@@ -38,10 +38,11 @@ from app.services.character_packages import (
     default_package_gate_context,
     detach_draft_package_references_for_asset,
 )
-from app.services.job_service import enqueue_job
+from app.services.job_service import cancel_job, enqueue_job
 from app.services.ordinal_allocator import (
     CandidateOrdinalConflictError,
     create_page_candidate,
+    lock_entity,
 )
 from app.services.page_completion import build_page_production_readiness, production_error_detail
 from app.services.page_readiness import ensure_page_ready
@@ -154,6 +155,9 @@ def favorite_candidate(
     candidate.version += 1
     db.commit()
     db.refresh(candidate)
+    # The route resolves PageCandidate OR AssetCandidate; only the page shape
+    # can go through candidate_read, whose PageCandidateRead requires the
+    # page_id/is_selected fields an AssetCandidate does not have.
     if isinstance(candidate, AssetCandidate):
         return asset_candidate_read(candidate)
     return candidate_read(candidate)
@@ -267,6 +271,21 @@ def delete_candidate(candidate_id: str, db: Session = Depends(get_db)) -> None:
             if not has_other_reference:
                 character.status = AssetStatus.NEEDS_CONFIRMATION
             character.version += 1
+    # The worker resolves its generation target without a deleted_at filter
+    # and would attach the paid result to this soft-deleted row, so an active
+    # job must be cancelled here (same guard for PageCandidate and
+    # AssetCandidate via their shared job_id).  Soft-delete first, then cancel:
+    # cancel_job commits, persisting the soft-delete above and the CANCELLED
+    # stamp as one final committed state.  The trailing commit is a no-op on
+    # that path and the real commit on the cancel_run path, which returns
+    # without committing.
+    job = db.get(GenerationJob, candidate.job_id) if candidate.job_id else None
+    if job is not None and job.status not in {
+        JobStatus.COMPLETED,
+        JobStatus.CANCELLED,
+        JobStatus.FAILED,
+    }:
+        cancel_job(db, job)
     db.commit()
 
 
@@ -277,6 +296,10 @@ def select_candidate(
     db: Session = Depends(get_db),
 ) -> MangaPage:
     page = _page(db, page_id)
+    # Agreed deletion-vs-selection convention (mirrors delete_asset): take the
+    # page lock before reading the candidate so a concurrent soft-delete on the
+    # same page serializes against this selection.
+    page = lock_entity(db, MangaPage, page.id)
     candidate = db.get(PageCandidate, payload.candidate_id)
     if (
         not candidate
@@ -286,6 +309,9 @@ def select_candidate(
         or candidate.status not in {"READY", "INSPECTED", "NEEDS_REVIEW"}
     ):
         raise HTTPException(status_code=409, detail="该候选尚不能采用")
+    asset = db.get(Asset, candidate.asset_id)
+    if asset is None or asset.deleted_at is not None:
+        raise HTTPException(status_code=409, detail="该候选的图片素材已删除，请重新生成")
     inspections = list(
         db.scalars(
             select(InspectionResult)
@@ -402,9 +428,15 @@ def keep_selected_candidate(
     db: Session = Depends(get_db),
 ) -> MangaPage:
     page = _page(db, page_id)
+    # Same page-lock convention as select_candidate/delete_asset: the lock
+    # re-reads the page (populate_existing) so the guards below cannot run on
+    # a pre-adoption snapshot when a concurrent selection lands between the
+    # read above and this commit.  The candidate is re-read post-lock too, so
+    # the guarded version bump lands on its current row.
+    page = lock_entity(db, MangaPage, page.id)
     if page.storyboard_version != payload.storyboard_version:
         raise HTTPException(status_code=409, detail="分镜已再次更新，请刷新后重试")
-    candidate = db.get(PageCandidate, payload.candidate_id)
+    candidate = lock_entity(db, PageCandidate, payload.candidate_id)
     if (
         not candidate
         or candidate.page_id != page.id
@@ -434,10 +466,15 @@ def retract_selected_candidate(
     db: Session = Depends(get_db),
 ) -> MangaPage:
     page = _page(db, page_id)
+    # Same page-lock convention as select_candidate/delete_asset: re-read the
+    # page and the adopted candidate post-lock so a concurrent selection that
+    # landed after the read above is retracted coherently instead of leaving
+    # its candidate stranded with is_selected=True.
+    page = lock_entity(db, MangaPage, page.id)
     if not page.selected_candidate_id:
         raise HTTPException(status_code=409, detail="当前页面没有已采用候选")
 
-    candidate = db.get(PageCandidate, page.selected_candidate_id)
+    candidate = lock_entity(db, PageCandidate, page.selected_candidate_id)
     if candidate and candidate.page_id == page.id:
         candidate.is_selected = False
         candidate.version += 1

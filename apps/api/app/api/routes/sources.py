@@ -3,12 +3,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from app.api.helpers import reject_required_nulls
 from app.config import get_settings
 from app.database import get_db
+from app.domain.states import ensure_unlocked
 from app.models import (
     Beat,
     CandidateLineage,
@@ -379,13 +380,34 @@ def update_scene(
     scene = db.get(Scene, scene_id)
     if not scene:
         raise HTTPException(status_code=404, detail="场景不存在")
-    if scene.version != payload.version:
-        raise HTTPException(status_code=409, detail="场景已被更新，请刷新后重试")
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
     reject_required_nulls(Scene, values)
-    from app.services.storyboard_edits import apply_scene_fields
-
-    apply_scene_fields(db, scene, values, bump_storyboard=False)
+    try:
+        ensure_unlocked(scene.locked_fields, list(values))
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    # Claim the row with an atomic conditional update so concurrent PATCHes
+    # cannot both pass an in-memory version comparison and silently overwrite
+    # each other (same pattern as _claim_panel_version / scene asset PATCH).
+    # apply_scene_fields' own version bump is skipped here because the claim
+    # above already advanced the version atomically.
+    claimed = db.execute(
+        update(Scene)
+        .where(Scene.id == scene.id, Scene.version == payload.version)
+        .values(version=Scene.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if not claimed.rowcount:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="场景已被更新，请刷新后重试")
+    for key, value in values.items():
+        setattr(scene, key, value.strip() if isinstance(value, str) else value)
+    mark_pages_for_review(
+        db,
+        scene.chapter_id,
+        reference_id=scene.id,
+        reference_kind="scene",
+    )
     db.commit()
     db.refresh(scene)
     scene.beats = list(
@@ -403,8 +425,6 @@ def update_beat(
     beat = db.get(Beat, beat_id)
     if not beat:
         raise HTTPException(status_code=404, detail="情节拍不存在")
-    if beat.version != payload.version:
-        raise HTTPException(status_code=409, detail="情节拍已被更新，请刷新后重试")
     scene = db.get(Scene, beat.scene_id)
     chapter = db.get(Chapter, scene.chapter_id) if scene else None
     if not scene or not chapter:
@@ -417,9 +437,20 @@ def update_beat(
             chapter.project_id,
             values["speaker_name"] or "",
         )
+    # Claim the row with an atomic conditional update so concurrent PATCHes
+    # cannot both pass an in-memory version comparison (same pattern as
+    # _claim_panel_version / scene asset PATCH).
+    claimed = db.execute(
+        update(Beat)
+        .where(Beat.id == beat.id, Beat.version == payload.version)
+        .values(version=Beat.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if not claimed.rowcount:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="情节拍已被更新，请刷新后重试")
     for key, value in values.items():
         setattr(beat, key, value.strip() if isinstance(value, str) else value)
-    beat.version += 1
     mark_pages_for_review(
         db,
         chapter.id,

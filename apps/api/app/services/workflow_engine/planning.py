@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.domain.states import JobStatus
@@ -28,6 +30,8 @@ from app.workflow_schemas import (
     WorkflowNodeDefinition,
 )
 
+LOGGER = logging.getLogger("mangaflow.workflow")
+
 
 def create_workflow_run(
     db: Session,
@@ -51,6 +55,25 @@ def create_workflow_run(
     if scope_type != "PROJECT" and not scope_id:
         raise ValueError("章节、页面或候选范围必须提供 scope_id")
     _validate_scope(db, workflow.project_id, scope_type, scope_id)
+    # One active run per workflow+scope: a double-click or a client retry of
+    # the start request otherwise mints a second run whose per-run job keys
+    # (`workflow:{run}:...`) never collide, and both runs execute paid jobs on
+    # the same target. Locking the definition row serializes concurrent starts
+    # before the check-then-insert below. Terminal runs (FAILED/CANCELLED/
+    # COMPLETED) never block retry_run or a fresh start.
+    from app.services.ordinal_allocator import lock_entity
+
+    lock_entity(db, WorkflowDefinition, workflow.id)
+    active_run = db.scalar(
+        select(WorkflowRun.id).where(
+            WorkflowRun.workflow_id == workflow.id,
+            WorkflowRun.scope_type == scope_type,
+            WorkflowRun.scope_id == scope_id,
+            WorkflowRun.status.not_in({"COMPLETED", "CANCELLED", "FAILED"}),
+        )
+    )
+    if active_run is not None:
+        raise ValueError("该范围已有进行中的运行，请先取消或等待完成")
     selected = _selected_nodes(graph, start_node_ids, stop_node_ids)
     selected_types = {node.type for node in graph.nodes if node.id in selected}
     page_types = {"generator.page", "control.approval", "quality.inspect", "output.page"}
@@ -133,7 +156,22 @@ def create_workflow_run(
             node_run.job_id = job.id
             job_by_node[node.id] = job
     db.commit()
-    reconcile_run(db, run.id)
+    # The run is already committed RUNNING; a scheduling failure inside the
+    # first reconcile (e.g. _submit_local re-raising on executor shutdown)
+    # must not turn the start into a 500 whose client retry then hits the
+    # duplicate-run guard (409) and locks the scope until recovery heals the
+    # run or it is cancelled. Mirror the completion path (worker_tasks) and
+    # the recovery loop (job_service): log and continue — the committed run
+    # self-heals via the next reconcile trigger, which routes WAITING-node
+    # jobs back to reconcile_run.
+    try:
+        reconcile_run(db, run.id)
+    except Exception:
+        LOGGER.exception("workflow run %s reconcile failed after creation", run.id)
+        # Drop partial writes from the failed reconcile so they cannot leak
+        # into the returned snapshot or a later use of this session; the
+        # committed run row itself is untouched.
+        db.rollback()
     return get_run(db, run.id)
 
 

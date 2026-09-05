@@ -7,6 +7,7 @@ Cancellation and lease checks stay owned by the execution shell.
 
 import hashlib
 import json
+import logging
 
 from PIL import Image
 from sqlalchemy import select
@@ -31,12 +32,27 @@ from app.services.asset_dedupe import adopt_deleted_duplicate, live_duplicate
 from app.services.media import create_thumbnails, remove_thumbnails
 from app.services.model_router import model_supports_resolution
 from app.services.worker_handlers import execution, provider
+from app.services.worker_handlers.execution import JobCancelledError
+
+LOGGER = logging.getLogger("mangaflow.worker.asset_generate")
 
 
 def _save_asset_candidate(db, candidate: AssetCandidate, project_id: str, data: bytes) -> Asset:
     settings = get_settings()
+    batch = db.get(GenerationBatch, candidate.batch_id)
+    kind = batch.generation_kind.lower()
     digest = hashlib.sha256(data).hexdigest()
-    existing = live_duplicate(db, project_id=project_id, sha256=digest)
+    # Dedupe must only consider live AI-generated rows of this batch's kind.
+    # Asset holds a hard UNIQUE(project_id, sha256), so an unfiltered match can
+    # hand a new paid candidate a soft-deleted asset (content 404s) or a
+    # byte-identical user upload / another generation kind's row.
+    existing = live_duplicate(
+        db,
+        project_id=project_id,
+        sha256=digest,
+        source="AI_GENERATED",
+        kind=kind,
+    )
     if existing:
         return existing
     destination = (
@@ -55,14 +71,13 @@ def _save_asset_candidate(db, candidate: AssetCandidate, project_id: str, data: 
     except OSError:
         width = height = None
         mime_type = "image/png"
-    batch = db.get(GenerationBatch, candidate.batch_id)
     try:
         with db.begin_nested():
             asset = Asset(
                 project_id=project_id,
-                kind=batch.generation_kind.lower(),
+                kind=kind,
                 original_name=(
-                    f"{batch.generation_kind.lower()}-{candidate.variant.lower()}-"
+                    f"{kind}-{candidate.variant.lower()}-"
                     f"{candidate.ordinal}.png"
                 ),
                 storage_key=destination.relative_to(settings.storage_root).as_posix(),
@@ -87,13 +102,61 @@ def _save_asset_candidate(db, candidate: AssetCandidate, project_id: str, data: 
             asset.thumbnail_640_key = thumbnails[640]
         return asset
     except IntegrityError:
+        # The insert can only collide on UNIQUE(project_id, sha256): a live
+        # matching row appeared concurrently, or a soft-deleted generated row
+        # of this kind holds the digest (asset deletes unlink no files). Flush
+        # so the re-queries below observe every row this transaction can see.
+        db.flush()
+        existing = live_duplicate(
+            db,
+            project_id=project_id,
+            sha256=digest,
+            source="AI_GENERATED",
+            kind=kind,
+        )
+        if existing:
+            destination.unlink(missing_ok=True)
+            return existing
+        deleted = adopt_deleted_duplicate(
+            db,
+            project_id=project_id,
+            sha256=digest,
+            source="AI_GENERATED",
+            kind=kind,
+        )
+        if deleted:
+            # Revive in place — mirroring upload_asset — because the hard
+            # UNIQUE(project_id, sha256) makes a fresh row impossible. Keep the
+            # NEW file and repoint the row at it, regenerating thumbnails; the
+            # previous file stays on disk so a later rollback cannot orphan the
+            # row (and delete already left every byte in place).
+            remove_thumbnails(settings.storage_root, deleted.id)
+            thumbnails = create_thumbnails(
+                destination,
+                settings.storage_root,
+                deleted.id,
+                max_pixels=settings.max_image_pixels,
+                max_side=settings.max_image_side,
+            )
+            deleted.original_name = (
+                f"{kind}-{candidate.variant.lower()}-{candidate.ordinal}.png"
+            )
+            deleted.storage_key = destination.relative_to(
+                settings.storage_root
+            ).as_posix()
+            deleted.thumbnail_320_key = thumbnails[320]
+            deleted.thumbnail_640_key = thumbnails[640]
+            deleted.mime_type = mime_type
+            deleted.byte_size = len(data)
+            deleted.width = width
+            deleted.height = height
+            deleted.status = "GENERATED"
+            deleted.deleted_at = None
+            deleted.version += 1
+            return deleted
+        # A non-generated or wrong-kind row owns the digest and must never be
+        # attached to this candidate; the constraint blocks a fresh row.
         destination.unlink(missing_ok=True)
-        existing = live_duplicate(db, project_id=project_id, sha256=digest)
-        if existing:
-            return existing
-        existing = adopt_deleted_duplicate(db, project_id=project_id, sha256=digest)
-        if existing:
-            return existing
         raise
     except Exception:
         destination.unlink(missing_ok=True)
@@ -106,6 +169,12 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
     candidate = db.get(AssetCandidate, job.target_id)
     if not candidate:
         raise RuntimeError("资产候选不存在")
+    if candidate.deleted_at is not None:
+        # A soft-deleted candidate must never take a paid call, no matter
+        # which delete path landed after enqueueing. Raise the shell's
+        # cancellation error so execute_job rolls back and stamps the job
+        # CANCELLED; the deleted row is left untouched.
+        raise JobCancelledError("候选已删除，任务取消，不再调用模型")
     batch = db.get(GenerationBatch, candidate.batch_id)
     if not batch:
         raise RuntimeError("资产生成批次不存在")
@@ -268,6 +337,19 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
     execution._commit_owned_progress(db, job, status=JobStatus.GENERATING, progress=45)
     reference_ids = [asset.id for asset in references]
     provider._lease_reference_assets(db, job, reference_ids)
+    # Re-read every leased row after committing the lease, mirroring
+    # page_generate: a concurrent delete can no longer pass silently into
+    # the paid request.
+    current_assets = list(
+        db.scalars(
+            select(Asset).where(
+                Asset.id.in_(reference_ids),
+                Asset.deleted_at.is_(None),
+            )
+        )
+    )
+    if {item.id for item in current_assets} != set(reference_ids):
+        raise RuntimeError("参考图在生成前发生变化，已停止模型调用")
     for asset in references:
         if not provider._asset_path(asset).is_file():
             raise RuntimeError(f"参考图文件不存在：{asset.original_name}")
@@ -309,6 +391,11 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
     )
     execution._ensure_job_not_cancelled(db, job)
     execution._ensure_candidate_live(db, candidate)
+    if len(response.images) > 1:
+        LOGGER.warning(
+            "模型返回 %d 张图片，仅持久化第 1 张（其余图片不落盘，用量按供应商返回如实记录）",
+            len(response.images),
+        )
     asset = _save_asset_candidate(db, candidate, batch.project_id, response.images[0])
     record = GenerationRecord(
         job_id=job.id,

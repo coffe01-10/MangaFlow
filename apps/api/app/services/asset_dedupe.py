@@ -15,34 +15,59 @@ from sqlalchemy.orm import Session
 from app.models import Asset
 
 
-def live_duplicate(db: Session, *, project_id: str, sha256: str) -> Asset | None:
-    """Return the live asset holding these bytes, if any."""
+def live_duplicate(
+    db: Session,
+    *,
+    project_id: str,
+    sha256: str,
+    source: str | None = None,
+    kind: str | None = None,
+) -> Asset | None:
+    """Return the live asset holding these bytes, if any.
 
-    return db.scalar(
-        select(Asset).where(
-            Asset.project_id == project_id,
-            Asset.sha256 == sha256,
-            Asset.deleted_at.is_(None),
-        )
-    )
+    ``source``/``kind`` narrow the match to the caller's own provenance: a
+    byte-identical user upload (or another generation kind's row) must never
+    be attached to a new paid candidate of a different kind.
+    """
+
+    filters = [
+        Asset.project_id == project_id,
+        Asset.sha256 == sha256,
+        Asset.deleted_at.is_(None),
+    ]
+    if source is not None:
+        filters.append(Asset.source == source)
+    if kind is not None:
+        filters.append(Asset.kind == kind)
+    return db.scalar(select(Asset).where(*filters))
 
 
 def adopt_deleted_duplicate(
-    db: Session, *, project_id: str, sha256: str
+    db: Session,
+    *,
+    project_id: str,
+    sha256: str,
+    source: str | None = None,
+    kind: str | None = None,
 ) -> Asset | None:
     """Revive the soft-deleted row holding the constraint slot, if any.
 
     Returns ``None`` when no tombstoned row exists so callers can re-raise
-    the original integrity error.
+    the original integrity error. ``source``/``kind`` keep the revival inside
+    the caller's own provenance: a deleted user upload is never resurrected
+    as a generated asset (and vice versa).
     """
 
-    row = db.scalar(
-        select(Asset).where(
-            Asset.project_id == project_id,
-            Asset.sha256 == sha256,
-            Asset.deleted_at.is_not(None),
-        )
-    )
+    filters = [
+        Asset.project_id == project_id,
+        Asset.sha256 == sha256,
+        Asset.deleted_at.is_not(None),
+    ]
+    if source is not None:
+        filters.append(Asset.source == source)
+    if kind is not None:
+        filters.append(Asset.kind == kind)
+    row = db.scalar(select(Asset).where(*filters))
     if row is None:
         return None
     row.deleted_at = None

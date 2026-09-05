@@ -10,9 +10,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.domain.states import JobStatus
+from app.domain.states import JobStatus, PageStatus
 from app.models import (
     AssetCandidate,
+    CandidateLineage,
     GenerationJob,
     JobAssetReference,
     JobDependency,
@@ -40,6 +41,14 @@ LEASED_JOB_STATUSES = {
     JobStatus.REPAIRING,
 }
 ACTIVE_JOB_STATUSES = {JobStatus.WAITING, JobStatus.QUEUED, *LEASED_JOB_STATUSES}
+# LOCAL wall-clock cap markers. The lease heartbeat stamps LOCAL_TIMEOUT once
+# the job's job_timeout_seconds budget is spent while the lease is still live;
+# recovery preserves that cause through reclaim/requeue exactly like the RQ
+# kill path's JOB_TIMEOUT. All LOCAL_TIMEOUT user-facing strings live here.
+LOCAL_TIMEOUT_ERROR_CODE = "LOCAL_TIMEOUT"
+LOCAL_TIMEOUT_WAITING_MESSAGE = "本地执行超过墙钟上限，等待租约过期回收"
+LOCAL_TIMEOUT_REQUEUE_MESSAGE = "本地执行超过墙钟上限，任务等待重新执行"
+LOCAL_TIMEOUT_TERMINAL_MESSAGE = "本地执行超过墙钟上限，且已达到最大尝试次数"
 
 
 def has_active_job(
@@ -57,6 +66,79 @@ def has_active_job(
     if target_type is not None:
         filters.append(GenerationJob.target_type == target_type)
     return db.scalar(select(GenerationJob.id).where(*filters).limit(1)) is not None
+
+
+def style_has_active_sibling_job(
+    db: Session,
+    *,
+    style_id: str,
+    exclude_job_id: str | None = None,
+) -> bool:
+    """True when another ACTIVE STYLE_ANALYZE job still targets the style.
+
+    Duplicate style jobs existed before the route guards (and a retried job is
+    active again), so the terminal-exit reset paths must only force the shared
+    style row back to DRAFT once no sibling is still analyzing it. The job
+    being finalized is excluded by id: terminal-exit paths claim the row via a
+    Core UPDATE with synchronize_session=False, and exclusion keeps the check
+    deterministic regardless of session/transaction visibility.
+    """
+
+    filters = [
+        GenerationJob.job_type == "STYLE_ANALYZE",
+        GenerationJob.target_type == "STYLE",
+        GenerationJob.target_id == style_id,
+        GenerationJob.status.in_(ACTIVE_JOB_STATUSES),
+    ]
+    if exclude_job_id is not None:
+        filters.append(GenerationJob.id != exclude_job_id)
+    return db.scalar(select(GenerationJob.id).where(*filters).limit(1)) is not None
+
+
+def has_active_derived_job(
+    db: Session,
+    *,
+    job_types: set[str] | str,
+    parent_candidate_id: str,
+    repair_type: str | None = None,
+    resolution: str | None = None,
+) -> bool:
+    """True when an ACTIVE derived-generation job still targets a child of the
+    given parent candidate.
+
+    Repair/upscale/region jobs point at the freshly created CHILD candidate, so
+    ``has_active_job(target_id=original.id)`` is vacuous for them and duplicate
+    requests each enqueued another paid job (the per-request idempotency keys —
+    ``repair:{plan_id}``, ``upscale:{batch_id}:{resolution}`` — are always
+    fresh). Match through CandidateLineage instead: the lineage row is written
+    in the same transaction as the child and its job, so any committed ACTIVE
+    job is reachable from its parent. JSON request_parameters matching (the
+    exact repair_type / target_resolution the routes store) stays in Python on
+    the small ACTIVE set, which keeps the query portable across SQLite and
+    PostgreSQL — no dialect-specific JSON containment operators.
+    """
+
+    if isinstance(job_types, str):
+        job_types = {job_types}
+    active_jobs = db.scalars(
+        select(GenerationJob)
+        .join(PageCandidate, PageCandidate.id == GenerationJob.target_id)
+        .join(CandidateLineage, CandidateLineage.child_candidate_id == PageCandidate.id)
+        .where(
+            GenerationJob.job_type.in_(set(job_types)),
+            GenerationJob.target_type == "PAGE_CANDIDATE",
+            GenerationJob.status.in_(ACTIVE_JOB_STATUSES),
+            CandidateLineage.parent_candidate_id == parent_candidate_id,
+        )
+    )
+    for job in active_jobs:
+        parameters = job.request_parameters or {}
+        if repair_type is not None and parameters.get("repair_type") != repair_type:
+            continue
+        if resolution is not None and parameters.get("target_resolution") != resolution:
+            continue
+        return True
+    return False
 
 
 def create_job(
@@ -341,6 +423,14 @@ def _execute_locally(job_id: str) -> None:
     from app.model_adapters.base import ProviderAdapterError
     from app.worker_tasks import JobCancelledError, JobLeaseLostError, execute_job
 
+    # Bounded-pin design: while the project sits at concurrency this loop
+    # would otherwise poll forever, pinning a LOCAL executor thread and
+    # rewriting the CONCURRENCY_LIMIT marker every pass. job_timeout_seconds
+    # is the same wall-clock budget a real execution gets. When it trips, the
+    # row is deliberately left WAITING+CONCURRENCY_LIMIT: this thread's id was
+    # discarded from LOCAL_SUBMITTED_JOB_IDS in the finally below, so the next
+    # recover_pending_jobs pass re-submits the job into a free slot.
+    wait_started = time.monotonic()
     delay = 0.1
     try:
         while True:
@@ -369,6 +459,19 @@ def _execute_locally(job_id: str) -> None:
                     JobStatus.FAILED,
                 }:
                     return
+                if (
+                    job.status == JobStatus.WAITING
+                    and job.error_code == "CONCURRENCY_LIMIT"
+                ):
+                    waited = time.monotonic() - wait_started
+                    if waited >= get_settings().job_timeout_seconds:
+                        LOGGER.warning(
+                            "job %s waited %.0fs for a project concurrency slot; "
+                            "releasing this executor so recovery can re-submit it",
+                            job_id,
+                            waited,
+                        )
+                        return
             Event().wait(delay)
             delay = min(delay * 2, 5.0)
     finally:
@@ -396,6 +499,31 @@ def restore_page_after_generation_exit(db: Session, page_candidate: PageCandidat
         )
     )
     page.status = "DRAFT_READY" if page.selected_candidate_id or other_ready else "STORYBOARDED"
+
+
+def restore_page_after_inspection_exit(db: Session, candidate: PageCandidate) -> None:
+    """Return a page from FINAL_CHECKING to NEEDS_REPAIR once the inspection of
+    its adopted candidate reached a terminal failure/cancel.
+
+    A PAGE_INSPECT job owns no PageCandidate row (``candidate.job_id`` is only
+    set for generation-type jobs), so ``restore_page_after_generation_exit``
+    never matches it and the page used to show "checking" forever, blocking
+    production readiness. Writes the same fields the inspection success path
+    writes for failing results (NEEDS_REPAIR + continuity NEEDS_REVIEW), a
+    terminal state the UI and readiness checks already render; the candidate
+    row itself is never touched here because it may hold adopted work.
+    """
+
+    if not candidate.is_selected:
+        return
+    page = db.get(MangaPage, candidate.page_id)
+    if page is None or page.selected_candidate_id != candidate.id:
+        return
+    if str(getattr(page.status, "value", page.status)) != "FINAL_CHECKING":
+        return
+    page.continuity_status = "NEEDS_REVIEW"
+    page.status = PageStatus.NEEDS_REPAIR
+    page.version += 1
 
 
 def start_periodic_recovery() -> tuple[Thread, Event]:
@@ -436,8 +564,36 @@ def start_periodic_recovery() -> tuple[Thread, Event]:
     return thread, stop
 
 
+def _workflow_node_blocks_recovery(db: Session, node_run_id: str) -> bool:
+    """True when the owning workflow node forbids recovery-side scheduling.
+
+    Recovery re-runs interrupted WORK: a legitimate requeue target's node_run
+    is RUNNING, because reconcile_run flips the node to RUNNING immediately
+    before enqueueing its job. A node_run still WAITING has never been
+    scheduled — enqueueing it here would duplicate (and race) reconcile's
+    scheduling role. The default graph makes that race catastrophic: the
+    output.page job is planned with zero dependency rows (its only upstream,
+    quality.inspect, gets no planning job), so its WAITING row looked
+    recoverable during any approval pause; executing it raises
+    PAGE_NOT_PRODUCTION_READY, retries burn, and reconcile flips the PAUSED
+    run to FAILED mid-approval. A PAUSED run is likewise never auto-advanced
+    by recovery, whatever the node's state.
+    """
+
+    node_run = db.get(WorkflowNodeRun, node_run_id)
+    if node_run is None:
+        return False
+    if node_run.status == "WAITING":
+        return True
+    run = db.get(WorkflowRun, node_run.workflow_run_id)
+    return run is not None and run.status == "PAUSED"
+
+
 def recover_pending_jobs(db: Session) -> int:
     """Reclaim expired worker leases and re-enqueue recoverable jobs."""
+    # Lazy import: keeps rq off the API import graph and avoids a module-level
+    # cycle with the worker class that writes the timeout marker.
+    from app.rq_windows import JOB_TIMEOUT_ERROR_CODE, JOB_TIMEOUT_ERROR_MESSAGE
 
     settings = get_settings()
     apply_runtime_overrides(db, settings)
@@ -477,13 +633,34 @@ def recover_pending_jobs(db: Session) -> int:
         )
 
         if job.attempt_count >= job.max_attempts:
+            # A force-killed horse leaves JOB_TIMEOUT on the row while the RQ
+            # retry no-ops inside the live lease; a LOCAL thread pinned past
+            # job_timeout_seconds leaves LOCAL_TIMEOUT (the heartbeat stopped
+            # renewing and the lease expired afterwards). Surface the recorded
+            # cause instead of the generic lease expiry. Status transitions
+            # stay identical.
+            if job.error_code == JOB_TIMEOUT_ERROR_CODE:
+                terminal_code, terminal_message = (
+                    JOB_TIMEOUT_ERROR_CODE,
+                    JOB_TIMEOUT_ERROR_MESSAGE,
+                )
+            elif job.error_code == LOCAL_TIMEOUT_ERROR_CODE:
+                terminal_code, terminal_message = (
+                    LOCAL_TIMEOUT_ERROR_CODE,
+                    LOCAL_TIMEOUT_TERMINAL_MESSAGE,
+                )
+            else:
+                terminal_code, terminal_message = (
+                    "LEASE_EXPIRED",
+                    "执行器租约已过期，且已达到最大尝试次数",
+                )
             updated = db.execute(
                 update(GenerationJob)
                 .where(*base_filter)
                 .values(
                     status=JobStatus.FAILED,
-                    error_code="LEASE_EXPIRED",
-                    error_message="执行器租约已过期，且已达到最大尝试次数",
+                    error_code=terminal_code,
+                    error_message=terminal_message,
                     finished_at=now,
                     lease_owner=None,
                     lease_expires_at=None,
@@ -491,6 +668,31 @@ def recover_pending_jobs(db: Session) -> int:
                 .execution_options(synchronize_session=False)
             )
             if updated.rowcount == 1:
+                # Best-effort closeout of attempts left unfinalized. Safe for
+                # RQ/JOB_TIMEOUT: a force-killed horse can never finalize
+                # afterwards. NOT safe for LOCAL_TIMEOUT: the local thread
+                # stays alive past the expired lease, so its wedged provider
+                # call may still return and finalize late — this guess can
+                # stamp a genuinely-SUCCEEDED paid call as FAILED.
+                # finalize_model_call_attempt repairs exactly that case (a
+                # SUCCEEDED finalize over a FAILED row carrying one of these
+                # terminal codes with usage still NULL upgrades the row), so
+                # nothing here may write usage columns: the sweep cannot know
+                # them, and NULL usage is the upgrade's discriminator.
+                db.execute(
+                    update(ModelCallAttempt)
+                    .where(
+                        ModelCallAttempt.job_id == job.id,
+                        ModelCallAttempt.outcome.is_(None),
+                    )
+                    .values(
+                        outcome="FAILED",
+                        error_code=terminal_code,
+                        error_message=terminal_message,
+                        finished_at=now,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
                 page_candidate = db.scalar(
                     select(PageCandidate).where(PageCandidate.job_id == job.id)
                 )
@@ -503,8 +705,21 @@ def recover_pending_jobs(db: Session) -> int:
                 if asset_candidate:
                     asset_candidate.status = "FAILED"
                 style = db.get(StyleProfile, job.target_id) if job.target_type == "STYLE" else None
-                if style:
+                if style and not style_has_active_sibling_job(
+                    db, style_id=job.target_id, exclude_job_id=job.id
+                ):
                     style.status = "DRAFT"
+                if job.job_type == "PAGE_INSPECT":
+                    # The candidate/asset lookups above match nothing: an inspect
+                    # job owns no PageCandidate row (job_id is only set for
+                    # generation-type jobs) and its target_id names the inspected
+                    # candidate, which must NOT be stamped FAILED — it may hold
+                    # adopted work. Only the page state is restored, so a swept
+                    # inspect lease cannot leave the page stuck FINAL_CHECKING
+                    # (same guard as the worker-failure and cancel paths).
+                    inspected = db.get(PageCandidate, job.target_id)
+                    if inspected:
+                        restore_page_after_inspection_exit(db, inspected)
                 node_run = db.scalar(
                     select(WorkflowNodeRun).where(WorkflowNodeRun.job_id == job.id)
                 )
@@ -513,19 +728,34 @@ def recover_pending_jobs(db: Session) -> int:
                     workflow_run_id = workflow_run_id or node_run.workflow_run_id
                     if node_run.status not in {"COMPLETED", "FAILED", "CANCELLED"}:
                         node_run.status = "FAILED"
-                        node_run.error_code = "LEASE_EXPIRED"
-                        node_run.error_message = "执行器租约已过期，且已达到最大尝试次数"
+                        node_run.error_code = terminal_code
+                        node_run.error_message = terminal_message
                         node_run.finished_at = now
                 if workflow_run_id:
                     workflow_run_ids.add(workflow_run_id)
         else:
+            if job.error_code == JOB_TIMEOUT_ERROR_CODE:
+                requeue_code, requeue_message = (
+                    JOB_TIMEOUT_ERROR_CODE,
+                    JOB_TIMEOUT_ERROR_MESSAGE,
+                )
+            elif job.error_code == LOCAL_TIMEOUT_ERROR_CODE:
+                requeue_code, requeue_message = (
+                    LOCAL_TIMEOUT_ERROR_CODE,
+                    LOCAL_TIMEOUT_REQUEUE_MESSAGE,
+                )
+            else:
+                requeue_code, requeue_message = (
+                    "LEASE_EXPIRED",
+                    "执行器已退出，任务等待重新执行",
+                )
             db.execute(
                 update(GenerationJob)
                 .where(*base_filter)
                 .values(
                     status=JobStatus.WAITING,
-                    error_code="LEASE_EXPIRED",
-                    error_message="执行器已退出，任务等待重新执行",
+                    error_code=requeue_code,
+                    error_message=requeue_message,
                     started_at=None,
                     scheduled_at=now,
                     lease_owner=None,
@@ -537,9 +767,18 @@ def recover_pending_jobs(db: Session) -> int:
         db.commit()
         db.expire_all()
     for workflow_run_id in workflow_run_ids:
-        from app.services.workflow_engine import reconcile_run
+        # One poisoned run must not skip the remaining reconciliations or the
+        # WAITING/QUEUED requeue below; this pass also runs inside the API
+        # lifespan at startup, where an unguarded raise would abort boot.
+        try:
+            from app.services.workflow_engine import reconcile_run
 
-        reconcile_run(db, workflow_run_id)
+            reconcile_run(db, workflow_run_id)
+        except Exception:
+            LOGGER.exception("workflow run %s reconcile failed during recovery", workflow_run_id)
+            # Drop partial writes from the failed reconcile so they cannot
+            # leak into the next run's pass or the requeue phase below.
+            db.rollback()
 
     rq_pending_cutoff = utcnow() - timedelta(seconds=10)
     jobs = list(
@@ -566,10 +805,34 @@ def recover_pending_jobs(db: Session) -> int:
         )
     )
     recovered = 0
+    reconciled_run_ids: set[str] = set()
     for job in jobs:
         with LOCAL_SUBMISSION_LOCK:
             already_submitted = job.id in LOCAL_SUBMITTED_JOB_IDS
         if already_submitted or not dependencies_complete(db, job):
+            continue
+        node_run_id = (job.request_parameters or {}).get("workflow_node_run_id")
+        if node_run_id and _workflow_node_blocks_recovery(db, node_run_id):
+            # Unscheduled workflow nodes (and every node of a PAUSED run) are
+            # reconcile's to schedule, not recovery's. Reconciling the run
+            # instead of enqueueing keeps the crash-window self-heal — a child
+            # stranded WAITING because a reconcile commit was lost still gets
+            # scheduled — while barrier/pause-gated nodes stay untouched
+            # (reconcile's parent gate refuses them). Skipped rows do not
+            # count as recovered.
+            node_run = db.get(WorkflowNodeRun, node_run_id)
+            run_id = node_run.workflow_run_id if node_run else None
+            if run_id and run_id not in reconciled_run_ids:
+                reconciled_run_ids.add(run_id)
+                try:
+                    from app.services.workflow_engine import reconcile_run
+
+                    reconcile_run(db, run_id)
+                except Exception:
+                    LOGGER.exception(
+                        "workflow run %s reconcile failed during recovery", run_id
+                    )
+                    db.rollback()
             continue
         if job.status == JobStatus.QUEUED:
             # Re-adopt a local or stranded-Redis row without clobbering
@@ -592,7 +855,15 @@ def recover_pending_jobs(db: Session) -> int:
                 continue
             db.commit()
             db.expire(job)
-        enqueue_job(db, job)
+        # enqueue_job refreshes the row first: a job deleted between the
+        # SELECT above and this call raises ObjectDeletedError, which used to
+        # starve the requeue of every remaining job in the pass.
+        try:
+            enqueue_job(db, job)
+        except Exception:
+            LOGGER.exception("job %s requeue failed during recovery", job.id)
+            db.rollback()
+            continue
         recovered += 1
     return recovered + sweep_lost_model_call_attempts(db)
 
@@ -744,9 +1015,28 @@ def mark_job_cancelled(db: Session, job: GenerationJob) -> GenerationJob:
 
     if job.job_type == "STYLE_ANALYZE":
         style = db.get(StyleProfile, job.target_id)
-        if style and style.status.value == "ANALYZING":
+        if (
+            style
+            and style.status.value == "ANALYZING"
+            # A duplicate may still be analyzing the same style row; forcing
+            # DRAFT here would let the UI fire another paid analyze while the
+            # sibling runs (last-writer-wins on style.profile otherwise).
+            and not style_has_active_sibling_job(
+                db, style_id=job.target_id, exclude_job_id=job.id
+            )
+        ):
             style.status = "DRAFT"
             style.version += 1
+
+    if job.job_type == "PAGE_INSPECT":
+        # The candidate/asset lookups above match nothing: an inspect job owns
+        # no PageCandidate row (job_id is only set for generation-type jobs)
+        # and its target_id names an existing candidate that must NOT be
+        # stamped CANCELLED — it may hold adopted work. Only the page state is
+        # restored, so a swept inspect job cannot leave the page FINAL_CHECKING.
+        inspected = db.get(PageCandidate, job.target_id)
+        if inspected:
+            restore_page_after_inspection_exit(db, inspected)
 
     node_run = db.scalar(select(WorkflowNodeRun).where(WorkflowNodeRun.job_id == job.id))
     if node_run and node_run.status not in {"COMPLETED", "FAILED", "CANCELLED"}:
@@ -776,15 +1066,17 @@ def cancel_job(db: Session, job: GenerationJob) -> GenerationJob:
 def reset_for_retry(db: Session, job: GenerationJob) -> GenerationJob:
     if job.status not in {JobStatus.FAILED, JobStatus.NEEDS_REVIEW, JobStatus.WAITING}:
         return job
-    # Conditional on the observed state and an unowned lease: a plain
-    # read-then-write cleared a lease that a worker took between the check
-    # and the commit, discarding its in-flight paid output and re-enqueueing
-    # a second dispatch of the same candidate.
+    # Single conditional claim instead of read-modify-write: a worker lease or
+    # a cancellation landing between the caller's read and this write must win
+    # over the retry (no clobbered lease, no resurrection), mirroring
+    # _transition_waiting_to_queued and mark_job_cancelled.
     claimed = db.execute(
         update(GenerationJob)
         .where(
             GenerationJob.id == job.id,
-            GenerationJob.status == job.status,
+            GenerationJob.status.in_(
+                [JobStatus.FAILED, JobStatus.NEEDS_REVIEW, JobStatus.WAITING]
+            ),
             GenerationJob.lease_owner.is_(None),
             GenerationJob.cancelled_at.is_(None),
         )
@@ -803,20 +1095,66 @@ def reset_for_retry(db: Session, job: GenerationJob) -> GenerationJob:
         .execution_options(synchronize_session=False)
     )
     if claimed.rowcount != 1:
+        # Another party advanced the row; the caller must not enqueue over it.
         db.rollback()
         from fastapi import HTTPException
 
         raise HTTPException(status_code=409, detail="任务状态已变化，请刷新后重试")
-    workflow_run_id = job.request_parameters.get("workflow_run_id")
+    # The claim above owns the job row, which serializes this revival against
+    # concurrent cancel_run/worker claims on the same job, so the cross-table
+    # writes below cannot clobber a concurrent terminal transition.
+    # Resolve the run via the node link too: an adopted route-created inspect
+    # job carries no workflow_run_id in request_parameters, and without the
+    # fallback its retry would skip the WorkflowRun/WorkflowNodeRun revival.
+    node_run = db.scalar(select(WorkflowNodeRun).where(WorkflowNodeRun.job_id == job.id))
+    workflow_run_id = (job.request_parameters or {}).get("workflow_run_id")
+    if node_run:
+        workflow_run_id = workflow_run_id or node_run.workflow_run_id
     if workflow_run_id:
         run = db.get(WorkflowRun, workflow_run_id)
-        node_run = db.scalar(
-            select(WorkflowNodeRun).where(WorkflowNodeRun.job_id == job.id)
-        )
         if run and run.status == "FAILED":
             run.status = "RUNNING"
             run.finished_at = None
             run.version += 1
+            # Revive the swept CANCELLED tail together with the run. Under a
+            # FAILED run a CANCELLED node/job can ONLY be
+            # _sweep_stranded_children output: cancel_run terminalizes the
+            # whole run CANCELLED and cancel_job cancels the run, so neither
+            # can leave a CANCELLED child behind a FAILED run. Swept jobs
+            # never ran, so their idempotency keys are intact (the
+            # closed:{id} collapse only applies when create_job re-creates
+            # the row), and any candidate the sweep stamped CANCELLED is
+            # harmless on rerun — generation re-attaches the candidate by
+            # target_id and resets its status, while inspect jobs own no
+            # candidate row. Late inspect jobs with no node link stay
+            # CANCELLED on purpose: they have no node_run row to revive, and
+            # reconcile's _create_inspection_job re-creates a fresh one
+            # (create_job collapses the CANCELLED row's key). Without this
+            # revival the tail stays dead forever — reconcile only schedules
+            # WAITING nodes and the tail breaks the all-COMPLETED check, so
+            # the run falls through to a permanent RUNNING zombie whose
+            # scope can never start another run; revived barrier nodes
+            # re-barrier to WAITING_APPROVAL (run PAUSED), which is the
+            # correct resume semantics.
+            for stranded in db.scalars(
+                select(WorkflowNodeRun).where(
+                    WorkflowNodeRun.workflow_run_id == run.id,
+                    WorkflowNodeRun.status == "CANCELLED",
+                )
+            ):
+                stranded.status = "WAITING"
+                stranded.finished_at = None
+                stranded.error_code = None
+                stranded.error_message = None
+                stranded_job = (
+                    db.get(GenerationJob, stranded.job_id) if stranded.job_id else None
+                )
+                if stranded_job and stranded_job.status == JobStatus.CANCELLED:
+                    stranded_job.status = JobStatus.WAITING
+                    stranded_job.cancelled_at = None
+                    stranded_job.error_code = None
+                    stranded_job.error_message = None
+                    stranded_job.finished_at = None
         if node_run and node_run.status == "FAILED":
             node_run.status = "RUNNING"
             node_run.error_code = None
@@ -825,3 +1163,4 @@ def reset_for_retry(db: Session, job: GenerationJob) -> GenerationJob:
     db.commit()
     db.refresh(job)
     return enqueue_job(db, job)
+

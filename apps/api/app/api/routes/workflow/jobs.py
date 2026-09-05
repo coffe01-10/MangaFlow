@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.api.helpers import asset_candidate_read, candidate_read
 from app.database import get_db
+from app.domain.states import JobStatus
 from app.models import (
     AssetCandidate,
     GenerationJob,
@@ -14,6 +15,7 @@ from app.models import (
     ModelCallAttempt,
     PageCandidate,
     WorkflowNodeRun,
+    WorkflowRun,
     utcnow,
 )
 from app.schemas import (
@@ -23,7 +25,7 @@ from app.schemas import (
     JobResultRead,
     ModelCallAttemptRead,
 )
-from app.services.job_service import cancel_job, reset_for_retry
+from app.services.job_service import cancel_job, dependencies_complete, reset_for_retry
 from app.services.model_costs import estimate_jobs
 
 router = APIRouter()
@@ -169,8 +171,36 @@ def retry(job_id: str, db: Session = Depends(get_db)) -> GenerationJob:
     job = db.get(GenerationJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
+    # An archived row is invisible in the default list; retrying it would
+    # re-run paid work the user filed away. Restore first, then retry.
+    if job.archived_at is not None:
+        raise HTTPException(status_code=409, detail="已归档的任务不能重试，请先恢复后再试")
+    # reset_for_retry silently ignores every other status and would return the
+    # unchanged row as a 200 "success"; reject those no-ops up front.
+    if job.status not in {JobStatus.FAILED, JobStatus.NEEDS_REVIEW, JobStatus.WAITING}:
+        raise HTTPException(status_code=409, detail="当前状态的任务不能重试")
     if job.attempt_count >= job.max_attempts:
         raise HTTPException(status_code=409, detail="任务已达到最大重试次数")
+    # A dependency-blocked WAITING child (parent job not COMPLETED) must not
+    # reach reset_for_retry: it would revive a FAILED run to phantom RUNNING
+    # before enqueue_job's dependency gate refuses the enqueue, leaving the
+    # studio polling a run with nothing executing. FAILED/NEEDS_REVIEW jobs
+    # always have COMPLETED dependencies, so legitimate retries never hit this.
+    if not dependencies_complete(db, job):
+        raise HTTPException(status_code=409, detail="依赖任务未完成，不能重试")
+    # A job whose run already ended must not retry: reset_for_retry's node_run
+    # revival has no run-status predicate (only its FAILED-run revival gates),
+    # so the job would execute paid work for a dead run and strand its
+    # node_run RUNNING forever inside a terminal run (reconcile early-returns
+    # on terminal runs). Reachable through the non-atomic worker-failure/
+    # cancel window: cancel_run's sweep deliberately keeps terminal FAILED
+    # jobs. A COMPLETED run with a late lease-expiry-FAILED job has the
+    # identical orphan shape, so both terminal statuses are gated.
+    node_run = db.scalar(select(WorkflowNodeRun).where(WorkflowNodeRun.job_id == job.id))
+    if node_run:
+        run = db.get(WorkflowRun, node_run.workflow_run_id)
+        if run and run.status in {"CANCELLED", "COMPLETED"}:
+            raise HTTPException(status_code=409, detail="所属运行已取消或已结束，不能重试该任务")
     return reset_for_retry(db, job)
 
 

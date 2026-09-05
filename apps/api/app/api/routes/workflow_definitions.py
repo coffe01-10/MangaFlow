@@ -3,7 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -159,15 +159,28 @@ def update_workflow(
     db: Session = Depends(get_db),
 ) -> WorkflowDefinition:
     workflow = _workflow(db, workflow_id)
-    if workflow.version != payload.version:
-        raise HTTPException(status_code=409, detail="工作流已被其他页面修改，请刷新后重试")
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
     if "draft_graph" in values:
         values["draft_graph"] = canonical_graph(values["draft_graph"])
+    # Claim the row with an atomic conditional update so concurrent PATCHes
+    # (and concurrent restores) cannot both pass an in-memory version
+    # comparison (same pattern as _claim_panel_version / scene asset PATCH).
+    claimed = db.execute(
+        update(WorkflowDefinition)
+        .where(
+            WorkflowDefinition.id == workflow.id,
+            WorkflowDefinition.version == payload.version,
+        )
+        .values(version=WorkflowDefinition.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if not claimed.rowcount:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="工作流已被其他页面修改，请刷新后重试")
+    if "draft_graph" in values:
         workflow.draft_version += 1
     for field, value in values.items():
         setattr(workflow, field, value)
-    workflow.version += 1
     try:
         db.commit()
     except IntegrityError as error:
@@ -235,11 +248,23 @@ def restore_version(
     if not version:
         raise HTTPException(status_code=404, detail="工作流版本不存在")
     workflow = _workflow(db, version.workflow_id)
-    if workflow.version != payload.version:
+    # Claim the workflow row with an atomic conditional update so a concurrent
+    # restore or PATCH cannot both pass an in-memory version comparison and
+    # silently overwrite each other's graph (same pattern as update_workflow).
+    claimed = db.execute(
+        update(WorkflowDefinition)
+        .where(
+            WorkflowDefinition.id == workflow.id,
+            WorkflowDefinition.version == payload.version,
+        )
+        .values(version=WorkflowDefinition.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if not claimed.rowcount:
+        db.rollback()
         raise HTTPException(status_code=409, detail="工作流已被其他页面修改，请刷新后重试")
     workflow.draft_graph = deepcopy(version.graph)
     workflow.draft_version += 1
-    workflow.version += 1
     db.commit()
     db.refresh(workflow)
     return workflow

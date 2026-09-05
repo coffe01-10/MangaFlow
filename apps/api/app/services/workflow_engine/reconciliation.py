@@ -15,6 +15,7 @@ from app.models import (
     WorkflowRun,
     utcnow,
 )
+from app.services.job_service import ACTIVE_JOB_STATUSES, mark_job_cancelled
 from app.services.page_completion import build_page_production_readiness
 from app.services.workflow_engine.catalog import NODE_TYPE_MAP
 from app.services.workflow_engine.scope import (
@@ -107,25 +108,44 @@ def _create_inspection_job(
     candidate = _candidate_for_run(db, run, node_runs)
     if not candidate or not candidate.asset_id:
         raise ValueError("质量检查必须等待已生成并采用的页面候选")
-    job = engine.create_job(
-        db,
-        project_id=run.project_id,
-        target_type="PAGE_CANDIDATE",
-        target_id=candidate.id,
-        job_type="PAGE_INSPECT",
-        model_alias=node.config.model_alias or "auto",
-        request_parameters={
-            "categories": ["SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"],
-            "workflow_run_id": run.id,
-            "workflow_node_run_id": node_run.id,
-            "node_id": node.id,
-            "node_type": node.type,
-        },
-        max_attempts=node.config.max_attempts,
-        idempotency_key=f"workflow:{run.id}:{node.id}:1",
-        dependency_ids=_parent_job_ids(db, run, graph, node.id),
-        auto_commit=False,
+    # Same active-job guard as the inspect route: the idempotency key below is
+    # workflow-scoped, so an ACTIVE PAGE_INSPECT job created through the route
+    # (or by a retried inspect) would otherwise run a second paid multimodal
+    # call on the same candidate. Adopt it, mirroring how reconcile handles a
+    # node that already carries a job.
+    active_job = db.scalar(
+        select(GenerationJob)
+        .where(
+            GenerationJob.job_type == "PAGE_INSPECT",
+            GenerationJob.target_type == "PAGE_CANDIDATE",
+            GenerationJob.target_id == candidate.id,
+            GenerationJob.status.in_(ACTIVE_JOB_STATUSES),
+        )
+        .order_by(GenerationJob.created_at, GenerationJob.id)
+        .limit(1)
     )
+    if active_job:
+        job = active_job
+    else:
+        job = engine.create_job(
+            db,
+            project_id=run.project_id,
+            target_type="PAGE_CANDIDATE",
+            target_id=candidate.id,
+            job_type="PAGE_INSPECT",
+            model_alias=node.config.model_alias or "auto",
+            request_parameters={
+                "categories": ["SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"],
+                "workflow_run_id": run.id,
+                "workflow_node_run_id": node_run.id,
+                "node_id": node.id,
+                "node_type": node.type,
+            },
+            max_attempts=node.config.max_attempts,
+            idempotency_key=f"workflow:{run.id}:{node.id}:1",
+            dependency_ids=_parent_job_ids(db, run, graph, node.id),
+            auto_commit=False,
+        )
     node_run.job_id = job.id
     node_run.input_snapshot = {
         **node_run.input_snapshot,
@@ -133,6 +153,50 @@ def _create_inspection_job(
         "asset_id": candidate.asset_id,
     }
     return job
+
+
+def _sweep_stranded_children(db: Session, run: WorkflowRun) -> None:
+    """Terminalize the run's remaining non-terminal children after a FAILED claim.
+
+    Mirrors cancel_run's sweep: a run claimed terminal-FAILED used to leave
+    downstream WAITING node_runs and their dependency-blocked jobs alive
+    forever (they keep ACTIVE_JOB_STATUSES, so project-scoped guards such as
+    the script delete 409 never clear, and jobless child nodes strand
+    WAITING). Strictly scoped to this run: node_run linkage plus the
+    request_parameters workflow_run_id match for late jobs. Must run inside
+    the claim's transaction so a lost claim rolls the sweep back with it.
+    """
+    node_runs = list(
+        db.scalars(select(WorkflowNodeRun).where(WorkflowNodeRun.workflow_run_id == run.id))
+    )
+    for item in node_runs:
+        if item.status not in {"COMPLETED", "FAILED", "CANCELLED"}:
+            item.status = "CANCELLED"
+            item.finished_at = utcnow()
+        job = db.get(GenerationJob, item.job_id) if item.job_id else None
+        # Unlike cancel_run (which retires even FAILED jobs because the whole
+        # run is cancelled), keep terminal FAILED jobs: this run failed
+        # because of them and the jobs list must keep showing the cause.
+        terminal = {JobStatus.COMPLETED, JobStatus.CANCELLED, JobStatus.FAILED}
+        if job and job.status not in terminal:
+            mark_job_cancelled(db, job)
+    # Inspect jobs are created lazily in reconcile and may not be on node_run
+    # yet; sweep them the same way cancel_run does (project-scoped query,
+    # filtered to this run's workflow_run_id parameter).
+    late_jobs = list(
+        db.scalars(
+            select(GenerationJob).where(
+                GenerationJob.project_id == run.project_id,
+                GenerationJob.status.not_in(
+                    {JobStatus.COMPLETED, JobStatus.CANCELLED, JobStatus.FAILED}
+                ),
+            )
+        )
+    )
+    for job in late_jobs:
+        params = job.request_parameters or {}
+        if params.get("workflow_run_id") == run.id:
+            mark_job_cancelled(db, job)
 
 
 def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
@@ -268,6 +332,11 @@ def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
     # written terminal state: two reconcilers race routinely (worker
     # finalize, recovery, approve), and a stale RUNNING write resurrects a
     # FAILED/CANCELLED run that retry then refuses to touch (zombie run).
+    # Flush the node-level writes first so a won claim commits them in the
+    # same transaction, and a lost claim rolls them back wholesale (the
+    # canceller's own transaction already moved every non-terminal node and
+    # its jobs to CANCELLED).
+    db.flush()
     claimed = db.execute(
         update(WorkflowRun)
         .where(
@@ -281,9 +350,16 @@ def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
     if claimed.rowcount != 1:
         db.rollback()
         return get_run(db, run.id)
+    if desired == "FAILED":
+        # The claim owns the row, so sweep the stranded children in the same
+        # transaction: run transition and sweep commit atomically, and any
+        # sweep failure rolls the FAILED claim back for a later reconcile to
+        # redo cleanly (cancel_run sweeps its own CANCELLED claim the same
+        # way before committing).
+        _sweep_stranded_children(db, run)
     db.commit()
-    # synchronize_session=False leaves the identity-map instance stale on
-    # sessions configured with expire_on_commit=False.
+    # synchronize_session=False leaves the identity-map row stale; refresh so
+    # get_run (same session) returns the claimed state, not the pre-write one.
     db.refresh(run)
     return get_run(db, run.id)
 

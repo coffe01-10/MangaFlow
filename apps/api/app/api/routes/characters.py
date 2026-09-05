@@ -110,8 +110,6 @@ def update_character(
     character = db.get(Character, character_id)
     if not character:
         raise HTTPException(status_code=404, detail="角色不存在")
-    if character.version != payload.version:
-        raise HTTPException(status_code=409, detail="角色已被更新，请刷新后重试")
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
     reject_required_nulls(Character, values)
     primary_name = values.get("primary_name", character.primary_name).strip()
@@ -126,10 +124,21 @@ def update_character(
     values["alias_conflict"] = _has_conflict(
         db, character.project_id, primary_name, aliases, character.id
     )
+    # Claim the row with an atomic conditional update so concurrent PATCHes
+    # cannot both pass an in-memory version comparison (same pattern as
+    # _claim_panel_version / scene asset PATCH).
+    claimed = db.execute(
+        update(Character)
+        .where(Character.id == character.id, Character.version == payload.version)
+        .values(version=Character.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if not claimed.rowcount:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="角色已被更新，请刷新后重试")
     for key, value in values.items():
         setattr(character, key, value)
     character.status = "NEEDS_CONFIRMATION" if character.alias_conflict else "CANONICAL"
-    character.version += 1
     db.commit()
     db.refresh(character)
     return _read(db, character)

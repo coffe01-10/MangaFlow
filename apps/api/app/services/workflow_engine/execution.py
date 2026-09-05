@@ -153,7 +153,17 @@ def execute_workflow_node(db: Session, job: GenerationJob) -> None:
         chapter = _scope_chapter(db, run)
         if not chapter:
             raise RuntimeError("UNSUPPORTED_INPUT: 整章导出节点需要章节运行范围")
-        bundle = create_export(chapter.id, ExportRequest(export_type="JSON"), db)
+        # Job reclaim / RQ redelivery re-executes this handler after a previous
+        # attempt already committed the bundle for the same deterministic
+        # artifact; reuse that row instead of duplicating it. (Only sequential
+        # re-execution is covered; truly concurrent double-execution would need
+        # a DB unique constraint, which requires a migration.)
+        bundle = create_export(
+            chapter.id,
+            ExportRequest(export_type="JSON"),
+            db,
+            reuse_existing=True,
+        )
         if not isinstance(bundle, ExportBundle):
             raise RuntimeError("导出节点没有产生 ExportBundle")
         node_run.output_refs = {

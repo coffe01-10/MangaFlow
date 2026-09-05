@@ -804,6 +804,32 @@ def accept_command(db: Session, project_id: str, command_id: str) -> dict:
         }
         db.commit()
         raise _http_409(row.error)
+    if envelope.operation == "update_scene_context" and "background" in envelope.payload:
+        # §6.3: execution writes scene fields AND panel.background, but the
+        # scene.version gate above cannot see a concurrent panel background
+        # PATCH (it moves panel.version and the storyboard counter, never
+        # scene.version — manual scene edits do not bump the storyboard
+        # either). Re-check the panel half against the propose-time diff. The
+        # panel is already locked above: background payloads require
+        # target.panel_id, so accept's page→panel lock block covers this read.
+        panel = (
+            db.get(Panel, envelope.target.panel_id) if envelope.target.panel_id else None
+        )
+        background_before = ((row.diff or {}).get("background") or {}).get("before")
+        if (
+            panel is None
+            or background_before is None
+            or panel.background != background_before
+        ):
+            conflict = {
+                "code": "VERSION_CONFLICT",
+                "message": "分镜背景已在预览后被更新，请刷新后重试",
+                "scope": "panel",
+                "current_version": None if panel is None else panel.version,
+            }
+            row.error = conflict
+            db.commit()
+            raise _http_409(conflict)
     claimed = db.execute(
         update(DirectorCommand)
         .where(
@@ -909,8 +935,27 @@ def discard_group(db: Session, project_id: str, command_group_id: str) -> dict:
         raise HTTPException(status_code=404, detail="命令组不存在")
     rows = list(db.scalars(select(DirectorCommand).where(DirectorCommand.group_id == group.id)))
     for row in rows:
-        if row.status in {CommandStatus.PREVIEWED.value, CommandStatus.PROPOSED.value}:
-            row.status = CommandStatus.DISCARDED.value
+        # Conditional claim mirrors accept_command/reject_command: only rows
+        # still PREVIEWED/PROPOSED may flip to DISCARDED. A rowcount of 0
+        # means the row was concurrently accepted/executed or rejected
+        # between our read and this claim (accept_command defends the same
+        # race from its side). Leave its real status untouched so
+        # undo_command can still revert EXECUTED rows; refresh so the journal
+        # read below reports current state. The group itself still ends up
+        # DISCARDED (existing forced-discard behavior), but executed rows stay
+        # undoable.
+        db.execute(
+            update(DirectorCommand)
+            .where(
+                DirectorCommand.id == row.id,
+                DirectorCommand.status.in_(
+                    [CommandStatus.PREVIEWED.value, CommandStatus.PROPOSED.value]
+                ),
+            )
+            .values(status=CommandStatus.DISCARDED.value)
+            .execution_options(synchronize_session=False)
+        )
+        db.refresh(row)
     group.status = CommandGroupStatus.DISCARDED.value
     _refresh_group_status(db, group)
     group.status = CommandGroupStatus.DISCARDED.value
@@ -924,7 +969,7 @@ def undo_command(db: Session, project_id: str, command_id: str) -> dict:
     if row.status != CommandStatus.EXECUTED.value:
         raise _http_409("只能撤销已执行的命令")
     page = _load_page(db, project_id, (row.target or {}).get("page_id"))
-    if page is None or row.storyboard_version_after != page.storyboard_version:
+    if page is None:
         row.status = CommandStatus.SUPERSEDED.value
         group = db.get(DirectorCommandGroup, row.group_id)
         _refresh_group_status(db, group)
@@ -933,9 +978,56 @@ def undo_command(db: Session, project_id: str, command_id: str) -> dict:
             {
                 "code": "SUPERSEDED",
                 "message": "分镜已在撤销前被更新，请刷新",
-                "current_version": None if page is None else page.storyboard_version,
+                "current_version": None,
             }
         )
+    # Same lock set and order as accept_command: page first, then the row's
+    # target panel for panel/dialogue-scoped operations (update_scene_context
+    # with a background carries target.panel_id too). populate_existing also
+    # replaces any stale identity-map snapshot with the locked current state,
+    # so the storyboard version below is the one the lock protects.
+    lock_entity(db, MangaPage, page.id)
+    if (row.target or {}).get("panel_id"):
+        lock_entity(db, Panel, row.target["panel_id"])
+    current_storyboard_version = page.storyboard_version
+    # Conditional claim mirrors accept_command/reject_command/discard_group:
+    # the row must still be EXECUTED and the storyboard must still be at the
+    # version the executed command recorded. Winning the claim flips the row
+    # to SUPERSEDED inside the same transaction that inserts the undo row and
+    # restores the snapshot, so a concurrent undo/redo (redo delegates here)
+    # can no longer pass the bare check-then-write gates and double-apply the
+    # inverse against an already-reverted page. On loss the whole unit rolls
+    # back below, leaving the row EXECUTED and the page untouched.
+    claimed = db.execute(
+        update(DirectorCommand)
+        .where(
+            DirectorCommand.id == row.id,
+            DirectorCommand.status == CommandStatus.EXECUTED.value,
+            DirectorCommand.storyboard_version_after == current_storyboard_version,
+        )
+        .values(status=CommandStatus.SUPERSEDED.value)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
+        db.rollback()
+        db.refresh(row)
+        if row.status == CommandStatus.EXECUTED.value:
+            # Still EXECUTED after losing the claim means the storyboard moved
+            # on after our read: keep the designed destructive SUPERSEDED flip
+            # (the sbv is the reconciliation anchor; SUPERSEDED tells the user
+            # to refresh).
+            group = db.get(DirectorCommandGroup, row.group_id)
+            row.status = CommandStatus.SUPERSEDED.value
+            _refresh_group_status(db, group)
+            db.commit()
+        raise _http_409(
+            {
+                "code": "SUPERSEDED",
+                "message": "分镜已在撤销前被更新，请刷新",
+                "current_version": current_storyboard_version,
+            }
+        )
+    db.refresh(row)
     existing = _existing_group(db, project_id, row.command_group_id)
     undo_id = str(uuid4())
     redo_snapshot = None
