@@ -193,6 +193,20 @@ def update_workflow(
 @router.delete("/workflows/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_workflow(workflow_id: str, db: Session = Depends(get_db)) -> Response:
     workflow = _workflow(db, workflow_id)
+    # Soft-deleting a definition that still has live runs would orphan them:
+    # reconcile/approve keep executing paid jobs for a workflow the studio no
+    # longer lists (#139). Refuse like delete_script — cancelling the runs is
+    # the caller's decision, never a delete side effect.
+    active_run = db.scalar(
+        select(WorkflowRun.id)
+        .where(
+            WorkflowRun.workflow_id == workflow.id,
+            WorkflowRun.status.not_in({"COMPLETED", "CANCELLED", "FAILED"}),
+        )
+        .limit(1)
+    )
+    if active_run is not None:
+        raise HTTPException(status_code=409, detail="工作流仍有进行中的运行，请先取消")
     workflow.deleted_at = utcnow()
     workflow.is_active = False
     workflow.version += 1
