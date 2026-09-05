@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from threading import Event, Lock, Thread
 
+from fastapi import HTTPException
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import IntegrityError
@@ -41,6 +42,13 @@ LEASED_JOB_STATUSES = {
     JobStatus.REPAIRING,
 }
 ACTIVE_JOB_STATUSES = {JobStatus.WAITING, JobStatus.QUEUED, *LEASED_JOB_STATUSES}
+# Job types whose paid call targets an inspectable id and must stay
+# one-active-per-target across ALL entry points (manual route, workflow node,
+# and retry). PAGE_INSPECT is the only member today; extend this set instead
+# of adding ad-hoc per-route guards when new inspection kinds appear (issue
+# #125: a retried FAILED inspect is invisible to idempotency keys because
+# create_job collapses the dead row's key to closed:{id}).
+INSPECT_JOB_TYPES = {"PAGE_INSPECT"}
 # LOCAL wall-clock cap markers. The lease heartbeat stamps LOCAL_TIMEOUT once
 # the job's job_timeout_seconds budget is spent while the lease is still live;
 # recovery preserves that cause through reclaim/requeue exactly like the RQ
@@ -57,6 +65,7 @@ def has_active_job(
     job_type: str,
     target_id: str,
     target_type: str | None = None,
+    exclude_job_id: str | None = None,
 ) -> bool:
     filters = [
         GenerationJob.job_type == job_type,
@@ -65,6 +74,11 @@ def has_active_job(
     ]
     if target_type is not None:
         filters.append(GenerationJob.target_type == target_type)
+    if exclude_job_id is not None:
+        # Self-exclusion for revival paths (reset_for_retry): the caller's own
+        # row is (or is about to be) ACTIVE again and must not trip its own
+        # duplicate guard.
+        filters.append(GenerationJob.id != exclude_job_id)
     return db.scalar(select(GenerationJob.id).where(*filters).limit(1)) is not None
 
 
@@ -419,6 +433,37 @@ def _submit_local(job_id: str) -> bool:
     return True
 
 
+def _warn_lease_lost_output_discarded(job_id: str, *, reason: str) -> None:
+    """Issue #130: surface a lease-lost executor's discarded paid output.
+
+    Losing the lease means the handler's uncommitted (possibly paid) output is
+    rolled back while the reclaiming executor may re-run the provider call —
+    a double spend that used to vanish with zero observability. Best-effort
+    row lookup for job_type/attempt context; a lookup failure logs and falls
+    back to placeholders rather than masking the warning.
+    """
+
+    from app.database import SessionLocal
+
+    job_type, attempt = "unknown", "?"
+    try:
+        with SessionLocal() as db:
+            row = db.get(GenerationJob, job_id)
+            if row is not None:
+                job_type, attempt = row.job_type, row.attempt_count
+    except Exception:
+        LOGGER.exception("lease-lost job row lookup failed for job %s", job_id)
+    LOGGER.warning(
+        "job %s (%s, attempt %s) lost its lease (%s); its uncommitted output "
+        "was rolled back and discarded; the provider call may already have "
+        "been billed and another executor may re-run it (double-spend risk)",
+        job_id,
+        job_type,
+        attempt,
+        reason,
+    )
+
+
 def _execute_locally(job_id: str) -> None:
     from app.model_adapters.base import ProviderAdapterError
     from app.worker_tasks import JobCancelledError, JobLeaseLostError, execute_job
@@ -436,7 +481,14 @@ def _execute_locally(job_id: str) -> None:
         while True:
             try:
                 execute_job(job_id)
-            except (JobCancelledError, JobLeaseLostError):
+            except JobLeaseLostError as error:
+                # execute_job's own handler already logged the rich warning
+                # before returning; this catch is defense in depth for
+                # lease-lost raises from seams outside its try block and must
+                # stay equally loud (issue #130: paid output discarded).
+                _warn_lease_lost_output_discarded(job_id, reason=str(error))
+                return
+            except JobCancelledError:
                 return
             except ProviderAdapterError as error:
                 if not getattr(error, "retryable", True):
@@ -589,6 +641,46 @@ def _workflow_node_blocks_recovery(db: Session, node_run_id: str) -> bool:
     return run is not None and run.status == "PAUSED"
 
 
+def _lease_reclaim_grace_seconds(settings) -> float:
+    """How long past its expiry a lease must stay cold before reclaim.
+
+    Issue #130 fence: an expired lease alone proves "no renewal in one full
+    lease period", NOT "the executor is dead". The heartbeat thread can be
+    transiently starved (GIL contention, a DB lock) while the paid provider
+    call legitimately runs on — job_timeout_seconds (900s) is 7.5x the default
+    lease (120s), so a slow-but-legal call occupies ~1/7 of its own timeout
+    window. Reclaiming at first observed expiry re-ran the job under the live
+    executor, and the loser's lease-fenced completion CAS then rolled back and
+    discarded its already-paid output: a silent double spend.
+
+    The janitor therefore reclaims only after the expiry has been cold for
+    longer than two full heartbeat windows, so an executor that comes back
+    within the fence can still finish and win the completion CAS (the row's
+    lease_owner is untouched while unreclaimed):
+
+        grace = max(2 * heartbeat_interval, lease / 3)
+              = max(2 * 30s, 120s / 3) = 60s at the default 120s lease
+
+    The lease/3 term keeps the tolerance proportional to the lease (a 3600s
+    lease gets a 1200s grace) because longer leases guard longer, pricier
+    calls where a wrong reclaim wastes more. The default derivation is
+    deliberately capped at 60s so the reclaim boundary pinned by the existing
+    recovery regression tests (a 60s-cold lease must still reclaim,
+    tests/test_local_worker.py, tests/test_style_job_guards.py) keeps
+    holding. settings.job_lease_reclaim_grace_seconds overrides the
+    derivation (0 disables the fence). A NULL lease_expires_at carries no
+    liveness trace at all (legacy/anomalous row) and stays immediately
+    reclaimable.
+    """
+
+    from app.worker_tasks import _heartbeat_interval_seconds
+
+    if settings.job_lease_reclaim_grace_seconds is not None:
+        return float(settings.job_lease_reclaim_grace_seconds)
+    lease_seconds = float(settings.job_lease_seconds)
+    return max(2.0 * _heartbeat_interval_seconds(lease_seconds), lease_seconds / 3.0)
+
+
 def recover_pending_jobs(db: Session) -> int:
     """Reclaim expired worker leases and re-enqueue recoverable jobs."""
     # Lazy import: keeps rq off the API import graph and avoids a module-level
@@ -600,13 +692,19 @@ def recover_pending_jobs(db: Session) -> int:
     if not settings.queue_enabled:
         return 0
     now = utcnow()
+    # Executor-liveness fence (issue #130): reclaim only leases that stayed
+    # cold beyond the grace window — "confirmed silent", not "just expired".
+    # The grace is at least two heartbeat windows (60s at defaults), during
+    # which a starved-but-alive executor can still return and complete under
+    # its own lease_owner. See _lease_reclaim_grace_seconds for the derivation.
+    reclaim_cutoff = now - timedelta(seconds=_lease_reclaim_grace_seconds(settings))
     expired_jobs = list(
         db.scalars(
             select(GenerationJob).where(
                 GenerationJob.status.in_(LEASED_JOB_STATUSES),
                 or_(
                     GenerationJob.lease_expires_at.is_(None),
-                    GenerationJob.lease_expires_at <= now,
+                    GenerationJob.lease_expires_at <= reclaim_cutoff,
                 ),
             )
         )
@@ -628,7 +726,7 @@ def recover_pending_jobs(db: Session) -> int:
         base_filter.append(
             or_(
                 GenerationJob.lease_expires_at.is_(None),
-                GenerationJob.lease_expires_at <= now,
+                GenerationJob.lease_expires_at <= reclaim_cutoff,
             )
         )
 
@@ -1097,9 +1195,31 @@ def reset_for_retry(db: Session, job: GenerationJob) -> GenerationJob:
     if claimed.rowcount != 1:
         # Another party advanced the row; the caller must not enqueue over it.
         db.rollback()
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=409, detail="任务状态已变化，请刷新后重试")
+    # Same-target mutex for the third PAGE_INSPECT entry point (issue #125):
+    # the manual route guards with has_active_job, but a retried FAILED inspect
+    # is invisible to that path's idempotency key — create_job collapsed the
+    # dead row's key to closed:{id} when a newer inspect took the key — so
+    # reviving it here could run a second paid inspect next to a live
+    # manual/workflow job on the same target. The claim above just moved this
+    # row back to WAITING, so it must be excluded by id (a WAITING job being
+    # retried would otherwise trip its own guard).
+    if (
+        job.job_type in INSPECT_JOB_TYPES
+        and job.target_id
+        and has_active_job(
+            db,
+            job_type=job.job_type,
+            target_id=str(job.target_id),
+            target_type=job.target_type,
+            exclude_job_id=job.id,
+        )
+    ):
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="该目标已有进行中的质检任务，请等待完成后再重试",
+        )
     # The claim above owns the job row, which serializes this revival against
     # concurrent cancel_run/worker claims on the same job, so the cross-table
     # writes below cannot clobber a concurrent terminal transition.

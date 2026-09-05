@@ -69,6 +69,16 @@ def _lease_duration() -> timedelta:
     return timedelta(seconds=get_settings().job_lease_seconds)
 
 
+def _heartbeat_interval_seconds(lease_seconds: float) -> float:
+    """Heartbeat cadence for a lease length: lease/3, clamped to [5s, 30s].
+
+    Single source of truth shared with job_service._lease_reclaim_grace_seconds,
+    which sizes the reclaim fence as a multiple of this interval (issue #130).
+    """
+
+    return max(5.0, min(30.0, lease_seconds / 3.0))
+
+
 class _LeaseHeartbeat:
     """Refresh a job lease without sharing the worker's SQLAlchemy session.
 
@@ -89,7 +99,7 @@ class _LeaseHeartbeat:
         self.job_id = job_id
         self.owner = owner
         self.duration = _lease_duration()
-        self.interval = max(5.0, min(30.0, self.duration.total_seconds() / 3))
+        self.interval = _heartbeat_interval_seconds(self.duration.total_seconds())
         self.stop = Event()
         self.lost = False
         # Wall-clock deadline for the whole execution, set by ``__enter__``.
@@ -593,8 +603,25 @@ def execute_job(job_id: str) -> None:
                 LOGGER.exception(
                     "workflow run %s reconcile failed after job completion", workflow_run_id
                 )
-    except JobLeaseLostError:
+    except JobLeaseLostError as error:
         db.rollback()
+        # Issue #130: this used to return silently. Losing the lease here means
+        # the handler already produced (possibly paid) output that this rollback
+        # discards, while the reclaiming executor may re-run the provider call —
+        # a double spend with zero observability. Reload the row for context;
+        # the lookup is best-effort and must never mask the return.
+        db.expire_all()
+        lost = db.get(GenerationJob, job_id)
+        LOGGER.warning(
+            "job %s (%s, attempt %s) lost its lease: %s. Its uncommitted "
+            "output was rolled back and discarded; the provider call may "
+            "already have been billed and another executor may re-run it "
+            "(double-spend risk)",
+            job_id,
+            getattr(lost, "job_type", "unknown"),
+            getattr(lost, "attempt_count", "?"),
+            error,
+        )
         return
     except JobCancelledError:
         db.rollback()

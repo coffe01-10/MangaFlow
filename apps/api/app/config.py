@@ -40,6 +40,13 @@ class Settings(BaseSettings):
     queue_enabled: bool = True
     job_timeout_seconds: int = Field(default=900, ge=30, le=3600)
     job_lease_seconds: int = Field(default=120, ge=30, le=3600)
+    # Executor-silence fence for lease reclaim (issue #130). None derives the
+    # grace from the lease/heartbeat geometry — see
+    # job_service._lease_reclaim_grace_seconds, which also explains why an
+    # explicit 0 (fence disabled) or a larger value may be pinned per
+    # deployment. reclaim only after the lease has been expired for at least
+    # this many seconds.
+    job_lease_reclaim_grace_seconds: int | None = Field(default=None, ge=0, le=3600)
     max_auto_repairs: int = Field(default=3, ge=0, le=10)
     cli_run_timeout_seconds: int = Field(default=120, ge=10, le=3600)
     cli_run_timeout_grace_seconds: int = Field(default=5, ge=0, le=60)
