@@ -6,7 +6,6 @@ per-segment split-retry engages; schema near-misses are deterministic
 (gateway HTML pages, truncated bodies) stay retryable.
 """
 
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -276,7 +275,7 @@ def test_google_schema_near_miss_is_terminal_and_decode_retryable(monkeypatch):
 def test_story_parse_rewrap_preserves_retryable_flag(client, db_session, monkeypatch):
     """The multi-chunk re-wrap must forward retryable (issue #121 instance 2)."""
 
-    from app.models import Chapter, GenerationJob, SourceSegment
+    from app.models import Chapter, GenerationJob
     from app.services.worker_handlers.story_parse import _run_story_parse
 
     project = client.post(
@@ -287,11 +286,6 @@ def test_story_parse_rewrap_preserves_retryable_flag(client, db_session, monkeyp
         json={"title": "第一章", "text": "顾川推开门。\n\n他看向窗边。"},
     ).json()
     chapter = db_session.get(Chapter, imported["chapters"][0]["id"])
-    segments = (
-        db_session.query(SourceSegment)
-        .filter(SourceSegment.source_revision_id == chapter.current_source_revision_id)
-        .all()
-    )
 
     class FlakyAdapter:
         def generate_structured(self, request, schema):
