@@ -581,9 +581,9 @@ a { color: inherit; text-decoration: none; }
 .storyboard-toolbar .page-menu-items button { justify-content: flex-start; border: 0; background: transparent; color: var(--vermillion); }
 .canvas-viewport { position: relative; overflow: auto; display: flex; border: 1px solid var(--ink); background: #d8d2c6; min-height: clamp(280px, calc(100vh - 340px), 420px); height: calc(100vh - 340px); max-height: 860px; }
 /* Auto margins center the page in both axes when it is smaller than the
-   viewport (fitted wide windows) and collapse to 0 when it overflows, so the
-   scrollable area is never clipped. */
-.canvas-page { position: relative; margin: auto; background: #fffdf8; box-shadow: 6px 6px 0 rgba(21,21,18,.14); touch-action: none; }
+   viewport; flex-shrink: 0 keeps a zoomed-in page overflowing with working
+   scrollbars instead of being clamped to the viewport. */
+.canvas-page { position: relative; flex-shrink: 0; margin: auto; background: #fffdf8; box-shadow: 6px 6px 0 rgba(21,21,18,.14); touch-action: none; }
 .canvas-panel { position: absolute; border: 1.5px solid #4a453d; background: rgba(255,255,255,.04); cursor: move; touch-action: none; transition: border-color .12s ease, box-shadow .12s ease; }
 .canvas-panel.selected { border: 2px solid var(--vermillion); box-shadow: 0 0 0 3px rgba(211,74,47,.2); }
 .canvas-panel.bleed-panel { border-style: dashed; border-color: #9a6534; }
@@ -2099,7 +2099,7 @@ p { font-size: var(--text-body) !important; }
 
 /* ---------------------------------------------------------------------------
  * V02-51B Template B (audit §4.2/§5): workbench slots.
- * Left nav collapses to a 48px icon rail anywhere outside the <900 hamburger;
+ * Left nav collapses to a 64px icon rail anywhere outside the <900 hamburger;
  * the generic right inspector slot docks ≥1280, becomes a right drawer at
  * 900–1279 and a bottom sheet below. Kept at end-of-file so the existing
  * storyboard blocks stay the first `min-width: 1280px` media query.

@@ -549,9 +549,10 @@ describe("StoryboardEditor canvas (V02-31B)", () => {
 
   it("S23 容器尺寸变化自动重适配；手动缩放后停止跟随，适配窗口恢复跟随", async () => {
     // 布局契约：画布在视口内两轴居中（大视口下空隙均分，不再堆在一侧），
+    // 放大后允许溢出滚动（flex-shrink: 0，否则 flex 会把页面压回视口），
     // 折叠图标轨加宽到 64px。
     expect(css).toContain(".canvas-viewport { position: relative; overflow: auto; display: flex;");
-    expect(css).toContain(".canvas-page { position: relative; margin: auto;");
+    expect(css).toContain(".canvas-page { position: relative; flex-shrink: 0; margin: auto;");
     expect(css).toContain(".workspace-layout.rail-left { grid-template-columns: 64px minmax(0, 1fr); }");
 
     class ROStub {
