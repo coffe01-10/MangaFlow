@@ -710,6 +710,7 @@ def recover_pending_jobs(db: Session) -> int:
         )
     )
     recovered = 0
+    reconciled_run_ids: set[str] = set()
     for job in jobs:
         with LOCAL_SUBMISSION_LOCK:
             already_submitted = job.id in LOCAL_SUBMITTED_JOB_IDS
@@ -718,8 +719,25 @@ def recover_pending_jobs(db: Session) -> int:
         node_run_id = (job.request_parameters or {}).get("workflow_node_run_id")
         if node_run_id and _workflow_node_blocks_recovery(db, node_run_id):
             # Unscheduled workflow nodes (and every node of a PAUSED run) are
-            # reconcile's to schedule, not recovery's. Skipped rows do not
+            # reconcile's to schedule, not recovery's. Reconciling the run
+            # instead of enqueueing keeps the crash-window self-heal — a child
+            # stranded WAITING because a reconcile commit was lost still gets
+            # scheduled — while barrier/pause-gated nodes stay untouched
+            # (reconcile's parent gate refuses them). Skipped rows do not
             # count as recovered.
+            node_run = db.get(WorkflowNodeRun, node_run_id)
+            run_id = node_run.workflow_run_id if node_run else None
+            if run_id and run_id not in reconciled_run_ids:
+                reconciled_run_ids.add(run_id)
+                try:
+                    from app.services.workflow_engine import reconcile_run
+
+                    reconcile_run(db, run_id)
+                except Exception:
+                    LOGGER.exception(
+                        "workflow run %s reconcile failed during recovery", run_id
+                    )
+                    db.rollback()
             continue
         if job.status == JobStatus.QUEUED:
             # Re-adopt a local-queue row without clobbering concurrent

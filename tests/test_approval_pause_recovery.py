@@ -15,6 +15,8 @@ reconcile sets it RUNNING immediately before enqueueing); scheduling NEW work
 workflow node linkage keep the legacy behavior untouched.
 """
 
+from sqlalchemy import select
+
 from app.config import Settings
 from app.domain.states import JobStatus
 from app.models import (
@@ -98,17 +100,51 @@ def _output_page_job(
 
 
 def _paused_run_with_unscheduled_output_node(db, project: Project, name: str):
-    """A run paused at the approval barriers, its output.job not yet scheduled."""
+    """A run paused at the approval barriers, its output.job not yet scheduled.
+
+    Graph-faithful: planning seeds a node_run for EVERY graph node, and a run
+    is PAUSED exactly while the generate/adopt barriers sit in
+    WAITING_APPROVAL. reconcile's parent gate ignores parents that have no
+    node_run row, so a faithful seed is what keeps the scheduling decision
+    honest.
+    """
 
     run = _workflow_run(db, project, name, status="PAUSED")
-    node_run = WorkflowNodeRun(
-        workflow_run_id=run.id,
-        node_id="complete",
-        node_type="output.page",
-        status="WAITING",
+    db.add_all(
+        [
+            WorkflowNodeRun(
+                workflow_run_id=run.id,
+                node_id="generate",
+                node_type="generator.page",
+                status="WAITING_APPROVAL",
+            ),
+            WorkflowNodeRun(
+                workflow_run_id=run.id,
+                node_id="adopt",
+                node_type="control.approval",
+                status="WAITING_APPROVAL",
+            ),
+            WorkflowNodeRun(
+                workflow_run_id=run.id,
+                node_id="inspect",
+                node_type="quality.inspect",
+                status="WAITING",
+            ),
+            WorkflowNodeRun(
+                workflow_run_id=run.id,
+                node_id="complete",
+                node_type="output.page",
+                status="WAITING",
+            ),
+        ]
     )
-    db.add(node_run)
     db.flush()
+    node_run = db.scalar(
+        select(WorkflowNodeRun).where(
+            WorkflowNodeRun.workflow_run_id == run.id,
+            WorkflowNodeRun.node_id == "complete",
+        )
+    )
     return run, node_run
 
 
@@ -276,3 +312,87 @@ def test_recovery_skips_queued_local_worker_output_page_of_paused_run(
     assert reloaded.status == JobStatus.QUEUED
     assert reloaded.error_code == "LOCAL_WORKER"
     assert db_session.get(WorkflowRun, run_id).status == "PAUSED"
+
+
+def test_recovery_self_heals_crash_stranded_child_via_reconcile(
+    db_session, monkeypatch
+):
+    """T5: a WAITING-node skip must still reconcile the run, not drop it.
+
+    Crash-window shape: the parent job committed COMPLETED, but the worker
+    died before reconcile_run could schedule the child (child node_run still
+    WAITING). Recovery must not run the child directly, and it must not skip
+    it either — it must hand the run to reconcile_run, which schedules every
+    legally unlocked node and leaves gated ones alone. Without the reconcile
+    trigger the run stalls forever (no other component reconciles it).
+    """
+
+    from app.models import JobDependency, WorkflowNodeRun as WNR
+
+    _set_queue_mode(db_session, "LOCAL")
+    project = Project(name="崩溃窗口自愈")
+    db_session.add(project)
+    db_session.flush()
+    run = _workflow_run(db_session, project, "崩溃运行", status="RUNNING")
+    parent_node = WNR(
+        workflow_run_id=run.id,
+        node_id="parse",
+        node_type="agent.parse",
+        # SKIPPED passes reconcile's parent gate while skipping the
+        # completed-output validation that expects real output_refs.
+        status="SKIPPED",
+    )
+    child_node = WNR(
+        workflow_run_id=run.id,
+        node_id="adapt",
+        node_type="agent.adapt",
+        status="WAITING",
+    )
+    db_session.add_all([parent_node, child_node])
+    db_session.flush()
+    parent_job = GenerationJob(
+        project_id=project.id,
+        target_type="CHAPTER",
+        target_id="chapter-1",
+        job_type="SOURCE_PARSE",
+        status=JobStatus.COMPLETED,
+        request_parameters={"workflow_run_id": run.id},
+        idempotency_key=f"workflow:{run.id}:parse:1",
+    )
+    child_job = GenerationJob(
+        project_id=project.id,
+        target_type="WORKFLOW_NODE",
+        target_id=child_node.id,
+        job_type="SOURCE_REWRITE",
+        status=JobStatus.WAITING,
+        request_parameters={
+            "workflow_run_id": run.id,
+            "workflow_node_run_id": child_node.id,
+            "node_id": "adapt",
+            "node_type": "agent.adapt",
+        },
+        idempotency_key=f"workflow:{run.id}:adapt:1",
+    )
+    db_session.add_all([parent_job, child_job])
+    db_session.flush()
+    parent_node.job_id = parent_job.id
+    child_node.job_id = child_job.id
+    db_session.add(JobDependency(job_id=child_job.id, depends_on_job_id=parent_job.id))
+    db_session.commit()
+    child_job_id, child_node_id = child_job.id, child_node.id
+
+    monkeypatch.setattr(
+        job_service, "get_settings", lambda: Settings(environment="development")
+    )
+    submitted: list[str] = []
+    monkeypatch.setattr(job_service, "_submit_local", lambda job_id: submitted.append(job_id))
+
+    job_service.recover_pending_jobs(db_session)
+
+    assert submitted == [child_job_id], (
+        "recovery must reconcile the run so the crash-stranded child is scheduled"
+    )
+    db_session.expire_all()
+    assert db_session.get(GenerationJob, child_job_id).status == JobStatus.QUEUED
+    child = db_session.get(WNR, child_node_id)
+    assert child.status == "RUNNING", "reconcile must mark the scheduled node RUNNING"
