@@ -776,6 +776,235 @@ def test_discard_group_marks_previewed_rows_and_group_discarded(client, db_sessi
     assert group.status == "DISCARDED"
 
 
+def test_undo_claim_blocks_second_undo_running_on_stale_reads(client, db_session):
+    """Two concurrent undos of one executed row: the conditional claim decides.
+
+    undo/redo used to be check-then-write with no claim and no lock: both
+    concurrent undos passed the bare EXECUTED + sbv gates, then both restored
+    the snapshot and inserted an undo row. db_session keeps stale identity-map
+    values (expire_on_commit=False); they stand in for the losing undo's reads
+    that happened before the winning undo committed, while its writes hit the
+    current database exactly like the losing racer would.
+    """
+    from sqlalchemy.orm import sessionmaker
+
+    from app.services.director_commands import undo_command
+
+    ctx = _setup(client, db_session)
+    original = ctx["panel"].shot_type
+    shot = _envelope(ctx, "update_panel_shot", {"shot_type": "wide"}, group_id=_uid())
+    proposed = _propose(client, ctx, [shot])
+    assert proposed.status_code == 200, proposed.text
+    accepted = client.post(
+        f"/api/v1/projects/{ctx['project']['id']}/director/commands/{shot['command_id']}/accept"
+    )
+    assert accepted.status_code == 200, accepted.text
+
+    # Reads for the "losing" undo happen now; the competing undo commits its
+    # claim and restore before the loser reaches its write.
+    stale_row = db_session.scalar(
+        select(DirectorCommand).where(DirectorCommand.command_id == shot["command_id"])
+    )
+    stale_page = db_session.get(MangaPage, ctx["page"].id)
+    assert stale_row.status == "EXECUTED"
+    sbv_after_accept = stale_page.storyboard_version
+    assert stale_row.storyboard_version_after == sbv_after_accept
+
+    ConcurrentSession = sessionmaker(
+        bind=db_session.get_bind(), autoflush=False, expire_on_commit=False
+    )
+    with ConcurrentSession() as other:
+        first = undo_command(other, ctx["project"]["id"], shot["command_id"])
+    first_undo = next(
+        item
+        for item in first["commands"]
+        if item["inverse_of_command_id"] == shot["command_id"]
+    )
+    assert first_undo["status"] == "EXECUTED"
+
+    second = client.post(
+        f"/api/v1/projects/{ctx['project']['id']}/director/commands/{shot['command_id']}/undo"
+    )
+    assert second.status_code == 409, second.text
+    assert second.json()["detail"]["code"] == "SUPERSEDED"
+
+    db_session.expire_all()
+    row = db_session.scalar(
+        select(DirectorCommand).where(DirectorCommand.command_id == shot["command_id"])
+    )
+    assert row.status == "SUPERSEDED"
+    undos = list(
+        db_session.scalars(
+            select(DirectorCommand).where(
+                DirectorCommand.inverse_of_command_id == shot["command_id"]
+            )
+        )
+    )
+    assert len(undos) == 1
+    page = db_session.get(MangaPage, ctx["page"].id)
+    assert page.storyboard_version == sbv_after_accept + 1
+    panel = db_session.get(Panel, ctx["panel"].id)
+    assert panel.shot_type == original
+
+
+def test_redo_claims_undo_row_and_blocks_second_redo(client, db_session):
+    """Redo delegates to undo_command, so it inherits the row claim.
+
+    After a redo the undo row must no longer be EXECUTED (it is claimed to
+    SUPERSEDED inside the redo transaction); a second redo of the same undo
+    row must be refused instead of re-applying the change twice.
+    """
+    ctx = _setup(client, db_session)
+    shot = _envelope(ctx, "update_panel_shot", {"shot_type": "wide"}, group_id=_uid())
+    proposed = _propose(client, ctx, [shot])
+    assert proposed.status_code == 200, proposed.text
+    project_id = ctx["project"]["id"]
+    accepted = client.post(
+        f"/api/v1/projects/{project_id}/director/commands/{shot['command_id']}/accept"
+    )
+    assert accepted.status_code == 200, accepted.text
+    undone = client.post(
+        f"/api/v1/projects/{project_id}/director/commands/{shot['command_id']}/undo"
+    )
+    assert undone.status_code == 200, undone.text
+    undo_id = next(
+        item["command_id"]
+        for item in undone.json()["commands"]
+        if item["inverse_of_command_id"] == shot["command_id"]
+    )
+    redone = client.post(
+        f"/api/v1/projects/{project_id}/director/commands/{undo_id}/redo"
+    )
+    assert redone.status_code == 200, redone.text
+    db_session.refresh(ctx["panel"])
+    assert ctx["panel"].shot_type == "wide"
+
+    db_session.expire_all()
+    undo_row = db_session.scalar(
+        select(DirectorCommand).where(DirectorCommand.command_id == undo_id)
+    )
+    assert undo_row.status == "SUPERSEDED"
+    sbv_after_redo = db_session.get(MangaPage, ctx["page"].id).storyboard_version
+
+    second = client.post(
+        f"/api/v1/projects/{project_id}/director/commands/{undo_id}/redo"
+    )
+    assert second.status_code == 409, second.text
+    redos = list(
+        db_session.scalars(
+            select(DirectorCommand).where(
+                DirectorCommand.inverse_of_command_id == undo_id
+            )
+        )
+    )
+    assert len(redos) == 1
+    db_session.refresh(ctx["panel"])
+    assert ctx["panel"].shot_type == "wide"
+    assert db_session.get(MangaPage, ctx["page"].id).storyboard_version == sbv_after_redo
+
+
+def test_superseded_undo_keeps_concurrent_patch_values(client, db_session):
+    """Preservation guard: a stale undo (sbv moved by an intervening PATCH)
+    still 409s SUPERSEDED and leaves the concurrent PATCH's values, the
+    executed command's values and the storyboard counter untouched."""
+    ctx = _setup(client, db_session)
+    shot = _envelope(ctx, "update_panel_shot", {"shot_type": "wide"}, group_id=_uid())
+    proposed = _propose(client, ctx, [shot])
+    assert proposed.status_code == 200, proposed.text
+    project_id = ctx["project"]["id"]
+    accepted = client.post(
+        f"/api/v1/projects/{project_id}/director/commands/{shot['command_id']}/accept"
+    )
+    assert accepted.status_code == 200, accepted.text
+    db_session.refresh(ctx["panel"])
+
+    patch = client.patch(
+        f"/api/v1/panels/{ctx['panel'].id}",
+        json={"camera_angle": "high", "version": ctx["panel"].version},
+    )
+    assert patch.status_code == 200, patch.text
+    db_session.refresh(ctx["page"])
+    sbv_after_patch = ctx["page"].storyboard_version
+
+    superseded = client.post(
+        f"/api/v1/projects/{project_id}/director/commands/{shot['command_id']}/undo"
+    )
+    assert superseded.status_code == 409, superseded.text
+    assert superseded.json()["detail"]["code"] == "SUPERSEDED"
+    db_session.refresh(ctx["panel"])
+    assert ctx["panel"].camera_angle == "high"
+    assert ctx["panel"].shot_type == "wide"
+    db_session.refresh(ctx["page"])
+    assert ctx["page"].storyboard_version == sbv_after_patch
+    db_session.expire_all()
+    row = db_session.scalar(
+        select(DirectorCommand).where(DirectorCommand.command_id == shot["command_id"])
+    )
+    assert row.status == "SUPERSEDED"
+
+
+def test_undo_restore_failure_rolls_back_row_claim(client, db_session):
+    """A restore failure after a won claim must leave no trace: the claim
+    (SUPERSEDED flip), the undo row and any restore writes roll back together
+    so the executed row stays undoable."""
+    from sqlalchemy.orm import sessionmaker
+
+    ctx = _setup(client, db_session)
+    group = DirectorCommandGroup(
+        project_id=ctx["project"]["id"],
+        command_group_id=_uid(),
+        page_id=ctx["page"].id,
+        status="COMMITTED",
+    )
+    db_session.add(group)
+    db_session.flush()
+    command = DirectorCommand(
+        project_id=ctx["project"]["id"],
+        group_id=group.id,
+        command_id=_uid(),
+        command_group_id=group.command_group_id,
+        operation="update_page_layout",
+        status="EXECUTED",
+        target={"project_id": ctx["project"]["id"], "page_id": ctx["page"].id},
+        expected_version={"scope": "page", "value": 1},
+        payload={"panel_count": 4, "layout_mode": "dynamic"},
+        source={"user_prompt": "改格数"},
+        before_snapshot=None,
+        storyboard_version_after=ctx["page"].storyboard_version,
+    )
+    db_session.add(command)
+    db_session.commit()
+    db_session.refresh(ctx["page"])
+    sbv_before = ctx["page"].storyboard_version
+
+    response = client.post(
+        f"/api/v1/projects/{ctx['project']['id']}/director/commands/"
+        f"{command.command_id}/undo"
+    )
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == "缺少布局快照，无法撤销"
+    db_session.rollback()
+
+    ConcurrentSession = sessionmaker(
+        bind=db_session.get_bind(), autoflush=False, expire_on_commit=False
+    )
+    with ConcurrentSession() as other:
+        row = other.scalar(
+            select(DirectorCommand).where(
+                DirectorCommand.command_id == command.command_id
+            )
+        )
+        assert row.status == "EXECUTED"
+        stray = other.scalar(
+            select(DirectorCommand).where(
+                DirectorCommand.inverse_of_command_id == command.command_id
+            )
+        )
+        assert stray is None
+        page = other.get(MangaPage, ctx["page"].id)
+        assert page.storyboard_version == sbv_before
+
+
 def test_discard_group_keeps_concurrently_executed_row_undoable(client, db_session):
     """discard must not overwrite a row that accept claimed after discard's read.
 

@@ -943,7 +943,7 @@ def undo_command(db: Session, project_id: str, command_id: str) -> dict:
     if row.status != CommandStatus.EXECUTED.value:
         raise _http_409("只能撤销已执行的命令")
     page = _load_page(db, project_id, (row.target or {}).get("page_id"))
-    if page is None or row.storyboard_version_after != page.storyboard_version:
+    if page is None:
         row.status = CommandStatus.SUPERSEDED.value
         group = db.get(DirectorCommandGroup, row.group_id)
         _refresh_group_status(db, group)
@@ -952,9 +952,56 @@ def undo_command(db: Session, project_id: str, command_id: str) -> dict:
             {
                 "code": "SUPERSEDED",
                 "message": "分镜已在撤销前被更新，请刷新",
-                "current_version": None if page is None else page.storyboard_version,
+                "current_version": None,
             }
         )
+    # Same lock set and order as accept_command: page first, then the row's
+    # target panel for panel/dialogue-scoped operations (update_scene_context
+    # with a background carries target.panel_id too). populate_existing also
+    # replaces any stale identity-map snapshot with the locked current state,
+    # so the storyboard version below is the one the lock protects.
+    lock_entity(db, MangaPage, page.id)
+    if (row.target or {}).get("panel_id"):
+        lock_entity(db, Panel, row.target["panel_id"])
+    current_storyboard_version = page.storyboard_version
+    # Conditional claim mirrors accept_command/reject_command/discard_group:
+    # the row must still be EXECUTED and the storyboard must still be at the
+    # version the executed command recorded. Winning the claim flips the row
+    # to SUPERSEDED inside the same transaction that inserts the undo row and
+    # restores the snapshot, so a concurrent undo/redo (redo delegates here)
+    # can no longer pass the bare check-then-write gates and double-apply the
+    # inverse against an already-reverted page. On loss the whole unit rolls
+    # back below, leaving the row EXECUTED and the page untouched.
+    claimed = db.execute(
+        update(DirectorCommand)
+        .where(
+            DirectorCommand.id == row.id,
+            DirectorCommand.status == CommandStatus.EXECUTED.value,
+            DirectorCommand.storyboard_version_after == current_storyboard_version,
+        )
+        .values(status=CommandStatus.SUPERSEDED.value)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
+        db.rollback()
+        db.refresh(row)
+        if row.status == CommandStatus.EXECUTED.value:
+            # Still EXECUTED after losing the claim means the storyboard moved
+            # on after our read: keep the designed destructive SUPERSEDED flip
+            # (the sbv is the reconciliation anchor; SUPERSEDED tells the user
+            # to refresh).
+            group = db.get(DirectorCommandGroup, row.group_id)
+            row.status = CommandStatus.SUPERSEDED.value
+            _refresh_group_status(db, group)
+            db.commit()
+        raise _http_409(
+            {
+                "code": "SUPERSEDED",
+                "message": "分镜已在撤销前被更新，请刷新",
+                "current_version": current_storyboard_version,
+            }
+        )
+    db.refresh(row)
     existing = _existing_group(db, project_id, row.command_group_id)
     undo_id = str(uuid4())
     redo_snapshot = None
