@@ -40,6 +40,14 @@ LEASED_JOB_STATUSES = {
     JobStatus.REPAIRING,
 }
 ACTIVE_JOB_STATUSES = {JobStatus.WAITING, JobStatus.QUEUED, *LEASED_JOB_STATUSES}
+# LOCAL wall-clock cap markers. The lease heartbeat stamps LOCAL_TIMEOUT once
+# the job's job_timeout_seconds budget is spent while the lease is still live;
+# recovery preserves that cause through reclaim/requeue exactly like the RQ
+# kill path's JOB_TIMEOUT. All LOCAL_TIMEOUT user-facing strings live here.
+LOCAL_TIMEOUT_ERROR_CODE = "LOCAL_TIMEOUT"
+LOCAL_TIMEOUT_WAITING_MESSAGE = "本地执行超过墙钟上限，等待租约过期回收"
+LOCAL_TIMEOUT_REQUEUE_MESSAGE = "本地执行超过墙钟上限，任务等待重新执行"
+LOCAL_TIMEOUT_TERMINAL_MESSAGE = "本地执行超过墙钟上限，且已达到最大尝试次数"
 
 
 def has_active_job(
@@ -397,6 +405,14 @@ def _execute_locally(job_id: str) -> None:
     from app.model_adapters.base import ProviderAdapterError
     from app.worker_tasks import JobCancelledError, JobLeaseLostError, execute_job
 
+    # Bounded-pin design: while the project sits at concurrency this loop
+    # would otherwise poll forever, pinning a LOCAL executor thread and
+    # rewriting the CONCURRENCY_LIMIT marker every pass. job_timeout_seconds
+    # is the same wall-clock budget a real execution gets. When it trips, the
+    # row is deliberately left WAITING+CONCURRENCY_LIMIT: this thread's id was
+    # discarded from LOCAL_SUBMITTED_JOB_IDS in the finally below, so the next
+    # recover_pending_jobs pass re-submits the job into a free slot.
+    wait_started = time.monotonic()
     delay = 0.1
     try:
         while True:
@@ -425,6 +441,19 @@ def _execute_locally(job_id: str) -> None:
                     JobStatus.FAILED,
                 }:
                     return
+                if (
+                    job.status == JobStatus.WAITING
+                    and job.error_code == "CONCURRENCY_LIMIT"
+                ):
+                    waited = time.monotonic() - wait_started
+                    if waited >= get_settings().job_timeout_seconds:
+                        LOGGER.warning(
+                            "job %s waited %.0fs for a project concurrency slot; "
+                            "releasing this executor so recovery can re-submit it",
+                            job_id,
+                            waited,
+                        )
+                        return
             Event().wait(delay)
             delay = min(delay * 2, 5.0)
     finally:
@@ -587,15 +616,26 @@ def recover_pending_jobs(db: Session) -> int:
 
         if job.attempt_count >= job.max_attempts:
             # A force-killed horse leaves JOB_TIMEOUT on the row while the RQ
-            # retry no-ops inside the live lease; surface that cause instead of
-            # the generic lease expiry. Status transitions stay identical.
-            timed_out = job.error_code == JOB_TIMEOUT_ERROR_CODE
-            terminal_code = JOB_TIMEOUT_ERROR_CODE if timed_out else "LEASE_EXPIRED"
-            terminal_message = (
-                JOB_TIMEOUT_ERROR_MESSAGE
-                if timed_out
-                else "执行器租约已过期，且已达到最大尝试次数"
-            )
+            # retry no-ops inside the live lease; a LOCAL thread pinned past
+            # job_timeout_seconds leaves LOCAL_TIMEOUT (the heartbeat stopped
+            # renewing and the lease expired afterwards). Surface the recorded
+            # cause instead of the generic lease expiry. Status transitions
+            # stay identical.
+            if job.error_code == JOB_TIMEOUT_ERROR_CODE:
+                terminal_code, terminal_message = (
+                    JOB_TIMEOUT_ERROR_CODE,
+                    JOB_TIMEOUT_ERROR_MESSAGE,
+                )
+            elif job.error_code == LOCAL_TIMEOUT_ERROR_CODE:
+                terminal_code, terminal_message = (
+                    LOCAL_TIMEOUT_ERROR_CODE,
+                    LOCAL_TIMEOUT_TERMINAL_MESSAGE,
+                )
+            else:
+                terminal_code, terminal_message = (
+                    "LEASE_EXPIRED",
+                    "执行器租约已过期，且已达到最大尝试次数",
+                )
             updated = db.execute(
                 update(GenerationJob)
                 .where(*base_filter)
@@ -669,18 +709,28 @@ def recover_pending_jobs(db: Session) -> int:
                 if workflow_run_id:
                     workflow_run_ids.add(workflow_run_id)
         else:
-            timed_out = job.error_code == JOB_TIMEOUT_ERROR_CODE
+            if job.error_code == JOB_TIMEOUT_ERROR_CODE:
+                requeue_code, requeue_message = (
+                    JOB_TIMEOUT_ERROR_CODE,
+                    JOB_TIMEOUT_ERROR_MESSAGE,
+                )
+            elif job.error_code == LOCAL_TIMEOUT_ERROR_CODE:
+                requeue_code, requeue_message = (
+                    LOCAL_TIMEOUT_ERROR_CODE,
+                    LOCAL_TIMEOUT_REQUEUE_MESSAGE,
+                )
+            else:
+                requeue_code, requeue_message = (
+                    "LEASE_EXPIRED",
+                    "执行器已退出，任务等待重新执行",
+                )
             db.execute(
                 update(GenerationJob)
                 .where(*base_filter)
                 .values(
                     status=JobStatus.WAITING,
-                    error_code=JOB_TIMEOUT_ERROR_CODE if timed_out else "LEASE_EXPIRED",
-                    error_message=(
-                        JOB_TIMEOUT_ERROR_MESSAGE
-                        if timed_out
-                        else "执行器已退出，任务等待重新执行"
-                    ),
+                    error_code=requeue_code,
+                    error_message=requeue_message,
                     started_at=None,
                     scheduled_at=now,
                     lease_owner=None,

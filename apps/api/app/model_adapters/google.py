@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from app.config import get_settings
 from app.model_adapters.base import (
     ImageRequest,
     ModelResponse,
@@ -24,6 +25,18 @@ class GoogleRuntime:
     capabilities: dict[str, Any] = field(default_factory=dict)
 
 
+def genai_http_options() -> dict[str, int]:
+    """Per-request HTTP timeout (milliseconds) for every genai.Client built here.
+
+    The LOCAL wall-clock cap is enforced between provider calls by the lease
+    heartbeat, which cannot interrupt a thread blocked inside a single
+    timeout-less HTTP request. Bounding the transport at the job budget keeps
+    one generate_content from outliving the attempt cap.
+    """
+
+    return {"timeout": get_settings().job_timeout_seconds * 1000}
+
+
 class _GoogleBase:
     def __init__(self, runtime: GoogleRuntime) -> None:
         self.runtime = runtime
@@ -31,7 +44,9 @@ class _GoogleBase:
     def _client(self):
         from google import genai
 
-        return genai.Client(api_key=self.runtime.api_key)
+        return genai.Client(
+            api_key=self.runtime.api_key, http_options=genai_http_options()
+        )
 
     @staticmethod
     def _translate(error: Exception) -> ProviderAdapterError:

@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, TypeVar
 
-from app.config import Settings
+from app.config import Settings, get_settings
 from app.services.provider_errors import ProviderFailure
 
 T = TypeVar("T")
@@ -19,6 +19,17 @@ T = TypeVar("T")
 # keeping the historical name avoids breaking importers while the code set
 # lives in one place (docs/v02-provider-neutrality-audit.md C5).
 VertexFailure = ProviderFailure
+
+
+def genai_http_options() -> dict[str, int]:
+    """Per-request HTTP timeout (milliseconds) for the Vertex genai.Client.
+
+    Mirrors ``app.model_adapters.google.genai_http_options``: the LOCAL
+    wall-clock cap cannot interrupt a thread blocked inside a single
+    timeout-less HTTP request, so the transport itself carries the job budget.
+    """
+
+    return {"timeout": get_settings().job_timeout_seconds * 1000}
 
 
 def classify_vertex_failure(error: Exception) -> VertexFailure:
@@ -191,6 +202,7 @@ class VertexCredentialManager:
             project=settings.google_cloud_project,
             location=settings.google_cloud_location,
             credentials=credentials,
+            http_options=genai_http_options(),
         )
 
     def execute(
