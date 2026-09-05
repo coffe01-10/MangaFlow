@@ -7,6 +7,7 @@ Cancellation and lease checks stay owned by the execution shell.
 
 import hashlib
 import json
+import logging
 
 from PIL import Image
 from sqlalchemy import select
@@ -30,6 +31,9 @@ from app.models import (
 from app.services.media import create_thumbnails, remove_thumbnails
 from app.services.model_router import model_supports_resolution
 from app.services.worker_handlers import execution, provider
+from app.services.worker_handlers.execution import JobCancelledError
+
+LOGGER = logging.getLogger("mangaflow.worker.asset_generate")
 
 
 def _save_asset_candidate(db, candidate: AssetCandidate, project_id: str, data: bytes) -> Asset:
@@ -160,6 +164,12 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
     candidate = db.get(AssetCandidate, job.target_id)
     if not candidate:
         raise RuntimeError("资产候选不存在")
+    if candidate.deleted_at is not None:
+        # A soft-deleted candidate must never take a paid call, no matter
+        # which delete path landed after enqueueing. Raise the shell's
+        # cancellation error so execute_job rolls back and stamps the job
+        # CANCELLED; the deleted row is left untouched.
+        raise JobCancelledError("候选已删除，任务取消，不再调用模型")
     batch = db.get(GenerationBatch, candidate.batch_id)
     if not batch:
         raise RuntimeError("资产生成批次不存在")
@@ -362,6 +372,18 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
         )
     )
     execution._ensure_job_not_cancelled(db, job)
+    # A delete can land while the paid request is in flight. The call is
+    # already spent (its ModelCallAttempt/usage rows committed autonomously),
+    # but nothing may be attached to the deleted row: abort before any
+    # persistence so the worker shell rolls the attach back.
+    db.refresh(candidate, attribute_names=["deleted_at"])
+    if candidate.deleted_at is not None:
+        LOGGER.warning(
+            "资产候选 %s 在模型调用完成后被删除，丢弃生成结果并取消任务 %s",
+            candidate.id,
+            job.id,
+        )
+        raise JobCancelledError("候选已删除，模型返回结果不再写入")
     asset = _save_asset_candidate(db, candidate, batch.project_id, response.images[0])
     record = GenerationRecord(
         job_id=job.id,

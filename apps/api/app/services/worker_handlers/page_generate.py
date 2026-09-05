@@ -8,6 +8,7 @@ lease checks stay owned by the execution shell via ``execution`` helpers.
 import copy
 import hashlib
 import json
+import logging
 
 from PIL import Image
 from sqlalchemy import select, update
@@ -44,7 +45,12 @@ from app.services.model_capabilities import (
 from app.services.model_router import model_supports_resolution
 from app.services.prompt_compiler import PAGE_TEMPLATE_VERSION, compile_page_prompt
 from app.services.worker_handlers import execution, provider
-from app.services.worker_handlers.execution import StaleStoryboardVersionError
+from app.services.worker_handlers.execution import (
+    JobCancelledError,
+    StaleStoryboardVersionError,
+)
+
+LOGGER = logging.getLogger("mangaflow.worker.page_generate")
 
 
 def _load_reference_assets(
@@ -342,6 +348,12 @@ def _run_page_generate(db, job: GenerationJob) -> None:
     candidate = db.get(PageCandidate, job.target_id)
     if not candidate:
         raise RuntimeError("候选记录不存在")
+    if candidate.deleted_at is not None:
+        # A soft-deleted candidate must never take a paid call, no matter
+        # which delete path landed after enqueueing. Raise the shell's
+        # cancellation error so execute_job rolls back and stamps the job
+        # CANCELLED; the deleted row is left untouched.
+        raise JobCancelledError("候选已删除，任务取消，不再调用模型")
     page = db.get(MangaPage, candidate.page_id)
     if candidate.based_on_storyboard_version != page.storyboard_version:
         raise StaleStoryboardVersionError(
@@ -592,6 +604,18 @@ def _run_page_generate(db, job: GenerationJob) -> None:
         )
     )
     execution._ensure_job_not_cancelled(db, job)
+    # A delete_candidate can land while the paid request is in flight. The
+    # call is already spent (its ModelCallAttempt/usage rows committed
+    # autonomously), but nothing may be attached to the deleted row: abort
+    # before any persistence so the worker shell rolls the attach back.
+    db.refresh(candidate, attribute_names=["deleted_at"])
+    if candidate.deleted_at is not None:
+        LOGGER.warning(
+            "候选 %s 在模型调用完成后被删除，丢弃生成结果并取消任务 %s",
+            candidate.id,
+            job.id,
+        )
+        raise JobCancelledError("候选已删除，模型返回结果不再写入")
     # An edit or select-candidate may land while the paid request is in flight.
     # Refresh status/selection before any page-row write so we cannot clobber
     # FINAL_* with a stale DRAFT_GENERATING identity map.
