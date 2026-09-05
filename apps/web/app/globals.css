@@ -583,8 +583,11 @@ a { color: inherit; text-decoration: none; }
 .storyboard-toolbar .page-menu { position: relative; }
 .storyboard-toolbar .page-menu-items { position: absolute; right: 0; top: calc(100% + 4px); z-index: 60; min-width: 190px; display: grid; padding: 4px; border: 1px solid var(--ink); background: var(--paper, #fff); box-shadow: 6px 6px 0 rgba(21,21,18,.12); }
 .storyboard-toolbar .page-menu-items button { justify-content: flex-start; border: 0; background: transparent; color: var(--vermillion); }
-.canvas-viewport { position: relative; overflow: auto; border: 1px solid var(--ink); background: #d8d2c6; min-height: clamp(280px, calc(100vh - 340px), 420px); height: calc(100vh - 340px); max-height: 860px; }
-.canvas-page { position: relative; margin: 24px auto; background: #fffdf8; box-shadow: 6px 6px 0 rgba(21,21,18,.14); touch-action: none; }
+.canvas-viewport { position: relative; overflow: auto; display: flex; border: 1px solid var(--ink); background: #d8d2c6; min-height: clamp(280px, calc(100vh - 340px), 420px); height: calc(100vh - 340px); max-height: 860px; }
+/* Auto margins center the page in both axes when it is smaller than the
+   viewport (fitted wide windows) and collapse to 0 when it overflows, so the
+   scrollable area is never clipped. */
+.canvas-page { position: relative; margin: auto; background: #fffdf8; box-shadow: 6px 6px 0 rgba(21,21,18,.14); touch-action: none; }
 .canvas-panel { position: absolute; border: 1.5px solid #4a453d; background: rgba(255,255,255,.04); cursor: move; touch-action: none; transition: border-color .12s ease, box-shadow .12s ease; }
 .canvas-panel.selected { border: 2px solid var(--vermillion); box-shadow: 0 0 0 3px rgba(211,74,47,.2); }
 .canvas-panel.bleed-panel { border-style: dashed; border-color: #9a6534; }
@@ -2114,8 +2117,8 @@ p { font-size: var(--text-body) !important; }
     cursor: pointer;
   }
   .workspace-nav-collapse:hover { border-color: var(--ink); color: var(--ink); }
-  .workspace-layout.rail-left { grid-template-columns: 48px minmax(0, 1fr); }
-  .workspace-left.rail { padding: 14px 4px 68px; }
+  .workspace-layout.rail-left { grid-template-columns: 64px minmax(0, 1fr); }
+  .workspace-left.rail { padding: 14px 6px 68px; }
   .workspace-left.rail .workspace-resizer,
   .workspace-left.rail .workspace-project-title,
   .workspace-left.rail .workspace-nav-divider,
@@ -2132,8 +2135,8 @@ p { font-size: var(--text-body) !important; }
 .workspace-inspector-backdrop { display: none; }
 @media (min-width: 1280px) {
   .workspace-layout.has-inspector { grid-template-columns: var(--workspace-sidebar-width, 214px) minmax(0, 1fr) var(--workspace-inspector-width, 390px); }
-  /* Collapsed rail + docked inspector: the rail stays 48px in the first column. */
-  .workspace-layout.rail-left.has-inspector { grid-template-columns: 48px minmax(0, 1fr) var(--workspace-inspector-width, 390px); }
+  /* Collapsed rail + docked inspector: the rail stays 64px in the first column. */
+  .workspace-layout.rail-left.has-inspector { grid-template-columns: 64px minmax(0, 1fr) var(--workspace-inspector-width, 390px); }
   .workspace-inspector { border-left: 1px solid var(--line); }
   .workspace-inspector-body { padding-bottom: 70px; }
 }
