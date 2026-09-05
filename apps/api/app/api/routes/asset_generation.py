@@ -159,8 +159,6 @@ def update_outfit(
     outfit = db.get(Outfit, outfit_id)
     if not outfit:
         raise HTTPException(status_code=404, detail="服装档案不存在")
-    if outfit.version != payload.version:
-        raise HTTPException(status_code=409, detail="服装档案已更新，请刷新后重试")
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
     reference_asset_ids = values.get("reference_asset_ids")
     if reference_asset_ids is not None:
@@ -174,9 +172,20 @@ def update_outfit(
         values["reference_asset_ids"] = list(dict.fromkeys(reference_asset_ids))
     if "name" in values:
         values["name"] = values["name"].strip()
+    # Claim the row with an atomic conditional update so concurrent PATCHes
+    # cannot both pass an in-memory version comparison (same pattern as
+    # _claim_panel_version / scene asset PATCH).
+    claimed = db.execute(
+        update(Outfit)
+        .where(Outfit.id == outfit.id, Outfit.version == payload.version)
+        .values(version=Outfit.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if not claimed.rowcount:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="服装档案已更新，请刷新后重试")
     for key, value in values.items():
         setattr(outfit, key, value)
-    outfit.version += 1
     db.commit()
     db.refresh(outfit)
     return outfit
@@ -387,8 +396,6 @@ def update_style(
     style = db.get(StyleProfile, style_id)
     if not style:
         raise HTTPException(status_code=404, detail="风格档案不存在")
-    if style.version != payload.version:
-        raise HTTPException(status_code=409, detail="风格档案已更新，请刷新后重试")
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
     reference_ids = values.pop("reference_asset_ids", None)
     if reference_ids is not None:
@@ -403,6 +410,18 @@ def update_style(
         values.get("color_mode") and values["color_mode"] != style.color_mode
     )
     profile_patch = values.pop("profile", None)
+    # Claim the row with an atomic conditional update so concurrent PATCHes
+    # cannot both pass an in-memory version comparison (same pattern as
+    # _claim_panel_version / scene asset PATCH).
+    claimed = db.execute(
+        update(StyleProfile)
+        .where(StyleProfile.id == style.id, StyleProfile.version == payload.version)
+        .values(version=StyleProfile.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if not claimed.rowcount:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="风格档案已更新，请刷新后重试")
     for key, value in values.items():
         setattr(style, key, value.strip() if key == "name" else value)
     profile = dict(style.profile)
@@ -418,7 +437,6 @@ def update_style(
         profile.pop("test_candidate_id", None)
     style.profile = profile
     style.status = StyleStatus.DRAFT
-    style.version += 1
     db.commit()
     db.refresh(style)
     return style
@@ -546,10 +564,20 @@ def approve_style_palette(
     style = db.get(StyleProfile, style_id)
     if not style:
         raise HTTPException(status_code=404, detail="风格档案不存在")
-    if style.version != payload.version:
-        raise HTTPException(status_code=409, detail="风格档案已更新，请刷新后重试")
     if style.color_mode != "color" or not payload.palette:
         raise HTTPException(status_code=409, detail="彩色色板不能为空")
+    # Claim the row with an atomic conditional update so concurrent approvals
+    # cannot both pass an in-memory version comparison (same pattern as
+    # _claim_panel_version / scene asset PATCH).
+    claimed = db.execute(
+        update(StyleProfile)
+        .where(StyleProfile.id == style.id, StyleProfile.version == payload.version)
+        .values(version=StyleProfile.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if not claimed.rowcount:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="风格档案已更新，请刷新后重试")
     profile = dict(style.profile)
     profile["palette"] = payload.palette
     profile["palette_confirmed"] = True
@@ -557,7 +585,6 @@ def approve_style_palette(
     profile.pop("test_candidate_id", None)
     style.profile = profile
     style.status = StyleStatus.DRAFT
-    style.version += 1
     db.commit()
     db.refresh(style)
     return style
@@ -573,8 +600,6 @@ def approve_style_test(
     candidate = db.get(AssetCandidate, payload.candidate_id)
     if not style:
         raise HTTPException(status_code=404, detail="风格档案不存在")
-    if style.version != payload.version:
-        raise HTTPException(status_code=409, detail="风格档案已更新，请刷新后重试")
     batch = db.get(GenerationBatch, candidate.batch_id) if candidate else None
     if (
         not candidate
@@ -586,12 +611,23 @@ def approve_style_test(
         or not candidate.asset_id
     ):
         raise HTTPException(status_code=409, detail="请选择已生成完成的风格测试图")
+    # Claim the row with an atomic conditional update so concurrent approvals
+    # cannot both pass an in-memory version comparison (same pattern as
+    # _claim_panel_version / scene asset PATCH).
+    claimed = db.execute(
+        update(StyleProfile)
+        .where(StyleProfile.id == style.id, StyleProfile.version == payload.version)
+        .values(version=StyleProfile.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if not claimed.rowcount:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="风格档案已更新，请刷新后重试")
     profile = dict(style.profile)
     profile["test_candidate_id"] = candidate.id
     profile["test_image_approved"] = payload.approved
     style.profile = profile
     style.status = "CONFIRMED" if payload.approved else StyleStatus.DRAFT
-    style.version += 1
     db.commit()
     db.refresh(style)
     return style
