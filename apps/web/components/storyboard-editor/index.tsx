@@ -111,7 +111,10 @@ export function StoryboardEditor({
   const [inspectorWidth, setInspectorWidth] = useState(() => {
     if (typeof window === "undefined") return 390;
     const stored = Number(window.localStorage.getItem("mangaflow.storyboard-inspector-width"));
-    return stored >= 320 && stored <= 620 ? stored : 390;
+    // Cap by viewport so a stored width from a larger window cannot push the
+    // worktable into horizontal overflow (canvas column has minmax(320px)).
+    const viewportCap = Math.max(320, Math.min(620, window.innerWidth - 740));
+    return stored >= 320 && stored <= viewportCap ? stored : 390;
   });
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const geometryRequestRef = useRef<{ id: string; stackIndex: number } | null>(null);
@@ -162,8 +165,15 @@ export function StoryboardEditor({
   const panelDraftDirty = editingPanel && panelDraft && activePanel
     ? JSON.stringify(panelDraft) !== JSON.stringify(makePanelDraft(activePanel))
     : false;
+  // Drafts for dialogues that no longer exist (deleted here or removed by an
+  // external refetch) must not keep the editor dirty forever.
+  const liveDialogueIds = useMemo(
+    () => new Set(panels.flatMap((panel) => panel.dialogues.map((dialogue) => dialogue.id))),
+    [panels],
+  );
+  const hasLiveDialogueDraft = Object.keys(dialogueDrafts).some((id) => liveDialogueIds.has(id));
   const dirty = commandStack.index > 0
-    || Object.keys(dialogueDrafts).length > 0
+    || hasLiveDialogueDraft
     || newDialogue !== null
     || panelDraftDirty;
   // The section-level chapter <select> cannot see editor state, so it needs
@@ -172,7 +182,10 @@ export function StoryboardEditor({
   useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
 
   const persistInspectorWidth = (value: number) => {
-    const next = Math.min(620, Math.max(320, value));
+    // Same viewport cap as the initial read: canvas min 320 + gap 10 + sidebar
+    // up to 360 + page padding must all fit alongside the inspector.
+    const viewportCap = typeof window === "undefined" ? 620 : Math.max(320, Math.min(620, window.innerWidth - 740));
+    const next = Math.min(viewportCap, Math.max(320, value));
     setInspectorWidth(next);
     window.localStorage.setItem("mangaflow.storyboard-inspector-width", String(next));
   };
@@ -192,9 +205,12 @@ export function StoryboardEditor({
   const geometrySave = useMutation({
     mutationFn: ({ pageId: targetPageId, payload }: { pageId: string; payload: StoryboardGeometrySavePayload }) =>
       api.saveStoryboardGeometry(targetPageId, payload),
-    onSuccess: (response) => {
+    onSuccess: (response, variables) => {
       clearGeometryDrafts();
-      queryClient.setQueryData(["storyboard", currentPage?.id], response);
+      // variables.pageId, not currentPage: a mid-save page switch re-renders
+      // this callback against the NEW page, and writing the old page's
+      // response under the new key would corrupt the canvas cache.
+      queryClient.setQueryData(["storyboard", variables.pageId], response);
       queryClient.invalidateQueries({ queryKey: ["pages", chapterId] });
       setNotice(storyboardCopy.savedNotice(response.page.storyboard_version, response.candidate_count));
     },
@@ -314,7 +330,11 @@ export function StoryboardEditor({
   });
   const removeDialogue = useMutation({
     mutationFn: (dialogueId: string) => api.deleteDialogue(dialogueId, activePanel!.version),
-    onSuccess: () => {
+    onSuccess: (_, dialogueId) => {
+      // An orphaned draft would keep the editor permanently dirty and arm the
+      // unsaved-changes guard for a bubble that no longer exists.
+      setDialogueDrafts((values) => { const next = { ...values }; delete next[dialogueId]; return next; });
+      setBubbleDrafts((values) => { const next = { ...values }; delete next[dialogueId]; return next; });
       setNotice(storyboardCopy.savedNotice((serverPage?.storyboard_version ?? currentPage.storyboard_version) + 1, storyboard.data?.candidate_count ?? 0));
       refresh();
     },

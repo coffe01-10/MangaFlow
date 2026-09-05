@@ -507,6 +507,10 @@ a { color: inherit; text-decoration: none; }
 .panel-proof.active { border-color: var(--ink); box-shadow: 4px 4px 0 rgba(21,21,18,.08); }
 .panel-proof.active { box-shadow: inset 3px 0 var(--vermillion), 4px 4px 0 rgba(21,21,18,.08); }
 .panel-inspector { position: sticky; top: 78px; border: 1px solid var(--ink); background: #f8f3e8; box-shadow: 6px 6px 0 rgba(21,21,18,.08); }
+/* Tall inspector content (readout + edit form + dialogue cards + layers) must
+   scroll inside the sticky panel; without the cap the bottom is unreachable on
+   short viewports once the parent column ends. */
+.panel-inspector { max-height: calc(100vh - 96px); overflow-y: auto; overscroll-behavior: contain; }
 .panel-inspector > header, .dialogue-editor > header { padding: 11px 12px; display: flex; align-items: center; justify-content: space-between; gap: 10px; border-bottom: 1px solid var(--line); background: rgba(255,255,255,.45); }
 .panel-inspector > header > div, .dialogue-editor > header > div { display: grid; gap: 2px; }
 .panel-inspector > header span, .dialogue-editor > header span { color: var(--vermillion-ink); font-size: 8px; letter-spacing: .14em; font-weight: 800; }
@@ -591,7 +595,7 @@ a { color: inherit; text-decoration: none; }
 .storyboard-toolbar .page-menu { position: relative; }
 .storyboard-toolbar .page-menu-items { position: absolute; right: 0; top: calc(100% + 4px); z-index: 60; min-width: 190px; display: grid; padding: 4px; border: 1px solid var(--ink); background: var(--paper, #fff); box-shadow: 6px 6px 0 rgba(21,21,18,.12); }
 .storyboard-toolbar .page-menu-items button { justify-content: flex-start; border: 0; background: transparent; color: var(--vermillion); }
-.canvas-viewport { position: relative; overflow: auto; border: 1px solid var(--ink); background: #d8d2c6; min-height: 420px; height: calc(100vh - 340px); max-height: 860px; }
+.canvas-viewport { position: relative; overflow: auto; border: 1px solid var(--ink); background: #d8d2c6; min-height: clamp(280px, calc(100vh - 340px), 420px); height: calc(100vh - 340px); max-height: 860px; }
 .canvas-page { position: relative; margin: 24px auto; background: #fffdf8; box-shadow: 6px 6px 0 rgba(21,21,18,.14); touch-action: none; }
 .canvas-panel { position: absolute; border: 1.5px solid #4a453d; background: rgba(255,255,255,.04); cursor: move; touch-action: none; transition: border-color .12s ease, box-shadow .12s ease; }
 .canvas-panel.selected { border: 2px solid var(--vermillion); box-shadow: 0 0 0 3px rgba(211,74,47,.2); }
@@ -1969,7 +1973,7 @@ p { font-size: var(--text-body) !important; }
 /* 900-1099px: full-width canvas; inspector as a bottom drawer. */
 @media (max-width: 1099.98px) and (min-width: 900px) {
   .storyboard-worktable { grid-template-columns: 1fr; }
-  .canvas-viewport { min-height: 480px; }
+  .canvas-viewport { min-height: clamp(320px, calc(100vh - 320px), 480px); }
   .panel-inspector-resizer { display: none; }
   .storyboard-inspector-toggle { display: inline-flex; }
   .panel-inspector.drawer-open { position: fixed; z-index: 70; left: 10px; right: 10px; bottom: 10px; top: auto; max-height: 58vh; overflow-y: auto; box-shadow: 0 -10px 28px rgba(21,21,18,.22); }
