@@ -27,6 +27,14 @@ from app.services.usage_ledger import (
     record_output_attachment_failure as _record_output_attachment_failure,
 )
 
+# Terminal error codes the recovery sweep (job_service.recover_pending_jobs)
+# writes when it closes NULL-outcome attempts on an expired lease. Duplicated
+# here as stable literals on purpose: model_call_audit must not import
+# job_service (the worker-handler layer sits below job orchestration), and a
+# genuine worker-failure finalize only ever writes adapter error codes, which
+# never collide with these three.
+SWEEP_TERMINAL_ERROR_CODES = frozenset({"JOB_TIMEOUT", "LOCAL_TIMEOUT", "LEASE_EXPIRED"})
+
 
 @dataclass(frozen=True)
 class ModelCallAttemptMeta:
@@ -198,6 +206,35 @@ def finalize_model_call_attempt(
             if existing_outcome == outcome:
                 db.rollback()
                 return
+            if outcome == "SUCCEEDED" and existing_outcome == "FAILED":
+                # The recovery sweep's closeout is a best-effort guess: for a
+                # LOCAL job the worker thread stays alive past the expired
+                # lease, so the sweep may have stamped an attempt FAILED (with
+                # a sweep terminal code and NULL usage) whose provider call is
+                # still wedged — and that call then returns successfully and
+                # lands here. Upgrade the guess to the real outcome and usage
+                # (same ``values`` as the normal finalize, so no drift) instead
+                # of hard-raising AUDIT_PERSISTENCE_FAILED and discarding the
+                # paid call. The conditional WHERE re-checks the full sweep
+                # profile atomically: a genuine failure finalize never carries
+                # a sweep terminal code, and a row that already has usage (or
+                # any other concurrent transition) still refuses.
+                upgraded = db.execute(
+                    update(ModelCallAttempt)
+                    .where(
+                        ModelCallAttempt.id == attempt_id,
+                        ModelCallAttempt.outcome == "FAILED",
+                        ModelCallAttempt.error_code.in_(SWEEP_TERMINAL_ERROR_CODES),
+                        ModelCallAttempt.usage.is_(None),
+                        ModelCallAttempt.usage_status.is_(None),
+                    )
+                    .values(**values)
+                    .execution_options(synchronize_session=False)
+                )
+                if upgraded.rowcount == 1:
+                    db.commit()
+                    return
+                db.rollback()
             raise RuntimeError("模型调用审计行已由其他终态完成")
         db.commit()
 
