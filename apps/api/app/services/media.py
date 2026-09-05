@@ -11,6 +11,12 @@ IMAGE_FORMAT_MIME = {
     "WEBP": ("image/webp", ".webp"),
 }
 
+# Floor for the shorter image side. Real page/asset images are hundreds of
+# pixels, while a broken endpoint can emit a decodeable stub (e.g. a 1x1
+# placeholder); anything below this is rejected as degenerate. Kept at 8 px so
+# legitimately small reference uploads still pass (existing product behavior).
+_MIN_IMAGE_SIDE = 8
+
 
 def inspect_upload_image(
     path: Path,
@@ -18,12 +24,22 @@ def inspect_upload_image(
     max_pixels: int,
     max_side: int,
 ) -> tuple[int, int, str, str]:
-    """Return width, height, MIME and suffix from the decoded image header."""
+    """Return width, height, MIME and suffix from a fully decoded image.
+
+    ``Image.verify()`` only validates headers, so the file is opened a second
+    time and fully decoded with ``load()``: a truncated file (valid JPEG/PNG
+    header with cut entropy data) must fail here instead of being adopted as a
+    SUCCEEDED output. The shorter side must also be at least ``8`` px
+    (``_MIN_IMAGE_SIDE``) — smaller images are treated as degenerate output.
+    """
 
     try:
         with Image.open(path) as image:
             image.verify()
         with Image.open(path) as image:
+            # verify() deliberately skips entropy data; load() forces the
+            # full decode so truncated bodies raise instead of passing.
+            image.load()
             width, height = image.size
             fmt = (image.format or "").upper()
     except DecompressionBombError as error:
@@ -34,6 +50,8 @@ def inspect_upload_image(
         raise ValueError("图片文件损坏或格式不符") from error
     if width <= 0 or height <= 0 or width > max_side or height > max_side:
         raise ValueError("图片宽高超过上限")
+    if min(width, height) < _MIN_IMAGE_SIDE:
+        raise ValueError("图片尺寸过小")
     if width * height > max_pixels:
         raise ValueError("图片像素数超过上限")
     mapped = IMAGE_FORMAT_MIME.get(fmt)

@@ -271,9 +271,16 @@ class CLIExecutionController:
                 error.add_note(f"CLI run cleanup failed: {type(cleanup_error).__name__}")
             raise
         except BaseException as unexpected:
-            error = ProviderAdapterError("CRASH", "CLI controller 异常终止")
+            if isinstance(unexpected, TimeoutError):
+                # Teardown overrun (Windows runner: diagnostic pipe did not
+                # close / Job Object did not terminate after the child was
+                # already stopped): generation has finished, so this is a
+                # contract timeout — retryable — not a controller crash.
+                error = ProviderAdapterError("TIMEOUT", "CLI 收尾阶段超时", retryable=True)
+            else:
+                error = ProviderAdapterError("CRASH", "CLI controller 异常终止")
             self._finish_failure(run_id, error, outcome)
-            self._cleanup(run_id, retain=True)
+            self._cleanup(run_id, retain=error.code in _RETAIN)
             raise error from unexpected
 
     def recover_abandoned(

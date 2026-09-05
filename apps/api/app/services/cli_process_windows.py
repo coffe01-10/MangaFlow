@@ -323,7 +323,13 @@ class WindowsJobCLIProcessRunner:
                     timed_out = True
                     _checked(api.TerminateJobObject(job_handle, 125))
                     break
-                time.sleep(0.05)
+                # Supervision poll: cancellation and the timeout deadline only
+                # need ~1s granularity, while each poll opens a fresh DB
+                # session (the cancel probe) — a 10x slower cadence cuts the
+                # transient-DB-failure exposure of a paid run without
+                # measurable cost. Diagnostic-pipe EOF is detected by the
+                # _OutputDrain threads, not by this loop, so it is unaffected.
+                time.sleep(0.5)
             stop_deadline = time.monotonic() + self.timeout_grace_seconds
             while _active_processes(api, job_handle):
                 if time.monotonic() >= stop_deadline:
