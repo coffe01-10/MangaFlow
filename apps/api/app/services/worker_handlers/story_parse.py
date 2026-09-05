@@ -23,7 +23,15 @@ from app.models import (
     SourceRevision,
     SourceSegment,
 )
-from app.services.ai_schemas import StoryParseOutput
+from app.services.ai_schemas import (
+    DRAFT_ALIAS_MAX_ITEMS,
+    DRAFT_LOCATION_MAX_LENGTH,
+    DRAFT_NAME_MAX_LENGTH,
+    DRAFT_TEXT_MAX_LENGTH,
+    BeatDraft,
+    StoryParseOutput,
+)
+from app.services.job_service import has_active_job
 from app.services.worker_handlers import execution, provider
 
 STORY_PARSE_CHUNK_MAX_CHARS = 800
@@ -101,8 +109,85 @@ def _merge_story_parse_outputs(outputs: list[StoryParseOutput]) -> StoryParseOut
             existing.description = existing.description or draft.description
             character_tokens[match_index].update(incoming)
         for scene in output.scenes:
-            scenes.append(scene.model_copy(update={"ordinal": len(scenes) + 1}, deep=True))
+            scenes.append(
+                scene.model_copy(
+                    update={"ordinal": len(scenes) + 1, "beats": _resequence_beats(scene.beats)},
+                    deep=True,
+                )
+            )
     return StoryParseOutput(characters=characters, scenes=scenes)
+
+
+def _resequence_beats(beats: list[BeatDraft]) -> list[BeatDraft]:
+    """Re-sequence one scene's beats to consecutive unique ordinals from 1.
+
+    JSON-mode models do emit duplicate or gapped indices on long beat lists;
+    consumers order by bare ``Beat.ordinal`` with no tiebreaker, so verbatim
+    persistence scrambles dialogue order (#152). Scenes are already
+    re-sequenced the same way at merge time; this mirrors it for beats and
+    drops exact duplicate beats (same source_segment_ids + same action text)
+    the model repeated across its output.
+    """
+
+    resequenced: list[BeatDraft] = []
+    seen_beats: set[tuple[tuple[str, ...], str]] = set()
+    for beat in beats:
+        if beat.action.strip():
+            key = (tuple(beat.source_segment_ids), beat.action)
+            if key in seen_beats:
+                continue
+            seen_beats.add(key)
+        resequenced.append(beat.model_copy(update={"ordinal": len(resequenced) + 1}))
+    return resequenced
+
+
+def _truncate(value: str, limit: int) -> str:
+    return value.strip()[:limit]
+
+
+def _sanitize_story_parse_output(output: StoryParseOutput) -> StoryParseOutput:
+    """Truncate overlong draft fields to the DB column widths before insert.
+
+    Truncation semantics (#159): hard character-level cuts with no ellipsis
+    marker, because the column widths and API contract are hard boundaries;
+    strings are stripped first. The Pydantic caps on the draft schemas already
+    reject most overlong emissions as INVALID_OUTPUT; this pass is the second
+    layer for values that reach the insert path without validation —
+    ``model_construct`` emissions from a lax adapter, and merge-time field
+    mutation (the cross-chunk ``dict.fromkeys`` alias union can exceed the
+    40-alias cap even when every chunk validated).
+
+    Presence keys are normalized here as well (whitespace-stripped casefold,
+    mirroring the speaker_name normalization) so the lookup side in
+    content_workflow can match with the same normalizer on both keys (#164).
+    """
+
+    for draft in output.characters:
+        draft.primary_name = _truncate(draft.primary_name, DRAFT_NAME_MAX_LENGTH)
+        draft.aliases = [
+            alias for alias in (_truncate(item, DRAFT_NAME_MAX_LENGTH) for item in draft.aliases)
+            if alias
+        ][:DRAFT_ALIAS_MAX_ITEMS]
+        draft.description = _truncate(draft.description, DRAFT_TEXT_MAX_LENGTH)
+    for scene in output.scenes:
+        scene.location = _truncate(scene.location, DRAFT_LOCATION_MAX_LENGTH)
+        scene.time_label = _truncate(scene.time_label, DRAFT_NAME_MAX_LENGTH)
+        scene.weather = _truncate(scene.weather, DRAFT_NAME_MAX_LENGTH)
+        scene.purpose = _truncate(scene.purpose, DRAFT_TEXT_MAX_LENGTH)
+        scene.emotional_arc = _truncate(scene.emotional_arc, DRAFT_TEXT_MAX_LENGTH)
+        for beat in scene.beats:
+            beat.action = _truncate(beat.action, DRAFT_TEXT_MAX_LENGTH)
+            beat.dialogue = _truncate(beat.dialogue, DRAFT_TEXT_MAX_LENGTH)
+            beat.narration = _truncate(beat.narration, DRAFT_TEXT_MAX_LENGTH)
+            beat.subtext = _truncate(beat.subtext, DRAFT_TEXT_MAX_LENGTH)
+            beat.speaker_name = _truncate(beat.speaker_name, DRAFT_NAME_MAX_LENGTH)
+            beat.emotion = _truncate(beat.emotion, DRAFT_NAME_MAX_LENGTH)
+            beat.character_presence = {
+                normalized: value
+                for key, value in beat.character_presence.items()
+                if (normalized := _normalize_name(key))
+            }
+    return output
 
 
 def _character_tokens(primary_name: str, aliases: list[str]) -> set[str]:
@@ -158,6 +243,25 @@ def _run_story_parse(db, job: GenerationJob) -> None:
         # Reuse the READY script instead of wiping Scene rows the pages point at.
         return
     _reject_if_chapter_has_pages(db, chapter.id)
+    # Defense in depth behind the route/planning-side guards (#124): jobs
+    # created through disjoint idempotency-key namespaces (route parse vs
+    # workflow agent.parse) can both be queued before either runs. The loser
+    # must fail HERE — before any paid chunk call — instead of double-paying
+    # and destructively rewriting the winner's committed script.
+    if has_active_job(
+        db,
+        job_type="SOURCE_PARSE",
+        target_id=chapter.id,
+        target_type="CHAPTER",
+        exclude_job_id=job.id,
+    ):
+        # Distinct from the retryable CONCURRENCY_LIMIT slot-wait marker: this
+        # is a terminal same-chapter conflict, failed before any paid call.
+        raise ProviderAdapterError(
+            "SOURCE_PARSE_CONFLICT",
+            "该章节已有进行中的剧本解析任务，本次重复解析已在调用模型前取消",
+            retryable=False,
+        )
     revision = db.get(SourceRevision, started_revision_id)
     segments = list(
         db.scalars(
@@ -246,6 +350,7 @@ def _run_story_parse(db, job: GenerationJob) -> None:
                     ) from segment_error
         execution._ensure_job_not_cancelled(db, job)
     output = _merge_story_parse_outputs(chunk_outputs)
+    output = _sanitize_story_parse_output(output)
     execution._ensure_job_not_cancelled(db, job)
     project_id = chapter.project_id
     all_aliases: dict[str, str] = {}
@@ -275,7 +380,7 @@ def _run_story_parse(db, job: GenerationJob) -> None:
                 ]
                 if item.strip() and _normalize_name(item) != _normalize_name(primary_name)
             )
-        )
+        )[:DRAFT_ALIAS_MAX_ITEMS]
         normalized = [_normalize_name(item) for item in aliases]
         normalized_primary = _normalize_name(primary_name)
         conflict = any(

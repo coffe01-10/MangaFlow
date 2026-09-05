@@ -675,13 +675,24 @@ def _resolve_panel_cast(
     structured = (beat.source_range or {}).get("character_presence", {}) if beat else {}
     props = list((beat.source_range or {}).get("props", [])) if beat else []
     presence: dict[str, str] = {}
+    # Structured keys are stored normalized since the #164 fix, but rows
+    # written before that keep raw keys; normalize BOTH sides so 「父 亲」,
+    # 「father」 and 「父亲」 all resolve to the same character instead of
+    # silently falling through to the text heuristics.
+    normalized_structured = {
+        _normalize_character_name(str(key)): value for key, value in structured.items()
+    }
+    normalized_structured.pop("", None)
 
     for character in characters:
-        raw = structured.get(character.id)
+        # Character ids are UUIDs (normalization is the identity on them) but
+        # are still routed through the map for one uniform lookup path.
+        raw = normalized_structured.get(character.id)
         if raw is None:
             for name in (character.primary_name, *(character.aliases or [])):
-                if name in structured:
-                    raw = structured[name]
+                normalized_name = _normalize_character_name(name)
+                if normalized_name and normalized_name in normalized_structured:
+                    raw = normalized_structured[normalized_name]
                     break
         parsed = _presence_value(raw) if raw is not None else None
         if parsed is not None:
@@ -689,23 +700,24 @@ def _resolve_panel_cast(
             continue
         if not _character_is_named(character, visual_text):
             continue
-        memorial_mention = any(
-            marker_form in action
-            for name in (character.primary_name, *(character.aliases or []))
-            if name
-            for marker in PROP_MARKERS
-            for marker_form in (f"{name}的{marker}", f"{name}{marker}")
+        # Memorial objects: a name co-occurring with a prop marker in ANY text
+        # field (action, dialogue or narration, either order) refers to the
+        # marker — 「灵牌上刻着爸爸的名字」 is a mention of the tablet, not a
+        # visible father (#164). Only exact contiguous forms were matched in
+        # `action` before, so ordinary phrasing marked the dead as VISIBLE.
+        memorial_marker = next(
+            (
+                marker
+                for field in (action, dialogue, narration)
+                if field
+                for marker in PROP_MARKERS
+                if marker in field and _character_is_named(character, field)
+            ),
+            None,
         )
-        if memorial_mention:
+        if memorial_marker is not None:
             presence[character.id] = CharacterPresence.MENTIONED.value
-            prop = next(
-                (
-                    f"{character.primary_name}的{marker}"
-                    for marker in PROP_MARKERS
-                    if marker in action
-                ),
-                f"{character.primary_name}的纪念物",
-            )
+            prop = f"{character.primary_name}的{memorial_marker}"
             if prop not in props:
                 props.append(prop)
         elif _character_is_named(character, action):

@@ -25,7 +25,17 @@ from app.services.worker_handlers.inspection import _run_inspection
 from app.worker_tasks import _mark_worker_failure
 from test_inspect_and_parse_guards import _adopt_candidate, _ready_candidate
 
-INSPECT_CATEGORIES = ["SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"]
+# #164: PRESENCE is the sixth inspection category; the handler always requests
+# it, so the fake passing output must ack it like the model would (the mocked
+# snapshot input is empty, so the deterministic cross-check is trivially clean).
+INSPECT_CATEGORIES = [
+    "SPEAKER",
+    "CHARACTER",
+    "OUTFIT",
+    "PROP",
+    "CONTINUITY",
+    "PRESENCE",
+]
 
 
 def _leased_inspect_job(db, project, candidate) -> GenerationJob:

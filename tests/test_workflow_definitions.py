@@ -81,6 +81,8 @@ class DeterministicWorkflowAdapter:
 
     def analyze_multimodal(self, _request, output_schema):
         assert output_schema is PageInspectionOutput
+        # #164: PRESENCE is always requested; the fake "sees" nobody because
+        # this DAG fixture's page has no cast, so the cross-check stays clean.
         return PageInspectionOutput(
             items=[
                 InspectionItem(
@@ -88,10 +90,21 @@ class DeterministicWorkflowAdapter:
                     outcome="PASS",
                     score=1.0,
                     severity="INFO",
-                    details={"expected": "deterministic", "observed": "deterministic"},
+                    details={
+                        "expected": "deterministic",
+                        "observed": "deterministic",
+                        "detected_characters": [],
+                    },
                     regions=[],
                 )
-                for category in ["SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"]
+                for category in [
+                    "SPEAKER",
+                    "CHARACTER",
+                    "OUTFIT",
+                    "PROP",
+                    "CONTINUITY",
+                    "PRESENCE",
+                ]
             ]
         )
 

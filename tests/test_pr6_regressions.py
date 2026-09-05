@@ -206,12 +206,15 @@ def test_new_storyboard_partial_check_cannot_reuse_old_categories(
     assert not build_page_production_readiness(db_session, page).ready
     assert candidate.status != "INSPECTED"
     assert page.continuity_status != "PASSED"
+    # #164: PRESENCE is always requested alongside the caller's list, so the
+    # completing pass must ack it too (the mocked snapshot input is empty,
+    # keeping the deterministic cross-check trivially clean).
     _inspect(
         db_session,
         monkeypatch,
         page,
         candidate,
-        ["SPEAKER", "CHARACTER", "OUTFIT", "PROP"],
+        ["SPEAKER", "CHARACTER", "OUTFIT", "PROP", "PRESENCE"],
     )
     assert build_page_production_readiness(db_session, page).ready
 
