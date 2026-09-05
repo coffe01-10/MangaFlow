@@ -146,7 +146,14 @@ export function useGenerationWorkspace({
   useEffect(() => {
     if (!inspectJobTerminal || !reviewCandidateId) return;
     queryClient.invalidateQueries({ queryKey: ["inspections", reviewCandidateId] });
-  }, [latestInspectJob?.id, inspectJobTerminal, reviewCandidateId, queryClient]);
+    // The workbench poll stops the moment the PAGE_INSPECT job turns terminal;
+    // its last in-flight fetch may predate the worker's final page-state commit
+    // (continuity_status / production gate), so the gate would otherwise keep
+    // showing the pre-inspection blocker until an unrelated invalidation.
+    queryClient.invalidateQueries({ queryKey: ["generation-workbench", selectedPageEntry?.id] });
+    queryClient.invalidateQueries({ queryKey: ["candidates"] });
+    queryClient.invalidateQueries({ queryKey: ["chapter-production", activeChapterId] });
+  }, [latestInspectJob?.id, inspectJobTerminal, reviewCandidateId, queryClient, selectedPageEntry?.id, activeChapterId]);
 
   const selectedPageStructureIssue = getPageStructureIssue(selectedPage);
   const selectedPageGenerationIssue = getPageGenerationIssue(selectedPage, activeDrawModel);
@@ -276,7 +283,10 @@ export function useGenerationWorkspace({
 
   const deleteCandidate = useMutation({
     mutationFn: (candidateId: string) => api.deleteCandidate(candidateId),
-    onSuccess: () => {
+    onSuccess: (_, candidateId) => {
+      // Otherwise the inspection panel keeps rendering rows for a deleted
+      // candidate until the user manually closes it.
+      if (reviewCandidateId === candidateId) setReviewCandidateId(null);
       queryClient.invalidateQueries({ queryKey: ["candidates"] });
       queryClient.invalidateQueries({ queryKey: ["library", id] });
     },
@@ -316,10 +326,15 @@ export function useGenerationWorkspace({
     mutationFn: ({ candidateId, resolution }: { candidateId: string; resolution: "2K" | "4K" }) =>
       api.upscaleCandidate(candidateId, requireDrawModel(), resolution),
     onSuccess: () => {
+      // Upscale closes the current batch server-side and puts the upscaled
+      // candidate into a new one; without the workbench invalidation the stale
+      // open batch shadows the new candidate until an unrelated refetch.
       queryClient.invalidateQueries({ queryKey: ["batches", selectedPage?.id] });
       queryClient.invalidateQueries({ queryKey: ["candidates"] });
       queryClient.invalidateQueries({ queryKey: ["jobs", id] });
       queryClient.invalidateQueries({ queryKey: ["library", id] });
+      queryClient.invalidateQueries({ queryKey: ["generation-workbench", selectedPage?.id] });
+      queryClient.invalidateQueries({ queryKey: ["chapter-production", activeChapterId] });
     },
   });
 
@@ -363,6 +378,12 @@ export function useGenerationWorkspace({
       setReferenceSelections({});
       setReferenceOverridePageId(null);
       queryClient.invalidateQueries({ queryKey: ["batches", next.id] });
+      // next_page closes the current page's open batch; keep its lists fresh
+      // for when the user navigates back.
+      if (selectedPage?.id && selectedPage.id !== next.id) {
+        queryClient.invalidateQueries({ queryKey: ["batches", selectedPage.id] });
+        queryClient.invalidateQueries({ queryKey: ["generation-workbench", selectedPage.id] });
+      }
     },
   });
 
