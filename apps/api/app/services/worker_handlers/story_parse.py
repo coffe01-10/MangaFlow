@@ -228,6 +228,8 @@ def _run_story_parse(db, job: GenerationJob) -> None:
                 raise ProviderAdapterError(
                     error.code,
                     f"原文片段 {ordinals} 生成失败：{error.user_message}",
+                    retryable=error.retryable,
+                    retry_after_seconds=error.retry_after_seconds,
                 ) from error
             for segment in chunk:
                 try:
@@ -239,6 +241,8 @@ def _run_story_parse(db, job: GenerationJob) -> None:
                         segment_error.code,
                         f"原文第 {segment.ordinal} 段被上游模型拒绝："
                         f"{segment_error.user_message}",
+                        retryable=segment_error.retryable,
+                        retry_after_seconds=segment_error.retry_after_seconds,
                     ) from segment_error
         execution._ensure_job_not_cancelled(db, job)
     output = _merge_story_parse_outputs(chunk_outputs)

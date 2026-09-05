@@ -20,6 +20,7 @@ from app.model_adapters.base import (
     MultimodalRequest,
     ProviderAdapterError,
     StructuredRequest,
+    strip_json_fences,
 )
 from app.services.provider_errors import parse_retry_after_seconds
 
@@ -213,6 +214,42 @@ def _schema_prompt(prompt: str, output_schema: type[BaseModel]) -> str:
     )
 
 
+def _json_body(response: httpx.Response) -> dict[str, Any]:
+    """Decode a JSON body with transient-failure semantics.
+
+    An HTML gateway/proxy page served on HTTP 200 is a transient transport
+    problem (retryable), not a deterministic model near-miss.
+    """
+
+    content_type = response.headers.get("content-type", "")
+    media = content_type.split(";")[0].strip().casefold()
+    if media == "text/html":
+        raise ProviderAdapterError(
+            "INVALID_OUTPUT", "供应商返回了非 JSON 内容", retryable=True
+        )
+    try:
+        return response.json()
+    except ValueError as error:
+        raise ProviderAdapterError(
+            "INVALID_OUTPUT", "模型已响应，但响应不是有效 JSON", retryable=True
+        ) from error
+
+
+def _validate_structured_text(
+    text: str, output_schema: type[BaseModel], *, failure_message: str
+) -> BaseModel:
+    try:
+        payload = json.loads(strip_json_fences(text))
+    except ValueError as error:
+        raise ProviderAdapterError(
+            "INVALID_OUTPUT", "模型已响应，但响应不是有效 JSON", retryable=True
+        ) from error
+    try:
+        return output_schema.model_validate(payload)
+    except Exception as error:
+        raise ProviderAdapterError("INVALID_OUTPUT", failure_message) from error
+
+
 def _provider_error(response: httpx.Response) -> ProviderAdapterError:
     status = response.status_code
     retry_after = response.headers.get("retry-after")
@@ -354,7 +391,7 @@ class OpenAICompatibleAdapter(_CompatibleBase):
                 json=payload,
             )
             try:
-                body = response.json()
+                body = _json_body(response)
                 text = body.get("output_text") or self._responses_text(body)
             except ProviderAdapterError:
                 raise
@@ -387,7 +424,7 @@ class OpenAICompatibleAdapter(_CompatibleBase):
                 json=payload,
             )
             try:
-                body = response.json()
+                body = _json_body(response)
                 text = self._chat_text(body)
             except ProviderAdapterError:
                 raise
@@ -395,12 +432,9 @@ class OpenAICompatibleAdapter(_CompatibleBase):
                 raise ProviderAdapterError(
                     "INVALID_OUTPUT", "模型已响应，但响应结构无法解析", retryable=True
                 ) from error
-        try:
-            return output_schema.model_validate_json(text)
-        except Exception as error:
-            raise ProviderAdapterError(
-                "INVALID_OUTPUT", "模型已响应，但结构化结果无法验证"
-            ) from error
+        return _validate_structured_text(
+            text, output_schema, failure_message="模型已响应，但结构化结果无法验证"
+        )
 
     def analyze_multimodal(
         self, request: MultimodalRequest, output_schema: type[BaseModel]
@@ -450,12 +484,11 @@ class OpenAICompatibleAdapter(_CompatibleBase):
             headers=_safe_headers(self.runtime),
             json=payload,
         )
-        try:
-            return output_schema.model_validate_json(self._chat_text(response.json()))
-        except Exception as error:
-            raise ProviderAdapterError(
-                "INVALID_OUTPUT", "模型已响应，但多模态结果无法验证"
-            ) from error
+        return _validate_structured_text(
+            self._chat_text(_json_body(response)),
+            output_schema,
+            failure_message="模型已响应，但多模态结果无法验证",
+        )
 
     def generate_page(self, request: ImageRequest) -> ModelResponse:
         return self._generate_image(request)
@@ -516,7 +549,7 @@ class OpenAICompatibleAdapter(_CompatibleBase):
                 json=payload,
             )
         try:
-            body = response.json()
+            body = _json_body(response)
             images = tuple(self._image_bytes(item) for item in body.get("data") or [])
         except ProviderAdapterError:
             raise
@@ -572,8 +605,20 @@ class OpenAICompatibleAdapter(_CompatibleBase):
     @staticmethod
     def _chat_text(body: dict[str, Any]) -> str:
         try:
-            content = body["choices"][0]["message"]["content"]
+            choice = body["choices"][0]
         except (KeyError, IndexError, TypeError) as error:
+            raise ProviderAdapterError("INVALID_OUTPUT", "文本模型没有返回内容") from error
+        # OpenAI-standard refusals arrive as HTTP 200 with content_filter /
+        # an explicit refusal field; surface them as CONTENT_POLICY so the
+        # designed per-segment split-retry engages instead of a terminal miss.
+        if choice.get("finish_reason") in {"content_filter", "content_policy"}:
+            raise ProviderAdapterError("CONTENT_POLICY", "模型因内容政策拒绝了本次生成")
+        message = choice.get("message")
+        if isinstance(message, dict) and message.get("refusal"):
+            raise ProviderAdapterError("CONTENT_POLICY", "模型因内容政策拒绝了本次生成")
+        try:
+            content = message["content"]
+        except (KeyError, TypeError) as error:
             raise ProviderAdapterError("INVALID_OUTPUT", "文本模型没有返回内容") from error
         if isinstance(content, str):
             return content
@@ -586,6 +631,10 @@ class OpenAICompatibleAdapter(_CompatibleBase):
         values: list[str] = []
         for output in body.get("output") or []:
             for item in output.get("content") or []:
+                if item.get("type") == "refusal":
+                    raise ProviderAdapterError(
+                        "CONTENT_POLICY", "模型因内容政策拒绝了本次生成"
+                    )
                 if item.get("type") in {"output_text", "text"}:
                     values.append(item.get("text") or "")
         if not values:
@@ -620,12 +669,11 @@ class AnthropicCompatibleAdapter(_CompatibleBase):
             headers=_safe_headers(self.runtime),
             json=payload,
         )
-        try:
-            return output_schema.model_validate_json(self._text(response.json()))
-        except Exception as error:
-            raise ProviderAdapterError(
-                "INVALID_OUTPUT", "模型已响应，但结构化结果无法验证"
-            ) from error
+        return _validate_structured_text(
+            self._text(_json_body(response)),
+            output_schema,
+            failure_message="模型已响应，但结构化结果无法验证",
+        )
 
     def analyze_multimodal(
         self, request: MultimodalRequest, output_schema: type[BaseModel]
@@ -662,15 +710,16 @@ class AnthropicCompatibleAdapter(_CompatibleBase):
             headers=_safe_headers(self.runtime),
             json=payload,
         )
-        try:
-            return output_schema.model_validate_json(self._text(response.json()))
-        except Exception as error:
-            raise ProviderAdapterError(
-                "INVALID_OUTPUT", "模型已响应，但多模态结果无法验证"
-            ) from error
+        return _validate_structured_text(
+            self._text(_json_body(response)),
+            output_schema,
+            failure_message="模型已响应，但多模态结果无法验证",
+        )
 
     @staticmethod
     def _text(body: dict[str, Any]) -> str:
+        if body.get("stop_reason") == "refusal":
+            raise ProviderAdapterError("CONTENT_POLICY", "模型因内容政策拒绝了本次生成")
         values = [item.get("text") or "" for item in body.get("content") or []]
         text = "".join(values)
         if not text:
