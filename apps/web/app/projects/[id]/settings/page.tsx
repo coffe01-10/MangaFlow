@@ -102,7 +102,7 @@ export default function ProjectSettingsPage() {
         : draft ? <div className="project-settings-grid">
           <section className="project-setting-section">
             <header><SlidersHorizontal size={18} /><div><span>WORKFLOW MODE</span><h2>工作方式</h2></div></header>
-            <div className="project-choice-grid" role="group" aria-label="工作方式">{([
+            <div className="project-choice-grid" role="radiogroup" aria-label="工作方式">{([
               ["DIRECTOR"],
               ["SEMI_AUTO"],
               ["AUTO"],
