@@ -332,6 +332,19 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
     execution._commit_owned_progress(db, job, status=JobStatus.GENERATING, progress=45)
     reference_ids = [asset.id for asset in references]
     provider._lease_reference_assets(db, job, reference_ids)
+    # Re-read every leased row after committing the lease, mirroring
+    # page_generate: a concurrent delete can no longer pass silently into
+    # the paid request.
+    current_assets = list(
+        db.scalars(
+            select(Asset).where(
+                Asset.id.in_(reference_ids),
+                Asset.deleted_at.is_(None),
+            )
+        )
+    )
+    if {item.id for item in current_assets} != set(reference_ids):
+        raise RuntimeError("参考图在生成前发生变化，已停止模型调用")
     for asset in references:
         if not provider._asset_path(asset).is_file():
             raise RuntimeError(f"参考图文件不存在：{asset.original_name}")

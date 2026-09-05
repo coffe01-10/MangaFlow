@@ -13,7 +13,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, update
 from sqlalchemy.orm import sessionmaker
 
 from app import database, worker_tasks
@@ -292,3 +292,105 @@ def test_candidate_deleted_mid_flight_discards_output_and_cancels_job(
             assert candidate.asset_id is None
             assert db.scalar(select(GenerationRecord)) is None
             assert db.scalar(select(Asset).where(Asset.source == "AI_GENERATED")) is None
+
+
+def test_asset_generation_requeries_references_after_lease(db_session, tmp_path, monkeypatch):
+    """Mirror page_generate's post-lease guard: a reference soft-deleted
+    between the lease commit and provider dispatch must stop the paid call
+    with the same fail-closed RuntimeError."""
+
+    from app.domain.states import JobStatus as JobStatusState
+    from app.worker_tasks import _run_asset_generate
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "storage_root", tmp_path / "storage")
+    monkeypatch.setattr(settings, "upload_root", tmp_path / "uploads")
+    project = Project(name="租后失效")
+    db_session.add(project)
+    db_session.flush()
+    reference = Asset(
+        project_id=project.id,
+        kind="STYLE_REFERENCE",
+        original_name="style.png",
+        storage_key="style-lease.png",
+        mime_type="image/png",
+        byte_size=10,
+        sha256="b" * 64,
+        source="USER_UPLOAD",
+        status="UPLOADED",
+    )
+    db_session.add(reference)
+    db_session.flush()
+    reference_file = settings.upload_root / reference.storage_key
+    reference_file.parent.mkdir(parents=True, exist_ok=True)
+    reference_file.write_bytes(_png_bytes())
+    style = StyleProfile(
+        project_id=project.id,
+        name="租后失效风格",
+        color_mode="color",
+        profile={"reference_asset_ids": [reference.id]},
+        status="DRAFT",
+    )
+    db_session.add(style)
+    db_session.flush()
+    batch = GenerationBatch(
+        project_id=project.id,
+        target_type="STYLE",
+        target_id=style.id,
+        generation_kind="STYLE_TEST",
+        ordinal=1,
+    )
+    db_session.add(batch)
+    db_session.flush()
+    candidate = AssetCandidate(
+        batch_id=batch.id,
+        ordinal=1,
+        model_alias="image.nano_banana_2",
+        resolution=Resolution.DRAFT_1K,
+        variant="STYLE_TEST",
+        status="QUEUED",
+    )
+    db_session.add(candidate)
+    db_session.flush()
+    job = GenerationJob(
+        project_id=project.id,
+        target_type="ASSET_CANDIDATE",
+        target_id=candidate.id,
+        job_type="ASSET_GENERATE",
+        status=JobStatusState.PREPARING,
+        model_alias="image.nano_banana_2",
+    )
+    db_session.add(job)
+    db_session.flush()
+    candidate.job_id = job.id
+    db_session.info["job_id"] = job.id
+    db_session.commit()
+    ensure_provider_presets(db_session, get_settings(), auto_commit=False)
+    db_session.commit()
+
+    provider_calls: list[object] = []
+
+    class ForbiddenAdapter:
+        def generate_asset(self, request):
+            provider_calls.append(request)
+            raise AssertionError("参考图租后失效不得调用模型")
+
+    monkeypatch.setattr(worker_tasks, "_adapter", lambda _alias: ForbiddenAdapter())
+    real_lease = provider._lease_reference_assets
+
+    def lease_then_delete(db, lease_job, asset_ids):
+        real_lease(db, lease_job, asset_ids)
+        # The reference is soft-deleted after the lease committed but before
+        # the paid request goes out.
+        db.execute(
+            update(Asset)
+            .where(Asset.id.in_(asset_ids))
+            .values(deleted_at=datetime.now(UTC))
+        )
+        db.commit()
+
+    monkeypatch.setattr(provider, "_lease_reference_assets", lease_then_delete)
+
+    with pytest.raises(RuntimeError, match="参考图在生成前发生变化"):
+        _run_asset_generate(db_session, job)
+    assert provider_calls == []
