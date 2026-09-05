@@ -12,12 +12,31 @@ from app.services.model_availability import (
 )
 from app.services.model_capabilities import (
     REGION_CAPABILITY_KEYS,
+    capability_reference_limit,
     region_capability_enabled,
     region_capability_source,
 )
 from app.services.provider_presets import ensure_provider_presets
 
 router = APIRouter()
+
+
+def capability_string_list(
+    capabilities: dict | None, key: str, *, default: list[str] | None = None
+) -> list[str]:
+    """Serialize one list-shaped capability without trusting its stored shape.
+
+    A poisoned value (e.g. ``resolutions`` stored as a bare string) must not
+    fail response validation for the whole catalog: a bare string reads as a
+    single-element list, anything else non-list falls back to the default.
+    """
+
+    value = (capabilities or {}).get(key)
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple)):
+        return [item for item in value if isinstance(item, str)]
+    return list(default or [])
 
 
 @router.get("", response_model=list[ModelCapabilityRead])
@@ -58,13 +77,17 @@ def list_models(db: Session = Depends(get_db)) -> list[dict]:
                 "input_modalities": model.input_modalities or [],
                 "output_modalities": model.output_modalities or [],
                 "operations": model.operations or [],
-                "resolutions": (model.capabilities or {}).get("resolutions") or [],
-                "preview_resolutions": (model.capabilities or {}).get("preview_resolutions")
-                or [],
-                "max_reference_images": int(
-                    (model.capabilities or {}).get("max_reference_images") or 0
+                "resolutions": capability_string_list(
+                    model.capabilities, "resolutions"
                 ),
-                "regions": (model.capabilities or {}).get("regions") or ["global"],
+                "preview_resolutions": capability_string_list(
+                    model.capabilities, "preview_resolutions"
+                ),
+                "max_reference_images": capability_reference_limit(model.capabilities)
+                or 0,
+                "regions": capability_string_list(
+                    model.capabilities, "regions", default=["global"]
+                ),
                 # V02-44B frozen region-edit bits (matrix §7.2): fail-closed,
                 # absent/UNKNOWN never serializes as true; every bit carries
                 # readable provenance.

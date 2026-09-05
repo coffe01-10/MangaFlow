@@ -61,10 +61,31 @@ def _normalize_character_name(value: str) -> str:
     return "".join(value.split()).casefold()
 
 
+MAX_CHAPTER_TITLE_LENGTH = 200
+
+
+def normalize_source_text(value: str) -> str:
+    """Drop control characters PostgreSQL text columns reject (NUL et al.).
+
+    Newlines and tabs are content, everything below 0x20 is not; decoded
+    payloads are sanitized once here so every persistence path is covered.
+    """
+
+    return "".join(
+        character
+        for character in value
+        if character in "\n\t" or ord(character) >= 0x20
+    )
+
+
+def normalize_chapter_title(value: str) -> str:
+    return normalize_source_text(value).strip()[:MAX_CHAPTER_TITLE_LENGTH]
+
+
 def split_chapters(title: str, text: str) -> list[tuple[str, str]]:
     matches = list(CHAPTER_HEADER.finditer(text))
     if not matches:
-        return [(title.strip(), text)]
+        return [(normalize_chapter_title(title) or "正文", text)]
 
     chapters: list[tuple[str, str]] = []
     prefix = text[: matches[0].start()]
@@ -74,7 +95,9 @@ def split_chapters(title: str, text: str) -> list[tuple[str, str]]:
         chunk = text[start:end]
         if index == 0 and prefix:
             chunk = prefix + chunk
-        chapters.append((match.group(1).strip(), chunk))
+        chapters.append(
+            (normalize_chapter_title(match.group(1)) or f"第{index + 1}章", chunk)
+        )
     return chapters
 
 

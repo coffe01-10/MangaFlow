@@ -5,6 +5,7 @@ from datetime import timedelta
 from threading import Event, Lock, Thread
 
 from sqlalchemy import and_, or_, select, update
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -16,6 +17,7 @@ from app.models import (
     JobAssetReference,
     JobDependency,
     MangaPage,
+    ModelCallAttempt,
     PageCandidate,
     StyleProfile,
     WorkflowNodeRun,
@@ -219,7 +221,13 @@ def enqueue_job(db: Session, job: GenerationJob) -> GenerationJob:
     if queue_mode == "LOCAL":
         return _enqueue_locally(db, job, "本地后台执行器正在处理任务")
 
-    if not _transition_waiting_to_queued(db, job, error_code=None, error_message=None):
+    # RQ_PENDING marks the crash window between the QUEUED commit and the
+    # Redis enqueue: a process death here used to strand the row as QUEUED
+    # with no payload and no recovery path. recover_pending_jobs re-enqueues
+    # stale RQ_PENDING rows; a successful enqueue clears the marker.
+    if not _transition_waiting_to_queued(
+        db, job, error_code="RQ_PENDING", error_message=None
+    ):
         return job
 
     connection = None
@@ -241,6 +249,17 @@ def enqueue_job(db: Session, job: GenerationJob) -> GenerationJob:
             job_timeout=settings.job_timeout_seconds,
             retry=rq_retry_policy(job),
         )
+        db.execute(
+            update(GenerationJob)
+            .where(
+                GenerationJob.id == job.id,
+                GenerationJob.status == JobStatus.QUEUED,
+                GenerationJob.error_code == "RQ_PENDING",
+            )
+            .values(error_code=None, error_message=None)
+            .execution_options(synchronize_session=False)
+        )
+        db.commit()
     except Exception:
         db.refresh(job)
         if _job_already_advanced(job):
@@ -522,6 +541,7 @@ def recover_pending_jobs(db: Session) -> int:
 
         reconcile_run(db, workflow_run_id)
 
+    rq_pending_cutoff = utcnow() - timedelta(seconds=10)
     jobs = list(
         db.scalars(
             select(GenerationJob)
@@ -531,6 +551,14 @@ def recover_pending_jobs(db: Session) -> int:
                     and_(
                         GenerationJob.status == JobStatus.QUEUED,
                         GenerationJob.error_code == "LOCAL_WORKER",
+                    ),
+                    # Stranded Redis handoffs: the QUEUED commit landed but
+                    # the process died before (or while) enqueueing. The age
+                    # threshold keeps this from racing the in-flight enqueue.
+                    and_(
+                        GenerationJob.status == JobStatus.QUEUED,
+                        GenerationJob.error_code == "RQ_PENDING",
+                        GenerationJob.updated_at < rq_pending_cutoff,
                     ),
                 )
             )
@@ -544,20 +572,20 @@ def recover_pending_jobs(db: Session) -> int:
         if already_submitted or not dependencies_complete(db, job):
             continue
         if job.status == JobStatus.QUEUED:
-            # Re-adopt a local-queue row without clobbering concurrent
-            # progress: if a worker already claimed the row, the conditional
-            # update misses and this round skips the job instead of writing
-            # WAITING over PREPARING.
+            # Re-adopt a local or stranded-Redis row without clobbering
+            # concurrent progress: if a worker already claimed the row, the
+            # conditional update misses and this round skips the job instead
+            # of writing WAITING over PREPARING.
             readopted = db.execute(
                 update(GenerationJob)
                 .where(
                     GenerationJob.id == job.id,
                     GenerationJob.status == JobStatus.QUEUED,
-                    GenerationJob.error_code == "LOCAL_WORKER",
+                    GenerationJob.error_code.in_(["LOCAL_WORKER", "RQ_PENDING"]),
                     GenerationJob.lease_owner.is_(None),
                     GenerationJob.cancelled_at.is_(None),
                 )
-                .values(status=JobStatus.WAITING)
+                .values(status=JobStatus.WAITING, error_code=None, error_message=None)
                 .execution_options(synchronize_session=False)
             )
             if readopted.rowcount != 1:
@@ -566,7 +594,47 @@ def recover_pending_jobs(db: Session) -> int:
             db.expire(job)
         enqueue_job(db, job)
         recovered += 1
-    return recovered
+    return recovered + sweep_lost_model_call_attempts(db)
+
+
+WORKER_LOST_MARGIN_SECONDS = 300
+
+
+def sweep_lost_model_call_attempts(db: Session) -> int:
+    """Converge unfinalized audit rows to FAILED after every deadline passed.
+
+    A worker killed between ``begin_model_call_attempt`` and finalize leaves
+    the row with ``outcome IS NULL`` forever: cost views exclude it (real
+    money invisible), the summary counts it as pending eternally, and no
+    operator signal distinguishes "in flight" from "lost in a crash". Once
+    the attempt is older than the job's hard timeout plus lease plus margin,
+    no live worker can still be planning to finalize it, so the row is
+    provably lost. The finalize CAS still wins if a straggler ever shows up.
+    """
+
+    settings = get_settings()
+    cutoff = utcnow() - timedelta(
+        seconds=settings.job_timeout_seconds
+        + settings.job_lease_seconds
+        + WORKER_LOST_MARGIN_SECONDS
+    )
+    updated = db.execute(
+        update(ModelCallAttempt)
+        .where(
+            ModelCallAttempt.outcome.is_(None),
+            ModelCallAttempt.started_at < cutoff,
+        )
+        .values(
+            outcome="FAILED",
+            error_code="WORKER_LOST",
+            error_message="执行器在调用期间丢失，审计行按失败收敛",
+            finished_at=utcnow(),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if updated.rowcount:
+        db.commit()
+    return updated.rowcount
 
 
 def mark_job_failed(
@@ -579,15 +647,38 @@ def mark_job_failed(
 ) -> str | None:
     """Mark a job and its visible targets as failed without committing."""
 
-    if job.status in {JobStatus.COMPLETED, JobStatus.CANCELLED}:
-        return None
     now = utcnow()
-    job.status = JobStatus.FAILED
-    job.error_code = error_code
-    job.error_message = error_message[:500]
-    job.finished_at = now
-    job.lease_owner = None
-    job.lease_expires_at = None
+    # Conditional claim instead of a read-check write: never clobber a live
+    # worker's unexpired lease, but still fail stuck rows whose lease died.
+    claimed = db.execute(
+        update(GenerationJob)
+        .where(
+            GenerationJob.id == job.id,
+            GenerationJob.status.not_in(
+                {JobStatus.COMPLETED, JobStatus.CANCELLED}
+            ),
+            or_(
+                GenerationJob.lease_owner.is_(None),
+                GenerationJob.lease_expires_at.is_(None),
+                GenerationJob.lease_expires_at <= now,
+            ),
+        )
+        .values(
+            status=JobStatus.FAILED,
+            error_code=error_code,
+            error_message=error_message[:500],
+            finished_at=now,
+            lease_owner=None,
+            lease_expires_at=None,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
+        return None
+    state = sa_inspect(job)
+    if state.persistent:
+        # The caller's copy still shows the pre-claim status; reload it.
+        db.expire(job)
     page_candidate = db.scalar(select(PageCandidate).where(PageCandidate.job_id == job.id))
     if page_candidate:
         page_candidate.status = candidate_status
@@ -685,16 +776,37 @@ def cancel_job(db: Session, job: GenerationJob) -> GenerationJob:
 def reset_for_retry(db: Session, job: GenerationJob) -> GenerationJob:
     if job.status not in {JobStatus.FAILED, JobStatus.NEEDS_REVIEW, JobStatus.WAITING}:
         return job
-    job.status = JobStatus.WAITING
-    job.error_code = None
-    job.error_message = None
-    job.progress = 0
-    job.started_at = None
-    job.finished_at = None
-    job.cancelled_at = None
-    job.lease_owner = None
-    job.lease_expires_at = None
-    job.scheduled_at = utcnow() + timedelta(seconds=1)
+    # Conditional on the observed state and an unowned lease: a plain
+    # read-then-write cleared a lease that a worker took between the check
+    # and the commit, discarding its in-flight paid output and re-enqueueing
+    # a second dispatch of the same candidate.
+    claimed = db.execute(
+        update(GenerationJob)
+        .where(
+            GenerationJob.id == job.id,
+            GenerationJob.status == job.status,
+            GenerationJob.lease_owner.is_(None),
+            GenerationJob.cancelled_at.is_(None),
+        )
+        .values(
+            status=JobStatus.WAITING,
+            error_code=None,
+            error_message=None,
+            progress=0,
+            started_at=None,
+            finished_at=None,
+            cancelled_at=None,
+            lease_owner=None,
+            lease_expires_at=None,
+            scheduled_at=utcnow() + timedelta(seconds=1),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
+        db.rollback()
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=409, detail="任务状态已变化，请刷新后重试")
     workflow_run_id = job.request_parameters.get("workflow_run_id")
     if workflow_run_id:
         run = db.get(WorkflowRun, workflow_run_id)
@@ -711,4 +823,5 @@ def reset_for_retry(db: Session, job: GenerationJob) -> GenerationJob:
             node_run.error_message = None
             node_run.finished_at = None
     db.commit()
+    db.refresh(job)
     return enqueue_job(db, job)

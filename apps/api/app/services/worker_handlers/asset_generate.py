@@ -27,6 +27,7 @@ from app.models import (
     StyleProfile,
     utcnow,
 )
+from app.services.asset_dedupe import adopt_deleted_duplicate, live_duplicate
 from app.services.media import create_thumbnails, remove_thumbnails
 from app.services.model_router import model_supports_resolution
 from app.services.worker_handlers import execution, provider
@@ -35,12 +36,7 @@ from app.services.worker_handlers import execution, provider
 def _save_asset_candidate(db, candidate: AssetCandidate, project_id: str, data: bytes) -> Asset:
     settings = get_settings()
     digest = hashlib.sha256(data).hexdigest()
-    existing = db.scalar(
-        select(Asset).where(
-            Asset.project_id == project_id,
-            Asset.sha256 == digest,
-        )
-    )
+    existing = live_duplicate(db, project_id=project_id, sha256=digest)
     if existing:
         return existing
     destination = (
@@ -92,12 +88,10 @@ def _save_asset_candidate(db, candidate: AssetCandidate, project_id: str, data: 
         return asset
     except IntegrityError:
         destination.unlink(missing_ok=True)
-        existing = db.scalar(
-            select(Asset).where(
-                Asset.project_id == project_id,
-                Asset.sha256 == digest,
-            )
-        )
+        existing = live_duplicate(db, project_id=project_id, sha256=digest)
+        if existing:
+            return existing
+        existing = adopt_deleted_duplicate(db, project_id=project_id, sha256=digest)
         if existing:
             return existing
         raise
@@ -314,6 +308,7 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
         )
     )
     execution._ensure_job_not_cancelled(db, job)
+    execution._ensure_candidate_live(db, candidate)
     asset = _save_asset_candidate(db, candidate, batch.project_id, response.images[0])
     record = GenerationRecord(
         job_id=job.id,

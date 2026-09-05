@@ -534,6 +534,9 @@ def _run_probe_command(settings: Settings, argv: tuple[str, ...]) -> CLIProcessO
             cancel_requested=lambda: False,
         )
     finally:
-        shutil.rmtree(probe_directory, ignore_errors=False)
+        # Cleanup failures must not mask the real probe failure with an
+        # unrelated rmtree error (locked/read-only files are common on
+        # Windows); the probe root sweep retries non-recursively instead.
+        shutil.rmtree(probe_directory, ignore_errors=True)
         with suppress(OSError):
             probe_root.rmdir()

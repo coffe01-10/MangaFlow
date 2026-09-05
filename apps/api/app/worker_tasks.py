@@ -485,14 +485,17 @@ def execute_job(job_id: str) -> None:
 
             reconcile_run(db, workflow_run_id)
         raise
-    except Exception as error:
+    except Exception:
         db.rollback()
+        # Same sanitization rule as _begin_or_fail: an unclassified exception's
+        # raw text (SQL, paths, URLs, driver details) stays in the re-raised
+        # exception chain for logs only, never in the user-visible message.
         marked, workflow_run_id, is_final = _mark_worker_failure(
             db,
             job_id,
             owner,
             "WORKER_ERROR",
-            str(error),
+            "模型任务出现未分类异常，已记录诊断日志",
             retryable=True,
         )
         if not marked:

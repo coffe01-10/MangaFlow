@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from app.api.helpers import reject_required_nulls
 from app.config import get_settings
 from app.database import get_db
 from app.models import (
@@ -41,6 +42,8 @@ from app.schemas import (
 from app.services.content_workflow import (
     chapter_metrics,
     import_source,
+    normalize_chapter_title,
+    normalize_source_text,
     plan_chapter_pages,
     revise_chapter_source,
 )
@@ -115,7 +118,7 @@ def upload_source(
 ) -> SourceImportRead:
     _project(db, project_id)
     settings = get_settings()
-    title = parsed.texts.get("title") or "正文"
+    title = normalize_chapter_title(parsed.texts.get("title") or "正文") or "正文"
     file = parsed.file
     suffix = Path(file.filename or "source.txt").suffix.lower()
     if suffix not in {".txt", ".md", ".markdown"}:
@@ -128,6 +131,7 @@ def upload_source(
         text = data.decode("utf-8-sig")
     except UnicodeDecodeError as error:
         raise HTTPException(status_code=422, detail="原文文件必须使用 UTF-8 编码") from error
+    text = normalize_source_text(text)
     source_type = "MARKDOWN" if suffix in {".md", ".markdown"} else "TXT"
     try:
         chapters = import_source(
@@ -378,6 +382,7 @@ def update_scene(
     if scene.version != payload.version:
         raise HTTPException(status_code=409, detail="场景已被更新，请刷新后重试")
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
+    reject_required_nulls(Scene, values)
     from app.services.storyboard_edits import apply_scene_fields
 
     apply_scene_fields(db, scene, values, bump_storyboard=False)
@@ -405,6 +410,7 @@ def update_beat(
     if not scene or not chapter:
         raise HTTPException(status_code=404, detail="情节拍所属章节不存在")
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
+    reject_required_nulls(Beat, values)
     if "speaker_name" in values:
         values["speaker_name"] = canonical_speaker_name(
             db,

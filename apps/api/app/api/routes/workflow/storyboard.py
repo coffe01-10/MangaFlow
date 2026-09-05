@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
+from app.api.helpers import reject_required_nulls
 from app.api.routes.workflow.common import _page, _panel_read, _storyboard_read
 from app.database import get_db
 from app.domain.storyboard_layout import canonical_bubble, read_bubble
@@ -130,6 +131,7 @@ def update_panel(
     panel, page, project_id = _panel_context(db, panel_id)
     _claim_panel_version(db, panel, payload.version)
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
+    reject_required_nulls(Panel, values)
     apply_panel_fields(db, panel, page, project_id, values)
     db.commit()
     db.refresh(panel)
@@ -188,6 +190,7 @@ def update_dialogue(
     panel, page, project_id = _panel_context(db, dialogue.panel_id)
     _claim_panel_version(db, panel, payload.panel_version)
     values = payload.model_dump(exclude_unset=True, exclude={"panel_version"})
+    reject_required_nulls(Dialogue, values)
     if "bubble" in values and values["bubble"] is not None:
         values["bubble"] = canonical_bubble(values["bubble"])
     apply_dialogue_fields(db, dialogue, panel, page, project_id, values)

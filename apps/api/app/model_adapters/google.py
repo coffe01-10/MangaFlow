@@ -13,7 +13,10 @@ from app.model_adapters.base import (
     ProviderAdapterError,
     StructuredRequest,
 )
+from app.services.model_capabilities import capability_reference_limit
 from app.services.vertex_credentials import classify_vertex_failure
+
+_GOOGLE_HTTP_TIMEOUT_MS = 90_000
 
 
 @dataclass(frozen=True)
@@ -31,7 +34,12 @@ class _GoogleBase:
     def _client(self):
         from google import genai
 
-        return genai.Client(api_key=self.runtime.api_key)
+        # Bound connect/read like the HTTP-API path (90s); the SDK default
+        # lets a hung upstream pin a worker slot for minutes.
+        return genai.Client(
+            api_key=self.runtime.api_key,
+            http_options={"timeout": _GOOGLE_HTTP_TIMEOUT_MS},
+        )
 
     @staticmethod
     def _translate(error: Exception) -> ProviderAdapterError:
@@ -146,7 +154,7 @@ class GoogleImageAdapter(_GoogleBase):
         from google.genai import types
 
         resolutions = self.runtime.capabilities.get("resolutions") or ["1K"]
-        max_references = int(self.runtime.capabilities.get("max_reference_images") or 0)
+        max_references = capability_reference_limit(self.runtime.capabilities) or 0
         if request.resolution not in resolutions:
             raise ProviderAdapterError(
                 "UNSUPPORTED_CAPABILITY",
