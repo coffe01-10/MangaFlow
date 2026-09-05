@@ -379,9 +379,15 @@ def keep_selected_candidate(
     db: Session = Depends(get_db),
 ) -> MangaPage:
     page = _page(db, page_id)
+    # Same page-lock convention as select_candidate/delete_asset: the lock
+    # re-reads the page (populate_existing) so the guards below cannot run on
+    # a pre-adoption snapshot when a concurrent selection lands between the
+    # read above and this commit.  The candidate is re-read post-lock too, so
+    # the guarded version bump lands on its current row.
+    page = lock_entity(db, MangaPage, page.id)
     if page.storyboard_version != payload.storyboard_version:
         raise HTTPException(status_code=409, detail="分镜已再次更新，请刷新后重试")
-    candidate = db.get(PageCandidate, payload.candidate_id)
+    candidate = lock_entity(db, PageCandidate, payload.candidate_id)
     if (
         not candidate
         or candidate.page_id != page.id
@@ -411,10 +417,15 @@ def retract_selected_candidate(
     db: Session = Depends(get_db),
 ) -> MangaPage:
     page = _page(db, page_id)
+    # Same page-lock convention as select_candidate/delete_asset: re-read the
+    # page and the adopted candidate post-lock so a concurrent selection that
+    # landed after the read above is retracted coherently instead of leaving
+    # its candidate stranded with is_selected=True.
+    page = lock_entity(db, MangaPage, page.id)
     if not page.selected_candidate_id:
         raise HTTPException(status_code=409, detail="当前页面没有已采用候选")
 
-    candidate = db.get(PageCandidate, page.selected_candidate_id)
+    candidate = lock_entity(db, PageCandidate, page.selected_candidate_id)
     if candidate and candidate.page_id == page.id:
         candidate.is_selected = False
         candidate.version += 1
