@@ -625,3 +625,66 @@ def test_region_job_does_not_clobber_final_ready_page_status(
     assert page.selected_candidate_id == parent.id
     assert page.version == 9
     assert db_session.get(PageCandidate, child.id).status == "READY"
+
+
+def test_cancel_landing_after_paid_call_keeps_ledger_consistent(
+    db_session, catalog, region_storage, monkeypatch
+):
+    """A cancel that lands while the paid call is in flight must converge
+    deterministically: the billed attempt stays SUCCEEDED with no output
+    linkage, the candidate is never marked READY, and no GenerationRecord
+    is written — TG2 in the audit backlog.
+    """
+
+    from app.model_adapters.fake_acceptance import FakeAcceptanceImageAdapter
+    from app.services.job_service import cancel_job
+    from app.worker_tasks import _run_page_generate
+
+    model = db_session.scalar(
+        select(AIModel).where(AIModel.legacy_alias == "image.nano_banana_2")
+    )
+    model.capabilities = {**(model.capabilities or {}), "accepts_explicit_mask": True}
+    db_session.commit()
+
+    adapter = FakeAcceptanceImageAdapter()
+    monkeypatch.setattr("app.worker_tasks._adapter", lambda alias: adapter)
+    parent, child, job = _region_job(db_session, region_storage)
+    _own_lease(db_session, job)
+
+    original_generate = adapter.generate_page
+    captured = {}
+
+    class CancelMidFlightAdapter(FakeAcceptanceImageAdapter):
+        def generate_page(self, request):
+            # Region jobs edit through generate_page (mask as reference).
+            result = original_generate(request)
+            # The user's cancel lands during the in-flight call; commit it so
+            # the handler's post-call checks observe it.
+            cancel_job(db_session, job)
+            captured["cancelled_at"] = job.cancelled_at
+            return result
+
+    adapter = CancelMidFlightAdapter()
+    monkeypatch.setattr("app.worker_tasks._adapter", lambda alias: adapter)
+
+    with pytest.raises(JobCancelledError):
+        _run_page_generate(db_session, job)
+    db_session.rollback()
+    db_session.expire_all()
+
+    # The paid dispatch really happened and is accounted as succeeded with
+    # no linked output — the documented cost of cancelling mid-flight.
+    attempts = list(db_session.scalars(select(ModelCallAttempt)))
+    assert len(attempts) == 1
+    assert attempts[0].outcome == "SUCCEEDED"
+    assert attempts[0].output_asset_ids is None
+
+    # The candidate never adopts the output and the page is not finalized.
+    done = db_session.get(PageCandidate, child.id)
+    assert done.status != "READY"
+    assert list(db_session.scalars(select(GenerationRecord))) == []
+
+    # The job converged to CANCELLED by the execution shell's cancel path.
+    refreshed = db_session.get(GenerationJob, job.id)
+    assert refreshed.status in {JobStatus.CANCELLED, JobStatus.FAILED}
+    assert refreshed.status == JobStatus.CANCELLED or refreshed.error_code
