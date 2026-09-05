@@ -14,9 +14,12 @@ from sqlalchemy.orm import sessionmaker
 
 from app.domain.states import JobStatus
 from app.models import (
+    Chapter,
     GenerationJob,
     JobDependency,
     Project,
+    ScriptRevision,
+    SourceRevision,
     WorkflowDefinition,
     WorkflowNodeRun,
     WorkflowRun,
@@ -153,6 +156,41 @@ def _seed_failed_chain(db):
     )
     db.commit()
     return project, run, failed_node_run, failed_job, waiting_node_run, waiting_job
+
+
+def _seed_ready_script(db, project):
+    """Give the project a chapter scope with a READY script revision.
+
+    reconcile's ``_completed_output_refs`` only marks a completed
+    ``agent.adapt`` node COMPLETED when the run's chapter has a READY script
+    (a PROJECT-scoped run has no chapter, so the node would just re-fail);
+    tests that continue past a retry need this to exercise the real
+    completion path.
+    """
+    chapter = Chapter(project_id=project.id, ordinal=1, title="第一章")
+    db.add(chapter)
+    db.flush()
+    source = SourceRevision(
+        chapter_id=chapter.id,
+        revision=1,
+        source_type="TEXT",
+        original_text="第一章正文",
+        sha256="a" * 64,
+        character_count=6,
+    )
+    db.add(source)
+    db.flush()
+    db.add(
+        ScriptRevision(
+            chapter_id=chapter.id,
+            source_revision_id=source.id,
+            revision_no=1,
+            status="READY",
+            coverage={"complete": True},
+        )
+    )
+    db.flush()
+    return chapter
 
 
 def test_failed_run_claim_cancels_dependency_blocked_children(db_session):
@@ -409,3 +447,111 @@ def test_failed_run_sweep_unblocks_project_active_job_guard(db_session):
         )
     )
     assert after == []
+
+
+def test_retry_of_failed_job_revives_the_swept_tail(client, db_session, monkeypatch):
+    """T-A1: retrying the causal FAILED job of a swept run must revive the
+    whole failed layer, not just the retried job's own node_run.
+
+    reconcile's FAILED claim sweeps downstream non-terminal node_runs and
+    jobs to CANCELLED. reset_for_retry used to revive only the run and the
+    failed node_run, so the CANCELLED tail survived: reconcile only schedules
+    WAITING nodes (CANCELLED is skipped forever) and the tail breaks the
+    all-COMPLETED check, so final_status fell through to a permanent RUNNING
+    zombie whose scope can never start another run.
+    """
+    (
+        project,
+        run,
+        failed_node_run,
+        failed_job,
+        waiting_node_run,
+        waiting_job,
+    ) = _seed_failed_chain(db_session)
+    reconcile_run(db_session, run.id)
+    db_session.refresh(run)
+    assert run.status == "FAILED"
+    db_session.refresh(waiting_node_run)
+    db_session.refresh(waiting_job)
+    assert waiting_node_run.status == "CANCELLED"
+    assert waiting_job.status == JobStatus.CANCELLED
+
+    import app.services.job_service as job_service
+
+    enqueued: list[str] = []
+    monkeypatch.setattr(
+        job_service, "enqueue_job", lambda db, job: enqueued.append(job.id) or job
+    )
+
+    response = client.post(f"/api/v1/jobs/{failed_job.id}/retry")
+
+    assert response.status_code == 200
+    assert enqueued == [failed_job.id]
+    db_session.refresh(run)
+    assert run.status == "RUNNING"
+    assert run.finished_at is None
+    db_session.refresh(failed_node_run)
+    assert failed_node_run.status == "RUNNING"
+    # The swept tail is revived together with the run (pre-fix it stayed
+    # CANCELLED: permanent zombie + scope lock).
+    db_session.refresh(waiting_node_run)
+    assert waiting_node_run.status == "WAITING"
+    assert waiting_node_run.finished_at is None
+    db_session.refresh(waiting_job)
+    assert waiting_job.status == JobStatus.WAITING
+    assert waiting_job.cancelled_at is None
+    assert waiting_job.finished_at is None
+
+
+def test_retry_completion_rebars_the_revived_tail_instead_of_zombie_running(
+    client, db_session, monkeypatch
+):
+    """T-A2: continuing from the revived T-A1 state, completing the retried
+    job must let reconcile re-barrier the revived tail — the run ends up
+    PAUSED at the page approval barrier instead of the pre-fix permanent
+    RUNNING zombie (the CANCELLED tail is invisible to reconcile's WAITING
+    scheduling and breaks the all-COMPLETED check)."""
+    (
+        project,
+        run,
+        _failed_node_run,
+        failed_job,
+        waiting_node_run,
+        waiting_job,
+    ) = _seed_failed_chain(db_session)
+    # The adapt completion needs a CHAPTER-scoped run with a READY script;
+    # otherwise reconcile would re-fail the adapt node instead of completing it.
+    chapter = _seed_ready_script(db_session, project)
+    run.scope_type = "CHAPTER"
+    run.scope_id = chapter.id
+    db_session.commit()
+
+    reconcile_run(db_session, run.id)
+    import app.services.job_service as job_service
+
+    enqueued: list[str] = []
+    monkeypatch.setattr(
+        job_service, "enqueue_job", lambda db, job: enqueued.append(job.id) or job
+    )
+    response = client.post(f"/api/v1/jobs/{failed_job.id}/retry")
+    assert response.status_code == 200
+
+    # The worker completes the retried job exactly like execute_job would.
+    failed_job.status = JobStatus.COMPLETED
+    failed_job.progress = 100
+    failed_job.started_at = failed_job.started_at or utcnow()
+    failed_job.finished_at = utcnow()
+    db_session.commit()
+
+    reconcile_run(db_session, run.id)
+
+    db_session.refresh(run)
+    # Pre-fix this fell through to "RUNNING" (permanent zombie).
+    assert run.status != "RUNNING"
+    # The seed's generator.page node is an approval barrier: the revived tail
+    # re-barriers to WAITING_APPROVAL and the run pauses for adoption.
+    assert run.status == "PAUSED"
+    db_session.refresh(waiting_node_run)
+    assert waiting_node_run.status == "WAITING_APPROVAL"
+    db_session.refresh(waiting_job)
+    assert waiting_job.status == JobStatus.WAITING
