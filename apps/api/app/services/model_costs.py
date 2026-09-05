@@ -246,7 +246,13 @@ def _active_price(
         if _as_utc(price.effective_from) <= started
         and (price.effective_to is None or started < _as_utc(price.effective_to))
     ]
-    return max(active, key=lambda price: _as_utc(price.effective_from), default=None)
+    # Tie-break equal windows deterministically so concurrent pricing rows
+    # cannot price the same attempt differently on every call.
+    return max(
+        active,
+        key=lambda price: (_as_utc(price.effective_from), price.pricing_version),
+        default=None,
+    )
 
 
 def _estimate_attempt(

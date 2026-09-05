@@ -238,6 +238,15 @@ def _invoke_provider(db, binding: AdapterBinding, callback):
                 error.code,
                 retry_after_seconds=error.retry_after_seconds,
             )
+            # Surface the real-traffic failure on the connection too: the
+            # verify/probe paths are the only other writers of these fields,
+            # and without this a connection shows a stale HEALTHY state while
+            # every paid call fails. Diagnostics only — routing semantics and
+            # enabled flags stay owned by verification.
+            connection = binding.resolved.connection
+            connection.error_code = error.code
+            connection.message = "模型调用失败，已记录最近一次真实流量错误"
+            db.commit()
             if error.code in {"AUTHENTICATION", "PERMISSION", "RATE_LIMIT"}:
                 try:
                     replacement = bind_adapter(

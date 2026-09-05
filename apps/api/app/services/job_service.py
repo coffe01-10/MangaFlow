@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from threading import Event, Lock, Thread
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, inspect as sa_inspect, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -605,15 +605,38 @@ def mark_job_failed(
 ) -> str | None:
     """Mark a job and its visible targets as failed without committing."""
 
-    if job.status in {JobStatus.COMPLETED, JobStatus.CANCELLED}:
-        return None
     now = utcnow()
-    job.status = JobStatus.FAILED
-    job.error_code = error_code
-    job.error_message = error_message[:500]
-    job.finished_at = now
-    job.lease_owner = None
-    job.lease_expires_at = None
+    # Conditional claim instead of a read-check write: never clobber a live
+    # worker's unexpired lease, but still fail stuck rows whose lease died.
+    claimed = db.execute(
+        update(GenerationJob)
+        .where(
+            GenerationJob.id == job.id,
+            GenerationJob.status.not_in(
+                {JobStatus.COMPLETED, JobStatus.CANCELLED}
+            ),
+            or_(
+                GenerationJob.lease_owner.is_(None),
+                GenerationJob.lease_expires_at.is_(None),
+                GenerationJob.lease_expires_at <= now,
+            ),
+        )
+        .values(
+            status=JobStatus.FAILED,
+            error_code=error_code,
+            error_message=error_message[:500],
+            finished_at=now,
+            lease_owner=None,
+            lease_expires_at=None,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
+        return None
+    state = sa_inspect(job)
+    if state.persistent:
+        # The caller's copy still shows the pre-claim status; reload it.
+        db.expire(job)
     page_candidate = db.scalar(select(PageCandidate).where(PageCandidate.job_id == job.id))
     if page_candidate:
         page_candidate.status = candidate_status
