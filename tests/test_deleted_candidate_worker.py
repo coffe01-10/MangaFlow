@@ -493,3 +493,87 @@ def test_delete_asset_rechecks_selected_guard_after_page_lock(db_session, client
     assert db_session.get(Asset, asset.id).deleted_at is None
     if real_lock is None:
         pytest.fail("delete_asset never took the page lock (fix not applied)")
+
+
+def test_previous_page_deleted_selected_candidate_skipped_as_continuity_reference(
+    db_session, caplog
+):
+    """Red team #137a: a page can hold a selected candidate that was
+    soft-deleted afterwards (select/delete TOCTOU). The next page's
+    continuity reference must skip a deleted candidate — and a live candidate
+    whose asset was soft-deleted — exactly like the style/scene/outfit
+    reference loads already do."""
+    import logging
+
+    from app.services.worker_handlers.page_generate import _load_reference_assets
+
+    project = Project(name="连续性参考过滤")
+    db_session.add(project)
+    db_session.flush()
+    chapter = Chapter(
+        project_id=project.id, ordinal=1, title="第一章", status="PAGES_PLANNED"
+    )
+    db_session.add(chapter)
+    db_session.flush()
+    previous_page = MangaPage(
+        chapter_id=chapter.id, page_number=1, scene_ids=["s"], beat_ids=["b"]
+    )
+    current_page = MangaPage(
+        chapter_id=chapter.id, page_number=2, scene_ids=["s"], beat_ids=["b"]
+    )
+    db_session.add_all([previous_page, current_page])
+    db_session.flush()
+    batch = GenerationBatch(
+        project_id=project.id,
+        chapter_id=chapter.id,
+        page_id=previous_page.id,
+        ordinal=1,
+        generation_kind="PAGE",
+    )
+    db_session.add(batch)
+    db_session.flush()
+    asset = Asset(
+        project_id=project.id,
+        kind="page_candidate",
+        original_name="previous.png",
+        storage_key="previous.png",
+        mime_type="image/png",
+        byte_size=10,
+        sha256="9" * 64,
+        source="VERTEX_GENERATED",
+        status="GENERATED",
+    )
+    db_session.add(asset)
+    db_session.flush()
+    candidate = PageCandidate(
+        batch_id=batch.id,
+        page_id=previous_page.id,
+        ordinal=1,
+        model_alias="image.nano_banana_2",
+        resolution=Resolution.DRAFT_1K,
+        status="INSPECTED",
+        asset_id=asset.id,
+        is_selected=True,
+    )
+    db_session.add(candidate)
+    db_session.flush()
+    previous_page.selected_candidate_id = candidate.id
+    db_session.commit()
+
+    # Live selected candidate: still feeds the next page's continuity.
+    references = _load_reference_assets(db_session, current_page, project)
+    assert [item.id for item in references] == [asset.id]
+
+    # Soft-deleted candidate: skipped with a log line, never fed to the prompt.
+    candidate.deleted_at = datetime.now(UTC)
+    db_session.commit()
+    with caplog.at_level(logging.INFO, logger="mangaflow.worker.page_generate"):
+        references = _load_reference_assets(db_session, current_page, project)
+    assert references == []
+    assert any("连续性参考" in record.message for record in caplog.records)
+
+    # Live candidate whose asset was soft-deleted: also skipped.
+    candidate.deleted_at = None
+    asset.deleted_at = datetime.now(UTC)
+    db_session.commit()
+    assert _load_reference_assets(db_session, current_page, project) == []

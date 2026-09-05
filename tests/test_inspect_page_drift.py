@@ -190,3 +190,75 @@ def test_inspect_success_without_drift_still_marks_page_passed(db_session, monke
     assert page_row.continuity_status == "PASSED"
     assert page_row.version == baseline_version + 1
     assert db_session.get(PageCandidate, candidate.id).status == "INSPECTED"
+
+
+def test_inspect_success_does_not_clear_needs_recheck_without_version_bump(
+    db_session, monkeypatch, caplog
+):
+    """#136: select/retract on an upstream page flags downstream pages
+    NEEDS_RECHECK WITHOUT bumping page.version, so the version baseline cannot
+    see that drift. The completion must keep the flag meaningful instead of
+    wiping it with PASSED/FINAL_READY: converge to NEEDS_REVIEW, keep the
+    inspection rows and log the stale completion."""
+    import logging
+
+    project, page, candidate, _generate_job = _ready_candidate(db_session)
+    _adopt_candidate(page, candidate)
+    db_session.commit()
+    baseline_version = page.version
+    job = _leased_inspect_job(db_session, project, candidate)
+
+    def upstream_reselect_flags_recheck_during_call():
+        # Second session: exactly the generation.py:410-418 / :486-494 shape —
+        # a bulk downstream NEEDS_RECHECK write with NO page.version bump and
+        # no storyboard_version change.
+        reselector = sessionmaker(
+            bind=db_session.get_bind(), autoflush=False, expire_on_commit=False
+        )()
+        try:
+            row = reselector.get(MangaPage, page.id)
+            row.continuity_status = "NEEDS_RECHECK"
+            reselector.commit()
+        finally:
+            reselector.close()
+
+    with caplog.at_level(logging.WARNING, logger="mangaflow.worker.inspection"):
+        _run_inspect(
+            db_session,
+            monkeypatch,
+            job,
+            during_call=upstream_reselect_flags_recheck_during_call,
+        )
+
+    assert any("连续性旗标" in record.message for record in caplog.records)
+
+    # execute_job's commit lands the handler writes; only a committed read
+    # proves the page did not return to PASSED/FINAL_READY.
+    db_session.commit()
+    db_session.expire_all()
+    page_row = db_session.get(MangaPage, page.id)
+    assert page_row.continuity_status == "NEEDS_REVIEW"
+    assert page_row.status == PageStatus.NEEDS_REPAIR
+    assert page_row.version == baseline_version + 1
+    assert page_row.storyboard_version == 1
+
+    kept = db_session.get(PageCandidate, candidate.id)
+    assert kept.status == "INSPECTED"
+    # The paid inspection rows survive as the audit trail of the stale pass.
+    from sqlalchemy import func, select
+
+    from app.models import InspectionResult
+
+    inspection_count = db_session.scalar(
+        select(func.count(InspectionResult.id)).where(
+            InspectionResult.candidate_id == candidate.id
+        )
+    )
+    assert inspection_count == len(INSPECT_CATEGORIES)
+
+    # Production readiness stays blocked on the review flag.
+    from app.services.page_completion import build_page_production_readiness
+
+    readiness = build_page_production_readiness(db_session, page_row)
+    assert readiness.ready is False
+    assert readiness.state == "NEEDS_REPAIR"

@@ -216,10 +216,37 @@ def _load_reference_assets(
         )
     )
     if previous and previous.selected_candidate_id:
-        candidate = db.get(PageCandidate, previous.selected_candidate_id)
-        if candidate and candidate.asset_id:
-            previous_asset = db.get(Asset, candidate.asset_id)
-            if previous_asset:
+        # Mirror the deleted_at filters every other reference load in this
+        # function applies (:176 outfits, :186 scene, :208 style): a page can
+        # legally hold a selected candidate that was soft-deleted afterwards
+        # (#137). A deleted candidate/asset must never feed the paid prompt
+        # as a continuity reference — skip it instead.
+        previous_candidate = db.scalar(
+            select(PageCandidate).where(
+                PageCandidate.id == previous.selected_candidate_id,
+                PageCandidate.deleted_at.is_(None),
+            )
+        )
+        if previous_candidate is None:
+            LOGGER.info(
+                "上一页（%s）已采用候选 %s 已删除或不存在，跳过该连续性参考",
+                previous.id,
+                previous.selected_candidate_id,
+            )
+        elif previous_candidate.asset_id:
+            previous_asset = db.scalar(
+                select(Asset).where(
+                    Asset.id == previous_candidate.asset_id,
+                    Asset.deleted_at.is_(None),
+                )
+            )
+            if previous_asset is None:
+                LOGGER.info(
+                    "上一页（%s）候选 %s 的图片素材已删除，跳过该连续性参考",
+                    previous.id,
+                    previous_candidate.id,
+                )
+            else:
                 references.append(previous_asset)
     return list({asset.id: asset for asset in references}.values())
 

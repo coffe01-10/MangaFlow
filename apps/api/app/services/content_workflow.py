@@ -23,10 +23,12 @@ from app.models import (
     SourceRevision,
     SourceSegment,
 )
+from app.services.editor import mark_pages_for_review, mark_storyboard_changed
 from app.services.job_service import has_active_job
 from app.services.ordinal_allocator import (
     ORDINAL_ALLOCATION_MAX_ATTEMPTS,
     ChapterOrdinalConflictError,
+    OrdinalConflictError,
     SourceRevisionConflictError,
     commit_ordinal_transaction,
     is_sqlite_lock_error,
@@ -36,17 +38,25 @@ from app.services.ordinal_allocator import (
 )
 from app.services.scene_assets import resolve_scene_background
 
+SOFT_TEXT_LIMIT = 120
+HARD_TEXT_LIMIT = 180
+MAX_BUBBLES = 8
+MAX_SEGMENT_CHARS = 800
+# Planner-side cap: a freshly planned page never carries more beats than the
+# panels it can hold, so beats cannot be silently dropped by the panel loop in
+# _populate_page_storyboard (#163).
+MAX_PAGE_PANELS = 5
+
+
+class PagePlanConflictError(OrdinalConflictError):
+    """Raised when chapter page planning cannot commit after lock contention."""
+
 CHAPTER_HEADER = re.compile(
     r"(?m)^\s*(第[零一二三四五六七八九十百千万两0-9]+[章节回卷][^\r\n]*)\s*$"
 )
 SENTENCE_BOUNDARY = re.compile(r"(?<=[。！？!?；;])")
 WHITESPACE = re.compile(r"\s+")
 ACTION_CLAUSE_BOUNDARY = re.compile(r"[，,。！？!?；;：:]+")
-
-SOFT_TEXT_LIMIT = 120
-HARD_TEXT_LIMIT = 180
-MAX_BUBBLES = 8
-MAX_SEGMENT_CHARS = 800
 
 
 def sha256_text(value: str) -> str:
@@ -422,6 +432,56 @@ def _build_beat_anchors(
     return anchors, beats_by_segment
 
 
+def _beat_capped_chunks(
+    chunk: PageChunk,
+    segment_beats: list[Beat],
+    beat_anchors: dict[tuple[str, str], int],
+    max_beats: int,
+) -> list[PageChunk]:
+    """Split a chunk carrying more anchored beats than a page's panel budget.
+
+    _split_for_pages only bounds text length, so a dialogue-dense segment can
+    pack every beat into one chunk (e.g. seven beats in ~60 chars). Page
+    assembly must then cut at the overflow beats' anchor positions so no page
+    plans more beats than its panels can hold (#163).
+    """
+
+    positions = sorted(
+        {
+            beat_anchors[(beat.id, chunk.segment_id)]
+            for beat in segment_beats
+            if chunk.start_offset
+            <= beat_anchors[(beat.id, chunk.segment_id)]
+            < chunk.end_offset
+        }
+    )
+    if len(positions) <= max_beats:
+        return [chunk]
+    pieces: list[PageChunk] = []
+    start = chunk.start_offset
+    while start < chunk.end_offset:
+        remaining = [position for position in positions if position >= start]
+        if not remaining or len(remaining) <= max_beats:
+            end = chunk.end_offset
+        else:
+            # Cut just before the (max_beats + 1)-th beat's anchor so this
+            # piece holds exactly max_beats anchored beats. Distinct beats can
+            # share an anchor offset; nudge by one char to keep pieces valid.
+            end = max(remaining[max_beats], start + 1)
+        text = chunk.text[start - chunk.start_offset : end - chunk.start_offset]
+        pieces.append(
+            PageChunk(
+                chunk.segment_id,
+                start,
+                end,
+                text,
+                _bubble_count(text),
+            )
+        )
+        start = end
+    return pieces
+
+
 def _beats_for_page_ranges(
     ranges: list[dict],
     beats: list[Beat],
@@ -686,6 +746,20 @@ def _populate_page_storyboard(
     page_beats: list[Beat],
     characters: list[Character],
 ) -> None:
+    # Beats beyond panel_count have no panel slot: the loop below builds
+    # dialogue/presence/props only from direct_beat, so those beats would be
+    # silently dropped (#163). Record the overflow on the page's existing
+    # source_coverage JSON so page readiness can surface it as a review hint
+    # instead of losing the story content invisibly.
+    orphan_beat_ids = [beat.id for beat in page_beats[page.panel_count :]]
+    coverage = {
+        key: value
+        for key, value in (page.source_coverage or {}).items()
+        if key != "orphan_beat_ids"
+    }
+    if orphan_beat_ids:
+        coverage["orphan_beat_ids"] = orphan_beat_ids
+    page.source_coverage = coverage
     layout = japanese_panel_layout(
         page.panel_count,
         page.page_number,
@@ -851,6 +925,13 @@ def apply_page_layout(
     ranges = page.source_coverage.get("ranges", [])
     if not ranges or not page.beat_ids or not page.scene_ids:
         raise HTTPException(status_code=409, detail="当前页缺少剧本或原文追溯，不能调整格数")
+    if panel_count < len(page.beat_ids):
+        # Rebuilding with fewer panels than beats would orphan the excess
+        # beats: their dialogue/presence vanish without a trace (#163).
+        raise HTTPException(
+            status_code=409,
+            detail="分格数少于情节拍数量，请先调整拍分配再降低格数",
+        )
 
     raw_chunks = [
         PageChunk(
@@ -897,10 +978,14 @@ def apply_page_layout(
         db.execute(delete(Panel).where(Panel.id.in_(panel_ids)))
     page.panel_count = panel_count
     page.source_coverage = {**page.source_coverage, "layout_mode": layout_mode}
-    page.continuity_status = "NEEDS_REVIEW"
-    page.storyboard_version += 1
-    page.selected_candidate_ack_version = None
-    page.version += 1
+    # A layout rebuild is a whole-page content change: invalidate this page's
+    # continuity AND every later page's, exactly like the undo path
+    # (_restore_page_snapshot) and the storyboard layout contract require
+    # (#148). mark_storyboard_changed bumps storyboard_version and clears the
+    # candidate ack; mark_pages_for_review flags continuity NEEDS_REVIEW and
+    # bumps version for every page from this one onward.
+    mark_storyboard_changed(page)
+    mark_pages_for_review(db, page.chapter_id, from_page_number=page.page_number)
     db.flush()
     _populate_page_storyboard(db, page, chunks, page_scenes, page_beats, characters)
     db.flush()
@@ -921,15 +1006,31 @@ def update_page_layout(
     return page
 
 
-def plan_chapter_pages(
+def _lock_chapter_for_planning(db: Session, chapter: Chapter) -> Chapter:
+    """Take the Project → Chapter row locks in revise_chapter_source's order."""
+    project = lock_entity(db, Project, chapter.project_id)
+    if project is None or project.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    locked = lock_entity(db, Chapter, chapter.id)
+    if not locked or locked.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="章节不存在")
+    return locked
+
+
+def _plan_chapter_pages_locked(
     db: Session,
     chapter: Chapter,
     *,
-    replace_existing: bool = True,
-    from_page_number: int | None = None,
-) -> list[MangaPage]:
-    if not chapter.current_source_revision_id:
-        raise HTTPException(status_code=409, detail="章节没有可用原文")
+    replace_existing: bool,
+    from_page_number: int | None,
+) -> tuple[list[MangaPage], list[MangaPage]]:
+    """Guarded delete + reinsert of one chapter's pages; no commit (#144).
+
+    Runs inside the caller's ordinal savepoint with the Project/Chapter row
+    locks held; returns (preserved_pages, created_pages). Every read here is
+    taken after those locks, so the has_batches guard sees batches committed
+    before the locks were granted.
+    """
     if has_active_job(
         db, job_type="SOURCE_PARSE", target_id=chapter.id, target_type="CHAPTER"
     ):
@@ -952,7 +1053,7 @@ def plan_chapter_pages(
         )
     )
     if existing and not replace_existing:
-        return existing
+        return existing, []
     preserved_pages: list[MangaPage] = []
     start_page_number = 1
     start_segment_id: str | None = None
@@ -971,6 +1072,21 @@ def plan_chapter_pages(
             start_offset = int(first_ranges[0].get("start_offset", 0))
         else:
             affected = existing
+        # Lock the affected page rows BEFORE counting batches (#144). The
+        # Chapter lock above alone does NOT serialize against batch creation:
+        # create_generation_batch / create_page_candidate lock Project → the
+        # page row and never touch Chapter. Locking the same page rows here
+        # closes the race in both directions on PostgreSQL — a creator that
+        # already holds a page lock blocks this count until it commits (the
+        # count below then sees its batch → 409), while a creator arriving
+        # later queues on the page lock until this plan commits (it then
+        # re-reads the page as deleted → 404, instead of having its committed
+        # batch cascade-deleted by our delete below). On SQLite the
+        # ordinal_savepoint's projects UPDATE already reserved the single
+        # writer slot, and the retry loop in plan_chapter_pages re-reads
+        # everything after any lock timeout.
+        for affected_page in affected:
+            lock_entity(db, MangaPage, affected_page.id)
         page_ids = [page.id for page in affected]
         has_batches = db.scalar(
             select(func.count(GenerationBatch.id)).where(GenerationBatch.page_id.in_(page_ids))
@@ -1023,6 +1139,7 @@ def plan_chapter_pages(
     current: list[PageChunk] = []
     current_chars = 0
     current_bubbles = 0
+    current_beats = 0
     current_scene_id: str | None = None
     started = start_segment_id is None
     for segment in segments:
@@ -1036,24 +1153,43 @@ def plan_chapter_pages(
             current = []
             current_chars = 0
             current_bubbles = 0
+            current_beats = 0
         current_scene_id = scene_id
-        for chunk in _split_for_pages(segment):
-            if segment.id == start_segment_id and chunk.end_offset <= start_offset:
+        segment_beats = beats_by_segment.get(segment.id, [])
+        for raw_chunk in _split_for_pages(segment):
+            if segment.id == start_segment_id and raw_chunk.end_offset <= start_offset:
                 continue
-            size = meaningful_characters(chunk.text)
-            overflow = current and (
-                current_chars + size > HARD_TEXT_LIMIT
-                or current_bubbles + chunk.bubble_count > MAX_BUBBLES
-                or current_chars >= SOFT_TEXT_LIMIT
-            )
-            if overflow:
-                pages_chunks.append(current)
-                current = []
-                current_chars = 0
-                current_bubbles = 0
-            current.append(chunk)
-            current_chars += size
-            current_bubbles += chunk.bubble_count
+            for chunk in _beat_capped_chunks(
+                raw_chunk, segment_beats, beat_anchors, MAX_PAGE_PANELS
+            ):
+                size = meaningful_characters(chunk.text)
+                # Same anchor predicate _beats_for_page_ranges uses to select
+                # a page's beats: a page that would hold more anchored beats
+                # than MAX_PAGE_PANELS is split early so the plan itself
+                # cannot overflow panel_count (#163).
+                chunk_beats = sum(
+                    1
+                    for beat in segment_beats
+                    if chunk.start_offset
+                    <= beat_anchors[(beat.id, segment.id)]
+                    < chunk.end_offset
+                )
+                overflow = current and (
+                    current_chars + size > HARD_TEXT_LIMIT
+                    or current_bubbles + chunk.bubble_count > MAX_BUBBLES
+                    or current_chars >= SOFT_TEXT_LIMIT
+                    or current_beats + chunk_beats > MAX_PAGE_PANELS
+                )
+                if overflow:
+                    pages_chunks.append(current)
+                    current = []
+                    current_chars = 0
+                    current_bubbles = 0
+                    current_beats = 0
+                current.append(chunk)
+                current_chars += size
+                current_bubbles += chunk.bubble_count
+                current_beats += chunk_beats
     if current:
         pages_chunks.append(current)
 
@@ -1064,7 +1200,6 @@ def plan_chapter_pages(
     for page_number, chunks in enumerate(pages_chunks, start_page_number):
         text_chars = sum(meaningful_characters(item.text) for item in chunks)
         bubbles = sum(item.bubble_count for item in chunks)
-        panel_count = min(5, max(3, len(chunks) + (1 if bubbles > 4 else 0)))
         ranges = [
             {
                 "segment_id": item.segment_id,
@@ -1075,6 +1210,15 @@ def plan_chapter_pages(
             for item in chunks
         ]
         page_beats = _beats_for_page_ranges(ranges, chapter_beats, beat_anchors, beats_by_segment)
+        # panel_count must be able to hold every planned beat: the panel loop
+        # maps beats[i] → panel[i], so panel_count < len(page_beats) would
+        # silently drop beats (#163). The pagination cap above keeps this at
+        # MAX_PAGE_PANELS except for the nearest-beat fallback, whose overflow
+        # is recorded on the page by _populate_page_storyboard instead.
+        panel_count = min(
+            MAX_PAGE_PANELS,
+            max(3, len(chunks) + (1 if bubbles > 4 else 0), len(page_beats)),
+        )
         scene_ids = list(dict.fromkeys(beat.scene_id for beat in page_beats))
         page_scenes = [scene_map[scene_id] for scene_id in scene_ids]
         beat_ids = [beat.id for beat in page_beats]
@@ -1100,11 +1244,70 @@ def plan_chapter_pages(
         pages.append(page)
 
     chapter.status = "PAGES_PLANNED"
+    # Inside the lock window: a concurrent revise_chapter_source holds the
+    # same Chapter row lock, so this increment can no longer be lost (#144c).
     chapter.version += 1
-    db.commit()
-    for page in pages:
-        db.refresh(page)
-    return [*preserved_pages, *pages]
+    return preserved_pages, pages
+
+
+def plan_chapter_pages(
+    db: Session,
+    chapter: Chapter,
+    *,
+    replace_existing: bool = True,
+    from_page_number: int | None = None,
+    max_attempts: int = ORDINAL_ALLOCATION_MAX_ATTEMPTS,
+) -> list[MangaPage]:
+    if not chapter.current_source_revision_id:
+        raise HTTPException(status_code=409, detail="章节没有可用原文")
+    db.flush()
+    last_error: BaseException | None = None
+    for _attempt in range(max_attempts):
+        try:
+            with ordinal_savepoint(db):
+                locked_chapter = _lock_chapter_for_planning(db, chapter)
+                preserved_pages, pages = _plan_chapter_pages_locked(
+                    db,
+                    locked_chapter,
+                    replace_existing=replace_existing,
+                    from_page_number=from_page_number,
+                )
+        except IntegrityError as error:
+            # The reinsert hit the (chapter_id, page_number, revision_no)
+            # unique constraint — a concurrent plan or page write committed
+            # inside our window. Roll back to the savepoint boundary (the
+            # context manager already did) and surface a clean conflict
+            # instead of an unhandled 500 (#144 instance b).
+            raise HTTPException(
+                status_code=409,
+                detail="分页已存在并发变化，请重试",
+            ) from error
+        except OperationalError as error:
+            if not is_sqlite_lock_error(error):
+                raise
+            last_error = error
+            # Roll the outer transaction back so the retry takes a fresh
+            # snapshot: on WAL SQLite a session that read before a concurrent
+            # commit keeps hitting SQLITE_BUSY_SNAPSHOT on every write retry.
+            db.rollback()
+            db.expire_all()
+            pause_before_ordinal_retry(_attempt, max_attempts)
+            continue
+        try:
+            commit_ordinal_transaction(db, PagePlanConflictError)
+        except PagePlanConflictError as error:
+            last_error = error
+            db.rollback()
+            db.expire_all()
+            pause_before_ordinal_retry(_attempt, max_attempts)
+            continue
+        for page in pages:
+            db.refresh(page)
+        return [*preserved_pages, *pages]
+    raise HTTPException(
+        status_code=409,
+        detail="章节分页正在被其他请求修改，请稍后重试",
+    ) from last_error
 
 
 def chapter_metrics(db: Session, chapter: Chapter) -> dict[str, int | float]:

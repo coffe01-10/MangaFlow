@@ -6,6 +6,7 @@ persistence and candidate/page status convergence.
 """
 
 import json
+import logging
 
 from app.domain.states import JobStatus, PageStatus
 from app.model_adapters.base import MultimodalRequest
@@ -27,6 +28,8 @@ from app.services.page_completion import (
 from app.services.prompt_compiler import compile_page_prompt
 from app.services.worker_handlers import execution, provider
 
+LOGGER = logging.getLogger("mangaflow.worker.inspection")
+
 
 def _run_inspection(db, job: GenerationJob) -> None:
     candidate = db.get(PageCandidate, job.target_id)
@@ -41,6 +44,12 @@ def _run_inspection(db, job: GenerationJob) -> None:
     # change from select/keep/retract) is invisible to the sbv guard below.
     # The page version is the baseline that catches those overwrites.
     baseline_page_version = page.version
+    # select/retract on an upstream page flags downstream pages NEEDS_RECHECK
+    # WITHOUT bumping page.version (generation.py), so the version baseline
+    # cannot see that class of drift. Snapshot the continuity flag too: a
+    # completion whose baseline no longer matches must not wipe the flag by
+    # writing PASSED/NOT_CHECKED over it (#136).
+    baseline_continuity_status = page.continuity_status
     _, snapshot = compile_page_prompt(db, page, project)
     categories = job.request_parameters.get(
         "categories",
@@ -126,6 +135,15 @@ regions 使用 0 到 1 的归一化 x/y/width/height。"""
         raise execution.StaleStoryboardVersionError(
             "页面内容在检查期间已变化（场景或采用状态），已取消本次检查；请按当前页面状态重新检查"
         )
+    continuity_drifted = page.continuity_status != baseline_continuity_status
+    if continuity_drifted:
+        LOGGER.warning(
+            "PAGE_INSPECT job %s 完成时连续性旗标已从 %s 变为 %s（无版本变化的并发写入，"
+            "疑似上游重选触发的 NEEDS_RECHECK）；本次过检结果标记为 NEEDS_REVIEW，不再回写 PASSED",
+            job.id,
+            baseline_continuity_status,
+            page.continuity_status,
+        )
     latest = latest_inspections_by_category(db, candidate.id, inspection_storyboard_version)
     complete = (
         bool(seen)
@@ -140,7 +158,10 @@ regions 使用 0 到 1 的归一化 x/y/width/height。"""
     if not complete:
         candidate.status = "READY"
         if page.selected_candidate_id == candidate.id and candidate.is_selected:
-            page.continuity_status = "NOT_CHECKED"
+            # A drifted flag must not be wiped by NOT_CHECKED either (#136).
+            page.continuity_status = (
+                "NEEDS_REVIEW" if continuity_drifted else "NOT_CHECKED"
+            )
             page.version += 1
     elif needs_review:
         candidate.status = "NEEDS_REVIEW"
@@ -151,9 +172,18 @@ regions 使用 0 到 1 的归一化 x/y/width/height。"""
     else:
         candidate.status = "INSPECTED"
         if page.selected_candidate_id == candidate.id and candidate.is_selected:
-            page.continuity_status = "PASSED"
-            page.status = PageStatus.FINAL_READY
-            page.version += 1
+            if continuity_drifted:
+                # Stale pass over a mid-flight NEEDS_RECHECK: keep the
+                # inspection rows for audit but converge to NEEDS_REVIEW so
+                # the export gate stays blocked until a fresh inspection
+                # runs against the changed upstream inputs (#136).
+                page.continuity_status = "NEEDS_REVIEW"
+                page.status = PageStatus.NEEDS_REPAIR
+                page.version += 1
+            else:
+                page.continuity_status = "PASSED"
+                page.status = PageStatus.FINAL_READY
+                page.version += 1
     # Do not commit inspection rows / page status here. execute_job CAS to
     # COMPLETED and commits the same session; a concurrent cancel then
     # rolls this unit back instead of leaving INSPECTED + CANCELLED.
