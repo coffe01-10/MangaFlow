@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings
 from app.models import ProviderKey
+from app.services.provider_errors import MAX_RETRY_AFTER_SECONDS
 
 _AAD = b"mangaflow-provider-key-v1"
 _LOCAL_MASTER_KEY_FILENAME = ".provider-credential-master-key"
@@ -120,16 +121,30 @@ def mark_key_failure(
     error_code: str,
     *,
     retry_after_seconds: int | None = None,
+    degrade_only: bool = False,
 ) -> None:
+    """Record a key failure; ``degrade_only`` for diagnostic surfaces.
+
+    Read-only diagnostics (balance queries) reuse the generation key but
+    their failures say nothing about the generation surface: a gateway may
+    401/403 its billing endpoint for a perfectly valid generation key.
+    Diagnostic failures must therefore never disable the key or start a
+    cooldown — they only mark it DEGRADED with the error code.
+    """
+
     key.last_error_code = error_code
-    if error_code in {"AUTHENTICATION", "PERMISSION"}:
+    if degrade_only:
+        key.health_state = "DEGRADED"
+    elif error_code in {"AUTHENTICATION", "PERMISSION"}:
         key.health_state = "DENIED"
         key.enabled = False
-    elif error_code == "RATE_LIMIT":
+    elif error_code == "RATE_LIMIT" and not degrade_only:
         key.health_state = "COOLDOWN"
-        key.cooldown_until = datetime.now(UTC) + timedelta(
-            seconds=max(1, retry_after_seconds or 60)
-        )
+        # Second clamp next to the arithmetic: parse sites may be added
+        # elsewhere and a garbage provider hint must never overflow the
+        # datetime arithmetic or outlive a sane cooldown window.
+        cooldown = min(max(1, retry_after_seconds or 60), MAX_RETRY_AFTER_SECONDS)
+        key.cooldown_until = datetime.now(UTC) + timedelta(seconds=cooldown)
     else:
         key.health_state = "DEGRADED"
     db.commit()

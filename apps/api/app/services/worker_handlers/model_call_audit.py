@@ -33,7 +33,13 @@ from app.services.usage_ledger import (
 # job_service (the worker-handler layer sits below job orchestration), and a
 # genuine worker-failure finalize only ever writes adapter error codes, which
 # never collide with these three.
-SWEEP_TERMINAL_ERROR_CODES = frozenset({"JOB_TIMEOUT", "LOCAL_TIMEOUT", "LEASE_EXPIRED"})
+# Error codes written by recovery-side closeouts (the lease-expiry sweep in
+# job_service and the periodic WORKER_LOST convergence). A finalize that
+# surfaces after one of these may carry the real outcome; genuine adapter
+# failures never collide with these codes.
+SWEEP_TERMINAL_ERROR_CODES = frozenset(
+    {"JOB_TIMEOUT", "LOCAL_TIMEOUT", "LEASE_EXPIRED", "WORKER_LOST"}
+)
 
 
 @dataclass(frozen=True)

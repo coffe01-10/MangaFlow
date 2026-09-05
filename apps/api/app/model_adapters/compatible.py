@@ -21,6 +21,7 @@ from app.model_adapters.base import (
     ProviderAdapterError,
     StructuredRequest,
 )
+from app.services.provider_errors import parse_retry_after_seconds
 
 _RESERVED_HEADERS = {"authorization", "host", "content-length", "x-api-key"}
 # "n" is reserved: a configured extra_body must not raise the image count
@@ -215,7 +216,7 @@ def _schema_prompt(prompt: str, output_schema: type[BaseModel]) -> str:
 def _provider_error(response: httpx.Response) -> ProviderAdapterError:
     status = response.status_code
     retry_after = response.headers.get("retry-after")
-    retry_after_seconds = int(retry_after) if retry_after and retry_after.isdigit() else None
+    retry_after_seconds = parse_retry_after_seconds(retry_after)
     if status == 401:
         return ProviderAdapterError("AUTHENTICATION", "供应商 API Key 无效", retryable=False)
     if status == 403:

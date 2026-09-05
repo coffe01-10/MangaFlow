@@ -1,12 +1,13 @@
 "use client";
 
 import { AppShell } from "@/components/shell";
+import { workflowModeLabels } from "@/components/project-workspace/labels";
 import { api, type Project, type Resolution, type WorkflowMode } from "@/lib/api";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Check, CircleAlert, Gauge, LoaderCircle, Save, ShieldCheck, SlidersHorizontal, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { creatorVisibleModels } from "@/lib/model-visibility";
 
 type ProjectDraft = Pick<Project, "workflow_mode" | "draft_resolution" | "default_resolution" | "default_concurrency" | "consistency_check_enabled" | "default_text_model_id" | "text_model_alias">;
@@ -20,6 +21,15 @@ export default function ProjectSettingsPage() {
   const [localDraft, setLocalDraft] = useState<ProjectDraft | null>(null);
   const [saved, setSaved] = useState(false);
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
+  // The floating toast must dismiss itself; leaving it up forever reads as a
+  // stale "still saving" signal on later visits to the page.
+  const savedTimerRef = useRef<number | null>(null);
+  useEffect(() => () => { if (savedTimerRef.current !== null) window.clearTimeout(savedTimerRef.current); }, []);
+  const announceSaved = () => {
+    setSaved(true);
+    if (savedTimerRef.current !== null) window.clearTimeout(savedTimerRef.current);
+    savedTimerRef.current = window.setTimeout(() => setSaved(false), 4000);
+  };
   const draft = localDraft ?? (project.data ? {
       workflow_mode: project.data.workflow_mode,
       draft_resolution: project.data.draft_resolution,
@@ -59,7 +69,7 @@ export default function ProjectSettingsPage() {
         default_text_model_id: data.default_text_model_id,
         text_model_alias: data.text_model_alias,
       });
-      setSaved(true);
+      announceSaved();
     },
   });
   const update = <K extends keyof ProjectDraft>(key: K, value: ProjectDraft[K]) => {
@@ -88,26 +98,30 @@ export default function ProjectSettingsPage() {
       </header>
       <main className="project-settings-page">
         <header className="project-settings-hero"><span>PROJECT SETTINGS / 08</span><h1>控制每一次生成，<br />不是控制你的故事。</h1><p>这里仅保存当前项目的制作策略。图片模型仍在每个候选生成前单独选择，不设置主次。</p></header>
-        {draft ? <div className="project-settings-grid">
+        {project.isError ? <div className="error-panel"><CircleAlert /><div><strong>项目设置读取失败</strong><p>{project.error instanceof Error ? project.error.message : "请稍后重试"}</p><p><button className="button outline compact" onClick={() => project.refetch()}>重试</button></p></div></div>
+        : draft ? <div className="project-settings-grid">
           <section className="project-setting-section">
             <header><SlidersHorizontal size={18} /><div><span>WORKFLOW MODE</span><h2>工作方式</h2></div></header>
-            <div className="project-choice-grid">{([
-              ["DIRECTOR", "导演模式", "每个关键阶段都等待确认"],
-              ["SEMI_AUTO", "半自动", "自动完成准备步骤，保留人工采用"],
-              ["AUTO", "自动规划", "自动推进文字环节，图片仍逐页确认"],
-            ] as const).map(([value, label, detail]) => <button key={value} className={draft.workflow_mode === value ? "selected" : ""} onClick={() => update("workflow_mode", value as WorkflowMode)}><span><strong>{label}</strong><small>{detail}</small></span>{draft.workflow_mode === value && <Check size={16} />}</button>)}</div>
+            <div className="project-choice-grid" role="radiogroup" aria-label="工作方式">{([
+              ["DIRECTOR"],
+              ["SEMI_AUTO"],
+              ["AUTO"],
+            ] as const).map(([value]) => {
+              const meta = workflowModeLabels[value];
+              return <button key={value} role="radio" aria-checked={draft.workflow_mode === value} className={draft.workflow_mode === value ? "selected" : ""} onClick={() => update("workflow_mode", value as WorkflowMode)}><span><strong>{meta.short}{value === "DIRECTOR" ? "模式" : ""}</strong><small>{meta.detail}</small></span>{draft.workflow_mode === value && <Check size={16} />}</button>;
+            })}</div>
           </section>
 
           <section className="project-setting-section">
             <header><Gauge size={18} /><div><span>OUTPUT</span><h2>清晰度与并发</h2></div></header>
-            <div className="project-inline-setting"><span><strong>草稿清晰度</strong><small>抽卡和预览使用</small></span><div className="segmented">{(["1K", "2K"] as Resolution[]).map((value) => <button key={value} className={draft.draft_resolution === value ? "selected" : ""} onClick={() => update("draft_resolution", value)}>{value}</button>)}</div></div>
-            <div className="project-inline-setting"><span><strong>正式清晰度</strong><small>导出前保持结构升清</small></span><div className="segmented">{(["1K", "2K", "4K"] as Resolution[]).map((value) => <button key={value} className={draft.default_resolution === value ? "selected" : ""} onClick={() => update("default_resolution", value)}>{value}</button>)}</div></div>
+            <div className="project-inline-setting"><span><strong>草稿清晰度</strong><small>抽卡和预览使用</small></span><div className="segmented" role="group" aria-label="草稿清晰度">{(["1K", "2K"] as Resolution[]).map((value) => <button key={value} aria-pressed={draft.draft_resolution === value} className={draft.draft_resolution === value ? "selected" : ""} onClick={() => update("draft_resolution", value)}>{value}</button>)}</div></div>
+            <div className="project-inline-setting"><span><strong>正式清晰度</strong><small>导出前保持结构升清</small></span><div className="segmented" role="group" aria-label="正式清晰度">{(["1K", "2K", "4K"] as Resolution[]).map((value) => <button key={value} aria-pressed={draft.default_resolution === value} className={draft.default_resolution === value ? "selected" : ""} onClick={() => update("default_resolution", value)}>{value}</button>)}</div></div>
             <label className="project-inline-setting"><span><strong>任务并发</strong><small>同一项目最多并行任务数</small></span><input type="number" min={1} max={8} value={draft.default_concurrency} onChange={(event) => update("default_concurrency", Number(event.target.value))} /></label>
           </section>
 
           <section className="project-setting-section checks-section">
             <header><ShieldCheck size={18} /><div><span>QUALITY GATES</span><h2>检查开关</h2></div></header>
-            <button className={`switch-setting ${draft.consistency_check_enabled ? "on" : ""}`} onClick={() => update("consistency_check_enabled", !draft.consistency_check_enabled)}><ShieldCheck size={19} /><span><strong>连续性检查</strong><small>检查角色、服装、道具和场景状态</small></span><i /></button>
+            <button role="switch" aria-checked={draft.consistency_check_enabled} className={`switch-setting ${draft.consistency_check_enabled ? "on" : ""}`} onClick={() => update("consistency_check_enabled", !draft.consistency_check_enabled)}><ShieldCheck size={19} /><span><strong>连续性检查</strong><small>检查角色、服装、道具和场景状态</small></span><i /></button>
             <p className="project-setting-note"><strong>文字由人工校对</strong><span>采用候选前必须明确确认页面文字，不再运行 OCR 或自动文字修复。</span></p>
           </section>
 
@@ -123,7 +137,7 @@ export default function ProjectSettingsPage() {
             }}><option value="auto">自动路由 · 已验证文字/视觉模型</option>{currentTextModelMissing ? <option value={currentTextModelValue}>当前配置 · {currentTextModelValue}</option> : null}{textModels.map((model) => <option key={model.catalog_id} value={textModelOptionValue(model.catalog_id, model.logical_alias)}>{model.provider} · {model.display_name}{!model.display_enabled ? "（已隐藏）" : ""}</option>)}</select></label>
           </section>
         </div> : <div className="loading-panel"><LoaderCircle className="spin" />读取项目设置…</div>}
-        {saved && <p className="save-success floating"><Check size={15} />项目设置已保存</p>}
+        {saved && <p className="save-success floating" role="status"><Check size={15} />项目设置已保存</p>}
         {save.isError && <p className="form-error"><CircleAlert size={15} />{save.error.message}</p>}
         {project.data && <section className="project-danger-zone"><header><Trash2 size={18} /><div><span>DANGER ZONE / 项目管理</span><h2>删除当前项目</h2></div></header><div><p>删除后项目将从工作台隐藏。数据库记录和生成文件暂时保留，避免误删；如需恢复可由维护工具处理。</p><label><span>输入项目名称确认</span><input aria-label="输入项目名称确认删除" value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} placeholder={project.data.name} /></label><button type="button" disabled={deleteConfirmation !== project.data.name || archive.isPending} onClick={() => { if (window.confirm(`确认从工作台删除项目“${project.data.name}”？`)) archive.mutate(); }}>{archive.isPending ? <LoaderCircle className="spin" size={16} /> : <Trash2 size={16} />}删除项目</button></div>{archive.isError && <p className="form-error"><CircleAlert size={15} />{archive.error.message}</p>}</section>}
       </main>

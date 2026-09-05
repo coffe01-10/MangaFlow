@@ -41,3 +41,28 @@ class ProviderFailure:
     message: str
     retryable: bool
     authentication: bool = False
+
+
+MAX_RETRY_AFTER_SECONDS = 3600
+
+
+def parse_retry_after_seconds(value: str | None) -> int | None:
+    """Bound a provider ``Retry-After`` hint to a sane cooldown window.
+
+    Third-party gateways echo epoch timestamps or garbage here; an unbounded
+    value used to overflow ``timedelta``/``datetime`` inside
+    ``mark_key_failure`` (crashing the failure path so the key never cooled
+    down) or silently cool a key for decades. Unparseable, non-positive and
+    oversized hints all fall back to the caller's default.
+    """
+
+    if not value:
+        return None
+    try:
+        seconds = int(value)
+    except ValueError:
+        return None
+    if seconds <= 0:
+        return None
+    return min(seconds, MAX_RETRY_AFTER_SECONDS)
+

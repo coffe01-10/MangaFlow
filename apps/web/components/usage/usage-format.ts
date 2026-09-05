@@ -100,6 +100,13 @@ export function formatDuration(ms: number | null) {
   return `${new Intl.NumberFormat("zh-CN").format(ms)} ms`;
 }
 
+export function usageStatusLabel(status: string | null) {
+  if (status === "COMPLETE") return "完整计量";
+  if (status === "PARTIAL") return "部分计量";
+  if (status === "UNKNOWN") return "计量未知";
+  return "未返回";
+}
+
 export function outcomeLabel(outcome: string | null) {
   if (outcome === "SUCCEEDED") return "成功";
   if (outcome === "FAILED") return "失败";

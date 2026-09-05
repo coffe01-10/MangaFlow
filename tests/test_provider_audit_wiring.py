@@ -438,3 +438,51 @@ def test_multi_chunk_calls_then_route_switch_numbering(env, monkeypatch):
         (3, "FAILED", False),
         (4, "SUCCEEDED", True),
     ]
+
+
+def test_replacement_dispatch_refuses_cancelled_job(env, monkeypatch):
+    """A cancel landing during the primary call must not buy a second paid
+    dispatch on the replacement key (JobCancelledError, one attempt row)."""
+
+    from datetime import UTC, datetime
+
+    from app.services.worker_handlers.execution import JobCancelledError
+
+    caller_factory, rows = env
+
+    class _SwitchingAdapter:
+        def __init__(self):
+            self.calls = 0
+
+        def generate_page(self, request):
+            self.calls += 1
+            if self.calls == 1:
+                raise ProviderAdapterError("AUTHENTICATION", "密钥无效")
+            return ModelResponse(
+                model_id="fallback-model", request_id="req-2", usage={"tokens": 3}
+            )
+
+    adapter = _SwitchingAdapter()
+    replacement_binding = _binding(rows, adapter, key=rows["key2"], replacement=True)
+
+    def cancel_and_bind(*_args, **_kwargs):
+        with caller_factory() as cancel_db:
+            job = cancel_db.get(GenerationJob, rows["job"].id)
+            job.status = "CANCELLED"
+            job.cancelled_at = datetime.now(UTC)
+            cancel_db.commit()
+        return replacement_binding
+
+    monkeypatch.setattr(provider, "bind_adapter", cancel_and_bind)
+
+    with caller_factory() as db:
+        db.info["job_id"] = rows["job"].id
+        with pytest.raises(JobCancelledError):
+            provider._invoke_provider(
+                db, _binding(rows, adapter), lambda a: a.generate_page(None)
+            )
+
+    assert adapter.calls == 1
+    attempts = _rows_for_job(caller_factory, rows["job"].id)
+    assert [item.outcome for item in attempts] == ["FAILED"]
+    assert attempts[0].error_code == "AUTHENTICATION"

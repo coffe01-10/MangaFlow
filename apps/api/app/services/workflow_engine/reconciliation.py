@@ -317,38 +317,40 @@ def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
     if run.status in {"COMPLETED", "CANCELLED", "FAILED"}:
         return get_run(db, run.id)
     if failed:
-        final_status = "FAILED"
+        desired = "FAILED"
     elif all(item.status in {"COMPLETED", "SKIPPED"} for item in node_runs):
-        final_status = "COMPLETED"
+        desired = "COMPLETED"
     elif paused:
-        final_status = "PAUSED"
+        desired = "PAUSED"
     else:
-        final_status = "RUNNING"
-    # The stale-status guard above cannot cover the write itself: a cancel_run
-    # claim landing between the refresh and this write owns the row, and an
-    # unconditional ORM write would flip CANCELLED to the recomputed state
-    # (permanent — later reconciles early-return on terminal and retry_run
-    # creates a new run). Claim the row exactly like cancel_run does; on a
-    # lost claim the flushed node writes are rolled back too, which is correct
-    # because the canceller's own committed transaction already moved every
-    # non-terminal node (and its jobs) to CANCELLED.
-    final_values: dict = {"status": final_status, "version": WorkflowRun.version + 1}
-    if final_status in {"FAILED", "COMPLETED"}:
-        final_values["finished_at"] = utcnow()
+        desired = "RUNNING"
+    if desired == "RUNNING":
+        run.version += 1
+        db.commit()
+        return get_run(db, run.id)
+    # Terminal and paused transitions must not overwrite a concurrently
+    # written terminal state: two reconcilers race routinely (worker
+    # finalize, recovery, approve), and a stale RUNNING write resurrects a
+    # FAILED/CANCELLED run that retry then refuses to touch (zombie run).
+    # Flush the node-level writes first so a won claim commits them in the
+    # same transaction, and a lost claim rolls them back wholesale (the
+    # canceller's own transaction already moved every non-terminal node and
+    # its jobs to CANCELLED).
     db.flush()
     claimed = db.execute(
         update(WorkflowRun)
         .where(
             WorkflowRun.id == run.id,
-            WorkflowRun.status.not_in({"COMPLETED", "CANCELLED", "FAILED"}),
+            WorkflowRun.status.not_in(["COMPLETED", "CANCELLED", "FAILED"]),
         )
-        .values(**final_values)
+        .values(status=desired, version=WorkflowRun.version + 1,
+                finished_at=utcnow() if desired in {"COMPLETED", "FAILED"} else None)
         .execution_options(synchronize_session=False)
     )
     if claimed.rowcount != 1:
         db.rollback()
         return get_run(db, run.id)
-    if final_status == "FAILED":
+    if desired == "FAILED":
         # The claim owns the row, so sweep the stranded children in the same
         # transaction: run transition and sweep commit atomically, and any
         # sweep failure rolls the FAILED claim back for a later reconcile to

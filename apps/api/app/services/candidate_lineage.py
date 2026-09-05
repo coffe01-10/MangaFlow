@@ -20,7 +20,6 @@ import hashlib
 import json
 
 from fastapi import HTTPException
-from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -35,6 +34,7 @@ from app.models import (
     MangaPage,
     PageCandidate,
 )
+from app.services.asset_dedupe import adopt_deleted_duplicate, live_duplicate
 from app.services.job_service import create_job
 from app.services.model_capabilities import (
     REGION_EDIT_SURFACE_LABELS,
@@ -132,9 +132,7 @@ def store_region_mask_asset(
         document, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     digest = hashlib.sha256(encoded).hexdigest()
-    existing = db.scalar(
-        select(Asset).where(Asset.project_id == project_id, Asset.sha256 == digest)
-    )
+    existing = live_duplicate(db, project_id=project_id, sha256=digest)
     if existing is not None:
         return existing
     storage_key = f"generated/{project_id}/region-masks/{digest}.json"
@@ -160,9 +158,11 @@ def store_region_mask_asset(
     except IntegrityError:
         # Another writer inserted the same content first; its file is the same
         # content-addressed bytes, so only the row lookup matters here.
-        existing = db.scalar(
-            select(Asset).where(Asset.project_id == project_id, Asset.sha256 == digest)
-        )
+        existing = live_duplicate(db, project_id=project_id, sha256=digest)
+        if existing is None:
+            existing = adopt_deleted_duplicate(
+                db, project_id=project_id, sha256=digest
+            )
         if existing is None:
             raise
         return existing

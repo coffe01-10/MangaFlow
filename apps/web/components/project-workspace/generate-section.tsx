@@ -20,10 +20,11 @@ import {
 import { useState } from "react";
 
 import { ProductionReadiness } from "@/components/production-readiness";
-import { api, originUrl, publicUrl, type ImageModelAlias, type MangaPage, type PageCandidate } from "@/lib/api";
+import { ApiError, api, originUrl, publicUrl, type ImageModelAlias, type InspectionResult, type MangaPage, type PageCandidate, type ProductionBlocker } from "@/lib/api";
 import { hasActiveItem } from "@/lib/task-status";
 
 import { assetName } from "./display";
+import { candidateStatusLabels, candidateVersionStateLabels, productionStateLabels } from "./labels";
 import { isPackageModeSelection } from "./reference-selection";
 import { interiorLabel, sceneAssetStatusMeta } from "./scene-status";
 import { CandidateArtwork, ImageModelPicker } from "./shared";
@@ -36,6 +37,7 @@ import type { WorkspaceQueries } from "./use-workspace-queries";
 
 export function GenerateSection({
   id,
+  chapters,
   pages,
   assets,
   characters,
@@ -56,6 +58,7 @@ export function GenerateSection({
   closeLocalEdit,
 }: {
   id: string;
+  chapters: WorkspaceQueries["chapters"];
   pages: WorkspaceQueries["pages"];
   assets: WorkspaceQueries["assets"];
   characters: WorkspaceQueries["characters"];
@@ -231,10 +234,12 @@ export function GenerateSection({
           {!generationReferenceReady && <p className="reference-check-warning"><CircleAlert size={13} />有角色缺少可用参考图，请先到“参考资产”绑定；分镜指定服装时也必须选择对应服装图。</p>}
         </section>
         <div className="generation-bar"><div className="generation-options"><div><span>正式模型</span><strong>{modelOptions.find((item) => item.alias === activeDrawModel)?.name ?? "尚未选择"}</strong></div><div><span>本次规格</span><strong>1K · 彩色 · 1 个候选</strong></div></div><button className="button ink generate-one" disabled={generate.isPending || !generationPackagesReady || Boolean(selectedPageGenerationIssue) || !pageReadiness.data?.ready || !generationReferenceReady || isViewingHistoricalBatch} onClick={() => generate.mutate()}>{generate.isPending ? <LoaderCircle className="spin" size={17} /> : <Star size={17} />}{generate.isPending ? "正在加入 1 个正式任务" : isViewingHistoricalBatch ? "先切回最新批次再生成" : selectedPageStructureIssue ? "请先补全剧本与分镜" : !activeDrawModel ? "先选择图片模型" : !pageReadiness.data?.ready ? "先完成页面生产准备" : !generationReferenceReady ? "先补齐人物与服装参考" : "生成 1 个 1K 彩色候选"}</button></div>
-        {(generate.isError || startBatch.isError || actionError) && <p className="form-error"><CircleAlert size={14} />{(generate.error ?? startBatch.error ?? actionError)?.message}</p>}
+        {(generate.isError || startBatch.isError || actionError) && <p className="form-error" role="alert"><CircleAlert size={14} />{describeActionError(generate.error ?? startBatch.error ?? actionError)}</p>}
 
         <div className="batch-heading"><div><span>{isViewingHistoricalBatch ? "HISTORY / 历史批次" : "BATCH / 当前批次"}</span><strong>{viewedBatch ? `批次 ${viewedBatch.ordinal}` : "尚未开始批次"}</strong></div><small>{isViewingHistoricalBatch ? `正在查看历史结果 · 共 ${orderedPageBatches.length} 个批次` : "每个候选记录实际供应商与模型 · 收藏不等于采用"}</small></div>
-        <div className="candidate-grid">{!candidates.data && <article className="candidate-card" aria-hidden="true"><CandidateArtwork contentUrl={null} label="候选加载中" eager /></article>}{candidates.data?.map((candidate, candidateIndex) => <article className={`${candidate.is_selected ? "candidate-card selected" : "candidate-card"} version-${candidate.version_state.toLowerCase()}`} key={candidate.id}><CandidateArtwork contentUrl={candidate.content_url} thumbnailUrl={candidate.thumbnail_url} label={`候选 ${candidate.ordinal}`} eager={candidateIndex === 0} onOpen={(url, label) => openPreview(url, label, candidate)} /><div className="candidate-meta"><span>候选 {String(candidate.ordinal).padStart(2, "0")}</span><strong>{catalogModelOptions.find((item) => item.alias === candidate.model_alias)?.name ?? candidate.model_alias}</strong><small>{candidate.resolution} · {candidate.status}</small><em>{candidate.based_on_storyboard_version ? `生成依据 V${candidate.based_on_storyboard_version}` : "生成版本未知"} · {candidate.version_state}</em></div><div className="candidate-actions"><button className={candidate.is_favorite ? "favorited" : ""} onClick={() => favorite.mutate({ candidateId: candidate.id, value: !candidate.is_favorite })}><Heart size={14} fill={candidate.is_favorite ? "currentColor" : "none"} />收藏</button><button disabled={!candidate.asset_id || candidate.is_selected} onClick={() => { if (window.confirm("请确认页面文字已人工校对。暂选后还需要完成视觉检查，才能进入下一页或导出。是否继续？")) selectCandidate.mutate({ candidateId: candidate.id, manualTextConfirmed: true, acceptStale: candidate.version_state !== "CURRENT" }); }}><Check size={14} />{candidate.is_selected ? "已暂选" : candidate.version_state === "CURRENT" ? "人工校对并暂选" : "确认旧版本并暂选"}</button><button className={reviewCandidateId === candidate.id ? "reviewing" : ""} disabled={!candidate.asset_id || inspectCandidate.isPending} onClick={() => { setReviewCandidateId(candidate.id); inspectCandidate.mutate(candidate.id); }}><CircleAlert size={14} />视觉检查</button>{candidate.asset_id && candidate.resolution === "1K" && <button disabled={upscaleCandidate.isPending || !activeDrawModel} onClick={() => upscaleCandidate.mutate({ candidateId: candidate.id, resolution: "2K" })}>升至 2K</button>}{candidate.asset_id && candidate.resolution !== "4K" && <button disabled={upscaleCandidate.isPending || !activeDrawModel} onClick={() => upscaleCandidate.mutate({ candidateId: candidate.id, resolution: "4K" })}>升至 4K</button>}{candidate.asset_id && <button title="在选区编辑：画 mask 后按 regenerate_region 生成派生候选" onClick={() => openLocalEdit(candidate)}><Pencil size={14} />局部修改</button>}<button className="danger-action" disabled={candidate.is_selected} onClick={() => { if (window.confirm("删除这个候选？收藏状态也会一并移除。")) deleteCandidate.mutate(candidate.id); }}><Trash2 size={14} />删除</button></div></article>)}</div>
+        <div className="candidate-grid">{!candidates.data && !candidates.isError && <article className="candidate-card" aria-hidden="true"><CandidateArtwork contentUrl={null} label="候选加载中" eager /></article>}{candidates.data?.map((candidate, candidateIndex) => { const upscaleBusy = upscaleCandidate.isPending && upscaleCandidate.variables?.candidateId === candidate.id; const deleteBusy = deleteCandidate.isPending && deleteCandidate.variables === candidate.id; // A paid upscale in flight on this candidate must fence the destructive and
+// selection actions on the same row, or the job can outlive its target.
+const rowLocked = upscaleBusy; return <article className={`${candidate.is_selected ? "candidate-card selected" : "candidate-card"} version-${candidate.version_state.toLowerCase()}`} key={candidate.id}><CandidateArtwork contentUrl={candidate.content_url} thumbnailUrl={candidate.thumbnail_url} label={`候选 ${candidate.ordinal}`} eager={candidateIndex === 0} onOpen={(url, label) => openPreview(url, label, candidate)} /><div className="candidate-meta"><span>候选 {String(candidate.ordinal).padStart(2, "0")}</span><strong>{catalogModelOptions.find((item) => item.alias === candidate.model_alias)?.name ?? candidate.model_alias}</strong><small>{candidate.resolution} · {candidateStatusLabels[candidate.status] ?? candidate.status}</small><em>{candidate.based_on_storyboard_version ? `生成依据 V${candidate.based_on_storyboard_version}` : "生成版本未知"} · {candidateVersionStateLabels[candidate.version_state] ?? candidate.version_state}</em></div><div className="candidate-actions"><button className={candidate.is_favorite ? "favorited" : ""} disabled={(favorite.isPending && favorite.variables?.candidateId === candidate.id) || rowLocked} onClick={() => favorite.mutate({ candidateId: candidate.id, value: !candidate.is_favorite })}><Heart size={14} fill={candidate.is_favorite ? "currentColor" : "none"} />收藏</button><button disabled={!candidate.asset_id || candidate.is_selected || rowLocked || (selectCandidate.isPending && selectCandidate.variables?.candidateId === candidate.id)} onClick={() => { if (window.confirm("请确认页面文字已人工校对。暂选后还需要完成视觉检查，才能进入下一页或导出。是否继续？")) selectCandidate.mutate({ candidateId: candidate.id, manualTextConfirmed: true, acceptStale: candidate.version_state !== "CURRENT" }); }}><Check size={14} />{candidate.is_selected ? "已暂选" : candidate.version_state === "CURRENT" ? "人工校对并暂选" : "确认旧版本并暂选"}</button><button className={reviewCandidateId === candidate.id ? "reviewing" : ""} disabled={!candidate.asset_id || inspectCandidate.isPending} onClick={() => { setReviewCandidateId(candidate.id); inspectCandidate.mutate(candidate.id); }}><CircleAlert size={14} />视觉检查</button>{candidate.asset_id && candidate.resolution === "1K" && <button disabled={upscaleCandidate.isPending || !activeDrawModel} title={upscaleBusy ? "正在提交升清任务" : "升清会调用一次所选图片模型（可能计费）并生成新候选"} onClick={() => { if (window.confirm(`升至 2K 会调用一次所选图片模型（可能计费），并基于该候选生成一个新批次。是否继续？`)) upscaleCandidate.mutate({ candidateId: candidate.id, resolution: "2K" }); }}>{upscaleBusy ? "正在升清…" : "升至 2K"}</button>}{candidate.asset_id && candidate.resolution !== "4K" && <button disabled={upscaleCandidate.isPending || !activeDrawModel} title={upscaleBusy ? "正在提交升清任务" : "升清会调用一次所选图片模型（可能计费）并生成新候选"} onClick={() => { if (window.confirm(`升至 4K 会调用一次所选图片模型（可能计费），并基于该候选生成一个新批次。是否继续？`)) upscaleCandidate.mutate({ candidateId: candidate.id, resolution: "4K" }); }}>{upscaleBusy ? "正在升清…" : "升至 4K"}</button>}{candidate.asset_id && <button title="在选区编辑：画 mask 后按 regenerate_region 生成派生候选" onClick={() => openLocalEdit(candidate)}><Pencil size={14} />局部修改</button>}<button className="danger-action" disabled={candidate.is_selected || rowLocked || deleteBusy} onClick={() => { if (window.confirm("删除这个候选？收藏状态也会一并移除。")) deleteCandidate.mutate(candidate.id); }}><Trash2 size={14} />删除</button></div></article>; })}</div>
         {reviewCandidateId && <InspectionPanel
           latestInspections={latestInspections}
           reviewJob={reviewJob}
@@ -246,20 +251,54 @@ export function GenerateSection({
         <section className={`production-gate ${pageProduction?.ready ? "ready" : "blocked"}`}>
           <header>
             <div><span>PRODUCTION GATE / 页面生产门禁</span><strong>{pageProduction?.ready ? "当前页已通过，可以进入下一页" : "当前页尚未生产通过"}</strong></div>
-            <em>{pageProduction?.ready ? "READY" : pageProduction?.state ?? "LOADING"}</em>
+            <em>{pageProduction ? productionStateLabels[pageProduction.state] ?? pageProduction.state : "读取中"}</em>
           </header>
           <div className="production-gate-steps">
             <span className={selectedWorkbenchCandidate ? "done" : ""}><Check size={13} />人工校对并暂选</span>
             <span className={selectedWorkbenchCandidate && !["STALE", "LEGACY_UNKNOWN"].includes(selectedWorkbenchCandidate.version_state) ? "done" : ""}><Check size={13} />确认当前分镜版本</span>
             <span className={pageProduction?.ready ? "done" : ""}><Check size={13} />视觉检查通过</span>
           </div>
-          {!pageProduction?.ready && <p><CircleAlert size={14} />{productionBlocker?.message ?? "正在读取当前页生产状态"}</p>}
+          {!pageProduction?.ready && <p><CircleAlert size={14} />{gateBlockerMessage(productionBlocker, latestInspections)}</p>}
         </section>
-        {!candidates.data?.length && <div className="asset-empty"><ImagePlus size={25} /><strong>这个批次还没有候选</strong><p>完成生产准备并确认参考图后，使用本次选择的图片模型生成 1 张彩色页面。</p></div>}
-        <div className="next-page-row"><span>{pageProduction?.ready ? "人工校对、版本确认和视觉检查均已通过" : productionBlocker?.message ?? "完成页面生产门禁后才能继续"}</span><div>{pageProduction?.ready && <a className="button ghost compact" href={api.selectedPagePngUrl(selectedPage.id)!}><Download size={14} />单页 PNG</a>}<button className="button outline" disabled={!pageProduction?.ready || goNext.isPending} onClick={() => goNext.mutate()}>生成下一页 <ArrowRight size={15} /></button></div></div>
-      </> : pages.isLoading || pages.data === undefined ? null : <div className="asset-empty tall"><Sparkles size={28} /><strong>没有可抽卡页面</strong><p>先完成动态分页。</p></div>}
+        {candidates.isError && <div className="asset-empty" role="alert"><CircleAlert size={25} /><strong>候选列表读取失败</strong><p>{candidates.error instanceof Error ? candidates.error.message : "请稍后重试"}</p><button type="button" className="button outline compact" onClick={() => candidates.refetch()}>重试读取</button></div>}
+        {!candidates.data?.length && !candidates.isError && !candidates.isLoading && <div className="asset-empty"><ImagePlus size={25} /><strong>这个批次还没有候选</strong><p>完成生产准备并确认参考图后，使用本次选择的图片模型生成 1 张彩色页面。</p></div>}
+        <div className="next-page-row"><span>{pageProduction?.ready ? "人工校对、版本确认和视觉检查均已通过" : gateBlockerMessage(productionBlocker, latestInspections)}</span><div>{pageProduction?.ready && <a className="button ghost compact" href={api.selectedPagePngUrl(selectedPage.id)!}><Download size={14} />单页 PNG</a>}<button className="button outline" disabled={!pageProduction?.ready || goNext.isPending} onClick={() => goNext.mutate()}>生成下一页 <ArrowRight size={15} /></button></div></div>
+      </> : chapters.isError ? <div className="asset-empty tall" role="alert"><CircleAlert size={28} /><strong>章节列表读取失败</strong><p>{chapters.error instanceof Error ? chapters.error.message : "请稍后重试"}</p><button type="button" className="button outline compact" onClick={() => chapters.refetch()}>重试</button></div> : pages.isLoading ? <div className="generate-skeleton" role="status" aria-label="正在读取页面列表"><LoaderCircle className="spin" size={22} /><span>正在读取页面列表…</span></div> : pages.isError ? <div className="asset-empty tall" role="alert"><CircleAlert size={28} /><strong>页面列表读取失败</strong><p>{pages.error instanceof Error ? pages.error.message : "请稍后重试"}</p><button type="button" className="button outline compact" onClick={() => pages.refetch()}>重试</button></div> : pages.data === undefined ? <div className="generate-skeleton" role="status" aria-label="正在读取页面列表"><LoaderCircle className="spin" size={22} /><span>正在读取页面列表…</span></div> : <div className="asset-empty tall"><Sparkles size={28} /><strong>没有可抽卡页面</strong><p>先完成动态分页。</p></div>}
     </div>
   );
+}
+
+const PASSING_OUTCOMES = new Set(["MATCH", "PASS", "ACCEPTABLE"]);
+
+// 409 payloads such as select-candidate carry structured blockers
+// ({code, message, recommended_action}); appending them tells the user what to
+// fix instead of a flat "候选尚未达到采用标准".
+function describeActionError(error: unknown): string {
+  const base = error instanceof Error ? error.message : "操作失败，请重试";
+  if (error instanceof ApiError && error.status === 409) {
+    const detail = error.detail as { blockers?: Array<{ message?: string }> } | undefined;
+    const messages = (detail?.blockers ?? []).map((item) => item.message).filter(Boolean);
+    if (messages.length) return `${base}：${messages.join("；")}`;
+  }
+  return base;
+}
+
+// The backend reuses QUALITY_REVIEW_REQUIRED both for genuinely failed
+// inspections and for the fail-closed "inputs changed since the last check"
+// state; the generic copy tells users a check failed when it actually passed.
+function gateBlockerMessage(
+  blocker: ProductionBlocker | null,
+  latestInspections: InspectionResult[],
+): string {
+  if (!blocker) return "正在读取当前页生产状态";
+  if (
+    blocker.code === "QUALITY_REVIEW_REQUIRED"
+    && latestInspections.length > 0
+    && latestInspections.every((item) => PASSING_OUTCOMES.has(item.outcome))
+  ) {
+    return "分镜、风格或参考已更新，请重新运行视觉检查，确认当前候选仍然有效";
+  }
+  return blocker.message;
 }
 
 function PageSceneInheritance({

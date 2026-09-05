@@ -490,7 +490,7 @@ describe("StoryboardEditor canvas (V02-31B)", () => {
     expect(panelEl("panel-1")).toHaveClass("selected");
   });
 
-  it("S16 画布一个 tab stop，方向键/Tab 在格之间移动", async () => {
+  it("S16 画布一个 tab stop，方向键/Tab 在格之间移动；边界 Tab 放行", async () => {
     renderEditor();
     const pageElement = await screen.findByTestId("canvas-page");
     expect(panelEl("panel-1").getAttribute("tabindex")).toBeNull();
@@ -504,6 +504,20 @@ describe("StoryboardEditor canvas (V02-31B)", () => {
     expect(panelEl("panel-1")).not.toHaveClass("selected");
     fireEvent.keyDown(pageElement, { key: "ArrowLeft" });
     expect(panelEl("panel-2")).toHaveClass("selected");
+    // 键盘不再被困死在画布内：末格按 Tab 放行给页面焦点序。
+    // fireEvent 返回 false 表示事件被 preventDefault 拦截。
+    fireEvent.keyDown(pageElement, { key: "ArrowRight" });
+    expect(panelEl("panel-2")).toHaveClass("selected");
+    const fallthroughAllowed = fireEvent.keyDown(pageElement, { key: "Tab" });
+    expect(fallthroughAllowed).toBe(true);
+    expect(panelEl("panel-2")).toHaveClass("selected");
+    // 末格内 Shift+Tab 仍有目标格，必须拦截并在格间移动。
+    const moveWithinPrevented = !fireEvent.keyDown(pageElement, { key: "Tab", shiftKey: true });
+    expect(moveWithinPrevented).toBe(true);
+    expect(panelEl("panel-1")).toHaveClass("selected");
+    // 首格再按 Shift+Tab 同样放行。
+    const escapeBackAllowed = fireEvent.keyDown(pageElement, { key: "Tab", shiftKey: true });
+    expect(escapeBackAllowed).toBe(true);
   });
 
   it("S17 reduced motion：画布过渡与气泡位移随 V02-51B 全局单块契约关闭", () => {
@@ -520,7 +534,8 @@ describe("StoryboardEditor canvas (V02-31B)", () => {
     const drawer = css.slice(css.indexOf("@media (max-width: 1099.98px) and (min-width: 900px)"));
     expect(drawer).toContain(".panel-inspector.drawer-open { position: fixed");
     expect(drawer).toContain("bottom: 10px");
-    expect(drawer).toContain(".canvas-viewport { min-height: 480px; }");
+    // 720p 窗口不再被 480px 硬下限挤出整页滚动条。
+    expect(drawer).toContain(".canvas-viewport { min-height: clamp(320px, calc(100vh - 320px), 480px); }");
   });
 
   it("S19 ≥1280px：画布与检查器并排（样式契约）", () => {
@@ -612,6 +627,84 @@ describe("StoryboardEditor canvas (V02-31B)", () => {
     expect(screen.getByRole("button", { name: "保存本页" })).toHaveProperty("disabled", true);
     expect(saveGeometry).not.toHaveBeenCalled();
   });
+
+  it("S21 删除带未保存文字草稿的气泡后，编辑器 dirty 状态清除", async () => {
+    const withBubble = makePanel({ dialogues: [{
+      id: "dlg-1",
+      panel_id: "panel-1",
+      speaker_character_id: null,
+      target_text: "早上好",
+      reading_order: 1,
+      text_direction: "vertical",
+      region: { preferred: "upper_inner" },
+      rewrite_forbidden: true,
+      bubble: storedBubble,
+    }] });
+    data = { page, candidate_count: 0, panels: [withBubble, panel2] };
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderEditor();
+    stubRect(await screen.findByTestId("canvas-page"), 640, 903);
+    fireEvent.pointerDown(bubbleEl("dlg-1"), { button: 0, pointerId: 1, clientX: 160, clientY: 172 });
+    fireEvent.pointerUp(window, { pointerId: 1, clientX: 160, clientY: 172 });
+    const textbox = await screen.findByRole("textbox", { name: "气泡 1 文字" });
+    fireEvent.change(textbox, { target: { value: "雨停之后的早晨" } });
+    expect(screen.getByRole("button", { name: "保存本页" })).toHaveProperty("disabled", false);
+    fireEvent.click(screen.getByRole("button", { name: "删除气泡 1" }));
+    await waitFor(() => expect(deleteDialogue).toHaveBeenCalledWith("dlg-1", expect.anything()));
+    // 草稿随气泡一并移除；保存按钮回到禁用，不再永久提示未保存。
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "保存本页" })).toHaveProperty("disabled", true);
+    });
+    confirmSpy.mockRestore();
+  });
+
+  it("S22 保存进行中切换页面：响应写入原页面缓存键，不覆盖新页面", async () => {
+    const page2Data = {
+      page: page2,
+      candidate_count: 0,
+      panels: [makePanel({ id: "panel-p2", page_id: "page-2", actions: { script_action: "第二页动作" } })],
+    };
+    storyboardQuery.mockReset();
+    storyboardQuery.mockImplementation((pageId: string) =>
+      Promise.resolve((pageId === "page-2" ? page2Data : data) as never));
+    let releaseSave: ((value: unknown) => void) | undefined;
+    saveGeometry.mockReset();
+    saveGeometry.mockImplementation(() => new Promise((resolve) => {
+      releaseSave = resolve;
+    }) as never);
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const client = new QueryClient();
+    render(
+      <QueryClientProvider client={client}>
+        <StoryboardEditor
+          chapterId="chapter-1"
+          pages={[page, page2] as never}
+          characters={[]}
+          outfits={[]}
+          onReplan={() => undefined}
+          replanPending={false}
+        />
+      </QueryClientProvider>,
+    );
+    stubRect(await screen.findByTestId("canvas-page"), 640, 903);
+    fireEvent.pointerDown(panelEl("panel-1"), { button: 0, pointerId: 1, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(window, { pointerId: 1, clientX: 164, clientY: 100 });
+    fireEvent.pointerUp(window, { pointerId: 1, clientX: 164, clientY: 100 });
+    fireEvent.click(screen.getByRole("button", { name: "保存本页" }));
+    await waitFor(() => expect(saveGeometry).toHaveBeenCalledTimes(1));
+    // 保存未返回时切到第 2 页（确认放弃草稿提示）。
+    fireEvent.click(screen.getByRole("button", { name: /P\.002/ }));
+    await screen.findByText("第二页动作");
+    const savedSnapshot = { ...makeStoryboard(), panels: [makePanel({ bounds: { x: 0.2, y: 0.1, width: 0.4, height: 0.3 } }), panel2] };
+    releaseSave?.(savedSnapshot as never);
+    await waitFor(() => {
+      expect(client.getQueryData(["storyboard", "page-1"])).toEqual(savedSnapshot);
+    });
+    // 第 2 页的缓存绝不能被第 1 页的响应覆盖。
+    expect(client.getQueryData(["storyboard", "page-2"])).toEqual(page2Data);
+    expect(screen.getByText("第二页动作")).toBeTruthy();
+    confirmSpy.mockRestore();
+  });
 });
 
 describe("StoryboardEditor inspector resizer（既有用例）", () => {
@@ -623,6 +716,8 @@ describe("StoryboardEditor inspector resizer（既有用例）", () => {
   });
 
   it("捕获拖拽指针并持续调整属性面板宽度", async () => {
+    // 视口宽度参与上限计算（画布列 + 侧栏预算后），用宽窗口测正常区间。
+    window.innerWidth = 1440;
     renderEditor();
     const separator = await screen.findByRole("separator", { name: "调整属性面板宽度" });
     const worktable = separator.parentElement!;

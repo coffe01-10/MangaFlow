@@ -1,7 +1,7 @@
 """Project job listing, lifecycle actions and bulk archive routes."""
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
 from app.api.helpers import asset_candidate_read, candidate_read
@@ -237,21 +237,22 @@ def restore_job(job_id: str, db: Session = Depends(get_db)) -> GenerationJob:
     response_model=JobArchiveResult,
 )
 def archive_completed_jobs(project_id: str, db: Session = Depends(get_db)) -> JobArchiveResult:
-    jobs = list(
-        db.scalars(
-            select(GenerationJob).where(
-                GenerationJob.project_id == project_id,
-                GenerationJob.archived_at.is_(None),
-                GenerationJob.status.in_(TERMINAL_JOB_STATUSES),
-            )
-        )
-    )
     archived_at = utcnow()
-    for job in jobs:
-        job.archived_at = archived_at
-        job.version += 1
+    # Single conditional update: a job concurrently retried back to an active
+    # status between the SELECT and the write must not be archived out of the
+    # job list while it still runs.
+    archived = db.execute(
+        update(GenerationJob)
+        .where(
+            GenerationJob.project_id == project_id,
+            GenerationJob.archived_at.is_(None),
+            GenerationJob.status.in_(TERMINAL_JOB_STATUSES),
+        )
+        .values(archived_at=archived_at, version=GenerationJob.version + 1)
+        .execution_options(synchronize_session=False)
+    )
     db.commit()
-    return JobArchiveResult(archived_count=len(jobs))
+    return JobArchiveResult(archived_count=archived.rowcount)
 
 
 @router.post(
@@ -277,15 +278,21 @@ def bulk_archive_jobs(
     if non_terminal:
         raise HTTPException(status_code=409, detail="运行中的任务不能批量归档")
     archived_at = utcnow()
-    archived_count = 0
-    for job in jobs:
-        if job.archived_at is not None:
-            continue
-        job.archived_at = archived_at
-        job.version += 1
-        archived_count += 1
+    # Conditional for the same reason as archive-completed: only rows that
+    # are still terminal at write time are archived.
+    archived = db.execute(
+        update(GenerationJob)
+        .where(
+            GenerationJob.id.in_(payload.job_ids),
+            GenerationJob.project_id == project_id,
+            GenerationJob.archived_at.is_(None),
+            GenerationJob.status.in_(TERMINAL_JOB_STATUSES),
+        )
+        .values(archived_at=archived_at, version=GenerationJob.version + 1)
+        .execution_options(synchronize_session=False)
+    )
     db.commit()
-    return JobArchiveResult(archived_count=archived_count)
+    return JobArchiveResult(archived_count=archived.rowcount)
 
 
 def _job_has_references(db: Session, job_id: str) -> bool:

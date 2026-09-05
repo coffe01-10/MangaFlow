@@ -23,11 +23,11 @@ from types import SimpleNamespace
 from sqlalchemy.orm import sessionmaker
 
 from app import database, worker_tasks
-from app.config import Settings, get_settings
+from app.config import Settings
 from app.domain.states import JobStatus
 from app.model_adapters import google as google_adapter
 from app.models import AppSetting, GenerationJob, ModelCallAttempt, Project
-from app.services import job_service, vertex_credentials
+from app.services import job_service
 
 LOCAL_TIMEOUT_WAITING_MESSAGE = "本地执行超过墙钟上限，等待租约过期回收"
 LOCAL_TIMEOUT_REQUEUE_MESSAGE = "本地执行超过墙钟上限，任务等待重新执行"
@@ -285,23 +285,15 @@ def test_recovery_requeue_preserves_local_timeout_cause(db_session, monkeypatch)
     assert db_session.get(ModelCallAttempt, attempt.id).outcome is None
 
 
-def test_genai_http_options_bounded_by_job_budget(monkeypatch):
-    """Both genai seams expose the same job-budget milliseconds timeout."""
+def test_genai_transport_bound_is_a_fixed_90s_cap():
+    """Both genai seams pin the transport at 90s (origin/master semantics).
 
-    expected = {"timeout": get_settings().job_timeout_seconds * 1000}
-    assert google_adapter.genai_http_options() == expected
-    assert vertex_credentials.genai_http_options() == expected
+    The job-level wall-clock cap stays with the lease heartbeat + recovery;
+    the transport bound exists so one hung request cannot pin a worker slot
+    for minutes. Fixed constant, independent of the job budget.
+    """
 
-    monkeypatch.setattr(
-        google_adapter, "get_settings", lambda: SimpleNamespace(job_timeout_seconds=45)
-    )
-    monkeypatch.setattr(
-        vertex_credentials,
-        "get_settings",
-        lambda: SimpleNamespace(job_timeout_seconds=45),
-    )
-    assert google_adapter.genai_http_options() == {"timeout": 45000}
-    assert vertex_credentials.genai_http_options() == {"timeout": 45000}
+    assert google_adapter._GOOGLE_HTTP_TIMEOUT_MS == 90_000
 
 
 def test_google_text_client_carries_timeout_into_real_genai_client():
@@ -320,7 +312,7 @@ def test_google_text_client_carries_timeout_into_real_genai_client():
     client = adapter._client()
     try:
         assert client._api_client._http_options.timeout == (
-            get_settings().job_timeout_seconds * 1000
+            google_adapter._GOOGLE_HTTP_TIMEOUT_MS
         )
     finally:
         close = getattr(client, "close", None)

@@ -1,7 +1,7 @@
 """Generation batch, page candidate and selection routes."""
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.api.helpers import asset_candidate_read, candidate_read, candidate_version_state
@@ -18,6 +18,7 @@ from app.models import (
     GenerationBatch,
     GenerationJob,
     InspectionResult,
+    JobAssetReference,
     MangaPage,
     Outfit,
     PageCandidate,
@@ -45,6 +46,8 @@ from app.services.ordinal_allocator import (
 )
 from app.services.page_completion import build_page_production_readiness, production_error_detail
 from app.services.page_readiness import ensure_page_ready
+
+_JOB_TERMINAL_STATUSES = ("COMPLETED", "FAILED", "CANCELLED", "NEEDS_REVIEW")
 
 router = APIRouter()
 
@@ -167,9 +170,57 @@ def delete_candidate(candidate_id: str, db: Session = Depends(get_db)) -> None:
         raise HTTPException(status_code=404, detail="候选不存在")
     if isinstance(candidate, PageCandidate) and candidate.is_selected:
         raise HTTPException(status_code=409, detail="当前采用版本不能删除")
-    deleted_at = utcnow()
     if isinstance(candidate, AssetCandidate) and candidate.asset_id:
-        # Lock/cleanup first so SQLITE_BUSY can roll back this unit and retry
+        asset = db.get(Asset, candidate.asset_id)
+        if asset and asset.deleted_at is None:
+            active_job_id = db.scalar(
+                select(GenerationJob.id)
+                .join(JobAssetReference, JobAssetReference.job_id == GenerationJob.id)
+                .where(
+                    JobAssetReference.asset_id == asset.id,
+                    GenerationJob.status.notin_(_JOB_TERMINAL_STATUSES),
+                )
+                .limit(1)
+            )
+            if active_job_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail="素材正被排队或执行中的生成任务使用，请先取消任务后再修改",
+                )
+            sibling_count = db.scalar(
+                select(func.count())
+                .select_from(AssetCandidate)
+                .where(
+                    AssetCandidate.asset_id == asset.id,
+                    AssetCandidate.deleted_at.is_(None),
+                    AssetCandidate.id != candidate.id,
+                )
+            )
+            if sibling_count:
+                raise HTTPException(
+                    status_code=409,
+                    detail="其他候选正在使用同一素材，请先删除对应候选",
+                )
+    deleted_at = utcnow()
+    # Claim the candidate with a conditional update before any dependent
+    # cleanup: a concurrent select-candidate flipping is_selected (or another
+    # delete winning) must turn this request into a 409 instead of
+    # tombstoning an adopted candidate or double-deleting.
+    candidate_model = type(candidate)
+    claim_filters = [candidate_model.deleted_at.is_(None)]
+    if isinstance(candidate, PageCandidate):
+        claim_filters.append(candidate_model.is_selected.is_(False))
+    claimed = db.execute(
+        update(candidate_model)
+        .where(candidate_model.id == candidate.id, *claim_filters)
+        .values(deleted_at=deleted_at, version=candidate_model.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="候选状态已变化，请刷新后重试")
+    if isinstance(candidate, AssetCandidate) and candidate.asset_id:
+        # Cleanup follows so SQLITE_BUSY can roll back this unit and retry
         # without discarding later writes in the same request.
         detach_draft_package_references_for_asset(db, candidate.asset_id)
         asset = db.get(Asset, candidate.asset_id)
@@ -220,8 +271,6 @@ def delete_candidate(candidate_id: str, db: Session = Depends(get_db)) -> None:
             if not has_other_reference:
                 character.status = AssetStatus.NEEDS_CONFIRMATION
             character.version += 1
-    candidate.deleted_at = deleted_at
-    candidate.version += 1
     # The worker resolves its generation target without a deleted_at filter
     # and would attach the paid result to this soft-deleted row, so an active
     # job must be cancelled here (same guard for PageCandidate and

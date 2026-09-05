@@ -104,9 +104,9 @@ def test_sweep_terminal_error_codes_are_the_exact_discriminator_set():
     """The upgrade discriminator is exactly the sweep's terminal code set.
 
     Genuine worker-failure finalizes write adapter error codes (UPSTREAM,
-    RATE_LIMIT, AUTHENTICATION, ...) which never collide with these three
-    sweep markers; usage_status alone is NOT a discriminator (genuine
-    failures also write UNKNOWN).
+    RATE_LIMIT, AUTHENTICATION, ...) which never collide with these four
+    sweep/recovery markers; usage_status alone is NOT a discriminator
+    (genuine failures also write UNKNOWN).
     """
 
     from app.services.worker_handlers.model_call_audit import (
@@ -114,7 +114,7 @@ def test_sweep_terminal_error_codes_are_the_exact_discriminator_set():
     )
 
     assert SWEEP_TERMINAL_ERROR_CODES == frozenset(
-        {"JOB_TIMEOUT", "LOCAL_TIMEOUT", "LEASE_EXPIRED"}
+        {"JOB_TIMEOUT", "LOCAL_TIMEOUT", "LEASE_EXPIRED", "WORKER_LOST"}
     )
 
 
@@ -304,3 +304,33 @@ def test_recovery_sweep_then_late_success_finalize_full_chain(db_session, monkey
     assert row.output_images == 2
     assert row.request_id == "req-full-chain"
     assert row.finished_at is not None
+
+
+def test_late_succeeded_finalize_upgrades_worker_lost_attempt(db_session):
+    """origin/master's WORKER_LOST convergence joins the upgrade marker set.
+
+    The periodic sweep closes an attempt older than timeout + lease + margin
+    as FAILED(WORKER_LOST) while a wedged LOCAL thread can still be inside
+    the call; a successful return must upgrade the row instead of raising.
+    """
+
+    job = _seed_job(db_session, "worker-lost-upgrade")
+    db_session.commit()
+    attempt_id = begin_model_call_attempt(_meta(job))
+    _sweep_close_job_attempts(job.id, "WORKER_LOST", "执行器在调用期间丢失，审计行按失败收敛")
+
+    finalize_model_call_attempt(
+        attempt_id,
+        outcome="SUCCEEDED",
+        model_id="model-reported-by-adapter",
+        request_id="req-late-success",
+        usage={"input_tokens": 11, "output_tokens": 7},
+        output_image_count=1,
+    )
+
+    with audit.SessionLocal() as db:
+        row = db.get(ModelCallAttempt, attempt_id)
+    assert row.outcome == "SUCCEEDED"
+    assert row.error_code is None
+    assert row.usage == {"input_tokens": 11, "output_tokens": 7}
+    assert row.request_id == "req-late-success"

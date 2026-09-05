@@ -218,23 +218,63 @@ def test_visibility_batch_partially_succeeds_and_is_idempotent(client, db_sessio
     body = response.json()
     assert {item["model_id"]: item["version"] for item in body["updated"]} == {
         changed.id: 2,
-        already_hidden.id: 3,
     }
     failures = {item["model_id"]: item for item in body["failed"]}
     assert failures[stale.id]["error_code"] == "VERSION_CONFLICT"
     assert failures[stale.id]["current_version"] == 2
+    # The idempotent branch still honors the optimistic token: already_hidden
+    # matches the target value but its expected_version is stale (1 vs 3).
+    assert failures[already_hidden.id]["error_code"] == "VERSION_CONFLICT"
+    assert failures[already_hidden.id]["current_version"] == 3
     assert failures["missing-model"]["error_code"] == "MODEL_NOT_FOUND"
     assert failures[orphan.id]["error_code"] == "CONNECTION_MISSING"
+
+    # A matching token makes the same no-op write an idempotent success
+    # without bumping the version.
+    retried_hidden = client.patch(
+        "/api/v1/providers/models/visibility",
+        json={
+            "items": [{"model_id": already_hidden.id, "expected_version": 3}],
+            "display_enabled": False,
+        },
+    )
+    assert retried_hidden.status_code == 200
+    assert retried_hidden.json() == {
+        "updated": [{"model_id": already_hidden.id, "version": 3}],
+        "failed": [],
+    }
 
     db_session.expire_all()
     assert db_session.get(AIModel, changed.id).display_enabled is False
     assert db_session.get(AIModel, changed.id).version == 2
     assert db_session.get(AIModel, stale.id).display_enabled is True
 
-    retried = client.patch(
+    # A stale-token retry of an already-applied item is a version conflict;
+    # retrying with the current token is the idempotent success.
+    stale_retry = client.patch(
         "/api/v1/providers/models/visibility",
         json={
             "items": [{"model_id": changed.id, "expected_version": 1}],
+            "display_enabled": False,
+        },
+    )
+    assert stale_retry.status_code == 200
+    assert stale_retry.json() == {
+        "updated": [],
+        "failed": [
+            {
+                "model_id": changed.id,
+                "error_code": "VERSION_CONFLICT",
+                "message": "模型设置已更新，请刷新后重试",
+                "current_version": 2,
+            }
+        ],
+    }
+
+    retried = client.patch(
+        "/api/v1/providers/models/visibility",
+        json={
+            "items": [{"model_id": changed.id, "expected_version": 2}],
             "display_enabled": False,
         },
     )
@@ -300,3 +340,38 @@ def test_hidden_model_remains_available_and_routable(client, db_session):
     )
     assert explicit.model.id == model.id
     assert automatic.model.id == model.id
+
+
+def test_update_model_claims_version_atomically(client, db_session, monkeypatch):
+    """A writer winning between the pre-check and the commit must 409, not
+    silently drop the concurrent edit (check-then-write lost update)."""
+
+    import sqlalchemy
+
+    from app.services import provider_catalog
+
+    connection = _connection(db_session)
+    model = _model(db_session, connection, "atomic-claim")
+
+    def concurrent_bump(_connection, *_args, **_kwargs):
+        db_session.execute(
+            sqlalchemy.update(AIModel)
+            .where(AIModel.id == model.id)
+            .values(version=AIModel.version + 1)
+        )
+        db_session.commit()
+
+    monkeypatch.setattr(
+        provider_catalog, "_validate_protocol_capabilities", concurrent_bump
+    )
+
+    response = client.patch(
+        f"/api/v1/providers/models/{model.id}",
+        json={"version": 1, "priority": 77},
+    )
+
+    assert response.status_code == 409
+    db_session.expire_all()
+    row = db_session.get(AIModel, model.id)
+    assert row.version == 2  # only the concurrent writer's bump survived
+    assert row.priority != 77

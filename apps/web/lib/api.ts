@@ -75,6 +75,19 @@ export interface RuntimeSettings {
   version: number;
 }
 
+export type RuntimeSettingsUpdate = Partial<
+  Pick<
+    RuntimeSettings,
+    | "queue_mode"
+    | "job_timeout_seconds"
+    | "max_auto_repairs"
+    | "default_concurrency"
+    | "health_check_interval_seconds"
+    | "ui_poll_interval_seconds"
+    | "workflow_autosave_ms"
+  >
+> & { version: number };
+
 export interface DiagnosticCheck {
   id: string;
   label: string;
@@ -1357,6 +1370,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...(init?.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
       ...init?.headers,
     },
+  }).catch((error: unknown) => {
+    throw new ApiError("无法连接 MangaFlow 服务，请确认本地 API 已启动后重试", 0, error);
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({ detail: "请求失败" }));
@@ -1367,23 +1382,38 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         && typeof rawDetail.message === "string"
         ? rawDetail.message
         : Array.isArray(rawDetail) && typeof rawDetail[0]?.msg === "string"
-          ? rawDetail[0].msg
+          ? formatValidationError(rawDetail)
           : typeof body.message === "string"
             ? body.message
             : "请求数据不符合要求";
-    throw new ApiError(detail, response.status);
+    throw new ApiError(detail, response.status, rawDetail);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
+// FastAPI 422 bodies are [{loc, msg, type}]; showing the bare English msg hides
+// which field was rejected, so prefix the field path when present.
+function formatValidationError(items: Array<{ loc?: unknown[]; msg?: string }>): string {
+  const first = items[0];
+  const field = Array.isArray(first.loc)
+    ? first.loc.filter((part) => typeof part === "string" && part !== "body").join(".")
+    : "";
+  const message = first.msg ?? "请求数据不符合要求";
+  return field ? `${field}：${message}` : message;
+}
+
 export class ApiError extends Error {
   status: number;
+  // Structured 409/422 payloads (e.g. select-candidate blockers) so callers can
+  // surface code-specific recovery guidance instead of one flattened message.
+  detail: unknown;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, detail?: unknown) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.detail = detail;
   }
 }
 
@@ -1419,7 +1449,7 @@ export const api = {
     request<void>(`/projects/${id}?confirm_name=${encodeURIComponent(confirmName)}`, { method: "DELETE" }),
   models: () => request<ModelCapability[]>("/models"),
   runtimeSettings: () => request<RuntimeSettings>("/settings/runtime"),
-  updateRuntimeSettings: (payload: Partial<RuntimeSettings> & { version: number }) =>
+  updateRuntimeSettings: (payload: RuntimeSettingsUpdate) =>
     request<RuntimeSettings>("/settings/runtime", { method: "PATCH", body: JSON.stringify(payload) }),
   diagnostics: () => request<Diagnostics>("/settings/diagnostics"),
   usageSummary: (filters: UsageFilters = {}) => {
@@ -1475,7 +1505,7 @@ export const api = {
     request<ProviderModel[]>(`/providers/connections/${connectionId}/models`),
   createProviderModel: (connectionId: string, payload: { provider_model_id: string; display_name?: string; model_type: "TEXT" | "IMAGE"; input_modalities: string[]; output_modalities: string[]; operations: string[]; api_surfaces: string[]; capabilities: Record<string, unknown> }) =>
     request<ProviderModel>(`/providers/connections/${connectionId}/models`, { method: "POST", body: JSON.stringify(payload) }),
-  verifyProviderConnection: (connectionId: string, payload: { level: "CREDENTIALS" | "MODEL_SMOKE"; catalog_model_id?: string; acknowledge_cost?: boolean; runs?: number }) =>
+  verifyProviderConnection: (connectionId: string, payload: { level: "CREDENTIALS" | "MODEL_SMOKE"; catalog_model_id?: string; operation?: "structured_text" | "multimodal_analysis" | "image_generate" | "image_edit"; acknowledge_cost?: boolean; runs?: number }) =>
     request<ConnectionVerifyResult>(`/providers/connections/${connectionId}/verify`, { method: "POST", body: JSON.stringify(payload) }),
   updateProviderModelVisibility: (modelId: string, displayEnabled: boolean, version: number) =>
     request<ProviderModel>(`/providers/models/${modelId}`, {

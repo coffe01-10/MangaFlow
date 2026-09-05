@@ -482,8 +482,10 @@ export function PageCanvas({
     }
     if (event.key === "Tab") {
       // 画布只有一个 tab stop；Tab/Shift+Tab 在格之间移动（audit §5）。
-      event.preventDefault();
-      navigatePanels(event.shiftKey ? -1 : 1);
+      // 到达首/末格时放行，让焦点回到页面正常 Tab 序，避免键盘困死在画布内。
+      if (navigatePanels(event.shiftKey ? -1 : 1)) {
+        event.preventDefault();
+      }
       return;
     }
     if (event.key.startsWith("Arrow")) {
@@ -519,14 +521,18 @@ export function PageCanvas({
     }
   };
 
-  const navigatePanels = (step: 1 | -1) => {
-    if (!panels.length) return;
+  const navigatePanels = (step: 1 | -1): boolean => {
+    if (!panels.length) return false;
     const currentIndex = selectedPanelIds.length
       ? panels.findIndex((panel) => panel.id === selectedPanelIds[selectedPanelIds.length - 1])
       : -1;
     const nextIndex = currentIndex === -1 ? (step === 1 ? 0 : panels.length - 1) : Math.min(Math.max(currentIndex + step, 0), panels.length - 1);
     const next = panels[nextIndex];
-    if (next) onSelectPanels([next.id]);
+    if (!next) return false;
+    onSelectPanels([next.id]);
+    // Report whether focus moved so Tab at the boundary can fall through to the
+    // page tab order instead of trapping keyboard users inside the canvas.
+    return nextIndex !== currentIndex || currentIndex === -1;
   };
 
   // --- hit-testing (audit §4: unselected objects carry no DOM nodes) --------

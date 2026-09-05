@@ -603,7 +603,11 @@ def _map_failure(text: str) -> tuple[str, str, bool]:
     lowered = text.lower()
     if any(value in lowered for value in ("authentication required", "not logged", "sign in")):
         return "UNAUTHENTICATED", "Antigravity CLI 尚未登录", False
-    if any(value in lowered for value in ("permission", "denied", "approval")):
+    if "approval" in lowered:
+        # Deterministic approval-gate denial only; the tool preflight already
+        # enforces grants in code. Bare "permission"/"denied" also appears in
+        # transient crash output (EACCES, 5xx bodies), which §7.5 says must
+        # stay retryable.
         return "UNSUPPORTED", "Antigravity CLI 图片工具权限未获允许", False
     if any(value in lowered for value in ("resource_exhausted", "quota", "rate limit")):
         return "RATE_LIMIT", "Antigravity CLI 当前额度或速率受限", True
@@ -677,6 +681,9 @@ def _run_probe_command(settings: Settings, argv: tuple[str, ...]) -> CLIProcessO
             cancel_requested=lambda: False,
         )
     finally:
-        shutil.rmtree(probe_directory, ignore_errors=False)
+        # Cleanup failures must not mask the real probe failure with an
+        # unrelated rmtree error (locked/read-only files are common on
+        # Windows); the probe root sweep retries non-recursively instead.
+        shutil.rmtree(probe_directory, ignore_errors=True)
         with suppress(OSError):
             probe_root.rmdir()

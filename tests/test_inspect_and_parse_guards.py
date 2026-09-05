@@ -5,6 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import create_engine, select, update
 from sqlalchemy.orm import sessionmaker
 
@@ -805,7 +806,11 @@ def test_reset_for_retry_does_not_clobber_live_worker_claim(db_session, monkeypa
     monkeypatch.setattr(
         job_service, "enqueue_job", lambda db, job: enqueued.append(job.id) or job
     )
-    job_service.reset_for_retry(db_session, job)
+    # The merged semantics surface a lost claim as a 409 to the caller
+    # instead of silently returning the unchanged row.
+    with pytest.raises(HTTPException) as excinfo:
+        job_service.reset_for_retry(db_session, job)
+    assert excinfo.value.status_code == 409
     db_session.expire_all()
     row = db_session.get(GenerationJob, job.id)
     assert row.status == JobStatus.GENERATING
@@ -848,7 +853,10 @@ def test_reset_for_retry_does_not_resurrect_cancelled_job(db_session, monkeypatc
     monkeypatch.setattr(
         job_service, "enqueue_job", lambda db, job: enqueued.append(job.id) or job
     )
-    job_service.reset_for_retry(db_session, job)
+    # Merged semantics: a lost claim raises 409 instead of silently no-oping.
+    with pytest.raises(HTTPException) as excinfo:
+        job_service.reset_for_retry(db_session, job)
+    assert excinfo.value.status_code == 409
     db_session.expire_all()
     row = db_session.get(GenerationJob, job.id)
     assert row.status == JobStatus.CANCELLED

@@ -25,6 +25,7 @@ from app.models import (
     ProviderProfile,
 )
 from app.services.credential_crypto import mark_key_failure, mark_key_success
+from app.services.model_capabilities import capability_reference_limit
 from app.services.model_router import (
     AdapterBinding,
     ResolvedModel,
@@ -237,6 +238,15 @@ def _invoke_provider(db, binding: AdapterBinding, callback):
                 error.code,
                 retry_after_seconds=error.retry_after_seconds,
             )
+            # Surface the real-traffic failure on the connection too: the
+            # verify/probe paths are the only other writers of these fields,
+            # and without this a connection shows a stale HEALTHY state while
+            # every paid call fails. Diagnostics only — routing semantics and
+            # enabled flags stay owned by verification.
+            connection = binding.resolved.connection
+            connection.error_code = error.code
+            connection.message = "模型调用失败，已记录最近一次真实流量错误"
+            db.commit()
             if error.code in {"AUTHENTICATION", "PERMISSION", "RATE_LIMIT"}:
                 try:
                     replacement = bind_adapter(
@@ -252,6 +262,13 @@ def _invoke_provider(db, binding: AdapterBinding, callback):
                     and replacement.selected_key
                     and replacement.selected_key.row.id != binding.selected_key.row.id
                 ):
+                    # A cancellation that lands while the primary call is in
+                    # flight must not buy a second paid dispatch on the
+                    # replacement key.
+                    if job_id:
+                        current = db.get(GenerationJob, job_id)
+                        if current is not None:
+                            _ensure_job_not_cancelled(db, current)
                     replacement_meta = _replacement_meta(db, binding, replacement)
                     replacement_id = _begin_or_fail(replacement_meta)
                     try:
@@ -385,8 +402,8 @@ def _text_model_reference(job: GenerationJob, project: Project) -> str | None:
 
 
 def _validate_reference_capacity(binding: AdapterBinding, count: int) -> None:
-    configured = (binding.resolved.model.capabilities or {}).get("max_reference_images")
-    if configured is not None and count > int(configured):
+    configured = capability_reference_limit(binding.resolved.model.capabilities)
+    if configured is not None and count > configured:
         raise ProviderAdapterError(
             "UNSUPPORTED_CAPABILITY",
             f"所选模型最多接收 {configured} 张参考图，本任务需要 {count} 张",

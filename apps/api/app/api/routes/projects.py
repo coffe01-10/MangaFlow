@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import case, func, select, update
 from sqlalchemy.orm import Session
 
+from app.api.helpers import reject_required_nulls
 from app.config import get_settings
 from app.database import get_db
 from app.domain.states import JobStatus
@@ -481,6 +482,7 @@ def update_project(
         raise HTTPException(status_code=404, detail="项目不存在")
 
     changes = payload.model_dump(exclude_unset=True, exclude={"version"})
+    reject_required_nulls(Project, changes)
     for field, model_type in (
         ("default_text_model_id", "TEXT"),
         ("last_image_model_id", "IMAGE"),

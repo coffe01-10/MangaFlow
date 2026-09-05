@@ -291,7 +291,7 @@ export function DirectorWorkspace({
       {notice && <p className="form-error" role="alert"><CircleAlert size={14} />{notice}</p>}
 
       {planState?.kind === "clarify" && (
-        <section className="director-clarify" role="dialog" aria-label="请确认命令目标">
+        <section className="director-clarify" role="dialog" aria-modal="false" aria-label="请确认命令目标" aria-live="polite">
           <p><CircleAlert size={14} />{planState.reason}</p>
           {planState.options.length > 0 && (
             <div className="director-clarify-options">

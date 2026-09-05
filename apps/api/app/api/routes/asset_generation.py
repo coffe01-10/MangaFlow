@@ -1,10 +1,11 @@
+import hashlib
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from app.api.helpers import asset_candidate_read, character_references
+from app.api.helpers import asset_candidate_read, character_references, reject_required_nulls
 from app.database import get_db
 from app.models import (
     Asset,
@@ -44,7 +45,7 @@ from app.schemas import (
     StyleProfileUpdate,
     StyleTestApproval,
 )
-from app.services.job_service import create_job, enqueue_job, has_active_job
+from app.services.job_service import create_job, enqueue_job
 from app.services.ordinal_allocator import (
     BatchOrdinalConflictError,
     CandidateOrdinalConflictError,
@@ -160,6 +161,7 @@ def update_outfit(
     if not outfit:
         raise HTTPException(status_code=404, detail="服装档案不存在")
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
+    reject_required_nulls(Outfit, values)
     reference_asset_ids = values.get("reference_asset_ids")
     if reference_asset_ids is not None:
         _validate_reference_assets(
@@ -397,6 +399,7 @@ def update_style(
     if not style:
         raise HTTPException(status_code=404, detail="风格档案不存在")
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
+    reject_required_nulls(StyleProfile, values)
     reference_ids = values.pop("reference_asset_ids", None)
     if reference_ids is not None:
         _validate_reference_assets(
@@ -467,6 +470,34 @@ def activate_style(project_id: str, style_id: str, db: Session = Depends(get_db)
     return style
 
 
+
+_STYLE_JOB_TERMINAL_STATUSES = ("COMPLETED", "FAILED", "CANCELLED", "NEEDS_REVIEW")
+
+
+def _reject_active_style_analysis(db: Session, style_id: str) -> None:
+    """Block duplicate paid analysis while one STYLE_ANALYZE job is open.
+
+    A client retry must not mint a second paid job; the idempotency key
+    alone cannot do that here because the route itself mutates
+    ``style.version`` (the key input) before enqueueing, so sequential
+    retries would always compute a fresh key. Failure and cancellation
+    keep the analysis re-runnable: the guard only sees open jobs.
+    """
+
+    active = db.scalar(
+        select(GenerationJob.id)
+        .where(
+            GenerationJob.target_type == "STYLE",
+            GenerationJob.target_id == style_id,
+            GenerationJob.job_type == "STYLE_ANALYZE",
+            GenerationJob.status.notin_(_STYLE_JOB_TERMINAL_STATUSES),
+        )
+        .limit(1)
+    )
+    if active:
+        raise HTTPException(status_code=409, detail="该风格档案已有进行中的分析任务")
+
+
 @router.post(
     "/styles/{style_id}/analyze",
     response_model=JobRead,
@@ -479,19 +510,8 @@ def analyze_style(style_id: str, db: Session = Depends(get_db)):
     reference_ids = style.profile.get("reference_asset_ids", [])
     if not reference_ids:
         raise HTTPException(status_code=409, detail="请先给风格档案绑定至少一张漫画参考图")
-    # The idempotency key below embeds the bumped style version, so sequential
-    # duplicates never collapse; guard on ACTIVE jobs (same pattern as the
-    # inspect route) so one style never runs two paid STYLE_ANALYZE calls.
-    if has_active_job(
-        db,
-        job_type="STYLE_ANALYZE",
-        target_id=str(style.id),
-        target_type="STYLE",
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail="该风格已有进行中的分析任务，请等待完成后再重新分析",
-        )
+    _reject_active_style_analysis(db, style.id)
+    version_before = style.version
     style.status = "ANALYZING"
     style.version += 1
     db.commit()
@@ -503,7 +523,10 @@ def analyze_style(style_id: str, db: Session = Depends(get_db)):
         job_type="STYLE_ANALYZE",
         model_alias="auto",
         reference_asset_ids=reference_ids,
-        idempotency_key=f"style-analyze:{style.id}:{style.version}",
+        # Key on the pre-bump version: keying on the already-incremented
+        # version made every duplicate POST mint a fresh key, so client
+        # retries enqueued duplicate paid analysis jobs.
+        idempotency_key=f"style-analyze:{style.id}:{version_before}",
     )
     return enqueue_job(db, job)
 
@@ -525,22 +548,14 @@ def draft_style_palette(
         raise HTTPException(status_code=409, detail="请先将风格档案切换为彩色漫画")
     if not style.profile.get("reference_asset_ids"):
         raise HTTPException(status_code=409, detail="请先绑定至少一张风格参考图")
-    # Palette drafting creates a STYLE_ANALYZE job against the same style row,
-    # so the same ACTIVE-job guard applies: analyzing and drafting must never
-    # run as two concurrent paid calls (nor overwrite each other's profile).
-    if has_active_job(
-        db,
-        job_type="STYLE_ANALYZE",
-        target_id=str(style.id),
-        target_type="STYLE",
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail="该风格已有进行中的分析任务，请等待完成后再起草色板",
-        )
+    _reject_active_style_analysis(db, style.id)
+    version_before = style.version
     style.status = StyleStatus.ANALYZING
     style.version += 1
     db.commit()
+    atmosphere_digest = hashlib.sha256(
+        payload.atmosphere.encode("utf-8")
+    ).hexdigest()[:16]
     job = create_job(
         db,
         project_id=style.project_id,
@@ -550,7 +565,9 @@ def draft_style_palette(
         model_alias="auto",
         request_parameters={"palette_atmosphere": payload.atmosphere},
         reference_asset_ids=list(style.profile.get("reference_asset_ids", [])),
-        idempotency_key=f"style-palette:{style.id}:{style.version}",
+        # Same pre-bump version rule as analyze, plus the atmosphere digest so
+        # distinct palette intents for one version never collapse into one job.
+        idempotency_key=f"style-palette:{style.id}:{version_before}:{atmosphere_digest}",
     )
     return enqueue_job(db, job)
 

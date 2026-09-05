@@ -28,6 +28,7 @@ from app.models import (
     StyleProfile,
     utcnow,
 )
+from app.services.asset_dedupe import adopt_deleted_duplicate, live_duplicate
 from app.services.media import create_thumbnails, remove_thumbnails
 from app.services.model_router import model_supports_resolution
 from app.services.worker_handlers import execution, provider
@@ -45,14 +46,13 @@ def _save_asset_candidate(db, candidate: AssetCandidate, project_id: str, data: 
     # Asset holds a hard UNIQUE(project_id, sha256), so an unfiltered match can
     # hand a new paid candidate a soft-deleted asset (content 404s) or a
     # byte-identical user upload / another generation kind's row.
-    live_dedupe_filters = (
-        Asset.project_id == project_id,
-        Asset.sha256 == digest,
-        Asset.deleted_at.is_(None),
-        Asset.source == "AI_GENERATED",
-        Asset.kind == kind,
+    existing = live_duplicate(
+        db,
+        project_id=project_id,
+        sha256=digest,
+        source="AI_GENERATED",
+        kind=kind,
     )
-    existing = db.scalar(select(Asset).where(*live_dedupe_filters))
     if existing:
         return existing
     destination = (
@@ -107,17 +107,22 @@ def _save_asset_candidate(db, candidate: AssetCandidate, project_id: str, data: 
         # of this kind holds the digest (asset deletes unlink no files). Flush
         # so the re-queries below observe every row this transaction can see.
         db.flush()
-        existing = db.scalar(select(Asset).where(*live_dedupe_filters))
+        existing = live_duplicate(
+            db,
+            project_id=project_id,
+            sha256=digest,
+            source="AI_GENERATED",
+            kind=kind,
+        )
         if existing:
             destination.unlink(missing_ok=True)
             return existing
-        deleted = db.scalar(
-            select(Asset).where(
-                Asset.project_id == project_id,
-                Asset.sha256 == digest,
-                Asset.source == "AI_GENERATED",
-                Asset.kind == kind,
-            )
+        deleted = adopt_deleted_duplicate(
+            db,
+            project_id=project_id,
+            sha256=digest,
+            source="AI_GENERATED",
+            kind=kind,
         )
         if deleted:
             # Revive in place — mirroring upload_asset — because the hard
@@ -385,18 +390,7 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
         )
     )
     execution._ensure_job_not_cancelled(db, job)
-    # A delete can land while the paid request is in flight. The call is
-    # already spent (its ModelCallAttempt/usage rows committed autonomously),
-    # but nothing may be attached to the deleted row: abort before any
-    # persistence so the worker shell rolls the attach back.
-    db.refresh(candidate, attribute_names=["deleted_at"])
-    if candidate.deleted_at is not None:
-        LOGGER.warning(
-            "资产候选 %s 在模型调用完成后被删除，丢弃生成结果并取消任务 %s",
-            candidate.id,
-            job.id,
-        )
-        raise JobCancelledError("候选已删除，模型返回结果不再写入")
+    execution._ensure_candidate_live(db, candidate)
     if len(response.images) > 1:
         LOGGER.warning(
             "模型返回 %d 张图片，仅持久化第 1 张（其余图片不落盘，用量按供应商返回如实记录）",

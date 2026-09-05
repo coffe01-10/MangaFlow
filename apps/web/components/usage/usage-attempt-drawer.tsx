@@ -10,6 +10,7 @@ import {
   formatDuration,
   formatQuantity,
   outcomeLabel,
+  usageStatusLabel,
 } from "./usage-format";
 
 interface UsageAttemptDrawerProps {
@@ -19,13 +20,32 @@ interface UsageAttemptDrawerProps {
 
 export function UsageAttemptDrawer({ attempt, onClose }: UsageAttemptDrawerProps) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const drawerRef = useRef<HTMLElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     previousFocusRef.current = document.activeElement as HTMLElement | null;
     closeButtonRef.current?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") {
+        onClose();
+        return;
+      }
+      // aria-modal dialogs must keep Tab inside (same trap the scene modal uses).
+      if (event.key === "Tab" && drawerRef.current) {
+        const focusables = Array.from(drawerRef.current.querySelectorAll<HTMLElement>("button:not([disabled]), a[href]"));
+        if (!focusables.length) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        const active = document.activeElement;
+        if (event.shiftKey && (active === first || !drawerRef.current.contains(active))) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && (active === last || !drawerRef.current.contains(active))) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => {
@@ -41,6 +61,7 @@ export function UsageAttemptDrawer({ attempt, onClose }: UsageAttemptDrawerProps
   return (
     <div className="usage-drawer-backdrop" onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <aside
+        ref={drawerRef}
         className="usage-drawer"
         role="dialog"
         aria-modal="true"
@@ -66,7 +87,7 @@ export function UsageAttemptDrawer({ attempt, onClose }: UsageAttemptDrawerProps
             <h3>计费与用量核算</h3>
             <dl>
               <div><dt>成本语义</dt><dd><span className={meta.badge} title={meta.hint}>{meta.label}</span></dd></div>
-              <div><dt>计量状态</dt><dd>{attempt.usage_status ?? "UNKNOWN"}{attempt.usage_source ? ` · ${attempt.usage_source}` : ""}</dd></div>
+              <div><dt>计量状态</dt><dd>{usageStatusLabel(attempt.usage_status)}{attempt.usage_source ? ` · ${attempt.usage_source}` : ""}</dd></div>
               <div><dt>计量单位</dt><dd>{attempt.unit_kind ?? "UNKNOWN"}</dd></div>
               <div><dt>单次金额</dt><dd className="usage-cost-none">单次尝试金额不在账本读取接口返回，估算金额仅在汇总层按币种展示</dd></div>
             </dl>
@@ -90,7 +111,7 @@ export function UsageAttemptDrawer({ attempt, onClose }: UsageAttemptDrawerProps
               <div><dt>缓存命中 Token</dt><dd>{formatQuantity(attempt.cached_input_tokens)}{attempt.cache_hit === null ? "" : attempt.cache_hit ? "（命中）" : "（未命中）"}</dd></div>
               <div><dt>输出图片</dt><dd>{attempt.output_images === null ? "未知" : `${formatQuantity(attempt.output_images)} 张`}</dd></div>
               {dims.length > 0 ? (
-                <div><dt>图片规格</dt><dd>{dims.map((dim) => `${dim.width ?? "?"}x${dim.height ?? "?"}`).join(" · ")}</dd></div>
+                <div><dt>图片规格</dt><dd>{dims.map((dim) => `${dim.width ?? "?"}×${dim.height ?? "?"}`).join(" · ")}</dd></div>
               ) : null}
               <div><dt>耗时</dt><dd>{formatDuration(attempt.duration_ms)}</dd></div>
               <div><dt>触发时间</dt><dd>{formatDateTime(attempt.started_at)} · 结束 {formatDateTime(attempt.finished_at)}</dd></div>

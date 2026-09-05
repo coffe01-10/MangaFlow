@@ -1,6 +1,7 @@
 """Offline contract tests for the provider-neutral CLI controller."""
 
 import json
+import os
 import stat
 from dataclasses import replace
 from pathlib import Path
@@ -400,3 +401,100 @@ def test_recover_abandoned_cli_runs_selects_platform_probe(monkeypatch):
     )
     assert recovered == []
     assert seen["probe"] is cli_executor.platform_controller_is_active
+
+
+class SubsetImagesRunner:
+    """Reports SUCCEEDED but omits one of the two registered images."""
+
+    def run(self, *, cwd, **_kwargs):
+        output = cwd.parent / "output"
+        _png(output / "images" / "out_001.png")
+        _png(output / "images" / "out_002.png")
+        (output / "result.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "status": "SUCCEEDED",
+                    "images": ["output/images/out_001.png"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return CLIProcessOutcome(exit_code=0)
+
+
+class LinkOutputRunner:
+    """Repoints the output directory at a link outside the run directory."""
+
+    def run(self, *, cwd, **_kwargs):
+        import os
+        import shutil
+        import tempfile
+
+        output = cwd.parent / "output"
+        if output.exists():
+            shutil.rmtree(output)
+        external = Path(tempfile.mkdtemp())
+        _png(external / "images" / "out_001.png")
+        (external / "result.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "status": "SUCCEEDED",
+                    "images": ["output/images/out_001.png"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        os.symlink(external, output)
+        return CLIProcessOutcome(exit_code=0)
+
+
+def test_partial_image_set_is_rejected_not_adopted(cli_context):
+    settings, factory, controller, ids = cli_context
+    run_id = _prepare(
+        controller,
+        ids,
+        output_images=(
+            "output/images/out_001.png",
+            "output/images/out_002.png",
+        ),
+        max_images=2,
+    )
+    with pytest.raises(ProviderAdapterError) as caught:
+        controller.execute(run_id, runner=SubsetImagesRunner(), argv=("fake-cli",))
+    assert caught.value.code == "PARTIAL_OUTPUT"
+    with factory() as db:
+        row = db.get(CLIExecutionRun, run_id)
+        assert (row.state, row.cleanup_state) == ("FAILED", "RETAINED")
+
+
+def test_output_directory_link_chain_is_rejected(cli_context):
+    settings, factory, controller, ids = cli_context
+    run_id = _prepare(controller, ids)
+    with pytest.raises(ProviderAdapterError) as caught:
+        controller.execute(run_id, runner=LinkOutputRunner(), argv=("fake-cli",))
+    assert caught.value.code == "INVALID_OUTPUT"
+    assert (settings.storage_root / "cli_runs" / run_id).exists()
+
+
+def test_posix_probe_detects_recycled_pid(tmp_path):
+    from app.services import cli_executor
+    """A PID now owned by a different process (different /proc starttime)
+    reports the controller as dead instead of holding the lease slot."""
+
+    journal = {"controller_pid": os.getpid()}
+    assert cli_executor.posix_controller_is_active(None, journal) is True
+
+    ticks = cli_executor._posix_start_ticks(os.getpid())
+    assert ticks is not None  # /proc available on this host
+
+    recycled = dict(journal, controller_start_ticks=ticks + 100000)
+    assert cli_executor.posix_controller_is_active(None, recycled) is False
+
+    matching = dict(journal, controller_start_ticks=ticks)
+    assert cli_executor.posix_controller_is_active(None, matching) is True
+
+    # Unreadable /proc degrades to the pid-only probe, never a false dead.
+    unreadable = dict(journal, controller_start_ticks=ticks, controller_pid=99999999)
+    assert cli_executor.posix_controller_is_active(None, unreadable) is False

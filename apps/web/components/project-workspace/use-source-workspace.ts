@@ -2,7 +2,7 @@
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 
 import { api } from "@/lib/api";
@@ -31,19 +31,30 @@ export function useSourceWorkspace({
   const [sourceText, setSourceText] = useState("");
   const [editingChapterId, setEditingChapterId] = useState<string | null>(null);
   const [deletedChapterId, setDeletedChapterId] = useState<string | null>(null);
+  const [importNotice, setImportNotice] = useState("");
   // 修订加载失败/进行中：失败时此前是 unhandled rejection，用户点击“修改原文”
   // 毫无反馈；加载期间提前输入的文本又会被晚到的响应覆盖。
   const [revisionLoadError, setRevisionLoadError] = useState("");
   const [revisionLoading, setRevisionLoading] = useState(false);
+  const revisionSeqRef = useRef(0);
 
   const importSource = useMutation({
-    mutationFn: () => editingChapterId
-      ? api.reviseSource(editingChapterId, sourceTitle.trim(), sourceText).then(() => ({ chapters: [], total_characters: 0 }))
-      : api.importSource(id, sourceTitle.trim(), sourceText),
+    mutationFn: () => {
+      setImportNotice("");
+      return editingChapterId
+        ? api.reviseSource(editingChapterId, sourceTitle.trim(), sourceText).then(() => ({ chapters: [], total_characters: 0 }))
+        : api.importSource(id, sourceTitle.trim(), sourceText);
+    },
     onSuccess: (result) => {
-      setSelectedChapterId(result.chapters[0]?.id ?? editingChapterId);
+      const chapterId = result.chapters[0]?.id ?? editingChapterId;
+      setSelectedChapterId(chapterId);
       setEditingChapterId(null);
       setSourceText("");
+      setImportNotice(
+        editingChapterId
+          ? "已保存为新修订。需要时可在下方章节上点击“修改原文”查看历史版本。"
+          : `已导入「${sourceTitle.trim() || "正文"}」。下一步：点击“生成漫画剧本”把这一章结构化成场景与情节拍。`,
+      );
       queryClient.invalidateQueries({ queryKey: ["chapters", id] });
       queryClient.invalidateQueries({ queryKey: ["revisions"] });
       queryClient.invalidateQueries({ queryKey: ["script"] });
@@ -52,15 +63,19 @@ export function useSourceWorkspace({
   });
 
   const importSourceFile = useMutation({
-    mutationFn: (file: File) => api.uploadSource(
-      id,
-      sourceTitle.trim() || file.name.replace(/\.(txt|md|markdown)$/i, ""),
-      file,
-    ),
+    mutationFn: (file: File) => {
+      setImportNotice("");
+      return api.uploadSource(
+        id,
+        sourceTitle.trim() || file.name.replace(/\.(txt|md|markdown)$/i, ""),
+        file,
+      );
+    },
     onSuccess: (result) => {
       setSelectedChapterId(result.chapters[0]?.id ?? null);
       setEditingChapterId(null);
       setSourceText("");
+      setImportNotice(`已导入 ${result.total_characters} 字。下一步：点击“生成漫画剧本”把这一章结构化成场景与情节拍。`);
       queryClient.invalidateQueries({ queryKey: ["chapters", id] });
       queryClient.invalidateQueries({ queryKey: ["revisions"] });
       queryClient.invalidateQueries({ queryKey: ["script"] });
@@ -111,22 +126,44 @@ export function useSourceWorkspace({
   }
 
   async function beginEditChapter(chapterId: string, title: string) {
+    // The compose box may hold a fully pasted chapter that was never imported;
+    // loading a revision silently over it is the worst kind of data loss.
+    if (sourceText.trim() && !window.confirm(
+      `当前输入框已有未导入的原文（${sourceText.trim().length} 字），载入章节修订会覆盖它。继续吗？`,
+    )) {
+      return;
+    }
+    // Sequence token: two rapid “修改原文” clicks must not let the older
+    // response overwrite the form the newer click is loading.
+    const seq = ++revisionSeqRef.current;
     setSelectedChapterId(chapterId);
     setRevisionLoadError("");
+    setImportNotice("");
     setRevisionLoading(true);
     try {
       const values = await queryClient.fetchQuery({ queryKey: ["revisions", chapterId], queryFn: () => api.revisions(chapterId) });
+      if (seq !== revisionSeqRef.current) return;
       const revision = values[0];
       setEditingChapterId(chapterId);
       setSourceTitle(title);
       setSourceText(revision?.original_text ?? "");
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (error) {
+      if (seq !== revisionSeqRef.current) return;
       setRevisionLoadError(error instanceof Error ? error.message : "原文修订加载失败，请重试");
       setEditingChapterId(null);
     } finally {
-      setRevisionLoading(false);
+      if (seq === revisionSeqRef.current) setRevisionLoading(false);
     }
+  }
+
+  function cancelEditChapter() {
+    if (sourceText.trim() && !window.confirm("取消修改会丢弃输入框中的全部文本。继续吗？")) {
+      return;
+    }
+    setEditingChapterId(null);
+    setSourceText("");
+    setRevisionLoadError("");
   }
 
   return {
@@ -134,6 +171,7 @@ export function useSourceWorkspace({
     setSourceTitle,
     sourceText,
     setSourceText,
+    importNotice,
     editingChapterId,
     setEditingChapterId,
     revisionLoadError,
@@ -147,6 +185,7 @@ export function useSourceWorkspace({
     planChapter,
     chooseSourceFile,
     beginEditChapter,
+    cancelEditChapter,
   };
 }
 

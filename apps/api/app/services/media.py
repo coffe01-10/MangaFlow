@@ -1,5 +1,6 @@
 from pathlib import Path
 from shutil import rmtree
+from uuid import uuid4
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 from PIL.Image import DecompressionBombError
@@ -27,7 +28,9 @@ def inspect_upload_image(
             fmt = (image.format or "").upper()
     except DecompressionBombError as error:
         raise ValueError("图片像素数超过上限") from error
-    except (UnidentifiedImageError, OSError) as error:
+    except (UnidentifiedImageError, OSError, SyntaxError) as error:
+        # Pillow raises SyntaxError for corrupt chunk CRCs in otherwise
+        # well-formed PNGs; without this it escapes upload handling as a 500.
         raise ValueError("图片文件损坏或格式不符") from error
     if width <= 0 or height <= 0 or width > max_side or height > max_side:
         raise ValueError("图片宽高超过上限")
@@ -78,8 +81,18 @@ def create_thumbnails(
             if preview.mode not in {"RGB", "RGBA"}:
                 preview = preview.convert("RGBA" if "A" in preview.getbands() else "RGB")
             destination = output_dir / f"{size}.webp"
-            preview.save(destination, format="WEBP", quality=82, method=6)
-            preview.close()
+            # In-place writes raced the on-demand regeneration path: a
+            # concurrent reader could stream a half-written webp. Write to a
+            # unique temp file and replace atomically instead.
+            temp = output_dir / f".{size}.{uuid4().hex}.tmp"
+            try:
+                preview.save(temp, format="WEBP", quality=82, method=6)
+                temp.replace(destination)
+            except BaseException:
+                temp.unlink(missing_ok=True)
+                raise
+            finally:
+                preview.close()
             keys[size] = destination.relative_to(root).as_posix()
     return keys
 
@@ -92,3 +105,27 @@ def remove_thumbnails(root: Path, asset_id: str) -> None:
     output_dir = (thumbnails_root / asset_id).resolve()
     if output_dir.is_relative_to(thumbnails_root) and output_dir.is_dir():
         rmtree(output_dir)
+
+
+def sanitize_stored_filename(
+    value: str, *, max_length: int = 255, default: str = "upload"
+) -> str:
+    """Reduce a client-supplied filename to a safe stored display name.
+
+    ``Path(...).name`` strips ``/`` but keeps backslashes, control
+    characters, trailing dots/spaces (which Windows ignores) and over-long
+    values that overflow the column on PostgreSQL. The stored name flows
+    into zip members, Content-Disposition and the library UI, so it must be
+    safe in all three.
+    """
+
+    flattened = value.replace("\\", "/").split("/")[-1]
+    # A colon would turn the stored name into an NTFS alternate data stream
+    # (and Windows pathlib treats drive-suffixed names oddly), so it is
+    # replaced like any other separator.
+    cleaned = "".join(
+        character for character in flattened if character.isprintable() and character != ":"
+    ).strip()
+    # Strip AFTER truncation: a 255-char cut can otherwise re-create the
+    # trailing dot/space that Windows ignores.
+    return cleaned[:max_length].rstrip(". ") or default

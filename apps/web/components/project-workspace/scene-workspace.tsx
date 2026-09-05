@@ -567,7 +567,7 @@ export function SceneWorkspace({
       </div>
 
       {notice && (
-        <p className="form-error">
+        <p className="form-error" role="alert">
           <CircleAlert size={14} />{notice}
           {notice.includes("请刷新") ? (
             <button type="button" className="button outline compact" onClick={() => { setNotice(""); refreshLists(); }}>刷新</button>
@@ -738,7 +738,7 @@ export function SceneWorkspace({
                                     <Image src={publicUrl(file.thumbnail_url ?? file.content_url)!} alt={label} width={72} height={72} unoptimized />
                                   </button>
                                 ) : <span>变体参考不可用</span>}
-                                <button type="button" onClick={() => unbindVariantReference.mutate({ variantId: variant.id, assetId: reference.asset_id })}>解绑</button>
+                                <button type="button" disabled={unbindVariantReference.isPending} onClick={() => unbindVariantReference.mutate({ variantId: variant.id, assetId: reference.asset_id })}>解绑</button>
                               </div>
                             );
                           })}
@@ -752,7 +752,7 @@ export function SceneWorkspace({
                             <button type="button" disabled={setDefaultVariant.isPending} onClick={() => setDefaultVariant.mutate(variant)}>设为默认</button>
                           )}
                           <button type="button" onClick={() => openVariant(variant)}>编辑</button>
-                          <button type="button" onClick={() => { if (window.confirm(`删除环境变体“${variant.name}”？`)) removeVariant.mutate(variant.id); }}>删除</button>
+                          <button type="button" disabled={removeVariant.isPending} onClick={() => { if (window.confirm(`删除环境变体“${variant.name}”？其专属参考图将解除绑定，绑定该变体的剧本场景回退到资产默认参考。`)) removeVariant.mutate(variant.id); }}>删除</button>
                         </div>
                       </article>
                     );

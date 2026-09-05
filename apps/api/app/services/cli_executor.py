@@ -159,9 +159,12 @@ class CLIExecutionController:
             )
             return run_id
         except BaseException:
+            # A locked leftover file (indexer, AV) must not replace the real
+            # error with an unrelated OSError; the orphaned directory is
+            # harmless (no DB row) and better leaked than masked.
             if run_directory.exists():
                 _make_inputs_writable(run_directory)
-                shutil.rmtree(run_directory)
+                shutil.rmtree(run_directory, ignore_errors=True)
             raise
 
     def request_manifest(self, run_id: str) -> dict:
@@ -533,6 +536,10 @@ class CLIExecutionController:
         journal.update(state="RUNNING", controller_pid=identity["pid"])
         if type(identity.get("created")) is int:
             journal["controller_created"] = identity["created"]
+        if sys.platform != "win32":
+            ticks = _posix_start_ticks(identity["pid"])
+            if ticks is not None:
+                journal["controller_start_ticks"] = ticks
         _write_json(run_directory / "journal.json", journal)
 
     def _environment(
@@ -610,10 +617,15 @@ class CLIExecutionController:
             or not isinstance(max_images, int)
             or not isinstance(images, list)
             or not images
+            or len(images) != len(registered)
             or len(images) > max_images
+            or any(not isinstance(path, str) for path in images)
             or any(path not in registered for path in images)
         ):
+            # Contract §7.4: a SUCCEEDED envelope must carry every registered
+            # image — a strict subset is a partial output and is never adopted.
             raise ProviderAdapterError("PARTIAL_OUTPUT", "CLI 输出清单不完整")
+        _reject_link_chain(run_directory / "output", run_directory)
         output_root = (run_directory / "output").resolve(strict=True)
         payloads: list[bytes] = []
         metadata: list[dict] = []
@@ -809,6 +821,27 @@ def _reject_link(path: Path) -> None:
         raise ProviderAdapterError("CONFIGURATION", "CLI 路径不能是链接")
 
 
+def _reject_link_chain(path: Path, root: Path) -> None:
+    """Reject a path whose intermediate components are links, not just the leaf.
+
+    A junction or symlink at an interior component (e.g. ``<run>/output``
+    itself) is not a symlink at the leaf, so per-file ``_reject_link`` checks
+    pass while the resolved content lives outside the run directory.
+    """
+
+    try:
+        relative = path.absolute().relative_to(root.absolute())
+    except ValueError as error:
+        raise ProviderAdapterError("INVALID_OUTPUT", "CLI 路径越界") from error
+    current = root.absolute()
+    for part in relative.parts:
+        current /= part
+        if current.is_symlink() or (
+            hasattr(current, "is_junction") and current.is_junction()
+        ):
+            raise ProviderAdapterError("INVALID_OUTPUT", "CLI 路径不能经过链接")
+
+
 def _make_inputs_writable(run_directory: Path) -> None:
     input_root = run_directory / "input"
     if not input_root.exists():
@@ -889,7 +922,34 @@ def posix_controller_is_active(_row: CLIExecutionRun, journal: dict) -> bool:
         return False
     except PermissionError:
         return True
+    # Recycled-PID protection: when the journal recorded the POSIX process
+    # start ticks at mark time, a PID now belonging to a different process
+    # (different starttime) means the controller is gone even though the PID
+    # was reused. Without this, one recycled PID pins the connection's lease
+    # slot until manual surgery.
+    recorded = journal.get("controller_start_ticks")
+    if type(recorded) is int:
+        current = _posix_start_ticks(pid)
+        if current is not None and current != recorded:
+            return False
     return True
+
+
+def _posix_start_ticks(pid: int) -> int | None:
+    """Field 22 of ``/proc/<pid>/stat`` (starttime in clock ticks), if readable."""
+
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    # comm can contain spaces/parens; the reliable split point is the last ')'.
+    tail = stat.rpartition(")")[2].split()
+    if len(tail) < 20:
+        return None
+    try:
+        return int(tail[19])
+    except ValueError:
+        return None
 
 
 def platform_controller_is_active(row: CLIExecutionRun, journal: dict) -> bool:

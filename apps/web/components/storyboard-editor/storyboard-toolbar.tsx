@@ -3,7 +3,7 @@
 // Canvas toolbar: zoom, fit/reset, snap + overlay toggles, undo/redo,
 // save and the page menu holding the destructive layout rebuild (audit §2.1 L0).
 import { ChevronDown, Maximize, Redo2, RefreshCw, Save, Scan, Undo2, ZoomIn, ZoomOut } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { storyboardCopy } from "./storyboard-copy";
 
@@ -53,6 +53,30 @@ export function StoryboardToolbar({
   onRebuildLayout: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  // The page menu must close on outside pointer-down and Escape like any
+  // popover, and return focus to its trigger.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target instanceof Node ? event.target : null)) {
+        setMenuOpen(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        setMenuOpen(false);
+        menuRef.current?.querySelector<HTMLElement>("[aria-haspopup='menu']")?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      document.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [menuOpen]);
   return <div className="storyboard-toolbar">
     <div className="toolbar-group" role="group" aria-label="画布缩放">
       <button type="button" aria-label={storyboardCopy.zoomOut} onClick={onZoomOut}><ZoomOut size={14} /></button>
@@ -86,8 +110,9 @@ export function StoryboardToolbar({
       <button type="button" aria-label={storyboardCopy.redo} disabled={!canRedo} onClick={onRedo}><Redo2 size={14} /></button>
     </div>
     {overlayHint && <p className="toolbar-hint">{overlayHint}</p>}
+    {!overlayHint && <p className="toolbar-hint" aria-hidden="true">Tab 切换格子 · 方向键微调（Shift 加速） · 回车打开属性 · Delete 删除气泡</p>}
     <div className="toolbar-group toolbar-spacer" role="group" aria-label="保存与页操作">
-      <div className="page-menu">
+      <div className="page-menu" ref={menuRef}>
         <button type="button" aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => setMenuOpen((open) => !open)}>
           {storyboardCopy.pageMenu}<ChevronDown size={12} />
         </button>

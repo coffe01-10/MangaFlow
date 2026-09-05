@@ -7,14 +7,18 @@ import { api, type Job } from "@/lib/api";
 import { activePollInterval, isActiveTaskStatus } from "@/lib/task-status";
 
 import { queueStatsOf } from "./display";
-import type { WorkspaceSection } from "./types";
 
-function usePerJobMutation(mutationFn: (jobId: string) => Promise<Job>, onSuccess: () => void) {
+function usePerJobMutation(
+  mutationFn: (jobId: string) => Promise<Job>,
+  onSuccess: () => void,
+  onError?: (reason: unknown, jobId: string) => void,
+) {
   const inFlight = useRef(new Set<string>());
   const [pendingIds, setPendingIds] = useState<string[]>([]);
   const mutation = useMutation({
     mutationFn,
     onSuccess,
+    onError: (error, jobId) => onError?.(error, jobId),
     onSettled: (_data, _error, jobId) => {
       inFlight.current.delete(jobId);
       setPendingIds((ids) => ids.filter((id) => id !== jobId));
@@ -35,37 +39,47 @@ function usePerJobMutation(mutationFn: (jobId: string) => Promise<Job>, onSucces
  * active-task polling, and every job lifecycle mutation (cancel, retry,
  * archive, restore, bulk archive, delete).
  */
-export function useJobsWorkspace({
-  id,
-  section,
-}: {
-  id: string;
-  section: WorkspaceSection;
-}) {
+export function useJobsWorkspace({ id }: { id: string }) {
   const queryClient = useQueryClient();
   const [showArchivedJobs, setShowArchivedJobs] = useState(false);
   const [jobNotice, setJobNotice] = useState("");
   const [selectedJobIds, setSelectedJobIds] = useState<string[]>([]);
 
+  // The queue dock renders on every section, so its data must stay live
+  // everywhere AND pinned to the active-jobs view: the toggleable
+  // showArchivedJobs key would otherwise feed the dock archived jobs as the
+  // "latest" status after the user visits 历史记录. When the section list is
+  // on the active view both queries share one cache entry.
   const jobs = useQuery({
     queryKey: ["jobs", id, showArchivedJobs],
     queryFn: () => api.jobs(id, showArchivedJobs),
-    enabled: ["assets", "jobs", "generate"].includes(section),
+    refetchInterval: (query) => activePollInterval(query.state.data, 3000),
+  });
+  const dockJobs = useQuery({
+    queryKey: ["jobs", id, false],
+    queryFn: () => api.jobs(id, false),
     refetchInterval: (query) => activePollInterval(query.state.data, 3000),
   });
 
   const invalidateJobs = () => queryClient.invalidateQueries({ queryKey: ["jobs", id] });
-  const cancelAction = usePerJobMutation((jobId) => api.cancelJob(jobId), invalidateJobs);
-  const retryAction = usePerJobMutation((jobId) => api.retryJob(jobId), invalidateJobs);
+  // Cancel/retry failures must surface: canceling a paid RUNNING job or
+  // retrying a FAILED one silently no-ops otherwise.
+  const mutationNotice = (action: string) => (reason: unknown) =>
+    setJobNotice(reason instanceof Error ? `${action}失败：${reason.message}` : `${action}失败，请重试`);
+  const cancelAction = usePerJobMutation((jobId) => api.cancelJob(jobId), invalidateJobs, mutationNotice("取消任务"));
+  const retryAction = usePerJobMutation((jobId) => api.retryJob(jobId), invalidateJobs, mutationNotice("重试任务"));
   const cancelJob = cancelAction.mutation;
   const retryJob = retryAction.mutation;
   const archiveJob = useMutation({
     mutationFn: (jobId: string) => api.archiveJob(jobId),
-    onSuccess: () => {
+    onSuccess: (_result, jobId) => {
       setJobNotice("任务已移入历史记录");
+      // Keep the bulk-archive count honest when a selected row is archived
+      // individually.
+      setSelectedJobIds((ids) => ids.filter((id) => id !== jobId));
       queryClient.invalidateQueries({ queryKey: ["jobs", id] });
     },
-    onError: (reason) => setJobNotice(reason instanceof Error ? reason.message : "归档失败"),
+    onError: (reason) => setJobNotice(reason instanceof Error ? `归档失败：${reason.message}` : "归档失败，请重试"),
   });
   const restoreJob = useMutation({
     mutationFn: (jobId: string) => api.restoreJob(jobId),
@@ -73,15 +87,18 @@ export function useJobsWorkspace({
       setJobNotice("任务已恢复到近期记录");
       queryClient.invalidateQueries({ queryKey: ["jobs", id] });
     },
-    onError: (reason) => setJobNotice(reason instanceof Error ? reason.message : "恢复失败"),
+    onError: (reason) => setJobNotice(reason instanceof Error ? `恢复失败：${reason.message}` : "恢复失败，请重试"),
   });
   const archiveCompletedJobs = useMutation({
     mutationFn: () => api.archiveCompletedJobs(id),
     onSuccess: (result) => {
       setJobNotice(result.archived_count ? `已归档 ${result.archived_count} 条已结束任务` : "没有可归档的已结束任务");
+      // Archived rows leave the recent list; keeping their ids selected left a
+      // stale toolbar count that re-sent ids the user could no longer see.
+      setSelectedJobIds([]);
       queryClient.invalidateQueries({ queryKey: ["jobs", id] });
     },
-    onError: (reason) => setJobNotice(reason instanceof Error ? reason.message : "清空失败"),
+    onError: (reason) => setJobNotice(reason instanceof Error ? `清空失败：${reason.message}` : "清空失败，请重试"),
   });
   const bulkArchiveJobs = useMutation({
     mutationFn: () => api.bulkArchiveJobs(id, selectedJobIds),
@@ -90,7 +107,7 @@ export function useJobsWorkspace({
       setSelectedJobIds([]);
       queryClient.invalidateQueries({ queryKey: ["jobs", id] });
     },
-    onError: (reason) => setJobNotice(reason instanceof Error ? reason.message : "批量归档失败"),
+    onError: (reason) => setJobNotice(reason instanceof Error ? `批量归档失败：${reason.message}` : "批量归档失败，请重试"),
   });
   const deleteJob = useMutation({
     mutationFn: (jobId: string) => api.deleteJob(jobId),
@@ -98,10 +115,10 @@ export function useJobsWorkspace({
       setJobNotice("无引用任务已彻底删除");
       queryClient.invalidateQueries({ queryKey: ["jobs", id] });
     },
-    onError: (reason) => setJobNotice(reason instanceof Error ? reason.message : "删除失败"),
+    onError: (reason) => setJobNotice(reason instanceof Error ? `删除失败：${reason.message}` : "删除失败，请重试"),
   });
 
-  const queueStats = useMemo(() => queueStatsOf(jobs.data ?? []), [jobs.data]);
+  const queueStats = useMemo(() => queueStatsOf(dockJobs.data ?? []), [dockJobs.data]);
   const activeJobs = (jobs.data ?? []).filter((job) => isActiveTaskStatus(job.status));
   const failedJobs = (jobs.data ?? []).filter((job) => job.status === "FAILED");
   const completedJobGroups = Object.entries(
@@ -114,6 +131,7 @@ export function useJobsWorkspace({
 
   return {
     jobs,
+    dockJobs,
     showArchivedJobs,
     setShowArchivedJobs,
     jobNotice,

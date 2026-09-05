@@ -6,7 +6,6 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from app.config import get_settings
 from app.model_adapters.base import (
     ImageRequest,
     ModelResponse,
@@ -14,7 +13,10 @@ from app.model_adapters.base import (
     ProviderAdapterError,
     StructuredRequest,
 )
+from app.services.model_capabilities import capability_reference_limit
 from app.services.vertex_credentials import classify_vertex_failure
+
+_GOOGLE_HTTP_TIMEOUT_MS = 90_000
 
 
 @dataclass(frozen=True)
@@ -25,18 +27,6 @@ class GoogleRuntime:
     capabilities: dict[str, Any] = field(default_factory=dict)
 
 
-def genai_http_options() -> dict[str, int]:
-    """Per-request HTTP timeout (milliseconds) for every genai.Client built here.
-
-    The LOCAL wall-clock cap is enforced between provider calls by the lease
-    heartbeat, which cannot interrupt a thread blocked inside a single
-    timeout-less HTTP request. Bounding the transport at the job budget keeps
-    one generate_content from outliving the attempt cap.
-    """
-
-    return {"timeout": get_settings().job_timeout_seconds * 1000}
-
-
 class _GoogleBase:
     def __init__(self, runtime: GoogleRuntime) -> None:
         self.runtime = runtime
@@ -44,8 +34,11 @@ class _GoogleBase:
     def _client(self):
         from google import genai
 
+        # Bound connect/read like the HTTP-API path (90s); the SDK default
+        # lets a hung upstream pin a worker slot for minutes.
         return genai.Client(
-            api_key=self.runtime.api_key, http_options=genai_http_options()
+            api_key=self.runtime.api_key,
+            http_options={"timeout": _GOOGLE_HTTP_TIMEOUT_MS},
         )
 
     @staticmethod
@@ -161,7 +154,7 @@ class GoogleImageAdapter(_GoogleBase):
         from google.genai import types
 
         resolutions = self.runtime.capabilities.get("resolutions") or ["1K"]
-        max_references = int(self.runtime.capabilities.get("max_reference_images") or 0)
+        max_references = capability_reference_limit(self.runtime.capabilities) or 0
         if request.resolution not in resolutions:
             raise ProviderAdapterError(
                 "UNSUPPORTED_CAPABILITY",

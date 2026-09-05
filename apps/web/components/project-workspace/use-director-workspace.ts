@@ -149,7 +149,10 @@ export function useDirectorWorkspace({
     onError: (error: Error) => setNotice(error.message),
   });
 
-  const executing = accept.isPending || undo.isPending || redo.isPending;
+  // reject/discard must be in the gate too: otherwise a reject in flight leaves
+  // 确认执行 clickable (accept+reject race on the same command) and 拒绝 can
+  // double-fire.
+  const executing = accept.isPending || reject.isPending || undo.isPending || redo.isPending || discard.isPending;
   useEffect(() => {
     onExecutingChange?.(executing || propose.isPending);
   }, [executing, propose.isPending, onExecutingChange]);

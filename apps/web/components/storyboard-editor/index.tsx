@@ -60,6 +60,7 @@ export function StoryboardEditor({
   replanError,
   initialPageId,
   focusCharacterId,
+  onDirtyChange,
 }: {
   chapterId: string;
   pages: MangaPage[];
@@ -70,6 +71,7 @@ export function StoryboardEditor({
   replanError?: Error | null;
   initialPageId?: string | null;
   focusCharacterId?: string | null;
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const queryClient = useQueryClient();
   const [pageId, setPageId] = useState(
@@ -109,7 +111,10 @@ export function StoryboardEditor({
   const [inspectorWidth, setInspectorWidth] = useState(() => {
     if (typeof window === "undefined") return 390;
     const stored = Number(window.localStorage.getItem("mangaflow.storyboard-inspector-width"));
-    return stored >= 320 && stored <= 620 ? stored : 390;
+    // Cap by viewport so a stored width from a larger window cannot push the
+    // worktable into horizontal overflow (canvas column has minmax(320px)).
+    const viewportCap = Math.max(320, Math.min(620, window.innerWidth - 740));
+    return stored >= 320 && stored <= viewportCap ? stored : 390;
   });
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const geometryRequestRef = useRef<{ id: string; stackIndex: number } | null>(null);
@@ -152,10 +157,35 @@ export function StoryboardEditor({
       ? panelOfDialogue(selection.dialogueId)
       : panels[0] ?? null;
 
-  const dirty = commandStack.index > 0;
+  // Leave protection covers geometry commands AND unsaved narrative drafts:
+  // typed dialogue text is the highest-effort content in the editor, so it must
+  // never vanish on page/section switch without confirmation. panelDraft only
+  // counts when it actually diverges from the server panel (opening the edit
+  // form alone is not an edit).
+  const panelDraftDirty = editingPanel && panelDraft && activePanel
+    ? JSON.stringify(panelDraft) !== JSON.stringify(makePanelDraft(activePanel))
+    : false;
+  // Drafts for dialogues that no longer exist (deleted here or removed by an
+  // external refetch) must not keep the editor dirty forever.
+  const liveDialogueIds = useMemo(
+    () => new Set(panels.flatMap((panel) => panel.dialogues.map((dialogue) => dialogue.id))),
+    [panels],
+  );
+  const hasLiveDialogueDraft = Object.keys(dialogueDrafts).some((id) => liveDialogueIds.has(id));
+  const dirty = commandStack.index > 0
+    || hasLiveDialogueDraft
+    || newDialogue !== null
+    || panelDraftDirty;
+  // The section-level chapter <select> cannot see editor state, so it needs
+  // the dirty flag lifted to guard chapter switches like the editor's own
+  // page switch does.
+  useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
 
   const persistInspectorWidth = (value: number) => {
-    const next = Math.min(620, Math.max(320, value));
+    // Same viewport cap as the initial read: canvas min 320 + gap 10 + sidebar
+    // up to 360 + page padding must all fit alongside the inspector.
+    const viewportCap = typeof window === "undefined" ? 620 : Math.max(320, Math.min(620, window.innerWidth - 740));
+    const next = Math.min(viewportCap, Math.max(320, value));
     setInspectorWidth(next);
     window.localStorage.setItem("mangaflow.storyboard-inspector-width", String(next));
   };
@@ -175,9 +205,12 @@ export function StoryboardEditor({
   const geometrySave = useMutation({
     mutationFn: ({ pageId: targetPageId, payload }: { pageId: string; payload: StoryboardGeometrySavePayload }) =>
       api.saveStoryboardGeometry(targetPageId, payload),
-    onSuccess: (response) => {
+    onSuccess: (response, variables) => {
       clearGeometryDrafts();
-      queryClient.setQueryData(["storyboard", currentPage?.id], response);
+      // variables.pageId, not currentPage: a mid-save page switch re-renders
+      // this callback against the NEW page, and writing the old page's
+      // response under the new key would corrupt the canvas cache.
+      queryClient.setQueryData(["storyboard", variables.pageId], response);
       queryClient.invalidateQueries({ queryKey: ["pages", chapterId] });
       setNotice(storyboardCopy.savedNotice(response.page.storyboard_version, response.candidate_count));
     },
@@ -297,7 +330,11 @@ export function StoryboardEditor({
   });
   const removeDialogue = useMutation({
     mutationFn: (dialogueId: string) => api.deleteDialogue(dialogueId, activePanel!.version),
-    onSuccess: () => {
+    onSuccess: (_, dialogueId) => {
+      // An orphaned draft would keep the editor permanently dirty and arm the
+      // unsaved-changes guard for a bubble that no longer exists.
+      setDialogueDrafts((values) => { const next = { ...values }; delete next[dialogueId]; return next; });
+      setBubbleDrafts((values) => { const next = { ...values }; delete next[dialogueId]; return next; });
       setNotice(storyboardCopy.savedNotice((serverPage?.storyboard_version ?? currentPage.storyboard_version) + 1, storyboard.data?.candidate_count ?? 0));
       refresh();
     },
@@ -394,6 +431,10 @@ export function StoryboardEditor({
     setSelection(null);
     setEditingPanel(false);
     setPanelDraft(null);
+    // Drafts belong to the previous page's dialogues; keeping them would leak
+    // stale text into the next page's editor.
+    setDialogueDrafts({});
+    setNewDialogue(null);
     setPageId(nextPageId);
   };
 
@@ -431,7 +472,7 @@ export function StoryboardEditor({
     <label className="storyboard-page-select"><span>当前页面</span><select value={currentPage.id} onChange={(event) => switchPage(event.target.value)}>{pages.map((page) => <option key={page.id} value={page.id}>第 {page.page_number} 页 · {page.panel_count} 格</option>)}</select></label>
     <div className="storyboard-page-strip">{pages.map((page) => <button key={page.id} className={page.id === currentPage.id ? "active" : ""} onClick={() => switchPage(page.id)}><span>P.{String(page.page_number).padStart(3, "0")}</span><strong>{page.panel_count} 格</strong><small>{page.continuity_status === "NEEDS_REVIEW" ? "待复查" : page.selected_candidate_id ? "已采用" : "已规划"}</small></button>)}</div>
     <div className="storyboard-status"><div><strong>第 {currentPage.page_number} 页 · {currentPage.estimated_text_chars}/180 字 · {currentPage.estimated_bubbles}/8 气泡</strong><span>来自漫画剧本：{currentPage.scene_ids.length} 个场景 · {currentPage.beat_ids.length} 个情节拍；修改不会删除已有候选。</span></div><button disabled={replanPending} onClick={() => onReplan(currentPage.page_number)}><RotateCcw size={12} />从本页重新计算</button></div>
-    {notice && <p className="edit-notice"><Check size={13} />{notice}</p>}
+    {notice && <p className="edit-notice" role="status"><Check size={13} />{notice}</p>}
     {conflict && <div className="storyboard-conflict" role="alert"><CircleAlert size={14} /><span>{storyboardCopy.conflict}</span><button type="button" onClick={discardDraft}>{storyboardCopy.discardReload}</button></div>}
     {error && !conflict && <p className="form-error"><CircleAlert size={14} />{error.message}
       {/* 几何保存失败（网络错误等）同样保留草稿：可放弃并重新加载，不假装已保存。 */}
