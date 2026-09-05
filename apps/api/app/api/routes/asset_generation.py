@@ -5,7 +5,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from app.api.helpers import asset_candidate_read, character_references, reject_required_nulls
+from app.api.helpers import (
+    asset_candidate_read,
+    character_references,
+    ensure_project_scope,
+    reject_required_nulls,
+)
 from app.database import get_db
 from app.models import (
     Asset,
@@ -161,11 +166,13 @@ def create_outfit(
 def update_outfit(
     outfit_id: str,
     payload: OutfitUpdate,
+    project_id: str | None = None,
     db: Session = Depends(get_db),
 ) -> Outfit:
     outfit = db.get(Outfit, outfit_id)
     if not outfit:
         raise HTTPException(status_code=404, detail="服装档案不存在")
+    ensure_project_scope(db, outfit, project_id, label="服装档案")
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
     reject_required_nulls(Outfit, values)
     reference_asset_ids = values.get("reference_asset_ids")
@@ -200,10 +207,13 @@ def update_outfit(
 
 
 @router.delete("/outfits/{outfit_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_outfit(outfit_id: str, db: Session = Depends(get_db)) -> None:
+def delete_outfit(
+    outfit_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> None:
     outfit = db.get(Outfit, outfit_id)
     if not outfit:
         raise HTTPException(status_code=404, detail="服装档案不存在")
+    ensure_project_scope(db, outfit, project_id, label="服装档案")
     # Contract §10.4: a package version cannot silently lose a bound outfit.
     referenced = db.scalar(
         select(CharacterModelPackageVersionOutfit.id).where(
@@ -407,11 +417,13 @@ def create_style(
 def update_style(
     style_id: str,
     payload: StyleProfileUpdate,
+    project_id: str | None = None,
     db: Session = Depends(get_db),
 ) -> StyleProfile:
     style = db.get(StyleProfile, style_id)
     if not style:
         raise HTTPException(status_code=404, detail="风格档案不存在")
+    ensure_project_scope(db, style, project_id, label="风格档案")
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
     reject_required_nulls(StyleProfile, values)
     reference_ids = values.pop("reference_asset_ids", None)
@@ -567,10 +579,11 @@ def _reject_active_style_analysis(db: Session, style_id: str) -> None:
     response_model=JobRead,
     status_code=status.HTTP_202_ACCEPTED,
 )
-def analyze_style(style_id: str, db: Session = Depends(get_db)):
+def analyze_style(style_id: str, db: Session = Depends(get_db), project_id: str | None = None):
     style = db.get(StyleProfile, style_id)
     if not style:
         raise HTTPException(status_code=404, detail="风格档案不存在")
+    ensure_project_scope(db, style, project_id, label="风格档案")
     reference_ids = style.profile.get("reference_asset_ids", [])
     if not reference_ids:
         raise HTTPException(status_code=409, detail="请先给风格档案绑定至少一张漫画参考图")
@@ -603,11 +616,13 @@ def analyze_style(style_id: str, db: Session = Depends(get_db)):
 def draft_style_palette(
     style_id: str,
     payload: StylePaletteDraftRequest,
+    project_id: str | None = None,
     db: Session = Depends(get_db),
 ):
     style = db.get(StyleProfile, style_id)
     if not style:
         raise HTTPException(status_code=404, detail="风格档案不存在")
+    ensure_project_scope(db, style, project_id, label="风格档案")
     if style.color_mode != "color":
         raise HTTPException(status_code=409, detail="请先将风格档案切换为彩色漫画")
     if not style.profile.get("reference_asset_ids"):
@@ -640,11 +655,13 @@ def draft_style_palette(
 def approve_style_palette(
     style_id: str,
     payload: StylePaletteApproval,
+    project_id: str | None = None,
     db: Session = Depends(get_db),
 ) -> StyleProfile:
     style = db.get(StyleProfile, style_id)
     if not style:
         raise HTTPException(status_code=404, detail="风格档案不存在")
+    ensure_project_scope(db, style, project_id, label="风格档案")
     if style.color_mode != "color" or not payload.palette:
         raise HTTPException(status_code=409, detail="彩色色板不能为空")
     # Claim the row with an atomic conditional update so concurrent approvals
@@ -675,12 +692,14 @@ def approve_style_palette(
 def approve_style_test(
     style_id: str,
     payload: StyleTestApproval,
+    project_id: str | None = None,
     db: Session = Depends(get_db),
 ) -> StyleProfile:
     style = db.get(StyleProfile, style_id)
     candidate = db.get(AssetCandidate, payload.candidate_id)
     if not style:
         raise HTTPException(status_code=404, detail="风格档案不存在")
+    ensure_project_scope(db, style, project_id, label="风格档案")
     batch = db.get(GenerationBatch, candidate.batch_id) if candidate else None
     if (
         not candidate
