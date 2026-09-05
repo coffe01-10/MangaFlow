@@ -538,9 +538,64 @@ describe("StoryboardEditor canvas (V02-31B)", () => {
     expect(drawer).toContain(".canvas-viewport { min-height: clamp(320px, calc(100vh - 320px), 480px); }");
   });
 
-  it("S19 ≥1280px：画布与检查器并排（样式契约）", () => {
+  it("S19 ≥1280px：画布与检查器并排；停靠检查器内部滚动（样式契约）", () => {
     const wide = css.slice(css.indexOf("@media (min-width: 1280px)"));
     expect(wide).toContain(".storyboard-worktable { grid-template-columns: minmax(320px, 1fr) 10px var(--inspector-width, 390px); }");
+    // 停靠检查器高度封顶：720p 下底部内容可达；仅限 ≥1280 停靠布局，
+    // 堆叠/抽屉布局保持页面级滚动（不阻断触摸滚动链）。
+    const block = css.slice(css.indexOf("@media (min-width: 1280px)"), css.indexOf("\n}", css.indexOf("@media (min-width: 1280px)")));
+    expect(block).toContain(".panel-inspector { max-height: calc(100vh - 96px); overflow-y: auto; overscroll-behavior: contain; }");
+  });
+
+  it("S23 容器尺寸变化自动重适配；手动缩放后停止跟随，适配窗口恢复跟随", async () => {
+    // 布局契约：画布在视口内两轴居中（大视口下空隙均分，不再堆在一侧），
+    // 放大后允许溢出滚动（flex-shrink: 0，否则 flex 会把页面压回视口），
+    // 折叠图标轨加宽到 64px。
+    expect(css).toContain(".canvas-viewport { position: relative; overflow: auto; display: flex;");
+    expect(css).toContain(".canvas-page { position: relative; flex-shrink: 0; margin: auto;");
+    expect(css).toContain(".workspace-layout.rail-left { grid-template-columns: 64px minmax(0, 1fr); }");
+
+    class ROStub {
+      static instances: ROStub[] = [];
+      callback: ResizeObserverCallback;
+      constructor(callback: ResizeObserverCallback) {
+        this.callback = callback;
+        ROStub.instances.push(this);
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+      fire() {
+        this.callback([], this as never);
+      }
+    }
+    // vi.stubGlobal 对环境自带的 ResizeObserver 可能不生效，直接覆写并还原。
+    const originalRO = (globalThis as { ResizeObserver?: unknown }).ResizeObserver;
+    (globalThis as { ResizeObserver?: unknown }).ResizeObserver = ROStub;
+    try {
+      renderEditor();
+      stubRect(await screen.findByTestId("canvas-page"), 640, 903);
+      const viewportEl = document.querySelector(".canvas-viewport")!;
+      Object.defineProperty(viewportEl, "clientWidth", { configurable: true, value: 800 });
+      Object.defineProperty(viewportEl, "clientHeight", { configurable: true, value: 1000 });
+
+      // fit = min((800-48)/640, (1000-48)/903.7) ≈ 105% —— 不再固定 100%
+      ROStub.instances[ROStub.instances.length - 1].fire();
+      await waitFor(() => expect(screen.getByText("105%")).toBeTruthy());
+      expect(canvasPage().style.width).not.toBe("640px");
+
+      // 手动缩放交还控制权：容器再变化也不改缩放
+      fireEvent.click(screen.getByRole("button", { name: "复位" }));
+      expect(screen.getByText("100%")).toBeTruthy();
+      ROStub.instances[ROStub.instances.length - 1].fire();
+      expect(screen.getByText("100%")).toBeTruthy();
+
+      // 适配窗口重新进入跟随模式
+      fireEvent.click(screen.getByRole("button", { name: "适配窗口" }));
+      await waitFor(() => expect(screen.getByText("105%")).toBeTruthy());
+    } finally {
+      (globalThis as { ResizeObserver?: unknown }).ResizeObserver = originalRO;
+    }
   });
 
   it("S20 气泡几何：拖动/缩放/尾巴进入整包 PUT；旧 region 只读兜底；拖出格外回弹", async () => {

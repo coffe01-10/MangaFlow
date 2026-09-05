@@ -460,6 +460,39 @@ export function StoryboardEditor({
     zoomTo(Math.min(width / BASE_PAGE_WIDTH, height / pageHeight));
   };
 
+  // Fit mode starts on and is re-armed by 适配窗口: while it is on, viewport
+  // resizes (sidebar collapse, inspector drag, window resize) re-fit the zoom.
+  // Any manual zoom hands control back to the user until the next explicit fit.
+  const fitModeRef = useRef(true);
+  const fitRef = useRef(() => {});
+  useEffect(() => {
+    fitRef.current = () => fitToViewport();
+  });
+
+  const zoomManually = (next: number) => {
+    fitModeRef.current = false;
+    zoomTo(next);
+  };
+
+  const fitAndFollow = () => {
+    fitModeRef.current = true;
+    fitToViewport();
+  };
+
+  // Attached once the canvas actually mounts: the storyboard query gates the
+  // viewport, so re-running when serverPage arrives re-attaches after the
+  // viewport exists (cold-cache visits included) instead of only on mount.
+  const hasServerPage = Boolean(serverPage);
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport || !hasServerPage || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (fitModeRef.current) fitRef.current();
+    });
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, [hasServerPage, currentPage?.id]);
+
   const error = savePanel.error ?? saveDialogue.error ?? addDialogue.error ?? removeDialogue.error
     ?? geometrySave.error ?? updateLayout.error ?? replanError;
   const conflict = geometrySave.error != null && isConflictError(geometrySave.error);
@@ -488,10 +521,10 @@ export function StoryboardEditor({
       dirty={dirty}
       saving={geometrySaving}
       overlayHint={!canvasKnown ? storyboardCopy.canvasMissing : null}
-      onZoomIn={() => zoomTo(zoom * ZOOM_STEP)}
-      onZoomOut={() => zoomTo(zoom / ZOOM_STEP)}
-      onFit={fitToViewport}
-      onReset={() => zoomTo(1)}
+      onZoomIn={() => zoomManually(zoom * ZOOM_STEP)}
+      onZoomOut={() => zoomManually(zoom / ZOOM_STEP)}
+      onFit={fitAndFollow}
+      onReset={() => zoomManually(1)}
       onToggle={(key) => setToggles((value) => ({ ...value, [key]: !value[key] }))}
       onUndo={handleUndo}
       onRedo={handleRedo}
@@ -525,7 +558,7 @@ export function StoryboardEditor({
             if (bubble && window.confirm("删除这个文字气泡？")) removeDialogue.mutate(dialogueId);
           }}
           onBubbleBounce={() => setNotice(storyboardCopy.bubbleBelongs)}
-          onZoomStep={(direction) => zoomTo(direction === 1 ? zoom * ZOOM_STEP : zoom / ZOOM_STEP)}
+          onZoomStep={(direction) => zoomManually(direction === 1 ? zoom * ZOOM_STEP : zoom / ZOOM_STEP)}
         />
         {activePanel && <div className="panel-inspector-resizer" role="separator" aria-label="调整属性面板宽度" aria-orientation="vertical" aria-valuemin={320} aria-valuemax={620} aria-valuenow={inspectorWidth} tabIndex={0} onKeyDown={(event) => { if (event.key === "ArrowLeft") persistInspectorWidth(inspectorWidth + 16); if (event.key === "ArrowRight") persistInspectorWidth(inspectorWidth - 16); }} onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); const worktable = event.currentTarget.parentElement?.getBoundingClientRect(); if (worktable) persistInspectorWidth(worktable.right - event.clientX); }} onPointerMove={(event) => { if (!event.currentTarget.hasPointerCapture(event.pointerId)) return; const worktable = event.currentTarget.parentElement?.getBoundingClientRect(); if (worktable) persistInspectorWidth(worktable.right - event.clientX); }} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }} onPointerCancel={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }}><span /></div>}
         {activePanel && <PanelInspector

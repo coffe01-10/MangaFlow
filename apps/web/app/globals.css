@@ -496,10 +496,6 @@ a { color: inherit; text-decoration: none; }
 .storyboard-status button { min-height: 30px; padding: 0 10px; display: flex; align-items: center; gap: 5px; border: 1px solid var(--line); background: transparent; font-size: 8px; cursor: pointer; }
 .storyboard-worktable { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(320px, .9fr); gap: 14px; align-items: start; }
 .panel-inspector { position: sticky; top: 78px; border: 1px solid var(--ink); background: #f8f3e8; box-shadow: 6px 6px 0 rgba(21,21,18,.08); }
-/* Tall inspector content (readout + edit form + dialogue cards + layers) must
-   scroll inside the sticky panel; without the cap the bottom is unreachable on
-   short viewports once the parent column ends. */
-.panel-inspector { max-height: calc(100vh - 96px); overflow-y: auto; overscroll-behavior: contain; }
 .panel-inspector > header, .dialogue-editor > header { padding: 11px 12px; display: flex; align-items: center; justify-content: space-between; gap: 10px; border-bottom: 1px solid var(--line); background: rgba(255,255,255,.45); }
 .panel-inspector > header > div, .dialogue-editor > header > div { display: grid; gap: 2px; }
 .panel-inspector > header span, .dialogue-editor > header span { color: var(--vermillion-ink); font-size: 8px; letter-spacing: .14em; font-weight: 800; }
@@ -583,8 +579,11 @@ a { color: inherit; text-decoration: none; }
 .storyboard-toolbar .page-menu { position: relative; }
 .storyboard-toolbar .page-menu-items { position: absolute; right: 0; top: calc(100% + 4px); z-index: 60; min-width: 190px; display: grid; padding: 4px; border: 1px solid var(--ink); background: var(--paper, #fff); box-shadow: 6px 6px 0 rgba(21,21,18,.12); }
 .storyboard-toolbar .page-menu-items button { justify-content: flex-start; border: 0; background: transparent; color: var(--vermillion); }
-.canvas-viewport { position: relative; overflow: auto; border: 1px solid var(--ink); background: #d8d2c6; min-height: clamp(280px, calc(100vh - 340px), 420px); height: calc(100vh - 340px); max-height: 860px; }
-.canvas-page { position: relative; margin: 24px auto; background: #fffdf8; box-shadow: 6px 6px 0 rgba(21,21,18,.14); touch-action: none; }
+.canvas-viewport { position: relative; overflow: auto; display: flex; border: 1px solid var(--ink); background: #d8d2c6; min-height: clamp(280px, calc(100vh - 340px), 420px); height: calc(100vh - 340px); max-height: 860px; }
+/* Auto margins center the page in both axes when it is smaller than the
+   viewport; flex-shrink: 0 keeps a zoomed-in page overflowing with working
+   scrollbars instead of being clamped to the viewport. */
+.canvas-page { position: relative; flex-shrink: 0; margin: auto; background: #fffdf8; box-shadow: 6px 6px 0 rgba(21,21,18,.14); touch-action: none; }
 .canvas-panel { position: absolute; border: 1.5px solid #4a453d; background: rgba(255,255,255,.04); cursor: move; touch-action: none; transition: border-color .12s ease, box-shadow .12s ease; }
 .canvas-panel.selected { border: 2px solid var(--vermillion); box-shadow: 0 0 0 3px rgba(211,74,47,.2); }
 .canvas-panel.bleed-panel { border-style: dashed; border-color: #9a6534; }
@@ -1919,6 +1918,11 @@ p { font-size: var(--text-body) !important; }
 @media (min-width: 1280px) {
   .storyboard-worktable { grid-template-columns: minmax(320px, 1fr) 10px var(--inspector-width, 390px); }
   .storyboard-inspector-toggle { display: inline-flex; }
+  /* Tall inspector content (readout + edit form + dialogue cards + layers)
+     scrolls inside the docked sticky panel; without the cap the bottom is
+     unreachable on short viewports once the parent column ends. Scoped to the
+     docked layout only — stacked/drawer variants keep page-level scrolling. */
+  .panel-inspector { max-height: calc(100vh - 96px); overflow-y: auto; overscroll-behavior: contain; }
 }
 
 /* 1100-1279px: canvas first; inspector becomes a right drawer (default open). */
@@ -2095,7 +2099,7 @@ p { font-size: var(--text-body) !important; }
 
 /* ---------------------------------------------------------------------------
  * V02-51B Template B (audit §4.2/§5): workbench slots.
- * Left nav collapses to a 48px icon rail anywhere outside the <900 hamburger;
+ * Left nav collapses to a 64px icon rail anywhere outside the <900 hamburger;
  * the generic right inspector slot docks ≥1280, becomes a right drawer at
  * 900–1279 and a bottom sheet below. Kept at end-of-file so the existing
  * storyboard blocks stay the first `min-width: 1280px` media query.
@@ -2114,8 +2118,8 @@ p { font-size: var(--text-body) !important; }
     cursor: pointer;
   }
   .workspace-nav-collapse:hover { border-color: var(--ink); color: var(--ink); }
-  .workspace-layout.rail-left { grid-template-columns: 48px minmax(0, 1fr); }
-  .workspace-left.rail { padding: 14px 4px 68px; }
+  .workspace-layout.rail-left { grid-template-columns: 64px minmax(0, 1fr); }
+  .workspace-left.rail { padding: 14px 6px 68px; }
   .workspace-left.rail .workspace-resizer,
   .workspace-left.rail .workspace-project-title,
   .workspace-left.rail .workspace-nav-divider,
@@ -2132,8 +2136,8 @@ p { font-size: var(--text-body) !important; }
 .workspace-inspector-backdrop { display: none; }
 @media (min-width: 1280px) {
   .workspace-layout.has-inspector { grid-template-columns: var(--workspace-sidebar-width, 214px) minmax(0, 1fr) var(--workspace-inspector-width, 390px); }
-  /* Collapsed rail + docked inspector: the rail stays 48px in the first column. */
-  .workspace-layout.rail-left.has-inspector { grid-template-columns: 48px minmax(0, 1fr) var(--workspace-inspector-width, 390px); }
+  /* Collapsed rail + docked inspector: the rail stays 64px in the first column. */
+  .workspace-layout.rail-left.has-inspector { grid-template-columns: 64px minmax(0, 1fr) var(--workspace-inspector-width, 390px); }
   .workspace-inspector { border-left: 1px solid var(--line); }
   .workspace-inspector-body { padding-bottom: 70px; }
 }
