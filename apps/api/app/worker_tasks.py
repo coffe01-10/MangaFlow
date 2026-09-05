@@ -1,6 +1,7 @@
 import logging
 import os
 import socket
+import time
 from datetime import timedelta
 from threading import Event, Lock, Thread
 from uuid import uuid4
@@ -68,7 +69,20 @@ def _lease_duration() -> timedelta:
 
 
 class _LeaseHeartbeat:
-    """Refresh a job lease without sharing the worker's SQLAlchemy session."""
+    """Refresh a job lease without sharing the worker's SQLAlchemy session.
+
+    Protection boundary (LOCAL wall-clock cap): once the job's
+    ``job_timeout_seconds`` budget is spent, the heartbeat writes a one-shot
+    ``LOCAL_TIMEOUT`` marker and stops renewing, so the lease expires and
+    recovery reclaims the row while preserving the recorded cause. It cannot
+    stop the worker thread itself: a thread blocked inside a single
+    timeout-less call stays wedged until that call returns — no in-process
+    Python mechanism can kill a thread, and RQ's parity mechanism (kill the
+    whole process) is deliberately absent from LOCAL. That residual window is
+    why the genai ``http_options`` timeout companion (see
+    ``app.model_adapters.google`` / ``app.services.vertex_credentials``)
+    bounds every single provider request at the same budget.
+    """
 
     def __init__(self, job_id: str, owner: str):
         self.job_id = job_id
@@ -77,9 +91,15 @@ class _LeaseHeartbeat:
         self.interval = max(5.0, min(30.0, self.duration.total_seconds() / 3))
         self.stop = Event()
         self.lost = False
+        # Wall-clock deadline for the whole execution, set by ``__enter__``.
+        # Defaults to None so direct ``_run`` callers (tests, tooling) keep the
+        # legacy renew-until-lost behavior.
+        self.deadline: float | None = None
+        self.timed_out = False
         self.thread: Thread | None = None
 
     def __enter__(self):
+        self.deadline = time.monotonic() + get_settings().job_timeout_seconds
         self.thread = Thread(
             target=self._run,
             name=f"mangaflow-lease-{self.job_id[:8]}",
@@ -95,6 +115,15 @@ class _LeaseHeartbeat:
 
     def _run(self) -> None:
         while not self.stop.wait(self.interval):
+            if self.deadline is not None and time.monotonic() >= self.deadline:
+                # Wall-clock cap reached: stamp the cause once and stop
+                # renewing. The worker thread keeps running (it cannot be
+                # interrupted in-process — see the class docstring); leaving
+                # the lease to expire is what lets recovery reclaim the row.
+                if not self.timed_out:
+                    self.timed_out = True
+                    self._mark_local_timeout()
+                return
             try:
                 now = utcnow()
                 with SessionLocal() as db:
@@ -127,6 +156,60 @@ class _LeaseHeartbeat:
                 )
                 if self.stop.wait(1.0):
                     return
+
+    def _mark_local_timeout(self) -> None:
+        """Write the one-shot LOCAL_TIMEOUT marker while the lease is live.
+
+        Mirrors the renewal UPDATE's shape (same owner/lease/status guards) so
+        the stamp can only land on the row this heartbeat still owns. The row
+        keeps its ACTIVE status and valid lease: the worker thread is typically
+        wedged inside a single provider call, and recovery reclaims the row
+        only after this thread stops renewing and the lease actually expires.
+        """
+
+        from app.services.job_service import (
+            LOCAL_TIMEOUT_ERROR_CODE,
+            LOCAL_TIMEOUT_WAITING_MESSAGE,
+        )
+
+        try:
+            now = utcnow()
+            with SessionLocal() as db:
+                db.execute(
+                    update(GenerationJob)
+                    .where(
+                        GenerationJob.id == self.job_id,
+                        GenerationJob.lease_owner == self.owner,
+                        GenerationJob.lease_expires_at.is_not(None),
+                        GenerationJob.lease_expires_at > now,
+                        GenerationJob.status.in_(ACTIVE_STATUSES),
+                        GenerationJob.status.not_in(
+                            {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED}
+                        ),
+                    )
+                    .values(
+                        error_code=LOCAL_TIMEOUT_ERROR_CODE,
+                        error_message=LOCAL_TIMEOUT_WAITING_MESSAGE,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+                db.commit()
+        except Exception:
+            # Same philosophy as the renewal path: a transient marker failure
+            # must not crash the heartbeat thread. The lease itself remains the
+            # source of truth; recovery still reclaims it, only without the
+            # cause stamp.
+            LOGGER.warning(
+                "LOCAL_TIMEOUT marker write failed for job %s",
+                self.job_id,
+                exc_info=True,
+            )
+            return
+        LOGGER.warning(
+            "job %s reached the local wall-clock cap; "
+            "lease renewal stopped until recovery reclaims it",
+            self.job_id,
+        )
 
 
 def _claim_job(db, job_id: str, owner: str) -> GenerationJob | None:
