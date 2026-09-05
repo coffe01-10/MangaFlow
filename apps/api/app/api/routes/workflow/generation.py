@@ -464,6 +464,7 @@ def keep_selected_candidate(
 def retract_selected_candidate(
     page_id: str,
     db: Session = Depends(get_db),
+    candidate_id: str | None = None,
 ) -> MangaPage:
     page = _page(db, page_id)
     # Same page-lock convention as select_candidate/delete_asset: re-read the
@@ -473,6 +474,16 @@ def retract_selected_candidate(
     page = lock_entity(db, MangaPage, page.id)
     if not page.selected_candidate_id:
         raise HTTPException(status_code=409, detail="当前页面没有已采用候选")
+    # Optional target pin (#156): the library card renders a specific candidate
+    # and must not retract whatever the page currently has selected when the
+    # cached card is stale (cross-tab selection swap). When candidate_id is
+    # provided, refuse on mismatch instead of retracting the wrong object;
+    # omitting it keeps the legacy "retract current selection" behavior.
+    if candidate_id is not None and page.selected_candidate_id != candidate_id:
+        raise HTTPException(
+            status_code=409,
+            detail="该候选已不是页面当前采用的选择，请刷新素材库后重试",
+        )
 
     candidate = lock_entity(db, PageCandidate, page.selected_candidate_id)
     if candidate and candidate.page_id == page.id:

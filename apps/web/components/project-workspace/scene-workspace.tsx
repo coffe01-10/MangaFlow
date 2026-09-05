@@ -50,7 +50,12 @@ import { interiorLabel, sceneAssetStatusMeta, SCENE_ASSET_STATUSES } from "./sce
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"];
 
 function conflictMessage(error: unknown, fallback: string) {
-  if (isConflictError(error)) return "数据已变化，请刷新后重试";
+  if (isConflictError(error)) {
+    // ae0c6ee 之后 ApiError.message 即后端 409 detail（字符串或 detail.message）。
+    // 语义化冲突（乐观锁提示等）原样透出，只有无语义 body 才退回通用文案（#156）。
+    const message = error instanceof Error ? error.message : "";
+    return message && message !== "请求数据不符合要求" ? message : "数据已变化，请刷新后重试";
+  }
   return error instanceof Error ? error.message : fallback;
 }
 
@@ -432,7 +437,13 @@ export function SceneWorkspace({
       setNotice("");
       refreshLists();
     },
-    onError: (error) => setNotice(conflictMessage(error, "设定规范参考失败")),
+    onError: (error) => {
+      // #162: unbind 已提交、bind 失败——原规范参考已被真实解除，服务端处于
+      // 零引用状态。立即刷新列表让 UI 回到真实（未绑定）状态而不是继续显示
+      // 旧缓存里的「已绑定」，并明确告知重试方向。
+      refreshLists();
+      setNotice(`原规范参考已被解除，重新绑定失败（${conflictMessage(error, "设定规范参考失败")}），请重试`);
+    },
   });
 
   const unbindVariantReference = useMutation({

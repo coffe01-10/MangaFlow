@@ -435,6 +435,66 @@ describe("StoryboardEditor canvas (V02-31B)", () => {
     expect(screen.queryByText(storyboardCopy.conflict)).toBeNull();
   });
 
+  it("S12b 叙事保存 409：同样显示冲突横幅与「放弃并重新加载」，编辑器保持打开", async () => {
+    updatePanel.mockReset().mockRejectedValueOnce(new ApiError("分镜格已被更新，请刷新后重试", 409));
+    renderEditor();
+    await screen.findByTestId("canvas-page");
+    fireEvent.click(screen.getByRole("button", { name: "编辑本格" }));
+    fireEvent.change(screen.getByLabelText("动作与表演"), { target: { value: "改成新的动作描述" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存本格分镜" }));
+
+    await screen.findByRole("alert");
+    expect(screen.getByText(storyboardCopy.conflict)).toBeTruthy();
+    // 编辑器不静默关闭：画布与编辑表单仍在，草稿保留等待恢复决策。
+    expect(screen.getByTestId("canvas-page")).toBeTruthy();
+    expect((screen.getByLabelText("动作与表演") as HTMLTextAreaElement).value).toBe("改成新的动作描述");
+
+    const refetchBefore = storyboardQuery.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: storyboardCopy.discardReload }));
+    await waitFor(() => {
+      expect(screen.queryByText(storyboardCopy.conflict)).toBeNull();
+    });
+    // 恢复路径必须 refetch panel 快照，而不是原地重发同一个过期版本。
+    await waitFor(() => {
+      expect(storyboardQuery.mock.calls.length).toBeGreaterThan(refetchBefore);
+    });
+    expect(screen.getByTestId("canvas-page")).toBeTruthy();
+  });
+
+  it("S12c 气泡台词保存 409：冲突横幅；放弃并重新加载丢弃未保存草稿", async () => {
+    const withBubble = makePanel({ dialogues: [{
+      id: "dlg-1",
+      panel_id: "panel-1",
+      speaker_character_id: null,
+      target_text: "早上好",
+      reading_order: 1,
+      text_direction: "vertical",
+      region: { preferred: "upper_inner" },
+      rewrite_forbidden: true,
+      bubble: storedBubble,
+    }] });
+    data = { page, candidate_count: 0, panels: [withBubble, panel2] };
+    updateDialogue.mockReset().mockRejectedValueOnce(new ApiError("分镜格已被更新，请刷新后重试", 409));
+    renderEditor();
+    await screen.findByTestId("canvas-page");
+    const textbox = screen.getByRole("textbox", { name: "气泡 1 文字" });
+    fireEvent.change(textbox, { target: { value: "雨停之后的早晨" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存更改" }));
+
+    await screen.findByRole("alert");
+    expect(screen.getByText(storyboardCopy.conflict)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: storyboardCopy.discardReload }));
+    await waitFor(() => {
+      expect(screen.queryByText(storyboardCopy.conflict)).toBeNull();
+    });
+    // 草稿被丢弃：文字回到服务端原文，dirty 状态解除。
+    await waitFor(() => {
+      expect((screen.getByRole("textbox", { name: "气泡 1 文字" }) as HTMLTextAreaElement).value).toBe("早上好");
+    });
+    expect(screen.getByRole("button", { name: "保存本页" })).toHaveProperty("disabled", true);
+  });
+
   it("S13 切到生成页有草稿：拦截确认", async () => {
     renderEditor();
     stubRect(await screen.findByTestId("canvas-page"), 640, 903);

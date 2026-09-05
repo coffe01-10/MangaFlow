@@ -1907,8 +1907,13 @@ export const api = {
         manual_text_confirmed: true,
       }),
     }),
-  retractSelectedCandidate: (pageId: string) =>
-    request<MangaPage>(`/pages/${pageId}/selected-candidate`, { method: "DELETE" }),
+  // candidate_id (#156): 素材库卡片撤回必须命中用户确认的那张候选;不带时保持
+  // 旧的「撤页面当前选中」行为,兼容只持有 pageId 的调用方。
+  retractSelectedCandidate: (pageId: string, candidateId?: string) =>
+    request<MangaPage>(
+      `/pages/${pageId}/selected-candidate${candidateId ? `?candidate_id=${encodeURIComponent(candidateId)}` : ""}`,
+      { method: "DELETE" },
+    ),
   nextPage: (pageId: string) => request<MangaPage>(`/pages/${pageId}/next`, { method: "POST" }),
   library: (projectId: string, filters: LibraryFilters = {}) => {
     const query = new URLSearchParams({ group_by: "batch" });

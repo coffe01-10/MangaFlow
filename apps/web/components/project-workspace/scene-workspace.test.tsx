@@ -18,6 +18,7 @@ const deleteApi = vi.spyOn(api, "deleteSceneAsset");
 const restoreApi = vi.spyOn(api, "restoreSceneAsset");
 const uploadApi = vi.spyOn(api, "uploadAsset");
 const bindRefApi = vi.spyOn(api, "bindSceneAssetReference");
+const unbindRefApi = vi.spyOn(api, "unbindSceneAssetReference");
 const createVariantApi = vi.spyOn(api, "createSceneAssetVariant");
 const chaptersApi = vi.spyOn(api, "chapters");
 const scriptApi = vi.spyOn(api, "script");
@@ -61,6 +62,7 @@ describe("SceneWorkspace", () => {
     restoreApi.mockReset();
     uploadApi.mockReset();
     bindRefApi.mockReset();
+    unbindRefApi.mockReset();
     createVariantApi.mockReset();
     chaptersApi.mockReset().mockResolvedValue([]);
     scriptApi.mockReset().mockResolvedValue({ chapter_id: "c1", status: "READY", revision_no: 1, coverage: {}, scenes: [] });
@@ -225,7 +227,7 @@ describe("SceneWorkspace", () => {
     expect(await screen.findByText(/暴雨黄昏/)).toBeInTheDocument();
   });
 
-  it("409 乐观锁展示刷新而不是静默覆盖", async () => {
+  it("409 乐观锁展示后端语义提示而不是静默覆盖（#156）", async () => {
     listApi.mockResolvedValue([assetFixture({
       references: [{
         id: "ref-1",
@@ -239,8 +241,56 @@ describe("SceneWorkspace", () => {
     updateApi.mockRejectedValue(new ApiError("场景资产已被更新，请刷新后重试", 409));
     renderWorkspace();
     fireEvent.click(await screen.findByRole("button", { name: "设为规范参考" }));
-    expect(await screen.findByText("数据已变化，请刷新后重试")).toBeInTheDocument();
+    // ae0c6ee 之后 ApiError.message 即后端 detail:语义化 409 原样透出。
+    expect(await screen.findByText("场景资产已被更新，请刷新后重试")).toBeInTheDocument();
+    expect(screen.queryByText("数据已变化，请刷新后重试")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "刷新" })).toBeInTheDocument();
+  });
+
+  it("规范参考换绑失败：解除已提交后立即刷新列表并明确提示参考已被解除（#162）", async () => {
+    let current = assetFixture({
+      references: [{
+        id: "ref-1",
+        scene_asset_id: "asset-1",
+        asset_id: "file-1",
+        role: "main",
+        is_canonical: false,
+        created_at: "2026-09-01T00:00:00Z",
+      }],
+    });
+    listApi.mockImplementation(async () => [current]);
+    // unbind 成功并已提交——服务端此刻处于零引用状态。
+    unbindRefApi.mockImplementation(async () => {
+      current = { ...current, references: [] };
+      return undefined as never;
+    });
+    bindRefApi.mockRejectedValue(new Error("绑定接口暂时不可用"));
+    renderWorkspace();
+    await screen.findByRole("option", { name: /学校天台/ });
+    // 卡片当前显示为已绑定的非规范参考(main)。
+    expect(await screen.findByText(/main/)).toBeInTheDocument();
+    const before = listApi.mock.calls.length;
+    // 参考卡上的「设为规范参考」(状态按钮在无规范参考时禁用)。
+    const swapButtons = await waitFor(() => {
+      const buttons = screen.getAllByRole("button", { name: "设为规范参考" }).filter((item) => !item.hasAttribute("disabled"));
+      expect(buttons).toHaveLength(1);
+      return buttons;
+    });
+    fireEvent.click(swapButtons[0]);
+    await waitFor(() => {
+      expect(unbindRefApi).toHaveBeenCalledWith("project-1", "asset-1", "file-1");
+      expect(bindRefApi).toHaveBeenCalledWith("project-1", "asset-1", expect.objectContaining({
+        asset_id: "file-1",
+        is_canonical: true,
+      }));
+    });
+    // 列表被 refetch,UI 回到真实的未绑定状态,不再静默显示已绑定。
+    await waitFor(() => {
+      expect(listApi.mock.calls.length).toBeGreaterThan(before);
+    });
+    expect(await screen.findByText("尚未绑定场景参考图")).toBeInTheDocument();
+    expect(screen.queryByText("规范参考")).not.toBeInTheDocument();
+    expect(await screen.findByText(/原规范参考已被解除，重新绑定失败/)).toBeInTheDocument();
   });
 
   it("TEST-SCENE-07 归档确认展示引用数量，恢复走 restore 接口", async () => {

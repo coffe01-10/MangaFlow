@@ -296,6 +296,18 @@ export function StoryboardEditor({
   const discardDraft = () => {
     clearGeometryDrafts();
     geometrySave.reset();
+    // Narrative recovery (#155): drafts were composed against a stale panel
+    // version — keeping them after the reload would immediately re-arm the
+    // same 409 loop the recovery button exists to break. Drop them like the
+    // geometry path drops its own drafts, then refetch the panel snapshot.
+    savePanel.reset();
+    saveDialogue.reset();
+    addDialogue.reset();
+    removeDialogue.reset();
+    setEditingPanel(false);
+    setPanelDraft(null);
+    setDialogueDrafts({});
+    setNewDialogue(null);
     setNotice("");
     queryClient.invalidateQueries({ queryKey: ["storyboard", currentPage?.id] });
   };
@@ -493,9 +505,14 @@ export function StoryboardEditor({
     return () => observer.disconnect();
   }, [hasServerPage, currentPage?.id]);
 
-  const error = savePanel.error ?? saveDialogue.error ?? addDialogue.error ?? removeDialogue.error
-    ?? geometrySave.error ?? updateLayout.error ?? replanError;
-  const conflict = geometrySave.error != null && isConflictError(geometrySave.error);
+  // Narrative saves 409 the same way geometry does (dialogue CRUD bumps
+  // panel.version server-side), so the conflict banner + 「放弃并重新加载」
+  // recovery must cover both paths — otherwise a stale panelDraft retries the
+  // identical version forever (#155).
+  const narrativeError = savePanel.error ?? saveDialogue.error ?? addDialogue.error ?? removeDialogue.error;
+  const error = narrativeError ?? geometrySave.error ?? updateLayout.error ?? replanError;
+  const conflict = (geometrySave.error != null && isConflictError(geometrySave.error))
+    || (narrativeError != null && isConflictError(narrativeError));
   const saving = savePanel.isPending || saveDialogue.isPending || addDialogue.isPending || removeDialogue.isPending
     || updateLayout.isPending || geometrySaving || replanPending;
   const saveStatus = saving ? storyboardCopy.saving : error ? "保存失败" : "已保存";
