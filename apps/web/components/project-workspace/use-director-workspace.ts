@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -35,8 +35,8 @@ export type DirectorCommandPlan = Extract<DirectorPlan, { kind: "command" }>;
 
 /**
  * Director workspace domain (V02-41B): scope selection, utterance draft,
- * history by page, and the propose 鈫?preview 鈫?accept/reject/undo/redo flow
- * against the V02-40 journal API. No Job is created here 鈥?accept executes
+ * history by page, and the propose → preview → accept/reject/undo/redo flow
+ * against the V02-40 journal API. No Job is created here — accept executes
  * synchronously; "executing" only reflects the in-flight HTTP call so the
  * canvas can show busy.
  */
@@ -149,6 +149,9 @@ export function useDirectorWorkspace({
     onError: (error: Error) => setNotice(error.message),
   });
 
+  // reject/discard must be in the gate too: otherwise a reject in flight leaves
+  // 确认执行 clickable (accept+reject race on the same command) and 拒绝 can
+  // double-fire.
   const executing = accept.isPending || reject.isPending || undo.isPending || redo.isPending || discard.isPending;
   useEffect(() => {
     onExecutingChange?.(executing || propose.isPending);
@@ -169,7 +172,7 @@ export function useDirectorWorkspace({
     [characters, draft, id, page, pageGenerationPending, panels, scenes, selection],
   );
 
-  /** 棰勮锛歝ompile 鈫?clarify/unsupported shown locally; command 鈫?propose. */
+  /** 预览：compile → clarify/unsupported shown locally; command → propose. */
   const submitForPreview = useCallback(() => {
     if (!page) return;
     setNotice(null);
