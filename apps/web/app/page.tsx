@@ -19,7 +19,7 @@ import {
 import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
-const modeLabel = { AUTO: "自动", DIRECTOR: "导演", SEMI_AUTO: "半自动" } as const;
+import { workflowModeLabels } from "@/components/project-workspace/labels";
 
 function ConnectionBadge({ summary }: { summary?: DashboardAIOverview }) {
   const healthy = summary?.healthy_connection_count ?? 0;
@@ -59,7 +59,7 @@ function ProjectCard({ item, index }: { item: DashboardProject; index: number })
       <div className="project-meta">
         <div>
           <strong>{project.name}</strong>
-          <span>{modeLabel[project.workflow_mode] ?? project.workflow_mode} · {project.default_resolution}</span>
+          <span>{workflowModeLabels[project.workflow_mode]?.short ?? project.workflow_mode} · {project.default_resolution}</span>
         </div>
         <ArrowRight size={17} />
       </div>
@@ -149,15 +149,14 @@ function CreateProjectPanel({ open, onClose }: { open: boolean; onClose: () => v
 
           <label className="field-label" id="new-project-mode-label">工作方式</label>
           <div className="mode-grid" role="group" aria-labelledby="new-project-mode-label">
-            {[
-              ["SEMI_AUTO", "半自动", "推荐", "AI 先完成，可随时接管"],
-              ["DIRECTOR", "导演", "逐步", "每个阶段等待确认"],
-              ["AUTO", "自动", "快速", "自动运行到最终审核"],
-            ].map(([value, label, tag, desc]) => (
-              <button type="button" key={value} aria-pressed={mode === value} className={mode === value ? "mode-option selected" : "mode-option"} onClick={() => setMode(value)}>
-                <span>{label}<small>{tag}</small></span><p>{desc}</p>{mode === value && <Check size={16} />}
-              </button>
-            ))}
+            {(Object.keys(workflowModeLabels) as Array<keyof typeof workflowModeLabels>).map((value) => {
+              const meta = workflowModeLabels[value];
+              return (
+                <button type="button" key={value} aria-pressed={mode === value} className={mode === value ? "mode-option selected" : "mode-option"} onClick={() => setMode(value)}>
+                  <span>{meta.short}<small>{value === "SEMI_AUTO" ? "推荐" : value === "DIRECTOR" ? "逐步" : "快速"}</small></span><p>{meta.detail}</p>{mode === value && <Check size={16} />}
+                </button>
+              );
+            })}
           </div>
 
           <p className="form-note"><Sparkles size={14} />图片模型不设默认主次；进入工作区后必须显式选择，以保持项目画风一致。</p>
