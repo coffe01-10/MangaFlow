@@ -1,5 +1,7 @@
 # N1 Core Reliability Audit Wave — 2026-09-05（night/n1-core，基线 c5179b7 → 合并后 HEAD）
 
+最终全量：**730 passed**（基线 629，+101 个新回归测试），失败集与 Windows 环境基线逐字节一致；ruff 干净。
+
 范围：Job / Queue / Cancellation / Retry / Workflow / Director / Persistence / Idempotency / Candidate / Inspection / Generation Integrity。
 方法：8 组 fresh-context Hunter（A–H）→ 独立 Verifier（P1 双验证）→ Fix Worker（独立 worktree/branch、文件互斥、failing-first 回归测试）→ Critic/Fresh Reviewer 终审。
 本环境边界：Linux 离线 SQLite 套件；live PostgreSQL/Redis/RQ/真实 provider 验收 **NOT RUN**（无基础设施，按仓库政策标记 BLOCKED）。基线 8 failed + 10 errors 全部为 Windows 专属环境失败（backup_restore_drill / codex_cli / grok_build_cli / e2e_isolation / antigravity_cli），全天保持不变。
@@ -43,11 +45,11 @@ Fresh Reviewer（最终对抗审查，覆盖 c5179b7..HEAD 全部合并 diff + �
 - **E-F5 页面回退 STORYBOARDED**：机制存在但终态良性等价（选择/重掷/就绪全部正常），降级 LOW，暂不修。
 
 ## 遗留队列（已定位、未修复，按价值排序）
-1. **C-F2/G-F2（P2 家族）**：9 处实体 PATCH 路由仍是“内存读版本→比较→无条件写”（scene/beat/character/outfit/style×3/project/workflow×2），并发双写静默丢失——与已修复的 panel/dialogue 原子化缺陷同族（a51e027）。修复模式现成（_claim_panel_version 的条件 UPDATE）。
-2. **C-F1（P2）**：workflow export 节点重执行时 create_export 非幂等 → 租约回收重跑产生重复 ExportBundle 行。
-3. **C-F3（P2，需产品决策）**：POST /workflows/{id}/runs 无幂等令牌、无同 scope 活跃 run 防护 → 双击/重试 = 双份付费 SOURCE_PARSE。
-4. **F-F4（P2，需产品决策）**：多图 provider 响应仅持久化 images[0] 但按 N 张计费，其余图静默丢弃。
-5. **R-7（P2/P3）**：/jobs/{id}/* 全家无项目归属校验；archived job 可重试；列表硬上限 100 无分页。
+1. ~~**C-F2/G-F2（P2 家族）**：9 处实体 PATCH 路由仍是"内存读版本→比较→无条件写"~~ → **已修复合并**：全部十处（scene/beat/character/outfit/style×3/project/workflow×2，含 restore_version）改为单条条件 UPDATE 原子 claim（`WHERE version == expected`，rowcount 0 → 409），10 个逐路由 lost-update 回归测试全部 failing-first 验证。
+2. ~~**C-F1（P2）**：workflow export 节点重执行时 create_export 非幂等~~ → **已修复合并**：`create_export(reuse_existing=True)` 仅在 export 节点处理器启用，以确定性 storage_key（选中候选集的纯函数）复用已提交 bundle 行；该行本身即幂等标记，可跨 create_export 提交与完成 CAS 之间的崩溃存活。残余（诚实记录）：真正并发的双执行仍可插入两行，彻底关闭需 `(chapter_id, export_type, storage_key)` 唯一约束（迁移，超本轮范围）。
+3. ~~**C-F3（P2）**：POST /workflows/{id}/runs 无幂等防护~~ → **已修复合并**：create_workflow_run 在 scope 校验后 lock_entity(WorkflowDefinition) + 同 workflow+scope 存在非终态 run 则 ValueError → 路由 409"该范围已有进行中的运行"。终态（FAILED/CANCELLED/COMPLETED）不阻塞 retry_run 与新起；不同 scope 并行不受影响。请求侧幂等令牌（需迁移+客户端配合）评估为不必要。
+4. ~~**F-F4（P2→P3）**：多图响应仅持久化 images[0] 但按 N 计费~~ → **已修复合并（降级 P3，发行预设 n=1 不可达）**：`"n"` 加入 _RESERVED_BODY（extra_body 无法再抬高张数）、images_edit 表单钉 `n=1`、Google 分支 `candidate_count=1`；两个 worker handler 对 N>1 响应打 WARNING。刻意不改账本——供应商确按 N 张计费，N 是诚实的支出记录；缺陷根因是"花钱不用"，已在请求源头钉死。
+5. **R-7（P2/P3）**：/jobs/{id}/* 全家无项目归属校验；archived job 可重试；列表硬上限 100 无分页。（API 本就无鉴权，属一致性缺口）
 6. **R-8（P2）**：LOCAL 模式无墙钟超时（job_timeout 仅挂在 RQ）；CONCURRENCY_LIMIT 等待者占死 8 线程池。
 7. **S-P3（P2）**：request_parameters / input_snapshot JSON 整列写与并发写者互相覆盖（_lease_reference_assets vs reconcile 参数合并）。
 8. **P3 前端提示缺口**（Fresh Reviewer 确认）：analyzeStyle 与 job retry/cancel 的 409 无错误呈现；director 非 tip 撤销按钮恒 409。
