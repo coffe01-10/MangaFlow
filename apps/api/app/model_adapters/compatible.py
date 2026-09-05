@@ -23,7 +23,9 @@ from app.model_adapters.base import (
 )
 
 _RESERVED_HEADERS = {"authorization", "host", "content-length", "x-api-key"}
-_RESERVED_BODY = {"model", "messages", "input", "prompt", "stream", "image", "images"}
+# "n" is reserved: a configured extra_body must not raise the image count
+# above the one image per candidate the product persists and inspects.
+_RESERVED_BODY = {"model", "messages", "input", "prompt", "stream", "image", "images", "n"}
 
 
 @dataclass(frozen=True)
@@ -491,6 +493,9 @@ class OpenAICompatibleAdapter(_CompatibleBase):
                 data={
                     "model": self.runtime.model_id,
                     "prompt": request.prompt,
+                    # One image per candidate: the product persists and
+                    # inspects exactly one, so asking for more only bills.
+                    "n": "1",
                     "size": self._image_size(request),
                 },
                 files=files,

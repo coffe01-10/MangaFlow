@@ -166,6 +166,9 @@ class GoogleImageAdapter(_GoogleBase):
                 model=self.runtime.model_id,
                 contents=contents,
                 config=types.GenerateContentConfig(
+                    # One candidate: the product persists only the first
+                    # image, so extra candidates would only inflate the bill.
+                    candidate_count=1,
                     response_modalities=[types.Modality.TEXT, types.Modality.IMAGE],
                     image_config=types.ImageConfig(
                         aspect_ratio=request.aspect_ratio,

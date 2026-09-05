@@ -623,6 +623,11 @@ def _run_page_generate(db, job: GenerationJob) -> None:
         page,
         attribute_names=["storyboard_version", "status", "selected_candidate_id", "version"],
     )
+    if len(response.images) > 1:
+        LOGGER.warning(
+            "模型返回 %d 张图片，仅持久化第 1 张（其余图片不落盘，用量按供应商返回如实记录）",
+            len(response.images),
+        )
     asset = _save_generated_asset(db, candidate, response.images[0])
     record = GenerationRecord(
         job_id=job.id,

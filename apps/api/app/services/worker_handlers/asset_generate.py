@@ -397,6 +397,11 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
             job.id,
         )
         raise JobCancelledError("候选已删除，模型返回结果不再写入")
+    if len(response.images) > 1:
+        LOGGER.warning(
+            "模型返回 %d 张图片，仅持久化第 1 张（其余图片不落盘，用量按供应商返回如实记录）",
+            len(response.images),
+        )
     asset = _save_asset_candidate(db, candidate, batch.project_id, response.images[0])
     record = GenerationRecord(
         job_id=job.id,
