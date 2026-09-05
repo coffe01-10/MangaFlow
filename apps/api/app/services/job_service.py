@@ -650,10 +650,17 @@ def recover_pending_jobs(db: Session) -> int:
                 .execution_options(synchronize_session=False)
             )
             if updated.rowcount == 1:
-                # Finalize attempts a killed horse never closed. Safe against
-                # live work: the conditional claim above just took the row from
-                # an expired lease, and an in-flight attempt only exists under
-                # a still-valid one, which this branch can never observe.
+                # Best-effort closeout of attempts left unfinalized. Safe for
+                # RQ/JOB_TIMEOUT: a force-killed horse can never finalize
+                # afterwards. NOT safe for LOCAL_TIMEOUT: the local thread
+                # stays alive past the expired lease, so its wedged provider
+                # call may still return and finalize late — this guess can
+                # stamp a genuinely-SUCCEEDED paid call as FAILED.
+                # finalize_model_call_attempt repairs exactly that case (a
+                # SUCCEEDED finalize over a FAILED row carrying one of these
+                # terminal codes with usage still NULL upgrades the row), so
+                # nothing here may write usage columns: the sweep cannot know
+                # them, and NULL usage is the upgrade's discriminator.
                 db.execute(
                     update(ModelCallAttempt)
                     .where(
