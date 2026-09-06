@@ -290,14 +290,20 @@ class GrokBuildArtifactRunner:
                     stderr_checksum=inspect_stderr_checksum,
                 )
             if inspect.exit_code:
+                # An unexplained nonzero preflight exit (AV/indexer file lock,
+                # self-update glitch, transient crash) must not stamp a
+                # terminal capability verdict: UPSTREAM keeps this dispatch
+                # fail-closed — no media call runs — while letting the retry
+                # budget absorb a transient glitch. A parsed hooks verdict
+                # stays UNSUPPORTED in _validate_safe_inspect below.
                 return replace(
                     inspect,
                     stdout=b"",
                     stderr=b"",
                     stdout_checksum=inspect_stdout_checksum,
                     stderr_checksum=inspect_stderr_checksum,
-                    error_code="UNSUPPORTED",
-                    error_message="无法确认 Grok Build CLI 的钩子隔离状态",
+                    error_code="UPSTREAM",
+                    error_message="Grok Build CLI inspect 预检失败，无法确认钩子隔离状态",
                 )
             try:
                 _validate_safe_inspect(inspect.stdout)
@@ -349,7 +355,7 @@ class GrokBuildArtifactRunner:
                 stderr_checksum,
             )
         if outcome.exit_code:
-            code, message, _retryable = _map_failure(_decode_bytes(raw_stdout + raw_stderr))
+            code, message, _retryable = _map_failure(_decode_output(outcome))
             return self._failure_outcome(
                 outcome,
                 environment,
@@ -370,6 +376,19 @@ class GrokBuildArtifactRunner:
                 stderr_checksum,
                 error.code,
                 error.user_message,
+            )
+        except OSError:
+            # Same contract as the antigravity runner: an OSError while
+            # adopting the artifact (ENOSPC, EACCES, hostile target) is an
+            # output failure to retain as evidence, not a controller crash.
+            return self._failure_outcome(
+                outcome,
+                environment,
+                run_id,
+                stdout_checksum,
+                stderr_checksum,
+                "INVALID_OUTPUT",
+                "Grok Build CLI 产物无法读取或落盘",
             )
         except BaseException as error:
             cleanup_warning = _cleanup_run_sessions(environment, run_id)
@@ -981,7 +1000,14 @@ def _decode_bytes(payload: bytes) -> str:
 
 
 def _decode_output(outcome: CLIProcessOutcome) -> str:
-    return _decode_bytes(outcome.stdout + b"\n" + outcome.stderr)
+    # Decode each stream independently: a CLI commonly writes UTF-8 JSON to
+    # stdout while a localized Windows error lands in stderr as cp936, and a
+    # concatenated decode succeeds as cp936 by mojibake-ing the UTF-8 half,
+    # breaking auth/quota keyword matching. Per-stream, the same chain keeps
+    # both halves readable.
+    return "\n".join(
+        _decode_bytes(payload) for payload in (outcome.stdout, outcome.stderr)
+    )
 
 
 def _elapsed_ms(started: float) -> int:

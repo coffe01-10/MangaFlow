@@ -264,6 +264,18 @@ class AntigravityArtifactRunner:
                 error_code=error.code,
                 error_message=error.user_message,
             )
+        except OSError:
+            # _adopt moves provider bytes around the workspace: an OSError
+            # (ENOSPC, EACCES, a directory planted at the registered target)
+            # is the artifact contract failing, not a controller crash.
+            # INVALID_OUTPUT retains the run as evidence instead of letting
+            # the OSError escape to execute()'s terminal CRASH fallback and
+            # discard the paid output.
+            return replace(
+                outcome,
+                error_code="INVALID_OUTPUT",
+                error_message="Antigravity CLI 产物无法读取或落盘",
+            )
         return outcome
 
     def _adopt(self, workspace: Path, outcome: CLIProcessOutcome) -> None:
@@ -645,7 +657,17 @@ def _write_json_atomic(path: Path, value: dict) -> None:
 
 
 def _decode_output(outcome: CLIProcessOutcome) -> str:
-    payload = outcome.stdout + b"\n" + outcome.stderr
+    # Decode each stream independently: a CLI commonly writes UTF-8 JSON to
+    # stdout while a localized Windows error lands in stderr as cp936, and a
+    # concatenated decode succeeds as cp936 by mojibake-ing the UTF-8 half,
+    # breaking auth/quota keyword matching. Per-stream, the same chain keeps
+    # both halves readable.
+    return "\n".join(
+        _decode_stream(payload) for payload in (outcome.stdout, outcome.stderr)
+    )
+
+
+def _decode_stream(payload: bytes) -> str:
     for encoding in ("utf-8-sig", "cp936"):
         try:
             return payload.decode(encoding)

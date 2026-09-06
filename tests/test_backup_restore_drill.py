@@ -72,6 +72,14 @@ def _fingerprint(root: Path) -> dict[str, dict]:
 
 def _make_junction(link: Path, target: Path) -> None:
     link.parent.mkdir(parents=True, exist_ok=True)
+    if sys.platform != "win32":
+        # POSIX has no junctions; a symlink is the platform's reparse analog
+        # and every backup/restore guard rejects symlinks exactly like
+        # junctions (is_link_or_reparse). Exercising the real rejection paths
+        # beats crashing on the Windows-only "oem" codec before cmd.exe is
+        # even resolved.
+        link.symlink_to(target)
+        return
     completed = subprocess.run(
         ["cmd.exe", "/c", "mklink", "/J", str(link), str(target)],
         capture_output=True,
@@ -790,7 +798,16 @@ def test_restore_rejects_duplicate_and_case_colliding_paths(tmp_path, fixture_ro
             repo_root=ROOT,
             report_path=tmp_path / "r2.json",
         )
-    assert raised_case.value.code == "PATH_CONFLICT"
+    if sys.platform == "win32":
+        # normcase lowercases on Windows, so the case variant collides with
+        # the original entry and the conflict guard fires first.
+        assert raised_case.value.code == "PATH_CONFLICT"
+    else:
+        # POSIX normcase is the identity and filesystems are case-sensitive:
+        # STORAGE/... no longer collides, but it equally no longer matches a
+        # backup scope prefix, so the manifest guard rejects it. Either way
+        # the restore must fail closed without creating the destination.
+        assert raised_case.value.code == "MANIFEST_INVALID"
     assert not (tmp_path / "restored-dup").exists()
     assert not (tmp_path / "restored-case").exists()
 
@@ -871,6 +888,10 @@ def test_cleanup_owned_fixture_deletes_only_marked_tree(tmp_path, fixture_root):
     assert not source.exists()
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="the backup-restore.ps1 wrapper and SYSTEMROOT are Windows-only",
+)
 def test_powershell_wrapper_dry_run_zero_writes(tmp_path, fixture_root):
     source, _meta = fixture_root
     archive = tmp_path / "archive"
