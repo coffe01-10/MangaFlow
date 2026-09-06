@@ -224,6 +224,30 @@ def _load_page(db: Session, project_id: str, page_id: str | None) -> MangaPage |
     return page
 
 
+def _scene_undo_drifted(scene: Scene | None, row: DirectorCommand) -> bool:
+    """True when the scene no longer holds exactly what this row's execution
+    wrote. PATCH /scenes bumps Scene.version and the page review flag but never
+    storyboard_version, so the sbv-equality claim is blind to a concurrent
+    manual scene edit; a chapter revise can also recreate the scene so the
+    row's scene_id no longer resolves. Both cases must stop a restore: compare
+    the written field values instead (payload holds the post-execution values
+    for both original commands and undo rows slated for redo).
+    """
+    if scene is None:
+        return True
+    payload = row.payload or {}
+    for key in SCENE_RESTORE_FIELDS:
+        if key not in payload:
+            continue
+        written = payload[key]
+        if isinstance(written, str):
+            # apply_scene_fields strips strings on write; compare the stored form.
+            written = written.strip()
+        if getattr(scene, key) != written:
+            return True
+    return False
+
+
 def _current_version(entity, scope: str) -> int:
     if scope == "panel":
         return entity.version
@@ -921,6 +945,34 @@ def accept_command(db: Session, project_id: str, command_id: str) -> dict:
             row.error = conflict
             db.commit()
             raise _http_409(conflict)
+    if envelope.operation == "update_scene_context":
+        # §6.4: the scene.version gate at the top ran before the page/panel
+        # locks, and manual scene PATCHes hold none of those locks while they
+        # write Scene.version directly — a PATCH committing in this window is
+        # invisible to that gate and would be silently overwritten by the
+        # blind ORM write below. Re-check the scene-scoped fields against the
+        # propose-time diff, mirroring the §6.3 panel-background re-check.
+        scene = db.get(Scene, envelope.target.scene_id)
+        diff = row.diff or {}
+        scene_drifted = scene is None
+        for key in SCENE_RESTORE_FIELDS:
+            change = diff.get(key)
+            if not isinstance(change, dict) or "before" not in change:
+                continue
+            current = getattr(scene, key, None) if scene is not None else None
+            if current != change["before"]:
+                scene_drifted = True
+                break
+        if scene_drifted:
+            conflict = {
+                "code": "VERSION_CONFLICT",
+                "message": "场景已在预览后被更新，请刷新后重试",
+                "scope": "scene",
+                "current_version": None if scene is None else scene.version,
+            }
+            row.error = conflict
+            db.commit()
+            raise _http_409(conflict)
     claimed = db.execute(
         update(DirectorCommand)
         .where(
@@ -1075,7 +1127,13 @@ def undo_command(db: Session, project_id: str, command_id: str) -> dict:
     row = _load_command(db, project_id, command_id)
     if row.status != CommandStatus.EXECUTED.value:
         raise _http_409("只能撤销已执行的命令")
-    page = _load_page(db, project_id, (row.target or {}).get("page_id"))
+    # Lenient page load: a deleted target page must reach the SUPERSEDED
+    # terminalization below instead of dying on _load_page's 422 (which made
+    # that branch dead code). Cross-project targets still 422.
+    target_page_id = (row.target or {}).get("page_id")
+    page = db.get(MangaPage, target_page_id) if target_page_id else None
+    if page is not None and project_id_for_page(db, page) != project_id:
+        raise _http_422("目标不属于当前项目")
     if page is None:
         row.status = CommandStatus.SUPERSEDED.value
         group = db.get(DirectorCommandGroup, row.group_id)
@@ -1135,6 +1193,26 @@ def undo_command(db: Session, project_id: str, command_id: str) -> dict:
             }
         )
     db.refresh(row)
+    # §6.4: for scene commands the sbv claim above is blind to a concurrent
+    # manual scene PATCH (it moves Scene.version, not storyboard_version) and
+    # to a scene recreated by a chapter revise. If the scene no longer holds
+    # what this row's execution wrote, keep the claimed SUPERSEDED flip (same
+    # destructive-terminal semantics as the sbv-moved branch), restore
+    # nothing, and tell the user to refresh. This runs before the undo row is
+    # built so no stray PREVIEWED row survives the abort.
+    if row.operation == "update_scene_context":
+        scene = db.get(Scene, (row.target or {}).get("scene_id"))
+        if _scene_undo_drifted(scene, row):
+            group = db.get(DirectorCommandGroup, row.group_id)
+            _refresh_group_status(db, group)
+            db.commit()
+            raise _http_409(
+                {
+                    "code": "SUPERSEDED",
+                    "message": "场景已在撤销前被修改，请刷新",
+                    "current_version": None if scene is None else scene.version,
+                }
+            )
     existing = _existing_group(db, project_id, row.command_group_id)
     undo_id = str(uuid4())
     redo_snapshot = None

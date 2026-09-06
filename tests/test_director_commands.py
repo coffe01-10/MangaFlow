@@ -1436,3 +1436,205 @@ def test_redo_group_status_reflects_restored_state(client, db_session):
         )
     )
     assert group.status == "COMMITTED"
+
+
+def test_undo_scene_context_rejects_after_concurrent_scene_patch(client, db_session):
+    """§6.4: undo of update_scene_context must not clobber a manual scene PATCH.
+
+    PATCH /scenes bumps Scene.version and the page review flag but never
+    storyboard_version, so the sbv-equality claim in undo_command cannot see a
+    concurrent scene edit: undo used to win the claim, restore the pre-command
+    weather and return 200, silently destroying the manual edit. The undo must
+    instead terminalize the row SUPERSEDED (mirroring the sbv-moved branch),
+    restore nothing, create no undo row, and 409.
+    """
+    ctx = _setup(client, db_session)
+    envelope = _envelope(
+        ctx, "update_scene_context", {"weather": "大雨"}, group_id=_uid()
+    )
+    proposed = _propose(client, ctx, [envelope])
+    assert proposed.status_code == 200, proposed.text
+    accepted = client.post(
+        f"/api/v1/projects/{ctx['project']['id']}/director/commands/"
+        f"{envelope['command_id']}/accept"
+    )
+    assert accepted.status_code == 200, accepted.text
+
+    # The concurrent manual edit: scene.version moves, storyboard_version does not.
+    db_session.refresh(ctx["scene"])
+    patch = client.patch(
+        f"/api/v1/scenes/{ctx['scene'].id}",
+        json={"weather": "晴", "version": ctx["scene"].version},
+    )
+    assert patch.status_code == 200, patch.text
+
+    undone = client.post(
+        f"/api/v1/projects/{ctx['project']['id']}/director/commands/"
+        f"{envelope['command_id']}/undo"
+    )
+    assert undone.status_code == 409, undone.text
+    assert undone.json()["detail"]["code"] == "SUPERSEDED"
+
+    db_session.expire_all()
+    scene = db_session.get(Scene, ctx["scene"].id)
+    assert scene.weather == "晴"
+    row = db_session.scalar(
+        select(DirectorCommand).where(
+            DirectorCommand.command_id == envelope["command_id"]
+        )
+    )
+    assert row.status == "SUPERSEDED"
+    stray = db_session.scalar(
+        select(DirectorCommand).where(
+            DirectorCommand.inverse_of_command_id == envelope["command_id"]
+        )
+    )
+    assert stray is None
+
+
+def test_redo_scene_context_rejects_after_concurrent_scene_patch(client, db_session):
+    """Redo delegates to undo_command, so the same manual-scene-PATCH drift must
+    stop a redo from re-applying the command's payload over the manual edit."""
+    ctx = _setup(client, db_session)
+    envelope = _envelope(
+        ctx, "update_scene_context", {"weather": "大雨"}, group_id=_uid()
+    )
+    proposed = _propose(client, ctx, [envelope])
+    assert proposed.status_code == 200, proposed.text
+    accepted = client.post(
+        f"/api/v1/projects/{ctx['project']['id']}/director/commands/"
+        f"{envelope['command_id']}/accept"
+    )
+    assert accepted.status_code == 200, accepted.text
+    undone = client.post(
+        f"/api/v1/projects/{ctx['project']['id']}/director/commands/"
+        f"{envelope['command_id']}/undo"
+    )
+    assert undone.status_code == 200, undone.text
+    undo_id = next(
+        item["command_id"]
+        for item in undone.json()["commands"]
+        if item["inverse_of_command_id"] == envelope["command_id"]
+    )
+
+    db_session.refresh(ctx["scene"])
+    patch = client.patch(
+        f"/api/v1/scenes/{ctx['scene'].id}",
+        json={"weather": "暴雨", "version": ctx["scene"].version},
+    )
+    assert patch.status_code == 200, patch.text
+
+    redone = client.post(
+        f"/api/v1/projects/{ctx['project']['id']}/director/commands/"
+        f"{undo_id}/redo"
+    )
+    assert redone.status_code == 409, redone.text
+    assert redone.json()["detail"]["code"] == "SUPERSEDED"
+
+    db_session.expire_all()
+    scene = db_session.get(Scene, ctx["scene"].id)
+    assert scene.weather == "暴雨"
+
+
+def test_undo_scene_context_without_intervening_patch_still_restores(
+    client, db_session
+):
+    """Control for the §6.4 fence: an undisturbed undo/redo cycle keeps working
+    end to end (no false SUPERSEDED from the new drift check)."""
+    ctx = _setup(client, db_session)
+    envelope = _envelope(
+        ctx, "update_scene_context", {"weather": "大雨"}, group_id=_uid()
+    )
+    proposed = _propose(client, ctx, [envelope])
+    assert proposed.status_code == 200, proposed.text
+    accepted = client.post(
+        f"/api/v1/projects/{ctx['project']['id']}/director/commands/"
+        f"{envelope['command_id']}/accept"
+    )
+    assert accepted.status_code == 200, accepted.text
+
+    undone = client.post(
+        f"/api/v1/projects/{ctx['project']['id']}/director/commands/"
+        f"{envelope['command_id']}/undo"
+    )
+    assert undone.status_code == 200, undone.text
+    db_session.expire_all()
+    scene = db_session.get(Scene, ctx["scene"].id)
+    assert scene.weather == "小雨"
+    undo_id = next(
+        item["command_id"]
+        for item in undone.json()["commands"]
+        if item["inverse_of_command_id"] == envelope["command_id"]
+    )
+
+    redone = client.post(
+        f"/api/v1/projects/{ctx['project']['id']}/director/commands/"
+        f"{undo_id}/redo"
+    )
+    assert redone.status_code == 200, redone.text
+    db_session.expire_all()
+    scene = db_session.get(Scene, ctx["scene"].id)
+    assert scene.weather == "大雨"
+
+
+def test_undo_after_target_page_deleted_supersedes_instead_of_422(client, db_session):
+    """undo of an EXECUTED command whose target page was deleted must land on
+    the designed SUPERSEDED terminalization, not raise 422 目标页不存在 from
+    _load_page before the page-is-None branch can run (that branch was dead
+    code: _load_page raises instead of returning None for a missing page)."""
+    from sqlalchemy import delete
+
+    ctx = _setup(client, db_session)
+    shot = _envelope(ctx, "update_panel_shot", {"shot_type": "wide"}, group_id=_uid())
+    proposed = _propose(client, ctx, [shot])
+    assert proposed.status_code == 200, proposed.text
+    accepted = client.post(
+        f"/api/v1/projects/{ctx['project']['id']}/director/commands/"
+        f"{shot['command_id']}/accept"
+    )
+    assert accepted.status_code == 200, accepted.text
+
+    db_session.execute(delete(MangaPage).where(MangaPage.id == ctx["page"].id))
+    db_session.commit()
+
+    undone = client.post(
+        f"/api/v1/projects/{ctx['project']['id']}/director/commands/"
+        f"{shot['command_id']}/undo"
+    )
+    assert undone.status_code == 409, undone.text
+    assert undone.json()["detail"]["code"] == "SUPERSEDED"
+
+    db_session.expire_all()
+    row = db_session.scalar(
+        select(DirectorCommand).where(DirectorCommand.command_id == shot["command_id"])
+    )
+    assert row.status == "SUPERSEDED"
+
+
+def test_undo_scene_context_after_scene_deleted_supersedes(client, db_session):
+    """A chapter revise can recreate scenes so the command's scene_id no longer
+    resolves. undo must flip SUPERSEDED with a 409, not crash on a None scene
+    inside restore_scene_snapshot."""
+    from sqlalchemy import delete
+
+    ctx = _setup(client, db_session)
+    envelope = _envelope(
+        ctx, "update_scene_context", {"weather": "大雨"}, group_id=_uid()
+    )
+    proposed = _propose(client, ctx, [envelope])
+    assert proposed.status_code == 200, proposed.text
+    accepted = client.post(
+        f"/api/v1/projects/{ctx['project']['id']}/director/commands/"
+        f"{envelope['command_id']}/accept"
+    )
+    assert accepted.status_code == 200, accepted.text
+
+    db_session.execute(delete(Scene).where(Scene.id == ctx["scene"].id))
+    db_session.commit()
+
+    undone = client.post(
+        f"/api/v1/projects/{ctx['project']['id']}/director/commands/"
+        f"{envelope['command_id']}/undo"
+    )
+    assert undone.status_code == 409, undone.text
+    assert undone.json()["detail"]["code"] == "SUPERSEDED"
