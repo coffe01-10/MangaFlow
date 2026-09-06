@@ -346,3 +346,98 @@ def test_reconcile_failure_after_final_failure_is_isolated_and_original_error_ra
             assert run_id in records[0].getMessage()
         finally:
             engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("handler_error", "expected_code", "expected_error"),
+    [
+        (
+            "stale",
+            "STALE_STORYBOARD_VERSION",
+            "from app.services.worker_handlers.execution import StaleStoryboardVersionError",
+        ),
+        ("generic", "WORKER_ERROR", "RuntimeError"),
+    ],
+)
+def test_reconcile_failure_isolation_on_stale_and_generic_handlers(
+    monkeypatch, caplog, handler_error, expected_code, expected_error
+):
+    """The Stale and generic-Exception failure handlers carry the same
+    reconcile-isolation edit as the ProviderAdapterError handler; pin both so
+    a future edit cannot reintroduce the bare reconcile call in one of them
+    (pre-fix the poisoned reconcile's RuntimeError escaped instead of the
+    original error)."""
+
+    with TemporaryDirectory() as directory:
+        engine = create_engine(
+            f"sqlite:///{Path(directory) / f'reconcile-{handler_error}.db'}",
+            connect_args={"check_same_thread": False},
+        )
+        testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+        Base.metadata.create_all(engine)
+        try:
+            with testing_session() as db:
+                project = Project(name=f"失败隔离-{handler_error}")
+                db.add(project)
+                db.flush()
+                run = _workflow_run(db, project, f"失败工作流-{handler_error}", handler_error * 64)
+                db.flush()
+                job = GenerationJob(
+                    project_id=project.id,
+                    target_type="CHAPTER",
+                    target_id=f"reconcile-{handler_error}",
+                    job_type="SOURCE_PARSE",
+                    status=JobStatus.QUEUED,
+                    attempt_count=0,
+                    max_attempts=1,
+                    request_parameters={"workflow_run_id": run.id},
+                )
+                db.add(job)
+                db.commit()
+                job_id, run_id = job.id, run.id
+
+            monkeypatch.setattr(worker_tasks, "SessionLocal", testing_session)
+            monkeypatch.setattr(database, "SessionLocal", testing_session)
+
+            if handler_error == "stale":
+                from app.services.worker_handlers.execution import (
+                    StaleStoryboardVersionError,
+                )
+
+                def failing_parse(_db, _job):
+                    raise StaleStoryboardVersionError(
+                        "分镜版本已变化，已在调用模型前取消本次检查；请按当前分镜重新检查"
+                    )
+
+                expected_exception = StaleStoryboardVersionError
+            else:
+
+                def failing_parse(_db, _job):
+                    raise RuntimeError("boom")
+
+                expected_exception = RuntimeError
+
+            monkeypatch.setattr(worker_tasks, "_run_story_parse", failing_parse)
+
+            def poisoned_reconcile(_db, poisoned_run_id):
+                raise RuntimeError(f"reconcile exploded for {poisoned_run_id}")
+
+            monkeypatch.setattr(workflow_engine, "reconcile_run", poisoned_reconcile)
+
+            with caplog.at_level(logging.ERROR, logger="mangaflow.worker"):
+                with pytest.raises(expected_exception):
+                    worker_tasks.execute_job(job_id)
+
+            with testing_session() as db:
+                failed = db.get(GenerationJob, job_id)
+                assert failed.status == JobStatus.FAILED
+                assert failed.error_code == expected_code
+
+            records = _failure_records(caplog, "reconcile failed after job failure")
+            assert records, (
+                "expected an ERROR log naming the run after the post-failure "
+                "reconcile explosion"
+            )
+            assert run_id in records[0].getMessage()
+        finally:
+            engine.dispose()
