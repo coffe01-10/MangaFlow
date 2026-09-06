@@ -109,6 +109,7 @@ def _create_inspection_job(
     candidate = _candidate_for_run(db, run, node_runs)
     if not candidate or not candidate.asset_id:
         raise ValueError("质量检查必须等待已生成并采用的页面候选")
+    page = db.get(MangaPage, candidate.page_id)
     # Same active-job guard as the inspect route: the idempotency key below is
     # workflow-scoped, so an ACTIVE PAGE_INSPECT job created through the route
     # (or by a retried inspect) would otherwise run a second paid multimodal
@@ -154,7 +155,7 @@ def _create_inspection_job(
             # the production gate downstream). FAILED/CANCELLED rows collapse
             # to closed:{id} inside create_job, so retries still mint fresh
             # jobs.
-            idempotency_key=f"inspect:{candidate.id}:{candidate.version}",
+            idempotency_key=f"inspect:{candidate.id}:{candidate.version}:{page.version}",
             dependency_ids=_parent_job_ids(db, run, graph, node.id),
             auto_commit=False,
         )

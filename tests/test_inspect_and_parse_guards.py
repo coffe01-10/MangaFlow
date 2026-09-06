@@ -1454,7 +1454,7 @@ def test_workflow_and_route_inspect_creation_collapse_to_one_job(db_session):
             target_type="PAGE_CANDIDATE",
             target_id=candidate.id,
             job_type="PAGE_INSPECT",
-            idempotency_key=f"inspect:{candidate.id}:{candidate.version}",
+            idempotency_key=f"inspect:{candidate.id}:{candidate.version}:{page.version}",
         )
         db_session.commit()
         workflow_side.commit()
@@ -1468,3 +1468,39 @@ def test_workflow_and_route_inspect_creation_collapse_to_one_job(db_session):
         )
     )
     assert len(list(inspect_ids)) == 1
+
+
+def test_inspect_after_page_version_bump_mints_fresh_job(client, db_session, monkeypatch):
+    """Interaction A (F2 elevated): a COMPLETED inspect job whose idempotency
+    key predates an inspection-invalidating fence (storyboard bump, review
+    flag — every one bumps page.version) must not be replayed by POST
+    /inspect. Pre-fix the route answered 202 with the stale COMPLETED job and
+    nothing re-ran; the page.version term in the key now mints a fresh job."""
+    from sqlalchemy import update as sa_update
+
+    project, page, candidate, _generate_job = _ready_candidate(db_session)
+    completed = job_service.create_job(
+        db_session,
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=candidate.id,
+        job_type="PAGE_INSPECT",
+        idempotency_key=f"inspect:{candidate.id}:{candidate.version}",
+    )
+    completed.status = JobStatus.COMPLETED
+    db_session.commit()
+
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    db_session.execute(
+        sa_update(MangaPage)
+        .where(MangaPage.id == page.id)
+        .values(version=MangaPage.version + 1)
+    )
+    db_session.commit()
+
+    response = client.post(
+        f"/api/v1/candidates/{candidate.id}/inspect",
+        json={"categories": ["CONTINUITY"]},
+    )
+    assert response.status_code == 202, response.text
+    assert response.json()["id"] != completed.id

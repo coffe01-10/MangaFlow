@@ -77,7 +77,11 @@ def inspect_candidate(
         model_alias="auto",
         request_parameters={"categories": payload.categories},
         reference_asset_ids=[candidate.asset_id],
-        idempotency_key=f"inspect:{candidate.id}:{candidate.version}",
+        # Key includes the page version so any inspection-invalidating fence
+        # (storyboard bump, review flag — every one of them bumps
+        # MangaPage.version) mints a fresh job instead of replaying a
+        # COMPLETED one whose verdicts belong to an older page state.
+        idempotency_key=f"inspect:{candidate.id}:{candidate.version}:{page.version}",
     )
     return enqueue_job(db, job)
 
