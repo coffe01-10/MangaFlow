@@ -29,6 +29,7 @@ from app.services.page_completion import (
 )
 from app.services.prompt_compiler import compile_page_prompt
 from app.services.worker_handlers import execution, provider
+from app.services.worker_handlers.execution import JobCancelledError
 
 LOGGER = logging.getLogger("mangaflow.worker.inspection")
 
@@ -128,6 +129,14 @@ def _run_inspection(db, job: GenerationJob) -> None:
     candidate = db.get(PageCandidate, job.target_id)
     if not candidate or not candidate.asset_id:
         raise RuntimeError("候选图片尚未生成")
+    if candidate.deleted_at is not None:
+        # A soft-deleted candidate must never take a paid call, no matter
+        # which delete path landed after enqueueing (inspect jobs never set
+        # candidate.job_id, so delete-side cancel cannot see them). Raise the
+        # shell's cancellation error so execute_job rolls back and stamps the
+        # job CANCELLED; the deleted row is left untouched. Mirrors the guard
+        # in _run_page_generate / _run_asset_generate.
+        raise JobCancelledError("候选已删除，任务取消，不再调用模型")
     page = db.get(MangaPage, candidate.page_id)
     asset = db.get(Asset, candidate.asset_id)
     project = db.get(Project, db.get(Chapter, page.chapter_id).project_id)
@@ -192,6 +201,7 @@ regions 使用 0 到 1 的归一化 x/y/width/height。"""
         ),
     )
     execution._ensure_job_not_cancelled(db, job)
+    execution._ensure_candidate_live(db, candidate)
     valid_outcomes = {
         "MATCH",
         "PASS",
@@ -281,9 +291,16 @@ regions 使用 0 到 1 的归一化 x/y/width/height。"""
             page.continuity_status,
         )
     latest = latest_inspections_by_category(db, candidate.id, inspection_storyboard_version)
+    # Coverage is judged against the merged verdict set (this run plus prior
+    # runs at the same storyboard version — the flush above made current-run
+    # rows visible to it), not against this run's `seen` alone: a re-inspect
+    # whose model response omits a category that a prior run already covered
+    # with a persisted verdict must not downgrade a terminal candidate state
+    # the merged set still supports. `bool(seen)` stays: a response with no
+    # fresh verdict at all is a failed run.
     complete = (
         bool(seen)
-        and set(requested) <= set(seen)
+        and set(requested) <= set(latest)
         and set(REQUIRED_QUALITY_CATEGORIES) <= set(latest)
     )
     needs_review = needs_review or any(
