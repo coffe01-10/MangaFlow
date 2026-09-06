@@ -122,7 +122,7 @@ def _scrub_surrogate_escape(match: re.Match[bytes]) -> bytes:
 
 
 def sanitize_json_surrogate_escapes(data: bytes) -> bytes:
-    """Replace lone ``\uD800``-style escapes with ``\uFFFD`` at the wire level."""
+    """Replace lone ``\\uD800``-style escapes with ``\\uFFFD`` at the wire level."""
 
     masked = data.replace(b"\\\\", b"\x00\x00")
     return _JSON_SURROGATE_ESCAPE_RE.sub(_scrub_surrogate_escape, masked).replace(

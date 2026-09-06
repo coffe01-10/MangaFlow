@@ -1,6 +1,37 @@
 # Phase 2: PostgreSQL 与 Redis/RQ 验收状态
 
 - Issue: [#12](https://github.com/coffe01-10/MangaFlow/issues/12)
+- 2026-09-06 Linux live 复跑（**本节为准**；2026-09-02 及更早记录原样保留、未改写，见下方历史小节）。
+
+## 2026-09-06 Linux live 复跑（Py3.13 导入修复 + #130 租约验收对齐，本节为准）
+
+- 日期：2026-09-06（Asia/Shanghai）。
+- 代码基线：`origin/master` `2955f6f` + 本 PR 提交（分支 `fix/issue12-py313-lease-acceptance`）。
+- 环境：Linux box，CPython **3.13.5**；PostgreSQL **16.15** @ `127.0.0.1:55432` / `mangaflow_acceptance`（`psycopg` 3.3.5，`select version()` 实测）；Redis **7.4.11** @ `127.0.0.1:56379/15`（`INFO server` 实测）。
+- 本轮前置修复（否则 Py3.13 无法复跑 live）：
+  1. **Py3.13 无法 import 应用**：源码字符串字面量中的 `\ud800`/`\udfff` 在 3.13 导入期触发 `UnicodeEncodeError: 'utf-8' codec can't encode character '\ud800'`（复现于 `app.request_limits` 导入链）。已改为不含真实 surrogate 的写法——`request_limits.py` docstring 用 `\\uD800` 转义字面量，`api/helpers.py` 的 `_LONE_SURROGATE_RE` 改为 `chr(0xD800)`/`chr(0xDFFF)` 运行时拼接。修复后 `from app.main import app` 在 3.13.5 通过。
+  2. **租约恢复验收与 #130 grace 对齐**：`recover_pending_jobs`（issue #130）只回收「过期后再冷超过 grace」的租约（默认 `job_lease_seconds=120` → 心跳 30s → grace = max(2×30, 120/3) = **60s**）。`test_redis_rq_lease_expiration_and_recovery` 原写 `utcnow() - 10s`（小于 grace，live 断言必败），改为 `utcnow() - timedelta(seconds=90)`（beyond #130 reclaim grace），产品 grace 逻辑未动。
+- 命令与结果（`PYTHONPATH=apps/api`，本机服务在线时实测）：
+
+```text
+pytest tests/integration/test_postgres_acceptance.py \
+  --run-live-integration \
+  --pg-url 'postgresql+psycopg://mangaflow:mangaflow@127.0.0.1:55432/mangaflow_acceptance' \
+  --redis-url 'redis://:mangaflow-dev@127.0.0.1:56379/15'
+# 18 passed in 30.85s
+
+pytest tests/integration/test_redis_rq_acceptance.py \
+  --run-live-integration \
+  --pg-url 'postgresql+psycopg://mangaflow:mangaflow@127.0.0.1:55432/mangaflow_acceptance' \
+  --redis-url 'redis://:mangaflow-dev@127.0.0.1:56379/15'
+# 8 passed, 7 skipped in 20.01s
+```
+
+- **7 skipped 诚实说明**：均为 `test_live_independent_worker_*`（pytest 收集即标注「requires Windows Job Objects; NOT RUN on Linux」）。Windows Job Object 独立 Worker 验收仍 **BLOCKED / NOT RUN**——Windows 笔记本无 Docker/PostgreSQL/Redis（55432/56379 关闭），用户明确不安装，pytest 未启动。这不是通过，也不是假 skip。
+- 相关单测不回归：`tests/test_lease_reclaim_fence.py` **6 passed**；`tests/test_input_validation_hardening.py` 覆盖两个被改函数，**49 passed**（与 fence 合跑计数）。
+
+## 2026-09-02 Linux 隔离 live 摘要（历史记录，原样保留）
+
 - 2026-09-02 Linux 隔离 live（本节为准，不改写下方历史 BLOCKED 记录）：起始 `master` / `f961774`，分支 `env/postgres-redis-acceptance`。
 - **真实 PostgreSQL：18 passed**（`127.0.0.1:55432` / `mangaflow_acceptance` / `psycopg`）。含 Alembic 邻接清理、用量账本、并发序号/发布/409、PKG-S14 七项。
 - **真实 Redis/RQ SimpleWorker：8 passed / 7 skipped**（`127.0.0.1:56379/15`）。P1-9 入队不覆盖、P1-11 槽位延迟、重试/取消/租约/命名空间清理通过。7 项 `test_live_independent_worker_*` 在 Linux 非 win32 skip；随后 Windows 笔记本尝试 live 时 **BLOCKED**（无 Docker/PostgreSQL/Redis，55432/56379 关闭，用户明确不安装，pytest 未启动），7 项仍为 NOT RUN，不是假 skip。

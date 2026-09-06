@@ -158,7 +158,7 @@ def ensure_project_scope(
 # combines well-formed pairs into single supplementary characters. Replacing
 # them with U+FFFD keeps legal text byte-for-byte identical and only scrubs
 # the unrepresentable code points.
-_LONE_SURROGATE_RE = re.compile("[\ud800-\udfff]")
+_LONE_SURROGATE_RE = re.compile("[" + chr(0xD800) + "-" + chr(0xDFFF) + "]")
 
 
 def sanitize_surrogates(value: Any) -> Any:
