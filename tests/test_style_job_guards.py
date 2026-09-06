@@ -12,6 +12,8 @@ from datetime import timedelta
 
 from sqlalchemy import select, update
 
+import pytest
+
 from app.config import get_settings
 from app.domain.states import JobStatus
 from app.models import (
@@ -23,6 +25,7 @@ from app.models import (
     utcnow,
 )
 from app.services import job_service
+from app.model_adapters.base import ProviderAdapterError
 from app.worker_tasks import _mark_worker_failure
 
 
@@ -307,3 +310,60 @@ def test_cancelled_style_job_resets_style_without_sibling(db_session):
     db_session.expire_all()
     assert db_session.get(GenerationJob, job.id).status == JobStatus.CANCELLED
     assert db_session.get(StyleProfile, style.id).status == StyleStatus.DRAFT
+
+
+def test_younger_style_analysis_fails_before_paid_call_when_sibling_active(
+    db_session, monkeypatch
+):
+    """Worker-side oldest-wins arbitration for STYLE_ANALYZE (the story_parse
+    pattern): the route guard is check-then-act and the two entry keys are
+    disjoint, so a concurrent analyze + palette-draft can commit two ACTIVE
+    jobs. The younger claimant must fail terminally before the paid multimodal
+    call instead of double-paying and clobbering the winner's profile write."""
+
+    from app.models import GenerationJob
+    from app.services.worker_handlers.style_analyze import _run_style_analyze
+
+    project = Project(name="风格仲裁")
+    db_session.add(project)
+    db_session.flush()
+    reference = _style_reference(db_session, project.id, "c")
+    style = StyleProfile(
+        project_id=project.id,
+        name="风格仲裁风格",
+        color_mode="monochrome",
+        status=StyleStatus.ANALYZING,
+        profile={"reference_asset_ids": [reference.id]},
+    )
+    db_session.add(style)
+    db_session.flush()
+    older = GenerationJob(
+        project_id=style.project_id,
+        target_type="STYLE",
+        target_id=style.id,
+        job_type="STYLE_ANALYZE",
+        status="PREPARING",
+    )
+    db_session.add(older)
+    db_session.flush()
+    younger = GenerationJob(
+        project_id=style.project_id,
+        target_type="STYLE",
+        target_id=style.id,
+        job_type="STYLE_ANALYZE",
+        status="PREPARING",
+    )
+    db_session.add(younger)
+    db_session.commit()
+
+    def forbid_binding(*_args, **_kwargs):
+        raise AssertionError("较新的重复分析不得发起模型调用")
+
+    monkeypatch.setattr(
+        "app.services.worker_handlers.style_analyze.provider._binding", forbid_binding
+    )
+
+    with pytest.raises(ProviderAdapterError) as excinfo:
+        _run_style_analyze(db_session, younger)
+    assert excinfo.value.code == "STYLE_ANALYSIS_CONFLICT"
+    assert excinfo.value.retryable is False
