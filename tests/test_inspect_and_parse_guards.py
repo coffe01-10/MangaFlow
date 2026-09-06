@@ -1386,3 +1386,85 @@ def test_workflow_run_creates_parse_job_when_chapter_is_idle(
     )
     assert run.status == "RUNNING"
     assert len(_active_parse_job_ids(db_session, chapter_id)) == 1
+
+
+def test_workflow_and_route_inspect_creation_collapse_to_one_job(db_session):
+    """The check-then-act windows of the inspect route and the workflow's
+    adoption SELECT can interleave (the workflow path runs inside reconcile,
+    reachable from the run GET endpoint). Pre-fix the two entry points keyed
+    disjoint idempotency namespaces — workflow:{run}:{node}:1 vs
+    inspect:{candidate}:{version} — so the global unique index never collided
+    and both creations committed, each enqueueing a paid multimodal call for
+    the same candidate. The workflow node now keys the route's namespace so
+    the index collapses the race to one job (create_job's IntegrityError
+    fallback returns the winner)."""
+    project, page, candidate, _generate_job = _ready_candidate(db_session)
+    graph = WorkflowGraph(
+        nodes=[
+            WorkflowNodeDefinition(id="inspect", type="quality.inspect", name="质量检查")
+        ]
+    )
+    workflow = WorkflowDefinition(
+        project_id=project.id, name="质检竞态", draft_graph=graph.model_dump(mode="json")
+    )
+    db_session.add(workflow)
+    db_session.flush()
+    version = WorkflowVersion(
+        workflow_id=workflow.id,
+        revision=1,
+        graph=graph.model_dump(mode="json"),
+        graph_checksum="inspect-race",
+    )
+    db_session.add(version)
+    db_session.flush()
+    run = WorkflowRun(
+        workflow_id=workflow.id,
+        workflow_version_id=version.id,
+        project_id=project.id,
+        scope_type="PAGE",
+        scope_id=page.id,
+        status="RUNNING",
+    )
+    db_session.add(run)
+    db_session.flush()
+    node_run = WorkflowNodeRun(
+        workflow_run_id=run.id,
+        node_id="inspect",
+        node_type="quality.inspect",
+        status="WAITING",
+    )
+    db_session.add(node_run)
+    db_session.commit()
+
+    # Two sessions on the same engine, mirroring the concurrent creators: the
+    # workflow's creation is still uncommitted when the route's window runs.
+    ConcurrentSession = sessionmaker(
+        bind=db_session.get_bind(), autoflush=False, expire_on_commit=False
+    )
+    with ConcurrentSession() as workflow_side:
+        workflow_job = _create_inspection_job(
+            workflow_side, run, graph, graph.nodes[0], node_run, [node_run]
+        )
+        # The route cannot see the workflow's uncommitted row through its
+        # has_active_job check, so it proceeds to create_job — which must hit
+        # the shared idempotency key.
+        route_job = job_service.create_job(
+            db_session,
+            project_id=project.id,
+            target_type="PAGE_CANDIDATE",
+            target_id=candidate.id,
+            job_type="PAGE_INSPECT",
+            idempotency_key=f"inspect:{candidate.id}:{candidate.version}",
+        )
+        db_session.commit()
+        workflow_side.commit()
+
+    db_session.expire_all()
+    assert route_job.id == workflow_job.id
+    inspect_ids = db_session.scalars(
+        select(GenerationJob.id).where(
+            GenerationJob.job_type == "PAGE_INSPECT",
+            GenerationJob.target_id == candidate.id,
+        )
+    )
+    assert len(list(inspect_ids)) == 1

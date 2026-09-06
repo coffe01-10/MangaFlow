@@ -143,7 +143,18 @@ def _create_inspection_job(
                 "node_type": node.type,
             },
             max_attempts=node.config.max_attempts,
-            idempotency_key=f"workflow:{run.id}:{node.id}:1",
+            # Candidate-scoped key in the SAME namespace the inspect route
+            # uses: the disjoint workflow:{run}:{node}:1 key let a route
+            # creation and this creation interleave in their check-then-act
+            # windows (the adoption SELECT above only sees committed rows) and
+            # both commit — two ACTIVE PAGE_INSPECT jobs, two paid calls. The
+            # shared key makes the global idempotency index collapse the race
+            # (create_job's IntegrityError fallback returns the winner), and a
+            # COMPLETED route job is adopted instead of re-run (validated by
+            # the production gate downstream). FAILED/CANCELLED rows collapse
+            # to closed:{id} inside create_job, so retries still mint fresh
+            # jobs.
+            idempotency_key=f"inspect:{candidate.id}:{candidate.version}",
             dependency_ids=_parent_job_ids(db, run, graph, node.id),
             auto_commit=False,
         )
