@@ -311,3 +311,70 @@ def test_story_parse_rewrap_preserves_retryable_flag(client, db_session, monkeyp
     assert excinfo.value.code == "RATE_LIMIT"
     assert excinfo.value.retryable is True
     assert excinfo.value.retry_after_seconds == 30
+
+
+def test_compatible_garbage_choices_shape_is_invalid_output():
+    """A 200 body with a non-dict choices entry is a malformed provider
+    response: it must classify as INVALID_OUTPUT instead of escaping as an
+    unclassified AttributeError (WORKER_ERROR)."""
+
+    adapter = _chat_adapter(
+        lambda request: httpx.Response(
+            200, json={"choices": ["garbage"]}, request=request
+        )
+    )
+    with pytest.raises(ProviderAdapterError) as excinfo:
+        adapter.generate_structured(StructuredRequest(prompt="x"), SmokeReply)
+    assert excinfo.value.code == "INVALID_OUTPUT"
+
+
+def test_compatible_multimodal_garbage_message_shape_is_invalid_output():
+    adapter = _chat_adapter(
+        lambda request: httpx.Response(
+            200, json={"choices": [{"message": "not-a-dict"}]}, request=request
+        )
+    )
+    request = MultimodalRequest(
+        prompt="inspect", images=(b"img",), mime_types=("image/png",)
+    )
+    with pytest.raises(ProviderAdapterError) as excinfo:
+        adapter.analyze_multimodal(request, SmokeReply)
+    assert excinfo.value.code == "INVALID_OUTPUT"
+
+
+def test_anthropic_garbage_content_shape_is_invalid_output():
+    adapter = AnthropicCompatibleAdapter(
+        _runtime(protocol="ANTHROPIC"),
+        client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    200, json={"content": "plain text garbage"}, request=request
+                )
+            )
+        ),
+    )
+    with pytest.raises(ProviderAdapterError) as excinfo:
+        adapter.generate_structured(StructuredRequest(prompt="x"), SmokeReply)
+    assert excinfo.value.code == "INVALID_OUTPUT"
+    assert excinfo.value.retryable is False
+
+
+def test_anthropic_non_dict_content_items_are_invalid_output():
+    adapter = AnthropicCompatibleAdapter(
+        _runtime(protocol="ANTHROPIC"),
+        client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    200, json={"content": [42, "str"]}, request=request
+                )
+            )
+        ),
+    )
+    with pytest.raises(ProviderAdapterError) as excinfo:
+        adapter.analyze_multimodal(
+            MultimodalRequest(
+                prompt="inspect", images=(b"img",), mime_types=("image/png",)
+            ),
+            SmokeReply,
+        )
+    assert excinfo.value.code == "INVALID_OUTPUT"
