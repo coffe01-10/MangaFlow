@@ -1515,12 +1515,16 @@ def _verify_retry_revival_post_commit(
       survive: a strictly older committed ACTIVE sibling (created_at, then
       id) means this revival is the duplicate and must be undone. A
       legitimately pre-existing sibling never reaches here — the pre-CAS
-      guard already rejected it. Residual window: the single-survivor
-      guarantee covers concurrent retries only. A manual-route job created
-      on the same target between this retry's pre-CAS guard and its commit
-      is younger than the revived row, so oldest-wins keeps this revival and
-      never arbitrates the manual job — whose route already returned without
-      seeing the uncommitted revival — and both dispatches can proceed.
+      guard already rejected it. Residual windows: (a) the single-survivor
+      guarantee covers concurrent retries only — a manual-route job created
+      on the same target between this retry's pre-CAS guard and its commit is
+      younger than the revived row, so oldest-wins keeps this revival and
+      never arbitrates the manual job, and both dispatches can proceed;
+      (b) a retry whose verification lands entirely inside another retry's
+      claim-to-commit window sees only itself and also survives (two
+      dispatches); (c) a job the worker already moved past WAITING verifies
+      as advanced and skips arbitration. Closing (b)/(c) fully would need a
+      lock anchored on the parent or serializable isolation.
     """
 
     db.refresh(job)
