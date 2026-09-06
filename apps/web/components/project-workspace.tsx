@@ -6,6 +6,7 @@ import { creatorVisibleModels } from "@/lib/model-visibility";
 import { SIDEBAR_WIDTH_DEFAULT, clampSidebarWidth, storedSidebarWidth } from "@/lib/workspace-layout";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { CircleAlert, LoaderCircle } from "lucide-react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
@@ -19,13 +20,34 @@ import { useJobsWorkspace } from "./project-workspace/use-jobs-workspace";
 import { useAssetsWorkspace } from "./project-workspace/use-assets-workspace";
 import { useGenerationWorkspace } from "./project-workspace/use-generation-workspace";
 import { useLibraryWorkspace } from "./project-workspace/use-library-workspace";
-import { SourceSection } from "./project-workspace/source-section";
-import { AssetsSection } from "./project-workspace/assets-section";
-import { ScriptSection } from "./project-workspace/script-section";
-import { StoryboardSection } from "./project-workspace/storyboard-section";
-import { GenerateSection } from "./project-workspace/generate-section";
-import { LibrarySection } from "./project-workspace/library-section";
-import { JobsSection } from "./project-workspace/jobs-section";
+// One dynamic route ([section]) serves all seven sections; static imports
+// shipped every section's code (storyboard pulled in the ~207KB canvas
+// editor, generate the desk) to every route and executed only the current
+// one — the Lighthouse unused-JS attribution on the storyboard route
+// (810ms) and the route's LCP/TBT tail. Split per section so each route
+// fetches only the code it renders; data hooks stay eager above, so
+// queries start before the section chunk arrives.
+const SourceSection = dynamic(
+  () => import("./project-workspace/source-section").then((m) => m.SourceSection),
+);
+const AssetsSection = dynamic(
+  () => import("./project-workspace/assets-section").then((m) => m.AssetsSection),
+);
+const ScriptSection = dynamic(
+  () => import("./project-workspace/script-section").then((m) => m.ScriptSection),
+);
+const StoryboardSection = dynamic(
+  () => import("./project-workspace/storyboard-section").then((m) => m.StoryboardSection),
+);
+const GenerateSection = dynamic(
+  () => import("./project-workspace/generate-section").then((m) => m.GenerateSection),
+);
+const LibrarySection = dynamic(
+  () => import("./project-workspace/library-section").then((m) => m.LibrarySection),
+);
+const JobsSection = dynamic(
+  () => import("./project-workspace/jobs-section").then((m) => m.JobsSection),
+);
 import {
   ImageLightbox,
   QueueDock,

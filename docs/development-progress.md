@@ -4,6 +4,12 @@
 
 本文件记录修订版 MVP 计划的实际完成度。
 
+## storyboard 性能修复 + W-12 安装器链收口（2026-09-06 第二轮，Windows 实机，分支 `lead/storyboard-perf`，基线 master `32a4ad8` = PR #177 合并）
+
+- **storyboard 路由性能（RC 报告的最小剩余清单第 1 项）已修复**：按 LH 归因（unused-JS 810ms 压高 LCP/TBT），`b958cc9` 把 `ProjectWorkspace` 7 个 section 组件改 `next/dynamic` 按路由懒加载（单条 `[section]` 路由此前静态打包全部 section；数据 hook 仍立即执行、无新增骨架）。修复后门禁（run_id `b67f80dde58d4c86b39242991ca3012a`，阈值不动，**两轮全过零失败**）：storyboard **91/90**（修复前 R1 81/lcp 4200/tbt 264、R2 84/lcp 4134/tbt 170 → 修复后 LCP 3424/3590ms、TBT 88/103ms，CLS 0.013 不变）；逐路由对照：`/` 96/97→98/98、workflow 87/93→92/92、generate 87/87→87/88、settings 98/98→97/97（唯一 1 分回落，仍远高于阈值）；FPS 两轮 exit 0（143.55/143.15）。行为门禁：web Vitest 41 文件 **429 项全过**、ESLint 干净、Next 生产构建通过。详见 `docs/acceptance/phase2-browser-performance.md` 2026-09-06 第二轮节。
+- **W-12 安装器链转 RUN（NSIS 实机）**：`tauri build` 首次于本机产出双安装包（MSI + NSIS，内嵌真实静态导出）；NSIS 实机脚本验证静默安装→用户数据 222 文件逐字节一致→HKCU 卸载项注册→静默卸载→安装目录/注册表清除、用户数据仍逐字节一致——§5「卸载不删用户数据」契约实测成立。MSI 静默安装需管理员授权（未提权），其安装步 NOT RUN。`docs/v02-windows-leftover-status.md` 与 README D1 已更新（RUN 7 / NOT RUN 10 / BLOCKED 6）。
+- **NOT RUN 边界**：跨版本升级路径（带 schema 迁移的覆盖安装）、W-03/04/05 交互面/W-09/W-10/W-18/W-19/W-20/W-22 维持 NOT RUN；W-13–17/21 维持 BLOCKED。版本号维持 0.1.0（V02-55 终审未做）。
+
 ## 0.2.0 RC 收口轮（2026-09-06，Windows 实机 `LAPTOP-TV9KT8RC`，分支 `lead/rc-closure`，基线 master `6ca9d5a`）
 
 - **范围**：RC 定向复审（6 路只读子代理 A–F）＋修复；V02-54 Windows 实机验收轮（此前全部 NOT RUN 的桌面壳面）；#28 处方性能复验；V02-55 可执行门禁。不新增审计范围，不降阈值，失败轮次全部保留。

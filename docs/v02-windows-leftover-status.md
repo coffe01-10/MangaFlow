@@ -19,9 +19,11 @@
 
 | 状态 | 数量 | 条目 |
 | --- | --- | --- |
-| RUN（2026-09-06 实机轮） | 6 | W-01、W-02（仪表盘级）、W-06（逻辑面）、W-07、W-08、W-11 |
-| NOT RUN | 10 | W-02（画布级/缺失安装）、W-03、W-04、W-05（对话框交互面）、W-10、W-12、W-18、W-19、W-20、W-22 |
+| RUN（2026-09-06 实机轮） | 7 | W-01、W-02（仪表盘级）、W-06（逻辑面）、W-07、W-08、W-11、W-12（NSIS 实机） |
+| NOT RUN | 11 | W-02（画布级/缺失安装）、W-03、W-04、W-05（对话框交互面）、W-09、W-10、W-12（MSI 安装步）、W-18、W-19、W-20、W-22 |
 | BLOCKED | 6 | W-13、W-14、W-15、W-16、W-17、W-21 |
+
+部分 RUN / 部分 NOT RUN 的条目（W-02/W-05/W-06/W-12）在两行重复出现，各行计数按列出条目数计。
 
 ## 2. A. Windows 实机运行面（桌面壳：进程 / 渲染 / 日志 / 安全）
 
@@ -42,8 +44,8 @@
 
 | ID | 描述 | 依赖环境 | 状态 | 阻塞原因 | 已有证据（不视作实机验收） |
 | --- | --- | --- | --- | --- | --- |
-| W-11 | Windows sidecar 打包形态：PyInstaller onedir / embeddable 在 Windows 构建，`alembic.ini`+`migrations` 入 `_internal/` 硬约束复验 | Windows 实机构建环境 | NOT RUN | 沙箱无 Windows 打包链 | Linux 形态 116MB onedir 冻结产物完整握手→GO→健康→API 冒烟通过（V02-53B 证据） |
-| W-12 | `tauri build` 产物与 MSI/NSIS 安装/升级/卸载实机：安装只换程序文件、Alembic 原地迁移、卸载不删 `data/`/`storage/`/`uploads/`/凭据、禁止 NSIS installer hooks 删用户数据 | Windows 实机 | NOT RUN | 沙箱无 webkit2gtk/显示服务，无法构建；Windows 构建轮未执行 | bundle（msi+nsis/图标）配置就位并过 Windows 目标编译校验；`shell-core/tests/delivery_contract.rs` 3 项冻结配置契约（README §5） |
+| W-11 | Windows sidecar 打包形态：PyInstaller onedir / embeddable 在 Windows 构建，`alembic.ini`+`migrations` 入 `_internal/` 硬约束复验 | Windows 实机构建环境 | **RUN（2026-09-06）** | — | Windows PyInstaller onedir 冻结产物（PyInstaller 6.22.2 / Python 3.12）冒烟全过：握手→GO→健康→dashboard API→协作停机 exit 0（3.4s 含 30 个迁移）；`alembic.ini`+`migrations` 入 `_internal/` 硬约束在 Windows 形态同样成立；Linux 形态 116MB onedir 证据（V02-53B）继续有效 |
+| W-12 | `tauri build` 产物与 MSI/NSIS 安装/升级/卸载实机：安装只换程序文件、Alembic 原地迁移、卸载不删 `data/`/`storage/`/`uploads/`/凭据、禁止 NSIS installer hooks 删用户数据 | Windows 实机 | **RUN（NSIS 实机，2026-09-06）/ MSI 安装步 NOT RUN** | MSI 静默安装（msoexec per-machine）需管理员授权，本轮未提权 | 双安装包本机构建成功（`tauri build`：MSI `MangaFlow_0.1.0_x64_en-US.msi` + NSIS `MangaFlow_0.1.0_x64-setup.exe`，内嵌真实静态导出）；NSIS 实机脚本验证：静默安装后用户数据 222 文件逐字节一致、HKCU 卸载项注册、卸载后安装目录与注册表项清除且用户数据仍逐字节一致（交付契约「卸载不删用户数据」实测成立）；冻结契约测试（`delivery_contract.rs`）继续全绿 |
 | W-13 | 代码签名与 SmartScreen：证书类型（OV/EV）、时间戳、签名后 SmartScreen 信誉实测 | 代码签名证书 + Windows 实机 | BLOCKED | 无证书、无签发授权；购买/身份属用户决策；Issue 明确禁止真实签名 | 未签名构建与安装契约已冻结；无任何签名实现 |
 | W-14 | 自动更新链路：updater 插件、签名密钥、更新服务器/分发渠道、升级不删用户数据实测 | 签名基础设施 + 更新服务器 | BLOCKED | 依赖 W-13；当前无插件、无密钥、无服务器（README D8） | 未接 updater；D8 整项 NOT RUN |
 | W-15 | 前端壳内形态收口：静态导出正式改造（动态段预渲染组合 + 工作台树预渲染）或方案 B（捆绑 node 跑 `next start` 保留 rewrites） | ADR 终批确定路线后的实现轮 + 实机验证 | BLOCKED | 先决 W-21：D5 路线未定 | 否决条件 3 已拿到确定性阻塞输入：flag 级静态导出不可行；poc 补丁仅覆盖壳级页面（D5） |
