@@ -355,7 +355,7 @@ class GrokBuildArtifactRunner:
                 stderr_checksum,
             )
         if outcome.exit_code:
-            code, message, _retryable = _map_failure(_decode_bytes(raw_stdout + raw_stderr))
+            code, message, _retryable = _map_failure(_decode_output(outcome))
             return self._failure_outcome(
                 outcome,
                 environment,
