@@ -142,3 +142,49 @@ def test_incomplete_reinspect_keeps_prior_complete_verdicts(db_session, monkeypa
     assert candidate.status == "INSPECTED"
     assert page.continuity_status == "PASSED"
     assert page.status == PageStatus.FINAL_READY
+
+
+def test_delete_committed_during_call_discards_verdicts(db_session, monkeypatch):
+    """The post-call backstop: a soft-delete committing between the provider
+    response and the completion writes must cancel the inspection — the
+    verdicts were only flushed, so the shell's rollback discards them and the
+    job stamps CANCELLED instead of writing INSPECTED onto the tombstone."""
+    from sqlalchemy import select
+
+    from app.models import InspectionResult
+
+    project, _page, candidate, _generate_job = _ready_candidate(db_session)
+    job = _leased_inspect_job(db_session, project, candidate)
+
+    calls: list = []
+
+    def tombstoning_invoke(_db, _binding, _callback):
+        calls.append(1)
+        candidate.deleted_at = utcnow()
+        db_session.commit()
+        return _inspection_output(INSPECT_CATEGORIES)
+
+    monkeypatch.setattr(
+        "app.services.worker_handlers.inspection.compile_page_prompt",
+        lambda *args: ("", {"input": {}}),
+    )
+    monkeypatch.setattr(
+        provider,
+        "_binding",
+        lambda *args, **kwargs: SimpleNamespace(
+            resolved=SimpleNamespace(model=SimpleNamespace(id=None))
+        ),
+    )
+    monkeypatch.setattr(provider, "_invoke_provider", tombstoning_invoke)
+
+    with pytest.raises(JobCancelledError):
+        _run_inspection(db_session, job)
+
+    # Exactly one provider dispatch happened; the shell's rollback then
+    # discards the flushed verdicts.
+    assert calls == [1]
+    db_session.rollback()
+    persisted = db_session.scalars(
+        select(InspectionResult).where(InspectionResult.candidate_id == candidate.id)
+    )
+    assert list(persisted) == []
