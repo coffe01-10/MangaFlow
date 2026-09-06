@@ -353,8 +353,36 @@ def delete_outfit(
             if assigned_outfit_id != outfit.id
         }
         if cleaned != assignments:
-            scene.outfit_assignments = cleaned
-            scene.version += 1
+            # Claim the row (same discipline as PATCH /scenes) so a concurrent
+            # scene writer's CAS bump cannot be collapsed by this teardown.
+            # The cleanup is idempotent: on a lost claim re-read fresh state
+            # and retry; after bounded retries surface 409 instead of writing.
+            claimed = False
+            for _attempt in range(3):
+                claimed = db.execute(
+                    update(Scene)
+                    .where(Scene.id == scene.id, Scene.version == scene.version)
+                    .values(
+                        version=Scene.version + 1,
+                        outfit_assignments=cleaned,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+                if claimed.rowcount == 1:
+                    claimed = True
+                    break
+                db.refresh(scene)
+                assignments = dict(scene.outfit_assignments or {})
+                cleaned = {
+                    character_id: assigned_outfit_id
+                    for character_id, assigned_outfit_id in assignments.items()
+                    if assigned_outfit_id != outfit.id
+                }
+            if not claimed:
+                db.rollback()
+                raise HTTPException(
+                    status_code=409, detail="场景已被更新，请刷新后重试"
+                )
             for page in db.scalars(
                 select(MangaPage).where(MangaPage.chapter_id == scene.chapter_id)
             ):
@@ -374,8 +402,32 @@ def delete_outfit(
             if assigned_outfit_id != outfit.id
         }
         if cleaned != assignments:
-            panel.outfits = cleaned
-            panel.version += 1
+            claimed = False
+            for _attempt in range(3):
+                claimed = db.execute(
+                    update(Panel)
+                    .where(Panel.id == panel.id, Panel.version == panel.version)
+                    .values(version=Panel.version + 1, outfits=cleaned)
+                    .execution_options(synchronize_session=False)
+                )
+                if claimed.rowcount == 1:
+                    claimed = True
+                    break
+                db.refresh(panel)
+                assignments = dict(panel.outfits or {})
+                cleaned = {
+                    character_id: assigned_outfit_id
+                    for character_id, assigned_outfit_id in assignments.items()
+                    if assigned_outfit_id != outfit.id
+                }
+            if not claimed:
+                db.rollback()
+                raise HTTPException(
+                    status_code=409, detail="分镜格已被更新，请刷新后重试"
+                )
+            # The claim's SQL already persisted outfits+version; drop the
+            # stale in-memory copy so the session cannot double-write it.
+            db.expire(panel, ["outfits", "version"])
             page = db.get(MangaPage, panel.page_id)
             if page is not None:
                 affected_pages[page.id] = page
