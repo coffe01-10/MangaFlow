@@ -131,6 +131,51 @@ fn handshake_go_health_and_clean_stop_leaves_no_residue() {
     let _ = std::fs::remove_dir_all(&user_data);
 }
 
+/// Windows launcher-interpreter regression: a `python.exe` that re-execs the
+/// real interpreter as a child (CPython 3.12 venv style) publishes a READY
+/// pid that is a grandchild of the spawned process. The handshake must
+/// accept it through Job Object membership (the announcer is still inside
+/// the shell's kill boundary) — exact-PID equality alone would fail closed
+/// and make dev-mode desktop shells impossible on such interpreters. The
+/// fake launcher mirrors the venv shape: direct child spawns the real stub
+/// helper and proxies its stdio.
+#[test]
+#[cfg(windows)]
+fn ready_pid_from_a_launcher_interpreter_chain_is_accepted_via_job_membership() {
+    let user_data = temp_user_data("trampoline");
+    let launcher_code = "import subprocess,sys; \
+         raise SystemExit(subprocess.run([sys.executable]+sys.argv[1:]).returncode)";
+    let mut config = HelperConfig::stub(&python(), &std::path::PathBuf::from("-c"));
+    config.helper_args = vec![
+        launcher_code.into(),
+        helper_script().to_string_lossy().into_owned(),
+        "stub".into(),
+    ];
+
+    let mut spawned = spawn_helper(&config, &user_data)
+        .expect("handshake must accept the launcher chain pid");
+    let direct_pid = spawned.tree.pid();
+    assert_ne!(
+        spawned.ready.pid, direct_pid,
+        "the fixture is meaningless unless the announcer is not the direct child"
+    );
+    assert!(
+        spawned.tree.contains_pid(spawned.ready.pid),
+        "the announcer must be inside the shell's Job"
+    );
+
+    // The cooperative stop still ends the whole chain: stdin EOF reaches the
+    // grandchild through the proxying launcher.
+    let exit_code = spawned
+        .tree
+        .stop(Duration::from_secs(10))
+        .expect("stop succeeds");
+    assert_eq!(exit_code, Some(0));
+    assert!(wait_until_gone(direct_pid, Duration::from_secs(5)));
+    assert!(wait_until_gone(spawned.ready.pid, Duration::from_secs(5)));
+    let _ = std::fs::remove_dir_all(&user_data);
+}
+
 #[test]
 fn concurrent_helpers_bind_distinct_dynamic_ports() {
     let user_data = temp_user_data("concurrent");

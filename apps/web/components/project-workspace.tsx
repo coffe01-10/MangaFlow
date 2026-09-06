@@ -195,7 +195,12 @@ export default function ProjectWorkspace({
     activeChapterId,
     models,
     pages,
-    jobs,
+    // The generation desk must always see the active-jobs view: after the
+    // user visits 任务中心 → 历史记录, the toggle-scoped `jobs` query returns
+    // only archived rows, so running PAGE_INSPECT jobs would vanish — the
+    // inspection poll stops, the terminal invalidation never fires, and the
+    // production gate silently stays blocked. Same rationale as the dock.
+    jobs: dockJobs,
     characters,
     outfits,
     selectedPageId,

@@ -4,6 +4,7 @@ import { CircleAlert, LoaderCircle, Sparkles } from "lucide-react";
 
 import { inspectionBubbleDiffs, inspectionSummary, recommendedRepairType } from "./display";
 import { inspectionOutcomeLabels, inspectionLabels, jobStatusLabels, repairTypeLabels } from "./labels";
+import { isTerminalTaskStatus } from "@/lib/task-status";
 import type { GenerationWorkspace } from "./use-generation-workspace";
 
 export function InspectionPanel({
@@ -23,7 +24,7 @@ export function InspectionPanel({
 }) {
   return <section className="inspection-panel">
     <header><div><span>AI QUALITY CHECK</span><strong>候选视觉检查</strong><small>检查说话人归属、角色、服装、道具和连续性；文字由人工校对。</small></div><button onClick={onClose}>关闭</button></header>
-    {!latestInspections.length ? <div className="inspection-wait"><LoaderCircle className={reviewJob && !["COMPLETED", "FAILED"].includes(reviewJob.status) ? "spin" : ""} size={18} /><span>{reviewJob ? `检查任务 ${jobStatusLabels[reviewJob.status] ?? reviewJob.status} · ${reviewJob.progress}%` : "正在读取检查结果"}</span></div> : <div className="inspection-results">{latestInspections.map((inspection) => {
+    {!latestInspections.length ? <div className="inspection-wait"><LoaderCircle className={reviewJob && !isTerminalTaskStatus(reviewJob.status) ? "spin" : ""} size={18} /><span>{reviewJob ? `检查任务 ${jobStatusLabels[reviewJob.status] ?? reviewJob.status} · ${reviewJob.progress}%` : "正在读取检查结果"}</span></div> : <div className="inspection-results">{latestInspections.map((inspection) => {
       const passed = ["PASS", "ACCEPTABLE", "MATCH"].includes(inspection.outcome);
       const repairType = recommendedRepairType(inspection.category);
       const bubbleDiffs = inspectionBubbleDiffs(inspection.details);

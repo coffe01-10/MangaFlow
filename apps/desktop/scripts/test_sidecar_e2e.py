@@ -83,6 +83,34 @@ class DesktopShell:
             start_new_session=True,  # mirrors setsid; shell can killpg the tree
         )
 
+    def _assert_owned_pid(self, pid: int) -> None:
+        """The READY announcer must be a process this shell spawned.
+
+        Direct equality is the norm; on Windows, a launcher-style venv
+        python (CPython 3.12) re-execs the real interpreter as a child, so
+        the announcer is a grandchild — accept it when its parent is the
+        spawned process (the Rust shell accepts it via Job membership).
+        """
+
+        if pid == self.process.pid:
+            return
+        assert os.name == "nt", f"helper pid {pid} is not the spawned {self.process.pid}"
+        query = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                f"(Get-CimInstance Win32_Process -Filter \"ProcessId={pid}\").ParentProcessId",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        parent = int(query.stdout.strip())
+        assert parent == self.process.pid, (
+            f"announcer pid {pid} parent {parent} is not the spawned {self.process.pid}"
+        )
+
     def handshake(self, timeout: float = 15.0) -> dict:
         deadline = time.monotonic() + timeout
         line = self.process.stdout.readline()  # blocking; helper prints once
@@ -90,13 +118,15 @@ class DesktopShell:
         assert line.startswith(READY_PREFIX), f"unexpected helper output: {line!r}"
         payload = json.loads(line.removeprefix(READY_PREFIX))
         assert payload["token"] == self.token
-        assert payload["pid"] == self.process.pid
+        self._assert_owned_pid(payload["pid"])
         origin = payload["api_origin"]
         assert origin.startswith("http://127.0.0.1:"), origin
         port = int(origin.rsplit(":", 1)[1])
         record = json.loads(self.journal.read_text(encoding="utf-8"))
         assert record["state"] == "ready"
-        assert record["pid"] == self.process.pid
+        # The journal is written by the announcer itself, so its pid is the
+        # helper's real pid (a grandchild under a launcher-style venv python).
+        assert record["pid"] == payload["pid"]
         assert record["api_origin"] == origin
         # The pre-bound socket must answer nothing before GO (no traffic
         # before the shell verified ownership).
@@ -129,6 +159,21 @@ class DesktopShell:
         raise AssertionError(f"health never became ready: {last_error}")
 
     def stop(self) -> int:
+        if os.name == "nt":
+            # The production Windows stop channel: closing the helper's stdin
+            # makes its EOF watcher self-terminate (uvicorn graceful exit);
+            # escalate to a hard kill of the direct child if it refuses.
+            try:
+                if self.process.stdin and not self.process.stdin.closed:
+                    self.process.stdin.close()
+                code = self.process.wait(timeout=20)
+                self.stderr_log.close()
+                return code
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                code = self.process.wait(timeout=5)
+                self.stderr_log.close()
+                return code
         # SIGTERM reaches the whole session (uvicorn installs graceful
         # shutdown handlers); escalate to SIGKILL if it refuses.
         try:

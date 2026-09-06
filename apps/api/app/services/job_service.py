@@ -601,7 +601,13 @@ def restore_page_after_inspection_exit(db: Session, candidate: PageCandidate) ->
 
     if not candidate.is_selected:
         return
-    page = db.get(MangaPage, candidate.page_id)
+    # Deferred import: ordinal_allocator imports create_job from this module,
+    # so a module-level import would be circular.
+    from app.services.ordinal_allocator import lock_entity
+
+    # Page row lock: the version fence bump below must serialize against
+    # route-side storyboard edits (same convention as the routes).
+    page = lock_entity(db, MangaPage, candidate.page_id)
     if page is None or page.selected_candidate_id != candidate.id:
         return
     if str(getattr(page.status, "value", page.status)) != "FINAL_CHECKING":

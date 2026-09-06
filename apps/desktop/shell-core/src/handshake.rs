@@ -13,7 +13,7 @@ use std::time::Duration;
 use crate::logs::{helper_log_path, logs_dir, open_append_regular, RunLog};
 use crate::ownership::{OwnedTree, OwnershipError};
 use crate::protocol::{
-    verify_journal, verify_ready_line, ReadyPayload, RuntimeLayout, VerifyError, GO_PREFIX,
+    verify_journal, verify_ready_line_where, ReadyPayload, RuntimeLayout, VerifyError, GO_PREFIX,
     HEALTH_PATH,
 };
 
@@ -177,7 +177,14 @@ pub fn spawn_helper(config: &HelperConfig, user_data: &Path) -> Result<SpawnedHe
         }
         Err(_) => return Err(abort_spawn(tree, &layout, &run_log, SpawnError::ReadyTimeout)),
     };
-    let ready = match verify_ready_line(&line, &layout.token, tree.pid()) {
+    // PID identity: the announcer must be a process this shell owns. On
+    // Windows a launcher-style venv python (CPython 3.12) re-execs through a
+    // child, so accept the direct child PID or any PID inside the root Job;
+    // on Unix the direct child only (exec preserves the PID).
+    let direct_pid = tree.pid();
+    let ready = match verify_ready_line_where(&line, &layout.token, |pid| {
+        pid == direct_pid || tree.contains_pid(pid)
+    }) {
         Ok(ready) => ready,
         Err(error) => return Err(abort_spawn(tree, &layout, &run_log, SpawnError::Verify(error))),
     };

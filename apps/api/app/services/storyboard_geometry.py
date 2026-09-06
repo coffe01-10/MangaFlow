@@ -55,7 +55,7 @@ def reorder_page_panels(db: Session, page: MangaPage, panel_ids: list[str]) -> N
         db.flush()
         for index, panel_id in enumerate(panel_ids, start=1):
             panels[panel_id].reading_order = index
-        mark_storyboard_changed(page)
+        mark_storyboard_changed(db, page)
         mark_pages_for_review(db, page.chapter_id, from_page_number=page.page_number)
         db.commit()
     except Exception:
@@ -182,7 +182,7 @@ def _apply_storyboard_geometry(
         dialogue.reading_order = reading_order
     db.flush()
 
-    mark_storyboard_changed(page)
+    mark_storyboard_changed(db, page)
     # §10.2: persist the last command tuple in the same transaction as the
     # save, so a lost-response retry replays from the row, not process memory.
     page.geometry_save_command = {

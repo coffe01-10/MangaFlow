@@ -212,16 +212,20 @@ test("任务活动阶段持续轮询，进入终态后停止", async ({ page, re
   });
 
   await page.goto(`/projects/${id}/jobs`);
-  await expect(page.getByText("CONSISTENCY_CHECKING", { exact: true })).toBeVisible();
+  // 任务状态自 e69aa9b 起渲染本地化标签（labels.ts jobStatusLabels），
+  // 原始状态码不再出现在 DOM；断言改为本地化文本。
+  await expect(page.getByText("连续性检查", { exact: true })).toBeVisible();
   await expect.poll(() => jobPolls.length, { timeout: 12_000 }).toBeGreaterThanOrEqual(2);
 
   status = "REPAIRING";
-  await expect(page.getByText("REPAIRING", { exact: true })).toBeVisible({ timeout: 12_000 });
+  await expect(page.getByText("修复中", { exact: true })).toBeVisible({ timeout: 12_000 });
   const afterRepair = jobPolls.length;
   await expect.poll(() => jobPolls.length, { timeout: 12_000 }).toBeGreaterThan(afterRepair);
 
   status = "COMPLETED";
-  await expect(page.getByRole("link", { name: /检查页面 · COMPLETED/ })).toBeVisible({
+  // 终态任务在任务中心位于折叠的日期分组内（DOM 存在但不可见）；
+  // 对用户可见的终态指示是队列坞的最近任务链接（检查页面 · 已完成）。
+  await expect(page.getByRole("link", { name: /检查页面 · 已完成/ })).toBeVisible({
     timeout: 12_000,
   });
   await expect(page.getByText("正在运行")).toHaveCount(0);

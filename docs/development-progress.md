@@ -1,8 +1,22 @@
 # MangaFlow AI 开发进度
 
-更新时间：2026-09-04
+更新时间：2026-09-06
 
 本文件记录修订版 MVP 计划的实际完成度。
+
+## 0.2.0 RC 收口轮（2026-09-06，Windows 实机 `LAPTOP-TV9KT8RC`，分支 `lead/rc-closure`，基线 master `6ca9d5a`）
+
+- **范围**：RC 定向复审（6 路只读子代理 A–F）＋修复；V02-54 Windows 实机验收轮（此前全部 NOT RUN 的桌面壳面）；#28 处方性能复验；V02-55 可执行门禁。不新增审计范围，不降阈值，失败轮次全部保留。
+- **定向复审结论**：6 个高风险区（Job/Queue/Worker、Workflow/Director/血缘、Provider/计费/台账、Storage/导出/备份、Web UI 状态竞态、Desktop/Windows 壳）中 4 区无可证 P0/P1；**2×P1 已修复**（`f0a35b1`）：
+  - **P1-B（页级围栏并发丢增量）**：`storyboard_version`/`page.version` 围栏在 storyboard 编辑路由是无锁读改写——并发编辑互相覆盖增量后，过期候选读 CURRENT、过期检查过生产门、导演 accept 在已变页面上通过。修复：`editor.py` 两个围栏助手改 SQL 表达式原子自增（覆盖全部调用方含 worker/scene 路径）；storyboard 路由（panel/dialogue/layout/reading-order/geometry）与 inspection/page_generate worker 收尾、失败收敛路径加页行锁（PG FOR UPDATE，与 select/keep/retract/accept 既有惯例一致）；导演 accept 改 project→page→panel 锁序消除与 revise/plan 的 AB-BA 死锁（PG）。回归：`tests/test_storyboard_fence_atomicity.py` 双会话交错（旧实现可证失败）＋场景服装分配路径（复审发现的漏改调用点，`dd5ce11`）。
+  - **P1-E（生成台消费归档切换视图）**：访问「任务中心→历史记录」后 `showArchivedJobs` 持久化，生成台拿到的 jobs 查询只剩归档行——运行中 PAGE_INSPECT 消失，检查轮询停转、终态失效不触发、生产门静默卡死。修复：生成台改用固定近期视图 `dockJobs`（与队列坞同理由）；检查面板等待态改共享终态谓词 `isTerminalTaskStatus`（CANCELLED/NEEDS_REVIEW 不再永转）。回归：`generation-desk-source-contract.test.ts` 源码契约。
+  - 复审代理对 5 项修复提交的独立验证：4/5 通过，抓出上述漏改调用点与一个旧实现也能过的弱测试（均已修）；其余（锁序、expire 语义、延迟导入、契约测试有效性）逐项验证通过。
+- **Windows 实机桌面验收（V02-54，此前全 NOT RUN）**：shell-core `cargo test` **49 项 Windows 原生全绿**（修 3 项测试可移植性缺陷后：picker symlink→junction 模式、append 句柄 set_len 权限）；sidecar 假闭环 e2e Windows 原生通过（11.1s，停止通道为生产 stdin-EOF 协作停机 exit 0）；完整 debug 壳（真实静态导出 + WebView2 Evergreen）实机：握手→仪表盘渲染（运行时 origin 注入实取 sidecar 数据）→单实例多开→关窗协作停机（RunLog `stopped`）→`taskkill /F` 崩溃清树（全树 3s 灭）→用户数据目录契约。**3 个实机发现并修复**：①CPython 3.12 venv 的 launcher 式 python.exe 使 READY pid 为孙进程——协议 PID 身份校验扩展为「直接子进程或 Job 成员」（`IsProcessInJob`，安全不变量保持，回归测试含 launcher 链握手/停止/清树）；本机首次壳启动正是靠它才成功。②单实例回调对最小化窗口 `set_focus` 无效——补 `unminimize()`（实测还原聚焦）。③误提交的本地调试脚本 `check_jobs*.py` 清除。
+- **W-11 RUN**：Windows PyInstaller onedir 冻结 sidecar 冒烟全过（3.4s READY 含 30 迁移→健康→dashboard API→协作停机 exit 0；`_internal/` 硬约束 Windows 形态成立）。
+- **#28 关闭**：授权窗口两轮处方复验全过——generate 路由 87/96/100 × 2 轮、**CLS 0.000 ×2**（原 0.477/73），FPS 两轮 exit 0（142.4/133.8）；阈值未动，失败轮次保留。**范围外新发现（保留）**：storyboard 路由 perf 81/84 <85——归因为 09-02 基线后合入的画布编辑器（LCP 4134ms + unused-JS 810ms），该特性此前无 LH 门禁记录；修复（代码分割/加载预留）另开专门窗口，不在收口轮临场改造。详见 `docs/acceptance/phase2-browser-performance.md` 2026-09-06 节。
+- **#12 维持 BLOCKED**：本机复核无 Docker/PostgreSQL/Redis（5432/6379/55432/56379 全关、WSL 无发行版），与 09-05 结论一致；live PG/Redis/RQ 交错验收与 Windows Job Object 独立 Worker 矩阵继续 NOT RUN（含 #176 并发修复的 live PG 抽验建议）。
+- **状态文档**：`docs/v02-windows-leftover-status.md` 更新至 2026-09-06 基线（W-01/02(仪表盘级)/06(逻辑面)/07/08/11 转 RUN；W-03/04/05(交互面)/09/10/12/18/19/20/22 仍 NOT RUN；W-13–17/21 维持 BLOCKED）；`apps/desktop/README.md` D2/D3/D4/§3/§7 同步。
+- **门禁**：定向 pytest（围栏/导演/血缘/检查并发等 100+ 项）与 Vitest 通过；`npm run check` 全量见 PR（首轮抓出 2 条我引入的 Ruff 违例，已修复后复跑）。真实供应商 smoke 未执行（无授权凭据，NOT RUN）。版本号未动（0.1.0，待 V02-55 终审）。
 
 ## V02-54D 完成并验收：Windows 剩余项状态目录（2026-09-04，Linux box，docs-only；已经 lead 验收审阅后勾选，PR #120）
 

@@ -1006,7 +1006,7 @@ def apply_page_layout(
     # (#148). mark_storyboard_changed bumps storyboard_version and clears the
     # candidate ack; mark_pages_for_review flags continuity NEEDS_REVIEW and
     # bumps version for every page from this one onward.
-    mark_storyboard_changed(page)
+    mark_storyboard_changed(db, page)
     mark_pages_for_review(db, page.chapter_id, from_page_number=page.page_number)
     db.flush()
     _populate_page_storyboard(db, page, chunks, page_scenes, page_beats, characters)

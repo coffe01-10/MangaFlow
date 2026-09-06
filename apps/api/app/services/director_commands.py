@@ -576,7 +576,7 @@ def _restore_page_snapshot(db: Session, page: MangaPage, snapshot: dict) -> None
 
     if "geometry_save_command" in snapshot:
         page.geometry_save_command = snapshot.get("geometry_save_command")
-    mark_storyboard_changed(page)
+    mark_storyboard_changed(db, page)
     mark_pages_for_review(db, page.chapter_id, from_page_number=page.page_number)
     refresh_page_text_metrics(db, page)
     db.flush()
@@ -875,6 +875,11 @@ def accept_command(db: Session, project_id: str, command_id: str) -> dict:
     if row.status != CommandStatus.PREVIEWED.value:
         raise _http_409(f"命令状态 {row.status} 不能接受")
     envelope = _envelope_from_row(row)
+    # Project lock BEFORE the page/panel locks: _execute_regenerate later
+    # allocates batch ordinals under the Project lock, while chapter
+    # revise/plan paths take project → chapter → page. Locking the page
+    # first here would invert that order and deadlock on PostgreSQL.
+    lock_entity(db, Project, project_id)
     if envelope.target.page_id:
         lock_entity(db, MangaPage, envelope.target.page_id)
     if envelope.target.panel_id:

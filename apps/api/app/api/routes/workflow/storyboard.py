@@ -29,6 +29,7 @@ from app.services.editor import (
     refresh_page_text_metrics,
     validate_character_ids,
 )
+from app.services.ordinal_allocator import lock_entity
 from app.services.storyboard_edits import apply_dialogue_fields, apply_panel_fields
 from app.services.storyboard_geometry import (
     reorder_page_panels,
@@ -46,7 +47,13 @@ def _panel_context(
     panel = db.get(Panel, panel_id)
     if not panel:
         raise HTTPException(status_code=404, detail="分镜格不存在")
-    page = _page(db, panel.page_id)
+    # Page row first, then the panel claim: every storyboard writer that
+    # bumps the page fences takes the page lock (same convention as
+    # select/keep/retract/director accept), so two concurrent edits on the
+    # same page serialize and both fence increments land.
+    page = lock_entity(db, MangaPage, panel.page_id)
+    if not page:
+        raise HTTPException(status_code=404, detail="页面不存在")
     ensure_project_scope(db, panel, project_scope, label="分镜格")
     return panel, page, project_id_for_page(db, page)
 
@@ -95,6 +102,17 @@ def get_storyboard(
     return _storyboard_read(db, page)
 
 
+def _page_for_write(db: Session, page_id: str, project_scope: str | None) -> MangaPage:
+    """Load a page for a write that bumps the storyboard fences, taking the
+    page row lock (PostgreSQL FOR UPDATE) so concurrent storyboard writers
+    serialize in one place; check-then-act version rechecks under this lock
+    cannot interleave."""
+
+    page = _page(db, page_id)
+    ensure_project_scope(db, page, project_scope, label="页面")
+    return lock_entity(db, MangaPage, page.id)
+
+
 @router.patch("/pages/{page_id}/layout", response_model=StoryboardRead)
 def patch_page_layout(
     page_id: str,
@@ -102,8 +120,7 @@ def patch_page_layout(
     db: Session = Depends(get_db),
     project_id: str | None = None,
 ) -> StoryboardRead:
-    page = _page(db, page_id)
-    ensure_project_scope(db, page, project_id, label="页面")
+    page = _page_for_write(db, page_id, project_id)
     page = update_page_layout(
         db,
         page,
@@ -120,8 +137,7 @@ def patch_page_reading_order(
     db: Session = Depends(get_db),
     project_id: str | None = None,
 ) -> StoryboardRead:
-    page = _page(db, page_id)
-    ensure_project_scope(db, page, project_id, label="页面")
+    page = _page_for_write(db, page_id, project_id)
     reorder_page_panels(db, page, payload.order)
     return _storyboard_read(db, page)
 
@@ -133,8 +149,7 @@ def put_page_storyboard_geometry(
     db: Session = Depends(get_db),
     project_id: str | None = None,
 ) -> StoryboardRead:
-    page = _page(db, page_id)
-    ensure_project_scope(db, page, project_id, label="页面")
+    page = _page_for_write(db, page_id, project_id)
     save_storyboard_geometry(db, page, payload)
     return _storyboard_read(db, page)
 
@@ -190,7 +205,7 @@ def create_dialogue(
     db.flush()
     refresh_page_text_metrics(db, page)
     panel.version += 1
-    mark_storyboard_changed(page)
+    mark_storyboard_changed(db, page)
     mark_pages_for_review(db, page.chapter_id, from_page_number=page.page_number)
     db.commit()
     db.refresh(dialogue)
@@ -237,6 +252,6 @@ def delete_dialogue(
     db.flush()
     refresh_page_text_metrics(db, page)
     panel.version += 1
-    mark_storyboard_changed(page)
+    mark_storyboard_changed(db, page)
     mark_pages_for_review(db, page.chapter_id, from_page_number=page.page_number)
     db.commit()
