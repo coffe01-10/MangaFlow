@@ -132,6 +132,7 @@ def test_review_fence_survives_interleaved_writers(file_sessions):
     page_b = db_b.get(MangaPage, later)
     baseline = page_a.version
     earlier_baseline = earlier_a.version
+    assert page_b.version == baseline, "B must hold the pre-A snapshot"
     db_a.commit()
     db_b.commit()
 

@@ -20,13 +20,13 @@ from app.models import (
     Project,
 )
 from app.services.ai_schemas import PageInspectionOutput
+from app.services.ordinal_allocator import lock_entity
 from app.services.page_completion import (
     GATED_QUALITY_CATEGORIES,
     PASSING_QUALITY_OUTCOMES,
     REQUIRED_QUALITY_CATEGORIES,
     latest_inspections_by_category,
 )
-from app.services.ordinal_allocator import lock_entity
 from app.services.prompt_compiler import compile_page_prompt
 from app.services.worker_handlers import execution, provider
 
