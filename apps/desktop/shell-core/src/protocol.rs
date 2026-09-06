@@ -46,6 +46,26 @@ pub fn verify_ready_line(
     token: &str,
     expected_pid: u32,
 ) -> Result<ReadyPayload, VerifyError> {
+    verify_ready_line_where(line, token, |pid| pid == expected_pid)
+}
+
+/// [`verify_ready_line`] with a caller-supplied PID predicate.
+///
+/// The default is exact equality with the spawned child. On Windows the
+/// predicate also accepts a PID that lives inside the shell's Job Object:
+/// CPython 3.12 venvs use a launcher-style `python.exe` that spawns the real
+/// interpreter as a child process, so the helper announcing readiness is a
+/// grandchild while the shell only knows the launcher PID. Job membership
+/// preserves the identity invariant (the announcer must belong to the tree
+/// this shell owns and can kill); the secret token still gates spoofing.
+pub fn verify_ready_line_where<P>(
+    line: &str,
+    token: &str,
+    pid_owned: P,
+) -> Result<ReadyPayload, VerifyError>
+where
+    P: Fn(u32) -> bool,
+{
     let payload = line
         .strip_prefix(READY_PREFIX)
         .ok_or(VerifyError::BadLine)?;
@@ -55,7 +75,7 @@ pub fn verify_ready_line(
         return Err(VerifyError::TokenMismatch);
     }
     let pid = value["pid"].as_u64().ok_or(VerifyError::BadJson)? as u32;
-    if pid != expected_pid {
+    if !pid_owned(pid) {
         return Err(VerifyError::PidMismatch);
     }
     let origin = value["api_origin"]

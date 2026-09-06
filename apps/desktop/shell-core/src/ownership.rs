@@ -139,6 +139,25 @@ impl OwnedTree {
         self.child.id()
     }
 
+    /// Whether `pid` belongs to the process tree this shell owns.
+    ///
+    /// Windows: membership in the root Job Object (the helper was assigned
+    /// before its first instruction and descendants inherit the job, so a
+    /// launcher-style interpreter chain stays inside the kill boundary).
+    /// Unix: only the direct child — `exec` semantics preserve the PID, so
+    /// anything else announcing a foreign PID must be refused.
+    pub fn contains_pid(&self, pid: u32) -> bool {
+        if pid == self.pid() {
+            return true;
+        }
+        #[cfg(windows)]
+        match &self.guard {
+            TreeGuard::Windows { job } => return job_contains_pid(job, pid),
+        }
+        #[allow(unreachable_code)]
+        false
+    }
+
     pub fn alive(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
     }
@@ -324,6 +343,37 @@ fn assign_process(job: &JobHandle, child: &Child) -> Result<(), OwnershipError> 
             .map_err(|error| OwnershipError::JobAssignment(error.to_string()))?;
     }
     Ok(())
+}
+
+/// Whether `pid` is a member of the root Job Object (`IsProcessInJob`).
+///
+/// Used by the READY verification to accept launcher-style interpreter chains
+/// (CPython 3.12 venv `python.exe` spawns the real interpreter as a child):
+/// the announcer PID is then a grandchild, but it is still inside the kill
+/// boundary this shell owns. A PID that left the job (or never joined it)
+/// reports false. The query opens the process with
+/// PROCESS_QUERY_LIMITED_INFORMATION, the least-privilege right sufficient
+/// for `IsProcessInJob`; access denial is reported as "not ours" (fail
+/// closed).
+#[cfg(windows)]
+fn job_contains_pid(job: &JobHandle, pid: u32) -> bool {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::JobObjects::IsProcessInJob;
+    use windows::Win32::System::Threading::{
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    unsafe {
+        let process = match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+            Ok(handle) => handle,
+            Err(_) => return false,
+        };
+        let mut in_job = windows::Win32::Foundation::BOOL::default();
+        let verdict =
+            IsProcessInJob(process, job.0, &mut in_job).is_ok() && in_job.as_bool();
+        let _ = CloseHandle(process);
+        verdict
+    }
 }
 
 #[cfg(test)]
