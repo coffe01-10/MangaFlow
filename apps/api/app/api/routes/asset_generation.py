@@ -793,6 +793,10 @@ def assign_scene_outfits(
     if not scene:
         raise HTTPException(status_code=404, detail="场景不存在")
     ensure_project_scope(db, scene, project_id, label="场景")
+    # Capture before any work: the write below claims this exact version, the
+    # same discipline as PATCH /scenes, so a concurrent scene writer's CAS bump
+    # cannot be collapsed by our blind increment.
+    scene_version_before = scene.version
     chapter = db.get(Chapter, scene.chapter_id)
     assignments = {
         character_id: outfit_id
@@ -810,8 +814,19 @@ def assign_scene_outfits(
             or outfit.character_id != character_id
         ):
             raise HTTPException(status_code=409, detail="服装必须属于指定角色")
+    claimed = db.execute(
+        update(Scene)
+        .where(Scene.id == scene.id, Scene.version == scene_version_before)
+        .values(version=Scene.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if not claimed.rowcount:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="场景已被更新，请刷新后重试")
+    # The claim bypassed the ORM increment; drop the stale copy so a
+    # later write in the same session claims the post-bump version.
+    db.expire(scene, ["version"])
     scene.outfit_assignments = assignments
-    scene.version += 1
     from app.services.editor import mark_pages_for_review, mark_storyboard_changed
 
     for page in db.scalars(select(MangaPage).where(MangaPage.chapter_id == chapter.id)):
