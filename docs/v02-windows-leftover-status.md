@@ -1,7 +1,9 @@
 # MangaFlow Windows 剩余项状态目录（V02-54D，状态 only）
 
-更新时间：2026-09-04　基线：`master` / `efedb08`（含 V02-54C / PR #118）
+更新时间：2026-09-06　基线：`lead/rc-closure`（自 `6ca9d5a` / master 起的 RC 收口分支）
 对应：Issue #119（本文档即其交付物）；父项 V02-54 / Issue #114 保持未勾，V02-55 未开。
+2026-09-06 Windows 实机轮（`LAPTOP-TV9KT8RC`，Windows 11 10.0.26200 + WebView2 Evergreen）
+已把 W-01/W-02(部分)/W-06(部分)/W-07/W-08/W-11 转为 RUN，详见各行。
 
 ## 0. 定位与读法
 
@@ -17,23 +19,24 @@
 
 | 状态 | 数量 | 条目 |
 | --- | --- | --- |
-| NOT RUN | 16 | W-01～W-12、W-18、W-19、W-20、W-22 |
+| RUN（2026-09-06 实机轮） | 6 | W-01、W-02（仪表盘级）、W-06（逻辑面）、W-07、W-08、W-11 |
+| NOT RUN | 10 | W-02（画布级/缺失安装）、W-03、W-04、W-05（对话框交互面）、W-10、W-12、W-18、W-19、W-20、W-22 |
 | BLOCKED | 6 | W-13、W-14、W-15、W-16、W-17、W-21 |
 
 ## 2. A. Windows 实机运行面（桌面壳：进程 / 渲染 / 日志 / 安全）
 
 | ID | 描述 | 依赖环境 | 状态 | 阻塞原因 | 已有证据（不视作实机验收） |
 | --- | --- | --- | --- | --- | --- |
-| W-01 | Windows 实机 Job Object 全链路：`CREATE_SUSPENDED` 挂起创建 → `KILL_ON_JOB_CLOSE` 根 Job → assign → `ResumeThread`；任一步失败终止挂起子进程（fail-closed）；崩溃/退出清树实测 | Windows 10/11 实机 | NOT RUN | 本沙箱为 Linux、无法运行 Windows；桌面壳 Windows 实机轮尚未执行 | 双 crate Windows 目标 `cargo check`；代码按 `scripts/owned_processes.py` 纪律实现；Linux PDEATHSIG 等价清树实测（`startup_protocol.rs`） |
-| W-02 | WebView2 Evergreen 渲染兼容：工作台 DOM/SVG 画布、拖拽/缩放、动画与 reduced-motion、静态导出页在 WebView2 内的实际表现 | Windows 实机 + WebView2 Runtime | NOT RUN | 无 WebView2 运行环境 | D5 Chromium 机制级验证（静态导出页直连动态端口 API）；非 WebView2 内核 |
-| W-03 | WebView2 缺失/损坏安装行为：Evergreen 未安装或损坏时壳的引导、提示与退出路径 | Windows 实机（可控卸载 Runtime） | NOT RUN | 同 W-02 | 壳侧握手与 WebView 创建顺序已有 Linux 等价测试 |
-| W-04 | WebView2 内工具页 invoke：`shell-tools.html` 经 `withGlobalTauri` 调用 `desktop_export_logs` / `desktop_pick_file` / `desktop_pick_directory` / `desktop_read_picked_file` 的实机链路 | Windows 实机 | NOT RUN | 同 W-02 | 触发页已随静态导出拷入 `dist/frontend/`；invoke 命令面过 Windows 目标编译门禁 |
-| W-05 | rfd 0.17 原生对话框实机行为：COM 线程模型、模态关系、与 WebView2 的焦点交互、保存/打开对话框 | Windows 实机 | NOT RUN | src-tauri 仅 Windows 目标编译门禁 | picker 策略/穿越拒绝/能力表矩阵在 shell-core `tests/picker_policy.rs` Linux 全绿 |
-| W-06 | 日志轮转 Windows 实机行为：对 helper 进程仍打开文件的 rename 语义、世代 shift、ACL 收紧前的符号链接种植场景 | Windows 实机 | NOT RUN | rename-on-open 的 Windows 语义无法在 Linux 复现 | shell-core 36 项测试 Linux 全绿（含符号链接注入、清扫收紧、自愈重开）；见 README §6.4 |
-| W-07 | 单实例多开行为：`tauri-plugin-single-instance` 第二实例聚焦/参数传递；会话启动清扫的「无并发壳」假设在多开下的实际竞态 | Windows 实机 | NOT RUN | 互斥体已接、实机未验；清扫无活跃性排除（README §6.4 并发假设） | 单实例插件已集成；清扫范围收紧有单元断言 |
-| W-08 | owner token CSPRNG 运行时：Windows `BCryptGenRandom` 路径实际产出 32 位 hex token | Windows 实机 | NOT RUN | 仅编译验证 | Unix `/dev/urandom` 路径 Linux 实测；token 校验逻辑共库 |
-| W-09 | CSP 在 WebView2 的实际执行：`script-src 'unsafe-inline'` 在案债务、`withGlobalTauri` 命令暴露面、`default-src 'self'` 外链限制的实际行为 | Windows 实机 + WebView2 DevTools | NOT RUN | 无 WebView2 | CSP 配置静态就位并在 README D9 记录为债务 |
-| W-10 | 用户数据目录 ACL 收紧：`%LOCALAPPDATA%\com.mangaflow.desktop\` 每用户权限边界、日志/运行目录的权限实测 | Windows 实机 | NOT RUN | user-data ACL 收紧未做（README D6/§6.4 残余风险记录） | 目录布局（data/storage/uploads/logs/runtime）有测试断言不落仓库 |
+| W-01 | Windows 实机 Job Object 全链路：`CREATE_SUSPENDED` 挂起创建 → `KILL_ON_JOB_CLOSE` 根 Job → assign → `ResumeThread`；任一步失败终止挂起子进程（fail-closed）；崩溃/退出清树实测 | Windows 10/11 实机 | **RUN（2026-09-06）** | — | shell-core `cargo test` 49 项 Windows 原生全绿（含 startup_protocol 9：握手全链/错误 GO/崩溃清树/强杀升级/stdin-EOF 协作停机/launcher 链 READY pid Job 成员验收）；完整 debug 壳实机：真实关窗协作停机 exit 0 + RunLog `stopped`，`taskkill /F` 强杀后 helper 树（含 launcher 孙进程）3 秒内全灭 |
+| W-02 | WebView2 Evergreen 渲染兼容：工作台 DOM/SVG 画布、拖拽/缩放、动画与 reduced-motion、静态导出页在 WebView2 内的实际表现 | Windows 实机 + WebView2 Runtime | **RUN（仪表盘级，2026-09-06）/ 画布级 NOT RUN** | 工作台子树受 D5 静态导出约束（poc stub），画布级渲染属 D5 改造范围 | debug 壳实机：WebView2 建窗后仪表盘完整渲染（全局导航/MVP ROUTE/AI 连接卡片），运行时 origin 注入实取 sidecar API 实时数据（2 可用模型/2 已配置连接）；中文排版/布局正常 |
+| W-03 | WebView2 缺失/损坏安装行为：Evergreen 未安装或损坏时壳的引导、提示与退出路径 | Windows 实机（可控卸载 Runtime） | NOT RUN | 需要可控卸载本机 WebView2 Runtime（有影响日常使用的风险，本轮不做） | 壳侧握手与 WebView 创建顺序已有测试 |
+| W-04 | WebView2 内工具页 invoke：`shell-tools.html` 经 `withGlobalTauri` 调用 `desktop_export_logs` / `desktop_pick_file` / `desktop_pick_directory` / `desktop_read_picked_file` 的实机链路 | Windows 实机 | NOT RUN | 壳内 UI 无工具页导航入口，实机交互无从触发；invoke 命令面过 Windows 原生 cargo 测试 | 触发页已随静态导出拷入 `dist/frontend/`；命令面过 Windows 目标编译门禁 + shell-core 策略测试 |
+| W-05 | rfd 0.17 原生对话框实机行为：COM 线程模型、模态关系、与 WebView2 的焦点交互、保存/打开对话框 | Windows 实机 | **RUN（策略面）/ 对话框交互 NOT RUN** | 原生对话框实机弹出需工具页入口（同 W-04） | picker 策略/穿越拒绝/能力表矩阵 Windows 原生跑绿（junction 链接拒绝实测） |
+| W-06 | 日志轮转 Windows 实机行为：对 helper 进程仍打开文件的 rename 语义、世代 shift、ACL 收紧前的符号链接种植场景 | Windows 实机 | **RUN（逻辑面，2026-09-06）/ ACL 场景 NOT RUN** | ACL 收紧本身未实现（README D6 债务） | shell-core 49 项 Windows 原生全绿（含 junction 注入拒绝、世代 shift/保留、清扫只动超阈值 base）；实机壳运行产生 `shell-<token>.log`/`helper-<token>.stderr.log` 里程碑链完整（spawn→ready_verified→go_sent→healthy→stopped） |
+| W-07 | 单实例多开行为：`tauri-plugin-single-instance` 第二实例聚焦/参数传递；会话启动清扫的「无并发壳」假设在多开下的实际竞态 | Windows 实机 | **RUN（2026-09-06）** | — | 第二实例立即退出（exit 0）仅剩一个壳进程；最小化窗口经 `unminimize()+set_focus()` 修复后正确还原聚焦（实机发现修复前 `set_focus` 单独对最小化窗口无效）；多开下会话清扫活跃性排除仍欠（设计假设记录在案） |
+| W-08 | owner token CSPRNG 运行时：Windows `BCryptGenRandom` 路径实际产出 32 位 hex token | Windows 实机 | **RUN（2026-09-06）** | — | `new_token` 经 Windows 原生测试断言；实机每次壳启动生成 token 并通过 journal/READY/运行目录三处一致性校验 |
+| W-09 | CSP 在 WebView2 的实际执行：`script-src 'unsafe-inline'` 在案债务、`withGlobalTauri` 命令暴露面、`default-src 'self'` 外链限制的实际行为 | Windows 实机 + WebView2 DevTools | NOT RUN | 页面正常加载证明配置未破坏渲染，但 CSP 指令级的实际执行行为未逐条验证（需 DevTools 深检） | CSP 配置静态就位并在 README D9 记录为债务 |
+| W-10 | 用户数据目录 ACL 收紧：`%LOCALAPPDATA%\com.mangaflow.desktop\` 每用户权限边界、日志/运行目录的权限实测 | Windows 实机 | NOT RUN | user-data ACL 收紧未做（README D6/§6.4 残余风险记录） | 目录布局（data/storage/uploads/logs/runtime）实机 2026-09-06 验证不落仓库、按契约落位 |
 
 ## 3. B. 打包、安装与分发
 
