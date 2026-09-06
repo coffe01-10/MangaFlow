@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -51,9 +52,10 @@ def _png(color: tuple[int, int, int]) -> bytes:
 class DesktopShell:
     """Python-level stand-in for the Rust shell handshake (D3/D4 evidence)."""
 
-    def __init__(self, user_data: Path) -> None:
+    def __init__(self, user_data: Path, web_dist: Path | None = None) -> None:
         self.token = os.urandom(16).hex()
         self.user_data = user_data
+        self.web_dist = web_dist
         self.runtime = user_data / "runtime" / f"mangaflow-desktop-{self.token}"
         self.runtime.mkdir(parents=True)
         self.journal = self.runtime / "owner.json"
@@ -64,17 +66,20 @@ class DesktopShell:
             MANGAFLOW_DESKTOP_JOURNAL=str(self.journal),
             MANGAFLOW_DISABLE_DOTENV="1",
         )
+        command = [
+            sys.executable,
+            str(HELPER),
+            "app",
+            "--api-root",
+            str(API_ROOT),
+            "--user-data",
+            str(user_data),
+            "--fake-channel",
+        ]
+        if web_dist is not None:
+            command += ["--web-dist", str(web_dist)]
         self.process = subprocess.Popen(
-            [
-                sys.executable,
-                str(HELPER),
-                "app",
-                "--api-root",
-                str(API_ROOT),
-                "--user-data",
-                str(user_data),
-                "--fake-channel",
-            ],
+            command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=self.stderr_log,
@@ -128,6 +133,16 @@ class DesktopShell:
         # helper's real pid (a grandchild under a launcher-style venv python).
         assert record["pid"] == payload["pid"]
         assert record["api_origin"] == origin
+        # Plan B (W-15): with --web-dist the helper manages a Next standalone
+        # server and announces its loopback origin in READY and the journal.
+        if self.web_dist is not None:
+            web_origin = payload["web_origin"]
+            assert web_origin.startswith("http://127.0.0.1:"), web_origin
+            assert record["web_origin"] == web_origin
+            self.web_origin = web_origin
+        else:
+            assert "web_origin" not in payload
+            assert "web_origin" not in record
         # The pre-bound socket must answer nothing before GO (no traffic
         # before the shell verified ownership).
         probe = socket.create_connection(("127.0.0.1", port), timeout=2)
@@ -379,3 +394,76 @@ def test_sidecar_boot_and_fake_generate_candidate_loop(desktop):
         {"version", "token", "role", "state", "pid", "pid_starttime", "port",
          "api_origin", "started_at", "grandchild_pid"}
     ), final_journal
+
+
+REPO_ROOT_AS_WEB = REPO_ROOT / "apps/web"
+
+
+def _web_dist_dir() -> Path:
+    """The Next standalone bundle (plan B, W-15): produced by the standard
+    production build (`next build`, output:"standalone") at
+    apps/web/.next/standalone/apps/web."""
+    dist = REPO_ROOT_AS_WEB / ".next" / "standalone" / "apps" / "web"
+    assert (dist / "server.js").is_file(), (
+        f"{dist} missing server.js — run `npm run build --workspace @mangaflow/web` first"
+    )
+    return dist
+
+
+def test_sidecar_plan_b_web_server_loop(tmp_path: Path):
+    """Plan B (W-15): with --web-dist the helper spawns the Next standalone
+    server as a child; READY carries the loopback web origin; the web server
+    serves the UI and proxies /api/v1/* to the helper-owned API through its
+    compiled rewrites; the cooperative stop reaps the web server with the
+    helper."""
+    if shutil.which("node") is None and not (
+        (HELPER.parent / "node" / ("node.exe" if os.name == "nt" else "bin/node"))
+    ).exists():
+        pytest.skip("no node runtime available for the standalone server")
+    shell = DesktopShell(tmp_path / "user-data", web_dist=_web_dist_dir())
+    (shell.user_data / "data").mkdir(parents=True, exist_ok=True)
+    try:
+        record = shell.handshake()
+        shell.wait_health()
+        web = shell.web_origin
+
+        # The web server proxies the API through its compiled rewrites and
+        # renders the UI (status 200 + HTML shell).
+        for _ in range(100):
+            try:
+                with urllib.request.urlopen(f"{web}/api/v1/health", timeout=2) as response:
+                    if response.status == 200:
+                        break
+            except Exception:  # noqa: BLE001 - node may still be booting
+                time.sleep(0.2)
+        else:
+            raise AssertionError("web server never proxied /api/v1/health")
+        with urllib.request.urlopen(f"{web}/", timeout=10) as response:
+            assert response.status == 200
+            body = response.read(4096)
+        assert b"<!DOCTYPE html>" in body or b"<html" in body.lower()
+
+        # Data flows through the same web origin end to end (seed project
+        # listed via the proxy = rewrites carry the helper's dynamic port).
+        with urllib.request.urlopen(f"{web}/api/v1/projects", timeout=10) as response:
+            assert response.status == 200
+        assert record["web_origin"] == web
+        # Journal identity-only: web fields are identity too, no commands/env.
+        assert set(record).issubset(
+            {"version", "token", "role", "state", "pid", "pid_starttime", "port",
+             "api_origin", "web_origin", "web_port", "started_at", "grandchild_pid"}
+        ), record
+    finally:
+        exit_code = shell.stop()
+        assert exit_code == 0, f"helper exited with {exit_code}"
+    # The web server must not survive the helper's cooperative exit: the
+    # port it claimed must be closed now.
+    web_port = int(shell.web_origin.rsplit(":", 1)[1])
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.settimeout(1.0)
+    try:
+        assert probe.connect_ex(("127.0.0.1", web_port)) != 0, (
+            "web server still listening after the helper stopped"
+        )
+    finally:
+        probe.close()

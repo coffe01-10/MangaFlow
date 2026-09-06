@@ -92,6 +92,71 @@ def _bind_loopback() -> socket.socket:
     return sock
 
 
+# Fixed loopback relay port (plan B, W-15). The Next standalone bundle
+# compiles next.config.ts rewrites at BUILD time, so the bundle's API
+# destination is this constant; at runtime the helper owns the port and
+# relays those connections to its own dynamic API port. Loopback only, and
+# the session-start bind is fail-closed (see _spawn_web_server).
+WEB_RELAY_PORT = 39443
+
+
+def _bind_relay(api_port: int) -> socket.socket | None:
+    """Claim the fixed relay port and listen; None when it is taken."""
+
+    relay = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        relay.bind(("127.0.0.1", WEB_RELAY_PORT))
+        relay.listen(64)
+    except OSError as error:
+        _log(f"relay port {WEB_RELAY_PORT} unavailable ({error!r}); starting without the web server")
+        relay.close()
+        return None
+    relay.settimeout(0.5)
+    return relay
+
+
+def _serve_relay(relay: socket.socket, api_port: int) -> None:
+    """Accept relay connections and pipe bytes to the dynamic API port.
+
+    A pure byte pipe: the API is on the loopback adapter, the relay adds no
+    parsing, no auth and no TLS — it exists only so a build-time-fixed
+    rewrite destination reaches this session's dynamic API port. Runs on a
+    daemon thread; the helper exit paths simply drop the listening socket
+    and the process teardown closes all piped connections.
+    """
+
+    while True:
+        try:
+            client, _ = relay.accept()
+        except socket.timeout:
+            continue
+        except OSError:
+            return  # listener closed — helper is shutting down
+        try:
+            upstream = socket.create_connection(("127.0.0.1", api_port), timeout=5)
+        except OSError:
+            client.close()
+            continue
+
+        def _pipe(src: socket.socket, dst: socket.socket) -> None:
+            try:
+                while True:
+                    data = src.recv(65536)
+                    if not data:
+                        break
+                    dst.sendall(data)
+            except OSError:
+                pass
+            finally:
+                try:
+                    dst.shutdown(socket.SHUT_WR)
+                except OSError:
+                    pass
+
+        threading.Thread(target=_pipe, args=(client, upstream), daemon=True).start()
+        threading.Thread(target=_pipe, args=(upstream, client), daemon=True).start()
+
+
 def _pid_starttime() -> int | None:
     """Linux identity anchor equivalent to Windows GetProcessTimes creation."""
     try:
@@ -217,56 +282,176 @@ def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
     os.environ["UPLOAD_ROOT"] = str(user_data / "uploads")
     os.environ["WEB_ORIGIN"] = args.web_origin
 
-    sock = _bind_loopback()
-    port = sock.getsockname()[1]
+    node = None
+    sock = None
     try:
-        from alembic import command
-        from alembic.config import Config as AlembicConfig
+        sock = _bind_loopback()
+        port = sock.getsockname()[1]
+        # The web server's compiled rewrites target this exact API origin, so
+        # spawn it only after the API port is bound (plan B, W-15).
+        node, web_port = _spawn_web_server(args, port)
+        try:
+            from alembic import command
+            from alembic.config import Config as AlembicConfig
 
-        alembic_config = AlembicConfig(str(api_root / "alembic.ini"))
-        alembic_config.set_main_option(
-            "sqlalchemy.url", os.environ["DATABASE_URL"]
+            alembic_config = AlembicConfig(str(api_root / "alembic.ini"))
+            alembic_config.set_main_option(
+                "sqlalchemy.url", os.environ["DATABASE_URL"]
+            )
+            command.upgrade(alembic_config, "head")
+        except BaseException as error:  # noqa: BLE001 - journal the failure, then exit
+            record.update(state="failed", error=f"alembic:{type(error).__name__}")
+            _write_journal(journal, record)
+            raise
+
+        if args.fake_channel:
+            from fake_channel import install  # provided next to this helper
+
+            install()
+
+        import uvicorn
+
+        record.update(
+            state="ready",
+            pid=os.getpid(),
+            pid_starttime=_pid_starttime(),
+            api_origin=f"http://127.0.0.1:{port}",
+            port=port,
         )
-        command.upgrade(alembic_config, "head")
-    except BaseException as error:  # noqa: BLE001 - journal the failure, then exit
-        record.update(state="failed", error=f"alembic:{type(error).__name__}")
+        if node is not None:
+            # Plan B (W-15): the web server is a helper child (Job member,
+            # killed with the tree) serving the Next standalone bundle; the
+            # shell builds the WebView against this loopback origin only.
+            record.update(web_origin=f"http://127.0.0.1:{web_port}", web_port=web_port)
         _write_journal(journal, record)
-        sock.close()
-        raise
+        ready_fields = ["token", "pid", "api_origin"]
+        if node is not None:
+            ready_fields.append("web_origin")
+        print(f"MANGAFLOW_READY {json.dumps({k: record[k] for k in ready_fields})}", flush=True)
 
-    if args.fake_channel:
-        from fake_channel import install  # provided next to this helper
+        if not _await_go(record["token"]):
+            return EXIT_HANDSHAKE_REFUSED
 
-        install()
+        # Arm the cooperative stop channel before the (slow) app import: the
+        # shell's graceful stop may arrive while third-party libraries are still
+        # loading, and it must unwind cleanly through main()'s cleanup rather
+        # than waiting for the kill escalation.
+        _start_stdin_eof_watch()
 
-    import uvicorn
+        from app.main import app
 
-    record.update(
-        state="ready",
-        pid=os.getpid(),
-        pid_starttime=_pid_starttime(),
-        api_origin=f"http://127.0.0.1:{port}",
-        port=port,
+        config = uvicorn.Config(app, log_level="warning", access_log=False, lifespan="on")
+        server = uvicorn.Server(config)
+        server.run(sockets=[sock])
+        return 0
+    finally:
+        # The web server is a helper child: terminate it on every helper exit
+        # path. Windows job-kill and Unix pdeathsig cover the crash paths;
+        # this covers the cooperative and refused-GO paths.
+        if node is not None and node.poll() is None:
+            node.terminate()
+            try:
+                node.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                node.kill()
+        if sock is not None:
+            sock.close()
+
+
+def _find_node() -> str | None:
+    """Resolve the bundled node runtime for the Next standalone server.
+
+    Ships with the install form (bundle resource, pinned version); dev form
+    falls back to the PATH node. None = run without a web server (shell then
+    serves the static export, the pre-W-15 form).
+    """
+
+    bundled = Path(__file__).resolve().parent / "node" / ("node.exe" if sys.platform == "win32" else "bin/node")
+    if bundled.exists():
+        return str(bundled)
+    import shutil
+
+    return shutil.which("node")
+
+
+def _spawn_web_server(
+    args: argparse.Namespace, api_port: int
+) -> tuple[subprocess.Popen | None, int | None]:
+    """Start the Next standalone server (plan B, W-15) as a helper child.
+
+    --web-dist must point at the standalone bundle directory (containing
+    server.js). The web port is claimed by a temporary bind(0), handed to
+    node via PORT, and released before spawn — the tiny bind-close race is
+    a documented, accepted residual (loopback, per-user dir, single-instance
+    shell).
+
+    Rewrites destination: the standalone bundle compiles next.config.ts
+    rewrites at BUILD time (routes-manifest.json), so the destination cannot
+    be re-pointed at this session's dynamic API port via the environment.
+    Instead the bundle is built with the fixed relay port
+    ``WEB_RELAY_PORT`` (127.0.0.1:39443) as the rewrite destination, and
+    this helper binds that relay port for the session and forwards
+    connections to its actual dynamic API port (``api_port``). The relay is
+    a pure byte pipe on the loopback adapter — no TLS, no HTTP parsing —
+    and lives and dies with the helper. Binding the fixed relay port is
+    fail-closed: if another process owns 39443 (e.g. a foreign app), the
+    web server is skipped rather than served against a wrong target.
+    No node on PATH and no --web-dist = no web server (None), which keeps
+    the pre-W-15 static-export form working unchanged.
+    """
+
+    web_dist = getattr(args, "web_dist", None)
+    if not web_dist:
+        return None, None
+    node = _find_node()
+    if node is None:
+        _log("no node runtime found; starting without the web server")
+        return None, None
+    server_js = Path(web_dist).resolve() / "server.js"
+    if not server_js.is_file():
+        _log(f"web dist {server_js} has no server.js; starting without the web server")
+        return None, None
+    relay = _bind_relay(api_port)
+    if relay is None:
+        return None, None
+    claim = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        claim.bind(("127.0.0.1", 0))
+        web_port = claim.getsockname()[1]
+    finally:
+        claim.close()
+    env = dict(
+        os.environ,
+        PORT=str(web_port),
+        HOSTNAME="127.0.0.1",
+        # Only relevant when the bundle was built without the fixed relay
+        # destination (dev form); the shipped bundle has the relay baked in.
+        MANGAFLOW_API_ORIGIN=f"http://127.0.0.1:{WEB_RELAY_PORT}",
+        NODE_ENV="production",
     )
-    _write_journal(journal, record)
-    print(f"MANGAFLOW_READY {json.dumps({k: record[k] for k in ('token', 'pid', 'api_origin')})}", flush=True)
-
-    if not _await_go(record["token"]):
-        sock.close()
-        return EXIT_HANDSHAKE_REFUSED
-
-    # Arm the cooperative stop channel before the (slow) app import: the
-    # shell's graceful stop may arrive while third-party libraries are still
-    # loading, and it must unwind cleanly through main()'s cleanup rather
-    # than waiting for the kill escalation.
-    _start_stdin_eof_watch()
-
-    from app.main import app
-
-    config = uvicorn.Config(app, log_level="warning", access_log=False, lifespan="on")
-    server = uvicorn.Server(config)
-    server.run(sockets=[sock])
-    return 0
+    try:
+        node_process = subprocess.Popen(
+            [node, str(server_js)],
+            stdin=subprocess.DEVNULL,
+            # stdout/stderr land in the helper's stderr stream (which the
+            # shell already redirects to helper-<token>.stderr.log) so web
+            # boot failures are diagnosable in the unified logs.
+            stdout=sys.stderr,
+            stderr=sys.stderr,
+            env=env,
+            cwd=str(server_js.parent),
+        )
+    except OSError as error:
+        _log(f"node spawn failed: {error!r}; starting without the web server")
+        relay.close()
+        return None, None
+    threading.Thread(
+        target=_serve_relay,
+        args=(relay, api_port),
+        name="mangaflow-web-relay",
+        daemon=True,
+    ).start()
+    return node_process, web_port
 
 
 def main() -> int:
@@ -280,6 +465,10 @@ def main() -> int:
         "--web-origin",
         default="http://tauri.localhost",
         help="app: WebView origin allowed by API CORS",
+    )
+    parser.add_argument(
+        "--web-dist",
+        help="app: Next standalone bundle dir (server.js); omit to run without a web server",
     )
     args = parser.parse_args()
 

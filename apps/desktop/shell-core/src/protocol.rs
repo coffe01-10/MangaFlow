@@ -18,6 +18,10 @@ pub struct ReadyPayload {
     pub pid: u32,
     pub api_origin: String,
     pub port: u16,
+    /// Plan B (W-15): loopback origin of the helper-spawned Next standalone
+    /// web server, present only when the helper manages one. The WebView
+    /// loads this instead of the static export.
+    pub web_origin: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,11 +94,21 @@ where
         .next()
         .and_then(|port| port.parse().ok())
         .ok_or(VerifyError::BadJson)?;
+    let web_origin = match value["web_origin"].as_str() {
+        Some(origin) => {
+            if !is_loopback_origin(origin) {
+                return Err(VerifyError::OriginNotLoopback);
+            }
+            Some(origin.to_string())
+        }
+        None => None,
+    };
     Ok(ReadyPayload {
         token: token.to_string(),
         pid,
         api_origin: origin,
         port,
+        web_origin,
     })
 }
 
@@ -117,6 +131,15 @@ pub fn verify_journal(journal: &Path, ready: &ReadyPayload) -> Result<(), Verify
     }
     if value["api_origin"].as_str() != Some(ready.api_origin.as_str()) {
         return Err(VerifyError::JournalMismatch("api_origin"));
+    }
+    match (&ready.web_origin, value["web_origin"].as_str()) {
+        (None, None) => {}
+        (Some(ready_origin), Some(journal_origin)) => {
+            if ready_origin != journal_origin {
+                return Err(VerifyError::JournalMismatch("web_origin"));
+            }
+        }
+        _ => return Err(VerifyError::JournalMismatch("web_origin")),
     }
     #[cfg(unix)]
     {
@@ -265,6 +288,47 @@ mod tests {
         let payload = verify_ready_line(&line, TOKEN, 4242).unwrap();
         assert_eq!(payload.port, 39001);
         assert_eq!(payload.api_origin, "http://127.0.0.1:39001");
+        assert!(payload.web_origin.is_none());
+    }
+
+    #[test]
+    fn accepts_web_origin_and_validates_it_is_loopback() {
+        let line = format!(
+            "{READY_PREFIX}{{\"token\":\"{TOKEN}\",\"pid\":4242,\"api_origin\":\"http://127.0.0.1:39001\",\"web_origin\":\"http://127.0.0.1:39002\"}}"
+        );
+        let payload = verify_ready_line(&line, TOKEN, 4242).unwrap();
+        assert_eq!(payload.web_origin.as_deref(), Some("http://127.0.0.1:39002"));
+
+        let hostile = format!(
+            "{READY_PREFIX}{{\"token\":\"{TOKEN}\",\"pid\":4242,\"api_origin\":\"http://127.0.0.1:39001\",\"web_origin\":\"http://10.0.0.9:39002\"}}"
+        );
+        assert!(matches!(
+            verify_ready_line(&hostile, TOKEN, 4242),
+            Err(VerifyError::OriginNotLoopback)
+        ));
+
+        // Journal must carry exactly the announced web origin: missing when
+        // announced, present when absent, and a mismatched value all fail.
+        let dir = std::env::temp_dir().join(format!("mfd-webo-{}-{}", std::process::id(), new_token()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let journal = dir.join(JOURNAL_NAME);
+        let payload = verify_ready_line(&line, TOKEN, 4242).unwrap();
+        let good = serde_json::json!({
+            "version": PROTOCOL_VERSION, "token": TOKEN, "state": "ready",
+            "pid": 4242, "api_origin": "http://127.0.0.1:39001",
+            "web_origin": "http://127.0.0.1:39002",
+        });
+        std::fs::write(&journal, good.to_string()).unwrap();
+        assert!(verify_journal(&journal, &payload).is_ok());
+        std::fs::write(&journal, serde_json::json!({
+            "version": PROTOCOL_VERSION, "token": TOKEN, "state": "ready",
+            "pid": 4242, "api_origin": "http://127.0.0.1:39001",
+        }).to_string()).unwrap();
+        assert!(matches!(
+            verify_journal(&journal, &payload),
+            Err(VerifyError::JournalMismatch("web_origin"))
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
