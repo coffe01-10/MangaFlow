@@ -578,6 +578,21 @@ def restore_page_after_generation_exit(db: Session, page_candidate: PageCandidat
     page = db.get(MangaPage, page_candidate.page_id)
     if page is None or str(getattr(page.status, "value", page.status)) != "DRAFT_GENERATING":
         return
+    # An ACTIVE sibling candidate (still queued/generating in the same batch)
+    # owns the page's in-flight state: restoring to STORYBOARDED here would
+    # leave the page stranded when the sibling later completes READY (the
+    # success fence requires DRAFT_GENERATING). Hold DRAFT_GENERATING until
+    # every sibling reaches a terminal candidate status.
+    active_sibling = db.scalar(
+        select(PageCandidate.id).where(
+            PageCandidate.page_id == page.id,
+            PageCandidate.id != page_candidate.id,
+            PageCandidate.status.in_({"QUEUED", "GENERATING"}),
+            PageCandidate.deleted_at.is_(None),
+        )
+    )
+    if active_sibling:
+        return
     other_ready = db.scalar(
         select(PageCandidate.id).where(
             PageCandidate.page_id == page.id,
