@@ -10,6 +10,7 @@ caller must not let a recovery failure abort API boot.
 """
 
 import logging
+import pytest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -267,3 +268,81 @@ def test_recovery_survives_reconcile_raising_for_every_run_and_still_requeues(
 
     records = _failure_records(caplog, "reconcile failed during recovery")
     assert records and run.id in records[0].getMessage()
+
+
+def test_reconcile_failure_after_final_failure_is_isolated_and_original_error_raised(
+    monkeypatch, caplog
+):
+    """R-5 (failure path): after _mark_worker_failure commits the FAILED claim
+    for a workflow-linked job, a poisoned reconcile must not replace the
+    original provider error (REDIS mode would burn an RQ retry that no-ops
+    against the FAILED row) and must be logged instead of propagating. The
+    completion path already isolates this (R-5); the three failure handlers
+    used to call reconcile_run bare.
+    """
+
+    from app.model_adapters.base import ProviderAdapterError
+
+    with TemporaryDirectory() as directory:
+        engine = create_engine(
+            f"sqlite:///{Path(directory) / 'reconcile-after-failure.db'}",
+            connect_args={"check_same_thread": False},
+        )
+        testing_session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+        Base.metadata.create_all(engine)
+        try:
+            with testing_session() as db:
+                project = Project(name="失败后reconcile失败")
+                db.add(project)
+                db.flush()
+                run = _workflow_run(db, project, "失败工作流", "f" * 64)
+                db.flush()
+                job = GenerationJob(
+                    project_id=project.id,
+                    target_type="CHAPTER",
+                    target_id="reconcile-after-failure",
+                    job_type="SOURCE_PARSE",
+                    status=JobStatus.QUEUED,
+                    attempt_count=0,
+                    max_attempts=1,
+                    request_parameters={"workflow_run_id": run.id},
+                )
+                db.add(job)
+                db.commit()
+                job_id, run_id = job.id, run.id
+
+            monkeypatch.setattr(worker_tasks, "SessionLocal", testing_session)
+            monkeypatch.setattr(database, "SessionLocal", testing_session)
+
+            def failing_parse(_db, _job):
+                raise ProviderAdapterError(
+                    "PROVIDER_DOWN", "供应商暂时不可用"
+                )
+
+            monkeypatch.setattr(worker_tasks, "_run_story_parse", failing_parse)
+
+            def poisoned_reconcile(_db, poisoned_run_id):
+                raise RuntimeError(f"reconcile exploded for {poisoned_run_id}")
+
+            monkeypatch.setattr(workflow_engine, "reconcile_run", poisoned_reconcile)
+
+            with caplog.at_level(logging.ERROR, logger="mangaflow.worker"):
+                # The ORIGINAL provider error must be what propagates; pre-fix
+                # the poisoned reconcile's RuntimeError escaped instead.
+                with pytest.raises(ProviderAdapterError):
+                    worker_tasks.execute_job(job_id)
+
+            with testing_session() as db:
+                failed = db.get(GenerationJob, job_id)
+                assert failed.status == JobStatus.FAILED
+                assert failed.error_code == "PROVIDER_DOWN"
+
+            records = _failure_records(caplog, "reconcile failed after job failure")
+            assert records, (
+                "expected an ERROR log naming the run after the post-failure "
+                "reconcile explosion (pre-fix the RuntimeError replaced the "
+                "original error and no log was written)"
+            )
+            assert run_id in records[0].getMessage()
+        finally:
+            engine.dispose()
