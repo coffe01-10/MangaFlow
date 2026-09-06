@@ -401,11 +401,18 @@ REPO_ROOT_AS_WEB = REPO_ROOT / "apps/web"
 
 def _web_dist_dir() -> Path:
     """The Next standalone bundle (plan B, W-15): produced by the standard
-    production build (`next build`, output:"standalone") at
-    apps/web/.next/standalone/apps/web."""
+    production build (`next build`, output:"standalone") plus the documented
+    post-build step of copying `.next/static` into the bundle (Next docs:
+    the standalone server does not serve the compile tree's static assets).
+    scripts/build-web-standalone.py performs the build + copy; this helper
+    only asserts the result."""
+
     dist = REPO_ROOT_AS_WEB / ".next" / "standalone" / "apps" / "web"
     assert (dist / "server.js").is_file(), (
-        f"{dist} missing server.js — run `npm run build --workspace @mangaflow/web` first"
+        f"{dist} missing server.js — run scripts/build-web-standalone.py first"
+    )
+    assert (dist / ".next" / "static").is_dir(), (
+        f"{dist} missing .next/static — run scripts/build-web-standalone.py first"
     )
     return dist
 
