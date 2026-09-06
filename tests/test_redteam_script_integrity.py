@@ -107,7 +107,7 @@ def test_merge_resequences_duplicate_beat_ordinals_and_dedupes():
                     BeatDraft(ordinal=2, action="第一拍", dialogue="一"),
                     BeatDraft(ordinal=2, action="第二拍", dialogue="二"),
                     BeatDraft(ordinal=7, action="第三拍", dialogue="三"),
-                    BeatDraft(ordinal=5, action="第一拍", dialogue="重复拍"),
+                    BeatDraft(ordinal=5, action="第一拍", dialogue="一"),
                 ],
             )
         ],

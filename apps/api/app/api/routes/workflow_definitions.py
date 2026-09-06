@@ -65,6 +65,12 @@ def _run(db: Session, run_id: str, project_id: str | None = None) -> WorkflowRun
     run = db.get(WorkflowRun, run_id)
     if not run:
         raise HTTPException(status_code=404, detail="工作流运行不存在")
+    # The run-scoped routes carry no project path segment, so a soft-deleted
+    # project must fail closed here: approve/retry would otherwise mint paid
+    # work on a project the user already archived.
+    project = db.get(Project, run.project_id)
+    if not project or project.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="项目不存在")
     ensure_project_scope(db, run, project_id, label="工作流运行")
     return run
 
