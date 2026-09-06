@@ -484,8 +484,20 @@ class OpenAICompatibleAdapter(_CompatibleBase):
             headers=_safe_headers(self.runtime),
             json=payload,
         )
+        try:
+            text = self._chat_text(_json_body(response))
+        except ProviderAdapterError:
+            raise
+        except Exception as error:
+            # A 200 body with hostile shapes (choices[0] as a bare string,
+            # message missing) is a malformed provider response, not a worker
+            # defect: classify like generate_structured instead of letting an
+            # AttributeError escape as an unclassified WORKER_ERROR.
+            raise ProviderAdapterError(
+                "INVALID_OUTPUT", "模型已响应，但响应结构无法解析", retryable=True
+            ) from error
         return _validate_structured_text(
-            self._chat_text(_json_body(response)),
+            text,
             output_schema,
             failure_message="模型已响应，但多模态结果无法验证",
         )
@@ -608,6 +620,10 @@ class OpenAICompatibleAdapter(_CompatibleBase):
             choice = body["choices"][0]
         except (KeyError, IndexError, TypeError) as error:
             raise ProviderAdapterError("INVALID_OUTPUT", "文本模型没有返回内容") from error
+        # A garbage choices entry (bare string/number) must degrade to a
+        # classified output failure, not escape as AttributeError.
+        if not isinstance(choice, dict):
+            raise ProviderAdapterError("INVALID_OUTPUT", "文本模型没有返回内容")
         # OpenAI-standard refusals arrive as HTTP 200 with content_filter /
         # an explicit refusal field; surface them as CONTENT_POLICY so the
         # designed per-segment split-retry engages instead of a terminal miss.
@@ -616,6 +632,8 @@ class OpenAICompatibleAdapter(_CompatibleBase):
         message = choice.get("message")
         if isinstance(message, dict) and message.get("refusal"):
             raise ProviderAdapterError("CONTENT_POLICY", "模型因内容政策拒绝了本次生成")
+        if not isinstance(message, dict):
+            raise ProviderAdapterError("INVALID_OUTPUT", "文本模型没有返回内容")
         try:
             content = message["content"]
         except (KeyError, TypeError) as error:
@@ -720,8 +738,13 @@ class AnthropicCompatibleAdapter(_CompatibleBase):
     def _text(body: dict[str, Any]) -> str:
         if body.get("stop_reason") == "refusal":
             raise ProviderAdapterError("CONTENT_POLICY", "模型因内容政策拒绝了本次生成")
-        values = [item.get("text") or "" for item in body.get("content") or []]
-        text = "".join(values)
+        content = body.get("content")
+        # A garbage content shape (string, dict, or non-dict items) must
+        # degrade to a classified output failure, not escape as AttributeError.
+        items = [item for item in (content or []) if isinstance(item, dict)] if isinstance(
+            content, list
+        ) else []
+        text = "".join(item.get("text") or "" for item in items)
         if not text:
             raise ProviderAdapterError("INVALID_OUTPUT", "Anthropic 协议没有返回文本")
         return text
