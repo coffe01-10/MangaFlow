@@ -603,6 +603,9 @@ def bind_scene_asset(
     if not claimed.rowcount:
         db.rollback()
         raise HTTPException(status_code=409, detail="场景已被更新，请刷新后重试")
+    # The claim bypassed the ORM increment; drop the stale copy so a
+    # later write in the same session claims the post-bump version.
+    db.expire(scene, ["version"])
     mark_pages_for_review(db, chapter.id, reference_id=scene.id, reference_kind="scene")
     db.commit()
     db.refresh(scene)
