@@ -364,6 +364,15 @@ def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
     db.refresh(run, attribute_names=["status"])
     if run.status in {"COMPLETED", "CANCELLED", "FAILED"}:
         return get_run(db, run.id)
+    # A CANCELLED node under a non-terminal run is the worker-guard shape
+    # (deleted chapter/candidate guards raise JobCancelledError, whose
+    # mark_job_cancelled branch stamps the node but never escalates to the
+    # run). Treating it like FAILED lets the run claim terminal here and the
+    # sweep terminalize the tail; otherwise desired stays RUNNING and every
+    # pass re-commits the zombie while the duplicate-run guard blocks the
+    # scope. Every other CANCELLED-node writer (cancel_run, sweeps, archive
+    # escalation) already guarantees a terminal run first.
+    failed = failed or any(item.status == "CANCELLED" for item in node_runs)
     if failed:
         desired = "FAILED"
     elif all(item.status in {"COMPLETED", "SKIPPED"} for item in node_runs):

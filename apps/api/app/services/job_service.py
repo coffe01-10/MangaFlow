@@ -1605,6 +1605,27 @@ def reset_for_retry(db: Session, job: GenerationJob) -> GenerationJob:
     if workflow_run_id:
         run = db.get(WorkflowRun, workflow_run_id)
         if run and run.status == "FAILED":
+            # Scope-level one-active-run guard (mirrors planning.py's
+            # start guard): retry_run clones a fresh RUNNING run from the
+            # FAILED one, and this FAILED run's kept cause-of-failure job
+            # still offers Retry — reviving it here would run two concurrent
+            # paid workflows on one scope. The claim above is pre-commit, so
+            # the rollback cleanly undoes it.
+            sibling_active_run = db.scalar(
+                select(WorkflowRun.id).where(
+                    WorkflowRun.workflow_id == run.workflow_id,
+                    WorkflowRun.scope_type == run.scope_type,
+                    WorkflowRun.scope_id == run.scope_id,
+                    WorkflowRun.id != run.id,
+                    WorkflowRun.status.not_in({"COMPLETED", "CANCELLED", "FAILED"}),
+                )
+            )
+            if sibling_active_run:
+                db.rollback()
+                raise HTTPException(
+                    status_code=409,
+                    detail="该范围已有进行中的运行，不能通过重试任务再唤醒旧运行",
+                )
             revival_snapshot["run"] = {
                 "id": run.id,
                 "status": run.status,
