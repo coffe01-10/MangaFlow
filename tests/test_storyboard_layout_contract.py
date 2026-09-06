@@ -1104,3 +1104,26 @@ def test_sound_effects_structured_write_validation(client, db_session):
         },
     )
     assert overflow.status_code == 422
+
+
+def test_put_geometry_bumps_panel_version_when_dialogue_changes(client, db_session):
+    """§10.2: the whole-page geometry save writes dialogue.bubble /
+    reading_order — the fields panel-scoped director dialogue commands fence
+    on — but bumped panel.version only for panel bounds/geometry changes, so a
+    PREVIEWED panel-scoped dialogue command still passed accept after a canvas
+    save and silently reverted the canvas's dialogue changes."""
+    _, _, page, panels, dialogue, _ = _storyboard_fixture(db_session)
+    panel = panels[0]
+    base = _geometry_payload(db_session, page)
+    version_before = panel.version
+    base["dialogues"][0]["bubble"] = {
+        "type": "rect",
+        "rect": {"x": 0.55, "y": 0.12, "width": 0.3, "height": 0.25},
+    }
+
+    response = client.put(f"/api/v1/pages/{page.id}/storyboard-geometry", json=base)
+    assert response.status_code == 200, response.text
+
+    db_session.expire_all()
+    panel = db_session.get(Panel, panel.id)
+    assert panel.version > version_before
