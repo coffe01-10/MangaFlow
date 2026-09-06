@@ -26,6 +26,10 @@ subprocess.run(
     ["npm.cmd", "run", "build", "--workspace", "@mangaflow/web"],
     cwd=REPO,
     check=True,
+    # The desktop bundle bakes the helper's fixed relay port into its
+    # rewrites at build time (see the comment in next.config.ts); the plain
+    # default (8000) stays for every non-desktop form.
+    env=dict(os.environ, MANGAFLOW_API_ORIGIN="http://127.0.0.1:39443"),
 )
 
 standalone = WEB / ".next" / "standalone" / "apps" / "web"

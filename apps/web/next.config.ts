@@ -1,16 +1,19 @@
 import type { NextConfig } from "next";
 
-// W-15 plan B: the desktop shell serves this app with a bundled node
-// (next standalone server). The standalone bundle compiles rewrites at
-// BUILD time (routes-manifest.json), so the API destination cannot be
-// re-pointed at runtime. The bundle is therefore built with the fixed
-// loopback relay port the helper owns (WEB_RELAY_PORT in
-// apps/desktop/sidecar/mangaflow_desktop_helper.py): the helper binds
-// 127.0.0.1:39443 for the session and relays those connections to its own
-// dynamic API port. Web/dev serving outside the desktop shell keeps the
-// env-driven origin below (next dev / next start use it directly).
-const WEB_RELAY_ORIGIN = "http://127.0.0.1:39443";
-const apiOrigin = process.env.MANGAFLOW_API_ORIGIN ?? WEB_RELAY_ORIGIN;
+// Rewrites destination resolution (W-15 plan B):
+// - Plain `next start` / `next dev` (E2E, browser acceptance, web app):
+//   this config file is re-evaluated at server start, so
+//   MANGAFLOW_API_ORIGIN — or the historical default :8000 — applies at
+//   runtime. Nothing changes for non-desktop forms.
+// - Desktop standalone bundle: `next build` compiles rewrites into
+//   routes-manifest.json, so the destination is baked at BUILD time.
+//   scripts/build-web-standalone.py therefore builds WITH
+//   MANGAFLOW_API_ORIGIN=http://127.0.0.1:39443 (the helper's fixed
+//   loopback relay port, owned and relayed to the dynamic API port at
+//   runtime — see WEB_RELAY_PORT in
+//   apps/desktop/sidecar/mangaflow_desktop_helper.py) and verifies the
+//   baked manifest, so an accidentally wrong build fails loudly.
+const apiOrigin = process.env.MANGAFLOW_API_ORIGIN ?? "http://127.0.0.1:8000";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
