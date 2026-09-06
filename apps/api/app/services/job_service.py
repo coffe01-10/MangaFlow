@@ -918,6 +918,16 @@ def recover_pending_jobs(db: Session) -> int:
             db.rollback()
 
     rq_pending_cutoff = utcnow() - timedelta(seconds=10)
+    # Payload-loss healing: a QUEUED row whose RQ_PENDING marker was already
+    # cleared by a successful enqueue can still strand when Redis loses the
+    # payload afterwards (flush, maxmemory eviction, an external Redis without
+    # persistence). No branch below matched QUEUED + error_code IS NULL, so
+    # such a row waited forever while retry_run refuses a QUEUED row. The long
+    # cutoff keeps this clear of both the in-flight enqueue (10s grace above)
+    # and healthy queue backlog; re-enqueueing a job whose payload is actually
+    # still queued is harmless — the claim CAS arbitrates and the duplicate
+    # payload no-ops against the already-claimed row.
+    stranded_queued_cutoff = utcnow() - timedelta(seconds=300)
     jobs = list(
         db.scalars(
             select(GenerationJob)
@@ -935,6 +945,11 @@ def recover_pending_jobs(db: Session) -> int:
                         GenerationJob.status == JobStatus.QUEUED,
                         GenerationJob.error_code == "RQ_PENDING",
                         GenerationJob.updated_at < rq_pending_cutoff,
+                    ),
+                    and_(
+                        GenerationJob.status == JobStatus.QUEUED,
+                        GenerationJob.error_code.is_(None),
+                        GenerationJob.updated_at < stranded_queued_cutoff,
                     ),
                 )
             )
@@ -981,7 +996,13 @@ def recover_pending_jobs(db: Session) -> int:
                 .where(
                     GenerationJob.id == job.id,
                     GenerationJob.status == JobStatus.QUEUED,
-                    GenerationJob.error_code.in_(["LOCAL_WORKER", "RQ_PENDING"]),
+                    or_(
+                        GenerationJob.error_code.in_(["LOCAL_WORKER", "RQ_PENDING"]),
+                        and_(
+                            GenerationJob.error_code.is_(None),
+                            GenerationJob.updated_at < stranded_queued_cutoff,
+                        ),
+                    ),
                     GenerationJob.lease_owner.is_(None),
                     GenerationJob.cancelled_at.is_(None),
                 )
