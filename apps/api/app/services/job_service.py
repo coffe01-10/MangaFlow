@@ -22,6 +22,7 @@ from app.models import (
     ModelCallAttempt,
     PageCandidate,
     StyleProfile,
+    WorkflowDefinition,
     WorkflowNodeRun,
     WorkflowRun,
     utcnow,
@@ -610,7 +611,15 @@ def restore_page_after_generation_exit(db: Session, page_candidate: PageCandidat
     paid call failure; mirrors the reset previously only done on cancellation.
     """
 
-    page = db.get(MangaPage, page_candidate.page_id)
+    # Lock the page row before reading sibling statuses: two concurrent
+    # terminal failures on sibling candidates otherwise each see the other's
+    # uncommitted GENERATING stamp (READ COMMITTED), both hold, and the page
+    # strands in DRAFT_GENERATING forever with no sweeper to free it. Mirrors
+    # restore_page_after_inspection_exit; the lock serializes the restores so
+    # the loser re-reads committed statuses.
+    from app.services.ordinal_allocator import lock_entity
+
+    page = lock_entity(db, MangaPage, page_candidate.page_id)
     if page is None or str(getattr(page.status, "value", page.status)) != "DRAFT_GENERATING":
         return
     # An ACTIVE sibling candidate (still queued/generating in the same batch)
@@ -1435,6 +1444,24 @@ def _compensate_retry_revival(
 
     if revival_snapshot.get("job") is None:
         return False
+    values = dict(revival_snapshot["job"])
+    preimage_terminal = values.get("status") in {
+        JobStatus.FAILED,
+        JobStatus.NEEDS_REVIEW,
+        JobStatus.CANCELLED,
+    }
+    if not preimage_terminal and observed_status in {
+        JobStatus.WAITING,
+        JobStatus.QUEUED,
+    }:
+        # Arbitration undo of an ACTIVE revival whose pre-retry state was
+        # itself dispatchable (a WAITING slot-stuck row): "restoring" that
+        # preimage writes WAITING over WAITING — reported as compensated
+        # while the duplicate stays alive. The loser must never dispatch,
+        # so it is cancelled instead.
+        values["status"] = JobStatus.CANCELLED
+        values["cancelled_at"] = utcnow()
+        values["finished_at"] = utcnow()
     try:
         claimed = db.execute(
             update(GenerationJob)
@@ -1442,7 +1469,7 @@ def _compensate_retry_revival(
                 GenerationJob.id == job.id,
                 GenerationJob.status == observed_status,
             )
-            .values(**revival_snapshot["job"])
+            .values(**values)
             .execution_options(synchronize_session=False)
         )
         if claimed.rowcount != 1:
@@ -1505,9 +1532,13 @@ def _verify_retry_revival_post_commit(
             raise HTTPException(status_code=409, detail="任务状态已变化，请刷新后重试")
         db.refresh(job)
         return False
-    if job.status != JobStatus.WAITING:
-        # Recovery/enqueue advanced the row normally between our commit and
-        # this re-read: the retry is proceeding, never compensate over it.
+    if job.status not in {JobStatus.WAITING, JobStatus.QUEUED}:
+        # Terminal or already-leased: the row belongs to a worker or a
+        # terminal transition — never compensate over it.
+        return True
+    if job.lease_owner is not None:
+        # Leased QUEUED row: a worker owns the dispatch; the arbitration
+        # lost the race and cannot undo an in-flight call.
         return True
     if job.job_type in RETRY_MUTEX_JOB_TYPES and job.target_id:
         oldest = oldest_active_job_id(
@@ -1518,7 +1549,7 @@ def _verify_retry_revival_post_commit(
         )
         if oldest is not None and oldest != job.id:
             compensated = _compensate_retry_revival(
-                db, job, revival_snapshot, observed_status=JobStatus.WAITING
+                db, job, revival_snapshot, observed_status=job.status
             )
             if not compensated:
                 # The undo CAS missed (or the run moved on): the younger
@@ -1551,7 +1582,7 @@ def _verify_retry_revival_post_commit(
             )
             if siblings and siblings[0].id != job.id:
                 compensated = _compensate_retry_revival(
-                    db, job, revival_snapshot, observed_status=JobStatus.WAITING
+                    db, job, revival_snapshot, observed_status=job.status
                 )
                 if not compensated:
                     LOGGER.warning(
@@ -1711,7 +1742,13 @@ def reset_for_retry(db: Session, job: GenerationJob) -> GenerationJob:
             # FAILED one, and this FAILED run's kept cause-of-failure job
             # still offers Retry — reviving it here would run two concurrent
             # paid workflows on one scope. The claim above is pre-commit, so
-            # the rollback cleanly undoes it.
+            # the rollback cleanly undoes it. The check-then-act needs the
+            # same serialization point create_workflow_run uses: lock the
+            # definition row first, or a concurrent retry_run passes its own
+            # committed-state check and both runs end up RUNNING.
+            from app.services.ordinal_allocator import lock_entity
+
+            lock_entity(db, WorkflowDefinition, run.workflow_id)
             sibling_active_run = db.scalar(
                 select(WorkflowRun.id).where(
                     WorkflowRun.workflow_id == run.workflow_id,
