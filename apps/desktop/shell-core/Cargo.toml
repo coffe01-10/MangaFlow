@@ -1,6 +1,6 @@
 [package]
 name = "mangaflow-desktop-shell-core"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "MangaFlow desktop shell core: sidecar handshake + process-tree ownership (no GUI deps)"
 

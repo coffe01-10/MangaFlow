@@ -4,6 +4,13 @@
 
 本文件记录修订版 MVP 计划的实际完成度。
 
+## V02-55 发布门禁完成，0.2.0 RC（2026-09-06 收官轮，分支 `lead/v02-55-release`，基线 master `e88a51a`）
+
+- **五 manifest 统一 `0.2.0`**（根包 / `apps/web` / `tauri.conf.json` / `src-tauri` / `shell-core`）+ 新建 `CHANGELOG.md`（0.2.0 RC：桌面交付 / Web 工作台 / 修复 / 性能 / 真实环境验证 / NOT RUN 边界）。
+- **V02-54 / V02-55 在 roadmap 勾选**（证据：#177/#178/#179/#180/#182/#183 与本分支）；W-22 转 RUN（RC 口径）。剩余状态：`docs/v02-windows-leftover-status.md` RUN 9 / NOT RUN 11 / BLOCKED 4。
+- **门禁**：`npm run check` 全量 exit 0；owned Playwright E2E 17/17；性能两轮 LH 全路由 ≥85（generate 87/88、storyboard 91/90）+ FPS 两轮 exit 0；NSIS 装卸数据安全实机两轮 PASS；sidecar e2e 2/2；shell-core cargo 51 项；worktree 清点无未合并改动（本机 4 个他属 worktree 仅 ui-dev 有未跟踪 scratch 文件）。
+- **NOT RUN / BLOCKED**：真实供应商（无凭据授权）；N=20 全样本（V02-52B）；Windows 独立 Worker 7 项（W-17，需 Windows+PG/Redis 同机）；跨版本升级（无历史安装版本）；签名/自动更新（W-13/14）；WebView2 缺失安装行为、工具页对话框实机交互、CSP 指令级逐条执行、用户数据 ACL 收紧、Electron 对比壳。Issue #12/#28 已关（#12 经用户确认接受 Windows Worker 残留）；#114 随本 PR 收口。
+
 ## W-15 方案 B 实现并实机验收（2026-09-06 第三轮，Windows 实机，分支 `lead/w15-slice1`，基线 master `d917d3b`）
 
 - **W-15 转 RUN**：桌面壳内 Web 形态采用方案 B（设计 `docs/v02-w15-desktop-web-form-plan-b.md` 经 lead 批准）。helper 派生捆绑 node 跑 Next standalone（helper 子进程 → Job 成员，协作停机收割 + 强杀/崩溃 Job 清树自动覆盖）；壳在 READY 带 `web_origin` 时以 `WebviewUrl::External` 加载该回环 origin（`main.rs`，协议校验回环后才建窗），否则回退静态导出形态（`MANGAFLOW_DESKTOP_WEB_DIST` 可覆盖）。

@@ -396,18 +396,14 @@ def test_sidecar_boot_and_fake_generate_candidate_loop(desktop):
     ), final_journal
 
 
-REPO_ROOT_AS_WEB = REPO_ROOT / "apps/web"
-
-
 def _web_dist_dir() -> Path:
-    """The Next standalone bundle (plan B, W-15): produced by the standard
-    production build (`next build`, output:"standalone") plus the documented
-    post-build step of copying `.next/static` into the bundle (Next docs:
-    the standalone server does not serve the compile tree's static assets).
-    scripts/build-web-standalone.py performs the build + copy; this helper
-    only asserts the result."""
+    """The Next standalone bundle (plan B, W-15): produced and relocated to
+    apps/desktop/dist/web-standalone by scripts/build-web-standalone.py
+    (build + relay-manifest verify + static copy; the relocation keeps it
+    out of reach of plain `next build`, which regenerates `.next` with the
+    :8000 destination and no static copy)."""
 
-    dist = REPO_ROOT_AS_WEB / ".next" / "standalone" / "apps" / "web"
+    dist = REPO_ROOT / "apps/desktop/dist/web-standalone"
     assert (dist / "server.js").is_file(), (
         f"{dist} missing server.js — run scripts/build-web-standalone.py first"
     )

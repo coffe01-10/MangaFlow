@@ -1,13 +1,20 @@
 """Build the Next standalone web bundle for the desktop shell (W-15 plan B).
 
 Runs the standard production build (next.config.ts opts into
-output:"standalone") and then performs the documented post-build step:
-copy `.next/static` into the standalone tree — the standalone server does
-not serve the compile tree's static assets by itself. Also seeds the
-rewrites destination check: the bundle must point /api/v1/* at the helper's
-fixed relay port (127.0.0.1:39443) — a build made with a different
-MANGAFLOW_API_ORIGIN would silently proxy to the wrong target, so the
-manifest is verified here and the build fails loudly instead.
+output:"standalone") and then performs the documented post-build steps:
+- copy `.next/static` into the standalone tree (the standalone server does
+  not serve the compile tree's static assets by itself);
+- verify the rewrites destination is the helper's fixed relay port
+  (127.0.0.1:39443) — a build made with a different MANGAFLOW_API_ORIGIN
+  would silently proxy to the wrong target, so the manifest is checked here
+  and the build fails loudly instead;
+- MOVE the verified bundle out of `.next` into
+  `apps/desktop/dist/web-standalone/` — every plain `next build`
+  regenerates `.next` from scratch (re-baking :8000 and dropping the static
+  copy), so the desktop bundle must live outside its reach.
+
+Run this script again after any `npm run build`; the sidecar e2e asserts
+the relocated bundle's manifest.
 """
 from __future__ import annotations
 
@@ -19,6 +26,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
 WEB = REPO / "apps" / "web"
+DESKTOP_DIST = REPO / "apps" / "desktop" / "dist" / "web-standalone"
 RELAY_ORIGIN = "http://127.0.0.1:39443"
 
 subprocess.run(
@@ -52,4 +60,9 @@ if static_dst.exists():
     shutil.rmtree(static_dst)
 shutil.copytree(WEB / ".next" / "static", static_dst)
 
-print("WEB_STANDALONE_READY", standalone)
+if DESKTOP_DIST.exists():
+    shutil.rmtree(DESKTOP_DIST)
+DESKTOP_DIST.parent.mkdir(parents=True, exist_ok=True)
+shutil.move(str(standalone), str(DESKTOP_DIST))
+
+print("WEB_STANDALONE_READY", DESKTOP_DIST)
