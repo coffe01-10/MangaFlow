@@ -1696,3 +1696,61 @@ def test_start_periodic_recovery_runs_repeatedly(monkeypatch):
         stop.set()
         thread.join(timeout=2)
         assert not thread.is_alive()
+
+
+def test_restore_holds_draft_generating_while_sibling_still_generating(
+    db_session, monkeypatch
+):
+    """Multi-candidate batch: when candidate A fails finally while sibling B is
+    still GENERATING, the page must hold DRAFT_GENERATING (pre-fix it flipped
+    STORYBOARDED, and B's later success was refused by the DRAFT_GENERATING
+    success fence — page stranded STORYBOARDED with a READY candidate)."""
+    from app.models import MangaPage, PageCandidate
+    from app.services.job_service import restore_page_after_generation_exit
+
+    project = Project(name="兄弟生成恢复")
+    db_session.add(project)
+    db_session.flush()
+    chapter = Chapter(project_id=project.id, title="第一章", ordinal=1)
+    db_session.add(chapter)
+    db_session.flush()
+    page = MangaPage(
+        chapter_id=chapter.id,
+        page_number=1,
+        status=PageStatus.DRAFT_GENERATING,
+        storyboard_version=1,
+    )
+    db_session.add(page)
+    db_session.flush()
+    batch = GenerationBatch(
+        project_id=project.id, chapter_id=chapter.id, page_id=page.id, ordinal=1
+    )
+    db_session.add(batch)
+    db_session.flush()
+
+    def _candidate(ordinal, status):
+        return PageCandidate(
+            batch_id=batch.id,
+            page_id=page.id,
+            ordinal=ordinal,
+            model_alias="image.nano_banana_2",
+            resolution=Resolution.DRAFT_1K,
+            status=status,
+        )
+
+    failing = _candidate(1, "GENERATING")
+    sibling = _candidate(2, "GENERATING")
+    db_session.add_all([failing, sibling])
+    db_session.commit()
+
+    # A reached its terminal FAILED candidate status before the shell calls
+    # the restore helper.
+    failing.status = "FAILED"
+    db_session.commit()
+    restore_page_after_generation_exit(db_session, failing)
+    db_session.commit()
+    db_session.expire(page)
+    assert str(page.status) == "DRAFT_GENERATING"
+    # With the page held in DRAFT_GENERATING, sibling B's success fence
+    # (page.status == DRAFT_GENERATING and no selected candidate) proceeds
+    # normally when B completes — pinned by the existing generation tests.

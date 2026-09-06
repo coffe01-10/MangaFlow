@@ -109,6 +109,7 @@ def _create_inspection_job(
     candidate = _candidate_for_run(db, run, node_runs)
     if not candidate or not candidate.asset_id:
         raise ValueError("质量检查必须等待已生成并采用的页面候选")
+    page = db.get(MangaPage, candidate.page_id)
     # Same active-job guard as the inspect route: the idempotency key below is
     # workflow-scoped, so an ACTIVE PAGE_INSPECT job created through the route
     # (or by a retried inspect) would otherwise run a second paid multimodal
@@ -154,7 +155,7 @@ def _create_inspection_job(
             # the production gate downstream). FAILED/CANCELLED rows collapse
             # to closed:{id} inside create_job, so retries still mint fresh
             # jobs.
-            idempotency_key=f"inspect:{candidate.id}:{candidate.version}",
+            idempotency_key=f"inspect:{candidate.id}:{candidate.version}:{page.version}",
             dependency_ids=_parent_job_ids(db, run, graph, node.id),
             auto_commit=False,
         )
@@ -364,6 +365,15 @@ def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
     db.refresh(run, attribute_names=["status"])
     if run.status in {"COMPLETED", "CANCELLED", "FAILED"}:
         return get_run(db, run.id)
+    # A CANCELLED node under a non-terminal run is the worker-guard shape
+    # (deleted chapter/candidate guards raise JobCancelledError, whose
+    # mark_job_cancelled branch stamps the node but never escalates to the
+    # run). Treating it like FAILED lets the run claim terminal here and the
+    # sweep terminalize the tail; otherwise desired stays RUNNING and every
+    # pass re-commits the zombie while the duplicate-run guard blocks the
+    # scope. Every other CANCELLED-node writer (cancel_run, sweeps, archive
+    # escalation) already guarantees a terminal run first.
+    failed = failed or any(item.status == "CANCELLED" for item in node_runs)
     if failed:
         desired = "FAILED"
     elif all(item.status in {"COMPLETED", "SKIPPED"} for item in node_runs):

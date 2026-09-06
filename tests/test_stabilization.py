@@ -261,7 +261,7 @@ def test_keep_stale_candidate_invalidates_inspection_idempotency_key(
         target_id=candidate.id,
         job_type="PAGE_INSPECT",
         status=JobStatus.COMPLETED,
-        idempotency_key=f"inspect:{candidate.id}:{candidate.version}",
+        idempotency_key=f"inspect:{candidate.id}:{candidate.version}:{page.version}",
     )
     db_session.add(old_job)
     db_session.commit()
@@ -286,7 +286,9 @@ def test_keep_stale_candidate_invalidates_inspection_idempotency_key(
     assert inspection.status_code == 202, inspection.json()
     assert inspection.json()["id"] != old_job.id
     new_job = db_session.get(GenerationJob, inspection.json()["id"])
-    assert new_job.idempotency_key == f"inspect:{candidate.id}:{candidate.version}"
+    assert new_job.idempotency_key == (
+        f"inspect:{candidate.id}:{candidate.version}:{page.version}"
+    )
 
 
 def test_retract_selected_candidate_preserves_candidate_and_marks_following_page(client, db_session):
