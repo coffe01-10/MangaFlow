@@ -263,6 +263,11 @@ fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
+                // Windows real-machine finding: set_focus alone cannot bring
+                // a minimized window back (SetForegroundWindow does not
+                // restore), so a second launch while minimized looked like
+                // "nothing happened". Unminimize first, then focus.
+                let _ = window.unminimize();
                 let _ = window.set_focus();
             }
         }))
