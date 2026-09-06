@@ -1,13 +1,12 @@
 import type { NextConfig } from "next";
 
 // Rewrites destination resolution (W-15 plan B):
-// - Plain `next start` / `next dev` (E2E, browser acceptance, web app):
-//   this config file is re-evaluated at server start, so
-//   MANGAFLOW_API_ORIGIN — or the historical default :8000 — applies at
-//   runtime. Nothing changes for non-desktop forms.
-// - Desktop standalone bundle: `next build` compiles rewrites into
-//   routes-manifest.json, so the destination is baked at BUILD time.
-//   scripts/build-web-standalone.py therefore builds WITH
+// - Rewrites are COMPILED at build time into routes-manifest.json for every
+//   production form (`next start` and standalone alike); only `next dev`
+//   re-evaluates this file per request. The historical default :8000 below
+//   is baked into all non-desktop builds and is what the owned E2E/browser
+//   acceptance servers proxy to.
+// - Desktop standalone bundle: scripts/build-web-standalone.py builds WITH
 //   MANGAFLOW_API_ORIGIN=http://127.0.0.1:39443 (the helper's fixed
 //   loopback relay port, owned and relayed to the dynamic API port at
 //   runtime — see WEB_RELAY_PORT in
