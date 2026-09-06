@@ -1,11 +1,12 @@
 # MangaFlow V02-54 桌面壳（`apps/desktop/`，自 V02-53B PoC 提升）
 
-> 状态：**交付方向实现，技术选型仍未批准。** 契约 `docs/adr/v02-desktop-shell-evaluation.md`
-> 仍是草案（V02-53A / Issue #56，V02-54 已补 PoC 输入）；最终选型由 lead 复核后决定。
+> 状态：**技术选型已批准（W-21，2026-09-06，Tauri 2 路线）。** 契约
+> `docs/adr/v02-desktop-shell-evaluation.md` 已由 lead 终批（批准记录见该文头部）；
+> 批准后 open 的实现事项：W-15 前端壳内形态（静态导出正式改造 vs 方案 B，实现轮提出
+> 设计后定夺）、W-13/W-14 签名与自动更新（外部资源 BLOCKED）。
 > 来源：V02-53B 可丢弃 PoC（Issue #110 / PR #111 / `203efad`，原 `apps/desktop-poc/`）；
 > V02-54（Issue #114）按交付目录策略 A 将其整体提升为 `apps/desktop/` 并继续交付推进。
-> `apps/api`/`apps/web` 业务代码零改动；本目录为纯新增，回滚 = 删除本目录，
-> 或按否决条件转 Electron 时整体丢弃后重做。
+> `apps/api`/`apps/web` 业务代码零改动；本目录为纯新增；选型已定，回滚预案保留在 ADR §3.2。
 
 ## 1. 目录地图
 
@@ -171,13 +172,13 @@ token/journal/回环校验→GO→健康）通过后 WebView2 建窗；仪表盘
   `shell-tools.html` 工具页 invoke 与 rfd 原生对话框实机交互（壳内 UI 无工具页入口，协议/
   命令面过 Windows 原生测试）、MSI/NSIS 安装器构建与安装/升级/卸载实机、SmartScreen/签名、
   自动更新链路。缓解不变：编译门禁 + 配置契约测试，不以编译通过冒充实机验证。
-- 否决条件核查（ADR §3.1，**逐项供 lead 复核，非结论**）：
-  1. Python sidecar 打包：Linux 形态机制可行；**Windows PyInstaller/embeddable 实测缺失** → 不能据此否决，也不能据此放行。
-  2. WebView2 渲染兼容：完全未测 → OPEN。
-  3. 前端静态导出：**发现确定性阻塞**（动态段预渲染组合 + 工作台预渲染崩溃），静态导出非 flag 级改动；方案 B 未在本 PoC 验证 → 倾向「方案 B 或混合形态」输入，不构成否决。
-  4. Rust 维护能力：壳核心逻辑集中在 shell-core（library 约 3,200 行 Rust，其中
+- 否决条件核查（ADR §3.1；**已于 2026-09-06 随 W-21 终批逐项复核，决议见 ADR 头部「批准记录」**）：
+  1. Python sidecar 打包：**已证伪为否决项**——Windows PyInstaller onedir 冻结产物冒烟全过（W-11 RUN，`_internal/` 硬约束双平台成立）。
+  2. WebView2 渲染兼容：仪表盘级渲染 + 运行时 origin 注入实机 RUN（W-02 部分）；画布级渲染受 D5 前端形态约束，属 W-15 实现轮事项，不构成平台级否决。
+  3. 前端静态导出：**发现确定性阻塞**（动态段预渲染组合 + 工作台预渲染崩溃），静态导出非 flag 级改动；方案 B 未在本 PoC 验证 → W-15 实现轮提出设计方案后由 lead 定夺（ADR 倾向「方案 B 或混合形态」输入不变）。
+  4. Rust 维护能力：壳核心逻辑集中在 shell-core（library 约 3,323 行 Rust，其中
      `logs.rs` 约占 1,900 行——日志布局/轮转/导出是 V02-54B/C 后最大的单一模块；
-     另有 tests/ 集成测试约 1,100 行）+ src-tauri 粘合（`main.rs` 约 330 行）；成本判断留给 lead。
+     另有 tests/ 集成测试约 1,100 行）+ src-tauri 粘合（`main.rs` 约 338 行）；**已由 lead 在终批中裁定可接受**。
      （行数为 2026-09-06 powershell 实测口径：`src/**/*.rs` 去 `src/bin/`、`src-tauri/src`。）
 
 ## 5. 用户数据安全（安装/升级/卸载契约）
