@@ -84,3 +84,102 @@ def test_assign_scene_outfits_rejects_stale_scene_instead_of_clobbering(
     row = db_session.get(Scene, scene.id)
     assert row.location == "厨房"
     assert row.version == version_after_bump
+
+
+def test_delete_outfit_rejects_stale_scene_instead_of_clobbering(
+    client, db_session, monkeypatch
+):
+    """Outfit teardown is the third writer #216's docstring names; it kept a
+    blind read-modify-write bump, silently reverting a concurrent scene
+    outfits PATCH that committed between its read and its write."""
+
+    from app.models import Outfit
+
+    scene = _seed_scene(db_session, "拆除竞态")
+    chapter = db_session.get(Chapter, scene.chapter_id)
+    character = (
+        db_session.query(Character)
+        .filter(Character.project_id == chapter.project_id)
+        .first()
+    )
+    outfit = Outfit(
+        project_id=chapter.project_id,
+        character_id=character.id,
+        name="常服",
+    )
+    db_session.add(outfit)
+    db_session.flush()
+    scene.outfit_assignments = {character.id: outfit.id}
+    db_session.commit()
+
+    version_after_bump = _bump_concurrently(db_session, scene.id)
+
+    # The teardown route refreshes the session via the detach helper's
+    # expire_all; stub it so the identity map keeps the pre-bump copy — the
+    # exact stale-read window a concurrent writer exploits.
+    monkeypatch.setattr(
+        "app.api.routes.asset_generation.detach_draft_package_references_for_assets",
+        lambda db, asset_ids: None,
+    )
+
+    response = client.delete(f"/api/v1/outfits/{outfit.id}")
+
+    assert response.status_code == 409, response.text
+    db_session.expire_all()
+    row = db_session.get(Scene, scene.id)
+    # The concurrent writer's field write survived and the outfit is intact.
+    assert row.location == "厨房"
+    assert row.version == version_after_bump
+    assert db_session.get(Outfit, outfit.id) is not None
+
+
+def test_delete_outfit_panel_claim_rejects_stale_panel(
+    client, db_session, monkeypatch
+):
+    monkeypatch.setattr(
+        "app.api.routes.asset_generation.detach_draft_package_references_for_assets",
+        lambda db, asset_ids: None,
+    )
+    from app.models import MangaPage, Outfit, Panel
+
+    scene = _seed_scene(db_session, "面板拆除竞态")
+    chapter = db_session.get(Chapter, scene.chapter_id)
+    character = (
+        db_session.query(Character)
+        .filter(Character.project_id == chapter.project_id)
+        .first()
+    )
+    outfit = Outfit(
+        project_id=chapter.project_id,
+        character_id=character.id,
+        name="常服",
+    )
+    page = MangaPage(chapter_id=chapter.id, page_number=1)
+    db_session.add_all([outfit, page])
+    db_session.flush()
+    panel = Panel(
+        page_id=page.id,
+        reading_order=1,
+        outfits={character.id: outfit.id},
+    )
+    db_session.add(panel)
+    db_session.commit()
+    db_session.execute(
+        sa_update(Panel)
+        .where(Panel.id == panel.id)
+        .values(
+            version=Panel.version + 1,
+            shot_type="wide",
+        )
+        .execution_options(synchronize_session=False)
+    )
+    db_session.commit()
+
+    response = client.delete(f"/api/v1/outfits/{outfit.id}")
+
+    assert response.status_code == 409, response.text
+    db_session.expire_all()
+    row = db_session.get(Panel, panel.id)
+    # The concurrent writer's field write survived.
+    assert row.shot_type == "wide"
+    assert db_session.get(Outfit, outfit.id) is not None
