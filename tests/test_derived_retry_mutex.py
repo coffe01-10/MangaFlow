@@ -158,3 +158,67 @@ def test_reset_for_retry_allows_repair_when_sibling_terminal(db_session):
     db_session.expire_all()
     row = db_session.get(GenerationJob, failed.id)
     assert row.status in {JobStatus.WAITING, JobStatus.QUEUED}
+
+
+def test_derived_retry_arbitration_oldest_wins(db_session):
+    """Two concurrent revivals of same-intent sibling repairs: the strictly
+    older stays committed and dispatches; the younger is compensated back to
+    FAILED with a 409 (mirrors the RETRY_MUTEX post-commit arbitration, which
+    is vacuous for derived jobs because each targets its own child)."""
+    from app.services.job_service import _verify_retry_revival_post_commit
+
+    project, parent, child_a, child_b = _seed_parent_with_children(db_session)
+    older = job_service.create_job(
+        db_session,
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=child_a.id,
+        job_type="PAGE_REPAIR",
+        request_parameters={
+            "original_candidate_id": parent.id,
+            "repair_type": "LOCAL_REPAIR",
+        },
+    )
+    younger = job_service.create_job(
+        db_session,
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=child_b.id,
+        job_type="PAGE_REPAIR",
+        request_parameters={
+            "original_candidate_id": parent.id,
+            "repair_type": "LOCAL_REPAIR",
+        },
+    )
+    # Simulate both concurrent revivals having committed (both WAITING).
+    older.status = JobStatus.WAITING
+    younger.status = JobStatus.WAITING
+    db_session.commit()
+
+    younger_snapshot = {
+        "job": {
+            "status": JobStatus.FAILED,
+            "error_code": "UPSTREAM",
+            "error_message": None,
+            "progress": 0,
+            "started_at": None,
+            "finished_at": None,
+            "cancelled_at": None,
+            "scheduled_at": None,
+            "lease_owner": None,
+            "lease_expires_at": None,
+        },
+        "run": None,
+    }
+    with pytest.raises(HTTPException) as exc_info:
+        _verify_retry_revival_post_commit(db_session, younger, younger_snapshot)
+    assert exc_info.value.status_code == 409
+    db_session.expire_all()
+    assert db_session.get(GenerationJob, younger.id).status == JobStatus.FAILED
+
+    # The older claimant survives arbitration and proceeds to dispatch.
+    assert (
+        _verify_retry_revival_post_commit(db_session, older, {}) is True
+    )
+    db_session.expire_all()
+    assert db_session.get(GenerationJob, older.id).status == JobStatus.WAITING

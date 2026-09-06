@@ -169,6 +169,33 @@ def has_active_derived_job(
     PostgreSQL — no dialect-specific JSON containment operators.
     """
 
+    return bool(
+        active_derived_jobs(
+            db,
+            job_types=job_types,
+            parent_candidate_id=parent_candidate_id,
+            repair_type=repair_type,
+            resolution=resolution,
+            exclude_job_id=exclude_job_id,
+        )
+    )
+
+
+def active_derived_jobs(
+    db: Session,
+    *,
+    job_types: set[str] | str,
+    parent_candidate_id: str,
+    repair_type: str | None = None,
+    resolution: str | None = None,
+    exclude_job_id: str | None = None,
+) -> list[GenerationJob]:
+    """ACTIVE derived-generation jobs under a parent, oldest first.
+
+    Shared query for the creation guards (existence check) and the retry
+    arbitration (oldest-wins loser selection).
+    """
+
     if isinstance(job_types, str):
         job_types = {job_types}
     active_jobs = db.scalars(
@@ -186,15 +213,17 @@ def has_active_derived_job(
                 else []
             ),
         )
+        .order_by(GenerationJob.created_at, GenerationJob.id)
     )
+    matched: list[GenerationJob] = []
     for job in active_jobs:
         parameters = job.request_parameters or {}
         if repair_type is not None and parameters.get("repair_type") != repair_type:
             continue
         if resolution is not None and parameters.get("target_resolution") != resolution:
             continue
-        return True
-    return False
+        matched.append(job)
+    return matched
 
 
 def create_job(
@@ -1505,6 +1534,34 @@ def _verify_retry_revival_post_commit(
                     job.target_id,
                 )
             raise HTTPException(status_code=409, detail="任务状态已变化，请重试")
+    # Derived jobs target their own child candidate, so the target-scoped
+    # arbitration above is vacuous for them; match through the parent lineage
+    # with the same intent filters the pre-CAS guard uses. Oldest wins: the
+    # younger concurrent revival compensates instead of double-dispatching.
+    if job.job_type in {"PAGE_REPAIR", "PAGE_UPSCALE", "PAGE_REGION_REGENERATE"}:
+        parameters = job.request_parameters or {}
+        parent_id = parameters.get("original_candidate_id")
+        if parent_id:
+            siblings = active_derived_jobs(
+                db,
+                job_types={job.job_type},
+                parent_candidate_id=str(parent_id),
+                repair_type=parameters.get("repair_type"),
+                resolution=parameters.get("target_resolution"),
+            )
+            if siblings and siblings[0].id != job.id:
+                compensated = _compensate_retry_revival(
+                    db, job, revival_snapshot, observed_status=JobStatus.WAITING
+                )
+                if not compensated:
+                    LOGGER.warning(
+                        "derived sibling-arbitration loss for job %s under parent "
+                        "%s could not be compensated; a duplicate dispatch is now "
+                        "likely",
+                        job.id,
+                        parent_id,
+                    )
+                raise HTTPException(status_code=409, detail="任务状态已变化，请重试")
     return True
 
 
