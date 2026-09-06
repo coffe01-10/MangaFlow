@@ -125,8 +125,15 @@ def test_review_fence_survives_interleaved_writers(file_sessions):
     db_b = file_sessions()
     page_a = db_a.get(MangaPage, later)
     earlier_a = db_a.get(MangaPage, earlier_id)
+    # Pre-load B's copy and close its read transaction while keeping the
+    # stale identity-map values (expire_on_commit=False): with the old ORM
+    # loop, B's ``version += 1`` would recompute from the pre-A value and
+    # erase A's increment.
+    page_b = db_b.get(MangaPage, later)
     baseline = page_a.version
     earlier_baseline = earlier_a.version
+    db_a.commit()
+    db_b.commit()
 
     mark_pages_for_review(db_a, chapter_id, from_page_number=2)
     db_a.commit()

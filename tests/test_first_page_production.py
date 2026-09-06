@@ -1,5 +1,5 @@
 from app.config import get_settings
-from app.domain.states import Resolution
+from app.domain.states import PageStatus, Resolution
 from app.models import (
     Asset,
     AssetCandidate,
@@ -155,6 +155,50 @@ def test_scene_outfit_can_return_to_unspecified(client, db_session):
     )
     assert cleared.status_code == 200, cleared.json()
     assert cleared.json()["assignments"] == {}
+
+
+def test_scene_outfit_assignment_bumps_page_fences_when_referenced(client, db_session):
+    """Regression (RC closure review): assigning outfits to a scene that a
+    page references must bump the page's storyboard fence — the route's
+    ``mark_storyboard_changed`` call previously regressed to a TypeError
+    (500) because no earlier test reached the loop body (their scenes were
+    referenced by no page)."""
+
+    project = _project(client, "服装围栏")
+    chapter = Chapter(project_id=project["id"], title="第一章", ordinal=1)
+    character = Character(project_id=project["id"], primary_name="她")
+    db_session.add_all([chapter, character])
+    db_session.flush()
+    scene = Scene(chapter_id=chapter.id, ordinal=1)
+    outfit = Outfit(
+        project_id=project["id"],
+        character_id=character.id,
+        name="雨夜风衣",
+    )
+    db_session.add_all([scene, outfit])
+    db_session.flush()
+    page = MangaPage(
+        chapter_id=chapter.id,
+        page_number=1,
+        status=PageStatus.PLANNED,
+        source_coverage={"complete": True},
+        scene_ids=[scene.id],
+        beat_ids=[],
+    )
+    db_session.add_all([page])
+    db_session.commit()
+    fence_before = page.storyboard_version
+
+    assigned = client.patch(
+        f"/api/v1/scenes/{scene.id}/outfits",
+        json={"assignments": {character.id: outfit.id}},
+    )
+    assert assigned.status_code == 200, assigned.json()
+    db_session.refresh(page)
+    assert page.storyboard_version == fence_before + 1
+    assert str(getattr(page.continuity_status, "value", page.continuity_status)) == (
+        "NEEDS_REVIEW"
+    )
 
 
 def test_color_style_requires_palette_and_approved_test_image(

@@ -794,7 +794,7 @@ def assign_scene_outfits(
 
     for page in db.scalars(select(MangaPage).where(MangaPage.chapter_id == chapter.id)):
         if scene.id in (page.scene_ids or []):
-            mark_storyboard_changed(page)
+            mark_storyboard_changed(db, page)
             mark_pages_for_review(db, chapter.id, from_page_number=page.page_number)
     db.commit()
     return {"scene_id": scene.id, "assignments": scene.outfit_assignments}
