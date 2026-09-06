@@ -334,3 +334,68 @@ def test_archiving_project_cancels_its_active_workflow_runs(client, db_session):
     db_session.expire_all()
     assert db_session.get(GenerationJob, job.id).status == JobStatus.CANCELLED
     assert db_session.get(WorkflowRun, run.id).status == "CANCELLED"
+
+
+def test_archiving_project_cancels_jobless_paused_runs(client, db_session):
+    """A PAUSED run parked at an approval barrier owns no non-terminal jobs
+    (barrier nodes are jobless), so the job-cancel loop never escalated it and
+    the archived project kept a non-terminal run row forever."""
+    from app.models import (
+        WorkflowDefinition,
+        WorkflowNodeRun,
+        WorkflowRun,
+        WorkflowVersion,
+    )
+    from app.workflow_schemas import WorkflowGraph
+    from app.services.workflow_engine import default_graph
+
+    project = client.post("/api/v1/projects", json={"name": "归档暂停运行"}).json()
+    graph = WorkflowGraph.model_validate(default_graph())
+    workflow = WorkflowDefinition(
+        project_id=project["id"],
+        name="归档暂停",
+        draft_graph=graph.model_dump(mode="json"),
+    )
+    db_session.add(workflow)
+    db_session.flush()
+    version = WorkflowVersion(
+        workflow_id=workflow.id,
+        revision=1,
+        graph=graph.model_dump(mode="json"),
+        graph_checksum="archive-paused",
+    )
+    db_session.add(version)
+    db_session.flush()
+    run = WorkflowRun(
+        workflow_id=workflow.id,
+        workflow_version_id=version.id,
+        project_id=project["id"],
+        scope_type="PAGE",
+        scope_id="archive-paused-scope",
+        status="PAUSED",
+        started_at=utcnow_stub(),
+    )
+    db_session.add(run)
+    db_session.flush()
+    node_run = WorkflowNodeRun(
+        workflow_run_id=run.id,
+        node_id="approve",
+        node_type="control.approval",
+        status="WAITING_APPROVAL",
+    )
+    db_session.add(node_run)
+    db_session.commit()
+
+    response = client.delete(
+        f"/api/v1/projects/{project['id']}", params={"confirm_name": "归档暂停运行"}
+    )
+
+    assert response.status_code == 204
+    db_session.expire_all()
+    assert db_session.get(WorkflowRun, run.id).status == "CANCELLED"
+
+
+def utcnow_stub():
+    from app.models import utcnow
+
+    return utcnow()
