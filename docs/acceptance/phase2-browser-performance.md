@@ -2,6 +2,23 @@
 
 成员交付：Grok Build；当前由组长接管。分支：`codex/phase2-browser-performance-acceptance`。基线：`b7d89c0`。本文件保留成员历史报告；组长独立结果以最新接管章节为准。历史报告不代表当前代码已通过验收。
 
+## Issue #28 收口复验（2026-09-06，RC 收口轮，本节为准）
+
+机器：`LAPTOP-TV9KT8RC`（Windows 11 10.0.26200）。代码：`lead/rc-closure`（master `6ca9d5a` + RC 收口修复，web 侧改动仅生成台 jobs 视图固定与检查面板终态谓词，不触生成路由布局）。生产构建后以 `run_e2e_owned.py performance` 独占窗口执行；数据集 `e2e-lighthouse-workbench`（1 页、1 候选、5 类检查），阈值不变（performance>=85 / accessibility>=90 / best-practices>=90；FPS 100 节点 10s 平均>=55、1% low>=45）。run_id `8386887cc387405c9a67443646b34bba`，全部轮次保留（含失败）。
+
+**#28 处方路由 generate（原 CLS 0.477 / perf 73）两轮全过：**
+
+| 轮次 | generate perf/a11y/BP | CLS | LCP | TBT | FCP |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 1 | 87 / 96 / 100 | **0.000** | 3911ms | 107ms | 922ms |
+| 2 | 87 / 96 / 100 | **0.000** | 3894ms | 102ms | 917ms |
+
+FPS（100 节点 / 10s，两轮 exit 0）：R1 avg 142.44 / 1% low 138.89 / p99 7.2ms；R2 avg 133.78 / 1% low 48.08（≥45）/ p99 20.8ms / max 84.9ms。
+
+**失败保留——storyboard 路由两轮 performance 低于 85**（R1 81 / R2 84；a11y 93、BP 100 达标；CLS 0.013 正常）。归因（LH 审计）：LCP 4134ms（FCP 920ms 后画布数据渲染 3.2s）+ unused-javascript 810ms + unused-css 290ms + render-blocking 271ms——来自 2026-09-02 通过基线（`98b93a0`）之后合入的可视化画布编辑器（`1aa23f7` 起），该特性此前无 LH 门禁记录。这是 #28 范围（generate 路由 CLS）之外的新发现，整体 LH 门禁 exit 1 由它触发；修复（画布编辑器代码分割/加载预留）应另开专门窗口，不在 RC 收口轮内临场改造。`/`（96-97）、workflow（87-93）、settings（98）两轮全过。
+
+本轮未读真实凭据、未连 PostgreSQL/Redis、未调供应商；runtime 独占并已清理（`process_tree_stopped=true`、`runtime_removed=true`）。
+
 ## 合并前独立复验（2026-08-29，本节为准）
 
 最终代码提交：`833197c5b77671c01833559e02ec44adbf117c3a`。组长没有直接采信交付报告；本轮实际发现并修复两项验收入口问题：
