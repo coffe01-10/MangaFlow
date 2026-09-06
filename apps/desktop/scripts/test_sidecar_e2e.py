@@ -414,6 +414,14 @@ def _web_dist_dir() -> Path:
     assert (dist / ".next" / "static").is_dir(), (
         f"{dist} missing .next/static — run scripts/build-web-standalone.py first"
     )
+    # A stale bundle built for the wrong target would make the loop pass
+    # vacuously through some other listener; the relay destination is the
+    # contract under test.
+    manifest = dist / ".next" / "routes-manifest.json"
+    assert "127.0.0.1:39443" in manifest.read_text(encoding="utf-8"), (
+        f"{manifest} does not target the helper relay — rebuild with "
+        "scripts/build-web-standalone.py"
+    )
     return dist
 
 

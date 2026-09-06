@@ -346,8 +346,10 @@ def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
         return 0
     finally:
         # The web server is a helper child: terminate it on every helper exit
-        # path. Windows job-kill and Unix pdeathsig cover the crash paths;
-        # this covers the cooperative and refused-GO paths.
+        # path. Windows job-kill covers the crash paths (node is a Job
+        # member through the helper); Unix pdeathsig (set on the node spawn
+        # above) covers the shell/helper death; this finally covers the
+        # cooperative and refused-GO paths.
         if node is not None and node.poll() is None:
             node.terminate()
             try:
@@ -439,6 +441,17 @@ def _spawn_web_server(
         NODE_ENV="production",
     )
     try:
+        # Unix: die with the helper exactly like the helper itself does
+        # (PR_SET_PDEATHSIG before the first instruction). Windows needs no
+        # equivalent here — node inherits the root Job through the helper.
+        preexec = None
+        if sys.platform != "win32":
+            def _pdeathsig() -> None:  # pragma: no cover - runs in forked child
+                import ctypes
+
+                ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGKILL, 0, 0, 0)
+
+            preexec = _pdeathsig
         node_process = subprocess.Popen(
             [node, str(server_js)],
             stdin=subprocess.DEVNULL,
@@ -449,6 +462,7 @@ def _spawn_web_server(
             stderr=sys.stderr,
             env=env,
             cwd=str(server_js.parent),
+            preexec_fn=preexec,
         )
     except OSError as error:
         _log(f"node spawn failed: {error!r}; starting without the web server")
