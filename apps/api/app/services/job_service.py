@@ -48,9 +48,12 @@ ACTIVE_JOB_STATUSES = {JobStatus.WAITING, JobStatus.QUEUED, *LEASED_JOB_STATUSES
 # create_job collapses the dead row's key to closed:{id} (issue #125).
 # SOURCE_PARSE: route and workflow entries use disjoint idempotency-key
 # namespaces, so a retried FAILED parse would otherwise run next to a live
-# one (#124). Extend this set instead of adding ad-hoc per-route guards when
+# one (#124). STYLE_ANALYZE: the analyze and palette-draft routes share a
+# one-active-per-style guard, but a retried FAILED analyze keyed on the
+# pre-bump version is invisible to it once the sibling bumped the version.
+# Extend this set instead of adding ad-hoc per-route guards when
 # new one-per-target kinds appear.
-RETRY_MUTEX_JOB_TYPES = {"PAGE_INSPECT", "SOURCE_PARSE"}
+RETRY_MUTEX_JOB_TYPES = {"PAGE_INSPECT", "SOURCE_PARSE", "STYLE_ANALYZE"}
 # LOCAL wall-clock cap markers. The lease heartbeat stamps LOCAL_TIMEOUT once
 # the job's job_timeout_seconds budget is spent while the lease is still live;
 # recovery preserves that cause through reclaim/requeue exactly like the RQ

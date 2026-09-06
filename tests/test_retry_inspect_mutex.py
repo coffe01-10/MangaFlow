@@ -192,3 +192,77 @@ def test_reset_for_retry_mutex_still_scoped_to_mutex_types(db_session, monkeypat
         JobStatus.WAITING,
         JobStatus.QUEUED,
     }
+
+
+def test_reset_for_retry_rejects_style_analyze_when_sibling_active(
+    db_session, monkeypatch
+):
+    """STYLE_ANALYZE is one-paid-analysis-per-style across the analyze and
+    palette-draft routes (shared guard), so a retried FAILED analyze must 409
+    while a sibling palette/analyze job is still ACTIVE — pre-fix the retry
+    mutex was scoped to PAGE_INSPECT/SOURCE_PARSE and the revival dispatched a
+    second paid multimodal call on the same style row."""
+
+    project = _project(db_session, "风格重试互斥")
+    failed = GenerationJob(
+        project_id=project.id,
+        target_type="STYLE",
+        target_id="style-7",
+        job_type="STYLE_ANALYZE",
+        status=JobStatus.FAILED,
+        error_code="UPSTREAM",
+    )
+    sibling = GenerationJob(
+        project_id=project.id,
+        target_type="STYLE",
+        target_id="style-7",
+        job_type="STYLE_ANALYZE",
+        status=JobStatus.QUEUED,
+    )
+    db_session.add_all([failed, sibling])
+    db_session.commit()
+    _set_queue_mode(db_session, "LOCAL")
+    submitted: list[str] = []
+    monkeypatch.setattr(job_service, "_submit_local", lambda job_id: submitted.append(job_id))
+
+    with pytest.raises(HTTPException) as exc_info:
+        job_service.reset_for_retry(db_session, failed)
+
+    assert exc_info.value.status_code == 409
+    db_session.expire_all()
+    assert db_session.get(GenerationJob, failed.id).status == JobStatus.FAILED
+    assert db_session.get(GenerationJob, sibling.id).status == JobStatus.QUEUED
+    assert submitted == []
+
+
+def test_reset_for_retry_style_analyze_allows_terminal_sibling(db_session, monkeypatch):
+    """The mutex only guards against ACTIVE siblings: retrying after a
+    terminal palette run stays possible."""
+
+    project = _project(db_session, "风格重试终态兄弟")
+    failed = GenerationJob(
+        project_id=project.id,
+        target_type="STYLE",
+        target_id="style-8",
+        job_type="STYLE_ANALYZE",
+        status=JobStatus.FAILED,
+        error_code="UPSTREAM",
+    )
+    terminal = GenerationJob(
+        project_id=project.id,
+        target_type="STYLE",
+        target_id="style-8",
+        job_type="STYLE_ANALYZE",
+        status=JobStatus.COMPLETED,
+    )
+    db_session.add_all([failed, terminal])
+    db_session.commit()
+    _set_queue_mode(db_session, "LOCAL")
+    monkeypatch.setattr(job_service, "_submit_local", lambda _job_id: None)
+
+    reset = job_service.reset_for_retry(db_session, failed)
+
+    assert reset.id == failed.id
+    db_session.expire_all()
+    row = db_session.get(GenerationJob, failed.id)
+    assert row.status in {JobStatus.WAITING, JobStatus.QUEUED}
