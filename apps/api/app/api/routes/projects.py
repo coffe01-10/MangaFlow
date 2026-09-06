@@ -38,7 +38,7 @@ from app.services.credential_source import (
     credential_source_for_protocol,
     environment_credentials_ready,
 )
-from app.services.job_service import mark_job_cancelled
+from app.services.job_service import cancel_job
 from app.services.model_availability import count_available_catalog_models
 from app.settings_schemas import ProjectSummaryRead
 
@@ -542,7 +542,11 @@ def archive_project(
         )
     )
     for job in active_jobs:
-        mark_job_cancelled(db, job)
+        # cancel_job, not the lower-level mark_job_cancelled: a run-linked job
+        # must escalate to cancel_run, otherwise the WorkflowRun row stays
+        # RUNNING forever (mark_job_cancelled only stamps the node run) and
+        # every later reconcile re-commits the zombie.
+        cancel_job(db, job)
     project.deleted_at = utcnow()
     project.version += 1
     db.commit()
