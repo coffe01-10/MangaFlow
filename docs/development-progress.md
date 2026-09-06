@@ -4,6 +4,12 @@
 
 本文件记录修订版 MVP 计划的实际完成度。
 
+## W-21 ADR 终批通过（2026-09-06 治理轮，分支 `lead/adr-approval`，基线 master `2955f6f` = PR #178 合并）
+
+- **决议（用户/组长作出）**：采用 Tauri 2 路线交付 Windows 桌面壳，Electron 不采用。`docs/adr/v02-desktop-shell-evaluation.md` 状态由 DRAFT 改为 **APPROVED（2026-09-06）**，头部新增「批准记录」：否决条件逐项复核（①sidecar 打包已被 W-11 Windows 冻结冒烟证伪；②WebView2 仪表盘级 RUN、画布级留给 W-15；③D5 路线——静态导出正式改造 vs 方案 B——明确为实现轮设计后由 lead 定夺，ADR 倾向「方案 B 或混合形态」输入不变；④Rust 维护成本裁定可接受，实测口径 shell-core 3,323 行 + main.rs 338 行）。
+- **同步更新**：`apps/desktop/README.md` 头部（选型已批准）与 §4 否决条件表（供复核→已复核）；`docs/v02-windows-leftover-status.md` W-21 转 RUN（RUN 8 / NOT RUN 11 / BLOCKED 5）、W-15 注明前置已解除、§7 解除条件更新。
+- **影响**：W-15（前端壳内形态）自 BLOCKED 转为可开实现轮，开工前需先定 D5 路线（见上③）。W-13/W-14（签名/更新）继续 BLOCKED（外部资源）。版本号维持 0.1.0。
+
 ## storyboard 性能修复 + W-12 安装器链收口（2026-09-06 第二轮，Windows 实机，分支 `lead/storyboard-perf`，基线 master `32a4ad8` = PR #177 合并）
 
 - **storyboard 路由性能（RC 报告的最小剩余清单第 1 项）已修复**：按 LH 归因（unused-JS 810ms 压高 LCP/TBT），`b958cc9` 把 `ProjectWorkspace` 7 个 section 组件改 `next/dynamic` 按路由懒加载（单条 `[section]` 路由此前静态打包全部 section；数据 hook 仍立即执行、无新增骨架）。修复后门禁（run_id `b67f80dde58d4c86b39242991ca3012a`，阈值不动，**两轮全过零失败**）：storyboard **91/90**（修复前 R1 81/lcp 4200/tbt 264、R2 84/lcp 4134/tbt 170 → 修复后 LCP 3424/3590ms、TBT 88/103ms，CLS 0.013 不变）；逐路由对照：`/` 96/97→98/98、workflow 87/93→92/92、generate 87/87→87/88、settings 98/98→97/97（唯一 1 分回落，仍远高于阈值）；FPS 两轮 exit 0（143.55/143.15）。行为门禁：web Vitest 41 文件 **429 项全过**、ESLint 干净、Next 生产构建通过。详见 `docs/acceptance/phase2-browser-performance.md` 2026-09-06 第二轮节。
