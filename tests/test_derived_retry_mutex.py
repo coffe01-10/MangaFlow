@@ -222,3 +222,80 @@ def test_derived_retry_arbitration_oldest_wins(db_session):
     )
     db_session.expire_all()
     assert db_session.get(GenerationJob, older.id).status == JobStatus.WAITING
+
+
+def test_retry_guard_respects_intent_filters(db_session):
+    """The intent filters (repair_type / target_resolution) at the retry call
+    sites are load-bearing: a retried LOCAL_REPAIR must NOT be blocked by an
+    ACTIVE sibling of a DIFFERENT intent (the creation route deliberately
+    allows that coexistence), while a same-intent ACTIVE sibling blocks."""
+    project, parent, child_a, child_b = _seed_parent_with_children(db_session)
+    failed_local = job_service.create_job(
+        db_session,
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=child_a.id,
+        job_type="PAGE_REPAIR",
+        request_parameters={
+            "original_candidate_id": parent.id,
+            "repair_type": "LOCAL_REPAIR",
+        },
+    )
+    failed_local.status = JobStatus.FAILED
+    db_session.commit()
+
+    # A same-parent sibling with a DIFFERENT intent must not block the retry.
+    different_intent = job_service.create_job(
+        db_session,
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=child_b.id,
+        job_type="PAGE_REPAIR",
+        request_parameters={
+            "original_candidate_id": parent.id,
+            "repair_type": "PAGE",
+        },
+    )
+    different_intent.status = JobStatus.QUEUED
+    db_session.commit()
+
+    reset = job_service.reset_for_retry(db_session, failed_local)
+    assert reset.id == failed_local.id
+    db_session.expire_all()
+    row = db_session.get(GenerationJob, failed_local.id)
+    assert row.status in {JobStatus.WAITING, JobStatus.QUEUED}
+
+    # A same-intent ACTIVE sibling still blocks (the pin for the filter).
+    younger = job_service.create_job(
+        db_session,
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=child_b.id,
+        job_type="PAGE_REPAIR",
+        request_parameters={
+            "original_candidate_id": parent.id,
+            "repair_type": "LOCAL_REPAIR",
+        },
+    )
+    younger.status = JobStatus.QUEUED
+    db_session.commit()
+
+    second = job_service.create_job(
+        db_session,
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=child_a.id,
+        job_type="PAGE_REPAIR",
+        request_parameters={
+            "original_candidate_id": parent.id,
+            "repair_type": "LOCAL_REPAIR",
+        },
+    )
+    second.status = JobStatus.FAILED
+    db_session.commit()
+
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc_info:
+        job_service.reset_for_retry(db_session, second)
+    assert exc_info.value.status_code == 409
