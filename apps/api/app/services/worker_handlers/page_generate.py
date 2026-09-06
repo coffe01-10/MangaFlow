@@ -393,6 +393,12 @@ def _run_page_generate(db, job: GenerationJob) -> None:
             "分镜版本已变化，已在调用模型前取消本次生成；请按当前分镜重新生成"
         )
     chapter = db.get(Chapter, page.chapter_id)
+    if chapter is not None and chapter.deleted_at is not None:
+        # delete_chapter is a soft delete with no active-job 409 and cancels
+        # nothing, and it bumps only chapter.version — invisible to the
+        # candidate and storyboard fences above. A deleted chapter must never
+        # take a paid call; mirror the deleted-candidate guard.
+        raise JobCancelledError("章节已删除，任务取消，不再调用模型")
     project = db.get(Project, chapter.project_id)
     if not page.scene_ids or not page.beat_ids:
         raise RuntimeError("页面缺少剧本与分镜来源，禁止生成")

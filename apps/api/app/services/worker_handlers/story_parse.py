@@ -275,6 +275,16 @@ def _run_story_parse(db, job: GenerationJob) -> None:
             .order_by(SourceSegment.ordinal)
         )
     )
+    db.refresh(chapter, attribute_names=["deleted_at"])
+    if chapter.deleted_at is not None:
+        # Entry fence: a chapter deleted while this parse sat queued must not
+        # pay for a single chunk (the wipe-time check below used to be the
+        # only guard, after the entire chunked loop had already run).
+        raise ProviderAdapterError(
+            "CHAPTER_DELETED",
+            "章节已删除，已取消本次剧本生成",
+            retryable=False,
+        )
     project = db.get(Project, chapter.project_id)
     mode_instruction = {
         "AUTO": (
@@ -353,6 +363,15 @@ def _run_story_parse(db, job: GenerationJob) -> None:
                         retryable=segment_error.retryable,
                         retry_after_seconds=segment_error.retry_after_seconds,
                     ) from segment_error
+        db.refresh(chapter, attribute_names=["deleted_at"])
+        if chapter.deleted_at is not None:
+            # Mid-loop fence: a chapter deleted while earlier chunks were
+            # already paid must not pay for the remaining ones.
+            raise ProviderAdapterError(
+                "CHAPTER_DELETED",
+                "章节已删除，已取消本次剧本生成",
+                retryable=False,
+            )
         execution._ensure_job_not_cancelled(db, job)
     output = _merge_story_parse_outputs(chunk_outputs)
     output = _sanitize_story_parse_output(output)

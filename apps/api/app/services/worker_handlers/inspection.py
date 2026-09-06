@@ -29,6 +29,7 @@ from app.services.page_completion import (
 )
 from app.services.prompt_compiler import compile_page_prompt
 from app.services.worker_handlers import execution, provider
+from app.services.worker_handlers.execution import JobCancelledError
 
 LOGGER = logging.getLogger("mangaflow.worker.inspection")
 
@@ -130,7 +131,14 @@ def _run_inspection(db, job: GenerationJob) -> None:
         raise RuntimeError("候选图片尚未生成")
     page = db.get(MangaPage, candidate.page_id)
     asset = db.get(Asset, candidate.asset_id)
-    project = db.get(Project, db.get(Chapter, page.chapter_id).project_id)
+    chapter = db.get(Chapter, page.chapter_id)
+    if chapter is not None and chapter.deleted_at is not None:
+        # delete_chapter is a soft delete with no active-job 409 and cancels
+        # nothing; inspect jobs never set candidate.job_id, so the route-side
+        # cancel cannot see them either. A deleted chapter must never take a
+        # paid multimodal call.
+        raise JobCancelledError("章节已删除，任务取消，不再调用模型")
+    project = db.get(Project, chapter.project_id)
     inspection_storyboard_version = page.storyboard_version
     # Scene writes deliberately never bump storyboard_version, so a review flag
     # committed by mark_pages_for_review during the paid call (or an adoption
