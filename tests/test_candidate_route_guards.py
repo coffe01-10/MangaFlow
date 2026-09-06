@@ -169,3 +169,87 @@ def test_favorite_asset_candidate_returns_asset_candidate_shape(client, db_sessi
     assert body["asset_id"] is None
     db_session.refresh(candidate)
     assert candidate.is_favorite is True
+
+
+def test_select_cas_fails_when_delete_commits_mid_request(client, db_session, monkeypatch):
+    """A delete committing between select's guard reads and its adopt write
+    must turn the adopt into a 409.
+
+    delete_candidate takes no page lock, so select's page lock serializes
+    nothing on the delete side; the adopt write used to be a blind ORM write
+    that landed on the tombstoned row, committing is_selected=true +
+    deleted_at together and leaving page.selected_candidate_id pointing at a
+    candidate the library no longer lists.
+    """
+
+    import app.api.routes.workflow.generation as generation_module
+    from app.api.helpers import candidate_version_state as real_state
+
+    project, page, candidate, _job = _seed_page_candidate(db_session, with_job=False)
+    asset = Asset(
+        project_id=project.id,
+        kind="page_candidate",
+        original_name="race.png",
+        storage_key="generated/race.png",
+        mime_type="image/png",
+        byte_size=10,
+        sha256="c" * 64,
+        source="VERTEX_GENERATED",
+        status="GENERATED",
+    )
+    db_session.add(asset)
+    db_session.flush()
+    candidate.asset_id = asset.id
+    candidate.status = "READY"
+    db_session.commit()
+
+    from sqlalchemy import update as sa_update
+
+    def tombstoning_state(candidate_, page_):
+        # Simulate DELETE /candidates/{id} committing its claim right after
+        # select's guards read the still-live row.
+        db_session.execute(
+            sa_update(PageCandidate)
+            .where(PageCandidate.id == candidate_.id)
+            .values(deleted_at=utcnow(), version=PageCandidate.version + 1)
+        )
+        db_session.commit()
+        return real_state(candidate_, page_)
+
+    monkeypatch.setattr(generation_module, "candidate_version_state", tombstoning_state)
+
+    response = client.post(
+        f"/api/v1/pages/{page.id}/select-candidate",
+        json={"candidate_id": candidate.id, "manual_text_confirmed": True},
+    )
+    assert response.status_code == 409, response.text
+
+    db_session.expire_all()
+    row = db_session.get(PageCandidate, candidate.id)
+    assert row.deleted_at is not None
+    # The contradiction the race used to commit: tombstoned yet adopted.
+    assert row.is_selected is not True
+    assert db_session.get(MangaPage, page.id).selected_candidate_id is None
+
+
+def test_delete_candidate_locks_the_page_before_claiming(client, db_session, monkeypatch):
+    """delete_candidate must participate in the deletion-vs-selection page
+    lock its own select-side comment promises (mirrors delete_asset)."""
+
+    import app.api.routes.workflow.generation as generation_module
+
+    _project, _page, candidate, _job = _seed_page_candidate(db_session, with_job=False)
+    db_session.commit()
+
+    locked: list[tuple[type, str]] = []
+    real_lock_entity = generation_module.lock_entity
+
+    def recording_lock(db, model, entity_id):
+        locked.append((model, entity_id))
+        return real_lock_entity(db, model, entity_id)
+
+    monkeypatch.setattr(generation_module, "lock_entity", recording_lock)
+
+    response = client.delete(f"/api/v1/candidates/{candidate.id}")
+    assert response.status_code == 204, response.text
+    assert (MangaPage, candidate.page_id) in locked
