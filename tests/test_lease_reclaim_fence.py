@@ -148,7 +148,14 @@ def test_derived_grace_matches_heartbeat_geometry():
     (heartbeat 30s), proportional for long leases, explicit override wins."""
 
     assert job_service._lease_reclaim_grace_seconds(Settings(environment="dev")) == 60.0
-    assert job_service._lease_reclaim_grace_seconds(Settings(job_lease_seconds=3600)) == 1200.0
+    # Lease geometry requires lease <= timeout, so a max-length lease pairs
+    # with a max-length timeout; the grace derivation only reads the lease.
+    assert (
+        job_service._lease_reclaim_grace_seconds(
+            Settings(job_lease_seconds=3600, job_timeout_seconds=3600)
+        )
+        == 1200.0
+    )
     # Minimum lease 30s: heartbeat = max(5, min(30, 10)) = 10s -> max(20, 10).
     assert job_service._lease_reclaim_grace_seconds(Settings(job_lease_seconds=30)) == 20.0
     assert (

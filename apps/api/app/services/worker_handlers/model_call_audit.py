@@ -30,13 +30,15 @@ from app.services.usage_ledger import (
 # Terminal error codes the recovery sweep (job_service.recover_pending_jobs)
 # writes when it closes NULL-outcome attempts on an expired lease. Duplicated
 # here as stable literals on purpose: model_call_audit must not import
-# job_service (the worker-handler layer sits below job orchestration), and a
-# genuine worker-failure finalize only ever writes adapter error codes, which
-# never collide with these three.
+# job_service (the worker-handler layer sits below job orchestration).
 # Error codes written by recovery-side closeouts (the lease-expiry sweep in
 # job_service and the periodic WORKER_LOST convergence). A finalize that
-# surfaces after one of these may carry the real outcome; genuine adapter
-# failures never collide with these codes.
+# surfaces after one of these may carry the real outcome. Finalize itself
+# writes only two error-code kinds — adapter codes on the ProviderAdapterError
+# paths, and WORKER_ERROR for unclassified exceptions (provider.py's
+# UNCLASSIFIED_ERROR_CODE, deliberately the same literal written at the job
+# level by worker_tasks.execute_job's generic _mark_worker_failure, so audit
+# and job agree on the failure class) — and neither collides with these four.
 SWEEP_TERMINAL_ERROR_CODES = frozenset(
     {"JOB_TIMEOUT", "LOCAL_TIMEOUT", "LEASE_EXPIRED", "WORKER_LOST"}
 )

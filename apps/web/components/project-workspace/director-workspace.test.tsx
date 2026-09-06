@@ -720,19 +720,8 @@ describe("DirectorWorkspace 导演台（V02-41B）", () => {
     screen.getAllByRole("button", { name: "丢弃" }).forEach((button) => expect(button).toBeEnabled());
   });
 
-  it("D18 从历史丢弃无关组不关闭当前预览组（#165）", async () => {
+  it("D18 从历史丢弃无关组：预览保持打开，解析文案（风险/摘要）不清空（#165）", async () => {
     groupsApi.mockResolvedValue([
-      groupFixture({
-        id: "row-a",
-        command_group_id: "group-a",
-        status: "PREVIEWED",
-        commands: [commandFixture({
-          command_id: "cmd-a",
-          command_group_id: "group-a",
-          status: "PREVIEWED",
-          source: { user_prompt: "格 1 改成近景（组 A）", reference_asset_ids: [], model: null, raw_output_id: "rule_stub_v1" },
-        })],
-      }),
       groupFixture({
         id: "row-b",
         command_group_id: "group-b",
@@ -745,20 +734,42 @@ describe("DirectorWorkspace 导演台（V02-41B）", () => {
         })],
       }),
     ]);
+    proposeApi.mockResolvedValue(groupFixture());
     discardApi.mockResolvedValue(groupFixture({ status: "DISCARDED", command_group_id: "group-b" }));
     renderDirector();
-    await screen.findByText("格 1 改成近景（组 A）");
-    const openButtons = screen.getAllByRole("button", { name: "继续预览" });
-    fireEvent.click(openButtons[0]);
-    expect(await screen.findByRole("region", { name: "命令预览" })).toHaveTextContent("格 1 改成近景（组 A）");
-    // 丢弃历史里的组 B：预览中的组 A 必须保持打开。
+    // 整页命令预览：previewPlan 携带高风险文案与解析摘要。
+    await previewUtterance("改成 6 格");
+    const region = await screen.findByRole("region", { name: "命令预览" });
+    await waitFor(() => {
+      expect(within(region).getByText("高：整页命令，候选将过期")).toBeInTheDocument();
+    });
+    // 丢弃历史里的无关组 B：预览不能关，previewPlan 也不能被清成「低风险」
+    // 的通用文案（#165② 误导类）。
     const discardButtons = screen.getAllByRole("button", { name: "丢弃" });
     fireEvent.click(discardButtons[discardButtons.length - 1]);
     await waitFor(() => {
       expect(discardApi).toHaveBeenCalledWith("project-1", "group-b");
     });
+    const afterRegion = screen.getByRole("region", { name: "命令预览" });
+    expect(within(afterRegion).getByText("高：整页命令，候选将过期")).toBeInTheDocument();
+    expect(within(afterRegion).queryByText("低：局部字段修改")).not.toBeInTheDocument();
+    expect(within(afterRegion).getByText(/把第 1 页改为 6 格/)).toBeInTheDocument();
+  });
+
+  it("D18b 丢弃的正是当前预览组时关闭预览并清空解析文案（#165）", async () => {
+    proposeApi.mockResolvedValue(groupFixture());
+    discardApi.mockResolvedValue(groupFixture({ status: "DISCARDED", command_group_id: "group-1" }));
+    renderDirector();
+    await previewUtterance("改成 6 格");
     const region = await screen.findByRole("region", { name: "命令预览" });
-    expect(region).toHaveTextContent("格 1 改成近景（组 A）");
+    expect(within(region).getByText("高：整页命令，候选将过期")).toBeInTheDocument();
+    fireEvent.click(within(region).getByRole("button", { name: "丢弃" }));
+    await waitFor(() => {
+      expect(discardApi).toHaveBeenCalledWith("project-1", "group-1");
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole("region", { name: "命令预览" })).not.toBeInTheDocument();
+    });
   });
 
   it("D19 撤销其他组后预览不再沿用旧命令的解析文案（#165 previewPlan 陈旧）", async () => {
@@ -863,5 +874,242 @@ describe("DirectorWorkspace 导演台（V02-41B）", () => {
     await waitFor(() => {
       expect(groupsApi).toHaveBeenCalledWith("project-1", "page-2");
     });
+  });
+
+  it("D21 换页前发出的 journal 变更晚到回调不把旧页命令组种进新页（#165③）", async () => {
+    const previewedGroup = groupFixture({
+      id: "row-prev",
+      command_group_id: "group-prev",
+      status: "PREVIEWED",
+      commands: [commandFixture({
+        command_id: "cmd-prev",
+        command_group_id: "group-prev",
+        status: "PREVIEWED",
+      })],
+    });
+    const executedGroup = groupFixture({
+      id: "row-exec",
+      command_group_id: "group-exec",
+      status: "COMMITTED",
+      commands: [commandFixture({
+        command_id: "cmd-exec",
+        command_group_id: "group-exec",
+        status: "EXECUTED",
+        storyboard_version_after: 3,
+      })],
+    });
+    groupsApi.mockImplementation((_projectId: string, pageId?: string | null) =>
+      Promise.resolve(pageId === "page-1" ? [previewedGroup] : []));
+    let resolvePropose: ((group: DirectorCommandGroup) => void) | null = null;
+    proposeApi.mockImplementation(() => new Promise<DirectorCommandGroup>((resolve) => {
+      resolvePropose = resolve;
+    }));
+    let resolveAccept: ((group: DirectorCommandGroup) => void) | null = null;
+    acceptApi.mockImplementation(() => new Promise<DirectorCommandGroup>((resolve) => {
+      resolveAccept = resolve;
+    }));
+    const onExecutingChange = vi.fn();
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const baseProps = {
+      id: "project-1",
+      panels: [panelFixture()],
+      scenes: [sceneFixture()],
+      characters: [characterFixture()],
+      activeDrawModelName: "Nano Banana 2",
+      pageGenerationPending: false,
+      onExecutingChange,
+      localEditCandidate: candidateFixture(),
+      onOpenLocalEdit: vi.fn(),
+    };
+    const view = render(
+      <QueryClientProvider client={client}>
+        <DirectorWorkspace {...baseProps} page={pageFixture()} />
+      </QueryClientProvider>,
+    );
+
+    // 在 page-1 上发起 propose，切到 page-2 后才返回旧页的组。
+    fireEvent.change(screen.getByLabelText("导演指令"), { target: { value: "第 1 格改成近景" } });
+    fireEvent.click(screen.getByRole("button", { name: "预览" }));
+    await waitFor(() => {
+      expect(proposeApi).toHaveBeenCalledTimes(1);
+    });
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <DirectorWorkspace {...baseProps} page={pageFixture({ id: "page-2", page_number: 2 })} />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => {
+      expect(screen.queryByRole("region", { name: "命令预览" })).not.toBeInTheDocument();
+    });
+    resolvePropose!(previewedGroup);
+    // 等 propose 落定（executing 回到 false）再断言：晚到的旧页组没有出现。
+    await waitFor(() => {
+      expect(onExecutingChange).toHaveBeenLastCalledWith(false);
+    });
+    expect(screen.queryByRole("region", { name: "命令预览" })).not.toBeInTheDocument();
+    expect(await screen.findByText("本页还没有导演命令。")).toBeInTheDocument();
+    expect((screen.getByLabelText("导演指令") as HTMLTextAreaElement).value).toBe("");
+
+    // 在 page-1 的待确认组上点「确认执行」，切到 page-2 后才返回执行结果。
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <DirectorWorkspace {...baseProps} page={pageFixture()} />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "继续预览" }));
+    fireEvent.click(await screen.findByRole("button", { name: "确认执行" }));
+    await waitFor(() => {
+      expect(acceptApi).toHaveBeenCalledWith("project-1", "cmd-prev");
+    });
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <DirectorWorkspace {...baseProps} page={pageFixture({ id: "page-2", page_number: 2 })} />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => {
+      expect(screen.queryByRole("region", { name: "命令预览" })).not.toBeInTheDocument();
+    });
+    resolveAccept!(executedGroup);
+    await waitFor(() => {
+      expect(onExecutingChange).toHaveBeenLastCalledWith(false);
+    });
+    expect(screen.queryByRole("region", { name: "命令预览" })).not.toBeInTheDocument();
+    expect(screen.queryByText("已执行 · 分镜已更新，可在历史里撤销。")).not.toBeInTheDocument();
+    expect(await screen.findByText("本页还没有导演命令。")).toBeInTheDocument();
+  });
+
+  it("D18c propose 在途时 journal 按钮全部禁用：丢弃清不掉在途解析文案，落地渲染自己的高风险行（#165 修复补丁）", async () => {
+    groupsApi.mockResolvedValue([
+      groupFixture({
+        id: "row-undo",
+        command_group_id: "group-undo",
+        status: "PARTIALLY_ACCEPTED",
+        commands: [commandFixture({
+          command_id: "cmd-undo",
+          command_group_id: "group-undo",
+          status: "EXECUTED",
+          inverse_of_command_id: "cmd-origin",
+          storyboard_version_after: 5,
+        })],
+      }),
+      groupFixture({
+        id: "row-origin",
+        command_group_id: "group-origin",
+        status: "COMMITTED",
+        commands: [commandFixture({
+          command_id: "cmd-origin",
+          command_group_id: "group-origin",
+          status: "EXECUTED",
+          storyboard_version_after: 4,
+        })],
+      }),
+      groupFixture({
+        id: "row-prev",
+        command_group_id: "group-prev",
+        status: "PREVIEWED",
+        commands: [commandFixture({
+          command_id: "cmd-prev",
+          command_group_id: "group-prev",
+          status: "PREVIEWED",
+        })],
+      }),
+    ]);
+    let resolvePropose: ((group: DirectorCommandGroup) => void) | null = null;
+    proposeApi.mockImplementation(() => new Promise<DirectorCommandGroup>((resolve) => {
+      resolvePropose = resolve;
+    }));
+    discardApi.mockResolvedValue(groupFixture({ status: "DISCARDED", command_group_id: "group-prev" }));
+    renderDirector();
+    // 打开历史里的待确认组，让预览区与历史区同时出现 journal 按钮。
+    fireEvent.click(await screen.findByRole("button", { name: "继续预览" }));
+    const region = await screen.findByRole("region", { name: "命令预览" });
+    // 发起整页命令 propose 并挂起：期间丢弃当前预览组会清算掉在途命令的
+    // 解析文案，落地后整页命令将退回「低：局部字段修改」的误导风险行。
+    fireEvent.change(screen.getByLabelText("导演指令"), { target: { value: "改成 6 格" } });
+    fireEvent.click(screen.getByRole("button", { name: "预览" }));
+    await waitFor(() => {
+      expect(proposeApi).toHaveBeenCalledTimes(1);
+    });
+    expect(within(region).getByRole("button", { name: "确认执行" })).toBeDisabled();
+    expect(within(region).getByRole("button", { name: "拒绝" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /撤销/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /重做/ })).toBeDisabled();
+    screen.getAllByRole("button", { name: "丢弃" }).forEach((button) => expect(button).toBeDisabled());
+    // 点击被禁用的丢弃：discard 不发出，在途解析文案不被中途清掉。
+    fireEvent.click(within(region).getByRole("button", { name: "丢弃" }));
+    expect(discardApi).not.toHaveBeenCalled();
+    // propose 落地：新整页命令带自己的高风险文案与解析意图。
+    resolvePropose!(groupFixture({
+      id: "row-new",
+      command_group_id: "group-new",
+      status: "PREVIEWED",
+      commands: [commandFixture({
+        command_id: "cmd-new",
+        command_group_id: "group-new",
+        status: "PREVIEWED",
+        operation: "update_page_layout",
+        source: { user_prompt: "改成 6 格", reference_asset_ids: [], model: null, raw_output_id: "rule_stub_v1" },
+      })],
+    }));
+    await waitFor(() => {
+      const nextRegion = screen.getByRole("region", { name: "命令预览" });
+      expect(within(nextRegion).getByText("高：整页命令，候选将过期")).toBeInTheDocument();
+    });
+    const finalRegion = screen.getByRole("region", { name: "命令预览" });
+    expect(within(finalRegion).queryByText("低：局部字段修改")).not.toBeInTheDocument();
+    expect(within(finalRegion).getByText("整页布局")).toBeInTheDocument();
+  });
+
+  it("D18d propose 在途时预览文案被并发动作清空：落地仍带自己的高风险解析（单一来源 + 落地取回）", async () => {
+    groupsApi.mockResolvedValue([groupFixture({
+      id: "row-prev",
+      command_group_id: "group-prev",
+      status: "PREVIEWED",
+      commands: [commandFixture({
+        command_id: "cmd-prev",
+        command_group_id: "group-prev",
+        status: "PREVIEWED",
+      })],
+    })]);
+    let resolvePropose: ((group: DirectorCommandGroup) => void) | null = null;
+    proposeApi.mockImplementation(() => new Promise<DirectorCommandGroup>((resolve) => {
+      resolvePropose = resolve;
+    }));
+    renderDirector();
+    fireEvent.change(screen.getByLabelText("导演指令"), { target: { value: "改成 6 格" } });
+    fireEvent.click(screen.getByRole("button", { name: "预览" }));
+    await waitFor(() => {
+      expect(proposeApi).toHaveBeenCalledTimes(1);
+    });
+    // propose 在途：重开历史组（本地动作，不受 journal 门禁）会替换预览并
+    // 清空解析文案——若 propose 落地不取回自己的文案，整页命令会以
+    // previewPlan===null 渲染出误导性的「低：局部字段修改」。
+    fireEvent.click(screen.getByRole("button", { name: "继续预览" }));
+    await waitFor(() => {
+      const reopened = screen.getByRole("region", { name: "命令预览" });
+      expect(within(reopened).getByText("镜头景别")).toBeInTheDocument();
+      expect(within(reopened).getByText("第 1 格改成近景")).toBeInTheDocument();
+    });
+    resolvePropose!(groupFixture({
+      id: "row-new",
+      command_group_id: "group-new",
+      status: "PREVIEWED",
+      commands: [commandFixture({
+        command_id: "cmd-new",
+        command_group_id: "group-new",
+        status: "PREVIEWED",
+        operation: "update_page_layout",
+        source: { user_prompt: "改成 6 格", reference_asset_ids: [], model: null, raw_output_id: "rule_stub_v1" },
+      })],
+    }));
+    await waitFor(() => {
+      const nextRegion = screen.getByRole("region", { name: "命令预览" });
+      expect(within(nextRegion).getByText("高：整页命令，候选将过期")).toBeInTheDocument();
+    });
+    const finalRegion = screen.getByRole("region", { name: "命令预览" });
+    expect(within(finalRegion).queryByText("低：局部字段修改")).not.toBeInTheDocument();
+    expect(within(finalRegion).getByText("整页布局")).toBeInTheDocument();
   });
 });

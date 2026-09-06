@@ -45,7 +45,7 @@ def _normalize_presence_name(value: str) -> str:
     return "".join(str(value).split()).casefold()
 
 
-def _presence_compliance(snapshot_input: dict, detected_names: set[str]) -> dict | None:
+def _presence_compliance(snapshot: dict, detected_names: set[str]) -> dict | None:
     """Deterministic cast-compliance cross-check (#164).
 
     The model is only trusted as the "eyes" — ``details.detected_characters``
@@ -55,18 +55,33 @@ def _presence_compliance(snapshot_input: dict, detected_names: set[str]) -> dict
     must not be. Returns a failing result dict, or None when compliant.
     """
 
+    snapshot_input = snapshot.get("input") or {}
     id_names: dict[str, str] = {}
     alias_index: dict[str, str] = {}
-    for entry in snapshot_input.get("characters") or []:
-        name = str(entry.get("primary_name") or "").strip()
+
+    def register(character_id: str, name: str, aliases: object) -> None:
         if not name:
-            continue
-        id_names[str(entry.get("id"))] = name
+            return
+        id_names.setdefault(character_id, name)
         alias_index.setdefault(_normalize_presence_name(name), name)
-        for alias in entry.get("aliases") or []:
+        for alias in aliases or []:
             alias = str(alias).strip()
             if alias:
                 alias_index.setdefault(_normalize_presence_name(alias), name)
+
+    for entry in snapshot_input.get("characters") or []:
+        register(
+            str(entry.get("id")),
+            str(entry.get("primary_name") or "").strip(),
+            entry.get("aliases"),
+        )
+    # The rendered prompt caps aliases at CAST_ALIAS_PROMPT_LIMIT, but the
+    # model may report any registered name; the snapshot's uncapped
+    # ``match_aliases`` index keeps a 9th alias mappable instead of
+    # synthesizing a false MISSING row (#164 alias-cap fix).
+    for character_id, names in (snapshot.get("match_aliases") or {}).items():
+        if names:
+            register(str(character_id), str(names[0]).strip(), names[1:])
     visible: set[str] = set()
     offscreen: set[str] = set()
     for panel in (snapshot_input.get("page") or {}).get("layout") or []:
@@ -216,7 +231,7 @@ regions 使用 0 到 1 的归一化 x/y/width/height。"""
         if str(item.category).upper() == "PRESENCE"
         for name in (item.details.detected_characters or [])
     }
-    compliance = _presence_compliance(snapshot["input"], detected_names)
+    compliance = _presence_compliance(snapshot, detected_names)
     if compliance is not None:
         # Deterministic cross-check failed (#164): persist a synthesized
         # PRESENCE row so the failure surfaces in the candidate's inspection

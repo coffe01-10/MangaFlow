@@ -6,12 +6,15 @@ keep steering every handler's model binding.
 """
 
 import hashlib
+import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy import delete, select
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import sessionmaker
 
 from app.config import get_settings
 from app.model_adapters.base import ProviderAdapterError
@@ -22,6 +25,7 @@ from app.models import (
     JobAssetReference,
     Project,
     ProviderConnection,
+    ProviderKey,
     ProviderProfile,
 )
 from app.services.credential_crypto import mark_key_failure, mark_key_success
@@ -42,6 +46,8 @@ from app.services.worker_handlers.model_call_audit import (
     finalize_model_call_attempt,
     record_output_attachment_failure,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _uninstalled_legacy_adapter(_alias: str):
@@ -203,6 +209,158 @@ def _finalize_or_fail(attempt_id: str | None, **kwargs) -> None:
         ) from error
 
 
+# Audit convergence code for unclassified exceptions raised by the adapter
+# runtime (a bug or an off-contract response shape). It deliberately matches
+# the job-level code the worker's generic error path writes
+# (``worker_tasks.execute_job`` -> ``_mark_worker_failure(..., "WORKER_ERROR")``)
+# so reliability triage can join audit rows to job outcomes: previously these
+# rows were stamped INVALID_OUTPUT while the job said WORKER_ERROR, pointing
+# two different investigations at the same dispatch. It never collides with
+# the adapter error-code space nor with model_call_audit's
+# SWEEP_TERMINAL_ERROR_CODES (JOB_TIMEOUT/LOCAL_TIMEOUT/LEASE_EXPIRED/
+# WORKER_LOST), so the sweep-closeout upgrade guard is unaffected.
+UNCLASSIFIED_ERROR_CODE = "WORKER_ERROR"
+
+
+def _diagnostics_sessionmaker(db):
+    """Second-session factory for writes that must outlive the caller's rollback.
+
+    The bind must be an Engine: binding the diagnostics session to the
+    caller's Connection would make it join the caller's DBAPI transaction, and
+    its commit would publish every pending caller change again — the exact
+    side effect this second session exists to remove. Fail loudly on that
+    topology instead of silently reintroducing the bug. (Production
+    ``SessionLocal`` is engine-bound: ``database.py``.)
+    """
+
+    bind = db.get_bind()
+    if not isinstance(bind, Engine):
+        raise RuntimeError(
+            "diagnostics sessions must bind to an Engine, got "
+            f"{type(bind).__name__}: a Connection-bound caller session would "
+            "share its DBAPI transaction and the scoped commit would publish "
+            "the caller's pending changes"
+        )
+    return sessionmaker(bind=bind, expire_on_commit=False)
+
+
+def _mark_key_outcome(
+    db,
+    key: ProviderKey,
+    *,
+    success: bool,
+    error_code: str | None = None,
+    retry_after_seconds: int | None = None,
+) -> None:
+    """Persist a key failure/success mark without publishing the caller's transaction.
+
+    ``mark_key_failure``/``mark_key_success`` commit internally, so running them
+    on the caller's session commits every other pending caller change too — the
+    same side effect the scoped diagnostics session removed. Re-fetch the row
+    by id on a second session (caller-bound ORM rows are never attached to
+    another session), then expire the caller's copy so later reads re-bind
+    committed state.
+
+    The write itself is best-effort, mirroring
+    ``_record_key_and_connection_failure``: a diagnostics failure here (lock
+    timeout, pool exhaustion) must never replace the adapter's outcome — the
+    success paths run after the paid call succeeded and its audit row is
+    already SUCCEEDED, so raising would hand the worker's generic handler a
+    retryable WORKER_ERROR (a second paid dispatch and audit/job divergence);
+    on the retry-error path it would replace the adapter's classification
+    before the raise.
+    """
+
+    key_id = key.id
+    diagnostics = _diagnostics_sessionmaker(db)
+    try:
+        with diagnostics() as mark_db:
+            row = mark_db.get(ProviderKey, key_id)
+            if row is None:
+                return
+            if success:
+                mark_key_success(mark_db, row)
+            else:
+                mark_key_failure(
+                    mark_db,
+                    row,
+                    error_code or "UNKNOWN",
+                    retry_after_seconds=retry_after_seconds,
+                )
+    except Exception as diagnostics_error:
+        LOGGER.warning(
+            "Failed to persist key outcome diagnostics for key_id=%s: %r",
+            key_id,
+            diagnostics_error,
+        )
+        return
+    finally:
+        if db.object_session(key) is db:
+            db.expire(key)
+
+
+def _record_key_and_connection_failure(
+    db, binding: AdapterBinding, error: ProviderAdapterError
+) -> None:
+    """Persist key-failure and connection diagnostics durably but scoped.
+
+    The worker rolls the caller's session back right after this raise, so these
+    diagnostics must commit on their own — but the previous in-session
+    ``mark_key_failure(...)`` + ``db.commit()`` published EVERY other pending
+    change in the caller's transaction as a side effect of a failed call.
+    ``db.begin_nested()`` cannot scope this write: ``mark_key_failure`` commits
+    internally (a ``Session.commit`` commits through any savepoint), and a
+    release-only savepoint would lose the diagnostics to the worker's rollback
+    anyway. So mirror ``model_call_audit``'s contract instead: snapshot scalar
+    ids from the caller's objects, re-load both rows on a second session bound
+    to the caller's own engine, and commit only that session. The caller's ORM
+    objects are expired afterwards so in-session readers (the replacement-key
+    rebinding below) observe the committed state instead of a stale
+    identity-map row.
+
+    The write itself is best-effort: a diagnostics failure here (lock timeout,
+    pool exhaustion) must never replace the adapter's error — that would skip
+    the replacement-key retry below and reclassify a non-retryable failure
+    (e.g. AUTHENTICATION) as a retried generic WORKER_ERROR.
+    """
+
+    key_id = binding.selected_key.row.id
+    connection_id = binding.resolved.connection.id
+    diagnostics = _diagnostics_sessionmaker(db)
+    try:
+        with diagnostics() as diag_db:
+            key = diag_db.get(ProviderKey, key_id)
+            if key is not None:
+                mark_key_failure(
+                    diag_db,
+                    key,
+                    error.code,
+                    retry_after_seconds=error.retry_after_seconds,
+                )
+            # Surface the real-traffic failure on the connection too: the
+            # verify/probe paths are the only other writers of these fields,
+            # and without this a connection shows a stale HEALTHY state while
+            # every paid call fails. Diagnostics only — routing semantics and
+            # enabled flags stay owned by verification.
+            connection = diag_db.get(ProviderConnection, connection_id)
+            if connection is not None:
+                connection.error_code = error.code
+                connection.message = "模型调用失败，已记录最近一次真实流量错误"
+                diag_db.commit()
+    except Exception as diagnostics_error:
+        LOGGER.warning(
+            "Failed to persist key/connection failure diagnostics for "
+            "key_id=%s: %r",
+            key_id,
+            diagnostics_error,
+        )
+        return
+    finally:
+        for stale in (binding.selected_key.row, binding.resolved.connection):
+            if db.object_session(stale) is db:
+                db.expire(stale)
+
+
 def _invoke_provider(db, binding: AdapterBinding, callback):
     job_id = db.info.get("job_id")
     if job_id:
@@ -232,21 +390,7 @@ def _invoke_provider(db, binding: AdapterBinding, callback):
             error_message=error.user_message,
         )
         if binding.selected_key:
-            mark_key_failure(
-                db,
-                binding.selected_key.row,
-                error.code,
-                retry_after_seconds=error.retry_after_seconds,
-            )
-            # Surface the real-traffic failure on the connection too: the
-            # verify/probe paths are the only other writers of these fields,
-            # and without this a connection shows a stale HEALTHY state while
-            # every paid call fails. Diagnostics only — routing semantics and
-            # enabled flags stay owned by verification.
-            connection = binding.resolved.connection
-            connection.error_code = error.code
-            connection.message = "模型调用失败，已记录最近一次真实流量错误"
-            db.commit()
+            _record_key_and_connection_failure(db, binding, error)
             if error.code in {"AUTHENTICATION", "PERMISSION", "RATE_LIMIT"}:
                 try:
                     replacement = bind_adapter(
@@ -280,10 +424,14 @@ def _invoke_provider(db, binding: AdapterBinding, callback):
                             error_code=retry_error.code,
                             error_message=retry_error.user_message,
                         )
-                        mark_key_failure(
+                        # Scoped second session: mark_key_failure commits
+                        # internally and must not publish the caller's
+                        # pending transaction (see _mark_key_outcome).
+                        _mark_key_outcome(
                             db,
                             replacement.selected_key.row,
-                            retry_error.code,
+                            success=False,
+                            error_code=retry_error.code,
                             retry_after_seconds=retry_error.retry_after_seconds,
                         )
                         raise
@@ -294,7 +442,7 @@ def _invoke_provider(db, binding: AdapterBinding, callback):
                         _finalize_or_fail(
                             replacement_id,
                             outcome="FAILED",
-                            error_code="INVALID_OUTPUT",
+                            error_code=UNCLASSIFIED_ERROR_CODE,
                             error_message="模型通道出现未分类异常，已记录失败",
                         )
                         raise
@@ -307,20 +455,22 @@ def _invoke_provider(db, binding: AdapterBinding, callback):
                         output_image_count=_output_image_count(result),
                     )
                     db.info["last_model_call_attempt_id"] = replacement_id
-                    mark_key_success(db, replacement.selected_key.row)
+                    _mark_key_outcome(db, replacement.selected_key.row, success=True)
                     return result
         raise
     except Exception:
         # An adapter bug or an unclassified malformed response must not leave
         # the paid attempt pending forever: converge the audit row to a
         # terminal FAILED state, then let the worker's generic error path
-        # decide retry semantics from the original exception. A persistence
-        # failure inside finalize still surfaces as AUDIT_PERSISTENCE_FAILED
+        # decide retry semantics from the original exception. The code matches
+        # the worker's job-level WORKER_ERROR so audit and job agree on the
+        # failure class (see UNCLASSIFIED_ERROR_CODE). A persistence failure
+        # inside finalize still surfaces as AUDIT_PERSISTENCE_FAILED
         # (non-retryable), matching the ProviderAdapterError path above.
         _finalize_or_fail(
             attempt_id,
             outcome="FAILED",
-            error_code="INVALID_OUTPUT",
+            error_code=UNCLASSIFIED_ERROR_CODE,
             error_message="模型通道出现未分类异常，已记录失败",
         )
         raise
@@ -334,7 +484,9 @@ def _invoke_provider(db, binding: AdapterBinding, callback):
     )
     db.info["last_model_call_attempt_id"] = attempt_id
     if binding.selected_key:
-        mark_key_success(db, binding.selected_key.row)
+        # Scoped second session: mark_key_success commits internally and must
+        # not publish the caller's pending transaction before its own commit.
+        _mark_key_outcome(db, binding.selected_key.row, success=True)
     return result
 
 

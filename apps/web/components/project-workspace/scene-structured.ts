@@ -1,4 +1,4 @@
-import type { SceneAssetStructured } from "@/lib/api";
+import { ApiError, type SceneAssetStructured } from "@/lib/api";
 
 export const TIME_OF_DAY_OPTIONS = [
   ["", "未指定"],
@@ -86,12 +86,21 @@ export function pickVariantOverrides(input?: Record<string, unknown> | null): Re
   return next;
 }
 
+// 404 判定以结构化状态码为准：消息文案（本地化的「不存在」）一旦措辞调整，
+// 正则失配会把可跳过的「章节无剧本」升级成计数失败。文案匹配仅作非 ApiError
+// 错误的最后兜底。
+// TODO: 确认所有 404 都以 ApiError(status=404) 形式抛出后，移除消息兜底。
+function isNotFoundError(error: unknown): boolean {
+  if (error instanceof ApiError) return error.status === 404;
+  return error instanceof Error && /不存在/.test(error.message);
+}
+
 export async function countPersistedSceneBindings(
   projectId: string,
   sceneAssetId: string,
   chapters: () => Promise<{ id: string }[]>,
   scriptOf: (chapterId: string) => Promise<{ scenes: { scene_asset_id: string | null }[] }>,
-  isNotFound: (error: unknown) => boolean,
+  isNotFound: (error: unknown) => boolean = isNotFoundError,
 ): Promise<number | null> {
   try {
     const listed = await chapters();

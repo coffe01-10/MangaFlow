@@ -17,7 +17,15 @@ fn env_or(name: &str, default: &str) -> String {
 }
 
 fn main() {
-    let python = env_or("MANGAFLOW_DESKTOP_PYTHON", "python3");
+    // "python3" on a stock Windows install resolves to the Microsoft Store
+    // app-execution stub (spawns, prints nothing, exits 9009), so the
+    // residue test would die at the handshake before ever exercising the
+    // crash path; "python" resolves to a real interpreter wherever Python
+    // is installed.
+    let python = env_or(
+        "MANGAFLOW_DESKTOP_PYTHON",
+        if cfg!(windows) { "python" } else { "python3" },
+    );
     let helper = env_or("MANGAFLOW_DESKTOP_HELPER", "");
     let user_data = env_or("MANGAFLOW_DESKTOP_USER_DATA", "");
     if helper.is_empty() || user_data.is_empty() {

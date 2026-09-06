@@ -3,7 +3,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _ENV_FILE = None if os.environ.get("MANGAFLOW_DISABLE_DOTENV") == "1" else ".env"
@@ -40,6 +40,19 @@ class Settings(BaseSettings):
     queue_enabled: bool = True
     job_timeout_seconds: int = Field(default=900, ge=30, le=3600)
     job_lease_seconds: int = Field(default=120, ge=30, le=3600)
+
+    @model_validator(mode="after")
+    def _validate_lease_geometry(self) -> "Settings":
+        # The heartbeat's wall-clock cap stops renewing at job_timeout_seconds
+        # (worker_tasks._heartbeat_interval_seconds). A lease longer than the
+        # timeout leaves a wedged job ACTIVE-but-unreclaimable for the lease's
+        # remainder plus the reclaim fence — the whole project queue stalls.
+        if self.job_lease_seconds > self.job_timeout_seconds:
+            raise ValueError(
+                "job_lease_seconds 不得大于 job_timeout_seconds：心跳停止后续约后，"
+                "卡死的任务将在租约剩余时间和回收宽限期内无法被回收"
+            )
+        return self
     # Executor-silence fence for lease reclaim (issue #130). None derives the
     # grace from the lease/heartbeat geometry — see
     # job_service._lease_reclaim_grace_seconds, which also explains why an

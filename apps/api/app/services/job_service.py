@@ -42,13 +42,15 @@ LEASED_JOB_STATUSES = {
     JobStatus.REPAIRING,
 }
 ACTIVE_JOB_STATUSES = {JobStatus.WAITING, JobStatus.QUEUED, *LEASED_JOB_STATUSES}
-# Job types whose paid call targets an inspectable id and must stay
-# one-active-per-target across ALL entry points (manual route, workflow node,
-# and retry). PAGE_INSPECT is the only member today; extend this set instead
-# of adding ad-hoc per-route guards when new inspection kinds appear (issue
-# #125: a retried FAILED inspect is invisible to idempotency keys because
-# create_job collapses the dead row's key to closed:{id}).
-INSPECT_JOB_TYPES = {"PAGE_INSPECT"}
+# Job types whose paid call must stay one-active-per-target across ALL entry
+# points (manual route, workflow node, and retry). PAGE_INSPECT: a retried
+# FAILED inspect is invisible to the route's idempotency key because
+# create_job collapses the dead row's key to closed:{id} (issue #125).
+# SOURCE_PARSE: route and workflow entries use disjoint idempotency-key
+# namespaces, so a retried FAILED parse would otherwise run next to a live
+# one (#124). Extend this set instead of adding ad-hoc per-route guards when
+# new one-per-target kinds appear.
+RETRY_MUTEX_JOB_TYPES = {"PAGE_INSPECT", "SOURCE_PARSE"}
 # LOCAL wall-clock cap markers. The lease heartbeat stamps LOCAL_TIMEOUT once
 # the job's job_timeout_seconds budget is spent while the lease is still live;
 # recovery preserves that cause through reclaim/requeue exactly like the RQ
@@ -80,6 +82,37 @@ def has_active_job(
         # duplicate guard.
         filters.append(GenerationJob.id != exclude_job_id)
     return db.scalar(select(GenerationJob.id).where(*filters).limit(1)) is not None
+
+
+def oldest_active_job_id(
+    db: Session,
+    *,
+    job_type: str,
+    target_id: str,
+    target_type: str | None = None,
+) -> str | None:
+    """Id of the oldest ACTIVE job for the target (``created_at``, then id).
+
+    Deterministic loser for same-window duplicate claims (#124): when two
+    claimants both see the other ACTIVE, a plain "any other active job
+    blocks me" guard kills both and leaves the target with zero runs. Callers
+    let exactly one claimant proceed — the row this read-only query names.
+    The id tie-break keeps the winner unique even when created_at collides.
+    """
+
+    filters = [
+        GenerationJob.job_type == job_type,
+        GenerationJob.target_id == target_id,
+        GenerationJob.status.in_(ACTIVE_JOB_STATUSES),
+    ]
+    if target_type is not None:
+        filters.append(GenerationJob.target_type == target_type)
+    return db.scalar(
+        select(GenerationJob.id)
+        .where(*filters)
+        .order_by(GenerationJob.created_at, GenerationJob.id)
+        .limit(1)
+    )
 
 
 def style_has_active_sibling_job(
@@ -1143,27 +1176,335 @@ def mark_job_cancelled(db: Session, job: GenerationJob) -> GenerationJob:
     return job
 
 
+TERMINAL_RUN_STATUSES = {"COMPLETED", "CANCELLED", "FAILED"}
+
+
+def _escalate_cancel_to_revived_run(
+    db: Session, job: GenerationJob, node_run: WorkflowNodeRun, run: WorkflowRun | None
+) -> bool:
+    """Stale-FAILED revival escalation for cancel_job; returns True on escalation.
+
+    Re-reads the committed run status (a column select, not the possibly stale
+    identity-map copy) and, when non-terminal, escalates through the same
+    cancel_run path as cancel_job's early branch so the revived run, its
+    nodes, and its late jobs are all terminalized; the node_run refresh first
+    drops the stale pre-escalation identity-map read so cancel_run's node
+    sweep sees the revived RUNNING node. Callers must hold NO job-row write
+    lock: cancel_run takes the run lock and then job locks (run→job), and
+    calling it while holding a job-row lock would invert that order against a
+    concurrent direct cancel_run on the same run.
+    """
+
+    current_run_status = db.scalar(
+        select(WorkflowRun.status).where(WorkflowRun.id == node_run.workflow_run_id)
+    )
+    if current_run_status in ({None} | TERMINAL_RUN_STATUSES):
+        return False
+    from app.services.workflow_engine import cancel_run
+
+    if run is None:
+        run = db.get(WorkflowRun, node_run.workflow_run_id)
+    db.refresh(node_run)
+    cancel_run(db, run)
+    db.refresh(job)
+    return True
+
+
 def cancel_job(db: Session, job: GenerationJob) -> GenerationJob:
     if job.status == JobStatus.COMPLETED:
         return job
     node_run = db.scalar(select(WorkflowNodeRun).where(WorkflowNodeRun.job_id == job.id))
+    run = None
     if node_run:
         run = db.get(WorkflowRun, node_run.workflow_run_id)
-        if run and run.status not in {"COMPLETED", "CANCELLED", "FAILED"}:
+        if run and run.status not in TERMINAL_RUN_STATUSES:
             from app.services.workflow_engine import cancel_run
 
             cancel_run(db, run)
             db.refresh(job)
             return job
+        # Stale-FAILED revival escalation, before the claim: the ORM read
+        # above can say FAILED while a concurrent reset_for_retry has already
+        # committed a FAILED→RUNNING revival. Take the run lock BEFORE any
+        # job-row claim (lock order run→job, same as a direct cancel_run), so
+        # a revival that is already committed is cancelled atomically through
+        # the early-branch path instead of falling into mark_job_cancelled.
+        if _escalate_cancel_to_revived_run(db, job, node_run, run):
+            return job
     mark_job_cancelled(db, job)
+    # Commit before any escalation: mark_job_cancelled's UPDATE holds the
+    # job-row write lock until commit, and calling cancel_run under that lock
+    # would acquire the run lock in a job→run order — the inverse of a
+    # concurrent direct cancel_run (which holds the run lock while its sweeps
+    # take job locks), an AB-BA deadlock window. Committing here releases the
+    # job-row lock first.
     db.commit()
+    if node_run is not None:
+        # Stale-FAILED revival escalation, after the claim (the serialization
+        # point): a concurrent reset_for_retry can commit its FAILED→RUNNING
+        # revival while our mark_job_cancelled claim blocks on the retry's job
+        # row lock. In that interleave our earlier run reads said FAILED, the
+        # claim then lands on the retry's freshly committed WAITING row, and
+        # without this re-read the revived run stays RUNNING forever behind a
+        # CANCELLED mid-chain node — a zombie run permanently locking the
+        # project scope. Re-reading AFTER our commit means no job-row lock is
+        # held when cancel_run takes the run lock.
+        _escalate_cancel_to_revived_run(db, job, node_run, run)
     db.refresh(job)
     return job
+
+
+def _restore_revived_run(db: Session, revival_snapshot: dict) -> bool:
+    """CAS the revived run (and its revived nodes/jobs) back to pre-retry values.
+
+    Returns False when the run is no longer in the non-terminal state the
+    revival created (RUNNING/PAUSED) — by then another owner (the cancel_job
+    escalation's cancel_run, or reconcile) has terminalized it and owns the
+    outcome. Every write is conditional on the exact revived value, so a row
+    already re-terminalized by someone else is left untouched.
+    """
+
+    run_snapshot = revival_snapshot["run"]
+    run_status = db.scalar(
+        select(WorkflowRun.status).where(WorkflowRun.id == run_snapshot["id"])
+    )
+    if run_status not in {"RUNNING", "PAUSED"}:
+        return False
+    # run.version is deliberately left incremented: it is a monotonic change
+    # counter, and rewinding it could clobber a concurrent writer's bump.
+    db.execute(
+        update(WorkflowRun)
+        .where(
+            WorkflowRun.id == run_snapshot["id"],
+            WorkflowRun.status.in_(("RUNNING", "PAUSED")),
+        )
+        .values(status=run_snapshot["status"], finished_at=run_snapshot["finished_at"])
+        .execution_options(synchronize_session=False)
+    )
+    node_snapshot = revival_snapshot["node"]
+    if node_snapshot is not None:
+        db.execute(
+            update(WorkflowNodeRun)
+            .where(
+                WorkflowNodeRun.id == node_snapshot["id"],
+                WorkflowNodeRun.status == "RUNNING",
+            )
+            .values(
+                status=node_snapshot["status"],
+                finished_at=node_snapshot["finished_at"],
+                error_code=node_snapshot["error_code"],
+                error_message=node_snapshot["error_message"],
+            )
+            .execution_options(synchronize_session=False)
+        )
+    for entry in revival_snapshot["revived_nodes"]:
+        db.execute(
+            update(WorkflowNodeRun)
+            .where(
+                WorkflowNodeRun.id == entry["id"],
+                WorkflowNodeRun.status == "WAITING",
+            )
+            .values(
+                status=entry["status"],
+                finished_at=entry["finished_at"],
+                error_code=entry["error_code"],
+                error_message=entry["error_message"],
+            )
+            .execution_options(synchronize_session=False)
+        )
+        job_entry = entry["job"]
+        if job_entry is not None:
+            db.execute(
+                update(GenerationJob)
+                .where(
+                    GenerationJob.id == job_entry["id"],
+                    GenerationJob.status == JobStatus.WAITING,
+                )
+                .values(
+                    status=JobStatus.CANCELLED,
+                    cancelled_at=job_entry["cancelled_at"],
+                    finished_at=job_entry["finished_at"],
+                    error_code=job_entry["error_code"],
+                    error_message=job_entry["error_message"],
+                )
+                .execution_options(synchronize_session=False)
+            )
+    return True
+
+
+def _compensate_retry_revival(
+    db: Session,
+    job: GenerationJob,
+    revival_snapshot: dict,
+    *,
+    observed_status: JobStatus,
+) -> bool:
+    """Undo a committed reset_for_retry revival in its own transaction.
+
+    Separate from reset_for_retry so the compensation is deterministically
+    testable and can never leave half a revival in the caller's transaction.
+    The job row CAS claims the exact post-commit status the caller observed
+    (CANCELLED for the cancel race, WAITING for the sibling-arbitration loss);
+    a miss means the row moved on again and belongs to whoever moved it. The
+    run is restored only while it still carries the revival's non-terminal
+    shape — a run already terminalized by the cancel-side escalation keeps
+    that outcome, and the whole compensation rolls back so it does not
+    contradict a user-visible CANCELLED run by re-failing the job.
+    Returns True when the revival was rolled back.
+    """
+
+    if revival_snapshot.get("job") is None:
+        return False
+    try:
+        claimed = db.execute(
+            update(GenerationJob)
+            .where(
+                GenerationJob.id == job.id,
+                GenerationJob.status == observed_status,
+            )
+            .values(**revival_snapshot["job"])
+            .execution_options(synchronize_session=False)
+        )
+        if claimed.rowcount != 1:
+            db.rollback()
+            return False
+        if revival_snapshot["run"] is not None and not _restore_revived_run(
+            db, revival_snapshot
+        ):
+            db.rollback()
+            return False
+        db.commit()
+        return True
+    except Exception:
+        # The compensation is best-effort by design: its counterpart
+        # (cancel_job's post-claim escalation) converges the same zombie from
+        # the other side, so a failed compensation must surface loudly but
+        # never mask the caller's original outcome.
+        db.rollback()
+        LOGGER.exception("post-retry revival compensation failed for job %s", job.id)
+        return False
+
+
+def _verify_retry_revival_post_commit(
+    db: Session, job: GenerationJob, revival_snapshot: dict
+) -> bool:
+    """Re-read the committed revival; compensate when it lost a post-commit race.
+
+    Returns True when the revival survived and reset_for_retry should enqueue.
+    Two losers are handled:
+
+    - CANCELLED flip: a concurrent cancel_job whose run read predated the
+      revival claims the freshly committed WAITING row right after our
+      commit. The cancel side also escalates to cancel_run (see cancel_job),
+      but this compensation restores the exact pre-retry FAILED state when
+      the revived run is still non-terminal, so the two heals converge on one
+      consistent outcome instead of a zombie RUNNING run.
+    - Sibling arbitration: two concurrent retries of sibling FAILED jobs can
+      both pass the pre-CAS has_active_job guard (each revival is invisible
+      until it commits) and both commit, which previously meant either two
+      paid runs or — when each guard did see the other — both retries 409ing
+      with zero runs. Oldest-wins arbitration (the same rule the R1
+      story_parse guard uses) lets exactly one of the concurrent RETRIES
+      survive: a strictly older committed ACTIVE sibling (created_at, then
+      id) means this revival is the duplicate and must be undone. A
+      legitimately pre-existing sibling never reaches here — the pre-CAS
+      guard already rejected it. Residual window: the single-survivor
+      guarantee covers concurrent retries only. A manual-route job created
+      on the same target between this retry's pre-CAS guard and its commit
+      is younger than the revived row, so oldest-wins keeps this revival and
+      never arbitrates the manual job — whose route already returned without
+      seeing the uncommitted revival — and both dispatches can proceed.
+    """
+
+    db.refresh(job)
+    if job.status == JobStatus.CANCELLED:
+        if _compensate_retry_revival(
+            db, job, revival_snapshot, observed_status=JobStatus.CANCELLED
+        ):
+            db.refresh(job)
+            raise HTTPException(status_code=409, detail="任务状态已变化，请刷新后重试")
+        db.refresh(job)
+        return False
+    if job.status != JobStatus.WAITING:
+        # Recovery/enqueue advanced the row normally between our commit and
+        # this re-read: the retry is proceeding, never compensate over it.
+        return True
+    if job.job_type in RETRY_MUTEX_JOB_TYPES and job.target_id:
+        oldest = oldest_active_job_id(
+            db,
+            job_type=job.job_type,
+            target_id=str(job.target_id),
+            target_type=job.target_type,
+        )
+        if oldest is not None and oldest != job.id:
+            compensated = _compensate_retry_revival(
+                db, job, revival_snapshot, observed_status=JobStatus.WAITING
+            )
+            if not compensated:
+                # The undo CAS missed (or the run moved on): the younger
+                # revival stays committed and dispatchable — the duplicate
+                # this arbitration exists to prevent — while the caller only
+                # sees the generic 409 below. Surface it for operator triage.
+                LOGGER.warning(
+                    "sibling-arbitration loss for job %s on target %s/%s could not be "
+                    "compensated; the revived job stays committed and a duplicate "
+                    "dispatch is now likely",
+                    job.id,
+                    job.target_type,
+                    job.target_id,
+                )
+            raise HTTPException(status_code=409, detail="任务状态已变化，请重试")
+    return True
 
 
 def reset_for_retry(db: Session, job: GenerationJob) -> GenerationJob:
     if job.status not in {JobStatus.FAILED, JobStatus.NEEDS_REVIEW, JobStatus.WAITING}:
         return job
+    # Pre-image of every column the revival below rewrites, read from the
+    # committed row (the caller's ORM copy can be stale). If the committed
+    # revival later loses a post-commit race, the compensation restores these
+    # exact values instead of guessing at the pre-retry shape. The lease pair
+    # is included for contract completeness: the revival CAS's
+    # lease_owner IS NULL precondition pins the pre-image to None/None here,
+    # because every lease writer (the cancel/fail/sweep/retry claims in this
+    # module and the worker_tasks claim/finalize CASes) writes lease_owner and
+    # lease_expires_at together — so snapshotting them lets the compensation
+    # restore them explicitly instead of leaning on that writer invariant.
+    preimage = db.execute(
+        select(
+            GenerationJob.status,
+            GenerationJob.error_code,
+            GenerationJob.error_message,
+            GenerationJob.progress,
+            GenerationJob.started_at,
+            GenerationJob.finished_at,
+            GenerationJob.cancelled_at,
+            GenerationJob.scheduled_at,
+            GenerationJob.lease_owner,
+            GenerationJob.lease_expires_at,
+        ).where(GenerationJob.id == job.id)
+    ).first()
+    revival_snapshot: dict = {
+        "job": (
+            {
+                "status": preimage.status,
+                "error_code": preimage.error_code,
+                "error_message": preimage.error_message,
+                "progress": preimage.progress,
+                "started_at": preimage.started_at,
+                "finished_at": preimage.finished_at,
+                "cancelled_at": preimage.cancelled_at,
+                "scheduled_at": preimage.scheduled_at,
+                "lease_owner": preimage.lease_owner,
+                "lease_expires_at": preimage.lease_expires_at,
+            }
+            if preimage is not None
+            else None
+        ),
+        "run": None,
+        "node": None,
+        "revived_nodes": [],
+    }
     # Single conditional claim instead of read-modify-write: a worker lease or
     # a cancellation landing between the caller's read and this write must win
     # over the retry (no clobbered lease, no resurrection), mirroring
@@ -1196,16 +1537,17 @@ def reset_for_retry(db: Session, job: GenerationJob) -> GenerationJob:
         # Another party advanced the row; the caller must not enqueue over it.
         db.rollback()
         raise HTTPException(status_code=409, detail="任务状态已变化，请刷新后重试")
-    # Same-target mutex for the third PAGE_INSPECT entry point (issue #125):
-    # the manual route guards with has_active_job, but a retried FAILED inspect
-    # is invisible to that path's idempotency key — create_job collapsed the
-    # dead row's key to closed:{id} when a newer inspect took the key — so
-    # reviving it here could run a second paid inspect next to a live
-    # manual/workflow job on the same target. The claim above just moved this
-    # row back to WAITING, so it must be excluded by id (a WAITING job being
-    # retried would otherwise trip its own guard).
+    # Same-target mutex for the third entry point, retry (issues #125/#124):
+    # the manual route guards with has_active_job, but a retried FAILED job is
+    # invisible to that path's idempotency key — create_job collapsed the dead
+    # row's key to closed:{id} when a newer job took the key (PAGE_INSPECT), or
+    # the entries never shared a key namespace at all (SOURCE_PARSE route vs
+    # workflow agent.parse) — so reviving it here could run a second paid call
+    # next to a live manual/workflow job on the same target. The claim above
+    # just moved this row back to WAITING, so it must be excluded by id (a
+    # WAITING job being retried would otherwise trip its own guard).
     if (
-        job.job_type in INSPECT_JOB_TYPES
+        job.job_type in RETRY_MUTEX_JOB_TYPES
         and job.target_id
         and has_active_job(
             db,
@@ -1218,7 +1560,7 @@ def reset_for_retry(db: Session, job: GenerationJob) -> GenerationJob:
         db.rollback()
         raise HTTPException(
             status_code=409,
-            detail="该目标已有进行中的质检任务，请等待完成后再重试",
+            detail="该目标已有进行中的同类任务，请等待完成后再重试",
         )
     # The claim above owns the job row, which serializes this revival against
     # concurrent cancel_run/worker claims on the same job, so the cross-table
@@ -1233,6 +1575,11 @@ def reset_for_retry(db: Session, job: GenerationJob) -> GenerationJob:
     if workflow_run_id:
         run = db.get(WorkflowRun, workflow_run_id)
         if run and run.status == "FAILED":
+            revival_snapshot["run"] = {
+                "id": run.id,
+                "status": run.status,
+                "finished_at": run.finished_at,
+            }
             run.status = "RUNNING"
             run.finished_at = None
             run.version += 1
@@ -1262,6 +1609,14 @@ def reset_for_retry(db: Session, job: GenerationJob) -> GenerationJob:
                     WorkflowNodeRun.status == "CANCELLED",
                 )
             ):
+                stranded_entry = {
+                    "id": stranded.id,
+                    "status": stranded.status,
+                    "finished_at": stranded.finished_at,
+                    "error_code": stranded.error_code,
+                    "error_message": stranded.error_message,
+                    "job": None,
+                }
                 stranded.status = "WAITING"
                 stranded.finished_at = None
                 stranded.error_code = None
@@ -1270,17 +1625,62 @@ def reset_for_retry(db: Session, job: GenerationJob) -> GenerationJob:
                     db.get(GenerationJob, stranded.job_id) if stranded.job_id else None
                 )
                 if stranded_job and stranded_job.status == JobStatus.CANCELLED:
+                    stranded_entry["job"] = {
+                        "id": stranded_job.id,
+                        "cancelled_at": stranded_job.cancelled_at,
+                        "finished_at": stranded_job.finished_at,
+                        "error_code": stranded_job.error_code,
+                        "error_message": stranded_job.error_message,
+                    }
                     stranded_job.status = JobStatus.WAITING
                     stranded_job.cancelled_at = None
                     stranded_job.error_code = None
                     stranded_job.error_message = None
                     stranded_job.finished_at = None
+                revival_snapshot["revived_nodes"].append(stranded_entry)
         if node_run and node_run.status == "FAILED":
+            revival_snapshot["node"] = {
+                "id": node_run.id,
+                "status": node_run.status,
+                "finished_at": node_run.finished_at,
+                "error_code": node_run.error_code,
+                "error_message": node_run.error_message,
+            }
             node_run.status = "RUNNING"
             node_run.error_code = None
             node_run.error_message = None
             node_run.finished_at = None
+    # Revival claim re-check: the claim above can be overtaken between the
+    # initial CAS and this commit by a concurrent cancel — cancel_job reads
+    # the run already FAILED (cancel_run's terminal claim no-ops) and then
+    # mark_job_cancelled claims the very WAITING row this transaction just
+    # created, so committing the run/node revival on top would leave a zombie
+    # RUNNING run with a CANCELLED node. Re-verify the exact shape this
+    # transaction created; a lost race rolls the whole revival back with the
+    # same 409 as any other stale claim.
+    verified = db.execute(
+        update(GenerationJob)
+        .where(
+            GenerationJob.id == job.id,
+            GenerationJob.status == JobStatus.WAITING,
+            GenerationJob.cancelled_at.is_(None),
+        )
+        .values(scheduled_at=utcnow() + timedelta(seconds=1))
+        .execution_options(synchronize_session=False)
+    )
+    if verified.rowcount != 1:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="任务状态已变化，请刷新后重试")
     db.commit()
-    db.refresh(job)
+    # Post-commit guard: the pre-commit re-verify above is a dead fence on a
+    # real multi-connection database — the initial CAS holds the job row's
+    # write lock until this commit, so no concurrent writer can flip the row
+    # to CANCELLED where the guard could see it. The races that matter all
+    # land AFTER this commit (the concurrent cancel's claim unblocks the
+    # moment we release the row), so re-read the committed state here and
+    # compensate when the revival lost.
+    if not _verify_retry_revival_post_commit(db, job, revival_snapshot):
+        db.refresh(job)
+        return job
     return enqueue_job(db, job)
 

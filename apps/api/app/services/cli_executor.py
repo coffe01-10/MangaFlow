@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -11,7 +12,7 @@ import stat
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
@@ -24,6 +25,16 @@ from app.config import Settings
 from app.model_adapters.base import ProviderAdapterError
 from app.models import CLIExecutionRun
 from app.services.media import inspect_upload_image
+
+LOGGER = logging.getLogger("mangaflow.cli")
+
+# Retention window for the boot-time sweep of CLI run directories that the
+# controller deliberately kept (RETAINED) or failed to clean (FAILED/PENDING).
+# Passed in explicitly by ``main`` because ``app.config`` stays the owner of
+# tunable settings; this module only clamps the floor so a caller cannot
+# configure an aggressive value that deletes fresh diagnostic evidence.
+MIN_RETENTION_SWEEP_SECONDS = 24 * 3600.0
+DEFAULT_RETENTION_SWEEP = timedelta(days=7)
 
 CLI_FAILURE_CODES = frozenset(
     {
@@ -363,6 +374,107 @@ class CLIExecutionController:
             created_at = created_at.replace(tzinfo=UTC)
         return (datetime.now(UTC) - created_at).total_seconds() >= grace
 
+    def sweep_retained(self, *, older_than: timedelta = DEFAULT_RETENTION_SWEEP) -> dict[str, int]:
+        """Delete RETAINED/FAILED/PENDING run directories past the window.
+
+        The controller keeps failed runs for diagnosis (``_RETAIN``) and every
+        cleanup writer only ever releases its own run, so without this sweep
+        ``storage/cli_runs/<id>`` grows without bound on recurring invalid
+        output. Conservative by construction:
+
+        - Only DB-owned rows are considered (an unknown directory on disk is
+          left alone), and only rows already in a terminal run state
+          (COMPLETED/FAILED): live PREPARING/RUNNING rows belong to
+          ``recover_abandoned``, never to deletion.
+        - Every deletion re-runs ``_validate_directory`` (journal token,
+          canonical-path and link checks) and a full link scan of the tree
+          before anything is unlinked — a symlink/junction planted anywhere
+          below the run directory aborts that run's sweep (marked FAILED for
+          manual inspection) instead of being followed.
+        - Failures are logged and counted; they never raise out of the sweep.
+        - The storage root is resolved once before any row is processed; an
+          unresolvable root aborts the whole sweep (logged, rows untouched)
+          instead of being misread as "run directory gone" for every row.
+        """
+
+        window = max(older_than, timedelta(seconds=MIN_RETENTION_SWEEP_SECONDS))
+        try:
+            self.settings.storage_root.resolve(strict=True)
+        except OSError as error:
+            # Without this gate, the first statement of _validate_directory
+            # raises FileNotFoundError for every row and the handler below
+            # would converge them all to CLEANED — deleting nothing, and
+            # (CLEANED being outside the SELECT set) hiding them from every
+            # later sweep. Abort instead: rows keep their state and are
+            # retried once the storage root exists again.
+            LOGGER.warning(
+                "CLI run retention sweep aborted; storage root unresolvable: %s",
+                type(error).__name__,
+            )
+            return {"removed": 0, "kept": 0, "failed": 0}
+        with self.session_factory() as db:
+            rows = list(
+                db.scalars(
+                    select(CLIExecutionRun).where(
+                        CLIExecutionRun.cleanup_state.in_(
+                            ("RETAINED", "FAILED", "PENDING")
+                        ),
+                        CLIExecutionRun.state.in_(("COMPLETED", "FAILED")),
+                    )
+                )
+            )
+            for row in rows:
+                db.expunge(row)
+        counts = {"removed": 0, "kept": 0, "failed": 0}
+        for row in rows:
+            if not self._row_is_past_grace(row, window.total_seconds()):
+                counts["kept"] += 1
+                continue
+            try:
+                run_directory, _journal = self._validate_directory(row)
+                if _tree_contains_link(run_directory):
+                    LOGGER.warning(
+                        "CLI run %s contains a link; retained for manual inspection",
+                        row.id,
+                    )
+                    self._set_cleanup(row.id, "FAILED")
+                    counts["failed"] += 1
+                    continue
+                if self._cleanup(row.id, retain=False) is None:
+                    counts["removed"] += 1
+                else:
+                    counts["failed"] += 1
+            except FileNotFoundError:
+                if not self.settings.storage_root.exists():
+                    # The root vanished mid-sweep: the same conflation the
+                    # pre-loop gate guards against — a storage failure is not
+                    # a converged run, so keep the row retriable (not CLEANED).
+                    LOGGER.warning(
+                        "CLI run %s retention sweep skipped: storage root vanished",
+                        row.id,
+                    )
+                    counts["failed"] += 1
+                    continue
+                # Run directory already gone (manual cleanup, prior host):
+                # nothing to delete — converge the row so later sweeps skip it.
+                self._set_cleanup(row.id, "CLEANED")
+                counts["removed"] += 1
+            except Exception as error:
+                # A transient storage failure must not kill the rest of the
+                # sweep; the row keeps its state and is retried next boot.
+                LOGGER.warning(
+                    "CLI run %s retention sweep skipped: %s", row.id, type(error).__name__
+                )
+                counts["failed"] += 1
+        if counts["removed"] or counts["failed"]:
+            LOGGER.info(
+                "CLI run retention sweep: %s removed, %s kept, %s failed",
+                counts["removed"],
+                counts["kept"],
+                counts["failed"],
+            )
+        return counts
+
     def _finish_recoverable(self, run_id: str, *, error_message: str) -> bool:
         """Fail an abandoned run only if it is still in a recoverable state."""
 
@@ -508,11 +620,17 @@ class CLIExecutionController:
 
     def _validate_directory(self, row: CLIExecutionRun) -> tuple[Path, dict]:
         storage_root = self.settings.storage_root.resolve(strict=True)
+        cli_root = (storage_root / "cli_runs").resolve(strict=True)
         candidate = (storage_root / row.relative_path).absolute()
         _reject_link(candidate)
         resolved = candidate.resolve(strict=True)
-        expected = (storage_root / "cli_runs" / row.id).resolve(strict=True)
-        if resolved != expected or not resolved.is_relative_to(storage_root):
+        expected = (cli_root / row.id).resolve(strict=True)
+        # Containment is anchored to the resolved cli_runs root, not just
+        # storage_root: a crafted row.id containing ".." can make
+        # (cli_root / row.id) resolve to a sibling directory that passes the
+        # equality check alone, and deletion must never escape cli_runs even
+        # when the escape stays inside storage_root.
+        if resolved != expected or not resolved.is_relative_to(cli_root):
             raise ProviderAdapterError("CONFIGURATION", "CLI run 目录归属校验失败")
         journal_path = resolved / "journal.json"
         _reject_link(journal_path)
@@ -738,6 +856,17 @@ class CLIExecutionController:
                 state = "CLEANED"
             self._set_cleanup(run_id, state)
             return None
+        except FileNotFoundError as error:
+            # A run directory that vanished between the caller's validation
+            # and this revalidation (or mid-rmtree) is already gone: that IS
+            # the converged state, so stamp CLEANED instead of FAILED and
+            # stop the row re-entering every later sweep. Only a vanished
+            # storage root is a transient failure that must stay retriable.
+            if self.settings.storage_root.exists():
+                self._set_cleanup(run_id, "CLEANED")
+                return None
+            self._set_cleanup(run_id, "FAILED")
+            return error
         except BaseException as error:
             self._set_cleanup(run_id, "FAILED")
             return error
@@ -826,6 +955,33 @@ def _validate_reference(source: Path, upload_root: Path, storage_root: Path) -> 
 def _reject_link(path: Path) -> None:
     if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
         raise ProviderAdapterError("CONFIGURATION", "CLI 路径不能是链接")
+
+
+def _is_link(path: Path) -> bool:
+    return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
+
+
+def _tree_contains_link(root: Path) -> bool:
+    """True when any entry at or below ``root`` is a symlink or junction.
+
+    Used by the retention sweep before unlinking: the scan checks each entry
+    for link-ness BEFORE deciding to descend, so a junction pointing at an
+    arbitrary target is detected and never traversed, regardless of how the
+    platform classifies junctions for directory iteration. An unreadable
+    directory counts as unsafe (True): the sweep must skip, not guess.
+    """
+
+    try:
+        entries = list(os.scandir(root))
+    except OSError:
+        return True
+    for entry in entries:
+        entry_path = Path(entry.path)
+        if _is_link(entry_path):
+            return True
+        if entry.is_dir(follow_symlinks=False) and _tree_contains_link(entry_path):
+            return True
+    return False
 
 
 def _reject_link_chain(path: Path, root: Path) -> None:
@@ -985,3 +1141,32 @@ def recover_abandoned_cli_runs(
         settings or get_settings(), session_factory or SessionLocal
     )
     return controller.recover_abandoned(controller_is_active=platform_controller_is_active)
+
+
+def sweep_retained_cli_runs(
+    settings: Settings | None = None,
+    session_factory: Callable[[], Session] | None = None,
+    *,
+    older_than: timedelta | None = None,
+) -> dict[str, int]:
+    """Production entry point for the CLI run retention sweep.
+
+    Deletes RETAINED/FAILED/PENDING run directories older than ``older_than``
+    (default: 7 days, floored at 24h — see ``DEFAULT_RETENTION_SWEEP``). Runs
+    once at API boot from ``main.lifespan`` next to
+    ``recover_abandoned_cli_runs``; callers must keep it failure-tolerant
+    (log-and-continue), which the sweep also guarantees internally.
+    ``app.config`` stays the owner of tunable settings, so the window is a
+    parameter here rather than a Settings field (follow-up: a
+    ``cli_run_retention_days`` field once config ownership allows).
+    """
+
+    from app.config import get_settings
+    from app.database import SessionLocal
+
+    controller = CLIExecutionController(
+        settings or get_settings(), session_factory or SessionLocal
+    )
+    return controller.sweep_retained(
+        older_than=older_than or DEFAULT_RETENTION_SWEEP
+    )

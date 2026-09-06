@@ -42,6 +42,7 @@ const directorGroupsApi = vi.spyOn(api, "directorCommandGroups");
 const directorProposeApi = vi.spyOn(api, "directorProposeCommandGroup");
 const upscaleApi = vi.spyOn(api, "upscaleCandidate");
 const selectApi = vi.spyOn(api, "selectCandidate");
+const nextPageApi = vi.spyOn(api, "nextPage");
 
 function pageFixture(overrides: Partial<MangaPage> = {}): MangaPage {
   return {
@@ -404,6 +405,7 @@ describe("GenerateSection 关键行为", () => {
     characterPackagesApi.mockReset().mockResolvedValue([]);
     characterPackageApi.mockReset();
     workbenchApi.mockReset().mockResolvedValue(workbenchFixture());
+    nextPageApi.mockReset();
   });
 
   it("生产门禁未通过时展示阻塞文案，且不发起生成请求", async () => {
@@ -415,6 +417,73 @@ describe("GenerateSection 关键行为", () => {
     expect(screen.getByRole("button", { name: "生成下一页" })).toBeDisabled();
     expect(await screen.findByText("这个批次还没有候选")).toBeInTheDocument();
     expect(generateCandidate).not.toHaveBeenCalled();
+  });
+
+  it("生成下一页后旧页检查面板不带到第 2 页：reviewCandidateId 被清理", async () => {
+    const page2 = pageFixture({ id: "page-2", page_number: 2 });
+    const candidate = candidateFixture({ is_selected: false });
+    const readyProduction = {
+      page_id: "page-1",
+      state: "READY" as const,
+      ready: true,
+      selected_candidate_id: candidate.id,
+      blockers: [],
+    };
+    const workbenchPage1 = workbenchFixture({
+      candidates: [candidate],
+      selected_candidate: candidate,
+      production: readyProduction,
+    });
+    const workbenchPage2 = workbenchFixture({
+      page: page2,
+      current_batch: null,
+      candidates: [],
+      selected_candidate: null,
+      selected_candidate_state: "NONE",
+      production: { ...readyProduction, page_id: "page-2", selected_candidate_id: null },
+    });
+    pagesApi.mockResolvedValue([pageFixture(), page2]);
+    workbenchApi.mockImplementation((pageId: string) =>
+      Promise.resolve(pageId === "page-2" ? workbenchPage2 : workbenchPage1));
+    batchesApi.mockImplementation((pageId: string) =>
+      Promise.resolve(pageId === "page-2" ? [] : [workbenchPage1.current_batch!]));
+    candidatesApi.mockResolvedValue([candidate]);
+    nextPageApi.mockResolvedValue(page2);
+    renderGenerate();
+    // 第 1 页打开检查面板
+    fireEvent.click(await screen.findByRole("button", { name: "视觉检查" }));
+    expect(await screen.findByText("候选视觉检查")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "生成下一页" }));
+    await waitFor(() => {
+      expect(nextPageApi).toHaveBeenCalledWith("page-1");
+    });
+    // 第 2 页工作台落地、抽卡面板完整渲染后，检查面板必须保持关闭；
+    // 若 reviewCandidateId 残留，面板会带着第 1 页的旧候选在新页渲染。
+    await waitFor(() => {
+      expect(screen.getByText("第 2 页候选")).toBeInTheDocument();
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/PRODUCTION GATE/)).toBeInTheDocument();
+    });
+    expect(screen.queryByText("候选视觉检查")).not.toBeInTheDocument();
+  });
+
+  it("workbench 查询 rejected 时展示错误卡与重试，而不是半渲染工作台", async () => {
+    workbenchApi.mockRejectedValue(new Error("工作台服务暂时不可用"));
+    renderGenerate();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("页面生产状态无法载入");
+    expect(alert).toHaveTextContent("工作台服务暂时不可用");
+    expect(screen.getByRole("button", { name: "重试" })).toBeInTheDocument();
+    // 门禁读数、批次切换器等静默缺口不允许出现，生成按钮也不渲染。
+    expect(screen.queryByText("正在读取当前页生产状态")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "生成 1 个 1K 彩色候选" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("选择要查看的生成批次")).not.toBeInTheDocument();
+
+    workbenchApi.mockResolvedValue(workbenchFixture());
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    expect(await screen.findByRole("button", { name: "生成 1 个 1K 彩色候选" })).toBeInTheDocument();
   });
 
   it("局部修改入口：候选卡片按钮打开局部编辑器，关闭返回网格", async () => {

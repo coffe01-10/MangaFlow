@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.helpers import candidate_read
+from app.api.helpers import candidate_read, ensure_project_scope
 from app.api.routes.workflow.common import _page, _page_candidate_count, _panel_read
 from app.config import get_settings
 from app.database import get_db
@@ -34,10 +34,15 @@ router = APIRouter()
 
 
 @router.get("/chapters/{chapter_id}/pages", response_model=list[PageRead])
-def list_pages(chapter_id: str, db: Session = Depends(get_db)) -> list[MangaPage]:
+def list_pages(
+    chapter_id: str,
+    db: Session = Depends(get_db),
+    project_id: str | None = None,
+) -> list[MangaPage]:
     chapter = db.get(Chapter, chapter_id)
     if not chapter or chapter.deleted_at is not None:
         raise HTTPException(status_code=404, detail="章节不存在")
+    ensure_project_scope(db, chapter, project_id, label="章节")
     return list(
         db.scalars(
             select(MangaPage)
@@ -48,16 +53,25 @@ def list_pages(chapter_id: str, db: Session = Depends(get_db)) -> list[MangaPage
 
 
 @router.get("/pages/{page_id}", response_model=PageRead)
-def get_page(page_id: str, db: Session = Depends(get_db)) -> MangaPage:
-    return _page(db, page_id)
+def get_page(
+    page_id: str,
+    db: Session = Depends(get_db),
+    project_id: str | None = None,
+) -> MangaPage:
+    page = _page(db, page_id)
+    ensure_project_scope(db, page, project_id, label="页面")
+    return page
 
 
 @router.get("/pages/{page_id}/readiness", response_model=PageReadinessRead)
 def get_page_readiness(
     page_id: str,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> PageReadinessRead:
-    return build_page_readiness(db, _page(db, page_id), get_settings())
+    page = _page(db, page_id)
+    ensure_project_scope(db, page, project_id, label="页面")
+    return build_page_readiness(db, page, get_settings())
 
 
 @router.get(
@@ -67,10 +81,12 @@ def get_page_readiness(
 def get_chapter_production_readiness(
     chapter_id: str,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> ChapterProductionReadinessRead:
     chapter = db.get(Chapter, chapter_id)
     if not chapter or chapter.deleted_at is not None:
         raise HTTPException(status_code=404, detail="章节不存在")
+    ensure_project_scope(db, chapter, project_id, label="章节")
     return build_chapter_production_readiness(db, chapter)
 
 
@@ -81,16 +97,21 @@ def get_chapter_production_readiness(
 def get_page_production_readiness(
     page_id: str,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> PageProductionReadinessRead:
-    return build_page_production_readiness(db, _page(db, page_id))
+    page = _page(db, page_id)
+    ensure_project_scope(db, page, project_id, label="页面")
+    return build_page_production_readiness(db, page)
 
 
 @router.get("/pages/{page_id}/generation-workbench", response_model=GenerationWorkbenchRead)
 def get_generation_workbench(
     page_id: str,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> GenerationWorkbenchRead:
     page = _page(db, page_id)
+    ensure_project_scope(db, page, project_id, label="页面")
     panels = list(
         db.scalars(select(Panel).where(Panel.page_id == page.id).order_by(Panel.reading_order))
     )

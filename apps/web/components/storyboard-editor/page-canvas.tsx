@@ -475,7 +475,9 @@ export function PageCanvas({
       onOpenInspector();
       return;
     }
-    if ((event.key === "Delete" || event.key === "Backspace") && selectedBubble) {
+    // 气泡删除是版本化写入：几何/叙事保存在途（interactive=false）时键盘
+    // Delete 与指针手势一样不发起，避免并发写制造虚假 409。
+    if ((event.key === "Delete" || event.key === "Backspace") && selectedBubble && interactive) {
       event.preventDefault();
       onDeleteBubble(selectedBubble.dialogue.id);
       return;

@@ -208,7 +208,14 @@ export default function ProjectWorkspace({
   const assignOutfit = useMutation({
     mutationFn: ({ sceneId, assignments }: { sceneId: string; assignments: Record<string, string> }) =>
       api.assignSceneOutfits(sceneId, assignments),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["script", activeChapterId] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["script", activeChapterId] });
+      // 后端会 bump storyboard_version 并把相关页标记待复查
+      // （mark_storyboard_changed + mark_pages_for_review）；不失效 pages 和
+      // generation-workbench 时，工作台仍持旧 storyboard_version，首次抽卡即 409。
+      queryClient.invalidateQueries({ queryKey: ["pages", activeChapterId] });
+      queryClient.invalidateQueries({ queryKey: ["generation-workbench"] });
+    },
   });
 
   const replanPage = useMutation({
@@ -262,10 +269,9 @@ export default function ProjectWorkspace({
     return () => window.cancelAnimationFrame(frame);
   }, [assetView, id, section, workspaceRouteReady]);
 
-  if (project.isLoading || !draft) {
-    return <AppShell><div className="full-loading"><LoaderCircle className="spin" />加载项目工作区…</div></AppShell>;
-  }
-  if (project.isError) {
+  // 首载失败必须先于加载分支判断：rejected 状态下 data 为空、draft 为 null，
+  // 若先判 isLoading/!draft 会永远停在「加载项目工作区…」，错误重试界面成为死代码。
+  if (project.isError && !draft) {
     return <AppShell><div className="full-loading error">
       <CircleAlert />
       <div>
@@ -277,6 +283,9 @@ export default function ProjectWorkspace({
         </div>
       </div>
     </div></AppShell>;
+  }
+  if (project.isLoading || !draft) {
+    return <AppShell><div className="full-loading"><LoaderCircle className="spin" />加载项目工作区…</div></AppShell>;
   }
 
   return (

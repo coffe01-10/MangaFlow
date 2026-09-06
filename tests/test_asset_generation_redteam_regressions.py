@@ -5,9 +5,15 @@ Covers issue #157 (approve-reference §10.3a cross-character package guard),
 soft-deletes), the #126 tail (approve_style_test / activate_style must fail
 closed on soft-deleted test images) and #138 (a late STYLE_TEST completion
 must not regress CONFIRMED/ACTIVE styles; concurrent activate_style calls
-keep exactly one ACTIVE style). Real PostgreSQL concurrency and real
-provider calls stay NOT RUN: the concurrency test uses file-backed SQLite
-sessions and the STYLE_TEST handler runs against the offline fake adapter.
+keep exactly one ACTIVE style). The review-round additions pin the
+detach/claim/lock ordering inside the same surface: activate_style re-runs
+its approval gates on the post-lock re-read, approve_asset_reference takes
+the §10.3a guard under the asset ownership lock (retrying SQLITE_BUSY), and
+the asset-candidate routes honor the optional project_id scope parameter.
+Real PostgreSQL concurrency and real provider calls stay NOT RUN: the
+concurrency tests use file-backed SQLite sessions, the lock-contention tests
+force the retry deterministically, and the STYLE_TEST handler runs against
+the offline fake adapter.
 """
 
 from concurrent.futures import ThreadPoolExecutor
@@ -24,6 +30,8 @@ from app.domain.states import Resolution
 from app.models import (
     Asset,
     AssetCandidate,
+    CharacterModelPackage,
+    CharacterModelPackageVersion,
     CharacterModelPackageVersionReference,
     CharacterReference,
     GenerationBatch,
@@ -653,3 +661,357 @@ def test_concurrent_style_activation_leaves_single_active(style_sessions, monkey
     assert active_after[0].id == loser_style_id
     assert verify.get(Project, project_id).default_style_id == loser_style_id
     verify.close()
+
+
+# --- review round: activate_style re-runs its gates on the post-lock re-read --
+
+
+def test_activate_style_rejects_concurrent_color_mode_switch(
+    client, db_session, monkeypatch
+):
+    """A color-mode switch landing between the pre-lock gates and the project
+    lock must fail the activation instead of promoting the cleared style."""
+    import app.api.routes.asset_generation as asset_generation_routes
+
+    project = _project(client, "并发切换黑白")
+    reference = _orm_asset(
+        db_session,
+        project["id"],
+        kind="STYLE_REFERENCE",
+        sha256="g" * 64,
+        source="USER_UPLOAD",
+    )
+    style = client.post(
+        f"/api/v1/projects/{project['id']}/styles",
+        json={
+            "name": "彩稿",
+            "color_mode": "color",
+            "profile": {"palette_confirmed": True, "test_image_approved": True},
+            "reference_asset_ids": [reference.id],
+        },
+    )
+    assert style.status_code == 201, style.text
+    batch = _orm_batch(
+        db_session,
+        project["id"],
+        target_type="STYLE",
+        target_id=style.json()["id"],
+        kind="STYLE_TEST",
+    )
+    test_asset = _orm_asset(
+        db_session, project["id"], kind="style_test", sha256="h" * 64,
+        source="AI_GENERATED",
+    )
+    candidate = _orm_candidate(db_session, batch.id, test_asset.id, variant="STYLE_TEST")
+    style_row = db_session.get(StyleProfile, style.json()["id"])
+    style_row.profile = {**style_row.profile, "test_candidate_id": candidate.id}
+    db_session.commit()
+
+    real_lock_entity = asset_generation_routes.lock_entity
+    switched = {"fired": False}
+
+    def lock_with_interleaved_update_style(db, model_cls, entity_id):
+        if model_cls is Project and not switched["fired"]:
+            switched["fired"] = True
+            # The concurrent update_style commits in the window between the
+            # pre-lock gates and the project lock: the color mode flips and
+            # the palette flags clear (update_style's color_changed branch).
+            raced = db.get(StyleProfile, style_row.id)
+            raced.color_mode = "monochrome"
+            profile = dict(raced.profile)
+            profile.pop("palette", None)
+            profile.pop("palette_draft", None)
+            profile["palette_confirmed"] = False
+            profile["test_image_approved"] = False
+            profile.pop("test_candidate_id", None)
+            raced.profile = profile
+            db.flush()
+        return real_lock_entity(db, model_cls, entity_id)
+
+    monkeypatch.setattr(
+        asset_generation_routes, "lock_entity", lock_with_interleaved_update_style
+    )
+
+    refused = client.post(
+        f"/api/v1/projects/{project['id']}/styles/{style_row.id}/activate"
+    )
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"] == "正式页面要求使用彩色漫画风格"
+    db_session.expire_all()
+    verified = db_session.get(StyleProfile, style_row.id)
+    assert verified.status != "ACTIVE"
+    # The interleaved switch rolled back with the rejected unit: the stored
+    # row keeps its color mode and approval flags.
+    assert verified.color_mode == "color"
+    assert verified.profile.get("palette_confirmed") is True
+
+
+# --- review round: approve-reference §10.3a guard under the asset lock --------
+
+
+def test_approve_reference_rechecks_foreign_packages_under_asset_lock(
+    client, db_session, monkeypatch
+):
+    """A foreign package bind landing in the window the bare pre-lock SELECT
+    used to leave open must still block the approval."""
+    import app.api.routes.asset_generation as asset_generation_routes
+
+    project = _project(client, "锁下复检外角色包")
+    character_x = _character(client, project["id"], "林澈")
+    character_y = _character(client, project["id"], "陈昊")
+    sheet = _orm_asset(
+        db_session, project["id"], kind="character", sha256="i" * 64,
+        source="AI_GENERATED",
+    )
+    package = CharacterModelPackage(project_id=project["id"], character_id=character_x["id"])
+    db_session.add(package)
+    db_session.flush()
+    draft = CharacterModelPackageVersion(
+        package_id=package.id, version_number=1, status="DRAFT"
+    )
+    db_session.add(draft)
+    db_session.commit()
+    batch = _orm_batch(
+        db_session,
+        project["id"],
+        target_type="CHARACTER",
+        target_id=character_y["id"],
+        kind="CHARACTER",
+    )
+    candidate = _orm_candidate(db_session, batch.id, sheet.id, variant="SHEET")
+
+    real_lock = asset_generation_routes.lock_asset_for_ownership
+    raced = {"fired": False}
+
+    def lock_with_interleaved_foreign_bind(db, asset_id):
+        if asset_id == sheet.id and not raced["fired"]:
+            raced["fired"] = True
+            # The foreign package bind commits right before the ownership
+            # lock is taken — exactly the race the bare SELECT guard missed.
+            db.add(
+                CharacterModelPackageVersionReference(
+                    version_id=draft.id, asset_id=asset_id, role="front", label=""
+                )
+            )
+            db.flush()
+        return real_lock(db, asset_id)
+
+    monkeypatch.setattr(
+        asset_generation_routes, "lock_asset_for_ownership", lock_with_interleaved_foreign_bind
+    )
+
+    refused = client.post(
+        f"/api/v1/asset-candidates/{candidate.id}/approve-reference",
+        json={"character_id": character_y["id"], "bind_character_reference": True},
+    )
+    assert refused.status_code == 409, refused.text
+    assert "模型包版本" in refused.json()["detail"]
+    db_session.expire_all()
+    assert (
+        db_session.scalar(
+            select(CharacterReference).where(
+                CharacterReference.character_id == character_y["id"]
+            )
+        )
+        is None
+    )
+    assert db_session.get(Asset, sheet.id).kind == "character"
+    # The interleaved bind itself rolled back with the rejected unit.
+    assert (
+        db_session.scalar(
+            select(CharacterModelPackageVersionReference.id).where(
+                CharacterModelPackageVersionReference.asset_id == sheet.id
+            )
+        )
+        is None
+    )
+
+
+def test_approve_reference_bind_survives_lock_contention_retry(
+    client, db_session, monkeypatch
+):
+    """SQLITE_BUSY on the ownership lock retries the whole bind unit; the
+    binding still lands atomically after the retry."""
+    import sqlite3
+
+    import app.api.routes.asset_generation as asset_generation_routes
+    from sqlalchemy.exc import OperationalError
+
+    monkeypatch.setattr(
+        "app.services.character_packages.pause_before_ordinal_retry",
+        lambda *_args: None,
+    )
+    project = _project(client, "绑定锁冲突重试")
+    character = _character(client, project["id"], "荻原桜")
+    sheet = _orm_asset(
+        db_session, project["id"], kind="character", sha256="j" * 64,
+        source="AI_GENERATED",
+    )
+    batch = _orm_batch(
+        db_session,
+        project["id"],
+        target_type="CHARACTER",
+        target_id=character["id"],
+        kind="CHARACTER",
+    )
+    candidate = _orm_candidate(db_session, batch.id, sheet.id, variant="SHEET")
+
+    real_lock = asset_generation_routes.lock_asset_for_ownership
+    attempts = {"n": 0}
+
+    def contended_lock(db, asset_id):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise OperationalError(
+                "UPDATE assets", None, sqlite3.OperationalError("database is locked")
+            )
+        return real_lock(db, asset_id)
+
+    monkeypatch.setattr(asset_generation_routes, "lock_asset_for_ownership", contended_lock)
+
+    approved = client.post(
+        f"/api/v1/asset-candidates/{candidate.id}/approve-reference",
+        json={"character_id": character["id"], "bind_character_reference": True},
+    )
+    assert approved.status_code == 200, approved.text
+    assert attempts["n"] == 2
+    reference = db_session.scalar(
+        select(CharacterReference).where(CharacterReference.asset_id == sheet.id)
+    )
+    assert reference is not None
+    assert reference.character_id == character["id"]
+    db_session.expire_all()
+    assert db_session.get(Asset, sheet.id).kind == "CHARACTER_REFERENCE"
+    snapshot = db_session.get(AssetCandidate, candidate.id).prompt_snapshot
+    assert snapshot["reference_approval"]["approved"] is True
+
+
+# --- review round: optional project_id scope on the candidate routes ----------
+
+
+def test_asset_candidate_routes_enforce_project_scope(client, db_session, monkeypatch):
+    """generate/approve/retract candidate routes hide cross-project objects
+    behind the shared 404 when the caller names a foreign project."""
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    project_a = _project(client, "隔离项目甲")
+    project_b = _project(client, "隔离项目乙")
+    character = _character(client, project_a["id"], "我")
+
+    queued = client.post(
+        f"/api/v1/characters/{character['id']}/complete-sheet",
+        json={
+            "model_alias": "image.nano_banana_2",
+            "resolution": "1K",
+            "generation_mode": "CONCEPT",
+        },
+    )
+    assert queued.status_code == 202, queued.text
+    candidate_id = queued.json()["candidate"]["id"]
+    batch_id = queued.json()["candidate"]["batch_id"]
+
+    foreign = client.post(
+        f"/api/v1/asset-generation-batches/{batch_id}/candidates",
+        params={"project_id": project_b["id"]},
+        json={
+            "model_alias": "image.nano_banana_2",
+            "resolution": "1K",
+            "variant": "SHEET",
+        },
+    )
+    assert foreign.status_code == 404, foreign.text
+    assert "不属于当前项目" in foreign.json()["detail"]
+    owned = client.post(
+        f"/api/v1/asset-generation-batches/{batch_id}/candidates",
+        params={"project_id": project_a["id"]},
+        json={
+            "model_alias": "image.nano_banana_2",
+            "resolution": "1K",
+            "variant": "SHEET",
+        },
+    )
+    assert owned.status_code == 202, owned.text
+
+    sheet = _orm_asset(
+        db_session, project_a["id"], kind="character", sha256="k" * 64,
+        source="AI_GENERATED",
+    )
+    candidate = db_session.get(AssetCandidate, candidate_id)
+    candidate.asset_id = sheet.id
+    candidate.status = "READY"
+    db_session.commit()
+
+    refused = client.post(
+        f"/api/v1/asset-candidates/{candidate_id}/approve-reference",
+        params={"project_id": project_b["id"]},
+        json={"character_id": character["id"], "bind_character_reference": True},
+    )
+    assert refused.status_code == 404, refused.text
+    assert (
+        db_session.scalar(
+            select(CharacterReference).where(CharacterReference.asset_id == sheet.id)
+        )
+        is None
+    )
+
+    approved = client.post(
+        f"/api/v1/asset-candidates/{candidate_id}/approve-reference",
+        params={"project_id": project_a["id"]},
+        json={"character_id": character["id"], "bind_character_reference": True},
+    )
+    assert approved.status_code == 200, approved.text
+
+    refused_retract = client.delete(
+        f"/api/v1/asset-candidates/{candidate_id}/approve-reference",
+        params={"project_id": project_b["id"]},
+    )
+    assert refused_retract.status_code == 404, refused_retract.text
+    retracted = client.delete(
+        f"/api/v1/asset-candidates/{candidate_id}/approve-reference",
+        params={"project_id": project_a["id"]},
+    )
+    assert retracted.status_code == 200, retracted.text
+    assert retracted.json()["approved"] is False
+
+
+def test_approve_reference_checks_scope_before_state_gates(client, db_session):
+    """A cross-project caller naming a non-READY candidate gets the scope 404,
+    not the READY-gate 409: the readiness/asset-liveness 409s must not act as
+    a state oracle for foreign projects (same order as retract_asset_reference)."""
+    project_a = _project(client, "状态先验项目甲")
+    project_b = _project(client, "状态先验项目乙")
+    character = _character(client, project_a["id"], "未完成角色")
+    batch = _orm_batch(
+        db_session,
+        project_a["id"],
+        target_type="CHARACTER",
+        target_id=character["id"],
+        kind="CHARACTER",
+    )
+    candidate = AssetCandidate(
+        batch_id=batch.id,
+        ordinal=1,
+        model_alias="image.nano_banana_2",
+        resolution=Resolution.DRAFT_1K,
+        variant="SHEET",
+        status="GENERATING",
+    )
+    db_session.add(candidate)
+    db_session.commit()
+
+    foreign = client.post(
+        f"/api/v1/asset-candidates/{candidate.id}/approve-reference",
+        params={"project_id": project_b["id"]},
+        json={"character_id": character["id"], "bind_character_reference": True},
+    )
+    assert foreign.status_code == 404, foreign.text
+    assert foreign.json()["detail"] == "候选不存在或不属于当前项目"
+
+    # Positive controls: the READY gate still fires for in-scope callers.
+    for params in (None, {"project_id": project_a["id"]}):
+        generating = client.post(
+            f"/api/v1/asset-candidates/{candidate.id}/approve-reference",
+            params=params,
+            json={"character_id": character["id"], "bind_character_reference": True},
+        )
+        assert generating.status_code == 409, generating.text
+        assert generating.json()["detail"] == "角色设定草稿尚未生成完成"

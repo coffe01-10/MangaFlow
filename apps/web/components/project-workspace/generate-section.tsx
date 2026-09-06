@@ -90,6 +90,8 @@ export function GenerateSection({
     packageSummariesByCharacter,
     selectedPage,
     candidates,
+    workbench,
+    pageBatches,
     generateWorkbenchReady,
     orderedPageBatches,
     latestBatch,
@@ -144,6 +146,13 @@ export function GenerateSection({
           <strong>角色模型包状态无法载入</strong>
           <p>在确认各角色的模型包发布状态前，无法安全解析生成参考，已暂停生成。{characterPackages.error.message}</p>
           <button type="button" className="button outline compact" onClick={() => characterPackages.refetch()}>重试</button>
+        </div>
+      ) : workbench.isError || pageBatches.isError ? (
+        <div className="asset-empty" role="alert">
+          <CircleAlert />
+          <strong>页面生产状态无法载入</strong>
+          <p>当前页的分镜、批次或生产门禁数据读取失败，已暂停生成，避免用不完整状态发起抽卡。{(workbench.error ?? pageBatches.error)?.message ?? "请稍后重试"}</p>
+          <button type="button" className="button outline compact" onClick={() => { workbench.refetch(); pageBatches.refetch(); }}>重试</button>
         </div>
       ) : !generateWorkbenchReady ? <div className="generate-skeleton" role="status" aria-label="正在载入生成工作台"><LoaderCircle className="spin" size={22} /><span>正在载入生成工作台…</span></div> : localEditCandidate ? (
         <LocalEditWorkspace

@@ -9,6 +9,7 @@ from app.schemas import VersionToken
 class RuntimeSettingsRead(BaseModel):
     queue_mode: Literal["AUTO", "LOCAL", "REDIS"] = "AUTO"
     job_timeout_seconds: int
+    job_lease_seconds: int
     max_auto_repairs: int
     default_concurrency: int = 4
     health_check_interval_seconds: int = 600
@@ -26,6 +27,7 @@ class RuntimeSettingsUpdate(BaseModel):
 
     queue_mode: Literal["AUTO", "LOCAL", "REDIS"] | None = None
     job_timeout_seconds: int | None = Field(default=None, ge=30, le=3600)
+    job_lease_seconds: int | None = Field(default=None, ge=30, le=3600)
     max_auto_repairs: int | None = Field(default=None, ge=0, le=10)
     default_concurrency: int | None = Field(default=None, ge=1, le=8)
     health_check_interval_seconds: int | None = Field(default=None, ge=60, le=3600)
@@ -36,6 +38,7 @@ class RuntimeSettingsUpdate(BaseModel):
     @field_validator(
         "queue_mode",
         "job_timeout_seconds",
+        "job_lease_seconds",
         "max_auto_repairs",
         "default_concurrency",
         "health_check_interval_seconds",

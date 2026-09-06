@@ -63,6 +63,7 @@ export interface ModelCapability {
 export interface RuntimeSettings {
   queue_mode: "AUTO" | "LOCAL" | "REDIS";
   job_timeout_seconds: number;
+  job_lease_seconds: number;
   max_auto_repairs: number;
   default_concurrency: number;
   health_check_interval_seconds: number;
@@ -80,6 +81,7 @@ export type RuntimeSettingsUpdate = Partial<
     RuntimeSettings,
     | "queue_mode"
     | "job_timeout_seconds"
+    | "job_lease_seconds"
     | "max_auto_repairs"
     | "default_concurrency"
     | "health_check_interval_seconds"

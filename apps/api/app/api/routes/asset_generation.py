@@ -52,7 +52,8 @@ from app.schemas import (
 )
 from app.services.character_packages import (
     assert_asset_not_referenced_by_foreign_packages,
-    detach_draft_package_references_for_asset,
+    detach_draft_package_references_for_assets,
+    lock_asset_for_ownership,
     run_lock_retry,
 )
 from app.services.job_service import create_job, enqueue_job
@@ -300,11 +301,6 @@ def delete_outfit(
     generated_asset_ids = {
         candidate.asset_id for candidate in candidates if candidate.asset_id
     }
-    deleted_at = datetime.now(UTC)
-    for candidate in candidates:
-        if candidate.deleted_at is None:
-            candidate.deleted_at = deleted_at
-            candidate.version += 1
     user_owned_reference_ids = {
         asset.id
         for asset in db.scalars(select(Asset).where(Asset.id.in_(exclusive_reference_ids)))
@@ -318,9 +314,18 @@ def delete_outfit(
     # _detach_reference_asset), so the slot stays rebindable and publish keeps
     # counting live references only. READY+ rows keep the frozen fact;
     # consumers filter by Asset.deleted_at at read time. detach must be the
-    # first writer in this unit, before any soft-delete mutations.
-    for asset_id in sorted(asset_ids_to_delete):
-        detach_draft_package_references_for_asset(db, asset_id)
+    # first writer in this unit, before the candidate tombstones and asset
+    # soft-deletes below: its internal run_lock_retry rolls the whole session
+    # back on SQLITE_BUSY, and any earlier tombstone write would be silently
+    # discarded instead of re-applied on the retry. All assets go through ONE
+    # retryable detach unit so a SQLITE_BUSY on a later asset cannot roll
+    # back an earlier asset's clears and commit a partial teardown.
+    detach_draft_package_references_for_assets(db, sorted(asset_ids_to_delete))
+    deleted_at = datetime.now(UTC)
+    for candidate in candidates:
+        if candidate.deleted_at is None:
+            candidate.deleted_at = deleted_at
+            candidate.version += 1
     if asset_ids_to_delete:
         for asset in db.scalars(select(Asset).where(Asset.id.in_(asset_ids_to_delete))):
             if asset.deleted_at is None:
@@ -493,22 +498,33 @@ def _ensure_style_test_image_alive(db: Session, style: StyleProfile) -> Asset | 
     return asset
 
 
-@router.post("/projects/{project_id}/styles/{style_id}/activate", response_model=StyleProfileRead)
-def activate_style(project_id: str, style_id: str, db: Session = Depends(get_db)) -> StyleProfile:
-    project = db.get(Project, project_id)
-    style = db.get(StyleProfile, style_id)
-    if not project or not style or style.project_id != project_id:
-        raise HTTPException(status_code=404, detail="项目或风格档案不存在")
+def _reject_style_not_activatable(db: Session, style: StyleProfile) -> None:
+    """Activation approval gates (issue #126).
+
+    Run once pre-lock for a fast fail and re-run on the post-lock re-read:
+    a concurrent ``update_style`` color-mode switch clears the palette flags
+    and must not slip between the pre-lock read and the ACTIVE promotion.
+    """
+
     if style.color_mode != "color":
         raise HTTPException(status_code=409, detail="正式页面要求使用彩色漫画风格")
     if not style.profile.get("palette_confirmed"):
         raise HTTPException(status_code=409, detail="请先确认彩色色板")
     if not style.profile.get("test_image_approved"):
         raise HTTPException(status_code=409, detail="请先人工通过风格测试图")
-    # Issue #126: the approval flags must not outlive the approved test image.
-    # When the profile records the approved candidate, its asset has to still
-    # be live; a deleted test image must not ride the flags into ACTIVE.
+    # The approval flags must not outlive the approved test image: when the
+    # profile records the approved candidate, its asset has to still be live;
+    # a deleted test image must not ride the flags into ACTIVE.
     _ensure_style_test_image_alive(db, style)
+
+
+@router.post("/projects/{project_id}/styles/{style_id}/activate", response_model=StyleProfileRead)
+def activate_style(project_id: str, style_id: str, db: Session = Depends(get_db)) -> StyleProfile:
+    project = db.get(Project, project_id)
+    style = db.get(StyleProfile, style_id)
+    if not project or not style or style.project_id != project_id:
+        raise HTTPException(status_code=404, detail="项目或风格档案不存在")
+    _reject_style_not_activatable(db, style)
 
     def _activate() -> None:
         # Issue #138-B: claim the project row before the read-modify-write
@@ -525,6 +541,11 @@ def activate_style(project_id: str, style_id: str, db: Session = Depends(get_db)
         target = db.get(StyleProfile, style_id)
         if not current_project or not target:
             raise HTTPException(status_code=404, detail="项目或风格档案不存在")
+        # The pre-lock guards ran on the caller's snapshot; a concurrent
+        # update_style can switch the color mode and clear the palette flags
+        # between that read and this lock, so the gates are re-run on the
+        # post-lock re-read before the status is promoted to ACTIVE.
+        _reject_style_not_activatable(db, target)
         previous_id = current_project.default_style_id
         if previous_id and previous_id != target.id:
             previous = db.get(StyleProfile, previous_id)
@@ -744,10 +765,12 @@ def assign_scene_outfits(
     scene_id: str,
     payload: SceneOutfitUpdate,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> dict:
     scene = db.get(Scene, scene_id)
     if not scene:
         raise HTTPException(status_code=404, detail="场景不存在")
+    ensure_project_scope(db, scene, project_id, label="场景")
     chapter = db.get(Chapter, scene.chapter_id)
     assignments = {
         character_id: outfit_id
@@ -793,20 +816,25 @@ def _target_project(db: Session, target_type: str, target_id: str) -> tuple[str,
 def start_asset_batch(
     payload: AssetBatchCreate,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> GenerationBatch:
     expected_kind = {"CHARACTER": "CHARACTER", "OUTFIT": "OUTFIT", "STYLE": "STYLE_TEST"}
     if payload.generation_kind != expected_kind[payload.target_type]:
         raise HTTPException(status_code=422, detail="资产生成类型与目标档案不匹配")
-    project_id, target = _target_project(db, payload.target_type, payload.target_id)
+    target_project_id, target = _target_project(db, payload.target_type, payload.target_id)
+    # Issue #143: the batch's project comes from the target row itself; the
+    # optional query parameter only decides whether a foreign target is hidden
+    # behind the shared 404 before any reference-asset state guards run.
+    ensure_project_scope(db, target, project_id, label="生成目标")
     if payload.target_type == "CHARACTER" and not character_references(db, target.id):
         raise HTTPException(status_code=409, detail="请先给角色绑定至少一张人物参考图")
     if payload.target_type == "OUTFIT":
-        if not _has_active_reference_assets(db, project_id, target.reference_asset_ids):
+        if not _has_active_reference_assets(db, target_project_id, target.reference_asset_ids):
             raise HTTPException(status_code=409, detail="请先给服装档案绑定至少一张服装参考图")
         if not character_references(db, target.character_id):
             raise HTTPException(status_code=409, detail="请先给服装所属角色绑定人物参考图")
     if payload.target_type == "STYLE" and not _has_active_reference_assets(
-        db, project_id, target.profile.get("reference_asset_ids", [])
+        db, target_project_id, target.profile.get("reference_asset_ids", [])
     ):
         raise HTTPException(status_code=409, detail="请先给风格档案绑定至少一张漫画参考图")
     if payload.target_type == "STYLE" and not target.profile.get("palette_confirmed"):
@@ -814,7 +842,7 @@ def start_asset_batch(
     try:
         batch = create_generation_batch(
             db,
-            project_id=project_id,
+            project_id=target_project_id,
             generation_kind=payload.generation_kind,
             target_type=payload.target_type,
             target_id=payload.target_id,
@@ -833,10 +861,12 @@ def list_asset_batches(
     target_id: str,
     limit: int = 10,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> list[GenerationBatch]:
     if target_type not in {"CHARACTER", "OUTFIT", "STYLE"}:
         raise HTTPException(status_code=422, detail="资产生成目标类型无效")
-    _target_project(db, target_type, target_id)
+    _, target = _target_project(db, target_type, target_id)
+    ensure_project_scope(db, target, project_id, label="生成目标")
     return list(
         db.scalars(
             select(GenerationBatch)
@@ -859,12 +889,21 @@ def generate_asset_candidate(
     batch_id: str,
     payload: AssetCandidateCreate,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> CandidateQueuedRead:
     if payload.model_alias.lower() == "auto":
         raise HTTPException(
             status_code=422,
             detail="参考资产必须显式选择图片模型，以保持项目画风一致",
         )
+    # Issue #143 scoping: only enforced when the caller names a project, so
+    # the historical missing-batch 409 from create_asset_candidate stays
+    # intact for callers that omit the parameter.
+    if project_id is not None:
+        batch = db.get(GenerationBatch, batch_id)
+        if not batch:
+            raise HTTPException(status_code=404, detail="资产生成批次不存在")
+        ensure_project_scope(db, batch, project_id, label="资产生成批次")
     try:
         candidate, job = create_asset_candidate(
             db,
@@ -890,10 +929,12 @@ def generate_complete_character_sheet(
     character_id: str,
     payload: CharacterSheetCreate,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> CandidateQueuedRead:
     character = db.get(Character, character_id)
     if not character:
         raise HTTPException(status_code=404, detail="角色不存在")
+    ensure_project_scope(db, character, project_id, label="角色")
     has_reference = bool(character_references(db, character_id))
     if payload.generation_mode == "REFERENCE" and not has_reference:
         raise HTTPException(status_code=409, detail="请先给角色绑定至少一张人物参考图")
@@ -948,6 +989,7 @@ def approve_asset_reference(
     candidate_id: str,
     payload: AssetReferenceApproval,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> dict:
     candidate = db.get(AssetCandidate, candidate_id)
     character = db.get(Character, payload.character_id)
@@ -957,58 +999,76 @@ def approve_asset_reference(
         or not batch
         or batch.target_type != "CHARACTER"
         or batch.target_id != payload.character_id
-        or candidate.status != "READY"
-        or not candidate.asset_id
     ):
-        raise HTTPException(status_code=409, detail="角色设定草稿尚未生成完成")
+        raise HTTPException(status_code=404, detail="角色设定候选不存在")
     if not character or character.id != batch.target_id:
         raise HTTPException(status_code=404, detail="角色不存在")
+    # Scope precedes the READY/asset-liveness gates (issue #143 pattern, same
+    # order as retract_asset_reference): a cross-project caller gets the
+    # shared 404 instead of a state oracle for the candidate's readiness.
+    ensure_project_scope(db, candidate, project_id, label="候选")
+    if candidate.status != "READY" or not candidate.asset_id:
+        raise HTTPException(status_code=409, detail="角色设定草稿尚未生成完成")
     asset = db.get(Asset, candidate.asset_id)
     if not asset or asset.deleted_at is not None:
         raise HTTPException(status_code=409, detail="设定草稿图片不存在")
 
-    reference = db.scalar(
-        select(CharacterReference).where(
-            CharacterReference.character_id == character.id,
-            CharacterReference.asset_id == asset.id,
-        )
-    )
     if payload.bind_character_reference:
-        # Contract §10.3a (issue #157): the sheet must not become this
-        # character's reference while another character's package version
-        # still points at the same asset (package-only bindings carry no
-        # legacy CharacterReference row, so the delete below sees nothing).
-        # Reuses the exact query _check_asset_binding_eligible runs; the
-        # approver's own package matrices never block the bind.
-        assert_asset_not_referenced_by_foreign_packages(
-            db, character_id=character.id, asset_id=asset.id
-        )
-        db.execute(
-            CharacterReference.__table__.delete().where(
-                CharacterReference.asset_id == asset.id,
-                CharacterReference.character_id != character.id,
+
+        def _bind() -> None:
+            # Contract §10.3a (issue #157): the sheet must not become this
+            # character's reference while another character's package version
+            # still points at the same asset (package-only bindings carry no
+            # legacy CharacterReference row, so the delete below sees nothing).
+            # Mirrors characters.bind_reference: the guard and the binding
+            # mutations run under the asset ownership lock so a concurrent
+            # package bind/unbind on the same asset cannot interleave, and the
+            # wrapper turns SQLITE_BUSY into a controlled rollback + retry of
+            # this first-writer unit (the route wrote nothing before it).
+            locked_asset = lock_asset_for_ownership(db, asset.id)
+            if not locked_asset or locked_asset.deleted_at is not None:
+                raise HTTPException(status_code=409, detail="设定草稿图片不存在")
+            assert_asset_not_referenced_by_foreign_packages(
+                db, character_id=character.id, asset_id=asset.id
             )
-        )
-        if payload.set_canonical:
-            db.execute(
-                update(CharacterReference)
-                .where(CharacterReference.character_id == character.id)
-                .values(is_canonical=False)
-            )
-        if reference:
-            reference.is_canonical = payload.set_canonical
-        else:
-            db.add(
-                CharacterReference(
-                    character_id=character.id,
-                    asset_id=asset.id,
-                    angle="complete_sheet",
-                    is_canonical=payload.set_canonical,
+            reference = db.scalar(
+                select(CharacterReference).where(
+                    CharacterReference.character_id == character.id,
+                    CharacterReference.asset_id == asset.id,
                 )
             )
-        asset.kind = "CHARACTER_REFERENCE"
-        character.status = "CANONICAL"
-        character.version += 1
+            db.execute(
+                CharacterReference.__table__.delete().where(
+                    CharacterReference.asset_id == asset.id,
+                    CharacterReference.character_id != character.id,
+                )
+            )
+            if payload.set_canonical:
+                db.execute(
+                    update(CharacterReference)
+                    .where(CharacterReference.character_id == character.id)
+                    .values(is_canonical=False)
+                )
+            if reference:
+                reference.is_canonical = payload.set_canonical
+            else:
+                db.add(
+                    CharacterReference(
+                        character_id=character.id,
+                        asset_id=asset.id,
+                        angle="complete_sheet",
+                        is_canonical=payload.set_canonical,
+                    )
+                )
+            locked_asset.kind = "CHARACTER_REFERENCE"
+            character.status = "CANONICAL"
+            character.version += 1
+
+        run_lock_retry(
+            db,
+            _bind,
+            conflict_detail="角色参考绑定冲突，请稍后重试",
+        )
 
     outfit = None
     if payload.outfit_name:
@@ -1063,11 +1123,16 @@ def approve_asset_reference(
 
 
 @router.delete("/asset-candidates/{candidate_id}/approve-reference", response_model=dict)
-def retract_asset_reference(candidate_id: str, db: Session = Depends(get_db)) -> dict:
+def retract_asset_reference(
+    candidate_id: str,
+    db: Session = Depends(get_db),
+    project_id: str | None = None,
+) -> dict:
     candidate = db.get(AssetCandidate, candidate_id)
     batch = db.get(GenerationBatch, candidate.batch_id) if candidate else None
     if not candidate or not batch or batch.target_type != "CHARACTER" or not candidate.asset_id:
         raise HTTPException(status_code=404, detail="角色设定候选不存在")
+    ensure_project_scope(db, candidate, project_id, label="候选")
     snapshot = dict(candidate.prompt_snapshot)
     approval = snapshot.get("reference_approval")
     if not isinstance(approval, dict) or not approval.get("approved"):

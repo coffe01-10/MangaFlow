@@ -700,15 +700,25 @@ def _resolve_panel_cast(
             continue
         if not _character_is_named(character, visual_text):
             continue
-        # Memorial objects: a name co-occurring with a prop marker in ANY text
-        # field (action, dialogue or narration, either order) refers to the
-        # marker — 「灵牌上刻着爸爸的名字」 is a mention of the tablet, not a
-        # visible father (#164). Only exact contiguous forms were matched in
+        # Memorial objects: a name co-occurring with a prop marker refers to
+        # the marker — 「灵牌上刻着爸爸的名字」 is a mention of the tablet, not
+        # a visible father (#164). Only exact contiguous forms were matched in
         # `action` before, so ordinary phrasing marked the dead as VISIBLE.
+        # The override never demotes an on-screen actor (#164 broadening
+        # regression): when the action field names the character without a
+        # marker (李明站在窗边), a marker+name pair in dialogue/narration
+        # (把李明的照片递给我) is a prop reference about the character, so
+        # only the action field itself is eligible. A character absent from
+        # the action is demoted by a pair in any field.
+        memorial_fields = (
+            (action,)
+            if _character_is_named(character, action)
+            else (action, dialogue, narration)
+        )
         memorial_marker = next(
             (
                 marker
-                for field in (action, dialogue, narration)
+                for field in memorial_fields
                 if field
                 for marker in PROP_MARKERS
                 if marker in field and _character_is_named(character, field)
@@ -1270,6 +1280,17 @@ def plan_chapter_pages(
     from_page_number: int | None = None,
     max_attempts: int = ORDINAL_ALLOCATION_MAX_ATTEMPTS,
 ) -> list[MangaPage]:
+    """Plan the chapter's pages under the Chapter-row lock (#144).
+
+    Session contract for callers: enter with a CLEAN session. The retry
+    paths below call ``db.rollback()`` so each retry starts from a fresh
+    snapshot, and that rollback discards the WHOLE unit of work — including
+    any pending uncommitted writes the caller made before calling in. Both
+    current callers (routes) open the session per request and arrive clean,
+    so this is latent; new callers must commit or roll back their own unit
+    first.
+    """
+
     if not chapter.current_source_revision_id:
         raise HTTPException(status_code=409, detail="章节没有可用原文")
     db.flush()
@@ -1301,6 +1322,8 @@ def plan_chapter_pages(
             # Roll the outer transaction back so the retry takes a fresh
             # snapshot: on WAL SQLite a session that read before a concurrent
             # commit keeps hitting SQLITE_BUSY_SNAPSHOT on every write retry.
+            # Contract (see docstring): callers must enter with a clean
+            # session — this rolls back the whole unit, not just this plan.
             db.rollback()
             db.expire_all()
             pause_before_ordinal_retry(_attempt, max_attempts)

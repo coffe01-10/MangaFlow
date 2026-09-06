@@ -54,6 +54,16 @@ def _read(db: Session, character: Character) -> CharacterRead:
     )
 
 
+def _ensure_character_scope(db: Session, character: Character, project_id: str | None) -> None:
+    """Issue #143 scope guard for routes keyed by ``character_id``.
+
+    An omitted parameter keeps the historical behavior, a mismatched one
+    hides the character behind the shared 「不属于当前项目」 404.
+    """
+
+    ensure_project_scope(db, character, project_id, label="角色")
+
+
 @router.get("/projects/{project_id}/characters", response_model=list[CharacterRead])
 def list_characters(project_id: str, db: Session = Depends(get_db)) -> list[CharacterRead]:
     project = db.get(Project, project_id)
@@ -106,10 +116,12 @@ def update_character(
     character_id: str,
     payload: CharacterUpdate,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> CharacterRead:
     character = db.get(Character, character_id)
     if not character:
         raise HTTPException(status_code=404, detail="角色不存在")
+    _ensure_character_scope(db, character, project_id)
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
     reject_required_nulls(Character, values)
     primary_name = values.get("primary_name", character.primary_name).strip()
@@ -153,10 +165,12 @@ def bind_reference(
     character_id: str,
     payload: CharacterReferenceCreate,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> CharacterReference:
     character = db.get(Character, character_id)
     if not character:
         raise HTTPException(status_code=404, detail="角色不存在")
+    _ensure_character_scope(db, character, project_id)
 
     def _bind() -> CharacterReference:
         asset = lock_asset_for_ownership(db, payload.asset_id)

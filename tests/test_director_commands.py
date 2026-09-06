@@ -1393,3 +1393,46 @@ def test_undo_group_status_reflects_reverted_state(client, db_session):
         )
     )
     assert group.status == "SUPERSEDED"
+
+
+def test_redo_group_status_reflects_restored_state(client, db_session):
+    """Redo companion of #147-5: after undo→redo the journal holds SUPERSEDED
+    originals plus EXECUTED inverse rows, but the parity machinery reports
+    every original back in effect with nothing withdrawn — the group must read
+    COMMITTED, not PARTIALLY_REJECTED (nothing was rejected; the effect is
+    fully restored)."""
+    ctx = _setup(client, db_session)
+    shot = _envelope(ctx, "update_panel_shot", {"shot_type": "wide"}, group_id=_uid())
+    proposed = _propose(client, ctx, [shot])
+    assert proposed.status_code == 200, proposed.text
+    project_id = ctx["project"]["id"]
+    accepted = client.post(
+        f"/api/v1/projects/{project_id}/director/commands/{shot['command_id']}/accept"
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["status"] == "COMMITTED"
+
+    undone = client.post(
+        f"/api/v1/projects/{project_id}/director/commands/{shot['command_id']}/undo"
+    )
+    assert undone.status_code == 200, undone.text
+    assert undone.json()["status"] == "SUPERSEDED"
+    undo_id = next(
+        item["command_id"]
+        for item in undone.json()["commands"]
+        if item["inverse_of_command_id"] == shot["command_id"]
+    )
+
+    redone = client.post(
+        f"/api/v1/projects/{project_id}/director/commands/{undo_id}/redo"
+    )
+    assert redone.status_code == 200, redone.text
+    assert redone.json()["status"] == "COMMITTED"
+
+    db_session.expire_all()
+    group = db_session.scalar(
+        select(DirectorCommandGroup).where(
+            DirectorCommandGroup.command_group_id == shot["command_group_id"]
+        )
+    )
+    assert group.status == "COMMITTED"

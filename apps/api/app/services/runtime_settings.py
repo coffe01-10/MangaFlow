@@ -18,6 +18,25 @@ RUNTIME_DEFAULTS: dict[str, Any] = {
     "ui_poll_interval_seconds": 3000,
     "workflow_autosave_ms": 800,
 }
+# Mirrors the boot-time model_validator in config.py (which the runtime
+# override path bypasses): a lease longer than the timeout leaves a wedged job
+# ACTIVE-but-unreclaimable for the lease's remainder plus the reclaim fence.
+LEASE_GEOMETRY_MESSAGE = (
+    "job_lease_seconds 不得大于 job_timeout_seconds：心跳停止后续约后，"
+    "卡死的任务将在租约剩余时间和回收宽限期内无法被回收"
+)
+
+
+def _effective_lease_geometry(overrides: dict[str, Any], settings: Settings) -> tuple[int, int]:
+    """Resolve the effective (lease, timeout) pair the process would run with.
+
+    Either side may come from the stored runtime row or fall back to the boot
+    Settings value, so callers must judge the merged result — never a payload
+    in isolation.
+    """
+    lease = int(overrides.get("job_lease_seconds", settings.job_lease_seconds))
+    timeout = int(overrides.get("job_timeout_seconds", settings.job_timeout_seconds))
+    return lease, timeout
 
 
 @dataclass(frozen=True)
@@ -51,6 +70,7 @@ def read_runtime_settings(db: Session, settings: Settings) -> RuntimeSettingsRea
     values = {
         **RUNTIME_DEFAULTS,
         "job_timeout_seconds": settings.job_timeout_seconds,
+        "job_lease_seconds": settings.job_lease_seconds,
         "max_auto_repairs": settings.max_auto_repairs,
         **overrides,
     }
@@ -138,8 +158,17 @@ def apply_runtime_overrides(db: Session, settings: Settings) -> None:
     overrides, _ = _safe_overrides(db)
     if not overrides:
         return
-    if "job_timeout_seconds" in overrides:
-        settings.job_timeout_seconds = overrides["job_timeout_seconds"]
+    # The lease/timeout pair is applied atomically: a row poisoned before the
+    # update-boundary guard (lease above timeout, or a runtime timeout below
+    # the boot lease) must not recreate the wedged geometry in the live
+    # process. The stored row stays untouched for reads; the next valid PATCH
+    # repairs it. This mirrors the defense-in-depth stance of _safe_overrides.
+    lease, timeout = _effective_lease_geometry(overrides, settings)
+    if lease <= timeout:
+        if "job_timeout_seconds" in overrides:
+            settings.job_timeout_seconds = timeout
+        if "job_lease_seconds" in overrides:
+            settings.job_lease_seconds = lease
     if "max_auto_repairs" in overrides:
         settings.max_auto_repairs = overrides["max_auto_repairs"]
     # queue_mode is resolved per enqueue operation. In particular, LOCAL means
@@ -159,6 +188,22 @@ def update_runtime_settings(
     current, _ = _safe_overrides(db)
     changes = payload.model_dump(exclude_unset=True, exclude={"version"})
     merged = {**current, **changes}
+    # Enforce the same cross-field geometry the boot Settings validator
+    # enforces — the runtime override path used to mutate the live Settings
+    # directly, so a PATCH could push the timeout below the effective lease.
+    # The check runs on the MERGED result: either side may be carried by the
+    # stored row (including a row poisoned before this guard) while the other
+    # comes from the payload or falls back to the boot value.
+    lease, timeout = _effective_lease_geometry(merged, settings)
+    if lease > timeout:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{LEASE_GEOMETRY_MESSAGE}"
+                f"（当前生效组合：job_lease_seconds={lease}，"
+                f"job_timeout_seconds={timeout}，请将两者调整为租约不大于超时后重试）"
+            ),
+        )
     if row:
         row.value = merged
         row.version += 1

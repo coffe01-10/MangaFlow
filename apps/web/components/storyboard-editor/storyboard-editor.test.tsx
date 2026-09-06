@@ -820,6 +820,239 @@ describe("StoryboardEditor canvas (V02-31B)", () => {
     expect(screen.getByText("第二页动作")).toBeTruthy();
     confirmSpy.mockRestore();
   });
+
+  it("S24 新增气泡在途：新气泡卡与本格保存按钮禁用，不再重复提交同版本 POST", async () => {
+    let releaseAdd: ((value: unknown) => void) | undefined;
+    createDialogue.mockReset();
+    createDialogue.mockImplementation(() => new Promise((resolve) => {
+      releaseAdd = resolve;
+    }) as never);
+    renderEditor();
+    await screen.findByTestId("canvas-page");
+    fireEvent.click(screen.getByRole("button", { name: "编辑本格" }));
+    fireEvent.click(screen.getByRole("button", { name: "新增气泡" }));
+    fireEvent.change(screen.getByLabelText("新增气泡文字"), { target: { value: "新台词" } });
+    const cardSave = document.querySelector(".dialogue-card.new .dialogue-save") as HTMLButtonElement;
+    fireEvent.click(cardSave);
+    await waitFor(() => {
+      expect(createDialogue).toHaveBeenCalledTimes(1);
+      expect(createDialogue).toHaveBeenCalledWith("panel-1", expect.objectContaining({
+        panel_version: 1,
+        target_text: "新台词",
+      }));
+    });
+    // add 在途：新气泡卡的保存按钮和本格保存按钮都必须被 saving 门禁覆盖——
+    // 否则第二次点击会带着同一 panel_version 再 POST 一次，制造虚假 409。
+    expect(cardSave).toBeDisabled();
+    expect(screen.getByRole("button", { name: "保存本格分镜" })).toBeDisabled();
+    // 落定后新增卡片收起。
+    releaseAdd?.({} as never);
+    await waitFor(() => {
+      expect(document.querySelector(".dialogue-card.new")).toBeNull();
+    });
+  });
+
+  it("S24b 新增气泡在途：工具栏「保存本页」禁用、画布气泡删除不可交互，不并发版本化写入", async () => {
+    const withBubble = makePanel({ dialogues: [{
+      id: "dlg-1",
+      panel_id: "panel-1",
+      speaker_character_id: null,
+      target_text: "早上好",
+      reading_order: 1,
+      text_direction: "vertical",
+      region: { preferred: "upper_inner" },
+      rewrite_forbidden: true,
+      bubble: storedBubble,
+    }] });
+    data = { page, candidate_count: 0, panels: [withBubble, panel2] };
+    let releaseAdd: ((value: unknown) => void) | undefined;
+    createDialogue.mockReset();
+    createDialogue.mockImplementation(() => new Promise((resolve) => {
+      releaseAdd = resolve;
+    }) as never);
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderEditor();
+    stubRect(await screen.findByTestId("canvas-page"), 640, 903);
+    // 先产生几何草稿让「保存本页」可点，才能证明叙事在途把它禁用。
+    fireEvent.pointerDown(panelEl("panel-1"), { button: 0, pointerId: 1, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(window, { pointerId: 1, clientX: 164, clientY: 100 });
+    fireEvent.pointerUp(window, { pointerId: 1, clientX: 164, clientY: 100 });
+    // 在途时按钮文案会切成「保存中」，用稳定的 class 取按钮本体。
+    const savePage = document.querySelector(".toolbar-save") as HTMLButtonElement;
+    expect(savePage.disabled).toBe(false);
+
+    // 发起挂起的新增气泡（编辑本格 → 新增气泡 → 填台词 → 卡片保存）。
+    fireEvent.click(screen.getByRole("button", { name: "编辑本格" }));
+    fireEvent.click(screen.getByRole("button", { name: "新增气泡" }));
+    fireEvent.change(screen.getByLabelText("新增气泡文字"), { target: { value: "新台词" } });
+    fireEvent.click(document.querySelector(".dialogue-card.new .dialogue-save") as HTMLButtonElement);
+    await waitFor(() => expect(createDialogue).toHaveBeenCalledTimes(1));
+
+    // add 在途：把画布选中切回已有气泡（检查器入口不受画布 interactive 门禁），
+    // 键盘 Delete 是画布删除气泡的唯一入口。
+    fireEvent.click(document.querySelector(".dialogue-card-slot") as HTMLElement);
+    // 整包保存与画布删除都被冻结——并发版本化写入会互相制造虚假 409。
+    expect(savePage).toBeDisabled();
+    fireEvent.keyDown(canvasPage(), { key: "Delete" });
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(deleteDialogue).not.toHaveBeenCalled();
+
+    // 落地后恢复：保存可再点，画布删除重新可用。
+    releaseAdd?.({} as never);
+    await waitFor(() => expect(savePage).toBeEnabled());
+    fireEvent.keyDown(canvasPage(), { key: "Delete" });
+    await waitFor(() => expect(deleteDialogue).toHaveBeenCalledWith("dlg-1", 1));
+    confirmSpy.mockRestore();
+  });
+
+  it("S24c 几何整包 PUT 在途：检查器保存按钮被组合 busy 禁用，输入仍可编辑", async () => {
+    // R2 审查修复的反向验证：只门禁画布不门禁检查器时，「保存本格分镜」与
+    // 气泡卡保存会在几何 PUT 在途时仍可点击，与整包保存并发制造虚假 409。
+    const withBubble = makePanel({ dialogues: [{
+      id: "dlg-1",
+      panel_id: "panel-1",
+      speaker_character_id: null,
+      target_text: "早上好",
+      reading_order: 1,
+      text_direction: "vertical",
+      region: { preferred: "upper_inner" },
+      rewrite_forbidden: true,
+      bubble: storedBubble,
+    }] });
+    data = { page, candidate_count: 0, panels: [withBubble, panel2] };
+    let releaseSave: ((value: unknown) => void) | undefined;
+    saveGeometry.mockReset();
+    saveGeometry.mockImplementation(() => new Promise((resolve) => {
+      releaseSave = resolve;
+    }) as never);
+    renderEditor();
+    stubRect(await screen.findByTestId("canvas-page"), 640, 903);
+    // 产生几何草稿并发起挂起的整包 PUT。
+    fireEvent.pointerDown(panelEl("panel-1"), { button: 0, pointerId: 1, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(window, { pointerId: 1, clientX: 164, clientY: 100 });
+    fireEvent.pointerUp(window, { pointerId: 1, clientX: 164, clientY: 100 });
+    fireEvent.click(screen.getByRole("button", { name: "保存本页" }));
+    await waitFor(() => expect(saveGeometry).toHaveBeenCalledTimes(1));
+
+    // PUT 在途：打开本格编辑表单——输入仍可编辑，只有保存按钮被禁用。
+    fireEvent.click(screen.getByRole("button", { name: "编辑本格" }));
+    const actionBox = screen.getByLabelText("动作与表演") as HTMLTextAreaElement;
+    expect(actionBox).toBeEnabled();
+    fireEvent.change(actionBox, { target: { value: "几何保存期间的草稿" } });
+    expect((screen.getByRole("textbox", { name: "气泡 1 文字" }) as HTMLTextAreaElement)).toBeEnabled();
+    expect(screen.getByRole("button", { name: "保存本格分镜" })).toBeDisabled();
+    const cardSave = document.querySelector(".dialogue-card:not(.new) .dialogue-save") as HTMLButtonElement;
+    expect(cardSave).toBeDisabled();
+    expect(updatePanel).not.toHaveBeenCalled();
+    expect(updateDialogue).not.toHaveBeenCalled();
+
+    // PUT 落地后：检查器保存入口恢复可用。
+    releaseSave?.(data as never);
+    await waitFor(() => expect(screen.getByRole("button", { name: "保存本格分镜" })).toBeEnabled());
+    await waitFor(() => expect(cardSave).toBeEnabled());
+  });
+
+  it("S25 拟声词结构化对象：输入框显示文本而非 [object Object]，编辑按索引保留 x/y 几何", async () => {
+    // 后端 read_sound_effects 恒返回结构化对象（旧字符串已被包装成
+    // {text,x,y,rotation,size}），检查器必须取 text 展示、按索引重建保留几何。
+    const withFx = makePanel({
+      sound_effects: [
+        { text: "咚…", x: 0.2, y: 0.1, rotation: 15, size: 0.05 },
+        { text: "嘎吱…", x: 0.7, y: 0.6, rotation: 0, size: null },
+      ],
+    });
+    data = { page, candidate_count: 0, panels: [withFx, panel2] };
+    updatePanel.mockReset().mockResolvedValue({} as never);
+    renderEditor();
+    await screen.findByTestId("canvas-page");
+    fireEvent.click(screen.getByRole("button", { name: "编辑本格" }));
+    const input = screen.getByLabelText("拟声词（用逗号分隔）") as HTMLInputElement;
+    expect(input.value).toBe("咚…，嘎吱…");
+    expect(input).toHaveAttribute("placeholder", "例如：咚…、嘎吱…");
+    // 只改第二条文本：x/y/rotation/size 按索引原样保留（PATCH 侧
+    // canonical_sound_effects 原样接受结构化对象，坐标不丢）。
+    fireEvent.change(input, { target: { value: "咚…，轰…" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存本格分镜" }));
+    await waitFor(() => expect(updatePanel).toHaveBeenCalledTimes(1));
+    const payload = updatePanel.mock.calls[0][1] as any;
+    expect(payload.sound_effects).toEqual([
+      { text: "咚…", x: 0.2, y: 0.1, rotation: 15, size: 0.05 },
+      { text: "轰…", x: 0.7, y: 0.6, rotation: 0, size: null },
+    ]);
+  });
+
+  it("S25b 删除中间拟声词：未变条目按文本锚定，保留各自几何而非滑到前者位置", async () => {
+    const withFx = makePanel({
+      sound_effects: [
+        { text: "咚…", x: 0.2, y: 0.1, rotation: 15, size: 0.05 },
+        { text: "嘎吱…", x: 0.4, y: 0.5, rotation: 30, size: 0.04 },
+        { text: "锵…", x: 0.7, y: 0.6, rotation: 0, size: null },
+      ],
+    });
+    data = { page, candidate_count: 0, panels: [withFx, panel2] };
+    updatePanel.mockReset().mockResolvedValue({} as never);
+    renderEditor();
+    await screen.findByTestId("canvas-page");
+    fireEvent.click(screen.getByRole("button", { name: "编辑本格" }));
+    const input = screen.getByLabelText("拟声词（用逗号分隔）") as HTMLInputElement;
+    // 删掉中间的「嘎吱…」：按索引重建会让「锵…」继承 0.4/0.5 的几何。
+    fireEvent.change(input, { target: { value: "咚…，锵…" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存本格分镜" }));
+    await waitFor(() => expect(updatePanel).toHaveBeenCalledTimes(1));
+    const payload = updatePanel.mock.calls[0][1] as any;
+    expect(payload.sound_effects).toEqual([
+      { text: "咚…", x: 0.2, y: 0.1, rotation: 15, size: 0.05 },
+      { text: "锵…", x: 0.7, y: 0.6, rotation: 0, size: null },
+    ]);
+  });
+
+  it("S25c 重排拟声词：每条保留自己的几何随文本移动", async () => {
+    const withFx = makePanel({
+      sound_effects: [
+        { text: "咚…", x: 0.2, y: 0.1, rotation: 15, size: 0.05 },
+        { text: "嘎吱…", x: 0.7, y: 0.6, rotation: 0, size: null },
+      ],
+    });
+    data = { page, candidate_count: 0, panels: [withFx, panel2] };
+    updatePanel.mockReset().mockResolvedValue({} as never);
+    renderEditor();
+    await screen.findByTestId("canvas-page");
+    fireEvent.click(screen.getByRole("button", { name: "编辑本格" }));
+    const input = screen.getByLabelText("拟声词（用逗号分隔）") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "嘎吱…，咚…" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存本格分镜" }));
+    await waitFor(() => expect(updatePanel).toHaveBeenCalledTimes(1));
+    const payload = updatePanel.mock.calls[0][1] as any;
+    expect(payload.sound_effects).toEqual([
+      { text: "嘎吱…", x: 0.7, y: 0.6, rotation: 0, size: null },
+      { text: "咚…", x: 0.2, y: 0.1, rotation: 15, size: 0.05 },
+    ]);
+  });
+
+  it("S25d 改名拟声词：无文本匹配时回退同索引几何；新增 token 落成裸 {text}", async () => {
+    const withFx = makePanel({
+      sound_effects: [
+        { text: "咚…", x: 0.2, y: 0.1, rotation: 15, size: 0.05 },
+        { text: "嘎吱…", x: 0.7, y: 0.6, rotation: 0, size: null },
+      ],
+    });
+    data = { page, candidate_count: 0, panels: [withFx, panel2] };
+    updatePanel.mockReset().mockResolvedValue({} as never);
+    renderEditor();
+    await screen.findByTestId("canvas-page");
+    fireEvent.click(screen.getByRole("button", { name: "编辑本格" }));
+    const input = screen.getByLabelText("拟声词（用逗号分隔）") as HTMLInputElement;
+    // 首条改名 + 新增第三条：改名沿用槽位 0 的几何，新增无锚点落成裸对象。
+    fireEvent.change(input, { target: { value: "咚咚，嘎吱…，轰…" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存本格分镜" }));
+    await waitFor(() => expect(updatePanel).toHaveBeenCalledTimes(1));
+    const payload = updatePanel.mock.calls[0][1] as any;
+    expect(payload.sound_effects).toEqual([
+      { text: "咚咚", x: 0.2, y: 0.1, rotation: 15, size: 0.05 },
+      { text: "嘎吱…", x: 0.7, y: 0.6, rotation: 0, size: null },
+      { text: "轰…" },
+    ]);
+  });
 });
 
 describe("StoryboardEditor inspector resizer（既有用例）", () => {

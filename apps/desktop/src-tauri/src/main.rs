@@ -231,6 +231,12 @@ fn helper_environment() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
     Some((python.into(), script.into()))
 }
 
+/// The ONE shutdown path for an owned helper run, used by BOTH the
+/// `RunEvent::Exit` handler and the setup-failure path below: an aborted
+/// setup must never leave `owner.json` at state "ready" for a dead run.
+/// `tree.stop` performs the graceful stop (stdin-EOF cooperative phase, then
+/// the fail-closed kill escalation); afterwards the RunLog "stopped"
+/// milestone and the ownership-journal `mark_stopped` are recorded.
 fn stop_helper(helper: &mut Option<SpawnedHelper>) {
     if let Some(mut spawned) = helper.take() {
         let exit_code = spawned
@@ -294,12 +300,21 @@ fn run() {
             let spawned = spawn_helper(&config, &user_data)
                 .map_err(|error| format!("sidecar handshake failed: {error:?}"))?;
 
-            // Synchronous injection: available before any page script runs.
-            // The origin is embedded as a JSON string literal so every byte is
-            // escaped by serde_json instead of raw format! interpolation.
+            // From here on, EVERY failure path must run the same shutdown
+            // bookkeeping as the RunEvent::Exit handler (RunLog "stopped"
+            // milestone + ownership-journal mark_stopped): an aborted setup
+            // must never leave owner.json at state "ready" for a dead run.
+            // stop_helper performs the graceful stop and both records; the
+            // OwnedTree drop inside it still does the fail-closed kill.
             let origin = spawned.ready.api_origin.clone();
-            let origin_literal =
-                serde_json::to_string(&origin).map_err(|error| error.to_string())?;
+            let origin_literal = match serde_json::to_string(&origin) {
+                Ok(literal) => literal,
+                Err(error) => {
+                    let message = error.to_string();
+                    stop_helper(&mut Some(spawned));
+                    return Err(message.into());
+                }
+            };
             let initialization_script =
                 format!("window.__MANGAFLOW_API_ORIGIN__ = {origin_literal};\n");
 
@@ -310,7 +325,7 @@ fn run() {
             });
             app.manage(PickedState(PickedRegistry::new()));
 
-            tauri::WebviewWindowBuilder::new(
+            if let Err(error) = tauri::WebviewWindowBuilder::new(
                 app,
                 "main",
                 tauri::WebviewUrl::App("index.html".into()),
@@ -318,7 +333,17 @@ fn run() {
             .title("MangaFlow")
             .inner_size(1280.0, 800.0)
             .initialization_script(&initialization_script)
-            .build()?;
+            .build()
+            {
+                // Fail-closed kill behavior is unchanged; the shutdown
+                // BOOKKEEPING now routes through the same helper as the Exit
+                // path — take the run back out of the managed state so the
+                // "stopped" milestone and journal update still happen.
+                if let Some(state) = app.try_state::<HelperState>() {
+                    stop_helper(&mut state.inner().0.lock().expect("helper state lock"));
+                }
+                return Err(error.into());
+            }
             Ok(())
         })
         .build(tauri::generate_context!())

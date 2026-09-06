@@ -94,12 +94,14 @@ _JSON_STRUCTURAL_BYTES = b'"\\{}[]'
 _JSON_NON_STRUCTURAL_BYTES = bytes(
     byte for byte in range(256) if byte not in _JSON_STRUCTURAL_BYTES
 )
-# A JSON ``\ud800``-style escape decodes to a lone surrogate. Pydantic 422s
-# typed str fields but echoes the invalid input back in the error response,
-# which then crashes response encoding (ensure_ascii=False) with a 500;
-# untyped dict payloads pass through and poison stored rows. Escaped
+# A JSON ``\ud800``-style escape decodes to a lone surrogate once stdlib json
+# parses the body. Pydantic does not reject lone surrogates in typed str
+# fields (``TypeAdapter(str).validate_python`` accepts them), so without this
+# scrub they poison every path alike: DB binds raise UnicodeEncodeError and
+# response encoding (ensure_ascii=False) crashes with a 500. Escaped
 # backslashes (``\\ud800`` as literal text) are masked first so only real
 # unicode escapes are rewritten; raw NUL cannot legally appear in JSON.
+_HIGH_SURROGATE_PREFIXES = (b"d8", b"d9", b"da", b"db")
 _JSON_SURROGATE_ESCAPE_RE = re.compile(
     rb"\\u(d[89a-f][0-9a-f][0-9a-f])(?:\\u(d[c-f][0-9a-f][0-9a-f]))?",
     re.IGNORECASE,
@@ -107,8 +109,15 @@ _JSON_SURROGATE_ESCAPE_RE = re.compile(
 
 
 def _scrub_surrogate_escape(match: re.Match[bytes]) -> bytes:
-    if match.group(2) is not None:  # well-formed surrogate pair: keep
-        return match.group(0)
+    # Only CPython's json combines a HIGH surrogate (D800-DBFF) immediately
+    # followed by a LOW one (DC00-DFFF); group(1)'s class also matches low
+    # escapes, so a low-leading "pair" (e.g. \udc00\udc00) is NOT well-formed
+    # and must be scrubbed like any other lone surrogate.
+    if (
+        match.group(2) is not None
+        and match.group(1)[:2].lower() in _HIGH_SURROGATE_PREFIXES
+    ):
+        return match.group(0)  # well-formed surrogate pair: keep
     return b"\\ufffd"
 
 

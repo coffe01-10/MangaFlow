@@ -18,6 +18,7 @@ from app.models import AppSetting, Dialogue, Project, SceneAsset
 from app.provider_schemas import ConnectionTestRequest, ProviderUpdate
 from app.request_limits import JsonDepthExceeded, _JsonDepthTracker
 from app.request_limits import max_json_body_bytes as json_limit_for_path
+from app.request_limits import sanitize_json_surrogate_escapes
 from app.schemas import (
     CharacterModelPackageUpdate,
     DialogueUpdate,
@@ -242,6 +243,34 @@ def test_sanitize_surrogates_copies_nested_models():
 def test_sanitize_surrogates_keeps_legal_text_untouched():
     text = "中文 émoji 🎨 tab\t quote\" backslash\\"
     assert sanitize_surrogates(text) == text
+
+
+def test_wire_surrogate_scrubber_keeps_only_true_high_low_pairs():
+    # CPython's json only combines a HIGH surrogate (D800-DBFF) immediately
+    # followed by a LOW one (DC00-DFFF). Lone lows, low-leading "pairs" and
+    # high+high all decode to lone surrogates that poison DB binds.
+    assert sanitize_json_surrogate_escapes(b'"\\ud83d\\ude00"') == b'"\\ud83d\\ude00"'
+    assert json.loads(sanitize_json_surrogate_escapes(b'"\\udc00"')) == "\ufffd"
+    low_low = sanitize_json_surrogate_escapes(b'"\\udc00\\udc00"')
+    assert json.loads(low_low) == "\ufffd"
+    high_high = sanitize_json_surrogate_escapes(b'"\\ud800\\ud800\\udc00"')
+    assert json.loads(high_high) == "\ufffd\U00010000"
+
+
+def test_project_post_low_low_surrogate_pair_is_scrubbed(client, db_session):
+    # POST bodies have no Python-level backstop, so a low+low escape pair
+    # must be scrubbed at the wire level — it used to be kept as if it were
+    # a well-formed pair and the lone surrogates then failed the insert bind.
+    content = b'{"name": "a\\udc00\\udc00b"}'
+    response = client.post(
+        "/api/v1/projects",
+        content=content,
+        headers={"content-type": "application/json"},
+    )
+    assert response.status_code == 201, response.text
+    db_session.expire_all()
+    row = db_session.get(Project, response.json()["id"])
+    assert row.name == "a\ufffdb"
 
 
 def test_reject_required_nulls_sanitizes_strings_in_place():

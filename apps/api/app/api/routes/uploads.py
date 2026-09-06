@@ -353,12 +353,17 @@ def update_asset(
 
 
 @router.post("/{asset_id}/adopt-reference", response_model=AssetRead)
-def adopt_generated_asset_as_reference(asset_id: str, db: Session = Depends(get_db)) -> AssetRead:
+def adopt_generated_asset_as_reference(
+    asset_id: str,
+    db: Session = Depends(get_db),
+    project_id: str | None = None,
+) -> AssetRead:
     """Make an AI-generated asset available for structured reference bindings."""
 
     asset = db.get(Asset, asset_id)
     if not asset or asset.deleted_at is not None:
         raise HTTPException(status_code=404, detail="素材不存在")
+    ensure_project_scope(db, asset, project_id, label="素材")
     if asset.source not in {"AI_GENERATED", "VERTEX_GENERATED"}:
         raise HTTPException(status_code=409, detail="只有生成素材可以导入为参考图")
     # Importing creates a new structured binding; it must not rewrite the source

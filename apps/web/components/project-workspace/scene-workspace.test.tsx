@@ -293,6 +293,38 @@ describe("SceneWorkspace", () => {
     expect(await screen.findByText(/原规范参考已被解除，重新绑定失败/)).toBeInTheDocument();
   });
 
+  it("规范参考换绑在解除阶段就失败：不宣称「已被解除」，按刷新引导提示", async () => {
+    listApi.mockResolvedValue([assetFixture({
+      references: [{
+        id: "ref-1",
+        scene_asset_id: "asset-1",
+        asset_id: "file-1",
+        role: "main",
+        is_canonical: false,
+        created_at: "2026-09-01T00:00:00Z",
+      }],
+    })]);
+    // unbind 直接失败：原规范参考仍绑在服务端，bind 从未发出。
+    unbindRefApi.mockRejectedValue(new ApiError("场景资产已被更新，请刷新后重试", 409));
+    renderWorkspace();
+    await screen.findByRole("option", { name: /学校天台/ });
+    const swapButtons = await waitFor(() => {
+      const buttons = screen.getAllByRole("button", { name: "设为规范参考" }).filter((item) => !item.hasAttribute("disabled"));
+      expect(buttons).toHaveLength(1);
+      return buttons;
+    });
+    fireEvent.click(swapButtons[0]);
+    await waitFor(() => {
+      expect(unbindRefApi).toHaveBeenCalledWith("project-1", "asset-1", "file-1");
+    });
+    expect(bindRefApi).not.toHaveBeenCalled();
+    // 解除阶段失败：不能把「原规范参考已被解除」说成事实。
+    expect(await screen.findByText("场景资产已被更新，请刷新后重试")).toBeInTheDocument();
+    expect(screen.queryByText(/原规范参考已被解除/)).not.toBeInTheDocument();
+    // 语义化 409 自带「请刷新」引导：刷新按钮可见。
+    expect(screen.getByRole("button", { name: "刷新" })).toBeInTheDocument();
+  });
+
   it("TEST-SCENE-07 归档确认展示引用数量，恢复走 restore 接口", async () => {
     const live = assetFixture();
     const archived = assetFixture({ deleted_at: "2026-09-01T00:00:00Z", status: "UPLOADED" });
@@ -350,5 +382,48 @@ describe("SceneWorkspace", () => {
     expect(await screen.findByRole("button", { name: "恢复" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "恢复" }));
     await waitFor(() => expect(restoreApi).toHaveBeenCalledWith("project-1", "asset-1"));
+  });
+
+  it("归档引用计数慢返回不覆盖后打开资产的确认框内容", async () => {
+    listApi.mockResolvedValue([
+      assetFixture({ id: "asset-a", name: "学校天台" }),
+      assetFixture({ id: "asset-b", name: "车站前街" }),
+    ]);
+    // 资产 A 的 chapters 挂起（慢），资产 B 立即返回空（0 绑定）。
+    let releaseChaptersA: ((chapters: unknown[]) => void) | undefined;
+    let chaptersCalls = 0;
+    chaptersApi.mockImplementation(() => {
+      chaptersCalls += 1;
+      if (chaptersCalls === 1) {
+        return new Promise((resolve) => {
+          releaseChaptersA = resolve;
+        }) as never;
+      }
+      return Promise.resolve([]) as never;
+    });
+    // A 的链路最终会数出 1 个绑定：若晚到结果没被令牌拦下，会盖掉 B 的 0。
+    scriptApi.mockResolvedValue({
+      scenes: [{ scene_asset_id: "asset-a" }],
+    } as never);
+    renderWorkspace();
+    // 打开 A 的归档确认（引用计数挂起中）后取消。
+    fireEvent.click(await screen.findByRole("button", { name: "归档" }));
+    expect(await screen.findByText("正在确认剧本引用…")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    // 打开 B 的归档确认：0 绑定文案立即可见。
+    fireEvent.click(screen.getByRole("option", { name: /车站前街/ }));
+    fireEvent.click(screen.getByRole("button", { name: "归档" }));
+    expect(await screen.findByText(/当前已加载的剧本中没有发现绑定/)).toBeInTheDocument();
+    // 此时 A 的慢计数返回 1——令牌已过期，必须被丢弃。
+    releaseChaptersA?.([{ id: "chapter-1" }] as never);
+    await waitFor(() => {
+      expect(scriptApi).toHaveBeenCalledWith("chapter-1");
+    });
+    await new Promise((resolve) => {
+      setTimeout(resolve, 0);
+    });
+    expect(screen.getByText(/当前已加载的剧本中没有发现绑定/)).toBeInTheDocument();
+    expect(screen.queryByText(/1 个剧本场景绑定了该资产/)).not.toBeInTheDocument();
+    expect(screen.getByText("归档场景“车站前街”？")).toBeInTheDocument();
   });
 });

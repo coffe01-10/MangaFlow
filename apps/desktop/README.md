@@ -77,13 +77,20 @@ apps/desktop/
    helper 的第一条指令执行前已进入 Job，V02-53B 骨架的 spawn→assign 竞争窗口已收口；
    任何一步失败即终止仍挂起的子进程（fail-closed）。壳侧 journal 在 spawn 之前由
    `RuntimeLayout::create` 写入（state=created + token + shell pid），比 owned_processes
-   「resume 前落盘」更早，可证明运行目录归属。**Windows 运行时行为 NOT RUN**（本沙箱为
-   Linux）：仅过 Windows 目标编译门禁，实机 D3 复验前不得称作生产已验证（见 `ownership.rs`
-   模块文档）。Linux 等价（本沙箱实测）= spawn 前 `PR_SET_PDEATHSIG`
-   + helper `setsid` + 壳按进程组 TERM→KILL。**每个壳退出路径（正常/崩溃/超时）都必须
+   「resume 前落盘」更早，可证明运行目录归属。**Windows 实机运行行为截至本轮仅由
+   shell-core 测试覆盖部分路径**（见 `ownership.rs` 模块文档），完整 D3 复验前不得称作
+   生产已验证。**停止语义（两平台一致：先协作后强杀）**：壳 `stop(grace)` 先关闭 helper
+   的 piped stdin——helper 内的 EOF 看护线程（`mangaflow_desktop_helper.py`
+   `_start_stdin_eof_watch`）随之对自身 `raise_signal(SIGTERM)`：uvicorn 接管前走 `sys.exit(0)`
+   handler，接管后走 uvicorn 自身的优雅退出（serve 循环经 FastAPI lifespan shutdown 收尾）；
+   宽限期内未退出才升级强杀——Linux = 进程组 SIGKILL（协作阶段 Unix 仍同时向进程组发
+   SIGTERM，覆盖不监看 stdin 的后代进程；升级阶段仅 SIGKILL），
+   Windows = `TerminateJobObject`（job 退出码 125）。崩溃路径不变：壳死亡即 Job 句柄
+   关闭，`KILL_ON_JOB_CLOSE` 无协作出杀全树。Linux 等价（沙箱实测）= spawn 前
+   `PR_SET_PDEATHSIG` + helper `setsid`。**每个壳退出路径（正常/崩溃/超时）都必须
    清树**，见 `tests/startup_protocol.rs::shell_crash_still_kills_helper_and_descendants`。
 
-## 3. 运行方式（Linux 沙箱实测；Windows 见 NOT RUN）
+## 3. 运行方式（Linux 沙箱实测；Windows 实机可原生跑 shell-core 测试，其余 Windows 面见 NOT RUN）
 
 需要 rustup stable（1.98.1，含 `x86_64-pc-windows-msvc` std）在 PATH；系统 cargo 1.85
 无 Windows std，Windows 目标检查会报 E0463。
@@ -92,7 +99,8 @@ apps/desktop/
 # a. 假模型闭环 + 协议 e2e（自动建 .venv-desktop）
 apps/desktop/scripts/run-sidecar-e2e.sh
 
-# b. Rust 协议/所有权测试（需 python3）
+# b. Rust 协议/所有权测试（需 python3；Windows 上默认解析为 `python`，
+#    除非显式设置 MANGAFLOW_DESKTOP_PYTHON）
 cd apps/desktop/shell-core && cargo test
 
 # c. Windows 目标编译校验（在本 Linux 机即可；需要 llvm-rc 于 PATH）
@@ -124,7 +132,7 @@ cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml
 | --- | --- | --- | --- |
 | D1 | 打包 | **RUN（部分）/ NOT RUN（安装器）** | `tauri build` 未跑（沙箱无 webkit2gtk/显示服务，见下）；bundle 配置（msi/nsis/图标）就位并经 Windows 目标 `cargo check` 校验配置合法性；卸载不删用户数据的配置契约由 `shell-core/tests/delivery_contract.rs` 冻结。安装/卸载/重装数据保留的实机验证 NOT RUN。 |
 | D2 | Python sidecar | **RUN（Linux 形态，含 PyInstaller 冻结产物）/ Windows 打包 NOT RUN**（V02-53B 证据） | `run-sidecar-e2e.sh`：真实 `app.main:app` 经 `alembic upgrade head`（28 个迁移到 head）+ SQLite 读写 + 本地 worker（无 Redis 时 API 内 LOCAL_EXECUTOR，即安装版默认形态）+ 假通道完成「生成→候选→采用→PNG 落盘→`/content` 可取」。PyInstaller onedir 冻结产物（116MB，含 alembic.ini+migrations 于 `_internal/`）实测通过完整握手→GO→健康→真实 dashboard API→优雅退出；`alembic.ini` 解析依赖冻结路径（`app.main.__file__`），故支持文件必须放 `_internal/`——这是打包形态的硬约束证据。**Windows PyInstaller/embeddable 形态 NOT RUN**；RQ/Redis Worker 进程形态 NOT RUN。 |
-| D3 | 进程生命周期 | **RUN（Linux 等价）/ Windows 路径已按 CREATE_SUSPENDED+assign+resume 实现、实机 NOT RUN** | `cargo test`（10 项）：握手全链、错误 GO 拒绝 exit 75、并发双 helper 端口不冲突、`shell-sim` 崩溃（SIGABRT）后 helper+孙进程全灭（PDEATHSIG 链）、无协作者 SIGTERM→SIGKILL 升级、壳在 spawn 前写入归属 journal。Windows 路径已按 `scripts/owned_processes.py` `start_python` 纪律重写：`CREATE_SUSPENDED` 挂起创建 → 建 Job（`KILL_ON_JOB_CLOSE`）→ assign 仍挂起的子进程 → 快照枚举初始线程后 `ResumeThread`；任一步失败即终止仍挂起的子进程，spawn→assign 竞争窗口已收口。**Windows 实机运行行为 NOT RUN**（本沙箱 Linux），合并前该路径只有编译门禁（`cargo check --target x86_64-pc-windows-msvc`）证据，实机 D3 复验仍欠。 |
+| D3 | 进程生命周期 | **RUN（Linux 沙箱等价 + Windows 实机 shell-core 集成测试）/ 完整 D3 复验（WebView/安装器链）仍欠** | `cargo test`：握手全链、错误 GO 拒绝 exit 75、并发双 helper 端口不冲突、`shell-sim` 崩溃（SIGABRT）后 helper+孙进程全灭（PDEATHSIG 链）、无协作者强杀升级、壳在 spawn 前写入归属 journal。Windows 路径已按 `scripts/owned_processes.py` `start_python` 纪律重写：`CREATE_SUSPENDED` 挂起创建 → 建 Job（`KILL_ON_JOB_CLOSE`）→ assign 仍挂起的子进程 → 快照枚举初始线程后 `ResumeThread`；任一步失败即终止仍挂起的子进程，spawn→assign 竞争窗口已收口。shell-core 集成测试现于**两平台原生运行**：Linux 沙箱为文档化 `cargo test` 腿；Windows 实机腿覆盖 spawn/stop/升级/崩溃清树路径（含完整宽限窗 + `TerminateJobObject` 退出码 125 与 stdin-EOF 协作停机，均为 `#[cfg(windows)]` 断言——Unix 侧 `stop()` 紧随 spawn 的组 SIGTERM 与 Python 引导期竞态，强杀升级仅断言终止契约与防挂起界，stdin-EOF 协作停机为 Windows 专属测试，见 `tests/startup_protocol.rs` 头注）。完整 D3 复验（真实 WebView + 安装器链 + 多开）仍欠，编译门禁（`cargo check --target x86_64-pc-windows-msvc`）照旧。 |
 | D4 | 端口/单实例 | **RUN（端口+注入）/ 单实例 NOT RUN**（V02-53B 证据） | 原子绑定 `127.0.0.1:0`（socket 先绑后报，无 TOCTOU；并发测试两 helper 端口必异）；WebView 建立前完成握手；运行时注入 = 初始化脚本同步写 `window.__MANGAFLOW_API_ORIGIN__` + invoke `desktop_get_api_origin` 双通道，不依赖 `NEXT_PUBLIC_*`（浏览器断言 `api_origin_env_free`）/不依赖 Next rewrite（D5 实测直连）。单实例互斥体已接 `tauri-plugin-single-instance` 但**实机多开行为 NOT RUN**。 |
 | D5 | 前端形态 | **RUN（机制验证，V02-53B 证据）/ 静态导出为「受限可行」** | `verify-static-origin.mjs`（Chromium）：静态导出页加载 → 注入 origin → 仪表盘**直连**动态端口 API（`/api/v1/projects/dashboard` 200，CORS 按桌面 origin 放行）→ 页面渲染，静态服务器 `/api/*` 零命中。**核心发现**：工作台子树无法只靠 flag 导出——`output:"export"` 要求每个动态段 ≥1 预渲染组合（真实项目 id 构建期不可知）且工作台组件树服务端预渲染崩溃；补丁以「poc 桩组合 + notFound stub + 删 3 个仅服务端页」换得壳级页面导出。**结论：静态导出路线需要正式的前端路由/组件改造（否决条件 3 的关键输入）；方案 B（捆绑 node 跑 next start，保留 rewrites）未被验证**。 |
 | D6 | 凭据/日志/数据 | **RUN（目录+日志+凭据路径+日志导出+日志轮转）/ ACL NOT RUN** | 用户数据目录布局：`data/`（DB）、`storage/`、`uploads/` 均落 user-data（测试断言不落仓库）；V02-54B 起统一日志目录 `logs/`（壳 RunLog 里程碑 + helper/API/Worker stderr 按运行分文件），壳侧 `desktop_export_logs` 可归档（store-only ZIP + manifest.json）到用户可选路径；V02-54C 起**按大小轮转**：`shell-*.log` / `helper-*.stderr.log` 单文件达 12 MiB（< 导出 64 MiB 上限）rename 为 `.1`–`.5` 世代、超出删最旧——壳 RunLog 会话内轮转（写前检查、轮转后原打开路径继续写），helper stderr 由 helper 进程持有 fd，采用**跨会话轮转**（新会话 `RunLog::create` 清扫，取舍见 §6.4）；轮转不跟随符号链接、rename/删除不越 canonical logs 根。假通道密钥走生产 `credential_crypto` AES-GCM + 文件主密钥（`storage/.provider-credential-master-key` 自动生成）。Windows ACL 收紧 NOT RUN；轮转 Windows 实机行为 NOT RUN（Linux 实测，见 §6.4）；导出对单文件 64 MiB 上限仍跳过并在 manifest/report 记录。 |
@@ -149,7 +157,10 @@ cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml
   1. Python sidecar 打包：Linux 形态机制可行；**Windows PyInstaller/embeddable 实测缺失** → 不能据此否决，也不能据此放行。
   2. WebView2 渲染兼容：完全未测 → OPEN。
   3. 前端静态导出：**发现确定性阻塞**（动态段预渲染组合 + 工作台预渲染崩溃），静态导出非 flag 级改动；方案 B 未在本 PoC 验证 → 倾向「方案 B 或混合形态」输入，不构成否决。
-  4. Rust 维护能力：壳核心逻辑集中在 shell-core（~600 行可测 Rust）+ src-tauri 粘合（~120 行）；成本判断留给 lead。
+  4. Rust 维护能力：壳核心逻辑集中在 shell-core（library 约 3,200 行 Rust，其中
+     `logs.rs` 约占 1,900 行——日志布局/轮转/导出是 V02-54B/C 后最大的单一模块；
+     另有 tests/ 集成测试约 1,100 行）+ src-tauri 粘合（`main.rs` 约 330 行）；成本判断留给 lead。
+     （行数为 2026-09-06 powershell 实测口径：`src/**/*.rs` 去 `src/bin/`、`src-tauri/src`。）
 
 ## 5. 用户数据安全（安装/升级/卸载契约）
 
@@ -191,8 +202,11 @@ cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml
   外部校验 CRC 与结构）：归档成员只收 `logs/` 内的常规文件——符号链接跳过
   不跟随、每个成员 canonical 路径必须仍在 canonical logs 根之下、单文件
   64 MiB 上限（超出跳过并记录；V02-54C 起轮转让常规日志稳定低于该上限，
-  见 §6.4）；导出目标必须为绝对路径、不含 `.`/`..` 成分、父目录存在且非符号链接、
-  **默认不得已存在**（未经用户确认覆盖）、canonical 化后**不得位于用户数据根之内**
+  见 §6.4）；导出目标必须为绝对路径、不含 `.`/`..` 成分、父目录必须存在，
+  且**最终成分**不得为符号链接/junction；父目录链本身**允许**符号链接/junction——
+  canonical 化会解析全部 reparse point 后再做包含检查，经链接最终解析进用户数据根
+  的目标同样被拒（`logs.rs` `validate_destination` 行为）。目标**默认不得已存在**
+  （未经用户确认覆盖）、canonical 化后**不得位于用户数据根之内**
   （既防止把用户数据当导出目标
   覆盖，也防止归档自我包含）。轮转产生的世代文件（`*.log.1`…）是普通
   成员，随导出一起归档（测试 `tests/log_rotation.rs`）。
@@ -292,7 +306,8 @@ cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml
 > 完整剩余项状态目录（每项 ID / 描述 / 依赖环境 / RUN·NOT RUN·BLOCKED / 阻塞原因，
 > 含打包、签名、更新、性能与治理项）见 `docs/v02-windows-leftover-status.md`（V02-54D）。
 
-1. Windows 实机全链路（Job Object 行为、WebView2、安装器、签名、更新、单实例多开）。
+1. Windows 实机全链路（WebView2、安装器、签名、更新、单实例多开；Job Object 的 shell-core 层
+   spawn/stop/升级路径已由 Windows 原生集成测试覆盖，桌面壳完整链路形态仍欠）。
 2. RQ/Redis worker 进程形态与 Independent Worker（按 Issue 约束不装 Redis/Docker/Postgres；本地 LOCAL_EXECUTOR 已验）。
 3. V02-52A N=20 性能门禁、Lighthouse/FPS（归 V02-52B）。
 4. 真实供应商、真实凭据、PostgreSQL live（沿项目既有边界；假模型闭环零外呼）。

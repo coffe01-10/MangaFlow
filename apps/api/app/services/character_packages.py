@@ -1832,51 +1832,71 @@ def default_package_gate_context(db: Session, page: MangaPage) -> dict[str, bool
 def detach_draft_package_references_for_asset(db: Session, asset_id: str) -> None:
     """Contract §10.3: soft-deleting an asset physically clears DRAFT slot rows.
 
+    Single-asset form of :func:`detach_draft_package_references_for_assets`,
+    which owns the shared lock-order and retry contract.
+    """
+
+    detach_draft_package_references_for_assets(db, [asset_id])
+
+
+def detach_draft_package_references_for_assets(db: Session, asset_ids: list[str]) -> None:
+    """Contract §10.3: soft-deleting assets physically clears DRAFT slot rows.
+
     READY+ relation rows keep the frozen fact; consumers filter by
     ``Asset.deleted_at`` at read time. Must be the first writer in the
     caller's unit so lock contention can roll back and retry.
 
-    Lock order follows ``run_package_transaction`` (issue #145-B): the parent
-    package rows first, then the bound Asset row, then version/relation rows.
-    A pre-read discovers which packages own DRAFT references; the mutation
-    re-reads under both locks so a concurrent bind/unbind cannot interleave
-    into a lost version-token increment.
+    All assets run in ONE ``run_lock_retry`` unit: a per-asset detach loop
+    let a SQLITE_BUSY on a later asset roll back the earlier assets'
+    uncommitted clears while retrying only the failing asset, so the caller
+    committed a partial teardown (slots still occupied by dead assets). Every
+    attempt re-runs the full loop over the sorted asset ids.
+
+    Lock order follows ``run_package_transaction`` (issue #145-B) per asset in
+    sorted asset order: the parent package rows first, then the bound Asset
+    row, then version/relation rows. A pre-read discovers which packages own
+    DRAFT references; the mutation re-reads under both locks so a concurrent
+    bind/unbind cannot interleave into a lost version-token increment.
     """
 
+    ordered_asset_ids = sorted(set(asset_ids))
+
     def _detach() -> None:
-        package_ids = sorted(
-            set(
-                db.scalars(
-                    select(CharacterModelPackageVersion.package_id)
-                    .join(
-                        CharacterModelPackageVersionReference,
-                        CharacterModelPackageVersionReference.version_id
-                        == CharacterModelPackageVersion.id,
-                    )
-                    .where(
-                        CharacterModelPackageVersionReference.asset_id == asset_id,
-                        CharacterModelPackageVersion.status == VERSION_DRAFT,
+        for asset_id in ordered_asset_ids:
+            package_ids = sorted(
+                set(
+                    db.scalars(
+                        select(CharacterModelPackageVersion.package_id)
+                        .join(
+                            CharacterModelPackageVersionReference,
+                            CharacterModelPackageVersionReference.version_id
+                            == CharacterModelPackageVersion.id,
+                        )
+                        .where(
+                            CharacterModelPackageVersionReference.asset_id == asset_id,
+                            CharacterModelPackageVersion.status == VERSION_DRAFT,
+                        )
                     )
                 )
             )
-        )
-        for package_id in package_ids:
-            lock_entity(db, CharacterModelPackage, package_id)
-        lock_asset_for_ownership(db, asset_id)
+            for package_id in package_ids:
+                lock_entity(db, CharacterModelPackage, package_id)
+            lock_asset_for_ownership(db, asset_id)
         db.expire_all()
-        for reference in db.scalars(
-            select(CharacterModelPackageVersionReference).where(
-                CharacterModelPackageVersionReference.asset_id == asset_id
-            )
-        ):
-            version = db.get(CharacterModelPackageVersion, reference.version_id)
-            if not version:
-                continue
-            if version.status == VERSION_DRAFT:
-                db.delete(reference)
-                # Editing a draft requires the parent token; the system must not
-                # silently mutate drafts without bumping it.
-                version.version += 1
+        for asset_id in ordered_asset_ids:
+            for reference in db.scalars(
+                select(CharacterModelPackageVersionReference).where(
+                    CharacterModelPackageVersionReference.asset_id == asset_id
+                )
+            ):
+                version = db.get(CharacterModelPackageVersion, reference.version_id)
+                if not version:
+                    continue
+                if version.status == VERSION_DRAFT:
+                    db.delete(reference)
+                    # Editing a draft requires the parent token; the system must not
+                    # silently mutate drafts without bumping it.
+                    version.version += 1
 
     run_lock_retry(
         db,

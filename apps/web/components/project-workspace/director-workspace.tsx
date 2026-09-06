@@ -183,6 +183,12 @@ export function DirectorWorkspace({
 
   const previewCommand: DirectorCommand | null = preview?.commands[0] ?? null;
 
+  // #165 修复补丁：propose 在途与 journal 执行在途一样要冻结全部 journal 按钮
+  // （预览区确认执行/拒绝/丢弃 + 历史区撤销/重做/丢弃）——否则丢弃可在途清算
+  // 掉正在解析的预览组，propose 落地后整页命令会以 previewPlan===null 渲染出
+  // 误导性的「低：局部字段修改」风险行。与预览按钮在 executing 时禁用互为镜像。
+  const journalBusy = executing || propose.isPending;
+
   const historyOriginCommand = (commands: DirectorCommand[]) => (
     commands.find((item) => !item.inverse_of_command_id) ?? commands[0] ?? null
   );
@@ -366,9 +372,9 @@ export function DirectorWorkspace({
             )}
             <footer className="director-preview-actions">
               {command.status === "PREVIEWED" && <>
-                <button type="button" className="button ink compact" disabled={executing} onClick={() => accept.mutate(command.command_id)}>确认执行</button>
-                <button type="button" className="button outline compact" disabled={executing} onClick={() => reject.mutate(command.command_id)}>拒绝</button>
-                <button type="button" className="button ghost compact" disabled={executing} onClick={() => discard.mutate(preview.command_group_id)}>丢弃</button>
+                <button type="button" className="button ink compact" disabled={journalBusy} onClick={() => accept.mutate(command.command_id)}>确认执行</button>
+                <button type="button" className="button outline compact" disabled={journalBusy} onClick={() => reject.mutate(command.command_id)}>拒绝</button>
+                <button type="button" className="button ghost compact" disabled={journalBusy} onClick={() => discard.mutate(preview.command_group_id)}>丢弃</button>
               </>}
               {command.status === "EXECUTED" && <>
                 <span className="director-preview-done">已执行 · 分镜已更新，可在历史里撤销。</span>
@@ -431,12 +437,12 @@ export function DirectorWorkspace({
                 <div className="director-history-actions">
                   {group.status === "PREVIEWED" && <button type="button" onClick={() => reopenGroup(group)}>继续预览</button>}
                   {undoId && (
-                    <button type="button" disabled={executing} onClick={() => undo.mutate(undoId)}>
+                    <button type="button" disabled={journalBusy} onClick={() => undo.mutate(undoId)}>
                       <RotateCcw size={12} />撤销
                     </button>
                   )}
                   {redoId && (
-                    <button type="button" disabled={executing} onClick={() => redo.mutate(redoId)}>
+                    <button type="button" disabled={journalBusy} onClick={() => redo.mutate(redoId)}>
                       <RotateCw size={12} />重做
                     </button>
                   )}
@@ -446,7 +452,7 @@ export function DirectorWorkspace({
                     </button>
                   )}
                   {(group.status === "PROPOSED" || group.status === "PREVIEWED") && (
-                    <button type="button" disabled={executing} onClick={() => discard.mutate(group.command_group_id)}>丢弃</button>
+                    <button type="button" disabled={journalBusy} onClick={() => discard.mutate(group.command_group_id)}>丢弃</button>
                   )}
                 </div>
               </li>

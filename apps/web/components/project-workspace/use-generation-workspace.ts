@@ -98,9 +98,12 @@ export function useGenerationWorkspace({
   // height is unknown until the workbench query lands; rendering them in stages
   // pushed the whole canvas down (measured CLS 0.477). Show one skeleton until
   // the workbench, batch, model and package data exist, then insert the canvas
-  // at once.
+  // at once. A rejected workbench/batches query must not half-render: gate it
+  // closed so GenerateSection can show the error card instead of silent gaps.
   const generateWorkbenchReady =
-    !workbench.isLoading && !pageBatches.isLoading && !models.isLoading && generationPackagesReady;
+    !workbench.isLoading && !workbench.isError
+    && !pageBatches.isLoading && !pageBatches.isError
+    && !models.isLoading && generationPackagesReady;
   const orderedPageBatches = useMemo(
     () => [...(pageBatches.data ?? [])].sort((left, right) => left.ordinal - right.ordinal),
     [pageBatches.data],
@@ -262,7 +265,11 @@ export function useGenerationWorkspace({
     },
     onSuccess: () => {
       setDraft(null);
+      // 新批次（currentBatch 为空时 startBatch）会替换当前查看的批次；旧批次的
+      // reviewCandidateId 若不清理，检查面板会在新批次下继续渲染，且其修复按钮
+      // 会以旧候选提交（reviewCandidate 在新批次中查不到 → 分辨率回退 "1K"）。
       setViewedBatchId(null);
+      setReviewCandidateId(null);
       queryClient.invalidateQueries({ queryKey: ["batches", selectedPage?.id] });
       queryClient.invalidateQueries({ queryKey: ["candidates"] });
       queryClient.invalidateQueries({ queryKey: ["jobs", id] });
@@ -377,6 +384,9 @@ export function useGenerationWorkspace({
       setSelectedPageId(next.id);
       setReferenceSelections({});
       setReferenceOverridePageId(null);
+      // 上一页打开的检查面板不能带到新页：reviewCandidateId 会指向旧页候选，
+      // 面板在新页渲染且修复按钮能以错误分辨率（回退 "1K"）对旧候选提交计费修复。
+      setReviewCandidateId(null);
       queryClient.invalidateQueries({ queryKey: ["batches", next.id] });
       // next_page closes the current page's open batch; keep its lists fresh
       // for when the user navigates back.

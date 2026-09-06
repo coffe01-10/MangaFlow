@@ -87,10 +87,17 @@ def _selected_pages(db: Session, chapter: Chapter):
 
 
 @router.get("/pages/{page_id}/export.png")
-def download_selected_page(page_id: str, db: Session = Depends(get_db)) -> FileResponse:
+def download_selected_page(
+    page_id: str,
+    db: Session = Depends(get_db),
+    project_id: str | None = None,
+) -> FileResponse:
     page = db.get(MangaPage, page_id)
     if not page:
         raise HTTPException(status_code=404, detail="页面不存在")
+    # The owning chapter's project is the page's scope (issue #143), resolved
+    # the same way create_export derives the project.
+    ensure_project_scope(db, page, project_id, label="页面")
     production = build_page_production_readiness(db, page)
     if not production.ready:
         raise HTTPException(status_code=409, detail=production_error_detail(production))
@@ -149,6 +156,7 @@ def create_export(
     payload: ExportRequest,
     db: Session = Depends(get_db),
     reuse_existing: bool = False,
+    project_id: str | None = None,
 ) -> ExportBundle:
     """Export a chapter's selected pages into a bundle artifact.
 
@@ -167,6 +175,9 @@ def create_export(
     chapter = db.get(Chapter, chapter_id)
     if not chapter or chapter.deleted_at is not None:
         raise HTTPException(status_code=404, detail="章节不存在")
+    # Checked before any bundle/artifact minting so a foreign caller cannot
+    # create exports under another project's chapter (issue #143).
+    ensure_project_scope(db, chapter, project_id, label="章节")
     project = db.get(Project, chapter.project_id)
     if not project or project.deleted_at is not None:
         raise HTTPException(status_code=404, detail="项目不存在")

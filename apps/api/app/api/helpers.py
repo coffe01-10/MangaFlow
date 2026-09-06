@@ -11,8 +11,11 @@ from sqlalchemy.orm import Session
 from app.models import (
     Asset,
     AssetCandidate,
+    Beat,
+    Chapter,
     Character,
     CharacterReference,
+    Dialogue,
     ExportBundle,
     GenerationBatch,
     GenerationJob,
@@ -20,6 +23,8 @@ from app.models import (
     ModelCallAttempt,
     Outfit,
     PageCandidate,
+    Panel,
+    Scene,
     StyleProfile,
     WorkflowDefinition,
     WorkflowRun,
@@ -58,6 +63,27 @@ def _scope_via_character(db: Session, obj: CharacterReference) -> str | None:
     return character.project_id if character else None
 
 
+def _scope_via_chapter(db: Session, obj: MangaPage | Scene) -> str | None:
+    chapter = db.get(Chapter, obj.chapter_id)
+    return chapter.project_id if chapter else None
+
+
+def _scope_via_panel(db: Session, obj: Panel) -> str | None:
+    page = db.get(MangaPage, obj.page_id)
+    return _scope_via_chapter(db, page) if page else None
+
+
+def _scope_via_dialogue(db: Session, obj: Dialogue) -> str | None:
+    panel = db.get(Panel, obj.panel_id)
+    return _scope_via_panel(db, panel) if panel else None
+
+
+def _scope_via_beat(db: Session, obj: Beat) -> str | None:
+    scene = db.get(Scene, obj.scene_id)
+    chapter = db.get(Chapter, scene.chapter_id) if scene else None
+    return chapter.project_id if chapter else None
+
+
 def _scope_via_workflow_definition(db: Session, obj: WorkflowVersion) -> str | None:
     workflow = db.get(WorkflowDefinition, obj.workflow_id)
     return workflow.project_id if workflow else None
@@ -74,10 +100,17 @@ _PROJECT_SCOPE_RESOLVERS: Mapping[type, ProjectScopeResolver] = {
     ExportBundle: _scope_from_column,
     WorkflowDefinition: _scope_from_column,
     WorkflowRun: _scope_from_column,
+    Character: _scope_from_column,
+    Chapter: _scope_from_column,
     PageCandidate: _scope_via_generation_batch,
     AssetCandidate: _scope_via_generation_batch,
     ModelCallAttempt: _scope_via_generation_job,
     CharacterReference: _scope_via_character,
+    MangaPage: _scope_via_chapter,
+    Panel: _scope_via_panel,
+    Dialogue: _scope_via_dialogue,
+    Scene: _scope_via_chapter,
+    Beat: _scope_via_beat,
     WorkflowVersion: _scope_via_workflow_definition,
 }
 
@@ -131,11 +164,13 @@ _LONE_SURROGATE_RE = re.compile("[\ud800-\udfff]")
 def sanitize_surrogates(value: Any) -> Any:
     """Return ``value`` with lone surrogates replaced by U+FFFD, recursively.
 
-    Pydantic already rejects surrogates in typed ``str`` fields (422), but
-    untyped ``dict``/``Any`` payloads (panel actions, scene palettes, legacy
-    regions) pass validation and poison the stored row — the DB bind or the
-    response encoding then fails. Models are copied, not mutated, so
-    ``model_dump``/``exclude_unset`` semantics in callers stay intact.
+    The wire-level middleware scrubs most bodies, but Pydantic accepts lone
+    surrogates in typed ``str`` fields, so any path it does not cover (and
+    untyped ``dict``/``Any`` payloads such as panel actions, scene palettes,
+    legacy regions) would poison the stored row — the DB bind or the response
+    encoding then fails. This is the Python-level backstop for those paths.
+    Models are copied, not mutated, so ``model_dump``/``exclude_unset``
+    semantics in callers stay intact.
     """
 
     if isinstance(value, str):

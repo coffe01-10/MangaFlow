@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.helpers import candidate_read
+from app.api.helpers import candidate_read, ensure_project_scope
 from app.api.routes.workflow.common import _page, _project_for_page
 from app.config import get_settings
 from app.database import get_db
@@ -46,10 +46,12 @@ def inspect_candidate(
     candidate_id: str,
     payload: InspectionRequest,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> GenerationJob:
     candidate = db.get(PageCandidate, candidate_id)
     if not candidate or not candidate.asset_id or candidate.deleted_at is not None:
         raise HTTPException(status_code=409, detail="候选图片尚未生成")
+    ensure_project_scope(db, candidate, project_id, label="候选")
     # A retried FAILED inspect job (its idempotency key stays collapsed as
     # closed:{id}) or a workflow-created inspect job is invisible to the
     # idempotency key above; guard on ACTIVE jobs so one candidate never runs
@@ -81,7 +83,16 @@ def inspect_candidate(
 
 
 @router.get("/candidates/{candidate_id}/inspections", response_model=list[InspectionRead])
-def list_inspections(candidate_id: str, db: Session = Depends(get_db)) -> list[InspectionResult]:
+def list_inspections(
+    candidate_id: str,
+    db: Session = Depends(get_db),
+    project_id: str | None = None,
+) -> list[InspectionResult]:
+    # Historical callers receive an empty list for an unknown candidate id, so
+    # the scope check only fires when the candidate row actually exists.
+    candidate = db.get(PageCandidate, candidate_id)
+    if candidate is not None:
+        ensure_project_scope(db, candidate, project_id, label="候选")
     return list(
         db.scalars(
             select(InspectionResult)
@@ -100,11 +111,13 @@ def repair_candidate(
     candidate_id: str,
     payload: RepairRequest,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> CandidateQueuedRead:
     original = db.get(PageCandidate, candidate_id)
-    inspection = db.get(InspectionResult, payload.inspection_result_id)
     if not original or not original.asset_id or original.deleted_at is not None:
         raise HTTPException(status_code=409, detail="原始候选图片不存在")
+    ensure_project_scope(db, original, project_id, label="候选")
+    inspection = db.get(InspectionResult, payload.inspection_result_id)
     if not inspection or inspection.candidate_id != original.id:
         raise HTTPException(status_code=409, detail="检查结果与候选不匹配")
     if inspection.category.upper() in {"TEXT", "OCR"}:
@@ -254,10 +267,12 @@ def upscale_candidate(
     candidate_id: str,
     payload: UpscaleRequest,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> CandidateQueuedRead:
     original = db.get(PageCandidate, candidate_id)
     if not original or not original.asset_id or original.deleted_at is not None:
         raise HTTPException(status_code=409, detail="原始候选图片不存在")
+    ensure_project_scope(db, original, project_id, label="候选")
     resolution_rank = {"1K": 1, "2K": 2, "4K": 4}
     if resolution_rank[payload.resolution.value] <= resolution_rank[original.resolution.value]:
         raise HTTPException(status_code=409, detail="升清目标必须高于当前候选清晰度")

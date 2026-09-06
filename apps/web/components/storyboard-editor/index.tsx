@@ -513,8 +513,11 @@ export function StoryboardEditor({
   const error = narrativeError ?? geometrySave.error ?? updateLayout.error ?? replanError;
   const conflict = (geometrySave.error != null && isConflictError(geometrySave.error))
     || (narrativeError != null && isConflictError(narrativeError));
-  const saving = savePanel.isPending || saveDialogue.isPending || addDialogue.isPending || removeDialogue.isPending
-    || updateLayout.isPending || geometrySaving || replanPending;
+  const narrativeSaving = savePanel.isPending || saveDialogue.isPending || addDialogue.isPending || removeDialogue.isPending;
+  // 叙事保存在途时同样冻结几何入口（审查 R2）：整包 PUT 与画布气泡删除都是
+  // 版本化写入，与 addDialogue 等并发会互相制造虚假 409。
+  const canvasBusy = geometrySaving || narrativeSaving;
+  const saving = canvasBusy || updateLayout.isPending || replanPending;
   const saveStatus = saving ? storyboardCopy.saving : error ? "保存失败" : "已保存";
   if (!currentPage) return null;
   return <div className={focusMode ? "storyboard-desk focus-mode" : "storyboard-desk"}>
@@ -536,7 +539,7 @@ export function StoryboardEditor({
       canUndo={commandStack.index > 0}
       canRedo={commandStack.index < commandStack.stack.length}
       dirty={dirty}
-      saving={geometrySaving}
+      saving={canvasBusy}
       overlayHint={!canvasKnown ? storyboardCopy.canvasMissing : null}
       onZoomIn={() => zoomManually(zoom * ZOOM_STEP)}
       onZoomOut={() => zoomManually(zoom / ZOOM_STEP)}
@@ -563,7 +566,7 @@ export function StoryboardEditor({
           showReadingOrder={toggles.readingOrder}
           showBleed={toggles.bleed}
           showSafe={toggles.safe}
-          interactive={!geometrySaving}
+          interactive={!canvasBusy}
           selection={selection}
           onCommand={handleCommand}
           onSelectPanels={selectPanels}
@@ -590,7 +593,11 @@ export function StoryboardEditor({
           dialogueDrafts={dialogueDrafts}
           newDialogue={newDialogue}
           selectedBubbleId={selection?.kind === "bubble" ? selection.dialogueId : null}
-          saving={savePanel.isPending || saveDialogue.isPending || removeDialogue.isPending}
+          // 组合 busy（几何 PUT + 叙事）双向门禁检查器保存按钮（R2 审查修复）：
+          // 只传 narrativeSaving 会让「保存本格分镜」/气泡卡在几何 PUT 在途时
+          // 仍可点击，与整包保存并发制造虚假 409——与下方画布冻结正好相反。
+          // 输入框不受影响：busy 只禁用按钮（dialogue-card 的 busy 语义相同）。
+          saving={canvasBusy}
           onBeginEdit={() => beginPanel(activePanel)}
           onExitEdit={() => { setEditingPanel(false); setPanelDraft(null); }}
           onPanelDraftChange={setPanelDraft}

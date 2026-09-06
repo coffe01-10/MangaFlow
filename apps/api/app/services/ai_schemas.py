@@ -25,9 +25,12 @@ class CharacterDraft(BaseModel):
 
 
 class BeatDraft(BaseModel):
-    # Ordinals are re-sequenced per scene after the merge (#152); the bound
-    # here only rejects clearly invalid emissions (0/negative) up front.
-    ordinal: int = Field(ge=1)
+    # Ordinals are re-sequenced to 1..n per scene after the merge (#152), so
+    # the schema tolerates 0-based or gapped emissions exactly like
+    # SceneDraft.ordinal instead of failing the paid call; normalization is
+    # the merge's job (_resequence_beats), and defense in depth continues at
+    # the pre-insert sanitizer.
+    ordinal: int
     action: str = Field(default="", max_length=DRAFT_TEXT_MAX_LENGTH)
     speaker_name: str = Field(default="", max_length=DRAFT_NAME_MAX_LENGTH)
     dialogue: str = Field(default="", max_length=DRAFT_TEXT_MAX_LENGTH)

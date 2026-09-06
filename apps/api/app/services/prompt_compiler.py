@@ -1,10 +1,13 @@
 import hashlib
 import json
+import logging
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Character, Dialogue, MangaPage, Outfit, Panel, Project, Scene, StyleProfile
+
+LOGGER = logging.getLogger("mangaflow.prompt_compiler")
 
 PAGE_TEMPLATE_VERSION = "page-v2.2.0"
 
@@ -26,6 +29,71 @@ CAST_ALIAS_PROMPT_LIMIT = 8
 # Name-only roster for non-cast project characters, truncated to bound the
 # summary line itself on huge casts.
 OTHER_CHARACTERS_ROSTER_MAX_CHARS = 2_000
+# Per-block cap for embedded JSON structures: outfit components / state
+# rules / locked fields, style.profile and per-cast locked feature lists.
+# The #160 caps bounded the description text, but these structural blocks
+# were unbounded side doors into the same prompt; 2_000 matches the
+# compressed description tier.
+STRUCTURED_BLOCK_MAX_CHARS = 2_000
+
+
+def _bound_structured_block(value: object, max_chars: int) -> object:
+    """Bound one embedded JSON block to ``max_chars`` of serialized text.
+
+    Cast descriptions cap plain strings by code-point slicing; these fields
+    are JSON structures, so an oversized block drops trailing list items /
+    dict keys (deterministic hard cuts, #160 style) until the compact
+    serialization fits. A single surviving item that still busts the cap is
+    bounded recursively (leaf strings are code-point truncated); if even
+    that cannot fit — only reachable through pathological nesting — the
+    block collapses to an empty list/dict, so the result always
+    re-serializes at or under the cap.
+    """
+
+    def serialized(item: object) -> str:
+        return json.dumps(item, ensure_ascii=False, separators=(",", ":"))
+
+    max_chars = max(max_chars, 2)  # "" / [] / {} serialize to 2 chars
+    if len(serialized(value)) <= max_chars:
+        return value
+    if isinstance(value, str):
+        # Reserve room for the JSON quotes/escapes, then shave code points
+        # until the serialized form fits.
+        trimmed = value[: max_chars - 2]
+        while trimmed and len(serialized(trimmed)) > max_chars:
+            trimmed = trimmed[:-1]
+        return trimmed
+    if isinstance(value, list):
+        for count in range(len(value), 0, -1):
+            prefix = value[:count]
+            if len(serialized(prefix)) <= max_chars:
+                return prefix
+        bounded = _bound_structured_block(value[0], max_chars - 2)
+        if len(serialized([bounded])) <= max_chars:
+            return [bounded]
+        return []
+    if isinstance(value, dict):
+        keys = list(value)
+        for count in range(len(keys), 0, -1):
+            subset = {key: value[key] for key in keys[:count]}
+            if len(serialized(subset)) <= max_chars:
+                return subset
+        key = keys[0]
+        original = value[key]
+        # A key so large it alone busts the cap is truncated first; its
+        # budget leaves room for the {"":} wrapper and a minimal value.
+        key_budget = max(2, max_chars - 5)
+        if len(serialized(key)) > key_budget:
+            key = _bound_structured_block(key, key_budget)
+        inner = max(2, max_chars - len(serialized(key)) - 3)
+        bounded = _bound_structured_block(original, inner)
+        if len(serialized({key: bounded})) <= max_chars:
+            return {key: bounded}
+        return {}
+    # Non-container scalars (bool/int/float/None) are tiny in practice, but a
+    # hostile huge number would serialize unbounded through this fallthrough —
+    # stringify and truncate so even this branch re-serializes under the cap.
+    return _bound_structured_block(str(value), max_chars)
 
 
 def _cast_bible_entry(
@@ -50,8 +118,12 @@ def _cast_bible_entry(
             # to the live aliases (contract §8.2 frozen facts).
             "aliases": (fact.get("aliases", item.aliases) or [])[:CAST_ALIAS_PROMPT_LIMIT],
             "description": (item.canonical_description or "")[:description_limit],
-            "locked_features": item.locked_features,
-            "forbidden_changes": item.forbidden_changes,
+            "locked_features": _bound_structured_block(
+                item.locked_features, STRUCTURED_BLOCK_MAX_CHARS
+            ),
+            "forbidden_changes": _bound_structured_block(
+                item.forbidden_changes, STRUCTURED_BLOCK_MAX_CHARS
+            ),
             "identity_spec": fact.get("identity_spec") or {},
             "visual_spec": fact.get("visual_spec") or {},
             "negative_constraints": fact.get("negative_constraints") or [],
@@ -61,9 +133,32 @@ def _cast_bible_entry(
         "primary_name": item.primary_name,
         "aliases": (item.aliases or [])[:CAST_ALIAS_PROMPT_LIMIT],
         "description": (item.canonical_description or "")[:description_limit],
-        "locked_features": item.locked_features,
-        "forbidden_changes": item.forbidden_changes,
+        "locked_features": _bound_structured_block(
+            item.locked_features, STRUCTURED_BLOCK_MAX_CHARS
+        ),
+        "forbidden_changes": _bound_structured_block(
+            item.forbidden_changes, STRUCTURED_BLOCK_MAX_CHARS
+        ),
     }
+
+
+def _character_match_names(item: Character, fact: dict | None) -> list[str]:
+    """Uncapped name list (primary name first) for deterministic matching.
+
+    The rendered prompt caps each cast entry's aliases at
+    CAST_ALIAS_PROMPT_LIMIT, but PRESENCE compliance must map every
+    registered name a model may report — a 9th alias or any decorated
+    form — so the snapshot carries the full list outside the rendered
+    ``input`` payload (#164). Frozen facts resolve names exactly like
+    ``_cast_bible_entry`` (contract §8.2/§8.5).
+    """
+
+    if fact:
+        return [
+            fact.get("primary_name") or item.primary_name,
+            *(fact.get("aliases", item.aliases) or []),
+        ]
+    return [item.primary_name, *(item.aliases or [])]
 
 
 def compile_page_prompt(
@@ -221,9 +316,15 @@ def compile_page_prompt(
                     "id": outfit.id,
                     "character_id": outfit.character_id,
                     "name": outfit.name,
-                    "components": outfit.components,
-                    "state_rules": outfit.state_rules,
-                    "locked_fields": outfit.locked_fields,
+                    "components": _bound_structured_block(
+                        outfit.components, STRUCTURED_BLOCK_MAX_CHARS
+                    ),
+                    "state_rules": _bound_structured_block(
+                        outfit.state_rules, STRUCTURED_BLOCK_MAX_CHARS
+                    ),
+                    "locked_fields": _bound_structured_block(
+                        outfit.locked_fields, STRUCTURED_BLOCK_MAX_CHARS
+                    ),
                 }
                 for outfit in outfits
             ],
@@ -232,7 +333,9 @@ def compile_page_prompt(
                     "id": style.id,
                     "name": style.name,
                     "color_mode": style.color_mode,
-                    "profile": style.profile,
+                    "profile": _bound_structured_block(
+                        style.profile, STRUCTURED_BLOCK_MAX_CHARS
+                    ),
                 }
                 if style
                 else None
@@ -278,9 +381,33 @@ other_characters 仅为项目其他角色名单，不得主动画入本页；
         # cast descriptions drop to the tighter cap and the prompt is rebuilt.
         payload = build_payload(CAST_DESCRIPTION_COMPRESSED_MAX_CHARS)
         prompt = build_prompt(payload)
+        if len(prompt) > PROMPT_CHAR_BUDGET:
+            # The single tier could not fit (e.g. huge source_text/layout or
+            # more cast than even 2_000-char descriptions can hold). Emit an
+            # explicit record instead of failing silently, but never raise:
+            # the caller already paid for this pipeline step.
+            LOGGER.warning(
+                "compile_page_prompt 压缩重建后仍超出提示词预算：project=%s page=%s"
+                "(page_number=%s) final_length=%d budget=%d，按现状继续",
+                project.id,
+                page.id,
+                page.page_number,
+                len(prompt),
+                PROMPT_CHAR_BUDGET,
+            )
+    # Uncapped matching index for the inspection handler (#164): rendered
+    # prompt text keeps the 8-alias cap, while this snapshot field carries
+    # every registered name so PRESENCE compliance maps a 9th alias instead
+    # of synthesizing a false MISSING row.
+    match_aliases = {
+        item.id: _character_match_names(item, frozen_facts.get(item.id))
+        for item in characters
+        if item.id in page_cast_ids
+    }
     snapshot = {
         "template": PAGE_TEMPLATE_VERSION,
         "checksum": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
         "input": payload,
+        "match_aliases": match_aliases,
     }
     return prompt, snapshot

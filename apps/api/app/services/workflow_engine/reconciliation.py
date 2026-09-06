@@ -25,6 +25,7 @@ from app.services.workflow_engine.scope import (
 )
 from app.services.workflow_engine.validation import validate_graph
 from app.workflow_schemas import (
+    WorkflowEdgeDefinition,
     WorkflowGraph,
     WorkflowNodeDefinition,
 )
@@ -221,6 +222,49 @@ def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
 
     paused = False
     failed = False
+    dead_cache: dict[str, bool] = {}
+
+    def _edge_leaves_dead_branch(edge: WorkflowEdgeDefinition) -> bool:
+        parent = by_node[edge.source_node]
+        if (
+            parent.node_type == "control.condition"
+            and parent.status == "COMPLETED"
+            and parent.output_refs.get("selected_port") != edge.source_port
+        ):
+            return True
+        return _branch_is_dead(edge.source_node)
+
+    def _branch_is_dead(node_id: str) -> bool:
+        """Transitively dead branch membership, memoized per reconciliation pass.
+
+        A node is dead when EVERY runnable incoming edge arrives from an
+        unselected port of a completed control.condition or from an already
+        dead parent. Direct-branch children keep the historical skip; the
+        recursion extends it past the first hop so condition→A→B chains on an
+        unselected port cannot execute (a paid generator.page downstream used
+        to pass the parent gate because SKIPPED counts as satisfied and B's
+        edge comes from A, not the condition). Nodes without runnable parents
+        — source nodes, explicit start nodes, and merges fed by any live
+        branch — are never dead. Statuses are read live: the loop walks a
+        topological order, so a node is only queried after its parents were
+        finalized in this pass.
+        """
+
+        if node_id in dead_cache:
+            return dead_cache[node_id]
+        # Cycle defense only: validate_graph rejects cycles (an invalid graph
+        # yields an empty topological_order this loop never walks), so this
+        # placeholder is never observed as a final answer.
+        dead_cache[node_id] = False
+        runnable_edges = [
+            edge for edge in incoming_edges[node_id] if edge.source_node in by_node
+        ]
+        dead = bool(runnable_edges) and all(
+            _edge_leaves_dead_branch(edge) for edge in runnable_edges
+        )
+        dead_cache[node_id] = dead
+        return dead
+
     for node_id in report.topological_order:
         item = by_node.get(node_id)
         if not item:
@@ -257,14 +301,7 @@ def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
             if parent in by_node
         ):
             continue
-        disabled_branch = any(
-            by_node[edge.source_node].node_type == "control.condition"
-            and by_node[edge.source_node].status == "COMPLETED"
-            and by_node[edge.source_node].output_refs.get("selected_port") != edge.source_port
-            for edge in incoming_edges[node_id]
-            if edge.source_node in by_node
-        )
-        if disabled_branch:
+        if _branch_is_dead(node_id):
             item.status = "SKIPPED"
             item.finished_at = utcnow()
             item.output_refs = {"reason": "CONDITION_BRANCH_NOT_SELECTED"}

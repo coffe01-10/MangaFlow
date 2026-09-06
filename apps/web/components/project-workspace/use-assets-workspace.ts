@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ChangeEvent, DragEvent } from "react";
 
 import { activePollInterval } from "@/lib/task-status";
@@ -11,6 +11,29 @@ import { api, type AssetPurpose, type ImageModelAlias, type Outfit, type StylePr
 import { assetKindByView } from "./labels";
 import type { AssetWorkspaceView, WorkspaceSection } from "./types";
 import type { WorkspaceQueries } from "./use-workspace-queries";
+
+// 水合安全的 localStorage 外部存储（风格色彩模式）：useSyncExternalStore 在
+// 水合期间采用服务端快照（默认「黑白」），客户端快照只在渲染后生效，避免
+// 渲染期读 localStorage 造成水合不匹配、也避免 effect 里同步 setState 的级联
+// 渲染。存储值精确等于 "color" 才视为彩色。
+const styleModeListeners = new Set<() => void>();
+
+function subscribeStyleMode(listener: () => void) {
+  styleModeListeners.add(listener);
+  return () => {
+    styleModeListeners.delete(listener);
+  };
+}
+
+function emitStyleModeChange() {
+  styleModeListeners.forEach((listener) => listener());
+}
+
+function readStyleMode(id: string): StyleProfile["color_mode"] {
+  return window.localStorage.getItem(`mangaflow.style-mode.${id}`) === "color"
+    ? "color"
+    : "monochrome";
+}
 
 /**
  * Assets domain: character/outfit/style reference states, their mutations and
@@ -59,10 +82,12 @@ export function useAssetsWorkspace({
   const [editingOutfitId, setEditingOutfitId] = useState<string | null>(null);
   const [styleName, setStyleName] = useState("黑白网点风格");
   const [styleLockedFields, setStyleLockedFields] = useState("");
-  const [styleColorMode, setStyleColorMode] = useState<StyleProfile["color_mode"]>(() => {
-    if (typeof window === "undefined") return "monochrome";
-    return window.localStorage.getItem(`mangaflow.style-mode.${id}`) === "color" ? "color" : "monochrome";
-  });
+  // 水合安全说明见模块顶部 readStyleMode。
+  const styleColorMode = useSyncExternalStore(
+    subscribeStyleMode,
+    () => readStyleMode(id),
+    () => "monochrome" as StyleProfile["color_mode"],
+  );
   const [selectedOutfitAssets, setSelectedOutfitAssets] = useState<string[]>([]);
   const [showGeneratedReferencePicker, setShowGeneratedReferencePicker] = useState(false);
   const [selectedStyleAssets, setSelectedStyleAssets] = useState<string[]>([]);
@@ -169,6 +194,9 @@ export function useAssetsWorkspace({
       queryClient.invalidateQueries({ queryKey: ["styles", id] });
       queryClient.invalidateQueries({ queryKey: ["scene-assets", id] });
       queryClient.invalidateQueries({ queryKey: ["pages", activeChapterId] });
+      // 重分类会拆掉 CHARACTER_REFERENCE 等绑定，直接改变生成就绪判定；
+      // 与 deleteAsset 一致，同步失效生成工作台，避免抽卡面板引用已失效参考。
+      queryClient.invalidateQueries({ queryKey: ["generation-workbench"] });
     },
   });
 
@@ -242,6 +270,9 @@ export function useAssetsWorkspace({
       return { result, targetId };
     },
     onSuccess: ({ result, targetId }) => {
+      // 保存已在服务端生效：即使面板已切到别的角色，也必须失效缓存里的旧
+      // version，否则下一次保存会带着过期版本号撞出假 409。身份校验只拦表单回填。
+      queryClient.invalidateQueries({ queryKey: ["characters", id] });
       // A late save of character A must not overwrite the edit form after the
       // user has already switched the panel to character B.
       if (targetId !== (boundCharacter?.id ?? null)) return;
@@ -249,7 +280,6 @@ export function useAssetsWorkspace({
       setEditCharacterAliases(result.aliases.join("，"));
       setEditLockedFeatures(result.locked_features.join("，"));
       setEditForbiddenChanges(result.forbidden_changes.join("，"));
-      queryClient.invalidateQueries({ queryKey: ["characters", id] });
     },
   });
 
@@ -283,6 +313,9 @@ export function useAssetsWorkspace({
       return targetId;
     },
     onSuccess: (targetId) => {
+      // 同 updateCharacter：保存已生效，先失效缓存的旧 version（否则下次保存
+      // 假 409）；身份校验只用于不覆盖用户正在编辑的表单。
+      queryClient.invalidateQueries({ queryKey: ["outfits", id] });
       // Same guard as updateCharacter: don't wipe the form the user is now
       // editing with a late result from a previously selected outfit.
       if (targetId !== editingOutfitId) return;
@@ -291,7 +324,6 @@ export function useAssetsWorkspace({
       setSelectedOutfitAssets([]);
       setEditingOutfitId(null);
       setShowGeneratedReferencePicker(false);
-      queryClient.invalidateQueries({ queryKey: ["outfits", id] });
     },
   });
 
@@ -308,6 +340,9 @@ export function useAssetsWorkspace({
       queryClient.invalidateQueries({ queryKey: ["script", activeChapterId] });
       queryClient.invalidateQueries({ queryKey: ["pages", activeChapterId] });
       queryClient.invalidateQueries({ queryKey: ["storyboard"] });
+      // 删除服装会清除剧本/分镜绑定并改变生成就绪输入；与 deleteAsset 一致
+      // 失效生成工作台，避免工作台继续按已删除服装判定参考就绪。
+      queryClient.invalidateQueries({ queryKey: ["generation-workbench"] });
       setUploadError("");
     },
     onError: (reason) => setUploadError(
@@ -371,8 +406,8 @@ export function useAssetsWorkspace({
   });
 
   function selectStyleMode(mode: StyleProfile["color_mode"]) {
-    setStyleColorMode(mode);
     window.localStorage.setItem(`mangaflow.style-mode.${id}`, mode);
+    emitStyleModeChange();
     setStyleName((current) => ["黑白网点风格", "彩色漫画风格"].includes(current) ? (mode === "monochrome" ? "黑白网点风格" : "彩色漫画风格") : current);
   }
 
@@ -453,7 +488,6 @@ export function useAssetsWorkspace({
     styleLockedFields,
     setStyleLockedFields,
     styleColorMode,
-    setStyleColorMode,
     selectedOutfitAssets,
     setSelectedOutfitAssets,
     showGeneratedReferencePicker,

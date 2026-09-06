@@ -18,6 +18,14 @@ Implements the frozen ADR startup protocol (`docs/adr/v02-desktop-shell-evaluati
    can ``kill(-pgid)`` the whole tree. On Windows the shell assigns the helper
    to the root Job Object with ``KILL_ON_JOB_CLOSE`` (see shell-core
    ``ownership.rs``; real Windows verification is NOT RUN in this sandbox).
+   Graceful stop on both platforms: the shell closes the helper's stdin pipe
+   (Windows' only cooperative channel — a Job Object cannot deliver SIGTERM),
+   and an EOF watcher thread inside the helper reacts by raising SIGTERM to
+   itself, which runs the ``sys.exit(0)`` handler registered here (or
+   uvicorn's own graceful SIGTERM handling once it owns the process), so the
+   serve loop unwinds through the FastAPI lifespan shutdown. The shell's
+   escalation (Unix SIGKILL / Windows ``TerminateJobObject``) is the backstop
+   if the process cannot exit cooperatively within the grace window.
 
 Modes:
   stub -- the handshake is exercised without FastAPI (serves /api/v1/health).
@@ -38,6 +46,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -100,6 +109,39 @@ def _await_go(token: str) -> bool:
     return True
 
 
+def _start_stdin_eof_watch() -> None:
+    """Arm the cooperative stop channel: stdin EOF -> SIGTERM to this process.
+
+    The Windows shell cannot deliver a signal across the Job Object boundary,
+    so its graceful stop closes the helper's stdin pipe instead; Unix shells
+    signal the process group directly and never depend on this thread. On EOF
+    the watcher raises SIGTERM into this process: before uvicorn starts, the
+    handler registered in ``main()`` (``sys.exit(0)``) runs and unwinds through
+    ``main()``'s cleanup; once uvicorn owns the process — its Windows fallback
+    installs ``signal.signal(SIGTERM, ...)`` on its handled signals — the same
+    raise flips uvicorn's ``should_exit`` and the serve loop shuts down through
+    the FastAPI lifespan. Python executes signal handlers on the main thread,
+    and uvicorn's ~0.1 s serve tick guarantees prompt dispatch.
+
+    Started only AFTER the GO line was consumed so it never races
+    ``_await_go`` for stdin; any post-GO stdin bytes are drained and ignored.
+    ``daemon=True``: if the main thread is ever stuck inside a C call that
+    never checks for signals, this thread must not block process exit — the
+    shell's escalation (Unix SIGKILL / Windows TerminateJobObject) is the
+    documented backstop for that residual case.
+    """
+
+    def _watch() -> None:
+        try:
+            while sys.stdin.readline() != "":
+                pass  # drain post-GO stdin bytes; EOF ends the loop
+        except Exception:  # noqa: BLE001 - any read failure means the pipe is gone
+            pass
+        signal.raise_signal(signal.SIGTERM)
+
+    threading.Thread(target=_watch, name="mangaflow-stdin-eof", daemon=True).start()
+
+
 def _spawn_grandchild() -> subprocess.Popen[str] | None:
     """Spawn a test descendant that dies with the helper (Linux PDEATHSIG)."""
     if sys.platform == "win32":
@@ -155,6 +197,7 @@ def _run_stub(journal: Path, record: dict, grandchild: bool) -> int:
         if not _await_go(record["token"]):
             server.server_close()
             return EXIT_HANDSHAKE_REFUSED
+        _start_stdin_eof_watch()
         server.serve_forever()
         return 0
     finally:
@@ -211,6 +254,12 @@ def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
     if not _await_go(record["token"]):
         sock.close()
         return EXIT_HANDSHAKE_REFUSED
+
+    # Arm the cooperative stop channel before the (slow) app import: the
+    # shell's graceful stop may arrive while third-party libraries are still
+    # loading, and it must unwind cleanly through main()'s cleanup rather
+    # than waiting for the kill escalation.
+    _start_stdin_eof_watch()
 
     from app.main import app
 

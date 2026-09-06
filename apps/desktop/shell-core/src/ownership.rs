@@ -7,15 +7,24 @@
 //! single instruction, and only then its initial thread is resumed. The
 //! spawn→assign race window of the V02-53B compile-only skeleton is gone:
 //! whatever happens (graceful exit, shell crash, timeout), the job handle
-//! closing kills the whole tree. The implementation compiles for
-//! `x86_64-pc-windows-msvc`, but its runtime behavior is **NOT RUN** (this
-//! sandbox is Linux): D3 must be re-verified on a real Windows machine before
-//! this path is called production-proven (see `apps/desktop/README.md`).
+//! closing kills the whole tree.
 //!
-//! Unix path (runtime-verified in this sandbox): the spawned helper gets
-//! `PR_SET_PDEATHSIG=SIGKILL` before its first instruction and puts itself
-//! into its own session, so a shell crash kills the helper immediately and
-//! the shell can signal the entire tree via the process group.
+//! **Windows stop semantics: cooperative first, then kill.** A Job Object
+//! cannot deliver SIGTERM, so [`OwnedTree::stop`] closes the child's piped
+//! stdin — the helper's documented EOF watcher reacts by raising SIGTERM to
+//! itself and unwinding uvicorn through the FastAPI lifespan shutdown (see
+//! `sidecar/mangaflow_desktop_helper.py`, `_start_stdin_eof_watch`). Only
+//! when the grace window elapses does `TerminateJobObject` escalate; the
+//! crash path (shell death) still relies on `KILL_ON_JOB_CLOSE` alone. The
+//! spawn/stop/escalation paths are exercised by the ownership integration
+//! tests on the platforms they run on; the full desktop-app D3 acceptance
+//! (real WebView + installer chain) remains a separate, lead-owned gate
+//! (see `apps/desktop/README.md`).
+//!
+//! Unix path: the spawned helper gets `PR_SET_PDEATHSIG=SIGKILL` before its
+//! first instruction and puts itself into its own session, so a shell crash
+//! kills the helper immediately and the shell can signal the entire tree via
+//! the process group.
 
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
@@ -135,13 +144,28 @@ impl OwnedTree {
     }
 
     /// Graceful stop with an escalation deadline; kills the whole tree.
+    ///
+    /// Cooperative phase first: the child's piped stdin is closed — the
+    /// helper's documented EOF watcher turns that into a self-SIGTERM and
+    /// unwinds uvicorn through the FastAPI lifespan shutdown instead of being
+    /// cut mid-flight. On Unix the process group is also SIGTERMed directly
+    /// so descendants that do not watch stdin still get the cooperative
+    /// signal. A child that exits during `grace` reports its own exit code.
+    ///
+    /// Escalation after `grace` kills the tree unconditionally: Unix SIGKILL
+    /// to the process group (no exit code), Windows `TerminateJobObject` on
+    /// the root Job (job exit code 125). The crash path (shell death) is
+    /// unchanged: the job handle's `KILL_ON_JOB_CLOSE` drop still kills
+    /// everything without any cooperation.
+    ///
+    /// Reliance: this requires the piped stdin handle to still be open in
+    /// [`OwnedTree::child`] — nothing may `take()` it between spawn and stop
+    /// (the handshake only borrows it to send GO).
     pub fn stop(&mut self, grace: Duration) -> Result<Option<i32>, OwnershipError> {
-        #[cfg(windows)]
-        match &self.guard {
-            TreeGuard::Windows { job } => unsafe {
-                let _ = windows::Win32::System::JobObjects::TerminateJobObject(job.0, 125);
-            },
-        }
+        // Cooperative phase: dropping the piped stdin closes the pipe's write
+        // end; the helper's EOF watcher is the graceful-shutdown trigger.
+        // Idempotent — take() on an already-taken stdin is a no-op.
+        drop(self.child.stdin.take());
         #[cfg(unix)]
         signal_tree(self.pid(), libc::SIGTERM);
         let deadline = Instant::now() + grace;
@@ -154,6 +178,12 @@ impl OwnedTree {
         }
         #[cfg(unix)]
         signal_tree(self.pid(), libc::SIGKILL);
+        #[cfg(windows)]
+        match &self.guard {
+            TreeGuard::Windows { job } => unsafe {
+                let _ = windows::Win32::System::JobObjects::TerminateJobObject(job.0, 125);
+            },
+        }
         match self.child.wait() {
             Ok(status) => Ok(status.code()),
             Err(error) => Err(OwnershipError::StopFailed(error.to_string())),
@@ -254,18 +284,30 @@ fn create_kill_on_close_job() -> Result<JobHandle, OwnershipError> {
     };
 
     unsafe {
-        let job = CreateJobObjectW(None, windows::core::PCWSTR::null())
-            .map_err(|error| OwnershipError::JobAssignment(error.to_string()))?;
+        // Wrap the raw handle IMMEDIATELY after creation: a failure of
+        // SetInformationJobObject below must not leak the job HANDLE. Before
+        // this wrapper-first shape, the handle was only wrapped after BOTH
+        // calls succeeded, so a SetInformationJobObject error returned
+        // without ever closing it — one leaked kernel object per failed
+        // spawn. With the wrapper owning it from here on, Drop closes it on
+        // every path out of this function (the leak cannot be forced from a
+        // test without injecting a failing setter; the release itself is
+        // covered by the handle-count regression test below).
+        let job = JobHandle(
+            CreateJobObjectW(None, windows::core::PCWSTR::null())
+                .map_err(|error| OwnershipError::JobAssignment(error.to_string()))?,
+        );
         let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
         limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        SetInformationJobObject(
-            job,
+        if let Err(error) = SetInformationJobObject(
+            job.0,
             JobObjectExtendedLimitInformation,
             &limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION as *const core::ffi::c_void,
             std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-        )
-        .map_err(|error| OwnershipError::JobAssignment(error.to_string()))?;
-        Ok(JobHandle(job))
+        ) {
+            return Err(OwnershipError::JobAssignment(error.to_string()));
+        }
+        Ok(job)
     }
 }
 

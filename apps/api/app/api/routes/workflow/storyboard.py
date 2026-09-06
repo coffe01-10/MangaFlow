@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from app.api.helpers import reject_required_nulls
+from app.api.helpers import ensure_project_scope, reject_required_nulls
 from app.api.routes.workflow.common import _page, _panel_read, _storyboard_read
 from app.database import get_db
 from app.domain.storyboard_layout import canonical_bubble, read_bubble
@@ -38,11 +38,16 @@ from app.services.storyboard_geometry import (
 router = APIRouter()
 
 
-def _panel_context(db: Session, panel_id: str) -> tuple[Panel, MangaPage, str]:
+def _panel_context(
+    db: Session,
+    panel_id: str,
+    project_scope: str | None = None,
+) -> tuple[Panel, MangaPage, str]:
     panel = db.get(Panel, panel_id)
     if not panel:
         raise HTTPException(status_code=404, detail="分镜格不存在")
     page = _page(db, panel.page_id)
+    ensure_project_scope(db, panel, project_scope, label="分镜格")
     return panel, page, project_id_for_page(db, page)
 
 
@@ -80,8 +85,13 @@ def _dialogue_read(dialogue: Dialogue) -> DialogueRead:
 
 
 @router.get("/pages/{page_id}/storyboard", response_model=StoryboardRead)
-def get_storyboard(page_id: str, db: Session = Depends(get_db)) -> StoryboardRead:
+def get_storyboard(
+    page_id: str,
+    db: Session = Depends(get_db),
+    project_id: str | None = None,
+) -> StoryboardRead:
     page = _page(db, page_id)
+    ensure_project_scope(db, page, project_id, label="页面")
     return _storyboard_read(db, page)
 
 
@@ -90,10 +100,13 @@ def patch_page_layout(
     page_id: str,
     payload: PageLayoutUpdate,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> StoryboardRead:
+    page = _page(db, page_id)
+    ensure_project_scope(db, page, project_id, label="页面")
     page = update_page_layout(
         db,
-        _page(db, page_id),
+        page,
         panel_count=payload.panel_count,
         layout_mode=payload.layout_mode,
     )
@@ -105,8 +118,10 @@ def patch_page_reading_order(
     page_id: str,
     payload: ReadingOrderUpdate,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> StoryboardRead:
     page = _page(db, page_id)
+    ensure_project_scope(db, page, project_id, label="页面")
     reorder_page_panels(db, page, payload.order)
     return _storyboard_read(db, page)
 
@@ -116,8 +131,10 @@ def put_page_storyboard_geometry(
     page_id: str,
     payload: StoryboardGeometrySave,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> StoryboardRead:
     page = _page(db, page_id)
+    ensure_project_scope(db, page, project_id, label="页面")
     save_storyboard_geometry(db, page, payload)
     return _storyboard_read(db, page)
 
@@ -127,8 +144,9 @@ def update_panel(
     panel_id: str,
     payload: PanelUpdate,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> PanelRead:
-    panel, page, project_id = _panel_context(db, panel_id)
+    panel, page, project_id = _panel_context(db, panel_id, project_id)
     _claim_panel_version(db, panel, payload.version)
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
     reject_required_nulls(Panel, values)
@@ -147,8 +165,9 @@ def create_dialogue(
     panel_id: str,
     payload: DialogueCreate,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> Dialogue:
-    panel, page, project_id = _panel_context(db, panel_id)
+    panel, page, project_id = _panel_context(db, panel_id, project_id)
     _claim_panel_version(db, panel, payload.panel_version)
     if not payload.target_text.strip():
         raise HTTPException(status_code=422, detail="气泡文字不能为空")
@@ -183,11 +202,13 @@ def update_dialogue(
     dialogue_id: str,
     payload: DialogueUpdate,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> Dialogue:
     dialogue = db.get(Dialogue, dialogue_id)
     if not dialogue:
         raise HTTPException(status_code=404, detail="对白不存在")
-    panel, page, project_id = _panel_context(db, dialogue.panel_id)
+    ensure_project_scope(db, dialogue, project_id, label="对白")
+    panel, page, project_id = _panel_context(db, dialogue.panel_id, project_id)
     _claim_panel_version(db, panel, payload.panel_version)
     values = payload.model_dump(exclude_unset=True, exclude={"panel_version"})
     reject_required_nulls(Dialogue, values)
@@ -204,11 +225,13 @@ def delete_dialogue(
     dialogue_id: str,
     payload: DialogueDelete,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> None:
     dialogue = db.get(Dialogue, dialogue_id)
     if not dialogue:
         raise HTTPException(status_code=404, detail="对白不存在")
-    panel, page, _ = _panel_context(db, dialogue.panel_id)
+    ensure_project_scope(db, dialogue, project_id, label="对白")
+    panel, page, _ = _panel_context(db, dialogue.panel_id, project_id)
     _claim_panel_version(db, panel, payload.panel_version)
     db.delete(dialogue)
     db.flush()

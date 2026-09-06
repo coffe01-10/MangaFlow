@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
-from app.api.helpers import reject_required_nulls
+from app.api.helpers import ensure_project_scope, reject_required_nulls
 from app.config import get_settings
 from app.database import get_db
 from app.domain.states import ensure_unlocked
@@ -171,18 +171,24 @@ def list_chapters(project_id: str, db: Session = Depends(get_db)) -> list[Chapte
 
 
 @router.get("/chapters/{chapter_id}", response_model=ChapterRead)
-def get_chapter(chapter_id: str, db: Session = Depends(get_db)) -> ChapterRead:
+def get_chapter(
+    chapter_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> ChapterRead:
     chapter = db.get(Chapter, chapter_id)
     if not chapter or chapter.deleted_at is not None:
         raise HTTPException(status_code=404, detail="章节不存在")
+    ensure_project_scope(db, chapter, project_id, label="章节")
     return _chapter_read(db, chapter)
 
 
 @router.get("/chapters/{chapter_id}/segments", response_model=list[SourceSegmentRead])
-def list_segments(chapter_id: str, db: Session = Depends(get_db)) -> list[SourceSegment]:
+def list_segments(
+    chapter_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> list[SourceSegment]:
     chapter = db.get(Chapter, chapter_id)
     if not chapter or chapter.deleted_at is not None or not chapter.current_source_revision_id:
         raise HTTPException(status_code=404, detail="章节原文不存在")
+    ensure_project_scope(db, chapter, project_id, label="章节")
     return list(
         db.scalars(
             select(SourceSegment)
@@ -197,10 +203,15 @@ def list_segments(chapter_id: str, db: Session = Depends(get_db)) -> list[Source
     response_model=JobRead,
     status_code=status.HTTP_202_ACCEPTED,
 )
-def parse_chapter(chapter_id: str, db: Session = Depends(get_db)):
+def parse_chapter(
+    chapter_id: str, db: Session = Depends(get_db), project_id: str | None = None
+):
     chapter = db.get(Chapter, chapter_id)
     if not chapter or chapter.deleted_at is not None:
         raise HTTPException(status_code=404, detail="章节不存在")
+    # Checked before any state guard so a foreign caller never mints a paid
+    # SOURCE_PARSE job (issue #143).
+    ensure_project_scope(db, chapter, project_id, label="章节")
     existing_page = db.scalar(
         select(MangaPage.id).where(MangaPage.chapter_id == chapter.id).limit(1)
     )
@@ -242,10 +253,14 @@ def plan_chapter(
     chapter_id: str,
     payload: PlanRequest,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> PlanRead:
     chapter = db.get(Chapter, chapter_id)
     if not chapter or chapter.deleted_at is not None:
         raise HTTPException(status_code=404, detail="章节不存在")
+    # Checked before the planning write so a foreign caller cannot create or
+    # replace another project's pages (issue #143).
+    ensure_project_scope(db, chapter, project_id, label="章节")
     pages = plan_chapter_pages(
         db,
         chapter,
@@ -265,10 +280,13 @@ def plan_chapter(
 
 
 @router.get("/chapters/{chapter_id}/revisions", response_model=list[SourceRevisionRead])
-def list_revisions(chapter_id: str, db: Session = Depends(get_db)) -> list[SourceRevision]:
+def list_revisions(
+    chapter_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> list[SourceRevision]:
     chapter = db.get(Chapter, chapter_id)
     if not chapter or chapter.deleted_at is not None:
         raise HTTPException(status_code=404, detail="章节不存在")
+    ensure_project_scope(db, chapter, project_id, label="章节")
     return list(
         db.scalars(
             select(SourceRevision)
@@ -284,8 +302,17 @@ def list_revisions(chapter_id: str, db: Session = Depends(get_db)) -> list[Sourc
     status_code=status.HTTP_201_CREATED,
 )
 def revise_source(
-    chapter_id: str, payload: SourceRevisionCreate, db: Session = Depends(get_db)
+    chapter_id: str,
+    payload: SourceRevisionCreate,
+    db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> SourceRevision:
+    chapter = db.get(Chapter, chapter_id)
+    if not chapter or chapter.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="章节不存在")
+    # Checked before the service's own locks so a foreign caller cannot rewrite
+    # another project's source text (issue #143).
+    ensure_project_scope(db, chapter, project_id, label="章节")
     try:
         return revise_chapter_source(
             db,
@@ -299,20 +326,30 @@ def revise_source(
 
 
 @router.delete("/chapters/{chapter_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_chapter(chapter_id: str, db: Session = Depends(get_db)) -> None:
+def delete_chapter(
+    chapter_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> None:
     chapter = db.get(Chapter, chapter_id)
     if not chapter or chapter.deleted_at is not None:
         raise HTTPException(status_code=404, detail="章节不存在")
+    # Checked before the soft delete so a foreign caller cannot hide another
+    # project's chapter (issue #143).
+    ensure_project_scope(db, chapter, project_id, label="章节")
     chapter.deleted_at = datetime.now(UTC)
     chapter.version += 1
     db.commit()
 
 
 @router.post("/chapters/{chapter_id}/restore", response_model=ChapterRead)
-def restore_chapter(chapter_id: str, db: Session = Depends(get_db)) -> ChapterRead:
+def restore_chapter(
+    chapter_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> ChapterRead:
     chapter = db.get(Chapter, chapter_id)
     if not chapter:
         raise HTTPException(status_code=404, detail="章节不存在")
+    # Checked before the restore so a foreign caller cannot resurrect another
+    # project's chapter (issue #143).
+    ensure_project_scope(db, chapter, project_id, label="章节")
     chapter.deleted_at = None
     chapter.version += 1
     db.commit()
@@ -321,10 +358,13 @@ def restore_chapter(chapter_id: str, db: Session = Depends(get_db)) -> ChapterRe
 
 
 @router.get("/chapters/{chapter_id}/script", response_model=ScriptRead)
-def get_script(chapter_id: str, db: Session = Depends(get_db)) -> ScriptRead:
+def get_script(
+    chapter_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> ScriptRead:
     chapter = db.get(Chapter, chapter_id)
     if not chapter or chapter.deleted_at is not None:
         raise HTTPException(status_code=404, detail="章节不存在")
+    ensure_project_scope(db, chapter, project_id, label="章节")
     scenes = list(
         db.scalars(select(Scene).where(Scene.chapter_id == chapter_id).order_by(Scene.ordinal))
     )
@@ -347,10 +387,15 @@ def get_script(chapter_id: str, db: Session = Depends(get_db)) -> ScriptRead:
 
 
 @router.delete("/chapters/{chapter_id}/script", status_code=status.HTTP_204_NO_CONTENT)
-def delete_script(chapter_id: str, db: Session = Depends(get_db)) -> None:
+def delete_script(
+    chapter_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> None:
     chapter = db.get(Chapter, chapter_id)
     if not chapter or chapter.deleted_at is not None:
         raise HTTPException(status_code=404, detail="章节不存在")
+    # Checked before the active-job guard and the destructive cascade so a
+    # foreign caller cannot wipe another project's script tree (issue #143).
+    ensure_project_scope(db, chapter, project_id, label="剧本")
     page_ids = list(db.scalars(select(MangaPage.id).where(MangaPage.chapter_id == chapter_id)))
     active_job = db.scalar(
         select(GenerationJob.id)
@@ -397,10 +442,14 @@ def update_scene(
     scene_id: str,
     payload: SceneUpdate,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> Scene:
     scene = db.get(Scene, scene_id)
     if not scene:
         raise HTTPException(status_code=404, detail="场景不存在")
+    # Checked before the lock/version guards so a foreign caller cannot edit
+    # another project's scene (issue #143).
+    ensure_project_scope(db, scene, project_id, label="场景")
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
     reject_required_nulls(Scene, values)
     try:
@@ -442,10 +491,15 @@ def update_beat(
     beat_id: str,
     payload: BeatUpdate,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> Beat:
     beat = db.get(Beat, beat_id)
     if not beat:
         raise HTTPException(status_code=404, detail="情节拍不存在")
+    # Checked before the version-claim update so a foreign caller cannot edit
+    # another project's beat (issue #143). The Beat resolver walks
+    # beat.scene_id → scene.chapter_id → project.
+    ensure_project_scope(db, beat, project_id, label="节拍")
     scene = db.get(Scene, beat.scene_id)
     chapter = db.get(Chapter, scene.chapter_id) if scene else None
     if not scene or not chapter:

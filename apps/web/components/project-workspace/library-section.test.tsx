@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api, ApiError, type ChapterProductionReadiness, type ExportBundle } from "@/lib/api";
+import { api, ApiError, type ChapterProductionReadiness, type ExportBundle, type MangaPage } from "@/lib/api";
 
 import { LibrarySection } from "./library-section";
 import { useLibraryWorkspace } from "./use-library-workspace";
@@ -27,6 +27,31 @@ const idleMutation = {
   isPending: false,
   mutate: vi.fn(),
 };
+
+function pageFixture(overrides: Partial<MangaPage> = {}): MangaPage {
+  return {
+    id: "page-1",
+    chapter_id: "chapter-1",
+    page_number: 1,
+    revision_no: 1,
+    page_function: "dialogue",
+    panel_count: 4,
+    reading_direction: "rtl",
+    resolution: "1K",
+    status: "PLANNED",
+    estimated_text_chars: 40,
+    estimated_bubbles: 2,
+    source_coverage: { complete: true, ranges: [] },
+    selected_candidate_id: null,
+    storyboard_version: 1,
+    selected_candidate_ack_version: 1,
+    continuity_status: "PASSED",
+    scene_ids: [],
+    beat_ids: [],
+    version: 1,
+    ...overrides,
+  };
+}
 
 function blockedProduction(): ChapterProductionReadiness {
   return {
@@ -173,6 +198,16 @@ describe("LibrarySection 导出阻塞", () => {
     expect(screen.getByRole("button", { name: "JSON" })).toBeDisabled();
     expect(screen.getByText("素材库还是空的")).toBeInTheDocument();
     expect(createExport).not.toHaveBeenCalled();
+  });
+
+  it("章节生产阻塞行用 pages 查询解析页码，不再显示「第 — 页」", async () => {
+    pagesApi.mockResolvedValue([pageFixture({ page_number: 3 })]);
+    renderLibrary();
+    await waitFor(() => {
+      expect(screen.getByText("0/1 页生产通过")).toBeInTheDocument();
+    });
+    expect(screen.getByText("第 3 页")).toBeInTheDocument();
+    expect(screen.queryByText("第 — 页")).not.toBeInTheDocument();
   });
 
   it("章节就绪后导出成功会刷新 exports，失败展示用户可见错误", async () => {

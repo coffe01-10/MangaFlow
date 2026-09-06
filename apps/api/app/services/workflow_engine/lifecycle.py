@@ -130,9 +130,27 @@ def approve_node(
             db.rollback()
             raise ValueError("当前运行已取消或已结束")
         db.expire(run, ["status"])
+        # Node-level CAS mirroring the GENERATE claim above: the run claim
+        # accepts RUNNING→RUNNING, so two concurrent approves of the same
+        # barrier both used to pass it and both wrote node_run COMPLETED
+        # (double completion, second approver clobbering output_refs). The
+        # loser must lose on the node row itself, with the same message the
+        # WAITING_APPROVAL read check raises.
+        node_claimed = db.execute(
+            update(WorkflowNodeRun)
+            .where(
+                WorkflowNodeRun.id == node_run.id,
+                WorkflowNodeRun.status == "WAITING_APPROVAL",
+            )
+            .values(status="COMPLETED", finished_at=utcnow())
+            .execution_options(synchronize_session=False)
+        )
+        if node_claimed.rowcount != 1:
+            db.rollback()
+            raise ValueError("节点当前不等待人工确认")
         node_run.status = "COMPLETED"
         node_run.started_at = node_run.started_at or utcnow()
-        node_run.finished_at = utcnow()
+        node_run.finished_at = node_run.finished_at or utcnow()
         node_run.output_refs = {"candidate_id": candidate.id, "page_id": page.id}
         db.commit()
     return reconcile_run(db, run.id)

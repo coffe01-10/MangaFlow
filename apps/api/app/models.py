@@ -233,9 +233,9 @@ class SceneAsset(Timestamped, Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    project_id: Mapped[str] = mapped_column(
-        ForeignKey("projects.id", ondelete="CASCADE"), index=True
-    )
+    # No single-column index: ix_scene_assets_project_deleted_created above
+    # leads with project_id, matching migration 20260901_24.
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
     name: Mapped[str] = mapped_column(String(120))
     normalized_name: Mapped[str] = mapped_column(String(120))
     description: Mapped[str] = mapped_column(Text, default="")
@@ -292,8 +292,10 @@ class SceneAssetVariant(Timestamped, Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    # No single-column index: ix_scene_asset_variants_asset_canonical above
+    # leads with scene_asset_id, matching migration 20260901_24.
     scene_asset_id: Mapped[str] = mapped_column(
-        ForeignKey("scene_assets.id", ondelete="CASCADE"), index=True
+        ForeignKey("scene_assets.id", ondelete="CASCADE")
     )
     name: Mapped[str] = mapped_column(String(120))
     structured_overrides: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -378,7 +380,12 @@ class Beat(Timestamped, Base):
 
 class MangaPage(Timestamped, Base):
     __tablename__ = "manga_pages"
-    __table_args__ = (UniqueConstraint("chapter_id", "page_number", "revision_no"),)
+    __table_args__ = (
+        # Declared as a named unique index (not UniqueConstraint) so create_all
+        # matches migrations 20260714_01/20260904_29, which own the
+        # uq_manga_pages_revision index artifact.
+        Index("uq_manga_pages_revision", "chapter_id", "page_number", "revision_no", unique=True),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     chapter_id: Mapped[str] = mapped_column(
@@ -545,6 +552,10 @@ class GenerationJob(Timestamped, Base):
             "archived_at",
             "created_at",
         ),
+        # Declared as a named unique index (not a column unique=True constraint)
+        # so create_all matches migration 20260714_01, which created exactly
+        # this index artifact.
+        Index("uq_generation_jobs_idempotency_key", "idempotency_key", unique=True),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -566,7 +577,7 @@ class GenerationJob(Timestamped, Base):
     )
     request_parameters: Mapped[dict] = mapped_column(JSON, default=dict)
     progress: Mapped[int] = mapped_column(Integer, default=0)
-    idempotency_key: Mapped[str | None] = mapped_column(String(160), nullable=True, unique=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(160), nullable=True)
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -1039,7 +1050,13 @@ class ScriptRevision(Timestamped, Base):
 
 class CharacterReference(Base):
     __tablename__ = "character_references"
-    __table_args__ = (UniqueConstraint("asset_id", name="uq_character_reference_asset"),)
+    __table_args__ = (
+        # Declared as a named unique index (not UniqueConstraint) so create_all
+        # matches migration 20260717_13, which created exactly this index
+        # artifact; the legacy UNIQUE (character_id, asset_id) from
+        # migration 20260714_01 is dropped by migration 20260906_30.
+        Index("uq_character_reference_asset", "asset_id", unique=True),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     character_id: Mapped[str] = mapped_column(
@@ -1076,9 +1093,9 @@ class CharacterModelPackage(Timestamped, Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     character_id: Mapped[str] = mapped_column(ForeignKey("characters.id", ondelete="CASCADE"))
-    project_id: Mapped[str] = mapped_column(
-        ForeignKey("projects.id", ondelete="CASCADE"), index=True
-    )
+    # No single-column index: ix_character_model_packages_project_status_created
+    # above leads with project_id, matching migration 20260902_25.
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
     identity_spec: Mapped[dict] = mapped_column(JSON, default=dict)
     visual_spec: Mapped[dict] = mapped_column(JSON, default=dict)
     negative_constraints: Mapped[list] = mapped_column(JSON, default=list)
@@ -1133,8 +1150,11 @@ class CharacterModelPackageVersion(Timestamped, Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    # No single-column index: uq_character_model_package_versions_number and
+    # ix_character_model_package_versions_package_status above both lead with
+    # package_id, matching migration 20260902_25.
     package_id: Mapped[str] = mapped_column(
-        ForeignKey("character_model_packages.id", ondelete="CASCADE"), index=True
+        ForeignKey("character_model_packages.id", ondelete="CASCADE")
     )
     version_number: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(16), default="DRAFT")
@@ -1316,8 +1336,11 @@ class CandidateLineage(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    # No separate index flag: child lookups are covered by the unique
+    # constraint above, and migration 20260904_29 dropped the redundant
+    # ix_candidate_lineage_child_candidate_id from migrated databases.
     child_candidate_id: Mapped[str] = mapped_column(
-        ForeignKey("page_candidates.id", ondelete="RESTRICT"), index=True
+        ForeignKey("page_candidates.id", ondelete="RESTRICT")
     )
     # Nullable only for GENERATED rows; every derived kind must carry a parent.
     parent_candidate_id: Mapped[str | None] = mapped_column(
@@ -1477,9 +1500,10 @@ class ProviderProfile(Timestamped, Base):
     __tablename__ = "provider_profiles"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    preset_key: Mapped[str | None] = mapped_column(
-        String(80), nullable=True, unique=True, index=True
-    )
+    # Unique constraint without a separate index: migration 20260906_30 drops
+    # the redundant non-unique ix_provider_profiles_preset_key that migration
+    # 20260718_15 had created next to the constraint.
+    preset_key: Mapped[str | None] = mapped_column(String(80), nullable=True, unique=True)
     name: Mapped[str] = mapped_column(String(120), index=True)
     category: Mapped[str] = mapped_column(String(32), default="OFFICIAL")
     description: Mapped[str] = mapped_column(Text, default="")
@@ -1560,9 +1584,10 @@ class AIModel(Timestamped, Base):
     )
     provider_model_id: Mapped[str] = mapped_column(String(200))
     display_name: Mapped[str] = mapped_column(String(200))
-    legacy_alias: Mapped[str | None] = mapped_column(
-        String(64), nullable=True, unique=True, index=True
-    )
+    # Unique constraint without a separate index: migration 20260906_30 drops
+    # the redundant non-unique ix_ai_models_legacy_alias that migration
+    # 20260718_15 had created next to the constraint.
+    legacy_alias: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
     model_type: Mapped[str] = mapped_column(String(24), default="TEXT")
     input_modalities: Mapped[list] = mapped_column(JSON, default=lambda: ["TEXT"])
     output_modalities: Mapped[list] = mapped_column(JSON, default=lambda: ["TEXT"])

@@ -31,7 +31,7 @@ from app.services.ai_schemas import (
     BeatDraft,
     StoryParseOutput,
 )
-from app.services.job_service import has_active_job
+from app.services.job_service import oldest_active_job_id
 from app.services.worker_handlers import execution, provider
 
 STORY_PARSE_CHUNK_MAX_CHARS = 800
@@ -247,14 +247,19 @@ def _run_story_parse(db, job: GenerationJob) -> None:
     # created through disjoint idempotency-key namespaces (route parse vs
     # workflow agent.parse) can both be queued before either runs. The loser
     # must fail HERE — before any paid chunk call — instead of double-paying
-    # and destructively rewriting the winner's committed script.
-    if has_active_job(
+    # and destructively rewriting the winner's committed script. Two claimants
+    # taken in the same window each see the other ACTIVE, so a symmetric
+    # "any active sibling blocks me" check killed both and left the chapter
+    # with zero parses; the loser is therefore decided deterministically:
+    # only the OLDEST active parse (created_at, tie-break id) proceeds, and
+    # every younger claimant fails terminally before any paid call.
+    oldest_id = oldest_active_job_id(
         db,
         job_type="SOURCE_PARSE",
         target_id=chapter.id,
         target_type="CHAPTER",
-        exclude_job_id=job.id,
-    ):
+    )
+    if oldest_id is not None and oldest_id != job.id:
         # Distinct from the retryable CONCURRENCY_LIMIT slot-wait marker: this
         # is a terminal same-chapter conflict, failed before any paid call.
         raise ProviderAdapterError(

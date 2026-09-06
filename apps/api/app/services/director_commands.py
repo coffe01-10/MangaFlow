@@ -179,6 +179,18 @@ def _refresh_group_status(db: Session, group: DirectorCommandGroup) -> None:
             # row-level vocabulary for "withdrawn by an inverse": SUPERSEDED.
             group.status = CommandStatus.SUPERSEDED.value
             return
+        rejected_like = statuses & {
+            CommandStatus.REJECTED,
+            CommandStatus.DISCARDED,
+            CommandStatus.FAILED,
+        }
+        if in_effect_ids and not reverted_ids and not rejected_like:
+            # Undo→redo: every original's effect is back in place (parity says
+            # in effect with nothing withdrawn), so the journal's SUPERSEDED
+            # originals plus EXECUTED inverse rows must not read
+            # PARTIALLY_REJECTED — the net result is fully applied again.
+            group.status = CommandGroupStatus.COMMITTED.value
+            return
         if CommandStatus.EXECUTED in statuses and (
             CommandStatus.REJECTED in statuses
             or CommandStatus.DISCARDED in statuses

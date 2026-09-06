@@ -191,6 +191,24 @@ def create_isolated_fixture(destination: Path, *, repo_root: Path) -> dict[str, 
         generated_asset.thumbnail_320_key = thumbnail_320_key
         generated_asset.thumbnail_640_key = thumbnail_640_key
 
+        # api/routes/uploads.py always populates both thumbnail keys and runs
+        # create_thumbnails with settings.upload_root for USER_UPLOAD assets,
+        # so their webp files live under uploads/thumbnails/<asset_id>/ — not
+        # under storage/. A fixture without them hides any verifier that
+        # resolves upload thumbnails under the wrong root.
+        upload_thumbnail_320_key = f"thumbnails/{upload_asset.id}/320.webp"
+        upload_thumbnail_640_key = f"thumbnails/{upload_asset.id}/640.webp"
+        _write_bytes(
+            dest / "uploads" / upload_thumbnail_320_key,
+            _webp((160, 64, 64, 255), 320),
+        )
+        _write_bytes(
+            dest / "uploads" / upload_thumbnail_640_key,
+            _webp((64, 64, 160, 255), 640),
+        )
+        upload_asset.thumbnail_320_key = upload_thumbnail_320_key
+        upload_asset.thumbnail_640_key = upload_thumbnail_640_key
+
         candidate = PageCandidate(
             batch_id=batch.id,
             page_id=page.id,
@@ -247,8 +265,11 @@ def create_isolated_fixture(destination: Path, *, repo_root: Path) -> dict[str, 
             "generated_key": generated_key,
             "upload_key": upload_key,
             "generated_asset_id": generated_asset.id,
+            "upload_asset_id": upload_asset.id,
             "thumbnail_320_key": thumbnail_320_key,
             "thumbnail_640_key": thumbnail_640_key,
+            "upload_thumbnail_320_key": upload_thumbnail_320_key,
+            "upload_thumbnail_640_key": upload_thumbnail_640_key,
             "export_storage_key": export_key,
         }
 

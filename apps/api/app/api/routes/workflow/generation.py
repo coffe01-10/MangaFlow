@@ -62,8 +62,13 @@ router = APIRouter()
     response_model=GenerationBatchRead,
     status_code=status.HTTP_201_CREATED,
 )
-def start_batch(page_id: str, db: Session = Depends(get_db)) -> GenerationBatch:
+def start_batch(
+    page_id: str,
+    db: Session = Depends(get_db),
+    project_id: str | None = None,
+) -> GenerationBatch:
     page = _page(db, page_id)
+    ensure_project_scope(db, page, project_id, label="页面")
     # Contract §8.1: batch start gates on the default-inheritance package
     # context (ACTIVE package + published version) when no payload exists yet.
     ensure_page_ready(
@@ -220,6 +225,15 @@ def delete_candidate(
                     detail="其他候选正在使用同一素材，请先删除对应候选",
                 )
     deleted_at = utcnow()
+    # Contract §10.3: DRAFT package relation rows are cleared before the claim
+    # and every other writer in this unit. detach self-serializes on the bound
+    # Asset lock, and its internal run_lock_retry rolls the whole session back
+    # on SQLITE_BUSY — a claim UPDATE executed first would be silently
+    # discarded and never re-applied, committing a partial teardown (asset
+    # gone, candidate alive). A lost claim race below rolls the detach back
+    # with the rest of the unit, so no orphaned cleanup survives the 409.
+    if isinstance(candidate, AssetCandidate) and candidate.asset_id:
+        detach_draft_package_references_for_asset(db, candidate.asset_id)
     # Claim the candidate with a conditional update before any dependent
     # cleanup: a concurrent select-candidate flipping is_selected (or another
     # delete winning) must turn this request into a 409 instead of
@@ -238,9 +252,6 @@ def delete_candidate(
         db.rollback()
         raise HTTPException(status_code=409, detail="候选状态已变化，请刷新后重试")
     if isinstance(candidate, AssetCandidate) and candidate.asset_id:
-        # Cleanup follows so SQLITE_BUSY can roll back this unit and retry
-        # without discarding later writes in the same request.
-        detach_draft_package_references_for_asset(db, candidate.asset_id)
         asset = db.get(Asset, candidate.asset_id)
         affected_character_ids = list(
             db.scalars(
@@ -312,8 +323,10 @@ def select_candidate(
     page_id: str,
     payload: SelectCandidateRequest,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> MangaPage:
     page = _page(db, page_id)
+    ensure_project_scope(db, page, project_id, label="页面")
     # Agreed deletion-vs-selection convention (mirrors delete_asset): take the
     # page lock before reading the candidate so a concurrent soft-delete on the
     # same page serializes against this selection.
@@ -449,8 +462,10 @@ def keep_selected_candidate(
     page_id: str,
     payload: KeepSelectedCandidateRequest,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> MangaPage:
     page = _page(db, page_id)
+    ensure_project_scope(db, page, project_id, label="页面")
     # Same page-lock convention as select_candidate/delete_asset: the lock
     # re-reads the page (populate_existing) so the guards below cannot run on
     # a pre-adoption snapshot when a concurrent selection lands between the
@@ -488,8 +503,10 @@ def retract_selected_candidate(
     page_id: str,
     db: Session = Depends(get_db),
     candidate_id: str | None = None,
+    project_id: str | None = None,
 ) -> MangaPage:
     page = _page(db, page_id)
+    ensure_project_scope(db, page, project_id, label="页面")
     # Same page-lock convention as select_candidate/delete_asset: re-read the
     # page and the adopted candidate post-lock so a concurrent selection that
     # landed after the read above is retracted coherently instead of leaving
@@ -535,8 +552,13 @@ def retract_selected_candidate(
 
 
 @router.post("/pages/{page_id}/next", response_model=PageRead)
-def next_page(page_id: str, db: Session = Depends(get_db)) -> MangaPage:
+def next_page(
+    page_id: str,
+    db: Session = Depends(get_db),
+    project_id: str | None = None,
+) -> MangaPage:
     page = _page(db, page_id)
+    ensure_project_scope(db, page, project_id, label="页面")
     production = build_page_production_readiness(db, page)
     if not production.ready:
         raise HTTPException(status_code=409, detail=production_error_detail(production))

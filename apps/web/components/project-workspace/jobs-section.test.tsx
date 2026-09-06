@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api, type Job } from "@/lib/api";
@@ -129,6 +129,49 @@ describe("JobsSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
     await waitFor(() => {
       expect(retryJob).toHaveBeenCalledWith("job-failed");
+    });
+  });
+
+  it("NEEDS_REVIEW 按终态渲染：可勾选与归档、不提供取消，并归入已结束分组", async () => {
+    jobsApi.mockReset().mockResolvedValue([
+      jobFixture({
+        id: "job-needs-review",
+        status: "NEEDS_REVIEW",
+        progress: 100,
+        error_code: null,
+        error_message: null,
+      }),
+    ]);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <JobsHarness />
+      </QueryClientProvider>,
+    );
+
+    // 终态语义来自共享 helper：NEEDS_REVIEW 不进「正在运行」，也无取消入口。
+    await waitFor(() => {
+      expect(screen.getByText(/已结束任务/)).toBeInTheDocument();
+    });
+    expect(screen.getByText("待复核")).toBeInTheDocument();
+    expect(screen.queryByText("正在运行")).toBeNull();
+    expect(screen.queryByRole("button", { name: "取消" })).toBeNull();
+
+    // 任务行不渲染 job id，按状态类名定位本行。
+    const row = document.querySelector("article.status-needs_review") as HTMLElement | null;
+    expect(row).toBeTruthy();
+    // 终态专属：可勾选批量归档，单行归档按钮可用；勾选后批量入口解除禁用。
+    const select = within(row!).getByRole("checkbox");
+    expect(select).toBeEnabled();
+    expect(within(row!).getByRole("button", { name: "归档" })).toBeEnabled();
+    const bulkArchive = screen.getByRole("button", { name: /归档已选（0）/ });
+    expect(bulkArchive).toBeDisabled();
+    fireEvent.click(select);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /归档已选（1）/ })).toBeEnabled();
     });
   });
 

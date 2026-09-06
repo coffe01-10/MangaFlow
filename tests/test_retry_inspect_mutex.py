@@ -1,4 +1,5 @@
-"""Regression (issue #125): retry must keep PAGE_INSPECT one-active-per-target.
+"""Regression (issues #125/#124): retry must keep one-per-target job types
+one-active-per-target.
 
 The manual route (/candidates/{id}/inspect) guards duplicates with
 ``has_active_job``, but the retry entry point did not: a FAILED inspect job's
@@ -7,6 +8,11 @@ inspect took the key, so nothing deduped the revival — ``reset_for_retry`` cou
 resurrect the dead job next to a live manual/workflow inspect on the same
 candidate, producing two paid ``analyze_multimodal`` calls, duplicate
 InspectionResult rows and racing candidate/page status writes.
+
+SOURCE_PARSE joins the retry mutex (#124): its route and workflow entries use
+disjoint idempotency-key namespaces, so a retried FAILED parse was equally
+invisible to every guard and could run a second paid structuring call next to
+a live parse on the same chapter.
 """
 
 import pytest
@@ -113,13 +119,15 @@ def test_reset_for_retry_ignores_terminal_inspect_sibling(db_session, monkeypatc
     assert row.status in {JobStatus.WAITING, JobStatus.QUEUED}
 
 
-def test_reset_for_retry_mutex_is_inspect_only(db_session, monkeypatch):
-    """Non-inspect types keep their existing retry semantics: the same-target
-    guard is deliberately scoped to INSPECT_JOB_TYPES (cross-entry mutex for
-    e.g. SOURCE_PARSE is a separate issue, #124)."""
+def test_reset_for_retry_rejects_source_parse_when_sibling_active(
+    db_session, monkeypatch
+):
+    """#124: a retried FAILED SOURCE_PARSE must 409 while another parse for the
+    same chapter is still ACTIVE — the route/workflow guards cannot see the
+    revival (disjoint idempotency-key namespaces), so this is the only fence
+    between the retry and a second paid structuring call."""
 
-    _set_queue_mode(db_session, "LOCAL")
-    project = _project(db_session, "重试非质检")
+    project = _project(db_session, "解析重试互斥")
     failed = GenerationJob(
         project_id=project.id,
         target_type="CHAPTER",
@@ -133,6 +141,44 @@ def test_reset_for_retry_mutex_is_inspect_only(db_session, monkeypatch):
         target_type="CHAPTER",
         target_id="chapter-9",
         job_type="SOURCE_PARSE",
+        status=JobStatus.QUEUED,
+    )
+    db_session.add_all([failed, sibling])
+    db_session.commit()
+    submitted: list[str] = []
+    monkeypatch.setattr(job_service, "_submit_local", lambda job_id: submitted.append(job_id))
+
+    with pytest.raises(HTTPException) as exc_info:
+        job_service.reset_for_retry(db_session, failed)
+
+    assert exc_info.value.status_code == 409
+    db_session.expire_all()
+    assert db_session.get(GenerationJob, failed.id).status == JobStatus.FAILED
+    assert db_session.get(GenerationJob, sibling.id).status == JobStatus.QUEUED
+    assert submitted == []  # nothing was enqueued
+
+
+def test_reset_for_retry_mutex_still_scoped_to_mutex_types(db_session, monkeypatch):
+    """Job types outside RETRY_MUTEX_JOB_TYPES keep their existing retry
+    semantics: the same-target guard is deliberately scoped to the mutex set
+    (SOURCE_PARSE joined it, closing #124), so an ordinary generation retry
+    still proceeds next to a queued sibling of the same type."""
+
+    _set_queue_mode(db_session, "LOCAL")
+    project = _project(db_session, "重试非互斥")
+    failed = GenerationJob(
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id="candidate-9",
+        job_type="PAGE_GENERATE",
+        status=JobStatus.FAILED,
+        error_code="UPSTREAM",
+    )
+    sibling = GenerationJob(
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id="candidate-9",
+        job_type="PAGE_GENERATE",
         status=JobStatus.QUEUED,
     )
     db_session.add_all([failed, sibling])

@@ -28,7 +28,10 @@ export function useWorkspaceQueries({
   const needsOutfits = section === "assets"
     ? ["outfits", "references"].includes(assetView)
     : ["script", "storyboard", "generate"].includes(section);
-  const needsPages = ["storyboard", "generate"].includes(section);
+  // Library 章节生产门禁的阻塞行需要 pages 列表解析「第 N 页」；不启用时
+  // 只能显示「第 — 页」。后端 production-readiness 载荷暂不含 page_number，
+  // 在这里启用查询是最小改动。
+  const needsPages = ["storyboard", "generate", "library"].includes(section);
   const needsScript = ["source", "script", "generate"].includes(section);
   const needsSceneAssets = section === "script" || section === "generate";
 

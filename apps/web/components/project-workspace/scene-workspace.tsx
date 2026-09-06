@@ -59,6 +59,21 @@ function conflictMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
 }
 
+/** 换绑规范参考的失败阶段：unbind / bind 哪一步失败，决定提示方向。 */
+type RebindPhase = "unbind" | "bind";
+
+function withRebindPhase(error: unknown, phase: RebindPhase): Error & { phase: RebindPhase } {
+  // 标记挂在原错误对象上（不包一层新 Error）：conflictMessage 依赖
+  // instanceof ApiError / status 识别 409，包装会丢掉语义化冲突信息。
+  const tagged = (error instanceof Error ? error : new Error(String(error))) as Error & { phase: RebindPhase };
+  tagged.phase = phase;
+  return tagged;
+}
+
+function rebindPhase(error: unknown): RebindPhase | null {
+  return (error as { phase?: RebindPhase } | null | undefined)?.phase ?? null;
+}
+
 function StructuredFields({
   value,
   onChange,
@@ -187,6 +202,9 @@ export function SceneWorkspace({
   const deleteTriggerRef = useRef<HTMLButtonElement>(null);
   const variantTriggerRef = useRef<HTMLButtonElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
+  // 归档确认框的引用计数竞态令牌：慢返回的 count 不能盖到后来打开的
+  // 另一个资产的确认框上，每次打开/取消都推进令牌使旧结果作废。
+  const bindingCountTokenRef = useRef(0);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [placeFilter, setPlaceFilter] = useState("");
@@ -426,23 +444,37 @@ export function SceneWorkspace({
   const setCanonicalReference = useMutation({
     mutationFn: async (reference: SceneAsset["references"][number]) => {
       if (!selected) throw new Error("请先选择场景资产");
-      await api.unbindSceneAssetReference(projectId, selected.id, reference.asset_id);
-      return api.bindSceneAssetReference(projectId, selected.id, {
-        asset_id: reference.asset_id,
-        role: reference.role,
-        is_canonical: true,
-      });
+      try {
+        await api.unbindSceneAssetReference(projectId, selected.id, reference.asset_id);
+      } catch (error) {
+        throw withRebindPhase(error, "unbind");
+      }
+      try {
+        return await api.bindSceneAssetReference(projectId, selected.id, {
+          asset_id: reference.asset_id,
+          role: reference.role,
+          is_canonical: true,
+        });
+      } catch (error) {
+        throw withRebindPhase(error, "bind");
+      }
     },
     onSuccess: () => {
       setNotice("");
       refreshLists();
     },
     onError: (error) => {
-      // #162: unbind 已提交、bind 失败——原规范参考已被真实解除，服务端处于
-      // 零引用状态。立即刷新列表让 UI 回到真实（未绑定）状态而不是继续显示
-      // 旧缓存里的「已绑定」，并明确告知重试方向。
-      refreshLists();
-      setNotice(`原规范参考已被解除，重新绑定失败（${conflictMessage(error, "设定规范参考失败")}），请重试`);
+      if (rebindPhase(error) === "bind") {
+        // #162: unbind 已提交、bind 失败——原规范参考已被真实解除，服务端处于
+        // 零引用状态。立即刷新列表让 UI 回到真实（未绑定）状态而不是继续显示
+        // 旧缓存里的「已绑定」，并明确告知重试方向。
+        refreshLists();
+        setNotice(`原规范参考已被解除，重新绑定失败（${conflictMessage(error, "设定规范参考失败")}），请重试`);
+        return;
+      }
+      // unbind 阶段就失败：原规范参考仍绑在服务端，绝不能宣称「已被解除」，
+      // 按普通失败提示（409 语义文案自带「请刷新」引导）。
+      setNotice(conflictMessage(error, "解除原规范参考失败"));
     },
   });
 
@@ -495,6 +527,7 @@ export function SceneWorkspace({
   }
 
   async function openDelete(asset: SceneAsset) {
+    const token = ++bindingCountTokenRef.current;
     setDeleteTarget(asset);
     setBindingCount("loading");
     const count = await countPersistedSceneBindings(
@@ -502,8 +535,9 @@ export function SceneWorkspace({
       asset.id,
       () => api.chapters(projectId),
       (chapterId) => api.script(chapterId),
-      (error) => error instanceof Error && /不存在/.test(error.message),
     );
+    // 等待期间又打开（或取消）了别的资产确认框：这次结果已过期，丢弃。
+    if (bindingCountTokenRef.current !== token) return;
     setBindingCount(count);
   }
 
@@ -893,7 +927,11 @@ export function SceneWorkspace({
           confirmLabel="确认归档"
           pending={removeAsset.isPending || bindingCount === "loading"}
           triggerRef={deleteTriggerRef}
-          onCancel={() => setDeleteTarget(null)}
+          onCancel={() => {
+            // 取消也推进令牌：挂起的 count 不许再写回（下一次打开会重置为 loading）。
+            bindingCountTokenRef.current += 1;
+            setDeleteTarget(null);
+          }}
           onConfirm={() => { if (bindingCount !== "loading") removeAsset.mutate(deleteTarget); }}
         />
       )}

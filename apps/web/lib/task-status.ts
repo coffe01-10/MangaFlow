@@ -17,7 +17,10 @@ export const ACTIVE_TASK_STATUSES = [
 ] as const;
 
 /** 终态之后不会再有写入；晚到的旧结果不允许重新触发轮询。 */
-export const TERMINAL_TASK_STATUSES = ["COMPLETED", "FAILED", "CANCELLED"] as const;
+// NEEDS_REVIEW 与后端四处终态定义一致（workflow/generation.py、workflow/jobs.py、
+// asset_generation.py、job_service.py）：检查工作流停在 NEEDS_REVIEW 后不会自行迁移，
+// 只有用户重试（回 WAITING）才会，属于轮询语义上的终态。
+export const TERMINAL_TASK_STATUSES = ["COMPLETED", "FAILED", "CANCELLED", "NEEDS_REVIEW"] as const;
 
 export function isActiveTaskStatus(status: string): boolean {
   return (ACTIVE_TASK_STATUSES as readonly string[]).includes(status);

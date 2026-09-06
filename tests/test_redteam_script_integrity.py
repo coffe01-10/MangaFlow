@@ -6,7 +6,9 @@ resequencing), #159 (draft field length caps + pre-insert truncation), #160
 normalization, memorial marker matching, and the PRESENCE inspection gate).
 """
 
-from datetime import timedelta
+import json
+import logging
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -20,10 +22,12 @@ from app.models import (
     GenerationJob,
     InspectionResult,
     MangaPage,
+    Outfit,
     Panel,
     Project,
     Scene,
     SourceSegment,
+    StyleProfile,
     utcnow,
 )
 from app.services.ai_schemas import (
@@ -36,8 +40,13 @@ from app.services.ai_schemas import (
 )
 from app.services.content_workflow import _resolve_panel_cast
 from app.services.page_completion import build_page_production_readiness
-from app.services.prompt_compiler import PROMPT_CHAR_BUDGET, compile_page_prompt
-from app.services.worker_handlers.inspection import _run_inspection
+from app.services.prompt_compiler import (
+    CAST_ALIAS_PROMPT_LIMIT,
+    PROMPT_CHAR_BUDGET,
+    STRUCTURED_BLOCK_MAX_CHARS,
+    compile_page_prompt,
+)
+from app.services.worker_handlers.inspection import _presence_compliance, _run_inspection
 from app.services.worker_handlers import provider
 from app.services.worker_handlers.story_parse import (
     _merge_story_parse_outputs,
@@ -258,14 +267,33 @@ def test_story_parse_truncates_overlong_draft_fields_before_insert(
     assert len(beat.speaker_name) == 120
 
 
-def test_story_parse_schema_rejects_invalid_ordinal_and_overlong_name():
+def test_story_parse_schema_tolerates_zero_ordinal_and_rejects_overlong_name():
     """The first layer of #159/#152: schema validation turns clearly invalid
-    emissions into structured-output failures before anything is persisted."""
+    emissions into structured-output failures before anything is persisted.
+    A 0-based beat ordinal is NOT invalid — the merge re-sequences to 1..n
+    (#152), so the schema must tolerate it like SceneDraft.ordinal."""
 
     from pydantic import ValidationError
 
-    with pytest.raises(ValidationError):
-        BeatDraft(ordinal=0, action="动作")
+    assert BeatDraft(ordinal=0, action="动作").ordinal == 0
+    merged = _merge_story_parse_outputs(
+        [
+            StoryParseOutput(
+                characters=[],
+                scenes=[
+                    SceneDraft(
+                        ordinal=1,
+                        beats=[
+                            BeatDraft(ordinal=0, action="零基拍", dialogue="一"),
+                            BeatDraft(ordinal=3, action="跳号拍", dialogue="二"),
+                        ],
+                    )
+                ],
+            )
+        ]
+    )
+    assert [beat.ordinal for beat in merged.scenes[0].beats] == [1, 2]
+    assert [beat.dialogue for beat in merged.scenes[0].beats] == ["一", "二"]
     with pytest.raises(ValidationError):
         CharacterDraft(primary_name="父" * 121)
     with pytest.raises(ValidationError):
@@ -283,12 +311,16 @@ def test_story_parse_handler_refuses_when_sibling_parse_is_active(
         f"/api/v1/projects/{project['id']}/sources/import",
         json={"title": "第一章", "text": "苏清白推开纸门。"},
     ).json()["chapters"][0]
+    # 固定 created_at：批量插入的两行偶尔拿到同一微秒时间戳，届时「最老者
+    # 胜」仲裁退化为 UUID 字典序，second 可能被误判为最老而放行。
+    now = datetime.now(UTC)
     first = GenerationJob(
         project_id=project["id"],
         target_type="CHAPTER",
         target_id=imported["id"],
         job_type="SOURCE_PARSE",
         status=JobStatus.GENERATING,
+        created_at=now,
     )
     second = GenerationJob(
         project_id=project["id"],
@@ -296,6 +328,7 @@ def test_story_parse_handler_refuses_when_sibling_parse_is_active(
         target_id=imported["id"],
         job_type="SOURCE_PARSE",
         status=JobStatus.PREPARING,
+        created_at=now + timedelta(seconds=1),
     )
     db_session.add_all([first, second])
     db_session.commit()
@@ -485,6 +518,186 @@ def test_page_prompt_compresses_cast_descriptions_over_budget(db_session):
     assert "详" * 2500 not in prompt
 
 
+def test_page_prompt_bounds_structured_blocks(db_session):
+    """Outfit components/state rules/locked fields, style.profile and per-cast
+    locked feature lists are capped to the per-block limit: an oversized
+    structural block can no longer push the prompt past the budget through a
+    side door (#160 follow-up)."""
+
+    project = Project(name="结构块封顶")
+    db_session.add(project)
+    db_session.flush()
+    chapter = Chapter(project_id=project.id, title="第一章", ordinal=1)
+    db_session.add(chapter)
+    db_session.flush()
+    cast = Character(
+        project_id=project.id,
+        primary_name="林澈",
+        canonical_description="主角",
+        locked_features=[f"特征{index}" for index in range(400)],
+        forbidden_changes=[f"禁改{index}" for index in range(400)],
+    )
+    db_session.add(cast)
+    db_session.flush()
+    scene = Scene(chapter_id=chapter.id, ordinal=1, location="祠堂")
+    db_session.add(scene)
+    db_session.flush()
+    outfit = Outfit(
+        project_id=project.id,
+        character_id=cast.id,
+        name="礼服",
+        components={"外套": "饰" * 6000},
+        state_rules={f"状态{index}": "规则" for index in range(300)},
+        locked_fields=[f"锁定{index}" for index in range(300)],
+    )
+    db_session.add(outfit)
+    db_session.flush()
+    scene.outfit_assignments = {cast.id: outfit.id}
+    style = StyleProfile(project_id=project.id, name="墨线", profile={"笔触": "绘" * 6000})
+    db_session.add(style)
+    db_session.flush()
+    page = MangaPage(
+        chapter_id=chapter.id,
+        page_number=1,
+        panel_count=1,
+        storyboard_version=1,
+        scene_ids=[scene.id],
+        style_id=style.id,
+    )
+    db_session.add(page)
+    db_session.flush()
+    db_session.add(
+        Panel(
+            page_id=page.id,
+            reading_order=1,
+            bounds={"x": 0, "y": 0, "width": 1, "height": 1},
+            characters=[cast.id],
+            character_presence={cast.id: CharacterPresence.VISIBLE.value},
+        )
+    )
+    db_session.commit()
+
+    prompt, snapshot = compile_page_prompt(db_session, page, project)
+
+    def block_len(value: object) -> int:
+        return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+
+    outfit_block = snapshot["input"]["outfits"][0]
+    assert block_len(outfit_block["components"]) <= STRUCTURED_BLOCK_MAX_CHARS
+    assert block_len(outfit_block["state_rules"]) <= STRUCTURED_BLOCK_MAX_CHARS
+    assert block_len(outfit_block["locked_fields"]) <= STRUCTURED_BLOCK_MAX_CHARS
+    assert block_len(snapshot["input"]["style"]["profile"]) <= STRUCTURED_BLOCK_MAX_CHARS
+    cast_entry = snapshot["input"]["characters"][0]
+    assert block_len(cast_entry["locked_features"]) <= STRUCTURED_BLOCK_MAX_CHARS
+    assert block_len(cast_entry["forbidden_changes"]) <= STRUCTURED_BLOCK_MAX_CHARS
+    # The oversized originals were hard-cut, not passed through: the giant
+    # leaf strings are gone and trailing list/dict items were dropped.
+    assert "饰" * 6000 not in prompt
+    assert "绘" * 6000 not in prompt
+    assert outfit_block["state_rules"].get("状态299") is None
+    assert len(outfit_block["locked_fields"]) < 300
+    assert len(cast_entry["locked_features"]) < 400
+
+
+def test_page_prompt_logs_when_compressed_rebuild_still_over_budget(db_session, caplog):
+    """When even the compressed rebuild exceeds the budget the compiler must
+    emit an explicit warning (context ids + final length) instead of failing
+    silently, and still return the prompt (#160 follow-up)."""
+
+    project = Project(name="压缩后仍超预算")
+    db_session.add(project)
+    db_session.flush()
+    chapter = Chapter(project_id=project.id, title="第一章", ordinal=1)
+    db_session.add(chapter)
+    db_session.flush()
+    cast_ids = []
+    for index in range(40):
+        member = Character(
+            project_id=project.id,
+            primary_name=f"主演{index}",
+            canonical_description=f"标记{index}" + "详" * 8000,
+        )
+        db_session.add(member)
+        db_session.flush()
+        cast_ids.append(member.id)
+    page = MangaPage(chapter_id=chapter.id, page_number=1, panel_count=1)
+    db_session.add(page)
+    db_session.flush()
+    db_session.add(
+        Panel(
+            page_id=page.id,
+            reading_order=1,
+            bounds={"x": 0, "y": 0, "width": 1, "height": 1},
+            characters=cast_ids,
+            character_presence={item: CharacterPresence.VISIBLE.value for item in cast_ids},
+        )
+    )
+    db_session.commit()
+
+    with caplog.at_level(logging.WARNING, logger="mangaflow.prompt_compiler"):
+        prompt, _snapshot = compile_page_prompt(db_session, page, project)
+
+    # 40 × 2_000-char compressed descriptions still bust the 60_000 budget.
+    assert len(prompt) > PROMPT_CHAR_BUDGET
+    warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
+    assert warnings, "压缩重建后仍超预算必须产生显式告警日志"
+    message = warnings[0].getMessage()
+    assert project.id in message
+    assert page.id in message
+    assert f"final_length={len(prompt)}" in message
+
+
+def test_presence_compliance_matches_aliases_beyond_prompt_cap(db_session):
+    """The rendered prompt caps aliases at CAST_ALIAS_PROMPT_LIMIT, but the
+    snapshot carries the uncapped list and PRESENCE compliance maps a 9th
+    alias instead of synthesizing a false MISSING row (#164 alias-cap fix)."""
+
+    project = Project(name="别名超上限")
+    db_session.add(project)
+    db_session.flush()
+    chapter = Chapter(project_id=project.id, title="第一章", ordinal=1)
+    db_session.add(chapter)
+    db_session.flush()
+    aliases = [f"别名{index}" for index in range(1, 13)]
+    cast = Character(project_id=project.id, primary_name="林澈", aliases=aliases)
+    db_session.add(cast)
+    db_session.flush()
+    page = MangaPage(
+        chapter_id=chapter.id,
+        page_number=1,
+        panel_count=1,
+        storyboard_version=1,
+    )
+    db_session.add(page)
+    db_session.flush()
+    db_session.add(
+        Panel(
+            page_id=page.id,
+            reading_order=1,
+            bounds={"x": 0, "y": 0, "width": 1, "height": 1},
+            characters=[cast.id],
+            character_presence={cast.id: CharacterPresence.VISIBLE.value},
+        )
+    )
+    db_session.commit()
+
+    _prompt, snapshot = compile_page_prompt(db_session, page, project)
+
+    # Rendered prompt text keeps the alias cap: the 9th alias never reaches
+    # the paid prompt...
+    assert len(snapshot["input"]["characters"][0]["aliases"]) == CAST_ALIAS_PROMPT_LIMIT
+    assert "别名9" not in _prompt
+    # ...while the snapshot carries the uncapped names for matching only.
+    assert snapshot["match_aliases"][cast.id] == ["林澈", *aliases]
+    # A model reporting the 9th alias still maps to the VISIBLE cast member.
+    assert _presence_compliance(snapshot, {"别名9"}) is None
+    # The mapping did not just whitelist every detection: omitting the
+    # character still fails deterministically.
+    compliance = _presence_compliance(snapshot, {"无关角色"})
+    assert compliance is not None
+    assert compliance["outcome"] == "MISSING"
+
+
 # --- #164 instance 1: presence resolution -----------------------------------
 
 
@@ -537,6 +750,48 @@ def test_memorial_phrase_marks_character_mentioned_not_visible():
         page=page, text="", beat=visible_beat, characters=[father]
     )
     assert presence == {father.id: CharacterPresence.VISIBLE.value}
+
+
+def test_visible_action_survives_photo_reference_in_dialogue():
+    """李明站在窗边 (action) + 把李明的照片递给我 (dialogue) must stay
+    VISIBLE: the everyday 照片 marker in a quote about an on-screen actor
+    must not demote him to MENTIONED (#164 broadening regression)."""
+
+    liming = Character(project_id="p", primary_name="李明")
+    page = MangaPage(page_number=2)
+    beat = Beat(
+        scene_id="s",
+        ordinal=1,
+        action="李明站在窗边。",
+        dialogue="把李明的照片递给我。",
+        source_range={"segment_ids": []},
+    )
+
+    presence, _props = _resolve_panel_cast(
+        page=page, text="", beat=beat, characters=[liming]
+    )
+    assert presence == {liming.id: CharacterPresence.VISIBLE.value}
+
+
+def test_absent_character_memorial_in_narration_stays_mentioned():
+    """A character absent from the action whose 遗像 is described in
+    narration stays MENTIONED with the memorial prop synthesized (#164)."""
+
+    grandfather = Character(project_id="p", primary_name="爷爷")
+    page = MangaPage(page_number=2)
+    beat = Beat(
+        scene_id="s",
+        ordinal=1,
+        action="我推开老宅的门，灰尘在光柱里浮动。",
+        narration="墙上的爷爷遗像凝视着空荡的房间。",
+        source_range={"segment_ids": []},
+    )
+
+    presence, props = _resolve_panel_cast(
+        page=page, text="", beat=beat, characters=[grandfather]
+    )
+    assert presence == {grandfather.id: CharacterPresence.MENTIONED.value}
+    assert "爷爷的遗像" in props
 
 
 def test_story_parse_normalizes_presence_keys_at_persist(client, db_session, monkeypatch):

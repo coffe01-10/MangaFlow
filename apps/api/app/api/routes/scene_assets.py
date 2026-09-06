@@ -11,7 +11,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.api.helpers import reject_required_nulls
+from app.api.helpers import ensure_project_scope, reject_required_nulls
 from app.api.routes.uploads import _ensure_asset_not_in_active_job
 from app.database import get_db
 from app.models import (
@@ -554,10 +554,12 @@ def bind_scene_asset(
     scene_id: str,
     payload: SceneBindAssetRequest,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> SceneRead:
     scene = db.get(Scene, scene_id)
     if not scene:
         raise HTTPException(status_code=404, detail="场景不存在")
+    ensure_project_scope(db, scene, project_id, label="场景")
     chapter = db.get(Chapter, scene.chapter_id)
     if not chapter:
         raise HTTPException(status_code=404, detail="场景所属章节不存在")
