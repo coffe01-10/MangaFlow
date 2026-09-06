@@ -14,6 +14,15 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
+# scripts/owned_processes.py implements process-tree ownership with Windows Job
+# Objects and hard-raises on other platforms; every test here drives that
+# runtime through the `runtime` fixture, so POSIX can only error at setup.
+# Gate the module instead of failing: on Windows nothing changes.
+pytestmark = pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="owned-process runtime requires Windows Job Objects",
+)
+
 
 def _load_serve():
     spec = importlib.util.spec_from_file_location(
