@@ -8,7 +8,7 @@ palette recovery included).
 from sqlalchemy import select
 
 from app.domain.states import JobStatus
-from app.model_adapters.base import MultimodalRequest
+from app.model_adapters.base import MultimodalRequest, ProviderAdapterError
 from app.models import Asset, GenerationJob, Project, StyleProfile
 from app.services.ai_schemas import StyleAnalysisOutput
 from app.services.worker_handlers import execution, provider
@@ -50,6 +50,26 @@ def _run_style_analyze(db, job: GenerationJob) -> None:
     style = db.get(StyleProfile, job.target_id)
     if not style:
         raise RuntimeError("风格档案不存在")
+    # Oldest-wins arbitration (the story_parse pattern): the route guard is
+    # check-then-act and the analyze/palette-draft idempotency keys are
+    # disjoint, so a concurrent analyze + palette-draft can commit two ACTIVE
+    # jobs for one style row. The younger claimant fails terminally here —
+    # before the paid multimodal call — instead of double-paying and
+    # clobbering the winner's profile write.
+    from app.services.job_service import oldest_active_job_id
+
+    oldest_id = oldest_active_job_id(
+        db,
+        job_type="STYLE_ANALYZE",
+        target_id=style.id,
+        target_type="STYLE",
+    )
+    if oldest_id is not None and oldest_id != job.id:
+        raise ProviderAdapterError(
+            "STYLE_ANALYSIS_CONFLICT",
+            "该风格档案已有进行中的分析任务，本次重复分析已在调用模型前取消",
+            retryable=False,
+        )
     reference_ids = style.profile.get("reference_asset_ids", [])
     references = list(
         db.scalars(
