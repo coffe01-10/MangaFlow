@@ -101,7 +101,9 @@ test("核心路由遵守首屏 API 请求预算", async ({ page, request }) => {
 
   for (const [path, budget] of [
     ["/", 3],
-    [`/projects/${id}/assets/characters`, 6],
+    // 资产/角色首屏含 character-packages：角色模型包状态是 V02-22 起
+    // assets/characters 视图的正式展示面（每角色包徽标），合法的第 7 个查询。
+    [`/projects/${id}/assets/characters`, 7],
     [`/projects/${id}/storyboard`, 6],
     [`/projects/${id}/jobs`, 6],
     [`/projects/${id}/generate`, 10],
