@@ -86,12 +86,19 @@ def test_assign_scene_outfits_rejects_stale_scene_instead_of_clobbering(
     assert row.version == version_after_bump
 
 
-def test_delete_outfit_rejects_stale_scene_instead_of_clobbering(
+def test_delete_outfit_completes_over_committed_scene_edit_without_clobbering(
     client, db_session, monkeypatch
 ):
     """Outfit teardown is the third writer #216's docstring names; it kept a
     blind read-modify-write bump, silently reverting a concurrent scene
-    outfits PATCH that committed between its read and its write."""
+    outfits PATCH that committed between its read and its write.
+
+    The teardown now claims each row (WHERE version = :read) with bounded
+    re-read-and-re-clean retries: a concurrent writer's FIELD write survives
+    (the claim only writes outfit_assignments + version), the concurrent
+    writer's version bump is preserved as the base of the claim, and the
+    delete completes in the same call instead of 409-ing into a manual retry.
+    """
 
     from app.models import Outfit
 
@@ -124,16 +131,19 @@ def test_delete_outfit_rejects_stale_scene_instead_of_clobbering(
 
     response = client.delete(f"/api/v1/outfits/{outfit.id}")
 
-    assert response.status_code == 409, response.text
+    assert response.status_code == 204, response.text
     db_session.expire_all()
     row = db_session.get(Scene, scene.id)
-    # The concurrent writer's field write survived and the outfit is intact.
+    # The concurrent writer's field write survived and its version bump was
+    # preserved as the claim's base (not collapsed back to the stale read).
     assert row.location == "厨房"
-    assert row.version == version_after_bump
-    assert db_session.get(Outfit, outfit.id) is not None
+    assert row.version >= version_after_bump
+    assert row.outfit_assignments == {}
+    # The outfit itself was deleted — the teardown completed over the edit.
+    assert db_session.get(Outfit, outfit.id) is None
 
 
-def test_delete_outfit_panel_claim_rejects_stale_panel(
+def test_delete_outfit_panel_claim_completes_over_stale_panel(
     client, db_session, monkeypatch
 ):
     monkeypatch.setattr(
@@ -177,9 +187,10 @@ def test_delete_outfit_panel_claim_rejects_stale_panel(
 
     response = client.delete(f"/api/v1/outfits/{outfit.id}")
 
-    assert response.status_code == 409, response.text
+    assert response.status_code == 204, response.text
     db_session.expire_all()
     row = db_session.get(Panel, panel.id)
-    # The concurrent writer's field write survived.
+    # The concurrent writer's field write survived the re-read-and-re-claim.
     assert row.shot_type == "wide"
-    assert db_session.get(Outfit, outfit.id) is not None
+    # The teardown completed: the outfit is gone.
+    assert db_session.get(Outfit, outfit.id) is None

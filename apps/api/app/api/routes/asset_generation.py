@@ -364,7 +364,7 @@ def delete_outfit(
             # and retry; after bounded retries surface 409 instead of writing.
             claimed = False
             for _attempt in range(3):
-                claimed = db.execute(
+                result = db.execute(
                     update(Scene)
                     .where(Scene.id == scene.id, Scene.version == scene.version)
                     .values(
@@ -373,8 +373,10 @@ def delete_outfit(
                     )
                     .execution_options(synchronize_session=False)
                 )
-                if claimed.rowcount == 1:
-                    claimed = True
+                # `claimed` stays a bool: a truthy Result would mask the lost
+                # claims above and let the teardown answer 204.
+                claimed = result.rowcount == 1
+                if claimed:
                     break
                 db.refresh(scene)
                 assignments = dict(scene.outfit_assignments or {})
@@ -412,14 +414,14 @@ def delete_outfit(
         if cleaned != assignments:
             claimed = False
             for _attempt in range(3):
-                claimed = db.execute(
+                result = db.execute(
                     update(Panel)
                     .where(Panel.id == panel.id, Panel.version == panel.version)
                     .values(version=Panel.version + 1, outfits=cleaned)
                     .execution_options(synchronize_session=False)
                 )
-                if claimed.rowcount == 1:
-                    claimed = True
+                claimed = result.rowcount == 1
+                if claimed:
                     break
                 db.refresh(panel)
                 assignments = dict(panel.outfits or {})
