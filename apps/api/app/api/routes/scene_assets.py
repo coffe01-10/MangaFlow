@@ -560,6 +560,10 @@ def bind_scene_asset(
     if not scene:
         raise HTTPException(status_code=404, detail="场景不存在")
     ensure_project_scope(db, scene, project_id, label="场景")
+    # Capture before any work: the write below claims this exact version, the
+    # same discipline as PATCH /scenes, so a concurrent scene writer's CAS bump
+    # cannot be collapsed by our blind increment.
+    scene_version_before = scene.version
     chapter = db.get(Chapter, scene.chapter_id)
     if not chapter:
         raise HTTPException(status_code=404, detail="场景所属章节不存在")
@@ -590,7 +594,15 @@ def bind_scene_asset(
             scene.scene_asset_variant_id = variant.id
         else:
             scene.scene_asset_variant_id = None
-    scene.version += 1
+    claimed = db.execute(
+        update(Scene)
+        .where(Scene.id == scene.id, Scene.version == scene_version_before)
+        .values(version=Scene.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if not claimed.rowcount:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="场景已被更新，请刷新后重试")
     mark_pages_for_review(db, chapter.id, reference_id=scene.id, reference_kind="scene")
     db.commit()
     db.refresh(scene)
