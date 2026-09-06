@@ -14,9 +14,10 @@ fi
 export MANGAFLOW_DESKTOP_PYTHON="$VENV/bin/python"
 export MANGAFLOW_DESKTOP_HELPER="$DESKTOP_ROOT/sidecar/mangaflow_desktop_helper.py"
 cd "$REPO_ROOT"
-# The plan B test needs the Next standalone bundle; build it when missing
-# (the build script verifies the relay destination and copies static assets).
-if [ ! -f "$REPO_ROOT/apps/web/.next/standalone/apps/web/server.js" ]; then
+# The plan B test needs the relocated Next standalone bundle; build it when
+# missing (the build script verifies the relay destination, copies static
+# assets, and moves the tree out of `.next`'s reach).
+if [ ! -f "$REPO_ROOT/apps/desktop/dist/web-standalone/server.js" ]; then
   "$VENV/bin/python" "$DESKTOP_ROOT/scripts/build-web-standalone.py"
 fi
 exec "$VENV/bin/python" -m pytest "$DESKTOP_ROOT/scripts/test_sidecar_e2e.py" -v "$@"

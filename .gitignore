@@ -50,3 +50,4 @@ Thumbs.db
 .venv-poc/
 .venv-desktop/
 apps/desktop/src-tauri/web/
+apps/desktop/dist/web-standalone/

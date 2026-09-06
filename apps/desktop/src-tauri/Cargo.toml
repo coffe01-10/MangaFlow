@@ -1,6 +1,6 @@
 [package]
 name = "mangaflow-desktop-shell"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "MangaFlow Tauri 2 desktop shell (V02-54 delivery)"
 
