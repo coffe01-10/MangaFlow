@@ -121,6 +121,24 @@ def _merge_story_parse_outputs(outputs: list[StoryParseOutput]) -> StoryParseOut
     return StoryParseOutput(characters=characters, scenes=scenes)
 
 
+
+def register_unmerged_tokens(
+    all_aliases: dict[str, str],
+    fresh_primary_normalized: str,
+    fresh_normalized: list[str],
+) -> None:
+    """Register a skipped character's committed tokens into the alias map.
+
+    A lost version claim skips the alias merge, but the character's
+    committed (possibly renamed) tokens are still live: later drafts must
+    compute ``alias_conflict`` against them. The primary maps to itself so
+    it never conflicts with its own row.
+    """
+
+    all_aliases[fresh_primary_normalized] = fresh_primary_normalized
+    for token in fresh_normalized:
+        all_aliases.setdefault(token, fresh_primary_normalized)
+
 def _resequence_beats(beats: list[BeatDraft]) -> list[BeatDraft]:
     """Re-sequence one scene's beats to consecutive unique ordinals from 1.
 
@@ -477,6 +495,13 @@ def _run_story_parse(db, job: GenerationJob) -> None:
                     break
             claimed_character_ids.add(character.id)
             if not merged:
+                # Register the character's committed tokens even though the
+                # merge was skipped: the map keeps only the stale snapshot
+                # otherwise, and later drafts under-report alias conflicts
+                # against the renamed character for the rest of this parse.
+                register_unmerged_tokens(
+                    all_aliases, fresh_primary_normalized, fresh_normalized
+                )
                 LOGGER.warning(
                     "story parse: character %s changed concurrently; "
                     "skipped its alias merge (script kept, re-parse to recover)",

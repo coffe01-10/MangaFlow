@@ -47,3 +47,25 @@ def test_different_speaker_same_action_is_kept():
     ]
     result = _resequence_beats(beats)
     assert len(result) == 2
+
+
+def test_register_unmerged_tokens_pins_renamed_character():
+    """A lost version claim skips the alias merge; the character's committed
+    (possibly renamed) tokens must still register so later drafts under the
+    same parse report alias conflicts against the renamed row."""
+
+    from app.services.worker_handlers.story_parse import (
+        register_unmerged_tokens,
+    )
+
+    all_aliases: dict[str, str] = {"顾川": "顾川", "小川": "顾川"}
+    register_unmerged_tokens(all_aliases, "顾队长", ["队长", "老顾"])
+
+    assert all_aliases["顾队长"] == "顾队长"
+    assert all_aliases["队长"] == "顾队长"
+    assert all_aliases["老顾"] == "顾队长"
+    # Pre-existing tokens are untouched.
+    assert all_aliases["顾川"] == "顾川"
+    # Re-registration never overwrites an established owner.
+    register_unmerged_tokens(all_aliases, "顾队长", ["顾川"])
+    assert all_aliases["顾川"] == "顾川"

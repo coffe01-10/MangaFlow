@@ -1754,3 +1754,21 @@ def test_restore_holds_draft_generating_while_sibling_still_generating(
     # With the page held in DRAFT_GENERATING, sibling B's success fence
     # (page.status == DRAFT_GENERATING and no selected candidate) proceeds
     # normally when B completes — pinned by the existing generation tests.
+
+    # The hold must be a hold, not a leak: once the LAST sibling also reaches
+    # a terminal candidate status, the restore releases the page. Without
+    # this, a double concurrent failure (or any missed release) strands the
+    # page in DRAFT_GENERATING forever — no sweeper touches page status.
+    sibling.status = "FAILED"
+    db_session.commit()
+    restore_page_after_generation_exit(db_session, sibling)
+    db_session.commit()
+    db_session.expire(page)
+    assert str(page.status) == "STORYBOARDED"
+
+    # And a second failure path on an already-terminal page must not flip the
+    # released page back into DRAFT_GENERATING.
+    restore_page_after_generation_exit(db_session, failing)
+    db_session.commit()
+    db_session.expire(page)
+    assert str(page.status) == "STORYBOARDED"
