@@ -303,6 +303,21 @@ fn run() {
             if let Some(web_dist) = std::env::var_os("MANGAFLOW_DESKTOP_WEB_DIST") {
                 helper_args.push("--web-dist".into());
                 helper_args.push(web_dist.to_string_lossy().into_owned());
+            } else {
+                // Install form: the packaging step lays the Next standalone
+                // tree and the node runtime under the bundled resources
+                // (tauri.conf resources); their presence enables plan B
+                // without any env var. Resources resolve next to the
+                // executable in the installed layout.
+                let bundled = std::env::current_exe()
+                    .ok()
+                    .and_then(|exe| exe.parent().map(|dir| dir.join("web").join("standalone")));
+                if let Some(bundled) = bundled {
+                    if bundled.join("server.js").is_file() {
+                        helper_args.push("--web-dist".into());
+                        helper_args.push(bundled.to_string_lossy().into_owned());
+                    }
+                }
             }
 
             let config = HelperConfig {

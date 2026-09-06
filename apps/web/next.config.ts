@@ -35,6 +35,38 @@ const nextConfig: NextConfig = {
       },
     ];
   },
+  // Security headers for the desktop plan-B form (W-15): the WebView loads
+  // this server's documents directly (External URL), so the tauri.conf CSP
+  // no longer applies to them — the equivalent policy ships here instead.
+  // script-src keeps 'unsafe-inline' for the Next inline bootstrap
+  // (self.__next_f.push), the same documented debt as the tauri.conf CSP;
+  // connect/img are loopback-only like the shell policy.
+  async headers() {
+    return [
+      {
+        source: "/:path*",
+        headers: [
+          {
+            key: "Content-Security-Policy",
+            value: [
+              "default-src 'self'",
+              "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'",
+              "style-src 'self' 'unsafe-inline'",
+              "img-src 'self' data: blob: http://127.0.0.1:*",
+              "font-src 'self' data:",
+              "connect-src 'self' http://127.0.0.1:*",
+              "object-src 'none'",
+              "base-uri 'self'",
+              "frame-src 'none'",
+            ].join("; "),
+          },
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "Referrer-Policy", value: "no-referrer" },
+        ],
+      },
+    ];
+  },
 };
 
 export default nextConfig;

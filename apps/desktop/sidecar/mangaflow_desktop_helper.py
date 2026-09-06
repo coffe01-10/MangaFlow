@@ -358,20 +358,28 @@ def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
             sock.close()
 
 
-def _find_node() -> str | None:
-    """Resolve the bundled node runtime for the Next standalone server.
+def _find_node(web_dist: Path) -> str | None:
+    """Resolve the node runtime for the Next standalone server.
 
-    Ships with the install form (bundle resource, pinned version); dev form
-    falls back to the PATH node. None = run without a web server (shell then
-    serves the static export, the pre-W-15 form).
+    Order: a node bundled next to the web bundle (``<web_dist>/../node/``,
+    the install-form resource layout assembled by the packaging step), then
+    a node next to this helper script, then the PATH node (dev form).
+    None = run without a web server (shell then serves the static export,
+    the pre-W-15 form).
     """
 
-    bundled = Path(__file__).resolve().parent / "node" / ("node.exe" if sys.platform == "win32" else "bin/node")
-    if bundled.exists():
-        return str(bundled)
+    exe = "node.exe" if sys.platform == "win32" else "node"
+    candidates = [
+        web_dist.parent / "node" / exe,
+        Path(__file__).resolve().parent / "node" / exe,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
     import shutil
 
-    return shutil.which("node")
+    found = shutil.which("node")
+    return str(found) if found else None
 
 
 def _spawn_web_server(
@@ -403,11 +411,12 @@ def _spawn_web_server(
     web_dist = getattr(args, "web_dist", None)
     if not web_dist:
         return None, None
-    node = _find_node()
+    dist_path = Path(web_dist).resolve()
+    node = _find_node(dist_path)
     if node is None:
         _log("no node runtime found; starting without the web server")
         return None, None
-    server_js = Path(web_dist).resolve() / "server.js"
+    server_js = dist_path / "server.js"
     if not server_js.is_file():
         _log(f"web dist {server_js} has no server.js; starting without the web server")
         return None, None
