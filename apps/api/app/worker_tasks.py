@@ -649,9 +649,21 @@ def execute_job(job_id: str) -> None:
         if not marked:
             return
         if workflow_run_id and is_final:
-            from app.services.workflow_engine import reconcile_run
+            # Same isolation rule as the completion path above: the failure
+            # claim is already committed and the original error is about to
+            # re-raise. A reconcile crash here must not replace that error
+            # (in REDIS mode it would burn an RQ payload retry that no-ops
+            # against the FAILED row); log and continue so the original
+            # failure still propagates.
+            try:
+                from app.services.workflow_engine import reconcile_run
 
-            reconcile_run(db, workflow_run_id)
+                reconcile_run(db, workflow_run_id)
+            except Exception:
+                LOGGER.exception(
+                    "workflow run %s reconcile failed after job failure",
+                    workflow_run_id,
+                )
         raise
     except ProviderAdapterError as error:
         db.rollback()
@@ -667,9 +679,21 @@ def execute_job(job_id: str) -> None:
         if not marked:
             return
         if workflow_run_id and is_final:
-            from app.services.workflow_engine import reconcile_run
+            # Same isolation rule as the completion path above: the failure
+            # claim is already committed and the original error is about to
+            # re-raise. A reconcile crash here must not replace that error
+            # (in REDIS mode it would burn an RQ payload retry that no-ops
+            # against the FAILED row); log and continue so the original
+            # failure still propagates.
+            try:
+                from app.services.workflow_engine import reconcile_run
 
-            reconcile_run(db, workflow_run_id)
+                reconcile_run(db, workflow_run_id)
+            except Exception:
+                LOGGER.exception(
+                    "workflow run %s reconcile failed after job failure",
+                    workflow_run_id,
+                )
         raise
     except Exception:
         db.rollback()
@@ -687,9 +711,21 @@ def execute_job(job_id: str) -> None:
         if not marked:
             return
         if workflow_run_id and is_final:
-            from app.services.workflow_engine import reconcile_run
+            # Same isolation rule as the completion path above: the failure
+            # claim is already committed and the original error is about to
+            # re-raise. A reconcile crash here must not replace that error
+            # (in REDIS mode it would burn an RQ payload retry that no-ops
+            # against the FAILED row); log and continue so the original
+            # failure still propagates.
+            try:
+                from app.services.workflow_engine import reconcile_run
 
-            reconcile_run(db, workflow_run_id)
+                reconcile_run(db, workflow_run_id)
+            except Exception:
+                LOGGER.exception(
+                    "workflow run %s reconcile failed after job failure",
+                    workflow_run_id,
+                )
         raise
     finally:
         db.close()
