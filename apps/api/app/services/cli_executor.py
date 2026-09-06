@@ -18,7 +18,7 @@ from typing import Protocol
 from uuid import uuid4
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.config import Settings
@@ -188,7 +188,10 @@ class CLIExecutionController:
         try:
             encoded = request_path.read_bytes()
             payload = json.loads(encoded)
-        except (OSError, json.JSONDecodeError) as error:
+        except (OSError, ValueError) as error:
+            # ValueError covers JSONDecodeError and the UnicodeDecodeError a
+            # non-UTF-8 body raises — either way the request is unreadable,
+            # never a controller crash.
             raise ProviderAdapterError("CONFIGURATION", "CLI 结构化请求无法读取") from error
         if hashlib.sha256(encoded).hexdigest() != row.request_checksum:
             raise ProviderAdapterError("CONFIGURATION", "CLI 结构化请求已被修改")
@@ -288,6 +291,18 @@ class CLIExecutionController:
                 # already stopped): generation has finished, so this is a
                 # contract timeout — retryable — not a controller crash.
                 error = ProviderAdapterError("TIMEOUT", "CLI 收尾阶段超时", retryable=True)
+            elif outcome is not None and isinstance(
+                unexpected, (OSError, SQLAlchemyError)
+            ):
+                # The child already finished; a diagnostics write, result
+                # read, or COMPLETED finalize failing afterwards is transient
+                # infrastructure, not a controller defect. UPSTREAM keeps the
+                # retryable contract TIMEOUT already uses for teardown
+                # overruns instead of discarding the paid run as a terminal
+                # CRASH.
+                error = ProviderAdapterError(
+                    "UPSTREAM", "CLI 收尾阶段基础设施故障", retryable=True
+                )
             else:
                 error = ProviderAdapterError("CRASH", "CLI controller 异常终止")
             self._finish_failure(run_id, error, outcome)
@@ -635,8 +650,8 @@ class CLIExecutionController:
         journal_path = resolved / "journal.json"
         _reject_link(journal_path)
         try:
-            journal = json.loads(journal_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
+            journal = json.loads(journal_path.read_bytes())
+        except (OSError, ValueError) as error:
             raise ProviderAdapterError("CONFIGURATION", "CLI run journal 无法验证") from error
         if (
             journal.get("version") != 1
@@ -711,8 +726,12 @@ class CLIExecutionController:
         if result_path.stat().st_size > self.settings.max_provider_metadata_bytes:
             raise ProviderAdapterError("INVALID_OUTPUT", "CLI 结果文件超过大小上限")
         try:
-            result = json.loads(result_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
+            # Decode from bytes like request.json above: json.loads on bytes
+            # strips a UTF-8 BOM (PowerShell-style writers) and raises
+            # ValueError subclasses for bad JSON or bad encoding, all of
+            # which classify as INVALID_OUTPUT instead of escaping.
+            result = json.loads(result_path.read_bytes())
+        except (OSError, ValueError) as error:
             raise ProviderAdapterError("INVALID_OUTPUT", "CLI 结果不是有效 JSON") from error
         if not isinstance(result, dict) or result.get("schema_version") != 1:
             raise ProviderAdapterError("INVALID_OUTPUT", "CLI 结果 schema 不受支持")

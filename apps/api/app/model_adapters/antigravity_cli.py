@@ -264,6 +264,18 @@ class AntigravityArtifactRunner:
                 error_code=error.code,
                 error_message=error.user_message,
             )
+        except OSError:
+            # _adopt moves provider bytes around the workspace: an OSError
+            # (ENOSPC, EACCES, a directory planted at the registered target)
+            # is the artifact contract failing, not a controller crash.
+            # INVALID_OUTPUT retains the run as evidence instead of letting
+            # the OSError escape to execute()'s terminal CRASH fallback and
+            # discard the paid output.
+            return replace(
+                outcome,
+                error_code="INVALID_OUTPUT",
+                error_message="Antigravity CLI 产物无法读取或落盘",
+            )
         return outcome
 
     def _adopt(self, workspace: Path, outcome: CLIProcessOutcome) -> None:
