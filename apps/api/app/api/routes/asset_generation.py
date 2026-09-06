@@ -337,6 +337,14 @@ def delete_outfit(
         .join(Chapter, Chapter.id == Scene.chapter_id)
         .where(Chapter.project_id == outfit.project_id)
     )
+    # §7.3: outfit_assignments/outfits feed the compiled page prompt (outfit
+    # ids + the scene_outfits block the OUTFIT inspection is judged against).
+    # Any scene/panel that loses an assignment must fence exactly like
+    # PATCH /scenes/{id}/outfits: storyboard bump + review flag on every
+    # referencing page, otherwise an adopted FINAL_READY+PASSED page keeps
+    # exporting a costume that no longer exists with every gate reading
+    # CURRENT.
+    affected_pages: dict[str, MangaPage] = {}
     for scene in scenes:
         assignments = dict(scene.outfit_assignments or {})
         cleaned = {
@@ -347,6 +355,11 @@ def delete_outfit(
         if cleaned != assignments:
             scene.outfit_assignments = cleaned
             scene.version += 1
+            for page in db.scalars(
+                select(MangaPage).where(MangaPage.chapter_id == scene.chapter_id)
+            ):
+                if scene.id in (page.scene_ids or []):
+                    affected_pages[page.id] = page
     panels = db.scalars(
         select(Panel)
         .join(MangaPage, MangaPage.id == Panel.page_id)
@@ -363,6 +376,15 @@ def delete_outfit(
         if cleaned != assignments:
             panel.outfits = cleaned
             panel.version += 1
+            page = db.get(MangaPage, panel.page_id)
+            if page is not None:
+                affected_pages[page.id] = page
+    if affected_pages:
+        from app.services.editor import mark_pages_for_review, mark_storyboard_changed
+
+        for page in affected_pages.values():
+            mark_storyboard_changed(db, page)
+            mark_pages_for_review(db, page.chapter_id, from_page_number=page.page_number)
 
     db.delete(outfit)
     db.commit()
