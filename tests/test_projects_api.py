@@ -262,3 +262,75 @@ def test_restoring_asset_tolerates_locked_stale_file(client, monkeypatch):
         assert restored.status_code == 201, restored.text
         assert restored.json()["id"] == uploaded["id"]
         assert client.get(restored.json()["content_url"]).status_code == 200
+
+
+def test_archiving_project_cancels_its_active_workflow_runs(client, db_session):
+    """archive_project cancels jobs through cancel_job's run escalation: a
+    project with a RUNNING run whose node job is still active must not leave
+    the run row RUNNING forever (pre-fix it called the lower-level
+    mark_job_cancelled, which stamps the node run but never the run; every
+    later reconcile then re-committed the zombie RUNNING)."""
+    from app.models import (
+        WorkflowDefinition,
+        WorkflowNodeRun,
+        WorkflowRun,
+        WorkflowVersion,
+    )
+    from app.workflow_schemas import WorkflowGraph
+    from app.services.workflow_engine import default_graph
+
+    project = client.post("/api/v1/projects", json={"name": "归档取消运行"}).json()
+    graph = WorkflowGraph.model_validate(default_graph())
+    workflow = WorkflowDefinition(
+        project_id=project["id"],
+        name="归档运行",
+        draft_graph=graph.model_dump(mode="json"),
+    )
+    db_session.add(workflow)
+    db_session.flush()
+    version = WorkflowVersion(
+        workflow_id=workflow.id,
+        revision=1,
+        graph=graph.model_dump(mode="json"),
+        graph_checksum="archive-run-cancel",
+    )
+    db_session.add(version)
+    db_session.flush()
+    run = WorkflowRun(
+        workflow_id=workflow.id,
+        workflow_version_id=version.id,
+        project_id=project["id"],
+        scope_type="PAGE",
+        scope_id="archive-run-scope",
+        status="RUNNING",
+    )
+    db_session.add(run)
+    db_session.flush()
+    job = GenerationJob(
+        project_id=project["id"],
+        target_type="CHAPTER",
+        target_id="archive-run-target",
+        job_type="SOURCE_PARSE",
+        status=JobStatus.QUEUED,
+        request_parameters={"workflow_run_id": run.id},
+    )
+    db_session.add(job)
+    db_session.flush()
+    node_run = WorkflowNodeRun(
+        workflow_run_id=run.id,
+        node_id="parse",
+        node_type="agent.parse",
+        status="RUNNING",
+        job_id=job.id,
+    )
+    db_session.add(node_run)
+    db_session.commit()
+
+    response = client.delete(
+        f"/api/v1/projects/{project['id']}", params={"confirm_name": "归档取消运行"}
+    )
+
+    assert response.status_code == 204
+    db_session.expire_all()
+    assert db_session.get(GenerationJob, job.id).status == JobStatus.CANCELLED
+    assert db_session.get(WorkflowRun, run.id).status == "CANCELLED"
