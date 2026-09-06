@@ -44,6 +44,7 @@ from app.services.model_capabilities import (
     model_supports_explicit_mask,
 )
 from app.services.model_router import model_supports_resolution
+from app.services.ordinal_allocator import lock_entity
 from app.services.prompt_compiler import PAGE_TEMPLATE_VERSION, compile_page_prompt
 from app.services.worker_handlers import execution, provider
 from app.services.worker_handlers.execution import (
@@ -702,6 +703,10 @@ def _run_page_generate(db, job: GenerationJob) -> None:
     candidate.asset_id = asset.id
     candidate.generation_record_id = record.id
     candidate.status = "READY"
+    # Page row lock for the DRAFT_READY fence bump: serializes against
+    # route-side storyboard edits so the version increment cannot be lost
+    # to a concurrent read-modify-write on the same row.
+    page = lock_entity(db, MangaPage, page.id)
     if page.status == PageStatus.DRAFT_GENERATING and not page.selected_candidate_id:
         page.status = PageStatus.DRAFT_READY
         page.version += 1

@@ -26,6 +26,7 @@ from app.services.page_completion import (
     REQUIRED_QUALITY_CATEGORIES,
     latest_inspections_by_category,
 )
+from app.services.ordinal_allocator import lock_entity
 from app.services.prompt_compiler import compile_page_prompt
 from app.services.worker_handlers import execution, provider
 
@@ -257,7 +258,11 @@ regions 使用 0 到 1 的归一化 x/y/width/height。"""
         )
         needs_review = True
     db.flush()
-    db.refresh(page)
+    # Take the page row lock before the drift recheck and the final status
+    # writes: the version fences below are check-then-act, and the completion
+    # writes (continuity/status/version) must serialize against route-side
+    # storyboard edits the same way the routes serialize among themselves.
+    page = lock_entity(db, MangaPage, page.id)
     if page.storyboard_version != inspection_storyboard_version:
         raise execution.StaleStoryboardVersionError(
             "分镜版本已变化，已在调用模型前取消本次检查；请按当前分镜重新检查"
