@@ -4,6 +4,15 @@
 
 本文件记录修订版 MVP 计划的实际完成度。
 
+## W-15 方案 B 实现并实机验收（2026-09-06 第三轮，Windows 实机，分支 `lead/w15-slice1`，基线 master `d917d3b`）
+
+- **W-15 转 RUN**：桌面壳内 Web 形态采用方案 B（设计 `docs/v02-w15-desktop-web-form-plan-b.md` 经 lead 批准）。helper 派生捆绑 node 跑 Next standalone（helper 子进程 → Job 成员，协作停机收割 + 强杀/崩溃 Job 清树自动覆盖）；壳在 READY 带 `web_origin` 时以 `WebviewUrl::External` 加载该回环 origin（`main.rs`，协议校验回环后才建窗），否则回退静态导出形态（`MANGAFLOW_DESKTOP_WEB_DIST` 可覆盖）。
+- **关键技术事实与对策**：standalone 的 rewrites 目的地在**构建期**固化进 routes-manifest（运行时 env 不可改，设计稿 §3 事实 2 的假设被实现轮修正）——`next.config.ts` 改以固定回环中继端口 `127.0.0.1:39443` 为构建期常量，helper 每会话绑定该端口并把连接**纯字节转发**到自己的动态 API 端口（`mangaflow_desktop_helper.py` `_bind_relay`/`_serve_relay`，绑定失败 fail-closed 放弃 web 形态）。Next 侧安全头（CSP/nosniff/XFO DENY/no-referrer）随 `next.config.ts` headers() 下发，实测 `SECURITY_HEADERS_PASS`（tauri.conf CSP 不再约束 External 文档）。
+- **门禁（全绿）**：sidecar e2e 扩至 2 项（原闭环 + plan B：健康经中继代理、UI 200、代理取数、停机后 web 端口关闭、journal 身份字段校验）17.7s；shell-core 51 项（含新增 web_origin 协议单元测试）；安全头四项断言；双安装包带 web 资源构建成功（**NSIS 23.7MB / MSI 35.4MB**，对比纯静态导出版 +10–14MB，优于设计稿预估）；NSIS 装卸数据安全复验 PASS（336 文件两态逐字节一致）；`npm run check` 全量 exit 0。
+- **实机验收**：WebView2 加载 `http://127.0.0.1:<port>`（a11y 树 347 元素），设置页完整生产 UI + 实时诊断数据 + 路由导航（静态导出形态从未达到的工作台形态）；关窗协作停机 exit 0、node 进程全灭。
+- **附带修正**：tauri resources（node.exe + standalone，85MB）经 `git rm --cached` 出库并 gitignore（构建产物不入库）；`scripts/build-web-standalone.py` 固化「构建 + manifest 校验（防错构建目的地）+ static 拷贝」三步。
+- **NOT RUN**：安装版内 plan B 全链（装 after 卸载重装、W-22 范围）；跨版本升级。签名/更新（W-13/14）、Redis 桌面形态（W-16/17）继续 BLOCKED；版本号维持 0.1.0。
+
 ## W-21 ADR 终批通过（2026-09-06 治理轮，分支 `lead/adr-approval`，基线 master `2955f6f` = PR #178 合并）
 
 - **决议（用户/组长作出）**：采用 Tauri 2 路线交付 Windows 桌面壳，Electron 不采用。`docs/adr/v02-desktop-shell-evaluation.md` 状态由 DRAFT 改为 **APPROVED（2026-09-06）**，头部新增「批准记录」：否决条件逐项复核（①sidecar 打包已被 W-11 Windows 冻结冒烟证伪；②WebView2 仪表盘级 RUN、画布级留给 W-15；③D5 路线——静态导出正式改造 vs 方案 B——明确为实现轮设计后由 lead 定夺，ADR 倾向「方案 B 或混合形态」输入不变；④Rust 维护成本裁定可接受，实测口径 shell-core 3,323 行 + main.rs 338 行）。
