@@ -130,10 +130,20 @@ def _resequence_beats(beats: list[BeatDraft]) -> list[BeatDraft]:
     """
 
     resequenced: list[BeatDraft] = []
-    seen_beats: set[tuple[tuple[str, ...], str]] = set()
+    seen_beats: set[tuple[tuple[str, ...], str, str, str, str]] = set()
     for beat in beats:
         if beat.action.strip():
-            key = (tuple(beat.source_segment_ids), beat.action)
+            # The key must include the dialogue content: two legitimate beats
+            # can share a segment and a generic action ("两人交谈") while
+            # carrying different lines — dropping the second silently deletes
+            # scripted dialogue from the persisted source.
+            key = (
+                tuple(beat.source_segment_ids),
+                beat.action,
+                beat.speaker_name or "",
+                beat.dialogue or "",
+                beat.narration or "",
+            )
             if key in seen_beats:
                 continue
             seen_beats.add(key)

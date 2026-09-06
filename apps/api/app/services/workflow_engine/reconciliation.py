@@ -302,6 +302,21 @@ def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
             item.error_code = job.error_code
             item.error_message = job.error_message
             failed = True
+        elif job and job.status == JobStatus.CANCELLED and item.status not in {
+            "COMPLETED",
+            "CANCELLED",
+            "SKIPPED",
+        }:
+            # A shared/cancelled job must not leave its node RUNNING forever:
+            # without this transition the run re-commits RUNNING on every
+            # poll, wedged (retry refuses non-terminal runs). The node copies
+            # the cancellation and the run converges to FAILED below, which
+            # retry_run accepts.
+            item.status = "CANCELLED"
+            item.error_code = job.error_code or "JOB_CANCELLED"
+            item.error_message = job.error_message or "节点任务已被取消"
+            item.finished_at = utcnow()
+            failed = True
         if item.status != "WAITING":
             if item.status == "WAITING_APPROVAL":
                 paused = True

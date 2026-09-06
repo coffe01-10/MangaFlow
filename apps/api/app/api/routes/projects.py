@@ -21,6 +21,7 @@ from app.models import (
     StyleProfile,
     StyleStatus,
     WorkflowDefinition,
+    WorkflowRun,
 )
 from app.schemas import (
     DashboardAIOverview,
@@ -40,6 +41,7 @@ from app.services.credential_source import (
 )
 from app.services.job_service import cancel_job
 from app.services.model_availability import count_available_catalog_models
+from app.services.workflow_engine.lifecycle import cancel_run
 from app.settings_schemas import ProjectSummaryRead
 
 router = APIRouter()
@@ -547,6 +549,19 @@ def archive_project(
         # RUNNING forever (mark_job_cancelled only stamps the node run) and
         # every later reconcile re-commits the zombie.
         cancel_job(db, job)
+    # A run parked at an approval barrier owns no active job, so the loop
+    # above never sees it: cancel non-terminal runs directly, or a later
+    # approve/retry would mint paid work on the archived project.
+    runs = list(
+        db.scalars(
+            select(WorkflowRun).where(
+                WorkflowRun.project_id == project_id,
+                WorkflowRun.status.not_in({"COMPLETED", "CANCELLED", "FAILED"}),
+            )
+        )
+    )
+    for run in runs:
+        cancel_run(db, run)
     project.deleted_at = utcnow()
     project.version += 1
     db.commit()
