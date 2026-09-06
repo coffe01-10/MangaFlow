@@ -223,12 +223,11 @@ test("任务活动阶段持续轮询，进入终态后停止", async ({ page, re
   await expect.poll(() => jobPolls.length, { timeout: 12_000 }).toBeGreaterThan(afterRepair);
 
   status = "COMPLETED";
-  // 任务行由链接改为 article.job-row（查看结果按钮入口）；
-  // 终态 = 行内同时出现任务标签与「已完成」状态。
-  const terminalRow = page
-    .locator(".job-row", { hasText: "检查页面" })
-    .filter({ hasText: "已完成" });
-  await expect(terminalRow).toBeVisible({ timeout: 12_000 });
+  // 终态任务在任务中心位于折叠的日期分组内（DOM 存在但不可见）；
+  // 对用户可见的终态指示是队列坞的最近任务链接（检查页面 · 已完成）。
+  await expect(page.getByRole("link", { name: /检查页面 · 已完成/ })).toBeVisible({
+    timeout: 12_000,
+  });
   await expect(page.getByText("正在运行")).toHaveCount(0);
   await page.waitForTimeout(3500);
   const stoppedAt = jobPolls.length;
