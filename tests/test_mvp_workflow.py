@@ -1652,3 +1652,70 @@ def test_export_artifacts_are_written_atomically(
         assert hashlib.sha256(data).hexdigest() == row.sha256
         assert len(data) == row.byte_size
 
+
+
+def test_delete_outfit_flags_referencing_pages_stale(client, db_session):
+    """§7.3: delete_outfit mutates compiled page-prompt inputs (scene
+    outfit_assignments feed outfit_ids + the scene_outfits block) but used to
+    bump only Scene.version/Panel.version — no storyboard bump, no review
+    flag — so an adopted FINAL_READY+PASSED page kept exporting with a
+    costume whose outfit row no longer exists, and every fence read CURRENT.
+    The teardown must fence exactly like PATCH /scenes/{id}/outfits does."""
+    from app.domain.states import PageStatus
+    from app.models import Chapter, Character, MangaPage, Outfit, Panel, Scene
+
+    project = client.post("/api/v1/projects", json={"name": "服装删除围栏"}).json()
+    chapter = Chapter(project_id=project["id"], title="第一章", ordinal=1)
+    character = Character(project_id=project["id"], primary_name="林澈")
+    db_session.add_all([chapter, character])
+    db_session.flush()
+    outfit = Outfit(
+        project_id=project["id"], character_id=character.id, name="校服"
+    )
+    db_session.add(outfit)
+    db_session.flush()
+    scene = Scene(
+        chapter_id=chapter.id,
+        ordinal=1,
+        location="客厅",
+        weather="小雨",
+        time_label="傍晚",
+        outfit_assignments={character.id: outfit.id},
+    )
+    page = MangaPage(
+        chapter_id=chapter.id,
+        page_number=1,
+        panel_count=1,
+        status=PageStatus.FINAL_READY,
+        continuity_status="PASSED",
+    )
+    db_session.add_all([scene, page])
+    db_session.flush()
+    page.scene_ids = [scene.id]
+    panel = Panel(
+        page_id=page.id,
+        reading_order=1,
+        shot_type="medium_close_up",
+        camera_angle="eye_level",
+        characters=[character.id],
+        character_presence={character.id: "VISIBLE"},
+        outfits={character.id: outfit.id},
+        actions={"source_text": "站着"},
+    )
+    db_session.add(panel)
+    db_session.commit()
+    adopted_version = page.version
+
+    response = client.delete(f"/api/v1/outfits/{outfit.id}")
+
+    assert response.status_code == 204, response.text
+    db_session.expire_all()
+    page = db_session.get(MangaPage, page.id)
+    scene = db_session.get(Scene, scene.id)
+    panel = db_session.get(Panel, panel.id)
+    # The compiled inputs changed: the fences must say so.
+    assert scene.outfit_assignments == {}
+    assert panel.outfits == {}
+    assert page.continuity_status == "NEEDS_REVIEW"
+    assert page.version > adopted_version
+    assert db_session.get(Outfit, outfit.id) is None
