@@ -7,8 +7,9 @@ by the execution shell.
 """
 
 import json
+import logging
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 from app.model_adapters.base import ProviderAdapterError, StructuredRequest
 from app.models import (
@@ -33,6 +34,8 @@ from app.services.ai_schemas import (
 )
 from app.services.job_service import oldest_active_job_id
 from app.services.worker_handlers import execution, provider
+
+LOGGER = logging.getLogger("mangaflow.worker")
 
 STORY_PARSE_CHUNK_MAX_CHARS = 800
 
@@ -424,12 +427,61 @@ def _run_story_parse(db, job: GenerationJob) -> None:
         for token in [normalized_primary, *normalized]:
             all_aliases.setdefault(token, normalized_primary)
         if character:
-            character.aliases = aliases
-            character.aliases_normalized = normalized
-            character.alias_conflict = conflict
-            character.canonical_description = draft.description or character.canonical_description
-            character.version += 1
+            # Per-character conditional claim (the same discipline as PATCH
+            # /characters): the merge re-reads fresh state and retries a
+            # bounded number of times, so a concurrent character PATCH that
+            # committed after our snapshot is merged onto instead of clobbered.
+            # On final loss we log and skip this character's alias merge — the
+            # billed ScriptRevision still lands, and a re-parse can recover it.
+            merged = False
+            for _attempt in range(3):
+                db.refresh(character)
+                fresh_primary = character.primary_name.strip()
+                fresh_aliases = list(
+                    dict.fromkeys(
+                        item.strip()
+                        for item in [
+                            *character.aliases,
+                            draft.primary_name,
+                            *draft.aliases,
+                        ]
+                        if item.strip()
+                        and _normalize_name(item) != _normalize_name(fresh_primary)
+                    )
+                )[:DRAFT_ALIAS_MAX_ITEMS]
+                fresh_normalized = [_normalize_name(item) for item in fresh_aliases]
+                fresh_primary_normalized = _normalize_name(fresh_primary)
+                fresh_conflict = any(
+                    token in all_aliases and all_aliases[token] != fresh_primary_normalized
+                    for token in [fresh_primary_normalized, *fresh_normalized]
+                )
+                claimed = db.execute(
+                    update(Character)
+                    .where(
+                        Character.id == character.id,
+                        Character.version == character.version,
+                    )
+                    .values(version=Character.version + 1)
+                    .execution_options(synchronize_session=False)
+                )
+                if claimed.rowcount == 1:
+                    character.aliases = fresh_aliases
+                    character.aliases_normalized = fresh_normalized
+                    character.alias_conflict = fresh_conflict
+                    character.canonical_description = (
+                        draft.description or character.canonical_description
+                    )
+                    for token in [fresh_primary_normalized, *fresh_normalized]:
+                        all_aliases[token] = fresh_primary_normalized
+                    merged = True
+                    break
             claimed_character_ids.add(character.id)
+            if not merged:
+                LOGGER.warning(
+                    "story parse: character %s changed concurrently; "
+                    "skipped its alias merge (script kept, re-parse to recover)",
+                    character.id,
+                )
         else:
             character = Character(
                 project_id=project_id,

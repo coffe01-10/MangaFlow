@@ -152,6 +152,7 @@ def has_active_derived_job(
     parent_candidate_id: str,
     repair_type: str | None = None,
     resolution: str | None = None,
+    exclude_job_id: str | None = None,
 ) -> bool:
     """True when an ACTIVE derived-generation job still targets a child of the
     given parent candidate.
@@ -179,6 +180,11 @@ def has_active_derived_job(
             GenerationJob.target_type == "PAGE_CANDIDATE",
             GenerationJob.status.in_(ACTIVE_JOB_STATUSES),
             CandidateLineage.parent_candidate_id == parent_candidate_id,
+            *(
+                [GenerationJob.id != exclude_job_id]
+                if exclude_job_id is not None
+                else []
+            ),
         )
     )
     for job in active_jobs:
@@ -577,6 +583,21 @@ def restore_page_after_generation_exit(db: Session, page_candidate: PageCandidat
 
     page = db.get(MangaPage, page_candidate.page_id)
     if page is None or str(getattr(page.status, "value", page.status)) != "DRAFT_GENERATING":
+        return
+    # An ACTIVE sibling candidate (still queued/generating in the same batch)
+    # owns the page's in-flight state: restoring to STORYBOARDED here would
+    # leave the page stranded when the sibling later completes READY (the
+    # success fence requires DRAFT_GENERATING). Hold DRAFT_GENERATING until
+    # every sibling reaches a terminal candidate status.
+    active_sibling = db.scalar(
+        select(PageCandidate.id).where(
+            PageCandidate.page_id == page.id,
+            PageCandidate.id != page_candidate.id,
+            PageCandidate.status.in_({"QUEUED", "GENERATING"}),
+            PageCandidate.deleted_at.is_(None),
+        )
+    )
+    if active_sibling:
         return
     other_ready = db.scalar(
         select(PageCandidate.id).where(
@@ -1592,6 +1613,29 @@ def reset_for_retry(db: Session, job: GenerationJob) -> GenerationJob:
             status_code=409,
             detail="该目标已有进行中的同类任务，请等待完成后再重试",
         )
+    # Derived jobs (repair/upscale/region) target their own CHILD candidate,
+    # so the target-scoped mutex above is vacuous for them: match through the
+    # parent lineage instead, with the same intent filters the creation
+    # routes use (repair_type / target_resolution).
+    if job.job_type in {"PAGE_REPAIR", "PAGE_UPSCALE", "PAGE_REGION_REGENERATE"}:
+        parameters = job.request_parameters or {}
+        parent_id = parameters.get("original_candidate_id")
+        if (
+            parent_id
+            and has_active_derived_job(
+                db,
+                job_types={job.job_type},
+                parent_candidate_id=str(parent_id),
+                repair_type=parameters.get("repair_type"),
+                resolution=parameters.get("target_resolution"),
+                exclude_job_id=job.id,
+            )
+        ):
+            db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="该原始候选已有进行中的同类任务，请等待完成后再重试",
+            )
     # The claim above owns the job row, which serializes this revival against
     # concurrent cancel_run/worker claims on the same job, so the cross-table
     # writes below cannot clobber a concurrent terminal transition.
@@ -1605,6 +1649,27 @@ def reset_for_retry(db: Session, job: GenerationJob) -> GenerationJob:
     if workflow_run_id:
         run = db.get(WorkflowRun, workflow_run_id)
         if run and run.status == "FAILED":
+            # Scope-level one-active-run guard (mirrors planning.py's
+            # start guard): retry_run clones a fresh RUNNING run from the
+            # FAILED one, and this FAILED run's kept cause-of-failure job
+            # still offers Retry — reviving it here would run two concurrent
+            # paid workflows on one scope. The claim above is pre-commit, so
+            # the rollback cleanly undoes it.
+            sibling_active_run = db.scalar(
+                select(WorkflowRun.id).where(
+                    WorkflowRun.workflow_id == run.workflow_id,
+                    WorkflowRun.scope_type == run.scope_type,
+                    WorkflowRun.scope_id == run.scope_id,
+                    WorkflowRun.id != run.id,
+                    WorkflowRun.status.not_in({"COMPLETED", "CANCELLED", "FAILED"}),
+                )
+            )
+            if sibling_active_run:
+                db.rollback()
+                raise HTTPException(
+                    status_code=409,
+                    detail="该范围已有进行中的运行，不能通过重试任务再唤醒旧运行",
+                )
             revival_snapshot["run"] = {
                 "id": run.id,
                 "status": run.status,

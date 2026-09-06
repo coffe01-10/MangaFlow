@@ -41,7 +41,7 @@ from app.services.credential_source import (
 )
 from app.services.job_service import cancel_job
 from app.services.model_availability import count_available_catalog_models
-from app.services.workflow_engine.lifecycle import cancel_run
+from app.services.workflow_engine import cancel_run
 from app.settings_schemas import ProjectSummaryRead
 
 router = APIRouter()
@@ -549,18 +549,19 @@ def archive_project(
         # RUNNING forever (mark_job_cancelled only stamps the node run) and
         # every later reconcile re-commits the zombie.
         cancel_job(db, job)
-    # A run parked at an approval barrier owns no active job, so the loop
-    # above never sees it: cancel non-terminal runs directly, or a later
-    # approve/retry would mint paid work on the archived project.
-    runs = list(
+    # Jobless non-terminal runs (e.g. PAUSED at an approval barrier, where
+    # barrier nodes own no job) never trigger the escalation above and would
+    # stay non-terminal under the archived project forever. Cancel them
+    # explicitly; cancel_run's sweeps are no-ops on jobless runs.
+    stale_runs = list(
         db.scalars(
             select(WorkflowRun).where(
                 WorkflowRun.project_id == project_id,
-                WorkflowRun.status.not_in({"COMPLETED", "CANCELLED", "FAILED"}),
+                WorkflowRun.status.not_in(["COMPLETED", "CANCELLED", "FAILED"]),
             )
         )
     )
-    for run in runs:
+    for run in stale_runs:
         cancel_run(db, run)
     project.deleted_at = utcnow()
     project.version += 1

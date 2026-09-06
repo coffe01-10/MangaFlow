@@ -672,3 +672,52 @@ def test_worker_claim_cancels_job_of_dead_run_before_provider_work(monkeypatch):
                 assert db.get(WorkflowRun, run_id).status == "CANCELLED"
         finally:
             engine.dispose()
+
+
+def test_cancelled_node_fails_zombie_running_run(db_session):
+    """The worker's deleted-chapter/candidate guards cancel a job through
+    mark_job_cancelled, which stamps the node_run CANCELLED but never touches
+    the run (no escalation on this branch). reconcile's desired-status
+    computation treated a CANCELLED node as neither completed nor failed, so
+    desired stayed RUNNING and every reconcile pass re-committed the zombie —
+    while the one-active-run guard blocked any new run for the scope. A
+    CANCELLED node under a non-terminal run must fail the run like a FAILED
+    node so the sweep terminalizes the tail and the scope unblocks."""
+    project, run = _seed_run(db_session)
+    ok_node, ok_job = _seed_node_job(
+        db_session,
+        project,
+        run,
+        "assets",
+        "source.assets",
+        job_status=JobStatus.COMPLETED,
+        node_status="COMPLETED",
+    )
+    ok_job.finished_at = utcnow()
+    cancelled_node, cancelled_job = _seed_node_job(
+        db_session,
+        project,
+        run,
+        "adapt",
+        "agent.adapt",
+        job_status=JobStatus.CANCELLED,
+        node_status="CANCELLED",
+    )
+    waiting_node, waiting_job = _seed_node_job(
+        db_session,
+        project,
+        run,
+        "page",
+        "generator.page",
+        job_status=JobStatus.WAITING,
+        node_status="WAITING",
+        depends_on=ok_job,
+    )
+    db_session.commit()
+
+    reconcile_run(db_session, run.id)
+
+    db_session.expire_all()
+    assert db_session.get(WorkflowRun, run.id).status == "FAILED"
+    tail = db_session.get(WorkflowNodeRun, waiting_node.id)
+    assert tail.status == "CANCELLED"
