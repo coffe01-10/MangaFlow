@@ -193,6 +193,13 @@ def delete_candidate(
     ensure_project_scope(db, candidate, project_id, label="候选")
     if isinstance(candidate, PageCandidate) and candidate.is_selected:
         raise HTTPException(status_code=409, detail="当前采用版本不能删除")
+    if isinstance(candidate, PageCandidate):
+        # Deletion-vs-selection convention: hold the page lock the select
+        # route takes before reading the candidate so the two serialize on
+        # PostgreSQL (delete_asset sets the same precedent). The conditional
+        # claim below stays the dialect-proof backstop — lock_entity is a
+        # no-op on SQLite.
+        lock_entity(db, MangaPage, candidate.page_id)
     if isinstance(candidate, AssetCandidate) and candidate.asset_id:
         asset = db.get(Asset, candidate.asset_id)
         if asset and asset.deleted_at is None:
@@ -406,8 +413,23 @@ def select_candidate(
     db.execute(
         update(PageCandidate).where(PageCandidate.page_id == page.id).values(is_selected=False)
     )
-    candidate.is_selected = True
-    candidate.version += 1
+    # The adopt is a conditional claim, not a blind ORM write: a concurrent
+    # DELETE /candidates/{id} can commit its tombstone between the guard reads
+    # above and this write (its claim predates ours and it holds no lock this
+    # route respects on every dialect). Losing the claim rolls the whole unit
+    # back — adopting a soft-deleted candidate (is_selected=true +
+    # deleted_at set + page.selected_candidate_id set) is exactly the
+    # contradiction both routes' guards exist to prevent.
+    adopted = db.execute(
+        update(PageCandidate)
+        .where(PageCandidate.id == candidate.id, PageCandidate.deleted_at.is_(None))
+        .values(is_selected=True, version=PageCandidate.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if adopted.rowcount != 1:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="候选已被删除，无法采用")
+    db.expire(candidate, ["is_selected", "version"])
     changed = page.selected_candidate_id and page.selected_candidate_id != candidate.id
     page.selected_candidate_id = candidate.id
     page.selected_candidate_ack_version = page.storyboard_version
