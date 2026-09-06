@@ -337,6 +337,11 @@ def delete_outfit(
         .join(Chapter, Chapter.id == Scene.chapter_id)
         .where(Chapter.project_id == outfit.project_id)
     )
+    scenes = db.scalars(
+        select(Scene)
+        .join(Chapter, Chapter.id == Scene.chapter_id)
+        .where(Chapter.project_id == outfit.project_id)
+    )
     # §7.3: outfit_assignments/outfits feed the compiled page prompt (outfit
     # ids + the scene_outfits block the OUTFIT inspection is judged against).
     # Any scene/panel that loses an assignment must fence exactly like
@@ -353,8 +358,20 @@ def delete_outfit(
             if assigned_outfit_id != outfit.id
         }
         if cleaned != assignments:
-            scene.outfit_assignments = cleaned
-            scene.version += 1
+            # Claim the row like PATCH /scenes/{id}/outfits: a concurrent CAS
+            # writer committing between the read above and this write must
+            # win with its own version bump, not be silently clobbered by
+            # ours (the lost update #216 names this writer for).
+            claimed = db.execute(
+                update(Scene)
+                .where(Scene.id == scene.id, Scene.version == scene.version)
+                .values(outfit_assignments=cleaned, version=Scene.version + 1)
+                .execution_options(synchronize_session=False)
+            )
+            if not claimed.rowcount:
+                db.rollback()
+                raise HTTPException(status_code=409, detail="场景已被更新，请刷新后重试")
+            db.expire(scene, ["outfit_assignments", "version"])
             for page in db.scalars(
                 select(MangaPage).where(MangaPage.chapter_id == scene.chapter_id)
             ):
@@ -374,8 +391,16 @@ def delete_outfit(
             if assigned_outfit_id != outfit.id
         }
         if cleaned != assignments:
-            panel.outfits = cleaned
-            panel.version += 1
+            claimed = db.execute(
+                update(Panel)
+                .where(Panel.id == panel.id, Panel.version == panel.version)
+                .values(outfits=cleaned, version=Panel.version + 1)
+                .execution_options(synchronize_session=False)
+            )
+            if not claimed.rowcount:
+                db.rollback()
+                raise HTTPException(status_code=409, detail="分镜格已被更新，请刷新后重试")
+            db.expire(panel, ["outfits", "version"])
             page = db.get(MangaPage, panel.page_id)
             if page is not None:
                 affected_pages[page.id] = page

@@ -517,7 +517,11 @@ def _run_page_generate(db, job: GenerationJob) -> None:
         original = db.get(PageCandidate, job.request_parameters.get("original_candidate_id"))
         if not original or not original.asset_id:
             raise RuntimeError("修复或升清任务缺少原始候选图")
+        if original.deleted_at is not None:
+            raise JobCancelledError("原始候选已被删除，模型返回结果不再写入")
         original_asset = db.get(Asset, original.asset_id)
+        if original_asset is None or original_asset.deleted_at is not None:
+            raise JobCancelledError("原始候选素材已被删除，模型返回结果不再写入")
         reference_bytes.insert(0, provider._asset_path(original_asset).read_bytes())
         reference_types.insert(0, original_asset.mime_type)
         reference_asset_ids.insert(0, original_asset.id)
@@ -547,7 +551,7 @@ def _run_page_generate(db, job: GenerationJob) -> None:
             mask_asset_id = job.request_parameters.get("mask_asset_id")
             target_regions = job.request_parameters.get("target_regions") or []
             mask_asset = db.get(Asset, mask_asset_id) if mask_asset_id else None
-            if mask_asset is None or not target_regions:
+            if mask_asset is None or mask_asset.deleted_at is not None or not target_regions:
                 raise RuntimeError("局部重抽卡任务缺少 mask 资产，已在调用模型前停止任务")
             region_context = {
                 "instruction": job.request_parameters.get("instruction") or "",

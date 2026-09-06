@@ -688,3 +688,44 @@ def test_cancel_landing_after_paid_call_keeps_ledger_consistent(
     refreshed = db_session.get(GenerationJob, job.id)
     assert refreshed.status in {JobStatus.CANCELLED, JobStatus.FAILED}
     assert refreshed.status == JobStatus.CANCELLED or refreshed.error_code
+
+
+def test_region_job_fences_soft_deleted_original_before_paid_call(
+    db_session, catalog, region_storage, monkeypatch
+):
+    """The derived-job fence must cover the ORIGINAL candidate, not only the
+    target: a region job whose parent candidate was soft-deleted (the outfit
+    teardown route does exactly that) must stop pre-paid instead of paying to
+    rebuild from input the user deleted."""
+
+    from datetime import UTC, datetime
+
+    from app.services.worker_handlers.execution import JobCancelledError
+    from app.worker_tasks import _run_page_generate
+
+    class _ForbiddenAdapter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def generate_page(self, request):
+            self.calls += 1
+            raise AssertionError("原始候选已删除时不得进入付费模型调用")
+
+    adapter = _ForbiddenAdapter()
+    monkeypatch.setattr("app.worker_tasks._adapter", lambda alias: adapter)
+    parent, child, job = _region_job(db_session, region_storage)
+    _own_lease(db_session, job)
+
+    parent.deleted_at = datetime.now(UTC)
+    parent.version += 1
+    db_session.commit()
+
+    with pytest.raises(JobCancelledError):
+        _run_page_generate(db_session, job)
+    assert adapter.calls == 0
+
+    db_session.rollback()
+    db_session.expire_all()
+    done = db_session.get(PageCandidate, child.id)
+    assert done.status != "READY"
+    assert list(db_session.scalars(select(GenerationRecord))) == []
