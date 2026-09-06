@@ -1000,7 +1000,14 @@ def _decode_bytes(payload: bytes) -> str:
 
 
 def _decode_output(outcome: CLIProcessOutcome) -> str:
-    return _decode_bytes(outcome.stdout + b"\n" + outcome.stderr)
+    # Decode each stream independently: a CLI commonly writes UTF-8 JSON to
+    # stdout while a localized Windows error lands in stderr as cp936, and a
+    # concatenated decode succeeds as cp936 by mojibake-ing the UTF-8 half,
+    # breaking auth/quota keyword matching. Per-stream, the same chain keeps
+    # both halves readable.
+    return "\n".join(
+        _decode_bytes(payload) for payload in (outcome.stdout, outcome.stderr)
+    )
 
 
 def _elapsed_ms(started: float) -> int:
