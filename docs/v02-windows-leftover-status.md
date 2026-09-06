@@ -21,13 +21,11 @@
 
 | 状态 | 数量 | 条目 |
 | --- | --- | --- |
-| RUN（2026-09-06 实机轮 + 治理轮） | 8 | W-01、W-02（仪表盘级）、W-06（逻辑面）、W-07、W-08、W-11、W-12（NSIS 实机）、W-21（ADR 终批） |
+| RUN（2026-09-06 实机轮 + 治理/实现轮） | 9 | W-01、W-02（仪表盘级）、W-06（逻辑面）、W-07、W-08、W-11、W-12（NSIS 实机）、W-15（方案 B 实机）、W-21（ADR 终批） |
 | NOT RUN | 11 | W-02（画布级/缺失安装）、W-03、W-04、W-05（对话框交互面）、W-09、W-10、W-12（MSI 安装步）、W-18、W-19、W-20、W-22 |
-| BLOCKED | 5 | W-13、W-14、W-15、W-16、W-17 |
+| BLOCKED | 4 | W-13、W-14、W-16、W-17 |
 
 部分 RUN / 部分 NOT RUN 的条目（W-02/W-05/W-06/W-12）在两行重复出现，各行计数按列出条目数计。
-W-15 依赖的 W-21 已于 2026-09-06 通过（ADR 终批），W-15 自 BLOCKED 转为「可开实现轮」——因其实现路线
-（静态导出正式改造 vs 方案 B）尚待实现轮提出设计后由 lead 定夺，暂保留在 BLOCKED 行并在此注明。
 
 ## 2. A. Windows 实机运行面（桌面壳：进程 / 渲染 / 日志 / 安全）
 
@@ -52,7 +50,7 @@ W-15 依赖的 W-21 已于 2026-09-06 通过（ADR 终批），W-15 自 BLOCKED 
 | W-12 | `tauri build` 产物与 MSI/NSIS 安装/升级/卸载实机：安装只换程序文件、Alembic 原地迁移、卸载不删 `data/`/`storage/`/`uploads/`/凭据、禁止 NSIS installer hooks 删用户数据 | Windows 实机 | **RUN（NSIS 实机，2026-09-06）/ MSI 安装步 NOT RUN** | MSI 静默安装（msoexec per-machine）需管理员授权，本轮未提权 | 双安装包本机构建成功（`tauri build`：MSI `MangaFlow_0.1.0_x64_en-US.msi` + NSIS `MangaFlow_0.1.0_x64-setup.exe`，内嵌真实静态导出）；NSIS 实机脚本验证：静默安装后用户数据 222 文件逐字节一致、HKCU 卸载项注册、卸载后安装目录与注册表项清除且用户数据仍逐字节一致（交付契约「卸载不删用户数据」实测成立）；冻结契约测试（`delivery_contract.rs`）继续全绿 |
 | W-13 | 代码签名与 SmartScreen：证书类型（OV/EV）、时间戳、签名后 SmartScreen 信誉实测 | 代码签名证书 + Windows 实机 | BLOCKED | 无证书、无签发授权；购买/身份属用户决策；Issue 明确禁止真实签名 | 未签名构建与安装契约已冻结；无任何签名实现 |
 | W-14 | 自动更新链路：updater 插件、签名密钥、更新服务器/分发渠道、升级不删用户数据实测 | 签名基础设施 + 更新服务器 | BLOCKED | 依赖 W-13；当前无插件、无密钥、无服务器（README D8） | 未接 updater；D8 整项 NOT RUN |
-| W-15 | 前端壳内形态收口：静态导出正式改造（动态段预渲染组合 + 工作台树预渲染）或方案 B（捆绑 node 跑 `next start` 保留 rewrites） | ADR 终批确定路线后的实现轮 + 实机验证 | BLOCKED | 先决 W-21：D5 路线未定 | 否决条件 3 已拿到确定性阻塞输入：flag 级静态导出不可行；poc 补丁仅覆盖壳级页面（D5） |
+| W-15 | 前端壳内形态收口：静态导出正式改造（动态段预渲染组合 + 工作台树预渲染）或方案 B（捆绑 node 跑 `next start` 保留 rewrites） | ADR 终批确定路线后的实现轮 + 实机验证 | **RUN（方案 B，2026-09-06 实机）** | — | 设计批准（`docs/v02-w15-desktop-web-form-plan-b.md`）后实现并实机验收：helper 派生捆绑 node 跑 Next standalone（Job 成员，停机/强杀自动收割）、固定回环中继 39443 解决 standalone 构建期固化 rewrites 目的地（`next.config.ts` + 中继双端实现）、壳 `WebviewUrl::External`（仅回环）、Next 安全头（CSP/nosniff/DENY/no-referrer，`SECURITY_HEADERS_PASS`）；实机：WebView2 加载 `http://127.0.0.1:<port>/settings` 完整生产 UI + 全实时数据 + 路由导航，关窗协作停机 exit 0 且 node 全灭；sidecar e2e 新增 plan B 用例（健康代理/UI/代理取数/停机收割）全绿；双安装包带 web 资源构建成功（NSIS 23.7MB / MSI 35.4MB），NSIS 装卸数据安全复验 PASS（336 文件两态逐字节一致）。`MANGAFLOW_DESKTOP_WEB_DIST` 缺省时保留静态导出形态（兼容回退） |
 
 ## 4. C. 运行基础设施与 Worker 形态
 
@@ -80,4 +78,4 @@ W-15 依赖的 W-21 已于 2026-09-06 通过（ADR 终批），W-15 自 BLOCKED 
 
 - 状态变化只能来自验证证据：每轮 Windows/发布验收后由 lead 核对证据 SHA 更新对应行，并在 `docs/development-progress.md` 记录该轮证据；不因分支测试全绿或 PR 打开而改状态。
 - 条目完成即整行移入该轮验收记录并标注证据链接；新发现的余项追加新 `W-xx` ID，不改写历史条目。
-- `BLOCKED` 项解除条件：W-13/W-14 = 用户提供证书与服务器并授权；W-15 = 实现轮提出 D5 路线设计（静态导出正式改造 vs 方案 B）后由 lead 定夺开工（前置 W-21 已于 2026-09-06 通过）；W-16/W-17 = 用户同意安装 Docker/PostgreSQL/Redis（或提供等价远程环境）；~~W-21 = lead 复核 ADR~~（已解除，2026-09-06）。
+- `BLOCKED` 项解除条件：W-13/W-14 = 用户提供证书与服务器并授权；W-16/W-17 = 用户同意安装 Docker/PostgreSQL/Redis（或提供等价远程环境）；~~W-21 = lead 复核 ADR~~（已解除，2026-09-06）；~~W-15 = D5 路线设计~~（方案 B 已批准并实现，2026-09-06）。

@@ -288,17 +288,42 @@ fn run() {
                 .ok_or("MANGAFLOW_DESKTOP_API_ROOT not set")?;
             let user_data = app.path().app_local_data_dir()?;
 
+            // Plan B (W-15): point the helper at the bundled Next standalone
+            // bundle; the helper then spawns node, announces the loopback
+            // web origin in READY, and the WebView loads it. Absent = the
+            // pre-W-15 static-export form.
+            let mut helper_args = vec![
+                "app".to_string(),
+                "--api-root".to_string(),
+                api_root.to_string_lossy().into_owned(),
+                "--user-data".to_string(),
+                user_data.to_string_lossy().into_owned(),
+                "--fake-channel".to_string(),
+            ];
+            if let Some(web_dist) = std::env::var_os("MANGAFLOW_DESKTOP_WEB_DIST") {
+                helper_args.push("--web-dist".into());
+                helper_args.push(web_dist.to_string_lossy().into_owned());
+            } else {
+                // Install form: the packaging step lays the Next standalone
+                // tree and the node runtime under the bundled resources
+                // (tauri.conf resources); their presence enables plan B
+                // without any env var. Resources resolve next to the
+                // executable in the installed layout.
+                let bundled = std::env::current_exe()
+                    .ok()
+                    .and_then(|exe| exe.parent().map(|dir| dir.join("web").join("standalone")));
+                if let Some(bundled) = bundled {
+                    if bundled.join("server.js").is_file() {
+                        helper_args.push("--web-dist".into());
+                        helper_args.push(bundled.to_string_lossy().into_owned());
+                    }
+                }
+            }
+
             let config = HelperConfig {
                 python,
                 helper_script,
-                helper_args: vec![
-                    "app".into(),
-                    "--api-root".into(),
-                    api_root.to_string_lossy().into_owned(),
-                    "--user-data".into(),
-                    user_data.to_string_lossy().into_owned(),
-                    "--fake-channel".into(),
-                ],
+                helper_args,
                 ready_timeout: std::time::Duration::from_secs(15),
                 health_timeout: std::time::Duration::from_secs(10),
             };
@@ -330,15 +355,36 @@ fn run() {
             });
             app.manage(PickedState(PickedRegistry::new()));
 
-            if let Err(error) = tauri::WebviewWindowBuilder::new(
-                app,
-                "main",
-                tauri::WebviewUrl::App("index.html".into()),
-            )
-            .title("MangaFlow")
-            .inner_size(1280.0, 800.0)
-            .initialization_script(&initialization_script)
-            .build()
+            // Plan B (W-15): when the helper manages the bundled Next
+            // standalone server, the WebView loads that loopback origin —
+            // the full production app with rewrites — instead of the static
+            // export embedded at compile time. The origin was already
+            // verified loopback by the protocol; spawn_helper validated it
+            // against the journal, so building the URL here cannot escape
+            // the loopback rule.
+            let web_url: Option<tauri::WebviewUrl> = {
+                let spawned_state = app.state::<HelperState>();
+                let guard = spawned_state.inner().0.lock().expect("helper state lock");
+                let run = guard.as_ref().expect("helper run present");
+                run.ready
+                    .web_origin
+                    .as_deref()
+                    .and_then(|origin| tauri::Url::parse(origin).ok())
+                    .map(tauri::WebviewUrl::External)
+            };
+            let builder = match &web_url {
+                Some(url) => tauri::WebviewWindowBuilder::new(app, "main", url.clone()),
+                None => tauri::WebviewWindowBuilder::new(
+                    app,
+                    "main",
+                    tauri::WebviewUrl::App("index.html".into()),
+                ),
+            };
+            if let Err(error) = builder
+                .title("MangaFlow")
+                .inner_size(1280.0, 800.0)
+                .initialization_script(&initialization_script)
+                .build()
             {
                 // Fail-closed kill behavior is unchanged; the shutdown
                 // BOOKKEEPING now routes through the same helper as the Exit
