@@ -40,8 +40,8 @@ from app.services.credential_source import (
     environment_credentials_ready,
 )
 from app.services.job_service import cancel_job
-from app.services.workflow_engine import cancel_run
 from app.services.model_availability import count_available_catalog_models
+from app.services.workflow_engine import cancel_run
 from app.settings_schemas import ProjectSummaryRead
 
 router = APIRouter()
