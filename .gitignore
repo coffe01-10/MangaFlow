@@ -49,3 +49,4 @@ Thumbs.db
 .vscode/
 .venv-poc/
 .venv-desktop/
+apps/desktop/src-tauri/web/
