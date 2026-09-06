@@ -225,25 +225,31 @@ def _load_page(db: Session, project_id: str, page_id: str | None) -> MangaPage |
 
 
 def _scene_undo_drifted(scene: Scene | None, row: DirectorCommand) -> bool:
-    """True when the scene no longer holds exactly what this row's execution
-    wrote. PATCH /scenes bumps Scene.version and the page review flag but never
-    storyboard_version, so the sbv-equality claim is blind to a concurrent
-    manual scene edit; a chapter revise can also recreate the scene so the
-    row's scene_id no longer resolves. Both cases must stop a restore: compare
-    the written field values instead (payload holds the post-execution values
-    for both original commands and undo rows slated for redo).
+    """True when the scene no longer holds exactly what this row's undo will
+    restore. PATCH /scenes bumps Scene.version and the page review flag but
+    never storyboard_version, so the sbv-equality claim is blind to a
+    concurrent manual scene edit; a chapter revise can also recreate the scene
+    so the row's scene_id no longer resolves. Both cases must stop a restore:
+    compare the field values instead. The expected value per field is what the
+    restore will write: the command's own payload for fields it carried, and
+    the pre-command inverse snapshot for the remaining scene fields
+    (inverse_payload always holds all three, even for partial payloads).
     """
     if scene is None:
         return True
     payload = row.payload or {}
+    inverse = row.inverse_payload or {}
     for key in SCENE_RESTORE_FIELDS:
-        if key not in payload:
+        if key in payload:
+            expected = payload[key]
+        elif key in inverse:
+            expected = inverse[key]
+        else:
             continue
-        written = payload[key]
-        if isinstance(written, str):
+        if isinstance(expected, str):
             # apply_scene_fields strips strings on write; compare the stored form.
-            written = written.strip()
-        if getattr(scene, key) != written:
+            expected = expected.strip()
+        if getattr(scene, key) != expected:
             return True
     return False
 

@@ -1638,3 +1638,64 @@ def test_undo_scene_context_after_scene_deleted_supersedes(client, db_session):
     )
     assert undone.status_code == 409, undone.text
     assert undone.json()["detail"]["code"] == "SUPERSEDED"
+
+    db_session.expire_all()
+    row = db_session.scalar(
+        select(DirectorCommand).where(
+            DirectorCommand.command_id == envelope["command_id"]
+        )
+    )
+    assert row.status == "SUPERSEDED"
+
+
+def test_undo_scene_context_rejects_after_patch_to_untouched_scene_field(
+    client, db_session
+):
+    """§6.4 cross-field case: undo restores every scene field from the
+    inverse snapshot, not just the payload's own keys. A concurrent PATCH to a
+    field the command did NOT write (location here) must still block the
+    restore — the drift gate compares the undo's full write set."""
+    ctx = _setup(client, db_session)
+    envelope = _envelope(
+        ctx, "update_scene_context", {"weather": "大雨"}, group_id=_uid()
+    )
+    proposed = _propose(client, ctx, [envelope])
+    assert proposed.status_code == 200, proposed.text
+    accepted = client.post(
+        f"/api/v1/projects/{ctx['project']['id']}/director/commands/"
+        f"{envelope['command_id']}/accept"
+    )
+    assert accepted.status_code == 200, accepted.text
+
+    db_session.refresh(ctx["scene"])
+    patch = client.patch(
+        f"/api/v1/scenes/{ctx['scene'].id}",
+        json={"location": "厨房", "version": ctx["scene"].version},
+    )
+    assert patch.status_code == 200, patch.text
+
+    undone = client.post(
+        f"/api/v1/projects/{ctx['project']['id']}/director/commands/"
+        f"{envelope['command_id']}/undo"
+    )
+    assert undone.status_code == 409, undone.text
+    assert undone.json()["detail"]["code"] == "SUPERSEDED"
+
+    db_session.expire_all()
+    scene = db_session.get(Scene, ctx["scene"].id)
+    assert scene.location == "厨房"
+    # The untouched field keeps the command's effect; only the concurrent
+    # edit is preserved.
+    assert scene.weather == "大雨"
+    row = db_session.scalar(
+        select(DirectorCommand).where(
+            DirectorCommand.command_id == envelope["command_id"]
+        )
+    )
+    assert row.status == "SUPERSEDED"
+    stray = db_session.scalar(
+        select(DirectorCommand).where(
+            DirectorCommand.inverse_of_command_id == envelope["command_id"]
+        )
+    )
+    assert stray is None
