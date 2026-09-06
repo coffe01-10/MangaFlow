@@ -250,15 +250,21 @@ class WindowsJobCLIProcessRunner:
     @staticmethod
     def _resolve(value: str, environment: dict[str, str]) -> str:
         candidate = Path(value)
-        if candidate.is_absolute():
-            resolved = candidate.resolve(strict=True)
-            if not resolved.is_file():
+        try:
+            if candidate.is_absolute():
+                resolved = candidate.resolve(strict=True)
+                if not resolved.is_file():
+                    raise ProviderAdapterError("UNAVAILABLE", "CLI 可执行文件不存在")
+                return str(resolved)
+            discovered = shutil.which(value, path=environment.get("PATH"))
+            if not discovered:
                 raise ProviderAdapterError("UNAVAILABLE", "CLI 可执行文件不存在")
-            return str(resolved)
-        discovered = shutil.which(value, path=environment.get("PATH"))
-        if not discovered:
-            raise ProviderAdapterError("UNAVAILABLE", "CLI 可执行文件不存在")
-        return str(Path(discovered).resolve(strict=True))
+            return str(Path(discovered).resolve(strict=True))
+        except OSError as error:
+            # The executable vanished between resolution and launch (update,
+            # AV quarantine): an UNAVAILABLE provider failure, not a bare
+            # OSError that would surface as a controller CRASH.
+            raise ProviderAdapterError("UNAVAILABLE", "CLI 可执行文件不存在") from error
 
     def _run_windows(self, executable, argv, cwd, environment, timeout_seconds, cancel_requested):
         import _winapi
