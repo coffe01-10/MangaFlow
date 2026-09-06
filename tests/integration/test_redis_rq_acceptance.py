@@ -445,7 +445,7 @@ def test_redis_rq_lease_expiration_and_recovery(
         job.status = JobStatus.GENERATING
         job.attempt_count = 1
         job.lease_owner = "dead-worker-pid-999"
-        job.lease_expires_at = utcnow() - timedelta(seconds=10)
+        job.lease_expires_at = utcnow() - timedelta(seconds=90)  # beyond #130 reclaim grace (~60s)
         db.commit()
 
         recovered_count = recover_pending_jobs(db)
