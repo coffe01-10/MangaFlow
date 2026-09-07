@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Text.Json;
+using MangaFlow.Native.Services;
 
 namespace MangaFlow.Native;
 
@@ -22,15 +23,24 @@ public sealed class WorkspaceState : Observable
     public string ConfiguredConnections => configuredConnections.ToString();
     public string HealthyConnections => healthyConnections.ToString();
     public string EnabledModels => enabledModels.ToString();
+    public string ConnectionBadgeLabel =>
+        healthyConnections > 0 ? $"{healthyConnections} 个 AI 连接健康"
+        : configuredConnections > 0 ? "供应商待验证"
+        : "未配置";
+    public string ConnectionBadgeTone =>
+        healthyConnections > 0 ? "success" : configuredConnections > 0 ? "warning" : "danger";
     public string AiConnectionTitle => healthyConnections > 0 ? "AI 连接已就绪" : configuredConnections > 0 ? "连接等待验证" : "等待添加供应商";
+
     public void UpdateDashboard(JsonElement dashboard)
     {
-        var totals = dashboard.GetProperty("totals");
-        var ai = dashboard.GetProperty("ai_overview");
+        var totals = dashboard.Element("totals");
+        var ai = dashboard.Element("ai_overview");
         totalPages = totals.Number("page_count"); selectedPages = totals.Number("selected_page_count");
         reviewPages = totals.Number("review_page_count"); enabledModels = ai.Number("enabled_model_count");
         configuredConnections = ai.Number("configured_connection_count"); healthyConnections = ai.Number("healthy_connection_count");
-        foreach (var name in new[] { nameof(ActiveProjectMetric), nameof(PageMetric), nameof(SelectedPageLabel), nameof(ReviewMetric), nameof(ModelLabel), nameof(ConfiguredConnections), nameof(HealthyConnections), nameof(EnabledModels), nameof(AiConnectionTitle) }) Changed(name);
+        ChangedAll(nameof(ActiveProjectMetric), nameof(PageMetric), nameof(SelectedPageLabel), nameof(ReviewMetric),
+            nameof(ModelLabel), nameof(ConfiguredConnections), nameof(HealthyConnections), nameof(EnabledModels),
+            nameof(AiConnectionTitle), nameof(ConnectionBadgeLabel), nameof(ConnectionBadgeTone));
         RefreshDashboardCards();
     }
     public void ChangeDashboardPage(int delta)
@@ -47,8 +57,30 @@ public sealed class WorkspaceState : Observable
             DashboardProjects.Clear();
             foreach (var item in visible) DashboardProjects.Add(item);
         }
-        Changed(nameof(DashboardPageLabel)); Changed(nameof(HasPreviousPage)); Changed(nameof(HasNextPage));
+        ChangedAll(nameof(DashboardPageLabel), nameof(HasPreviousPage), nameof(HasNextPage));
     }
+
+    // Queue dock (web QueueDock): latest job + waiting/failed counters.
+    private JobItem? dockJob;
+    private int waitingJobs, failedJobs;
+    private bool dockHidden;
+    public JobItem? DockJob { get => dockJob; set => Set(ref dockJob, value, nameof(DockJob), nameof(DockJobLabel), nameof(DockJobStatus)); }
+    public string DockJobLabel => DockJob is { } job ? $"{job.Name} · {job.StatusLabel}" : "";
+    public string DockJobStatus => DockJob?.StatusLabel ?? "";
+    public int WaitingJobs { get => waitingJobs; set => Set(ref waitingJobs, value, nameof(WaitingJobs), nameof(DockSummary)); }
+    public int FailedJobs { get => failedJobs; set => Set(ref failedJobs, value, nameof(FailedJobs), nameof(DockSummary)); }
+    public bool DockWaiting => WaitingJobs > 0;
+    public string DockSummary => $"并发上限 {CurrentConcurrency} | {waitingJobs} 等待 | {failedJobs} 失败";
+    public string DockIdleLabel => CurrentSection is "jobs" or "generate" ? "当前没有任务" : "查看生成、解析与检查进度";
+    public int CurrentConcurrency { get; set; } = 2;
+    public string CurrentSection { get; set; } = "home";
+    public bool DockHidden
+    {
+        get => dockHidden;
+        set => Set(ref dockHidden, value, nameof(DockHidden), nameof(DockShown));
+    }
+    public bool DockShown => !dockHidden;
+
     public ObservableCollection<ChapterItem> Chapters { get; } = [];
     public ObservableCollection<JobItem> VisibleJobs { get; } = [];
     private bool connected, busy;
@@ -70,7 +102,16 @@ public sealed class WorkspaceState : Observable
     public string ReaderText { get => readerText; set => Set(ref readerText, value); }
     public string ChapterHint { get => chapterHint; set => Set(ref chapterHint, value); }
     public string JobHint { get => jobHint; set => Set(ref jobHint, value); }
-    public ProjectItem? CurrentProject { get => currentProject; set => Set(ref currentProject, value); }
+    public ProjectItem? CurrentProject
+    {
+        get => currentProject;
+        set
+        {
+            Set(ref currentProject, value);
+            Changed(nameof(ProjectId));
+        }
+    }
+    public string ProjectId => currentProject?.Id ?? "";
     public string DataPath { get; init; } = "";
     public string ProjectCount => Projects.Count.ToString();
     public void CountsChanged() => Changed(nameof(ProjectCount));

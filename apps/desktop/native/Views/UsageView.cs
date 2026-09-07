@@ -1,0 +1,540 @@
+using System.IO;
+using System.Net.Http;
+using System.Text;
+using System.Text.Json;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Shapes;
+using System.Windows.Input;
+using System.Windows.Media;
+using MangaFlow.Native.Controls;
+using MangaFlow.Native.Services;
+
+namespace MangaFlow.Native.Views;
+
+/// <summary>NUI-6: usage & cost dashboard — filters, KPI, trend, attempts keyset paging, budget, CSV.</summary>
+public sealed class UsageView : WorkspaceView
+{
+    private readonly ScrollViewer scroller = new() { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+    private readonly ComboBox rangeSelector = Selector("时间范围", 130);
+    private readonly ComboBox projectSelector = Selector("按项目筛选", 170);
+    private readonly ComboBox providerSelector = Selector("按供应商筛选", 150);
+    private readonly ComboBox modelSelector = Selector("按模型筛选", 160);
+    private readonly ComboBox channelSelector = Selector("按通道筛选", 110);
+    private readonly StackPanel kpiRow = new() { Orientation = Orientation.Horizontal };
+    private readonly StackPanel trendHost = new();
+    private readonly StackPanel attemptsTable = new();
+    private readonly StackPanel billedTable = new();
+    private readonly TextBlock summaryLine = new() { Style = (Style)Application.Current.FindResource("Caption") };
+    private JsonElement summary;
+    private List<JsonElement> attempts = [];
+    private string? nextCursor;
+    private bool loadingMore;
+
+    public UsageView()
+    {
+        var panel = new StackPanel { Margin = new Thickness(36, 30, 36, 28) };
+        panel.Children.Add(new TextBlock { Text = "SYSTEM / USAGE & COST", Style = (Style)Application.Current.FindResource("SectionIndex") });
+        panel.Children.Add(new TextBlock
+        {
+            Text = "系统设置 / 用量与成本看板",
+            FontFamily = (FontFamily)Application.Current.FindResource("Serif"),
+            FontSize = 26, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 6, 0, 16),
+        });
+        var filters = new WrapPanel { Margin = new Thickness(0, 0, 0, 14) };
+        foreach (var (key, label) in new[] { ("7d", "近 7 天"), ("30d", "近 30 天"), ("month", "本月"), ("custom", "自定义") })
+            rangeSelector.Items.Add(new ComboBoxItem { Tag = key, Content = label });
+        rangeSelector.SelectedIndex = 1;
+        rangeSelector.SelectionChanged += (_, _) => _ = LoadAsync();
+        filters.Children.Add(rangeSelector);
+        projectSelector.Margin = new Thickness(8, 0, 0, 0);
+        projectSelector.SelectionChanged += (_, _) => _ = LoadAsync();
+        filters.Children.Add(projectSelector);
+        providerSelector.Margin = new Thickness(8, 0, 0, 0);
+        providerSelector.SelectionChanged += (_, _) => { modelSelector.SelectedIndex = -1; _ = LoadAsync(); };
+        filters.Children.Add(providerSelector);
+        modelSelector.Margin = new Thickness(8, 0, 0, 0);
+        modelSelector.SelectionChanged += (_, _) => _ = LoadAsync();
+        filters.Children.Add(modelSelector);
+        channelSelector.Items.Add(new ComboBoxItem { Tag = "", Content = "通道" });
+        channelSelector.Items.Add(new ComboBoxItem { Tag = "HTTP", Content = "HTTP API" });
+        channelSelector.Items.Add(new ComboBoxItem { Tag = "CLI", Content = "CLI" });
+        channelSelector.SelectedIndex = 0;
+        channelSelector.SelectionChanged += (_, _) => _ = LoadAttemptsAsync();
+        channelSelector.Margin = new Thickness(8, 0, 0, 0);
+        filters.Children.Add(channelSelector);
+        var refresh = Kit.Act("刷新", async (_, _) => await LoadAsync(), "Compact");
+        refresh.Margin = new Thickness(12, 0, 0, 0);
+        filters.Children.Add(refresh);
+        var export = Kit.Act("导出 CSV", (_, _) => ExportCsv(), "Compact");
+        export.Margin = new Thickness(8, 0, 0, 0);
+        filters.Children.Add(export);
+        panel.Children.Add(filters);
+        panel.Children.Add(summaryLine);
+        kpiRow.Margin = new Thickness(0, 10, 0, 0);
+        panel.Children.Add(kpiRow);
+        trendHost.Margin = new Thickness(0, 16, 0, 0);
+        panel.Children.Add(WrapCard("费用与调用趋势", trendHost));
+        panel.Children.Add(WrapCard("调用明细", attemptsTable));
+        panel.Children.Add(WrapCard("账单对账记录", billedTable));
+        panel.Children.Add(new TextBlock
+        {
+            Text = "计量语义：账单（对账导入）与估算（价格表推算）永不相加；不同币种不做隐式换算；未知 ≠ 0；CLI 通道费用未知 ≠ 免费。通道筛选作用于调用明细；汇总接口按时间/项目/供应商/模型聚合。",
+            Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 12, 0, 0), TextWrapping = TextWrapping.Wrap,
+        });
+        scroller.Content = panel;
+        Content = scroller;
+    }
+
+    private static Border WrapCard(string title, UIElement content) => new()
+    {
+        Style = (Style)Application.Current.FindResource("Card"),
+        Padding = new Thickness(18),
+        Margin = new Thickness(0, 0, 0, 14),
+        Child = new StackPanel { Children = { new TextBlock { Text = title, FontWeight = FontWeights.Bold, FontSize = 14, Margin = new Thickness(0, 0, 0, 8) }, content } },
+    };
+
+    public override async void Activate(WorkspaceContext context)
+    {
+        base.Activate(context);
+        try
+        {
+            var projects = await Api.SendAsync("projects", cancellation: lifetime.Token);
+            if (lifetime.Token.IsCancellationRequested) return;
+            projectSelector.Items.Clear();
+            projectSelector.Items.Add(new ComboBoxItem { Tag = "", Content = "全部项目" });
+            foreach (var project in projects.EnumerateArray())
+                projectSelector.Items.Add(new ComboBoxItem { Tag = project.Text("id"), Content = project.Text("name") });
+            projectSelector.SelectedIndex = 0;
+            await LoadAsync();
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            summaryLine.Text = $"用量数据加载失败：{error.Message}";
+        }
+    }
+
+    private (string? Since, string? Until) RangeBounds()
+    {
+        var key = (rangeSelector.SelectedItem as ComboBoxItem)?.Tag as string ?? "30d";
+        var now = DateTime.Now;
+        return key switch
+        {
+            "7d" => (now.AddDays(-7).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"), null),
+            "month" => (new DateTime(now.Year, now.Month, 1).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"), null),
+            "30d" => (now.AddDays(-30).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"), null),
+            _ => (now.AddDays(-30).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"), null),
+        };
+    }
+
+    private async Task LoadAsync()
+    {
+        var (since, until) = RangeBounds();
+        var parameters = new List<(string, object?)>
+        {
+            ("from", since), ("to", until),
+        };
+        if (projectSelector.SelectedItem is ComboBoxItem { Tag: string projectId } && projectId.Length > 0)
+            parameters.Add(("project_id", projectId));
+        if (providerSelector.SelectedItem is ComboBoxItem { Tag: string provider } && provider.Length > 0)
+            parameters.Add(("provider", provider));
+        if (modelSelector.SelectedItem is ComboBoxItem { Tag: string model } && model.Length > 0)
+            parameters.Add(("model_id", model));
+        try
+        {
+            summary = await Api.SendAsync(QueryBuilder.Build("usage/summary", [.. parameters]), cancellation: lifetime.Token);
+            if (lifetime.Token.IsCancellationRequested) return;
+            RenderSummary();
+            await LoadAttemptsAsync();
+            var providers = summary.Array("groups").Select(g => g.Text("provider")).Distinct().OrderBy(p => p).ToList();
+            if (providerSelector.Items.Count == 0)
+            {
+                providerSelector.Items.Add(new ComboBoxItem { Tag = "", Content = "全部供应商" });
+                foreach (var name in providers) providerSelector.Items.Add(new ComboBoxItem { Tag = name, Content = name });
+                providerSelector.SelectedIndex = 0;
+                var models = summary.Array("groups").Select(g => g.Text("model_id")).Distinct().OrderBy(m => m).ToList();
+                modelSelector.Items.Add(new ComboBoxItem { Tag = "", Content = "全部模型" });
+                foreach (var name in models) modelSelector.Items.Add(new ComboBoxItem { Tag = name, Content = name });
+                modelSelector.SelectedIndex = 0;
+            }
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            summaryLine.Text = $"用量数据加载失败：{error.Message}";
+        }
+    }
+
+    private void RenderSummary()
+    {
+        kpiRow.Children.Clear();
+        var groups = summary.Array("groups");
+        var billed = summary.Array("billed");
+        if (groups.Count == 0 && billed.Count == 0)
+        {
+            summaryLine.Text = "暂无调用记录。发起剧本分析或单页生成后即可在此查看用量统计。";
+            return;
+        }
+        summaryLine.Text = "";
+        var attemptsTotal = groups.Sum(g => g.Number("attempt_count"));
+        var succeeded = groups.Sum(g => g.Number("succeeded_count"));
+        var failed = groups.Sum(g => g.Number("failed_count"));
+        var pending = groups.Sum(g => g.Number("pending_count"));
+        var rate = attemptsTotal > 0 ? (double)succeeded / attemptsTotal * 100 : double.NaN;
+        var estimated = groups.SelectMany(g => g.Array("estimated_costs"))
+            .GroupBy(c => c.Text("currency"))
+            .OrderBy(c => c.Key)
+            .Select(currency => (Currency: currency.Key, Sum: currency.Sum(c => c.Decimal("amount"))))
+            .ToList();
+        var billedBy = billed.GroupBy(b => b.Text("currency"))
+            .OrderBy(b => b.Key)
+            .Select(currency => (Currency: currency.Key, Sum: currency.Sum(b => b.Decimal("billed_amount"))))
+            .ToList();
+        kpiRow.Children.Add(KpiCard("调用总览", $"{attemptsTotal} 次",
+            $"成功 {succeeded} / 失败 {failed} / 未决 {pending} · 成功率 {(double.IsNaN(rate) ? "未知" : $"{rate:0.#}%")}"));
+        kpiRow.Children.Add(KpiCard("估算支出",
+            estimated.Count == 0 ? "无估算数据" : string.Join("\n", estimated.Select(e => $"≈ {Symbol(e.Currency)}{e.Sum:0.00}")),
+            "估算值不等于供应商账单"));
+        kpiRow.Children.Add(KpiCard("账单支出",
+            billedBy.Count == 0 ? "暂无对账记录" : string.Join("\n", billedBy.Select(b => $"{Symbol(b.Currency)}{b.Sum:0.00}")),
+            "账单事实与估算永不相加"));
+        RenderTrend(groups);
+        RenderBilled(billed);
+    }
+
+    private static string Symbol(string currency) => currency switch
+    {
+        "CNY" => "¥", "USD" => "$", "EUR" => "€", "GBP" => "£", "JPY" => "JP¥", "HKD" => "HK$", _ => currency + " ",
+    };
+
+    private static Border KpiCard(string title, string value, string note) => new()
+    {
+        Style = (Style)Application.Current.FindResource("Card"),
+        Padding = new Thickness(16),
+        Margin = new Thickness(0, 0, 12, 0),
+        MinWidth = 210,
+        VerticalAlignment = VerticalAlignment.Top,
+        Child = new StackPanel
+        {
+            Children =
+            {
+                new TextBlock { Text = title, Style = (Style)Application.Current.FindResource("Micro") },
+                new TextBlock { Text = value, FontFamily = (FontFamily)Application.Current.FindResource("Serif"), FontSize = 22, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 6, 0, 4) },
+                new TextBlock { Text = note, Style = (Style)Application.Current.FindResource("Micro") },
+            },
+        },
+    };
+
+    private void RenderTrend(List<JsonElement> groups)
+    {
+        trendHost.Children.Clear();
+        var byDay = groups.GroupBy(g => g.Text("day")).OrderBy(g => g.Key).ToList();
+        if (byDay.Count == 0)
+        {
+            trendHost.Children.Add(Kit.Caption("所选范围内无用量记录。"));
+            return;
+        }
+        const double chartWidth = 640, chartHeight = 140;
+        var canvas = new Canvas { Width = chartWidth, Height = chartHeight, Background = (Brush)Application.Current.FindResource("PaperDeep") };
+        var slot = chartWidth / byDay.Count;
+        var max = byDay.Max(day => day.Sum(g => g.Number("attempt_count")));
+        var palette = new[] { "#D34A2F", "#3F6D4E", "#3F5E8C", "#A8842C", "#6D4A7E" };
+        var index = 0;
+        foreach (var day in byDay)
+        {
+            var count = day.Sum(g => g.Number("attempt_count"));
+            var barHeight = max == 0 ? 0 : Math.Max(2, count / (double)max * (chartHeight - 24));
+            var bar = new Rectangle
+            {
+                Width = Math.Max(3, slot * 0.6),
+                Height = barHeight,
+                Fill = new SolidColorBrush((Color)ColorConverter.ConvertFromString(palette[index % palette.Length])),
+                ToolTip = $"{day.Key} · {count} 次调用",
+            };
+            Canvas.SetLeft(bar, index * slot + slot * 0.2);
+            Canvas.SetTop(bar, chartHeight - 16 - barHeight);
+            canvas.Children.Add(bar);
+            if (index % 3 == 0)
+            {
+                var label = new TextBlock { Text = day.Key.Length >= 10 ? day.Key[5..10] : day.Key, FontSize = 9, Foreground = (Brush)Application.Current.FindResource("Muted") };
+                Canvas.SetLeft(label, index * slot);
+                Canvas.SetTop(label, chartHeight - 14);
+                canvas.Children.Add(label);
+            }
+            index++;
+        }
+        trendHost.Children.Add(canvas);
+        trendHost.Children.Add(new TextBlock
+        {
+            Text = "按日调用次数分组柱状图；金额与 Token 明细见调用明细表。未知不等于 0。",
+            Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap,
+        });
+    }
+
+    private async Task LoadAttemptsAsync()
+    {
+        attemptsTable.Children.Clear();
+        var (since, until) = RangeBounds();
+        var parameters = new List<(string, object?)> { ("since", since), ("limit", 50) };
+        if (projectSelector.SelectedItem is ComboBoxItem { Tag: string projectId } && projectId.Length > 0) parameters.Add(("project_id", projectId));
+        if (providerSelector.SelectedItem is ComboBoxItem { Tag: string provider } && provider.Length > 0) parameters.Add(("provider", provider));
+        if (modelSelector.SelectedItem is ComboBoxItem { Tag: string model } && model.Length > 0) parameters.Add(("model_id", model));
+        if (channelSelector.SelectedItem is ComboBoxItem { Tag: string channel } && channel.Length > 0) parameters.Add(("channel", channel));
+        try
+        {
+            var page = await Api.SendAsync(QueryBuilder.Build("usage/attempts", [.. parameters]), cancellation: lifetime.Token);
+            if (lifetime.Token.IsCancellationRequested) return;
+            attempts = page.Array("items").ToList();
+            nextCursor = page.TextOrNull("next_cursor");
+            RenderAttempts();
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            attemptsTable.Children.Add(Kit.Caption($"调用明细加载失败：{error.Message}"));
+        }
+    }
+
+    private void RenderAttempts()
+    {
+        attemptsTable.Children.Clear();
+        attemptsTable.Children.Add(new TextBlock
+        {
+            Text = $"已加载 {attempts.Count} 条 · 按开始时间倒序 keyset 分页",
+            Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 0, 0, 8),
+        });
+        if (attempts.Count == 0)
+        {
+            attemptsTable.Children.Add(Kit.Caption("该范围暂无调用尝试记录。"));
+            return;
+        }
+        foreach (var attempt in attempts)
+        {
+            var row = new StackPanel
+            {
+                Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 4), Cursor = Cursors.Hand,
+            };
+            var started = attempt.Text("started_at");
+            var time = started.Length >= 16 ? started.Replace('T', ' ')[..16] : started;
+            var costMode = CostModeOf(attempt);
+            row.Children.Add(new TextBlock { Text = time, Width = 108, FontFamily = (FontFamily)Application.Current.FindResource("Mono"), FontSize = 11.5, VerticalAlignment = VerticalAlignment.Center });
+            row.Children.Add(new TextBlock { Text = attempt.Text("channel"), Width = 64, Style = (Style)Application.Current.FindResource("Micro"), VerticalAlignment = VerticalAlignment.Center });
+            row.Children.Add(new TextBlock
+            {
+                Text = $"{attempt.Text("provider")} · {attempt.Text("model_id")}", Width = 220,
+                Style = (Style)Application.Current.FindResource("Micro"), TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center,
+            });
+            row.Children.Add(new TextBlock
+            {
+                Text = $"第 {attempt.Number("dispatch_no")} 次派发", Width = 84,
+                Style = (Style)Application.Current.FindResource("Micro"), VerticalAlignment = VerticalAlignment.Center,
+            });
+            row.Children.Add(new TextBlock
+            {
+                Text = Labels.Map(Labels.AttemptOutcome, attempt.Text("outcome")), Width = 44,
+                Foreground = attempt.Text("outcome") == "SUCCEEDED" ? (Brush)Application.Current.FindResource("Success")
+                    : attempt.Text("outcome") == "FAILED" ? (Brush)Application.Current.FindResource("Danger")
+                    : (Brush)Application.Current.FindResource("Muted"),
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+            row.Children.Add(new TextBlock
+            {
+                Text = Labels.Map(Labels.CostMode, costMode), Width = 70,
+                Style = (Style)Application.Current.FindResource("Micro"),
+                ToolTip = Labels.Map(Labels.CostModeHint, costMode), VerticalAlignment = VerticalAlignment.Center,
+            });
+            var detail = Kit.Act("详情", (_, _) => new AttemptDrawer(Host, attempt).ShowDialog(), "Compact");
+            row.Children.Add(detail);
+            row.MouseLeftButtonDown += (_, _) => new AttemptDrawer(Host, attempt).ShowDialog();
+            attemptsTable.Children.Add(row);
+        }
+        if (nextCursor != null)
+        {
+            var more = Kit.Act("加载更多", async (_, _) => await LoadMoreAsync(), "Compact");
+            more.Margin = new Thickness(0, 8, 0, 0);
+            attemptsTable.Children.Add(more);
+        }
+        else
+        {
+            attemptsTable.Children.Add(new TextBlock { Text = "已加载全部匹配记录", Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 8, 0, 0) });
+        }
+    }
+
+    private async Task LoadMoreAsync()
+    {
+        if (loadingMore || nextCursor == null) return;
+        loadingMore = true;
+        try
+        {
+            var (since, _) = RangeBounds();
+            var page = await Api.SendAsync(QueryBuilder.Build("usage/attempts",
+                ("since", since), ("cursor", nextCursor!), ("limit", 50)), cancellation: lifetime.Token);
+            attempts.AddRange(page.Array("items"));
+            nextCursor = page.TextOrNull("next_cursor");
+            RenderAttempts();
+        }
+        catch (Exception) { }
+        finally { loadingMore = false; }
+    }
+
+    private static string CostModeOf(JsonElement attempt)
+    {
+        if (attempt.Text("usage_source") == "OPERATOR_BILLED") return "BILLED";
+        if (attempt.Element("input_tokens").ValueKind == JsonValueKind.Number
+            || attempt.Element("output_tokens").ValueKind == JsonValueKind.Number
+            || attempt.Element("output_images").ValueKind == JsonValueKind.Number) return "USAGE_ONLY";
+        if (attempt.Element("usage").ValueKind is JsonValueKind.Null or JsonValueKind.Undefined
+            && attempt.Text("outcome") == "SUCCEEDED") return "UNAVAILABLE";
+        return "UNKNOWN";
+    }
+
+    private void RenderBilled(List<JsonElement> billed)
+    {
+        billedTable.Children.Clear();
+        if (billed.Count == 0)
+        {
+            billedTable.Children.Add(Kit.Caption("所选范围内暂无对账记录。"));
+            return;
+        }
+        foreach (var row in billed)
+        {
+            var item = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 4) };
+            item.Children.Add(new TextBlock
+            {
+                Text = $"{row.Text("period_start")[..Math.Min(10, row.Text("period_start").Length)]} ~ {row.Text("period_end")[..Math.Min(10, row.Text("period_end").Length)]}",
+                Width = 140, Style = (Style)Application.Current.FindResource("Micro"), VerticalAlignment = VerticalAlignment.Center,
+            });
+            item.Children.Add(new TextBlock
+            {
+                Text = $"{row.Text("provider")} · {row.Text("model_id")}", Width = 230,
+                Style = (Style)Application.Current.FindResource("Micro"), TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center,
+            });
+            item.Children.Add(new TextBlock
+            {
+                Text = $"账单 {Symbol(row.Text("currency"))}{row.Decimal("billed_amount"):0.00}",
+                FontWeight = FontWeights.Bold, VerticalAlignment = VerticalAlignment.Center,
+            });
+            billedTable.Children.Add(item);
+        }
+    }
+
+    private void ExportCsv()
+    {
+        if (summary.ValueKind != JsonValueKind.Object)
+        {
+            MessageBox.Show(Host, "尚无可导出的数据。", "导出 CSV");
+            return;
+        }
+        var dialog = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = "导出用量 CSV", Filter = "CSV|*.csv", FileName = $"usage-{DateTime.Now:yyyy-MM-dd}.csv",
+        };
+        if (dialog.ShowDialog(Host) != true) return;
+        try
+        {
+            var builder = new StringBuilder("\uFEFF");
+            builder.AppendLine("日期,供应商,模型ID,通道,调用次数,成功,失败,未决,输入Token,输出Token,缓存命中Token,输出图片张数,计量状态分布,估算币种,估算金额（原币种）");
+            foreach (var group in summary.Array("groups"))
+            {
+                var costs = group.Array("estimated_costs");
+                var rows = costs.Count == 0 ? [("", "")] : costs.Select(c => (c.Text("currency"), c.Decimal("amount").ToString())).ToList();
+                foreach (var (currency, amount) in rows)
+                {
+                    var line = string.Join(",",
+                        Csv(group.Text("day")), Csv(group.Text("provider")), Csv(group.Text("model_id")), Csv(group.Text("channel")),
+                        group.Number("attempt_count"), group.Number("succeeded_count"), group.Number("failed_count"), group.Number("pending_count"),
+                        NumberOrNull(group, "input_tokens"), NumberOrNull(group, "output_tokens"), NumberOrNull(group, "cached_input_tokens"),
+                        NumberOrNull(group, "output_images"), Csv(string.Join(" ", group.Element("usage_status_counts").EnumerateObject().Select(p => $"{p.Name}:{p.Value}"))),
+                        currency.Length == 0 ? "无估算数据" : currency, amount);
+                    builder.AppendLine(line);
+                }
+            }
+            File.WriteAllText(dialog.FileName, builder.ToString(), new UTF8Encoding(false));
+            MessageBox.Show(Host, "CSV 已导出。", "导出完成");
+        }
+        catch (Exception error)
+        {
+            MessageBox.Show(Host, error.Message, "导出未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private static string NumberOrNull(JsonElement element, string name) =>
+        element.Element(name).ValueKind == JsonValueKind.Number ? element.Number(name).ToString() : "";
+
+    // CSV injection guard: prefix dangerous leading chars with ', quote when needed.
+    private static string Csv(string value)
+    {
+        var dangerous = value.StartsWith("=") || value.StartsWith("+") || value.StartsWith("-") || value.StartsWith("@") || value.StartsWith("\t");
+        var safe = dangerous ? "'" + value : value;
+        return safe.Contains('"') || safe.Contains(',') || safe.Contains('\n') || safe.Contains('\r')
+            ? "\"" + safe.Replace("\"", "\"\"") + "\""
+            : safe;
+    }
+
+    public override Task RefreshAsync()
+    {
+        _ = LoadAsync();
+        return Task.CompletedTask;
+    }
+
+    private sealed class AttemptDrawer : Window
+    {
+        public AttemptDrawer(Window owner, JsonElement attempt)
+        {
+            Owner = owner;
+            Title = "调用尝试详情";
+            Width = 560;
+            SizeToContent = SizeToContent.Height;
+            MaxHeight = 700;
+            WindowStartupLocation = WindowStartupLocation.CenterOwner;
+            ShowInTaskbar = false;
+            Background = (Brush)Application.Current.FindResource("Paper");
+            var scroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+            var panel = new StackPanel { Margin = new Thickness(24) };
+            panel.Children.Add(new TextBlock
+            {
+                Text = "调用尝试详情", FontFamily = (FontFamily)Application.Current.FindResource("Serif"),
+                FontSize = 20, FontWeight = FontWeights.SemiBold,
+            });
+            panel.Children.Add(new TextBlock { Text = "CALL ATTEMPT", Style = (Style)Application.Current.FindResource("SectionIndex"), Margin = new Thickness(0, 4, 0, 12) });
+            void Field(string label, string value)
+            {
+                panel.Children.Add(new TextBlock { Text = label, Style = (Style)Application.Current.FindResource("FieldLabel"), Margin = new Thickness(0, 10, 0, 2) });
+                panel.Children.Add(new TextBlock { Text = value.Length > 0 ? value : "—", TextWrapping = TextWrapping.Wrap, FontFamily = (FontFamily)Application.Current.FindResource("Mono"), FontSize = 12 });
+            }
+            var costMode = CostModeOf(attempt);
+            Field("成本语义", $"{Labels.Map(Labels.CostMode, costMode)} · {Labels.Map(Labels.CostModeHint, costMode)}");
+            Field("计量状态", Labels.Map(Labels.UsageStatus, attempt.Text("usage_status", "UNKNOWN")));
+            Field("供应商 / 模型", $"{attempt.Text("provider")} · {attempt.Text("model_id")}");
+            Field("通道", attempt.Text("channel"));
+            Field("上游 Request ID", attempt.Text("request_id", "未返回"));
+            Field("尝试序号", $"调度尝试 {attempt.Number("job_attempt")} · 第 {attempt.Number("dispatch_no")} 次派发" + (attempt.Flag("route_switched") ? " · 换路" : ""));
+            Field("输入 / 输出 Token", $"{NumberOrNull(attempt, "input_tokens")} / {NumberOrNull(attempt, "output_tokens")}");
+            Field("输出图片", attempt.Element("output_images").ValueKind == JsonValueKind.Number ? $"{attempt.Number("output_images")} 张" : "未知");
+            Field("耗时", $"{attempt.Number("duration_ms")} ms");
+            Field("结果", $"{Labels.Map(Labels.AttemptOutcome, attempt.Text("outcome"))}{(attempt.Text("error_code").Length > 0 ? $" · {attempt.Text("error_code")}" : "")}");
+            if (attempt.Text("error_message").Length > 0)
+                Field("错误信息", attempt.Text("error_message"));
+            panel.Children.Add(new TextBlock
+            {
+                Text = "数据来自模型调用账本（已脱敏）· 未知 ≠ 0，CLI 通道费用未知 ≠ 免费",
+                Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 14, 0, 0), TextWrapping = TextWrapping.Wrap,
+            });
+            scroll.Content = panel;
+            Content = scroll;
+            PreviewKeyDown += (_, e) => { if (e.Key == Key.Escape) Close(); };
+        }
+
+        private static string NumberOrNull(JsonElement element, string name) =>
+            element.Element(name).ValueKind == JsonValueKind.Number ? element.Number(name).ToString() : "未知";
+
+        private static string CostModeOf(JsonElement attempt)
+        {
+            if (attempt.Text("usage_source") == "OPERATOR_BILLED") return "BILLED";
+            if (attempt.Element("input_tokens").ValueKind == JsonValueKind.Number
+                || attempt.Element("output_tokens").ValueKind == JsonValueKind.Number
+                || attempt.Element("output_images").ValueKind == JsonValueKind.Number) return "USAGE_ONLY";
+            if (attempt.Element("usage").ValueKind is JsonValueKind.Null or JsonValueKind.Undefined
+                && attempt.Text("outcome") == "SUCCEEDED") return "UNAVAILABLE";
+            return "UNKNOWN";
+        }
+    }
+}

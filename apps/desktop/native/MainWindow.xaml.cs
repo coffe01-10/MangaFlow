@@ -3,12 +3,15 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Net.Http;
+using System.Windows.Media;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Threading;
+using MangaFlow.Native.Controls;
 using MangaFlow.Native.Services;
+using MangaFlow.Native.Views;
 using Microsoft.Win32;
 
 namespace MangaFlow.Native;
@@ -20,15 +23,16 @@ public partial class MainWindow : Window
     private readonly string dataRoot;
     private readonly Preferences preferences;
     private readonly CancellationTokenSource lifetime = new();
-    private readonly DispatcherTimer poll = new() { Interval = TimeSpan.FromSeconds(5) };
+    private readonly DispatcherTimer poll = new() { Interval = TimeSpan.FromSeconds(3) };
+    private readonly DispatcherTimer dockPoll = new() { Interval = TimeSpan.FromSeconds(3) };
+    private readonly ApiCache cache = new();
+    private readonly Dictionary<string, IWorkspaceView> viewCache = new();
     private ApiClient? api;
     private Task? connectionTask;
-    private CancellationTokenSource? viewRead, chapterRead;
-    private List<JobItem> jobs = [];
+    private CancellationTokenSource? viewRead;
+    private IWorkspaceView? activeView;
     private string page = "home";
-    private bool closing, closed, polling, syncingProjects, settingsLoaded, settingsSaving;
-    private int settingsVersion;
-    private string savedConcurrency = "", savedTimeout = "";
+    private bool closing, closed, polling, syncingProjects;
     private int pendingReads;
 
     public MainWindow(string repository, string dataRoot)
@@ -38,22 +42,18 @@ public partial class MainWindow : Window
         state = new WorkspaceState { DataPath = dataRoot };
         DataContext = state;
         ProjectSections.SelectedItem = state.Navigation.Current;
-        HomePage.CreateRequested += (_, _) => CreateProject(this, new());
-        HomePage.SettingsRequested += (_, _) => ShowSettings(this, new());
-        HomePage.ProjectRequested += project =>
-        {
-            if (Equals(ProjectList.SelectedItem, project)) _ = OpenProjectAsync(project);
-            else ProjectList.SelectedItem = project;
-        };
         backend = new NativeBackend(repository, dataRoot);
         preferences = Preferences.Load(dataRoot);
+        KeyValueStore.UseLocation(Path.Combine(dataRoot, "prefs.json"));
         var work = SystemParameters.WorkArea;
         Width = double.IsFinite(preferences.Width) ? Math.Clamp(preferences.Width, MinWidth, Math.Max(MinWidth, work.Width)) : 1320;
         Height = double.IsFinite(preferences.Height) ? Math.Clamp(preferences.Height, MinHeight, Math.Max(MinHeight, work.Height)) : 860;
         if (preferences.Maximized) WindowState = WindowState.Maximized;
+        state.DockHidden = preferences.DockHidden;
         ApplySidebar();
         Navigate("home");
         poll.Tick += Poll;
+        dockPoll.Tick += PollDock;
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
@@ -61,6 +61,7 @@ public partial class MainWindow : Window
         connectionTask = ConnectAsync();
         await connectionTask;
         poll.Start();
+        dockPoll.Start();
     }
 
     private async Task ConnectAsync()
@@ -84,8 +85,12 @@ public partial class MainWindow : Window
             {
                 var recent = state.Projects.FirstOrDefault(p => p.Id == preferences.RecentProject);
                 if (recent != null) ProjectList.SelectedItem = recent;
+                else await OpenProjectAsync(state.Projects.FirstOrDefault());
             }
-            else await LoadCurrentAsync();
+            else await OpenProjectAsync(state.CurrentProject ?? state.Projects.FirstOrDefault());
+            // OpenProjectAsync already activated the project view; only activate when
+            // no project opened (home stays on screen).
+            if (state.CurrentProject == null) await ActivateCurrentViewAsync();
             state.Status = "已就绪 · Ctrl+K 快速切换项目";
         }
         catch (OperationCanceledException) when (closing) { }
@@ -124,13 +129,12 @@ public partial class MainWindow : Window
         try
         {
             var selectedId = state.CurrentProject?.Id;
-            // Retain identical rows and selected identity; do not rebuild the sidebar on every poll.
             Sync(state.Projects, list, p => p.Id);
             if (selectedId != null)
             {
                 state.CurrentProject = state.Projects.FirstOrDefault(p => p.Id == selectedId);
                 ProjectList.SelectedItem = state.CurrentProject;
-                if (state.CurrentProject == null && page == "project") Navigate("home");
+                if (state.CurrentProject == null && page != "home") Navigate("home");
             }
         }
         finally { syncingProjects = false; }
@@ -158,295 +162,308 @@ public partial class MainWindow : Window
         while (target.Count > source.Count) target.RemoveAt(target.Count - 1);
     }
 
-    private void CancelReads()
-    {
-        viewRead?.Cancel();
-        chapterRead?.Cancel();
-    }
+    private void CancelReads() => viewRead?.Cancel();
 
-    private void Navigate(string destination)
+    // ============ Navigation ============
+    private static IWorkspaceView CreateView(string id) => id switch
     {
+        "home" => new HomeView(),
+        "settings-global" => new SettingsView(),
+        "usage" => new UsageView(),
+        "help" => new HelpView(),
+        "source" => new SourceView(),
+        "assets" => new AssetsView(),
+        "script" => new ScriptView(),
+        "storyboard" => new StoryboardView(),
+        "generate" => new GenerateView(),
+        "library" => new LibraryView(),
+        "jobs" => new JobsView(),
+        "workflow" => new WorkflowView(),
+        "project-settings" => new ProjectSettingsView(),
+        _ => throw new ArgumentException($"未知页面：{id}"),
+    };
+
+    private async Task NavigateAsync(string destination, bool confirmLeave = true)
+    {
+        destination = destination switch
+        {
+            // Project settings lives at WebSection "settings"; keep the internal id distinct
+            // so the global settings page and the project settings page stay separate views.
+            "settings" => "project-settings",
+            _ => destination,
+        };
+        if (page == destination) return;
+        if (confirmLeave && activeView != null && !await activeView.ConfirmLeaveAsync()) return;
+        activeView?.Deactivate();
         CancelReads();
         page = destination;
+        state.CurrentSection = destination;
         ApplySidebar();
-        HomePage.Visibility = destination == "home" ? Visibility.Visible : Visibility.Collapsed;
-        ProjectPage.Visibility = destination == "project" ? Visibility.Visible : Visibility.Collapsed;
-        SettingsPage.Visibility = destination == "settings" ? Visibility.Visible : Visibility.Collapsed;
-        HelpPage.Visibility = destination == "help" ? Visibility.Visible : Visibility.Collapsed;
-        state.Breadcrumb = destination switch { "project" => state.CurrentProject?.Name ?? "项目", "settings" => "系统设置", "help" => "使用帮助", _ => "漫画生产台" };
-        if (destination == "project") UpdateProjectPage();
-        var selected = (System.Windows.Media.Brush)FindResource("Selected");
-        HomeNav.Background = destination is "home" or "project" ? selected : System.Windows.Media.Brushes.Transparent;
-        SettingsNav.Background = destination == "settings" ? selected : System.Windows.Media.Brushes.Transparent;
-        HelpNav.Background = destination == "help" ? selected : System.Windows.Media.Brushes.Transparent;
+        var view = viewCache.TryGetValue(destination, out var cached)
+            ? cached
+            : viewCache[destination] = CreateView(destination);
+        if (view is HomeView home)
+        {
+            home.CreateRequested -= OnProjectCreated;
+            home.CreateRequested += OnProjectCreated;
+        }
+        ContentHost.Content = view as UIElement ?? throw new InvalidOperationException("视图不是 UI 元素");
+        await ActivateCurrentViewAsync();
     }
 
-    private async void ShowHome(object sender, RoutedEventArgs e) { Navigate("home"); await LoadCurrentAsync(); }
-    private async void ShowSettings(object sender, RoutedEventArgs e) { Navigate("settings"); await LoadCurrentAsync(); }
-    private void ShowHelp(object sender, RoutedEventArgs e) => Navigate("help");
-    private async void SelectProject(object sender, SelectionChangedEventArgs e)
+    private async void OnProjectCreated()
     {
-        if (syncingProjects || ProjectList.SelectedItem is not ProjectItem item) return;
-        await OpenProjectAsync(item);
-    }
-    private void OpenHomeProject(object sender, SelectionChangedEventArgs e)
-    {
-        if (e.AddedItems.Count > 0 && e.AddedItems[0] is ProjectItem item)
+        if (api == null || closing) return;
+        try
         {
-            if (Equals(ProjectList.SelectedItem, item)) _ = OpenProjectAsync(item);
-            else ProjectList.SelectedItem = item;
-            ((ListBox)sender).SelectedItem = null;
+            await LoadDashboardAsync(lifetime.Token);
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            state.Error = ErrorText(error);
         }
     }
 
-    private async Task OpenProjectAsync(ProjectItem item)
+    private void Navigate(string destination) => _ = NavigateAsync(destination);
+
+    private async Task ActivateCurrentViewAsync()
     {
+        if (api == null || !state.Connected) return;
+        var context = new WorkspaceContext
+        {
+            Api = api,
+            Cache = cache,
+            State = state,
+            Window = this,
+            Project = state.CurrentProject,
+            NavigateSection = async (section, query) =>
+            {
+                if (section == "settings-global") await NavigateAsync("settings-global");
+                else if (ProjectPages.FindBySection(section) is { } definition)
+                {
+                    // Home cards pass "project:{id}" to switch identity before opening the section.
+                    if (query.StartsWith("project:", StringComparison.Ordinal))
+                    {
+                        var id = query["project:".Length..];
+                        var target = state.Projects.FirstOrDefault(p => p.Id == id);
+                        if (target != null && state.CurrentProject?.Id != id)
+                        {
+                            ProjectList.SelectedItem = target;   // triggers OpenProjectAsync
+                            return;
+                        }
+                    }
+                    await EnsureProjectAsync();
+                    ProjectSections.SelectedItem = definition;
+                }
+            },
+            OpenDashboard = async () =>
+            {
+                state.CurrentProject = null;
+                preferences.RecentProject = null;
+                ProjectList.SelectedItem = null;
+                await NavigateAsync("home");
+                if (api != null) await LoadDashboardAsync(lifetime.Token);
+            },
+        };
+        if (ContentHost.Content is IWorkspaceView view)
+        {
+            activeView = view;
+            var request = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+            viewRead = request;
+            pendingReads++;
+            state.Busy = true;
+            try
+            {
+                view.Activate(context);
+                request.Token.ThrowIfCancellationRequested();
+                state.Error = "";
+            }
+            catch (Exception error) when (!request.IsCancellationRequested)
+            {
+                state.Error = ErrorText(error);
+            }
+            finally
+            {
+                if (viewRead == request) viewRead = null;
+                request.Dispose();
+                pendingReads--;
+                state.Busy = pendingReads > 0;
+            }
+        }
+        UpdateChrome();
+    }
+
+    private async Task EnsureProjectAsync()
+    {
+        if (state.CurrentProject != null || state.Projects.Count == 0) return;
+        if (page != "home") await NavigateAsync("home");
+        await OpenProjectAsync(state.Projects[0]);
+    }
+
+    private void UpdateChrome()
+    {
+        var project = state.CurrentProject;
+        state.Breadcrumb = page switch
+        {
+            "home" => "漫画生产台",
+            "settings-global" => "系统设置",
+            "usage" => "用量与成本看板",
+            "help" => "使用帮助",
+            _ => $"{project?.Name ?? "项目"} / {state.Navigation.Current.Title}",
+        };
+        TopTitle.Text = page switch
+        {
+            "home" => "漫画生产台",
+            "settings-global" => "系统设置",
+            "usage" => "用量看板",
+            "help" => "使用帮助",
+            _ => project?.Name ?? "项目工作区",
+        };
+        var selected = (Brush)FindResource("Selected");
+        HomeNav.Background = page == "home" ? selected : Brushes.Transparent;
+        UsageNav.Background = page == "usage" ? selected : Brushes.Transparent;
+        HelpNav.Background = page == "help" ? selected : Brushes.Transparent;
+        SettingsNav.Background = page == "settings-global" ? selected : Brushes.Transparent;
+    }
+
+    private async void ShowHome(object sender, RoutedEventArgs e) => await NavigateAsync("home");
+    private async void ShowSettings(object sender, RoutedEventArgs e) => await NavigateAsync("settings-global");
+    private async void ShowUsage(object sender, RoutedEventArgs e) => await NavigateAsync("usage");
+    private void ShowHelp(object sender, RoutedEventArgs e) => Navigate("help");
+
+    private async void SelectProject(object sender, SelectionChangedEventArgs e)
+    {
+        if (syncingProjects) return;
+        if (ProjectList.SelectedItem is not ProjectItem item) return;
+        await OpenProjectAsync(item);
+    }
+
+    private async Task OpenProjectAsync(ProjectItem? item)
+    {
+        if (item == null) return;
         state.CurrentProject = item;
         preferences.RecentProject = item.Id;
-        state.Chapters.Clear();
-        state.VisibleJobs.Clear();
-        jobs.Clear();
-        state.ReaderTitle = "选择一个章节";
-        state.ReaderText = "从左侧选择章节阅读原文，或导入新的故事。";
-        Navigate("project");
-        await LoadCurrentAsync();
+        state.CurrentConcurrency = 2;
+        if (page == "home" || page is "settings-global" or "usage" or "help")
+        {
+            ProjectSections.SelectedItem = state.Navigation.Current;
+            await NavigateAsync(state.Navigation.Current.WebSection);
+        }
+        else await ActivateCurrentViewAsync();
     }
 
     private async void SelectProjectSection(object sender, SelectionChangedEventArgs e)
     {
-        if (state == null || ProjectSections.SelectedItem is not ProjectPageDefinition selected ||
-            !state.Navigation.Select(selected)) return;
-        CancelReads();
-        UpdateProjectPage();
-        if (page != "project") return;
-        await LoadCurrentAsync();
-    }
-
-    private void UpdateProjectPage()
-    {
-        var selected = state.Navigation.Current;
-        SourcePane.Visibility = selected.Id == ProjectPageId.Source ? Visibility.Visible : Visibility.Collapsed;
-        JobsPane.Visibility = selected.Id == ProjectPageId.Jobs ? Visibility.Visible : Visibility.Collapsed;
-        PendingPage.Visibility = selected.IsConnected ? Visibility.Collapsed : Visibility.Visible;
-        if (page == "project")
-            state.Breadcrumb = $"{state.CurrentProject?.Name ?? "项目"} / {selected.Title}";
-    }
-
-    private async Task LoadCurrentAsync(bool background = false)
-    {
-        // A migration preview is local UI, not a successful backend refresh.
-        if (page == "project" && !state.Navigation.Current.IsConnected) return;
-        if (!state.Connected || api == null || closing) return;
-        viewRead?.Cancel();
-        var request = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
-        viewRead = request;
-        pendingReads++;
-        if (!background) state.Busy = true;
-        try
+        if (state == null || ProjectSections.SelectedItem is not ProjectPageDefinition selected) return;
+        var previous = state.Navigation.Current;
+        if (selected == previous) return;
+        // Confirm unsaved work BEFORE mutating navigation or the sidebar highlight;
+        // a refusal rolls the selection back so the page can still be entered later.
+        if (activeView != null && !await activeView.ConfirmLeaveAsync())
         {
-            var token = request.Token;
-            if (page == "home") await LoadDashboardAsync(token);
-            if (page == "project" && state.CurrentProject is { } project)
-            {
-                var section = state.Navigation.Current.ReadResource;
-                var rows = await api.SendAsync($"projects/{project.Id}/{section}", cancellation: token);
-                token.ThrowIfCancellationRequested();
-                if (section == "chapters")
-                {
-                    Sync(state.Chapters, rows.EnumerateArray().Select(ChapterItem.From).ToList(), c => c.Id);
-                    state.ChapterHint = state.Chapters.Count == 0 ? "还没有章节，导入一段故事开始。" : $"共 {state.Chapters.Count} 个章节";
-                }
-                else
-                {
-                    jobs = rows.EnumerateArray().Select(JobItem.From).ToList();
-                    ApplyJobFilter();
-                }
-            }
-            if (page == "settings" && !settingsLoaded)
-            {
-                var settings = await api.SendAsync("settings/runtime", cancellation: token);
-                token.ThrowIfCancellationRequested();
-                settingsVersion = settings.Number("version");
-                savedConcurrency = ConcurrencyInput.Text = settings.Text("default_concurrency");
-                savedTimeout = TimeoutInput.Text = settings.Text("job_timeout_seconds");
-                SettingsMessage.Text = "";
-                settingsLoaded = true;
-            }
-            request.Token.ThrowIfCancellationRequested();
-            state.Error = "";
-            state.Status = $"已更新 · {DateTime.Now:HH:mm:ss}";
+            ProjectSections.SelectedItem = previous;
+            return;
         }
-        catch (OperationCanceledException) when (request.IsCancellationRequested) { }
-        catch (Exception error) when (!request.IsCancellationRequested) { state.Error = ErrorText(error); state.Status = "刷新失败，保留已有内容"; }
-        catch (Exception) when (request.IsCancellationRequested) { }
-        finally
+        if (!state.Navigation.Select(selected)) return;
+        if (state.CurrentProject == null)
         {
-            if (viewRead == request) viewRead = null;
-            request.Dispose();
-            pendingReads--;
-            state.Busy = pendingReads > 0;
+            if (state.Projects.Count > 0) { ProjectList.SelectedItem = state.Projects[0]; return; }
+            await NavigateAsync("home", confirmLeave: false);
+            return;
         }
+        await NavigateAsync(selected.WebSection, confirmLeave: false);
     }
 
-    private async void ReadChapter(object sender, SelectionChangedEventArgs e)
-    {
-        if (api == null || e.AddedItems.Count == 0 || e.AddedItems[0] is not ChapterItem chapter) return;
-        chapterRead?.Cancel();
-        var request = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
-        chapterRead = request;
-        state.ReaderTitle = chapter.Title;
-        state.ReaderText = "正在读取原文…";
-        try
-        {
-            var revisions = await api.SendAsync($"chapters/{chapter.Id}/revisions", cancellation: request.Token);
-            request.Token.ThrowIfCancellationRequested();
-            var latest = revisions.EnumerateArray().OrderByDescending(r => r.Number("revision")).FirstOrDefault();
-            state.ReaderText = latest.ValueKind == JsonValueKind.Undefined ? "这个章节尚无原文。" : latest.Text("original_text");
-        }
-        catch (OperationCanceledException) when (request.IsCancellationRequested) { }
-        catch (Exception error) when (!request.IsCancellationRequested) { state.ReaderText = ErrorText(error); }
-        catch (Exception) when (request.IsCancellationRequested) { }
-        finally { if (chapterRead == request) chapterRead = null; request.Dispose(); }
-    }
-
-    private void FilterJobs(object sender, SelectionChangedEventArgs e) { if (state != null) ApplyJobFilter(); }
-    private void ApplyJobFilter()
-    {
-        var visible = jobs.Where(j => JobFilter.SelectedIndex switch
-        {
-            1 => j.CanCancel, 2 => j.State is "FAILED" or "NEEDS_REVIEW", _ => true,
-        }).ToList();
-        Sync(state.VisibleJobs, visible, j => j.Id);
-        state.JobHint = jobs.Count == 0 ? "暂无任务。" : $"最近 {jobs.Count} 项任务 · 当前显示 {visible.Count} 项 · 每 5 秒更新";
-    }
-
+    // ============ Polling ============
     private async void Poll(object? sender, EventArgs e)
     {
         if (polling || closing || !state.Connected || WindowState == WindowState.Minimized ||
-            connectionTask is { IsCompleted: false } || pendingReads > 0 || !IsActive) return;
+            connectionTask is { IsCompleted: false }) return;
         polling = true;
         try
         {
-            if (!backend.IsRunning)
+            if (backend.IsRunning) activeView?.PollTick();
+            else
             {
                 state.Connected = false;
                 state.ConnectionLabel = "本地服务已断开";
                 state.Error = "本地服务已退出。点击重新连接恢复工作，已有数据保留。";
-                return;
             }
-            if (page == "home" || (page == "project" && state.Navigation.Current.Id == ProjectPageId.Jobs)) await LoadCurrentAsync(true);
         }
         finally { polling = false; }
     }
 
+    private async void PollDock(object? sender, EventArgs e)
+    {
+        if (closing || !state.Connected || api == null || WindowState == WindowState.Minimized ||
+            state.CurrentProject == null) return;
+        try
+        {
+            var rows = await api.SendAsync($"projects/{state.CurrentProject.Id}/jobs?archived=false",
+                cancellation: lifetime.Token);
+            if (lifetime.Token.IsCancellationRequested) return;
+            var jobs = rows.EnumerateArray().Select(JobItem.From).ToList();
+            state.DockJob = jobs.FirstOrDefault();
+            state.WaitingJobs = jobs.Count(j => j.State is "WAITING" or "QUEUED");
+            state.FailedJobs = jobs.Count(j => j.State == "FAILED");
+        }
+        catch (Exception) when (!lifetime.Token.IsCancellationRequested) { }
+    }
+
+    private void OpenJobs(object sender, MouseButtonEventArgs e)
+    {
+        if (state.CurrentProject == null) return;
+        ProjectSections.SelectedItem = ProjectPages.Get(ProjectPageId.Jobs);
+    }
+
+    private void HideDock(object sender, RoutedEventArgs e)
+    {
+        state.DockHidden = true;
+        preferences.DockHidden = true;
+        e.Handled = true;
+    }
+
+    private void ShowDock(object sender, RoutedEventArgs e)
+    {
+        state.DockHidden = false;
+        preferences.DockHidden = false;
+    }
+
+    // ============ Global actions ============
     private async void Refresh(object sender, RoutedEventArgs e)
     {
-        if (page == "settings")
+        if (activeView != null) await activeView.RefreshAsync();
+        if (page == "home" && api != null)
         {
-            if (settingsSaving) return;
-            if (settingsLoaded && (ConcurrencyInput.Text != savedConcurrency || TimeoutInput.Text != savedTimeout) &&
-                MessageBox.Show(this, "放弃未保存的运行偏好并重新加载？", "刷新设置", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
-            settingsLoaded = false;
+            try { await LoadDashboardAsync(lifetime.Token); } catch (Exception) { }
         }
-        await LoadCurrentAsync();
     }
 
     private void CreateProject(object sender, RoutedEventArgs e)
     {
-        if (api == null || !state.Connected) return;
-        var client = api;
-        new EditorDialog(this, "新建项目", "给这个故事起个名字", false, async (name, _, _) =>
-        {
-            var created = await client.SendAsync("projects", HttpMethod.Post, new { name });
-            await LoadDashboardAsync(lifetime.Token);
-            ProjectList.SelectedItem = state.Projects.FirstOrDefault(p => p.Id == created.Text("id"));
-        }).ShowDialog();
-    }
-
-    private void ImportSource(object sender, RoutedEventArgs e)
-    {
-        if (api == null || state.CurrentProject == null || !state.Connected) return;
-        var project = state.CurrentProject;
-        var client = api;
-        new EditorDialog(this, "导入原作", $"导入到「{project.Name}」", true, async (title, text, type) =>
-        {
-            await client.SendAsync($"projects/{project.Id}/sources/import", HttpMethod.Post, new { title, text, source_type = type });
-            await LoadDashboardAsync(lifetime.Token);
-            await LoadCurrentAsync();
-        }).ShowDialog();
-    }
-
-    private async void CancelJob(object sender, RoutedEventArgs e) => await JobActionAsync((Button)sender, "cancel");
-    private async void RetryJob(object sender, RoutedEventArgs e)
-    {
-        if (MessageBox.Show(this, "重试可能再次调用模型并产生费用。确认重试这个任务？", "重试任务", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
-            await JobActionAsync((Button)sender, "retry");
-    }
-    private async Task JobActionAsync(Button button, string action)
-    {
-        if (api == null || button.Tag is not JobItem job || state.CurrentProject == null) return;
-        var projectId = state.CurrentProject.Id;
-        button.IsEnabled = false;
-        try
-        {
-            await api.SendAsync($"jobs/{job.Id}/{action}?project_id={projectId}", HttpMethod.Post);
-            await LoadCurrentAsync();
-        }
-        catch (Exception error) { MessageBox.Show(this, ErrorText(error), "操作未完成", MessageBoxButton.OK, MessageBoxImage.Warning); }
-        finally { button.IsEnabled = true; }
-    }
-
-    private async void SaveSettings(object sender, RoutedEventArgs e)
-    {
-        if (api == null || !settingsLoaded || settingsSaving) return;
-        if (!int.TryParse(ConcurrencyInput.Text, out var concurrency) || concurrency is < 1 or > 8 ||
-            !int.TryParse(TimeoutInput.Text, out var timeout) || timeout is < 30 or > 3600)
-        {
-            SettingsMessage.Text = "请输入有效范围内的整数：并发 1–8，超时 30–3600 秒。";
-            return;
-        }
-        settingsSaving = true;
-        ((Button)sender).IsEnabled = false;
-        try
-        {
-            var saved = await api.SendAsync("settings/runtime", HttpMethod.Patch,
-                new { version = settingsVersion, default_concurrency = concurrency, job_timeout_seconds = timeout });
-            settingsVersion = saved.Number("version");
-            savedConcurrency = concurrency.ToString();
-            savedTimeout = timeout.ToString();
-            SettingsMessage.Text = "运行偏好已保存。";
-        }
-        catch (Exception error) { SettingsMessage.Text = ErrorText(error); }
-        finally { settingsSaving = false; ((Button)sender).IsEnabled = state.Connected; }
+        Navigate("home");
+        if (viewCache.TryGetValue("home", out var view) && view is HomeView home) home.OpenCreationDrawer();
     }
 
     private void OpenPalette(object sender, RoutedEventArgs e)
     {
         var palette = new ProjectPalette(this, state.Projects.ToList());
         if (palette.ShowDialog() == true && palette.SelectedProject is { } project)
-        {
-            if (Equals(ProjectList.SelectedItem, project)) _ = OpenProjectAsync(project);
-            else ProjectList.SelectedItem = project;
-        }
+            ProjectList.SelectedItem = project;
     }
+
     private void ToggleSidebar(object sender, RoutedEventArgs e)
     {
         preferences.SidebarCollapsed = !preferences.SidebarCollapsed;
         ApplySidebar();
     }
+
     private void ApplySidebar()
     {
-        SidebarColumn.Width = new GridLength(page == "project" && !preferences.SidebarCollapsed ? 214 : 0);
-        SidebarToggle.Visibility = page == "project" ? Visibility.Visible : Visibility.Collapsed;
-        UpdateChromeWidth();
+        SidebarColumn.Width = new GridLength(preferences.SidebarCollapsed ? 0 : 236);
     }
-    private void OnWindowSizeChanged(object sender, SizeChangedEventArgs e) => UpdateChromeWidth();
-    private void UpdateChromeWidth()
-    {
-        if (RuntimeBadge == null) return;
-        RuntimeBadge.Visibility = (ActualWidth > 0 ? ActualWidth : Width) - SidebarColumn.Width.Value < 1120
-            ? Visibility.Collapsed : Visibility.Visible;
-    }
+
+    private void OnWindowSizeChanged(object sender, SizeChangedEventArgs e) { }
 
     private void OnKeyDown(object sender, KeyEventArgs e)
     {
@@ -482,7 +499,6 @@ public partial class MainWindow : Window
             {
                 var root = Path.Combine(dataRoot, "logs");
                 if (!Directory.Exists(root)) throw new IOException("暂无可导出的日志。");
-                if ((File.GetAttributes(root) & FileAttributes.ReparsePoint) != 0) throw new IOException("日志目录不能是链接。");
                 using var buffer = new MemoryStream();
                 using (var zip = new ZipArchive(buffer, ZipArchiveMode.Create, true))
                 {
@@ -512,32 +528,36 @@ public partial class MainWindow : Window
         if (closed) return;
         e.Cancel = true;
         if (closing) return;
-        if (settingsSaving) { state.Status = "正在保存运行偏好，请稍候再关闭。"; return; }
-        if (settingsLoaded && (ConcurrencyInput.Text != savedConcurrency || TimeoutInput.Text != savedTimeout) &&
-            MessageBox.Show(this, "运行偏好尚未保存，仍要退出？", "退出 MangaFlow", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+        if (activeView != null && !await activeView.ConfirmLeaveAsync()) return;
         closing = true;
         IsEnabled = false;
         poll.Stop();
-        lifetime.Cancel();
+        dockPoll.Stop();
         CancelReads();
+        // Persist the session shape first: if backend shutdown then fails, the retry
+        // path below still force-closes (the Job Object kills the child tree anyway),
+        // so preferences must not depend on a clean stop.
+        preferences.Width = RestoreBounds.Width;
+        preferences.Height = RestoreBounds.Height;
+        preferences.Maximized = WindowState == WindowState.Maximized;
+        preferences.DockHidden = state.DockHidden;
+        preferences.Save(dataRoot);
+        lifetime.Cancel();
         state.Status = "正在安全停止本地服务…";
         try
         {
             if (connectionTask != null) await connectionTask;
             await backend.StopAsync();
-            preferences.Width = RestoreBounds.Width;
-            preferences.Height = RestoreBounds.Height;
-            preferences.Maximized = WindowState == WindowState.Maximized;
-            preferences.Save(dataRoot);
-            api?.Dispose();
-            closed = true;
-            Close();
         }
         catch (Exception error)
         {
-            state.Error = "退出收尾未完成：" + error.Message + "。请再次关闭以重试。";
-            IsEnabled = true;
-            closing = false;
+            state.Error = "退出收尾未完全成功：" + error.Message + "。窗口将关闭；本地服务由系统作业对象一并回收。";
+        }
+        finally
+        {
+            api?.Dispose();
+            closed = true;
+            Close();
         }
     }
 }

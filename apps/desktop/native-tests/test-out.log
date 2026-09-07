@@ -1,0 +1,23 @@
+PASS: untrusted origins rejected
+PASS: exact versioned API path
+PASS: UTF-8 JSON survives response disposal
+PASS: 409 preserves actionable server detail
+PASS: interrupted mutation never automatically retries
+PASS: navigation cancellation reaches HTTP handler
+PASS: terminal actions disabled and progress clamped
+PASS: exhausted task cannot retry
+PASS: window preferences persist
+PASS: atomic save leaves no temporary files
+PASS: corrupt preferences fall back safely
+PASS: dashboard bounds visual count
+PASS: dashboard paging preserves remaining projects
+PASS: archive emptying last page returns to valid page
+PASS: cover lettering preserves Unicode graphemes
+PASS: project navigation covers Web routes in order
+PASS: reselecting a page does not rebuild it
+PASS: selecting a new page notifies once
+PASS: unknown page definition is rejected
+PASS: director rule stub compiles whitelisted commands and gates pixel intents
+PASS: view registry, offline navigation, cached instances, sidebar collapse, workspace layouts
+PASS: native XAML loads and lays out at 1320 / 940 px; review fixtures rendered
+Native client checks passed: 28; WPF navigation and visual checks passed

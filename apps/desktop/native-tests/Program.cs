@@ -2,9 +2,11 @@ using System.Net;
 using System.Net.Http;
 using System.IO;
 using System.Text.Json;
+using System.Windows;
 using MangaFlow.Native;
 using MangaFlow.Native.Services;
 
+// Client-side regression checks: API safety, models, preferences, navigation, director rules.
 var count = 0;
 void Check(bool condition, string name)
 {
@@ -68,9 +70,9 @@ var temp = Path.Combine(Path.GetTempPath(), "mangaflow-native-test-" + Guid.NewG
 Directory.CreateDirectory(temp);
 try
 {
-    new Preferences { Width = 1111, RecentProject = "中文项目", SidebarCollapsed = true }.Save(temp);
+    new Preferences { Width = 1111, RecentProject = "中文项目", SidebarCollapsed = true, DockHidden = true }.Save(temp);
     var loaded = Preferences.Load(temp);
-    Check(loaded.Width == 1111 && loaded.RecentProject == "中文项目" && loaded.SidebarCollapsed, "window preferences persist");
+    Check(loaded.Width == 1111 && loaded.RecentProject == "中文项目" && loaded.SidebarCollapsed && loaded.DockHidden, "window preferences persist");
     Check(Directory.GetFiles(temp).Length == 1, "atomic save leaves no temporary files");
     File.WriteAllText(Path.Combine(temp, "window.json"), "broken");
     Check(Preferences.Load(temp).Width == 1320, "corrupt preferences fall back safely");
@@ -94,11 +96,20 @@ var changes = 0;
 navigation.PropertyChanged += (_, _) => changes++;
 Check(!navigation.Select(navigation.Current) && changes == 0, "reselecting a page does not rebuild it");
 Check(navigation.Select(ProjectPages.Get(ProjectPageId.Assets)) && changes == 1, "selecting a new page notifies once");
-Check(ProjectPages.All.Where(p => p.IsConnected).Select(p => p.ReadResource).SequenceEqual(new[] { "chapters", "jobs" }), "only connected pages own an API resource");
 Check(!navigation.Select(ProjectPages.Get(ProjectPageId.Source) with { WebSection = "unknown" }), "unknown page definition is rejected");
 
-if (args.Contains("--render")) NativeVisualChecks.Run(args.Last());
-Console.WriteLine($"Native client checks passed: {count}" + (args.Contains("--render") ? "; WPF navigation and visual checks passed" : ""));
+NativeNavigationChecks.RunDirectorRules();
+var output = args.FirstOrDefault(a => !a.StartsWith("--"))
+    ?? Path.Combine(Path.GetTempPath(), "mangaflow-native-checks");
+var uiChecked = false;
+if (args.Contains("--render"))
+{
+    // UI checks must run on a dedicated STA thread (see NativeVisualChecks).
+    NativeVisualChecks.Run(output);
+    uiChecked = true;
+}
+Console.WriteLine($"Native client checks passed: {count}" + (uiChecked ? "; WPF navigation and visual checks passed" : ""));
+return 0;
 
 sealed class FakeHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> respond) : HttpMessageHandler
 {

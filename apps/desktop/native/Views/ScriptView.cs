@@ -1,0 +1,688 @@
+using System.Net.Http;
+using System.Text.Json;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Media;
+using MangaFlow.Native.Controls;
+using MangaFlow.Native.Services;
+
+namespace MangaFlow.Native.Views;
+
+/// <summary>NUI-3: screenplay — coverage header, scene/beat editing, scene-asset binding, wardrobe.</summary>
+public sealed class ScriptView : WorkspaceView
+{
+    private readonly ScrollViewer scroller = new() { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+    private readonly StackPanel body = new();
+    private readonly ComboBox chapterSelector = Selector("章节选择", 260);
+    private readonly TextBlock sceneCount = new() { Style = (Style)Application.Current.FindResource("Caption"), VerticalAlignment = VerticalAlignment.Center };
+    private List<ChapterItem> chapters = [];
+    private JsonElement script;
+    private string chapterId = "";
+    private readonly Dictionary<string, List<CharacterItem>> chapterCharacters = [];
+    private List<OutfitItem> outfits = [];
+    private List<SceneAssetItem> sceneAssets = [];
+    private readonly TextBlock notice = new() { Style = (Style)Application.Current.FindResource("Caption"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 12) };
+    private bool loadingScript;
+
+    public ScriptView()
+    {
+        var panel = new StackPanel { Margin = new Thickness(4, 0, 24, 28) };
+        var header = new Border { Style = (Style)Application.Current.FindResource("CanvasHeader") };
+        var headerGrid = new Grid();
+        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var heading = new StackPanel();
+        heading.Children.Add(new TextBlock { Text = "SCREENPLAY", Style = (Style)Application.Current.FindResource("SectionIndex") });
+        heading.Children.Add(new TextBlock
+        {
+            Text = "漫画剧本 · 先写场景与情节拍，再进入分页",
+            FontFamily = (FontFamily)Application.Current.FindResource("Serif"),
+            FontSize = 21, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 5, 0, 0),
+        });
+        headerGrid.Children.Add(heading);
+        var stage = new StackPanel { Orientation = Orientation.Horizontal };
+        sceneCount.Margin = new Thickness(14, 0, 0, 0);
+        stage.Children.Add(chapterSelector);
+        stage.Children.Add(sceneCount);
+        Grid.SetColumn(stage, 1);
+        stage.VerticalAlignment = VerticalAlignment.Bottom;
+        headerGrid.Children.Add(stage);
+        header.Child = headerGrid;
+        panel.Children.Add(header);
+        chapterSelector.SelectionChanged += async (_, _) =>
+        {
+            if (chapterSelector.SelectedItem is ComboBoxItem { Tag: string id } && id != chapterId)
+            {
+                if (!await ConfirmLeaveAsync()) { SelectChapter(chapterId); return; }
+                chapterId = id;
+                await LoadScriptAsync();
+            }
+        };
+        panel.Children.Add(notice);
+        panel.Children.Add(body);
+        scroller.Content = panel;
+        Content = scroller;
+    }
+
+    private void SelectChapter(string id)
+    {
+        foreach (var item in chapterSelector.Items.OfType<ComboBoxItem>())
+            if ((string?)item.Tag == id) chapterSelector.SelectedItem = item;
+    }
+
+    public override async void Activate(WorkspaceContext context)
+    {
+        base.Activate(context);
+        try
+        {
+            var rows = await Api.SendAsync($"projects/{ProjectId}/chapters", cancellation: lifetime.Token);
+            if (lifetime.Token.IsCancellationRequested) return;
+            chapters = rows.EnumerateArray().Select(ChapterItem.From).ToList();
+            chapterSelector.Items.Clear();
+            foreach (var chapter in chapters)
+                chapterSelector.Items.Add(new ComboBoxItem { Tag = chapter.Id, Content = $"{chapter.Ordinal}. {chapter.Title}" });
+            if (chapters.Count > 0)
+            {
+                var selected = chapters.FirstOrDefault(c => c.Id == chapterId) ?? chapters[0];
+                SelectChapter(selected.Id);
+                chapterId = selected.Id;
+                await LoadScriptAsync();
+            }
+            else
+            {
+                body.Children.Clear();
+                body.Children.Add(EmptyState("请先导入原作", "在“原作与修订”页导入章节后，才能生成漫画剧本。"));
+            }
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            body.Children.Clear();
+            var host = Context!;
+            body.Children.Add(ErrorCard(error.Message, () => { Activate(host); return Task.CompletedTask; }));
+        }
+    }
+
+    private async Task LoadScriptAsync()
+    {
+        if (chapterId.Length == 0) return;
+        loadingScript = true;
+        body.Children.Clear();
+        var spinner = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 0) };
+        spinner.Children.Add(new Spinner { Size = 18 });
+        var hint = Kit.Caption("正在读取剧本…");
+        hint.Margin = new Thickness(10, 0, 0, 0);
+        spinner.Children.Add(hint);
+        body.Children.Add(spinner);
+        try
+        {
+            var loadScript = Api.SendAsync($"chapters/{chapterId}/script", cancellation: lifetime.Token);
+            var loadCharacters = Api.SendAsync($"projects/{ProjectId}/characters", cancellation: lifetime.Token);
+            var loadOutfits = Api.SendAsync($"projects/{ProjectId}/outfits", cancellation: lifetime.Token);
+            var loadSceneAssets = Api.SendAsync(QueryBuilder.Build($"projects/{ProjectId}/scene-assets", ("limit", 200)), cancellation: lifetime.Token);
+            await Task.WhenAll(loadScript, loadCharacters, loadOutfits, loadSceneAssets);
+            if (lifetime.Token.IsCancellationRequested) return;
+            script = await loadScript;
+            chapterCharacters[chapterId] = (await loadCharacters).EnumerateArray().Select(CharacterItem.From).ToList();
+            outfits = (await loadOutfits).EnumerateArray().Select(OutfitItem.From).ToList();
+            sceneAssets = (await loadSceneAssets).EnumerateArray().Select(SceneAssetItem.From).ToList();
+            Render();
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            body.Children.Clear();
+            body.Children.Add(ErrorCard($"剧本读取失败：{error.Message}", async () => await LoadScriptAsync()));
+        }
+        finally { loadingScript = false; }
+    }
+
+    private static Border EmptyState(string title, string description)
+    {
+        var stack = new StackPanel();
+        stack.Children.Add(new TextBlock { Text = title, FontFamily = (FontFamily)Application.Current.FindResource("Serif"), FontSize = 18, FontWeight = FontWeights.Bold });
+        stack.Children.Add(Kit.Caption(description));
+        return new Border { Style = (Style)Application.Current.FindResource("Card"), Padding = new Thickness(26), Child = stack };
+    }
+
+    private static Border ErrorCard(string message, Func<Task> retry)
+    {
+        var stack = new StackPanel();
+        stack.Children.Add(new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap });
+        var button = Kit.Act("重试", async (_, _) => await retry(), "Outline");
+        button.Margin = new Thickness(0, 10, 0, 0);
+        button.HorizontalAlignment = HorizontalAlignment.Left;
+        stack.Children.Add(button);
+        return new Border { Style = (Style)Application.Current.FindResource("Card"), Padding = new Thickness(20), Child = stack };
+    }
+
+    private void Render()
+    {
+        body.Children.Clear();
+        notice.Text = "";
+        var status = script.Text("status", "NOT_CREATED");
+        var coverage = (int)Math.Round(script.Decimal("coverage_ratio") * 100);
+        var scenes = script.Array("scenes");
+        sceneCount.Text = $"{scenes.Count} 个场景";
+
+        if (scenes.Count == 0)
+        {
+            var chapter = chapters.FirstOrDefault(c => c.Id == chapterId);
+            var hasPages = chapter is { Pages: > 0 };
+            var stack = new StackPanel();
+            stack.Children.Add(new TextBlock { Text = "本章还没有漫画剧本", FontFamily = (FontFamily)Application.Current.FindResource("Serif"), FontSize = 18, FontWeight = FontWeights.Bold });
+            if (hasPages)
+            {
+                stack.Children.Add(Kit.Caption("已有分页时不能重新生成剧本。请先删除分页，再生成剧本并重新计算分页。"));
+                var remove = Kit.Act("删除分页", async (_, _) => await DeleteScript(), "DangerButton");
+                remove.Margin = new Thickness(0, 14, 0, 0);
+                remove.HorizontalAlignment = HorizontalAlignment.Left;
+                stack.Children.Add(remove);
+            }
+            else
+            {
+                stack.Children.Add(Kit.Caption("点击“生成漫画剧本”，默认文字模型会逐段补充可视化动作、场景、对白、旁白、情绪和翻页悬念，不会压缩原文。"));
+                var generate = Kit.Act("生成漫画剧本", async (_, _) => await ParseChapter(), "InkButton");
+                generate.Margin = new Thickness(0, 14, 0, 0);
+                generate.HorizontalAlignment = HorizontalAlignment.Left;
+                stack.Children.Add(generate);
+            }
+            body.Children.Add(new Border { Style = (Style)Application.Current.FindResource("Card"), Padding = new Thickness(26), Child = stack });
+            return;
+        }
+
+        // Coverage header + delete script.
+        var coverageBar = new DockPanel { Margin = new Thickness(0, 0, 0, 14) };
+        var removeScript = Kit.Act("删除剧本", async (_, _) => await DeleteScript(), "DangerButton");
+        DockPanel.SetDock(removeScript, Dock.Right);
+        coverageBar.Children.Add(removeScript);
+        var coverageStack = new StackPanel { Orientation = Orientation.Horizontal };
+        coverageStack.Children.Add(new TextBlock { Text = $"原文覆盖 {coverage}%", FontWeight = FontWeights.Bold });
+        var fragments = script.Array("source_segments");
+        var meta = Kit.Caption($" · {fragments.Count} 个原文片段 · {Labels.Map(Labels.ScriptStatus, status)}");
+        meta.Margin = new Thickness(10, 0, 0, 0);
+        coverageStack.Children.Add(meta);
+        coverageBar.Children.Add(coverageStack);
+        body.Children.Add(coverageBar);
+
+        body.Children.Add(new Border
+        {
+            Background = (Brush)Application.Current.FindResource("WarningBg"),
+            Padding = new Thickness(14, 9, 14, 9),
+            Margin = new Thickness(0, 0, 0, 16),
+            Child = new TextBlock { Text = "导演修订模式 / 场景与情节拍可直接修改；来源区间保持只读，避免剧情丢失。", FontSize = 12.5 },
+        });
+
+        var sceneIndex = 0;
+        foreach (var scene in scenes)
+        {
+            sceneIndex++;
+            body.Children.Add(new SceneSection(this, scene, sceneIndex, chapterCharacters.GetValueOrDefault(chapterId, []), outfits, sceneAssets));
+        }
+    }
+
+    internal async Task LoadScene(SceneSection section, JsonElement scene, Dictionary<string, object?> changes)
+    {
+        try
+        {
+            changes["version"] = scene.Number("version");
+            await Api.SendAsync($"scenes/{scene.Text("id")}", HttpMethod.Patch, changes, cancellation: lifetime.Token);
+            section.ExitEdit();
+            notice.Text = "场景修改已保存；相关页面已标记为待复查。";
+            Cache.Invalidate("script:" + chapterId, "pages:" + chapterId);
+            await LoadScriptAsync();
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            MessageBox.Show(Host, error.Message, "保存未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    internal async Task SaveBeat(BeatRow beat, JsonElement beatValue, Dictionary<string, object?> changes)
+    {
+        try
+        {
+            changes["version"] = beatValue.Number("version");
+            await Api.SendAsync($"beats/{beatValue.Text("id")}", HttpMethod.Patch, changes, cancellation: lifetime.Token);
+            beat.ExitEdit();
+            notice.Text = "情节拍修改已保存；分镜与历史候选保留，相关页面需复查。";
+            Cache.Invalidate("script:" + chapterId, "pages:" + chapterId);
+            await LoadScriptAsync();
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            MessageBox.Show(Host, error.Message, "保存未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    internal async Task SaveOutfitAssignment(JsonElement scene, string characterId, string? outfitId)
+    {
+        try
+        {
+            var assignments = new Dictionary<string, string>();
+            foreach (var pair in scene.Array("outfit_assignments"))
+                assignments[pair.Text("character_id")] = pair.Text("outfit_id");
+            if (outfitId == null) assignments.Remove(characterId);
+            else assignments[characterId] = outfitId;
+            await Api.SendAsync($"scenes/{scene.Text("id")}/outfits", HttpMethod.Patch,
+                new { assignments }, cancellation: lifetime.Token);
+            notice.Text = "本场服装指定已保存；相关页面会标记为待复查。";
+            Cache.Invalidate("script:" + chapterId, "pages:" + chapterId);
+            await LoadScriptAsync();
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            MessageBox.Show(Host, error.Message, "服装指定未保存", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    internal async Task BindSceneAsset(JsonElement scene, string? assetId, string? variantId)
+    {
+        try
+        {
+            await Api.SendAsync($"scenes/{scene.Text("id")}/bind-asset", HttpMethod.Patch,
+                new { scene_asset_id = assetId, scene_asset_variant_id = variantId }, cancellation: lifetime.Token);
+            Cache.Invalidate("script:" + chapterId, "scene-assets:" + ProjectId);
+            await LoadScriptAsync();
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            MessageBox.Show(Host, "绑定场景资产失败：" + error.Message, "绑定未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private async Task DeleteScript()
+    {
+        if (MessageBox.Show(Host, "删除本章漫画剧本？分页、分镜和页面候选会同时从工作区移除；原文、素材文件与任务记录保留，之后可重新生成。",
+            "删除剧本", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        try
+        {
+            await Api.SendOptionalAsync($"chapters/{chapterId}/script", HttpMethod.Delete, cancellation: lifetime.Token);
+            Cache.Invalidate("script:" + chapterId, "pages:" + chapterId, "chapters:" + ProjectId);
+            await LoadScriptAsync();
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            MessageBox.Show(Host, error.Message, "删除未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private async Task ParseChapter()
+    {
+        try
+        {
+            await Api.SendAsync($"chapters/{chapterId}/parse", HttpMethod.Post, cancellation: lifetime.Token);
+            State.Status = "剧本解析任务已创建";
+            await Context!.NavigateSection("jobs", "");
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            MessageBox.Show(Host, error.Message, "生成剧本未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    public override void PollTick()
+    {
+        // While a SOURCE_PARSE job is active the script keeps converging; refetch quietly.
+        if (!loadingScript && chapterId.Length > 0 && script.ValueKind == JsonValueKind.Undefined)
+            _ = LoadScriptAsync();
+    }
+
+    public override async Task<bool> ConfirmLeaveAsync()
+    {
+        var sceneEditing = body.Children.OfType<SceneSection>().Any(s => s.IsEditing);
+        var beatEditing = body.Children.OfType<SceneSection>().SelectMany(s => s.BeatRows).Any(b => b.IsEditing);
+        if (sceneEditing || beatEditing)
+        {
+            var result = MessageBox.Show(Host, "当前场景 / 情节拍的修改尚未保存，切换章节会丢弃这些修改。仍要切换吗？",
+                "离开确认", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            return result == MessageBoxResult.Yes;
+        }
+        return await Task.FromResult(true);
+    }
+
+    public override Task RefreshAsync()
+    {
+        _ = LoadScriptAsync();
+        return Task.CompletedTask;
+    }
+}
+
+/// <summary>One scene card: header, context line, asset binding, wardrobe, beats.</summary>
+internal sealed class SceneSection : Border
+{
+    private readonly ScriptView view;
+    private JsonElement scene;
+    private readonly int index;
+    private readonly List<CharacterItem> characters;
+    private readonly List<OutfitItem> outfits;
+    private readonly List<SceneAssetItem> sceneAssets;
+    private readonly StackPanel content = new();
+    private bool editing;
+    private readonly List<BeatRow> beatRows = [];
+
+    public bool IsEditing => editing;
+    internal IEnumerable<BeatRow> BeatRows => beatRows;
+
+    public SceneSection(ScriptView view, JsonElement scene, int index,
+        List<CharacterItem> characters, List<OutfitItem> outfits, List<SceneAssetItem> sceneAssets)
+    {
+        this.view = view;
+        this.scene = scene;
+        this.index = index;
+        this.characters = characters;
+        this.outfits = outfits;
+        this.sceneAssets = sceneAssets;
+        Style = (Style)Application.Current.FindResource("Card");
+        Padding = new Thickness(20);
+        Margin = new Thickness(0, 0, 0, 14);
+        Child = content;
+        Render();
+    }
+
+    public void ExitEdit() { editing = false; }
+
+    private void Render()
+    {
+        content.Children.Clear();
+        var header = new DockPanel { Margin = new Thickness(0, 0, 0, 10) };
+        var editButton = Kit.Act(editing ? "退出编辑" : "编辑场景", (_, _) => { editing = !editing; Render(); }, editing ? "Ghost" : "Compact");
+        DockPanel.SetDock(editButton, Dock.Right);
+        header.Children.Add(editButton);
+        var title = new StackPanel();
+        title.Children.Add(new TextBlock { Text = $"SCENE {index:D2} · {scene.Text("location", "未指定地点")} · {scene.Text("time_label", "时间未标注")}", Style = (Style)Application.Current.FindResource("SectionIndex") });
+        title.Children.Add(new TextBlock { Text = scene.Text("purpose"), Style = (Style)Application.Current.FindResource("Caption"), Margin = new Thickness(0, 5, 0, 0) });
+        header.Children.Add(title);
+        content.Children.Add(header);
+
+        if (editing)
+            content.Children.Add(BuildEditForm());
+        else
+        {
+            var emotion = scene.Text("emotional_arc");
+            var weather = scene.Text("weather");
+            if (emotion.Length > 0 || weather.Length > 0)
+                content.Children.Add(new TextBlock
+                {
+                    Text = $"情绪线：{emotion} · {weather}",
+                    FontStyle = FontStyles.Italic, FontSize = 13, Margin = new Thickness(0, 0, 0, 10),
+                });
+        }
+
+        content.Children.Add(BuildAssetBinding());
+        var cast = VisibleCast();
+        if (cast.Count > 0) content.Children.Add(BuildWardrobe(cast));
+        content.Children.Add(new TextBlock { Text = "情节拍", Style = (Style)Application.Current.FindResource("SectionIndex"), Margin = new Thickness(0, 12, 0, 6) });
+        beatRows.Clear();
+        var beatIndex = 0;
+        foreach (var beat in scene.Array("beats"))
+        {
+            var row = new BeatRow(view, beat, ++beatIndex, characters, outfits);
+            beatRows.Add(row);
+            content.Children.Add(row);
+        }
+        if (scene.Array("beats").Count == 0)
+            content.Children.Add(Kit.Caption("本场景还没有情节拍。"));
+    }
+
+    private List<CharacterItem> VisibleCast() =>
+        characters.Where(c => scene.Array("beats").Any(b => b.Text("speaker_name").Contains(c.PrimaryName, StringComparison.Ordinal)
+            || c.Aliases.Any(a => b.Text("speaker_name").Contains(a, StringComparison.Ordinal)))).ToList();
+
+    private FrameworkElement BuildEditForm()
+    {
+        var location = new TextBox { Text = scene.Text("location"), Margin = new Thickness(0, 0, 0, 10) };
+        var time = new TextBox { Text = scene.Text("time_label"), Margin = new Thickness(0, 0, 0, 10) };
+        var weather = new TextBox { Text = scene.Text("weather"), Margin = new Thickness(0, 0, 0, 10) };
+        var purpose = new TextBox { Text = scene.Text("purpose"), AcceptsReturn = true, MinHeight = 64, Margin = new Thickness(0, 0, 0, 10) };
+        var emotionalArc = new TextBox { Text = scene.Text("emotional_arc"), AcceptsReturn = true, MinHeight = 64, Margin = new Thickness(0, 0, 0, 12) };
+        var panel = new StackPanel();
+        panel.Children.Add(SceneLabel("地点（历史兜底，绑定资产时不会清空）"));
+        panel.Children.Add(location);
+        panel.Children.Add(SceneLabel("时间"));
+        panel.Children.Add(time);
+        panel.Children.Add(SceneLabel("天气 / 氛围"));
+        panel.Children.Add(weather);
+        panel.Children.Add(SceneLabel("本场目的"));
+        panel.Children.Add(purpose);
+        panel.Children.Add(SceneLabel("情绪弧线"));
+        panel.Children.Add(emotionalArc);
+        var actions = new StackPanel { Orientation = Orientation.Horizontal };
+        var cancel = Kit.Act("取消", (_, _) => { editing = false; Render(); }, "Ghost");
+        cancel.Margin = new Thickness(0, 0, 10, 0);
+        actions.Children.Add(cancel);
+        var save = Kit.Act("保存场景", async (_, _) =>
+        {
+            await view.LoadScene(this, scene, new Dictionary<string, object?>
+            {
+                ["location"] = location.Text, ["time_label"] = time.Text, ["weather"] = weather.Text,
+                ["purpose"] = purpose.Text, ["emotional_arc"] = emotionalArc.Text,
+            });
+        }, "InkButton");
+        actions.Children.Add(save);
+        panel.Children.Add(actions);
+        return panel;
+    }
+
+    private static TextBlock SceneLabel(string text) => new()
+    { Text = text, Style = (Style)Application.Current.FindResource("FieldLabel"), Margin = new Thickness(0, 0, 0, 6) };
+
+    private FrameworkElement BuildAssetBinding()
+    {
+        var panel = new StackPanel { Margin = new Thickness(0, 4, 0, 10) };
+        panel.Children.Add(new TextBlock { Text = "本场场景资产", Style = (Style)Application.Current.FindResource("SectionIndex"), Margin = new Thickness(0, 0, 0, 4) });
+        panel.Children.Add(Kit.Caption("地点文本会保留作历史兜底，绑定资产时不会被清空。"));
+        var assetSelector = new ComboBox { Width = 320, Margin = new Thickness(0, 8, 0, 0) };
+        assetSelector.Items.Add(new ComboBoxItem { Tag = "", Content = "不绑定场景资产" });
+        var currentAssetId = scene.Text("scene_asset_id");
+        var currentVariantId = scene.Text("scene_asset_variant_id");
+        foreach (var asset in sceneAssets.Where(a => !a.Deleted))
+        {
+            var item = new ComboBoxItem { Tag = asset.Id, Content = $"{asset.Name} · {asset.InteriorLabel}" };
+            assetSelector.Items.Add(item);
+            if (asset.Id == currentAssetId) assetSelector.SelectedItem = item;
+        }
+        if (assetSelector.SelectedIndex == -1) assetSelector.SelectedIndex = 0;
+        var variantSelector = new ComboBox { Width = 320, Margin = new Thickness(10, 0, 0, 0) };
+        void RefreshVariants()
+        {
+            variantSelector.Items.Clear();
+            variantSelector.Items.Add(new ComboBoxItem { Tag = "", Content = "使用资产默认变体" });
+            var selectedAsset = (assetSelector.SelectedItem as ComboBoxItem)?.Tag as string;
+            var asset = sceneAssets.FirstOrDefault(a => a.Id == selectedAsset);
+            if (asset != null)
+                foreach (var variant in asset.Variants)
+                {
+                    var name = variant.Text("name");
+                    var item = new ComboBoxItem { Tag = variant.Text("id"), Content = variant.Flag("is_canonical") ? $"{name}（默认）" : name };
+                    variantSelector.Items.Add(item);
+                    if (variant.Text("id") == currentVariantId) variantSelector.SelectedItem = item;
+                }
+            if (variantSelector.SelectedIndex == -1) variantSelector.SelectedIndex = 0;
+            variantSelector.IsEnabled = asset != null;
+        }
+        RefreshVariants();
+        var row = new StackPanel { Orientation = Orientation.Horizontal };
+        row.Children.Add(assetSelector);
+        row.Children.Add(variantSelector);
+        panel.Children.Add(row);
+        var bind = Kit.Act("保存绑定", async (_, _) =>
+        {
+            var assetId = (assetSelector.SelectedItem as ComboBoxItem)?.Tag as string;
+            var variantId = assetId.Length > 0 ? (variantSelector.SelectedItem as ComboBoxItem)?.Tag as string : null;
+            await view.BindSceneAsset(scene, assetId.Length > 0 ? assetId : null, variantId);
+        }, "Compact");
+        bind.Margin = new Thickness(0, 10, 0, 0);
+        panel.Children.Add(bind);
+        return panel;
+    }
+
+    private FrameworkElement BuildWardrobe(List<CharacterItem> cast)
+    {
+        var panel = new StackPanel { Margin = new Thickness(0, 4, 0, 4) };
+        panel.Children.Add(new TextBlock { Text = "本场服装指定", Style = (Style)Application.Current.FindResource("SectionIndex"), Margin = new Thickness(0, 0, 0, 6) });
+        var selectors = new List<(string CharacterId, ComboBox Selector)>();
+        foreach (var character in cast)
+        {
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 4) };
+            var name = new TextBlock { Text = character.PrimaryName, VerticalAlignment = VerticalAlignment.Center, FontWeight = FontWeights.Bold, Width = 110, TextTrimming = TextTrimming.CharacterEllipsis };
+            row.Children.Add(name);
+            var selector = new ComboBox { Width = 260 };
+            selector.Items.Add(new ComboBoxItem { Tag = "", Content = "未指定" });
+            var assigned = scene.Array("outfit_assignments").FirstOrDefault(a => a.Text("character_id") == character.Id).Text("outfit_id");
+            foreach (var outfit in outfits.Where(o => o.CharacterId == character.Id))
+            {
+                var item = new ComboBoxItem { Tag = outfit.Id, Content = outfit.Name };
+                selector.Items.Add(item);
+                if (outfit.Id == assigned) selector.SelectedItem = item;
+            }
+            if (selector.SelectedIndex == -1) selector.SelectedIndex = 0;
+            row.Children.Add(selector);
+            selectors.Add((character.Id, selector));
+            panel.Children.Add(row);
+        }
+        var save = Kit.Act("保存服装指定", async (_, _) =>
+        {
+            var dirty = selectors.Where(s =>
+                ((s.Selector.SelectedItem as ComboBoxItem)?.Tag as string ?? "")
+                != scene.Array("outfit_assignments").FirstOrDefault(a => a.Text("character_id") == s.CharacterId).Text("outfit_id"));
+            foreach (var (characterId, selector) in dirty)
+            {
+                var outfitId = (selector.SelectedItem as ComboBoxItem)?.Tag as string;
+                await view.SaveOutfitAssignment(scene, characterId, outfitId.Length > 0 ? outfitId : null);
+            }
+        }, "Compact");
+        save.Margin = new Thickness(0, 8, 0, 0);
+        panel.Children.Add(save);
+        return panel;
+    }
+}
+
+/// <summary>One beat: read view or inline edit form.</summary>
+internal sealed class BeatRow : Border
+{
+    private readonly ScriptView view;
+    private readonly JsonElement beat;
+    private readonly int index;
+    private readonly List<CharacterItem> characters;
+    private readonly List<OutfitItem> outfits;
+    private bool editing;
+
+    public bool IsEditing => editing;
+
+    public BeatRow(ScriptView view, JsonElement beat, int index, List<CharacterItem> characters, List<OutfitItem> outfits)
+    {
+        this.view = view;
+        this.beat = beat;
+        this.index = index;
+        this.characters = characters;
+        this.outfits = outfits;
+        BorderBrush = (Brush)Application.Current.FindResource("Line");
+        BorderThickness = new Thickness(0, 0, 0, 1);
+        Padding = new Thickness(0, 10, 0, 10);
+        Render();
+    }
+
+    public void ExitEdit() { editing = false; }
+
+    private void Render()
+    {
+        Child = editing ? BuildEditForm() : BuildReadView();
+    }
+
+    private FrameworkElement BuildReadView()
+    {
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var number = new TextBlock { Text = index.ToString("D2"), Style = (Style)Application.Current.FindResource("SectionIndex"), Margin = new Thickness(0, 0, 14, 0), VerticalAlignment = VerticalAlignment.Top };
+        grid.Children.Add(number);
+        var content = new StackPanel();
+        content.Children.Add(new TextBlock { Text = beat.Text("action"), FontWeight = FontWeights.Bold, FontSize = 13.5, TextWrapping = TextWrapping.Wrap });
+        var speaker = beat.Text("speaker_name");
+        var dialogue = beat.Text("dialogue");
+        if (dialogue.Length > 0)
+        {
+            var line = new TextBlock { Text = speaker.Length > 0 ? $"{speaker}：{dialogue}" : dialogue, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 5, 0, 0) };
+            content.Children.Add(line);
+        }
+        var narration = beat.Text("narration");
+        if (narration.Length > 0)
+            content.Children.Add(new TextBlock { Text = $"旁白：{narration}", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 5, 0, 0), Foreground = (Brush)Application.Current.FindResource("Muted") });
+        var emotion = beat.Text("emotion");
+        var segments = beat.Array("source_segments");
+        content.Children.Add(new TextBlock
+        {
+            Text = $"{emotion} · 来源 {segments.Count} 段 · V{beat.Number("version")}",
+            Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 6, 0, 0),
+        });
+        grid.Children.Add(content);
+        var edit = Kit.Act("编辑", (_, _) => { editing = true; Render(); }, "Compact");
+        edit.VerticalAlignment = VerticalAlignment.Top;
+        Grid.SetColumn(edit, 2);
+        grid.Children.Add(edit);
+        return grid;
+    }
+
+    private FrameworkElement BuildEditForm()
+    {
+        var panel = new StackPanel { Margin = new Thickness(38, 6, 0, 0) };
+        var action = new TextBox { Text = beat.Text("action"), AcceptsReturn = true, MinHeight = 56, Margin = new Thickness(0, 0, 0, 10) };
+        var speaker = new TextBox { Text = beat.Text("speaker_name"), Width = 240, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 0, 0, 10) };
+        var emotion = new TextBox { Text = beat.Text("emotion"), Width = 240, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 0, 0, 10) };
+        var dialogue = new TextBox { Text = beat.Text("dialogue"), AcceptsReturn = true, MinHeight = 56, Margin = new Thickness(0, 0, 0, 10) };
+        var narration = new TextBox { Text = beat.Text("narration"), AcceptsReturn = true, MinHeight = 48, Margin = new Thickness(0, 0, 0, 10) };
+        var subtext = new TextBox { Text = beat.Text("subtext"), Margin = new Thickness(0, 0, 0, 10) };
+        var mustVisualize = new CheckBox { Content = "必须画出", IsChecked = beat.Flag("must_visualize"), Margin = new Thickness(0, 0, 14, 10) };
+        var mergeable = new CheckBox { Content = "允许合并", IsChecked = beat.Flag("mergeable"), Margin = new Thickness(0, 0, 14, 10) };
+        var pageTurn = new CheckBox { Content = "翻页悬念", IsChecked = beat.Flag("page_turn_hook"), Margin = new Thickness(0, 0, 0, 10) };
+        var importance = new Slider { Minimum = 0, Maximum = 1, Value = beat.Decimal("importance", 0.5), Width = 260, HorizontalAlignment = HorizontalAlignment.Left };
+
+        panel.Children.Add(BeatLabel("可视化动作（必填）"));
+        panel.Children.Add(action);
+        panel.Children.Add(BeatLabel("说话人（可填绰号，保存后归一）"));
+        panel.Children.Add(speaker);
+        panel.Children.Add(BeatLabel("情绪"));
+        panel.Children.Add(emotion);
+        panel.Children.Add(BeatLabel("对白"));
+        panel.Children.Add(dialogue);
+        panel.Children.Add(BeatLabel("旁白"));
+        panel.Children.Add(narration);
+        panel.Children.Add(BeatLabel("潜台词 / 表演提示"));
+        panel.Children.Add(subtext);
+        var flags = new StackPanel { Orientation = Orientation.Horizontal };
+        flags.Children.Add(mustVisualize);
+        flags.Children.Add(mergeable);
+        flags.Children.Add(pageTurn);
+        panel.Children.Add(flags);
+        panel.Children.Add(BeatLabel("重要度"));
+        panel.Children.Add(importance);
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 12, 0, 0) };
+        var cancel = Kit.Act("取消", (_, _) => { editing = false; Render(); }, "Ghost");
+        cancel.Margin = new Thickness(0, 0, 10, 0);
+        actions.Children.Add(cancel);
+        var save = Kit.Act("保存情节拍", async (_, _) =>
+        {
+            if (action.Text.Trim().Length == 0) { MessageBox.Show(Window.GetWindow(this), "可视化动作不能为空。", "保存情节拍"); return; }
+            await view.SaveBeat(this, beat, new Dictionary<string, object?>
+            {
+                ["action"] = action.Text,
+                ["speaker_name"] = speaker.Text,
+                ["emotion"] = emotion.Text,
+                ["dialogue"] = dialogue.Text,
+                ["narration"] = narration.Text,
+                ["subtext"] = subtext.Text,
+                ["importance"] = Math.Round(importance.Value, 2),
+                ["must_visualize"] = mustVisualize.IsChecked == true,
+                ["mergeable"] = mergeable.IsChecked == true,
+                ["page_turn_hook"] = pageTurn.IsChecked == true,
+            });
+        }, "InkButton");
+        actions.Children.Add(save);
+        panel.Children.Add(actions);
+        return panel;
+    }
+
+    private static TextBlock BeatLabel(string text) => new()
+    { Text = text, Style = (Style)Application.Current.FindResource("FieldLabel"), Margin = new Thickness(0, 0, 0, 6) };
+}

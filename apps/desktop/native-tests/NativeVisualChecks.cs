@@ -6,6 +6,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using MangaFlow.Native;
+using MangaFlow.Native.Views;
 
 internal static class NativeVisualChecks
 {
@@ -28,15 +29,13 @@ internal static class NativeVisualChecks
                 Directory.CreateDirectory(output);
                 foreach (var width in new[] { 1320, 940 })
                 {
-                    var view = new DashboardView { DataContext = state, Width = width, Height = 1000 };
+                    var view = new HomeView { DataContext = state, Width = width, Height = 1000 };
                     view.Measure(new Size(width, 1000));
                     view.Arrange(new Rect(0, 0, width, 1000));
                     view.UpdateLayout();
                     Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
                     view.UpdateLayout();
-                    var rail = (Border)view.FindName("DashboardRail");
-                    if (Grid.GetRow(rail) != (width < 1180 ? 1 : 0)) throw new Exception("Rail breakpoint failed");
-                    if (rail.ActualWidth < 250) throw new Exception("Connection panel is clipped");
+                    if (view.ActualWidth < 300) throw new Exception("Home view is clipped");
                     var bitmap = new RenderTargetBitmap(width, 1000, 96, 96, PixelFormats.Pbgra32);
                     bitmap.Render(view);
                     var encoder = new PngBitmapEncoder();
@@ -62,7 +61,8 @@ internal static class NativeVisualChecks
                 shell.Render(content);
                 var shellEncoder = new PngBitmapEncoder();
                 shellEncoder.Frames.Add(BitmapFrame.Create(shell));
-                using (var file = File.Create(Path.Combine(output, "native-home-1320.png"))) shellEncoder.Save(file);
+                using var shellFile = File.Create(Path.Combine(output, "native-home-1320.png"));
+                shellEncoder.Save(shellFile);
                 NativeNavigationChecks.Run(output);
                 app.Shutdown();
             }

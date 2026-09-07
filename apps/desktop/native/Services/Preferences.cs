@@ -9,6 +9,7 @@ public sealed class Preferences
     public double Height { get; set; } = 860;
     public bool Maximized { get; set; }
     public bool SidebarCollapsed { get; set; }
+    public bool DockHidden { get; set; }
     public string? RecentProject { get; set; }
 
     public static Preferences Load(string root)
