@@ -130,6 +130,10 @@ def test_incomplete_reinspect_keeps_prior_complete_verdicts(db_session, monkeypa
     assert page.continuity_status == "PASSED"
     assert page.status == PageStatus.FINAL_READY
 
+    # The shell finalized the first job; mirror that before the re-inspect.
+    first_job.status = JobStatus.COMPLETED
+    db_session.commit()
+
     # Re-inspect; this run's model response omits PROP.
     second_job = _leased_inspect_job(db_session, project, candidate, seq=2)
     partial = [category for category in INSPECT_CATEGORIES if category != "PROP"]

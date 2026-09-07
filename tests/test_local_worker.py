@@ -10,7 +10,7 @@ from sqlalchemy import create_engine, func, select, update
 from sqlalchemy.orm import sessionmaker
 
 from app import database, worker_tasks
-from app.config import Settings
+from app.config import Settings, get_settings
 from app.database import Base
 from app.domain.states import JobStatus, PageStatus, Resolution
 from app.services.worker_handlers import execution, provider
@@ -1772,3 +1772,67 @@ def test_restore_holds_draft_generating_while_sibling_still_generating(
     db_session.commit()
     db_session.expire(page)
     assert str(page.status) == "STORYBOARDED"
+
+
+def test_execute_job_applies_runtime_lease_override(monkeypatch):
+    """The worker process must re-read runtime settings per execution: an
+    operator's job_lease_seconds override reaches API-side recovery (reclaim
+    fence) but previously never reached the worker's own claim/heartbeat
+    lease, so the two processes disagreed on the lease geometry."""
+
+    with TemporaryDirectory() as directory:
+        engine = create_engine(
+            f"sqlite:///{Path(directory) / 'lease-override.db'}",
+            connect_args={"check_same_thread": False},
+        )
+        testing_session = sessionmaker(
+            bind=engine, autoflush=False, expire_on_commit=False
+        )
+        Base.metadata.create_all(engine)
+
+        settings = get_settings()
+        # Pin the geometry the runtime row is judged against: earlier suite
+        # tests PATCH /settings/runtime and mutate the shared Settings
+        # singleton without restoring it.
+        original_timeout = settings.job_timeout_seconds
+        original_lease = settings.job_lease_seconds
+        settings.job_timeout_seconds = 900
+        settings.job_lease_seconds = 60
+        monkeypatch.setattr(worker_tasks, "SessionLocal", testing_session)
+
+        with testing_session() as db:
+            db.add(
+                AppSetting(
+                    key="runtime",
+                    value={"job_lease_seconds": 300},
+                    version=1,
+                )
+            )
+            project = Project(name="租约覆盖")
+            db.add(project)
+            db.flush()
+            job = GenerationJob(
+                project_id=project.id,
+                target_type="CHAPTER",
+                target_id="lease-target",
+                job_type="SOURCE_PARSE",
+                status=JobStatus.QUEUED,
+            )
+            db.add(job)
+            db.commit()
+            job_id = job.id
+
+        seen: dict[str, object] = {}
+
+        def fake_run(_db, _job):
+            seen["lease_seconds"] = get_settings().job_lease_seconds
+            seen["claimed_lease"] = _job.lease_expires_at
+
+        monkeypatch.setattr(worker_tasks, "_run_story_parse", fake_run)
+        worker_tasks.execute_job(job_id)
+
+        assert seen["lease_seconds"] == 300
+        # The claim stamped a lease while running under the override window.
+        assert seen["claimed_lease"] is not None
+        settings.job_timeout_seconds = original_timeout
+        settings.job_lease_seconds = original_lease
