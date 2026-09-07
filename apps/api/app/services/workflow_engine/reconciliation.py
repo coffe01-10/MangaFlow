@@ -159,6 +159,15 @@ def _create_inspection_job(
             dependency_ids=_parent_job_ids(db, run, graph, node.id),
             auto_commit=False,
         )
+        # Same oldest-wins arbitration as the route side (see the helper):
+        # a fence bump between the two version reads mints different-keyed
+        # jobs for one candidate, and key equality collapses only same-key
+        # races. The younger duplicate is cancelled uncommitted and the
+        # node adopts the older ACTIVE job; the reconcile transaction
+        # commits both together.
+        from app.services.job_service import arbitrate_inspection_creation
+
+        job = arbitrate_inspection_creation(db, job)
     node_run.job_id = job.id
     node_run.input_snapshot = {
         **node_run.input_snapshot,

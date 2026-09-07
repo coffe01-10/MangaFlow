@@ -19,7 +19,16 @@ import pytest
 from fastapi import HTTPException
 
 from app.domain.states import JobStatus
-from app.models import AppSetting, GenerationJob, Project
+from app.models import (
+    AppSetting,
+    Asset,
+    Chapter,
+    GenerationBatch,
+    GenerationJob,
+    MangaPage,
+    PageCandidate,
+    Project,
+)
 from app.services import job_service
 
 
@@ -266,3 +275,99 @@ def test_reset_for_retry_style_analyze_allows_terminal_sibling(db_session, monke
     db_session.expire_all()
     row = db_session.get(GenerationJob, failed.id)
     assert row.status in {JobStatus.WAITING, JobStatus.QUEUED}
+
+
+def test_route_arbitrates_fence_split_duplicates(db_session):
+    """A fence bump between the route's and the reconciler's version reads
+    mints different-keyed PAGE_INSPECT jobs for one candidate; key equality
+    cannot collapse those, and each side's check-then-act window can miss
+    the other's uncommitted row. The shared post-insert arbitration is the
+    backstop: the older ACTIVE job wins, the younger duplicate is cancelled
+    and the caller adopts the older one."""
+
+    from app.models import (
+        Asset,
+        Chapter,
+        GenerationBatch,
+        MangaPage,
+    )
+    from app.services.job_service import arbitrate_inspection_creation
+
+    project_row = Project(name="栅栏分裂仲裁")
+    db_session.add(project_row)
+    db_session.flush()
+    chapter = Chapter(project_id=project_row.id, title="第一章", ordinal=1)
+    db_session.add(chapter)
+    db_session.flush()
+    page = MangaPage(chapter_id=chapter.id, page_number=1, storyboard_version=3)
+    db_session.add(page)
+    db_session.flush()
+    batch = GenerationBatch(
+        project_id=project_row.id, chapter_id=chapter.id, page_id=page.id, ordinal=1
+    )
+    asset = Asset(
+        project_id=project_row.id,
+        kind="page_candidate",
+        original_name="ready.png",
+        storage_key="generated/ready.png",
+        mime_type="image/png",
+        byte_size=10,
+        sha256="9" * 64,
+        source="VERTEX_GENERATED",
+        status="GENERATED",
+    )
+    db_session.add_all([batch, asset])
+    db_session.flush()
+    candidate = PageCandidate(
+        batch_id=batch.id,
+        page_id=page.id,
+        ordinal=1,
+        model_alias="image.nano_banana_2",
+        resolution="DRAFT_1K",
+        status="READY",
+        asset_id=asset.id,
+    )
+    db_session.add(candidate)
+    db_session.flush()
+
+    # The reconciler's creation landed first, keyed on page version 3; a
+    # fence then bumped the page, so the route computes a version-4 key.
+    reconciler_job = GenerationJob(
+        project_id=project_row.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=candidate.id,
+        job_type="PAGE_INSPECT",
+        status=JobStatus.QUEUED,
+        request_parameters={"categories": ["SPEAKER"], "workflow_run_id": "run-1"},
+        idempotency_key=f"inspect:{candidate.id}:{candidate.version}:3",
+    )
+    route_job = GenerationJob(
+        project_id=project_row.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=candidate.id,
+        job_type="PAGE_INSPECT",
+        status=JobStatus.WAITING,
+        request_parameters={"categories": ["SPEAKER"]},
+        idempotency_key=f"inspect:{candidate.id}:{candidate.version}:4",
+    )
+    db_session.add_all([reconciler_job, route_job])
+    db_session.commit()
+
+    winner = arbitrate_inspection_creation(db_session, route_job)
+
+    assert winner.id == reconciler_job.id
+    db_session.expire_all()
+    assert (
+        db_session.get(GenerationJob, reconciler_job.id).status
+        == JobStatus.QUEUED
+    )
+    assert db_session.get(GenerationJob, route_job.id).status == JobStatus.CANCELLED
+
+    # The older job itself stays untouched when arbitrated (first-committer
+    # symmetry): it is the oldest ACTIVE and returns itself.
+    winner_again = arbitrate_inspection_creation(db_session, reconciler_job)
+    assert winner_again.id == reconciler_job.id
+    assert (
+        db_session.get(GenerationJob, reconciler_job.id).status
+        == JobStatus.QUEUED
+    )

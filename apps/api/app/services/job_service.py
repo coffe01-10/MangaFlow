@@ -1195,6 +1195,33 @@ def mark_job_failed(
     return workflow_run_id
 
 
+def arbitrate_inspection_creation(db: Session, job: GenerationJob) -> GenerationJob:
+    """Post-insert oldest-wins arbitration for PAGE_INSPECT creation.
+
+    The idempotency key embeds candidate/page versions, so the two creation
+    sides (route, workflow reconciler) mint different-keyed jobs for the
+    same candidate when a fence bumps the page between their version reads:
+    key equality collapses same-key races only, and the version-agnostic
+    adoption SELECT plus the route's ``has_active_job`` only cover their own
+    check-then-act windows. Whichever job committed first is the older and
+    wins; the younger duplicate is cancelled (its sweep touches no candidate
+    — inspect jobs never set ``candidate.job_id``) and the older ACTIVE job
+    is returned for the caller to use.
+    """
+
+    oldest = oldest_active_job_id(
+        db,
+        job_type="PAGE_INSPECT",
+        target_id=str(job.target_id),
+        target_type=job.target_type,
+    )
+    if oldest is None or oldest == job.id:
+        return job
+    older = db.get(GenerationJob, oldest)
+    mark_job_cancelled(db, job)
+    return older
+
+
 def mark_job_cancelled(db: Session, job: GenerationJob) -> GenerationJob:
     """Mark a job and its visible target as cancelled without committing."""
 
