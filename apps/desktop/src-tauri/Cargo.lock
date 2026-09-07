@@ -2006,7 +2006,7 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "mangaflow-desktop-shell"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "mangaflow-desktop-shell-core",
  "rfd",
@@ -2019,7 +2019,7 @@ dependencies = [
 
 [[package]]
 name = "mangaflow-desktop-shell-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libc",
  "serde",
