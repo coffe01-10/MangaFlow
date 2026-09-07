@@ -321,7 +321,7 @@ def test_younger_style_analysis_fails_before_paid_call_when_sibling_active(
     jobs. The younger claimant must fail terminally before the paid multimodal
     call instead of double-paying and clobbering the winner's profile write."""
 
-    from app.models import GenerationJob
+    from app.models import GenerationJob, utcnow
     from app.services.worker_handlers.style_analyze import _run_style_analyze
 
     project = Project(name="风格仲裁")
@@ -343,6 +343,10 @@ def test_younger_style_analysis_fails_before_paid_call_when_sibling_active(
         target_id=style.id,
         job_type="STYLE_ANALYZE",
         status="PREPARING",
+        # Pin the ordering: both created_at defaults can land on the same
+        # clock tick, and the arbitration's UUID id tie-break would then crown
+        # the younger job as the oldest ACTIVE sibling.
+        created_at=utcnow() - timedelta(seconds=5),
     )
     db_session.add(older)
     db_session.flush()
