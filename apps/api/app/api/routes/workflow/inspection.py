@@ -26,6 +26,7 @@ from app.schemas import (
 )
 from app.services.candidate_lineage import attach_derived_lineage, inherited_reference_ids
 from app.services.job_service import (
+    arbitrate_inspection_creation,
     create_job,
     enqueue_job,
     has_active_derived_job,
@@ -83,6 +84,12 @@ def inspect_candidate(
         # COMPLETED one whose verdicts belong to an older page state.
         idempotency_key=f"inspect:{candidate.id}:{candidate.version}:{page.version}",
     )
+    # A fence bump between this route's version reads and the reconciler's
+    # mints different-keyed jobs for the same candidate; key equality cannot
+    # collapse those. Oldest-wins: the younger duplicate is cancelled and the
+    # older ACTIVE job is returned/enqueued instead.
+    job = arbitrate_inspection_creation(db, job)
+    db.commit()
     return enqueue_job(db, job)
 
 
