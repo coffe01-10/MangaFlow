@@ -301,6 +301,73 @@ fn shell_crash_still_kills_helper_and_descendants() {
     let _ = std::fs::remove_dir_all(&user_data);
 }
 
+/// Regression (process-group ownership): `stop()` must kill descendants even
+/// when the direct child NEVER puts itself into its own session. Before the
+/// shell claimed the process group at spawn time (`process_group(0)`), the
+/// group-kill `kill(-pid)` only worked after the helper's own `setsid()` had
+/// run — a stop landing during a helper's interpreter bootstrap left
+/// descendants in the shell's group where the group signal missed them and
+/// the per-pid fallback orphaned them. This stand-in mirrors that shape
+/// deliberately: `sh` backgrounds a grandchild and parks in `wait`, calling
+/// no `setsid`/`setpgid` at all, and the grandchild inherits the TEST
+/// HARNESS's group (so nothing but the child-owned group signal can reach
+/// it — it is not a PDEATHSIG child of the helper either, `sh` cannot set
+/// one). Unix-only: on Windows the Job Object covers the whole tree by
+/// construction.
+#[test]
+#[cfg(unix)]
+fn stop_kills_descendants_of_a_child_that_never_joins_its_own_group() {
+    let user_data = temp_user_data("pgroup");
+    let pid_file = user_data.join("grandchild.pid");
+    let script = format!(
+        "sleep 3600 & echo $! > {}; wait",
+        pid_file.to_string_lossy()
+    );
+    let mut command = Command::new("sh");
+    command.arg("-c").arg(&script);
+    let mut tree = OwnedTree::spawn(command).unwrap();
+
+    // Wait for the grandchild's PID to be published, then confirm the
+    // shell-owned group covers the descendant from spawn time: the
+    // grandchild's pgid is the tree root's pid, not the harness's group.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let grandchild_pid = loop {
+        if let Ok(text) = std::fs::read_to_string(&pid_file) {
+            if let Ok(pid) = text.trim().parse::<u32>() {
+                break pid;
+            }
+        }
+        assert!(Instant::now() < deadline, "grandchild pid never published");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let pgid_of = |pid: u32| -> u32 {
+        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .unwrap()
+            .rsplit(')')
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .nth(2)
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    assert_eq!(
+        pgid_of(grandchild_pid),
+        tree.pid(),
+        "the grandchild must live in the process group the shell owns"
+    );
+
+    let exit = tree.stop(Duration::from_secs(5)).expect("stop succeeds");
+    assert_eq!(exit, None, "a signal death reports no exit code");
+    assert!(wait_until_gone(tree.pid(), Duration::from_secs(5)), "sh must die");
+    assert!(
+        wait_until_gone(grandchild_pid, Duration::from_secs(5)),
+        "the grandchild must die with the tree (group signal), not be orphaned"
+    );
+    let _ = std::fs::remove_dir_all(&user_data);
+}
+
 /// The escalation half of `stop()`: a child no cooperative channel can
 /// reach must still die, promptly, once the grace window elapses. The
 /// stand-in never reads stdin and — once its interpreter finishes

@@ -22,9 +22,12 @@
 //! (see `apps/desktop/README.md`).
 //!
 //! Unix path: the spawned helper gets `PR_SET_PDEATHSIG=SIGKILL` before its
-//! first instruction and puts itself into its own session, so a shell crash
-//! kills the helper immediately and the shell can signal the entire tree via
-//! the process group.
+//! first instruction, and the SHELL makes it its own process-group leader at
+//! spawn time (`process_group(0)`) — before any helper code runs — so a
+//! shell crash kills the helper immediately and `stop()` can signal the
+//! entire tree via the process group from the earliest possible moment. (The
+//! helper's own `setsid()` remains as a harmless guard for non-shell
+//! launchers; the shell no longer depends on it.)
 
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
@@ -98,6 +101,17 @@ impl OwnedTree {
                     Ok(())
                 });
             }
+            // The SHELL owns the process group: the child becomes its own
+            // group leader before its first instruction, so `stop()`'s
+            // `kill(-pid)` reaches the whole tree from the earliest possible
+            // moment. The old arrangement relied on the helper calling
+            // `setsid()` from Python — a stop landing during the interpreter
+            // bootstrap (before that line ran) left descendants in the
+            // SHELL's own group, where the group signal misses them and the
+            // per-pid fallback orphans them. With the group claimed at spawn
+            // time the window is gone; the helper's `setsid()` becomes a
+            // no-op guard for non-shell launchers, not a load-bearing step.
+            command.process_group(0);
         }
         #[cfg(windows)]
         {
@@ -279,8 +293,11 @@ fn resume_initial_thread(child_pid: u32) -> Result<(), OwnershipError> {
 
 #[cfg(unix)]
 fn signal_tree(pid: u32, sig: i32) {
-    // The helper calls setsid(), so its process group id equals its pid and
-    // the signal reaches every descendant that did not break away.
+    // `OwnedTree::spawn` made the child its own process-group leader before
+    // its first instruction (`process_group(0)`), so the signal reaches the
+    // whole tree — including during the helper's interpreter bootstrap, where
+    // the helper's own late `setsid()` would not exist yet. The per-pid
+    // fallback remains for a child that somehow lost the group.
     let group_signal = unsafe { libc::kill(-(pid as libc::pid_t), sig) };
     if group_signal != 0 {
         unsafe { libc::kill(pid as libc::pid_t, sig) };
