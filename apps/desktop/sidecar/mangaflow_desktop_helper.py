@@ -137,6 +137,16 @@ def _serve_relay(relay: socket.socket, api_port: int) -> None:
         except OSError:
             client.close()
             continue
+        # The 5s timeout above bounds the CONNECT only; the byte pipe itself
+        # must never time out. With the timeout left armed on the upstream
+        # socket, a response whose first byte took longer than 5s to produce
+        # was dropped mid-flight (the client saw a bare FIN), and every
+        # keep-alive connection was severed after 5s of silence. The accepted
+        # client side is already blocking (a timeout-mode listener accepts in
+        # blocking mode), so the pump below runs without any read deadline on
+        # both directions; liveness is the peers' business (HTTP closes,
+        # process teardown closes the sockets).
+        upstream.settimeout(None)
 
         def _pipe(src: socket.socket, dst: socket.socket) -> None:
             try:
