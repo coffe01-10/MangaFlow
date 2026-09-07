@@ -101,9 +101,24 @@ WEB_RELAY_PORT = 39443
 
 
 def _bind_relay(api_port: int) -> socket.socket | None:
-    """Claim the fixed relay port and listen; None when it is taken."""
+    """Claim the fixed relay port and listen; None when it is taken.
+
+    POSIX: sets SO_REUSEADDR so the bind survives this app's own TIME_WAIT
+    remnants. The relay is the active closer whenever the API side finishes
+    first, so its accepted sockets routinely end up in TIME_WAIT on the
+    fixed port; without the flag, relaunching the shell within the ~60s
+    TIME_WAIT window failed the bind and silently downgraded the session to
+    the static-export form — exactly the degradation the fail-closed bind
+    was meant to reserve for a foreign owner. SO_REUSEADDR cannot take the
+    port from a foreign live listener (Linux would require SO_REUSEPORT on
+    both sockets), so fail-closed against a foreign owner is unchanged.
+    Windows keeps the strict default: SO_REUSEADDR there permits hijacking
+    binds, so that platform retains the TIME_WAIT residual instead.
+    """
 
     relay = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    if sys.platform != "win32":
+        relay.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         relay.bind(("127.0.0.1", WEB_RELAY_PORT))
         relay.listen(64)
