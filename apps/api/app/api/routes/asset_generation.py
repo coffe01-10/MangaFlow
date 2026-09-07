@@ -3,7 +3,9 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import ObjectDeletedError
 
 from app.api.helpers import (
     asset_candidate_read,
@@ -378,7 +380,13 @@ def delete_outfit(
                 claimed = result.rowcount == 1
                 if claimed:
                     break
-                db.refresh(scene)
+                try:
+                    db.refresh(scene)
+                except (ObjectDeletedError, InvalidRequestError) as exc:
+                    db.rollback()
+                    raise HTTPException(
+                        status_code=409, detail="场景已被更新，请刷新后重试"
+                    ) from exc
                 assignments = dict(scene.outfit_assignments or {})
                 cleaned = {
                     character_id: assigned_outfit_id
@@ -423,7 +431,13 @@ def delete_outfit(
                 claimed = result.rowcount == 1
                 if claimed:
                     break
-                db.refresh(panel)
+                try:
+                    db.refresh(panel)
+                except (ObjectDeletedError, InvalidRequestError) as exc:
+                    db.rollback()
+                    raise HTTPException(
+                        status_code=409, detail="分镜格已被更新，请刷新后重试"
+                    ) from exc
                 assignments = dict(panel.outfits or {})
                 cleaned = {
                     character_id: assigned_outfit_id

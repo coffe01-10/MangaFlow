@@ -180,3 +180,54 @@ def test_delete_outfit_cleans_after_losing_one_scene_claim(client, db_session, m
     row = db_session.get(Scene, scene.id)
     assert row.outfit_assignments == {}
     assert db_session.get(Outfit, outfit.id) is None
+
+
+def test_delete_outfit_409s_when_scene_row_deleted_mid_retry(
+    client, db_session, monkeypatch
+):
+    """A scene hard-deleted between a lost claim and the refresh (storyboard
+    regeneration and chapter revise paths hard-delete rows the teardown is
+    iterating) must surface the 409, not an unhandled InvalidRequestError."""
+    from sqlalchemy import delete as sa_delete
+
+    project = Project(name="场景行删除竞态")
+    db_session.add(project)
+    db_session.flush()
+    character = Character(project_id=project.id, primary_name="林澈")
+    db_session.add(character)
+    db_session.flush()
+    outfit = Outfit(project_id=project.id, character_id=character.id, name="制服")
+    chapter = Chapter(project_id=project.id, title="第一章", ordinal=1)
+    db_session.add_all([outfit, chapter])
+    db_session.flush()
+    scene = Scene(
+        chapter_id=chapter.id,
+        ordinal=1,
+        outfit_assignments={character.id: outfit.id},
+    )
+    db_session.add(scene)
+    db_session.commit()
+
+    real_execute = db_session.execute
+    state = {"claims": 0}
+
+    def delete_then_defeat(statement, *args, **kwargs):
+        if statement.is_update and statement.table.name == "scenes":
+            state["claims"] += 1
+            # The concurrent cleanup hard-deletes the row and commits in its
+            # own transaction before this claim can land.
+            real_execute(sa_delete(Scene).where(Scene.id == scene.id))
+            db_session.commit()
+            from types import SimpleNamespace
+
+            return SimpleNamespace(rowcount=0)
+        return real_execute(statement, *args, **kwargs)
+
+    monkeypatch.setattr(db_session, "execute", delete_then_defeat)
+
+    response = client.delete(f"/api/v1/outfits/{outfit.id}")
+
+    assert response.status_code == 409, response.text
+    db_session.expire_all()
+    assert db_session.get(Outfit, outfit.id) is not None
+    assert state["claims"] >= 1
