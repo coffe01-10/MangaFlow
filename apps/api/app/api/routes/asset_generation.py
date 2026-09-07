@@ -13,6 +13,7 @@ from app.api.helpers import (
     ensure_project_scope,
     reject_required_nulls,
 )
+from app.config import get_settings
 from app.database import get_db
 from app.models import (
     Asset,
@@ -124,6 +125,23 @@ def _has_active_reference_assets(
         )
         or 0
     ) > 0
+
+
+def _ensure_asset_blob_alive(asset: Asset, *, detail: str) -> None:
+    """Issue #210-2: approval gates must preflight the backing file itself.
+
+    Row-level liveness alone approved assets whose bytes were already gone
+    (boot sweep, manual disk cleanup, a failed resurrect): the approval then
+    promoted a canonical/style binding whose preview 404s forever. Same
+    preflight pattern as exports._asset_path, narrowed to a 409 that names
+    the missing blob so the client can point at regeneration.
+    """
+
+    settings = get_settings()
+    root = settings.upload_root if asset.source == "USER_UPLOAD" else settings.storage_root
+    path = (root / asset.storage_key).resolve()
+    if not path.is_relative_to(root.resolve()) or not path.is_file():
+        raise HTTPException(status_code=409, detail=detail)
 
 
 @router.get("/projects/{project_id}/outfits", response_model=list[OutfitRead])
@@ -593,6 +611,9 @@ def _ensure_style_test_image_alive(db: Session, style: StyleProfile) -> Asset | 
     asset = db.get(Asset, candidate.asset_id) if candidate and candidate.asset_id else None
     if not asset or asset.deleted_at is not None:
         raise HTTPException(status_code=409, detail="风格测试图已被删除，请重新生成后再试")
+    # Issue #210-2: the recorded approved test image must also be physically
+    # present, otherwise ACTIVE promotion rides flags whose preview 404s.
+    _ensure_asset_blob_alive(asset, detail="风格测试图文件缺失，请重新生成后再激活")
     return asset
 
 
@@ -836,6 +857,11 @@ def approve_style_test(
     test_asset = db.get(Asset, candidate.asset_id)
     if not test_asset or test_asset.deleted_at is not None:
         raise HTTPException(status_code=409, detail="风格测试图已被删除，请重新生成后再审批")
+    # Issue #210-2: row liveness is not enough — approving a candidate whose
+    # blob is missing would promote a test image nothing can ever render.
+    _ensure_asset_blob_alive(
+        test_asset, detail="风格测试图文件缺失，请重新生成后再审批"
+    )
     # Claim the row with an atomic conditional update so concurrent approvals
     # cannot both pass an in-memory version comparison (same pattern as
     # _claim_panel_version / scene asset PATCH).
@@ -873,6 +899,12 @@ def assign_scene_outfits(
     # same discipline as PATCH /scenes, so a concurrent scene writer's CAS bump
     # cannot be collapsed by our blind increment.
     scene_version_before = scene.version
+    # Issue #226/#246 token claim: when the payload carries the caller's
+    # observed scene version (optional field owned by schemas.py), a mismatch
+    # is a lost-update 409 before any assignment validation runs.
+    claimed_scene_version = getattr(payload, "version", None)
+    if claimed_scene_version is not None and claimed_scene_version != scene_version_before:
+        raise HTTPException(status_code=409, detail="场景已被更新，请刷新后重试")
     chapter = db.get(Chapter, scene.chapter_id)
     assignments = {
         character_id: outfit_id
@@ -1125,6 +1157,9 @@ def approve_asset_reference(
     asset = db.get(Asset, candidate.asset_id)
     if not asset or asset.deleted_at is not None:
         raise HTTPException(status_code=409, detail="设定草稿图片不存在")
+    # Issue #210-2: the sheet's bytes must exist before approval promotes it
+    # into character/outfit reference bindings.
+    _ensure_asset_blob_alive(asset, detail="设定草稿图片文件缺失，请重新生成后再审批")
 
     if payload.bind_character_reference:
 
@@ -1150,12 +1185,40 @@ def approve_asset_reference(
                     CharacterReference.asset_id == asset.id,
                 )
             )
+            # Issue #211-2: capture the other characters whose reference rows
+            # the delete below removes BEFORE it runs, so each can be
+            # recomputed from its remaining LIVE references afterwards —
+            # otherwise they stay CANONICAL with zero reference rows.
+            affected_other_character_ids = list(
+                db.scalars(
+                    select(CharacterReference.character_id).where(
+                        CharacterReference.asset_id == asset.id,
+                        CharacterReference.character_id != character.id,
+                    )
+                )
+            )
             db.execute(
                 CharacterReference.__table__.delete().where(
                     CharacterReference.asset_id == asset.id,
                     CharacterReference.character_id != character.id,
                 )
             )
+            for other_character_id in dict.fromkeys(affected_other_character_ids):
+                other_character = db.get(Character, other_character_id)
+                if not other_character:
+                    continue
+                has_live_reference = db.scalar(
+                    select(CharacterReference.id)
+                    .join(Asset, Asset.id == CharacterReference.asset_id)
+                    .where(
+                        CharacterReference.character_id == other_character_id,
+                        Asset.deleted_at.is_(None),
+                    )
+                    .limit(1)
+                )
+                if not has_live_reference:
+                    other_character.status = AssetStatus.NEEDS_CONFIRMATION
+                other_character.version += 1
             if payload.set_canonical:
                 db.execute(
                     update(CharacterReference)
@@ -1280,8 +1343,17 @@ def retract_asset_reference(
             outfit.version += 1
     character = db.get(Character, character_id)
     if character:
+        # Issue #211-3: tombstoned assets must not count as remaining
+        # references — without the Asset.deleted_at join a retraction left
+        # the character CANONICAL while every surviving reference pointed at
+        # a soft-deleted (unviewable) asset.
         has_other_reference = db.scalar(
-            select(CharacterReference.id).where(CharacterReference.character_id == character_id)
+            select(CharacterReference.id)
+            .join(Asset, Asset.id == CharacterReference.asset_id)
+            .where(
+                CharacterReference.character_id == character_id,
+                Asset.deleted_at.is_(None),
+            )
         )
         if not has_other_reference:
             character.status = AssetStatus.NEEDS_CONFIRMATION

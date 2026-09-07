@@ -148,6 +148,12 @@ export function useAssetsWorkspace({
   const upload = useMutation({
     mutationFn: async (file: File) => {
       const uploaded = await api.uploadAsset(id, currentAssetKind, file);
+      // 服务端已对“同内容不同用途”的重复上传返回 409，但防御性校验返回
+      // 素材的用途：错用途素材绝不能进入后续的角色绑定或选中集合，
+      // 否则面板会把旧用途素材当成当前用途处理。
+      if (uploaded.kind !== currentAssetKind) {
+        throw new Error(`该图片已按其他参考用途上传（${uploaded.kind}），请改用原用途或先删除原图`);
+      }
       if (currentAssetKind === "CHARACTER_REFERENCE" && bindCharacterId) {
         await api.bindCharacterReference(bindCharacterId, uploaded.id);
       }

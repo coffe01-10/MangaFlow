@@ -7,7 +7,8 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse
-from sqlalchemy import delete, select
+from PIL.Image import DecompressionBombError
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -85,6 +86,26 @@ def _ensure_asset_not_in_active_job(db: Session, asset: Asset) -> None:
         )
 
 
+def _live_reference_exists(db: Session, asset_ids: list[str]) -> bool:
+    """Whether at least one of ``asset_ids`` is a live (non-tombstoned) row.
+
+    Mirrors the character recompute in delete_candidate: binding rows that
+    point at soft-deleted assets must not keep an entity CANONICAL.
+    """
+
+    if not asset_ids:
+        return False
+    return (
+        db.scalar(
+            select(Asset.id).where(
+                Asset.id.in_(asset_ids),
+                Asset.deleted_at.is_(None),
+            ).limit(1)
+        )
+        is not None
+    )
+
+
 def _detach_reference_asset(db: Session, asset: Asset) -> None:
     """Remove a reference asset from every structured binding in its project."""
 
@@ -98,7 +119,11 @@ def _detach_reference_asset(db: Session, asset: Asset) -> None:
         outfit.reference_asset_ids = [
             asset_id for asset_id in outfit.reference_asset_ids if asset_id != asset.id
         ]
-        outfit.status = AssetStatus.NEEDS_CONFIRMATION
+        # Issue #211-1: demote only when no LIVE reference remains. The blind
+        # NEEDS_CONFIRMATION demote left outfits that still bind other live
+        # reference images flagged as unconfirmed.
+        if not _live_reference_exists(db, outfit.reference_asset_ids):
+            outfit.status = AssetStatus.NEEDS_CONFIRMATION
         outfit.version += 1
     styles = db.scalars(
         select(StyleProfile).where(StyleProfile.project_id == asset.project_id)
@@ -146,7 +171,29 @@ def _detach_reference_asset(db: Session, asset: Asset) -> None:
         scene_asset = db.get(SceneAsset, scene_asset_id)
         if not scene_asset:
             continue
-        scene_asset.status = AssetStatus.NEEDS_CONFIRMATION
+        # Issue #211-1: same live-ref recompute as outfits — the reference
+        # rows above are already deleted, so the remaining pool is whatever
+        # other asset-level and variant-level references still point at live
+        # assets. Only a scene asset with zero live references is demoted.
+        remaining_ids = set(
+            db.scalars(
+                select(SceneAssetReference.asset_id).where(
+                    SceneAssetReference.scene_asset_id == scene_asset_id
+                )
+            )
+        )
+        remaining_ids |= set(
+            db.scalars(
+                select(SceneAssetVariantReference.asset_id)
+                .join(
+                    SceneAssetVariant,
+                    SceneAssetVariant.id == SceneAssetVariantReference.variant_id,
+                )
+                .where(SceneAssetVariant.scene_asset_id == scene_asset_id)
+            )
+        )
+        if not _live_reference_exists(db, list(remaining_ids)):
+            scene_asset.status = AssetStatus.NEEDS_CONFIRMATION
         scene_asset.version += 1
 
 
@@ -241,6 +288,15 @@ def upload_asset(
         if existing:
             old_path = (settings.upload_root / existing.storage_key).resolve()
             safe_old_path = old_path.is_relative_to(settings.upload_root.resolve())
+            # Issue #210-4: byte-identical re-upload must not silently answer
+            # with an asset of a different kind — the caller's binding intent
+            # (character/outfit/style/scene) would be attached to a row that
+            # feeds a different reference pool.
+            if existing.kind != normalized_kind:
+                raise HTTPException(
+                    status_code=409,
+                    detail="同内容素材已按其他参考用途上传，请先删除原图或改用原用途",
+                )
             if existing.deleted_at is None and safe_old_path and old_path.is_file():
                 destination.unlink(missing_ok=True)
                 return asset_read(existing)
@@ -250,18 +306,80 @@ def upload_asset(
             remove_thumbnails(settings.upload_root, existing.id)
             thumbnail_asset_id = existing.id
             thumbnails = create_thumbnails(destination, settings.upload_root, existing.id)
-            existing.kind = normalized_kind
-            existing.original_name = safe_name
-            existing.storage_key = destination.relative_to(settings.upload_root).as_posix()
-            existing.thumbnail_320_key = thumbnails[320]
-            existing.thumbnail_640_key = thumbnails[640]
-            existing.mime_type = mime_type
-            existing.byte_size = byte_size
-            existing.width = width
-            existing.height = height
-            existing.status = AssetStatus.UPLOADED
-            existing.deleted_at = None
-            existing.version += 1
+            # Issue #210-1: the resurrect used to be a read-then-act full-row
+            # rewrite with a blind version += 1, so two concurrent re-uploads
+            # of a tombstoned asset both "won" and the loser's committed
+            # storage_key was clobbered, orphaning its file. Claim the row
+            # with a version-CAS conditional UPDATE whose liveness predicate
+            # matches the snapshot we validated against; one bounded retry on
+            # a lost claim, then a 409 (the loser's file is unlinked by the
+            # outer HTTPException cleanup below).
+            # The claim loop always exits via a successful break or raises a
+            # 409, so falling through here means the resurrect is ours.
+            for attempt in range(2):
+                snapshot_version = existing.version
+                was_tombstoned = existing.deleted_at is not None
+                old_path = (settings.upload_root / existing.storage_key).resolve()
+                safe_old_path = old_path.is_relative_to(settings.upload_root.resolve())
+                claimed = db.execute(
+                    update(Asset)
+                    .where(
+                        Asset.id == existing.id,
+                        Asset.version == snapshot_version,
+                        (
+                            Asset.deleted_at.is_not(None)
+                            if was_tombstoned
+                            else Asset.deleted_at.is_(None)
+                        ),
+                    )
+                    .values(
+                        kind=normalized_kind,
+                        original_name=safe_name,
+                        storage_key=destination.relative_to(settings.upload_root).as_posix(),
+                        thumbnail_320_key=thumbnails[320],
+                        thumbnail_640_key=thumbnails[640],
+                        mime_type=mime_type,
+                        byte_size=byte_size,
+                        width=width,
+                        height=height,
+                        status=AssetStatus.UPLOADED,
+                        deleted_at=None,
+                        version=Asset.version + 1,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+                if claimed.rowcount:
+                    break
+                if attempt == 0:
+                    # Discard the stale identity-map row and re-read the
+                    # winner's committed state once before the final try.
+                    db.rollback()
+                    existing = db.scalar(
+                        select(Asset).where(
+                            Asset.project_id == project_id,
+                            Asset.sha256 == digest.hexdigest(),
+                        )
+                    )
+                    if existing is not None:
+                        if existing.kind != normalized_kind:
+                            # The concurrent winner resurrected with a
+                            # different kind; do not flip it back.
+                            thumbnail_asset_id = asset_id
+                            raise HTTPException(
+                                status_code=409,
+                                detail="同内容素材已按其他参考用途上传，请先删除原图或改用原用途",
+                            )
+                        continue
+                # Lost the claim: unlink only OUR file. The thumbnails live
+                # under thumbnails/{existing.id}/, a namespace shared with the
+                # concurrent winner's committed keys, so the generic cleanup
+                # below must not remove them (point it at the fresh uuid dir,
+                # which was never created).
+                thumbnail_asset_id = asset_id
+                raise HTTPException(
+                    status_code=409,
+                    detail="素材状态已变化，请重新上传",
+                ) from None
             db.commit()
             db.refresh(existing)
             if safe_old_path and old_path != destination.resolve():
@@ -337,6 +455,12 @@ def update_asset(
     if not asset or asset.deleted_at is not None:
         raise HTTPException(status_code=404, detail="素材不存在")
     ensure_project_scope(db, asset, project_id, label="素材")
+    # Issue #226/#246 token claim: when the payload carries the caller's
+    # observed version (optional field — schemas.py owns whether it is
+    # exposed yet), a mismatch is a lost-update 409 before any teardown runs.
+    claimed_version = getattr(payload, "version", None)
+    if claimed_version is not None and claimed_version != asset.version:
+        raise HTTPException(status_code=409, detail="素材已更新，请刷新后重试")
     if payload.kind is not None:
         if asset.source != "USER_UPLOAD":
             raise HTTPException(status_code=409, detail="生成结果不能改成参考图")
@@ -346,7 +470,26 @@ def update_asset(
             asset.kind = payload.kind
     if "display_name" in payload.model_fields_set:
         asset.display_name = payload.display_name
-    asset.version += 1
+    # Issue #210/#211: the version bump used to be a blind ORM increment, so
+    # two concurrent PATCHes (or a PATCH racing a concurrent delete/re-upload)
+    # both committed and one side's writes were silently folded away. Claim
+    # the row with a conditional UPDATE on the read snapshot; a lost claim
+    # rolls the whole unit — including the detach teardown — back to a 409.
+    snapshot_version = asset.version
+    claimed = db.execute(
+        update(Asset)
+        .where(
+            Asset.id == asset.id,
+            Asset.deleted_at.is_(None),
+            Asset.version == snapshot_version,
+        )
+        .values(version=Asset.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if not claimed.rowcount:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="素材已更新，请刷新后重试")
+    db.expire(asset, ["version"])
     db.commit()
     db.refresh(asset)
     return asset_read(asset)
@@ -461,8 +604,18 @@ def asset_thumbnail(
         if not source.is_relative_to(root.resolve()) or not source.is_file():
             raise HTTPException(status_code=404, detail="素材文件不存在")
         try:
-            thumbnails = create_thumbnails(source, root, asset.id)
-        except OSError as error:
+            # Issue #210-3: the stored bytes may predate the pixel caps (or be
+            # a generated blob that skipped upload inspection), so the same
+            # configured bounds must gate regeneration; a bomb or corrupt file
+            # is a 422, not a thumbnailing hang or a 500.
+            thumbnails = create_thumbnails(
+                source,
+                root,
+                asset.id,
+                max_pixels=settings.max_image_pixels,
+                max_side=settings.max_image_side,
+            )
+        except (OSError, DecompressionBombError, ValueError) as error:
             raise HTTPException(status_code=422, detail="无法生成素材缩略图") from error
         asset.thumbnail_320_key = thumbnails[320]
         asset.thumbnail_640_key = thumbnails[640]

@@ -171,8 +171,31 @@ def favorite_candidate(
     if not candidate or candidate.deleted_at is not None:
         raise HTTPException(status_code=404, detail="候选不存在")
     ensure_project_scope(db, candidate, project_id, label="候选")
-    candidate.is_favorite = payload.is_favorite
-    candidate.version += 1
+    # Issue #211-5/#226: the favorite used to be a blind ORM write, so two
+    # concurrent favorites (or a favorite racing a delete) both "succeeded"
+    # and one side's is_favorite flip was silently folded away. Claim the row
+    # with a conditional UPDATE on the read snapshot; when the payload carries
+    # the caller's observed version (optional FavoriteUpdate field owned by
+    # schemas.py), a mismatch is a 409 before any write runs.
+    candidate_model = type(candidate)
+    snapshot_version = candidate.version
+    claimed_version = getattr(payload, "version", None)
+    if claimed_version is not None and claimed_version != snapshot_version:
+        raise HTTPException(status_code=409, detail="候选已更新，请刷新后重试")
+    claimed = db.execute(
+        update(candidate_model)
+        .where(
+            candidate_model.id == candidate.id,
+            candidate_model.deleted_at.is_(None),
+            candidate_model.version == snapshot_version,
+        )
+        .values(is_favorite=payload.is_favorite, version=candidate_model.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="候选状态已变化，请刷新后重试")
+    db.expire(candidate, ["is_favorite", "version"])
     db.commit()
     db.refresh(candidate)
     # The route resolves PageCandidate OR AssetCandidate; only the page shape
@@ -584,6 +607,18 @@ def next_page(
     production = build_page_production_readiness(db, page)
     if not production.ready:
         raise HTTPException(status_code=409, detail=production_error_detail(production))
+    # Issue #236-4: resolve `following` BEFORE closing OPEN batches and
+    # committing. The old order closed/committed the page's batches first and
+    # then discovered there is no next page, leaving the chapter's batches
+    # CLOSED (and the workbench without an open batch) behind a 409.
+    following = db.scalar(
+        select(MangaPage).where(
+            MangaPage.chapter_id == page.chapter_id,
+            MangaPage.page_number == page.page_number + 1,
+        )
+    )
+    if not following:
+        raise HTTPException(status_code=409, detail="当前页已经是本章最后一页")
     db.execute(
         update(GenerationBatch)
         .where(
@@ -592,13 +627,5 @@ def next_page(
         )
         .values(status="CLOSED", closed_at=utcnow())
     )
-    following = db.scalar(
-        select(MangaPage).where(
-            MangaPage.chapter_id == page.chapter_id,
-            MangaPage.page_number == page.page_number + 1,
-        )
-    )
     db.commit()
-    if not following:
-        raise HTTPException(status_code=409, detail="当前页已经是本章最后一页")
     return following

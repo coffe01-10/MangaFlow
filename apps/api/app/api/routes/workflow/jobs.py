@@ -1,7 +1,7 @@
 """Project job listing, lifecycle actions and bulk archive routes."""
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import or_, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.api.helpers import asset_candidate_read, candidate_read, ensure_project_scope
@@ -339,7 +339,20 @@ def delete_job(
         raise HTTPException(status_code=409, detail="只有失败或已取消任务可以彻底删除")
     if _job_has_references(db, job.id):
         raise HTTPException(status_code=409, detail="任务仍被候选、生成记录或工作流引用，只能归档")
-    db.delete(job)
+    # Issue #211-5: the read-check above is not atomic with the delete. A
+    # concurrent retry can revive the FAILED job back to WAITING between the
+    # two, and an unconditional db.delete would destroy a queued paid job.
+    # The conditional delete only removes a row that is STILL deletable at
+    # write time; a revived job turns this into a 409.
+    deleted = db.execute(
+        delete(GenerationJob).where(
+            GenerationJob.id == job.id,
+            GenerationJob.status.in_(DELETABLE_JOB_STATUSES),
+        )
+    )
+    if deleted.rowcount != 1:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="任务状态已变化，请刷新后重试")
     db.commit()
 
 

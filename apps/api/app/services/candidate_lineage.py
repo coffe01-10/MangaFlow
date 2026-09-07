@@ -248,7 +248,12 @@ def create_region_regeneration(
         catalog_model_id=resolved_model.id,
         resolution=resolution,
         status="QUEUED",
-        based_on_storyboard_version=page.storyboard_version,
+        # Issue #237-1: stamp-inheritance (same rationale as the repair and
+        # upscale routes): a region-regenerated child inherits the parent's
+        # storyboard stamp, so regenerating a region of a stale candidate
+        # cannot launder it into a CURRENT candidate the adoption gates
+        # would read as fresh.
+        based_on_storyboard_version=parent.based_on_storyboard_version,
         prompt_snapshot={
             **(parent.prompt_snapshot or {}),
             "lineage": {

@@ -311,15 +311,26 @@ export function useGenerationWorkspace({
   });
 
   const repairCandidate = useMutation({
-    mutationFn: (inspection: NonNullable<typeof inspections.data>[number]) => api.repairCandidate(reviewCandidateId!, {
-      inspection_result_id: inspection.id,
-      repair_type: recommendedRepairType(inspection.category),
-      target_regions: inspection.regions,
-      target_fields: [],
-      model_alias: requireDrawModel(),
-      resolution: reviewCandidate?.resolution ?? "1K",
-    }),
+    mutationFn: (inspection: NonNullable<typeof inspections.data>[number]) => {
+      if (!reviewCandidateId) throw new Error("请先选择要修复的候选");
+      // 后端现在按 rank 拒绝降清修复（422/409）；这里不能再静默回退 "1K"，
+      // 否则 2K/4K 候选的修复会以降级分辨率提交并立即被拒。
+      const resolution = reviewCandidate?.resolution;
+      if (!resolution) throw new Error("候选分辨率未知，请刷新后重试");
+      return api.repairCandidate(reviewCandidateId, {
+        inspection_result_id: inspection.id,
+        repair_type: recommendedRepairType(inspection.category),
+        target_regions: inspection.regions,
+        target_fields: [],
+        model_alias: requireDrawModel(),
+        resolution,
+      });
+    },
     onSuccess: () => {
+      // 修复会关闭当前批次并新开 REPAIR 批次（服务端 close_open_page_batches），
+      // 旧 reviewCandidateId 若不清理，检查面板会继续渲染且其修复按钮会对
+      // 旧候选提交（同 generate/startBatch 的 hazard 注释）。
+      setReviewCandidateId(null);
       queryClient.invalidateQueries({ queryKey: ["batches", selectedPage?.id] });
       queryClient.invalidateQueries({ queryKey: ["candidates"] });
       queryClient.invalidateQueries({ queryKey: ["jobs", id] });
@@ -336,6 +347,9 @@ export function useGenerationWorkspace({
       // Upscale closes the current batch server-side and puts the upscaled
       // candidate into a new one; without the workbench invalidation the stale
       // open batch shadows the new candidate until an unrelated refetch.
+      // 同 repair：批次已切换，检查面板的 reviewCandidateId 必须清理，否则
+      // 其修复按钮会对已不在当前批次的旧候选提交。
+      setReviewCandidateId(null);
       queryClient.invalidateQueries({ queryKey: ["batches", selectedPage?.id] });
       queryClient.invalidateQueries({ queryKey: ["candidates"] });
       queryClient.invalidateQueries({ queryKey: ["jobs", id] });
