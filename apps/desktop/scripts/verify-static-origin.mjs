@@ -11,7 +11,7 @@
 //      on the static server, no NEXT_PUBLIC dependency) and renders.
 import { createServer } from "node:http";
 import { readFile, stat } from "node:fs/promises";
-import { join, extname } from "node:path";
+import { join, extname, resolve, sep } from "node:path";
 import { spawn } from "node:child_process";
 import { chromium } from "playwright";
 
@@ -90,7 +90,14 @@ const server = createServer(async (req, res) => {
   let path = req.url.split("?")[0];
   if (path.endsWith("/")) path += "index.html";
   try {
-    let file = join(FRONTEND, decodeURIComponent(path));
+    // Containment first: unlike a browser, a raw HTTP client can send `..`
+    // segments verbatim (curl --path-as-is), so resolve and refuse anything
+    // that would leave the static export root instead of trusting the URL.
+    const root = resolve(FRONTEND);
+    let file = resolve(root, `.${decodeURIComponent(path)}`);
+    if (file !== root && !file.startsWith(root + sep)) {
+      throw new Error("path escapes the static export root");
+    }
     if ((await stat(file)).isDirectory()) file = join(file, "index.html");
     const body = await readFile(file);
     res.writeHead(200, { "content-type": MIME[extname(file)] ?? "application/octet-stream" });
