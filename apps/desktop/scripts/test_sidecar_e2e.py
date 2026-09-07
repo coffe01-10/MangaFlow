@@ -421,6 +421,21 @@ def _web_dist_dir() -> Path:
     return dist
 
 
+def _non_loopback_ipv4() -> str | None:
+    """A routable local IPv4 address, or None when the host has none (the
+    loopback-bind assertion then self-skips: there is no second adapter to
+    probe). The UDP connect performs a route lookup without sending packets."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("8.8.8.8", 80))
+        address = sock.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        sock.close()
+    return None if address.startswith("127.") else address
+
+
 def test_sidecar_plan_b_web_server_loop(tmp_path: Path):
     """Plan B (W-15): with --web-dist the helper spawns the Next standalone
     server as a child; READY carries the loopback web origin; the web server
@@ -458,6 +473,22 @@ def test_sidecar_plan_b_web_server_loop(tmp_path: Path):
         # listed via the proxy = rewrites carry the helper's dynamic port).
         with urllib.request.urlopen(f"{web}/api/v1/projects", timeout=10) as response:
             assert response.status == 200
+        # D9: the web server binds the loopback adapter only. While it is
+        # live, the same port must refuse a non-loopback local address —
+        # the helper passes HOSTNAME=127.0.0.1 to the Next standalone
+        # server (whose own default is 0.0.0.0), and a regression to an
+        # all-interfaces bind would silently expose the UI and its API
+        # proxy to the LAN.
+        external_ip = _non_loopback_ipv4()
+        if external_ip is not None:
+            external = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            external.settimeout(2.0)
+            try:
+                assert external.connect_ex((external_ip, int(web.rsplit(":", 1)[1]))) != 0, (
+                    f"web server answered on the non-loopback address {external_ip}"
+                )
+            finally:
+                external.close()
         assert record["web_origin"] == web
         # Journal identity-only: web fields are identity too, no commands/env.
         assert set(record).issubset(
