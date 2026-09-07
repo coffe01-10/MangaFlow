@@ -56,15 +56,28 @@ impl ZipWriter {
     }
 
     /// Add one file (stored, UTF-8 name, no extra fields).
+    ///
+    /// Panics rather than silently corrupting: the EOCD entry count is a
+    /// u16 field and member offsets are u32, so overflow here would hand
+    /// the caller an archive every reader shows as truncated. The exporter
+    /// keeps both shapes reachable-but-guarded (`EXPORT_MAX_MEMBERS`,
+    /// `EXPORT_MAX_TOTAL_BYTES`); this is the last-resort invariant for any
+    /// future caller.
     pub fn add_file(&mut self, name: &str, data: &[u8], dos_date: u16, dos_time: u16) {
         let name = name.as_bytes();
         assert!(
             !name.contains(&b'\\') && !name.is_empty(),
             "zip member names must be non-empty forward-slash relative paths"
         );
+        assert!(
+            self.entries < u16::MAX,
+            "zip: entry count would exceed the EOCD u16 field"
+        );
         let crc = crc32(data);
-        let size = data.len() as u32;
-        let offset = self.body.len() as u32;
+        let size = u32::try_from(data.len())
+            .expect("zip: member exceeds the u32 size field");
+        let offset = u32::try_from(self.body.len())
+            .expect("zip: archive exceeds the u32 offset field");
 
         put_u32(&mut self.body, 0x0403_4b50);
         put_u16(&mut self.body, 20); // version needed
@@ -99,12 +112,14 @@ impl ZipWriter {
         put_u32(&mut self.central, offset);
         self.central.extend_from_slice(name);
 
-        self.entries = self.entries.saturating_add(1);
+        self.entries += 1;
     }
 
     pub fn finish(mut self) -> Vec<u8> {
-        let central_offset = self.body.len() as u32;
-        let central_size = self.central.len() as u32;
+        let central_offset = u32::try_from(self.body.len())
+            .expect("zip: archive exceeds the u32 offset field");
+        let central_size = u32::try_from(self.central.len())
+            .expect("zip: central directory exceeds the u32 size field");
         self.body.extend_from_slice(&self.central);
         put_u32(&mut self.body, 0x0605_4b50);
         put_u16(&mut self.body, 0);
@@ -199,5 +214,36 @@ mod tests {
             assert_eq!(&bytes[data_at..data_at + expected.1.len()], expected.1);
             cursor += 46 + name_len as usize;
         }
+    }
+
+    /// The u16 entry-count invariant: exactly `u16::MAX` members still
+    /// finish cleanly; one more must fail LOUDLY instead of wrapping the
+    /// EOCD count into an archive readers show as truncated (the old
+    /// `saturating_add` behavior).
+    #[test]
+    fn add_file_accepts_the_u16_maximum_and_panics_beyond_it() {
+        let mut zip = ZipWriter::new();
+        for index in 0..u16::MAX as usize {
+            zip.add_file("m", b"", 0, 0);
+            assert_eq!(zip.entries, (index + 1) as u16);
+        }
+        let bytes = zip.finish();
+        // The maximum-count archive is structurally valid.
+        let eocd = bytes.len() - 22;
+        let entries = u16::from_le_bytes([bytes[eocd + 10], bytes[eocd + 11]]);
+        assert_eq!(entries, u16::MAX);
+
+        // The 65 536th member must panic (checked via catch_unwind so the
+        // valid-prefix assertions above stay in the same test).
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let overflowed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut zip = ZipWriter::new();
+            for _ in 0..=u16::MAX as usize {
+                zip.add_file("m", b"", 0, 0);
+            }
+        }));
+        std::panic::set_hook(default_hook);
+        assert!(overflowed.is_err(), "the 65536th member must fail loudly");
     }
 }
