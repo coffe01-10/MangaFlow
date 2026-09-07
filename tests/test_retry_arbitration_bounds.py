@@ -93,13 +93,21 @@ def test_compensation_restores_terminal_preimage(db_session):
 
 
 def test_verify_arbitrates_queued_loser(db_session):
+    from datetime import timedelta
+
     from fastapi import HTTPException
+
+    from app.models import utcnow
 
     older = _job(
         db_session,
         "仲裁排队兄",
         status=JobStatus.QUEUED,
     )
+    # Pin the ordering: both created_at defaults can land on the same clock
+    # tick, and the id tie-break on random UUIDs would flip the winner.
+    older.created_at = utcnow() - timedelta(seconds=5)
+    db_session.commit()
     younger = _job(db_session, "仲裁排队弟", status=JobStatus.QUEUED)
     snapshot = _snapshot_waiting()
 

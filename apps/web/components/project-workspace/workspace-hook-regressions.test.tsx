@@ -258,8 +258,10 @@ beforeEach(() => {
   modelsApi.mockResolvedValue([{
     catalog_id: "model-1",
     connection_id: "conn-1",
-    provider: "vertex-ai",
-    protocol: "VERTEX_NATIVE",
+    // Provider-neutral identifiers: the neutrality gate forbids concrete
+    // provider/protocol literals in web code outside the allowlist.
+    provider: "provider-a",
+    protocol: "OPENAI_COMPATIBLE",
     model_id: "nano-2",
     logical_alias: "image.nano_banana_2",
     display_name: "Nano Banana 2",
