@@ -299,3 +299,109 @@ def test_retry_guard_respects_intent_filters(db_session):
     with pytest.raises(HTTPException) as exc_info:
         job_service.reset_for_retry(db_session, second)
     assert exc_info.value.status_code == 409
+
+
+def test_post_commit_arbitration_respects_intent_filters(db_session):
+    """Pin the ARBITRATION-side intent filters (the pre-CAS guard side is
+    pinned above): a younger revival of a DIFFERENT intent must survive
+    verification — dropping repair_type/target_resolution from the
+    arbitration call would compensate it as a duplicate and cancel a
+    legitimate dispatch."""
+    from app.services.job_service import _verify_retry_revival_post_commit
+
+    project, parent, child_a, child_b = _seed_parent_with_children(db_session)
+    local_repair = job_service.create_job(
+        db_session,
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=child_a.id,
+        job_type="PAGE_REPAIR",
+        request_parameters={
+            "original_candidate_id": parent.id,
+            "repair_type": "LOCAL_REPAIR",
+        },
+    )
+    upscale = job_service.create_job(
+        db_session,
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=child_b.id,
+        job_type="PAGE_UPSCALE",
+        request_parameters={
+            "original_candidate_id": parent.id,
+            "target_resolution": "2K",
+        },
+    )
+    # Both revivals committed (created_at ordering: local_repair is older).
+    local_repair.status = JobStatus.WAITING
+    upscale.status = JobStatus.WAITING
+    db_session.commit()
+
+    # The younger cross-intent revival is NOT a duplicate of the older
+    # LOCAL_REPAIR: verification must let it proceed.
+    assert (
+        _verify_retry_revival_post_commit(db_session, upscale, {}) is True
+    )
+    db_session.expire_all()
+    assert db_session.get(GenerationJob, upscale.id).status == JobStatus.WAITING
+
+
+def test_post_commit_arbitration_compensates_same_intent_younger(
+    db_session, monkeypatch
+):
+    """Same-intent younger revival is compensated (back to FAILED) even when
+    the row was advanced to QUEUED by recovery before verification — the
+    QUEUED early-return used to skip arbitration entirely."""
+    from fastapi import HTTPException
+
+    from app.services.job_service import _verify_retry_revival_post_commit
+
+    project, parent, child_a, child_b = _seed_parent_with_children(db_session)
+    older = job_service.create_job(
+        db_session,
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=child_a.id,
+        job_type="PAGE_REPAIR",
+        request_parameters={
+            "original_candidate_id": parent.id,
+            "repair_type": "LOCAL_REPAIR",
+        },
+    )
+    younger = job_service.create_job(
+        db_session,
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=child_b.id,
+        job_type="PAGE_REPAIR",
+        request_parameters={
+            "original_candidate_id": parent.id,
+            "repair_type": "LOCAL_REPAIR",
+        },
+    )
+    older.status = JobStatus.WAITING
+    younger.status = JobStatus.QUEUED
+    younger.lease_owner = None
+    db_session.commit()
+
+    younger_snapshot = {
+        "job": {
+            "status": JobStatus.FAILED,
+            "error_code": "UPSTREAM",
+            "error_message": None,
+            "progress": 0,
+            "started_at": None,
+            "finished_at": None,
+            "cancelled_at": None,
+            "scheduled_at": None,
+            "lease_owner": None,
+            "lease_expires_at": None,
+        },
+        "run": None,
+    }
+    with pytest.raises(HTTPException) as exc_info:
+        _verify_retry_revival_post_commit(db_session, younger, younger_snapshot)
+    assert exc_info.value.status_code == 409
+    db_session.expire_all()
+    row = db_session.get(GenerationJob, younger.id)
+    assert row.status == JobStatus.FAILED

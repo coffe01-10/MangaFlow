@@ -22,6 +22,7 @@ from app.models import (
     WorkflowRun,
     utcnow,
 )
+from app.services.runtime_settings import apply_runtime_overrides
 from app.services.worker_handlers import provider
 from app.services.worker_handlers.asset_generate import _run_asset_generate
 from app.services.worker_handlers.execution import (
@@ -484,6 +485,12 @@ def execute_job(job_id: str) -> None:
     db = SessionLocal()
     owner = _worker_id()
     db.info["job_lease_owner"] = owner
+    # Runtime settings live in the DB: without this, an operator's
+    # job_lease_seconds override reaches API-side recovery (which computes
+    # the reclaim fence from it) but workers keep claiming and renewing with
+    # their boot-time lease — the two processes disagree on the lease
+    # geometry for the lifetime of the worker process.
+    apply_runtime_overrides(db, get_settings())
     try:
         job = db.get(GenerationJob, job_id)
         if not job or job.status == JobStatus.CANCELLED:

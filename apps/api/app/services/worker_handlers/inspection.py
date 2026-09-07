@@ -9,7 +9,7 @@ import json
 import logging
 
 from app.domain.states import JobStatus, PageStatus
-from app.model_adapters.base import MultimodalRequest
+from app.model_adapters.base import MultimodalRequest, ProviderAdapterError
 from app.models import (
     Asset,
     Chapter,
@@ -139,13 +139,36 @@ def _run_inspection(db, job: GenerationJob) -> None:
         raise JobCancelledError("候选已删除，任务取消，不再调用模型")
     page = db.get(MangaPage, candidate.page_id)
     asset = db.get(Asset, candidate.asset_id)
-    chapter = db.get(Chapter, page.chapter_id)
+    chapter = db.get(Chapter, page.chapter_id) if page else None
+    if page is None or chapter is None:
+        # Orphaned rows would otherwise convert the soft-delete guards below
+        # into an AttributeError and WORKER_ERROR retry loop.
+        raise JobCancelledError("候选所属页面或章节不存在，任务取消，不再调用模型")
     if chapter is not None and chapter.deleted_at is not None:
         # delete_chapter is a soft delete with no active-job 409 and cancels
         # nothing; inspect jobs never set candidate.job_id, so the route-side
         # cancel cannot see them either. A deleted chapter must never take a
         # paid multimodal call.
         raise JobCancelledError("章节已删除，任务取消，不再调用模型")
+    # Worker-side oldest-wins arbitration (mirrors style_analyze/story_parse):
+    # the route guard and the reconciler adoption are check-then-act, and the
+    # shared idempotency key only collapses creations with identical
+    # candidate/page versions — an interleaved fence bump splits the keys and
+    # both jobs go ACTIVE. The younger job dies here, before the paid call.
+    from app.services.job_service import oldest_active_job_id
+
+    oldest_id = oldest_active_job_id(
+        db,
+        job_type="PAGE_INSPECT",
+        target_id=str(candidate.id),
+        target_type="PAGE_CANDIDATE",
+    )
+    if oldest_id is not None and oldest_id != job.id:
+        raise ProviderAdapterError(
+            "PAGE_INSPECT_CONFLICT",
+            "同一候选已有更早的质检任务在进行，本次任务已在调用模型前取消",
+            retryable=False,
+        )
     project = db.get(Project, chapter.project_id)
     inspection_storyboard_version = page.storyboard_version
     # Scene writes deliberately never bump storyboard_version, so a review flag
@@ -161,10 +184,16 @@ def _run_inspection(db, job: GenerationJob) -> None:
     # PASSED/NOT_CHECKED over it (#136).
     baseline_continuity_status = page.continuity_status
     _, snapshot = compile_page_prompt(db, page, project)
-    categories = list(
-        job.request_parameters.get("categories", DEFAULT_INSPECTION_CATEGORIES),
+    categories = sorted(
+        {
+            str(item).strip().upper()
+            for item in job.request_parameters.get(
+                "categories", DEFAULT_INSPECTION_CATEGORIES
+            )
+            if str(item).strip()
+        }
     )
-    if "PRESENCE" not in {str(item).upper() for item in categories}:
+    if "PRESENCE" not in categories:
         # #164: presence compliance joins every inspection run regardless of
         # the caller's list — the completion gate treats it as required for
         # newly inspected candidates.
@@ -218,25 +247,32 @@ regions 使用 0 到 1 的归一化 x/y/width/height。"""
         "EXTRA",
     }
     passing_outcomes = {"MATCH", "PASS", "ACCEPTABLE"}
-    requested = [str(item) for item in categories]
+    requested = list(categories)
     seen: dict[str, object] = {}
     needs_review = False
     for item in output.items:
-        category = str(item.category)
+        category = str(item.category).strip().upper()
         if category not in requested:
             continue
-        if item.outcome not in valid_outcomes:
-            raise RuntimeError("质检结果包含非法 outcome")
+        if str(item.outcome).strip().upper() not in valid_outcomes:
+            # A deterministic invalid verdict must not burn max_attempts paid
+            # re-runs (generic RuntimeError classifies retryable).
+            raise ProviderAdapterError(
+                "INVALID_OUTPUT",
+                "质检结果包含非法 outcome",
+                retryable=False,
+            )
+        outcome = str(item.outcome).strip().upper()
         seen[category] = item
-        if item.outcome not in passing_outcomes:
+        if outcome not in passing_outcomes:
             needs_review = True
         db.add(
             InspectionResult(
                 generation_record_id=candidate.generation_record_id,
                 candidate_id=candidate.id,
                 storyboard_version=inspection_storyboard_version,
-                category=item.category,
-                outcome=item.outcome,
+                category=category,
+                outcome=outcome,
                 score=item.score,
                 details=item.details.model_dump(),
                 regions=item.regions,
@@ -282,7 +318,7 @@ regions 使用 0 到 1 的归一化 x/y/width/height。"""
     page = lock_entity(db, MangaPage, page.id)
     if page.storyboard_version != inspection_storyboard_version:
         raise execution.StaleStoryboardVersionError(
-            "分镜版本已变化，已在调用模型前取消本次检查；请按当前分镜重新检查"
+            "检查期间分镜已变化，本次质检结果作废；请按当前分镜重新检查"
         )
     if page.version != baseline_page_version:
         raise execution.StaleStoryboardVersionError(
@@ -316,11 +352,21 @@ regions 使用 0 到 1 的归一化 x/y/width/height。"""
         if category in latest
     )
     if not complete:
-        candidate.status = "READY"
+        # An incomplete run must not UPGRADE state: a candidate already
+        # NEEDS_REVIEW (failing gated rows at this storyboard version) stays
+        # there, and an existing NEEDS_REVIEW/NEEDS_RECHECK continuity flag
+        # is preserved like a drifted one (#136).
+        if candidate.status == "NEEDS_REVIEW":
+            needs_review = True
+        else:
+            candidate.status = "READY"
         if page.selected_candidate_id == candidate.id and candidate.is_selected:
-            # A drifted flag must not be wiped by NOT_CHECKED either (#136).
             page.continuity_status = (
-                "NEEDS_REVIEW" if continuity_drifted else "NOT_CHECKED"
+                "NEEDS_REVIEW"
+                if continuity_drifted
+                or page.continuity_status
+                in {"NEEDS_REVIEW", "NEEDS_RECHECK"}
+                else "NOT_CHECKED"
             )
             page.version += 1
     elif needs_review:
