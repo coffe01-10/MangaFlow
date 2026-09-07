@@ -9,6 +9,13 @@ from app.workflow_schemas import (
     WorkflowValidationRead,
 )
 
+# Operators whose comparison is meaningless without an expected value: the
+# executor passes condition.get("value") straight into the comparison, so a
+# missing key silently compares against None (eq/ne: always False against
+# numbers, contains: TypeError guarded to False) instead of failing at
+# publish time (#224).
+VALUE_REQUIRED_OPERATORS = {"eq", "ne", "gt", "gte", "lt", "lte", "contains"}
+
 
 def validate_graph(graph_value: WorkflowGraph | dict) -> WorkflowValidationRead:
     graph = (
@@ -86,6 +93,18 @@ def validate_graph(graph_value: WorkflowGraph | dict) -> WorkflowValidationRead:
                         severity="ERROR",
                         code="INVALID_CONDITION",
                         message="条件仅支持安全 JSON 路径和预定义比较符",
+                        node_id=node.id,
+                    )
+                )
+            elif (
+                condition.get("operator") in VALUE_REQUIRED_OPERATORS
+                and "value" not in condition
+            ):
+                issues.append(
+                    WorkflowValidationIssue(
+                        severity="ERROR",
+                        code="CONDITION_VALUE_REQUIRED",
+                        message="该比较符需要配置比较值",
                         node_id=node.id,
                     )
                 )

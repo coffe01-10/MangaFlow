@@ -289,6 +289,21 @@ class GrokBuildArtifactRunner:
                     stdout_checksum=inspect_stdout_checksum,
                     stderr_checksum=inspect_stderr_checksum,
                 )
+            if getattr(inspect, "stdout_truncated", False):
+                # #241-1: our own capture layer dropped bytes past its spill
+                # cap, so the hooks verdict below would parse partial JSON.
+                # Like an unexplained nonzero preflight exit this must not
+                # stamp a terminal capability verdict: UPSTREAM keeps the
+                # dispatch fail-closed while the retry budget absorbs it.
+                return replace(
+                    inspect,
+                    stdout=b"",
+                    stderr=b"",
+                    stdout_checksum=inspect_stdout_checksum,
+                    stderr_checksum=inspect_stderr_checksum,
+                    error_code="UPSTREAM",
+                    error_message="Grok Build CLI inspect 输出捕获被截断，无法确认钩子隔离状态",
+                )
             if inspect.exit_code:
                 # An unexplained nonzero preflight exit (AV/indexer file lock,
                 # self-update glitch, transient crash) must not stamp a
@@ -330,8 +345,6 @@ class GrokBuildArtifactRunner:
                 CLIProcessOutcome(124, timed_out=True),
                 environment,
                 run_id,
-                inspect_stdout_checksum,
-                inspect_stderr_checksum,
             )
         media_kwargs = dict(kwargs)
         media_kwargs["timeout_seconds"] = remaining_seconds
@@ -343,39 +356,31 @@ class GrokBuildArtifactRunner:
                 error.add_note("Grok Build failed-session cleanup did not complete")
             raise
         raw_stdout = outcome.stdout
-        raw_stderr = outcome.stderr
-        stdout_checksum = outcome.stdout_checksum or hashlib.sha256(raw_stdout).hexdigest()
-        stderr_checksum = outcome.stderr_checksum or hashlib.sha256(raw_stderr).hexdigest()
         if outcome.cancelled or outcome.timed_out:
+            return self._failure_outcome(outcome, environment, run_id)
+        if getattr(outcome, "stdout_truncated", False):
+            # #241-1: the capture layer dropped bytes past its spill cap, so
+            # the stream cannot be parsed and the CLI's real result — and any
+            # billed session image — is unknown. This is our failure, not the
+            # CLI's: classify retryable UPSTREAM instead of a terminal
+            # INVALID_OUTPUT/UNKNOWN_RESULT, and keep the session directory
+            # on disk for adoption/forensics instead of deleting it.
             return self._failure_outcome(
                 outcome,
                 environment,
                 run_id,
-                stdout_checksum,
-                stderr_checksum,
+                "UPSTREAM",
+                "CLI stdout 捕获被截断，无法采用 Grok Build 结果",
+                preserve_sessions=True,
             )
         if outcome.exit_code:
             code, message, _retryable = _map_failure(_decode_output(outcome))
-            return self._failure_outcome(
-                outcome,
-                environment,
-                run_id,
-                stdout_checksum,
-                stderr_checksum,
-                code,
-                message,
-            )
+            return self._failure_outcome(outcome, environment, run_id, code, message)
         try:
             summary = self._adopt(cwd, environment, raw_stdout)
         except ProviderAdapterError as error:
             return self._failure_outcome(
-                outcome,
-                environment,
-                run_id,
-                stdout_checksum,
-                stderr_checksum,
-                error.code,
-                error.user_message,
+                outcome, environment, run_id, error.code, error.user_message
             )
         except OSError:
             # Same contract as the antigravity runner: an OSError while
@@ -385,8 +390,6 @@ class GrokBuildArtifactRunner:
                 outcome,
                 environment,
                 run_id,
-                stdout_checksum,
-                stderr_checksum,
                 "INVALID_OUTPUT",
                 "Grok Build CLI 产物无法读取或落盘",
             )
@@ -395,12 +398,18 @@ class GrokBuildArtifactRunner:
             if cleanup_warning:
                 error.add_note("Grok Build failed-session cleanup did not complete")
             raise
+        # #195: the recorded checksums must verify against what is stored.
+        # The controller persists (a sanitized copy of) exactly the bytes
+        # returned here — the minimal summary on success, empty streams on
+        # failure — so the checksums cover those bytes rather than the raw
+        # stream, which is replaced/zeroed below and never persisted whole.
+        summary_payload = json.dumps(summary, sort_keys=True, separators=(",", ":")).encode()
         return replace(
             outcome,
-            stdout=json.dumps(summary, sort_keys=True, separators=(",", ":")).encode(),
+            stdout=summary_payload,
             stderr=b"",
-            stdout_checksum=stdout_checksum,
-            stderr_checksum=stderr_checksum,
+            stdout_checksum=hashlib.sha256(summary_payload).hexdigest(),
+            stderr_checksum=hashlib.sha256(b"").hexdigest(),
         )
 
     @staticmethod
@@ -408,12 +417,25 @@ class GrokBuildArtifactRunner:
         outcome: CLIProcessOutcome,
         environment: dict[str, str],
         run_id: str,
-        stdout_checksum: str,
-        stderr_checksum: str,
         error_code: str | None = None,
         error_message: str | None = None,
+        *,
+        preserve_sessions: bool = False,
     ) -> CLIProcessOutcome:
-        cleanup_warning = _cleanup_run_sessions(environment, run_id)
+        """Zero the streams (keeping at most a cleanup warning) and fail.
+
+        ``preserve_sessions`` (#241-1) skips the failed-session cleanup: when
+        the failure was caused by our own capture truncation the CLI may have
+        completed and been billed, so its session directory is evidence to
+        keep, not garbage. The recorded checksums always cover exactly the
+        bytes returned here — empty stdout, the cleanup-warning stderr — so
+        they verify against the logs the controller persists from this
+        outcome (#195) instead of a raw stream nobody stores.
+        """
+
+        cleanup_warning = (
+            None if preserve_sessions else _cleanup_run_sessions(environment, run_id)
+        )
         safe_stderr = b""
         resolved_message = error_message if error_message is not None else outcome.error_message
         if cleanup_warning:
@@ -428,8 +450,8 @@ class GrokBuildArtifactRunner:
             outcome,
             stdout=b"",
             stderr=safe_stderr,
-            stdout_checksum=stdout_checksum,
-            stderr_checksum=stderr_checksum,
+            stdout_checksum=hashlib.sha256(b"").hexdigest(),
+            stderr_checksum=hashlib.sha256(safe_stderr).hexdigest(),
             error_code=error_code if error_code is not None else outcome.error_code,
             error_message=resolved_message,
         )

@@ -15,7 +15,7 @@ invisible to every guard and could run a second paid structuring call next to
 a live parse on the same chapter.
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 
 import pytest
 from fastapi import HTTPException
@@ -288,12 +288,6 @@ def test_route_arbitrates_fence_split_duplicates(db_session):
     backstop: the older ACTIVE job wins, the younger duplicate is cancelled
     and the caller adopts the older one."""
 
-    from app.models import (
-        Asset,
-        Chapter,
-        GenerationBatch,
-        MangaPage,
-    )
     from app.services.job_service import arbitrate_inspection_creation
 
     project_row = Project(name="栅栏分裂仲裁")

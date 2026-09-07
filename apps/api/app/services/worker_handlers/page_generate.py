@@ -45,7 +45,12 @@ from app.services.model_capabilities import (
 )
 from app.services.model_router import model_supports_resolution
 from app.services.ordinal_allocator import lock_entity
-from app.services.prompt_compiler import PAGE_TEMPLATE_VERSION, compile_page_prompt
+from app.services.prompt_compiler import (
+    PAGE_TEMPLATE_VERSION,
+    STRUCTURED_BLOCK_MAX_CHARS,
+    _bound_structured_block,
+    compile_page_prompt,
+)
 from app.services.worker_handlers import execution, provider
 from app.services.worker_handlers.execution import (
     JobCancelledError,
@@ -53,6 +58,26 @@ from app.services.worker_handlers.execution import (
 )
 
 LOGGER = logging.getLogger("mangaflow.worker.page_generate")
+
+
+def _asset_blob_bytes(asset: Asset) -> bytes:
+    """Read an asset blob with a missing-file preflight (#210-5).
+
+    Terminal INVALID_INPUT instead of a raw FileNotFoundError (which the
+    worker classifies as retryable WORKER_ERROR and re-pays). The ``is_file``
+    probe tolerates the legacy ``_asset_path`` test seam (bare namespaces
+    exposing only ``read_bytes``).
+    """
+
+    path = provider._asset_path(asset)
+    is_file = getattr(path, "is_file", None)
+    if callable(is_file) and not is_file():
+        raise ProviderAdapterError(
+            "INVALID_INPUT",
+            f"素材文件缺失，已终止任务：{asset.original_name}",
+            retryable=False,
+        )
+    return path.read_bytes()
 
 
 def _load_reference_assets(
@@ -203,13 +228,26 @@ def _load_reference_assets(
     if style:
         style_reference_ids = style.profile.get("reference_asset_ids", [])
         if style_reference_ids:
-            references.extend(
+            style_references = list(
                 db.scalars(
                     select(Asset).where(
                         Asset.id.in_(style_reference_ids), Asset.deleted_at.is_(None)
                     )
                 )
             )
+            loaded_style_ids = {item.id for item in style_references}
+            if loaded_style_ids != set(style_reference_ids):
+                # #236-2 fence: the deleted_at filter used to silently shrink
+                # the reference list, so a paid call could lose the style
+                # image with no signal — the generated page drifted from the
+                # style the user selected. Same pre-call contract as the
+                # scene/selection reference loads above.
+                missing_style = sorted(set(style_reference_ids) - loaded_style_ids)
+                raise RuntimeError(
+                    "风格参考图已删除或失效，已在调用模型前停止任务："
+                    + "、".join(missing_style)
+                )
+            references.extend(style_references)
     previous = db.scalar(
         select(MangaPage).where(
             MangaPage.chapter_id == page.chapter_id,
@@ -506,10 +544,9 @@ def _run_page_generate(db, job: GenerationJob) -> None:
     reference_bytes: list[bytes] = []
     reference_types: list[str] = []
     for asset in reference_assets:
-        path = provider._asset_path(asset)
-        if not path.is_file():
-            raise RuntimeError(f"参考图文件不存在：{asset.original_name}")
-        reference_bytes.append(path.read_bytes())
+        # #210-5: a vanished blob must terminate here (non-retryable) instead
+        # of failing the paid dispatch as retryable WORKER_ERROR.
+        reference_bytes.append(_asset_blob_bytes(asset))
         reference_types.append(asset.mime_type)
 
     reference_asset_ids = [asset.id for asset in reference_assets]
@@ -522,7 +559,7 @@ def _run_page_generate(db, job: GenerationJob) -> None:
         original_asset = db.get(Asset, original.asset_id)
         if original_asset is None or original_asset.deleted_at is not None:
             raise JobCancelledError("原始候选素材已被删除，模型返回结果不再写入")
-        reference_bytes.insert(0, provider._asset_path(original_asset).read_bytes())
+        reference_bytes.insert(0, _asset_blob_bytes(original_asset))
         reference_types.insert(0, original_asset.mime_type)
         reference_asset_ids.insert(0, original_asset.id)
         if job.job_type == "PAGE_REPAIR":
@@ -538,9 +575,18 @@ def _run_page_generate(db, job: GenerationJob) -> None:
                 "details": inspection.details,
                 "target_regions": repair.target_regions,
             }
+            # #244-1: the raw json.dumps used to append inspection.details and
+            # repair.target_regions UNBOUNDED after the compiled prompt had
+            # already been squeezed into PROMPT_CHAR_BUDGET — a hostile or
+            # degenerate verdict blob reopened the budget through this side
+            # door. Bound each context block with the compiler's own
+            # per-block budget (deterministic hard cuts, #160 style).
+            bounded_repair_context = _bound_structured_block(
+                repair_context, STRUCTURED_BLOCK_MAX_CHARS
+            )
             prompt += (
                 "\n这是局部修复任务。严格根据以下检查结果修复指定范围："
-                f"{json.dumps(repair_context, ensure_ascii=False, separators=(',', ':'))}。"
+                f"{json.dumps(bounded_repair_context, ensure_ascii=False, separators=(',', ':'))}。"
                 "不得改动范围外的人物身份、服装、背景、格线、文字、镜头与构图；"
                 "修复后仍输出完整页面。"
             )
@@ -558,10 +604,16 @@ def _run_page_generate(db, job: GenerationJob) -> None:
                 "mask_asset_id": mask_asset.id,
                 "target_regions": target_regions,
             }
+            # #244-1: same budget bound as the repair context — the caller's
+            # target_regions are request parameters, not compiler output, and
+            # must not append unbounded either.
+            bounded_region_context = _bound_structured_block(
+                region_context, STRUCTURED_BLOCK_MAX_CHARS
+            )
             prompt += (
                 "\n这是局部重抽卡任务。原始页是第一张参考图；只允许重绘以下 mask "
                 "区域内的内容："
-                f"{json.dumps(region_context, ensure_ascii=False, separators=(',', ':'))}。"
+                f"{json.dumps(bounded_region_context, ensure_ascii=False, separators=(',', ':'))}。"
                 "mask 区域外的人物身份、服装、背景、格线、文字、镜头与构图必须与原图"
                 "保持一致；仍输出完整页面。"
             )

@@ -180,17 +180,21 @@ def sweep_orphan_generated_files(
     *,
     older_than: timedelta = DEFAULT_ORPHAN_GRACE,
 ) -> dict[str, int]:
-    """Delete generated files and thumbnails no ``Asset`` row references.
+    """Delete generated and uploaded files no ``Asset`` row references.
 
     Orphan origin: ``_save_generated_asset`` / ``_save_asset_candidate``
     write bytes under ``storage/generated`` before any DB row exists, and the
     post-call completion CAS / lease-lost rollback in ``worker_tasks`` can
     discard the owning rows while leaving the file plus its thumbnails on
-    disk. This sweep walks ``storage/generated`` and ``storage/thumbnails``
-    and unlinks files that are (a) older than ``older_than`` (floored at one
-    hour) and (b) referenced by no ``Asset`` row through ``storage_key``,
-    ``thumbnail_320_key`` or ``thumbnail_640_key`` — soft-deleted rows count
-    as references too, because asset deletes unlink no files by design.
+    disk. The same window exists for user uploads (``uploads/{project_id}``
+    is written before the row insert; a crash, or the loser of a concurrent
+    resurrect — see the upload route's version-CAS — leaves its bytes
+    behind). This sweep walks ``storage/generated``, ``storage/thumbnails``
+    and the whole ``upload_root`` and unlinks files that are (a) older than
+    ``older_than`` (floored at one hour) and (b) referenced by no ``Asset``
+    row through ``storage_key``, ``thumbnail_320_key`` or
+    ``thumbnail_640_key`` — soft-deleted rows count as references too,
+    because asset deletes unlink no files by design.
 
     Conservative: symlinks/junctions are neither followed nor unlinked,
     walk errors are logged and skipped without aborting the sweep, reference
@@ -205,35 +209,45 @@ def sweep_orphan_generated_files(
 
         session_factory = SessionLocal
     root = settings.storage_root.resolve()
+    upload_root = settings.upload_root.resolve()
 
     candidates: list[tuple[Path, str]] = []
 
     def _log_walk_error(error: OSError) -> None:
         LOGGER.warning("orphan sweep skipped unreadable path %s", error.filename)
 
-    for relative_root in ("generated", "thumbnails"):
-        top = root / relative_root
-        if not top.is_dir():
-            continue
-        for current, dirnames, filenames in os.walk(
-            top, followlinks=False, onerror=_log_walk_error
-        ):
-            # Prune link-like children regardless of how the platform
-            # classifies junctions during iteration: never descend into them.
-            for name in list(dirnames):
-                if _is_link(Path(current) / name):
-                    dirnames.remove(name)
-            for name in filenames:
-                path = Path(current) / name
-                if _is_link(path):
-                    continue
-                try:
-                    if path.stat().st_mtime >= cutoff:
+    # Upload files live directly under per-project directories (plus their
+    # ``thumbnails`` subtree), while generated media sits under the named
+    # storage subdirectories; scanning upload_root wholesale covers both.
+    scan_roots: list[tuple[Path, tuple[str, ...]]] = [
+        (root, ("generated", "thumbnails")),
+    ]
+    if upload_root != root:
+        scan_roots.append((upload_root, ("",)))
+    for base, relative_roots in scan_roots:
+        for relative_root in relative_roots:
+            top = base / relative_root if relative_root else base
+            if not top.is_dir():
+                continue
+            for current, dirnames, filenames in os.walk(
+                top, followlinks=False, onerror=_log_walk_error
+            ):
+                # Prune link-like children regardless of how the platform
+                # classifies junctions during iteration: never descend into them.
+                for name in list(dirnames):
+                    if _is_link(Path(current) / name):
+                        dirnames.remove(name)
+                for name in filenames:
+                    path = Path(current) / name
+                    if _is_link(path):
                         continue
-                except OSError:
-                    LOGGER.warning("orphan sweep skipped unstattable file %s", path)
-                    continue
-                candidates.append((path, path.relative_to(root).as_posix()))
+                    try:
+                        if path.stat().st_mtime >= cutoff:
+                            continue
+                    except OSError:
+                        LOGGER.warning("orphan sweep skipped unstattable file %s", path)
+                        continue
+                    candidates.append((path, path.relative_to(base).as_posix()))
 
     referenced: set[str] = set()
     if candidates:
@@ -274,6 +288,11 @@ def sweep_orphan_generated_files(
 
     for relative_root in ("generated", "thumbnails"):
         _prune_empty_directories(root / relative_root)
+    # Same best-effort pruning for upload_root: project directories whose
+    # files were all swept must not accumulate; the root itself is kept by
+    # _prune_empty_directories' top guard.
+    if upload_root != root:
+        _prune_empty_directories(upload_root)
     if counts["removed"] or counts["failed"]:
         LOGGER.info(
             "orphan media sweep: %s removed, %s failed, %s scanned",

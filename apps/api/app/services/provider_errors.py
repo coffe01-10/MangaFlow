@@ -32,6 +32,20 @@ PROVIDER_ERROR_CODES: frozenset[str] = frozenset(
     }
 )
 
+# Terminal adapter-emitted codes that intentionally live outside the canonical
+# classifier vocabulary above (like MODEL_ROUTE_UNAVAILABLE and
+# AUDIT_PERSISTENCE_FAILED): they are raised by adapters/worker plumbing, not
+# produced by a protocol classifier, so the pinned provider-code contract set
+# stays stable.
+# The model stopped on a token/turn limit: the output is provably incomplete
+# (issue #205) and a retry without a larger budget would bill the same
+# truncation again, so it is never retryable.
+OUTPUT_TRUNCATED = "OUTPUT_TRUNCATED"
+# A stored provider key cannot be opened with the current master key (issue
+# #243): rotation or corruption is an operator action away; retrying inside
+# the worker would just loop, so it is terminal.
+CREDENTIAL_DECRYPT_FAILED = "CREDENTIAL_DECRYPT_FAILED"
+
 
 @dataclass(frozen=True)
 class ProviderFailure:

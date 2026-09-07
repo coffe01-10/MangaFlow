@@ -412,7 +412,9 @@ def test_repair_and_upscale_write_lineage_rows(
             "target_regions": [],
             "target_fields": [],
             "model_alias": "image.nano_banana_2",
-            "resolution": "1K",
+            # #246: RepairRequest rejects 1K; 2K keeps the request valid so the
+            # lineage rows (what this test asserts) are written.
+            "resolution": "2K",
         },
     )
     assert repaired.status_code == 202, repaired.text
@@ -458,7 +460,9 @@ def test_inspection_family_rejects_soft_deleted_candidates(client, db_session):
             "inspection_result_id": "irrelevant",
             "repair_type": "PANEL",
             "model_alias": "image.nano_banana_2",
-            "resolution": "1K",
+            # #246: RepairRequest rejects 1K; a valid 2K payload keeps the
+            # 409 coming from the soft-delete guard this test asserts.
+            "resolution": "2K",
         },
     )
     assert repaired.status_code == 409

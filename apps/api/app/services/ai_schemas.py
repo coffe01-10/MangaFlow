@@ -15,13 +15,36 @@ DRAFT_NAME_MAX_LENGTH = 120
 DRAFT_LOCATION_MAX_LENGTH = 200
 DRAFT_TEXT_MAX_LENGTH = 8000
 DRAFT_ALIAS_MAX_ITEMS = 40
+# Container caps (#240/#244-1): the #159 string caps bounded every leaf field,
+# but list/dict containers had no cap, so a hostile or degenerate emission
+# could still bill unbounded validation/persistence work (segment-id lists,
+# props, presence maps, inspection items/regions). The values stay far above
+# anything a faithful emission produces; the story_parse sanitizer re-enforces
+# them as defense in depth because merge-time mutation (the cross-chunk
+# ``dict.fromkeys`` unions) can exceed caps every chunk validated against.
+DRAFT_SEGMENT_MAX_ITEMS = 200
+DRAFT_PROPS_MAX_ITEMS = 20
+DRAFT_PRESENCE_MAX_ITEMS = 40
+# Inspection-side caps (#244-1): the sanitizer-style bound for verdict text
+# and the per-run caps on persisted item/region rows (the handler additionally
+# dedupes per category before persisting).
+INSPECTION_TEXT_MAX_LENGTH = 2000
+INSPECTION_REGIONS_MAX_ITEMS = 16
+INSPECTION_ITEMS_MAX = 32
 
 
 class CharacterDraft(BaseModel):
     primary_name: str = Field(max_length=DRAFT_NAME_MAX_LENGTH)
     aliases: list[str] = Field(default_factory=list, max_length=DRAFT_ALIAS_MAX_ITEMS)
     description: str = Field(default="", max_length=DRAFT_TEXT_MAX_LENGTH)
-    source_segment_ids: list[str] = Field(default_factory=list)
+    source_segment_ids: list[str] = Field(
+        default_factory=list, max_length=DRAFT_SEGMENT_MAX_ITEMS
+    )
+    # Internal merge-time marker (#240): never part of the model contract —
+    # ``_merge_story_parse_outputs`` sets it when a cross-chunk fusion merges
+    # two different primary names, so persistence can raise alias_conflict
+    # instead of silently dropping the second name.
+    alias_conflict: bool = False
 
 
 class BeatDraft(BaseModel):
@@ -41,9 +64,17 @@ class BeatDraft(BaseModel):
     must_visualize: bool = True
     mergeable: bool = False
     page_turn_hook: bool = False
-    source_segment_ids: list[str] = Field(default_factory=list)
-    character_presence: dict[str, CharacterPresence] = Field(default_factory=dict)
-    props: list[str] = Field(default_factory=list)
+    source_segment_ids: list[str] = Field(
+        default_factory=list, max_length=DRAFT_SEGMENT_MAX_ITEMS
+    )
+    character_presence: dict[str, CharacterPresence] = Field(
+        default_factory=dict, max_length=DRAFT_PRESENCE_MAX_ITEMS
+    )
+    props: list[str] = Field(default_factory=list, max_length=DRAFT_PROPS_MAX_ITEMS)
+    # Internal sanitizer-time marker (#240): the raw keys that collapsed onto
+    # one normalized presence key with conflicting values. Persisted into
+    # Beat.source_range so the silent last-write-wins becomes an auditable flag.
+    presence_key_conflicts: list[str] = Field(default_factory=list)
 
 
 class SceneDraft(BaseModel):
@@ -53,7 +84,9 @@ class SceneDraft(BaseModel):
     weather: str = Field(default="", max_length=DRAFT_NAME_MAX_LENGTH)
     purpose: str = Field(default="", max_length=DRAFT_TEXT_MAX_LENGTH)
     emotional_arc: str = Field(default="", max_length=DRAFT_TEXT_MAX_LENGTH)
-    source_segment_ids: list[str] = Field(default_factory=list)
+    source_segment_ids: list[str] = Field(
+        default_factory=list, max_length=DRAFT_SEGMENT_MAX_ITEMS
+    )
     beats: list[BeatDraft]
 
 
@@ -70,8 +103,8 @@ class BubbleTextDiff(BaseModel):
 
 
 class InspectionDetails(BaseModel):
-    expected: str
-    observed: str
+    expected: str = Field(max_length=INSPECTION_TEXT_MAX_LENGTH)
+    observed: str = Field(max_length=INSPECTION_TEXT_MAX_LENGTH)
     differences: list[str] = Field(default_factory=list)
     bubble_diffs: list[BubbleTextDiff] = Field(default_factory=list)
     # PRESENCE compliance (#164): every character the model actually sees in
@@ -87,11 +120,11 @@ class InspectionItem(BaseModel):
     score: float | None = None
     severity: str = "INFO"
     details: InspectionDetails
-    regions: list[dict] = Field(default_factory=list)
+    regions: list[dict] = Field(default_factory=list, max_length=INSPECTION_REGIONS_MAX_ITEMS)
 
 
 class PageInspectionOutput(BaseModel):
-    items: list[InspectionItem]
+    items: list[InspectionItem] = Field(max_length=INSPECTION_ITEMS_MAX)
 
 
 class StyleAnalysisOutput(BaseModel):

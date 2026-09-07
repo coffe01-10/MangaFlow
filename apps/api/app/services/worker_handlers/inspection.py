@@ -19,7 +19,7 @@ from app.models import (
     PageCandidate,
     Project,
 )
-from app.services.ai_schemas import PageInspectionOutput
+from app.services.ai_schemas import INSPECTION_ITEMS_MAX, PageInspectionOutput
 from app.services.ordinal_allocator import lock_entity
 from app.services.page_completion import (
     GATED_QUALITY_CATEGORIES,
@@ -41,6 +41,29 @@ DEFAULT_INSPECTION_CATEGORIES = [
     "CONTINUITY",
     "PRESENCE",
 ]
+
+
+def _asset_blob_bytes(asset: Asset) -> bytes:
+    """Read an asset blob with a missing-file preflight (#210-5).
+
+    A vanished blob (storage sweep, partial restore, manual deletion) must
+    fail TERMINALLY: the raw ``read_bytes`` FileNotFoundError reaches the
+    worker's generic path as retryable WORKER_ERROR and burns max_attempts
+    paid re-runs against a file that will not reappear. ``INVALID_INPUT`` is
+    the established non-retryable code for "this input cannot be used". The
+    ``is_file`` probe tolerates the legacy ``_asset_path`` test seam, which
+    returns bare namespaces exposing only ``read_bytes``.
+    """
+
+    path = provider._asset_path(asset)
+    is_file = getattr(path, "is_file", None)
+    if callable(is_file) and not is_file():
+        raise ProviderAdapterError(
+            "INVALID_INPUT",
+            f"素材文件缺失，已终止任务：{asset.original_name}",
+            retryable=False,
+        )
+    return path.read_bytes()
 
 
 def _normalize_presence_name(value: str) -> str:
@@ -224,14 +247,33 @@ regions 使用 0 到 1 的归一化 x/y/width/height。"""
         task_kind=job.job_type,
     )
     job.catalog_model_id = binding.resolved.model.id
+    # #223-4 pre-call fence: the paid call used to run on a candidate whose
+    # based_on_storyboard_version was already stale at claim time (a storyboard
+    # edit landing between enqueueing and execution); only the post-call guard
+    # caught it, after the tokens were billed. Mirror the page_generate guard:
+    # die terminally BEFORE the call. Legacy rows (NULL fence) pass — the
+    # post-call snapshot guards still cover them.
+    db.refresh(page, attribute_names=["storyboard_version"])
+    if (
+        candidate.based_on_storyboard_version is not None
+        and candidate.based_on_storyboard_version != page.storyboard_version
+    ):
+        raise execution.StaleStoryboardVersionError(
+            "分镜版本已变化，已在调用模型前取消本次质检；请按当前分镜重新检查"
+        )
     output = provider._invoke_provider(
         db,
         binding,
         lambda adapter: adapter.analyze_multimodal(
             MultimodalRequest(
                 prompt=prompt,
-                images=(provider._asset_path(asset).read_bytes(),),
+                images=(_asset_blob_bytes(asset),),
                 mime_types=(asset.mime_type,),
+                # #205: without the explicit budget the provider default caps
+                # output at 2048 tokens and silently truncates the verdict
+                # list (the schema then fails as INVALID_OUTPUT after the paid
+                # call). Mirror story_parse's structured-call metadata.
+                metadata={"max_output_tokens": 8192, "thinking_budget": 0},
             ),
             PageInspectionOutput,
         ),
@@ -250,6 +292,7 @@ regions 使用 0 到 1 的归一化 x/y/width/height。"""
     requested = list(categories)
     seen: dict[str, object] = {}
     needs_review = False
+    persisted_items = 0
     for item in output.items:
         category = str(item.category).strip().upper()
         if category not in requested:
@@ -262,8 +305,32 @@ regions 使用 0 到 1 的归一化 x/y/width/height。"""
                 "质检结果包含非法 outcome",
                 retryable=False,
             )
+        if category in seen:
+            # #244-1: one verdict row per category — the model repeating a
+            # category used to persist one row per emission, and
+            # latest_inspections_by_category then resolved the pile by
+            # timestamps. First emission wins (deterministic); repeats are
+            # dropped with a note.
+            LOGGER.warning(
+                "PAGE_INSPECT job %s: dropped duplicate %s verdict (first emission kept)",
+                job.id,
+                category,
+            )
+            continue
+        if persisted_items >= INSPECTION_ITEMS_MAX:
+            # #244-1: bound the persisted row count per run; the schema cap
+            # already rejects emissions above the cap at validation, this is
+            # the handler-side backstop for validated-but-degenerate lists.
+            LOGGER.warning(
+                "PAGE_INSPECT job %s: dropped %s verdict, persisted item cap %d reached",
+                job.id,
+                category,
+                INSPECTION_ITEMS_MAX,
+            )
+            continue
         outcome = str(item.outcome).strip().upper()
         seen[category] = item
+        persisted_items += 1
         if outcome not in passing_outcomes:
             needs_review = True
         db.add(
@@ -279,12 +346,13 @@ regions 使用 0 到 1 的归一化 x/y/width/height。"""
                 severity=item.severity,
             )
         )
-    detected_names = {
-        name
-        for item in output.items
-        if str(item.category).upper() == "PRESENCE"
-        for name in (item.details.detected_characters or [])
-    }
+    # The compliance cross-check reads the SAME verdict that was persisted:
+    # with per-category dedupe (#244-1) the first PRESENCE emission is the one
+    # on record, so dropped duplicates must not feed the deterministic check.
+    presence_item = seen.get("PRESENCE")
+    detected_names = set(
+        (presence_item.details.detected_characters or []) if presence_item else []
+    )
     compliance = _presence_compliance(snapshot, detected_names)
     if compliance is not None:
         # Deterministic cross-check failed (#164): persist a synthesized

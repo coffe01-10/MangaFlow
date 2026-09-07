@@ -76,6 +76,13 @@ def create_workflow_run(
     from app.services.ordinal_allocator import lock_entity
 
     lock_entity(db, WorkflowDefinition, workflow.id)
+    # The route-side `_workflow` guard ran before this lock was granted; a
+    # concurrent delete_workflow committing in between would soft-delete the
+    # definition under a run we are about to start executing paid jobs for
+    # (#197). The lock re-read the row (populate_existing), so re-check the
+    # tombstone here like retry_run does and refuse instead of resurrecting.
+    if workflow.deleted_at is not None:
+        raise ValueError("工作流不存在或已删除")
     active_run = db.scalar(
         select(WorkflowRun.id).where(
             WorkflowRun.workflow_id == workflow.id,

@@ -51,7 +51,11 @@ def _bound_structured_block(value: object, max_chars: int) -> object:
     """
 
     def serialized(item: object) -> str:
-        return json.dumps(item, ensure_ascii=False, separators=(",", ":"))
+        # allow_nan=False (#225): a non-finite float anywhere in the payload
+        # must raise here (a terminal, classified worker error) instead of
+        # embedding a bare NaN token in a paid prompt that providers reject
+        # after the call was already metered.
+        return json.dumps(item, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
 
     max_chars = max(max_chars, 2)  # "" / [] / {} serialize to 2 chars
     if len(serialized(value)) <= max_chars:
@@ -366,7 +370,7 @@ def compile_page_prompt(
 character_presence 为 VISIBLE 的角色必须在对应画面中画出；OFFSCREEN/MENTIONED 的角色不得出现。
 {mode_instruction}
 原文与页面结构如下：
-{json.dumps(payload, ensure_ascii=False, separators=(",", ":"))}
+{json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":"))}
 要求：采用专业日本漫画页面语言，格子大小有节奏变化，右上开始、左下结束；
 {render_rules}使用清晰格线；严格使用 scene_outfits 指定服装；角色身份、服装、道具和场景连续；
 若存在 style.profile，按其总结的{style_dimensions}执行；

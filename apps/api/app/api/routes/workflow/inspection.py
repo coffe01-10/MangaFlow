@@ -128,6 +128,11 @@ def repair_candidate(
     if not original or not original.asset_id or original.deleted_at is not None:
         raise HTTPException(status_code=409, detail="原始候选图片不存在")
     ensure_project_scope(db, original, project_id, label="候选")
+    # Issue #246-1: mirror the upscale rank guard — model support alone let a
+    # paid repair silently downgrade a 2K/4K candidate back to 1K.
+    resolution_rank = {"1K": 1, "2K": 2, "4K": 4}
+    if resolution_rank[payload.resolution.value] < resolution_rank[original.resolution.value]:
+        raise HTTPException(status_code=409, detail="修复清晰度不能低于当前候选清晰度")
     inspection = db.get(InspectionResult, payload.inspection_result_id)
     if not inspection or inspection.candidate_id != original.id:
         raise HTTPException(status_code=409, detail="检查结果与候选不匹配")
@@ -149,6 +154,16 @@ def repair_candidate(
         generation_kind="REPAIR",
         close_open_page_batches=True,
     )
+    # Issue #230 residual: create_generation_batch acquired (and holds) the
+    # project/page locks; a concurrent delete of the original candidate can
+    # have committed between the route's initial read and this point. The
+    # route must re-read the tombstone state now and refuse, otherwise it
+    # enqueues a paid PAGE_REPAIR whose parent is gone (the worker fence is
+    # the backstop, not the route contract).
+    db.refresh(original)
+    if original.deleted_at is not None:
+        db.rollback()  # discard the reserved batch and release the locks
+        raise HTTPException(status_code=409, detail="原始候选已被删除，请刷新后重试")
     # Post-lock budget/duplicate window: create_generation_batch acquired the
     # project/page locks and they are held until this route commits (or rolls
     # back on the guards below). Every sibling repair/upscale must take the
@@ -193,7 +208,13 @@ def repair_candidate(
         model_alias=payload.model_alias,
         resolution=payload.resolution,
         status="QUEUED",
-        based_on_storyboard_version=page.storyboard_version,
+        # Issue #237-1: stamp-inheritance. Stamping the page's CURRENT
+        # storyboard_version laundered a stale parent: a repair of a
+        # candidate built on an older storyboard arrived as CURRENT and every
+        # adoption gate read it as fresh. The child inherits the parent's
+        # based_on_storyboard_version (equal to the page's whenever the
+        # parent is CURRENT), so staleness propagates truthfully.
+        based_on_storyboard_version=original.based_on_storyboard_version,
         # Contract §8.6-3: repairs inherit the original candidate's complete
         # queue-time snapshot, including character_packages, without re-resolving.
         prompt_snapshot=dict(original.prompt_snapshot or {}),
@@ -297,6 +318,14 @@ def upscale_candidate(
         generation_kind="UPSCALE",
         close_open_page_batches=True,
     )
+    # Issue #230 residual: same post-lock re-read as the repair route — a
+    # concurrent delete of the original may have committed while the batch
+    # allocation took the locks; refuse instead of enqueuing a paid upscale
+    # of a tombstoned parent.
+    db.refresh(original)
+    if original.deleted_at is not None:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="原始候选已被删除，请刷新后重试")
     # Post-lock duplicate window (same locks-and-commit guarantee as the repair
     # route): the job's target_id is the new child, so match ACTIVE
     # PAGE_UPSCALE jobs for this original's lineage children on the stored
@@ -321,7 +350,10 @@ def upscale_candidate(
         model_alias=payload.model_alias,
         resolution=payload.resolution,
         status="QUEUED",
-        based_on_storyboard_version=page.storyboard_version,
+        # Issue #237-1: stamp-inheritance (same rationale as the repair
+        # route): the upscaled child inherits the parent's storyboard stamp
+        # so a stale parent cannot be laundered into a CURRENT candidate.
+        based_on_storyboard_version=original.based_on_storyboard_version,
         # Contract §8.6-3: upscales inherit the original candidate's complete
         # queue-time snapshot, including character_packages, without re-resolving.
         prompt_snapshot=dict(original.prompt_snapshot or {}),

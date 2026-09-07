@@ -33,15 +33,26 @@ from app.usage_schemas import (
 )
 
 _INPUT_ALIASES = ("input_tokens", "prompt_tokens", "prompt_token_count")
+# Thinking-model aliases come last: when a standard output alias is present it
+# already covers the billable output (Vertex reports candidates_token_count
+# separately from thoughts_token_count), so the reasoning keys act only as a
+# last-resort output bucket — but they must stay KNOWN either way, otherwise
+# every thinking-model row has an unmapped positive key and freezes at PARTIAL
+# (issue #209).
 _OUTPUT_ALIASES = (
     "output_tokens",
     "completion_tokens",
     "candidates_token_count",
+    "thoughts_token_count",
+    "reasoning_tokens",
+    "thinking_tokens",
 )
 _CACHED_PATHS = (
     ("cached_input_tokens",),
     ("cached_content_token_count",),
     ("cache_read_input_tokens",),
+    # grok/antigravity gateways report cached reads under this flat key.
+    ("cache_read_tokens",),
     ("prompt_tokens_details", "cached_tokens"),
 )
 _IMAGE_ALIASES = ("output_images",)

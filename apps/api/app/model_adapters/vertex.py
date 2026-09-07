@@ -10,6 +10,9 @@ from app.model_adapters.base import (
     MultimodalRequest,
     ProviderAdapterError,
     StructuredRequest,
+    attach_provider_usage,
+    blocked_finish_reason,
+    response_usage,
 )
 from app.services.model_registry import ModelCapability
 from app.services.vertex_credentials import (
@@ -33,17 +36,6 @@ class VertexAdapterError(ProviderAdapterError):
             retryable=retryable,
             retry_after_seconds=retry_after_seconds,
         )
-
-
-# finish_reason values the SDK reports on otherwise-successful empty responses
-# when safety systems blocked the content (docs/v02-cli-executor-contract.md §7).
-_BLOCKED_FINISH_REASONS = {
-    "SAFETY",
-    "RECITATION",
-    "BLOCKLIST",
-    "PROHIBITED_CONTENT",
-    "SPII",
-}
 
 
 class _VertexBase:
@@ -78,21 +70,7 @@ class _VertexBase:
         except Exception:
             return None
 
-    @staticmethod
-    def _blocked_reason(response) -> str | None:
-        """Read safety refusals the SDK surfaces as successful empty responses."""
-        feedback = getattr(response, "prompt_feedback", None)
-        block = getattr(feedback, "block_reason", None) if feedback else None
-        if block:
-            return str(getattr(block, "name", block))
-        for candidate in getattr(response, "candidates", None) or []:
-            reason = getattr(candidate, "finish_reason", None)
-            if reason is None:
-                continue
-            name = str(getattr(reason, "name", reason))
-            if name in _BLOCKED_FINISH_REASONS:
-                return name
-        return None
+    _blocked_reason = staticmethod(blocked_finish_reason)
 
     def _validate_structured(
         self, text: str | None, output_schema: type[BaseModel], *, empty_message: str
@@ -146,11 +124,13 @@ class VertexTextAdapter(_VertexBase):
                 raise VertexAdapterError(
                     "CONTENT_POLICY", "请求被 Vertex 内容安全策略拦截，系统已缩小生成片段；请重试"
                 )
-            return self._validate_structured(
+            result = self._validate_structured(
                 self._response_text(response),
                 output_schema,
                 empty_message="模型没有返回可验证的结构化结果",
             )
+            attach_provider_usage(result, response_usage(response))
+            return result
         except VertexAdapterError:
             raise
         except Exception as error:
@@ -184,11 +164,13 @@ class VertexTextAdapter(_VertexBase):
                 raise VertexAdapterError(
                     "CONTENT_POLICY", "请求被 Vertex 内容安全策略拦截，系统已缩小生成片段；请重试"
                 )
-            return self._validate_structured(
+            result = self._validate_structured(
                 self._response_text(response),
                 output_schema,
                 empty_message="模型没有返回检查结果",
             )
+            attach_provider_usage(result, response_usage(response))
+            return result
         except VertexAdapterError:
             raise
         except Exception as error:
@@ -259,11 +241,7 @@ class VertexImageAdapter(_VertexBase):
                         "请求被 Vertex 内容安全策略拦截，本次生成被拒绝",
                     )
                 raise VertexAdapterError("INVALID_OUTPUT", "模型未返回图像")
-            usage = (
-                response.usage_metadata.model_dump(exclude_none=True)
-                if response.usage_metadata
-                else {}
-            )
+            usage = response_usage(response) or {}
             return ModelResponse(
                 model_id=self.capability.model_id,
                 request_id=getattr(response, "response_id", None),

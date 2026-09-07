@@ -1836,3 +1836,6 @@ def test_execute_job_applies_runtime_lease_override(monkeypatch):
         assert seen["claimed_lease"] is not None
         settings.job_timeout_seconds = original_timeout
         settings.job_lease_seconds = original_lease
+        # Release pooled connections before TemporaryDirectory cleanup:
+        # on Windows the open pool handles keep lease-override.db locked.
+        engine.dispose()

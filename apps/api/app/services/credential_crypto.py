@@ -18,6 +18,22 @@ _AAD = b"mangaflow-provider-key-v1"
 _LOCAL_MASTER_KEY_FILENAME = ".provider-credential-master-key"
 
 
+class CredentialDecryptError(RuntimeError):
+    """A stored provider secret cannot be opened with the current master key.
+
+    Subclasses ``RuntimeError`` so existing handlers keep working, but the
+    worker's binding layer matches this exact type to converge the failure
+    into a terminal ``CREDENTIAL_DECRYPT_FAILED`` instead of a retryable
+    generic loop (issue #243). ``connection_id``/``key_id`` are stamped by
+    ``select_provider_key`` so the health transition can target the rows.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.connection_id: str | None = None
+        self.key_id: str | None = None
+
+
 def _load_or_create_local_master_key(settings: Settings) -> str:
     settings.storage_root.mkdir(parents=True, exist_ok=True)
     path = settings.storage_root / _LOCAL_MASTER_KEY_FILENAME
@@ -70,14 +86,14 @@ def encrypt_secret(settings: Settings, secret: str) -> str:
 def decrypt_secret(settings: Settings, token: str) -> str:
     version, separator, payload = token.partition(".")
     if separator != "." or version != "v1":
-        raise RuntimeError("不支持的供应商凭据版本")
+        raise CredentialDecryptError("不支持的供应商凭据版本")
     try:
         raw = base64.urlsafe_b64decode(payload.encode("ascii"))
         value = AESGCM(_decode_master_key(settings)).decrypt(raw[:12], raw[12:], _AAD)
     except HTTPException:
         raise
     except Exception as error:
-        raise RuntimeError("供应商凭据无法解密") from error
+        raise CredentialDecryptError("供应商凭据无法解密") from error
     return value.decode("utf-8")
 
 
@@ -109,7 +125,14 @@ def select_provider_key(
     )
     if key is None:
         raise HTTPException(status_code=409, detail="供应商连接没有可用的 API Key")
-    secret = decrypt_secret(settings, key.encrypted_secret)
+    try:
+        secret = decrypt_secret(settings, key.encrypted_secret)
+    except CredentialDecryptError as error:
+        # Stamp the row context so callers can transition the exact key and
+        # connection to a terminal FAILED health state (issue #243).
+        error.connection_id = connection_id
+        error.key_id = key.id
+        raise
     key.last_used_at = now
     db.commit()
     return SelectedProviderKey(row=key, secret=secret)

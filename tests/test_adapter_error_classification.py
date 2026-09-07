@@ -378,3 +378,123 @@ def test_anthropic_non_dict_content_items_are_invalid_output():
             SmokeReply,
         )
     assert excinfo.value.code == "INVALID_OUTPUT"
+
+
+def _google_text_adapter() -> GoogleTextAdapter:
+    from app.model_adapters.google import GoogleRuntime
+
+    return GoogleTextAdapter(
+        GoogleRuntime(api_key="k", model_id="m", display_name="m")
+    )
+
+
+def test_google_prompt_feedback_block_maps_to_content_policy(monkeypatch):
+    """Issue #206: blocked Gemini-native responses must classify as
+    CONTENT_POLICY (non-retryable), not INVALID_OUTPUT."""
+
+    adapter = _google_text_adapter()
+    blocked = SimpleNamespace(
+        candidates=[],
+        prompt_feedback=SimpleNamespace(block_reason=SimpleNamespace(name="SAFETY")),
+        usage_metadata=None,
+    )
+    monkeypatch.setattr(adapter, "_execute", lambda operation: blocked)
+    with pytest.raises(ProviderAdapterError) as excinfo:
+        adapter.generate_structured(StructuredRequest(prompt="x"), SmokeReply)
+    assert excinfo.value.code == "CONTENT_POLICY"
+    assert excinfo.value.retryable is False
+
+
+def test_google_blocked_candidate_maps_to_content_policy(monkeypatch):
+    """A blocked candidate has no text; response.text raises, which used to
+    surface as retryable INVALID_OUTPUT and broke the story_parse
+    CONTENT_POLICY split-retry (issue #206)."""
+
+    adapter = _google_text_adapter()
+
+    class _BlockedResponse:
+        candidates = [SimpleNamespace(finish_reason=SimpleNamespace(name="SAFETY"))]
+        prompt_feedback = None
+        usage_metadata = None
+
+        @property
+        def text(self):
+            raise ValueError("no text parts on blocked candidate")
+
+    monkeypatch.setattr(adapter, "_execute", lambda operation: _BlockedResponse())
+    with pytest.raises(ProviderAdapterError) as excinfo:
+        adapter.generate_structured(StructuredRequest(prompt="x"), SmokeReply)
+    assert excinfo.value.code == "CONTENT_POLICY"
+    assert excinfo.value.retryable is False
+
+
+def test_google_multimodal_blocked_candidate_maps_to_content_policy(monkeypatch):
+    adapter = _google_text_adapter()
+    blocked = SimpleNamespace(
+        candidates=[SimpleNamespace(finish_reason="BLOCKLIST")],
+        prompt_feedback=None,
+        usage_metadata=None,
+    )
+    monkeypatch.setattr(adapter, "_execute", lambda operation: blocked)
+    request = MultimodalRequest(
+        prompt="inspect", images=(b"img",), mime_types=("image/png",)
+    )
+    with pytest.raises(ProviderAdapterError) as excinfo:
+        adapter.analyze_multimodal(request, SmokeReply)
+    assert excinfo.value.code == "CONTENT_POLICY"
+
+
+def test_google_image_blocked_candidate_maps_to_content_policy(monkeypatch):
+    """The blocked image shape (content=None + safety finish_reason) must not
+    raise AttributeError into a retryable INVALID_OUTPUT (issue #206)."""
+
+    from app.model_adapters.base import ImageRequest
+    from app.model_adapters.google import GoogleImageAdapter, GoogleRuntime
+
+    blocked = SimpleNamespace(
+        candidates=[SimpleNamespace(content=None, finish_reason="SAFETY")],
+        prompt_feedback=None,
+        usage_metadata=None,
+        response_id=None,
+    )
+    adapter = GoogleImageAdapter(
+        GoogleRuntime(
+            api_key="k",
+            model_id="img",
+            display_name="img",
+            capabilities={"resolutions": ["1K"], "max_reference_images": 1},
+        )
+    )
+    monkeypatch.setattr(adapter, "_execute", lambda operation: blocked)
+    with pytest.raises(ProviderAdapterError) as excinfo:
+        adapter.generate_asset(ImageRequest(prompt="i", resolution="1K"))
+    assert excinfo.value.code == "CONTENT_POLICY"
+    assert excinfo.value.retryable is False
+
+
+def test_google_image_unblocked_empty_content_stays_invalid_output(monkeypatch):
+    """content=None with a normal STOP reason is a no-image miss, not a block:
+    it must stay INVALID_OUTPUT (non-retryable) rather than CONTENT_POLICY."""
+
+    from app.model_adapters.base import ImageRequest
+    from app.model_adapters.google import GoogleImageAdapter, GoogleRuntime
+
+    empty = SimpleNamespace(
+        candidates=[SimpleNamespace(content=None, finish_reason="STOP")],
+        prompt_feedback=None,
+        usage_metadata=None,
+        response_id=None,
+    )
+    adapter = GoogleImageAdapter(
+        GoogleRuntime(
+            api_key="k",
+            model_id="img",
+            display_name="img",
+            capabilities={"resolutions": ["1K"], "max_reference_images": 1},
+        )
+    )
+    monkeypatch.setattr(adapter, "_execute", lambda operation: empty)
+    with pytest.raises(ProviderAdapterError) as excinfo:
+        adapter.generate_asset(ImageRequest(prompt="i", resolution="1K"))
+    assert excinfo.value.code == "INVALID_OUTPUT"
+    assert excinfo.value.retryable is False

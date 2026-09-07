@@ -648,7 +648,11 @@ def restore_page_after_generation_exit(db: Session, page_candidate: PageCandidat
     page.status = "DRAFT_READY" if page.selected_candidate_id or other_ready else "STORYBOARDED"
 
 
-def restore_page_after_inspection_exit(db: Session, candidate: PageCandidate) -> None:
+def restore_page_after_inspection_exit(
+    db: Session,
+    candidate: PageCandidate,
+    error_code: str | None = None,
+) -> None:
     """Return a page from FINAL_CHECKING to NEEDS_REPAIR once the inspection of
     its adopted candidate reached a terminal failure/cancel.
 
@@ -659,6 +663,15 @@ def restore_page_after_inspection_exit(db: Session, candidate: PageCandidate) ->
     writes for failing results (NEEDS_REPAIR + continuity NEEDS_REVIEW), a
     terminal state the UI and readiness checks already render; the candidate
     row itself is never touched here because it may hold adopted work.
+
+    #237-2: ``STALE_STORYBOARD_VERSION`` failures skip the flip when the page
+    carries no review flag — the inspect was stale, the page is not broken.
+    Fabricating NEEDS_REPAIR there routed the user into repair flows for a
+    healthy page; the page simply stays parked in FINAL_CHECKING awaiting a
+    fresh inspect (the inspect route enqueues from any page status, and the
+    job's own error already tells the user to re-inspect). A page that WAS
+    flagged mid-flight (NEEDS_REVIEW/NEEDS_RECHECK) still converges to the
+    blocking restore so the flag keeps gating production.
     """
 
     if not candidate.is_selected:
@@ -673,6 +686,15 @@ def restore_page_after_inspection_exit(db: Session, candidate: PageCandidate) ->
     if page is None or page.selected_candidate_id != candidate.id:
         return
     if str(getattr(page.status, "value", page.status)) != "FINAL_CHECKING":
+        return
+    if error_code == "STALE_STORYBOARD_VERSION" and str(
+        page.continuity_status or ""
+    ) not in {"NEEDS_REVIEW", "NEEDS_RECHECK"}:
+        LOGGER.info(
+            "PAGE_INSPECT failed stale for page %s; leaving FINAL_CHECKING state "
+            "intact (page not broken, fresh inspect required)",
+            page.id,
+        )
         return
     page.continuity_status = "NEEDS_REVIEW"
     page.status = PageStatus.NEEDS_REPAIR
@@ -904,8 +926,16 @@ def recover_pending_jobs(db: Session) -> int:
                 if asset_candidate:
                     asset_candidate.status = "FAILED"
                 style = db.get(StyleProfile, job.target_id) if job.target_type == "STYLE" else None
-                if style and not style_has_active_sibling_job(
-                    db, style_id=job.target_id, exclude_job_id=job.id
+                # #231: same guard as the worker-failure path — a confirmed
+                # (CONFIRMED) or activated (ACTIVE) style must not be demoted
+                # to DRAFT by a swept/expired sibling analysis job.
+                if (
+                    style
+                    and str(getattr(style.status, "value", style.status) or "")
+                    not in {"CONFIRMED", "ACTIVE"}
+                    and not style_has_active_sibling_job(
+                        db, style_id=job.target_id, exclude_job_id=job.id
+                    )
                 ):
                     style.status = "DRAFT"
                 if job.job_type == "PAGE_INSPECT":

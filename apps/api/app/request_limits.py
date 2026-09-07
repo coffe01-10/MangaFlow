@@ -130,6 +130,44 @@ def sanitize_json_surrogate_escapes(data: bytes) -> bytes:
     )
 
 
+# Bare non-finite float literals: stdlib json.loads ACCEPTS these by default,
+# so without a wire-level rejection they parse into float("nan")/inf and ride
+# the free-form dict fields into DB JSON columns and paid prompts (#225). The
+# lookaround delimiters keep legal in-string text ("NaN" as content) from
+# matching because strings are masked out first.
+_JSON_NON_FINITE_TOKEN_RE = re.compile(
+    rb"(?<![0-9A-Za-z_])(-?Infinity|NaN)(?![0-9A-Za-z_])"
+)
+
+
+def _mask_json_string_bytes(data: bytes) -> bytes:
+    """Overwrite every byte inside JSON strings (and their quotes) with 'a'."""
+
+    out = bytearray(data)
+    in_string = False
+    escaped = False
+    for index, byte in enumerate(out):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif byte == 0x5C:  # backslash
+                escaped = True
+            elif byte == 0x22:  # closing quote
+                in_string = False
+            out[index] = 0x61  # 'a'
+            continue
+        if byte == 0x22:  # opening quote
+            in_string = True
+            out[index] = 0x61
+    return bytes(out)
+
+
+def json_contains_non_finite_literals(data: bytes) -> bool:
+    """Detect bare ``NaN``/``Infinity``/``-Infinity`` literals outside strings."""
+
+    return _JSON_NON_FINITE_TOKEN_RE.search(_mask_json_string_bytes(data)) is not None
+
+
 class _JsonDepthTracker:
     """Incremental structural depth scan over raw JSON bytes.
 
@@ -284,12 +322,22 @@ class RequestBodyLimitMiddleware:
             if not message.get("more_body", False):
                 break
 
+        # Reject bare NaN/Infinity/-Infinity literals before dispatch (#225):
+        # stdlib json accepts them, so they would parse into non-finite floats
+        # and poison free-form dict fields all the way into DB JSON columns
+        # and paid prompts. Mirrors the surrogate scrub's wire-level position
+        # (answer here, never invoke the app below).
+        body = b"".join(chunks)
+        if json_contains_non_finite_literals(body):
+            await _send_json(send, 422, "JSON 不允许 NaN 或 Infinity 字面量")
+            return
+
         # Scrub lone surrogate escapes on the full buffered body: escapes can
         # straddle chunk boundaries, and neither the Pydantic 422 (which
         # echoes the bad input and crashes response encoding) nor a poisoned
         # stored row is an acceptable outcome. Valid surrogate pairs and
         # literal "\udXXX" text are preserved.
-        body = sanitize_json_surrogate_escapes(b"".join(chunks))
+        body = sanitize_json_surrogate_escapes(body)
         replay_chunks: list[bytes] = [body] if body else []
 
         async def replay_receive() -> Message:

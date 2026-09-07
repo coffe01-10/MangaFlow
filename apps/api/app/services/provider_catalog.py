@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, datetime
 from pathlib import PurePosixPath, PureWindowsPath
@@ -145,6 +146,97 @@ def _validate_balance_config(config: dict[str, Any]) -> dict[str, Any]:
 
 def _default_endpoints(protocol: str) -> dict[str, str]:
     return dict(ANTHROPIC_ENDPOINTS if protocol == "ANTHROPIC" else OPENAI_ENDPOINTS)
+
+
+# Connection fields that change what a verification actually verified. Any
+# PATCH touching one of these invalidates the stored health verdict (issue
+# #243): the previous reset only covered the CLI executable path, so a stale
+# HEALTHY state survived base_url/key-endpoint edits.
+_CONNECTION_EDITING_FIELDS = frozenset(
+    {
+        "base_url",
+        "use_responses_api",
+        "endpoint_templates",
+        "extra_headers",
+        "balance_config",
+        "nonsecret_config",
+    }
+)
+_VERIFIED_CONFIG_FINGERPRINT_KEY = "verified_config_fingerprint"
+
+
+def _connection_config_material(connection: ProviderConnection) -> dict[str, Any]:
+    nonsecret = {
+        key: value
+        for key, value in (connection.nonsecret_config or {}).items()
+        if key
+        not in {
+            _VERIFIED_CONFIG_FINGERPRINT_KEY,
+            # Transient bookkeeping, not connectivity state.
+            "auto_enable_pending",
+        }
+    }
+    return {
+        "base_url": connection.base_url,
+        "use_responses_api": bool(connection.use_responses_api),
+        "endpoint_templates": dict(sorted((connection.endpoint_templates or {}).items())),
+        "extra_headers": dict(sorted((connection.extra_headers or {}).items())),
+        "balance_config": connection.balance_config or {},
+        "nonsecret_config": nonsecret,
+    }
+
+
+def connection_config_fingerprint(connection: ProviderConnection) -> str:
+    """Stable digest of the connection-editing fields (issue #243).
+
+    Written into ``nonsecret_config`` whenever a verify verdict is recorded so
+    a later reader can tell whether the HEALTHY/DEGRADED state describes the
+    connection as currently configured.
+    """
+
+    material = json.dumps(
+        _connection_config_material(connection),
+        sort_keys=True,
+        ensure_ascii=False,
+        default=str,
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _stamp_verified_config_fingerprint(connection: ProviderConnection) -> str:
+    fingerprint = connection_config_fingerprint(connection)
+    nonsecret = dict(connection.nonsecret_config or {})
+    nonsecret[_VERIFIED_CONFIG_FINGERPRINT_KEY] = fingerprint
+    connection.nonsecret_config = nonsecret
+    return fingerprint
+
+
+def mark_credential_decrypt_failed(
+    db: Session, *, connection_id: str | None, key_id: str | None
+) -> None:
+    """Terminal health transition for an unreadable stored secret (issue #243).
+
+    The stored secret can no longer be opened with the current master key
+    (rotated away or corrupted); retrying cannot fix that. The commit is
+    internal (mirrors ``mark_key_failure``) and must be called on a scoped
+    diagnostics session — the caller's transaction is rolled back by the
+    worker right after the terminal raise. Nothing is disabled here:
+    re-saving the key (``write_provider_key``) re-encrypts and restores
+    UNKNOWN health.
+    """
+
+    if key_id:
+        key = db.get(ProviderKey, key_id)
+        if key is not None:
+            key.health_state = "FAILED"
+            key.last_error_code = "CREDENTIAL_DECRYPT_FAILED"
+    if connection_id:
+        connection = db.get(ProviderConnection, connection_id)
+        if connection is not None:
+            connection.health_state = "FAILED"
+            connection.error_code = "CREDENTIAL_DECRYPT_FAILED"
+            connection.message = "已保存的 API Key 无法用当前主密钥解密，请重新保存凭据"
+    db.commit()
 
 
 def list_provider_views(db: Session, settings: Settings) -> list[dict]:
@@ -386,6 +478,11 @@ def update_connection(
         )
         != previous_cli_executable
     )
+    # Any connectivity-bearing edit invalidates the stored verify verdict — a
+    # stale HEALTHY state surviving a base_url / endpoint / key-env-ref change
+    # kept routing paid calls at the old configuration (issue #243). Only the
+    # version bump below still guards concurrent PATCHes.
+    connection_edited = any(field in changes for field in _CONNECTION_EDITING_FIELDS)
     if "enabled" in changes:
         source_config = changes.get("nonsecret_config", connection.nonsecret_config)
         nonsecret_config = dict(source_config or {})
@@ -396,10 +493,19 @@ def update_connection(
             connection.nonsecret_config = nonsecret_config
     for key, value in changes.items():
         setattr(connection, key, value)
-    if cli_executable_changed:
+    if connection_edited:
+        # The previous verdict no longer describes this configuration; drop
+        # its fingerprint so a stale match can never be claimed later.
+        nonsecret = dict(connection.nonsecret_config or {})
+        nonsecret.pop(_VERIFIED_CONFIG_FINGERPRINT_KEY, None)
+        connection.nonsecret_config = nonsecret
         connection.health_state = "UNKNOWN"
         connection.error_code = None
-        connection.message = "CLI 路径已更改，等待重新探测"
+        connection.message = (
+            "CLI 路径已更改，等待重新探测"
+            if cli_executable_changed
+            else "连接配置已更改，等待重新验证"
+        )
     connection.version += 1
     db.commit()
     db.refresh(connection)
@@ -854,6 +960,9 @@ def _record_connection_failure(
     connection.latency_ms = round((perf_counter() - started) * 1000)
     connection.error_code = code
     connection.message = _safe_error_message(code)
+    # Failure verdicts describe a configuration too — stamp it so a later edit
+    # is detectable against the state it invalidated (issue #243).
+    _stamp_verified_config_fingerprint(connection)
     mark_key_failure(db, selected.row, code)
 
 
@@ -881,8 +990,13 @@ def probe_connection_credentials(
         connection.latency_ms = round((perf_counter() - started) * 1000)
         connection.error_code = None
         connection.message = "凭据可读取；该协议需通过模型冒烟验证远端权限"
+        fingerprint = _stamp_verified_config_fingerprint(connection)
         db.commit()
-        return {"remote_verified": False, "discovered_models": None}
+        return {
+            "remote_verified": False,
+            "discovered_models": None,
+            "config_fingerprint": fingerprint,
+        }
     try:
         entries, latency_ms = _fetch_model_entries(
             db, settings, connection, selected.secret, client=client
@@ -893,8 +1007,13 @@ def probe_connection_credentials(
         connection.latency_ms = latency_ms
         connection.error_code = None
         connection.message = "凭据与模型目录连接验证成功"
+        fingerprint = _stamp_verified_config_fingerprint(connection)
         mark_key_success(db, selected.row)
-        return {"remote_verified": True, "discovered_models": len(entries)}
+        return {
+            "remote_verified": True,
+            "discovered_models": len(entries),
+            "config_fingerprint": fingerprint,
+        }
     except (ProviderAdapterError, httpx.HTTPError, ValueError) as error:
         _record_connection_failure(db, connection, selected, error, started)
         if isinstance(error, ProviderAdapterError):

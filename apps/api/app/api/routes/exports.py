@@ -356,6 +356,13 @@ def _prune_superseded_exports(
 
 @router.get("/projects/{project_id}/exports", response_model=list[ExportRead])
 def list_exports(project_id: str, db: Session = Depends(get_db)) -> list[ExportBundle]:
+    # Issue #246-3: the listing is served by object/project id with no row
+    # liveness gate of its own — an archived project must not keep answering
+    # with its export bundles (the download route hides them through
+    # ensure_project_scope's project-liveness check).
+    project = db.get(Project, project_id)
+    if not project or project.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="项目不存在")
     return list(
         db.scalars(
             select(ExportBundle)

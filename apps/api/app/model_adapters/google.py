@@ -12,6 +12,9 @@ from app.model_adapters.base import (
     MultimodalRequest,
     ProviderAdapterError,
     StructuredRequest,
+    attach_provider_usage,
+    blocked_finish_reason,
+    response_usage,
     strip_json_fences,
 )
 from app.services.model_capabilities import capability_reference_limit
@@ -49,12 +52,19 @@ class _GoogleBase:
 
     def _client(self):
         from google import genai
+        from google.genai import types
 
         # Bound connect/read like the HTTP-API path (90s); the SDK default
-        # lets a hung upstream pin a worker slot for minutes.
+        # lets a hung upstream pin a worker slot for minutes. Retry attempts
+        # are pinned to 1 so the dormant SDK retry can never silently multiply
+        # paid dispatches inside the manager/worker's own bounded retry loop
+        # (issue #209).
         return genai.Client(
             api_key=self.runtime.api_key,
-            http_options={"timeout": _GOOGLE_HTTP_TIMEOUT_MS},
+            http_options=types.HttpOptions(
+                timeout=_GOOGLE_HTTP_TIMEOUT_MS,
+                retry_options=types.HttpRetryOptions(attempts=1),
+            ),
         )
 
     @staticmethod
@@ -63,6 +73,8 @@ class _GoogleBase:
         return ProviderAdapterError(
             failure.code, failure.message, retryable=failure.retryable
         )
+
+    _blocked_reason = staticmethod(blocked_finish_reason)
 
     def _execute(self, operation):
         client = self._client()
@@ -97,6 +109,11 @@ class GoogleTextAdapter(_GoogleBase):
                 ),
             )
         )
+        if self._blocked_reason(response):
+            raise ProviderAdapterError(
+                "CONTENT_POLICY",
+                "请求被 Gemini API 内容安全策略拦截，系统已缩小生成片段；请重试",
+            )
         try:
             text = response.text
         except Exception as error:
@@ -105,9 +122,11 @@ class GoogleTextAdapter(_GoogleBase):
             ) from error
         if not text:
             raise ProviderAdapterError("INVALID_OUTPUT", "Gemini API 没有返回文本")
-        return _validate_structured_text(
+        result = _validate_structured_text(
             text, output_schema, failure_message="Gemini API 返回结构无法验证"
         )
+        attach_provider_usage(result, response_usage(response))
+        return result
 
     def analyze_multimodal(
         self, request: MultimodalRequest, output_schema: type[BaseModel]
@@ -132,6 +151,11 @@ class GoogleTextAdapter(_GoogleBase):
                 ),
             )
         )
+        if self._blocked_reason(response):
+            raise ProviderAdapterError(
+                "CONTENT_POLICY",
+                "请求被 Gemini API 内容安全策略拦截，系统已缩小生成片段；请重试",
+            )
         try:
             text = response.text
         except Exception as error:
@@ -140,9 +164,11 @@ class GoogleTextAdapter(_GoogleBase):
             ) from error
         if not text:
             raise ProviderAdapterError("INVALID_OUTPUT", "Gemini API 没有返回分析结果")
-        return _validate_structured_text(
+        result = _validate_structured_text(
             text, output_schema, failure_message="Gemini API 返回结构无法验证"
         )
+        attach_provider_usage(result, response_usage(response))
+        return result
 
 
 class GoogleImageAdapter(_GoogleBase):
@@ -199,16 +225,16 @@ class GoogleImageAdapter(_GoogleBase):
             images: list[bytes] = []
             texts: list[str] = []
             for candidate in response.candidates or []:
-                for part in candidate.content.parts or []:
+                # A blocked candidate has no content at all; read it defensively
+                # so the blocked shape classifies below instead of raising
+                # AttributeError into a retryable INVALID_OUTPUT (issue #206).
+                parts = getattr(getattr(candidate, "content", None), "parts", None) or []
+                for part in parts:
                     if part.inline_data and part.inline_data.data:
                         images.append(part.inline_data.data)
                     elif part.text:
                         texts.append(part.text)
-            usage = (
-                response.usage_metadata.model_dump(exclude_none=True)
-                if response.usage_metadata
-                else {}
-            )
+            usage = response_usage(response) or {}
         except ProviderAdapterError:
             raise
         except Exception as error:
@@ -216,6 +242,11 @@ class GoogleImageAdapter(_GoogleBase):
                 "INVALID_OUTPUT", "Gemini API 图像响应结构无法解析", retryable=True
             ) from error
         if not images:
+            if self._blocked_reason(response):
+                raise ProviderAdapterError(
+                    "CONTENT_POLICY",
+                    "请求被 Gemini API 内容安全策略拦截，本次生成被拒绝",
+                )
             raise ProviderAdapterError("INVALID_OUTPUT", "Gemini API 未返回图像")
         return ModelResponse(
             model_id=self.runtime.model_id,

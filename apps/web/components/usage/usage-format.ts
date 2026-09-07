@@ -38,7 +38,7 @@ export const COST_MODE_META: Record<
   UNAVAILABLE: {
     label: "无用量返回",
     badge: "usage-badge unavailable",
-    hint: "供应商调用成功但未返回 usage 字段",
+    hint: "供应商调用成功但未返回 usage 字段；早期版本的文本调用在用量回填前也记为无用量",
   },
 };
 

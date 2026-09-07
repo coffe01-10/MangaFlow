@@ -417,6 +417,37 @@ def create_page_candidate(
                 scene_reference_ids = [
                     item.id for item in scene_reference_assets(db, current_page)
                 ]
+                # Issue #236-2 (route half): the style profile's reference
+                # images feed the compiled page prompt the same way the
+                # character/outfit/scene references do, so they must join the
+                # job's lease set (JobAssetReference). Resolved with the same
+                # effective-style rule as the prompt compiler
+                # (page.style_id, falling back to the project default) and
+                # liveness-filtered like every other reference source.
+                effective_style_id = (
+                    current_page.style_id or current_project.default_style_id
+                )
+                effective_style = (
+                    db.get(StyleProfile, effective_style_id)
+                    if effective_style_id
+                    else None
+                )
+                style_reference_ids = (
+                    list(
+                        db.scalars(
+                            select(Asset.id).where(
+                                Asset.id.in_(
+                                    effective_style.profile.get(
+                                        "reference_asset_ids", []
+                                    )
+                                ),
+                                Asset.deleted_at.is_(None),
+                            )
+                        )
+                    )
+                    if effective_style
+                    else []
+                )
                 job = create_job(
                     db,
                     project_id=current_project.id,
@@ -441,6 +472,7 @@ def create_page_candidate(
                             if asset_id
                         ),
                         *scene_reference_ids,
+                        *style_reference_ids,
                     ],
                     idempotency_key=f"candidate:{candidate.id}",
                     auto_commit=False,

@@ -5,12 +5,14 @@ from collections import defaultdict, deque
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from app.api.helpers import candidate_version_state
 from app.domain.states import JobStatus
 from app.models import (
     GenerationJob,
     InspectionResult,
     JobDependency,
     MangaPage,
+    WorkflowDefinition,
     WorkflowNodeRun,
     WorkflowRun,
     utcnow,
@@ -29,6 +31,15 @@ from app.workflow_schemas import (
     WorkflowGraph,
     WorkflowNodeDefinition,
 )
+
+
+class StaleCandidateError(ValueError):
+    """The candidate a node wants to consume is not current (#223).
+
+    Raised before any paid job is minted so the node fails terminally with a
+    distinct error code instead of spending a provider call on state the user
+    has not re-confirmed (storyboard edited, ack marker nulled).
+    """
 
 
 def get_run(db: Session, run_id: str) -> WorkflowRun:
@@ -127,8 +138,24 @@ def _create_inspection_job(
         .limit(1)
     )
     if active_job:
+        # Adoption spends nothing (the route already owns the paid call), so
+        # the currency gate below only guards the minting branch.
         job = active_job
     else:
+        # Currency gate (#223), immediately before minting: a fresh paid
+        # multimodal PAGE_INSPECT must never run against state the user has
+        # not confirmed. Mirroring the APPROVE barrier and the manual adopt
+        # path, only CURRENT candidates (or ones whose staleness was
+        # explicitly acknowledged via keep-selected, which stamps
+        # selected_candidate_ack_version == storyboard_version together with
+        # the manual text confirmation) may be inspected. Anything else fails
+        # the node terminally instead of spending.
+        version_state, _reasons = candidate_version_state(candidate, page)
+        if version_state not in {"CURRENT", "STALE_ACCEPTED"}:
+            raise StaleCandidateError(
+                "STALE_CANDIDATE_CONFIRMATION_REQUIRED:"
+                "质量检查候选已过期（分镜已更新且未确认沿用），请先人工确认后再继续"
+            )
         job = engine.create_job(
             db,
             project_id=run.project_id,
@@ -228,6 +255,29 @@ def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
     run = db.get(WorkflowRun, run_id)
     if not run or run.status in {"COMPLETED", "CANCELLED", "FAILED"}:
         return get_run(db, run_id)
+    # Deleted-definition gate (#211-7): a definition soft-deleted while a run
+    # was active (the #197 TOCTOU window, or a definition deleted after its
+    # runs failed and were retried) must never keep executing paid jobs.
+    # Mirror the archive sweep's convention: claim the run CANCELLED
+    # conditionally and terminalize its children in the same transaction,
+    # instead of re-committing a zombie RUNNING run on every poll.
+    definition = db.get(WorkflowDefinition, run.workflow_id)
+    if definition is None or definition.deleted_at is not None:
+        db.flush()
+        claimed = db.execute(
+            update(WorkflowRun)
+            .where(
+                WorkflowRun.id == run.id,
+                WorkflowRun.status.not_in(["COMPLETED", "CANCELLED", "FAILED"]),
+            )
+            .values(status="CANCELLED", finished_at=utcnow())
+            .execution_options(synchronize_session=False)
+        )
+        if claimed.rowcount == 1:
+            _sweep_stranded_children(db, run)
+            db.commit()
+            db.refresh(run)
+        return get_run(db, run.id)
     graph = _graph_for_run(db, run)
     report = validate_graph(graph)
     node_map = {node.id: node for node in graph.nodes}
@@ -358,7 +408,11 @@ def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
                 )
             except ValueError as error:
                 item.status = "FAILED"
-                item.error_code = "MISSING_CANDIDATE"
+                item.error_code = (
+                    "STALE_CANDIDATE"
+                    if isinstance(error, StaleCandidateError)
+                    else "MISSING_CANDIDATE"
+                )
                 item.error_message = str(error)
                 failed = True
                 continue

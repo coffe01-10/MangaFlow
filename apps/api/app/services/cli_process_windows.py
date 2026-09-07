@@ -8,22 +8,46 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 from contextlib import suppress
 from ctypes import wintypes
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
 from app.model_adapters.base import ProviderAdapterError
 from app.services.cli_executor import CLIProcessOutcome
 
+# Retention geometry for one diagnostic stream (#241-1): the first
+# _CAPTURE_LIMIT bytes stay in memory (the historical cap), anything past
+# that spills to an OS temp file so a successful run with more than 64 KiB of
+# stdout is not silently destroyed, and only past _SPILL_LIMIT are bytes
+# dropped with the outcome's truncation flags set.
 _CAPTURE_LIMIT = 64 * 1024
+_SPILL_LIMIT = 8 * 1024 * 1024
 _CREATE_SUSPENDED = 0x00000004
 _CREATE_NO_WINDOW = 0x08000000
 _KILL_ON_JOB_CLOSE = 0x00002000
 _WAIT_OBJECT_0 = 0
 _WAIT_TIMEOUT = 258
+
+
+@dataclass(frozen=True)
+class WindowsCLIProcessOutcome(CLIProcessOutcome):
+    """``CLIProcessOutcome`` plus the capture layer's truncation flags (#241-1).
+
+    The flags live on this runner-owned subclass so the provider-neutral
+    ``CLIProcessOutcome`` contract in ``cli_executor`` stays untouched;
+    ``False`` means the retained stream bytes are the complete stream, while
+    ``True`` means bytes past the spill cap were dropped (the digest still
+    covers the whole stream). Adapters read them defensively via
+    ``getattr`` because delegate runners may return the plain base class.
+    """
+
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
 
 
 class _Limits(ctypes.Structure):
@@ -192,9 +216,29 @@ def _record_suspended_process(cwd: Path, *, pid: int, job_name: str) -> None:
 
 
 class _OutputDrain:
-    def __init__(self, descriptor: int) -> None:
+    """Drain one diagnostic pipe into a bounded, spill-backed buffer.
+
+    Before #241-1 only the first ``_CAPTURE_LIMIT`` bytes were buffered while
+    the digest ran over the whole stream: a successful grok run with more
+    than 64 KiB of streaming-JSON stdout was silently truncated and then
+    destroyed downstream as INVALID_OUTPUT/UNKNOWN_RESULT. The first
+    ``_CAPTURE_LIMIT`` bytes still stay in memory (a ``SpooledTemporaryFile``
+    holds them until it rolls), overflow spills to an OS temp file that
+    ``finish`` reads back, and only past ``spill_limit`` are bytes dropped —
+    flipping ``truncated`` so callers can classify the capture as lossy
+    instead of trusting partial content.
+    """
+
+    def __init__(self, descriptor: int, *, spill_limit: int | None = None) -> None:
         self.descriptor = descriptor
-        self.buffer, self.digest = bytearray(), hashlib.sha256()
+        self._spill_limit = _SPILL_LIMIT if spill_limit is None else spill_limit
+        self._retained = 0
+        # The sink deliberately outlives this frame: finish() reads it back
+        # and discard() closes it (also on the runner's error path), so a
+        # `with` block would close it before the captured bytes are read.
+        self._sink = tempfile.SpooledTemporaryFile(max_size=_CAPTURE_LIMIT)  # noqa: SIM115
+        self.truncated = False
+        self.digest = hashlib.sha256()
         self.error: BaseException | None = None
         self.thread = threading.Thread(target=self._run, daemon=True)
 
@@ -206,9 +250,13 @@ class _OutputDrain:
             with os.fdopen(self.descriptor, "rb", closefd=True) as stream:
                 while chunk := stream.read(8192):
                     self.digest.update(chunk)
-                    remaining = _CAPTURE_LIMIT - len(self.buffer)
-                    if remaining > 0:
-                        self.buffer.extend(chunk[:remaining])
+                    room = self._spill_limit - self._retained
+                    if room > 0:
+                        kept = chunk if len(chunk) <= room else chunk[:room]
+                        self._sink.write(kept)
+                        self._retained += len(kept)
+                    if len(chunk) > max(room, 0):
+                        self.truncated = True
         except BaseException as error:
             self.error = error
 
@@ -218,7 +266,17 @@ class _OutputDrain:
             raise TimeoutError("CLI diagnostic pipe did not close")
         if self.error:
             raise self.error
-        return bytes(self.buffer), self.digest.hexdigest()
+        try:
+            self._sink.seek(0)
+            return self._sink.read(), self.digest.hexdigest()
+        finally:
+            self.discard()
+
+    def discard(self) -> None:
+        """Release the rolled spill file (a no-op while everything is in memory)."""
+
+        with suppress(BaseException):
+            self._sink.close()
 
 
 class WindowsJobCLIProcessRunner:
@@ -296,6 +354,21 @@ class WindowsJobCLIProcessRunner:
             startup.hStdInput = msvcrt.get_osfhandle(stdin_file.fileno())
             startup.hStdOutput = msvcrt.get_osfhandle(stdout_write)
             startup.hStdError = msvcrt.get_osfhandle(stderr_write)
+            # #241-3: bInheritHandles=TRUE on its own leaks EVERY currently
+            # inheritable handle of this process into the CLI child (another
+            # run's pipe write end is the classic one), which can keep that
+            # pipe from ever reaching EOF and turn a completed run into a
+            # phantom TIMEOUT. PROC_THREAD_ATTRIBUTE_HANDLE_LIST restricts
+            # inheritance to exactly the three std handles: _winapi.
+            # CreateProcess builds the STARTUPINFOEX attribute list (and adds
+            # EXTENDED_STARTUPINFO_PRESENT itself) from this dict. The three
+            # handles are distinct pipe/file ends, so the list can never hold
+            # the duplicate handles Windows rejects with ERROR_INVALID_PARAMETER.
+            startup.lpAttributeList["handle_list"] = [
+                startup.hStdInput,
+                startup.hStdOutput,
+                startup.hStdError,
+            ]
             process_handle, thread_handle, pid, _ = _winapi.CreateProcess(
                 executable,
                 subprocess.list2cmdline(list(argv)),
@@ -352,7 +425,7 @@ class WindowsJobCLIProcessRunner:
             stdin_file.close()
             stdout, stdout_checksum = stdout_drain.finish()
             stderr, stderr_checksum = stderr_drain.finish()
-            return CLIProcessOutcome(
+            return WindowsCLIProcessOutcome(
                 code.value,
                 stdout,
                 stderr,
@@ -360,6 +433,8 @@ class WindowsJobCLIProcessRunner:
                 stderr_checksum,
                 timed_out,
                 cancelled,
+                stdout_truncated=stdout_drain.truncated,
+                stderr_truncated=stderr_drain.truncated,
             )
         except BaseException:
             if job_handle:
@@ -380,3 +455,8 @@ class WindowsJobCLIProcessRunner:
                     api.CloseHandle(handle)
             stdout_drain.thread.join(timeout=1)
             stderr_drain.thread.join(timeout=1)
+            # Release any rolled spill files deterministically; after a
+            # successful finish() this is a no-op (GC would also clean up,
+            # but the error path should not depend on it).
+            stdout_drain.discard()
+            stderr_drain.discard()

@@ -414,12 +414,14 @@ def _mark_worker_failure(
             # candidate via target_id — deliberately without stamping it:
             # that row may hold adopted READY/INSPECTED work. Only the page
             # gets restored so a terminal inspect failure cannot leave it
-            # stuck FINAL_CHECKING.
+            # stuck FINAL_CHECKING. The failure code rides along (#237-2):
+            # a STALE_STORYBOARD_VERSION failure means the inspect was stale,
+            # not that the page is broken.
             inspected = db.get(PageCandidate, job.target_id)
             if inspected:
                 from app.services.job_service import restore_page_after_inspection_exit
 
-                restore_page_after_inspection_exit(db, inspected)
+                restore_page_after_inspection_exit(db, inspected, error_code=error_code)
         asset_candidate = db.scalar(
             select(AssetCandidate).where(AssetCandidate.job_id == job.id)
         )
@@ -430,9 +432,14 @@ def _mark_worker_failure(
             # The failing job was already claimed FAILED in-session above, but
             # a duplicate STYLE_ANALYZE job may still be analyzing the same
             # style row; only force DRAFT once no sibling remains active.
+            # #231: a style the user already confirmed (CONFIRMED) or
+            # activated (ACTIVE) mid-flight must not be demoted back to DRAFT
+            # by a late sibling's failure — the sibling-exclusion alone did
+            # not cover the confirmation/activation transition.
             from app.services.job_service import style_has_active_sibling_job
 
-            if not style_has_active_sibling_job(
+            style_status = str(getattr(style.status, "value", style.status) or "")
+            if style_status not in {"CONFIRMED", "ACTIVE"} and not style_has_active_sibling_job(
                 db, style_id=job.target_id, exclude_job_id=job.id
             ):
                 style.status = "DRAFT"

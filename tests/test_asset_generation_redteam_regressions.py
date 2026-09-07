@@ -129,6 +129,36 @@ def _orm_batch(db, project_id: str, *, target_type: str, target_id: str, kind: s
 
 
 @pytest.fixture
+def blob_roots(tmp_path, monkeypatch):
+    """Point storage/upload roots at tmp_path for the seeded-blob helpers.
+
+    The approval gates preflight the backing file itself (#210-2), so tests
+    whose ORM-seeded assets must survive that preflight write real bytes under
+    isolated roots instead of the developer-default ./storage and ./uploads.
+    """
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "storage_root", tmp_path / "storage")
+    monkeypatch.setattr(settings, "upload_root", tmp_path / "uploads")
+    return tmp_path
+
+
+def _write_asset_blob(asset: Asset) -> None:
+    """Write the backing file for a seeded ORM asset row (#210-2 preflight).
+
+    Root choice mirrors ``_ensure_asset_blob_alive`` in the route: uploaded
+    assets resolve against ``upload_root``, everything else against
+    ``storage_root``.
+    """
+
+    settings = get_settings()
+    root = settings.upload_root if asset.source == "USER_UPLOAD" else settings.storage_root
+    blob = root / asset.storage_key
+    blob.parent.mkdir(parents=True, exist_ok=True)
+    blob.write_bytes(_png_bytes((30, 60, 90)))
+
+
+@pytest.fixture
 def style_sessions(tmp_path):
     """File-backed SQLite for the concurrent activate_style test (P2-8 pattern)."""
     db_path = tmp_path / "style_activation_concurrency.db"
@@ -667,7 +697,7 @@ def test_concurrent_style_activation_leaves_single_active(style_sessions, monkey
 
 
 def test_activate_style_rejects_concurrent_color_mode_switch(
-    client, db_session, monkeypatch
+    client, db_session, monkeypatch, blob_roots
 ):
     """A color-mode switch landing between the pre-lock gates and the project
     lock must fail the activation instead of promoting the cleared style."""
@@ -702,6 +732,9 @@ def test_activate_style_rejects_concurrent_color_mode_switch(
         db_session, project["id"], kind="style_test", sha256="h" * 64,
         source="AI_GENERATED",
     )
+    # #210-2: the recorded test image's bytes must exist so the pre-lock gate
+    # passes and the interleaved color switch below is what fails the request.
+    _write_asset_blob(test_asset)
     candidate = _orm_candidate(db_session, batch.id, test_asset.id, variant="STYLE_TEST")
     style_row = db_session.get(StyleProfile, style.json()["id"])
     style_row.profile = {**style_row.profile, "test_candidate_id": candidate.id}
@@ -750,7 +783,7 @@ def test_activate_style_rejects_concurrent_color_mode_switch(
 
 
 def test_approve_reference_rechecks_foreign_packages_under_asset_lock(
-    client, db_session, monkeypatch
+    client, db_session, monkeypatch, blob_roots
 ):
     """A foreign package bind landing in the window the bare pre-lock SELECT
     used to leave open must still block the approval."""
@@ -763,6 +796,9 @@ def test_approve_reference_rechecks_foreign_packages_under_asset_lock(
         db_session, project["id"], kind="character", sha256="i" * 64,
         source="AI_GENERATED",
     )
+    # #210-2: the sheet's bytes must exist so the approval reaches the
+    # foreign-package recheck this test asserts instead of the blob preflight.
+    _write_asset_blob(sheet)
     package = CharacterModelPackage(project_id=project["id"], character_id=character_x["id"])
     db_session.add(package)
     db_session.flush()
@@ -828,7 +864,7 @@ def test_approve_reference_rechecks_foreign_packages_under_asset_lock(
 
 
 def test_approve_reference_bind_survives_lock_contention_retry(
-    client, db_session, monkeypatch
+    client, db_session, monkeypatch, blob_roots
 ):
     """SQLITE_BUSY on the ownership lock retries the whole bind unit; the
     binding still lands atomically after the retry."""
@@ -847,6 +883,9 @@ def test_approve_reference_bind_survives_lock_contention_retry(
         db_session, project["id"], kind="character", sha256="j" * 64,
         source="AI_GENERATED",
     )
+    # #210-2: the approval preflights the sheet's bytes, so a real file must
+    # back the seeded row for the retry path to reach the bind itself.
+    _write_asset_blob(sheet)
     batch = _orm_batch(
         db_session,
         project["id"],
@@ -889,7 +928,9 @@ def test_approve_reference_bind_survives_lock_contention_retry(
 # --- review round: optional project_id scope on the candidate routes ----------
 
 
-def test_asset_candidate_routes_enforce_project_scope(client, db_session, monkeypatch):
+def test_asset_candidate_routes_enforce_project_scope(
+    client, db_session, monkeypatch, blob_roots
+):
     """generate/approve/retract candidate routes hide cross-project objects
     behind the shared 404 when the caller names a foreign project."""
     monkeypatch.setattr(get_settings(), "queue_enabled", False)
@@ -935,6 +976,9 @@ def test_asset_candidate_routes_enforce_project_scope(client, db_session, monkey
         db_session, project_a["id"], kind="character", sha256="k" * 64,
         source="AI_GENERATED",
     )
+    # #210-2: the in-scope approval must get past the blob preflight so the
+    # scope-vs-success contrast this test asserts stays the only difference.
+    _write_asset_blob(sheet)
     candidate = db_session.get(AssetCandidate, candidate_id)
     candidate.asset_id = sheet.id
     candidate.status = "READY"

@@ -1,7 +1,9 @@
+import math
 from datetime import datetime
 from typing import Annotated
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -33,6 +35,47 @@ MODEL_REFERENCE_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$"
 VersionToken = Annotated[int, Field(ge=1, le=2_147_483_647)]
 
 
+def reject_non_finite_json(value: object) -> object:
+    """Recursively reject NaN/Infinity floats in free-form JSON payloads (#225).
+
+    stdlib ``json.loads`` accepts the bare literals, and pydantic coerces them
+    into non-finite floats inside otherwise-untyped dict/list fields; from
+    there they poison DB JSON columns and paid prompts. Shared by every
+    dict-typed input field via ``FiniteJsonDict`` (and workflow_schemas'
+    condition dict) so the rejection is a 422 at the API boundary.
+    """
+
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("数值不能是 NaN 或 Infinity")
+    elif isinstance(value, dict):
+        for item in value.values():
+            reject_non_finite_json(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            reject_non_finite_json(item)
+    return value
+
+
+FiniteJsonDict = Annotated[dict, AfterValidator(reject_non_finite_json)]
+
+
+def _reject_whitespace_only(value: str) -> str:
+    """Reject whitespace-only strings BEFORE routes strip them for storage.
+
+    The character/scene-asset routes call ``.strip()`` after pydantic has
+    already accepted ``" "``, so a whitespace-only name used to pass
+    ``min_length=1`` and then store as ``""`` (#226).
+    """
+
+    if not value.strip():
+        raise ValueError("不能只包含空白字符")
+    return value
+
+
+NonBlankName = Annotated[str, AfterValidator(_reject_whitespace_only)]
+
+
 class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     language: str = Field(default="zh-CN", max_length=16)
@@ -44,8 +87,8 @@ class ProjectCreate(BaseModel):
     default_concurrency: int = Field(default=4, ge=1, le=8)
     consistency_check_enabled: bool = True
     last_image_model_alias: str | None = Field(default=None, pattern=MODEL_REFERENCE_PATTERN)
-    default_text_model_id: str | None = Field(default=None, max_length=36)
-    last_image_model_id: str | None = Field(default=None, max_length=36)
+    default_text_model_id: str | None = Field(default=None, min_length=1, max_length=36)
+    last_image_model_id: str | None = Field(default=None, min_length=1, max_length=36)
     text_model_alias: str | None = Field(default=None, pattern=MODEL_REFERENCE_PATTERN)
 
 
@@ -57,8 +100,10 @@ class ProjectUpdate(BaseModel):
     default_concurrency: int | None = Field(default=None, ge=1, le=8)
     consistency_check_enabled: bool | None = None
     last_image_model_alias: str | None = Field(default=None, pattern=MODEL_REFERENCE_PATTERN)
-    default_text_model_id: str | None = Field(default=None, max_length=36)
-    last_image_model_id: str | None = Field(default=None, max_length=36)
+    # min_length=1 (#226): the empty string used to pass max_length and hit
+    # the FK 500 on create (or be silently skipped on update) instead of a 422.
+    default_text_model_id: str | None = Field(default=None, min_length=1, max_length=36)
+    last_image_model_id: str | None = Field(default=None, min_length=1, max_length=36)
     text_model_alias: str | None = Field(default=None, pattern=MODEL_REFERENCE_PATTERN)
     version: VersionToken
 
@@ -151,6 +196,9 @@ class AssetUpdate(BaseModel):
         pattern="^(CHARACTER_REFERENCE|OUTFIT_REFERENCE|STYLE_REFERENCE|SCENE_REFERENCE)$",
     )
     display_name: str | None = Field(default=None, min_length=1, max_length=120)
+    # Optional optimistic-lock token (#226): the owning route claims on it when
+    # present; legacy callers that omit it keep the historical behavior.
+    version: VersionToken | None = None
 
     @model_validator(mode="after")
     def require_change(self):
@@ -331,14 +379,14 @@ class SceneAssetStructured(BaseModel):
 
 
 class SceneAssetCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=120)
+    name: NonBlankName = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=8000)
     location_hint: str = Field(default="", max_length=200)
     structured: SceneAssetStructured = Field(default_factory=SceneAssetStructured)
 
 
 class SceneAssetUpdate(BaseModel):
-    name: str | None = Field(default=None, min_length=1, max_length=120)
+    name: NonBlankName | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=8000)
     structured: SceneAssetStructured | None = None
     status: str | None = Field(
@@ -445,7 +493,7 @@ class SourceImportRead(BaseModel):
 
 
 class CharacterCreate(BaseModel):
-    primary_name: str = Field(min_length=1, max_length=120)
+    primary_name: NonBlankName = Field(min_length=1, max_length=120)
     aliases: list[str] = Field(default_factory=list, max_length=40)
     canonical_description: str = Field(default="", max_length=8000)
     locked_features: list[str] = Field(default_factory=list)
@@ -453,7 +501,7 @@ class CharacterCreate(BaseModel):
 
 
 class CharacterUpdate(BaseModel):
-    primary_name: str | None = Field(default=None, min_length=1, max_length=120)
+    primary_name: NonBlankName | None = Field(default=None, min_length=1, max_length=120)
     aliases: list[str] | None = Field(default=None, max_length=40)
     canonical_description: str | None = Field(default=None, max_length=8000)
     locked_features: list[str] | None = None
@@ -497,8 +545,8 @@ class CharacterReferenceCreate(BaseModel):
 class OutfitCreate(BaseModel):
     character_id: str
     name: str = Field(min_length=1, max_length=120)
-    components: dict = Field(default_factory=dict)
-    state_rules: dict = Field(default_factory=dict)
+    components: FiniteJsonDict = Field(default_factory=dict)
+    state_rules: FiniteJsonDict = Field(default_factory=dict)
     locked_fields: list[str] = Field(default_factory=list)
     reference_asset_ids: list[str] = Field(default_factory=list)
 
@@ -528,7 +576,7 @@ class OutfitRead(BaseModel):
 class StyleProfileCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     color_mode: str = Field(default="monochrome", pattern="^(monochrome|color)$")
-    profile: dict = Field(default_factory=dict)
+    profile: FiniteJsonDict = Field(default_factory=dict)
     reference_asset_ids: list[str] = Field(default_factory=list)
     locked_fields: list[str] = Field(default_factory=list)
 
@@ -536,7 +584,7 @@ class StyleProfileCreate(BaseModel):
 class StyleProfileUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     color_mode: str | None = Field(default=None, pattern="^(monochrome|color)$")
-    profile: dict | None = None
+    profile: FiniteJsonDict | None = None
     locked_fields: list[str] | None = None
     reference_asset_ids: list[str] | None = None
     version: VersionToken
@@ -557,6 +605,9 @@ class StyleProfileRead(BaseModel):
 
 class SceneOutfitUpdate(BaseModel):
     assignments: dict[str, str] = Field(default_factory=dict)
+    # Optional optimistic-lock token (#226): the owning route claims on it when
+    # present; legacy callers that omit it keep the historical behavior.
+    version: VersionToken | None = None
 
 
 class CharacterSheetCreate(BaseModel):
@@ -748,7 +799,7 @@ class PanelUpdate(BaseModel):
     character_presence: dict[str, CharacterPresence] | None = None
     props: list[str] | None = Field(default=None, max_length=40)
     outfits: dict[str, str] | None = None
-    actions: dict | None = None
+    actions: FiniteJsonDict | None = None
     expressions: dict[str, str] | None = None
     background: str | None = Field(default=None, max_length=8000)
     sound_effects: list[SoundEffect | str] | None = None
@@ -763,7 +814,7 @@ class DialogueCreate(BaseModel):
     target_text: str = Field(min_length=1, max_length=4000)
     speaker_character_id: str | None = None
     text_direction: str = Field(default="vertical", pattern="^(vertical|horizontal)$")
-    region: dict = Field(default_factory=lambda: {"preferred": "upper_inner"})
+    region: FiniteJsonDict = Field(default_factory=lambda: {"preferred": "upper_inner"})
     rewrite_forbidden: bool = True
     panel_version: VersionToken
 
@@ -772,7 +823,7 @@ class DialogueUpdate(BaseModel):
     target_text: str | None = Field(default=None, min_length=1, max_length=4000)
     speaker_character_id: str | None = None
     text_direction: str | None = Field(default=None, pattern="^(vertical|horizontal)$")
-    region: dict | None = None
+    region: FiniteJsonDict | None = None
     bubble: BubbleGeometry | None = None
     rewrite_forbidden: bool | None = None
     panel_version: VersionToken
@@ -901,6 +952,9 @@ class AssetCandidateCreate(BaseModel):
 
 class FavoriteUpdate(BaseModel):
     is_favorite: bool
+    # Optional optimistic-lock token (#226): the owning route claims on it when
+    # present; legacy callers that omit it keep the historical behavior.
+    version: VersionToken | None = None
 
 
 class SelectCandidateRequest(BaseModel):
@@ -1180,10 +1234,21 @@ class InspectionRead(BaseModel):
 class RepairRequest(BaseModel):
     inspection_result_id: str
     repair_type: str = Field(pattern="^(BUBBLE_REGION|PANEL|PAGE)$")
-    target_regions: list[dict] = Field(default_factory=list)
+    target_regions: list[FiniteJsonDict] = Field(default_factory=list)
     target_fields: list[str] = Field(default_factory=list)
     model_alias: str = Field(pattern=MODEL_REFERENCE_PATTERN)
     resolution: Resolution
+
+    @model_validator(mode="after")
+    def validate_resolution(self):
+        # Same rank-guard floor as UpscaleRequest (#246): a DRAFT_1K repair
+        # child can only equal or downgrade its parent's resolution, and the
+        # route used to accept it silently. The schema floor is the shared
+        # enforcement; the route additionally compares against the original
+        # candidate's resolution.
+        if self.resolution == Resolution.DRAFT_1K:
+            raise ValueError("修复输出不能选择 1K，请保持或提高清晰度")
+        return self
 
 
 class UpscaleRequest(BaseModel):

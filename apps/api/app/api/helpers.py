@@ -24,6 +24,7 @@ from app.models import (
     Outfit,
     PageCandidate,
     Panel,
+    Project,
     Scene,
     StyleProfile,
     WorkflowDefinition,
@@ -143,11 +144,25 @@ def ensure_project_scope(
     omitting it keeps the historical behavior for existing callers, while a
     mismatched value hides the object behind the same 「不属于当前项目」 404
     the scoped list/bulk endpoints already return.
+
+    Issue #236: liveness is checked even when ``project_id`` is omitted. The
+    archive sweep cancels the project's jobs and runs, but routes that only
+    re-read their target row kept answering 200 for objects under a
+    soft-deleted project — minting jobs whose responses lied about spend and
+    letting object-id writes mutate a filed-away project. The check sits at
+    this shared scope boundary so every caller inherits it; no un-archive
+    route exists for projects (chapter/scene-asset/job restores operate
+    under live projects), so legitimate recovery paths are unaffected.
     """
 
+    scope = resolve_project_scope(db, obj)
+    if scope is not None:
+        owner = db.get(Project, scope)
+        if owner is None or owner.deleted_at is not None:
+            raise HTTPException(status_code=404, detail=f"{label}所属项目已删除")
     if project_id is None:
         return
-    if resolve_project_scope(db, obj) != project_id:
+    if scope != project_id:
         raise HTTPException(status_code=404, detail=f"{label}不存在或不属于当前项目")
 
 
