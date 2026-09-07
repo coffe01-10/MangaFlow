@@ -1,0 +1,4 @@
+bin/
+obj/
+.dotnet/
+.test-data/

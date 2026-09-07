@@ -26,6 +26,13 @@ flowchart LR
 
 本地默认使用 SQLite 和本地文件。任务元数据始终先写入数据库。`LOCAL` 直接使用受并发限制的本地后台执行器；`AUTO` 在开发环境无法连接 Redis 时自动使用本地执行器；`REDIS` 必须进入 RQ，Redis 不可用时任务保留为 `WAITING`。生产环境可替换为 PostgreSQL、对象存储和独立 RQ Worker。
 
+Windows 原生客户端位于 `apps/desktop/native`，以 WPF 重绘工作台界面，直接消费
+同一套 `/api/v1` 接口。首页沿用 Web 的纸面设计与 dashboard 指标合同；原生列表
+分页限制同时创建的封面控件数量。后台生命周期通过 `shell-core` 的 `native-host`
+复用既有握手及进程所有权机制。迁移范围与验收边界见
+[Windows 原生客户端 ADR](adr/native-windows-client.md)，未迁移功能继续由现有 Web
+工作台承接。本轮没有数据库 schema 或 API 合同变更。
+
 ## 3. 代码结构
 
 ```text
