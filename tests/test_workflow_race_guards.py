@@ -166,6 +166,9 @@ def _page_with_candidates(
         model_alias="draft",
         resolution=Resolution.DRAFT_1K,
         status="READY",
+        # #223: CURRENT stamps keep the approve path's currency gate green so
+        # the race assertions below still exercise the node claim itself.
+        based_on_storyboard_version=page.storyboard_version,
     )
     adopted = PageCandidate(
         batch_id=_batch(db, project, chapter, page, ordinal=2).id,
@@ -175,6 +178,7 @@ def _page_with_candidates(
         resolution=Resolution.STANDARD_2K,
         status="READY",
         is_selected=True,
+        based_on_storyboard_version=page.storyboard_version,
     )
     db.add_all([generated, adopted])
     db.flush()

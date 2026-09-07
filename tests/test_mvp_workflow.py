@@ -1420,7 +1420,9 @@ def test_inspection_repair_escalation_and_upscale_jobs(client, db_session, monke
                 "target_regions": [],
                 "target_fields": [],
                 "model_alias": "image.nano_banana_2",
-                "resolution": "1K",
+                # #246: RepairRequest rejects 1K; 2K is the valid outcome for
+                # this 1K parent so the escalation reaches the budget guard.
+                "resolution": "2K",
             },
         )
         assert repaired.status_code == 202
@@ -1433,7 +1435,7 @@ def test_inspection_repair_escalation_and_upscale_jobs(client, db_session, monke
             "inspection_result_id": inspection.id,
             "repair_type": "PAGE",
             "model_alias": "image.nano_banana_2",
-            "resolution": "1K",
+            "resolution": "2K",
         },
     )
     assert blocked.status_code == 409

@@ -37,7 +37,11 @@ REPAIR_PAYLOAD_TEMPLATE = {
     "target_regions": [],
     "target_fields": [],
     "model_alias": "image.nano_banana_2",
-    "resolution": "1K",
+    # #246: RepairRequest rejects DRAFT_1K outright ("修复输出不能选择 1K") and
+    # the route 409s below the original's rank, so a valid repair here must be
+    # 2K (the 1K parent's equal-or-higher outcome) to reach the duplicate /
+    # budget / retry guards these tests assert.
+    "resolution": "2K",
 }
 
 

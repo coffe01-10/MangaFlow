@@ -19,6 +19,7 @@ from app.models import (
     MangaPage,
     PageCandidate,
     Project,
+    utcnow,
 )
 from app.services import job_service
 
@@ -165,6 +166,8 @@ def test_derived_retry_arbitration_oldest_wins(db_session):
     older stays committed and dispatches; the younger is compensated back to
     FAILED with a 409 (mirrors the RETRY_MUTEX post-commit arbitration, which
     is vacuous for derived jobs because each targets its own child)."""
+    from datetime import timedelta
+
     from app.services.job_service import _verify_retry_revival_post_commit
 
     project, parent, child_a, child_b = _seed_parent_with_children(db_session)
@@ -179,6 +182,9 @@ def test_derived_retry_arbitration_oldest_wins(db_session):
             "repair_type": "LOCAL_REPAIR",
         },
     )
+    # Pin the ordering: both created_at defaults can land on the same clock
+    # tick, and the id tie-break on random UUIDs would flip the winner.
+    older.created_at = utcnow() - timedelta(seconds=5)
     younger = job_service.create_job(
         db_session,
         project_id=project.id,
@@ -354,6 +360,8 @@ def test_post_commit_arbitration_compensates_same_intent_younger(
     QUEUED early-return used to skip arbitration entirely."""
     from fastapi import HTTPException
 
+    from datetime import timedelta
+
     from app.services.job_service import _verify_retry_revival_post_commit
 
     project, parent, child_a, child_b = _seed_parent_with_children(db_session)
@@ -368,6 +376,9 @@ def test_post_commit_arbitration_compensates_same_intent_younger(
             "repair_type": "LOCAL_REPAIR",
         },
     )
+    # Pin the ordering: both created_at defaults can land on the same clock
+    # tick, and the id tie-break on random UUIDs would flip the winner.
+    older.created_at = utcnow() - timedelta(seconds=5)
     younger = job_service.create_job(
         db_session,
         project_id=project.id,

@@ -1181,6 +1181,9 @@ def test_scene_upload_kind_dedup_and_security_guards(
 def test_delete_asset_detaches_scene_bindings_and_resets_status(
     client, db_session
 ):
+    """#211-1: detaching a reference only demotes the scene asset when zero
+    LIVE references remain; a surviving binding keeps the confirmed status."""
+
     project = _project(client)
     scene_asset = _create_scene_asset(client, project["id"])
     main_asset = _reference_asset(db_session, project["id"])
@@ -1205,7 +1208,9 @@ def test_delete_asset_detaches_scene_bindings_and_resets_status(
     )
     assert [binding.asset_id for binding in bindings] == [sub_asset.id]
     refreshed = db_session.get(SceneAsset, scene_asset["id"])
-    assert refreshed.status.value == "NEEDS_CONFIRMATION"
+    # The remaining live reference (sub_asset) must keep the scene asset
+    # confirmed; pre-fix the detach blindly demoted to NEEDS_CONFIRMATION.
+    assert refreshed.status.value == "UPLOADED"
     assert refreshed.version == scene_asset["version"] + 1
 
     detail = client.get(
@@ -1213,6 +1218,14 @@ def test_delete_asset_detaches_scene_bindings_and_resets_status(
     ).json()
     assert main_asset.id not in {item["asset_id"] for item in detail["references"]}
     assert main_asset.deleted_at is not None
+
+    # Removing the LAST live reference is what resets the status.
+    last = client.delete(f"/api/v1/assets/{sub_asset.id}")
+    assert last.status_code == 204
+    db_session.expire_all()
+    demoted = db_session.get(SceneAsset, scene_asset["id"])
+    assert demoted.status.value == "NEEDS_CONFIRMATION"
+    assert demoted.version == scene_asset["version"] + 2
 
 
 # --- Regression: storyboard rebuild uses the resolved background -----------

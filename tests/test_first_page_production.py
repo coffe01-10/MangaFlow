@@ -36,10 +36,27 @@ def _asset(project_id: str, name: str, digest: str, kind: str) -> Asset:
     )
 
 
+def _write_asset_blob(asset: Asset) -> None:
+    """Write the backing file for the seeded ORM asset row (#210-2 preflight).
+
+    The approval gate resolves generated assets against ``storage_root``; the
+    blob must exist or the route 409s before the lock-retry semantics under
+    test can run.
+    """
+
+    root = get_settings().storage_root
+    blob = root / asset.storage_key
+    blob.parent.mkdir(parents=True, exist_ok=True)
+    blob.write_bytes(b"\x89PNG\r\n\x1a\nstub")
+
+
 def test_concept_sheet_can_be_approved_as_character_and_outfit_reference(
-    client, db_session, monkeypatch
+    client, db_session, monkeypatch, tmp_path
 ):
     monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    # Isolate the blob roots so the seeded stub file never lands in the
+    # developer-default ./storage directory.
+    monkeypatch.setattr(get_settings(), "storage_root", tmp_path / "storage")
     project = _project(client, "概念设定确认")
     character = client.post(
         f"/api/v1/projects/{project['id']}/characters",
@@ -62,6 +79,7 @@ def test_concept_sheet_can_be_approved_as_character_and_outfit_reference(
     asset = _asset(project["id"], "concept.png", "a", "character")
     db_session.add(asset)
     db_session.flush()
+    _write_asset_blob(asset)
     candidate = db_session.get(AssetCandidate, candidate_id)
     candidate.asset_id = asset.id
     candidate.status = "READY"
@@ -202,9 +220,10 @@ def test_scene_outfit_assignment_bumps_page_fences_when_referenced(client, db_se
 
 
 def test_color_style_requires_palette_and_approved_test_image(
-    client, db_session, monkeypatch
+    client, db_session, monkeypatch, tmp_path
 ):
     monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    monkeypatch.setattr(get_settings(), "storage_root", tmp_path / "storage")
     project = _project(client, "彩色风格确认")
     style_reference = _asset(project["id"], "style.png", "b", "STYLE_REFERENCE")
     db_session.add(style_reference)
@@ -253,6 +272,7 @@ def test_color_style_requires_palette_and_approved_test_image(
     )
     assert batch.status_code == 201, batch.json()
     test_asset = _asset(project["id"], "style-test.png", "c", "style_test")
+    _write_asset_blob(test_asset)
     candidate = AssetCandidate(
         batch_id=batch.json()["id"],
         ordinal=1,

@@ -1307,7 +1307,9 @@ def test_package_repair_candidate_inherits_queued_snapshot(
                 "target_regions": [],
                 "target_fields": [],
                 "model_alias": "image.nano_banana_2",
-                "resolution": "1K",
+                # #246: RepairRequest rejects 1K; the 1K original accepts 2K,
+                # so the repair still inherits the snapshot this test asserts.
+                "resolution": "2K",
             },
         )
         assert created.status_code == 202, created.text

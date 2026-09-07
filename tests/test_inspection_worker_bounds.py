@@ -30,6 +30,7 @@ from app.models import (
     MangaPage,
     PageCandidate,
     Project,
+    utcnow,
 )
 from app.services.ai_schemas import InspectionItem, PageInspectionOutput
 from app.services.provider_presets import ensure_provider_presets
@@ -202,6 +203,11 @@ def test_younger_inspect_dies_before_paid_call(
         job_type="PAGE_INSPECT",
         status=JobStatus.CONSISTENCY_CHECKING,
         request_parameters={"categories": CATEGORIES},
+        # created_at is pinned apart (same pattern as
+        # test_retry_inspect_mutex): both defaults can land on the same clock
+        # tick, and the arbitration's UUID id tie-break would then flip the
+        # winner at random (~1/3 flake). A real gap keeps `older` oldest.
+        created_at=utcnow() - timedelta(seconds=5),
     )
     younger = GenerationJob(
         project_id=project.id,

@@ -955,6 +955,11 @@ def test_reset_for_retry_still_resets_job_and_revives_failed_workflow_run(
 
 def test_workflow_inspect_job_does_not_auto_commit(db_session, monkeypatch):
     project, page, candidate, _generate_job = _ready_candidate(db_session)
+    # #223: the reconciler's minting branch now requires a CURRENT (or
+    # ack-confirmed) candidate; the unstamped LEGACY_UNKNOWN row would trip
+    # that gate before the auto_commit=False behavior this test pins.
+    candidate.based_on_storyboard_version = page.storyboard_version
+    db_session.commit()
     graph = WorkflowGraph(
         nodes=[
             WorkflowNodeDefinition(id="inspect", type="quality.inspect", name="质量检查")
@@ -1399,6 +1404,10 @@ def test_workflow_and_route_inspect_creation_collapse_to_one_job(db_session):
     the index collapses the race to one job (create_job's IntegrityError
     fallback returns the winner)."""
     project, page, candidate, _generate_job = _ready_candidate(db_session)
+    # #223: same currency gate as the auto-commit test — the workflow-side
+    # mint below must reach create_job, not the STALE_CANDIDATE rejection.
+    candidate.based_on_storyboard_version = page.storyboard_version
+    db_session.commit()
     graph = WorkflowGraph(
         nodes=[
             WorkflowNodeDefinition(id="inspect", type="quality.inspect", name="质量检查")
