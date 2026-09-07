@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from fastapi import HTTPException
+from sqlalchemy import update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import Settings
@@ -185,9 +187,21 @@ def update_runtime_settings(
     if payload.version != current_version:
         raise HTTPException(status_code=409, detail="运行设置已更新，请刷新后重试")
 
-    current, _ = _safe_overrides(db)
+    # Merge against the RAW stored value, not the schema-filtered read: keys
+    # outside the current schema (written by a newer/older deployment) must
+    # survive this PATCH instead of being silently wiped. Known keys with
+    # legacy None values stay dropped for the same reason _safe_overrides
+    # drops them (issue #243).
+    allowed = set(RuntimeSettingsUpdate.model_fields) - {"version"}
+    raw = dict(row.value) if row else {}
+    preserved_unknown = {key: value for key, value in raw.items() if key not in allowed}
+    current = {
+        key: value
+        for key, value in raw.items()
+        if key in allowed and value is not None
+    }
     changes = payload.model_dump(exclude_unset=True, exclude={"version"})
-    merged = {**current, **changes}
+    merged = {**preserved_unknown, **current, **changes}
     # Enforce the same cross-field geometry the boot Settings validator
     # enforces — the runtime override path used to mutate the live Settings
     # directly, so a PATCH could push the timeout below the effective lease.
@@ -205,12 +219,34 @@ def update_runtime_settings(
             ),
         )
     if row:
-        row.value = merged
-        row.version += 1
+        # Claim the row with the expected version before writing: the plain
+        # check-then-write above lost concurrent PATCHes silently (two PATCHes
+        # at version N both passed the check, the second commit overwrote the
+        # first without bumping past it correctly).
+        claimed = db.execute(
+            update(AppSetting)
+            .where(AppSetting.key == RUNTIME_KEY, AppSetting.version == current_version)
+            .values(value=merged, version=AppSetting.version + 1)
+            .execution_options(synchronize_session=False)
+        )
+        if claimed.rowcount != 1:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="运行设置已更新，请刷新后重试")
+        db.commit()
+        db.expire(row)
+        db.refresh(row)
     else:
         row = AppSetting(key=RUNTIME_KEY, value=merged, version=2)
         db.add(row)
-    db.commit()
+        try:
+            db.commit()
+        except IntegrityError as error:
+            # A concurrent insert claimed the singleton row first.
+            db.rollback()
+            raise HTTPException(
+                status_code=409, detail="运行设置已更新，请刷新后重试"
+            ) from error
+        db.refresh(row)
 
     # Existing workers read Settings per job, so safe mutable overrides take effect
     # without a restart. Paths, database URLs, Redis URLs and credentials are never dynamic.

@@ -1232,9 +1232,12 @@ def test_google_adapters_wrap_response_postprocessing_failures(monkeypatch):
     class _FakeModels:
         def generate_content(self, **kwargs):
             if kwargs.get("contents") and isinstance(kwargs["contents"], list):
-                # Image path: candidate present but content is None (blocked).
+                # Image path: the real blocked shape has content=None plus a
+                # safety finish_reason (issue #206). The previous mock pinned
+                # finish_reason="STOP" — impossible together with content=None —
+                # and asserted the AttributeError path this fix removes.
                 return SimpleNamespace(
-                    candidates=[SimpleNamespace(content=None, finish_reason="STOP")],
+                    candidates=[SimpleNamespace(content=None, finish_reason="SAFETY")],
                     usage_metadata=None,
                     response_id=None,
                 )
@@ -1269,4 +1272,5 @@ def test_google_adapters_wrap_response_postprocessing_failures(monkeypatch):
         image_adapter.generate_asset(
             GoogleImageRequest(prompt="i", resolution="1K", aspect_ratio="1:1")
         )
-    assert image_error.value.code == "INVALID_OUTPUT"
+    assert image_error.value.code == "CONTENT_POLICY"
+    assert image_error.value.retryable is False

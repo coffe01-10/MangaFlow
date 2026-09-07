@@ -23,10 +23,17 @@ _MILLION = Decimal(1_000_000)
 _DISPLAY_QUANTUM = Decimal("0.000001")
 _USAGE_ALIASES = {
     "input_tokens": ("input_tokens", "prompt_tokens", "prompt_token_count"),
+    # Thinking aliases are a last-resort output bucket (mirrors
+    # usage_ledger._OUTPUT_ALIASES): a standard output alias wins when present,
+    # and the keys must stay KNOWN so thinking rows do not count as unmapped
+    # usage and force PARTIAL estimates (issue #209).
     "output_tokens": (
         "output_tokens",
         "completion_tokens",
         "candidates_token_count",
+        "thoughts_token_count",
+        "reasoning_tokens",
+        "thinking_tokens",
     ),
     "output_images": ("output_images",),
 }
@@ -331,6 +338,9 @@ def _normalized_usage(usage: dict | None) -> tuple[dict[str, Decimal], bool]:
         "cached_input_tokens",
         "cached_content_token_count",
         "cache_read_input_tokens",
+        # grok/antigravity gateways report cached reads under this flat key
+        # (mirrors usage_ledger._CACHED_PATHS, issue #209).
+        "cache_read_tokens",
     ):
         if alias in usage:
             cached = _nonnegative_decimal(usage[alias])

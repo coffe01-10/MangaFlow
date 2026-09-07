@@ -827,7 +827,20 @@ fn export_logs_with(
     let mut zip = ZipWriter::new();
 
     for (member, path, size) in &members {
-        let data = fs::read(path).map_err(ExportError::Io)?;
+        // #241-5b: an unreadable member (locked by another process, permission
+        // revoked, vanished between collect and read) joins the size-change
+        // race below in the skip-and-report treatment instead of aborting the
+        // whole export — the remaining members are still worth archiving.
+        let data = match fs::read(path) {
+            Ok(data) => data,
+            Err(error) => {
+                skipped.push(SkippedEntry {
+                    name: member.clone(),
+                    reason: format!("read: {error}"),
+                });
+                continue;
+            }
+        };
         if data.len() as u64 != *size || data.len() as u64 > EXPORT_MAX_FILE_BYTES {
             skipped.push(SkippedEntry {
                 name: member.clone(),
@@ -1689,6 +1702,85 @@ mod tests {
         let _ = fs::remove_file(&destination);
     }
 
+    /// #241-5b regression: one unreadable member must not abort the whole
+    /// export — it is skipped and reported like the size-change race, while
+    /// the healthy members still land in the archive and the manifest.
+    /// Windows: the victim is held open WITHOUT FILE_SHARE_READ, so its
+    /// `fs::read` (GENERIC_READ) fails with a sharing violation while the
+    /// collect-phase metadata/canonicalize (which request no read access)
+    /// keep succeeding and the member reaches the read loop. Unix: mode 000
+    /// (skipped under root — permissions cannot stop root from reading).
+    #[test]
+    fn export_skips_a_member_that_cannot_be_read() {
+        let user_data = temp_user_data("unreadable");
+        let logs = logs_dir(&user_data);
+        fs::create_dir_all(&logs).unwrap();
+        let healthy_name = format!("shell-{}.log", "a".repeat(32));
+        fs::write(logs.join(&healthy_name), "healthy line\n").unwrap();
+        let victim_name = format!("helper-{}.stderr.log", "b".repeat(32));
+        let victim = logs.join(&victim_name);
+        fs::write(&victim, "locked away\n").unwrap();
+
+        #[cfg(windows)]
+        let lock = lock_member_against_read(&victim);
+        #[cfg(unix)]
+        let lock = {
+            if skip_when_root() {
+                eprintln!("running as root: mode 000 cannot fail a read");
+                return;
+            }
+            let mut permissions = fs::metadata(&victim).unwrap().permissions();
+            std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o000);
+            fs::set_permissions(&victim, permissions).unwrap();
+            ()
+        };
+
+        let destination = std::env::temp_dir().join(format!(
+            "mfd-unreadable-{}.zip",
+            crate::protocol::new_token()
+        ));
+        let report = export_logs_zip(&user_data, &destination).unwrap();
+        drop(lock);
+        #[cfg(unix)]
+        {
+            let mut permissions = fs::metadata(&victim).unwrap().permissions();
+            std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o644);
+            let _ = fs::set_permissions(&victim, permissions);
+        }
+
+        assert_eq!(report.files, vec![healthy_name.clone()], "{report:?}");
+        assert!(
+            report
+                .skipped
+                .iter()
+                .any(|entry| entry.name == victim_name && entry.reason.starts_with("read: ")),
+            "{report:?}"
+        );
+        assert_eq!(&fs::read(&destination).unwrap()[0..2], b"PK");
+
+        // manifest.json inside the archive agrees with the report.
+        let archive = fs::read(&destination).unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&zip_member_bytes(&archive, "manifest.json")).unwrap();
+        let included: Vec<&str> = manifest["included"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap())
+            .collect();
+        let skipped: Vec<&str> = manifest["skipped"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(included, vec![healthy_name.as_str()], "{manifest}");
+        assert!(skipped.contains(&victim_name.as_str()), "{manifest}");
+
+        let _ = fs::remove_dir_all(&user_data);
+        let _ = fs::remove_file(&destination);
+    }
+
     /// A logs entry whose file name contains a backslash (a legal byte in
     /// Unix file names, but the ZIP format's path separator — see
     /// `ZipWriter`'s last-resort assert) must be skipped and reported, never
@@ -1888,6 +1980,39 @@ mod tests {
         // Directory permissions cannot make rename fail for root.
         let euid = unsafe { libc::geteuid() };
         euid == 0
+    }
+
+    /// Windows lock for #241-5b: holds a member open WITHOUT FILE_SHARE_READ
+    /// (but with WRITE|DELETE sharing) so a later `fs::read` — which opens
+    /// with GENERIC_READ — fails with a sharing violation while the collect
+    /// phase's metadata and canonicalize (desired access 0) keep succeeding
+    /// and the member still reaches the read loop.
+    #[cfg(windows)]
+    fn lock_member_against_read(path: &Path) -> RenameLock {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::Win32::Storage::FileSystem::{
+            CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_CREATION_DISPOSITION,
+            FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_MODE, FILE_SHARE_WRITE,
+            OPEN_EXISTING,
+        };
+        let wide = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<u16>>();
+        let handle = unsafe {
+            CreateFileW(
+                windows::core::PCWSTR(wide.as_ptr()),
+                0x8000_0000u32, // GENERIC_READ
+                FILE_SHARE_MODE(FILE_SHARE_WRITE.0 | FILE_SHARE_DELETE.0),
+                None,
+                FILE_CREATION_DISPOSITION(OPEN_EXISTING.0),
+                FILE_FLAGS_AND_ATTRIBUTES(FILE_ATTRIBUTE_NORMAL.0),
+                None,
+            )
+            .expect("open the member without FILE_SHARE_READ for the read-skip test")
+        };
+        RenameLock(handle)
     }
 
     /// #150 regression: while the base cannot be renamed (Windows: held

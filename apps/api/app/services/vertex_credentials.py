@@ -21,6 +21,31 @@ T = TypeVar("T")
 VertexFailure = ProviderFailure
 
 
+def _is_transport_or_sdk_error(error: Exception) -> bool:
+    """Distinguish transient transport/SDK failures from local defects.
+
+    The catch-all below used to mark every unknown exception retryable, so an
+    adapter bug or off-contract response shape was re-billed up to
+    ``max_attempts`` times inside one audit row. Unknown failures keep
+    transient semantics only when they demonstrably come from the transport
+    stack or the google SDK namespace; everything else is treated as terminal
+    (issue #209).
+    """
+
+    if isinstance(error, (ConnectionError, TimeoutError, OSError)):
+        return True
+    root = (type(error).__module__ or "").split(".", 1)[0]
+    return root in {
+        "google",
+        "grpc",
+        "httpx",
+        "httpcore",
+        "requests",
+        "urllib3",
+        "aiohttp",
+    }
+
+
 def classify_vertex_failure(error: Exception) -> VertexFailure:
     """Map provider and transport failures to safe, user-facing categories."""
     raw = str(error).lower()
@@ -73,7 +98,11 @@ def classify_vertex_failure(error: Exception) -> VertexFailure:
         return VertexFailure("UPSTREAM", "Vertex AI 网络或上游服务暂时不可用", True)
     if any(token in raw for token in ("credential", "service account", "private key")):
         return VertexFailure("CONFIGURATION", "Vertex AI 服务账号配置无效", False)
-    return VertexFailure("UPSTREAM", "Vertex AI 暂时无法完成请求", True)
+    if _is_transport_or_sdk_error(error):
+        return VertexFailure("UPSTREAM", "Vertex AI 暂时无法完成请求", True)
+    return VertexFailure(
+        "UPSTREAM", "Vertex AI 请求出现未分类错误，已停止重试", False
+    )
 
 
 @dataclass
@@ -97,6 +126,13 @@ class VertexCredentialManager:
         self.base_backoff_seconds = base_backoff_seconds
         self._entries: dict[tuple[str, int, str, str], _CredentialEntry] = {}
         self._entries_lock = threading.RLock()
+        # Number of provider dispatches the most recent ``execute`` call made
+        # (issue #209): the manager retries the whole ``operation`` inside ONE
+        # audit row, so the count is the only visibility into hidden paid
+        # dispatches. Reset at the start of every ``execute`` and incremented
+        # before each operation invocation; read after ``execute`` returns or
+        # raises.
+        self.last_dispatch_count = 0
 
     @staticmethod
     def _config_key(settings: Settings) -> tuple[str, int, str, str]:
@@ -184,14 +220,21 @@ class VertexCredentialManager:
 
     def create_client(self, settings: Settings) -> Any:
         from google import genai
+        from google.genai import types
 
         credentials = self.get_credentials(settings)
+        # Timeout bound (90s) plus pinned retry attempts: the SDK default retry
+        # policy could silently multiply paid dispatches inside the manager's
+        # own bounded retry loop and one audit row (issue #209).
         return genai.Client(
             vertexai=True,
             project=settings.google_cloud_project,
             location=settings.google_cloud_location,
             credentials=credentials,
-            http_options={"timeout": 90_000},
+            http_options=types.HttpOptions(
+                timeout=90_000,
+                retry_options=types.HttpRetryOptions(attempts=1),
+            ),
         )
 
     def execute(
@@ -203,10 +246,12 @@ class VertexCredentialManager:
     ) -> T:
         auth_retried = False
         factory = client_factory or (lambda: self.create_client(settings))
+        self.last_dispatch_count = 0
         for attempt in range(self.max_attempts):
             client = None
             try:
                 client = factory()
+                self.last_dispatch_count += 1
                 return operation(client)
             except Exception as error:
                 failure = classify_vertex_failure(error)

@@ -24,6 +24,19 @@ OPENAI_ENDPOINTS = {
 }
 ANTHROPIC_ENDPOINTS = {"models": "/models", "messages": "/messages"}
 
+# Historical seeded defaults for the legacy-alias Vertex rows (issue #243).
+# Seeding captures the boot-time ``settings.vertex_*_model`` value, so a row
+# seeded with the default would freeze there forever while the operator's env
+# override changed. On boot, a row whose provider_model_id still equals one of
+# these defaults is refreshed to the current settings value; anything else is
+# a user-edited id and must not be clobbered. Keep old defaults appended here
+# when the config defaults move so upgraded installs keep refreshing.
+_VERTEX_PRESET_MODEL_DEFAULTS: dict[str, tuple[str, ...]] = {
+    "text.fast": ("gemini-3.5-flash",),
+    "image.nano_banana_2": ("gemini-3.1-flash-image",),
+    "image.nano_banana_pro": ("gemini-3-pro-image-preview",),
+}
+
 
 @dataclass(frozen=True)
 class ProviderPreset:
@@ -390,6 +403,7 @@ def ensure_provider_presets(
 
     db.flush()
     sync_vertex_connection_health(db, settings)
+    _refresh_vertex_preset_model_ids(db, settings)
     if created_vertex_profile and provider_catalog_empty:
         _ensure_vertex_models(db, settings)
     _ensure_codex_cli_model(db)
@@ -437,6 +451,35 @@ def sync_vertex_connection_health(
     connection.latency_ms = health.latency_ms
     connection.error_code = health.error_code
     connection.message = health.message
+
+
+def _refresh_vertex_preset_model_ids(db: Session, settings: Settings) -> None:
+    """Refresh legacy-alias Vertex rows that still carry a seeded default id.
+
+    Runs on every preset sync (not just first boot): the seeded
+    ``provider_model_id`` freezes at the value the environment had when the
+    row was created, so an operator setting ``settings.vertex_text_model``
+    later had no effect. A row is refreshed only when its id still equals one
+    of the known seeded defaults; a user-edited id never matches them and is
+    left alone (issue #243).
+    """
+
+    settings_values = {
+        "text.fast": settings.vertex_text_model,
+        "image.nano_banana_2": settings.vertex_image_model_nano_banana_2,
+        "image.nano_banana_pro": settings.vertex_image_model_nano_banana_pro,
+    }
+    for legacy_alias, seeded_defaults in _VERTEX_PRESET_MODEL_DEFAULTS.items():
+        model = db.scalar(
+            select(AIModel).where(AIModel.legacy_alias == legacy_alias)
+        )
+        if model is None:
+            continue
+        current = settings_values[legacy_alias]
+        if model.provider_model_id != current and (
+            model.provider_model_id in seeded_defaults
+        ):
+            model.provider_model_id = current
 
 
 def _ensure_vertex_models(db: Session, settings: Settings) -> None:

@@ -28,7 +28,11 @@ from app.models import (
     ProviderKey,
     ProviderProfile,
 )
-from app.services.credential_crypto import mark_key_failure, mark_key_success
+from app.services.credential_crypto import (
+    CredentialDecryptError,
+    mark_key_failure,
+    mark_key_success,
+)
 from app.services.model_capabilities import capability_reference_limit
 from app.services.model_router import (
     AdapterBinding,
@@ -36,6 +40,8 @@ from app.services.model_router import (
     bind_adapter,
     get_catalog_model,
 )
+from app.services.provider_catalog import mark_credential_decrypt_failed
+from app.services.provider_errors import CREDENTIAL_DECRYPT_FAILED
 from app.services.provider_presets import ensure_provider_presets
 from app.services.usage_ledger import resolve_usage_dimensions
 from app.services.worker_handlers.execution import _ensure_job_not_cancelled
@@ -109,6 +115,18 @@ def _binding(
             project_id=project_id,
             task_kind=task_kind,
         )
+    except CredentialDecryptError as error:
+        # A stored secret that no longer opens under the current master key is
+        # terminal (issue #243): re-raising the raw RuntimeError would surface
+        # as a generic retryable WORKER_ERROR loop while the key stays HEALTHY.
+        # Persist the FAILED health transition on a scoped session first — the
+        # worker rolls the caller's session back right after this raise.
+        _mark_credential_decrypt_failed(db, error)
+        raise ProviderAdapterError(
+            CREDENTIAL_DECRYPT_FAILED,
+            "已保存的供应商 API Key 无法解密，请重新保存该连接的凭据",
+            retryable=False,
+        ) from error
     except HTTPException as error:
         detail = error.detail if isinstance(error.detail, str) else "模型路由配置无效"
         raise ProviderAdapterError("MODEL_ROUTE_UNAVAILABLE", detail) from error
@@ -242,6 +260,50 @@ def _diagnostics_sessionmaker(db):
             "the caller's pending changes"
         )
     return sessionmaker(bind=bind, expire_on_commit=False)
+
+
+def _mark_credential_decrypt_failed(db, error: CredentialDecryptError) -> None:
+    """Transition the unreadable key/connection to FAILED on a scoped session.
+
+    The caller's transaction is rolled back by the worker right after the
+    raise, so the health transition must commit on its own session (same rule
+    as ``_record_key_and_connection_failure``). Best-effort: the classification
+    raise below is the load-bearing part; a diagnostics failure here must not
+    replace it.
+    """
+
+    connection_id = getattr(error, "connection_id", None)
+    key_id = getattr(error, "key_id", None)
+    if not connection_id and not key_id:
+        return
+    try:
+        diagnostics = _diagnostics_sessionmaker(db)
+        with diagnostics() as diag_db:
+            mark_credential_decrypt_failed(
+                diag_db, connection_id=connection_id, key_id=key_id
+            )
+    except Exception as diagnostics_error:
+        LOGGER.warning(
+            "Failed to persist CREDENTIAL_DECRYPT_FAILED health transition for "
+            "connection_id=%s key_id=%s: %r",
+            connection_id,
+            key_id,
+            diagnostics_error,
+        )
+
+
+def _result_usage(result: object) -> dict | None:
+    """Best-effort usage extraction from a finished adapter result (issue #204).
+
+    Structured text results transport the provider dict through the private
+    ``provider_usage`` attribute (see ``model_adapters.base``); image results
+    expose it as the ``ModelResponse.usage`` field. Empty dicts mean "no
+    usage reported" and stay NULL — that NULL is the recovery sweep's
+    upgrade discriminator and must not be fabricated.
+    """
+
+    usage = getattr(result, "provider_usage", None) or getattr(result, "usage", None)
+    return usage if isinstance(usage, dict) and usage else None
 
 
 def _mark_key_outcome(
@@ -388,6 +450,10 @@ def _invoke_provider(db, binding: AdapterBinding, callback):
             outcome="FAILED",
             error_code=error.code,
             error_message=error.user_message,
+            # Post-POST failures (e.g. an image URL download timeout) may carry
+            # the usage the provider already billed; record it so the FAILED
+            # attempt still shows what was spent (issue #207).
+            usage=error.usage,
         )
         if binding.selected_key:
             _record_key_and_connection_failure(db, binding, error)
@@ -423,6 +489,7 @@ def _invoke_provider(db, binding: AdapterBinding, callback):
                             outcome="FAILED",
                             error_code=retry_error.code,
                             error_message=retry_error.user_message,
+                            usage=retry_error.usage,
                         )
                         # Scoped second session: mark_key_failure commits
                         # internally and must not publish the caller's
@@ -451,7 +518,7 @@ def _invoke_provider(db, binding: AdapterBinding, callback):
                         outcome="SUCCEEDED",
                         model_id=getattr(result, "model_id", None),
                         request_id=getattr(result, "request_id", None),
-                        usage=getattr(result, "usage", None),
+                        usage=_result_usage(result),
                         output_image_count=_output_image_count(result),
                     )
                     db.info["last_model_call_attempt_id"] = replacement_id
@@ -479,7 +546,7 @@ def _invoke_provider(db, binding: AdapterBinding, callback):
         outcome="SUCCEEDED",
         model_id=getattr(result, "model_id", None),
         request_id=getattr(result, "request_id", None),
-        usage=getattr(result, "usage", None),
+        usage=_result_usage(result),
         output_image_count=_output_image_count(result),
     )
     db.info["last_model_call_attempt_id"] = attempt_id

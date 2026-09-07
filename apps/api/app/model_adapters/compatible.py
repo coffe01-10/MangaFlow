@@ -20,9 +20,10 @@ from app.model_adapters.base import (
     MultimodalRequest,
     ProviderAdapterError,
     StructuredRequest,
+    attach_provider_usage,
     strip_json_fences,
 )
-from app.services.provider_errors import parse_retry_after_seconds
+from app.services.provider_errors import OUTPUT_TRUNCATED, parse_retry_after_seconds
 
 _RESERVED_HEADERS = {"authorization", "host", "content-length", "x-api-key"}
 # "n" is reserved: a configured extra_body must not raise the image count
@@ -250,6 +251,13 @@ def _validate_structured_text(
         raise ProviderAdapterError("INVALID_OUTPUT", failure_message) from error
 
 
+def _body_usage(body: dict[str, Any]) -> dict[str, Any] | None:
+    """Read the usage block an OpenAI/Anthropic-protocol 200 body carries."""
+
+    usage = body.get("usage")
+    return usage if isinstance(usage, dict) and usage else None
+
+
 def _provider_error(response: httpx.Response) -> ProviderAdapterError:
     status = response.status_code
     retry_after = response.headers.get("retry-after")
@@ -361,6 +369,7 @@ class OpenAICompatibleAdapter(_CompatibleBase):
             if supports_schema
             else _schema_prompt(request.prompt, output_schema)
         )
+        usage: dict[str, Any] | None = None
         if self.runtime.use_responses_api:
             payload: dict[str, Any] = {
                 "model": self.runtime.model_id,
@@ -392,6 +401,7 @@ class OpenAICompatibleAdapter(_CompatibleBase):
             )
             try:
                 body = _json_body(response)
+                usage = _body_usage(body)
                 text = body.get("output_text") or self._responses_text(body)
             except ProviderAdapterError:
                 raise
@@ -425,6 +435,7 @@ class OpenAICompatibleAdapter(_CompatibleBase):
             )
             try:
                 body = _json_body(response)
+                usage = _body_usage(body)
                 text = self._chat_text(body)
             except ProviderAdapterError:
                 raise
@@ -432,9 +443,11 @@ class OpenAICompatibleAdapter(_CompatibleBase):
                 raise ProviderAdapterError(
                     "INVALID_OUTPUT", "模型已响应，但响应结构无法解析", retryable=True
                 ) from error
-        return _validate_structured_text(
+        result = _validate_structured_text(
             text, output_schema, failure_message="模型已响应，但结构化结果无法验证"
         )
+        attach_provider_usage(result, usage)
+        return result
 
     def analyze_multimodal(
         self, request: MultimodalRequest, output_schema: type[BaseModel]
@@ -484,8 +497,11 @@ class OpenAICompatibleAdapter(_CompatibleBase):
             headers=_safe_headers(self.runtime),
             json=payload,
         )
+        usage: dict[str, Any] | None = None
         try:
-            text = self._chat_text(_json_body(response))
+            body = _json_body(response)
+            usage = _body_usage(body)
+            text = self._chat_text(body)
         except ProviderAdapterError:
             raise
         except Exception as error:
@@ -496,11 +512,13 @@ class OpenAICompatibleAdapter(_CompatibleBase):
             raise ProviderAdapterError(
                 "INVALID_OUTPUT", "模型已响应，但响应结构无法解析", retryable=True
             ) from error
-        return _validate_structured_text(
+        result = _validate_structured_text(
             text,
             output_schema,
             failure_message="模型已响应，但多模态结果无法验证",
         )
+        attach_provider_usage(result, usage)
+        return result
 
     def generate_page(self, request: ImageRequest) -> ModelResponse:
         return self._generate_image(request)
@@ -543,6 +561,10 @@ class OpenAICompatibleAdapter(_CompatibleBase):
                     # inspects exactly one, so asking for more only bills.
                     "n": "1",
                     "size": self._image_size(request),
+                    # Inline bytes keep the billed POST self-contained: a URL
+                    # response turns the download into part of the paid window
+                    # (issue #207).
+                    "response_format": "b64_json",
                 },
                 files=files,
             )
@@ -552,6 +574,10 @@ class OpenAICompatibleAdapter(_CompatibleBase):
                 "prompt": request.prompt,
                 "n": 1,
                 "size": self._image_size(request),
+                # Default to inline bytes so the result rides on the billed
+                # POST itself; an explicit extra_body response_format is merged
+                # after this default and still overrides it (issue #207).
+                "response_format": "b64_json",
                 **_safe_extra_body(self.runtime),
             }
             response = self._request(
@@ -560,21 +586,32 @@ class OpenAICompatibleAdapter(_CompatibleBase):
                 headers=headers,
                 json=payload,
             )
+        usage: dict[str, Any] | None = None
         try:
             body = _json_body(response)
+            usage = _body_usage(body)
             images = tuple(self._image_bytes(item) for item in body.get("data") or [])
-        except ProviderAdapterError:
+        except ProviderAdapterError as error:
+            # The provider POST already succeeded (body decoded, usage read):
+            # a download/decode failure now must keep the spent usage on the
+            # error so the FAILED audit finalize bills the real dispatch
+            # instead of discarding it and retrying the generation (#207).
+            if usage:
+                error.usage = usage
             raise
         except Exception as error:
-            raise ProviderAdapterError(
+            wrapped = ProviderAdapterError(
                 "INVALID_OUTPUT", "图片模型已响应，但结果无法解析", retryable=True
-            ) from error
+            )
+            if usage:
+                wrapped.usage = usage
+            raise wrapped from error
         if not images:
             raise ProviderAdapterError("INVALID_OUTPUT", "图片模型没有返回可用图片")
         return ModelResponse(
             model_id=body.get("model") or self.runtime.model_id,
             request_id=body.get("id") or response.headers.get("x-request-id"),
-            usage=body.get("usage") or {},
+            usage=usage or {},
             images=images,
         )
 
@@ -629,6 +666,13 @@ class OpenAICompatibleAdapter(_CompatibleBase):
         # designed per-segment split-retry engages instead of a terminal miss.
         if choice.get("finish_reason") in {"content_filter", "content_policy"}:
             raise ProviderAdapterError("CONTENT_POLICY", "模型因内容政策拒绝了本次生成")
+        # A token-limit stop means the body is provably incomplete; classify it
+        # before any JSON validation so truncated JSON never masquerades as a
+        # decode/schema miss (issue #205).
+        if choice.get("finish_reason") == "length":
+            raise ProviderAdapterError(
+                OUTPUT_TRUNCATED, "模型输出因长度限制被截断，请减少内容或提高 token 上限"
+            )
         message = choice.get("message")
         if isinstance(message, dict) and message.get("refusal"):
             raise ProviderAdapterError("CONTENT_POLICY", "模型因内容政策拒绝了本次生成")
@@ -646,6 +690,20 @@ class OpenAICompatibleAdapter(_CompatibleBase):
 
     @staticmethod
     def _responses_text(body: dict[str, Any]) -> str:
+        # The Responses API marks truncation with status "incomplete" plus an
+        # incomplete_details reason; classify it before text assembly so a
+        # truncated body never falls through to INVALID_OUTPUT (issue #205).
+        if body.get("status") == "incomplete":
+            raise ProviderAdapterError(
+                OUTPUT_TRUNCATED, "模型输出因长度限制被截断，请减少内容或提高 token 上限"
+            )
+        incomplete_details = body.get("incomplete_details")
+        if isinstance(incomplete_details, dict) and (
+            incomplete_details.get("reason") == "max_output_tokens"
+        ):
+            raise ProviderAdapterError(
+                OUTPUT_TRUNCATED, "模型输出因长度限制被截断，请减少内容或提高 token 上限"
+            )
         values: list[str] = []
         for output in body.get("output") or []:
             for item in output.get("content") or []:
@@ -687,11 +745,14 @@ class AnthropicCompatibleAdapter(_CompatibleBase):
             headers=_safe_headers(self.runtime),
             json=payload,
         )
-        return _validate_structured_text(
-            self._text(_json_body(response)),
+        body = _json_body(response)
+        result = _validate_structured_text(
+            self._text(body),
             output_schema,
             failure_message="模型已响应，但结构化结果无法验证",
         )
+        attach_provider_usage(result, _body_usage(body))
+        return result
 
     def analyze_multimodal(
         self, request: MultimodalRequest, output_schema: type[BaseModel]
@@ -728,16 +789,26 @@ class AnthropicCompatibleAdapter(_CompatibleBase):
             headers=_safe_headers(self.runtime),
             json=payload,
         )
-        return _validate_structured_text(
-            self._text(_json_body(response)),
+        body = _json_body(response)
+        result = _validate_structured_text(
+            self._text(body),
             output_schema,
             failure_message="模型已响应，但多模态结果无法验证",
         )
+        attach_provider_usage(result, _body_usage(body))
+        return result
 
     @staticmethod
     def _text(body: dict[str, Any]) -> str:
         if body.get("stop_reason") == "refusal":
             raise ProviderAdapterError("CONTENT_POLICY", "模型因内容政策拒绝了本次生成")
+        # A max_tokens stop means the body is provably incomplete; classify it
+        # before content assembly so truncated JSON never masquerades as a
+        # decode/schema miss (issue #205).
+        if body.get("stop_reason") == "max_tokens":
+            raise ProviderAdapterError(
+                OUTPUT_TRUNCATED, "模型输出因长度限制被截断，请减少内容或提高 token 上限"
+            )
         content = body.get("content")
         # A garbage content shape (string, dict, or non-dict items) must
         # degrade to a classified output failure, not escape as AttributeError.

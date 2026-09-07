@@ -53,6 +53,21 @@ class Settings(BaseSettings):
                 "卡死的任务将在租约剩余时间和回收宽限期内无法被回收"
             )
         return self
+
+    @model_validator(mode="after")
+    def _validate_cli_run_timeout_geometry(self) -> "Settings":
+        # cli_executor hands cli_run_timeout_seconds to the runner inside the
+        # job's own timeout budget. A CLI timeout wider than the job timeout
+        # means the worker reclaims/kills the job while the paid CLI run is
+        # still executing: the run is then recovered as an abandoned CRASH
+        # instead of ending in a controlled, retryable TIMEOUT.
+        if self.cli_run_timeout_seconds > self.job_timeout_seconds:
+            raise ValueError(
+                "cli_run_timeout_seconds 不得大于 job_timeout_seconds："
+                "CLI 子进程超时必须先于任务超时终止，"
+                "否则任务会在 CLI 仍在运行时被强制回收并误判为控制器崩溃"
+            )
+        return self
     # Executor-silence fence for lease reclaim (issue #130). None derives the
     # grace from the lease/heartbeat geometry — see
     # job_service._lease_reclaim_grace_seconds, which also explains why an
