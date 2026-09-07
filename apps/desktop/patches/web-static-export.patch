@@ -1,6 +1,7 @@
 # V02-53B disposable patch: static export + runtime API origin injection.
 #
-# Inert in normal development/builds: `output: "export"` only activates with
+# Inert in normal development/builds: the static-export shape (output
+# "export", unoptimized images, no rewrites/headers) only activates with
 # MANGAFLOW_STATIC_EXPORT=1, and the api.ts override only reads
 # window.__MANGAFLOW_API_ORIGIN__ when the desktop shell initialization
 # script has set it. ADR 4.2 frozen startup protocol: the origin is provided
@@ -20,44 +21,14 @@
 # and component scheme change, which is exactly the veto-condition-3 input
 # for the lead's decision.
 #
+# Rebased 2026-09-07 (desktop red team): W-15 plan B (#182) made
+# `output: "standalone"` unconditional and added headers(); both overrode or
+# blocked the export build, so the patch now switches `output` explicitly
+# between "export" (flag set) and "standalone" (everything else) and gates
+# rewrites()/headers() to empty under the flag. Behaviour without
+# MANGAFLOW_STATIC_EXPORT=1 is unchanged.
+#
 # Apply with: git apply apps/desktop/patches/web-static-export.patch
-diff --git a/apps/web/lib/api.ts b/apps/web/lib/api.ts
-index 08fed49..0fe19c5 100644
---- a/apps/web/lib/api.ts
-+++ b/apps/web/lib/api.ts
-@@ -1,4 +1,12 @@
--const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "/api/v1";
-+// V02-53B disposable desktop-shell patch: prefer the origin injected at
-+// runtime by the desktop shell (window.__MANGAFLOW_API_ORIGIN__, set by the
-+// Tauri initialization script) over the build-time default. Build/SSG still
-+// resolves the relative default so static export stays provider-agnostic.
-+const API_URL =
-+  typeof window !== "undefined" &&
-+  (window as { __MANGAFLOW_API_ORIGIN__?: string }).__MANGAFLOW_API_ORIGIN__
-+    ? `${(window as { __MANGAFLOW_API_ORIGIN__?: string }).__MANGAFLOW_API_ORIGIN__}/api/v1`
-+    : process.env.NEXT_PUBLIC_API_URL ?? "/api/v1";
- const API_ORIGIN = API_URL.replace(/\/api\/v1\/?$/, "");
- 
- export type Resolution = "1K" | "2K" | "4K";
-diff --git a/apps/web/next.config.ts b/apps/web/next.config.ts
-index f69656f..8786598 100644
---- a/apps/web/next.config.ts
-+++ b/apps/web/next.config.ts
-@@ -4,6 +4,14 @@ const apiOrigin = process.env.MANGAFLOW_API_ORIGIN ?? "http://127.0.0.1:8000";
- 
- const nextConfig: NextConfig = {
-   reactStrictMode: true,
-+  // V02-53B disposable desktop-shell patch: static export only for the
-+  // desktop PoC build; normal builds keep the Node-server rewrite below.
-+  ...(process.env.MANGAFLOW_STATIC_EXPORT === "1"
-+    ? {
-+        output: "export" as const,
-+        images: { unoptimized: true },
-+      }
-+    : {}),
-   experimental: {
-     optimizePackageImports: ["lucide-react"],
-   },
 diff --git a/apps/web/app/projects/[id]/[section]/page.tsx b/apps/web/app/projects/[id]/[section]/page.tsx
 index a86dd1c..6831c87 100644
 --- a/apps/web/app/projects/[id]/[section]/page.tsx
@@ -153,3 +124,65 @@ index ef0e884..0000000
 -  const { id } = await params;
 -  return <WorkflowStudio projectId={id} />;
 -}
+diff --git a/apps/web/lib/api.ts b/apps/web/lib/api.ts
+index e0d5669..84a04e5 100644
+--- a/apps/web/lib/api.ts
++++ b/apps/web/lib/api.ts
+@@ -1,4 +1,12 @@
+-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "/api/v1";
++// V02-53B disposable desktop-shell patch: prefer the origin injected at
++// runtime by the desktop shell (window.__MANGAFLOW_API_ORIGIN__, set by the
++// Tauri initialization script) over the build-time default. Build/SSG still
++// resolves the relative default so static export stays provider-agnostic.
++const API_URL =
++  typeof window !== "undefined" &&
++  (window as { __MANGAFLOW_API_ORIGIN__?: string }).__MANGAFLOW_API_ORIGIN__
++    ? `${(window as { __MANGAFLOW_API_ORIGIN__?: string }).__MANGAFLOW_API_ORIGIN__}/api/v1`
++    : process.env.NEXT_PUBLIC_API_URL ?? "/api/v1";
+ const API_ORIGIN = API_URL.replace(/\/api\/v1\/?$/, "");
+ 
+ export type Resolution = "1K" | "2K" | "4K";
+diff --git a/apps/web/next.config.ts b/apps/web/next.config.ts
+index 5ae6a98..5648a87 100644
+--- a/apps/web/next.config.ts
++++ b/apps/web/next.config.ts
+@@ -20,7 +20,17 @@ const nextConfig: NextConfig = {
+   // node (next standalone server). `output: "standalone"` changes only the
+   // artifact layout of a production build (a self-contained server/ tree
+   // under .next); regular `next start` and `npm run dev` are unaffected.
+-  output: "standalone",
++  // V02-53B disposable desktop-shell patch: static export only for the
++  // desktop PoC build (MANGAFLOW_STATIC_EXPORT=1); the W-15 plan B default
++  // (standalone) stays for every other build. An export has no Node server
++  // and no image optimizer, so rewrites/headers below are dropped and
++  // images are unoptimized in the export build only.
++  output: process.env.MANGAFLOW_STATIC_EXPORT === "1"
++    ? ("export" as const)
++    : ("standalone" as const),
++  ...(process.env.MANGAFLOW_STATIC_EXPORT === "1"
++    ? { images: { unoptimized: true } }
++    : {}),
+   experimental: {
+     optimizePackageImports: ["lucide-react"],
+   },
+@@ -30,6 +40,9 @@ const nextConfig: NextConfig = {
+   distDir: process.env.NODE_ENV === "development" ? ".next-dev" : ".next",
+   allowedDevOrigins: ["127.0.0.1", "localhost"],
+   async rewrites() {
++    // V02-53B disposable desktop-shell patch: a static export serves no
++    // Node-side /api, so the rewrite list is dropped for the export build.
++    if (process.env.MANGAFLOW_STATIC_EXPORT === "1") return [];
+     return [
+       {
+         source: "/api/v1/:path*",
+@@ -44,6 +57,10 @@ const nextConfig: NextConfig = {
+   // (self.__next_f.push), the same documented debt as the tauri.conf CSP;
+   // connect/img are loopback-only like the shell policy.
+   async headers() {
++    // V02-53B disposable desktop-shell patch: static exports carry no
++    // server-generated response headers; the tauri.conf CSP covers the
++    // exported form instead.
++    if (process.env.MANGAFLOW_STATIC_EXPORT === "1") return [];
+     return [
+       {
+         source: "/:path*",
