@@ -1972,11 +1972,11 @@ mod tests {
         }
 
         // Member cap: 4 files sorted, only the first two archived.
-        let destination =
+        let destination_members =
             std::env::temp_dir().join(format!("mfd-caps-m-{}.zip", crate::protocol::new_token()));
         let report = export_logs_with(
             &user_data,
-            &destination,
+            &destination_members,
             false,
             ExportLimits {
                 max_members: 2,
@@ -1997,11 +1997,11 @@ mod tests {
 
         // Size cap: all four would fit the member cap, but the 2 GiB…
         // here 25-byte… budget only takes two.
-        let destination =
+        let destination_sizes =
             std::env::temp_dir().join(format!("mfd-caps-s-{}.zip", crate::protocol::new_token()));
         let report = export_logs_with(
             &user_data,
-            &destination,
+            &destination_sizes,
             false,
             ExportLimits {
                 max_members: EXPORT_MAX_MEMBERS,
@@ -2023,28 +2023,24 @@ mod tests {
 
         // Both archives are structurally valid and their manifests agree
         // with the reports.
-        let archive = fs::read(&destination).unwrap();
+        let archive = fs::read(&destination_sizes).unwrap();
         let manifest: serde_json::Value =
             serde_json::from_slice(&zip_member_bytes(&archive, "manifest.json")).unwrap();
         assert_eq!(manifest["included"].as_array().unwrap().len(), 2);
         assert_eq!(manifest["skipped"].as_array().unwrap().len(), 2);
 
         // With the real limits the same four files all fit.
-        let destination =
-            std::env::temp_dir().join(format!("mfd-caps-f-{}.zip", crate::protocol::new_token()));
-        let report = export_logs_zip(&user_data, &destination).unwrap();
+        let destination_full =
+            std::env::temp_dir().join(format!("mfd-caps-full-{}.zip", crate::protocol::new_token()));
+        let report = export_logs_zip(&user_data, &destination_full).unwrap();
         assert_eq!(report.files.len(), 4, "{report:?}");
         assert!(report.skipped.is_empty(), "{report:?}");
 
         let _ = fs::remove_dir_all(&user_data);
-        for prefix in ["mfd-caps-m-", "mfd-caps-s-", "mfd-caps-f-"] {
-            let _ = fs::read_dir(std::env::temp_dir()).map(|entries| {
-                for entry in entries.flatten() {
-                    if entry.file_name().to_string_lossy().starts_with(prefix) {
-                        let _ = fs::remove_file(entry.path());
-                    }
-                }
-            });
+        // Exact-path cleanup only: a prefix sweep over the shared temp
+        // directory could delete a concurrent test process's destinations.
+        for destination in [destination_members, destination_sizes, destination_full] {
+            let _ = fs::remove_file(&destination);
         }
     }
 
