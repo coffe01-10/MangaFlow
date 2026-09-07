@@ -3,6 +3,7 @@ from __future__ import annotations
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from app.api.helpers import candidate_version_state
 from app.config import get_settings
 from app.domain.states import JobStatus, Resolution
 from app.models import (
@@ -11,6 +12,7 @@ from app.models import (
     Character,
     CharacterReference,
     GenerationJob,
+    InspectionResult,
     MangaPage,
     Outfit,
     PageCandidate,
@@ -28,6 +30,7 @@ from app.services.ordinal_allocator import (
     BatchOrdinalConflictError,
     commit_ordinal_transaction,
     create_generation_batch,
+    lock_entity,
 )
 from app.services.page_readiness import ensure_page_ready
 from app.services.scene_assets import scene_asset_snapshot, scene_reference_assets
@@ -112,11 +115,60 @@ def approve_node(
     elif spec.barrier == "APPROVE":
         if run.scope_type != "PAGE" or not run.scope_id:
             raise ValueError("采用候选节点必须使用 PAGE 运行范围")
-        page = db.get(MangaPage, run.scope_id)
+        # Lock the page before reading the candidate (#223): a storyboard edit
+        # (mark_storyboard_changed) or a concurrent selection/retraction that
+        # commits between the route's read and this claim would otherwise be
+        # evaluated on a stale snapshot. populate_existing re-reads the row.
+        page = lock_entity(db, MangaPage, run.scope_id)
         selected = candidate_id or (page.selected_candidate_id if page else None)
         candidate = db.get(PageCandidate, selected) if selected else None
         if not page or not candidate or candidate.page_id != page.id or not candidate.is_selected:
             raise ValueError("请先在单页生成页采用当前页的一个候选")
+        # Currency + severity gate, mirroring the manual adopt path (routes/
+        # workflow/generation.py select_candidate): the barrier used to trust
+        # is_selected alone, so a storyboard edit that nulled the page's ack
+        # (editor.mark_storyboard_changed's designed staleness marker) still
+        # let the workflow consume the stale candidate. CURRENT and
+        # STALE_ACCEPTED pass: the latter means the user explicitly ran the
+        # keep-selected confirmation (manual_text_confirmed) against the
+        # current storyboard, which is the workflow-side equivalent of the
+        # manual path's accept_stale + manual_text_confirmed blockers.
+        blockers: list[str] = []
+        version_state, _reasons = candidate_version_state(candidate, page)
+        if version_state not in {"CURRENT", "STALE_ACCEPTED"}:
+            blockers.append(
+                "STALE_CANDIDATE_CONFIRMATION_REQUIRED:该候选不是基于当前分镜生成，"
+                "请先人工校对文字并确认继续使用旧候选"
+            )
+        inspections = list(
+            db.scalars(
+                select(InspectionResult)
+                .where(InspectionResult.candidate_id == candidate.id)
+                .order_by(InspectionResult.created_at.desc())
+            )
+        )
+        latest_by_category: dict[str, InspectionResult] = {}
+        for inspection in inspections:
+            latest_by_category.setdefault(inspection.category.upper(), inspection)
+        for category in ("CHARACTER", "OUTFIT", "CONTINUITY"):
+            inspection = latest_by_category.get(category)
+            if not inspection:
+                # Same default-DAG convention as the manual path: visual QA
+                # happens after the adoption gate, so a missing check cannot
+                # block the first adoption.
+                continue
+            outcome = inspection.outcome.upper()
+            severity = inspection.severity.upper()
+            if outcome not in {"MATCH", "PASS", "ACCEPTABLE"} and severity in {
+                "HIGH",
+                "ERROR",
+                "CRITICAL",
+            }:
+                blockers.append(
+                    f"SEVERE_{category}_ISSUE:{category} 存在严重问题，不能采用"
+                )
+        if blockers:
+            raise ValueError("候选尚未达到采用标准：" + "；".join(blockers))
         claimed = db.execute(
             update(WorkflowRun)
             .where(

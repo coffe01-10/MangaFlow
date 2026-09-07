@@ -527,7 +527,11 @@ def archive_project(
     project = db.get(Project, project_id)
     if not project or project.deleted_at is not None:
         raise HTTPException(status_code=404, detail="项目不存在")
-    if confirm_name.strip() != project.name:
+    # Project names are stored unstripped (create performs no trimming), so a
+    # stored " 名称" must still be archivable by typing "名称": compare
+    # stripped-to-stripped instead of a bare confirm_name.strip() against the
+    # raw stored name (#226).
+    if confirm_name.strip() != project.name.strip():
         raise HTTPException(status_code=409, detail="项目名称不匹配，未执行删除")
     terminal_statuses = {
         JobStatus.COMPLETED,

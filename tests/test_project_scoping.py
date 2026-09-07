@@ -732,54 +732,40 @@ def test_object_endpoint_accepts_owning_project(
     assert response.status_code == expected, response.text
 
 
-def test_object_endpoints_without_project_param_keep_legacy_behavior(
-    client, scoped_world
-):
-    """The web client never sends project_id on object routes (#143 sweep)."""
+def test_object_endpoints_enforce_optional_project_param(client, scoped_world):
+    """Secured half of the optional ``project_id`` boundary (#143 / #226 sweep).
+
+    These endpoints used to be pinned as "no project_id keeps the legacy
+    unscoped behavior"; that pin documented the bypass instead of the guard.
+    The secured contract is what is pinned now: whenever the caller names a
+    project, a foreign value hides the object behind the shared 404. (The
+    no-parameter path stays permissive by design for the existing web client,
+    per ``ensure_project_scope``.)
+    """
 
     context = scoped_world["context"]
-    assert client.get(f"/api/v1/jobs/{context['completed_job_id_b']}").status_code == 200
-    assert (
-        client.get(f"/api/v1/batches/{context['batch_id_b']}/candidates").status_code == 200
-    )
-    assert (
-        client.get(f"/api/v1/usage/attempts/{context['attempt_direct_id_b']}").status_code
-        == 200
-    )
-    legacy = client.patch(
-        f"/api/v1/candidates/{context['page_candidate_id_b']}/favorite",
-        json={"is_favorite": True},
-    )
-    assert legacy.status_code == 200, legacy.text
-    # #143 workflow/storyboard/pages/scene_assets sweep: object routes that
-    # carry no project segment keep their unscoped behavior without the param.
-    assert client.get(f"/api/v1/pages/{context['page_id_b']}").status_code == 200
-    assert client.get(f"/api/v1/pages/{context['page_id_b']}/storyboard").status_code == 200
-    assert (
-        client.get(
-            f"/api/v1/candidates/{context['page_candidate_id_b']}/inspections"
-        ).status_code
-        == 200
-    )
-    assert (
-        client.get(
+    foreign = {"project_id": context["project_id_a"]}
+    secured_calls = [
+        ("GET", f"/api/v1/jobs/{context['completed_job_id_b']}", None),
+        ("GET", f"/api/v1/batches/{context['batch_id_b']}/candidates", None),
+        ("GET", f"/api/v1/usage/attempts/{context['attempt_direct_id_b']}", None),
+        ("PATCH", f"/api/v1/candidates/{context['page_candidate_id_b']}/favorite", None),
+        ("GET", f"/api/v1/pages/{context['page_id_b']}", None),
+        ("GET", f"/api/v1/pages/{context['page_id_b']}/storyboard", None),
+        ("GET", f"/api/v1/candidates/{context['page_candidate_id_b']}/inspections", None),
+        (
+            "GET",
             "/api/v1/asset-generation-batches",
-            params={"target_type": "CHARACTER", "target_id": context["character_id_b"]},
-        ).status_code
-        == 200
-    )
-    # The fixture page carries no script/source traceability, so the layout
-    # PATCH keeps its historical 409 guard — what matters is that the route
-    # ran past the (omitted) scope gate instead of returning the scope 404.
-    legacy_layout = client.patch(
-        f"/api/v1/pages/{context['page_id_b']}/layout", json={"panel_count": 5}
-    )
-    assert legacy_layout.status_code == 409, legacy_layout.text
-    assert legacy_layout.json()["detail"] == "当前页缺少剧本或原文追溯，不能调整格数"
-    legacy_bind = client.patch(
-        f"/api/v1/scenes/{context['scene_id_b']}/bind-asset", json={}
-    )
-    assert legacy_bind.status_code == 200, legacy_bind.text
+            {"target_type": "CHARACTER", "target_id": context["character_id_b"]},
+        ),
+    ]
+    for method, url, extra_params in secured_calls:
+        params = {**foreign, **(extra_params or {})}
+        response = client.request(
+            method, url, params=params, json={"is_favorite": True} if method == "PATCH" else None
+        )
+        assert response.status_code == 404, f"{method} {url}: {response.text}"
+        assert "不属于当前项目" in response.json()["detail"]
 
 
 def test_cross_project_destructive_calls_leave_target_rows_intact(
@@ -820,12 +806,13 @@ def test_usage_attempt_list_filters_by_optional_project(client, scoped_world):
     assert context["attempt_direct_id_b"] not in returned
 
 
-def test_new_object_endpoints_accept_owning_project_and_legacy_calls(
+def test_new_object_endpoints_accept_owning_project_and_reject_foreign(
     client, scoped_world, monkeypatch
 ):
     """The follow-up sweep (character PATCH/bind, page export.png, generated
-    asset adopt, chapter parse) keeps working for the owning project and for
-    legacy callers that never send project_id."""
+    asset adopt, chapter parse) accepts the owning project's parameter and
+    hides the objects from a foreign project (#226 sweep: the old test pinned
+    the no-parameter legacy calls instead of the guard)."""
 
     context = scoped_world["context"]
     owned_patch = client.patch(
@@ -853,22 +840,20 @@ def test_new_object_endpoints_accept_owning_project_and_legacy_calls(
     )
     assert owned_parse.status_code == 202, owned_parse.text
 
-    legacy_patch = client.patch(
-        f"/api/v1/characters/{context['character_id_b']}",
-        json={"primary_name": "旧客户端直连修改", "version": 1},
-    )
-    assert legacy_patch.status_code == 200, legacy_patch.text
-    legacy_bind = client.post(
-        f"/api/v1/characters/{context['character_id_b']}/references",
-        json={"asset_id": context["asset_id_b"], "is_canonical": False},
-    )
-    assert legacy_bind.status_code == 201, legacy_bind.text
-    legacy_adopt = client.post(
-        f"/api/v1/assets/{context['generated_asset_id_b']}/adopt-reference"
-    )
-    assert legacy_adopt.status_code == 200, legacy_adopt.text
-    legacy_parse = client.post(f"/api/v1/chapters/{context['bare_chapter_id_b']}/parse")
-    assert legacy_parse.status_code == 202, legacy_parse.text
+    foreign = {"project_id": context["project_id_a"]}
+    foreign_calls = [
+        ("PATCH", f"/api/v1/characters/{context['character_id_b']}",
+         {"primary_name": "越权修改", "version": 1}),
+        ("POST", f"/api/v1/characters/{context['character_id_b']}/references",
+         {"asset_id": context["asset_id_a"], "is_canonical": False}),
+        # Paid endpoint: a wrong-project parse must never mint a SOURCE_PARSE.
+        ("POST", f"/api/v1/chapters/{context['bare_chapter_id_b']}/parse", None),
+        ("POST", f"/api/v1/assets/{context['generated_asset_id_b']}/adopt-reference", None),
+    ]
+    for method, url, body in foreign_calls:
+        response = client.request(method, url, params=foreign, json=body)
+        assert response.status_code == 404, f"{method} {url}: {response.text}"
+        assert "不属于当前项目" in response.json()["detail"]
 
 
 def test_cross_project_calls_on_new_endpoints_leave_targets_intact(

@@ -39,15 +39,31 @@ def _condition_matches(value: Any, operator: str, expected: Any) -> bool:
     if operator == "ne":
         return value != expected
     if operator == "contains":
-        return expected in value if isinstance(value, (str, list, tuple, dict)) else False
-    if operator in {"gt", "gte", "lt", "lte"}:
+        # A non-container value simply cannot contain anything. Inside real
+        # containers a non-matching expected type must answer False instead of
+        # raising: ``None in "text"`` (missing "value" key on an unpublished
+        # legacy graph, #224) and an unhashable lookup into a dict are TypeErrors
+        # a worker must not crash on.
+        if not isinstance(value, (str, list, tuple, dict)):
+            return False
+        if isinstance(value, str) and not isinstance(expected, str):
+            return False
         try:
-            return {
-                "gt": value > expected,
-                "gte": value >= expected,
-                "lt": value < expected,
-                "lte": value <= expected,
-            }[operator]
+            return expected in value
+        except TypeError:
+            return False
+    if operator in {"gt", "gte", "lt", "lte"}:
+        # Only the requested comparison is evaluated; an incomparable pair
+        # (None vs number, container vs scalar) is a False branch, not a crash
+        # (#224).
+        try:
+            if operator == "gt":
+                return value > expected
+            if operator == "gte":
+                return value >= expected
+            if operator == "lt":
+                return value < expected
+            return value <= expected
         except TypeError:
             return False
     raise ValueError("不支持的条件比较符")

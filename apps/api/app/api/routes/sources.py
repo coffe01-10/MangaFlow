@@ -396,7 +396,22 @@ def delete_script(
     # Checked before the active-job guard and the destructive cascade so a
     # foreign caller cannot wipe another project's script tree (issue #143).
     ensure_project_scope(db, chapter, project_id, label="剧本")
+    # #237: the guard reads and the cascade below used to run as plain
+    # SELECTs, so a parse/plan/page write committing inside the window was
+    # orphaned (pages deleted under a job the guard had just missed). Mirror
+    # plan_chapter_pages' #144 discipline: lock the chapter row (serializes
+    # against planning, which takes Project→Chapter), then lock the chapter's
+    # page rows (serializes against selection/candidate writes), and only
+    # THEN re-read the active-job set — every read below now observes rows
+    # committed before the locks were granted.
+    from app.services.ordinal_allocator import lock_entity
+
+    locked_chapter = lock_entity(db, Chapter, chapter_id)
+    if not locked_chapter or locked_chapter.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="章节不存在")
     page_ids = list(db.scalars(select(MangaPage.id).where(MangaPage.chapter_id == chapter_id)))
+    for page_id in page_ids:
+        lock_entity(db, MangaPage, page_id)
     active_job = db.scalar(
         select(GenerationJob.id)
         .where(

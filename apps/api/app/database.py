@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from collections.abc import Generator
 
@@ -24,9 +25,27 @@ def _enable_sqlite_integrity(dbapi_connection, _connection_record) -> None:
     cursor.close()
 
 
+def _strict_json_serializer(value) -> str:
+    """Serialize JSON columns without NaN/Infinity (#225).
+
+    SQLAlchemy's default json.dumps emits bare ``NaN``/``Infinity`` tokens,
+    which are not valid JSON: a poisoned free-form field would store a row no
+    strict parser (provider APIs included) accepts. Failing the write loudly
+    here is the last line of defense behind the wire-level 422 and the schema
+    finiteness validators. No ``json_deserializer`` is configured: reads stay
+    on stdlib defaults so legacy rows still load.
+    """
+
+    return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+
+
 settings = get_settings()
 connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
-engine = create_engine(settings.database_url, connect_args=connect_args)
+engine = create_engine(
+    settings.database_url,
+    connect_args=connect_args,
+    json_serializer=_strict_json_serializer,
+)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 

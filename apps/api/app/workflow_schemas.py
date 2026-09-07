@@ -3,7 +3,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.schemas import VersionToken
+from app.schemas import VersionToken, reject_non_finite_json
 
 PortDataType = Literal["text", "json", "image", "asset", "report", "boolean"]
 WorkflowScope = Literal["PROJECT", "CHAPTER", "PAGE", "CANDIDATE"]
@@ -29,6 +29,15 @@ class WorkflowNodeConfig(BaseModel):
     notes: str = Field(default="", max_length=20_000)
     condition: dict[str, Any] = Field(default_factory=dict)
     requires_approval: bool = False
+
+    @field_validator("condition")
+    @classmethod
+    def _condition_finite(cls, value: dict[str, Any]) -> dict[str, Any]:
+        # Free-form condition dict shared with the executor: reject non-finite
+        # floats recursively (#225) so a NaN comparison value cannot ride the
+        # published graph into DB JSON columns or paid condition evaluation.
+        reject_non_finite_json(value)
+        return value
 
 
 class WorkflowNodeDefinition(BaseModel):

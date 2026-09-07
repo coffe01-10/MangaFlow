@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.api.helpers import ensure_project_scope
 from app.database import get_db
 from app.models import Project, WorkflowDefinition, WorkflowRun, WorkflowVersion, utcnow
-from app.services.ordinal_allocator import OrdinalConflictError
+from app.services.ordinal_allocator import OrdinalConflictError, lock_entity
 from app.services.workflow_engine import (
     PublishRevisionConflictError,
     approve_node,
@@ -209,6 +209,13 @@ def delete_workflow(
     workflow_id: str, db: Session = Depends(get_db), project_id: str | None = None
 ) -> Response:
     workflow = _workflow(db, workflow_id, project_id)
+    # Lock the definition row before the active-run read (#197): the start
+    # route's create_workflow_run takes the same lock before inserting a run,
+    # so a delete racing a start serializes here instead of soft-deleting a
+    # definition whose run is being minted on the other side of the window.
+    workflow = lock_entity(db, WorkflowDefinition, workflow.id)
+    if workflow is None or workflow.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="工作流不存在")
     # Soft-deleting a definition that still has live runs would orphan them:
     # reconcile/approve keep executing paid jobs for a workflow the studio no
     # longer lists (#139). Refuse like delete_script — cancelling the runs is
@@ -223,9 +230,23 @@ def delete_workflow(
     )
     if active_run is not None:
         raise HTTPException(status_code=409, detail="工作流仍有进行中的运行，请先取消")
-    workflow.deleted_at = utcnow()
-    workflow.is_active = False
-    workflow.version += 1
+    # Tombstone + version bump as one atomic conditional UPDATE (mirror
+    # update_workflow's claim): the ORM read-modify-write could lose a bump
+    # against a concurrent PATCH/restore, and the deleted_at IS NULL predicate
+    # makes a double delete a no-op instead of a second version bump.
+    db.execute(
+        update(WorkflowDefinition)
+        .where(
+            WorkflowDefinition.id == workflow.id,
+            WorkflowDefinition.deleted_at.is_(None),
+        )
+        .values(
+            deleted_at=utcnow(),
+            is_active=False,
+            version=WorkflowDefinition.version + 1,
+        )
+        .execution_options(synchronize_session=False)
+    )
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
