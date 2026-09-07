@@ -63,6 +63,7 @@ internal static class NativeVisualChecks
                 var shellEncoder = new PngBitmapEncoder();
                 shellEncoder.Frames.Add(BitmapFrame.Create(shell));
                 using (var file = File.Create(Path.Combine(output, "native-home-1320.png"))) shellEncoder.Save(file);
+                NativeNavigationChecks.Run(output);
                 app.Shutdown();
             }
             catch (Exception e) { failure = e; }

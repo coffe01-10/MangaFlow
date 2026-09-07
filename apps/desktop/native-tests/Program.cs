@@ -76,7 +76,6 @@ try
     Check(Preferences.Load(temp).Width == 1320, "corrupt preferences fall back safely");
 }
 finally { Directory.Delete(temp, true); }
-Console.WriteLine($"Native client checks passed: {count}");
 
 var workspace = new WorkspaceState();
 for (var i = 0; i < 29; i++) workspace.Projects.Add(new ProjectItem($"p{i}", $"故事{i}", "", 0, 0));
@@ -89,7 +88,17 @@ workspace.ChangeDashboardPage(0);
 Check(workspace.DashboardProjects.Count == 0 && workspace.DashboardPageLabel == "1 / 1", "archive emptying last page returns to valid page");
 Check(new ProjectItem("p", "雨🌧️夜", "", 0, 0).CoverTitle == "雨\n🌧️\n夜", "cover lettering preserves Unicode graphemes");
 
+var navigation = new ProjectNavigation();
+Check(ProjectPages.All.Select(p => p.WebSection).SequenceEqual(new[] { "source", "assets", "script", "storyboard", "generate", "library", "jobs", "workflow", "settings" }), "project navigation covers Web routes in order");
+var changes = 0;
+navigation.PropertyChanged += (_, _) => changes++;
+Check(!navigation.Select(navigation.Current) && changes == 0, "reselecting a page does not rebuild it");
+Check(navigation.Select(ProjectPages.Get(ProjectPageId.Assets)) && changes == 1, "selecting a new page notifies once");
+Check(ProjectPages.All.Where(p => p.IsConnected).Select(p => p.ReadResource).SequenceEqual(new[] { "chapters", "jobs" }), "only connected pages own an API resource");
+Check(!navigation.Select(ProjectPages.Get(ProjectPageId.Source) with { WebSection = "unknown" }), "unknown page definition is rejected");
+
 if (args.Contains("--render")) NativeVisualChecks.Run(args.Last());
+Console.WriteLine($"Native client checks passed: {count}" + (args.Contains("--render") ? "; WPF navigation and visual checks passed" : ""));
 
 sealed class FakeHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> respond) : HttpMessageHandler
 {

@@ -33,6 +33,11 @@ Windows 原生客户端位于 `apps/desktop/native`，以 WPF 重绘工作台界
 [Windows 原生客户端 ADR](adr/native-windows-client.md)，未迁移功能继续由现有 Web
 工作台承接。本轮没有数据库 schema 或 API 合同变更。
 
+原生页面导航由 `ProjectPages` / `ProjectNavigation` 集中定义，`WorkspacePageFrame`
+提供统一标题、实现状态与正文槽，沿用 Web 九个项目一级入口的信息架构。既有原作与任务
+视图保持实例，导航先取消旧读取再同步更新显示；未接通页面不读取业务接口。后续业务
+View 独立接入，迁移范围与阶段门禁见 [原生 UI 迁移清单](native-ui-migration.md)。
+
 ## 3. 代码结构
 
 ```text

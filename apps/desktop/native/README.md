@@ -26,6 +26,13 @@ powershell -ExecutionPolicy Bypass -File apps/desktop/scripts/start-native.ps1
   避免大项目列表一次生成过多原生视觉元素。
 - 首页/帮助/设置使用顶部导航；进入项目后展示可折叠的项目侧栏。
 - 设置、任务、章节、编辑对话框共享纸面色板、直角卡片、字体层级及朱红焦点。
+- 项目侧栏包含与网页一致的九个入口，标题、面包屑与当前页同步；原作/任务保留真实
+  业务视图，其余七页显示明确的待迁移清单。共享 `WorkspacePageFrame` 为后续独立
+  业务视图提供统一正文槽；待迁移页不会请求 API，断网仍可切换页面。
+
+完整页面清单与阶段计划见 [原生 UI 迁移清单](../../../../docs/native-ui-migration.md)。
+执行顺序与完成状态同步维护于 [roadmap](../../../../docs/roadmap.md) 的 WPF 原生客户端
+队列；入口可导航不表示业务功能已迁移。
 
 界面是原生控件重绘，不是网页像素级嵌入。供应商编辑、资产编辑、分镜画布、导演、
 生成审阅等功能尚未迁移；完整功能仍由旧工作台承接。
@@ -42,6 +49,11 @@ dotnet build apps/desktop/native-tests/MangaFlow.Native.Tests.csproj -c Release 
 验证覆盖 URL 边界、版本冲突、取消读取、写操作不自动重试、窗口偏好、
 分页首尾/空页、Unicode 竖排标题及 1320/940 DIP 原生 XAML 实际布局。
 编译和离屏测试不代表真实供应商验收或已达到特定 FPS。
+
+2026-09-07 NUI-1：构建输出可使用 `-p:OutputPath=bin/UiMigration/`，随后运行
+`apps/desktop/native-tests/bin/UiMigration/MangaFlow.Native.Tests.exe --render output/native-ui-migration-20260907`。
+新增九页真实选择事件、显式 API 路径、重复选择、待迁移页零请求、迟到结果丢弃、断网
+切页及 1320/940 DIP 工作区布局检查。检查不启动原生宿主、不显示窗口、不连接用户数据。
 
 2026-09-07 首次原生实机已验证主窗口启动并连接隔离数据目录的真实 API；
 用户接管调试后未继续自动操作窗口。网页风格版本使用离屏渲染验证。

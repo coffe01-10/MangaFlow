@@ -11,13 +11,13 @@
     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
     <Grid Margin="8,0,0,22"><TextBlock Text="漫画生产工作区" FontFamily="{StaticResource Serif}" FontSize="20" FontWeight="SemiBold"/><TextBlock Text="PROJECT WORKSPACE" Style="{StaticResource SectionIndex}" Margin="0,30,0,0"/></Grid>
     <StackPanel Grid.Row="1">
-     <Button Content="＋  新建项目" Style="{StaticResource Nav}" Click="CreateProject" ToolTip="Ctrl+N" IsEnabled="{Binding Connected}"/>
-     <Button Content="⌕  快速切换                 Ctrl K" Style="{StaticResource Nav}" Click="OpenPalette"/>
+     <Button Content="快速切换 · Ctrl+K" Style="{StaticResource Nav}" Click="OpenPalette"/>
      <Button Content="▦  项目概览" Style="{StaticResource Nav}" Click="ShowHome"/>
     </StackPanel>
-    <Grid Grid.Row="2" Margin="10,24,6,8"><TextBlock Text="项目" Style="{StaticResource Caption}"/><TextBlock Text="{Binding ProjectCount}" HorizontalAlignment="Right" Style="{StaticResource Caption}"/></Grid>
-    <ListBox Grid.Row="3" x:Name="ProjectList" ItemsSource="{Binding Projects}" SelectionChanged="SelectProject" AutomationProperties.Name="项目列表">
-     <ListBox.ItemTemplate><DataTemplate><StackPanel><TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap"/><TextBlock Text="{Binding Summary}" Style="{StaticResource Caption}" Margin="0,5,0,0"/></StackPanel></DataTemplate></ListBox.ItemTemplate>
+    <ComboBox Grid.Row="2" x:Name="ProjectList" ItemsSource="{Binding Projects}" DisplayMemberPath="Name" SelectionChanged="SelectProject" AutomationProperties.Name="切换项目" Margin="0,16,0,14"/>
+    <ListBox Grid.Row="3" x:Name="ProjectSections" ItemsSource="{x:Static local:ProjectPages.All}" SelectionChanged="SelectProjectSection" AutomationProperties.Name="项目页面导航">
+     <ListBox.ItemContainerStyle><Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}"><Setter Property="AutomationProperties.Name" Value="{Binding AccessibleName}"/><Setter Property="MinHeight" Value="48"/></Style></ListBox.ItemContainerStyle>
+     <ListBox.ItemTemplate><DataTemplate><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="{Binding Index}" Style="{StaticResource SectionIndex}" VerticalAlignment="Center"/><TextBlock Grid.Column="1" Text="{Binding Title}" VerticalAlignment="Center" TextWrapping="NoWrap"/></Grid></DataTemplate></ListBox.ItemTemplate>
     </ListBox>
     <StackPanel Grid.Row="4">
      <Separator Background="{StaticResource Line}" Margin="0,12"/>
@@ -48,14 +48,9 @@
    </Border>
    <Grid Grid.Row="2">
     <local:DashboardView x:Name="HomePage"/>
-    <Grid x:Name="ProjectPage" Visibility="Collapsed" Margin="28">
-     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-     <StackPanel><TextBlock Text="{Binding CurrentProject.Name}" Style="{StaticResource Heading}"/><TextBlock Text="{Binding CurrentProject.Summary}" Foreground="{StaticResource Muted}"/></StackPanel>
-     <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,22,0,18">
-      <Button x:Name="SourceTab" Content="原作与章节" Click="ShowSource" Margin="0,0,8,0"/>
-      <Button x:Name="JobsTab" Content="任务中心" Click="ShowJobs"/>
-     </StackPanel>
-     <Grid Grid.Row="2" x:Name="SourcePane">
+    <local:WorkspacePageFrame x:Name="ProjectPage" Page="{Binding Navigation.Current}" Visibility="Collapsed" Margin="28">
+     <Grid>
+     <Grid x:Name="SourcePane">
       <Grid.ColumnDefinitions><ColumnDefinition Width="240"/><ColumnDefinition Width="14"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
       <Border Style="{StaticResource Card}" Padding="10">
        <DockPanel><Button DockPanel.Dock="Top" Content="＋ 导入原作" Click="ImportSource" Margin="0,0,0,12" IsEnabled="{Binding Connected}"/>
@@ -69,7 +64,7 @@
        </DockPanel>
       </Border>
      </Grid>
-     <Grid Grid.Row="2" x:Name="JobsPane" Visibility="Collapsed">
+     <Grid x:Name="JobsPane" Visibility="Collapsed">
       <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
       <DockPanel Margin="0,0,0,14"><ComboBox DockPanel.Dock="Right" x:Name="JobFilter" Width="130" SelectedIndex="0" SelectionChanged="FilterJobs" AutomationProperties.Name="筛选任务"><ComboBoxItem Content="全部任务"/><ComboBoxItem Content="进行中"/><ComboBoxItem Content="需要处理"/></ComboBox><TextBlock Text="{Binding JobHint}" Style="{StaticResource Caption}" VerticalAlignment="Center"/></DockPanel>
       <ListBox Grid.Row="1" ItemsSource="{Binding VisibleJobs}" AutomationProperties.Name="任务列表">
@@ -79,7 +74,9 @@
        </Grid></Border></DataTemplate></ListBox.ItemTemplate>
       </ListBox>
      </Grid>
-    </Grid>
+     <local:MigrationPage x:Name="PendingPage" DataContext="{Binding Navigation.Current}" Visibility="Collapsed"/>
+     </Grid>
+    </local:WorkspacePageFrame>
     <ScrollViewer x:Name="SettingsPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" Margin="36,32">
      <StackPanel MaxWidth="780" HorizontalAlignment="Left">
       <TextBlock Text="控制台 / SETTINGS" Style="{StaticResource SectionIndex}" Margin="0,0,0,10"/><TextBlock Text="系统设置" Style="{StaticResource Heading}"/><TextBlock Text="连接模型、配置运行参数，检查本地工作环境。" Foreground="{StaticResource Muted}" Margin="0,0,0,24"/>

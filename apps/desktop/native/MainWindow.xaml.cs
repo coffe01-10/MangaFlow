@@ -25,7 +25,7 @@ public partial class MainWindow : Window
     private Task? connectionTask;
     private CancellationTokenSource? viewRead, chapterRead;
     private List<JobItem> jobs = [];
-    private string page = "home", projectTab = "source";
+    private string page = "home";
     private bool closing, closed, polling, syncingProjects, settingsLoaded, settingsSaving;
     private int settingsVersion;
     private string savedConcurrency = "", savedTimeout = "";
@@ -37,6 +37,7 @@ public partial class MainWindow : Window
         this.dataRoot = dataRoot;
         state = new WorkspaceState { DataPath = dataRoot };
         DataContext = state;
+        ProjectSections.SelectedItem = state.Navigation.Current;
         HomePage.CreateRequested += (_, _) => CreateProject(this, new());
         HomePage.SettingsRequested += (_, _) => ShowSettings(this, new());
         HomePage.ProjectRequested += project =>
@@ -173,6 +174,7 @@ public partial class MainWindow : Window
         SettingsPage.Visibility = destination == "settings" ? Visibility.Visible : Visibility.Collapsed;
         HelpPage.Visibility = destination == "help" ? Visibility.Visible : Visibility.Collapsed;
         state.Breadcrumb = destination switch { "project" => state.CurrentProject?.Name ?? "项目", "settings" => "系统设置", "help" => "使用帮助", _ => "漫画生产台" };
+        if (destination == "project") UpdateProjectPage();
         var selected = (System.Windows.Media.Brush)FindResource("Selected");
         HomeNav.Background = destination is "home" or "project" ? selected : System.Windows.Media.Brushes.Transparent;
         SettingsNav.Background = destination == "settings" ? selected : System.Windows.Media.Brushes.Transparent;
@@ -210,20 +212,30 @@ public partial class MainWindow : Window
         await LoadCurrentAsync();
     }
 
-    private async void ShowSource(object sender, RoutedEventArgs e)
+    private async void SelectProjectSection(object sender, SelectionChangedEventArgs e)
     {
-        projectTab = "source";
+        if (state == null || ProjectSections.SelectedItem is not ProjectPageDefinition selected ||
+            !state.Navigation.Select(selected)) return;
+        CancelReads();
+        UpdateProjectPage();
+        if (page != "project") return;
         await LoadCurrentAsync();
     }
-    private async void ShowJobs(object sender, RoutedEventArgs e)
+
+    private void UpdateProjectPage()
     {
-        chapterRead?.Cancel();
-        projectTab = "jobs";
-        await LoadCurrentAsync();
+        var selected = state.Navigation.Current;
+        SourcePane.Visibility = selected.Id == ProjectPageId.Source ? Visibility.Visible : Visibility.Collapsed;
+        JobsPane.Visibility = selected.Id == ProjectPageId.Jobs ? Visibility.Visible : Visibility.Collapsed;
+        PendingPage.Visibility = selected.IsConnected ? Visibility.Collapsed : Visibility.Visible;
+        if (page == "project")
+            state.Breadcrumb = $"{state.CurrentProject?.Name ?? "项目"} / {selected.Title}";
     }
 
     private async Task LoadCurrentAsync(bool background = false)
     {
+        // A migration preview is local UI, not a successful backend refresh.
+        if (page == "project" && !state.Navigation.Current.IsConnected) return;
         if (!state.Connected || api == null || closing) return;
         viewRead?.Cancel();
         var request = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
@@ -236,12 +248,7 @@ public partial class MainWindow : Window
             if (page == "home") await LoadDashboardAsync(token);
             if (page == "project" && state.CurrentProject is { } project)
             {
-                SourcePane.Visibility = projectTab == "source" ? Visibility.Visible : Visibility.Collapsed;
-                JobsPane.Visibility = projectTab == "jobs" ? Visibility.Visible : Visibility.Collapsed;
-                var selectedBrush = (System.Windows.Media.Brush)FindResource("Selected");
-                SourceTab.Background = projectTab == "source" ? selectedBrush : System.Windows.Media.Brushes.Transparent;
-                JobsTab.Background = projectTab == "jobs" ? selectedBrush : System.Windows.Media.Brushes.Transparent;
-                var section = projectTab == "source" ? "chapters" : "jobs";
+                var section = state.Navigation.Current.ReadResource;
                 var rows = await api.SendAsync($"projects/{project.Id}/{section}", cancellation: token);
                 token.ThrowIfCancellationRequested();
                 if (section == "chapters")
@@ -327,7 +334,7 @@ public partial class MainWindow : Window
                 state.Error = "本地服务已退出。点击重新连接恢复工作，已有数据保留。";
                 return;
             }
-            if (page == "home" || (page == "project" && projectTab == "jobs")) await LoadCurrentAsync(true);
+            if (page == "home" || (page == "project" && state.Navigation.Current.Id == ProjectPageId.Jobs)) await LoadCurrentAsync(true);
         }
         finally { polling = false; }
     }

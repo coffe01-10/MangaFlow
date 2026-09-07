@@ -5,6 +5,7 @@ namespace MangaFlow.Native;
 
 public sealed class WorkspaceState : Observable
 {
+    public ProjectNavigation Navigation { get; } = new();
     public ObservableCollection<ProjectItem> Projects { get; } = [];
     public ObservableCollection<ProjectItem> DashboardProjects { get; } = [];
     private int dashboardPage;
