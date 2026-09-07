@@ -5,13 +5,17 @@ multimodal call and style profile draft persistence (prompt summary and color
 palette recovery included).
 """
 
+import logging
+
 from sqlalchemy import select
 
 from app.domain.states import JobStatus
 from app.model_adapters.base import MultimodalRequest, ProviderAdapterError
-from app.models import Asset, GenerationJob, Project, StyleProfile
+from app.models import Asset, GenerationJob, Project, StyleProfile, StyleStatus
 from app.services.ai_schemas import StyleAnalysisOutput
 from app.services.worker_handlers import execution, provider
+
+LOGGER = logging.getLogger("mangaflow.worker.style_analyze")
 
 
 def _build_style_prompt_summary(analyzed: dict, color_mode: str) -> str:
@@ -44,6 +48,26 @@ def _build_color_palette(analyzed: dict) -> dict[str, str]:
         "环境色": "潮湿京都的蓝灰、纸门米灰与深木色",
         "光影色": analyzed.get("lighting") or "柔和冷色散射光，阴影不使用纯黑硬切",
     }
+
+
+def _asset_blob_bytes(asset: Asset) -> bytes:
+    """Read an asset blob with a missing-file preflight (#210-5).
+
+    A vanished blob must fail TERMINALLY (non-retryable INVALID_INPUT) instead
+    of raising FileNotFoundError, which the worker classifies as retryable
+    WORKER_ERROR and re-pays. The ``is_file`` probe tolerates the legacy
+    ``_asset_path`` test seam (bare namespaces exposing only ``read_bytes``).
+    """
+
+    path = provider._asset_path(asset)
+    is_file = getattr(path, "is_file", None)
+    if callable(is_file) and not is_file():
+        raise ProviderAdapterError(
+            "INVALID_INPUT",
+            f"风格参考图文件缺失，已终止任务：{asset.original_name}",
+            retryable=False,
+        )
+    return path.read_bytes()
 
 
 def _run_style_analyze(db, job: GenerationJob) -> None:
@@ -112,13 +136,35 @@ def _run_style_analyze(db, job: GenerationJob) -> None:
         lambda adapter: adapter.analyze_multimodal(
             MultimodalRequest(
                 prompt=prompt,
-                images=tuple(provider._asset_path(asset).read_bytes() for asset in references[:8]),
+                images=tuple(
+                    _asset_blob_bytes(asset) for asset in references[:8]
+                ),
                 mime_types=tuple(asset.mime_type for asset in references[:8]),
             ),
             StyleAnalysisOutput,
         ),
     )
     execution._ensure_job_not_cancelled(db, job)
+    # #231 completion guard (the STYLE_TEST pattern in asset_generate): the
+    # paid call can outlive a palette confirmation/activation committed
+    # mid-flight. Re-read fresh state and, when the style has already moved
+    # past the analyze-awaiting states, do NOT demote it back to DRAFT, do NOT
+    # reset palette_confirmed/test_image_approved, and do NOT overwrite the
+    # confirmed profile — the late completion is skipped with a logged note
+    # and the job still completes (the paid result is not user-recoverable
+    # here; the route can re-run analyze explicitly if wanted).
+    db.refresh(style, attribute_names=["status", "version"])
+    current_status = str(getattr(style.status, "value", style.status) or "")
+    if current_status not in {StyleStatus.DRAFT.value, StyleStatus.ANALYZING.value}:
+        LOGGER.warning(
+            "STYLE_ANALYZE job %s completed after style %s moved to %s; "
+            "analyzed profile discarded (confirmed/active state kept)",
+            job.id,
+            style.id,
+            current_status,
+        )
+        job.progress = 90
+        return
     analyzed = output.model_dump()
     analyzed["prompt_summary"] = _build_style_prompt_summary(analyzed, style.color_mode)
     analyzed["reference_asset_ids"] = reference_ids

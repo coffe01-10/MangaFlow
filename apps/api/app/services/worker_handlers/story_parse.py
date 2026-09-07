@@ -11,6 +11,7 @@ import logging
 
 from sqlalchemy import delete, select, update
 
+from app.domain.states import CharacterPresence
 from app.model_adapters.base import ProviderAdapterError, StructuredRequest
 from app.models import (
     Beat,
@@ -28,8 +29,12 @@ from app.services.ai_schemas import (
     DRAFT_ALIAS_MAX_ITEMS,
     DRAFT_LOCATION_MAX_LENGTH,
     DRAFT_NAME_MAX_LENGTH,
+    DRAFT_PRESENCE_MAX_ITEMS,
+    DRAFT_PROPS_MAX_ITEMS,
+    DRAFT_SEGMENT_MAX_ITEMS,
     DRAFT_TEXT_MAX_LENGTH,
     BeatDraft,
+    SceneDraft,
     StoryParseOutput,
 )
 from app.services.job_service import oldest_active_job_id
@@ -89,10 +94,38 @@ def _story_parse_chunks(segments: list[SourceSegment]) -> list[list[SourceSegmen
     return chunks
 
 
+def _scene_fingerprint(scene: SceneDraft) -> tuple | None:
+    """Content fingerprint for duplicate-scene dedupe at merge time (#240).
+
+    A model that re-emits the same scene across chunk boundaries (same
+    location/purpose and identical beat content) used to survive the merge as
+    two scenes, duplicating every beat in the persisted script. The fingerprint
+    covers location/purpose plus the beat content hash; scenes with ZERO beats
+    return ``None`` — they carry no beat content to hash, and deduping every
+    contentless scene together would collapse legitimate empty scenes that the
+    merge has always preserved.
+    """
+
+    if not scene.beats:
+        return None
+    beat_signature = tuple(
+        (
+            tuple(beat.source_segment_ids),
+            beat.action,
+            beat.speaker_name,
+            beat.dialogue,
+            beat.narration,
+        )
+        for beat in scene.beats
+    )
+    return (scene.location.strip(), scene.purpose.strip(), beat_signature)
+
+
 def _merge_story_parse_outputs(outputs: list[StoryParseOutput]) -> StoryParseOutput:
     characters = []
     character_tokens: list[set[str]] = []
     scenes = []
+    seen_scene_fingerprints: set[tuple] = set()
     for output in outputs:
         for draft in output.characters:
             incoming = _character_tokens(draft.primary_name, draft.aliases)
@@ -105,13 +138,39 @@ def _merge_story_parse_outputs(outputs: list[StoryParseOutput]) -> StoryParseOut
                 character_tokens.append(set(incoming))
                 continue
             existing = characters[match_index]
+            fused_primary = draft.primary_name.strip()
+            if (
+                _normalize_name(fused_primary)
+                and _normalize_name(fused_primary) != _normalize_name(existing.primary_name)
+            ):
+                # #240: the fusion used to erase the second chunk's primary_name
+                # entirely (only aliases were unioned), so 「顾川」+「小川」
+                # silently became one character with no trace of the second
+                # name. Keep it as an alias and raise the conflict flag so
+                # persistence marks the row NEEDS_CONFIRMATION instead of
+                # ANALYZED — the fusion stays reviewable, not silent.
+                existing.aliases = list(dict.fromkeys([*existing.aliases, fused_primary]))
+                existing.alias_conflict = True
             existing.aliases = list(dict.fromkeys([*existing.aliases, *draft.aliases]))
             existing.source_segment_ids = list(
                 dict.fromkeys([*existing.source_segment_ids, *draft.source_segment_ids])
             )
+            existing.alias_conflict = existing.alias_conflict or draft.alias_conflict
             existing.description = existing.description or draft.description
             character_tokens[match_index].update(incoming)
         for scene in output.scenes:
+            fingerprint = _scene_fingerprint(scene)
+            if fingerprint is not None:
+                if fingerprint in seen_scene_fingerprints:
+                    LOGGER.warning(
+                        "story parse: dropped a duplicate scene emission at merge "
+                        "(location=%r purpose=%r beats=%d)",
+                        scene.location,
+                        scene.purpose,
+                        len(scene.beats),
+                    )
+                    continue
+                seen_scene_fingerprints.add(fingerprint)
             scenes.append(
                 scene.model_copy(
                     update={"ordinal": len(scenes) + 1, "beats": _resequence_beats(scene.beats)},
@@ -191,6 +250,14 @@ def _sanitize_story_parse_output(output: StoryParseOutput) -> StoryParseOutput:
     Presence keys are normalized here as well (whitespace-stripped casefold,
     mirroring the speaker_name normalization) so the lookup side in
     content_workflow can match with the same normalizer on both keys (#164).
+
+    #240 additions: when two raw keys collapse onto one normalized key, the
+    FIRST emission wins (deterministic rule; dict order is the model's own
+    emission order) and the collision is recorded on
+    ``beat.presence_key_conflicts`` instead of silently taking the last value.
+    Container caps are re-enforced here too: merge-time ``dict.fromkeys``
+    unions (aliases, source_segment_ids) can exceed the schema caps even when
+    every chunk individually validated against them.
     """
 
     for draft in output.characters:
@@ -200,12 +267,14 @@ def _sanitize_story_parse_output(output: StoryParseOutput) -> StoryParseOutput:
             if alias
         ][:DRAFT_ALIAS_MAX_ITEMS]
         draft.description = _truncate(draft.description, DRAFT_TEXT_MAX_LENGTH)
+        draft.source_segment_ids = list(draft.source_segment_ids)[:DRAFT_SEGMENT_MAX_ITEMS]
     for scene in output.scenes:
         scene.location = _truncate(scene.location, DRAFT_LOCATION_MAX_LENGTH)
         scene.time_label = _truncate(scene.time_label, DRAFT_NAME_MAX_LENGTH)
         scene.weather = _truncate(scene.weather, DRAFT_NAME_MAX_LENGTH)
         scene.purpose = _truncate(scene.purpose, DRAFT_TEXT_MAX_LENGTH)
         scene.emotional_arc = _truncate(scene.emotional_arc, DRAFT_TEXT_MAX_LENGTH)
+        scene.source_segment_ids = list(scene.source_segment_ids)[:DRAFT_SEGMENT_MAX_ITEMS]
         for beat in scene.beats:
             beat.action = _truncate(beat.action, DRAFT_TEXT_MAX_LENGTH)
             beat.dialogue = _truncate(beat.dialogue, DRAFT_TEXT_MAX_LENGTH)
@@ -213,11 +282,30 @@ def _sanitize_story_parse_output(output: StoryParseOutput) -> StoryParseOutput:
             beat.subtext = _truncate(beat.subtext, DRAFT_TEXT_MAX_LENGTH)
             beat.speaker_name = _truncate(beat.speaker_name, DRAFT_NAME_MAX_LENGTH)
             beat.emotion = _truncate(beat.emotion, DRAFT_NAME_MAX_LENGTH)
-            beat.character_presence = {
-                normalized: value
-                for key, value in beat.character_presence.items()
-                if (normalized := _normalize_name(key))
-            }
+            beat.source_segment_ids = list(beat.source_segment_ids)[
+                :DRAFT_SEGMENT_MAX_ITEMS
+            ]
+            beat.props = list(beat.props)[:DRAFT_PROPS_MAX_ITEMS]
+            normalized_presence: dict[str, CharacterPresence] = {}
+            conflicts: list[str] = []
+            for key, value in beat.character_presence.items():
+                normalized = _normalize_name(key)
+                if not normalized:
+                    continue
+                if normalized in normalized_presence:
+                    # Deterministic conflict rule (#240): first emission wins;
+                    # the dropped contender stays auditable on the beat row.
+                    kept = normalized_presence[normalized]
+                    conflicts.append(
+                        f"{key}({getattr(value, 'value', value)}) 与已存在的"
+                        f"{normalized}({getattr(kept, 'value', kept)}) 规范化后同名，保留首个"
+                    )
+                    continue
+                normalized_presence[normalized] = value
+            beat.character_presence = dict(
+                list(normalized_presence.items())[:DRAFT_PRESENCE_MAX_ITEMS]
+            )
+            beat.presence_key_conflicts = conflicts
     return output
 
 
@@ -233,35 +321,68 @@ def _match_existing_character(
     aliases: list[str],
     claimed_ids: set[str],
 ) -> Character | None:
-    """Prefer user-curated characters when the model returns one of their aliases."""
+    """Prefer user-curated characters when the model returns one of their aliases.
+
+    Minimum match strength (#244-5): a match requires a PRIMARY-name-level exact
+    hit — the draft's primary name equals an existing primary name, or appears
+    in an existing alias list, or an existing primary name appears among the
+    draft's aliases. Two characters merely SHARING a nickname (alias↔alias
+    overlap only) no longer merge: that any-token fusion silently fused
+    distinct cast members. Ranking puts exact primary↔primary equality above
+    status, so a NEEDS_CONFIRMATION exact name can never lose to an unrelated
+    CANONICAL row that only shares a nickname.
+    """
 
     incoming = _character_tokens(primary_name, aliases)
-    matches = [
-        character
-        for character in characters
-        if character.id not in claimed_ids
-        and incoming & _character_tokens(character.primary_name, character.aliases)
-    ]
-    if not matches:
+    if not incoming:
         return None
-
-    status_priority = {
-        "CANONICAL": 0,
-        "UPLOADED": 1,
-        "NEEDS_CONFIRMATION": 2,
-        "ANALYZED": 3,
-    }
     normalized_primary = _normalize_name(primary_name)
+    incoming_aliases = {
+        _normalize_name(alias) for alias in aliases if _normalize_name(alias)
+    }
 
-    def rank(character: Character) -> tuple[int, int, str]:
+    def match_rank(character: Character) -> tuple[int, int, int, str] | None:
+        if character.id in claimed_ids:
+            return None
+        existing_primary = _normalize_name(character.primary_name)
+        existing_aliases = {
+            _normalize_name(alias) for alias in character.aliases if _normalize_name(alias)
+        }
+        tokens = {existing_primary, *existing_aliases}
+        if not incoming & tokens:
+            return None
+        # Primary-level exact hits are the minimum strength; alias↔alias-only
+        # overlap is below the bar and returns no rank at all.
+        primary_to_primary = bool(
+            normalized_primary and normalized_primary == existing_primary
+        )
+        primary_to_alias = bool(
+            normalized_primary and normalized_primary in existing_aliases
+        ) or bool(existing_primary and existing_primary in incoming_aliases)
+        if not (primary_to_primary or primary_to_alias):
+            return None
         status = getattr(character.status, "value", character.status)
+        status_priority = {
+            "CANONICAL": 0,
+            "UPLOADED": 1,
+            "NEEDS_CONFIRMATION": 2,
+            "ANALYZED": 3,
+        }
         return (
+            0 if primary_to_primary else 1,
             status_priority.get(str(status), 4),
-            0 if _normalize_name(character.primary_name) == normalized_primary else 1,
             character.created_at.isoformat() if character.created_at else "",
+            character.id,
         )
 
-    return min(matches, key=rank)
+    ranked = [
+        (rank, character)
+        for character in characters
+        if (rank := match_rank(character)) is not None
+    ]
+    if not ranked:
+        return None
+    return min(ranked, key=lambda pair: pair[0])[1]
 
 
 def _run_story_parse(db, job: GenerationJob) -> None:
@@ -485,10 +606,30 @@ def _run_story_parse(db, job: GenerationJob) -> None:
                 if claimed.rowcount == 1:
                     character.aliases = fresh_aliases
                     character.aliases_normalized = fresh_normalized
-                    character.alias_conflict = fresh_conflict
-                    character.canonical_description = (
-                        draft.description or character.canonical_description
+                    character.alias_conflict = fresh_conflict or draft.alias_conflict
+                    fresh_status = str(
+                        getattr(character.status, "value", character.status) or ""
                     )
+                    if (
+                        fresh_status == "CANONICAL"
+                        and (character.canonical_description or "").strip()
+                    ):
+                        # #240: a re-parse must not overwrite the user-curated
+                        # canonical description of a confirmed character. The
+                        # model text is parked in the log (there is no
+                        # description-parking column on Character); the
+                        # curated value stays authoritative.
+                        if draft.description.strip():
+                            LOGGER.info(
+                                "story parse: kept curated canonical description of "
+                                "character %s (model text skipped: %s)",
+                                character.id,
+                                draft.description[:200],
+                            )
+                    else:
+                        character.canonical_description = (
+                            draft.description or character.canonical_description
+                        )
                     for token in [fresh_primary_normalized, *fresh_normalized]:
                         all_aliases[token] = fresh_primary_normalized
                     merged = True
@@ -513,9 +654,13 @@ def _run_story_parse(db, job: GenerationJob) -> None:
                 primary_name=primary_name,
                 aliases=aliases,
                 aliases_normalized=normalized,
-                alias_conflict=conflict,
+                alias_conflict=conflict or draft.alias_conflict,
                 canonical_description=draft.description,
-                status="NEEDS_CONFIRMATION" if conflict else "ANALYZED",
+                status=(
+                    "NEEDS_CONFIRMATION"
+                    if (conflict or draft.alias_conflict)
+                    else "ANALYZED"
+                ),
             )
             db.add(character)
             db.flush()
@@ -552,9 +697,28 @@ def _run_story_parse(db, job: GenerationJob) -> None:
     db.execute(delete(Scene).where(Scene.chapter_id == chapter.id))
     db.execute(delete(ScriptRevision).where(ScriptRevision.chapter_id == chapter.id))
     db.flush()
+    expected_segment_ids = {item.id for item in segments}
     covered_segment_ids: set[str] = set()
     for scene_draft in output.scenes:
-        covered_segment_ids.update(scene_draft.source_segment_ids)
+        # #240: claimed segment ids are validated against the chunk inputs
+        # before they can mark anything covered or persist into source_range —
+        # a hallucinated id is neither coverage nor a traceable reference.
+        scene_segment_ids = [
+            segment_id
+            for segment_id in scene_draft.source_segment_ids
+            if segment_id in expected_segment_ids
+        ]
+        dropped_scene_ids = [
+            segment_id
+            for segment_id in scene_draft.source_segment_ids
+            if segment_id not in expected_segment_ids
+        ]
+        if dropped_scene_ids:
+            LOGGER.warning(
+                "story parse: scene claimed %d segment ids outside the chapter "
+                "input; dropped from source_range and coverage",
+                len(dropped_scene_ids),
+            )
         scene = Scene(
             chapter_id=chapter.id,
             ordinal=scene_draft.ordinal,
@@ -563,16 +727,38 @@ def _run_story_parse(db, job: GenerationJob) -> None:
             weather=scene_draft.weather,
             purpose=scene_draft.purpose,
             emotional_arc=scene_draft.emotional_arc,
-            source_range={"segment_ids": scene_draft.source_segment_ids},
+            source_range={"segment_ids": scene_segment_ids},
         )
         db.add(scene)
         db.flush()
         for beat_draft in scene_draft.beats:
-            covered_segment_ids.update(beat_draft.source_segment_ids)
+            # #240: coverage is beat-level only. A scene claiming a segment
+            # while emitting zero beats for it must NOT count as covered —
+            # scene-level claims alone used to lie SCRIPT_READY/100%.
+            beat_segment_ids = [
+                segment_id
+                for segment_id in beat_draft.source_segment_ids
+                if segment_id in expected_segment_ids
+            ]
+            covered_segment_ids.update(beat_segment_ids)
             speaker_name = beat_draft.speaker_name.strip()
             if speaker_name:
                 speaker = character_map.get(_normalize_name(speaker_name))
                 speaker_name = speaker.primary_name if speaker else speaker_name
+            beat_source_range = {
+                "segment_ids": beat_segment_ids,
+                "character_presence": {
+                    key: value.value
+                    for key, value in beat_draft.character_presence.items()
+                },
+                "props": beat_draft.props,
+            }
+            if beat_draft.presence_key_conflicts:
+                # #240: normalized-key collisions are first-wins; the dropped
+                # contenders ride along on the persisted row for audit.
+                beat_source_range["presence_key_conflicts"] = list(
+                    beat_draft.presence_key_conflicts
+                )
             db.add(
                 Beat(
                     scene_id=scene.id,
@@ -587,17 +773,9 @@ def _run_story_parse(db, job: GenerationJob) -> None:
                     must_visualize=beat_draft.must_visualize,
                     mergeable=beat_draft.mergeable,
                     page_turn_hook=beat_draft.page_turn_hook,
-                    source_range={
-                        "segment_ids": beat_draft.source_segment_ids,
-                        "character_presence": {
-                            key: value.value
-                            for key, value in beat_draft.character_presence.items()
-                        },
-                        "props": beat_draft.props,
-                    },
+                    source_range=beat_source_range,
                 )
             )
-    expected_segment_ids = {item.id for item in segments}
     missing_segment_ids = sorted(expected_segment_ids - covered_segment_ids)
     script = ScriptRevision(
         chapter_id=chapter.id,
@@ -618,4 +796,26 @@ def _run_story_parse(db, job: GenerationJob) -> None:
     )
     db.add(script)
     chapter.status = "SCRIPT_READY" if not missing_segment_ids else "SCRIPT_INCOMPLETE"
-    chapter.version += 1
+    # #240: the blind ORM ``chapter.version += 1`` is a read-modify-write that
+    # loses the bump to a concurrent writer. Claim the snapshot version with a
+    # conditional UPDATE; on a lost claim the increment still lands (single
+    # SQL expression), and the conflict becomes observable instead of silent.
+    claimed_chapter = db.execute(
+        update(Chapter)
+        .where(Chapter.id == chapter.id, Chapter.version == chapter.version)
+        .values(version=Chapter.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed_chapter.rowcount != 1:
+        LOGGER.warning(
+            "story parse: chapter %s version changed concurrently during the parse; "
+            "forcing the script-ready bump (conditional claim lost)",
+            chapter.id,
+        )
+        db.execute(
+            update(Chapter)
+            .where(Chapter.id == chapter.id)
+            .values(version=Chapter.version + 1)
+            .execution_options(synchronize_session=False)
+        )
+    db.expire(chapter, ["version"])
