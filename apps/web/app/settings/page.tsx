@@ -51,6 +51,7 @@ export default function SystemSettingsPage() {
         version: draft.version,
         queue_mode: draft.queue_mode,
         job_timeout_seconds: draft.job_timeout_seconds,
+        job_lease_seconds: draft.job_lease_seconds,
         max_auto_repairs: draft.max_auto_repairs,
         default_concurrency: draft.default_concurrency,
         health_check_interval_seconds: draft.health_check_interval_seconds,
@@ -88,6 +89,7 @@ export default function SystemSettingsPage() {
               {draft ? <div className="runtime-form">
                 <label><span>队列模式<small>自动、本地同步或强制 Redis</small></span><select value={draft.queue_mode} onChange={(event) => update("queue_mode", event.target.value as RuntimeSettings["queue_mode"])}><option value="AUTO">自动回退</option><option value="LOCAL">本地同步</option><option value="REDIS">Redis 队列</option></select></label>
                 <label><span>任务超时<small>30–3600 秒</small></span><input type="number" min={30} max={3600} value={draft.job_timeout_seconds} onChange={(event) => update("job_timeout_seconds", Number(event.target.value))} /></label>
+                <label><span>任务租约<small>30–3600 秒 · 需不超过任务超时</small></span><input type="number" min={30} max={3600} value={draft.job_lease_seconds} onChange={(event) => update("job_lease_seconds", Number(event.target.value))} /></label>
                 <label><span>默认并发<small>1–8 路</small></span><input type="number" min={1} max={8} value={draft.default_concurrency} onChange={(event) => update("default_concurrency", Number(event.target.value))} /></label>
                 <label><span>视觉修复重试<small>不含文字校对 · 0–10 次</small></span><input type="number" min={0} max={10} value={draft.max_auto_repairs} onChange={(event) => update("max_auto_repairs", Number(event.target.value))} /></label>
                 <label><span>状态检查周期<small>秒</small></span><input type="number" min={60} max={3600} value={draft.health_check_interval_seconds} onChange={(event) => update("health_check_interval_seconds", Number(event.target.value))} /></label>

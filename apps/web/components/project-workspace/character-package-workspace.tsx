@@ -39,7 +39,13 @@ import { SceneConfirmDialog } from "./scene-modal";
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"];
 
 function conflictMessage(error: unknown, fallback: string) {
-  if (isConflictError(error)) return "数据已变化，请刷新后重试";
+  if (isConflictError(error)) {
+    // ae0c6ee 之后 ApiError.message 即后端 409 detail（字符串或 detail.message）。
+    // 语义化冲突（「已有草稿版本，请先发布或删除该草稿」「角色模型包已存在」）
+    // 必须原样透出——通用刷新提示会让用户刷新后撞进同一个冲突（#156）。
+    const message = error instanceof Error ? error.message : "";
+    return message && message !== "请求数据不符合要求" ? message : "数据已变化，请刷新后重试";
+  }
   return error instanceof Error ? error.message : fallback;
 }
 

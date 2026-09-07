@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 
 import { originUrl, type Job } from "@/lib/api";
-import { isActiveTaskStatus } from "@/lib/task-status";
+import { isActiveTaskStatus, isTerminalTaskStatus } from "@/lib/task-status";
 
 import { errorCodeLabels, jobLabels, jobStatusLabels } from "./labels";
 import type { JobsWorkspace } from "./use-jobs-workspace";
@@ -66,7 +66,8 @@ export function JobsSection({
   } = workspace;
 
   function renderJob(job: Job, showProgress: boolean) {
-    const terminal = ["COMPLETED", "FAILED", "CANCELLED", "NEEDS_REVIEW"].includes(job.status);
+    // 终态判定复用共享语义（含 NEEDS_REVIEW，与后端一致），不再本地重定义。
+    const terminal = isTerminalTaskStatus(job.status);
     const resultUrl = originUrl(job.result?.content_url ?? null);
     const showResult = () => {
       if (resultUrl && job.result) openPreview(resultUrl, job.result.label);

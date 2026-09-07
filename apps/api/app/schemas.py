@@ -1,7 +1,14 @@
 from datetime import datetime
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 
 from app.domain.states import (
     CharacterPresence,
@@ -18,6 +25,12 @@ from app.domain.storyboard_layout import (
 )
 
 MODEL_REFERENCE_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$"
+
+# Optimistic-lock version tokens are stored in 32-bit Integer columns
+# (models.py maps every ``version``/``*_version`` column as Integer). A token
+# beyond int32 overflows the SQLite driver binding (OverflowError) and raises
+# DataError on PostgreSQL, so every input token is bounded at the column size.
+VersionToken = Annotated[int, Field(ge=1, le=2_147_483_647)]
 
 
 class ProjectCreate(BaseModel):
@@ -47,7 +60,7 @@ class ProjectUpdate(BaseModel):
     default_text_model_id: str | None = Field(default=None, max_length=36)
     last_image_model_id: str | None = Field(default=None, max_length=36)
     text_model_alias: str | None = Field(default=None, pattern=MODEL_REFERENCE_PATTERN)
-    version: int = Field(ge=1)
+    version: VersionToken
 
 
 class ProjectRead(BaseModel):
@@ -264,7 +277,7 @@ class BeatUpdate(BaseModel):
     must_visualize: bool | None = None
     mergeable: bool | None = None
     page_turn_hook: bool | None = None
-    version: int = Field(ge=1)
+    version: VersionToken
 
 
 class SceneRead(BaseModel):
@@ -293,7 +306,7 @@ class SceneUpdate(BaseModel):
     weather: str | None = Field(default=None, max_length=120)
     purpose: str | None = Field(default=None, max_length=8000)
     emotional_arc: str | None = Field(default=None, max_length=8000)
-    version: int = Field(ge=1)
+    version: VersionToken
 
 
 class SceneAssetStructured(BaseModel):
@@ -332,7 +345,7 @@ class SceneAssetUpdate(BaseModel):
         default=None,
         pattern="^(UPLOADED|ANALYZED|GENERATED|NEEDS_CONFIRMATION|CANONICAL|ARCHIVED)$",
     )
-    version: int = Field(ge=1)
+    version: VersionToken
 
 
 class SceneAssetReferenceRead(BaseModel):
@@ -379,7 +392,7 @@ class SceneAssetVariantUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     structured_overrides: dict | None = None
     is_canonical: bool | None = None
-    version: int = Field(ge=1)
+    version: VersionToken
 
 
 class SceneAssetVariantRead(BaseModel):
@@ -445,7 +458,7 @@ class CharacterUpdate(BaseModel):
     canonical_description: str | None = Field(default=None, max_length=8000)
     locked_features: list[str] | None = None
     forbidden_changes: list[str] | None = None
-    version: int = Field(ge=1)
+    version: VersionToken
 
 
 class CharacterReferenceRead(BaseModel):
@@ -494,7 +507,7 @@ class OutfitUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     locked_fields: list[str] | None = None
     reference_asset_ids: list[str] | None = None
-    version: int = Field(ge=1)
+    version: VersionToken
 
 
 class OutfitRead(BaseModel):
@@ -526,7 +539,7 @@ class StyleProfileUpdate(BaseModel):
     profile: dict | None = None
     locked_fields: list[str] | None = None
     reference_asset_ids: list[str] | None = None
-    version: int = Field(ge=1)
+    version: VersionToken
 
 
 class StyleProfileRead(BaseModel):
@@ -570,13 +583,13 @@ class StylePaletteDraftRequest(BaseModel):
 
 class StylePaletteApproval(BaseModel):
     palette: dict
-    version: int = Field(ge=1)
+    version: VersionToken
 
 
 class StyleTestApproval(BaseModel):
     candidate_id: str
     approved: bool = True
-    version: int = Field(ge=1)
+    version: VersionToken
 
 
 class AssetBatchCreate(BaseModel):
@@ -743,7 +756,7 @@ class PanelUpdate(BaseModel):
     geometry: PanelGeometry | None = None
     bleed: bool | None = None
     borderless: bool | None = None
-    version: int = Field(ge=1)
+    version: VersionToken
 
 
 class DialogueCreate(BaseModel):
@@ -752,7 +765,7 @@ class DialogueCreate(BaseModel):
     text_direction: str = Field(default="vertical", pattern="^(vertical|horizontal)$")
     region: dict = Field(default_factory=lambda: {"preferred": "upper_inner"})
     rewrite_forbidden: bool = True
-    panel_version: int = Field(ge=1)
+    panel_version: VersionToken
 
 
 class DialogueUpdate(BaseModel):
@@ -762,11 +775,11 @@ class DialogueUpdate(BaseModel):
     region: dict | None = None
     bubble: BubbleGeometry | None = None
     rewrite_forbidden: bool | None = None
-    panel_version: int = Field(ge=1)
+    panel_version: VersionToken
 
 
 class DialogueDelete(BaseModel):
-    panel_version: int = Field(ge=1)
+    panel_version: VersionToken
 
 
 class PlanRequest(BaseModel):
@@ -802,7 +815,7 @@ class GenerationBatchRead(BaseModel):
 class CandidateCreate(BaseModel):
     model_alias: str = Field(pattern=MODEL_REFERENCE_PATTERN)
     resolution: Resolution
-    storyboard_version: int = Field(ge=1)
+    storyboard_version: VersionToken
     reference_selections: dict[str, dict[str, str | None]] = Field(default_factory=dict)
 
 
@@ -842,7 +855,7 @@ class StoryboardGeometrySave(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     request_id: str = Field(min_length=1, max_length=128)
-    storyboard_version: int = Field(ge=1)
+    storyboard_version: VersionToken
     panels: list[StoryboardGeometryPanelItem]
     dialogues: list[StoryboardGeometryDialogueItem] = Field(default_factory=list)
 
@@ -898,7 +911,7 @@ class SelectCandidateRequest(BaseModel):
 
 class KeepSelectedCandidateRequest(BaseModel):
     candidate_id: str
-    storyboard_version: int = Field(ge=1)
+    storyboard_version: VersionToken
     manual_text_confirmed: bool = False
 
 
@@ -1259,7 +1272,18 @@ class CharacterModelPackageUpdate(BaseModel):
     negative_constraints: list[PackageConstraintItem] | None = Field(
         default=None, max_length=20
     )
-    version: int = Field(ge=1)
+    version: VersionToken
+
+    @field_validator("identity_spec", "visual_spec", "negative_constraints", mode="after")
+    @classmethod
+    def reject_explicit_null_blocks(cls, value):
+        # ``update_package_workspace`` treats a present key as "replace the
+        # block"; an explicit null used to wipe it silently (``None or {}``)
+        # with a 200 and a version bump. Omission keeps the stored block and
+        # an empty object clears it — null is never a legal third state.
+        if value is None:
+            raise ValueError("规格块不接受显式 null：省略字段表示不修改，传空对象表示清空")
+        return value
 
 
 class PackageReferenceCreate(BaseModel):
@@ -1267,32 +1291,32 @@ class PackageReferenceCreate(BaseModel):
     role: str = Field(min_length=1, max_length=32)
     label: str = Field(default="", max_length=48)
     sort_order: int = Field(default=0, ge=0, le=1000)
-    version: int = Field(ge=1)
+    version: VersionToken
 
 
 class PackageCoverCreate(BaseModel):
     asset_id: str = Field(min_length=1, max_length=36)
-    version: int = Field(ge=1)
+    version: VersionToken
 
 
 class PackageReferenceDelete(BaseModel):
-    version: int = Field(ge=1)
+    version: VersionToken
 
 
 class PackageOutfitCreate(BaseModel):
     outfit_id: str = Field(min_length=1, max_length=36)
     is_default: bool = False
     sort_order: int = Field(default=0, ge=0, le=1000)
-    version: int = Field(ge=1)
+    version: VersionToken
 
 
 class PackageOutfitDefaultUpdate(BaseModel):
     is_default: bool
-    version: int = Field(ge=1)
+    version: VersionToken
 
 
 class PackageOutfitDelete(BaseModel):
-    version: int = Field(ge=1)
+    version: VersionToken
 
 
 class PackageVersionDerive(BaseModel):

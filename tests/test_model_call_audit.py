@@ -7,10 +7,11 @@ deterministic and offline.
 """
 
 import json as jsonlib
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, select
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 import app.services.worker_handlers.model_call_audit as audit
 from app.database import Base
@@ -351,4 +352,37 @@ def test_invoke_provider_finalizes_attempt_on_unclassified_exception(monkeypatch
     attempt_id, kwargs = finalize_calls[0]
     assert attempt_id == "attempt-unclassified"
     assert kwargs["outcome"] == "FAILED"
-    assert kwargs["error_code"] == "INVALID_OUTPUT"
+    # WORKER_ERROR (not INVALID_OUTPUT): must match the job-level code the
+    # worker's generic path writes, so audit and job agree on the class.
+    assert kwargs["error_code"] == "WORKER_ERROR"
+
+
+def test_scoped_diagnostics_rejects_connection_bound_caller_session(tmp_path):
+    """The scoped diagnostics/key-mark sessions are only sound on an Engine
+    bind: a Connection-bound caller session would make them join the caller's
+    DBAPI transaction, and their commits would publish the caller's pending
+    changes — the exact bug the second session removes. The guard must fail
+    loudly on that topology instead of silently reintroducing it."""
+
+    import app.services.worker_handlers.provider as provider_module
+    from app.model_adapters.base import ProviderAdapterError
+
+    engine = create_engine(f"sqlite:///{(tmp_path / 'conn-bind.db').as_posix()}")
+    Base.metadata.create_all(engine)
+    try:
+        with engine.connect() as connection:
+            with Session(bind=connection, expire_on_commit=False) as db:
+                binding = SimpleNamespace(
+                    resolved=SimpleNamespace(connection=SimpleNamespace(id="conn-1")),
+                    selected_key=SimpleNamespace(row=SimpleNamespace(id="key-1")),
+                )
+                error = ProviderAdapterError("UPSTREAM", "上游错误", retryable=True)
+                with pytest.raises(RuntimeError, match="Engine"):
+                    provider_module._record_key_and_connection_failure(db, binding, error)
+                # The key-mark helper shares the same guard.
+                with pytest.raises(RuntimeError, match="Engine"):
+                    provider_module._mark_key_outcome(
+                        db, binding.selected_key.row, success=True
+                    )
+    finally:
+        engine.dispose()

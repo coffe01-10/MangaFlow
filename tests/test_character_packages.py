@@ -2138,3 +2138,306 @@ def test_legacy_bind_retries_sqlite_lock(client, monkeypatch):
     )
     assert bind.status_code == 201, bind.text
     assert calls["n"] == 2
+
+
+# --- red-team remediation: issue #145 (create/detach/explicit races) ---------
+
+
+def _seed_character_without_package(factory):
+    """Project + character only, for concurrent duplicate-create tests."""
+    from app.models import Character, Project
+
+    db = factory()
+    project = Project(id="duplicate-project", name="并发建包项目")
+    character = Character(
+        id="duplicate-character",
+        project_id=project.id,
+        primary_name="并发建包角色",
+        aliases=[],
+        aliases_normalized=[],
+        status="UPLOADED",
+    )
+    db.add(project)
+    db.flush()
+    db.add(character)
+    db.commit()
+    ids = (project.id, character.id)
+    db.close()
+    return ids
+
+
+def test_package_concurrent_create_duplicate_maps_loser_to_409(file_sessions, monkeypatch):
+    """Issue #145-A: a duplicate concurrent create ends as 409, never a 500.
+
+    Both sessions pass the ``existing`` read before either commits; the loser
+    must surface the unique-index violation (PostgreSQL) or the SQLite
+    busy/snapshot lock as the designed 「角色模型包已存在」409.
+    """
+    from threading import Barrier
+
+    from app.models import (
+        CharacterModelPackage,
+        CharacterModelPackageVersion,
+        Project,
+    )
+    from app.services import character_packages as packages
+    from app.services.character_packages import create_package
+
+    project_id, character_id = _seed_character_without_package(file_sessions)
+    # Rendezvous both threads on the project row load — after their earlier
+    # reads, before the duplicate read/INSERT — so both pass the ``existing``
+    # check before either INSERT lands (the real concurrent-double-create
+    # interleaving instead of an accidentally serialized one).
+    barrier = Barrier(2, timeout=30)
+    real_lock_entity = packages.lock_entity
+
+    def synchronizing_lock_entity(db, model_cls, entity_id):
+        if model_cls is Project:
+            barrier.wait()
+        return real_lock_entity(db, model_cls, entity_id)
+
+    monkeypatch.setattr(packages, "lock_entity", synchronizing_lock_entity)
+
+    errors: dict[str, HTTPException] = {}
+    results = _concurrent_pair(
+        file_sessions,
+        lambda db: create_package(db, project_id, character_id, {}),
+        lambda db: create_package(db, project_id, character_id, {}),
+        errors,
+    )
+    winners = [key for key, value in results.items() if value is not None]
+    assert len(winners) == 1, errors
+    loser = errors.get("first") or errors.get("second")
+    assert loser is not None
+    assert loser.status_code == 409
+    assert loser.detail == "角色模型包已存在"
+
+    db = file_sessions()
+    packages = list(
+        db.scalars(
+            select(CharacterModelPackage).where(
+                CharacterModelPackage.character_id == character_id
+            )
+        )
+    )
+    assert len(packages) == 1
+    versions = list(
+        db.scalars(
+            select(CharacterModelPackageVersion).where(
+                CharacterModelPackageVersion.package_id == packages[0].id
+            )
+        )
+    )
+    assert len(versions) == 1
+    assert versions[0].status == "DRAFT"
+    db.close()
+
+
+def test_package_detach_locks_package_rows_before_asset(client, db_session, monkeypatch):
+    """Issue #145-B: detach follows the documented package→asset lock order."""
+    from app.services import character_packages as packages
+
+    locked: list[tuple[str, str]] = []
+    real_lock_entity = packages.lock_entity
+    real_lock_asset = packages.lock_asset_for_ownership
+
+    def wrapped_lock_entity(db, model_cls, entity_id):
+        locked.append((model_cls.__name__, entity_id))
+        return real_lock_entity(db, model_cls, entity_id)
+
+    def wrapped_lock_asset(db, asset_id):
+        locked.append(("Asset", asset_id))
+        return real_lock_asset(db, asset_id)
+
+    monkeypatch.setattr(packages, "lock_entity", wrapped_lock_entity)
+    monkeypatch.setattr(packages, "lock_asset_for_ownership", wrapped_lock_asset)
+
+    project = _project(client)
+    character = _character(client, project["id"])
+    asset = _upload_asset(client, project["id"])
+    package = _create_package(client, project["id"], character["id"])
+    version_id = package["versions"][0]["id"]
+    token = package["versions"][0]["version"]
+    bind = client.post(
+        f"{_package_url(project['id'], character['id'])}/versions/{version_id}/references",
+        json={"asset_id": asset["id"], "role": "front", "version": token},
+    )
+    assert bind.status_code == 201, bind.text
+
+    locked.clear()
+    packages.detach_draft_package_references_for_asset(db_session, asset["id"])
+    db_session.commit()
+    package_lock_indexes = [
+        index for index, (name, _id) in enumerate(locked) if name == "CharacterModelPackage"
+    ]
+    asset_lock_indexes = [
+        index for index, (name, _id) in enumerate(locked) if name == "Asset"
+    ]
+    assert package_lock_indexes, locked
+    assert asset_lock_indexes, locked
+    assert max(package_lock_indexes) < min(asset_lock_indexes)
+
+
+def test_package_detach_vs_bind_keeps_version_token_monotonic(file_sessions):
+    """Issue #145-B: bind vs detach must not lose a version-token increment.
+
+    Both writers start from token 1. If the bind lands first and the cleanup
+    removes the row afterwards, BOTH edits must be counted (1→2→3); a lost
+    increment would leave the token at 2 while the slot row vanished.
+    """
+    from app.models import (
+        Asset,
+        Character,
+        CharacterModelPackage,
+        CharacterModelPackageVersion,
+        CharacterModelPackageVersionReference,
+        Project,
+        utcnow,
+    )
+    from app.services.character_packages import (
+        bind_reference,
+        detach_draft_package_references_for_asset,
+    )
+
+    db = file_sessions()
+    project = Project(id="detach-race-project", name="清理并发项目")
+    character = Character(
+        id="detach-race-character",
+        project_id=project.id,
+        primary_name="清理角色",
+        aliases=[],
+        aliases_normalized=[],
+        status="UPLOADED",
+    )
+    asset = Asset(
+        id="detach-race-asset",
+        project_id=project.id,
+        kind="CHARACTER_REFERENCE",
+        original_name="front.png",
+        storage_key="detach/front.png",
+        mime_type="image/png",
+        byte_size=100,
+        sha256="f" * 64,
+        source="USER_UPLOAD",
+        status="UPLOADED",
+    )
+    db.add(project)
+    db.flush()
+    db.add(character)
+    db.flush()
+    db.add(asset)
+    db.flush()
+    package = CharacterModelPackage(
+        character_id=character.id,
+        project_id=project.id,
+        identity_spec={},
+        visual_spec={},
+        negative_constraints=[],
+        status="ACTIVE",
+    )
+    db.add(package)
+    db.flush()
+    version = CharacterModelPackageVersion(
+        package_id=package.id,
+        version_number=1,
+        status="DRAFT",
+        spec_snapshot={},
+    )
+    db.add(version)
+    db.commit()
+    project_id, character_id, version_id, asset_id = (
+        project.id,
+        character.id,
+        version.id,
+        asset.id,
+    )
+    db.close()
+
+    errors: dict[str, HTTPException] = {}
+
+    def do_bind(session):
+        bind_reference(
+            session,
+            project_id,
+            character_id,
+            version_id,
+            asset_id=asset_id,
+            role="front",
+            token=1,
+        )
+        return "bind"
+
+    def do_delete(session):
+        detach_draft_package_references_for_asset(session, asset_id)
+        row = session.get(Asset, asset_id)
+        row.deleted_at = utcnow()
+        session.commit()
+        return "delete"
+
+    outcomes = set(
+        _concurrent_pair(file_sessions, do_bind, do_delete, errors).values()
+    )
+    verify = file_sessions()
+    refs = list(
+        verify.scalars(
+            select(CharacterModelPackageVersionReference).where(
+                CharacterModelPackageVersionReference.asset_id == asset_id
+            )
+        )
+    )
+    token = verify.get(CharacterModelPackageVersion, version_id).version
+    verify.close()
+    if refs:
+        # The cleanup read before the bind landed: exactly one edit happened.
+        assert "bind" in outcomes, errors
+        assert len(refs) == 1
+        assert token == 2
+    elif "bind" in outcomes:
+        # The bind landed first and the cleanup removed its row: both edits
+        # must be reflected — a lost increment keeps the token at 2.
+        assert token == 3, errors
+    else:
+        # The bind lost to lock retries; the cleanup was a no-op on an empty
+        # slot and must not have bumped anything.
+        assert token == 1, errors
+
+
+def test_package_explicit_version_of_archived_package_rejected(
+    client, db_session, monkeypatch
+):
+    """Issue #145-C: explicit selection revalidates package.status (ARCHIVED).
+
+    Version-status ARCHIVED stays explicitly selectable (§5.2,
+    test_package_explicit_archived_version_usable_for_generation); this gate
+    covers the owning package only, matching the default path's behavior.
+    """
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    _skip_page_readiness(monkeypatch)
+    project, character, front, outfit, o_asset, version_id = _package_published_fixture(
+        client, db_session, monkeypatch
+    )
+    archived_package = client.post(
+        f"{_package_url(project['id'], character['id'])}/archive", json={}
+    )
+    assert archived_package.status_code == 200, archived_package.text
+
+    _chapter, page = _generation_page(db_session, project["id"], character["id"])
+    batch = client.post(f"/api/v1/pages/{page.id}/batches")
+    assert batch.status_code == 201, batch.text
+    queued = client.post(
+        f"/api/v1/batches/{batch.json()['id']}/candidates",
+        json={
+            "model_alias": "image.nano_banana_2",
+            "resolution": "1K",
+            "storyboard_version": page.storyboard_version,
+            "reference_selections": {
+                character["id"]: {
+                    "package_version_id": version_id,
+                    "outfit_id": outfit["id"],
+                    "outfit_asset_id": o_asset["id"],
+                }
+            },
+        },
+    )
+    assert queued.status_code == 409, queued.text
+    assert "已归档" in queued.json()["detail"]

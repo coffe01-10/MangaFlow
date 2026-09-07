@@ -184,6 +184,7 @@ def _inspect(db, monkeypatch, page, candidate, categories, *, during_call=None):
         lambda asset: SimpleNamespace(read_bytes=lambda: b"offline"),
     )
     _run_inspection(db, job)
+    return job
 
 
 def test_new_storyboard_partial_check_cannot_reuse_old_categories(
@@ -202,16 +203,26 @@ def test_new_storyboard_partial_check_cannot_reuse_old_categories(
         ),
         db_session,
     )
-    _inspect(db_session, monkeypatch, page, candidate, ["CONTINUITY"])
+    first_job = _inspect(
+        db_session, monkeypatch, page, candidate, ["CONTINUITY"]
+    )
     assert not build_page_production_readiness(db_session, page).ready
     assert candidate.status != "INSPECTED"
     assert page.continuity_status != "PASSED"
+    # Production shells finalize each inspect job before a later POST can
+    # pass has_active_job; mirror that or the oldest-wins arbitration
+    # legitimately refuses the second inspect.
+    first_job.status = JobStatus.COMPLETED
+    db_session.commit()
+    # #164: PRESENCE is always requested alongside the caller's list, so the
+    # completing pass must ack it too (the mocked snapshot input is empty,
+    # keeping the deterministic cross-check trivially clean).
     _inspect(
         db_session,
         monkeypatch,
         page,
         candidate,
-        ["SPEAKER", "CHARACTER", "OUTFIT", "PROP"],
+        ["SPEAKER", "CHARACTER", "OUTFIT", "PROP", "PRESENCE"],
     )
     assert build_page_production_readiness(db_session, page).ready
 

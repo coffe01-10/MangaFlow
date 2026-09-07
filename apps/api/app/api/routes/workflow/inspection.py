@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.helpers import candidate_read
+from app.api.helpers import candidate_read, ensure_project_scope
 from app.api.routes.workflow.common import _page, _project_for_page
 from app.config import get_settings
 from app.database import get_db
@@ -25,7 +25,13 @@ from app.schemas import (
     UpscaleRequest,
 )
 from app.services.candidate_lineage import attach_derived_lineage, inherited_reference_ids
-from app.services.job_service import create_job, enqueue_job
+from app.services.job_service import (
+    arbitrate_inspection_creation,
+    create_job,
+    enqueue_job,
+    has_active_derived_job,
+    has_active_job,
+)
 from app.services.model_router import model_supports_resolution, resolve_model
 from app.services.ordinal_allocator import create_generation_batch
 
@@ -41,10 +47,26 @@ def inspect_candidate(
     candidate_id: str,
     payload: InspectionRequest,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> GenerationJob:
     candidate = db.get(PageCandidate, candidate_id)
     if not candidate or not candidate.asset_id or candidate.deleted_at is not None:
         raise HTTPException(status_code=409, detail="候选图片尚未生成")
+    ensure_project_scope(db, candidate, project_id, label="候选")
+    # A retried FAILED inspect job (its idempotency key stays collapsed as
+    # closed:{id}) or a workflow-created inspect job is invisible to the
+    # idempotency key above; guard on ACTIVE jobs so one candidate never runs
+    # two paid PAGE_INSPECT calls at once.
+    if has_active_job(
+        db,
+        job_type="PAGE_INSPECT",
+        target_id=str(candidate.id),
+        target_type="PAGE_CANDIDATE",
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="该候选已有进行中的质检任务，请等待完成后再重新质检",
+        )
     page = _page(db, candidate.page_id)
     project = _project_for_page(db, page)
     job = create_job(
@@ -56,13 +78,32 @@ def inspect_candidate(
         model_alias="auto",
         request_parameters={"categories": payload.categories},
         reference_asset_ids=[candidate.asset_id],
-        idempotency_key=f"inspect:{candidate.id}:{candidate.version}",
+        # Key includes the page version so any inspection-invalidating fence
+        # (storyboard bump, review flag — every one of them bumps
+        # MangaPage.version) mints a fresh job instead of replaying a
+        # COMPLETED one whose verdicts belong to an older page state.
+        idempotency_key=f"inspect:{candidate.id}:{candidate.version}:{page.version}",
     )
+    # A fence bump between this route's version reads and the reconciler's
+    # mints different-keyed jobs for the same candidate; key equality cannot
+    # collapse those. Oldest-wins: the younger duplicate is cancelled and the
+    # older ACTIVE job is returned/enqueued instead.
+    job = arbitrate_inspection_creation(db, job)
+    db.commit()
     return enqueue_job(db, job)
 
 
 @router.get("/candidates/{candidate_id}/inspections", response_model=list[InspectionRead])
-def list_inspections(candidate_id: str, db: Session = Depends(get_db)) -> list[InspectionResult]:
+def list_inspections(
+    candidate_id: str,
+    db: Session = Depends(get_db),
+    project_id: str | None = None,
+) -> list[InspectionResult]:
+    # Historical callers receive an empty list for an unknown candidate id, so
+    # the scope check only fires when the candidate row actually exists.
+    candidate = db.get(PageCandidate, candidate_id)
+    if candidate is not None:
+        ensure_project_scope(db, candidate, project_id, label="候选")
     return list(
         db.scalars(
             select(InspectionResult)
@@ -81,31 +122,19 @@ def repair_candidate(
     candidate_id: str,
     payload: RepairRequest,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> CandidateQueuedRead:
     original = db.get(PageCandidate, candidate_id)
-    inspection = db.get(InspectionResult, payload.inspection_result_id)
     if not original or not original.asset_id or original.deleted_at is not None:
         raise HTTPException(status_code=409, detail="原始候选图片不存在")
+    ensure_project_scope(db, original, project_id, label="候选")
+    inspection = db.get(InspectionResult, payload.inspection_result_id)
     if not inspection or inspection.candidate_id != original.id:
         raise HTTPException(status_code=409, detail="检查结果与候选不匹配")
-    inspection_ids = select(InspectionResult.id).where(InspectionResult.candidate_id == original.id)
-    previous_repairs = list(
-        db.scalars(select(RepairPlan).where(RepairPlan.inspection_result_id.in_(inspection_ids)))
-    )
-    attempts = max((item.automatic_attempts for item in previous_repairs), default=0)
-    if attempts >= get_settings().max_auto_repairs:
-        raise HTTPException(status_code=409, detail="已达到最大自动修复次数，请人工处理")
     if inspection.category.upper() in {"TEXT", "OCR"}:
         raise HTTPException(
             status_code=409, detail="历史文字检查仅供查看，文字问题不再创建修复任务"
         )
-    repair_rank = {"BUBBLE_REGION": 0, "PANEL": 1, "PAGE": 2}
-    previous_rank = max(
-        (repair_rank[item.repair_type] for item in previous_repairs),
-        default=-1,
-    )
-    if repair_rank[payload.repair_type] < previous_rank:
-        raise HTTPException(status_code=409, detail="修复范围只能保持或逐步扩大，不能退回更小范围")
     page = _page(db, original.page_id)
     try:
         ensure_unlocked(page.locked_fields, payload.target_fields)
@@ -120,6 +149,43 @@ def repair_candidate(
         generation_kind="REPAIR",
         close_open_page_batches=True,
     )
+    # Post-lock budget/duplicate window: create_generation_batch acquired the
+    # project/page locks and they are held until this route commits (or rolls
+    # back on the guards below). Every sibling repair/upscale must take the
+    # same locks before its own writes, and a lock holder commits before a
+    # waiter proceeds, so the reads below observe every concurrently committed
+    # sibling plan/job. The old pre-lock SELECT let two concurrent requests
+    # both read attempts=N, both pass the cap, and both enqueue a paid
+    # PAGE_REPAIR job (the per-request repair:{plan_id} key never deduped).
+    inspection_ids = select(InspectionResult.id).where(InspectionResult.candidate_id == original.id)
+    previous_repairs = list(
+        db.scalars(select(RepairPlan).where(RepairPlan.inspection_result_id.in_(inspection_ids)))
+    )
+    attempts = max((item.automatic_attempts for item in previous_repairs), default=0)
+    if attempts >= get_settings().max_auto_repairs:
+        db.rollback()  # discard the reserved batch and release the locks
+        raise HTTPException(status_code=409, detail="已达到最大自动修复次数，请人工处理")
+    repair_rank = {"BUBBLE_REGION": 0, "PANEL": 1, "PAGE": 2}
+    previous_rank = max(
+        (repair_rank[item.repair_type] for item in previous_repairs),
+        default=-1,
+    )
+    if repair_rank[payload.repair_type] < previous_rank:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="修复范围只能保持或逐步扩大，不能退回更小范围")
+    # target_id names the new child candidate, so the duplicate check must go
+    # through CandidateLineage back to this original, matching repair_type.
+    if has_active_derived_job(
+        db,
+        job_types="PAGE_REPAIR",
+        parent_candidate_id=original.id,
+        repair_type=payload.repair_type,
+    ):
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="该候选已有进行中的同类修复任务，请等待完成后再试",
+        )
     candidate = PageCandidate(
         batch_id=batch.id,
         page_id=page.id,
@@ -212,10 +278,12 @@ def upscale_candidate(
     candidate_id: str,
     payload: UpscaleRequest,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> CandidateQueuedRead:
     original = db.get(PageCandidate, candidate_id)
     if not original or not original.asset_id or original.deleted_at is not None:
         raise HTTPException(status_code=409, detail="原始候选图片不存在")
+    ensure_project_scope(db, original, project_id, label="候选")
     resolution_rank = {"1K": 1, "2K": 2, "4K": 4}
     if resolution_rank[payload.resolution.value] <= resolution_rank[original.resolution.value]:
         raise HTTPException(status_code=409, detail="升清目标必须高于当前候选清晰度")
@@ -229,6 +297,23 @@ def upscale_candidate(
         generation_kind="UPSCALE",
         close_open_page_batches=True,
     )
+    # Post-lock duplicate window (same locks-and-commit guarantee as the repair
+    # route): the job's target_id is the new child, so match ACTIVE
+    # PAGE_UPSCALE jobs for this original's lineage children on the stored
+    # target_resolution. The old flow created a fresh batch and a fresh
+    # upscale:{batch.id}:{resolution} key per request, so every repeat paid
+    # again while the previous upscale was still running.
+    if has_active_derived_job(
+        db,
+        job_types="PAGE_UPSCALE",
+        parent_candidate_id=original.id,
+        resolution=payload.resolution.value,
+    ):
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="该候选已有进行中的同分辨率放大任务，请等待完成后再试",
+        )
     candidate = PageCandidate(
         batch_id=batch.id,
         page_id=page.id,

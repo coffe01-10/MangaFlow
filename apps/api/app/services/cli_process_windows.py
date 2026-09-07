@@ -250,15 +250,21 @@ class WindowsJobCLIProcessRunner:
     @staticmethod
     def _resolve(value: str, environment: dict[str, str]) -> str:
         candidate = Path(value)
-        if candidate.is_absolute():
-            resolved = candidate.resolve(strict=True)
-            if not resolved.is_file():
+        try:
+            if candidate.is_absolute():
+                resolved = candidate.resolve(strict=True)
+                if not resolved.is_file():
+                    raise ProviderAdapterError("UNAVAILABLE", "CLI 可执行文件不存在")
+                return str(resolved)
+            discovered = shutil.which(value, path=environment.get("PATH"))
+            if not discovered:
                 raise ProviderAdapterError("UNAVAILABLE", "CLI 可执行文件不存在")
-            return str(resolved)
-        discovered = shutil.which(value, path=environment.get("PATH"))
-        if not discovered:
-            raise ProviderAdapterError("UNAVAILABLE", "CLI 可执行文件不存在")
-        return str(Path(discovered).resolve(strict=True))
+            return str(Path(discovered).resolve(strict=True))
+        except OSError as error:
+            # The executable vanished between resolution and launch (update,
+            # AV quarantine): an UNAVAILABLE provider failure, not a bare
+            # OSError that would surface as a controller CRASH.
+            raise ProviderAdapterError("UNAVAILABLE", "CLI 可执行文件不存在") from error
 
     def _run_windows(self, executable, argv, cwd, environment, timeout_seconds, cancel_requested):
         import _winapi
@@ -323,7 +329,13 @@ class WindowsJobCLIProcessRunner:
                     timed_out = True
                     _checked(api.TerminateJobObject(job_handle, 125))
                     break
-                time.sleep(0.05)
+                # Supervision poll: cancellation and the timeout deadline only
+                # need ~1s granularity, while each poll opens a fresh DB
+                # session (the cancel probe) — a 10x slower cadence cuts the
+                # transient-DB-failure exposure of a paid run without
+                # measurable cost. Diagnostic-pipe EOF is detected by the
+                # _OutputDrain threads, not by this loop, so it is unaffected.
+                time.sleep(0.5)
             stop_deadline = time.monotonic() + self.timeout_grace_seconds
             while _active_processes(api, job_handle):
                 if time.monotonic() >= stop_deadline:

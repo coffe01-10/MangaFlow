@@ -44,12 +44,13 @@ describe("共享任务状态语义", () => {
     }
   });
 
-  it("isTerminalTaskStatus 只认三种终态", () => {
+  it("isTerminalTaskStatus 认四种终态（NEEDS_REVIEW 与后端一致，不会自行迁移）", () => {
     expect(isTerminalTaskStatus("COMPLETED")).toBe(true);
     expect(isTerminalTaskStatus("FAILED")).toBe(true);
     expect(isTerminalTaskStatus("CANCELLED")).toBe(true);
+    expect(isTerminalTaskStatus("NEEDS_REVIEW")).toBe(true);
     expect(isTerminalTaskStatus("RUNNING")).toBe(false);
-    expect(isTerminalTaskStatus("NEEDS_REVIEW")).toBe(false);
+    expect(isTerminalTaskStatus("WAITING")).toBe(false);
   });
 
   it("只要列表中还有任一活动条目就判定为需要继续轮询", () => {
@@ -73,7 +74,10 @@ describe("activePollInterval 轮询间隔门禁", () => {
     expect(activePollInterval([{ status: "COMPLETED" }], 3000)).toBe(false);
     expect(activePollInterval([{ status: "FAILED" }], 3000)).toBe(false);
     expect(activePollInterval([{ status: "CANCELLED" }], 3000)).toBe(false);
+    // NEEDS_REVIEW 不会自行迁移（只有用户重试才回 WAITING），轮询必须停止。
+    expect(activePollInterval([{ status: "NEEDS_REVIEW" }], 3000)).toBe(false);
     expect(activePollInterval([{ status: "COMPLETED" }, { status: "FAILED" }], 3000)).toBe(false);
+    expect(activePollInterval([{ status: "COMPLETED" }, { status: "NEEDS_REVIEW" }], 3000)).toBe(false);
     expect(activePollInterval([], 3000)).toBe(false);
     expect(activePollInterval(undefined, 3000)).toBe(false);
   });

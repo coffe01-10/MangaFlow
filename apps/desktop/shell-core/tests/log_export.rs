@@ -4,6 +4,8 @@
 //! externally by `python3 -m zipfile`/`zipfile` (independent CRC + layout
 //! check, so a writer bug cannot pass by parsing its own output twice).
 
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -14,9 +16,7 @@ use mangaflow_desktop_shell_core::logs::{
 };
 use mangaflow_desktop_shell_core::protocol::new_token;
 
-fn python() -> PathBuf {
-    PathBuf::from(std::env::var("MANGAFLOW_DESKTOP_PYTHON").unwrap_or_else(|_| "python3".into()))
-}
+use common::python;
 
 fn temp_user_data(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -50,7 +50,7 @@ print("PYZIP_OK")
         .arg(archive)
         .args(expected_members)
         .output()
-        .expect("python3 must be available (same requirement as the protocol tests)");
+        .expect("a python interpreter must be available (same requirement as the protocol tests)");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success() && stdout.contains("PYZIP_OK"),

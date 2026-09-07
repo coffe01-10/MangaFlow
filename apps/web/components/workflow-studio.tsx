@@ -591,17 +591,24 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
     return nodes.map((node) => ({ ...node, data: { ...node.data, runStatus: statuses.get(node.id) } }));
   }, [displayedRun, nodes]);
 
+  // Follow-the-run camera: re-center only when the run or focus node actually
+  // changes. runs.data gets a new identity on every 3s poll, so keying the
+  // effect on it yanked the viewport away from the user's pan/zoom for the
+  // whole run; dragging must also freeze the camera.
+  const cameraTargetRef = useRef<string | null>(null);
   useEffect(() => {
     const targetRun = displayedRun?.node_runs.find((item) => item.status === "RUNNING")
       ?? displayedRun?.node_runs.find((item) => !["COMPLETED", "SKIPPED"].includes(item.status));
+    const cameraKey = `${displayedRun?.id ?? "none"}:${targetRun?.node_id ?? "none"}`;
+    if (cameraKey === cameraTargetRef.current) return;
+    cameraTargetRef.current = cameraKey;
     const target = nodesRef.current.find((node) => node.id === targetRun?.node_id)
       ?? nodesRef.current[0];
-    if (target && flowInstance.current) {
-      void flowInstance.current.setCenter(target.position.x + 112, target.position.y + 60, {
-        zoom: 0.75,
-        duration: 350,
-      });
-    }
+    if (!target || !flowInstance.current || dragging.current) return;
+    void flowInstance.current.setCenter(target.position.x + 112, target.position.y + 60, {
+      zoom: 0.75,
+      duration: 350,
+    });
   }, [activeWorkflow?.id, displayedRun]);
 
   if (workflows.isError) {
@@ -656,7 +663,7 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
           <button onClick={() => downloadJson(`${activeWorkflow.name}.json`, { schema: "mangaflow.workflow.v2", name: activeWorkflow.name, description: activeWorkflow.description, graph: buildGraph() })}><Download size={14} />导出</button>
           <label><Upload size={14} />导入<input type="file" accept="application/json,.json" onChange={importFile} /></label>
           <button onClick={() => void saveNow()}><Save size={14} />保存</button>
-          <button onClick={() => validate.mutate()}><Check size={14} />校验</button>
+          <button disabled={validate.isPending} onClick={() => validate.mutate()}>{validate.isPending ? "校验中…" : <><Check size={14} />校验</>}</button>
           <button className={styles.publish} disabled={publish.isPending} onClick={() => publish.mutate()}><Send size={14} />发布</button>
         </div>
       </header>

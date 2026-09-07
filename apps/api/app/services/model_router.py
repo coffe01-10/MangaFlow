@@ -80,7 +80,13 @@ def get_catalog_model(db: Session, reference: str) -> AIModel | None:
 
 def model_supports_resolution(model: AIModel, resolution: str) -> bool:
     supported = (model.capabilities or {}).get("resolutions") or []
-    return not supported or resolution in supported
+    if isinstance(supported, str):
+        supported = [supported]
+    if not supported:
+        return True
+    if not isinstance(supported, (list, tuple, set)):
+        return False
+    return resolution in supported
 
 
 def model_supports_explicit_mask(model: AIModel) -> bool:
@@ -391,6 +397,13 @@ def _route_score(model: AIModel, policy: RoutingPolicy | None) -> float:
     ) / 100
 
 
+def _declared_or_fallback_references(capabilities: dict, fallback: int) -> int:
+    declared = model_capabilities.capability_reference_limit(capabilities)
+    if declared is not None:
+        return declared
+    return int(fallback or 0)
+
+
 def _catalog_capability(
     model: AIModel,
     provider_name: str,
@@ -412,8 +425,8 @@ def _catalog_capability(
         preview_resolutions=tuple(
             capabilities.get("preview_resolutions", fallback_preview_resolutions) or ()
         ),
-        max_reference_images=int(
-            capabilities.get("max_reference_images", fallback_max_references) or 0
+        max_reference_images=_declared_or_fallback_references(
+            capabilities, fallback_max_references
         ),
         regions=tuple(capabilities.get("regions", fallback_regions) or ()),
         supported_parameters=tuple(

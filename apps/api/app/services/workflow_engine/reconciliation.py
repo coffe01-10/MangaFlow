@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.domain.states import JobStatus
@@ -15,6 +15,7 @@ from app.models import (
     WorkflowRun,
     utcnow,
 )
+from app.services.job_service import ACTIVE_JOB_STATUSES, mark_job_cancelled
 from app.services.page_completion import build_page_production_readiness
 from app.services.workflow_engine.catalog import NODE_TYPE_MAP
 from app.services.workflow_engine.scope import (
@@ -24,6 +25,7 @@ from app.services.workflow_engine.scope import (
 )
 from app.services.workflow_engine.validation import validate_graph
 from app.workflow_schemas import (
+    WorkflowEdgeDefinition,
     WorkflowGraph,
     WorkflowNodeDefinition,
 )
@@ -107,25 +109,65 @@ def _create_inspection_job(
     candidate = _candidate_for_run(db, run, node_runs)
     if not candidate or not candidate.asset_id:
         raise ValueError("质量检查必须等待已生成并采用的页面候选")
-    job = engine.create_job(
-        db,
-        project_id=run.project_id,
-        target_type="PAGE_CANDIDATE",
-        target_id=candidate.id,
-        job_type="PAGE_INSPECT",
-        model_alias=node.config.model_alias or "auto",
-        request_parameters={
-            "categories": ["SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"],
-            "workflow_run_id": run.id,
-            "workflow_node_run_id": node_run.id,
-            "node_id": node.id,
-            "node_type": node.type,
-        },
-        max_attempts=node.config.max_attempts,
-        idempotency_key=f"workflow:{run.id}:{node.id}:1",
-        dependency_ids=_parent_job_ids(db, run, graph, node.id),
-        auto_commit=False,
+    page = db.get(MangaPage, candidate.page_id)
+    # Same active-job guard as the inspect route: the idempotency key below is
+    # workflow-scoped, so an ACTIVE PAGE_INSPECT job created through the route
+    # (or by a retried inspect) would otherwise run a second paid multimodal
+    # call on the same candidate. Adopt it, mirroring how reconcile handles a
+    # node that already carries a job.
+    active_job = db.scalar(
+        select(GenerationJob)
+        .where(
+            GenerationJob.job_type == "PAGE_INSPECT",
+            GenerationJob.target_type == "PAGE_CANDIDATE",
+            GenerationJob.target_id == candidate.id,
+            GenerationJob.status.in_(ACTIVE_JOB_STATUSES),
+        )
+        .order_by(GenerationJob.created_at, GenerationJob.id)
+        .limit(1)
     )
+    if active_job:
+        job = active_job
+    else:
+        job = engine.create_job(
+            db,
+            project_id=run.project_id,
+            target_type="PAGE_CANDIDATE",
+            target_id=candidate.id,
+            job_type="PAGE_INSPECT",
+            model_alias=node.config.model_alias or "auto",
+            request_parameters={
+                "categories": ["SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"],
+                "workflow_run_id": run.id,
+                "workflow_node_run_id": node_run.id,
+                "node_id": node.id,
+                "node_type": node.type,
+            },
+            max_attempts=node.config.max_attempts,
+            # Candidate-scoped key in the SAME namespace the inspect route
+            # uses: the disjoint workflow:{run}:{node}:1 key let a route
+            # creation and this creation interleave in their check-then-act
+            # windows (the adoption SELECT above only sees committed rows) and
+            # both commit — two ACTIVE PAGE_INSPECT jobs, two paid calls. The
+            # shared key makes the global idempotency index collapse the race
+            # (create_job's IntegrityError fallback returns the winner), and a
+            # COMPLETED route job is adopted instead of re-run (validated by
+            # the production gate downstream). FAILED/CANCELLED rows collapse
+            # to closed:{id} inside create_job, so retries still mint fresh
+            # jobs.
+            idempotency_key=f"inspect:{candidate.id}:{candidate.version}:{page.version}",
+            dependency_ids=_parent_job_ids(db, run, graph, node.id),
+            auto_commit=False,
+        )
+        # Same oldest-wins arbitration as the route side (see the helper):
+        # a fence bump between the two version reads mints different-keyed
+        # jobs for one candidate, and key equality collapses only same-key
+        # races. The younger duplicate is cancelled uncommitted and the
+        # node adopts the older ACTIVE job; the reconcile transaction
+        # commits both together.
+        from app.services.job_service import arbitrate_inspection_creation
+
+        job = arbitrate_inspection_creation(db, job)
     node_run.job_id = job.id
     node_run.input_snapshot = {
         **node_run.input_snapshot,
@@ -133,6 +175,50 @@ def _create_inspection_job(
         "asset_id": candidate.asset_id,
     }
     return job
+
+
+def _sweep_stranded_children(db: Session, run: WorkflowRun) -> None:
+    """Terminalize the run's remaining non-terminal children after a FAILED claim.
+
+    Mirrors cancel_run's sweep: a run claimed terminal-FAILED used to leave
+    downstream WAITING node_runs and their dependency-blocked jobs alive
+    forever (they keep ACTIVE_JOB_STATUSES, so project-scoped guards such as
+    the script delete 409 never clear, and jobless child nodes strand
+    WAITING). Strictly scoped to this run: node_run linkage plus the
+    request_parameters workflow_run_id match for late jobs. Must run inside
+    the claim's transaction so a lost claim rolls the sweep back with it.
+    """
+    node_runs = list(
+        db.scalars(select(WorkflowNodeRun).where(WorkflowNodeRun.workflow_run_id == run.id))
+    )
+    for item in node_runs:
+        if item.status not in {"COMPLETED", "FAILED", "CANCELLED"}:
+            item.status = "CANCELLED"
+            item.finished_at = utcnow()
+        job = db.get(GenerationJob, item.job_id) if item.job_id else None
+        # Unlike cancel_run (which retires even FAILED jobs because the whole
+        # run is cancelled), keep terminal FAILED jobs: this run failed
+        # because of them and the jobs list must keep showing the cause.
+        terminal = {JobStatus.COMPLETED, JobStatus.CANCELLED, JobStatus.FAILED}
+        if job and job.status not in terminal:
+            mark_job_cancelled(db, job)
+    # Inspect jobs are created lazily in reconcile and may not be on node_run
+    # yet; sweep them the same way cancel_run does (project-scoped query,
+    # filtered to this run's workflow_run_id parameter).
+    late_jobs = list(
+        db.scalars(
+            select(GenerationJob).where(
+                GenerationJob.project_id == run.project_id,
+                GenerationJob.status.not_in(
+                    {JobStatus.COMPLETED, JobStatus.CANCELLED, JobStatus.FAILED}
+                ),
+            )
+        )
+    )
+    for job in late_jobs:
+        params = job.request_parameters or {}
+        if params.get("workflow_run_id") == run.id:
+            mark_job_cancelled(db, job)
 
 
 def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
@@ -157,6 +243,49 @@ def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
 
     paused = False
     failed = False
+    dead_cache: dict[str, bool] = {}
+
+    def _edge_leaves_dead_branch(edge: WorkflowEdgeDefinition) -> bool:
+        parent = by_node[edge.source_node]
+        if (
+            parent.node_type == "control.condition"
+            and parent.status == "COMPLETED"
+            and parent.output_refs.get("selected_port") != edge.source_port
+        ):
+            return True
+        return _branch_is_dead(edge.source_node)
+
+    def _branch_is_dead(node_id: str) -> bool:
+        """Transitively dead branch membership, memoized per reconciliation pass.
+
+        A node is dead when EVERY runnable incoming edge arrives from an
+        unselected port of a completed control.condition or from an already
+        dead parent. Direct-branch children keep the historical skip; the
+        recursion extends it past the first hop so condition→A→B chains on an
+        unselected port cannot execute (a paid generator.page downstream used
+        to pass the parent gate because SKIPPED counts as satisfied and B's
+        edge comes from A, not the condition). Nodes without runnable parents
+        — source nodes, explicit start nodes, and merges fed by any live
+        branch — are never dead. Statuses are read live: the loop walks a
+        topological order, so a node is only queried after its parents were
+        finalized in this pass.
+        """
+
+        if node_id in dead_cache:
+            return dead_cache[node_id]
+        # Cycle defense only: validate_graph rejects cycles (an invalid graph
+        # yields an empty topological_order this loop never walks), so this
+        # placeholder is never observed as a final answer.
+        dead_cache[node_id] = False
+        runnable_edges = [
+            edge for edge in incoming_edges[node_id] if edge.source_node in by_node
+        ]
+        dead = bool(runnable_edges) and all(
+            _edge_leaves_dead_branch(edge) for edge in runnable_edges
+        )
+        dead_cache[node_id] = dead
+        return dead
+
     for node_id in report.topological_order:
         item = by_node.get(node_id)
         if not item:
@@ -183,6 +312,21 @@ def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
             item.error_code = job.error_code
             item.error_message = job.error_message
             failed = True
+        elif job and job.status == JobStatus.CANCELLED and item.status not in {
+            "COMPLETED",
+            "CANCELLED",
+            "SKIPPED",
+        }:
+            # A shared/cancelled job must not leave its node RUNNING forever:
+            # without this transition the run re-commits RUNNING on every
+            # poll, wedged (retry refuses non-terminal runs). The node copies
+            # the cancellation and the run converges to FAILED below, which
+            # retry_run accepts.
+            item.status = "CANCELLED"
+            item.error_code = job.error_code or "JOB_CANCELLED"
+            item.error_message = job.error_message or "节点任务已被取消"
+            item.finished_at = utcnow()
+            failed = True
         if item.status != "WAITING":
             if item.status == "WAITING_APPROVAL":
                 paused = True
@@ -193,14 +337,7 @@ def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
             if parent in by_node
         ):
             continue
-        disabled_branch = any(
-            by_node[edge.source_node].node_type == "control.condition"
-            and by_node[edge.source_node].status == "COMPLETED"
-            and by_node[edge.source_node].output_refs.get("selected_port") != edge.source_port
-            for edge in incoming_edges[node_id]
-            if edge.source_node in by_node
-        )
-        if disabled_branch:
+        if _branch_is_dead(node_id):
             item.status = "SKIPPED"
             item.finished_at = utcnow()
             item.output_refs = {"reason": "CONDITION_BRANCH_NOT_SELECTED"}
@@ -252,18 +389,60 @@ def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
     db.refresh(run, attribute_names=["status"])
     if run.status in {"COMPLETED", "CANCELLED", "FAILED"}:
         return get_run(db, run.id)
+    # A CANCELLED node under a non-terminal run is the worker-guard shape
+    # (deleted chapter/candidate guards raise JobCancelledError, whose
+    # mark_job_cancelled branch stamps the node but never escalates to the
+    # run). Treating it like FAILED lets the run claim terminal here and the
+    # sweep terminalize the tail; otherwise desired stays RUNNING and every
+    # pass re-commits the zombie while the duplicate-run guard blocks the
+    # scope. Every other CANCELLED-node writer (cancel_run, sweeps, archive
+    # escalation) already guarantees a terminal run first.
+    failed = failed or any(item.status == "CANCELLED" for item in node_runs)
     if failed:
-        run.status = "FAILED"
-        run.finished_at = utcnow()
+        desired = "FAILED"
     elif all(item.status in {"COMPLETED", "SKIPPED"} for item in node_runs):
-        run.status = "COMPLETED"
-        run.finished_at = utcnow()
+        desired = "COMPLETED"
     elif paused:
-        run.status = "PAUSED"
+        desired = "PAUSED"
     else:
-        run.status = "RUNNING"
-    run.version += 1
+        desired = "RUNNING"
+    if desired == "RUNNING":
+        run.version += 1
+        db.commit()
+        return get_run(db, run.id)
+    # Terminal and paused transitions must not overwrite a concurrently
+    # written terminal state: two reconcilers race routinely (worker
+    # finalize, recovery, approve), and a stale RUNNING write resurrects a
+    # FAILED/CANCELLED run that retry then refuses to touch (zombie run).
+    # Flush the node-level writes first so a won claim commits them in the
+    # same transaction, and a lost claim rolls them back wholesale (the
+    # canceller's own transaction already moved every non-terminal node and
+    # its jobs to CANCELLED).
+    db.flush()
+    claimed = db.execute(
+        update(WorkflowRun)
+        .where(
+            WorkflowRun.id == run.id,
+            WorkflowRun.status.not_in(["COMPLETED", "CANCELLED", "FAILED"]),
+        )
+        .values(status=desired, version=WorkflowRun.version + 1,
+                finished_at=utcnow() if desired in {"COMPLETED", "FAILED"} else None)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
+        db.rollback()
+        return get_run(db, run.id)
+    if desired == "FAILED":
+        # The claim owns the row, so sweep the stranded children in the same
+        # transaction: run transition and sweep commit atomically, and any
+        # sweep failure rolls the FAILED claim back for a later reconcile to
+        # redo cleanly (cancel_run sweeps its own CANCELLED claim the same
+        # way before committing).
+        _sweep_stranded_children(db, run)
     db.commit()
+    # synchronize_session=False leaves the identity-map row stale; refresh so
+    # get_run (same session) returns the claimed state, not the pre-write one.
+    db.refresh(run)
     return get_run(db, run.id)
 
 

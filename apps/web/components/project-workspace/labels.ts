@@ -29,6 +29,27 @@ export const kinds = [
   ["SCENE_REFERENCE", "场景参考"],
 ] as const;
 
+// Single source of truth for WorkflowMode copy. Previously the create dialog,
+// project settings and the dashboard chip used three different label sets for
+// the same three modes (U-audit terminology drift).
+export const workflowModeLabels: Record<string, { label: string; short: string; detail: string }> = {
+  SEMI_AUTO: {
+    label: "半自动（推荐）",
+    short: "半自动",
+    detail: "AI 先完成准备步骤，保留人工采用与逐页确认",
+  },
+  DIRECTOR: {
+    label: "导演逐步",
+    short: "导演",
+    detail: "每个关键阶段都等待确认后再继续",
+  },
+  AUTO: {
+    label: "自动快速",
+    short: "自动",
+    detail: "自动推进文字环节，图片仍逐页确认",
+  },
+};
+
 export const assetKindByView: Record<Exclude<AssetWorkspaceView, "references">, AssetPurpose> = {
   characters: "CHARACTER_REFERENCE",
   outfits: "OUTFIT_REFERENCE",

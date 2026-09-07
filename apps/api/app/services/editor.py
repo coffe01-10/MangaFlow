@@ -1,13 +1,34 @@
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.models import Chapter, Character, Dialogue, MangaPage, Panel, Scene
 
 
-def mark_storyboard_changed(page: MangaPage) -> None:
-    page.storyboard_version += 1
-    page.selected_candidate_ack_version = None
+def mark_storyboard_changed(db: Session, page: MangaPage) -> None:
+    """Bump the page storyboard fence as a SQL-expression increment.
+
+    The counter gates candidate staleness, inspection freshness and director
+    accepts, so a lost increment would make stale content read CURRENT. An
+    ORM ``page.storyboard_version += 1`` is a read-modify-write: two
+    concurrent edits could both read N and both write N+1, silently dropping
+    one change. The atomic form always lands +1 per caller even without the
+    page lock (callers that hold it additionally serialize check-then-act).
+    """
+
+    db.execute(
+        update(MangaPage)
+        .where(MangaPage.id == page.id)
+        .values(
+            storyboard_version=MangaPage.storyboard_version + 1,
+            selected_candidate_ack_version=None,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    # synchronize_session=False leaves the ORM attributes stale; expire just
+    # the two written fields so later reads in this transaction see the bump
+    # (pending ORM changes on other attributes are untouched).
+    db.expire(page, ["storyboard_version", "selected_candidate_ack_version"])
 
 
 def _normalize_name(value: str) -> str:
@@ -101,10 +122,18 @@ def mark_pages_for_review(
             ]
         start = min(referenced) if referenced else pages[0].page_number
     start = start or pages[0].page_number
+    # Atomic per-row increment (see mark_storyboard_changed): the ORM loop
+    # ``page.version += 1`` loses increments under concurrent writers, and
+    # this fence gates the production/inspection staleness checks.
+    db.execute(
+        update(MangaPage)
+        .where(MangaPage.chapter_id == chapter_id, MangaPage.page_number >= start)
+        .values(continuity_status="NEEDS_REVIEW", version=MangaPage.version + 1)
+        .execution_options(synchronize_session=False)
+    )
     for page in pages:
         if page.page_number >= start:
-            page.continuity_status = "NEEDS_REVIEW"
-            page.version += 1
+            db.expire(page, ["continuity_status", "version"])
 
 
 def refresh_page_text_metrics(db: Session, page: MangaPage) -> None:

@@ -1,10 +1,18 @@
+import hashlib
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import ObjectDeletedError
 
-from app.api.helpers import asset_candidate_read, character_references
+from app.api.helpers import (
+    asset_candidate_read,
+    character_references,
+    ensure_project_scope,
+    reject_required_nulls,
+)
 from app.database import get_db
 from app.models import (
     Asset,
@@ -44,6 +52,12 @@ from app.schemas import (
     StyleProfileUpdate,
     StyleTestApproval,
 )
+from app.services.character_packages import (
+    assert_asset_not_referenced_by_foreign_packages,
+    detach_draft_package_references_for_assets,
+    lock_asset_for_ownership,
+    run_lock_retry,
+)
 from app.services.job_service import create_job, enqueue_job
 from app.services.ordinal_allocator import (
     BatchOrdinalConflictError,
@@ -51,6 +65,7 @@ from app.services.ordinal_allocator import (
     commit_ordinal_transaction,
     create_asset_candidate,
     create_generation_batch,
+    lock_entity,
 )
 
 router = APIRouter()
@@ -154,14 +169,15 @@ def create_outfit(
 def update_outfit(
     outfit_id: str,
     payload: OutfitUpdate,
+    project_id: str | None = None,
     db: Session = Depends(get_db),
 ) -> Outfit:
     outfit = db.get(Outfit, outfit_id)
     if not outfit:
         raise HTTPException(status_code=404, detail="服装档案不存在")
-    if outfit.version != payload.version:
-        raise HTTPException(status_code=409, detail="服装档案已更新，请刷新后重试")
+    ensure_project_scope(db, outfit, project_id, label="服装档案")
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
+    reject_required_nulls(Outfit, values)
     reference_asset_ids = values.get("reference_asset_ids")
     if reference_asset_ids is not None:
         _validate_reference_assets(
@@ -174,19 +190,33 @@ def update_outfit(
         values["reference_asset_ids"] = list(dict.fromkeys(reference_asset_ids))
     if "name" in values:
         values["name"] = values["name"].strip()
+    # Claim the row with an atomic conditional update so concurrent PATCHes
+    # cannot both pass an in-memory version comparison (same pattern as
+    # _claim_panel_version / scene asset PATCH).
+    claimed = db.execute(
+        update(Outfit)
+        .where(Outfit.id == outfit.id, Outfit.version == payload.version)
+        .values(version=Outfit.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if not claimed.rowcount:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="服装档案已更新，请刷新后重试")
     for key, value in values.items():
         setattr(outfit, key, value)
-    outfit.version += 1
     db.commit()
     db.refresh(outfit)
     return outfit
 
 
 @router.delete("/outfits/{outfit_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_outfit(outfit_id: str, db: Session = Depends(get_db)) -> None:
+def delete_outfit(
+    outfit_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> None:
     outfit = db.get(Outfit, outfit_id)
     if not outfit:
         raise HTTPException(status_code=404, detail="服装档案不存在")
+    ensure_project_scope(db, outfit, project_id, label="服装档案")
     # Contract §10.4: a package version cannot silently lose a bound outfit.
     referenced = db.scalar(
         select(CharacterModelPackageVersionOutfit.id).where(
@@ -273,11 +303,6 @@ def delete_outfit(outfit_id: str, db: Session = Depends(get_db)) -> None:
     generated_asset_ids = {
         candidate.asset_id for candidate in candidates if candidate.asset_id
     }
-    deleted_at = datetime.now(UTC)
-    for candidate in candidates:
-        if candidate.deleted_at is None:
-            candidate.deleted_at = deleted_at
-            candidate.version += 1
     user_owned_reference_ids = {
         asset.id
         for asset in db.scalars(select(Asset).where(Asset.id.in_(exclusive_reference_ids)))
@@ -286,6 +311,23 @@ def delete_outfit(outfit_id: str, db: Session = Depends(get_db)) -> None:
     asset_ids_to_delete = user_owned_reference_ids | (
         generated_asset_ids - protected_reference_ids
     )
+    # Contract §10.3 (issue #158): DRAFT package relation rows are physically
+    # cleared with every asset this teardown soft-deletes (mirroring uploads'
+    # _detach_reference_asset), so the slot stays rebindable and publish keeps
+    # counting live references only. READY+ rows keep the frozen fact;
+    # consumers filter by Asset.deleted_at at read time. detach must be the
+    # first writer in this unit, before the candidate tombstones and asset
+    # soft-deletes below: its internal run_lock_retry rolls the whole session
+    # back on SQLITE_BUSY, and any earlier tombstone write would be silently
+    # discarded instead of re-applied on the retry. All assets go through ONE
+    # retryable detach unit so a SQLITE_BUSY on a later asset cannot roll
+    # back an earlier asset's clears and commit a partial teardown.
+    detach_draft_package_references_for_assets(db, sorted(asset_ids_to_delete))
+    deleted_at = datetime.now(UTC)
+    for candidate in candidates:
+        if candidate.deleted_at is None:
+            candidate.deleted_at = deleted_at
+            candidate.version += 1
     if asset_ids_to_delete:
         for asset in db.scalars(select(Asset).where(Asset.id.in_(asset_ids_to_delete))):
             if asset.deleted_at is None:
@@ -297,6 +339,19 @@ def delete_outfit(outfit_id: str, db: Session = Depends(get_db)) -> None:
         .join(Chapter, Chapter.id == Scene.chapter_id)
         .where(Chapter.project_id == outfit.project_id)
     )
+    scenes = db.scalars(
+        select(Scene)
+        .join(Chapter, Chapter.id == Scene.chapter_id)
+        .where(Chapter.project_id == outfit.project_id)
+    )
+    # §7.3: outfit_assignments/outfits feed the compiled page prompt (outfit
+    # ids + the scene_outfits block the OUTFIT inspection is judged against).
+    # Any scene/panel that loses an assignment must fence exactly like
+    # PATCH /scenes/{id}/outfits: storyboard bump + review flag on every
+    # referencing page, otherwise an adopted FINAL_READY+PASSED page keeps
+    # exporting a costume that no longer exists with every gate reading
+    # CURRENT.
+    affected_pages: dict[str, MangaPage] = {}
     for scene in scenes:
         assignments = dict(scene.outfit_assignments or {})
         cleaned = {
@@ -305,8 +360,52 @@ def delete_outfit(outfit_id: str, db: Session = Depends(get_db)) -> None:
             if assigned_outfit_id != outfit.id
         }
         if cleaned != assignments:
-            scene.outfit_assignments = cleaned
-            scene.version += 1
+            # Claim the row (same discipline as PATCH /scenes) so a concurrent
+            # scene writer's CAS bump cannot be collapsed by this teardown.
+            # The cleanup is idempotent: on a lost claim re-read fresh state
+            # and retry; after bounded retries surface 409 instead of writing.
+            claimed = False
+            for _attempt in range(3):
+                result = db.execute(
+                    update(Scene)
+                    .where(Scene.id == scene.id, Scene.version == scene.version)
+                    .values(
+                        version=Scene.version + 1,
+                        outfit_assignments=cleaned,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+                # `claimed` stays a bool: a truthy Result would mask the lost
+                # claims above and let the teardown answer 204.
+                claimed = result.rowcount == 1
+                if claimed:
+                    break
+                try:
+                    db.refresh(scene)
+                except (ObjectDeletedError, InvalidRequestError) as exc:
+                    db.rollback()
+                    raise HTTPException(
+                        status_code=409, detail="场景已被更新，请刷新后重试"
+                    ) from exc
+                assignments = dict(scene.outfit_assignments or {})
+                cleaned = {
+                    character_id: assigned_outfit_id
+                    for character_id, assigned_outfit_id in assignments.items()
+                    if assigned_outfit_id != outfit.id
+                }
+            if not claimed:
+                db.rollback()
+                raise HTTPException(
+                    status_code=409, detail="场景已被更新，请刷新后重试"
+                )
+            # The claim's SQL already persisted outfit_assignments+version;
+            # drop the stale in-memory copy so the session cannot double-write.
+            db.expire(scene, ["outfit_assignments", "version"])
+            for page in db.scalars(
+                select(MangaPage).where(MangaPage.chapter_id == scene.chapter_id)
+            ):
+                if scene.id in (page.scene_ids or []):
+                    affected_pages[page.id] = page
     panels = db.scalars(
         select(Panel)
         .join(MangaPage, MangaPage.id == Panel.page_id)
@@ -321,8 +420,47 @@ def delete_outfit(outfit_id: str, db: Session = Depends(get_db)) -> None:
             if assigned_outfit_id != outfit.id
         }
         if cleaned != assignments:
-            panel.outfits = cleaned
-            panel.version += 1
+            claimed = False
+            for _attempt in range(3):
+                result = db.execute(
+                    update(Panel)
+                    .where(Panel.id == panel.id, Panel.version == panel.version)
+                    .values(version=Panel.version + 1, outfits=cleaned)
+                    .execution_options(synchronize_session=False)
+                )
+                claimed = result.rowcount == 1
+                if claimed:
+                    break
+                try:
+                    db.refresh(panel)
+                except (ObjectDeletedError, InvalidRequestError) as exc:
+                    db.rollback()
+                    raise HTTPException(
+                        status_code=409, detail="分镜格已被更新，请刷新后重试"
+                    ) from exc
+                assignments = dict(panel.outfits or {})
+                cleaned = {
+                    character_id: assigned_outfit_id
+                    for character_id, assigned_outfit_id in assignments.items()
+                    if assigned_outfit_id != outfit.id
+                }
+            if not claimed:
+                db.rollback()
+                raise HTTPException(
+                    status_code=409, detail="分镜格已被更新，请刷新后重试"
+                )
+            # The claim's SQL already persisted outfits+version; drop the
+            # stale in-memory copy so the session cannot double-write it.
+            db.expire(panel, ["outfits", "version"])
+            page = db.get(MangaPage, panel.page_id)
+            if page is not None:
+                affected_pages[page.id] = page
+    if affected_pages:
+        from app.services.editor import mark_pages_for_review, mark_storyboard_changed
+
+        for page in affected_pages.values():
+            mark_storyboard_changed(db, page)
+            mark_pages_for_review(db, page.chapter_id, from_page_number=page.page_number)
 
     db.delete(outfit)
     db.commit()
@@ -382,14 +520,15 @@ def create_style(
 def update_style(
     style_id: str,
     payload: StyleProfileUpdate,
+    project_id: str | None = None,
     db: Session = Depends(get_db),
 ) -> StyleProfile:
     style = db.get(StyleProfile, style_id)
     if not style:
         raise HTTPException(status_code=404, detail="风格档案不存在")
-    if style.version != payload.version:
-        raise HTTPException(status_code=409, detail="风格档案已更新，请刷新后重试")
+    ensure_project_scope(db, style, project_id, label="风格档案")
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
+    reject_required_nulls(StyleProfile, values)
     reference_ids = values.pop("reference_asset_ids", None)
     if reference_ids is not None:
         _validate_reference_assets(
@@ -403,6 +542,18 @@ def update_style(
         values.get("color_mode") and values["color_mode"] != style.color_mode
     )
     profile_patch = values.pop("profile", None)
+    # Claim the row with an atomic conditional update so concurrent PATCHes
+    # cannot both pass an in-memory version comparison (same pattern as
+    # _claim_panel_version / scene asset PATCH).
+    claimed = db.execute(
+        update(StyleProfile)
+        .where(StyleProfile.id == style.id, StyleProfile.version == payload.version)
+        .values(version=StyleProfile.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if not claimed.rowcount:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="风格档案已更新，请刷新后重试")
     for key, value in values.items():
         setattr(style, key, value.strip() if key == "name" else value)
     profile = dict(style.profile)
@@ -418,10 +569,51 @@ def update_style(
         profile.pop("test_candidate_id", None)
     style.profile = profile
     style.status = StyleStatus.DRAFT
-    style.version += 1
     db.commit()
     db.refresh(style)
     return style
+
+
+def _ensure_style_test_image_alive(db: Session, style: StyleProfile) -> Asset | None:
+    """Issue #126: the recorded style-test image must not be soft-deleted.
+
+    Activation must fail closed when the profile records an approved test
+    candidate whose asset row is gone: an unviewable approved test image must
+    not become the ACTIVE style. Styles whose flags were set directly through
+    the profile API without a recorded candidate keep the flags-only
+    contract. Only the recorded test candidate's asset is checked — the
+    style reference pool is already filtered by ``Asset.deleted_at`` on every
+    read path that consumes it.
+    """
+
+    candidate_id = style.profile.get("test_candidate_id")
+    if not candidate_id:
+        return None
+    candidate = db.get(AssetCandidate, candidate_id)
+    asset = db.get(Asset, candidate.asset_id) if candidate and candidate.asset_id else None
+    if not asset or asset.deleted_at is not None:
+        raise HTTPException(status_code=409, detail="风格测试图已被删除，请重新生成后再试")
+    return asset
+
+
+def _reject_style_not_activatable(db: Session, style: StyleProfile) -> None:
+    """Activation approval gates (issue #126).
+
+    Run once pre-lock for a fast fail and re-run on the post-lock re-read:
+    a concurrent ``update_style`` color-mode switch clears the palette flags
+    and must not slip between the pre-lock read and the ACTIVE promotion.
+    """
+
+    if style.color_mode != "color":
+        raise HTTPException(status_code=409, detail="正式页面要求使用彩色漫画风格")
+    if not style.profile.get("palette_confirmed"):
+        raise HTTPException(status_code=409, detail="请先确认彩色色板")
+    if not style.profile.get("test_image_approved"):
+        raise HTTPException(status_code=409, detail="请先人工通过风格测试图")
+    # The approval flags must not outlive the approved test image: when the
+    # profile records the approved candidate, its asset has to still be live;
+    # a deleted test image must not ride the flags into ACTIVE.
+    _ensure_style_test_image_alive(db, style)
 
 
 @router.post("/projects/{project_id}/styles/{style_id}/activate", response_model=StyleProfileRead)
@@ -430,23 +622,75 @@ def activate_style(project_id: str, style_id: str, db: Session = Depends(get_db)
     style = db.get(StyleProfile, style_id)
     if not project or not style or style.project_id != project_id:
         raise HTTPException(status_code=404, detail="项目或风格档案不存在")
-    if style.color_mode != "color":
-        raise HTTPException(status_code=409, detail="正式页面要求使用彩色漫画风格")
-    if not style.profile.get("palette_confirmed"):
-        raise HTTPException(status_code=409, detail="请先确认彩色色板")
-    if not style.profile.get("test_image_approved"):
-        raise HTTPException(status_code=409, detail="请先人工通过风格测试图")
-    previous = db.get(StyleProfile, project.default_style_id) if project.default_style_id else None
-    if previous and previous.id != style.id and previous.status == "ACTIVE":
-        previous.status = "CONFIRMED"
-        previous.version += 1
-    project.default_style_id = style.id
-    project.version += 1
-    style.status = "ACTIVE"
-    style.version += 1
-    db.commit()
+    _reject_style_not_activatable(db, style)
+
+    def _activate() -> None:
+        # Issue #138-B: claim the project row before the read-modify-write
+        # (the same parent-row-first lock order as run_package_transaction).
+        # Two concurrent activations of different styles serialize here, so
+        # "demote the previous ACTIVE + set self ACTIVE" cannot interleave
+        # into two ACTIVE styles; re-activating the same style is an
+        # idempotent pointer rewrite. The wrapper retries SQLite lock
+        # contention as a controlled 409.
+        if lock_entity(db, Project, project_id) is None:
+            raise HTTPException(status_code=404, detail="项目或风格档案不存在")
+        db.expire_all()
+        current_project = db.get(Project, project_id)
+        target = db.get(StyleProfile, style_id)
+        if not current_project or not target:
+            raise HTTPException(status_code=404, detail="项目或风格档案不存在")
+        # The pre-lock guards ran on the caller's snapshot; a concurrent
+        # update_style can switch the color mode and clear the palette flags
+        # between that read and this lock, so the gates are re-run on the
+        # post-lock re-read before the status is promoted to ACTIVE.
+        _reject_style_not_activatable(db, target)
+        previous_id = current_project.default_style_id
+        if previous_id and previous_id != target.id:
+            previous = db.get(StyleProfile, previous_id)
+            if previous and previous.status == "ACTIVE":
+                previous.status = "CONFIRMED"
+                previous.version += 1
+        current_project.default_style_id = target.id
+        current_project.version += 1
+        target.status = "ACTIVE"
+        target.version += 1
+
+    run_lock_retry(
+        db,
+        _activate,
+        conflict_detail="风格激活冲突，请稍后重试",
+        commit=True,
+    )
     db.refresh(style)
     return style
+
+
+
+_STYLE_JOB_TERMINAL_STATUSES = ("COMPLETED", "FAILED", "CANCELLED", "NEEDS_REVIEW")
+
+
+def _reject_active_style_analysis(db: Session, style_id: str) -> None:
+    """Block duplicate paid analysis while one STYLE_ANALYZE job is open.
+
+    A client retry must not mint a second paid job; the idempotency key
+    alone cannot do that here because the route itself mutates
+    ``style.version`` (the key input) before enqueueing, so sequential
+    retries would always compute a fresh key. Failure and cancellation
+    keep the analysis re-runnable: the guard only sees open jobs.
+    """
+
+    active = db.scalar(
+        select(GenerationJob.id)
+        .where(
+            GenerationJob.target_type == "STYLE",
+            GenerationJob.target_id == style_id,
+            GenerationJob.job_type == "STYLE_ANALYZE",
+            GenerationJob.status.notin_(_STYLE_JOB_TERMINAL_STATUSES),
+        )
+        .limit(1)
+    )
+    if active:
+        raise HTTPException(status_code=409, detail="该风格档案已有进行中的分析任务")
 
 
 @router.post(
@@ -454,13 +698,16 @@ def activate_style(project_id: str, style_id: str, db: Session = Depends(get_db)
     response_model=JobRead,
     status_code=status.HTTP_202_ACCEPTED,
 )
-def analyze_style(style_id: str, db: Session = Depends(get_db)):
+def analyze_style(style_id: str, db: Session = Depends(get_db), project_id: str | None = None):
     style = db.get(StyleProfile, style_id)
     if not style:
         raise HTTPException(status_code=404, detail="风格档案不存在")
+    ensure_project_scope(db, style, project_id, label="风格档案")
     reference_ids = style.profile.get("reference_asset_ids", [])
     if not reference_ids:
         raise HTTPException(status_code=409, detail="请先给风格档案绑定至少一张漫画参考图")
+    _reject_active_style_analysis(db, style.id)
+    version_before = style.version
     style.status = "ANALYZING"
     style.version += 1
     db.commit()
@@ -472,7 +719,10 @@ def analyze_style(style_id: str, db: Session = Depends(get_db)):
         job_type="STYLE_ANALYZE",
         model_alias="auto",
         reference_asset_ids=reference_ids,
-        idempotency_key=f"style-analyze:{style.id}:{style.version}",
+        # Key on the pre-bump version: keying on the already-incremented
+        # version made every duplicate POST mint a fresh key, so client
+        # retries enqueued duplicate paid analysis jobs.
+        idempotency_key=f"style-analyze:{style.id}:{version_before}",
     )
     return enqueue_job(db, job)
 
@@ -485,18 +735,25 @@ def analyze_style(style_id: str, db: Session = Depends(get_db)):
 def draft_style_palette(
     style_id: str,
     payload: StylePaletteDraftRequest,
+    project_id: str | None = None,
     db: Session = Depends(get_db),
 ):
     style = db.get(StyleProfile, style_id)
     if not style:
         raise HTTPException(status_code=404, detail="风格档案不存在")
+    ensure_project_scope(db, style, project_id, label="风格档案")
     if style.color_mode != "color":
         raise HTTPException(status_code=409, detail="请先将风格档案切换为彩色漫画")
     if not style.profile.get("reference_asset_ids"):
         raise HTTPException(status_code=409, detail="请先绑定至少一张风格参考图")
+    _reject_active_style_analysis(db, style.id)
+    version_before = style.version
     style.status = StyleStatus.ANALYZING
     style.version += 1
     db.commit()
+    atmosphere_digest = hashlib.sha256(
+        payload.atmosphere.encode("utf-8")
+    ).hexdigest()[:16]
     job = create_job(
         db,
         project_id=style.project_id,
@@ -506,7 +763,9 @@ def draft_style_palette(
         model_alias="auto",
         request_parameters={"palette_atmosphere": payload.atmosphere},
         reference_asset_ids=list(style.profile.get("reference_asset_ids", [])),
-        idempotency_key=f"style-palette:{style.id}:{style.version}",
+        # Same pre-bump version rule as analyze, plus the atmosphere digest so
+        # distinct palette intents for one version never collapse into one job.
+        idempotency_key=f"style-palette:{style.id}:{version_before}:{atmosphere_digest}",
     )
     return enqueue_job(db, job)
 
@@ -515,15 +774,27 @@ def draft_style_palette(
 def approve_style_palette(
     style_id: str,
     payload: StylePaletteApproval,
+    project_id: str | None = None,
     db: Session = Depends(get_db),
 ) -> StyleProfile:
     style = db.get(StyleProfile, style_id)
     if not style:
         raise HTTPException(status_code=404, detail="风格档案不存在")
-    if style.version != payload.version:
-        raise HTTPException(status_code=409, detail="风格档案已更新，请刷新后重试")
+    ensure_project_scope(db, style, project_id, label="风格档案")
     if style.color_mode != "color" or not payload.palette:
         raise HTTPException(status_code=409, detail="彩色色板不能为空")
+    # Claim the row with an atomic conditional update so concurrent approvals
+    # cannot both pass an in-memory version comparison (same pattern as
+    # _claim_panel_version / scene asset PATCH).
+    claimed = db.execute(
+        update(StyleProfile)
+        .where(StyleProfile.id == style.id, StyleProfile.version == payload.version)
+        .values(version=StyleProfile.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if not claimed.rowcount:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="风格档案已更新，请刷新后重试")
     profile = dict(style.profile)
     profile["palette"] = payload.palette
     profile["palette_confirmed"] = True
@@ -531,7 +802,6 @@ def approve_style_palette(
     profile.pop("test_candidate_id", None)
     style.profile = profile
     style.status = StyleStatus.DRAFT
-    style.version += 1
     db.commit()
     db.refresh(style)
     return style
@@ -541,14 +811,14 @@ def approve_style_palette(
 def approve_style_test(
     style_id: str,
     payload: StyleTestApproval,
+    project_id: str | None = None,
     db: Session = Depends(get_db),
 ) -> StyleProfile:
     style = db.get(StyleProfile, style_id)
     candidate = db.get(AssetCandidate, payload.candidate_id)
     if not style:
         raise HTTPException(status_code=404, detail="风格档案不存在")
-    if style.version != payload.version:
-        raise HTTPException(status_code=409, detail="风格档案已更新，请刷新后重试")
+    ensure_project_scope(db, style, project_id, label="风格档案")
     batch = db.get(GenerationBatch, candidate.batch_id) if candidate else None
     if (
         not candidate
@@ -560,12 +830,29 @@ def approve_style_test(
         or not candidate.asset_id
     ):
         raise HTTPException(status_code=409, detail="请选择已生成完成的风格测试图")
+    # Issue #126: a soft-deleted test image must not be approvable — approval
+    # used to pass on candidate READY + asset_id alone while the underlying
+    # Asset row was already gone (previews 404, no file).
+    test_asset = db.get(Asset, candidate.asset_id)
+    if not test_asset or test_asset.deleted_at is not None:
+        raise HTTPException(status_code=409, detail="风格测试图已被删除，请重新生成后再审批")
+    # Claim the row with an atomic conditional update so concurrent approvals
+    # cannot both pass an in-memory version comparison (same pattern as
+    # _claim_panel_version / scene asset PATCH).
+    claimed = db.execute(
+        update(StyleProfile)
+        .where(StyleProfile.id == style.id, StyleProfile.version == payload.version)
+        .values(version=StyleProfile.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if not claimed.rowcount:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="风格档案已更新，请刷新后重试")
     profile = dict(style.profile)
     profile["test_candidate_id"] = candidate.id
     profile["test_image_approved"] = payload.approved
     style.profile = profile
     style.status = "CONFIRMED" if payload.approved else StyleStatus.DRAFT
-    style.version += 1
     db.commit()
     db.refresh(style)
     return style
@@ -576,10 +863,16 @@ def assign_scene_outfits(
     scene_id: str,
     payload: SceneOutfitUpdate,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> dict:
     scene = db.get(Scene, scene_id)
     if not scene:
         raise HTTPException(status_code=404, detail="场景不存在")
+    ensure_project_scope(db, scene, project_id, label="场景")
+    # Capture before any work: the write below claims this exact version, the
+    # same discipline as PATCH /scenes, so a concurrent scene writer's CAS bump
+    # cannot be collapsed by our blind increment.
+    scene_version_before = scene.version
     chapter = db.get(Chapter, scene.chapter_id)
     assignments = {
         character_id: outfit_id
@@ -597,13 +890,24 @@ def assign_scene_outfits(
             or outfit.character_id != character_id
         ):
             raise HTTPException(status_code=409, detail="服装必须属于指定角色")
+    claimed = db.execute(
+        update(Scene)
+        .where(Scene.id == scene.id, Scene.version == scene_version_before)
+        .values(version=Scene.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if not claimed.rowcount:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="场景已被更新，请刷新后重试")
+    # The claim bypassed the ORM increment; drop the stale copy so a
+    # later write in the same session claims the post-bump version.
+    db.expire(scene, ["version"])
     scene.outfit_assignments = assignments
-    scene.version += 1
     from app.services.editor import mark_pages_for_review, mark_storyboard_changed
 
     for page in db.scalars(select(MangaPage).where(MangaPage.chapter_id == chapter.id)):
         if scene.id in (page.scene_ids or []):
-            mark_storyboard_changed(page)
+            mark_storyboard_changed(db, page)
             mark_pages_for_review(db, chapter.id, from_page_number=page.page_number)
     db.commit()
     return {"scene_id": scene.id, "assignments": scene.outfit_assignments}
@@ -625,20 +929,25 @@ def _target_project(db: Session, target_type: str, target_id: str) -> tuple[str,
 def start_asset_batch(
     payload: AssetBatchCreate,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> GenerationBatch:
     expected_kind = {"CHARACTER": "CHARACTER", "OUTFIT": "OUTFIT", "STYLE": "STYLE_TEST"}
     if payload.generation_kind != expected_kind[payload.target_type]:
         raise HTTPException(status_code=422, detail="资产生成类型与目标档案不匹配")
-    project_id, target = _target_project(db, payload.target_type, payload.target_id)
+    target_project_id, target = _target_project(db, payload.target_type, payload.target_id)
+    # Issue #143: the batch's project comes from the target row itself; the
+    # optional query parameter only decides whether a foreign target is hidden
+    # behind the shared 404 before any reference-asset state guards run.
+    ensure_project_scope(db, target, project_id, label="生成目标")
     if payload.target_type == "CHARACTER" and not character_references(db, target.id):
         raise HTTPException(status_code=409, detail="请先给角色绑定至少一张人物参考图")
     if payload.target_type == "OUTFIT":
-        if not _has_active_reference_assets(db, project_id, target.reference_asset_ids):
+        if not _has_active_reference_assets(db, target_project_id, target.reference_asset_ids):
             raise HTTPException(status_code=409, detail="请先给服装档案绑定至少一张服装参考图")
         if not character_references(db, target.character_id):
             raise HTTPException(status_code=409, detail="请先给服装所属角色绑定人物参考图")
     if payload.target_type == "STYLE" and not _has_active_reference_assets(
-        db, project_id, target.profile.get("reference_asset_ids", [])
+        db, target_project_id, target.profile.get("reference_asset_ids", [])
     ):
         raise HTTPException(status_code=409, detail="请先给风格档案绑定至少一张漫画参考图")
     if payload.target_type == "STYLE" and not target.profile.get("palette_confirmed"):
@@ -646,7 +955,7 @@ def start_asset_batch(
     try:
         batch = create_generation_batch(
             db,
-            project_id=project_id,
+            project_id=target_project_id,
             generation_kind=payload.generation_kind,
             target_type=payload.target_type,
             target_id=payload.target_id,
@@ -665,10 +974,12 @@ def list_asset_batches(
     target_id: str,
     limit: int = 10,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> list[GenerationBatch]:
     if target_type not in {"CHARACTER", "OUTFIT", "STYLE"}:
         raise HTTPException(status_code=422, detail="资产生成目标类型无效")
-    _target_project(db, target_type, target_id)
+    _, target = _target_project(db, target_type, target_id)
+    ensure_project_scope(db, target, project_id, label="生成目标")
     return list(
         db.scalars(
             select(GenerationBatch)
@@ -691,12 +1002,21 @@ def generate_asset_candidate(
     batch_id: str,
     payload: AssetCandidateCreate,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> CandidateQueuedRead:
     if payload.model_alias.lower() == "auto":
         raise HTTPException(
             status_code=422,
             detail="参考资产必须显式选择图片模型，以保持项目画风一致",
         )
+    # Issue #143 scoping: only enforced when the caller names a project, so
+    # the historical missing-batch 409 from create_asset_candidate stays
+    # intact for callers that omit the parameter.
+    if project_id is not None:
+        batch = db.get(GenerationBatch, batch_id)
+        if not batch:
+            raise HTTPException(status_code=404, detail="资产生成批次不存在")
+        ensure_project_scope(db, batch, project_id, label="资产生成批次")
     try:
         candidate, job = create_asset_candidate(
             db,
@@ -722,10 +1042,12 @@ def generate_complete_character_sheet(
     character_id: str,
     payload: CharacterSheetCreate,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> CandidateQueuedRead:
     character = db.get(Character, character_id)
     if not character:
         raise HTTPException(status_code=404, detail="角色不存在")
+    ensure_project_scope(db, character, project_id, label="角色")
     has_reference = bool(character_references(db, character_id))
     if payload.generation_mode == "REFERENCE" and not has_reference:
         raise HTTPException(status_code=409, detail="请先给角色绑定至少一张人物参考图")
@@ -780,6 +1102,7 @@ def approve_asset_reference(
     candidate_id: str,
     payload: AssetReferenceApproval,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> dict:
     candidate = db.get(AssetCandidate, candidate_id)
     character = db.get(Character, payload.character_id)
@@ -789,49 +1112,76 @@ def approve_asset_reference(
         or not batch
         or batch.target_type != "CHARACTER"
         or batch.target_id != payload.character_id
-        or candidate.status != "READY"
-        or not candidate.asset_id
     ):
-        raise HTTPException(status_code=409, detail="角色设定草稿尚未生成完成")
+        raise HTTPException(status_code=404, detail="角色设定候选不存在")
     if not character or character.id != batch.target_id:
         raise HTTPException(status_code=404, detail="角色不存在")
+    # Scope precedes the READY/asset-liveness gates (issue #143 pattern, same
+    # order as retract_asset_reference): a cross-project caller gets the
+    # shared 404 instead of a state oracle for the candidate's readiness.
+    ensure_project_scope(db, candidate, project_id, label="候选")
+    if candidate.status != "READY" or not candidate.asset_id:
+        raise HTTPException(status_code=409, detail="角色设定草稿尚未生成完成")
     asset = db.get(Asset, candidate.asset_id)
     if not asset or asset.deleted_at is not None:
         raise HTTPException(status_code=409, detail="设定草稿图片不存在")
 
-    reference = db.scalar(
-        select(CharacterReference).where(
-            CharacterReference.character_id == character.id,
-            CharacterReference.asset_id == asset.id,
-        )
-    )
     if payload.bind_character_reference:
-        db.execute(
-            CharacterReference.__table__.delete().where(
-                CharacterReference.asset_id == asset.id,
-                CharacterReference.character_id != character.id,
+
+        def _bind() -> None:
+            # Contract §10.3a (issue #157): the sheet must not become this
+            # character's reference while another character's package version
+            # still points at the same asset (package-only bindings carry no
+            # legacy CharacterReference row, so the delete below sees nothing).
+            # Mirrors characters.bind_reference: the guard and the binding
+            # mutations run under the asset ownership lock so a concurrent
+            # package bind/unbind on the same asset cannot interleave, and the
+            # wrapper turns SQLITE_BUSY into a controlled rollback + retry of
+            # this first-writer unit (the route wrote nothing before it).
+            locked_asset = lock_asset_for_ownership(db, asset.id)
+            if not locked_asset or locked_asset.deleted_at is not None:
+                raise HTTPException(status_code=409, detail="设定草稿图片不存在")
+            assert_asset_not_referenced_by_foreign_packages(
+                db, character_id=character.id, asset_id=asset.id
             )
-        )
-        if payload.set_canonical:
-            db.execute(
-                update(CharacterReference)
-                .where(CharacterReference.character_id == character.id)
-                .values(is_canonical=False)
-            )
-        if reference:
-            reference.is_canonical = payload.set_canonical
-        else:
-            db.add(
-                CharacterReference(
-                    character_id=character.id,
-                    asset_id=asset.id,
-                    angle="complete_sheet",
-                    is_canonical=payload.set_canonical,
+            reference = db.scalar(
+                select(CharacterReference).where(
+                    CharacterReference.character_id == character.id,
+                    CharacterReference.asset_id == asset.id,
                 )
             )
-        asset.kind = "CHARACTER_REFERENCE"
-        character.status = "CANONICAL"
-        character.version += 1
+            db.execute(
+                CharacterReference.__table__.delete().where(
+                    CharacterReference.asset_id == asset.id,
+                    CharacterReference.character_id != character.id,
+                )
+            )
+            if payload.set_canonical:
+                db.execute(
+                    update(CharacterReference)
+                    .where(CharacterReference.character_id == character.id)
+                    .values(is_canonical=False)
+                )
+            if reference:
+                reference.is_canonical = payload.set_canonical
+            else:
+                db.add(
+                    CharacterReference(
+                        character_id=character.id,
+                        asset_id=asset.id,
+                        angle="complete_sheet",
+                        is_canonical=payload.set_canonical,
+                    )
+                )
+            locked_asset.kind = "CHARACTER_REFERENCE"
+            character.status = "CANONICAL"
+            character.version += 1
+
+        run_lock_retry(
+            db,
+            _bind,
+            conflict_detail="角色参考绑定冲突，请稍后重试",
+        )
 
     outfit = None
     if payload.outfit_name:
@@ -886,11 +1236,16 @@ def approve_asset_reference(
 
 
 @router.delete("/asset-candidates/{candidate_id}/approve-reference", response_model=dict)
-def retract_asset_reference(candidate_id: str, db: Session = Depends(get_db)) -> dict:
+def retract_asset_reference(
+    candidate_id: str,
+    db: Session = Depends(get_db),
+    project_id: str | None = None,
+) -> dict:
     candidate = db.get(AssetCandidate, candidate_id)
     batch = db.get(GenerationBatch, candidate.batch_id) if candidate else None
     if not candidate or not batch or batch.target_type != "CHARACTER" or not candidate.asset_id:
         raise HTTPException(status_code=404, detail="角色设定候选不存在")
+    ensure_project_scope(db, candidate, project_id, label="候选")
     snapshot = dict(candidate.prompt_snapshot)
     approval = snapshot.get("reference_approval")
     if not isinstance(approval, dict) or not approval.get("approved"):

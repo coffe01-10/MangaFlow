@@ -24,14 +24,39 @@ fn temp_dir(tag: &str) -> PathBuf {
     dir
 }
 
-fn symlink(target: &Path, link: &Path) {
+/// File symlinks need Developer Mode / admin on Windows, so the caller runs
+/// the link-specific assertions only when creation succeeds (same precedent
+/// as `logs.rs` `export_refuses_a_stale_symlink_planted_at_the_pending_sibling`).
+fn file_symlink(target: &Path, link: &Path) -> bool {
     #[cfg(unix)]
-    std::os::unix::fs::symlink(target, link).unwrap();
+    {
+        std::os::unix::fs::symlink(target, link).unwrap();
+        true
+    }
     #[cfg(windows)]
     {
-        // Compile parity only; these tests execute on Linux.
-        let _ = (target, link);
-        panic!("symlink test executed on non-Unix platform");
+        std::os::windows::fs::symlink_file(target, link).is_ok()
+    }
+}
+
+/// Directory links: junctions share the reparse-point metadata shape that
+/// `is_symlink` detects and are creatable without any privilege on Windows.
+fn dir_link(target: &Path, link: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link).unwrap();
+        true
+    }
+    #[cfg(windows)]
+    {
+        // `mklink` is a cmd.exe builtin; /J creates a junction unprivileged.
+        std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
     }
 }
 
@@ -118,9 +143,12 @@ fn traversal_shapes_are_rejected_before_any_read() {
     let real = dir.join("real.md");
     fs::write(&real, "x").unwrap();
     let link = dir.join("link.md");
-    symlink(&real, &link);
-    let error = validate_picked_file(&link, PickKind::SourceText).unwrap_err();
-    assert!(matches!(error, PickError::IsSymlink), "{error}");
+    if file_symlink(&real, &link) {
+        let error = validate_picked_file(&link, PickKind::SourceText).unwrap_err();
+        assert!(matches!(error, PickError::IsSymlink), "{error}");
+    } else {
+        eprintln!("file symlink creation not permitted; skipping the link assertion");
+    }
 
     // Directory picked as a file.
     let error = validate_picked_file(&dir, PickKind::SourceText).unwrap_err();
@@ -149,11 +177,20 @@ fn directory_pick_validates_type_and_symlinks() {
     ));
 
     let link = dir.join("dir-link");
-    symlink(&material, &link);
-    assert!(matches!(
-        validate_picked_directory(&link),
-        Err(PickError::IsSymlink)
-    ));
+    if dir_link(&material, &link) {
+        assert!(matches!(
+            validate_picked_directory(&link),
+            Err(PickError::IsSymlink)
+        ));
+        // Removes the link itself; the target directory survives.
+        #[cfg(unix)]
+        fs::remove_file(&link).unwrap();
+        #[cfg(windows)]
+        fs::remove_dir(&link).unwrap();
+        assert!(material.is_dir());
+    } else {
+        eprintln!("directory link creation failed; skipping the link assertion");
+    }
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -172,17 +209,24 @@ fn readback_refails_when_picked_file_is_swapped_or_grows() {
     let other = dir.join("other.png");
     fs::write(&other, b"\x89PNG\r\n").unwrap();
     fs::remove_file(&source).unwrap();
-    symlink(&other, &source);
-    let error = read_registered_file(&registry, &source).unwrap_err();
-    assert!(matches!(error, PickError::NotRegistered), "{error}");
-    fs::remove_file(&source).unwrap();
+    if file_symlink(&other, &source) {
+        let error = read_registered_file(&registry, &source).unwrap_err();
+        assert!(matches!(error, PickError::NotRegistered), "{error}");
+        fs::remove_file(&source).unwrap();
+    } else {
+        eprintln!("file symlink creation not permitted; skipping the swap assertion");
+        fs::write(&source, "正文").unwrap();
+    }
 
     // A registered file that grows past the cap between pick and read is
     // refused by the re-validation, not silently truncated into the page.
+    // (write rather than append: this handle only grows the file — on
+    // Windows an append-only handle lacks the FILE_WRITE_DATA that
+    // SetEndOfFile needs.)
     let grower = dir.join("grower.txt");
     fs::write(&grower, "x").unwrap();
     registry.register(&validate_picked_file(&grower, PickKind::SourceText).unwrap());
-    let file = fs::OpenOptions::new().append(true).open(&grower).unwrap();
+    let file = fs::OpenOptions::new().write(true).open(&grower).unwrap();
     file.set_len(20 * 1024 * 1024 + 1).unwrap();
     let error = read_registered_file(&registry, &grower).unwrap_err();
     assert!(matches!(error, PickError::TooLarge { .. }), "{error}");

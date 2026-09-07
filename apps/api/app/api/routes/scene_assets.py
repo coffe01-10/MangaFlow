@@ -11,6 +11,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.api.helpers import ensure_project_scope, reject_required_nulls
 from app.api.routes.uploads import _ensure_asset_not_in_active_job
 from app.database import get_db
 from app.models import (
@@ -207,11 +208,17 @@ def update_scene_asset(
     if not claimed.rowcount:
         raise HTTPException(status_code=409, detail="场景资产已被更新，请刷新后重试")
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
+    # Same guard as the storyboard PATCHes: an explicit null for a NOT NULL
+    # column (name/structured/status) must 422 — the None-skip loop below
+    # used to hide it, and name reached None.strip() first. The claim above
+    # is rolled back with this transaction on failure.
+    reject_required_nulls(SceneAsset, values)
     if "name" in values:
         values["name"] = values["name"].strip()
         values["normalized_name"] = normalized_name(values["name"])
-    if "structured" in values and values["structured"] is not None:
-        values["structured"] = values["structured"].model_dump(exclude_unset=True)
+    # ``model_dump`` above already converted ``structured`` to a plain dict
+    # (recursively excluding unset keys); the former second ``.model_dump``
+    # here raised AttributeError on every structured PATCH.
     if "status" in values and values["status"] is not None:
         values["status"] = AssetStatus(values["status"])
     for key, value in values.items():
@@ -411,6 +418,9 @@ def update_scene_asset_variant(
     if not claimed.rowcount:
         raise HTTPException(status_code=409, detail="场景变体已被更新，请刷新后重试")
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
+    # Explicit null on a NOT NULL column (name/structured_overrides/
+    # is_canonical) is a 422, not a silent no-op skipped by the loop below.
+    reject_required_nulls(SceneAssetVariant, values)
     if values.get("structured_overrides") is not None:
         validate_variant_overrides(values["structured_overrides"])
     if values.get("is_canonical") is True:
@@ -544,10 +554,16 @@ def bind_scene_asset(
     scene_id: str,
     payload: SceneBindAssetRequest,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> SceneRead:
     scene = db.get(Scene, scene_id)
     if not scene:
         raise HTTPException(status_code=404, detail="场景不存在")
+    ensure_project_scope(db, scene, project_id, label="场景")
+    # Capture before any work: the write below claims this exact version, the
+    # same discipline as PATCH /scenes, so a concurrent scene writer's CAS bump
+    # cannot be collapsed by our blind increment.
+    scene_version_before = scene.version
     chapter = db.get(Chapter, scene.chapter_id)
     if not chapter:
         raise HTTPException(status_code=404, detail="场景所属章节不存在")
@@ -578,7 +594,18 @@ def bind_scene_asset(
             scene.scene_asset_variant_id = variant.id
         else:
             scene.scene_asset_variant_id = None
-    scene.version += 1
+    claimed = db.execute(
+        update(Scene)
+        .where(Scene.id == scene.id, Scene.version == scene_version_before)
+        .values(version=Scene.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if not claimed.rowcount:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="场景已被更新，请刷新后重试")
+    # The claim bypassed the ORM increment; drop the stale copy so a
+    # later write in the same session claims the post-bump version.
+    db.expire(scene, ["version"])
     mark_pages_for_review(db, chapter.id, reference_id=scene.id, reference_kind="scene")
     db.commit()
     db.refresh(scene)

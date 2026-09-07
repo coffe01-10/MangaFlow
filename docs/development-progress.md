@@ -1,8 +1,50 @@
 # MangaFlow AI 开发进度
 
-更新时间：2026-09-04
+更新时间：2026-09-06
 
 本文件记录修订版 MVP 计划的实际完成度。
+
+## V02-55 发布门禁完成，0.2.0 RC（2026-09-06 收官轮，分支 `lead/v02-55-release`，基线 master `e88a51a`）
+
+- **五 manifest 统一 `0.2.0`**（根包 / `apps/web` / `tauri.conf.json` / `src-tauri` / `shell-core`）+ 新建 `CHANGELOG.md`（0.2.0 RC：桌面交付 / Web 工作台 / 修复 / 性能 / 真实环境验证 / NOT RUN 边界）。
+- **V02-54 / V02-55 在 roadmap 勾选**（证据：#177/#178/#179/#180/#182/#183 与本分支）；W-22 转 RUN（RC 口径）。剩余状态：`docs/v02-windows-leftover-status.md` RUN 9 / NOT RUN 11 / BLOCKED 4。
+- **门禁**：`npm run check` 全量 exit 0；owned Playwright E2E 17/17；性能两轮 LH 全路由 ≥85（generate 87/88、storyboard 91/90）+ FPS 两轮 exit 0；NSIS 装卸数据安全实机两轮 PASS；sidecar e2e 2/2；shell-core cargo 51 项；worktree 清点无未合并改动（本机 4 个他属 worktree 仅 ui-dev 有未跟踪 scratch 文件）。
+- **NOT RUN / BLOCKED**：真实供应商（无凭据授权）；N=20 全样本（V02-52B）；Windows 独立 Worker 7 项（W-17，需 Windows+PG/Redis 同机）；跨版本升级（无历史安装版本）；签名/自动更新（W-13/14）；WebView2 缺失安装行为、工具页对话框实机交互、CSP 指令级逐条执行、用户数据 ACL 收紧、Electron 对比壳。Issue #12/#28 已关（#12 经用户确认接受 Windows Worker 残留）；#114 随本 PR 收口。
+
+## W-15 方案 B 实现并实机验收（2026-09-06 第三轮，Windows 实机，分支 `lead/w15-slice1`，基线 master `d917d3b`）
+
+- **W-15 转 RUN**：桌面壳内 Web 形态采用方案 B（设计 `docs/v02-w15-desktop-web-form-plan-b.md` 经 lead 批准）。helper 派生捆绑 node 跑 Next standalone（helper 子进程 → Job 成员，协作停机收割 + 强杀/崩溃 Job 清树自动覆盖）；壳在 READY 带 `web_origin` 时以 `WebviewUrl::External` 加载该回环 origin（`main.rs`，协议校验回环后才建窗），否则回退静态导出形态（`MANGAFLOW_DESKTOP_WEB_DIST` 可覆盖）。
+- **关键技术事实与对策**：standalone 的 rewrites 目的地在**构建期**固化进 routes-manifest（运行时 env 不可改，设计稿 §3 事实 2 的假设被实现轮修正）——`next.config.ts` 改以固定回环中继端口 `127.0.0.1:39443` 为构建期常量，helper 每会话绑定该端口并把连接**纯字节转发**到自己的动态 API 端口（`mangaflow_desktop_helper.py` `_bind_relay`/`_serve_relay`，绑定失败 fail-closed 放弃 web 形态）。Next 侧安全头（CSP/nosniff/XFO DENY/no-referrer）随 `next.config.ts` headers() 下发，实测 `SECURITY_HEADERS_PASS`（tauri.conf CSP 不再约束 External 文档）。
+- **门禁（全绿）**：sidecar e2e 扩至 2 项（原闭环 + plan B：健康经中继代理、UI 200、代理取数、停机后 web 端口关闭、journal 身份字段校验）17.7s；shell-core 51 项（含新增 web_origin 协议单元测试）；安全头四项断言；双安装包带 web 资源构建成功（**NSIS 23.7MB / MSI 35.4MB**，对比纯静态导出版 +10–14MB，优于设计稿预估）；NSIS 装卸数据安全复验 PASS（336 文件两态逐字节一致）；`npm run check` 全量 exit 0。
+- **实机验收**：WebView2 加载 `http://127.0.0.1:<port>`（a11y 树 347 元素），设置页完整生产 UI + 实时诊断数据 + 路由导航（静态导出形态从未达到的工作台形态）；关窗协作停机 exit 0、node 进程全灭。
+- **附带修正**：tauri resources（node.exe + standalone，85MB）经 `git rm --cached` 出库并 gitignore（构建产物不入库）；`scripts/build-web-standalone.py` 固化「构建 + manifest 校验（防错构建目的地）+ static 拷贝」三步。
+- **NOT RUN**：安装版内 plan B 全链（装 after 卸载重装、W-22 范围）；跨版本升级。签名/更新（W-13/14）、Redis 桌面形态（W-16/17）继续 BLOCKED；版本号维持 0.1.0。
+
+## W-21 ADR 终批通过（2026-09-06 治理轮，分支 `lead/adr-approval`，基线 master `2955f6f` = PR #178 合并）
+
+- **决议（用户/组长作出）**：采用 Tauri 2 路线交付 Windows 桌面壳，Electron 不采用。`docs/adr/v02-desktop-shell-evaluation.md` 状态由 DRAFT 改为 **APPROVED（2026-09-06）**，头部新增「批准记录」：否决条件逐项复核（①sidecar 打包已被 W-11 Windows 冻结冒烟证伪；②WebView2 仪表盘级 RUN、画布级留给 W-15；③D5 路线——静态导出正式改造 vs 方案 B——明确为实现轮设计后由 lead 定夺，ADR 倾向「方案 B 或混合形态」输入不变；④Rust 维护成本裁定可接受，实测口径 shell-core 3,323 行 + main.rs 338 行）。
+- **同步更新**：`apps/desktop/README.md` 头部（选型已批准）与 §4 否决条件表（供复核→已复核）；`docs/v02-windows-leftover-status.md` W-21 转 RUN（RUN 8 / NOT RUN 11 / BLOCKED 5）、W-15 注明前置已解除、§7 解除条件更新。
+- **影响**：W-15（前端壳内形态）自 BLOCKED 转为可开实现轮，开工前需先定 D5 路线（见上③）。W-13/W-14（签名/更新）继续 BLOCKED（外部资源）。版本号维持 0.1.0。
+
+## storyboard 性能修复 + W-12 安装器链收口（2026-09-06 第二轮，Windows 实机，分支 `lead/storyboard-perf`，基线 master `32a4ad8` = PR #177 合并）
+
+- **storyboard 路由性能（RC 报告的最小剩余清单第 1 项）已修复**：按 LH 归因（unused-JS 810ms 压高 LCP/TBT），`b958cc9` 把 `ProjectWorkspace` 7 个 section 组件改 `next/dynamic` 按路由懒加载（单条 `[section]` 路由此前静态打包全部 section；数据 hook 仍立即执行、无新增骨架）。修复后门禁（run_id `b67f80dde58d4c86b39242991ca3012a`，阈值不动，**两轮全过零失败**）：storyboard **91/90**（修复前 R1 81/lcp 4200/tbt 264、R2 84/lcp 4134/tbt 170 → 修复后 LCP 3424/3590ms、TBT 88/103ms，CLS 0.013 不变）；逐路由对照：`/` 96/97→98/98、workflow 87/93→92/92、generate 87/87→87/88、settings 98/98→97/97（唯一 1 分回落，仍远高于阈值）；FPS 两轮 exit 0（143.55/143.15）。行为门禁：web Vitest 41 文件 **429 项全过**、ESLint 干净、Next 生产构建通过。详见 `docs/acceptance/phase2-browser-performance.md` 2026-09-06 第二轮节。
+- **W-12 安装器链转 RUN（NSIS 实机）**：`tauri build` 首次于本机产出双安装包（MSI + NSIS，内嵌真实静态导出）；NSIS 实机脚本验证静默安装→用户数据 222 文件逐字节一致→HKCU 卸载项注册→静默卸载→安装目录/注册表清除、用户数据仍逐字节一致——§5「卸载不删用户数据」契约实测成立。MSI 静默安装需管理员授权（未提权），其安装步 NOT RUN。`docs/v02-windows-leftover-status.md` 与 README D1 已更新（RUN 7 / NOT RUN 10 / BLOCKED 6）。
+- **NOT RUN 边界**：跨版本升级路径（带 schema 迁移的覆盖安装）、W-03/04/05 交互面/W-09/W-10/W-18/W-19/W-20/W-22 维持 NOT RUN；W-13–17/21 维持 BLOCKED。版本号维持 0.1.0（V02-55 终审未做）。
+
+## 0.2.0 RC 收口轮（2026-09-06，Windows 实机 `LAPTOP-TV9KT8RC`，分支 `lead/rc-closure`，基线 master `6ca9d5a`）
+
+- **范围**：RC 定向复审（6 路只读子代理 A–F）＋修复；V02-54 Windows 实机验收轮（此前全部 NOT RUN 的桌面壳面）；#28 处方性能复验；V02-55 可执行门禁。不新增审计范围，不降阈值，失败轮次全部保留。
+- **定向复审结论**：6 个高风险区（Job/Queue/Worker、Workflow/Director/血缘、Provider/计费/台账、Storage/导出/备份、Web UI 状态竞态、Desktop/Windows 壳）中 4 区无可证 P0/P1；**2×P1 已修复**（`f0a35b1`）：
+  - **P1-B（页级围栏并发丢增量）**：`storyboard_version`/`page.version` 围栏在 storyboard 编辑路由是无锁读改写——并发编辑互相覆盖增量后，过期候选读 CURRENT、过期检查过生产门、导演 accept 在已变页面上通过。修复：`editor.py` 两个围栏助手改 SQL 表达式原子自增（覆盖全部调用方含 worker/scene 路径）；storyboard 路由（panel/dialogue/layout/reading-order/geometry）与 inspection/page_generate worker 收尾、失败收敛路径加页行锁（PG FOR UPDATE，与 select/keep/retract/accept 既有惯例一致）；导演 accept 改 project→page→panel 锁序消除与 revise/plan 的 AB-BA 死锁（PG）。回归：`tests/test_storyboard_fence_atomicity.py` 双会话交错（旧实现可证失败）＋场景服装分配路径（复审发现的漏改调用点，`dd5ce11`）。
+  - **P1-E（生成台消费归档切换视图）**：访问「任务中心→历史记录」后 `showArchivedJobs` 持久化，生成台拿到的 jobs 查询只剩归档行——运行中 PAGE_INSPECT 消失，检查轮询停转、终态失效不触发、生产门静默卡死。修复：生成台改用固定近期视图 `dockJobs`（与队列坞同理由）；检查面板等待态改共享终态谓词 `isTerminalTaskStatus`（CANCELLED/NEEDS_REVIEW 不再永转）。回归：`generation-desk-source-contract.test.ts` 源码契约。
+  - 复审代理对 5 项修复提交的独立验证：4/5 通过，抓出上述漏改调用点与一个旧实现也能过的弱测试（均已修）；其余（锁序、expire 语义、延迟导入、契约测试有效性）逐项验证通过。
+- **Windows 实机桌面验收（V02-54，此前全 NOT RUN）**：shell-core `cargo test` **49 项 Windows 原生全绿**（修 3 项测试可移植性缺陷后：picker symlink→junction 模式、append 句柄 set_len 权限）；sidecar 假闭环 e2e Windows 原生通过（11.1s，停止通道为生产 stdin-EOF 协作停机 exit 0）；完整 debug 壳（真实静态导出 + WebView2 Evergreen）实机：握手→仪表盘渲染（运行时 origin 注入实取 sidecar 数据）→单实例多开→关窗协作停机（RunLog `stopped`）→`taskkill /F` 崩溃清树（全树 3s 灭）→用户数据目录契约。**3 个实机发现并修复**：①CPython 3.12 venv 的 launcher 式 python.exe 使 READY pid 为孙进程——协议 PID 身份校验扩展为「直接子进程或 Job 成员」（`IsProcessInJob`，安全不变量保持，回归测试含 launcher 链握手/停止/清树）；本机首次壳启动正是靠它才成功。②单实例回调对最小化窗口 `set_focus` 无效——补 `unminimize()`（实测还原聚焦）。③误提交的本地调试脚本 `check_jobs*.py` 清除。
+- **W-11 RUN**：Windows PyInstaller onedir 冻结 sidecar 冒烟全过（3.4s READY 含 30 迁移→健康→dashboard API→协作停机 exit 0；`_internal/` 硬约束 Windows 形态成立）。
+- **#28 关闭**：授权窗口两轮处方复验全过——generate 路由 87/96/100 × 2 轮、**CLS 0.000 ×2**（原 0.477/73），FPS 两轮 exit 0（142.4/133.8）；阈值未动，失败轮次保留。**范围外新发现（保留）**：storyboard 路由 perf 81/84 <85——归因为 09-02 基线后合入的画布编辑器（LCP 4134ms + unused-JS 810ms），该特性此前无 LH 门禁记录；修复（代码分割/加载预留）另开专门窗口，不在收口轮临场改造。详见 `docs/acceptance/phase2-browser-performance.md` 2026-09-06 节。
+- **#12 维持 BLOCKED**：本机复核无 Docker/PostgreSQL/Redis（5432/6379/55432/56379 全关、WSL 无发行版），与 09-05 结论一致；live PG/Redis/RQ 交错验收与 Windows Job Object 独立 Worker 矩阵继续 NOT RUN（含 #176 并发修复的 live PG 抽验建议）。
+- **状态文档**：`docs/v02-windows-leftover-status.md` 更新至 2026-09-06 基线（W-01/02(仪表盘级)/06(逻辑面)/07/08/11 转 RUN；W-03/04/05(交互面)/09/10/12/18/19/20/22 仍 NOT RUN；W-13–17/21 维持 BLOCKED）；`apps/desktop/README.md` D2/D3/D4/§3/§7 同步。
+- **门禁**：定向 pytest（围栏/导演/血缘/检查并发等 100+ 项）与 Vitest 通过；`npm run check` 全量见 PR（首轮抓出 2 条我引入的 Ruff 违例，已修复后复跑）。真实供应商 smoke 未执行（无授权凭据，NOT RUN）。版本号未动（0.1.0，待 V02-55 终审）。
 
 ## V02-54D 完成并验收：Windows 剩余项状态目录（2026-09-04，Linux box，docs-only；已经 lead 验收审阅后勾选，PR #120）
 

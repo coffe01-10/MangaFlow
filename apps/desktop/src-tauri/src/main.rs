@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use mangaflow_desktop_shell_core::handshake::{get_status, spawn_helper, HelperConfig, SpawnedHelper};
-use mangaflow_desktop_shell_core::logs::export_logs_zip;
+use mangaflow_desktop_shell_core::logs::export_logs_zip_overwrite;
 use mangaflow_desktop_shell_core::picker::{
     read_registered_file, validate_picked_directory, validate_picked_file, PickError, PickKind,
     PickedFile, PickedRegistry,
@@ -81,35 +81,30 @@ fn desktop_health_probe(origin: tauri::State<ApiOrigin>) -> Result<u16, String> 
         .map_err(|error| error.to_string())
 }
 
-/// Export the unified logs directory to a ZIP archive. Without a
-/// `destination` argument a native save dialog lets the user choose the
-/// path; with one, the same shell-core validation applies (absolute, no
-/// `.`/`..`, never inside the user-data root). Returns `Ok(None)` when the
-/// user cancels the dialog.
+/// Export the unified logs directory to a ZIP archive through a native save
+/// dialog; `Ok(None)` means the user cancelled. #149: the destination is
+/// chosen exclusively by the user inside the `rfd` dialog — this command no
+/// longer accepts a renderer-supplied `destination` argument (an unguarded
+/// arbitrary-overwrite primitive), and shell-core refuses an existing
+/// destination unless the caller carries the dialog's overwrite
+/// confirmation. Returns `Ok(None)` when the user cancels the dialog.
 #[tauri::command]
-fn desktop_export_logs(
-    destination: Option<String>,
-    paths: tauri::State<ShellPaths>,
-) -> Result<Option<ExportReportDto>, String> {
-    let destination = match destination {
-        Some(raw) => PathBuf::from(raw),
-        None => {
-            return match rfd::FileDialog::new()
-                .set_title("导出运行日志")
-                .set_file_name("mangaflow-logs.zip")
-                .add_filter("ZIP 归档", &["zip"])
-                .save_file()
-            {
-                Some(path) => run_export(&paths.user_data, &path),
-                None => Ok(None),
-            }
-        }
+fn desktop_export_logs(paths: tauri::State<ShellPaths>) -> Result<Option<ExportReportDto>, String> {
+    let Some(path) = rfd::FileDialog::new()
+        .set_title("导出运行日志")
+        .set_file_name("mangaflow-logs.zip")
+        .add_filter("ZIP 归档", &["zip"])
+        .save_file()
+    else {
+        return Ok(None);
     };
-    run_export(&paths.user_data, &destination)
+    run_export(&paths.user_data, &path)
 }
 
 fn run_export(user_data: &Path, destination: &Path) -> Result<Option<ExportReportDto>, String> {
-    export_logs_zip(user_data, destination)
+    // The only sanctioned overwrite of an existing destination: the rfd save
+    // dialog above already prompted the user about replacing it (#149).
+    export_logs_zip_overwrite(user_data, destination)
         .map(|report| {
             Some(ExportReportDto {
                 destination: report.destination,
@@ -236,6 +231,12 @@ fn helper_environment() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
     Some((python.into(), script.into()))
 }
 
+/// The ONE shutdown path for an owned helper run, used by BOTH the
+/// `RunEvent::Exit` handler and the setup-failure path below: an aborted
+/// setup must never leave `owner.json` at state "ready" for a dead run.
+/// `tree.stop` performs the graceful stop (stdin-EOF cooperative phase, then
+/// the fail-closed kill escalation); afterwards the RunLog "stopped"
+/// milestone and the ownership-journal `mark_stopped` are recorded.
 fn stop_helper(helper: &mut Option<SpawnedHelper>) {
     if let Some(mut spawned) = helper.take() {
         let exit_code = spawned
@@ -243,10 +244,18 @@ fn stop_helper(helper: &mut Option<SpawnedHelper>) {
             .stop(std::time::Duration::from_secs(5))
             .ok()
             .flatten();
-        let _ = spawned
+        // #150: a failing milestone or journal write at shutdown is no longer
+        // silently discarded — stderr is the one channel a broken logging
+        // system may still use without recursing into itself.
+        if let Err(error) = spawned
             .log
-            .record("stopped", &serde_json::json!({ "exit_code": exit_code }));
-        let _ = spawned.layout.mark_stopped(exit_code);
+            .record("stopped", &serde_json::json!({ "exit_code": exit_code }))
+        {
+            eprintln!("mangaflow-desktop: run log 'stopped' milestone failed: {error}");
+        }
+        if let Err(error) = spawned.layout.mark_stopped(exit_code) {
+            eprintln!("mangaflow-desktop: marking the ownership journal stopped failed: {error}");
+        }
     }
 }
 
@@ -254,6 +263,11 @@ fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
+                // Windows real-machine finding: set_focus alone cannot bring
+                // a minimized window back (SetForegroundWindow does not
+                // restore), so a second launch while minimized looked like
+                // "nothing happened". Unminimize first, then focus.
+                let _ = window.unminimize();
                 let _ = window.set_focus();
             }
         }))
@@ -274,29 +288,63 @@ fn run() {
                 .ok_or("MANGAFLOW_DESKTOP_API_ROOT not set")?;
             let user_data = app.path().app_local_data_dir()?;
 
+            // Plan B (W-15): point the helper at the bundled Next standalone
+            // bundle; the helper then spawns node, announces the loopback
+            // web origin in READY, and the WebView loads it. Absent = the
+            // pre-W-15 static-export form.
+            let mut helper_args = vec![
+                "app".to_string(),
+                "--api-root".to_string(),
+                api_root.to_string_lossy().into_owned(),
+                "--user-data".to_string(),
+                user_data.to_string_lossy().into_owned(),
+                "--fake-channel".to_string(),
+            ];
+            if let Some(web_dist) = std::env::var_os("MANGAFLOW_DESKTOP_WEB_DIST") {
+                helper_args.push("--web-dist".into());
+                helper_args.push(web_dist.to_string_lossy().into_owned());
+            } else {
+                // Install form: the packaging step lays the Next standalone
+                // tree and the node runtime under the bundled resources
+                // (tauri.conf resources); their presence enables plan B
+                // without any env var. Resources resolve next to the
+                // executable in the installed layout.
+                let bundled = std::env::current_exe()
+                    .ok()
+                    .and_then(|exe| exe.parent().map(|dir| dir.join("web").join("standalone")));
+                if let Some(bundled) = bundled {
+                    if bundled.join("server.js").is_file() {
+                        helper_args.push("--web-dist".into());
+                        helper_args.push(bundled.to_string_lossy().into_owned());
+                    }
+                }
+            }
+
             let config = HelperConfig {
                 python,
                 helper_script,
-                helper_args: vec![
-                    "app".into(),
-                    "--api-root".into(),
-                    api_root.to_string_lossy().into_owned(),
-                    "--user-data".into(),
-                    user_data.to_string_lossy().into_owned(),
-                    "--fake-channel".into(),
-                ],
+                helper_args,
                 ready_timeout: std::time::Duration::from_secs(15),
                 health_timeout: std::time::Duration::from_secs(10),
             };
             let spawned = spawn_helper(&config, &user_data)
                 .map_err(|error| format!("sidecar handshake failed: {error:?}"))?;
 
-            // Synchronous injection: available before any page script runs.
-            // The origin is embedded as a JSON string literal so every byte is
-            // escaped by serde_json instead of raw format! interpolation.
+            // From here on, EVERY failure path must run the same shutdown
+            // bookkeeping as the RunEvent::Exit handler (RunLog "stopped"
+            // milestone + ownership-journal mark_stopped): an aborted setup
+            // must never leave owner.json at state "ready" for a dead run.
+            // stop_helper performs the graceful stop and both records; the
+            // OwnedTree drop inside it still does the fail-closed kill.
             let origin = spawned.ready.api_origin.clone();
-            let origin_literal =
-                serde_json::to_string(&origin).map_err(|error| error.to_string())?;
+            let origin_literal = match serde_json::to_string(&origin) {
+                Ok(literal) => literal,
+                Err(error) => {
+                    let message = error.to_string();
+                    stop_helper(&mut Some(spawned));
+                    return Err(message.into());
+                }
+            };
             let initialization_script =
                 format!("window.__MANGAFLOW_API_ORIGIN__ = {origin_literal};\n");
 
@@ -307,15 +355,46 @@ fn run() {
             });
             app.manage(PickedState(PickedRegistry::new()));
 
-            tauri::WebviewWindowBuilder::new(
-                app,
-                "main",
-                tauri::WebviewUrl::App("index.html".into()),
-            )
-            .title("MangaFlow")
-            .inner_size(1280.0, 800.0)
-            .initialization_script(&initialization_script)
-            .build()?;
+            // Plan B (W-15): when the helper manages the bundled Next
+            // standalone server, the WebView loads that loopback origin —
+            // the full production app with rewrites — instead of the static
+            // export embedded at compile time. The origin was already
+            // verified loopback by the protocol; spawn_helper validated it
+            // against the journal, so building the URL here cannot escape
+            // the loopback rule.
+            let web_url: Option<tauri::WebviewUrl> = {
+                let spawned_state = app.state::<HelperState>();
+                let guard = spawned_state.inner().0.lock().expect("helper state lock");
+                let run = guard.as_ref().expect("helper run present");
+                run.ready
+                    .web_origin
+                    .as_deref()
+                    .and_then(|origin| tauri::Url::parse(origin).ok())
+                    .map(tauri::WebviewUrl::External)
+            };
+            let builder = match &web_url {
+                Some(url) => tauri::WebviewWindowBuilder::new(app, "main", url.clone()),
+                None => tauri::WebviewWindowBuilder::new(
+                    app,
+                    "main",
+                    tauri::WebviewUrl::App("index.html".into()),
+                ),
+            };
+            if let Err(error) = builder
+                .title("MangaFlow")
+                .inner_size(1280.0, 800.0)
+                .initialization_script(&initialization_script)
+                .build()
+            {
+                // Fail-closed kill behavior is unchanged; the shutdown
+                // BOOKKEEPING now routes through the same helper as the Exit
+                // path — take the run back out of the managed state so the
+                // "stopped" milestone and journal update still happen.
+                if let Some(state) = app.try_state::<HelperState>() {
+                    stop_helper(&mut state.inner().0.lock().expect("helper state lock"));
+                }
+                return Err(error.into());
+            }
             Ok(())
         })
         .build(tauri::generate_context!())

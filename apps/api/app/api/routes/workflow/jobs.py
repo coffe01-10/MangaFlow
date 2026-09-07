@@ -1,11 +1,12 @@
 """Project job listing, lifecycle actions and bulk archive routes."""
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
-from app.api.helpers import asset_candidate_read, candidate_read
+from app.api.helpers import asset_candidate_read, candidate_read, ensure_project_scope
 from app.database import get_db
+from app.domain.states import JobStatus
 from app.models import (
     AssetCandidate,
     GenerationJob,
@@ -14,6 +15,7 @@ from app.models import (
     ModelCallAttempt,
     PageCandidate,
     WorkflowNodeRun,
+    WorkflowRun,
     utcnow,
 )
 from app.schemas import (
@@ -23,7 +25,7 @@ from app.schemas import (
     JobResultRead,
     ModelCallAttemptRead,
 )
-from app.services.job_service import cancel_job, reset_for_retry
+from app.services.job_service import cancel_job, dependencies_complete, reset_for_retry
 from app.services.model_costs import estimate_jobs
 
 router = APIRouter()
@@ -149,36 +151,76 @@ def list_jobs(
 
 
 @router.get("/jobs/{job_id}", response_model=JobRead)
-def get_job(job_id: str, db: Session = Depends(get_db)) -> JobRead:
+def get_job(
+    job_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> JobRead:
     job = db.get(GenerationJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
+    ensure_project_scope(db, job, project_id, label="任务")
     return _job_reads(db, [job])[0]
 
 
 @router.post("/jobs/{job_id}/cancel", response_model=JobRead)
-def cancel(job_id: str, db: Session = Depends(get_db)) -> GenerationJob:
+def cancel(
+    job_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> GenerationJob:
     job = db.get(GenerationJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
+    ensure_project_scope(db, job, project_id, label="任务")
     return cancel_job(db, job)
 
 
 @router.post("/jobs/{job_id}/retry", response_model=JobRead)
-def retry(job_id: str, db: Session = Depends(get_db)) -> GenerationJob:
+def retry(
+    job_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> GenerationJob:
     job = db.get(GenerationJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
+    ensure_project_scope(db, job, project_id, label="任务")
+    # An archived row is invisible in the default list; retrying it would
+    # re-run paid work the user filed away. Restore first, then retry.
+    if job.archived_at is not None:
+        raise HTTPException(status_code=409, detail="已归档的任务不能重试，请先恢复后再试")
+    # reset_for_retry silently ignores every other status and would return the
+    # unchanged row as a 200 "success"; reject those no-ops up front.
+    if job.status not in {JobStatus.FAILED, JobStatus.NEEDS_REVIEW, JobStatus.WAITING}:
+        raise HTTPException(status_code=409, detail="当前状态的任务不能重试")
     if job.attempt_count >= job.max_attempts:
         raise HTTPException(status_code=409, detail="任务已达到最大重试次数")
+    # A dependency-blocked WAITING child (parent job not COMPLETED) must not
+    # reach reset_for_retry: it would revive a FAILED run to phantom RUNNING
+    # before enqueue_job's dependency gate refuses the enqueue, leaving the
+    # studio polling a run with nothing executing. FAILED/NEEDS_REVIEW jobs
+    # always have COMPLETED dependencies, so legitimate retries never hit this.
+    if not dependencies_complete(db, job):
+        raise HTTPException(status_code=409, detail="依赖任务未完成，不能重试")
+    # A job whose run already ended must not retry: reset_for_retry's node_run
+    # revival has no run-status predicate (only its FAILED-run revival gates),
+    # so the job would execute paid work for a dead run and strand its
+    # node_run RUNNING forever inside a terminal run (reconcile early-returns
+    # on terminal runs). Reachable through the non-atomic worker-failure/
+    # cancel window: cancel_run's sweep deliberately keeps terminal FAILED
+    # jobs. A COMPLETED run with a late lease-expiry-FAILED job has the
+    # identical orphan shape, so both terminal statuses are gated.
+    node_run = db.scalar(select(WorkflowNodeRun).where(WorkflowNodeRun.job_id == job.id))
+    if node_run:
+        run = db.get(WorkflowRun, node_run.workflow_run_id)
+        if run and run.status in {"CANCELLED", "COMPLETED"}:
+            raise HTTPException(status_code=409, detail="所属运行已取消或已结束，不能重试该任务")
     return reset_for_retry(db, job)
 
 
 @router.post("/jobs/{job_id}/archive", response_model=JobRead)
-def archive_job(job_id: str, db: Session = Depends(get_db)) -> GenerationJob:
+def archive_job(
+    job_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> GenerationJob:
     job = db.get(GenerationJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
+    ensure_project_scope(db, job, project_id, label="任务")
     if job.status.value not in TERMINAL_JOB_STATUSES:
         raise HTTPException(status_code=409, detail="运行中的任务不能归档，请先取消")
     if job.archived_at is None:
@@ -190,10 +232,13 @@ def archive_job(job_id: str, db: Session = Depends(get_db)) -> GenerationJob:
 
 
 @router.post("/jobs/{job_id}/restore", response_model=JobRead)
-def restore_job(job_id: str, db: Session = Depends(get_db)) -> GenerationJob:
+def restore_job(
+    job_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> GenerationJob:
     job = db.get(GenerationJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
+    ensure_project_scope(db, job, project_id, label="任务")
     if job.archived_at is not None:
         job.archived_at = None
         job.version += 1
@@ -207,21 +252,22 @@ def restore_job(job_id: str, db: Session = Depends(get_db)) -> GenerationJob:
     response_model=JobArchiveResult,
 )
 def archive_completed_jobs(project_id: str, db: Session = Depends(get_db)) -> JobArchiveResult:
-    jobs = list(
-        db.scalars(
-            select(GenerationJob).where(
-                GenerationJob.project_id == project_id,
-                GenerationJob.archived_at.is_(None),
-                GenerationJob.status.in_(TERMINAL_JOB_STATUSES),
-            )
-        )
-    )
     archived_at = utcnow()
-    for job in jobs:
-        job.archived_at = archived_at
-        job.version += 1
+    # Single conditional update: a job concurrently retried back to an active
+    # status between the SELECT and the write must not be archived out of the
+    # job list while it still runs.
+    archived = db.execute(
+        update(GenerationJob)
+        .where(
+            GenerationJob.project_id == project_id,
+            GenerationJob.archived_at.is_(None),
+            GenerationJob.status.in_(TERMINAL_JOB_STATUSES),
+        )
+        .values(archived_at=archived_at, version=GenerationJob.version + 1)
+        .execution_options(synchronize_session=False)
+    )
     db.commit()
-    return JobArchiveResult(archived_count=len(jobs))
+    return JobArchiveResult(archived_count=archived.rowcount)
 
 
 @router.post(
@@ -247,15 +293,21 @@ def bulk_archive_jobs(
     if non_terminal:
         raise HTTPException(status_code=409, detail="运行中的任务不能批量归档")
     archived_at = utcnow()
-    archived_count = 0
-    for job in jobs:
-        if job.archived_at is not None:
-            continue
-        job.archived_at = archived_at
-        job.version += 1
-        archived_count += 1
+    # Conditional for the same reason as archive-completed: only rows that
+    # are still terminal at write time are archived.
+    archived = db.execute(
+        update(GenerationJob)
+        .where(
+            GenerationJob.id.in_(payload.job_ids),
+            GenerationJob.project_id == project_id,
+            GenerationJob.archived_at.is_(None),
+            GenerationJob.status.in_(TERMINAL_JOB_STATUSES),
+        )
+        .values(archived_at=archived_at, version=GenerationJob.version + 1)
+        .execution_options(synchronize_session=False)
+    )
     db.commit()
-    return JobArchiveResult(archived_count=archived_count)
+    return JobArchiveResult(archived_count=archived.rowcount)
 
 
 def _job_has_references(db: Session, job_id: str) -> bool:
@@ -276,10 +328,13 @@ def _job_has_references(db: Session, job_id: str) -> bool:
 
 
 @router.delete("/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_job(job_id: str, db: Session = Depends(get_db)) -> None:
+def delete_job(
+    job_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> None:
     job = db.get(GenerationJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
+    ensure_project_scope(db, job, project_id, label="任务")
     if job.status.value not in DELETABLE_JOB_STATUSES:
         raise HTTPException(status_code=409, detail="只有失败或已取消任务可以彻底删除")
     if _job_has_references(db, job.id):
@@ -290,11 +345,12 @@ def delete_job(job_id: str, db: Session = Depends(get_db)) -> None:
 
 @router.get("/jobs/{job_id}/model-call-attempts", response_model=list[ModelCallAttemptRead])
 def list_model_call_attempts(
-    job_id: str, db: Session = Depends(get_db)
+    job_id: str, db: Session = Depends(get_db), project_id: str | None = None
 ) -> list[ModelCallAttempt]:
     job = db.get(GenerationJob, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
+    ensure_project_scope(db, job, project_id, label="任务")
     return list(
         db.scalars(
             select(ModelCallAttempt)

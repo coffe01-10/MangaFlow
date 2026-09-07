@@ -191,6 +191,7 @@ class VertexCredentialManager:
             project=settings.google_cloud_project,
             location=settings.google_cloud_location,
             credentials=credentials,
+            http_options={"timeout": 90_000},
         )
 
     def execute(

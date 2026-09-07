@@ -1,20 +1,33 @@
-//! Linux-sandbox integration tests for the desktop startup protocol and
-//! process-tree ownership. Windows runtime behavior is NOT RUN here; the
-//! Windows-side compile gate runs separately via
-//! `cargo check --target x86_64-pc-windows-msvc`.
+//! Integration tests for the desktop startup protocol and process-tree
+//! ownership, run NATIVELY on both supported legs: the documented Linux
+//! `cargo test` sandbox and a Windows machine. Platform-divergent runtime
+//! behavior is cfg-gated inline with the reason stated at each gate:
+//! - `proc_alive` reads `/proc/<pid>` on Unix and `tasklist` on Windows;
+//! - `python()` (tests/common) defaults to `python` on Windows because
+//!   `python3` resolves to the Microsoft Store app-execution stub there;
+//! - the Windows-only assertions cover the Job Object escalation (job exit
+//!   code 125) and the stdin-EOF cooperative stop channel: on Unix,
+//!   `stop()` group-SIGTERMs the tree microseconds after spawn, which
+//!   races any Python stand-in's interpreter bootstrap before it can
+//!   install its SIGTERM handling (see
+//!   `stdin_close_is_a_cooperative_stop_channel`).
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use mangaflow_desktop_shell_core::handshake::{spawn_helper, HelperConfig};
+#[cfg(unix)]
+use std::path::Path;
+
+mod common;
+
+use mangaflow_desktop_shell_core::handshake::{spawn_helper, HelperConfig, SpawnError};
+use mangaflow_desktop_shell_core::logs::shell_log_path;
 use mangaflow_desktop_shell_core::ownership::OwnedTree;
 use mangaflow_desktop_shell_core::protocol::{verify_ready_line, GO_PREFIX, HEALTH_PATH};
 
-fn python() -> PathBuf {
-    PathBuf::from(std::env::var("MANGAFLOW_DESKTOP_PYTHON").unwrap_or_else(|_| "python3".into()))
-}
+use common::python;
 
 fn helper_script() -> PathBuf {
     let from_env = std::env::var("MANGAFLOW_DESKTOP_HELPER").map(PathBuf::from);
@@ -37,8 +50,19 @@ fn proc_alive(pid: u32) -> bool {
     }
     #[cfg(windows)]
     {
-        let _ = pid;
-        false
+        // `tasklist` enumerates running processes only. Match the PID as an
+        // exact whitespace token: the /NH (no header) rows are name, PID,
+        // session, mem usage — a substring match could hit a memory column
+        // like "38,040 K", a token match cannot.
+        std::process::Command::new("tasklist")
+            .args(["/FI", format!("PID eq {pid}").as_str(), "/NH"])
+            .output()
+            .map(|output| {
+                String::from_utf8_lossy(&output.stdout)
+                    .split_whitespace()
+                    .any(|token| token == pid.to_string())
+            })
+            .unwrap_or(false)
     }
 }
 
@@ -56,7 +80,11 @@ fn wait_until_gone(pid: u32, timeout: Duration) -> bool {
 #[test]
 fn handshake_go_health_and_clean_stop_leaves_no_residue() {
     let user_data = temp_user_data("clean-stop");
+    #[cfg_attr(windows, allow(unused_mut))] // the push below is Unix-only
     let mut config = HelperConfig::stub(&python(), &helper_script());
+    // The helper's test descendant is a Unix-only facility (PDEATHSIG chain);
+    // on Windows the equivalent coverage is the Job Object crash test below.
+    #[cfg(unix)]
     config.helper_args.push("--grandchild".into());
 
     let mut spawned = spawn_helper(&config, &user_data).expect("handshake must complete");
@@ -64,15 +92,16 @@ fn handshake_go_health_and_clean_stop_leaves_no_residue() {
 
     // Journal is owned by the shell; before stop it still reads "ready".
     let journal = std::fs::read_to_string(spawned.layout.journal_path()).unwrap();
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&journal).unwrap()["state"],
-        "ready"
-    );
-    let grandchild_pid = serde_json::from_str::<serde_json::Value>(&journal).unwrap()
-        ["grandchild_pid"]
+    let journal: serde_json::Value = serde_json::from_str(&journal).unwrap();
+    assert_eq!(journal["state"], "ready");
+    #[cfg(unix)]
+    let grandchild_pid = journal["grandchild_pid"]
         .as_u64()
         .expect("stub --grandchild records its descendant");
 
+    // The cooperative stop channel end-to-end: closing stdin trips the
+    // helper's EOF watcher (self-SIGTERM, sys.exit(0)) — on Windows this is
+    // the ONLY cooperative path, so Some(0) proves it worked within grace.
     let exit_code = spawned
         .tree
         .stop(Duration::from_secs(5))
@@ -83,6 +112,7 @@ fn handshake_go_health_and_clean_stop_leaves_no_residue() {
         wait_until_gone(helper_pid, Duration::from_secs(5)),
         "helper must be gone"
     );
+    #[cfg(unix)]
     assert!(
         wait_until_gone(grandchild_pid as u32, Duration::from_secs(5)),
         "descendant must be gone (process-group kill)"
@@ -98,6 +128,51 @@ fn handshake_go_health_and_clean_stop_leaves_no_residue() {
         "journal keeps identity, never secrets"
     );
 
+    let _ = std::fs::remove_dir_all(&user_data);
+}
+
+/// Windows launcher-interpreter regression: a `python.exe` that re-execs the
+/// real interpreter as a child (CPython 3.12 venv style) publishes a READY
+/// pid that is a grandchild of the spawned process. The handshake must
+/// accept it through Job Object membership (the announcer is still inside
+/// the shell's kill boundary) — exact-PID equality alone would fail closed
+/// and make dev-mode desktop shells impossible on such interpreters. The
+/// fake launcher mirrors the venv shape: direct child spawns the real stub
+/// helper and proxies its stdio.
+#[test]
+#[cfg(windows)]
+fn ready_pid_from_a_launcher_interpreter_chain_is_accepted_via_job_membership() {
+    let user_data = temp_user_data("trampoline");
+    let launcher_code = "import subprocess,sys; \
+         raise SystemExit(subprocess.run([sys.executable]+sys.argv[1:]).returncode)";
+    let mut config = HelperConfig::stub(&python(), &std::path::PathBuf::from("-c"));
+    config.helper_args = vec![
+        launcher_code.into(),
+        helper_script().to_string_lossy().into_owned(),
+        "stub".into(),
+    ];
+
+    let mut spawned = spawn_helper(&config, &user_data)
+        .expect("handshake must accept the launcher chain pid");
+    let direct_pid = spawned.tree.pid();
+    assert_ne!(
+        spawned.ready.pid, direct_pid,
+        "the fixture is meaningless unless the announcer is not the direct child"
+    );
+    assert!(
+        spawned.tree.contains_pid(spawned.ready.pid),
+        "the announcer must be inside the shell's Job"
+    );
+
+    // The cooperative stop still ends the whole chain: stdin EOF reaches the
+    // grandchild through the proxying launcher.
+    let exit_code = spawned
+        .tree
+        .stop(Duration::from_secs(10))
+        .expect("stop succeeds");
+    assert_eq!(exit_code, Some(0));
+    assert!(wait_until_gone(direct_pid, Duration::from_secs(5)));
+    assert!(wait_until_gone(spawned.ready.pid, Duration::from_secs(5)));
     let _ = std::fs::remove_dir_all(&user_data);
 }
 
@@ -210,12 +285,15 @@ fn shell_crash_still_kills_helper_and_descendants() {
         serde_json::from_str(&std::fs::read_to_string(runtime_dir.join("owner.json")).unwrap())
             .unwrap();
     let helper_pid = journal["pid"].as_u64().unwrap() as u32;
+    // The test descendant only exists on Unix (helper-side win32 gate).
+    #[cfg(unix)]
     let grandchild_pid = journal["grandchild_pid"].as_u64().unwrap() as u32;
 
     assert!(
         wait_until_gone(helper_pid, Duration::from_secs(5)),
         "helper must die with the shell"
     );
+    #[cfg(unix)]
     assert!(
         wait_until_gone(grandchild_pid, Duration::from_secs(5)),
         "descendants must die through the PDEATHSIG chain"
@@ -223,22 +301,308 @@ fn shell_crash_still_kills_helper_and_descendants() {
     let _ = std::fs::remove_dir_all(&user_data);
 }
 
+/// The escalation half of `stop()`: a child no cooperative channel can
+/// reach must still die, promptly, once the grace window elapses. The
+/// stand-in never reads stdin and — once its interpreter finishes
+/// bootstrapping — ignores SIGTERM, so every cooperative channel of
+/// `stop()` is unavailable.
+///
+/// Which platform exercises which assertion:
+/// - Windows (deterministic): no signal exists to race the bootstrap — the
+///   cooperative phase is exactly "close stdin and wait", and a child that
+///   never reads stdin cannot exit early — so the FULL grace must elapse
+///   before `TerminateJobObject` kills the job with exit code 125. The
+///   grace-floor and exit-code assertions below are Windows-gated.
+/// - Unix (termination contract only): `stop()` group-SIGTERMs
+///   microseconds after spawn, which typically lands while the Python
+///   stand-in is still bootstrapping — before its
+///   `signal.signal(SIGTERM, SIG_IGN)` instruction runs — so the child may
+///   die to the default-disposition SIGTERM in ~0-40 ms instead of being
+///   SIGKILLed after the grace window. (An `sh -c 'trap "" TERM; exec …'`
+///   wrapper would only shrink, not close, its own bootstrap race, so it
+///   cannot make the timing assertions deterministic either.) Both Unix
+///   outcomes are acceptable: `stop()` returns Ok, the tree is dead, and a
+///   signal death reports no exit code either way — those assertions stay
+///   cross-platform, as does the anti-hang bound on the elapsed time.
 #[test]
 fn noncooperative_helper_is_forcefully_killed() {
     let user_data = temp_user_data("timeout");
     let mut command = Command::new(python());
-    // The helper ignores SIGTERM, so stop() must escalate to SIGKILL after
-    // the grace deadline instead of waiting forever.
     command.arg("-c").arg(
         "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(3600)",
     );
     let mut tree = OwnedTree::spawn(command).unwrap();
     let pid = tree.pid();
 
-    let exit = tree
-        .stop(Duration::from_millis(500))
-        .expect("forceful stop succeeds");
-    assert_eq!(exit, None, "SIGKILLed process reports no exit code");
+    let grace = Duration::from_millis(600);
+    let started = Instant::now();
+    let exit = tree.stop(grace).expect("forceful stop succeeds");
+    let elapsed = started.elapsed();
+    // The cooperative phase gets the full grace window before escalation…
+    // but only Windows observes this deterministically (docstring above: on
+    // Unix the immediate SIGTERM may kill the stand-in mid-bootstrap, long
+    // before the grace deadline, through no fault of stop()).
+    #[cfg(windows)]
+    assert!(
+        elapsed >= grace,
+        "stop() must honor the grace window before escalating (took {elapsed:?})"
+    );
+    // …and the escalation (or, on Unix, the early cooperative-SIGTERM
+    // death) must terminate the tree promptly — the anti-hang regression,
+    // valid on both platforms and in both Unix outcomes.
+    assert!(
+        elapsed < grace + Duration::from_secs(5),
+        "escalation after the deadline must be immediate (took {elapsed:?})"
+    );
+    // Windows: the escalation is TerminateJobObject, whose job exit code is
+    // 125. Unix: whether the stand-in lost the bootstrap race to SIGTERM or
+    // survived it and met the post-grace SIGKILL, a signal death reports no
+    // exit code.
+    #[cfg(unix)]
+    assert_eq!(exit, None, "a signal death reports no exit code");
+    #[cfg(windows)]
+    assert_eq!(
+        exit,
+        Some(125),
+        "TerminateJobObject escalation reports the job exit code"
+    );
     assert!(wait_until_gone(pid, Duration::from_secs(5)));
+    let _ = std::fs::remove_dir_all(&user_data);
+}
+
+/// The cooperative half of `stop()`: closing the child's piped stdin is the
+/// graceful-shutdown trigger the Windows path depends on. This stand-in
+/// ignores SIGTERM so ONLY the stdin-EOF channel can stop it, and exits 42
+/// on EOF — a cooperative stop reports the child's own exit code, well
+/// inside the grace window, with no escalation involved. The stdin MUST be
+/// piped for this to exercise anything: without `.stdin(Stdio::piped())`
+/// the child inherits the harness stdin (already at EOF under `cargo test`,
+/// an open console interactively), `stop()`'s stdin close is a no-op, and
+/// the test passes vacuously or hangs.
+///
+/// Windows-only: the stdin-EOF channel is by design the WINDOWS cooperative
+/// path (a Job Object cannot deliver a signal). On Unix, `stop()` also
+/// group-SIGTERMs the tree microseconds after spawn — before this Python
+/// stand-in's interpreter bootstrap can reach its
+/// `signal.signal(SIGTERM, SIG_IGN)` — so the child dies from the
+/// default-disposition SIGTERM during bootstrap (exit `None`) instead of
+/// exiting 42 via stdin EOF, and the Some(42) contract cannot be tested
+/// there without racing the bootstrap.
+#[test]
+#[cfg(windows)]
+fn stdin_close_is_a_cooperative_stop_channel() {
+    let user_data = temp_user_data("stdin-eof");
+    let mut command = Command::new(python());
+    command
+        .arg("-c")
+        .arg(
+            "import signal, sys; signal.signal(signal.SIGTERM, signal.SIG_IGN); \
+             sys.stdin.read(); sys.exit(42)",
+        )
+        .stdin(Stdio::piped());
+    let mut tree = OwnedTree::spawn(command).unwrap();
+
+    let started = Instant::now();
+    let grace = Duration::from_secs(5);
+    let exit = tree.stop(grace).expect("cooperative stop succeeds");
+    // 42 can only be the child's own `sys.exit(42)` observed via the
+    // cooperative stdin-EOF channel: the escalation paths report job exit
+    // code 125 (Windows) or no code at all (Unix SIGKILL).
+    assert_eq!(exit, Some(42), "stopped via stdin EOF, not by a kill");
+    assert!(
+        started.elapsed() < grace,
+        "a cooperative exit must complete within the grace window (took {:?})",
+        started.elapsed()
+    );
+    let _ = std::fs::remove_dir_all(&user_data);
+}
+
+/// Regression for the handshake stdout contract: after the READY line the
+/// shell must keep DRAINING the child's stdout (not close its read end).
+/// With the old first-line-only reader this child's post-handshake writes
+/// hit a broken pipe, its main thread died mid-print, and the session lost
+/// a perfectly healthy helper; here the health probe after several stdout
+/// writes must still answer.
+#[test]
+fn post_ready_stdout_chatter_does_not_break_the_session() {
+    let user_data = temp_user_data("stdout-drain");
+    // A minimal stand-in helper implementing the frozen protocol: READY line
+    // from a journal-correct record, GO gating, then the health server in a
+    // background thread while the MAIN thread keeps printing to stdout —
+    // exactly the shape that EPIPEs under a closed read end.
+    let stand_in = r#"
+import json, os, sys, threading, time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+token = os.environ["MANGAFLOW_DESKTOP_TOKEN"]
+journal_path = os.environ["MANGAFLOW_DESKTOP_JOURNAL"]
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path != "/api/v1/health":
+            self.send_error(404)
+            return
+        body = b'{"status":"ok"}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_args):
+        return
+
+server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+origin = "http://127.0.0.1:%d" % server.server_address[1]
+record = {
+    "version": 1,
+    "token": token,
+    "state": "ready",
+    "pid": os.getpid(),
+    "api_origin": origin,
+}
+with open(journal_path, "w", encoding="utf-8") as handle:
+    json.dump(record, handle)
+print(
+    "MANGAFLOW_READY "
+    + json.dumps({"token": token, "pid": os.getpid(), "api_origin": origin}),
+    flush=True,
+)
+
+line = sys.stdin.readline()
+if line.strip() != "MANGAFLOW_GO " + token:
+    server.server_close()
+    raise SystemExit(75)
+
+threading.Thread(target=server.serve_forever, daemon=True).start()
+for index in range(100):
+    print(f"post-ready stdout line {index}", flush=True)
+    time.sleep(0.05)
+"#;
+    let stand_in_path = user_data.join("stand_in_helper.py");
+    std::fs::write(&stand_in_path, stand_in).unwrap();
+    let config = HelperConfig {
+        python: python(),
+        helper_script: stand_in_path,
+        helper_args: vec![],
+        ready_timeout: Duration::from_secs(20),
+        health_timeout: Duration::from_secs(10),
+    };
+
+    let mut spawned = spawn_helper(&config, &user_data).expect("handshake must complete");
+    // Several chatter lines have been written past the READY line by now;
+    // the helper must still be alive and serving.
+    std::thread::sleep(Duration::from_millis(300));
+    let (status, _) = mangaflow_desktop_shell_core::handshake::get_status(
+        &spawned.ready.api_origin,
+        HEALTH_PATH,
+        Duration::from_secs(2),
+    )
+    .expect("helper survives its own post-ready stdout writes");
+    assert_eq!(status, 200);
+
+    // The stand-in has no stdin watcher and no signal handler, so this stop
+    // exercises the plain escalation on both platforms; only its success and
+    // the survival assertion above matter here.
+    spawned
+        .tree
+        .stop(Duration::from_millis(500))
+        .expect("stop succeeds after the chatter");
+    let _ = std::fs::remove_dir_all(&user_data);
+}
+
+/// Regression for the handshake-failure bookkeeping: a spawn whose health
+/// gate times out AFTER the helper already published state "ready" must not
+/// leave `owner.json` claiming "ready" for a run the shell is killing. The
+/// stand-in announces an origin that never serves (loopback port 1), so
+/// `spawn_helper` fails with `HealthTimeout`; the failure path must still
+/// (a) kill the tree, (b) append the RunLog "stopped" milestone, and
+/// (c) mark the ownership journal "stopped".
+#[test]
+fn health_timeout_failure_still_records_terminal_state_and_kills() {
+    let user_data = temp_user_data("health-timeout");
+    // A minimal protocol-correct stand-in: journal + READY line with a
+    // loopback origin nothing serves, then park on stdin like the real
+    // helper's EOF watcher.
+    let stand_in = r#"
+import json, os, sys
+token = os.environ["MANGAFLOW_DESKTOP_TOKEN"]
+journal_path = os.environ["MANGAFLOW_DESKTOP_JOURNAL"]
+record = {
+    "version": 1,
+    "token": token,
+    "state": "ready",
+    "pid": os.getpid(),
+    "api_origin": "http://127.0.0.1:1",
+}
+with open(journal_path, "w", encoding="utf-8") as handle:
+    json.dump(record, handle)
+print(
+    "MANGAFLOW_READY "
+    + json.dumps({"token": token, "pid": os.getpid(), "api_origin": "http://127.0.0.1:1"}),
+    flush=True,
+)
+sys.stdin.read()
+"#;
+    let stand_in_path = user_data.join("stand_in_no_health.py");
+    std::fs::write(&stand_in_path, stand_in).unwrap();
+    let config = HelperConfig {
+        python: python(),
+        helper_script: stand_in_path,
+        helper_args: vec![],
+        ready_timeout: Duration::from_secs(20),
+        health_timeout: Duration::from_secs(1),
+    };
+
+    let error = match spawn_helper(&config, &user_data) {
+        Ok(_) => panic!("health gate must time out"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(error, SpawnError::HealthTimeout),
+        "unexpected error: {error:?}"
+    );
+
+    // Exactly one owned run exists; its journal must no longer claim
+    // "ready" for a run that is being torn down.
+    let runtime_dir = std::fs::read_dir(user_data.join("runtime"))
+        .expect("runtime dir")
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let journal: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(runtime_dir.join("owner.json")).unwrap())
+            .unwrap();
+    assert_eq!(journal["state"], "stopped");
+    let helper_pid = journal["pid"].as_u64().unwrap() as u32;
+    assert!(
+        wait_until_gone(helper_pid, Duration::from_secs(5)),
+        "the failed run must be dead"
+    );
+
+    // The milestone log ends with the terminal "stopped" record.
+    let token = journal["token"].as_str().unwrap();
+    let shell_log = std::fs::read_to_string(shell_log_path(&user_data, token)).unwrap();
+    let events: Vec<String> = shell_log
+        .lines()
+        .filter_map(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .ok()?
+                .get("event")?
+                .as_str()
+                .map(str::to_string)
+        })
+        .collect();
+    assert_eq!(
+        events,
+        vec![
+            "spawn".to_string(),
+            "ready_verified".to_string(),
+            "go_sent".to_string(),
+            "stopped".to_string()
+        ],
+        "{shell_log}"
+    );
     let _ = std::fs::remove_dir_all(&user_data);
 }

@@ -98,9 +98,12 @@ export function useGenerationWorkspace({
   // height is unknown until the workbench query lands; rendering them in stages
   // pushed the whole canvas down (measured CLS 0.477). Show one skeleton until
   // the workbench, batch, model and package data exist, then insert the canvas
-  // at once.
+  // at once. A rejected workbench/batches query must not half-render: gate it
+  // closed so GenerateSection can show the error card instead of silent gaps.
   const generateWorkbenchReady =
-    !workbench.isLoading && !pageBatches.isLoading && !models.isLoading && generationPackagesReady;
+    !workbench.isLoading && !workbench.isError
+    && !pageBatches.isLoading && !pageBatches.isError
+    && !models.isLoading && generationPackagesReady;
   const orderedPageBatches = useMemo(
     () => [...(pageBatches.data ?? [])].sort((left, right) => left.ordinal - right.ordinal),
     [pageBatches.data],
@@ -146,7 +149,14 @@ export function useGenerationWorkspace({
   useEffect(() => {
     if (!inspectJobTerminal || !reviewCandidateId) return;
     queryClient.invalidateQueries({ queryKey: ["inspections", reviewCandidateId] });
-  }, [latestInspectJob?.id, inspectJobTerminal, reviewCandidateId, queryClient]);
+    // The workbench poll stops the moment the PAGE_INSPECT job turns terminal;
+    // its last in-flight fetch may predate the worker's final page-state commit
+    // (continuity_status / production gate), so the gate would otherwise keep
+    // showing the pre-inspection blocker until an unrelated invalidation.
+    queryClient.invalidateQueries({ queryKey: ["generation-workbench", selectedPageEntry?.id] });
+    queryClient.invalidateQueries({ queryKey: ["candidates"] });
+    queryClient.invalidateQueries({ queryKey: ["chapter-production", activeChapterId] });
+  }, [latestInspectJob?.id, inspectJobTerminal, reviewCandidateId, queryClient, selectedPageEntry?.id, activeChapterId]);
 
   const selectedPageStructureIssue = getPageStructureIssue(selectedPage);
   const selectedPageGenerationIssue = getPageGenerationIssue(selectedPage, activeDrawModel);
@@ -255,7 +265,11 @@ export function useGenerationWorkspace({
     },
     onSuccess: () => {
       setDraft(null);
+      // 新批次（currentBatch 为空时 startBatch）会替换当前查看的批次；旧批次的
+      // reviewCandidateId 若不清理，检查面板会在新批次下继续渲染，且其修复按钮
+      // 会以旧候选提交（reviewCandidate 在新批次中查不到 → 分辨率回退 "1K"）。
       setViewedBatchId(null);
+      setReviewCandidateId(null);
       queryClient.invalidateQueries({ queryKey: ["batches", selectedPage?.id] });
       queryClient.invalidateQueries({ queryKey: ["candidates"] });
       queryClient.invalidateQueries({ queryKey: ["jobs", id] });
@@ -276,7 +290,10 @@ export function useGenerationWorkspace({
 
   const deleteCandidate = useMutation({
     mutationFn: (candidateId: string) => api.deleteCandidate(candidateId),
-    onSuccess: () => {
+    onSuccess: (_, candidateId) => {
+      // Otherwise the inspection panel keeps rendering rows for a deleted
+      // candidate until the user manually closes it.
+      if (reviewCandidateId === candidateId) setReviewCandidateId(null);
       queryClient.invalidateQueries({ queryKey: ["candidates"] });
       queryClient.invalidateQueries({ queryKey: ["library", id] });
     },
@@ -316,10 +333,15 @@ export function useGenerationWorkspace({
     mutationFn: ({ candidateId, resolution }: { candidateId: string; resolution: "2K" | "4K" }) =>
       api.upscaleCandidate(candidateId, requireDrawModel(), resolution),
     onSuccess: () => {
+      // Upscale closes the current batch server-side and puts the upscaled
+      // candidate into a new one; without the workbench invalidation the stale
+      // open batch shadows the new candidate until an unrelated refetch.
       queryClient.invalidateQueries({ queryKey: ["batches", selectedPage?.id] });
       queryClient.invalidateQueries({ queryKey: ["candidates"] });
       queryClient.invalidateQueries({ queryKey: ["jobs", id] });
       queryClient.invalidateQueries({ queryKey: ["library", id] });
+      queryClient.invalidateQueries({ queryKey: ["generation-workbench", selectedPage?.id] });
+      queryClient.invalidateQueries({ queryKey: ["chapter-production", activeChapterId] });
     },
   });
 
@@ -362,7 +384,16 @@ export function useGenerationWorkspace({
       setSelectedPageId(next.id);
       setReferenceSelections({});
       setReferenceOverridePageId(null);
+      // 上一页打开的检查面板不能带到新页：reviewCandidateId 会指向旧页候选，
+      // 面板在新页渲染且修复按钮能以错误分辨率（回退 "1K"）对旧候选提交计费修复。
+      setReviewCandidateId(null);
       queryClient.invalidateQueries({ queryKey: ["batches", next.id] });
+      // next_page closes the current page's open batch; keep its lists fresh
+      // for when the user navigates back.
+      if (selectedPage?.id && selectedPage.id !== next.id) {
+        queryClient.invalidateQueries({ queryKey: ["batches", selectedPage.id] });
+        queryClient.invalidateQueries({ queryKey: ["generation-workbench", selectedPage.id] });
+      }
     },
   });
 

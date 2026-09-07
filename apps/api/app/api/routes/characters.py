@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from app.api.helpers import character_references
+from app.api.helpers import character_references, ensure_project_scope, reject_required_nulls
 from app.database import get_db
 from app.models import (
     Character,
@@ -52,6 +52,16 @@ def _read(db: Session, character: Character) -> CharacterRead:
     return CharacterRead.model_validate(character).model_copy(
         update={"references": character_references(db, character.id)}
     )
+
+
+def _ensure_character_scope(db: Session, character: Character, project_id: str | None) -> None:
+    """Issue #143 scope guard for routes keyed by ``character_id``.
+
+    An omitted parameter keeps the historical behavior, a mismatched one
+    hides the character behind the shared 「不属于当前项目」 404.
+    """
+
+    ensure_project_scope(db, character, project_id, label="角色")
 
 
 @router.get("/projects/{project_id}/characters", response_model=list[CharacterRead])
@@ -106,13 +116,14 @@ def update_character(
     character_id: str,
     payload: CharacterUpdate,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> CharacterRead:
     character = db.get(Character, character_id)
     if not character:
         raise HTTPException(status_code=404, detail="角色不存在")
-    if character.version != payload.version:
-        raise HTTPException(status_code=409, detail="角色已被更新，请刷新后重试")
+    _ensure_character_scope(db, character, project_id)
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
+    reject_required_nulls(Character, values)
     primary_name = values.get("primary_name", character.primary_name).strip()
     aliases = list(
         dict.fromkeys(
@@ -125,10 +136,21 @@ def update_character(
     values["alias_conflict"] = _has_conflict(
         db, character.project_id, primary_name, aliases, character.id
     )
+    # Claim the row with an atomic conditional update so concurrent PATCHes
+    # cannot both pass an in-memory version comparison (same pattern as
+    # _claim_panel_version / scene asset PATCH).
+    claimed = db.execute(
+        update(Character)
+        .where(Character.id == character.id, Character.version == payload.version)
+        .values(version=Character.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if not claimed.rowcount:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="角色已被更新，请刷新后重试")
     for key, value in values.items():
         setattr(character, key, value)
     character.status = "NEEDS_CONFIRMATION" if character.alias_conflict else "CANONICAL"
-    character.version += 1
     db.commit()
     db.refresh(character)
     return _read(db, character)
@@ -143,10 +165,12 @@ def bind_reference(
     character_id: str,
     payload: CharacterReferenceCreate,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> CharacterReference:
     character = db.get(Character, character_id)
     if not character:
         raise HTTPException(status_code=404, detail="角色不存在")
+    _ensure_character_scope(db, character, project_id)
 
     def _bind() -> CharacterReference:
         asset = lock_asset_for_ownership(db, payload.asset_id)
@@ -229,9 +253,12 @@ def bind_reference(
 
 
 @router.delete("/character-references/{reference_id}", status_code=status.HTTP_204_NO_CONTENT)
-def unbind_reference(reference_id: str, db: Session = Depends(get_db)) -> None:
+def unbind_reference(
+    reference_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> None:
     reference = db.get(CharacterReference, reference_id)
     if not reference:
         raise HTTPException(status_code=404, detail="角色参考绑定不存在")
+    ensure_project_scope(db, reference, project_id, label="角色参考绑定")
     db.delete(reference)
     db.commit()

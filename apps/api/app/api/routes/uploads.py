@@ -8,10 +8,10 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse
 from sqlalchemy import delete, select
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.api.helpers import asset_read
+from app.api.helpers import asset_read, ensure_project_scope
 from app.config import get_settings
 from app.database import get_db
 from app.models import (
@@ -21,6 +21,7 @@ from app.models import (
     CharacterReference,
     GenerationJob,
     JobAssetReference,
+    MangaPage,
     Outfit,
     PageCandidate,
     Project,
@@ -34,7 +35,13 @@ from app.models import (
 from app.request_limits import ASSET_UPLOAD_OPENAPI, ParsedUpload, parse_single_file_form
 from app.schemas import AssetRead, AssetUpdate
 from app.services.character_packages import detach_draft_package_references_for_asset
-from app.services.media import create_thumbnails, inspect_upload_image, remove_thumbnails
+from app.services.media import (
+    create_thumbnails,
+    inspect_upload_image,
+    remove_thumbnails,
+    sanitize_stored_filename,
+)
+from app.services.ordinal_allocator import lock_entity
 
 router = APIRouter()
 CHUNK_SIZE = 1024 * 1024
@@ -192,7 +199,7 @@ def upload_asset(
     ):
         raise HTTPException(status_code=415, detail="不支持的文件类型")
 
-    safe_name = Path(file.filename or "upload").name
+    safe_name = sanitize_stored_filename(file.filename or "upload")
     suffix = Path(safe_name).suffix.lower()
     asset_id = str(uuid4())
     project_dir = settings.upload_root / project_id
@@ -280,7 +287,30 @@ def upload_asset(
             height=height,
         )
         db.add(asset)
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError as error:
+            # A concurrent upload of the same bytes won the
+            # (project_id, sha256) unique slot; a routine duplicate must not
+            # surface as 文件保存失败. Only that constraint is deduped — any
+            # other integrity failure keeps its real cause.
+            if "unique" not in str(error.orig).lower() or "sha256" not in str(
+                error.orig
+            ).lower():
+                raise
+            db.rollback()
+            winner = db.scalar(
+                select(Asset).where(
+                    Asset.project_id == project_id,
+                    Asset.sha256 == digest.hexdigest(),
+                    Asset.deleted_at.is_(None),
+                )
+            )
+            destination.unlink(missing_ok=True)
+            remove_thumbnails(settings.upload_root, asset_id)
+            if winner is not None:
+                return asset_read(winner)
+            raise HTTPException(status_code=409, detail="同内容素材已存在") from None
         db.refresh(asset)
         return asset_read(asset)
     except HTTPException:
@@ -297,10 +327,16 @@ def upload_asset(
 
 
 @router.patch("/{asset_id}", response_model=AssetRead)
-def update_asset(asset_id: str, payload: AssetUpdate, db: Session = Depends(get_db)) -> AssetRead:
+def update_asset(
+    asset_id: str,
+    payload: AssetUpdate,
+    project_id: str | None = None,
+    db: Session = Depends(get_db),
+) -> AssetRead:
     asset = db.get(Asset, asset_id)
     if not asset or asset.deleted_at is not None:
         raise HTTPException(status_code=404, detail="素材不存在")
+    ensure_project_scope(db, asset, project_id, label="素材")
     if payload.kind is not None:
         if asset.source != "USER_UPLOAD":
             raise HTTPException(status_code=409, detail="生成结果不能改成参考图")
@@ -317,12 +353,17 @@ def update_asset(asset_id: str, payload: AssetUpdate, db: Session = Depends(get_
 
 
 @router.post("/{asset_id}/adopt-reference", response_model=AssetRead)
-def adopt_generated_asset_as_reference(asset_id: str, db: Session = Depends(get_db)) -> AssetRead:
+def adopt_generated_asset_as_reference(
+    asset_id: str,
+    db: Session = Depends(get_db),
+    project_id: str | None = None,
+) -> AssetRead:
     """Make an AI-generated asset available for structured reference bindings."""
 
     asset = db.get(Asset, asset_id)
     if not asset or asset.deleted_at is not None:
         raise HTTPException(status_code=404, detail="素材不存在")
+    ensure_project_scope(db, asset, project_id, label="素材")
     if asset.source not in {"AI_GENERATED", "VERTEX_GENERATED"}:
         raise HTTPException(status_code=409, detail="只有生成素材可以导入为参考图")
     # Importing creates a new structured binding; it must not rewrite the source
@@ -331,10 +372,13 @@ def adopt_generated_asset_as_reference(asset_id: str, db: Session = Depends(get_
 
 
 @router.delete("/{asset_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_asset(asset_id: str, db: Session = Depends(get_db)) -> None:
+def delete_asset(
+    asset_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> None:
     asset = db.get(Asset, asset_id)
     if not asset or asset.deleted_at is not None:
         raise HTTPException(status_code=404, detail="素材不存在")
+    ensure_project_scope(db, asset, project_id, label="素材")
     _ensure_asset_not_in_active_job(db, asset)
     page_candidates = list(
         db.scalars(
@@ -342,6 +386,22 @@ def delete_asset(asset_id: str, db: Session = Depends(get_db)) -> None:
                 PageCandidate.asset_id == asset.id,
                 PageCandidate.deleted_at.is_(None),
             )
+        )
+    )
+    # Agreed convention with select_candidate: both sides hold the page lock
+    # before their selected-guard reads, so a concurrent adopt cannot slip
+    # between this read and the soft delete below. The guard below runs on a
+    # post-lock re-read (populate_existing refreshes stale identity-map rows).
+    for page_id in sorted({candidate.page_id for candidate in page_candidates}):
+        lock_entity(db, MangaPage, page_id)
+    page_candidates = list(
+        db.scalars(
+            select(PageCandidate)
+            .where(
+                PageCandidate.asset_id == asset.id,
+                PageCandidate.deleted_at.is_(None),
+            )
+            .execution_options(populate_existing=True)
         )
     )
     if any(candidate.is_selected for candidate in page_candidates):
@@ -364,11 +424,14 @@ def delete_asset(asset_id: str, db: Session = Depends(get_db)) -> None:
 
 
 @router.get("/{asset_id}/content")
-def asset_content(asset_id: str, db: Session = Depends(get_db)) -> FileResponse:
+def asset_content(
+    asset_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> FileResponse:
     settings = get_settings()
     asset = db.get(Asset, asset_id)
     if not asset or asset.deleted_at is not None:
         raise HTTPException(status_code=404, detail="素材不存在")
+    ensure_project_scope(db, asset, project_id, label="素材")
     root = settings.upload_root if asset.source == "USER_UPLOAD" else settings.storage_root
     path = (root / asset.storage_key).resolve()
     if not path.is_relative_to(root.resolve()) or not path.is_file():
@@ -377,13 +440,19 @@ def asset_content(asset_id: str, db: Session = Depends(get_db)) -> FileResponse:
 
 
 @router.get("/{asset_id}/thumbnail/{size}")
-def asset_thumbnail(asset_id: str, size: int, db: Session = Depends(get_db)) -> FileResponse:
+def asset_thumbnail(
+    asset_id: str,
+    size: int,
+    project_id: str | None = None,
+    db: Session = Depends(get_db),
+) -> FileResponse:
     if size not in {320, 640}:
         raise HTTPException(status_code=422, detail="缩略图尺寸只支持 320 或 640")
     settings = get_settings()
     asset = db.get(Asset, asset_id)
     if not asset or asset.deleted_at is not None:
         raise HTTPException(status_code=404, detail="素材不存在")
+    ensure_project_scope(db, asset, project_id, label="素材")
     root = settings.upload_root if asset.source == "USER_UPLOAD" else settings.storage_root
     key = asset.thumbnail_320_key if size == 320 else asset.thumbnail_640_key
     path = (root / key).resolve() if key else None

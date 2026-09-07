@@ -1,7 +1,9 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.schemas import VersionToken
 
 PortDataType = Literal["text", "json", "image", "asset", "report", "boolean"]
 WorkflowScope = Literal["PROJECT", "CHAPTER", "PAGE", "CANDIDATE"]
@@ -64,6 +66,10 @@ class WorkflowGraph(BaseModel):
 
 
 class WorkflowCreate(BaseModel):
+    # extra="forbid": a create body is fully server-templated, so a stray
+    # "draft_graph": null must 422 instead of being silently ignored.
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(default="默认漫画工作流", min_length=1, max_length=160)
     description: str = Field(default="", max_length=10_000)
     template: str = Field(
@@ -77,7 +83,19 @@ class WorkflowUpdate(BaseModel):
     description: str | None = Field(default=None, max_length=10_000)
     draft_graph: WorkflowGraph | None = None
     is_active: bool | None = None
-    version: int = Field(ge=1)
+    version: VersionToken
+
+    @field_validator("name", "description", "draft_graph", "is_active", mode="after")
+    @classmethod
+    def reject_explicit_null(cls, value):
+        # Optional here means "omitted = keep the stored value". An explicit
+        # null on draft_graph used to reach canonical_graph(None) and surface
+        # a ValidationError 500; nulls on the NOT NULL name/description/
+        # is_active columns misfired the route's IntegrityError handler as a
+        # misleading 409. None of those is a legal "clear" operation.
+        if value is None:
+            raise ValueError("不接受显式 null，省略字段表示不修改")
+        return value
 
 
 class WorkflowRead(BaseModel):
@@ -130,7 +148,7 @@ class WorkflowRunCreate(BaseModel):
 
 
 class WorkflowRestoreRequest(BaseModel):
-    version: int = Field(ge=1)
+    version: VersionToken
 
 
 class WorkflowNodeApproveRequest(BaseModel):

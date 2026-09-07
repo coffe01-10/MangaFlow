@@ -65,7 +65,13 @@ class FakeAcceptanceAdapter:
         self.inspection_index = 0
 
     def _response(self) -> ModelResponse:
+        # Distinct bytes per request: real providers never emit two
+        # byte-identical images for different generation kinds, and the
+        # asset dedupe path treats a same-digest collision across kinds as
+        # an error instead of attaching the wrong asset.
         self.request_index += 1
+        shade = (240 + self.request_index) % 256
+        self.generated_image = _png_bytes((245, shade, 240))
         return ModelResponse(
             model_id="fake-vertex-image",
             request_id=f"fake-request-{self.request_index}",
@@ -150,7 +156,10 @@ class FakeAcceptanceAdapter:
             )
         assert output_schema is PageInspectionOutput
         self.inspection_index += 1
-        categories = ["SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY"]
+        # #164: PRESENCE joins the category set; the fake "sees" both project
+        # characters so the deterministic cast-compliance cross-check passes
+        # (every page's VISIBLE cast is a subset of these two).
+        categories = ["SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY", "PRESENCE"]
         return PageInspectionOutput(
             items=[
                 InspectionItem(
@@ -161,6 +170,9 @@ class FakeAcceptanceAdapter:
                     details={
                         "expected": "结构化目标",
                         "observed": "符合目标",
+                        "detected_characters": (
+                            ["苏清白", "顾川"] if category == "PRESENCE" else []
+                        ),
                     },
                     regions=[],
                 )
@@ -483,6 +495,7 @@ def test_1500_to_3000_character_full_manga_acceptance(
                             "OUTFIT",
                             "PROP",
                             "CONTINUITY",
+                            "PRESENCE",
                         ]
                     },
                 )
@@ -491,7 +504,7 @@ def test_1500_to_3000_character_full_manga_acceptance(
                 inspections = client.get(
                     f"/api/v1/candidates/{candidate_id}/inspections"
                 ).json()
-                assert len(inspections) == 5
+                assert len(inspections) == 6
 
             final_inspection_job = client.post(
                 f"/api/v1/candidates/{selected_id}/inspect",
@@ -502,6 +515,7 @@ def test_1500_to_3000_character_full_manga_acceptance(
                         "OUTFIT",
                         "PROP",
                         "CONTINUITY",
+                        "PRESENCE",
                     ]
                 },
             )

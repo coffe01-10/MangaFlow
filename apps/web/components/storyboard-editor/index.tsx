@@ -111,7 +111,10 @@ export function StoryboardEditor({
   const [inspectorWidth, setInspectorWidth] = useState(() => {
     if (typeof window === "undefined") return 390;
     const stored = Number(window.localStorage.getItem("mangaflow.storyboard-inspector-width"));
-    return stored >= 320 && stored <= 620 ? stored : 390;
+    // Cap by viewport so a stored width from a larger window cannot push the
+    // worktable into horizontal overflow (canvas column has minmax(320px)).
+    const viewportCap = Math.max(320, Math.min(620, window.innerWidth - 740));
+    return stored >= 320 && stored <= viewportCap ? stored : 390;
   });
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const geometryRequestRef = useRef<{ id: string; stackIndex: number } | null>(null);
@@ -162,8 +165,15 @@ export function StoryboardEditor({
   const panelDraftDirty = editingPanel && panelDraft && activePanel
     ? JSON.stringify(panelDraft) !== JSON.stringify(makePanelDraft(activePanel))
     : false;
+  // Drafts for dialogues that no longer exist (deleted here or removed by an
+  // external refetch) must not keep the editor dirty forever.
+  const liveDialogueIds = useMemo(
+    () => new Set(panels.flatMap((panel) => panel.dialogues.map((dialogue) => dialogue.id))),
+    [panels],
+  );
+  const hasLiveDialogueDraft = Object.keys(dialogueDrafts).some((id) => liveDialogueIds.has(id));
   const dirty = commandStack.index > 0
-    || Object.keys(dialogueDrafts).length > 0
+    || hasLiveDialogueDraft
     || newDialogue !== null
     || panelDraftDirty;
   // The section-level chapter <select> cannot see editor state, so it needs
@@ -172,7 +182,10 @@ export function StoryboardEditor({
   useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
 
   const persistInspectorWidth = (value: number) => {
-    const next = Math.min(620, Math.max(320, value));
+    // Same viewport cap as the initial read: canvas min 320 + gap 10 + sidebar
+    // up to 360 + page padding must all fit alongside the inspector.
+    const viewportCap = typeof window === "undefined" ? 620 : Math.max(320, Math.min(620, window.innerWidth - 740));
+    const next = Math.min(viewportCap, Math.max(320, value));
     setInspectorWidth(next);
     window.localStorage.setItem("mangaflow.storyboard-inspector-width", String(next));
   };
@@ -192,9 +205,12 @@ export function StoryboardEditor({
   const geometrySave = useMutation({
     mutationFn: ({ pageId: targetPageId, payload }: { pageId: string; payload: StoryboardGeometrySavePayload }) =>
       api.saveStoryboardGeometry(targetPageId, payload),
-    onSuccess: (response) => {
+    onSuccess: (response, variables) => {
       clearGeometryDrafts();
-      queryClient.setQueryData(["storyboard", currentPage?.id], response);
+      // variables.pageId, not currentPage: a mid-save page switch re-renders
+      // this callback against the NEW page, and writing the old page's
+      // response under the new key would corrupt the canvas cache.
+      queryClient.setQueryData(["storyboard", variables.pageId], response);
       queryClient.invalidateQueries({ queryKey: ["pages", chapterId] });
       setNotice(storyboardCopy.savedNotice(response.page.storyboard_version, response.candidate_count));
     },
@@ -280,6 +296,18 @@ export function StoryboardEditor({
   const discardDraft = () => {
     clearGeometryDrafts();
     geometrySave.reset();
+    // Narrative recovery (#155): drafts were composed against a stale panel
+    // version — keeping them after the reload would immediately re-arm the
+    // same 409 loop the recovery button exists to break. Drop them like the
+    // geometry path drops its own drafts, then refetch the panel snapshot.
+    savePanel.reset();
+    saveDialogue.reset();
+    addDialogue.reset();
+    removeDialogue.reset();
+    setEditingPanel(false);
+    setPanelDraft(null);
+    setDialogueDrafts({});
+    setNewDialogue(null);
     setNotice("");
     queryClient.invalidateQueries({ queryKey: ["storyboard", currentPage?.id] });
   };
@@ -314,7 +342,11 @@ export function StoryboardEditor({
   });
   const removeDialogue = useMutation({
     mutationFn: (dialogueId: string) => api.deleteDialogue(dialogueId, activePanel!.version),
-    onSuccess: () => {
+    onSuccess: (_, dialogueId) => {
+      // An orphaned draft would keep the editor permanently dirty and arm the
+      // unsaved-changes guard for a bubble that no longer exists.
+      setDialogueDrafts((values) => { const next = { ...values }; delete next[dialogueId]; return next; });
+      setBubbleDrafts((values) => { const next = { ...values }; delete next[dialogueId]; return next; });
       setNotice(storyboardCopy.savedNotice((serverPage?.storyboard_version ?? currentPage.storyboard_version) + 1, storyboard.data?.candidate_count ?? 0));
       refresh();
     },
@@ -440,11 +472,52 @@ export function StoryboardEditor({
     zoomTo(Math.min(width / BASE_PAGE_WIDTH, height / pageHeight));
   };
 
-  const error = savePanel.error ?? saveDialogue.error ?? addDialogue.error ?? removeDialogue.error
-    ?? geometrySave.error ?? updateLayout.error ?? replanError;
-  const conflict = geometrySave.error != null && isConflictError(geometrySave.error);
-  const saving = savePanel.isPending || saveDialogue.isPending || addDialogue.isPending || removeDialogue.isPending
-    || updateLayout.isPending || geometrySaving || replanPending;
+  // Fit mode starts on and is re-armed by 适配窗口: while it is on, viewport
+  // resizes (sidebar collapse, inspector drag, window resize) re-fit the zoom.
+  // Any manual zoom hands control back to the user until the next explicit fit.
+  const fitModeRef = useRef(true);
+  const fitRef = useRef(() => {});
+  useEffect(() => {
+    fitRef.current = () => fitToViewport();
+  });
+
+  const zoomManually = (next: number) => {
+    fitModeRef.current = false;
+    zoomTo(next);
+  };
+
+  const fitAndFollow = () => {
+    fitModeRef.current = true;
+    fitToViewport();
+  };
+
+  // Attached once the canvas actually mounts: the storyboard query gates the
+  // viewport, so re-running when serverPage arrives re-attaches after the
+  // viewport exists (cold-cache visits included) instead of only on mount.
+  const hasServerPage = Boolean(serverPage);
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport || !hasServerPage || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (fitModeRef.current) fitRef.current();
+    });
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, [hasServerPage, currentPage?.id]);
+
+  // Narrative saves 409 the same way geometry does (dialogue CRUD bumps
+  // panel.version server-side), so the conflict banner + 「放弃并重新加载」
+  // recovery must cover both paths — otherwise a stale panelDraft retries the
+  // identical version forever (#155).
+  const narrativeError = savePanel.error ?? saveDialogue.error ?? addDialogue.error ?? removeDialogue.error;
+  const error = narrativeError ?? geometrySave.error ?? updateLayout.error ?? replanError;
+  const conflict = (geometrySave.error != null && isConflictError(geometrySave.error))
+    || (narrativeError != null && isConflictError(narrativeError));
+  const narrativeSaving = savePanel.isPending || saveDialogue.isPending || addDialogue.isPending || removeDialogue.isPending;
+  // 叙事保存在途时同样冻结几何入口（审查 R2）：整包 PUT 与画布气泡删除都是
+  // 版本化写入，与 addDialogue 等并发会互相制造虚假 409。
+  const canvasBusy = geometrySaving || narrativeSaving;
+  const saving = canvasBusy || updateLayout.isPending || replanPending;
   const saveStatus = saving ? storyboardCopy.saving : error ? "保存失败" : "已保存";
   if (!currentPage) return null;
   return <div className={focusMode ? "storyboard-desk focus-mode" : "storyboard-desk"}>
@@ -466,12 +539,12 @@ export function StoryboardEditor({
       canUndo={commandStack.index > 0}
       canRedo={commandStack.index < commandStack.stack.length}
       dirty={dirty}
-      saving={geometrySaving}
+      saving={canvasBusy}
       overlayHint={!canvasKnown ? storyboardCopy.canvasMissing : null}
-      onZoomIn={() => zoomTo(zoom * ZOOM_STEP)}
-      onZoomOut={() => zoomTo(zoom / ZOOM_STEP)}
-      onFit={fitToViewport}
-      onReset={() => zoomTo(1)}
+      onZoomIn={() => zoomManually(zoom * ZOOM_STEP)}
+      onZoomOut={() => zoomManually(zoom / ZOOM_STEP)}
+      onFit={fitAndFollow}
+      onReset={() => zoomManually(1)}
       onToggle={(key) => setToggles((value) => ({ ...value, [key]: !value[key] }))}
       onUndo={handleUndo}
       onRedo={handleRedo}
@@ -493,7 +566,7 @@ export function StoryboardEditor({
           showReadingOrder={toggles.readingOrder}
           showBleed={toggles.bleed}
           showSafe={toggles.safe}
-          interactive={!geometrySaving}
+          interactive={!canvasBusy}
           selection={selection}
           onCommand={handleCommand}
           onSelectPanels={selectPanels}
@@ -505,7 +578,7 @@ export function StoryboardEditor({
             if (bubble && window.confirm("删除这个文字气泡？")) removeDialogue.mutate(dialogueId);
           }}
           onBubbleBounce={() => setNotice(storyboardCopy.bubbleBelongs)}
-          onZoomStep={(direction) => zoomTo(direction === 1 ? zoom * ZOOM_STEP : zoom / ZOOM_STEP)}
+          onZoomStep={(direction) => zoomManually(direction === 1 ? zoom * ZOOM_STEP : zoom / ZOOM_STEP)}
         />
         {activePanel && <div className="panel-inspector-resizer" role="separator" aria-label="调整属性面板宽度" aria-orientation="vertical" aria-valuemin={320} aria-valuemax={620} aria-valuenow={inspectorWidth} tabIndex={0} onKeyDown={(event) => { if (event.key === "ArrowLeft") persistInspectorWidth(inspectorWidth + 16); if (event.key === "ArrowRight") persistInspectorWidth(inspectorWidth - 16); }} onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); const worktable = event.currentTarget.parentElement?.getBoundingClientRect(); if (worktable) persistInspectorWidth(worktable.right - event.clientX); }} onPointerMove={(event) => { if (!event.currentTarget.hasPointerCapture(event.pointerId)) return; const worktable = event.currentTarget.parentElement?.getBoundingClientRect(); if (worktable) persistInspectorWidth(worktable.right - event.clientX); }} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }} onPointerCancel={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }}><span /></div>}
         {activePanel && <PanelInspector
@@ -520,7 +593,11 @@ export function StoryboardEditor({
           dialogueDrafts={dialogueDrafts}
           newDialogue={newDialogue}
           selectedBubbleId={selection?.kind === "bubble" ? selection.dialogueId : null}
-          saving={savePanel.isPending || saveDialogue.isPending || removeDialogue.isPending}
+          // 组合 busy（几何 PUT + 叙事）双向门禁检查器保存按钮（R2 审查修复）：
+          // 只传 narrativeSaving 会让「保存本格分镜」/气泡卡在几何 PUT 在途时
+          // 仍可点击，与整包保存并发制造虚假 409——与下方画布冻结正好相反。
+          // 输入框不受影响：busy 只禁用按钮（dialogue-card 的 busy 语义相同）。
+          saving={canvasBusy}
           onBeginEdit={() => beginPanel(activePanel)}
           onExitEdit={() => { setEditingPanel(false); setPanelDraft(null); }}
           onPanelDraftChange={setPanelDraft}

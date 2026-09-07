@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import PurePosixPath, PureWindowsPath
 from time import perf_counter
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -11,6 +11,7 @@ import httpx
 from fastapi import HTTPException
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import ObjectDeletedError
 
 from app.config import Settings
 from app.http_bounds import read_bounded_http_body
@@ -309,6 +310,21 @@ def add_connection(
     return connection
 
 
+
+def is_absolute_executable_path(value: str) -> bool:
+    """Platform-independent absolute-path check for configured CLI paths.
+
+    The product host is Windows, but this validation runs wherever the API
+    process lives (Linux development, containers): ``Path().is_absolute()``
+    alone accepts ``/usr/bin/agy`` and rejects ``C:\\tools\\agy.exe`` on
+    POSIX, and the reverse on Windows. Both syntaxes are absolute; the CLI
+    probe still fails closed when the file does not exist on the actual
+    host, so accepting the wider syntax here adds no execution surface.
+    """
+
+    return PureWindowsPath(value).is_absolute() or PurePosixPath(value).is_absolute()
+
+
 def update_connection(
     db: Session, connection_id: str, payload: ConnectionUpdate
 ) -> ProviderConnection:
@@ -351,7 +367,7 @@ def update_connection(
         executable = executable.strip()
         if (
             executable.casefold() != default_cli_executable
-            and not Path(executable).is_absolute()
+            and not is_absolute_executable_path(executable)
         ):
             raise HTTPException(
                 status_code=422,
@@ -526,13 +542,25 @@ def update_model(db: Session, model_id: str, payload: ProviderModelUpdate) -> AI
         list(changes.get("output_modalities") or model.output_modalities or []),
         list(changes.get("operations") or model.operations or []),
     )
+    # Claim the row with the expected version before applying general
+    # changes: the plain check-then-write above this line lost concurrent
+    # edits silently (two PATCHes at version N, second commit drops the
+    # first), the same race the display-only fast path already closes.
+    claimed = db.execute(
+        update(AIModel)
+        .where(AIModel.id == model.id, AIModel.version == payload.version)
+        .values(version=AIModel.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="模型设置已更新，请刷新后重试")
     for key, value in changes.items():
         setattr(model, key, value)
     if display_requested:
         model.display_enabled = bool(display_enabled)
     model.source = "MANUAL"
     model.confidence = "MANUAL"
-    model.version += 1
     db.commit()
     db.refresh(model)
     return model
@@ -567,7 +595,17 @@ def set_model_visibility_bulk(
             )
             continue
         if model.display_enabled == payload.display_enabled:
-            updated.append({"model_id": model.id, "version": model.version})
+            if model.version != item.expected_version:
+                failed.append(
+                    {
+                        "model_id": item.model_id,
+                        "error_code": "VERSION_CONFLICT",
+                        "message": "模型设置已更新，请刷新后重试",
+                        "current_version": model.version,
+                    }
+                )
+            else:
+                updated.append({"model_id": model.id, "version": model.version})
             continue
         if model.version != item.expected_version:
             failed.append(
@@ -591,7 +629,17 @@ def set_model_visibility_bulk(
         if result.rowcount != 1:
             db.rollback()
             db.expire(model)
-            db.refresh(model)
+            try:
+                db.refresh(model)
+            except ObjectDeletedError:
+                failed.append(
+                    {
+                        "model_id": item.model_id,
+                        "error_code": "MODEL_NOT_FOUND",
+                        "message": "模型已被删除",
+                    }
+                )
+                continue
             if model.display_enabled == payload.display_enabled:
                 updated.append({"model_id": model.id, "version": model.version})
             else:
@@ -722,7 +770,10 @@ def _fetch_model_entries(
         if connection.protocol == "GOOGLE_NATIVE":
             from google import genai
 
-            google_client = genai.Client(api_key=secret)
+            google_client = genai.Client(
+                api_key=secret,
+                http_options={"timeout": 90_000},
+            )
             try:
                 entries = _collect_google_model_entries(
                     google_client.models.list(), settings
@@ -1105,6 +1156,9 @@ def read_balance(
             selected.row,
             error.code,
             retry_after_seconds=error.retry_after_seconds,
+            # Balance failures are diagnostic: they must not disable a
+            # generation key that may be perfectly valid for paid calls.
+            degrade_only=True,
         )
         raise HTTPException(status_code=502, detail=error.user_message) from error
     except Exception as error:

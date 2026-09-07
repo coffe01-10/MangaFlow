@@ -368,7 +368,7 @@ def test_antigravity_image_edit_adopts_one_private_artifact_through_controller(
     ("outcome", "expected", "retryable"),
     [
         (CLIProcessOutcome(2, stderr=b"Authentication required"), "UNAUTHENTICATED", False),
-        (CLIProcessOutcome(2, stderr=b"Permission denied"), "UNSUPPORTED", False),
+        (CLIProcessOutcome(2, stderr=b"image tool requires approval"), "UNSUPPORTED", False),
         (CLIProcessOutcome(2, stderr=b"quota exhausted"), "RATE_LIMIT", True),
         (CLIProcessOutcome(0, stdout=b"not-json"), "INVALID_OUTPUT", False),
         (CLIProcessOutcome(0, stdout=b'{"status":"MAYBE"}'), "INVALID_OUTPUT", False),

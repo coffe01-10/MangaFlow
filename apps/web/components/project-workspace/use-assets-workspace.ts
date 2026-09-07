@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ChangeEvent, DragEvent } from "react";
 
 import { activePollInterval } from "@/lib/task-status";
@@ -11,6 +11,29 @@ import { api, type AssetPurpose, type ImageModelAlias, type Outfit, type StylePr
 import { assetKindByView } from "./labels";
 import type { AssetWorkspaceView, WorkspaceSection } from "./types";
 import type { WorkspaceQueries } from "./use-workspace-queries";
+
+// 水合安全的 localStorage 外部存储（风格色彩模式）：useSyncExternalStore 在
+// 水合期间采用服务端快照（默认「黑白」），客户端快照只在渲染后生效，避免
+// 渲染期读 localStorage 造成水合不匹配、也避免 effect 里同步 setState 的级联
+// 渲染。存储值精确等于 "color" 才视为彩色。
+const styleModeListeners = new Set<() => void>();
+
+function subscribeStyleMode(listener: () => void) {
+  styleModeListeners.add(listener);
+  return () => {
+    styleModeListeners.delete(listener);
+  };
+}
+
+function emitStyleModeChange() {
+  styleModeListeners.forEach((listener) => listener());
+}
+
+function readStyleMode(id: string): StyleProfile["color_mode"] {
+  return window.localStorage.getItem(`mangaflow.style-mode.${id}`) === "color"
+    ? "color"
+    : "monochrome";
+}
 
 /**
  * Assets domain: character/outfit/style reference states, their mutations and
@@ -28,6 +51,7 @@ export function useAssetsWorkspace({
   characters,
   outfits,
   requireDrawModel,
+  initialCharacterId,
 }: {
   id: string;
   section: WorkspaceSection;
@@ -39,6 +63,7 @@ export function useAssetsWorkspace({
   characters: WorkspaceQueries["characters"];
   outfits: WorkspaceQueries["outfits"];
   requireDrawModel: () => ImageModelAlias;
+  initialCharacterId?: string | null;
 }) {
   const queryClient = useQueryClient();
   const [assetKind, setAssetKind] = useState<AssetPurpose>("CHARACTER_REFERENCE");
@@ -51,16 +76,18 @@ export function useAssetsWorkspace({
   const [editCharacterAliases, setEditCharacterAliases] = useState("");
   const [editLockedFeatures, setEditLockedFeatures] = useState("");
   const [editForbiddenChanges, setEditForbiddenChanges] = useState("");
-  const [bindCharacterId, setBindCharacterId] = useState("");
+  const [bindCharacterId, setBindCharacterId] = useState(initialCharacterId ?? "");
   const [outfitName, setOutfitName] = useState("");
   const [outfitLockedFields, setOutfitLockedFields] = useState("");
   const [editingOutfitId, setEditingOutfitId] = useState<string | null>(null);
   const [styleName, setStyleName] = useState("黑白网点风格");
   const [styleLockedFields, setStyleLockedFields] = useState("");
-  const [styleColorMode, setStyleColorMode] = useState<StyleProfile["color_mode"]>(() => {
-    if (typeof window === "undefined") return "monochrome";
-    return window.localStorage.getItem(`mangaflow.style-mode.${id}`) === "color" ? "color" : "monochrome";
-  });
+  // 水合安全说明见模块顶部 readStyleMode。
+  const styleColorMode = useSyncExternalStore(
+    subscribeStyleMode,
+    () => readStyleMode(id),
+    () => "monochrome" as StyleProfile["color_mode"],
+  );
   const [selectedOutfitAssets, setSelectedOutfitAssets] = useState<string[]>([]);
   const [showGeneratedReferencePicker, setShowGeneratedReferencePicker] = useState(false);
   const [selectedStyleAssets, setSelectedStyleAssets] = useState<string[]>([]);
@@ -78,6 +105,17 @@ export function useAssetsWorkspace({
     enabled: section === "assets" && assetView === "outfits" && showGeneratedReferencePicker && Boolean(bindCharacterId),
   });
   const boundCharacter = characters.data?.find((item) => item.id === bindCharacterId) ?? null;
+  // Deep links (?character=) preselect the character before the user clicks
+  // the chip; seed the edit form once so the panel is immediately usable.
+  const formSeededRef = useRef(false);
+  useEffect(() => {
+    if (formSeededRef.current || !boundCharacter) return;
+    formSeededRef.current = true;
+    setEditCharacterName(boundCharacter.primary_name);
+    setEditCharacterAliases(boundCharacter.aliases.join("，"));
+    setEditLockedFeatures(boundCharacter.locked_features.join("，"));
+    setEditForbiddenChanges(boundCharacter.forbidden_changes.join("，"));
+  }, [boundCharacter]);
   const editingOutfit = outfits.data?.find((item) => item.id === editingOutfitId) ?? null;
   const selectedOutfitFiles = assets.data?.filter((item) => selectedOutfitAssets.includes(item.id)) ?? [];
   const generatedReferenceCandidates = useMemo(
@@ -147,8 +185,18 @@ export function useAssetsWorkspace({
   const reclassifyAsset = useMutation({
     mutationFn: ({ assetId, kind }: { assetId: string; kind: AssetPurpose }) => api.updateAsset(assetId, { kind }),
     onSuccess: () => {
+      // Server-side reclassification detaches the asset from characters,
+      // outfits, styles and scene assets in one transaction; every list that
+      // can still show the old binding must refetch.
       queryClient.invalidateQueries({ queryKey: ["assets", id] });
       queryClient.invalidateQueries({ queryKey: ["characters", id] });
+      queryClient.invalidateQueries({ queryKey: ["outfits", id] });
+      queryClient.invalidateQueries({ queryKey: ["styles", id] });
+      queryClient.invalidateQueries({ queryKey: ["scene-assets", id] });
+      queryClient.invalidateQueries({ queryKey: ["pages", activeChapterId] });
+      // 重分类会拆掉 CHARACTER_REFERENCE 等绑定，直接改变生成就绪判定；
+      // 与 deleteAsset 一致，同步失效生成工作台，避免抽卡面板引用已失效参考。
+      queryClient.invalidateQueries({ queryKey: ["generation-workbench"] });
     },
   });
 
@@ -208,9 +256,10 @@ export function useAssetsWorkspace({
   });
 
   const updateCharacter = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       if (!boundCharacter) throw new Error("请先选择角色");
-      return api.updateCharacter(
+      const targetId = boundCharacter.id;
+      const result = await api.updateCharacter(
         boundCharacter.id,
         boundCharacter.version,
         editCharacterName.trim(),
@@ -218,13 +267,19 @@ export function useAssetsWorkspace({
         editLockedFeatures.split(/[，,、]/).map((item) => item.trim()).filter(Boolean),
         editForbiddenChanges.split(/[，,、]/).map((item) => item.trim()).filter(Boolean),
       );
+      return { result, targetId };
     },
-    onSuccess: (result) => {
+    onSuccess: ({ result, targetId }) => {
+      // 保存已在服务端生效：即使面板已切到别的角色，也必须失效缓存里的旧
+      // version，否则下一次保存会带着过期版本号撞出假 409。身份校验只拦表单回填。
+      queryClient.invalidateQueries({ queryKey: ["characters", id] });
+      // A late save of character A must not overwrite the edit form after the
+      // user has already switched the panel to character B.
+      if (targetId !== (boundCharacter?.id ?? null)) return;
       setEditCharacterName(result.primary_name);
       setEditCharacterAliases(result.aliases.join("，"));
       setEditLockedFeatures(result.locked_features.join("，"));
       setEditForbiddenChanges(result.forbidden_changes.join("，"));
-      queryClient.invalidateQueries({ queryKey: ["characters", id] });
     },
   });
 
@@ -246,22 +301,29 @@ export function useAssetsWorkspace({
   });
 
   const updateOutfit = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       if (!editingOutfit) throw new Error("服装档案不存在，请刷新后重试");
-      return api.updateOutfit(editingOutfit.id, {
+      const targetId = editingOutfit.id;
+      await api.updateOutfit(editingOutfit.id, {
         version: editingOutfit.version,
         name: outfitName.trim(),
         reference_asset_ids: selectedOutfitAssets,
         locked_fields: outfitLockedFields.split(/[，,、]/).map((item) => item.trim()).filter(Boolean),
       });
+      return targetId;
     },
-    onSuccess: () => {
+    onSuccess: (targetId) => {
+      // 同 updateCharacter：保存已生效，先失效缓存的旧 version（否则下次保存
+      // 假 409）；身份校验只用于不覆盖用户正在编辑的表单。
+      queryClient.invalidateQueries({ queryKey: ["outfits", id] });
+      // Same guard as updateCharacter: don't wipe the form the user is now
+      // editing with a late result from a previously selected outfit.
+      if (targetId !== editingOutfitId) return;
       setOutfitName("");
       setOutfitLockedFields("");
       setSelectedOutfitAssets([]);
       setEditingOutfitId(null);
       setShowGeneratedReferencePicker(false);
-      queryClient.invalidateQueries({ queryKey: ["outfits", id] });
     },
   });
 
@@ -278,6 +340,9 @@ export function useAssetsWorkspace({
       queryClient.invalidateQueries({ queryKey: ["script", activeChapterId] });
       queryClient.invalidateQueries({ queryKey: ["pages", activeChapterId] });
       queryClient.invalidateQueries({ queryKey: ["storyboard"] });
+      // 删除服装会清除剧本/分镜绑定并改变生成就绪输入；与 deleteAsset 一致
+      // 失效生成工作台，避免工作台继续按已删除服装判定参考就绪。
+      queryClient.invalidateQueries({ queryKey: ["generation-workbench"] });
       setUploadError("");
     },
     onError: (reason) => setUploadError(
@@ -314,7 +379,10 @@ export function useAssetsWorkspace({
       // The auto-triggered analysis must not fail silently: an unhandled
       // rejection left the style stuck in DRAFT with no recovery hint.
       api.analyzeStyle(style.id)
-        .then(() => queryClient.invalidateQueries({ queryKey: ["jobs", id] }))
+        .then(() => {
+          queryClient.invalidateQueries({ queryKey: ["styles", id] });
+          queryClient.invalidateQueries({ queryKey: ["jobs", id] });
+        })
         .catch(() => setUploadError("风格分析任务启动失败；请在已保存档案中点击“重新分析画面语言”重试。"));
     },
   });
@@ -322,8 +390,12 @@ export function useAssetsWorkspace({
   const analyzeStyle = useMutation({
     mutationFn: (styleId: string) => api.analyzeStyle(styleId),
     onSuccess: () => {
-      router.push(projectPath("jobs"));
+      // The analyze POST flips the style to ANALYZING synchronously; without
+      // this invalidation the cached list still shows the old status, the
+      // ANALYZING poll never starts, and the finished profile never appears.
+      queryClient.invalidateQueries({ queryKey: ["styles", id] });
       queryClient.invalidateQueries({ queryKey: ["jobs", id] });
+      router.push(projectPath("jobs"));
     },
   });
 
@@ -334,8 +406,8 @@ export function useAssetsWorkspace({
   });
 
   function selectStyleMode(mode: StyleProfile["color_mode"]) {
-    setStyleColorMode(mode);
     window.localStorage.setItem(`mangaflow.style-mode.${id}`, mode);
+    emitStyleModeChange();
     setStyleName((current) => ["黑白网点风格", "彩色漫画风格"].includes(current) ? (mode === "monochrome" ? "黑白网点风格" : "彩色漫画风格") : current);
   }
 
@@ -416,7 +488,6 @@ export function useAssetsWorkspace({
     styleLockedFields,
     setStyleLockedFields,
     styleColorMode,
-    setStyleColorMode,
     selectedOutfitAssets,
     setSelectedOutfitAssets,
     showGeneratedReferencePicker,

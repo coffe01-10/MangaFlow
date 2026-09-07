@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, select, update
 from sqlalchemy.orm import Session
 
+from app.api.helpers import reject_required_nulls
 from app.config import get_settings
 from app.database import get_db
 from app.domain.states import JobStatus
@@ -20,6 +21,7 @@ from app.models import (
     StyleProfile,
     StyleStatus,
     WorkflowDefinition,
+    WorkflowRun,
 )
 from app.schemas import (
     DashboardAIOverview,
@@ -37,8 +39,9 @@ from app.services.credential_source import (
     credential_source_for_protocol,
     environment_credentials_ready,
 )
-from app.services.job_service import mark_job_cancelled
+from app.services.job_service import cancel_job
 from app.services.model_availability import count_available_catalog_models
+from app.services.workflow_engine import cancel_run
 from app.settings_schemas import ProjectSummaryRead
 
 router = APIRouter()
@@ -479,10 +482,9 @@ def update_project(
     project = db.get(Project, project_id)
     if not project or project.deleted_at is not None:
         raise HTTPException(status_code=404, detail="项目不存在")
-    if project.version != payload.version:
-        raise HTTPException(status_code=409, detail="项目已被其他操作更新，请刷新后重试")
 
     changes = payload.model_dump(exclude_unset=True, exclude={"version"})
+    reject_required_nulls(Project, changes)
     for field, model_type in (
         ("default_text_model_id", "TEXT"),
         ("last_image_model_id", "IMAGE"),
@@ -493,11 +495,22 @@ def update_project(
         model = db.get(AIModel, model_id)
         if not model or model.model_type != model_type or not model.enabled:
             raise HTTPException(status_code=422, detail=f"{field} 指向的模型不可用")
+    # Claim the row with an atomic conditional update so concurrent PATCHes
+    # cannot both pass an in-memory version comparison (same pattern as
+    # _claim_panel_version / scene asset PATCH).
+    claimed = db.execute(
+        update(Project)
+        .where(Project.id == project.id, Project.version == payload.version)
+        .values(version=Project.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if not claimed.rowcount:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="项目已被其他操作更新，请刷新后重试")
     for key, value in changes.items():
         setattr(project, key, value)
     if changes.get("last_image_model_alias"):
         project.image_model_alias = changes["last_image_model_alias"]
-    project.version += 1
     db.commit()
     db.refresh(project)
     return project
@@ -531,7 +544,25 @@ def archive_project(
         )
     )
     for job in active_jobs:
-        mark_job_cancelled(db, job)
+        # cancel_job, not the lower-level mark_job_cancelled: a run-linked job
+        # must escalate to cancel_run, otherwise the WorkflowRun row stays
+        # RUNNING forever (mark_job_cancelled only stamps the node run) and
+        # every later reconcile re-commits the zombie.
+        cancel_job(db, job)
+    # Jobless non-terminal runs (e.g. PAUSED at an approval barrier, where
+    # barrier nodes own no job) never trigger the escalation above and would
+    # stay non-terminal under the archived project forever. Cancel them
+    # explicitly; cancel_run's sweeps are no-ops on jobless runs.
+    stale_runs = list(
+        db.scalars(
+            select(WorkflowRun).where(
+                WorkflowRun.project_id == project_id,
+                WorkflowRun.status.not_in(["COMPLETED", "CANCELLED", "FAILED"]),
+            )
+        )
+    )
+    for run in stale_runs:
+        cancel_run(db, run)
     project.deleted_at = utcnow()
     project.version += 1
     db.commit()

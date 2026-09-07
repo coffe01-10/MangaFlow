@@ -1,7 +1,11 @@
 # MangaFlow Windows 剩余项状态目录（V02-54D，状态 only）
 
-更新时间：2026-09-04　基线：`master` / `efedb08`（含 V02-54C / PR #118）
+更新时间：2026-09-06　基线：`lead/adr-approval`（master `2955f6f` = PR #178 合并后）
 对应：Issue #119（本文档即其交付物）；父项 V02-54 / Issue #114 保持未勾，V02-55 未开。
+2026-09-06 Windows 实机轮（`LAPTOP-TV9KT8RC`，Windows 11 10.0.26200 + WebView2 Evergreen）
+已把 W-01/W-02(部分)/W-06(部分)/W-07/W-08/W-11 转为 RUN，详见各行；
+同日第二/三轮（PR #178）W-12 转 RUN（NSIS 实机）；同日治理轮 W-21 转 RUN（ADR 终批，
+`lead/adr-approval` 分支）。
 
 ## 0. 定位与读法
 
@@ -17,33 +21,36 @@
 
 | 状态 | 数量 | 条目 |
 | --- | --- | --- |
-| NOT RUN | 16 | W-01～W-12、W-18、W-19、W-20、W-22 |
-| BLOCKED | 6 | W-13、W-14、W-15、W-16、W-17、W-21 |
+| RUN（2026-09-06 实机轮 + 治理/实现轮） | 9 | W-01、W-02（仪表盘级）、W-06（逻辑面）、W-07、W-08、W-11、W-12（NSIS 实机）、W-15（方案 B 实机）、W-21（ADR 终批） |
+| NOT RUN | 11 | W-02（画布级/缺失安装）、W-03、W-04、W-05（对话框交互面）、W-09、W-10、W-12（MSI 安装步）、W-18、W-19、W-20、W-22 |
+| BLOCKED | 4 | W-13、W-14、W-16、W-17 |
+
+部分 RUN / 部分 NOT RUN 的条目（W-02/W-05/W-06/W-12）在两行重复出现，各行计数按列出条目数计。
 
 ## 2. A. Windows 实机运行面（桌面壳：进程 / 渲染 / 日志 / 安全）
 
 | ID | 描述 | 依赖环境 | 状态 | 阻塞原因 | 已有证据（不视作实机验收） |
 | --- | --- | --- | --- | --- | --- |
-| W-01 | Windows 实机 Job Object 全链路：`CREATE_SUSPENDED` 挂起创建 → `KILL_ON_JOB_CLOSE` 根 Job → assign → `ResumeThread`；任一步失败终止挂起子进程（fail-closed）；崩溃/退出清树实测 | Windows 10/11 实机 | NOT RUN | 本沙箱为 Linux、无法运行 Windows；桌面壳 Windows 实机轮尚未执行 | 双 crate Windows 目标 `cargo check`；代码按 `scripts/owned_processes.py` 纪律实现；Linux PDEATHSIG 等价清树实测（`startup_protocol.rs`） |
-| W-02 | WebView2 Evergreen 渲染兼容：工作台 DOM/SVG 画布、拖拽/缩放、动画与 reduced-motion、静态导出页在 WebView2 内的实际表现 | Windows 实机 + WebView2 Runtime | NOT RUN | 无 WebView2 运行环境 | D5 Chromium 机制级验证（静态导出页直连动态端口 API）；非 WebView2 内核 |
-| W-03 | WebView2 缺失/损坏安装行为：Evergreen 未安装或损坏时壳的引导、提示与退出路径 | Windows 实机（可控卸载 Runtime） | NOT RUN | 同 W-02 | 壳侧握手与 WebView 创建顺序已有 Linux 等价测试 |
-| W-04 | WebView2 内工具页 invoke：`shell-tools.html` 经 `withGlobalTauri` 调用 `desktop_export_logs` / `desktop_pick_file` / `desktop_pick_directory` / `desktop_read_picked_file` 的实机链路 | Windows 实机 | NOT RUN | 同 W-02 | 触发页已随静态导出拷入 `dist/frontend/`；invoke 命令面过 Windows 目标编译门禁 |
-| W-05 | rfd 0.17 原生对话框实机行为：COM 线程模型、模态关系、与 WebView2 的焦点交互、保存/打开对话框 | Windows 实机 | NOT RUN | src-tauri 仅 Windows 目标编译门禁 | picker 策略/穿越拒绝/能力表矩阵在 shell-core `tests/picker_policy.rs` Linux 全绿 |
-| W-06 | 日志轮转 Windows 实机行为：对 helper 进程仍打开文件的 rename 语义、世代 shift、ACL 收紧前的符号链接种植场景 | Windows 实机 | NOT RUN | rename-on-open 的 Windows 语义无法在 Linux 复现 | shell-core 36 项测试 Linux 全绿（含符号链接注入、清扫收紧、自愈重开）；见 README §6.4 |
-| W-07 | 单实例多开行为：`tauri-plugin-single-instance` 第二实例聚焦/参数传递；会话启动清扫的「无并发壳」假设在多开下的实际竞态 | Windows 实机 | NOT RUN | 互斥体已接、实机未验；清扫无活跃性排除（README §6.4 并发假设） | 单实例插件已集成；清扫范围收紧有单元断言 |
-| W-08 | owner token CSPRNG 运行时：Windows `BCryptGenRandom` 路径实际产出 32 位 hex token | Windows 实机 | NOT RUN | 仅编译验证 | Unix `/dev/urandom` 路径 Linux 实测；token 校验逻辑共库 |
-| W-09 | CSP 在 WebView2 的实际执行：`script-src 'unsafe-inline'` 在案债务、`withGlobalTauri` 命令暴露面、`default-src 'self'` 外链限制的实际行为 | Windows 实机 + WebView2 DevTools | NOT RUN | 无 WebView2 | CSP 配置静态就位并在 README D9 记录为债务 |
-| W-10 | 用户数据目录 ACL 收紧：`%LOCALAPPDATA%\com.mangaflow.desktop\` 每用户权限边界、日志/运行目录的权限实测 | Windows 实机 | NOT RUN | user-data ACL 收紧未做（README D6/§6.4 残余风险记录） | 目录布局（data/storage/uploads/logs/runtime）有测试断言不落仓库 |
+| W-01 | Windows 实机 Job Object 全链路：`CREATE_SUSPENDED` 挂起创建 → `KILL_ON_JOB_CLOSE` 根 Job → assign → `ResumeThread`；任一步失败终止挂起子进程（fail-closed）；崩溃/退出清树实测 | Windows 10/11 实机 | **RUN（2026-09-06）** | — | shell-core `cargo test` 49 项 Windows 原生全绿（含 startup_protocol 9：握手全链/错误 GO/崩溃清树/强杀升级/stdin-EOF 协作停机/launcher 链 READY pid Job 成员验收）；完整 debug 壳实机：真实关窗协作停机 exit 0 + RunLog `stopped`，`taskkill /F` 强杀后 helper 树（含 launcher 孙进程）3 秒内全灭 |
+| W-02 | WebView2 Evergreen 渲染兼容：工作台 DOM/SVG 画布、拖拽/缩放、动画与 reduced-motion、静态导出页在 WebView2 内的实际表现 | Windows 实机 + WebView2 Runtime | **RUN（仪表盘级，2026-09-06）/ 画布级 NOT RUN** | 工作台子树受 D5 静态导出约束（poc stub），画布级渲染属 D5 改造范围 | debug 壳实机：WebView2 建窗后仪表盘完整渲染（全局导航/MVP ROUTE/AI 连接卡片），运行时 origin 注入实取 sidecar API 实时数据（2 可用模型/2 已配置连接）；中文排版/布局正常 |
+| W-03 | WebView2 缺失/损坏安装行为：Evergreen 未安装或损坏时壳的引导、提示与退出路径 | Windows 实机（可控卸载 Runtime） | NOT RUN | 需要可控卸载本机 WebView2 Runtime（有影响日常使用的风险，本轮不做） | 壳侧握手与 WebView 创建顺序已有测试 |
+| W-04 | WebView2 内工具页 invoke：`shell-tools.html` 经 `withGlobalTauri` 调用 `desktop_export_logs` / `desktop_pick_file` / `desktop_pick_directory` / `desktop_read_picked_file` 的实机链路 | Windows 实机 | NOT RUN | 壳内 UI 无工具页导航入口，实机交互无从触发；invoke 命令面过 Windows 原生 cargo 测试 | 触发页已随静态导出拷入 `dist/frontend/`；命令面过 Windows 目标编译门禁 + shell-core 策略测试 |
+| W-05 | rfd 0.17 原生对话框实机行为：COM 线程模型、模态关系、与 WebView2 的焦点交互、保存/打开对话框 | Windows 实机 | **RUN（策略面）/ 对话框交互 NOT RUN** | 原生对话框实机弹出需工具页入口（同 W-04） | picker 策略/穿越拒绝/能力表矩阵 Windows 原生跑绿（junction 链接拒绝实测） |
+| W-06 | 日志轮转 Windows 实机行为：对 helper 进程仍打开文件的 rename 语义、世代 shift、ACL 收紧前的符号链接种植场景 | Windows 实机 | **RUN（逻辑面，2026-09-06）/ ACL 场景 NOT RUN** | ACL 收紧本身未实现（README D6 债务） | shell-core 49 项 Windows 原生全绿（含 junction 注入拒绝、世代 shift/保留、清扫只动超阈值 base）；实机壳运行产生 `shell-<token>.log`/`helper-<token>.stderr.log` 里程碑链完整（spawn→ready_verified→go_sent→healthy→stopped） |
+| W-07 | 单实例多开行为：`tauri-plugin-single-instance` 第二实例聚焦/参数传递；会话启动清扫的「无并发壳」假设在多开下的实际竞态 | Windows 实机 | **RUN（2026-09-06）** | — | 第二实例立即退出（exit 0）仅剩一个壳进程；最小化窗口经 `unminimize()+set_focus()` 修复后正确还原聚焦（实机发现修复前 `set_focus` 单独对最小化窗口无效）；多开下会话清扫活跃性排除仍欠（设计假设记录在案） |
+| W-08 | owner token CSPRNG 运行时：Windows `BCryptGenRandom` 路径实际产出 32 位 hex token | Windows 实机 | **RUN（2026-09-06）** | — | `new_token` 经 Windows 原生测试断言；实机每次壳启动生成 token 并通过 journal/READY/运行目录三处一致性校验 |
+| W-09 | CSP 在 WebView2 的实际执行：`script-src 'unsafe-inline'` 在案债务、`withGlobalTauri` 命令暴露面、`default-src 'self'` 外链限制的实际行为 | Windows 实机 + WebView2 DevTools | NOT RUN | 页面正常加载证明配置未破坏渲染，但 CSP 指令级的实际执行行为未逐条验证（需 DevTools 深检） | CSP 配置静态就位并在 README D9 记录为债务 |
+| W-10 | 用户数据目录 ACL 收紧：`%LOCALAPPDATA%\com.mangaflow.desktop\` 每用户权限边界、日志/运行目录的权限实测 | Windows 实机 | NOT RUN | user-data ACL 收紧未做（README D6/§6.4 残余风险记录） | 目录布局（data/storage/uploads/logs/runtime）实机 2026-09-06 验证不落仓库、按契约落位 |
 
 ## 3. B. 打包、安装与分发
 
 | ID | 描述 | 依赖环境 | 状态 | 阻塞原因 | 已有证据（不视作实机验收） |
 | --- | --- | --- | --- | --- | --- |
-| W-11 | Windows sidecar 打包形态：PyInstaller onedir / embeddable 在 Windows 构建，`alembic.ini`+`migrations` 入 `_internal/` 硬约束复验 | Windows 实机构建环境 | NOT RUN | 沙箱无 Windows 打包链 | Linux 形态 116MB onedir 冻结产物完整握手→GO→健康→API 冒烟通过（V02-53B 证据） |
-| W-12 | `tauri build` 产物与 MSI/NSIS 安装/升级/卸载实机：安装只换程序文件、Alembic 原地迁移、卸载不删 `data/`/`storage/`/`uploads/`/凭据、禁止 NSIS installer hooks 删用户数据 | Windows 实机 | NOT RUN | 沙箱无 webkit2gtk/显示服务，无法构建；Windows 构建轮未执行 | bundle（msi+nsis/图标）配置就位并过 Windows 目标编译校验；`shell-core/tests/delivery_contract.rs` 3 项冻结配置契约（README §5） |
+| W-11 | Windows sidecar 打包形态：PyInstaller onedir / embeddable 在 Windows 构建，`alembic.ini`+`migrations` 入 `_internal/` 硬约束复验 | Windows 实机构建环境 | **RUN（2026-09-06）** | — | Windows PyInstaller onedir 冻结产物（PyInstaller 6.22.2 / Python 3.12）冒烟全过：握手→GO→健康→dashboard API→协作停机 exit 0（3.4s 含 30 个迁移）；`alembic.ini`+`migrations` 入 `_internal/` 硬约束在 Windows 形态同样成立；Linux 形态 116MB onedir 证据（V02-53B）继续有效 |
+| W-12 | `tauri build` 产物与 MSI/NSIS 安装/升级/卸载实机：安装只换程序文件、Alembic 原地迁移、卸载不删 `data/`/`storage/`/`uploads/`/凭据、禁止 NSIS installer hooks 删用户数据 | Windows 实机 | **RUN（NSIS 实机，2026-09-06）/ MSI 安装步 NOT RUN** | MSI 静默安装（msoexec per-machine）需管理员授权，本轮未提权 | 双安装包本机构建成功（`tauri build`：MSI `MangaFlow_0.1.0_x64_en-US.msi` + NSIS `MangaFlow_0.1.0_x64-setup.exe`，内嵌真实静态导出）；NSIS 实机脚本验证：静默安装后用户数据 222 文件逐字节一致、HKCU 卸载项注册、卸载后安装目录与注册表项清除且用户数据仍逐字节一致（交付契约「卸载不删用户数据」实测成立）；冻结契约测试（`delivery_contract.rs`）继续全绿 |
 | W-13 | 代码签名与 SmartScreen：证书类型（OV/EV）、时间戳、签名后 SmartScreen 信誉实测 | 代码签名证书 + Windows 实机 | BLOCKED | 无证书、无签发授权；购买/身份属用户决策；Issue 明确禁止真实签名 | 未签名构建与安装契约已冻结；无任何签名实现 |
 | W-14 | 自动更新链路：updater 插件、签名密钥、更新服务器/分发渠道、升级不删用户数据实测 | 签名基础设施 + 更新服务器 | BLOCKED | 依赖 W-13；当前无插件、无密钥、无服务器（README D8） | 未接 updater；D8 整项 NOT RUN |
-| W-15 | 前端壳内形态收口：静态导出正式改造（动态段预渲染组合 + 工作台树预渲染）或方案 B（捆绑 node 跑 `next start` 保留 rewrites） | ADR 终批确定路线后的实现轮 + 实机验证 | BLOCKED | 先决 W-21：D5 路线未定 | 否决条件 3 已拿到确定性阻塞输入：flag 级静态导出不可行；poc 补丁仅覆盖壳级页面（D5） |
+| W-15 | 前端壳内形态收口：静态导出正式改造（动态段预渲染组合 + 工作台树预渲染）或方案 B（捆绑 node 跑 `next start` 保留 rewrites） | ADR 终批确定路线后的实现轮 + 实机验证 | **RUN（方案 B，2026-09-06 实机）** | — | 设计批准（`docs/v02-w15-desktop-web-form-plan-b.md`）后实现并实机验收：helper 派生捆绑 node 跑 Next standalone（Job 成员，停机/强杀自动收割）、固定回环中继 39443 解决 standalone 构建期固化 rewrites 目的地（`next.config.ts` + 中继双端实现）、壳 `WebviewUrl::External`（仅回环）、Next 安全头（CSP/nosniff/DENY/no-referrer，`SECURITY_HEADERS_PASS`）；实机：WebView2 加载 `http://127.0.0.1:<port>/settings` 完整生产 UI + 全实时数据 + 路由导航，关窗协作停机 exit 0 且 node 全灭；sidecar e2e 新增 plan B 用例（健康代理/UI/代理取数/停机收割）全绿；双安装包带 web 资源构建成功（NSIS 23.7MB / MSI 35.4MB），NSIS 装卸数据安全复验 PASS（336 文件两态逐字节一致）。`MANGAFLOW_DESKTOP_WEB_DIST` 缺省时保留静态导出形态（兼容回退） |
 
 ## 4. C. 运行基础设施与 Worker 形态
 
@@ -64,11 +71,11 @@
 
 | ID | 描述 | 依赖环境 | 状态 | 阻塞原因 | 已有证据（不视作实机验收） |
 | --- | --- | --- | --- | --- | --- |
-| W-21 | ADR 选型 lead 终批：`docs/adr/v02-desktop-shell-evaluation.md` 仍为 DRAFT；§3.1 否决条件核查表 + D5 输入 + W-01～W-20 状态供复核 | lead 复核决策 | BLOCKED | 治理门禁：选型不由实现/文档轮自行放行 | ADR 状态说明已按 V02-53B/V02-54 输入更新（仍草案） |
-| W-22 | V02-55 发布门禁：全新安装/升级/卸载/恢复测试、浏览器 E2E、固定性能门禁、授权范围内真实供应商验收、全部 worktree 清点、三 manifest 统一 `0.2.0` + 变更记录 | 上述各项收口 | NOT RUN | 等前置项收口；版本号与变更记录不提前改动 | roadmap V02-55 保持未勾；`0.2.0` 版本结论只声明目标 |
+| W-21 | ADR 选型 lead 终批：`docs/adr/v02-desktop-shell-evaluation.md` §3.1 否决条件核查表 + D5 输入 + W-01～W-20 状态供复核 | lead 复核决策 | **RUN（2026-09-06）** | — | 用户（组长/产品决策人）终批通过：**Tauri 2 路线批准，Electron 不采用**；否决条件逐项复核记录 + 批准依据写入 ADR 头部「批准记录」（sidecar 打包 W-11 证伪、WebView2 仪表盘级 RUN、D5 路线明确留给 W-15 实现轮、Rust 维护成本裁定可接受）；README 头部与 §4 否决条件表同步 |
+| W-22 | V02-55 发布门禁：全新安装/升级/卸载/恢复测试、浏览器 E2E、固定性能门禁、授权范围内真实供应商验收、全部 worktree 清点、三 manifest 统一 `0.2.0` + 变更记录 | 上述各项收口 | **RUN（2026-09-06，RC 口径）** | 真实供应商验收无凭据授权 NOT RUN；N=20 全样本 NOT RUN（两轮 LH/FPS 门禁已过）；跨版本升级无历史安装版本可测 NOT RUN | `npm run check` exit 0、E2E 17/17、性能两轮全过（run_id `b67f80dd…`）、NSIS 装卸数据安全实机两轮 PASS、sidecar e2e 2/2、shell-core 51 项、worktree 清点完成；五 manifest 统一 `0.2.0` + `CHANGELOG.md`（V02-55 行/roadmap）；#12/#28 关闭、#114 随本轮收口 |
 
 ## 7. 维护规则
 
 - 状态变化只能来自验证证据：每轮 Windows/发布验收后由 lead 核对证据 SHA 更新对应行，并在 `docs/development-progress.md` 记录该轮证据；不因分支测试全绿或 PR 打开而改状态。
 - 条目完成即整行移入该轮验收记录并标注证据链接；新发现的余项追加新 `W-xx` ID，不改写历史条目。
-- `BLOCKED` 项解除条件：W-13/W-14 = 用户提供证书与服务器并授权；W-15 = W-21 定路线后开实现轮；W-16/W-17 = 用户同意安装 Docker/PostgreSQL/Redis（或提供等价远程环境）；W-21 = lead 复核 ADR。
+- `BLOCKED` 项解除条件：W-13/W-14 = 用户提供证书与服务器并授权；W-16/W-17 = 用户同意安装 Docker/PostgreSQL/Redis（或提供等价远程环境）；~~W-21 = lead 复核 ADR~~（已解除，2026-09-06）；~~W-15 = D5 路线设计~~（方案 B 已批准并实现，2026-09-06）。

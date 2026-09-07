@@ -10,6 +10,7 @@ degrading to a whole-page image-to-image edit or switching model/provider.
 
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 from typing import Any, Final
 
 ACCEPTS_EXPLICIT_MASK: Final = "accepts_explicit_mask"
@@ -143,3 +144,32 @@ def whole_image_reference_edit_capabilities() -> dict[str, Any]:
     """
 
     return declare_region_capabilities(whole_image_reference_only=True)
+
+
+MAX_DECLARED_REFERENCE_IMAGES: Final = 100
+
+
+def capability_reference_limit(capabilities: dict[str, Any] | None) -> int | None:
+    """Read ``max_reference_images`` as a bounded non-negative integer.
+
+    Returns ``None`` when the bit is absent or malformed so callers keep the
+    documented undeclared semantics instead of crashing: one bad admin write
+    must not 500 the model catalog, kill worker binding or break vertex binds.
+    Booleans, negative, fractional and oversized values read as undeclared.
+    """
+
+    value = (capabilities or {}).get("max_reference_images")
+    if isinstance(value, bool):
+        return None
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if (
+        not number.is_finite()
+        or number < 0
+        or number > MAX_DECLARED_REFERENCE_IMAGES
+        or number != number.to_integral_value()
+    ):
+        return None
+    return int(number)

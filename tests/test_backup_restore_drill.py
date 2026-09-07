@@ -72,6 +72,14 @@ def _fingerprint(root: Path) -> dict[str, dict]:
 
 def _make_junction(link: Path, target: Path) -> None:
     link.parent.mkdir(parents=True, exist_ok=True)
+    if sys.platform != "win32":
+        # POSIX has no junctions; a symlink is the platform's reparse analog
+        # and every backup/restore guard rejects symlinks exactly like
+        # junctions (is_link_or_reparse). Exercising the real rejection paths
+        # beats crashing on the Windows-only "oem" codec before cmd.exe is
+        # even resolved.
+        link.symlink_to(target)
+        return
     completed = subprocess.run(
         ["cmd.exe", "/c", "mklink", "/J", str(link), str(target)],
         capture_output=True,
@@ -131,6 +139,7 @@ def test_backup_restore_roundtrip_preserves_source_and_exports(tmp_path, fixture
     assert restore_result.checks["source_unchanged"] == "passed"
     assert restore_result.checks["pre_alembic_bytes"] == "passed"
     assert restore_result.checks["foreign_keys"] == "passed"
+    assert restore_result.checks["db_blobs"] == "passed"
     assert restore_result.checks["page_export"] == meta["page_id"]
     assert restore_result.pre_alembic_db_sha256
     assert restore_result.post_alembic_db_sha256
@@ -140,6 +149,12 @@ def test_backup_restore_roundtrip_preserves_source_and_exports(tmp_path, fixture
     assert _snapshot(source) == before
     assert not (archive / ".env").exists()
     assert not (archive / "uploads" / ".env.local").exists()
+    for key in (
+        meta["thumbnail_320_key"],
+        meta["thumbnail_640_key"],
+        meta["export_storage_key"],
+    ):
+        assert (restored / "storage" / key).is_file()
     exported = restored / "storage" / "exports" / "_restore-drill" / "page-0001.png"
     generated = restored / "storage" / meta["generated_key"]
     assert exported.is_file()
@@ -156,10 +171,266 @@ def test_backup_restore_roundtrip_preserves_source_and_exports(tmp_path, fixture
         report_path=tmp_path / "verify-report.json",
     )
     assert verify_result.outcome == "success"
+    assert verify_result.checks["db_blobs"] == "passed"
     assert json.loads(restore_report.read_text(encoding="utf-8"))["errors"] == []
     assert "cloud upload" in restore_result.not_run
     assert _owner(archive)["status"] == "complete"
     assert _owner(restored)["status"] == "complete"
+
+
+def test_backup_restore_includes_db_referenced_thumbnails_and_exports(
+    tmp_path, fixture_root
+):
+    source, meta = fixture_root
+    archive = tmp_path / "archive"
+    backup_result = backup(
+        source_root=source, destination=archive, report_path=tmp_path / "backup.json"
+    )
+    assert backup_result.outcome == "success"
+    archived = {entry["path"] for entry in backup_result.files}
+    assert f"storage/{meta['thumbnail_320_key']}" in archived
+    assert f"storage/{meta['thumbnail_640_key']}" in archived
+    assert f"storage/{meta['export_storage_key']}" in archived
+
+    restored = tmp_path / "restored"
+    restore_result = restore(
+        archive=archive,
+        destination=restored,
+        repo_root=ROOT,
+        report_path=tmp_path / "restore.json",
+    )
+    assert restore_result.outcome == "success"
+    assert restore_result.checks["db_blobs"] == "passed"
+    for key in (
+        meta["thumbnail_320_key"],
+        meta["thumbnail_640_key"],
+        meta["export_storage_key"],
+    ):
+        assert (restored / "storage" / key).is_file()
+        assert hash_file(restored / "storage" / key)[0] == hash_file(
+            source / "storage" / key
+        )[0]
+    verify_result = verify_restored(
+        destination=restored,
+        repo_root=ROOT,
+        report_path=tmp_path / "verify.json",
+    )
+    assert verify_result.outcome == "success"
+    assert verify_result.checks["db_blobs"] == "passed"
+
+
+def test_user_upload_thumbnails_round_trip_restore_and_verify(tmp_path, fixture_root):
+    source, meta = fixture_root
+    # uploads.py runs create_thumbnails with settings.upload_root for
+    # USER_UPLOAD assets, so their webp keys live under uploads/thumbnails/,
+    # not storage/thumbnails/. The whole drill must resolve them there.
+    archive = tmp_path / "archive"
+    backup_result = backup(
+        source_root=source, destination=archive, report_path=tmp_path / "backup.json"
+    )
+    assert backup_result.outcome == "success"
+    archived = {entry["path"] for entry in backup_result.files}
+    for key in (meta["upload_thumbnail_320_key"], meta["upload_thumbnail_640_key"]):
+        assert f"uploads/{key}" in archived
+
+    restored = tmp_path / "restored"
+    restore_result = restore(
+        archive=archive,
+        destination=restored,
+        repo_root=ROOT,
+        report_path=tmp_path / "restore.json",
+    )
+    assert restore_result.outcome == "success"
+    assert restore_result.checks["db_blobs"] == "passed"
+    for key in (meta["upload_thumbnail_320_key"], meta["upload_thumbnail_640_key"]):
+        assert (restored / "uploads" / key).is_file()
+        assert hash_file(restored / "uploads" / key)[0] == hash_file(
+            source / "uploads" / key
+        )[0]
+    verify_result = verify_restored(
+        destination=restored,
+        repo_root=ROOT,
+        report_path=tmp_path / "verify.json",
+    )
+    assert verify_result.outcome == "success"
+    assert verify_result.checks["db_blobs"] == "passed"
+
+
+@pytest.mark.parametrize("scope", ["thumbnails", "exports"])
+def test_missing_scope_directory_backs_up_as_empty_scope(
+    tmp_path, fixture_root, scope
+):
+    source, meta = fixture_root
+    # Nothing in the app pre-creates storage/thumbnails or storage/exports
+    # (config.py ensure_directories only creates storage_root and upload_root;
+    # both scopes appear lazily). A fresh data root without them — and without
+    # the rows referencing them — must back up and restore as an empty scope.
+    shutil.rmtree(source / "storage" / scope)
+    connection = sqlite3.connect(source / "storage" / "mangaflow.db")
+    try:
+        if scope == "thumbnails":
+            connection.execute(
+                "UPDATE assets SET thumbnail_320_key = NULL, thumbnail_640_key = NULL"
+            )
+        else:
+            connection.execute("DELETE FROM export_bundles")
+        connection.commit()
+    finally:
+        connection.close()
+    archive = tmp_path / "archive"
+    result = backup(
+        source_root=source, destination=archive, report_path=tmp_path / "backup.json"
+    )
+    assert result.outcome == "success"
+    archived = {entry["path"] for entry in result.files}
+    assert not any(path.startswith(f"storage/{scope}/") for path in archived)
+    restored = tmp_path / "restored"
+    restore_result = restore(
+        archive=archive,
+        destination=restored,
+        repo_root=ROOT,
+        report_path=tmp_path / "restore.json",
+    )
+    assert restore_result.outcome == "success"
+    assert restore_result.checks["db_blobs"] == "passed"
+
+
+@pytest.mark.parametrize("scope", ["thumbnails", "exports"])
+def test_scope_slot_occupied_by_non_directory_fails_backup(
+    tmp_path, fixture_root, scope
+):
+    source, meta = fixture_root
+    # Missing scope directories are empty scopes, but a file planted in a
+    # scope slot is still a hostile layout and must fail closed.
+    shutil.rmtree(source / "storage" / scope)
+    (source / "storage" / scope).write_text("not a directory\n", encoding="utf-8")
+    with pytest.raises(BackupRestoreError) as raised:
+        backup(
+            source_root=source,
+            destination=tmp_path / "archive",
+            report_path=tmp_path / "backup.json",
+        )
+    assert raised.value.code == "PATH_INVALID"
+    assert not (tmp_path / "archive").exists()
+
+
+def test_scope_slot_occupied_by_junction_fails_backup(tmp_path, fixture_root):
+    source, meta = fixture_root
+    shutil.rmtree(source / "storage" / "exports")
+    _make_junction(source / "storage" / "exports", source / "storage" / "generated")
+    with pytest.raises(BackupRestoreError) as raised:
+        backup(
+            source_root=source,
+            destination=tmp_path / "archive",
+            report_path=tmp_path / "backup.json",
+        )
+    assert raised.value.code == "REPARSE"
+    assert not (tmp_path / "archive").exists()
+
+
+def test_drifted_source_fails_backup_db_blob_missing(tmp_path, fixture_root):
+    source, meta = fixture_root
+    # Delete the blob before backup so the source database keeps referencing a
+    # file that no longer exists (drift). Backup must fail fast on the source
+    # instead of reporting success for an archive that every restore would
+    # then reject with DB_BLOB_MISSING.
+    (source / "storage" / meta["thumbnail_320_key"]).unlink()
+    archive = tmp_path / "archive"
+    report_path = tmp_path / "backup.json"
+    with pytest.raises(BackupRestoreError) as raised:
+        backup(source_root=source, destination=archive, report_path=report_path)
+    assert raised.value.code == "DB_BLOB_MISSING"
+    assert meta["thumbnail_320_key"] in str(raised.value)
+    assert not archive.exists()
+    assert raised.value.report is not None
+    assert raised.value.report.outcome == "failed"
+    assert raised.value.report.destination_created is False
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["outcome"] == "failed"
+    assert payload["errors"][0]["code"] == "DB_BLOB_MISSING"
+    assert payload["checks"]["db_blob_missing"] == "failed"
+    assert payload["destination_created"] is False
+
+
+def test_restore_fails_when_db_referenced_thumbnail_missing(tmp_path, fixture_root):
+    source, meta = fixture_root
+    archive = tmp_path / "archive"
+    backup(
+        source_root=source, destination=archive, report_path=tmp_path / "backup.json"
+    )
+    # Backup now refuses drifted sources, so post-backup drift is constructed
+    # directly in the archive: the database still references the thumbnail
+    # while neither the tree nor the manifest carries it. Restore and verify
+    # must both fail closed on that archive.
+    drift_relative = f"storage/{meta['thumbnail_320_key']}"
+    (archive / drift_relative).unlink()
+    manifest_path = archive / "manifest.json"
+    manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_payload["files"] = [
+        entry
+        for entry in manifest_payload["files"]
+        if entry["path"] != drift_relative
+    ]
+    manifest_path.write_text(json.dumps(manifest_payload), encoding="utf-8")
+
+    restored = tmp_path / "restored"
+    report_path = tmp_path / "restore.json"
+    with pytest.raises(BackupRestoreError) as raised:
+        restore(
+            archive=archive,
+            destination=restored,
+            repo_root=ROOT,
+            report_path=report_path,
+        )
+    assert raised.value.code == "DB_BLOB_MISSING"
+    assert meta["thumbnail_320_key"] in str(raised.value)
+    assert raised.value.report is not None
+    assert raised.value.report.outcome == "failed"
+    assert raised.value.report.incomplete is True
+    assert _owner(restored)["status"] == "incomplete"
+    assert not (restored / "storage" / meta["thumbnail_320_key"]).exists()
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["outcome"] == "failed"
+    assert payload["errors"][0]["code"] == "DB_BLOB_MISSING"
+    assert payload["checks"]["db_blob_missing"] == "failed"
+    with pytest.raises(BackupRestoreError) as verify_failed:
+        verify_restored(
+            destination=restored,
+            repo_root=ROOT,
+            report_path=tmp_path / "verify.json",
+        )
+    assert verify_failed.value.code == "DB_BLOB_MISSING"
+
+
+def test_backup_excludes_drill_self_produced_export_dir(tmp_path, fixture_root):
+    source, meta = fixture_root
+    archive = tmp_path / "archive"
+    backup(
+        source_root=source, destination=archive, report_path=tmp_path / "backup.json"
+    )
+    restored = tmp_path / "restored"
+    restore(
+        archive=archive,
+        destination=restored,
+        repo_root=ROOT,
+        report_path=tmp_path / "restore.json",
+    )
+    drill_png = restored / "storage" / "exports" / "_restore-drill" / "page-0001.png"
+    assert drill_png.is_file()
+
+    rearchive = tmp_path / "rearchive"
+    result = backup(
+        source_root=restored,
+        destination=rearchive,
+        report_path=tmp_path / "rebackup.json",
+    )
+    assert result.outcome == "success"
+    archived = {entry["path"] for entry in result.files}
+    assert not any(
+        path.startswith("storage/exports/_restore-drill/") for path in archived
+    )
+    assert f"storage/{meta['export_storage_key']}" in archived
+    assert f"storage/{meta['thumbnail_320_key']}" in archived
 
 
 def test_dry_run_validates_without_any_writes(tmp_path, fixture_root):
@@ -527,7 +798,16 @@ def test_restore_rejects_duplicate_and_case_colliding_paths(tmp_path, fixture_ro
             repo_root=ROOT,
             report_path=tmp_path / "r2.json",
         )
-    assert raised_case.value.code == "PATH_CONFLICT"
+    if sys.platform == "win32":
+        # normcase lowercases on Windows, so the case variant collides with
+        # the original entry and the conflict guard fires first.
+        assert raised_case.value.code == "PATH_CONFLICT"
+    else:
+        # POSIX normcase is the identity and filesystems are case-sensitive:
+        # STORAGE/... no longer collides, but it equally no longer matches a
+        # backup scope prefix, so the manifest guard rejects it. Either way
+        # the restore must fail closed without creating the destination.
+        assert raised_case.value.code == "MANIFEST_INVALID"
     assert not (tmp_path / "restored-dup").exists()
     assert not (tmp_path / "restored-case").exists()
 
@@ -608,6 +888,10 @@ def test_cleanup_owned_fixture_deletes_only_marked_tree(tmp_path, fixture_root):
     assert not source.exists()
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="the backup-restore.ps1 wrapper and SYSTEMROOT are Windows-only",
+)
 def test_powershell_wrapper_dry_run_zero_writes(tmp_path, fixture_root):
     source, _meta = fixture_root
     archive = tmp_path / "archive"
@@ -792,7 +1076,7 @@ def test_malformed_manifest_has_structured_failure_report(tmp_path, fixture_root
         elif case == "negative_bytes":
             payload["files"][0]["bytes"] = -1
         else:
-            payload["files"][-1]["path"] = "storage/exports/out-of-scope.png"
+            payload["files"][-1]["path"] = "storage/out-of-scope.png"
         manifest_path.write_text(json.dumps(payload), encoding="utf-8")
 
     destination = tmp_path / "restored"

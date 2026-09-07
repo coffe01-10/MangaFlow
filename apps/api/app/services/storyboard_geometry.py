@@ -55,7 +55,7 @@ def reorder_page_panels(db: Session, page: MangaPage, panel_ids: list[str]) -> N
         db.flush()
         for index, panel_id in enumerate(panel_ids, start=1):
             panels[panel_id].reading_order = index
-        mark_storyboard_changed(page)
+        mark_storyboard_changed(db, page)
         mark_pages_for_review(db, page.chapter_id, from_page_number=page.page_number)
         db.commit()
     except Exception:
@@ -139,7 +139,10 @@ def _apply_storyboard_geometry(
     for item in payload.dialogues:
         dialogue = dialogues[item.dialogue_id]
         bubble = canonical_bubble(item.bubble.model_dump()) if item.bubble is not None else None
-        dialogue_writes.append((dialogue, bubble, item.reading_order))
+        # Compare against the pre-offset values: the change flag decides the
+        # owning panel's fence bump at write time.
+        changed = dialogue.bubble != bubble or dialogue.reading_order != item.reading_order
+        dialogue_writes.append((dialogue, bubble, item.reading_order, changed))
 
     panel_orders = sorted(item.reading_order for item in payload.panels)
     if panel_orders != list(range(1, len(panel_orders) + 1)):
@@ -177,12 +180,19 @@ def _apply_storyboard_geometry(
         panel.bounds = bounds
         panel.geometry = geometry
         panel.reading_order = reading_order
-    for dialogue, bubble, reading_order in dialogue_writes:
+    for dialogue, bubble, reading_order, changed in dialogue_writes:
         dialogue.bubble = bubble
         dialogue.reading_order = reading_order
+        if changed:
+            # Dialogue content is fenced through the owning panel's version
+            # (Dialogue has no counter of its own); a content change that
+            # leaves panel.version alone lets a stale panel-scoped director
+            # dialogue command pass accept and revert this save. The page lock
+            # is held, so the ORM increment is the accepted discipline here.
+            panels[dialogue.panel_id].version += 1
     db.flush()
 
-    mark_storyboard_changed(page)
+    mark_storyboard_changed(db, page)
     # §10.2: persist the last command tuple in the same transaction as the
     # save, so a lost-response retry replays from the row, not process memory.
     page.geometry_save_command = {

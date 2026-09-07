@@ -131,6 +131,7 @@ def test_runtime_overrides_survive_rehydrate_and_reject_sensitive_fields(
         RuntimeSettingsUpdate(
             queue_mode="LOCAL",
             job_timeout_seconds=120,
+            job_lease_seconds=60,
             max_auto_repairs=2,
             version=1,
         ),
@@ -142,10 +143,12 @@ def test_runtime_overrides_survive_rehydrate_and_reject_sensitive_fields(
     # LOCAL is an executor mode, not a switch that disables execution.
     assert restarted.queue_enabled is True
     assert restarted.job_timeout_seconds == 120
+    assert restarted.job_lease_seconds == 60
     assert restarted.max_auto_repairs == 2
     assert set(db_session.get(AppSetting, "runtime").value) <= {
         "queue_mode",
         "job_timeout_seconds",
+        "job_lease_seconds",
         "max_auto_repairs",
     }
 

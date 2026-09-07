@@ -13,7 +13,7 @@ use std::time::Duration;
 use crate::logs::{helper_log_path, logs_dir, open_append_regular, RunLog};
 use crate::ownership::{OwnedTree, OwnershipError};
 use crate::protocol::{
-    verify_journal, verify_ready_line, ReadyPayload, RuntimeLayout, VerifyError, GO_PREFIX,
+    verify_journal, verify_ready_line_where, ReadyPayload, RuntimeLayout, VerifyError, GO_PREFIX,
     HEALTH_PATH,
 };
 
@@ -43,6 +43,25 @@ impl HelperConfig {
     }
 }
 
+/// Force the helper's Python stdio/stderr encoding to UTF-8 regardless of
+/// the host's ANSI codepage (#150): on zh-CN Windows the default for
+/// redirected streams is GBK, which would mix encodings inside the
+/// otherwise-UTF-8 log tree the exporter ships. Kept as its own function so
+/// the encoding contract is unit-testable without spawning anything.
+pub(crate) fn force_helper_utf8(command: &mut Command) {
+    command.env("PYTHONUTF8", "1");
+    command.env("PYTHONIOENCODING", "utf-8");
+}
+
+/// Record a shell milestone, surfacing a failure on stderr instead of
+/// discarding it (#150). stderr — not the logger itself — is the only
+/// channel a failing logging system may use without recursing into itself.
+fn try_record(log: &RunLog, event: &str, fields: &serde_json::Value) {
+    if let Err(error) = log.record(event, fields) {
+        eprintln!("mangaflow-desktop: run log '{event}' milestone failed: {error}");
+    }
+}
+
 pub struct SpawnedHelper {
     pub tree: OwnedTree,
     pub ready: ReadyPayload,
@@ -53,6 +72,12 @@ pub struct SpawnedHelper {
 
 /// Run the full handshake. On success the helper is verified, serving, and
 /// owned; the caller may create the WebView and inject `ready.api_origin`.
+/// On failure the child (if any) is torn down with the same fail-closed
+/// stop its `OwnedTree` drop performs, and — from the moment the run log
+/// exists — every failure path records the run's terminal state (RunLog
+/// "stopped" milestone + ownership-journal `mark_stopped`), so an aborted
+/// handshake never leaves `owner.json` claiming state "ready" for a run the
+/// shell just killed.
 pub fn spawn_helper(config: &HelperConfig, user_data: &Path) -> Result<SpawnedHelper, SpawnError> {
     let layout = RuntimeLayout::create(user_data)?;
     let run_log = RunLog::create(user_data, &layout.token)?;
@@ -64,10 +89,32 @@ pub fn spawn_helper(config: &HelperConfig, user_data: &Path) -> Result<SpawnedHe
     // In-session rotation is deliberately NOT attempted here: the helper
     // process owns this handle for its lifetime, so helper stderr rotates
     // across sessions (the RunLog::create sweep above, see logs.rs).
-    let helper_stderr = open_append_regular(
+    // Resolve the canonical logs root BEFORE opening the helper's stderr
+    // file: it is the root `open_append_regular` compares the resolved
+    // helper-log path against. This is still a pre-spawn step (`OwnedTree`
+    // does not exist yet), so a failure here must do the same terminal
+    // bookkeeping as the open itself failing below — record "stopped" with
+    // no exit code and stop nothing — honoring the doc contract that every
+    // failure path from the moment the run log exists records the run's
+    // terminal state. The bare `?` this replaces returned without any
+    // record even though `RunLog::create` had already succeeded.
+    let canonical_logs_root = match logs_dir(user_data).canonicalize() {
+        Ok(root) => root,
+        Err(error) => {
+            record_stopped(&run_log, &layout, None);
+            return Err(SpawnError::Io(error));
+        }
+    };
+    let helper_stderr = match open_append_regular(
         &helper_log_path(user_data, &layout.token),
-        &logs_dir(user_data).canonicalize()?,
-    )?;
+        &canonical_logs_root,
+    ) {
+        Ok(stderr) => stderr,
+        Err(error) => {
+            record_stopped(&run_log, &layout, None);
+            return Err(SpawnError::Io(error));
+        }
+    };
     let mut command = Command::new(&config.python);
     command
         .arg(&config.helper_script)
@@ -77,55 +124,139 @@ pub fn spawn_helper(config: &HelperConfig, user_data: &Path) -> Result<SpawnedHe
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::from(helper_stderr));
-    let _ = run_log.record("spawn", &serde_json::json!({ "token": layout.token }));
+    force_helper_utf8(&mut command);
+    try_record(
+        &run_log,
+        "spawn",
+        &serde_json::json!({ "token": layout.token }),
+    );
 
-    let mut tree = OwnedTree::spawn(command)?;
+    let mut tree = match OwnedTree::spawn(command) {
+        Ok(tree) => tree,
+        Err(error) => {
+            // No child ever came up (a Windows spawn failure has already
+            // killed the still-suspended child); only the terminal records
+            // of a run that never started are missing.
+            record_stopped(&run_log, &layout, None);
+            return Err(error.into());
+        }
+    };
     let stdout = tree.child.stdout.take().expect("piped stdout");
 
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
         let mut lines = BufReader::new(stdout).lines();
-        match lines.next() {
-            Some(Ok(line)) => {
-                let _ = sender.send(Ok(line));
-            }
-            Some(Err(error)) => {
-                let _ = sender.send(Err(error));
-            }
-            None => {
-                let _ = sender.send(Err(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "helper closed stdout before publishing readiness",
-                )));
-            }
-        }
+        // Only the FIRST line is protocol; the thread then parks reading to
+        // EOF so the pipe's read end stays open for the child's whole
+        // lifetime. If the thread exited after the READY line (the old
+        // behavior), its drop of the only read end would break the pipe: any
+        // later helper stdout write — a third-party library printing during
+        // import, a stray print — would hit EPIPE and could kill an otherwise
+        // healthy helper. Post-handshake output is drained and discarded:
+        // the desktop helper logs to stderr, stdout carries the protocol.
+        let first = match lines.next() {
+            Some(Ok(line)) => Ok(line),
+            Some(Err(error)) => Err(error),
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "helper closed stdout before publishing readiness",
+            )),
+        };
+        let _ = sender.send(first);
+        for _ in lines.by_ref() {}
     });
 
-    let line = receiver
-        .recv_timeout(config.ready_timeout)
-        .map_err(|_| SpawnError::ReadyTimeout)?
-        .map_err(SpawnError::Io)?;
-    let ready = verify_ready_line(&line, &layout.token, tree.pid()).map_err(SpawnError::Verify)?;
-    verify_journal(&layout.journal_path(), &ready).map_err(SpawnError::Verify)?;
-    let _ = run_log.record(
+    // From here on the child exists: every failure path tears it down and
+    // records the terminal state via `abort_spawn` BEFORE the original
+    // error is returned. The verification calls and their order are
+    // unchanged — only the error routing around them is new.
+    let line = match receiver.recv_timeout(config.ready_timeout) {
+        Ok(Ok(line)) => line,
+        Ok(Err(error)) => {
+            return Err(abort_spawn(tree, &layout, &run_log, SpawnError::Io(error)))
+        }
+        Err(_) => return Err(abort_spawn(tree, &layout, &run_log, SpawnError::ReadyTimeout)),
+    };
+    // PID identity: the announcer must be a process this shell owns. On
+    // Windows a launcher-style venv python (CPython 3.12) re-execs through a
+    // child, so accept the direct child PID or any PID inside the root Job;
+    // on Unix the direct child only (exec preserves the PID).
+    let direct_pid = tree.pid();
+    let ready = match verify_ready_line_where(&line, &layout.token, |pid| {
+        pid == direct_pid || tree.contains_pid(pid)
+    }) {
+        Ok(ready) => ready,
+        Err(error) => return Err(abort_spawn(tree, &layout, &run_log, SpawnError::Verify(error))),
+    };
+    match verify_journal(&layout.journal_path(), &ready) {
+        Ok(()) => {}
+        Err(error) => return Err(abort_spawn(tree, &layout, &run_log, SpawnError::Verify(error))),
+    }
+    try_record(
+        &run_log,
         "ready_verified",
         &serde_json::json!({ "pid": ready.pid, "port": ready.port }),
     );
 
     let stdin = tree.child.stdin.as_mut().expect("piped stdin");
-    writeln!(stdin, "{GO_PREFIX}{}", layout.token).map_err(SpawnError::Io)?;
-    stdin.flush().map_err(SpawnError::Io)?;
-    let _ = run_log.record("go_sent", &serde_json::json!({}));
+    let go = writeln!(stdin, "{GO_PREFIX}{}", layout.token).and_then(|()| stdin.flush());
+    if let Err(error) = go {
+        return Err(abort_spawn(tree, &layout, &run_log, SpawnError::Io(error)));
+    }
+    try_record(&run_log, "go_sent", &serde_json::json!({}));
 
-    wait_for_health(&ready.api_origin, config.health_timeout)
-        .map_err(|_| SpawnError::HealthTimeout)?;
-    let _ = run_log.record("healthy", &serde_json::json!({}));
+    if wait_for_health(&ready.api_origin, config.health_timeout).is_err() {
+        // The helper already published state "ready" in its journal; without
+        // this path the shell would kill it and leave owner.json claiming
+        // "ready" for a dead run.
+        return Err(abort_spawn(
+            tree,
+            &layout,
+            &run_log,
+            SpawnError::HealthTimeout,
+        ));
+    }
+    try_record(&run_log, "healthy", &serde_json::json!({}));
     Ok(SpawnedHelper {
         tree,
         ready,
         layout,
         log: run_log,
     })
+}
+
+/// Terminal bookkeeping shared by every handshake failure path from the
+/// moment the run log exists: the RunLog "stopped" milestone and the
+/// ownership journal's `mark_stopped` — the same records the desktop
+/// shell's `stop_helper` writes on shutdown. A failure surfaces on stderr
+/// (#150), never recursively through the logger.
+fn record_stopped(run_log: &RunLog, layout: &RuntimeLayout, exit_code: Option<i32>) {
+    try_record(
+        run_log,
+        "stopped",
+        &serde_json::json!({ "exit_code": exit_code }),
+    );
+    if let Err(error) = layout.mark_stopped(exit_code) {
+        eprintln!("mangaflow-desktop: marking the ownership journal stopped failed: {error}");
+    }
+}
+
+/// Tear a half-spawned run down and record its terminal state before the
+/// original handshake error is returned. The stop itself is IDENTICAL to
+/// what `OwnedTree`'s drop performed on the old `?` propagation — the same
+/// cooperative-then-escalating stop with drop's 3s grace — so the kill
+/// semantics are unchanged; only the records are new. (After an explicit
+/// stop the drop sees an already-reaped child and adds no second stop; the
+/// job handle still closes, killing anything that escaped.)
+fn abort_spawn(
+    mut tree: OwnedTree,
+    layout: &RuntimeLayout,
+    run_log: &RunLog,
+    error: SpawnError,
+) -> SpawnError {
+    let exit_code = tree.stop(Duration::from_secs(3)).ok().flatten();
+    record_stopped(run_log, layout, exit_code);
+    error
 }
 
 #[derive(Debug)]
@@ -183,5 +314,33 @@ fn wait_for_health(origin: &str, timeout: Duration) -> std::io::Result<()> {
             ));
         }
         std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #150 regression: the helper command must force UTF-8 stdio encoding
+    /// (`PYTHONUTF8` + `PYTHONIOENCODING`) so its stderr never mixes GBK
+    /// bytes into the UTF-8 log tree on an ANSI-codepage Windows host.
+    #[test]
+    fn helper_command_forces_utf8_stdio_environment() {
+        let mut command = Command::new("irrelevant-binary");
+        force_helper_utf8(&mut command);
+        let envs: std::collections::BTreeMap<&std::ffi::OsStr, &std::ffi::OsStr> = command
+            .get_envs()
+            .filter_map(|(key, value)| value.map(|value| (key, value)))
+            .collect();
+        assert_eq!(
+            envs.get(std::ffi::OsStr::new("PYTHONUTF8")),
+            Some(&std::ffi::OsStr::new("1")),
+            "{envs:?}"
+        );
+        assert_eq!(
+            envs.get(std::ffi::OsStr::new("PYTHONIOENCODING")),
+            Some(&std::ffi::OsStr::new("utf-8")),
+            "{envs:?}"
+        );
     }
 }

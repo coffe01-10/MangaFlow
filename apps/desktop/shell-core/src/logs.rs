@@ -40,9 +40,14 @@
 //! housekeeping: a failed sweep never blocks a session start, and a failed
 //! in-session rotation is reported to the caller and retried on the next
 //! record (which first tries to recover the log handle) instead of panicking
-//! the shell. The sweep assumes no concurrent shell shares the user-data
-//! root — the single-instance mutex is NOT RUN on real hardware (D4) — so
-//! there is no liveness check that would exclude a live session's files.
+//! the shell. #150 hardens that retry loop two ways: the base is renamed to
+//! a staging name BEFORE any generation is shifted — a locked base fails
+//! with zero history loss — and after
+//! [`ROTATION_MAX_CONSECUTIVE_FAILURES`] consecutive failures a circuit
+//! breaker stops further rotation attempts for the process. The sweep
+//! assumes no concurrent shell shares the user-data root — the
+//! single-instance mutex is NOT RUN on real hardware (D4) — so there is no
+//! liveness check that would exclude a live session's files.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -66,9 +71,21 @@ pub const ROTATION_THRESHOLD_BYTES: u64 = 12 * 1024 * 1024;
 /// Number of rotated generations (`.1` = newest … `.<N>` = oldest) kept per
 /// log base; anything beyond is deleted.
 pub const ROTATION_KEEP_GENERATIONS: usize = 5;
+/// #150 circuit breaker: after this many consecutive in-session rotation
+/// failures, rotation attempts stop for the rest of the process and the
+/// active file keeps accepting appends (growing past the threshold if it
+/// must) instead of retrying destructively on every record while a lock
+/// persists. 3 is tight enough to bound damage at a single-digit number of
+/// failed attempts yet tolerant of one transient failure plus its retry.
+/// The count resets only on a successful rotation; a fresh process starts
+/// at zero, so the next session retries normally.
+pub const ROTATION_MAX_CONSECUTIVE_FAILURES: u32 = 3;
 
 fn is_valid_token(token: &str) -> bool {
-    token.len() == 32 && token.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    token.len() == 32
+        && token
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 pub fn logs_dir(user_data: &Path) -> PathBuf {
@@ -157,13 +174,108 @@ fn generation_path(base: &Path, generation: usize) -> Option<PathBuf> {
     Some(base.with_file_name(name))
 }
 
+/// Remove `path` if it exists; a NotFound result is success. Anything else
+/// (locked, permission, directory) propagates so callers can bail out before
+/// touching further state.
+fn remove_file_if_exists(path: &Path) -> std::io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+/// Staging name used while a rotation shifts generations around a base.
+/// It matches no rotatable base pattern (`is_rotatable_base_name` requires
+/// the exact `.log` / `.stderr.log` suffixes), so a leftover staging file is
+/// never swept up as history by a later session; the next rotation attempt
+/// removes it before staging again.
+fn rotation_staging_path(base: &Path) -> Option<PathBuf> {
+    let mut name = base.file_name()?.to_os_string();
+    name.push(".rotating");
+    Some(base.with_file_name(name))
+}
+
+/// Drop the oldest generation, then shift `.i` → `.(i+1)` from the newest
+/// end down (each destination was just vacated, so plain renames also work
+/// on Windows, which has no overwrite-on-rename). Symlinks are never
+/// followed or moved: a symlinked generation is unlinked — its target
+/// survives. On success the ledger of renames performed is returned so the
+/// caller can undo the whole shift — via [`unwind_renamed_generations`] —
+/// when a LATER step of the rotation fails. If a step of the shift itself
+/// fails after renames have already happened, the successful renames are
+/// rolled back in reverse order before the error is returned (the ledger
+/// dies with that internal unwind), so an interrupted shift leaves the
+/// surviving generations at their original slots instead of displaced one
+/// up (the pre-shift deletion of the oldest generation is the one step no
+/// rollback can undo).
+fn shift_generations_up(base: &Path, keep: usize) -> std::io::Result<Vec<(PathBuf, PathBuf)>> {
+    if let Some(oldest) = generation_path(base, keep) {
+        remove_file_if_exists(&oldest)?;
+    }
+    // Successful (source, destination) renames, in execution order.
+    let mut renamed: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for generation in (1..keep).rev() {
+        let Some(source) = generation_path(base, generation) else {
+            continue;
+        };
+        let Ok(source_meta) = fs::symlink_metadata(&source) else {
+            continue;
+        };
+        if source_meta.is_symlink() {
+            match fs::remove_file(&source) {
+                Ok(()) => {}
+                Err(error) => {
+                    unwind_renamed_generations(&renamed);
+                    return Err(error);
+                }
+            }
+        } else if source_meta.is_file() {
+            let Some(destination) = generation_path(base, generation + 1) else {
+                continue;
+            };
+            match fs::rename(&source, &destination) {
+                Ok(()) => renamed.push((source, destination)),
+                Err(error) => {
+                    unwind_renamed_generations(&renamed);
+                    return Err(error);
+                }
+            }
+        }
+    }
+    Ok(renamed)
+}
+
+/// Roll back the renames [`shift_generations_up`] recorded, last performed
+/// first (each earlier destination slot was vacated by the step before it,
+/// so the reverse order is exactly the one that can succeed). Best effort
+/// by design: an unwind step that itself fails — the slot was reoccupied
+/// mid-rollback, or a handle appeared without FILE_SHARE_DELETE — is
+/// reported to stderr and skipped; the caller must still see the ORIGINAL
+/// shift error, which is the one that aborted the rotation.
+fn unwind_renamed_generations(renamed: &[(PathBuf, PathBuf)]) {
+    for (source, destination) in renamed.iter().rev() {
+        if let Err(error) = fs::rename(destination, source) {
+            eprintln!(
+                "mangaflow-desktop: rotation rollback could not restore {}: {error}",
+                source.display()
+            );
+        }
+    }
+}
+
 /// Rotate one base file if it is an oversized regular file inside
-/// `logs_canonical`: drop the oldest generation, shift `.i` → `.(i+1)` from
-/// the newest end down (each destination was just vacated, so plain renames
-/// also work on Windows, which has no overwrite-on-rename), then move the
-/// base into `.1`. Returns whether a rotation happened. Symlinks are never
-/// followed or moved: a link at the base path skips rotation, a symlinked
-/// generation is unlinked instead of renamed.
+/// `logs_canonical`. #150 order-of-operations: the base is renamed to a
+/// staging sibling FIRST — when the base is held open without
+/// FILE_SHARE_DELETE (Windows) or the directory is unwritable, the rotation
+/// fails here with **zero generations touched**, instead of shifting history
+/// on every retry while a lock persists. Only after the base is safely
+/// staged are the oldest generation dropped and the rest shifted; a failure
+/// in that phase unwinds the renames already performed (see
+/// [`shift_generations_up`]) and rolls the base back to its original path
+/// before the error is returned, and a failure of the final staging→newest
+/// rename unwinds the completed shift the same way before that rollback.
+/// Returns whether a rotation happened.
 fn rotate_file(
     base: &Path,
     logs_canonical: &Path,
@@ -185,32 +297,46 @@ fn rotate_file(
         Ok(canonical) if canonical.starts_with(logs_canonical) => {}
         _ => return Ok(false),
     }
-    // Deleting the oldest generation is best-effort: if it cannot be removed,
-    // the first shift below fails and the caller falls back to appending.
-    if let Some(oldest) = generation_path(base, keep) {
-        let _ = fs::remove_file(oldest);
-    }
-    for generation in (1..keep).rev() {
-        let Some(source) = generation_path(base, generation) else {
-            continue;
-        };
-        let Ok(source_meta) = fs::symlink_metadata(&source) else {
-            continue;
-        };
-        if source_meta.is_symlink() {
-            fs::remove_file(&source)?;
-        } else if source_meta.is_file() {
-            let Some(destination) = generation_path(base, generation + 1) else {
-                continue;
-            };
-            fs::rename(&source, &destination)?;
-        }
-    }
+    let Some(staging) = rotation_staging_path(base) else {
+        return Ok(false);
+    };
     let Some(newest) = generation_path(base, 1) else {
         return Ok(false);
     };
-    fs::rename(base, newest)?;
-    Ok(true)
+    // A leftover staging file means an earlier rollback also failed; clear
+    // it before re-staging. If it cannot be removed, stop here — no
+    // generation has been touched yet.
+    remove_file_if_exists(&staging)?;
+    // The critical gate: a base that cannot be renamed (locked without
+    // FILE_SHARE_DELETE) fails HERE, before any generation is shifted or
+    // deleted — the retry loop the in-session rotation runs on every record
+    // can no longer grind history away one generation per attempt (#150).
+    fs::rename(base, &staging)?;
+    let shifted = shift_generations_up(base, keep);
+    match shifted {
+        Ok(renamed) => match fs::rename(&staging, &newest) {
+            Ok(()) => Ok(true),
+            // Exotic (`.1` reoccupied mid-rotation): the shift has already
+            // committed, so unwind it first — the same reverse rollback the
+            // shift runs for its own partial failures; the unwind's first
+            // step may fail on the reoccupied `.1` slot, which it reports
+            // and skips — then keep the base content by rolling it back
+            // rather than losing it into staging.
+            Err(error) => {
+                unwind_renamed_generations(&renamed);
+                let _ = fs::rename(&staging, base);
+                Err(error)
+            }
+        },
+        // Roll the base content back to its original path; the shift has
+        // already unwound its own partial renames. If even the rollback
+        // fails, the next attempt clears the staging leftover above; the
+        // error reported is the one that aborted the shift.
+        Err(error) => {
+            let _ = fs::rename(&staging, base);
+            Err(error)
+        }
+    }
 }
 
 /// Sweep one logs directory with explicit limits (see [`rotate_logs`]).
@@ -232,7 +358,13 @@ fn sweep_logs_dir(
         if !is_rotatable_base_name(&name) {
             continue;
         }
-        let _ = rotate_file(&entry.path(), logs_canonical, threshold, keep);
+        // Best-effort remains the contract (a sweep failure must never block
+        // a session start), but the failure is no longer silently discarded:
+        // it goes to stderr, the one channel a broken logging system may
+        // still use without recursing into itself (#150).
+        if let Err(error) = rotate_file(&entry.path(), logs_canonical, threshold, keep) {
+            eprintln!("mangaflow-desktop: session-start rotation failed for {name}: {error}");
+        }
     }
     Ok(())
 }
@@ -273,6 +405,10 @@ struct RunLogFile {
     logs_canonical: PathBuf,
     /// Rotate once the active file reaches this size.
     max_file_bytes: u64,
+    /// Consecutive failed rotation attempts; once it reaches
+    /// [`ROTATION_MAX_CONSECUTIVE_FAILURES`] the circuit opens and rotation
+    /// is no longer attempted (#150).
+    rotation_failures: u32,
 }
 
 impl RunLogFile {
@@ -281,10 +417,7 @@ impl RunLogFile {
         // Retry the open first, so logging resumes as soon as the base path
         // is usable again instead of staying dead forever.
         if self.file.is_none() {
-            self.file = Some(open_append_regular(
-                &self.base,
-                &self.logs_canonical,
-            )?);
+            self.file = Some(open_append_regular(&self.base, &self.logs_canonical)?);
         }
         let Some(file) = self.file.as_ref() else {
             return Err(std::io::Error::new(
@@ -298,19 +431,44 @@ impl RunLogFile {
         // Close before renaming: Windows cannot rename a file that is open
         // without FILE_SHARE_DELETE.
         self.file = None;
-        let rotated = rotate_file(
-            &self.base,
-            &self.logs_canonical,
-            self.max_file_bytes,
-            ROTATION_KEEP_GENERATIONS,
-        );
+        // Circuit breaker (#150): while it is open, skip the rotation
+        // attempt entirely — the base is reopened below and keeps accepting
+        // writes, at the cost of growing past the threshold, which is the
+        // lesser evil against grinding generations away on every record.
+        let rotated = if self.rotation_failures >= ROTATION_MAX_CONSECUTIVE_FAILURES {
+            Ok(false)
+        } else {
+            rotate_file(
+                &self.base,
+                &self.logs_canonical,
+                self.max_file_bytes,
+                ROTATION_KEEP_GENERATIONS,
+            )
+        };
         // Reopen the base path either way: fresh after a successful rotation,
         // still the old (oversized or unrotatable) file when rotation was
         // skipped or failed mid-way — the open path keeps accepting writes.
         match open_append_regular(&self.base, &self.logs_canonical) {
             Ok(reopened) => {
                 self.file = Some(reopened);
-                rotated.map(|_| ())
+                match rotated {
+                    Ok(true) => {
+                        self.rotation_failures = 0;
+                        Ok(())
+                    }
+                    Ok(false) => Ok(()),
+                    Err(error) => {
+                        self.rotation_failures += 1;
+                        if self.rotation_failures == ROTATION_MAX_CONSECUTIVE_FAILURES {
+                            eprintln!(
+                                "mangaflow-desktop: log rotation disabled after \
+                                 {ROTATION_MAX_CONSECUTIVE_FAILURES} consecutive failures: \
+                                 {error}"
+                            );
+                        }
+                        Err(error)
+                    }
+                }
             }
             Err(reopen_error) => {
                 // Never write through whatever now sits at the base path
@@ -347,6 +505,7 @@ impl RunLog {
                 base,
                 logs_canonical,
                 max_file_bytes: ROTATION_THRESHOLD_BYTES,
+                rotation_failures: 0,
             }),
         })
     }
@@ -368,7 +527,12 @@ impl RunLog {
         };
         // Rotation is housekeeping: a failed rotation must never cost the
         // milestone line, so its error is only reported after the write.
+        // The failure also goes to stderr — never back into this logger —
+        // so a persistently failing rotation is observable (#150).
         let rotation = active.rotate_if_large();
+        if let Err(error) = &rotation {
+            eprintln!("mangaflow-desktop: shell log rotation failed: {error}");
+        }
         let written = match active.file.as_mut() {
             Some(file) => file.write_all(&payload),
             None => Err(std::io::Error::new(
@@ -388,6 +552,18 @@ pub enum ExportError {
     DestinationHasDotComponents,
     DestinationIsSymlink,
     DestinationIsDirectory,
+    /// #149: the destination already exists and the caller has no
+    /// user-confirmed overwrite (only the native save dialog grants one).
+    /// Enforced at validation time AND again atomically at placement: a
+    /// file that appears at the destination while the archive is being
+    /// collected and zipped is never clobbered by the no-overwrite path.
+    DestinationExists,
+    /// #150: the `.pending` sibling the exporter stages the archive in is
+    /// occupied by a symlink/junction — planted links are refused up front,
+    /// and anything that claims the path between the clear and the
+    /// `create_new` staging write fails the same way. The archive is never
+    /// written through a link.
+    PendingIsSymlink,
     DestinationInsideUserData,
     Io(std::io::Error),
 }
@@ -398,9 +574,17 @@ impl std::fmt::Display for ExportError {
             ExportError::DestinationNotAbsolute => write!(f, "导出目标必须是绝对路径"),
             ExportError::DestinationNoFileName => write!(f, "导出目标缺少文件名"),
             ExportError::DestinationParentMissing => write!(f, "导出目标的上级目录不存在"),
-            ExportError::DestinationHasDotComponents => write!(f, "导出目标不能包含 . / .. 路径成分"),
+            ExportError::DestinationHasDotComponents => {
+                write!(f, "导出目标不能包含 . / .. 路径成分")
+            }
             ExportError::DestinationIsSymlink => write!(f, "导出目标不能是符号链接"),
             ExportError::DestinationIsDirectory => write!(f, "导出目标已是目录"),
+            ExportError::DestinationExists => {
+                write!(f, "导出目标已存在，未经用户在对话框中确认覆盖")
+            }
+            ExportError::PendingIsSymlink => {
+                write!(f, "导出目标的 .pending 临时文件是符号链接，拒绝写入")
+            }
             ExportError::DestinationInsideUserData => {
                 write!(f, "导出目标不能位于用户数据根之内")
             }
@@ -423,10 +607,31 @@ pub struct ExportReport {
     pub total_bytes: u64,
 }
 
+/// Whether the entry at `path` is a symlink (junctions share the same
+/// reparse-point metadata shape on Windows). Never follows the link —
+/// `symlink_metadata` is read exactly once and only its file type is
+/// inspected. Shared by the destination and the `.pending` sibling checks
+/// so both refuse links the same way (#149, #150).
+fn is_symlink_at(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink())
+}
+
 /// Validate the user-chosen destination: absolute, no `.`/`..` components,
-/// existing (non-symlink) parent, and — after canonicalizing the parent —
-/// never inside the user-data root. Returns the canonical destination path.
-fn validate_destination(user_data: &Path, destination: &Path) -> Result<PathBuf, ExportError> {
+/// an existing parent, and — after canonicalizing the parent chain — never
+/// inside the user-data root. The parent chain itself may contain symlinks
+/// or junctions: canonicalization resolves every reparse point to its real
+/// target, and the containment check runs on that resolved path, so a
+/// destination reached through a link that ultimately lands inside user
+/// data is refused exactly like a direct one. With `allow_existing ==
+/// false` (the default export surface, #149) an already-existing regular
+/// destination is refused: the only sanctioned overwrite is the native save
+/// dialog's explicit user confirmation, represented by the caller using
+/// [`export_logs_zip_overwrite`]. Returns the canonical destination path.
+fn validate_destination(
+    user_data: &Path,
+    destination: &Path,
+    allow_existing: bool,
+) -> Result<PathBuf, ExportError> {
     if !destination.is_absolute() {
         return Err(ExportError::DestinationNotAbsolute);
     }
@@ -442,20 +647,20 @@ fn validate_destination(user_data: &Path, destination: &Path) -> Result<PathBuf,
     let parent = destination
         .parent()
         .ok_or(ExportError::DestinationNoFileName)?;
-    if destination.is_symlink() {
+    if is_symlink_at(destination) {
         return Err(ExportError::DestinationIsSymlink);
     }
     if destination.is_dir() {
         return Err(ExportError::DestinationIsDirectory);
     }
-    let parent_canonical = parent
-        .canonicalize()
-        .map_err(|error| match error.kind() {
-            std::io::ErrorKind::NotFound => ExportError::DestinationParentMissing,
-            _ => ExportError::Io(error),
-        })?;
-    let user_data_canonical =
-        user_data.canonicalize().map_err(ExportError::Io)?;
+    if !allow_existing && destination.is_file() {
+        return Err(ExportError::DestinationExists);
+    }
+    let parent_canonical = parent.canonicalize().map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => ExportError::DestinationParentMissing,
+        _ => ExportError::Io(error),
+    })?;
+    let user_data_canonical = user_data.canonicalize().map_err(ExportError::Io)?;
     let destination_canonical = parent_canonical.join(file_name);
     if destination_canonical.starts_with(&user_data_canonical) {
         return Err(ExportError::DestinationInsideUserData);
@@ -493,13 +698,19 @@ fn collect_members(
         let file_type = match entry.file_type() {
             Ok(t) => t,
             Err(error) => {
-                skipped.push(SkippedEntry { name: member, reason: format!("stat: {error}") });
+                skipped.push(SkippedEntry {
+                    name: member,
+                    reason: format!("stat: {error}"),
+                });
                 continue;
             }
         };
         let path = entry.path();
         if file_type.is_symlink() {
-            skipped.push(SkippedEntry { name: member, reason: "symlink".into() });
+            skipped.push(SkippedEntry {
+                name: member,
+                reason: "symlink".into(),
+            });
             continue;
         }
         if file_type.is_dir() {
@@ -507,7 +718,10 @@ fn collect_members(
             continue;
         }
         if !file_type.is_file() {
-            skipped.push(SkippedEntry { name: member, reason: "not_a_regular_file".into() });
+            skipped.push(SkippedEntry {
+                name: member,
+                reason: "not_a_regular_file".into(),
+            });
             continue;
         }
         // Belt and braces: the canonical path must still live under the logs
@@ -515,17 +729,46 @@ fn collect_members(
         match path.canonicalize() {
             Ok(canonical) if canonical.starts_with(root_canonical) => {}
             _ => {
-                skipped.push(SkippedEntry { name: member, reason: "escaped_logs_root".into() });
+                skipped.push(SkippedEntry {
+                    name: member,
+                    reason: "escaped_logs_root".into(),
+                });
                 continue;
             }
         }
-        if member.split('/').any(|part| part == ".." || part.is_empty()) {
-            skipped.push(SkippedEntry { name: member, reason: "unsafe_member_name".into() });
+        // Zip member names must be non-empty forward-slash relative paths.
+        // A backslash is legal in Unix file names but is the ZIP format's
+        // canonical path separator (and a length that no longer fits the
+        // u16 name field would corrupt the archive), so any such shape is
+        // skipped and reported here — `ZipWriter`'s assert is the
+        // last-resort invariant, and a directory entry must never be able
+        // to panic the whole export.
+        if member.is_empty()
+            || member.contains('\\')
+            || member.len() > u16::MAX as usize
+            || member
+                .split('/')
+                .any(|part| part == ".." || part.is_empty())
+        {
+            skipped.push(SkippedEntry {
+                name: member,
+                reason: "unsafe_member_name".into(),
+            });
             continue;
         }
-        let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+        // Size via a fresh metadata query, NOT the enumeration entry: on
+        // NTFS the directory entry's size field lags while a writer holds
+        // the file open (probed: entry_meta=0 vs fs_meta=11 for a
+        // just-written open log), which made every export of the ACTIVE
+        // run log report "changed_during_export" on Windows. `fs::metadata`
+        // sees the current size on both platforms, and the post-read
+        // re-check below still catches genuine mid-export changes.
+        let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         if size > EXPORT_MAX_FILE_BYTES {
-            skipped.push(SkippedEntry { name: member, reason: "too_large".into() });
+            skipped.push(SkippedEntry {
+                name: member,
+                reason: "too_large".into(),
+            });
             continue;
         }
         members.push((member, path, size));
@@ -535,47 +778,53 @@ fn collect_members(
 
 /// Archive `<user_data>/logs/` into a store-only ZIP at `destination`.
 /// The destination must resolve outside the user-data root (both directions
-/// of the boundary are enforced — see the module docs).
-pub fn export_logs_zip(
+/// of the boundary are enforced — see the module docs). #149: an
+/// already-existing destination is REFUSED here — a caller that obtained the
+/// user's explicit overwrite confirmation through the native save dialog
+/// must use [`export_logs_zip_overwrite`] instead; nothing else may replace
+/// an existing file, and the refusal is re-enforced atomically at placement
+/// (see [`place_archive`]): a file that appears at the destination while
+/// the archive is being built is never clobbered.
+pub fn export_logs_zip(user_data: &Path, destination: &Path) -> Result<ExportReport, ExportError> {
+    export_logs_with(user_data, destination, false)
+}
+
+/// Confirmed-overwrite variant of [`export_logs_zip`] (#149). The one
+/// legitimate caller is the shell's export command, whose destination comes
+/// from a native save dialog that already prompted the user about replacing
+/// the existing file. Replacing the destination remains a remove-then-rename
+/// through the `.pending` sibling (the no-overwrite path uses the
+/// no-clobber `hard_link` placement instead — see [`place_archive`]),
+/// never an in-place truncation.
+pub fn export_logs_zip_overwrite(
     user_data: &Path,
     destination: &Path,
 ) -> Result<ExportReport, ExportError> {
-    let destination_canonical = validate_destination(user_data, destination)?;
+    export_logs_with(user_data, destination, true)
+}
+
+fn export_logs_with(
+    user_data: &Path,
+    destination: &Path,
+    overwrite_confirmed: bool,
+) -> Result<ExportReport, ExportError> {
+    let destination_canonical = validate_destination(user_data, destination, overwrite_confirmed)?;
     let logs = logs_dir(user_data);
     let logs_canonical = logs.canonicalize().map_err(ExportError::Io)?;
 
     let mut members: Vec<(String, PathBuf, u64)> = Vec::new();
     let mut skipped: Vec<SkippedEntry> = Vec::new();
-    collect_members(
-        &logs,
-        &logs_canonical,
-        "",
-        &mut members,
-        &mut skipped,
-    )
-    .map_err(ExportError::Io)?;
+    collect_members(&logs, &logs_canonical, "", &mut members, &mut skipped)
+        .map_err(ExportError::Io)?;
     members.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut total_bytes = 0u64;
-    let mut included: Vec<String> = Vec::new();
+    // (name, archived size) pairs, appended only as members are actually
+    // archived, so the manifest built after the loop describes the archive
+    // that was really written.
+    let mut included: Vec<(String, u64)> = Vec::new();
     let (dos_date, dos_time) = dos_date_time(unix_now());
     let mut zip = ZipWriter::new();
-
-    let manifest = serde_json::json!({
-        "version": 1,
-        "generated_at": unix_now(),
-        "source": "user-data:logs",
-        "included": members.iter().map(|(name, _, size)| serde_json::json!({
-            "name": name, "size": size,
-        })).collect::<Vec<_>>(),
-        "skipped": skipped,
-    });
-    zip.add_file(
-        "manifest.json",
-        serde_json::to_string(&manifest).unwrap().as_bytes(),
-        dos_date,
-        dos_time,
-    );
 
     for (member, path, size) in &members {
         let data = fs::read(path).map_err(ExportError::Io)?;
@@ -587,30 +836,135 @@ pub fn export_logs_zip(
             continue;
         }
         total_bytes += data.len() as u64;
-        included.push(member.clone());
+        included.push((member.clone(), data.len() as u64));
         zip.add_file(member, &data, dos_date, dos_time);
     }
 
-    // Write through a pending sibling and rename, so a failed write never
-    // leaves a truncated archive at the user-chosen path.
+    // The manifest is built AFTER the read loop and added as the last
+    // member: a member that changed mid-export then appears in its
+    // skipped list, not in included — a manifest written before the loop
+    // claimed contents the archive does not actually have. Zip readers
+    // locate members by name through the central directory, so manifest.json
+    // does not need to be the first entry.
+    let manifest = serde_json::json!({
+        "version": 1,
+        "generated_at": unix_now(),
+        "source": "user-data:logs",
+        "included": included.iter().map(|(name, size)| serde_json::json!({
+            "name": name, "size": size,
+        })).collect::<Vec<_>>(),
+        "skipped": skipped,
+    });
+    zip.add_file(
+        "manifest.json",
+        serde_json::to_string(&manifest).unwrap().as_bytes(),
+        dos_date,
+        dos_time,
+    );
+
+    // Write through a pending sibling so a failed write never leaves a
+    // truncated archive at the user-chosen path. #150: a planted
+    // symlink/junction AT the pending path is refused outright, and the
+    // staging write itself can never go through a link it did not create:
+    // any leftover pending entry is removed first (`remove_file` on a
+    // symlink unlinks the link — it does not follow it), and the fresh file
+    // is claimed with `create_new`, which fails if ANYTHING (including a
+    // link replanted in the window) occupies the path.
     let file_name = destination_canonical
         .file_name()
         .ok_or(ExportError::DestinationNoFileName)?
         .to_string_lossy()
         .into_owned();
     let pending = destination_canonical.with_file_name(format!("{file_name}.pending"));
-    fs::write(&pending, zip.finish()).map_err(ExportError::Io)?;
-    if destination_canonical.is_file() {
-        fs::remove_file(&destination_canonical).map_err(ExportError::Io)?;
+    if is_symlink_at(&pending) {
+        return Err(ExportError::PendingIsSymlink);
     }
-    fs::rename(&pending, &destination_canonical).map_err(ExportError::Io)?;
+    remove_file_if_exists(&pending).map_err(ExportError::Io)?;
+    let archive = zip.finish();
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&pending)
+        .and_then(|mut file| file.write_all(&archive))
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::AlreadyExists => ExportError::PendingIsSymlink,
+            _ => ExportError::Io(error),
+        })?;
+    place_archive(&pending, &destination_canonical, overwrite_confirmed)?;
 
     Ok(ExportReport {
         destination: destination_canonical,
-        files: included,
+        files: included.into_iter().map(|(name, _)| name).collect(),
         skipped,
         total_bytes,
     })
+}
+
+/// Move the completed archive from its `pending` sibling onto
+/// `destination`. #149: the `!overwrite_confirmed` path must not clobber —
+/// the validation-time "destination must not exist" check can be undercut
+/// by anything created at the destination while the archive was being
+/// collected and zipped, and `fs::rename` on Windows replaces whatever sits
+/// at the target (MOVEFILE_REPLACE_EXISTING). `hard_link` is the std-only
+/// atomic no-clobber placement: it fails with [`AlreadyExists`][kind] when
+/// the destination is taken — even by a file created a microsecond ago —
+/// and on success the destination and the pending name are two links to
+/// the same complete inode, so dropping the pending link finalizes the
+/// placement. The pending sibling lives in the destination's own directory
+/// (same volume), which is exactly what `hard_link` requires; note that
+/// the no-overwrite path also needs hard-link SUPPORT on that filesystem —
+/// fine on NTFS/ext4/APFS, but FAT/exFAT and some network volumes refuse
+/// links (ERROR_NOT_SUPPORTED / EPERM / EOPNOTSUPP), which surfaces as
+/// [`ExportError::Io`] — and production callers avoid that exposure: the
+/// shell's export command always carries the save dialog's overwrite
+/// confirmation and takes the `overwrite_confirmed` variant. When the
+/// placement fails, the pending sibling this export created is removed
+/// best-effort so the user's directory is not left with an orphaned,
+/// fully-written archive copy.
+///
+/// The `overwrite_confirmed` path keeps the historical remove+rename: the
+/// user has explicitly sanctioned replacing whatever sits there.
+///
+/// [kind]: std::io::ErrorKind::AlreadyExists
+fn place_archive(
+    pending: &Path,
+    destination: &Path,
+    overwrite_confirmed: bool,
+) -> Result<(), ExportError> {
+    if overwrite_confirmed {
+        if destination.is_file() {
+            fs::remove_file(destination).map_err(ExportError::Io)?;
+        }
+        fs::rename(pending, destination).map_err(ExportError::Io)?;
+        return Ok(());
+    }
+    if let Err(error) = fs::hard_link(pending, destination) {
+        // The archive never reached the destination, so the pending sibling
+        // is a fully-written orphan THIS export created — remove it
+        // best-effort, ignoring secondary errors: the actionable failure is
+        // the placement error, and the orphan cannot be relied on to be
+        // cleared later (the next no-overwrite export fails validation on
+        // the — now existing — destination long before its pending cleanup).
+        let _ = remove_file_if_exists(pending);
+        return Err(match error.kind() {
+            std::io::ErrorKind::AlreadyExists => ExportError::DestinationExists,
+            _ => ExportError::Io(error),
+        });
+    }
+    if let Err(error) = fs::remove_file(pending) {
+        // The archive is already atomically in place at the destination; a
+        // pending sibling that could not be unlinked is inert clutter —
+        // only a confirmed-overwrite export reaches the pending cleanup
+        // that clears it, because a no-overwrite export now fails
+        // validation on the existing destination first — so the placement
+        // still succeeds rather than reporting a failure the caller cannot
+        // retry without hitting DestinationExists.
+        eprintln!(
+            "mangaflow-desktop: could not remove the pending export sibling {}: {error}",
+            pending.display()
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -628,38 +982,88 @@ mod tests {
         dir
     }
 
+    /// Minimal reader for the store-only archives this module writes: walk
+    /// the central directory, find `name`, and return its stored bytes. No
+    /// compression, no extra fields — exactly the layout `ZipWriter` emits,
+    /// so tests can assert on manifest.json inside the produced archive.
+    fn zip_member_bytes(archive: &[u8], name: &str) -> Vec<u8> {
+        let eocd = archive.len() - 22;
+        assert_eq!(&archive[eocd..eocd + 4], &0x0605_4b50u32.to_le_bytes());
+        let entries = u16::from_le_bytes([archive[eocd + 10], archive[eocd + 11]]);
+        let central_offset = u32::from_le_bytes([
+            archive[eocd + 16],
+            archive[eocd + 17],
+            archive[eocd + 18],
+            archive[eocd + 19],
+        ]) as usize;
+        let mut cursor = central_offset;
+        for _ in 0..entries {
+            assert_eq!(&archive[cursor..cursor + 4], &0x0201_4b50u32.to_le_bytes());
+            let size = u32::from_le_bytes([
+                archive[cursor + 24],
+                archive[cursor + 25],
+                archive[cursor + 26],
+                archive[cursor + 27],
+            ]) as usize;
+            let name_len =
+                u16::from_le_bytes([archive[cursor + 28], archive[cursor + 29]]) as usize;
+            let local = u32::from_le_bytes([
+                archive[cursor + 42],
+                archive[cursor + 43],
+                archive[cursor + 44],
+                archive[cursor + 45],
+            ]) as usize;
+            let entry_name = std::str::from_utf8(&archive[cursor + 46..cursor + 46 + name_len])
+                .unwrap()
+                .to_owned();
+            cursor += 46 + name_len;
+            if entry_name == name {
+                let data_at = local + 30 + name_len;
+                return archive[data_at..data_at + size].to_vec();
+            }
+        }
+        panic!("member {name} not found in the archive");
+    }
+
     #[test]
     fn destination_validation_rejects_traversal_and_user_data_targets() {
         let user_data = temp_user_data("dest");
         let inside = user_data.join("export.zip");
         assert!(matches!(
-            validate_destination(&user_data, &inside),
+            validate_destination(&user_data, &inside, false),
             Err(ExportError::DestinationInsideUserData)
         ));
         // A `..` path that lexically escapes but resolves outside is still
         // rejected up front: the shell never normalizes user input silently.
         assert!(matches!(
-            validate_destination(&user_data, &user_data.join("x/../../escape.zip")),
+            validate_destination(&user_data, &user_data.join("x/../../escape.zip"), false),
             Err(ExportError::DestinationHasDotComponents)
         ));
         assert!(matches!(
-            validate_destination(&user_data, Path::new("relative.zip")),
+            validate_destination(&user_data, Path::new("relative.zip"), false),
             Err(ExportError::DestinationNotAbsolute)
         ));
         assert!(matches!(
-            validate_destination(&user_data, &user_data.join("no-such-parent/e.zip")),
+            validate_destination(&user_data, &user_data.join("no-such-parent/e.zip"), false),
             Err(ExportError::DestinationParentMissing)
         ));
-        // A symlink destination (even pointing outside) is refused.
-        let outside = std::env::temp_dir().join(format!("mfd-dest-{}.zip", crate::protocol::new_token()));
-        std::os::unix::fs::symlink(&outside, user_data.join("link.zip")).unwrap();
-        assert!(matches!(
-            validate_destination(&user_data, &user_data.join("link.zip")),
-            Err(ExportError::DestinationIsSymlink)
-        ));
-        let _ = fs::remove_file(user_data.join("link.zip"));
+        // A symlink destination (even pointing outside) is refused. (Unix
+        // only: planting a link needs SeCreateSymbolicLinkPrivilege on
+        // Windows, so that platform exercises this policy via the shared
+        // `is_symlink_at` predicate instead.)
+        #[cfg(unix)]
+        {
+            let outside =
+                std::env::temp_dir().join(format!("mfd-dest-{}.zip", crate::protocol::new_token()));
+            std::os::unix::fs::symlink(&outside, user_data.join("link.zip")).unwrap();
+            assert!(matches!(
+                validate_destination(&user_data, &user_data.join("link.zip"), false),
+                Err(ExportError::DestinationIsSymlink)
+            ));
+            let _ = fs::remove_file(user_data.join("link.zip"));
+            let _ = fs::remove_file(&outside);
+        }
         let _ = fs::remove_dir_all(&user_data);
-        let _ = fs::remove_file(&outside);
     }
 
     #[test]
@@ -709,18 +1113,20 @@ mod tests {
         let user_data = temp_user_data("symlink");
         let logs = logs_dir(&user_data);
         fs::create_dir_all(&logs).unwrap();
-        let logs_canonical = logs.canonicalize().unwrap();
+        let _logs_canonical = logs.canonicalize().unwrap();
 
         // A symlink planted at a base path is neither followed nor moved:
         // rotation skips it and its target is untouched.
-        let outside = std::env::temp_dir()
-            .join(format!("mfd-rotate-out-{}.log", crate::protocol::new_token()));
+        let outside = std::env::temp_dir().join(format!(
+            "mfd-rotate-out-{}.log",
+            crate::protocol::new_token()
+        ));
         fs::write(&outside, "outside".repeat(8)).unwrap();
         #[cfg(unix)]
         {
             let linked = logs.join(format!("shell-{}.log", "a".repeat(32)));
             std::os::unix::fs::symlink(&outside, &linked).unwrap();
-            assert!(!rotate_file(&linked, &logs_canonical, 8, 5).unwrap());
+            assert!(!rotate_file(&linked, &_logs_canonical, 8, 5).unwrap());
             assert!(fs::symlink_metadata(&linked).unwrap().is_symlink());
             assert_eq!(fs::read(&outside).unwrap(), b"outside".repeat(8));
             let _ = fs::remove_file(&linked);
@@ -730,8 +1136,8 @@ mod tests {
         // alone (simulated here with a foreign containment root).
         let base = logs.join(format!("shell-{}.log", "b".repeat(32)));
         fs::write(&base, "x".repeat(64)).unwrap();
-        let other_root = std::env::temp_dir()
-            .join(format!("mfd-rotate-other-{}", crate::protocol::new_token()));
+        let other_root =
+            std::env::temp_dir().join(format!("mfd-rotate-other-{}", crate::protocol::new_token()));
         fs::create_dir_all(&other_root).unwrap();
         assert!(!rotate_file(&base, &other_root.canonicalize().unwrap(), 8, 5).unwrap());
         assert_eq!(fs::read_to_string(&base).unwrap(), "x".repeat(64));
@@ -743,12 +1149,14 @@ mod tests {
         {
             let base = logs.join(format!("shell-{}.log", "c".repeat(32)));
             fs::write(&base, "y".repeat(64)).unwrap();
-            let gen_target = std::env::temp_dir()
-                .join(format!("mfd-rotate-gen-{}.log", crate::protocol::new_token()));
+            let gen_target = std::env::temp_dir().join(format!(
+                "mfd-rotate-gen-{}.log",
+                crate::protocol::new_token()
+            ));
             fs::write(&gen_target, "gen-target").unwrap();
             let generation = generation_path(&base, 1).unwrap();
             std::os::unix::fs::symlink(&gen_target, &generation).unwrap();
-            assert!(rotate_file(&base, &logs_canonical, 8, 5).unwrap());
+            assert!(rotate_file(&base, &_logs_canonical, 8, 5).unwrap());
             assert_eq!(fs::read(&gen_target).unwrap(), b"gen-target");
             assert!(!fs::symlink_metadata(&generation).unwrap().is_symlink());
             assert_eq!(fs::read_to_string(&generation).unwrap(), "y".repeat(64));
@@ -804,8 +1212,8 @@ mod tests {
         let user_data = temp_user_data("opensymlink");
         let logs = logs_dir(&user_data);
         fs::create_dir_all(&logs).unwrap();
-        let outside = std::env::temp_dir()
-            .join(format!("mfd-open-{}.log", crate::protocol::new_token()));
+        let outside =
+            std::env::temp_dir().join(format!("mfd-open-{}.log", crate::protocol::new_token()));
         fs::write(&outside, "secret").unwrap();
         let token = "ab".repeat(16);
         std::os::unix::fs::symlink(&outside, shell_log_path(&user_data, &token)).unwrap();
@@ -824,8 +1232,10 @@ mod tests {
 
         // A path outside the logs root is refused before anything is created
         // through it, even though it is a perfectly regular target.
-        let outside = std::env::temp_dir()
-            .join(format!("mfd-open-outside-{}.log", crate::protocol::new_token()));
+        let outside = std::env::temp_dir().join(format!(
+            "mfd-open-outside-{}.log",
+            crate::protocol::new_token()
+        ));
         let error = open_append_regular(&outside, &logs_canonical).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
         assert!(!outside.exists(), "nothing may be created outside the root");
@@ -834,13 +1244,12 @@ mod tests {
         // elsewhere through a symlinked directory is refused as well.
         #[cfg(unix)]
         {
-            let outside_dir = std::env::temp_dir()
-                .join(format!("mfd-open-dir-{}", crate::protocol::new_token()));
+            let outside_dir =
+                std::env::temp_dir().join(format!("mfd-open-dir-{}", crate::protocol::new_token()));
             fs::create_dir_all(&outside_dir).unwrap();
             let planted = logs.join("planted-dir");
             std::os::unix::fs::symlink(&outside_dir, &planted).unwrap();
-            let error =
-                open_append_regular(&planted.join("x.log"), &logs_canonical).unwrap_err();
+            let error = open_append_regular(&planted.join("x.log"), &logs_canonical).unwrap_err();
             assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
             assert_eq!(
                 fs::read_dir(&outside_dir).unwrap().count(),
@@ -901,8 +1310,10 @@ mod tests {
             .unwrap()
             .set_len(ROTATION_THRESHOLD_BYTES)
             .unwrap();
-        let link_target = std::env::temp_dir()
-            .join(format!("mfd-reopen-evil-{}.log", crate::protocol::new_token()));
+        let link_target = std::env::temp_dir().join(format!(
+            "mfd-reopen-evil-{}.log",
+            crate::protocol::new_token()
+        ));
         fs::write(&link_target, "evil").unwrap();
         fs::remove_file(&base).unwrap();
         std::os::unix::fs::symlink(&link_target, &base).unwrap();
@@ -926,5 +1337,673 @@ mod tests {
 
         let _ = fs::remove_dir_all(&user_data);
         let _ = fs::remove_file(&link_target);
+    }
+
+    /// #149 regression: a caller without the user's overwrite confirmation
+    /// must never replace an existing file — the default export refuses,
+    /// leaves the file byte-identical, and leaves no `.pending` sibling.
+    #[test]
+    fn export_refuses_an_existing_destination_without_confirmation() {
+        let user_data = temp_user_data("exists");
+        let logs = logs_dir(&user_data);
+        fs::create_dir_all(&logs).unwrap();
+        fs::write(logs.join(format!("shell-{}.log", "5".repeat(32))), "line\n").unwrap();
+
+        let destination =
+            std::env::temp_dir().join(format!("mfd-existing-{}.txt", crate::protocol::new_token()));
+        fs::write(&destination, "important user document").unwrap();
+        let pending = destination.with_file_name(format!(
+            "{}.pending",
+            destination.file_name().unwrap().to_string_lossy()
+        ));
+
+        let error = export_logs_zip(&user_data, &destination).unwrap_err();
+        assert!(matches!(error, ExportError::DestinationExists), "{error}");
+        assert_eq!(
+            fs::read_to_string(&destination).unwrap(),
+            "important user document",
+            "the existing file must be untouched"
+        );
+        assert!(!pending.exists(), "no pending sibling may be left behind");
+
+        // The confirmed-overwrite entry point — what the native save
+        // dialog's overwrite prompt funnels into — is the only way the
+        // file gets replaced.
+        let report = export_logs_zip_overwrite(&user_data, &destination).unwrap();
+        assert_eq!(report.files.len(), 1);
+        assert_eq!(&fs::read(&destination).unwrap()[0..2], b"PK");
+        assert!(!pending.exists());
+
+        let _ = fs::remove_dir_all(&user_data);
+        let _ = fs::remove_file(&destination);
+    }
+
+    /// #150 regression: a symlink planted at the `.pending` sibling is
+    /// refused with the same detection the destination itself uses, and the
+    /// link target is never written through. Unix uses a real symlink;
+    /// Windows needs SeCreateSymbolicLinkPrivilege to plant one, so the
+    /// positive case is attempted and skipped when the privilege is
+    /// missing (the shared `is_symlink_at` predicate both checks run is
+    /// still exercised via the negative case, and the junction-based
+    /// sibling test below covers the privilege-free positive case on
+    /// Windows).
+    #[test]
+    fn export_refuses_a_symlink_planted_at_the_pending_sibling() {
+        let user_data = temp_user_data("pendlink");
+        let logs = logs_dir(&user_data);
+        fs::create_dir_all(&logs).unwrap();
+        fs::write(logs.join(format!("shell-{}.log", "6".repeat(32))), "line\n").unwrap();
+
+        let destination =
+            std::env::temp_dir().join(format!("mfd-pending-{}.zip", crate::protocol::new_token()));
+        let pending = destination.with_file_name(format!(
+            "{}.pending",
+            destination.file_name().unwrap().to_string_lossy()
+        ));
+        let victim = std::env::temp_dir().join(format!(
+            "mfd-pending-victim-{}.txt",
+            crate::protocol::new_token()
+        ));
+        fs::write(&victim, "do not touch").unwrap();
+
+        #[cfg(unix)]
+        let planted = std::os::unix::fs::symlink(&victim, &pending).is_ok();
+        #[cfg(windows)]
+        let planted = std::os::windows::fs::symlink_file(&victim, &pending).is_ok();
+        if !planted {
+            eprintln!("symlink creation not permitted; running the negative case only");
+        } else {
+            let error = export_logs_zip(&user_data, &destination).unwrap_err();
+            assert!(matches!(error, ExportError::PendingIsSymlink), "{error}");
+            assert!(!destination.exists());
+            assert!(is_symlink_at(&pending));
+            assert_eq!(fs::read_to_string(&victim).unwrap(), "do not touch");
+            let _ = fs::remove_file(&pending);
+        }
+
+        // Negative case (no privileges needed): a regular file is not a link.
+        assert!(!is_symlink_at(&victim));
+
+        let _ = fs::remove_dir_all(&user_data);
+        let _ = fs::remove_file(&victim);
+    }
+
+    /// #150 regression, Windows: a DIRECTORY JUNCTION planted at the
+    /// `.pending` sibling is refused exactly like a symlink. `mklink /J`
+    /// needs no privilege (unlike `symlink_file`), so this positive case
+    /// runs on every Windows machine instead of silently degrading when
+    /// SeCreateSymbolicLinkPrivilege is missing — junctions share the
+    /// reparse-point metadata shape `is_symlink_at` detects.
+    #[test]
+    #[cfg(windows)]
+    fn export_refuses_a_junction_planted_at_the_pending_sibling() {
+        let user_data = temp_user_data("pendjunction");
+        let logs = logs_dir(&user_data);
+        fs::create_dir_all(&logs).unwrap();
+        fs::write(logs.join(format!("shell-{}.log", "f".repeat(32))), "line\n").unwrap();
+
+        let destination =
+            std::env::temp_dir().join(format!("mfd-junction-{}.zip", crate::protocol::new_token()));
+        let pending = destination.with_file_name(format!(
+            "{}.pending",
+            destination.file_name().unwrap().to_string_lossy()
+        ));
+        let target = std::env::temp_dir().join(format!(
+            "mfd-junction-target-{}",
+            crate::protocol::new_token()
+        ));
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("canary.txt"), "do not touch").unwrap();
+
+        // `mklink` is a cmd.exe builtin; /J creates a junction without any
+        // privilege. If even this fails (exotic lockdown), skip gracefully.
+        let created = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&pending)
+            .arg(&target)
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false);
+        if !created {
+            eprintln!("junction creation failed; running the negative case only");
+        } else {
+            let error = export_logs_zip(&user_data, &destination).unwrap_err();
+            assert!(matches!(error, ExportError::PendingIsSymlink), "{error}");
+            assert!(!destination.exists());
+            assert!(is_symlink_at(&pending));
+            assert_eq!(
+                fs::read_to_string(target.join("canary.txt")).unwrap(),
+                "do not touch",
+                "nothing may be written through the junction"
+            );
+            // Removing the junction removes the link itself, never the
+            // target directory.
+            fs::remove_dir(&pending).unwrap();
+            assert!(target.join("canary.txt").exists());
+            assert!(!destination.exists());
+        }
+
+        // Negative case (no privileges needed): a regular file is not a link.
+        assert!(!is_symlink_at(&target.join("canary.txt")));
+
+        let _ = fs::remove_dir_all(&user_data);
+        let _ = fs::remove_dir_all(&target);
+    }
+
+    /// #149 TOCTOU regression: the validation-time "destination must not
+    /// exist" check can be undercut by a file that appears at the
+    /// destination while the archive is being collected and zipped. The
+    /// no-overwrite placement must refuse atomically — `hard_link` fails
+    /// with AlreadyExists — and leave the raced file's bytes untouched;
+    /// only the confirmed-overwrite placement may replace it.
+    #[test]
+    fn no_overwrite_placement_refuses_a_destination_created_after_validation() {
+        let dir = temp_user_data("clobber");
+        let destination = dir.join("logs.zip");
+        let pending = dir.join("logs.zip.pending");
+        fs::write(&pending, "staged archive bytes").unwrap();
+
+        // The race: a user file occupies the destination at placement time.
+        fs::write(&destination, "user file that appeared late").unwrap();
+        let error = place_archive(&pending, &destination, false).unwrap_err();
+        assert!(matches!(error, ExportError::DestinationExists), "{error}");
+        assert_eq!(
+            fs::read_to_string(&destination).unwrap(),
+            "user file that appeared late",
+            "a file created after validation must never be clobbered"
+        );
+        assert!(
+            !pending.exists(),
+            "a failed placement must not leak the pending sibling"
+        );
+
+        // With the destination free, the no-overwrite placement succeeds and
+        // leaves no pending sibling behind.
+        fs::remove_file(&destination).unwrap();
+        fs::write(&pending, "staged archive bytes").unwrap();
+        place_archive(&pending, &destination, false).unwrap();
+        assert_eq!(
+            fs::read_to_string(&destination).unwrap(),
+            "staged archive bytes"
+        );
+        assert!(!pending.exists());
+
+        // The confirmed-overwrite placement is the one sanctioned replacement.
+        fs::write(&pending, "revised archive bytes").unwrap();
+        place_archive(&pending, &destination, true).unwrap();
+        assert_eq!(
+            fs::read_to_string(&destination).unwrap(),
+            "revised archive bytes"
+        );
+        assert!(!pending.exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// #150 regression: a shift that fails partway must unwind the renames
+    /// it already performed. Generation `.3` is a non-empty directory —
+    /// the `.4 → .5` rename succeeds (its slot was vacated by the oldest
+    /// deletion), then the `.2 → .3` rename fails into the directory —
+    /// so the unwind must restore `.4` from `.5` before the base rolls
+    /// back, leaving every surviving generation at its original slot. Only
+    /// the pre-shift deletion of the oldest generation is unrecoverable.
+    #[test]
+    fn rotation_shift_failure_unwinds_already_renamed_generations() {
+        let user_data = temp_user_data("unwind");
+        let logs = logs_dir(&user_data);
+        fs::create_dir_all(&logs).unwrap();
+        let logs_canonical = logs.canonicalize().unwrap();
+        let base = logs.join(format!("shell-{}.log", "9".repeat(32)));
+
+        fs::write(generation_path(&base, 1).unwrap(), "content-1").unwrap();
+        fs::write(generation_path(&base, 2).unwrap(), "content-2").unwrap();
+        let blocked = generation_path(&base, 3).unwrap();
+        fs::create_dir_all(&blocked).unwrap();
+        fs::write(blocked.join("blocker.txt"), "occupied slot").unwrap();
+        fs::write(generation_path(&base, 4).unwrap(), "content-4").unwrap();
+        fs::write(generation_path(&base, 5).unwrap(), "content-5").unwrap();
+        fs::write(&base, "oversized base").unwrap();
+
+        let result = rotate_file(&base, &logs_canonical, 8, ROTATION_KEEP_GENERATIONS);
+        assert!(result.is_err(), "renaming into an occupied slot must fail");
+
+        // The base is rolled back and every surviving generation keeps its
+        // exact content — nothing stays displaced one slot up.
+        assert_eq!(fs::read_to_string(&base).unwrap(), "oversized base");
+        assert_eq!(
+            fs::read_to_string(generation_path(&base, 1).unwrap()).unwrap(),
+            "content-1"
+        );
+        assert_eq!(
+            fs::read_to_string(generation_path(&base, 2).unwrap()).unwrap(),
+            "content-2"
+        );
+        assert_eq!(
+            fs::read_to_string(blocked.join("blocker.txt")).unwrap(),
+            "occupied slot",
+            "the blocking directory itself is untouched"
+        );
+        assert_eq!(
+            fs::read_to_string(generation_path(&base, 4).unwrap()).unwrap(),
+            "content-4",
+            "the already-renamed .4 must be restored from .5 by the unwind"
+        );
+        assert!(
+            !generation_path(&base, 5).unwrap().exists(),
+            "the pre-shift oldest deletion is the one unrecoverable loss"
+        );
+        assert!(
+            !rotation_staging_path(&base).unwrap().exists(),
+            "no staging leftover may remain after the failed attempt"
+        );
+        let _ = fs::remove_dir_all(&user_data);
+    }
+
+    /// #150 regression: the FINAL staging→newest rename failing must unwind
+    /// the shift that already committed, not only roll the base back —
+    /// otherwise every surviving generation stays displaced one slot up.
+    /// A directory planted at `.1` (directories are never generations, so
+    /// the shift skips it) makes the staging→`.1` rename fail portably on
+    /// both platforms while `.2`/`.3` have already been shifted.
+    #[test]
+    fn rotation_final_rename_failure_unwinds_the_completed_shift() {
+        let user_data = temp_user_data("finalrename");
+        let logs = logs_dir(&user_data);
+        fs::create_dir_all(&logs).unwrap();
+        let logs_canonical = logs.canonicalize().unwrap();
+        let base = logs.join(format!("shell-{}.log", "3".repeat(32)));
+
+        let blocked = generation_path(&base, 1).unwrap();
+        fs::create_dir_all(&blocked).unwrap();
+        fs::write(blocked.join("blocker.txt"), "occupied slot").unwrap();
+        fs::write(generation_path(&base, 2).unwrap(), "content-2").unwrap();
+        fs::write(generation_path(&base, 3).unwrap(), "content-3").unwrap();
+        fs::write(&base, "oversized base").unwrap();
+
+        let result = rotate_file(&base, &logs_canonical, 8, ROTATION_KEEP_GENERATIONS);
+        assert!(
+            result.is_err(),
+            "renaming into the directory at .1 must fail"
+        );
+
+        // The base rolls back AND the committed shift unwinds: generations
+        // end at their original slots, the blocker is untouched.
+        assert_eq!(fs::read_to_string(&base).unwrap(), "oversized base");
+        assert_eq!(
+            fs::read_to_string(blocked.join("blocker.txt")).unwrap(),
+            "occupied slot",
+            "the blocking directory itself is untouched"
+        );
+        assert_eq!(
+            fs::read_to_string(generation_path(&base, 2).unwrap()).unwrap(),
+            "content-2",
+            "the shifted .2 must be restored from .3 by the unwind"
+        );
+        assert_eq!(
+            fs::read_to_string(generation_path(&base, 3).unwrap()).unwrap(),
+            "content-3",
+            "the shifted .3 must be restored from .4 by the unwind"
+        );
+        assert!(
+            !generation_path(&base, 4).unwrap().exists(),
+            "no displaced leftover may remain at .4"
+        );
+        assert!(
+            !rotation_staging_path(&base).unwrap().exists(),
+            "no staging leftover may remain after the failed attempt"
+        );
+        let _ = fs::remove_dir_all(&user_data);
+    }
+
+    /// A stale regular `.pending` file left by an earlier failed export
+    /// must neither block nor misreport the next export: it is removed
+    /// before the `create_new` staging claim, and the export succeeds.
+    #[test]
+    fn export_replaces_a_stale_regular_pending_sibling() {
+        let user_data = temp_user_data("stalepending");
+        let logs = logs_dir(&user_data);
+        fs::create_dir_all(&logs).unwrap();
+        fs::write(logs.join(format!("shell-{}.log", "e".repeat(32))), "line\n").unwrap();
+
+        let destination =
+            std::env::temp_dir().join(format!("mfd-stale-{}.zip", crate::protocol::new_token()));
+        let pending = destination.with_file_name(format!(
+            "{}.pending",
+            destination.file_name().unwrap().to_string_lossy()
+        ));
+        fs::write(
+            &pending,
+            "half-written archive from an earlier failed export",
+        )
+        .unwrap();
+
+        let report = export_logs_zip(&user_data, &destination).unwrap();
+        assert_eq!(report.files.len(), 1);
+        assert_eq!(&fs::read(&destination).unwrap()[0..2], b"PK");
+        assert!(
+            !pending.exists(),
+            "the stale pending file must be replaced, not reused"
+        );
+
+        let _ = fs::remove_dir_all(&user_data);
+        let _ = fs::remove_file(&destination);
+    }
+
+    /// A logs entry whose file name contains a backslash (a legal byte in
+    /// Unix file names, but the ZIP format's path separator — see
+    /// `ZipWriter`'s last-resort assert) must be skipped and reported, never
+    /// archived: before the skip rule it panicked `desktop_export_logs` on
+    /// every invocation. Windows cannot create such a file name, so the case
+    /// is Unix-only.
+    #[test]
+    #[cfg(unix)]
+    fn export_skips_members_with_backslashes_in_their_names() {
+        let user_data = temp_user_data("backslash");
+        let logs = logs_dir(&user_data);
+        fs::create_dir_all(&logs).unwrap();
+        fs::write(logs.join(format!("shell-{}.log", "2".repeat(32))), "line\n").unwrap();
+        fs::write(logs.join("evil\\name.log"), "must not be archived\n").unwrap();
+
+        let destination = std::env::temp_dir().join(format!(
+            "mfd-backslash-{}.zip",
+            crate::protocol::new_token()
+        ));
+        // No panic: the unsafe name is skipped instead of reaching the writer.
+        let report = export_logs_zip(&user_data, &destination).unwrap();
+
+        assert_eq!(report.files.len(), 1, "{report:?}");
+        assert!(
+            report
+                .skipped
+                .iter()
+                .any(|entry| entry.name == "evil\\name.log"
+                    && entry.reason == "unsafe_member_name"),
+            "{report:?}"
+        );
+        assert_eq!(&fs::read(&destination).unwrap()[0..2], b"PK");
+
+        let _ = fs::remove_dir_all(&user_data);
+        let _ = fs::remove_file(&destination);
+    }
+
+    /// The manifest is written AFTER the read loop (#151 review finding):
+    /// a member that changes between its stat and its read is excluded from
+    /// the archive AND from manifest.json's included list, and is listed as
+    /// changed_during_export instead. The realistic trigger is the one the
+    /// exporter documents — a log still being appended to while the export
+    /// runs — modeled by a monotonically growing writer thread; the many
+    /// stable members sorted before the victim keep the stat→read window
+    /// wide enough that the writer always lands inside it (the export is
+    /// retried a bounded number of times in case a scheduler starved it).
+    #[test]
+    fn export_manifest_excludes_members_that_change_during_export() {
+        let user_data = temp_user_data("manifest");
+        let logs = logs_dir(&user_data);
+        fs::create_dir_all(&logs).unwrap();
+        for index in 0..600 {
+            fs::write(logs.join(format!("a-{index:03}.log")), [b'x'; 8192]).unwrap();
+        }
+        let victim = logs.join("zz-victim.log");
+        fs::write(&victim, "v").unwrap();
+
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mutator = {
+            let stop = std::sync::Arc::clone(&stop);
+            let victim = victim.clone();
+            std::thread::spawn(move || {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let Ok(mut file) = fs::OpenOptions::new().append(true).open(&victim) else {
+                        break;
+                    };
+                    let _ = file.write_all(b"growing");
+                }
+            })
+        };
+
+        let destination =
+            std::env::temp_dir().join(format!("mfd-manifest-{}.zip", crate::protocol::new_token()));
+        let mut report = None;
+        for attempt in 0..3 {
+            let candidate = export_logs_zip_overwrite(&user_data, &destination).unwrap();
+            if candidate
+                .skipped
+                .iter()
+                .any(|entry| entry.name == "zz-victim.log")
+            {
+                report = Some(candidate);
+                break;
+            }
+            eprintln!("writer thread did not interleave on attempt {attempt}; retrying");
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        mutator.join().unwrap();
+        let report = report.expect("the growing member must be skipped as changed_during_export");
+
+        assert!(
+            report
+                .skipped
+                .iter()
+                .any(|entry| entry.name == "zz-victim.log"
+                    && entry.reason == "changed_during_export"),
+            "{report:?}"
+        );
+        assert_eq!(report.files.len(), 600, "{report:?}");
+
+        // manifest.json inside the archive agrees with the report: the
+        // victim is absent from included and present under skipped.
+        let archive = fs::read(&destination).unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&zip_member_bytes(&archive, "manifest.json")).unwrap();
+        let included: Vec<&str> = manifest["included"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap())
+            .collect();
+        let skipped: Vec<&str> = manifest["skipped"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(included.len(), 600, "{manifest}");
+        assert!(!included.contains(&"zz-victim.log"), "{manifest}");
+        assert!(skipped.contains(&"zz-victim.log"), "{manifest}");
+
+        let _ = fs::remove_dir_all(&user_data);
+        let _ = fs::remove_file(&destination);
+    }
+
+    /// Windows lock for the rotation-failure tests: holds the base open
+    /// WITHOUT FILE_SHARE_DELETE (but with READ|WRITE sharing so the
+    /// logger's append-reopen keeps succeeding) — exactly the external
+    /// handle shape from #150 that made renames fail while writes flowed.
+    #[cfg(windows)]
+    struct RenameLock(windows::Win32::Foundation::HANDLE);
+
+    #[cfg(windows)]
+    impl Drop for RenameLock {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = windows::Win32::Foundation::CloseHandle(self.0);
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    fn lock_base_against_rename(path: &Path) -> RenameLock {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::Win32::Storage::FileSystem::{
+            CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_CREATION_DISPOSITION,
+            FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_MODE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+            OPEN_EXISTING,
+        };
+        let wide = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<u16>>();
+        let handle = unsafe {
+            CreateFileW(
+                windows::core::PCWSTR(wide.as_ptr()),
+                0x8000_0000u32, // GENERIC_READ
+                FILE_SHARE_MODE(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0),
+                None,
+                FILE_CREATION_DISPOSITION(OPEN_EXISTING.0),
+                FILE_FLAGS_AND_ATTRIBUTES(FILE_ATTRIBUTE_NORMAL.0),
+                None,
+            )
+            .expect("open the base without FILE_SHARE_DELETE for the lock test")
+        };
+        RenameLock(handle)
+    }
+
+    /// Unix equivalent: strips the logs directory's write permission, which
+    /// fails the base rename while appends to the open file keep working —
+    /// the same failure shape as a Windows no-DELETE-share handle.
+    #[cfg(unix)]
+    struct DirWriteLock<'a>(&'a Path);
+
+    #[cfg(unix)]
+    impl<'a> DirWriteLock<'a> {
+        fn lock(dir: &'a Path) -> Self {
+            let mut permissions = fs::metadata(dir).unwrap().permissions();
+            std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o555);
+            fs::set_permissions(dir, permissions).unwrap();
+            DirWriteLock(dir)
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for DirWriteLock<'_> {
+        fn drop(&mut self) {
+            let mut permissions = fs::metadata(self.0).unwrap().permissions();
+            std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+            let _ = fs::set_permissions(self.0, permissions);
+        }
+    }
+
+    #[cfg(unix)]
+    fn skip_when_root() -> bool {
+        // Directory permissions cannot make rename fail for root.
+        let euid = unsafe { libc::geteuid() };
+        euid == 0
+    }
+
+    /// #150 regression: while the base cannot be renamed (Windows: held
+    /// open without FILE_SHARE_DELETE; Unix: logs directory not writable),
+    /// a failed rotation must not shift or delete a single generation.
+    /// The old order shifted history first, so every retry ate one more
+    /// generation until the archive was empty and the base grew unbounded.
+    #[test]
+    fn rotation_failure_on_an_unrenameable_base_loses_no_generations() {
+        let user_data = temp_user_data("locked");
+        let logs = logs_dir(&user_data);
+        fs::create_dir_all(&logs).unwrap();
+        let logs_canonical = logs.canonicalize().unwrap();
+        let base = logs.join(format!("shell-{}.log", "7".repeat(32)));
+
+        // Full history plus an oversized base.
+        let mut expected_generations = Vec::new();
+        for generation in 1..=ROTATION_KEEP_GENERATIONS {
+            let content = format!("generation-{generation}");
+            fs::write(generation_path(&base, generation).unwrap(), &content).unwrap();
+            expected_generations.push(content);
+        }
+        fs::write(&base, "oversized base").unwrap();
+
+        #[cfg(windows)]
+        let lock = lock_base_against_rename(&base);
+        #[cfg(unix)]
+        let lock = {
+            if skip_when_root() {
+                eprintln!("running as root: directory permissions cannot fail a rename");
+                return;
+            }
+            DirWriteLock::lock(&logs)
+        };
+
+        let result = rotate_file(&base, &logs_canonical, 8, ROTATION_KEEP_GENERATIONS);
+        assert!(
+            result.is_err(),
+            "renaming the base must fail under the lock"
+        );
+        drop(lock);
+
+        // Zero history loss: every generation keeps its exact content and
+        // the base is untouched — not moved, not left in staging.
+        assert_eq!(fs::read_to_string(&base).unwrap(), "oversized base");
+        for (generation, content) in (1..=ROTATION_KEEP_GENERATIONS).zip(&expected_generations) {
+            assert_eq!(
+                fs::read_to_string(generation_path(&base, generation).unwrap()).unwrap(),
+                *content,
+                "generation {generation} must survive the failed rotation"
+            );
+        }
+        assert!(
+            !rotation_staging_path(&base).unwrap().exists(),
+            "no staging leftover may remain after the failed attempt"
+        );
+        let _ = fs::remove_dir_all(&user_data);
+    }
+
+    /// #150 regression: `ROTATION_MAX_CONSECUTIVE_FAILURES` consecutive
+    /// rotation failures open the circuit breaker — afterwards rotation is
+    /// no longer attempted even after the lock is gone, while milestone
+    /// lines keep flowing into the (oversized) base instead of history
+    /// being ground away record by record.
+    #[test]
+    fn run_log_rotation_circuit_breaker_opens_after_three_failures() {
+        let user_data = temp_user_data("breaker");
+        let token = "8".repeat(32);
+        #[cfg(unix)]
+        let logs = logs_dir(&user_data);
+        let run_log = RunLog::create(&user_data, &token).unwrap();
+        let base = shell_log_path(&user_data, &token);
+        run_log.record("warmup", &serde_json::json!({})).unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&base)
+            .unwrap()
+            .set_len(ROTATION_THRESHOLD_BYTES)
+            .unwrap();
+
+        #[cfg(windows)]
+        let lock = lock_base_against_rename(&base);
+        #[cfg(unix)]
+        let lock = {
+            if skip_when_root() {
+                eprintln!("running as root: directory permissions cannot fail a rename");
+                return;
+            }
+            DirWriteLock::lock(&logs)
+        };
+
+        // Three failing rotations: every record still writes its line (the
+        // failure is reported, never fatal) and surfaces the rotation error.
+        for attempt in 0..ROTATION_MAX_CONSECUTIVE_FAILURES {
+            let result =
+                run_log.record("locked_attempt", &serde_json::json!({ "attempt": attempt }));
+            assert!(
+                result.is_err(),
+                "rotation under the lock must surface its error"
+            );
+        }
+        drop(lock);
+
+        // The breaker is open: even though the base is renameable again and
+        // still oversized, no rotation is attempted — no generation appears.
+        run_log
+            .record("after_lock", &serde_json::json!({}))
+            .unwrap();
+        assert!(
+            !generation_path(&base, 1).unwrap().exists(),
+            "the open breaker must stop rotation attempts"
+        );
+        let active = fs::read_to_string(&base).unwrap();
+        assert!(active.contains("\"after_lock\""), "{active}");
+        assert!(active.contains("\"locked_attempt\""), "{active}");
+
+        let _ = fs::remove_dir_all(&user_data);
     }
 }

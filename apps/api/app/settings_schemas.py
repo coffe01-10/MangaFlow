@@ -1,12 +1,15 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.schemas import VersionToken
 
 
 class RuntimeSettingsRead(BaseModel):
     queue_mode: Literal["AUTO", "LOCAL", "REDIS"] = "AUTO"
     job_timeout_seconds: int
+    job_lease_seconds: int
     max_auto_repairs: int
     default_concurrency: int = 4
     health_check_interval_seconds: int = 600
@@ -24,12 +27,34 @@ class RuntimeSettingsUpdate(BaseModel):
 
     queue_mode: Literal["AUTO", "LOCAL", "REDIS"] | None = None
     job_timeout_seconds: int | None = Field(default=None, ge=30, le=3600)
+    job_lease_seconds: int | None = Field(default=None, ge=30, le=3600)
     max_auto_repairs: int | None = Field(default=None, ge=0, le=10)
     default_concurrency: int | None = Field(default=None, ge=1, le=8)
     health_check_interval_seconds: int | None = Field(default=None, ge=60, le=3600)
     ui_poll_interval_seconds: int | None = Field(default=None, ge=1000, le=60_000)
     workflow_autosave_ms: int | None = Field(default=None, ge=200, le=10_000)
-    version: int = Field(default=1, ge=1)
+    version: VersionToken = 1
+
+    @field_validator(
+        "queue_mode",
+        "job_timeout_seconds",
+        "job_lease_seconds",
+        "max_auto_repairs",
+        "default_concurrency",
+        "health_check_interval_seconds",
+        "ui_poll_interval_seconds",
+        "workflow_autosave_ms",
+        mode="after",
+    )
+    @classmethod
+    def reject_explicit_null(cls, value):
+        # Optional here means "omitted = keep the current value" (the default
+        # None is never validated). A JSON null used to pass validation, was
+        # persisted into the AppSetting row and rehydrated into the process
+        # Settings, permanently breaking GET /settings/runtime.
+        if value is None:
+            raise ValueError("不接受显式 null，省略字段表示不修改")
+        return value
 
 
 class VertexHealthRead(BaseModel):

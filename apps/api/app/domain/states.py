@@ -1,5 +1,32 @@
 from enum import StrEnum
 
+# Status-transition semantics (issue #128): this module intentionally exports
+# NO transition tables. The former JOB_TRANSITIONS/PAGE_TRANSITIONS maps and
+# ``ensure_transition`` had zero runtime call sites — every real status write
+# is guarded by a conditional UPDATE (WHERE status/lease/owner/cancelled_at)
+# at its own write point, so the tables described guarantees the runtime did
+# not enforce and never blocked a transition it forbade. Actual semantics:
+#
+# - GenerationJob: WAITING/QUEUED -> PREPARING is the lease claim CAS
+#   (worker_tasks._claim_job); the leased pipeline PREPARING ->
+#   UPLOADING_REFERENCES/GENERATING/OCR_CHECKING/CONSISTENCY_CHECKING/
+#   REPAIRING steps are owned-progress CASes (worker_handlers.execution);
+#   COMPLETED/FAILED are completion/failure CASes fenced on lease_owner;
+#   retry/recovery migrations (GENERATING -> WAITING lease reclaim, FAILED ->
+#   WAITING reset_for_retry, QUEUED -> WAITING defer/queue-unavailable,
+#   FAILED/CANCELLED -> CANCELLED cancel sweeps) are the conditional updates
+#   in job_service (recover_pending_jobs, reset_for_retry, mark_job_*) and
+#   worker_tasks (_mark_worker_failure, _claim_job's concurrency fallback).
+# - WorkflowRun/WorkflowNodeRun: status strings are mutated by the workflow
+#   engine's lifecycle/reconciliation/planning paths under their own row
+#   guards; no enumerated table exists by the same design.
+# - MangaPage: page statuses are written by the content workflow and restore
+#   helpers next to their own guards.
+#
+# If a future change wants centralized enforcement, it must wire the tables
+# into EVERY write point enumerated above first; a table without call sites
+# is documentation that silently rots.
+
 
 class WorkflowMode(StrEnum):
     AUTO = "AUTO"
@@ -48,68 +75,6 @@ class JobStatus(StrEnum):
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
     NEEDS_REVIEW = "NEEDS_REVIEW"
-
-
-PAGE_TRANSITIONS: dict[PageStatus, frozenset[PageStatus]] = {
-    PageStatus.PLANNED: frozenset({PageStatus.STORYBOARDED}),
-    PageStatus.STORYBOARDED: frozenset({PageStatus.DRAFT_GENERATING}),
-    PageStatus.DRAFT_GENERATING: frozenset({PageStatus.DRAFT_READY, PageStatus.FAILED}),
-    PageStatus.DRAFT_READY: frozenset({PageStatus.REVIEW_REQUIRED}),
-    PageStatus.REVIEW_REQUIRED: frozenset({PageStatus.APPROVED, PageStatus.NEEDS_REPAIR}),
-    PageStatus.APPROVED: frozenset({PageStatus.FINAL_GENERATING}),
-    PageStatus.FINAL_GENERATING: frozenset({PageStatus.FINAL_CHECKING, PageStatus.FAILED}),
-    PageStatus.FINAL_CHECKING: frozenset(
-        {PageStatus.FINAL_READY, PageStatus.NEEDS_REPAIR, PageStatus.NEEDS_MANUAL_REVIEW}
-    ),
-    PageStatus.FINAL_READY: frozenset({PageStatus.EXPORTED}),
-    PageStatus.EXPORTED: frozenset(),
-    PageStatus.FAILED: frozenset(
-        {PageStatus.DRAFT_GENERATING, PageStatus.FINAL_GENERATING, PageStatus.NEEDS_MANUAL_REVIEW}
-    ),
-    PageStatus.NEEDS_REPAIR: frozenset(
-        {PageStatus.DRAFT_GENERATING, PageStatus.FINAL_GENERATING, PageStatus.NEEDS_MANUAL_REVIEW}
-    ),
-    PageStatus.NEEDS_MANUAL_REVIEW: frozenset(
-        {PageStatus.DRAFT_GENERATING, PageStatus.FINAL_GENERATING}
-    ),
-}
-
-JOB_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
-    JobStatus.WAITING: frozenset({JobStatus.QUEUED, JobStatus.CANCELLED}),
-    JobStatus.QUEUED: frozenset({JobStatus.PREPARING, JobStatus.CANCELLED}),
-    JobStatus.PREPARING: frozenset(
-        {
-            JobStatus.UPLOADING_REFERENCES,
-            JobStatus.GENERATING,
-            JobStatus.FAILED,
-            JobStatus.CANCELLED,
-        }
-    ),
-    JobStatus.UPLOADING_REFERENCES: frozenset(
-        {JobStatus.GENERATING, JobStatus.FAILED, JobStatus.CANCELLED}
-    ),
-    JobStatus.GENERATING: frozenset(
-        {JobStatus.OCR_CHECKING, JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED}
-    ),
-    JobStatus.OCR_CHECKING: frozenset(
-        {JobStatus.CONSISTENCY_CHECKING, JobStatus.FAILED, JobStatus.CANCELLED}
-    ),
-    JobStatus.CONSISTENCY_CHECKING: frozenset(
-        {JobStatus.REPAIRING, JobStatus.COMPLETED, JobStatus.NEEDS_REVIEW, JobStatus.FAILED}
-    ),
-    JobStatus.REPAIRING: frozenset(
-        {JobStatus.COMPLETED, JobStatus.NEEDS_REVIEW, JobStatus.FAILED, JobStatus.CANCELLED}
-    ),
-    JobStatus.COMPLETED: frozenset(),
-    JobStatus.FAILED: frozenset({JobStatus.QUEUED, JobStatus.NEEDS_REVIEW}),
-    JobStatus.CANCELLED: frozenset(),
-    JobStatus.NEEDS_REVIEW: frozenset(),
-}
-
-
-def ensure_transition(current: StrEnum, target: StrEnum, transitions: dict) -> None:
-    if target not in transitions.get(current, frozenset()):
-        raise ValueError(f"非法状态迁移：{current.value} → {target.value}")
 
 
 def ensure_unlocked(locked_fields: list[str], target_fields: list[str]) -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -43,6 +44,7 @@ GROK_ENVIRONMENT = (
     "GROK_DISABLE_AUTOUPDATER",
 )
 _VERSION = re.compile(r"\bgrok\s+([0-9][0-9A-Za-z.+-]*)", re.I)
+_LOGGER = logging.getLogger("mangaflow.cli.grok")
 _SAFE_ERROR_TYPE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,63}")
 _EXPECTED_OUTPUT_TYPES = {
     "image_generate": "ImageGen",
@@ -288,14 +290,20 @@ class GrokBuildArtifactRunner:
                     stderr_checksum=inspect_stderr_checksum,
                 )
             if inspect.exit_code:
+                # An unexplained nonzero preflight exit (AV/indexer file lock,
+                # self-update glitch, transient crash) must not stamp a
+                # terminal capability verdict: UPSTREAM keeps this dispatch
+                # fail-closed — no media call runs — while letting the retry
+                # budget absorb a transient glitch. A parsed hooks verdict
+                # stays UNSUPPORTED in _validate_safe_inspect below.
                 return replace(
                     inspect,
                     stdout=b"",
                     stderr=b"",
                     stdout_checksum=inspect_stdout_checksum,
                     stderr_checksum=inspect_stderr_checksum,
-                    error_code="UNSUPPORTED",
-                    error_message="无法确认 Grok Build CLI 的钩子隔离状态",
+                    error_code="UPSTREAM",
+                    error_message="Grok Build CLI inspect 预检失败，无法确认钩子隔离状态",
                 )
             try:
                 _validate_safe_inspect(inspect.stdout)
@@ -347,7 +355,7 @@ class GrokBuildArtifactRunner:
                 stderr_checksum,
             )
         if outcome.exit_code:
-            code, message, _retryable = _map_failure(_decode_bytes(raw_stdout + raw_stderr))
+            code, message, _retryable = _map_failure(_decode_output(outcome))
             return self._failure_outcome(
                 outcome,
                 environment,
@@ -368,6 +376,19 @@ class GrokBuildArtifactRunner:
                 stderr_checksum,
                 error.code,
                 error.user_message,
+            )
+        except OSError:
+            # Same contract as the antigravity runner: an OSError while
+            # adopting the artifact (ENOSPC, EACCES, hostile target) is an
+            # output failure to retain as evidence, not a controller crash.
+            return self._failure_outcome(
+                outcome,
+                environment,
+                run_id,
+                stdout_checksum,
+                stderr_checksum,
+                "INVALID_OUTPUT",
+                "Grok Build CLI 产物无法读取或落盘",
             )
         except BaseException as error:
             cleanup_warning = _cleanup_run_sessions(environment, run_id)
@@ -660,18 +681,27 @@ class GrokBuildCLIImageAdapter:
         )
 
     def _cancel_requested(self, context: _InvocationContext) -> bool:
-        with self.runtime.session_factory() as db:
-            job = db.get(GenerationJob, context.job_id)
-            if job is None or job.status == JobStatus.CANCELLED or job.cancelled_at is not None:
-                return True
-            if context.lease_owner and job.lease_owner != context.lease_owner:
-                return True
-            expires_at = job.lease_expires_at
-            if expires_at is not None:
-                if expires_at.tzinfo is None:
-                    expires_at = expires_at.replace(tzinfo=UTC)
-                if expires_at <= datetime.now(UTC):
+        try:
+            with self.runtime.session_factory() as db:
+                job = db.get(GenerationJob, context.job_id)
+                if job is None or job.status == JobStatus.CANCELLED or job.cancelled_at is not None:
                     return True
+                if context.lease_owner and job.lease_owner != context.lease_owner:
+                    return True
+                expires_at = job.lease_expires_at
+                if expires_at is not None:
+                    if expires_at.tzinfo is None:
+                        expires_at = expires_at.replace(tzinfo=UTC)
+                    if expires_at <= datetime.now(UTC):
+                        return True
+        except Exception:
+            # A controller-side probe failure (e.g. a transient DB error)
+            # must not kill the paid child run mid-generation as CRASH:
+            # assume the job is not cancelled and keep waiting. Cancellation
+            # is a deliberate user action, and the controller re-checks this
+            # probe after the process finishes (cli_executor.execute).
+            _LOGGER.exception("Cancel probe failed; treating job as not cancelled")
+            return False
         return False
 
 
@@ -916,12 +946,14 @@ def _map_failure(text: str) -> tuple[str, str, bool]:
         for value in ("not authenticated", "authentication required", "not logged", "sign in")
     ):
         return "UNAUTHENTICATED", "Grok Build CLI 尚未登录", False
-    if any(value in lowered for value in ("supergrok", "isn't available", "not available")):
+    # Account-capability denials only: "not available" alone also matches
+    # transient "temporarily not available" 5xx bodies, which §7.5 keeps
+    # retryable. Deterministic tool-grant refusals are enforced by the
+    # preflight/hook checks in code, not by stderr matching.
+    if any(value in lowered for value in ("supergrok", "isn't available", "not included")):
         return "UNSUPPORTED", "当前 Grok 账号不具备 Imagine 图片能力", False
     if any(value in lowered for value in ("quota", "rate limit", "too many requests")):
         return "RATE_LIMIT", "Grok Build CLI 当前额度或速率受限", True
-    if any(value in lowered for value in ("permission", "denied", "blocked")):
-        return "UNSUPPORTED", "Grok Build CLI 图片工具权限未获允许", False
     return "UPSTREAM", "Grok Build CLI 图片任务执行失败", True
 
 
@@ -968,7 +1000,14 @@ def _decode_bytes(payload: bytes) -> str:
 
 
 def _decode_output(outcome: CLIProcessOutcome) -> str:
-    return _decode_bytes(outcome.stdout + b"\n" + outcome.stderr)
+    # Decode each stream independently: a CLI commonly writes UTF-8 JSON to
+    # stdout while a localized Windows error lands in stderr as cp936, and a
+    # concatenated decode succeeds as cp936 by mojibake-ing the UTF-8 half,
+    # breaking auth/quota keyword matching. Per-stream, the same chain keeps
+    # both halves readable.
+    return "\n".join(
+        _decode_bytes(payload) for payload in (outcome.stdout, outcome.stderr)
+    )
 
 
 def _elapsed_ms(started: float) -> int:
@@ -1005,6 +1044,9 @@ def _run_probe_command(settings: Settings, argv: tuple[str, ...]) -> CLIProcessO
             cancel_requested=lambda: False,
         )
     finally:
-        shutil.rmtree(probe_directory, ignore_errors=False)
+        # Cleanup failures must not mask the real probe failure with an
+        # unrelated rmtree error (locked/read-only files are common on
+        # Windows); the probe root sweep retries non-recursively instead.
+        shutil.rmtree(probe_directory, ignore_errors=True)
         with suppress(OSError):
             probe_root.rmdir()

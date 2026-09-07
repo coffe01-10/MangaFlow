@@ -15,6 +15,14 @@ REQUIRED_QUALITY_CATEGORIES = (
     "PROP",
     "CONTINUITY",
 )
+# #164: PRESENCE (cast-compliance) is a sixth inspection category. Historical
+# InspectionResult rows predate it and are deliberately NOT retroactively
+# gated — a missing PRESENCE row never blocks an old candidate ("历史页面不追
+# 溯，新检查才要求"). Any inspection that emits the category must pass it, and
+# the inspect handler always requests PRESENCE for new runs, so in practice
+# "absent" means "inspected before the category existed".
+PRESENCE_QUALITY_CATEGORY = "PRESENCE"
+GATED_QUALITY_CATEGORIES = (*REQUIRED_QUALITY_CATEGORIES, PRESENCE_QUALITY_CATEGORY)
 PASSING_QUALITY_OUTCOMES = {"MATCH", "PASS", "ACCEPTABLE"}
 
 
@@ -97,9 +105,12 @@ def build_page_production_readiness(
                 )
             )
         latest = latest_inspections_by_category(db, candidate.id, page.storyboard_version)
+        # A failing row blocks for every gated category (including PRESENCE
+        # when it exists); only the five original categories are REQUIRED to
+        # exist, so legacy five-category candidates stay ready (#164).
         failed = [
             category
-            for category in REQUIRED_QUALITY_CATEGORIES
+            for category in GATED_QUALITY_CATEGORIES
             if category in latest
             and latest[category].outcome not in PASSING_QUALITY_OUTCOMES
         ]

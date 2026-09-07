@@ -4,6 +4,16 @@ from typing import Any, Protocol
 from pydantic import BaseModel
 
 
+def strip_json_fences(text: str) -> str:
+    """Strip a single Markdown code fence a model may wrap around JSON."""
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        first_newline = stripped.find("\n")
+        if first_newline != -1 and stripped.endswith("```"):
+            return stripped[first_newline + 1 : -3].strip()
+    return stripped
+
+
 class ProviderAdapterError(RuntimeError):
     def __init__(
         self,

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { ApiError } from "@/lib/api";
+
 import { countPersistedSceneBindings, pickStructured, pickVariantOverrides } from "./scene-structured";
 import { sceneAssetStatusMeta } from "./scene-status";
 
@@ -65,5 +67,42 @@ describe("scene binding count", () => {
       () => false,
     );
     expect(count).toBe(2);
+  });
+
+  it("404 by status code: a rejected script without the legacy「不存在」wording still counts as absent", async () => {
+    const count = await countPersistedSceneBindings(
+      "project-1",
+      "asset-1",
+      async () => [{ id: "chapter-1" }, { id: "chapter-2" }],
+      async (chapterId) => {
+        if (chapterId === "chapter-2") throw new ApiError("chapter has no script", 404);
+        return { scenes: [{ scene_asset_id: "asset-1" }] };
+      },
+    );
+    expect(count).toBe(1);
+  });
+
+  it("non-404 ApiError is a real failure even when the message mentions「不存在」", async () => {
+    const count = await countPersistedSceneBindings(
+      "project-1",
+      "asset-1",
+      async () => [{ id: "chapter-1" }],
+      async () => {
+        throw new ApiError("章节剧本不存在副本读取失败", 500);
+      },
+    );
+    expect(count).toBeNull();
+  });
+
+  it("plain Error without a status keeps the message fallback for not-found", async () => {
+    const count = await countPersistedSceneBindings(
+      "project-1",
+      "asset-1",
+      async () => [{ id: "chapter-1" }],
+      async () => {
+        throw new Error("章节不存在");
+      },
+    );
+    expect(count).toBe(0);
   });
 });

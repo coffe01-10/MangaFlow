@@ -3,10 +3,11 @@ from __future__ import annotations
 from copy import deepcopy
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.api.helpers import ensure_project_scope
 from app.database import get_db
 from app.models import Project, WorkflowDefinition, WorkflowRun, WorkflowVersion, utcnow
 from app.services.ordinal_allocator import OrdinalConflictError
@@ -50,17 +51,27 @@ def _project(db: Session, project_id: str) -> Project:
     return project
 
 
-def _workflow(db: Session, workflow_id: str) -> WorkflowDefinition:
+def _workflow(
+    db: Session, workflow_id: str, project_id: str | None = None
+) -> WorkflowDefinition:
     workflow = db.get(WorkflowDefinition, workflow_id)
     if not workflow or workflow.deleted_at is not None:
         raise HTTPException(status_code=404, detail="工作流不存在")
+    ensure_project_scope(db, workflow, project_id, label="工作流")
     return workflow
 
 
-def _run(db: Session, run_id: str) -> WorkflowRun:
+def _run(db: Session, run_id: str, project_id: str | None = None) -> WorkflowRun:
     run = db.get(WorkflowRun, run_id)
     if not run:
         raise HTTPException(status_code=404, detail="工作流运行不存在")
+    # The run-scoped routes carry no project path segment, so a soft-deleted
+    # project must fail closed here: approve/retry would otherwise mint paid
+    # work on a project the user already archived.
+    project = db.get(Project, run.project_id)
+    if not project or project.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    ensure_project_scope(db, run, project_id, label="工作流运行")
     return run
 
 
@@ -148,26 +159,42 @@ def import_workflow(
 
 
 @router.get("/workflows/{workflow_id}", response_model=WorkflowRead)
-def get_workflow(workflow_id: str, db: Session = Depends(get_db)) -> WorkflowDefinition:
-    return _workflow(db, workflow_id)
+def get_workflow(
+    workflow_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> WorkflowDefinition:
+    return _workflow(db, workflow_id, project_id)
 
 
 @router.patch("/workflows/{workflow_id}", response_model=WorkflowRead)
 def update_workflow(
     workflow_id: str,
     payload: WorkflowUpdate,
+    project_id: str | None = None,
     db: Session = Depends(get_db),
 ) -> WorkflowDefinition:
-    workflow = _workflow(db, workflow_id)
-    if workflow.version != payload.version:
-        raise HTTPException(status_code=409, detail="工作流已被其他页面修改，请刷新后重试")
+    workflow = _workflow(db, workflow_id, project_id)
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
     if "draft_graph" in values:
         values["draft_graph"] = canonical_graph(values["draft_graph"])
+    # Claim the row with an atomic conditional update so concurrent PATCHes
+    # (and concurrent restores) cannot both pass an in-memory version
+    # comparison (same pattern as _claim_panel_version / scene asset PATCH).
+    claimed = db.execute(
+        update(WorkflowDefinition)
+        .where(
+            WorkflowDefinition.id == workflow.id,
+            WorkflowDefinition.version == payload.version,
+        )
+        .values(version=WorkflowDefinition.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if not claimed.rowcount:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="工作流已被其他页面修改，请刷新后重试")
+    if "draft_graph" in values:
         workflow.draft_version += 1
     for field, value in values.items():
         setattr(workflow, field, value)
-    workflow.version += 1
     try:
         db.commit()
     except IntegrityError as error:
@@ -178,8 +205,24 @@ def update_workflow(
 
 
 @router.delete("/workflows/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_workflow(workflow_id: str, db: Session = Depends(get_db)) -> Response:
-    workflow = _workflow(db, workflow_id)
+def delete_workflow(
+    workflow_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> Response:
+    workflow = _workflow(db, workflow_id, project_id)
+    # Soft-deleting a definition that still has live runs would orphan them:
+    # reconcile/approve keep executing paid jobs for a workflow the studio no
+    # longer lists (#139). Refuse like delete_script — cancelling the runs is
+    # the caller's decision, never a delete side effect.
+    active_run = db.scalar(
+        select(WorkflowRun.id)
+        .where(
+            WorkflowRun.workflow_id == workflow.id,
+            WorkflowRun.status.not_in({"COMPLETED", "CANCELLED", "FAILED"}),
+        )
+        .limit(1)
+    )
+    if active_run is not None:
+        raise HTTPException(status_code=409, detail="工作流仍有进行中的运行，请先取消")
     workflow.deleted_at = utcnow()
     workflow.is_active = False
     workflow.version += 1
@@ -188,8 +231,10 @@ def delete_workflow(workflow_id: str, db: Session = Depends(get_db)) -> Response
 
 
 @router.get("/workflows/{workflow_id}/export")
-def export_workflow(workflow_id: str, db: Session = Depends(get_db)) -> dict:
-    workflow = _workflow(db, workflow_id)
+def export_workflow(
+    workflow_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> dict:
+    workflow = _workflow(db, workflow_id, project_id)
     return {
         "schema": "mangaflow.workflow.v2",
         "name": workflow.name,
@@ -199,14 +244,18 @@ def export_workflow(workflow_id: str, db: Session = Depends(get_db)) -> dict:
 
 
 @router.post("/workflows/{workflow_id}/validate", response_model=WorkflowValidationRead)
-def validate_workflow(workflow_id: str, db: Session = Depends(get_db)) -> WorkflowValidationRead:
-    return validate_graph(_workflow(db, workflow_id).draft_graph)
+def validate_workflow(
+    workflow_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> WorkflowValidationRead:
+    return validate_graph(_workflow(db, workflow_id, project_id).draft_graph)
 
 
 @router.post("/workflows/{workflow_id}/publish", response_model=WorkflowVersionRead)
-def publish(workflow_id: str, db: Session = Depends(get_db)) -> WorkflowVersion:
+def publish(
+    workflow_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> WorkflowVersion:
     try:
-        return publish_workflow(db, _workflow(db, workflow_id))
+        return publish_workflow(db, _workflow(db, workflow_id, project_id))
     except PublishRevisionConflictError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     except ValueError as error:
@@ -214,8 +263,10 @@ def publish(workflow_id: str, db: Session = Depends(get_db)) -> WorkflowVersion:
 
 
 @router.get("/workflows/{workflow_id}/versions", response_model=list[WorkflowVersionRead])
-def list_versions(workflow_id: str, db: Session = Depends(get_db)) -> list[WorkflowVersion]:
-    _workflow(db, workflow_id)
+def list_versions(
+    workflow_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> list[WorkflowVersion]:
+    _workflow(db, workflow_id, project_id)
     return list(
         db.scalars(
             select(WorkflowVersion)
@@ -229,25 +280,41 @@ def list_versions(workflow_id: str, db: Session = Depends(get_db)) -> list[Workf
 def restore_version(
     version_id: str,
     payload: WorkflowRestoreRequest,
+    project_id: str | None = None,
     db: Session = Depends(get_db),
 ) -> WorkflowDefinition:
     version = db.get(WorkflowVersion, version_id)
     if not version:
         raise HTTPException(status_code=404, detail="工作流版本不存在")
+    ensure_project_scope(db, version, project_id, label="工作流版本")
     workflow = _workflow(db, version.workflow_id)
-    if workflow.version != payload.version:
+    # Claim the workflow row with an atomic conditional update so a concurrent
+    # restore or PATCH cannot both pass an in-memory version comparison and
+    # silently overwrite each other's graph (same pattern as update_workflow).
+    claimed = db.execute(
+        update(WorkflowDefinition)
+        .where(
+            WorkflowDefinition.id == workflow.id,
+            WorkflowDefinition.version == payload.version,
+        )
+        .values(version=WorkflowDefinition.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if not claimed.rowcount:
+        db.rollback()
         raise HTTPException(status_code=409, detail="工作流已被其他页面修改，请刷新后重试")
     workflow.draft_graph = deepcopy(version.graph)
     workflow.draft_version += 1
-    workflow.version += 1
     db.commit()
     db.refresh(workflow)
     return workflow
 
 
 @router.get("/workflows/{workflow_id}/runs", response_model=list[WorkflowRunRead])
-def list_runs(workflow_id: str, db: Session = Depends(get_db)) -> list[WorkflowRun]:
-    _workflow(db, workflow_id)
+def list_runs(
+    workflow_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> list[WorkflowRun]:
+    _workflow(db, workflow_id, project_id)
     runs = list(
         db.scalars(
             select(WorkflowRun)
@@ -266,12 +333,13 @@ def list_runs(workflow_id: str, db: Session = Depends(get_db)) -> list[WorkflowR
 def start_run(
     workflow_id: str,
     payload: WorkflowRunCreate,
+    project_id: str | None = None,
     db: Session = Depends(get_db),
 ) -> WorkflowRun:
     try:
         return create_workflow_run(
             db,
-            _workflow(db, workflow_id),
+            _workflow(db, workflow_id, project_id),
             scope_type=payload.scope_type,
             scope_id=payload.scope_id,
             start_node_ids=payload.start_node_ids,
@@ -284,14 +352,18 @@ def start_run(
 
 
 @router.get("/workflow-runs/{run_id}", response_model=WorkflowRunRead)
-def read_run(run_id: str, db: Session = Depends(get_db)) -> WorkflowRun:
-    _run(db, run_id)
+def read_run(
+    run_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> WorkflowRun:
+    _run(db, run_id, project_id)
     return reconcile_run(db, run_id)
 
 
 @router.post("/workflow-runs/{run_id}/cancel", response_model=WorkflowRunRead)
-def stop_run(run_id: str, db: Session = Depends(get_db)) -> WorkflowRun:
-    return cancel_run(db, _run(db, run_id))
+def stop_run(
+    run_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> WorkflowRun:
+    return cancel_run(db, _run(db, run_id, project_id))
 
 
 @router.post(
@@ -299,9 +371,11 @@ def stop_run(run_id: str, db: Session = Depends(get_db)) -> WorkflowRun:
     response_model=WorkflowRunRead,
     status_code=status.HTTP_202_ACCEPTED,
 )
-def rerun(run_id: str, db: Session = Depends(get_db)) -> WorkflowRun:
+def rerun(
+    run_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> WorkflowRun:
     try:
-        return retry_run(db, _run(db, run_id))
+        return retry_run(db, _run(db, run_id, project_id))
     except OrdinalConflictError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     except ValueError as error:
@@ -316,8 +390,10 @@ def approve(
     run_id: str,
     node_id: str,
     payload: WorkflowNodeApproveRequest,
+    project_id: str | None = None,
     db: Session = Depends(get_db),
 ) -> WorkflowRun:
+    _run(db, run_id, project_id)
     try:
         return approve_node(
             db,

@@ -2,6 +2,36 @@
 
 成员交付：Grok Build；当前由组长接管。分支：`codex/phase2-browser-performance-acceptance`。基线：`b7d89c0`。本文件保留成员历史报告；组长独立结果以最新接管章节为准。历史报告不代表当前代码已通过验收。
 
+## storyboard 路由性能修复收口（2026-09-06 第二轮，本节为准）
+
+接下节：storyboard 路由 81/84 <85 已按 LH 归因修复——`b958cc9`（分支 `lead/storyboard-perf`）把 `ProjectWorkspace` 的 7 个 section 组件改为 `next/dynamic` 按路由懒加载（此前单条 `[section]` 路由静态打包全部 section：storyboard 路由携带生成台/素材库等未执行代码，归因 unused-JS 810ms 直接压高 LCP 与 TBT）。数据 hook 保持立即执行，section chunk 并行加载，无新骨架/占位。
+
+**修复后门禁（run_id `b67f80dde58d4c86b39242991ca3012a`，阈值不变，两轮全过、零失败）：**
+
+| 轮次 | `/` | **storyboard** | generate | workflow | settings |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 98/100/96 | **91/93/100，LCP 3424，TBT 88，CLS 0.013** | 87/96/100 | 92/100/100 | 97/100/100 |
+| 2 | 98/100/96 | **90/93/100，LCP 3590，TBT 103，CLS 0.013** | 88/96/100 | 92/100/100 | 97/100/100 |
+
+FPS 两轮 exit 0（avg 143.55 / 143.15，1% low 140.85）。**修复前 storyboard 两轮的完整指标**（run_id `8386887cc387405c9a67443646b34bba`，summary.json 于本轮入库对照）：R1 perf=81 fcp=921 lcp=4200 tbt=264 cls=0.013；R2 perf=84 fcp=920 lcp=4134 tbt=170 cls=0.013。修复后逐路由对照：storyboard 81/84→**91/90**、`/` 96/97→98/98、workflow 87/93→92/92、generate 87/87→87/88、settings 98/98→97/97（唯一小幅回落 1 分，仍远高于 85）。
+
+## Issue #28 收口复验（2026-09-06，RC 收口轮，本节为准）
+
+机器：`LAPTOP-TV9KT8RC`（Windows 11 10.0.26200）。代码：`lead/rc-closure`（master `6ca9d5a` + RC 收口修复，web 侧改动仅生成台 jobs 视图固定与检查面板终态谓词，不触生成路由布局）。生产构建后以 `run_e2e_owned.py performance` 独占窗口执行；数据集 `e2e-lighthouse-workbench`（1 页、1 候选、5 类检查），阈值不变（performance>=85 / accessibility>=90 / best-practices>=90；FPS 100 节点 10s 平均>=55、1% low>=45）。run_id `8386887cc387405c9a67443646b34bba`，全部轮次保留（含失败）。
+
+**#28 处方路由 generate（原 CLS 0.477 / perf 73）两轮全过：**
+
+| 轮次 | generate perf/a11y/BP | CLS | LCP | TBT | FCP |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 1 | 87 / 96 / 100 | **0.000** | 3911ms | 107ms | 922ms |
+| 2 | 87 / 96 / 100 | **0.000** | 3894ms | 102ms | 917ms |
+
+FPS（100 节点 / 10s，两轮 exit 0）：R1 avg 142.44 / 1% low 138.89 / p99 7.2ms；R2 avg 133.78 / 1% low 48.08（≥45）/ p99 20.8ms / max 84.9ms。
+
+**失败保留——storyboard 路由两轮 performance 低于 85**（R1 81 / R2 84；a11y 93、BP 100 达标；CLS 0.013 正常）。归因（LH 审计）：LCP 4134ms（FCP 920ms 后画布数据渲染 3.2s）+ unused-javascript 810ms + unused-css 290ms + render-blocking 271ms——来自 2026-09-02 通过基线（`98b93a0`）之后合入的可视化画布编辑器（`1aa23f7` 起），该特性此前无 LH 门禁记录。这是 #28 范围（generate 路由 CLS）之外的新发现，整体 LH 门禁 exit 1 由它触发；修复（画布编辑器代码分割/加载预留）应另开专门窗口，不在 RC 收口轮内临场改造。`/`（96-97）、workflow（87-93）、settings（98）两轮全过。
+
+本轮未读真实凭据、未连 PostgreSQL/Redis、未调供应商；runtime 独占并已清理（`process_tree_stopped=true`、`runtime_removed=true`）。
+
 ## 合并前独立复验（2026-08-29，本节为准）
 
 最终代码提交：`833197c5b77671c01833559e02ec44adbf117c3a`。组长没有直接采信交付报告；本轮实际发现并修复两项验收入口问题：

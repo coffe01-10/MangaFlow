@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
+from app.api.helpers import ensure_project_scope, reject_required_nulls
 from app.api.routes.workflow.common import _page, _panel_read, _storyboard_read
 from app.database import get_db
 from app.domain.storyboard_layout import canonical_bubble, read_bubble
@@ -28,6 +29,7 @@ from app.services.editor import (
     refresh_page_text_metrics,
     validate_character_ids,
 )
+from app.services.ordinal_allocator import lock_entity
 from app.services.storyboard_edits import apply_dialogue_fields, apply_panel_fields
 from app.services.storyboard_geometry import (
     reorder_page_panels,
@@ -37,11 +39,22 @@ from app.services.storyboard_geometry import (
 router = APIRouter()
 
 
-def _panel_context(db: Session, panel_id: str) -> tuple[Panel, MangaPage, str]:
+def _panel_context(
+    db: Session,
+    panel_id: str,
+    project_scope: str | None = None,
+) -> tuple[Panel, MangaPage, str]:
     panel = db.get(Panel, panel_id)
     if not panel:
         raise HTTPException(status_code=404, detail="分镜格不存在")
-    page = _page(db, panel.page_id)
+    # Page row first, then the panel claim: every storyboard writer that
+    # bumps the page fences takes the page lock (same convention as
+    # select/keep/retract/director accept), so two concurrent edits on the
+    # same page serialize and both fence increments land.
+    page = lock_entity(db, MangaPage, panel.page_id)
+    if not page:
+        raise HTTPException(status_code=404, detail="页面不存在")
+    ensure_project_scope(db, panel, project_scope, label="分镜格")
     return panel, page, project_id_for_page(db, page)
 
 
@@ -79,9 +92,25 @@ def _dialogue_read(dialogue: Dialogue) -> DialogueRead:
 
 
 @router.get("/pages/{page_id}/storyboard", response_model=StoryboardRead)
-def get_storyboard(page_id: str, db: Session = Depends(get_db)) -> StoryboardRead:
+def get_storyboard(
+    page_id: str,
+    db: Session = Depends(get_db),
+    project_id: str | None = None,
+) -> StoryboardRead:
     page = _page(db, page_id)
+    ensure_project_scope(db, page, project_id, label="页面")
     return _storyboard_read(db, page)
+
+
+def _page_for_write(db: Session, page_id: str, project_scope: str | None) -> MangaPage:
+    """Load a page for a write that bumps the storyboard fences, taking the
+    page row lock (PostgreSQL FOR UPDATE) so concurrent storyboard writers
+    serialize in one place; check-then-act version rechecks under this lock
+    cannot interleave."""
+
+    page = _page(db, page_id)
+    ensure_project_scope(db, page, project_scope, label="页面")
+    return lock_entity(db, MangaPage, page.id)
 
 
 @router.patch("/pages/{page_id}/layout", response_model=StoryboardRead)
@@ -89,10 +118,12 @@ def patch_page_layout(
     page_id: str,
     payload: PageLayoutUpdate,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> StoryboardRead:
+    page = _page_for_write(db, page_id, project_id)
     page = update_page_layout(
         db,
-        _page(db, page_id),
+        page,
         panel_count=payload.panel_count,
         layout_mode=payload.layout_mode,
     )
@@ -104,8 +135,9 @@ def patch_page_reading_order(
     page_id: str,
     payload: ReadingOrderUpdate,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> StoryboardRead:
-    page = _page(db, page_id)
+    page = _page_for_write(db, page_id, project_id)
     reorder_page_panels(db, page, payload.order)
     return _storyboard_read(db, page)
 
@@ -115,8 +147,9 @@ def put_page_storyboard_geometry(
     page_id: str,
     payload: StoryboardGeometrySave,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> StoryboardRead:
-    page = _page(db, page_id)
+    page = _page_for_write(db, page_id, project_id)
     save_storyboard_geometry(db, page, payload)
     return _storyboard_read(db, page)
 
@@ -126,10 +159,12 @@ def update_panel(
     panel_id: str,
     payload: PanelUpdate,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> PanelRead:
-    panel, page, project_id = _panel_context(db, panel_id)
+    panel, page, project_id = _panel_context(db, panel_id, project_id)
     _claim_panel_version(db, panel, payload.version)
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
+    reject_required_nulls(Panel, values)
     apply_panel_fields(db, panel, page, project_id, values)
     db.commit()
     db.refresh(panel)
@@ -145,8 +180,9 @@ def create_dialogue(
     panel_id: str,
     payload: DialogueCreate,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> Dialogue:
-    panel, page, project_id = _panel_context(db, panel_id)
+    panel, page, project_id = _panel_context(db, panel_id, project_id)
     _claim_panel_version(db, panel, payload.panel_version)
     if not payload.target_text.strip():
         raise HTTPException(status_code=422, detail="气泡文字不能为空")
@@ -169,7 +205,7 @@ def create_dialogue(
     db.flush()
     refresh_page_text_metrics(db, page)
     panel.version += 1
-    mark_storyboard_changed(page)
+    mark_storyboard_changed(db, page)
     mark_pages_for_review(db, page.chapter_id, from_page_number=page.page_number)
     db.commit()
     db.refresh(dialogue)
@@ -181,13 +217,16 @@ def update_dialogue(
     dialogue_id: str,
     payload: DialogueUpdate,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> Dialogue:
     dialogue = db.get(Dialogue, dialogue_id)
     if not dialogue:
         raise HTTPException(status_code=404, detail="对白不存在")
-    panel, page, project_id = _panel_context(db, dialogue.panel_id)
+    ensure_project_scope(db, dialogue, project_id, label="对白")
+    panel, page, project_id = _panel_context(db, dialogue.panel_id, project_id)
     _claim_panel_version(db, panel, payload.panel_version)
     values = payload.model_dump(exclude_unset=True, exclude={"panel_version"})
+    reject_required_nulls(Dialogue, values)
     if "bubble" in values and values["bubble"] is not None:
         values["bubble"] = canonical_bubble(values["bubble"])
     apply_dialogue_fields(db, dialogue, panel, page, project_id, values)
@@ -201,16 +240,18 @@ def delete_dialogue(
     dialogue_id: str,
     payload: DialogueDelete,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> None:
     dialogue = db.get(Dialogue, dialogue_id)
     if not dialogue:
         raise HTTPException(status_code=404, detail="对白不存在")
-    panel, page, _ = _panel_context(db, dialogue.panel_id)
+    ensure_project_scope(db, dialogue, project_id, label="对白")
+    panel, page, _ = _panel_context(db, dialogue.panel_id, project_id)
     _claim_panel_version(db, panel, payload.panel_version)
     db.delete(dialogue)
     db.flush()
     refresh_page_text_metrics(db, page)
     panel.version += 1
-    mark_storyboard_changed(page)
+    mark_storyboard_changed(db, page)
     mark_pages_for_review(db, page.chapter_id, from_page_number=page.page_number)
     db.commit()

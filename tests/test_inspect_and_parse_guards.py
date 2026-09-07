@@ -1,18 +1,25 @@
 """Guards: inspect failure must not own the inspected candidate; re-parse must not wipe live pages."""
 
 from datetime import timedelta
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pytest
-from sqlalchemy import select
+from fastapi import HTTPException
+from sqlalchemy import create_engine, select, update
+from sqlalchemy.orm import sessionmaker
 
+from app import worker_tasks
 from app.config import get_settings
-from app.domain.states import JobStatus, Resolution
+from app.database import Base
+from app.domain.states import JobStatus, PageStatus, Resolution
 from app.model_adapters.base import ProviderAdapterError
 from app.models import (
     Asset,
     Chapter,
     GenerationBatch,
     GenerationJob,
+    InspectionResult,
     MangaPage,
     PageCandidate,
     Project,
@@ -25,9 +32,14 @@ from app.models import (
     utcnow,
 )
 from app.services import job_service
-from app.services.job_service import mark_job_failed
+from app.services.page_completion import REQUIRED_QUALITY_CATEGORIES
 from app.services.worker_handlers.story_parse import _run_story_parse
-from app.services.workflow_engine.reconciliation import _create_inspection_job
+from app.services.workflow_engine import (
+    create_workflow_run,
+    default_graph,
+    publish_workflow,
+)
+from app.services.workflow_engine.reconciliation import _create_inspection_job, reconcile_run
 from app.worker_tasks import _mark_worker_failure
 from app.workflow_schemas import WorkflowGraph, WorkflowNodeDefinition
 
@@ -146,23 +158,180 @@ def test_page_generate_failure_still_marks_owned_candidate_failed(db_session):
     assert db_session.get(PageCandidate, candidate.id).status == "FAILED"
 
 
-def test_mark_job_failed_does_not_clobber_inspected_target(db_session):
-    project, _page, candidate, _generate_job = _ready_candidate(db_session)
-    inspect_job = GenerationJob(
+# The former test_mark_job_failed_does_not_clobber_inspected_target pinned one
+# guarantee on the now-deleted dead helper mark_job_failed: a terminal PAGE_INSPECT
+# failure must not stamp the adopted candidate FAILED. That guarantee lives on the
+# live worker-failure path (test_inspect_failure_does_not_mark_ready_candidate_failed,
+# test_terminal_inspect_failure_restores_final_checking_page) and on the recovery
+# path (tests/test_inspect_exit_recovery.py).
+
+
+def _adopt_candidate(page, candidate) -> None:
+    """Mirror select_candidate's post-adoption write: page parked in
+    FINAL_CHECKING until a fresh PAGE_INSPECT resolves it."""
+
+    page.selected_candidate_ack_version = page.storyboard_version
+    page.status = PageStatus.FINAL_CHECKING
+    page.continuity_status = "NOT_CHECKED"
+    page.version += 1
+
+
+def _extra_candidate(db, page, *, ordinal=2, is_selected=False, status="READY"):
+    batch = db.scalar(select(GenerationBatch).where(GenerationBatch.page_id == page.id))
+    candidate = PageCandidate(
+        batch_id=batch.id,
+        page_id=page.id,
+        ordinal=ordinal,
+        model_alias="image.nano_banana_2",
+        resolution=Resolution.DRAFT_1K,
+        status=status,
+        is_selected=is_selected,
+    )
+    db.add(candidate)
+    db.commit()
+    return candidate
+
+
+def _inspect_job(db, project, candidate) -> GenerationJob:
+    job = GenerationJob(
         project_id=project.id,
         target_type="PAGE_CANDIDATE",
         target_id=candidate.id,
         job_type="PAGE_INSPECT",
         status=JobStatus.CONSISTENCY_CHECKING,
     )
-    db_session.add(inspect_job)
-    db_session.commit()
+    db.add(job)
+    db.commit()
+    return job
 
-    mark_job_failed(db_session, inspect_job, "WORKER_ERROR", "质检失败")
+
+def test_terminal_inspect_failure_restores_final_checking_page(db_session):
+    """A terminal PAGE_INSPECT failure on the adopted candidate must converge
+    the page to NEEDS_REPAIR instead of leaving it stuck FINAL_CHECKING."""
+    project, page, candidate, _generate_job = _ready_candidate(db_session)
+    _adopt_candidate(page, candidate)
     db_session.commit()
+    inspect_job = _inspect_job(db_session, project, candidate)
+    owner = _own_lease(db_session, inspect_job)
+    version_before = page.version
+
+    marked, _, is_final = _mark_worker_failure(
+        db_session,
+        inspect_job.id,
+        owner,
+        "WORKER_ERROR",
+        "质检执行器崩溃",
+        retryable=False,
+    )
+    assert marked is True and is_final is True
     db_session.expire_all()
     assert db_session.get(GenerationJob, inspect_job.id).status == JobStatus.FAILED
+    restored = db_session.get(MangaPage, page.id)
+    assert restored.status == PageStatus.NEEDS_REPAIR
+    assert restored.continuity_status == "NEEDS_REVIEW"
+    assert restored.version == version_before + 1
+    # The inspected candidate holds adopted work and must stay untouched.
     assert db_session.get(PageCandidate, candidate.id).status == "READY"
+    assert db_session.get(PageCandidate, candidate.id).is_selected is True
+
+
+def test_cancelled_inspect_job_restores_final_checking_page(db_session):
+    """Cancelling a PAGE_INSPECT job must not leave the adopted page parked in
+    FINAL_CHECKING either (workflow cancel_run sweeps inspect jobs)."""
+    project, page, candidate, _generate_job = _ready_candidate(db_session)
+    _adopt_candidate(page, candidate)
+    db_session.commit()
+    inspect_job = _inspect_job(db_session, project, candidate)
+    version_before = page.version
+
+    job_service.mark_job_cancelled(db_session, inspect_job)
+    db_session.commit()
+    db_session.expire_all()
+    assert db_session.get(GenerationJob, inspect_job.id).status == JobStatus.CANCELLED
+    restored = db_session.get(MangaPage, page.id)
+    assert restored.status == PageStatus.NEEDS_REPAIR
+    assert restored.continuity_status == "NEEDS_REVIEW"
+    assert restored.version == version_before + 1
+    assert db_session.get(PageCandidate, candidate.id).status == "READY"
+
+
+def test_terminal_inspect_failure_ignores_non_selected_candidate(db_session):
+    """A terminal inspect failure on a non-adopted candidate must not touch the
+    page: the FINAL_CHECKING gate belongs to the selected candidate's run."""
+    project, page, selected, _generate_job = _ready_candidate(db_session)
+    other = _extra_candidate(db_session, page)
+    _adopt_candidate(page, selected)
+    db_session.commit()
+    inspect_job = _inspect_job(db_session, project, other)
+    owner = _own_lease(db_session, inspect_job)
+
+    marked, _, _ = _mark_worker_failure(
+        db_session,
+        inspect_job.id,
+        owner,
+        "WORKER_ERROR",
+        "质检执行器崩溃",
+        retryable=False,
+    )
+    assert marked is True
+    db_session.expire_all()
+    restored = db_session.get(MangaPage, page.id)
+    assert restored.status == PageStatus.FINAL_CHECKING
+    assert restored.continuity_status == "NOT_CHECKED"
+    assert db_session.get(PageCandidate, other.id).status == "READY"
+
+
+def test_terminal_inspect_failure_does_not_downgrade_final_ready_page(db_session):
+    """A failed re-inspection must not downgrade a page whose gate already
+    completed (FINAL_READY from a prior passing inspection)."""
+    project, page, candidate, _generate_job = _ready_candidate(db_session)
+    page.selected_candidate_ack_version = page.storyboard_version
+    page.status = PageStatus.FINAL_READY
+    page.continuity_status = "PASSED"
+    page.version += 1
+    db_session.commit()
+    inspect_job = _inspect_job(db_session, project, candidate)
+    owner = _own_lease(db_session, inspect_job)
+
+    marked, _, _ = _mark_worker_failure(
+        db_session,
+        inspect_job.id,
+        owner,
+        "WORKER_ERROR",
+        "质检执行器崩溃",
+        retryable=False,
+    )
+    assert marked is True
+    db_session.expire_all()
+    restored = db_session.get(MangaPage, page.id)
+    assert restored.status == PageStatus.FINAL_READY
+    assert restored.continuity_status == "PASSED"
+
+
+def test_terminal_inspect_failure_on_non_selected_non_checking_page_is_noop(db_session):
+    """Non-selected candidate plus a page outside FINAL_CHECKING: the exit
+    restore must be a complete no-op on both status and continuity."""
+    project, page, selected, _generate_job = _ready_candidate(db_session)
+    other = _extra_candidate(db_session, page)
+    page.status = PageStatus.DRAFT_READY
+    page.continuity_status = "NOT_CHECKED"
+    db_session.commit()
+    inspect_job = _inspect_job(db_session, project, other)
+    owner = _own_lease(db_session, inspect_job)
+
+    marked, _, _ = _mark_worker_failure(
+        db_session,
+        inspect_job.id,
+        owner,
+        "WORKER_ERROR",
+        "质检执行器崩溃",
+        retryable=False,
+    )
+    assert marked is True
+    db_session.expire_all()
+    restored = db_session.get(MangaPage, page.id)
+    assert restored.status == PageStatus.DRAFT_READY
+    assert restored.continuity_status == "NOT_CHECKED"
 
 
 def test_create_job_retries_after_failed_inspect_idempotency(db_session):
@@ -249,6 +418,539 @@ def test_failed_inspect_http_retry_enqueues_new_job(client, db_session, monkeypa
     assert retried.status_code == 202, retried.json()
     assert retried.json()["id"] != failed.id
     assert retried.json()["job_type"] == "PAGE_INSPECT"
+
+
+def _active_inspect_job_ids(db, candidate_id) -> list[str]:
+    return list(
+        db.scalars(
+            select(GenerationJob.id).where(
+                GenerationJob.job_type == "PAGE_INSPECT",
+                GenerationJob.target_type == "PAGE_CANDIDATE",
+                GenerationJob.target_id == candidate_id,
+                GenerationJob.status.in_(job_service.ACTIVE_JOB_STATUSES),
+            )
+        )
+    )
+
+
+def test_inspect_rejects_while_retried_failed_job_is_still_active(
+    client, db_session, monkeypatch
+):
+    """A FAILED inspect job whose key was collapsed to closed:{id} and that was
+    then retried via reset_for_retry is ACTIVE again; re-inspect must not spawn
+    a second paid PAGE_INSPECT job for the same candidate."""
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    project, _page, candidate, _generate_job = _ready_candidate(db_session)
+    old = job_service.create_job(
+        db_session,
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=candidate.id,
+        job_type="PAGE_INSPECT",
+        idempotency_key=f"inspect:{candidate.id}:{candidate.version}",
+    )
+    old.status = JobStatus.FAILED
+    # Same rewrite create_job performs when it collapses a terminal duplicate.
+    old.idempotency_key = f"closed:{old.id}"
+    db_session.commit()
+
+    job_service.reset_for_retry(db_session, old)
+    db_session.expire_all()
+    assert db_session.get(GenerationJob, old.id).status == JobStatus.WAITING
+
+    response = client.post(
+        f"/api/v1/candidates/{candidate.id}/inspect",
+        json={"categories": ["CONTINUITY"]},
+    )
+    assert response.status_code == 409, response.json()
+    assert _active_inspect_job_ids(db_session, candidate.id) == [old.id]
+
+
+def test_inspect_rejects_while_queued_inspect_job_is_active(client, db_session):
+    """An in-flight (QUEUED) inspect job blocks a second inspect for the same
+    candidate instead of silently returning it or creating a duplicate."""
+    project, _page, candidate, _generate_job = _ready_candidate(db_session)
+    queued = GenerationJob(
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=candidate.id,
+        job_type="PAGE_INSPECT",
+        status=JobStatus.QUEUED,
+        idempotency_key=f"inspect:{candidate.id}:{candidate.version}",
+    )
+    db_session.add(queued)
+    db_session.commit()
+
+    response = client.post(
+        f"/api/v1/candidates/{candidate.id}/inspect",
+        json={"categories": ["CONTINUITY"]},
+    )
+    assert response.status_code == 409, response.json()
+    assert _active_inspect_job_ids(db_session, candidate.id) == [queued.id]
+
+
+def test_inspect_still_creates_new_job_after_unretried_terminal_failure(
+    client, db_session, monkeypatch
+):
+    """A terminal FAILED inspect with no active replacement keeps the
+    collapse+recreate path: re-inspect after failure must stay possible."""
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    project, _page, candidate, _generate_job = _ready_candidate(db_session)
+    failed = job_service.create_job(
+        db_session,
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=candidate.id,
+        job_type="PAGE_INSPECT",
+        idempotency_key=f"inspect:{candidate.id}:{candidate.version}",
+    )
+    failed.status = JobStatus.FAILED
+    failed.idempotency_key = f"closed:{failed.id}"
+    db_session.commit()
+
+    response = client.post(
+        f"/api/v1/candidates/{candidate.id}/inspect",
+        json={"categories": ["CONTINUITY"]},
+    )
+    assert response.status_code == 202, response.json()
+    assert response.json()["id"] != failed.id
+    assert _active_inspect_job_ids(db_session, candidate.id) == [response.json()["id"]]
+
+
+def test_create_inspection_job_adopts_route_created_active_inspect_job(
+    db_session, monkeypatch
+):
+    """The workflow reconcile path must adopt an already-active PAGE_INSPECT
+    job for the candidate instead of creating a second paid duplicate."""
+    project, page, candidate, _generate_job = _ready_candidate(db_session)
+    graph = WorkflowGraph(
+        nodes=[
+            WorkflowNodeDefinition(id="inspect", type="quality.inspect", name="质量检查")
+        ]
+    )
+    workflow = WorkflowDefinition(
+        project_id=project.id, name="质检收养", draft_graph=graph.model_dump(mode="json")
+    )
+    db_session.add(workflow)
+    db_session.flush()
+    version = WorkflowVersion(
+        workflow_id=workflow.id,
+        revision=1,
+        graph=graph.model_dump(mode="json"),
+        graph_checksum="inspect-adopt",
+    )
+    db_session.add(version)
+    db_session.flush()
+    run = WorkflowRun(
+        workflow_id=workflow.id,
+        workflow_version_id=version.id,
+        project_id=project.id,
+        scope_type="PAGE",
+        scope_id=page.id,
+        status="RUNNING",
+    )
+    db_session.add(run)
+    db_session.flush()
+    node_run = WorkflowNodeRun(
+        workflow_run_id=run.id,
+        node_id="inspect",
+        node_type="quality.inspect",
+        status="WAITING",
+    )
+    db_session.add(node_run)
+    db_session.flush()
+    route_job = GenerationJob(
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=candidate.id,
+        job_type="PAGE_INSPECT",
+        status=JobStatus.QUEUED,
+    )
+    db_session.add(route_job)
+    db_session.commit()
+
+    job = _create_inspection_job(db_session, run, graph, graph.nodes[0], node_run, [node_run])
+    assert job.id == route_job.id
+    assert node_run.job_id == route_job.id
+    duplicates = db_session.scalars(
+        select(GenerationJob.id).where(
+            GenerationJob.job_type == "PAGE_INSPECT",
+            GenerationJob.target_id == candidate.id,
+        )
+    )
+    assert list(duplicates) == [route_job.id]
+
+
+def test_executed_adopted_inspect_job_reconciles_its_workflow_run(monkeypatch):
+    """execute_job's success path must reconcile the run of an adopted
+    route-created inspect job: its request_parameters carry no workflow_run_id,
+    so the WorkflowNodeRun.job_id link is the only reference to the run.
+    Without that fallback the completed node and its run stall RUNNING forever
+    (the run-list endpoint never reconciles)."""
+    with TemporaryDirectory() as directory:
+        engine = create_engine(
+            f"sqlite:///{Path(directory) / 'adopt-success.db'}",
+            connect_args={"check_same_thread": False},
+        )
+        testing_session = sessionmaker(
+            bind=engine, autoflush=False, expire_on_commit=False
+        )
+        Base.metadata.create_all(engine)
+        with testing_session() as db:
+            project, page, candidate, _generate_job = _ready_candidate(db)
+            # Success-side page state the inspect node's completion gate needs.
+            page.selected_candidate_ack_version = page.storyboard_version
+            page.continuity_status = "PASSED"
+            graph = WorkflowGraph(
+                nodes=[
+                    WorkflowNodeDefinition(id="inspect", type="quality.inspect", name="质量检查")
+                ]
+            )
+            workflow = WorkflowDefinition(
+                project_id=project.id, name="收养成功推进", draft_graph=graph.model_dump(mode="json")
+            )
+            db.add(workflow)
+            db.flush()
+            version = WorkflowVersion(
+                workflow_id=workflow.id,
+                revision=1,
+                graph=graph.model_dump(mode="json"),
+                graph_checksum="adopt-success",
+            )
+            db.add(version)
+            db.flush()
+            run = WorkflowRun(
+                workflow_id=workflow.id,
+                workflow_version_id=version.id,
+                project_id=project.id,
+                scope_type="PAGE",
+                scope_id=page.id,
+                status="RUNNING",
+            )
+            db.add(run)
+            db.flush()
+            node_run = WorkflowNodeRun(
+                workflow_run_id=run.id,
+                node_id="inspect",
+                node_type="quality.inspect",
+                status="WAITING",
+            )
+            db.add(node_run)
+            db.flush()
+            route_job = GenerationJob(
+                project_id=project.id,
+                target_type="PAGE_CANDIDATE",
+                target_id=candidate.id,
+                job_type="PAGE_INSPECT",
+                status=JobStatus.QUEUED,
+            )
+            db.add(route_job)
+            db.flush()
+            adopted = _create_inspection_job(
+                db, run, graph, graph.nodes[0], node_run, [node_run]
+            )
+            assert adopted.id == route_job.id
+            db.commit()
+            job_id = route_job.id
+            run_id = run.id
+            node_run_id = node_run.id
+
+        def fake_inspection(db, job):
+            # Success effects of the real handler that the completion gate
+            # reads: passing results per required category, INSPECTED candidate.
+            inspected = db.get(PageCandidate, job.target_id)
+            inspected_page = db.get(MangaPage, inspected.page_id)
+            for category in REQUIRED_QUALITY_CATEGORIES:
+                db.add(
+                    InspectionResult(
+                        candidate_id=inspected.id,
+                        storyboard_version=inspected_page.storyboard_version,
+                        category=category,
+                        outcome="PASS",
+                    )
+                )
+            inspected.status = "INSPECTED"
+            db.commit()
+
+        monkeypatch.setattr(worker_tasks, "SessionLocal", testing_session)
+        monkeypatch.setattr(worker_tasks, "_run_inspection", fake_inspection)
+        worker_tasks.execute_job(job_id)
+
+        with testing_session() as db:
+            finished_run = db.get(WorkflowRun, run_id)
+            assert finished_run.status == "COMPLETED", finished_run.status
+            assert db.get(WorkflowNodeRun, node_run_id).status == "COMPLETED"
+        engine.dispose()
+
+
+def test_reconcile_final_write_does_not_overwrite_concurrent_cancel(db_session, monkeypatch):
+    """A cancel_run claim landing between reconcile's status refresh and the
+    final run write owns the row: the final write must not flip the CANCELLED
+    run to its recomputed state (later reconciles early-return on terminal, so
+    the overwrite would be permanent)."""
+    project, page, candidate, _generate_job = _ready_candidate(db_session)
+    graph = WorkflowGraph(
+        nodes=[
+            WorkflowNodeDefinition(id="inspect", type="quality.inspect", name="质量检查")
+        ]
+    )
+    workflow = WorkflowDefinition(
+        project_id=project.id, name="取消不被覆盖", draft_graph=graph.model_dump(mode="json")
+    )
+    db_session.add(workflow)
+    db_session.flush()
+    version = WorkflowVersion(
+        workflow_id=workflow.id,
+        revision=1,
+        graph=graph.model_dump(mode="json"),
+        graph_checksum="cancel-claim",
+    )
+    db_session.add(version)
+    db_session.flush()
+    run = WorkflowRun(
+        workflow_id=workflow.id,
+        workflow_version_id=version.id,
+        project_id=project.id,
+        scope_type="PAGE",
+        scope_id=page.id,
+        status="RUNNING",
+    )
+    db_session.add(run)
+    db_session.flush()
+    completed_job = GenerationJob(
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=candidate.id,
+        job_type="PAGE_INSPECT",
+        status=JobStatus.COMPLETED,
+        finished_at=utcnow(),
+    )
+    db_session.add(completed_job)
+    db_session.flush()
+    node_run = WorkflowNodeRun(
+        workflow_run_id=run.id,
+        node_id="inspect",
+        node_type="quality.inspect",
+        status="COMPLETED",
+        job_id=completed_job.id,
+        finished_at=utcnow(),
+    )
+    db_session.add(node_run)
+    db_session.commit()
+    run_id = run.id
+    pre_cancel_version = run.version
+
+    original_refresh = db_session.refresh
+    cancelled = {"claimed": False}
+
+    def refresh_then_cancel(target, *args, **kwargs):
+        original_refresh(target, *args, **kwargs)
+        if (
+            not cancelled["claimed"]
+            and isinstance(target, WorkflowRun)
+            and target.id == run_id
+        ):
+            # Cancel lands in the window right after the refresh: same claim
+            # cancel_run uses (terminal rows excluded, version bumped).
+            cancelled["claimed"] = True
+            canceller = sessionmaker(
+                bind=db_session.get_bind(), autoflush=False, expire_on_commit=False
+            )()
+            try:
+                canceller.execute(
+                    update(WorkflowRun)
+                    .where(WorkflowRun.id == run_id)
+                    .values(
+                        status="CANCELLED",
+                        finished_at=utcnow(),
+                        version=WorkflowRun.version + 1,
+                    )
+                )
+                canceller.commit()
+            finally:
+                canceller.close()
+
+    monkeypatch.setattr(db_session, "refresh", refresh_then_cancel)
+    reconciled = reconcile_run(db_session, run_id)
+    assert reconciled.status == "CANCELLED"
+    assert reconciled.version == pre_cancel_version + 1
+
+
+def test_reset_for_retry_does_not_clobber_live_worker_claim(db_session, monkeypatch):
+    """A worker claim landing between the retry route's read and the reset must
+    win: reset_for_retry must not clobber the lease or requeue the job."""
+    project, _page, candidate, _generate_job = _ready_candidate(db_session)
+    job = GenerationJob(
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=candidate.id,
+        job_type="PAGE_GENERATE",
+        status=JobStatus.FAILED,
+        error_code="WORKER_ERROR",
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    # Simulate a worker claim landing after the route read the row.
+    worker = sessionmaker(bind=db_session.get_bind(), autoflush=False, expire_on_commit=False)()
+    try:
+        worker.execute(
+            update(GenerationJob)
+            .where(GenerationJob.id == job.id)
+            .values(
+                status=JobStatus.GENERATING,
+                lease_owner="worker-1",
+                lease_expires_at=utcnow() + timedelta(minutes=5),
+            )
+        )
+        worker.commit()
+    finally:
+        worker.close()
+
+    enqueued: list[str] = []
+    monkeypatch.setattr(
+        job_service, "enqueue_job", lambda db, job: enqueued.append(job.id) or job
+    )
+    # The merged semantics surface a lost claim as a 409 to the caller
+    # instead of silently returning the unchanged row.
+    with pytest.raises(HTTPException) as excinfo:
+        job_service.reset_for_retry(db_session, job)
+    assert excinfo.value.status_code == 409
+    db_session.expire_all()
+    row = db_session.get(GenerationJob, job.id)
+    assert row.status == JobStatus.GENERATING
+    assert row.lease_owner == "worker-1"
+    assert enqueued == []
+
+
+def test_reset_for_retry_does_not_resurrect_cancelled_job(db_session, monkeypatch):
+    """A job cancelled in the race window must stay cancelled: the retry reset
+    must not flip it back to WAITING and clear cancelled_at."""
+    project, _page, candidate, _generate_job = _ready_candidate(db_session)
+    job = GenerationJob(
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=candidate.id,
+        job_type="PAGE_GENERATE",
+        status=JobStatus.FAILED,
+        error_code="WORKER_ERROR",
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    cancelled_at = utcnow()
+    worker = sessionmaker(bind=db_session.get_bind(), autoflush=False, expire_on_commit=False)()
+    try:
+        worker.execute(
+            update(GenerationJob)
+            .where(GenerationJob.id == job.id)
+            .values(
+                status=JobStatus.CANCELLED,
+                cancelled_at=cancelled_at,
+                finished_at=cancelled_at,
+            )
+        )
+        worker.commit()
+    finally:
+        worker.close()
+
+    enqueued: list[str] = []
+    monkeypatch.setattr(
+        job_service, "enqueue_job", lambda db, job: enqueued.append(job.id) or job
+    )
+    # Merged semantics: a lost claim raises 409 instead of silently no-oping.
+    with pytest.raises(HTTPException) as excinfo:
+        job_service.reset_for_retry(db_session, job)
+    assert excinfo.value.status_code == 409
+    db_session.expire_all()
+    row = db_session.get(GenerationJob, job.id)
+    assert row.status == JobStatus.CANCELLED
+    assert row.cancelled_at is not None
+    assert enqueued == []
+
+
+def test_reset_for_retry_still_resets_job_and_revives_failed_workflow_run(
+    db_session, monkeypatch
+):
+    """Normal path stays intact: FAILED job becomes WAITING and enqueues, and a
+    FAILED workflow run/node pair linked to the job is revived to RUNNING."""
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    project, page, candidate, _generate_job = _ready_candidate(db_session)
+    graph = WorkflowGraph(
+        nodes=[
+            WorkflowNodeDefinition(id="inspect", type="quality.inspect", name="质量检查")
+        ]
+    )
+    workflow = WorkflowDefinition(
+        project_id=project.id, name="重试恢复", draft_graph=graph.model_dump(mode="json")
+    )
+    db_session.add(workflow)
+    db_session.flush()
+    version = WorkflowVersion(
+        workflow_id=workflow.id,
+        revision=1,
+        graph=graph.model_dump(mode="json"),
+        graph_checksum="retry-revive",
+    )
+    db_session.add(version)
+    db_session.flush()
+    run = WorkflowRun(
+        workflow_id=workflow.id,
+        workflow_version_id=version.id,
+        project_id=project.id,
+        scope_type="PAGE",
+        scope_id=page.id,
+        status="FAILED",
+        finished_at=utcnow(),
+    )
+    db_session.add(run)
+    db_session.flush()
+    job = GenerationJob(
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=candidate.id,
+        job_type="PAGE_INSPECT",
+        status=JobStatus.FAILED,
+        error_code="WORKER_ERROR",
+        error_message="质检失败",
+        progress=40,
+        request_parameters={"workflow_run_id": run.id},
+    )
+    db_session.add(job)
+    db_session.flush()
+    node_run = WorkflowNodeRun(
+        workflow_run_id=run.id,
+        node_id="inspect",
+        node_type="quality.inspect",
+        status="FAILED",
+        error_code="WORKER_ERROR",
+        error_message="质检失败",
+        job_id=job.id,
+    )
+    db_session.add(node_run)
+    db_session.commit()
+
+    enqueued: list[str] = []
+    real_enqueue = job_service.enqueue_job
+
+    def recording_enqueue(db, job):
+        enqueued.append(job.id)
+        return real_enqueue(db, job)
+
+    monkeypatch.setattr(job_service, "enqueue_job", recording_enqueue)
+    job_service.reset_for_retry(db_session, job)
+    db_session.expire_all()
+    row = db_session.get(GenerationJob, job.id)
+    assert row.status == JobStatus.WAITING
+    assert row.progress == 0
+    assert row.started_at is None
+    assert enqueued == [job.id]
+    revived_run = db_session.get(WorkflowRun, run.id)
+    assert revived_run.status == "RUNNING"
+    assert revived_run.finished_at is None
+    revived_node = db_session.get(WorkflowNodeRun, node_run.id)
+    assert revived_node.status == "RUNNING"
+    assert revived_node.error_code is None
 
 
 def test_workflow_inspect_job_does_not_auto_commit(db_session, monkeypatch):
@@ -528,3 +1230,277 @@ def test_revise_source_rejects_while_source_parse_is_active(client, db_session):
     )
     assert response.status_code == 409
     assert "正在生成剧本" in response.json()["detail"]
+
+
+def _imported_chapter(client, project_name: str) -> tuple[dict, str]:
+    project = client.post("/api/v1/projects", json={"name": project_name}).json()
+    imported = client.post(
+        f"/api/v1/projects/{project['id']}/sources/import",
+        json={"title": "第一章", "text": "顾川推开门。"},
+    )
+    assert imported.status_code == 201, imported.text
+    return project, imported.json()["chapters"][0]["id"]
+
+
+def _chapter_parse_workflow(db, project_id: str) -> WorkflowDefinition:
+    """A minimal source.chapter → agent.parse graph (default-graph nodes)."""
+
+    graph = default_graph()
+    workflow = WorkflowDefinition(
+        project_id=project_id,
+        name="章节解析流程",
+        draft_graph={
+            "schema_version": graph.get("schema_version", 2),
+            "nodes": [
+                node for node in graph["nodes"] if node["id"] in {"chapter", "parse"}
+            ],
+            "edges": [
+                edge
+                for edge in graph["edges"]
+                if edge["source_node"] == "chapter" and edge["target_node"] == "parse"
+            ],
+        },
+    )
+    db.add(workflow)
+    db.commit()
+    publish_workflow(db, workflow)
+    db.refresh(workflow)
+    return workflow
+
+
+def _active_parse_job_ids(db, chapter_id: str) -> list[str]:
+    return list(
+        db.scalars(
+            select(GenerationJob.id).where(
+                GenerationJob.job_type == "SOURCE_PARSE",
+                GenerationJob.target_type == "CHAPTER",
+                GenerationJob.target_id == chapter_id,
+                GenerationJob.status.in_(job_service.ACTIVE_JOB_STATUSES),
+            )
+        )
+    )
+
+
+def test_parse_route_rejects_while_workflow_parse_job_is_active(client, db_session):
+    """#124 (failing-first): the parse route and the workflow agent.parse node
+    use disjoint idempotency-key namespaces; an ACTIVE workflow-side parse
+    must 409 the route instead of enqueueing a second paid SOURCE_PARSE."""
+    project, chapter_id = _imported_chapter(client, "解析跨入口互斥")
+    workflow_job = GenerationJob(
+        project_id=project["id"],
+        target_type="CHAPTER",
+        target_id=chapter_id,
+        job_type="SOURCE_PARSE",
+        status=JobStatus.PREPARING,
+        idempotency_key="workflow:some-run:parse:1",
+    )
+    db_session.add(workflow_job)
+    db_session.commit()
+
+    response = client.post(f"/api/v1/chapters/{chapter_id}/parse")
+    assert response.status_code == 409, response.text
+    assert "该章节已有进行中的解析任务" in response.json()["detail"]
+    assert _active_parse_job_ids(db_session, chapter_id) == [workflow_job.id]
+
+
+def test_parse_route_allows_new_parse_after_previous_job_finished(
+    client, db_session, monkeypatch
+):
+    """#124 guard rail: a terminal (CANCELLED) parse job never blocks a fresh
+    route parse."""
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    project, chapter_id = _imported_chapter(client, "解析结束后可重发")
+    finished = GenerationJob(
+        project_id=project["id"],
+        target_type="CHAPTER",
+        target_id=chapter_id,
+        job_type="SOURCE_PARSE",
+        status=JobStatus.CANCELLED,
+        idempotency_key=f"source-parse:{chapter_id}:1",
+    )
+    db_session.add(finished)
+    db_session.commit()
+
+    response = client.post(f"/api/v1/chapters/{chapter_id}/parse")
+    assert response.status_code == 202, response.text
+    assert response.json()["id"] != finished.id
+
+
+def test_workflow_parse_node_rejects_while_route_parse_job_is_active(
+    client, db_session, monkeypatch
+):
+    """#124 (failing-first): create_workflow_run's agent.parse node must
+    refuse to mint a second SOURCE_PARSE job while the route-created one
+    (source-parse:{chapter}:{version} key) is still ACTIVE."""
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    project, chapter_id = _imported_chapter(client, "工作流解析互斥")
+    workflow = _chapter_parse_workflow(db_session, project["id"])
+    chapter = db_session.get(Chapter, chapter_id)
+    route_job = GenerationJob(
+        project_id=project["id"],
+        target_type="CHAPTER",
+        target_id=chapter_id,
+        job_type="SOURCE_PARSE",
+        status=JobStatus.QUEUED,
+        idempotency_key=f"source-parse:{chapter_id}:{chapter.version}",
+    )
+    db_session.add(route_job)
+    db_session.commit()
+
+    with pytest.raises(ValueError, match="该章节已有进行中的解析任务"):
+        create_workflow_run(
+            db_session,
+            workflow,
+            scope_type="CHAPTER",
+            scope_id=chapter_id,
+            start_node_ids=[],
+            stop_node_ids=[],
+        )
+    # The rejected start leaves no run and no second parse job behind.
+    db_session.rollback()
+    assert (
+        db_session.scalars(
+            select(WorkflowRun).where(WorkflowRun.workflow_id == workflow.id)
+        ).all()
+        == []
+    )
+    assert _active_parse_job_ids(db_session, chapter_id) == [route_job.id]
+
+
+def test_workflow_run_creates_parse_job_when_chapter_is_idle(
+    client, db_session, monkeypatch
+):
+    """#124 guard rail: with no ACTIVE parse on the chapter the workflow start
+    still mints its SOURCE_PARSE job."""
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    project, chapter_id = _imported_chapter(client, "空闲章节可启动解析流程")
+    workflow = _chapter_parse_workflow(db_session, project["id"])
+
+    run = create_workflow_run(
+        db_session,
+        workflow,
+        scope_type="CHAPTER",
+        scope_id=chapter_id,
+        start_node_ids=[],
+        stop_node_ids=[],
+    )
+    assert run.status == "RUNNING"
+    assert len(_active_parse_job_ids(db_session, chapter_id)) == 1
+
+
+def test_workflow_and_route_inspect_creation_collapse_to_one_job(db_session):
+    """The check-then-act windows of the inspect route and the workflow's
+    adoption SELECT can interleave (the workflow path runs inside reconcile,
+    reachable from the run GET endpoint). Pre-fix the two entry points keyed
+    disjoint idempotency namespaces — workflow:{run}:{node}:1 vs
+    inspect:{candidate}:{version} — so the global unique index never collided
+    and both creations committed, each enqueueing a paid multimodal call for
+    the same candidate. The workflow node now keys the route's namespace so
+    the index collapses the race to one job (create_job's IntegrityError
+    fallback returns the winner)."""
+    project, page, candidate, _generate_job = _ready_candidate(db_session)
+    graph = WorkflowGraph(
+        nodes=[
+            WorkflowNodeDefinition(id="inspect", type="quality.inspect", name="质量检查")
+        ]
+    )
+    workflow = WorkflowDefinition(
+        project_id=project.id, name="质检竞态", draft_graph=graph.model_dump(mode="json")
+    )
+    db_session.add(workflow)
+    db_session.flush()
+    version = WorkflowVersion(
+        workflow_id=workflow.id,
+        revision=1,
+        graph=graph.model_dump(mode="json"),
+        graph_checksum="inspect-race",
+    )
+    db_session.add(version)
+    db_session.flush()
+    run = WorkflowRun(
+        workflow_id=workflow.id,
+        workflow_version_id=version.id,
+        project_id=project.id,
+        scope_type="PAGE",
+        scope_id=page.id,
+        status="RUNNING",
+    )
+    db_session.add(run)
+    db_session.flush()
+    node_run = WorkflowNodeRun(
+        workflow_run_id=run.id,
+        node_id="inspect",
+        node_type="quality.inspect",
+        status="WAITING",
+    )
+    db_session.add(node_run)
+    db_session.commit()
+
+    # Two sessions on the same engine, mirroring the concurrent creators: the
+    # workflow's creation is still uncommitted when the route's window runs.
+    ConcurrentSession = sessionmaker(
+        bind=db_session.get_bind(), autoflush=False, expire_on_commit=False
+    )
+    with ConcurrentSession() as workflow_side:
+        workflow_job = _create_inspection_job(
+            workflow_side, run, graph, graph.nodes[0], node_run, [node_run]
+        )
+        # The route cannot see the workflow's uncommitted row through its
+        # has_active_job check, so it proceeds to create_job — which must hit
+        # the shared idempotency key.
+        route_job = job_service.create_job(
+            db_session,
+            project_id=project.id,
+            target_type="PAGE_CANDIDATE",
+            target_id=candidate.id,
+            job_type="PAGE_INSPECT",
+            idempotency_key=f"inspect:{candidate.id}:{candidate.version}:{page.version}",
+        )
+        db_session.commit()
+        workflow_side.commit()
+
+    db_session.expire_all()
+    assert route_job.id == workflow_job.id
+    inspect_ids = db_session.scalars(
+        select(GenerationJob.id).where(
+            GenerationJob.job_type == "PAGE_INSPECT",
+            GenerationJob.target_id == candidate.id,
+        )
+    )
+    assert len(list(inspect_ids)) == 1
+
+
+def test_inspect_after_page_version_bump_mints_fresh_job(client, db_session, monkeypatch):
+    """Interaction A (F2 elevated): a COMPLETED inspect job whose idempotency
+    key predates an inspection-invalidating fence (storyboard bump, review
+    flag — every one bumps page.version) must not be replayed by POST
+    /inspect. Pre-fix the route answered 202 with the stale COMPLETED job and
+    nothing re-ran; the page.version term in the key now mints a fresh job."""
+    from sqlalchemy import update as sa_update
+
+    project, page, candidate, _generate_job = _ready_candidate(db_session)
+    completed = job_service.create_job(
+        db_session,
+        project_id=project.id,
+        target_type="PAGE_CANDIDATE",
+        target_id=candidate.id,
+        job_type="PAGE_INSPECT",
+        idempotency_key=f"inspect:{candidate.id}:{candidate.version}",
+    )
+    completed.status = JobStatus.COMPLETED
+    db_session.commit()
+
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    db_session.execute(
+        sa_update(MangaPage)
+        .where(MangaPage.id == page.id)
+        .values(version=MangaPage.version + 1)
+    )
+    db_session.commit()
+
+    response = client.post(
+        f"/api/v1/candidates/{candidate.id}/inspect",
+        json={"categories": ["CONTINUITY"]},
+    )
+    assert response.status_code == 202, response.text
+    assert response.json()["id"] != completed.id

@@ -10,7 +10,7 @@ from sqlalchemy import create_engine, func, select, update
 from sqlalchemy.orm import sessionmaker
 
 from app import database, worker_tasks
-from app.config import Settings
+from app.config import Settings, get_settings
 from app.database import Base
 from app.domain.states import JobStatus, PageStatus, Resolution
 from app.services.worker_handlers import execution, provider
@@ -1696,3 +1696,143 @@ def test_start_periodic_recovery_runs_repeatedly(monkeypatch):
         stop.set()
         thread.join(timeout=2)
         assert not thread.is_alive()
+
+
+def test_restore_holds_draft_generating_while_sibling_still_generating(
+    db_session, monkeypatch
+):
+    """Multi-candidate batch: when candidate A fails finally while sibling B is
+    still GENERATING, the page must hold DRAFT_GENERATING (pre-fix it flipped
+    STORYBOARDED, and B's later success was refused by the DRAFT_GENERATING
+    success fence — page stranded STORYBOARDED with a READY candidate)."""
+    from app.models import MangaPage, PageCandidate
+    from app.services.job_service import restore_page_after_generation_exit
+
+    project = Project(name="兄弟生成恢复")
+    db_session.add(project)
+    db_session.flush()
+    chapter = Chapter(project_id=project.id, title="第一章", ordinal=1)
+    db_session.add(chapter)
+    db_session.flush()
+    page = MangaPage(
+        chapter_id=chapter.id,
+        page_number=1,
+        status=PageStatus.DRAFT_GENERATING,
+        storyboard_version=1,
+    )
+    db_session.add(page)
+    db_session.flush()
+    batch = GenerationBatch(
+        project_id=project.id, chapter_id=chapter.id, page_id=page.id, ordinal=1
+    )
+    db_session.add(batch)
+    db_session.flush()
+
+    def _candidate(ordinal, status):
+        return PageCandidate(
+            batch_id=batch.id,
+            page_id=page.id,
+            ordinal=ordinal,
+            model_alias="image.nano_banana_2",
+            resolution=Resolution.DRAFT_1K,
+            status=status,
+        )
+
+    failing = _candidate(1, "GENERATING")
+    sibling = _candidate(2, "GENERATING")
+    db_session.add_all([failing, sibling])
+    db_session.commit()
+
+    # A reached its terminal FAILED candidate status before the shell calls
+    # the restore helper.
+    failing.status = "FAILED"
+    db_session.commit()
+    restore_page_after_generation_exit(db_session, failing)
+    db_session.commit()
+    db_session.expire(page)
+    assert str(page.status) == "DRAFT_GENERATING"
+    # With the page held in DRAFT_GENERATING, sibling B's success fence
+    # (page.status == DRAFT_GENERATING and no selected candidate) proceeds
+    # normally when B completes — pinned by the existing generation tests.
+
+    # The hold must be a hold, not a leak: once the LAST sibling also reaches
+    # a terminal candidate status, the restore releases the page. Without
+    # this, a double concurrent failure (or any missed release) strands the
+    # page in DRAFT_GENERATING forever — no sweeper touches page status.
+    sibling.status = "FAILED"
+    db_session.commit()
+    restore_page_after_generation_exit(db_session, sibling)
+    db_session.commit()
+    db_session.expire(page)
+    assert str(page.status) == "STORYBOARDED"
+
+    # And a second failure path on an already-terminal page must not flip the
+    # released page back into DRAFT_GENERATING.
+    restore_page_after_generation_exit(db_session, failing)
+    db_session.commit()
+    db_session.expire(page)
+    assert str(page.status) == "STORYBOARDED"
+
+
+def test_execute_job_applies_runtime_lease_override(monkeypatch):
+    """The worker process must re-read runtime settings per execution: an
+    operator's job_lease_seconds override reaches API-side recovery (reclaim
+    fence) but previously never reached the worker's own claim/heartbeat
+    lease, so the two processes disagreed on the lease geometry."""
+
+    with TemporaryDirectory() as directory:
+        engine = create_engine(
+            f"sqlite:///{Path(directory) / 'lease-override.db'}",
+            connect_args={"check_same_thread": False},
+        )
+        testing_session = sessionmaker(
+            bind=engine, autoflush=False, expire_on_commit=False
+        )
+        Base.metadata.create_all(engine)
+
+        settings = get_settings()
+        # Pin the geometry the runtime row is judged against: earlier suite
+        # tests PATCH /settings/runtime and mutate the shared Settings
+        # singleton without restoring it.
+        original_timeout = settings.job_timeout_seconds
+        original_lease = settings.job_lease_seconds
+        settings.job_timeout_seconds = 900
+        settings.job_lease_seconds = 60
+        monkeypatch.setattr(worker_tasks, "SessionLocal", testing_session)
+
+        with testing_session() as db:
+            db.add(
+                AppSetting(
+                    key="runtime",
+                    value={"job_lease_seconds": 300},
+                    version=1,
+                )
+            )
+            project = Project(name="租约覆盖")
+            db.add(project)
+            db.flush()
+            job = GenerationJob(
+                project_id=project.id,
+                target_type="CHAPTER",
+                target_id="lease-target",
+                job_type="SOURCE_PARSE",
+                status=JobStatus.QUEUED,
+            )
+            db.add(job)
+            db.commit()
+            job_id = job.id
+
+        seen: dict[str, object] = {}
+
+        def fake_run(_db, _job):
+            seen["lease_seconds"] = get_settings().job_lease_seconds
+            seen["claimed_lease"] = _job.lease_expires_at
+
+        monkeypatch.setattr(worker_tasks, "_run_story_parse", fake_run)
+        worker_tasks.execute_job(job_id)
+
+        assert seen["lease_seconds"] == 300
+        # The claim stamped a lease while running under the override window.
+        assert seen["claimed_lease"] is not None
+        settings.job_timeout_seconds = original_timeout
+        settings.job_lease_seconds = original_lease

@@ -738,6 +738,13 @@ def test_workflow_approval_endpoint_maps_ordinal_conflict_to_409(monkeypatch):
         mock_approve_node,
     )
 
+    # The route's #143 project-scope pre-check loads the run before delegating;
+    # this test isolates the exception mapping only, so stub the loader too.
+    monkeypatch.setattr(
+        "app.api.routes.workflow_definitions._run",
+        lambda *_args, **_kwargs: None,
+    )
+
     client = TestClient(app)
     response = client.post(
         "/workflow-runs/run-123/nodes/node-generate/approve",

@@ -1,4 +1,6 @@
+import logging
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from pathlib import Path
 
 from alembic.config import Config as AlembicConfig
@@ -10,12 +12,20 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 from app import models  # noqa: F401
 from app.api.router import api_router
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.database import SessionLocal, engine
 from app.request_limits import RequestBodyLimitMiddleware
 from app.services.job_service import recover_pending_jobs, start_periodic_recovery
 from app.services.provider_presets import ensure_provider_presets
 from app.services.runtime_settings import apply_runtime_overrides
+
+LOGGER = logging.getLogger("mangaflow.jobs")
+
+# Retention window for the boot-time storage sweeps (retained CLI run
+# directories and orphaned generated media). A constant here because
+# ``app.config`` settings ownership is out of scope for this change; promoting
+# it to a Settings field (e.g. storage_sweep_days) is a config follow-up.
+_STORAGE_SWEEP_WINDOW = timedelta(days=7)
 
 
 def _assert_database_is_current() -> None:
@@ -51,8 +61,15 @@ async def lifespan(application: FastAPI):
         if not application.dependency_overrides:
             apply_runtime_overrides(db, settings)
             ensure_provider_presets(db, settings, auto_commit=True)
-            recover_pending_jobs(db)
+            # A persistently poisoned run or job must not abort API startup:
+            # mirror the periodic loop's isolation and _recover_cli_runs
+            # below — log the recovery failure and keep booting.
+            try:
+                recover_pending_jobs(db)
+            except Exception:
+                LOGGER.exception("job recovery failed at startup")
             _recover_cli_runs()
+            _sweep_stale_storage(settings)
     if not application.dependency_overrides:
         # REDIS-mode RQ retries fire inside the lease window and then stop, so
         # a dead worker's job would stay ACTIVE until the next API restart.
@@ -77,6 +94,36 @@ def _recover_cli_runs() -> None:
         return
     for run_id in recovered:
         logger.warning("released abandoned CLI run %s", run_id)
+
+
+def _sweep_stale_storage(settings: Settings) -> None:
+    """Boot-time retention sweeps: retained CLI run directories and orphaned
+    generated media.
+
+    Both address unbounded growth paths (retained-for-diagnosis CLI runs;
+    generated files whose owning ``Asset`` row was rolled back by a failed
+    completion CAS or a lost lease). Conservative windows (see
+    ``_STORAGE_SWEEP_WINDOW``), and each sweep is failure-tolerant: a poisoned
+    storage state is logged, never allowed to abort API startup.
+    """
+
+    from app.services.cli_executor import sweep_retained_cli_runs
+    from app.services.media import sweep_orphan_generated_files
+
+    try:
+        counts = sweep_retained_cli_runs(settings, older_than=_STORAGE_SWEEP_WINDOW)
+        if counts.get("failed"):
+            LOGGER.warning("CLI run retention sweep reported failures: %s", counts)
+    except Exception:
+        LOGGER.exception("CLI run retention sweep failed at startup")
+    try:
+        counts = sweep_orphan_generated_files(
+            settings, older_than=_STORAGE_SWEEP_WINDOW
+        )
+        if counts.get("failed"):
+            LOGGER.warning("orphan media sweep reported failures: %s", counts)
+    except Exception:
+        LOGGER.exception("orphan media sweep failed at startup")
 
 
 settings = get_settings()

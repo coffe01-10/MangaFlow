@@ -93,6 +93,9 @@ export function useJobsWorkspace({ id }: { id: string }) {
     mutationFn: () => api.archiveCompletedJobs(id),
     onSuccess: (result) => {
       setJobNotice(result.archived_count ? `已归档 ${result.archived_count} 条已结束任务` : "没有可归档的已结束任务");
+      // Archived rows leave the recent list; keeping their ids selected left a
+      // stale toolbar count that re-sent ids the user could no longer see.
+      setSelectedJobIds([]);
       queryClient.invalidateQueries({ queryKey: ["jobs", id] });
     },
     onError: (reason) => setJobNotice(reason instanceof Error ? `清空失败：${reason.message}` : "清空失败，请重试"),

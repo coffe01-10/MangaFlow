@@ -56,12 +56,14 @@ def _block(
     stage: str,
     *,
     target_id: str | None = None,
+    severity: str = "BLOCKING",
 ) -> PageReadinessBlocker:
     return PageReadinessBlocker(
         code=code,
         message=message,
         stage=stage,
         target_id=target_id,
+        severity=severity,
     )
 
 
@@ -215,6 +217,30 @@ def build_page_readiness(
             )
         )
 
+    # Beats without a panel slot contribute no dialogue, presence or props,
+    # so a page carrying more beats than panels is silently losing story
+    # content (#163). Surfaces both the recorded overflow (set by
+    # _populate_page_storyboard on every rebuild) and the structural
+    # condition (legacy pages / manual edits) as a NEEDS_REVIEW-level hint:
+    # visible, but it does not by itself block production because a human
+    # may have deliberately moved those beats to dialogue editing.
+    orphan_beat_ids = list((page.source_coverage or {}).get("orphan_beat_ids") or [])
+    beat_overflow = len(page.beat_ids or []) - page.panel_count
+    if orphan_beat_ids or beat_overflow > 0:
+        orphan_count = max(len(orphan_beat_ids), beat_overflow)
+        blockers.append(
+            _block(
+                "ORPHANED_PAGE_BEATS",
+                (
+                    f"有 {orphan_count} 个情节拍未入板（分格数少于本页拍数），"
+                    "对应台词与出镜不会被生成，请调整分页或格数"
+                ),
+                "storyboard",
+                target_id=page.id,
+                severity="WARNING",
+            )
+        )
+
     visible, non_visible, props = _page_cast(db, page)
     for character in visible:
         if not character.character_reference_ids:
@@ -349,7 +375,10 @@ def build_page_readiness(
 
     return PageReadinessRead(
         page_id=page.id,
-        ready=not blockers,
+        # Only BLOCKING-severity findings gate generation; WARNING entries
+        # (e.g. ORPHANED_PAGE_BEATS) are surfaced for review without
+        # blocking (#163).
+        ready=not any(item.severity == "BLOCKING" for item in blockers),
         source_complete=source_complete,
         script_complete=script_complete,
         visible_characters=visible,

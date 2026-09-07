@@ -157,9 +157,41 @@ def _candidate_for_run(
     run: WorkflowRun,
     node_runs: list[WorkflowNodeRun],
 ) -> PageCandidate | None:
-    for item in reversed(node_runs):
-        candidate_id = item.output_refs.get("candidate_id")
-        candidate = db.get(PageCandidate, candidate_id) if candidate_id else None
+    # Deterministic selection (the callers' SELECTs have no ORDER BY, so the
+    # previous reversed() picked "most recent" by accident): the adopted
+    # candidate is the one approve_node records on the control.approval
+    # barrier, so approval runs outrank generator/inspect runs that merely
+    # carry the candidate they produced or checked. Within each tier the
+    # most recent run wins on a stable (started_at, id) order instead of
+    # row-return order.
+    def _run_rank(item: WorkflowNodeRun) -> tuple[str, str]:
+        return (
+            item.started_at.isoformat() if item.started_at else "",
+            item.id,
+        )
+
+    approval_runs = sorted(
+        (
+            item
+            for item in node_runs
+            if item.node_type == "control.approval"
+            and item.output_refs.get("candidate_id")
+        ),
+        key=_run_rank,
+        reverse=True,
+    )
+    other_runs = sorted(
+        (
+            item
+            for item in node_runs
+            if item.node_type != "control.approval"
+            and item.output_refs.get("candidate_id")
+        ),
+        key=_run_rank,
+        reverse=True,
+    )
+    for item in [*approval_runs, *other_runs]:
+        candidate = db.get(PageCandidate, item.output_refs.get("candidate_id"))
         if candidate:
             return candidate
     if run.scope_type == "CANDIDATE" and run.scope_id:

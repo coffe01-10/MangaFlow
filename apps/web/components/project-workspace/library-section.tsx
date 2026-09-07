@@ -1,5 +1,6 @@
 "use client";
 
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { CSSProperties } from "react";
 import {
   ArrowLeft,
@@ -14,7 +15,7 @@ import {
   Trash2,
 } from "lucide-react";
 
-import { publicUrl, type ImageModelAlias } from "@/lib/api";
+import { api, publicUrl, type ImageModelAlias } from "@/lib/api";
 
 import { formatBytes } from "./display";
 import { candidateStatusLabels, generationKindLabels } from "./labels";
@@ -46,8 +47,24 @@ export function LibrarySection({
   rememberWorkspaceScroll: () => void;
   setSelectedPageId: (pageId: string | null) => void;
   libraryWorkspace: LibraryWorkspace;
-  generation: Pick<GenerationWorkspace, "deleteCandidate" | "retractSelectedCandidate" | "actionError">;
+  generation: Pick<GenerationWorkspace, "deleteCandidate" | "actionError">;
 }) {
+  const queryClient = useQueryClient();
+  // #156: 撤回必须指向用户确认的那张候选卡。共享的 retract mutation 以 pageId
+  // 为变量撤「页面当前选中」,跨标签页/会话过期时会撤掉别的候选;这里带上
+  // candidate_id,由后端校验与页面当前 selected_candidate_id 一致,不一致 409。
+  // 无效化键沿用 use-generation-workspace 撤回成功后的刷新集合。
+  const retractCandidate = useMutation({
+    mutationFn: ({ pageId, candidateId }: { pageId: string; candidateId: string }) =>
+      api.retractSelectedCandidate(pageId, candidateId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["pages"] });
+      queryClient.invalidateQueries({ queryKey: ["candidates"] });
+      queryClient.invalidateQueries({ queryKey: ["library"] });
+      queryClient.invalidateQueries({ queryKey: ["generation-workbench"] });
+      queryClient.invalidateQueries({ queryKey: ["chapter-production"] });
+    },
+  });
   const {
     favoriteOnly,
     setFavoriteOnly,
@@ -74,7 +91,7 @@ export function LibrarySection({
     chapterProduction,
     createExport,
   } = libraryWorkspace;
-  const { deleteCandidate, retractSelectedCandidate, actionError } = generation;
+  const { deleteCandidate, actionError } = generation;
 
   return (
     <>
@@ -95,7 +112,7 @@ export function LibrarySection({
           <button onClick={() => { setLibraryChapter(""); setFavoriteOnly(false); setLibraryCharacter(""); setLibraryKind(""); setLibraryModel(""); setLibraryResolution(""); setLibraryDateFrom(""); setLibraryDateTo(""); setLibraryCursor(""); setLibraryHistory([]); }}><RotateCcw size={13} />重置</button>
         </div>
       </div>
-      <div className="library-groups">{library.data?.groups.map((group, groupIndex) => { const columns = Math.min(Math.max(group.candidates.length, 1), 3); return <section className="library-group" style={{ "--batch-columns": columns } as CSSProperties} key={group.batch.id}><header><div><span>BATCH {String(group.batch.ordinal).padStart(3, "0")}</span><strong>{generationKindLabels[group.batch.generation_kind] ?? group.batch.generation_kind}</strong></div><small>{new Date(group.batch.created_at).toLocaleString("zh-CN")} · {group.candidates.length} 张</small></header><div className="library-candidates">{group.candidates.map((candidate, candidateIndex) => <article className={candidate.is_selected ? "is-selected" : undefined} key={candidate.id}><CandidateArtwork contentUrl={candidate.content_url} thumbnailUrl={candidate.thumbnail_url} label={`批次候选 ${candidate.ordinal}`} eager={groupIndex === 0 && candidateIndex === 0} onOpen={(url, label) => openPreview(url, label)} /><div><strong>{modelOptions.find((item) => item.alias === candidate.model_alias)?.name}</strong><span>{candidate.resolution} · {candidateStatusLabels[candidate.status] ?? candidate.status}</span>{candidate.is_favorite && <Heart size={13} fill="currentColor" />}{candidate.is_selected && <div className="library-selection-row"><em><Check size={12} />已暂选</em><button className="library-retract" disabled={!candidate.page_id || retractSelectedCandidate.isPending} onClick={() => { if (candidate.page_id && window.confirm("撤回暂选后，候选图片和生成记录仍会保留，后续页面将标记为待复查。是否继续？")) retractSelectedCandidate.mutate(candidate.page_id); }}><RotateCcw size={13} />撤回</button></div>}{!candidate.is_selected && <button className="library-delete" title="从素材库软删除" aria-label={`从素材库软删除候选 ${candidate.ordinal}`} disabled={deleteCandidate.isPending} onClick={() => { if (window.confirm("从素材库隐藏这个候选？生成文件和任务记录会保留。")) deleteCandidate.mutate(candidate.id); }}><Trash2 size={12} /></button>}</div></article>)}</div></section>; })}</div>
+      <div className="library-groups">{library.data?.groups.map((group, groupIndex) => { const columns = Math.min(Math.max(group.candidates.length, 1), 3); return <section className="library-group" style={{ "--batch-columns": columns } as CSSProperties} key={group.batch.id}><header><div><span>BATCH {String(group.batch.ordinal).padStart(3, "0")}</span><strong>{generationKindLabels[group.batch.generation_kind] ?? group.batch.generation_kind}</strong></div><small>{new Date(group.batch.created_at).toLocaleString("zh-CN")} · {group.candidates.length} 张</small></header><div className="library-candidates">{group.candidates.map((candidate, candidateIndex) => <article className={candidate.is_selected ? "is-selected" : undefined} key={candidate.id}><CandidateArtwork contentUrl={candidate.content_url} thumbnailUrl={candidate.thumbnail_url} label={`批次候选 ${candidate.ordinal}`} eager={groupIndex === 0 && candidateIndex === 0} onOpen={(url, label) => openPreview(url, label)} /><div><strong>{modelOptions.find((item) => item.alias === candidate.model_alias)?.name}</strong><span>{candidate.resolution} · {candidateStatusLabels[candidate.status] ?? candidate.status}</span>{candidate.is_favorite && <Heart size={13} fill="currentColor" />}{candidate.is_selected && <div className="library-selection-row"><em><Check size={12} />已暂选</em><button className="library-retract" disabled={!candidate.page_id || retractCandidate.isPending} onClick={() => { if (candidate.page_id && window.confirm("撤回暂选后，候选图片和生成记录仍会保留，后续页面将标记为待复查。是否继续？")) retractCandidate.mutate({ pageId: candidate.page_id, candidateId: candidate.id }); }}><RotateCcw size={13} />撤回</button></div>}{!candidate.is_selected && <button className="library-delete" title="从素材库软删除" aria-label={`从素材库软删除候选 ${candidate.ordinal}`} disabled={deleteCandidate.isPending} onClick={() => { if (window.confirm("从素材库隐藏这个候选？生成文件和任务记录会保留。")) deleteCandidate.mutate(candidate.id); }}><Trash2 size={12} /></button>}</div></article>)}</div></section>; })}</div>
       {library.isLoading && <div className="loading-panel"><LibraryBig size={16} />正在读取素材库…</div>}
       {library.isError && <p className="form-error" role="alert"><CircleAlert size={15} />素材库读取失败：{library.error instanceof Error ? library.error.message : "请稍后重试"}</p>}
       {!library.isLoading && !library.isError && !library.data?.groups.length && <div className="asset-empty tall"><LibraryBig size={28} /><strong>素材库还是空的</strong><p>从单页抽卡开始，所有候选都会按批次保留。</p></div>}
@@ -103,7 +120,7 @@ export function LibrarySection({
       <div className={`export-desk ${chapterProduction.data?.ready ? "ready" : "blocked"}`}><div><span>EXPORT / 整章导出门禁</span><strong>{chapterProduction.isError ? "章节生产状态读取失败" : chapterProduction.data ? `${chapterProduction.data.ready_pages}/${chapterProduction.data.total_pages} 页生产通过` : "正在核对章节生产状态"}</strong><small>{chapterProduction.isError ? <button type="button" className="chapter-production-retry" onClick={() => chapterProduction.refetch()}>重试读取</button> : chapterProduction.data?.ready ? "全部页面已完成校对、版本确认和视觉检查" : chapterProduction.data?.pages.find((page) => !page.ready)?.blockers[0]?.message ?? "章节没有可导出的页面"}</small></div><div>{(["PNG", "PDF", "JSON"] as const).map((type) => <button key={type} disabled={!chapterProduction.data?.ready || createExport.isPending} onClick={() => createExport.mutate(type)}><Download size={14} />{type}</button>)}</div></div>
       {chapterProduction.data && !chapterProduction.data.ready && <div className="chapter-production-blockers">{chapterProduction.data.pages.filter((page) => !page.ready).slice(0, 4).map((page) => { const pageNumber = pages.data?.find((item) => item.id === page.page_id)?.page_number; return <button key={page.page_id} onClick={() => { setSelectedPageId(page.page_id); rememberWorkspaceScroll(); router.push(projectPath("generate")); }}><span>第 {pageNumber ?? "—"} 页</span><strong>{page.blockers[0]?.message ?? "尚未通过"}</strong><ArrowRight size={14} /></button>; })}</div>}
       <div className="export-list">{exportsQuery.data?.map((item) => <a key={item.id} href={publicUrl(item.download_url)!}><FileImage size={14} /><span>{item.export_type} · {item.page_count} 页 · {formatBytes(item.byte_size)}</span><Download size={13} /></a>)}{exportsQuery.isSuccess && !exportsQuery.data?.length && <p className="export-list-empty">还没有导出文件；通过上方门禁后即可导出整章 PNG / PDF / JSON。</p>}{exportsQuery.isError && <p className="form-error" role="alert"><CircleAlert size={14} />导出记录读取失败：{exportsQuery.error instanceof Error ? exportsQuery.error.message : "请稍后重试"}<button type="button" className="chapter-production-retry" onClick={() => exportsQuery.refetch()}>重试读取</button></p>}</div>
-      {(createExport.isError || actionError) && <p className="form-error" role="alert"><CircleAlert size={14} />{(createExport.error ?? actionError)?.message}</p>}
+      {(createExport.isError || actionError || retractCandidate.isError) && <p className="form-error" role="alert"><CircleAlert size={14} />{(retractCandidate.error ?? createExport.error ?? actionError)?.message}</p>}
     </>
   );
 }

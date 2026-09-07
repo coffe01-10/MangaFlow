@@ -1,14 +1,19 @@
 """Generation batch, page candidate and selection routes."""
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from app.api.helpers import asset_candidate_read, candidate_read, candidate_version_state
+from app.api.helpers import (
+    asset_candidate_read,
+    candidate_read,
+    candidate_version_state,
+    ensure_project_scope,
+)
 from app.api.routes.workflow.common import _new_batch, _page
 from app.config import get_settings
 from app.database import get_db
-from app.domain.states import PageStatus
+from app.domain.states import JobStatus, PageStatus
 from app.models import (
     Asset,
     AssetCandidate,
@@ -16,7 +21,9 @@ from app.models import (
     Character,
     CharacterReference,
     GenerationBatch,
+    GenerationJob,
     InspectionResult,
+    JobAssetReference,
     MangaPage,
     Outfit,
     PageCandidate,
@@ -36,13 +43,16 @@ from app.services.character_packages import (
     default_package_gate_context,
     detach_draft_package_references_for_asset,
 )
-from app.services.job_service import enqueue_job
+from app.services.job_service import cancel_job, enqueue_job
 from app.services.ordinal_allocator import (
     CandidateOrdinalConflictError,
     create_page_candidate,
+    lock_entity,
 )
 from app.services.page_completion import build_page_production_readiness, production_error_detail
 from app.services.page_readiness import ensure_page_ready
+
+_JOB_TERMINAL_STATUSES = ("COMPLETED", "FAILED", "CANCELLED", "NEEDS_REVIEW")
 
 router = APIRouter()
 
@@ -52,8 +62,13 @@ router = APIRouter()
     response_model=GenerationBatchRead,
     status_code=status.HTTP_201_CREATED,
 )
-def start_batch(page_id: str, db: Session = Depends(get_db)) -> GenerationBatch:
+def start_batch(
+    page_id: str,
+    db: Session = Depends(get_db),
+    project_id: str | None = None,
+) -> GenerationBatch:
     page = _page(db, page_id)
+    ensure_project_scope(db, page, project_id, label="页面")
     # Contract §8.1: batch start gates on the default-inheritance package
     # context (ACTIVE package + published version) when no payload exists yet.
     ensure_page_ready(
@@ -82,6 +97,7 @@ def list_batches(page_id: str, db: Session = Depends(get_db)) -> list[Generation
 def create_candidate(
     batch_id: str,
     payload: CandidateCreate,
+    project_id: str | None = None,
     db: Session = Depends(get_db),
 ) -> CandidateQueuedRead:
     if payload.model_alias.lower() == "auto":
@@ -89,6 +105,10 @@ def create_candidate(
             status_code=422,
             detail="生图模型必须显式选择，不能使用 auto",
         )
+    batch = db.get(GenerationBatch, batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="抽卡批次不存在")
+    ensure_project_scope(db, batch, project_id, label="抽卡批次")
     try:
         candidate, job = create_page_candidate(
             db,
@@ -107,10 +127,13 @@ def create_candidate(
 
 
 @router.get("/batches/{batch_id}/candidates", response_model=list[PageCandidateRead])
-def list_candidates(batch_id: str, db: Session = Depends(get_db)) -> list[PageCandidateRead]:
+def list_candidates(
+    batch_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> list[PageCandidateRead]:
     batch = db.get(GenerationBatch, batch_id)
     if not batch:
         raise HTTPException(status_code=404, detail="抽卡批次不存在")
+    ensure_project_scope(db, batch, project_id, label="抽卡批次")
     if batch.target_type:
         candidates = list(
             db.scalars(
@@ -141,30 +164,101 @@ def list_candidates(batch_id: str, db: Session = Depends(get_db)) -> list[PageCa
 def favorite_candidate(
     candidate_id: str,
     payload: FavoriteUpdate,
+    project_id: str | None = None,
     db: Session = Depends(get_db),
 ) -> PageCandidateRead:
     candidate = db.get(PageCandidate, candidate_id) or db.get(AssetCandidate, candidate_id)
     if not candidate or candidate.deleted_at is not None:
         raise HTTPException(status_code=404, detail="候选不存在")
+    ensure_project_scope(db, candidate, project_id, label="候选")
     candidate.is_favorite = payload.is_favorite
     candidate.version += 1
     db.commit()
     db.refresh(candidate)
+    # The route resolves PageCandidate OR AssetCandidate; only the page shape
+    # can go through candidate_read, whose PageCandidateRead requires the
+    # page_id/is_selected fields an AssetCandidate does not have.
+    if isinstance(candidate, AssetCandidate):
+        return asset_candidate_read(candidate)
     return candidate_read(candidate)
 
 
 @router.delete("/candidates/{candidate_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_candidate(candidate_id: str, db: Session = Depends(get_db)) -> None:
+def delete_candidate(
+    candidate_id: str, db: Session = Depends(get_db), project_id: str | None = None
+) -> None:
     candidate = db.get(PageCandidate, candidate_id) or db.get(AssetCandidate, candidate_id)
     if not candidate or candidate.deleted_at is not None:
         raise HTTPException(status_code=404, detail="候选不存在")
+    ensure_project_scope(db, candidate, project_id, label="候选")
     if isinstance(candidate, PageCandidate) and candidate.is_selected:
         raise HTTPException(status_code=409, detail="当前采用版本不能删除")
-    deleted_at = utcnow()
+    if isinstance(candidate, PageCandidate):
+        # Deletion-vs-selection convention: hold the page lock the select
+        # route takes before reading the candidate so the two serialize on
+        # PostgreSQL (delete_asset sets the same precedent). The conditional
+        # claim below stays the dialect-proof backstop — lock_entity is a
+        # no-op on SQLite.
+        lock_entity(db, MangaPage, candidate.page_id)
     if isinstance(candidate, AssetCandidate) and candidate.asset_id:
-        # Lock/cleanup first so SQLITE_BUSY can roll back this unit and retry
-        # without discarding later writes in the same request.
+        asset = db.get(Asset, candidate.asset_id)
+        if asset and asset.deleted_at is None:
+            active_job_id = db.scalar(
+                select(GenerationJob.id)
+                .join(JobAssetReference, JobAssetReference.job_id == GenerationJob.id)
+                .where(
+                    JobAssetReference.asset_id == asset.id,
+                    GenerationJob.status.notin_(_JOB_TERMINAL_STATUSES),
+                )
+                .limit(1)
+            )
+            if active_job_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail="素材正被排队或执行中的生成任务使用，请先取消任务后再修改",
+                )
+            sibling_count = db.scalar(
+                select(func.count())
+                .select_from(AssetCandidate)
+                .where(
+                    AssetCandidate.asset_id == asset.id,
+                    AssetCandidate.deleted_at.is_(None),
+                    AssetCandidate.id != candidate.id,
+                )
+            )
+            if sibling_count:
+                raise HTTPException(
+                    status_code=409,
+                    detail="其他候选正在使用同一素材，请先删除对应候选",
+                )
+    deleted_at = utcnow()
+    # Contract §10.3: DRAFT package relation rows are cleared before the claim
+    # and every other writer in this unit. detach self-serializes on the bound
+    # Asset lock, and its internal run_lock_retry rolls the whole session back
+    # on SQLITE_BUSY — a claim UPDATE executed first would be silently
+    # discarded and never re-applied, committing a partial teardown (asset
+    # gone, candidate alive). A lost claim race below rolls the detach back
+    # with the rest of the unit, so no orphaned cleanup survives the 409.
+    if isinstance(candidate, AssetCandidate) and candidate.asset_id:
         detach_draft_package_references_for_asset(db, candidate.asset_id)
+    # Claim the candidate with a conditional update before any dependent
+    # cleanup: a concurrent select-candidate flipping is_selected (or another
+    # delete winning) must turn this request into a 409 instead of
+    # tombstoning an adopted candidate or double-deleting.
+    candidate_model = type(candidate)
+    claim_filters = [candidate_model.deleted_at.is_(None)]
+    if isinstance(candidate, PageCandidate):
+        claim_filters.append(candidate_model.is_selected.is_(False))
+    claimed = db.execute(
+        update(candidate_model)
+        .where(candidate_model.id == candidate.id, *claim_filters)
+        .values(deleted_at=deleted_at, version=candidate_model.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="候选状态已变化，请刷新后重试")
+    if isinstance(candidate, AssetCandidate) and candidate.asset_id:
         asset = db.get(Asset, candidate.asset_id)
         affected_character_ids = list(
             db.scalars(
@@ -213,8 +307,21 @@ def delete_candidate(candidate_id: str, db: Session = Depends(get_db)) -> None:
             if not has_other_reference:
                 character.status = AssetStatus.NEEDS_CONFIRMATION
             character.version += 1
-    candidate.deleted_at = deleted_at
-    candidate.version += 1
+    # The worker resolves its generation target without a deleted_at filter
+    # and would attach the paid result to this soft-deleted row, so an active
+    # job must be cancelled here (same guard for PageCandidate and
+    # AssetCandidate via their shared job_id).  Soft-delete first, then cancel:
+    # cancel_job commits, persisting the soft-delete above and the CANCELLED
+    # stamp as one final committed state.  The trailing commit is a no-op on
+    # that path and the real commit on the cancel_run path, which returns
+    # without committing.
+    job = db.get(GenerationJob, candidate.job_id) if candidate.job_id else None
+    if job is not None and job.status not in {
+        JobStatus.COMPLETED,
+        JobStatus.CANCELLED,
+        JobStatus.FAILED,
+    }:
+        cancel_job(db, job)
     db.commit()
 
 
@@ -223,8 +330,14 @@ def select_candidate(
     page_id: str,
     payload: SelectCandidateRequest,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> MangaPage:
     page = _page(db, page_id)
+    ensure_project_scope(db, page, project_id, label="页面")
+    # Agreed deletion-vs-selection convention (mirrors delete_asset): take the
+    # page lock before reading the candidate so a concurrent soft-delete on the
+    # same page serializes against this selection.
+    page = lock_entity(db, MangaPage, page.id)
     candidate = db.get(PageCandidate, payload.candidate_id)
     if (
         not candidate
@@ -234,6 +347,9 @@ def select_candidate(
         or candidate.status not in {"READY", "INSPECTED", "NEEDS_REVIEW"}
     ):
         raise HTTPException(status_code=409, detail="该候选尚不能采用")
+    asset = db.get(Asset, candidate.asset_id)
+    if asset is None or asset.deleted_at is not None:
+        raise HTTPException(status_code=409, detail="该候选的图片素材已删除，请重新生成")
     inspections = list(
         db.scalars(
             select(InspectionResult)
@@ -297,8 +413,23 @@ def select_candidate(
     db.execute(
         update(PageCandidate).where(PageCandidate.page_id == page.id).values(is_selected=False)
     )
-    candidate.is_selected = True
-    candidate.version += 1
+    # The adopt is a conditional claim, not a blind ORM write: a concurrent
+    # DELETE /candidates/{id} can commit its tombstone between the guard reads
+    # above and this write (its claim predates ours and it holds no lock this
+    # route respects on every dialect). Losing the claim rolls the whole unit
+    # back — adopting a soft-deleted candidate (is_selected=true +
+    # deleted_at set + page.selected_candidate_id set) is exactly the
+    # contradiction both routes' guards exist to prevent.
+    adopted = db.execute(
+        update(PageCandidate)
+        .where(PageCandidate.id == candidate.id, PageCandidate.deleted_at.is_(None))
+        .values(is_selected=True, version=PageCandidate.version + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if adopted.rowcount != 1:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="候选已被删除，无法采用")
+    db.expire(candidate, ["is_selected", "version"])
     changed = page.selected_candidate_id and page.selected_candidate_id != candidate.id
     page.selected_candidate_id = candidate.id
     page.selected_candidate_ack_version = page.storyboard_version
@@ -336,7 +467,12 @@ def select_candidate(
                 MangaPage.page_number > page.page_number,
                 MangaPage.selected_candidate_id.is_not(None),
             )
-            .values(continuity_status="NEEDS_RECHECK")
+            # #136 route-side defense: the downstream re-check flag must also
+            # bump page.version so an in-flight PAGE_INSPECT whose baseline was
+            # captured before this selection sees the drift through the version
+            # guard (single-statement version=version+1 keeps the bump atomic
+            # with the flag write).
+            .values(continuity_status="NEEDS_RECHECK", version=MangaPage.version + 1)
         )
     db.commit()
     db.refresh(page)
@@ -348,11 +484,19 @@ def keep_selected_candidate(
     page_id: str,
     payload: KeepSelectedCandidateRequest,
     db: Session = Depends(get_db),
+    project_id: str | None = None,
 ) -> MangaPage:
     page = _page(db, page_id)
+    ensure_project_scope(db, page, project_id, label="页面")
+    # Same page-lock convention as select_candidate/delete_asset: the lock
+    # re-reads the page (populate_existing) so the guards below cannot run on
+    # a pre-adoption snapshot when a concurrent selection lands between the
+    # read above and this commit.  The candidate is re-read post-lock too, so
+    # the guarded version bump lands on its current row.
+    page = lock_entity(db, MangaPage, page.id)
     if page.storyboard_version != payload.storyboard_version:
         raise HTTPException(status_code=409, detail="分镜已再次更新，请刷新后重试")
-    candidate = db.get(PageCandidate, payload.candidate_id)
+    candidate = lock_entity(db, PageCandidate, payload.candidate_id)
     if (
         not candidate
         or candidate.page_id != page.id
@@ -380,12 +524,30 @@ def keep_selected_candidate(
 def retract_selected_candidate(
     page_id: str,
     db: Session = Depends(get_db),
+    candidate_id: str | None = None,
+    project_id: str | None = None,
 ) -> MangaPage:
     page = _page(db, page_id)
+    ensure_project_scope(db, page, project_id, label="页面")
+    # Same page-lock convention as select_candidate/delete_asset: re-read the
+    # page and the adopted candidate post-lock so a concurrent selection that
+    # landed after the read above is retracted coherently instead of leaving
+    # its candidate stranded with is_selected=True.
+    page = lock_entity(db, MangaPage, page.id)
     if not page.selected_candidate_id:
         raise HTTPException(status_code=409, detail="当前页面没有已采用候选")
+    # Optional target pin (#156): the library card renders a specific candidate
+    # and must not retract whatever the page currently has selected when the
+    # cached card is stale (cross-tab selection swap). When candidate_id is
+    # provided, refuse on mismatch instead of retracting the wrong object;
+    # omitting it keeps the legacy "retract current selection" behavior.
+    if candidate_id is not None and page.selected_candidate_id != candidate_id:
+        raise HTTPException(
+            status_code=409,
+            detail="该候选已不是页面当前采用的选择，请刷新素材库后重试",
+        )
 
-    candidate = db.get(PageCandidate, page.selected_candidate_id)
+    candidate = lock_entity(db, PageCandidate, page.selected_candidate_id)
     if candidate and candidate.page_id == page.id:
         candidate.is_selected = False
         candidate.version += 1
@@ -401,7 +563,10 @@ def retract_selected_candidate(
             MangaPage.page_number > page.page_number,
             MangaPage.selected_candidate_id.is_not(None),
         )
-        .values(continuity_status="NEEDS_RECHECK")
+        # #136 route-side defense (same as select_candidate): the re-check
+        # flag rides with a version bump so the inspection handler's page
+        # version baseline notices the mid-flight change.
+        .values(continuity_status="NEEDS_RECHECK", version=MangaPage.version + 1)
     )
     db.commit()
     db.refresh(page)
@@ -409,8 +574,13 @@ def retract_selected_candidate(
 
 
 @router.post("/pages/{page_id}/next", response_model=PageRead)
-def next_page(page_id: str, db: Session = Depends(get_db)) -> MangaPage:
+def next_page(
+    page_id: str,
+    db: Session = Depends(get_db),
+    project_id: str | None = None,
+) -> MangaPage:
     page = _page(db, page_id)
+    ensure_project_scope(db, page, project_id, label="页面")
     production = build_page_production_readiness(db, page)
     if not production.ready:
         raise HTTPException(status_code=409, detail=production_error_detail(production))

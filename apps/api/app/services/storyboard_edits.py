@@ -124,7 +124,7 @@ def apply_panel_fields(
     for key, value in values.items():
         setattr(panel, key, value.strip() if isinstance(value, str) else value)
     panel.version += 1
-    mark_storyboard_changed(page)
+    mark_storyboard_changed(db, page)
     mark_pages_for_review(db, page.chapter_id, from_page_number=page.page_number)
     db.flush()
     return panel
@@ -164,7 +164,7 @@ def apply_dialogue_fields(
     db.flush()
     refresh_page_text_metrics(db, page)
     panel.version += 1
-    mark_storyboard_changed(page)
+    mark_storyboard_changed(db, page)
     mark_pages_for_review(db, page.chapter_id, from_page_number=page.page_number)
     db.flush()
     return dialogue
@@ -211,7 +211,7 @@ def _bump_scene_storyboard(db: Session, scene: Scene) -> None:
         return
     for item in chapter_pages:
         if item.page_number >= start and scene.id in (item.scene_ids or []):
-            mark_storyboard_changed(item)
+            mark_storyboard_changed(db, item)
 
 
 PANEL_RESTORE_FIELDS = (
@@ -264,7 +264,7 @@ def restore_panel_snapshot(
 ) -> None:
     restore_entity_fields(panel, snapshot, PANEL_RESTORE_FIELDS)
     panel.version += 1
-    mark_storyboard_changed(page)
+    mark_storyboard_changed(db, page)
     mark_pages_for_review(db, page.chapter_id, from_page_number=page.page_number)
     db.flush()
 
@@ -280,7 +280,7 @@ def restore_dialogue_snapshot(
     db.flush()
     refresh_page_text_metrics(db, page)
     panel.version += 1
-    mark_storyboard_changed(page)
+    mark_storyboard_changed(db, page)
     mark_pages_for_review(db, page.chapter_id, from_page_number=page.page_number)
     db.flush()
 

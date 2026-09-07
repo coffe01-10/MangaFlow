@@ -17,6 +17,40 @@ const cameraAngles = [["eye_level", "平视"], ["low_angle", "仰拍"], ["high_a
 
 export type PanelDraft = Pick<StoryboardPanel, "shot_type" | "camera_angle" | "camera_height" | "characters" | "character_presence" | "props" | "outfits" | "actions" | "expressions" | "background" | "sound_effects" | "bleed" | "borderless">;
 
+/**
+ * 从逗号分隔的文本列表重建拟声词条目（R2 审查修复：几何按文本锚定）。
+ * 1) 先按「文本未变」精确匹配（从左到右消耗，重复文本不复用同一条几何）：
+ *    删除或重排中间条目后，未变条目必须保留自己的 x/y/rotation/size，
+ *    而不是像纯按索引重建那样滑到前一个条目的位置。
+ * 2) 改名/新增的 token 回退到同索引位置的原对象（沿用其几何）。
+ * 3) 其余落成裸 {text}（旧字符串条目一并规范化为对象）。
+ */
+export function anchorSoundEffects(
+  texts: string[],
+  previous: PanelDraft["sound_effects"],
+): PanelDraft["sound_effects"] {
+  // 只有结构化对象携带几何；旧字符串条目规范化为裸 {text}。
+  const available: { entry: Record<string, unknown>; index: number; used: boolean }[] = [];
+  previous.forEach((entry, index) => {
+    if (typeof entry === "object") available.push({ entry, index, used: false });
+  });
+  const matched = texts.map((text) => {
+    const hit = available.find(({ entry, used }) => !used && String(entry.text ?? "") === text);
+    if (!hit) return null;
+    hit.used = true;
+    return { ...hit.entry, text };
+  });
+  return matched.map((entry, index) => {
+    if (entry !== null) return entry;
+    const positional = available.find(({ index: slot, used }) => slot === index && !used);
+    if (positional) {
+      positional.used = true;
+      return { ...positional.entry, text: texts[index] };
+    }
+    return { text: texts[index] };
+  });
+}
+
 export function PanelInspector({
   page,
   panel,
@@ -99,7 +133,22 @@ export function PanelInspector({
       <label><span>动作与表演</span><textarea value={panelDraft.actions.script_action ?? ""} onChange={(event) => onPanelDraftChange({ ...panelDraft, actions: { ...panelDraft.actions, script_action: event.target.value } })} /></label>
       <label><span>背景</span><textarea value={panelDraft.background} onChange={(event) => onPanelDraftChange({ ...panelDraft, background: event.target.value })} /></label>
       <label><span>场景道具（用逗号分隔）</span><input value={panelDraft.props.join("，")} onChange={(event) => onPanelDraftChange({ ...panelDraft, props: event.target.value.split(/[，,]/).map((item) => item.trim()).filter(Boolean) })} placeholder="例如：爸爸的灵牌、香炉、白菊" /></label>
-      <label><span>拟声词（用逗号分隔）</span><input value={panelDraft.sound_effects.map(String).join("，")} onChange={(event) => onPanelDraftChange({ ...panelDraft, sound_effects: event.target.value.split(/[，,]/).map((item) => item.trim()).filter(Boolean) })} /></label>
+      <label><span>拟声词（用逗号分隔）</span><input
+        // 后端 read_sound_effects 恒返回结构化对象（{text,x,y,rotation,size}，
+        // 旧字符串已被包装），直接 String(item) 会显示「[object Object]」且编辑
+        // 会把几何压扁成裸字符串。展示取 text；编辑时 anchorSoundEffects 先按
+        // 文本锚定未变条目的几何，改名/新增再回退索引，最后才是裸 {text}
+        // （PATCH 侧 canonical_sound_effects 原样接受结构化对象）。
+        value={panelDraft.sound_effects.map((item) => (typeof item === "string" ? item : String(item.text ?? ""))).join("，")}
+        onChange={(event) => onPanelDraftChange({
+          ...panelDraft,
+          sound_effects: anchorSoundEffects(
+            event.target.value.split(/[，,]/).map((item) => item.trim()).filter(Boolean),
+            panelDraft.sound_effects,
+          ),
+        })}
+        placeholder="例如：咚…、嘎吱…"
+      /></label>
       <fieldset><legend>人物状态</legend><p className="presence-help">只有“实际出镜”会要求人物与服装参考；画外音和被提及人物不会阻塞生图。</p><div className="character-presence-grid">{characters.map((character) => {
         const presence = (panelDraft.character_presence[character.id] || "NONE") as CharacterPresence | "NONE";
         return <label key={character.id} className={presence !== "NONE" ? `active presence-${presence.toLowerCase()}` : ""}><strong>{character.primary_name}</strong><select aria-label={`${character.primary_name}人物状态`} value={presence} onChange={(event) => onPresenceChange(character.id, event.target.value as CharacterPresence | "NONE")}><option value="NONE">不在本格</option><option value="VISIBLE">实际出镜</option><option value="OFFSCREEN">画外人物</option><option value="MENTIONED">仅被提及</option></select></label>;

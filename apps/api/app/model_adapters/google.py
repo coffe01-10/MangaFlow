@@ -12,8 +12,27 @@ from app.model_adapters.base import (
     MultimodalRequest,
     ProviderAdapterError,
     StructuredRequest,
+    strip_json_fences,
 )
+from app.services.model_capabilities import capability_reference_limit
 from app.services.vertex_credentials import classify_vertex_failure
+
+_GOOGLE_HTTP_TIMEOUT_MS = 90_000
+
+
+def _validate_structured_text(
+    text: str, output_schema: type[BaseModel], *, failure_message: str
+) -> BaseModel:
+    try:
+        payload = json.loads(strip_json_fences(text))
+    except ValueError as error:
+        raise ProviderAdapterError(
+            "INVALID_OUTPUT", "Gemini API 返回内容不是有效 JSON", retryable=True
+        ) from error
+    try:
+        return output_schema.model_validate(payload)
+    except Exception as error:
+        raise ProviderAdapterError("INVALID_OUTPUT", failure_message) from error
 
 
 @dataclass(frozen=True)
@@ -31,7 +50,12 @@ class _GoogleBase:
     def _client(self):
         from google import genai
 
-        return genai.Client(api_key=self.runtime.api_key)
+        # Bound connect/read like the HTTP-API path (90s); the SDK default
+        # lets a hung upstream pin a worker slot for minutes.
+        return genai.Client(
+            api_key=self.runtime.api_key,
+            http_options={"timeout": _GOOGLE_HTTP_TIMEOUT_MS},
+        )
 
     @staticmethod
     def _translate(error: Exception) -> ProviderAdapterError:
@@ -81,12 +105,9 @@ class GoogleTextAdapter(_GoogleBase):
             ) from error
         if not text:
             raise ProviderAdapterError("INVALID_OUTPUT", "Gemini API 没有返回文本")
-        try:
-            return output_schema.model_validate(json.loads(text))
-        except Exception as error:
-            raise ProviderAdapterError(
-                "INVALID_OUTPUT", "Gemini API 返回结构无法验证"
-            ) from error
+        return _validate_structured_text(
+            text, output_schema, failure_message="Gemini API 返回结构无法验证"
+        )
 
     def analyze_multimodal(
         self, request: MultimodalRequest, output_schema: type[BaseModel]
@@ -119,12 +140,9 @@ class GoogleTextAdapter(_GoogleBase):
             ) from error
         if not text:
             raise ProviderAdapterError("INVALID_OUTPUT", "Gemini API 没有返回分析结果")
-        try:
-            return output_schema.model_validate(json.loads(text))
-        except Exception as error:
-            raise ProviderAdapterError(
-                "INVALID_OUTPUT", "Gemini API 返回结构无法验证"
-            ) from error
+        return _validate_structured_text(
+            text, output_schema, failure_message="Gemini API 返回结构无法验证"
+        )
 
 
 class GoogleImageAdapter(_GoogleBase):
@@ -146,7 +164,7 @@ class GoogleImageAdapter(_GoogleBase):
         from google.genai import types
 
         resolutions = self.runtime.capabilities.get("resolutions") or ["1K"]
-        max_references = int(self.runtime.capabilities.get("max_reference_images") or 0)
+        max_references = capability_reference_limit(self.runtime.capabilities) or 0
         if request.resolution not in resolutions:
             raise ProviderAdapterError(
                 "UNSUPPORTED_CAPABILITY",
@@ -166,6 +184,9 @@ class GoogleImageAdapter(_GoogleBase):
                 model=self.runtime.model_id,
                 contents=contents,
                 config=types.GenerateContentConfig(
+                    # One candidate: the product persists only the first
+                    # image, so extra candidates would only inflate the bill.
+                    candidate_count=1,
                     response_modalities=[types.Modality.TEXT, types.Modality.IMAGE],
                     image_config=types.ImageConfig(
                         aspect_ratio=request.aspect_ratio,
