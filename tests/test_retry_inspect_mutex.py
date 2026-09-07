@@ -15,6 +15,8 @@ invisible to every guard and could run a second paid structuring call next to
 a live parse on the same chapter.
 """
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from fastapi import HTTPException
 
@@ -28,6 +30,7 @@ from app.models import (
     MangaPage,
     PageCandidate,
     Project,
+    utcnow,
 )
 from app.services import job_service
 
@@ -332,6 +335,8 @@ def test_route_arbitrates_fence_split_duplicates(db_session):
 
     # The reconciler's creation landed first, keyed on page version 3; a
     # fence then bumped the page, so the route computes a version-4 key.
+    # created_at is pinned apart: both defaults can land on the same clock
+    # tick, and the id tie-break on random UUIDs would flip the winner.
     reconciler_job = GenerationJob(
         project_id=project_row.id,
         target_type="PAGE_CANDIDATE",
@@ -340,6 +345,7 @@ def test_route_arbitrates_fence_split_duplicates(db_session):
         status=JobStatus.QUEUED,
         request_parameters={"categories": ["SPEAKER"], "workflow_run_id": "run-1"},
         idempotency_key=f"inspect:{candidate.id}:{candidate.version}:3",
+        created_at=utcnow() - timedelta(seconds=5),
     )
     route_job = GenerationJob(
         project_id=project_row.id,
