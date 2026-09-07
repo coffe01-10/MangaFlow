@@ -116,6 +116,33 @@ fn check_no_traversal(raw: &Path) -> Result<(), PickError> {
     Ok(())
 }
 
+/// Reject a symlink/junction ANYWHERE in the directory chain, not just at
+/// the final component. `symlink_metadata` on the full path only sees the
+/// last entry; an intermediate link (on Windows a junction needs no
+/// privilege at all) would silently resolve a picked path into an
+/// undisclosed location, breaking the module contract that no symlink
+/// survives validation. Each ancestor is checked with `symlink_metadata`,
+/// which never follows links; the full path itself is skipped here because
+/// every caller checks the final component separately. Relative paths never
+/// reach this function — `check_no_traversal` runs first.
+fn reject_intermediate_links(raw: &Path) -> Result<(), PickError> {
+    for ancestor in raw.ancestors().skip(1) {
+        if ancestor.as_os_str().is_empty() {
+            continue;
+        }
+        let meta = ancestor
+            .symlink_metadata()
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::NotFound => PickError::DoesNotExist,
+                _ => PickError::Io(error),
+            })?;
+        if meta.is_symlink() {
+            return Err(PickError::IsSymlink);
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct PickedFile {
     /// Canonical path (safe to hand back to the frontend as an opaque key).
@@ -132,11 +159,13 @@ pub struct PickedDirectory {
 }
 
 /// Validate a path that came from a native pick dialog: no traversal
-/// components, no symlink anywhere in the final resolution, a regular file
+/// components, no symlink anywhere in the chain (intermediate directories
+/// included — see [`reject_intermediate_links`]), a regular file
 /// whose canonical file name still matches what was picked, and the
 /// kind-aligned suffix/size policy.
 pub fn validate_picked_file(raw: &Path, kind: PickKind) -> Result<PickedFile, PickError> {
     check_no_traversal(raw)?;
+    reject_intermediate_links(raw)?;
     let meta = raw
         .symlink_metadata()
         .map_err(|error| match error.kind() {
@@ -184,6 +213,7 @@ pub fn validate_picked_file(raw: &Path, kind: PickKind) -> Result<PickedFile, Pi
 /// Validate a picked directory (import roots for 原作/素材 workflows).
 pub fn validate_picked_directory(raw: &Path) -> Result<PickedDirectory, PickError> {
     check_no_traversal(raw)?;
+    reject_intermediate_links(raw)?;
     let meta = raw
         .symlink_metadata()
         .map_err(|error| match error.kind() {
