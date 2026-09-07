@@ -18,6 +18,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -97,6 +98,7 @@ class DesktopShell:
         spawned process (the Rust shell accepts it via Job membership).
         """
 
+        assert isinstance(pid, int) and pid > 0, f"announcer pid must be a positive int, got {pid!r}"
         if pid == self.process.pid:
             return
         assert os.name == "nt", f"helper pid {pid} is not the spawned {self.process.pid}"
@@ -116,10 +118,35 @@ class DesktopShell:
             f"announcer pid {pid} parent {parent} is not the spawned {self.process.pid}"
         )
 
+    def _read_ready_line(self, timeout: float) -> str:
+        """Read one protocol line with a hard deadline.
+
+        ``readline()`` itself blocks forever when a helper hangs before
+        publishing readiness — a deadline assertion placed after it can
+        never fire, and the suite dies on the harness timeout instead of
+        the intended assertion. A daemon reader thread keeps the read
+        portable (select() does not work on Windows pipes).
+        """
+
+        import queue
+
+        lines: queue.Queue[str] = queue.Queue()
+
+        def _reader() -> None:
+            assert self.process.stdout is not None
+            lines.put(self.process.stdout.readline())
+
+        reader = threading.Thread(target=_reader, daemon=True)
+        reader.start()
+        try:
+            return lines.get(timeout=timeout)
+        except queue.Empty:
+            raise AssertionError(
+                f"helper did not publish readiness within {timeout}s"
+            ) from None
+
     def handshake(self, timeout: float = 15.0) -> dict:
-        deadline = time.monotonic() + timeout
-        line = self.process.stdout.readline()  # blocking; helper prints once
-        assert time.monotonic() <= deadline, "helper did not publish readiness in time"
+        line = self._read_ready_line(timeout)
         assert line.startswith(READY_PREFIX), f"unexpected helper output: {line!r}"
         payload = json.loads(line.removeprefix(READY_PREFIX))
         assert payload["token"] == self.token
