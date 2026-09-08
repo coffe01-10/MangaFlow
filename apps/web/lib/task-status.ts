@@ -13,6 +13,9 @@ export const ACTIVE_TASK_STATUSES = [
   "OCR_CHECKING", // 历史任务兼容
   "CONSISTENCY_CHECKING",
   "REPAIRING",
+  // RUNNING 不是 JobStatus；它是 WorkflowRun.status 的词汇
+  // （workflow-studio 的运行状态轮询）。保留在此使共享的活跃判定对工作流
+  // 运行条目同样成立，勿当作后端任务状态扩展依据。
   "RUNNING",
 ] as const;
 

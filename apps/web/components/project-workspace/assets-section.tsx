@@ -20,6 +20,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
+import { useEffect, useRef } from "react";
 
 import { publicUrl, type AssetPurpose, type ImageModelAlias } from "@/lib/api";
 
@@ -52,6 +53,7 @@ export function AssetsSection({
   openPreview,
   rememberWorkspaceScroll,
   workspace,
+  focusStyleId,
 }: {
   id: string;
   assetView: AssetWorkspaceView;
@@ -65,7 +67,12 @@ export function AssetsSection({
   openPreview: (url: string, label: string) => void;
   rememberWorkspaceScroll: () => void;
   workspace: AssetsWorkspace;
+  focusStyleId?: string | null;
 }) {
+  // 生产准备“去处理”深链带 ?style=：高亮并滚到目标风格档案（与 ?outfit=
+  // 直接进入编辑态同一意图；风格档案没有独立编辑态，高亮即定位）。
+  const focusStyleRef = useRef<HTMLElement | null>(null);
+  const styleDeepLinked = (styleId: string) => Boolean(focusStyleId) && styleId === focusStyleId;
   const {
     assetKind,
     setAssetKind,
@@ -136,6 +143,10 @@ export function AssetsSection({
     dropReferenceFile,
     confirmDeleteOutfit,
   } = workspace;
+  useEffect(() => {
+    if (!focusStyleId) return;
+    focusStyleRef.current?.scrollIntoView({ block: "center" });
+  }, [focusStyleId, styles.data]);
   const visibleAssetKinds = assetView === "references"
     ? kinds
     : kinds.filter(([kind]) => kind === currentAssetKind);
@@ -247,7 +258,7 @@ export function AssetsSection({
           <div className="profile-subsection-title"><div><span>已保存档案</span><strong>逐份修改与切换</strong></div><p>下方开关修改的是该档案本身，不会改变上方新档案表单。</p></div><div className="profile-records">{styles.data?.map((style) => {
             const isActive = draft.default_style_id === style.id && style.status === "ACTIVE";
             const referenceCount = style.profile.reference_asset_ids?.length ?? 0;
-            return <article className={isActive ? "active style-production-record" : "style-production-record"} key={style.id}><div className="profile-record-title"><span>{isActive ? "CURRENT STYLE" : "STYLE PROFILE"}</span><strong>{style.name}</strong><small>{styleStatusLabels[style.status] ?? style.status} · {referenceCount} 张参考 · {style.locked_fields.length} 项锁定</small></div><ComicModeSwitch compact value={style.color_mode} disabled={updateStyleMode.isPending} onChange={(colorMode) => updateStyleMode.mutate({ style, colorMode })} />{style.status === "DRAFT" && <p className="reanalyze-note">彩色风格必须依次确认色板和测试图，再激活用于正式页面。</p>}<div className="profile-record-actions"><button type="button" disabled={!referenceCount || analyzeStyle.isPending} onClick={() => analyzeStyle.mutate(style.id)}>重新分析画面语言</button></div><StyleProductionPanel key={`${style.id}:${style.version}`} projectId={id} style={style} model={activeDrawModel} active={isActive} onOpen={openPreview} /></article>;
+            return <article className={styleDeepLinked(style.id) ? `${isActive ? "active " : ""}style-production-record deep-link-focus` : isActive ? "active style-production-record" : "style-production-record"} key={style.id} ref={styleDeepLinked(style.id) ? focusStyleRef : undefined}><div className="profile-record-title"><span>{isActive ? "CURRENT STYLE" : "STYLE PROFILE"}</span><strong>{style.name}</strong><small>{styleStatusLabels[style.status] ?? style.status} · {referenceCount} 张参考 · {style.locked_fields.length} 项锁定</small></div><ComicModeSwitch compact value={style.color_mode} disabled={updateStyleMode.isPending} onChange={(colorMode) => updateStyleMode.mutate({ style, colorMode })} />{style.status === "DRAFT" && <p className="reanalyze-note">彩色风格必须依次确认色板和测试图，再激活用于正式页面。</p>}<div className="profile-record-actions"><button type="button" disabled={!referenceCount || analyzeStyle.isPending} onClick={() => analyzeStyle.mutate(style.id)}>重新分析画面语言</button></div><StyleProductionPanel key={`${style.id}:${style.version}`} projectId={id} style={style} model={activeDrawModel} active={isActive} onOpen={openPreview} /></article>;
           })}{!styles.data?.length && !styles.isLoading && <p className="profile-record-empty">选择色彩模式并绑定参考页，建立第一份漫画风格档案。</p>}</div>
         </section></>}
       </div>

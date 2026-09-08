@@ -358,8 +358,11 @@ export function LocalEditWorkspace({
       else if (event.key === "]") setBrushSize((size) => Math.min(200, size + 4));
       else if (event.key === "Delete" || event.key === "Backspace") clearMask();
       else if (event.key === "Escape") {
+        // 可见按钮在 pending 期间禁用；键盘路径必须同样防双发，否则快速
+        // 双击 Esc 的第二次调用通常 404 并顶掉提示。ref 守卫对陈旧闭包同样
+        // 生效（keyed effect 不会随 pending 重渲染重建）。
         if (previewGroup) {
-          discard.mutate(previewGroup.command_group_id);
+          discardPreview();
           return;
         }
         if (mask.present.length && !window.confirm("放弃当前选区并关闭局部编辑？")) return;
@@ -397,6 +400,15 @@ export function LocalEditWorkspace({
   // (same dedupe discipline as the jobs cancel/retry buttons).
   const submittingRef = useRef(false);
   const acceptingRef = useRef(false);
+  const discardingRef = useRef(false);
+
+  const discardPreview = () => {
+    if (discardingRef.current) return;
+    discardingRef.current = true;
+    discard.mutate(previewGroup!.command_group_id, {
+      onSettled: () => { discardingRef.current = false; },
+    });
+  };
 
   const submitPreview = () => {
     if (submittingRef.current || locked) return;
@@ -623,7 +635,7 @@ export function LocalEditWorkspace({
                 >
                   {accept.isPending ? <LoaderCircle className="spin" size={13} /> : <Check size={13} />}确认生成
                 </button>
-                <button type="button" className="button outline compact" disabled={discard.isPending} onClick={() => discard.mutate(previewGroup!.command_group_id)}>取消预览</button>
+                <button type="button" className="button outline compact" disabled={discard.isPending} onClick={discardPreview}>取消预览</button>
               </footer>
             </section>
           )}

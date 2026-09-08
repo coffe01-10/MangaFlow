@@ -1608,6 +1608,8 @@ p { font-size: var(--text-body) !important; }
 .style-production-record .profile-record-actions { grid-column: 1 / -1; justify-content: flex-start; }
 .style-production-record .profile-record-actions button { padding: 0 14px; font-size: 13px !important; }
 .style-production-record .style-production-pipeline { margin-top: 2px; }
+/* 生产准备“去处理”深链（?style=）定位高亮 */
+.deep-link-focus { outline: 2px solid #d97706; outline-offset: 3px; }
 .pipeline-stage { padding: 14px; gap: 12px; }
 .pipeline-stage p { color: #625d55; line-height: 1.6; }
 

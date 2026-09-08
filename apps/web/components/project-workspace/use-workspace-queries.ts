@@ -111,7 +111,7 @@ export function useWorkspaceQueries({
   }, [chapterParseId, chapterParseTerminal, activeChapterId, queryClient]);
   const sceneAssets = useQuery({
     queryKey: ["scene-assets", id],
-    queryFn: () => api.sceneAssets(id, { limit: 200 }),
+    queryFn: () => api.sceneAssetsAll(id),
     enabled: needsSceneAssets,
   });
 

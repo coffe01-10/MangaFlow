@@ -361,6 +361,21 @@ describe("UsageDashboard cost semantics", () => {
     });
   });
 
+  it("applies the channel filter to the summary KPIs, not only the attempts table", async () => {
+    renderDashboard();
+    await waitFor(() => expect(screen.getByText("调用明细")).toBeTruthy());
+    usageSummaryApi.mockClear();
+    fireEvent.change(screen.getByLabelText("按通道筛选"), {
+      target: { value: "CLI" },
+    });
+    await waitFor(() => {
+      const summaryCalls = usageSummaryApi.mock.calls.filter(
+        (call) => (call[0] as { channel?: string } | undefined)?.channel === "CLI",
+      );
+      expect(summaryCalls.length).toBeGreaterThan(0);
+    });
+  });
+
   it("exports the summary CSV with per-currency rows", async () => {
     const created: Blob[] = [];
     const clickSpy = vi

@@ -139,6 +139,7 @@ def get_usage_attempt(
 @router.get("/summary", response_model=UsageSummaryRead)
 def get_usage_summary(
     project_id: str | None = None,
+    channel: str | None = Query(default=None, pattern="^(HTTP_API|CLI)$"),
     provider: str | None = None,
     model_id: str | None = None,
     from_: datetime | None = Query(default=None, alias="from"),
@@ -152,6 +153,7 @@ def get_usage_summary(
     return summarize_usage(
         db,
         project_id=project_id,
+        channel=channel,
         provider=provider,
         model_id=model_id,
         since=since,

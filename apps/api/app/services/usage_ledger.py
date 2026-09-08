@@ -444,6 +444,7 @@ def summarize_usage(
     db: Session,
     *,
     project_id: str | None = None,
+    channel: str | None = None,
     provider: str | None = None,
     model_id: str | None = None,
     since: datetime | None = None,
@@ -460,7 +461,7 @@ def summarize_usage(
             usage_attempt_query(
                 project_id=project_id,
                 job_id=None,
-                channel=None,
+                channel=channel,
                 provider=provider,
                 model_id=model_id,
                 since=since,
@@ -549,6 +550,10 @@ def summarize_usage(
         return UsageSummaryRead(groups=groups, billed=[])
 
     billed_query = select(ProviderUsageReconciliation)
+    if channel:
+        billed_query = billed_query.where(
+            ProviderUsageReconciliation.channel == channel
+        )
     if provider:
         billed_query = billed_query.where(
             ProviderUsageReconciliation.provider == provider

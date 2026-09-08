@@ -24,6 +24,14 @@ function toIsoLocalMidnight(date: Date) {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate()).toISOString();
 }
 
+// "YYYY-MM-DD" must parse as LOCAL midnight; Date(string) would read it as UTC
+// and shift the range a day early west of Greenwich.
+function parseLocalDate(value: string) {
+  const [y, m, d] = value.split("-").map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d);
+}
+
 export function UsageDashboard() {
   const [preset, setPreset] = useState<RangePreset>("30d");
   const [customFrom, setCustomFrom] = useState("");
@@ -46,10 +54,13 @@ export function UsageDashboard() {
       return { since: toIsoLocalMidnight(new Date(now.getFullYear(), now.getMonth(), 1)) };
     }
     if (!customFrom) return {};
-    const untilDate = customTo || customFrom;
-    const until = new Date(untilDate);
+    const fromDate = parseLocalDate(customFrom);
+    if (!fromDate) return {};
+    const untilSource = customTo ? parseLocalDate(customTo) : fromDate;
+    if (!untilSource) return {};
+    const until = new Date(untilSource);
     until.setDate(until.getDate() + 1);
-    return { since: toIsoLocalMidnight(new Date(customFrom)), until: toIsoLocalMidnight(until) };
+    return { since: toIsoLocalMidnight(fromDate), until: toIsoLocalMidnight(until) };
   }, [preset, customFrom, customTo]);
 
   const summaryFilters: UsageFilters = useMemo(
@@ -57,15 +68,13 @@ export function UsageDashboard() {
       project_id: projectId || undefined,
       provider: provider || undefined,
       model_id: modelId || undefined,
+      channel: channel || undefined,
       ...sinceUntil,
     }),
-    [projectId, provider, modelId, sinceUntil],
+    [projectId, provider, modelId, channel, sinceUntil],
   );
-  const attemptsFilters: UsageFilters = useMemo(
-    () => ({ ...summaryFilters, channel: channel || undefined }),
-    [summaryFilters, channel],
-  );
-  const filterKey = JSON.stringify({ summaryFilters, channel });
+  const attemptsFilters = summaryFilters;
+  const filterKey = JSON.stringify(summaryFilters);
 
   const projects = useQuery({ queryKey: ["projects"], queryFn: api.projects });
   // Facet source: unfiltered summary keeps provider/model options stable while
