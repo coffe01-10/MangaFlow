@@ -18,6 +18,7 @@ severed every keep-alive connection after 5s of silence.
 from __future__ import annotations
 
 import socket
+import struct
 import sys
 import threading
 import time
@@ -45,11 +46,13 @@ def _free_port() -> int:
 class StubApi:
     """Minimal HTTP/1.1 keep-alive server standing in for uvicorn."""
 
-    def __init__(self, response_delay: float = 0.0) -> None:
+    def __init__(self, response_delay: float = 0.0, close_after_response: bool = False,
+                 port: int | None = None) -> None:
         self.response_delay = response_delay
+        self.close_after_response = close_after_response
         self._server = socket.socket()
         self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._server.bind(("127.0.0.1", 0))
+        self._server.bind(("127.0.0.1", port if port is not None else 0))
         self._server.listen(16)
         self.port = self._server.getsockname()[1]
         self._thread = threading.Thread(target=self._serve, daemon=True)
@@ -76,6 +79,9 @@ class StubApi:
                 if self.response_delay:
                     time.sleep(self.response_delay)
                 conn.sendall(RESPONSE)
+                if self.close_after_response:
+                    conn.close()
+                    return
         except OSError:
             pass
         finally:
@@ -88,14 +94,17 @@ class StubApi:
         self._server.close()
 
 
-def start_relay(monkeypatch: pytest.MonkeyPatch, api: StubApi) -> tuple[int, Callable[[], None]]:
-    """Bind and run the helper's relay in front of ``api``; (port, stop)."""
+def start_relay_on(monkeypatch: pytest.MonkeyPatch, api_port: int) -> tuple[int, Callable[[], None]]:
+    """Bind and run the helper's relay in front of ``api_port``; (port, stop).
+
+    ``api_port`` may be a port with no listener (dead-upstream scenarios).
+    """
     port = _free_port()
     monkeypatch.setattr(helper, "WEB_RELAY_PORT", port)
-    relay = helper._bind_relay(api.port)
+    relay = helper._bind_relay(api_port)
     assert relay is not None, "the relay bind must succeed on a free port"
     thread = threading.Thread(
-        target=helper._serve_relay, args=(relay, api.port), daemon=True
+        target=helper._serve_relay, args=(relay, api_port), daemon=True
     )
     thread.start()
 
@@ -105,6 +114,10 @@ def start_relay(monkeypatch: pytest.MonkeyPatch, api: StubApi) -> tuple[int, Cal
         assert not thread.is_alive(), "relay pump thread must stop when the listener closes"
 
     return port, stop
+
+
+def start_relay(monkeypatch: pytest.MonkeyPatch, api: StubApi) -> tuple[int, Callable[[], None]]:
+    return start_relay_on(monkeypatch, api.port)
 
 
 def read_response(client: socket.socket, timeout_seconds: float) -> bytes:
@@ -170,6 +183,135 @@ def test_relay_serves_a_second_request_after_a_long_keep_alive_gap(monkeypatch):
                 client.close()
             assert b"200 OK" in first, first
             assert b"200 OK" in second, second
+        finally:
+            stop()
+    finally:
+        api.close()
+
+
+def read_until_closed(client: socket.socket, timeout_seconds: float) -> bytes:
+    """Read until the connection ends (clean FIN **or** RST); return the
+    bytes that arrived. Fails only on a hang — a dead connection that never
+    tells the client is the defect this guard exists for."""
+    client.settimeout(0.5)
+    deadline = time.monotonic() + timeout_seconds
+    data = b""
+    while time.monotonic() < deadline:
+        try:
+            chunk = client.recv(65536)
+        except socket.timeout:
+            continue
+        except OSError:
+            return data  # RST: an abrupt but definite end
+        if not chunk:
+            return data
+        data += chunk
+    pytest.fail(f"the relay never closed the connection within {timeout_seconds}s (data so far: {data!r})")
+
+
+@pytest.mark.parametrize(
+    ("scenario", "close_after_response"),
+    [
+        pytest.param("client-half-close", False, id="client-half-close"),
+        pytest.param("upstream-fin", True, id="upstream-fin"),
+    ],
+)
+def test_relay_pipe_semantics_table(monkeypatch, scenario, close_after_response):
+    """Table-driven half-close semantics: EOF must flow through the pipe.
+
+    - ``client-half-close``: a client that shuts its write side after a full
+      request (HTTP pipelines do this) must still get the response — the
+      relay forwards the request even though no further bytes will come.
+    - ``upstream-fin``: when the API side closes first (uvicorn closing a
+      keep-alive connection), the relay must deliver that FIN to the client
+      as EOF instead of hanging it with an open, dead connection.
+    """
+    api = StubApi(close_after_response=close_after_response)
+    try:
+        port, stop = start_relay(monkeypatch, api)
+        try:
+            client = socket.create_connection(("127.0.0.1", port), timeout=15)
+            try:
+                client.sendall(REQUEST)
+                client.shutdown(socket.SHUT_WR)  # "no more request bytes"
+                body = read_response(client, timeout_seconds=4)
+                assert b"200 OK" in body, body
+                # Whatever closes first, the client must eventually see the
+                # peer's EOF — never a silent, dead connection.
+                tail = read_until_closed(client, timeout_seconds=4)
+            finally:
+                client.close()
+            if scenario == "upstream-fin":
+                assert tail == b"", f"EOF expected right after the response: {tail!r}"
+        finally:
+            stop()
+    finally:
+        api.close()
+
+
+def test_relay_survives_a_dead_upstream_and_recovers(monkeypatch):
+    """Error path: a refused upstream must fail the one request fast, never
+    kill the accept loop — and the relay must serve again once the API port
+    comes alive on the same port.
+
+    Regression shape: uvicorn is down while node already proxies; the next
+    connection after recovery must work (the relay's accept loop and pump
+    threads are per-connection, one failure may not poison the listener).
+    """
+    dead_port = _free_port()
+    port, stop = start_relay_on(monkeypatch, dead_port)
+    try:
+        # While the API port refuses connections: connect succeeds (the relay
+        # owns the listener), then the client gets a prompt EOF, not a hang.
+        client = socket.create_connection(("127.0.0.1", port), timeout=15)
+        try:
+            client.sendall(REQUEST)
+            assert read_until_closed(client, timeout_seconds=4) == b""
+        finally:
+            client.close()
+
+        # The API comes alive on the very same port (uvicorn finished booting).
+        api = StubApi(port=dead_port)
+        try:
+            client = socket.create_connection(("127.0.0.1", port), timeout=15)
+            try:
+                client.sendall(REQUEST)
+                body = read_response(client, timeout_seconds=4)
+            finally:
+                client.close()
+            assert b"200 OK" in body, body
+        finally:
+            api.close()
+    finally:
+        stop()
+
+
+def test_relay_accept_loop_survives_a_client_reset(monkeypatch):
+    """Error path: a client RST (SO_LINGER 0 close) kills only that
+    connection's pump threads — the relay listener must keep serving.
+
+    Regression shape: a WebView tab aborting a request mid-flight resets the
+    proxy connection; one reset may not take the whole relay down.
+    """
+    api = StubApi()
+    try:
+        port, stop = start_relay(monkeypatch, api)
+        try:
+            resetter = socket.create_connection(("127.0.0.1", port), timeout=15)
+            resetter.setsockopt(
+                socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)
+            )
+            resetter.sendall(b"GET /aborted HTTP/1.1\r\nHost: 127.0.0.1\r\n")
+            resetter.close()  # RST: linger-on + zero timeout + pending data
+            time.sleep(0.3)  # let the pump meet the reset
+
+            client = socket.create_connection(("127.0.0.1", port), timeout=15)
+            try:
+                client.sendall(REQUEST)
+                body = read_response(client, timeout_seconds=4)
+            finally:
+                client.close()
+            assert b"200 OK" in body, body
         finally:
             stop()
     finally:
