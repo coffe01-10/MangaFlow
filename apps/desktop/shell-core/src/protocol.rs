@@ -469,6 +469,51 @@ mod tests {
         ));
     }
 
+    /// The sweep is wired into session start (RunLog::create), not just
+    /// reachable as a free function: a stale terminal-state runtime
+    /// directory from a previous session must be gone after the new
+    /// session's log exists. Production wiring uses the full 24 h grace,
+    /// so the fixture ages the stale journal's mtime past it.
+    #[test]
+    fn session_start_sweeps_a_stale_terminal_runtime_directory() {
+        let user_data = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-sweep-wiring-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&user_data);
+        let stale = user_data
+            .join("runtime")
+            .join(format!("{RUNTIME_DIR_PREFIX}{}", "a".repeat(32)));
+        std::fs::create_dir_all(&stale).unwrap();
+        std::fs::write(
+            stale.join(JOURNAL_NAME),
+            format!("{{\"version\":{PROTOCOL_VERSION},\"token\":\"{}\",\"state\":\"stopped\"}}", "b".repeat(32)),
+        )
+        .unwrap();
+        // Age the terminal journal beyond the production grace window.
+        let aged = std::time::SystemTime::now()
+            - std::time::Duration::from_secs(RUNTIME_SWEEP_GRACE_SECONDS * 2);
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(stale.join(JOURNAL_NAME))
+            .unwrap();
+        file.set_times(
+            std::fs::FileTimes::new().set_modified(aged),
+        )
+        .unwrap();
+        drop(file);
+
+        let fresh_token = new_token();
+        crate::logs::RunLog::create(&user_data, &fresh_token).unwrap();
+        assert!(
+            !stale.exists(),
+            "session start must sweep the stale terminal runtime directory"
+        );
+
+        let _ = std::fs::remove_dir_all(&user_data);
+    }
+
     #[test]
     fn rejects_garbage_lines() {
         assert!(matches!(

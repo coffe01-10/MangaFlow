@@ -575,7 +575,15 @@ impl RunLog {
         // RuntimeLayout::create just before this and is skipped by the
         // terminal-state + grace-window predicate either way.
         let _ = rotate_logs(user_data);
-        let _ = crate::protocol::sweep_runtime_dirs(user_data);
+        // The sweep's contract promises a stderr report for its failures —
+        // discarding the Result wholesale left that promise unimplemented
+        // (#264): a silently failing sweep is invisible exactly when stale
+        // runtime directories start to matter for forensics.
+        if let Err(error) = crate::protocol::sweep_runtime_dirs(user_data) {
+            eprintln!(
+                "mangaflow-desktop: stale runtime-directory sweep failed: {error}"
+            );
+        }
         fs::create_dir_all(logs_dir(user_data))?;
         let base = shell_log_path(user_data, token);
         let logs_canonical = logs_dir(user_data).canonicalize()?;
