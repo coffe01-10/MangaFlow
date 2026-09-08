@@ -99,6 +99,45 @@ def test_retry_still_resets_failed_job(client, db_session, monkeypatch):
     assert row.finished_at is None
 
 
+def test_retry_of_attempt_exhausted_job_resets_the_attempt_budget(
+    client, db_session, monkeypatch
+):
+    """预算耗尽的任务：路由明确拒绝；服务层若被未来调用方直接唤醒则发放新预算。
+
+    attempt_count == max_attempts 的任务若被复活为 WAITING 而不重置预算，
+    _claim_job 的 attempt_count < max_attempts 认领门永远不满足，任务会在
+    WAITING→QUEUED→认领失败（误报 CONCURRENCY_LIMIT）之间无限循环。路由
+    已拒绝该输入（下方 409 固定）；服务级重置是纵深防御。
+    """
+
+    from app.config import get_settings
+    from app.services.job_service import reset_for_retry
+
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    exhausted = _seed_job(
+        db_session,
+        JobStatus.FAILED,
+        error_code="WORKER_ERROR",
+        finished_at=utcnow(),
+        attempt_count=3,
+        max_attempts=3,
+    )
+
+    response = client.post(f"/api/v1/jobs/{exhausted.id}/retry")
+
+    assert response.status_code == 409, response.json()
+    assert "最大重试次数" in response.json()["detail"]
+
+    # 纵深防御：直接调用服务层（未来可能的调用方）必须发放新预算。
+    db_session.expire_all()
+    row = db_session.get(GenerationJob, exhausted.id)
+    reset_for_retry(db_session, row)
+    db_session.expire_all()
+    revived = db_session.get(GenerationJob, exhausted.id)
+    assert revived.status == JobStatus.WAITING
+    assert revived.attempt_count == 0, "revival must grant a fresh attempt budget"
+
+
 def test_retry_rejects_archived_failed_job(client, db_session):
     """An archived FAILED job must be restored before it can retry.
 

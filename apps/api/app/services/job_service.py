@@ -1210,7 +1210,17 @@ def mark_job_failed(
     if asset_candidate:
         asset_candidate.status = "FAILED"
     style = db.get(StyleProfile, job.target_id) if job.target_type == "STYLE" else None
-    if style:
+    # #231: same guard as every live demotion site (worker failure, cancel,
+    # recovery sweep) — a confirmed/activated style, or one with a live
+    # sibling analysis job, must not be demoted to DRAFT here either.
+    if (
+        style
+        and str(getattr(style.status, "value", style.status) or "")
+        not in {"CONFIRMED", "ACTIVE"}
+        and not style_has_active_sibling_job(
+            db, style_id=job.target_id, exclude_job_id=job.id
+        )
+    ):
         style.status = "DRAFT"
 
     node_run = db.scalar(select(WorkflowNodeRun).where(WorkflowNodeRun.job_id == job.id))
@@ -1682,6 +1692,7 @@ def reset_for_retry(db: Session, job: GenerationJob) -> GenerationJob:
             GenerationJob.scheduled_at,
             GenerationJob.lease_owner,
             GenerationJob.lease_expires_at,
+            GenerationJob.attempt_count,
         ).where(GenerationJob.id == job.id)
     ).first()
     revival_snapshot: dict = {
@@ -1697,6 +1708,7 @@ def reset_for_retry(db: Session, job: GenerationJob) -> GenerationJob:
                 "scheduled_at": preimage.scheduled_at,
                 "lease_owner": preimage.lease_owner,
                 "lease_expires_at": preimage.lease_expires_at,
+                "attempt_count": preimage.attempt_count,
             }
             if preimage is not None
             else None
@@ -1729,6 +1741,13 @@ def reset_for_retry(db: Session, job: GenerationJob) -> GenerationJob:
             cancelled_at=None,
             lease_owner=None,
             lease_expires_at=None,
+            # 手动重试是用户显式授权的新一轮：复活必须同时重置自动重试
+            # 预算，否则一个因预算耗尽而 FAILED 的任务（attempt_count ==
+            # max_attempts）复活后永远过不了 _claim_job 的
+            # attempt_count < max_attempts 认领门，任务在 WAITING→QUEUED→
+            # 认领失败（误报 CONCURRENCY_LIMIT）之间无限循环，Redis 模式下
+            # 还会每 ~3s 铸造一个新 RQ payload。
+            attempt_count=0,
             scheduled_at=utcnow() + timedelta(seconds=1),
         )
         .execution_options(synchronize_session=False)
