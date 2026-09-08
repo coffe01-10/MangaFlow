@@ -85,8 +85,21 @@ def _write_journal(journal: Path, record: dict) -> None:
 
 
 def _bind_loopback() -> socket.socket:
+    """Atomically claim an ephemeral loopback port for the API server.
+
+    Unix: SO_REUSEADDR is the classic listen-socket option (TIME_WAIT
+    rebind); it cannot let a second listener share an actively bound
+    specific address. Windows: SO_REUSEADDR means the OPPOSITE — it invites
+    a second bind of the same port, so a local process could share or steal
+    the session's traffic after the origin was verified and injected. win32
+    therefore sets SO_EXCLUSIVEADDRUSE instead, which makes ANY conflicting
+    bind fail outright (fail-closed).
+    """
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    if sys.platform == "win32":
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+    else:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(("127.0.0.1", 0))
     sock.listen(128)
     return sock
@@ -101,9 +114,16 @@ WEB_RELAY_PORT = 39443
 
 
 def _bind_relay(api_port: int) -> socket.socket | None:
-    """Claim the fixed relay port and listen; None when it is taken."""
+    """Claim the fixed relay port and listen; None when it is taken.
+
+    Same platform bind policy as ``_bind_loopback``: without
+    SO_EXCLUSIVEADDRUSE a Windows SO_REUSEADDR binder could later overlap
+    this listener and intercept relayed traffic.
+    """
 
     relay = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    if sys.platform == "win32":
+        relay.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
     try:
         relay.bind(("127.0.0.1", WEB_RELAY_PORT))
         relay.listen(64)
@@ -225,6 +245,19 @@ def _spawn_grandchild() -> subprocess.Popen[str] | None:
     )
 
 
+class _StubServer(ThreadingHTTPServer):
+    """stub 模式的健康服务器，绑定策略与 ``_bind_loopback`` 一致：
+    Windows 上不设 SO_REUSEADDR（``allow_reuse_address``），改设
+    SO_EXCLUSIVEADDRUSE，避免同端口二次绑定劫持；Unix 行为不变。"""
+
+    allow_reuse_address = sys.platform != "win32"
+
+    def server_bind(self) -> None:
+        if sys.platform == "win32":
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 class _StubHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - stdlib naming
         if self.path != "/api/v1/health":
@@ -242,7 +275,7 @@ class _StubHandler(BaseHTTPRequestHandler):
 
 
 def _run_stub(journal: Path, record: dict, grandchild: bool) -> int:
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _StubHandler)
+    server = _StubServer(("127.0.0.1", 0), _StubHandler)
     try:
         port = server.server_address[1]
         record.update(
