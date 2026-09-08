@@ -3,7 +3,7 @@
 //! poll loopback health → only then is the shell allowed to create the
 //! WebView and inject the API origin.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -16,6 +16,13 @@ use crate::protocol::{
     verify_journal, verify_ready_line_where, ReadyPayload, RuntimeLayout, VerifyError, GO_PREFIX,
     HEALTH_PATH,
 };
+
+/// Upper bound for one stdout protocol line and one health response body.
+/// The writer on both channels is the shell's own helper, but "a third-party
+/// library echoes a huge blob to stdout" is a realistic non-adversarial
+/// trigger; the cap turns that into a failed verification or a truncated
+/// (status-line-only-relevant) response instead of an unbounded String.
+pub(crate) const MAX_STREAM_MESSAGE_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct HelperConfig {
@@ -145,7 +152,7 @@ pub fn spawn_helper(config: &HelperConfig, user_data: &Path) -> Result<SpawnedHe
 
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
-        let mut lines = BufReader::new(stdout).lines();
+        let mut reader = BufReader::new(stdout);
         // Only the FIRST line is protocol; the thread then parks reading to
         // EOF so the pipe's read end stays open for the child's whole
         // lifetime. If the thread exited after the READY line (the old
@@ -154,16 +161,37 @@ pub fn spawn_helper(config: &HelperConfig, user_data: &Path) -> Result<SpawnedHe
         // import, a stray print — would hit EPIPE and could kill an otherwise
         // healthy helper. Post-handshake output is drained and discarded:
         // the desktop helper logs to stderr, stdout carries the protocol.
-        let first = match lines.next() {
-            Some(Ok(line)) => Ok(line),
-            Some(Err(error)) => Err(error),
-            None => Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "helper closed stdout before publishing readiness",
-            )),
+        // Every line is read through a byte cap: a newline-free garbage
+        // stream (a third-party library echoing a huge blob) must cost
+        // bounded memory, not an unbounded String. A protocol line is far
+        // below the cap, so a truncation can only ever fail verification.
+        let first = {
+            let mut line = String::new();
+            let read = reader
+                .by_ref()
+                .take(MAX_STREAM_MESSAGE_BYTES)
+                .read_line(&mut line);
+            match read {
+                Ok(0) => Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "helper closed stdout before publishing readiness",
+                )),
+                Ok(_) => Ok(line),
+                Err(error) => Err(error),
+            }
         };
         let _ = sender.send(first);
-        for _ in lines.by_ref() {}
+        loop {
+            let mut junk = String::new();
+            match reader
+                .by_ref()
+                .take(MAX_STREAM_MESSAGE_BYTES)
+                .read_line(&mut junk)
+            {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
     });
 
     // From here on the child exists: every failure path tears it down and
@@ -281,7 +309,10 @@ impl From<std::io::Error> for SpawnError {
 }
 
 /// Minimal HTTP/1.0 GET over std TCP — enough for the loopback health gate
-/// without pulling an HTTP client dependency into the shell core.
+/// without pulling an HTTP client dependency into the shell core. The
+/// response is read through a byte cap: only the status line is parsed, so a
+/// peer that streams without end costs bounded memory, not an unbounded
+/// String (read_to_string would otherwise buffer the whole body).
 pub fn get_status(origin: &str, path: &str, timeout: Duration) -> std::io::Result<(u16, String)> {
     let authority = origin.trim_start_matches("http://");
     let mut stream = TcpStream::connect(authority)?;
@@ -292,7 +323,9 @@ pub fn get_status(origin: &str, path: &str, timeout: Duration) -> std::io::Resul
         "GET {path} HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
     )?;
     let mut response = String::new();
-    std::io::Read::read_to_string(&mut BufReader::new(stream), &mut response)?;
+    (&mut BufReader::new(stream))
+        .take(MAX_STREAM_MESSAGE_BYTES)
+        .read_to_string(&mut response)?;
     let status: u16 = response
         .split_whitespace()
         .nth(1)
@@ -320,6 +353,44 @@ fn wait_for_health(origin: &str, timeout: Duration) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Red team 2026-09-08: the health response read is byte-capped. Only
+    /// the status line is parsed, so a peer streaming a huge body must yield
+    /// a truncated bounded response (with the status still parsed), never an
+    /// unbounded String.
+    #[test]
+    fn get_status_caps_the_response_read() {
+        use std::io::Write as _;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().expect("accept");
+            let _ = sock.write_all(b"HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\n");
+            let chunk = [b'A'; 8192];
+            for _ in 0..64 {
+                if sock.write_all(&chunk).is_err() {
+                    break;
+                }
+            }
+            let _ = sock.flush();
+            // The socket drops here: HTTP/1.0 + Connection: close means EOF
+            // ends the read even though the server never consumed a request
+            // body boundary.
+        });
+
+        let (status, body) =
+            get_status(&format!("http://127.0.0.1:{port}"), HEALTH_PATH, Duration::from_secs(5))
+                .expect("health read succeeds");
+        assert_eq!(status, 200);
+        assert!(
+            (body.len() as u64) <= MAX_STREAM_MESSAGE_BYTES,
+            "response must be capped at {MAX_STREAM_MESSAGE_BYTES}, got {}",
+            body.len()
+        );
+        let _ = server.join();
+    }
 
     /// #150 regression: the helper command must force UTF-8 stdio encoding
     /// (`PYTHONUTF8` + `PYTHONIOENCODING`) so its stderr never mixes GBK

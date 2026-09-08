@@ -793,3 +793,46 @@ fn orphan_is_live(pid: u32) -> bool {
         Err(_) => false,
     }
 }
+
+/// Red team 2026-09-08: the READY-line read is byte-capped. A helper whose
+/// stdout emits a newline-free blob (a third-party library echoing a huge
+/// payload) must fail verification on the truncated first chunk instead of
+/// buffering an unbounded String — and must fail FAST, not at the readiness
+/// deadline.
+#[test]
+fn oversized_ready_line_fails_verification_quickly() {
+    use mangaflow_desktop_shell_core::handshake::SpawnError;
+    use mangaflow_desktop_shell_core::protocol::VerifyError;
+
+    let user_data = temp_user_data("oversize-line");
+    let stand_in = r#"
+import sys, time
+sys.stdout.write("MANGAFLOW_READY " + "A" * (200 * 1024) + "\n")
+sys.stdout.flush()
+time.sleep(120)
+"#;
+    let stand_in_path = user_data.join("oversize_ready.py");
+    std::fs::write(&stand_in_path, stand_in).unwrap();
+    let config = HelperConfig {
+        python: python(),
+        helper_script: stand_in_path,
+        helper_args: vec![],
+        ready_timeout: Duration::from_secs(20),
+        health_timeout: Duration::from_secs(10),
+    };
+
+    let started = Instant::now();
+    let error = spawn_helper(&config, &user_data)
+        .err()
+        .expect("an unparsable oversized READY line must fail the handshake");
+    assert!(
+        matches!(error, SpawnError::Verify(VerifyError::BadJson)),
+        "unexpected error: {error:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "the capped read must fail fast, not at the readiness deadline (took {:?})",
+        started.elapsed()
+    );
+    let _ = std::fs::remove_dir_all(&user_data);
+}
