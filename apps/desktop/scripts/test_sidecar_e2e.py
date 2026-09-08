@@ -523,6 +523,19 @@ def test_sidecar_plan_b_web_server_loop(tmp_path: Path):
             finally:
                 external.close()
         assert record["web_origin"] == web
+        # The fixed relay port (WEB_RELAY_PORT, 127.0.0.1:39443) must be
+        # LISTENING for the whole plan-B session: the Next server's compiled
+        # rewrites target it, so a regression that releases it mid-session
+        # (or never binds it) breaks every proxied API call.
+        relay_probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        relay_probe.settimeout(1.0)
+        try:
+            assert relay_probe.connect_ex(("127.0.0.1", 39443)) == 0, (
+                "the relay on the fixed port 39443 must listen while the "
+                "plan-B web server is serving"
+            )
+        finally:
+            relay_probe.close()
         # Journal identity-only: web fields are identity too, no commands/env.
         assert set(record).issubset(
             {"version", "token", "role", "state", "pid", "pid_starttime", "port",
@@ -572,6 +585,25 @@ def test_sidecar_dead_web_dist_fails_closed_without_web_origin(tmp_path: Path):
         # The degraded session is still a fully working API session.
         with urllib.request.urlopen(f"{shell.origin}/api/v1/projects", timeout=10) as response:
             assert response.status == 200
+        # A degraded session must not squat on the fixed relay port: with no
+        # web server to feed, the helper has no business holding 39443 until
+        # process exit (the next session would then see the port as taken).
+        # Regression 2026-09-08 (N2 audit §2): _await_web_server reaped the
+        # dead node but left the relay bound.
+        deadline = time.monotonic() + 5.0
+        while True:
+            relay_probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            relay_probe.settimeout(1.0)
+            try:
+                if relay_probe.connect_ex(("127.0.0.1", 39443)) != 0:
+                    break  # released
+            finally:
+                relay_probe.close()
+            if time.monotonic() >= deadline:
+                raise AssertionError(
+                    "the degraded session still holds the fixed relay port 39443"
+                )
+            time.sleep(0.1)
     finally:
         exit_code = shell.stop()
         assert exit_code == 0, f"helper exited with {exit_code}"
