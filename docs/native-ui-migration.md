@@ -153,6 +153,27 @@ Enter/Esc/长按/焦点恢复/弹窗单次确认、帮助锚点（含从已滚�
 NUI-6 整体仍未完成，真实账本实机、供应商、
 浏览器 E2E、DPI/性能、安装发布继续为 NOT RUN。
 
+## 2026-09-08 素材库接线与布局续作
+
+直接核对 `library-section.tsx`、`use-library-workspace.ts` 及现有 API，修复刷新误用下一页
+游标、翻页失败却推进历史、旧筛选响应覆盖新项目的问题。新增日期筛选、完整模型目录筛选、
+收藏操作与软删除；候选是否已暂选读取服务端 `is_selected`，撤回携带用户确认的候选 ID。
+生产检查失败及章节切换都会关闭旧导出门禁；阻塞页面跳转同时保存章节和页面身份。
+
+PNG ZIP / PDF / JSON 使用原生保存对话框与流式下载，读取真实 `byte_size`，不再调用图片
+预览充当下载。下载失败或取消保留已有目标文件并清理本次临时文件。批次采用候选数量跨列、
+3:4 图片比例、完整边框和深色导出栏；日期控件使用统一纸面样式并保留原生输入和日历功能。
+相同响应及失败的收藏操作保留卡片实例，减少图片重载和焦点丢失。
+
+验证：`NativeLibraryChecks` 覆盖日期输入/选择/清空、筛选与分页失败、迟到响应、重复点击、
+撤回候选身份、软删除刷新、导出失败关闭门禁、跨章节定位、下载中断/取消后的文件保护，
+以及 360/650/1000 DIP 混合批次布局、700/1060 DIP 正文布局及图片内部铺满断言。
+54 项基础断言和完整 WPF 导航/重渲染/交互检查通过；全编译 0 错误，仍有 36 条既有警告。
+本次完整 `npm run check` 通过：Pytest 1508 通过/37 跳过、Vitest 435 通过/42 文件，
+neutrality/ESLint/Ruff、TypeScript 与 Next.js 生产构建通过。
+`output/native-parity-review/native-library-populated-{700,1060}.png` 是模拟 HTTP 的离屏样例，
+不代表真实媒体或供应商验收。系统保存对话框实机、全页面像素对照和帧时间测量仍为 NOT RUN。
+
 ## 页面与功能覆盖
 
 Web 当前有 11 个 `page.tsx` 路由文件，展开合法动态段后为 17 个业务页面与
@@ -177,7 +198,7 @@ Web 当前有 11 个 `page.tsx` 路由文件，展开合法动态段后为 17 �
 | `/storyboard` | 联系表、分页、可视画布、格子几何/对白气泡、检查器、布局重建、版本保存/确认；`storyboard-editor/` | 已重写（StoryboardView）：归一化坐标画布、手势/吸附/撤销、原子保存 | NUI-4 |
 | `/generate` | 页选择、生产门禁、模型/参考/提示词、候选生成/比较/收藏/采用、质检、修复/升清、导出；`generate-section.tsx` | 已重写（GenerateView） | NUI-5 |
 | `/generate` 内嵌导演与局部编辑 | 提议/歧义澄清、命令 diff、确认/拒绝/撤销/重做、选区、局部候选/血缘；`director-workspace.tsx`、`local-edit-workspace.tsx` | 导演台已重写；2026-09-08 接入 LocalEditWindow 原生选区编辑，预览/确认/撤回契约回归通过，真实供应商与全交互对照仍待验收 | NUI-5/6 |
-| `/library` | 类型/批次、游标分页、候选、原图预览与历史；`library-section.tsx` | 已重写（LibraryView）：筛选/键集分页/整章导出门禁 | NUI-5 |
+| `/library` | 类型/批次、日期与模型筛选、游标分页、收藏/撤回/软删除、原图预览、整章导出与文件保存；`library-section.tsx` | LibraryView + LibraryFeed：2026-09-08 接线与布局回归通过；实机逐项对照待 NUI-6C | NUI-5/6 |
 | `/jobs` | 筛选、进度、错误详情、取消/重试、调用/成本信息；`jobs-section.tsx` | JobsView + JobDetailsWindow；真实字段、历史查询、日期分组、账本分页与状态隔离已回归；实机逐项对照待 NUI-6C | NUI-2/6 |
 | `/workflow`（项目内） | DAG 工具栏、画布、拖拽/连线、检查器、草稿/发布、运行、节点审批、监视器；`workflow-editor/` | 已重写（WorkflowView）：DAG 画布/缩放/撤销/导入导出/运行监视/序列化自动保存 | NUI-4 |
 | `/settings`（项目内） | 工作方式、分辨率/并发、检查开关、文字模型路由、版本冲突、确认名称后删除 | 已重写（ProjectSettingsView）：五分区 + 危险区 | NUI-2 |

@@ -66,3 +66,9 @@ dotnet build apps/desktop/native-tests/MangaFlow.Native.Tests.csproj -c Release 
 
 2026-09-07 首次原生实机已验证主窗口启动并连接隔离数据目录的真实 API；
 用户接管调试后未继续自动操作窗口。网页风格版本使用离屏渲染验证。
+
+2026-09-08 素材库续作：日期/完整模型筛选、当前页刷新、收藏/撤回/软删除、章节导出门禁
+与 PNG ZIP / PDF / JSON 文件保存已接通。批次按候选数跨列，图片保持 3:4；相同响应保留
+卡片控件。`NativeLibraryChecks` 随 `--render` 验证游标、迟到响应、重复操作、跨章节定位、
+下载中断保护与原生日期输入。预览 `native-library-populated-{700,1060}.png` 使用样例数据；
+完整实机功能与帧时间仍待验收。
