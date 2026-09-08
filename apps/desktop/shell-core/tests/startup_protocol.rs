@@ -472,8 +472,38 @@ fn stop_is_idempotent_and_reports_the_cached_exit() {
 
     // Give the stand-in time to install its SIGTERM handler; stopping
     // during the interpreter bootstrap would kill it by signal (exit None)
-    // — the documented bootstrap race of every Unix stop() test.
-    std::thread::sleep(Duration::from_millis(300));
+    // — the documented bootstrap race of every Unix stop() test. Poll the
+    // kernel's caught-signal mask (bit 15 = SIGTERM in SigCgt) instead of
+    // sleeping a fixed interval, so a loaded machine cannot flake.
+    let sigterm_catch_deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        // SIG_IGN lands in the IGNORED mask, a Python handler in the CAUGHT
+        // mask — either one proves signal.signal(SIGTERM, …) has run.
+        let installed = std::fs::read_to_string(format!("/proc/{}/status", tree.pid()))
+            .ok()
+            .and_then(|status| {
+                let bit = |prefix: &str| {
+                    status
+                        .lines()
+                        .find(|line| line.starts_with(prefix))
+                        .and_then(|line| {
+                            line.split_whitespace()
+                                .nth(1)
+                                .and_then(|mask| u64::from_str_radix(mask, 16).ok())
+                        })
+                        .unwrap_or(0)
+                };
+                Some((bit("SigIgn:") | bit("SigCgt:")) & (1 << 14) != 0)
+            });
+        if installed.unwrap_or(false) {
+            break;
+        }
+        assert!(
+            Instant::now() < sigterm_catch_deadline,
+            "the stand-in never installed its SIGTERM handler"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 
     let first = tree.stop(Duration::from_secs(5)).expect("first stop");
     let second = tree.stop(Duration::from_secs(5)).expect("second stop");
@@ -829,13 +859,14 @@ time.sleep(0.5)
 
     // Reap the exited child BEFORE calling stop — the native-host
     // self-exit path shape.
+    let reap_deadline = Instant::now() + Duration::from_secs(5);
     let reaped = loop {
         match tree.child.try_wait().expect("try_wait succeeds") {
             Some(status) => break status,
             None => {
                 assert!(
-                    Instant::now() < Instant::now() + Duration::from_secs(5),
-                    "unreachable"
+                    Instant::now() < reap_deadline,
+                    "the fixture child never exited"
                 );
                 std::thread::sleep(Duration::from_millis(20));
             }
