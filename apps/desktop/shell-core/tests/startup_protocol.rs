@@ -80,7 +80,12 @@ fn wait_until_gone(pid: u32, timeout: Duration) -> bool {
 /// Gone means absent from /proc OR a zombie: a SIGKILLed orphan re-parents
 /// to the init process and lingers unreaped in containers whose init never
 /// reaps, so bare existence reads as alive when the process is already dead.
+#[cfg(unix)]
 fn proc_dead(pid: u32) -> bool {
+    // Gone means absent from /proc OR a zombie: a SIGKILLed orphan
+    // re-parents to the init process and lingers unreaped in containers
+    // whose init never reaps, so bare existence reads as alive when the
+    // process is already dead.
     let Ok(text) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
         return true;
     };
@@ -92,6 +97,11 @@ fn proc_dead(pid: u32) -> bool {
         Some(state) => state == "Z",
         None => true,
     }
+}
+
+#[cfg(windows)]
+fn proc_dead(pid: u32) -> bool {
+    !proc_alive(pid)
 }
 
 #[test]
@@ -472,10 +482,14 @@ fn stop_is_idempotent_and_reports_the_cached_exit() {
 
     // Give the stand-in time to install its SIGTERM handler; stopping
     // during the interpreter bootstrap would kill it by signal (exit None)
-    // — the documented bootstrap race of every Unix stop() test. Poll the
-    // kernel's caught-signal mask (bit 15 = SIGTERM in SigCgt) instead of
-    // sleeping a fixed interval, so a loaded machine cannot flake.
+    // — the documented bootstrap race of every Unix stop() test. Unix polls
+    // the kernel's signal masks (bit 14 = signal 15, SIGTERM, in
+    // SigIgn/SigCgt) instead of sleeping a fixed interval, so a loaded
+    // machine cannot flake; Windows has no signal to race — stdin EOF is
+    // the cooperative channel — so it needs no wait at all.
+    #[cfg(unix)]
     let sigterm_catch_deadline = Instant::now() + Duration::from_secs(5);
+    #[cfg(unix)]
     loop {
         // SIG_IGN lands in the IGNORED mask, a Python handler in the CAUGHT
         // mask — either one proves signal.signal(SIGTERM, …) has run.
