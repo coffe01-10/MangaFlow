@@ -142,6 +142,30 @@ def test_success_finalize_records_usage_request_and_duration(audit_sessions):
     assert row.duration_ms is not None and row.duration_ms >= 0
 
 
+def test_finalize_truncates_provider_controlled_ids_to_column_caps(audit_sessions):
+    """Provider strings land in String(128)/String(200) columns.
+
+    SQLite fixtures never enforce the length, but on PostgreSQL an oversized
+    value raises DataError only after the paid call succeeded, converting it
+    into terminal AUDIT_PERSISTENCE_FAILED — the audit must cap instead.
+    """
+
+    job = _seed_job(audit_sessions)
+    attempt_id = begin_model_call_attempt(_meta(job))
+
+    finalize_model_call_attempt(
+        attempt_id,
+        outcome="SUCCEEDED",
+        model_id="m" * 500,
+        request_id="r" * 500,
+    )
+
+    with audit_sessions() as db:
+        row = db.get(ModelCallAttempt, attempt_id)
+    assert row.model_id == "m" * 128
+    assert row.request_id == "r" * 200
+
+
 def test_finalize_without_usage_keeps_columns_null(audit_sessions):
     job = _seed_job(audit_sessions)
     attempt_id = begin_model_call_attempt(_meta(job))

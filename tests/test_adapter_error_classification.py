@@ -50,6 +50,59 @@ def test_vertex_translate_error_forwards_retryable_flag():
     assert error.retryable is True
 
 
+def test_gemini_invalid_api_key_400_is_terminal_authentication():
+    """Gemini Developer API rejects a bad key with 400 "API key not valid".
+
+    Pre-fix it fell through to the transport fallback as retryable UPSTREAM,
+    burning the job's whole retry budget on a permanently bad key and never
+    disabling it (key replacement/disable paths key off AUTHENTICATION).
+    """
+
+    class BadKeyError(Exception):
+        code = 400
+
+    error = VertexTextAdapter._translate_error(
+        BadKeyError("API key not valid. Please pass a valid API key.")
+    )
+    assert error.code == "AUTHENTICATION"
+    assert error.retryable is False
+
+
+def test_classifier_status_numbers_do_not_match_inside_longer_numbers():
+    """A transport message containing "4019" must not be classified as 401.
+
+    A false 401 used to permanently disable the key (AUTHENTICATION →
+    DENIED + enabled=False). No structured status on this fixture, so only
+    the text pass can decide.
+    """
+
+    from app.services.vertex_credentials import classify_vertex_failure
+
+    failure = classify_vertex_failure(
+        Exception("upstream tunnel reset, received: 4019 bytes on port 40443")
+    )
+    assert failure.code != "AUTHENTICATION"
+    assert failure.code != "MODEL_NOT_FOUND"
+
+
+def test_compatible_http_408_maps_to_retryable_timeout():
+    """A gateway-side timeout is transient, not a rejected request.
+
+    Pre-fix it fell to the INVALID_INPUT catch-all (terminal), while the
+    identical outage surfacing inside httpx one layer later was already
+    TIMEOUT retryable.
+    """
+
+    from app.model_adapters.compatible import _provider_error
+
+    response = httpx.Response(
+        408, request=httpx.Request("POST", "https://provider.example/v1/chat")
+    )
+    error = _provider_error(response)
+    assert error.code == "TIMEOUT"
+    assert error.retryable is True
+
+
 def test_vertex_blocked_response_maps_to_content_policy(monkeypatch):
     adapter = _vertex_text_adapter()
     blocked = SimpleNamespace(

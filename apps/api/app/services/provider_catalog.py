@@ -875,10 +875,17 @@ def _fetch_model_entries(
     try:
         if connection.protocol == "GOOGLE_NATIVE":
             from google import genai
+            from google.genai import types as genai_types
 
             google_client = genai.Client(
                 api_key=secret,
-                http_options={"timeout": 90_000},
+                http_options={
+                    "timeout": 90_000,
+                    # Same pin as both adapters (#209): the dormant SDK retry
+                    # must never silently multiply requests; discovery is
+                    # unbilled, so this bounds wall-clock only.
+                    "retry_options": genai_types.HttpRetryOptions(attempts=1),
+                },
             )
             try:
                 entries = _collect_google_model_entries(
@@ -1182,6 +1189,8 @@ def _http_error(status: int) -> ProviderAdapterError:
         return ProviderAdapterError("AUTHENTICATION", "供应商 API Key 无效")
     if status == 403:
         return ProviderAdapterError("PERMISSION", "供应商拒绝访问")
+    if status == 408:
+        return ProviderAdapterError("TIMEOUT", "供应商请求超时", retryable=True)
     if status == 429:
         return ProviderAdapterError("RATE_LIMIT", "供应商请求已达限制", retryable=True)
     if status >= 500:
