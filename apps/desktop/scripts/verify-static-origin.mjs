@@ -13,6 +13,7 @@ import { createServer } from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { join, extname, resolve, sep } from "node:path";
 import { spawn } from "node:child_process";
+import { connect } from "node:net";
 import { chromium } from "playwright";
 
 const DESKTOP_ROOT = new URL("..", import.meta.url).pathname;
@@ -109,6 +110,38 @@ const server = createServer(async (req, res) => {
   }
 });
 await new Promise((resolve) => server.listen(STATIC_PORT, "127.0.0.1", resolve));
+
+// ---- 2b. path-fence self-test (N2 audit §7) ------------------------------
+// The containment check in the handler above has no other executable
+// verification: pin it here with an encoded-traversal request sent over a
+// RAW socket. WHATWG URL parsing (fetch) would decode %2e%2e and collapse
+// the dot segments before they ever reach the handler; a raw request keeps
+// them verbatim so decodeURIComponent + resolve inside the handler is what
+// gets exercised. The target must EXIST when the fence is missing - four
+// levels up is the repository root - otherwise the handler's generic 404
+// would mask the breach.
+{
+  const traversal = await new Promise((settle) => {
+    const sock = connect(STATIC_PORT, "127.0.0.1", () => {
+      sock.write(
+        "GET /%2e%2e/%2e%2e/%2e%2e/%2e%2e/package.json HTTP/1.1\r\n" +
+        "Host: 127.0.0.1\r\nConnection: close\r\n\r\n",
+      );
+    });
+    let raw = "";
+    sock.setEncoding("latin1");
+    sock.on("data", (chunk) => { raw += chunk; });
+    sock.on("close", () => settle(raw));
+    sock.on("error", () => settle(raw));
+    setTimeout(() => sock.destroy(), 3000);
+  });
+  const status = Number(traversal.split("\r\n")[0]?.split(" ")[1] ?? 0);
+  if (status !== 404) {
+    fail(`path fence breached: encoded traversal answered ${status} (must be 404)`);
+  } else {
+    console.log("D5 path fence ok: encoded traversal refused with 404");
+  }
+}
 
 // ---- 3+4. browser with shell-equivalent initialization script ------------
 const browser = await chromium.launch({ args: ["--no-sandbox"] });
