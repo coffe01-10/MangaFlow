@@ -523,10 +523,10 @@ def test_sidecar_plan_b_web_server_loop(tmp_path: Path):
             finally:
                 external.close()
         assert record["web_origin"] == web
-        # The fixed relay port (WEB_RELAY_PORT, 127.0.0.1:39443) must be
-        # LISTENING for the whole plan-B session: the Next server's compiled
-        # rewrites target it, so a regression that releases it mid-session
-        # (or never binds it) breaks every proxied API call.
+        # Direct, named contract check: the fixed relay port
+        # (WEB_RELAY_PORT, 127.0.0.1:39443) is listening while the plan-B
+        # web server serves. (The proxied requests above already exercise it
+        # implicitly; this snapshot pins the socket contract itself.)
         relay_probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         relay_probe.settimeout(1.0)
         try:
@@ -601,7 +601,8 @@ def test_sidecar_dead_web_dist_fails_closed_without_web_origin(tmp_path: Path):
                 relay_probe.close()
             if time.monotonic() >= deadline:
                 raise AssertionError(
-                    "the degraded session still holds the fixed relay port 39443"
+                    "39443 still answering: the degraded helper holds the "
+                    "fixed relay port - or another process bound it"
                 )
             time.sleep(0.1)
     finally:

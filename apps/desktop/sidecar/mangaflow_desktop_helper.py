@@ -382,12 +382,17 @@ def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
             # that never answers is reaped and the session continues without
             # a web server (the shell falls back to the static export).
             node, web_port = _await_web_server(node, web_port)
-            if node is None and relay is not None:
-                # The degraded (static-export) session has no web server the
-                # relay could feed: release the fixed relay port now instead
-                # of squatting on it until process exit.
-                relay.close()
-                relay = None
+        if node is None and relay is not None:
+            # A degraded (static-export) session has no web server the relay
+            # could feed: release the fixed relay port now instead of
+            # squatting on it until process exit. Spawn-degraded sessions
+            # never reach here (their relay was already closed inside
+            # _spawn_web_server and arrives as None); boot-degraded sessions
+            # arrive with the node just reaped above. Hoisted out of the
+            # `if node is not None:` guard so the release does not read as
+            # depending on the spawn-time node handle.
+            relay.close()
+            relay = None
 
         record.update(
             state="ready",
@@ -441,6 +446,7 @@ def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
             # the fd anyway); a still-open relay here means the success path
             # is exiting, so nothing needs the fixed port any more.
             relay.close()
+            relay = None
 
 
 def _find_node(web_dist: Path) -> str | None:
