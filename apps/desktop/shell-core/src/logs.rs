@@ -804,6 +804,16 @@ fn collect_members(
             });
             continue;
         }
+        if name.ends_with(".rotating") || name.ends_with(".rotating-oldest") {
+            // Rotation staging debris (a drop or rollback that failed mid
+            // rotation): never a history member, and archiving it would
+            // duplicate the oldest generation under a second name.
+            skipped.push(SkippedEntry {
+                name: member,
+                reason: "rotation_staging".into(),
+            });
+            continue;
+        }
         if file_type.is_dir() {
             // A subdirectory that cannot be enumerated (locked, permission
             // revoked) must not abort the whole export — the same
@@ -972,17 +982,19 @@ fn export_logs_with(
         // revoked, vanished between collect and read) joins the size-change
         // race below in the skip-and-report treatment instead of aborting the
         // whole export — the remaining members are still worth archiving.
-        // The read itself is bounded by `take(EXPORT_MAX_FILE_BYTES)`: the
-        // collect-time size is only a snapshot, and a log still being written
-        // can grow to many GiB before this line — `fs::read` would buffer the
-        // whole grown file just to reject it in the re-check below, so the
-        // cap is enforced at read time and a grown member fails the size
-        // re-check as "changed_during_export".
+        // The read itself is bounded by `take(EXPORT_MAX_FILE_BYTES + 1)`:
+        // the collect-time size is only a snapshot, and a log still being
+        // written can grow to many GiB before this line — `fs::read` would
+        // buffer the whole grown file just to reject it in the re-check
+        // below. The read is capped one byte PAST the limit instead: a
+        // member at exactly the cap is read whole and included, one that
+        // grew past it reads back over-cap and fails the re-check as
+        // "changed_during_export" without ever being buffered beyond the cap.
         let data = (|| -> std::io::Result<Vec<u8>> {
             use std::io::Read;
-            let mut file = fs::File::open(path)?;
+            let file = fs::File::open(path)?;
             let mut data = Vec::new();
-            file.take(EXPORT_MAX_FILE_BYTES).read_to_end(&mut data)?;
+            file.take(EXPORT_MAX_FILE_BYTES + 1).read_to_end(&mut data)?;
             Ok(data)
         })();
         let data = match data {
