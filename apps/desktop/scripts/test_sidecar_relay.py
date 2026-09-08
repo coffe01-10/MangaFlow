@@ -94,7 +94,9 @@ class StubApi:
         self._server.close()
 
 
-def start_relay_on(monkeypatch: pytest.MonkeyPatch, api_port: int) -> tuple[int, Callable[[], None]]:
+def start_relay_on(
+    monkeypatch: pytest.MonkeyPatch, api_port: int
+) -> tuple[int, Callable[[], None]]:
     """Bind and run the helper's relay in front of ``api_port``; (port, stop).
 
     ``api_port`` may be a port with no listener (dead-upstream scenarios).
@@ -121,6 +123,11 @@ def start_relay(monkeypatch: pytest.MonkeyPatch, api: StubApi) -> tuple[int, Cal
 
 
 def read_response(client: socket.socket, timeout_seconds: float) -> bytes:
+    """Read one full response: headers plus the declared Content-Length body.
+
+    Truncation after the header boundary is a failure, not a pass — the
+    body bytes are part of the pipe contract under test.
+    """
     client.settimeout(0.5)
     deadline = time.monotonic() + timeout_seconds
     data = b""
@@ -132,8 +139,18 @@ def read_response(client: socket.socket, timeout_seconds: float) -> bytes:
         if not chunk:
             pytest.fail("relay closed the connection before a full response")
         data += chunk
-        if b"\r\n\r\n" in data:
-            return data
+        header, sep, body = data.partition(b"\r\n\r\n")
+        if sep:
+            declared = next(
+                (
+                    int(line.split(b":", 1)[1])
+                    for line in header.split(b"\r\n")
+                    if line.lower().startswith(b"content-length:")
+                ),
+                None,
+            )
+            if declared is not None and len(body) >= declared:
+                return data
     pytest.fail(f"no complete response within {timeout_seconds}s: {data!r}")
 
 
@@ -154,7 +171,7 @@ def test_relay_delivers_a_response_slower_than_the_connect_timeout(monkeypatch):
                 body = read_response(client, timeout_seconds=10)
             finally:
                 client.close()
-            assert b"200 OK" in body, body
+            assert body.endswith(b"ok"), body
         finally:
             stop()
     finally:
@@ -206,7 +223,9 @@ def read_until_closed(client: socket.socket, timeout_seconds: float) -> bytes:
         if not chunk:
             return data
         data += chunk
-    pytest.fail(f"the relay never closed the connection within {timeout_seconds}s (data so far: {data!r})")
+    pytest.fail(
+        f"relay never closed the connection within {timeout_seconds}s: {data!r}"
+    )
 
 
 @pytest.mark.parametrize(
@@ -235,7 +254,7 @@ def test_relay_pipe_semantics_table(monkeypatch, scenario, close_after_response)
                 client.sendall(REQUEST)
                 client.shutdown(socket.SHUT_WR)  # "no more request bytes"
                 body = read_response(client, timeout_seconds=4)
-                assert b"200 OK" in body, body
+                assert body.endswith(b"ok"), body
                 # Whatever closes first, the client must eventually see the
                 # peer's EOF — never a silent, dead connection.
                 tail = read_until_closed(client, timeout_seconds=4)
@@ -243,6 +262,9 @@ def test_relay_pipe_semantics_table(monkeypatch, scenario, close_after_response)
                 client.close()
             if scenario == "upstream-fin":
                 assert tail == b"", f"EOF expected right after the response: {tail!r}"
+            else:
+                # Half-close: any tail bytes must be response body, never junk.
+                assert set(tail) <= set(b"ok"), f"unexpected tail {tail!r}"
         finally:
             stop()
     finally:
@@ -262,7 +284,9 @@ def test_relay_survives_a_dead_upstream_and_recovers(monkeypatch):
     port, stop = start_relay_on(monkeypatch, dead_port)
     try:
         # While the API port refuses connections: connect succeeds (the relay
-        # owns the listener), then the client gets a prompt EOF, not a hang.
+        # owns the listener), then the client's connection ends promptly -
+        # a FIN or, because the relay closes with the client's request
+        # bytes still unread, an RST; either way never a silent hang.
         client = socket.create_connection(("127.0.0.1", port), timeout=15)
         try:
             client.sendall(REQUEST)
@@ -279,7 +303,7 @@ def test_relay_survives_a_dead_upstream_and_recovers(monkeypatch):
                 body = read_response(client, timeout_seconds=4)
             finally:
                 client.close()
-            assert b"200 OK" in body, body
+            assert body.endswith(b"ok"), body
         finally:
             api.close()
     finally:
@@ -302,7 +326,7 @@ def test_relay_accept_loop_survives_a_client_reset(monkeypatch):
                 socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)
             )
             resetter.sendall(b"GET /aborted HTTP/1.1\r\nHost: 127.0.0.1\r\n")
-            resetter.close()  # RST: linger-on + zero timeout + pending data
+            resetter.close()  # linger(1,0) close is abortive: always an RST
             time.sleep(0.3)  # let the pump meet the reset
 
             client = socket.create_connection(("127.0.0.1", port), timeout=15)
@@ -311,7 +335,7 @@ def test_relay_accept_loop_survives_a_client_reset(monkeypatch):
                 body = read_response(client, timeout_seconds=4)
             finally:
                 client.close()
-            assert b"200 OK" in body, body
+            assert body.endswith(b"ok"), body
         finally:
             stop()
     finally:
