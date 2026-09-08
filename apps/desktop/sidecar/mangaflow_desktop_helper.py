@@ -371,6 +371,17 @@ def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
 
         import uvicorn
 
+        if node is not None:
+            # Red team 2026-09-08: publishing web_origin is only allowed for
+            # a node that provably owns its port. Spawn alone proves nothing
+            # — node can die at boot (EADDRINUSE lost to a bind-close race
+            # winner, or any crash) while this helper sails on to announce
+            # the still-free port, and the shell then navigates its WebView
+            # into whatever local process claims it. Fail-closed: a node
+            # that never answers is reaped and the session continues without
+            # a web server (the shell falls back to the static export).
+            node, web_port = _await_web_server(node, web_port)
+
         record.update(
             state="ready",
             pid=os.getpid(),
@@ -535,6 +546,59 @@ def _spawn_web_server(
         daemon=True,
     ).start()
     return node_process, web_port
+
+
+WEB_BOOT_TIMEOUT_SECONDS = 10.0
+
+
+def _await_web_server(
+    node: subprocess.Popen, web_port: int
+) -> tuple[subprocess.Popen | None, int | None]:
+    """Verify the web server is alive AND accepting on its announced port.
+
+    The spawn is not proof of ownership: between the claim-port close and
+    node's own bind, the port is free (the documented bind-close race), and
+    any boot crash frees it for good. Publishing ``web_origin`` for a port
+    nobody owns hands the WebView — with the injected API origin and the
+    unauthenticated loopback API behind it — to whichever local process
+    claims the port instead. The dual check closes the pair of races: a
+    dead node fails ``poll()`` (its port-claim died with it), and a claimed
+    port must ANSWER while node is still alive; a final ``poll()`` after the
+    connect catches the case where a hijacker's bind evicted node and the
+    exit status has not been reaped yet.
+    """
+
+    deadline = time.monotonic() + WEB_BOOT_TIMEOUT_SECONDS
+    while True:
+        if node.poll() is not None:
+            _log(
+                f"web server exited during boot (code {node.returncode}); "
+                "continuing without the web server"
+            )
+            return None, None
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.settimeout(1.0)
+        try:
+            answering = probe.connect_ex(("127.0.0.1", web_port)) == 0
+        except OSError:
+            answering = False
+        finally:
+            probe.close()
+        if answering and node.poll() is None:
+            return node, web_port
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.2)
+    _log(
+        f"web server did not accept on 127.0.0.1:{web_port} within "
+        f"{WEB_BOOT_TIMEOUT_SECONDS:.0f}s; continuing without the web server"
+    )
+    node.terminate()
+    try:
+        node.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        node.kill()
+    return None, None
 
 
 def main() -> int:
