@@ -198,8 +198,8 @@ def test_relay_serves_a_second_request_after_a_long_keep_alive_gap(monkeypatch):
                 second = read_response(client, timeout_seconds=4)
             finally:
                 client.close()
-            assert b"200 OK" in first, first
-            assert b"200 OK" in second, second
+            assert first.startswith(b"HTTP/1.1 200") and first.endswith(b"ok"), first
+            assert second.startswith(b"HTTP/1.1 200") and second.endswith(b"ok"), second
         finally:
             stop()
     finally:
