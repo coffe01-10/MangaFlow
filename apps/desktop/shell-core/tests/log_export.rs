@@ -136,7 +136,8 @@ fn export_skips_an_unreadable_subdirectory_instead_of_aborting() {
     fs::set_permissions(&locked, perms).unwrap();
     if unsafe { libc::geteuid() } == 0 {
         // Root reads through the permission bit mask; the in-crate tests
-        // skip the same way. The chmod is restored by the cleanup below.
+        // skip the same way. The mode is restored above, before this
+        // skip-return, so the cleanup below stays safe.
         let mut restore = fs::metadata(&locked).unwrap().permissions();
         restore.set_mode(0o755);
         fs::set_permissions(&locked, restore).unwrap();
