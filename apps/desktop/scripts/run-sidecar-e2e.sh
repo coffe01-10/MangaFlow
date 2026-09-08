@@ -20,4 +20,12 @@ cd "$REPO_ROOT"
 if [ ! -f "$REPO_ROOT/apps/desktop/dist/web-standalone/server.js" ]; then
   "$VENV/bin/python" "$DESKTOP_ROOT/scripts/build-web-standalone.py"
 fi
-exec "$VENV/bin/python" -m pytest "$DESKTOP_ROOT/scripts/test_sidecar_e2e.py" -v "$@"
+# The relay/bind regression suites (test_sidecar_relay*.py) are
+# pure-loopback stdlib+pytest and run everywhere the e2e runs; keep them in
+# this runner so the relay pipe/bind contracts stay exercised instead of
+# depending on someone remembering a manual pytest command.
+exec "$VENV/bin/python" -m pytest \
+  "$DESKTOP_ROOT/scripts/test_sidecar_e2e.py" \
+  "$DESKTOP_ROOT/scripts/test_sidecar_relay.py" \
+  "$DESKTOP_ROOT/scripts/test_sidecar_relay_bind.py" \
+  -v "$@"
