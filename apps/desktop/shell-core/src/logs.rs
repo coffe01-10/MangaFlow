@@ -821,10 +821,11 @@ pub fn export_logs_zip(user_data: &Path, destination: &Path) -> Result<ExportRep
 /// Confirmed-overwrite variant of [`export_logs_zip`] (#149). The one
 /// legitimate caller is the shell's export command, whose destination comes
 /// from a native save dialog that already prompted the user about replacing
-/// the existing file. Replacing the destination remains a remove-then-rename
-/// through the `.pending` sibling (the no-overwrite path uses the
-/// no-clobber `hard_link` placement instead — see [`place_archive`]),
-/// never an in-place truncation.
+/// the existing file. The archive is still staged in the `.pending` sibling
+/// and placed by [`place_archive`] — atomically on POSIX, via the
+/// remove+rename fallback (with orphan cleanup) on Windows — never an
+/// in-place truncation; the no-overwrite path uses the no-clobber
+/// `hard_link` placement instead.
 pub fn export_logs_zip_overwrite(
     user_data: &Path,
     destination: &Path,
@@ -1015,8 +1016,10 @@ fn export_logs_with(
 /// best-effort so the user's directory is not left with an orphaned,
 /// fully-written archive copy.
 ///
-/// The `overwrite_confirmed` path keeps the historical remove+rename: the
-/// user has explicitly sanctioned replacing whatever sits there.
+/// The `overwrite_confirmed` path replaces whatever sits there — the user
+/// has explicitly sanctioned it. POSIX `rename(2)` does that atomically;
+/// Windows needs the historical remove+rename fallback (see `place_archive`),
+/// which now also cleans up the pending sibling on failure.
 ///
 /// [kind]: std::io::ErrorKind::AlreadyExists
 fn place_archive(
@@ -1025,11 +1028,29 @@ fn place_archive(
     overwrite_confirmed: bool,
 ) -> Result<(), ExportError> {
     if overwrite_confirmed {
-        if destination.is_file() {
-            fs::remove_file(destination).map_err(ExportError::Io)?;
+        // POSIX rename(2) atomically replaces an existing destination, so
+        // the common case never has a window where the user's previous
+        // archive is already gone and the new one has not landed. Windows
+        // rename refuses to replace (AlreadyExists): only there does the
+        // historical remove+rename run — and if any destructive step fails,
+        // the pending sibling is cleaned up exactly like the hard_link
+        // branch below, so a failed overwrite cannot orphan a fully
+        // written archive copy next to the (possibly removed) destination.
+        match fs::rename(pending, destination) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                fs::remove_file(destination).map_err(ExportError::Io)?;
+                fs::rename(pending, destination).map_err(|error| {
+                    let _ = remove_file_if_exists(pending);
+                    ExportError::Io(error)
+                })?;
+                return Ok(());
+            }
+            Err(error) => {
+                let _ = remove_file_if_exists(pending);
+                return Err(ExportError::Io(error));
+            }
         }
-        fs::rename(pending, destination).map_err(ExportError::Io)?;
-        return Ok(());
     }
     if let Err(error) = fs::hard_link(pending, destination) {
         // The archive never reached the destination, so the pending sibling
@@ -1073,6 +1094,33 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// A failed confirmed-overwrite must not orphan the pending sibling
+    /// next to an untouched (or already removed) destination. The old code
+    /// removed the destination file and only then renamed, so a rename
+    /// failure deleted the user's archive while leaving the `.pending`
+    /// copy behind — and that branch had no cleanup at all, unlike the
+    /// hard_link branch. `place_archive` is called directly because
+    /// `validate_destination` refuses directory destinations long before
+    /// placement, and a directory at the destination makes both the rename
+    /// and the removal fail portably (EISDIR).
+    #[test]
+    fn overwrite_placement_failure_cleans_up_the_pending_sibling() {
+        let dir = temp_user_data("placefail");
+        let pending = dir.join("archive.zip.pending");
+        let destination = dir.join("archive.zip");
+        fs::write(&pending, "fully written archive").unwrap();
+        fs::create_dir_all(&destination).unwrap();
+
+        let error = place_archive(&pending, &destination, true).unwrap_err();
+        assert!(matches!(error, ExportError::Io(_)), "{error:?}");
+        assert!(destination.is_dir(), "the occupying directory is untouched");
+        assert!(
+            !pending.exists(),
+            "a failed placement must clean up the pending sibling"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// Minimal reader for the store-only archives this module writes: walk

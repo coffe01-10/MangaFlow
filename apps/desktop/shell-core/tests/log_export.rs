@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use mangaflow_desktop_shell_core::handshake::{spawn_helper, HelperConfig};
 use mangaflow_desktop_shell_core::logs::{
-    export_logs_zip, helper_log_path, logs_dir, shell_log_path, RunLog,
+    export_logs_zip, export_logs_zip_overwrite, helper_log_path, logs_dir, shell_log_path, RunLog,
 };
 use mangaflow_desktop_shell_core::protocol::new_token;
 
@@ -174,6 +174,38 @@ fn export_includes_a_member_at_exactly_the_per_member_cap() {
         report.total_bytes,
         mangaflow_desktop_shell_core::logs::EXPORT_MAX_FILE_BYTES
     );
+
+    let _ = fs::remove_dir_all(&user_data);
+    let _ = fs::remove_file(&destination);
+}
+
+#[test]
+fn export_overwrite_replaces_and_never_orphans_the_pending_sibling() {
+    // #149: the confirmed-overwrite path replaces an existing archive. On
+    // POSIX the placement is an atomic rename; on failure paths the pending
+    // sibling this export created must never be left orphaned next to the
+    // (possibly removed) destination.
+    let user_data = temp_user_data("overwrite");
+    let logs = logs_dir(&user_data);
+    fs::create_dir_all(&logs).unwrap();
+    fs::write(logs.join("first.log"), "first line\n").unwrap();
+
+    let destination =
+        std::env::temp_dir().join(format!("mfd-overwrite-{}.zip", new_token()));
+    export_logs_zip(&user_data, &destination).unwrap();
+
+    fs::write(logs.join("second.log"), "second line\n").unwrap();
+    let second = export_logs_zip_overwrite(&user_data, &destination).unwrap();
+    assert!(
+        second.files.contains(&"second.log".to_string()),
+        "{second:?}"
+    );
+    assert_eq!(&fs::read(&destination).unwrap()[0..2], b"PK");
+    let pending = destination.with_file_name(format!(
+        "{}.pending",
+        destination.file_name().unwrap().to_string_lossy()
+    ));
+    assert!(!pending.exists(), "no pending sibling may survive a success");
 
     let _ = fs::remove_dir_all(&user_data);
     let _ = fs::remove_file(&destination);
