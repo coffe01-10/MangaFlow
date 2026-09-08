@@ -237,6 +237,97 @@ fn write_journal_atomic(journal: &Path, record: &serde_json::Value) -> std::io::
     std::fs::rename(&pending, journal)
 }
 
+/// Session-start sweep of stale runtime directories (#264).
+///
+/// Every session creates a fresh `runtime/mangaflow-desktop-<token>/` that no
+/// production path ever deletes, so the directory accumulates for the
+/// install's lifetime and stale journals blur operator forensics. Mirroring
+/// `rotate_logs`' placement and contract, this sweep runs from
+/// [`crate::logs::RunLog::create`] while no session owns those files and is
+/// best-effort: a failure is reported to stderr and never blocks the session
+/// start. A runtime directory is deleted only when BOTH hold:
+///
+/// 1. its journal carries a terminal state ("stopped" — the shell's
+///    `mark_stopped`; "failed" — the helper's startup failure), and
+/// 2. the journal's mtime (the terminal write) is older than the grace
+///    window, so a just-finished session stays inspectable.
+///
+/// "created"/"ready" directories are NEVER touched — the native-host (WPF)
+/// leg shares this layout without a single-instance mutex, so a non-terminal
+/// directory may belong to a live session. Foreign names (not
+/// `mangaflow-desktop-<32 hex>`), symlinks/junctions planted at a candidate
+/// name, unparsable journals, and anything that does not canonically resolve
+/// inside the runtime root are all left untouched.
+pub const RUNTIME_SWEEP_GRACE_SECONDS: u64 = 24 * 60 * 60;
+
+/// Whether a runtime-directory base name is one this shell may sweep.
+fn is_runtime_dir_name(name: &str) -> bool {
+    name.strip_prefix(RUNTIME_DIR_PREFIX).is_some_and(|token| {
+        token.len() == 32
+            && token
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
+}
+
+/// [`sweep_runtime_dirs`] with an explicit grace window (tests use 0 /
+/// `u64::MAX` instead of rewriting mtimes).
+pub fn sweep_runtime_dirs_with(user_data: &Path, grace_seconds: u64) -> std::io::Result<()> {
+    let runtime = user_data.join("runtime");
+    let Ok(runtime_canonical) = runtime.canonicalize() else {
+        return Ok(()); // no runtime directory yet — nothing to sweep
+    };
+    for entry in std::fs::read_dir(&runtime)? {
+        let Ok(entry) = entry else { continue };
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.contains('/') || name.contains('\\') || !is_runtime_dir_name(&name) {
+            continue;
+        }
+        let dir = entry.path();
+        // Never remove through a planted link: a symlink/junction at a
+        // candidate name is foreign media, not a session directory.
+        match entry.file_type() {
+            Ok(file_type) if file_type.is_dir() => {}
+            _ => continue,
+        }
+        match dir.canonicalize() {
+            Ok(canonical) if canonical.starts_with(&runtime_canonical) => {}
+            _ => continue,
+        }
+        let journal = dir.join(JOURNAL_NAME);
+        let Ok(text) = std::fs::read_to_string(&journal) else {
+            continue; // no readable journal — conservative: keep the directory
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue; // unparsable journal — keep
+        };
+        let terminal = matches!(value["state"].as_str(), Some("stopped") | Some("failed"));
+        if !terminal {
+            continue; // created/ready/unknown may belong to a live session
+        }
+        let Ok(modified) = std::fs::metadata(&journal).and_then(|meta| meta.modified()) else {
+            continue;
+        };
+        let Ok(age) = SystemTime::now().duration_since(modified) else {
+            continue;
+        };
+        if age.as_secs() < grace_seconds {
+            continue;
+        }
+        if let Err(error) = std::fs::remove_dir_all(&dir) {
+            eprintln!(
+                "mangaflow-desktop: stale runtime sweep failed for {name}: {error}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Session-start sweep with the production 24h grace window.
+pub fn sweep_runtime_dirs(user_data: &Path) -> std::io::Result<()> {
+    sweep_runtime_dirs_with(user_data, RUNTIME_SWEEP_GRACE_SECONDS)
+}
+
 pub fn new_token() -> String {
     // 128 bits from the OS CSPRNG; format mirrors owned_processes (32 hex).
     let mut bytes = [0u8; 16];
@@ -394,5 +485,122 @@ mod tests {
         assert!(value.get("command").is_none() && value.get("env").is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #264 sweep fixtures: build a runtime directory with the given journal.
+    fn runtime_fixture(user_data: &Path, token: &str, journal: &str) -> PathBuf {
+        let dir = user_data
+            .join("runtime")
+            .join(format!("{RUNTIME_DIR_PREFIX}{token}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(JOURNAL_NAME), journal).unwrap();
+        dir
+    }
+
+    #[test]
+    fn sweep_removes_only_stale_terminal_runtime_dirs() {
+        let user_data = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-rtsweep-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&user_data);
+        std::fs::create_dir_all(&user_data).unwrap();
+        let stopped = runtime_fixture(
+            &user_data,
+            &"1".repeat(32),
+            &serde_json::json!({"version": 1, "token": "1".repeat(32), "state": "stopped"}).to_string(),
+        );
+        let failed = runtime_fixture(
+            &user_data,
+            &"2".repeat(32),
+            &serde_json::json!({"version": 1, "token": "2".repeat(32), "state": "failed"}).to_string(),
+        );
+        let ready = runtime_fixture(
+            &user_data,
+            &"3".repeat(32),
+            &serde_json::json!({"version": 1, "token": "3".repeat(32), "state": "ready"}).to_string(),
+        );
+        let created = runtime_fixture(
+            &user_data,
+            &"4".repeat(32),
+            &serde_json::json!({"version": 1, "token": "4".repeat(32), "state": "created"}).to_string(),
+        );
+        let unparsable = runtime_fixture(&user_data, &"5".repeat(32), "not json");
+        let foreign = {
+            let dir = user_data.join("runtime").join("foreign-dir");
+            std::fs::create_dir_all(&dir).unwrap();
+            dir
+        };
+        let short_token = {
+            let dir = user_data
+                .join("runtime")
+                .join(format!("{RUNTIME_DIR_PREFIX}{}", "a".repeat(8)));
+            std::fs::create_dir_all(&dir).unwrap();
+            dir
+        };
+
+        // grace = 0: everything terminal counts as stale and is removed;
+        // non-terminal, unparsable, and foreign names survive.
+        sweep_runtime_dirs_with(&user_data, 0).unwrap();
+        assert!(!stopped.exists());
+        assert!(!failed.exists());
+        assert!(ready.exists());
+        assert!(created.exists());
+        assert!(unparsable.exists());
+        assert!(foreign.exists());
+        assert!(short_token.exists());
+
+        // A huge grace keeps even terminal directories (fresh sessions stay
+        // inspectable).
+        let stopped2 = runtime_fixture(
+            &user_data,
+            &"6".repeat(32),
+            &serde_json::json!({"version": 1, "token": "6".repeat(32), "state": "stopped"}).to_string(),
+        );
+        sweep_runtime_dirs_with(&user_data, u64::MAX).unwrap();
+        assert!(stopped2.exists());
+
+        let _ = std::fs::remove_dir_all(&user_data);
+    }
+
+    /// A junction/symlink planted at a runtime-directory name is never
+    /// removed through (Unix: real symlink; Windows: skipped entry type).
+    #[test]
+    fn sweep_never_removes_through_planted_links() {
+        let user_data = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-rtlink-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&user_data);
+        std::fs::create_dir_all(&user_data).unwrap();
+        let outside = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-rtlink-out-{}",
+            new_token()
+        ));
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(
+            outside.join(JOURNAL_NAME),
+            serde_json::json!({"version": 1, "token": "7".repeat(32), "state": "stopped"}).to_string(),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            std::fs::create_dir_all(user_data.join("runtime")).unwrap();
+            std::os::unix::fs::symlink(
+                &outside,
+                user_data
+                    .join("runtime")
+                    .join(format!("{RUNTIME_DIR_PREFIX}{}", "7".repeat(32))),
+            )
+            .unwrap();
+            sweep_runtime_dirs_with(&user_data, 0).unwrap();
+            // The link entry is not a dir from read_dir's file_type: skipped,
+            // and the target directory survives untouched.
+            assert!(outside.join(JOURNAL_NAME).exists());
+        }
+        let _ = std::fs::remove_dir_all(&user_data);
+        let _ = std::fs::remove_dir_all(&outside);
     }
 }

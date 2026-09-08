@@ -147,6 +147,13 @@ Electron 是有效备选：自带 Node（`next start` 零改动）、目录捆�
 - 日志：壳日志 + API/Worker 日志统一写 `%LOCALAPPDATA%/MangaFlow/logs/`，按进程分文件、轮转、可导出（对齐 V02-54「日志导出」）。
 - 崩溃恢复：壳监控 API/Worker health（探活），崩溃自动重启；Worker 复用既有租约恢复（P0-1）；壳自身崩溃重启后 `recover_stopped_tree` 恢复/清理子进程。
 
+> **范围修订（2026-09-08，lead 决策，Issue #264/#265）：** 0.2.x 桌面交付（WPF 原生客户端为唯一正式客户端，见 2026-09-07 分支决策表）实际交付的崩溃恢复契约是「检测 + 干净收尾 + 一键重连」，**不含自动重启**：
+>
+> - native-host（WPF leg）以 250ms 轮询 `child.try_wait()` 监控 helper 进程退出——OOM、外部 kill、helper 崩溃均在 250ms 内检出；退出时执行完整收尾（进程树停止、日志 `stopped` 里程碑、journal `mark_stopped`），以非零码退出并报「local API process exited; restart the connection」。
+> - WPF 客户端轮询 `backend.IsRunning`，后端中途退出即显式切到断开横幅「本地服务已断开 · 点击重新连接恢复工作，已有数据保留」，`Reconnect` 一键重跑完整握手取得新 origin。
+> - **出范围（0.2.x）**：自动原地重启（重握手 + 新 origin 再注入）与稳态 loopback 健康探活。理由：自动重启要求新的进程生命周期设计（跨 L3 边界，需独立设计轮）；「挂着但僵死」的进程由每请求超时 + 手动重连路径覆盖；§5.2 的「崩溃后自动重启成功」验收以「崩溃后检测成功且一键重连恢复」为准解释。
+> - 陈旧 runtime 会话目录（`runtime/mangaflow-desktop-<token>/`）自 2026-09-08 起由会话启动清扫回收（终态 + 24h 宽限，见 `shell-core/src/protocol.rs` `sweep_runtime_dirs`）。
+
 ---
 
 ## 5. PoC 边界、固定验收指标、回滚方案与发布风险
@@ -166,7 +173,7 @@ Electron 是有效备选：自带 Node（`next start` 零改动）、目录捆�
 | 空闲内存（无任务） | ≤ 600MB（Windows 11 x64） |
 | 安装包体积 | ≤ 400MB（含 Python sidecar） |
 | 100 节点画布 FPS | 按项目既有 `architecture.md:131` 固定采样窗口通过 |
-| 子进程归属 | 壳退出后无残留进程（Job Object 验证）；崩溃后自动重启成功 |
+| 子进程归属 | 壳退出后无残留进程（Job Object 验证）；崩溃后自动重启成功（2026-09-08 修订：按 §4.5 范围注记，以「崩溃后 250ms 内检出 + 干净收尾 + 一键重连恢复」为准，自动重启出 0.2.x 范围） |
 | 数据不丢 | 升级/卸载/重装不删除用户数据与素材（`%APPDATA%/MangaFlow/`） |
 | 离线可用 | 无网络能启动 + SQLite 生成（假模型） |
 

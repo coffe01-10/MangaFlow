@@ -494,7 +494,12 @@ impl RunLog {
         // guaranteed closed — see the module docs for the cross-session
         // helper-stderr regime. Fail-soft: a sweep failure (unreadable
         // directory, stray fs error) must never block the session start.
+        // The same moment sweeps stale terminal-state runtime session
+        // directories (#264): the fresh session's own directory was created by
+        // RuntimeLayout::create just before this and is skipped by the
+        // terminal-state + grace-window predicate either way.
         let _ = rotate_logs(user_data);
+        let _ = crate::protocol::sweep_runtime_dirs(user_data);
         fs::create_dir_all(logs_dir(user_data))?;
         let base = shell_log_path(user_data, token);
         let logs_canonical = logs_dir(user_data).canonicalize()?;

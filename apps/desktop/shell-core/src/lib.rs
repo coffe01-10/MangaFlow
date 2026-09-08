@@ -28,4 +28,7 @@ pub use picker::{
     read_registered_file, validate_picked_directory, validate_picked_file, PickError, PickKind,
     PickedDirectory, PickedFile, PickedRegistry, MAX_PICKED_FILE_BYTES,
 };
-pub use protocol::{ReadyPayload, RuntimeLayout, VerifyError};
+pub use protocol::{
+    sweep_runtime_dirs, sweep_runtime_dirs_with, ReadyPayload, RuntimeLayout, VerifyError,
+    RUNTIME_SWEEP_GRACE_SECONDS,
+};
