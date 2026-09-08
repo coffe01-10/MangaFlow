@@ -116,6 +116,44 @@ fn export_archives_logs_skips_escapes_and_python_validates() {
     let _ = fs::remove_file(&destination);
 }
 
+#[cfg(unix)]
+#[test]
+fn export_skips_an_unreadable_subdirectory_instead_of_aborting() {
+    // #241-5b covers unreadable files; a locked subdirectory (read_dir
+    // fails) must join the same skip-and-report policy instead of aborting
+    // the whole export with a bare Io error.
+    let user_data = temp_user_data("lockedsub");
+    let logs = logs_dir(&user_data);
+    fs::create_dir_all(&logs).unwrap();
+    fs::write(logs.join("keeper.log"), "kept line\n").unwrap();
+    let locked = logs.join("run-locked");
+    fs::create_dir_all(&locked).unwrap();
+    fs::write(locked.join("secret.log"), "locked line\n").unwrap();
+
+    let mut perms = fs::metadata(&locked).unwrap().permissions();
+    use std::os::unix::fs::PermissionsExt;
+    perms.set_mode(0o000);
+    fs::set_permissions(&locked, perms).unwrap();
+
+    let destination = std::env::temp_dir().join(format!("mfd-export-lockedsub-{}.zip", new_token()));
+    let report = export_logs_zip(&user_data, &destination).unwrap();
+    assert_eq!(report.files, vec!["keeper.log".to_string()], "{report:?}");
+    assert!(
+        report
+            .skipped
+            .iter()
+            .any(|entry| entry.name == "run-locked" && entry.reason.starts_with("readdir:")),
+        "{report:?}"
+    );
+
+    // Restore access so the cleanup can actually remove the tree.
+    let mut perms = fs::metadata(&locked).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&locked, perms).unwrap();
+    let _ = fs::remove_dir_all(&user_data);
+    let _ = fs::remove_file(&destination);
+}
+
 #[test]
 fn export_refuses_destinations_inside_user_data_root() {
     let user_data = temp_user_data("inside");

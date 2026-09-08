@@ -732,7 +732,18 @@ fn collect_members(
             continue;
         }
         if file_type.is_dir() {
-            collect_members(&path, root_canonical, &member, members, skipped)?;
+            // A subdirectory that cannot be enumerated (locked, permission
+            // revoked) must not abort the whole export — the same
+            // skip-and-report policy as unreadable files (#241-5b): the
+            // remaining members are still worth archiving, and the failure
+            // is reported against the subdirectory's member name. Only the
+            // top-level logs-dir failure propagates (export_logs_with).
+            if let Err(error) = collect_members(&path, root_canonical, &member, members, skipped) {
+                skipped.push(SkippedEntry {
+                    name: member,
+                    reason: format!("readdir: {error}"),
+                });
+            }
             continue;
         }
         if !file_type.is_file() {
