@@ -16,6 +16,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use mangaflow_desktop_shell_core::base64_encode;
 use mangaflow_desktop_shell_core::handshake::{get_status, spawn_helper, HelperConfig, SpawnedHelper};
 use mangaflow_desktop_shell_core::logs::export_logs_zip_overwrite;
 use mangaflow_desktop_shell_core::picker::{
@@ -197,32 +198,6 @@ fn picked_file_dto(picked: &PickedFile) -> PickedFileDto {
 
 fn pick_error_message(error: PickError) -> String {
     error.to_string()
-}
-
-/// Standard base64 (RFC 4648, padded) so ≤20 MiB picked files survive the
-/// JSON IPC bridge without a byte-per-number array blow-up.
-fn base64_encode(data: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
-        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
-        let triple = b0 << 16 | b1 << 8 | b2;
-        out.push(ALPHABET[(triple >> 18) as usize & 0x3f] as char);
-        out.push(ALPHABET[(triple >> 12) as usize & 0x3f] as char);
-        out.push(if chunk.len() > 1 {
-            ALPHABET[(triple >> 6) as usize & 0x3f] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            ALPHABET[triple as usize & 0x3f] as char
-        } else {
-            '='
-        });
-    }
-    out
 }
 
 fn helper_environment() -> Option<(std::path::PathBuf, std::path::PathBuf)> {

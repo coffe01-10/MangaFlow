@@ -11,6 +11,7 @@
 //! path-safe ZIP export, and the validated local file/directory pick surface
 //! shared with the Tauri shell commands.
 
+pub mod b64;
 pub mod handshake;
 pub mod logs;
 pub mod ownership;
@@ -18,6 +19,7 @@ pub mod picker;
 pub mod protocol;
 pub mod ziparch;
 
+pub use b64::base64_encode;
 pub use handshake::{spawn_helper, HelperConfig, SpawnedHelper};
 pub use logs::{
     export_logs_zip, export_logs_zip_overwrite, rotate_logs, ExportError, ExportReport, RunLog,
