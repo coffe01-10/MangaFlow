@@ -344,12 +344,13 @@ def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
 
     node = None
     sock = None
+    relay = None
     try:
         sock = _bind_loopback()
         port = sock.getsockname()[1]
         # The web server's compiled rewrites target this exact API origin, so
         # spawn it only after the API port is bound (plan B, W-15).
-        node, web_port = _spawn_web_server(args, port)
+        node, web_port, relay = _spawn_web_server(args, port)
         try:
             from alembic import command
             from alembic.config import Config as AlembicConfig
@@ -381,6 +382,12 @@ def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
             # that never answers is reaped and the session continues without
             # a web server (the shell falls back to the static export).
             node, web_port = _await_web_server(node, web_port)
+            if node is None and relay is not None:
+                # The degraded (static-export) session has no web server the
+                # relay could feed: release the fixed relay port now instead
+                # of squatting on it until process exit.
+                relay.close()
+                relay = None
 
         record.update(
             state="ready",
@@ -429,6 +436,11 @@ def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
                 node.kill()
         if sock is not None:
             sock.close()
+        if relay is not None:
+            # Stop the accept loop explicitly (process teardown would close
+            # the fd anyway); a still-open relay here means the success path
+            # is exiting, so nothing needs the fixed port any more.
+            relay.close()
 
 
 def _find_node(web_dist: Path) -> str | None:
@@ -457,7 +469,7 @@ def _find_node(web_dist: Path) -> str | None:
 
 def _spawn_web_server(
     args: argparse.Namespace, api_port: int
-) -> tuple[subprocess.Popen | None, int | None]:
+) -> tuple[subprocess.Popen | None, int | None, socket.socket | None]:
     """Start the Next standalone server (plan B, W-15) as a helper child.
 
     --web-dist must point at the standalone bundle directory (containing
@@ -483,19 +495,19 @@ def _spawn_web_server(
 
     web_dist = getattr(args, "web_dist", None)
     if not web_dist:
-        return None, None
+        return None, None, None
     dist_path = Path(web_dist).resolve()
     node = _find_node(dist_path)
     if node is None:
         _log("no node runtime found; starting without the web server")
-        return None, None
+        return None, None, None
     server_js = dist_path / "server.js"
     if not server_js.is_file():
         _log(f"web dist {server_js} has no server.js; starting without the web server")
-        return None, None
+        return None, None, None
     relay = _bind_relay(api_port)
     if relay is None:
-        return None, None
+        return None, None, None
     claim = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         claim.bind(("127.0.0.1", 0))
@@ -538,14 +550,17 @@ def _spawn_web_server(
     except OSError as error:
         _log(f"node spawn failed: {error!r}; starting without the web server")
         relay.close()
-        return None, None
+        return None, None, None
     threading.Thread(
         target=_serve_relay,
         args=(relay, api_port),
         name="mangaflow-web-relay",
         daemon=True,
     ).start()
-    return node_process, web_port
+    # The relay handle travels with the result: the caller closes it when the
+    # web boot fails (a degraded session must not squat on the fixed port) and
+    # on every helper exit path.
+    return node_process, web_port, relay
 
 
 WEB_BOOT_TIMEOUT_SECONDS = 10.0
