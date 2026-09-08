@@ -66,16 +66,18 @@ pub const LOGS_DIR_NAME: &str = "logs";
 pub const EXPORT_MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 /// Cap on the archived member count. The ZIP end-of-central-directory
 /// record stores its entry count in a u16 field: a 65 536th member would
-/// silently wrap that count (the writer saturates today) and hand the user
-/// an archive every reader shows as truncated. Members beyond this cap are
-/// skipped and reported (`too_many_members`); the always-present manifest
-/// brings the worst-case entry count to exactly the u16 maximum.
+/// overflow that count and hand the user an archive every reader shows as
+/// truncated. Members beyond this cap are skipped and reported
+/// (`too_many_members`); the always-present manifest brings the worst-case
+/// entry count to exactly the u16 maximum. (The writer itself now panics
+/// past the field rather than saturating — see `ziparch::ZipWriter`.)
 pub const EXPORT_MAX_MEMBERS: usize = 65_534;
 /// Cap on the archive's total uncompressed size. ZIP offsets and sizes are
 /// u32 fields, so an archive at or beyond 4 GiB would silently overflow
 /// them and corrupt; 2 GiB keeps a wide safety margin below that for
-/// store-only members. Further members are skipped and reported
-/// (`archive_size_cap`).
+/// store-only members. A member whose inclusion would push the running
+/// total beyond this cap is skipped and reported (`archive_size_cap`);
+/// smaller later members that still fit are archived.
 pub const EXPORT_MAX_TOTAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Rotate a log file once it reaches this size. 12 MiB is this crate's own
 /// choice — the ADR requires rotation but names no numeric band — and is
@@ -209,22 +211,48 @@ fn rotation_staging_path(base: &Path) -> Option<PathBuf> {
     Some(base.with_file_name(name))
 }
 
-/// Drop the oldest generation, then shift `.i` → `.(i+1)` from the newest
-/// end down (each destination was just vacated, so plain renames also work
-/// on Windows, which has no overwrite-on-rename). Symlinks are never
-/// followed or moved: a symlinked generation is unlinked — its target
-/// survives. On success the ledger of renames performed is returned so the
-/// caller can undo the whole shift — via [`unwind_renamed_generations`] —
-/// when a LATER step of the rotation fails. If a step of the shift itself
-/// fails after renames have already happened, the successful renames are
-/// rolled back in reverse order before the error is returned (the ledger
-/// dies with that internal unwind), so an interrupted shift leaves the
-/// surviving generations at their original slots instead of displaced one
-/// up (the pre-shift deletion of the oldest generation is the one step no
-/// rollback can undo).
+/// Staging name used while a rotation moves the OLDEST generation aside
+/// before shifting (the plain `.rotating` sibling is reserved for the base
+/// at that moment). Like `.rotating`, it matches no rotatable base pattern,
+/// so a leftover never re-enters history; the shift itself removes it on
+/// success and restores it on failure, and the next shift clears any
+/// residue before staging again.
+fn rotation_oldest_staging_path(base: &Path) -> Option<PathBuf> {
+    let mut name = base.file_name()?.to_os_string();
+    name.push(".rotating-oldest");
+    Some(base.with_file_name(name))
+}
+
+/// Stage the oldest generation into the staging sibling, then shift
+/// `.i` → `.(i+1)` from the newest end down (each destination was just
+/// vacated, so plain renames also work on Windows, which has no
+/// overwrite-on-rename). Symlinks are never followed or moved: a symlinked
+/// generation is unlinked — its target survives. On success the ledger of
+/// renames performed is returned so the caller can undo the whole shift —
+/// via [`unwind_renamed_generations`] — when a LATER step of the rotation
+/// fails, and the staged oldest file is deleted (the actual drop, now that
+/// every step has succeeded). If a step of the shift itself fails after
+/// renames have already happened, the successful renames are rolled back in
+/// reverse order and the staged oldest generation is renamed back to its
+/// slot before the error is returned (the ledger dies with that internal
+/// unwind), so an interrupted shift leaves the surviving generations at
+/// their original slots with their history intact — nothing is deleted
+/// before the rotation is known to succeed.
 fn shift_generations_up(base: &Path, keep: usize) -> std::io::Result<Vec<(PathBuf, PathBuf)>> {
+    let mut staged_oldest: Option<PathBuf> = None;
     if let Some(oldest) = generation_path(base, keep) {
-        remove_file_if_exists(&oldest)?;
+        if let Some(staging) = rotation_oldest_staging_path(base) {
+            // Clear a leftover from an earlier failed shift before staging.
+            remove_file_if_exists(&staging)?;
+            match fs::rename(&oldest, &staging) {
+                Ok(()) => staged_oldest = Some(staging),
+                // No oldest generation: nothing to stage, nothing to drop.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        } else {
+            remove_file_if_exists(&oldest)?;
+        }
     }
     // Successful (source, destination) renames, in execution order.
     let mut renamed: Vec<(PathBuf, PathBuf)> = Vec::new();
@@ -239,7 +267,12 @@ fn shift_generations_up(base: &Path, keep: usize) -> std::io::Result<Vec<(PathBu
             match fs::remove_file(&source) {
                 Ok(()) => {}
                 Err(error) => {
+                    // Unwind the renames FIRST (the reverse order frees the
+                    // oldest slot last), then restore the staged oldest —
+                    // restoring it early would overwrite a generation the
+                    // unwind still needs to move back.
                     unwind_renamed_generations(&renamed);
+                    restore_staged_oldest(&staged_oldest, base, keep);
                     return Err(error);
                 }
             }
@@ -250,13 +283,45 @@ fn shift_generations_up(base: &Path, keep: usize) -> std::io::Result<Vec<(PathBu
             match fs::rename(&source, &destination) {
                 Ok(()) => renamed.push((source, destination)),
                 Err(error) => {
+                    // Unwind the renames FIRST (the reverse order frees the
+                    // oldest slot last), then restore the staged oldest —
+                    // restoring it early would overwrite a generation the
+                    // unwind still needs to move back.
                     unwind_renamed_generations(&renamed);
+                    restore_staged_oldest(&staged_oldest, base, keep);
                     return Err(error);
                 }
             }
         }
     }
+    // The drop happens only now: every step of the rotation has succeeded.
+    if let Some(staged) = &staged_oldest {
+        if let Err(error) = remove_file_if_exists(staged) {
+            // Best effort: the staged name matches no rotatable base
+            // pattern, and the next rotation clears any leftover staging
+            // entry before staging again.
+            eprintln!(
+                "mangaflow-desktop: rotation could not delete the staged oldest generation {}: {error}",
+                staged.display()
+            );
+        }
+    }
     Ok(renamed)
+}
+
+/// Best-effort restore of the staged oldest generation during a failed
+/// shift, mirroring [`unwind_renamed_generations`]'s reporting discipline.
+fn restore_staged_oldest(staged: &Option<PathBuf>, base: &Path, keep: usize) {
+    if let Some(staged) = staged {
+        if let Some(oldest) = generation_path(base, keep) {
+            if let Err(error) = fs::rename(staged, &oldest) {
+                eprintln!(
+                    "mangaflow-desktop: rotation rollback could not restore {}: {error}",
+                    oldest.display()
+                );
+            }
+        }
+    }
 }
 
 /// Roll back the renames [`shift_generations_up`] recorded, last performed
@@ -512,7 +577,15 @@ impl RunLog {
         // RuntimeLayout::create just before this and is skipped by the
         // terminal-state + grace-window predicate either way.
         let _ = rotate_logs(user_data);
-        let _ = crate::protocol::sweep_runtime_dirs(user_data);
+        // The sweep's contract promises a stderr report for its failures —
+        // discarding the Result wholesale left that promise unimplemented
+        // (#264): a silently failing sweep is invisible exactly when stale
+        // runtime directories start to matter for forensics.
+        if let Err(error) = crate::protocol::sweep_runtime_dirs(user_data) {
+            eprintln!(
+                "mangaflow-desktop: stale runtime-directory sweep failed: {error}"
+            );
+        }
         fs::create_dir_all(logs_dir(user_data))?;
         let base = shell_log_path(user_data, token);
         let logs_canonical = logs_dir(user_data).canonicalize()?;
@@ -732,7 +805,18 @@ fn collect_members(
             continue;
         }
         if file_type.is_dir() {
-            collect_members(&path, root_canonical, &member, members, skipped)?;
+            // A subdirectory that cannot be enumerated (locked, permission
+            // revoked) must not abort the whole export — the same
+            // skip-and-report policy as unreadable files (#241-5b): the
+            // remaining members are still worth archiving, and the failure
+            // is reported against the subdirectory's member name. Only the
+            // top-level logs-dir failure propagates (export_logs_with).
+            if let Err(error) = collect_members(&path, root_canonical, &member, members, skipped) {
+                skipped.push(SkippedEntry {
+                    name: member,
+                    reason: format!("readdir: {error}"),
+                });
+            }
             continue;
         }
         if !file_type.is_file() {
@@ -810,10 +894,11 @@ pub fn export_logs_zip(user_data: &Path, destination: &Path) -> Result<ExportRep
 /// Confirmed-overwrite variant of [`export_logs_zip`] (#149). The one
 /// legitimate caller is the shell's export command, whose destination comes
 /// from a native save dialog that already prompted the user about replacing
-/// the existing file. Replacing the destination remains a remove-then-rename
-/// through the `.pending` sibling (the no-overwrite path uses the
-/// no-clobber `hard_link` placement instead — see [`place_archive`]),
-/// never an in-place truncation.
+/// the existing file. The archive is still staged in the `.pending` sibling
+/// and placed by [`place_archive`] — atomically on POSIX, via the
+/// remove+rename fallback (with orphan cleanup) on Windows — never an
+/// in-place truncation; the no-overwrite path uses the no-clobber
+/// `hard_link` placement instead.
 pub fn export_logs_zip_overwrite(
     user_data: &Path,
     destination: &Path,
@@ -887,7 +972,20 @@ fn export_logs_with(
         // revoked, vanished between collect and read) joins the size-change
         // race below in the skip-and-report treatment instead of aborting the
         // whole export — the remaining members are still worth archiving.
-        let data = match fs::read(path) {
+        // The read itself is bounded by `take(EXPORT_MAX_FILE_BYTES)`: the
+        // collect-time size is only a snapshot, and a log still being written
+        // can grow to many GiB before this line — `fs::read` would buffer the
+        // whole grown file just to reject it in the re-check below, so the
+        // cap is enforced at read time and a grown member fails the size
+        // re-check as "changed_during_export".
+        let data = (|| -> std::io::Result<Vec<u8>> {
+            use std::io::Read;
+            let mut file = fs::File::open(path)?;
+            let mut data = Vec::new();
+            file.take(EXPORT_MAX_FILE_BYTES).read_to_end(&mut data)?;
+            Ok(data)
+        })();
+        let data = match data {
             Ok(data) => data,
             Err(error) => {
                 skipped.push(SkippedEntry {
@@ -991,8 +1089,10 @@ fn export_logs_with(
 /// best-effort so the user's directory is not left with an orphaned,
 /// fully-written archive copy.
 ///
-/// The `overwrite_confirmed` path keeps the historical remove+rename: the
-/// user has explicitly sanctioned replacing whatever sits there.
+/// The `overwrite_confirmed` path replaces whatever sits there — the user
+/// has explicitly sanctioned it. POSIX `rename(2)` does that atomically;
+/// Windows needs the historical remove+rename fallback (see `place_archive`),
+/// which now also cleans up the pending sibling on failure.
 ///
 /// [kind]: std::io::ErrorKind::AlreadyExists
 fn place_archive(
@@ -1001,11 +1101,29 @@ fn place_archive(
     overwrite_confirmed: bool,
 ) -> Result<(), ExportError> {
     if overwrite_confirmed {
-        if destination.is_file() {
-            fs::remove_file(destination).map_err(ExportError::Io)?;
+        // POSIX rename(2) atomically replaces an existing destination, so
+        // the common case never has a window where the user's previous
+        // archive is already gone and the new one has not landed. Windows
+        // rename refuses to replace (AlreadyExists): only there does the
+        // historical remove+rename run — and if any destructive step fails,
+        // the pending sibling is cleaned up exactly like the hard_link
+        // branch below, so a failed overwrite cannot orphan a fully
+        // written archive copy next to the (possibly removed) destination.
+        match fs::rename(pending, destination) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                fs::remove_file(destination).map_err(ExportError::Io)?;
+                fs::rename(pending, destination).map_err(|error| {
+                    let _ = remove_file_if_exists(pending);
+                    ExportError::Io(error)
+                })?;
+                return Ok(());
+            }
+            Err(error) => {
+                let _ = remove_file_if_exists(pending);
+                return Err(ExportError::Io(error));
+            }
         }
-        fs::rename(pending, destination).map_err(ExportError::Io)?;
-        return Ok(());
     }
     if let Err(error) = fs::hard_link(pending, destination) {
         // The archive never reached the destination, so the pending sibling
@@ -1049,6 +1167,33 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// A failed confirmed-overwrite must not orphan the pending sibling
+    /// next to an untouched (or already removed) destination. The old code
+    /// removed the destination file and only then renamed, so a rename
+    /// failure deleted the user's archive while leaving the `.pending`
+    /// copy behind — and that branch had no cleanup at all, unlike the
+    /// hard_link branch. `place_archive` is called directly because
+    /// `validate_destination` refuses directory destinations long before
+    /// placement, and a directory at the destination makes both the rename
+    /// and the removal fail portably (EISDIR).
+    #[test]
+    fn overwrite_placement_failure_cleans_up_the_pending_sibling() {
+        let dir = temp_user_data("placefail");
+        let pending = dir.join("archive.zip.pending");
+        let destination = dir.join("archive.zip");
+        fs::write(&pending, "fully written archive").unwrap();
+        fs::create_dir_all(&destination).unwrap();
+
+        let error = place_archive(&pending, &destination, true).unwrap_err();
+        assert!(matches!(error, ExportError::Io(_)), "{error:?}");
+        assert!(destination.is_dir(), "the occupying directory is untouched");
+        assert!(
+            !pending.exists(),
+            "a failed placement must clean up the pending sibling"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// Minimal reader for the store-only archives this module writes: walk
@@ -1611,11 +1756,11 @@ mod tests {
 
     /// #150 regression: a shift that fails partway must unwind the renames
     /// it already performed. Generation `.3` is a non-empty directory —
-    /// the `.4 → .5` rename succeeds (its slot was vacated by the oldest
-    /// deletion), then the `.2 → .3` rename fails into the directory —
-    /// so the unwind must restore `.4` from `.5` before the base rolls
-    /// back, leaving every surviving generation at its original slot. Only
-    /// the pre-shift deletion of the oldest generation is unrecoverable.
+    /// the `.4 → .5` rename succeeds (its slot was vacated by staging the
+    /// oldest away), then the `.2 → .3` rename fails into the directory —
+    /// so the unwind must restore `.4` from `.5` and the staged `.5` from
+    /// the staging sibling before the base rolls back, leaving every
+    /// surviving generation at its original slot with its content intact.
     #[test]
     fn rotation_shift_failure_unwinds_already_renamed_generations() {
         let user_data = temp_user_data("unwind");
@@ -1657,9 +1802,11 @@ mod tests {
             "content-4",
             "the already-renamed .4 must be restored from .5 by the unwind"
         );
-        assert!(
-            !generation_path(&base, 5).unwrap().exists(),
-            "the pre-shift oldest deletion is the one unrecoverable loss"
+        assert_eq!(
+            fs::read_to_string(generation_path(&base, 5).unwrap()).unwrap(),
+            "content-5",
+            "the oldest generation is staged, not deleted: a failed shift \
+             must restore it — no rotation failure may destroy history"
         );
         assert!(
             !rotation_staging_path(&base).unwrap().exists(),

@@ -32,7 +32,10 @@ pub struct HelperConfig {
     pub helper_script: PathBuf,
     /// Extra helper arguments after the mode, e.g. ["app", "--api-root", …].
     pub helper_args: Vec<String>,
-    /// Overall deadline for the READY line (ADR cold-start budget ≤ 15s).
+    /// Overall deadline for the READY line. The ADR cold-start budget is
+    /// ≤ 15s; the default here is deliberately looser (20s) so a slow but
+    /// healthy start fails the budget in the measured numbers, not by
+    /// aborting the handshake.
     pub ready_timeout: Duration,
     /// Deadline for the first successful loopback health response after GO.
     pub health_timeout: Duration,

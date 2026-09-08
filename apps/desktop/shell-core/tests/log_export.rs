@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use mangaflow_desktop_shell_core::handshake::{spawn_helper, HelperConfig};
 use mangaflow_desktop_shell_core::logs::{
-    export_logs_zip, helper_log_path, logs_dir, shell_log_path, RunLog,
+    export_logs_zip, export_logs_zip_overwrite, helper_log_path, logs_dir, shell_log_path, RunLog,
 };
 use mangaflow_desktop_shell_core::protocol::new_token;
 
@@ -112,6 +112,101 @@ fn export_archives_logs_skips_escapes_and_python_validates() {
 
     // The user-data root is untouched apart from the logs themselves.
     assert!(destination.exists());
+    let _ = fs::remove_dir_all(&user_data);
+    let _ = fs::remove_file(&destination);
+}
+
+#[cfg(unix)]
+#[test]
+fn export_skips_an_unreadable_subdirectory_instead_of_aborting() {
+    // #241-5b covers unreadable files; a locked subdirectory (read_dir
+    // fails) must join the same skip-and-report policy instead of aborting
+    // the whole export with a bare Io error.
+    let user_data = temp_user_data("lockedsub");
+    let logs = logs_dir(&user_data);
+    fs::create_dir_all(&logs).unwrap();
+    fs::write(logs.join("keeper.log"), "kept line\n").unwrap();
+    let locked = logs.join("run-locked");
+    fs::create_dir_all(&locked).unwrap();
+    fs::write(locked.join("secret.log"), "locked line\n").unwrap();
+
+    let mut perms = fs::metadata(&locked).unwrap().permissions();
+    use std::os::unix::fs::PermissionsExt;
+    perms.set_mode(0o000);
+    fs::set_permissions(&locked, perms).unwrap();
+
+    let destination = std::env::temp_dir().join(format!("mfd-export-lockedsub-{}.zip", new_token()));
+    let report = export_logs_zip(&user_data, &destination).unwrap();
+    assert_eq!(report.files, vec!["keeper.log".to_string()], "{report:?}");
+    assert!(
+        report
+            .skipped
+            .iter()
+            .any(|entry| entry.name == "run-locked" && entry.reason.starts_with("readdir:")),
+        "{report:?}"
+    );
+
+    // Restore access so the cleanup can actually remove the tree.
+    let mut perms = fs::metadata(&locked).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&locked, perms).unwrap();
+    let _ = fs::remove_dir_all(&user_data);
+    let _ = fs::remove_file(&destination);
+}
+
+#[test]
+fn export_includes_a_member_at_exactly_the_per_member_cap() {
+    // The cap is inclusive (`>` skips): a member of exactly
+    // EXPORT_MAX_FILE_BYTES must be archived, and the bounded reader
+    // (take at the cap) must still deliver it whole.
+    let user_data = temp_user_data("exactcap");
+    let logs = logs_dir(&user_data);
+    fs::create_dir_all(&logs).unwrap();
+    let capped = fs::File::create(logs.join("exact-cap.log")).unwrap();
+    capped
+        .set_len(mangaflow_desktop_shell_core::logs::EXPORT_MAX_FILE_BYTES)
+        .unwrap();
+
+    let destination = std::env::temp_dir().join(format!("mfd-export-exactcap-{}.zip", new_token()));
+    let report = export_logs_zip(&user_data, &destination).unwrap();
+    assert_eq!(report.files, vec!["exact-cap.log".to_string()], "{report:?}");
+    assert_eq!(
+        report.total_bytes,
+        mangaflow_desktop_shell_core::logs::EXPORT_MAX_FILE_BYTES
+    );
+
+    let _ = fs::remove_dir_all(&user_data);
+    let _ = fs::remove_file(&destination);
+}
+
+#[test]
+fn export_overwrite_replaces_and_never_orphans_the_pending_sibling() {
+    // #149: the confirmed-overwrite path replaces an existing archive. On
+    // POSIX the placement is an atomic rename; on failure paths the pending
+    // sibling this export created must never be left orphaned next to the
+    // (possibly removed) destination.
+    let user_data = temp_user_data("overwrite");
+    let logs = logs_dir(&user_data);
+    fs::create_dir_all(&logs).unwrap();
+    fs::write(logs.join("first.log"), "first line\n").unwrap();
+
+    let destination =
+        std::env::temp_dir().join(format!("mfd-overwrite-{}.zip", new_token()));
+    export_logs_zip(&user_data, &destination).unwrap();
+
+    fs::write(logs.join("second.log"), "second line\n").unwrap();
+    let second = export_logs_zip_overwrite(&user_data, &destination).unwrap();
+    assert!(
+        second.files.contains(&"second.log".to_string()),
+        "{second:?}"
+    );
+    assert_eq!(&fs::read(&destination).unwrap()[0..2], b"PK");
+    let pending = destination.with_file_name(format!(
+        "{}.pending",
+        destination.file_name().unwrap().to_string_lossy()
+    ));
+    assert!(!pending.exists(), "no pending sibling may survive a success");
+
     let _ = fs::remove_dir_all(&user_data);
     let _ = fs::remove_file(&destination);
 }

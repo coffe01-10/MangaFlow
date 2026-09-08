@@ -81,6 +81,37 @@ fn session_start_sweep_rotates_oversized_previous_session_logs() {
 }
 
 #[test]
+fn session_start_sweep_leaves_below_threshold_logs_alone() {
+    // The boundary complement of the sweep test: threshold-1 must NOT
+    // rotate (`rotate_file` uses `<` on the metadata length), whatever the
+    // base kind — only reaching the threshold triggers rotation.
+    let user_data = temp_user_data("below");
+    let logs = logs_dir(&user_data);
+    fs::create_dir_all(&logs).unwrap();
+
+    let old = new_token();
+    for path in [
+        helper_log_path(&user_data, &old),
+        shell_log_path(&user_data, &old),
+    ] {
+        fs::File::create(path)
+            .unwrap()
+            .set_len(ROTATION_THRESHOLD_BYTES - 1)
+            .unwrap();
+    }
+
+    let fresh = new_token();
+    RunLog::create(&user_data, &fresh).unwrap();
+
+    assert!(helper_log_path(&user_data, &old).exists());
+    assert!(shell_log_path(&user_data, &old).exists());
+    assert!(!generation(&logs, &format!("helper-{old}.stderr.log"), 1).exists());
+    assert!(!generation(&logs, &format!("shell-{old}.log"), 1).exists());
+
+    let _ = fs::remove_dir_all(&user_data);
+}
+
+#[test]
 fn run_log_rotates_mid_session_and_open_path_stays_writable() {
     let user_data = temp_user_data("in-session");
     let token = new_token();

@@ -20,7 +20,8 @@ pub fn crc32(data: &[u8]) -> u32 {
 }
 
 /// DOS/ZIP packed modification time. `seconds` is a Unix timestamp; dates
-/// before 1980 clamp to the epoch floor (ZIP cannot represent them).
+/// outside 1980–2107 clamp to the representable floor/ceiling (the DOS date
+/// fields cannot encode them).
 pub fn dos_date_time(seconds: u64) -> (u16, u16) {
     let days = (seconds / 86_400) as i64;
     let secs_of_day = (seconds % 86_400) as u32;
@@ -58,9 +59,10 @@ impl ZipWriter {
     /// Add one file (stored, UTF-8 name, no extra fields).
     ///
     /// Panics rather than silently corrupting: the EOCD entry count is a
-    /// u16 field and member offsets are u32, so overflow here would hand
-    /// the caller an archive every reader shows as truncated. The exporter
-    /// keeps both shapes reachable-but-guarded (`EXPORT_MAX_MEMBERS`,
+    /// u16 field, member offsets/sizes are u32, and the member name length
+    /// is a u16 — overflow in any of them would hand the caller an archive
+    /// every reader shows as truncated. The exporter keeps the count/total
+    /// shapes reachable-but-guarded (`EXPORT_MAX_MEMBERS`,
     /// `EXPORT_MAX_TOTAL_BYTES`); this is the last-resort invariant for any
     /// future caller.
     pub fn add_file(&mut self, name: &str, data: &[u8], dos_date: u16, dos_time: u16) {
@@ -68,6 +70,10 @@ impl ZipWriter {
         assert!(
             !name.contains(&b'\\') && !name.is_empty(),
             "zip member names must be non-empty forward-slash relative paths"
+        );
+        assert!(
+            name.len() <= u16::MAX as usize,
+            "zip: member name exceeds the u16 name-length field"
         );
         assert!(
             self.entries < u16::MAX,
@@ -245,5 +251,47 @@ mod tests {
         }));
         std::panic::set_hook(default_hook);
         assert!(overflowed.is_err(), "the 65536th member must fail loudly");
+    }
+
+    /// The name-length field is u16 too: a 65,535-byte name is the largest
+    /// representable and must round-trip bit-exactly; one more byte must
+    /// panic instead of silently truncating the field (the truncated archive
+    /// parses with a wrong name length and every reader misreads the file —
+    /// the doc on `add_file` promises panic-not-corrupt).
+    #[test]
+    fn member_names_beyond_the_u16_field_panic_instead_of_corrupting() {
+        let longest = "n".repeat(u16::MAX as usize);
+        let mut zip = ZipWriter::new();
+        zip.add_file(&longest, b"x", 0, 0);
+        let bytes = zip.finish();
+        let eocd = bytes.len() - 22;
+        let central_offset = u32::from_le_bytes([
+            bytes[eocd + 16],
+            bytes[eocd + 17],
+            bytes[eocd + 18],
+            bytes[eocd + 19],
+        ]) as usize;
+        assert_eq!(
+            &bytes[central_offset + 28..central_offset + 30],
+            &u16::MAX.to_le_bytes()
+        );
+
+        std::panic::set_hook(Box::new(|_| {}));
+        let overflowed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut zip = ZipWriter::new();
+            zip.add_file(&"n".repeat(u16::MAX as usize + 1), b"x", 0, 0);
+        }));
+        std::panic::set_hook(std::panic::take_hook());
+        assert!(overflowed.is_err(), "a name beyond the u16 field must fail loudly");
+    }
+
+    /// Years beyond 2107 are not representable in the DOS date either; they
+    /// clamp to the representable ceiling instead of wrapping back into the
+    /// 1980–2107 range and silently misdating members.
+    #[test]
+    fn dos_date_time_clamps_far_future_years() {
+        // 2200-01-01 00:00:00 UTC.
+        let (date, _) = dos_date_time(7_258_118_400);
+        assert_eq!(date >> 9, 2107 - 1980);
     }
 }
