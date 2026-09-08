@@ -18,6 +18,9 @@ powershell -ExecutionPolicy Bypass -File apps/desktop/scripts/start-native.ps1
 
 ## 与网页一致的界面
 
+- 全局模式/筛选/选项按钮采用矩形轮廓；资产分类为 44 DIP 下划线导航，图像模型为
+  68 DIP 两列矩形卡片。项目选择框按名称显示，不再输出 `ProjectItem` 对象文本。
+
 - 首页顶部导航、两行宋体标题、米色纸面、朱红强调色、四项指标。
 - 项目封面、竖排标题、制作中印章、采用进度、模式和分辨率。
 - 右侧 AI 连接统计及完整生产流程说明。连接数字来自 dashboard API，

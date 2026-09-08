@@ -17,7 +17,7 @@ public sealed class AssetsView : WorkspaceView
 {
     public const string Characters = "characters", Outfits = "outfits", Scenes = "scenes", Style = "style", References = "references";
 
-    private readonly StackPanel subnav = new() { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 18) };
+    private readonly WrapPanel subnav = new();
     private readonly Grid host = new();
     private readonly Dictionary<string, ToggleButton> tabs = new();
     private string current = Characters;
@@ -42,14 +42,14 @@ public sealed class AssetsView : WorkspaceView
         {
             var tab = new ToggleButton
             {
-                Content = label, Style = (Style)Application.Current.FindResource("Pill"),
-                Tag = key, Margin = new Thickness(0, 0, 8, 0),
+                Content = label, Style = (Style)Application.Current.FindResource("AssetTab"),
+                Tag = key, Margin = new Thickness(0, 0, 7, 0),
             };
-            tab.Click += (_, _) => Switch(key);
+            tab.Click += (_, _) => { if (current == key) tab.IsChecked = true; else Switch(key); };
             tabs[key] = tab;
             subnav.Children.Add(tab);
         }
-        panel.Children.Add(subnav);
+        panel.Children.Add(new Border { Child = subnav, BorderBrush = (Brush)FindResource("Line"), BorderThickness = new Thickness(0, 0, 0, 1), Margin = new Thickness(0, 0, 0, 22) });
         panel.Children.Add(notice);
         panel.Children.Add(host);
         var scroller = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = panel };
@@ -208,17 +208,21 @@ internal sealed class ModelPickerBand : Border
         }
         else
         {
-            var row = new WrapPanel();
+            var row = new TilePanel { MinimumTileWidth = 260, MaximumColumns = 2, Gap = 9, Margin = new Thickness(0, 15, 0, 4) };
             Selected = view.SelectedImageModel;
             foreach (var option in options)
             {
                 var alias = option.Text("logical_alias");
+                var description = new StackPanel();
+                description.Children.Add(new TextBlock { Text = option.Text("display_name"), FontWeight = FontWeights.Bold, FontSize = 14, TextTrimming = TextTrimming.CharacterEllipsis, TextWrapping = TextWrapping.NoWrap });
+                description.Children.Add(new TextBlock { Text = string.Join(" · ", new[] { option.Text("provider"), option.Text("model_id") }.Where(s => s.Length > 0)), FontSize = 11, Foreground = (Brush)Application.Current.FindResource("Muted"), Margin = new Thickness(0, 4, 0, 0), TextWrapping = TextWrapping.Wrap });
                 var toggle = new ToggleButton
                 {
-                    Content = $"{option.Text("display_name")} · {option.Text("model_id")}",
-                    Style = (Style)Application.Current.FindResource("Chip"),
-                    IsChecked = alias == Selected, Margin = new Thickness(0, 0, 8, 6),
+                    Content = description, Tag = alias,
+                    Style = (Style)Application.Current.FindResource("ModelChoice"),
+                    IsChecked = alias == Selected,
                 };
+                System.Windows.Automation.AutomationProperties.SetName(toggle, option.Text("display_name") + " · " + option.Text("model_id"));
                 toggle.Click += (_, _) =>
                 {
                     Selected = alias;

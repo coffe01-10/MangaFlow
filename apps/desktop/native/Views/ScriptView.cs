@@ -1,4 +1,4 @@
-using System.Net.Http;
+﻿using System.Net.Http;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -85,7 +85,7 @@ public sealed class ScriptView : WorkspaceView
                 chapterSelector.Items.Add(new ComboBoxItem { Tag = chapter.Id, Content = $"{chapter.Ordinal}. {chapter.Title}" });
             if (chapters.Count > 0)
             {
-                var selected = chapters.FirstOrDefault(c => c.Id == chapterId) ?? chapters[0];
+                var selected = chapters.FirstOrDefault(c => c.Id == KeyValueStore.Get("workspace:chapter:" + ProjectId)) ?? chapters.FirstOrDefault(c => c.Id == chapterId) ?? chapters[0];
                 SelectChapter(selected.Id);
                 chapterId = selected.Id;
                 await LoadScriptAsync();

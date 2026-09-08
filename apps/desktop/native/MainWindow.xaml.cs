@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
@@ -539,11 +539,11 @@ public partial class MainWindow : Window
         TopbarRow.Height = new GridLength(workspace ? 58 : 74);
         Breadcrumb.Visibility = Visibility.Collapsed;
         ProjectSummary.Visibility = preferences.SidebarCollapsed ? Visibility.Collapsed : Visibility.Visible;
-        ProjectList.Visibility = preferences.SidebarCollapsed ? Visibility.Collapsed : Visibility.Visible;
+        ProjectList.Visibility = Visibility.Collapsed;
         SidebarFooter.Visibility = preferences.SidebarCollapsed ? Visibility.Collapsed : Visibility.Visible;
         state.IsWorkspace = workspace;
         state.SidebarCollapsed = preferences.SidebarCollapsed;
-        ContentHost.Margin = workspace ? new Thickness(24, 24, 0, 0) : new Thickness(0);
+        ContentHost.Margin = page == "source" ? new Thickness(30, 28, 30, 0) : workspace ? new Thickness(24, 24, 0, 0) : new Thickness(0);
     }
 
     private void OnWindowSizeChanged(object sender, SizeChangedEventArgs e) { }

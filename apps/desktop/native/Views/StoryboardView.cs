@@ -1,4 +1,4 @@
-using System.Net.Http;
+﻿using System.Net.Http;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -205,7 +205,7 @@ public sealed class StoryboardView : WorkspaceView
                 inspector.Children.Add(Kit.Caption("尚未生成分页分镜。先完成漫画剧本。"));
                 return;
             }
-            var target = chapters.FirstOrDefault(c => c.Id == chapterId) ?? chapters[0];
+            var target = chapters.FirstOrDefault(c => c.Id == KeyValueStore.Get("workspace:chapter:" + ProjectId)) ?? chapters.FirstOrDefault(c => c.Id == chapterId) ?? chapters[0];
             SelectChapter(target.Id);
             chapterId = target.Id;
             await LoadPagesAsync();

@@ -1,4 +1,4 @@
-<Window x:Class="MangaFlow.Native.MainWindow"
+﻿<Window x:Class="MangaFlow.Native.MainWindow"
  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
  xmlns:local="clr-namespace:MangaFlow.Native"
@@ -15,7 +15,7 @@
   </Grid.RowDefinitions>
 
   <!-- Top bar -->
-  <Border Grid.Row="0" Background="{StaticResource Paper}" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1" Padding="34,0">
+  <Border Grid.Row="0" Background="{StaticResource Paper}" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1" Padding="20,0">
    <Grid>
     <Grid.ColumnDefinitions>
      <ColumnDefinition Width="Auto"/>
@@ -71,36 +71,50 @@
     <ColumnDefinition Width="*"/>
    </Grid.ColumnDefinitions>
    <Border x:Name="SidebarPanel" Background="{StaticResource PaperDeep}" BorderBrush="{StaticResource Line}" BorderThickness="0,0,1,0" ClipToBounds="True">
-    <Grid Margin="8,24,8,12">
+    <Grid Margin="14,22,14,12">
      <Grid.RowDefinitions>
       <RowDefinition Height="Auto"/>
       <RowDefinition Height="Auto"/>
-      <RowDefinition Height="Auto"/>
       <RowDefinition Height="*"/>
+      <RowDefinition Height="0"/>
       <RowDefinition Height="Auto"/>
      </Grid.RowDefinitions>
-     <StackPanel x:Name="ProjectSummary" Margin="12,0,12,16">
+     <StackPanel x:Name="ProjectSummary" Margin="6,0,6,22">
       <TextBlock Text="PROJECT / 01" Style="{StaticResource Kicker}"/>
-      <TextBlock Text="{Binding CurrentProject.Name}" Style="{StaticResource SubHeading}" Margin="0,8,0,8"/>
+      <TextBlock Text="{Binding CurrentProject.Name}" FontFamily="{StaticResource Serif}" FontSize="18" Margin="0,12,0,8"/>
       <TextBlock Text="{Binding CurrentProject.Summary}" Style="{StaticResource Caption}"/>
      </StackPanel>
      <ComboBox Grid.Row="1" x:Name="ProjectList" ItemsSource="{Binding Projects}" DisplayMemberPath="Name"
       SelectionChanged="SelectProject" AutomationProperties.Name="切换项目" Margin="0,0,0,12"/>
      <ListBox Grid.Row="2" x:Name="ProjectSections" ItemsSource="{x:Static local:ProjectPages.All}"
-      SelectionChanged="SelectProjectSection" AutomationProperties.Name="项目页面导航" Margin="0,0,0,12">
+      SelectionChanged="SelectProjectSection" AutomationProperties.Name="项目页面导航" Margin="0,0,0,12" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0" Padding="0,15,0,0" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
       <ListBox.ItemContainerStyle>
-       <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+       <Style TargetType="ListBoxItem">
         <Setter Property="AutomationProperties.Name" Value="{Binding AccessibleName}"/>
-        <Setter Property="MinHeight" Value="44"/>
+        <Setter Property="MinHeight" Value="48"/><Setter Property="Margin" Value="0,0,4,5"/>
+        <Setter Property="Foreground" Value="{StaticResource Muted}"/><Setter Property="FontWeight" Value="Bold"/>
+        <Setter Property="HorizontalContentAlignment" Value="Stretch"/><Setter Property="Cursor" Value="Hand"/>
         <Setter Property="ToolTip" Value="{Binding Title}"/>
-        <Setter Property="Padding" Value="8,10"/>
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ListBoxItem">
+         <Grid>
+          <Border x:Name="Shadow" Background="#33D34A2F" Margin="4,4,-4,-4" Visibility="Collapsed"/>
+          <Border x:Name="Surface" Background="Transparent" Padding="8"><ContentPresenter VerticalAlignment="Center" HorizontalAlignment="Stretch"/></Border>
+          <Border x:Name="Mark" Width="2" HorizontalAlignment="Left" Margin="0,9" Background="{StaticResource Accent}" Visibility="Collapsed"/>
+         </Grid>
+         <ControlTemplate.Triggers>
+          <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Surface" Property="Background" Value="#16FFFFFF"/></Trigger>
+          <Trigger Property="IsSelected" Value="True"><Setter TargetName="Surface" Property="Background" Value="{StaticResource Ink}"/><Setter Property="Foreground" Value="White"/><Setter TargetName="Mark" Property="Visibility" Value="Visible"/><Setter TargetName="Shadow" Property="Visibility" Value="Visible"/></Trigger>
+          <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Surface" Property="BorderBrush" Value="{StaticResource Accent}"/><Setter TargetName="Surface" Property="BorderThickness" Value="1"/></Trigger>
+         </ControlTemplate.Triggers>
+        </ControlTemplate></Setter.Value></Setter>
        </Style>
       </ListBox.ItemContainerStyle>
       <ListBox.ItemTemplate>
        <DataTemplate>
         <Grid>
-         <Grid.ColumnDefinitions><ColumnDefinition Width="26"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-         <TextBlock Text="{Binding Index}" Style="{StaticResource SectionIndex}" VerticalAlignment="Center"/>
+         <Grid.ColumnDefinitions><ColumnDefinition Width="28"/><ColumnDefinition Width="*"/><ColumnDefinition Width="22"/></Grid.ColumnDefinitions>
+         <Viewbox Width="17" Height="17" HorizontalAlignment="Left"><Path Data="{Binding IconData}" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" StrokeThickness="1.7" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/></Viewbox>
+         <TextBlock Grid.Column="2" Text="{Binding Index}" FontWeight="Normal" FontSize="12" HorizontalAlignment="Right" VerticalAlignment="Center"/>
          <StackPanel Grid.Column="1">
           <StackPanel.Style><Style TargetType="StackPanel"><Style.Triggers>
            <DataTrigger Binding="{Binding DataContext.SidebarCollapsed, RelativeSource={RelativeSource AncestorType=Window}}" Value="True"><Setter Property="Visibility" Value="Collapsed"/></DataTrigger>

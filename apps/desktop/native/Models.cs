@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 
@@ -99,6 +99,7 @@ public record ChapterItem(string Id, string Title, string Summary)
     public int Pages { get; init; }
     public int Ordinal { get; init; }
     public int Characters { get; init; }
+    public int Segments { get; init; }
     public int Coverage { get; init; }
     public string StatusLabel => Labels.Map(Labels.ChapterStatus, Status);
     public static ChapterItem From(JsonElement c) => new(c.Text("id"), c.Text("title"),
@@ -108,6 +109,7 @@ public record ChapterItem(string Id, string Title, string Summary)
         Pages = c.Number("page_count"),
         Ordinal = c.Number("ordinal"),
         Characters = c.Number("source_character_count"),
+        Segments = c.Number("segment_count"),
         Coverage = (int)Math.Round(c.Decimal("coverage_ratio", 0) * 100),
     };
 }
