@@ -260,7 +260,10 @@ public sealed class SettingsView : WorkspaceView
     public override async void Activate(WorkspaceContext context)
     {
         base.Activate(context);
-        await LoadAllAsync();
+        // Deactivation cancels in-flight reads; async void has no caller to observe the
+        // cancellation, so swallow it here instead of crashing the dispatcher.
+        try { await LoadAllAsync(); }
+        catch (OperationCanceledException) { }
     }
 
     private async Task LoadAllAsync()
@@ -284,6 +287,7 @@ public sealed class SettingsView : WorkspaceView
             providerSummary.Text = $"{providers.Count} 家供应商 · {configured} 已配置";
             RenderProviders();
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             providerList.Children.Clear();
@@ -392,6 +396,7 @@ public sealed class SettingsView : WorkspaceView
             if (lifetime.Token.IsCancellationRequested) return;
             RenderRuntime();
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             runtimeForm.Children.Clear();
@@ -472,6 +477,7 @@ public sealed class SettingsView : WorkspaceView
             runtimeNotice.Visibility = Visibility.Visible;
             await LoadDiagnosticsAsync();
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             runtimeError.Text = error.Message;
@@ -531,6 +537,7 @@ public sealed class SettingsView : WorkspaceView
                 diagnosticsList.Children.Add(row);
             }
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             diagnosticsList.Children.Clear();

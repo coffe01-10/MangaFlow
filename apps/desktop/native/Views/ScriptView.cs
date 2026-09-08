@@ -96,6 +96,7 @@ public sealed class ScriptView : WorkspaceView
                 body.Children.Add(EmptyState("请先导入原作", "在“原作与修订”页导入章节后，才能生成漫画剧本。"));
             }
         }
+        catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             body.Children.Clear();
@@ -129,6 +130,7 @@ public sealed class ScriptView : WorkspaceView
             sceneAssets = (await loadSceneAssets).EnumerateArray().Select(SceneAssetItem.From).ToList();
             Render();
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             body.Children.Clear();
@@ -232,6 +234,7 @@ public sealed class ScriptView : WorkspaceView
             Cache.Invalidate("script:" + chapterId, "pages:" + chapterId);
             await LoadScriptAsync();
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             MessageBox.Show(Host, error.Message, "保存未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -249,6 +252,7 @@ public sealed class ScriptView : WorkspaceView
             Cache.Invalidate("script:" + chapterId, "pages:" + chapterId);
             await LoadScriptAsync();
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             MessageBox.Show(Host, error.Message, "保存未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -270,6 +274,7 @@ public sealed class ScriptView : WorkspaceView
             Cache.Invalidate("script:" + chapterId, "pages:" + chapterId);
             await LoadScriptAsync();
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             MessageBox.Show(Host, error.Message, "服装指定未保存", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -285,6 +290,7 @@ public sealed class ScriptView : WorkspaceView
             Cache.Invalidate("script:" + chapterId, "scene-assets:" + ProjectId);
             await LoadScriptAsync();
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             MessageBox.Show(Host, "绑定场景资产失败：" + error.Message, "绑定未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -301,6 +307,7 @@ public sealed class ScriptView : WorkspaceView
             Cache.Invalidate("script:" + chapterId, "pages:" + chapterId, "chapters:" + ProjectId);
             await LoadScriptAsync();
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             MessageBox.Show(Host, error.Message, "删除未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -315,6 +322,7 @@ public sealed class ScriptView : WorkspaceView
             State.Status = "剧本解析任务已创建";
             await Context!.NavigateSection("jobs", "");
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             MessageBox.Show(Host, error.Message, "生成剧本未完成", MessageBoxButton.OK, MessageBoxImage.Warning);

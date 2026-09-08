@@ -210,6 +210,7 @@ public sealed class StoryboardView : WorkspaceView
             chapterId = target.Id;
             await LoadPagesAsync();
         }
+        catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             inspector.Children.Clear();
@@ -242,6 +243,7 @@ public sealed class StoryboardView : WorkspaceView
             }
             await SelectPageAsync(target);
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             inspector.Children.Add(Kit.Caption($"页面列表读取失败：{error.Message}"));
@@ -303,6 +305,7 @@ public sealed class StoryboardView : WorkspaceView
             RenderInspector();
             UpdatePageSize();
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             currentPage = previous;   // 失败回滚页签选中态
@@ -657,6 +660,7 @@ public sealed class StoryboardView : WorkspaceView
             Cache.Invalidate("storyboard:" + currentPage.Id, "pages:" + chapterId);
             await SelectPageAsync(currentPage);
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             MessageBox.Show(Host, error.Message, "保存本格未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -677,6 +681,7 @@ public sealed class StoryboardView : WorkspaceView
             RenderInspector();
             RenderOrderBadges();
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             MessageBox.Show(Host, error.Message, "删除未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -703,6 +708,7 @@ public sealed class StoryboardView : WorkspaceView
             await SelectPageAsync(currentPage);
             UpdateStatus("版式已重建");
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             MessageBox.Show(Host, error.Message, "重建未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -740,6 +746,7 @@ public sealed class StoryboardView : WorkspaceView
             Cache.Invalidate("pages:" + chapterId, "workbench:", "library:" + ProjectId);
             await SelectPageAsync(currentPage);
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             UpdateStatus("保存失败");

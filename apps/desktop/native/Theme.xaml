@@ -516,7 +516,7 @@
      <StackPanel Orientation="Horizontal" Background="Transparent">
       <Grid Width="44" Height="24" VerticalAlignment="Center">
        <Border x:Name="Track" Background="{StaticResource Line}" CornerRadius="99"/>
-       <Border x:Name="Knob" Width="20" Height="20" CornerRadius="99" Background="{StaticResource WhiteColor}"
+       <Border x:Name="Knob" Width="20" Height="20" CornerRadius="99" Background="{StaticResource Surface}"
         HorizontalAlignment="Left" Margin="2,0,0,0" RenderTransformOrigin="0.5,0.5">
         <Border.RenderTransform><TranslateTransform X="0"/></Border.RenderTransform>
        </Border>

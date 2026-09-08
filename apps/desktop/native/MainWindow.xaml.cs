@@ -225,6 +225,7 @@ public partial class MainWindow : Window
         {
             await LoadDashboardAsync(lifetime.Token);
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             state.Error = ErrorText(error);

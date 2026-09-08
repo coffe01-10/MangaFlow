@@ -59,7 +59,10 @@ public sealed class AssetsView : WorkspaceView
     public override async void Activate(WorkspaceContext context)
     {
         base.Activate(context);
-        await LoadAsync();
+        // Deactivation cancels in-flight reads; async void has no caller to observe the
+        // cancellation, so swallow it here instead of crashing the dispatcher.
+        try { await LoadAsync(); }
+        catch (OperationCanceledException) { }
     }
 
     public void Switch(string view)
@@ -100,6 +103,7 @@ public sealed class AssetsView : WorkspaceView
             foreach (var (key, tab) in tabs) tab.IsChecked = key == current;
             Render();
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             host.Children.Clear();

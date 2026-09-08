@@ -3,6 +3,40 @@
 盘点日期：2026-09-08；初始基线：`9e6f738`。以当前源码和
 `docs/adr/native-windows-client.md` 为准。旧 Tauri/Next 壳保留，但不计作 WPF 功能交付。
 
+## 2026-09-08 17 页状态验收矩阵 NUI-6C
+
+本次基线为 NUI-6B 提交后工作树。新增 `NativeStateMatrixChecks`：以受控 HTTP fake
+（空数据/全 500/停车三模式，停车可按取消令牌真实取消）驱动 13 个视图 Id + 5 个资产
+子页（对应 web 17 个业务页面）逐一过**空**（渲染非空、无永久「正在读取」、干净页面
+不阻拦返回导航）、**错误**（服务端 detail 可见）、**恢复**（重试按钮 + 刷新 + 重进
+页面后错误清除）、**项目切换**（迟到 500 与真实取消不污染新页面、旧项目身份不泄
+漏）；每个页面输出空态 PNG 到 `output/native-parity-review/native-matrix-*.png` 作
+为证据（13 张 + 资产子页内联断言）。
+
+矩阵抓到并已修复三组真实缺陷（另有专项审查复核）：
+1. **Switch 模板 Color/Brush 混用**（Theme.xaml）：Knob 的 Background 引用
+   `WhiteColor`（Color 资源），项目设置页有数据实例化模板即抛 XamlParseException；
+   改为 `Surface`（同色 Brush）。
+2. **取消异常穿透 async void**：7 个视图的 Activate 与约 40 处用户动作 handler 的
+   `catch (Exception e) when (e is not OperationCanceledException)` 不捕获取消，而
+   async void 无调用者——真实 HTTP 在视图停用/动作飞行中取消时会崩 dispatcher；
+   既有测试的 fake handler 从不观察令牌，从未暴露。统一在过滤器前补
+   `catch (OperationCanceledException) { }`。
+3. **超时与取消不可区分**：HttpClient 30 秒超时表现为「令牌未取消的取消异常」，
+   原会被上述吞咽静默吃掉（页面永久停留加载）。`ApiClient` 现将令牌未取消的
+   OperationCanceledException 翻译为 TimeoutException（错误 UI 显示、保留取消的
+   OCE 语义供视图静默吞咽）。审查确认 LocalEditWindow 关窗 discard 超时因此变为
+   可见提示而非无响应。
+
+矩阵本身的审查改进：错误断言收紧为匹配唯一 detail 串；交互看门狗 20s→60s；fake
+补对象形状（workflows POST、项目详情按请求 Id 返回）；source 页的切换场景走真实
+取消路径（令牌注册取消停车 TCS），确保吞咽修复被实际执行。
+
+**仍未验收（NOT RUN）**：409 版本冲突格子、`ConfirmLeaveAsync=false` 阻断导航的负
+向格、弹窗确认流与焦点恢复的逐页格（弹窗/Esc/焦点恢复已由 NUI-6B 的全局回归覆
+盖控件原语，但未逐页登记）、全部实机（真实窗口、真实数据）格子。矩阵覆盖的是离
+线契约可证明的部分，不得据此宣称 17 页实机验收完成。
+
 ## 2026-09-08 全局任务底栏、帮助全文与快捷键/焦点 NUI-6B
 
 本次基线 `de5f5d2`。任务底栏按网页 `.queue-dock` 重做为深色横条（48 DIP 高、墨色
@@ -94,8 +128,8 @@ Enter/Esc/长按/焦点恢复/弹窗单次确认、帮助锚点（含从已滚�
 本次 `npm run check` 全部通过：neutrality/ESLint/Ruff、Pytest 1508 通过/37 跳过
 （761 条既有弃用警告）、Vitest 435 通过/42 文件、TypeScript 与 Next.js 生产构建。
 
-下一项 **NUI-6C：登记 17 页及内嵌工作区的完整状态矩阵**（NUI-6B 已于上方 2026-09-08
-章节完成）。NUI-6 整体仍未完成，真实账本实机、供应商、
+下一项 **NUI-7：性能与发布验收**（NUI-6B/6C 已于上方 2026-09-08 章节完成）。
+NUI-6 整体仍未完成，真实账本实机、供应商、
 浏览器 E2E、DPI/性能、安装发布继续为 NOT RUN。
 
 ## 页面与功能覆盖

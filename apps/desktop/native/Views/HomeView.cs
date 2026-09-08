@@ -515,6 +515,7 @@ public sealed class HomeView : WorkspaceView
             State.Status = $"项目「{name}」已创建";
             CreateRequested?.Invoke();
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             drawerError.Text = error.Message;

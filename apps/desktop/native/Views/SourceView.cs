@@ -119,7 +119,10 @@ public sealed class SourceView : WorkspaceView
         planButton.Click -= PlanChapter;
         parseButton.Click += ParseChapter;
         planButton.Click += PlanChapter;
-        await LoadChaptersAsync();
+        // Deactivation cancels in-flight reads; async void has no caller to observe the
+        // cancellation, so swallow it here instead of crashing the dispatcher.
+        try { await LoadChaptersAsync(); }
+        catch (OperationCanceledException) { }
     }
 
     private async Task LoadChaptersAsync()
@@ -138,6 +141,7 @@ public sealed class SourceView : WorkspaceView
             chapters = rows.EnumerateArray().Select(ChapterItem.From).ToList();
             RenderChapters();
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             chapterList.Children.Clear();
@@ -251,6 +255,7 @@ public sealed class SourceView : WorkspaceView
             var latest = revisions.EnumerateArray().OrderByDescending(r => r.Number("revision")).FirstOrDefault();
             State.ReaderText = latest.ValueKind == JsonValueKind.Undefined ? "这个章节尚无原文。" : latest.Text("original_text");
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             State.ReaderText = $"原文修订加载失败：{error.Message}";
@@ -280,6 +285,7 @@ public sealed class SourceView : WorkspaceView
             composeFooter.Text = "保存后生成新修订，旧版本仍保留";
             scroller.ScrollToHome();
         }
+         catch (OperationCanceledException) { }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             error.Text = $"原文修订加载失败：{ex.Message}";
@@ -361,6 +367,7 @@ public sealed class SourceView : WorkspaceView
             }
             Cache.Invalidate("chapters:" + ProjectId, "dashboard");
         }
+         catch (OperationCanceledException) { }
         catch (Exception reason) when (reason is not OperationCanceledException)
         {
             error.Text = reason is OperationCanceledException or TimeoutException
@@ -388,6 +395,7 @@ public sealed class SourceView : WorkspaceView
             Cache.Invalidate("chapters:" + ProjectId, "dashboard");
             await LoadChaptersAsync();
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             MessageBox.Show(Host, "章节删除失败，请重试：" + error.Message, "删除未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -411,6 +419,7 @@ public sealed class SourceView : WorkspaceView
             Cache.Invalidate("chapters:" + ProjectId, "dashboard");
             await LoadChaptersAsync();
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             if (pendingRestoreChapterIds.Count > 0)
@@ -432,6 +441,7 @@ public sealed class SourceView : WorkspaceView
             State.Status = "剧本解析任务已创建";
             await Context!.NavigateSection("jobs", "");
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             MessageBox.Show(Host, error.Message, "生成剧本未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -450,6 +460,7 @@ public sealed class SourceView : WorkspaceView
             State.Status = "分页计算完成";
             await Context!.NavigateSection("storyboard", "");
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             MessageBox.Show(Host, error.Message, "计算分页未完成", MessageBoxButton.OK, MessageBoxImage.Warning);

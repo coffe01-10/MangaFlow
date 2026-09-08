@@ -41,8 +41,21 @@ public sealed class ApiClient : IDisposable
         Validate(path);
         using var request = new HttpRequestMessage(method ?? HttpMethod.Get, path);
         if (body != null) request.Content = JsonContent.Create(body);
-        using var response = await client.SendAsync(request, cancellation).ConfigureAwait(false);
-        var text = await response.Content.ReadAsStringAsync(cancellation).ConfigureAwait(false);
+        HttpResponseMessage response;
+        string text;
+        try
+        {
+            response = await client.SendAsync(request, cancellation).ConfigureAwait(false);
+            text = await response.Content.ReadAsStringAsync(cancellation).ConfigureAwait(false);
+        }
+        // HttpClient reports its 30s timeout as a cancellation with an uncancelled caller
+        // token. Translate those to TimeoutException so error UI can show them; genuine
+        // caller cancellations (page deactivation) stay OperationCanceledException for
+        // the views' silent-swallow filters.
+        catch (OperationCanceledException) when (!cancellation.IsCancellationRequested)
+        {
+            throw new TimeoutException("请求超时，请检查本地服务后重试。");
+        }
         if (!response.IsSuccessStatusCode)
         {
             var detail = $"请求失败（{(int)response.StatusCode}）";

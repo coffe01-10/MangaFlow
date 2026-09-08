@@ -556,6 +556,7 @@ public sealed class GenerateView : WorkspaceView
                 await File.WriteAllBytesAsync(save.FileName, bytes);
                 notice.Text = "单页 PNG 已保存。";
             }
+             catch (OperationCanceledException) { }
             catch (Exception error) when (error is not OperationCanceledException) { notice.Text = error.Message; }
         }, "Compact");
         download.Margin = new Thickness(10, 0, 0, 0);
@@ -719,6 +720,7 @@ public sealed class GenerateView : WorkspaceView
             if (nextPage != null) await SelectPageAsync(nextPage);
             else await LoadPagesAsync();
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             notice.Text = error.Message;

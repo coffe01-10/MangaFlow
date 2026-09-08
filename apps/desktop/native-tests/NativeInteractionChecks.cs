@@ -35,12 +35,12 @@ internal static class NativeInteractionChecks
     {
         Exception? failure = null;
         var frame = new DispatcherFrame();
-        var timeout = new DispatcherTimer { Interval = TimeSpan.FromSeconds(20) };
+        var timeout = new DispatcherTimer { Interval = TimeSpan.FromSeconds(60) };
         timeout.Tick += (_, _) => { failure = new TimeoutException("Native interaction checks timed out"); frame.Continue = false; };
         timeout.Start();
         Dispatcher.CurrentDispatcher.BeginInvoke(new Action(async () =>
         {
-            try { await Creation(); await Generation(); await LocalEdit(); await NativeJobsChecks.Run(output); await NativeLibraryChecks.Run(output); await NativeDockChecks.Run(output); }
+            try { await Creation(); await Generation(); await LocalEdit(); await NativeJobsChecks.Run(output); await NativeLibraryChecks.Run(output); await NativeDockChecks.Run(output); await NativeStateMatrixChecks.Run(output); }
             catch (Exception error) { failure = error; }
             finally { frame.Continue = false; }
         }));

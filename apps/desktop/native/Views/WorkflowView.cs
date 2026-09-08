@@ -276,6 +276,7 @@ public sealed class WorkflowView : WorkspaceView
             await LoadWorkflowAsync();
             await LoadScopeTargetsAsync();
         }
+        catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             statusLine.Text = $"无法载入项目工作流：{error.Message}";
@@ -307,6 +308,7 @@ public sealed class WorkflowView : WorkspaceView
             }
             if (scopeTarget.Items.Count > 0) scopeTarget.SelectedIndex = 0;
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             scopeTarget.SelectedItem = null;
@@ -383,6 +385,7 @@ public sealed class WorkflowView : WorkspaceView
             UpdateStatus("已保存");
             _ = LoadRunsAsync();
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             statusLine.Text = $"工作流载入失败：{error.Message}";
@@ -756,6 +759,7 @@ public sealed class WorkflowView : WorkspaceView
             if (issues.Count > 0)
                 MessageBox.Show(Host, string.Join("\n", issues.Select(i => $"[{i.Text("severity")}] {i.Text("message")}")), "校验问题");
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             MessageBox.Show(Host, error.Message, "校验失败", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -771,6 +775,7 @@ public sealed class WorkflowView : WorkspaceView
             statusLine.Text = "已发布不可变版本";
             State.Status = "工作流版本已发布";
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             MessageBox.Show(Host, error.Message, "发布失败", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -822,6 +827,7 @@ public sealed class WorkflowView : WorkspaceView
             async void Reload() => Activate(refreshed);
             Reload();
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             MessageBox.Show(Host, error.Message, "导入失败", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -847,6 +853,7 @@ public sealed class WorkflowView : WorkspaceView
             statusLine.Text = "运行已启动";
             await LoadRunsAsync();
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             MessageBox.Show(Host, error.Message, "运行未启动", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -896,6 +903,7 @@ public sealed class WorkflowView : WorkspaceView
                 runMonitor.Children.Add(cancel);
             }
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             _ = error;

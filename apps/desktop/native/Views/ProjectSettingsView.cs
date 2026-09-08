@@ -85,7 +85,10 @@ public sealed class ProjectSettingsView : WorkspaceView
         base.Activate(context);
         saveButton.Click -= Save;
         saveButton.Click += Save;
-        await LoadAsync();
+        // Deactivation cancels in-flight reads; async void has no caller to observe the
+        // cancellation, so swallow it here instead of crashing the dispatcher.
+        try { await LoadAsync(); }
+        catch (OperationCanceledException) { }
     }
 
     private async Task LoadAsync()
@@ -110,6 +113,7 @@ public sealed class ProjectSettingsView : WorkspaceView
                 .ToList();
             Render();
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             body.Children.Clear();
@@ -350,6 +354,7 @@ public sealed class ProjectSettingsView : WorkspaceView
             successTimer.Start();
             Cache.Invalidate("project:" + ProjectId, "dashboard", "projects");
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             saveError.Text = error.Message;
@@ -381,6 +386,7 @@ public sealed class ProjectSettingsView : WorkspaceView
             State.Status = $"项目「{expected}」已删除";
             await Context!.OpenDashboard();
         }
+         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             MessageBox.Show(Host, error.Message, "删除未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
