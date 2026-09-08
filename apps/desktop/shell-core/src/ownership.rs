@@ -195,6 +195,20 @@ impl OwnedTree {
     /// [`OwnedTree::child`] — nothing may `take()` it between spawn and stop
     /// (the handshake only borrows it to send GO).
     pub fn stop(&mut self, grace: Duration) -> Result<Option<i32>, OwnershipError> {
+        // A caller can arrive after the child was already reaped (native-host
+        // polls `try_wait` and stops the tree when a self-exited helper is
+        // observed). Signaling first would fire `signal_tree` at a freed pid
+        // — possibly recycled into an unrelated process group — before the
+        // grace loop ever reaches its own exit check, so the already-reaped
+        // case returns the cached status up front. `try_wait` keeps
+        // returning the exit status after the first reap.
+        let already_reaped = match self.child.try_wait() {
+            Ok(reaped) => reaped,
+            Err(error) => return Err(OwnershipError::StopFailed(error.to_string())),
+        };
+        if let Some(status) = already_reaped {
+            return Ok(status.code());
+        }
         // Cooperative phase: dropping the piped stdin closes the pipe's write
         // end; the helper's EOF watcher is the graceful-shutdown trigger.
         // Idempotent — take() on an already-taken stdin is a no-op.
