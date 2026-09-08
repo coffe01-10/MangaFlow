@@ -209,22 +209,48 @@ fn rotation_staging_path(base: &Path) -> Option<PathBuf> {
     Some(base.with_file_name(name))
 }
 
-/// Drop the oldest generation, then shift `.i` → `.(i+1)` from the newest
-/// end down (each destination was just vacated, so plain renames also work
-/// on Windows, which has no overwrite-on-rename). Symlinks are never
-/// followed or moved: a symlinked generation is unlinked — its target
-/// survives. On success the ledger of renames performed is returned so the
-/// caller can undo the whole shift — via [`unwind_renamed_generations`] —
-/// when a LATER step of the rotation fails. If a step of the shift itself
-/// fails after renames have already happened, the successful renames are
-/// rolled back in reverse order before the error is returned (the ledger
-/// dies with that internal unwind), so an interrupted shift leaves the
-/// surviving generations at their original slots instead of displaced one
-/// up (the pre-shift deletion of the oldest generation is the one step no
-/// rollback can undo).
+/// Staging name used while a rotation moves the OLDEST generation aside
+/// before shifting (the plain `.rotating` sibling is reserved for the base
+/// at that moment). Like `.rotating`, it matches no rotatable base pattern,
+/// so a leftover never re-enters history; the shift itself removes it on
+/// success and restores it on failure, and the next shift clears any
+/// residue before staging again.
+fn rotation_oldest_staging_path(base: &Path) -> Option<PathBuf> {
+    let mut name = base.file_name()?.to_os_string();
+    name.push(".rotating-oldest");
+    Some(base.with_file_name(name))
+}
+
+/// Stage the oldest generation into the staging sibling, then shift
+/// `.i` → `.(i+1)` from the newest end down (each destination was just
+/// vacated, so plain renames also work on Windows, which has no
+/// overwrite-on-rename). Symlinks are never followed or moved: a symlinked
+/// generation is unlinked — its target survives. On success the ledger of
+/// renames performed is returned so the caller can undo the whole shift —
+/// via [`unwind_renamed_generations`] — when a LATER step of the rotation
+/// fails, and the staged oldest file is deleted (the actual drop, now that
+/// every step has succeeded). If a step of the shift itself fails after
+/// renames have already happened, the successful renames are rolled back in
+/// reverse order and the staged oldest generation is renamed back to its
+/// slot before the error is returned (the ledger dies with that internal
+/// unwind), so an interrupted shift leaves the surviving generations at
+/// their original slots with their history intact — nothing is deleted
+/// before the rotation is known to succeed.
 fn shift_generations_up(base: &Path, keep: usize) -> std::io::Result<Vec<(PathBuf, PathBuf)>> {
+    let mut staged_oldest: Option<PathBuf> = None;
     if let Some(oldest) = generation_path(base, keep) {
-        remove_file_if_exists(&oldest)?;
+        if let Some(staging) = rotation_oldest_staging_path(base) {
+            // Clear a leftover from an earlier failed shift before staging.
+            remove_file_if_exists(&staging)?;
+            match fs::rename(&oldest, &staging) {
+                Ok(()) => staged_oldest = Some(staging),
+                // No oldest generation: nothing to stage, nothing to drop.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        } else {
+            remove_file_if_exists(&oldest)?;
+        }
     }
     // Successful (source, destination) renames, in execution order.
     let mut renamed: Vec<(PathBuf, PathBuf)> = Vec::new();
@@ -239,7 +265,12 @@ fn shift_generations_up(base: &Path, keep: usize) -> std::io::Result<Vec<(PathBu
             match fs::remove_file(&source) {
                 Ok(()) => {}
                 Err(error) => {
+                    // Unwind the renames FIRST (the reverse order frees the
+                    // oldest slot last), then restore the staged oldest —
+                    // restoring it early would overwrite a generation the
+                    // unwind still needs to move back.
                     unwind_renamed_generations(&renamed);
+                    restore_staged_oldest(&staged_oldest, base, keep);
                     return Err(error);
                 }
             }
@@ -250,13 +281,45 @@ fn shift_generations_up(base: &Path, keep: usize) -> std::io::Result<Vec<(PathBu
             match fs::rename(&source, &destination) {
                 Ok(()) => renamed.push((source, destination)),
                 Err(error) => {
+                    // Unwind the renames FIRST (the reverse order frees the
+                    // oldest slot last), then restore the staged oldest —
+                    // restoring it early would overwrite a generation the
+                    // unwind still needs to move back.
                     unwind_renamed_generations(&renamed);
+                    restore_staged_oldest(&staged_oldest, base, keep);
                     return Err(error);
                 }
             }
         }
     }
+    // The drop happens only now: every step of the rotation has succeeded.
+    if let Some(staged) = &staged_oldest {
+        if let Err(error) = remove_file_if_exists(staged) {
+            // Best effort: the staged name matches no rotatable base
+            // pattern, and the next rotation clears any leftover staging
+            // entry before staging again.
+            eprintln!(
+                "mangaflow-desktop: rotation could not delete the staged oldest generation {}: {error}",
+                staged.display()
+            );
+        }
+    }
     Ok(renamed)
+}
+
+/// Best-effort restore of the staged oldest generation during a failed
+/// shift, mirroring [`unwind_renamed_generations`]'s reporting discipline.
+fn restore_staged_oldest(staged: &Option<PathBuf>, base: &Path, keep: usize) {
+    if let Some(staged) = staged {
+        if let Some(oldest) = generation_path(base, keep) {
+            if let Err(error) = fs::rename(staged, &oldest) {
+                eprintln!(
+                    "mangaflow-desktop: rotation rollback could not restore {}: {error}",
+                    oldest.display()
+                );
+            }
+        }
+    }
 }
 
 /// Roll back the renames [`shift_generations_up`] recorded, last performed
@@ -1683,11 +1746,11 @@ mod tests {
 
     /// #150 regression: a shift that fails partway must unwind the renames
     /// it already performed. Generation `.3` is a non-empty directory —
-    /// the `.4 → .5` rename succeeds (its slot was vacated by the oldest
-    /// deletion), then the `.2 → .3` rename fails into the directory —
-    /// so the unwind must restore `.4` from `.5` before the base rolls
-    /// back, leaving every surviving generation at its original slot. Only
-    /// the pre-shift deletion of the oldest generation is unrecoverable.
+    /// the `.4 → .5` rename succeeds (its slot was vacated by staging the
+    /// oldest away), then the `.2 → .3` rename fails into the directory —
+    /// so the unwind must restore `.4` from `.5` and the staged `.5` from
+    /// the staging sibling before the base rolls back, leaving every
+    /// surviving generation at its original slot with its content intact.
     #[test]
     fn rotation_shift_failure_unwinds_already_renamed_generations() {
         let user_data = temp_user_data("unwind");
@@ -1729,9 +1792,11 @@ mod tests {
             "content-4",
             "the already-renamed .4 must be restored from .5 by the unwind"
         );
-        assert!(
-            !generation_path(&base, 5).unwrap().exists(),
-            "the pre-shift oldest deletion is the one unrecoverable loss"
+        assert_eq!(
+            fs::read_to_string(generation_path(&base, 5).unwrap()).unwrap(),
+            "content-5",
+            "the oldest generation is staged, not deleted: a failed shift \
+             must restore it — no rotation failure may destroy history"
         );
         assert!(
             !rotation_staging_path(&base).unwrap().exists(),
