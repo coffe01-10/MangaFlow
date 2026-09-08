@@ -85,6 +85,7 @@ public sealed class GenerateView : WorkspaceView
             if (chapterSelector.SelectedItem is ComboBoxItem { Tag: string id } && id != chapterId)
             {
                 chapterId = id;
+                KeyValueStore.Set("generate:chapter:" + ProjectId, id);
                 await LoadPagesAsync();
             }
         };
@@ -130,7 +131,9 @@ public sealed class GenerateView : WorkspaceView
                 body.Children.Add(Kit.Caption("没有可抽卡页面。先完成动态分页。"));
                 return;
             }
-            var target = chapters.FirstOrDefault(c => c.Id == chapterId) ?? chapters[0];
+            var requestedChapter = KeyValueStore.Get("generate:chapter:" + ProjectId);
+            var target = chapters.FirstOrDefault(c => c.Id == requestedChapter)
+                ?? chapters.FirstOrDefault(c => c.Id == chapterId) ?? chapters[0];
             chapterId = target.Id;
             foreach (var item in chapterSelector.Items.OfType<ComboBoxItem>())
                 if ((string?)item.Tag == target.Id) { chapterSelector.SelectedItem = item; break; }

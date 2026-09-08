@@ -131,7 +131,7 @@
      <Grid>
       <Border Background="{TemplateBinding BorderBrush}" Margin="3,3,-3,-3" Opacity="0.06" CornerRadius="3" IsHitTestVisible="False"/>
       <Border x:Name="Surface" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}" CornerRadius="3">
-       <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center"/>
+       <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
       </Border>
       <Border x:Name="FocusRing" BorderBrush="{StaticResource Accent}" BorderThickness="2" CornerRadius="4" Margin="-3" Visibility="Collapsed" IsHitTestVisible="False"/>
      </Grid>
@@ -324,6 +324,65 @@
     <Setter Property="Opacity" Value="0.6"/>
    </Trigger>
   </Style.Triggers>
+ </Style>
+ <Style TargetType="DatePicker">
+  <Setter Property="MinHeight" Value="40"/>
+  <Setter Property="FontSize" Value="13"/>
+  <Setter Property="Language" Value="zh-CN"/>
+  <Setter Property="SelectedDateFormat" Value="Short"/>
+  <Setter Property="Foreground" Value="{StaticResource Ink}"/>
+  <Setter Property="Background" Value="{StaticResource Surface}"/>
+  <Setter Property="BorderBrush" Value="{StaticResource LineDark}"/>
+  <Setter Property="BorderThickness" Value="1"/>
+  <Setter Property="CalendarStyle">
+   <Setter.Value>
+    <Style TargetType="Calendar">
+     <Setter Property="Background" Value="{StaticResource Surface}"/>
+     <Setter Property="BorderBrush" Value="{StaticResource LineDark}"/>
+     <Setter Property="Foreground" Value="{StaticResource Ink}"/>
+    </Style>
+   </Setter.Value>
+  </Setter>
+  <Setter Property="Template">
+   <Setter.Value>
+    <ControlTemplate TargetType="DatePicker">
+     <Grid>
+      <Border x:Name="Frame" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
+       <Grid>
+        <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="30"/></Grid.ColumnDefinitions>
+        <DatePickerTextBox x:Name="PART_TextBox" Padding="8,6,0,6" VerticalContentAlignment="Center" Background="Transparent" BorderThickness="0" Foreground="{TemplateBinding Foreground}">
+         <DatePickerTextBox.Template>
+          <ControlTemplate TargetType="DatePickerTextBox">
+           <Grid>
+            <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"/>
+            <ContentControl x:Name="PART_Watermark" Visibility="Collapsed" Margin="{TemplateBinding Padding}" VerticalAlignment="Center" Foreground="{StaticResource Muted}" IsHitTestVisible="False" Focusable="False"/>
+           </Grid>
+           <ControlTemplate.Triggers><Trigger Property="Text" Value=""><Setter TargetName="PART_Watermark" Property="Visibility" Value="Visible"/></Trigger></ControlTemplate.Triggers>
+          </ControlTemplate>
+         </DatePickerTextBox.Template>
+        </DatePickerTextBox>
+        <Button x:Name="PART_Button" Grid.Column="1" Focusable="False" AutomationProperties.Name="打开日历" Background="Transparent" BorderThickness="0" Padding="0" Cursor="Hand">
+         <Button.Template>
+          <ControlTemplate TargetType="Button">
+           <Border x:Name="CalendarButton" Background="{TemplateBinding Background}">
+            <Path Width="14" Height="15" Stretch="Uniform" Stroke="{StaticResource Muted}" StrokeThickness="1.2" Data="M 1,3 L 13,3 13,14 1,14 Z M 1,6 L 13,6 M 4,1 L 4,4 M 10,1 L 10,4 M 4,9 L 6,9 M 8,9 L 10,9 M 4,11 L 6,11"/>
+           </Border>
+           <ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="CalendarButton" Property="Background" Value="{StaticResource PaperDeep}"/></Trigger></ControlTemplate.Triggers>
+          </ControlTemplate>
+         </Button.Template>
+        </Button>
+       </Grid>
+      </Border>
+      <Popup x:Name="PART_Popup" Placement="Bottom" PlacementTarget="{Binding ElementName=Frame}" AllowsTransparency="True" StaysOpen="False" PopupAnimation="None"/>
+      <Border x:Name="FocusRing" BorderBrush="{StaticResource Accent}" BorderThickness="2" Margin="-2" Visibility="Collapsed" IsHitTestVisible="False"/>
+     </Grid>
+     <ControlTemplate.Triggers>
+      <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter TargetName="FocusRing" Property="Visibility" Value="Visible"/></Trigger>
+      <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5"/></Trigger>
+     </ControlTemplate.Triggers>
+    </ControlTemplate>
+   </Setter.Value>
+  </Setter>
  </Style>
  <Style TargetType="PasswordBox">
   <Setter Property="Padding" Value="12,10"/>

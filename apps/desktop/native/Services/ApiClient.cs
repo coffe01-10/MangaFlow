@@ -3,6 +3,7 @@ using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Web;
+using System.IO;
 
 namespace MangaFlow.Native.Services;
 
@@ -116,6 +117,34 @@ public sealed class ApiClient : IDisposable
         using var response = await client.GetAsync(path, cancellation).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadAsByteArrayAsync(cancellation).ConfigureAwait(false);
+    }
+
+    // Stream to an owned sibling file, then replace the user's destination only after completion.
+    public async Task SaveDownloadAsync(string path, string destination, CancellationToken cancellation = default)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        timeout.CancelAfter(TimeSpan.FromMinutes(5));
+        cancellation = timeout.Token;
+        var relative = MediaPath(path);
+        var target = Path.GetFullPath(destination);
+        var temporary = Path.Combine(Path.GetDirectoryName(target)!, ".mangaflow-" + Guid.NewGuid().ToString("N") + ".download");
+        var created = false;
+        try
+        {
+            using var response = await client.GetAsync(relative, HttpCompletionOption.ResponseHeadersRead, cancellation).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            await using (var input = await response.Content.ReadAsStreamAsync(cancellation).ConfigureAwait(false))
+            await using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous))
+            {
+                created = true;
+                await input.CopyToAsync(output, cancellation).ConfigureAwait(false);
+                await output.FlushAsync(cancellation).ConfigureAwait(false);
+            }
+            cancellation.ThrowIfCancellationRequested();
+            File.Move(temporary, target, overwrite: true);
+            created = false;
+        }
+        finally { if (created) File.Delete(temporary); }
     }
 
     // Web publicUrl(): grids use the 640px thumbnail; lightbox keeps the original.

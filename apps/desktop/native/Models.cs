@@ -129,6 +129,11 @@ public record CostEstimate(string Amount, string Currency, string Status, string
         if (json.ValueKind != JsonValueKind.Object) return None;
         return new(json.Text("amount"), json.Text("currency"), json.Text("status"), json.Text("note"));
     }
+
+    public static CostEstimate FromJob(JsonElement job) => new(
+        job.Text("estimated_cost"), job.Text("estimated_cost_currency"),
+        job.Text("estimated_cost_status", job.Element("estimated_cost").ValueKind == JsonValueKind.Number ? "AVAILABLE" : "UNAVAILABLE"),
+        job.Text("estimated_cost_note"));
 }
 
 public record JobItem(string Id, string Name, string State, string StatusLabel, int Progress,
@@ -139,12 +144,15 @@ public record JobItem(string Id, string Name, string State, string StatusLabel, 
     public string ModelName { get; init; } = "";
     public string ErrorCode { get; init; } = "";
     public double Duration { get; init; }
+    public bool HasDuration { get; init; }
+    public string CreatedAt { get; init; } = "";
+    public List<string> PricingVersions { get; init; } = [];
     public int Attempt { get; init; }
     public int MaxAttempts { get; init; }
     public CostEstimate Cost { get; init; } = CostEstimate.None;
     public string ResultImageUrl { get; init; } = "";
     public string ErrorLabel =>
-        ErrorCode.Length > 0 ? $"{ErrorCode} · {Labels.Map(Labels.ErrorCode, ErrorCode)}" : Detail;
+        ErrorCode.Length > 0 ? $"{ErrorCode} · {(Detail.Length > 0 ? Detail : Labels.Map(Labels.ErrorCode, ErrorCode))}" : Detail;
     public bool Terminal => State is "COMPLETED" or "FAILED" or "CANCELLED" or "NEEDS_REVIEW";
     public bool Active => !Terminal;
     public string CostLabel => Cost.Label.Length > 0
@@ -156,20 +164,23 @@ public record JobItem(string Id, string Name, string State, string StatusLabel, 
         var label = Labels.Map(Labels.JobStatus, state);
         var name = Labels.Map(Labels.Jobs, j.Text("job_type"));
         return new(j.Text("id"), name, state, label, Math.Clamp(j.Number("progress"), 0, 100),
-            j.Text("error_message", "任务由本地服务执行"),
+            j.Text("error_message"),
             state is "WAITING" or "QUEUED" or "RUNNING" or "PREPARING" or "GENERATING"
                 or "UPLOADING_REFERENCES" or "CONSISTENCY_CHECKING" or "REPAIRING" or "OCR_CHECKING",
             (state is "FAILED" or "NEEDS_REVIEW" or "WAITING") && j.Number("attempt_count") < j.Number("max_attempts"))
         {
             Type = j.Text("job_type"),
-            NodeName = j.Text("node_name"),
-            ModelName = j.Text("model_name"),
+            NodeName = j.Text("workflow_node_id") is { Length: > 0 } node ? $"节点 {node}" : "",
+            ModelName = j.Text("model_alias"),
             ErrorCode = j.Text("error_code"),
-            Duration = j.Decimal("duration_seconds"),
+            Duration = j.Decimal("duration_ms") / 1000,
+            HasDuration = j.Element("duration_ms").ValueKind == JsonValueKind.Number,
+            CreatedAt = j.Text("created_at"),
+            PricingVersions = j.Strings("estimated_cost_pricing_versions"),
             Attempt = j.Number("attempt_count"),
             MaxAttempts = j.Number("max_attempts"),
-            Cost = CostEstimate.From(j.Element("estimated_cost")),
-            ResultImageUrl = j.Text("result_image_url"),
+            Cost = CostEstimate.FromJob(j),
+            ResultImageUrl = j.Element("result").Text("content_url"),
         };
     }
 }
@@ -327,6 +338,7 @@ public record CandidateItem(string Id, int Ordinal, string Status)
     public string AssetId { get; init; } = "";
     public string ContentUrl { get; init; } = "";
     public bool Favorite { get; init; }
+    public bool IsSelected { get; init; }
     public string VersionState { get; init; } = "CURRENT";
     public string StoryboardVersion { get; init; } = "";
     public string BatchId { get; init; } = "";
@@ -345,6 +357,7 @@ public record CandidateItem(string Id, int Ordinal, string Status)
         AssetId = c.Text("asset_id"),
         ContentUrl = c.Text("content_url"),
         Favorite = c.Flag("is_favorite"),
+        IsSelected = c.Flag("is_selected"),
         VersionState = c.Text("version_state", "CURRENT"),
         StoryboardVersion = c.Text("storyboard_version"),
         BatchId = c.Text("batch_id"),
@@ -378,7 +391,7 @@ public record ExportItem(string Id, string ExportType)
     {
         FileName = e.Text("file_name"),
         PageCount = e.Number("page_count"),
-        FileSize = e.Number("file_size"),
+        FileSize = e.Element("byte_size").ValueKind == JsonValueKind.Number && e.Element("byte_size").TryGetInt64(out var bytes) ? bytes : 0,
         Url = e.Text("download_url"),
         CreatedAt = e.Text("created_at"),
     };

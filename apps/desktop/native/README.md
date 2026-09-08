@@ -59,5 +59,10 @@ dotnet build apps/desktop/native-tests/MangaFlow.Native.Tests.csproj -c Release 
 的项目创建、参考选择提交、重复提交保护和局部编辑预览/确认/撤回检查。
 用量回归覆盖分页筛选保持、迟到首屏/续页隔离和重复加载拦截。模拟 HTTP 检查不会调用供应商。
 
+2026-09-08 任务中心续作：`NativeJobsChecks` 随 `--render` 运行，覆盖真实 JobRead
+字段、历史切换、迟到读写隔离、单项/批量操作去重与失败恢复、空列表刷新、稳定控件、
+日期分组和调用明细分页。任务页预览名为 `native-jobs-{940,1320}.png`，调用详情为
+`native-job-details.png`；均为样例数据。完整 Release 编译当前有 36 条既有警告、0 错误。
+
 2026-09-07 首次原生实机已验证主窗口启动并连接隔离数据目录的真实 API；
 用户接管调试后未继续自动操作窗口。网页风格版本使用离屏渲染验证。

@@ -41,6 +41,11 @@ Windows 原生客户端位于 `apps/desktop/native`，以 WPF 重绘工作台界
 检查源图仍为当前采用候选。`UsageAttemptFeed` 固定一轮游标遍历的筛选快照并隔离迟到响应。
 原生层未增加数据库 schema 或服务端状态机，迁移与验收边界见 [原生 UI 迁移清单](native-ui-migration.md)。
 
+原生任务中心按 `JobRead` 的标量费用、币种和完整度展示估算；`JobDetailsWindow`
+只读消费现有 `/usage/attempts`，固定项目/任务作用域，按 50 条游标分页加载派发记录。
+列表读取以请求代次隔离历史切换，写操作以视图激活代次拒绝跨项目迟到 UI 更新；
+客户端不重试写请求，不承担供应商计价、数据库事务或任务状态机所有权。
+
 ## 3. 代码结构
 
 ```text

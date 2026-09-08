@@ -23,6 +23,14 @@ public sealed class JobsView : WorkspaceView
     private bool archivedView;
     private readonly HashSet<string> selected = [];
     private readonly HashSet<string> pending = [];
+    private CancellationTokenSource? listRequest;
+    private long requestVersion;
+    private long activationVersion;
+    private bool loading;
+    private bool bulkPending;
+    private bool listFailed;
+    private string lastResponse = "";
+    private readonly HashSet<string> expandedDates = [];
 
     public JobsView()
     {
@@ -48,7 +56,7 @@ public sealed class JobsView : WorkspaceView
         header.Child = new PageHeading(heading, count);
         panel.Children.Add(header);
 
-        var toolbar = new DockPanel { Margin = new Thickness(0, 0, 0, 14) };
+        var toolbar = new DockPanel { LastChildFill = false, Margin = new Thickness(0, 0, 0, 14) };
         var tabs = new StackPanel { Orientation = Orientation.Horizontal };
         recentTab.Margin = new Thickness(0, 0, 8, 0);
         tabs.Children.Add(recentTab);
@@ -70,6 +78,8 @@ public sealed class JobsView : WorkspaceView
 
     private void SwitchView(bool history)
     {
+        recentTab.IsChecked = !history;
+        historyTab.IsChecked = history;
         if (archivedView == history) return;
         archivedView = history;
         recentTab.IsChecked = !history;
@@ -77,28 +87,70 @@ public sealed class JobsView : WorkspaceView
         selected.Clear();
         notice.Text = "";
         archiveAll.Visibility = history ? Visibility.Collapsed : Visibility.Visible;
-        Render();
+        jobs.Clear();
+        lastResponse = "";
+        expandedDates.Clear();
+        _ = LoadAsync();
     }
 
     public override async void Activate(WorkspaceContext context)
     {
         base.Activate(context);
+        activationVersion++;
+        jobs.Clear();
+        selected.Clear();
+        pending.Clear();
+        expandedDates.Clear();
+        bulkPending = false;
+        notice.Text = "";
+        lastResponse = "";
         await LoadAsync();
+    }
+
+    public override void Deactivate()
+    {
+        activationVersion++;
+        requestVersion++;
+        listRequest?.Cancel();
+        listRequest?.Dispose();
+        listRequest = null;
+        base.Deactivate();
     }
 
     private async Task LoadAsync()
     {
+        listRequest?.Cancel();
+        listRequest?.Dispose();
+        listRequest = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+        var token = listRequest.Token;
+        var version = ++requestVersion;
+        loading = true;
+        if (lastResponse.Length == 0)
+        {
+            body.Children.Clear();
+            body.Children.Add(Caption("正在读取任务…"));
+            State.JobHint = "正在读取…";
+        }
         try
         {
             var rows = await Api.SendAsync(
                 QueryBuilder.Build($"projects/{ProjectId}/jobs", ("archived", archivedView ? "true" : "false")),
-                cancellation: lifetime.Token);
-            if (lifetime.Token.IsCancellationRequested) return;
+                cancellation: token);
+            if (token.IsCancellationRequested || version != requestVersion) return;
+            listFailed = false;
+            if (lastResponse == rows.GetRawText()) return;
+            lastResponse = rows.GetRawText();
             jobs = rows.EnumerateArray().Select(JobItem.From).ToList();
+            selected.IntersectWith(jobs.Where(j => j.Terminal).Select(j => j.Id));
             Render();
         }
-        catch (Exception error) when (error is not OperationCanceledException)
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception error)
         {
+            if (token.IsCancellationRequested || version != requestVersion) return;
+            lastResponse = "";
+            listFailed = true;
+            State.JobHint = "读取失败";
             body.Children.Clear();
             var stack = new StackPanel();
             stack.Children.Add(new TextBlock { Text = $"任务列表读取失败：{error.Message}", TextWrapping = TextWrapping.Wrap });
@@ -108,11 +160,13 @@ public sealed class JobsView : WorkspaceView
             stack.Children.Add(retry);
             body.Children.Add(new Border { Style = (Style)Application.Current.FindResource("Card"), Padding = new Thickness(20), Child = stack });
         }
+        finally { if (version == requestVersion) loading = false; }
     }
 
     private void Render()
     {
         body.Children.Clear();
+        archiveAll.IsEnabled = !bulkPending && pending.Count == 0;
         State.JobHint = jobs.Count == 0 ? "" : $"{jobs.Count} 个任务";
         if (jobs.Count == 0)
         {
@@ -143,12 +197,25 @@ public sealed class JobsView : WorkspaceView
             body.Children.Add(SectionLabel($"失败任务 · {failed.Count} 条 · 展开查看错误与重试"));
             foreach (var job in failed) body.Children.Add(Row(job));
         }
-        body.Children.Add(SectionLabel($"{(archivedView ? "已归档" : "已结束")} · {finished.Count} 条"));
-        foreach (var job in finished) body.Children.Add(Row(job));
+        foreach (var group in finished.GroupBy(j => DateTimeOffset.TryParse(j.CreatedAt, out var date)
+            ? date.ToLocalTime().ToString("yyyy-MM-dd") : "日期未知"))
+        {
+            var rows = new StackPanel();
+            foreach (var job in group) rows.Children.Add(Row(job));
+            var expander = new Expander
+            {
+                Header = $"{group.Key} · {group.Count()} 条{(archivedView ? "已归档" : "已结束")}任务",
+                Content = rows, IsExpanded = expandedDates.Contains(group.Key), Margin = new Thickness(0, 12, 0, 0),
+            };
+            expander.Expanded += (_, _) => expandedDates.Add(group.Key);
+            expander.Collapsed += (_, _) => expandedDates.Remove(group.Key);
+            body.Children.Add(expander);
+        }
         if (!archivedView && selected.Count > 0)
         {
             var bar = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 12, 0, 0) };
             var bulk = Act($"归档已选（{selected.Count}）", BulkArchive, "Compact");
+            bulk.IsEnabled = !bulkPending && pending.Count == 0;
             bar.Children.Add(bulk);
             body.Children.Add(bar);
         }
@@ -178,6 +245,8 @@ public sealed class JobsView : WorkspaceView
         {
             var box = new CheckBox { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) };
             box.IsChecked = selected.Contains(job.Id);
+            box.IsEnabled = !bulkPending && !pending.Contains(job.Id);
+            System.Windows.Automation.AutomationProperties.SetName(box, $"选择{job.Name}");
             box.Click += (_, _) =>
             {
                 if (box.IsChecked == true) selected.Add(job.Id);
@@ -187,7 +256,7 @@ public sealed class JobsView : WorkspaceView
             grid.Children.Add(box);
         }
         var info = new StackPanel();
-        var titleRow = new StackPanel { Orientation = Orientation.Horizontal };
+        var titleRow = new WrapPanel();
         titleRow.Children.Add(new TextBlock { Text = job.Name, FontWeight = FontWeights.Bold, FontSize = 14 });
         var status = new TextBlock
         {
@@ -217,14 +286,15 @@ public sealed class JobsView : WorkspaceView
         if (job.NodeName.Length > 0) detailParts.Add(job.NodeName);
         else if (job.ModelName.Length > 0) detailParts.Add(job.ModelName);
         else detailParts.Add("系统任务");
-        if (job.Duration > 0) detailParts.Add($"耗时 {job.Duration:0.#} 秒");
-        else if (!job.Terminal) detailParts.Add("尚未完成");
+        if (job.HasDuration) detailParts.Add($"耗时 {job.Duration:0.0} 秒");
+        else detailParts.Add("尚未完成");
         var cost = job.CostLabel;
         if (cost.Length > 0) detailParts.Add(cost);
         var detail = Caption(string.Join(" · ", detailParts));
+        detail.TextWrapping = TextWrapping.Wrap;
         detail.Margin = new Thickness(0, 7, 0, 0);
         info.Children.Add(detail);
-        if (job.State == "FAILED" && job.ErrorLabel.Length > 0)
+        if (job.ErrorLabel.Length > 0)
         {
             var reason = new TextBlock
             {
@@ -237,16 +307,17 @@ public sealed class JobsView : WorkspaceView
         grid.Children.Add(info);
         Grid.SetColumn(info, 1);
 
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        var actions = new WrapPanel { MaxWidth = 210, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0) };
+        actions.Children.Add(Act("调用与成本", (_, _) => new JobDetailsWindow(Host, Api, ProjectId, job).ShowDialog(), "Compact"));
         if (job.ResultImageUrl.Length > 0)
             actions.Children.Add(Act("查看结果", (_, _) => OpenImage(job.ResultImageUrl, job.Name), "Compact"));
-        if (job.CanCancel)
+        if (!archivedView && job.CanCancel)
         {
             var cancel = Act("取消", async (_, _) => await JobAction(job, "cancel", "取消任务"), "Compact");
             cancel.Margin = new Thickness(6, 0, 0, 0);
             actions.Children.Add(cancel);
         }
-        if (job.CanRetry)
+        if (!archivedView && job.CanRetry)
         {
             var retry = Act("重试", async (_, _) =>
             {
@@ -281,6 +352,8 @@ public sealed class JobsView : WorkspaceView
             }
         }
         grid.Children.Add(actions);
+        foreach (var button in actions.Children.OfType<Button>())
+            button.IsEnabled = !bulkPending && !pending.Contains(job.Id);
         Grid.SetColumn(actions, 2);
         row.Child = grid;
         if (job.ResultImageUrl.Length > 0)
@@ -290,15 +363,21 @@ public sealed class JobsView : WorkspaceView
 
     private async Task JobAction(JobItem job, string action, string label, bool useDelete = false)
     {
-        if (pending.Contains(job.Id)) return;
+        if (bulkPending || pending.Contains(job.Id)) return;
+        var version = activationVersion;
+        var token = lifetime.Token;
+        var projectId = ProjectId;
+        var cache = Cache;
         pending.Add(job.Id);
         Render();
         try
         {
             if (useDelete)
-                await Api.SendOptionalAsync($"jobs/{job.Id}", HttpMethod.Delete, cancellation: lifetime.Token);
+                await Api.SendOptionalAsync($"jobs/{job.Id}?project_id={projectId}", HttpMethod.Delete, cancellation: token);
             else
-                await Api.SendAsync($"jobs/{job.Id}/{action}?project_id={ProjectId}", HttpMethod.Post, cancellation: lifetime.Token);
+                await Api.SendAsync($"jobs/{job.Id}/{action}?project_id={projectId}", HttpMethod.Post, cancellation: token);
+            cache.Invalidate("jobs:" + projectId);
+            if (token.IsCancellationRequested || version != activationVersion) return;
             notice.Text = label switch
             {
                 "取消任务" => "任务已请求取消",
@@ -309,60 +388,86 @@ public sealed class JobsView : WorkspaceView
                 _ => "操作已完成",
             };
             await LoadAsync();
-            Cache.Invalidate("jobs:" + ProjectId);
         }
-        catch (Exception error) when (error is not OperationCanceledException)
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception error)
         {
-            notice.Text = $"{label}失败：{error.Message}";
+            if (!token.IsCancellationRequested && version == activationVersion)
+                notice.Text = $"{label}失败：{error.Message}";
         }
         finally
         {
-            pending.Remove(job.Id);
+            if (version == activationVersion)
+            {
+                pending.Remove(job.Id);
+                // Re-enable existing buttons without replacing an error/retry panel.
+                UpdateActionAvailability();
+            }
         }
     }
 
     private async void ArchiveAllCompleted(object sender, RoutedEventArgs e)
     {
+        if (bulkPending || pending.Count > 0) return;
         if (MessageBox.Show(Host, "将所有已完成、失败和已取消任务移入历史记录？生成候选与溯源信息不会删除。",
             "归档全部终态", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
-        try
-        {
-            var result = await Api.SendAsync($"projects/{ProjectId}/jobs/archive-completed", HttpMethod.Post, cancellation: lifetime.Token);
-            notice.Text = result.Number("archived_count") > 0
+        await BulkAction("archive-completed", null, result => result.Number("archived_count") > 0
                 ? $"已归档 {result.Number("archived_count")} 条已结束任务"
-                : "没有可归档的已结束任务";
-            await LoadAsync();
-        }
-        catch (Exception error) when (error is not OperationCanceledException)
-        {
-            notice.Text = $"清空失败：{error.Message}";
-        }
+                : "没有可归档的已结束任务");
     }
 
     private async void BulkArchive(object sender, RoutedEventArgs e)
     {
+        if (selected.Count == 0) return;
+        await BulkAction("bulk-archive", new { job_ids = selected.ToList() },
+            result => $"已批量归档 {result.Array("archived").Count} 条任务");
+    }
+
+    private async Task BulkAction(string action, object? payload, Func<JsonElement, string> message)
+    {
+        if (bulkPending || pending.Count > 0) return;
+        var version = activationVersion;
+        var token = lifetime.Token;
+        var projectId = ProjectId;
+        var cache = Cache;
+        bulkPending = true;
+        Render();
         try
         {
-            var result = await Api.SendAsync($"projects/{ProjectId}/jobs/bulk-archive", HttpMethod.Post,
-                new { job_ids = selected.ToList() }, cancellation: lifetime.Token);
-            notice.Text = $"已批量归档 {result.Array("archived").Count} 条任务";
+            var result = await Api.SendAsync($"projects/{projectId}/jobs/{action}", HttpMethod.Post,
+                payload, cancellation: token);
+            cache.Invalidate("jobs:" + projectId);
+            if (token.IsCancellationRequested || version != activationVersion) return;
+            notice.Text = message(result);
             selected.Clear();
             await LoadAsync();
         }
-        catch (Exception error) when (error is not OperationCanceledException)
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception error)
         {
-            notice.Text = $"批量归档失败：{error.Message}";
+            if (!token.IsCancellationRequested && version == activationVersion)
+                notice.Text = $"归档失败：{error.Message}";
         }
+        finally
+        {
+            if (version == activationVersion)
+            {
+                bulkPending = false;
+                UpdateActionAvailability();
+            }
+        }
+    }
+
+    private void UpdateActionAvailability()
+    {
+        archiveAll.IsEnabled = !bulkPending && pending.Count == 0;
+        if (!listFailed) Render();
     }
 
     public override void PollTick()
     {
-        if (jobs.Any(j => j.Active)) _ = LoadAsync();
+        if (!lifetime.IsCancellationRequested && !loading && !bulkPending && pending.Count == 0) _ = LoadAsync();
     }
 
-    public override Task RefreshAsync()
-    {
-        _ = LoadAsync();
-        return Task.CompletedTask;
-    }
+    public override Task RefreshAsync() => LoadAsync();
 }

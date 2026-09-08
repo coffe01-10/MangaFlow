@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http;
 using System.Reflection;
+using System.IO;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -12,7 +13,25 @@ using MangaFlow.Native.Views;
 
 internal static class NativeInteractionChecks
 {
-    public static void Run()
+    public static void Run(string output)
+    {
+        var preferencesRoot = Path.Combine(Path.GetTempPath(), "mangaflow-interaction-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(preferencesRoot);
+        var preferencesFile = Path.Combine(preferencesRoot, "prefs.json");
+        File.WriteAllText(preferencesFile, "{}");
+        var previousLocation = (string)typeof(KeyValueStore).GetField("path", BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null)!;
+        KeyValueStore.UseLocation(preferencesFile);
+        try { RunIsolated(output); }
+        finally
+        {
+            KeyValueStore.UseLocation(previousLocation);
+            File.Delete(preferencesFile);
+            File.Delete(preferencesFile + ".tmp");
+            Directory.Delete(preferencesRoot);
+        }
+    }
+
+    private static void RunIsolated(string output)
     {
         Exception? failure = null;
         var frame = new DispatcherFrame();
@@ -21,7 +40,7 @@ internal static class NativeInteractionChecks
         timeout.Start();
         Dispatcher.CurrentDispatcher.BeginInvoke(new Action(async () =>
         {
-            try { await Creation(); await Generation(); await LocalEdit(); }
+            try { await Creation(); await Generation(); await LocalEdit(); await NativeJobsChecks.Run(output); await NativeLibraryChecks.Run(output); }
             catch (Exception error) { failure = error; }
             finally { frame.Continue = false; }
         }));

@@ -3,6 +3,53 @@ using System.Windows.Controls;
 
 namespace MangaFlow.Native.Controls;
 
+/// <summary>Preserves the web artwork's 3:4 ratio while its grid cell changes width.</summary>
+public sealed class ArtworkFrame : Decorator
+{
+    protected override Size MeasureOverride(Size constraint)
+    {
+        var width = double.IsFinite(constraint.Width) ? Math.Max(0, constraint.Width) : 210;
+        var size = new Size(width, width * 4 / 3);
+        Child?.Measure(size);
+        return size;
+    }
+    protected override Size ArrangeOverride(Size size)
+    {
+        Child?.Arrange(new Rect(size));
+        return size;
+    }
+}
+
+/// <summary>Batch groups occupy one to three 280-DIP columns, in source order like the web grid.</summary>
+public sealed class BatchPanel : Panel
+{
+    private const double Gap = 16;
+    private double Layout(double width, bool arrange)
+    {
+        var columns = Math.Max(1, (int)Math.Floor((width + Gap) / (280 + Gap)));
+        var cell = Math.Max(0, (width - Gap * (columns - 1)) / columns);
+        double top = 0, height = 0;
+        var column = 0;
+        foreach (UIElement child in InternalChildren)
+        {
+            var span = Math.Clamp(Grid.GetColumnSpan(child), 1, columns);
+            if (column + span > columns) { top += height + Gap; height = 0; column = 0; }
+            var childWidth = cell * span + Gap * (span - 1);
+            if (!arrange) child.Measure(new Size(childWidth, double.PositiveInfinity));
+            else child.Arrange(new Rect(column * (cell + Gap), top, childWidth, child.DesiredSize.Height));
+            height = Math.Max(height, child.DesiredSize.Height);
+            column += span;
+        }
+        return top + height;
+    }
+    protected override Size MeasureOverride(Size constraint)
+    {
+        var width = double.IsFinite(constraint.Width) ? Math.Max(0, constraint.Width) : 280;
+        return new Size(width, Layout(width, false));
+    }
+    protected override Size ArrangeOverride(Size size) { Layout(size.Width, true); return size; }
+}
+
 /// <summary>Equal-width web-style cards; wrapping never gives a child more width than its cell.</summary>
 public sealed class TilePanel : Panel
 {
