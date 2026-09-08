@@ -122,6 +122,11 @@ await new Promise((resolve) => server.listen(STATIC_PORT, "127.0.0.1", resolve))
 // would mask the breach.
 {
   const traversal = await new Promise((settle) => {
+    const timer = setTimeout(() => sock.destroy(), 3000);
+    const settleOnce = (raw) => {
+      clearTimeout(timer);
+      settle(raw);
+    };
     const sock = connect(STATIC_PORT, "127.0.0.1", () => {
       sock.write(
         "GET /%2e%2e/%2e%2e/%2e%2e/%2e%2e/package.json HTTP/1.1\r\n" +
@@ -131,9 +136,8 @@ await new Promise((resolve) => server.listen(STATIC_PORT, "127.0.0.1", resolve))
     let raw = "";
     sock.setEncoding("latin1");
     sock.on("data", (chunk) => { raw += chunk; });
-    sock.on("close", () => settle(raw));
-    sock.on("error", () => settle(raw));
-    setTimeout(() => sock.destroy(), 3000);
+    sock.on("close", () => settleOnce(raw));
+    sock.on("error", () => settleOnce(raw));
   });
   const status = Number(traversal.split("\r\n")[0]?.split(" ")[1] ?? 0);
   if (status !== 404) {
