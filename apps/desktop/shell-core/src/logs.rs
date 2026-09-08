@@ -243,24 +243,30 @@ fn shift_generations_up(
         if let Some(staging) = rotation_oldest_staging_path(base) {
             let leftover = fs::symlink_metadata(&staging).is_ok();
             let keep_occupied = fs::symlink_metadata(&oldest).is_ok();
-            if leftover && !keep_occupied {
-                // A staging leftover with an empty `.keep` slot is the
-                // oldest generation a previous failed rotation could not
-                // rename back — genuine history, not residue. Retry the
-                // restore; if that fails, skip this rotation entirely
-                // rather than reshuffle generations around a stranded copy.
-                if fs::rename(&staging, &oldest).is_err() {
-                    eprintln!(
-                        "mangaflow-desktop: rotation could not restore the staged oldest generation {}; skipping this rotation",
-                        oldest.display()
-                    );
-                    return Ok((Vec::new(), None));
-                }
-            } else if leftover {
-                // The slot is occupied, so a staging leftover is residue of
-                // an already-completed rotation whose drop failed — safe to
-                // clear before staging.
-                remove_file_if_exists(&staging)?;
+            if leftover {
+                // A staging leftover next to an occupied `.keep` cannot be
+                // proven to be residue: it may be the oldest generation a
+                // failed unwind could not rename back (double failure), and
+                // deleting it would destroy history. Fail the rotation and
+                // report instead — the stranded copy stays inspectable and
+                // recovery is a deliberate manual step. (The empty-slot
+                // case below is the provable restore-retry: there the
+                // leftover can only be that history, so renaming it back
+                // is always safe.)
+                let error = std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "stale rotation staging sibling; remove it manually after inspection",
+                );
+                eprintln!(
+                    "mangaflow-desktop: rotation could not restore the staged oldest generation {}; skipping this rotation",
+                    oldest.display()
+                );
+                return Err(error);
+            }
+            if !keep_occupied {
+                // No `.keep` slot and no leftover: nothing to drop. Fall
+                // through — the shift below has no oldest generation to
+                // stage (its NotFound arm handles that).
             }
             match fs::rename(&oldest, &staging) {
                 Ok(()) => staged_oldest = Some(staging),
@@ -322,9 +328,20 @@ fn shift_generations_up(
 fn restore_staged_oldest(staged: &Option<PathBuf>, base: &Path, keep: usize) {
     if let Some(staged) = staged {
         if let Some(oldest) = generation_path(base, keep) {
+            // POSIX rename would silently replace an occupied slot — if the
+            // unwind failed mid-way and left a displaced generation there,
+            // the restore must not clobber it. Leave the staging copy in
+            // place instead: the next attempt's self-heal branch treats it
+            // as history and fails the rotation rather than deleting it.
+            let slot_occupied = fs::symlink_metadata(&oldest).is_ok();
             if let Err(error) = fs::rename(staged, &oldest) {
                 eprintln!(
                     "mangaflow-desktop: rotation rollback could not restore {}: {error}",
+                    oldest.display()
+                );
+            } else if slot_occupied {
+                eprintln!(
+                    "mangaflow-desktop: rotation rollback restored {} over an occupied slot",
                     oldest.display()
                 );
             }
@@ -830,10 +847,16 @@ fn collect_members(
             });
             continue;
         }
-        if name.ends_with(".rotating") || name.ends_with(".rotating-oldest") {
-            // Rotation staging debris (a drop or rollback that failed mid
-            // rotation): never a history member, and archiving it would
-            // duplicate the oldest generation under a second name.
+        let staging_debris = name
+            .strip_suffix(".rotating")
+            .or_else(|| name.strip_suffix(".rotating-oldest"))
+            .is_some_and(is_rotatable_base_name);
+        if staging_debris {
+            // Rotation staging debris of a rotatable base (a drop or
+            // rollback that failed mid rotation): never a history member,
+            // and archiving it would duplicate the oldest generation under
+            // a second name. A user file that merely ends in ".rotating"
+            // is NOT covered — it archives like any other member.
             skipped.push(SkippedEntry {
                 name: member,
                 reason: "rotation_staging".into(),
@@ -1150,11 +1173,14 @@ fn place_archive(
         match fs::rename(pending, destination) {
             Ok(()) => return Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                fs::remove_file(destination).map_err(ExportError::Io)?;
-                fs::rename(pending, destination).map_err(|error| {
+                if let Err(remove_error) = fs::remove_file(destination) {
                     let _ = remove_file_if_exists(pending);
-                    ExportError::Io(error)
-                })?;
+                    return Err(ExportError::Io(remove_error));
+                }
+                if let Err(rename_error) = fs::rename(pending, destination) {
+                    let _ = remove_file_if_exists(pending);
+                    return Err(ExportError::Io(rename_error));
+                }
                 return Ok(());
             }
             Err(error) => {
