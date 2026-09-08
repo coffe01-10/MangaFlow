@@ -565,7 +565,9 @@ mod tests {
     }
 
     /// A junction/symlink planted at a runtime-directory name is never
-    /// removed through (Unix: real symlink; Windows: skipped entry type).
+    /// removed through (Unix: real symlink; Windows: junction via
+    /// `mklink /J`, which needs no privilege — otherwise the Windows leg
+    /// of this test would be a vacuous pass).
     #[test]
     fn sweep_never_removes_through_planted_links() {
         let user_data = std::env::temp_dir().join(format!(
@@ -585,19 +587,43 @@ mod tests {
             serde_json::json!({"version": 1, "token": "7".repeat(32), "state": "stopped"}).to_string(),
         )
         .unwrap();
+        std::fs::create_dir_all(user_data.join("runtime")).unwrap();
+        let planted = user_data
+            .join("runtime")
+            .join(format!("{RUNTIME_DIR_PREFIX}{}", "7".repeat(32)));
         #[cfg(unix)]
         {
-            std::fs::create_dir_all(user_data.join("runtime")).unwrap();
-            std::os::unix::fs::symlink(
-                &outside,
-                user_data
-                    .join("runtime")
-                    .join(format!("{RUNTIME_DIR_PREFIX}{}", "7".repeat(32))),
-            )
-            .unwrap();
+            std::os::unix::fs::symlink(&outside, &planted).unwrap();
             sweep_runtime_dirs_with(&user_data, 0).unwrap();
             // The link entry is not a dir from read_dir's file_type: skipped,
             // and the target directory survives untouched.
+            assert!(outside.join(JOURNAL_NAME).exists());
+            let _ = std::fs::remove_file(&planted);
+        }
+        #[cfg(windows)]
+        {
+            // A junction is the privilege-free Windows equivalent of a
+            // planted link; whichever guard fires (entry file type or the
+            // canonical containment — the junction resolves outside the
+            // runtime root), the target must survive.
+            let output = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&planted)
+                .arg(&outside)
+                .output()
+                .expect("run mklink /J");
+            assert!(
+                output.status.success(),
+                "mklink /J failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            sweep_runtime_dirs_with(&user_data, 0).unwrap();
+            assert!(
+                outside.join(JOURNAL_NAME).exists(),
+                "junction target must survive the sweep"
+            );
+            // remove_dir on a junction removes the link, not the target.
+            let _ = std::fs::remove_dir(&planted);
             assert!(outside.join(JOURNAL_NAME).exists());
         }
         let _ = std::fs::remove_dir_all(&user_data);

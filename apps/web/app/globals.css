@@ -1608,8 +1608,10 @@ p { font-size: var(--text-body) !important; }
 .style-production-record .profile-record-actions { grid-column: 1 / -1; justify-content: flex-start; }
 .style-production-record .profile-record-actions button { padding: 0 14px; font-size: 13px !important; }
 .style-production-record .style-production-pipeline { margin-top: 2px; }
-/* 生产准备“去处理”深链（?style=）定位高亮 */
-.deep-link-focus { outline: 2px solid #d97706; outline-offset: 3px; }
+/* 生产准备“去处理”深链（?style=）定位高亮。用 box-shadow 而非 outline：
+   视觉系统只允许一条全局 :focus-visible outline 规则（见
+   desktop-visual-system.test.ts），outline 样式一律留给键盘焦点环。 */
+.deep-link-focus { box-shadow: 0 0 0 3px var(--vermillion); border-radius: 6px; }
 .pipeline-stage { padding: 14px; gap: 12px; }
 .pipeline-stage p { color: #625d55; line-height: 1.6; }
 

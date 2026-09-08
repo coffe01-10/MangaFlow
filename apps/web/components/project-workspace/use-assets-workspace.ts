@@ -128,7 +128,6 @@ export function useAssetsWorkspace({
     if (!target) return;
     outfitDeepLinkRef.current = true;
     beginOutfitEdit(target);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- beginOutfitEdit 每次渲染重建；一次性深链效果由 ref 守卫，与上方 formSeededRef 同一模式。
   }, [initialOutfitId, outfits.data]);
   const selectedOutfitFiles = assets.data?.filter((item) => selectedOutfitAssets.includes(item.id)) ?? [];
   const generatedReferenceCandidates = useMemo(

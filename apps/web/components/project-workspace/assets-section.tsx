@@ -72,6 +72,9 @@ export function AssetsSection({
   // 生产准备“去处理”深链带 ?style=：高亮并滚到目标风格档案（与 ?outfit=
   // 直接进入编辑态同一意图；风格档案没有独立编辑态，高亮即定位）。
   const focusStyleRef = useRef<HTMLElement | null>(null);
+  // 滚动只在定位目标变化时做一次：styles 轮询（ANALYZING 每 2.5s）和
+  // invalidation 会持续产生新的 data 身份，无守卫会把视口反复拽回目标行。
+  const focusScrolledFor = useRef<string | null>(null);
   const styleDeepLinked = (styleId: string) => Boolean(focusStyleId) && styleId === focusStyleId;
   const {
     assetKind,
@@ -145,7 +148,10 @@ export function AssetsSection({
   } = workspace;
   useEffect(() => {
     if (!focusStyleId) return;
-    focusStyleRef.current?.scrollIntoView({ block: "center" });
+    if (focusScrolledFor.current === focusStyleId) return;
+    if (!focusStyleRef.current) return; // 目标行尚未挂载（数据未到），等下一次 data 到达
+    focusScrolledFor.current = focusStyleId;
+    focusStyleRef.current.scrollIntoView({ block: "center" });
   }, [focusStyleId, styles.data]);
   const visibleAssetKinds = assetView === "references"
     ? kinds

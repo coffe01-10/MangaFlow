@@ -335,6 +335,18 @@ export function LocalEditWorkspace({
   }, []);
 
   // --- keyboard shortcuts (audit §8; never while typing) -----------------
+  // Synchronous in-flight guard: the visible button disables itself while
+  // discard.isPending, but the keyboard path must not double-fire either —
+  // a fast double-Esc issues a second discard that 404s and replaces the
+  // notice. The ref survives the stale closures this keyed effect keeps.
+  const discardingRef = useRef(false);
+  const discardPreview = () => {
+    if (discardingRef.current) return;
+    discardingRef.current = true;
+    discard.mutate(previewGroup!.command_group_id, {
+      onSettled: () => { discardingRef.current = false; },
+    });
+  };
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
@@ -400,15 +412,6 @@ export function LocalEditWorkspace({
   // (same dedupe discipline as the jobs cancel/retry buttons).
   const submittingRef = useRef(false);
   const acceptingRef = useRef(false);
-  const discardingRef = useRef(false);
-
-  const discardPreview = () => {
-    if (discardingRef.current) return;
-    discardingRef.current = true;
-    discard.mutate(previewGroup!.command_group_id, {
-      onSettled: () => { discardingRef.current = false; },
-    });
-  };
 
   const submitPreview = () => {
     if (submittingRef.current || locked) return;

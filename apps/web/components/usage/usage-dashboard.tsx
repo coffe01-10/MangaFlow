@@ -300,7 +300,7 @@ export function UsageDashboard() {
       <footer className="usage-disclaimer">
         <p>
           计量语义：账单（对账导入）与估算（价格表推算）永不相加；不同币种不做隐式换算；未知 ≠ 0；CLI 通道费用未知 ≠ 免费。
-          通道筛选作用于调用明细；汇总接口按时间/项目/供应商/模型聚合。
+          通道筛选同时作用于调用明细与汇总（KPI、趋势、构成及对账行）。
         </p>
       </footer>
     </div>
