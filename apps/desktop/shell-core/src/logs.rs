@@ -243,30 +243,36 @@ fn shift_generations_up(
         if let Some(staging) = rotation_oldest_staging_path(base) {
             let leftover = fs::symlink_metadata(&staging).is_ok();
             let keep_occupied = fs::symlink_metadata(&oldest).is_ok();
-            if leftover {
+            if leftover && keep_occupied {
                 // A staging leftover next to an occupied `.keep` cannot be
                 // proven to be residue: it may be the oldest generation a
                 // failed unwind could not rename back (double failure), and
                 // deleting it would destroy history. Fail the rotation and
                 // report instead — the stranded copy stays inspectable and
-                // recovery is a deliberate manual step. (The empty-slot
-                // case below is the provable restore-retry: there the
-                // leftover can only be that history, so renaming it back
-                // is always safe.)
+                // recovery is a deliberate manual step.
                 let error = std::io::Error::new(
                     std::io::ErrorKind::Other,
                     "stale rotation staging sibling; remove it manually after inspection",
                 );
                 eprintln!(
-                    "mangaflow-desktop: rotation could not restore the staged oldest generation {}; skipping this rotation",
+                    "mangaflow-desktop: rotation could not restore the staged oldest generation {}; failing this rotation",
                     oldest.display()
                 );
                 return Err(error);
             }
-            if !keep_occupied {
-                // No `.keep` slot and no leftover: nothing to drop. Fall
-                // through — the shift below has no oldest generation to
-                // stage (its NotFound arm handles that).
+            if leftover && !keep_occupied {
+                // Empty `.keep` slot + leftover is the provable case: the
+                // leftover can only be the oldest generation a previous
+                // failed rotation could not restore. Retry that restore;
+                // if even it fails, skip this rotation entirely rather
+                // than reshuffle generations around a stranded copy.
+                if fs::rename(&staging, &oldest).is_err() {
+                    eprintln!(
+                        "mangaflow-desktop: rotation could not restore the staged oldest generation {}; skipping this rotation",
+                        oldest.display()
+                    );
+                    return Ok((Vec::new(), None));
+                }
             }
             match fs::rename(&oldest, &staging) {
                 Ok(()) => staged_oldest = Some(staging),
@@ -333,15 +339,17 @@ fn restore_staged_oldest(staged: &Option<PathBuf>, base: &Path, keep: usize) {
             // the restore must not clobber it. Leave the staging copy in
             // place instead: the next attempt's self-heal branch treats it
             // as history and fails the rotation rather than deleting it.
-            let slot_occupied = fs::symlink_metadata(&oldest).is_ok();
+            if fs::symlink_metadata(&oldest).is_ok() {
+                eprintln!(
+                    "mangaflow-desktop: rotation rollback found {} occupied; the staged copy stays at {}",
+                    oldest.display(),
+                    staged.display()
+                );
+                return;
+            }
             if let Err(error) = fs::rename(staged, &oldest) {
                 eprintln!(
                     "mangaflow-desktop: rotation rollback could not restore {}: {error}",
-                    oldest.display()
-                );
-            } else if slot_occupied {
-                eprintln!(
-                    "mangaflow-desktop: rotation rollback restored {} over an occupied slot",
                     oldest.display()
                 );
             }
@@ -408,7 +416,11 @@ fn rotate_file(
     };
     // A leftover staging file means an earlier rollback also failed; clear
     // it before re-staging. If it cannot be removed, stop here — no
-    // generation has been touched yet.
+    // generation has been touched yet. (Asymmetry, deliberate: this sibling
+    // holds the OVERSIZED base content at rotation time — a file whose
+    // rotation can simply be retried — while a `.rotating-oldest` leftover
+    // holds the oldest HISTORY generation, which is why that one is never
+    // deleted unconditionally; see shift_generations_up.)
     remove_file_if_exists(&staging)?;
     // The critical gate: a base that cannot be renamed (locked without
     // FILE_SHARE_DELETE) fails HERE, before any generation is shifted or
@@ -1038,7 +1050,8 @@ fn export_logs_with(
         // below. The read is capped one byte PAST the limit instead: a
         // member at exactly the cap is read whole and included, one that
         // grew past it reads back over-cap and fails the re-check as
-        // "changed_during_export" without ever being buffered beyond the cap.
+        // "changed_during_export" without ever being buffered beyond cap+1
+        // cap+1.
         let data = (|| -> std::io::Result<Vec<u8>> {
             use std::io::Read;
             let file = fs::File::open(path)?;
@@ -1243,6 +1256,80 @@ mod tests {
     /// placement, and a directory at the destination makes both the rename
     /// and the removal fail portably (EISDIR).
     #[test]
+    /// A `.rotating-oldest` leftover beside an occupied `.keep` slot
+    /// cannot be proven to be residue: the rotation must FAIL and leave
+    /// both the slot and the leftover untouched (recovery is manual).
+    #[test]
+    fn rotation_fails_and_preserves_an_ambiguous_oldest_staging_leftover() {
+        let user_data = temp_user_data("ambiguousleft");
+        let logs = logs_dir(&user_data);
+        fs::create_dir_all(&logs).unwrap();
+        let logs_canonical = logs.canonicalize().unwrap();
+        let base = logs.join(format!("shell-{}.log", "7".repeat(32)));
+        fs::write(generation_path(&base, 5).unwrap(), "content-5").unwrap();
+        let staging = rotation_oldest_staging_path(&base).unwrap();
+        fs::write(&staging, "possibly-history").unwrap();
+        fs::write(&base, "oversized base").unwrap();
+
+        let result = rotate_file(&base, &logs_canonical, 8, ROTATION_KEEP_GENERATIONS);
+        assert!(result.is_err(), "{result:?}");
+        assert_eq!(
+            fs::read_to_string(generation_path(&base, 5).unwrap()).unwrap(),
+            "content-5"
+        );
+        assert_eq!(fs::read_to_string(&staging).unwrap(), "possibly-history");
+        assert_eq!(fs::read_to_string(&base).unwrap(), "oversized base");
+        let _ = fs::remove_dir_all(&user_data);
+    }
+
+    /// An empty `.keep` slot makes the leftover unambiguously the oldest
+    /// generation a failed rotation could not restore: the self-heal retry
+    /// puts it back and the rotation proceeds normally (the pruned drop at
+    /// the end then removes it, exactly like a normal oldest generation).
+    #[test]
+    fn rotation_self_heals_a_staged_oldest_leftover_into_the_empty_slot() {
+        let user_data = temp_user_data("healleft");
+        let logs = logs_dir(&user_data);
+        fs::create_dir_all(&logs).unwrap();
+        let logs_canonical = logs.canonicalize().unwrap();
+        let base = logs.join(format!("shell-{}.log", "6".repeat(32)));
+        let staging = rotation_oldest_staging_path(&base).unwrap();
+        fs::write(&staging, "content-5").unwrap();
+        fs::write(&base, "oversized base").unwrap();
+
+        let rotated = rotate_file(&base, &logs_canonical, 8, ROTATION_KEEP_GENERATIONS);
+        assert!(rotated.unwrap(), "the rotation must proceed after the heal");
+        assert!(!staging.exists(), "the healed copy is dropped after commit");
+        assert_eq!(
+            fs::read_to_string(generation_path(&base, 1).unwrap()).unwrap(),
+            "oversized base"
+        );
+        let _ = fs::remove_dir_all(&user_data);
+    }
+
+    /// The rollback restore must not rename over an occupied `.keep` slot
+    /// (a double failure strands the displaced generation there); the
+    /// staged copy stays behind for the next attempt's self-heal instead.
+    #[test]
+    fn restore_refuses_to_clobber_an_occupied_oldest_slot() {
+        let user_data = temp_user_data("restoreocc");
+        fs::create_dir_all(logs_dir(&user_data)).unwrap();
+        let base = logs_dir(&user_data).join(format!("shell-{}.log", "8".repeat(32)));
+        fs::write(generation_path(&base, 5).unwrap(), "displaced").unwrap();
+        let staging = rotation_oldest_staging_path(&base).unwrap();
+        fs::write(&staging, "staged-copy").unwrap();
+
+        restore_staged_oldest(&Some(staging.clone()), &base, ROTATION_KEEP_GENERATIONS);
+
+        assert_eq!(
+            fs::read_to_string(generation_path(&base, 5).unwrap()).unwrap(),
+            "displaced",
+            "the occupied slot is untouched"
+        );
+        assert_eq!(fs::read_to_string(&staging).unwrap(), "staged-copy");
+        let _ = fs::remove_dir_all(&user_data);
+    }
+
     fn overwrite_placement_failure_cleans_up_the_pending_sibling() {
         let dir = temp_user_data("placefail");
         let pending = dir.join("archive.zip.pending");
