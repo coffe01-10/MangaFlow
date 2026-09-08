@@ -40,7 +40,7 @@ internal static class NativeInteractionChecks
         timeout.Start();
         Dispatcher.CurrentDispatcher.BeginInvoke(new Action(async () =>
         {
-            try { await Creation(); await Generation(); await LocalEdit(); await NativeJobsChecks.Run(output); await NativeLibraryChecks.Run(output); }
+            try { await Creation(); await Generation(); await LocalEdit(); await NativeJobsChecks.Run(output); await NativeLibraryChecks.Run(output); await NativeDockChecks.Run(output); }
             catch (Exception error) { failure = error; }
             finally { frame.Continue = false; }
         }));

@@ -60,21 +60,44 @@ public sealed class WorkspaceState : Observable
         ChangedAll(nameof(DashboardPageLabel), nameof(HasPreviousPage), nameof(HasNextPage));
     }
 
-    // Queue dock (web QueueDock): latest job + waiting/failed counters.
+    // Queue dock (web QueueDock): latest job + total/running/waiting/failed/completed counters.
     private JobItem? dockJob;
-    private int waitingJobs, failedJobs;
-    private bool dockHidden;
-    public JobItem? DockJob { get => dockJob; set => Set(ref dockJob, value, nameof(DockJob), nameof(DockJobLabel), nameof(DockJobStatus)); }
+    private int runningJobs, waitingJobs, failedJobs, completedJobs, dockTotal;
+    private bool dockHidden, dockActionPending;
+    private string dockNotice = "";
+    public JobItem? DockJob
+    {
+        get => dockJob;
+        set => Set(ref dockJob, value, nameof(DockJob), nameof(DockJobLabel),
+            nameof(DockCancelShown), nameof(DockRetryShown), nameof(DockStatusText));
+    }
     public string DockJobLabel => DockJob is { } job ? $"{job.Name} · {job.StatusLabel}" : "";
-    public string DockJobStatus => DockJob?.StatusLabel ?? "";
-    public int WaitingJobs { get => waitingJobs; set => Set(ref waitingJobs, value, nameof(WaitingJobs), nameof(DockSummary)); }
+    public int RunningJobs { get => runningJobs; set => Set(ref runningJobs, value, nameof(RunningJobs), nameof(DockSummary)); }
+    public int WaitingJobs { get => waitingJobs; set => Set(ref waitingJobs, value, nameof(WaitingJobs), nameof(DockSummary), nameof(DockWaiting)); }
     public int FailedJobs { get => failedJobs; set => Set(ref failedJobs, value, nameof(FailedJobs), nameof(DockSummary)); }
+    public int CompletedJobs { get => completedJobs; set => Set(ref completedJobs, value, nameof(CompletedJobs), nameof(DockSummary)); }
+    public int DockTotal { get => dockTotal; set => Set(ref dockTotal, value, nameof(DockTotal), nameof(DockSummary), nameof(DockCountShown)); }
     public bool DockWaiting => WaitingJobs > 0;
-    public string DockSummary => $"并发上限 {CurrentConcurrency} | {waitingJobs} 等待 | {failedJobs} 失败";
+    public bool DockCountShown => DockTotal > 0;
+    public bool DockActionPending
+    {
+        get => dockActionPending;
+        set => Set(ref dockActionPending, value, nameof(DockActionPending), nameof(DockCancelShown), nameof(DockRetryShown));
+    }
+    public string DockNotice { get => dockNotice; set => Set(ref dockNotice, value, nameof(DockNotice), nameof(DockNoticeShown)); }
+    public bool DockNoticeShown => DockNotice.Length > 0;
+    public bool DockCancelShown => DockJob is { CanCancel: true } && !dockActionPending;
+    public bool DockRetryShown => DockJob is { CanRetry: true } && !dockActionPending;
+    public string DockSummary => $"共 {dockTotal} 项 · {runningJobs} 运行 · {waitingJobs} 等待 · {failedJobs} 失败 · {completedJobs} 完成";
     public string DockIdleLabel => CurrentSection is "jobs" or "generate" ? "当前没有任务" : "查看生成、解析与检查进度";
-    public int CurrentConcurrency { get; set; } = 2;
+    // Web dock headline: latest job label+status when present, idle hint otherwise (never both).
+    public string DockStatusText => DockJob is { } job ? DockJobLabel : DockIdleLabel;
     private string currentSection = "home";
-    public string CurrentSection { get => currentSection; set => Set(ref currentSection, value, nameof(CurrentSection), nameof(DockIdleLabel)); }
+    public string CurrentSection
+    {
+        get => currentSection;
+        set => Set(ref currentSection, value, nameof(CurrentSection), nameof(DockIdleLabel), nameof(DockStatusText));
+    }
     private bool isWorkspace, sidebarCollapsed;
     public bool IsWorkspace { get => isWorkspace; set => Set(ref isWorkspace, value, nameof(IsWorkspace), nameof(DockShown), nameof(DockRestoreShown)); }
     public bool SidebarCollapsed { get => sidebarCollapsed; set => Set(ref sidebarCollapsed, value); }

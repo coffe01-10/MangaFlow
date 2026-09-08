@@ -28,6 +28,7 @@ public partial class MainWindow : Window
     private readonly ApiCache cache = new();
     private readonly Dictionary<string, IWorkspaceView> viewCache = new();
     private ApiClient? api;
+    private DockQueue? dock;
     private Task? connectionTask;
     private CancellationTokenSource? viewRead;
     private IWorkspaceView? activeView;
@@ -77,7 +78,12 @@ public partial class MainWindow : Window
             api = null;
             var origin = await backend.StartAsync(lifetime.Token);
             lifetime.Token.ThrowIfCancellationRequested();
+            // Detach the previous queue first: its in-flight writes must not touch the
+            // shared dock state the replacement is about to own (reconnect path).
+            dock?.Abandon();
+            dock?.Reset();
             api = new ApiClient(origin);
+            dock = new DockQueue(api, state);
             state.Connected = true;
             state.ConnectionLabel = "● 本地服务已连接";
             await LoadDashboardAsync(lifetime.Token);
@@ -385,16 +391,19 @@ public partial class MainWindow : Window
             // old reads first so late responses cannot paint the new project.
             activeView?.Deactivate();
             CancelReads();
+            // Same contract for the dock: drop the previous project's counters so a
+            // slow reply from it can never re-paint after the identity switch.
+            dock?.Reset();
         }
         state.CurrentProject = item;
         preferences.RecentProject = item.Id;
-        state.CurrentConcurrency = 2;
         if (page == "home" || page is "settings-global" or "usage" or "help")
         {
             ProjectSections.SelectedItem = state.Navigation.Current;
             await NavigateAsync(state.Navigation.Current.WebSection);
         }
         else await ActivateCurrentViewAsync();
+        if (dock != null && state.Connected) _ = dock.RefreshAsync(item.Id, lifetime.Token);
     }
 
     private async void SelectProjectSection(object sender, SelectionChangedEventArgs e)
@@ -438,21 +447,11 @@ public partial class MainWindow : Window
         finally { polling = false; }
     }
 
-    private async void PollDock(object? sender, EventArgs e)
+    private void PollDock(object? sender, EventArgs e)
     {
-        if (closing || !state.Connected || api == null || WindowState == WindowState.Minimized ||
-            state.CurrentProject == null) return;
-        try
-        {
-            var rows = await api.SendAsync($"projects/{state.CurrentProject.Id}/jobs?archived=false",
-                cancellation: lifetime.Token);
-            if (lifetime.Token.IsCancellationRequested) return;
-            var jobs = rows.EnumerateArray().Select(JobItem.From).ToList();
-            state.DockJob = jobs.FirstOrDefault();
-            state.WaitingJobs = jobs.Count(j => j.State is "WAITING" or "QUEUED");
-            state.FailedJobs = jobs.Count(j => j.State == "FAILED");
-        }
-        catch (Exception) when (!lifetime.Token.IsCancellationRequested) { }
+        if (closing || !state.Connected || !backend.IsRunning || dock == null ||
+            WindowState == WindowState.Minimized || state.CurrentProject is not { } project) return;
+        _ = dock.RefreshAsync(project.Id, lifetime.Token);
     }
 
     private void OpenJobs(object sender, MouseButtonEventArgs e)
@@ -461,10 +460,30 @@ public partial class MainWindow : Window
         ProjectSections.SelectedItem = ProjectPages.Get(ProjectPageId.Jobs);
     }
 
+    // Dock cancel/retry operate on the latest job; writes are deduplicated in DockQueue
+    // and never retried automatically — a failed action only surfaces its notice.
+    private async void DockCancelJob(object sender, RoutedEventArgs e)
+    {
+        e.Handled = true;
+        if (closing || dock == null || state.CurrentProject is not { } project || state.DockJob is not { CanCancel: true } job) return;
+        await dock.ActAsync(job, "cancel", project.Id, lifetime.Token);
+    }
+
+    private async void DockRetryJob(object sender, RoutedEventArgs e)
+    {
+        e.Handled = true;
+        if (closing || dock == null || state.CurrentProject is not { } project || state.DockJob is not { CanRetry: true } job) return;
+        if (new ConfirmDialog(this, "重试任务", "重试可能再次调用模型并产生费用。确认重试这个任务？", "重试") .ShowDialog() != true) return;
+        // The modal keeps polling; revalidate identity AND retryability before paying again.
+        if (state.CurrentProject?.Id != project.Id || state.DockJob?.Id != job.Id || !state.DockJob.CanRetry) return;
+        await dock.ActAsync(job, "retry", project.Id, lifetime.Token);
+    }
+
     private void HideDock(object sender, RoutedEventArgs e)
     {
         state.DockHidden = true;
         preferences.DockHidden = true;
+        preferences.Save(dataRoot);
         e.Handled = true;
     }
 
@@ -472,6 +491,7 @@ public partial class MainWindow : Window
     {
         state.DockHidden = false;
         preferences.DockHidden = false;
+        preferences.Save(dataRoot);
     }
 
     // ============ Global actions ============

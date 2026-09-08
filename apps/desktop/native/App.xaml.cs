@@ -2,6 +2,7 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Windows;
+using System.Windows.Input;
 
 namespace MangaFlow.Native;
 
@@ -11,6 +12,26 @@ public partial class App : Application
     private EventWaitHandle? activation;
     private RegisteredWaitHandle? activationWait;
     private bool ownsMutex;
+
+    static App()
+    {
+        // Web parity: Enter activates the focused button/toggle exactly like Space.
+        // Applies to every ButtonBase (incl. filter pills, checkboxes) across all windows.
+        EventManager.RegisterClassHandler(typeof(System.Windows.Controls.Primitives.ButtonBase),
+            UIElement.PreviewKeyDownEvent, new KeyEventHandler(ActivateOnEnter));
+    }
+
+    private static void ActivateOnEnter(object sender, KeyEventArgs e)
+    {
+        // Held-down Enter must not machine-gun clicks: real presses fire once per key-down.
+        if (e.Key != Key.Enter || e.IsRepeat || e.Handled || e.OriginalSource != sender) return;
+        e.Handled = true;
+        // Drive the real click pipeline (ButtonBase.OnClick): plain buttons raise Click
+        // and toggles/checkboxes/radios also flip their state.
+        var button = (System.Windows.Controls.Primitives.ButtonBase)sender;
+        button.GetType().GetMethod("OnClick", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+            ?.Invoke(button, null);
+    }
 
     protected override void OnStartup(StartupEventArgs e)
     {

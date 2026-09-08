@@ -120,25 +120,63 @@
    <c:TransitioningContentControl x:Name="ContentHost" Grid.Column="1" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" ClipToBounds="True"/>
   </Grid>
 
-  <!-- Queue dock -->
-  <Border Grid.Row="2" Background="{StaticResource PaperDeep}" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0" Padding="18,7"
-    Visibility="{Binding DockShown, Converter={StaticResource BoolVisibility}}" Cursor="Hand" MouseLeftButtonDown="OpenJobs">
+  <!-- Queue dock (web .queue-dock): ink bar, status dot, counts, latest-job actions -->
+  <Border x:Name="QueueDock" Grid.Row="2" Height="48" Background="{StaticResource Ink}" Padding="20,0,64,0"
+    Visibility="{Binding DockShown, Converter={StaticResource BoolVisibility}}" Cursor="Hand" MouseLeftButtonDown="OpenJobs"
+    AutomationProperties.Name="打开任务中心">
    <DockPanel>
-    <Ellipse DockPanel.Dock="Left" Width="8" Height="8" VerticalAlignment="Center" Margin="0,0,10,0" Fill="{StaticResource Accent}"
-     Visibility="{Binding DockWaiting, Converter={StaticResource BoolVisibility}}"/>
-    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
-     <Button x:Name="DockToggle" Content="▾" Style="{StaticResource Ghost}" MinWidth="34" MinHeight="30" Click="HideDock" AutomationProperties.Name="隐藏任务坞"/>
+    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+     <Button x:Name="DockCancel" Content="取消" Click="DockCancelJob" Visibility="{Binding DockCancelShown, Converter={StaticResource BoolVisibility}}"
+       Background="Transparent" Foreground="#FCFBF7" BorderBrush="#4B4942" MinHeight="30" MinWidth="56" Padding="12,0" FontSize="12" FontWeight="Bold"
+       ToolTip="取消最新任务" AutomationProperties.Name="取消最新任务"/>
+     <Button x:Name="DockRetry" Content="重试" Click="DockRetryJob" Visibility="{Binding DockRetryShown, Converter={StaticResource BoolVisibility}}"
+       Background="Transparent" Foreground="#FCFBF7" BorderBrush="#4B4942" MinHeight="30" MinWidth="56" Padding="12,0" Margin="8,0,0,0" FontSize="12" FontWeight="Bold"
+       ToolTip="重新排队最新失败任务（可能产生费用）" AutomationProperties.Name="重试最新任务"/>
+     <Button x:Name="DockToggle" Content="▾" Click="HideDock" MinWidth="40" MinHeight="34" Margin="12,0,0,0"
+       Background="Transparent" Foreground="#FCFBF7" BorderBrush="#4B4942" FontSize="13"
+       ToolTip="隐藏任务中心快捷栏" AutomationProperties.Name="隐藏任务中心快捷栏"/>
     </StackPanel>
-    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-     <TextBlock Text="{Binding DockJobLabel}" FontWeight="Bold" FontSize="12.5"/>
-     <TextBlock Text="{Binding DockSummary}" Style="{StaticResource Micro}" Margin="16,0,0,0" Visibility="{Binding DockJob, Converter={StaticResource NullToVisibility}}"/>
-     <TextBlock Text="{Binding DockIdleLabel}" Style="{StaticResource Micro}"/>
-    </StackPanel>
+    <Grid VerticalAlignment="Center">
+     <Grid.ColumnDefinitions>
+      <ColumnDefinition Width="Auto"/>
+      <ColumnDefinition Width="Auto"/>
+      <ColumnDefinition Width="Auto"/>
+      <ColumnDefinition Width="1*"/>
+      <ColumnDefinition Width="1*"/>
+     </Grid.ColumnDefinitions>
+     <Ellipse Width="6" Height="6" Margin="0,0,10,0" VerticalAlignment="Center">
+      <Ellipse.Style>
+       <Style TargetType="Ellipse">
+        <Setter Property="Fill" Value="#716E67"/>
+        <Style.Triggers>
+         <DataTrigger Binding="{Binding DockWaiting}" Value="True">
+          <Setter Property="Fill" Value="{StaticResource Warning}"/>
+          <Setter Property="Effect">
+           <Setter.Value><DropShadowEffect Color="#B77C26" BlurRadius="9" ShadowDepth="0" Opacity="0.55"/></Setter.Value>
+          </Setter>
+         </DataTrigger>
+        </Style.Triggers>
+       </Style>
+      </Ellipse.Style>
+     </Ellipse>
+     <TextBlock Grid.Column="1" Text="打开任务中心" Foreground="#FCFBF7" FontWeight="Bold" FontSize="12" VerticalAlignment="Center"/>
+     <TextBlock Grid.Column="2" Text="{Binding DockStatusText}" Foreground="#9A978F" FontSize="11" Margin="14,0,0,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+     <TextBlock Grid.Column="3" Text="{Binding DockNotice}" Foreground="#E4B664" FontSize="11" Margin="14,0,0,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+      Visibility="{Binding DockNoticeShown, Converter={StaticResource BoolVisibility}}"/>
+     <TextBlock Grid.Column="4" Text="{Binding DockSummary}" Foreground="#9A978F" FontSize="11" Margin="14,0,0,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+      Visibility="{Binding DockCountShown, Converter={StaticResource BoolVisibility}}"/>
+    </Grid>
    </DockPanel>
   </Border>
-  <Border Grid.Row="2" Background="Transparent" HorizontalAlignment="Right" Margin="0,4,18,4"
+  <Border Grid.Row="2" Background="Transparent" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,10,8"
    Visibility="{Binding DockRestoreShown, Converter={StaticResource BoolVisibility}}">
-   <Button x:Name="DockRestore" Content="▴ 任务" Style="{StaticResource Ghost}" MinHeight="30" Click="ShowDock" AutomationProperties.Name="显示任务坞"/>
+   <StackPanel Orientation="Horizontal">
+    <Button x:Name="DockRestore" Content="▴ 任务" Click="ShowDock" MinWidth="76" MinHeight="38" Padding="0"
+      Background="#25241F" Foreground="#FCFBF7" BorderBrush="#4B4942" FontSize="12"
+      ToolTip="显示任务中心快捷栏" AutomationProperties.Name="显示任务中心快捷栏"/>
+    <Ellipse Width="6" Height="6" Fill="{StaticResource Warning}" Margin="-22,0,0,24"
+     Visibility="{Binding DockWaiting, Converter={StaticResource BoolVisibility}}" IsHitTestVisible="False"/>
+   </StackPanel>
   </Border>
 
   <!-- Status bar -->

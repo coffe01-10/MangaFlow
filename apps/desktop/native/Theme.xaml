@@ -294,6 +294,9 @@
       <Trigger Property="IsMouseOver" Value="True">
        <Setter TargetName="Surface" Property="BorderBrush" Value="{StaticResource Ink}"/>
       </Trigger>
+      <Trigger Property="IsKeyboardFocused" Value="True">
+       <Setter TargetName="Surface" Property="BorderBrush" Value="{StaticResource Accent}"/>
+      </Trigger>
       <Trigger Property="IsEnabled" Value="False">
        <Setter Property="Opacity" Value="0.5"/>
        <Setter Property="Cursor" Value="Arrow"/>
@@ -489,6 +492,9 @@
       </Trigger>
       <Trigger Property="IsMouseOver" Value="True">
        <Setter TargetName="Box" Property="BorderBrush" Value="{StaticResource Ink}"/>
+      </Trigger>
+      <Trigger Property="IsKeyboardFocused" Value="True">
+       <Setter TargetName="Box" Property="BorderBrush" Value="{StaticResource Accent}"/>
       </Trigger>
       <Trigger Property="IsEnabled" Value="False">
        <Setter Property="Opacity" Value="0.5"/>
