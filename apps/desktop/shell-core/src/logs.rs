@@ -66,16 +66,18 @@ pub const LOGS_DIR_NAME: &str = "logs";
 pub const EXPORT_MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 /// Cap on the archived member count. The ZIP end-of-central-directory
 /// record stores its entry count in a u16 field: a 65 536th member would
-/// silently wrap that count (the writer saturates today) and hand the user
-/// an archive every reader shows as truncated. Members beyond this cap are
-/// skipped and reported (`too_many_members`); the always-present manifest
-/// brings the worst-case entry count to exactly the u16 maximum.
+/// overflow that count and hand the user an archive every reader shows as
+/// truncated. Members beyond this cap are skipped and reported
+/// (`too_many_members`); the always-present manifest brings the worst-case
+/// entry count to exactly the u16 maximum. (The writer itself now panics
+/// past the field rather than saturating — see `ziparch::ZipWriter`.)
 pub const EXPORT_MAX_MEMBERS: usize = 65_534;
 /// Cap on the archive's total uncompressed size. ZIP offsets and sizes are
 /// u32 fields, so an archive at or beyond 4 GiB would silently overflow
 /// them and corrupt; 2 GiB keeps a wide safety margin below that for
-/// store-only members. Further members are skipped and reported
-/// (`archive_size_cap`).
+/// store-only members. A member whose inclusion would push the running
+/// total beyond this cap is skipped and reported (`archive_size_cap`);
+/// smaller later members that still fit are archived.
 pub const EXPORT_MAX_TOTAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Rotate a log file once it reaches this size. 12 MiB is this crate's own
 /// choice — the ADR requires rotation but names no numeric band — and is

@@ -20,7 +20,8 @@ pub fn crc32(data: &[u8]) -> u32 {
 }
 
 /// DOS/ZIP packed modification time. `seconds` is a Unix timestamp; dates
-/// before 1980 clamp to the epoch floor (ZIP cannot represent them).
+/// outside 1980–2107 clamp to the representable floor/ceiling (the DOS date
+/// fields cannot encode them).
 pub fn dos_date_time(seconds: u64) -> (u16, u16) {
     let days = (seconds / 86_400) as i64;
     let secs_of_day = (seconds % 86_400) as u32;
