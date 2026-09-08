@@ -18,6 +18,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -97,6 +98,7 @@ class DesktopShell:
         spawned process (the Rust shell accepts it via Job membership).
         """
 
+        assert isinstance(pid, int) and pid > 0, f"announcer pid must be a positive int, got {pid!r}"
         if pid == self.process.pid:
             return
         assert os.name == "nt", f"helper pid {pid} is not the spawned {self.process.pid}"
@@ -116,10 +118,35 @@ class DesktopShell:
             f"announcer pid {pid} parent {parent} is not the spawned {self.process.pid}"
         )
 
+    def _read_ready_line(self, timeout: float) -> str:
+        """Read one protocol line with a hard deadline.
+
+        ``readline()`` itself blocks forever when a helper hangs before
+        publishing readiness — a deadline assertion placed after it can
+        never fire, and the suite dies on the harness timeout instead of
+        the intended assertion. A daemon reader thread keeps the read
+        portable (select() does not work on Windows pipes).
+        """
+
+        import queue
+
+        lines: queue.Queue[str] = queue.Queue()
+
+        def _reader() -> None:
+            assert self.process.stdout is not None
+            lines.put(self.process.stdout.readline())
+
+        reader = threading.Thread(target=_reader, daemon=True)
+        reader.start()
+        try:
+            return lines.get(timeout=timeout)
+        except queue.Empty:
+            raise AssertionError(
+                f"helper did not publish readiness within {timeout}s"
+            ) from None
+
     def handshake(self, timeout: float = 15.0) -> dict:
-        deadline = time.monotonic() + timeout
-        line = self.process.stdout.readline()  # blocking; helper prints once
-        assert time.monotonic() <= deadline, "helper did not publish readiness in time"
+        line = self._read_ready_line(timeout)
         assert line.startswith(READY_PREFIX), f"unexpected helper output: {line!r}"
         payload = json.loads(line.removeprefix(READY_PREFIX))
         assert payload["token"] == self.token
@@ -421,6 +448,21 @@ def _web_dist_dir() -> Path:
     return dist
 
 
+def _non_loopback_ipv4() -> str | None:
+    """A routable local IPv4 address, or None when the host has none (the
+    loopback-bind assertion then self-skips: there is no second adapter to
+    probe). The UDP connect performs a route lookup without sending packets."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("8.8.8.8", 80))
+        address = sock.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        sock.close()
+    return None if address.startswith("127.") else address
+
+
 def test_sidecar_plan_b_web_server_loop(tmp_path: Path):
     """Plan B (W-15): with --web-dist the helper spawns the Next standalone
     server as a child; READY carries the loopback web origin; the web server
@@ -458,6 +500,22 @@ def test_sidecar_plan_b_web_server_loop(tmp_path: Path):
         # listed via the proxy = rewrites carry the helper's dynamic port).
         with urllib.request.urlopen(f"{web}/api/v1/projects", timeout=10) as response:
             assert response.status == 200
+        # D9: the web server binds the loopback adapter only. While it is
+        # live, the same port must refuse a non-loopback local address —
+        # the helper passes HOSTNAME=127.0.0.1 to the Next standalone
+        # server (whose own default is 0.0.0.0), and a regression to an
+        # all-interfaces bind would silently expose the UI and its API
+        # proxy to the LAN.
+        external_ip = _non_loopback_ipv4()
+        if external_ip is not None:
+            external = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            external.settimeout(2.0)
+            try:
+                assert external.connect_ex((external_ip, int(web.rsplit(":", 1)[1]))) != 0, (
+                    f"web server answered on the non-loopback address {external_ip}"
+                )
+            finally:
+                external.close()
         assert record["web_origin"] == web
         # Journal identity-only: web fields are identity too, no commands/env.
         assert set(record).issubset(

@@ -64,6 +64,19 @@ pub const LOGS_DIR_NAME: &str = "logs";
 /// well below this cap; it remains the guard for a helper log that outgrew
 /// the rotation threshold within a single session.
 pub const EXPORT_MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
+/// Cap on the archived member count. The ZIP end-of-central-directory
+/// record stores its entry count in a u16 field: a 65 536th member would
+/// silently wrap that count (the writer saturates today) and hand the user
+/// an archive every reader shows as truncated. Members beyond this cap are
+/// skipped and reported (`too_many_members`); the always-present manifest
+/// brings the worst-case entry count to exactly the u16 maximum.
+pub const EXPORT_MAX_MEMBERS: usize = 65_534;
+/// Cap on the archive's total uncompressed size. ZIP offsets and sizes are
+/// u32 fields, so an archive at or beyond 4 GiB would silently overflow
+/// them and corrupt; 2 GiB keeps a wide safety margin below that for
+/// store-only members. Further members are skipped and reported
+/// (`archive_size_cap`).
+pub const EXPORT_MAX_TOTAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Rotate a log file once it reaches this size. 12 MiB is this crate's own
 /// choice — the ADR requires rotation but names no numeric band — and is
 /// strictly below the 64 MiB export cap.
@@ -791,7 +804,7 @@ fn collect_members(
 /// (see [`place_archive`]): a file that appears at the destination while
 /// the archive is being built is never clobbered.
 pub fn export_logs_zip(user_data: &Path, destination: &Path) -> Result<ExportReport, ExportError> {
-    export_logs_with(user_data, destination, false)
+    export_logs_with(user_data, destination, false, ExportLimits::default())
 }
 
 /// Confirmed-overwrite variant of [`export_logs_zip`] (#149). The one
@@ -805,13 +818,33 @@ pub fn export_logs_zip_overwrite(
     user_data: &Path,
     destination: &Path,
 ) -> Result<ExportReport, ExportError> {
-    export_logs_with(user_data, destination, true)
+    export_logs_with(user_data, destination, true, ExportLimits::default())
+}
+
+/// Archive-shape limits applied while building the member list (see the
+/// [`EXPORT_MAX_MEMBERS`] / [`EXPORT_MAX_TOTAL_BYTES`] docs). Internal and
+/// injectable so tests can exercise the caps without tens of thousands of
+/// files.
+#[derive(Debug, Clone, Copy)]
+struct ExportLimits {
+    max_members: usize,
+    max_total_bytes: u64,
+}
+
+impl Default for ExportLimits {
+    fn default() -> Self {
+        ExportLimits {
+            max_members: EXPORT_MAX_MEMBERS,
+            max_total_bytes: EXPORT_MAX_TOTAL_BYTES,
+        }
+    }
 }
 
 fn export_logs_with(
     user_data: &Path,
     destination: &Path,
     overwrite_confirmed: bool,
+    limits: ExportLimits,
 ) -> Result<ExportReport, ExportError> {
     let destination_canonical = validate_destination(user_data, destination, overwrite_confirmed)?;
     let logs = logs_dir(user_data);
@@ -832,6 +865,24 @@ fn export_logs_with(
     let mut zip = ZipWriter::new();
 
     for (member, path, size) in &members {
+        // Archive-shape caps first (metadata only, before any read): the
+        // member count must stay inside the EOCD's u16 entry field and the
+        // running total inside the u32 offset field's safe range — beyond
+        // either, the archive would silently corrupt instead of failing.
+        if included.len() >= limits.max_members {
+            skipped.push(SkippedEntry {
+                name: member.clone(),
+                reason: "too_many_members".into(),
+            });
+            continue;
+        }
+        if total_bytes.saturating_add(*size) > limits.max_total_bytes {
+            skipped.push(SkippedEntry {
+                name: member.clone(),
+                reason: "archive_size_cap".into(),
+            });
+            continue;
+        }
         // #241-5b: an unreadable member (locked by another process, permission
         // revoked, vanished between collect and read) joins the size-change
         // race below in the skip-and-report treatment instead of aborting the
@@ -1909,6 +1960,93 @@ mod tests {
 
         let _ = fs::remove_dir_all(&user_data);
         let _ = fs::remove_file(&destination);
+    }
+
+    /// Archive-shape caps: members beyond `max_members` (the EOCD u16 entry
+    /// field) and members that would push the total beyond `max_total_bytes`
+    /// (the u32 offset field's safe range) are skipped with reported reasons
+    /// instead of silently wrapping the ZIP structure into a corrupt
+    /// archive. The manifest inside the archive must agree with the report.
+    #[test]
+    fn export_caps_members_and_total_bytes_with_reported_skips() {
+        let user_data = temp_user_data("caps");
+        let logs = logs_dir(&user_data);
+        fs::create_dir_all(&logs).unwrap();
+        for name in ["a-one.log", "b-two.log", "c-three.log", "d-four.log"] {
+            fs::write(logs.join(name), "0123456789").unwrap(); // 10 bytes each
+        }
+
+        // Member cap: 4 files sorted, only the first two archived.
+        let destination_members =
+            std::env::temp_dir().join(format!("mfd-caps-m-{}.zip", crate::protocol::new_token()));
+        let report = export_logs_with(
+            &user_data,
+            &destination_members,
+            false,
+            ExportLimits {
+                max_members: 2,
+                max_total_bytes: EXPORT_MAX_TOTAL_BYTES,
+            },
+        )
+        .unwrap();
+        assert_eq!(report.files, vec!["a-one.log", "b-two.log"], "{report:?}");
+        assert_eq!(
+            report
+                .skipped
+                .iter()
+                .filter(|entry| entry.reason == "too_many_members")
+                .count(),
+            2,
+            "{report:?}"
+        );
+
+        // Size cap: all four would fit the member cap, but the 2 GiB…
+        // here 25-byte… budget only takes two.
+        let destination_sizes =
+            std::env::temp_dir().join(format!("mfd-caps-s-{}.zip", crate::protocol::new_token()));
+        let report = export_logs_with(
+            &user_data,
+            &destination_sizes,
+            false,
+            ExportLimits {
+                max_members: EXPORT_MAX_MEMBERS,
+                max_total_bytes: 25,
+            },
+        )
+        .unwrap();
+        assert_eq!(report.files, vec!["a-one.log", "b-two.log"], "{report:?}");
+        assert_eq!(
+            report
+                .skipped
+                .iter()
+                .filter(|entry| entry.reason == "archive_size_cap")
+                .count(),
+            2,
+            "{report:?}"
+        );
+        assert_eq!(report.total_bytes, 20);
+
+        // Both archives are structurally valid and their manifests agree
+        // with the reports.
+        let archive = fs::read(&destination_sizes).unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&zip_member_bytes(&archive, "manifest.json")).unwrap();
+        assert_eq!(manifest["included"].as_array().unwrap().len(), 2);
+        assert_eq!(manifest["skipped"].as_array().unwrap().len(), 2);
+
+        // With the real limits the same four files all fit.
+        let destination_full =
+            std::env::temp_dir().join(format!("mfd-caps-full-{}.zip", crate::protocol::new_token()));
+        let report = export_logs_zip(&user_data, &destination_full).unwrap();
+        assert_eq!(report.files.len(), 4, "{report:?}");
+        assert!(report.skipped.is_empty(), "{report:?}");
+
+        let _ = fs::remove_dir_all(&user_data);
+        // Exact-path cleanup only: a prefix sweep over the shared temp
+        // directory could delete a concurrent test process's destinations.
+        for destination in [destination_members, destination_sizes, destination_full] {
+            let _ = fs::remove_file(&destination);
+        }
     }
 
     /// Windows lock for the rotation-failure tests: holds the base open

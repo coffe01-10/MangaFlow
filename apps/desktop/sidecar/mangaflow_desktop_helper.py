@@ -116,14 +116,31 @@ WEB_RELAY_PORT = 39443
 def _bind_relay(api_port: int) -> socket.socket | None:
     """Claim the fixed relay port and listen; None when it is taken.
 
-    Same platform bind policy as ``_bind_loopback``: without
-    SO_EXCLUSIVEADDRUSE a Windows SO_REUSEADDR binder could later overlap
-    this listener and intercept relayed traffic.
+    POSIX: sets SO_REUSEADDR so the bind survives this app's own TIME_WAIT
+    remnants (#253). The relay is the active closer whenever the API side
+    finishes first, so its accepted sockets routinely end up in TIME_WAIT on
+    the fixed port; without the flag, relaunching the shell within the ~60s
+    TIME_WAIT window failed the bind and silently downgraded the session to
+    the static-export form — exactly the degradation the fail-closed bind
+    was meant to reserve for a foreign owner. SO_REUSEADDR cannot take the
+    port from a foreign live listener (Linux would require SO_REUSEPORT on
+    both sockets), so fail-closed against a foreign owner is unchanged.
+
+    Windows: sets SO_EXCLUSIVEADDRUSE (PR #256). A plain no-option bind is
+    the platform default there, but it still yields to a later binder that
+    sets SO_REUSEADDR — the Windows semantic is the opposite of POSIX and
+    allows the second process to share/steal the session's relayed traffic.
+    SO_EXCLUSIVEADDRUSE rejects even those binders outright (any conflicting
+    bind fails), at the cost of retaining the TIME_WAIT residual on this
+    platform: within the ~60s window a relaunch reports the port taken and
+    downgrades to the static-export form, which stays fail-closed.
     """
 
     relay = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     if sys.platform == "win32":
         relay.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+    else:
+        relay.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         relay.bind(("127.0.0.1", WEB_RELAY_PORT))
         relay.listen(64)
@@ -157,6 +174,16 @@ def _serve_relay(relay: socket.socket, api_port: int) -> None:
         except OSError:
             client.close()
             continue
+        # The 5s timeout above bounds the CONNECT only; the byte pipe itself
+        # must never time out. With the timeout left armed on the upstream
+        # socket, a response whose first byte took longer than 5s to produce
+        # was dropped mid-flight (the client saw a bare FIN), and every
+        # keep-alive connection was severed after 5s of silence. The accepted
+        # client side is already blocking (a timeout-mode listener accepts in
+        # blocking mode), so the pump below runs without any read deadline on
+        # both directions; liveness is the peers' business (HTTP closes,
+        # process teardown closes the sockets).
+        upstream.settimeout(None)
 
         def _pipe(src: socket.socket, dst: socket.socket) -> None:
             try:

@@ -161,6 +161,65 @@ fn traversal_shapes_are_rejected_before_any_read() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// A pick whose PARENT directory chain contains a link must be refused even
+/// though the final component is a perfectly regular file: the old check
+/// only saw the last entry (`symlink_metadata` on the full path), so a
+/// file reached through a symlinked/junctioned directory validated as if
+/// it lived where it was picked. On Windows a junction needs no privilege,
+/// which made this a privilege-free way to resolve a picked path into an
+/// undisclosed location. The registry is unaffected: it keys on canonical
+/// paths, and a read-back re-validates the raw path and fails the same way.
+#[test]
+fn picks_through_linked_parent_directories_are_refused() {
+    let dir = temp_dir("parent-link");
+    let real = dir.join("real");
+    fs::create_dir_all(&real).unwrap();
+    fs::write(real.join("ref.png"), b"\x89PNG\r\n").unwrap();
+
+    let linked_dir = dir.join("linked-dir");
+    if !dir_link(&real, &linked_dir) {
+        eprintln!("directory link creation failed; skipping the link assertions");
+        let _ = fs::remove_dir_all(&dir);
+        return;
+    }
+
+    // A regular, suffix-correct file behind a linked parent is refused.
+    let error = validate_picked_file(&linked_dir.join("ref.png"), PickKind::ReferenceImage)
+        .unwrap_err();
+    assert!(matches!(error, PickError::IsSymlink), "{error}");
+
+    // Deeply nested: the link may sit anywhere along the chain.
+    let nested = real.join("nested");
+    fs::create_dir_all(&nested).unwrap();
+    fs::write(nested.join("ref.png"), b"\x89PNG\r\n").unwrap();
+    let error = validate_picked_file(
+        &linked_dir.join("nested").join("ref.png"),
+        PickKind::ReferenceImage,
+    )
+    .unwrap_err();
+    assert!(matches!(error, PickError::IsSymlink), "{error}");
+
+    // The same policy applies to directory picks through a link.
+    let error = validate_picked_directory(&linked_dir.join("nested")).unwrap_err();
+    assert!(matches!(error, PickError::IsSymlink), "{error}");
+
+    // The real paths keep validating — the policy refuses the link, not
+    // the location.
+    validate_picked_file(&real.join("ref.png"), PickKind::ReferenceImage)
+        .expect("the real path must stay valid");
+    validate_picked_directory(&nested).expect("the real directory must stay valid");
+
+    // A registry read-back through the linked path is refused as well: the
+    // re-validation of the raw path fails before any byte is read.
+    let registry = PickedRegistry::new();
+    registry.register(&validate_picked_file(&real.join("ref.png"), PickKind::ReferenceImage).unwrap());
+    let error =
+        read_registered_file(&registry, &linked_dir.join("ref.png")).unwrap_err();
+    assert!(matches!(error, PickError::IsSymlink), "{error}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn directory_pick_validates_type_and_symlinks() {
     let dir = temp_dir("dirs");

@@ -29,11 +29,12 @@ WEB = REPO / "apps" / "web"
 DESKTOP_DIST = REPO / "apps" / "desktop" / "dist" / "web-standalone"
 RELAY_ORIGIN = "http://127.0.0.1:39443"
 
-# npm's process name is platform-specific ("npm.cmd" is the Windows shim);
-# a hardcoded Windows name broke the Linux e2e path with FileNotFoundError.
-npm = "npm.cmd" if os.name == "nt" else "npm"
+# npm's CLI shim is npm.cmd on Windows and npm everywhere else; this script
+# runs from both the Windows packaging flow and run-sidecar-e2e.sh (Linux).
+NPM = "npm.cmd" if os.name == "nt" else "npm"
+
 subprocess.run(
-    [npm, "run", "build", "--workspace", "@mangaflow/web"],
+    [NPM, "run", "build", "--workspace", "@mangaflow/web"],
     cwd=REPO,
     check=True,
     # The desktop bundle bakes the helper's fixed relay port into its

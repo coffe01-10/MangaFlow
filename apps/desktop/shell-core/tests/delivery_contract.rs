@@ -80,3 +80,48 @@ fn bundle_identity_and_targets_stay_pinned() {
     let names: Vec<&str> = targets.iter().filter_map(|v| v.as_str()).collect();
     assert!(names.contains(&"msi") && names.contains(&"nsis"), "{names:?}");
 }
+
+/// The shell exposes `window.__TAURI__` to EVERY document the WebView loads —
+/// including the plan-B (W-15) web origin `http://127.0.0.1:<port>` loaded via
+/// `WebviewUrl::External`. The only thing keeping that (or any other remote)
+/// page from invoking the shell commands — log export, file pick, file
+/// read-back — is the ACL context: in tauri 2.x an invoke from a remote
+/// origin is denied unless some capability explicitly declares a `remote`
+/// context (tauri 2.11.5 `webview/mod.rs`: "remote content can never reach
+/// custom commands unless an explicit `remote` capability has been
+/// configured"). This test freezes exactly that: shell commands stay a
+/// LOCAL-context surface (the static export / shell-tools page). Granting a
+/// remote context is a security decision that must replace this contract
+/// deliberately, not a convenience someone reaches for while wiring up the
+/// web form.
+#[test]
+fn no_capability_may_grant_a_remote_ipc_context() {
+    let capabilities = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src-tauri/capabilities");
+    let entries = std::fs::read_dir(&capabilities)
+        .unwrap_or_else(|error| panic!("capabilities dir {:?} readable: {error}", capabilities))
+        .collect::<Result<Vec<_>, _>>()
+        .expect("capability entries readable");
+    let json_files: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+        .collect();
+    assert!(
+        !json_files.is_empty(),
+        "at least one capability file must exist (the shell grants core:default today)"
+    );
+    for entry in json_files {
+        let path = entry.path();
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("capability {:?} readable: {error}", path));
+        let value: Value = serde_json::from_str(&text)
+            .unwrap_or_else(|error| panic!("capability {:?} parses: {error}", path));
+        assert!(
+            value.get("remote").is_none(),
+            "capability {:?} declares a `remote` IPC context: shell commands would become \
+             invokable from remote documents (the plan-B web origin and anything else the \
+             WebView loads). This requires a lead-reviewed security decision and must \
+             consciously replace this contract — see this test's documentation.",
+            path
+        );
+    }
+}
