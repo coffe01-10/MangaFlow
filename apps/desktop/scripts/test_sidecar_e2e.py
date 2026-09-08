@@ -53,10 +53,13 @@ def _png(color: tuple[int, int, int]) -> bytes:
 class DesktopShell:
     """Python-level stand-in for the Rust shell handshake (D3/D4 evidence)."""
 
-    def __init__(self, user_data: Path, web_dist: Path | None = None) -> None:
+    def __init__(
+        self, user_data: Path, web_dist: Path | None = None, *, expect_web_origin: bool = True
+    ) -> None:
         self.token = os.urandom(16).hex()
         self.user_data = user_data
         self.web_dist = web_dist
+        self.expect_web_origin = expect_web_origin
         self.runtime = user_data / "runtime" / f"mangaflow-desktop-{self.token}"
         self.runtime.mkdir(parents=True)
         self.journal = self.runtime / "owner.json"
@@ -161,8 +164,11 @@ class DesktopShell:
         assert record["pid"] == payload["pid"]
         assert record["api_origin"] == origin
         # Plan B (W-15): with --web-dist the helper manages a Next standalone
-        # server and announces its loopback origin in READY and the journal.
-        if self.web_dist is not None:
+        # server and announces its loopback origin in READY and the journal —
+        # unless the server failed to boot, in which case the helper must
+        # fail closed (no web_origin anywhere) instead of announcing a port
+        # it does not own.
+        if self.web_dist is not None and self.expect_web_origin:
             web_origin = payload["web_origin"]
             assert web_origin.startswith("http://127.0.0.1:"), web_origin
             assert record["web_origin"] == web_origin
@@ -536,3 +542,36 @@ def test_sidecar_plan_b_web_server_loop(tmp_path: Path):
         )
     finally:
         probe.close()
+
+
+def test_sidecar_dead_web_dist_fails_closed_without_web_origin(tmp_path: Path):
+    """Red team 2026-09-08: a web server that dies during boot must NOT leave
+    web_origin in READY or the journal.
+
+    Publishing a web origin for a port the session does not own hands the
+    WebView — and, through the injected API origin, the unauthenticated
+    loopback API — to whichever local process claims the free port instead.
+    The helper must verify node is alive and accepting before announcing,
+    and downgrade to the static-export form (no web_origin anywhere) when
+    it cannot.
+    """
+    if shutil.which("node") is None:
+        pytest.skip("no node runtime available for the standalone server")
+    broken_dist = tmp_path / "broken-web-dist"
+    broken_dist.mkdir()
+    (broken_dist / "server.js").write_text("process.exit(1);\n", encoding="utf-8")
+
+    shell = DesktopShell(
+        tmp_path / "user-data", web_dist=broken_dist, expect_web_origin=False
+    )
+    (shell.user_data / "data").mkdir(parents=True, exist_ok=True)
+    try:
+        record = shell.handshake()
+        shell.wait_health()
+        assert "web_origin" not in record, record
+        # The degraded session is still a fully working API session.
+        with urllib.request.urlopen(f"{shell.origin}/api/v1/projects", timeout=10) as response:
+            assert response.status == 200
+    finally:
+        exit_code = shell.stop()
+        assert exit_code == 0, f"helper exited with {exit_code}"
