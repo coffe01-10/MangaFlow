@@ -8,14 +8,14 @@
  WindowStartupLocation="CenterScreen" Loaded="OnLoaded" Closing="OnClosing" PreviewKeyDown="OnKeyDown" SizeChanged="OnWindowSizeChanged">
  <Grid>
   <Grid.RowDefinitions>
-   <RowDefinition Height="62"/>
+   <RowDefinition x:Name="TopbarRow" Height="74"/>
    <RowDefinition Height="*"/>
    <RowDefinition Height="Auto"/>
-   <RowDefinition Height="30"/>
+   <RowDefinition Height="0"/>
   </Grid.RowDefinitions>
 
   <!-- Top bar -->
-  <Border Grid.Row="0" Background="{StaticResource Paper}" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1" Padding="20,0">
+  <Border Grid.Row="0" Background="{StaticResource Paper}" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1" Padding="34,0">
    <Grid>
     <Grid.ColumnDefinitions>
      <ColumnDefinition Width="Auto"/>
@@ -24,22 +24,33 @@
     </Grid.ColumnDefinitions>
     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
      <Button x:Name="SidebarToggle" Content="☰" BorderThickness="0" MinWidth="36" ToolTip="折叠侧栏 · Ctrl+B" Click="ToggleSidebar" AutomationProperties.Name="折叠侧栏"/>
-     <StackPanel Margin="14,0,0,0" VerticalAlignment="Center">
-      <TextBlock Text="MANGAFLOW / PRODUCTION DESK" Style="{StaticResource Kicker}"/>
+     <Button x:Name="BackToProjects" Content="← 项目" Style="{StaticResource Nav}" Click="ShowHome" Margin="0,0,16,0"/>
+     <StackPanel VerticalAlignment="Center">
+      <TextBlock x:Name="BrandKicker" Text="MANGAFLOW / PRODUCTION DESK" Style="{StaticResource Kicker}" Margin="0,0,0,4"/>
       <TextBlock x:Name="TopTitle" Text="漫画生产台" FontFamily="{StaticResource Serif}" FontSize="17" FontWeight="Bold"/>
      </StackPanel>
     </StackPanel>
     <TextBlock Grid.Column="1" x:Name="Breadcrumb" Text="{Binding Breadcrumb}" Style="{StaticResource Caption}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+    <StackPanel x:Name="GlobalActions" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
      <Button x:Name="HomeNav" Content="项目" Style="{StaticResource Nav}" Click="ShowHome"/>
-     <Button x:Name="UsageNav" Content="用量" Style="{StaticResource Nav}" Click="ShowUsage"/>
+     <Button x:Name="UsageNav" Content="用量" Style="{StaticResource Nav}" Click="ShowUsage" Visibility="Collapsed"/>
      <Button x:Name="HelpNav" Content="帮助" Style="{StaticResource Nav}" Click="ShowHelp"/>
      <Button x:Name="SettingsNav" Content="设置" Style="{StaticResource Nav}" Click="ShowSettings"/>
      <Border BorderBrush="{StaticResource Line}" BorderThickness="1,0,0,0" Margin="8,0" Padding="12,0">
-      <TextBlock Text="{Binding ConnectionLabel}" FontSize="12" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+      <TextBlock Text="{Binding ConnectionBadgeLabel}" FontSize="12" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
      </Border>
-     <Button Content="搜索" Click="OpenPalette" ToolTip="Ctrl+K" Margin="0,0,8,0"/>
+     <Button Content="系统设置" Style="{StaticResource Ghost}" Click="ShowSettings" Margin="0,0,12,0"/>
      <Button Content="＋ 新建项目" Style="{StaticResource InkButton}" Click="CreateProject" IsEnabled="{Binding Connected}"/>
+    </StackPanel>
+    <StackPanel x:Name="WorkspaceActions" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Visibility="Collapsed">
+     <TextBlock Text="● 项目工作区" Style="{StaticResource Caption}" VerticalAlignment="Center" Margin="0,0,16,0"/>
+     <Button Content="在工作流中查看" Style="{StaticResource Outline}" Click="ShowWorkflow" Margin="0,0,12,0"/>
+     <Button Content="项目设置" Style="{StaticResource InkButton}" Click="ShowProjectSettings"/>
+    </StackPanel>
+    <StackPanel x:Name="SettingsActions" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Visibility="Collapsed">
+     <Button Content="用量与成本看板" Style="{StaticResource Ghost}" Click="ShowUsage" Margin="0,0,12,0"/>
+     <Button Content="← 返回项目" Style="{StaticResource Ghost}" Click="ShowHome" Margin="0,0,12,0"/>
+     <Button Content="保存运行设置" Style="{StaticResource InkButton}" Click="SaveRuntimeSettings" IsEnabled="{Binding Connected}"/>
     </StackPanel>
    </Grid>
   </Border>
@@ -59,8 +70,8 @@
     <ColumnDefinition x:Name="SidebarColumn" Width="236"/>
     <ColumnDefinition Width="*"/>
    </Grid.ColumnDefinitions>
-   <Border Background="{StaticResource PaperDeep}" BorderBrush="{StaticResource Line}" BorderThickness="0,0,1,0">
-    <Grid Margin="12,16,12,12">
+   <Border x:Name="SidebarPanel" Background="{StaticResource PaperDeep}" BorderBrush="{StaticResource Line}" BorderThickness="0,0,1,0" ClipToBounds="True">
+    <Grid Margin="8,24,8,12">
      <Grid.RowDefinitions>
       <RowDefinition Height="Auto"/>
       <RowDefinition Height="Auto"/>
@@ -68,7 +79,11 @@
       <RowDefinition Height="*"/>
       <RowDefinition Height="Auto"/>
      </Grid.RowDefinitions>
-     <Button Content="快速切换 · Ctrl+K" Style="{StaticResource Nav}" Click="OpenPalette" Margin="0,0,0,10"/>
+     <StackPanel x:Name="ProjectSummary" Margin="12,0,12,16">
+      <TextBlock Text="PROJECT / 01" Style="{StaticResource Kicker}"/>
+      <TextBlock Text="{Binding CurrentProject.Name}" Style="{StaticResource SubHeading}" Margin="0,8,0,8"/>
+      <TextBlock Text="{Binding CurrentProject.Summary}" Style="{StaticResource Caption}"/>
+     </StackPanel>
      <ComboBox Grid.Row="1" x:Name="ProjectList" ItemsSource="{Binding Projects}" DisplayMemberPath="Name"
       SelectionChanged="SelectProject" AutomationProperties.Name="切换项目" Margin="0,0,0,12"/>
      <ListBox Grid.Row="2" x:Name="ProjectSections" ItemsSource="{x:Static local:ProjectPages.All}"
@@ -76,7 +91,9 @@
       <ListBox.ItemContainerStyle>
        <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
         <Setter Property="AutomationProperties.Name" Value="{Binding AccessibleName}"/>
-        <Setter Property="MinHeight" Value="46"/>
+        <Setter Property="MinHeight" Value="44"/>
+        <Setter Property="ToolTip" Value="{Binding Title}"/>
+        <Setter Property="Padding" Value="8,10"/>
        </Style>
       </ListBox.ItemContainerStyle>
       <ListBox.ItemTemplate>
@@ -85,21 +102,22 @@
          <Grid.ColumnDefinitions><ColumnDefinition Width="26"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
          <TextBlock Text="{Binding Index}" Style="{StaticResource SectionIndex}" VerticalAlignment="Center"/>
          <StackPanel Grid.Column="1">
+          <StackPanel.Style><Style TargetType="StackPanel"><Style.Triggers>
+           <DataTrigger Binding="{Binding DataContext.SidebarCollapsed, RelativeSource={RelativeSource AncestorType=Window}}" Value="True"><Setter Property="Visibility" Value="Collapsed"/></DataTrigger>
+          </Style.Triggers></Style></StackPanel.Style>
           <TextBlock Text="{Binding Title}" VerticalAlignment="Center"/>
-          <TextBlock Text="{Binding Description}" Style="{StaticResource Micro}"/>
          </StackPanel>
         </Grid>
        </DataTemplate>
       </ListBox.ItemTemplate>
      </ListBox>
-     <StackPanel Grid.Row="4">
+     <StackPanel x:Name="SidebarFooter" Grid.Row="4">
       <Separator Background="{StaticResource Line}" Margin="0,8"/>
-      <TextBlock Text="{Binding DataPath}" Style="{StaticResource Micro}" TextTrimming="CharacterEllipsis" ToolTip="{Binding DataPath}"/>
-      <TextBlock Text="本地创作 · 原生 Windows" Style="{StaticResource Micro}" Margin="0,6,0,0"/>
+      <Button Content="搜索与切换 · Ctrl+K" Style="{StaticResource Nav}" Click="OpenPalette"/>
      </StackPanel>
     </Grid>
    </Border>
-   <c:TransitioningContentControl x:Name="ContentHost" Grid.Column="1"/>
+   <c:TransitioningContentControl x:Name="ContentHost" Grid.Column="1" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" ClipToBounds="True"/>
   </Grid>
 
   <!-- Queue dock -->
@@ -119,7 +137,7 @@
    </DockPanel>
   </Border>
   <Border Grid.Row="2" Background="Transparent" HorizontalAlignment="Right" Margin="0,4,18,4"
-   Visibility="{Binding DockHidden, Converter={StaticResource BoolVisibility}}">
+   Visibility="{Binding DockRestoreShown, Converter={StaticResource BoolVisibility}}">
    <Button x:Name="DockRestore" Content="▴ 任务" Style="{StaticResource Ghost}" MinHeight="30" Click="ShowDock" AutomationProperties.Name="显示任务坞"/>
   </Border>
 

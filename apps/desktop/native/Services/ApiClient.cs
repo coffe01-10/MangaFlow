@@ -119,11 +119,23 @@ public sealed class ApiClient : IDisposable
     }
 
     // Web publicUrl(): grids use the 640px thumbnail; lightbox keeps the original.
-    public string PublicUrl(string path) =>
-        path.Contains("/assets/", StringComparison.Ordinal) && path.EndsWith("/content", StringComparison.Ordinal)
-            ? $"{Origin}/api/v1/{path[..^"/content".Length]}/thumbnail/640"
-            : $"{Origin}/api/v1/{path.TrimStart('/')}";
-    public string OriginUrl(string path) => $"{Origin}/api/v1/{path.TrimStart('/')}";
+    public string PublicUrl(string path)
+    {
+        var relative = MediaPath(path);
+        if (relative.StartsWith("assets/", StringComparison.Ordinal) && relative.EndsWith("/content", StringComparison.Ordinal))
+            relative = relative[..^"/content".Length] + "/thumbnail/640";
+        return $"{Origin}/api/v1/{relative}";
+    }
+    public string OriginUrl(string path) => $"{Origin}/api/v1/{MediaPath(path)}";
+
+    private static string MediaPath(string path)
+    {
+        // API responses already contain /api/v1; locally constructed paths do not.
+        // Normalize once so every gallery, reference picker and lightbox resolves identically.
+        var relative = path.StartsWith("/api/v1/", StringComparison.Ordinal) ? path[8..] : path.TrimStart('/');
+        Validate(relative);
+        return relative;
+    }
 
     private static void Validate(string path)
     {

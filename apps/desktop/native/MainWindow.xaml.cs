@@ -192,13 +192,14 @@ public partial class MainWindow : Window
             "settings" => "project-settings",
             _ => destination,
         };
-        if (page == destination) return;
+        if (page == destination && ContentHost.Content != null) return;
         if (confirmLeave && activeView != null && !await activeView.ConfirmLeaveAsync()) return;
         activeView?.Deactivate();
         CancelReads();
         page = destination;
         state.CurrentSection = destination;
         ApplySidebar();
+        UpdateChrome();
         var view = viewCache.TryGetValue(destination, out var cached)
             ? cached
             : viewCache[destination] = CreateView(destination);
@@ -257,7 +258,15 @@ public partial class MainWindow : Window
                         }
                     }
                     await EnsureProjectAsync();
+                    await NavigateAsync(section);
+                    if (page != (section == "settings" ? "project-settings" : section)) return;
+                    state.Navigation.Select(definition);
                     ProjectSections.SelectedItem = definition;
+                    if (section == "assets" && ContentHost.Content is AssetsView assets)
+                    {
+                        var parameters = System.Web.HttpUtility.ParseQueryString(query.TrimStart('?'));
+                        if (parameters["view"] is { } assetView) assets.Switch(assetView);
+                    }
                 }
             },
             OpenDashboard = async () =>
@@ -323,6 +332,13 @@ public partial class MainWindow : Window
             "help" => "使用帮助",
             _ => project?.Name ?? "项目工作区",
         };
+        BrandKicker.Text = page switch
+        {
+            "settings-global" => "SYSTEM / CONTROL ROOM",
+            "usage" => "SYSTEM / USAGE & COST",
+            "help" => "MANGAFLOW / FIELD GUIDE",
+            _ => "MANGAFLOW / PRODUCTION DESK",
+        };
         var selected = (Brush)FindResource("Selected");
         HomeNav.Background = page == "home" ? selected : Brushes.Transparent;
         UsageNav.Background = page == "usage" ? selected : Brushes.Transparent;
@@ -333,6 +349,12 @@ public partial class MainWindow : Window
     private async void ShowHome(object sender, RoutedEventArgs e) => await NavigateAsync("home");
     private async void ShowSettings(object sender, RoutedEventArgs e) => await NavigateAsync("settings-global");
     private async void ShowUsage(object sender, RoutedEventArgs e) => await NavigateAsync("usage");
+    private void ShowWorkflow(object sender, RoutedEventArgs e) => ProjectSections.SelectedItem = ProjectPages.Get(ProjectPageId.Workflow);
+    private void ShowProjectSettings(object sender, RoutedEventArgs e) => ProjectSections.SelectedItem = ProjectPages.Get(ProjectPageId.Settings);
+    private void SaveRuntimeSettings(object sender, RoutedEventArgs e)
+    {
+        if (ContentHost.Content is SettingsView settings) settings.SaveRuntimeSettings();
+    }
     private void ShowHelp(object sender, RoutedEventArgs e) => Navigate("help");
 
     private async void SelectProject(object sender, SelectionChangedEventArgs e)
@@ -483,7 +505,24 @@ public partial class MainWindow : Window
 
     private void ApplySidebar()
     {
-        SidebarColumn.Width = new GridLength(preferences.SidebarCollapsed ? 0 : 236);
+        if (preferences == null) return;
+        var workspace = page is not ("home" or "settings-global" or "usage" or "help");
+        SidebarColumn.Width = new GridLength(workspace ? (preferences.SidebarCollapsed ? 52 : 214) : 0);
+        SidebarPanel.Visibility = workspace ? Visibility.Visible : Visibility.Collapsed;
+        SidebarToggle.Visibility = workspace ? Visibility.Visible : Visibility.Collapsed;
+        GlobalActions.Visibility = workspace || page == "settings-global" ? Visibility.Collapsed : Visibility.Visible;
+        SettingsActions.Visibility = page == "settings-global" ? Visibility.Visible : Visibility.Collapsed;
+        WorkspaceActions.Visibility = workspace ? Visibility.Visible : Visibility.Collapsed;
+        BackToProjects.Visibility = workspace ? Visibility.Visible : Visibility.Collapsed;
+        BrandKicker.Visibility = workspace ? Visibility.Collapsed : Visibility.Visible;
+        TopbarRow.Height = new GridLength(workspace ? 58 : 74);
+        Breadcrumb.Visibility = Visibility.Collapsed;
+        ProjectSummary.Visibility = preferences.SidebarCollapsed ? Visibility.Collapsed : Visibility.Visible;
+        ProjectList.Visibility = preferences.SidebarCollapsed ? Visibility.Collapsed : Visibility.Visible;
+        SidebarFooter.Visibility = preferences.SidebarCollapsed ? Visibility.Collapsed : Visibility.Visible;
+        state.IsWorkspace = workspace;
+        state.SidebarCollapsed = preferences.SidebarCollapsed;
+        ContentHost.Margin = workspace ? new Thickness(24, 24, 0, 0) : new Thickness(0);
     }
 
     private void OnWindowSizeChanged(object sender, SizeChangedEventArgs e) { }

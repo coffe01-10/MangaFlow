@@ -64,6 +64,7 @@ public sealed class AssetsView : WorkspaceView
 
     public void Switch(string view)
     {
+        if (!tabs.ContainsKey(view)) return;
         if (current == view) return;
         current = view;
         foreach (var (key, tab) in tabs) tab.IsChecked = key == view;

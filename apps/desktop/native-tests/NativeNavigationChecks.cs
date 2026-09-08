@@ -55,7 +55,7 @@ internal static class NativeNavigationChecks
         sidebarToggle.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         Drain();
         var sidebar = (ColumnDefinition)window.FindName("SidebarColumn")!;
-        Require(sidebar.Width.Value == 0, "sidebar collapses to zero width");
+        Require(sidebar.Width.Value == 52, "sidebar collapses to a usable icon rail");
         sidebarToggle.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         Drain();
         Require(sidebar.Width.Value > 0, "sidebar restores");

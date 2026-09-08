@@ -93,10 +93,12 @@ public sealed class StoryboardView : WorkspaceView
         stage.Children.Add(chapterSelector);
         stage.VerticalAlignment = VerticalAlignment.Bottom;
         headerGrid.Children.Add(stage);
-        header.Child = headerGrid;
+        headerGrid.Children.Clear();
+        header.Child = new PageHeading(heading, stage);
         root.Children.Add(header);
 
         pageBar.Margin = new Thickness(0, 0, 0, 12);
+        Grid.SetRow(pageBar, 1);
         root.Children.Add(pageBar);
         chapterSelector.SelectionChanged += async (_, _) =>
         {
@@ -160,14 +162,26 @@ public sealed class StoryboardView : WorkspaceView
         left.Children.Add(fit);
         left.Children.Add(reset);
         snapButton.Margin = new Thickness(14, 0, 6, 0);
-        snapButton.Click += (_, _) => snapButton.IsChecked = true;
         left.Children.Add(snapButton);
         orderButton.Margin = new Thickness(0, 0, 14, 0);
         orderButton.Click += (_, _) => { RenderOrderBadges(); };
         left.Children.Add(orderButton);
         left.Children.Add(statusLine);
         bar.Children.Add(left);
-        return bar;
+        // Match the web toolbar wrapping; a horizontal StackPanel otherwise measures
+        // all controls at infinite width and paints over the inspector in narrow windows.
+        var wrapped = new WrapPanel { Margin = bar.Margin };
+        foreach (var group in new[] { left, right })
+        {
+            var children = group.Children.Cast<UIElement>().ToArray();
+            group.Children.Clear();
+            foreach (var child in children)
+            {
+                if (child is FrameworkElement element) element.Margin = new Thickness(0, 0, 6, 6);
+                wrapped.Children.Add(child);
+            }
+        }
+        return wrapped;
     }
 
     public override async void Activate(WorkspaceContext context)

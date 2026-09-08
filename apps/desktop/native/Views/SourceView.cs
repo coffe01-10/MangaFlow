@@ -62,7 +62,8 @@ public sealed class SourceView : WorkspaceView
         chapterCount.VerticalAlignment = VerticalAlignment.Bottom;
         Grid.SetColumn(chapterCount, 1);
         headerGrid.Children.Add(chapterCount);
-        header.Child = headerGrid;
+        headerGrid.Children.Clear();
+        header.Child = new PageHeading(heading, chapterCount);
         panel.Children.Add(header);
         panel.Children.Add(BuildComposeCard());
         undoBanner.Visibility = Visibility.Collapsed;

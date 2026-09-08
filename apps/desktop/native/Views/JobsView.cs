@@ -44,7 +44,8 @@ public sealed class JobsView : WorkspaceView
         count.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding("JobHint") { Mode = System.Windows.Data.BindingMode.OneWay });
         Grid.SetColumn(count, 1);
         headerGrid.Children.Add(count);
-        header.Child = headerGrid;
+        headerGrid.Children.Clear();
+        header.Child = new PageHeading(heading, count);
         panel.Children.Add(header);
 
         var toolbar = new DockPanel { Margin = new Thickness(0, 0, 0, 14) };
