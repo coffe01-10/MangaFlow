@@ -673,3 +673,123 @@ sys.stdin.read()
     );
     let _ = std::fs::remove_dir_all(&user_data);
 }
+
+/// Regression (red team 2026-09-08): `stop()` called after the direct child
+/// was already reaped — the native-host self-exit path reaps via `try_wait`
+/// and then stops the tree — must not signal the freed pid. The fixture
+/// child is a session leader that leaves an orphaned group member behind:
+/// the group id stays allocated while the orphan lives, so the old
+/// signal-before-check order deterministically killed it (the exact
+/// "unrelated group" blast radius without needing pid reuse).
+#[test]
+#[cfg(unix)]
+fn stop_on_an_already_reaped_child_spares_the_leftover_group() {
+    let user_data = temp_user_data("reaped-stop");
+    let child_code = "\
+import subprocess, sys, time
+orphan = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])
+print(orphan.pid, flush=True)
+time.sleep(0.5)
+";
+    let mut command = Command::new(python());
+    command
+        .arg("-c")
+        .arg(child_code)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
+    let mut tree = OwnedTree::spawn(command).unwrap();
+    let mut stdout = tree.child.stdout.take().unwrap();
+    // Diagnostic/health lines precede the orphan pid; keep reading until a
+    // line parses as the pid.
+    let orphan_pid: u32 = loop {
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(&mut stdout), &mut line)
+            .expect("child stdout readable");
+        match line.trim().parse::<u32>() {
+            Ok(pid) => break pid,
+            Err(_) => eprintln!("fixture child: {}", line.trim()),
+        }
+    };
+
+    // Reap the exited child BEFORE calling stop — the native-host
+    // self-exit path shape.
+    let reaped = loop {
+        match tree.child.try_wait().expect("try_wait succeeds") {
+            Some(status) => break status,
+            None => {
+                assert!(
+                    Instant::now() < Instant::now() + Duration::from_secs(5),
+                    "unreachable"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    };
+    assert!(
+        proc_alive(orphan_pid),
+        "fixture broken: the orphan must outlive the exited child"
+    );
+    // Fixture integrity: the orphan's process group must be the reaped
+    // child's pid — `OwnedTree::spawn` claims the group at spawn time
+    // (`process_group(0)`), and group ids persist while any member lives —
+    // otherwise the stray-signal scenario below cannot exist. /proc pgid is
+    // the third whitespace field after the comm's closing paren.
+    let stat = std::fs::read_to_string(format!("/proc/{orphan_pid}/stat"))
+        .expect("orphan stat readable");
+    let pgid: u32 = stat
+        .rsplit(')')
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .nth(2)
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(
+        pgid,
+        tree.pid(),
+        "fixture broken: the orphan must sit in the exited child's group"
+    );
+
+    let exit = tree
+        .stop(Duration::from_millis(300))
+        .expect("stop on an already-reaped tree succeeds");
+    assert_eq!(
+        exit,
+        reaped.code(),
+        "stop must report the already-cached exit status"
+    );
+    // The stray group signal (old order) kills the orphan; give a delivered
+    // signal time to surface as an exit or zombie before asserting.
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < deadline && orphan_is_live(orphan_pid) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        orphan_is_live(orphan_pid),
+        "stop() signalled the leftover process group of an already-reaped child"
+    );
+
+    // Clean up the fixture orphan out-of-band; it is outside the tree by
+    // construction (that is the point of the regression).
+    let _ = Command::new("kill")
+        .arg("-9")
+        .arg(orphan_pid.to_string())
+        .output();
+    let _ = std::fs::remove_dir_all(&user_data);
+}
+
+/// Live means an existing /proc entry that is not a zombie: a reaped or
+/// still-dying process keeps its /proc node in state Z, which a bare
+/// existence check misreports as alive.
+#[cfg(unix)]
+fn orphan_is_live(pid: u32) -> bool {
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => {
+            let state = stat.rsplit(')').next().unwrap().split_whitespace().next().unwrap();
+            state != "Z"
+        }
+        Err(_) => false,
+    }
+}
