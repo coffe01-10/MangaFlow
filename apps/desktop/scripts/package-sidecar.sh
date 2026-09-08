@@ -20,8 +20,17 @@ if [ ! -x "$VENV/bin/pyinstaller" ]; then
 fi
 
 cd "$REPO_ROOT"
+# Private build scratch directory: a predictable /tmp path is writable by
+# any local user before the build starts, and PyInstaller follows symlinks
+# when writing its workpath/specpath artifacts — a planted
+# /tmp/mangaflow-desktop-pyi/warn-*.txt -> ~/victim link would be written
+# through. mktemp -d (0700) forecloses that; cleaned on exit.
+PYI_SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/mangaflow-desktop-pyi-XXXXXX")"
+cleanup() { rm -rf "$PYI_SCRATCH"; }
+trap cleanup EXIT
+
 "$VENV/bin/pyinstaller" --noconfirm --clean --onedir --name mangaflow-desktop-sidecar \
-  --distpath "$DESKTOP_ROOT/dist/sidecar" --workpath /tmp/mangaflow-desktop-pyi --specpath /tmp/mangaflow-desktop-pyi \
+  --distpath "$DESKTOP_ROOT/dist/sidecar" --workpath "$PYI_SCRATCH/work" --specpath "$PYI_SCRATCH/spec" \
   --paths apps/api --paths apps/desktop/sidecar \
   --hidden-import app --hidden-import app.main --hidden-import app.database \
   --hidden-import app.models --hidden-import app.worker_tasks --hidden-import app.config \
