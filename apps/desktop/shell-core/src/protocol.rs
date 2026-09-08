@@ -461,7 +461,7 @@ mod tests {
     fn rejects_pids_beyond_the_u32_range_even_when_they_wrap_onto_the_expected_pid() {
         let line = format!(
             "{READY_PREFIX}{{\"token\":\"{TOKEN}\",\"pid\":{},\"api_origin\":\"http://127.0.0.1:8000\"}}",
-            4242u64 + 1 << 32
+            4242 + (1u64 << 32)
         );
         assert!(matches!(
             verify_ready_line(&line, TOKEN, 4242),

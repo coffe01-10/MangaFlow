@@ -225,8 +225,10 @@ impl OwnedTree {
                     // descendant can ignore the SIGTERM sent above. Escalate
                     // before returning: the shell owns the group until the
                     // last member exits, not merely until the child does.
+                    // Group-only: the child pid is already reaped here, so
+                    // the per-pid fallback could fire at a recycled pid.
                     #[cfg(unix)]
-                    signal_tree(self.pid(), libc::SIGKILL);
+                    signal_group_only(self.pid(), libc::SIGKILL);
                     return Ok(status.code());
                 }
                 Ok(None) => std::thread::sleep(Duration::from_millis(20)),
@@ -260,8 +262,10 @@ impl Drop for OwnedTree {
             // its node server lives on). Best-effort group SIGKILL: no
             // grace is possible during drop, and a process that ignored
             // the SIGTERM sent by an earlier stop() gets no second chance.
+            // Group-only for the same recycled-pid reason as stop(): the
+            // child pid was reaped the moment `alive()` observed the exit.
             #[cfg(unix)]
-            signal_tree(self.pid(), libc::SIGKILL);
+            signal_group_only(self.pid(), libc::SIGKILL);
         }
         // The Windows job handle now closes via `JobHandle::drop` (#150):
         // KILL_ON_JOB_CLOSE then kills anything that survived the graceful
@@ -336,6 +340,15 @@ fn signal_tree(pid: u32, sig: i32) {
     if group_signal != 0 {
         unsafe { libc::kill(pid as libc::pid_t, sig) };
     }
+}
+
+/// Group-only signaling for AFTER the direct child was reaped: the pid is
+/// freed at that point, so `signal_tree`'s per-pid fallback could deliver a
+/// signal to whatever process recycled it. An empty group fails with ESRCH
+/// and is ignored — that is the harmless "nothing left to kill" case.
+#[cfg(unix)]
+fn signal_group_only(pid: u32, sig: i32) {
+    unsafe { libc::kill(-(pid as libc::pid_t), sig) };
 }
 
 #[cfg(unix)]
@@ -429,7 +442,6 @@ fn job_contains_pid(job: &JobHandle, pid: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     /// #150 regression: creating and dropping JobHandles must not leak
     /// kernel objects — this is the release path the assign/resume failure
