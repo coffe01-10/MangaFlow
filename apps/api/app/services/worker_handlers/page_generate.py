@@ -366,6 +366,12 @@ def _save_generated_asset(db, candidate: PageCandidate, data: bytes) -> Asset:
         )
         if existing:
             destination.unlink(missing_ok=True)
+            # The thumbnails were written for the never-committed asset row
+            # inside the rolled-back savepoint; the boot-time orphan sweep
+            # would get them in a week, but this branch knows the id — clean
+            # up now like the generic failure path below does.
+            if "asset" in locals() and asset.id:
+                remove_thumbnails(settings.storage_root, asset.id)
             return existing
         deleted = adopt_deleted_duplicate(
             db,

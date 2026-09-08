@@ -534,6 +534,23 @@ def execute_job(job_id: str) -> None:
                 db.commit()
                 return
         with _LeaseHeartbeat(job.id, owner) as heartbeat:
+            # Lock ordering fence (PostgreSQL): the claim transaction above
+            # already committed, so this handler transaction starts without
+            # the job row lock, and the page handlers take the page row lock
+            # (DRAFT_READY fence) before the completion CAS re-locks the job
+            # row — a PAGE→JOB order. Every cancel/failure/restore path takes
+            # the opposite order (job claim, then the page restore lock), and
+            # a user cancel landing while the handler holds the page fence
+            # deadlocks both transactions on PG. Take the job row lock up
+            # front (SELECT FOR UPDATE on PG; a plain read on SQLite, whose
+            # single-writer mode is unaffected by the ordering) so this
+            # transaction's acquisition order is JOB→PAGE, identical to every
+            # other writer of the pair. A read fence, not a write: an early
+            # no-op UPDATE would seize SQLite's database write lock for the
+            # whole handler and serialize the local executor's threads.
+            from app.services.ordinal_allocator import lock_entity
+
+            lock_entity(db, GenerationJob, job.id)
             if job.job_type in {
                 "PAGE_GENERATE",
                 "PAGE_REPAIR",
@@ -723,6 +740,15 @@ def execute_job(job_id: str) -> None:
             retryable=True,
         )
         if not marked:
+            # Unmarked means the row is terminal or the lease was lost; the
+            # re-raise below never happens, so without this the exception
+            # (e.g. a post-commit flush failure) disappears with zero
+            # observability.
+            LOGGER.exception(
+                "job %s reached a terminal state before its failure could be "
+                "recorded; the original exception follows",
+                job_id,
+            )
             return
         if workflow_run_id and is_final:
             # Same isolation rule as the completion path above: the failure

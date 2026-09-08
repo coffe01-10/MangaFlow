@@ -117,6 +117,11 @@ def _save_asset_candidate(db, candidate: AssetCandidate, project_id: str, data: 
         )
         if existing:
             destination.unlink(missing_ok=True)
+            # Thumbnails of the never-committed asset row would linger until
+            # the boot-time orphan sweep; clean up now like the generic
+            # failure path does.
+            if "asset" in locals() and asset.id:
+                remove_thumbnails(settings.storage_root, asset.id)
             return existing
         deleted = adopt_deleted_duplicate(
             db,
