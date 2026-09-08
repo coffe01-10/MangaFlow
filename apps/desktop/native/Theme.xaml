@@ -754,35 +754,6 @@
   <Setter Property="Margin" Value="0,8"/>
  </Style>
 
- <!-- Workspace page frame: shared title/description/status header for all project sections. -->
- <Style TargetType="local:WorkspacePageFrame">
-  <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
-  <Setter Property="VerticalContentAlignment" Value="Stretch"/>
-  <Setter Property="Template">
-   <Setter.Value>
-    <ControlTemplate TargetType="local:WorkspacePageFrame">
-     <Grid>
-      <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-      <Border BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1" Padding="0,0,0,18" Margin="0,0,0,20">
-       <Grid>
-        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-        <StackPanel>
-         <TextBlock Text="{Binding Page.Index, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource SectionIndex}" Margin="0,0,0,8"/>
-         <TextBlock Text="{Binding Page.Title, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource Heading}"/>
-         <TextBlock Text="{Binding Page.Description, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource Caption}"/>
-        </StackPanel>
-        <Border Grid.Column="1" Background="{StaticResource PaperDeep}" Padding="12,6" VerticalAlignment="Top" Margin="16,0,0,0">
-         <TextBlock Text="{Binding Page.Availability, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource Caption}"/>
-        </Border>
-       </Grid>
-      </Border>
-      <ContentPresenter Grid.Row="1"/>
-     </Grid>
-    </ControlTemplate>
-   </Setter.Value>
-  </Setter>
- </Style>
-
  <!-- Canvas header used by every project section (kicker + serif title + right meta). -->
  <Style x:Key="CanvasHeader" TargetType="Border">
   <Setter Property="BorderBrush" Value="{StaticResource Line}"/>

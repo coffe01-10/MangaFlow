@@ -482,9 +482,12 @@ public sealed class WorkflowView : WorkspaceView
         dragging = true;
         MouseEventHandler moved = (_, me) =>
         {
+            // GetPosition(canvas) already inverse-applies the canvas RenderTransform,
+            // so the delta is in unscaled node coordinates — dividing by scale again
+            // would make the node trail the cursor at zoom != 1.
             var current = me.GetPosition(canvas);
-            var x = Math.Max(0, nodeOrigin.X + (current.X - origin.X) / scale);
-            var y = Math.Max(0, nodeOrigin.Y + (current.Y - origin.Y) / scale);
+            var x = Math.Max(0, nodeOrigin.X + (current.X - origin.X));
+            var y = Math.Max(0, nodeOrigin.Y + (current.Y - origin.Y));
             node.Position = (x, y);
             Canvas.SetLeft(node.Element, x);
             Canvas.SetTop(node.Element, y);
@@ -677,7 +680,25 @@ public sealed class WorkflowView : WorkspaceView
         timer.Start();
     }
 
-    private async Task SaveNowAsync()
+    // 保存队列尾。所有调用点都在 UI 线程上，读写无需加锁；导航离开时也要
+    // await 它，否则 Deactivate 取消令牌会腰斩在途 PATCH。
+    private Task saveChain = Task.CompletedTask;
+
+    private Task SaveNowAsync()
+    {
+        var previous = saveChain;
+        var run = SaveAfterAsync(previous);
+        saveChain = run;
+        return run;
+
+        async Task SaveAfterAsync(Task before)
+        {
+            try { await before; } catch (Exception) { }   // 前一次失败不阻塞本次
+            await SaveNowCoreAsync();
+        }
+    }
+
+    private async Task SaveNowCoreAsync()
     {
         if (workflowId.Length == 0) return;
         var generationAtSave = generation;
@@ -691,9 +712,14 @@ public sealed class WorkflowView : WorkspaceView
             version = saved.Number("version");
             current = saved;
             if (generationAtSave == generation) UpdateStatus($"已保存 · 草稿 V{saved.Number("draft_version")}");
-            else await SaveNowAsync();   // new edits landed while saving
+            else await SaveNowCoreAsync();   // new edits landed while saving（同槽递归，避免自我等待）
         }
-        catch (Exception error) when (error is not OperationCanceledException)
+        catch (OperationCanceledException)
+        {
+            // 导航/关闭取消在途保存：视图即将离场，吞掉令牌异常防止逃逸到 dispatcher
+            UpdateStatus("保存已取消");
+        }
+        catch (Exception error)
         {
             UpdateStatus("保存失败");
             statusLine.Text = $"保存失败：{error.Message.Split('\n')[0]}";
@@ -954,13 +980,14 @@ public sealed class WorkflowView : WorkspaceView
         return Task.CompletedTask;
     }
 
-    public override Task<bool> ConfirmLeaveAsync()
+    public override async Task<bool> ConfirmLeaveAsync()
     {
-        if (autosave is { Enabled: true })
-        {
-            _ = SaveNowAsync();
-        }
-        return Task.FromResult(true);
+        // Flush the debounced draft AND await any PATCH already in flight: returning
+        // first would let Deactivate() cancel the lifetime token mid-request.
+        autosave?.Stop();
+        if (autosave is { Enabled: true }) await SaveNowAsync();
+        else await saveChain;
+        return true;
     }
 
     // ============ Node visual model ============

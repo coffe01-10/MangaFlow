@@ -35,10 +35,13 @@ public static class DirectorRules
 
     private static readonly string[] PixelIntentWords = ["重画", "重绘", "重新生成", "重新抽", "重抽", "局部", "选区", "蒙版", "mask", "涂"];
 
-    public static DirectorPlanResult Compile(JsonElement page, JsonElement storyboard, List<JsonElement> characters,
-        DirectorScope? selection, string utterance, string? retryOfCommandId, bool pageGenerationPending,
-        int? sceneVersion = null)
+    public static DirectorPlanResult Compile(JsonElement page, string? projectId, JsonElement storyboard,
+        List<JsonElement> characters, DirectorScope? selection, string utterance, string? retryOfCommandId,
+        bool pageGenerationPending, int? sceneVersion = null)
     {
+        // Backend UUID() rejects prefixed ids, and PageRead rows carry no project_id;
+        // the caller (GenerateView) always knows the owning project and passes it in.
+        var ownerId = projectId ?? page.Text("project_id");
         var panels = storyboard.Array("panels");
         var text = utterance.Trim();
         if (text.Length == 0)
@@ -63,7 +66,7 @@ public static class DirectorRules
             };
             var summary = $"把第 {page.Number("page_number")} 页改为 {count} 格（动态布局）。整页命令风险高：改动后该页候选将过期。";
             return DirectorPlanResult.Command(
-                Envelope(page, null, null, null, "page", page.Number("version"), "update_page_layout",
+                Envelope(page, ownerId, null, null, null, "page", page.Number("version"), "update_page_layout",
                     new Dictionary<string, object?> { ["panel_count"] = count, ["layout_mode"] = "dynamic" }, text, retryOfCommandId),
                 "整页布局", $"第 {page.Number("page_number")} 页 · 整页", summary, "high");
         }
@@ -71,29 +74,34 @@ public static class DirectorRules
         // Dialogue rewrite: 台词改成「…」
         var hasQuote = text.Contains('「') || text.Contains('『') || text.Contains('“') || text.Contains('"');
         var hasVerb = text.Contains("改成") || text.Contains("改为") || text.Contains("换成") || text.Contains("说");
-        if (text.Contains("台词") || text.Contains("对白") || text.Contains("气泡") || (hasQuote && hasVerb))
+        var explicitDialogue = text.Contains("台词") || text.Contains("对白") || text.Contains("气泡");
+        if (explicitDialogue || (hasQuote && hasVerb))
         {
             if (targetPanel is { Kind: "clarify" or "blocked" or "unsupported" }) return targetPanel;
             var quoted = System.Text.RegularExpressions.Regex.Match(text, @"[「『“""]([^」』""]{1,200})[」』""]");
             string? newText = quoted.Success ? quoted.Groups[1].Value.Trim() : null;
-            if (newText == null)
+            if (string.IsNullOrEmpty(newText))
             {
                 var bare = System.Text.RegularExpressions.Regex.Match(text, @"(?:台词|对白|气泡)(?:内容|文字)?(?:改成|改为|换成)\s*([^，。！？；\s]{1,200})");
                 if (bare.Success) newText = bare.Groups[1].Value;
             }
-            if (newText == null)
+            if (string.IsNullOrEmpty(newText) && explicitDialogue)
                 return DirectorPlanResult.Clarify("请用引号写明新的台词内容，例如：台词改成「我没事」", []);
-            var dialogue = ResolveDialogue((JsonElement)targetPanel!.Envelope!, selection, text, panels);
-            if (dialogue.Kind != "command") return dialogue;
-            var dialogueRow = (JsonElement)dialogue.Envelope!;
-            if (dialogueRow.Flag("rewrite_forbidden"))
-                return DirectorPlanResult.Unsupported($"格 {dialogueRow.Number("reading_order")} 的气泡被标记为禁止改写，请在分镜编辑器处理");
-            var panelRow = (JsonElement)targetPanel.Envelope!;
-            var summary = $"把格 {panelRow.Number("reading_order")} 气泡{dialogueRow.Number("reading_order")} 的台词改为「{newText}」。";
-            return DirectorPlanResult.Command(
-                Envelope(page, dialogueRow.Text("panel_id"), dialogueRow.Text("id"), null, "panel", panelRow.Number("version"),
-                    "update_dialogue", new Dictionary<string, object?> { ["target_text"] = newText }, text, retryOfCommandId),
-                "气泡台词", $"格 {panelRow.Number("reading_order")} · 气泡{dialogueRow.Number("reading_order")}", summary, "low");
+            if (newText is { Length: > 0 })
+            {
+                var dialogue = ResolveDialogue((JsonElement)targetPanel!.Envelope!, selection, text, panels);
+                if (dialogue.Kind != "command") return dialogue;
+                var dialogueRow = (JsonElement)dialogue.Envelope!;
+                if (dialogueRow.Flag("rewrite_forbidden"))
+                    return DirectorPlanResult.Unsupported($"格 {dialogueRow.Number("reading_order")} 的气泡被标记为禁止改写，请在分镜编辑器处理");
+                var panelRow = (JsonElement)targetPanel.Envelope!;
+                var summary = $"把格 {panelRow.Number("reading_order")} 气泡{dialogueRow.Number("reading_order")} 的台词改为「{newText}」。";
+                return DirectorPlanResult.Command(
+                    Envelope(page, ownerId, dialogueRow.Text("panel_id"), dialogueRow.Text("id"), null, "panel", panelRow.Number("version"),
+                        "update_dialogue", new Dictionary<string, object?> { ["target_text"] = newText }, text, retryOfCommandId),
+                    "气泡台词", $"格 {panelRow.Number("reading_order")} · 气泡{dialogueRow.Number("reading_order")}", summary, "low");
+            }
+            // 引号+动词但提取不出新台词且未点名台词：与 web 一致，落到天气/景别等后续规则
         }
 
         // Scene weather / time — outcome values must mirror director-rules.ts exactly.
@@ -121,7 +129,7 @@ public static class DirectorRules
                 return DirectorPlanResult.Unsupported("无法确认场景版本，请刷新剧本页后再试");
             var summary = $"把本页主场景的{(weather != null ? $"天气→{weather}" : "")}{(weather != null && time != null ? "、" : "")}{(time != null ? $"时间→{time}" : "")}。天气/时间是场景级字段，会影响本页后续所有抽卡。";
             return DirectorPlanResult.Command(
-                Envelope(page, null, null, sceneId, "scene", sceneVersionValue,
+                Envelope(page, ownerId, null, null, sceneId, "scene", sceneVersionValue,
                     "update_scene_context", new Dictionary<string, object?>
                     {
                         ["weather"] = weather, ["time_label"] = time,
@@ -163,7 +171,7 @@ public static class DirectorRules
             }
             var intent = removeMatch.Success ? "移除入镜角色" : "加入入镜角色";
             return DirectorPlanResult.Command(
-                Envelope(page, panel.Text("id"), null, null, "panel", panel.Number("version"), "update_panel_cast",
+                Envelope(page, ownerId, panel.Text("id"), null, null, "panel", panel.Number("version"), "update_panel_cast",
                     new Dictionary<string, object?>
                     {
                         ["characters"] = cast, ["character_presence"] = presence,
@@ -196,7 +204,7 @@ public static class DirectorRules
                 expressions[pair.Name] = pair.Value.ToString();
             expressions[characterRow.Text("id")] = expression;
             return DirectorPlanResult.Command(
-                Envelope(page, panel.Text("id"), null, null, "panel", panel.Number("version"), "update_panel_cast",
+                Envelope(page, ownerId, panel.Text("id"), null, null, "panel", panel.Number("version"), "update_panel_cast",
                     new Dictionary<string, object?> { ["expressions"] = expressions }, text, retryOfCommandId),
                 "角色表情", $"格 {panel.Number("reading_order")} · {characterRow.Text("primary_name")}",
                 $"把 {characterRow.Text("primary_name")} 的表情改为{expression}。", "low");
@@ -218,7 +226,7 @@ public static class DirectorRules
             var payload = new Dictionary<string, object?> { ["shot_type"] = shot, ["camera_angle"] = camera };
             var summary = $"把格 {panel.Number("reading_order")} 的{(shot != null ? $"景别→{shot}" : "")}{(shot != null && camera != null ? "、" : "")}{(camera != null ? $"镜头角度→{camera}" : "")}。";
             return DirectorPlanResult.Command(
-                Envelope(page, panel.Text("id"), null, null, "panel", panel.Number("version"), "update_panel_shot", payload, text, retryOfCommandId),
+                Envelope(page, ownerId, panel.Text("id"), null, null, "panel", panel.Number("version"), "update_panel_shot", payload, text, retryOfCommandId),
                 "镜头景别", $"格 {panel.Number("reading_order")}", summary, "medium");
         }
 
@@ -254,8 +262,15 @@ public static class DirectorRules
             var panel = panels.FirstOrDefault(p => p.Text("id") == selection.PanelId);
             if (panel.ValueKind == JsonValueKind.Object) return CommandPanel(panel);
         }
+        // A character chip pins the panel when that character appears in exactly one
+        // panel (mirrors resolvePanelTarget in director-rules.ts).
+        if (selection?.Kind == "character")
+        {
+            var owned = panels.Where(p => p.Strings("characters").Contains(selection.CharacterId!)).ToList();
+            if (owned.Count == 1) return CommandPanel(owned[0]);
+        }
         if (panels.Count == 0)
-            return DirectorPlanResult.Blocked("当前页还没有分镜格，请先完成分镜");
+            return DirectorPlanResult.Unsupported("当前页还没有分镜格，请先完成分镜");
         return DirectorPlanResult.Clarify("请先点击一个格芯片（或在指令里写明「第 N 格」）再下指令", PanelOptions(panels));
     }
 
@@ -264,17 +279,20 @@ public static class DirectorRules
 
     private static DirectorPlanResult ResolveDialogue(JsonElement panel, DirectorScope? selection, string text, List<JsonElement> panels)
     {
-        var dialogues = panel.Array("dialogues");
+        var dialogues = panel.Array("dialogues").OrderBy(d => d.Number("reading_order")).ToList();
         if (selection?.Kind == "dialogue")
         {
             var found = dialogues.FirstOrDefault(d => d.Text("id") == selection.DialogueId);
             if (found.ValueKind == JsonValueKind.Object) return CommandPanel(found);
         }
-        var nth = System.Text.RegularExpressions.Regex.Match(text, @"第\s*([1-8])\s*(?:句|气泡|个气泡)");
+        var nth = System.Text.RegularExpressions.Regex.Match(text, @"第\s*([1-8]|[一二三四五六七八])\s*(?:句|气泡|个气泡)");
         if (nth.Success)
         {
-            var index = int.Parse(nth.Groups[1].Value) - 1;
-            if (index < dialogues.Count) return CommandPanel(dialogues[index]);
+            var ordinal = nth.Groups[1].Value switch
+            {
+                "一" => 1, "二" => 2, "三" => 3, "四" => 4, "五" => 5, "六" => 6, "七" => 7, "八" => 8, var n => int.Parse(n),
+            };
+            if (ordinal <= dialogues.Count) return CommandPanel(dialogues[ordinal - 1]);
         }
         if (dialogues.Count == 1) return CommandPanel(dialogues[0]);
         if (dialogues.Count == 0) return DirectorPlanResult.Unsupported($"格 {panel.Number("reading_order")} 没有气泡");
@@ -285,19 +303,22 @@ public static class DirectorRules
     private static DirectorPlanResult ResolveCharacter(List<JsonElement> characters, string rawName, DirectorScope? selection, List<JsonElement> panels)
     {
         var name = rawName.Trim('，', ' ', '。', '的');
-        if (selection?.Kind == "character")
-        {
-            var bySelection = characters.FirstOrDefault(c => c.Text("id") == selection.CharacterId);
-            if (bySelection.ValueKind == JsonValueKind.Object) return CommandPanel(bySelection);
-        }
+        // Priority mirrors director-rules.ts (audit D4): a literal name in the
+        // utterance beats the chip selection; the chip beats unique-presence.
         var matches = characters.Where(c => name.Contains(c.Text("primary_name"), StringComparison.Ordinal)
             || c.Array("aliases").Any(a => name.Contains(a.ToString(), StringComparison.Ordinal))).ToList();
         if (matches.Count == 1) return CommandPanel(matches[0]);
         if (matches.Count > 1)
             return DirectorPlanResult.Clarify("指令中匹配到多名角色，必须点击角色芯片确认目标",
-                characters.Select(c => ("character", c.Text("id"), c.Text("primary_name"))).ToList());
+                matches.Select(c => ("character", c.Text("id"), c.Text("primary_name"))).ToList());
+        if (selection?.Kind == "character")
+        {
+            var bySelection = characters.FirstOrDefault(c => c.Text("id") == selection.CharacterId);
+            if (bySelection.ValueKind == JsonValueKind.Object) return CommandPanel(bySelection);
+        }
+        // `characters` arrives pre-filtered to on-page (visible) cast by GenerateView.
         if (characters.Count == 1) return CommandPanel(characters[0]);
-        if (characters.Count == 0) return DirectorPlanResult.Blocked("当前页分镜没有入镜角色");
+        if (characters.Count == 0) return DirectorPlanResult.Unsupported("当前页分镜没有入镜角色");
         return DirectorPlanResult.Clarify("页上有多名角色，请点击角色芯片确认目标",
             characters.Select(c => ("character", c.Text("id"), c.Text("primary_name"))).ToList());
     }
@@ -312,13 +333,13 @@ public static class DirectorRules
         return null;
     }
 
-    private static object Envelope(JsonElement page, string? panelId, string? dialogueId, string? sceneId,
+    private static object Envelope(JsonElement page, string projectId, string? panelId, string? dialogueId, string? sceneId,
         string scope, int version, string operation, Dictionary<string, object?> payload,
         string utterance, string? retryOfCommandId)
     {
         var target = new Dictionary<string, object?>
         {
-            ["project_id"] = page.Text("project_id"),
+            ["project_id"] = projectId,
             ["page_id"] = page.Text("id"),
         };
         if (panelId != null) target["panel_id"] = panelId;
@@ -327,8 +348,9 @@ public static class DirectorRules
         return new Dictionary<string, object?>
         {
             ["schema_version"] = 1,
-            ["command_id"] = $"cmd-{Guid.NewGuid():N}",
-            ["command_group_id"] = $"grp-{Guid.NewGuid():N}",
+            // Plain UUID strings: backend UUID() cannot parse "cmd-"/"grp-" prefixed ids.
+            ["command_id"] = Guid.NewGuid().ToString(),
+            ["command_group_id"] = Guid.NewGuid().ToString(),
             ["created_at"] = DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffzzz"),
             ["target"] = target,
             ["expected_version"] = new Dictionary<string, object?> { ["scope"] = scope, ["value"] = version },

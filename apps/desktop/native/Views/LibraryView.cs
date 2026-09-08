@@ -31,6 +31,9 @@ public sealed class LibraryView : WorkspaceView
     private readonly List<string> pageStack = [];   // keyset cursors: previous pages
     private string? nextCursor;
     private bool hasLoaded;
+    // Suppresses SelectionChanged cascades while filters are populated
+    // programmatically; without it Activate fires up to three parallel LoadAsync.
+    private bool populating;
 
     public LibraryView()
     {
@@ -48,7 +51,7 @@ public sealed class LibraryView : WorkspaceView
         kindSelector.Margin = new Thickness(0, 0, 8, 0);
         foreach (var (key, label) in Labels.GenerationKind)
             kindSelector.Items.Add(new ComboBoxItem { Tag = key, Content = label });
-        kindSelector.SelectionChanged += (_, _) => { ResetPaging(); _ = LoadAsync(); };
+        kindSelector.SelectionChanged += (_, _) => { if (populating) return; ResetPaging(); _ = LoadAsync(); };
         filters.Children.Add(kindSelector);
         modelSelector.MinWidth = 150;
         modelSelector.Margin = new Thickness(0, 0, 8, 0);
@@ -57,19 +60,21 @@ public sealed class LibraryView : WorkspaceView
         foreach (var resolution in new[] { "1K", "2K", "4K" })
             resolutionSelector.Items.Add(new ComboBoxItem { Tag = resolution, Content = resolution });
         resolutionSelector.SelectedIndex = 0;
-        resolutionSelector.SelectionChanged += (_, _) => { ResetPaging(); _ = LoadAsync(); };
+        resolutionSelector.SelectionChanged += (_, _) => { if (populating) return; ResetPaging(); _ = LoadAsync(); };
         filters.Children.Add(resolutionSelector);
-        chapterSelector.SelectionChanged += (_, _) => { ResetPaging(); _ = LoadAsync(); LoadExports(); };
-        characterSelector.SelectionChanged += (_, _) => { ResetPaging(); _ = LoadAsync(); };
-        modelSelector.SelectionChanged += (_, _) => { ResetPaging(); _ = LoadAsync(); };
+        chapterSelector.SelectionChanged += (_, _) => { if (populating) return; ResetPaging(); _ = LoadAsync(); LoadExports(); };
+        characterSelector.SelectionChanged += (_, _) => { if (populating) return; ResetPaging(); _ = LoadAsync(); };
+        modelSelector.SelectionChanged += (_, _) => { if (populating) return; ResetPaging(); _ = LoadAsync(); };
         var reset = Kit.Act("重置", (_, _) =>
         {
+            populating = true;
             chapterSelector.SelectedIndex = -1;
             characterSelector.SelectedIndex = -1;
             kindSelector.SelectedIndex = -1;
             modelSelector.SelectedIndex = -1;
             resolutionSelector.SelectedIndex = 0;
             favoriteOnly.IsChecked = false;
+            populating = false;
             ResetPaging();
             _ = LoadAsync();
         }, "Compact");
@@ -136,6 +141,7 @@ public sealed class LibraryView : WorkspaceView
             if (lifetime.Token.IsCancellationRequested) return;
             chapters = chapterRows.EnumerateArray().Select(ChapterItem.From).ToList();
             characters = characterRows.EnumerateArray().Select(CharacterItem.From).ToList();
+            populating = true;
             chapterSelector.Items.Clear();
             chapterSelector.Items.Add(new ComboBoxItem { Tag = "", Content = "全部章节" });
             foreach (var chapter in chapters)
@@ -146,6 +152,7 @@ public sealed class LibraryView : WorkspaceView
             foreach (var character in characters)
                 characterSelector.Items.Add(new ComboBoxItem { Tag = character.Id, Content = character.PrimaryName });
             characterSelector.SelectedIndex = 0;
+            populating = false;
             await LoadAsync();
             LoadExports();
         }
@@ -215,11 +222,13 @@ public sealed class LibraryView : WorkspaceView
                 modelNames.Add(candidate.Text("model_alias"));
         if (modelSelector.Items.Count <= 1)
         {
+            populating = true;
             modelSelector.Items.Clear();
             modelSelector.Items.Add(new ComboBoxItem { Tag = "", Content = "全部模型" });
             foreach (var model in modelNames.OrderBy(m => m))
                 modelSelector.Items.Add(new ComboBoxItem { Tag = model, Content = model });
             modelSelector.SelectedIndex = 0;
+            populating = false;
         }
         foreach (var group in groups)
         {

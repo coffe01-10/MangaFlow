@@ -186,6 +186,18 @@ public sealed class ImageBox : ContentControl
         return new Border { Background = background, Child = new Spinner { Size = 18 } };
     }
 
+    private static Border FailedPlaceholder()
+    {
+        var background = Application.Current.TryFindResource("PaperDeep") as Brush ?? Brushes.LightGray;
+        var text = new TextBlock
+        {
+            Text = "图片加载失败", FontSize = 11, TextWrapping = TextWrapping.Wrap,
+            HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+            Style = (Style)Application.Current.FindResource("Micro"),
+        };
+        return new Border { Background = background, Child = text };
+    }
+
     private void Reload()
     {
         load?.Cancel();
@@ -205,14 +217,25 @@ public sealed class ImageBox : ContentControl
             try
             {
                 var image = await ImageStore.LoadAsync(url, token);
-                if (token.IsCancellationRequested || image == null) return;
+                if (token.IsCancellationRequested) return;
                 await Dispatcher.BeginInvoke(() =>
                 {
                     if (token.IsCancellationRequested || SourceUrl != url) return;
-                    Present(image);
+                    // null = 下载到空数据/无法解码；同样离开 spinner 状态。
+                    if (image != null) Present(image);
+                    else Content = FailedPlaceholder();
                 });
             }
             catch (OperationCanceledException) { }
+            catch (Exception)
+            {
+                if (token.IsCancellationRequested) return;
+                await Dispatcher.BeginInvoke(() =>
+                {
+                    if (token.IsCancellationRequested || SourceUrl != url) return;
+                    Content = FailedPlaceholder();
+                });
+            }
         }, token);
     }
 

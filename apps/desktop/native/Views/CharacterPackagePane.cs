@@ -20,17 +20,19 @@ internal sealed class CharacterPackagePane : Border
     private readonly CharacterItem character;
     private JsonElement package;
     private readonly StackPanel content = new();
-    private readonly TextBox age = new();
-    private readonly TextBox gender = new();
-    private readonly TextBox personality = new();
-    private readonly TextBox identityNotes = new() { AcceptsReturn = true, MinHeight = 44 };
-    private readonly TextBox hair = new();
-    private readonly TextBox hairColor = new();
-    private readonly TextBox face = new();
-    private readonly TextBox eyes = new();
-    private readonly TextBox body = new();
-    private readonly TextBox marks = new();
-    private readonly TextBox negative = new() { AcceptsReturn = true, MinHeight = 64 };
+    // Fresh on every RenderDraft(): these sit nested inside FieldGrid cards, so a
+    // reused instance would still belong to the previous (detached) grid and throw.
+    private TextBox age = null!;
+    private TextBox gender = null!;
+    private TextBox personality = null!;
+    private TextBox identityNotes = null!;
+    private TextBox hair = null!;
+    private TextBox hairColor = null!;
+    private TextBox face = null!;
+    private TextBox eyes = null!;
+    private TextBox body = null!;
+    private TextBox marks = null!;
+    private TextBox negative = null!;
     private readonly StackPanel versions = new();
     private readonly StackPanel matrix = new();
 
@@ -170,17 +172,17 @@ internal sealed class CharacterPackagePane : Border
         var snapshot = draft.Element("spec_snapshot");
         var identity = snapshot.Element("identity_spec");
         var visual = snapshot.Element("visual_spec");
-        age.Text = identity.Text("age_appearance");
-        gender.Text = identity.Text("gender");
-        personality.Text = identity.Text("personality");
-        identityNotes.Text = identity.Text("identity_notes");
-        hair.Text = visual.Text("hair");
-        hairColor.Text = visual.Text("hair_color");
-        face.Text = visual.Text("face");
-        eyes.Text = visual.Text("eyes");
-        body.Text = visual.Text("body");
-        marks.Text = visual.Text("distinguishing_marks");
-        negative.Text = string.Join("\n", snapshot.Array("negative_constraints"));
+        age = new TextBox { Text = identity.Text("age_appearance") };
+        gender = new TextBox { Text = identity.Text("gender") };
+        personality = new TextBox { Text = identity.Text("personality") };
+        identityNotes = new TextBox { Text = identity.Text("identity_notes"), AcceptsReturn = true, MinHeight = 44 };
+        hair = new TextBox { Text = visual.Text("hair") };
+        hairColor = new TextBox { Text = visual.Text("hair_color") };
+        face = new TextBox { Text = visual.Text("face") };
+        eyes = new TextBox { Text = visual.Text("eyes") };
+        body = new TextBox { Text = visual.Text("body") };
+        marks = new TextBox { Text = visual.Text("distinguishing_marks") };
+        negative = new TextBox { Text = string.Join("\n", snapshot.Array("negative_constraints")), AcceptsReturn = true, MinHeight = 64 };
 
         var headerRow = new DockPanel { Margin = new Thickness(0, 8, 0, 8) };
         var actions = new StackPanel { Orientation = Orientation.Horizontal };

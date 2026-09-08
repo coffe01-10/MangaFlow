@@ -85,11 +85,17 @@ public sealed class AssetsView : WorkspaceView
             assets = (await assetTask).EnumerateArray().Select(AssetItem.From).ToList();
             characters = (await characterTask).EnumerateArray().Select(CharacterItem.From).ToList();
             outfits = (await outfitTask).EnumerateArray().Select(OutfitItem.From).ToList();
+            var keepPane = false;
             if (current == Style)
             {
                 var styleRows = await Api.SendAsync($"projects/{ProjectId}/styles", cancellation: lifetime.Token);
-                styles = styleRows.EnumerateArray().Select(StyleItem.From).ToList();
+                var next = styleRows.EnumerateArray().Select(StyleItem.From).ToList();
+                // PollTick during ANALYZING reloads every 3s; only rebuild the pane
+                // when a style actually changed, or the creation form loses input.
+                keepPane = host.Children.Count > 0 && StyleFingerprint(next) == StyleFingerprint(styles);
+                styles = next;
             }
+            if (keepPane) return;
             foreach (var (key, tab) in tabs) tab.IsChecked = key == current;
             Render();
         }
@@ -99,6 +105,10 @@ public sealed class AssetsView : WorkspaceView
             host.Children.Add(Kit.Caption($"资产读取失败：{error.Message}"));
         }
     }
+
+    private static string StyleFingerprint(List<StyleItem> rows) =>
+        string.Join("|", rows.OrderBy(s => s.Id).Select(s =>
+            $"{s.Id}:{s.Status}:{s.PaletteConfirmed}:{string.Join(",", s.PaletteDraft ?? [])}"));
 
     internal List<JsonElement> ImageEditModels => models
         .Where(m => m.Text("model_type") == "IMAGE" && m.Array("operations").Any(o => o.ToString() == "image_edit") && m.Flag("enabled"))
@@ -233,8 +243,6 @@ internal sealed class CharactersPane : StackPanel
     private readonly StackPanel editor = new();
     private readonly TextBox nameInput = new() { Width = 220 };
     private readonly TextBox aliasInput = new() { Width = 220 };
-    private readonly TextBox lockedFeatures = new() { MinWidth = 320 };
-    private readonly TextBox forbiddenChanges = new() { MinWidth = 320 };
 
     public CharactersPane(AssetsView view)
     {
@@ -320,13 +328,14 @@ internal sealed class CharactersPane : StackPanel
         // so the editor must not reuse the create-row inputs.
         var editName = new TextBox { Text = character.PrimaryName, Width = 220 };
         var editAlias = new TextBox { Text = string.Join("，", character.Aliases), Width = 220 };
-        lockedFeatures.Text = character.LockedFeatures;
-        forbiddenChanges.Text = character.ForbiddenChanges;
+        var lockedFeatures = new TextBox { Text = character.LockedFeatures, MinWidth = 320 };
+        var forbiddenChanges = new TextBox { Text = character.ForbiddenChanges, MinWidth = 320 };
         var row = new StackPanel { Orientation = Orientation.Horizontal };
         row.Children.Add(editName);
         editAlias.Margin = new Thickness(8, 0, 8, 0);
         row.Children.Add(editAlias);
-        row.Children.Add(Kit.Act("保存角色规范", async (_, _) => await SaveCharacter(character, editName.Text, editAlias.Text), "CompactInk"));
+        row.Children.Add(Kit.Act("保存角色规范", async (_, _) =>
+            await SaveCharacter(character, editName.Text, editAlias.Text, lockedFeatures.Text, forbiddenChanges.Text), "CompactInk"));
         form.Children.Add(row);
         form.Children.Add(Labelled("固定特征（生图时保持）", lockedFeatures));
         form.Children.Add(Labelled("禁止改变项", forbiddenChanges));
@@ -359,7 +368,8 @@ internal sealed class CharactersPane : StackPanel
         catch (Exception error) { view.Notify("创建角色失败：" + error.Message); }
     }
 
-    private async Task SaveCharacter(CharacterItem character, string primaryName, string aliasText)
+    private async Task SaveCharacter(CharacterItem character, string primaryName, string aliasText,
+        string lockedFeatures, string forbiddenChanges)
     {
         try
         {
@@ -369,8 +379,8 @@ internal sealed class CharactersPane : StackPanel
                 version = character.Version,
                 primary_name = primaryName.Trim(),
                 aliases,
-                locked_features = lockedFeatures.Text,
-                forbidden_changes = forbiddenChanges.Text,
+                locked_features = lockedFeatures,
+                forbidden_changes = forbiddenChanges,
             });
             await view.ReloadAssets();
             view.Notify("角色规范已保存。");

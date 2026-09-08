@@ -682,7 +682,7 @@ internal sealed class DirectorPane : Border
                 sceneVersion = script.Array("scenes").FirstOrDefault(s => s.Text("id") == primarySceneId).Number("version");
                 if (sceneVersion == 0) sceneVersion = null;
             }
-            plan = DirectorRules.Compile(view.Workbench.Element("page"), storyboard, visible, selection,
+            plan = DirectorRules.Compile(view.Workbench.Element("page"), view.ProjectId2, storyboard, visible, selection,
                 commandInput.Text, retryOfCommandId,
                 view.Workbench.Array("candidates").Any(c => c.Text("status") is "QUEUED" or "GENERATING"),
                 sceneVersion);
@@ -831,9 +831,36 @@ internal sealed class DirectorPane : Border
                     Text = command.Element("source").Text("user_prompt"), FontStyle = FontStyles.Italic,
                     Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 3, 0, 0),
                 });
+                if (status is "FAILED" or "REJECTED")
+                {
+                    // 改口令重发：沿用原指令与作用域，把 retry_of_command_id 链到原命令
+                    var retry = Kit.Act("改口令重发", (_, _) =>
+                    {
+                        var chained = command.Text("retry_of_command_id");
+                        retryOfCommandId = chained.Length > 0 ? chained : command.Text("command_id");
+                        commandInput.Text = command.Element("source").Text("user_prompt");
+                        selection = SelectionFromTarget(command.Element("target"));
+                        plan = null;
+                        previewGroup = default;
+                        preview.Children.Clear();
+                        BuildScopes();
+                        commandInput.Focus();
+                    }, "Outline");
+                    retry.Margin = new Thickness(0, 6, 0, 0);
+                    item.Children.Add(retry);
+                }
                 history.Children.Add(item);
             }
         }
         catch (Exception) { }
+    }
+
+    private static DirectorScope? SelectionFromTarget(JsonElement target)
+    {
+        var dialogueId = target.Text("dialogue_id");
+        var panelId = target.Text("panel_id");
+        if (dialogueId.Length > 0 && panelId.Length > 0) return DirectorScope.Dialogue(panelId, dialogueId);
+        if (panelId.Length > 0) return DirectorScope.Panel(panelId);
+        return null;
     }
 }

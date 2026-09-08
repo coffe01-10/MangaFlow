@@ -9,4 +9,9 @@
     <ApplicationIcon>../src-tauri/icons/icon.ico</ApplicationIcon>
     <Version>0.3.0</Version>
   </PropertyGroup>
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>MangaFlow.Native.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
 </Project>

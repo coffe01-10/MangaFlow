@@ -248,6 +248,10 @@ public partial class MainWindow : Window
                         var target = state.Projects.FirstOrDefault(p => p.Id == id);
                         if (target != null && state.CurrentProject?.Id != id)
                         {
+                            // Record the destination section first: OpenProjectAsync
+                            // navigates to Navigation.Current, so without this the
+                            // requested section would be dropped after the switch.
+                            state.Navigation.Select(definition);
                             ProjectList.SelectedItem = target;   // triggers OpenProjectAsync
                             return;
                         }
@@ -335,12 +339,31 @@ public partial class MainWindow : Window
     {
         if (syncingProjects) return;
         if (ProjectList.SelectedItem is not ProjectItem item) return;
+        var previous = state.CurrentProject;
+        if (previous?.Id == item.Id) return;
+        // Same contract as SelectProjectSection: confirm unsaved work before
+        // switching identity; a refusal rolls the selection back.
+        if (activeView != null && !await activeView.ConfirmLeaveAsync())
+        {
+            if (ReferenceEquals(ProjectList.SelectedItem, item)) ProjectList.SelectedItem = previous;
+            return;
+        }
+        // The await can span a real save; if the user re-targeted meanwhile, the
+        // newer selection's own invocation owns the switch.
+        if (!ReferenceEquals(ProjectList.SelectedItem, item)) return;
         await OpenProjectAsync(item);
     }
 
     private async Task OpenProjectAsync(ProjectItem? item)
     {
         if (item == null) return;
+        if (state.CurrentProject?.Id != item.Id)
+        {
+            // Staying on the same page re-activates the same view instance; cancel the
+            // old reads first so late responses cannot paint the new project.
+            activeView?.Deactivate();
+            CancelReads();
+        }
         state.CurrentProject = item;
         preferences.RecentProject = item.Id;
         state.CurrentConcurrency = 2;

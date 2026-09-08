@@ -626,14 +626,16 @@ internal sealed class ConnectionPanel : Border
     private readonly JsonElement provider;
     private JsonElement connection;
     private readonly List<JsonElement> catalog;
-    private readonly StackPanel modelsPanel = new();
-    private readonly TextBlock statusLine = new() { Style = (Style)Application.Current.FindResource("Micro"), TextWrapping = TextWrapping.Wrap };
-    private readonly StackPanel keyList = new();
-    private readonly TextBox keyLabel = new() { Width = 120, Text = "default" };
-    private readonly PasswordBox keyValue = new() { Width = 260 };
-    private readonly ComboBox manualType = new();
-    private readonly TextBox manualId = new() { Width = 220 };
-    private readonly TextBox manualName = new() { Width = 220 };
+    // Fresh on every Render(): re-parenting a reused control would throw, and the
+    // pane re-renders on enable/disable toggles and manual-form switches.
+    private StackPanel modelsPanel = null!;
+    private TextBlock statusLine = null!;
+    private StackPanel keyList = null!;
+    private TextBox keyLabel = null!;
+    private PasswordBox keyValue = null!;
+    private ComboBox manualType = null!;
+    private TextBox manualId = null!;
+    private TextBox manualName = null!;
     private bool busy;
 
     public ConnectionPanel(SettingsView owner, JsonElement provider, JsonElement connection, List<JsonElement> catalog)
@@ -653,6 +655,15 @@ internal sealed class ConnectionPanel : Border
 
     private void Render()
     {
+        modelsPanel = new StackPanel();
+        statusLine = new TextBlock { Style = (Style)Application.Current.FindResource("Micro"), TextWrapping = TextWrapping.Wrap };
+        keyList = new StackPanel();
+        keyLabel = new TextBox { Width = 120, Text = "default" };
+        keyValue = new PasswordBox { Width = 260 };
+        manualType = new ComboBox();
+        manualId = new TextBox { Width = 220 };
+        manualName = new TextBox { Width = 220 };
+        manualOpen = false;   // 重渲染会重建面板，旧手工表单已随之消失
         var panel = new StackPanel();
         var health = connection.Text("health_state", "UNKNOWN");
         var header = new DockPanel { Margin = new Thickness(0, 0, 0, 8) };

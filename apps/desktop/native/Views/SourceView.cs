@@ -30,6 +30,8 @@ public sealed class SourceView : WorkspaceView
     private readonly StackPanel chapterList = new();
     private readonly TextBlock chapterCount = new() { Style = (Style)Application.Current.FindResource("Caption") };
     private readonly Border undoBanner = Notice("章节已移入回收状态", "warn");
+    private readonly TextBlock undoBannerText = new()
+    { Text = "章节已移入回收状态", Style = (Style)Application.Current.FindResource("Caption") };
     private readonly TextBlock composeFooter = Caption("不会限制总页数 · 单页硬上限 180 个中文字符");
     private readonly ScrollViewer scroller = new() { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
 
@@ -37,7 +39,8 @@ public sealed class SourceView : WorkspaceView
     private string? editingChapterId;
     private bool importing, revisionLoading;
     private int revisionToken;
-    private string? pendingRestoreChapterId;
+    // 连续删除多章时逐个入列；单槽会丢掉除最后一次删除外的撤回能力。
+    private readonly List<string> pendingRestoreChapterIds = [];
     private string sourceType = "PASTE";
 
     public SourceView()
@@ -65,11 +68,8 @@ public sealed class SourceView : WorkspaceView
         undoBanner.Visibility = Visibility.Collapsed;
         var restore = Act("撤回删除", RestoreChapter, "Outline");
         var bannerRow = new StackPanel { Orientation = Orientation.Horizontal };
-        bannerRow.Children.Add(new TextBlock
-        {
-            Text = "章节已移入回收状态", VerticalAlignment = VerticalAlignment.Center,
-            Style = (Style)Application.Current.FindResource("Caption"),
-        });
+        undoBannerText.VerticalAlignment = VerticalAlignment.Center;
+        bannerRow.Children.Add(undoBannerText);
         restore.Margin = new Thickness(12, 0, 0, 0);
         bannerRow.Children.Add(restore);
         undoBanner.Child = bannerRow;
@@ -379,7 +379,10 @@ public sealed class SourceView : WorkspaceView
         try
         {
             await Api.SendOptionalAsync($"chapters/{chapter.Id}", HttpMethod.Delete, cancellation: lifetime.Token);
-            pendingRestoreChapterId = chapter.Id;
+            pendingRestoreChapterIds.Add(chapter.Id);
+            undoBannerText.Text = pendingRestoreChapterIds.Count == 1
+                ? "章节已移入回收状态"
+                : $"已删除 {pendingRestoreChapterIds.Count} 章，可一次全部撤回";
             undoBanner.Visibility = Visibility.Visible;
             Cache.Invalidate("chapters:" + ProjectId, "dashboard");
             await LoadChaptersAsync();
@@ -392,18 +395,27 @@ public sealed class SourceView : WorkspaceView
 
     private async void RestoreChapter(object sender, RoutedEventArgs e)
     {
-        if (pendingRestoreChapterId == null) return;
+        if (pendingRestoreChapterIds.Count == 0) return;
         ((Button)sender).IsEnabled = false;
         try
         {
-            await Api.SendAsync($"chapters/{pendingRestoreChapterId}/restore", HttpMethod.Post, cancellation: lifetime.Token);
+            // 每章恢复成功即出列：部分失败时重试不会重复 restore 已恢复章节。
+            while (pendingRestoreChapterIds.Count > 0)
+            {
+                var chapterId = pendingRestoreChapterIds[0];
+                await Api.SendAsync($"chapters/{chapterId}/restore", HttpMethod.Post, cancellation: lifetime.Token);
+                pendingRestoreChapterIds.RemoveAt(0);
+            }
             undoBanner.Visibility = Visibility.Collapsed;
-            pendingRestoreChapterId = null;
             Cache.Invalidate("chapters:" + ProjectId, "dashboard");
             await LoadChaptersAsync();
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {
+            if (pendingRestoreChapterIds.Count > 0)
+                undoBannerText.Text = pendingRestoreChapterIds.Count == 1
+                    ? "章节已移入回收状态"
+                    : $"已删除 {pendingRestoreChapterIds.Count} 章，可一次全部撤回";
             MessageBox.Show(Host, "章节撤回失败，请重试：" + error.Message, "撤回未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         finally { ((Button)sender).IsEnabled = true; }
