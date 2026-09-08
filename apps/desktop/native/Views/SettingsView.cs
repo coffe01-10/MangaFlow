@@ -45,28 +45,34 @@ public sealed class SettingsView : WorkspaceView
 
     public SettingsView()
     {
-        var page = new StackPanel { Margin = new Thickness(36, 30, 36, 28), MaxWidth = 980, HorizontalAlignment = HorizontalAlignment.Left };
-        page.Children.Add(new TextBlock { Text = "SYSTEM / CONTROL ROOM", Style = (Style)Application.Current.FindResource("SectionIndex") });
-        page.Children.Add(new TextBlock
-        {
-            Text = "系统设置与运行诊断",
-            FontFamily = (FontFamily)Application.Current.FindResource("Serif"),
-            FontSize = 27, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 6, 0, 16),
-        });
+        var page = new StackPanel { Margin = new Thickness(34, 32, 34, 40) };
         page.Children.Add(BuildStatusStrip());
-        page.Children.Add(BuildProviderBoard());
-        page.Children.Add(BuildRuntimeCard());
-        var bottom = new Grid { Margin = new Thickness(0, 16, 0, 0) };
-        bottom.ColumnDefinitions.Add(new ColumnDefinition());
-        bottom.ColumnDefinitions.Add(new ColumnDefinition());
+        var board = new Grid { Name = "SettingsBoard" };
+        board.ColumnDefinitions.Add(new ColumnDefinition());
+        board.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(342) });
+        board.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        board.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        var main = new StackPanel();
+        main.Children.Add(BuildProviderBoard());
+        main.Children.Add(BuildRuntimeCard());
+        board.Children.Add(main);
+        var side = new StackPanel { Name = "SettingsDiagnostics", Margin = new Thickness(22, 0, 0, 0) };
         var diagnostics = BuildDiagnosticsCard();
-        Grid.SetColumn(diagnostics, 0);
-        bottom.Children.Add(diagnostics);
+        side.Children.Add(diagnostics);
         var storage = BuildStorageCard();
-        Grid.SetColumn(storage, 1);
-        storage.Margin = new Thickness(16, 0, 0, 0);
-        bottom.Children.Add(storage);
-        page.Children.Add(bottom);
+        storage.Margin = new Thickness(0, 18, 0, 0);
+        side.Children.Add(storage);
+        Grid.SetColumn(side, 1);
+        board.Children.Add(side);
+        SizeChanged += (_, _) =>
+        {
+            var narrow = ActualWidth < 1280;
+            board.ColumnDefinitions[1].Width = new GridLength(narrow ? 0 : 342);
+            Grid.SetColumn(side, narrow ? 0 : 1);
+            Grid.SetRow(side, narrow ? 1 : 0);
+            side.Margin = narrow ? new Thickness(0, 20, 0, 0) : new Thickness(22, 0, 0, 0);
+        };
+        page.Children.Add(board);
         scroller.Content = page;
         Content = scroller;
     }
@@ -439,6 +445,8 @@ public sealed class SettingsView : WorkspaceView
         return box;
     }
 
+    public void SaveRuntimeSettings() => SaveRuntime(runtimeSave, new RoutedEventArgs());
+
     private async void SaveRuntime(object sender, RoutedEventArgs e)
     {
         if (runtimeSaving || runtime.ValueKind != JsonValueKind.Object) return;
@@ -626,14 +634,16 @@ internal sealed class ConnectionPanel : Border
     private readonly JsonElement provider;
     private JsonElement connection;
     private readonly List<JsonElement> catalog;
-    private readonly StackPanel modelsPanel = new();
-    private readonly TextBlock statusLine = new() { Style = (Style)Application.Current.FindResource("Micro"), TextWrapping = TextWrapping.Wrap };
-    private readonly StackPanel keyList = new();
-    private readonly TextBox keyLabel = new() { Width = 120, Text = "default" };
-    private readonly PasswordBox keyValue = new() { Width = 260 };
-    private readonly ComboBox manualType = new();
-    private readonly TextBox manualId = new() { Width = 220 };
-    private readonly TextBox manualName = new() { Width = 220 };
+    // Fresh on every Render(): re-parenting a reused control would throw, and the
+    // pane re-renders on enable/disable toggles and manual-form switches.
+    private StackPanel modelsPanel = null!;
+    private TextBlock statusLine = null!;
+    private StackPanel keyList = null!;
+    private TextBox keyLabel = null!;
+    private PasswordBox keyValue = null!;
+    private ComboBox manualType = null!;
+    private TextBox manualId = null!;
+    private TextBox manualName = null!;
     private bool busy;
 
     public ConnectionPanel(SettingsView owner, JsonElement provider, JsonElement connection, List<JsonElement> catalog)
@@ -653,6 +663,15 @@ internal sealed class ConnectionPanel : Border
 
     private void Render()
     {
+        modelsPanel = new StackPanel();
+        statusLine = new TextBlock { Style = (Style)Application.Current.FindResource("Micro"), TextWrapping = TextWrapping.Wrap };
+        keyList = new StackPanel();
+        keyLabel = new TextBox { Width = 120, Text = "default" };
+        keyValue = new PasswordBox { Width = 260 };
+        manualType = new ComboBox();
+        manualId = new TextBox { Width = 220 };
+        manualName = new TextBox { Width = 220 };
+        manualOpen = false;   // 重渲染会重建面板，旧手工表单已随之消失
         var panel = new StackPanel();
         var health = connection.Text("health_state", "UNKNOWN");
         var header = new DockPanel { Margin = new Thickness(0, 0, 0, 8) };

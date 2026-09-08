@@ -22,6 +22,13 @@ public interface IWorkspaceView
 
 public abstract class WorkspaceView : UserControl, IWorkspaceView
 {
+    protected WorkspaceView()
+    {
+        HorizontalContentAlignment = HorizontalAlignment.Stretch;
+        VerticalContentAlignment = VerticalAlignment.Stretch;
+        UseLayoutRounding = true;
+        Background = (Brush)Application.Current.FindResource("Paper");
+    }
     protected WorkspaceContext? Context { get; private set; }
     protected ApiClient Api => Context?.Api ?? throw new InvalidOperationException("视图尚未激活");
     protected ApiCache Cache => Context?.Cache ?? throw new InvalidOperationException("视图尚未激活");
@@ -67,7 +74,12 @@ public abstract class WorkspaceView : UserControl, IWorkspaceView
         Child = content is Panel or Border ? content : new ScrollViewer { Content = content },
     };
     protected static Border Notice(string text, string tone) => Kit.Notice(text, tone);
-    protected static StackPanel Row(params UIElement[] children) => new() { Orientation = Orientation.Horizontal };
+    protected static StackPanel Row(params UIElement[] children)
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal };
+        foreach (var child in children) row.Children.Add(child);
+        return row;
+    }
     protected static StackPanel Column(double gap = 0, params UIElement[] children)
     {
         var panel = new StackPanel();

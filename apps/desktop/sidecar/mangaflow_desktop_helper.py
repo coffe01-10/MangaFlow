@@ -85,8 +85,21 @@ def _write_journal(journal: Path, record: dict) -> None:
 
 
 def _bind_loopback() -> socket.socket:
+    """Atomically claim an ephemeral loopback port for the API server.
+
+    Unix: SO_REUSEADDR is the classic listen-socket option (TIME_WAIT
+    rebind); it cannot let a second listener share an actively bound
+    specific address. Windows: SO_REUSEADDR means the OPPOSITE — it invites
+    a second bind of the same port, so a local process could share or steal
+    the session's traffic after the origin was verified and injected. win32
+    therefore sets SO_EXCLUSIVEADDRUSE instead, which makes ANY conflicting
+    bind fail outright (fail-closed).
+    """
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    if sys.platform == "win32":
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+    else:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(("127.0.0.1", 0))
     sock.listen(128)
     return sock
@@ -104,20 +117,29 @@ def _bind_relay(api_port: int) -> socket.socket | None:
     """Claim the fixed relay port and listen; None when it is taken.
 
     POSIX: sets SO_REUSEADDR so the bind survives this app's own TIME_WAIT
-    remnants. The relay is the active closer whenever the API side finishes
-    first, so its accepted sockets routinely end up in TIME_WAIT on the
-    fixed port; without the flag, relaunching the shell within the ~60s
+    remnants (#253). The relay is the active closer whenever the API side
+    finishes first, so its accepted sockets routinely end up in TIME_WAIT on
+    the fixed port; without the flag, relaunching the shell within the ~60s
     TIME_WAIT window failed the bind and silently downgraded the session to
     the static-export form — exactly the degradation the fail-closed bind
     was meant to reserve for a foreign owner. SO_REUSEADDR cannot take the
     port from a foreign live listener (Linux would require SO_REUSEPORT on
     both sockets), so fail-closed against a foreign owner is unchanged.
-    Windows keeps the strict default: SO_REUSEADDR there permits hijacking
-    binds, so that platform retains the TIME_WAIT residual instead.
+
+    Windows: sets SO_EXCLUSIVEADDRUSE (PR #256). A plain no-option bind is
+    the platform default there, but it still yields to a later binder that
+    sets SO_REUSEADDR — the Windows semantic is the opposite of POSIX and
+    allows the second process to share/steal the session's relayed traffic.
+    SO_EXCLUSIVEADDRUSE rejects even those binders outright (any conflicting
+    bind fails), at the cost of retaining the TIME_WAIT residual on this
+    platform: within the ~60s window a relaunch reports the port taken and
+    downgrades to the static-export form, which stays fail-closed.
     """
 
     relay = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    if sys.platform != "win32":
+    if sys.platform == "win32":
+        relay.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+    else:
         relay.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         relay.bind(("127.0.0.1", WEB_RELAY_PORT))
@@ -250,6 +272,19 @@ def _spawn_grandchild() -> subprocess.Popen[str] | None:
     )
 
 
+class _StubServer(ThreadingHTTPServer):
+    """stub 模式的健康服务器，绑定策略与 ``_bind_loopback`` 一致：
+    Windows 上不设 SO_REUSEADDR（``allow_reuse_address``），改设
+    SO_EXCLUSIVEADDRUSE，避免同端口二次绑定劫持；Unix 行为不变。"""
+
+    allow_reuse_address = sys.platform != "win32"
+
+    def server_bind(self) -> None:
+        if sys.platform == "win32":
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 class _StubHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - stdlib naming
         if self.path != "/api/v1/health":
@@ -267,7 +302,7 @@ class _StubHandler(BaseHTTPRequestHandler):
 
 
 def _run_stub(journal: Path, record: dict, grandchild: bool) -> int:
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _StubHandler)
+    server = _StubServer(("127.0.0.1", 0), _StubHandler)
     try:
         port = server.server_address[1]
         record.update(

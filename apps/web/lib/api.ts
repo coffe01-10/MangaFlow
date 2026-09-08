@@ -1365,14 +1365,25 @@ export function publicUrl(path: string | null) {
   return originUrl(previewPath);
 }
 
+// 本地 API 的 GET 轮询若不设超时，一条挂起的连接会让查询永远停在 pending；
+// 只给无显式 signal 的只读请求兜底（变更类请求可能合理地慢，不设默认超时）。
+const DEFAULT_GET_TIMEOUT_MS = 120_000;
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const method = init?.method ?? "GET";
+  const signal = init?.signal
+    ?? (method === "GET" ? AbortSignal.timeout(DEFAULT_GET_TIMEOUT_MS) : undefined);
   const response = await fetch(`${API_URL}${path}`, {
     ...init,
+    signal,
     headers: {
       ...(init?.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
       ...init?.headers,
     },
   }).catch((error: unknown) => {
+    if (error instanceof DOMException && error.name === "TimeoutError") {
+      throw new ApiError("请求超时，请检查本地 API 状态后重试", 0, error);
+    }
     throw new ApiError("无法连接 MangaFlow 服务，请确认本地 API 已启动后重试", 0, error);
   });
   if (!response.ok) {
@@ -1459,6 +1470,7 @@ export const api = {
     if (filters.project_id) query.set("project_id", filters.project_id);
     if (filters.provider) query.set("provider", filters.provider);
     if (filters.model_id) query.set("model_id", filters.model_id);
+    if (filters.channel) query.set("channel", filters.channel);
     if (filters.since) query.set("from", filters.since);
     if (filters.until) query.set("to", filters.until);
     const suffix = query.toString() ? `?${query.toString()}` : "";
@@ -1631,6 +1643,21 @@ export const api = {
     }),
   sceneAssets: (projectId: string, query: SceneAssetListQuery = {}) =>
     request<SceneAsset[]>(`/projects/${projectId}/scene-assets${sceneAssetQueryString(query)}`),
+  // The scene-asset list endpoint caps one page at 200; workspace consumers
+  // (script scene binding, generate-side pickers) need the complete list, so
+  // they page with the maximum limit until a short page ends the loop — same
+  // silent-truncation guard as characterPackagesAll.
+  sceneAssetsAll: async (projectId: string, query: SceneAssetListQuery = {}) => {
+    const limit = 200;
+    const all: SceneAsset[] = [];
+    let offset = 0;
+    for (;;) {
+      const page = await api.sceneAssets(projectId, { ...query, limit, offset });
+      all.push(...page);
+      if (page.length < limit) return all;
+      offset += limit;
+    }
+  },
   sceneAsset: (projectId: string, assetId: string) =>
     request<SceneAsset>(`/projects/${projectId}/scene-assets/${assetId}`),
   createSceneAsset: (projectId: string, payload: SceneAssetCreateRequest) =>

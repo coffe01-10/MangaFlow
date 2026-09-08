@@ -15,8 +15,19 @@ namespace MangaFlow.Native.Controls;
 // cubic-bezier(.2,.75,.2,1) — web --ease-out.
 public sealed class EaseOutQuint : EasingFunctionBase
 {
-    protected override double EaseInCore(double normalizedTime) =>
-        1 - Math.Pow(1 - normalizedTime, 4);
+    public EaseOutQuint() => EasingMode = EasingMode.EaseIn;
+    protected override double EaseInCore(double normalizedTime)
+    {
+        // Invert x(t), then evaluate y(t) for the actual web cubic-bezier(.2,.75,.2,1).
+        double low = 0, high = 1, t = normalizedTime;
+        for (var i = 0; i < 20; i++)
+        {
+            var x = 0.6 * (1 - t) * t + t * t * t;
+            if (x < normalizedTime) low = t; else high = t;
+            t = (low + high) / 2;
+        }
+        return 2.25 * (1 - t) * (1 - t) * t + 3 * (1 - t) * t * t + t * t * t;
+    }
     protected override Freezable CreateInstanceCore() => new EaseOutQuint();
 }
 
@@ -48,21 +59,20 @@ public static class Motion
             completed?.Invoke();
             return;
         }
-        element.RenderTransform = new TranslateTransform(0, fromOffset);
-        var move = new DoubleAnimation(fromOffset, toOffset, duration) { EasingFunction = new EaseOutQuint() };
-        var fade = new DoubleAnimation(fromOpacity, toOpacity, duration) { EasingFunction = new EaseOutQuint() };
-        if (completed != null)
+        var transform = new TranslateTransform(0, toOffset);
+        element.RenderTransform = transform;
+        element.Opacity = toOpacity;
+        var move = new DoubleAnimation(fromOffset, toOffset, duration) { EasingFunction = new EaseOutQuint(), FillBehavior = FillBehavior.Stop };
+        var fade = new DoubleAnimation(fromOpacity, toOpacity, duration) { EasingFunction = new EaseOutQuint(), FillBehavior = FillBehavior.Stop };
+        fade.Completed += (_, _) =>
         {
-            var done = false;
-            fade.Completed += (_, _) =>
-            {
-                if (done) return;
-                done = true;
-                completed();
-            };
-        }
+            if (!ReferenceEquals(element.RenderTransform, transform)) return;
+            element.BeginAnimation(UIElement.OpacityProperty, null);
+            transform.BeginAnimation(TranslateTransform.YProperty, null);
+            completed?.Invoke();
+        };
         element.BeginAnimation(UIElement.OpacityProperty, fade);
-        ((TranslateTransform)element.RenderTransform).BeginAnimation(TranslateTransform.YProperty, move);
+        transform.BeginAnimation(TranslateTransform.YProperty, move);
     }
 }
 
@@ -74,9 +84,27 @@ public static class Motion
 public sealed class TransitioningContentControl : ContentControl
 {
     private bool first = true;
+    private FrameworkElement? pending;
+    private EventHandler? pendingLayout;
+
+    private void CancelEntrance()
+    {
+        if (pending != null && pendingLayout != null) pending.LayoutUpdated -= pendingLayout;
+        pending = null;
+        pendingLayout = null;
+    }
+
+    public TransitioningContentControl() => Unloaded += (_, _) => CancelEntrance();
 
     protected override void OnContentChanged(object oldContent, object newContent)
     {
+        CancelEntrance();
+        if (oldContent is FrameworkElement outgoing)
+        {
+            outgoing.BeginAnimation(UIElement.OpacityProperty, null);
+            outgoing.Opacity = 1;
+            outgoing.RenderTransform = null;
+        }
         base.OnContentChanged(oldContent, newContent);
         if (first || ReferenceEquals(oldContent, newContent)) { first = false; return; }
         if (newContent is not FrameworkElement incoming) return;
@@ -91,13 +119,14 @@ public sealed class TransitioningContentControl : ContentControl
             return;
         }
         incoming.Opacity = 0;
-        EventHandler layoutHandler = null!;
-        layoutHandler = (_, _) =>
+        pending = incoming;
+        pendingLayout = (_, _) =>
         {
-            incoming.LayoutUpdated -= layoutHandler;
+            CancelEntrance();
+            if (!ReferenceEquals(Content, incoming)) return;
             Motion.FadeTranslate(incoming, 10, 0, 0, 1, Motion.Base);
         };
-        incoming.LayoutUpdated += layoutHandler;
+        incoming.LayoutUpdated += pendingLayout;
     }
 }
 
@@ -176,14 +205,29 @@ public sealed class ImageBox : ContentControl
     public ImageBox()
     {
         Focusable = false;
+        HorizontalContentAlignment = HorizontalAlignment.Stretch;
+        VerticalContentAlignment = VerticalAlignment.Stretch;
         Content = Placeholder();
         Unloaded += (_, _) => load?.Cancel();
+        Loaded += (_, _) => { if (load?.IsCancellationRequested == true) Reload(); };
     }
 
     private static Border Placeholder()
     {
         var background = Application.Current.TryFindResource("PaperDeep") as Brush ?? Brushes.LightGray;
         return new Border { Background = background, Child = new Spinner { Size = 18 } };
+    }
+
+    private static Border FailedPlaceholder()
+    {
+        var background = Application.Current.TryFindResource("PaperDeep") as Brush ?? Brushes.LightGray;
+        var text = new TextBlock
+        {
+            Text = "图片加载失败", FontSize = 11, TextWrapping = TextWrapping.Wrap,
+            HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+            Style = (Style)Application.Current.FindResource("Micro"),
+        };
+        return new Border { Background = background, Child = text };
     }
 
     private void Reload()
@@ -205,14 +249,25 @@ public sealed class ImageBox : ContentControl
             try
             {
                 var image = await ImageStore.LoadAsync(url, token);
-                if (token.IsCancellationRequested || image == null) return;
+                if (token.IsCancellationRequested) return;
                 await Dispatcher.BeginInvoke(() =>
                 {
                     if (token.IsCancellationRequested || SourceUrl != url) return;
-                    Present(image);
+                    // null = 下载到空数据/无法解码；同样离开 spinner 状态。
+                    if (image != null) Present(image);
+                    else Content = FailedPlaceholder();
                 });
             }
             catch (OperationCanceledException) { }
+            catch (Exception)
+            {
+                if (token.IsCancellationRequested) return;
+                await Dispatcher.BeginInvoke(() =>
+                {
+                    if (token.IsCancellationRequested || SourceUrl != url) return;
+                    Content = FailedPlaceholder();
+                });
+            }
         }, token);
     }
 
@@ -258,8 +313,11 @@ public static class ImageStore
         if (TryGet(url, out var cached)) return cached;
         byte[] data;
         using (var request = new HttpRequestMessage(HttpMethod.Get, url))
-            data = await (await http.SendAsync(request, cancellation).ConfigureAwait(false))
-                .Content.ReadAsByteArrayAsync(cancellation).ConfigureAwait(false);
+        using (var response = await http.SendAsync(request, cancellation).ConfigureAwait(false))
+        {
+            response.EnsureSuccessStatusCode();
+            data = await response.Content.ReadAsByteArrayAsync(cancellation).ConfigureAwait(false);
+        }
         if (data.Length == 0 || data.Length > 60 * 1024 * 1024) return null;
         var image = new BitmapImage();
         using (var stream = new MemoryStream(data))
@@ -398,6 +456,8 @@ public sealed class DrawerOverlay : ContentControl
     { Background = new SolidColorBrush(Color.FromRgb(0x15, 0x15, 0x12)), Opacity = 0 };
     private readonly Border surface;
     private bool hosting;
+    private int transition;
+    private IInputElement? returnFocus;
 
     public static readonly DependencyProperty OpenProperty = DependencyProperty.Register(
         nameof(Open), typeof(bool), typeof(DrawerOverlay),
@@ -411,6 +471,8 @@ public sealed class DrawerOverlay : ContentControl
     public DrawerOverlay()
     {
         Focusable = false;
+        HorizontalContentAlignment = HorizontalAlignment.Stretch;
+        VerticalContentAlignment = VerticalAlignment.Stretch;
         surface = new Border
         {
             Background = (Brush)Application.Current.FindResource("Paper"),
@@ -422,6 +484,8 @@ public sealed class DrawerOverlay : ContentControl
         };
         root.Children.Add(backdrop);
         root.Children.Add(surface);
+        KeyboardNavigation.SetTabNavigation(surface, KeyboardNavigationMode.Cycle);
+        KeyboardNavigation.SetControlTabNavigation(surface, KeyboardNavigationMode.Cycle);
         root.Visibility = Visibility.Collapsed;
         Content = root;
         backdrop.MouseLeftButtonDown += (_, _) => { Open = false; ClosedByUser?.Invoke(this, EventArgs.Empty); };
@@ -461,21 +525,46 @@ public sealed class DrawerOverlay : ContentControl
 
     private void Apply(bool open)
     {
+        var version = ++transition;
         ClampWidth();
-        root.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
-        if (!Motion.Enabled)
+        var transform = surface.RenderTransform as TranslateTransform ?? new TranslateTransform();
+        var from = root.Visibility == Visibility.Visible ? transform.X : surface.Width;
+        surface.RenderTransform = transform;
+        if (open)
         {
+            returnFocus = Keyboard.FocusedElement;
+            root.Visibility = Visibility.Visible;
+            surface.IsEnabled = true;
+            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Input, new Action(() =>
+            {
+                if (Open && version == transition)
+                    surface.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
+            }));
+        }
+        else surface.IsEnabled = false;
+        void Finish()
+        {
+            if (version != transition) return;
+            transform.BeginAnimation(TranslateTransform.XProperty, null);
+            transform.X = 0;
+            backdrop.BeginAnimation(OpacityProperty, null);
             backdrop.Opacity = open ? 0.45 : 0;
-            var still = surface.RenderTransform as TranslateTransform;
-            if (still != null) still.X = 0;
+            if (!open)
+            {
+                root.Visibility = Visibility.Collapsed;
+                if (returnFocus is UIElement { IsVisible: true, IsEnabled: true } target) target.Focus();
+            }
+        }
+        if (!Motion.Enabled || PresentationSource.FromVisual(this) == null)
+        {
+            Finish();
             return;
         }
-        var slideTransform = new TranslateTransform(open ? surface.Width : 0, 0);
-        surface.RenderTransform = slideTransform;
-        var slide = new DoubleAnimation(open ? surface.Width : 0, open ? 0 : surface.Width, Motion.Slow)
+        var slide = new DoubleAnimation(from, open ? 0 : surface.Width, open ? Motion.Slow : Motion.Base)
         { EasingFunction = new EaseOutQuint() };
-        var fade = new DoubleAnimation(open ? 0 : 0.45, open ? 0.45 : 0, Motion.Base);
-        slideTransform.BeginAnimation(TranslateTransform.XProperty, slide);
+        slide.Completed += (_, _) => Finish();
+        var fade = new DoubleAnimation(backdrop.Opacity, open ? 0.45 : 0, Motion.Base);
+        transform.BeginAnimation(TranslateTransform.XProperty, slide);
         backdrop.BeginAnimation(OpacityProperty, fade);
     }
 }

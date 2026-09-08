@@ -48,7 +48,8 @@ public sealed class ScriptView : WorkspaceView
         Grid.SetColumn(stage, 1);
         stage.VerticalAlignment = VerticalAlignment.Bottom;
         headerGrid.Children.Add(stage);
-        header.Child = headerGrid;
+        headerGrid.Children.Clear();
+        header.Child = new PageHeading(heading, stage);
         panel.Children.Add(header);
         chapterSelector.SelectionChanged += async (_, _) =>
         {

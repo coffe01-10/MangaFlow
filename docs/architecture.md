@@ -33,10 +33,13 @@ Windows 原生客户端位于 `apps/desktop/native`，以 WPF 重绘工作台界
 [Windows 原生客户端 ADR](adr/native-windows-client.md)，未迁移功能继续由现有 Web
 工作台承接。本轮没有数据库 schema 或 API 合同变更。
 
-原生页面导航由 `ProjectPages` / `ProjectNavigation` 集中定义，`WorkspacePageFrame`
-提供统一标题、实现状态与正文槽，沿用 Web 九个项目一级入口的信息架构。既有原作与任务
-视图保持实例，导航先取消旧读取再同步更新显示；未接通页面不读取业务接口。后续业务
-View 独立接入，迁移范围与阶段门禁见 [原生 UI 迁移清单](native-ui-migration.md)。
+原生页面导航由 `ProjectPages` / `ProjectNavigation` 集中定义，沿用 Web 九个项目一级入口。
+各 `WorkspaceView` 缓存实例，以 `Activate/Deactivate/ConfirmLeaveAsync/PollTick` 管理上下文、
+读取取消和草稿离开保护；`PageHeading` 与 `TilePanel` 负责自适应标题和卡片布局。
+生成参考配置由 `GenerationReferences` 按分镜人物、服装与已发布角色包生成，并随候选请求提交。
+`LocalEditWindow` 使用图像像素坐标的选区，通过现有导演提议/确认接口创建派生候选；预览与确认前
+检查源图仍为当前采用候选。`UsageAttemptFeed` 固定一轮游标遍历的筛选快照并隔离迟到响应。
+原生层未增加数据库 schema 或服务端状态机，迁移与验收边界见 [原生 UI 迁移清单](native-ui-migration.md)。
 
 ## 3. 代码结构
 

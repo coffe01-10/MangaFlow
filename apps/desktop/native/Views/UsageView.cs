@@ -21,15 +21,20 @@ public sealed class UsageView : WorkspaceView
     private readonly ComboBox providerSelector = Selector("按供应商筛选", 150);
     private readonly ComboBox modelSelector = Selector("按模型筛选", 160);
     private readonly ComboBox channelSelector = Selector("按通道筛选", 110);
-    private readonly StackPanel kpiRow = new() { Orientation = Orientation.Horizontal };
+    private readonly WrapPanel kpiRow = new();
+    private readonly WrapPanel customRange = new() { Visibility = Visibility.Collapsed, Margin = new Thickness(0, 0, 0, 12) };
+    private readonly DatePicker sinceDate = new() { SelectedDate = DateTime.Today.AddDays(-30), Width = 145 };
+    private readonly DatePicker untilDate = new() { SelectedDate = DateTime.Today, Width = 145 };
     private readonly StackPanel trendHost = new();
     private readonly StackPanel attemptsTable = new();
     private readonly StackPanel billedTable = new();
     private readonly TextBlock summaryLine = new() { Style = (Style)Application.Current.FindResource("Caption") };
     private JsonElement summary;
-    private List<JsonElement> attempts = [];
-    private string? nextCursor;
-    private bool loadingMore;
+    private readonly UsageAttemptFeed feed = new();
+    private List<JsonElement> attempts => feed.Items;
+    private string? nextCursor => feed.NextCursor;
+    private bool updatingFilters;
+    private int loadRevision;
 
     public UsageView()
     {
@@ -45,22 +50,33 @@ public sealed class UsageView : WorkspaceView
         foreach (var (key, label) in new[] { ("7d", "近 7 天"), ("30d", "近 30 天"), ("month", "本月"), ("custom", "自定义") })
             rangeSelector.Items.Add(new ComboBoxItem { Tag = key, Content = label });
         rangeSelector.SelectedIndex = 1;
-        rangeSelector.SelectionChanged += (_, _) => _ = LoadAsync();
+        rangeSelector.SelectionChanged += (_, _) =>
+        {
+            customRange.Visibility = (rangeSelector.SelectedItem as ComboBoxItem)?.Tag as string == "custom" ? Visibility.Visible : Visibility.Collapsed;
+            _ = LoadAsync();
+        };
         filters.Children.Add(rangeSelector);
         projectSelector.Margin = new Thickness(8, 0, 0, 0);
         projectSelector.SelectionChanged += (_, _) => _ = LoadAsync();
         filters.Children.Add(projectSelector);
         providerSelector.Margin = new Thickness(8, 0, 0, 0);
-        providerSelector.SelectionChanged += (_, _) => { modelSelector.SelectedIndex = -1; _ = LoadAsync(); };
+        providerSelector.SelectionChanged += (_, _) =>
+        {
+            if (updatingFilters) return;
+            updatingFilters = true;
+            modelSelector.SelectedIndex = 0;
+            updatingFilters = false;
+            _ = LoadAsync();
+        };
         filters.Children.Add(providerSelector);
         modelSelector.Margin = new Thickness(8, 0, 0, 0);
         modelSelector.SelectionChanged += (_, _) => _ = LoadAsync();
         filters.Children.Add(modelSelector);
         channelSelector.Items.Add(new ComboBoxItem { Tag = "", Content = "通道" });
-        channelSelector.Items.Add(new ComboBoxItem { Tag = "HTTP", Content = "HTTP API" });
+        channelSelector.Items.Add(new ComboBoxItem { Tag = "HTTP_API", Content = "HTTP API" });
         channelSelector.Items.Add(new ComboBoxItem { Tag = "CLI", Content = "CLI" });
         channelSelector.SelectedIndex = 0;
-        channelSelector.SelectionChanged += (_, _) => _ = LoadAttemptsAsync();
+        channelSelector.SelectionChanged += (_, _) => _ = LoadAsync();
         channelSelector.Margin = new Thickness(8, 0, 0, 0);
         filters.Children.Add(channelSelector);
         var refresh = Kit.Act("刷新", async (_, _) => await LoadAsync(), "Compact");
@@ -70,6 +86,14 @@ public sealed class UsageView : WorkspaceView
         export.Margin = new Thickness(8, 0, 0, 0);
         filters.Children.Add(export);
         panel.Children.Add(filters);
+        customRange.Children.Add(Kit.FieldLabel("从 "));
+        customRange.Children.Add(sinceDate);
+        customRange.Children.Add(Kit.FieldLabel(" 至 "));
+        customRange.Children.Add(untilDate);
+        customRange.Children.Add(Kit.Act("应用日期", async (_, _) => await LoadAsync(), "Compact"));
+        System.Windows.Automation.AutomationProperties.SetName(sinceDate, "开始日期");
+        System.Windows.Automation.AutomationProperties.SetName(untilDate, "结束日期（含当天）");
+        panel.Children.Add(customRange);
         panel.Children.Add(summaryLine);
         kpiRow.Margin = new Thickness(0, 10, 0, 0);
         panel.Children.Add(kpiRow);
@@ -99,79 +123,104 @@ public sealed class UsageView : WorkspaceView
         base.Activate(context);
         try
         {
-            var projects = await Api.SendAsync("projects", cancellation: lifetime.Token);
-            if (lifetime.Token.IsCancellationRequested) return;
+            var token = lifetime.Token;
+            var projects = await Api.SendAsync("projects", cancellation: token);
+            if (token.IsCancellationRequested) return;
+            updatingFilters = true;
+            var selected = (projectSelector.SelectedItem as ComboBoxItem)?.Tag as string;
             projectSelector.Items.Clear();
             projectSelector.Items.Add(new ComboBoxItem { Tag = "", Content = "全部项目" });
             foreach (var project in projects.EnumerateArray())
                 projectSelector.Items.Add(new ComboBoxItem { Tag = project.Text("id"), Content = project.Text("name") });
-            projectSelector.SelectedIndex = 0;
+            projectSelector.SelectedItem = projectSelector.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string?)i.Tag == selected)
+                ?? projectSelector.Items[0];
+            updatingFilters = false;
             await LoadAsync();
         }
+        catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             summaryLine.Text = $"用量数据加载失败：{error.Message}";
         }
     }
 
-    private (string? Since, string? Until) RangeBounds()
+    private UsageFilter CaptureFilter()
     {
         var key = (rangeSelector.SelectedItem as ComboBoxItem)?.Tag as string ?? "30d";
-        var now = DateTime.Now;
-        return key switch
+        var now = DateTimeOffset.Now;
+        var since = key switch
         {
-            "7d" => (now.AddDays(-7).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"), null),
-            "month" => (new DateTime(now.Year, now.Month, 1).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"), null),
-            "30d" => (now.AddDays(-30).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"), null),
-            _ => (now.AddDays(-30).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"), null),
+            "7d" => now.AddDays(-7),
+            "month" => new DateTimeOffset(new DateTime(now.Year, now.Month, 1), now.Offset),
+            "custom" => sinceDate.SelectedDate is { } start ? new DateTimeOffset(start) : throw new ArgumentException("请选择开始日期。"),
+            _ => now.AddDays(-30),
         };
+        var until = key == "custom" ? untilDate.SelectedDate is { } end ? new DateTimeOffset(end.AddDays(1))
+            : throw new ArgumentException("请选择结束日期。") : now;
+        static string? Selected(ComboBox selector) => (selector.SelectedItem as ComboBoxItem)?.Tag as string;
+        var filter = new UsageFilter(since, until, Selected(projectSelector), Selected(providerSelector), Selected(modelSelector), Selected(channelSelector));
+        filter.Validate();
+        return filter;
     }
 
     private async Task LoadAsync()
     {
-        var (since, until) = RangeBounds();
-        var parameters = new List<(string, object?)>
-        {
-            ("from", since), ("to", until),
-        };
-        if (projectSelector.SelectedItem is ComboBoxItem { Tag: string projectId } && projectId.Length > 0)
-            parameters.Add(("project_id", projectId));
-        if (providerSelector.SelectedItem is ComboBoxItem { Tag: string provider } && provider.Length > 0)
-            parameters.Add(("provider", provider));
-        if (modelSelector.SelectedItem is ComboBoxItem { Tag: string model } && model.Length > 0)
-            parameters.Add(("model_id", model));
+        if (Context == null || updatingFilters || lifetime.IsCancellationRequested) return;
+        var request = ++loadRevision;
+        var token = lifetime.Token;
+        feed.Reset();
+        attemptsTable.Children.Clear();
+        summary = default;
+        kpiRow.Children.Clear();
+        trendHost.Children.Clear();
+        billedTable.Children.Clear();
         try
         {
-            summary = await Api.SendAsync(QueryBuilder.Build("usage/summary", [.. parameters]), cancellation: lifetime.Token);
-            if (lifetime.Token.IsCancellationRequested) return;
+            var filter = CaptureFilter();
+            summaryLine.Text = "正在读取用量…";
+            var summaryTask = Api.SendAsync(filter.SummaryPath(), cancellation: token);
+            var attemptsTask = feed.LoadAsync(Api, filter, token);
+            await Task.WhenAll(summaryTask, attemptsTask);
+            if (token.IsCancellationRequested || request != loadRevision) return;
+            summary = await summaryTask;
             RenderSummary();
-            await LoadAttemptsAsync();
-            var providers = summary.Array("groups").Select(g => g.Text("provider")).Distinct().OrderBy(p => p).ToList();
-            if (providerSelector.Items.Count == 0)
+            RenderAttempts();
+            updatingFilters = true;
+            try
             {
-                providerSelector.Items.Add(new ComboBoxItem { Tag = "", Content = "全部供应商" });
-                foreach (var name in providers) providerSelector.Items.Add(new ComboBoxItem { Tag = name, Content = name });
-                providerSelector.SelectedIndex = 0;
-                var models = summary.Array("groups").Select(g => g.Text("model_id")).Distinct().OrderBy(m => m).ToList();
-                modelSelector.Items.Add(new ComboBoxItem { Tag = "", Content = "全部模型" });
-                foreach (var name in models) modelSelector.Items.Add(new ComboBoxItem { Tag = name, Content = name });
-                modelSelector.SelectedIndex = 0;
+                void AddChoices(ComboBox selector, string all, IEnumerable<string> values)
+                {
+                    if (selector.Items.Count == 0) selector.Items.Add(new ComboBoxItem { Tag = "", Content = all });
+                    foreach (var value in values.Distinct().OrderBy(v => v))
+                        if (!selector.Items.OfType<ComboBoxItem>().Any(i => (string?)i.Tag == value))
+                            selector.Items.Add(new ComboBoxItem { Tag = value, Content = value });
+                    if (selector.SelectedIndex < 0) selector.SelectedIndex = 0;
+                }
+                AddChoices(providerSelector, "全部供应商", summary.Array("groups").Select(g => g.Text("provider")));
+                AddChoices(modelSelector, "全部模型", summary.Array("groups").Select(g => g.Text("model_id")));
             }
+            finally { updatingFilters = false; }
         }
-        catch (Exception error) when (error is not OperationCanceledException)
+        catch (OperationCanceledException) { }
+        catch (Exception error)
         {
-            summaryLine.Text = $"用量数据加载失败：{error.Message}";
+            if (!token.IsCancellationRequested && request == loadRevision)
+                summaryLine.Text = $"用量数据加载失败：{error.Message}";
         }
     }
 
     private void RenderSummary()
     {
         kpiRow.Children.Clear();
+        trendHost.Children.Clear();
+        billedTable.Children.Clear();
         var groups = summary.Array("groups");
         var billed = summary.Array("billed");
         if (groups.Count == 0 && billed.Count == 0)
         {
             summaryLine.Text = "暂无调用记录。发起剧本分析或单页生成后即可在此查看用量统计。";
+            RenderTrend(groups);
+            RenderBilled(billed);
             return;
         }
         summaryLine.Text = "";
@@ -270,35 +319,12 @@ public sealed class UsageView : WorkspaceView
         });
     }
 
-    private async Task LoadAttemptsAsync()
-    {
-        attemptsTable.Children.Clear();
-        var (since, until) = RangeBounds();
-        var parameters = new List<(string, object?)> { ("since", since), ("limit", 50) };
-        if (projectSelector.SelectedItem is ComboBoxItem { Tag: string projectId } && projectId.Length > 0) parameters.Add(("project_id", projectId));
-        if (providerSelector.SelectedItem is ComboBoxItem { Tag: string provider } && provider.Length > 0) parameters.Add(("provider", provider));
-        if (modelSelector.SelectedItem is ComboBoxItem { Tag: string model } && model.Length > 0) parameters.Add(("model_id", model));
-        if (channelSelector.SelectedItem is ComboBoxItem { Tag: string channel } && channel.Length > 0) parameters.Add(("channel", channel));
-        try
-        {
-            var page = await Api.SendAsync(QueryBuilder.Build("usage/attempts", [.. parameters]), cancellation: lifetime.Token);
-            if (lifetime.Token.IsCancellationRequested) return;
-            attempts = page.Array("items").ToList();
-            nextCursor = page.TextOrNull("next_cursor");
-            RenderAttempts();
-        }
-        catch (Exception error) when (error is not OperationCanceledException)
-        {
-            attemptsTable.Children.Add(Kit.Caption($"调用明细加载失败：{error.Message}"));
-        }
-    }
-
     private void RenderAttempts()
     {
         attemptsTable.Children.Clear();
         attemptsTable.Children.Add(new TextBlock
         {
-            Text = $"已加载 {attempts.Count} 条 · 按开始时间倒序 keyset 分页",
+            Text = $"已加载 {attempts.Count} 条 · 最新调用在前",
             Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 0, 0, 8),
         });
         if (attempts.Count == 0)
@@ -360,19 +386,18 @@ public sealed class UsageView : WorkspaceView
 
     private async Task LoadMoreAsync()
     {
-        if (loadingMore || nextCursor == null) return;
-        loadingMore = true;
+        var request = loadRevision;
+        var token = lifetime.Token;
         try
         {
-            var (since, _) = RangeBounds();
-            var page = await Api.SendAsync(QueryBuilder.Build("usage/attempts",
-                ("since", since), ("cursor", nextCursor!), ("limit", 50)), cancellation: lifetime.Token);
-            attempts.AddRange(page.Array("items"));
-            nextCursor = page.TextOrNull("next_cursor");
-            RenderAttempts();
+            if (await feed.LoadMoreAsync(Api, token) && request == loadRevision) RenderAttempts();
         }
-        catch (Exception) { }
-        finally { loadingMore = false; }
+        catch (OperationCanceledException) { }
+        catch (Exception error)
+        {
+            if (!token.IsCancellationRequested && request == loadRevision)
+                summaryLine.Text = $"加载更多失败，可重试：{error.Message}";
+        }
     }
 
     private static string CostModeOf(JsonElement attempt)

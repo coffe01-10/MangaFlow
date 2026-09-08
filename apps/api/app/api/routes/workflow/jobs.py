@@ -134,6 +134,22 @@ def list_jobs(
     archived: bool = Query(default=False),
     db: Session = Depends(get_db),
 ) -> list[JobRead]:
+    # 活跃任务排在最前再按创建时间倒序：列表截断在 100 条，若活跃任务
+    # 掉到窗口之外，前端队列坞的轮询门（activePollInterval）会误判「没有
+    # 活跃任务」而停止刷新（#P3 jobs-100-cap）。
+    active_statuses = [
+        status.value
+        for status in (
+            JobStatus.WAITING,
+            JobStatus.QUEUED,
+            JobStatus.PREPARING,
+            JobStatus.UPLOADING_REFERENCES,
+            JobStatus.GENERATING,
+            JobStatus.OCR_CHECKING,
+            JobStatus.CONSISTENCY_CHECKING,
+            JobStatus.REPAIRING,
+        )
+    ]
     jobs = list(
         db.scalars(
             select(GenerationJob)
@@ -143,7 +159,10 @@ def list_jobs(
                 if archived
                 else GenerationJob.archived_at.is_(None),
             )
-            .order_by(GenerationJob.created_at.desc())
+            .order_by(
+                GenerationJob.status.in_(active_statuses).desc(),
+                GenerationJob.created_at.desc(),
+            )
             .limit(100)
         )
     )

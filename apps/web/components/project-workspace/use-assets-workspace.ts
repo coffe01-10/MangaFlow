@@ -52,6 +52,7 @@ export function useAssetsWorkspace({
   outfits,
   requireDrawModel,
   initialCharacterId,
+  initialOutfitId,
 }: {
   id: string;
   section: WorkspaceSection;
@@ -64,6 +65,7 @@ export function useAssetsWorkspace({
   outfits: WorkspaceQueries["outfits"];
   requireDrawModel: () => ImageModelAlias;
   initialCharacterId?: string | null;
+  initialOutfitId?: string | null;
 }) {
   const queryClient = useQueryClient();
   const [assetKind, setAssetKind] = useState<AssetPurpose>("CHARACTER_REFERENCE");
@@ -117,6 +119,16 @@ export function useAssetsWorkspace({
     setEditForbiddenChanges(boundCharacter.forbidden_changes.join("，"));
   }, [boundCharacter]);
   const editingOutfit = outfits.data?.find((item) => item.id === editingOutfitId) ?? null;
+  // 生产准备“去处理”深链带 ?outfit=：直接把目标服装档案切进编辑态，用户
+  // 不必在列表里再找一次（与 ?character= 预选角色同一模式）。
+  const outfitDeepLinkRef = useRef(false);
+  useEffect(() => {
+    if (outfitDeepLinkRef.current || !initialOutfitId) return;
+    const target = outfits.data?.find((item) => item.id === initialOutfitId);
+    if (!target) return;
+    outfitDeepLinkRef.current = true;
+    beginOutfitEdit(target);
+  }, [initialOutfitId, outfits.data]);
   const selectedOutfitFiles = assets.data?.filter((item) => selectedOutfitAssets.includes(item.id)) ?? [];
   const generatedReferenceCandidates = useMemo(
     () => (generatedReferenceLibrary.data?.groups ?? [])

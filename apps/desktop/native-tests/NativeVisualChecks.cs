@@ -64,6 +64,9 @@ internal static class NativeVisualChecks
                 using var shellFile = File.Create(Path.Combine(output, "native-home-1320.png"));
                 shellEncoder.Save(shellFile);
                 NativeNavigationChecks.Run(output);
+                NativeRerenderChecks.Run();
+                NativeParityChecks.Run(output, state);
+                NativeInteractionChecks.Run();
                 app.Shutdown();
             }
             catch (Exception e) { failure = e; }

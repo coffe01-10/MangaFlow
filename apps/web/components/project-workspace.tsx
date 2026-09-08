@@ -9,7 +9,7 @@ import { CircleAlert, LoaderCircle } from "lucide-react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 
 import { jobLabels } from "./project-workspace/labels";
@@ -208,8 +208,10 @@ export default function ProjectWorkspace({
     characters,
     outfits,
     requireDrawModel,
-    // 生产准备“去处理”深链带 ?character=：预选该角色，用户不必再手动点一次。
+    // 生产准备“去处理”深链带 ?character=/?outfit=：预选该角色/服装档案，
+    // 用户不必再手动点一次。
     initialCharacterId: assetView === "characters" ? searchParams.get("character") : null,
+    initialOutfitId: assetView === "outfits" ? searchParams.get("outfit") : null,
   });
   const generationWorkspace = useGenerationWorkspace({
     id,
@@ -256,6 +258,17 @@ export default function ProjectWorkspace({
     },
   });
 
+  // 拖拽期间挂到 window 的监听必须能在组件卸载时解绑（中途路由离开），
+  // pointercancel（触摸抬起/系统打断）与 pointerup 同样收尾。
+  const sidebarDragRef = useRef<{ move: (event: PointerEvent) => void; stop: (event: PointerEvent) => void } | null>(null);
+  useEffect(() => () => {
+    const drag = sidebarDragRef.current;
+    if (!drag) return;
+    window.removeEventListener("pointermove", drag.move);
+    window.removeEventListener("pointerup", drag.stop);
+    window.removeEventListener("pointercancel", drag.stop);
+  }, []);
+
   function beginSidebarResize(event: ReactPointerEvent<HTMLButtonElement>) {
     event.currentTarget.setPointerCapture(event.pointerId);
     const startX = event.clientX;
@@ -265,11 +278,15 @@ export default function ProjectWorkspace({
       const next = clampSidebarWidth(startWidth + stopEvent.clientX - startX);
       setSidebarWidth(next);
       window.localStorage.setItem("mangaflow.project-sidebar-width", String(next));
+      sidebarDragRef.current = null;
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
     };
+    sidebarDragRef.current = { move, stop };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
   }
 
   const workspaceRouteReady = !project.isLoading
@@ -366,6 +383,7 @@ export default function ProjectWorkspace({
               openPreview={openPreview}
               rememberWorkspaceScroll={rememberWorkspaceScroll}
               workspace={assetsWorkspace}
+              focusStyleId={assetView === "style" ? searchParams.get("style") : null}
             />
           )}
           {section === "script" && (

@@ -65,12 +65,11 @@
  </Style>
  <Style TargetType="TextBlock">
   <Setter Property="TextWrapping" Value="Wrap"/>
-  <Setter Property="Foreground" Value="{StaticResource Ink}"/>
  </Style>
 
  <!-- Kicker: 9px letterspaced caption above section titles. -->
  <Style x:Key="Kicker" TargetType="TextBlock">
-  <Setter Property="FontSize" Value="10"/>
+  <Setter Property="FontSize" Value="11"/>
   <Setter Property="FontWeight" Value="ExtraBold"/>
   <Setter Property="Foreground" Value="{StaticResource Muted}"/>
  </Style>
@@ -125,109 +124,33 @@
   <Setter Property="SnapsToDevicePixels" Value="True"/>
   <Setter Property="HorizontalContentAlignment" Value="Center"/>
   <Setter Property="VerticalContentAlignment" Value="Center"/>
+  <Setter Property="c:HoverMotion.Enabled" Value="True"/>
   <Setter Property="Template">
    <Setter.Value>
     <ControlTemplate TargetType="Button">
-     <Border x:Name="Surface" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
-      BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="3" Padding="{TemplateBinding Padding}"
-      RenderTransformOrigin="0.5,0.5">
-      <Border.RenderTransform><TranslateTransform X="0" Y="0"/></Border.RenderTransform>
-      <Border.Effect>
-       <DropShadowEffect x:Name="Shadow" Color="#151512" BlurRadius="0" ShadowDepth="4" Direction="315" Opacity="0.10"/>
-      </Border.Effect>
-      <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center"/>
-     </Border>
+     <Grid>
+      <Border Background="{TemplateBinding BorderBrush}" Margin="3,3,-3,-3" Opacity="0.06" CornerRadius="3" IsHitTestVisible="False"/>
+      <Border x:Name="Surface" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}" CornerRadius="3">
+       <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center"/>
+      </Border>
+      <Border x:Name="FocusRing" BorderBrush="{StaticResource Accent}" BorderThickness="2" CornerRadius="4" Margin="-3" Visibility="Collapsed" IsHitTestVisible="False"/>
+     </Grid>
      <ControlTemplate.Triggers>
-      <Trigger Property="IsMouseOver" Value="True">
-       <Setter TargetName="Surface" Property="BorderBrush" Value="{StaticResource Ink}"/>
-       <Trigger.EnterActions>
-        <BeginStoryboard>
-         <Storyboard>
-          <DoubleAnimation Storyboard.TargetName="Surface" Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.Y)" To="-1" Duration="{StaticResource Fast}" EasingFunction="{StaticResource EaseOut}"/>
-          <DoubleAnimation Storyboard.TargetName="Shadow" Storyboard.TargetProperty="Opacity" To="0.2" Duration="{StaticResource Fast}"/>
-         </Storyboard>
-        </BeginStoryboard>
-       </Trigger.EnterActions>
-       <Trigger.ExitActions>
-        <BeginStoryboard>
-         <Storyboard>
-          <DoubleAnimation Storyboard.TargetName="Surface" Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.Y)" To="0" Duration="{StaticResource Fast}" EasingFunction="{StaticResource EaseOut}"/>
-          <DoubleAnimation Storyboard.TargetName="Shadow" Storyboard.TargetProperty="Opacity" To="0.10" Duration="{StaticResource Fast}"/>
-         </Storyboard>
-        </BeginStoryboard>
-       </Trigger.ExitActions>
-      </Trigger>
-      <Trigger Property="IsPressed" Value="True">
-       <!-- 纯 Setter：EnterActions-only 动画会在松开后停在 +1px -->
-       <Setter TargetName="Surface" Property="Opacity" Value="0.82"/>
-      </Trigger>
-      <Trigger Property="IsKeyboardFocused" Value="True">
-       <Setter TargetName="Surface" Property="BorderBrush" Value="{StaticResource Accent}"/>
-       <Setter TargetName="Surface" Property="BorderThickness" Value="2"/>
-      </Trigger>
-      <Trigger Property="IsEnabled" Value="False">
-       <Setter Property="Opacity" Value="0.5"/>
-       <Setter Property="Cursor" Value="Arrow"/>
-      </Trigger>
+      <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Surface" Property="BorderBrush" Value="{StaticResource Ink}"/></Trigger>
+      <Trigger Property="IsPressed" Value="True"><Setter TargetName="Surface" Property="Opacity" Value="0.8"/></Trigger>
+      <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="FocusRing" Property="Visibility" Value="Visible"/></Trigger>
+      <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5"/><Setter Property="Cursor" Value="Arrow"/></Trigger>
      </ControlTemplate.Triggers>
     </ControlTemplate>
    </Setter.Value>
   </Setter>
  </Style>
-
  <Style x:Key="InkButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
   <Setter Property="Background" Value="{StaticResource Ink}"/>
   <Setter Property="Foreground" Value="White"/>
   <Setter Property="BorderBrush" Value="{StaticResource Ink}"/>
-  <Setter Property="Template">
-   <Setter.Value>
-    <ControlTemplate TargetType="Button">
-     <Border x:Name="Surface" Background="{StaticResource Ink}" BorderBrush="{StaticResource Ink}" BorderThickness="1"
-      CornerRadius="3" Padding="{TemplateBinding Padding}" RenderTransformOrigin="0.5,0.5">
-      <Border.RenderTransform><TranslateTransform X="0" Y="0"/></Border.RenderTransform>
-      <Border.Effect>
-       <DropShadowEffect x:Name="Shadow" Color="#D34A2F" BlurRadius="0" ShadowDepth="4" Direction="315" Opacity="0.18"/>
-      </Border.Effect>
-      <TextBlock x:Name="Label" Text="{TemplateBinding Content}" HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
-       VerticalAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
-       Foreground="#FCFBF7" FontSize="{TemplateBinding FontSize}" FontWeight="{TemplateBinding FontWeight}"/>
-     </Border>
-     <ControlTemplate.Triggers>
-      <Trigger Property="IsMouseOver" Value="True">
-       <Trigger.EnterActions>
-        <BeginStoryboard>
-         <Storyboard>
-          <DoubleAnimation Storyboard.TargetName="Surface" Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.Y)" To="-1" Duration="{StaticResource Fast}" EasingFunction="{StaticResource EaseOut}"/>
-          <DoubleAnimation Storyboard.TargetName="Shadow" Storyboard.TargetProperty="Opacity" To="0.34" Duration="{StaticResource Fast}"/>
-         </Storyboard>
-        </BeginStoryboard>
-       </Trigger.EnterActions>
-       <Trigger.ExitActions>
-        <BeginStoryboard>
-         <Storyboard>
-          <DoubleAnimation Storyboard.TargetName="Surface" Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.Y)" To="0" Duration="{StaticResource Fast}" EasingFunction="{StaticResource EaseOut}"/>
-          <DoubleAnimation Storyboard.TargetName="Shadow" Storyboard.TargetProperty="Opacity" To="0.18" Duration="{StaticResource Fast}"/>
-         </Storyboard>
-        </BeginStoryboard>
-       </Trigger.ExitActions>
-      </Trigger>
-      <Trigger Property="IsPressed" Value="True">
-       <!-- 纯 Setter：EnterActions-only 动画会在松开后停在 +1px -->
-       <Setter TargetName="Surface" Property="Opacity" Value="0.82"/>
-      </Trigger>
-      <Trigger Property="IsKeyboardFocused" Value="True">
-       <Setter TargetName="Surface" Property="BorderBrush" Value="{StaticResource Accent}"/>
-       <Setter TargetName="Surface" Property="BorderThickness" Value="2"/>
-      </Trigger>
-      <Trigger Property="IsEnabled" Value="False">
-       <Setter Property="Opacity" Value="0.5"/>
-       <Setter Property="Cursor" Value="Arrow"/>
-      </Trigger>
-     </ControlTemplate.Triggers>
-    </ControlTemplate>
-   </Setter.Value>
-  </Setter>
  </Style>
+
  <Style x:Key="Ghost" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
   <Setter Property="BorderThickness" Value="1"/>
   <Setter Property="BorderBrush" Value="{StaticResource Line}"/>
@@ -270,22 +193,7 @@
       <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center"/>
      </Border>
      <ControlTemplate.Triggers>
-      <Trigger Property="IsMouseOver" Value="True">
-       <Trigger.EnterActions>
-        <BeginStoryboard>
-         <Storyboard>
-          <ColorAnimation Storyboard.TargetName="Surface" Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)" To="#E9DFD0" Duration="{StaticResource Fast}"/>
-         </Storyboard>
-        </BeginStoryboard>
-       </Trigger.EnterActions>
-       <Trigger.ExitActions>
-        <BeginStoryboard>
-         <Storyboard>
-          <ColorAnimation Storyboard.TargetName="Surface" Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)" To="#F4F1E9" Duration="{StaticResource Fast}"/>
-         </Storyboard>
-        </BeginStoryboard>
-       </Trigger.ExitActions>
-      </Trigger>
+      <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Surface" Property="Background" Value="{StaticResource Selected}"/></Trigger>
       <Trigger Property="IsKeyboardFocused" Value="True">
        <Setter TargetName="Surface" Property="BorderBrush" Value="{StaticResource Accent}"/>
       </Trigger>
@@ -439,6 +347,37 @@
   <Setter Property="Foreground" Value="{StaticResource Ink}"/>
   <Setter Property="BorderBrush" Value="{StaticResource LineDark}"/>
   <Setter Property="Cursor" Value="Hand"/>
+  <Setter Property="Template">
+   <Setter.Value>
+    <ControlTemplate TargetType="ComboBox">
+     <Grid>
+      <ToggleButton Focusable="False" IsChecked="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}" ClickMode="Press">
+       <ToggleButton.Template>
+        <ControlTemplate TargetType="ToggleButton">
+         <Border x:Name="Frame" Background="{StaticResource Surface}" BorderBrush="{StaticResource LineDark}" BorderThickness="1" CornerRadius="3">
+          <Path Data="M 0,0 L 4,4 8,0" Stroke="{StaticResource Muted}" StrokeThickness="1.4" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,12,0"/>
+         </Border>
+         <ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Frame" Property="BorderBrush" Value="{StaticResource Ink}"/></Trigger></ControlTemplate.Triggers>
+        </ControlTemplate>
+       </ToggleButton.Template>
+      </ToggleButton>
+      <ContentPresenter x:Name="Selection" Content="{TemplateBinding SelectionBoxItem}" ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}" Margin="12,6,32,6" VerticalAlignment="Center" IsHitTestVisible="False"/>
+      <TextBox x:Name="PART_EditableTextBox" Visibility="Hidden" Margin="4,2,28,2" Background="Transparent" BorderThickness="0" VerticalContentAlignment="Center"/>
+      <Border x:Name="FocusRing" BorderBrush="{StaticResource Accent}" BorderThickness="2" Margin="-2" Visibility="Collapsed" IsHitTestVisible="False"/>
+      <Popup x:Name="PART_Popup" Placement="Bottom" IsOpen="{TemplateBinding IsDropDownOpen}" AllowsTransparency="True" Focusable="False" PopupAnimation="None">
+       <Border Background="{StaticResource Surface}" BorderBrush="{StaticResource LineDark}" BorderThickness="1" MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}" MaxHeight="{TemplateBinding MaxDropDownHeight}" Margin="0,4,0,0" Padding="4">
+        <ScrollViewer CanContentScroll="True"><ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained"/></ScrollViewer>
+       </Border>
+      </Popup>
+     </Grid>
+     <ControlTemplate.Triggers>
+      <Trigger Property="IsEditable" Value="True"><Setter TargetName="PART_EditableTextBox" Property="Visibility" Value="Visible"/><Setter TargetName="Selection" Property="Visibility" Value="Hidden"/></Trigger>
+      <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter TargetName="FocusRing" Property="Visibility" Value="Visible"/></Trigger>
+      <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5"/></Trigger>
+     </ControlTemplate.Triggers>
+    </ControlTemplate>
+   </Setter.Value>
+  </Setter>
   <Setter Property="ItemContainerStyle">
    <Setter.Value>
     <Style TargetType="ComboBoxItem">
@@ -732,6 +671,63 @@
    </Setter.Value>
   </Setter>
  </Style>
+ <Style x:Key="ResolutionOption" TargetType="ToggleButton" BasedOn="{StaticResource Pill}">
+  <Setter Property="Height" Value="47"/>
+  <Setter Property="HorizontalAlignment" Value="Stretch"/>
+  <Setter Property="FontFamily" Value="{StaticResource Serif}"/>
+  <Setter Property="Template">
+   <Setter.Value>
+    <ControlTemplate TargetType="ToggleButton">
+     <Border x:Name="Outline" Background="{TemplateBinding Background}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="4">
+      <ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
+     </Border>
+     <ControlTemplate.Triggers>
+      <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Outline" Property="BorderBrush" Value="{StaticResource Ink}"/></Trigger>
+      <Trigger Property="IsChecked" Value="True">
+       <Setter TargetName="Outline" Property="Background" Value="{StaticResource Ink}"/>
+       <Setter TargetName="Outline" Property="BorderBrush" Value="{StaticResource Ink}"/>
+       <Setter Property="Foreground" Value="{StaticResource Surface}"/>
+      </Trigger>
+      <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Outline" Property="BorderBrush" Value="{StaticResource Accent}"/></Trigger>
+     </ControlTemplate.Triggers>
+    </ControlTemplate>
+   </Setter.Value>
+  </Setter>
+ </Style>
+ <Style x:Key="ModeOption" TargetType="RadioButton">
+  <Setter Property="Background" Value="{StaticResource Paper}"/>
+  <Setter Property="BorderBrush" Value="{StaticResource Line}"/>
+  <Setter Property="Foreground" Value="{StaticResource Ink}"/>
+  <Setter Property="Padding" Value="14"/>
+  <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+  <Setter Property="Cursor" Value="Hand"/>
+  <Setter Property="Template">
+   <Setter.Value>
+    <ControlTemplate TargetType="RadioButton">
+     <Grid Margin="0,0,3,3">
+      <Border x:Name="Shadow" Background="#14151512" Margin="3,3,-3,-3" Visibility="Hidden"/>
+      <Border x:Name="Outline" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" Padding="{TemplateBinding Padding}">
+       <Grid>
+        <ContentPresenter Margin="0,0,20,0"/>
+        <TextBlock x:Name="Check" Text="✓" FontSize="15" Foreground="{StaticResource Accent}" HorizontalAlignment="Right" VerticalAlignment="Top" Visibility="Hidden"/>
+       </Grid>
+      </Border>
+     </Grid>
+     <ControlTemplate.Triggers>
+      <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Outline" Property="BorderBrush" Value="{StaticResource LineDark}"/></Trigger>
+      <Trigger Property="IsChecked" Value="True">
+       <Setter TargetName="Outline" Property="BorderBrush" Value="{StaticResource Ink}"/>
+       <Setter TargetName="Outline" Property="Background" Value="{StaticResource Surface}"/>
+       <Setter TargetName="Shadow" Property="Visibility" Value="Visible"/>
+       <Setter TargetName="Check" Property="Visibility" Value="Visible"/>
+      </Trigger>
+      <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Outline" Property="BorderBrush" Value="{StaticResource Accent}"/></Trigger>
+      <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5"/></Trigger>
+     </ControlTemplate.Triggers>
+    </ControlTemplate>
+   </Setter.Value>
+  </Setter>
+ </Style>
  <Style TargetType="ToolTip">
   <Setter Property="Background" Value="{StaticResource Ink}"/>
   <Setter Property="Foreground" Value="#FCFBF7"/>
@@ -752,35 +748,6 @@
   <Setter Property="Background" Value="{StaticResource Line}"/>
   <Setter Property="Height" Value="1"/>
   <Setter Property="Margin" Value="0,8"/>
- </Style>
-
- <!-- Workspace page frame: shared title/description/status header for all project sections. -->
- <Style TargetType="local:WorkspacePageFrame">
-  <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
-  <Setter Property="VerticalContentAlignment" Value="Stretch"/>
-  <Setter Property="Template">
-   <Setter.Value>
-    <ControlTemplate TargetType="local:WorkspacePageFrame">
-     <Grid>
-      <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-      <Border BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1" Padding="0,0,0,18" Margin="0,0,0,20">
-       <Grid>
-        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-        <StackPanel>
-         <TextBlock Text="{Binding Page.Index, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource SectionIndex}" Margin="0,0,0,8"/>
-         <TextBlock Text="{Binding Page.Title, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource Heading}"/>
-         <TextBlock Text="{Binding Page.Description, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource Caption}"/>
-        </StackPanel>
-        <Border Grid.Column="1" Background="{StaticResource PaperDeep}" Padding="12,6" VerticalAlignment="Top" Margin="16,0,0,0">
-         <TextBlock Text="{Binding Page.Availability, RelativeSource={RelativeSource TemplatedParent}}" Style="{StaticResource Caption}"/>
-        </Border>
-       </Grid>
-      </Border>
-      <ContentPresenter Grid.Row="1"/>
-     </Grid>
-    </ControlTemplate>
-   </Setter.Value>
-  </Setter>
  </Style>
 
  <!-- Canvas header used by every project section (kicker + serif title + right meta). -->

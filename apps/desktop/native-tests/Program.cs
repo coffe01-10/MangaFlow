@@ -19,6 +19,12 @@ foreach (var invalid in new[] { "https://127.0.0.1:80", "http://localhost:80", "
     catch (ArgumentException) { count++; }
 }
 Console.WriteLine("PASS: untrusted origins rejected");
+using (var media = new ApiClient("http://127.0.0.1:12345"))
+{
+    Check(media.PublicUrl("/api/v1/assets/fixture/content") == "http://127.0.0.1:12345/api/v1/assets/fixture/thumbnail/640", "server media paths have exactly one API prefix");
+    Check(media.PublicUrl("assets/fixture/content") == media.PublicUrl("/api/v1/assets/fixture/content"), "local and server media paths use identical thumbnails");
+    Check(media.OriginUrl("/api/v1/assets/fixture/content") == "http://127.0.0.1:12345/api/v1/assets/fixture/content", "lightbox preserves original resolution");
+}
 var handler = new FakeHandler((request, _) =>
 {
     Check(request.RequestUri!.AbsoluteUri == "http://127.0.0.1:12345/api/v1/projects", "exact versioned API path");
@@ -99,6 +105,23 @@ Check(navigation.Select(ProjectPages.Get(ProjectPageId.Assets)) && changes == 1,
 Check(!navigation.Select(ProjectPages.Get(ProjectPageId.Source) with { WebSection = "unknown" }), "unknown page definition is rejected");
 
 NativeNavigationChecks.RunDirectorRules();
+using (var maskModel = JsonDocument.Parse("""{"model_type":"IMAGE","enabled":true,"accepts_explicit_mask":true,"operations":["image_edit"]}"""))
+    Check(LocalEditRules.SupportsMask(maskModel.RootElement), "local edit accepts explicitly mask-capable image models");
+using (var wholeModel = JsonDocument.Parse("""{"model_type":"IMAGE","enabled":true,"whole_image_reference_only":true,"operations":["image_edit"]}"""))
+    Check(!LocalEditRules.SupportsMask(wholeModel.RootElement), "local edit never falls back to whole-image reference editing");
+var region = LocalEditRules.Rectangle(new Point(-20, 100), new Point(200, 300), new Size(1024, 1024));
+Check(region[0].X == 0 && LocalEditRules.Area(region) == 40000, "rectangle masks clamp to real image pixels");
+var strokeRegion = LocalEditRules.Brush(Enumerable.Range(0, 200).Select(i => new Point(i + 20, 100)).ToArray(), 40, new Size(1024, 1024));
+Check(strokeRegion.Length <= 64 && LocalEditRules.Area(strokeRegion) > 7000, "brush masks retain area and obey backend point limit");
+using (var editPage = JsonDocument.Parse("""{"id":"page-id","version":7}"""))
+{
+    var envelope = JsonSerializer.SerializeToElement(LocalEditRules.Envelope("project-id", editPage.RootElement, "修正雨伞", "mask-model", "1K", [region], Guid.NewGuid().ToString(), Guid.NewGuid().ToString()));
+    Check(envelope.Text("operation") == "regenerate_region" && envelope.Element("expected_version").Number("value") == 7, "local edits preserve the versioned director command contract");
+    Check(envelope.Element("payload").Array("mask")[0].Array("points").Count == 4, "native mask envelope uses polygon points");
+    try { LocalEditRules.Envelope("p", editPage.RootElement, "修正", "m", "1K", [], "c", "g"); throw new Exception("empty mask accepted"); }
+    catch (ArgumentException) { Check(true, "empty masks cannot be proposed"); }
+}
+await NativeBehaviorChecks.Run(Check);
 var output = args.FirstOrDefault(a => !a.StartsWith("--"))
     ?? Path.Combine(Path.GetTempPath(), "mangaflow-native-checks");
 var uiChecked = false;

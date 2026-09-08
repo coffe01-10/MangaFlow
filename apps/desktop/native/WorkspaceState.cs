@@ -73,13 +73,18 @@ public sealed class WorkspaceState : Observable
     public string DockSummary => $"并发上限 {CurrentConcurrency} | {waitingJobs} 等待 | {failedJobs} 失败";
     public string DockIdleLabel => CurrentSection is "jobs" or "generate" ? "当前没有任务" : "查看生成、解析与检查进度";
     public int CurrentConcurrency { get; set; } = 2;
-    public string CurrentSection { get; set; } = "home";
+    private string currentSection = "home";
+    public string CurrentSection { get => currentSection; set => Set(ref currentSection, value, nameof(CurrentSection), nameof(DockIdleLabel)); }
+    private bool isWorkspace, sidebarCollapsed;
+    public bool IsWorkspace { get => isWorkspace; set => Set(ref isWorkspace, value, nameof(IsWorkspace), nameof(DockShown), nameof(DockRestoreShown)); }
+    public bool SidebarCollapsed { get => sidebarCollapsed; set => Set(ref sidebarCollapsed, value); }
     public bool DockHidden
     {
         get => dockHidden;
-        set => Set(ref dockHidden, value, nameof(DockHidden), nameof(DockShown));
+        set => Set(ref dockHidden, value, nameof(DockHidden), nameof(DockShown), nameof(DockRestoreShown));
     }
-    public bool DockShown => !dockHidden;
+    public bool DockShown => IsWorkspace && !dockHidden;
+    public bool DockRestoreShown => IsWorkspace && dockHidden;
 
     public ObservableCollection<ChapterItem> Chapters { get; } = [];
     public ObservableCollection<JobItem> VisibleJobs { get; } = [];

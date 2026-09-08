@@ -1,7 +1,9 @@
+from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pytest
+from sqlalchemy import update
 
 from app import worker_tasks
 from app.config import get_settings
@@ -1358,6 +1360,44 @@ def test_job_history_archive_restore_and_safe_delete(client, db_session):
     assert client.delete(f"/api/v1/jobs/{completed.id}").status_code == 409
     assert client.delete(f"/api/v1/jobs/{failed_referenced.id}").status_code == 409
     assert client.delete(f"/api/v1/jobs/{failed_unreferenced.id}").status_code == 204
+
+
+def test_jobs_list_orders_active_before_recent_completed(client, db_session):
+    """活跃任务必须先于更晚创建的终态任务出现。
+
+    列表截断在 100 条且前端轮询门以「窗口内是否存在活跃任务」判定；若
+    活跃任务被大量新终态行挤到窗口之外，轮询会在付费任务仍在跑时停止。
+    """
+    project = _project(client, "活跃优先排序")
+    old_active = GenerationJob(
+        project_id=project["id"],
+        target_type="PROJECT",
+        target_id=project["id"],
+        job_type="SOURCE_PARSE",
+        status=JobStatus.GENERATING,
+    )
+    newer_done = GenerationJob(
+        project_id=project["id"],
+        target_type="PROJECT",
+        target_id=project["id"],
+        job_type="SOURCE_PARSE",
+        status=JobStatus.COMPLETED,
+    )
+    db_session.add_all([old_active, newer_done])
+    db_session.commit()
+    # 明确让终态任务更晚创建，证明排序不只依赖插入顺序。
+    db_session.execute(
+        update(GenerationJob)
+        .where(GenerationJob.id == newer_done.id)
+        .values(created_at=old_active.created_at + timedelta(seconds=60))
+    )
+    db_session.commit()
+
+    listed = client.get(f"/api/v1/projects/{project['id']}/jobs")
+
+    assert listed.status_code == 200
+    ids = [item["id"] for item in listed.json()]
+    assert ids.index(old_active.id) < ids.index(newer_done.id)
 
 
 def test_inspection_repair_escalation_and_upscale_jobs(client, db_session, monkeypatch):

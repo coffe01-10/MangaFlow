@@ -93,10 +93,12 @@ public sealed class StoryboardView : WorkspaceView
         stage.Children.Add(chapterSelector);
         stage.VerticalAlignment = VerticalAlignment.Bottom;
         headerGrid.Children.Add(stage);
-        header.Child = headerGrid;
+        headerGrid.Children.Clear();
+        header.Child = new PageHeading(heading, stage);
         root.Children.Add(header);
 
         pageBar.Margin = new Thickness(0, 0, 0, 12);
+        Grid.SetRow(pageBar, 1);
         root.Children.Add(pageBar);
         chapterSelector.SelectionChanged += async (_, _) =>
         {
@@ -160,14 +162,26 @@ public sealed class StoryboardView : WorkspaceView
         left.Children.Add(fit);
         left.Children.Add(reset);
         snapButton.Margin = new Thickness(14, 0, 6, 0);
-        snapButton.Click += (_, _) => snapButton.IsChecked = true;
         left.Children.Add(snapButton);
         orderButton.Margin = new Thickness(0, 0, 14, 0);
         orderButton.Click += (_, _) => { RenderOrderBadges(); };
         left.Children.Add(orderButton);
         left.Children.Add(statusLine);
         bar.Children.Add(left);
-        return bar;
+        // Match the web toolbar wrapping; a horizontal StackPanel otherwise measures
+        // all controls at infinite width and paints over the inspector in narrow windows.
+        var wrapped = new WrapPanel { Margin = bar.Margin };
+        foreach (var group in new[] { left, right })
+        {
+            var children = group.Children.Cast<UIElement>().ToArray();
+            group.Children.Clear();
+            foreach (var child in children)
+            {
+                if (child is FrameworkElement element) element.Margin = new Thickness(0, 0, 6, 6);
+                wrapped.Children.Add(child);
+            }
+        }
+        return wrapped;
     }
 
     public override async void Activate(WorkspaceContext context)
@@ -387,17 +401,28 @@ public sealed class StoryboardView : WorkspaceView
             }
         };
         MouseButtonEventHandler up = null!;
-        up = (_, me) =>
+        MouseEventHandler lost = null!;
+        var committed = false;   // up 与 LostMouseCapture 都会触发时只提交一次
+        void Finish()
         {
-            element.ReleaseMouseCapture();
             Mouse.RemoveMouseMoveHandler(element, moved);
             Mouse.RemoveMouseUpHandler(element, up);
+            Mouse.RemoveLostMouseCaptureHandler(element, lost);
+            if (committed) return;
+            committed = true;
             panelGesture?.Commit(this);
             panelGesture = null;
             ClearGuides();
+        }
+        up = (_, _) =>
+        {
+            element.ReleaseMouseCapture();
+            Finish();
         };
+        lost = (_, _) => Finish();
         Mouse.AddMouseMoveHandler(element, moved);
         Mouse.AddMouseUpHandler(element, up);
+        Mouse.AddLostMouseCaptureHandler(element, lost);
         e.Handled = true;
     }
 
@@ -407,6 +432,7 @@ public sealed class StoryboardView : WorkspaceView
         SelectBubble(bubble);
         var start = e.GetPosition(page);
         var origin = bubble.Rect;
+        var movedBeforeGesture = bubble.Moved;
         var element = (FrameworkElement)sender;
         element.CaptureMouse();
         MouseEventHandler moved = (_, me) =>
@@ -420,25 +446,37 @@ public sealed class StoryboardView : WorkspaceView
             bubble.SetRectDirect(next, page);
         };
         MouseButtonEventHandler up = null!;
-        up = (_, _) =>
+        MouseEventHandler lost = null!;
+        var committed = false;   // up 与 LostMouseCapture 都会触发时只提交一次
+        void Finish()
         {
-            element.ReleaseMouseCapture();
             Mouse.RemoveMouseMoveHandler(element, moved);
             Mouse.RemoveMouseUpHandler(element, up);
+            Mouse.RemoveLostMouseCaptureHandler(element, lost);
+            if (committed) return;
+            committed = true;
             var final = bubble.Rect;
             var host = panels.FirstOrDefault(p => p.Id == bubble.PanelId);
             if (host != null && !Covers(host.Rect, final))
             {
                 bubble.SetRectDirect(origin, page);  // bubbles never leave their panel
+                bubble.Moved = movedBeforeGesture;   // 回弹后还原到手势前的定位语义
             }
             else if (final != origin)
             {
                 history.Push(new GeometryCommand("拖动气泡", [new BubbleChange(bubble.Id, origin, final)]));
                 MarkDirty();
             }
+        }
+        up = (_, _) =>
+        {
+            element.ReleaseMouseCapture();
+            Finish();
         };
+        lost = (_, _) => Finish();
         Mouse.AddMouseMoveHandler(element, moved);
         Mouse.AddMouseUpHandler(element, up);
+        Mouse.AddLostMouseCaptureHandler(element, lost);
         e.Handled = true;
     }
 

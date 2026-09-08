@@ -21,6 +21,7 @@ output/playwright/
 # Only formal reports are tracked under output/; working artifacts stay local
 output/rc-closure/
 output/v02-21b-screens/
+output/native-parity-review/
 .playwright-mcp/
 *.tsbuildinfo
 npm-debug.log*

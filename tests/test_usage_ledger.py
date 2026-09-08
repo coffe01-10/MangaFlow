@@ -326,6 +326,14 @@ def test_usage_attempt_pagination_summary_and_unknown_semantics(
         {"currency": "USD", "amount": "0.10000000"}
     ]
 
+    cli_summary = client.get("/api/v1/usage/summary", params={"channel": "CLI"})
+    assert cli_summary.status_code == 200, cli_summary.text
+    cli_groups = cli_summary.json()["groups"]
+    assert sum(item["attempt_count"] for item in cli_groups) == 1
+    assert all(item["channel"] == "CLI" for item in cli_groups)
+    bad_channel = client.get("/api/v1/usage/summary", params={"channel": "SMTP"})
+    assert bad_channel.status_code == 422
+
 
 def test_usage_read_filters_narrow_by_model_id(db_session, client):
     job, _candidate = _seed_page_job(db_session)

@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using System.Windows.Shapes;
+using System.Windows.Data;
 using MangaFlow.Native.Controls;
 using MangaFlow.Native.Services;
 
@@ -13,7 +14,6 @@ namespace MangaFlow.Native.Views;
 public sealed class HomeView : WorkspaceView
 {
     public event Action? CreateRequested;
-    public event Action? SettingsRequested;
 
     private readonly DrawerOverlay drawer = new() { DrawerWidth = 510 };
     private readonly TextBox nameInput = new()
@@ -22,7 +22,7 @@ public sealed class HomeView : WorkspaceView
         FontSize = 17, Padding = new Thickness(12, 12, 12, 12),
     };
     private readonly StackPanel modeGroup = new();
-    private readonly StackPanel resolutionGroup = new();
+    private readonly UniformGrid resolutionGroup = new() { Rows = 1, Columns = 3 };
     private readonly Button createButton = new() { Content = "创建项目", Style = (Style)Application.Current.FindResource("InkButton") };
     private readonly TextBlock drawerError = new() { Foreground = (Brush)Application.Current.FindResource("Danger"), TextWrapping = TextWrapping.Wrap };
     private bool creating;
@@ -30,17 +30,30 @@ public sealed class HomeView : WorkspaceView
     public HomeView()
     {
         var scroller = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-        var grid = new Grid();
+        var grid = new Grid { Name = "DashboardLayout" };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(308) });
-        var main = new StackPanel { Margin = new Thickness(36, 40, 36, 36) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(328) });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        var main = new StackPanel { Name = "DashboardMain", Margin = new Thickness(36, 44, 36, 60) };
         BuildHero(main);
         BuildProjects(main);
-        scroller.Content = main;
-        grid.Children.Add(scroller);
-        grid.Children.Add(BuildRail());
+        grid.Children.Add(main);
+        var rail = BuildRail();
+        rail.Name = "DashboardRail";
+        Grid.SetColumn(rail, 1);
+        grid.Children.Add(rail);
+        scroller.Content = grid;
+        SizeChanged += (_, _) =>
+        {
+            var narrow = ActualWidth < 1180;
+            grid.ColumnDefinitions[1].Width = new GridLength(narrow ? 0 : 328);
+            Grid.SetColumn(rail, narrow ? 0 : 1);
+            Grid.SetRow(rail, narrow ? 1 : 0);
+            rail.BorderThickness = narrow ? new Thickness(0, 1, 0, 0) : new Thickness(1, 0, 0, 0);
+        };
         var overlay = new Grid();
-        overlay.Children.Add(grid);
+        overlay.Children.Add(scroller);
         drawer.Content = BuildDrawer();
         overlay.Children.Add(drawer);
         Content = overlay;
@@ -143,12 +156,10 @@ public sealed class HomeView : WorkspaceView
         header.Child = dock;
         main.Children.Add(header);
 
-        var cards = new ItemsControl();
-        cards.SetBinding(ItemsControl.ItemsSourceProperty, new System.Windows.Data.Binding("DashboardProjects"));
-        var panelTemplate = new FrameworkElementFactory(typeof(UniformGrid));
-        panelTemplate.SetValue(UniformGrid.ColumnsProperty, 3);
+        var cards = new ItemsControl { Name = "ProjectCards" };
+        var panelTemplate = new FrameworkElementFactory(typeof(TilePanel));
         cards.ItemsPanel = new ItemsPanelTemplate(panelTemplate);
-        cards.ItemTemplate = CreateCardTemplate();
+        cards.Resources.Add(new DataTemplateKey(typeof(ProjectItem)), CreateCardTemplate());
         main.Children.Add(cards);
 
         var newCard = new Button
@@ -165,15 +176,17 @@ public sealed class HomeView : WorkspaceView
             },
             Background = Brushes.Transparent,
             BorderBrush = (Brush)Application.Current.FindResource("LineDark"),
-            MinHeight = 300, MinWidth = 300,
-            HorizontalAlignment = HorizontalAlignment.Left,
-            Margin = new Thickness(0, 0, 0, 18),
+            Name = "CreateProjectCard", MinHeight = 334,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
         };
         newCard.Click += (_, _) => OpenCreationDrawer();
         newCard.SetBinding(Button.IsEnabledProperty, new System.Windows.Data.Binding("Connected"));
-        main.Children.Add(newCard);
+        var projects = new CollectionContainer();
+        BindingOperations.SetBinding(projects, CollectionContainer.CollectionProperty,
+            new Binding("DataContext.DashboardProjects") { Source = this });
+        cards.ItemsSource = new CompositeCollection { projects, newCard };
 
-        var pager = new DockPanel { Margin = new Thickness(0, 4, 16, 0) };
+        var pager = new DockPanel { Margin = new Thickness(0, 20, 0, 0) };
         var previous = Act("上一页", (_, _) => ChangePage(-1), "Compact");
         var next = Act("下一页", (_, _) => ChangePage(1), "Compact");
         DockPanel.SetDock(previous, Dock.Left);
@@ -197,10 +210,9 @@ public sealed class HomeView : WorkspaceView
         var buttonFactory = new FrameworkElementFactory(typeof(Button));
         buttonFactory.SetValue(Button.BackgroundProperty, Application.Current.FindResource("Surface"));
         buttonFactory.SetValue(Button.PaddingProperty, new Thickness(10));
-        buttonFactory.SetValue(Button.MarginProperty, new Thickness(0, 0, 16, 20));
+        buttonFactory.SetValue(Button.MarginProperty, new Thickness(0));
         buttonFactory.SetValue(Button.HorizontalContentAlignmentProperty, HorizontalAlignment.Stretch);
-        buttonFactory.SetValue(Button.MinWidthProperty, 300d);
-        buttonFactory.SetValue(Button.TagProperty, new System.Windows.Data.Binding());
+        buttonFactory.SetBinding(Button.TagProperty, new System.Windows.Data.Binding());
         buttonFactory.AddHandler(Button.ClickEvent, new RoutedEventHandler((sender, _) =>
         {
             if (sender is Button { Tag: ProjectItem project })
@@ -209,7 +221,7 @@ public sealed class HomeView : WorkspaceView
 
         var stack = new FrameworkElementFactory(typeof(StackPanel));
         var cover = new FrameworkElementFactory(typeof(Border));
-        cover.SetValue(Border.HeightProperty, 264d);
+        cover.SetValue(Border.HeightProperty, 220d);
         cover.SetValue(Border.BorderBrushProperty, new SolidColorBrush(Color.FromRgb(0xC2, 0xBC, 0xAF)));
         cover.SetValue(Border.BorderThicknessProperty, new Thickness(1));
         cover.SetValue(Border.BackgroundProperty, new SolidColorBrush(Color.FromRgb(0xD8, 0xD3, 0xC8)));
@@ -237,6 +249,14 @@ public sealed class HomeView : WorkspaceView
         title.SetValue(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
         title.SetValue(TextBlock.MarginProperty, new Thickness(0, 26, 0, 18));
         coverGrid.AppendChild(title);
+        var stamp = new FrameworkElementFactory(typeof(TextBlock));
+        stamp.SetValue(TextBlock.TextProperty, "制作中");
+        stamp.SetValue(TextBlock.ForegroundProperty, Application.Current.FindResource("AccentInk"));
+        stamp.SetValue(TextBlock.FontWeightProperty, FontWeights.Bold);
+        stamp.SetValue(TextBlock.HorizontalAlignmentProperty, HorizontalAlignment.Right);
+        stamp.SetValue(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Bottom);
+        stamp.SetValue(TextBlock.MarginProperty, new Thickness(12));
+        coverGrid.AppendChild(stamp);
         cover.AppendChild(coverGrid);
         stack.AppendChild(cover);
 
@@ -359,25 +379,34 @@ public sealed class HomeView : WorkspaceView
     private FrameworkElement BuildDrawer()
     {
         var scroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-        var panel = new StackPanel { Margin = new Thickness(28, 26, 28, 24) };
-        var header = new DockPanel { Margin = new Thickness(0, 0, 0, 18) };
+        var outer = new StackPanel();
+        var panel = new StackPanel { Margin = new Thickness(28) };
+        var header = new DockPanel();
         var close = Act("✕", (_, _) => drawer.Open = false, "Ghost");
         close.MinWidth = 40;
+        close.Width = close.Height = 40;
+        close.Padding = new Thickness(0);
+        close.FontSize = 18;
+        System.Windows.Automation.AutomationProperties.SetName(close, "关闭创建面板");
+        close.VerticalAlignment = VerticalAlignment.Center;
         DockPanel.SetDock(close, Dock.Right);
         header.Children.Add(close);
-        var heading = new StackPanel();
-        heading.Children.Add(new TextBlock { Text = "NEW PROJECT / 01", Style = (Style)Application.Current.FindResource("SectionIndex") });
+        var heading = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        heading.Children.Add(new TextBlock { Text = "NEW PROJECT / 01", FontSize = 12, FontWeight = FontWeights.Bold, Foreground = (Brush)Application.Current.FindResource("Muted") });
         heading.Children.Add(new TextBlock
         {
             Text = "建立漫画项目", FontFamily = (FontFamily)Application.Current.FindResource("Serif"),
-            FontSize = 25, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 6, 0, 0),
+            FontSize = 22, FontWeight = FontWeights.Normal, Margin = new Thickness(0, 6, 0, 0),
         });
         header.Children.Add(heading);
-        panel.Children.Add(header);
+        outer.Children.Add(new Border { Child = header, Height = 92, Padding = new Thickness(28, 0, 28, 0),
+            BorderBrush = (Brush)Application.Current.FindResource("Line"), BorderThickness = new Thickness(0, 0, 0, 1) });
+        outer.Children.Add(panel);
 
         panel.Children.Add(FieldLabel("项目名称"));
         System.Windows.Automation.AutomationProperties.SetName(nameInput, "项目名称");
         nameInput.MaxLines = 2;
+        nameInput.Margin = new Thickness(0, 0, 0, 18);
         panel.Children.Add(nameInput);
 
         panel.Children.Add(FieldLabel("工作方式"));
@@ -388,9 +417,10 @@ public sealed class HomeView : WorkspaceView
             var card = new RadioButton
             {
                 GroupName = "create-mode",
+                Style = (Style)Application.Current.FindResource("ModeOption"),
                 Tag = mode,
                 Margin = new Thickness(0, 0, 0, 8),
-                MinHeight = 58,
+                MinHeight = 68,
                 Content = new StackPanel
                 {
                     Children =
@@ -426,25 +456,31 @@ public sealed class HomeView : WorkspaceView
         actions.Children.Add(cancel);
         createButton.Click += CreateProject;
         actions.Children.Add(createButton);
-        panel.Children.Add(actions);
-        scroll.Content = panel;
+        panel.Children.Add(new Border { Child = actions, Margin = new Thickness(0, 10, 0, 0), Padding = new Thickness(0, 20, 0, 0),
+            BorderBrush = (Brush)Application.Current.FindResource("Line"), BorderThickness = new Thickness(0, 1, 0, 0) });
+        scroll.Content = outer;
         return scroll;
     }
 
     private void BuildResolution(string current)
     {
         resolutionGroup.Children.Clear();
-        resolutionGroup.Orientation = Orientation.Horizontal;
         foreach (var option in new[] { "1K", "2K", "4K" })
         {
+            var label = new Grid();
+            label.Children.Add(new TextBlock { Text = option, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center });
+            if (option == "4K") label.Children.Add(new TextBlock { Text = "Preview", FontSize = 11, FontFamily = new FontFamily("Microsoft YaHei UI"),
+                Foreground = (Brush)Application.Current.FindResource("AccentInk"), HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top });
             var toggle = new ToggleButton
             {
-                Content = option == "4K" ? "4K · Preview" : option,
-                Style = (Style)Application.Current.FindResource("Pill"),
-                IsChecked = option == current, MinWidth = 72, Margin = new Thickness(0, 0, 8, 0),
+                Content = label, Tag = option,
+                Style = (Style)Application.Current.FindResource("ResolutionOption"),
+                IsChecked = option == current, MinWidth = 72, Margin = new Thickness(0, 0, option == "4K" ? 0 : 7, 0),
             };
-            toggle.Checked += (_, _) =>
+            System.Windows.Automation.AutomationProperties.SetName(toggle, option);
+            toggle.Click += (_, _) =>
             {
+                toggle.IsChecked = true;
                 foreach (var other in resolutionGroup.Children.OfType<ToggleButton>())
                     if (!ReferenceEquals(other, toggle)) other.IsChecked = false;
             };
@@ -464,8 +500,8 @@ public sealed class HomeView : WorkspaceView
             return;
         }
         var mode = modeGroup.Children.OfType<RadioButton>().FirstOrDefault(r => r.IsChecked == true) is { Tag: string m } ? m : "SEMI_AUTO";
-        var resolution = resolutionGroup.Children.OfType<ToggleButton>().FirstOrDefault(t => t.IsChecked == true) is { Content: string value }
-            ? value.Split(' ')[0] : "2K";
+        var resolution = resolutionGroup.Children.OfType<ToggleButton>().FirstOrDefault(t => t.IsChecked == true) is { Tag: string value }
+            ? value : "2K";
         creating = true;
         createButton.IsEnabled = false;
         drawerError.Text = "";
@@ -497,5 +533,5 @@ public sealed class HomeView : WorkspaceView
         ProjectRequested += OnProjectRequested;
     }
 
-    private void OnProjectRequested(ProjectItem project) => Context?.NavigateSection("source", $"project:{project.Id}");
+    private void OnProjectRequested(ProjectItem project) => Context?.NavigateSection(project.NextSection, $"project:{project.Id}");
 }

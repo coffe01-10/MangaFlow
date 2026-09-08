@@ -19,12 +19,14 @@ public sealed class ProjectSettingsView : WorkspaceView
     private readonly TextBlock saveError = new() { Foreground = (Brush)Application.Current.FindResource("Danger"), TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
     private readonly Border saveSuccess = Notice("项目设置已保存", "ok");
 
-    private readonly StackPanel modeGroup = new();
-    private readonly StackPanel draftGroup = new();
-    private readonly StackPanel finalGroup = new();
-    private readonly TextBox concurrencyInput = new() { Width = 120 };
-    private readonly CheckBox consistencySwitch = new() { Style = (Style)Application.Current.FindResource("Switch") };
-    private readonly ComboBox modelSelector = Selector("文字任务默认路由", 320);
+    // Set fresh on every Render(): these live nested inside Section cards, so
+    // re-adding a reused instance would throw (single logical parent rule).
+    private StackPanel modeGroup = null!;
+    private StackPanel draftGroup = null!;
+    private StackPanel finalGroup = null!;
+    private TextBox concurrencyInput = null!;
+    private CheckBox consistencySwitch = null!;
+    private ComboBox modelSelector = null!;
 
     private JsonElement project;
     private int version;
@@ -35,10 +37,6 @@ public sealed class ProjectSettingsView : WorkspaceView
     public ProjectSettingsView()
     {
         saveSuccess.Visibility = Visibility.Collapsed;
-        // Wire once: Render() rebuilds controls on every reload and must not stack handlers.
-        consistencySwitch.Checked += (_, _) => Dirty();
-        consistencySwitch.Unchecked += (_, _) => Dirty();
-        modelSelector.SelectionChanged += (_, _) => Dirty();
         var grid = new Grid { Margin = new Thickness(36, 32, 36, 24) };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -51,7 +49,6 @@ public sealed class ProjectSettingsView : WorkspaceView
         Grid.SetColumn(danger, 1);
         grid.Children.Add(scroller);
         grid.Children.Add(danger);
-        System.Windows.Automation.AutomationProperties.SetName(concurrencyInput, "任务并发");
         Content = grid;
     }
 
@@ -130,6 +127,17 @@ public sealed class ProjectSettingsView : WorkspaceView
 
     private void Render()
     {
+        modeGroup = new StackPanel();
+        draftGroup = new StackPanel();
+        finalGroup = new StackPanel();
+        concurrencyInput = new TextBox { Width = 120 };
+        consistencySwitch = new CheckBox { Style = (Style)Application.Current.FindResource("Switch") };
+        modelSelector = Selector("文字任务默认路由", 320);
+        System.Windows.Automation.AutomationProperties.SetName(concurrencyInput, "任务并发");
+        // Wire once per instance: the controls above are fresh on every Render.
+        consistencySwitch.Checked += (_, _) => Dirty();
+        consistencySwitch.Unchecked += (_, _) => Dirty();
+        modelSelector.SelectionChanged += (_, _) => Dirty();
         body.Children.Clear();
         saveSuccess.Visibility = Visibility.Collapsed;
         saveError.Visibility = Visibility.Collapsed;
