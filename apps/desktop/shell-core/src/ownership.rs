@@ -442,6 +442,11 @@ fn job_contains_pid(job: &JobHandle, pid: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    // The Windows-only Job Object test calls `create_kill_on_close_job`
+    // unqualified; on Linux this glob is genuinely unused, which is why a
+    // Linux-only lint must not be allowed to delete it again.
+    #[cfg(windows)]
+    use super::*;
 
     /// #150 regression: creating and dropping JobHandles must not leak
     /// kernel objects — this is the release path the assign/resume failure
