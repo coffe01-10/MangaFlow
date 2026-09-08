@@ -78,7 +78,13 @@ where
     if value["token"].as_str() != Some(token) {
         return Err(VerifyError::TokenMismatch);
     }
-    let pid = value["pid"].as_u64().ok_or(VerifyError::BadJson)? as u32;
+    // PIDs are u32 on every supported platform: a 64-bit value (tampered or
+    // buggy READY output) must be rejected outright — an `as u32` cast would
+    // wrap 2^32 offsets back onto the real child pid and pass ownership.
+    let pid = match value["pid"].as_u64() {
+        Some(pid) => u32::try_from(pid).map_err(|_| VerifyError::BadJson)?,
+        None => return Err(VerifyError::BadJson),
+    };
     if !pid_owned(pid) {
         return Err(VerifyError::PidMismatch);
     }
@@ -445,6 +451,21 @@ mod tests {
         assert!(matches!(
             verify_ready_line(&line, TOKEN, 4242),
             Err(VerifyError::OriginNotLoopback)
+        ));
+    }
+
+    /// PIDs are u32: a 64-bit READY pid (tampered output) that wraps onto
+    /// the expected pid via `as u32` must be rejected outright, not pass
+    /// the ownership predicate.
+    #[test]
+    fn rejects_pids_beyond_the_u32_range_even_when_they_wrap_onto_the_expected_pid() {
+        let line = format!(
+            "{READY_PREFIX}{{\"token\":\"{TOKEN}\",\"pid\":{},\"api_origin\":\"http://127.0.0.1:8000\"}}",
+            4242u64 + 1 << 32
+        );
+        assert!(matches!(
+            verify_ready_line(&line, TOKEN, 4242),
+            Err(VerifyError::BadJson)
         ));
     }
 

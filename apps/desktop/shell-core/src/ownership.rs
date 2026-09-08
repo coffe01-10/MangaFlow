@@ -204,7 +204,17 @@ impl OwnedTree {
         let deadline = Instant::now() + grace;
         while Instant::now() < deadline {
             match self.child.try_wait() {
-                Ok(Some(status)) => return Ok(status.code()),
+                Ok(Some(status)) => {
+                    // The direct child is gone, but group members may still
+                    // be alive — a helper that crashed leaves its own
+                    // children (plan B's node server) in the group, and a
+                    // descendant can ignore the SIGTERM sent above. Escalate
+                    // before returning: the shell owns the group until the
+                    // last member exits, not merely until the child does.
+                    #[cfg(unix)]
+                    signal_tree(self.pid(), libc::SIGKILL);
+                    return Ok(status.code());
+                }
                 Ok(None) => std::thread::sleep(Duration::from_millis(20)),
                 Err(error) => return Err(OwnershipError::StopFailed(error.to_string())),
             }
@@ -228,6 +238,16 @@ impl Drop for OwnedTree {
     fn drop(&mut self) {
         if self.alive() {
             let _ = self.stop(Duration::from_secs(3));
+        } else {
+            // The direct child already exited on its own, but its
+            // descendants may live on inside the group this shell owns —
+            // Unix has no KILL_ON_JOB_CLOSE analog, so nothing else would
+            // ever signal them (the crash shape of plan B: the helper dies,
+            // its node server lives on). Best-effort group SIGKILL: no
+            // grace is possible during drop, and a process that ignored
+            // the SIGTERM sent by an earlier stop() gets no second chance.
+            #[cfg(unix)]
+            signal_tree(self.pid(), libc::SIGKILL);
         }
         // The Windows job handle now closes via `JobHandle::drop` (#150):
         // KILL_ON_JOB_CLOSE then kills anything that survived the graceful

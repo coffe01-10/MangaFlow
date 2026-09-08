@@ -368,6 +368,86 @@ fn stop_kills_descendants_of_a_child_that_never_joins_its_own_group() {
     let _ = std::fs::remove_dir_all(&user_data);
 }
 
+/// A helper that exits on its own while its descendants live must not
+/// orphan them: the Drop path still owns the process group after the child
+/// is gone. This is the crash shape of plan B — the helper dies, its node
+/// server lives on — and Unix has no KILL_ON_JOB_CLOSE analog. Red-green:
+/// without the Drop group-kill the grandchild outlives the tree.
+#[cfg(unix)]
+#[test]
+fn drop_kills_descendants_after_the_child_exited_on_its_own() {
+    let user_data = temp_user_data("orphan");
+    let pid_file = user_data.join("grandchild.pid");
+    // The grandchild's stdout/stderr are redirected: an orphan holding the
+    // test harness's pipe open would hang the whole suite after the run.
+    let script = format!(
+        "sleep 3600 >/dev/null 2>&1 & echo $! > {}; exit 0",
+        pid_file.to_string_lossy()
+    );
+    let mut command = Command::new("sh");
+    command.arg("-c").arg(&script);
+    let tree = OwnedTree::spawn(command).unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let grandchild_pid = loop {
+        if let Ok(text) = std::fs::read_to_string(&pid_file) {
+            if let Ok(pid) = text.trim().parse::<u32>() {
+                break pid;
+            }
+        }
+        assert!(Instant::now() < deadline, "grandchild pid never published");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    // The child exits 0 right after publishing the grandchild. Until
+    // `drop` reaps it, it lingers as a zombie — so "exited" here means
+    // /proc state 'Z' (or fully gone), not mere existence.
+    let process_state = |pid: u32| -> Option<char> {
+        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|text| {
+                text.rsplit(')')
+                    .next()?
+                    .split_whitespace()
+                    .next()?
+                    .chars()
+                    .next()
+            })
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while process_state(tree.pid()).map(|state| state != 'Z').unwrap_or(false) {
+        assert!(
+            Instant::now() < deadline,
+            "the child must have exited on its own"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    drop(tree);
+    assert!(
+        wait_until_gone(grandchild_pid, Duration::from_secs(5)),
+        "the grandchild must die with the group even after the child exited"
+    );
+    let _ = std::fs::remove_dir_all(&user_data);
+}
+
+/// stop() is idempotent: a second call after the first must report the
+/// cached exit instead of hanging or erroring (the stdin take is a no-op,
+/// the group signals hit a dead group, and try_wait returns the cached
+/// status).
+#[test]
+fn stop_is_idempotent_and_reports_the_cached_exit() {
+    let user_data = temp_user_data("twice");
+    let mut command = Command::new(python());
+    command.arg("-c").arg("import time; time.sleep(3600)");
+    let mut tree = OwnedTree::spawn(command).unwrap();
+
+    let first = tree.stop(Duration::from_secs(5)).expect("first stop");
+    let second = tree.stop(Duration::from_secs(5)).expect("second stop");
+    assert_eq!(first, second, "the second stop reports the cached exit");
+    assert!(!tree.alive());
+    let _ = std::fs::remove_dir_all(&user_data);
+}
+
 /// The escalation half of `stop()`: a child no cooperative channel can
 /// reach must still die, promptly, once the grace window elapses. The
 /// stand-in never reads stdin and — once its interpreter finishes
