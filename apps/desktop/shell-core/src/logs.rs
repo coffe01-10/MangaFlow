@@ -898,7 +898,20 @@ fn export_logs_with(
         // revoked, vanished between collect and read) joins the size-change
         // race below in the skip-and-report treatment instead of aborting the
         // whole export — the remaining members are still worth archiving.
-        let data = match fs::read(path) {
+        // The read itself is bounded by `take(EXPORT_MAX_FILE_BYTES)`: the
+        // collect-time size is only a snapshot, and a log still being written
+        // can grow to many GiB before this line — `fs::read` would buffer the
+        // whole grown file just to reject it in the re-check below, so the
+        // cap is enforced at read time and a grown member fails the size
+        // re-check as "changed_during_export".
+        let data = (|| -> std::io::Result<Vec<u8>> {
+            use std::io::Read;
+            let mut file = fs::File::open(path)?;
+            let mut data = Vec::new();
+            file.take(EXPORT_MAX_FILE_BYTES).read_to_end(&mut data)?;
+            Ok(data)
+        })();
+        let data = match data {
             Ok(data) => data,
             Err(error) => {
                 skipped.push(SkippedEntry {

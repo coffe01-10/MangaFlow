@@ -155,6 +155,31 @@ fn export_skips_an_unreadable_subdirectory_instead_of_aborting() {
 }
 
 #[test]
+fn export_includes_a_member_at_exactly_the_per_member_cap() {
+    // The cap is inclusive (`>` skips): a member of exactly
+    // EXPORT_MAX_FILE_BYTES must be archived, and the bounded reader
+    // (take at the cap) must still deliver it whole.
+    let user_data = temp_user_data("exactcap");
+    let logs = logs_dir(&user_data);
+    fs::create_dir_all(&logs).unwrap();
+    let capped = fs::File::create(logs.join("exact-cap.log")).unwrap();
+    capped
+        .set_len(mangaflow_desktop_shell_core::logs::EXPORT_MAX_FILE_BYTES)
+        .unwrap();
+
+    let destination = std::env::temp_dir().join(format!("mfd-export-exactcap-{}.zip", new_token()));
+    let report = export_logs_zip(&user_data, &destination).unwrap();
+    assert_eq!(report.files, vec!["exact-cap.log".to_string()], "{report:?}");
+    assert_eq!(
+        report.total_bytes,
+        mangaflow_desktop_shell_core::logs::EXPORT_MAX_FILE_BYTES
+    );
+
+    let _ = fs::remove_dir_all(&user_data);
+    let _ = fs::remove_file(&destination);
+}
+
+#[test]
 fn export_refuses_destinations_inside_user_data_root() {
     let user_data = temp_user_data("inside");
     let logs = logs_dir(&user_data);
