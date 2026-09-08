@@ -69,12 +69,39 @@ fn proc_alive(pid: u32) -> bool {
 fn wait_until_gone(pid: u32, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if !proc_alive(pid) {
+        if proc_dead(pid) {
             return true;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    proc_alive(pid) == false
+    proc_dead(pid)
+}
+
+/// Gone means absent from /proc OR a zombie: a SIGKILLed orphan re-parents
+/// to the init process and lingers unreaped in containers whose init never
+/// reaps, so bare existence reads as alive when the process is already dead.
+#[cfg(unix)]
+fn proc_dead(pid: u32) -> bool {
+    // Gone means absent from /proc OR a zombie: a SIGKILLed orphan
+    // re-parents to the init process and lingers unreaped in containers
+    // whose init never reaps, so bare existence reads as alive when the
+    // process is already dead.
+    let Ok(text) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return true;
+    };
+    match text
+        .rsplit(')')
+        .next()
+        .and_then(|rest| rest.split_whitespace().next())
+    {
+        Some(state) => state == "Z",
+        None => true,
+    }
+}
+
+#[cfg(windows)]
+fn proc_dead(pid: u32) -> bool {
+    !proc_alive(pid)
 }
 
 #[test]
@@ -401,20 +428,21 @@ fn drop_kills_descendants_after_the_child_exited_on_its_own() {
     // The child exits 0 right after publishing the grandchild. Until
     // `drop` reaps it, it lingers as a zombie — so "exited" here means
     // /proc state 'Z' (or fully gone), not mere existence.
-    let process_state = |pid: u32| -> Option<char> {
-        std::fs::read_to_string(format!("/proc/{pid}/stat"))
-            .ok()
-            .and_then(|text| {
-                text.rsplit(')')
-                    .next()?
-                    .split_whitespace()
-                    .next()?
-                    .chars()
-                    .next()
-            })
+    let process_state = |pid: u32| -> char {
+        let text = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .expect("this unix test requires /proc (same as the pgid checks)");
+        text.rsplit(')')
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .chars()
+            .next()
+            .unwrap()
     };
     let deadline = Instant::now() + Duration::from_secs(5);
-    while process_state(tree.pid()).map(|state| state != 'Z').unwrap_or(false) {
+    while process_state(tree.pid()) != 'Z' {
         assert!(
             Instant::now() < deadline,
             "the child must have exited on its own"
@@ -438,12 +466,63 @@ fn drop_kills_descendants_after_the_child_exited_on_its_own() {
 fn stop_is_idempotent_and_reports_the_cached_exit() {
     let user_data = temp_user_data("twice");
     let mut command = Command::new(python());
-    command.arg("-c").arg("import time; time.sleep(3600)");
+    command
+        .arg("-c")
+        .arg(
+            // Same shape as `stdin_close_is_a_cooperative_stop_channel`:
+            // ignore SIGTERM during bootstrap so the group SIGTERM cannot
+            // win the race against the interpreter reaching stdin.read();
+            // the cooperative EOF exit code is what makes the cached-exit
+            // equality meaningful (a signal death reports None).
+            "import signal, sys; signal.signal(signal.SIGTERM, signal.SIG_IGN); \
+             sys.stdin.read(); sys.exit(7)",
+        )
+        .stdin(std::process::Stdio::piped());
     let mut tree = OwnedTree::spawn(command).unwrap();
+
+    // Give the stand-in time to install its SIGTERM handler; stopping
+    // during the interpreter bootstrap would kill it by signal (exit None)
+    // — the documented bootstrap race of every Unix stop() test. Unix polls
+    // the kernel's signal masks (bit 14 = signal 15, SIGTERM, in
+    // SigIgn/SigCgt) instead of sleeping a fixed interval, so a loaded
+    // machine cannot flake; Windows has no signal to race — stdin EOF is
+    // the cooperative channel — so it needs no wait at all.
+    #[cfg(unix)]
+    let sigterm_catch_deadline = Instant::now() + Duration::from_secs(5);
+    #[cfg(unix)]
+    loop {
+        // SIG_IGN lands in the IGNORED mask, a Python handler in the CAUGHT
+        // mask — either one proves signal.signal(SIGTERM, …) has run.
+        let installed = std::fs::read_to_string(format!("/proc/{}/status", tree.pid()))
+            .ok()
+            .and_then(|status| {
+                let bit = |prefix: &str| {
+                    status
+                        .lines()
+                        .find(|line| line.starts_with(prefix))
+                        .and_then(|line| {
+                            line.split_whitespace()
+                                .nth(1)
+                                .and_then(|mask| u64::from_str_radix(mask, 16).ok())
+                        })
+                        .unwrap_or(0)
+                };
+                Some((bit("SigIgn:") | bit("SigCgt:")) & (1 << 14) != 0)
+            });
+        if installed.unwrap_or(false) {
+            break;
+        }
+        assert!(
+            Instant::now() < sigterm_catch_deadline,
+            "the stand-in never installed its SIGTERM handler"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 
     let first = tree.stop(Duration::from_secs(5)).expect("first stop");
     let second = tree.stop(Duration::from_secs(5)).expect("second stop");
-    assert_eq!(first, second, "the second stop reports the cached exit");
+    assert_eq!(first, Some(7), "the cooperative exit code is observed");
+    assert_eq!(second, first, "the second stop reports the cached exit");
     assert!(!tree.alive());
     let _ = std::fs::remove_dir_all(&user_data);
 }
@@ -794,13 +873,14 @@ time.sleep(0.5)
 
     // Reap the exited child BEFORE calling stop — the native-host
     // self-exit path shape.
+    let reap_deadline = Instant::now() + Duration::from_secs(5);
     let reaped = loop {
         match tree.child.try_wait().expect("try_wait succeeds") {
             Some(status) => break status,
             None => {
                 assert!(
-                    Instant::now() < Instant::now() + Duration::from_secs(5),
-                    "unreachable"
+                    Instant::now() < reap_deadline,
+                    "the fixture child never exited"
                 );
                 std::thread::sleep(Duration::from_millis(20));
             }

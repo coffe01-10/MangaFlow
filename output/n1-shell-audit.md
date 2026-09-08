@@ -1,85 +1,95 @@
-# N1 shell-core 审计（2026-09-08 夜间烧 · 持续更新）
+# N1 shell-core 审计（2026-09-08 夜间烧 · 终版）
 
-- 范围：`apps/desktop/shell-core/**`（基线 `origin/master` = `2e5772b`，含 PR #252–#258 与
-  NUI/review-loop 波次）；验证驱动仅触及 `apps/desktop/scripts/**` 的 shell 相关测试。
-- 方法：两个只读深读代理分别覆盖 logs.rs/ziparch.rs 与 protocol.rs/handshake.rs/ownership.rs
-  （合计 107 条原始发现），组长对全部 BUG 级候选做了行级复核后才收录；红绿判别（C 项）
-  与边界补测（D 项）结果随切片回填。
-- 状态语义：BUG = 会误伤用户的真实缺陷（附复现）；RISK = 真实窗口/健壮性弱点；
-  GAP = 测试缺口候选；DOC = 文档-代码不一致或缺文档。全部行号以基线 `2e5772b` 为准。
+- 范围：`apps/desktop/shell-core/**`；验证驱动仅触及 `apps/desktop/scripts/**` 的
+  shell 相关测试；`apps/desktop/native/**` 与 `native-tests/**` 全程未动（硬禁区）。
+- 基线演进：起跑 `origin/master` = `2e5772b`；期间 PR #277–#281（并行夜间代理）与
+  本轮 PR #280 被连续合入，终版审计锚定 `1a53b4a` + 本分支增量。
+- 方法：两个只读深读子代理覆盖全部源文件（logs/ziparch 与 protocol/handshake/
+  ownership，合计 107 条原始发现），组长行级复核后收录；三轮独立子代理审查
+  （E 项）的阻断项全部修复；每个修复在旧实现上做过红绿判别（C 项）。
+- 证据：`cargo test` 9/9 套件全绿，**78 项**（单元 46 + 集成 32），Linux 实测；
+  红绿判别逐条记录于各 commit message 与下表。
 
-## 1. 已确认 BUG（按切片修复，各自独立 commit/PR）
+## 1. BUG 账本（全部已修或明确边界）
 
-| ID | 位置 | 缺陷 | 复现/判别 | 状态 |
-| --- | --- | --- | --- | --- |
-| BUG-1 | `ziparch.rs:91,106` | `name.len() as u16` 静默截断：>65,535 字节成员名产出结构性损坏的归档；模块文档（:60）承诺"panic 而非静默损坏" | `add_file(&"a".repeat(70_000), …)` → name_len 字段 = 70000 mod 65536，所有读者误析构 | 修复中 |
-| BUG-2 | `logs.rs:1003-1008` | confirmed-overwrite 落盘先 `remove_file(destination)` 再 `rename`：rename 失败 → 用户原归档已删、`.pending` 孤儿（该分支无清理；hard_link 分支有） | 目标父目录 chmod 500 → rename EACCES；旧代码留 `.pending` 孤儿 | 修复中 |
-| BUG-3 | `logs.rs:226-228` | 轮转 shift 前先删最旧世代 `.keep`：后续任一步失败不可回滚，真实历史永久丢失；既有测试反而把该损失固化为预期 | 在 `.keep` 位失败（如 planted 目录）→ `.5` 应幸存而现状被毁 | 修复中 |
-| BUG-4 | `logs.rs:890` | 成员读取 `fs::read` 无上界：collect 时 ≤64 MiB、读取前涨到数 GiB 的日志会被整读进内存后才被拒，可 OOM 壳进程 | 构造性缺陷；修复 = open 后复查 metadata + `take(EXPORT_MAX_FILE_BYTES)` | 修复中 |
-| BUG-5 | `logs.rs:735` | 子目录 `read_dir` 失败沿 `?` 中止整个导出，与 :886-889 对文件声明的 skip-and-report 策略矛盾 | 一个锁死/不可读子目录 → 整次导出失败 | 修复中 |
-| BUG-6 | `ownership.rs:205-211,227-237` | Unix：helper 自行退出后 `stop()` 提前返回、`Drop` 的 `alive()` 为假 → 组信号永不发出，plan B 的 node 等 helper 后代孤儿化（无 KILL_ON_JOB_CLOSE 等价物）；SIGTERM-忽略型后代在子进程先死时同样漏杀 | helper 立即退出 + 忽略 SIGTERM 的孙进程 → drop 后孙进程仍存活 | 待修 |
-| BUG-7 | `protocol.rs:81` | READY 的 `pid.as_u64() as u32` 回绕：`2^32+真实pid` 可通过 PID 归属校验 | 构造 pid=2^32+child_pid → TokenMismatch 之外的校验被绕过 | 待修 |
-| BUG-8 | `protocol.rs:217-219,304` + `logs.rs:515` | `mark_stopped` 把不可解析 journal 静默重置为 `"{}"`，随后新 sweep 会在宽限后删除这份被毁的取证记录；且 sweep 契约（`protocol.rs:247-248`）承诺失败上 stderr，唯一调用点 `let _ =` 丢弃 | 植入损坏 owner.json → stop → sweep 删除 | 待修 |
-| BUG-9 | `ownership.rs:217`（Windows 腿） | `TerminateJobObject` 结果 `let _ =` 丢弃后落入无超时 `child.wait()`：升级杀失败 → 潜在无限挂起 | Windows 原生；**NOT RUN**（Linux 不可证） | 代码修复，验证 NOT RUN |
-
-## 2. RISK（记录，按优先级排队；部分随切片顺带收口）
-
-- `protocol.rs:78,123` token 比较非常量时间（helper 本就持 token，风险受控，未文档化）。
-- `protocol.rs:43,95` `u16::from_str` 接受前导 `+`，`http://127.0.0.1:+80` 通过回环门。
-- `handshake.rs:148` / `protocol.rs:117` READY 行与 journal 读取无长度上界（恶意 helper 可撑内存）。
-- `handshake.rs:307` 健康门只看 HTTP 200 不验身份，helper 死后端口被抢可过门。
-- `handshake.rs:295` get_status 全量缓冲响应。
-- `protocol.rs:150,144-153` starttime 锚点缺失即跳过（fail-open），且仅 cfg(unix)；Windows 腿无创建时间等价物。
-- `ownership.rs:96-103` fork→prctl 窗口；`163-173` setsid 后代逃逸组（模块文档未声明该例外）；`261-280` Windows 线程快照 PID 复用窗口。
-- `logs.rs:929` manifest 序列化 unwrap；`865,952` 全归档内存缓冲 + 位转 CRC；`1004-1007` 目标父链验证后内核重解析窗口；`662-674` Windows ADS 目标名未拒；`441` rotate_if_large 尺寸-重命名交换窗；`446,464` 熔断态每行重开句柄；`951,958-959` 并发导出同目标时 `.pending` 竞争误报 PendingIsSymlink。
-- `handshake.rs:257`（及 `src-tauri/main.rs:242-244`）abort/stop 失败被 `.ok().flatten()` 吞掉。
-- `protocol.rs:342-343,355,236,361-366` pub API 可达 panic（new_token/BCrypt/write_journal_atomic/unix_now）。
-
-## 3. GAP（测试缺口 → D 项补测清单）
-
-- 边界相等性：轮转阈值-1；`EXPORT_MAX_FILE_BYTES` **恰好** 64 MiB 应纳入；总字节上限**恰好等于**应纳入（现在只测 `>`）；65,534 成员 + manifest = u16::MAX 的端到端。
-- 轮转：keep=1 退化；回滚账本中被重占槽位的 unwind 步失败；`.rotating` 残留清扫植入；跨会话清扫并发。
-- 导出：missing logs dir 的 Io 变体；`.pending` 为目录；成员缩小（shrink）场景；覆盖式 rename 失败（BUG-2 的判别测试）；非 UTF-8 成员名 lossy 塌缩重复。
-- ziparch：成员名 >65,535 字节 panic（BUG-1 判别）；`dos_date_time` 上界 2108 钳制。
-- 协议/所有权：stop 幂等/并发；ReadyTimeout 路径；stop-before-GO；端到端畸形 READY/journal 篡改矩阵；READY pid 既非子进程又非 Job 成员的负例；Linux `pid_starttime` 校验（protocol.rs:144-153 零覆盖）；ready_timeout 时序；健康重试非 200→迟来 200；超大 stdout 洪泛；`RunLog::create` 真正触发 sweep 的接线测试；sweep read_dir 错误路径。
-- 错误类型：`SpawnError`/`OwnershipError`/`VerifyError` 均无 `Display`/`std::error::Error` 实现（无法经 `?` 传播）。
-
-## 4. DOC（文档-代码不一致；随切片修正）
-
-- `ziparch.rs:69` "writer saturates today" 已失实（现 panic，有测试钉住）；`:60` panic 承诺被 BUG-1 打破；`:47` "Streaming" 实为全内存；`:22-23` 只提 1980 下钳、代码另有 2107 上钳（`ziparch.rs:37`）。
-- `logs.rs:69` 同 "saturates" 失实；`:77-78` 总量上限"后续成员被跳过"过度承诺（:879-885 只跳过会越限的成员，后续更小者仍纳入）；`:406-407` RunLog"仅身份字段"在 record() 层无强制；`:745-746` "硬链接逃逸被跳过"不实（canonicalize 解析到根内名，硬链接文件会被归档）；`:990-992` 承诺的 pending 清理在 overwrite 分支不存在（BUG-2）。
-- `protocol.rs:240-261` sweep 契约挂在常量 rustdoc 上且 stderr 承诺未实现（BUG-8）；`:283` 分隔符检查为死代码；`:148-150` journal "anchors PID identity" 对缺失字段静默跳过。
-- `handshake.rs:29` ready_timeout 文档写 ADR 预算 ≤15s、`stub()` 实为 20s。
-- 大量 pub 项缺文档（logs.rs:61,104,498,566-625；protocol.rs:8-13,16-24,27-37,159-162,203-211,331-366；handshake.rs:35-43,65-71,262-269；ownership.rs:59-77,152-154,175-177,307-313）。
-
-## 5. C 项红绿判别（每集成套件 ≥1 抽查；结果回填）
-
-| 套件 | 被还原的生产修复 | 预期 | 实测 |
+| ID | 位置（基线行号） | 缺陷 | 状态 |
 | --- | --- | --- | --- |
-| startup_protocol | `process_group(0)`（9989d9c 的 spawn 期组所有权） | `stop_kills_descendants_of_a_child_that_never_joins_its_own_group` 转红 | 待跑 |
-| picker_policy | `reject_intermediate_links`（5aad7bc） | 链接祖先用例转红 | 待跑 |
-| delivery_contract | capabilities/default.json 加 remote 键（负向检查） | 契约测试转红 | 待跑 |
-| log_export | 目的地校验（最终成分符号链接 / 用户数据根包含） | 对应用例转红 | 待跑 |
-| log_rotation | shift 回滚 / 阈值逻辑 | 对应用例转红 | 待跑 |
+| BUG-1 | ziparch.rs:91,106 | 成员名 `as u16` 截断 → 结构性损坏归档 | 已修（assert + 边界测试） |
+| BUG-2 | logs.rs place_archive | overwrite 先删后改名，失败即丢用户归档且孤儿 `.pending` | 已修（POSIX 原子替换优先 + 全失败路径清理；Windows 已存在→回退分支同样清理） |
+| BUG-3 | logs.rs shift_generations_up | 轮转 shift 前先删最旧世代，失败不可回滚 | 已修（staged 化 + 提交后才删；round-3 把删除再推迟到 rotate_file 终步成功之后） |
+| BUG-4 | logs.rs 成员读取 | `fs::read` 无上界，collect 后暴涨的日志被整读进内存 | 已修（`take(cap+1)`，超限按 changed 拒绝） |
+| BUG-5 | logs.rs:735 | 子目录 read_dir 失败中止整个导出 | 已修（skip-and-report） |
+| BUG-6 | ownership.rs stop/Drop | Unix 上 helper 自行退出后组信号永不发出，后代孤儿化（plan B node） | 已修（stop 观察到子进程退出即升级组 SIGKILL；Drop 对已 reap 的树做 group-only 补杀） |
+| BUG-7 | protocol.rs:81 | READY pid `as u32` 回绕绕过归属校验 | 已修（try_from 拒绝 + 判别测试；round-1 修掉了测试字面量自身的优先级错误 `4242+1<<32`） |
+| BUG-8 | logs.rs:515 + protocol.rs:247 | sweep 契约承诺 stderr 报告但 Result 被丢弃；mark_stopped 把损坏 journal 重置为 `{}` 后会被 sweep 删除 | stderr 已落实 + 接线测试；mark_stopped 语义属行为变更，记录为待 lead 决策项（见 §5） |
+| BUG-9 | ownership.rs TerminateJobObject | Windows 升级杀结果被丢弃，可能无限等待 | **代码修复 NOT RUN**（Windows 腿；本环境不可证）——由后续 Windows 实机轮验证 |
 
-## 6. 切片与 PR 台账（B 项；每切片独立 commit/PR）
+## 2. RISK（本轮新记录；多数为受控窗口，详见各文件注释）
 
-| 切片 | 内容 | commit/PR | cargo 证据 |
-| --- | --- | --- | --- |
-| ziparch | BUG-1 + 名称上界 panic 测试 + dos_date 上钳测试 | 待 | 待 |
-| logs-export | BUG-2/4/5 + 相应判别与边界测试 | 待 | 待 |
-| logs-rotation | BUG-3 垃圾桶-回滚设计 + 重写固化坏行为的测试 + 阈值-1 边界 | 待 | 待 |
-| startup-ownership | BUG-6/7 + 并发 stop/幂等测试 + pid_starttime 单测 | 待 | 待 |
-| protocol-sweep | BUG-8 stderr 契约 + 接线测试 | 待 | 待 |
+- token 比较非常量时间（helper 本持 token）；`u16::from_str` 接受 `+80` 端口。
+- READY 行 / journal 读取无长度上界（PR #277 handshake-stream-caps 已并入后请以
+  其为准复核；本轮未重复实现）。
+- 健康门不验身份（回环 200 即过）；get_status 全量缓冲。
+- starttime 锚点缺失即跳过且仅 cfg(unix)；Windows 无创建时间等价物。
+- fork→prctl 窗口；setsid 后代逃逸组（无 KILL_ON_JOB_CLOSE 等价，已由 group-only
+  补杀缩小）；Windows 线程快照 PID 复用窗口。
+- 导出全归档内存缓冲 + 位转 CRC；目标父链验证后内核重解析窗口；Windows ADS 目标名；
+  rotate_if_large 尺寸-重命名交换窗；熔断态每行重开句柄；并发导出同目标的
+  `.pending` 误报。
+- abort/stop 失败被 `.ok().flatten()` 吞掉（src-tauri 侧同型）。
+- pub API 可达 panic（new_token/BCrypt/write_journal_atomic/unix_now）。
+- 本轮新增已审：`.rotating`（base 内容）与 `.rotating-oldest`(历史) 的清理不对称——
+  前者可重试、后者绝不无条件删（见 §1 BUG-3 修复与其文档）。
 
-## 7. NOT RUN（本环境不可证）
+## 3. D 项边界测试台账（新增/重写）
 
-- BUG-9 与一切 Windows 腿（Job Object/TerminateJobObject/ADS/创建时间锚点/MSI）——Linux 沙箱无 Windows 实机。
-- 真实 WebView2、真实供应商、付费调用：沿项目既有边界。
-- `handshake.rs:307` 抢占端口的健康门竞态：需要受控端口竞争环境，Linux 上只能单元级模拟。
+- ziparch：65,535 字节名往返 + 第 65,536 次 panic；u16 成员数上限；dos_date_time
+  2107 上钳。
+- 导出：恰好 64 MiB 成员纳入；超限 `.pending` 目录；覆盖式改名失败判别；
+  locked-subdirectory（root 跳过）；成员 shrink/涨由 `take(cap+1)` + re-check 结构性
+  约束（+1 的 call-site 变异不可见性已在审计记录，属残留）。
+- 轮转：阈值-1 不轮转；shift 失败 unwind 且 `.5` 幸存（重写了固化损失行为的旧断言）；
+  final-rename 失败时 `.4`/`.5` 幸存；`.rotating-oldest` 双态（占位 → fail+保留；
+  空位 → 自愈重试）；restore 拒绝覆盖占位槽。
+- 启动协议：孤儿化 Drop 判别（sleep 输出重定向防管道悬挂）；stop 幂等（协作退出码
+  7 缓存判别）；SigIgn/SigCgt 位 14 轮询替代固定 300ms 竞态；真实 reap deadline（原
+  `Instant::now() < Instant::now()+5s` 恒真）；pid 回绕单测；sweep 接线测试。
 
-## 8. E 项子代理审查轮次
+## 4. C 项红绿判别（每集成套件 ≥1）
 
-- 轮 1：待派（契约正确性 / 测试恒真 / 修复是否改行为；结论须落 file:line）。
-- 轮 2：待派。
-- 轮 3：待派。
+| 套件 | 还原的生产修复 | 结果 |
+| --- | --- | --- |
+| startup_protocol | `process_group(0)`（波次）/ Drop 组补杀（本轮） | 红 ✓ / 红 ✓ |
+| picker_policy | `reject_intermediate_links`（5aad7bc） | 红 ✓ |
+| delivery_contract | capabilities 注入 `remote` 键 | 红 ✓ |
+| log_export | overwrite placement / subdir-skip | 红 ✓ / 红 ✓ |
+| log_rotation | 删除先行的旧 shift | 红 ✓（重写后的判别测试） |
+
+## 5. E 项三轮审查记录
+
+- 轮 1（2 代理）：107 条原始发现（BUG 候选 7）→ 全部行级复核 → 切片修复。
+- 轮 2（1 代理）：BLOCKER（cfg-gated 测试 glob 被删 → Windows 腿编译断裂）、
+  MAJOR（自愈失败返回 success 形态导致 POSIX 覆盖活世代；staged 删除时点仍偏早）
+  及 6 MINOR → 全部修复；`4242+1<<32` 测试字面量优先级错误在本轮修正。
+- 轮 3（1 代理）：HOLD → 4 阻断（未 cfg-gate 的 /proc 轮询、restore 覆盖占位槽、
+  自愈重试在 round-2 塌缩中丢失、wait_until_gone 在 Windows 空转）→ 全部修复 +
+  3 个新夹具（双态 leftover、restore 拒绝）；轮内同时确认了 unwind/restore 次序、
+  位 14 掩码、`take(cap+1)` 语义与 `.1` 重占路径的正确性。
+- 最终 Linux 状态：`cargo test` 78/78；Windows 腿 NOT RUN。
+
+## 6. 交付物
+
+- `night/n1-core-burn-20260908`（PR #280，已合并）：六切片修复 + 附属交付。
+- `night/n1-core-review1-fixes`（PR #287，待审）：三轮审查修复，7 commits。
+- 本审计文档：`output/n1-shell-audit.md`（随分支交付）。
+- 另见保留分支 `night/preserved-desktop-scripts-20260907`（上一夜被重置的
+  windows-d-checks 驱动等，未并入，供 lead 处置）。
+
+## 7. NOT RUN / 待决策
+
+- 一切 Windows 腿（BUG-9、Job Object、junction/ADS、MSI）：无 Windows 实机。
+- mark_stopped 对损坏 journal 的重置语义：改成"保留损坏原文"属行为变更，留 lead
+  决策（BUG-8 关联）。
+- `take(cap+1)` call-site 的变异不可见性：无测试能在不引入 seam 的前提下覆盖
+  "+1 的缺失"，已提取说明并记录（read_bounded 语义有 tiny-cap 单测约束）。
+- 真实供应商、真实 WebView2、N=20 性能门禁（W-18/19）：沿项目边界，未动。
