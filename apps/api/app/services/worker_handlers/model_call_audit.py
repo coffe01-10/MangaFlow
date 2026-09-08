@@ -175,9 +175,14 @@ def finalize_model_call_attempt(
             "error_message": error_message[:500] if error_message else None,
         }
         if model_id is not None:
-            values["model_id"] = model_id
+            # Provider-controlled strings land in length-capped columns
+            # (String(128)/String(200)); on PostgreSQL an oversized value
+            # raises DataError only AFTER the paid call succeeded, converting
+            # it into terminal AUDIT_PERSISTENCE_FAILED. SQLite fixtures never
+            # enforce the length, so cap here.
+            values["model_id"] = model_id[:128]
         if request_id is not None:
-            values["request_id"] = request_id
+            values["request_id"] = request_id[:200]
         if usage is not None:
             values["usage"] = usage
         normalized = normalize_usage(

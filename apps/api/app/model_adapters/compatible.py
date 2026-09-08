@@ -56,6 +56,10 @@ class CompatibleRuntime:
         return urljoin(f"{self.base_url.rstrip('/')}/", path.lstrip("/"))
 
 
+class ProviderUrlUnresolvedError(ValueError):
+    """DNS resolution failed at request time (transient, retryable)."""
+
+
 def validate_provider_url(
     url: str,
     *,
@@ -83,7 +87,11 @@ def validate_provider_url(
             )
         }
     except socket.gaierror as error:
-        raise ValueError("供应商地址无法解析") from error
+        # Distinct type: a transient resolver failure must not inherit the
+        # terminal "disallowed network" INVALID_INPUT semantics the policy
+        # violations below carry — every paid call re-resolves DNS, so a
+        # resolver blip must stay retryable.
+        raise ProviderUrlUnresolvedError("供应商地址暂时无法解析") from error
     for address in addresses:
         ip = ipaddress.ip_address(address)
         dangerous = ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified
@@ -268,6 +276,10 @@ def _provider_error(response: httpx.Response) -> ProviderAdapterError:
         return ProviderAdapterError("PERMISSION", "供应商拒绝访问该模型", retryable=False)
     if status == 404:
         return ProviderAdapterError("MODEL_NOT_FOUND", "供应商模型或端点不存在")
+    if status == 408:
+        # Gateway-side timeout is transient; the same outage surfacing inside
+        # httpx one layer later is already TIMEOUT retryable.
+        return ProviderAdapterError("TIMEOUT", "供应商请求超时", retryable=True)
     if status == 429:
         return ProviderAdapterError(
             "RATE_LIMIT",
@@ -311,6 +323,10 @@ class _CompatibleBase:
                     allow_http_loopback=self.runtime.allow_http_loopback,
                     proxy_url=self.runtime.proxy_url if same_origin else None,
                 )
+            except ProviderUrlUnresolvedError as error:
+                raise ProviderAdapterError(
+                    "UPSTREAM", "供应商域名暂时无法解析，请稍后重试", retryable=True
+                ) from error
             except ValueError as error:
                 raise ProviderAdapterError(
                     "INVALID_INPUT", "供应商请求地址指向了不允许的网络"
@@ -402,7 +418,13 @@ class OpenAICompatibleAdapter(_CompatibleBase):
             try:
                 body = _json_body(response)
                 usage = _body_usage(body)
-                text = body.get("output_text") or self._responses_text(body)
+                text = body.get("output_text")
+                # A non-string output_text (provider sent a structured value)
+                # must fall back to the structured walker, not reach
+                # strip_json_fences where .strip() would raise AttributeError
+                # and escape as a retryable WORKER_ERROR re-billing the call.
+                if not isinstance(text, str):
+                    text = self._responses_text(body)
             except ProviderAdapterError:
                 raise
             except Exception as error:
@@ -624,6 +646,10 @@ class OpenAICompatibleAdapter(_CompatibleBase):
             raise ProviderAdapterError("INVALID_OUTPUT", "图片结果缺少安全的下载地址")
         try:
             validate_provider_url(str(url), allow_query=True)
+        except ProviderUrlUnresolvedError as error:
+            raise ProviderAdapterError(
+                "UPSTREAM", "图片下载域名暂时无法解析，请稍后重试", retryable=True
+            ) from error
         except ValueError as error:
             raise ProviderAdapterError(
                 "INVALID_OUTPUT", "图片下载地址指向了不允许的网络"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -46,6 +47,17 @@ def _is_transport_or_sdk_error(error: Exception) -> bool:
     }
 
 
+def _raw_mentions(raw: str, code: str) -> bool:
+    """Word-boundary numeric match on the error text.
+
+    A bare substring check let "received: 4019" or "port 40443" trip the 401/
+    404 branches; the worst case was a quota message containing such a number
+    being classified AUTHENTICATION, which permanently disables the key.
+    """
+
+    return re.search(rf"(?<![0-9]){code}(?![0-9])", raw) is not None
+
+
 def classify_vertex_failure(error: Exception) -> VertexFailure:
     """Map provider and transport failures to safe, user-facing categories."""
     raw = str(error).lower()
@@ -77,15 +89,29 @@ def classify_vertex_failure(error: Exception) -> VertexFailure:
             "请求被 Vertex 内容安全策略拦截，系统已缩小生成片段；请重试",
             False,
         )
-    if status in (401,) or "401" in raw or "unauth" in raw or "invalid_grant" in raw:
+    # Gemini Developer API rejects a bad key with HTTP 400 and "API key not
+    # valid" — no 401, none of the tokens below. Without this branch it fell
+    # through to the transport fallback as retryable UPSTREAM, so every job
+    # burned its full retry budget on a permanently bad key and the key was
+    # never disabled (replacement/disable paths key off AUTHENTICATION).
+    if "api key not valid" in raw or "api_key_invalid" in raw:
+        return VertexFailure(
+            "AUTHENTICATION", "API 密钥无效，请更换有效的密钥", False, authentication=True
+        )
+    if status in (401,) or _raw_mentions(raw, "401") or "unauth" in raw or "invalid_grant" in raw:
         return VertexFailure(
             "AUTHENTICATION", "Vertex AI 凭据无效或令牌已过期", True, authentication=True
         )
-    if status in (403,) or "403" in raw or "permission" in raw or "forbidden" in raw:
+    if status in (403,) or _raw_mentions(raw, "403") or "permission" in raw or "forbidden" in raw:
         return VertexFailure("PERMISSION", "服务账号没有调用该 Vertex 模型的权限", False)
-    if status in (404,) or "404" in raw or "not found" in raw or "not_found" in raw:
+    if status in (404,) or _raw_mentions(raw, "404") or "not found" in raw or "not_found" in raw:
         return VertexFailure("MODEL_NOT_FOUND", "配置的 Vertex 模型或区域不可用", False)
-    if status in (429,) or "429" in raw or "rate limit" in raw or "resource_exhausted" in raw:
+    if (
+        status in (429,)
+        or _raw_mentions(raw, "429")
+        or "rate limit" in raw
+        or "resource_exhausted" in raw
+    ):
         return VertexFailure("RATE_LIMIT", "Vertex AI 请求过于频繁，请稍后重试", True)
     if isinstance(error, TimeoutError) or "timeout" in raw or "deadline" in raw:
         return VertexFailure("TIMEOUT", "Vertex AI 请求超时", True)

@@ -45,6 +45,10 @@ _CACHED_USAGE_KEYS = {
     "cached_input_tokens",
     "cached_content_token_count",
     "cache_read_input_tokens",
+    # grok's cache-creation side of the same pair usage_ledger already
+    # ignores (#209 sync): without it here, every grok attempt carrying
+    # cache-creation tokens counts as unmapped usage and prices PARTIAL.
+    "cache_creation_input_tokens",
     "prompt_tokens_details",
 }
 
