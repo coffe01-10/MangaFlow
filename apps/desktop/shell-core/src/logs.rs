@@ -814,6 +814,11 @@ fn validate_destination(
     Ok(destination_canonical)
 }
 
+/// Recursion depth cap for `collect_members`: the logs directory is
+/// shell-written, but a same-user planted tree must degrade to a reported
+/// skip instead of a stack overflow (red team 2026-09-09, issue #310).
+const MAX_EXPORT_DEPTH: usize = 32;
+
 /// Recursively collect regular files under `root` (never following symlinks),
 /// verifying every member stays canonically inside the root. Returns
 /// `(relative_member_name, path)` pairs plus skip reasons.
@@ -821,9 +826,17 @@ fn collect_members(
     dir: &Path,
     root_canonical: &Path,
     relative: &str,
+    depth: usize,
     members: &mut Vec<(String, PathBuf, u64)>,
     skipped: &mut Vec<SkippedEntry>,
 ) -> std::io::Result<()> {
+    if depth > MAX_EXPORT_DEPTH {
+        skipped.push(SkippedEntry {
+            name: relative.to_string(),
+            reason: "max_depth".into(),
+        });
+        return Ok(());
+    }
     for entry in fs::read_dir(dir)? {
         let entry = match entry {
             Ok(entry) => entry,
@@ -893,7 +906,9 @@ fn collect_members(
             // remaining members are still worth archiving, and the failure
             // is reported against the subdirectory's member name. Only the
             // top-level logs-dir failure propagates (export_logs_with).
-            if let Err(error) = collect_members(&path, root_canonical, &member, members, skipped) {
+            if let Err(error) =
+                collect_members(&path, root_canonical, &member, depth + 1, members, skipped)
+            {
                 skipped.push(SkippedEntry {
                     name: member,
                     reason: format!("readdir: {error}"),
@@ -947,7 +962,10 @@ fn collect_members(
         // run log report "changed_during_export" on Windows. `fs::metadata`
         // sees the current size on both platforms, and the post-read
         // re-check below still catches genuine mid-export changes.
-        let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        // No-follow size: a symlink swapped in after enumeration must not
+        // have its TARGET sized (and later read) as if it were the member —
+        // symlink_metadata keeps the check on the enumerated entry itself.
+        let size = fs::symlink_metadata(&path).map(|m| m.len()).unwrap_or(0);
         if size > EXPORT_MAX_FILE_BYTES {
             skipped.push(SkippedEntry {
                 name: member,
@@ -1019,7 +1037,7 @@ fn export_logs_with(
 
     let mut members: Vec<(String, PathBuf, u64)> = Vec::new();
     let mut skipped: Vec<SkippedEntry> = Vec::new();
-    collect_members(&logs, &logs_canonical, "", &mut members, &mut skipped)
+    collect_members(&logs, &logs_canonical, "", 0, &mut members, &mut skipped)
         .map_err(ExportError::Io)?;
     members.sort_by(|a, b| a.0.cmp(&b.0));
 
