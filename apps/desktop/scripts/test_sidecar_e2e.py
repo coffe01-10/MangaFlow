@@ -602,7 +602,7 @@ def test_sidecar_dead_web_dist_fails_closed_without_web_origin(tmp_path: Path):
         # A degraded session must not squat on the fixed relay port: with no
         # web server to feed, the helper has no business holding 39443 until
         # process exit (the next session would then see the port as taken).
-        # Regression 2026-09-08 (N2 audit §2): _await_web_server reaped the
+        # Regression 2026-09-08 (N2 audit §2): _await_web_server_boot reaped the
         # dead node but left the relay bound.
         deadline = time.monotonic() + 5.0
         while True:

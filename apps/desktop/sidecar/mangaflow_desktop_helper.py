@@ -618,12 +618,16 @@ def _spawn_web_server(args: argparse.Namespace, api_port: int) -> WebServer | No
     historical claim-close-spawn window nor a Windows co-bind (libuv sets
     no socket option on node's own bind, so a ``SO_REUSEADDR`` binder could
     share the port while node stays alive — red team 2026-09-09) can put
-    foreign content behind the announced origin.
+    foreign content behind the ANNOUNCED port itself.
 
-    node's own ephemeral port keeps a bind-close race, but a hijacker
-    winning it makes node die with EADDRINUSE, which the boot verification
-    (:func:`_await_web_server_boot`) turns into the fail-closed
-    static-export downgrade — and nothing navigates to node's port.
+    node's own ephemeral port keeps two residuals that #301 narrowed but
+    cannot close from the helper side (see the threat model): the
+    claim-close-spawn race can still kill node (fail-closed downgrade via
+    :func:`_await_web_server_boot`), and on Windows a ``SO_REUSEADDR``
+    binder can co-bind node's port while node lives — the boot check's
+    final ``poll()`` narrows that window to milliseconds but a same-user
+    co-binder that survives it mixes relayed traffic (netstat-
+    discoverable; nothing navigates to node's port).
 
     Rewrites destination: the standalone bundle compiles next.config.ts
     rewrites at BUILD time (routes-manifest.json), so the destination cannot
@@ -657,7 +661,12 @@ def _spawn_web_server(args: argparse.Namespace, api_port: int) -> WebServer | No
         return None
     web_sock = _bind_web_port()
     if web_sock is None:
-        relay.close()
+        # Guarded (E3-F2): a secondary close failure must not escalate a
+        # downgrade into session death.
+        try:
+            relay.close()
+        except OSError:
+            pass
         return None
     announced_port = web_sock.getsockname()[1]
     try:
@@ -716,24 +725,51 @@ def _spawn_web_server(args: argparse.Namespace, api_port: int) -> WebServer | No
         )
     except OSError as error:
         _log(f"node spawn failed: {error!r}; starting without the web server")
-        web_sock.close()
-        relay.close()
+        # Guarded (E3-F2): consistent with the claim-failure path above.
+        for sock in (web_sock, relay):
+            try:
+                sock.close()
+            except OSError:
+                pass
         return None
     # Two byte-pipe relays, both loopback-only and helper-lifetime-bound:
     # announced web port -> node's ephemeral port (this redesign), and the
-    # fixed relay port -> the API (build-time rewrite destination).
-    threading.Thread(
-        target=_serve_relay,
-        args=(web_sock, node_port),
-        name="mangaflow-web-announced",
-        daemon=True,
-    ).start()
-    threading.Thread(
-        target=_serve_relay,
-        args=(relay, api_port),
-        name="mangaflow-web-relay",
-        daemon=True,
-    ).start()
+    # fixed relay port -> the API (build-time rewrite destination). A start
+    # failure here (thread exhaustion) must not orphan a live node without
+    # a handle: reap it and release both sockets (E3-F3).
+    try:
+        threading.Thread(
+            target=_serve_relay,
+            args=(web_sock, node_port),
+            name="mangaflow-web-announced",
+            daemon=True,
+        ).start()
+        threading.Thread(
+            target=_serve_relay,
+            args=(relay, api_port),
+            name="mangaflow-web-relay",
+            daemon=True,
+        ).start()
+    except Exception as error:  # noqa: BLE001 - downgrade, not session death
+        _log(f"relay thread start failed ({error!r}); starting without the web server")
+        node_process.terminate()
+        try:
+            node_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            node_process.kill()
+            # Reap the killed child for symmetry with WebServer.close: a
+            # lingering zombie holds the pid and reads as a phantom
+            # "running" node (E4 review).
+            try:
+                node_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        for sock in (web_sock, relay):
+            try:
+                sock.close()
+            except OSError:
+                pass
+        return None
     return WebServer(
         process=node_process,
         announced_port=announced_port,
