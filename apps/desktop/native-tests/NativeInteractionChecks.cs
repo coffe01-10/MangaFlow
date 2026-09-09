@@ -40,7 +40,7 @@ internal static class NativeInteractionChecks
         timeout.Start();
         Dispatcher.CurrentDispatcher.BeginInvoke(new Action(async () =>
         {
-            try { await NativeButtonChecks.Run(output); await NativeSourceChecks.Run(output); await NativeCharacterPageChecks.Run(output); await Creation(); await Generation(); await LocalEdit(); await NativeJobsChecks.Run(output); await NativeLibraryChecks.Run(output); await NativeDockChecks.Run(output); await NativeStateMatrixChecks.Run(output); }
+            try { await NativeBackendChecks.Run(); await NativeButtonChecks.Run(output); await NativeSourceChecks.Run(output); await NativeCharacterPageChecks.Run(output); await Creation(); await Generation(); await LocalEdit(); await NativeJobsChecks.Run(output); await NativeLibraryChecks.Run(output); await NativeDockChecks.Run(output); await NativeStateMatrixChecks.Run(output); }
             catch (Exception error) { failure = error; }
             finally { frame.Continue = false; }
         }));

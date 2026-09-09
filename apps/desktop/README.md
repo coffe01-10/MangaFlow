@@ -136,6 +136,12 @@ MANGAFLOW_DESKTOP_PYTHON=.venv-desktop/bin/python \
   cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml
 ```
 
+假模型通道开关（#275）：壳本身**不再**无条件给 helper 传 `--fake-channel`。
+仅当启动器显式设置 `MANGAFLOW_DESKTOP_FAKE_CHANNEL=1` 时才追加该旗标（与 ADR
+`native-windows-client` 的"测试通过显式环境开关启用 stub"契约一致；直接调用
+helper 的 e2e 脚本不受影响，它们本就显式传参）。`start-desktop.cmd` 与安装形态
+不设置该变量——真实 provider 启用后不会被开发 stub 静默截胡。
+
 实机证据（debug 构建，基线 `lead/rc-closure`）：完整握手（挂起创建→Job→resume→READY→
 token/journal/回环校验→GO→健康）通过后 WebView2 建窗；仪表盘渲染 + 运行时 origin 注入
 实取 sidecar API 数据（模型目录/连接统计）；单实例第二实例立即退出（exit 0）且最小化窗口

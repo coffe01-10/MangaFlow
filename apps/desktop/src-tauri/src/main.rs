@@ -206,6 +206,32 @@ fn helper_environment() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
     Some((python.into(), script.into()))
 }
 
+/// Build the base helper argv (everything except `--web-dist`). The fake
+/// model channel is a dev/acceptance stub (ADR native-windows-client §: tests
+/// enable it via an explicit environment switch) — a production launch must
+/// not silently install the mock provider, mirroring the WPF leg's refusal
+/// to inherit development flags (NativeBackend.cs).
+fn build_helper_args(api_root: &str, user_data: &str, fake_channel: bool) -> Vec<String> {
+    let mut args = vec![
+        "app".to_string(),
+        "--api-root".to_string(),
+        api_root.to_string(),
+        "--user-data".to_string(),
+        user_data.to_string(),
+    ];
+    if fake_channel {
+        args.push("--fake-channel".into());
+    }
+    args
+}
+
+/// #275: `--fake-channel` may only be appended when the launcher explicitly
+/// opts in via `MANGAFLOW_DESKTOP_FAKE_CHANNEL=1` (dev/e2e launchers set it;
+/// start-desktop.cmd and the installed form never do).
+fn fake_channel_requested(env: Option<std::ffi::OsString>) -> bool {
+    env.as_deref() == Some(std::ffi::OsStr::new("1"))
+}
+
 /// The ONE shutdown path for an owned helper run, used by BOTH the
 /// `RunEvent::Exit` handler and the setup-failure path below: an aborted
 /// setup must never leave `owner.json` at state "ready" for a dead run.
@@ -267,14 +293,11 @@ fn run() {
             // bundle; the helper then spawns node, announces the loopback
             // web origin in READY, and the WebView loads it. Absent = the
             // pre-W-15 static-export form.
-            let mut helper_args = vec![
-                "app".to_string(),
-                "--api-root".to_string(),
-                api_root.to_string_lossy().into_owned(),
-                "--user-data".to_string(),
-                user_data.to_string_lossy().into_owned(),
-                "--fake-channel".to_string(),
-            ];
+            let mut helper_args = build_helper_args(
+                &api_root.to_string_lossy(),
+                &user_data.to_string_lossy(),
+                fake_channel_requested(std::env::var_os("MANGAFLOW_DESKTOP_FAKE_CHANNEL")),
+            );
             if let Some(web_dist) = std::env::var_os("MANGAFLOW_DESKTOP_WEB_DIST") {
                 helper_args.push("--web-dist".into());
                 helper_args.push(web_dist.to_string_lossy().into_owned());
@@ -385,4 +408,36 @@ fn run() {
 
 fn main() {
     run();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_helper_args, fake_channel_requested};
+
+    fn args(fake: bool) -> Vec<String> {
+        build_helper_args("C:/api", "C:/data", fake)
+    }
+
+    #[test]
+    fn production_arg_set_has_no_fake_channel() {
+        let produced = args(false);
+        assert_eq!(
+            produced,
+            vec!["app", "--api-root", "C:/api", "--user-data", "C:/data"]
+        );
+    }
+
+    #[test]
+    fn explicit_opt_in_appends_fake_channel() {
+        let produced = args(true);
+        assert_eq!(produced.last().map(String::as_str), Some("--fake-channel"));
+    }
+
+    #[test]
+    fn fake_channel_requires_exact_env_switch() {
+        assert!(fake_channel_requested(Some("1".into())));
+        assert!(!fake_channel_requested(None));
+        assert!(!fake_channel_requested(Some("0".into())));
+        assert!(!fake_channel_requested(Some("true".into())));
+    }
 }
