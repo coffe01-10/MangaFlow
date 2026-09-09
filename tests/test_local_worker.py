@@ -495,6 +495,87 @@ def test_redis_mode_keeps_job_waiting_when_redis_is_unavailable(
     assert submitted == []
 
 
+def test_redis_mode_marker_clear_failure_still_downgrades_to_waiting(
+    db_session, monkeypatch
+):
+    """The except handler must survive a DBAPI error from the marker-clearing
+    execute: refreshing a session left in a failed-transaction state used to
+    raise again inside the handler, escaping enqueue_job and skipping the
+    WAITING/QUEUE_UNAVAILABLE fallback."""
+    from sqlalchemy.exc import OperationalError
+
+    _set_queue_mode(db_session, "REDIS")
+    job = _waiting_job(db_session, "marker")
+    monkeypatch.setattr(
+        job_service, "get_settings", lambda: Settings(environment="development")
+    )
+
+    class _FakeConnection:
+        def ping(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    class _FakeQueue:
+        def __init__(self, *_args, **_kwargs) -> None:
+            return None
+
+        def enqueue(self, *_args, **_kwargs) -> None:
+            return None
+
+    monkeypatch.setattr("redis.Redis.from_url", lambda *_a, **_k: _FakeConnection())
+    import rq
+
+    monkeypatch.setattr(rq, "Queue", _FakeQueue)
+
+    # The Redis enqueue succeeds; the SECOND generation_jobs UPDATE inside
+    # enqueue_job (the RQ_PENDING marker clear — the first is the QUEUED
+    # transition CAS) blows up like a dropped connection. SQLite does not
+    # poison the session the way PostgreSQL does, so the regression is pinned
+    # by operation ORDER: the first session operation after the failed marker
+    # clear must be a rollback (before any refresh issues SQL on the possibly
+    # failed transaction).
+    from sqlalchemy.sql.dml import UpdateBase
+
+    real_execute = db_session.execute
+    real_rollback = db_session.rollback
+    real_refresh = db_session.refresh
+    events: list[str] = []
+    updates = {"count": 0}
+
+    def recording_rollback():
+        events.append("rollback")
+        return real_rollback()
+
+    def recording_refresh(*args, **kwargs):
+        events.append("refresh")
+        return real_refresh(*args, **kwargs)
+
+    def poisoned_execute(statement, *args, **kwargs):
+        if isinstance(statement, UpdateBase) and statement.table.name == "generation_jobs":
+            updates["count"] += 1
+            if updates["count"] == 2:
+                events.append("marker-clear-failed")
+                raise OperationalError("UPDATE generation_jobs", {}, RuntimeError("dbapi died"))
+        return real_execute(statement, *args, **kwargs)
+
+    monkeypatch.setattr(db_session, "execute", poisoned_execute)
+    monkeypatch.setattr(db_session, "rollback", recording_rollback)
+    monkeypatch.setattr(db_session, "refresh", recording_refresh)
+
+    result = job_service.enqueue_job(db_session, job)
+
+    assert result.status == JobStatus.WAITING
+    assert result.error_code == "QUEUE_UNAVAILABLE"
+    assert updates["count"] >= 3
+    failed_at = events.index("marker-clear-failed")
+    assert events[failed_at + 1] == "rollback", (
+        "the except handler must roll the session back before refreshing the job"
+    )
+    assert "refresh" in events[failed_at + 2:]
+
+
 def test_auto_mode_falls_back_to_local_in_development(db_session, monkeypatch):
     _set_queue_mode(db_session, "AUTO")
     job = _waiting_job(db_session, "auto")

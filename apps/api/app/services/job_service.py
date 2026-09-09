@@ -429,6 +429,13 @@ def enqueue_job(db: Session, job: GenerationJob) -> GenerationJob:
         )
         db.commit()
     except Exception:
+        # The exception may come from the marker-clearing execute/commit above,
+        # leaving the session in a failed-transaction state; refresh on that
+        # session raises again and lets the original failure escape this
+        # handler, skipping the designed WAITING/QUEUE_UNAVAILABLE fallback.
+        # Rollback first — harmless when the failure came from Redis instead
+        # (the QUEUED transition was already committed separately).
+        db.rollback()
         db.refresh(job)
         if _job_already_advanced(job):
             return job

@@ -357,11 +357,6 @@ def delete_outfit(
         .join(Chapter, Chapter.id == Scene.chapter_id)
         .where(Chapter.project_id == outfit.project_id)
     )
-    scenes = db.scalars(
-        select(Scene)
-        .join(Chapter, Chapter.id == Scene.chapter_id)
-        .where(Chapter.project_id == outfit.project_id)
-    )
     # §7.3: outfit_assignments/outfits feed the compiled page prompt (outfit
     # ids + the scene_outfits block the OUTFIT inspection is judged against).
     # Any scene/panel that loses an assignment must fence exactly like

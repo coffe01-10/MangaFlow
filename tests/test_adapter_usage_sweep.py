@@ -632,6 +632,7 @@ def test_model_costs_mirrors_thinking_and_cached_keys():
 def test_execute_stamps_dispatch_count_within_one_call():
     manager = VertexCredentialManager(max_attempts=3, base_backoff_seconds=0)
     calls: list[int] = []
+    dispatches: list[int] = []
 
     class _Flaky(Exception):
         status_code = 503
@@ -645,23 +646,39 @@ def test_execute_stamps_dispatch_count_within_one_call():
     settings = get_settings()
     assert (
         manager.execute(
-            settings, operation, client_factory=lambda: SimpleNamespace(close=lambda: None)
+            settings,
+            operation,
+            client_factory=lambda: SimpleNamespace(close=lambda: None),
+            dispatch_counter=dispatches,
         )
         == "done"
     )
-    assert manager.last_dispatch_count == 2
+    assert len(dispatches) == 2
     assert len(calls) == 2
 
 
-def test_execute_dispatch_count_reset_per_call():
+def test_execute_dispatch_count_is_per_call_not_shared():
     manager = VertexCredentialManager(max_attempts=2, base_backoff_seconds=0)
     settings = get_settings()
+    first: list[int] = []
+    second: list[int] = []
     manager.execute(
         settings,
         lambda client: "ok",
         client_factory=lambda: SimpleNamespace(close=lambda: None),
+        dispatch_counter=first,
     )
-    assert manager.last_dispatch_count == 1
+    manager.execute(
+        settings,
+        lambda client: "ok",
+        client_factory=lambda: SimpleNamespace(close=lambda: None),
+        dispatch_counter=second,
+    )
+    assert len(first) == 1 and len(second) == 1
+    assert not hasattr(manager, "last_dispatch_count"), (
+        "the racy process-global counter must stay deleted (concurrent local "
+        "executor jobs used to stomp it)"
+    )
 
 
 def test_unknown_exception_is_not_blindly_retryable():
