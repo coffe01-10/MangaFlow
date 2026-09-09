@@ -147,6 +147,13 @@
   helper 持有 announced 端口、双 byte-pipe、boot 双 poll、N4 settle-race 修复——无缺陷；
   #333 3 项 NIT（sendall 包错误处理、断言消息含 closed 态、子句顺序注释）→ 已返工（f4cce63）。
   另：限制器为每 relay 实例（announced/39443 各 128，总 256）——精确化记录于 §1。
+- **0909 深夜稳定性与扩面（无子代理）**：
+  - 连续 3 次 runner 全套（e2e 4 + relay 9 + bind 3）：**17/17 × 3 全绿**，耗时 28.57/28.67/28.91s
+    （抖动 <1.2%）——e2e 稳定性证据；
+  - 扩面审查 #312 新增 env 卫生测试（importlib 加载 helper、四名剥离 + PATH 伴行断言）——
+    无恒真隐患；
+  - 扩面审查 `scripts/start-native.ps1`（Windows 专用，本沙箱 NOT RUN）：fail-closed 构建、
+    SHA256 拷贝校验、`$env:` 会话残留为既有 dev 工具形态——无缺陷。
 
 ## 10. 红/绿判别力抽查记录
 
