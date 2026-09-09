@@ -15,9 +15,9 @@
 | --- | --- | --- |
 | 连接超时与管道隔离 | `_serve_relay` L180-266；`create_connection(timeout=5)` 后 `upstream.settimeout(None)`（L229；PR #252，已合并） | ✅ 连接超时只约束 CONNECT；双向 pump 无读死限。客户端侧由 timeout-mode listener accept 出 blocking socket，无需显式设置。 |
 | 慢响应 / keep-alive | `test_sidecar_relay.py::test_relay_delivers_a_response_slower_than_the_connect_timeout`（上游 TTFB 5.6s）、`::test_relay_serves_a_second_request_after_a_long_keep_alive_gap`（空闲 5.5s 后复用） | ✅ 红/绿已验证（旧代码必失败）。 |
-| 半关闭语义 | `_pipe` finally `dst.shutdown(SHUT_WR)`（L239-244） | ✅ 半关闭=向对端转发 EOF；两个方向对称。表驱动红绿：`test_relay_pipe_semantics_table[client-half-close / upstream-fin]`（EOF 吞噬变异必失败，#278）。 |
-| 单连接故障隔离 | `_pipe` `except OSError: pass`（L239-240） + accept 循环 `except OSError: return`（L205-206） | ✅ 单连接 RST/ECONNRESET 只死 pump 线程，accept 循环存活。红绿：`test_relay_accept_loop_survives_a_client_reset`（SO_LINGER RST 后新连接可服务，#278）。 |
-| 上游拒连（错误路径） | `create_connection` 失败 → `client.close()` + 释放槽位 + `continue`（L216-219） | ✅ uvicorn 未起时 node 代理请求快速失败（FIN/RST）。红绿：`test_relay_survives_a_dead_upstream_and_recovers`（API 端口复话后同一 relay 恢复服务，#278）。 |
+| 半关闭语义 | `_pipe` finally `dst.shutdown(SHUT_WR)`（L239-244） | ✅ 半关闭=向对端转发 EOF；两个方向对称。表驱动红绿：`test_relay_pipe_semantics_table[client-half-close / upstream-fin]`（EOF 吞噬变异必失败，#278/#292）。 |
+| 单连接故障隔离 | `_pipe` `except OSError: pass`（L239-240） + accept 循环 `except OSError: return`（L205-206） | ✅ 单连接 RST/ECONNRESET 只死 pump 线程，accept 循环存活。红绿：`test_relay_error_path_table[client-rst-isolation]`（SO_LINGER RST 后新连接可服务，#278/#292）。 |
+| 上游拒连（错误路径） | `create_connection` 失败 → `client.close()` + 释放槽位 + `continue`（L216-219） | ✅ uvicorn 未起时 node 代理请求快速失败（FIN/RST）。红绿：`test_relay_error_path_table[dead-upstream-recovery]`（API 端口复话后同一 relay 恢复服务，#278/#292）。 |
 | 线程模型 | 每连接 2 pump 线程 + 1 joiner（`_pump` L246），并发上限 `WEB_RELAY_MAX_CONNECTIONS=128`（`_RelayLimiter` L121，accept 守卫 L207）；溢出连接立即关闭，槽位在双向 pump 均结束后释放 | ✅ 单元红绿：`test_relay_caps_concurrent_connections`（cap=2：占满→第 3 连接无响应关闭→释放槽位→新客户端可服务；旁路 limiter 的变异必失败）。PR #288 已合并。⚠️ 已知隐患：master 版 `_pump()` 经 accept 循环共享 cell 读取套接字（B023 晚绑定，跨线程延迟读取理论上可泵入外来配对）——**#290 已改为参数传递并加固 spawn（RuntimeError 不再杀死 accept 循环）+ 饱和日志 10s 限频 + 释放检测 5s 有界重试，待合并**。 |
 
 ## 2. bind / REUSE / EXCLUSIVE（`_bind_loopback` L87-104、`_bind_relay` L116-152）
@@ -25,7 +25,7 @@
 | 平台/项 | 语义 | 状态 |
 | --- | --- | --- |
 | API 动态端口（`_bind_loopback` L87-104） | Unix `SO_REUSEADDR`；Windows `SO_EXCLUSIVEADDRUSE`（#256） | ✅ 端口 0 无冲突面；Windows 防 SO_REUSEADDR 抢绑。 |
-| relay 固定端口 39443（`_bind_relay` L141-177） | Unix `SO_REUSEADDR`（跨自身 TIME_WAIT 重绑，#253）；Windows `SO_EXCLUSIVEADDRUSE`（#256，保留 TIME_WAIT 残余并记录于 docstring） | ✅ 单元红绿：`test_sidecar_relay_bind.py::test_relay_bind_survives_its_own_time_wait_remnants`（旧代码失败）、`::test_relay_bind_stays_fail_closed_against_a_foreign_live_listener`（前后皆过，钉死对外 fail-closed）。 |
+| relay 固定端口 39443（`_bind_relay` L141-177） | Unix `SO_REUSEADDR`（跨自身 TIME_WAIT 重绑，#253）；Windows `SO_EXCLUSIVEADDRUSE`（#256，保留 TIME_WAIT 残余并记录于 docstring） | ✅ 单元红绿：`test_sidecar_relay_bind.py::test_relay_bind_policy_table[own-time-wait]`（旧代码失败，#253/#292）、`[…][foreign-live-listener / foreign-reuseaddr-listener]`（前后皆过，钉死对外 fail-closed 含 SO_REUSEADDR 持有者新行，#292）。 |
 | web 端口 claim-bind-close | `_spawn_web_server`（L534 起，claim 在 L560 附近） | ℹ️ bind(0)→close→node bind 的极小 TOCTOU，plan-B 设计稿 §6 记录在案；#271 的 `_await_web_server` 已把"宣布未持有端口"的最坏后果关闭（见 §4）。 |
 | 已知缺陷 | **web boot 失败路径不释放 relay**：`_spawn_web_server` 仅在 node spawn OSError 时 `relay.close()`（L540）；`_await_web_server` 失败（L383 调用，L554-603 实现）reap node 后返回 `(None, None)`，relay 仍绑 39443 且 pump 线程存活整会话；`_run_app` finally（L418-430）无 relay 句柄。 | ⚠️ **PR-B**：`_spawn_web_server` 返回 relay 句柄；`_await_web_server` 失败即关闭；e2e 断言降级会话 39443 不再监听（红/绿）。 |
 
@@ -85,6 +85,7 @@
 | PR-G #285（已合并）（scripts 子系统） | run-sidecar-e2e.sh 纳入 relay/bind 回归套件 | Linux pytest RUN |
 | PR-H #288（relay 加固） | 并发连接上限 128：溢出快速关闭、双向 pump 结束才释放槽位、既有连接不受影响 | Linux pytest RUN（7 passed；旁路变异必失败） |
 | PR-I #289（scripts 润色） | D5 根路径改 `fileURLToPath`（win32 可移植性） | Linux D5 RUN（PASS）；win32 NOT RUN |
+| PR-K #292（relay 表驱动整合） | 管道生命周期表（4 参数：慢响应/keep-alive/半关闭/上游 FIN）+ 错误路径表（2 参数：死上游恢复/RST 隔离）+ bind 策略表（3 参数：TIME_WAIT/外占/REUSEADDR 外占新行） | Linux pytest RUN（表 10 passed，runner 14 passed；两项变异各自精确命中目标行） |
 | PR-J #291（web 检测） | plan-B web 服务器 mid-session 退出的检测与法证日志（250ms 轮询，只记日志不重启，ADR §4.5 范围内） | Linux e2e RUN（runner 13 passed；禁用 watcher 的变异必失败） |
 | 审计文档 | 本文件（随各轮审查增量更新；首轮子代理审查修订 7 处行号引用 + §11 新增 win32 可移植性残余） | 子代理抽查 30+ 引用 |
 
