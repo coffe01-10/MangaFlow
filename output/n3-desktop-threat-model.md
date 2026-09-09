@@ -94,6 +94,9 @@
 - #321 node 子进程 env 卫生（_node_child_env + 单测，e2e 17/17）
 - （前窗）#303 降级健壮性双修（N4/N5 + 释放断言）、#304 注释校准
 
-**E — 互审轮次：** 见 §6（09-08 R1/R2；09-09 R1/R2'/R3'；本轮 R3''-R5'' 进行中，结论追加于此）。
+**E — 互审轮次（本 Goal ≥4 轮）：**
+- R2'（#301 重构复核）：无引入缺陷；N1/N3 跟进已落地（#303 + 措辞校准）。
+- **R3''（三个防守钉 PR 交叉复核，2026-09-09）**：三 PR 均判 MERGE——#318 资源/fixture/cfg 纪律全部核实（3 LOW 已修：过期 fail-open 注释、cfg(unix)→cfg(target_os=linux)、pid-4242 锚点缺失夹具的潜伏 flake）；#320 深度线程与 no-follow 语义核实（1 nit：注释措辞）；#321 env 移除与 import 无副作用核实（跟进：活体 /proc 断言可选）。无假阳性声明。
+- R4''/R5''：进行中（Issue 质量审计 / 终审），结论追加于此。
 
 **D — 旧账状态：** #264 FIXED（sweep）、#265 FIXED（ADR 修订 + 检测/横幅）、#272 FIXED（#271/#301）、#275 FIXED（0dfaac3 门控）、#276 FIXED（NativeBackendChecks）——均有带证据的关闭/评论；#299/#300 开放中由认领者跟进。非 Desktop 的 N1 期 Red Team Issue（#121-#152 等）不在 N3 审计面。
