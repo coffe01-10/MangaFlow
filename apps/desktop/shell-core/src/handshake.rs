@@ -431,6 +431,7 @@ mod tests {
             let _ = sock.set_read_timeout(Some(Duration::from_millis(100)));
             let _ = sock.read(&mut [0u8; 1024]);
             let _ = sock.set_read_timeout(None);
+            let _ = sock.shutdown(std::net::Shutdown::Write);
             // The socket drops here: HTTP/1.0 + Connection: close means EOF
             // ends the read even though the server never consumed a request
             // body boundary.
