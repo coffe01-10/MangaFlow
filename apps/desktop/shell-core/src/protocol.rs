@@ -494,10 +494,13 @@ fn fill_random(buffer: &mut [u8]) {
 }
 
 pub fn unix_now() -> u64 {
-    // A clock set before 1970 must not panic the logging path: clamp to the
-    // epoch floor (dos_date_time clamps again at the DOS layer).
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
+    unix_now_from(SystemTime::now())
+}
+
+/// Clamps a pre-epoch clock to the epoch floor: the logging path must stay
+/// panic-free, and dos_date_time clamps again at the DOS layer.
+fn unix_now_from(now: SystemTime) -> u64 {
+    now.duration_since(UNIX_EPOCH)
         .map(|since| since.as_secs())
         .unwrap_or(0)
 }
@@ -960,15 +963,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// unix_now clamps a pre-epoch clock to 0 instead of panicking (the
-    /// logging path must stay panic-free; the doc on the fn promises it).
+    /// unix_now clamps a pre-epoch clock to 0 instead of panicking — the
+    /// logging path must stay panic-free. The seam takes an explicit
+    /// SystemTime so the pre-epoch case is exercised directly (red on the
+    /// old unwrap: it panicked instead of returning 0).
     #[test]
     fn unix_now_clamps_a_pre_epoch_clock() {
-        // Cannot rewind the system clock in a test; pin the contract via
-        // dos_date_time, whose 1980 floor already absorbs the clamped 0.
-        let (date, _) = crate::ziparch::dos_date_time(unix_now());
-        assert!(date >> 9 >= 0);
-        assert!(unix_now() > 1_600_000_000, "plausible current timestamp");
+        let pre_epoch = UNIX_EPOCH - std::time::Duration::from_secs(1);
+        assert_eq!(unix_now_from(pre_epoch), 0);
+        let at_epoch = UNIX_EPOCH;
+        assert_eq!(unix_now_from(at_epoch), 0);
     }
 
     #[test]
