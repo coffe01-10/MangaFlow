@@ -335,6 +335,48 @@ def test_usage_attempt_pagination_summary_and_unknown_semantics(
     assert bad_channel.status_code == 422
 
 
+def test_summary_day_buckets_follow_the_window_timezone(db_session, client):
+    """前端发送本地午夜窗口（toIsoLocalMidnight，如 +08:00）：日分桶必须跟
+    随窗口偏移，否则本地 9 月 1 日凌晨的用量落进前一天（UTC）的分组。"""
+    from datetime import timezone as dt_timezone
+
+    job, _candidate = _seed_page_job(db_session)
+    # 数据库以 UTC 存储时间戳：17:00Z == 本地（+08:00）9 月 1 日 01:00。
+    # UTC 口径会把这条分到 8/31，本地午夜窗口口径应分到 9/1。
+    local_midnight = datetime(2026, 9, 1, 0, 0, tzinfo=dt_timezone(timedelta(hours=8)))
+    db_session.add(
+        ModelCallAttempt(
+            job_id=job.id,
+            project_id=job.project_id,
+            job_attempt=1,
+            dispatch_no=1,
+            outcome="SUCCEEDED",
+            channel="HTTP_API",
+            provider="provider-a",
+            model_id="model-a",
+            started_at=datetime(2026, 8, 31, 17, 0, tzinfo=UTC),
+            usage_status="UNKNOWN",
+        )
+    )
+    db_session.commit()
+
+    summary = client.get(
+        "/api/v1/usage/summary",
+        params={"from": local_midnight.isoformat()},
+    )
+    assert summary.status_code == 200, summary.text
+    groups = summary.json()["groups"]
+    assert len(groups) == 1
+    assert groups[0]["day"] == "2026-09-01"
+
+    # 无窗口（或 UTC 窗口）时保持 UTC 口径——既有行为与测试不变。
+    utc_window = client.get(
+        "/api/v1/usage/summary",
+        params={"from": datetime(2026, 8, 31, tzinfo=UTC).isoformat()},
+    )
+    assert utc_window.json()["groups"][0]["day"] == "2026-08-31"
+
+
 def test_usage_read_filters_narrow_by_model_id(db_session, client):
     job, _candidate = _seed_page_job(db_session)
     started = datetime(2026, 9, 1, 10, tzinfo=UTC)

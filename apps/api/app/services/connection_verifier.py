@@ -474,6 +474,10 @@ def _verify_model_smoke(
                 outcome="FAILED",
                 error_code=error.code,
                 error_message=error.user_message,
+                # Post-POST failures may carry the usage the provider already
+                # billed; record it so the FAILED smoke attempt still shows
+                # what was spent (issue #207, mirrors worker provider path).
+                usage=error.usage,
             )
         if binding and binding.selected_key:
             mark_key_failure(

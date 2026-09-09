@@ -29,6 +29,7 @@ from app.services.cli_executor import (
     CLIProcessOutcome,
     CLIProcessRunner,
     build_cli_environment,
+    prepare_repo_boundary,
 )
 from app.services.cli_probe import CLIProbeObservation
 from app.services.cli_process_windows import WindowsJobCLIProcessRunner
@@ -246,6 +247,9 @@ class AntigravityArtifactRunner:
         return identity() if callable(identity) else None
 
     def run(self, **kwargs) -> CLIProcessOutcome:
+        # 与 Grok Build / Codex 相同的仓库指令边界：无标记时 agy 会从 cwd 向上
+        # 发现仓库级开发指令并纳入付费上下文。
+        prepare_repo_boundary(kwargs["cwd"], "Antigravity")
         outcome = self.delegate.run(**kwargs)
         if outcome.cancelled or outcome.timed_out:
             return outcome
@@ -263,6 +267,7 @@ class AntigravityArtifactRunner:
                 outcome,
                 error_code=error.code,
                 error_message=error.user_message,
+                usage=error.usage,
             )
         except OSError:
             # _adopt moves provider bytes around the workspace: an OSError
@@ -280,6 +285,19 @@ class AntigravityArtifactRunner:
 
     def _adopt(self, workspace: Path, outcome: CLIProcessOutcome) -> None:
         envelope = _parse_envelope(outcome.stdout, self.settings.max_provider_metadata_bytes)
+        usage = _safe_usage(envelope.get("usage"))
+        try:
+            self._adopt_envelope(workspace, outcome, envelope)
+        except ProviderAdapterError as error:
+            # SUCCESS 包络的采用失败（校验/落盘阶段）：CLI 会话已经跑完并可能
+            # 计费，已解析的 usage 不随失败丢弃（#207 语义）。
+            if error.usage is None and usage:
+                error.usage = usage
+            raise
+
+    def _adopt_envelope(
+        self, workspace: Path, outcome: CLIProcessOutcome, envelope: dict
+    ) -> None:
         status = envelope.get("status")
         if status == "ERROR":
             error_text = str(envelope.get("error") or "")
@@ -689,6 +707,7 @@ def _run_probe_command(settings: Settings, argv: tuple[str, ...]) -> CLIProcessO
     probe_directory = probe_root / uuid4().hex
     workspace = probe_directory / "workspace"
     workspace.mkdir(parents=True)
+    prepare_repo_boundary(workspace, "Antigravity")
     (probe_directory / "journal.json").write_text(
         json.dumps(
             {"version": 1, "token": uuid4().hex, "state": "RUNNING"},
