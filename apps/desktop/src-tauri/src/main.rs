@@ -226,8 +226,10 @@ fn build_helper_args(api_root: &str, user_data: &str, fake_channel: bool) -> Vec
 }
 
 /// #275: `--fake-channel` may only be appended when the launcher explicitly
-/// opts in via `MANGAFLOW_DESKTOP_FAKE_CHANNEL=1` (dev/e2e launchers set it;
-/// start-desktop.cmd and the installed form never do).
+/// opts in via `MANGAFLOW_DESKTOP_FAKE_CHANNEL=1`. Nothing in the repo sets
+/// that env var (start-desktop.cmd and the installed form never do; the e2e
+/// and D5 scripts pass `--fake-channel` as argv instead), so the flag can
+/// only arrive from a deliberately configured launcher environment.
 fn fake_channel_requested(env: Option<std::ffi::OsString>) -> bool {
     env.as_deref() == Some(std::ffi::OsStr::new("1"))
 }
