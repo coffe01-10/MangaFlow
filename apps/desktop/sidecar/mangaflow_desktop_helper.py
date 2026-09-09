@@ -112,6 +112,31 @@ def _bind_loopback() -> socket.socket:
 # the session-start bind is fail-closed (see _spawn_web_server).
 WEB_RELAY_PORT = 39443
 
+# Upper bound on live relay connections (see _serve_relay). The only real
+# client is the local Next standalone server; 128 is two orders of magnitude
+# above anything it pools while bounding the helper's thread count.
+WEB_RELAY_MAX_CONNECTIONS = 128
+
+
+class _RelayLimiter:
+    """Thread-safe counter bounding live relay connections."""
+
+    def __init__(self, max_connections: int) -> None:
+        self._max = max_connections
+        self._lock = threading.Lock()
+        self._live = 0
+
+    def try_acquire(self) -> bool:
+        with self._lock:
+            if self._live >= self._max:
+                return False
+            self._live += 1
+            return True
+
+    def release(self) -> None:
+        with self._lock:
+            self._live = max(0, self._live - 1)
+
 
 def _bind_relay(api_port: int) -> socket.socket | None:
     """Claim the fixed relay port and listen; None when it is taken.
@@ -160,8 +185,18 @@ def _serve_relay(relay: socket.socket, api_port: int) -> None:
     rewrite destination reaches this session's dynamic API port. Runs on a
     daemon thread; the helper exit paths simply drop the listening socket
     and the process teardown closes all piped connections.
+
+    Concurrent connections are bounded (``WEB_RELAY_MAX_CONNECTIONS``): each
+    pinned connection costs two pump threads for as long as both peers keep
+    it open, so an unbounded accept loop would let one leaking or hostile
+    local client grow the helper without limit. The real client is the Next
+    standalone server on the same host — tens of pooled connections at most
+    — so the bound is far above legitimate use while keeping the failure
+    mode explicit: overflow connections are closed immediately (fail-fast,
+    same shape as a refused upstream) instead of being silently starved.
     """
 
+    limiter = _RelayLimiter(WEB_RELAY_MAX_CONNECTIONS)
     while True:
         try:
             client, _ = relay.accept()
@@ -169,10 +204,18 @@ def _serve_relay(relay: socket.socket, api_port: int) -> None:
             continue
         except OSError:
             return  # listener closed — helper is shutting down
+        if not limiter.try_acquire():
+            _log(
+                f"relay connection limit {WEB_RELAY_MAX_CONNECTIONS} reached; "
+                "closing the newest client"
+            )
+            client.close()
+            continue
         try:
             upstream = socket.create_connection(("127.0.0.1", api_port), timeout=5)
         except OSError:
             client.close()
+            limiter.release()
             continue
         # The 5s timeout above bounds the CONNECT only; the byte pipe itself
         # must never time out. With the timeout left armed on the upstream
@@ -200,8 +243,23 @@ def _serve_relay(relay: socket.socket, api_port: int) -> None:
                 except OSError:
                     pass
 
-        threading.Thread(target=_pipe, args=(client, upstream), daemon=True).start()
-        threading.Thread(target=_pipe, args=(upstream, client), daemon=True).start()
+        def _pump() -> None:
+            # Two pumps, one slot: the connection holds its limiter slot
+            # until BOTH directions are done, then releases it for the next
+            # accepted client.
+            try:
+                pumps = [
+                    threading.Thread(target=_pipe, args=(client, upstream), daemon=True),
+                    threading.Thread(target=_pipe, args=(upstream, client), daemon=True),
+                ]
+                for pump in pumps:
+                    pump.start()
+                for pump in pumps:
+                    pump.join()
+            finally:
+                limiter.release()
+
+        threading.Thread(target=_pump, name="mangaflow-web-relay-pipe", daemon=True).start()
 
 
 def _pid_starttime() -> int | None:

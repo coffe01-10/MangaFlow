@@ -310,6 +310,62 @@ def test_relay_survives_a_dead_upstream_and_recovers(monkeypatch):
         stop()
 
 
+def test_relay_caps_concurrent_connections(monkeypatch):
+    """Live relay connections are bounded: overflow is closed fast, and a
+    released slot serves the next client.
+
+    Each pinned connection costs two pump threads for as long as its peers
+    keep it open; without a bound, one leaking client grows the helper
+    without limit. The cap must be far above legitimate use (the Next
+    server's pool) and must NOT sever existing connections when it trips.
+    """
+    api = StubApi()
+    try:
+        # The limiter snapshots the cap when the pump thread starts, so the
+        # patch must land BEFORE start_relay.
+        monkeypatch.setattr(helper, "WEB_RELAY_MAX_CONNECTIONS", 2)
+        port, stop = start_relay(monkeypatch, api)
+        try:
+            pinned = []
+            for index in range(2):
+                client = socket.create_connection(("127.0.0.1", port), timeout=15)
+                client.sendall(REQUEST)
+                body = read_response(client, timeout_seconds=4)
+                assert body.endswith(b"ok"), body
+                pinned.append(client)
+
+            # Third connection while both slots are pinned: closed promptly,
+            # with no response bytes.
+            overflow = socket.create_connection(("127.0.0.1", port), timeout=15)
+            try:
+                overflow.sendall(REQUEST)
+                assert read_until_closed(overflow, timeout_seconds=4) == b"", (
+                    "an overflow connection must be closed without a response"
+                )
+            finally:
+                overflow.close()
+
+            # Releasing one pinned slot lets the next client through, and the
+            # surviving pinned connection is unaffected.
+            pinned[0].close()
+            time.sleep(0.3)  # let the pumps release the slot
+            client = socket.create_connection(("127.0.0.1", port), timeout=15)
+            try:
+                client.sendall(REQUEST)
+                body = read_response(client, timeout_seconds=4)
+            finally:
+                client.close()
+            assert body.endswith(b"ok"), body
+            pinned[1].sendall(REQUEST)
+            assert read_response(pinned[1], timeout_seconds=4).endswith(b"ok")
+        finally:
+            for client in pinned:
+                client.close()
+            stop()
+    finally:
+        api.close()
+
+
 def test_relay_accept_loop_survives_a_client_reset(monkeypatch):
     """Error path: a client RST (SO_LINGER 0 close) kills only that
     connection's pump threads — the relay listener must keep serving.
