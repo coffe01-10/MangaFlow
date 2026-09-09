@@ -69,4 +69,22 @@ if DESKTOP_DIST.exists():
 DESKTOP_DIST.parent.mkdir(parents=True, exist_ok=True)
 shutil.move(str(standalone), str(DESKTOP_DIST))
 
+# Build provenance: the e2e asserts the bundle was built from THIS source
+# tree, so a stale relocated bundle (dist/ is gitignored and survives for
+# days) can never silently test outdated UI code.
+def _git(*args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=REPO, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+build_info = {
+    "source_commit": _git("rev-parse", "HEAD"),
+    "apps_web_tree": _git("rev-parse", "HEAD:apps/web"),
+    "relay_origin": RELAY_ORIGIN,
+}
+(DESKTOP_DIST / "build-info.json").write_text(
+    json.dumps(build_info, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+)
+
 print("WEB_STANDALONE_READY", DESKTOP_DIST)

@@ -452,6 +452,28 @@ def _web_dist_dir() -> Path:
         f"{manifest} does not target the helper relay — rebuild with "
         "scripts/build-web-standalone.py"
     )
+    # Build provenance: the bundle must come from THIS source tree. dist/ is
+    # gitignored and survives for days, so a bundle built from an older
+    # apps/web would silently test outdated UI code. Both the source commit
+    # and the apps/web tree hash are stamped by the build script.
+    build_info_path = dist / "build-info.json"
+    assert build_info_path.is_file(), (
+        f"{build_info_path} missing — rebuild with scripts/build-web-standalone.py"
+    )
+    build_info = json.loads(build_info_path.read_text(encoding="utf-8"))
+    def _git(*args: str) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=REPO_ROOT, check=True, capture_output=True, text=True
+        ).stdout.strip()
+    # Branch-independent: the apps/web TREE hash is what the UI was built
+    # from, identical across branches that share the same web source. The
+    # source_commit stays in the stamp as provenance metadata only.
+    expected_tree = _git("rev-parse", "HEAD:apps/web")
+    assert build_info.get("apps_web_tree") == expected_tree, (
+        f"stale web bundle: built from apps/web tree "
+        f"{build_info.get('apps_web_tree')!r} but the tree is at "
+        f"{expected_tree!r} — rerun scripts/build-web-standalone.py"
+    )
     return dist
 
 
