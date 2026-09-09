@@ -241,7 +241,7 @@ pub fn verify_journal(journal: &Path, ready: &ReadyPayload) -> Result<(), Verify
         }
         _ => return Err(VerifyError::JournalMismatch("web_origin")),
     }
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     {
         let announced = value["pid_starttime"].as_u64();
         let actual = crate::ownership::pid_starttime(ready.pid);
@@ -718,7 +718,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     #[test]
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     fn journal_starttime_anchor_matches_or_fails_closed() {
         let dir = std::env::temp_dir().join(format!(
             "mangaflow-desktop-starttime-{}-{}",

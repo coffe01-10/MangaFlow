@@ -81,19 +81,6 @@ fn bundle_identity_and_targets_stay_pinned() {
     assert!(names.contains(&"msi") && names.contains(&"nsis"), "{names:?}");
 }
 
-/// The shell exposes `window.__TAURI__` to EVERY document the WebView loads —
-/// including the plan-B (W-15) web origin `http://127.0.0.1:<port>` loaded via
-/// `WebviewUrl::External`. The only thing keeping that (or any other remote)
-/// page from invoking the shell commands — log export, file pick, file
-/// read-back — is the ACL context: in tauri 2.x an invoke from a remote
-/// origin is denied unless some capability explicitly declares a `remote`
-/// context (tauri 2.11.5 `webview/mod.rs`: "remote content can never reach
-/// custom commands unless an explicit `remote` capability has been
-/// configured"). This test freezes exactly that: shell commands stay a
-/// LOCAL-context surface (the static export / shell-tools page). Granting a
-/// remote context is a security decision that must replace this contract
-/// deliberately, not a convenience someone reaches for while wiring up the
-/// web form.
 /// The capability file's authority surface stays exactly the default:
 /// core permissions on the single main window. A new permission, window or
 /// capability file widens what a loaded document may reach and must be a
@@ -158,6 +145,19 @@ fn no_config_declared_window_may_bypass_the_handshake_gate() {
     );
 }
 
+/// The shell exposes `window.__TAURI__` to EVERY document the WebView loads —
+/// including the plan-B (W-15) web origin `http://127.0.0.1:<port>` loaded via
+/// `WebviewUrl::External`. The only thing keeping that (or any other remote)
+/// page from invoking the shell commands — log export, file pick, file
+/// read-back — is the ACL context: in tauri 2.x an invoke from a remote
+/// origin is denied unless some capability explicitly declares a `remote`
+/// context (tauri 2.11.5 `webview/mod.rs`: "remote content can never reach
+/// custom commands unless an explicit `remote` capability has been
+/// configured"). This test freezes exactly that: shell commands stay a
+/// LOCAL-context surface (the static export / shell-tools page). Granting a
+/// remote context is a security decision that must replace this contract
+/// deliberately, not a convenience someone reaches for while wiring up the
+/// web form.
 #[test]
 fn no_capability_may_grant_a_remote_ipc_context() {
     let capabilities = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src-tauri/capabilities");

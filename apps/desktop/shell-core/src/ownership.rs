@@ -374,6 +374,7 @@ fn signal_group_only(pid: u32, sig: i32) {
 }
 
 #[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub fn pid_starttime(pid: u32) -> Option<u64> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let tail = stat.rsplit(')').next()?;

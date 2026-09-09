@@ -685,6 +685,7 @@ record = {
     "token": token,
     "state": "ready",
     "pid": os.getpid(),
+    "pid_starttime": int(open("/proc/self/stat").read().rsplit(")", 1)[1].split()[19]),
     "api_origin": origin,
 }
 with open(journal_path, "w", encoding="utf-8") as handle:
@@ -754,11 +755,13 @@ fn health_timeout_failure_still_records_terminal_state_and_kills() {
 import json, os, sys
 token = os.environ["MANGAFLOW_DESKTOP_TOKEN"]
 journal_path = os.environ["MANGAFLOW_DESKTOP_JOURNAL"]
+starttime = int(open("/proc/self/stat").read().rsplit(")", 1)[1].split()[19])
 record = {
     "version": 1,
     "token": token,
     "state": "ready",
     "pid": os.getpid(),
+    "pid_starttime": starttime,
     "api_origin": "http://127.0.0.1:1",
 }
 with open(journal_path, "w", encoding="utf-8") as handle:
@@ -861,9 +864,11 @@ class Health(BaseHTTPRequestHandler):
 
 server = ThreadingHTTPServer(("127.0.0.1", 0), Health)
 origin = f"http://127.0.0.1:{server.server_address[1]}"
+starttime = int(open("/proc/self/stat").read().rsplit(")", 1)[1].split()[19])
 with open(journal_path, "w", encoding="utf-8") as handle:
     json.dump({"version": 1, "token": token, "state": "ready",
-               "pid": os.getpid(), "api_origin": origin}, handle)
+               "pid": os.getpid(), "pid_starttime": starttime,
+               "api_origin": origin}, handle)
 print("MANGAFLOW_READY " + json.dumps(
     {"token": token, "pid": os.getpid(), "api_origin": origin}), flush=True)
 server.serve_forever()
@@ -926,7 +931,9 @@ fn an_immediately_exiting_helper_fails_verification_and_is_torn_down() {
     );
 
     // The exiting stand-in is reaped by the teardown; nothing may linger.
+    #[cfg(unix)]
     let deadline = Instant::now() + Duration::from_secs(5);
+    #[cfg(unix)]
     while Instant::now() < deadline {
         let live = std::process::Command::new("pgrep")
             .args(["-f", "stand_in_exit.py"])
@@ -979,7 +986,9 @@ fn a_silent_helper_fails_with_ready_timeout_and_is_torn_down() {
     );
 
     // Teardown: the silent helper must be dead (abort_spawn stops the tree).
+    #[cfg(unix)]
     let deadline = Instant::now() + Duration::from_secs(5);
+    #[cfg(unix)]
     let helper_alive = |tag: &str| -> bool {
         let _ = tag;
         std::process::Command::new("pgrep")
@@ -988,6 +997,7 @@ fn a_silent_helper_fails_with_ready_timeout_and_is_torn_down() {
             .map(|output| !output.stdout.is_empty())
             .unwrap_or(true)
     };
+    #[cfg(unix)]
     while helper_alive("poll") && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
