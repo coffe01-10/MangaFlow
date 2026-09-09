@@ -219,7 +219,8 @@
   ConnectionReset——夹具服务端从不读取客户端请求就以 512 KiB 压入后关闭，
   关闭时未读数据触发 RST 打断客户端读满上限。现先排干请求头（有界读至
   \r\n\r\n）、写入总量收敛到 128 KiB（仍高于上限，保留越界断言）、
-  shutdown(Write) 干净收尾；5× 连续 lib 全绿验证。
+  shutdown(Write) 干净收尾；5× 连续 lib 全绿验证。（勘误：本段所述夹具改动
+  曾随分支重置短暂丢失，续跑恢复轮已重新落地。）
 - 新增 pin：sweep 对 journal 为目录的候选保持目录（read_journal_bounded 拒绝
   非常规文件）；mark_stopped 对缺失 journal 不伪造 stopped 记录。
 - 测试增量：单元 65 项（+2）、集成 40 项，9/9 套件全绿。
