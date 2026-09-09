@@ -306,3 +306,43 @@ fn helper_script() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../sidecar/mangaflow_desktop_helper.py")
     })
 }
+
+/// Red team 2026-09-09 (#310): `collect_members` recursion is depth-capped.
+/// A same-user planted tree nested beyond the cap degrades to a reported
+/// skip ("max_depth") instead of a stack overflow; shallow members still
+/// archive normally.
+#[test]
+fn export_skips_members_beyond_the_recursion_depth_cap() {
+    let user_data = temp_user_data("deep");
+    let logs = logs_dir(&user_data);
+    fs::create_dir_all(&logs).unwrap();
+    let mut dir = logs.clone();
+    for _ in 0..40 {
+        dir = dir.join("n");
+    }
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("deep.log"), "deep\n").unwrap();
+    fs::write(logs.join("shallow.log"), "shallow\n").unwrap();
+
+    let destination = std::env::temp_dir().join(format!("mfd-deep-{}.zip", new_token()));
+    let report = export_logs_zip(&user_data, &destination).unwrap();
+
+    assert!(
+        report.files.iter().any(|name| name == "shallow.log"),
+        "{report:?}"
+    );
+    assert!(
+        report
+            .skipped
+            .iter()
+            .any(|entry| entry.reason == "max_depth"),
+        "{report:?}"
+    );
+    assert!(
+        report.files.iter().all(|name| !name.ends_with("deep.log")),
+        "nothing beyond the cap may be archived: {report:?}"
+    );
+
+    let _ = fs::remove_dir_all(&user_data);
+    let _ = fs::remove_file(&destination);
+}
