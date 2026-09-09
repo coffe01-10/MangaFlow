@@ -78,8 +78,13 @@ def start_batch(
 
 
 @router.get("/pages/{page_id}/batches", response_model=list[GenerationBatchRead])
-def list_batches(page_id: str, db: Session = Depends(get_db)) -> list[GenerationBatch]:
-    _page(db, page_id)
+def list_batches(
+    page_id: str,
+    db: Session = Depends(get_db),
+    project_id: str | None = None,
+) -> list[GenerationBatch]:
+    page = _page(db, page_id)
+    ensure_project_scope(db, page, project_id, label="页面")
     return list(
         db.scalars(
             select(GenerationBatch)

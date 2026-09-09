@@ -269,6 +269,9 @@ describe("local-edit-rules 派生候选识别", () => {
     expect(derivedCandidatePhase({ status: "GENERATING", asset_id: null })).toBe("pending");
     expect(derivedCandidatePhase({ status: "COMPLETED", asset_id: "asset-9" })).toBe("done");
     expect(derivedCandidatePhase({ status: "FAILED", asset_id: null })).toBe("failed");
+    // STALE 是区域重生成的不可重试终态（无 asset 产出）：不判终态会让
+    // 编辑器无限轮询并保持画笔锁定。
+    expect(derivedCandidatePhase({ status: "STALE", asset_id: null })).toBe("failed");
     expect(derivedCandidatePhase({ status: "CANCELLED", asset_id: null })).toBe("canceled");
   });
 });

@@ -21,6 +21,7 @@ import type { PointerEvent as ReactPointerEvent } from "react";
 
 import { Pencil } from "lucide-react";
 import type { Job, PageCandidate } from "@/lib/api";
+import { useLocalStorageValue, writeLocalStorage } from "@/lib/local-storage-store";
 
 import { jobStatusLabels, navigationItems } from "./labels";
 import type { WorkspaceSection } from "./types";
@@ -160,13 +161,11 @@ export function QueueDock({
   concurrency: number;
   projectPath: (target: string) => string;
 }) {
-  const [queueDockHidden, setQueueDockHidden] = useState(() => {
-    if (typeof window === "undefined") return false;
-    return window.localStorage.getItem("mangaflow.queue-dock-hidden") === "true";
-  });
+  // 水合安全的持久化（见 lib/local-storage-store.ts）：渲染期直读
+  // localStorage 会在隐藏过快捷栏的用户端造成水合不匹配。
+  const queueDockHidden = useLocalStorageValue("mangaflow.queue-dock-hidden", "false") === "true";
   const toggleQueueDock = (hidden: boolean) => {
-    setQueueDockHidden(hidden);
-    window.localStorage.setItem("mangaflow.queue-dock-hidden", String(hidden));
+    writeLocalStorage("mangaflow.queue-dock-hidden", String(hidden));
   };
 
   return queueDockHidden ? <button type="button" className="queue-dock-reveal" aria-label="显示任务中心快捷栏" title="显示任务中心快捷栏" onClick={() => toggleQueueDock(false)}><ListTodo size={16} /><span className={queueStats.waiting ? "queue-light active" : "queue-light"} /><ChevronUp size={13} /></button> : <><Link className="queue-dock" href={projectPath("jobs")}><div><span className={queueStats.waiting ? "queue-light active" : "queue-light"} /><strong>打开任务中心</strong><small>{latestJob ? `${latestJobLabel} · ${jobStatusLabels[latestJob.status] ?? latestJob.status}` : section === "jobs" || section === "generate" ? "当前没有任务" : "查看生成、解析与检查进度"}</small></div>{(section === "jobs" || section === "generate") && <div><span>并发上限 {concurrency}</span><i /><span>{queueStats.waiting} 等待</span><i /><span>{queueStats.failed} 失败</span></div>}</Link><button type="button" className="queue-dock-hide" aria-label="隐藏任务中心快捷栏" title="隐藏任务中心快捷栏" onClick={() => toggleQueueDock(true)}><ChevronDown size={15} /></button></>;

@@ -395,7 +395,9 @@ export interface PageCandidateLike {
 
 export type DerivedCandidatePhase = "none" | "pending" | "done" | "failed" | "canceled";
 
-const TERMINAL_FAILED = new Set(["FAILED"]);
+// STALE 是区域重生成任务不可重试的终态（worker 以 candidate_status="STALE"
+// 落行、不产出 asset）——不列入终态会让编辑器对其无限轮询并保持锁定。
+const TERMINAL_FAILED = new Set(["FAILED", "STALE"]);
 const TERMINAL_CANCELED = new Set(["CANCELED", "CANCELLED"]);
 
 /** Maps the derived candidate's queue state onto the editor's job phase. */
