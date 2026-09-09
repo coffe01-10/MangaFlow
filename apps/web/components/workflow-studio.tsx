@@ -179,6 +179,7 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
   const [currentRun, setCurrentRun] = useState<WorkflowRun | null>(null);
   const [scopeType, setScopeType] = useState<"CHAPTER" | "PAGE">("PAGE");
   const [scopeId, setScopeId] = useState("");
+  const [pageChapterId, setPageChapterId] = useState("");
   const [drawModel, setDrawModel] = useState<ImageModelAlias | "">("");
   const [drawResolution, setDrawResolution] = useState<Resolution>("1K");
   const [legacyGraph, setLegacyGraph] = useState<WorkflowGraph | null>(null);
@@ -199,7 +200,9 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
   const catalog = useQuery({ queryKey: ["workflow-node-types"], queryFn: api.workflowNodeTypes, staleTime: 60 * 60_000 });
   const models = useQuery({ queryKey: ["models"], queryFn: api.models, staleTime: 30_000 });
   const chapters = useQuery({ queryKey: ["chapters", projectId], queryFn: () => api.chapters(projectId), staleTime: 20_000 });
-  const activeChapter = scopeType === "CHAPTER" ? (scopeId || chapters.data?.[0]?.id || "") : chapters.data?.[0]?.id ?? "";
+  // PAGE 运行范围的页面来自显式选择的章节（默认第一章）：此前 PAGE 模式恒取
+  // chapters[0]，多章项目永远无法从编排页对第 2+ 章的页面发起单页流程。
+  const activeChapter = scopeType === "CHAPTER" ? (scopeId || chapters.data?.[0]?.id || "") : (pageChapterId || chapters.data?.[0]?.id) ?? "";
   const pages = useQuery({ queryKey: ["pages", activeChapter], queryFn: () => api.pages(activeChapter), enabled: Boolean(activeChapter), staleTime: 10_000 });
   const effectiveScopeId = scopeType === "CHAPTER"
     ? chapters.data?.some((chapter) => chapter.id === scopeId) ? scopeId : chapters.data?.[0]?.id ?? ""
@@ -242,6 +245,9 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
     setFuture([]);
     setValidation([]);
     setSelectedId(null);
+    // 上一个工作流的运行（含 WAITING_APPROVAL 审批行）不得跟随切换残留：
+    // displayedRun 会把旧 run 的节点状态与审批按钮画到新画布上。
+    setCurrentRun(null);
     draftSaver.current?.reset();
     setSaveStatus("已保存");
     const chapterOnly = activeWorkflow.draft_graph.nodes.some((node) => node.type === "source.approved_pages")
@@ -521,6 +527,9 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
     },
     onSuccess: (restored) => {
       workflowRef.current = restored;
+      // 恢复是破坏性覆盖：立即丢弃未落的防抖草稿，否则 800ms 定时器会在
+      // 重取落地前用旧节点图 + 恢复后的新版本号提交，静默回滚这次恢复。
+      draftSaver.current?.reset();
       initializedId.current = null;
       void workflows.refetch();
       setNotice(`已恢复发布版本到草稿（V${restored.version}）`);
@@ -749,7 +758,7 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
       </section>
 
       <footer className={styles.runner}>
-        <div className={styles.runScope}><span>运行范围</span><select aria-label="运行范围类型" value={scopeType} onChange={(event) => { const next = event.target.value as "CHAPTER" | "PAGE"; setScopeType(next); setScopeId(next === "CHAPTER" ? chapters.data?.[0]?.id ?? "" : pages.data?.[0]?.id ?? ""); }}><option value="CHAPTER">章节</option><option value="PAGE">页面</option></select><select aria-label="运行目标" value={effectiveScopeId} onChange={(event) => setScopeId(event.target.value)}>{scopeType === "CHAPTER" ? chapters.data?.map((chapter) => <option value={chapter.id} key={chapter.id}>{chapter.title}</option>) : pages.data?.map((page) => <option value={page.id} key={page.id}>第 {page.page_number} 页</option>)}</select></div>
+        <div className={styles.runScope}><span>运行范围</span><select aria-label="运行范围类型" value={scopeType} onChange={(event) => { const next = event.target.value as "CHAPTER" | "PAGE"; setScopeType(next); setScopeId(next === "CHAPTER" ? chapters.data?.[0]?.id ?? "" : ""); }}><option value="CHAPTER">章节</option><option value="PAGE">页面</option></select>{scopeType === "PAGE" ? <select aria-label="页面所属章节" value={activeChapter} onChange={(event) => { setPageChapterId(event.target.value); setScopeId(""); }}>{chapters.data?.map((chapter) => <option value={chapter.id} key={chapter.id}>{chapter.title}</option>)}</select> : null}<select aria-label="运行目标" value={effectiveScopeId} onChange={(event) => setScopeId(event.target.value)}>{scopeType === "CHAPTER" ? chapters.data?.map((chapter) => <option value={chapter.id} key={chapter.id}>{chapter.title}</option>) : pages.data?.map((page) => <option value={page.id} key={page.id}>第 {page.page_number} 页</option>)}</select></div>
         <div className={styles.runState}><i className={displayedRun?.status === "RUNNING" ? styles.running : ""} /><span>{displayedRun ? `运行 ${statusLabel[displayedRun.status] ?? displayedRun.status} · ${displayedRun.node_runs.filter((item) => item.status === "COMPLETED").length}/${displayedRun.node_runs.length}` : "尚未运行已发布版本"}</span></div>
         <div className={styles.runActions}><button disabled={!selectedId || startRun.isPending} onClick={() => startRun.mutate("NODE")}><Play size={13} />运行节点</button><button disabled={!selectedId || startRun.isPending} onClick={() => startRun.mutate("FROM")}><Play size={13} />从这里运行</button>{displayedRun?.status === "RUNNING" ? <button disabled={cancelRun.isPending} onClick={() => cancelRun.mutate(displayedRun.id)}><Pause size={13} />取消</button> : null}<button className={styles.runPrimary} disabled={startRun.isPending} onClick={() => startRun.mutate("FULL")}><Play size={14} />运行工作流</button></div>
         {displayedRun?.node_runs.filter((run) => run.status === "WAITING_APPROVAL").map((run) => <div className={styles.approval} key={run.id}><strong>{run.node_type === "generator.page" ? "单页生成等待选择模型" : "采用候选后继续"}</strong>{run.node_type === "generator.page" ? <><select aria-label="选择图片模型" value={drawModel} onChange={(event) => setDrawModel(event.target.value as ImageModelAlias | "")}><option value="">选择图片模型</option>{imageModels.map((model) => <option key={model.catalog_id} value={model.logical_alias}>{model.provider} · {model.display_name}</option>)}</select><select aria-label="选择图片清晰度" value={drawResolution} onChange={(event) => setDrawResolution(event.target.value as Resolution)}><option>1K</option><option>2K</option><option>4K</option></select></> : <Link href={`/projects/${projectId}/generate`}>前往采用</Link>}<button disabled={approveNode.isPending || (run.node_type === "generator.page" && !drawModel)} onClick={() => approveNode.mutate(run)}>确认继续</button></div>)}

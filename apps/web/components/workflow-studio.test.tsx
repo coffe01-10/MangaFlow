@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api, type WorkflowDefinition, type WorkflowGraph, type WorkflowNodeType } from "@/lib/api";
+import { api, type MangaPage, type WorkflowDefinition, type WorkflowGraph, type WorkflowNodeType } from "@/lib/api";
 
 import WorkflowStudio from "./workflow-studio";
 
@@ -322,5 +322,41 @@ describe("WorkflowStudio 草稿离开边界", () => {
       ).toBeInTheDocument(),
     );
     expect(screen.getByLabelText("选择工作流")).toHaveProperty("value", "wf-2");
+  });
+
+  it("PAGE 运行范围可选择其他章节的页面（不再钉死第一章）", async () => {
+    const chapter = (id: string, title: string, ordinal: number) => ({
+      id, project_id: "project-1", title, ordinal, status: "READY",
+      current_source_revision_id: null, source_character_count: 0, segment_count: 0,
+      page_count: 1, coverage_ratio: 1,
+      created_at: "2026-08-27T00:00:00Z", updated_at: "2026-08-27T00:00:00Z", version: 1,
+    });
+    const page = (id: string, chapterId: string, pageNumber: number): MangaPage => ({
+      id, chapter_id: chapterId, page_number: pageNumber, revision_no: 1,
+      page_function: "dialogue", panel_count: 4, reading_direction: "rtl",
+      resolution: "1K", status: "PLANNED", estimated_text_chars: 40,
+      estimated_bubbles: 2, source_coverage: { complete: true, ranges: [] },
+      selected_candidate_id: null, storyboard_version: 1,
+      selected_candidate_ack_version: 1, continuity_status: "PASSED",
+      scene_ids: [], beat_ids: [], version: 1,
+    });
+    chaptersSpy.mockResolvedValue([chapter("ch-1", "第一章", 1), chapter("ch-2", "第二章", 2)]);
+    pagesSpy.mockImplementation(async (chapterId: string) =>
+      chapterId === "ch-2"
+        ? [page("p-2-1", "ch-2", 1), page("p-2-2", "ch-2", 2)]
+        : [page("p-1-1", "ch-1", 1)]);
+
+    renderStudio();
+    await screen.findByText("流程编排");
+    // PAGE 模式默认展示第一章的页面。
+    const chapterSelect = screen.getByLabelText("页面所属章节");
+    expect(chapterSelect).toHaveValue("ch-1");
+    await waitFor(() => expect(screen.getByLabelText("运行目标")).toHaveValue("p-1-1"));
+
+    // 切到第二章：页面列表与运行目标都来自第二章。
+    fireEvent.change(chapterSelect, { target: { value: "ch-2" } });
+    await waitFor(() => expect(pagesSpy).toHaveBeenCalledWith("ch-2"));
+    await waitFor(() => expect(screen.getByLabelText("运行目标")).toHaveValue("p-2-1"));
+    expect(screen.getByRole("option", { name: "第 2 页" })).toBeInTheDocument();
   });
 });
