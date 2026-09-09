@@ -975,6 +975,70 @@ mod tests {
         assert_eq!(unix_now_from(at_epoch), 0);
     }
 
+    /// The token generator's output contract: 32 lowercase hex chars, the
+    /// exact shape the stale-runtime sweep's name predicate (and every
+    /// log/journal name in the crate) recognizes, and unique across draws.
+    /// A formatting or determinism regression here would make new runtime
+    /// directories permanently invisible to the sweep.
+    #[test]
+    fn new_token_output_satisfies_the_token_format_contract_and_is_unique() {
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        for _ in 0..128 {
+            let token = new_token();
+            assert_eq!(token.len(), 32, "{token}");
+            assert!(
+                token.bytes().all(|byte| byte.is_ascii_digit()
+                    || (b'a'..=b'f').contains(&byte)),
+                "token must be lowercase hex: {token}"
+            );
+            assert!(
+                is_runtime_dir_name(&format!("{RUNTIME_DIR_PREFIX}{token}")),
+                "the sweep must recognize the generated runtime directory name"
+            );
+            assert!(seen.insert(token.clone()), "token collision: {token}");
+        }
+        assert_eq!(seen.len(), 128);
+    }
+
+    /// The sweep reads a candidate's journal through read_journal_bounded,
+    /// which refuses symlinks: a planted symlink at owner.json must keep
+    /// the candidate directory AND the link target's bytes intact — the
+    /// deletion decision may never be driven by content outside the
+    /// runtime root.
+    #[test]
+    fn sweep_keeps_a_candidate_whose_journal_is_a_symlink() {
+        let user_data = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-sweep-symlink-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&user_data);
+        let runtime = user_data.join("runtime");
+        let candidate = runtime.join(format!("{RUNTIME_DIR_PREFIX}{}", "c".repeat(32)));
+        std::fs::create_dir_all(&candidate).unwrap();
+        let outside = user_data.join("outside.json");
+        std::fs::write(
+            &outside,
+            format!("{{\"version\":1,\"token\":\"{}\",\"state\":\"stopped\"}}", "d".repeat(32)),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, candidate.join(JOURNAL_NAME)).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&outside, candidate.join(JOURNAL_NAME)).unwrap();
+
+        sweep_runtime_dirs_with(&user_data, 0).unwrap();
+
+        assert!(candidate.exists(), "the candidate directory must be kept");
+        assert_eq!(
+            std::fs::read_to_string(outside).unwrap(),
+            format!("{{\"version\":1,\"token\":\"{}\",\"state\":\"stopped\"}}", "d".repeat(32)),
+            "the link target's bytes must be untouched"
+        );
+        let _ = std::fs::remove_dir_all(&user_data);
+    }
+
     #[test]
     fn runtime_layout_journals_ownership_before_any_spawn() {
         let dir = std::env::temp_dir().join(format!(
