@@ -673,3 +673,31 @@ def test_sidecar_mid_session_node_exit_is_detected_and_logged(tmp_path: Path):
     finally:
         exit_code = shell.stop()
         assert exit_code == 0, f"helper exited with {exit_code}"
+
+
+def test_node_child_env_strips_ownership_secrets_and_hooks(monkeypatch):
+    """Red team 2026-09-09 (#312): the node child inherits the parent env
+    minus the handshake secrets and node auto-load hooks — the long-lived
+    process most exposed to web content must not carry the ownership token,
+    the journal path, or injectable NODE_OPTIONS/NODE_PATH."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "mangaflow_desktop_helper_env", str(HELPER)
+    )
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+
+    monkeypatch.setenv("MANGAFLOW_DESKTOP_TOKEN", "a" * 32)
+    monkeypatch.setenv("MANGAFLOW_DESKTOP_JOURNAL", "/tmp/owner.json")
+    monkeypatch.setenv("NODE_OPTIONS", "--require /evil")
+    monkeypatch.setenv("NODE_PATH", "/evil")
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    env = helper._node_child_env()
+
+    assert "MANGAFLOW_DESKTOP_TOKEN" not in env
+    assert "MANGAFLOW_DESKTOP_JOURNAL" not in env
+    assert "NODE_OPTIONS" not in env
+    assert "NODE_PATH" not in env
+    assert env["PATH"] == "/usr/bin", "unrelated parent env must ride along"

@@ -584,6 +584,28 @@ def _find_node(web_dist: Path) -> str | None:
     return str(found) if found else None
 
 
+def _node_child_env() -> dict[str, str]:
+    """Parent env for the node child, minus secrets and auto-load hooks.
+
+    The full parent env used to ride along, including
+    ``MANGAFLOW_DESKTOP_TOKEN``/``_JOURNAL`` (the handshake secret and
+    journal path) and any ``NODE_OPTIONS``/``NODE_PATH`` (which node
+    auto-applies). The child needs the parent env for PATH and friends, but
+    not the handshake identity nor injectable hooks (red team 2026-09-09,
+    #312). Callers add PORT/HOSTNAME/MANGAFLOW_API_ORIGIN/NODE_ENV on top.
+    """
+
+    env = dict(os.environ)
+    for name in (
+        "MANGAFLOW_DESKTOP_TOKEN",
+        "MANGAFLOW_DESKTOP_JOURNAL",
+        "NODE_OPTIONS",
+        "NODE_PATH",
+    ):
+        env.pop(name, None)
+    return env
+
+
 def _spawn_web_server(args: argparse.Namespace, api_port: int) -> WebServer | None:
     """Start the Next standalone server (plan B, W-15) as a helper child.
 
@@ -659,8 +681,8 @@ def _spawn_web_server(args: argparse.Namespace, api_port: int) -> WebServer | No
             except OSError:
                 pass
         return None
-    env = dict(
-        os.environ,
+    env = _node_child_env()
+    env.update(
         PORT=str(node_port),
         HOSTNAME="127.0.0.1",
         # Only relevant when the bundle was built without the fixed relay
