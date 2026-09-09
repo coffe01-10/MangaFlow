@@ -71,6 +71,28 @@ pub enum OwnershipError {
     StopFailed(String),
 }
 
+impl std::fmt::Display for OwnershipError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OwnershipError::Spawn(error) => write!(f, "spawn helper 失败：{error}"),
+            OwnershipError::JobAssignment(detail) => {
+                write!(f, "子进程加入 Job Object 失败：{detail}")
+            }
+            OwnershipError::Resume(detail) => write!(f, "恢复挂起线程失败：{detail}"),
+            OwnershipError::StopFailed(detail) => write!(f, "停止进程树失败：{detail}"),
+        }
+    }
+}
+
+impl std::error::Error for OwnershipError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            OwnershipError::Spawn(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
 pub struct OwnedTree {
     pub child: Child,
     pub guard: TreeGuard,
@@ -442,6 +464,24 @@ fn job_contains_pid(job: &JobHandle, pid: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// The starttime anchor (field 22 of /proc/<pid>/stat, zero-indexed 19
+    /// after the comm close-paren split): it reads the live test process,
+    /// returns None for a missing pid, and — the whole point — changes
+    /// value between DIFFERENT pids only via reuse, so matching values
+    /// prove identity within one test run.
+    #[test]
+    #[cfg(unix)]
+    fn pid_starttime_reads_the_live_process_and_rejects_missing_pids() {
+        let mine = pid_starttime(std::process::id());
+        assert!(mine.is_some(), "/proc must expose the test process");
+        // The same pid read twice is stable (identity anchor property).
+        assert_eq!(pid_starttime(std::process::id()), mine);
+        // A pid that cannot exist (kernel-idle upper range) reads as None.
+        assert_eq!(pid_starttime(u32::MAX), None);
+    }
+
     // The Windows-only Job Object test calls `create_kill_on_close_job`
     // unqualified; on Linux this glob is genuinely unused, which is why a
     // Linux-only lint must not be allowed to delete it again.
