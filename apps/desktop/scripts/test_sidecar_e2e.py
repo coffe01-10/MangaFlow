@@ -608,3 +608,54 @@ def test_sidecar_dead_web_dist_fails_closed_without_web_origin(tmp_path: Path):
     finally:
         exit_code = shell.stop()
         assert exit_code == 0, f"helper exited with {exit_code}"
+
+
+def test_sidecar_mid_session_node_exit_is_detected_and_logged(tmp_path: Path):
+    """ADR §4.5 scope note (0.2.x = detection, no auto-restart): a web server
+    that dies AFTER being announced must leave a forensic milestone in the
+    unified logs, and the API session must be unaffected.
+
+    Boot verification (#271) only proves node ownership at READY time; the
+    mid-session exit previously vanished into node's own crash output (if
+    any), leaving the WebView on a dead origin with no lifecycle evidence.
+    """
+    if shutil.which("node") is None:
+        pytest.skip("no node runtime available for the standalone server")
+    dying_dist = tmp_path / "dying-web-dist"
+    dying_dist.mkdir()
+    # Serve normally (so boot verification passes and web_origin is
+    # announced), then die mid-session.
+    (dying_dist / "server.js").write_text(
+        "const http = require('http');\n"
+        "const server = http.createServer((req, res) => res.end('ok'));\n"
+        "server.listen(Number(process.env.PORT), '127.0.0.1', () => {\n"
+        "  setTimeout(() => process.exit(3), 2500);\n"
+        "});\n",
+        encoding="utf-8",
+    )
+
+    shell = DesktopShell(tmp_path / "user-data", web_dist=dying_dist)
+    (shell.user_data / "data").mkdir(parents=True, exist_ok=True)
+    stderr_log = shell.runtime / "helper.stderr.log"
+    try:
+        record = shell.handshake()
+        shell.wait_health()
+        assert "web_origin" in record, record
+        # Mid-session death: the watcher must record it within ~1s of the
+        # 700ms delayed exit, plus poll cadence and log flush.
+        deadline = time.monotonic() + 8.0
+        detected = False
+        while time.monotonic() < deadline:
+            if stderr_log.exists() and "exited mid-session" in stderr_log.read_text(
+                encoding="utf-8", errors="replace"
+            ):
+                detected = True
+                break
+            time.sleep(0.1)
+        assert detected, "mid-session web server exit was never logged"
+        # Detection is log-only (no restart): the API session is untouched.
+        with urllib.request.urlopen(f"{shell.origin}/api/v1/projects", timeout=10) as response:
+            assert response.status == 200
+    finally:
+        exit_code = shell.stop()
+        assert exit_code == 0, f"helper exited with {exit_code}"
