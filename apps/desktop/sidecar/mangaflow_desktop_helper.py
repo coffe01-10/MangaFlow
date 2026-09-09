@@ -618,12 +618,27 @@ def _spawn_web_server(args: argparse.Namespace, api_port: int) -> WebServer | No
         relay.close()
         return None
     announced_port = web_sock.getsockname()[1]
-    claim = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        claim.bind(("127.0.0.1", 0))
-        node_port = claim.getsockname()[1]
-    finally:
-        claim.close()
+        claim = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            claim.bind(("127.0.0.1", 0))
+            node_port = claim.getsockname()[1]
+        finally:
+            claim.close()
+    except OSError as error:
+        # A failed node-port claim (fd exhaustion, socket stash full) is a
+        # downgrade, not a session death: every other spawn-stage failure
+        # downgrades, and this one is equally recoverable (R2 review
+        # 2026-09-09, N5). The sockets opened above are released here.
+        _log(f"node port claim failed ({error!r}); starting without the web server")
+        # Guarded closes (same shape as WebServer.close): a secondary close
+        # failure must not skip the second socket or mask the downgrade.
+        for sock in (web_sock, relay):
+            try:
+                sock.close()
+            except OSError:
+                pass
+        return None
     env = dict(
         os.environ,
         PORT=str(node_port),
@@ -713,6 +728,14 @@ def _start_web_exit_watch(node: subprocess.Popen, shutdown: threading.Event) -> 
         while not shutdown.is_set():
             code = node.poll()
             if code is not None:
+                # A deliberate stop sets the shutdown event BEFORE close()
+                # reaps the child, so a code observed on the wrong side of
+                # that race gets one watch interval to settle: a genuine
+                # mid-session crash leaves the event unset (R2 review
+                # 2026-09-09, N4 — the old check-then-act order logged a
+                # spurious crash line on every deliberate stop).
+                if shutdown.wait(WEB_EXIT_WATCH_INTERVAL_SECONDS):
+                    return
                 _log(
                     f"web server exited mid-session (code {code}); the plan-B "
                     "web origin is dead - restart the app to recover"
