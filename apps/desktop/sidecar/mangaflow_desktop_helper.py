@@ -48,6 +48,7 @@ import subprocess
 import sys
 import threading
 import time
+import typing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -441,16 +442,15 @@ def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
     os.environ["UPLOAD_ROOT"] = str(user_data / "uploads")
     os.environ["WEB_ORIGIN"] = args.web_origin
 
-    node = None
     sock = None
-    relay = None
+    web: WebServer | None = None
     web_shutdown = threading.Event()
     try:
         sock = _bind_loopback()
         port = sock.getsockname()[1]
         # The web server's compiled rewrites target this exact API origin, so
         # spawn it only after the API port is bound (plan B, W-15).
-        node, web_port, relay = _spawn_web_server(args, port)
+        web = _spawn_web_server(args, port)
         try:
             from alembic import command
             from alembic.config import Config as AlembicConfig
@@ -472,32 +472,21 @@ def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
 
         import uvicorn
 
-        if node is not None:
-            # Red team 2026-09-08: publishing web_origin is only allowed for
-            # a node that provably owns its port. Spawn alone proves nothing
-            # — node can die at boot (EADDRINUSE lost to a bind-close race
-            # winner, or any crash) while this helper sails on to announce
-            # the still-free port, and the shell then navigates its WebView
-            # into whatever local process claims it. Fail-closed: a node
-            # that never answers is reaped and the session continues without
-            # a web server (the shell falls back to the static export).
-            node, web_port = _await_web_server(node, web_port)
-            if node is not None:
+        if web is not None:
+            # Red team 2026-09-08/09: publishing web_origin requires a web
+            # server that provably booted. The announced port is already
+            # helper-owned (exclusive on Windows), so a boot failure can no
+            # longer hand the announced origin to a hijacker — but a node
+            # that never comes up must still fail the session closed to the
+            # static-export form instead of serving a dead relay.
+            if not _await_web_server_boot(web.process, web.node_port):
+                web.close()
+                web = None
+            else:
                 # Ownership of the announced origin now includes noticing
                 # when it dies: arm the mid-session exit watch (log-only,
                 # ADR §4.5 detection scope).
-                _start_web_exit_watch(node, web_shutdown)
-        if node is None and relay is not None:
-            # A degraded (static-export) session has no web server the relay
-            # could feed: release the fixed relay port now instead of
-            # squatting on it until process exit. Spawn-degraded sessions
-            # never reach here (their relay was already closed inside
-            # _spawn_web_server and arrives as None); boot-degraded sessions
-            # arrive with the node just reaped above. Hoisted out of the
-            # `if node is not None:` guard so the release does not read as
-            # depending on the spawn-time node handle.
-            relay.close()
-            relay = None
+                _start_web_exit_watch(web.process, web_shutdown)
 
         record.update(
             state="ready",
@@ -506,14 +495,17 @@ def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
             api_origin=f"http://127.0.0.1:{port}",
             port=port,
         )
-        if node is not None:
+        if web is not None:
             # Plan B (W-15): the web server is a helper child (Job member,
             # killed with the tree) serving the Next standalone bundle; the
             # shell builds the WebView against this loopback origin only.
-            record.update(web_origin=f"http://127.0.0.1:{web_port}", web_port=web_port)
+            record.update(
+                web_origin=f"http://127.0.0.1:{web.announced_port}",
+                web_port=web.announced_port,
+            )
         _write_journal(journal, record)
         ready_fields = ["token", "pid", "api_origin"]
-        if node is not None:
+        if web is not None:
             ready_fields.append("web_origin")
         print(f"MANGAFLOW_READY {json.dumps({k: record[k] for k in ready_fields})}", flush=True)
 
@@ -539,20 +531,13 @@ def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
         # above) covers the shell/helper death; this finally covers the
         # cooperative and refused-GO paths.
         web_shutdown.set()  # deliberate stop: the exit watcher must stay silent
-        if node is not None and node.poll() is None:
-            node.terminate()
-            try:
-                node.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                node.kill()
+        if web is not None:
+            # Releases the child (terminate/wait/kill with a final reap) and
+            # both session-owned sockets — the announced web port (helper
+            # property since before node spawned) and the fixed relay port.
+            web.close()
         if sock is not None:
             sock.close()
-        if relay is not None:
-            # Stop the accept loop explicitly (process teardown would close
-            # the fd anyway); a still-open relay here means the success path
-            # is exiting, so nothing needs the fixed port any more.
-            relay.close()
-            relay = None
 
 
 def _find_node(web_dist: Path) -> str | None:
@@ -579,16 +564,24 @@ def _find_node(web_dist: Path) -> str | None:
     return str(found) if found else None
 
 
-def _spawn_web_server(
-    args: argparse.Namespace, api_port: int
-) -> tuple[subprocess.Popen | None, int | None, socket.socket | None]:
+def _spawn_web_server(args: argparse.Namespace, api_port: int) -> WebServer | None:
     """Start the Next standalone server (plan B, W-15) as a helper child.
 
     --web-dist must point at the standalone bundle directory (containing
-    server.js). The web port is claimed by a temporary bind(0), handed to
-    node via PORT, and released before spawn — the tiny bind-close race is
-    a documented, accepted residual (loopback, per-user dir, single-instance
-    shell).
+    server.js). The helper OWNS the announced web port: it binds a loopback
+    port itself — Windows with ``SO_EXCLUSIVEADDRUSE``, POSIX with
+    ``SO_REUSEADDR`` — before node is spawned, and relays it byte-for-byte
+    to node's own ephemeral port. The WebView therefore only ever touches a
+    socket the helper has held since before the spawn: neither the
+    historical claim-close-spawn window nor a Windows co-bind (libuv sets
+    no socket option on node's own bind, so a ``SO_REUSEADDR`` binder could
+    share the port while node stays alive — red team 2026-09-09) can put
+    foreign content behind the announced origin.
+
+    node's own ephemeral port keeps a bind-close race, but a hijacker
+    winning it makes node die with EADDRINUSE, which the boot verification
+    (:func:`_await_web_server_boot`) turns into the fail-closed
+    static-export downgrade — and nothing navigates to node's port.
 
     Rewrites destination: the standalone bundle compiles next.config.ts
     rewrites at BUILD time (routes-manifest.json), so the destination cannot
@@ -607,28 +600,33 @@ def _spawn_web_server(
 
     web_dist = getattr(args, "web_dist", None)
     if not web_dist:
-        return None, None, None
+        return None
     dist_path = Path(web_dist).resolve()
     node = _find_node(dist_path)
     if node is None:
         _log("no node runtime found; starting without the web server")
-        return None, None, None
+        return None
     server_js = dist_path / "server.js"
     if not server_js.is_file():
         _log(f"web dist {server_js} has no server.js; starting without the web server")
-        return None, None, None
+        return None
     relay = _bind_relay(api_port)
     if relay is None:
-        return None, None, None
+        return None
+    web_sock = _bind_web_port()
+    if web_sock is None:
+        relay.close()
+        return None
+    announced_port = web_sock.getsockname()[1]
     claim = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         claim.bind(("127.0.0.1", 0))
-        web_port = claim.getsockname()[1]
+        node_port = claim.getsockname()[1]
     finally:
         claim.close()
     env = dict(
         os.environ,
-        PORT=str(web_port),
+        PORT=str(node_port),
         HOSTNAME="127.0.0.1",
         # Only relevant when the bundle was built without the fixed relay
         # destination (dev form); the shipped bundle has the relay baked in.
@@ -661,18 +659,31 @@ def _spawn_web_server(
         )
     except OSError as error:
         _log(f"node spawn failed: {error!r}; starting without the web server")
+        web_sock.close()
         relay.close()
-        return None, None, None
+        return None
+    # Two byte-pipe relays, both loopback-only and helper-lifetime-bound:
+    # announced web port -> node's ephemeral port (this redesign), and the
+    # fixed relay port -> the API (build-time rewrite destination).
+    threading.Thread(
+        target=_serve_relay,
+        args=(web_sock, node_port),
+        name="mangaflow-web-announced",
+        daemon=True,
+    ).start()
     threading.Thread(
         target=_serve_relay,
         args=(relay, api_port),
         name="mangaflow-web-relay",
         daemon=True,
     ).start()
-    # The relay handle travels with the result: the caller closes it when the
-    # web boot fails (a degraded session must not squat on the fixed port) and
-    # on every helper exit path.
-    return node_process, web_port, relay
+    return WebServer(
+        process=node_process,
+        announced_port=announced_port,
+        node_port=node_port,
+        web_sock=web_sock,
+        relay=relay,
+    )
 
 
 WEB_BOOT_TIMEOUT_SECONDS = 10.0
@@ -714,21 +725,80 @@ def _start_web_exit_watch(node: subprocess.Popen, shutdown: threading.Event) -> 
     return thread
 
 
-def _await_web_server(
-    node: subprocess.Popen, web_port: int
-) -> tuple[subprocess.Popen | None, int | None]:
-    """Verify the web server is alive AND accepting on its announced port.
+class WebServer(typing.NamedTuple):
+    """Session-owned plan-B web resources (all released by :meth:`close`).
 
-    The spawn is not proof of ownership: between the claim-port close and
-    node's own bind, the port is free (the documented bind-close race), and
-    any boot crash frees it for good. Publishing ``web_origin`` for a port
-    nobody owns hands the WebView — with the injected API origin and the
-    unauthenticated loopback API behind it — to whichever local process
-    claims the port instead. The dual check closes the pair of races: a
-    dead node fails ``poll()`` (its port-claim died with it), and a claimed
-    port must ANSWER while node is still alive; a final ``poll()`` after the
-    connect catches the case where a hijacker's bind evicted node and the
-    exit status has not been reaped yet.
+    ``announced_port`` is the helper-owned socket the WebView loads — held
+    by the helper since before node spawned, so no local process can put
+    foreign content behind it. ``node_port`` is node's own ephemeral bind,
+    reachable only through the helper's byte relay.
+    """
+
+    process: subprocess.Popen
+    announced_port: int
+    node_port: int
+    web_sock: socket.socket
+    relay: socket.socket
+
+    def close(self) -> None:
+        """Release every session-owned resource: the child, both sockets."""
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                # Reap the killed child promptly: a lingering zombie holds
+                # the pid and reads as a phantom "running" node.
+                try:
+                    self.process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+        for sock in (self.web_sock, self.relay):
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+
+def _bind_web_port() -> socket.socket | None:
+    """Bind the announced web port (dynamic, loopback) for the helper's
+    exclusive session-long use; None when no port can be claimed.
+
+    Windows: ``SO_EXCLUSIVEADDRUSE`` — libuv (node's runtime) sets no socket
+    option on its own binds, so on that platform a ``SO_REUSEADDR`` binder
+    can share a port with an option-less listener while the listener stays
+    alive; the helper's own socket forecloses that for the one port the
+    WebView actually loads (red team 2026-09-09). POSIX: ``SO_REUSEADDR``
+    covers the session-relaunch TIME_WAIT case, same policy as the fixed
+    relay port.
+    """
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    if sys.platform == "win32":
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+    else:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(128)
+    except OSError as error:
+        _log(f"web port bind failed ({error!r}); starting without the web server")
+        sock.close()
+        return None
+    return sock
+
+
+def _await_web_server_boot(node: subprocess.Popen, node_port: int) -> bool:
+    """Verify the web server is alive AND accepting on its own port.
+
+    The spawn is not proof of life: node can die at boot (its ephemeral
+    port lost to a bind-close race winner, or any crash). With the
+    helper-owned announced port the failure mode is availability only —
+    the caller downgrades to the static export — never a hijack, because
+    nothing navigates to node's port and the announced socket cannot leave
+    the helper's hands. A final ``poll()`` after the connect keeps the
+    verdict from riding a node that died while the probe was in flight.
     """
 
     deadline = time.monotonic() + WEB_BOOT_TIMEOUT_SECONDS
@@ -738,30 +808,25 @@ def _await_web_server(
                 f"web server exited during boot (code {node.returncode}); "
                 "continuing without the web server"
             )
-            return None, None
+            return False
         probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         probe.settimeout(1.0)
         try:
-            answering = probe.connect_ex(("127.0.0.1", web_port)) == 0
+            answering = probe.connect_ex(("127.0.0.1", node_port)) == 0
         except OSError:
             answering = False
         finally:
             probe.close()
         if answering and node.poll() is None:
-            return node, web_port
+            return True
         if time.monotonic() >= deadline:
             break
         time.sleep(0.2)
     _log(
-        f"web server did not accept on 127.0.0.1:{web_port} within "
+        f"web server did not accept on 127.0.0.1:{node_port} within "
         f"{WEB_BOOT_TIMEOUT_SECONDS:.0f}s; continuing without the web server"
     )
-    node.terminate()
-    try:
-        node.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        node.kill()
-    return None, None
+    return False
 
 
 def main() -> int:
