@@ -94,6 +94,55 @@ fn bundle_identity_and_targets_stay_pinned() {
 /// remote context is a security decision that must replace this contract
 /// deliberately, not a convenience someone reaches for while wiring up the
 /// web form.
+/// The capability file's authority surface stays exactly the default:
+/// core permissions on the single main window. A new permission, window or
+/// capability file widens what a loaded document may reach and must be a
+/// deliberate contract change, not config drift.
+#[test]
+fn capability_surface_stays_the_pinned_default() {
+    let capabilities = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src-tauri/capabilities");
+    let files: Vec<_> = std::fs::read_dir(&capabilities)
+        .expect("capabilities dir readable")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("capability entries readable");
+    assert_eq!(
+        files.len(),
+        1,
+        "exactly one capability file is expected (default.json)"
+    );
+    let value: Value = serde_json::from_str(
+        &std::fs::read_to_string(files[0].path()).expect("capability readable"),
+    )
+    .expect("capability json parses");
+    assert_eq!(
+        value["identifier"], "default",
+        "capability identifier drifted"
+    );
+    assert_eq!(
+        value["windows"],
+        serde_json::json!(["main"]),
+        "the capability must target only the main window"
+    );
+    assert_eq!(
+        value["permissions"],
+        serde_json::json!(["core:default"]),
+        "permissions drifted beyond core:default — a lead-reviewed security          decision is required"
+    );
+}
+
+/// withGlobalTauri is the shell-tools page's whole trigger surface (W-04):
+/// if it is ever disabled, the desktop_export_logs / desktop_pick_* commands
+/// lose their only in-shell caller. Pin it so the flag cannot be flipped as
+/// cleanup without noticing.
+#[test]
+fn with_global_tauri_stays_enabled_for_the_shell_tools_page() {
+    let config = tauri_config();
+    assert_eq!(
+        config["app"]["withGlobalTauri"], true,
+        "withGlobalTauri must stay on: shell-tools.html invokes the shell commands"
+    );
+}
+
 #[test]
 fn no_capability_may_grant_a_remote_ipc_context() {
     let capabilities = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src-tauri/capabilities");
