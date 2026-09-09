@@ -32,12 +32,14 @@ public sealed class AssetsView : WorkspaceView
     private List<JsonElement> models = [];
     internal CharacterItem? SelectedCharacter;
     internal OutfitItem? SelectedOutfit;
+    internal string OutfitPreviewId = "";
     internal StyleItem? SelectedStyle;
     private readonly TextBlock notice = new() { Style = (Style)Application.Current.FindResource("Caption"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 12) };
 
     public AssetsView()
     {
-        var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 70) };
+        var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 70), Background = (Brush)Application.Current.FindResource("Paper") };
+        RenderOptions.SetClearTypeHint(panel, ClearTypeHint.Enabled);
         foreach (var (key, label) in new[]
                  {
                      (Characters, "人物设定"), (Outfits, "服装档案"), (Scenes, "场景资产"), (Style, "漫画风格"), (References, "原始参考素材"),
@@ -64,7 +66,7 @@ public sealed class AssetsView : WorkspaceView
     {
         var changed = ProjectId != context.ProjectId;
         base.Activate(context); epoch++;
-        if (changed) { SelectedCharacter = null; SelectedOutfit = null; SelectedStyle = null; notice.Text = ""; }
+        if (changed) { SelectedCharacter = null; SelectedOutfit = null; OutfitPreviewId = ""; SelectedStyle = null; notice.Text = ""; }
         // Deactivation cancels in-flight reads; async void has no caller to observe the
         // cancellation, so swallow it here instead of crashing the dispatcher.
         try { await LoadAsync(); }
@@ -143,7 +145,7 @@ public sealed class AssetsView : WorkspaceView
         switch (current)
         {
             case Characters: host.Children.Add(new CharactersPane(this)); break;
-            case Outfits: host.Children.Add(new OutfitsPane(this)); break;
+            case Outfits: host.Children.Add(new OutfitWorkspace(this)); break;
             case Scenes: host.Children.Add(new ScenesPane(this)); break;
             case Style: host.Children.Add(new StylePane(this)); break;
             default: host.Children.Add(new ReferencesPane(this)); break;
@@ -185,8 +187,13 @@ public sealed class AssetsView : WorkspaceView
 
     public override Task RefreshAsync() => LoadAsync();
 
+    internal void InvalidateOutfitDependents() => Cache.Invalidate("assets:" + ProjectId, "library:" + ProjectId, "jobs:" + ProjectId, "workbench:", "script:", "storyboard:", "pages:", "dashboard");
+
+    internal bool OwnsOutfits(OutfitWorkspace pane) => host.Children.Contains(pane);
+
     public override void PollTick()
     {
+        if (current == Outfits && host.Children.OfType<OutfitWorkspace>().FirstOrDefault() is { } outfitPane) outfitPane.PollTick();
         if (current == Style && styles.Any(s => s.Analyzing)) _ = LoadAsync();
     }
 }

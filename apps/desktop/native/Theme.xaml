@@ -367,7 +367,7 @@
  <!-- ============ Inputs ============ -->
  <Style TargetType="TextBox">
   <Setter Property="Padding" Value="12,10"/>
-  <Setter Property="Background" Value="#84FCFBF7"/>
+  <Setter Property="Background" Value="{StaticResource Surface}"/>
   <Setter Property="Foreground" Value="{StaticResource Ink}"/>
   <Setter Property="BorderBrush" Value="{StaticResource LineDark}"/>
   <Setter Property="BorderThickness" Value="1"/>
@@ -446,7 +446,7 @@
  </Style>
  <Style TargetType="PasswordBox">
   <Setter Property="Padding" Value="12,10"/>
-  <Setter Property="Background" Value="#84FCFBF7"/>
+  <Setter Property="Background" Value="{StaticResource Surface}"/>
   <Setter Property="Foreground" Value="{StaticResource Ink}"/>
   <Setter Property="BorderBrush" Value="{StaticResource LineDark}"/>
   <Setter Property="BorderThickness" Value="1"/>
@@ -462,7 +462,7 @@
   <Setter Property="FontSize" Value="13"/>
   <Setter Property="Padding" Value="12,8"/>
   <Setter Property="VerticalContentAlignment" Value="Center"/>
-  <Setter Property="Background" Value="#84FCFBF7"/>
+  <Setter Property="Background" Value="{StaticResource Surface}"/>
   <Setter Property="Foreground" Value="{StaticResource Ink}"/>
   <Setter Property="BorderBrush" Value="{StaticResource LineDark}"/>
   <Setter Property="Cursor" Value="Hand"/>
@@ -704,15 +704,13 @@
   <Setter Property="CornerRadius" Value="0"/>
   <Setter Property="Padding" Value="20"/>
   <Setter Property="Background" Value="{StaticResource Surface}"/>
-  <Setter Property="Effect">
-   <Setter.Value><DropShadowEffect Color="#151512" BlurRadius="0" ShadowDepth="5" Direction="315" Opacity="0.055"/></Setter.Value>
-  </Setter>
+  <!-- Keep text on the opaque surface; an ancestor Effect disables ClearType. -->
+  <Setter Property="RenderOptions.ClearTypeHint" Value="Enabled"/>
  </Style>
  <Style x:Key="CardInk" TargetType="Border" BasedOn="{StaticResource Card}">
   <Setter Property="BorderBrush" Value="{StaticResource Ink}"/>
-  <Setter Property="Effect">
-   <Setter.Value><DropShadowEffect Color="#151512" BlurRadius="0" ShadowDepth="7" Direction="315" Opacity="0.08"/></Setter.Value>
-  </Setter>
+  <!-- Keep text on the opaque surface; an ancestor Effect disables ClearType. -->
+  <Setter Property="RenderOptions.ClearTypeHint" Value="Enabled"/>
  </Style>
  <Style x:Key="Banner" TargetType="Border">
   <Setter Property="Padding" Value="16,10"/>

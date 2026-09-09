@@ -220,7 +220,7 @@ public record OutfitItem(string Id, string CharacterId, string Name)
     public static OutfitItem From(JsonElement o) => new(o.Text("id"), o.Text("character_id"), o.Text("name"))
     {
         ReferenceAssetIds = o.Strings("reference_asset_ids"),
-        LockedFields = o.Text("locked_fields"),
+        LockedFields = string.Join("，", o.Strings("locked_fields")),
         Version = o.Number("version"),
     };
 }

@@ -1,4 +1,4 @@
-# 网页到 WPF 原生工作台迁移清单
+﻿# 网页到 WPF 原生工作台迁移清单
 
 盘点日期：2026-09-08；初始基线：`9e6f738`。以当前源码和
 `docs/adr/native-windows-client.md` 为准。旧 Tauri/Next 壳保留，但不计作 WPF 功能交付。
@@ -16,6 +16,35 @@
 遗漏 ItemTemplateSelector，避免项目选择框输出整个 ProjectItem。新增 NativeButtonChecks
 验证矩形状态、分类切换/重复选择、模型互斥选择及 DisplayMemberPath；650/1060 DIP
 资产页预览使用模拟数据，仅作为本次样式检查。
+
+## 2026-09-09 逐页还原：服装档案与卡片文字
+
+服装入口已切换到原生 OutfitWorkspace，依据网页 assets-section.tsx、use-assets-workspace.ts
+与 globals.css 还原：网页标题、显式双列模型选择、左侧三步绑定表单/待绑定摘要、右侧全部
+角色的已保存档案，以及下方上传区、生成素材选择和双列参考图卡。窄窗口改为上下排列。
+支持新建、带 version 的 PATCH 编辑、取消编辑、参考图加入/移除、上传/拖放、素材重命名、
+重分类及删除、档案删除确认、生成穿着图、实际提示词和实时结果。locked_fields 按数组传输。
+生成素材库使用 groups / next_cursor 对象契约并去重；导入仅加入草稿，保存才绑定。
+生成结果涵盖上传/检查阶段轮询，终态停止，返回页面读取最近批次；异步结果校验页面归属，
+离开后不会继续派发第二步生成请求。服务端 409 保留编辑内容，写入期间禁止重复操作。
+
+字体追加修复：移除 Card / CardInk 上包住文字的 DropShadowEffect，将文本/密码/下拉输入
+背景改为实色，并在资产页滚动内容内部提供实色背景和 ClearTypeHint。保留按钮模板中
+独立的装饰阴影，不栅格化整块卡片文字。
+依据：[Microsoft WPF ClearTypeHint 文档](https://learn.microsoft.com/en-us/dotnet/api/system.windows.media.renderoptions.cleartypehint)
+说明 Effect、Clip、Opacity 等中间渲染层及透明背景可能导致 ClearType 停用。
+
+验证：Release 编译 0 错误；54 项基础检查和完整原生 UI 回归通过。新增 NativeOutfitChecks
+使用受控 HTTP 验证真实 WPF 控件的 650/1100 DIP 布局、实色文字表面、锁定项数组、版本
+编辑/冲突保留、保存去重、素材库游标/导入、PNG multipart 上传与草稿选中、显式模型生成、
+上传/检查阶段轮询、终态停止、返回结果恢复，以及离页/换角色的迟到响应隔离。
+测试配置和上传临时文件在 finally 中清理。预览使用模拟数据：
+output/native-parity-review/native-outfits-restored-shell.png、native-outfits-restored-650.png、
+native-outfit-references-restored.png、native-outfits-text-125pct.png。
+
+边界：本次内置浏览器访问网页返回 ERR_CONNECTION_REFUSED；网页实时并排验收为 NOT RUN。
+文件选择器、真实拖放手势、删除/用途修改确认弹窗、真实供应商调用及物理屏幕 DPI/动画
+性能未实机验收。离屏截图不能证明用户看到的模糊已完全消除，也不代表全客户端一比一完成。
 
 ## 2026-09-09 逐页还原：人物设定与字体清晰度
 
