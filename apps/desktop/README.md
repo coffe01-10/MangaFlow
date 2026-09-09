@@ -110,7 +110,7 @@ apps/desktop/scripts/run-sidecar-e2e.sh
 
 # b. Rust 协议/所有权测试（需 python3；Windows 上默认解析为 `python`，
 #    除非显式设置 MANGAFLOW_DESKTOP_PYTHON）
-cd apps/desktop/shell-core && cargo test   # 49 项两平台原生全绿（2026-09-06 Windows 实机复跑）
+cd apps/desktop/shell-core && cargo test   # 85 项（Linux 2026-09-09 实测；2026-09-06 Windows 实机为 49 项，夜间波次后持续增长）
 
 # c. Windows 目标编译校验（在本 Linux 机即可；需要 llvm-rc 于 PATH）
 cd apps/desktop/src-tauri && cargo check --target x86_64-pc-windows-msvc
