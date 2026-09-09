@@ -444,6 +444,7 @@ def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
     node = None
     sock = None
     relay = None
+    web_shutdown = threading.Event()
     try:
         sock = _bind_loopback()
         port = sock.getsockname()[1]
@@ -481,6 +482,11 @@ def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
             # that never answers is reaped and the session continues without
             # a web server (the shell falls back to the static export).
             node, web_port = _await_web_server(node, web_port)
+            if node is not None:
+                # Ownership of the announced origin now includes noticing
+                # when it dies: arm the mid-session exit watch (log-only,
+                # ADR §4.5 detection scope).
+                _start_web_exit_watch(node, web_shutdown)
         if node is None and relay is not None:
             # A degraded (static-export) session has no web server the relay
             # could feed: release the fixed relay port now instead of
@@ -532,6 +538,7 @@ def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
         # member through the helper); Unix pdeathsig (set on the node spawn
         # above) covers the shell/helper death; this finally covers the
         # cooperative and refused-GO paths.
+        web_shutdown.set()  # deliberate stop: the exit watcher must stay silent
         if node is not None and node.poll() is None:
             node.terminate()
             try:
@@ -669,6 +676,42 @@ def _spawn_web_server(
 
 
 WEB_BOOT_TIMEOUT_SECONDS = 10.0
+# Mid-session death detection cadence (ADR §4.5 scope note, 2026-09-08: 0.2.x
+# delivers DETECTION + clean teardown + manual reconnect; automatic restart is
+# out of scope). The WPF leg's 250ms budget is a UX-banner latency contract;
+# here the detection output is a forensic log line, so the cadence only bounds
+# how late the evidence appears in the unified logs.
+WEB_EXIT_WATCH_INTERVAL_SECONDS = 0.25
+
+
+def _start_web_exit_watch(node: subprocess.Popen, shutdown: threading.Event) -> threading.Thread:
+    """Detect the plan-B web server dying mid-session and log it.
+
+    Boot verification (#271) proves node owns its port at READY time; nothing
+    watched it afterwards, so a mid-session crash left the WebView pointed at
+    a dead origin with only node's own crash output (if any) in the unified
+    logs. This watcher adds the ADR's DETECTION half for the Tauri leg: a
+    daemon thread polls the child and, when it exits WITHOUT a helper
+    shutdown in progress, records the exit code as a forensic milestone. It
+    never restarts anything (out of 0.2.x scope) and never blocks shutdown —
+    the helper's finally sets the event first, so cooperative and escalation
+    stops stay silent.
+    """
+
+    def _watch() -> None:
+        while not shutdown.is_set():
+            code = node.poll()
+            if code is not None:
+                _log(
+                    f"web server exited mid-session (code {code}); the plan-B "
+                    "web origin is dead - restart the app to recover"
+                )
+                return
+            time.sleep(WEB_EXIT_WATCH_INTERVAL_SECONDS)
+
+    thread = threading.Thread(target=_watch, name="mangaflow-web-exit-watch", daemon=True)
+    thread.start()
+    return thread
 
 
 def _await_web_server(
