@@ -833,6 +833,149 @@ sys.stdin.read()
     let _ = std::fs::remove_dir_all(&user_data);
 }
 
+/// Respawn discipline: a full handshake + stop must leave the process
+/// clean enough that a SECOND helper (fresh token, fresh runtime dir)
+/// handshakes and stops normally — no leaked global state, no port or
+/// group leftovers gating the next session.
+#[test]
+fn a_second_helper_spawns_cleanly_after_a_full_first_session() {
+    let user_data = temp_user_data("respawn");
+    let stand_in = r#"
+import json, os, sys, threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+token = os.environ["MANGAFLOW_DESKTOP_TOKEN"]
+journal_path = os.environ["MANGAFLOW_DESKTOP_JOURNAL"]
+
+class Health(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b'{"status":"ok"}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+server = ThreadingHTTPServer(("127.0.0.1", 0), Health)
+origin = f"http://127.0.0.1:{server.server_address[1]}"
+with open(journal_path, "w", encoding="utf-8") as handle:
+    json.dump({"version": 1, "token": token, "state": "ready",
+               "pid": os.getpid(), "api_origin": origin}, handle)
+print("MANGAFLOW_READY " + json.dumps(
+    {"token": token, "pid": os.getpid(), "api_origin": origin}), flush=True)
+server.serve_forever()
+"#;
+    let stand_in_path = user_data.join("stand_in_respawn.py");
+    std::fs::write(&stand_in_path, stand_in).unwrap();
+    let make_config = || HelperConfig {
+        python: python(),
+        helper_script: stand_in_path.clone(),
+        helper_args: vec![],
+        ready_timeout: Duration::from_secs(10),
+        health_timeout: Duration::from_secs(5),
+    };
+
+    let mut first = spawn_helper(&make_config(), &user_data).expect("first handshake");
+    let first_exit = first.tree.stop(Duration::from_secs(5)).expect("first stop");
+
+    let mut second = spawn_helper(&make_config(), &user_data).expect("second handshake");
+    let second_exit = second.tree.stop(Duration::from_secs(5)).expect("second stop");
+
+    // Both cooperative stops recorded an exit; neither session poisoned the
+    // next one.
+    let _ = (first_exit, second_exit);
+    assert!(!first.tree.alive() && !second.tree.alive());
+    let _ = std::fs::remove_dir_all(&user_data);
+}
+
+/// F41 closure: the ReadyTimeout path had no end-to-end test — a helper
+/// that NEVER publishes READY must fail with SpawnError::ReadyTimeout on
+/// the ready budget (not the health window), tear the silent helper down,
+/// and record a terminal journal with only the spawn milestone.
+#[test]
+fn a_silent_helper_fails_with_ready_timeout_and_is_torn_down() {
+    let user_data = temp_user_data("never-ready");
+    let stand_in_path = user_data.join("stand_in_silent.py");
+    std::fs::write(&stand_in_path, "import time; time.sleep(60)").unwrap();
+    let config = HelperConfig {
+        python: python(),
+        helper_script: stand_in_path.clone(),
+        helper_args: vec![],
+        ready_timeout: Duration::from_secs(2),
+        health_timeout: Duration::from_secs(5),
+    };
+
+    let started = Instant::now();
+    let error = match spawn_helper(&config, &user_data) {
+        Ok(_) => panic!("a helper that never publishes READY must fail"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, SpawnError::ReadyTimeout), "{error:?}");
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "ReadyTimeout must fire on the ready budget, not the health window"
+    );
+
+    // Teardown: the silent helper must be dead (abort_spawn stops the tree).
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let helper_alive = |tag: &str| -> bool {
+        let _ = tag;
+        std::process::Command::new("pgrep")
+            .args(["-f", "stand_in_silent.py"])
+            .output()
+            .map(|output| !output.stdout.is_empty())
+            .unwrap_or(true)
+    };
+    while helper_alive("poll") && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    #[cfg(unix)]
+    assert!(
+        !helper_alive("final"),
+        "the silent helper must be dead after the ReadyTimeout teardown"
+    );
+
+    // Exactly one owned run exists, recorded as terminal, with the spawn
+    // milestone and no ready_verified (the handshake never got that far).
+    let runtime_entry = std::fs::read_dir(user_data.join("runtime"))
+        .expect("runtime dir")
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let journal: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(runtime_entry.join("owner.json")).unwrap())
+            .unwrap();
+    assert_eq!(journal["state"], "stopped", "{journal}");
+    let logs_dir = user_data.join("logs");
+    let shell_log = std::fs::read_dir(&logs_dir)
+        .unwrap()
+        .find(|entry| {
+            entry.as_ref().unwrap().file_name().to_string_lossy().starts_with("shell-")
+        })
+        .unwrap()
+        .unwrap()
+        .path();
+    let events: Vec<String> = std::fs::read_to_string(&shell_log)
+        .unwrap()
+        .lines()
+        .filter_map(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .ok()?
+                .get("event")?
+                .as_str()
+                .map(str::to_string)
+        })
+        .collect();
+    // The handshake never got past spawn: no ready_verified/go_sent/health
+    // milestones — only the spawn and the teardown's own stopped marker.
+    assert_eq!(events, vec!["spawn".to_string(), "stopped".to_string()], "{events:?}");
+    let _ = std::fs::remove_dir_all(&user_data);
+}
+
 /// Regression (red team 2026-09-08): `stop()` called after the direct child
 /// was already reaped — the native-host self-exit path reaps via `try_wait`
 /// and then stops the tree — must not signal the freed pid. The fixture
