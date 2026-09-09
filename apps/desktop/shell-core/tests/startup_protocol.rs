@@ -891,6 +891,65 @@ server.serve_forever()
     let _ = std::fs::remove_dir_all(&user_data);
 }
 
+/// Error-path pin: a helper that exits IMMEDIATELY (before any READY
+/// output) leaves stdout at EOF — the handshake must fail fast with a
+/// verification error (the empty line is not a READY line), tear the
+/// tree down, and never hang on the read.
+#[test]
+fn an_immediately_exiting_helper_fails_verification_and_is_torn_down() {
+    let user_data = temp_user_data("instant-exit");
+    let stand_in_path = user_data.join("stand_in_exit.py");
+    std::fs::write(&stand_in_path, "import sys; sys.exit(3)").unwrap();
+    let config = HelperConfig {
+        python: python(),
+        helper_script: stand_in_path.clone(),
+        helper_args: vec![],
+        ready_timeout: Duration::from_secs(20),
+        health_timeout: Duration::from_secs(10),
+    };
+
+    let started = Instant::now();
+    let error = match spawn_helper(&config, &user_data) {
+        Ok(_) => panic!("an exiting helper must not complete the handshake"),
+        Err(error) => error,
+    };
+    // The handshake maps stdout EOF to an explicit UnexpectedEof I/O error
+    // (dedicated to "helper closed stdout before publishing readiness") —
+    // a fast, named failure instead of a read hang or a timeout wait.
+    assert!(
+        matches!(error, SpawnError::Io(io_error) if io_error.kind() == std::io::ErrorKind::UnexpectedEof),
+        "unexpected error: {error:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "the EOF failure must be quick, not a ready-timeout wait"
+    );
+
+    // The exiting stand-in is reaped by the teardown; nothing may linger.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        let live = std::process::Command::new("pgrep")
+            .args(["-f", "stand_in_exit.py"])
+            .output()
+            .map(|output| !output.stdout.is_empty())
+            .unwrap_or(true);
+        if !live {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    #[cfg(unix)]
+    assert!(
+        !std::process::Command::new("pgrep")
+            .args(["-f", "stand_in_exit.py"])
+            .output()
+            .map(|output| !output.stdout.is_empty())
+            .unwrap_or(true),
+        "no stand-in process may linger after the teardown"
+    );
+    let _ = std::fs::remove_dir_all(&user_data);
+}
+
 /// F41 closure: the ReadyTimeout path had no end-to-end test — a helper
 /// that NEVER publishes READY must fail with SpawnError::ReadyTimeout on
 /// the ready budget (not the health window), tear the silent helper down,
