@@ -1014,6 +1014,33 @@ mod tests {
 
     /// Clock-skew fail-closed leg: a terminal journal whose mtime is in the
     /// FUTURE must keep the directory (duration_since errs → continue).
+    /// A journal that is a FIFO must keep the candidate WITHOUT blocking:
+    /// read_journal_bounded checks regular-file via metadata BEFORE any
+    /// open, so the sweep can never hang on a planted pipe.
+    #[test]
+    fn sweep_keeps_a_candidate_whose_journal_is_a_fifo() {
+        let user_data = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-sweep-fifo-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&user_data);
+        let runtime = user_data.join("runtime");
+        let candidate = runtime.join(format!("{RUNTIME_DIR_PREFIX}{}", "b".repeat(32)));
+        std::fs::create_dir_all(&candidate).unwrap();
+        let journal = candidate.join(JOURNAL_NAME);
+        let cpath = std::ffi::CString::new(journal.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o644) }, 0);
+
+        sweep_runtime_dirs_with(&user_data, 0).unwrap();
+
+        assert!(
+            candidate.exists() && journal.exists(),
+            "the FIFO-journal candidate must be kept without blocking"
+        );
+        let _ = std::fs::remove_dir_all(&user_data);
+    }
+
     #[test]
     fn sweep_keeps_a_candidate_with_a_future_mtime_journal() {
         let user_data = std::env::temp_dir().join(format!(

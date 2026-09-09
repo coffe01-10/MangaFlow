@@ -11,7 +11,7 @@ use mangaflow_desktop_shell_core::picker::{
     read_registered_file, validate_picked_directory, validate_picked_file, PickError, PickKind,
     PickedRegistry,
 };
-use mangaflow_desktop_shell_core::protocol::new_token;
+use mangaflow_desktop_shell_core::protocol::{new_token, RUNTIME_DIR_PREFIX};
 
 fn temp_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -454,4 +454,39 @@ fn suffix_policy_maps_per_kind_with_exact_allowed_sets() {
             Err(other) => panic!("{name}/{kind:?}: unexpected {other:?}"),
         }
     }
+}
+
+/// Sweep-name boundary table (end-to-end over the real sweep): names that
+/// fail `is_runtime_dir_name` must keep their directories even when the
+/// journal claims a terminal state — the deletion predicate is gated on
+/// the name being a real owned runtime directory.
+#[test]
+fn sweep_keeps_candidates_with_invalid_runtime_names() {
+    let user_data = temp_dir("names");
+    let runtime = user_data.join("runtime");
+    let names = [
+        format!("{RUNTIME_DIR_PREFIX}{}", "A".repeat(32)),   // uppercase hex
+        format!("{RUNTIME_DIR_PREFIX}{}", "g".repeat(32)),   // non-hex char
+        format!("{RUNTIME_DIR_PREFIX}abc"),                  // too short
+        format!("foreign-{}", "a".repeat(32)),               // foreign prefix
+    ];
+    for name in &names {
+        let candidate = runtime.join(name);
+        fs::create_dir_all(&candidate).unwrap();
+        fs::write(
+            candidate.join("owner.json"),
+            format!("{{\"version\":1,\"token\":\"{}\",\"state\":\"stopped\"}}", name),
+        )
+        .unwrap();
+    }
+
+    mangaflow_desktop_shell_core::protocol::sweep_runtime_dirs_with(&user_data, 0).unwrap();
+
+    for name in &names {
+        assert!(
+            runtime.join(name).exists(),
+            "a foreign-named directory must never be swept"
+        );
+    }
+    let _ = fs::remove_dir_all(&user_data);
 }
