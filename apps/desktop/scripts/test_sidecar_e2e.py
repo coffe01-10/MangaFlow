@@ -558,9 +558,13 @@ def test_sidecar_plan_b_web_server_loop(tmp_path: Path):
         probe.close()
     # E2e stability contract: a COOPERATIVE stop must never produce a
     # spurious "exited mid-session" alarm. The exit watcher's shutdown
-    # event suppresses it; a regression there would stamp a false
-    # lifecycle milestone into every healthy session's unified log and
-    # poison forensics.
+    # event suppresses it. Precision: this assertion deterministically
+    # catches milestones emitted on the stop path itself, and catches
+    # disarming regressions whenever the watcher wins the exit race (a
+    # disarmed watcher can still lose that race at the shipped 250ms
+    # cadence, because the helper unwinds within tens of ms of node's
+    # death) - a regression there would stamp a false lifecycle milestone
+    # into healthy sessions' unified logs and poison forensics.
     stderr_text = shell.stderr_log_path.read_text(encoding="utf-8", errors="replace")
     assert "exited mid-session" not in stderr_text, (
         "healthy cooperative stop logged a spurious mid-session web exit"
@@ -646,7 +650,7 @@ def test_sidecar_mid_session_node_exit_is_detected_and_logged(tmp_path: Path):
 
     shell = DesktopShell(tmp_path / "user-data", web_dist=dying_dist)
     (shell.user_data / "data").mkdir(parents=True, exist_ok=True)
-    stderr_log = shell.runtime / "helper.stderr.log"
+    stderr_log = shell.stderr_log_path
     try:
         record = shell.handshake()
         shell.wait_health()
