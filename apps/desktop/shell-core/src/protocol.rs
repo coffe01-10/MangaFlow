@@ -1001,6 +1001,43 @@ mod tests {
         assert_eq!(seen.len(), 128);
     }
 
+    /// Clock-skew fail-closed leg: a terminal journal whose mtime is in the
+    /// FUTURE must keep the directory (duration_since errs → continue).
+    #[test]
+    fn sweep_keeps_a_candidate_with_a_future_mtime_journal() {
+        let user_data = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-sweep-future-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&user_data);
+        let runtime = user_data.join("runtime");
+        let candidate = runtime.join(format!("{RUNTIME_DIR_PREFIX}{}", "e".repeat(32)));
+        std::fs::create_dir_all(&candidate).unwrap();
+        std::fs::write(
+            candidate.join(JOURNAL_NAME),
+            format!("{{\"version\":1,\"token\":\"{}\",\"state\":\"stopped\"}}", "f".repeat(32)),
+        )
+        .unwrap();
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+        let handle = std::fs::OpenOptions::new()
+            .write(true)
+            .open(candidate.join(JOURNAL_NAME))
+            .unwrap();
+        handle
+            .set_times(std::fs::FileTimes::new().set_modified(future))
+            .unwrap();
+        drop(handle);
+
+        sweep_runtime_dirs_with(&user_data, 0).unwrap();
+
+        assert!(
+            candidate.exists(),
+            "a future-mtime terminal journal must keep the candidate (clock-skew fail-closed)"
+        );
+        let _ = std::fs::remove_dir_all(&user_data);
+    }
+
     /// The sweep reads a candidate's journal through read_journal_bounded,
     /// which refuses symlinks: a planted symlink at owner.json must keep
     /// the candidate directory AND the link target's bytes intact — the
@@ -1045,6 +1082,43 @@ mod tests {
             "the link target's bytes must be untouched"
         );
         let _ = std::fs::remove_dir_all(&user_data);
+    }
+
+    /// Error-path pins: a symlink at the journal path and a non-UTF8
+    /// journal both fail closed (the bounded reader's refusals surfaced as
+    /// JournalMissing / JournalMismatch("non-utf8")).
+    #[test]
+    #[cfg(unix)]
+    fn journal_symlink_and_non_utf8_fail_closed() {
+        let dir = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-jsymlink-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let journal = dir.join(JOURNAL_NAME);
+        let ready = ReadyPayload {
+            token: "0".repeat(32),
+            pid: 1,
+            api_origin: "http://127.0.0.1:8080".into(),
+            port: 8080,
+            web_origin: None,
+        };
+        let outside = dir.join("outside.json");
+        std::fs::write(&outside, "{\"stolen\": true}").unwrap();
+        std::os::unix::fs::symlink(&outside, &journal).unwrap();
+        assert!(matches!(
+            verify_journal(&journal, &ready),
+            Err(VerifyError::JournalMissing)
+        ));
+        std::fs::remove_file(&journal).unwrap();
+        std::fs::write(&journal, b"\xff\xfe not utf8").unwrap();
+        assert!(matches!(
+            verify_journal(&journal, &ready),
+            Err(VerifyError::JournalMismatch("non-utf8"))
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
