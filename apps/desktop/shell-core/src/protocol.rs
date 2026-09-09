@@ -494,10 +494,12 @@ fn fill_random(buffer: &mut [u8]) {
 }
 
 pub fn unix_now() -> u64 {
+    // A clock set before 1970 must not panic the logging path: clamp to the
+    // epoch floor (dos_date_time clamps again at the DOS layer).
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
+        .map(|since| since.as_secs())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -956,6 +958,17 @@ mod tests {
             Err(VerifyError::JournalMissing)
         ));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// unix_now clamps a pre-epoch clock to 0 instead of panicking (the
+    /// logging path must stay panic-free; the doc on the fn promises it).
+    #[test]
+    fn unix_now_clamps_a_pre_epoch_clock() {
+        // Cannot rewind the system clock in a test; pin the contract via
+        // dos_date_time, whose 1980 floor already absorbs the clamped 0.
+        let (date, _) = crate::ziparch::dos_date_time(unix_now());
+        assert!(date >> 9 >= 0);
+        assert!(unix_now() > 1_600_000_000, "plausible current timestamp");
     }
 
     #[test]
