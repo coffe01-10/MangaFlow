@@ -83,6 +83,7 @@
 | PR-G #285（已合并）（scripts 子系统） | run-sidecar-e2e.sh 纳入 relay/bind 回归套件 | Linux pytest RUN |
 | PR-H #288（relay 加固） | 并发连接上限 128：溢出快速关闭、双向 pump 结束才释放槽位、既有连接不受影响 | Linux pytest RUN（7 passed；旁路变异必失败） |
 | PR-I #289（scripts 润色） | D5 根路径改 `fileURLToPath`（win32 可移植性） | Linux D5 RUN（PASS）；win32 NOT RUN |
+| PR-J #291（web 检测） | plan-B web 服务器 mid-session 退出的检测与法证日志（250ms 轮询，只记日志不重启，ADR §4.5 范围内） | Linux e2e RUN（runner 13 passed；禁用 watcher 的变异必失败） |
 | 审计文档 | 本文件（随各轮审查增量更新；首轮子代理审查修订 7 处行号引用 + §11 新增 win32 可移植性残余） | 子代理抽查 30+ 引用 |
 
 ## 12. 子代理审查记录（≥3 轮，结论落到文件/行）
@@ -122,6 +123,16 @@
   `fileURLToPath`，POSIX 输出不变；win32 实跑仍 NOT RUN）。
 - Windows 实机（WebView2/Job/EXCLUSIVEADDRUSE/安装器链）本沙箱不可达，全部 NOT RUN。
 
+## 12b. 追加发现（web 相关，待 lead 决策，不擅改）
+
+- **plan-B 形态下壳工具页不可达**：`shell/shell-tools.html`（日志导出/本地文件选择/回读）
+  仅随静态导出拷入 `dist/frontend/`，经 `tauri.localhost/shell-tools.html`（local context，
+  IPC 放行）可达；plan-B 的 WebView 加载 `http://127.0.0.1:<web>`（remote context，#254 已证
+  IPC 拒绝），且 Next 应用无任何入口链接壳工具页 ⇒ plan-B 用户没有任何路径触发
+  `desktop_export_logs` / `desktop_pick_file` / `desktop_read_picked_file`。静态导出形态
+  （legacy）有此能力 ⇒ 相对功能回退。候选方案（均为产品设计决策，不擅动）：壳级菜单/托盘
+  入口打开壳工具页、Next 应用加壳链接、或接受缺失直至原生客户端替代。**未修，仅上报。**
+
 ## 13. 完成审计（final sweep，master = `f6e4687`）
 
 - **同步**：`origin/master` 自本轮起点推进 `a52fca9` → `f6e4687`（#286 合入 + N1 final
@@ -131,6 +142,7 @@
   - `apps/desktop/scripts/run-sidecar-e2e.sh` → **11 passed**（23.7s：e2e 3 + relay 管道 6 + relay bind 2）；
   - shell-core `cargo test` → **9/9 套件 ok**（含 N1 新增用例）；
   - D5 全程 **PASS**（静态导出重建后：握手、围栏 404、origin 注入、直连 CORS 放行 API、渲染）。
+  - 续跑追加：runner **13 passed**（27.2s，含新增 mid-session 检测 e2e）；#291 待 lead 合并。
 - **遗留 PR**：#286（断言统一）已由 lead 合并；本审计报告随 night 分支持久化
   （`night/n2-platform-burn-20260908`）。
 - **收敛判定**：范围内（sidecar / scripts / plan-B 壳内 Web / static-export 围栏）无已知
