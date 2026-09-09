@@ -70,20 +70,24 @@ test.describe("用量与成本看板（离线种子数据）", () => {
     await expect(dialog).toHaveCount(0);
   });
 
-  test("通道筛选只作用于调用明细，CLI 行保留且不显示免费", async ({ page }) => {
+  test("通道筛选同时作用于调用明细与汇总分解", async ({ page }) => {
     await page.goto("/settings/usage");
     await expect(page.getByLabel("调用明细")).toBeVisible();
 
     const attempts = page.getByLabel("调用明细");
+    const breakdown = page.getByLabel("供应商与模型分解");
+    // 未筛选时两个通道的模型同时出现在明细与分解。
     await expect(attempts.getByText("e2e-gate-cli-codex")).toBeVisible();
     await expect(attempts.getByText("e2e-gate-image").first()).toBeVisible();
+    await expect(breakdown.getByText("e2e-gate-image").first()).toBeVisible();
+    await expect(breakdown.getByText("e2e-gate-cli-codex").first()).toBeVisible();
 
     await page.getByLabel("按通道筛选").selectOption("CLI");
     await expect(attempts.getByText("e2e-gate-cli-codex")).toBeVisible();
     await expect(attempts.getByText("e2e-gate-image")).toHaveCount(0);
-    // 汇总层（供应商/模型分解）不受通道筛选影响：summary 契约无通道参数
-    const breakdown = page.getByLabel("供应商与模型分解");
-    await expect(breakdown.getByText("e2e-gate-image").first()).toBeVisible();
+    // bef240e 起 summary 契约带 channel 参数：分解与 KPI 同样按通道过滤。
+    await expect(breakdown.getByText("e2e-gate-image")).toHaveCount(0);
+    await expect(breakdown.getByText("e2e-gate-cli-codex").first()).toBeVisible();
   });
 
   test("导出 CSV 生成按币种分行的文件", async ({ page }) => {
