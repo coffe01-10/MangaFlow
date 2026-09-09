@@ -757,6 +757,13 @@ def _spawn_web_server(args: argparse.Namespace, api_port: int) -> WebServer | No
             node_process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             node_process.kill()
+            # Reap the killed child for symmetry with WebServer.close: a
+            # lingering zombie holds the pid and reads as a phantom
+            # "running" node (E4 review).
+            try:
+                node_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
         for sock in (web_sock, relay):
             try:
                 sock.close()
