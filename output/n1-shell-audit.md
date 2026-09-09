@@ -216,6 +216,9 @@
 - 测试增量：单元 65 项（+2）、集成 40 项，9/9 套件全绿。
 
 新记录的待办（下轮候选）：
+- 续跑轮 3 已落地：垃圾 READY 行端到端（Verify(BadLine) + stand-in 清死）、
+  sweep 对 FIFO journal 无阻塞保持、非法 runtime 目录名（大写 hex/非 hex/过短/
+  外来前缀）绝不清扫——三组边界测试随本轮交付。
 
 - ~~`unix_now` panic 路径~~ 已修（commit 2cb6321 注入缝钳制，见轮 5 记录）；残留：
   `write_journal_atomic` 的 serde_json unwrap（Value 序列化实际不可失败，仅警告级）。
