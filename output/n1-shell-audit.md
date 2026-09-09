@@ -204,6 +204,15 @@
 
 - NIT 已修：journal symlink pin 补 outside.json 字节断言；sweep 未来 mtime 测试
   补 aged 对照组（hex 名修正后通过）；TODO 勘误（unix_now 已修）。
+### 续跑轮 1（垃圾 READY 端到端 + FIFO/命名边界）
+
+- 垃圾 READY 行端到端：非 READY 前缀首行 → Verify(BadLine) 快速失败（时序断言
+  < ready 预算）+ stand-in 清死。
+- sweep FIFO pin：journal 为 FIFO 的候选在无阻塞下保持目录（metadata-before-open
+  排序，libc::mkfifo 植入）。
+- sweep 非法名边界表：大写 hex / 非 hex / 过短 / 外来前缀绝不清扫（terminal
+  journal 也一样）。
+
 ### 续跑轮 2（get_status 夹具加固 + 畸形 journal pin）
 
 - 夹具加固：get_status_caps_the_response_read 在全量并行负载下出现过一次
