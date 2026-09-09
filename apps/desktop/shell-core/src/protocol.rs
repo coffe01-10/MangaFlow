@@ -669,12 +669,16 @@ mod tests {
         ));
     }
 
-    /// The /proc starttime anchor: the anchor is REQUIRED on Unix (red team
-    /// 2026-09-09 — the old `is_some() &&` guard failed open on omission).
-    /// A journal carrying the anchor must match the live process; a
-    /// mismatching or absent anchor fails closed. (The Windows leg has no
-    /// /proc equivalent; Job membership anchors there.)
+    /// The /proc starttime anchor is REQUIRED on Unix (red team 2026-09-09
+    /// — the old `is_some() &&` guard failed open on omission): a journal
+    /// carrying the anchor must match the live process; a mismatching or
+    /// absent anchor fails closed. The Windows leg has no /proc equivalent
+    /// (Job membership anchors there), and pid_starttime reads /proc, so
+    /// the whole matrix is unix-gated.
     #[test]
+    #[cfg(unix)]
+    #[test]
+    #[cfg(unix)]
     fn journal_starttime_anchor_matches_or_fails_closed() {
         let dir = std::env::temp_dir().join(format!(
             "mangaflow-desktop-starttime-{}-{}",
