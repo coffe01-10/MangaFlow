@@ -1030,19 +1030,33 @@ mod tests {
             CString::new(journal.as_os_str().as_encoded_bytes()).unwrap();
         assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o644) }, 0);
 
+        // The wait is bounded by a channel: a regression to open-before-
+        // metadata would hang the sweep forever on the writer-less FIFO —
+        // a hang must surface as a test failure, not wedge the suite.
+        let (tx, rx) = std::sync::mpsc::channel();
         let worker = std::thread::spawn({
             let user_data = user_data.clone();
-            move || sweep_runtime_dirs_with(&user_data, 0)
+            move || {
+                let result = std::panic::catch_unwind(
+                    std::panic::AssertUnwindSafe(|| {
+                        sweep_runtime_dirs_with(&user_data, 0)
+                    }),
+                );
+                let _ = tx.send(());
+                result
+            }
         });
-        let result = match worker.join() {
-            Ok(result) => result,
-            Err(_) => panic!("the sweep panicked on the FIFO journal"),
-        };
-        // A regression to open-before-metadata would block the sweep
-        // forever (writer-less FIFO) — the bounded join turns that into a
-        // test failure via the panic above; reaching here means the
-        // metadata refusal held.
-        assert!(result.is_ok(), "{result:?}");
+        let sweep_started = rx
+            .recv_timeout(Duration::from_secs(60))
+            .expect("the sweep hung on the FIFO journal — metadata-before-open regression");
+        let sweep_result = worker
+            .join()
+            .unwrap_or_else(|payload| panic!("the sweep worker panicked: {payload:?}"));
+        assert!(
+            sweep_result.is_ok(),
+            "the sweep must not error on a FIFO journal: {sweep_result:?}"
+        );
+        let _ = sweep_started;
 
         assert!(
             candidate.exists() && journal.exists(),
