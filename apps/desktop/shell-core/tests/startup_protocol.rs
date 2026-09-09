@@ -660,6 +660,12 @@ fn post_ready_stdout_chatter_does_not_break_the_session() {
 import json, os, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+def _starttime():
+    try:
+        return int(open("/proc/self/stat").read().rsplit(")", 1)[1].split()[19])
+    except Exception:
+        return None
+
 token = os.environ["MANGAFLOW_DESKTOP_TOKEN"]
 journal_path = os.environ["MANGAFLOW_DESKTOP_JOURNAL"]
 
@@ -685,6 +691,7 @@ record = {
     "token": token,
     "state": "ready",
     "pid": os.getpid(),
+    "pid_starttime": _starttime(),
     "api_origin": origin,
 }
 with open(journal_path, "w", encoding="utf-8") as handle:
@@ -752,6 +759,13 @@ fn health_timeout_failure_still_records_terminal_state_and_kills() {
     // helper's EOF watcher.
     let stand_in = r#"
 import json, os, sys
+
+def _starttime():
+    try:
+        return int(open("/proc/self/stat").read().rsplit(")", 1)[1].split()[19])
+    except Exception:
+        return None
+
 token = os.environ["MANGAFLOW_DESKTOP_TOKEN"]
 journal_path = os.environ["MANGAFLOW_DESKTOP_JOURNAL"]
 record = {
@@ -759,6 +773,7 @@ record = {
     "token": token,
     "state": "ready",
     "pid": os.getpid(),
+    "pid_starttime": _starttime(),
     "api_origin": "http://127.0.0.1:1",
 }
 with open(journal_path, "w", encoding="utf-8") as handle:

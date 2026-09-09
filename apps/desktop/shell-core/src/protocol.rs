@@ -177,7 +177,12 @@ pub fn verify_journal(journal: &Path, ready: &ReadyPayload) -> Result<(), Verify
         let actual = crate::ownership::pid_starttime(ready.pid);
         // On Linux the journal anchors PID identity to /proc start time, the
         // equivalent of the Windows creation-time check in owned_processes.
-        if announced.is_some() && announced != actual {
+        // The anchor is REQUIRED (red team 2026-09-09: the old
+        // `is_some() &&` guard failed open on omission — the helper always
+        // writes the field, so an omitted/unreadable anchor is not a journal
+        // this handshake produced). Comparing the Options rejects omission,
+        // mismatch, and a journal shipped for a now-dead pid alike.
+        if announced != actual {
             return Err(VerifyError::StartTimeMismatch);
         }
     }
@@ -644,35 +649,60 @@ mod tests {
             port: 8080,
             web_origin: None,
         };
-        let base = serde_json::json!({
+        let mut base = serde_json::json!({
             "version": PROTOCOL_VERSION,
             "token": token,
             "state": "ready",
             "pid": std::process::id(),
             "api_origin": "http://127.0.0.1:8080",
         });
-        let tampered: Vec<(&str, serde_json::Value)> = vec![
+        // The Unix anchor belongs in the base fixture: the helper always
+        // writes it, and verify_journal treats a missing/mismatched
+        // pid_starttime as a failure (red team 2026-09-09).
+        #[cfg(unix)]
+        if let Some(starttime) = crate::ownership::pid_starttime(std::process::id()) {
+            base["pid_starttime"] = serde_json::json!(starttime);
+        }
+        let mut tampered: Vec<(&str, serde_json::Value)> = vec![
             ("version", serde_json::json!(PROTOCOL_VERSION + 1)),
             ("token", serde_json::json!("f".repeat(32))),
             ("state", serde_json::json!("stopped")),
             ("pid", serde_json::json!(std::process::id() + 1)),
             ("api_origin", serde_json::json!("http://127.0.0.1:9999")),
         ];
+        #[cfg(unix)]
+        {
+            // The anchor must be present AND correct: omission is no longer
+            // a fail-open skip.
+            tampered.push(("pid_starttime", serde_json::Value::Null));
+            tampered.push(("pid_starttime", serde_json::json!(999)));
+        }
         for (field, value) in tampered {
             let mut journal = base.clone();
             journal[field] = value;
             std::fs::write(layout.journal_path(), journal.to_string()).unwrap();
-            assert!(
-                matches!(
-                    verify_journal(&layout.journal_path(), &ready),
-                    Err(VerifyError::JournalMismatch(name)) if name == field,
-                ),
-                "tampering {field} must fail closed"
-            );
+            let result = verify_journal(&layout.journal_path(), &ready);
+            let failed_closed = match result {
+                Err(VerifyError::JournalMismatch(name)) => name == field,
+                Err(VerifyError::StartTimeMismatch) => field == "pid_starttime",
+                _ => false,
+            };
+            assert!(failed_closed, "tampering {field} must fail closed");
         }
         // Positive control: the untampered journal passes.
         std::fs::write(layout.journal_path(), base.to_string()).unwrap();
         assert!(verify_journal(&layout.journal_path(), &ready).is_ok());
+        // Omitting the anchor entirely fails closed too.
+        #[cfg(unix)]
+        {
+            let mut without_anchor = base.clone();
+            without_anchor.as_object_mut().unwrap().remove("pid_starttime");
+            std::fs::write(layout.journal_path(), without_anchor.to_string()).unwrap();
+            assert!(matches!(
+                verify_journal(&layout.journal_path(), &ready),
+                Err(VerifyError::StartTimeMismatch)
+            ));
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
