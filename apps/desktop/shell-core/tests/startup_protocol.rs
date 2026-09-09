@@ -662,6 +662,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 token = os.environ["MANGAFLOW_DESKTOP_TOKEN"]
 journal_path = os.environ["MANGAFLOW_DESKTOP_JOURNAL"]
+try:
+    starttime = int(open("/proc/self/stat").read().rsplit(")", 1)[1].split()[19])
+except Exception:
+    starttime = None  # non-Linux: the anchor is optional, verification skips it
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
