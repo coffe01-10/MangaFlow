@@ -1266,7 +1266,6 @@ mod tests {
     /// `validate_destination` refuses directory destinations long before
     /// placement, and a directory at the destination makes both the rename
     /// and the removal fail portably (EISDIR).
-    #[test]
     /// A `.rotating-oldest` leftover beside an occupied `.keep` slot
     /// cannot be proven to be residue: the rotation must FAIL and leave
     /// both the slot and the leftover untouched (recovery is manual).
@@ -1370,6 +1369,7 @@ mod tests {
         let _ = fs::remove_dir_all(&user_data);
     }
 
+    #[test]
     fn overwrite_placement_failure_cleans_up_the_pending_sibling() {
         let dir = temp_user_data("placefail");
         let pending = dir.join("archive.zip.pending");
@@ -2149,7 +2149,9 @@ mod tests {
             crate::protocol::new_token()
         ));
         let report = export_logs_zip(&user_data, &destination).unwrap();
-        drop(lock);
+        // Cross-platform release: on unix the lock is a zero-sized marker,
+        // on Windows a real handle guard — `let _` drops both immediately.
+        let _ = lock;
         #[cfg(unix)]
         {
             let mut permissions = fs::metadata(&victim).unwrap().permissions();
@@ -2353,6 +2355,8 @@ mod tests {
             "{report:?}"
         );
 
+        let _ = fs::remove_file(&destination_members);
+
         // Size cap: all four would fit the member cap, but the 2 GiB…
         // here 25-byte… budget only takes two.
         let destination_sizes =
@@ -2400,6 +2404,45 @@ mod tests {
         for destination in [destination_members, destination_sizes, destination_full] {
             let _ = fs::remove_file(&destination);
         }
+    }
+
+    /// Boundary pin: a member landing the running total EXACTLY on the
+    /// cap is included (the skip is strictly `>`), and only the next one
+    /// is skipped for the size cap.
+    #[test]
+    fn export_includes_members_at_exactly_the_total_cap() {
+        let user_data = temp_user_data("equpoe");
+        let logs = logs_dir(&user_data);
+        fs::create_dir_all(&logs).unwrap();
+        fs::write(logs.join("a-first.log"), "1".repeat(15)).unwrap();
+        fs::write(logs.join("b-second.log"), "2".repeat(10)).unwrap();
+        fs::write(logs.join("c-third.log"), "3").unwrap();
+
+        let destination =
+            std::env::temp_dir().join(format!("mfd-caps-eq-{}.zip", crate::protocol::new_token()));
+        let report = export_logs_with(
+            &user_data,
+            &destination,
+            false,
+            ExportLimits {
+                max_members: EXPORT_MAX_MEMBERS,
+                max_total_bytes: 25,
+            },
+        )
+        .unwrap();
+        assert_eq!(report.files, vec!["a-first.log", "b-second.log"], "{report:?}");
+        assert_eq!(report.total_bytes, 25, "{report:?}");
+        assert_eq!(
+            report
+                .skipped
+                .iter()
+                .filter(|entry| entry.reason == "archive_size_cap")
+                .count(),
+            1,
+            "{report:?}"
+        );
+        let _ = fs::remove_dir_all(&user_data);
+        let _ = fs::remove_file(&destination);
     }
 
     /// Windows lock for the rotation-failure tests: holds the base open
@@ -2549,7 +2592,9 @@ mod tests {
             result.is_err(),
             "renaming the base must fail under the lock"
         );
-        drop(lock);
+        // Cross-platform release: on unix the lock is a zero-sized marker,
+        // on Windows a real handle guard — `let _` drops both immediately.
+        let _ = lock;
 
         // Zero history loss: every generation keeps its exact content and
         // the base is untouched — not moved, not left in staging.
@@ -2610,7 +2655,9 @@ mod tests {
                 "rotation under the lock must surface its error"
             );
         }
-        drop(lock);
+        // Cross-platform release: on unix the lock is a zero-sized marker,
+        // on Windows a real handle guard — `let _` drops both immediately.
+        let _ = lock;
 
         // The breaker is open: even though the base is renameable again and
         // still oversized, no rotation is attempted — no generation appears.
