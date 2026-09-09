@@ -494,10 +494,15 @@ fn fill_random(buffer: &mut [u8]) {
 }
 
 pub fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
+    unix_now_from(SystemTime::now())
+}
+
+/// Clamps a pre-epoch clock to the epoch floor: the logging path must stay
+/// panic-free, and dos_date_time clamps again at the DOS layer.
+fn unix_now_from(now: SystemTime) -> u64 {
+    now.duration_since(UNIX_EPOCH)
+        .map(|since| since.as_secs())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -954,6 +959,188 @@ mod tests {
         assert!(matches!(
             verify_journal(&journal, &ready),
             Err(VerifyError::JournalMissing)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// unix_now clamps a pre-epoch clock to 0 instead of panicking — the
+    /// logging path must stay panic-free. The seam takes an explicit
+    /// SystemTime so the pre-epoch case is exercised directly (red on the
+    /// old unwrap: it panicked instead of returning 0).
+    #[test]
+    fn unix_now_clamps_a_pre_epoch_clock() {
+        let pre_epoch = UNIX_EPOCH - std::time::Duration::from_secs(1);
+        assert_eq!(unix_now_from(pre_epoch), 0);
+        let at_epoch = UNIX_EPOCH;
+        assert_eq!(unix_now_from(at_epoch), 0);
+    }
+
+    /// The token generator's output contract: 32 lowercase hex chars, the
+    /// exact shape the stale-runtime sweep's name predicate (and every
+    /// log/journal name in the crate) recognizes, and unique across draws.
+    /// A formatting or determinism regression here would make new runtime
+    /// directories permanently invisible to the sweep.
+    #[test]
+    fn new_token_output_satisfies_the_token_format_contract_and_is_unique() {
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        for _ in 0..128 {
+            let token = new_token();
+            assert_eq!(token.len(), 32, "{token}");
+            assert!(
+                token.bytes().all(|byte| byte.is_ascii_digit()
+                    || (b'a'..=b'f').contains(&byte)),
+                "token must be lowercase hex: {token}"
+            );
+            assert!(
+                is_runtime_dir_name(&format!("{RUNTIME_DIR_PREFIX}{token}")),
+                "the sweep must recognize the generated runtime directory name"
+            );
+            assert!(seen.insert(token.clone()), "token collision: {token}");
+        }
+        assert_eq!(seen.len(), 128);
+    }
+
+    /// Clock-skew fail-closed leg: a terminal journal whose mtime is in the
+    /// FUTURE must keep the directory (duration_since errs → continue).
+    #[test]
+    fn sweep_keeps_a_candidate_with_a_future_mtime_journal() {
+        let user_data = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-sweep-future-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&user_data);
+        let runtime = user_data.join("runtime");
+        let candidate = runtime.join(format!("{RUNTIME_DIR_PREFIX}{}", "e".repeat(32)));
+        std::fs::create_dir_all(&candidate).unwrap();
+        std::fs::write(
+            candidate.join(JOURNAL_NAME),
+            format!("{{\"version\":1,\"token\":\"{}\",\"state\":\"stopped\"}}", "f".repeat(32)),
+        )
+        .unwrap();
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+        let handle = std::fs::OpenOptions::new()
+            .write(true)
+            .open(candidate.join(JOURNAL_NAME))
+            .unwrap();
+        handle
+            .set_times(std::fs::FileTimes::new().set_modified(future))
+            .unwrap();
+        drop(handle);
+
+        // Negative control: an AGED terminal twin must be removed by the
+        // same sweep, proving the future-mtime keep is the anchor at work.
+        let aged = runtime.join(format!("{RUNTIME_DIR_PREFIX}{}", "9".repeat(32)));
+        std::fs::create_dir_all(&aged).unwrap();
+        std::fs::write(
+            aged.join(JOURNAL_NAME),
+            format!("{{\"version\":1,\"token\":\"{}\",\"state\":\"stopped\"}}", "9".repeat(32)),
+        )
+        .unwrap();
+
+        sweep_runtime_dirs_with(&user_data, 0).unwrap();
+
+        assert!(
+            candidate.exists(),
+            "a future-mtime terminal journal must keep the candidate (clock-skew fail-closed)"
+        );
+        assert!(
+            !aged.exists(),
+            "the aged control must be swept (proves the sweep ran)"
+        );
+        let _ = std::fs::remove_dir_all(&user_data);
+    }
+
+    /// The sweep reads a candidate's journal through read_journal_bounded,
+    /// which refuses symlinks: a planted symlink at owner.json must keep
+    /// the candidate directory AND the link target's bytes intact — the
+    /// deletion decision may never be driven by content outside the
+    /// runtime root.
+    #[test]
+    fn sweep_keeps_a_candidate_whose_journal_is_a_symlink() {
+        let user_data = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-sweep-symlink-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&user_data);
+        let runtime = user_data.join("runtime");
+        let candidate = runtime.join(format!("{RUNTIME_DIR_PREFIX}{}", "c".repeat(32)));
+        std::fs::create_dir_all(&candidate).unwrap();
+        let outside = user_data.join("outside.json");
+        std::fs::write(
+            &outside,
+            format!("{{\"version\":1,\"token\":\"{}\",\"state\":\"stopped\"}}", "d".repeat(32)),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, candidate.join(JOURNAL_NAME)).unwrap();
+        #[cfg(windows)]
+        {
+            // Windows symlink_file needs privileges; if creation is refused,
+            // skip the case instead of panicking at fixture setup.
+            if std::os::windows::fs::symlink_file(&outside, candidate.join(JOURNAL_NAME)).is_err() {
+                eprintln!("symlink creation not permitted; skipping the sweep-symlink case");
+                let _ = std::fs::remove_dir_all(&user_data);
+                return;
+            }
+        }
+
+        sweep_runtime_dirs_with(&user_data, 0).unwrap();
+
+        assert!(candidate.exists(), "the candidate directory must be kept");
+        assert_eq!(
+            std::fs::read_to_string(outside).unwrap(),
+            format!("{{\"version\":1,\"token\":\"{}\",\"state\":\"stopped\"}}", "d".repeat(32)),
+            "the link target's bytes must be untouched"
+        );
+        let _ = std::fs::remove_dir_all(&user_data);
+    }
+
+    /// Error-path pins: a symlink at the journal path and a non-UTF8
+    /// journal both fail closed (the bounded reader's refusals surfaced as
+    /// JournalMissing / JournalMismatch("non-utf8")).
+    #[test]
+    #[cfg(unix)]
+    fn journal_symlink_and_non_utf8_fail_closed() {
+        let dir = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-jsymlink-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let journal = dir.join(JOURNAL_NAME);
+        let ready = ReadyPayload {
+            token: "0".repeat(32),
+            pid: 1,
+            api_origin: "http://127.0.0.1:8080".into(),
+            port: 8080,
+            web_origin: None,
+        };
+        let outside = dir.join("outside.json");
+        std::fs::write(&outside, "{\"stolen\": true}").unwrap();
+        std::os::unix::fs::symlink(&outside, &journal).unwrap();
+        assert!(matches!(
+            verify_journal(&journal, &ready),
+            Err(VerifyError::JournalMissing)
+        ));
+        assert_eq!(
+            std::fs::read_to_string(&outside).unwrap(),
+            "{\"stolen\": true}",
+            "the symlink target's bytes must be untouched"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&outside).unwrap(),
+            "{\"stolen\": true}",
+            "the symlink target's bytes must be untouched"
+        );
+        std::fs::remove_file(&journal).unwrap();
+        std::fs::write(&journal, b"\xff\xfe not utf8").unwrap();
+        assert!(matches!(
+            verify_journal(&journal, &ready),
+            Err(VerifyError::JournalMismatch("non-utf8"))
         ));
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -254,7 +254,7 @@ fn directory_pick_validates_type_and_symlinks() {
 }
 
 #[test]
-fn readback_refails_when_picked_file_is_swapped_or_grows() {
+fn readback_refails_when_picked_file_is_swapped_grows_or_deleted() {
     let dir = temp_dir("swap");
     let source = dir.join("chapter.txt");
     fs::write(&source, "正文").unwrap();
@@ -276,6 +276,15 @@ fn readback_refails_when_picked_file_is_swapped_or_grows() {
         eprintln!("file symlink creation not permitted; skipping the swap assertion");
         fs::write(&source, "正文").unwrap();
     }
+
+    // A registered file DELETED after the pick fails the re-validation
+    // with the dedicated DoesNotExist (not a registry bypass).
+    let gone = dir.join("gone.txt");
+    fs::write(&gone, "temporarily real").unwrap();
+    registry.register(&validate_picked_file(&gone, PickKind::SourceText).unwrap());
+    fs::remove_file(&gone).unwrap();
+    let error = read_registered_file(&registry, &gone).unwrap_err();
+    assert!(matches!(error, PickError::DoesNotExist), "{error}");
 
     // A registered file that grows past the cap between pick and read is
     // refused by the re-validation, not silently truncated into the page.

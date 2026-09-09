@@ -167,10 +167,50 @@
 **后续 PR**：分支 `night/n1-core-burn-20260909` 对 master 的剩余 delta（journal
 读写分类、mark_stopped 保留、staging 结构修复等 7 commits）以新 PR 提交待审。
 
+### 轮 2 审查（子代理）与 erratum
+
+- 判定 SHIP（本范围）。NIT 已落实：readback 测试改名覆盖 deleted 用例。
+- **Erratum**：commit c66bc14（"Refuse a deleted-after-pick read…"）只新增了
+  unix_now 钳制与注入缝测试——被删后读取的拒绝行为在 master 既有代码中已存在
+  （picker.rs canonicalize-first），该提交只是补钉测；标题不改变行为这一事实
+  以本记录为准。
+- pid_starttime 现为 cfg(target_os = "linux")；verify_journal 锚点块同门。
+  macOS 腿无锚点覆盖（设计内，受支持腿为 Linux + Windows）。
+
+### 轮 4 终验（子代理）与收尾
+
+- 终验判定：**SHIP**（0 BLOCKER/0 MAJOR）。两条新测试（new_token 契约、sweep
+  symlink 拒绝）经构建追溯确认非恒真、红据充分；cfg 门一致（linux）；diff 无
+  native 路径触碰。
+- 终验 MINOR 已修：sweep-symlink 测试的 Windows symlink 创建失败改为优雅跳过
+  （本环境 Linux 不受影响）。
+- 如实记录：`get_status_caps_the_response_read`（master 既有，流上限波次）在
+  全量并行负载下出现过一次时序 flake（单测隔离 3× 稳定绿）——非本轮 delta 引入，
+  留给该测试的归属轮次处理。
+- 终态计数：cargo test 9/9 套件、**103 项**全绿（单元 61 + 集成 42，Linux 实测
+  2026-09-09）。Windows 腿 NOT RUN。
+
+### 续跑增量（分支重置恢复 + 三个边界 pin）
+
+- 分支恢复：lead 侧将 master/分支重置回 #330 谱系，6 个丢失提交
+  （deleted-after-pick pin、clock clamp seam、token 契约测试、sweep symlink
+  拒绝、round-4 账本、windows-skip）已 cherry-pick 回当前谱系并全绿。
+- 新增 pin（commit 2cb6321）：
+  - journal 符号链接 → JournalMissing；非 UTF8 journal → JournalMismatch("non-utf8")。
+  - sweep 对未来 mtime 的 terminal journal 保持目录（时钟偏移 fail-closed 腿）。
+- 测试增量：单元 63 项全绿（+2 相对 round-4 的 61；含 journal symlink/non-UTF8
+  钉测与 sweep 未来 mtime 对照组）。轮 5 审查（本轮 pin + 恢复提交）判定 SHIP，
+  5 条 NIT 已落实（outside.json 字节断言、aged 对照组、文档归属修正、TODO 勘误）。
+
+- NIT 已修：journal symlink pin 补 outside.json 字节断言；sweep 未来 mtime 测试
+  补 aged 对照组（hex 名修正后通过）；TODO 勘误（unix_now 已修）。
+- 残留：write_journal_atomic 的 serde_json unwrap（Value 序列化实际不可失败）；
+  get_status_caps 并行负载 flake（master 既有）。
+
 新记录的待办（下轮候选）：
 
-- `write_journal_atomic` 的 serde_json unwrap 与 `unix_now` panic 路径（pub API
-  可达 panic）——需要 no-panic 化重构。
+- ~~`unix_now` panic 路径~~ 已修（commit 2cb6321 注入缝钳制，见轮 5 记录）；残留：
+  `write_journal_atomic` 的 serde_json unwrap（Value 序列化实际不可失败，仅警告级）。
 - 健康门不验响应身份（回环 200 即过）——设计级，需 lead 决策。
 - keep=1 与 sweep 的交互（清扫对 keep=1 基名的世代匹配）未测。
 - 并发导出同目标的 `.pending` 竞争（失败方误报 PendingIsSymlink）——需 seam。
