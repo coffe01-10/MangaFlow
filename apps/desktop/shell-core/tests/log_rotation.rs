@@ -11,8 +11,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use mangaflow_desktop_shell_core::logs::{
-    export_logs_zip, helper_log_path, logs_dir, shell_log_path, RunLog, ROTATION_KEEP_GENERATIONS,
-    ROTATION_THRESHOLD_BYTES,
+    export_logs_zip, helper_log_path, logs_dir, shell_log_path, RunLog,
+    ROTATION_KEEP_GENERATIONS, ROTATION_THRESHOLD_BYTES,
 };
 use mangaflow_desktop_shell_core::protocol::new_token;
 
@@ -218,4 +218,19 @@ fn rotated_generations_are_exported_with_the_active_log() {
 
     let _ = fs::remove_dir_all(&user_data);
     let _ = fs::remove_file(&destination);
+}
+
+/// Sweeping a user-data directory that has no logs/ yet (first session,
+/// fresh install) must be a clean no-op — not an error, not a directory
+/// creation side effect.
+#[test]
+fn rotate_logs_is_a_noop_without_a_logs_directory() {
+    let user_data = temp_user_data("no-logs-dir");
+    assert!(!logs_dir(&user_data).exists());
+    mangaflow_desktop_shell_core::logs::rotate_logs(&user_data).unwrap();
+    assert!(
+        !logs_dir(&user_data).exists(),
+        "the no-op must not create the logs directory as a side effect"
+    );
+    let _ = fs::remove_dir_all(&user_data);
 }

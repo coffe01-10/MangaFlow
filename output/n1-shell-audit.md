@@ -129,6 +129,44 @@
 测试增量：`cargo test` 9/9 套件、**80 项**全绿（46→52 单元 + 32 集成 + picker 7
 等，Linux 实测）。
 
+### 2026-09-09 深夜配额账本（B/D 项）
+
+8 个独立小 PR（类别 → 分支/PR）：
+
+| # | 类别 | 分支 | PR | 分支内容 |
+| --- | --- | --- | --- | --- |
+| 1 | 启动协议 | night/n1-09b-ready-journal | #322 | journal 读取上界、token 折叠、数字端口门、mark_stopped 非对象保留、starttime/篡改矩阵 |
+| 2 | OwnedTree/stop + 红绿判别 | night/n1-09b-stop-respawn-tests | #323 | ReadyTimeout 端到端、respawn 纪律、lead 测试真实 deadline |
+| 3 | picker 路径 | night/n1-09b-picker-shapes | #324 | 表驱动形状边界（含精确变体与真实深树） |
+| 4 | zip/log 导出上限 | night/n1-09b-log-caps-nonutf8 | #325 | 非 UTF8 跳过、keep=1、总量等值边界 |
+| 5 | CSP/capability 契约 | night/n1-09b-capability-surface | #326 | 能力面 + withGlobalTauri 钉测 |
+| 6 | 错误路径 | night/n1-09b-error-display | #327 | OwnershipError Display、pid_starttime 钉测 |
+| 7 | 启动协议（补充） | night/n1-09b-loopback-matrix | #328 | 回环形近 origin 矩阵、journal 目录错误路径 |
+| 8 | 文档账本 | night/n1-pr-readme-ledger | #329 | README cargo test 计数同步（49 → 85） |
+
+伞形集成 PR：#302（night/n1-core-burn-20260909，含上述全部内容与审计文档）。
+合并顺序建议：先 #302，其余按类别各自独立或随后 rebase。
+
+### 2026-09-09 深夜 · 审查轮次与 rebase 后续账（C/D 项）
+
+- 轮 1（2 代理并行）：protocol/journal 加固 + logs/picker/tests 侧——发现 sweep 无上界
+  读取、mark_stopped 非对象 panic、stand-in 平台脆弱性、文档错挂等 → 全部修复
+  （commits 947dead..2a9916b 段）。
+- 轮 2（1 代理）：确认 12 项（2 MAJOR：stand-in Windows 崩溃、非对象根 panic 未真
+  修）→ 全部修复（2a9916b）。
+- 轮 3（1 代理）：HOLD——指出 9e07e61 提交信息与 rebase 后 diff 不符（per-file PR
+  先行合入所致的中间态）+ 4 MINOR → MINOR 已修（1bd05c4），errata 如下。
+- 轮 4（1 代理）：HOLD——web-origin 测试的 linux 门缺失（Windows E0425）+ 3 MINOR
+  → 全部修复（06169cd）。终态：cargo test 9/9 套件、98 项全绿（Linux）。
+
+**Errata（提交信息勘误）**：rebase 线性化使 9e07e61/6a5330e 等提交的 diff 与其信息
+表述出现错位（内容已由并行合入的 per-file PR 先行落在 master，rebase 重放的 diff
+呈删除形态）。HEAD（06169cd）为完整终态，review 以 HEAD 为准；历史中间提交的
+信息不再改写。
+
+**后续 PR**：分支 `night/n1-core-burn-20260909` 对 master 的剩余 delta（journal
+读写分类、mark_stopped 保留、staging 结构修复等 7 commits）以新 PR 提交待审。
+
 新记录的待办（下轮候选）：
 
 - `write_journal_atomic` 的 serde_json unwrap 与 `unix_now` panic 路径（pub API

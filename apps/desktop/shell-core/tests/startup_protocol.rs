@@ -660,14 +660,12 @@ fn post_ready_stdout_chatter_does_not_break_the_session() {
 import json, os, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-def _starttime():
-    try:
-        return int(open("/proc/self/stat").read().rsplit(")", 1)[1].split()[19])
-    except Exception:
-        return None
-
 token = os.environ["MANGAFLOW_DESKTOP_TOKEN"]
 journal_path = os.environ["MANGAFLOW_DESKTOP_JOURNAL"]
+try:
+    starttime = int(open("/proc/self/stat").read().rsplit(")", 1)[1].split()[19])
+except Exception:
+    starttime = None  # non-Linux: the anchor is optional, verification skips it
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -691,7 +689,7 @@ record = {
     "token": token,
     "state": "ready",
     "pid": os.getpid(),
-    "pid_starttime": _starttime(),
+    **({"pid_starttime": starttime} if starttime is not None else {}),
     "api_origin": origin,
 }
 with open(journal_path, "w", encoding="utf-8") as handle:
@@ -759,21 +757,18 @@ fn health_timeout_failure_still_records_terminal_state_and_kills() {
     // helper's EOF watcher.
     let stand_in = r#"
 import json, os, sys
-
-def _starttime():
-    try:
-        return int(open("/proc/self/stat").read().rsplit(")", 1)[1].split()[19])
-    except Exception:
-        return None
-
 token = os.environ["MANGAFLOW_DESKTOP_TOKEN"]
 journal_path = os.environ["MANGAFLOW_DESKTOP_JOURNAL"]
+try:
+    starttime = int(open("/proc/self/stat").read().rsplit(")", 1)[1].split()[19])
+except Exception:
+    starttime = None  # non-Linux: the anchor is optional, verification skips it
 record = {
     "version": 1,
     "token": token,
     "state": "ready",
     "pid": os.getpid(),
-    "pid_starttime": _starttime(),
+    **({"pid_starttime": starttime} if starttime is not None else {}),
     "api_origin": "http://127.0.0.1:1",
 }
 with open(journal_path, "w", encoding="utf-8") as handle:
@@ -861,6 +856,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 token = os.environ["MANGAFLOW_DESKTOP_TOKEN"]
 journal_path = os.environ["MANGAFLOW_DESKTOP_JOURNAL"]
+try:
+    starttime = int(open("/proc/self/stat").read().rsplit(")", 1)[1].split()[19])
+except Exception:
+    starttime = None  # non-Linux: the anchor is optional, verification skips it
 
 class Health(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -878,7 +877,9 @@ server = ThreadingHTTPServer(("127.0.0.1", 0), Health)
 origin = f"http://127.0.0.1:{server.server_address[1]}"
 with open(journal_path, "w", encoding="utf-8") as handle:
     json.dump({"version": 1, "token": token, "state": "ready",
-               "pid": os.getpid(), "api_origin": origin}, handle)
+               "pid": os.getpid(),
+               **({"pid_starttime": starttime} if starttime is not None else {}),
+               "api_origin": origin}, handle)
 print("MANGAFLOW_READY " + json.dumps(
     {"token": token, "pid": os.getpid(), "api_origin": origin}), flush=True)
 server.serve_forever()
@@ -941,7 +942,9 @@ fn an_immediately_exiting_helper_fails_verification_and_is_torn_down() {
     );
 
     // The exiting stand-in is reaped by the teardown; nothing may linger.
+    #[cfg(unix)]
     let deadline = Instant::now() + Duration::from_secs(5);
+    #[cfg(unix)]
     while Instant::now() < deadline {
         let live = std::process::Command::new("pgrep")
             .args(["-f", "stand_in_exit.py"])
@@ -994,7 +997,9 @@ fn a_silent_helper_fails_with_ready_timeout_and_is_torn_down() {
     );
 
     // Teardown: the silent helper must be dead (abort_spawn stops the tree).
+    #[cfg(unix)]
     let deadline = Instant::now() + Duration::from_secs(5);
+    #[cfg(unix)]
     let helper_alive = |tag: &str| -> bool {
         let _ = tag;
         std::process::Command::new("pgrep")
@@ -1003,6 +1008,7 @@ fn a_silent_helper_fails_with_ready_timeout_and_is_torn_down() {
             .map(|output| !output.stdout.is_empty())
             .unwrap_or(true)
     };
+    #[cfg(unix)]
     while helper_alive("poll") && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }

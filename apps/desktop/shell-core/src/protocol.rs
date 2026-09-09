@@ -24,6 +24,32 @@ pub struct ReadyPayload {
     pub web_origin: Option<String>,
 }
 
+/// Human-readable failure reasons for the startup protocol's verification
+/// steps; every variant names the step that failed so log lines localize
+/// without extra context.
+impl std::fmt::Display for VerifyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VerifyError::BadLine => write!(f, "READY 行前缀不正确"),
+            VerifyError::BadJson => write!(f, "READY 行不是合法 JSON（或字段越界）"),
+            VerifyError::TokenMismatch => write!(f, "READY 行 token 与本壳不匹配"),
+            VerifyError::PidMismatch => write!(f, "READY 宣布的 pid 不属于本壳"),
+            VerifyError::OriginNotLoopback => write!(f, "宣布的 origin 不是回环地址"),
+            VerifyError::JournalMissing => write!(f, "ownership journal 不存在或不可读"),
+            VerifyError::JournalTooLarge => write!(f, "ownership journal 超过读取上限"),
+            VerifyError::JournalMismatch("non-utf8") => {
+                write!(f, "ownership journal 不是 UTF-8 文本")
+            }
+            VerifyError::JournalMismatch(field) => {
+                write!(f, "ownership journal 字段不匹配：{field}")
+            }
+            VerifyError::StartTimeMismatch => write!(f, "journal 的进程启动时间与 /proc 不符"),
+        }
+    }
+}
+
+impl std::error::Error for VerifyError {}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VerifyError {
     BadLine,
@@ -32,6 +58,9 @@ pub enum VerifyError {
     PidMismatch,
     OriginNotLoopback,
     JournalMissing,
+    /// The journal read exceeded [`JOURNAL_MAX_BYTES`] — identity fields are
+    /// a few hundred bytes, so an oversized file is malformed by definition.
+    JournalTooLarge,
     JournalMismatch(&'static str),
     StartTimeMismatch,
 }
@@ -139,9 +168,53 @@ where
     })
 }
 
+/// Upper bound for the ownership journal read. Journals carry identity
+/// fields only (a few hundred bytes); anything larger is malformed by
+/// definition, and the read must be bounded so a planted multi-GiB file at
+/// the journal path cannot be buffered by the shell during verification.
+pub const JOURNAL_MAX_BYTES: u64 = 64 * 1024;
+
+/// Read a journal bounded to [`JOURNAL_MAX_BYTES`] (+1 detection byte).
+/// Regular files only: a planted FIFO would block the open, and a symlink
+/// is refused outright. Returns `None` for anything unreadable, over-cap
+/// (buffered at most cap+1 bytes, then classified as malformed) or
+/// non-UTF8 — every caller treats that as "keep / fail closed".
+fn read_journal_bounded(journal: &Path) -> Option<String> {
+    let meta = std::fs::symlink_metadata(journal).ok()?;
+    if meta.is_symlink() || !meta.is_file() {
+        return None;
+    }
+    let file = std::fs::File::open(journal).ok()?;
+    let mut bytes = Vec::new();
+    {
+        use std::io::Read;
+        file.take(JOURNAL_MAX_BYTES + 1).read_to_end(&mut bytes).ok()?;
+    }
+    if bytes.len() as u64 > JOURNAL_MAX_BYTES {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+
 /// Verify the readiness journal the helper published (identity fields only).
 pub fn verify_journal(journal: &Path, ready: &ReadyPayload) -> Result<(), VerifyError> {
-    let text = std::fs::read_to_string(journal).map_err(|_| VerifyError::JournalMissing)?;
+    let meta = std::fs::symlink_metadata(journal).map_err(|_| VerifyError::JournalMissing)?;
+    if meta.is_symlink() || !meta.is_file() {
+        // A planted FIFO would block the open; a symlink is refused outright.
+        return Err(VerifyError::JournalMissing);
+    }
+    let file = std::fs::File::open(journal).map_err(|_| VerifyError::JournalMissing)?;
+    let mut bytes = Vec::new();
+    {
+        use std::io::Read;
+        file.take(JOURNAL_MAX_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| VerifyError::JournalMissing)?;
+    }
+    if bytes.len() as u64 > JOURNAL_MAX_BYTES {
+        return Err(VerifyError::JournalTooLarge);
+    }
+    let text = String::from_utf8(bytes).map_err(|_| VerifyError::JournalMismatch("non-utf8"))?;
     let value: serde_json::Value =
         serde_json::from_str(&text).map_err(|_| VerifyError::JournalMismatch("unparsable"))?;
     if value["version"].as_u64() != Some(PROTOCOL_VERSION) {
@@ -171,7 +244,7 @@ pub fn verify_journal(journal: &Path, ready: &ReadyPayload) -> Result<(), Verify
         }
         _ => return Err(VerifyError::JournalMismatch("web_origin")),
     }
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     {
         let announced = value["pid_starttime"].as_u64();
         let actual = crate::ownership::pid_starttime(ready.pid);
@@ -181,7 +254,9 @@ pub fn verify_journal(journal: &Path, ready: &ReadyPayload) -> Result<(), Verify
         // `is_some() &&` guard failed open on omission — the helper always
         // writes the field, so an omitted/unreadable anchor is not a journal
         // this handshake produced). Comparing the Options rejects omission,
-        // mismatch, and a journal shipped for a now-dead pid alike.
+        // mismatch, and a journal shipped for a now-dead pid alike; the one
+        // residual corner is a /proc read failure for a LIVE pid (both
+        // Nones match), which the GO write and health gate still gate.
         if announced != actual {
             return Err(VerifyError::StartTimeMismatch);
         }
@@ -248,18 +323,28 @@ impl RuntimeLayout {
     /// Record the owner-side terminal state after the tree has been stopped.
     pub fn mark_stopped(&self, exit_code: Option<i32>) -> std::io::Result<()> {
         let journal = self.journal_path();
-        let existing = std::fs::read_to_string(&journal).unwrap_or_else(|_| "{}".into());
-        let mut value: serde_json::Value = match serde_json::from_str(&existing) {
-            Ok(value) => value,
-            // An unparsable journal is a forensic anomaly (a partial write
-            // or tamper). Overwriting it with a fresh stub would hide the
-            // anomaly AND hand the stale-runtime sweep a terminal state to
-            // delete — the record would vanish exactly when it matters.
-            // Leave the bytes untouched: the sweep already refuses
-            // unparsable journals, so nothing is lost by keeping them.
-            Err(_) => {
+        let existing = match read_journal_bounded(&journal) {
+            Some(text) => text,
+            None => {
                 eprintln!(
-                    "mangaflow-desktop: ownership journal {} is unparsable; leaving it untouched instead of marking stopped",
+                    "mangaflow-desktop: ownership journal {} is unreadable, oversized or malformed; leaving it untouched instead of marking stopped",
+                    journal.display()
+                );
+                return Ok(());
+            }
+        };
+        let mut value: serde_json::Value = match serde_json::from_str::<serde_json::Value>(&existing) {
+            Ok(value) if value.is_object() => value,
+            // Anything else — unparsable bytes, or a parsable non-object
+            // root (42, [1,2,3], a bare string) — is a forensic anomaly.
+            // Overwriting it with a fresh stub would hide the anomaly AND
+            // hand the stale-runtime sweep a terminal state to delete (an
+            // object root even parses as one), destroying the record
+            // exactly when it matters. Leave the bytes untouched: the sweep
+            // keeps malformed journals.
+            _ => {
+                eprintln!(
+                    "mangaflow-desktop: ownership journal {} is malformed; leaving it untouched instead of marking stopped",
                     journal.display()
                 );
                 return Ok(());
@@ -343,8 +428,10 @@ pub fn sweep_runtime_dirs_with(user_data: &Path, grace_seconds: u64) -> std::io:
             _ => continue,
         }
         let journal = dir.join(JOURNAL_NAME);
-        let Ok(text) = std::fs::read_to_string(&journal) else {
-            continue; // no readable journal — conservative: keep the directory
+        // Bounded read: a planted oversized journal at a scannable name is
+        // treated exactly like an unreadable one (keep the directory).
+        let Some(text) = read_journal_bounded(&journal) else {
+            continue;
         };
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
             continue; // unparsable journal — keep
@@ -437,7 +524,10 @@ mod tests {
         // a fixture pid whose liveness varies across machines would make
         // the positive journal assertion flaky.
         let live_pid = std::process::id();
+        #[cfg(target_os = "linux")]
         let live_starttime = crate::ownership::pid_starttime(live_pid);
+        #[cfg(not(target_os = "linux"))]
+        let live_starttime: Option<u64> = None;
         let line = format!(
             "{READY_PREFIX}{{\"token\":\"{TOKEN}\",\"pid\":{live_pid},\"api_origin\":\"http://127.0.0.1:39001\",\"web_origin\":\"http://127.0.0.1:39002\"}}"
         );
@@ -463,7 +553,7 @@ mod tests {
             "pid": live_pid, "api_origin": "http://127.0.0.1:39001",
             "web_origin": "http://127.0.0.1:39002",
         });
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         if let Some(starttime) = live_starttime {
             good["pid_starttime"] = serde_json::json!(starttime);
         }
@@ -473,7 +563,7 @@ mod tests {
             "version": PROTOCOL_VERSION, "token": TOKEN, "state": "ready",
             "pid": live_pid, "api_origin": "http://127.0.0.1:39001",
         });
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         if let Some(starttime) = live_starttime {
             mismatched["pid_starttime"] = serde_json::json!(starttime);
         }
@@ -624,11 +714,13 @@ mod tests {
         ));
     }
 
-    /// The /proc starttime anchor: the anchor is REQUIRED on Unix (red team
-    /// 2026-09-09 — the old `is_some() &&` guard failed open on omission).
-    /// A journal carrying the anchor must match the live process; a
-    /// mismatching or absent anchor fails closed. (The Windows leg has no
-    /// /proc equivalent; Job membership anchors there.)
+    /// The /proc starttime anchor is REQUIRED on Unix (red team 2026-09-09
+    /// — the old `is_some() &&` guard failed open on omission): a journal
+    /// carrying the anchor must match the live process; a mismatching or
+    /// absent anchor fails closed. The Windows leg has no /proc equivalent
+    /// (Job membership anchors there), and pid_starttime reads /proc, so
+    /// the whole matrix is unix-gated.
+    #[cfg(target_os = "linux")]
     #[test]
     fn journal_starttime_anchor_matches_or_fails_closed() {
         let dir = std::env::temp_dir().join(format!(
@@ -700,7 +792,7 @@ mod tests {
         // The Unix anchor belongs in the base fixture: the helper always
         // writes it, and verify_journal treats a missing/mismatched
         // pid_starttime as a failure (red team 2026-09-09).
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         if let Some(starttime) = crate::ownership::pid_starttime(std::process::id()) {
             base["pid_starttime"] = serde_json::json!(starttime);
         }
@@ -773,6 +865,58 @@ mod tests {
             "the corrupt bytes must survive verbatim"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An oversized journal (identity fields are a few hundred bytes) must
+    /// fail with JournalTooLarge instead of being buffered into the shell —
+    /// the read is bounded at the cap with one detection byte to spare.
+    #[test]
+    fn journal_reads_are_bounded_and_oversize_fails_closed() {
+        let dir = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-jsize-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let layout = RuntimeLayout::create(&dir).unwrap();
+        let oversized = "x".repeat(JOURNAL_MAX_BYTES as usize + 1);
+        std::fs::write(layout.journal_path(), oversized).unwrap();
+        let ready = ReadyPayload {
+            token: layout.token.clone(),
+            pid: 1,
+            api_origin: "http://127.0.0.1:8080".into(),
+            port: 8080,
+            web_origin: None,
+        };
+        assert!(matches!(
+            verify_journal(&layout.journal_path(), &ready),
+            Err(VerifyError::JournalTooLarge)
+        ));
+        // Boundary complement: a journal at exactly the cap is readable and
+        // fails later on content, not on size.
+        let at_cap = "x".repeat(JOURNAL_MAX_BYTES as usize);
+        std::fs::write(layout.journal_path(), at_cap).unwrap();
+        assert!(matches!(
+            verify_journal(&layout.journal_path(), &ready),
+            Err(VerifyError::JournalMismatch("unparsable"))
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The error enum is user-facing: Display carries the failing step,
+    /// and the value routes through `Box<dyn std::error::Error>` like any
+    /// other error path.
+    #[test]
+    fn verify_errors_display_and_route_through_the_error_trait() {
+        let error: Box<dyn std::error::Error> = Box::new(VerifyError::OriginNotLoopback);
+        assert!(
+            error.to_string().contains("回环"),
+            "unexpected message: {error}"
+        );
+        let error: Box<dyn std::error::Error> =
+            Box::new(VerifyError::JournalMismatch("token"));
+        assert!(error.to_string().contains("token"), "{error}");
     }
 
     #[test]

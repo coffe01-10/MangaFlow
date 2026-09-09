@@ -1079,8 +1079,7 @@ fn export_logs_with(
         // below. The read is capped one byte PAST the limit instead: a
         // member at exactly the cap is read whole and included, one that
         // grew past it reads back over-cap and fails the re-check as
-        // "changed_during_export" without ever being buffered beyond cap+1
-        // cap+1.
+        // "changed_during_export" without ever being buffered beyond cap+1.
         let data = (|| -> std::io::Result<Vec<u8>> {
             use std::io::Read;
             let file = fs::File::open(path)?;
@@ -1275,15 +1274,6 @@ mod tests {
         dir
     }
 
-    /// A failed confirmed-overwrite must not orphan the pending sibling
-    /// next to an untouched (or already removed) destination. The old code
-    /// removed the destination file and only then renamed, so a rename
-    /// failure deleted the user's archive while leaving the `.pending`
-    /// copy behind — and that branch had no cleanup at all, unlike the
-    /// hard_link branch. `place_archive` is called directly because
-    /// `validate_destination` refuses directory destinations long before
-    /// placement, and a directory at the destination makes both the rename
-    /// and the removal fail portably (EISDIR).
     /// A `.rotating-oldest` leftover beside an occupied `.keep` slot
     /// cannot be proven to be residue: the rotation must FAIL and leave
     /// both the slot and the leftover untouched (recovery is manual).
@@ -1387,6 +1377,15 @@ mod tests {
         let _ = fs::remove_dir_all(&user_data);
     }
 
+    /// A failed confirmed-overwrite must not orphan the pending sibling
+    /// next to an untouched (or already removed) destination. The old code
+    /// removed the destination file and only then renamed, so a rename
+    /// failure deleted the user's archive while leaving the `.pending`
+    /// copy behind — and that branch had no cleanup at all, unlike the
+    /// hard_link branch. `place_archive` is called directly because
+    /// `validate_destination` refuses directory destinations long before
+    /// placement, and a directory at the destination makes both the rename
+    /// and the removal fail portably (EISDIR).
     #[test]
     fn overwrite_placement_failure_cleans_up_the_pending_sibling() {
         let dir = temp_user_data("placefail");
