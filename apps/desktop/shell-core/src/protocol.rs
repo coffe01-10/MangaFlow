@@ -171,22 +171,47 @@ where
 /// the journal path cannot be buffered by the shell during verification.
 pub const JOURNAL_MAX_BYTES: u64 = 64 * 1024;
 
+/// Read a journal bounded to [`JOURNAL_MAX_BYTES`] (+1 detection byte).
+/// Regular files only: a planted FIFO would block the open, and a symlink
+/// is refused outright. Returns `None` for anything unreadable, over-cap
+/// (buffered at most cap+1 bytes, then classified as malformed) or
+/// non-UTF8 — every caller treats that as "keep / fail closed".
+fn read_journal_bounded(journal: &Path) -> Option<String> {
+    let meta = std::fs::symlink_metadata(journal).ok()?;
+    if meta.is_symlink() || !meta.is_file() {
+        return None;
+    }
+    let file = std::fs::File::open(journal).ok()?;
+    let mut bytes = Vec::new();
+    {
+        use std::io::Read;
+        file.take(JOURNAL_MAX_BYTES + 1).read_to_end(&mut bytes).ok()?;
+    }
+    if bytes.len() as u64 > JOURNAL_MAX_BYTES {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+
 /// Verify the readiness journal the helper published (identity fields only).
 pub fn verify_journal(journal: &Path, ready: &ReadyPayload) -> Result<(), VerifyError> {
-    let text = match std::fs::File::open(journal) {
-        Ok(file) => {
-            use std::io::Read;
-            let mut bounded = String::new();
-            file.take(JOURNAL_MAX_BYTES + 1)
-                .read_to_string(&mut bounded)
-                .map_err(|_| VerifyError::JournalMissing)?;
-            bounded
-        }
-        Err(_) => return Err(VerifyError::JournalMissing),
-    };
-    if text.len() as u64 > JOURNAL_MAX_BYTES {
+    let meta = std::fs::symlink_metadata(journal).map_err(|_| VerifyError::JournalMissing)?;
+    if meta.is_symlink() || !meta.is_file() {
+        // A planted FIFO would block the open; a symlink is refused outright.
+        return Err(VerifyError::JournalMissing);
+    }
+    let file = std::fs::File::open(journal).map_err(|_| VerifyError::JournalMissing)?;
+    let mut bytes = Vec::new();
+    {
+        use std::io::Read;
+        file.take(JOURNAL_MAX_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| VerifyError::JournalMissing)?;
+    }
+    if bytes.len() as u64 > JOURNAL_MAX_BYTES {
         return Err(VerifyError::JournalTooLarge);
     }
+    let text = String::from_utf8(bytes).map_err(|_| VerifyError::JournalMismatch("non-utf8"))?;
     let value: serde_json::Value =
         serde_json::from_str(&text).map_err(|_| VerifyError::JournalMismatch("unparsable"))?;
     if value["version"].as_u64() != Some(PROTOCOL_VERSION) {
@@ -293,7 +318,16 @@ impl RuntimeLayout {
     /// Record the owner-side terminal state after the tree has been stopped.
     pub fn mark_stopped(&self, exit_code: Option<i32>) -> std::io::Result<()> {
         let journal = self.journal_path();
-        let existing = std::fs::read_to_string(&journal).unwrap_or_else(|_| "{}".into());
+        let existing = match read_journal_bounded(&journal) {
+            Some(text) => text,
+            None => {
+                eprintln!(
+                    "mangaflow-desktop: ownership journal {} is unreadable or oversized; leaving it untouched instead of marking stopped",
+                    journal.display()
+                );
+                return Ok(());
+            }
+        };
         let mut value: serde_json::Value = match serde_json::from_str(&existing) {
             Ok(value) => value,
             // An unparsable journal is a forensic anomaly (a partial write
@@ -302,9 +336,13 @@ impl RuntimeLayout {
             // delete — the record would vanish exactly when it matters.
             // Leave the bytes untouched: the sweep already refuses
             // unparsable journals, so nothing is lost by keeping them.
-            Err(_) => {
+            // Unparsable AND non-object roots are forensic anomalies: over-
+            // writing either with a fresh stub would hand the stale-runtime
+            // sweep a terminal state to delete (an object root even parses
+            // as one), destroying the record exactly when it matters.
+            _ => {
                 eprintln!(
-                    "mangaflow-desktop: ownership journal {} is unparsable; leaving it untouched instead of marking stopped",
+                    "mangaflow-desktop: ownership journal {} is malformed; leaving it untouched instead of marking stopped",
                     journal.display()
                 );
                 return Ok(());
@@ -388,8 +426,10 @@ pub fn sweep_runtime_dirs_with(user_data: &Path, grace_seconds: u64) -> std::io:
             _ => continue,
         }
         let journal = dir.join(JOURNAL_NAME);
-        let Ok(text) = std::fs::read_to_string(&journal) else {
-            continue; // no readable journal — conservative: keep the directory
+        // Bounded read: a planted oversized journal at a scannable name is
+        // treated exactly like an unreadable one (keep the directory).
+        let Some(text) = read_journal_bounded(&journal) else {
+            continue;
         };
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
             continue; // unparsable journal — keep
