@@ -631,8 +631,13 @@ def _spawn_web_server(args: argparse.Namespace, api_port: int) -> WebServer | No
         # downgrades, and this one is equally recoverable (R2 review
         # 2026-09-09, N5). The sockets opened above are released here.
         _log(f"node port claim failed ({error!r}); starting without the web server")
-        web_sock.close()
-        relay.close()
+        # Guarded closes (same shape as WebServer.close): a secondary close
+        # failure must not skip the second socket or mask the downgrade.
+        for sock in (web_sock, relay):
+            try:
+                sock.close()
+            except OSError:
+                pass
         return None
     env = dict(
         os.environ,
