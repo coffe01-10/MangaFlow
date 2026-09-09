@@ -314,20 +314,21 @@ def test_relay_caps_concurrent_connections(monkeypatch):
     """Live relay connections are bounded: overflow is closed fast, and a
     released slot serves the next client.
 
-    Each pinned connection costs two pump threads for as long as its peers
-    keep it open; without a bound, one leaking client grows the helper
-    without limit. The cap must be far above legitimate use (the Next
-    server's pool) and must NOT sever existing connections when it trips.
+    Each pinned connection costs three threads (two pumps + one joiner)
+    for as long as its peers keep it open; without a bound, one leaking
+    client grows the helper without limit. The cap must be far above
+    legitimate use (the Next server's pool) and must NOT sever existing
+    connections when it trips.
     """
     api = StubApi()
     try:
-        # The limiter snapshots the cap when the pump thread starts, so the
-        # patch must land BEFORE start_relay.
+        # The limiter snapshots the cap when _serve_relay (the accept
+        # thread) starts, so the patch must land BEFORE start_relay.
         monkeypatch.setattr(helper, "WEB_RELAY_MAX_CONNECTIONS", 2)
         port, stop = start_relay(monkeypatch, api)
         try:
             pinned = []
-            for index in range(2):
+            for _ in range(2):
                 client = socket.create_connection(("127.0.0.1", port), timeout=15)
                 client.sendall(REQUEST)
                 body = read_response(client, timeout_seconds=4)
@@ -346,16 +347,27 @@ def test_relay_caps_concurrent_connections(monkeypatch):
                 overflow.close()
 
             # Releasing one pinned slot lets the next client through, and the
-            # surviving pinned connection is unaffected.
+            # surviving pinned connection is unaffected. Bounded retry: the
+            # release needs a few thread hops (FIN -> pumps -> join), and a
+            # slow runner must not fail the cap logic with a false negative.
             pinned[0].close()
-            time.sleep(0.3)  # let the pumps release the slot
-            client = socket.create_connection(("127.0.0.1", port), timeout=15)
-            try:
-                client.sendall(REQUEST)
-                body = read_response(client, timeout_seconds=4)
-            finally:
-                client.close()
-            assert body.endswith(b"ok"), body
+            deadline = time.monotonic() + 5.0
+            served = None
+            while served is None and time.monotonic() < deadline:
+                client = socket.create_connection(("127.0.0.1", port), timeout=15)
+                try:
+                    client.sendall(REQUEST)
+                    served = read_response(client, timeout_seconds=2)
+                except (pytest.fail.Exception, OSError):
+                    # Not free yet: refused (FIN/RST like the overflow path).
+                    candidate, client = client, None
+                    candidate.close()
+                    time.sleep(0.2)
+                else:
+                    client.close()
+            assert served is not None and served.endswith(b"ok"), (
+                f"a slot was never released for a new client: {served!r}"
+            )
             pinned[1].sendall(REQUEST)
             assert read_response(pinned[1], timeout_seconds=4).endswith(b"ok")
         finally:

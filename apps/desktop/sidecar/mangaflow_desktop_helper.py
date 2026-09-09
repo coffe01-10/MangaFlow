@@ -187,8 +187,8 @@ def _serve_relay(relay: socket.socket, api_port: int) -> None:
     and the process teardown closes all piped connections.
 
     Concurrent connections are bounded (``WEB_RELAY_MAX_CONNECTIONS``): each
-    pinned connection costs two pump threads for as long as both peers keep
-    it open, so an unbounded accept loop would let one leaking or hostile
+    pinned connection costs three threads (two pumps + one joiner) for as
+    long as both peers keep it open, so an unbounded accept loop would let one leaking or hostile
     local client grow the helper without limit. The real client is the Next
     standalone server on the same host — tens of pooled connections at most
     — so the bound is far above legitimate use while keeping the failure
@@ -197,6 +197,7 @@ def _serve_relay(relay: socket.socket, api_port: int) -> None:
     """
 
     limiter = _RelayLimiter(WEB_RELAY_MAX_CONNECTIONS)
+    log_cooldown = 0.0
     while True:
         try:
             client, _ = relay.accept()
@@ -205,10 +206,17 @@ def _serve_relay(relay: socket.socket, api_port: int) -> None:
         except OSError:
             return  # listener closed — helper is shutting down
         if not limiter.try_acquire():
-            _log(
-                f"relay connection limit {WEB_RELAY_MAX_CONNECTIONS} reached; "
-                "closing the newest client"
-            )
+            # Rate-limited: the stderr log only rotates across sessions, so
+            # one line per refused connection under a refuse-flood would
+            # grow it for the rest of the session. Log the transition into
+            # saturation (and its end) instead of every refusal.
+            now = time.monotonic()
+            if now >= log_cooldown:
+                _log(
+                    f"relay connection limit {WEB_RELAY_MAX_CONNECTIONS} "
+                    "reached; closing overflow clients"
+                )
+                log_cooldown = now + 10.0
             client.close()
             continue
         try:
@@ -243,23 +251,56 @@ def _serve_relay(relay: socket.socket, api_port: int) -> None:
                 except OSError:
                     pass
 
-        def _pump() -> None:
+        def _pump(pair_client: socket.socket, pair_upstream: socket.socket) -> None:
             # Two pumps, one slot: the connection holds its limiter slot
             # until BOTH directions are done, then releases it for the next
-            # accepted client.
+            # accepted client. The sockets arrive as ARGUMENTS, not through
+            # the accept loop's shared cells: those are rebound on every
+            # iteration, and a deferred read from this thread could pipe a
+            # foreign pair (the classic late-binding closure hazard).
+            pumps = [
+                threading.Thread(target=_pipe, args=(pair_client, pair_upstream), daemon=True),
+                threading.Thread(target=_pipe, args=(pair_upstream, pair_client), daemon=True),
+            ]
             try:
-                pumps = [
-                    threading.Thread(target=_pipe, args=(client, upstream), daemon=True),
-                    threading.Thread(target=_pipe, args=(upstream, client), daemon=True),
-                ]
                 for pump in pumps:
                     pump.start()
-                for pump in pumps:
-                    pump.join()
-            finally:
+            except RuntimeError:
+                # Thread creation failed under host-wide pressure (OS
+                # thread/memory limits - not our own counter, which the cap
+                # bounds). Drop the pair deterministically; the accept loop
+                # must stay immortal even then.
+                for sock in (pair_client, pair_upstream):
+                    try:
+                        sock.close()
+                    except OSError:
+                        pass
                 limiter.release()
+                return
+            for pump in pumps:
+                pump.join()
+            # Both directions are done; close explicitly so the pair's fate
+            # does not depend on refcount timing.
+            for sock in (pair_client, pair_upstream):
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+            limiter.release()
 
-        threading.Thread(target=_pump, name="mangaflow-web-relay-pipe", daemon=True).start()
+        spawn = threading.Thread(
+            target=_pump, args=(client, upstream), name="mangaflow-web-relay-pipe", daemon=True
+        )
+        try:
+            spawn.start()
+        except RuntimeError:
+            # Same host-wide failure, one level up: without this guard the
+            # exception would kill the ACCEPT loop while 39443 stays bound,
+            # leaving backlog clients hanging for the rest of the session.
+            client.close()
+            upstream.close()
+            limiter.release()
+            continue
 
 
 def _pid_starttime() -> int | None:
