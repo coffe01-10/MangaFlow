@@ -98,6 +98,8 @@
 - R2'（#301 重构复核）：无引入缺陷；N1/N3 跟进已落地（#303 + 措辞校准）。
 - **R3''（三个防守钉 PR 交叉复核，2026-09-09）**：三 PR 均判 MERGE——#318 资源/fixture/cfg 纪律全部核实（3 LOW 已修：过期 fail-open 注释、cfg(unix)→cfg(target_os=linux)、pid-4242 锚点缺失夹具的潜伏 flake）；#320 深度线程与 no-follow 语义核实（1 nit：注释措辞）；#321 env 移除与 import 无副作用核实（跟进：活体 /proc 断言可选）。无假阳性声明。
 - **R4''（Issue 质量审计，2026-09-09）**：11 个 Issue 逐条对照代码——全部 CORRECT、无重复、严重度无超一级偏差；#309/#310/#312 已随 #318/#320/#321 合并关闭（Issue 已关+FIXED 评论）；#317 第一项被 #298 提前修复（已评论重划范围为 2-3 项）；#311 补 std 版本对 junction 语义的注意事项；行号漂移多处均不影响结论。307 的 P3 与其余 P4 的梯度张力已标注供 lead 校准。
-- **R5''（终审，2026-09-09）**：终审子代理对 #330（E3 polish）与 §7 台账逐项核验——分支 delta 与声明完全一致（守卫形状正确）、台账 11 Issue/5 PR 与 GitHub 真实状态一致、master 合并祖先核验（#301/#303/#318/#320/#321 全部在位）、helper 编译通过。**GO**。两个 LOW 已当场处置：#309 自动关闭无评论 → 补 FIXED 评论；#330 kill 后补 wait() reap。**本 Goal 配额（A/B/C/D/E/F）全部完成。**
+- **R5''（终审，2026-09-09）**：终审子代理对 #330（E3 polish）与 §7 台账逐项核验——分支 delta 与声明完全一致（守卫形状正确）、台账 11 Issue/5 PR 与 GitHub 真实状态一致、master 合并祖先核验（#301/#303/#318/#320/#321 全部在位）、helper 编译通过。**GO**。两个 LOW 已当场处置：#309 自动关闭无评论 → 补 FIXED 评论；#330 kill 后补 wait() reap。
+
+**R6（跨目标续跑，master 4a0ebe6）**：交叉复核并行轮最新 6 个加固提交（时钟钳制/注入缝、token 契约钉、sweep 符号链接 journal 拒绝、非 UTF8 分类、future-mtime keep、review 强化）——**无引入缺陷**（生产侧仅 4969c93 panic→clamp 与 6a7d636 纯重构）；发现并落地：非 UTF8 分类测试被无必要 unix 门控 → 拆分出全平台测试（**PR #335**）+ 去重字节级断言；确认 #308 的 validate→open 窗口仍开放（删除场景已被 4969c93 系拒绝，swap 场景维持残差 R-c）；4969c93 的提交信息勘误已在 output/n1-shell-audit.md:173 记录。shell-core 套件 **106/106**。
 
 **D — 旧账状态：** #264 FIXED（sweep）、#265 FIXED（ADR 修订 + 检测/横幅）、#272 FIXED（#271/#301）、#275 FIXED（0dfaac3 门控）、#276 FIXED（NativeBackendChecks）——均有带证据的关闭/评论；#299/#300 开放中由认领者跟进。非 Desktop 的 N1 期 Red Team Issue（#121-#152 等）不在 N3 审计面。
