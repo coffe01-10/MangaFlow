@@ -371,3 +371,35 @@ fn picker_shape_boundaries_fail_cleanly() {
     }
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// The kind→suffix mapping pinned exactly, including the allowed set each
+/// ForbiddenSuffix carries (the dialog shows it): each kind accepts only
+/// its own extensions and rejects the other kind's.
+#[test]
+fn suffix_policy_maps_per_kind_with_exact_allowed_sets() {
+    let dir = temp_dir("suffixmap");
+    for name in ["story.md", "story.txt", "story.markdown", "pic.png", "pic.jpg", "pic.jpeg", "pic.webp"] {
+        fs::write(dir.join(name), b"x").unwrap();
+    }
+    let cases: Vec<(&str, PickKind, bool, &[&str])> = vec![
+        ("story.md", PickKind::SourceText, true, &[".txt", ".md", ".markdown"]),
+        ("story.txt", PickKind::SourceText, true, &[".txt", ".md", ".markdown"]),
+        ("story.markdown", PickKind::SourceText, true, &[".txt", ".md", ".markdown"]),
+        ("pic.png", PickKind::SourceText, false, &[".txt", ".md", ".markdown"]),
+        ("story.md", PickKind::ReferenceImage, false, &[".png", ".jpg", ".jpeg", ".webp"]),
+        ("pic.png", PickKind::ReferenceImage, true, &[".png", ".jpg", ".jpeg", ".webp"]),
+        ("pic.jpg", PickKind::ReferenceImage, true, &[".png", ".jpg", ".jpeg", ".webp"]),
+        ("pic.jpeg", PickKind::ReferenceImage, true, &[".png", ".jpg", ".jpeg", ".webp"]),
+        ("pic.webp", PickKind::ReferenceImage, true, &[".png", ".jpg", ".jpeg", ".webp"]),
+    ];
+    for (name, kind, accepted, allowed) in cases {
+        match validate_picked_file(&dir.join(name), kind) {
+            Ok(picked) => assert!(accepted, "{name}/{kind:?} must be accepted"),
+            Err(PickError::ForbiddenSuffix { allowed: carried }) => {
+                assert!(!accepted, "{name}/{kind:?} must be rejected");
+                assert_eq!(carried, allowed, "{name}");
+            }
+            Err(other) => panic!("{name}/{kind:?}: unexpected {other:?}"),
+        }
+    }
+}
