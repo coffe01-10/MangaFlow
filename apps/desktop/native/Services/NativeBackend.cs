@@ -13,11 +13,31 @@ public sealed class NativeBackend(string repository, string userData)
     private readonly StringBuilder errors = new();
     public bool IsRunning => process is { HasExited: false };
 
+    /// <summary>Host executable the next StartAsync will load (chosen at start).</summary>
+    public string HostPath { get; private set; } = "";
+    /// <summary>SHA-256 of that host file at start; empty when unreadable.</summary>
+    public string HostSha256 { get; private set; } = "";
+
+    private static string Sha256File(string path)
+    {
+        try
+        {
+            using var stream = File.OpenRead(path);
+            return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(stream));
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            return "";
+        }
+    }
+
     public async Task<string> StartAsync(CancellationToken cancellation)
     {
         if (process != null) throw new InvalidOperationException("旧服务尚未停止，请等待后重试");
         var host = Path.Combine(AppContext.BaseDirectory, "native-host.exe");
         if (!File.Exists(host)) host = Path.Combine(repository, "apps", "desktop", "shell-core", "target", "debug", "native-host.exe");
+        HostPath = host;
+        HostSha256 = Sha256File(host);
         var python = Environment.GetEnvironmentVariable("MANGAFLOW_DESKTOP_PYTHON")
             ?? Path.Combine(repository, ".venv-desktop", "Scripts", "python.exe");
         if (!File.Exists(host) || !File.Exists(python))

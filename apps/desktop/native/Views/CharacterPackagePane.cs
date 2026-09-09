@@ -37,6 +37,10 @@ internal sealed partial class CharacterPackagePane : Border
     private TextBox negative = null!;
     private readonly StackPanel versions = new();
     private readonly StackPanel matrix = new();
+    // Async guard: the pane is only allowed to paint/notify while it is still the
+    // attached package view for this character. Internal tab switches and package
+    // list selections detach the pane WITHOUT bumping the parent view's epoch.
+    private bool Showing => view.IsCurrent(epoch) && Parent != null;
 
     public CharacterPackagePane(AssetsView view, CharacterItem character)
     {
@@ -61,6 +65,9 @@ internal sealed partial class CharacterPackagePane : Border
         try
         {
             var loaded = await GetAsync(string.Format(Base, view.ProjectIdValue, character.Id));
+            // Epoch only: during the constructor the pane is not parented yet, so the
+            // first load must not depend on attachment. Late repaints of a detached
+            // pane are invisible and harmless; user-facing notifies use Showing.
             if (!view.IsCurrent(epoch)) return;
             package = loaded is { ValueKind: JsonValueKind.Object } value ? value : default;
             if (package.ValueKind == JsonValueKind.Undefined)
@@ -72,7 +79,7 @@ internal sealed partial class CharacterPackagePane : Border
         }
         catch (Exception error)
         {
-            if (!view.IsCurrent(epoch)) return;
+            if (!Showing) return;
             content.Children.Clear();
             content.Children.Add(Kit.Caption($"角色模型包暂不可用：{error.Message}"));
         }
@@ -102,6 +109,16 @@ internal sealed partial class CharacterPackagePane : Border
         foreach (var version in package.Array("versions"))
             if (version.Text("status") == "DRAFT") return version;
         return null;
+    }
+
+    // Web §9.2 parity: with no DRAFT, the frozen view shows the published pointer,
+    // falling back to the newest locked version when no published pointer exists.
+    private JsonElement FrozenVersion()
+    {
+        var versions = package.Array("versions");
+        var published = versions.FirstOrDefault(v => v.Text("id") == package.Text("published_version_id"));
+        if (published.ValueKind == JsonValueKind.Object) return published;
+        return versions.FirstOrDefault(v => v.Text("status") != "DRAFT");
     }
 
     private void Render()
@@ -161,7 +178,7 @@ internal sealed partial class CharacterPackagePane : Border
         });
         header.Children.Clear();
         content.Children.Add(new PageHeading(title, actions) { Margin = new Thickness(0, 0, 0, 10) });
-        RenderCompleteness(draft ?? package.Array("versions").FirstOrDefault(v => v.Text("id") == package.Text("published_version_id")));
+        RenderCompleteness(draft ?? FrozenVersion());
 
         if (draft is { } current)
         {
@@ -170,12 +187,83 @@ internal sealed partial class CharacterPackagePane : Border
         else
         {
             content.Children.Add(Kit.Caption("当前版本已冻结，只读查看；如需调整，请先派生新版本。"));
-            var frozen = package.Array("versions").FirstOrDefault(v => v.Text("id") == package.Text("published_version_id"));
-            if (frozen.ValueKind == JsonValueKind.Object) { content.Children.Add(matrix); RenderMatrix(frozen); }
+            var frozen = FrozenVersion();
+            if (frozen.ValueKind == JsonValueKind.Object)
+            {
+                RenderFrozenSpec(frozen);
+                content.Children.Add(matrix); RenderMatrix(frozen);
+            }
         }
         content.Children.Add(new TextBlock { Text = "版本历史", Style = (Style)Application.Current.FindResource("SectionIndex"), Margin = new Thickness(0, 14, 0, 6) });
         content.Children.Add(versions);
         RenderVersions();
+    }
+
+    private static readonly (string Key, string Label)[] SpecFields =
+    [
+        ("age_appearance", "年龄段外观"), ("gender", "性别"), ("personality", "核心性格"), ("identity_notes", "身份备注"),
+        ("hair", "发型"), ("hair_color", "发色"), ("face", "面部"), ("eyes", "瞳色"), ("body", "体型"), ("distinguishing_marks", "标识性特征"),
+    ];
+
+    /// <summary>
+    /// Read-only spec readout for a frozen version, mirroring the web's
+    /// FrozenSpecReadout: identity + visual anchors and negative constraints come
+    /// from THAT version's spec_snapshot — never from the package's editable
+    /// working spec, which may already have drifted to a newer draft.
+    /// </summary>
+    private void RenderFrozenSpec(JsonElement version)
+    {
+        var header = new StackPanel { Margin = new Thickness(0, 10, 0, 8) };
+        header.Children.Add(new TextBlock
+        {
+            Text = $"已冻结版本 V{version.Number("version_number")} · {Labels.Map(Labels.PackageVersionStatus, version.Text("status"))} · 只读",
+            FontWeight = FontWeights.Bold,
+        });
+        header.Children.Add(Kit.Caption("发布版本冻结不可编辑；如需修改请派生新版本。"));
+        content.Children.Add(new Border
+        {
+            BorderBrush = AssetPageUi.Brush("Line"), BorderThickness = new Thickness(1), Background = AssetPageUi.Brush("Surface"),
+            Padding = new Thickness(14), Margin = new Thickness(0, 6, 0, 10), Child = header,
+        });
+        var snapshot = version.Element("spec_snapshot");
+        var rows = new List<(string Label, string Value)>();
+        foreach (var (key, label) in SpecFields)
+        {
+            var value = snapshot.Element("identity_spec").Text(key);
+            if (value.Length == 0) value = snapshot.Element("visual_spec").Text(key);
+            if (value.Length > 0) rows.Add((label, value));
+        }
+        // Unknown/extra snapshot keys still display (raw key as label), like the web.
+        foreach (var block in new[] { snapshot.Element("identity_spec"), snapshot.Element("visual_spec") })
+            if (block.ValueKind == JsonValueKind.Object)
+                foreach (var property in block.EnumerateObject())
+                    if (property.Value.ToString().Length > 0 && !SpecFields.Any(f => f.Key == property.Name))
+                        rows.Add((property.Name, property.Value.ToString()));
+        var readout = new StackPanel();
+        if (rows.Count == 0)
+        {
+            readout.Children.Add(Kit.Caption("该版本未填写规格文字。"));
+        }
+        else
+        {
+            var grid = new Grid();
+            for (var i = 0; i < 2; i++) grid.ColumnDefinitions.Add(new ColumnDefinition());
+            for (var i = 0; i < rows.Count; i++)
+            {
+                var cell = new StackPanel { Margin = new Thickness(0, 0, 12, 8) };
+                cell.Children.Add(new TextBlock { Text = rows[i].Label, FontSize = 12, FontWeight = FontWeights.Bold });
+                cell.Children.Add(new TextBlock { Text = rows[i].Value, FontSize = 12.5, TextWrapping = TextWrapping.Wrap, Foreground = AssetPageUi.Brush("Muted") });
+                Grid.SetRow(cell, i / 2);
+                Grid.SetColumn(cell, i % 2);
+                if (grid.RowDefinitions.Count <= i / 2) grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                grid.Children.Add(cell);
+            }
+            readout.Children.Add(grid);
+        }
+        var constraints = snapshot.Array("negative_constraints").Select(c => c.ToString()).Where(c => c.Length > 0).ToList();
+        if (constraints.Count > 0)
+            readout.Children.Add(Kit.Caption("负面约束：" + string.Join("；", constraints)));
+        content.Children.Add(readout);
     }
 
     private void RenderDraft(JsonElement draft)
@@ -267,7 +355,7 @@ internal sealed partial class CharacterPackagePane : Border
 
     private async Task SaveSpec(JsonElement draft)
     {
-        if (busy || !view.IsCurrent(epoch)) return; busy = true; IsEnabled = false;
+        if (busy || !Showing) return; busy = true; IsEnabled = false;
         try
         {
             await view.ApiSend(string.Format(Base, view.ProjectIdValue, character.Id), HttpMethod.Patch, new
@@ -286,10 +374,11 @@ internal sealed partial class CharacterPackagePane : Border
                     .Select(l => l.Trim()).Where(l => l.Length > 0).Take(20).ToArray(),
                 version = package.Number("version"),
             });
+            if (!Showing) return;
             view.Notify("草稿规格已保存。");
             await LoadAsync();
         }
-        catch (Exception error) { if (view.IsCurrent(epoch)) view.Notify("保存失败：" + error.Message); }
+        catch (Exception error) { if (Showing) view.Notify("保存失败：" + error.Message); }
         finally { busy = false; IsEnabled = true; }
     }
 
@@ -301,11 +390,12 @@ internal sealed partial class CharacterPackagePane : Border
         try
         {
             await view.ApiSend($"{string.Format(Base, view.ProjectIdValue, character.Id)}/versions/{draft.Text("id")}/publish", HttpMethod.Post);
+            if (!Showing) return;
             view.Notify("版本已发布。");
             await LoadAsync();
             await view.ReloadAssets();
         }
-        catch (Exception error) { view.Notify("发布失败：" + error.Message); }
+        catch (Exception error) { if (Showing) view.Notify("发布失败：" + error.Message); }
     }
 
     private async Task DeleteDraft(JsonElement draft)
@@ -317,7 +407,7 @@ internal sealed partial class CharacterPackagePane : Border
             await view.ApiSendOptional($"{string.Format(Base, view.ProjectIdValue, character.Id)}/versions/{draft.Text("id")}", HttpMethod.Delete);
             await LoadAsync();
         }
-        catch (Exception error) { view.Notify(error.Message); }
+        catch (Exception error) { if (Showing) view.Notify(error.Message); }
     }
 
     private void RenderVersions()

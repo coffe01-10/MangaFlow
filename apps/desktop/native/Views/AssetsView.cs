@@ -6,6 +6,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 using Microsoft.Win32;
 using MangaFlow.Native.Controls;
 using MangaFlow.Native.Services;
@@ -73,14 +74,83 @@ public sealed class AssetsView : WorkspaceView
         catch (OperationCanceledException) { }
     }
 
-    public void Switch(string view)
+    public void Switch(string view) => _ = SwitchAsync(view);
+
+    /// <summary>Guards an unsaved outfit draft before the internal tab changes.</summary>
+    public async Task SwitchAsync(string view)
     {
         if (!tabs.ContainsKey(view)) return;
         if (current == view) return;
+        if (await GuardOutfitDraftAsync() != OutfitDraftDecision.Proceed) return;
         current = view;
         foreach (var (key, tab) in tabs) tab.IsChecked = key == view;
         Render();
         if (view == Style) _ = LoadAsync();   // styles load lazily on first visit
+    }
+
+    internal enum OutfitDraftDecision { Proceed, Cancelled }
+
+    // Test seam: when set, replaces the interactive save/discard/cancel dialog.
+    internal Func<string, Task<string>>? OutfitDraftPrompt;
+
+    /// <summary>
+    /// If the wardrobe tab owns an unsaved draft, ask the user to save, discard or
+    /// keep editing. Saving runs the real save flow and stays on the tab when the
+    /// server rejects it (e.g. a version conflict). Never auto-submits.
+    /// </summary>
+    internal async Task<OutfitDraftDecision> GuardOutfitDraftAsync()
+    {
+        if (current != Outfits || host.Children.OfType<OutfitWorkspace>().FirstOrDefault() is not { } pane || !pane.DraftDirty)
+            return OutfitDraftDecision.Proceed;
+        var answer = OutfitDraftPrompt != null
+            ? await OutfitDraftPrompt(pane.DraftLabel)
+            : await ShowOutfitDraftDialog(pane.DraftLabel);
+        if (answer == "save")
+        {
+            await pane.SaveAsync();
+            // A rejected save (e.g. version conflict) keeps the draft on screen and
+            // cancels the navigation so nothing is lost.
+            if (!pane.DraftDirty) return OutfitDraftDecision.Proceed;
+        }
+        else if (answer == "discard")
+        {
+            pane.Reset();
+            return OutfitDraftDecision.Proceed;
+        }
+        foreach (var (key, tab) in tabs) tab.IsChecked = key == current;
+        return OutfitDraftDecision.Cancelled;
+    }
+
+    private async Task<string> ShowOutfitDraftDialog(string label)
+    {
+        var completion = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var dialog = new Window
+        {
+            Owner = Host, Title = "未保存的服装草稿", Width = 470, SizeToContent = SizeToContent.Height,
+            ResizeMode = ResizeMode.NoResize, WindowStartupLocation = WindowStartupLocation.CenterOwner, ShowInTaskbar = false,
+            Background = (Brush)Application.Current.FindResource("Paper"),
+        };
+        var panel = new StackPanel { Margin = new Thickness(26) };
+        panel.Children.Add(new TextBlock { Text = "未保存的服装草稿", FontFamily = (FontFamily)Application.Current.FindResource("Serif"), FontSize = 19, FontWeight = FontWeights.SemiBold });
+        panel.Children.Add(new TextBlock { Text = $"「{label}」还有未保存的名称、参考图或锁定项。切换前要如何处理这份草稿？", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 10, 0, 0), LineHeight = 23 });
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 22, 0, 0) };
+        void Add(string text, string result, string style, double marginLeft = 0)
+        {
+            var button = new Button { Content = text, MinWidth = 104, Margin = new Thickness(marginLeft, 0, 0, 0) };
+            button.Style = (Style)Application.Current.FindResource(style);
+            button.Click += (_, _) => { completion.TrySetResult(result); dialog.Close(); };
+            actions.Children.Add(button);
+        }
+        Add("继续编辑", "cancel", "Outline");
+        Add("放弃修改", "discard", "Ghost", 10);
+        Add("保存并继续", "save", "InkButton", 10);
+        panel.Children.Add(actions);
+        dialog.Content = panel;
+        dialog.PreviewKeyDown += (_, e) => { if (e.Key == Key.Escape) { e.Handled = true; completion.TrySetResult("cancel"); dialog.Close(); } };
+        dialog.Closed += (_, _) => completion.TrySetResult("cancel");
+        dialog.Loaded += (_, _) => actions.Children.OfType<Button>().First().Focus();
+        dialog.ShowDialog();
+        return await completion.Task;
     }
 
     public override void Deactivate() { epoch++; base.Deactivate(); }
@@ -111,6 +181,21 @@ public sealed class AssetsView : WorkspaceView
                 // when a style actually changed, or the creation form loses input.
                 keepPane = host.Children.Count > 0 && StyleFingerprint(next) == StyleFingerprint(styles);
                 styles = next;
+            }
+            else if (current == Outfits && host.Children.OfType<OutfitWorkspace>().FirstOrDefault() is { } outfitPane && outfitPane.SessionEpoch == captured)
+            {
+                // A late reload (e.g. a reference upload completing after a tab switch)
+                // must refresh shared data without rebuilding the wardrobe editor —
+                // the pane adopts the fresh rows and keeps unsaved input.
+                outfitPane.AdoptReloaded();
+                keepPane = true;
+            }
+            else if (current == Characters && host.Children.OfType<CharactersPane>().FirstOrDefault() is { } charactersPane && charactersPane.SessionEpoch == captured)
+            {
+                // Same contract for the characters pane: strip/reference surfaces refresh,
+                // the profile editor and the concept panel keep their in-progress input.
+                charactersPane.AdoptReloaded();
+                keepPane = true;
             }
             if (keepPane) return;
             foreach (var (key, tab) in tabs) tab.IsChecked = key == current;
@@ -187,6 +272,11 @@ public sealed class AssetsView : WorkspaceView
 
     public override Task RefreshAsync() => LoadAsync();
 
+    // Leaving the whole assets view (page/project navigation, window close) gets the
+    // same unsaved-draft protection as internal tab switches.
+    public override async Task<bool> ConfirmLeaveAsync() =>
+        await GuardOutfitDraftAsync() == OutfitDraftDecision.Proceed;
+
     internal void InvalidateOutfitDependents() => Cache.Invalidate("assets:" + ProjectId, "library:" + ProjectId, "jobs:" + ProjectId, "workbench:", "script:", "storyboard:", "pages:", "dashboard");
 
     internal bool OwnsOutfits(OutfitWorkspace pane) => host.Children.Contains(pane);
@@ -194,6 +284,7 @@ public sealed class AssetsView : WorkspaceView
     public override void PollTick()
     {
         if (current == Outfits && host.Children.OfType<OutfitWorkspace>().FirstOrDefault() is { } outfitPane) outfitPane.PollTick();
+        if (current == Characters && host.Children.OfType<CharactersPane>().FirstOrDefault() is { } charactersPane) charactersPane.PollTick();
         if (current == Style && styles.Any(s => s.Analyzing)) _ = LoadAsync();
     }
 }
@@ -257,17 +348,22 @@ internal sealed class ModelPickerBand : Border
 internal sealed class CharactersPane : StackPanel
 {
     private readonly AssetsView view;
+    private readonly int epoch;
     private readonly StackPanel strip = new() { Orientation = Orientation.Horizontal };
     private readonly StackPanel concept = new();
+    private ConceptPanel? conceptPanel;
     private readonly Button addButton = new() { Content = "＋ 添加角色", MinHeight = 44, Style = (Style)Application.Current.FindResource("InkButton") };
     private bool saving;
     private readonly StackPanel editor = new();
     private readonly TextBox nameInput = new() { Height = 42, FontSize = 13 };
     private readonly TextBox aliasInput = new() { Height = 42, FontSize = 13 };
+    internal int SessionEpoch => epoch;
+    private bool Attached => Parent != null && view.IsCurrent(epoch);
 
     public CharactersPane(AssetsView view)
     {
         this.view = view;
+        epoch = view.Epoch;
         Margin = new Thickness(0);
         Children.Add(Header("C H A R A C T E R  B I B L E  /  角色资产", "姓名、绰号与参考图绑定", $"{view.characters.Count} 个角色"));
         var createRow = new Grid { Margin = new Thickness(0, 18, 0, 12), ColumnDefinitions = { new ColumnDefinition(), new ColumnDefinition(), new ColumnDefinition { Width = GridLength.Auto } } };
@@ -363,7 +459,20 @@ internal sealed class CharactersPane : StackPanel
         form.Children.Add(Labelled("固定特征（生图时保持）", lockedFeatures));
         form.Children.Add(Labelled("禁止改变项", forbiddenChanges));
         editor.Children.Add(new Border { Style = (Style)Application.Current.FindResource("Card"), Padding = new Thickness(18), Child = form });
-        concept.Children.Add(new ConceptPanel(view, character));
+        conceptPanel = new ConceptPanel(view, character);
+        concept.Children.Add(conceptPanel);
+    }
+
+    internal void PollTick() => conceptPanel?.PollTick();
+
+    // Refresh shared data surfaces (strip counts, reference bindings) after a
+    // background reload WITHOUT rebuilding the editor or the concept panel —
+    // in-progress input must survive late responses from other panes.
+    internal void AdoptReloaded()
+    {
+        if (!Attached) return;
+        RenderStrip();
+        foreach (var references in Children.OfType<CharacterReferencesPane>()) references.Render();
     }
 
     private static StackPanel Labelled(string label, TextBox box)
@@ -413,7 +522,10 @@ internal sealed class CharactersPane : StackPanel
             });
             if (!view.IsCurrent(captured)) return;
             await view.ReloadAssets();
-            if (view.IsCurrent(captured)) view.Notify("角色规范已保存。");
+            // The data refresh always runs; the success toast only shows when the
+            // saved character is still on screen — otherwise it reads as the wrong
+            // object's confirmation after a quick re-selection.
+            if (view.IsCurrent(captured) && view.SelectedCharacter?.Id == character.Id) view.Notify("角色规范已保存。");
         }
         catch (Exception error) { if (view.IsCurrent(captured)) view.Notify("保存角色失败：" + error.Message); }
         finally { saving = false; editor.IsEnabled = true; }
@@ -423,21 +535,41 @@ internal sealed class CharactersPane : StackPanel
 /// <summary>AI concept panel: one-sheet generation for character + outfit norms.</summary>
 internal sealed class ConceptPanel : Border
 {
+    // Non-terminal candidate statuses (mirrors the asset candidate job pipeline).
+    private static readonly HashSet<string> PendingStatuses =
+        ["WAITING", "QUEUED", "PREPARING", "UPLOADING_REFERENCES", "GENERATING", "OCR_CHECKING", "CONSISTENCY_CHECKING", "REPAIRING", "RUNNING"];
+    private const int VisibleCandidates = 2;   // web shows the latest two concept drafts
+
     private readonly AssetsView view;
     private readonly CharacterItem character;
+    private readonly int epoch;
     private readonly TextBox appearance = new() { AcceptsReturn = true, MinHeight = 54 };
     private readonly TextBox outfitName = new() { Width = 260 };
     private readonly TextBox outfitDescription = new() { AcceptsReturn = true, MinHeight = 54 };
     private readonly TextBox lockedFields = new() { Width = 260 };
     private readonly StackPanel candidates = new();
+    private readonly Button generate;
+    private readonly DispatcherTimer draftSave;
+    private readonly HashSet<string> approving = [];
+    private bool busy, reading, pollDue;
+    private bool Active => view.IsCurrent(epoch) && view.SelectedCharacter?.Id == character.Id;
+    private string DraftKey => "concept-draft:" + view.ProjectIdValue + ":" + character.Id;
 
     public ConceptPanel(AssetsView view, CharacterItem character)
     {
         this.view = view;
         this.character = character;
+        epoch = view.Epoch;
         Margin = new Thickness(0, 14, 0, 0);
         Style = (Style)Application.Current.FindResource("Card");
         Padding = new Thickness(18);
+        LoadDraft();
+        // Web parity: the concept form is a per-(project, character) draft that must
+        // survive re-entry, approval reloads and background data refreshes.
+        draftSave = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(800) };
+        draftSave.Tick += (_, _) => { draftSave.Stop(); SaveDraft(); };
+        foreach (var box in new[] { appearance, outfitName, outfitDescription, lockedFields })
+            box.TextChanged += (_, _) => draftSave.Start();
         var panel = new StackPanel();
         panel.Children.Add(new TextBlock { Text = "AI CONCEPT / 待确认草稿", Style = (Style)Application.Current.FindResource("SectionIndex") });
         panel.Children.Add(new TextBlock
@@ -454,7 +586,7 @@ internal sealed class ConceptPanel : Border
         panel.Children.Add(Field("服装档案名称", outfitName));
         panel.Children.Add(Field("服装描述", outfitDescription));
         panel.Children.Add(Field("确认后锁定项", lockedFields));
-        var generate = Kit.Act("生成概念设定草稿", async (_, _) => await Generate(), "InkButton");
+        generate = Kit.Act("生成概念设定草稿", async (_, _) => await Generate(), "InkButton");
         generate.Margin = new Thickness(0, 6, 0, 12);
         generate.HorizontalAlignment = HorizontalAlignment.Left;
         panel.Children.Add(generate);
@@ -471,12 +603,39 @@ internal sealed class ConceptPanel : Border
         return panel;
     }
 
+    private void LoadDraft()
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(KeyValueStore.Get(DraftKey));
+            var draft = document.RootElement;
+            appearance.Text = draft.Text("appearance");
+            outfitName.Text = draft.Text("outfitName");
+            outfitDescription.Text = draft.Text("outfitDescription");
+            lockedFields.Text = draft.Text("lockedFields");
+        }
+        catch (JsonException) { /* absent or corrupt draft starts blank */ }
+    }
+
+    private void SaveDraft()
+    {
+        KeyValueStore.Set(DraftKey, JsonSerializer.Serialize(new
+        {
+            appearance = appearance.Text, outfitName = outfitName.Text,
+            outfitDescription = outfitDescription.Text, lockedFields = lockedFields.Text,
+        }));
+    }
+
     private async Task Generate()
     {
-        var alias = new ModelPickerBand(view, "").Selected;
-        if (alias.Length == 0) { view.Notify("请先选择一个支持参考图编辑的图片模型"); return; }
+        if (busy) return;
+        var alias = view.SelectedImageModel;
+        if (!view.ImageEditModels.Any(m => m.Text("logical_alias") == alias))
+        { view.Notify("请先选择一个支持参考图编辑的图片模型"); return; }
         if (outfitName.Text.Trim().Length == 0 || outfitDescription.Text.Trim().Length == 0)
         { view.Notify("请填写服装档案名称和服装描述。"); return; }
+        draftSave.Stop(); SaveDraft();
+        busy = true; generate.IsEnabled = false;
         try
         {
             await view.ApiSend($"characters/{character.Id}/complete-sheet", HttpMethod.Post, new
@@ -485,71 +644,116 @@ internal sealed class ConceptPanel : Border
                 appearance_description = appearance.Text, outfit_name = outfitName.Text.Trim(),
                 outfit_description = outfitDescription.Text,
             });
+            if (!Active) return;
             view.Notify("概念设定任务已创建，候选生成后会显示在下方。");
+            pollDue = true;
             await LoadCandidatesAsync();
         }
-        catch (Exception error) { view.Notify("生成失败：" + error.Message); }
+        catch (Exception error) { if (Active) view.Notify("生成失败：" + error.Message); }
+        finally { busy = false; if (Active) generate.IsEnabled = true; }
     }
 
+    internal void PollTick()
+    {
+        if (!Active || reading || !pollDue) return;
+        _ = LoadCandidatesAsync();
+    }
+
+    // Reads the latest CHARACTER-target batch, then its concept-sheet candidates.
+    // Late responses are dropped: the panel may have been detached or the character
+    // re-selected while the requests were in flight.
     private async Task LoadCandidatesAsync()
     {
+        if (reading) return;
+        reading = true;
         try
         {
             var batches = await view.ApiSend(QueryBuilder.Build("asset-generation-batches",
-                ("target_type", "CHARACTER"), ("target_id", character.Id), ("limit", 10)));
-            candidates.Children.Clear();
-            foreach (var batch in batches.EnumerateArray().Reverse())
+                ("target_type", "CHARACTER"), ("target_id", character.Id), ("limit", 1)));
+            if (!view.IsCurrent(epoch)) return;
+            var rows = new List<JsonElement>();
+            var batchId = batches.EnumerateArray().FirstOrDefault().Text("id");
+            if (batchId.Length > 0)
             {
-                var rows = await view.ApiSend($"batches/{batch.Text("id")}/candidates");
-                foreach (var row in rows.EnumerateArray())
-                {
-                    var candidate = CandidateItem.From(row);
-                    var card = new StackPanel { Margin = new Thickness(0, 0, 12, 12) };
-                    var url = candidate.ContentUrl.Length > 0 ? candidate.ContentUrl : (candidate.AssetId.Length > 0 ? $"assets/{candidate.AssetId}/content" : "");
-                    Border artwork;
-                    if (url.Length > 0)
-                    {
-                        artwork = new Border { Width = 128, Height = 128, BorderBrush = (Brush)Application.Current.FindResource("LineDark"), BorderThickness = new Thickness(1) };
-                        var image = new ImageBox { SourceUrl = view.OriginFor(url) };
-                        artwork.Child = image;
-                        artwork.Cursor = Cursors.Hand;
-                        artwork.MouseLeftButtonDown += (_, _) => view.ShowImage(view.OriginFor(url), $"{character.PrimaryName} 概念设定");
-                    }
-                    else
-                    {
-                        artwork = new Border
-                        {
-                            Width = 128, Height = 128, Background = (Brush)Application.Current.FindResource("PaperDeep"),
-                            Child = new TextBlock
-                            {
-                                Text = candidate.Status == "FAILED" ? "生成失败" : "等待 Worker 生成",
-                                Style = (Style)Application.Current.FindResource("Micro"),
-                                HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
-                            },
-                        };
-                    }
-                    card.Children.Add(artwork);
-                    card.Children.Add(new TextBlock { Text = candidate.StatusLabel, Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 4, 0, 0) });
-                    if (candidate.Status == "READY")
-                    {
-                        var approve = Kit.Act("确认为规范参考", async (_, _) => await Approve(candidate), "CompactInk");
-                        approve.Margin = new Thickness(0, 6, 0, 0);
-                        card.Children.Add(approve);
-                    }
-                    candidates.Children.Add(card);
-                }
+                var response = await view.ApiSend($"batches/{batchId}/candidates");
+                if (!view.IsCurrent(epoch)) return;
+                // Concept adoption only applies to complete-sheet candidates; other
+                // variants (e.g. redrawn reference views) must not enter this list.
+                rows = response.EnumerateArray().Where(r => r.Text("variant") == "SHEET").ToList();
             }
-            if (candidates.Children.Count == 0)
-                candidates.Children.Add(Kit.Caption("第一张草稿生成后会实时出现在这里；确认前不会进入正式页面提示词。"));
+            if (!Active) return;
+            RenderCandidates(rows);
         }
-        catch (Exception) { candidates.Children.Add(Kit.Caption("候选读取失败。")); }
+        catch (OperationCanceledException) { }
+        catch (Exception error)
+        {
+            if (!Active) return;
+            candidates.Children.Clear();
+            candidates.Children.Add(Kit.Caption("候选读取失败：" + error.Message));
+        }
+        finally { reading = false; }
     }
 
-    private async Task Approve(CandidateItem candidate)
+    private void RenderCandidates(List<JsonElement> rows)
     {
+        candidates.Children.Clear();
+        pollDue = rows.Any(r => PendingStatuses.Contains(r.Text("status")));
+        foreach (var row in rows.Take(VisibleCandidates))
+        {
+            var candidate = CandidateItem.From(row);
+            var approved = row.Element("prompt_snapshot").Element("reference_approval").Flag("approved");
+            var card = new StackPanel { Margin = new Thickness(0, 0, 12, 12) };
+            var url = candidate.ContentUrl.Length > 0 ? candidate.ContentUrl : (candidate.AssetId.Length > 0 ? $"assets/{candidate.AssetId}/content" : "");
+            Border artwork;
+            if (url.Length > 0)
+            {
+                artwork = new Border { Width = 128, Height = 128, BorderBrush = (Brush)Application.Current.FindResource("LineDark"), BorderThickness = new Thickness(1) };
+                artwork.Child = new ImageBox { SourceUrl = view.OriginFor(url) };
+                artwork.Cursor = Cursors.Hand;
+                artwork.MouseLeftButtonDown += (_, _) => view.ShowImage(url, $"{character.PrimaryName} 概念设定");
+            }
+            else
+            {
+                artwork = new Border
+                {
+                    Width = 128, Height = 128, Background = (Brush)Application.Current.FindResource("PaperDeep"),
+                    Child = new TextBlock
+                    {
+                        Text = candidate.Status == "FAILED" ? "生成失败" : PendingStatuses.Contains(candidate.Status) ? "排队/生成中…" : "等待图片",
+                        Style = (Style)Application.Current.FindResource("Micro"),
+                        HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+                    },
+                };
+            }
+            card.Children.Add(artwork);
+            var status = approved ? "已确认为规范参考" : candidate.StatusLabel;
+            card.Children.Add(new TextBlock { Text = status, Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 4, 0, 0) });
+            if (candidate.Status == "READY" && !approved)
+            {
+                var id = candidate.Id;
+                var approve = Kit.Act("确认为规范参考", async (_, _) => await Approve(id), "CompactInk");
+                approve.Margin = new Thickness(0, 6, 0, 0);
+                if (approving.Contains(id)) approve.IsEnabled = false;
+                card.Children.Add(approve);
+            }
+            candidates.Children.Add(card);
+        }
+        if (rows.Count > VisibleCandidates)
+            candidates.Children.Add(Kit.Caption($"另有 {rows.Count - VisibleCandidates} 个历史候选，可在生成素材库中查看。"));
+        if (candidates.Children.Count == 0)
+            candidates.Children.Add(Kit.Caption("第一张草稿生成后会实时出现在这里；确认前不会进入正式页面提示词。"));
+    }
+
+    private async Task Approve(string candidateId)
+    {
+        if (busy || approving.Contains(candidateId)) return;
+        draftSave.Stop(); SaveDraft();
+        approving.Add(candidateId);
+        foreach (var button in candidates.Children.OfType<StackPanel>().SelectMany(DescendantButtons))
+            if (Equals(button.Content, "确认为规范参考")) button.IsEnabled = false;
         try
         {
-            await view.ApiSend($"asset-candidates/{candidate.Id}/approve-reference", HttpMethod.Post, new
+            await view.ApiSend($"asset-candidates/{candidateId}/approve-reference", HttpMethod.Post, new
             {
                 character_id = character.Id,
                 bind_character_reference = true,
@@ -558,10 +762,29 @@ internal sealed class ConceptPanel : Border
                 outfit_description = outfitDescription.Text.Trim().Length > 0 ? outfitDescription.Text : null,
                 outfit_locked_fields = lockedFields.Text.Trim().Length > 0 ? lockedFields.Text.Trim().Split('；', ';') : Array.Empty<string>(),
             });
+            if (!Active) return;
             view.Notify("已绑定人物与服装。");
             await view.ReloadAssets();
+            if (Active) await LoadCandidatesAsync();
         }
-        catch (Exception error) { view.Notify("确认采用失败：" + error.Message); }
+        catch (Exception error) { if (Active) view.Notify("确认采用失败：" + error.Message); }
+        finally
+        {
+            approving.Remove(candidateId);
+            if (Active) foreach (var button in candidates.Children.OfType<StackPanel>().SelectMany(DescendantButtons))
+                if (Equals(button.Content, "确认为规范参考")) button.IsEnabled = true;
+        }
+    }
+
+    private static IEnumerable<Button> DescendantButtons(DependencyObject root)
+    {
+        var count = System.Windows.Media.VisualTreeHelper.GetChildrenCount(root);
+        for (var i = 0; i < count; i++)
+        {
+            var child = System.Windows.Media.VisualTreeHelper.GetChild(root, i);
+            if (child is Button button) yield return button;
+            foreach (var nested in DescendantButtons(child)) yield return nested;
+        }
     }
 }
 
@@ -1150,7 +1373,7 @@ internal sealed class ScenesPane : StackPanel
         foreach (var reference in asset.References)
         {
             var assetId = reference.Text("asset_id");
-            var url = view.OriginFor($"assets/{assetId}/content");
+            var url = $"assets/{assetId}/content";
             var thumb = new Border
             {
                 Width = 96, Height = 96, Margin = new Thickness(0, 0, 10, 10),
@@ -1384,7 +1607,7 @@ internal sealed class AssetCard : Border
         {
             var image = new ImageBox { SourceUrl = view.OriginFor(asset.ContentUrl.Contains("/content") ? asset.ContentUrl.Replace("/content", "/thumbnail/640") : asset.ContentUrl) };
             thumb.Child = image;
-            thumb.MouseLeftButtonDown += (_, _) => view.ShowImage(view.OriginFor(asset.ContentUrl), asset.Name);
+            thumb.MouseLeftButtonDown += (_, _) => view.ShowImage(asset.ContentUrl, asset.Name);
         }
         panel.Children.Add(thumb);
         panel.Children.Add(new TextBlock { Text = asset.Name, FontWeight = FontWeights.Bold, FontSize = 12.5, TextTrimming = TextTrimming.CharacterEllipsis, TextWrapping = TextWrapping.NoWrap });

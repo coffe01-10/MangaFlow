@@ -107,16 +107,16 @@ internal sealed partial class CharacterPackagePane
         await Change(async () =>
         {
             var asset = await view.UploadAsset("CHARACTER_REFERENCE", picker.FileName);
-            if (!view.IsCurrent(epoch)) return;
+            if (!Showing) return;
             if (role == "cover") await view.ApiSend($"{PackagePath}/versions/{draft.Text("id")}/cover", HttpMethod.Put, new { asset_id = asset.Text("id"), version = draft.Number("version") });
             else await view.ApiSend($"{PackagePath}/versions/{draft.Text("id")}/references", HttpMethod.Post, new { asset_id = asset.Text("id"), role, label, sort_order = 0, version = draft.Number("version") });
         });
     }
     private async Task Change(Func<Task> action)
     {
-        if (busy || !view.IsCurrent(epoch)) return; busy = true; IsEnabled = false;
-        try { await action(); if (view.IsCurrent(epoch)) await LoadAsync(); }
-        catch (Exception ex) { if (view.IsCurrent(epoch)) view.Notify(ex.Message); }
+        if (busy || !Showing) return; busy = true; IsEnabled = false;
+        try { await action(); if (Showing) await LoadAsync(); }
+        catch (Exception ex) { if (Showing) view.Notify(ex.Message); }
         finally { busy = false; IsEnabled = true; }
     }
     private void RenderOutfits(JsonElement draft, bool editable)

@@ -35,12 +35,21 @@ internal static class NativeInteractionChecks
     {
         Exception? failure = null;
         var frame = new DispatcherFrame();
+        // async-void continuations (button/tab handlers) route their exceptions here;
+        // without this hook a stray one kills the process with a WER dialog and the
+        // 60s guard below can never fire because the modal dialog blocks the pump.
+        Dispatcher.CurrentDispatcher.UnhandledException += (_, e) =>
+        {
+            e.Handled = true;
+            if (failure == null) failure = new Exception("Dispatcher unhandled: " + e.Exception.Message, e.Exception);
+            frame.Continue = false;
+        };
         var timeout = new DispatcherTimer { Interval = TimeSpan.FromSeconds(60) };
         timeout.Tick += (_, _) => { failure = new TimeoutException("Native interaction checks timed out"); frame.Continue = false; };
         timeout.Start();
         Dispatcher.CurrentDispatcher.BeginInvoke(new Action(async () =>
         {
-            try { await NativeBackendChecks.Run(); await NativeWorkflowChecks.Run(); await NativeStoryboardChecks.Run(); await NativeButtonChecks.Run(output); await NativeSourceChecks.Run(output); await NativeCharacterPageChecks.Run(output); await NativeOutfitChecks.Run(output); await Creation(); await Generation(); await LocalEdit(); await NativeJobsChecks.Run(output); await NativeLibraryChecks.Run(output); await NativeDockChecks.Run(output); await NativeStateMatrixChecks.Run(output); }
+            try { await NativeBackendChecks.Run(); await NativeWorkflowChecks.Run(); await NativeStoryboardChecks.Run(); await NativeButtonChecks.Run(output); await NativeSourceChecks.Run(output); await NativeCharacterPageChecks.Run(output); await NativeOutfitChecks.Run(output); await NativeAssetsLoopChecks.Run(output); await Creation(); await Generation(); await LocalEdit(); await NativeJobsChecks.Run(output); await NativeLibraryChecks.Run(output); await NativeDockChecks.Run(output); await NativeStateMatrixChecks.Run(output); }
             catch (Exception error) { failure = error; }
             finally { frame.Continue = false; }
         }));

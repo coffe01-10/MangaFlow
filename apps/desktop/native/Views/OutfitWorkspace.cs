@@ -32,6 +32,17 @@ internal sealed class OutfitWorkspace : StackPanel
     private int libraryRequest, resultRequest;
     private string resultOutfit = "", resultBatch = "", nextCursor = "";
     private readonly List<JsonElement> libraryCandidates = [];
+    // Draft baseline captured whenever the form is (re)filled, so DraftDirty can
+    // distinguish "user edits since BeginEdit/Reset" from the pristine record.
+    private string initialName = "", initialLocked = "";
+    private readonly HashSet<string> initialSelected = [];
+    private bool syncingSelector;
+    private string lastCharacterId = "";
+    internal int SessionEpoch => epoch;
+    internal bool DraftDirty => editing != null
+        ? outfitName.Text != initialName || lockedFields.Text != initialLocked || !selected.SetEquals(initialSelected)
+        : outfitName.Text.Trim().Length > 0 || lockedFields.Text.Trim().Length > 0 || selected.Count > 0;
+    internal string DraftLabel => editing != null ? outfitName.Text.Trim().Length > 0 ? outfitName.Text.Trim() : editing.Name : outfitName.Text.Trim();
     private bool Active => view.IsCurrent(epoch) && view.OwnsOutfits(this);
     private string CharacterId => (characterSelector.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
 
@@ -80,11 +91,12 @@ internal sealed class OutfitWorkspace : StackPanel
         import = Kit.Act("从生成素材库导入", ToggleLibrary, "Outline");
         import.HorizontalAlignment = HorizontalAlignment.Left; import.Margin = new Thickness(0, 12, 0, 14); Children.Add(import);
         library.Visibility = Visibility.Collapsed; Children.Add(library); Children.Add(references);
-        characterSelector.SelectionChanged += (_, _) => { libraryRequest++; library.Visibility = Visibility.Collapsed; import.Content = "从生成素材库导入"; UpdateDraft(); RenderReferences(); };
+        characterSelector.SelectionChanged += async (_, _) => await SelectionChangedAsync();
         outfitName.TextChanged += (_, _) => UpdateDraft();
         models.AddHandler(ButtonBase.ClickEvent, new RoutedEventHandler((_, _) => RenderRecords()));
         if (view.SelectedCharacter != null) SelectCharacter(view.SelectedCharacter.Id);
         if (view.outfits.FirstOrDefault(o => o.Id == view.SelectedOutfit?.Id) is { } initialOutfit) BeginEdit(initialOutfit);
+        lastCharacterId = CharacterId; CaptureDraftBaseline();
         UpdateDraft(); RenderRecords(); RenderReferences();
         if (view.OutfitPreviewId.Length > 0) Dispatcher.BeginInvoke(new Action(async () => await LoadLatestResultAsync()));
     }
@@ -123,15 +135,53 @@ internal sealed class OutfitWorkspace : StackPanel
     }
     private void BeginEdit(OutfitItem outfit)
     {
-        if (busy) return; editing = outfit; view.SelectedOutfit = outfit; SelectCharacter(outfit.CharacterId);
+        if (busy) return; editing = outfit; view.SelectedOutfit = outfit;
+        syncingSelector = true; SelectCharacter(outfit.CharacterId); syncingSelector = false; lastCharacterId = CharacterId;
         selected.Clear(); selected.UnionWith(outfit.ReferenceAssetIds); outfitName.Text = outfit.Name; lockedFields.Text = outfit.LockedFields;
+        CaptureDraftBaseline();
         UpdateDraft(); RenderRecords(); RenderReferences();
     }
-    private void Reset()
+    // Switching the edited record re-owns the form: unsaved edits get the same
+    // save/discard/cancel guard as tab switches before the record loads.
+    private async Task EditAsync(OutfitItem outfit)
+    {
+        if (busy) return;
+        if (DraftDirty && editing?.Id != outfit.Id)
+        {
+            if (await view.GuardOutfitDraftAsync() == AssetsView.OutfitDraftDecision.Cancelled || DraftDirty) return;
+        }
+        BeginEdit(outfit);
+    }
+    internal void Reset()
     {
         editing = null; view.SelectedOutfit = null; selected.Clear(); outfitName.Clear(); lockedFields.Clear();
         libraryRequest++; library.Visibility = Visibility.Collapsed; import.Content = "从生成素材库导入";
+        CaptureDraftBaseline();
         UpdateDraft(); RenderRecords(); RenderReferences();
+    }
+    private void CaptureDraftBaseline()
+    {
+        initialName = outfitName.Text; initialLocked = lockedFields.Text;
+        initialSelected.Clear(); initialSelected.UnionWith(selected);
+    }
+    // A user-driven character change re-owns the draft: with unsaved edits, ask
+    // save/discard/cancel first. Programmatic selections (BeginEdit/Reset) pass through.
+    private async Task SelectionChangedAsync()
+    {
+        if (syncingSelector) return;
+        var next = CharacterId;
+        if (next == lastCharacterId) return;
+        if (DraftDirty)
+        {
+            // Revert first so a cancelled guard leaves the draft's owner selected.
+            syncingSelector = true; SelectCharacter(lastCharacterId); syncingSelector = false;
+            var decision = await view.GuardOutfitDraftAsync();
+            if (decision == AssetsView.OutfitDraftDecision.Cancelled || DraftDirty) return;
+            syncingSelector = true; SelectCharacter(next); syncingSelector = false;
+        }
+        lastCharacterId = next;
+        libraryRequest++; library.Visibility = Visibility.Collapsed; import.Content = "从生成素材库导入";
+        UpdateDraft(); RenderReferences();
     }
     private async Task RunAsync(Func<Task> action)
     {
@@ -147,12 +197,24 @@ internal sealed class OutfitWorkspace : StackPanel
         var outfits = await view.ApiSend($"projects/{projectId}/outfits");
         if (!Active) return;
         view.assets = assets.EnumerateArray().Select(AssetItem.From).ToList(); view.outfits = outfits.EnumerateArray().Select(OutfitItem.From).ToList();
-        selected.IntersectWith(view.assets.Where(a => a.Kind == "OUTFIT_REFERENCE").Select(a => a.Id));
+        AdoptReloaded();
+    }
+    // Absorbs already-refreshed shared rows (AssetsView.LoadAsync fetched them)
+    // without rebuilding the editor: the draft, its baseline and the busy state
+    // stay exactly as they were. Only externally-deleted reference ids leave the
+    // baseline; typed text keeps marking the draft dirty.
+    internal void AdoptReloaded()
+    {
+        if (!Active) return;
+        var liveIds = view.assets.Where(a => a.Kind == "OUTFIT_REFERENCE").Select(a => a.Id).ToHashSet();
+        selected.IntersectWith(liveIds);
+        initialSelected.IntersectWith(liveIds);
         Children.RemoveAt(0); Children.Insert(0, AssetPageUi.Header("WARDROBE / 服装档案", "角色、服装与参考图逐一绑定", $"{view.outfits.Count} 份档案"));
         view.InvalidateOutfitDependents();
         RenderReferences(); RenderRecords(); UpdateDraft();
     }
-    private Task SaveAsync() => RunAsync(async () =>
+    internal Task SaveAsync() => SaveDraftAsync();
+    private Task SaveDraftAsync() => RunAsync(async () =>
     {
         if (outfitName.Text.Trim().Length == 0 || editing == null && (CharacterId.Length == 0 || selected.Count == 0)) return;
         var fields = lockedFields.Text.Split(new[] { '，', ',', '、' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -190,7 +252,7 @@ internal sealed class OutfitWorkspace : StackPanel
             text.Children.Add(chain);
             var actions = new WrapPanel();
             actions.Children.Add(Kit.Act("删除档案及图片", async (_, _) => await DeleteAsync(outfit), "CompactDanger"));
-            actions.Children.Add(Kit.Act(editing?.Id == outfit.Id ? "编辑中" : "管理参考图", (_, _) => BeginEdit(outfit), "Compact"));
+            actions.Children.Add(Kit.Act(editing?.Id == outfit.Id ? "编辑中" : "管理参考图", async (_, _) => await EditAsync(outfit), "Compact"));
             var generate = Kit.Act("生成穿着图", async (_, _) => await GenerateAsync(outfit), "Compact"); generate.IsEnabled = !busy && view.ImageEditModels.Any(m => m.Text("logical_alias") == models.Selected) && outfit.ReferenceCount > 0; actions.Children.Add(generate);
             foreach (FrameworkElement action in actions.Children) action.Margin = new Thickness(0, 0, 6, 6);
             text.Children.Add(actions); var surface = Surface(text); surface.Margin = new Thickness(0, 0, 0, 10); if (editing?.Id == outfit.Id) surface.BorderBrush = AssetPageUi.Brush("Accent"); records.Children.Add(surface);

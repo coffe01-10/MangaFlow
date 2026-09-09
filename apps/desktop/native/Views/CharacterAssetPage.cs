@@ -157,7 +157,7 @@ internal sealed class CharacterReferencesPane : StackPanel
     {
         var grid = new Grid { ColumnDefinitions = { new ColumnDefinition { Width = new GridLength(84) }, new ColumnDefinition() } };
         var thumb = new Button { Width = 74, Height = 74, Padding = new Thickness(0), VerticalAlignment = VerticalAlignment.Top, BorderThickness = new Thickness(0) };
-        if (asset.ContentUrl.Length > 0) { thumb.Content = new ImageBox { SourceUrl = view.OriginFor(asset.ContentUrl.Replace("/content", "/thumbnail/640")) }; thumb.Click += (_, _) => view.ShowImage(view.OriginFor(asset.ContentUrl), asset.Name); }
+        if (asset.ContentUrl.Length > 0) { thumb.Content = new ImageBox { SourceUrl = view.OriginFor(asset.ContentUrl.Replace("/content", "/thumbnail/640")) }; thumb.Click += (_, _) => view.ShowImage(asset.ContentUrl, asset.Name); }
         else thumb.Content = SourceIcon.Create("file", 26);
         grid.Children.Add(thumb);
         var info = new StackPanel(); Grid.SetColumn(info, 1); grid.Children.Add(info);

@@ -14,7 +14,18 @@ try {
     & dotnet build $nativeProject -c Release --nologo
     if ($LASTEXITCODE -ne 0) { throw 'Native UI build failed.' }
     $nativeOutput = Join-Path $nativeRepo 'apps/desktop/native/bin/Release/net8.0-windows'
-    Copy-Item -LiteralPath (Join-Path $nativeRepo 'apps/desktop/shell-core/target/debug/native-host.exe') -Destination $nativeOutput -Force
+    # The WPF client loads the host from ITS output directory first (NativeBackend),
+    # so a failed or partial copy here would silently run a stale host. Build and
+    # copy are already fail-closed; the hash comparison additionally rejects a
+    # truncated/locked copy that Copy-Item reported as success.
+    $hostSource = Join-Path $nativeRepo 'apps/desktop/shell-core/target/debug/native-host.exe'
+    $hostTarget = Join-Path $nativeOutput 'native-host.exe'
+    Copy-Item -LiteralPath $hostSource -Destination $hostTarget -Force
+    if ((Get-FileHash -LiteralPath $hostSource -Algorithm SHA256).Hash -ne
+        (Get-FileHash -LiteralPath $hostTarget -Algorithm SHA256).Hash) {
+        throw 'native-host.exe copy verification failed: output copy differs from the freshly built host.'
+    }
+    Write-Host ("Host deployed: {0} (SHA256 {1})" -f $hostTarget, (Get-FileHash -LiteralPath $hostTarget -Algorithm SHA256).Hash)
     if (!$BuildOnly) {
         $env:MANGAFLOW_NATIVE_REPO = $nativeRepo
         if ($UserData) { $env:MANGAFLOW_DESKTOP_USER_DATA = [IO.Path]::GetFullPath($UserData) }

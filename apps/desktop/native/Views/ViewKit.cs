@@ -119,10 +119,34 @@ public abstract class WorkspaceView : UserControl, IWorkspaceView
     protected static Button Act(string text, RoutedEventHandler onClick, string style = "Ghost") => Kit.Act(text, onClick, style);
     protected static void Show(Window owner, string url, string label) => new Lightbox(owner, url, label).ShowDialog();
 
-    protected void OpenImage(string? url, string label)
+    // Test seam: preview call sites pass RAW API paths (e.g. "/api/v1/assets/x/content");
+    // this method is the single place that resolves them. Recording lets headless checks
+    // verify the resolved URL without opening a modal lightbox.
+    internal bool RecordPreviewInsteadOfDialog;
+    internal string? LastPreviewUrl;
+    internal string? LastPreviewLabel;
+    internal string? LastPreviewError;
+
+    protected void OpenImage(string? path, string label)
     {
-        if (string.IsNullOrEmpty(url) || Context == null) return;
-        new Lightbox(Host, Context.Api.OriginUrl(url), label).ShowDialog();
+        LastPreviewUrl = null; LastPreviewLabel = null; LastPreviewError = null;
+        if (string.IsNullOrEmpty(path) || Context == null) return;
+        string url;
+        try
+        {
+            url = Context.Api.OriginUrl(path);
+        }
+        catch (ArgumentException error)
+        {
+            // A click handler must never crash over a malformed media path; surface it.
+            LastPreviewError = error.Message;
+            if (!RecordPreviewInsteadOfDialog)
+                MessageBox.Show(Host, "无法打开图片预览：" + error.Message, "图片预览", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        LastPreviewUrl = url;
+        LastPreviewLabel = label;
+        if (!RecordPreviewInsteadOfDialog) new Lightbox(Host, url, label).ShowDialog();
     }
 
     protected static string Loading => "正在读取…";

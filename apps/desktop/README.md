@@ -149,6 +149,29 @@ token/journal/回环校验→GO→健康）通过后 WebView2 建窗；仪表盘
 强杀壳后 helper 树（含 launcher 链孙进程）3 秒内全灭（`KILL_ON_JOB_CLOSE`）；用户数据落
 `%LOCALAPPDATA%\com.mangaflow.desktop\{data,storage,uploads,runtime,logs}`。
 
+## 3.1 WPF 原生客户端的标准构建/启动入口（2026-09-09）
+
+`apps/desktop/native/`（WPF）与 `apps/desktop/shell-core/`（Rust 宿主 `native-host.exe`）
+是两个独立构建产物。WPF 的 `Services/NativeBackend.cs` 启动 sidecar 时**优先加载 WPF
+输出目录内的 `native-host.exe`**，仅当输出目录缺失时才回退到
+`shell-core/target/debug/native-host.exe`。因此单独 `dotnet build` 不会刷新输出目录内
+的宿主，可能运行旧宿主——**标准入口是 `apps/desktop/scripts/start-native.ps1`**：
+
+```powershell
+# 构建 Rust 宿主 + WPF（Release），把宿主复制进 WPF 输出目录并做 SHA-256 校验
+powershell -ExecutionPolicy Bypass -File apps/desktop/scripts/start-native.ps1 -BuildOnly
+# 同上并启动 WPF 客户端（交互窗口）
+powershell -ExecutionPolicy Bypass -File apps/desktop/scripts/start-native.ps1
+```
+
+- 脚本内 cargo/dotnet 任一失败即中止（`$ErrorActionPreference='Stop'`）；复制后比对源/
+  目标 SHA-256，不一致即报错，**不会悄悄复用旧宿主文件**。
+- 验收记录宿主来源：`NativeBackend.HostPath`/`HostSha256` 在每次启动时记录实际加载的
+  宿主绝对路径与哈希（取自输出目录或回退目录）。
+- 不要用“删除输出目录里的旧宿主来触发 debug 回退”的方式保证新鲜度——始终通过脚本或
+  等价的 cargo build → dotnet build → copy + 校验链。
+- 原生回归（含 UI 检查）：`dotnet run --project apps/desktop/native-tests -- --render`。
+
 ## 4. 验收矩阵 D1–D9（ADR §6）
 
 | 编号 | 层 | 结论 | 证据 / 边界 |

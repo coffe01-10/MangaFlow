@@ -111,6 +111,9 @@ internal static class NativeOutfitChecks
             // A detached pane must not continue the second POST after a delayed batch response.
             var batchHold = fake.PendingBatch = new TaskCompletionSource<HttpResponseMessage>();
             Click(Buttons(pane, "生成穿着图").First()); var generationCount = fake.Writes.Count(w => w.Path.EndsWith("/candidates"));
+            // The uploaded draft is dirty: the tab switch goes through the unsaved-draft
+            // guard; discard keeps this isolation scenario deterministic (no dialog).
+            view.OutfitDraftPrompt = _ => Task.FromResult("discard");
             view.Switch(AssetsView.Characters); batchHold.SetResult(Json("{\"id\":\"late\"}")); await Settle();
             Require(fake.Writes.Count(w => w.Path.EndsWith("/candidates")) == generationCount, "detached outfit pane dispatched generation follow-up");
             view.Switch(AssetsView.Outfits); await Settle(); Layout(view, 1100, 1000); pane = Descendants(view).OfType<OutfitWorkspace>().Single();
