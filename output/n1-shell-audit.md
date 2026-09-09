@@ -190,6 +190,16 @@
 - 终态计数：cargo test 9/9 套件、**103 项**全绿（单元 61 + 集成 42，Linux 实测
   2026-09-09）。Windows 腿 NOT RUN。
 
+### 续跑增量（分支重置恢复 + 三个边界 pin）
+
+- 分支恢复：lead 侧将 master/分支重置回 #330 谱系，6 个丢失提交
+  （deleted-after-pick pin、clock clamp seam、token 契约测试、sweep symlink
+  拒绝、round-4 账本、windows-skip）已 cherry-pick 回当前谱系并全绿。
+- 新增 pin（commit 待查）：
+  - journal 符号链接 → JournalMissing；非 UTF8 journal → JournalMismatch("non-utf8")。
+  - sweep 对未来 mtime 的 terminal journal 保持目录（时钟偏移 fail-closed 腿）。
+- 测试增量：单元 63 项全绿（+4）。round-5 审查待派（针对本批 pin）。
+
 新记录的待办（下轮候选）：
 
 - `write_journal_atomic` 的 serde_json unwrap 与 `unix_now` panic 路径（pub API
