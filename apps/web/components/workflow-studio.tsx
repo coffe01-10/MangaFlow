@@ -254,6 +254,9 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
       && !activeWorkflow.draft_graph.nodes.some((node) => node.type === "generator.page");
     setScopeType(chapterOnly ? "CHAPTER" : "PAGE");
     setScopeId("");
+    // 页面所属章节也随初始化复位：App Router 在项目间切换时保留组件状态，
+    // 残留的章节 id 会把上一个项目的页面列表拉进本项目的运行目标下拉。
+    setPageChapterId("");
     // Templates can place nodes outside the default viewport; fit the whole
     // graph on first paint instead of an empty-looking canvas.
     window.setTimeout(() => { void flowInstance.current?.fitView({ padding: 0.15, duration: 250 }); }, 60);

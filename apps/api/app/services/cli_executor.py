@@ -275,7 +275,10 @@ class CLIExecutionController:
                     and not outcome.error_code
                     and not outcome.exit_code
                 ):
-                    with contextlib.suppress(ProviderAdapterError):
+                    # 尽力读取必须真的尽力：_read_result 内部的 OSError/DB 错误
+                    # （AV 文件锁、连接闪断）若逃逸到 BaseException 处理器，会把
+                    # 一次用户取消重分类为可重试 UPSTREAM，可能再跑一次付费任务。
+                    with contextlib.suppress(ProviderAdapterError, OSError, SQLAlchemyError):
                         error.usage = self._read_result(run_id, run_directory).usage
                     error.retain_artifacts = True
                 raise error
