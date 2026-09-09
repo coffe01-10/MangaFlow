@@ -17,6 +17,33 @@
 验证矩形状态、分类切换/重复选择、模型互斥选择及 DisplayMemberPath；650/1060 DIP
 资产页预览使用模拟数据，仅作为本次样式检查。
 
+## 2026-09-09 逐页还原：人物设定与字体清晰度
+
+按用户要求继续第二页（参考资产 → 人物设定）。以用户截图和网页 assets-section /
+character-package-workspace 源码为依据；本次内置浏览器访问 127.0.0.1:3000 返回
+ERR_CONNECTION_REFUSED，未启动或修改用户服务，因此真实网页并排运行验收为 NOT RUN。
+
+已调整全宽双输入表单、矩形角色条、两列模型卡片；进入页面不再自动选择第一个角色和
+模型。新增独立模型包列表/创建区域及人物参考拖放、上传、重命名、绑定/解绑、用途修改
+和删除区域。包详情新增服务端完整度、封面横向操作、四视图、表情槽位、服装集及历史
+对比；修正规格工作集读取、派生/激活/封面/解绑版本参数接口。角色特征与禁改项按 API
+数组传输，参考数量从 references 读取、素材大小从 byte_size 读取。
+
+文字：保留标题衬线风格，正文使用 Microsoft YaHei UI；页面显式继承 Display / ClearType、
+布局与像素对齐，在有实色背景的页面启用 ClearTypeHint，悬停结束位移对齐物理像素。
+exe 增加并验证嵌入 PerMonitorV2 manifest；必须重启生效。已输出 96/120 DPI 离屏图，
+实际显示器跨屏切换、用户所见发糊是否完全消除、动画帧率仍为 NOT RUN。
+参考：[Microsoft DPI manifest](https://learn.microsoft.com/en-us/windows/win32/hidpi/setting-the-default-dpi-awareness-for-a-process)、
+[WPF ClearTypeHint](https://learn.microsoft.com/en-us/dotnet/api/system.windows.media.renderoptions.cleartypehint)。
+
+验证使用模拟 HTTP 驱动真实 WPF 控件：650/1100 DIP 排版、显式选择、角色数组契约、
+新增去重、包工作集/完整度、封面 PUT、视角版本参数、规格保存、人物解绑、迟到响应隔离。
+Release 编译通过，54 项基础检查与完整原生 UI 回归通过；全量重编译仍有 37 条既有警告。
+预览：output/native-parity-review/native-characters-restored-shell.png、
+native-character-package-restored.png、native-character-references-restored.png。
+发布/归档确认弹窗、真实文件选择器/拖放、供应商生成与跨屏视觉验收未实际操作，不能以
+离屏回归宣称本页所有操作或其他资产子页已经一比一验收。
+
 ## 2026-09-08 逐页还原：原作与修订
 
 按用户要求先收尾此页。已只读核对内置浏览器中的真实 `/source` 页面：标题与底线、

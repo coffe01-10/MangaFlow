@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Net.Http;
 using System.Text.Json;
 using System.Windows;
@@ -21,6 +21,9 @@ public sealed class AssetsView : WorkspaceView
     private readonly Grid host = new();
     private readonly Dictionary<string, ToggleButton> tabs = new();
     private string current = Characters;
+    private int epoch, loadRequest;
+    internal int Epoch => epoch;
+    internal bool IsCurrent(int captured) => captured == epoch && !lifetime.IsCancellationRequested;
 
     internal List<CharacterItem> characters = [];
     internal List<OutfitItem> outfits = [];
@@ -34,7 +37,7 @@ public sealed class AssetsView : WorkspaceView
 
     public AssetsView()
     {
-        var panel = new StackPanel { Margin = new Thickness(4, 0, 24, 28) };
+        var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 70) };
         foreach (var (key, label) in new[]
                  {
                      (Characters, "人物设定"), (Outfits, "服装档案"), (Scenes, "场景资产"), (Style, "漫画风格"), (References, "原始参考素材"),
@@ -50,6 +53,7 @@ public sealed class AssetsView : WorkspaceView
             subnav.Children.Add(tab);
         }
         panel.Children.Add(new Border { Child = subnav, BorderBrush = (Brush)FindResource("Line"), BorderThickness = new Thickness(0, 0, 0, 1), Margin = new Thickness(0, 0, 0, 22) });
+        notice.SetBinding(VisibilityProperty, new System.Windows.Data.Binding("Text") { Source = notice, ConverterParameter = "collapse", Converter = (System.Windows.Data.IValueConverter)FindResource("EmptyToCollapsed") });
         panel.Children.Add(notice);
         panel.Children.Add(host);
         var scroller = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = panel };
@@ -58,7 +62,9 @@ public sealed class AssetsView : WorkspaceView
 
     public override async void Activate(WorkspaceContext context)
     {
-        base.Activate(context);
+        var changed = ProjectId != context.ProjectId;
+        base.Activate(context); epoch++;
+        if (changed) { SelectedCharacter = null; SelectedOutfit = null; SelectedStyle = null; notice.Text = ""; }
         // Deactivation cancels in-flight reads; async void has no caller to observe the
         // cancellation, so swallow it here instead of crashing the dispatcher.
         try { await LoadAsync(); }
@@ -75,24 +81,29 @@ public sealed class AssetsView : WorkspaceView
         if (view == Style) _ = LoadAsync();   // styles load lazily on first visit
     }
 
+    public override void Deactivate() { epoch++; base.Deactivate(); }
+
     internal async Task LoadAsync()
     {
+        var captured = epoch; var token = lifetime.Token; var request = ++loadRequest;
         try
         {
-            var modelTask = Api.SendAsync("models", cancellation: lifetime.Token);
-            var assetTask = Api.SendAsync($"assets?project_id={ProjectId}", cancellation: lifetime.Token);
-            var characterTask = Api.SendAsync($"projects/{ProjectId}/characters", cancellation: lifetime.Token);
-            var outfitTask = Api.SendAsync($"projects/{ProjectId}/outfits", cancellation: lifetime.Token);
+            var modelTask = Api.SendAsync("models", cancellation: token);
+            var assetTask = Api.SendAsync($"assets?project_id={ProjectId}", cancellation: token);
+            var characterTask = Api.SendAsync($"projects/{ProjectId}/characters", cancellation: token);
+            var outfitTask = Api.SendAsync($"projects/{ProjectId}/outfits", cancellation: token);
             await Task.WhenAll(modelTask, assetTask, characterTask, outfitTask);
-            if (lifetime.Token.IsCancellationRequested) return;
+            if (!IsCurrent(captured) || request != loadRequest) return;
             models = (await modelTask).EnumerateArray().ToList();
             assets = (await assetTask).EnumerateArray().Select(AssetItem.From).ToList();
             characters = (await characterTask).EnumerateArray().Select(CharacterItem.From).ToList();
+            SelectedCharacter = characters.FirstOrDefault(c => c.Id == SelectedCharacter?.Id);
             outfits = (await outfitTask).EnumerateArray().Select(OutfitItem.From).ToList();
             var keepPane = false;
             if (current == Style)
             {
-                var styleRows = await Api.SendAsync($"projects/{ProjectId}/styles", cancellation: lifetime.Token);
+                var styleRows = await Api.SendAsync($"projects/{ProjectId}/styles", cancellation: token);
+                if (!IsCurrent(captured) || request != loadRequest) return;
                 var next = styleRows.EnumerateArray().Select(StyleItem.From).ToList();
                 // PollTick during ANALYZING reloads every 3s; only rebuild the pane
                 // when a style actually changed, or the creation form loses input.
@@ -106,6 +117,7 @@ public sealed class AssetsView : WorkspaceView
          catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
+            if (!IsCurrent(captured) || request != loadRequest) return;
             host.Children.Clear();
             host.Children.Add(Kit.Caption($"资产读取失败：{error.Message}"));
         }
@@ -166,15 +178,12 @@ public sealed class AssetsView : WorkspaceView
 
     internal async Task ReloadAssets()
     {
+        var captured = epoch;
         await LoadAsync();
-        Cache.Invalidate("assets:" + ProjectId, "dashboard");
+        if (IsCurrent(captured)) Cache.Invalidate("assets:" + ProjectId, "dashboard");
     }
 
-    public override Task RefreshAsync()
-    {
-        _ = LoadAsync();
-        return Task.CompletedTask;
-    }
+    public override Task RefreshAsync() => LoadAsync();
 
     public override void PollTick()
     {
@@ -192,11 +201,11 @@ internal sealed class ModelPickerBand : Border
     {
         this.view = view;
         BorderBrush = (Brush)Application.Current.FindResource("Line");
-        BorderThickness = new Thickness(1);
-        Padding = new Thickness(14, 10, 14, 10);
-        Margin = new Thickness(0, 0, 0, 14);
+        BorderThickness = new Thickness(0);
+        Padding = new Thickness(0);
+        Margin = new Thickness(0, 14, 0, 24);
         var panel = new StackPanel();
-        panel.Children.Add(new TextBlock { Text = label, Style = (Style)Application.Current.FindResource("FieldLabel") });
+        panel.Children.Add(new TextBlock { Text = label, Foreground = (Brush)Application.Current.FindResource("Muted"), FontSize = 13 });
         var options = view.ImageEditModels;
         if (options.Count == 0)
         {
@@ -214,8 +223,8 @@ internal sealed class ModelPickerBand : Border
             {
                 var alias = option.Text("logical_alias");
                 var description = new StackPanel();
-                description.Children.Add(new TextBlock { Text = option.Text("display_name"), FontWeight = FontWeights.Bold, FontSize = 14, TextTrimming = TextTrimming.CharacterEllipsis, TextWrapping = TextWrapping.NoWrap });
-                description.Children.Add(new TextBlock { Text = string.Join(" · ", new[] { option.Text("provider"), option.Text("model_id") }.Where(s => s.Length > 0)), FontSize = 11, Foreground = (Brush)Application.Current.FindResource("Muted"), Margin = new Thickness(0, 4, 0, 0), TextWrapping = TextWrapping.Wrap });
+                description.Children.Add(new TextBlock { Text = option.Text("display_name"), FontWeight = FontWeights.Bold, FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis, TextWrapping = TextWrapping.NoWrap });
+                description.Children.Add(new TextBlock { Text = string.Join(" · ", new[] { option.Text("provider"), option.Text("model_id") }.Where(s => s.Length > 0)), FontSize = 11, FontWeight = FontWeights.Normal, FontFamily = (FontFamily)Application.Current.FindResource("Mono"), Foreground = (Brush)Application.Current.FindResource("Muted"), Margin = new Thickness(0, 4, 0, 0), TextWrapping = TextWrapping.Wrap });
                 var toggle = new ToggleButton
                 {
                     Content = description, Tag = alias,
@@ -231,13 +240,6 @@ internal sealed class ModelPickerBand : Border
                 };
                 row.Children.Add(toggle);
             }
-            if (Selected.Length == 0 && options.Count > 0)
-            {
-                // Preselect + persist the first model so panels reading a fresh band agree with the UI.
-                Selected = options[0].Text("logical_alias");
-                view.SelectedImageModel = Selected;
-                ((ToggleButton)row.Children[0]!).IsChecked = true;
-            }
             panel.Children.Add(row);
         }
         Child = panel;
@@ -249,43 +251,47 @@ internal sealed class CharactersPane : StackPanel
 {
     private readonly AssetsView view;
     private readonly StackPanel strip = new() { Orientation = Orientation.Horizontal };
+    private readonly StackPanel concept = new();
+    private readonly Button addButton = new() { Content = "＋ 添加角色", MinHeight = 44, Style = (Style)Application.Current.FindResource("InkButton") };
+    private bool saving;
     private readonly StackPanel editor = new();
-    private readonly TextBox nameInput = new() { Width = 220 };
-    private readonly TextBox aliasInput = new() { Width = 220 };
+    private readonly TextBox nameInput = new() { Height = 42, FontSize = 13 };
+    private readonly TextBox aliasInput = new() { Height = 42, FontSize = 13 };
 
     public CharactersPane(AssetsView view)
     {
         this.view = view;
         Margin = new Thickness(0);
-        Children.Add(Header("CHARACTER BIBLE", "角色资产 · 姓名、绰号与参考图绑定", $"{view.characters.Count} 个角色"));
-        var createRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 12) };
-        System.Windows.Automation.AutomationProperties.SetName(nameInput, "姓名");
-        System.Windows.Automation.AutomationProperties.SetName(aliasInput, "绰号");
-        createRow.Children.Add(nameInput);
-        aliasInput.Margin = new Thickness(8, 0, 8, 0);
-        createRow.Children.Add(aliasInput);
-        createRow.Children.Add(Kit.Act("添加角色", async (_, _) => await AddCharacter(), "CompactInk"));
+        Children.Add(Header("C H A R A C T E R  B I B L E  /  角色资产", "姓名、绰号与参考图绑定", $"{view.characters.Count} 个角色"));
+        var createRow = new Grid { Margin = new Thickness(0, 18, 0, 12), ColumnDefinitions = { new ColumnDefinition(), new ColumnDefinition(), new ColumnDefinition { Width = GridLength.Auto } } };
+        createRow.Children.Add(AssetPageUi.Input(nameInput, "主要姓名（剧本默认使用）", "新角色主要姓名"));
+        var aliases = AssetPageUi.Input(aliasInput, "绰号，用逗号分隔", "新角色绰号，用逗号分隔");
+        aliases.Margin = new Thickness(8, 0, 8, 0); Grid.SetColumn(aliases, 1); createRow.Children.Add(aliases);
+        Grid.SetColumn(addButton, 2); createRow.Children.Add(addButton);
+        addButton.IsEnabled = false; nameInput.TextChanged += (_, _) => addButton.IsEnabled = !saving && nameInput.Text.Trim().Length > 0;
+        addButton.Click += async (_, _) => await AddCharacter();
         Children.Add(createRow);
-        Children.Add(strip);
-        RenderStrip();
+        Children.Add(new ScrollViewer { HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, Content = strip, Margin = new Thickness(0, 4, 0, 12) });
+        RenderStrip(); Children.Add(editor);
         Children.Add(new ModelPickerBand(view, "项目视觉模型（必须显式选择，并在各生成页面保持一致）"));
-        Children.Add(editor);
-        view.SelectedCharacter ??= view.characters.FirstOrDefault();
+        Children.Add(concept);
+        Children.Add(new CharacterPackagesWorkspace(view));
+        Children.Add(new CharacterReferencesPane(view));
         RenderEditor();
     }
 
     private static Border Header(string kicker, string title, string count)
     {
-        var border = new Border { Style = (Style)Application.Current.FindResource("CanvasHeader") };
+        var border = new Border { BorderBrush = (Brush)Application.Current.FindResource("Ink"), BorderThickness = new Thickness(0, 0, 0, 1), Padding = new Thickness(0, 6, 0, 17) };
         var grid = new Grid();
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var heading = new StackPanel();
-        heading.Children.Add(new TextBlock { Text = kicker, Style = (Style)Application.Current.FindResource("SectionIndex") });
+        heading.Children.Add(new TextBlock { Text = kicker, FontSize = 9, FontWeight = FontWeights.Bold, Foreground = (Brush)Application.Current.FindResource("Muted") });
         heading.Children.Add(new TextBlock
         {
             Text = title, FontFamily = (FontFamily)Application.Current.FindResource("Serif"),
-            FontSize = 20, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 5, 0, 0),
+            FontSize = 23, FontWeight = FontWeights.Normal, Margin = new Thickness(0, 10, 0, 0),
         });
         grid.Children.Add(heading);
         var counter = new TextBlock { Text = count, Style = (Style)Application.Current.FindResource("Caption"), VerticalAlignment = VerticalAlignment.Bottom };
@@ -311,11 +317,12 @@ internal sealed class CharactersPane : StackPanel
                         new TextBlock { Text = $"{character.ReferenceCount} 张参考图 · {character.LockedReferences} 项已锁定", Style = (Style)Application.Current.FindResource("Micro") },
                     },
                 },
-                Style = (Style)Application.Current.FindResource("Chip"),
+                Style = (Style)Application.Current.FindResource("CharacterChoice"),
+                Tag = character.Id,
                 IsChecked = view.SelectedCharacter?.Id == character.Id,
-                Margin = new Thickness(0, 0, 10, 8), MinWidth = 150,
+                Margin = new Thickness(0, 0, 8, 4), Width = 176, MinHeight = 80,
             };
-            chip.Click += (_, _) => { view.SelectedCharacter = character; RenderStrip(); RenderEditor(); };
+            chip.Click += (_, _) => { view.SelectedCharacter = character; RenderStrip(); RenderEditor(); foreach (var references in Children.OfType<CharacterReferencesPane>()) references.Render(); };
             strip.Children.Add(chip);
         }
         if (view.characters.Count == 0)
@@ -324,7 +331,7 @@ internal sealed class CharactersPane : StackPanel
 
     private void RenderEditor()
     {
-        editor.Children.Clear();
+        editor.Children.Clear(); concept.Children.Clear();
         var character = view.SelectedCharacter;
         if (character == null) return;
         editor.Children.Add(new TextBlock
@@ -335,22 +342,21 @@ internal sealed class CharactersPane : StackPanel
         var form = new StackPanel();
         // Fresh instances per render: a WPF element can only have one logical parent,
         // so the editor must not reuse the create-row inputs.
-        var editName = new TextBox { Text = character.PrimaryName, Width = 220 };
-        var editAlias = new TextBox { Text = string.Join("，", character.Aliases), Width = 220 };
-        var lockedFeatures = new TextBox { Text = character.LockedFeatures, MinWidth = 320 };
-        var forbiddenChanges = new TextBox { Text = character.ForbiddenChanges, MinWidth = 320 };
-        var row = new StackPanel { Orientation = Orientation.Horizontal };
+        var editName = new TextBox { Text = character.PrimaryName };
+        var editAlias = new TextBox { Text = string.Join("，", character.Aliases) };
+        var lockedFeatures = new TextBox { Text = character.LockedFeatures };
+        var forbiddenChanges = new TextBox { Text = character.ForbiddenChanges };
+        var row = new Grid { ColumnDefinitions = { new ColumnDefinition(), new ColumnDefinition(), new ColumnDefinition { Width = GridLength.Auto } } };
         row.Children.Add(editName);
         editAlias.Margin = new Thickness(8, 0, 8, 0);
-        row.Children.Add(editAlias);
-        row.Children.Add(Kit.Act("保存角色规范", async (_, _) =>
-            await SaveCharacter(character, editName.Text, editAlias.Text, lockedFeatures.Text, forbiddenChanges.Text), "CompactInk"));
+        Grid.SetColumn(editAlias, 1); row.Children.Add(editAlias);
+        var save = Kit.Act("保存角色规范", async (_, _) => await SaveCharacter(character, editName.Text, editAlias.Text, lockedFeatures.Text, forbiddenChanges.Text), "Outline");
+        Grid.SetColumn(save, 2); row.Children.Add(save);
         form.Children.Add(row);
         form.Children.Add(Labelled("固定特征（生图时保持）", lockedFeatures));
         form.Children.Add(Labelled("禁止改变项", forbiddenChanges));
         editor.Children.Add(new Border { Style = (Style)Application.Current.FindResource("Card"), Padding = new Thickness(18), Child = form });
-        editor.Children.Add(new ConceptPanel(view, character));
-        editor.Children.Add(new CharacterPackagePane(view, character));
+        concept.Children.Add(new ConceptPanel(view, character));
     }
 
     private static StackPanel Labelled(string label, TextBox box)
@@ -363,23 +369,30 @@ internal sealed class CharactersPane : StackPanel
 
     private async Task AddCharacter()
     {
+        if (saving) return;
+        var captured = view.Epoch;
         var name = nameInput.Text.Trim();
         if (name.Length == 0) { view.Notify("请填写姓名。"); return; }
+        saving = true; addButton.IsEnabled = false; nameInput.IsEnabled = aliasInput.IsEnabled = false;
         try
         {
             var aliases = aliasInput.Text.Split(['，', ',', '、'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
             await view.ApiSend("projects/" + view.ProjectIdValue + "/characters", HttpMethod.Post,
                 new { primary_name = name, aliases });
+            if (!view.IsCurrent(captured)) return;
             nameInput.Clear(); aliasInput.Clear();
             await view.ReloadAssets();
             view.Notify($"角色「{name}」已创建。");
         }
-        catch (Exception error) { view.Notify("创建角色失败：" + error.Message); }
+        catch (Exception error) { if (view.IsCurrent(captured)) view.Notify("创建角色失败：" + error.Message); }
+        finally { saving = false; addButton.IsEnabled = nameInput.Text.Trim().Length > 0; nameInput.IsEnabled = aliasInput.IsEnabled = true; }
     }
 
     private async Task SaveCharacter(CharacterItem character, string primaryName, string aliasText,
         string lockedFeatures, string forbiddenChanges)
     {
+        if (saving || primaryName.Trim().Length == 0) return;
+        saving = true; editor.IsEnabled = false; var captured = view.Epoch;
         try
         {
             var aliases = aliasText.Split(['，', ',', '、'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -388,13 +401,15 @@ internal sealed class CharactersPane : StackPanel
                 version = character.Version,
                 primary_name = primaryName.Trim(),
                 aliases,
-                locked_features = lockedFeatures,
-                forbidden_changes = forbiddenChanges,
+                locked_features = lockedFeatures.Split(['，', ',', '、'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+                forbidden_changes = forbiddenChanges.Split(['，', ',', '、'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
             });
+            if (!view.IsCurrent(captured)) return;
             await view.ReloadAssets();
-            view.Notify("角色规范已保存。");
+            if (view.IsCurrent(captured)) view.Notify("角色规范已保存。");
         }
-        catch (Exception error) { view.Notify("保存角色失败：" + error.Message); }
+        catch (Exception error) { if (view.IsCurrent(captured)) view.Notify("保存角色失败：" + error.Message); }
+        finally { saving = false; editor.IsEnabled = true; }
     }
 }
 

@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
@@ -43,6 +43,8 @@ public static class HoverMotion
             if (element.RenderTransform != null && !element.RenderTransform.Value.IsIdentity) return;
             element.RenderTransform = transform = new TranslateTransform();
         }
+        var scale = VisualTreeHelper.GetDpi(element).DpiScaleY;
+        target = Math.Round(target * scale) / scale;
         var from = transform.Y;
         transform.BeginAnimation(TranslateTransform.YProperty, null);
         transform.Y = Motion.Enabled ? target : 0;

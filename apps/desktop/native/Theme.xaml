@@ -55,11 +55,12 @@
  <c:ProgressToPercentConverter x:Key="Percent"/>
 
  <Style TargetType="Window">
-  <Setter Property="FontFamily" Value="Noto Sans SC, Microsoft YaHei UI"/>
+  <Setter Property="FontFamily" Value="Microsoft YaHei UI, Noto Sans SC"/>
   <Setter Property="FontSize" Value="14"/>
   <Setter Property="Foreground" Value="{StaticResource Ink}"/>
   <Setter Property="Background" Value="{StaticResource Paper}"/>
   <Setter Property="UseLayoutRounding" Value="True"/>
+  <Setter Property="SnapsToDevicePixels" Value="True"/>
   <Setter Property="TextOptions.TextFormattingMode" Value="Display"/>
   <Setter Property="TextOptions.TextRenderingMode" Value="ClearType"/>
  </Style>
@@ -911,6 +912,13 @@
     <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Surface" Property="BorderBrush" Value="{StaticResource Accent}"/></Trigger>
     <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5"/></Trigger>
    </ControlTemplate.Triggers>
+  </ControlTemplate></Setter.Value></Setter>
+ </Style>
+ <Style x:Key="CharacterChoice" TargetType="ToggleButton">
+  <Setter Property="Background" Value="#FAF8F3"/><Setter Property="Foreground" Value="{StaticResource Ink}"/><Setter Property="Padding" Value="11"/><Setter Property="Cursor" Value="Hand"/>
+  <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ToggleButton">
+   <Border x:Name="Surface" Background="{TemplateBinding Background}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="{TemplateBinding Padding}"><ContentPresenter VerticalAlignment="Center" HorizontalAlignment="Stretch"/></Border>
+   <ControlTemplate.Triggers><Trigger Property="IsChecked" Value="True"><Setter TargetName="Surface" Property="BorderBrush" Value="{StaticResource Ink}"/></Trigger><Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Surface" Property="BorderBrush" Value="{StaticResource Accent}"/></Trigger><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Surface" Property="Background" Value="{StaticResource Surface}"/></Trigger></ControlTemplate.Triggers>
   </ControlTemplate></Setter.Value></Setter>
  </Style>
 </ResourceDictionary>

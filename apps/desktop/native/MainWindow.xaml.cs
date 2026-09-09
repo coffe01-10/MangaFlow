@@ -543,7 +543,7 @@ public partial class MainWindow : Window
         SidebarFooter.Visibility = preferences.SidebarCollapsed ? Visibility.Collapsed : Visibility.Visible;
         state.IsWorkspace = workspace;
         state.SidebarCollapsed = preferences.SidebarCollapsed;
-        ContentHost.Margin = page == "source" ? new Thickness(30, 28, 30, 0) : workspace ? new Thickness(24, 24, 0, 0) : new Thickness(0);
+        ContentHost.Margin = page is "source" or "assets" ? new Thickness(30, 28, 30, 0) : workspace ? new Thickness(24, 24, 0, 0) : new Thickness(0);
     }
 
     private void OnWindowSizeChanged(object sender, SizeChangedEventArgs e) { }

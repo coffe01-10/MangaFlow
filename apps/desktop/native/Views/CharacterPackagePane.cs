@@ -1,4 +1,4 @@
-using System.Net.Http;
+﻿using System.Net.Http;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -12,13 +12,15 @@ namespace MangaFlow.Native.Views;
 /// Character model package workspace (V02-23B native port): draft spec editor,
 /// cover + four-view matrix, expression set, completeness, versions and publish.
 /// </summary>
-internal sealed class CharacterPackagePane : Border
+internal sealed partial class CharacterPackagePane : Border
 {
     private const string Base = "projects/{0}/characters/{1}/package";
 
     private readonly AssetsView view;
     private readonly CharacterItem character;
     private JsonElement package;
+    private readonly int epoch;
+    private bool busy;
     private readonly StackPanel content = new();
     // Fresh on every RenderDraft(): these sit nested inside FieldGrid cards, so a
     // reused instance would still belong to the previous (detached) grid and throw.
@@ -40,6 +42,7 @@ internal sealed class CharacterPackagePane : Border
     {
         this.view = view;
         this.character = character;
+        epoch = view.Epoch;
         Margin = new Thickness(0, 14, 0, 0);
         Style = (Style)Application.Current.FindResource("Card");
         Padding = new Thickness(18);
@@ -58,6 +61,7 @@ internal sealed class CharacterPackagePane : Border
         try
         {
             var loaded = await GetAsync(string.Format(Base, view.ProjectIdValue, character.Id));
+            if (!view.IsCurrent(epoch)) return;
             package = loaded is { ValueKind: JsonValueKind.Object } value ? value : default;
             if (package.ValueKind == JsonValueKind.Undefined)
             {
@@ -68,6 +72,7 @@ internal sealed class CharacterPackagePane : Border
         }
         catch (Exception error)
         {
+            if (!view.IsCurrent(epoch)) return;
             content.Children.Clear();
             content.Children.Add(Kit.Caption($"角色模型包暂不可用：{error.Message}"));
         }
@@ -76,7 +81,7 @@ internal sealed class CharacterPackagePane : Border
     private void RenderCreateEntry()
     {
         content.Children.Clear();
-        content.Children.Add(new TextBlock { Text = "CHARACTER MODEL PACKAGE / 角色模型包", Style = (Style)Application.Current.FindResource("SectionIndex") });
+        content.Children.Add(new TextBlock { Text = "PACKAGE DETAIL", FontSize = 13 });
         content.Children.Add(Kit.Caption("未启用角色模型包（沿用人物参考图路径）。创建后可维护四视图矩阵、表情集与默认服装，并发布不可变版本用于生成。"));
         var create = Kit.Act("创建角色模型包", async (_, _) =>
         {
@@ -103,24 +108,27 @@ internal sealed class CharacterPackagePane : Border
     {
         content.Children.Clear();
         var header = new DockPanel { Margin = new Thickness(0, 0, 0, 10) };
-        var actions = new StackPanel { Orientation = Orientation.Horizontal };
+        var actions = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Right };
         var draft = Draft();
-        if (draft == null)
         {
             var derive = Kit.Act("派生新版本", async (_, _) =>
             {
                 try
                 {
                     var published = package.Array("versions").FirstOrDefault(v => v.Text("id") == package.Text("published_version_id"));
-                    await view.ApiSend(string.Format(Base, view.ProjectIdValue, character.Id) + "/versions/derive", HttpMethod.Post,
+                    await view.ApiSend(string.Format(Base, view.ProjectIdValue, character.Id) + "/versions", HttpMethod.Post,
                         new { base_version_id = published.ValueKind == JsonValueKind.Object ? published.Text("id") : (string?)null });
                     await LoadAsync();
                 }
                 catch (Exception error) { view.Notify("派生失败：" + error.Message); }
             }, "Compact");
+            derive.IsEnabled = draft == null;
+            derive.MinHeight = 44;
             derive.ToolTip = "从已发布版本派生新的可编辑草稿";
             actions.Children.Add(derive);
         }
+        var compare = Kit.Act("对比历史", async (_, _) => await ShowHistory(), "Outline");
+        compare.IsEnabled = package.Array("versions").Count > 1; compare.Margin = new Thickness(8, 0, 0, 0); actions.Children.Add(compare);
         var archive = Kit.Act(package.Text("status") == "ARCHIVED" ? "恢复角色包" : "归档角色包", async (_, _) =>
         {
             var message = package.Text("status") == "ARCHIVED"
@@ -134,13 +142,13 @@ internal sealed class CharacterPackagePane : Border
                 await LoadAsync();
             }
             catch (Exception error) { view.Notify(error.Message); }
-        }, "CompactDanger");
+        }, "Ghost");
         archive.Margin = new Thickness(8, 0, 0, 0);
         actions.Children.Add(archive);
         DockPanel.SetDock(actions, Dock.Right);
         header.Children.Add(actions);
         var title = new StackPanel();
-        title.Children.Add(new TextBlock { Text = "CHARACTER MODEL PACKAGE / 角色模型包", Style = (Style)Application.Current.FindResource("SectionIndex") });
+        title.Children.Add(new TextBlock { Text = "PACKAGE DETAIL", FontSize = 13 });
         title.Children.Add(new TextBlock
         {
             Text = $"{character.PrimaryName} 的角色模型包",
@@ -151,8 +159,9 @@ internal sealed class CharacterPackagePane : Border
             Text = package.Text("status") == "ARCHIVED" ? "已归档 · 退出默认继承，Character 不受影响" : "启用中 · 已发布版本进入默认继承",
             Style = (Style)Application.Current.FindResource("Micro"),
         });
-        header.Children.Add(title);
-        content.Children.Add(header);
+        header.Children.Clear();
+        content.Children.Add(new PageHeading(title, actions) { Margin = new Thickness(0, 0, 0, 10) });
+        RenderCompleteness(draft ?? package.Array("versions").FirstOrDefault(v => v.Text("id") == package.Text("published_version_id")));
 
         if (draft is { } current)
         {
@@ -160,7 +169,9 @@ internal sealed class CharacterPackagePane : Border
         }
         else
         {
-            content.Children.Add(Kit.Caption("当前没有草稿版本。规格与矩阵只能在草稿中修改；如需调整，请先派生新版本。"));
+            content.Children.Add(Kit.Caption("当前版本已冻结，只读查看；如需调整，请先派生新版本。"));
+            var frozen = package.Array("versions").FirstOrDefault(v => v.Text("id") == package.Text("published_version_id"));
+            if (frozen.ValueKind == JsonValueKind.Object) { content.Children.Add(matrix); RenderMatrix(frozen); }
         }
         content.Children.Add(new TextBlock { Text = "版本历史", Style = (Style)Application.Current.FindResource("SectionIndex"), Margin = new Thickness(0, 14, 0, 6) });
         content.Children.Add(versions);
@@ -169,7 +180,7 @@ internal sealed class CharacterPackagePane : Border
 
     private void RenderDraft(JsonElement draft)
     {
-        var snapshot = draft.Element("spec_snapshot");
+        var snapshot = package;
         var identity = snapshot.Element("identity_spec");
         var visual = snapshot.Element("visual_spec");
         age = new TextBox { Text = identity.Text("age_appearance") };
@@ -227,8 +238,7 @@ internal sealed class CharacterPackagePane : Border
             Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 6, 0, 0),
         });
 
-        content.Children.Add(new TextBlock { Text = "参考图矩阵（封面 · 四视图 · 表情）", Style = (Style)Application.Current.FindResource("SectionIndex"), Margin = new Thickness(0, 14, 0, 4) });
-        content.Children.Add(Kit.Caption("正面 15 · 侧面 10 · 背面 10 · 3/4 侧 5 分。换绑槽位前需先解绑；同一张图可同时作为封面与视图。"));
+
         content.Children.Add(matrix);
         RenderMatrix(draft);
     }
@@ -257,6 +267,7 @@ internal sealed class CharacterPackagePane : Border
 
     private async Task SaveSpec(JsonElement draft)
     {
+        if (busy || !view.IsCurrent(epoch)) return; busy = true; IsEnabled = false;
         try
         {
             await view.ApiSend(string.Format(Base, view.ProjectIdValue, character.Id), HttpMethod.Patch, new
@@ -278,7 +289,8 @@ internal sealed class CharacterPackagePane : Border
             view.Notify("草稿规格已保存。");
             await LoadAsync();
         }
-        catch (Exception error) { view.Notify("保存失败：" + error.Message); }
+        catch (Exception error) { if (view.IsCurrent(epoch)) view.Notify("保存失败：" + error.Message); }
+        finally { busy = false; IsEnabled = true; }
     }
 
     private async Task Publish(JsonElement draft)
@@ -308,73 +320,6 @@ internal sealed class CharacterPackagePane : Border
         catch (Exception error) { view.Notify(error.Message); }
     }
 
-    private void RenderMatrix(JsonElement draft)
-    {
-        matrix.Children.Clear();
-        var grid = new WrapPanel();
-        var bound = new Dictionary<string, JsonElement>();
-        foreach (var reference in draft.Array("references"))
-            bound.TryAdd(reference.Text("role") + "\n" + reference.Text("label"), reference);
-        foreach (var role in new[] { "cover", "front", "side", "back", "three_quarter" })
-        {
-            var slot = new StackPanel { Margin = new Thickness(0, 0, 10, 10), Width = 132 };
-            var cell = new Border
-            {
-                Width = 128, Height = 128,
-                BorderBrush = (Brush)Application.Current.FindResource("LineDark"),
-                BorderThickness = new Thickness(1),
-                Background = (Brush)Application.Current.FindResource("PaperDeep"),
-            };
-            var reference = draft.Array("references").FirstOrDefault(r => r.Text("role") == role);
-            if (reference.ValueKind == JsonValueKind.Object && reference.Text("asset_id").Length > 0)
-            {
-                cell.Child = new ImageBox { SourceUrl = view.OriginFor($"assets/{reference.Text("asset_id")}/thumbnail/640") };
-                var unbind = Kit.Act("解绑", async (_, _) =>
-                {
-                    try
-                    {
-                        await view.ApiSendOptional(
-                            $"{string.Format(Base, view.ProjectIdValue, character.Id)}/versions/{draft.Text("id")}/references/{reference.Text("id")}?version={draft.Number("version")}",
-                            HttpMethod.Delete);
-                        await LoadAsync();
-                    }
-                    catch (Exception error) { view.Notify(error.Message); }
-                }, "CompactDanger");
-                slot.Children.Add(cell);
-                slot.Children.Add(new TextBlock { Text = Labels.Map(Labels.PackageRole, role), Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 4, 0, 2) });
-                slot.Children.Add(unbind);
-            }
-            else
-            {
-                cell.Child = new TextBlock
-                {
-                    Text = "＋", FontSize = 26, HorizontalAlignment = HorizontalAlignment.Center,
-                    VerticalAlignment = VerticalAlignment.Center, Foreground = (Brush)Application.Current.FindResource("Muted"),
-                };
-                var upload = Kit.Act("上传", async (_, _) =>
-                {
-                    var picker = new OpenFileDialog { Filter = "图片|*.png;*.jpg;*.jpeg;*.webp" };
-                    if (picker.ShowDialog(view.WindowHost()) != true) return;
-                    try
-                    {
-                        var asset = await view.UploadAsset("CHARACTER_REFERENCE", picker.FileName);
-                        await view.ApiSend($"{string.Format(Base, view.ProjectIdValue, character.Id)}/versions/{draft.Text("id")}/references",
-                            HttpMethod.Post,
-                            new { asset_id = asset.Text("id"), role, sort_order = 0, version = draft.Number("version") });
-                        await LoadAsync();
-                    }
-                    catch (Exception error) { view.Notify(error.Message); }
-                }, "Compact");
-                slot.Children.Add(cell);
-                slot.Children.Add(new TextBlock { Text = Labels.Map(Labels.PackageRole, role), Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 4, 0, 2) });
-                slot.Children.Add(upload);
-            }
-            grid.Children.Add(slot);
-        }
-        matrix.Children.Add(grid);
-        _ = bound;
-    }
-
     private void RenderVersions()
     {
         versions.Children.Clear();
@@ -402,7 +347,7 @@ internal sealed class CharacterPackagePane : Border
                 {
                     try
                     {
-                        await view.ApiSend($"{string.Format(Base, view.ProjectIdValue, character.Id)}/versions/activate", HttpMethod.Post,
+                        await view.ApiSend($"{string.Format(Base, view.ProjectIdValue, character.Id)}/activate", HttpMethod.Post,
                             new { version_id = version.Text("id"), expected_published_version_id = package.TextOrNull("published_version_id") });
                         await LoadAsync();
                     }

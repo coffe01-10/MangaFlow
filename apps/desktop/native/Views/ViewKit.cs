@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using MangaFlow.Native.Controls;
@@ -27,6 +27,11 @@ public abstract class WorkspaceView : UserControl, IWorkspaceView
         HorizontalContentAlignment = HorizontalAlignment.Stretch;
         VerticalContentAlignment = VerticalAlignment.Stretch;
         UseLayoutRounding = true;
+        SnapsToDevicePixels = true;
+        FontFamily = new FontFamily("Microsoft YaHei UI");
+        TextOptions.SetTextFormattingMode(this, TextFormattingMode.Display);
+        TextOptions.SetTextRenderingMode(this, TextRenderingMode.ClearType);
+        RenderOptions.SetClearTypeHint(this, ClearTypeHint.Enabled);
         Background = (Brush)Application.Current.FindResource("Paper");
     }
     protected WorkspaceContext? Context { get; private set; }

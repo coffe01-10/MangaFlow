@@ -194,17 +194,19 @@ public record CharacterItem(string Id, string PrimaryName)
     public string ForbiddenChanges { get; init; } = "";
     public int Version { get; init; }
     public int ReferenceCount { get; init; }
+    public List<JsonElement> References { get; init; } = [];
     public int LockedReferences { get; init; }
     public bool AliasConflict { get; init; }
     public string AliasLabel => Aliases.Count == 0 ? "无绰号" : "又名 " + string.Join(" / ", Aliases);
     public static CharacterItem From(JsonElement c) => new(c.Text("id"), c.Text("primary_name"))
     {
         Aliases = c.Strings("aliases"),
-        LockedFeatures = c.Text("locked_features"),
-        ForbiddenChanges = c.Text("forbidden_changes"),
+        LockedFeatures = string.Join("，", c.Strings("locked_features")),
+        ForbiddenChanges = string.Join("，", c.Strings("forbidden_changes")),
         Version = c.Number("version"),
-        ReferenceCount = c.Number("reference_count"),
-        LockedReferences = c.Number("locked_reference_count"),
+        ReferenceCount = c.Array("references").Count,
+        References = c.Array("references"),
+        LockedReferences = c.Strings("locked_features").Count,
         AliasConflict = c.Flag("alias_conflict"),
     };
 }
@@ -271,7 +273,7 @@ public record AssetItem(string Id, string Kind)
     {
         DisplayName = a.Text("display_name"),
         OriginalName = a.Text("original_name"),
-        FileSize = a.Number("file_size"),
+        FileSize = a.Element("byte_size").ValueKind == JsonValueKind.Number ? a.Number("byte_size") : a.Number("file_size"),
         Status = a.Text("status", "UPLOADED"),
         ContentUrl = a.Text("content_url"),
         Canonical = a.Flag("is_canonical"),
