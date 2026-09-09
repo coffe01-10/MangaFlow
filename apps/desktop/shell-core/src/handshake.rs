@@ -299,6 +299,29 @@ pub enum SpawnError {
     Ownership(OwnershipError),
 }
 
+impl std::fmt::Display for SpawnError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SpawnError::Io(error) => write!(f, "spawn helper I/O 失败：{error}"),
+            SpawnError::ReadyTimeout => write!(f, "helper 未在预算内宣布 READY"),
+            SpawnError::HealthTimeout => write!(f, "GO 后健康探活未在预算内通过"),
+            SpawnError::Verify(error) => write!(f, "READY 校验失败：{error}"),
+            SpawnError::Ownership(error) => write!(f, "进程树所有权建立失败：{error}"),
+        }
+    }
+}
+
+impl std::error::Error for SpawnError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            SpawnError::Io(error) => Some(error),
+            SpawnError::Verify(error) => Some(error),
+            SpawnError::Ownership(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
 impl From<OwnershipError> for SpawnError {
     fn from(error: OwnershipError) -> Self {
         SpawnError::Ownership(error)
