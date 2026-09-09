@@ -1079,8 +1079,7 @@ fn export_logs_with(
         // below. The read is capped one byte PAST the limit instead: a
         // member at exactly the cap is read whole and included, one that
         // grew past it reads back over-cap and fails the re-check as
-        // "changed_during_export" without ever being buffered beyond cap+1
-        // cap+1.
+        // "changed_during_export" without ever being buffered beyond cap+1.
         let data = (|| -> std::io::Result<Vec<u8>> {
             use std::io::Read;
             let file = fs::File::open(path)?;

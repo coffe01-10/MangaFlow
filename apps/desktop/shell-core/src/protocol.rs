@@ -254,7 +254,9 @@ pub fn verify_journal(journal: &Path, ready: &ReadyPayload) -> Result<(), Verify
         // `is_some() &&` guard failed open on omission — the helper always
         // writes the field, so an omitted/unreadable anchor is not a journal
         // this handshake produced). Comparing the Options rejects omission,
-        // mismatch, and a journal shipped for a now-dead pid alike.
+        // mismatch, and a journal shipped for a now-dead pid alike; the one
+        // residual corner is a /proc read failure for a LIVE pid (both
+        // Nones match), which the GO write and health gate still gate.
         if announced != actual {
             return Err(VerifyError::StartTimeMismatch);
         }
@@ -522,7 +524,10 @@ mod tests {
         // a fixture pid whose liveness varies across machines would make
         // the positive journal assertion flaky.
         let live_pid = std::process::id();
+        #[cfg(target_os = "linux")]
         let live_starttime = crate::ownership::pid_starttime(live_pid);
+        #[cfg(not(target_os = "linux"))]
+        let live_starttime: Option<u64> = None;
         let line = format!(
             "{READY_PREFIX}{{\"token\":\"{TOKEN}\",\"pid\":{live_pid},\"api_origin\":\"http://127.0.0.1:39001\",\"web_origin\":\"http://127.0.0.1:39002\"}}"
         );
@@ -548,7 +553,7 @@ mod tests {
             "pid": live_pid, "api_origin": "http://127.0.0.1:39001",
             "web_origin": "http://127.0.0.1:39002",
         });
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         if let Some(starttime) = live_starttime {
             good["pid_starttime"] = serde_json::json!(starttime);
         }
@@ -558,7 +563,7 @@ mod tests {
             "version": PROTOCOL_VERSION, "token": TOKEN, "state": "ready",
             "pid": live_pid, "api_origin": "http://127.0.0.1:39001",
         });
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         if let Some(starttime) = live_starttime {
             mismatched["pid_starttime"] = serde_json::json!(starttime);
         }
@@ -787,7 +792,7 @@ mod tests {
         // The Unix anchor belongs in the base fixture: the helper always
         // writes it, and verify_journal treats a missing/mismatched
         // pid_starttime as a failure (red team 2026-09-09).
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         if let Some(starttime) = crate::ownership::pid_starttime(std::process::id()) {
             base["pid_starttime"] = serde_json::json!(starttime);
         }

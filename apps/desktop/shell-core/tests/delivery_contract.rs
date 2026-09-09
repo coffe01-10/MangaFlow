@@ -125,7 +125,7 @@ fn capability_surface_stays_the_pinned_default() {
     assert_eq!(
         value["permissions"],
         serde_json::json!(["core:default"]),
-        "permissions drifted beyond core:default — a lead-reviewed security          decision is required"
+        "permissions drifted beyond core:default — a lead-reviewed security decision is required"
     );
 }
 

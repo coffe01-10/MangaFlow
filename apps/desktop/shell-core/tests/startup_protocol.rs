@@ -875,10 +875,6 @@ class Health(BaseHTTPRequestHandler):
 
 server = ThreadingHTTPServer(("127.0.0.1", 0), Health)
 origin = f"http://127.0.0.1:{server.server_address[1]}"
-try:
-    starttime = int(open("/proc/self/stat").read().rsplit(")", 1)[1].split()[19])
-except Exception:
-    starttime = None  # non-Linux: the anchor is optional, verification skips it
 with open(journal_path, "w", encoding="utf-8") as handle:
     json.dump({"version": 1, "token": token, "state": "ready",
                "pid": os.getpid(),
