@@ -568,6 +568,9 @@ internal sealed class OutfitsPane : StackPanel
     private readonly StackPanel records = new();
     private readonly StackPanel liveResults = new();
     private readonly StackPanel pendingRefs = new();
+    // 素材库候选按钮住在专用面板：待绑定计数的 RenderPending 会重建
+    // pendingRefs，若按钮与其同住，导入一张后其余候选全部消失。
+    private readonly StackPanel candidateRefs = new();
     private readonly List<string> pendingAssetIds = [];
 
     public OutfitsPane(AssetsView view)
@@ -597,6 +600,7 @@ internal sealed class OutfitsPane : StackPanel
         form.Children.Add(new TextBlock { Text = "锁定项", Style = (Style)Application.Current.FindResource("FieldLabel"), Margin = new Thickness(0, 10, 0, 6) });
         form.Children.Add(lockedFields);
         form.Children.Add(pendingRefs);
+        form.Children.Add(candidateRefs);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 12, 0, 0) };
         actions.Children.Add(Kit.Act("建立并绑定", async (_, _) => await CreateOutfit(), "InkButton"));
         form.Children.Add(actions);
@@ -659,6 +663,9 @@ internal sealed class OutfitsPane : StackPanel
             var rows = await view.ApiSend(QueryBuilder.Build($"projects/{view.ProjectIdValue}/library", ("character_id", characterId), ("limit", 30)));
             var adopted = rows.EnumerateArray().SelectMany(g => g.Array("candidates")).ToList();
             if (adopted.Count == 0) { view.Notify("当前角色还没有可导入的生成图片。"); return; }
+            // 每次拉取都重建候选面板（重复点击不叠加旧按钮）；面板与
+            // pendingRefs 分离，导入一张后其余候选按钮保持可见。
+            candidateRefs.Children.Clear();
             foreach (var candidate in adopted.Take(30))
             {
                 if (candidate.Text("asset_id").Length == 0) continue;
@@ -673,7 +680,7 @@ internal sealed class OutfitsPane : StackPanel
                     }
                     catch (Exception error) { view.Notify("导入失败：" + error.Message); }
                 }, "Compact");
-                pendingRefs.Children.Add(button);
+                candidateRefs.Children.Add(button);
             }
         }
         catch (Exception error) { view.Notify(error.Message); }
