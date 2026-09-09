@@ -9,29 +9,31 @@
 
 ## 1. relay 字节管道（`sidecar/mangaflow_desktop_helper.py`）
 
+> 行号基线：master `37055ab`（#288 已含、#290 待合并——合并后 `_serve_relay` 区块行号会再偏移）。
+
 | 项 | 位置 | 结论 |
 | --- | --- | --- |
-| 连接超时与管道隔离 | `_serve_relay` L155-204；`create_connection(timeout=5)` 后 `upstream.settimeout(None)`（PR #252，已合并） | ✅ 连接超时只约束 CONNECT；双向 pump 无读死限。客户端侧由 timeout-mode listener accept 出 blocking socket，无需显式设置。 |
+| 连接超时与管道隔离 | `_serve_relay` L180-266；`create_connection(timeout=5)` 后 `upstream.settimeout(None)`（L229；PR #252，已合并） | ✅ 连接超时只约束 CONNECT；双向 pump 无读死限。客户端侧由 timeout-mode listener accept 出 blocking socket，无需显式设置。 |
 | 慢响应 / keep-alive | `test_sidecar_relay.py::test_relay_delivers_a_response_slower_than_the_connect_timeout`（上游 TTFB 5.6s）、`::test_relay_serves_a_second_request_after_a_long_keep_alive_gap`（空闲 5.5s 后复用） | ✅ 红/绿已验证（旧代码必失败）。 |
-| 半关闭语义 | `_pipe` finally `dst.shutdown(SHUT_WR)`（L197-201） | ✅ 半关闭=向对端转发 EOF；两个方向对称。**测试缺口：无客户端半关闭/上游 FIN 的红绿用例 → 本轮 PR-A 补表驱动用例。** |
-| 单连接故障隔离 | `_pipe` `except OSError: pass`（L195-196） + accept 循环 `except OSError: return`（L170-171） | ℹ️ 单连接 RST/ECONNRESET 只死 pump 线程，accept 循环存活。**测试缺口：RST 后 relay 仍可服务下一连接 → PR-A 补。** |
-| 上游拒连（错误路径） | `_serve_relay` `create_connection` 失败 → `client.close(); continue`（L173-176） | ℹ️ uvicorn 未起时 node 代理请求快速失败。**测试缺口：上游端口死掉时 relay 存活且下一连接可服务 → PR-A 补。** |
-| 线程模型 | 每连接 2 pump 线程 + 1 joiner（`_pump`），并发上限 `WEB_RELAY_MAX_CONNECTIONS=128`；溢出连接立即关闭并记日志，槽位在双向 pump 均结束后释放 | ✅ 单元红绿：`test_relay_caps_concurrent_connections`（cap=2：占满→第 3 连接无响应关闭→释放槽位→新客户端可服务；旁路 limiter 的变异必失败）。PR #288。 |
+| 半关闭语义 | `_pipe` finally `dst.shutdown(SHUT_WR)`（L239-244） | ✅ 半关闭=向对端转发 EOF；两个方向对称。表驱动红绿：`test_relay_pipe_semantics_table[client-half-close / upstream-fin]`（EOF 吞噬变异必失败，#278）。 |
+| 单连接故障隔离 | `_pipe` `except OSError: pass`（L239-240） + accept 循环 `except OSError: return`（L205-206） | ✅ 单连接 RST/ECONNRESET 只死 pump 线程，accept 循环存活。红绿：`test_relay_accept_loop_survives_a_client_reset`（SO_LINGER RST 后新连接可服务，#278）。 |
+| 上游拒连（错误路径） | `create_connection` 失败 → `client.close()` + 释放槽位 + `continue`（L216-219） | ✅ uvicorn 未起时 node 代理请求快速失败（FIN/RST）。红绿：`test_relay_survives_a_dead_upstream_and_recovers`（API 端口复话后同一 relay 恢复服务，#278）。 |
+| 线程模型 | 每连接 2 pump 线程 + 1 joiner（`_pump` L246），并发上限 `WEB_RELAY_MAX_CONNECTIONS=128`（`_RelayLimiter` L121，accept 守卫 L207）；溢出连接立即关闭，槽位在双向 pump 均结束后释放 | ✅ 单元红绿：`test_relay_caps_concurrent_connections`（cap=2：占满→第 3 连接无响应关闭→释放槽位→新客户端可服务；旁路 limiter 的变异必失败）。PR #288 已合并。⚠️ 已知隐患：master 版 `_pump()` 经 accept 循环共享 cell 读取套接字（B023 晚绑定，跨线程延迟读取理论上可泵入外来配对）——**#290 已改为参数传递并加固 spawn（RuntimeError 不再杀死 accept 循环）+ 饱和日志 10s 限频 + 释放检测 5s 有界重试，待合并**。 |
 
 ## 2. bind / REUSE / EXCLUSIVE（`_bind_loopback` L87-104、`_bind_relay` L116-152）
 
 | 平台/项 | 语义 | 状态 |
 | --- | --- | --- |
-| API 动态端口（L87） | Unix `SO_REUSEADDR`；Windows `SO_EXCLUSIVEADDRUSE`（#256） | ✅ 端口 0 无冲突面；Windows 防 SO_REUSEADDR 抢绑。 |
-| relay 固定端口 39443（L139-151） | Unix `SO_REUSEADDR`（跨自身 TIME_WAIT 重绑，#253）；Windows `SO_EXCLUSIVEADDRUSE`（#256，保留 TIME_WAIT 残余并记录于 docstring） | ✅ 单元红绿：`test_sidecar_relay_bind.py::test_relay_bind_survives_its_own_time_wait_remnants`（旧代码失败）、`::test_relay_bind_stays_fail_closed_against_a_foreign_live_listener`（前后皆过，钉死对外 fail-closed）。 |
-| web 端口 claim-bind-close | `_spawn_web_server` L499-504 | ℹ️ bind(0)→close→node bind 的极小 TOCTOU，plan-B 设计稿 §6 记录在案；#271 的 `_await_web_server` 已把"宣布未持有端口"的最坏后果关闭（见 §4）。 |
+| API 动态端口（`_bind_loopback` L87-104） | Unix `SO_REUSEADDR`；Windows `SO_EXCLUSIVEADDRUSE`（#256） | ✅ 端口 0 无冲突面；Windows 防 SO_REUSEADDR 抢绑。 |
+| relay 固定端口 39443（`_bind_relay` L141-177） | Unix `SO_REUSEADDR`（跨自身 TIME_WAIT 重绑，#253）；Windows `SO_EXCLUSIVEADDRUSE`（#256，保留 TIME_WAIT 残余并记录于 docstring） | ✅ 单元红绿：`test_sidecar_relay_bind.py::test_relay_bind_survives_its_own_time_wait_remnants`（旧代码失败）、`::test_relay_bind_stays_fail_closed_against_a_foreign_live_listener`（前后皆过，钉死对外 fail-closed）。 |
+| web 端口 claim-bind-close | `_spawn_web_server`（L534 起，claim 在 L560 附近） | ℹ️ bind(0)→close→node bind 的极小 TOCTOU，plan-B 设计稿 §6 记录在案；#271 的 `_await_web_server` 已把"宣布未持有端口"的最坏后果关闭（见 §4）。 |
 | 已知缺陷 | **web boot 失败路径不释放 relay**：`_spawn_web_server` 仅在 node spawn OSError 时 `relay.close()`（L540）；`_await_web_server` 失败（L383 调用，L554-603 实现）reap node 后返回 `(None, None)`，relay 仍绑 39443 且 pump 线程存活整会话；`_run_app` finally（L418-430）无 relay 句柄。 | ⚠️ **PR-B**：`_spawn_web_server` 返回 relay 句柄；`_await_web_server` 失败即关闭；e2e 断言降级会话 39443 不再监听（红/绿）。 |
 
 ## 3. loopback 不变量
 
 - READY/api_origin：`_run_app` L385-396 只发布 `127.0.0.1:<dynamic>`；shell 侧 `is_loopback_origin`（shell-core protocol.rs）双向校验 api_origin/web_origin。✅
 - web 服务器 bind：helper 以 `HOSTNAME=127.0.0.1` 启 node（L508），e2e `test_sidecar_plan_b_web_server_loop` 在存活期探测非回环本地 IPv4 拒连（#266）。✅
-- D5 静态服务器：`verify-static-origin.mjs` L111 仅绑 `127.0.0.1:4173`（处理器围栏在 L88-107）。✅
+- D5 静态服务器：`verify-static-origin.mjs` L116 仅绑 `127.0.0.1:4173`（围栏在 L97-105；根路径推导已改 `fileURLToPath`，L18-24，PR #289）。✅
 - helper/壳不读非回环地址；shell-core 交付契约测试钉 CSP `connect-src 'self' http://127.0.0.1:*`。✅
 
 ## 4. READY / journal（`_read_context` L63、`_write_journal` L78、`_run_app` L385-403）
@@ -59,7 +61,7 @@
 
 ## 7. static export 路径围栏（`scripts/verify-static-origin.mjs` L88-107）
 
-- `resolve(root, "." + decodeURIComponent(path))` + `startsWith(root + sep)` 包含检查，`curl --path-asis` 式 `..`/`%2e%2e` 逃逸 → 404（commit `6a97625`）。✅
+- `resolve(root, "." + decodeURIComponent(path))` + `startsWith(root + sep)` 包含检查，`curl --path-asis` 式 `..`/`%2e%2e` 逃逸 → 404（commit `6a97625`；fence 断言 L103-105）。✅
 - ℹ️ 测试缺口：围栏本身无可执行验证（D5 只走正常路径）→ **PR-C**：D5 自测追加编码遍历请求断言 404（红/绿：临时撤掉围栏必须失败）。
 - Tauri 侧等价围栏（`shell-core/tests/delivery_contract.rs` CSP 契约 + 无 remote IPC 能力契约，#254）✅。
 
@@ -150,3 +152,16 @@
   web 端口 bind-close TOCTOU、D5 win32 可移植性），均有文档化理由。两夜累计合并
   #252/#253/#254/#259/#270/#278/#279/#281/#282/#283/#284/#285/#286。
 - **未完事项**：无。Windows 实机验证保持 NOT RUN，待 D3 复验窗口。
+
+### 指定领域覆盖核对（审计 Mandate A，逐项）
+
+| Mandate 条目 | 审计节 | 状态 |
+| --- | --- | --- |
+| relay 字节管道 | §1 | ✅ 超时/半关闭/FIN 透传/死上游/RST 隔离/并发上限，全部有红绿 |
+| bind/REUSE/EXCLUSIVE | §2 | ✅ POSIX REUSEADDR（#253）+ Windows EXCLUSIVEADDRUSE（#256），红绿钉死 |
+| loopback | §3 | ✅ API/READY/web/D5 四面回环不变量 + 非回环拒连 e2e |
+| READY/journal | §4 | ✅ 身份白名单、原子写、#271 属权验证、stale 清扫 |
+| e2e 超时 | §5 | ✅ 五阶段超时矩阵（READY 15s/健康 20s/web boot 10s/停机分级/job 120s） |
+| npm shim | §6 | ✅ 平台解析 + relay 目标烤入校验 |
+| static export 路径围栏 | §7 | ✅ 包含检查（6a97625）+ D5 自测（#281）+ win32 根路径（#289） |
+| CORS/CSP 与 helper 交互 | §8 | ✅ WEB_ORIGIN 派生/TrustedHost/plan-B 同源/withGlobalTauri ACL 契约
