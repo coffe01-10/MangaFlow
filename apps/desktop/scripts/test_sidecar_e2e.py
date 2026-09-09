@@ -63,7 +63,8 @@ class DesktopShell:
         self.runtime = user_data / "runtime" / f"mangaflow-desktop-{self.token}"
         self.runtime.mkdir(parents=True)
         self.journal = self.runtime / "owner.json"
-        self.stderr_log = (self.runtime / "helper.stderr.log").open("wb")
+        self.stderr_log_path = self.runtime / "helper.stderr.log"
+        self.stderr_log = self.stderr_log_path.open("wb")
         env = dict(
             os.environ,
             MANGAFLOW_DESKTOP_TOKEN=self.token,
@@ -555,6 +556,15 @@ def test_sidecar_plan_b_web_server_loop(tmp_path: Path):
         )
     finally:
         probe.close()
+    # E2e stability contract: a COOPERATIVE stop must never produce a
+    # spurious "exited mid-session" alarm. The exit watcher's shutdown
+    # event suppresses it; a regression there would stamp a false
+    # lifecycle milestone into every healthy session's unified log and
+    # poison forensics.
+    stderr_text = shell.stderr_log_path.read_text(encoding="utf-8", errors="replace")
+    assert "exited mid-session" not in stderr_text, (
+        "healthy cooperative stop logged a spurious mid-session web exit"
+    )
 
 
 def test_sidecar_dead_web_dist_fails_closed_without_web_origin(tmp_path: Path):
