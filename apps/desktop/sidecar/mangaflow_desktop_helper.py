@@ -480,8 +480,15 @@ def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
             # that never comes up must still fail the session closed to the
             # static-export form instead of serving a dead relay.
             if not _await_web_server_boot(web.process, web.node_port):
+                released_port = web.announced_port
                 web.close()
                 web = None
+                # The downgrade log names the announced port so the e2e can
+                # assert the helper actually released it (R2 review 2026-09-09).
+                _log(
+                    f"web boot failed; released announced port {released_port} "
+                    "(static-export downgrade)"
+                )
             else:
                 # Ownership of the announced origin now includes noticing
                 # when it dies: arm the mid-session exit watch (log-only,
@@ -772,6 +779,12 @@ def _bind_web_port() -> socket.socket | None:
     WebView actually loads (red team 2026-09-09). POSIX: ``SO_REUSEADDR``
     covers the session-relaunch TIME_WAIT case, same policy as the fixed
     relay port.
+
+    Scope note (R2 review 2026-09-09): this makes the ANNOUNCED port
+    unshareable, not the whole plan-B surface — node's own ephemeral port
+    is still a plain option-less bind, so a same-user process can co-bind
+    it there (netstat-discoverable) and mix relayed traffic; that residual
+    lives in the threat model, and nothing navigates to node's port.
     """
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -779,6 +792,11 @@ def _bind_web_port() -> socket.socket | None:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
     else:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    # Same cadence as _bind_relay: bounds the accept loop so a close() from
+    # the boot-downgrade path wakes the relay thread and actually releases
+    # the announced port (a blocking accept would keep it bound until
+    # process exit — R2 review 2026-09-09).
+    sock.settimeout(0.5)
     try:
         sock.bind(("127.0.0.1", 0))
         sock.listen(128)

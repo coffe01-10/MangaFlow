@@ -585,6 +585,37 @@ def test_sidecar_dead_web_dist_fails_closed_without_web_origin(tmp_path: Path):
         # The degraded session is still a fully working API session.
         with urllib.request.urlopen(f"{shell.origin}/api/v1/projects", timeout=10) as response:
             assert response.status == 200
+        # The ANNOUNCED web port (helper-owned since before node spawned)
+        # must be released by the downgrade too — the helper logs which port
+        # it let go. R2 review 2026-09-09: without this, a boot-degraded
+        # session squatted on its announced listener until process exit.
+        stderr_log = shell.runtime / "helper.stderr.log"
+        announced: int | None = None
+        deadline = time.monotonic() + 5.0
+        while announced is None and time.monotonic() < deadline:
+            match = re.search(
+                r"released announced port (\d+)",
+                stderr_log.read_text(encoding="utf-8", errors="replace"),
+            )
+            if match:
+                announced = int(match.group(1))
+                break
+            time.sleep(0.2)
+        assert announced is not None, "downgrade never logged a released announced port"
+        deadline = time.monotonic() + 5.0
+        while True:
+            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            probe.settimeout(1.0)
+            try:
+                if probe.connect_ex(("127.0.0.1", announced)) != 0:
+                    break  # released
+            finally:
+                probe.close()
+            if time.monotonic() >= deadline:
+                raise AssertionError(
+                    f"boot-degraded session still holds the announced port {announced}"
+                )
+            time.sleep(0.1)
         # A degraded session must not squat on the fixed relay port: with no
         # web server to feed, the helper has no business holding 39443 until
         # process exit (the next session would then see the port as taken).
