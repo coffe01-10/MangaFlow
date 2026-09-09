@@ -1026,7 +1026,15 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(&outside, candidate.join(JOURNAL_NAME)).unwrap();
         #[cfg(windows)]
-        std::os::windows::fs::symlink_file(&outside, candidate.join(JOURNAL_NAME)).unwrap();
+        {
+            // Windows symlink_file needs privileges; if creation is refused,
+            // skip the case instead of panicking at fixture setup.
+            if std::os::windows::fs::symlink_file(&outside, candidate.join(JOURNAL_NAME)).is_err() {
+                eprintln!("symlink creation not permitted; skipping the sweep-symlink case");
+                let _ = std::fs::remove_dir_all(&user_data);
+                return;
+            }
+        }
 
         sweep_runtime_dirs_with(&user_data, 0).unwrap();
 
