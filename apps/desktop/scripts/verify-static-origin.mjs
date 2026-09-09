@@ -15,9 +15,13 @@ import { join, extname, resolve, sep } from "node:path";
 import { spawn } from "node:child_process";
 import { connect } from "node:net";
 import { chromium } from "playwright";
+// fileURLToPath, not `.pathname`: on Windows `.pathname` yields `/C:/...`,
+// which join/resolve/spawn all mishandle (recorded as a residual in the N2
+// audit §11 before this fix). POSIX output is unchanged.
+import { fileURLToPath } from "node:url";
 
-const DESKTOP_ROOT = new URL("..", import.meta.url).pathname;
-const REPO_ROOT = new URL("../../..", import.meta.url).pathname;
+const DESKTOP_ROOT = fileURLToPath(new URL("..", import.meta.url));
+const REPO_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 const FRONTEND = join(DESKTOP_ROOT, "dist/frontend");
 const HELPER = join(DESKTOP_ROOT, "sidecar/mangaflow_desktop_helper.py");
 const PYTHON = process.env.MANGAFLOW_DESKTOP_PYTHON ?? "python3";
