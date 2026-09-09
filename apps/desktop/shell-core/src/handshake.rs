@@ -302,7 +302,7 @@ pub enum SpawnError {
 impl std::fmt::Display for SpawnError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SpawnError::Io(error) => write!(f, "spawn helper I/O 失败：{error}"),
+            SpawnError::Io(error) => write!(f, "启动握手 I/O 失败：{error}"),
             SpawnError::ReadyTimeout => write!(f, "helper 未在预算内宣布 READY"),
             SpawnError::HealthTimeout => write!(f, "GO 后健康探活未在预算内通过"),
             SpawnError::Verify(error) => write!(f, "READY 校验失败：{error}"),

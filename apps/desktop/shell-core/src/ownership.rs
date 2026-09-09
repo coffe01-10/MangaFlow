@@ -76,9 +76,11 @@ impl std::fmt::Display for OwnershipError {
         match self {
             OwnershipError::Spawn(error) => write!(f, "spawn helper 失败：{error}"),
             OwnershipError::JobAssignment(detail) => {
-                write!(f, "子进程加入 Job Object 失败：{detail}")
+                write!(f, "Job Object 操作失败：{detail}")
             }
-            OwnershipError::Resume(detail) => write!(f, "恢复挂起线程失败：{detail}"),
+            OwnershipError::Resume(detail) => {
+                write!(f, "线程恢复流程失败：{detail}")
+            }
             OwnershipError::StopFailed(detail) => write!(f, "停止进程树失败：{detail}"),
         }
     }

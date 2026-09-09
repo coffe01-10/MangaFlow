@@ -92,15 +92,27 @@ fn capability_surface_stays_the_pinned_default() {
         .expect("capabilities dir readable")
         .collect::<Result<Vec<_>, _>>()
         .expect("capability entries readable");
+    let json_files: Vec<_> = files
+        .iter()
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+        .collect();
     assert_eq!(
-        files.len(),
+        json_files.len(),
         1,
         "exactly one capability file is expected (default.json)"
     );
+    assert!(
+        json_files[0].file_name() == "default.json",
+        "the capability file must stay default.json"
+    );
     let value: Value = serde_json::from_str(
-        &std::fs::read_to_string(files[0].path()).expect("capability readable"),
+        &std::fs::read_to_string(json_files[0].path()).expect("capability readable"),
     )
     .expect("capability json parses");
+    let expected_keys = ["identifier", "windows", "permissions"];
+    for key in expected_keys {
+        assert!(value.get(key).is_some(), "capability key {key} missing");
+    }
     assert_eq!(
         value["identifier"], "default",
         "capability identifier drifted"

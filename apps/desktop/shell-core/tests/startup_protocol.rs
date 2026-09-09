@@ -685,8 +685,7 @@ record = {
     "token": token,
     "state": "ready",
     "pid": os.getpid(),
-    **({"pid_starttime": int(open("/proc/self/stat").read().rsplit(")", 1)[1].split()[19])}
-        if os.path.exists("/proc/self/stat") else {}),
+    **({"pid_starttime": starttime} if starttime is not None else {}),
     "api_origin": origin,
 }
 with open(journal_path, "w", encoding="utf-8") as handle:
@@ -853,6 +852,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 token = os.environ["MANGAFLOW_DESKTOP_TOKEN"]
 journal_path = os.environ["MANGAFLOW_DESKTOP_JOURNAL"]
+try:
+    starttime = int(open("/proc/self/stat").read().rsplit(")", 1)[1].split()[19])
+except Exception:
+    starttime = None  # non-Linux: the anchor is optional, verification skips it
 
 class Health(BaseHTTPRequestHandler):
     def do_GET(self):
