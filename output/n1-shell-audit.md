@@ -198,7 +198,14 @@
 - 新增 pin（commit 待查）：
   - journal 符号链接 → JournalMissing；非 UTF8 journal → JournalMismatch("non-utf8")。
   - sweep 对未来 mtime 的 terminal journal 保持目录（时钟偏移 fail-closed 腿）。
-- 测试增量：单元 63 项全绿（+4）。round-5 审查待派（针对本批 pin）。
+- 测试增量：单元 63 项全绿（+2 相对 round-4 的 61；含 journal symlink/non-UTF8
+  钉测与 sweep 未来 mtime 对照组）。轮 5 审查（本轮 pin + 恢复提交）判定 SHIP，
+  5 条 NIT 已落实（outside.json 字节断言、aged 对照组、文档归属修正、TODO 勘误）。
+
+- NIT 已修：journal symlink pin 补 outside.json 字节断言；sweep 未来 mtime 测试
+  补 aged 对照组（hex 名修正后通过）；TODO 勘误（unix_now 已修）。
+- 残留：write_journal_atomic 的 serde_json unwrap（Value 序列化实际不可失败）；
+  get_status_caps 并行负载 flake（master 既有）。
 
 新记录的待办（下轮候选）：
 

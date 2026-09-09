@@ -1029,11 +1029,25 @@ mod tests {
             .unwrap();
         drop(handle);
 
+        // Negative control: an AGED terminal twin must be removed by the
+        // same sweep, proving the future-mtime keep is the anchor at work.
+        let aged = runtime.join(format!("{RUNTIME_DIR_PREFIX}{}", "9".repeat(32)));
+        std::fs::create_dir_all(&aged).unwrap();
+        std::fs::write(
+            aged.join(JOURNAL_NAME),
+            format!("{{\"version\":1,\"token\":\"{}\",\"state\":\"stopped\"}}", "9".repeat(32)),
+        )
+        .unwrap();
+
         sweep_runtime_dirs_with(&user_data, 0).unwrap();
 
         assert!(
             candidate.exists(),
             "a future-mtime terminal journal must keep the candidate (clock-skew fail-closed)"
+        );
+        assert!(
+            !aged.exists(),
+            "the aged control must be swept (proves the sweep ran)"
         );
         let _ = std::fs::remove_dir_all(&user_data);
     }
@@ -1112,6 +1126,16 @@ mod tests {
             verify_journal(&journal, &ready),
             Err(VerifyError::JournalMissing)
         ));
+        assert_eq!(
+            std::fs::read_to_string(&outside).unwrap(),
+            "{\"stolen\": true}",
+            "the symlink target's bytes must be untouched"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&outside).unwrap(),
+            "{\"stolen\": true}",
+            "the symlink target's bytes must be untouched"
+        );
         std::fs::remove_file(&journal).unwrap();
         std::fs::write(&journal, b"\xff\xfe not utf8").unwrap();
         assert!(matches!(
