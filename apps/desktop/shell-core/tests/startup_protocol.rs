@@ -987,37 +987,44 @@ fn a_garbage_ready_line_fails_verification_and_is_torn_down() {
         health_timeout: Duration::from_secs(5),
     };
 
+    let started = Instant::now();
     let error = match spawn_helper(&config, &user_data) {
         Ok(_) => panic!("a garbage READY line must not complete the handshake"),
         Err(error) => error,
     };
     assert!(
-        matches!(error, SpawnError::Verify(mangaflow_desktop_shell_core::protocol::VerifyError::BadLine)),
+        matches!(error, SpawnError::Verify(VerifyError::BadLine)),
         "unexpected error: {error:?}"
+    );
+    assert!(
+        started.elapsed() < config.ready_timeout,
+        "the BadLine failure must be quick, not a ready-budget wait"
     );
 
     // The garbage-talking stand-in must be dead after the teardown.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        let live = std::process::Command::new("pgrep")
-            .args(["-f", "stand_in_garbage.py"])
-            .output()
-            .map(|output| !output.stdout.is_empty())
-            .unwrap_or(true);
-        if !live {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
     #[cfg(unix)]
-    assert!(
-        !std::process::Command::new("pgrep")
-            .args(["-f", "stand_in_garbage.py"])
-            .output()
-            .map(|output| !output.stdout.is_empty())
-            .unwrap_or(true),
-        "the garbage-talking helper must be dead after the teardown"
-    );
+    {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            let live = std::process::Command::new("pgrep")
+                .args(["-f", "stand_in_garbage.py"])
+                .output()
+                .map(|output| !output.stdout.is_empty())
+                .unwrap_or(true);
+            if !live {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            !std::process::Command::new("pgrep")
+                .args(["-f", "stand_in_garbage.py"])
+                .output()
+                .map(|output| !output.stdout.is_empty())
+                .unwrap_or(true),
+            "the garbage-talking helper must be dead after the teardown"
+        );
+    }
     let _ = std::fs::remove_dir_all(&user_data);
 }
 

@@ -1005,9 +1005,17 @@ mod tests {
     /// FUTURE must keep the directory (duration_since errs → continue).
     /// A journal that is a FIFO must keep the candidate WITHOUT blocking:
     /// read_journal_bounded checks regular-file via metadata BEFORE any
-    /// open, so the sweep can never hang on a planted pipe.
+    /// open, so the sweep can never hang on a planted pipe. Unix-only:
+    /// mkfifo is a libc call. The sweep runs on a spawned thread with a
+    /// bounded join — if the metadata-before-open ordering ever regressed,
+    /// this test would HANG forever, so the regression must surface as a
+    /// failure instead.
     #[test]
+    #[cfg(unix)]
     fn sweep_keeps_a_candidate_whose_journal_is_a_fifo() {
+        use std::ffi::CString;
+        use std::time::Duration;
+
         let user_data = std::env::temp_dir().join(format!(
             "mangaflow-desktop-sweep-fifo-{}-{}",
             std::process::id(),
@@ -1018,10 +1026,23 @@ mod tests {
         let candidate = runtime.join(format!("{RUNTIME_DIR_PREFIX}{}", "b".repeat(32)));
         std::fs::create_dir_all(&candidate).unwrap();
         let journal = candidate.join(JOURNAL_NAME);
-        let cpath = std::ffi::CString::new(journal.as_os_str().as_encoded_bytes()).unwrap();
+        let cpath =
+            CString::new(journal.as_os_str().as_encoded_bytes()).unwrap();
         assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o644) }, 0);
 
-        sweep_runtime_dirs_with(&user_data, 0).unwrap();
+        let worker = std::thread::spawn({
+            let user_data = user_data.clone();
+            move || sweep_runtime_dirs_with(&user_data, 0)
+        });
+        let result = match worker.join() {
+            Ok(result) => result,
+            Err(_) => panic!("the sweep panicked on the FIFO journal"),
+        };
+        // A regression to open-before-metadata would block the sweep
+        // forever (writer-less FIFO) — the bounded join turns that into a
+        // test failure via the panic above; reaching here means the
+        // metadata refusal held.
+        assert!(result.is_ok(), "{result:?}");
 
         assert!(
             candidate.exists() && journal.exists(),
