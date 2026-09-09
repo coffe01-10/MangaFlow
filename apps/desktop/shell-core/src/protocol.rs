@@ -37,6 +37,9 @@ impl std::fmt::Display for VerifyError {
             VerifyError::OriginNotLoopback => write!(f, "宣布的 origin 不是回环地址"),
             VerifyError::JournalMissing => write!(f, "ownership journal 不存在或不可读"),
             VerifyError::JournalTooLarge => write!(f, "ownership journal 超过读取上限"),
+            VerifyError::JournalMismatch("non-utf8") => {
+                write!(f, "ownership journal 不是 UTF-8 文本")
+            }
             VerifyError::JournalMismatch(field) => {
                 write!(f, "ownership journal 字段不匹配：{field}")
             }
@@ -322,24 +325,21 @@ impl RuntimeLayout {
             Some(text) => text,
             None => {
                 eprintln!(
-                    "mangaflow-desktop: ownership journal {} is unreadable or oversized; leaving it untouched instead of marking stopped",
+                    "mangaflow-desktop: ownership journal {} is unreadable, oversized or malformed; leaving it untouched instead of marking stopped",
                     journal.display()
                 );
                 return Ok(());
             }
         };
-        let mut value: serde_json::Value = match serde_json::from_str(&existing) {
-            Ok(value) => value,
-            // An unparsable journal is a forensic anomaly (a partial write
-            // or tamper). Overwriting it with a fresh stub would hide the
-            // anomaly AND hand the stale-runtime sweep a terminal state to
-            // delete — the record would vanish exactly when it matters.
-            // Leave the bytes untouched: the sweep already refuses
-            // unparsable journals, so nothing is lost by keeping them.
-            // Unparsable AND non-object roots are forensic anomalies: over-
-            // writing either with a fresh stub would hand the stale-runtime
-            // sweep a terminal state to delete (an object root even parses
-            // as one), destroying the record exactly when it matters.
+        let mut value: serde_json::Value = match serde_json::from_str::<serde_json::Value>(&existing) {
+            Ok(value) if value.is_object() => value,
+            // Anything else — unparsable bytes, or a parsable non-object
+            // root (42, [1,2,3], a bare string) — is a forensic anomaly.
+            // Overwriting it with a fresh stub would hide the anomaly AND
+            // hand the stale-runtime sweep a terminal state to delete (an
+            // object root even parses as one), destroying the record
+            // exactly when it matters. Leave the bytes untouched: the sweep
+            // keeps malformed journals.
             _ => {
                 eprintln!(
                     "mangaflow-desktop: ownership journal {} is malformed; leaving it untouched instead of marking stopped",
@@ -715,10 +715,8 @@ mod tests {
     /// absent anchor fails closed. The Windows leg has no /proc equivalent
     /// (Job membership anchors there), and pid_starttime reads /proc, so
     /// the whole matrix is unix-gated.
-    #[test]
-    #[cfg(unix)]
-    #[test]
     #[cfg(target_os = "linux")]
+    #[test]
     fn journal_starttime_anchor_matches_or_fails_closed() {
         let dir = std::env::temp_dir().join(format!(
             "mangaflow-desktop-starttime-{}-{}",

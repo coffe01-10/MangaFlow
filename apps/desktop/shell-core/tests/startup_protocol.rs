@@ -685,7 +685,8 @@ record = {
     "token": token,
     "state": "ready",
     "pid": os.getpid(),
-    "pid_starttime": int(open("/proc/self/stat").read().rsplit(")", 1)[1].split()[19]),
+    **({"pid_starttime": int(open("/proc/self/stat").read().rsplit(")", 1)[1].split()[19])}
+        if os.path.exists("/proc/self/stat") else {}),
     "api_origin": origin,
 }
 with open(journal_path, "w", encoding="utf-8") as handle:
@@ -755,13 +756,16 @@ fn health_timeout_failure_still_records_terminal_state_and_kills() {
 import json, os, sys
 token = os.environ["MANGAFLOW_DESKTOP_TOKEN"]
 journal_path = os.environ["MANGAFLOW_DESKTOP_JOURNAL"]
-starttime = int(open("/proc/self/stat").read().rsplit(")", 1)[1].split()[19])
+try:
+    starttime = int(open("/proc/self/stat").read().rsplit(")", 1)[1].split()[19])
+except Exception:
+    starttime = None  # non-Linux: the anchor is optional, verification skips it
 record = {
     "version": 1,
     "token": token,
     "state": "ready",
     "pid": os.getpid(),
-    "pid_starttime": starttime,
+    **({"pid_starttime": starttime} if starttime is not None else {}),
     "api_origin": "http://127.0.0.1:1",
 }
 with open(journal_path, "w", encoding="utf-8") as handle:
@@ -864,10 +868,14 @@ class Health(BaseHTTPRequestHandler):
 
 server = ThreadingHTTPServer(("127.0.0.1", 0), Health)
 origin = f"http://127.0.0.1:{server.server_address[1]}"
-starttime = int(open("/proc/self/stat").read().rsplit(")", 1)[1].split()[19])
+try:
+    starttime = int(open("/proc/self/stat").read().rsplit(")", 1)[1].split()[19])
+except Exception:
+    starttime = None  # non-Linux: the anchor is optional, verification skips it
 with open(journal_path, "w", encoding="utf-8") as handle:
     json.dump({"version": 1, "token": token, "state": "ready",
-               "pid": os.getpid(), "pid_starttime": starttime,
+               "pid": os.getpid(),
+               **({"pid_starttime": starttime} if starttime is not None else {}),
                "api_origin": origin}, handle)
 print("MANGAFLOW_READY " + json.dumps(
     {"token": token, "pid": os.getpid(), "api_origin": origin}), flush=True)
