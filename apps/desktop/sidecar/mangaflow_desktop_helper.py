@@ -138,6 +138,12 @@ class _RelayLimiter:
         with self._lock:
             self._live = max(0, self._live - 1)
 
+    @property
+    def max_connections(self) -> int:
+        """The cap this limiter actually enforces (its construction
+        snapshot), so logs can never disagree with enforcement."""
+        return self._max
+
 
 def _bind_relay(api_port: int) -> socket.socket | None:
     """Claim the fixed relay port and listen; None when it is taken.
@@ -198,7 +204,7 @@ def _serve_relay(relay: socket.socket, api_port: int) -> None:
     """
 
     limiter = _RelayLimiter(WEB_RELAY_MAX_CONNECTIONS)
-    log_cooldown = 0.0
+    log_cooldown = float("-inf")
     while True:
         try:
             client, _ = relay.accept()
@@ -207,14 +213,16 @@ def _serve_relay(relay: socket.socket, api_port: int) -> None:
         except OSError:
             return  # listener closed — helper is shutting down
         if not limiter.try_acquire():
-            # Rate-limited: the stderr log only rotates across sessions, so
-            # one line per refused connection under a refuse-flood would
-            # grow it for the rest of the session. Log the transition into
-            # saturation (and its end) instead of every refusal.
+            # Rate-limited: the stderr log only rotates across sessions,
+            # so one line per refused connection under a refuse-flood
+            # would grow it for the rest of the session. Log the entry
+            # into saturation once per cooldown instead of every refusal
+            # (the enforced cap is the limiter's snapshot, not the
+            # module global).
             now = time.monotonic()
             if now >= log_cooldown:
                 _log(
-                    f"relay connection limit {WEB_RELAY_MAX_CONNECTIONS} "
+                    f"relay connection limit {limiter.max_connections} "
                     "reached; closing overflow clients"
                 )
                 log_cooldown = now + 10.0
@@ -259,45 +267,57 @@ def _serve_relay(relay: socket.socket, api_port: int) -> None:
             # the accept loop's shared cells: those are rebound on every
             # iteration, and a deferred read from this thread could pipe a
             # foreign pair (the classic late-binding closure hazard).
-            pumps = [
-                threading.Thread(target=_pipe, args=(pair_client, pair_upstream), daemon=True),
-                threading.Thread(target=_pipe, args=(pair_upstream, pair_client), daemon=True),
-            ]
             try:
+                # Thread CONSTRUCTION can fail under the same host-wide
+                # pressure as start() (MemoryError from the allocation), so
+                # the whole lifecycle sits inside the guard.
+                pumps = [
+                    threading.Thread(
+                        target=_pipe, args=(pair_client, pair_upstream), daemon=True
+                    ),
+                    threading.Thread(
+                        target=_pipe, args=(pair_upstream, pair_client), daemon=True
+                    ),
+                ]
+                try:
+                    for pump in pumps:
+                        pump.start()
+                except (RuntimeError, MemoryError):
+                    return
                 for pump in pumps:
-                    pump.start()
-            except RuntimeError:
-                # Thread creation failed under host-wide pressure (OS
+                    pump.join()
+            except (RuntimeError, MemoryError):
+                # Construction or start failed under host-wide pressure (OS
                 # thread/memory limits - not our own counter, which the cap
-                # bounds). Drop the pair deterministically; the accept loop
-                # must stay immortal even then.
+                # bounds). Swallowed: the finally below closes the pair and
+                # releases the slot, and the accept loop is untouched.
+                pass
+            finally:
+                # Every path out of _pump - normal completion, start failure,
+                # construction failure - closes the pair deterministically
+                # (never refcount timing) and releases the slot. No path may
+                # leave either behind.
                 for sock in (pair_client, pair_upstream):
                     try:
                         sock.close()
                     except OSError:
                         pass
                 limiter.release()
-                return
-            for pump in pumps:
-                pump.join()
-            # Both directions are done; close explicitly so the pair's fate
-            # does not depend on refcount timing.
-            for sock in (pair_client, pair_upstream):
-                try:
-                    sock.close()
-                except OSError:
-                    pass
-            limiter.release()
 
-        spawn = threading.Thread(
-            target=_pump, args=(client, upstream), name="mangaflow-web-relay-pipe", daemon=True
-        )
         try:
+            spawn = threading.Thread(
+                target=_pump,
+                args=(client, upstream),
+                name="mangaflow-web-relay-pipe",
+                daemon=True,
+            )
             spawn.start()
-        except RuntimeError:
-            # Same host-wide failure, one level up: without this guard the
-            # exception would kill the ACCEPT loop while 39443 stays bound,
-            # leaving backlog clients hanging for the rest of the session.
+        except (RuntimeError, MemoryError):
+            # Same host-wide failure, one level up (start() raises
+            # RuntimeError; construction itself can raise MemoryError) -
+            # without this guard the exception would kill the ACCEPT loop
+            # while 39443 stays bound, leaving backlog clients hanging for
+            # the rest of the session.
             client.close()
             upstream.close()
             limiter.release()

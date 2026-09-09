@@ -302,6 +302,73 @@ def test_relay_error_path_table(monkeypatch, scenario):
         api.close()
 
 
+@pytest.mark.parametrize(
+    ("scenario", "explode_on"),
+    [
+        pytest.param(
+            "outer-construction-fails",
+            lambda kwargs: kwargs.get("name") == "mangaflow-web-relay-pipe",
+            id="outer-construction-fails",
+        ),
+        pytest.param(
+            "inner-construction-fails",
+            lambda kwargs: getattr(kwargs.get("target"), "__name__", "") == "_pipe",
+            id="inner-construction-fails",
+        ),
+    ],
+)
+def test_relay_releases_slot_when_thread_construction_fails(monkeypatch, scenario, explode_on):
+    """Thread CONSTRUCTION failing (MemoryError under host-wide pressure)
+    must release the limiter slot at BOTH levels - a permanent leak would
+    ratchet the relay's effective capacity to zero, one connection at a
+    time.
+
+    Regression: #290's RuntimeError guards covered only `start()`; the
+    `Thread(...)` allocations sat outside them, so a construction failure
+    escaped `_pump` with the slot held (inner) or killed the accept loop
+    (outer).
+    """
+    api = StubApi()
+    try:
+        monkeypatch.setattr(helper, "WEB_RELAY_MAX_CONNECTIONS", 1)
+        port, stop = start_relay(monkeypatch, api)
+        try:
+            real_thread = threading.Thread
+
+            def exploding_thread(*args, **kwargs):
+                # Targeted explosion: the relay's own spawn sites only - a
+                # blanket patch would also kill the StubApi's handler
+                # threads, breaking the served phase below.
+                if explode_on(kwargs):
+                    raise MemoryError("host-wide pressure")
+                return real_thread(*args, **kwargs)
+
+            monkeypatch.setattr(helper.threading, "Thread", exploding_thread)
+            refused = socket.create_connection(("127.0.0.1", port), timeout=15)
+            try:
+                refused.sendall(REQUEST)
+                assert read_until_closed(refused, timeout_seconds=4) == b"", (
+                    "a construction-failed connection must be dropped promptly"
+                )
+            finally:
+                refused.close()
+
+            # Restore construction: the released slot must serve the next
+            # client (the leak would have ratcheted capacity to zero).
+            monkeypatch.setattr(helper.threading, "Thread", real_thread)
+            client = socket.create_connection(("127.0.0.1", port), timeout=15)
+            try:
+                client.sendall(REQUEST)
+                body = read_response(client, timeout_seconds=4)
+            finally:
+                client.close()
+            assert body.endswith(b"ok"), body
+        finally:
+            stop()
+    finally:
+        api.close()
+
+
 def test_relay_caps_concurrent_connections(monkeypatch):
     """Live relay connections are bounded: overflow is closed fast, and a
     released slot serves the next client.
@@ -352,8 +419,7 @@ def test_relay_caps_concurrent_connections(monkeypatch):
                     served = read_response(client, timeout_seconds=2)
                 except (pytest.fail.Exception, OSError):
                     # Not free yet: refused (FIN/RST like the overflow path).
-                    candidate, client = client, None
-                    candidate.close()
+                    client.close()
                     time.sleep(0.2)
                 else:
                     client.close()
