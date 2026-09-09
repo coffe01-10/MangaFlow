@@ -129,6 +129,24 @@
 测试增量：`cargo test` 9/9 套件、**80 项**全绿（46→52 单元 + 32 集成 + picker 7
 等，Linux 实测）。
 
+### 2026-09-09 深夜配额账本（B/D 项）
+
+8 个独立小 PR（类别 → 分支/PR）：
+
+| # | 类别 | 分支 | PR | 分支内容 |
+| --- | --- | --- | --- | --- |
+| 1 | 启动协议 | night/n1-09b-ready-journal | #322 | journal 读取上界、token 折叠、数字端口门、mark_stopped 非对象保留、starttime/篡改矩阵 |
+| 2 | OwnedTree/stop + 红绿判别 | night/n1-09b-stop-respawn-tests | #323 | ReadyTimeout 端到端、respawn 纪律、lead 测试真实 deadline |
+| 3 | picker 路径 | night/n1-09b-picker-shapes | #324 | 表驱动形状边界（含精确变体与真实深树） |
+| 4 | zip/log 导出上限 | night/n1-09b-log-caps-nonutf8 | #325 | 非 UTF8 跳过、keep=1、总量等值边界 |
+| 5 | CSP/capability 契约 | night/n1-09b-capability-surface | #326 | 能力面 + withGlobalTauri 钉测 |
+| 6 | 错误路径 | night/n1-09b-error-display | #327 | OwnershipError Display、pid_starttime 钉测 |
+| 7 | 启动协议（补充） | night/n1-09b-loopback-matrix | #328 | 回环形近 origin 矩阵、journal 目录错误路径 |
+| 8 | 文档账本 | night/n1-pr-readme-ledger | #329 | README cargo test 计数同步（49 → 85） |
+
+伞形集成 PR：#302（night/n1-core-burn-20260909，含上述全部内容与审计文档）。
+合并顺序建议：先 #302，其余按类别各自独立或随后 rebase。
+
 新记录的待办（下轮候选）：
 
 - `write_journal_atomic` 的 serde_json unwrap 与 `unix_now` panic 路径（pub API
