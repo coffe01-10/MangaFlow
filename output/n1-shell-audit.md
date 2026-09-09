@@ -167,6 +167,16 @@
 **后续 PR**：分支 `night/n1-core-burn-20260909` 对 master 的剩余 delta（journal
 读写分类、mark_stopped 保留、staging 结构修复等 7 commits）以新 PR 提交待审。
 
+### 轮 2 审查（子代理）与 erratum
+
+- 判定 SHIP（本范围）。NIT 已落实：readback 测试改名覆盖 deleted 用例。
+- **Erratum**：commit c66bc14（"Refuse a deleted-after-pick read…"）只新增了
+  unix_now 钳制与注入缝测试——被删后读取的拒绝行为在 master 既有代码中已存在
+  （picker.rs canonicalize-first），该提交只是补钉测；标题不改变行为这一事实
+  以本记录为准。
+- pid_starttime 现为 cfg(target_os = "linux")；verify_journal 锚点块同门。
+  macOS 腿无锚点覆盖（设计内，受支持腿为 Linux + Windows）。
+
 新记录的待办（下轮候选）：
 
 - `write_journal_atomic` 的 serde_json unwrap 与 `unix_now` panic 路径（pub API

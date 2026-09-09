@@ -254,7 +254,7 @@ fn directory_pick_validates_type_and_symlinks() {
 }
 
 #[test]
-fn readback_refails_when_picked_file_is_swapped_or_grows() {
+fn readback_refails_when_picked_file_is_swapped_grows_or_deleted() {
     let dir = temp_dir("swap");
     let source = dir.join("chapter.txt");
     fs::write(&source, "正文").unwrap();
