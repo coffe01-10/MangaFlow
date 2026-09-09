@@ -2353,6 +2353,8 @@ mod tests {
             "{report:?}"
         );
 
+        let _ = fs::remove_file(&destination_members);
+
         // Size cap: all four would fit the member cap, but the 2 GiB…
         // here 25-byte… budget only takes two.
         let destination_sizes =
@@ -2400,6 +2402,45 @@ mod tests {
         for destination in [destination_members, destination_sizes, destination_full] {
             let _ = fs::remove_file(&destination);
         }
+    }
+
+    /// Boundary pin: a member landing the running total EXACTLY on the
+    /// cap is included (the skip is strictly `>`), and only the next one
+    /// is skipped for the size cap.
+    #[test]
+    fn export_includes_members_at_exactly_the_total_cap() {
+        let user_data = temp_user_data("equpoe");
+        let logs = logs_dir(&user_data);
+        fs::create_dir_all(&logs).unwrap();
+        fs::write(logs.join("a-first.log"), "1".repeat(15)).unwrap();
+        fs::write(logs.join("b-second.log"), "2".repeat(10)).unwrap();
+        fs::write(logs.join("c-third.log"), "3").unwrap();
+
+        let destination =
+            std::env::temp_dir().join(format!("mfd-caps-eq-{}.zip", crate::protocol::new_token()));
+        let report = export_logs_with(
+            &user_data,
+            &destination,
+            false,
+            ExportLimits {
+                max_members: EXPORT_MAX_MEMBERS,
+                max_total_bytes: 25,
+            },
+        )
+        .unwrap();
+        assert_eq!(report.files, vec!["a-first.log", "b-second.log"], "{report:?}");
+        assert_eq!(report.total_bytes, 25, "{report:?}");
+        assert_eq!(
+            report
+                .skipped
+                .iter()
+                .filter(|entry| entry.reason == "archive_size_cap")
+                .count(),
+            1,
+            "{report:?}"
+        );
+        let _ = fs::remove_dir_all(&user_data);
+        let _ = fs::remove_file(&destination);
     }
 
     /// Windows lock for the rotation-failure tests: holds the base open
