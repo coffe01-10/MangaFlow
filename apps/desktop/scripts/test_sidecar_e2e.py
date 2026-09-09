@@ -670,6 +670,39 @@ def test_sidecar_mid_session_node_exit_is_detected_and_logged(tmp_path: Path):
         # Detection is log-only (no restart): the API session is untouched.
         with urllib.request.urlopen(f"{shell.origin}/api/v1/projects", timeout=10) as response:
             assert response.status == 200
+        # The announced origin degrades to fail-fast: the helper-owned
+        # listening socket stays up (the E3 redesign), but each connection
+        # is closed promptly with no response bytes once node is gone -
+        # never a hang, and the session keeps serving through the API port.
+        web_port = int(shell.web_origin.rsplit(":", 1)[1])
+        dead_origin = socket.create_connection(("127.0.0.1", web_port), timeout=15)
+        try:
+            try:
+                dead_origin.sendall(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            except OSError:
+                pass  # RST before the request was even written: prompt fail-fast
+            deadline = time.monotonic() + 4.0
+            data = b""
+            closed = False
+            dead_origin.settimeout(0.5)
+            while time.monotonic() < deadline:
+                try:
+                    chunk = dead_origin.recv(65536)
+                except socket.timeout:
+                    # Must precede except OSError: TimeoutError subclasses it.
+                    continue
+                except OSError:
+                    closed = True  # RST: prompt fail-fast
+                    break
+                if not chunk:
+                    closed = True  # FIN
+                    break
+                data += chunk
+            assert closed and b"HTTP/" not in data, (
+                f"dead origin mishandled (closed={closed}): {data!r}"
+            )
+        finally:
+            dead_origin.close()
     finally:
         exit_code = shell.stop()
         assert exit_code == 0, f"helper exited with {exit_code}"
