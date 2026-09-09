@@ -15,6 +15,7 @@ import {
   type StoryboardGeometrySavePayload,
   type StoryboardPanel,
 } from "@/lib/api";
+import { useLocalStorageValue, writeLocalStorage } from "@/lib/local-storage-store";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, CircleAlert, Maximize2, Minimize2, RotateCcw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -108,14 +109,17 @@ export function StoryboardEditor({
     panelCount: 3,
     layoutMode: "dynamic",
   });
-  const [inspectorWidth, setInspectorWidth] = useState(() => {
+  // 属性面板宽度持久化走水合安全的 localStorage 外部存储（水合渲染用默认
+  // 390，真实存储值在水合后同步生效；渲染期直读会造成水合不匹配）。
+  const storedInspectorWidth = useLocalStorageValue("mangaflow.storyboard-inspector-width", "");
+  const inspectorWidth = useMemo(() => {
     if (typeof window === "undefined") return 390;
-    const stored = Number(window.localStorage.getItem("mangaflow.storyboard-inspector-width"));
+    const stored = Number(storedInspectorWidth);
     // Cap by viewport so a stored width from a larger window cannot push the
     // worktable into horizontal overflow (canvas column has minmax(320px)).
     const viewportCap = Math.max(320, Math.min(620, window.innerWidth - 740));
     return stored >= 320 && stored <= viewportCap ? stored : 390;
-  });
+  }, [storedInspectorWidth]);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const geometryRequestRef = useRef<{ id: string; stackIndex: number } | null>(null);
 
@@ -182,12 +186,11 @@ export function StoryboardEditor({
   useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
 
   const persistInspectorWidth = (value: number) => {
-    // Same viewport cap as the initial read: canvas min 320 + gap 10 + sidebar
+    // Same viewport cap as the read: canvas min 320 + gap 10 + sidebar
     // up to 360 + page padding must all fit alongside the inspector.
     const viewportCap = typeof window === "undefined" ? 620 : Math.max(320, Math.min(620, window.innerWidth - 740));
     const next = Math.min(viewportCap, Math.max(320, value));
-    setInspectorWidth(next);
-    window.localStorage.setItem("mangaflow.storyboard-inspector-width", String(next));
+    writeLocalStorage("mangaflow.storyboard-inspector-width", String(next));
   };
 
   const refresh = () => {

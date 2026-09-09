@@ -154,6 +154,13 @@ export function GenerateSection({
           <p>当前页的分镜、批次或生产门禁数据读取失败，已暂停生成，避免用不完整状态发起抽卡。{(workbench.error ?? pageBatches.error)?.message ?? "请稍后重试"}</p>
           <button type="button" className="button outline compact" onClick={() => { workbench.refetch(); pageBatches.refetch(); }}>重试</button>
         </div>
+      ) : models.isError ? (
+        <div className="asset-empty" role="alert">
+          <CircleAlert />
+          <strong>模型目录无法载入</strong>
+          <p>读取可用图片模型失败，已暂停生成，避免在模型缺失的状态下发起抽卡。{models.error.message}</p>
+          <button type="button" className="button outline compact" onClick={() => models.refetch()}>重试</button>
+        </div>
       ) : !generateWorkbenchReady ? <div className="generate-skeleton" role="status" aria-label="正在载入生成工作台"><LoaderCircle className="spin" size={22} /><span>正在载入生成工作台…</span></div> : localEditCandidate ? (
         <LocalEditWorkspace
           id={id}

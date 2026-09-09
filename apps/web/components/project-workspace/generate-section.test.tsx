@@ -486,6 +486,43 @@ describe("GenerateSection 关键行为", () => {
     expect(await screen.findByRole("button", { name: "生成 1 个 1K 彩色候选" })).toBeInTheDocument();
   });
 
+  it("models 查询 rejected 时展示错误卡与重试，而不是骨架半渲染工作台", async () => {
+    modelsApi.mockRejectedValue(new Error("模型目录暂时不可用"));
+    renderGenerate();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("模型目录无法载入");
+    expect(alert).toHaveTextContent("模型目录暂时不可用");
+    expect(screen.getByRole("button", { name: "重试" })).toBeInTheDocument();
+    // 骨架（半渲染）与生成按钮都不允许出现。
+    expect(screen.queryByLabelText("正在载入生成工作台")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "生成 1 个 1K 彩色候选" })).not.toBeInTheDocument();
+
+    modelsApi.mockResolvedValue([{
+      catalog_id: "model-1",
+      connection_id: "conn-1",
+      provider: "vertex-ai",
+      protocol: "VERTEX_NATIVE",
+      model_id: "nano-2",
+      logical_alias: "image.nano_banana_2",
+      display_name: "Nano Banana 2",
+      model_type: "IMAGE",
+      input_modalities: ["TEXT", "IMAGE"],
+      output_modalities: ["IMAGE"],
+      operations: ["image_generate", "image_edit"],
+      resolutions: ["1K"],
+      preview_resolutions: ["1K"],
+      max_reference_images: 1,
+      regions: [],
+      confidence: "HIGH",
+      enabled: true,
+      display_enabled: true,
+      auto_eligible: true,
+      priority: 1,
+    }]);
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    expect(await screen.findByRole("button", { name: "生成 1 个 1K 彩色候选" })).toBeInTheDocument();
+  });
+
   it("局部修改入口：候选卡片按钮打开局部编辑器，关闭返回网格", async () => {
     const candidate = candidateFixture();
     workbenchApi.mockResolvedValue(workbenchFixture({ candidates: [candidate], selected_candidate: candidate }));

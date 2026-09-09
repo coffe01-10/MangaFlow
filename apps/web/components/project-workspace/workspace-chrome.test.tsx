@@ -197,7 +197,8 @@ describe("U9 侧栏拖宽 188–360（audit §13：与既有拖宽边界同类�
   it("project workspace 的拖宽与恢复消费同一 clamp 实现", () => {
     const source = readFileSync(resolve(process.cwd(), "components/project-workspace.tsx"), "utf8");
     expect(source).toContain("clampSidebarWidth(startWidth");
-    expect(source).toContain("storedSidebarWidth(window.localStorage.getItem");
+    expect(source).toContain('storedSidebarWidth(storedSidebarWidthValue)');
+    expect(source).toContain('useLocalStorageValue("mangaflow.project-sidebar-width"');
     expect(source).not.toContain("Math.min(360, Math.max(188");
   });
 });
