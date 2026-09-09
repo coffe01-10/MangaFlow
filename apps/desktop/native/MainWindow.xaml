@@ -4,7 +4,7 @@
  xmlns:local="clr-namespace:MangaFlow.Native"
  xmlns:views="clr-namespace:MangaFlow.Native.Views"
  xmlns:c="clr-namespace:MangaFlow.Native.Controls"
- Title="MangaFlow · 原生工作台" Width="1320" Height="860" MinWidth="960" MinHeight="640"
+ Title="MangaFlow · 原生工作台" Icon="Assets/App.ico" Width="1320" Height="860" MinWidth="960" MinHeight="640"
  WindowStartupLocation="CenterScreen" Loaded="OnLoaded" Closing="OnClosing" PreviewKeyDown="OnKeyDown" SizeChanged="OnWindowSizeChanged">
  <Grid>
   <Grid.RowDefinitions>

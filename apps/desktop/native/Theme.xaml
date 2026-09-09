@@ -618,6 +618,19 @@
   <Setter Property="VirtualizingPanel.VirtualizationMode" Value="Recycling"/>
   <Setter Property="VirtualizingPanel.ScrollUnit" Value="Pixel"/>
  </Style>
+ <Style x:Key="SceneListItem" TargetType="ListBoxItem">
+  <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+  <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ListBoxItem">
+   <Border x:Name="SceneBorder" BorderBrush="{StaticResource Line}" BorderThickness="1" Background="{StaticResource Surface}" SnapsToDevicePixels="True">
+    <ContentPresenter/>
+   </Border>
+   <ControlTemplate.Triggers>
+    <Trigger Property="IsSelected" Value="True"><Setter TargetName="SceneBorder" Property="BorderBrush" Value="{StaticResource Ink}"/></Trigger>
+    <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="SceneBorder" Property="BorderBrush" Value="{StaticResource Ink}"/></Trigger>
+    <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter TargetName="SceneBorder" Property="BorderBrush" Value="{StaticResource Ink}"/></Trigger>
+   </ControlTemplate.Triggers>
+  </ControlTemplate></Setter.Value></Setter>
+ </Style>
  <Style TargetType="ListBoxItem">
   <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
   <Setter Property="Padding" Value="10"/>

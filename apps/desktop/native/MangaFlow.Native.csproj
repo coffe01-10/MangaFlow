@@ -11,6 +11,7 @@
     <Version>0.3.0</Version>
   </PropertyGroup>
   <ItemGroup>
+    <Resource Include="../src-tauri/icons/icon.ico" Link="Assets/App.ico" />
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
       <_Parameter1>MangaFlow.Native.Tests</_Parameter1>
     </AssemblyAttribute>
