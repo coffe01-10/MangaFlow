@@ -2,8 +2,9 @@
 
 import { AppShell } from "@/components/shell";
 import { api, type ImageModelAlias, type PageCandidate, type Project } from "@/lib/api";
+import { useLocalStorageValue, writeLocalStorage } from "@/lib/local-storage-store";
 import { creatorVisibleModels } from "@/lib/model-visibility";
-import { SIDEBAR_WIDTH_DEFAULT, clampSidebarWidth, storedSidebarWidth } from "@/lib/workspace-layout";
+import { clampSidebarWidth, storedSidebarWidth } from "@/lib/workspace-layout";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { CircleAlert, LoaderCircle } from "lucide-react";
 import dynamic from "next/dynamic";
@@ -69,24 +70,21 @@ export default function ProjectWorkspace({
   const searchParams = useSearchParams();
   const queryClient = useQueryClient();
   const [navOpen, setNavOpen] = useState(false);
-  const [navCollapsed, setNavCollapsed] = useState(() => {
-    if (typeof window === "undefined") return false;
-    return window.localStorage.getItem("mangaflow.project-sidebar-collapsed") === "true";
-  });
+  // 折叠/宽度/模型选择持久化走水合安全的 localStorage 外部存储：水合渲染
+  // 采用默认值，真实存储值在水合后同步生效（见 lib/local-storage-store.ts），
+  // 渲染期直读 localStorage 会造成水合不匹配。
+  const navCollapsed = useLocalStorageValue("mangaflow.project-sidebar-collapsed", "false") === "true";
   const [localDraft, setDraft] = useState<Project | null>(null);
   const [selectedChapterId, setSelectedChapterId] = useState<string | null>(null);
   const [selectedPageId, setSelectedPageId] = useState<string | null>(() => searchParams.get("page"));
-  const [drawModel, setDrawModelState] = useState<ImageModelAlias | null>(() => {
-    if (typeof window === "undefined") return null;
-    const stored = window.localStorage.getItem(`mangaflow.image-model.${id}`);
-    return stored && stored !== "auto" ? stored : null;
-  });
+  const storedDrawModel = useLocalStorageValue(`mangaflow.image-model.${id}`, "auto");
+  const drawModel: ImageModelAlias | null = storedDrawModel !== "auto" ? storedDrawModel : null;
   const [previewImage, setPreviewImage] = useState<{ url: string; label: string; candidate?: PageCandidate } | null>(null);
   const [localEditCandidate, setLocalEditCandidate] = useState<PageCandidate | null>(null);
-  const [sidebarWidth, setSidebarWidth] = useState(() => {
-    if (typeof window === "undefined") return SIDEBAR_WIDTH_DEFAULT;
-    return storedSidebarWidth(window.localStorage.getItem("mangaflow.project-sidebar-width"));
-  });
+  // 拖拽期间走本地状态保证逐帧跟手；松手才写入存储（写存储会通知全部订阅者）。
+  const [dragSidebarWidth, setDragSidebarWidth] = useState<number | null>(null);
+  const storedSidebarWidthValue = useLocalStorageValue("mangaflow.project-sidebar-width", "");
+  const sidebarWidth = dragSidebarWidth ?? storedSidebarWidth(storedSidebarWidthValue);
 
   const workspaceQueries = useWorkspaceQueries({ id, section, assetView, selectedChapterId });
   const {
@@ -119,14 +117,12 @@ export default function ProjectWorkspace({
   const projectPath = (target: string) =>
     target === "assets" ? `/projects/${id}/assets/characters` : `/projects/${id}/${target}`;
   const setDrawModel = (model: ImageModelAlias) => {
-    setDrawModelState(model);
-    window.localStorage.setItem(`mangaflow.image-model.${id}`, model);
+    writeLocalStorage(`mangaflow.image-model.${id}`, model);
   };
   // Template B (audit §4.2): the left nav collapse persists independently of
   // the draggable width so a rail survives reloads without losing the width.
   const toggleNavCollapsed = (collapsed: boolean) => {
-    setNavCollapsed(collapsed);
-    window.localStorage.setItem("mangaflow.project-sidebar-collapsed", String(collapsed));
+    writeLocalStorage("mangaflow.project-sidebar-collapsed", String(collapsed));
   };
 
   const source = useSourceWorkspace({
@@ -273,11 +269,11 @@ export default function ProjectWorkspace({
     event.currentTarget.setPointerCapture(event.pointerId);
     const startX = event.clientX;
     const startWidth = sidebarWidth;
-    const move = (moveEvent: PointerEvent) => setSidebarWidth(clampSidebarWidth(startWidth + moveEvent.clientX - startX));
+    const move = (moveEvent: PointerEvent) => setDragSidebarWidth(clampSidebarWidth(startWidth + moveEvent.clientX - startX));
     const stop = (stopEvent: PointerEvent) => {
       const next = clampSidebarWidth(startWidth + stopEvent.clientX - startX);
-      setSidebarWidth(next);
-      window.localStorage.setItem("mangaflow.project-sidebar-width", String(next));
+      writeLocalStorage("mangaflow.project-sidebar-width", String(next));
+      setDragSidebarWidth(null);
       sidebarDragRef.current = null;
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", stop);

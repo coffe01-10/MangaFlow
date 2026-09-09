@@ -110,8 +110,14 @@ describe("U1 ≥1280 工作台：左导航停靠且底栏不遮挡主栏", () =>
     const railBlock = lastMediaBlock("(min-width: 761px)");
     expect(railBlock).toContain(".workspace-layout.rail-left { grid-template-columns: 64px minmax(0, 1fr); }");
     expect(railBlock).toContain(".workspace-left.rail .workspace-project-title");
-    expect(projectWorkspaceSource).toContain('window.localStorage.getItem("mangaflow.project-sidebar-collapsed")');
-    expect(projectWorkspaceSource).toContain('window.localStorage.setItem("mangaflow.project-sidebar-collapsed"');
+    // 持久化走 lib/local-storage-store（水合安全的外部存储）：读与写都以
+    // mangaflow.project-sidebar-collapsed 为键，且不再在渲染期直读 localStorage。
+    expect(projectWorkspaceSource).toContain('useLocalStorageValue("mangaflow.project-sidebar-collapsed"');
+    expect(projectWorkspaceSource).toContain('writeLocalStorage("mangaflow.project-sidebar-collapsed"');
+    expect(projectWorkspaceSource).not.toContain("window.localStorage.getItem");
+    const storeSource = readFileSync(resolve(process.cwd(), "lib/local-storage-store.ts"), "utf8");
+    expect(storeSource).toContain("window.localStorage.getItem(key)");
+    expect(storeSource).toContain("window.localStorage.setItem(key, value)");
   });
 
   it("P1-C 模板 B：≥1280 图标轨 + 停靠右槽组合为 64px 三列", () => {

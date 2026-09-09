@@ -152,13 +152,6 @@ class VertexCredentialManager:
         self.base_backoff_seconds = base_backoff_seconds
         self._entries: dict[tuple[str, int, str, str], _CredentialEntry] = {}
         self._entries_lock = threading.RLock()
-        # Number of provider dispatches the most recent ``execute`` call made
-        # (issue #209): the manager retries the whole ``operation`` inside ONE
-        # audit row, so the count is the only visibility into hidden paid
-        # dispatches. Reset at the start of every ``execute`` and incremented
-        # before each operation invocation; read after ``execute`` returns or
-        # raises.
-        self.last_dispatch_count = 0
 
     @staticmethod
     def _config_key(settings: Settings) -> tuple[str, int, str, str]:
@@ -269,15 +262,25 @@ class VertexCredentialManager:
         operation: Callable[[Any], T],
         *,
         client_factory: Callable[[], Any] | None = None,
+        dispatch_counter: list[int] | None = None,
     ) -> T:
+        """Run ``operation`` with bounded retries over a fresh client.
+
+        ``dispatch_counter`` (issue #209): the manager retries the whole
+        ``operation`` inside ONE audit row, so per-call visibility into hidden
+        paid dispatches is opt-in via this caller-owned list — one append per
+        provider dispatch, readable after ``execute`` returns or raises. It
+        replaces the former process-global ``last_dispatch_count``, which
+        concurrent local-executor jobs stomped.
+        """
         auth_retried = False
         factory = client_factory or (lambda: self.create_client(settings))
-        self.last_dispatch_count = 0
         for attempt in range(self.max_attempts):
             client = None
             try:
                 client = factory()
-                self.last_dispatch_count += 1
+                if dispatch_counter is not None:
+                    dispatch_counter.append(attempt)
                 return operation(client)
             except Exception as error:
                 failure = classify_vertex_failure(error)

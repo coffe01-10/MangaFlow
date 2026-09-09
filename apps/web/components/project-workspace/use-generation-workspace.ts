@@ -103,7 +103,7 @@ export function useGenerationWorkspace({
   const generateWorkbenchReady =
     !workbench.isLoading && !workbench.isError
     && !pageBatches.isLoading && !pageBatches.isError
-    && !models.isLoading && generationPackagesReady;
+    && !models.isLoading && !models.isError && generationPackagesReady;
   const orderedPageBatches = useMemo(
     () => [...(pageBatches.data ?? [])].sort((left, right) => left.ordinal - right.ordinal),
     [pageBatches.data],

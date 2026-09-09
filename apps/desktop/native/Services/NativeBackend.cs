@@ -52,23 +52,59 @@ public sealed class NativeBackend(string repository, string userData)
             process.BeginErrorReadLine();
             var line = await process.StandardOutput.ReadLineAsync(cancellation).AsTask()
                 .WaitAsync(TimeSpan.FromSeconds(35), cancellation);
-            const string prefix = "MANGAFLOW_NATIVE_READY ";
-            if (line == null || !line.StartsWith(prefix, StringComparison.Ordinal))
+            try
+            {
+                return ParseReadyOrigin(line);
+            }
+            catch (InvalidOperationException error)
             {
                 if (process.HasExited) await process.WaitForExitAsync(CancellationToken.None);
                 string reason;
                 lock (errors) reason = errors.ToString();
-                throw new InvalidOperationException("本地服务未能启动。\n" + reason);
+                throw new InvalidOperationException(error.Message + "\n" + reason);
             }
-            using var ready = JsonDocument.Parse(line[prefix.Length..]);
-            return ready.RootElement.GetProperty("api_origin").GetString()
-                ?? throw new InvalidOperationException("服务未返回连接地址");
         }
         catch
         {
             await StopAsync();
             throw;
         }
+    }
+
+    /// Parse the native-host READY line into the API origin. #276: the parse
+    /// site itself asserts the loopback http rule — ApiClient re-validates in
+    /// its constructor, but a caller that skips that rule must still never
+    /// receive a foreign origin. Every malformed shape (no prefix, non-JSON
+    /// payload, missing/null api_origin, non-loopback origin) fails closed as
+    /// InvalidOperationException.
+    internal static string ParseReadyOrigin(string? line)
+    {
+        const string prefix = "MANGAFLOW_NATIVE_READY ";
+        if (line is null || !line.StartsWith(prefix, StringComparison.Ordinal))
+            throw new InvalidOperationException("本地服务未能启动。");
+        try
+        {
+            using var ready = JsonDocument.Parse(line[prefix.Length..]);
+            var origin = ready.RootElement.GetProperty("api_origin").GetString()
+                ?? throw new InvalidOperationException("服务未返回连接地址");
+            return IsTrustedLoopback(origin)
+                ? origin
+                : throw new InvalidOperationException($"服务返回了不可信的连接地址：{origin}");
+        }
+        catch (Exception error) when (error is JsonException or KeyNotFoundException)
+        {
+            throw new InvalidOperationException("本地服务启动信息格式异常。", error);
+        }
+    }
+
+    // Mirrors ApiClient's constructor trust rule (scheme/host/port/path/query/
+    // fragment/userinfo) without throwing on arbitrary input.
+    private static bool IsTrustedLoopback(string origin)
+    {
+        if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri)) return false;
+        return uri.Scheme == "http" && uri.Host == "127.0.0.1" && uri.Port > 0
+            && uri.AbsolutePath == "/" && uri.Query.Length == 0
+            && uri.Fragment.Length == 0 && uri.UserInfo.Length == 0;
     }
 
     public async Task StopAsync()
