@@ -24,6 +24,29 @@ pub struct ReadyPayload {
     pub web_origin: Option<String>,
 }
 
+/// Human-readable failure reasons for the startup protocol's verification
+/// steps; every variant names the step that failed so log lines localize
+/// without extra context.
+impl std::fmt::Display for VerifyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VerifyError::BadLine => write!(f, "READY 行前缀不正确"),
+            VerifyError::BadJson => write!(f, "READY 行不是合法 JSON（或字段越界）"),
+            VerifyError::TokenMismatch => write!(f, "READY 行 token 与本壳不匹配"),
+            VerifyError::PidMismatch => write!(f, "READY 宣布的 pid 不属于本壳"),
+            VerifyError::OriginNotLoopback => write!(f, "宣布的 origin 不是回环地址"),
+            VerifyError::JournalMissing => write!(f, "ownership journal 不存在或不可读"),
+            VerifyError::JournalTooLarge => write!(f, "ownership journal 超过读取上限"),
+            VerifyError::JournalMismatch(field) => {
+                write!(f, "ownership journal 字段不匹配：{field}")
+            }
+            VerifyError::StartTimeMismatch => write!(f, "journal 的进程启动时间与 /proc 不符"),
+        }
+    }
+}
+
+impl std::error::Error for VerifyError {}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VerifyError {
     BadLine,
@@ -32,6 +55,9 @@ pub enum VerifyError {
     PidMismatch,
     OriginNotLoopback,
     JournalMissing,
+    /// The journal read exceeded [`JOURNAL_MAX_BYTES`] — identity fields are
+    /// a few hundred bytes, so an oversized file is malformed by definition.
+    JournalTooLarge,
     JournalMismatch(&'static str),
     StartTimeMismatch,
 }
@@ -139,9 +165,28 @@ where
     })
 }
 
+/// Upper bound for the ownership journal read. Journals carry identity
+/// fields only (a few hundred bytes); anything larger is malformed by
+/// definition, and the read must be bounded so a planted multi-GiB file at
+/// the journal path cannot be buffered by the shell during verification.
+pub const JOURNAL_MAX_BYTES: u64 = 64 * 1024;
+
 /// Verify the readiness journal the helper published (identity fields only).
 pub fn verify_journal(journal: &Path, ready: &ReadyPayload) -> Result<(), VerifyError> {
-    let text = std::fs::read_to_string(journal).map_err(|_| VerifyError::JournalMissing)?;
+    let text = match std::fs::File::open(journal) {
+        Ok(file) => {
+            use std::io::Read;
+            let mut bounded = String::new();
+            file.take(JOURNAL_MAX_BYTES + 1)
+                .read_to_string(&mut bounded)
+                .map_err(|_| VerifyError::JournalMissing)?;
+            bounded
+        }
+        Err(_) => return Err(VerifyError::JournalMissing),
+    };
+    if text.len() as u64 > JOURNAL_MAX_BYTES {
+        return Err(VerifyError::JournalTooLarge);
+    }
     let value: serde_json::Value =
         serde_json::from_str(&text).map_err(|_| VerifyError::JournalMismatch("unparsable"))?;
     if value["version"].as_u64() != Some(PROTOCOL_VERSION) {
@@ -773,6 +818,58 @@ mod tests {
             "the corrupt bytes must survive verbatim"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An oversized journal (identity fields are a few hundred bytes) must
+    /// fail with JournalTooLarge instead of being buffered into the shell —
+    /// the read is bounded at the cap with one detection byte to spare.
+    #[test]
+    fn journal_reads_are_bounded_and_oversize_fails_closed() {
+        let dir = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-jsize-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let layout = RuntimeLayout::create(&dir).unwrap();
+        let oversized = "x".repeat(JOURNAL_MAX_BYTES as usize + 1);
+        std::fs::write(layout.journal_path(), oversized).unwrap();
+        let ready = ReadyPayload {
+            token: layout.token.clone(),
+            pid: 1,
+            api_origin: "http://127.0.0.1:8080".into(),
+            port: 8080,
+            web_origin: None,
+        };
+        assert!(matches!(
+            verify_journal(&layout.journal_path(), &ready),
+            Err(VerifyError::JournalTooLarge)
+        ));
+        // Boundary complement: a journal at exactly the cap is readable and
+        // fails later on content, not on size.
+        let at_cap = "x".repeat(JOURNAL_MAX_BYTES as usize);
+        std::fs::write(layout.journal_path(), at_cap).unwrap();
+        assert!(matches!(
+            verify_journal(&layout.journal_path(), &ready),
+            Err(VerifyError::JournalMismatch("unparsable"))
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The error enum is user-facing: Display carries the failing step,
+    /// and the value routes through `Box<dyn std::error::Error>` like any
+    /// other error path.
+    #[test]
+    fn verify_errors_display_and_route_through_the_error_trait() {
+        let error: Box<dyn std::error::Error> = Box::new(VerifyError::OriginNotLoopback);
+        assert!(
+            error.to_string().contains("回环"),
+            "unexpected message: {error}"
+        );
+        let error: Box<dyn std::error::Error> =
+            Box::new(VerifyError::JournalMismatch("token"));
+        assert!(error.to_string().contains("token"), "{error}");
     }
 
     #[test]

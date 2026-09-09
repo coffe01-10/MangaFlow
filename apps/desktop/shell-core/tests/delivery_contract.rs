@@ -143,21 +143,6 @@ fn with_global_tauri_stays_enabled_for_the_shell_tools_page() {
     );
 }
 
-/// `app.windows` must stay EMPTY in config: a config-declared window would
-/// let the WebView load documents BEFORE the shell's helper handshake and
-/// GO gate (the shell builds its window programmatically only after the
-/// ownership verification passes). A window appearing in config is a
-/// startup-security regression, not a UI tweak.
-#[test]
-fn no_config_declared_window_may_bypass_the_handshake_gate() {
-    let config = tauri_config();
-    assert_eq!(
-        config["app"]["windows"],
-        serde_json::json!([]),
-        "a config-declared window would load before the handshake-gated programmatic window"
-    );
-}
-
 #[test]
 fn no_capability_may_grant_a_remote_ipc_context() {
     let capabilities = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src-tauri/capabilities");

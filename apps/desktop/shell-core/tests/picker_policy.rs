@@ -394,7 +394,7 @@ fn suffix_policy_maps_per_kind_with_exact_allowed_sets() {
     ];
     for (name, kind, accepted, allowed) in cases {
         match validate_picked_file(&dir.join(name), kind) {
-            Ok(_) => assert!(accepted, "{name}/{kind:?} must be accepted"),
+            Ok(picked) => assert!(accepted, "{name}/{kind:?} must be accepted"),
             Err(PickError::ForbiddenSuffix { allowed: carried }) => {
                 assert!(!accepted, "{name}/{kind:?} must be rejected");
                 assert_eq!(carried, allowed, "{name}");
