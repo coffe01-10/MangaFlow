@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -449,6 +449,7 @@ def summarize_usage(
     model_id: str | None = None,
     since: datetime | None = None,
     until: datetime | None = None,
+    window_offset: timedelta | None = None,
 ) -> UsageSummaryRead:
     from app.services.model_costs import (
         _active_price,
@@ -493,13 +494,26 @@ def summarize_usage(
     for price in prices:
         prices_by_pair[(price.provider, price.model_id)].append(price)
 
+    # 日期分桶跟随查询窗口的本地时区：前端发送本地午夜的 since/until
+    # （toIsoLocalMidnight，如 +08:00），按窗口偏移分桶才能让“某天”的
+    # 用量与操作者的日历一致。路由已把窗口归一化为 UTC，所以偏移须由
+    # 调用方显式传入；未传时从窗口本身推导，无窗口（或 naive）按 UTC。
+    if window_offset is None:
+        window = since or until
+        window_offset = (
+            window.utcoffset()
+            if window is not None and window.utcoffset() is not None
+            else timedelta(0)
+        )
+    display_tz = timezone(window_offset)
+
     buckets: dict[tuple, list[ModelCallAttempt]] = defaultdict(list)
     for attempt in attempts:
         started = attempt.started_at
         if started.tzinfo is None:
             started = started.replace(tzinfo=UTC)
         key = (
-            started.astimezone(UTC).date(),
+            started.astimezone(display_tz).date(),
             attempt.provider,
             attempt.model_id,
             attempt.channel,

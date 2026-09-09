@@ -143,6 +143,72 @@ def test_model_smoke_updates_connection_model_and_probe(
     assert stored.last_verified_at is not None
 
 
+def test_model_smoke_failure_records_billed_usage_on_attempt(
+    client, db_session, monkeypatch
+):
+    """A post-POST smoke failure carries the usage the provider already billed
+    (issue #207 semantics): the FAILED attempt row must record the spend
+    instead of silently dropping it, mirroring the worker provider path."""
+    from sqlalchemy import select
+
+    from app.model_adapters.base import ProviderAdapterError
+    from app.models import ModelCallAttempt
+
+    _configure_key_storage(monkeypatch)
+    provider = client.post(
+        "/api/v1/providers",
+        json={
+            "name": "冒烟失败网关",
+            "protocol": "OPENAI",
+            "base_url": "https://smoke-fail.example.com/v1",
+        },
+    ).json()
+    connection_id = provider["connections"][0]["id"]
+    assert client.put(
+        f"/api/v1/providers/connections/{connection_id}/keys",
+        json={"label": "default", "api_key": "smoke-key"},
+    ).status_code == 201
+    model = client.post(
+        f"/api/v1/providers/connections/{connection_id}/models",
+        json={
+            "provider_model_id": "smoke-fail-text",
+            "model_type": "TEXT",
+            "operations": ["structured_text"],
+        },
+    ).json()
+
+    def boom(*_args, **_kwargs):
+        raise ProviderAdapterError(
+            "UPSTREAM",
+            "图片下载超时",
+            usage={"output_images": 1, "estimated_cost": 0.01},
+        )
+
+    binding = SimpleNamespace(
+        adapter=SimpleNamespace(generate_structured=boom), selected_key=None
+    )
+    monkeypatch.setattr(
+        "app.services.connection_verifier.bind_adapter",
+        lambda *_args, **_kwargs: binding,
+    )
+
+    response = client.post(
+        f"/api/v1/providers/connections/{connection_id}/verify",
+        json={"level": "MODEL_SMOKE", "catalog_model_id": model["id"]},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["probe"]["status"] == "FAILED"
+    attempt = db_session.scalar(
+        select(ModelCallAttempt).where(
+            ModelCallAttempt.route_reason == "MODEL_SMOKE",
+            ModelCallAttempt.outcome == "FAILED",
+        )
+    )
+    assert attempt is not None, "冒烟失败未留下 FAILED 审计行"
+    assert attempt.usage == {"output_images": 1, "estimated_cost": 0.01}
+
+
 def test_legacy_text_and_vision_smokes_preserve_requested_operation(
     client, db_session, monkeypatch
 ):

@@ -150,6 +150,12 @@ def get_usage_summary(
     until = _as_utc(to, field="to")
     if since and until and until <= since:
         raise HTTPException(status_code=422, detail="to 必须晚于 from")
+    # 分桶时区跟随调用方本地午夜窗口的原始偏移（_as_utc 已归一化为 UTC，
+    # 偏移会丢失；见 summarize_usage 的 window_offset 说明）。
+    window_offset = (
+        from_.utcoffset() if from_ is not None
+        else (to.utcoffset() if to is not None else None)
+    )
     return summarize_usage(
         db,
         project_id=project_id,
@@ -158,6 +164,7 @@ def get_usage_summary(
         model_id=model_id,
         since=since,
         until=until,
+        window_offset=window_offset,
     )
 
 

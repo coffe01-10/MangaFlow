@@ -380,7 +380,8 @@ class GrokBuildArtifactRunner:
             summary = self._adopt(cwd, environment, raw_stdout)
         except ProviderAdapterError as error:
             return self._failure_outcome(
-                outcome, environment, run_id, error.code, error.user_message
+                outcome, environment, run_id, error.code, error.user_message,
+                usage=error.usage,
             )
         except OSError:
             # Same contract as the antigravity runner: an OSError while
@@ -421,13 +422,16 @@ class GrokBuildArtifactRunner:
         error_message: str | None = None,
         *,
         preserve_sessions: bool = False,
+        usage: dict | None = None,
     ) -> CLIProcessOutcome:
         """Zero the streams (keeping at most a cleanup warning) and fail.
 
         ``preserve_sessions`` (#241-1) skips the failed-session cleanup: when
         the failure was caused by our own capture truncation the CLI may have
         completed and been billed, so its session directory is evidence to
-        keep, not garbage. The recorded checksums always cover exactly the
+        keep, not garbage. ``usage`` carries the parsed provider usage onto the
+        failure outcome so a billed-but-failed session still lands in the
+        audit row. The recorded checksums always cover exactly the
         bytes returned here — empty stdout, the cleanup-warning stderr — so
         they verify against the logs the controller persists from this
         outcome (#195) instead of a raw stream nobody stores.
@@ -454,6 +458,7 @@ class GrokBuildArtifactRunner:
             stderr_checksum=hashlib.sha256(safe_stderr).hexdigest(),
             error_code=error_code if error_code is not None else outcome.error_code,
             error_message=resolved_message,
+            usage=usage if usage is not None else outcome.usage,
         )
 
     def _adopt(
@@ -510,6 +515,27 @@ class GrokBuildArtifactRunner:
                 usage.update(_safe_usage(event.get("usage")))
         if not end_seen:
             raise ProviderAdapterError("UNKNOWN_RESULT", "Grok Build CLI 未返回结束事件")
+        # 结束事件已解析出 usage：此后采用阶段的失败不得丢弃已计费用量
+        # （#207 语义——worker 的 FAILED finalize 读取 error.usage）。
+        try:
+            return self._adopt_tool_output(
+                workspace, environment, calls, media, expected_tool, dict(usage)
+            )
+        except ProviderAdapterError as error:
+            if error.usage is None and usage:
+                error.usage = dict(usage)
+            raise
+
+    def _adopt_tool_output(
+        self,
+        workspace: Path,
+        environment: dict[str, str],
+        calls: dict[str, str],
+        media: list[dict],
+        expected_tool: str,
+        usage: dict[str, int],
+    ) -> dict:
+        expected_type = _EXPECTED_OUTPUT_TYPES[self.operation]
         if set(calls.values()) != {expected_tool} or len(calls) != 1 or len(media) != 1:
             raise ProviderAdapterError("PARTIAL_OUTPUT", "Grok Build 图片工具调用数量不唯一")
 

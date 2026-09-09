@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -54,6 +55,23 @@ CLI_FAILURE_CODES = frozenset(
 )
 _RETRYABLE = frozenset({"RATE_LIMIT", "TIMEOUT", "UPSTREAM"})
 _RETAIN = frozenset({"CRASH", "INVALID_OUTPUT", "PARTIAL_OUTPUT", "UNKNOWN_RESULT"})
+
+
+def prepare_repo_boundary(workspace: Path, channel: str) -> None:
+    """Plant an empty ``.git`` directory in a CLI run workspace.
+
+    Provider CLIs walk up from their cwd looking for repository instructions
+    (Codex reads ``AGENTS.md``; Grok Build gets the same marker). Without it,
+    a default relative ``storage_root`` puts the workspace INSIDE the
+    MangaFlow repository, so the repository's development instructions enter
+    the paid agent's context alongside the static task. The marker makes the
+    walk stop at the run workspace (parity with Grok Build's isolation).
+    """
+
+    marker = workspace / ".git"
+    if marker.exists() or marker.is_symlink() or marker.is_junction():
+        raise ProviderAdapterError("CONFIGURATION", f"{channel} CLI 隔离标记已被占用")
+    marker.mkdir()
 _TOKEN_LINE = re.compile(
     r"(?:authorization\s*:|\btoken\b|\bapi[_-]?key\b|\bsk-[a-z0-9_-]+)", re.I
 )
@@ -84,6 +102,11 @@ class CLIProcessOutcome:
     cancelled: bool = False
     error_code: str | None = None
     error_message: str | None = None
+    # Parsed provider usage from the CLI's result stream. Set by adapters on
+    # failure outcomes where the provider session already ran (and likely
+    # billed); execute() attaches it to the raised ProviderAdapterError so the
+    # FAILED audit finalize records the spend (issue #207 semantics).
+    usage: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -241,7 +264,21 @@ class CLIExecutionController:
                 run_directory, outcome, output_encoding
             )
             if outcome.cancelled or cancel_requested():
-                raise ProviderAdapterError("CANCELLED", "CLI 任务已取消")
+                error = ProviderAdapterError("CANCELLED", "CLI 任务已取消")
+                # 迟到取消（进程已正常退出、result.json 完整）：CLI 供应商可能
+                # 已经计费。尽力读取 usage 附到错误上（#207 语义，worker 的
+                # FAILED finalize 会读取 error.usage），并保留运行目录作为产物
+                # 证据——直接按 CANCELLED 清理会删掉已付费的图片与用量凭据。
+                if (
+                    not outcome.cancelled
+                    and not outcome.timed_out
+                    and not outcome.error_code
+                    and not outcome.exit_code
+                ):
+                    with contextlib.suppress(ProviderAdapterError):
+                        error.usage = self._read_result(run_id, run_directory).usage
+                    error.retain_artifacts = True
+                raise error
             if outcome.timed_out:
                 raise ProviderAdapterError("TIMEOUT", "CLI 图片任务执行超时", retryable=True)
             if outcome.error_code:
@@ -251,6 +288,7 @@ class CLIExecutionController:
                     outcome.error_code,
                     _sanitize_message(outcome.error_message or "CLI 图片任务执行失败"),
                     retryable=outcome.error_code in _RETRYABLE,
+                    usage=outcome.usage,
                 )
             if outcome.exit_code:
                 raise ProviderAdapterError("UPSTREAM", "CLI 图片任务执行失败", retryable=True)
@@ -280,7 +318,10 @@ class CLIExecutionController:
             )
         except ProviderAdapterError as error:
             self._finish_failure(run_id, error, outcome)
-            cleanup_error = self._cleanup(run_id, retain=error.code in _RETAIN)
+            cleanup_error = self._cleanup(
+                run_id,
+                retain=error.code in _RETAIN or getattr(error, "retain_artifacts", False),
+            )
             if cleanup_error:
                 error.add_note(f"CLI run cleanup failed: {type(cleanup_error).__name__}")
             raise

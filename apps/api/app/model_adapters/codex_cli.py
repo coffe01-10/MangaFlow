@@ -30,6 +30,7 @@ from app.services.cli_executor import (
     CLIProcessOutcome,
     CLIProcessRunner,
     build_cli_environment,
+    prepare_repo_boundary,
 )
 from app.services.cli_probe import CLIProbeObservation
 from app.services.cli_process_windows import WindowsJobCLIProcessRunner
@@ -244,6 +245,27 @@ class CodexCLIProbeAdapter:
             return None
 
 
+class _RepoBoundaryRunner:
+    """Plant the workspace ``.git`` boundary before the delegate runs.
+
+    Codex walks up from its cwd reading ``AGENTS.md``; without the marker a
+    default relative ``storage_root`` lets the repository's development
+    instructions enter the paid agent's context (same isolation Grok Build
+    already applies).
+    """
+
+    def __init__(self, delegate: CLIProcessRunner) -> None:
+        self.delegate = delegate
+
+    def controller_identity(self) -> dict[int, int] | None:
+        identity = getattr(self.delegate, "controller_identity", None)
+        return identity() if callable(identity) else None
+
+    def run(self, **kwargs) -> CLIProcessOutcome:
+        prepare_repo_boundary(kwargs["cwd"], "Codex")
+        return self.delegate.run(**kwargs)
+
+
 class CodexCLIImageAdapter:
     """Map MangaFlow image operations to one audited non-interactive Codex run."""
 
@@ -312,7 +334,7 @@ class CodexCLIImageAdapter:
                 ) from error
             if not executable:
                 raise ProviderAdapterError("UNAVAILABLE", "未找到 Codex CLI 原生可执行文件")
-            runner = self.runner_factory()
+            runner = _RepoBoundaryRunner(self.runner_factory())
             run_id = self.controller.prepare(
                 job_id=context.job_id,
                 model_call_attempt_id=context.model_call_attempt_id,
@@ -535,6 +557,7 @@ def _run_probe_command(settings: Settings, argv: tuple[str, ...]) -> CLIProcessO
     probe_directory = probe_root / uuid4().hex
     workspace = probe_directory / "workspace"
     workspace.mkdir(parents=True)
+    prepare_repo_boundary(workspace, "Codex")
     (probe_directory / "journal.json").write_text(
         json.dumps(
             {"version": 1, "token": uuid4().hex, "state": "RUNNING"},
