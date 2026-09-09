@@ -835,7 +835,18 @@ fn collect_members(
                 continue;
             }
         };
-        let name = entry.file_name().to_string_lossy().into_owned();
+        let entry_name = entry.file_name();
+        if entry_name.to_str().is_none() {
+            // `to_string_lossy` would fold two distinct non-UTF8 names onto
+            // the same replacement-char member (duplicate ZIP entries).
+            // Skip and report: the file keeps existing on disk.
+            skipped.push(SkippedEntry {
+                name: relative.to_string(),
+                reason: "non_utf8_name".into(),
+            });
+            continue;
+        }
+        let name = entry_name.to_string_lossy().into_owned();
         let member = if relative.is_empty() {
             name.clone()
         } else {
@@ -1327,6 +1338,35 @@ mod tests {
             "the occupied slot is untouched"
         );
         assert_eq!(fs::read_to_string(&staging).unwrap(), "staged-copy");
+        let _ = fs::remove_dir_all(&user_data);
+    }
+
+    /// keep=1 degenerates the shift to "no renames at all": the base
+    /// becomes the only generation and the previous `.1` is pruned. No
+    /// panic, no leftover, exactly one generation survives.
+    #[test]
+    fn rotation_with_keep_1_prunes_down_to_a_single_generation() {
+        let user_data = temp_user_data("keepone");
+        let logs = logs_dir(&user_data);
+        fs::create_dir_all(&logs).unwrap();
+        let logs_canonical = logs.canonicalize().unwrap();
+        let base = logs.join(format!("shell-{}.log", "5".repeat(32)));
+        fs::write(generation_path(&base, 1).unwrap(), "old-1").unwrap();
+        fs::write(&base, "fresh base").unwrap();
+
+        let rotated = rotate_file(&base, &logs_canonical, 8, 1);
+        assert!(rotated.unwrap());
+        assert_eq!(
+            fs::read_to_string(generation_path(&base, 1).unwrap()).unwrap(),
+            "fresh base"
+        );
+        assert!(!generation_path(&base, 2).unwrap().exists());
+        assert!(
+            !rotation_oldest_staging_path(&base).unwrap().exists(),
+            "the staged old generation is pruned after commit"
+        );
+        // The sweep regime vacates the base; the next writer re-creates it.
+        assert!(!base.exists());
         let _ = fs::remove_dir_all(&user_data);
     }
 

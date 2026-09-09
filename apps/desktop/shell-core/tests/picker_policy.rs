@@ -291,3 +291,83 @@ fn readback_refails_when_picked_file_is_swapped_or_grows() {
     assert!(matches!(error, PickError::TooLarge { .. }), "{error}");
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// Table-driven shape boundaries: each malformed shape fails cleanly with
+/// its dedicated error instead of panicking or slipping through. Rows are
+/// (label, path); the deterministic rows assert their exact error variant,
+/// the filesystem-variant rows (ENAMETOOLONG/EACCES) assert a clean
+/// rejection only, because the exact io::ErrorKind varies by platform and
+/// filesystem.
+#[test]
+fn picker_shape_boundaries_fail_cleanly() {
+    let dir = temp_dir("shapes");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("real.txt"), "正文").unwrap();
+
+    let overlong_component = dir.join(format!("{}.txt", "长".repeat(300)));
+    let mut deep = dir.clone();
+    for _ in 0..4096 {
+        deep = deep.join("nested");
+    }
+    deep.push("leaf.txt");
+
+    let cases: Vec<(&str, PathBuf)> = vec![
+        ("empty", PathBuf::new()),
+        ("relative", PathBuf::from("relative/正文.txt")),
+        ("nonexistent", dir.join("missing.txt")),
+        ("overlong component", overlong_component),
+        ("overlong total path", deep),
+    ];
+    for (label, path) in &cases {
+        for kind in [PickKind::SourceText, PickKind::ReferenceImage] {
+            assert!(
+                validate_picked_file(path, kind).is_err(),
+                "{label}/{kind:?}: file pick must be rejected"
+            );
+        }
+        assert!(
+            validate_picked_directory(path).is_err(),
+            "{label}: directory pick must be rejected"
+        );
+    }
+
+    // Deterministic rows, exact variants (unix: /proc-free, pure stdio).
+    #[cfg(unix)]
+    {
+        assert!(matches!(
+            validate_picked_file(Path::new(""), PickKind::SourceText),
+            Err(PickError::EmptyPath)
+        ));
+        assert!(matches!(
+            validate_picked_file(Path::new("relative/正文.txt"), PickKind::SourceText),
+            Err(PickError::NotAbsolute)
+        ));
+        assert!(matches!(
+            validate_picked_file(&dir.join("missing.txt"), PickKind::SourceText),
+            Err(PickError::DoesNotExist)
+        ));
+    }
+
+    // Permission-denied ancestor: validation through it fails with EACCES
+    // instead of succeeding (skipped under root, which reads through the
+    // mode bits).
+    #[cfg(unix)]
+    if unsafe { libc::geteuid() } != 0 {
+        use std::os::unix::fs::PermissionsExt;
+        let locked_parent = dir.join("locked");
+        fs::create_dir_all(locked_parent.join("inner")).unwrap();
+        fs::write(locked_parent.join("inner").join("leaf.txt"), "x").unwrap();
+        let mut perms = fs::metadata(&locked_parent).unwrap().permissions();
+        perms.set_mode(0o000);
+        fs::set_permissions(&locked_parent, perms).unwrap();
+        assert!(
+            validate_picked_file(&locked_parent.join("inner").join("leaf.txt"), PickKind::SourceText)
+                .is_err(),
+            "a pick through a locked ancestor must be rejected"
+        );
+        let mut restore = fs::metadata(&locked_parent).unwrap().permissions();
+        restore.set_mode(0o755);
+        fs::set_permissions(&locked_parent, restore).unwrap();
+    }
+    let _ = fs::remove_dir_all(&dir);
+}

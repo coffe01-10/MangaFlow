@@ -1,4 +1,13 @@
-# N1 shell-core 审计（2026-09-08 夜间烧 · 终版）
+# N1 shell-core 审计（2026-09-09 夜间烧 · 持续更新）
+
+> 2026-09-08 终版经 PR #280/#287 合入 master；本文档在 2026-09-09 夜继续维护，
+> 基线推进至 `961bcec`。当日增量见文末「2026-09-09 增量」。
+
+---
+
+（以下为 2026-09-08 终版原文，历史结论以当时基线为准）
+
+
 
 - 范围：`apps/desktop/shell-core/**`；验证驱动仅触及 `apps/desktop/scripts/**` 的
   shell 相关测试；`apps/desktop/native/**` 与 `native-tests/**` 全程未动（硬禁区）。
@@ -93,3 +102,37 @@
 - `take(cap+1)` call-site 的变异不可见性：无测试能在不引入 seam 的前提下覆盖
   "+1 的缺失"，已提取说明并记录（read_bounded 语义有 tiny-cap 单测约束）。
 - 真实供应商、真实 WebView2、N=20 性能门禁（W-18/19）：沿项目边界，未动。
+
+
+---
+
+## 2026-09-09 增量（基线 `961bcec`）
+
+ Overnight 并行轮次（review-round 系列、relay 矩阵、web-exit-detection、
+ handshake-stream-caps）已消化上一版审计中的多条 RISK（READY 行/journal/健康响应
+ 读取上界、relay 连接上限等）——复核确认后不再重复实现。
+
+本轮新增修复（每项独立 commit，红绿判别见 commit message）：
+
+1. `token_matches`：READY/journal 的 owner token 比较改为长度无关折叠
+  （防御纵深；两侧本已持 token）。测试：长度/字节差异仍判不匹配。
+2. `is_loopback_origin`：端口只接受纯数字（`u16::from_str` 接受 `+80`，
+   `http://127.0.0.1:+80` 曾能通过回环门）。测试判别：'+' origin 现被拒。
+3. `mark_stopped`：不可解析 journal 不再被 `{}` 桩覆盖（桩会交给 sweep 删除，
+   正好销毁取证记录）；保留原文并上 stderr 报告。红绿：损坏字节逐字幸存。
+4. 导出：非 UTF8 文件名跳过并报告（lossy 转换会把两个不同名折叠成同一
+   ZIP 成员）。
+5. picker：表驱动形状边界（空/相对/不存在/超长成员/超长总路径/锁定祖先），
+   确定性行断言精确变体（EmptyPath/NotAbsolute/DoesNotExist），root 跳过。
+6. 轮转：keep=1 退化路径钉测（base 腾空、单一世代、staged 清理）。
+
+测试增量：`cargo test` 9/9 套件、**80 项**全绿（46→52 单元 + 32 集成 + picker 7
+等，Linux 实测）。
+
+新记录的待办（下轮候选）：
+
+- `write_journal_atomic` 的 serde_json unwrap 与 `unix_now` panic 路径（pub API
+  可达 panic）——需要 no-panic 化重构。
+- 健康门不验响应身份（回环 200 即过）——设计级，需 lead 决策。
+- keep=1 与 sweep 的交互（清扫对 keep=1 基名的世代匹配）未测。
+- 并发导出同目标的 `.pending` 竞争（失败方误报 PendingIsSymlink）——需 seam。
