@@ -1119,6 +1119,54 @@ mod tests {
     /// the candidate directory AND the link target's bytes intact — the
     /// deletion decision may never be driven by content outside the
     /// runtime root.
+    /// A journal that is a DIRECTORY (not a regular file) must keep the
+    /// candidate exactly like a symlink: read_journal_bounded refuses
+    /// non-regular files, and the deletion decision may never depend on
+    /// their content.
+    #[test]
+    fn sweep_keeps_a_candidate_whose_journal_is_a_directory() {
+        let user_data = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-sweep-jdir-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&user_data);
+        let runtime = user_data.join("runtime");
+        let candidate = runtime.join(format!("{RUNTIME_DIR_PREFIX}{}", "b".repeat(32)));
+        std::fs::create_dir_all(candidate.join(JOURNAL_NAME)).unwrap();
+
+        sweep_runtime_dirs_with(&user_data, 0).unwrap();
+
+        assert!(
+            candidate.exists(),
+            "a directory-as-journal candidate must be kept"
+        );
+        let _ = std::fs::remove_dir_all(&user_data);
+    }
+
+    /// mark_stopped on a MISSING journal must not fabricate a stopped
+    /// record: absent ownership records are kept absent (the sweep then
+    /// ignores the directory as a foreign/empty name).
+    #[test]
+    fn mark_stopped_without_a_journal_fabricates_nothing() {
+        let dir = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-missing-j-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let layout = RuntimeLayout::create(&dir).unwrap();
+        std::fs::remove_file(layout.journal_path()).unwrap();
+
+        layout.mark_stopped(Some(0)).unwrap();
+
+        assert!(
+            !layout.journal_path().exists(),
+            "mark_stopped must not fabricate a stopped record for a missing journal"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn sweep_keeps_a_candidate_whose_journal_is_a_symlink() {
         let user_data = std::env::temp_dir().join(format!(
