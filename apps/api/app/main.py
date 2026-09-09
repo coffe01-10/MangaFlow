@@ -2,6 +2,7 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
+from threading import Event, Thread
 
 from alembic.config import Config as AlembicConfig
 from alembic.migration import MigrationContext
@@ -70,13 +71,20 @@ async def lifespan(application: FastAPI):
                 LOGGER.exception("job recovery failed at startup")
             _recover_cli_runs()
             _sweep_stale_storage(settings)
+    recovery: tuple[Thread, Event] | None = None
     if not application.dependency_overrides:
         # REDIS-mode RQ retries fire inside the lease window and then stop, so
         # a dead worker's job would stay ACTIVE until the next API restart.
         # The periodic pass keeps reclaiming expired leases and re-enqueueing
         # parked WAITING jobs for the lifetime of the API process.
-        start_periodic_recovery()
+        recovery = start_periodic_recovery()
     yield
+    if recovery is not None:
+        # Graceful shutdown: stop the recovery loop before the server stops
+        # serving — otherwise a waking pass can re-enqueue work and race the
+        # teardown (start_periodic_recovery returns the handle for exactly
+        # this parking purpose).
+        recovery[1].set()
 
 
 def _recover_cli_runs() -> None:

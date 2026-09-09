@@ -32,13 +32,13 @@ API Key 使用 AES-256-GCM 加密写入 `provider_keys`。设置页只显示标�
 
 内置 `codex-cli` 连接默认禁用，目录种子 `codex-imagegen` 只声明 `image_generate`、`image_edit` 与最多 5 张参考图，费用来源保持 `CLI_EXTERNAL / UNKNOWN`。设置页的模型冒烟按钮不会直接发起可能计费的 CLI 调用；真实能力只能通过已有持久化任务和 `ModelCallAttempt` 验证。
 
-调用只解析原生 `codex.exe`；Windows npm 的 `.cmd` / `.ps1` shim 仅用于定位官方架构包内的有界原生二进制，不交给 shell 执行。公共 controller 把提示词和参考图写入校验和保护的结构化输入，argv 只包含固定任务说明、受控相对路径与 Codex 安全参数。Codex 以 `workspace-write`、`approval=never`、`ephemeral`、忽略用户配置的非交互模式运行；全局参数在 `exec` 前、子命令参数在 `exec` 后，真实 CLI 参数解析探测和离线回归共同锁定这一边界。输出仍需经过公共 controller 的登记路径、大小、像素、格式和清理校验，失败不切换到 HTTP 供应商。
+调用只解析原生 `codex.exe`；Windows npm 的 `.cmd` / `.ps1` shim 仅用于定位官方架构包内的有界原生二进制，不交给 shell 执行。公共 controller 把提示词和参考图写入校验和保护的结构化输入，argv 只包含固定任务说明、受控相对路径与 Codex 安全参数。Codex 以 `workspace-write`、`approval=never`、`ephemeral`、忽略用户配置的非交互模式运行；全局参数在 `exec` 前、子命令参数在 `exec` 后，真实 CLI 参数解析探测和离线回归共同锁定这一边界。run workspace 放置私有 `.git` 边界，阻断 Codex 从 cwd 向上发现仓库级 `AGENTS.md` 开发指令（与 Grok Build 同一隔离约定）。输出仍需经过公共 controller 的登记路径、大小、像素、格式和清理校验，失败不切换到 HTTP 供应商。
 
 ### Antigravity CLI 图片通道
 
 内置 `antigravity-cli` 连接默认禁用，目录种子 `antigravity-imagegen` 以 `DECLARED` 声明图片生成、图片编辑和最多 1 张参考图，费用保持 `CLI_EXTERNAL / UNKNOWN`。应用只解析 PATH 或用户配置绝对路径中的原生 `agy.exe`，不执行 IDE wrapper、`.cmd`、安装、更新、登录或退出命令。
 
-运行使用 `--sandbox`、`--disable-slash-commands`、受控 `--add-dir`、JSON print 与双重超时；用户 prompt 和参考图只进入公共结构化 request。每次 run 把 Antigravity HOME 指向 workspace 下的私有目录，保留系统安全钥匙串发现能力但不继承全量环境，也不读取用户设置或凭据内容。适配器先验证官方 JSON envelope，再仅扫描私有 `~/.gemini/antigravity-cli/brain`；目录遍历拒绝链接、junction、越界和过量条目，只采用唯一合法图片并归一化为公共 `result.json`。权限软拒绝、未登录、额度、坏 JSON 和歧义产物分别映射为统一错误，均不回退 HTTP。真实图片调用和费用默认门禁不执行。
+运行使用 `--sandbox`、`--disable-slash-commands`、受控 `--add-dir`、JSON print 与双重超时；用户 prompt 和参考图只进入公共结构化 request。每次 run 把 Antigravity HOME 指向 workspace 下的私有目录，保留系统安全钥匙串发现能力但不继承全量环境，也不读取用户设置或凭据内容；run workspace 同样放置私有 `.git` 边界，阻断 CLI 从 cwd 向上发现仓库级开发指令（与 Grok Build、Codex 同一隔离约定）。适配器先验证官方 JSON envelope，再仅扫描私有 `~/.gemini/antigravity-cli/brain`；目录遍历拒绝链接、junction、越界和过量条目，只采用唯一合法图片并归一化为公共 `result.json`。权限软拒绝、未登录、额度、坏 JSON 和歧义产物分别映射为统一错误，均不回退 HTTP。真实图片调用和费用默认门禁不执行。
 
 ### Grok Build CLI 图片通道
 
