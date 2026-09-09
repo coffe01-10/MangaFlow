@@ -37,11 +37,32 @@ pub enum VerifyError {
 }
 
 fn is_loopback_origin(origin: &str) -> bool {
-    // ADR D9: the API must bind the loopback adapter only.
-    origin
-        .strip_prefix("http://127.0.0.1:")
-        .and_then(|port| port.parse::<u16>().ok())
-        .is_some()
+    // ADR D9: the API must bind the loopback adapter only. The port is
+    // matched as pure digits: `u16::from_str` accepts a leading '+', so
+    // "http://127.0.0.1:+80" would slip a malformed origin past the
+    // loopback gate on a parsing technicality.
+    origin.strip_prefix("http://127.0.0.1:").is_some_and(|port| {
+        !port.is_empty()
+            && port.bytes().all(|byte| byte.is_ascii_digit())
+            && port.parse::<u16>().is_ok()
+    })
+}
+
+/// Length-independent equality for the owner token. Both sides already
+/// hold the token (env at spawn, the published READY line), so this is
+/// defense in depth — a probing helper must not be able to infer the
+/// secret one byte at a time from comparison timing. Runs in time that
+/// depends only on the announced length, never on WHERE a mismatch is.
+fn token_matches(announced: &str, expected: &str) -> bool {
+    let (left, right) = (announced.as_bytes(), expected.as_bytes());
+    let length_delta = u32::try_from(left.len() ^ right.len()).unwrap_or(u32::MAX);
+    let body = left.iter().zip(right).fold(0u8, |acc, (x, y)| acc | (x ^ y));
+    let tail = left
+        .iter()
+        .skip(right.len())
+        .chain(right.iter().skip(left.len()))
+        .fold(0u8, |acc, byte| acc | byte);
+    (u8::try_from(length_delta).unwrap_or(u8::MAX) | body | tail) == 0
 }
 
 /// Parse and verify the `MANGAFLOW_READY {json}` line against expectations.
@@ -75,7 +96,7 @@ where
         .ok_or(VerifyError::BadLine)?;
     let value: serde_json::Value =
         serde_json::from_str(payload).map_err(|_| VerifyError::BadJson)?;
-    if value["token"].as_str() != Some(token) {
+    if !token_matches(value["token"].as_str().unwrap_or(""), token) {
         return Err(VerifyError::TokenMismatch);
     }
     // PIDs are u32 on every supported platform: a 64-bit value (tampered or
@@ -126,7 +147,10 @@ pub fn verify_journal(journal: &Path, ready: &ReadyPayload) -> Result<(), Verify
     if value["version"].as_u64() != Some(PROTOCOL_VERSION) {
         return Err(VerifyError::JournalMismatch("version"));
     }
-    if value["token"].as_str() != Some(ready.token.as_str()) {
+    if !token_matches(
+        value["token"].as_str().unwrap_or(""),
+        ready.token.as_str(),
+    ) {
         return Err(VerifyError::JournalMismatch("token"));
     }
     if value["state"].as_str() != Some("ready") {
@@ -219,10 +243,23 @@ impl RuntimeLayout {
     /// Record the owner-side terminal state after the tree has been stopped.
     pub fn mark_stopped(&self, exit_code: Option<i32>) -> std::io::Result<()> {
         let journal = self.journal_path();
-        let mut value: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(&journal).unwrap_or_else(|_| "{}".into()),
-        )
-        .unwrap_or_else(|_| serde_json::json!({}));
+        let existing = std::fs::read_to_string(&journal).unwrap_or_else(|_| "{}".into());
+        let mut value: serde_json::Value = match serde_json::from_str(&existing) {
+            Ok(value) => value,
+            // An unparsable journal is a forensic anomaly (a partial write
+            // or tamper). Overwriting it with a fresh stub would hide the
+            // anomaly AND hand the stale-runtime sweep a terminal state to
+            // delete — the record would vanish exactly when it matters.
+            // Leave the bytes untouched: the sweep already refuses
+            // unparsable journals, so nothing is lost by keeping them.
+            Err(_) => {
+                eprintln!(
+                    "mangaflow-desktop: ownership journal {} is unparsable; leaving it untouched instead of marking stopped",
+                    journal.display()
+                );
+                return Ok(());
+            }
+        };
         value["state"] = "stopped".into();
         value["stopped_at"] = unix_now().into();
         if let Some(code) = exit_code {
@@ -512,6 +549,157 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&user_data);
+    }
+
+    /// The loopback gate matches ports as pure digits: a leading '+'
+    /// (accepted by `u16::from_str`) must fail the gate, not pass it on a
+    /// parsing technicality. Red on the old `parse::<u16>()` check.
+    #[test]
+    fn rejects_a_plus_prefixed_port_in_the_origin() {
+        let line = format!(
+            "{READY_PREFIX}{{\"token\":\"{TOKEN}\",\"pid\":4242,\"api_origin\":\"http://127.0.0.1:+80\"}}"
+        );
+        assert!(matches!(
+            verify_ready_line(&line, TOKEN, 4242),
+            Err(VerifyError::OriginNotLoopback)
+        ));
+    }
+
+    /// Token comparison stays correct for the cases timing-hardening must
+    /// not break: equal strings match, and any differing byte/length is a
+    /// mismatch (the fold covers bytes past the shorter side too).
+    #[test]
+    fn token_matches_survives_length_and_byte_differences() {
+        assert!(token_matches(TOKEN, TOKEN));
+        assert!(!token_matches("", TOKEN) && !token_matches(TOKEN, ""));
+        assert!(!token_matches(&TOKEN[..31], TOKEN));
+        assert!(!token_matches(
+            "0123456789abcdef0123456789abcdeG",
+            TOKEN
+        ));
+    }
+
+    /// The /proc starttime anchor: a journal that carries it must match the
+    /// live process, a mismatching one must fail closed — and the ABSENT
+    /// form stays accepted for older helpers (documented fail-open, the
+    /// Windows leg has no equivalent yet).
+    #[test]
+    fn journal_starttime_anchor_matches_or_fails_closed() {
+        let dir = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-starttime-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let layout = RuntimeLayout::create(&dir).unwrap();
+        let token = layout.token.clone();
+        let ready = ReadyPayload {
+            token: token.clone(),
+            pid: std::process::id(),
+            api_origin: "http://127.0.0.1:8080".into(),
+            port: 8080,
+            web_origin: None,
+        };
+        let live = crate::ownership::pid_starttime(std::process::id());
+        let mut journal: serde_json::Value = serde_json::json!({
+            "version": PROTOCOL_VERSION,
+            "token": token,
+            "state": "ready",
+            "pid": std::process::id(),
+            "api_origin": "http://127.0.0.1:8080",
+        });
+        if let Some(starttime) = live {
+            journal["pid_starttime"] = serde_json::json!(starttime);
+        }
+        std::fs::write(layout.journal_path(), journal.to_string()).unwrap();
+        assert!(verify_journal(&layout.journal_path(), &ready).is_ok());
+
+        journal["pid_starttime"] = serde_json::json!(live.unwrap_or(0) + 1);
+        std::fs::write(layout.journal_path(), journal.to_string()).unwrap();
+        assert!(matches!(
+            verify_journal(&layout.journal_path(), &ready),
+            Err(VerifyError::StartTimeMismatch)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Every tampered identity field fails closed with the offending field
+    /// named; the positive control proves the fixture itself is valid.
+    #[test]
+    fn journal_tamper_matrix_fails_closed_on_every_identity_field() {
+        let dir = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-tamper-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let layout = RuntimeLayout::create(&dir).unwrap();
+        let token = layout.token.clone();
+        let ready = ReadyPayload {
+            token: token.clone(),
+            pid: std::process::id(),
+            api_origin: "http://127.0.0.1:8080".into(),
+            port: 8080,
+            web_origin: None,
+        };
+        let base = serde_json::json!({
+            "version": PROTOCOL_VERSION,
+            "token": token,
+            "state": "ready",
+            "pid": std::process::id(),
+            "api_origin": "http://127.0.0.1:8080",
+        });
+        let tampered: Vec<(&str, serde_json::Value)> = vec![
+            ("version", serde_json::json!(PROTOCOL_VERSION + 1)),
+            ("token", serde_json::json!("f".repeat(32))),
+            ("state", serde_json::json!("stopped")),
+            ("pid", serde_json::json!(std::process::id() + 1)),
+            ("api_origin", serde_json::json!("http://127.0.0.1:9999")),
+        ];
+        for (field, value) in tampered {
+            let mut journal = base.clone();
+            journal[field] = value;
+            std::fs::write(layout.journal_path(), journal.to_string()).unwrap();
+            assert!(
+                matches!(
+                    verify_journal(&layout.journal_path(), &ready),
+                    Err(VerifyError::JournalMismatch(name)) if name == field,
+                ),
+                "tampering {field} must fail closed"
+            );
+        }
+        // Positive control: the untampered journal passes.
+        std::fs::write(layout.journal_path(), base.to_string()).unwrap();
+        assert!(verify_journal(&layout.journal_path(), &ready).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An unparsable journal is a forensic anomaly: mark_stopped must leave
+    /// the bytes untouched instead of replacing them with a deletable stub
+    /// (the stale-runtime sweep deletes terminal-state directories, so a
+    /// stub here would destroy the record exactly when it matters).
+    #[test]
+    fn mark_stopped_preserves_an_unparsable_journal() {
+        let dir = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-corrupt-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let layout = RuntimeLayout::create(&dir).unwrap();
+        std::fs::write(layout.journal_path(), "{\"state\": \"rea").unwrap();
+
+        layout.mark_stopped(Some(0)).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(layout.journal_path()).unwrap(),
+            "{\"state\": \"rea",
+            "the corrupt bytes must survive verbatim"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
