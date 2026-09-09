@@ -511,6 +511,31 @@ mod tests {
         ));
     }
 
+    /// The gate is prefix-bound to http://127.0.0.1:<digits>: the localhost
+    /// NAME, IPv6 loopback, a sibling domain ending in 127.0.0.1, and an
+    /// empty port are all NOT the loopback origin the ADR means.
+    #[test]
+    fn rejects_loopback_lookalike_origins() {
+        for origin in [
+            "http://localhost:8000",
+            "http://[::1]:8000",
+            "http://127.0.0.1.evil.example:8000",
+            "http://127.0.0.1:",
+            "http://0.0.0.0:8000",
+        ] {
+            let line = format!(
+                "{READY_PREFIX}{{\"token\":\"{TOKEN}\",\"pid\":4242,\"api_origin\":\"{origin}\"}}"
+            );
+            assert!(
+                matches!(
+                    verify_ready_line(&line, TOKEN, 4242),
+                    Err(VerifyError::OriginNotLoopback)
+                ),
+                "{origin} must not pass the loopback gate"
+            );
+        }
+    }
+
     /// PIDs are u32: a 64-bit READY pid (tampered output) that wraps onto
     /// the expected pid via `as u32` must be rejected outright, not pass
     /// the ownership predicate.
@@ -760,6 +785,33 @@ mod tests {
             verify_ready_line(&format!("{READY_PREFIX}not-json"), TOKEN, 1),
             Err(VerifyError::BadJson)
         ));
+    }
+
+    /// Error-path pin: a DIRECTORY at the journal path fails the read
+    /// (EISDIR) and surfaces as JournalMissing — not a panic and not an
+    /// accidental parse.
+    #[test]
+    fn journal_directory_path_surfaces_as_journal_missing() {
+        let dir = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-jdir-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let journal = dir.join("owner.json");
+        std::fs::create_dir_all(&journal).unwrap();
+        let ready = ReadyPayload {
+            token: "0".repeat(32),
+            pid: 1,
+            api_origin: "http://127.0.0.1:8080".into(),
+            port: 8080,
+            web_origin: None,
+        };
+        assert!(matches!(
+            verify_journal(&journal, &ready),
+            Err(VerifyError::JournalMissing)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
