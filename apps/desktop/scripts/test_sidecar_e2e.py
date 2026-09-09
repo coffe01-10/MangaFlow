@@ -677,7 +677,10 @@ def test_sidecar_mid_session_node_exit_is_detected_and_logged(tmp_path: Path):
         web_port = int(shell.web_origin.rsplit(":", 1)[1])
         dead_origin = socket.create_connection(("127.0.0.1", web_port), timeout=15)
         try:
-            dead_origin.sendall(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            try:
+                dead_origin.sendall(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            except OSError:
+                pass  # RST before the request was even written: prompt fail-fast
             deadline = time.monotonic() + 4.0
             data = b""
             closed = False
@@ -686,6 +689,7 @@ def test_sidecar_mid_session_node_exit_is_detected_and_logged(tmp_path: Path):
                 try:
                     chunk = dead_origin.recv(65536)
                 except socket.timeout:
+                    # Must precede except OSError: TimeoutError subclasses it.
                     continue
                 except OSError:
                     closed = True  # RST: prompt fail-fast
@@ -694,7 +698,9 @@ def test_sidecar_mid_session_node_exit_is_detected_and_logged(tmp_path: Path):
                     closed = True  # FIN
                     break
                 data += chunk
-            assert closed and b"HTTP/" not in data, f"dead origin mishandled: {data!r}"
+            assert closed and b"HTTP/" not in data, (
+                f"dead origin mishandled (closed={closed}): {data!r}"
+            )
         finally:
             dead_origin.close()
     finally:
