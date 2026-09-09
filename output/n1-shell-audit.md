@@ -204,8 +204,16 @@
 
 - NIT 已修：journal symlink pin 补 outside.json 字节断言；sweep 未来 mtime 测试
   补 aged 对照组（hex 名修正后通过）；TODO 勘误（unix_now 已修）。
-- 残留：write_journal_atomic 的 serde_json unwrap（Value 序列化实际不可失败）；
-  get_status_caps 并行负载 flake（master 既有）。
+### 续跑轮 2（get_status 夹具加固 + 畸形 journal pin）
+
+- 夹具加固：get_status_caps_the_response_read 在全量并行负载下出现过一次
+  ConnectionReset——夹具服务端从不读取客户端请求就以 512 KiB 压入后关闭，
+  关闭时未读数据触发 RST 打断客户端读满上限。现先排干请求头（有界读至
+  \r\n\r\n）、写入总量收敛到 128 KiB（仍高于上限，保留越界断言）、
+  shutdown(Write) 干净收尾；5× 连续 lib 全绿验证。
+- 新增 pin：sweep 对 journal 为目录的候选保持目录（read_journal_bounded 拒绝
+  非常规文件）；mark_stopped 对缺失 journal 不伪造 stopped 记录。
+- 测试增量：单元 65 项（+2）、集成 40 项，9/9 套件全绿。
 
 新记录的待办（下轮候选）：
 
