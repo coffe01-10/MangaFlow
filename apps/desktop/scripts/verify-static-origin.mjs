@@ -115,15 +115,33 @@ const server = createServer(async (req, res) => {
 });
 try {
   await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(STATIC_PORT, "127.0.0.1", resolve);
+    const onListenError = (listenError) => {
+      server.off("error", onListenReady);
+      reject(listenError);
+    };
+    const onListenReady = () => {
+      // Detach after a successful listen: a later runtime 'error' event
+      // must keep master's loud-crash semantics instead of being swallowed
+      // by a settled promise.
+      server.off("error", onListenError);
+      resolve();
+    };
+    server.once("error", onListenError);
+    server.listen(STATIC_PORT, "127.0.0.1", onListenReady);
   });
 } catch (error) {
   // A busy 4173 (leftover D5 run, dev server) used to surface as an
   // unhandled 'error' event with a raw stack; name the cause and the fix.
+  // The helper is already GO'd at this point: reap it so a failed D5 run
+  // does not become the "leftover" the next run then complains about.
+  try {
+    helper.kill("SIGTERM");
+  } catch {}
   console.error(
-    `D5 FAIL: static port ${STATIC_PORT} on 127.0.0.1 is busy ` +
-    `(${error?.code ?? error}) — stop the other listener and retry.`,
+    `D5 FAIL: static port ${STATIC_PORT} on 127.0.0.1 unusable ` +
+    `(${error?.code === "EACCES"
+      ? "EACCES - access denied; on Windows check reserved port ranges"
+      : `busy: ${error?.code ?? error}`}) - stop the other listener and retry.`,
   );
   process.exit(1);
 }
