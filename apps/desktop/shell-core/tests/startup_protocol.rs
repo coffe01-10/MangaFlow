@@ -917,7 +917,7 @@ fn an_immediately_exiting_helper_fails_verification_and_is_torn_down() {
     // (dedicated to "helper closed stdout before publishing readiness") —
     // a fast, named failure instead of a read hang or a timeout wait.
     assert!(
-        matches!(error, SpawnError::Io(io_error) if io_error.kind() == std::io::ErrorKind::UnexpectedEof),
+        matches!(error, SpawnError::Io(ref io_error) if io_error.kind() == std::io::ErrorKind::UnexpectedEof),
         "unexpected error: {error:?}"
     );
     assert!(

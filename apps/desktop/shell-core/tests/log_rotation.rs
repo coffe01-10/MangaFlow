@@ -11,7 +11,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use mangaflow_desktop_shell_core::logs::{
-    export_logs_zip, helper_log_path, logs_dir, rotate_logs, shell_log_path, RunLog,
+    export_logs_zip, helper_log_path, logs_dir, shell_log_path, RunLog,
     ROTATION_KEEP_GENERATIONS, ROTATION_THRESHOLD_BYTES,
 };
 use mangaflow_desktop_shell_core::protocol::new_token;
