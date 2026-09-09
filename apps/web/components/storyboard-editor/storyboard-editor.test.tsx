@@ -1063,7 +1063,7 @@ describe("StoryboardEditor inspector resizer（既有用例）", () => {
     saveGeometry.mockReset().mockResolvedValue(data as never);
   });
 
-  it("捕获拖拽指针并持续调整属性面板宽度", async () => {
+  it("捕获拖拽指针并持续调整属性面板宽度，松手才落盘", async () => {
     // 视口宽度参与上限计算（画布列 + 侧栏预算后），用宽窗口测正常区间。
     window.innerWidth = 1440;
     renderEditor();
@@ -1081,8 +1081,17 @@ describe("StoryboardEditor inspector resizer（既有用例）", () => {
 
     fireEvent.pointerDown(separator, { pointerId: 7, clientX: 610 });
     fireEvent.pointerMove(separator, { pointerId: 7, clientX: 500 });
-
+    // 拖拽期间宽度实时跟手（本地状态），但不写存储——逐帧同步写
+    // localStorage 并扇出通知所有订阅者是刻意移除的行为。
     await waitFor(() => expect(separator).toHaveAttribute("aria-valuenow", "500"));
-    expect(window.localStorage.getItem("mangaflow.storyboard-inspector-width")).toBe("500");
+    expect(window.localStorage.getItem("mangaflow.storyboard-inspector-width")).toBeNull();
+
+    fireEvent.pointerMove(separator, { pointerId: 7, clientX: 470 });
+    await waitFor(() => expect(separator).toHaveAttribute("aria-valuenow", "530"));
+    expect(window.localStorage.getItem("mangaflow.storyboard-inspector-width")).toBeNull();
+
+    // 松手：一次写入最终宽度。
+    fireEvent.pointerUp(separator, { pointerId: 7, clientX: 470 });
+    await waitFor(() => expect(window.localStorage.getItem("mangaflow.storyboard-inspector-width")).toBe("530"));
   });
 });

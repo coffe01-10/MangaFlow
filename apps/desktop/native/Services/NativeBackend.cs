@@ -85,6 +85,11 @@ public sealed class NativeBackend(string repository, string userData)
         try
         {
             using var ready = JsonDocument.Parse(line[prefix.Length..]);
+            // GetProperty on a non-object root throws its own raw
+            // InvalidOperationException — normalize it into the same friendly
+            // wrap as the other malformed shapes.
+            if (ready.RootElement.ValueKind != JsonValueKind.Object)
+                throw new InvalidOperationException("本地服务启动信息格式异常。");
             var origin = ready.RootElement.GetProperty("api_origin").GetString()
                 ?? throw new InvalidOperationException("服务未返回连接地址");
             return IsTrustedLoopback(origin)

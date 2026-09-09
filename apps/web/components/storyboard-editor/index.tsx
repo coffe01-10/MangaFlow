@@ -110,9 +110,17 @@ export function StoryboardEditor({
     layoutMode: "dynamic",
   });
   // 属性面板宽度持久化走水合安全的 localStorage 外部存储（水合渲染用默认
-  // 390，真实存储值在水合后同步生效；渲染期直读会造成水合不匹配）。
+  // 390，真实存储值在水合后同步生效；渲染期直读会造成水合不匹配）。拖拽期间
+  // 只走本地状态，松手才写存储——逐帧写存储会同步落盘并扇出通知全部订阅者。
   const storedInspectorWidth = useLocalStorageValue("mangaflow.storyboard-inspector-width", "");
-  const inspectorWidth = useMemo(() => {
+  const [dragInspectorWidth, setDragInspectorWidth] = useState<number | null>(null);
+  const clampInspectorWidth = (value: number) => {
+    // Same viewport cap as the read: canvas min 320 + gap 10 + sidebar up to
+    // 360 + page padding must all fit alongside the inspector.
+    const viewportCap = typeof window === "undefined" ? 620 : Math.max(320, Math.min(620, window.innerWidth - 740));
+    return Math.min(viewportCap, Math.max(320, value));
+  };
+  const persistedInspectorWidth = useMemo(() => {
     if (typeof window === "undefined") return 390;
     const stored = Number(storedInspectorWidth);
     // Cap by viewport so a stored width from a larger window cannot push the
@@ -120,6 +128,7 @@ export function StoryboardEditor({
     const viewportCap = Math.max(320, Math.min(620, window.innerWidth - 740));
     return stored >= 320 && stored <= viewportCap ? stored : 390;
   }, [storedInspectorWidth]);
+  const inspectorWidth = dragInspectorWidth ?? persistedInspectorWidth;
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const geometryRequestRef = useRef<{ id: string; stackIndex: number } | null>(null);
 
@@ -186,11 +195,7 @@ export function StoryboardEditor({
   useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
 
   const persistInspectorWidth = (value: number) => {
-    // Same viewport cap as the read: canvas min 320 + gap 10 + sidebar
-    // up to 360 + page padding must all fit alongside the inspector.
-    const viewportCap = typeof window === "undefined" ? 620 : Math.max(320, Math.min(620, window.innerWidth - 740));
-    const next = Math.min(viewportCap, Math.max(320, value));
-    writeLocalStorage("mangaflow.storyboard-inspector-width", String(next));
+    writeLocalStorage("mangaflow.storyboard-inspector-width", String(clampInspectorWidth(value)));
   };
 
   const refresh = () => {
@@ -583,7 +588,7 @@ export function StoryboardEditor({
           onBubbleBounce={() => setNotice(storyboardCopy.bubbleBelongs)}
           onZoomStep={(direction) => zoomManually(direction === 1 ? zoom * ZOOM_STEP : zoom / ZOOM_STEP)}
         />
-        {activePanel && <div className="panel-inspector-resizer" role="separator" aria-label="调整属性面板宽度" aria-orientation="vertical" aria-valuemin={320} aria-valuemax={620} aria-valuenow={inspectorWidth} tabIndex={0} onKeyDown={(event) => { if (event.key === "ArrowLeft") persistInspectorWidth(inspectorWidth + 16); if (event.key === "ArrowRight") persistInspectorWidth(inspectorWidth - 16); }} onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); const worktable = event.currentTarget.parentElement?.getBoundingClientRect(); if (worktable) persistInspectorWidth(worktable.right - event.clientX); }} onPointerMove={(event) => { if (!event.currentTarget.hasPointerCapture(event.pointerId)) return; const worktable = event.currentTarget.parentElement?.getBoundingClientRect(); if (worktable) persistInspectorWidth(worktable.right - event.clientX); }} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }} onPointerCancel={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }}><span /></div>}
+        {activePanel && <div className="panel-inspector-resizer" role="separator" aria-label="调整属性面板宽度" aria-orientation="vertical" aria-valuemin={320} aria-valuemax={620} aria-valuenow={inspectorWidth} tabIndex={0} onKeyDown={(event) => { if (event.key === "ArrowLeft") persistInspectorWidth(inspectorWidth + 16); if (event.key === "ArrowRight") persistInspectorWidth(inspectorWidth - 16); }} onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); const worktable = event.currentTarget.parentElement?.getBoundingClientRect(); if (worktable) setDragInspectorWidth(clampInspectorWidth(worktable.right - event.clientX)); }} onPointerMove={(event) => { if (!event.currentTarget.hasPointerCapture(event.pointerId)) return; const worktable = event.currentTarget.parentElement?.getBoundingClientRect(); if (worktable) setDragInspectorWidth(clampInspectorWidth(worktable.right - event.clientX)); }} onPointerUp={(event) => { if (!event.currentTarget.hasPointerCapture(event.pointerId)) return; event.currentTarget.releasePointerCapture(event.pointerId); const worktable = event.currentTarget.parentElement?.getBoundingClientRect(); if (worktable) persistInspectorWidth(worktable.right - event.clientX); setDragInspectorWidth(null); }} onPointerCancel={(event) => { if (!event.currentTarget.hasPointerCapture(event.pointerId)) return; event.currentTarget.releasePointerCapture(event.pointerId); persistInspectorWidth(inspectorWidth); setDragInspectorWidth(null); }}><span /></div>}
         {activePanel && <PanelInspector
           page={serverPage ?? currentPage}
           panel={activePanel}

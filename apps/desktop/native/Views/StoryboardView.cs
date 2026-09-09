@@ -206,8 +206,12 @@ public sealed class StoryboardView : WorkspaceView
                 return;
             }
             var target = chapters.FirstOrDefault(c => c.Id == KeyValueStore.Get("workspace:chapter:" + ProjectId)) ?? chapters.FirstOrDefault(c => c.Id == chapterId) ?? chapters[0];
-            SelectChapter(target.Id);
+            // 激活不是章节切换：离开分镜区时 MainWindow 已运行过离开确认，这里必须
+            // 先赋 chapterId 再拨选择器，让 SelectionChanged 的确认/加载旁路保持
+            // 静默，由 Activate 自己恰好加载一次（旧顺序在用户拒绝切换时仍会覆盖
+            // 拒绝加载目标章节，在同意时则重复加载两遍）。
             chapterId = target.Id;
+            SelectChapter(target.Id);
             await LoadPagesAsync();
         }
         catch (OperationCanceledException) { }
@@ -885,7 +889,11 @@ public sealed class StoryboardView : WorkspaceView
         if (!dirty) return Task.FromResult(true);
         var result = MessageBox.Show(Host, "分镜画布有未保存的几何草稿，离开将丢失。确定离开吗？",
             "离开确认", MessageBoxButton.YesNo, MessageBoxImage.Question);
-        return Task.FromResult(result == MessageBoxResult.Yes);
+        if (result != MessageBoxResult.Yes) return Task.FromResult(false);
+        // 同意离开即弃稿：每个 true 调用点都会继续用新状态覆盖画布，但 dirty
+        // 原样保留会让同一次弃稿在再次激活/切换章节时重复弹窗。
+        dirty = false;
+        return Task.FromResult(true);
     }
 
     public override Task RefreshAsync()

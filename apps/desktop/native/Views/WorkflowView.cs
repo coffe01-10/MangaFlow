@@ -992,8 +992,12 @@ public sealed class WorkflowView : WorkspaceView
     {
         // Flush the debounced draft AND await any PATCH already in flight: returning
         // first would let Deactivate() cancel the lifetime token mid-request.
+        // Capture the armed state BEFORE Stop() — Timer.Stop() clears Enabled,
+        // so checking it afterwards never flushed the pending 800ms debounce and
+        // the last edits were silently lost on navigation.
+        var pendingFlush = autosave is { Enabled: true };
         autosave?.Stop();
-        if (autosave is { Enabled: true }) await SaveNowAsync();
+        if (pendingFlush) await SaveNowAsync();
         else await saveChain;
         return true;
     }
