@@ -113,7 +113,20 @@ const server = createServer(async (req, res) => {
     res.end(body);
   }
 });
-await new Promise((resolve) => server.listen(STATIC_PORT, "127.0.0.1", resolve));
+try {
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(STATIC_PORT, "127.0.0.1", resolve);
+  });
+} catch (error) {
+  // A busy 4173 (leftover D5 run, dev server) used to surface as an
+  // unhandled 'error' event with a raw stack; name the cause and the fix.
+  console.error(
+    `D5 FAIL: static port ${STATIC_PORT} on 127.0.0.1 is busy ` +
+    `(${error?.code ?? error}) — stop the other listener and retry.`,
+  );
+  process.exit(1);
+}
 
 // ---- 2b. path-fence self-test (N2 audit §7) ------------------------------
 // The containment check in the handler above has no other executable
