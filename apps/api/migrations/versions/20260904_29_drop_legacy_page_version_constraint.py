@@ -159,6 +159,25 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     bind = op.get_bind()
+    # 守卫式回退（同 20260831_22 的约定）：升级后，同一页两个修订的乐观锁
+    # 计数相等是文档化的正常状态；不预检就重建旧 UNIQUE 约束会在重建中途
+    # 以裸 IntegrityError 失败。存在重复时明确拒绝，数据保持原样。
+    duplicates = bind.execute(
+        sa.text(
+            "SELECT chapter_id, page_number, version, COUNT(*) "
+            "FROM manga_pages "
+            "GROUP BY chapter_id, page_number, version "
+            "HAVING COUNT(*) > 1"
+        )
+    ).fetchall()
+    if duplicates:
+        raise RuntimeError(
+            "downgrade 20260904_29 cannot re-create the legacy "
+            "(chapter_id, page_number, version) unique constraint: "
+            f"{len(duplicates)} duplicate groups exist "
+            f"(e.g. {duplicates[:3]}). Resolve those page revisions first; "
+            "data is preserved."
+        )
     index_name = "ix_candidate_lineage_child_candidate_id"
     inspector = sa.inspect(bind)
     existing = {

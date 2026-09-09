@@ -22,7 +22,6 @@ class Settings(BaseSettings):
     google_cloud_project: str | None = None
     google_cloud_location: str = "global"
     google_application_credentials: Path | None = None
-    google_genai_use_vertexai: bool = True
 
     vertex_text_model: str = "gemini-3.5-flash"
     vertex_image_model_nano_banana_2: str = "gemini-3.1-flash-image"

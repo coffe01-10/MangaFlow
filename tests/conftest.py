@@ -18,7 +18,6 @@ for _live_name in (
     "GOOGLE_CLOUD_PROJECT",
     "GOOGLE_CLOUD_LOCATION",
     "GOOGLE_APPLICATION_CREDENTIALS",
-    "GOOGLE_GENAI_USE_VERTEXAI",
     "MANGAFLOW_CREDENTIAL_MASTER_KEY",
     "MANGAFLOW_PROXY_URL",
 ):
@@ -49,7 +48,6 @@ def _offline_configured_provider_premise(tmp_path_factory, monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "google_cloud_project", OFFLINE_PROVIDER_PROJECT)
     monkeypatch.setattr(settings, "google_application_credentials", creds)
-    monkeypatch.setattr(settings, "google_genai_use_vertexai", False)
     return creds
 
 
