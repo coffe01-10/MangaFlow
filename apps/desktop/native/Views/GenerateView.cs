@@ -47,6 +47,17 @@ public sealed class GenerateView : WorkspaceView
     private List<JsonElement>? historicalCandidates;
     private int workbenchRead;
     private int pagesRead;
+    // ── 检查结果面板（web InspectionPanel / reviewCandidateId 状态）──
+    // 面板只跟随一个候选；切页/切批次/抽卡/修复/升清/删除都会收起（对齐 web 的
+    // reviewCandidateId 生命周期），否则修复按钮会对已不在当前批次的旧候选提交。
+    private string? reviewCandidateId;
+    private List<JsonElement> reviewInspections = [];
+    private string? inspectionsError;
+    private int inspectionsRead;
+    private JsonElement reviewInspectJob;
+    private string reviewInspectJobIdSeen = "";
+    private bool reviewChecking;
+    private string? panelError;
 
     public GenerateView()
     {
@@ -324,6 +335,13 @@ public sealed class GenerateView : WorkspaceView
         referenceSelections.Clear();
         viewedBatchId = null;
         historicalCandidates = null;
+        // web pageScopeRef：换页清空检查面板——reviewCandidateId 指向旧页候选时，
+        // 面板会在新页渲染且修复按钮以错误分辨率对旧候选提交计费修复。
+        reviewCandidateId = null;
+        panelError = null;
+        reviewInspectJob = default;
+        reviewInspectJobIdSeen = "";
+        reviewChecking = false;
         // G-3: 检查任务的看护是页作用域的 —— 旧页的在途 PAGE_INSPECT 不得继续驱动新页的轮询/终态刷新。
         //（在途的 Watch 在 currentPage 守卫处返回，不会把旧任务 id 写回。）
         trackedInspectJobs.Clear();
@@ -386,6 +404,10 @@ public sealed class GenerateView : WorkspaceView
         var pageId = currentPage?.Id;
         var token = lifetime.Token;
         viewedBatchId = id;
+        // web 的批次切换（上一批/下一批/下拉选择）都会 setReviewCandidateId(null)：
+        // 面板与修复动作是批次作用域的，不能跨批次对旧候选提交。
+        reviewCandidateId = null;
+        panelError = null;
         try
         {
             var rows = await Api.SendAsync($"batches/{id}/candidates", cancellation: token);
@@ -571,6 +593,10 @@ public sealed class GenerateView : WorkspaceView
             body.Children.Add(grid);
         }
 
+        // 候选视觉检查面板（web generate-section 里候选网格之后、生产门禁之前渲染 InspectionPanel）。
+        if (reviewCandidateId is { } reviewTarget)
+            body.Children.Add(BuildInspectionCard(reviewTarget));
+
         // Production gate + next page.
         var gateCard = new StackPanel();
         var productionReady = production.Flag("ready");
@@ -711,6 +737,11 @@ public sealed class GenerateView : WorkspaceView
             State.Status = "已加入 1 个生成任务";
             viewedBatchId = null;
             historicalCandidates = null;
+            // web generate.onSuccess：新批次（或新候选）会替换当前查看的批次；
+            // 旧 reviewCandidateId 不清理，检查面板会在新批次下继续渲染且其修复
+            // 按钮会对旧候选提交。
+            reviewCandidateId = null;
+            panelError = null;
             await LoadWorkbenchAsync();
         }
         catch (OperationCanceledException) { }
@@ -749,6 +780,10 @@ public sealed class GenerateView : WorkspaceView
                     await Api.SendOptionalAsync($"candidates/{candidate.Id}", HttpMethod.Delete);
                     break;
                 case "inspect":
+                    // web：点击「视觉检查」先打开检查面板（立即展示已有结果与任务状态），
+                    // 再提交新一轮检查；提交失败（如其他客户端已有进行中任务 409）时
+                    // 面板保持打开并在页脚展示错误。
+                    OpenInspectionPanel(candidate.Id);
                     var inspectJob = await Api.SendAsync($"candidates/{candidate.Id}/inspect", HttpMethod.Post, new
                     {
                         categories = new[] { "SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY" },
@@ -784,14 +819,29 @@ public sealed class GenerateView : WorkspaceView
                     });
                     break;
             }
+            // web 的 delete/upscale onSuccess 会收起检查面板：删除的候选不再有结果可看；
+            // 升清会关闭当前批次并新开 UPSCALE 批次，旧候选不在新批次里。
+            var closePanel = (action == "delete" && reviewCandidateId == candidate.Id) || action is "upscale2k" or "upscale4k";
+            if (closePanel) { reviewCandidateId = null; panelError = null; }
             Cache.Invalidate("workbench:" + targetPage, "library:" + project, "jobs:" + project, "pages:" + chapterId);
             if (token.IsCancellationRequested || currentPage?.Id != targetPage || ProjectId != project) return;
             await LoadWorkbenchAsync();
+            if (closePanel) Render();
         }
         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
-            if (!token.IsCancellationRequested && currentPage?.Id == targetPage && ProjectId == project) notice.Text = error.Message;
+            if (!token.IsCancellationRequested && currentPage?.Id == targetPage && ProjectId == project)
+            {
+                notice.Text = error.Message;
+                // web 把 inspect/repair/upscale 的失败聚合展示在 InspectionPanel 页脚；
+                // 面板打开且正是该候选时，镜像到面板内，其余情况仍走顶部通知。
+                if (reviewCandidateId == candidate.Id && action is "inspect" or "upscale2k" or "upscale4k")
+                {
+                    panelError = error.Message;
+                    Render();
+                }
+            }
         }
         finally
         {
@@ -832,6 +882,9 @@ public sealed class GenerateView : WorkspaceView
                 storyboard_version = targetPage.StoryboardVersion,
                 manual_text_confirmed = true,
             }, cancellation: token);
+            // web keepSelectedCandidate.onSuccess：沿用成功即打开检查面板，再提交新一轮检查
+            // （inspect 失败时面板保持打开并展示错误，如其他客户端已有进行中的检查任务）。
+            OpenInspectionPanel(candidate.Text("id"));
             var inspectJob = await Api.SendAsync($"candidates/{candidate.Text("id")}/inspect", HttpMethod.Post, new
             {
                 categories = new[] { "SPEAKER", "CHARACTER", "OUTFIT", "PROP", "CONTINUITY" },
@@ -845,7 +898,11 @@ public sealed class GenerateView : WorkspaceView
         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
-            if (!token.IsCancellationRequested && currentPage?.Id == targetPage.Id && ProjectId == project) notice.Text = error.Message;
+            if (!token.IsCancellationRequested && currentPage?.Id == targetPage.Id && ProjectId == project)
+            {
+                notice.Text = error.Message;
+                if (reviewCandidateId == candidate.Text("id")) { panelError = error.Message; Render(); }
+            }
         }
         finally
         {
@@ -900,6 +957,320 @@ public sealed class GenerateView : WorkspaceView
             trackedInspectJobs.Add(job.Text("id"));
     }
 
+    /// <summary>打开检查面板（web setReviewCandidateId）：清掉上一个候选的残留结果，立即拉取并重画。</summary>
+    internal void OpenInspectionPanel(string candidateId)
+    {
+        reviewCandidateId = candidateId;
+        panelError = null;
+        reviewInspections = [];
+        inspectionsError = null;
+        reviewInspectJob = default;
+        reviewInspectJobIdSeen = "";
+        reviewChecking = false;
+        _ = LoadInspectionsAsync(candidateId);
+        Render();
+    }
+
+    /// <summary>
+    /// 检查结果数据源：GET /candidates/{id}/inspections（web api.inspections）。带页/项目/
+    /// 取消令牌与序号守卫，迟到响应不得写入已切换候选/页面的面板。
+    /// </summary>
+    internal async Task LoadInspectionsAsync(string candidateId)
+    {
+        var requestedPage = currentPage?.Id;
+        var requestedProject = ProjectId;
+        var request = ++inspectionsRead;
+        var token = lifetime.Token;
+        try
+        {
+            var rows = await Api.SendAsync($"candidates/{candidateId}/inspections", cancellation: token);
+            if (token.IsCancellationRequested || request != inspectionsRead || reviewCandidateId != candidateId
+                || currentPage?.Id != requestedPage || ProjectId != requestedProject) return;
+            var list = rows.EnumerateArray().ToList();
+            inspectionsError = null;
+            var unchanged = reviewInspections.Count == list.Count
+                && string.Join("", reviewInspections.Select(item => item.GetRawText())) == string.Join("", list.Select(item => item.GetRawText()));
+            reviewInspections = list;
+            if (!unchanged) Render();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            if (token.IsCancellationRequested || request != inspectionsRead || reviewCandidateId != candidateId) return;
+            inspectionsError = error.Message;
+            Render();
+        }
+    }
+
+    /// <summary>
+    /// web latestInspections：按当前分镜版本过滤（item.storyboard_version 与页不符的旧结果
+    /// 不展示），再每个维度（category）取最新一条（接口按 created_at 倒序，首次出现的即最新）。
+    /// </summary>
+    internal List<JsonElement> LatestInspections()
+    {
+        var latest = new Dictionary<string, JsonElement>();
+        var currentVersion = currentPage?.StoryboardVersion ?? 0;
+        foreach (var item in reviewInspections)
+        {
+            if (item.ValueKind != JsonValueKind.Object) continue;
+            var version = item.Element("storyboard_version");
+            if (currentVersion > 0 && version.ValueKind == JsonValueKind.Number
+                && version.TryGetInt32(out var itemVersion) && itemVersion != currentVersion) continue;
+            var category = item.Text("category");
+            if (!latest.ContainsKey(category)) latest[category] = item;
+        }
+        return latest.Values.ToList();
+    }
+
+    /// <summary>web display.recommendedRepairType：按检查维度推导修复范围（提交载荷的一部分）。</summary>
+    internal static string RecommendedRepairType(string category) => category switch
+    {
+        "SPEAKER" => "BUBBLE_REGION",
+        "CHARACTER" or "OUTFIT" or "PROP" => "PANEL",
+        _ => "PAGE",
+    };
+
+    /// <summary>
+    /// web display.inspectionSummary：details 带 expected/observed 时给「应为/实为」对照，
+    /// 否则逐键罗列；完全为空时给固定文案。
+    /// </summary>
+    internal static string InspectionSummary(JsonElement details)
+    {
+        if (details.ValueKind != JsonValueKind.Object) return "模型未补充说明";
+        var expected = details.TextOrNull("expected");
+        var observed = details.TextOrNull("observed");
+        if ((expected ?? "").Length > 0 || (observed ?? "").Length > 0)
+        {
+            return string.Join("；", new[]
+            {
+                string.IsNullOrEmpty(expected) ? null : $"应为：{expected}",
+                string.IsNullOrEmpty(observed) ? null : $"实为：{observed}",
+            }.Where(part => part != null));
+        }
+        var parts = details.EnumerateObject()
+            .Select(property => $"{property.Name}: {DetailValue(property.Value)}")
+            .ToList();
+        return parts.Count > 0 ? string.Join("；", parts) : "模型未补充说明";
+    }
+
+    private static string DetailValue(JsonElement value) => value.ValueKind switch
+    {
+        JsonValueKind.String => value.ToString(),
+        JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False => value.ToString(),
+        JsonValueKind.Null or JsonValueKind.Undefined => "",
+        _ => value.GetRawText(),
+    };
+
+    /// <summary>web display.inspectionBubbleDiffs：details.bubble_diffs 只保留对象项。</summary>
+    internal static List<JsonElement> InspectionBubbleDiffs(JsonElement details)
+    {
+        var diffs = details.Element("bubble_diffs");
+        return diffs.ValueKind == JsonValueKind.Array
+            ? diffs.EnumerateArray().Where(item => item.ValueKind == JsonValueKind.Object).ToList()
+            : [];
+    }
+
+    /// <summary>候选视觉检查面板（web inspection-panel.tsx 的桌面移植）：结论、逐项 issue 与修复入口。</summary>
+    private Border BuildInspectionCard(string candidateId)
+    {
+        var panel = new StackPanel();
+        var heading = new StackPanel();
+        heading.Children.Add(new TextBlock { Text = "AI QUALITY CHECK", Style = (Style)Application.Current.FindResource("SectionIndex") });
+        heading.Children.Add(new TextBlock
+        {
+            Text = "候选视觉检查",
+            FontFamily = (FontFamily)Application.Current.FindResource("Serif"),
+            FontSize = 18, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 5, 0, 0),
+        });
+        var actions = new StackPanel { Orientation = Orientation.Horizontal };
+        actions.Children.Add(Kit.Act("关闭", (_, _) =>
+        {
+            reviewCandidateId = null;
+            panelError = null;
+            Render();
+        }, "Compact"));
+        panel.Children.Add(new PageHeading(heading, actions));
+        panel.Children.Add(Kit.Caption("检查说话人归属、角色、服装、道具和连续性；文字由人工校对。"));
+
+        var latest = LatestInspections();
+        if (latest.Count == 0)
+        {
+            // web 等待行：检查任务进行中时显示任务状态与进度，否则显示读取文案。
+            var wait = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 0) };
+            wait.Children.Add(new Spinner { Size = 18 });
+            var jobText = reviewInspectJob.ValueKind == JsonValueKind.Object
+                ? $"检查任务 {Labels.Map(Labels.JobStatus, reviewInspectJob.Text("status"))} · {reviewInspectJob.Number("progress")}%"
+                : null;
+            var hint = Kit.Caption(inspectionsError != null ? $"检查结果读取失败：{inspectionsError}" : jobText ?? "正在读取检查结果");
+            hint.Margin = new Thickness(10, 0, 0, 0);
+            wait.Children.Add(hint);
+            panel.Children.Add(wait);
+        }
+        else
+        {
+            foreach (var inspection in latest)
+                panel.Children.Add(BuildInspectionRow(inspection));
+        }
+        if (panelError != null)
+            panel.Children.Add(new TextBlock
+            {
+                Text = panelError, Foreground = (Brush)Application.Current.FindResource("Danger"),
+                FontSize = 12.5, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0),
+            });
+        var card = Wrap(null, panel);
+        System.Windows.Automation.AutomationProperties.SetName(card, "候选视觉检查面板");
+        return card;
+    }
+
+    /// <summary>单个检查结论（web inspection-panel 的 article）：维度、结论、分数、摘要、气泡差异与修复入口。</summary>
+    private Border BuildInspectionRow(JsonElement inspection)
+    {
+        var category = inspection.Text("category");
+        var outcome = inspection.Text("outcome");
+        // web 的通过集合：PASS / ACCEPTABLE / MATCH；其余（MISMATCH/MISSING/EXTRA/未知）按未通过呈现。
+        var passed = outcome is "PASS" or "ACCEPTABLE" or "MATCH";
+        var details = inspection.Element("details");
+        var content = new StackPanel();
+        content.Children.Add(new TextBlock
+        {
+            Text = $"{Labels.Map(Labels.InspectionCategory, category)} · {Labels.Map(Labels.InspectionOutcome, outcome)} · {ScoreLabel(inspection)}",
+            FontWeight = FontWeights.Bold,
+            Foreground = passed ? (Brush)Application.Current.FindResource("Success") : (Brush)Application.Current.FindResource("Warning"),
+        });
+        var summary = Kit.Caption(InspectionSummary(details));
+        summary.TextWrapping = TextWrapping.Wrap;
+        summary.Margin = new Thickness(0, 4, 0, 0);
+        content.Children.Add(summary);
+        var diffs = InspectionBubbleDiffs(details);
+        for (var index = 0; index < diffs.Count; index++)
+        {
+            var diff = diffs[index];
+            var raw = diff.Element("balloon_index");
+            var balloon = raw.ValueKind == JsonValueKind.Number && raw.TryGetInt32(out var number) ? number : index + 1;
+            var line = new TextBlock
+            {
+                // web：气泡编号缺省用序号；相似度仅数字时给百分比。
+                Text = $"气泡 {balloon:D2} · 目标：{diff.Text("target_text")} · 识别：{diff.Text("recognized_text")} · {SimilarityLabel(diff)}",
+                Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 3, 0, 0),
+            };
+            content.Children.Add(line);
+        }
+        if (!passed)
+        {
+            if (category == "TEXT")
+            {
+                var manual = Kit.Caption("请人工校对；确认后可直接采用");
+                manual.Margin = new Thickness(0, 8, 0, 0);
+                content.Children.Add(manual);
+            }
+            else
+            {
+                var repair = Kit.Act("修复" + Labels.Map(Labels.RepairType, RecommendedRepairType(category)),
+                    async (_, _) => await RepairCandidateAsync(inspection), "Compact");
+                repair.Margin = new Thickness(0, 8, 0, 0);
+                repair.IsEnabled = !pendingRows.Contains("repair");
+                content.Children.Add(repair);
+            }
+        }
+        return new Border
+        {
+            BorderBrush = passed ? (Brush)Application.Current.FindResource("Success") : (Brush)Application.Current.FindResource("Warning"),
+            BorderThickness = new Thickness(3, 0, 0, 0),
+            Padding = new Thickness(8, 4, 0, 4),
+            Margin = new Thickness(0, 10, 0, 0),
+            Child = content,
+        };
+    }
+
+    private static string ScoreLabel(JsonElement inspection)
+    {
+        var score = inspection.Element("score");
+        return score.ValueKind == JsonValueKind.Number && score.TryGetDouble(out var value)
+            ? $"{Math.Round(value * 100)}%" : "—";
+    }
+
+    private static string SimilarityLabel(JsonElement diff)
+    {
+        var similarity = diff.Element("similarity");
+        return similarity.ValueKind == JsonValueKind.Number && similarity.TryGetDouble(out var value)
+            ? $"{Math.Round(value * 100)}%" : "—";
+    }
+
+    /// <summary>
+    /// 修复动作的分辨率来源（web repairCandidate）：优先工作台已暂选候选（同 id，独立于批次列表），
+    /// 否则取当前查看批次里的该候选；都找不到时不得静默回退 1K（2K/4K 候选会被后端 422/409 拒绝）。
+    /// </summary>
+    private string ResolutionForReviewCandidate(string candidateId)
+    {
+        var selected = workbench.Element("selected_candidate");
+        if (selected.ValueKind == JsonValueKind.Object && selected.Text("id") == candidateId)
+            return selected.Text("resolution");
+        var row = (historicalCandidates ?? workbench.Array("candidates")).FirstOrDefault(c => c.Text("id") == candidateId);
+        return row.ValueKind == JsonValueKind.Object ? row.Text("resolution") : "";
+    }
+
+    /// <summary>
+    /// 逐项修复（web repairCandidate）：按 issue 的检查结果 id 与推荐修复范围提交
+    /// POST /candidates/{id}/repairs；成功后收起面板（修复会关闭当前批次并新开 REPAIR 批次，
+    /// 旧候选不在新批次里），并失效工作台/候选/任务/页面数据。
+    /// </summary>
+    internal async Task RepairCandidateAsync(JsonElement inspection)
+    {
+        if (currentPage == null || reviewCandidateId is not { } candidateId)
+        {
+            panelError = "请先选择要修复的候选";
+            Render();
+            return;
+        }
+        if (!pendingRows.Add("repair")) return;
+        var targetPage = currentPage;
+        var project = ProjectId;
+        var token = lifetime.Token;
+        panelError = null;
+        Render();
+        try
+        {
+            // 与 web 的 requireDrawModel 一致：无可用模型时不提交，绝不发送空 model_alias。
+            if (!HasUsableDrawModel())
+            {
+                panelError = "请先选择一个支持参考图编辑的图片模型";
+                return;
+            }
+            var resolution = ResolutionForReviewCandidate(candidateId);
+            if (resolution.Length == 0)
+            {
+                panelError = "候选分辨率未知，请刷新后重试";
+                return;
+            }
+            await Api.SendAsync($"candidates/{candidateId}/repairs", HttpMethod.Post, new
+            {
+                inspection_result_id = inspection.Text("id"),
+                repair_type = RecommendedRepairType(inspection.Text("category")),
+                target_regions = inspection.Element("regions").ValueKind == JsonValueKind.Array
+                    ? inspection.Element("regions") : (object)Array.Empty<object>(),
+                target_fields = Array.Empty<string>(),
+                model_alias = selectedModel,
+                resolution,
+            }, cancellation: token);
+            reviewCandidateId = null;
+            panelError = null;
+            State.Status = "已创建修复任务";
+            Cache.Invalidate("workbench:" + targetPage.Id, "library:" + project, "jobs:" + project, "pages:" + chapterId);
+            if (token.IsCancellationRequested || currentPage?.Id != targetPage.Id || ProjectId != project) return;
+            await LoadWorkbenchAsync();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            if (!token.IsCancellationRequested && currentPage?.Id == targetPage.Id && ProjectId == project) panelError = error.Message;
+        }
+        finally
+        {
+            pendingRows.Remove("repair");
+            if (!token.IsCancellationRequested && currentPage?.Id == targetPage.Id) Render();
+        }
+    }
+
     /// <summary>
     /// 视觉检查任务的看护（对应 web use-generation-workspace 的轮询与终态失效）：
     /// 有活动 PAGE_INSPECT 时持续刷新工作台；跟踪中的任务转为终态后，再补刷一次
@@ -935,6 +1306,48 @@ public sealed class GenerateView : WorkspaceView
                 // 数据，只刷工作台会让页面栏停在检查前的状态。
                 Cache.Invalidate("pages:" + chapterId);
                 _ = RefreshPageBarAsync();
+            }
+            // ── 检查面板的数据看护（web reviewJob + inspections 轮询 + 终态 invalidation）──
+            // 面板打开期间按 target_id 看护该候选的 PAGE_INSPECT，不限提交来源（其他客户端
+            // 提交的外部任务同样驱动面板刷新）；进行中每拍重读检查结果（web 2500ms 轮询），
+            // 任务身份变化或活动→终态翻转时补拉结果并刷新工作台/页面 —— 对齐 web 终态
+            // invalidation 集合：inspections、generation-workbench、candidates、chapter-production
+            //（桌面的门禁/候选来自工作台，章节生产状态来自 pages，两者都在这里覆盖）。
+            var reviewId = reviewCandidateId;
+            var reviewJob = default(JsonElement);
+            if (reviewId != null)
+            {
+                foreach (var job in jobs.EnumerateArray())
+                {
+                    if (job.Text("job_type") != "PAGE_INSPECT" || job.Text("target_id") != reviewId) continue;
+                    reviewJob = job;
+                    break;
+                }
+            }
+            reviewInspectJob = reviewJob;
+            var reviewActive = reviewJob.ValueKind == JsonValueKind.Object && !TerminalJobStatus(reviewJob.Text("status"));
+            if (reviewId == null)
+            {
+                reviewInspectJobIdSeen = "";
+                reviewChecking = false;
+                return;
+            }
+            var jobId = reviewJob.ValueKind == JsonValueKind.Object ? reviewJob.Text("id") : "";
+            var jobChanged = jobId != reviewInspectJobIdSeen;
+            reviewInspectJobIdSeen = jobId;
+            var turnedTerminal = reviewChecking && !reviewActive;
+            reviewChecking = reviewActive;
+            if (reviewActive || jobChanged || turnedTerminal) _ = LoadInspectionsAsync(reviewId);
+            if (jobChanged || turnedTerminal)
+            {
+                // G-4 的 turned 只覆盖 trackedInspectJobs（本会话提交）；外部来源的检查任务
+                // 转终态时，这里补上同一组工作台/页面刷新。
+                if (!(turnedTerminal && reviewJob.ValueKind == JsonValueKind.Object && turned.Contains(reviewJob.Text("id"))))
+                {
+                    _ = LoadWorkbenchAsync();
+                    Cache.Invalidate("pages:" + chapterId);
+                    _ = RefreshPageBarAsync();
+                }
             }
         }
         catch (OperationCanceledException) { }
@@ -972,14 +1385,17 @@ public sealed class GenerateView : WorkspaceView
         // PAGE_INSPECT，只要 target 属当前候选集就要继续看护。入口数据源即 Watch 自己拉取的
         // 全项目活跃任务列表（State/DockQueue 只暴露第一项，无法按 target 判定）；
         // Watch 自带 jobsWatchBusy 防重入，每拍最多 spawn 一次。当前页完全没有候选时无检查可言，
-        // 跳过探测以免空转请求。
-        if (active || trackedInspectJobs.Count > 0 || workbench.Array("candidates").Count > 0)
+        // 跳过探测以免空转请求；检查面板打开时除外 —— 面板要按 target 看护该候选的检查任务
+        //（含历史批次候选与外部来源），并在终态后补拉结果。
+        if (active || trackedInspectJobs.Count > 0 || workbench.Array("candidates").Count > 0 || reviewCandidateId != null)
             _ = WatchInspectJobsAsync();
     }
 
     public override Task RefreshAsync()
     {
         if (currentPage != null) _ = LoadWorkbenchAsync();
+        // 手动刷新同样覆盖检查面板的数据源（web 的失效会让 inspections 查询重新拉取）。
+        if (reviewCandidateId is { } reviewId) _ = LoadInspectionsAsync(reviewId);
         return Task.CompletedTask;
     }
 }
