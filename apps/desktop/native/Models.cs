@@ -181,7 +181,10 @@ public record JobItem(string Id, string Name, string State, string StatusLabel, 
             j.Text("error_message"),
             state is "WAITING" or "QUEUED" or "RUNNING" or "PREPARING" or "GENERATING"
                 or "UPLOADING_REFERENCES" or "CONSISTENCY_CHECKING" or "REPAIRING" or "OCR_CHECKING",
-            (state is "FAILED" or "NEEDS_REVIEW" or "WAITING") && j.Number("attempt_count") < j.Number("max_attempts"))
+            // Web jobs-section only offers 重试 for status === "FAILED" (QUEUED/GENERATING/
+            // RUNNING rows get 取消 instead); the attempt guard keeps the existing
+            // "exhausted task cannot retry" contract on top of that baseline.
+            state == "FAILED" && j.Number("attempt_count") < j.Number("max_attempts"))
         {
             Type = j.Text("job_type"),
             NodeName = j.Text("workflow_node_id") is { Length: > 0 } node ? $"节点 {node}" : "",

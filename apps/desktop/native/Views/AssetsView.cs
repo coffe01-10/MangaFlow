@@ -171,10 +171,17 @@ public sealed class AssetsView : WorkspaceView
             characters = (await characterTask).EnumerateArray().Select(CharacterItem.From).ToList();
             SelectedCharacter = characters.FirstOrDefault(c => c.Id == SelectedCharacter?.Id);
             outfits = (await outfitTask).EnumerateArray().Select(OutfitItem.From).ToList();
+            // Consume a pending deep link BEFORE the panes refresh so open panes adopt
+            // the preselection (fresh Render picks SelectedCharacter/SelectedOutfit up
+            // from the pane constructors themselves).
+            var deepLink = ConsumePendingDeepLink();
+            if (deepLink.Character is { } linked) SelectedCharacter = linked;
+            if (deepLink.Outfit is { } linkedOutfit) SelectedOutfit = linkedOutfit;
             var keepPane = false;
             if (current == Style && host.Children.OfType<StyleWorkspace>().FirstOrDefault() is { } stylePane && stylePane.SessionEpoch == captured)
             {
                 await stylePane.ReloadAsync();
+                if (deepLink.StyleId is { } styleId) stylePane.FocusStyle(styleId);
                 keepPane = true;
             }
             else if (current == Outfits && host.Children.OfType<OutfitWorkspace>().FirstOrDefault() is { } outfitPane && outfitPane.SessionEpoch == captured)
@@ -183,6 +190,8 @@ public sealed class AssetsView : WorkspaceView
                 // must refresh shared data without rebuilding the wardrobe editor —
                 // the pane adopts the fresh rows and keeps unsaved input.
                 outfitPane.AdoptReloaded();
+                // ?outfit= deep link: web's beginOutfitEdit seeds the edit form directly.
+                if (deepLink.Outfit is { } outfit) outfitPane.BeginEdit(outfit);
                 keepPane = true;
             }
             else if (current == Characters && host.Children.OfType<CharactersPane>().FirstOrDefault() is { } charactersPane && charactersPane.SessionEpoch == captured)
@@ -190,11 +199,23 @@ public sealed class AssetsView : WorkspaceView
                 // Same contract for the characters pane: strip/reference surfaces refresh,
                 // the profile editor and the concept panel keep their in-progress input.
                 charactersPane.AdoptReloaded();
+                // ?character= deep link additionally seeds the edit form (web seeds the
+                // form once when the bound character arrives).
+                if (deepLink.Character is { } character) charactersPane.ApplyCharacterDeepLink(character);
                 keepPane = true;
             }
             if (keepPane) return;
             foreach (var (key, tab) in tabs) tab.IsChecked = key == current;
             Render();
+            // Fresh panes: the outfit pane constructor already adopts SelectedOutfit
+            // (BeginEdit) and the character strip reflects SelectedCharacter; the
+            // character editor seed and the style focus need an explicit pass.
+            if (deepLink.Character is { } fresh && current == Characters &&
+                host.Children.OfType<CharactersPane>().FirstOrDefault() is { } freshPane)
+                freshPane.ApplyCharacterDeepLink(fresh);
+            if (deepLink.StyleId is { } freshStyle && current == Style &&
+                host.Children.OfType<StyleWorkspace>().FirstOrDefault() is { } freshStylePane)
+                freshStylePane.FocusStyle(freshStyle);
         }
          catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
@@ -203,6 +224,57 @@ public sealed class AssetsView : WorkspaceView
             host.Children.Clear();
             host.Children.Add(Kit.Caption($"资产读取失败：{error.Message}"));
         }
+    }
+
+    // ============ Web deep links (?character= / ?outfit= / ?style=) ============
+
+    private string? pendingCharacterId, pendingOutfitId, pendingStyleId;
+
+    /// <summary>
+    /// Web project-workspace.tsx reads ?character=/?outfit=/?style= and hands them to
+    /// use-assets-workspace (bindCharacterId preselect + edit-form seeding, outfit edit
+    /// state, style record focus). Desktop equivalent: MainWindow's NavigateSection
+    /// forwards the ids here; they are consumed by the next data load, when the rows
+    /// they point at actually exist. Unknown ids simply fall back to the plain view.
+    /// </summary>
+    public void ApplyDeepLink(string? characterId, string? outfitId, string? styleId)
+    {
+        pendingCharacterId = NonEmpty(characterId);
+        pendingOutfitId = NonEmpty(outfitId);
+        pendingStyleId = NonEmpty(styleId);
+        if (pendingCharacterId == null && pendingOutfitId == null && pendingStyleId == null) return;
+        // Switch to the target sub-view first (same unsaved-draft guard as a user tab
+        // click); the pending ids are applied when the load below lands.
+        var target = pendingOutfitId != null ? Outfits : pendingStyleId != null ? Style : Characters;
+        if (current != target) _ = SwitchAsync(target);
+        _ = LoadAsync();
+    }
+
+    private static string? NonEmpty(string? value) => value is { Length: > 0 } ? value : null;
+
+    private (CharacterItem? Character, OutfitItem? Outfit, string? StyleId) ConsumePendingDeepLink()
+    {
+        CharacterItem? character = null;
+        OutfitItem? outfit = null;
+        // Styles load lazily inside StyleWorkspace (not part of this view's shared
+        // reads), so the style id is handed through and resolved by the pane itself.
+        string? styleId = null;
+        if (pendingCharacterId is { } characterId)
+        {
+            character = characters.FirstOrDefault(c => c.Id == characterId);
+            pendingCharacterId = null;
+        }
+        if (pendingOutfitId is { } outfitId)
+        {
+            outfit = outfits.FirstOrDefault(o => o.Id == outfitId);
+            pendingOutfitId = null;
+        }
+        if (pendingStyleId is { } pending)
+        {
+            styleId = pending;
+            pendingStyleId = null;
+        }
+        return (character, outfit, styleId);
     }
 
     private static string StyleFingerprint(List<StyleItem> rows) =>
@@ -463,6 +535,19 @@ internal sealed class CharactersPane : StackPanel
     }
 
     internal void PollTick() => conceptPanel?.PollTick();
+
+    /// <summary>
+    /// ?character= deep link (web seeds the edit form once when the deep-linked
+    /// character becomes bound): select the strip chip and open the seeded editor.
+    /// </summary>
+    internal void ApplyCharacterDeepLink(CharacterItem character)
+    {
+        if (!Attached) return;
+        view.SelectedCharacter = character;
+        RenderStrip();
+        RenderEditor();
+        foreach (var references in Children.OfType<CharacterReferencesPane>()) references.Render();
+    }
 
     // Refresh shared data surfaces (strip counts, reference bindings) after a
     // background reload WITHOUT rebuilding the editor or the concept panel —
@@ -1032,14 +1117,55 @@ internal sealed class ReferencesPane : StackPanel
 {
     private readonly AssetsView view;
     private readonly StackPanel groups = new();
+    // Web use-assets-workspace: assetKind is an explicit choice (kind-switch buttons,
+    // default CHARACTER_REFERENCE) that drives the upload's kind field — never a
+    // guess from whatever character happens to be selected.
+    private string selectedKind = "CHARACTER_REFERENCE";
+    private readonly TextBlock uploadLabel = new()
+    {
+        Text = "拖拽图片到这里，或点击上传人物参考", FontWeight = FontWeights.Bold, FontSize = 15,
+        TextAlignment = TextAlignment.Center, Margin = new Thickness(0, 0, 0, 6),
+    };
+    private readonly TextBlock kindHint = new()
+    {
+        Style = (Style)Application.Current.FindResource("Micro"), TextWrapping = TextWrapping.Wrap,
+        Margin = new Thickness(0, 0, 0, 10),
+    };
+    private readonly TextBlock kindDescription = new()
+    {
+        FontSize = 12, Foreground = (Brush)Application.Current.FindResource("Muted"), TextAlignment = TextAlignment.Center,
+    };
 
     public ReferencesPane(AssetsView view)
     {
         this.view = view;
         Children.Add(PaneHeader("REFERENCE INTAKE", "原始素材 · 上传、分类与追溯原始参考图", $"{view.assets.Count} 个文件"));
+        // Web intake-toolbar / kind-switch（labels.ts kinds 顺序）：显式选择上传用途。
+        var chips = new WrapPanel { Margin = new Thickness(0, 0, 0, 8) };
+        foreach (var (kind, label) in new[]
+                 {
+                     ("CHARACTER_REFERENCE", "人物参考"), ("OUTFIT_REFERENCE", "服装参考"),
+                     ("STYLE_REFERENCE", "漫画风格"), ("SCENE_REFERENCE", "场景参考"),
+                 })
+        {
+            var chip = new ToggleButton
+            {
+                Content = label, Tag = kind, Margin = new Thickness(0, 0, 7, 6),
+                Style = (Style)Application.Current.FindResource("Chip"), IsChecked = kind == selectedKind,
+            };
+            chip.Click += (_, _) =>
+            {
+                selectedKind = kind;
+                foreach (var other in chips.Children.OfType<ToggleButton>()) other.IsChecked = ReferenceEquals(other, chip);
+                UpdateKindHint();
+            };
+            chips.Children.Add(chip);
+        }
+        Children.Add(chips);
+        Children.Add(kindHint);
         var upload = new Button
         {
-            Content = "拖拽图片到这里，或点击上传参考图", MinHeight = 84,
+            Content = new StackPanel { Children = { uploadLabel, kindDescription } }, MinHeight = 84,
             BorderBrush = (Brush)Application.Current.FindResource("LineDark"), BorderThickness = new Thickness(1),
             Background = new SolidColorBrush(Color.FromArgb(0x84, 0xFC, 0xFB, 0xF7)),
             Margin = new Thickness(0, 0, 0, 16), AllowDrop = true,
@@ -1052,7 +1178,32 @@ internal sealed class ReferencesPane : StackPanel
         };
         Children.Add(upload);
         Children.Add(groups);
+        UpdateKindHint();
         RenderGroups();
+    }
+
+    // Web intake-toolbar hint + upload-stage copy per current kind (assets-section.tsx).
+    private void UpdateKindHint()
+    {
+        uploadLabel.Text = $"拖拽图片到这里，或点击上传{Labels.Map(Labels.AssetKinds, selectedKind)}";
+        kindDescription.Text = selectedKind switch
+        {
+            "CHARACTER_REFERENCE" => "人物图会和选中的主要姓名绑定，不会只依赖文件名猜测身份。",
+            "OUTFIT_REFERENCE" => "上传后自动加入当前服装档案，保存时绑定到上方所选角色。",
+            "SCENE_REFERENCE" => "场景参考图走同一套文件类型、尺寸和安全校验；绑定关系请在场景资产中建立。",
+            _ => "上传后自动加入当前风格档案的待分析参考，创建后再由默认视觉模型分析。",
+        };
+        kindHint.Text = selectedKind switch
+        {
+            "CHARACTER_REFERENCE" => view.SelectedCharacter is { } character
+                ? $"将绑定到选中的角色 {character.PrimaryName}。"
+                : "请先选择要绑定的角色；未选择时上传的人物图不会自动绑定。",
+            "OUTFIT_REFERENCE" => view.SelectedCharacter is { } owner
+                ? $"当前绑定目标：{owner.PrimaryName} → 未命名服装。"
+                : "先选择所属角色，再建立服装档案。",
+            "SCENE_REFERENCE" => "上传后请到场景资产工作区绑定地点。",
+            _ => "当前分析目标：上传后进入待分析参考集。",
+        };
     }
 
     private static Border PaneHeader(string kicker, string title, string count)
@@ -1078,10 +1229,13 @@ internal sealed class ReferencesPane : StackPanel
 
     private async Task Upload(string? path = null)
     {
-        var kind = view.SelectedCharacter != null ? "CHARACTER_REFERENCE" : "SCENE_REFERENCE";
+        // The explicit selector above owns the kind; the character only decides
+        // whether a CHARACTER_REFERENCE upload additionally binds (web upload
+        // mutationFn: bindCharacterId is required for binding, never for the kind).
+        var kind = selectedKind;
         if (path == null)
         {
-            var picker = new OpenFileDialog { Filter = "图片|*.png;*.jpg;*.jpeg;*.webp", Title = "上传参考图" };
+            var picker = new OpenFileDialog { Filter = "图片|*.png;*.jpg;*.jpeg;*.webp", Title = $"上传{Labels.Map(Labels.AssetKinds, kind)}" };
             if (picker.ShowDialog(view.WindowHost()) != true) return;
             path = picker.FileName;
         }

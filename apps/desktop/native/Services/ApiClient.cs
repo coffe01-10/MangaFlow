@@ -58,35 +58,8 @@ public sealed class ApiClient : IDisposable
         }
         if (!response.IsSuccessStatusCode)
         {
-            var detail = $"请求失败（{(int)response.StatusCode}）";
-            try
-            {
-                using var error = JsonDocument.Parse(text);
-                if (error.RootElement.ValueKind == JsonValueKind.Object)
-                {
-                    if (error.RootElement.TryGetProperty("detail", out var value))
-                    {
-                        detail = value.ValueKind switch
-                        {
-                            JsonValueKind.String => value.GetString() ?? detail,
-                            JsonValueKind.Array => string.Join("\n", value.EnumerateArray()
-                                .Select(item => item.TryGetProperty("msg", out var msg) && item.TryGetProperty("loc", out var loc)
-                                    ? $"{string.Join(".", loc.EnumerateArray().Skip(1).Select(l => l.ToString()))}：{msg}"
-                                    : item.ToString())),
-                            JsonValueKind.Object => value.TryGetProperty("message", out var message)
-                                ? message.GetString() ?? detail
-                                : value.ToString(),
-                            _ => value.ToString(),
-                        };
-                    }
-                }
-                else if (error.RootElement.ValueKind == JsonValueKind.String)
-                    detail = error.RootElement.GetString() ?? detail;
-            }
-            catch (JsonException) { }
-            if (response.StatusCode == HttpStatusCode.Conflict)
-                detail = "数据已变化或操作条件不满足。请刷新后重试。\n" + detail;
-            throw new InvalidOperationException(detail.Length > 2000 ? detail[..2000] : detail);
+            ThrowResponseError(response, text);
+            throw new InvalidOperationException("unreachable");  // ThrowResponseError always throws
         }
         if (string.IsNullOrWhiteSpace(text)) return default;
         using var document = JsonDocument.Parse(text);
@@ -108,31 +81,17 @@ public sealed class ApiClient : IDisposable
         var text = await response.Content.ReadAsStringAsync(cancellation).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            var detail = $"上传失败（{(int)response.StatusCode}）";
-            try
-            {
-                using var error = JsonDocument.Parse(text);
-                if (error.RootElement.ValueKind == JsonValueKind.Object &&
-                    error.RootElement.TryGetProperty("detail", out var value)) detail = value.ToString();
-                else if (error.RootElement.ValueKind == JsonValueKind.String)
-                    detail = error.RootElement.GetString() ?? detail;
-            }
-            catch (JsonException) { }
-            throw new InvalidOperationException(detail);
+            ThrowResponseError(response, text, "上传失败");
+            throw new InvalidOperationException("unreachable");  // ThrowResponseError always throws
         }
         using var document = JsonDocument.Parse(text);
         return document.RootElement.Clone();
     }
 
-    public async Task<byte[]> DownloadAsync(string path, CancellationToken cancellation = default)
-    {
-        Validate(path);
-        using var response = await client.GetAsync(path, cancellation).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
-        return await response.Content.ReadAsByteArrayAsync(cancellation).ConfigureAwait(false);
-    }
-
     // Stream to an owned sibling file, then replace the user's destination only after completion.
+    // Media downloads stay streaming (ResponseHeadersRead) so a large PNG/ZIP never buffers
+    // in memory, and a failed transfer (non-2xx, network drop) leaves the user's previous
+    // file untouched instead of a silent half-written copy.
     public async Task SaveDownloadAsync(string path, string destination, CancellationToken cancellation = default)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
@@ -145,7 +104,14 @@ public sealed class ApiClient : IDisposable
         try
         {
             using var response = await client.GetAsync(relative, HttpCompletionOption.ResponseHeadersRead, cancellation).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
+            if (!response.IsSuccessStatusCode)
+            {
+                // Non-2xx bodies are small JSON errors (e.g. export.png answers 409 with
+                // the production blockers); surface the server detail like SendAsync.
+                var text = await response.Content.ReadAsStringAsync(cancellation).ConfigureAwait(false);
+                ThrowResponseError(response, text, "下载失败");
+                throw new InvalidOperationException("unreachable");  // ThrowResponseError always throws
+            }
             await using (var input = await response.Content.ReadAsStreamAsync(cancellation).ConfigureAwait(false))
             await using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous))
             {
@@ -158,6 +124,75 @@ public sealed class ApiClient : IDisposable
             created = false;
         }
         finally { if (created) File.Delete(temporary); }
+    }
+
+    /// <summary>
+    /// Shared non-2xx translation for every request path (JSON, upload, media download).
+    /// Mirrors lib/api.ts request(): detail string → as-is; detail array (FastAPI 422
+    /// loc/msg) → field-prefixed lines; detail object → its message. On top of the web
+    /// baseline, structured blocker arrays (web describeActionError in generate-section:
+    /// 409 payloads such as select-candidate / export.png carry {code, message, blockers})
+    /// are appended so per-blocker recovery guidance is never dropped.
+    /// </summary>
+    private static void ThrowResponseError(HttpResponseMessage response, string text, string fallbackLabel = "请求失败")
+    {
+        var detail = $"{fallbackLabel}（{(int)response.StatusCode}）";
+        try
+        {
+            using var error = JsonDocument.Parse(text);
+            if (error.RootElement.ValueKind == JsonValueKind.Object &&
+                error.RootElement.TryGetProperty("detail", out var value))
+                detail = DescribeDetail(value, detail);
+            else if (error.RootElement.ValueKind == JsonValueKind.String)
+                detail = error.RootElement.GetString() ?? detail;
+        }
+        catch (JsonException) { }
+        if (response.StatusCode == HttpStatusCode.Conflict)
+            detail = "数据已变化或操作条件不满足。请刷新后重试。\n" + detail;
+        throw new InvalidOperationException(detail.Length > 2000 ? detail[..2000] : detail);
+    }
+
+    private static string DescribeDetail(JsonElement value, string fallback)
+    {
+        switch (value.ValueKind)
+        {
+            case JsonValueKind.String:
+                return value.GetString() ?? fallback;
+            case JsonValueKind.Array:
+            {
+                var lines = new List<string>();
+                foreach (var item in value.EnumerateArray())
+                {
+                    if (item.ValueKind == JsonValueKind.Object &&
+                        item.TryGetProperty("msg", out var msg) && msg.ValueKind == JsonValueKind.String &&
+                        item.TryGetProperty("loc", out var loc) && loc.ValueKind == JsonValueKind.Array)
+                    {
+                        var path = string.Join(".", loc.EnumerateArray().Skip(1).Select(part => part.ToString()));
+                        lines.Add(path.Length > 0 ? $"{path}：{msg.GetString()}" : msg.GetString() ?? "");
+                    }
+                    else lines.Add(item.ToString());
+                }
+                return lines.Count > 0 ? string.Join("\n", lines) : fallback;
+            }
+            case JsonValueKind.Object:
+            {
+                var message = value.TryGetProperty("message", out var header) && header.ValueKind == JsonValueKind.String
+                    ? header.GetString() : null;
+                var blockers = new List<string>();
+                if (value.TryGetProperty("blockers", out var list) && list.ValueKind == JsonValueKind.Array)
+                    foreach (var blocker in list.EnumerateArray())
+                        if (blocker.ValueKind == JsonValueKind.Object &&
+                            blocker.TryGetProperty("message", out var text) && text.ValueKind == JsonValueKind.String &&
+                            text.GetString() is { Length: > 0 } blockerMessage)
+                            blockers.Add(blockerMessage);
+                if (message is { Length: > 0 } && blockers.Count > 0)
+                    return $"{message}：{string.Join("；", blockers)}";
+                if (blockers.Count > 0) return string.Join("；", blockers);
+                return message is { Length: > 0 } ? message : value.ToString();
+            }
+            default:
+                return value.ToString();
+        }
     }
 
     // Web publicUrl(): grids use the 640px thumbnail; lightbox keeps the original.

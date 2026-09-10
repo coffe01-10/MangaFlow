@@ -496,13 +496,10 @@ public sealed class GenerateView : WorkspaceView
             {
                 var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 5, 0, 0) };
                 row.Children.Add(new TextBlock { Text = "• " + blocker.Text("message"), TextWrapping = TextWrapping.Wrap });
-                var code = blocker.Text("code");
-                if (RouteForBlocker(code) is { } route)
-                {
-                    var go = Kit.Act("去处理", async (_, _) => await Context!.NavigateSection(route.section, route.query), "Compact");
-                    go.Margin = new Thickness(10, 0, 0, 0);
-                    row.Children.Add(go);
-                }
+                var route = RouteForBlocker(blocker, currentPage.Id);
+                var go = Kit.Act("去处理", async (_, _) => await Context!.NavigateSection(route.Section, route.Query), "Compact");
+                go.Margin = new Thickness(10, 0, 0, 0);
+                row.Children.Add(go);
                 readinessCard.Children.Add(row);
             }
         }
@@ -650,11 +647,15 @@ public sealed class GenerateView : WorkspaceView
             if (save.ShowDialog(Host) != true) return;
             try
             {
-                var bytes = await Api.DownloadAsync($"pages/{exportPage.Id}/export.png", lifetime.Token);
-                await File.WriteAllBytesAsync(save.FileName, bytes);
+                // Streaming save (web: <a href={selectedPagePngUrl}> lets the browser
+                // stream): big pages never buffer in memory and a failure (non-2xx such
+                // as the 409 production blockers, or a network drop mid-copy) leaves the
+                // previous file intact and surfaces the server detail here.
+                await Api.SaveDownloadAsync($"pages/{exportPage.Id}/export.png", save.FileName, lifetime.Token);
                 notice.Text = "单页 PNG 已保存。";
             }
-             catch (OperationCanceledException) { }
+            catch (OperationCanceledException) when (lifetime.Token.IsCancellationRequested) { }
+            catch (OperationCanceledException) { notice.Text = "下载超时，请重试；原有文件未被替换。"; }
             catch (Exception error) when (error is not OperationCanceledException) { notice.Text = error.Message; }
         }, "Compact");
         download.Margin = new Thickness(10, 0, 0, 0);
@@ -688,17 +689,39 @@ public sealed class GenerateView : WorkspaceView
     internal bool HasUsableDrawModel() => selectedModel.Length > 0
         && UsableEditModels().Any(m => m.Text("logical_alias") == selectedModel);
 
-    private static (string section, string query)? RouteForBlocker(string code) => code switch
+    // Web routeForBlocker (production-readiness.tsx): the 去处理 jump carries the
+    // blocker's target entity — ?character=/?outfit=/?style= preselect the assets view,
+    // ?page= locates the storyboard page — instead of dropping the user on a bare tab.
+    // The stage fallback (SOURCE/SCRIPT/STORYBOARD/…/PROVIDER/WORKER) mirrors the web's
+    // stageRoutes map; unknown stages land on generate exactly like the web.
+    internal static (string Section, string Query) RouteForBlocker(JsonElement blocker, string pageId)
     {
-        "MISSING_OUTFIT_ASSIGNMENT" => ("storyboard", ""),
-        "MISSING_CHARACTER_REFERENCE" => ("assets", "view=characters"),
-        "MISSING_OUTFIT_REFERENCE" => ("assets", "view=outfits"),
-        "STYLE_NOT_ACTIVE" or "STYLE_MISSING" => ("assets", "view=style"),
-        "SOURCE_INCOMPLETE" => ("source", ""),
-        "SCRIPT_INCOMPLETE" => ("script", ""),
-        "STORYBOARD_STALE" => ("storyboard", ""),
-        _ => null,
-    };
+        var code = blocker.Text("code");
+        var target = blocker.TextOrNull("target_id") ?? "";
+        var escaped = Uri.EscapeDataString(target);
+        if (code == "MISSING_OUTFIT_ASSIGNMENT")
+            // Web also carries the character (?page=…&character=…&edit=outfit) so the
+            // storyboard can focus the first VISIBLE panel of that character with no
+            // outfit assigned (storyboard-editor focusCharacterId).
+            return ("storyboard", $"page={Uri.EscapeDataString(pageId)}" + (escaped.Length > 0 ? $"&character={escaped}" : ""));
+        if (code == "MISSING_CHARACTER_REFERENCE")
+            return ("assets", $"view=characters&character={escaped}");
+        if (code == "MISSING_OUTFIT_REFERENCE")
+            return ("assets", $"view=outfits&outfit={escaped}");
+        if (code.StartsWith("STYLE_", StringComparison.Ordinal))
+            return ("assets", "view=style" + (escaped.Length > 0 ? $"&style={escaped}" : ""));
+        var stage = blocker.TextOrNull("stage")?.ToLowerInvariant() ?? "";
+        var section = stage switch
+        {
+            "source" => "source",
+            "script" => "script",
+            "storyboard" => "storyboard",
+            "assets" or "style" => "assets",
+            "settings" or "provider" or "worker" => "settings-global",
+            _ => "generate",
+        };
+        return (section, "");
+    }
 
     private static Border Wrap(string? title, StackPanel card)
     {

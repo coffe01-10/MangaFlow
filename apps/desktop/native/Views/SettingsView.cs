@@ -38,6 +38,13 @@ public sealed class SettingsView : WorkspaceView
     private List<JsonElement> catalog = [];
     private readonly Dictionary<string, bool> expanded = new();
     private string search = "";
+
+    /// <summary>
+    /// Raised after a successful PATCH /settings/runtime. MainWindow re-arms its
+    /// poll timers so the new ui_poll_interval_seconds applies from the next tick
+    /// (web: the settings cache update lands on the next query interval).
+    /// </summary>
+    internal event Action? RuntimeSaved;
     private string capability = "ALL", modelType = "ALL", sort = "RECOMMENDED";
     private bool verified, hidden;
     private JsonElement runtime;
@@ -540,6 +547,11 @@ public sealed class SettingsView : WorkspaceView
             }
             runtime = await Api.SendAsync("settings/runtime", HttpMethod.Patch, payload, cancellation: lifetime.Token);
             RenderRuntime();
+            // Publish the fresh ui_poll_interval_seconds into the shared poll period
+            // before notifying: MainWindow's handler only re-arms its timers. Null /
+            // invalid values keep the current period (PollInterval.Apply contract).
+            PollInterval.Apply(PollInterval.Parse(runtime));
+            RuntimeSaved?.Invoke();
             runtimeNotice.Visibility = Visibility.Visible;
             await LoadDiagnosticsAsync();
         }

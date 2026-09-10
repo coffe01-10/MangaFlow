@@ -296,6 +296,81 @@ public sealed class StoryboardView : WorkspaceView
             if ((string?)item.Tag == id) { chapterSelector.SelectedItem = item; return; }
     }
 
+    /// <summary>
+    /// ?page= deep link (web storyboard route from routeForBlocker): locate a page that
+    /// may live in another chapter. MainWindow stores the id in KeyValueStore first, so
+    /// after the chapter switch LoadPagesAsync picks it up; this method only resolves the
+    /// owning chapter (GET pages/{id} → chapter_id) when the page is not already loaded.
+    /// ?character= (MISSING_OUTFIT_ASSIGNMENT carries the target character) additionally
+    /// focuses the first VISIBLE panel of that character without an outfit, mirroring the
+    /// web storyboard-editor focusCharacterId effect.
+    /// </summary>
+    internal async Task LocatePageAsync(string pageId, string? focusCharacterId = null)
+    {
+        if (lifetime.IsCancellationRequested) return;
+        // Queue before any early return so the focus survives "already on that page".
+        pendingOutfitCharacterId = string.IsNullOrEmpty(focusCharacterId) ? null : focusCharacterId;
+        if (pages.FirstOrDefault(p => p.Id == pageId) is { } current && currentPage?.Id == pageId)
+        {
+            ApplyOutfitFocus();
+            return;
+        }
+        if (pages.Any(p => p.Id == pageId))
+        {
+            await LoadPagesAsync();
+            return;
+        }
+        try
+        {
+            var row = await Api.SendAsync($"pages/{pageId}", cancellation: lifetime.Token);
+            if (lifetime.IsCancellationRequested) return;
+            var owner = row.Text("chapter_id");
+            if (owner.Length == 0 || owner == chapterId) { await LoadPagesAsync(); return; }
+            if (!await ConfirmLeaveAsync()) return;
+            // Assign before moving the selector: SelectionChanged must not double-load
+            // (Activate uses the same silence trick).
+            chapterId = owner;
+            SelectChapter(owner);
+            await LoadPagesAsync();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            inspector.Children.Add(Kit.Caption($"深链页面定位失败：{error.Message}"));
+        }
+    }
+
+    // ?character=&edit=outfit deep link target: web selects the first panel where the
+    // character is VISIBLE (character_presence, with the characters array fallback)
+    // and has no outfit bound, then points the user at the outfit picker. The pending
+    // id is consumed once; SelectPageAsync applies it after the located page renders.
+    private string? pendingOutfitCharacterId;
+
+    private void ApplyOutfitFocus()
+    {
+        if (pendingOutfitCharacterId is not { } characterId) return;
+        foreach (var row in storyboard.Array("panels"))
+        {
+            var presence = row.Element("character_presence");
+            var visible = presence.ValueKind == JsonValueKind.Object
+                && presence.EnumerateObject().Any(p => p.Name == characterId
+                    && p.Value.ValueKind == JsonValueKind.String && p.Value.GetString() == "VISIBLE")
+                || row.Array("characters").Any(c => c.ValueKind == JsonValueKind.String && c.GetString() == characterId);
+            if (!visible) continue;
+            var outfits = row.Element("outfits");
+            if (outfits.ValueKind == JsonValueKind.Object
+                && outfits.EnumerateObject().Any(p => p.Name == characterId && p.Value.ToString().Length > 0))
+                continue;
+            pendingOutfitCharacterId = null;
+            if (panels.FirstOrDefault(p => p.Id == row.Text("id")) is { } target)
+            {
+                SelectPanel(target);
+                UpdateStatus("已定位到缺少服装的出镜格，请在人物下方选择服装并保存本格分镜");
+            }
+            return;
+        }
+    }
+
     private async Task LoadPagesAsync()
     {
         try
@@ -427,6 +502,7 @@ public sealed class StoryboardView : WorkspaceView
             RenderCanvas();
             RenderInspector();
             UpdatePageSize();
+            ApplyOutfitFocus();
         }
          catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
