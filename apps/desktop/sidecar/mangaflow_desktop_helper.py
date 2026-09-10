@@ -461,7 +461,17 @@ def _validate_api_root(api_root: Path) -> str | None:
         return "api-root/missing-alembic-ini"
     if not (api_root / "app" / "main.py").is_file():
         return "api-root/missing-app-main"
-    if (api_root / "fake_channel.py").is_file():
+    # Case-insensitive on purpose: Windows resolves imports case-insensitively
+    # (NTFS), so `Fake_Channel.py` would shadow the helper's own module there
+    # even though a byte-exact `fake_channel.py` check passes. On POSIX the
+    # scan is simply stricter — a case-variant is rejected everywhere.
+    try:
+        names = {entry.name.lower() for entry in api_root.iterdir()}
+    except OSError:
+        # Unreadable root: app/main.py above already failed, so this branch
+        # is unreachable in practice — keep the shadow check conservative.
+        names = set()
+    if "fake_channel.py" in names:
         return "api-root/shadowing-fake-channel"
     return None
 
