@@ -222,6 +222,39 @@
   #252/#253/#254/#259/#270/#278/#279/#281/#282/#283/#284/#285/#286。
 - **未完事项**：无。Windows 实机验证保持 NOT RUN，待 D3 复验窗口。
 
+## 14b. 20260911 夜续跑增量（master `37055ab`→`053b9e6`，PR #333/#334/#319 已合并）
+
+- **新 PR #334（已合并）**：web bundle 构建溯源戳（build-info.json：source_commit /
+  apps_web_tree / relay_origin）；e2e `_web_dist_dir()` 断言 apps/web 树哈希一致
+  （分支无关）——陈旧 bundle 无法静默测试过期 UI。实证：本轮 reset 后陈旧 bundle 在
+  新断言下响亮失败（stale tree hash），重建后恢复。
+- **新断言（#333，已合并）**：死后 announced 端口降级形态（快速关闭、无 HTTP 字节；
+  兼作 Windows co-bind 劫持绊线）。
+- **串行证据（全部 RUN）**：runner **17/17**（4a0ebe6，28.7s）；cargo **9/9**；D5 **PASS**
+  （含 path fence、in-root symlink fence、symlink 自测——#317）。
+- **行级复审（无缺陷）**：E3-F2/F3 两提交（guarded closes、收尸对称）；#312 env 卫生测试
+  （无恒真）；`start-native.ps1`（Release host 修正 + SHA256 校验，Windows NOT RUN）。
+
+## 14b-2. 0911 夜第 1 轮审查（1 子代理，文件/行级，REQUEST_CHANGES → 已返工/上报）
+
+- **F1 MAJOR（PR #336，已返工）**：`_validate_api_root` 的 `except OSError` 分支 fail-OPEN
+  ——traverse-only（0o111）root 可通过 marker `is_file()` 但 `iterdir()` 抛错，旧字节精确
+  检查反而不放行（探针证明）。修复：枚举失败回退字节精确探针（stat 经 +x 可用）。
+- **F2 MINOR（已改写）**：平台矩阵注释两半皆误——NTFS `is_file()` 匹配本身大小写不敏感；
+  POSIX 导入默认大小写敏感（PYTHONCASEOK 放宽）。扫描的真实价值：严格性 + 大小写敏感
+  卷在放宽匹配下的覆盖。
+- **F4 MAJOR（相邻，已由 PR #355 上报）**：capability 契约测试顶部枚举可被嵌套
+  `capabilities/**` 文件绕过（tauri-build glob 为 `**`）。
+- **F7 MINOR（已改写）**：docstring 修正为「wrong-tree heuristic, not hostile-tree
+  defense」（launcher 拥有该参数）。
+- **无发现区（行级核实）**：DIALOG 原子性与 Drop 顺序；async read 的 State 签名；
+  shell-tools local-context 无新 IPC 面（#254 契约仍绿）；`set_menu` 仅 UX 残余；
+  marker 集合完备性 vs 声明威胁模型（F7 修正）。
+- **跨组上报（N1）**：`picker_policy::readback_fails_closed_when_swapped...` 在
+  overlayfs（inode 复用）上间歇失败——#308 的 (st_dev, st_ino) 身份缝在 inode 复用
+  文件系统不可靠；需 N1/lead 决策（补 size/ctime 比对或标记 fs 敏感）。本轮实测：
+  全套件运行时 FAILED、单跑 PASSED（flaky）。
+
 ### 指定领域覆盖核对（审计 Mandate A，逐项）
 
 | Mandate 条目 | 审计节 | 状态 |
