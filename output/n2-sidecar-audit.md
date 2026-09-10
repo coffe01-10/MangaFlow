@@ -254,6 +254,9 @@
   overlayfs（inode 复用）上间歇失败——#308 的 (st_dev, st_ino) 身份缝在 inode 复用
   文件系统不可靠；需 N1/lead 决策（补 size/ctime 比对或标记 fs 敏感）。本轮实测：
   全套件运行时 FAILED、单跑 PASSED（flaky）。
+- **陈旧 bundle 检测实证（0911 深夜追加）**：master 前进（apps/web 变更）后，溯源断言在
+  plan-b e2e 响亮失败（stale tree hash）→ 重建后 17/17 恢复——#334 的契约在真实漂移下
+  按设计生效。
 
 ### 指定领域覆盖核对（审计 Mandate A，逐项）
 
