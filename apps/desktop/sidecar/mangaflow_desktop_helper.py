@@ -452,25 +452,31 @@ def _run_stub(journal: Path, record: dict, grandchild: bool) -> int:
 def _validate_api_root(api_root: Path) -> str | None:
     """Return a rejection reason for an unusable --api-root tree, else None.
 
-    --api-root is unvalidated shell input that becomes sys.path[0]: a wrong
-    or hostile tree can shadow the helper's own modules (fake_channel) and
-    hijack alembic's env.py before the API ever imports (#314). Marker files
-    are checked instead of trusting the path string.
+    --api-root is unvalidated shell input that becomes sys.path[0]: a WRONG
+    tree (not the API layout the launcher supplies) would shadow the
+    helper's own modules (fake_channel) and hijack alembic/uvicorn imports
+    before the API ever imports (#314). Marker files gate the wrong-tree
+    case; this is a wrong-tree heuristic, not hostile-tree defense — a
+    genuinely hostile tree that includes the markers is out of scope here
+    (the launcher owns this argument).
     """
     if not (api_root / "alembic.ini").is_file():
         return "api-root/missing-alembic-ini"
     if not (api_root / "app" / "main.py").is_file():
         return "api-root/missing-app-main"
-    # Case-insensitive on purpose: Windows resolves imports case-insensitively
-    # (NTFS), so `Fake_Channel.py` would shadow the helper's own module there
-    # even though a byte-exact `fake_channel.py` check passes. On POSIX the
-    # scan is simply stricter — a case-variant is rejected everywhere.
+    # Platform matrix for the shadow scan (round-1 review correction):
+    # - NTFS/Windows: `is_file()` matching is itself case-insensitive, so
+    #   even the byte-exact probe already rejects case variants there.
+    # - POSIX imports: case-sensitive by default (PYTHONCASEOK relaxes it),
+    #   so case variants never shadow — the scan is strictness plus
+    #   coverage for case-sensitive volumes under relaxed matching.
+    # Fail closed on enumeration failure: a traverse-only root passes the
+    # marker `is_file()` checks above but cannot be listed — fall back to
+    # the byte-exact probe (stat works through +x) instead of accepting.
     try:
         names = {entry.name.lower() for entry in api_root.iterdir()}
     except OSError:
-        # Unreadable root: app/main.py above already failed, so this branch
-        # is unreachable in practice — keep the shadow check conservative.
-        names = set()
+        names = {"fake_channel.py"} if (api_root / "fake_channel.py").is_file() else set()
     if "fake_channel.py" in names:
         return "api-root/shadowing-fake-channel"
     return None
