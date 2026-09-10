@@ -402,6 +402,29 @@ fn picker_shape_boundaries_fail_cleanly() {
         ));
     }
 
+    // A FIFO planted as an ANCESTOR of the picked path must be rejected
+    // cleanly (NotARegularFile/DoesNotExist via the metadata checks) and
+    // must NOT hang: every check in the chain is metadata-only (lstat/
+    // fstat never block on a FIFO), and opening the FIFO's path is never
+    // attempted by the validator.
+    #[cfg(unix)]
+    {
+        let fifo_dir = dir.join("fifo-ancestor");
+        fs::create_dir_all(fifo_dir.join("inner")).unwrap();
+        let fifo = fifo_dir.join("pipe");
+        let cpath =
+            std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o644) }, 0);
+        let target = fifo.join("leaf.txt");
+        // The leaf under the FIFO never exists (nothing can be created
+        // inside a pipe) — the pick must fail cleanly through the ancestor
+        // metadata checks, not hang on the FIFO.
+        assert!(
+            validate_picked_file(&target, PickKind::SourceText).is_err(),
+            "a pick through a FIFO ancestor must be rejected"
+        );
+    }
+
     // Permission-denied ancestor: validation through it fails with EACCES
     // instead of succeeding (skipped under root, which reads through the
     // mode bits).
