@@ -1014,6 +1014,68 @@ mod tests {
 
     /// Clock-skew fail-closed leg: a terminal journal whose mtime is in the
     /// FUTURE must keep the directory (duration_since errs → continue).
+    /// A journal that is a FIFO must keep the candidate WITHOUT blocking:
+    /// read_journal_bounded checks regular-file via metadata BEFORE any
+    /// open, so the sweep can never hang on a planted pipe. Unix-only:
+    /// mkfifo is a libc call. The sweep runs on a spawned thread with a
+    /// bounded join — if the metadata-before-open ordering ever regressed,
+    /// this test would HANG forever, so the regression must surface as a
+    /// failure instead.
+    #[test]
+    #[cfg(unix)]
+    fn sweep_keeps_a_candidate_whose_journal_is_a_fifo() {
+        use std::ffi::CString;
+        use std::time::Duration;
+
+        let user_data = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-sweep-fifo-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&user_data);
+        let runtime = user_data.join("runtime");
+        let candidate = runtime.join(format!("{RUNTIME_DIR_PREFIX}{}", "b".repeat(32)));
+        std::fs::create_dir_all(&candidate).unwrap();
+        let journal = candidate.join(JOURNAL_NAME);
+        let cpath =
+            CString::new(journal.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o644) }, 0);
+
+        // The wait is bounded by a channel: a regression to open-before-
+        // metadata would hang the sweep forever on the writer-less FIFO —
+        // a hang must surface as a test failure, not wedge the suite.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn({
+            let user_data = user_data.clone();
+            move || {
+                let result = std::panic::catch_unwind(
+                    std::panic::AssertUnwindSafe(|| {
+                        sweep_runtime_dirs_with(&user_data, 0)
+                    }),
+                );
+                let _ = tx.send(());
+                result
+            }
+        });
+        let sweep_started = rx
+            .recv_timeout(Duration::from_secs(60))
+            .expect("the sweep hung on the FIFO journal — metadata-before-open regression");
+        let sweep_result = worker
+            .join()
+            .unwrap_or_else(|payload| panic!("the sweep worker panicked: {payload:?}"));
+        assert!(
+            sweep_result.is_ok(),
+            "the sweep must not error on a FIFO journal: {sweep_result:?}"
+        );
+        let _ = sweep_started;
+
+        assert!(
+            candidate.exists() && journal.exists(),
+            "the FIFO-journal candidate must be kept without blocking"
+        );
+        let _ = std::fs::remove_dir_all(&user_data);
+    }
+
     #[test]
     fn sweep_keeps_a_candidate_with_a_future_mtime_journal() {
         let user_data = std::env::temp_dir().join(format!(
