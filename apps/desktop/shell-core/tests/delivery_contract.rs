@@ -8,7 +8,7 @@
 //! D1 re-verification on Windows remains required before shipping.
 
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn tauri_config() -> Value {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src-tauri/tauri.conf.json");
@@ -67,6 +67,32 @@ fn webview_network_surface_stays_loopback_only() {
     }
 }
 
+/// Issue #300 (Stage 0 pin): script-src carries 'unsafe-inline' because the
+/// static export ships Next's inline bootstrap (`self.__next_f.push`) plus
+/// shell-tools.html's own inline script; a nonce rework needs per-request
+/// rendering that a statically exported page cannot provide, and hash-based
+/// removal would have to cover every build's flight data. The debt is
+/// therefore PINNED, not accidental: this test freezes the exact directive
+/// so that dropping or extending 'unsafe-inline' (or adding a source) is a
+/// deliberate, lead-reviewed contract change. The equivalent header for the
+/// web form is pinned separately in apps/web (next-config-csp.test.ts).
+#[test]
+fn script_src_unsafe_inline_is_pinned_debt_not_drift() {
+    let config = tauri_config();
+    let csp = config["app"]["security"]["csp"]
+        .as_str()
+        .expect("restricted CSP configured");
+    let script_src = csp
+        .split("; ")
+        .find(|portion| portion.starts_with("script-src "))
+        .expect("script-src directive present");
+    assert_eq!(
+        script_src,
+        "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'",
+        "script-src drifted; changing the unsafe-inline debt requires a deliberate contract change (issue #300)"
+    );
+}
+
 #[test]
 fn bundle_identity_and_targets_stay_pinned() {
     let config = tauri_config();
@@ -81,32 +107,50 @@ fn bundle_identity_and_targets_stay_pinned() {
     assert!(names.contains(&"msi") && names.contains(&"nsis"), "{names:?}");
 }
 
-/// The capability file's authority surface stays exactly the default:
-/// core permissions on the single main window. A new permission, window or
-/// capability file widens what a loaded document may reach and must be a
-/// deliberate contract change, not config drift.
+/// Enumerate every capability file the build actually loads. tauri-build's
+/// default glob is `capabilities/**/*` and tauri-utils parses `.json`/`.toml`
+/// at ANY depth - a top-level `read_dir` would let a nested file
+/// (`capabilities/remote/remote.json`) silently bypass these contract tests.
+fn capability_files() -> Vec<PathBuf> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        let entries = std::fs::read_dir(dir)
+            .unwrap_or_else(|error| panic!("capabilities dir {dir:?} readable: {error}"));
+        for entry in entries {
+            let entry = entry.expect("capability entry readable");
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "json" || ext == "toml") {
+                out.push(path);
+            }
+        }
+    }
+    let capabilities = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src-tauri/capabilities");
+    let mut files = Vec::new();
+    walk(&capabilities, &mut files);
+    files.sort();
+    files
+}
+
+/// The capability file's authority surface stays pinned: core permissions on
+/// exactly the main + shell-tools windows (the tools window is local-context
+/// by construction, #299). A new permission, window or capability file widens
+/// what a loaded document may reach and must be a deliberate contract change,
+/// not config drift.
 #[test]
 fn capability_surface_stays_the_pinned_default() {
-    let capabilities = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src-tauri/capabilities");
-    let files: Vec<_> = std::fs::read_dir(&capabilities)
-        .expect("capabilities dir readable")
-        .collect::<Result<Vec<_>, _>>()
-        .expect("capability entries readable");
-    let json_files: Vec<_> = files
-        .iter()
-        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
-        .collect();
+    let files = capability_files();
     assert_eq!(
-        json_files.len(),
+        files.len(),
         1,
-        "exactly one capability file is expected (default.json)"
+        "exactly one capability file is expected (default.json): {files:?}"
     );
     assert!(
-        json_files[0].file_name() == "default.json",
+        files[0].file_name().is_some_and(|name| name == "default.json"),
         "the capability file must stay default.json"
     );
     let value: Value = serde_json::from_str(
-        &std::fs::read_to_string(json_files[0].path()).expect("capability readable"),
+        &std::fs::read_to_string(&files[0]).expect("capability readable"),
     )
     .expect("capability json parses");
     let expected_keys = ["identifier", "windows", "permissions"];
@@ -117,10 +161,13 @@ fn capability_surface_stays_the_pinned_default() {
         value["identifier"], "default",
         "capability identifier drifted"
     );
+    // #299: shell-tools is the local-context window the 工具 menu opens (the
+    // plan-B web origin is remote and stays denied). The pair is pinned so a
+    // new window is a deliberate contract change, not config drift.
     assert_eq!(
         value["windows"],
-        serde_json::json!(["main"]),
-        "the capability must target only the main window"
+        serde_json::json!(["main", "shell-tools"]),
+        "the capability must target only the main + shell-tools windows"
     );
     assert_eq!(
         value["permissions"],
@@ -172,21 +219,12 @@ fn no_config_declared_window_may_bypass_the_handshake_gate() {
 /// web form.
 #[test]
 fn no_capability_may_grant_a_remote_ipc_context() {
-    let capabilities = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src-tauri/capabilities");
-    let entries = std::fs::read_dir(&capabilities)
-        .unwrap_or_else(|error| panic!("capabilities dir {:?} readable: {error}", capabilities))
-        .collect::<Result<Vec<_>, _>>()
-        .expect("capability entries readable");
-    let json_files: Vec<_> = entries
-        .iter()
-        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
-        .collect();
+    let files = capability_files();
     assert!(
-        !json_files.is_empty(),
+        !files.is_empty(),
         "at least one capability file must exist (the shell grants core:default today)"
     );
-    for entry in json_files {
-        let path = entry.path();
+    for path in files {
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("capability {:?} readable: {error}", path));
         let value: Value = serde_json::from_str(&text)

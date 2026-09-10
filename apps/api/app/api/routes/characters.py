@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.api.helpers import character_references, ensure_project_scope, reject_required_nulls
 from app.database import get_db
 from app.models import (
+    Asset,
     Character,
     CharacterModelPackage,
     CharacterModelPackageVersion,
@@ -45,6 +46,57 @@ def _has_conflict(
         incoming & _tokens(item.primary_name, item.aliases)
         for item in others
         if item.id != exclude_id
+    )
+
+
+def _recompute_project_conflicts(db: Session, project_id: str) -> None:
+    """Refresh ``alias_conflict`` for every character in the project.
+
+    The one-sided check only compared the incoming row against pre-existing
+    rows, so the first 「Bob」 kept alias_conflict=false forever after a second
+    「Bob」 was created. Flags must reflect the current name set on both sides.
+    A peer that flips into conflict also drops to NEEDS_CONFIRMATION (same
+    rule as create); a resolved conflict leaves status alone — reference
+    approval owns the promotion back to CANONICAL.
+    """
+
+    items = list(db.scalars(select(Character).where(Character.project_id == project_id)))
+    token_sets = [(item, _tokens(item.primary_name, item.aliases)) for item in items]
+    for item, tokens in token_sets:
+        conflict = any(
+            tokens & other_tokens
+            for other, other_tokens in token_sets
+            if other.id != item.id
+        )
+        if conflict != item.alias_conflict:
+            # Atomic version bump: a concurrent PATCH may have advanced the
+            # row past our read; an ORM `+= 1` computed from the stale read
+            # would write the same value back and let a client holding the
+            # pre-change token pass a later optimistic-concurrency check.
+            db.execute(
+                update(Character)
+                .where(Character.id == item.id)
+                .values(version=Character.version + 1)
+                .execution_options(synchronize_session=False)
+            )
+            item.alias_conflict = conflict
+            if conflict:
+                item.status = "NEEDS_CONFIRMATION"
+            db.expire(item, ["version"])
+
+
+def _live_reference_exists(db: Session, character_id: str) -> bool:
+    return (
+        db.scalar(
+            select(CharacterReference.id)
+            .join(Asset, Asset.id == CharacterReference.asset_id)
+            .where(
+                CharacterReference.character_id == character_id,
+                Asset.deleted_at.is_(None),
+            )
+            .limit(1)
+        )
+        is not None
     )
 
 
@@ -106,6 +158,10 @@ def create_character(
         status="NEEDS_CONFIRMATION" if conflict else "UPLOADED",
     )
     db.add(character)
+    # flush so the project-wide conflict recompute (which re-reads every row)
+    # sees this insert in the same unit — the session is autoflush=False.
+    db.flush()
+    _recompute_project_conflicts(db, project_id)
     db.commit()
     db.refresh(character)
     return _read(db, character)
@@ -150,7 +206,16 @@ def update_character(
         raise HTTPException(status_code=409, detail="角色已被更新，请刷新后重试")
     for key, value in values.items():
         setattr(character, key, value)
-    character.status = "NEEDS_CONFIRMATION" if character.alias_conflict else "CANONICAL"
+    # Status derivation: alias conflict forces NEEDS_CONFIRMATION; live
+    # references with a resolved identity give CANONICAL. A reference-less
+    # row keeps its current status — a metadata edit must neither fabricate
+    # CANONICAL (that transition belongs to reference approval) nor erase the
+    # lost-reference NEEDS_CONFIRMATION signal the retract path sets.
+    if character.alias_conflict:
+        character.status = "NEEDS_CONFIRMATION"
+    elif _live_reference_exists(db, character.id):
+        character.status = "CANONICAL"
+    _recompute_project_conflicts(db, character.project_id)
     db.commit()
     db.refresh(character)
     return _read(db, character)

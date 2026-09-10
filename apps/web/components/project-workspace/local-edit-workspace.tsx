@@ -432,7 +432,12 @@ export function LocalEditWorkspace({
 
   const previewCommand = previewGroup?.commands[0] ?? null;
   const regions = mask.present;
-  const areaText = formatMaskArea(regions, imageDims.width, imageDims.height);
+  // 扫描线并集计算是 O(行×区域×边),笔画拖动期间每帧重算会浪费;
+  // 只随选区与图像尺寸变化。
+  const areaText = useMemo(
+    () => formatMaskArea(regions, imageDims.width, imageDims.height),
+    [regions, imageDims.width, imageDims.height],
+  );
   const statusText = jobPhase === "pending"
     ? "局部候选生成中，画笔已锁定；可取消任务。"
     : preparing

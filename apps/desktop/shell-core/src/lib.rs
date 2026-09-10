@@ -28,8 +28,9 @@ pub use logs::{
 };
 pub use ownership::OwnershipError;
 pub use picker::{
-    read_registered_file, validate_picked_directory, validate_picked_file, PickError, PickKind,
-    PickedDirectory, PickedFile, PickedRegistry, MAX_PICKED_FILE_BYTES,
+    read_registered_file, read_registered_file_with, validate_picked_directory,
+    validate_picked_file, PickError, PickKind, PickedDirectory, PickedFile, PickedRegistry,
+    MAX_PICKED_FILE_BYTES,
 };
 pub use protocol::{
     sweep_runtime_dirs, sweep_runtime_dirs_with, ReadyPayload, RuntimeLayout, VerifyError,

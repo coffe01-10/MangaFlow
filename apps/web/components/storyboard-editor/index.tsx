@@ -87,6 +87,12 @@ export function StoryboardEditor({
 
   const [selection, setSelection] = useState<CanvasSelection>(null);
   const [editingPanel, setEditingPanel] = useState(false);
+  // The draft is bound to the panel it was composed for. activePanel follows
+  // the selection, so keying the form on it let a bubble click or canvas
+  // clear re-label the still-open form: 保存本格分镜 then PATCHed the draft
+  // onto the WRONG panel with that panel's valid version — silent
+  // cross-panel corruption.
+  const [editingPanelId, setEditingPanelId] = useState<string | null>(null);
   const [panelDraft, setPanelDraft] = useState<PanelDraft | null>(null);
   const [dialogueDrafts, setDialogueDrafts] = useState<Record<string, DialogueDraft>>({});
   const [newDialogue, setNewDialogue] = useState<DialogueDraft | null>(null);
@@ -169,14 +175,25 @@ export function StoryboardEditor({
     : selection?.kind === "bubble"
       ? panelOfDialogue(selection.dialogueId)
       : panels[0] ?? null;
+  const editedPanel = editingPanelId ? panels.find((panel) => panel.id === editingPanelId) ?? null : null;
+  // The edited panel vanished (deleted here or by an external refetch): the
+  // form must close, never silently re-target whatever activePanel resolves
+  // to next. Derived, not an effect: the stale editing state behind it is
+  // inert (draft compares unequal-to-nothing → not dirty; the next
+  // selectPanels/beginPanel resets it).
+  const editFormOpen = editingPanel && editedPanel !== null;
+  // While the edit form is open the inspector stays pinned to the edited
+  // panel (header, dialogue editor, layer list); selection changes on the
+  // canvas highlight there without moving the form under the user.
+  const inspectorPanel = editFormOpen ? editedPanel : activePanel;
 
   // Leave protection covers geometry commands AND unsaved narrative drafts:
   // typed dialogue text is the highest-effort content in the editor, so it must
   // never vanish on page/section switch without confirmation. panelDraft only
   // counts when it actually diverges from the server panel (opening the edit
   // form alone is not an edit).
-  const panelDraftDirty = editingPanel && panelDraft && activePanel
-    ? JSON.stringify(panelDraft) !== JSON.stringify(makePanelDraft(activePanel))
+  const panelDraftDirty = editFormOpen && panelDraft && editedPanel
+    ? JSON.stringify(panelDraft) !== JSON.stringify(makePanelDraft(editedPanel))
     : false;
   // Drafts for dialogues that no longer exist (deleted here or removed by an
   // external refetch) must not keep the editor dirty forever.
@@ -313,6 +330,7 @@ export function StoryboardEditor({
     addDialogue.reset();
     removeDialogue.reset();
     setEditingPanel(false);
+    setEditingPanelId(null);
     setPanelDraft(null);
     setDialogueDrafts({});
     setNewDialogue(null);
@@ -322,34 +340,76 @@ export function StoryboardEditor({
 
   // --- narrative saves keep the existing single-object PATCH path ----------
 
+  // Narrative mutations resolve their target from the dialogue's OWNING panel
+  // (or the pinned inspector panel for creation): activePanel follows the
+  // canvas selection, and while the edit form is open the inspector shows
+  // editedPanel — keying versions on activePanel would send the wrong
+  // panel_version (false 409s) or create bubbles in the wrong panel.
   const savePanel = useMutation({
-    mutationFn: () => api.updatePanel(activePanel!.id, { version: activePanel!.version, ...panelDraft! }),
-    onSuccess: () => {
+    mutationFn: (draft: PanelDraft) => {
+      const target = editedPanel;
+      if (!target) throw new Error("目标分格已不存在，无法保存");
+      return api.updatePanel(target.id, { version: target.version, ...draft });
+    },
+    onSuccess: (_, draft) => {
+      // 表单在保存在途时不锁输入:用户继续敲入的内容不能随成功静默丢弃。
+      // 只有草稿仍等于提交内容时才收起表单;有更新的输入则保留表单。
+      if (JSON.stringify(panelDraft) !== JSON.stringify(draft)) {
+        setNotice(storyboardCopy.savedNotice((serverPage?.storyboard_version ?? currentPage.storyboard_version) + 1, storyboard.data?.candidate_count ?? 0));
+        refresh();
+        return;
+      }
       setEditingPanel(false);
+      setEditingPanelId(null);
       setPanelDraft(null);
       setNotice(storyboardCopy.savedNotice((serverPage?.storyboard_version ?? currentPage.storyboard_version) + 1, storyboard.data?.candidate_count ?? 0));
       refresh();
     },
   });
   const saveDialogue = useMutation({
-    mutationFn: ({ dialogue, draft }: { dialogue: { id: string }; draft: DialogueDraft }) =>
-      api.updateDialogue(dialogue.id, { panel_version: activePanel!.version, ...draft }),
+    mutationFn: ({ dialogue, draft }: { dialogue: { id: string }; draft: DialogueDraft }) => {
+      const owner = panelOfDialogue(dialogue.id);
+      if (!owner) throw new Error("气泡所属分格已不存在，无法保存");
+      return api.updateDialogue(dialogue.id, { panel_version: owner.version, ...draft });
+    },
     onSuccess: (_, variables) => {
-      setDialogueDrafts((values) => { const next = { ...values }; delete next[variables.dialogue.id]; return next; });
+      setDialogueDrafts((values) => {
+        const current = values[variables.dialogue.id];
+        // 在途保存期间继续敲入的文本不能被这次成功静默丢弃:仅当草稿仍
+        // 等于提交内容时清除,否则保留新输入(编辑器保持 dirty)。
+        if (current && JSON.stringify(current) !== JSON.stringify(variables.draft)) {
+          return values;
+        }
+        const next = { ...values }; delete next[variables.dialogue.id]; return next;
+      });
       setNotice(storyboardCopy.savedNotice((serverPage?.storyboard_version ?? currentPage.storyboard_version) + 1, storyboard.data?.candidate_count ?? 0));
       refresh();
     },
   });
   const addDialogue = useMutation({
-    mutationFn: () => api.createDialogue(activePanel!.id, { panel_version: activePanel!.version, ...newDialogue! }),
-    onSuccess: () => {
+    mutationFn: (draft: DialogueDraft) => {
+      const target = inspectorPanel;
+      if (!target) throw new Error("目标分格已不存在，无法新增气泡");
+      return api.createDialogue(target.id, { panel_version: target.version, ...draft });
+    },
+    onSuccess: (_, draft) => {
+      // 新气泡卡片同样不锁输入:提交后又输入的文本保留在卡片上。
+      if (JSON.stringify(newDialogue) !== JSON.stringify(draft)) {
+        setNotice(storyboardCopy.savedNotice((serverPage?.storyboard_version ?? currentPage.storyboard_version) + 1, storyboard.data?.candidate_count ?? 0));
+        refresh();
+        return;
+      }
       setNewDialogue(null);
       setNotice(storyboardCopy.savedNotice((serverPage?.storyboard_version ?? currentPage.storyboard_version) + 1, storyboard.data?.candidate_count ?? 0));
       refresh();
     },
   });
   const removeDialogue = useMutation({
-    mutationFn: (dialogueId: string) => api.deleteDialogue(dialogueId, activePanel!.version),
+    mutationFn: (dialogueId: string) => {
+      const owner = panelOfDialogue(dialogueId);
+      if (!owner) throw new Error("气泡所属分格已不存在，无法删除");
+      return api.deleteDialogue(dialogueId, owner.version);
+    },
     onSuccess: (_, dialogueId) => {
       // An orphaned draft would keep the editor permanently dirty and arm the
       // unsaved-changes guard for a bubble that no longer exists.
@@ -366,6 +426,7 @@ export function StoryboardEditor({
       clearGeometryDrafts();
       setSelection(null);
       setEditingPanel(false);
+      setEditingPanelId(null);
       setRebuild((value) => ({ ...value, open: false }));
       setNotice(storyboardCopy.rebuildNotice);
       refresh();
@@ -373,8 +434,15 @@ export function StoryboardEditor({
   });
 
   function beginPanel(panel: StoryboardPanel) {
+    // Opening a different panel's form discards the current draft: an unsaved
+    // draft confirms first, like every other exit path.
+    if (editingPanel && panelDraftDirty && panel.id !== editingPanelId
+      && !window.confirm(storyboardCopy.leaveConfirm)) {
+      return;
+    }
     setSelection({ kind: "panels", ids: [panel.id] });
     setEditingPanel(true);
+    setEditingPanelId(panel.id);
     setPanelDraft(makePanelDraft(panel));
     setNotice("");
   }
@@ -392,6 +460,7 @@ export function StoryboardEditor({
       if (cancelled) return;
       setSelection({ kind: "panels", ids: [targetPanel.id] });
       setEditingPanel(true);
+      setEditingPanelId(targetPanel.id);
       setPanelDraft(makePanelDraft(targetPanel));
       setNotice("已定位到缺少服装的出镜格，请在人物下方选择服装并保存本格分镜。");
       setFocusHandled(true);
@@ -450,6 +519,7 @@ export function StoryboardEditor({
     clearGeometryDrafts();
     setSelection(null);
     setEditingPanel(false);
+    setEditingPanelId(null);
     setPanelDraft(null);
     // Drafts belong to the previous page's dialogues; keeping them would leak
     // stale text into the next page's editor.
@@ -458,10 +528,40 @@ export function StoryboardEditor({
     setPageId(nextPageId);
   };
 
+  // 同一路由内的 ?page= 变化(前进/后退)不会重挂载编辑器,一次性 useState
+  // 初值只认挂载那一刻;后续变化要走 switchPage,复用脏确认与草稿清理。
+  // ref 只在目标页真正进入 pages 后前进:深链常落在 pages 查询落地之前,
+  // 一次性提交会让 effect 在数据到达后判定"无变化",?page= 被静默丢弃
+  // (use-assets-workspace 的 ?outfit= 深链同款写法)。参数离开时重置 ref,
+  // 前进/后退回到同一深链条目才能再次应用。
+  const appliedInitialPageRef = useRef<string | null>(null);
+  const switchPageRef = useRef(switchPage);
+  useEffect(() => { switchPageRef.current = switchPage; });
+  useEffect(() => {
+    const target = initialPageId ?? null;
+    if (appliedInitialPageRef.current === target) return;
+    if (!target) {
+      appliedInitialPageRef.current = null;
+      return;
+    }
+    if (!pages.some((page) => page.id === target)) return;
+    appliedInitialPageRef.current = target;
+    // 初次挂载时 useState 已应用同一值,switchPage 对相同页是 no-op。
+    switchPageRef.current(target);
+  }, [initialPageId, pages]);
+
   const selectPanels = (ids: string[]) => {
+    // Leaving the panel being edited closes its form; an unsaved draft must
+    // confirm first (same copy as every other exit path). Re-clicking the
+    // edited panel keeps the form open instead of discarding it silently.
+    const leavingEdit = editingPanel && editingPanelId !== null && !ids.includes(editingPanelId);
+    if (leavingEdit && panelDraftDirty && !window.confirm(storyboardCopy.leaveConfirm)) return;
     setSelection({ kind: "panels", ids });
-    setEditingPanel(false);
-    setPanelDraft(null);
+    if (leavingEdit) {
+      setEditingPanel(false);
+      setEditingPanelId(null);
+      setPanelDraft(null);
+    }
   };
 
   const selectBubble = (dialogueId: string) => {
@@ -546,7 +646,7 @@ export function StoryboardEditor({
       safeAvailable={canvasKnown}
       canUndo={commandStack.index > 0}
       canRedo={commandStack.index < commandStack.stack.length}
-      dirty={dirty}
+      canSave={commandStack.index > 0}
       saving={canvasBusy}
       overlayHint={!canvasKnown ? storyboardCopy.canvasMissing : null}
       onZoomIn={() => zoomManually(zoom * ZOOM_STEP)}
@@ -580,7 +680,14 @@ export function StoryboardEditor({
           onSelectPanels={selectPanels}
           onSelectBubble={selectBubble}
           onClearSelection={() => setSelection(null)}
-          onOpenInspector={() => activePanel && beginPanel(activePanel)}
+          onOpenInspector={() => {
+            // Canvas double-click pairs onSelectPanels with this callback: a
+            // CANCELLED leave-confirm leaves the form on the edited panel, and
+            // re-beginning that same panel here would silently reset the dirty
+            // draft the user just declined to discard.
+            if (editingPanel) return;
+            if (activePanel) beginPanel(activePanel);
+          }}
           onDeleteBubble={(dialogueId) => {
             const bubble = bubbles.find((item) => item.dialogue.id === dialogueId);
             if (bubble && window.confirm("删除这个文字气泡？")) removeDialogue.mutate(dialogueId);
@@ -591,12 +698,12 @@ export function StoryboardEditor({
         {activePanel && <div className="panel-inspector-resizer" role="separator" aria-label="调整属性面板宽度" aria-orientation="vertical" aria-valuemin={320} aria-valuemax={620} aria-valuenow={inspectorWidth} tabIndex={0} onKeyDown={(event) => { if (event.key === "ArrowLeft") persistInspectorWidth(inspectorWidth + 16); if (event.key === "ArrowRight") persistInspectorWidth(inspectorWidth - 16); }} onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); const worktable = event.currentTarget.parentElement?.getBoundingClientRect(); if (worktable) setDragInspectorWidth(clampInspectorWidth(worktable.right - event.clientX)); }} onPointerMove={(event) => { if (!event.currentTarget.hasPointerCapture(event.pointerId)) return; const worktable = event.currentTarget.parentElement?.getBoundingClientRect(); if (worktable) setDragInspectorWidth(clampInspectorWidth(worktable.right - event.clientX)); }} onPointerUp={(event) => { if (!event.currentTarget.hasPointerCapture(event.pointerId)) return; event.currentTarget.releasePointerCapture(event.pointerId); const worktable = event.currentTarget.parentElement?.getBoundingClientRect(); if (worktable) persistInspectorWidth(worktable.right - event.clientX); setDragInspectorWidth(null); }} onPointerCancel={(event) => { if (!event.currentTarget.hasPointerCapture(event.pointerId)) return; event.currentTarget.releasePointerCapture(event.pointerId); persistInspectorWidth(inspectorWidth); setDragInspectorWidth(null); }}><span /></div>}
         {activePanel && <PanelInspector
           page={serverPage ?? currentPage}
-          panel={activePanel}
+          panel={inspectorPanel ?? activePanel}
           panels={panels}
           panelRects={panelRects}
           characters={characters}
           outfits={outfits}
-          editingPanel={editingPanel}
+          editingPanel={editFormOpen}
           panelDraft={panelDraft}
           dialogueDrafts={dialogueDrafts}
           newDialogue={newDialogue}
@@ -606,16 +713,21 @@ export function StoryboardEditor({
           // 仍可点击，与整包保存并发制造虚假 409——与下方画布冻结正好相反。
           // 输入框不受影响：busy 只禁用按钮（dialogue-card 的 busy 语义相同）。
           saving={canvasBusy}
-          onBeginEdit={() => beginPanel(activePanel)}
-          onExitEdit={() => { setEditingPanel(false); setPanelDraft(null); }}
+          onBeginEdit={() => inspectorPanel && beginPanel(inspectorPanel)}
+          onExitEdit={() => {
+            if (panelDraftDirty && !window.confirm(storyboardCopy.leaveConfirm)) return;
+            setEditingPanel(false);
+            setEditingPanelId(null);
+            setPanelDraft(null);
+          }}
           onPanelDraftChange={setPanelDraft}
           onPresenceChange={setPresence}
-          onSavePanel={() => savePanel.mutate()}
+          onSavePanel={() => panelDraft && savePanel.mutate(panelDraft)}
           onDialogueDraftChange={(dialogue, draft) => setDialogueDrafts({ ...dialogueDrafts, [dialogue.id]: draft })}
           onSaveDialogue={(dialogue, draft) => saveDialogue.mutate({ dialogue, draft })}
           onRemoveDialogue={(dialogueId) => window.confirm("删除这个文字气泡？") && removeDialogue.mutate(dialogueId)}
           onNewDialogueChange={setNewDialogue}
-          onAddDialogue={() => addDialogue.mutate()}
+          onAddDialogue={() => newDialogue && addDialogue.mutate(newDialogue)}
           onCancelNewDialogue={() => setNewDialogue(null)}
           onSelectPanel={(panelId) => selectPanels([panelId])}
           onSelectBubble={selectBubble}

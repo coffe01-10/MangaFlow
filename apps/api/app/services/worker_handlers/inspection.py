@@ -379,6 +379,12 @@ regions 使用 0 到 1 的归一化 x/y/width/height。"""
         )
         needs_review = True
     db.flush()
+    # Re-acquire the JOB row lock before the page fence (mid-handler progress
+    # commits released execute_job's FOR UPDATE): this unit must run
+    # JOB→PAGE like every cancel/failure/restore path, not the inverse —
+    # otherwise a concurrent cancel holding the job claim blocks on the page
+    # restore lock while this unit blocks on the job row (AB-BA on PG).
+    lock_entity(db, GenerationJob, job.id)
     # Take the page row lock before the drift recheck and the final status
     # writes: the version fences below are check-then-act, and the completion
     # writes (continuity/status/version) must serialize against route-side

@@ -1059,3 +1059,78 @@ def test_approve_reference_checks_scope_before_state_gates(client, db_session):
         )
         assert generating.status_code == 409, generating.text
         assert generating.json()["detail"] == "角色设定草稿尚未生成完成"
+
+
+# --- 2026-09-10 web/API review round: asset surface consistency --------------
+
+
+def test_asset_kind_flip_runs_under_ownership_lock(client, db_session, monkeypatch):
+    """The PATCH kind-flip teardown must serialize on the Asset ownership lock
+    (same lock the character/scene bind routes take), so a binding validated
+    against the old kind cannot commit between the flip's read and commit."""
+    import app.api.routes.uploads as uploads_routes
+
+    project = _project(client, "用途切换锁")
+    asset = _upload_reference(client, project["id"], "flip.png")
+
+    taken: list[str] = []
+    real_lock = uploads_routes.lock_asset_for_ownership
+
+    def lock_tracking(db, asset_id):
+        taken.append(asset_id)
+        return real_lock(db, asset_id)
+
+    monkeypatch.setattr(
+        uploads_routes, "lock_asset_for_ownership", lock_tracking
+    )
+
+    flipped = client.patch(
+        f"/api/v1/assets/{asset['id']}", json={"kind": "OUTFIT_REFERENCE"}
+    )
+    assert flipped.status_code == 200, flipped.text
+    assert flipped.json()["kind"] == "OUTFIT_REFERENCE"
+    assert taken == [asset["id"]]
+
+
+def test_tombstoned_reupload_with_other_kind_resurrects(client, db_session):
+    """A soft-deleted asset's bytes must not be locked out of every other
+    reference kind forever: re-uploading the same bytes under a different
+    kind resurrects the tombstoned row with the new kind (no live binding can
+    be misrouted — the row was deleted)."""
+    project = _project(client, "墓碑重传换用途")
+    payload = _png_bytes((9, 8, 7))
+    uploaded = client.post(
+        "/api/v1/assets/upload",
+        files={"file": ("a.png", payload, "image/png")},
+        data={"project_id": project["id"], "kind": "character"},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+
+    deleted = client.delete(f"/api/v1/assets/{uploaded.json()['id']}")
+    assert deleted.status_code == 204, deleted.text
+
+    resurrected = client.post(
+        "/api/v1/assets/upload",
+        files={"file": ("b.png", payload, "image/png")},
+        data={"project_id": project["id"], "kind": "outfit"},
+    )
+    assert resurrected.status_code == 201, resurrected.text
+    assert resurrected.json()["id"] == uploaded.json()["id"]
+    assert resurrected.json()["kind"] == "OUTFIT_REFERENCE"
+
+
+def test_list_outfits_and_styles_404_on_archived_project(client, db_session):
+    """The outfit/style list routes must mirror the sibling list routes: an
+    archived (or typo'd) project is a 404, not an empty 200 that reads as
+    "该项目的确没有任何服装/风格"."""
+    project = _project(client, "归档列表门禁")
+
+    archived = client.delete(
+        f"/api/v1/projects/{project['id']}", params={"confirm_name": project["name"]}
+    )
+    assert archived.status_code == 204, archived.text
+
+    outfits = client.get(f"/api/v1/projects/{project['id']}/outfits")
+    assert outfits.status_code == 404, outfits.text
+    styles = client.get(f"/api/v1/projects/{project['id']}/styles")
+    assert styles.status_code == 404, styles.text

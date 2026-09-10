@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api, type MangaPage, type WorkflowDefinition, type WorkflowGraph, type WorkflowNodeType } from "@/lib/api";
+import { api, type MangaPage, type WorkflowDefinition, type WorkflowGraph, type WorkflowNodeRun, type WorkflowNodeType, type WorkflowRun } from "@/lib/api";
 
 import WorkflowStudio from "./workflow-studio";
 
@@ -66,6 +66,7 @@ const chaptersSpy = vi.spyOn(api, "chapters");
 const pagesSpy = vi.spyOn(api, "pages");
 const versionsSpy = vi.spyOn(api, "workflowVersions");
 const runsSpy = vi.spyOn(api, "workflowRuns");
+const startRunSpy = vi.spyOn(api, "startWorkflowRun");
 const updateSpy = vi.spyOn(api, "updateWorkflow");
 const publishSpy = vi.spyOn(api, "publishWorkflow");
 
@@ -358,5 +359,106 @@ describe("WorkflowStudio 草稿离开边界", () => {
     await waitFor(() => expect(pagesSpy).toHaveBeenCalledWith("ch-2"));
     await waitFor(() => expect(screen.getByLabelText("运行目标")).toHaveValue("p-2-1"));
     expect(screen.getByRole("option", { name: "第 2 页" })).toBeInTheDocument();
+  });
+});
+
+describe("WorkflowStudio 运行状态显示", () => {
+  function nodeRun(overrides: Partial<WorkflowNodeRun> = {}): WorkflowNodeRun {
+    return {
+      id: "nr-1", workflow_run_id: "run-1", node_id: "node-1", node_type: "control.approval",
+      status: "WAITING", job_id: null, input_snapshot: {}, output_refs: {}, attempt_count: 0,
+      started_at: null, finished_at: null, error_code: null, error_message: null,
+      ...overrides,
+    };
+  }
+  function run(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
+    return {
+      id: "run-1", workflow_id: "wf-1", workflow_version_id: "ver-1", project_id: "project-1",
+      scope_type: "CHAPTER", scope_id: "ch-1", status: "RUNNING", start_node_ids: [], stop_node_ids: [],
+      node_runs: [], created_at: "2026-08-27T00:00:00Z", updated_at: "2026-08-27T00:00:00Z", version: 1,
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    projectSpy.mockReset().mockResolvedValue({
+      id: "project-1",
+      name: "测试项目",
+      language: "zh-CN",
+      reading_direction: "rtl",
+      page_ratio: "b5_portrait",
+      default_resolution: "2K",
+      draft_resolution: "1K",
+      workflow_mode: "SEMI_AUTO",
+      default_concurrency: 1,
+      default_style_id: null,
+      consistency_check_enabled: true,
+      text_model_alias: "text.fast",
+      last_image_model_alias: null,
+      default_text_model_id: null,
+      last_image_model_id: null,
+      created_at: "2026-08-27T00:00:00Z",
+      updated_at: "2026-08-27T00:00:00Z",
+      version: 1,
+    });
+    workflowsSpy.mockReset().mockResolvedValue([workflow()]);
+    catalogSpy.mockReset().mockResolvedValue([nodeType]);
+    modelsSpy.mockReset().mockResolvedValue([]);
+    chaptersSpy.mockReset().mockResolvedValue([{
+      id: "ch-1", project_id: "project-1", title: "第一章", ordinal: 1, status: "READY",
+      current_source_revision_id: null, source_character_count: 0, segment_count: 0,
+      page_count: 1, coverage_ratio: 1,
+      created_at: "2026-08-27T00:00:00Z", updated_at: "2026-08-27T00:00:00Z", version: 1,
+    }]);
+    pagesSpy.mockReset().mockResolvedValue([]);
+    versionsSpy.mockReset().mockResolvedValue([]);
+    runsSpy.mockReset().mockResolvedValue([]);
+    startRunSpy.mockReset();
+    updateSpy.mockReset();
+    publishSpy.mockReset();
+  });
+
+  it("运行启动后，审批行与进度来自轮询列表而非启动快照", async () => {
+    // 启动响应快照：两个节点都还在 WAITING（后端 202 立即返回）。
+    const snapshot = run({
+      node_runs: [
+        nodeRun({ node_id: "node-1" }),
+        nodeRun({ id: "nr-2", node_id: "node-2" }),
+      ],
+    });
+    // 后端推进后的轮询结果：node-1 已完成，node-2 到达 WAITING_APPROVAL。
+    const progressed = run({
+      node_runs: [
+        nodeRun({
+          node_id: "node-1", status: "COMPLETED",
+          started_at: "2026-08-27T00:00:01Z", finished_at: "2026-08-27T00:00:02Z",
+        }),
+        nodeRun({ id: "nr-2", node_id: "node-2", status: "WAITING_APPROVAL" }),
+      ],
+    });
+    const started = deferred<WorkflowRun>();
+    startRunSpy.mockReturnValue(started.promise);
+    runsSpy.mockResolvedValue([]);
+
+    renderStudio();
+    await screen.findByText("流程编排");
+    // 运行范围默认 PAGE：切到 CHAPTER 并等章节就位。
+    fireEvent.change(screen.getByLabelText("运行范围类型"), { target: { value: "CHAPTER" } });
+    await waitFor(() => expect(screen.getByLabelText("运行目标")).toHaveValue("ch-1"));
+    await act(async () => {
+      screen.getByRole("button", { name: "运行工作流" }).click();
+    });
+    // 启动成功后，下一次轮询返回同 ID 的更新运行。
+    runsSpy.mockResolvedValue([progressed]);
+    await act(async () => {
+      started.resolve(snapshot);
+      await started.promise;
+    });
+
+    // 审批行来自轮询数据：快照里没有 WAITING_APPROVAL，冻结在快照上就永远不出现。
+    expect(await screen.findByText("采用候选后继续")).toBeInTheDocument();
+    // 进度计数 1/2 同样来自轮询数据（快照是 0/2）。
+    expect(screen.getByText(/1\/2/)).toBeInTheDocument();
   });
 });

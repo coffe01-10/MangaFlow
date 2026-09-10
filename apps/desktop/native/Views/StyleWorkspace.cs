@@ -121,6 +121,7 @@ internal sealed class StyleWorkspace : StackPanel
                 card.Adopt(row, activeId == id && row.Text("status") == "ACTIVE");
             }
             if (rows.Count == 0) records.Children.Add(Caption("选择色彩模式并绑定参考页，建立第一份漫画风格档案。")); Heading(rows.Count);
+            ApplyPendingStyleFocus();
             await Task.WhenAll(cards.Values.Select(card => card.LoadCandidatesAsync()));
         }
         catch (OperationCanceledException) { }
@@ -128,6 +129,23 @@ internal sealed class StyleWorkspace : StackPanel
         finally { if (ticket == request) reading = false; }
     }
     internal void PollTick() { if (Active && !reading && cards.Values.Any(c => c.NeedsPoll)) _ = ReloadAsync(); }
+
+    // ?style= deep link (web focusStyleId + deep-link-focus CSS class): highlight the
+    // targeted record and scroll it into view. Styles load asynchronously here, so an
+    /// id that has no card yet is queued and applied at the end of the next ReloadAsync.
+    private string? pendingFocusStyleId;
+    internal void FocusStyle(string styleId)
+    {
+        pendingFocusStyleId = styleId;
+        ApplyPendingStyleFocus();
+    }
+    private void ApplyPendingStyleFocus()
+    {
+        if (pendingFocusStyleId is not { } id || !cards.TryGetValue(id, out var card)) return;
+        pendingFocusStyleId = null;
+        View.SelectedStyle = card.Item;
+        card.MarkDeepLinkFocus();
+    }
     internal async Task CreateAsync()
     {
         if (!Active || saving || selected.Count == 0 || name.Text.Trim().Length == 0) return;

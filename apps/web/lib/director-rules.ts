@@ -162,6 +162,24 @@ function mentionedCharacters(utterance: string, characters: Character[]): Charac
   );
 }
 
+/**
+ * 把角色名（含别名）从指令文本中剥除，用于天气/时间匹配：名为「小雨」的
+ * 角色不能只因为字面包含「雨」就把「去掉小雨」劫持成场景级天气修改。
+ * 最长优先，别名包含较短名字时整段消耗；返回文本仅供模式匹配，不再
+ * 用于角色解析（那些分支继续用原文）。
+ */
+function stripCharacterMentions(utterance: string, characters: Character[]): string {
+  let text = utterance;
+  const names = characters
+    .flatMap((character) => [character.primary_name, ...(character.aliases ?? [])])
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+  for (const name of names) {
+    text = text.split(name).join(" ");
+  }
+  return text;
+}
+
 function panelClarifyOptions(panels: StoryboardPanel[]): DirectorClarifyOption[] {
   return orderedPanels(panels).map((panel) => ({
     kind: "panel" as const,
@@ -411,10 +429,13 @@ export function compileDirectorCommand(input: DirectorRuleInput): DirectorPlan {
   }
 
   // Scene context (weather / time of day), before cast rules so 「去掉雨」
-  // resolves as weather. Uses the page's primary scene — the same scene that
-  // feeds generation input.
-  const weather = WEATHER_LABELS.find(([pattern]) => pattern.test(utterance));
-  const timeLabel = TIME_LABELS.find(([pattern]) => pattern.test(utterance));
+  // resolves as weather. Character names are stripped from the matching text
+  // first: a character named 小雨 must not satisfy the 雨 pattern and hijack
+  // 「去掉小雨」/「小雨微笑」 into a scene-level weather change. Cast and
+  // expression branches below keep matching on the original utterance.
+  const nameStripped = stripCharacterMentions(utterance, input.characters);
+  const weather = WEATHER_LABELS.find(([pattern]) => pattern.test(nameStripped));
+  const timeLabel = TIME_LABELS.find(([pattern]) => pattern.test(nameStripped));
   if (weather || timeLabel) {
     const sceneId = input.page.scene_ids[0] ?? null;
     const scene = sceneId ? input.scenes.find((item) => item.id === sceneId) ?? null : null;
@@ -425,11 +446,40 @@ export function compileDirectorCommand(input: DirectorRuleInput): DirectorPlan {
       };
     }
     const payload: Record<string, unknown> = {};
-    const wantsGone = /去掉|移除|拿掉|停|不要/.test(utterance);
-    if (weather) payload.weather = wantsGone ? "无雨" : weather[1];
+    // 否定按"子句"判定:「去掉雾,改成晚上」里否定只作用于雾,时间仍是
+    // 正面设定;整句检测会把时间改动静默丢掉。子句从剥离角色名后的文本
+    // 切分(名字里的「停」等否定字样不再劫持天气),且 、 是并列连词不是
+    // 子句边界——「去掉雾、雪」必须整体视为移除,否则首个匹配词会脱离
+    // 否定子句被反向写成肯定值。
+    const NEGATION = /去掉|移除|拿掉|停|不要/;
+    const clauses = nameStripped.split(/[,，。;；!！?？]/);
+    const weatherNegated = weather
+      ? clauses.some((clause) => NEGATION.test(clause) && weather[0].test(clause))
+      : false;
+    const timeNegated = timeLabel
+      ? clauses.some((clause) => NEGATION.test(clause) && timeLabel[0].test(clause))
+      : false;
+    const WEATHER_REMOVAL: Record<string, string> = {
+      "暴雨": "无雨", "雷雨": "无雨", "大雨": "无雨", "小雨": "无雨", "雨": "无雨",
+      "雪": "无雪", "雾": "无雾", "阴": "晴", "晴": "阴",
+    };
+    const weatherValue = weather ? (weatherNegated ? WEATHER_REMOVAL[weather[1]] ?? weather[1] : weather[1]) : null;
+    if (timeNegated) {
+      // 否定时间没有自然反义(「不要夜晚」该变成白天还是清晨?),写回否定值
+      // 恰好与用户意图相反,改为要求正面表述。即使同一句里天气子句可以按
+      // 否定映射(「不要下雨,不要夜晚」的「无雨」),时间子句也无法编译成
+      // 命令——整体进澄清层并说明天气意向,而不是把时间静默丢进只改天气
+      // 的 payload。子句判定见上:否定只作用于它所在的那一个子句。
+      return {
+        kind: "clarify",
+        reason: `${weatherValue ? `天气部分会按「${weatherValue}」处理，但` : ""}时间无法直接“移除”，请改成想要的时间，例如：时间改成白天`,
+        options: [],
+      };
+    }
+    if (weatherValue) payload.weather = weatherValue;
     if (timeLabel) payload.time_label = timeLabel[1];
     const changes = [
-      weather ? `天气→${wantsGone ? "无雨" : weather[1]}` : null,
+      weatherValue ? `天气→${weatherValue}` : null,
       timeLabel ? `时间→${timeLabel[1]}` : null,
     ].filter(Boolean).join("、");
     const panelNote = parsePanelNumber(utterance);

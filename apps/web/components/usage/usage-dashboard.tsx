@@ -62,6 +62,11 @@ export function UsageDashboard() {
     until.setDate(until.getDate() + 1);
     return { since: toIsoLocalMidnight(fromDate), until: toIsoLocalMidnight(until) };
   }, [preset, customFrom, customTo]);
+  // An incomplete custom range (cleared or unparsable start date, unparsable
+  // end date) must fail VISIBLE: silently dropping both bounds queried
+  // all-time totals while the UI still presented the custom-range controls.
+  const customRangeInvalid = preset === "custom"
+    && (!customFrom || !parseLocalDate(customFrom) || (customTo !== "" && !parseLocalDate(customTo)));
 
   const summaryFilters: UsageFilters = useMemo(
     () => ({
@@ -83,6 +88,7 @@ export function UsageDashboard() {
   const summary = useQuery({
     queryKey: ["usage-summary", filterKey],
     queryFn: () => api.usageSummary(summaryFilters),
+    enabled: !customRangeInvalid,
   });
   const attempts = useInfiniteQuery({
     queryKey: ["usage-attempts", filterKey],
@@ -90,6 +96,7 @@ export function UsageDashboard() {
       api.usageAttempts(attemptsFilters, pageParam, 50),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
+    enabled: !customRangeInvalid,
   });
 
   const providerOptions = useMemo(() => {
@@ -216,7 +223,13 @@ export function UsageDashboard() {
         </div>
       </section>
 
-      {isLoading ? (
+      {customRangeInvalid ? (
+        <div className="usage-state empty" role="alert">
+          <p>自定义时间范围不完整</p>
+          <small>请填写有效的开始日期（结束日期留空表示只统计开始当天），或切回预设范围</small>
+          <button type="button" className="button ghost compact" onClick={resetFilters}>重置筛选</button>
+        </div>
+      ) : isLoading ? (
         <div className="usage-state loading" role="status">
           <p>正在汇总 API 用量与成本数据…</p>
         </div>

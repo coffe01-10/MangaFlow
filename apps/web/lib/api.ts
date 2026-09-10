@@ -1536,7 +1536,23 @@ export const api = {
   providerBalance: (connectionId: string) =>
     request<{ configured: boolean; value: string | number | null; usage?: string | number | null; currency?: string | null; message: string }>(`/providers/connections/${connectionId}/balance`),
   providerProbes: (connectionId: string) => request<ModelProbe[]>(`/providers/probes?connection_id=${encodeURIComponent(connectionId)}`),
-  assets: (projectId: string) => request<Asset[]>(`/assets?project_id=${encodeURIComponent(projectId)}`),
+  // The asset list endpoint caps one page at 200; workspace consumers (asset
+  // panels, generation references) need the complete list, so they page with
+  // the maximum limit until a short page ends the loop — same pattern as
+  // sceneAssetsAll / characterPackagesAll.
+  assets: async (projectId: string) => {
+    const limit = 200;
+    const all: Asset[] = [];
+    let offset = 0;
+    for (;;) {
+      const page = await request<Asset[]>(
+        `/assets?project_id=${encodeURIComponent(projectId)}&limit=${limit}&offset=${offset}`,
+      );
+      all.push(...page);
+      if (page.length < limit) return all;
+      offset += limit;
+    }
+  },
   uploadAsset: (projectId: string, kind: string, file: File) => {
     const data = new FormData();
     data.append("project_id", projectId);

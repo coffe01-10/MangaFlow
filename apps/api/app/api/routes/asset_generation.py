@@ -31,6 +31,10 @@ from app.models import (
     Panel,
     Project,
     Scene,
+    SceneAsset,
+    SceneAssetReference,
+    SceneAssetVariant,
+    SceneAssetVariantReference,
     StyleProfile,
     StyleStatus,
 )
@@ -90,24 +94,38 @@ def _validate_reference_assets(
     expected_kind: str,
     label: str,
 ) -> None:
-    for asset_id in asset_ids:
-        asset = db.get(Asset, asset_id)
-        if (
-            not asset
-            or asset.deleted_at is not None
-            or asset.project_id != project_id
-            or (
-                asset.kind != expected_kind
-                and not (
-                    expected_kind == "OUTFIT_REFERENCE"
-                    and asset.source in {"AI_GENERATED", "VERTEX_GENERATED"}
+    # Validate under the asset ownership lock (sorted id order gives one
+    # global order across multi-asset lists): a concurrent PATCH kind flip
+    # tears outfit/style reference lists down while holding this lock, so a
+    # list validated against the old kind cannot commit past the flip — the
+    # same serialization the character/scene bind routes apply.
+    ordered = sorted(set(asset_ids))
+
+    def _validate() -> None:
+        for asset_id in ordered:
+            asset = lock_asset_for_ownership(db, asset_id)
+            if (
+                not asset
+                or asset.deleted_at is not None
+                or asset.project_id != project_id
+                or (
+                    asset.kind != expected_kind
+                    and not (
+                        expected_kind == "OUTFIT_REFERENCE"
+                        and asset.source in {"AI_GENERATED", "VERTEX_GENERATED"}
+                    )
                 )
-            )
-        ):
-            raise HTTPException(
-                status_code=409,
-                detail=f"{label}不存在、用途错误或不属于当前项目",
-            )
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"{label}不存在、用途错误或不属于当前项目",
+                )
+
+    run_lock_retry(
+        db,
+        _validate,
+        conflict_detail="素材校验冲突，请稍后重试",
+    )
 
 
 def _has_active_reference_assets(
@@ -146,6 +164,11 @@ def _ensure_asset_blob_alive(asset: Asset, *, detail: str) -> None:
 
 @router.get("/projects/{project_id}/outfits", response_model=list[OutfitRead])
 def list_outfits(project_id: str, db: Session = Depends(get_db)) -> list[Outfit]:
+    # Same liveness guard as every sibling list route: an archived/typo'd
+    # project must surface as 404, not as an empty "no outfits" answer.
+    project = db.get(Project, project_id)
+    if not project or project.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="项目不存在")
     return list(
         db.scalars(
             select(Outfit).where(Outfit.project_id == project_id).order_by(Outfit.created_at)
@@ -316,7 +339,33 @@ def delete_outfit(
         )
         for asset_id in style.profile.get("reference_asset_ids", [])
     }
-    protected_reference_ids = other_reference_ids | character_reference_ids | style_reference_ids
+    # Scene reference pools (asset-level and variant-level) are live bindings
+    # too: a generated outfit candidate that is also bound to a scene asset
+    # must not be tombstoned here — the scene bind listing would keep showing
+    # a binding whose content_url 404s. Mirrors the character/style sets.
+    scene_reference_ids = set(
+        db.scalars(
+            select(SceneAssetReference.asset_id)
+            .join(SceneAsset, SceneAsset.id == SceneAssetReference.scene_asset_id)
+            .where(SceneAsset.project_id == outfit.project_id)
+        )
+    ) | set(
+        db.scalars(
+            select(SceneAssetVariantReference.asset_id)
+            .join(
+                SceneAssetVariant,
+                SceneAssetVariant.id == SceneAssetVariantReference.variant_id,
+            )
+            .join(SceneAsset, SceneAsset.id == SceneAssetVariant.scene_asset_id)
+            .where(SceneAsset.project_id == outfit.project_id)
+        )
+    )
+    protected_reference_ids = (
+        other_reference_ids
+        | character_reference_ids
+        | style_reference_ids
+        | scene_reference_ids
+    )
     exclusive_reference_ids = reference_ids - protected_reference_ids
     generated_asset_ids = {
         candidate.asset_id for candidate in candidates if candidate.asset_id
@@ -481,6 +530,10 @@ def delete_outfit(
 
 @router.get("/projects/{project_id}/styles", response_model=list[StyleProfileRead])
 def list_styles(project_id: str, db: Session = Depends(get_db)) -> list[StyleProfile]:
+    # Liveness guard mirroring list_outfits / list_characters.
+    project = db.get(Project, project_id)
+    if not project or project.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="项目不存在")
     return list(
         db.scalars(
             select(StyleProfile)
@@ -1232,7 +1285,12 @@ def approve_asset_reference(
                     )
                 )
             locked_asset.kind = "CHARACTER_REFERENCE"
-            character.status = "CANONICAL"
+            # CANONICAL requires a resolved identity: an alias-conflicted
+            # character stays NEEDS_CONFIRMATION even with a live reference
+            # (same derivation as PATCH /characters/{id}).
+            character.status = (
+                "NEEDS_CONFIRMATION" if character.alias_conflict else "CANONICAL"
+            )
             character.version += 1
 
         run_lock_retry(

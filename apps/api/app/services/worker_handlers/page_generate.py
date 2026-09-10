@@ -771,6 +771,12 @@ def _run_page_generate(db, job: GenerationJob) -> None:
     candidate.asset_id = asset.id
     candidate.generation_record_id = record.id
     candidate.status = "READY"
+    # Re-acquire the JOB row lock before the page fence: the mid-handler
+    # progress commits (_commit_owned_progress / _lease_reference_assets)
+    # released the FOR UPDATE taken in execute_job, and this final unit would
+    # otherwise run PAGE→JOB — opposite to every cancel/failure/restore path
+    # (job claim, then page restore lock), an AB-BA deadlock on PostgreSQL.
+    lock_entity(db, GenerationJob, job.id)
     # Page row lock for the DRAFT_READY fence bump: serializes against
     # route-side storyboard edits so the version increment cannot be lost
     # to a concurrent read-modify-write on the same row.

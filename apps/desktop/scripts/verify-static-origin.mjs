@@ -10,7 +10,7 @@
 //   4. asserts the exported app calls the API origin DIRECTLY (no /api path
 //      on the static server, no NEXT_PUBLIC dependency) and renders.
 import { createServer } from "node:http";
-import { readFile, stat } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
 import { join, extname, resolve, sep } from "node:path";
 import { spawn } from "node:child_process";
 import { connect } from "node:net";
@@ -44,8 +44,20 @@ const runtime = join(user_data, `runtime/mangaflow-desktop-${token}`);
 await (await import("node:fs/promises")).mkdir(runtime, { recursive: true });
 const journal = join(runtime, "owner.json");
 
+let ok = true;
+
 function fail(message) {
+  // Every failure — including the request-handler fence breaches that fire
+  // before the ok flag's declaration point in the flow — must clear ok:
+  // otherwise the final `process.exitCode = ok ? 0 : 1` turns a breached
+  // fence into "D5 PASS" + exit 0 (E2 review, HIGH).
+  ok = false;
   console.error(`D5 FAIL: ${message}`);
+  // The helper is setsid'd (own process group), so the negative-pid kill
+  // reaches it and anything it spawned. Without this, a helper hung before
+  // READY (stdin-EOF watch never armed, nothing reads its stdin) outlives
+  // the script while holding its loopback port (E-review L1a).
+  try { process.kill(-helper.pid, "SIGKILL"); } catch { /* already gone */ }
   process.exitCode = 1;
 }
 
@@ -57,13 +69,28 @@ const helper = spawn(PYTHON, [HELPER, "app", "--api-root", join(REPO_ROOT, "apps
   stdio: ["pipe", "pipe", "inherit"],
 });
 const readyLine = await new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error("helper readiness timeout")), 20000);
+  const timer = setTimeout(() => {
+    // A helper hung before READY has no stdin-EOF watch armed (that is
+    // armed after GO), so nothing would terminate it: kill the process
+    // group before failing, or it outlives the script holding its
+    // loopback port (E2 review of #353 — the headline fix bypassed
+    // fail() on exactly this path).
+    try { process.kill(-helper.pid, "SIGKILL"); } catch { /* already gone */ }
+    reject(new Error("helper readiness timeout"));
+  }, 20000);
   helper.stdout.once("data", (chunk) => {
     clearTimeout(timer);
     resolve(chunk.toString().split("\n")[0]);
   });
 });
 if (!readyLine.startsWith("MANGAFLOW_READY ")) return fail(`bad ready line: ${readyLine}`);
+// Track the helper's exit from the earliest possible moment: fail() may
+// SIGKILL the process group at ANY later point (including while the script
+// is inside the browser phase), and an exit listener registered only in the
+// teardown block would miss that event and hang on the give-up timer.
+let helper_exit_resolve;
+const helper_exit = new Promise((resolve) => { helper_exit_resolve = resolve; });
+helper.once("exit", (code, signal) => helper_exit_resolve({ code, signal }));
 const ready = JSON.parse(readyLine.slice("MANGAFLOW_READY ".length));
 const record = JSON.parse((await readFile(journal)).toString());
 if (ready.token !== token) return fail("token mismatch");
@@ -75,7 +102,11 @@ helper.stdin.write(`MANGAFLOW_GO ${token}\n`);
 let health_ok = false;
 for (let attempt = 0; attempt < 50 && !health_ok; attempt += 1) {
   try {
-    const probe = await fetch(`${ready.api_origin}/api/v1/health`);
+    // Per-attempt timeout: a connection that is accepted but never
+    // responded would otherwise hang the loop past the 50-attempt bound
+    // (E-review L1b).
+    const probe = await fetch(`${ready.api_origin}/api/v1/health`,
+      { signal: AbortSignal.timeout(2000) });
     health_ok = probe.status === 200;
   } catch {
     await new Promise((resolve) => setTimeout(resolve, 200));
@@ -103,7 +134,20 @@ const server = createServer(async (req, res) => {
     if (file !== root && !file.startsWith(root + sep)) {
       throw new Error("path escapes the static export root");
     }
-    if ((await stat(file)).isDirectory()) file = join(file, "index.html");
+    // In-root symlinks are refused like escapes (#317): stat/readFile FOLLOW
+    // them, so a planted link (or one whose target swaps after validation)
+    // would serve content the resolve-only containment check never saw.
+    let info = await lstat(file);
+    if (info.isSymbolicLink()) {
+      throw new Error("symlink inside the static export root");
+    }
+    if (info.isDirectory()) {
+      file = join(file, "index.html");
+      info = await lstat(file);
+      if (info.isSymbolicLink()) {
+        throw new Error("symlink inside the static export root");
+      }
+    }
     const body = await readFile(file);
     res.writeHead(200, { "content-type": MIME[extname(file)] ?? "application/octet-stream" });
     res.end(body);
@@ -164,6 +208,55 @@ try {
   }
 }
 
+// ---- 2c. in-root symlink fence (#317) -------------------------------------
+// The lstat refusal above has no other executable verification: plant a link
+// INSIDE the export root (so the resolve fence passes) whose target exists,
+// and require the server to answer 404 instead of following it. Symlink
+// creation can be unavailable (Windows without developer mode); the probe
+// skips loudly rather than silently weakening the fence check.
+{
+  const { symlink, unlink } = await import("node:fs/promises");
+  const probe = join(FRONTEND, "d5-symlink-probe.json");
+  let planted = true;
+  try {
+    await symlink(join(REPO_ROOT, "package.json"), probe, "file");
+  } catch {
+    planted = false;
+  }
+  if (!planted) {
+    console.log("D5 symlink fence skipped: symlink creation unavailable on this host");
+  } else {
+    try {
+      const viaLink = await new Promise((settle) => {
+        const timer = setTimeout(() => sock.destroy(), 3000);
+        const settleOnce = (raw) => {
+          clearTimeout(timer);
+          settle(raw);
+        };
+        const sock = connect(STATIC_PORT, "127.0.0.1", () => {
+          sock.write(
+            "GET /d5-symlink-probe.json HTTP/1.1\r\n" +
+            "Host: 127.0.0.1\r\nConnection: close\r\n\r\n",
+          );
+        });
+        let raw = "";
+        sock.setEncoding("latin1");
+        sock.on("data", (chunk) => { raw += chunk; });
+        sock.on("close", () => settleOnce(raw));
+        sock.on("error", () => settleOnce(raw));
+      });
+      const status = Number(viaLink.split("\r\n")[0]?.split(" ")[1] ?? 0);
+      if (status !== 404) {
+        fail(`in-root symlink served: answered ${status} (must be 404)`);
+      } else {
+        console.log("D5 symlink fence ok: in-root link refused with 404");
+      }
+    } finally {
+      await unlink(probe).catch(() => {});
+    }
+  }
+}
+
 // ---- 3+4. browser with shell-equivalent initialization script ------------
 const browser = await chromium.launch({ args: ["--no-sandbox"] });
 const context = await browser.newContext();
@@ -196,7 +289,6 @@ const evidence = {
     Object.keys(window).filter((key) => key.startsWith("__MANGAFLOW_ORIGIN")).length === 0),
   rendered_marker: body_text.includes("新建项目") || body_text.includes("最近创作"),
 };
-let ok = true;
 if (evidence.injected_origin !== ready.api_origin) { ok = false; fail("origin injection missing"); }
 if (evidence.api_request_count === 0) { ok = false; fail("no direct API request observed"); }
 if (evidence.api_bad.length > 0) { ok = false; fail(`API responses failed: ${evidence.api_bad.join(", ")}`); }
@@ -210,14 +302,25 @@ console.log("sample api requests:", api_requests.slice(0, 3));
 await browser.close();
 server.close();
 helper.stdin.end();
-const exit_code = await new Promise((resolve) => {
-  const timer = setTimeout(() => {
-    try { process.kill(-helper.pid, "SIGTERM"); } catch {}
-    helper.once("exit", (_, signal) => resolve(signal));
-  }, 15000);
-  helper.once("exit", (code) => { clearTimeout(timer); resolve(code); });
-});
-if (exit_code !== 0) { ok = false; fail(`helper exit ${exit_code}`); }
+// The killGroup escalation still covers the cooperative-grace case; the
+// exit promise above was registered at spawn, so a helper already killed
+// by fail() settles immediately instead of hanging on the give-up timer.
+const killGroup = (signal) => {
+  try { process.kill(-helper.pid, signal); } catch { /* group already gone */ }
+};
+let settled = false;
+const finish = (code) => { if (!settled) { settled = true; helper_exit_resolve(code); } };
+const giveUp = setTimeout(() => finish(-1), 40000);
+const killGrace = setTimeout(() => {
+  killGroup("SIGTERM");
+  setTimeout(() => killGroup("SIGKILL"), 10000);
+}, 15000);
+void helper_exit.then((code) => { clearTimeout(killGrace); clearTimeout(giveUp); finish(code); });
+const helper_exit_code = (await helper_exit).code;
+if (helper_exit_code !== 0) {
+    ok = false;
+    fail(`helper exit ${helper_exit_code ?? "give-up"}`);
+  }
 console.log(ok ? "D5 PASS: static export + runtime origin injection + direct CORS-allowed API verified" : "D5 FAILED");
 process.exitCode = ok ? 0 : 1;
 }

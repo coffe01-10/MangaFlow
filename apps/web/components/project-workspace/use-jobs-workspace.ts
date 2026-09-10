@@ -10,14 +10,14 @@ import { queueStatsOf } from "./display";
 
 function usePerJobMutation(
   mutationFn: (jobId: string) => Promise<Job>,
-  onSuccess: () => void,
+  onSuccess: (jobId: string) => void,
   onError?: (reason: unknown, jobId: string) => void,
 ) {
   const inFlight = useRef(new Set<string>());
   const [pendingIds, setPendingIds] = useState<string[]>([]);
   const mutation = useMutation({
     mutationFn,
-    onSuccess,
+    onSuccess: (_result, jobId) => onSuccess(jobId),
     onError: (error, jobId) => onError?.(error, jobId),
     onSettled: (_data, _error, jobId) => {
       inFlight.current.delete(jobId);
@@ -67,7 +67,17 @@ export function useJobsWorkspace({ id }: { id: string }) {
   const mutationNotice = (action: string) => (reason: unknown) =>
     setJobNotice(reason instanceof Error ? `${action}失败：${reason.message}` : `${action}失败，请重试`);
   const cancelAction = usePerJobMutation((jobId) => api.cancelJob(jobId), invalidateJobs, mutationNotice("取消任务"));
-  const retryAction = usePerJobMutation((jobId) => api.retryJob(jobId), invalidateJobs, mutationNotice("重试任务"));
+  const retryAction = usePerJobMutation(
+    (jobId) => api.retryJob(jobId),
+    (jobId) => {
+      invalidateJobs();
+      // A retried job goes back to WAITING: its checkbox disappears, so a
+      // stale selection id would 409 the whole bulk archive with no way to
+      // uncheck it (the terminal-only rows no longer render it).
+      setSelectedJobIds((ids) => ids.filter((id) => id !== jobId));
+    },
+    mutationNotice("重试任务"),
+  );
   const cancelJob = cancelAction.mutation;
   const retryJob = retryAction.mutation;
   const archiveJob = useMutation({

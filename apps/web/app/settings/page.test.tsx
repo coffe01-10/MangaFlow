@@ -90,6 +90,9 @@ describe("SystemSettingsPage 任务租约设置", () => {
 
     const leaseInput = await screen.findByLabelText(/任务租约/);
     fireEvent.change(leaseInput, { target: { value: "90" } });
+    // ClampedNumberInput 只在失焦时提交钳制结果;真实浏览器点击保存按钮会
+    // 先让输入框失焦,jsdom 不会自动触发,这里手动派发冒泡 focusout。
+    fireEvent(leaseInput, new FocusEvent("focusout", { bubbles: true }));
     fireEvent.click(screen.getByRole("button", { name: /保存运行设置/ }));
 
     await waitFor(() => expect(updateRuntimeSettingsSpy).toHaveBeenCalledTimes(1));

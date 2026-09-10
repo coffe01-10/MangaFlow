@@ -393,14 +393,45 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let server = std::thread::spawn(move || {
             let (mut sock, _) = listener.accept().expect("accept");
+            // Drain the client's request HEADERS before writing: closing
+            // with UNREAD peer data queued makes the kernel send RST, which
+            // can sever the client's in-progress cap read under parallel
+            // load (observed as a spurious ConnectionReset in full-suite
+            // runs). The client never half-closes its write side, so the
+            // drain stops at the header terminator instead of read_to_end.
+            let _ = sock.set_read_timeout(Some(Duration::from_secs(2)));
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            loop {
+                match sock.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        request.extend_from_slice(&buffer[..n]);
+                        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                }
+                if request.len() > 16 * 1024 {
+                    break;
+                }
+            }
+            let _ = sock.set_read_timeout(None);
             let _ = sock.write_all(b"HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\n");
             let chunk = [b'A'; 8192];
-            for _ in 0..64 {
+            for _ in 0..16 {
                 if sock.write_all(&chunk).is_err() {
                     break;
                 }
             }
             let _ = sock.flush();
+            // One last bounded drain: a client request byte that trickled
+            // in after the header drain would otherwise RST the connection
+            // as the write side closes with unread peer data queued.
+            let _ = sock.set_read_timeout(Some(Duration::from_millis(100)));
+            let _ = sock.read(&mut [0u8; 1024]);
+            let _ = sock.set_read_timeout(None);
+            let _ = sock.shutdown(std::net::Shutdown::Write);
             // The socket drops here: HTTP/1.0 + Connection: close means EOF
             // ends the read even though the server never consumed a request
             // body boundary.
@@ -410,9 +441,9 @@ mod tests {
             get_status(&format!("http://127.0.0.1:{port}"), HEALTH_PATH, Duration::from_secs(5))
                 .expect("health read succeeds");
         assert_eq!(status, 200);
-        assert!(
-            (body.len() as u64) <= MAX_STREAM_MESSAGE_BYTES,
-            "response must be capped at {MAX_STREAM_MESSAGE_BYTES}, got {}",
+        assert_eq!(
+            body.len() as u64, MAX_STREAM_MESSAGE_BYTES,
+            "response must be truncated at exactly {MAX_STREAM_MESSAGE_BYTES}, got {}",
             body.len()
         );
         let _ = server.join();

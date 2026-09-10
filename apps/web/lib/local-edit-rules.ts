@@ -203,11 +203,42 @@ export function polygonArea(points: MaskPoint[]): number {
   return Math.abs(sum / 2);
 }
 
-/** Selected share of the source image (0..1) for the「已选 X% 面积」note. */
+/** Selected share of the source image (0..1) for the「已选 X% 面积」note.
+ *
+ * 重叠选区只计一次:用户常通过多笔画扩大选区,按多边形面积直接求和会把
+ * 重叠部分计两遍。逐行扫描线在每个采样行上对全部区域的覆盖区间做并集,
+ * 与预览的半透明叠加(视觉上是并集)一致;轴对齐整数矩形下与 shoelace 相同。
+ */
 export function maskAreaRatio(regions: MaskRegion[], width: number, height: number): number {
-  if (!width || !height) return 0;
-  const area = regions.reduce((total, region) => total + polygonArea(region.points), 0);
-  return area / (width * height);
+  if (!width || !height || !regions.length) return 0;
+  const rows = Math.min(Math.ceil(height), 1024);
+  const step = height / rows;
+  let covered = 0;
+  for (let row = 0; row < rows; row += 1) {
+    const y = (row + 0.5) * step;
+    const intervals: Array<[number, number]> = [];
+    for (const region of regions) {
+      const points = region.points;
+      const crossings: number[] = [];
+      for (let index = 0, j = points.length - 1; index < points.length; j = index, index += 1) {
+        const [xi, yi] = points[index];
+        const [xj, yj] = points[j];
+        if ((yi <= y && yj > y) || (yj <= y && yi > y)) {
+          crossings.push(xi + ((y - yi) / (yj - yi)) * (xj - xi));
+        }
+      }
+      crossings.sort((a, b) => a - b);
+      for (let k = 0; k + 1 < crossings.length; k += 2) intervals.push([crossings[k], crossings[k + 1]]);
+    }
+    intervals.sort((a, b) => a[0] - b[0]);
+    let reach = -Infinity;
+    for (const [start, end] of intervals) {
+      if (end <= reach) continue;
+      covered += end - Math.max(start, reach);
+      reach = end;
+    }
+  }
+  return (covered * step) / (width * height);
 }
 
 export function formatMaskArea(regions: MaskRegion[], width: number, height: number): string {

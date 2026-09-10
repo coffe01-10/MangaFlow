@@ -38,6 +38,13 @@ public sealed class SettingsView : WorkspaceView
     private List<JsonElement> catalog = [];
     private readonly Dictionary<string, bool> expanded = new();
     private string search = "";
+
+    /// <summary>
+    /// Raised after a successful PATCH /settings/runtime. MainWindow re-arms its
+    /// poll timers so the new ui_poll_interval_seconds applies from the next tick
+    /// (web: the settings cache update lands on the next query interval).
+    /// </summary>
+    internal event Action? RuntimeSaved;
     private string capability = "ALL", modelType = "ALL", sort = "RECOMMENDED";
     private bool verified, hidden;
     private JsonElement runtime;
@@ -424,17 +431,71 @@ public sealed class SettingsView : WorkspaceView
 
     private readonly Dictionary<string, FrameworkElement> runtimeInputs = new();
 
+    // 数字项的合法区间（与 web 设置表单一致）。钳制只发生在失焦与保存前：
+    // 按键级夹值会把 "45"（区间 30–3600）的首键 "4" 立刻改写成 "30"，
+    // 用户将永远无法通过键盘输入低于当前值的数字，清空输入也会被立即顶回最小值。
+    private static readonly Dictionary<string, (int Min, int Max)> RuntimeRanges = new()
+    {
+        ["job_timeout_seconds"] = (30, 3600),
+        ["job_lease_seconds"] = (30, 3600),
+        ["default_concurrency"] = (1, 8),
+        ["max_auto_repairs"] = (0, 10),
+        ["health_check_interval_seconds"] = (60, 3600),
+        ["ui_poll_interval_seconds"] = (1000, 60000),
+    };
+    // 每个数字项最近一次的有效值：失焦时清空/非法输入回退到这里，而不是把越界值交给服务端 422。
+    private readonly Dictionary<string, int> runtimeCommitted = new();
+
     private void AddRuntimeField(string label, string key, string value, string? options = null)
     {
         var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 12) };
         panel.Children.Add(FieldLabel(label));
         FrameworkElement input = options == null
-            ? new TextBox { Text = value, Width = 180, Tag = key }
+            ? BuildRuntimeNumber(key, value)
             : BuildOptionSelect(key, value, options);
         input.SetValue(HorizontalAlignmentProperty, HorizontalAlignment.Left);
         panel.Children.Add(input);
         runtimeInputs[key] = input;
         runtimeForm.Children.Add(panel);
+    }
+
+    private TextBox BuildRuntimeNumber(string key, string value)
+    {
+        var box = new TextBox { Text = value, Width = 180, Tag = key };
+        if (RuntimeRanges.TryGetValue(key, out var range))
+        {
+            runtimeCommitted[key] = int.TryParse(value, out var initial) ? Math.Clamp(initial, range.Min, range.Max) : range.Min;
+            // 失焦才钳制：输入期间原文展示，离开输入框时提交区间内结果（web ClampedNumberInput 的语义）。
+            box.LostFocus += (_, _) => ClampRuntimeInput(box, key);
+        }
+        return box;
+    }
+
+    private void ClampRuntimeInput(TextBox box, string key)
+    {
+        var range = RuntimeRanges[key];
+        // S-3: 与 web ClampedNumberInput 同语义 —— 可解析的小数（"900.5"）按 Math.round
+        // 取整后钳制提交，只有空/非法输入才回退旧值；int.TryParse 会把小数当非法丢掉。
+        if (TryParseRuntimeNumber(box.Text, out var parsed))
+        {
+            var clamped = Math.Clamp(parsed, range.Min, range.Max);
+            runtimeCommitted[key] = clamped;
+            box.Text = clamped.ToString();
+            return;
+        }
+        // 清空或非法输入放弃修改，回显上一个有效值。
+        box.Text = runtimeCommitted.GetValueOrDefault(key, range.Min).ToString();
+    }
+
+    // 数字项输入的统一解析：接受小数与科学计数法（web 的 Number(raw)），四舍五入到整数。
+    private static bool TryParseRuntimeNumber(string value, out int number)
+    {
+        number = 0;
+        if (!double.TryParse(value.Trim(), System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var parsed))
+            return false;
+        number = (int)Math.Round(parsed, MidpointRounding.AwayFromZero);
+        return true;
     }
 
     private static ComboBox BuildOptionSelect(string key, string value, string options)
@@ -470,10 +531,27 @@ public sealed class SettingsView : WorkspaceView
                     ComboBox combo => (combo.SelectedItem as ComboBoxItem)?.Tag as string ?? "",
                     _ => "",
                 };
-                payload[key] = int.TryParse(value, out var number) && key != "queue_mode" ? number : value;
+                if (RuntimeRanges.TryGetValue(key, out var range))
+                {
+                    // 保存前再钳一次：失焦钩子可能被绕过（未失焦直接点保存），
+                    // 越界值必须在此截住，不能依赖服务端 422 兜底；小数与失焦路径
+                    // 同语义（TryParseRuntimeNumber：可解析小数取整后钳制）。
+                    var parsed = TryParseRuntimeNumber(value, out var number) ? number : runtimeCommitted.GetValueOrDefault(key, range.Min);
+                    var clamped = Math.Clamp(parsed, range.Min, range.Max);
+                    runtimeCommitted[key] = clamped;
+                    if (input is TextBox box) box.Text = clamped.ToString();
+                    payload[key] = clamped;
+                    continue;
+                }
+                payload[key] = int.TryParse(value, out var raw) && key != "queue_mode" ? raw : value;
             }
             runtime = await Api.SendAsync("settings/runtime", HttpMethod.Patch, payload, cancellation: lifetime.Token);
             RenderRuntime();
+            // Publish the fresh ui_poll_interval_seconds into the shared poll period
+            // before notifying: MainWindow's handler only re-arms its timers. Null /
+            // invalid values keep the current period (PollInterval.Apply contract).
+            PollInterval.Apply(PollInterval.Parse(runtime));
+            RuntimeSaved?.Invoke();
             runtimeNotice.Visibility = Visibility.Visible;
             await LoadDiagnosticsAsync();
         }
@@ -569,6 +647,8 @@ internal sealed class ProviderCard : Border
     private readonly List<JsonElement> catalog;
     private readonly SettingsView owner;
     private readonly Dictionary<string, bool> expanded;
+    private readonly bool showHidden, verifiedOnly;
+    private readonly string modelType, capability;
 
     public ProviderCard(SettingsView owner, JsonElement provider, List<JsonElement> catalog,
         Dictionary<string, bool> expanded, bool showHidden, bool verifiedOnly, string modelType, string capability)
@@ -577,7 +657,12 @@ internal sealed class ProviderCard : Border
         this.provider = provider;
         this.catalog = catalog;
         this.expanded = expanded;
-        _ = showHidden; _ = verifiedOnly; _ = modelType; _ = capability; // filters apply at model-row level in a later slice
+        // 筛选语义与 web provider-management 对齐：类型/能力/仅已验证/显示已隐藏只过滤
+        // 各连接内的模型行，绝不整卡隐藏供应商——供应商分组仍由搜索与配置状态决定。
+        this.showHidden = showHidden;
+        this.verifiedOnly = verifiedOnly;
+        this.modelType = modelType;
+        this.capability = capability;
         Style = (Style)Application.Current.FindResource("Card");
         Padding = new Thickness(0);
         Margin = new Thickness(0, 0, 0, 10);
@@ -602,7 +687,7 @@ internal sealed class ProviderCard : Border
         if (open)
         {
             foreach (var connection in provider.Array("connections"))
-                panel.Children.Add(new ConnectionPanel(owner, provider, connection, catalog));
+                panel.Children.Add(new ConnectionPanel(owner, provider, connection, catalog, showHidden, verifiedOnly, modelType, capability));
         }
         Child = panel;
     }
@@ -641,6 +726,9 @@ internal sealed class ConnectionPanel : Border
     private readonly JsonElement provider;
     private JsonElement connection;
     private readonly List<JsonElement> catalog;
+    // 模型行筛选（web filterModels 的四条规则）；默认值等价于"不过滤"，供重渲染冒烟等直接构造场景使用。
+    private readonly bool showHidden, verifiedOnly;
+    private readonly string modelType, capability;
     // Fresh on every Render(): re-parenting a reused control would throw, and the
     // pane re-renders on enable/disable toggles and manual-form switches.
     private StackPanel modelsPanel = null!;
@@ -653,12 +741,17 @@ internal sealed class ConnectionPanel : Border
     private TextBox manualName = null!;
     private bool busy;
 
-    public ConnectionPanel(SettingsView owner, JsonElement provider, JsonElement connection, List<JsonElement> catalog)
+    public ConnectionPanel(SettingsView owner, JsonElement provider, JsonElement connection, List<JsonElement> catalog,
+        bool showHidden = false, bool verifiedOnly = false, string modelType = "ALL", string capability = "ALL")
     {
         this.owner = owner;
         this.provider = provider;
         this.connection = connection;
         this.catalog = catalog;
+        this.showHidden = showHidden;
+        this.verifiedOnly = verifiedOnly;
+        this.modelType = modelType;
+        this.capability = capability;
         BorderBrush = (Brush)Application.Current.FindResource("Line");
         BorderThickness = new Thickness(0, 1, 0, 0);
         Padding = new Thickness(18, 14, 16, 16);
@@ -931,13 +1024,40 @@ internal sealed class ConnectionPanel : Border
                 });
                 return;
             }
-            foreach (var model in rows) modelsPanel.Children.Add(new ModelRow(this, model, catalog));
+            // 与 web filterModels 逐条对齐：隐藏、类型、能力、仅已验证。目录为空与"筛完为空"
+            // 是两种状态，后者要提示用户清除筛选而不是误以为连接没有模型。
+            var visible = rows.Where(ModelMatchesFilters).ToList();
+            if (visible.Count == 0)
+            {
+                modelsPanel.Children.Add(new TextBlock
+                {
+                    Text = "没有符合筛选的模型",
+                    Style = (Style)Application.Current.FindResource("Micro"), FontWeight = FontWeights.Bold,
+                });
+                modelsPanel.Children.Add(new TextBlock
+                {
+                    Text = "可清除类型、能力、仅已验证筛选，或开启“显示已隐藏”。",
+                    Style = (Style)Application.Current.FindResource("Micro"), TextWrapping = TextWrapping.Wrap,
+                });
+                return;
+            }
+            foreach (var model in visible) modelsPanel.Children.Add(new ModelRow(this, model, catalog));
         }
         catch (Exception error)
         {
             modelsPanel.Children.Clear();
             modelsPanel.Children.Add(Kit.Caption($"模型目录读取失败：{error.Message}"));
         }
+    }
+
+    /// <summary>模型行是否通过当前筛选：display_enabled / model_type / operations / confidence。</summary>
+    private bool ModelMatchesFilters(JsonElement model)
+    {
+        if (!showHidden && !model.Flag("display_enabled")) return false;
+        if (modelType != "ALL" && model.Text("model_type") != modelType) return false;
+        if (capability != "ALL" && !model.Array("operations").Any(operation => operation.ToString() == capability)) return false;
+        if (verifiedOnly && model.Text("confidence", "MANUAL") != "VERIFIED") return false;
+        return true;
     }
 
     internal void RefreshModels() => _ = LoadModelsAsync();

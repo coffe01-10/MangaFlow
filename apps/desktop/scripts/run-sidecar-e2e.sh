@@ -28,4 +28,5 @@ exec "$VENV/bin/python" -m pytest \
   "$DESKTOP_ROOT/scripts/test_sidecar_e2e.py" \
   "$DESKTOP_ROOT/scripts/test_sidecar_relay.py" \
   "$DESKTOP_ROOT/scripts/test_sidecar_relay_bind.py" \
+  "$DESKTOP_ROOT/scripts/test_sidecar_env_and_api_root.py" \
   -v "$@"

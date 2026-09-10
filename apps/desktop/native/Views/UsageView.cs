@@ -12,7 +12,7 @@ using MangaFlow.Native.Services;
 
 namespace MangaFlow.Native.Views;
 
-/// <summary>NUI-6: usage & cost dashboard — filters, KPI, trend, attempts keyset paging, budget, CSV.</summary>
+/// <summary>NUI-6: usage &amp; cost dashboard \u2014 filters, KPI, trend, attempts keyset paging, budget, CSV.</summary>
 public sealed class UsageView : WorkspaceView
 {
     private readonly ScrollViewer scroller = new() { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
@@ -22,6 +22,9 @@ public sealed class UsageView : WorkspaceView
     private readonly ComboBox modelSelector = Selector("按模型筛选", 160);
     private readonly ComboBox channelSelector = Selector("按通道筛选", 110);
     private readonly WrapPanel kpiRow = new();
+    // Web usage-dashboard order: KPI \u2192 budget banner \u2192 trend \u2192 per-model breakdown.
+    private readonly StackPanel budgetHost = new() { Margin = new Thickness(0, 14, 0, 0) };
+    private readonly StackPanel breakdownHost = new();
     private readonly WrapPanel customRange = new() { Visibility = Visibility.Collapsed, Margin = new Thickness(0, 0, 0, 12) };
     private readonly DatePicker sinceDate = new() { SelectedDate = DateTime.Today.AddDays(-30), Width = 145 };
     private readonly DatePicker untilDate = new() { SelectedDate = DateTime.Today, Width = 145 };
@@ -97,13 +100,15 @@ public sealed class UsageView : WorkspaceView
         panel.Children.Add(summaryLine);
         kpiRow.Margin = new Thickness(0, 10, 0, 0);
         panel.Children.Add(kpiRow);
+        panel.Children.Add(budgetHost);
         trendHost.Margin = new Thickness(0, 16, 0, 0);
         panel.Children.Add(WrapCard("费用与调用趋势", trendHost));
+        panel.Children.Add(WrapCard("供应商与模型分解", breakdownHost));
         panel.Children.Add(WrapCard("调用明细", attemptsTable));
         panel.Children.Add(WrapCard("账单对账记录", billedTable));
         panel.Children.Add(new TextBlock
         {
-            Text = "计量语义：账单（对账导入）与估算（价格表推算）永不相加；不同币种不做隐式换算；未知 ≠ 0；CLI 通道费用未知 ≠ 免费。通道筛选作用于调用明细；汇总接口按时间/项目/供应商/模型聚合。",
+            Text = "计量语义：账单（对账导入）与估算（价格表推算）永不相加；不同币种不做隐式换算；未知 \u2260 0；CLI 通道费用未知 \u2260 免费。通道筛选作用于调用明细；汇总接口按时间/项目/供应商/模型聚合。",
             Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 12, 0, 0), TextWrapping = TextWrapping.Wrap,
         });
         scroller.Content = panel;
@@ -172,12 +177,15 @@ public sealed class UsageView : WorkspaceView
         attemptsTable.Children.Clear();
         summary = default;
         kpiRow.Children.Clear();
+        budgetHost.Children.Clear();
         trendHost.Children.Clear();
+        breakdownHost.Children.Clear();
         billedTable.Children.Clear();
+        budgetFormOpen = false;
         try
         {
             var filter = CaptureFilter();
-            summaryLine.Text = "正在读取用量…";
+            summaryLine.Text = "正在读取用量\u2026";
             var summaryTask = Api.SendAsync(filter.SummaryPath(), cancellation: token);
             var attemptsTask = feed.LoadAsync(Api, filter, token);
             await Task.WhenAll(summaryTask, attemptsTask);
@@ -219,7 +227,9 @@ public sealed class UsageView : WorkspaceView
         if (groups.Count == 0 && billed.Count == 0)
         {
             summaryLine.Text = "暂无调用记录。发起剧本分析或单页生成后即可在此查看用量统计。";
+            RenderBudget(groups);
             RenderTrend(groups);
+            RenderBreakdown(groups);
             RenderBilled(billed);
             return;
         }
@@ -232,27 +242,272 @@ public sealed class UsageView : WorkspaceView
         var estimated = groups.SelectMany(g => g.Array("estimated_costs"))
             .GroupBy(c => c.Text("currency"))
             .OrderBy(c => c.Key)
-            .Select(currency => (Currency: currency.Key, Sum: currency.Sum(c => c.Decimal("amount"))))
+            .Select(currency => (Currency: currency.Key, Sum: currency.Sum(c => Money(c))))
             .ToList();
         var billedBy = billed.GroupBy(b => b.Text("currency"))
             .OrderBy(b => b.Key)
-            .Select(currency => (Currency: currency.Key, Sum: currency.Sum(b => b.Decimal("billed_amount"))))
+            .Select(currency => (Currency: currency.Key, Sum: currency.Sum(b => Money(b, "billed_amount"))))
             .ToList();
         kpiRow.Children.Add(KpiCard("调用总览", $"{attemptsTotal} 次",
             $"成功 {succeeded} / 失败 {failed} / 未决 {pending} · 成功率 {(double.IsNaN(rate) ? "未知" : $"{rate:0.#}%")}"));
         kpiRow.Children.Add(KpiCard("估算支出",
-            estimated.Count == 0 ? "无估算数据" : string.Join("\n", estimated.Select(e => $"≈ {Symbol(e.Currency)}{e.Sum:0.00}")),
+            estimated.Count == 0 ? "无估算数据" : string.Join("\n", estimated.Select(e => $"\u2248 {Symbol(e.Currency)}{e.Sum:0.00}")),
             "估算值不等于供应商账单"));
         kpiRow.Children.Add(KpiCard("账单支出",
             billedBy.Count == 0 ? "暂无对账记录" : string.Join("\n", billedBy.Select(b => $"{Symbol(b.Currency)}{b.Sum:0.00}")),
             "账单事实与估算永不相加"));
+        RenderBudget(groups);
         RenderTrend(groups);
+        RenderBreakdown(groups);
         RenderBilled(billed);
     }
 
+    // ============ 预算横幅（web components/usage/usage-budget-banner.tsx） ============
+    // Web stores the budget in localStorage key "mangaflow.usage-budget" as
+    // {"currency":"CNY","amount":"120"}; the desktop keeps the same key and JSON
+    // shape in KeyValueStore. Only the estimated totals of the chosen currency
+    // are compared \u2014 billed facts never enter the ratio.
+
+    private const string BudgetStorageKey = "mangaflow.usage-budget";
+    private bool budgetFormOpen;
+
+    /// <summary>
+    /// 金额读取：pydantic 把 Decimal 序列化为 JSON 字符串（"60.00"），网页端
+    /// 统一用 Number() 解析；全局 Decimal() 扩展只认 Number 值，字符串金额
+    /// 会静默归零（预算对比与明细因此失效）。这里接受 Number 与可解析字符串
+    /// 两种形态（Invariant），与网页语义一致。
+    /// </summary>
+    internal static double Money(JsonElement element, string name = "amount")
+    {
+        if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(name, out var value)) return 0;
+        return value.ValueKind switch
+        {
+            JsonValueKind.Number when value.TryGetDouble(out var number) => number,
+            JsonValueKind.String when double.TryParse(value.GetString(), System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var parsed) => parsed,
+            _ => 0,
+        };
+    }
+
+    internal readonly record struct UsageBudget(string Currency, double Amount);
+
+    /// <summary>Same acceptance rule as web parseBudget: uppercase 3-letter currency and a finite positive amount.</summary>
+    internal static UsageBudget? ParseBudget(string? raw)
+    {
+        if (raw is not { Length: > 0 }) return null;
+        try
+        {
+            using var parsed = JsonDocument.Parse(raw);
+            var root = parsed.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return null;
+            var currency = root.Text("currency");
+            var amount = root.Text("amount");
+            if (currency.Length != 3 || currency.Any(c => c is < 'A' or > 'Z')) return null;
+            if (!double.TryParse(amount, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var value)
+                || double.IsNaN(value) || double.IsInfinity(value) || value <= 0) return null;
+            return new UsageBudget(currency, value);
+        }
+        catch (JsonException) { return null; }
+    }
+
+    /// <summary>
+    /// Web banner states: idle (no budget / no spend in that currency), over
+    /// (ratio &gt; 1, role=alert), near (ratio &gt;= 0.8), ok otherwise. The tuple's
+    /// first item is the CSS-class-like tone, the second the exact status line.
+    /// </summary>
+    internal static (string Tone, string Text) BudgetStatus(UsageBudget? budget, double spentInCurrency)
+    {
+        if (budget is not { } current) return ("idle", "尚未设置预算提醒");
+        var budgetText = $"{Symbol(current.Currency)}{current.Amount:0.00}";
+        if (spentInCurrency <= 0)
+            return ("idle", $"所选范围无 {current.Currency} 估算支出，无法对比预算 {budgetText}");
+        var ratio = spentInCurrency / current.Amount;
+        if (ratio > 1) return ("over", $"估算支出 {Symbol(current.Currency)}{spentInCurrency:0.00} 已超出预算 {budgetText}");
+        if (ratio >= 0.8) return ("near", $"估算支出 {Symbol(current.Currency)}{spentInCurrency:0.00} 已接近预算 {budgetText}");
+        return ("ok", $"估算支出 {Symbol(current.Currency)}{spentInCurrency:0.00} 在预算 {budgetText} 内");
+    }
+
+    private void RenderBudget(List<JsonElement> groups)
+    {
+        budgetHost.Children.Clear();
+        var budget = ParseBudget(KeyValueStore.Get(BudgetStorageKey));
+        var spent = groups.SelectMany(g => g.Array("estimated_costs"))
+            .Where(c => c.Text("currency") == budget?.Currency)
+            .Sum(c => Money(c));
+        var (tone, status) = BudgetStatus(budget, spent);
+        var banner = new Border
+        {
+            Style = (Style)Application.Current.FindResource("Card"),
+            Padding = new Thickness(14),
+            Tag = tone,
+        };
+        System.Windows.Automation.AutomationProperties.SetName(banner, "预算提醒");
+        var row = new StackPanel { Orientation = Orientation.Horizontal };
+        var toneBrush = tone switch
+        {
+            "over" => (Brush)Application.Current.FindResource("Danger"),
+            "near" => (Brush)Application.Current.FindResource("AccentInk"),
+            "ok" => (Brush)Application.Current.FindResource("Success"),
+            _ => (Brush)Application.Current.FindResource("Muted"),
+        };
+        row.Children.Add(new TextBlock
+        {
+            Text = status + (budget is not null ? "（仅对比估算支出，不含账单事实）" : ""),
+            FontWeight = FontWeights.Bold,
+            Foreground = toneBrush,
+            VerticalAlignment = VerticalAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+        });
+        if (!budgetFormOpen)
+        {
+            var open = Kit.Act("设置预算", (_, _) => { budgetFormOpen = true; RenderBudget(groups); }, "Compact");
+            open.Margin = new Thickness(12, 0, 0, 0);
+            open.VerticalAlignment = VerticalAlignment.Center;
+            row.Children.Add(open);
+            banner.Child = row;
+            budgetHost.Children.Add(banner);
+            return;
+        }
+        banner.Child = row;
+        budgetHost.Children.Add(banner);
+        var currencyInput = new TextBox { Width = 64, MaxLength = 3, Text = budget?.Currency ?? "" };
+        System.Windows.Automation.AutomationProperties.SetName(currencyInput, "预算币种");
+        var amountInput = new TextBox { Width = 110, Text = budget is { } kept ? kept.Amount.ToString("0.##") : "" };
+        System.Windows.Automation.AutomationProperties.SetName(amountInput, "预算金额");
+        var hint = new TextBlock { Style = (Style)Application.Current.FindResource("Micro"), VerticalAlignment = VerticalAlignment.Center };
+        var form = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 0) };
+        form.Children.Add(currencyInput);
+        form.Children.Add(new TextBlock { Text = " ", Width = 6 });
+        form.Children.Add(amountInput);
+        var save = Kit.Act("保存", (_, _) =>
+        {
+            var currency = currencyInput.Text.Trim().ToUpperInvariant();
+            if (currency.Length != 3 || currency.Any(c => c is < 'A' or > 'Z')
+                || !double.TryParse(amountInput.Text.Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var amount)
+                || double.IsNaN(amount) || double.IsInfinity(amount) || amount <= 0)
+            {
+                // Web save() silently keeps the form; surface the same acceptance rule.
+                hint.Text = "币种为 3 位大写字母，金额须大于 0。";
+                return;
+            }
+            var stored = "{\"currency\":\"" + currency + "\",\"amount\":\""
+                + amount.ToString("0.##########", System.Globalization.CultureInfo.InvariantCulture) + "\"}";
+            KeyValueStore.Set(BudgetStorageKey, stored);
+            budgetFormOpen = false;
+            RenderBudget(groups);
+        }, "Compact");
+        save.Margin = new Thickness(8, 0, 0, 0);
+        form.Children.Add(save);
+        if (budget is not null)
+        {
+            var clear = Kit.Act("清除", (_, _) =>
+            {
+                KeyValueStore.Remove(BudgetStorageKey);
+                budgetFormOpen = false;
+                RenderBudget(groups);
+            }, "Compact");
+            clear.Margin = new Thickness(6, 0, 0, 0);
+            form.Children.Add(clear);
+        }
+        form.Children.Add(hint);
+        var column = new StackPanel { Children = { row, form } };
+        banner.Child = column;
+    }
+
+    // ============ 供应商与模型分解（web components/usage/usage-breakdown-table.tsx） ============
+    // Aggregates the summary groups to provider/model/channel rows; token and
+    // image sums stay null ("未知") unless at least one group measured them,
+    // amounts never merge across currencies, and mixed cost modes show 混合.
+
+    private void RenderBreakdown(List<JsonElement> groups)
+    {
+        breakdownHost.Children.Clear();
+        if (groups.Count == 0)
+        {
+            breakdownHost.Children.Add(Kit.Caption("所选范围内暂无供应商与模型汇总。"));
+            return;
+        }
+        var header = BreakdownRow("供应商 / 模型", "通道", "调用", "成功 / 失败 / 未决", "输入 / 输出 Token", "缓存命中", "图片", "估算金额（原币种）", "成本语义");
+        header.FontWeight = FontWeights.Bold;
+        breakdownHost.Children.Add(header);
+        var rows = groups.GroupBy(g => (Provider: g.Text("provider"), Model: g.Text("model_id"), Channel: g.Text("channel")))
+            .OrderBy(r => r.Key.Provider, StringComparer.Ordinal)
+            .ThenBy(r => r.Key.Model, StringComparer.Ordinal)
+            .ThenBy(r => r.Key.Channel, StringComparer.Ordinal);
+        foreach (var entry in rows)
+        {
+            var cells = entry.ToList();
+            var attempts = cells.Sum(g => g.Number("attempt_count"));
+            var succeeded = cells.Sum(g => g.Number("succeeded_count"));
+            var failed = cells.Sum(g => g.Number("failed_count"));
+            var pending = cells.Sum(g => g.Number("pending_count"));
+            static long? SumPresent(List<JsonElement> list, string field)
+            {
+                long total = 0;
+                var present = false;
+                foreach (var group in list)
+                    if (group.Element(field).ValueKind == JsonValueKind.Number)
+                    {
+                        total += group.Number(field);
+                        present = true;
+                    }
+                return present ? total : null;
+            }
+            var input = SumPresent(cells, "input_tokens");
+            var output = SumPresent(cells, "output_tokens");
+            var cached = SumPresent(cells, "cached_input_tokens");
+            var images = SumPresent(cells, "output_images");
+            var costs = cells.SelectMany(g => g.Array("estimated_costs"))
+                .GroupBy(c => c.Text("currency"))
+                .OrderBy(c => c.Key)
+                .Select(currency => $"\u2248 {Symbol(currency.Key)}{currency.Sum(c => Money(c)):0.0000}")
+                .ToList();
+            var modes = cells.Select(GroupCostMode).Distinct().ToList();
+            var mode = modes.Count == 1 ? modes[0] : "MIXED";
+            breakdownHost.Children.Add(BreakdownRow(
+                $"{entry.Key.Provider} · {entry.Key.Model}",
+                entry.Key.Channel == "CLI" ? "CLI" : "HTTP API",
+                attempts.ToString(),
+                $"{succeeded} / {failed} / {pending}",
+                input is null && output is null ? "未知" : $"{input?.ToString() ?? "未知"} / {output?.ToString() ?? "未知"}",
+                cached?.ToString() ?? "未知",
+                images?.ToString() ?? "未知",
+                costs.Count == 0 ? "无估算数据" : string.Join("　", costs),
+                mode == "MIXED" ? "混合" : Labels.Map(Labels.CostMode, mode)));
+        }
+        breakdownHost.Children.Add(new TextBlock
+        {
+            Text = "估算金额按币种分行展示，不同币种永不相加；估算值不等于供应商账单。",
+            Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap,
+        });
+    }
+
+    /// <summary>Group-level cost semantics driven by summary aggregates only (web groupCostMode).</summary>
+    internal static string GroupCostMode(JsonElement group)
+    {
+        if (group.Array("estimated_costs").Count > 0) return "ESTIMATED";
+        if (group.Element("input_tokens").ValueKind == JsonValueKind.Number
+            || group.Element("output_tokens").ValueKind == JsonValueKind.Number
+            || group.Element("cached_input_tokens").ValueKind == JsonValueKind.Number
+            || group.Element("output_images").ValueKind == JsonValueKind.Number) return "USAGE_ONLY";
+        return "UNKNOWN";
+    }
+
+    private static TextBlock BreakdownRow(string providerModel, string channel, string calls, string outcomes,
+        string tokens, string cached, string images, string costs, string mode) => new()
+    {
+        Text = $"{Trim(providerModel, 44),-44}  {channel,-9}  {calls,7}  {Trim(outcomes, 17),-17}  {Trim(tokens, 19),-19}  {Trim(cached, 8),-8}  {images,4}  {Trim(costs, 30),-30}  {mode}",
+        FontFamily = (FontFamily)Application.Current.FindResource("Mono"),
+        FontSize = 11.5,
+        TextWrapping = TextWrapping.NoWrap,
+        Margin = new Thickness(0, 3, 0, 3),
+    };
+
+    private static string Trim(string value, int width) => value.Length <= width ? value : value[..(width - 1)] + "\u2026";
+
     private static string Symbol(string currency) => currency switch
     {
-        "CNY" => "¥", "USD" => "$", "EUR" => "€", "GBP" => "£", "JPY" => "JP¥", "HKD" => "HK$", _ => currency + " ",
+        "CNY" => "\u00a5", "USD" => "$", "EUR" => "\u20ac", "GBP" => "\u00a3", "JPY" => "JP\u00a5", "HKD" => "HK$", _ => currency + " ",
     };
 
     private static Border KpiCard(string title, string value, string note) => new()
@@ -434,7 +689,7 @@ public sealed class UsageView : WorkspaceView
             });
             item.Children.Add(new TextBlock
             {
-                Text = $"账单 {Symbol(row.Text("currency"))}{row.Decimal("billed_amount"):0.00}",
+                Text = $"账单 {Symbol(row.Text("currency"))}{Money(row, "billed_amount"):0.00}",
                 FontWeight = FontWeights.Bold, VerticalAlignment = VerticalAlignment.Center,
             });
             billedTable.Children.Add(item);
@@ -460,7 +715,7 @@ public sealed class UsageView : WorkspaceView
             foreach (var group in summary.Array("groups"))
             {
                 var costs = group.Array("estimated_costs");
-                var rows = costs.Count == 0 ? [("", "")] : costs.Select(c => (c.Text("currency"), c.Decimal("amount").ToString())).ToList();
+                var rows = costs.Count == 0 ? [("", "")] : costs.Select(c => (c.Text("currency"), Money(c).ToString())).ToList();
                 foreach (var (currency, amount) in rows)
                 {
                     var line = string.Join(",",
@@ -523,7 +778,7 @@ public sealed class UsageView : WorkspaceView
             void Field(string label, string value)
             {
                 panel.Children.Add(new TextBlock { Text = label, Style = (Style)Application.Current.FindResource("FieldLabel"), Margin = new Thickness(0, 10, 0, 2) });
-                panel.Children.Add(new TextBlock { Text = value.Length > 0 ? value : "—", TextWrapping = TextWrapping.Wrap, FontFamily = (FontFamily)Application.Current.FindResource("Mono"), FontSize = 12 });
+                panel.Children.Add(new TextBlock { Text = value.Length > 0 ? value : "\u2014", TextWrapping = TextWrapping.Wrap, FontFamily = (FontFamily)Application.Current.FindResource("Mono"), FontSize = 12 });
             }
             var costMode = CostModeOf(attempt);
             Field("成本语义", $"{Labels.Map(Labels.CostMode, costMode)} · {Labels.Map(Labels.CostModeHint, costMode)}");
@@ -540,7 +795,7 @@ public sealed class UsageView : WorkspaceView
                 Field("错误信息", attempt.Text("error_message"));
             panel.Children.Add(new TextBlock
             {
-                Text = "数据来自模型调用账本（已脱敏）· 未知 ≠ 0，CLI 通道费用未知 ≠ 免费",
+                Text = "数据来自模型调用账本（已脱敏）· 未知 \u2260 0，CLI 通道费用未知 \u2260 免费",
                 Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 14, 0, 0), TextWrapping = TextWrapping.Wrap,
             });
             scroll.Content = panel;

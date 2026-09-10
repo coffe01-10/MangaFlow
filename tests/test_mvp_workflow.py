@@ -696,7 +696,9 @@ def test_character_alias_conflict_and_reference_binding(client):
     )
     assert resolved.status_code == 200
     assert resolved.json()["alias_conflict"] is False
-    assert resolved.json()["status"] == "CANONICAL"
+    # 解决别名冲突不会凭空「已定稿」:CANONICAL 由参考图人工通过赋予;无引用
+    # 行保持原有状态(此处为创建冲突时写入的待确认)。
+    assert resolved.json()["status"] == "NEEDS_CONFIRMATION"
     assert resolved.json()["locked_features"] == ["银色短发", "右眼泪痣"]
     assert resolved.json()["forbidden_changes"] == ["不得改变发色"]
 

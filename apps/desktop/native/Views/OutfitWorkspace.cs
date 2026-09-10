@@ -133,7 +133,8 @@ internal sealed class OutfitWorkspace : StackPanel
         characterSelector.IsEnabled = !busy && editing == null;
         upload.IsEnabled = import.IsEnabled = !busy && CharacterId.Length > 0;
     }
-    private void BeginEdit(OutfitItem outfit)
+    // Internal for the ?outfit= deep link (AssetsView.ApplyDeepLink → web beginOutfitEdit).
+    internal void BeginEdit(OutfitItem outfit)
     {
         if (busy) return; editing = outfit; view.SelectedOutfit = outfit;
         syncingSelector = true; SelectCharacter(outfit.CharacterId); syncingSelector = false; lastCharacterId = CharacterId;

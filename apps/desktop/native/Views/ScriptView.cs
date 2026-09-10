@@ -24,6 +24,14 @@ public sealed class ScriptView : WorkspaceView
     private List<SceneAssetItem> sceneAssets = [];
     private readonly TextBlock notice = new() { Style = (Style)Application.Current.FindResource("Caption"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 12) };
     private bool loadingScript;
+    private int scriptLoadVersion;
+    // SC-2: quiet 轮询加载的独立在途标志 —— 不渲染 spinner，但也不能每拍叠加一组 4 并发请求。
+    private bool quietLoadInFlight;
+    // SC-3: 本章 SOURCE_PARSE 收敛判定的任务列表探测在途标志。
+    private bool jobsProbeBusy;
+    // SC-4: 当前已渲染数据（script/characters/outfits/sceneAssets 原文）的签名，
+    // quiet 加载结果与之相同则跳过 Render，避免打爆正在阅读或编辑中的界面。
+    private string renderedScriptSignature = "";
 
     public ScriptView()
     {
@@ -105,17 +113,34 @@ public sealed class ScriptView : WorkspaceView
         }
     }
 
-    private async Task LoadScriptAsync()
+    private async Task LoadScriptAsync(bool quiet = false)
     {
         if (chapterId.Length == 0) return;
-        loadingScript = true;
-        body.Children.Clear();
-        var spinner = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 0) };
-        spinner.Children.Add(new Spinner { Size = 18 });
-        var hint = Kit.Caption("正在读取剧本…");
-        hint.Margin = new Thickness(10, 0, 0, 0);
-        spinner.Children.Add(hint);
-        body.Children.Add(spinner);
+        // 迟到响应隔离:快速切换章节时,旧章节数据不得覆盖新章节的渲染
+        // (与 SourceView 的 activation / StoryboardView 的守卫同一模式)。
+        var requestVersion = ++scriptLoadVersion;
+        if (quiet)
+        {
+            // SC-2: quiet 加载不置 loadingScript（不渲染 spinner），改用独立在途标志去重，
+            // 慢网下 PollTick 不得每 3 秒叠加一组 4 并发请求。
+            if (quietLoadInFlight) return;
+            quietLoadInFlight = true;
+        }
+        else
+        {
+            loadingScript = true;
+            // SC-5: 非静默加载即切换数据作用域：先清空上一章的 script 与场景计数（占位 "—"），
+            // 失败分支才不会残留旧章节信息，PollTick 的未加载判定也不会失真。
+            script = default;
+            sceneCount.Text = "—";
+            body.Children.Clear();
+            var spinner = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 0) };
+            spinner.Children.Add(new Spinner { Size = 18 });
+            var hint = Kit.Caption("正在读取剧本…");
+            hint.Margin = new Thickness(10, 0, 0, 0);
+            spinner.Children.Add(hint);
+            body.Children.Add(spinner);
+        }
         try
         {
             var loadScript = Api.SendAsync($"chapters/{chapterId}/script", cancellation: lifetime.Token);
@@ -123,20 +148,41 @@ public sealed class ScriptView : WorkspaceView
             var loadOutfits = Api.SendAsync($"projects/{ProjectId}/outfits", cancellation: lifetime.Token);
             var loadSceneAssets = Api.SendAsync(QueryBuilder.Build($"projects/{ProjectId}/scene-assets", ("limit", 200)), cancellation: lifetime.Token);
             await Task.WhenAll(loadScript, loadCharacters, loadOutfits, loadSceneAssets);
-            if (lifetime.Token.IsCancellationRequested) return;
-            script = await loadScript;
-            chapterCharacters[chapterId] = (await loadCharacters).EnumerateArray().Select(CharacterItem.From).ToList();
-            outfits = (await loadOutfits).EnumerateArray().Select(OutfitItem.From).ToList();
-            sceneAssets = (await loadSceneAssets).EnumerateArray().Select(SceneAssetItem.From).ToList();
+            if (requestVersion != scriptLoadVersion || lifetime.Token.IsCancellationRequested) return;
+            var scriptRow = await loadScript;
+            var characterRows = await loadCharacters;
+            var outfitRows = await loadOutfits;
+            var sceneAssetRows = await loadSceneAssets;
+            var signature = string.Join("\n",
+                scriptRow.GetRawText(), characterRows.GetRawText(), outfitRows.GetRawText(), sceneAssetRows.GetRawText());
+            // SC-4: 在途 quiet 完成时用户已打开编辑表单 —— 整份结果原地丢弃（字段与已渲染 UI 保持一致），
+            // 绝不 Render 清空表单；表单关闭后的下一次加载会用新数据重绘。
+            if (quiet && editingFormsOpen) return;
+            script = scriptRow;
+            chapterCharacters[chapterId] = characterRows.EnumerateArray().Select(CharacterItem.From).ToList();
+            outfits = outfitRows.EnumerateArray().Select(OutfitItem.From).ToList();
+            sceneAssets = sceneAssetRows.EnumerateArray().Select(SceneAssetItem.From).ToList();
+            // SC-4: quiet 成功但数据序列化未变化 —— 跳过 Render（非 quiet 路径总是重绘，替换 spinner/错误卡）。
+            if (quiet && signature == renderedScriptSignature) return;
+            renderedScriptSignature = signature;
             Render();
         }
          catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
+            // SC-1: 旧请求的迟到失败既不能盖掉新请求已渲染的章节，也不属于 quiet 静默重试路径。
+            if (quiet || requestVersion != scriptLoadVersion) return;
             body.Children.Clear();
+            // 错误卡替换了画布：签名与已渲染内容不再对应，下次成功加载必须重绘。
+            renderedScriptSignature = "";
             body.Children.Add(ErrorCard($"剧本读取失败：{error.Message}", async () => await LoadScriptAsync()));
         }
-        finally { loadingScript = false; }
+        finally
+        {
+            // SC-1: loadingScript 只属于最新一次非静默请求 —— 旧请求的 finally 不得提前清掉新请求的 loading 位。
+            if (!quiet && requestVersion == scriptLoadVersion) loadingScript = false;
+            if (quiet) quietLoadInFlight = false;
+        }
     }
 
     private static Border EmptyState(string title, string description)
@@ -263,9 +309,9 @@ public sealed class ScriptView : WorkspaceView
     {
         try
         {
-            var assignments = new Dictionary<string, string>();
-            foreach (var pair in scene.Array("outfit_assignments"))
-                assignments[pair.Text("character_id")] = pair.Text("outfit_id");
+            // outfit_assignments 是 {characterId: outfitId} 字典(后端 SceneRead);
+            // 按数组解析会得到空映射,后端全量替换会悄悄清掉其他角色的指定。
+            var assignments = scene.StringMap("outfit_assignments");
             if (outfitId == null) assignments.Remove(characterId);
             else assignments[characterId] = outfitId;
             await Api.SendAsync($"scenes/{scene.Text("id")}/outfits", HttpMethod.Patch,
@@ -329,11 +375,51 @@ public sealed class ScriptView : WorkspaceView
         }
     }
 
+    private bool editingFormsOpen =>
+        body.Children.OfType<SceneSection>().Any(s => s.IsEditing)
+        || body.Children.OfType<SceneSection>().SelectMany(s => s.BeatRows).Any(b => b.IsEditing);
+
+    private static bool TerminalJobStatus(string status) =>
+        status is "COMPLETED" or "FAILED" or "CANCELLED" or "NEEDS_REVIEW";
+
     public override void PollTick()
     {
-        // While a SOURCE_PARSE job is active the script keeps converging; refetch quietly.
-        if (!loadingScript && chapterId.Length > 0 && script.ValueKind == JsonValueKind.Undefined)
-            _ = LoadScriptAsync();
+        if (loadingScript || chapterId.Length == 0 || editingFormsOpen) return;
+        // 剧本未加载时直接补一次 quiet 读取；已加载时按本章的活跃 SOURCE_PARSE 收敛。
+        if (script.ValueKind == JsonValueKind.Undefined)
+        {
+            _ = LoadScriptAsync(quiet: true);
+            return;
+        }
+        _ = PollChapterParseAsync();
+    }
+
+    /// <summary>
+    /// SC-3: 本章是否存在活跃 SOURCE_PARSE（对齐 web chapterParseJob：
+    /// job_type == "SOURCE_PARSE" &amp;&amp; job.target_id == chapterId 且非终态）。
+    /// 数据源选「自行轻量拉取全项目活跃任务列表」：State.DockJob 只暴露全项目第一项
+    /// （他章任务会误判/漏判），ApiCache 的 jobs 键当前无人写入（只有 Invalidate 调用），
+    /// 都无法按 target_id 判定；jobsProbeBusy 保证每拍最多一次探测，慢响应由下一拍重试。
+    /// </summary>
+    private async Task PollChapterParseAsync()
+    {
+        if (jobsProbeBusy) return;
+        jobsProbeBusy = true;
+        try
+        {
+            var chapter = chapterId;
+            var rows = await Api.SendAsync(
+                QueryBuilder.Build($"projects/{ProjectId}/jobs", ("archived", "false")),
+                cancellation: lifetime.Token);
+            if (lifetime.Token.IsCancellationRequested || chapter != chapterId) return;
+            var parseRunning = rows.EnumerateArray().Any(job => job.Text("job_type") == "SOURCE_PARSE"
+                && job.Text("target_id") == chapter && !TerminalJobStatus(job.Text("status")));
+            if (parseRunning && !loadingScript && !editingFormsOpen)
+                await LoadScriptAsync(quiet: true);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception) { /* 任务列表瞬时失败只影响本轮收敛判定，下一拍重试 */ }
+        finally { jobsProbeBusy = false; }
     }
 
     public override async Task<bool> ConfirmLeaveAsync()
@@ -434,8 +520,9 @@ internal sealed class SceneSection : Border
     }
 
     private List<CharacterItem> VisibleCast() =>
-        characters.Where(c => scene.Array("beats").Any(b => b.Text("speaker_name").Contains(c.PrimaryName, StringComparison.Ordinal)
-            || c.Aliases.Any(a => b.Text("speaker_name").Contains(a, StringComparison.Ordinal)))).ToList();
+        // 与网页一致:列出所有拥有服装档案的角色(说话人匹配会漏掉未开口
+        // 但已建服装的出镜角色,也让衣橱区依赖对白文本)。
+        characters.Where(c => outfits.Any(o => o.CharacterId == c.Id)).ToList();
 
     private FrameworkElement BuildEditForm()
     {
@@ -537,7 +624,7 @@ internal sealed class SceneSection : Border
             row.Children.Add(name);
             var selector = new ComboBox { Width = 260 };
             selector.Items.Add(new ComboBoxItem { Tag = "", Content = "未指定" });
-            var assigned = scene.Array("outfit_assignments").FirstOrDefault(a => a.Text("character_id") == character.Id).Text("outfit_id");
+            var assigned = scene.StringMap("outfit_assignments").TryGetValue(character.Id, out var assignedId) ? assignedId : "";
             foreach (var outfit in outfits.Where(o => o.CharacterId == character.Id))
             {
                 var item = new ComboBoxItem { Tag = outfit.Id, Content = outfit.Name };
@@ -551,9 +638,10 @@ internal sealed class SceneSection : Border
         }
         var save = Kit.Act("保存服装指定", async (_, _) =>
         {
+            var current = scene.StringMap("outfit_assignments");
             var dirty = selectors.Where(s =>
                 ((s.Selector.SelectedItem as ComboBoxItem)?.Tag as string ?? "")
-                != scene.Array("outfit_assignments").FirstOrDefault(a => a.Text("character_id") == s.CharacterId).Text("outfit_id"));
+                != (current.TryGetValue(s.CharacterId, out var value) ? value : ""));
             foreach (var (characterId, selector) in dirty)
             {
                 var outfitId = (selector.SelectedItem as ComboBoxItem)?.Tag as string;

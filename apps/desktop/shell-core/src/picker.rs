@@ -74,6 +74,7 @@ pub enum PickError {
     TooLarge { size: u64, cap: u64 },
     NotRegistered,
     GrewDuringRead,
+    SwappedAfterValidation,
     Io(std::io::Error),
 }
 
@@ -95,6 +96,9 @@ impl std::fmt::Display for PickError {
             }
             PickError::NotRegistered => write!(f, "该路径不是本会话中通过选择得到的，已拒绝"),
             PickError::GrewDuringRead => write!(f, "文件在读取期间超过上限"),
+            PickError::SwappedAfterValidation => {
+                write!(f, "文件在校验后被替换，已拒绝读取")
+            }
             PickError::Io(error) => write!(f, "读取失败: {error}"),
         }
     }
@@ -267,6 +271,58 @@ impl PickedRegistry {
     }
 }
 
+/// (volume/device, index/inode) identity of a PATH, from a metadata stat.
+#[cfg(unix)]
+fn path_identity(path: &Path) -> std::io::Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::metadata(path)?;
+    Ok((meta.dev(), meta.ino()))
+}
+
+/// Windows path identity: std exposes no file index, so open a handle and ask
+/// the filesystem. Only used as the EXPECTED side of the comparison in
+/// [`read_registered_file`] — the final read still opens its own handle and
+/// re-checks identity, so this probe handle closing first is harmless.
+#[cfg(windows)]
+fn path_identity(path: &Path) -> std::io::Result<(u64, u64)> {
+    handle_identity(&std::fs::File::open(path)?)
+}
+
+/// (volume/device, index/inode) identity of an OPEN HANDLE: fstat on Unix,
+/// GetFileInformationByHandle on Windows. Comparing this against the pre-open
+/// path identity detects a file swapped between validation and open — the
+/// open handle then belongs to different on-disk object than the one the
+/// policy validated.
+#[cfg(unix)]
+fn handle_identity(file: &std::fs::File) -> std::io::Result<(u64, u64)> {
+    use std::os::unix::io::AsRawFd;
+    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: stat is a valid out-pointer for the duration of the call and
+    // the fd is owned by `file`.
+    if unsafe { libc::fstat(file.as_raw_fd(), &mut stat) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok((stat.st_dev as u64, stat.st_ino as u64))
+}
+
+#[cfg(windows)]
+fn handle_identity(file: &std::fs::File) -> std::io::Result<(u64, u64)> {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: the handle is owned by `file` and outlives the call; `info` is
+    // a valid out-pointer.
+    let result = unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut info) };
+    result.map_err(|error| std::io::Error::from_raw_os_error(error.code().0 as i32))?;
+    Ok((
+        info.dwVolumeSerialNumber as u64,
+        ((info.nFileIndexHigh as u64) << 32) | (info.nFileIndexLow as u64),
+    ))
+}
+
 /// Read a previously picked file back for the page (which then uploads it
 /// through the ordinary API upload endpoints). Re-validates the full policy
 /// and registry membership on every call — a pick is a capability, not a
@@ -274,6 +330,17 @@ impl PickedRegistry {
 pub fn read_registered_file(
     registry: &PickedRegistry,
     raw: &Path,
+) -> Result<(PickedFile, Vec<u8>), PickError> {
+    read_registered_file_with(registry, raw, || {})
+}
+
+/// Test seam for the post-open identity check: `between_identity_and_open`
+/// runs exactly where a real swap would have to happen (after the policy
+/// validated the path's identity, before the read opens its handle).
+pub fn read_registered_file_with(
+    registry: &PickedRegistry,
+    raw: &Path,
+    between_identity_and_open: impl FnOnce(),
 ) -> Result<(PickedFile, Vec<u8>), PickError> {
     let canonical = raw.canonicalize().map_err(|error| match error.kind() {
         std::io::ErrorKind::NotFound => PickError::DoesNotExist,
@@ -287,7 +354,16 @@ pub fn read_registered_file(
         // The path re-resolved differently from the registered canonical key.
         return Err(PickError::IsSymlink);
     }
+    // Post-open identity check (#308): the opened handle must belong to the
+    // same on-disk object the policy just validated. A swap between the
+    // stat and the open makes the handle's identity mismatch and fails
+    // closed instead of serving replaced bytes.
+    let expected = path_identity(&picked.path).map_err(PickError::Io)?;
+    between_identity_and_open();
     let file = std::fs::File::open(&picked.path).map_err(PickError::Io)?;
+    if handle_identity(&file).map_err(PickError::Io)? != expected {
+        return Err(PickError::SwappedAfterValidation);
+    }
     let mut buffer = Vec::new();
     file.take(MAX_PICKED_FILE_BYTES + 1)
         .read_to_end(&mut buffer)

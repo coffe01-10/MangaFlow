@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -513,6 +513,63 @@ describe("CharacterPackageWorkspace", () => {
     expect(await screen.findByText("角色模型包已被更新，请刷新后重试")).toBeInTheDocument();
     expect(screen.queryByText("数据已变化，请刷新后重试")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "刷新" })).toBeInTheDocument();
+  });
+
+  it("保存草稿规格成功后同步 base：外部规格变化仍被采纳", async () => {
+    let current = packageFixture();
+    listApi.mockResolvedValue([summaryFixture()]);
+    detailApi.mockImplementation(async () => current);
+    updateApi.mockImplementation(async (_project, _character, payload) => {
+      current = {
+        ...current,
+        identity_spec: { ...current.identity_spec, ...payload.identity_spec },
+        visual_spec: { ...current.visual_spec, ...payload.visual_spec },
+        negative_constraints: payload.negative_constraints ?? current.negative_constraints,
+        version: current.version + 1,
+      };
+      return current;
+    });
+    renderWorkspace();
+    const ageInput = await screen.findByLabelText("身份锚点 年龄段外观");
+    expect(ageInput).toHaveValue("17 岁高中生");
+    fireEvent.change(ageInput, { target: { value: "18 岁大学生" } });
+    fireEvent.click(screen.getByRole("button", { name: /保存草稿规格/ }));
+    await waitFor(() => expect(updateApi).toHaveBeenCalledTimes(1));
+    // 保存触发的重拉落地（挂载 1 次 + 失效重拉 1 次）。
+    await waitFor(() => expect(detailApi.mock.calls.length).toBeGreaterThanOrEqual(2));
+    // 旧缺陷：base 停在保存前的规格，specDirty 恒真——外部变化（另一处保存
+    // 后窗口聚焦重拉）永远不再被采纳。
+    current = {
+      ...current,
+      identity_spec: { ...current.identity_spec, age_appearance: "20 岁大学生" },
+    };
+    focusManager.setFocused(true);
+    await waitFor(() => expect(ageInput).toHaveValue("20 岁大学生"));
+  });
+
+  it("保存草稿规格成功后同步 base：在途新输入不被覆盖", async () => {
+    let current = packageFixture();
+    listApi.mockResolvedValue([summaryFixture()]);
+    detailApi.mockImplementation(async () => current);
+    let release: ((value: CharacterModelPackage) => void) | undefined;
+    updateApi.mockImplementation(() => new Promise((resolve) => {
+      release = resolve;
+    }));
+    renderWorkspace();
+    const ageInput = await screen.findByLabelText("身份锚点 年龄段外观");
+    fireEvent.change(ageInput, { target: { value: "18 岁大学生" } });
+    fireEvent.click(screen.getByRole("button", { name: /保存草稿规格/ }));
+    await waitFor(() => expect(updateApi).toHaveBeenCalledTimes(1));
+    // 保存在途期间继续输入：成功与重拉落地后这些字符必须保留。
+    fireEvent.change(ageInput, { target: { value: "19 岁大学生" } });
+    current = {
+      ...current,
+      identity_spec: { ...current.identity_spec, age_appearance: "18 岁大学生" },
+      version: current.version + 1,
+    };
+    release?.(current);
+    await waitFor(() => expect(detailApi.mock.calls.length).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(ageInput).toHaveValue("19 岁大学生"));
   });
 
   it("服装集支持关联、设默认；历史版本可归档与恢复", async () => {

@@ -565,6 +565,84 @@ def test_approve_node_enforces_readiness_and_freezes_scene_snapshot(db_session):
     assert snapshot["scene_asset"]["compiled_background"]
 
 
+def test_approve_node_leases_style_reference_assets(db_session, monkeypatch):
+    """#236-2 工作流侧：审批创建的 PAGE_GENERATE 任务必须与路由侧
+    create_page_candidate 一样，把生效风格（page.style_id 回退项目默认）的
+    参考图纳入 JobAssetReference 租约——否则排队期间删除风格参考图不被
+    409 拦截，付费任务烧完全部重试后把整条运行拖成 FAILED。"""
+
+    monkeypatch.setattr(
+        "app.services.workflow_engine.lifecycle.ensure_page_ready",
+        lambda *_args, **_kwargs: None,
+    )
+    seeded = _seed_page_hierarchy(db_session)
+    workflow = _seed_workflow(db_session, seeded["project_id"], default_graph())
+    publish_workflow(db_session, workflow)
+
+    from app.models import JobAssetReference, StyleProfile
+
+    style_asset = Asset(
+        project_id=seeded["project_id"],
+        kind="STYLE_REFERENCE",
+        original_name="style.png",
+        storage_key="test/style.png",
+        mime_type="image/png",
+        byte_size=1024,
+        width=512,
+        height=512,
+        sha256="facade-style-hash",
+    )
+    db_session.add(style_asset)
+    db_session.flush()
+    style = StyleProfile(
+        project_id=seeded["project_id"],
+        name="测试风格",
+        color_mode="monochrome",
+        status="ACTIVE",
+        profile={"reference_asset_ids": [style_asset.id]},
+    )
+    db_session.add(style)
+    db_session.flush()
+    project = db_session.get(Project, seeded["project_id"])
+    project.default_style_id = style.id
+    db_session.commit()
+
+    run = create_workflow_run(
+        db_session,
+        workflow,
+        scope_type="PAGE",
+        scope_id=seeded["page_id"],
+        start_node_ids=["generate"],
+        stop_node_ids=["generate"],
+    )
+    node_run = db_session.scalar(
+        select(WorkflowNodeRun).where(
+            WorkflowNodeRun.workflow_run_id == run.id,
+            WorkflowNodeRun.status == "WAITING_APPROVAL",
+        )
+    )
+    assert node_run is not None
+    approve_node(
+        db_session,
+        run.id,
+        node_run.node_id,
+        image_model_alias="image.nano_banana_2",
+        resolution="1K",
+    )
+
+    db_session.expire(node_run)
+    leased = set(
+        db_session.scalars(
+            select(JobAssetReference.asset_id).where(
+                JobAssetReference.job_id == node_run.job_id
+            )
+        )
+    )
+    assert style_asset.id in leased, (
+        "生效风格的参考图必须进入审批任务的租约集，删除才能被 409 拦截"
+    )
+
+
 def test_approve_node_double_approve_leaves_single_candidate(db_session, monkeypatch):
     """Two racing approvals of the same node must not create two candidates:
     the conditional claim makes the loser fail cleanly instead of leaving an

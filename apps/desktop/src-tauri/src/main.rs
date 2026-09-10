@@ -70,6 +70,28 @@ struct ReadPickedFileDto {
     content_base64: String,
 }
 
+/// One native dialog at a time (#316): a second invoke while a dialog is up
+/// returns an error instead of stacking another modal on the message pump
+/// (sync dialog commands run on the UI thread and would otherwise queue a
+/// second rfd loop behind the first).
+static DIALOG_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+struct DialogClaim;
+
+impl Drop for DialogClaim {
+    fn drop(&mut self) {
+        DIALOG_OPEN.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+fn claim_dialog() -> Result<DialogClaim, String> {
+    if DIALOG_OPEN.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        Err("已有文件对话框打开，请先完成或关闭它".into())
+    } else {
+        Ok(DialogClaim)
+    }
+}
+
 #[tauri::command]
 fn desktop_get_api_origin(origin: tauri::State<ApiOrigin>) -> String {
     origin.0.clone()
@@ -91,6 +113,7 @@ fn desktop_health_probe(origin: tauri::State<ApiOrigin>) -> Result<u16, String> 
 /// confirmation. Returns `Ok(None)` when the user cancels the dialog.
 #[tauri::command]
 fn desktop_export_logs(paths: tauri::State<ShellPaths>) -> Result<Option<ExportReportDto>, String> {
+    let _guard = claim_dialog()?;
     let Some(path) = rfd::FileDialog::new()
         .set_title("导出运行日志")
         .set_file_name("mangaflow-logs.zip")
@@ -129,6 +152,7 @@ fn desktop_pick_file(
     kind: String,
     picked: tauri::State<PickedState>,
 ) -> Result<Option<PickedFileDto>, String> {
+    let _guard = claim_dialog()?;
     let kind = PickKind::parse(&kind).ok_or("unknown pick kind; expected source_text | reference_image")?;
     let (label, extensions) = kind.dialog_filter();
     let chosen = rfd::FileDialog::new()
@@ -151,6 +175,7 @@ fn desktop_pick_file(
 /// symlinks and traversal shapes; `Ok(None)` = user cancelled.
 #[tauri::command]
 fn desktop_pick_directory() -> Result<Option<PickedDirectoryDto>, String> {
+    let _guard = claim_dialog()?;
     let chosen = rfd::FileDialog::new()
         .set_title("选择目录")
         .pick_folder();
@@ -167,10 +192,13 @@ fn desktop_pick_directory() -> Result<Option<PickedDirectoryDto>, String> {
 /// Read back a previously picked file so the page can upload it through the
 /// ordinary API upload endpoints. Every call re-validates membership in the
 /// session registry and the full pick policy.
+// async (#316): tauri runs async commands off the main thread — a sync
+// command kept the up-to-20 MiB read + base64 encode on the UI thread,
+// freezing dialogs and the WebView loop for its whole duration.
 #[tauri::command]
-fn desktop_read_picked_file(
+async fn desktop_read_picked_file(
     path: String,
-    picked: tauri::State<PickedState>,
+    picked: tauri::State<'_, PickedState>,
 ) -> Result<ReadPickedFileDto, String> {
     if path.is_empty() {
         return Err(pick_error_message(PickError::EmptyPath));
@@ -395,7 +423,79 @@ fn run() {
                 }
                 return Err(error.into());
             }
+
+            // Shell tools window (#299): plan B loads the web app as a REMOTE
+            // origin, where app-command invokes are (correctly) ACL-denied —
+            // so the only local-context surface for desktop_export_logs /
+            // desktop_pick_* needs its own window. Created programmatically
+            // AFTER the handshake gate (never config-declared), hidden until
+            // the menu opens it; same local-context construction as the main
+            // static-export window, so no `remote` capability is involved.
+            if let Err(error) = tauri::WebviewWindowBuilder::new(
+                app,
+                "shell-tools",
+                tauri::WebviewUrl::App("shell-tools.html".into()),
+            )
+            .title("MangaFlow 壳工具")
+            .inner_size(620.0, 520.0)
+            .visible(false)
+            .build()
+            {
+                if let Some(state) = app.try_state::<HelperState>() {
+                    stop_helper(&mut state.inner().0.lock().expect("helper state lock"));
+                }
+                return Err(error.into());
+            }
+            // Menu wiring can fail too, and the shutdown-bookkeeping invariant
+            // applies to it like every setup failure path: run the same
+            // stop_helper bookkeeping rather than bare `?`.
+            if let Err(error) = (|| -> Result<(), tauri::Error> {
+                let shell_tools = tauri::menu::MenuItem::with_id(
+                    app,
+                    "open-shell-tools",
+                    "壳工具（日志导出 / 文件选择）",
+                    true,
+                    None::<&str>,
+                )?;
+                let tools_menu = tauri::menu::Submenu::with_id_and_items(
+                    app,
+                    "tools",
+                    "工具",
+                    true,
+                    &[&shell_tools],
+                )?;
+                let menu = tauri::menu::Menu::with_items(app, &[&tools_menu])?;
+                app.set_menu(menu)?;
+                app.on_menu_event(|app, event| {
+                    if event.id() == "open-shell-tools" {
+                        if let Some(window) = app.get_webview_window("shell-tools") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                });
+                Ok(())
+            })() {
+                if let Some(state) = app.try_state::<HelperState>() {
+                    stop_helper(&mut state.inner().0.lock().expect("helper state lock"));
+                }
+                return Err(error.into());
+            }
             Ok(())
+        })
+        // The hidden shell-tools window must not outlive the main window:
+        // tauri exits when ALL windows are destroyed, so a lingering hidden
+        // window would keep the process (and the helper sidecar) running
+        // with nothing visible, and the single-instance handler — which
+        // focuses "main" only — could not surface it on relaunch.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Destroyed = event {
+                if window.label() == "main" {
+                    if let Some(tools) = window.app_handle().get_webview_window("shell-tools") {
+                        let _ = tools.destroy();
+                    }
+                }
+            }
         })
         .build(tauri::generate_context!())
         .expect("failed to build the MangaFlow desktop shell")

@@ -23,8 +23,10 @@ public partial class MainWindow : Window
     private readonly string dataRoot;
     private readonly Preferences preferences;
     private readonly CancellationTokenSource lifetime = new();
-    private readonly DispatcherTimer poll = new() { Interval = TimeSpan.FromSeconds(3) };
-    private readonly DispatcherTimer dockPoll = new() { Interval = TimeSpan.FromSeconds(3) };
+    // Poll period follows the runtime setting ui_poll_interval_seconds (web 界面轮询周期,
+    // default 3000 ms) instead of a hardcoded 3 s; see PollInterval for the生效语义.
+    private readonly DispatcherTimer poll = new() { Interval = Services.PollInterval.Interval };
+    private readonly DispatcherTimer dockPoll = new() { Interval = Services.PollInterval.Interval };
     private readonly ApiCache cache = new();
     private readonly Dictionary<string, IWorkspaceView> viewCache = new();
     private ApiClient? api;
@@ -87,6 +89,11 @@ public partial class MainWindow : Window
             state.Connected = true;
             state.ConnectionLabel = "● 本地服务已连接";
             await LoadDashboardAsync(lifetime.Token);
+            // Best-effort: a failing /settings/runtime read keeps the current poll
+            // period (default 3000 ms); reconnection retries the fetch.
+            try { await PollInterval.LoadAsync(api, lifetime.Token); }
+            catch (Exception) when (!lifetime.Token.IsCancellationRequested) { }
+            ApplyPollIntervals();
             if (state.CurrentProject == null && preferences.RecentProject != null)
             {
                 var recent = state.Projects.FirstOrDefault(p => p.Id == preferences.RecentProject);
@@ -214,6 +221,13 @@ public partial class MainWindow : Window
             home.CreateRequested -= OnProjectCreated;
             home.CreateRequested += OnProjectCreated;
         }
+        if (view is SettingsView settings)
+        {
+            // Saving 界面轮询周期 re-arms both timers with the new value; the
+            // change applies from the next tick (web: settings cache update).
+            settings.RuntimeSaved -= OnRuntimeSettingsSaved;
+            settings.RuntimeSaved += OnRuntimeSettingsSaved;
+        }
         ContentHost.Content = view as UIElement ?? throw new InvalidOperationException("视图不是 UI 元素");
         await ActivateCurrentViewAsync();
     }
@@ -230,6 +244,20 @@ public partial class MainWindow : Window
         {
             state.Error = ErrorText(error);
         }
+    }
+
+    private void OnRuntimeSettingsSaved()
+    {
+        if (closing) return;
+        // SettingsView already published the value into PollInterval; re-arm the
+        // timers so the next tick runs on the new period.
+        ApplyPollIntervals();
+    }
+
+    private void ApplyPollIntervals()
+    {
+        poll.Interval = PollInterval.Interval;
+        dockPoll.Interval = PollInterval.Interval;
     }
 
     private void Navigate(string destination) => _ = NavigateAsync(destination);
@@ -269,10 +297,23 @@ public partial class MainWindow : Window
                     if (page != (section == "settings" ? "project-settings" : section)) return;
                     state.Navigation.Select(definition);
                     ProjectSections.SelectedItem = definition;
+                    // Web deep links (?view=/?character=/?outfit=/?style=/?page=, applied in
+                    // project-workspace.tsx + use-assets-workspace.ts) land here: the assets
+                    // view preselects the entity, the storyboard view locates the page.
+                    var parameters = System.Web.HttpUtility.ParseQueryString(query.TrimStart('?'));
                     if (section == "assets" && ContentHost.Content is AssetsView assets)
                     {
-                        var parameters = System.Web.HttpUtility.ParseQueryString(query.TrimStart('?'));
                         if (parameters["view"] is { } assetView) assets.Switch(assetView);
+                        assets.ApplyDeepLink(parameters["character"], parameters["outfit"], parameters["style"]);
+                    }
+                    else if (section == "storyboard" && ContentHost.Content is StoryboardView storyboard &&
+                             parameters["page"] is { Length: > 0 } pageId)
+                    {
+                        // LoadPagesAsync picks the remembered page after the chapter switch;
+                        // ?character= focuses the first outfit-less VISIBLE panel of that
+                        // character (web storyboard-editor focusCharacterId).
+                        KeyValueStore.Set("storyboard:page:" + state.CurrentProject?.Id, pageId);
+                        _ = storyboard.LocatePageAsync(pageId, parameters["character"]);
                     }
                 }
             },

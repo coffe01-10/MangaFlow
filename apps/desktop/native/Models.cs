@@ -40,6 +40,18 @@ public static class JsonFields
     }
     public static List<string> Strings(this JsonElement json, string name) =>
         json.Array(name).Select(item => item.ToString()).ToList();
+    /// <summary>String-valued object map (e.g. scene outfit_assignments);
+    /// non-object or non-string members are skipped.</summary>
+    public static Dictionary<string, string> StringMap(this JsonElement json, string name)
+    {
+        var map = new Dictionary<string, string>();
+        var element = json.Element(name);
+        if (element.ValueKind == JsonValueKind.Object)
+            foreach (var property in element.EnumerateObject())
+                if (property.Value.ValueKind == JsonValueKind.String)
+                    map[property.Name] = property.Value.GetString()!;
+        return map;
+    }
     public static string MapText(this JsonElement json, string name, IReadOnlyDictionary<string, string> table) =>
         Labels.Map(table, json.TextOrNull(name));
 }
@@ -169,7 +181,10 @@ public record JobItem(string Id, string Name, string State, string StatusLabel, 
             j.Text("error_message"),
             state is "WAITING" or "QUEUED" or "RUNNING" or "PREPARING" or "GENERATING"
                 or "UPLOADING_REFERENCES" or "CONSISTENCY_CHECKING" or "REPAIRING" or "OCR_CHECKING",
-            (state is "FAILED" or "NEEDS_REVIEW" or "WAITING") && j.Number("attempt_count") < j.Number("max_attempts"))
+            // Web jobs-section only offers 重试 for status === "FAILED" (QUEUED/GENERATING/
+            // RUNNING rows get 取消 instead); the attempt guard keeps the existing
+            // "exhausted task cannot retry" contract on top of that baseline.
+            state == "FAILED" && j.Number("attempt_count") < j.Number("max_attempts"))
         {
             Type = j.Text("job_type"),
             NodeName = j.Text("workflow_node_id") is { Length: > 0 } node ? $"节点 {node}" : "",

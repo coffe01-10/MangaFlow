@@ -312,7 +312,9 @@ public static class Labels
         ["eye_level"] = "视线高度",
         ["ground_level"] = "贴地机位",
         ["waist_level"] = "腰部机位",
-        ["top_down"] = "顶视机位",
+        // 与 web panel-inspector 的机位高度词表同键（顶视机位）；服务端历史值
+        // top_down 由 StoryboardView 读侧映射为 overhead 后再种子/提交。
+        ["overhead"] = "顶视机位",
     };
 
     public static readonly IReadOnlyDictionary<string, string> CharacterPresence = new Dictionary<string, string>

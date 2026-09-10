@@ -14,6 +14,7 @@ internal sealed class StyleProductionCard : Border
     private readonly StyleWorkspace owner;
     private JsonElement data;
     internal string Id => data.Text("id");
+    internal StyleItem Item => StyleItem.From(data);
     private JsonElement Profile => data.Element("profile");
     private readonly TextBlock title = new() { FontSize = 18, FontWeight = FontWeights.Bold };
     private readonly TextBlock status = StyleWorkspace.Caption("");
@@ -67,6 +68,14 @@ internal sealed class StyleProductionCard : Border
     {
         var panel = new StackPanel(); panel.Children.Add(new TextBlock { Text = name, FontWeight = FontWeights.Bold, FontSize = 12, Margin = new Thickness(0, 0, 0, 8) });
         state.Margin = new Thickness(0, 0, 0, 12); panel.Children.Add(state); stages.Children.Add(StyleWorkspace.Surface(panel, padding: 14)); return panel;
+    }
+    /// <summary>?style= deep link: web's deep-link-focus ring (accent border + scroll).</summary>
+    internal void MarkDeepLinkFocus()
+    {
+        BorderBrush = (Brush)FindResource("Accent");
+        BorderThickness = new Thickness(2);
+        ToolTip = "深链定位的风格档案";
+        BringIntoView();
     }
     private Button Button(string name, Func<Task> action, string style = "Compact")
     {

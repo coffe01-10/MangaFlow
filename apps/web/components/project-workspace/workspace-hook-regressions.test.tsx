@@ -314,7 +314,7 @@ beforeEach(() => {
   characterPackagesApi.mockResolvedValue([]);
 });
 
-function Probe({ collect }: { collect: (value: unknown) => void }) {
+function Probe({ collect, selectedPageId = "page-1" }: { collect: (value: unknown) => void; selectedPageId?: string | null }) {
   const queries = useWorkspaceQueries({
     id: "project-1",
     section: "generate",
@@ -330,7 +330,7 @@ function Probe({ collect }: { collect: (value: unknown) => void }) {
     jobs: { data: [], isLoading: false, isError: false } as never,
     characters: queries.characters,
     outfits: queries.outfits,
-    selectedPageId: "page-1",
+    selectedPageId,
     setSelectedPageId: () => undefined,
     setDraft: () => undefined,
     activeDrawModel: "image.nano_banana_2",
@@ -340,7 +340,7 @@ function Probe({ collect }: { collect: (value: unknown) => void }) {
   return null;
 }
 
-function renderGenerationProbe() {
+function renderGenerationProbe(selectedPageId: string | null = "page-1") {
   let latest: GenerationWorkspace | null = null;
   const collect = (value: unknown) => {
     latest = value as GenerationWorkspace;
@@ -348,14 +348,18 @@ function renderGenerationProbe() {
   const client = createClient();
   const element = (
     <QueryClientProvider client={client}>
-      <Probe collect={collect} />
+      <Probe collect={collect} selectedPageId={selectedPageId} />
     </QueryClientProvider>
   );
   const view = render(element);
   return {
     view,
     workspace: () => latest!,
-    rerender: () => view.rerender(element),
+    rerender: (nextPageId: string | null) => view.rerender(
+      <QueryClientProvider client={client}>
+        <Probe collect={collect} selectedPageId={nextPageId} />
+      </QueryClientProvider>,
+    ),
   };
 }
 
@@ -372,6 +376,69 @@ describe("生成工作台修复/升清回归", () => {
     });
     expect(repairApi).not.toHaveBeenCalled();
     expect(workspace().repairCandidate.error?.message).toContain("请先选择要修复的候选");
+  });
+
+  it("跨批次检查的候选从工作台选中候选回退解析分辨率，而不是误报未知", async () => {
+    // 沿用并重新检查会把上一批次的候选放进检查面板；当前查看批次的
+    // 候选列表里没有它（reviewCandidate 为 null），旧代码因此以“候选
+    // 分辨率未知”误报且刷新也无法自愈。回退源是工作台的
+    // selected_candidate（同一 id 时），它独立于批次列表。
+    batchesApi.mockResolvedValue([workbenchFixture().current_batch!]);
+    candidatesApi.mockResolvedValue([candidateFixture({ id: "candidate-other" })]);
+    workbenchApi.mockResolvedValue({
+      ...workbenchFixture(),
+      selected_candidate: candidateFixture({ resolution: "2K" }),
+    });
+    repairApi.mockResolvedValue({
+      job_id: "job-repair",
+      job_status: "QUEUED",
+      candidate: candidateFixture(),
+    });
+    const { workspace } = renderGenerationProbe();
+    await vi.waitFor(() => {
+      expect(workspace().selectedWorkbenchCandidate?.id).toBe("candidate-1");
+    });
+    workspace().setReviewCandidateId("candidate-1");
+    // 等待重渲染落地（mutate 的闭包取自最近一次渲染），再提交修复。
+    await vi.waitFor(() => {
+      expect(workspace().reviewCandidateId).toBe("candidate-1");
+    });
+    workspace().repairCandidate.mutate(inspectionFixture());
+    await vi.waitFor(() => {
+      expect(workspace().repairCandidate.isSuccess).toBe(true);
+    });
+    expect(repairApi).toHaveBeenCalledWith("candidate-1", expect.objectContaining({ resolution: "2K" }));
+  });
+
+  it("切页（含素材库阻断行的跳转路径）清空引用改写、检查面板与批次视图", async () => {
+    // 素材库「去生成」直接 setSelectedPageId：此前只有页面选择器与
+    // goNext 清理这些页内状态，泄漏的改写会并入下一页的生成请求。
+    pagesApi.mockResolvedValue([pageFixture(), pageFixture({ id: "page-2", page_number: 2 })]);
+    const { workspace, rerender } = renderGenerationProbe();
+    await vi.waitFor(() => {
+      expect(workspace().selectedPage?.id).toBe("page-1");
+    });
+    workspace().setReferenceSelections({ "character-1": { asset_id: "asset-x" } } as never);
+    workspace().setReviewCandidateId("candidate-1");
+    rerender("page-2");
+    await vi.waitFor(() => {
+      expect(workspace().selectedPage?.id).toBe("page-2");
+    });
+    expect(workspace().referenceSelections).toEqual({});
+    expect(workspace().reviewCandidateId).toBe(null);
+    expect(workspace().viewedBatchId).toBe(null);
+  });
+
+  it("共享场景资产查询包含已归档资产，激活绑定方的归档分支", async () => {
+    // 归档不清除绑定；排除软删除行的共享列表让“当前绑定已归档”分支
+    // 成为死代码，且绑定下拉框看起来像未绑定。
+    renderGenerationProbe();
+    await vi.waitFor(() => {
+      expect(sceneAssetsApi).toHaveBeenCalledWith(
+        "project-1",
+        expect.objectContaining({ include_deleted: true }),
+      );
+    });
   });
 
   it("修复与升清成功后清理 reviewCandidateId（批次已被服务端关闭）", async () => {

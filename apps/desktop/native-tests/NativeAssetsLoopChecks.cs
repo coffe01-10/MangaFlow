@@ -69,11 +69,24 @@ internal static class NativeAssetsLoopChecks
         ClickVisual(conceptThumb);
         Require(view.LastPreviewUrl == "http://127.0.0.1:12345/api/v1/assets/sheet1/content", "concept preview URL mismatch");
 
-        // Scene reference thumbnail (locally constructed relative path).
-        await view.SwitchAsync(AssetsView.Scenes); await Settle(); Layout(view, 1200, 1000);
-        var sceneThumb = Descendants(view).OfType<Border>().First(b => b.Cursor == Cursors.Hand && b.Child is ImageBox);
-        ClickVisual(sceneThumb);
-        Require(view.LastPreviewUrl == "http://127.0.0.1:12345/api/v1/assets/a1/content", "scene preview did not resolve the local relative path");
+        // Scene reference thumbnail. 961bcec refactored the tile from a
+        // Hand-cursor Border into an accessible Button{Content=ImageBox} whose
+        // Click opens the preview — the click semantics and the resolved media
+        // path are unchanged, so the check targets the Button and raises its
+        // Click event (down-only visual clicks never fire a WPF Button). The
+        // detail pane fills from a dispatcher-deferred load: bounded-wait like
+        // FrozenSpecChecks instead of a single Settle.
+        await view.SwitchAsync(AssetsView.Scenes);
+        Button? sceneThumb = null;
+        var sceneWait = DateTime.UtcNow;
+        while (sceneThumb == null && DateTime.UtcNow - sceneWait < TimeSpan.FromSeconds(3))
+        {
+            await Settle(); Layout(view, 1200, 1000);
+            sceneThumb = Descendants(view).OfType<Button>().FirstOrDefault(b => b.Content is ImageBox);
+        }
+        if (sceneThumb == null) throw new Exception("scene reference thumbnail (Button+ImageBox) never appeared");
+        Click(sceneThumb);
+        Require(view.LastPreviewUrl == "http://127.0.0.1:12345/api/v1/assets/a1/content", "scene preview did not resolve the scene reference path");
 
         // Raw reference library card.
         await view.SwitchAsync(AssetsView.References); Layout(view, 1200, 1000);

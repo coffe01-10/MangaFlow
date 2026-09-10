@@ -210,6 +210,20 @@ describe("UsageDashboard cost semantics", () => {
     expect(within(breakdown).getAllByText("仅计量").length).toBeGreaterThan(0);
   });
 
+  it("自定义范围缺开始日期时可见拒绝查询，而不是退化为全量统计", async () => {
+    renderDashboard();
+    await waitFor(() => expect(screen.getByText("¥66.00")).toBeTruthy());
+    fireEvent.change(screen.getByLabelText("选择用量统计时间范围"), { target: { value: "custom" } });
+    // 缺开始日期：显示无效范围提示，KPI/表格消失——静默丢掉两个边界
+    // 会把全史总量当成所选范围的量展示。
+    expect(await screen.findByText("自定义时间范围不完整")).toBeTruthy();
+    expect(screen.queryByText("¥66.00")).toBeNull();
+    // 补齐开始日期后恢复正常查询。
+    fireEvent.change(screen.getByLabelText("自定义开始日期"), { target: { value: "2026-09-01" } });
+    await waitFor(() => expect(screen.getByText("¥66.00")).toBeTruthy());
+    expect(screen.queryByText("自定义时间范围不完整")).toBeNull();
+  });
+
   it("opens the attempt drawer from a row and closes on Escape with focus moved to the close button", async () => {
     renderDashboard();
     await waitFor(() => expect(screen.getByText("调用明细")).toBeTruthy());

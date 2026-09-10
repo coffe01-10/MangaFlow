@@ -31,7 +31,10 @@ public sealed class LocalEditWindow : Window
     private readonly Polygon draft = new() { Fill = new SolidColorBrush(Color.FromArgb(80, 211, 74, 47)), Stroke = Brushes.OrangeRed, StrokeThickness = 2, IsHitTestVisible = false };
     private readonly List<Polygon> masks = [];
     private readonly CancellationTokenSource lifetime = new();
-    private readonly System.Windows.Threading.DispatcherTimer poll = new() { Interval = TimeSpan.FromSeconds(3) };
+    // Poll period follows the runtime setting ui_poll_interval_seconds (default
+    // 3000 ms), same as the MainWindow timers; windows opened after a settings
+    // change pick up the new value, in-flight windows keep ticking on the old one.
+    private readonly System.Windows.Threading.DispatcherTimer poll = new() { Interval = Services.PollInterval.Interval };
     private readonly List<JsonElement> capableModels;
     private string tool = "rect", commandId = "", groupId = "", acceptedId = "";
     private bool busy, loaded, closed, polling;

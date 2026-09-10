@@ -2,6 +2,7 @@
 
 import { AppShell } from "@/components/shell";
 import { ProviderManagement } from "@/components/provider-management";
+import { ClampedNumberInput } from "@/components/clamped-number-input";
 import {
   api,
   type DiagnosticCheck,
@@ -61,13 +62,7 @@ export default function SystemSettingsPage() {
     onSuccess: (data) => { queryClient.setQueryData(["runtime-settings"], data); setLocalDraft(data); setNotice("运行设置已保存并应用到后续任务"); diagnostics.refetch(); },
   });
   const update = <K extends keyof RuntimeSettings>(key: K, value: RuntimeSettings[K]) => { setLocalDraft((current) => ({ ...(current ?? draft!), [key]: value })); setNotice(""); };
-  // 数字输入清空/半输入（""、"1e"）会解析成 0/NaN，直接透传会撞后端 422；
-  // 只接受可解析值并夹回字段区间，无效输入保持上一个有效值。
-  const updateClamped = (key: "job_timeout_seconds" | "job_lease_seconds" | "default_concurrency" | "max_auto_repairs" | "health_check_interval_seconds" | "ui_poll_interval_seconds", raw: string, min: number, max: number) => {
-    const parsed = Number(raw);
-    if (raw.trim() === "" || !Number.isFinite(parsed)) return;
-    update(key, Math.min(max, Math.max(min, Math.round(parsed))) as RuntimeSettings[typeof key]);
-  };
+  // 数字钳制统一走 ClampedNumberInput:输入期间不夹值,失焦才提交区间内结果。
 
   return (
     <AppShell>
@@ -95,12 +90,12 @@ export default function SystemSettingsPage() {
               <header><div><ServerCog size={18} /><span>WORKER / RUNTIME</span></div><small>非敏感动态设置</small></header>
               {draft ? <div className="runtime-form">
                 <label><span>队列模式<small>自动、本地同步或强制 Redis</small></span><select value={draft.queue_mode} onChange={(event) => update("queue_mode", event.target.value as RuntimeSettings["queue_mode"])}><option value="AUTO">自动回退</option><option value="LOCAL">本地同步</option><option value="REDIS">Redis 队列</option></select></label>
-                <label><span>任务超时<small>30–3600 秒</small></span><input type="number" min={30} max={3600} value={draft.job_timeout_seconds} onChange={(event) => updateClamped("job_timeout_seconds", event.target.value, 30, 3600)} /></label>
-                <label><span>任务租约<small>30–3600 秒 · 需不超过任务超时</small></span><input type="number" min={30} max={3600} value={draft.job_lease_seconds} onChange={(event) => updateClamped("job_lease_seconds", event.target.value, 30, 3600)} /></label>
-                <label><span>默认并发<small>1–8 路</small></span><input type="number" min={1} max={8} value={draft.default_concurrency} onChange={(event) => updateClamped("default_concurrency", event.target.value, 1, 8)} /></label>
-                <label><span>视觉修复重试<small>不含文字校对 · 0–10 次</small></span><input type="number" min={0} max={10} value={draft.max_auto_repairs} onChange={(event) => updateClamped("max_auto_repairs", event.target.value, 0, 10)} /></label>
-                <label><span>状态检查周期<small>秒</small></span><input type="number" min={60} max={3600} value={draft.health_check_interval_seconds} onChange={(event) => updateClamped("health_check_interval_seconds", event.target.value, 60, 3600)} /></label>
-                <label><span>界面轮询周期<small>毫秒</small></span><input type="number" min={1000} max={60000} value={draft.ui_poll_interval_seconds} onChange={(event) => updateClamped("ui_poll_interval_seconds", event.target.value, 1000, 60000)} /></label>
+                <label><span>任务超时<small>30–3600 秒</small></span><ClampedNumberInput value={draft.job_timeout_seconds} min={30} max={3600} onCommit={(value) => update("job_timeout_seconds", value)} /></label>
+                <label><span>任务租约<small>30–3600 秒 · 需不超过任务超时</small></span><ClampedNumberInput value={draft.job_lease_seconds} min={30} max={3600} onCommit={(value) => update("job_lease_seconds", value)} /></label>
+                <label><span>默认并发<small>1–8 路</small></span><ClampedNumberInput value={draft.default_concurrency} min={1} max={8} onCommit={(value) => update("default_concurrency", value)} /></label>
+                <label><span>视觉修复重试<small>不含文字校对 · 0–10 次</small></span><ClampedNumberInput value={draft.max_auto_repairs} min={0} max={10} onCommit={(value) => update("max_auto_repairs", value)} /></label>
+                <label><span>状态检查周期<small>秒</small></span><ClampedNumberInput value={draft.health_check_interval_seconds} min={60} max={3600} onCommit={(value) => update("health_check_interval_seconds", value)} /></label>
+                <label><span>界面轮询周期<small>毫秒</small></span><ClampedNumberInput value={draft.ui_poll_interval_seconds} min={1000} max={60000} onCommit={(value) => update("ui_poll_interval_seconds", value)} /></label>
               </div> : <div className="loading-panel"><LoaderCircle className="spin" />读取设置…</div>}
               {notice && <p className="save-success"><CheckCircle2 size={15} />{notice}</p>}{save.isError && <p className="form-error"><CircleAlert size={15} />{save.error.message}</p>}
             </article>

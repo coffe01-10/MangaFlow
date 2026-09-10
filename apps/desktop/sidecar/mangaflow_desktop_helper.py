@@ -449,18 +449,65 @@ def _run_stub(journal: Path, record: dict, grandchild: bool) -> int:
         server.server_close()
 
 
+def _validate_api_root(api_root: Path) -> str | None:
+    """Return a rejection reason for an unusable --api-root tree, else None.
+
+    --api-root is unvalidated shell input that becomes sys.path[0]: a wrong
+    or hostile tree can shadow the helper's own modules (fake_channel) and
+    hijack alembic's env.py before the API ever imports (#314). Marker files
+    are checked instead of trusting the path string.
+    """
+    if not (api_root / "alembic.ini").is_file():
+        return "api-root/missing-alembic-ini"
+    if not (api_root / "app" / "main.py").is_file():
+        return "api-root/missing-app-main"
+    # Platform matrix (round-1 review F2): NTFS `is_file()` matching is
+    # itself case-insensitive, so the byte-exact probe already rejects case
+    # variants on Windows; POSIX imports are case-sensitive by default
+    # (PYTHONCASEOK relaxes it). The lowercase scan is strictness plus
+    # coverage for case-sensitive volumes under relaxed matching.
+    # Fail closed on enumeration failure: a traverse-only (0o111) root
+    # passes the marker `is_file()` checks above but cannot be listed -
+    # fall back to the byte-exact probe (stat works through +x) instead of
+    # accepting (round-1 review F1: the bare `set()` fallback was
+    # fail-OPEN, probe-verified).
+    try:
+        names = {entry.name.lower() for entry in api_root.iterdir()}
+    except OSError:
+        names = {"fake_channel.py"} if (api_root / "fake_channel.py").is_file() else set()
+    if "fake_channel.py" in names:
+        return "api-root/shadowing-fake-channel"
+    return None
+
+
+def _apply_app_environment(user_data: Path, web_origin: str) -> None:
+    # Force-set, not setdefault: an inherited MANGAFLOW_DISABLE_DOTENV=0 would
+    # re-enable .env loading relative to the helper's CWD on every start
+    # (#313) — the shell owns this environment, the surrounding machine does
+    # not. Siblings below are already unconditional for the same reason.
+    os.environ["MANGAFLOW_DISABLE_DOTENV"] = "1"
+    os.environ["DATABASE_URL"] = f"sqlite:///{user_data / 'data' / 'mangaflow.db'}"
+    os.environ["STORAGE_ROOT"] = str(user_data / "storage")
+    os.environ["UPLOAD_ROOT"] = str(user_data / "uploads")
+    os.environ["WEB_ORIGIN"] = web_origin
+
+
 def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
     api_root = Path(args.api_root).resolve()
+    rejection = _validate_api_root(api_root)
+    if rejection is not None:
+        # Fail closed through the journal before any import side effect: the
+        # tree never reaches sys.path, alembic, or uvicorn.
+        record.update(state="failed", error=rejection)
+        _write_journal(journal, record)
+        _log(f"api root rejected: {rejection}")
+        return 1
     sys.path.insert(0, str(api_root))
     user_data = Path(args.user_data).resolve()
     # The shell supplies the user-data root; the helper lays out the
     # database directory under it (ADR §4.1 install-form discipline).
     (user_data / "data").mkdir(parents=True, exist_ok=True)
-    os.environ.setdefault("MANGAFLOW_DISABLE_DOTENV", "1")
-    os.environ["DATABASE_URL"] = f"sqlite:///{user_data / 'data' / 'mangaflow.db'}"
-    os.environ["STORAGE_ROOT"] = str(user_data / "storage")
-    os.environ["UPLOAD_ROOT"] = str(user_data / "uploads")
-    os.environ["WEB_ORIGIN"] = args.web_origin
+    _apply_app_environment(user_data, args.web_origin)
 
     sock = None
     web: WebServer | None = None

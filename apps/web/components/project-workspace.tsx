@@ -1,7 +1,7 @@
 "use client";
 
 import { AppShell } from "@/components/shell";
-import { api, type ImageModelAlias, type PageCandidate, type Project } from "@/lib/api";
+import { api, type ImageModelAlias, type PageCandidate, type Project, type Script } from "@/lib/api";
 import { useLocalStorageValue, writeLocalStorage } from "@/lib/local-storage-store";
 import { creatorVisibleModels } from "@/lib/model-visibility";
 import { clampSidebarWidth, storedSidebarWidth } from "@/lib/workspace-layout";
@@ -233,6 +233,34 @@ export default function ProjectWorkspace({
   const assignOutfit = useMutation({
     mutationFn: ({ sceneId, assignments }: { sceneId: string; assignments: Record<string, string> }) =>
       api.assignSceneOutfits(sceneId, assignments),
+    // isPending 在成功瞬间翻回 false,而失效重拉尚未落地:第二次指定若仍从
+    // 旧 scene.outfit_assignments 组装 payload,后端全量替换会把前一次指定
+    // 悄悄回滚。乐观写入 script 缓存,让下一次 onChange 立刻建立在最新映射上。
+    onMutate: async ({ sceneId, assignments }) => {
+      const queryKey = ["script", activeChapterId];
+      if (!activeChapterId) return {};
+      await queryClient.cancelQueries({ queryKey });
+      const previous = queryClient.getQueryData<Script>(queryKey);
+      if (previous) {
+        queryClient.setQueryData<Script>(queryKey, {
+          ...previous,
+          scenes: previous.scenes.map((scene) => scene.id === sceneId
+            ? { ...scene, outfit_assignments: { ...assignments } }
+            : scene),
+        });
+      }
+      return { queryKey, previous };
+    },
+    onError: (_error, _variables, context) => {
+      if (context?.previous && context.queryKey) {
+        queryClient.setQueryData(context.queryKey, context.previous);
+      }
+      // 变更在途期间可能有更新的重拉落地,无条件回滚会把新数据盖掉;
+      // 回滚后立即失效,以下一次服务器真相兜底。
+      if (activeChapterId) {
+        void queryClient.invalidateQueries({ queryKey: ["script", activeChapterId] });
+      }
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["script", activeChapterId] });
       // 后端会 bump storyboard_version 并把相关页标记待复查
@@ -406,7 +434,10 @@ export default function ProjectWorkspace({
               setSelectedChapterId={setSelectedChapterId}
               replanPage={replanPage}
               projectPath={projectPath}
-              initialPageId={searchParams.get("page")}
+              // URL ?page= 优先;否则落在当前选中的页(生成台/库的阻断行都
+              // 会同步 selectedPageId)。不给兜底时,第 7 页的"检查分镜"会
+              // 把用户送回第 1 页的分镜编辑器。
+              initialPageId={searchParams.get("page") ?? selectedPageId ?? null}
               focusCharacterId={searchParams.get("character")}
             />
           )}

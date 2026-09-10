@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { getPageGenerationIssue, getPageStructureIssue } from "@/lib/generation-rules";
 import { api, type CharacterPackageSummary, type ImageModelAlias, type InspectionResult, type Job } from "@/lib/api";
@@ -61,6 +61,19 @@ export function useGenerationWorkspace({
   const [referenceOverridePageId, setReferenceOverridePageId] = useState<string | null>(null);
 
   const selectedPageEntry = pages.data?.find((item) => item.id === selectedPageId) ?? pages.data?.[0] ?? null;
+  // Page-scoped state must reset when the page changes from ANY caller —
+  // the picker and goNext already clear these, but library blocker rows and
+  // replan jump pages through setSelectedPageId directly: leaked overrides
+  // would then force the previous page's outfit/asset references onto the
+  // new page's generation payload, and a stale review panel would render
+  // under the new page's grid.
+  const pageScopeRef = useRef<string | null>(selectedPageEntry?.id ?? null);
+  if (pageScopeRef.current !== (selectedPageEntry?.id ?? null)) {
+    pageScopeRef.current = selectedPageEntry?.id ?? null;
+    setReviewCandidateId(null);
+    setReferenceSelections({});
+    setViewedBatchId(null);
+  }
   const workbench = useQuery({
     queryKey: ["generation-workbench", selectedPageEntry?.id],
     queryFn: () => api.generationWorkbench(selectedPageEntry!.id),
@@ -315,7 +328,13 @@ export function useGenerationWorkspace({
       if (!reviewCandidateId) throw new Error("请先选择要修复的候选");
       // 后端现在按 rank 拒绝降清修复（422/409）；这里不能再静默回退 "1K"，
       // 否则 2K/4K 候选的修复会以降级分辨率提交并立即被拒。
-      const resolution = reviewCandidate?.resolution;
+      // 跨批次查找：沿用并重新检查会把上一批次的候选放进检查面板，而
+      // reviewCandidate 只在“当前查看批次”的列表里找——切换/新开批次后
+      // 永远为 null，修复按钮就以“分辨率未知”误报。回退到工作台选中的
+      // 候选（同一 id 时），它独立于批次列表。
+      const resolution = (reviewCandidateId === selectedWorkbenchCandidate?.id
+        ? selectedWorkbenchCandidate.resolution
+        : reviewCandidate?.resolution);
       if (!resolution) throw new Error("候选分辨率未知，请刷新后重试");
       return api.repairCandidate(reviewCandidateId, {
         inspection_result_id: inspection.id,

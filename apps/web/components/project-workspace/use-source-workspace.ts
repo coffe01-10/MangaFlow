@@ -41,17 +41,29 @@ export function useSourceWorkspace({
   const importSource = useMutation({
     mutationFn: () => {
       setImportNotice("");
-      return editingChapterId
-        ? api.reviseSource(editingChapterId, sourceTitle.trim(), sourceText).then(() => ({ chapters: [], total_characters: 0 }))
-        : api.importSource(id, sourceTitle.trim(), sourceText);
+      // Capture compose-box ownership at save time: a slow save resolving
+      // after the user opened a different chapter must not clear the newly
+      // loaded revision (same guard shape as use-assets-workspace).
+      const savedEditingId = editingChapterId;
+      return (savedEditingId
+        ? api.reviseSource(savedEditingId, sourceTitle.trim(), sourceText).then(() => ({ chapters: [], total_characters: 0 }))
+        : api.importSource(id, sourceTitle.trim(), sourceText)
+      ).then((result) => ({ ...result, savedEditingId }));
     },
-    onSuccess: (result) => {
-      const chapterId = result.chapters[0]?.id ?? editingChapterId;
+    onSuccess: ({ savedEditingId, ...result }) => {
+      if (editingChapterId !== savedEditingId) {
+        // The form moved to different content while the save was in flight:
+        // refresh the server-side lists, but leave the compose box alone.
+        queryClient.invalidateQueries({ queryKey: ["chapters", id] });
+        queryClient.invalidateQueries({ queryKey: ["revisions"] });
+        return;
+      }
+      const chapterId = result.chapters[0]?.id ?? savedEditingId;
       setSelectedChapterId(chapterId);
       setEditingChapterId(null);
       setSourceText("");
       setImportNotice(
-        editingChapterId
+        savedEditingId
           ? "已保存为新修订。需要时可在下方章节上点击“修改原文”查看历史版本。"
           : `已导入「${sourceTitle.trim() || "正文"}」。下一步：点击“生成漫画剧本”把这一章结构化成场景与情节拍。`,
       );
@@ -121,6 +133,15 @@ export function useSourceWorkspace({
 
   function chooseSourceFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
+    // The compose box may hold a fully pasted chapter that was never imported;
+    // a file import replacing it silently is the same loss as beginEditChapter
+    // loading a revision over it, so it confirms the same way.
+    if (file && sourceText.trim() && !window.confirm(
+      `当前输入框已有未导入的原文（${sourceText.trim().length} 字），导入文件会覆盖它。继续吗？`,
+    )) {
+      event.target.value = "";
+      return;
+    }
     if (file) importSourceFile.mutate(file);
     event.target.value = "";
   }

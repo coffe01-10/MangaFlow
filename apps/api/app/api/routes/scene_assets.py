@@ -18,6 +18,7 @@ from app.models import (
     Asset,
     AssetStatus,
     Chapter,
+    MangaPage,
     Project,
     Scene,
     SceneAsset,
@@ -40,7 +41,9 @@ from app.schemas import (
     SceneBindAssetRequest,
     SceneRead,
 )
+from app.services.character_packages import lock_asset_for_ownership, run_lock_retry
 from app.services.editor import mark_pages_for_review
+from app.services.ordinal_allocator import lock_entity
 from app.services.scene_assets import (
     mark_pages_for_scene_asset_review,
     normalized_name,
@@ -293,6 +296,21 @@ def delete_scene_asset(project_id: str, asset_id: str, db: Session = Depends(get
     db.commit()
 
 
+def _scene_asset_bound_page_ids(db: Session, scene_asset_id: str) -> set[str]:
+    """Pages whose chapters hold scenes bound to the scene asset — the rows
+    ``mark_pages_for_scene_asset_review`` will write in a bind unit."""
+
+    chapter_ids = set(
+        db.scalars(select(Scene.chapter_id).where(Scene.scene_asset_id == scene_asset_id))
+    )
+    page_ids: set[str] = set()
+    for chapter_id in chapter_ids:
+        page_ids.update(
+            db.scalars(select(MangaPage.id).where(MangaPage.chapter_id == chapter_id))
+        )
+    return page_ids
+
+
 @router.post(
     "/projects/{project_id}/scene-assets/{asset_id}/references",
     response_model=SceneAssetReferenceRead,
@@ -305,23 +323,61 @@ def bind_scene_asset_reference(
     db: Session = Depends(get_db),
 ) -> SceneAssetReference:
     asset = _scene_asset(db, project_id, asset_id)
-    reference_asset = _scene_reference_file(db, project_id, payload.asset_id)
-    binding = SceneAssetReference(
-        scene_asset_id=asset.id,
-        asset_id=reference_asset.id,
-        role=payload.role,
-        is_canonical=payload.is_canonical,
+
+    def _bind() -> SceneAssetReference:
+        # Lock-order fence: the bind takes the asset ownership lock and then
+        # writes bound pages (mark_pages_for_scene_asset_review), while
+        # delete_asset locks those same pages before its teardown reaches the
+        # asset lock — PAGE first here keeps both orders identical on PG.
+        for page_id in sorted(_scene_asset_bound_page_ids(db, asset.id)):
+            lock_entity(db, MangaPage, page_id)
+        # Ownership lock (mirrors characters.bind_reference): the kind/
+        # liveness validation and the insert must share the Asset row lock
+        # taken by PATCH /assets/{id} kind flips — otherwise a binding
+        # committed while a flip is in flight survives its teardown and
+        # points at a kind that would fail validation.
+        reference_asset = lock_asset_for_ownership(db, payload.asset_id)
+        if not reference_asset or reference_asset.deleted_at is not None:
+            raise HTTPException(status_code=404, detail="素材不存在")
+        if reference_asset.project_id != project_id:
+            raise HTTPException(status_code=422, detail="参考图和场景资产不属于同一项目")
+        allowed_generated_sources = {"AI_GENERATED", "VERTEX_GENERATED"}
+        if (
+            reference_asset.kind != "SCENE_REFERENCE"
+            and reference_asset.source not in allowed_generated_sources
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="只有场景参考图或已生成的图片可以绑定为场景参考",
+            )
+        existing = db.scalar(
+            select(SceneAssetReference).where(
+                SceneAssetReference.scene_asset_id == asset.id,
+                SceneAssetReference.asset_id == reference_asset.id,
+                SceneAssetReference.role == payload.role,
+            )
+        )
+        if existing:
+            raise HTTPException(status_code=409, detail="该参考图已绑定在当前场景资产")
+        binding = SceneAssetReference(
+            scene_asset_id=asset.id,
+            asset_id=reference_asset.id,
+            role=payload.role,
+            is_canonical=payload.is_canonical,
+        )
+        db.add(binding)
+        # Asset-level reference changes alter the scene reference set for later
+        # generations; flag bound pages for review like the variant-level path
+        # (architecture §6: bind/unbind marks related pages NEEDS_REVIEW).
+        mark_pages_for_scene_asset_review(db, asset.id)
+        return binding
+
+    binding = run_lock_retry(
+        db,
+        _bind,
+        conflict_detail="场景参考绑定冲突，请稍后重试",
+        commit=True,
     )
-    db.add(binding)
-    # Asset-level reference changes alter the scene reference set for later
-    # generations; flag bound pages for review like the variant-level path
-    # (architecture §6: bind/unbind marks related pages NEEDS_REVIEW).
-    mark_pages_for_scene_asset_review(db, asset.id)
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(status_code=409, detail="该参考图已绑定在当前场景资产") from None
     db.refresh(binding)
     return binding
 
@@ -469,6 +525,7 @@ def delete_scene_asset_variant(
 
 
 def _scene_reference_file(db: Session, project_id: str, asset_id: str) -> Asset:
+    """Unlocked kind/liveness validation, kept for callers outside bind units."""
     reference_asset = db.get(Asset, asset_id)
     if not reference_asset or reference_asset.deleted_at is not None:
         raise HTTPException(status_code=404, detail="素材不存在")
@@ -504,20 +561,53 @@ def bind_scene_asset_variant_reference(
         raise HTTPException(status_code=404, detail="场景变体不存在")
     if variant.deleted_at is not None:
         raise HTTPException(status_code=422, detail="场景变体已归档，请先恢复")
-    reference_asset = _scene_reference_file(db, project_id, payload.asset_id)
-    binding = SceneAssetVariantReference(
-        variant_id=variant.id,
-        asset_id=reference_asset.id,
-        role=payload.role,
-        sort_order=payload.sort_order,
+
+    def _bind() -> SceneAssetVariantReference:
+        # Same PAGE→ASSET fence as the asset-level bind above (the mark
+        # writes bound pages under the asset ownership lock).
+        for page_id in sorted(_scene_asset_bound_page_ids(db, asset.id)):
+            lock_entity(db, MangaPage, page_id)
+        # Same ownership-lock discipline as the asset-level bind above: kind
+        # validation and insert must serialize against asset kind flips.
+        reference_asset = lock_asset_for_ownership(db, payload.asset_id)
+        if not reference_asset or reference_asset.deleted_at is not None:
+            raise HTTPException(status_code=404, detail="素材不存在")
+        if reference_asset.project_id != project_id:
+            raise HTTPException(status_code=422, detail="参考图和场景资产不属于同一项目")
+        allowed_generated_sources = {"AI_GENERATED", "VERTEX_GENERATED"}
+        if (
+            reference_asset.kind != "SCENE_REFERENCE"
+            and reference_asset.source not in allowed_generated_sources
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="只有场景参考图或已生成的图片可以绑定为场景参考",
+            )
+        existing = db.scalar(
+            select(SceneAssetVariantReference).where(
+                SceneAssetVariantReference.variant_id == variant.id,
+                SceneAssetVariantReference.asset_id == reference_asset.id,
+                SceneAssetVariantReference.role == payload.role,
+            )
+        )
+        if existing:
+            raise HTTPException(status_code=409, detail="该参考图已绑定在当前场景变体")
+        binding = SceneAssetVariantReference(
+            variant_id=variant.id,
+            asset_id=reference_asset.id,
+            role=payload.role,
+            sort_order=payload.sort_order,
+        )
+        db.add(binding)
+        mark_pages_for_scene_asset_review(db, asset.id)
+        return binding
+
+    binding = run_lock_retry(
+        db,
+        _bind,
+        conflict_detail="场景变体参考绑定冲突，请稍后重试",
+        commit=True,
     )
-    db.add(binding)
-    mark_pages_for_scene_asset_review(db, asset.id)
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(status_code=409, detail="该参考图已绑定在当前场景变体") from None
     db.refresh(binding)
     return binding
 
