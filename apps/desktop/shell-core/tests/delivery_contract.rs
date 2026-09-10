@@ -67,6 +67,32 @@ fn webview_network_surface_stays_loopback_only() {
     }
 }
 
+/// Issue #300 (Stage 0 pin): script-src carries 'unsafe-inline' because the
+/// static export ships Next's inline bootstrap (`self.__next_f.push`) plus
+/// shell-tools.html's own inline script; a nonce rework needs per-request
+/// rendering that a statically exported page cannot provide, and hash-based
+/// removal would have to cover every build's flight data. The debt is
+/// therefore PINNED, not accidental: this test freezes the exact directive
+/// so that dropping or extending 'unsafe-inline' (or adding a source) is a
+/// deliberate, lead-reviewed contract change. The equivalent header for the
+/// web form is pinned separately in apps/web (next-config-csp.test.ts).
+#[test]
+fn script_src_unsafe_inline_is_pinned_debt_not_drift() {
+    let config = tauri_config();
+    let csp = config["app"]["security"]["csp"]
+        .as_str()
+        .expect("restricted CSP configured");
+    let script_src = csp
+        .split("; ")
+        .find(|portion| portion.starts_with("script-src "))
+        .expect("script-src directive present");
+    assert_eq!(
+        script_src,
+        "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'",
+        "script-src drifted; changing the unsafe-inline debt requires a deliberate contract change (issue #300)"
+    );
+}
+
 #[test]
 fn bundle_identity_and_targets_stay_pinned() {
     let config = tauri_config();
