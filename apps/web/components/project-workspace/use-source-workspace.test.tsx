@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api } from "@/lib/api";
+import { api, type SourceRevision } from "@/lib/api";
 
 import { useSourceWorkspace } from "./use-source-workspace";
 
@@ -91,8 +91,8 @@ describe("useSourceWorkspace 关键行为", () => {
 
   it("迟到的保存成功不得清掉用户已切去编辑的另一章文本", async () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
-    let resolveRevise!: () => void;
-    reviseApi.mockReset().mockImplementation(() => new Promise<void>((resolve) => {
+    let resolveRevise!: (value: SourceRevision) => void;
+    reviseApi.mockReset().mockImplementation(() => new Promise<SourceRevision>((resolve) => {
       resolveRevise = resolve;
     }));
     const getHook = renderProbe();
@@ -112,7 +112,7 @@ describe("useSourceWorkspace 关键行为", () => {
     expect(getHook().sourceText).toBe("旧章节内容");
     // A 的保存此刻才成功：表单已归属 B，不得被清空或改写。
     await act(async () => {
-      resolveRevise();
+      resolveRevise({} as SourceRevision);
     });
     await waitFor(() => expect(getHook().importSource.isSuccess).toBe(true));
     expect(getHook().editingChapterId).toBe("chapter-b");

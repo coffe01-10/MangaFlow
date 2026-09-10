@@ -374,6 +374,50 @@ describe("生成工作台修复/升清回归", () => {
     expect(workspace().repairCandidate.error?.message).toContain("请先选择要修复的候选");
   });
 
+  it("跨批次检查的候选从工作台选中候选回退解析分辨率，而不是误报未知", async () => {
+    // 沿用并重新检查会把上一批次的候选放进检查面板；当前查看批次的
+    // 候选列表里没有它（reviewCandidate 为 null），旧代码因此以“候选
+    // 分辨率未知”误报且刷新也无法自愈。回退源是工作台的
+    // selected_candidate（同一 id 时），它独立于批次列表。
+    batchesApi.mockResolvedValue([workbenchFixture().current_batch!]);
+    candidatesApi.mockResolvedValue([candidateFixture({ id: "candidate-other" })]);
+    workbenchApi.mockResolvedValue({
+      ...workbenchFixture(),
+      selected_candidate: candidateFixture({ resolution: "2K" }),
+    });
+    repairApi.mockResolvedValue({
+      job_id: "job-repair",
+      job_status: "QUEUED",
+      candidate: candidateFixture(),
+    });
+    const { workspace } = renderGenerationProbe();
+    await vi.waitFor(() => {
+      expect(workspace().selectedWorkbenchCandidate?.id).toBe("candidate-1");
+    });
+    workspace().setReviewCandidateId("candidate-1");
+    // 等待重渲染落地（mutate 的闭包取自最近一次渲染），再提交修复。
+    await vi.waitFor(() => {
+      expect(workspace().reviewCandidateId).toBe("candidate-1");
+    });
+    workspace().repairCandidate.mutate(inspectionFixture());
+    await vi.waitFor(() => {
+      expect(workspace().repairCandidate.isSuccess).toBe(true);
+    });
+    expect(repairApi).toHaveBeenCalledWith("candidate-1", expect.objectContaining({ resolution: "2K" }));
+  });
+
+  it("共享场景资产查询包含已归档资产，激活绑定方的归档分支", async () => {
+    // 归档不清除绑定；排除软删除行的共享列表让“当前绑定已归档”分支
+    // 成为死代码，且绑定下拉框看起来像未绑定。
+    renderGenerationProbe();
+    await vi.waitFor(() => {
+      expect(sceneAssetsApi).toHaveBeenCalledWith(
+        "project-1",
+        expect.objectContaining({ include_deleted: true }),
+      );
+    });
+  });
+
   it("修复与升清成功后清理 reviewCandidateId（批次已被服务端关闭）", async () => {
     batchesApi.mockResolvedValue([workbenchFixture().current_batch!]);
     candidatesApi.mockResolvedValue([candidateFixture({ resolution: "2K" })]);

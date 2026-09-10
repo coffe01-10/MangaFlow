@@ -95,6 +95,33 @@ describe("JobsSection", () => {
     expect(screen.getAllByText(/估算值不等于供应商账单/)).toHaveLength(2);
   });
 
+  it("重试成功的任务立即移出批量归档选择", async () => {
+    jobsApi.mockReset().mockResolvedValue([
+      jobFixture({ id: "job-failed", status: "FAILED", progress: 100 }),
+      jobFixture({ id: "job-done", status: "COMPLETED", progress: 100 }),
+    ]);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <JobsHarness />
+      </QueryClientProvider>,
+    );
+    // 选中失败任务与一个已完成任务。
+    const boxes = await screen.findAllByLabelText(/选择/);
+    fireEvent.click(boxes[0]);
+    fireEvent.click(boxes[1]);
+    expect(screen.getByText("归档已选（2）")).toBeInTheDocument();
+    // 重试失败任务：它回到 WAITING 后行内不再渲染复选框，选中集合必须
+    // 同步剔除该 id，否则整个批量归档会 409 且无从取消勾选。
+    fireEvent.click(screen.getByRole("button", { name: /重试/ }));
+    await waitFor(() => expect(retryJob).toHaveBeenCalledWith("job-failed"));
+    await waitFor(() => {
+      expect(screen.getByText("归档已选（1）")).toBeInTheDocument();
+    });
+  });
+
   it("运行中的任务提供取消，失败任务提供重试，且调用对应接口", async () => {
     jobsApi.mockReset().mockResolvedValue([
       jobFixture({ id: "job-running", status: "RUNNING", progress: 55 }),

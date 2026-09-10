@@ -111,7 +111,12 @@ export function useWorkspaceQueries({
   }, [chapterParseId, chapterParseTerminal, activeChapterId, queryClient]);
   const sceneAssets = useQuery({
     queryKey: ["scene-assets", id],
-    queryFn: () => api.sceneAssetsAll(id),
+    // include_deleted: the shared list feeds BOUND-asset lookups (scene
+    // picker, generation inheritance) — archiving does not clear bindings,
+    // so excluding soft-deleted rows made every designed "已归档" branch dead
+    // code and rendered bound selects as unbound. New-binding option lists
+    // filter deleted_at themselves (scene-picker activeAssets).
+    queryFn: () => api.sceneAssetsAll(id, { include_deleted: true }),
     enabled: needsSceneAssets,
   });
 

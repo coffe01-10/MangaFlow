@@ -197,7 +197,7 @@ describe("StoryboardEditor 编辑表单归属（R2 审查修复）", () => {
     fireEvent.click(screen.getByRole("button", { name: "保存本格分镜" }));
     await waitFor(() => expect(updatePanel).toHaveBeenCalledTimes(1));
     expect(updatePanel.mock.calls[0][0]).toBe("panel-1");
-    expect((updatePanel.mock.calls[0][1] as { actions: { script_action: string } }).actions.script_action)
+    expect((updatePanel.mock.calls[0][1] as any).actions.script_action)
       .toBe("新写的第一格动作");
   });
 
