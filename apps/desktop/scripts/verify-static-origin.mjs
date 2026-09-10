@@ -172,6 +172,59 @@ try {
   process.exit(1);
 }
 
+// ---- 2b-2. sibling-prefix fence probe (round-5 review) --------------------
+// The far-escape probe above cannot catch the classic `startsWith(root)`
+// (missing `+ sep`) weakening: a resolved sibling of the export root
+// (`.../dist/frontend-sibling-probe/...`) fails BOTH the strict and the
+// weakened check only when the sibling does not exist - so this probe
+// CREATES the sibling with a real file. With the correct fence
+// (`startsWith(root + sep)`) it answers 404; a sep-dropped regression
+// answers 200 with the file's bytes. The fixture is created before the
+// server starts and removed after the probe.
+{
+  const { mkdir, writeFile, rm } = await import("node:fs/promises");
+  const siblingDir = join(FRONTEND, "..", "frontend-sibling-probe");
+  const mark = join(siblingDir, "mark.txt");
+  let fixture = true;
+  try {
+    await mkdir(siblingDir, { recursive: true });
+    await writeFile(mark, "d5 sibling probe\n", "utf-8");
+  } catch {
+    fixture = false;
+    console.log("D5 sibling-prefix probe skipped: fixture creation failed");
+  }
+  if (fixture) {
+    try {
+      const viaSibling = await new Promise((settle) => {
+        const timer = setTimeout(() => sock2.destroy(), 3000);
+        const settleOnce = (raw) => {
+          clearTimeout(timer);
+          settle(raw);
+        };
+        const sock2 = connect(STATIC_PORT, "127.0.0.1", () => {
+          sock2.write(
+            "GET /../frontend-sibling-probe/mark.txt HTTP/1.1\r\n" +
+            "Host: 127.0.0.1\r\nConnection: close\r\n\r\n",
+          );
+        });
+        let raw = "";
+        sock2.setEncoding("latin1");
+        sock2.on("data", (chunk) => { raw += chunk; });
+        sock2.on("close", () => settleOnce(raw));
+        sock2.on("error", () => settleOnce(raw));
+      });
+      const status = Number(viaSibling.split("\r\n")[0]?.split(" ")[1] ?? 0);
+      if (status !== 404) {
+        fail(`sibling-prefix served: answered ${status} (must be 404)`);
+      } else {
+        console.log("D5 sibling-prefix fence ok: sibling dir refused with 404");
+      }
+    } finally {
+      await rm(siblingDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+}
+
 // ---- 2b. path-fence self-test (N2 audit §7) ------------------------------
 // The containment check in the handler above has no other executable
 // verification: pin it here with an encoded-traversal request sent over a
