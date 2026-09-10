@@ -440,9 +440,9 @@ mod tests {
             get_status(&format!("http://127.0.0.1:{port}"), HEALTH_PATH, Duration::from_secs(5))
                 .expect("health read succeeds");
         assert_eq!(status, 200);
-        assert!(
-            (body.len() as u64) <= MAX_STREAM_MESSAGE_BYTES,
-            "response must be capped at {MAX_STREAM_MESSAGE_BYTES}, got {}",
+        assert_eq!(
+            body.len() as u64, MAX_STREAM_MESSAGE_BYTES,
+            "response must be truncated at exactly {MAX_STREAM_MESSAGE_BYTES}, got {}",
             body.len()
         );
         let _ = server.join();
