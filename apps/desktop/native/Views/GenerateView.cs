@@ -324,6 +324,9 @@ public sealed class GenerateView : WorkspaceView
         referenceSelections.Clear();
         viewedBatchId = null;
         historicalCandidates = null;
+        // G-3: 检查任务的看护是页作用域的 —— 旧页的在途 PAGE_INSPECT 不得继续驱动新页的轮询/终态刷新。
+        //（在途的 Watch 在 currentPage 守卫处返回，不会把旧任务 id 写回。）
+        trackedInspectJobs.Clear();
         RenderPageBar();
         await LoadWorkbenchAsync();
     }
@@ -412,6 +415,10 @@ public sealed class GenerateView : WorkspaceView
         var batches = pageBatches;
         // 工作台快照里的已暂选候选：横幅（沿用并重新检查）与生产门禁的步骤判定都以它为准。
         var selectedCandidate = workbench.Element("selected_candidate");
+        // 就绪状态与参考配置提前算好：旧版本横幅的「重新生成」按钮与生成条共用同一判定。
+        var ready = readiness.Flag("ready");
+        var references = EffectiveReferences();
+        var referenceReady = referencesLoaded && GenerationReferences.Ready(references, referenceOutfits, referencePackages);
 
         // 旧版本横幅（web stale-candidate-banner）：旧候选可以继续查看，但必须先决定版本
         // ——沿用并重新检查，或按当前分镜重新抽卡——才能进入下一页或导出。
@@ -435,12 +442,24 @@ public sealed class GenerateView : WorkspaceView
             // 捕获渲染时的候选快照：工作台稍后会被整体替换，闭包不能引用可变字段。
             var staleCandidate = selectedCandidate;
             staleRow.Children.Add(Kit.Act("沿用并重新检查", async (_, _) => await KeepSelectedCandidateAsync(staleCandidate), "InkButton"));
+            // G-2: web 横幅的第二个动作 —— 按当前分镜版本重新抽卡（generate.mutate），
+            // 复用现有生成路径；禁用条件对齐 web：提交中 / 生产准备未就绪 / 参考未就绪 / 正在查看历史批次。
+            var currentBatchId = workbench.Element("current_batch").ValueKind == JsonValueKind.Object
+                ? workbench.Element("current_batch").Text("id") : "";
+            var latestOrdered = batches.OrderByDescending(b => b.Number("ordinal")).FirstOrDefault();
+            var latestBatchId = currentBatchId.Length > 0 ? currentBatchId
+                : latestOrdered.ValueKind == JsonValueKind.Object ? latestOrdered.Text("id") : "";
+            var viewingHistory = viewedBatchId != null && viewedBatchId != latestBatchId;
+            var regenerate = Kit.Act(viewingHistory ? "先切回最新批次" : $"按当前 V{currentPage.StoryboardVersion} 重新生成",
+                async (_, _) => await GenerateAsync(), "Compact");
+            regenerate.Margin = new Thickness(10, 0, 0, 0);
+            regenerate.IsEnabled = !pendingRows.Contains("generate") && ready && referenceReady && !viewingHistory;
+            staleRow.Children.Add(regenerate);
             banner.Children.Add(staleRow);
             body.Children.Add(Wrap(null, banner));
         }
 
         // Production readiness card.
-        var ready = readiness.Flag("ready");
         var readinessCard = new StackPanel();
         readinessCard.Children.Add(new TextBlock { Text = "PRODUCTION CHECK / 页面生产准备", Style = (Style)Application.Current.FindResource("SectionIndex") });
         var blockers = readiness.Array("blockers");
@@ -507,8 +526,6 @@ public sealed class GenerateView : WorkspaceView
         // The card is added in both cases: it explains either the choice or why generation is blocked.
         body.Children.Add(Wrap(null, modelCard));
 
-        var references = EffectiveReferences();
-        var referenceReady = referencesLoaded && GenerationReferences.Ready(references, referenceOutfits, referencePackages);
         body.Children.Add(BuildReferenceCard(references, referenceReady));
 
         // Generate bar.
@@ -628,9 +645,15 @@ public sealed class GenerateView : WorkspaceView
         return "生成 1 个 1K 彩色候选";
     }
 
-    /// <summary>支持图片编辑且已启用的模型（与 web 的 modelOptions 同源）。</summary>
+    /// <summary>
+    /// 支持图片编辑且对创作者可见的模型（与 web 的 modelOptions 同源：先按 IMAGE + image_edit
+    /// 过滤，再过 creatorVisibleModels —— (enabled &amp;&amp; display_enabled)，当前已选 alias 豁免）。
+    /// display_enabled 缺失按可见处理（与 ModelOption.From 同约定；/models 接口恒返回该字段）。
+    /// </summary>
     private List<JsonElement> UsableEditModels() => models.Where(m => m.Text("model_type") == "IMAGE"
-        && m.Array("operations").Any(o => o.ToString() == "image_edit") && m.Flag("enabled")).ToList();
+        && m.Array("operations").Any(o => o.ToString() == "image_edit")
+        && ((m.Flag("enabled") && m.Element("display_enabled").ValueKind is not JsonValueKind.False)
+            || m.Text("logical_alias") == selectedModel)).ToList();
 
     /// <summary>
     /// 当前是否选定了可用的抽卡模型（web 的 activeDrawModel 判定）：
@@ -906,6 +929,13 @@ public sealed class GenerateView : WorkspaceView
             trackedInspectJobs.Clear();
             foreach (var id in activeIds) trackedInspectJobs.Add(id);
             if (activeIds.Count > 0 || turned.Count > 0) _ = LoadWorkbenchAsync();
+            if (turned.Count > 0)
+            {
+                // G-4: web 在检查终态同时失效 pages —— 页面生产状态（continuity/门禁）来自 pages
+                // 数据，只刷工作台会让页面栏停在检查前的状态。
+                Cache.Invalidate("pages:" + chapterId);
+                _ = RefreshPageBarAsync();
+            }
         }
         catch (OperationCanceledException) { }
         catch (Exception) { /* 任务列表读取失败只影响本轮看护，下一拍重试，不打断抽卡轮询 */ }
@@ -915,6 +945,22 @@ public sealed class GenerateView : WorkspaceView
         }
     }
 
+    /// <summary>检查终态后的轻量页面栏刷新：只重读 pages 列表并重画页签，不触发选页/工作台重载。</summary>
+    private async Task RefreshPageBarAsync()
+    {
+        var chapter = chapterId;
+        try
+        {
+            var rows = await Api.SendAsync($"chapters/{chapter}/pages", cancellation: lifetime.Token);
+            if (lifetime.Token.IsCancellationRequested || chapter != chapterId) return;
+            pages = rows.EnumerateArray().Select(PageItem.From).ToList();
+            if (currentPage != null) currentPage = pages.FirstOrDefault(p => p.Id == currentPage.Id) ?? currentPage;
+            RenderPageBar();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception) { /* 页面栏刷新失败不影响工作台轮询，用户刷新/切页时会重新拉取 */ }
+    }
+
     public override void PollTick()
     {
         if (currentPage == null) return;
@@ -922,7 +968,13 @@ public sealed class GenerateView : WorkspaceView
         var active = workbench.Array("candidates").Any(c => c.Text("status") is "QUEUED" or "GENERATING");
         if (active || directorPane?.Busy == true) _ = LoadWorkbenchAsync();
         // 轮询条件同时覆盖生成中的候选与进行中的视觉检查（web 的 refetchInterval 两者都看）。
-        if (active || trackedInspectJobs.Count > 0) _ = WatchInspectJobsAsync();
+        // G-1: checking 不限于本会话提交的任务 —— 任意来源（其他客户端/重启前）的非终态
+        // PAGE_INSPECT，只要 target 属当前候选集就要继续看护。入口数据源即 Watch 自己拉取的
+        // 全项目活跃任务列表（State/DockQueue 只暴露第一项，无法按 target 判定）；
+        // Watch 自带 jobsWatchBusy 防重入，每拍最多 spawn 一次。当前页完全没有候选时无检查可言，
+        // 跳过探测以免空转请求。
+        if (active || trackedInspectJobs.Count > 0 || workbench.Array("candidates").Count > 0)
+            _ = WatchInspectJobsAsync();
     }
 
     public override Task RefreshAsync()
@@ -976,8 +1028,11 @@ internal sealed class GenerateCandidateCard : Border
         });
         var actions = new WrapPanel();
         actions.Children.Add(CardAction(view, candidate, candidate.Favorite ? "♥ 已收藏" : "♥ 收藏", "favorite"));
-        // 已暂选的候选显示禁用的"已暂选"，与 web 一致，防止重复提交暂选。
-        actions.Children.Add(CardAction(view, candidate, candidate.IsSelected ? "已暂选" : "暂选", "select"));
+        // 已暂选的候选显示禁用的"已暂选"，与 web 一致，防止重复提交暂选；
+        // 旧版本候选的暂选文案区分版本语义（web："人工校对并暂选" vs "确认旧版本并暂选"），
+        // accept_stale 提交行为保持不变（CandidateActionAsync 里按 VersionState 判定）。
+        actions.Children.Add(CardAction(view, candidate, candidate.IsSelected ? "已暂选"
+            : candidate.VersionState == "CURRENT" ? "人工校对并暂选" : "确认旧版本并暂选", "select"));
         actions.Children.Add(CardAction(view, candidate, "视觉检查", "inspect"));
         if (candidate.HasImage)
             actions.Children.Add(Kit.Act("局部修改", async (_, _) => await view.OpenLocalEdit(candidate), "Compact"));

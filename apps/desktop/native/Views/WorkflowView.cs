@@ -7,6 +7,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
+using System.Windows.Threading;
 using MangaFlow.Native.Controls;
 using MangaFlow.Native.Services;
 
@@ -19,8 +20,11 @@ namespace MangaFlow.Native.Views;
 public sealed class WorkflowView : WorkspaceView
 {
     private const double NodeWidth = 224;
-    // 端口锚点用固定公式（首行中心 ≈ 节点顶部 70px、行距 25px），与 web 端 Handle
-    // 的 top:64+index*25 定位对齐；不依赖布局完成，载入即可画边（旧实现同理用固定 +64）。
+    // 端口锚点固定公式（首行中心 ≈ 节点顶部 70px、行距 25px）：只在布局完成前的
+    // 初帧作回退使用（WorkflowNode.AnchorCache 为空时）。布局完成后锚点改用
+    // TranslatePoint 实测的端口圆点位置（见 MeasureAnchors）——标题 TextWrapping
+    // 换行会把端口区下推约 19px/行，纯公式会让连线端点脱离端口圆点（web 端
+    // React Flow 从 Handle 实测 DOM 位置画边）。
     private const double PortRowTop = 70;
     private const double PortRowStep = 25;
     private readonly ComboBox workflowSelector = Selector("选择工作流", 250);
@@ -45,6 +49,7 @@ public sealed class WorkflowView : WorkspaceView
     private int version;
     private WorkflowNode? selected;
     private string? selectedEdgeKey;
+    private Button? removeButton;                    // P2-2: 状态栏删除按钮，按选中状态禁用
     private readonly Dictionary<string, (double X, double Y)> draftPositions = new();
     private System.Timers.Timer? autosave;
     private int generation;
@@ -240,9 +245,12 @@ public sealed class WorkflowView : WorkspaceView
         var copy = Kit.Act("复制", (_, _) => DuplicateSelected(), "Compact");
         copy.Margin = new Thickness(6, 0, 0, 0);
         canvasTools.Children.Add(copy);
-        var remove = Kit.Act("删除", (_, _) => DeleteSelected(), "Compact");
-        remove.Margin = new Thickness(6, 0, 0, 0);
-        canvasTools.Children.Add(remove);
+        // P2-2: 删除按钮统一分派（选中连线删连线，否则选中节点删节点），且无
+        // 选中对象时禁用——对齐 web 端 deleteKeyCode 只作用于唯一选中对象 +
+        // 工具栏 disabled 语义，不再出现点了静默无效。
+        removeButton = Kit.Act("删除", (_, _) => DeleteSelection(), "Compact");
+        removeButton.Margin = new Thickness(6, 0, 0, 0);
+        canvasTools.Children.Add(removeButton);
         var fit = Kit.Act("查看全图", (_, _) => FitView(), "Compact");
         fit.Margin = new Thickness(6, 0, 0, 0);
         canvasTools.Children.Add(fit);
@@ -453,6 +461,7 @@ public sealed class WorkflowView : WorkspaceView
             var to = nodes.FirstOrDefault(n => n.Id == edge.Target);
             if (from == null || to == null) continue;
             var geometry = EdgeGeometry(from, edge.SourcePort, to, edge.TargetPort);
+            if (geometry == null) continue;   // 端口 id 漂移（P3b）：宁可少画不可画错
             var curve = new System.Windows.Shapes.Path
             {
                 Data = geometry,
@@ -499,6 +508,7 @@ public sealed class WorkflowView : WorkspaceView
             canvas.Children.Add(hint);
         }
         ApplyView();
+        RefreshDeleteButton();   // 重建会收敛悬空的 selectedEdgeKey，按钮态随之刷新
     }
 
     private void ApplyView()
@@ -562,6 +572,7 @@ public sealed class WorkflowView : WorkspaceView
             selectedEdgeKey = key;
         }
         if (edgePaths.TryGetValue(key, out var current)) ApplyEdgeSelection(current.Curve, true);
+        RefreshDeleteButton();   // 选中了连线：删除按钮必须可用
         FocusCanvas();   // Delete 删除连线要求键盘焦点在画布，而不是上一次点过的输入框
     }
 
@@ -575,9 +586,12 @@ public sealed class WorkflowView : WorkspaceView
 
     private void ClearEdgeSelection()
     {
-        if (selectedEdgeKey == null) return;
-        if (edgePaths.TryGetValue(selectedEdgeKey, out var path)) ApplyEdgeSelection(path.Curve, false);
-        selectedEdgeKey = null;
+        if (selectedEdgeKey != null)
+        {
+            if (edgePaths.TryGetValue(selectedEdgeKey, out var path)) ApplyEdgeSelection(path.Curve, false);
+            selectedEdgeKey = null;
+        }
+        RefreshDeleteButton();   // 选中状态变化（含节点选中覆盖连线选中的路径）都刷新按钮
     }
 
     private static void ApplyEdgeSelection(System.Windows.Shapes.Path curve, bool isSelected)
@@ -588,15 +602,21 @@ public sealed class WorkflowView : WorkspaceView
         curve.StrokeThickness = isSelected ? 3 : 2;
     }
 
-    // 节点入列/恢复后的统一接线：整体拖拽 + 输出端口发起连线
+    // 节点入列/恢复后的统一接线：整体拖拽 + 输出端口发起连线 + 锚点实测回调
     private void AttachNodeHandlers(WorkflowNode node)
     {
         node.Element.MouseLeftButtonDown += (s, e) => BeginNodeDrag(s, e, node);
-        // 只有输出端口发起连线（对齐 web 的严格连接模式）；输入端口点击不处理，
-        // 事件继续冒泡成节点拖拽。
+        // P1-1: 布局实测的端口锚点变化（标题换行推挤端口区等）→ 只重画与该
+        // 节点相连的边，锚点缓存见 WorkflowNode.MeasureAnchors。
+        node.AnchorsChanged = () => RedrawEdgesFor(node);
         foreach (var port in node.Ports)
             if (port.IsOutput)
                 port.Element.MouseLeftButtonDown += (s, e) => BeginWireDrag(s, e, port);
+            else
+                // P3c: 输入端口是连线落点而非拖拽把手——阻断按下冒泡，点击输入
+                // 端口不再拖动整个节点（对齐 web Handle 的 mousedown 语义）。
+                // 落点解析走 Mouse.DirectlyOver（纯命中测试），不受 Handled 影响。
+                port.Element.MouseLeftButtonDown += (_, e) => e.Handled = true;
     }
 
     private void BeginNodeDrag(object sender, MouseButtonEventArgs e, WorkflowNode node)
@@ -656,9 +676,10 @@ public sealed class WorkflowView : WorkspaceView
         if (e.ChangedButton != MouseButton.Left) return;
         e.Handled = true;   // 端口点击不再冒泡成节点拖拽
         FocusCanvas();      // Escape 取消依赖画布持有键盘焦点
+        if (PortAnchor(source.Node, source.Id, true) is not { } anchor)
+            return;   // 端口定义已漂移（公式回退也找不到该端口）：不启动连线
         var element = (FrameworkElement)sender;
         element.CaptureMouse();
-        var anchor = PortAnchor(source.Node, source.Id, true);
         pendingWire = new System.Windows.Shapes.Path
         {
             Stroke = new SolidColorBrush(Color.FromRgb(0x77, 0x84, 0x7C)),
@@ -666,7 +687,9 @@ public sealed class WorkflowView : WorkspaceView
             StrokeDashArray = [4, 3],   // 虚线 = 未提交的预览，与实线正式边区分
             IsHitTestVisible = false,   // 预览线绝不能挡住落点端口的命中
         };
-        canvas.Children.Add(pendingWire);
+        // P3a: 预览虚线插在边层之后、节点层之前（RenderCanvas 先加边对再加节点，
+        // children 前段恰好是 2×边数的边层），不再浮在节点上方。
+        canvas.Children.Insert(Math.Min(edgePaths.Count * 2, canvas.Children.Count), pendingWire);
         Mouse.OverrideCursor = Cursors.Cross;
         MouseEventHandler moved = (_, me) =>
         {
@@ -711,15 +734,36 @@ public sealed class WorkflowView : WorkspaceView
         return null;   // 空白画布/节点本体/输出端口 → 取消
     }
 
-    // 建边规则照抄 web validConnection + connect：data_type 相同、不自连、
-    // 端口对判重（确定性边 id 意味着重复连接会造出同 id 两条边，后端直接 422）。
+    // ============ 连线契约（纯函数，供 TryConnect 与无 UI 回归检查共用） ============
+    // 对齐 web workflow-studio 的 validConnection+connect 与后端 catalog._edge：
+    // ① 两端 data_type 必须相同；② 禁自连（同节点）；③ 同端口对（四元组）判重
+    // ——确定性边 id 下重复连接会造出同 id 两条边，后端直接 422；④ 四元组任一
+    // 为空视为无效（对应 web connect 对 sourceHandle/targetHandle 的真值检查）。
+    internal static string EdgeId(string sourceNode, string sourcePort, string targetNode, string targetPort) =>
+        $"{sourceNode}:{sourcePort}-{targetNode}:{targetPort}";
+
+    internal static bool CanConnect(
+        string sourceNode, string sourcePort, string sourceDataType,
+        string targetNode, string targetPort, string targetDataType,
+        IEnumerable<(string SourceNode, string SourcePort, string TargetNode, string TargetPort)> existingEdges)
+    {
+        if (sourceNode.Length == 0 || sourcePort.Length == 0 || targetNode.Length == 0 || targetPort.Length == 0) return false;
+        if (sourceNode == targetNode) return false;
+        if (!string.Equals(sourceDataType, targetDataType, StringComparison.Ordinal)) return false;
+        foreach (var edge in existingEdges)
+            if (edge.SourceNode == sourceNode && edge.SourcePort == sourcePort
+                && edge.TargetNode == targetNode && edge.TargetPort == targetPort)
+                return false;
+        return true;
+    }
+
+    // 建边规则经 CanConnect 纯函数执行（契约细节见上方注释）。
     private bool TryConnect(PortSite source, PortSite? target)
     {
         if (target == null) return false;
-        if (target.Node.Id == source.Node.Id
-            || target.DataType != source.DataType
-            || edges.Any(e => e.Source == source.Node.Id && e.SourcePort == source.Id
-                           && e.Target == target.Node.Id && e.TargetPort == target.Id))
+        if (!CanConnect(source.Node.Id, source.Id, source.DataType,
+                target.Node.Id, target.Id, target.DataType,
+                edges.Select(e => (e.Source, e.SourcePort, e.Target, e.TargetPort))))
             return false;
         edges.Add(new WorkflowEdge(source.Node.Id, source.Id, target.Node.Id, target.Id));
         PushHistory(Snapshot("建立连线"));
@@ -739,6 +783,20 @@ public sealed class WorkflowView : WorkspaceView
         RenderCanvas();
     }
 
+    // P2-2: 状态栏「删除」统一分派——选中连线删连线，否则选中节点删节点，
+    // 与键盘 Delete 的分派顺序一致（连线优先，节点连线互斥选中）。
+    private void DeleteSelection()
+    {
+        if (selectedEdgeKey != null) DeleteSelectedEdge();
+        else DeleteSelected();
+    }
+
+    // 无任何选中对象时删除按钮禁用（对齐 web 工具栏 disabled 语义）
+    private void RefreshDeleteButton()
+    {
+        if (removeButton != null) removeButton.IsEnabled = selectedEdgeKey != null || selected != null;
+    }
+
     // 拖拽移动时只更新与该节点相连边的 Path Data，避免全量重绘
     private void RedrawEdgesFor(WorkflowNode node)
     {
@@ -750,20 +808,27 @@ public sealed class WorkflowView : WorkspaceView
             var to = nodes.FirstOrDefault(n => n.Id == edge.Target);
             if (from == null || to == null) continue;
             var geometry = EdgeGeometry(from, edge.SourcePort, to, edge.TargetPort);
+            if (geometry == null) continue;   // 端口 id 漂移（P3b）：保留原样不更新错位几何
             pair.Curve.Data = geometry;
             pair.Hit.Data = geometry;   // 命中层与可视层共用同一份几何
         }
     }
 
-    private static string EdgeKey(WorkflowEdge edge) => $"{edge.Source}:{edge.SourcePort}-{edge.Target}:{edge.TargetPort}";
+    private static string EdgeKey(WorkflowEdge edge) => EdgeId(edge.Source, edge.SourcePort, edge.Target, edge.TargetPort);
 
-    // 端口圆心即连线端点；锚点公式见 PortRowTop 常量注释
-    private Point PortAnchor(WorkflowNode node, string portId, bool isOutput)
+    // 端口圆心即连线端点。P1-1: 优先读布局后实测的锚点缓存（标题换行会把端口
+    // 区推下约 19px/行，公式必然脱锚）；缓存缺失（初帧/未布局，如无头检查）回退
+    // 固定公式；端口 id 漂移（两边公式都找不到该端口）返回 null，调用方跳过
+    // 该边（P3b：宁可少画不可画错）。
+    private static Point? PortAnchor(WorkflowNode node, string portId, bool isOutput)
     {
-        var index = node.Ports.FirstOrDefault(p => p.Id == portId && p.IsOutput == isOutput)?.Index ?? 0;
+        if (node.AnchorCache != null && node.AnchorCache.TryGetValue(PortSite.Key(portId, isOutput), out var measured))
+            return new Point(node.Position.X + measured.X, node.Position.Y + measured.Y);
+        var port = node.Ports.FirstOrDefault(p => p.Id == portId && p.IsOutput == isOutput);
+        if (port == null) return null;
         return new Point(
             isOutput ? node.Position.X + NodeWidth - 6 : node.Position.X + 6,
-            node.Position.Y + PortRowTop + index * PortRowStep);
+            node.Position.Y + PortRowTop + port.Index * PortRowStep);
     }
 
     private static PathGeometry BezierWire(Point start, Point end) => new([new PathFigure(start,
@@ -771,8 +836,12 @@ public sealed class WorkflowView : WorkspaceView
             new BezierSegment(new Point(start.X + 60, start.Y), new Point(end.X - 60, end.Y), end, true),
         ], false)]);
 
-    private PathGeometry EdgeGeometry(WorkflowNode from, string fromPort, WorkflowNode to, string toPort) =>
-        BezierWire(PortAnchor(from, fromPort, true), PortAnchor(to, toPort, false));
+    private static PathGeometry? EdgeGeometry(WorkflowNode from, string fromPort, WorkflowNode to, string toPort)
+    {
+        if (PortAnchor(from, fromPort, true) is not { } start) return null;
+        if (PortAnchor(to, toPort, false) is not { } end) return null;
+        return BezierWire(start, end);
+    }
 
     private void DeleteSelected()
     {
@@ -834,7 +903,7 @@ public sealed class WorkflowView : WorkspaceView
         // 与 BuildGraph 相同的 snake_case 结构，保证 Restore 能按 source_node 等字段读回
         edges = edges.Select(e => new Dictionary<string, object?>
         {
-            ["id"] = $"{e.Source}:{e.SourcePort}-{e.Target}:{e.TargetPort}",
+            ["id"] = EdgeId(e.Source, e.SourcePort, e.Target, e.TargetPort),
             ["source_node"] = e.Source, ["source_port"] = e.SourcePort,
             ["target_node"] = e.Target, ["target_port"] = e.TargetPort,
         }).ToList(),
@@ -968,7 +1037,7 @@ public sealed class WorkflowView : WorkspaceView
         }).ToList(),
         ["edges"] = edges.Select(e => new Dictionary<string, object?>
         {
-            ["id"] = $"{e.Source}:{e.SourcePort}-{e.Target}:{e.TargetPort}",
+            ["id"] = EdgeId(e.Source, e.SourcePort, e.Target, e.TargetPort),
             ["source_node"] = e.Source, ["source_port"] = e.SourcePort,
             ["target_node"] = e.Target, ["target_port"] = e.TargetPort,
         }).ToList(),
@@ -1167,7 +1236,8 @@ public sealed class WorkflowView : WorkspaceView
         }
         var node = selected;
         var name = new TextBox { Text = node.Name };
-        name.TextChanged += (_, _) => { node.Name = name.Text; ScheduleSave(); };
+        // SetName 同步画布标题；标题换行变化会推挤端口区并触发锚点重测+边重画
+        name.TextChanged += (_, _) => { node.SetName(name.Text); ScheduleSave(); };
         var timeout = new TextBox { Text = node.ConfigElement.TryGetProperty("timeout_seconds", out var t) && t.ValueKind == JsonValueKind.Number ? t.GetInt32().ToString() : "900", Width = 130 };
         var retries = new TextBox { Text = node.ConfigElement.TryGetProperty("max_attempts", out var r) && r.ValueKind == JsonValueKind.Number ? r.GetInt32().ToString() : "3", Width = 130 };
         var prompt = new TextBox
@@ -1242,8 +1312,15 @@ public sealed class WorkflowView : WorkspaceView
         public Dictionary<string, object?> Config { get; set; } = [];
         public required Border Element { get; init; }
         private TextBlock? statusBadge;
+        private TextBlock? titleBlock;
         // 端口站点表：连线拖拽的发起端与命中端都从这里取（Tag 挂在端口行 Border 上）
         public readonly List<PortSite> Ports = [];
+        // P1-1: 实测锚点缓存——键 PortSite.Key(端口)，值为端口圆点圆心相对节点根
+        // 元素左上角的偏移；布局完成前为 null（PortAnchor 回退固定公式）。
+        public Dictionary<string, Point>? AnchorCache;
+        // 实测锚点与旧值有实际变化（标题换行推挤端口区等）时由 MeasureAnchors
+        // 触发；视图接线成 RedrawEdgesFor（见 AttachNodeHandlers）。
+        public Action? AnchorsChanged;
 
         public JsonElement ConfigElement
         {
@@ -1322,6 +1399,44 @@ public sealed class WorkflowView : WorkspaceView
 
         public void SetConfig(string key, object? value) => Config[key] = value;
 
+        // 重命名同步画布标题；换行数变化会推挤端口区 → SizeChanged → 重测锚点 → 重画边
+        public void SetName(string name)
+        {
+            Name = name;
+            if (titleBlock == null || titleBlock.Text == name) return;
+            titleBlock.Text = name;
+        }
+
+        // 推迟到布局稳定后测量：Loaded/SizeChanged 触发时同轮布局可能尚未完成，
+        // 立即 TranslatePoint 会读到半途位置。
+        private void QueueAnchorMeasure() =>
+            Element.Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(MeasureAnchors));
+
+        // P1-1: 实测各端口圆点圆心（相对节点根元素）。web 端 React Flow 从 Handle
+        // 的 DOM 实测位置画边，这里等价：端口圆点无论被标题换行推到哪里，锚点
+        // 跟着圆点走。未完成布局的端口直接放弃本次测量，等下一个信号重测。
+        public void MeasureAnchors()
+        {
+            if (Ports.Count == 0 || !Element.IsArrangeValid) return;
+            var measured = new Dictionary<string, Point>();
+            foreach (var port in Ports)
+            {
+                if (port.Dot is not { } dot || !dot.IsArrangeValid) return;
+                measured[PortSite.Key(port.Id, port.IsOutput)] = dot.TranslatePoint(new Point(dot.Width / 2, dot.Height / 2), Element);
+            }
+            if (AnchorCache != null && AnchorCache.Count == measured.Count)
+            {
+                var unchanged = true;
+                foreach (var entry in measured)
+                    if (!AnchorCache.TryGetValue(entry.Key, out var prior)
+                        || Math.Abs(prior.X - entry.Value.X) > 0.5 || Math.Abs(prior.Y - entry.Value.Y) > 0.5)
+                    { unchanged = false; break; }
+                if (unchanged) return;   // 亚像素抖动不触发重绘
+            }
+            AnchorCache = measured;
+            AnchorsChanged?.Invoke();
+        }
+
         private void BuildVisual()
         {
             var tone = Tone;
@@ -1354,6 +1469,9 @@ public sealed class WorkflowView : WorkspaceView
                 FontFamily = (FontFamily)Application.Current.FindResource("Serif"),
                 Margin = new Thickness(9, 8, 9, 8), TextWrapping = TextWrapping.Wrap,
             };
+            titleBlock = title;
+            // P1-1: 标题换行改变端口区起点——尺寸一变就排队重测端口锚点
+            title.SizeChanged += (_, _) => QueueAnchorMeasure();
             var ports = new Grid { Margin = new Thickness(0, 0, 0, 8), MinHeight = 40 };
             ports.ColumnDefinitions.Add(new ColumnDefinition());
             ports.ColumnDefinitions.Add(new ColumnDefinition());
@@ -1402,6 +1520,7 @@ public sealed class WorkflowView : WorkspaceView
             {
                 var grid = Element.Child as StackPanel;
                 grid?.Children.Insert(0, topBar);
+                QueueAnchorMeasure();   // 载入（含 topBar 插入引起的重排）后重测端口锚点
             };
         }
 
@@ -1460,6 +1579,7 @@ public sealed class WorkflowView : WorkspaceView
                 Child = content,
             };
             port.Element = row;
+            port.Dot = dot;   // P1-1: 锚点实测的测量对象就是端口圆点本身
             if (port.IsOutput) row.Cursor = Cursors.Cross;   // 可拖出连线的手势提示
             return row;
         }
@@ -1477,7 +1597,8 @@ public sealed class WorkflowView : WorkspaceView
     }
 
     // 端口站点：节点内一个可命中的输入/输出端口，携带建边校验所需的全部信息；
-    // Element 由 BuildPortRow 回填为端口行 Border（BuildVisual 建站后立即成行）
+    // Element 由 BuildPortRow 回填为端口行 Border，Dot 回填为端口圆点（锚点实测
+    // 的测量对象），Key 生成锚点缓存键（输入/输出端口 id 可能重名，须带方向）。
     private sealed class PortSite
     {
         public required WorkflowNode Node { get; init; }
@@ -1486,6 +1607,9 @@ public sealed class WorkflowView : WorkspaceView
         public required bool IsOutput { get; init; }
         public int Index { get; init; }
         public FrameworkElement Element { get; internal set; } = null!;
+        public Ellipse? Dot { get; internal set; }
+
+        internal static string Key(string portId, bool isOutput) => (isOutput ? "o:" : "i:") + portId;
     }
 
     private sealed record WorkflowEdge(string Source, string SourcePort, string Target, string TargetPort);

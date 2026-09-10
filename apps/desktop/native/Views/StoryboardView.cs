@@ -49,6 +49,12 @@ public sealed class StoryboardView : WorkspaceView
     private double zoom = 1;
     private double pageAspect = 257.0 / 182.0;
     private readonly CommandStack history = new();
+    // 对齐 web storyboard-editor 的 geometryRequestRef：记录上一次几何保存的
+    // { request_id, 撤销栈 index, 气泡数 }。网络超时后服务端可能已提交事务
+    // （幂等元组随成功事务持久化，见 storyboard_geometry.save_storyboard_geometry），
+    // 同一草稿状态重试必须重放同一 request_id；栈或气泡集合变过才换新 id。
+    // 气泡删除不在撤销栈里，bubbles.Count 是栈 index 之外必要的草稿指纹。
+    private (Guid Id, int StackIndex, int BubbleCount)? geometryRequest;
     private bool saving, dirty, bubblesDeleted;
     private int pageLoadVersion;
     private PanelNode? selected;
@@ -315,8 +321,11 @@ public sealed class StoryboardView : WorkspaceView
         var requestVersion = ++pageLoadVersion;
         try
         {
-            storyboard = await Api.SendAsync($"pages/{item.Id}/storyboard", cancellation: lifetime.Token);
+            // 迟到的旧响应先用局部变量承接，守卫通过后再写字段：无条件赋值会在
+            // 快速连点两页时把旧页分镜短暂污染进字段（P3-6 同类竞态）。
+            var fresh = await Api.SendAsync($"pages/{item.Id}/storyboard", cancellation: lifetime.Token);
             if (requestVersion != pageLoadVersion || lifetime.Token.IsCancellationRequested) return;
+            storyboard = fresh;
             // 拉取成功后才切换页签状态与记住的页号；页版本以服务端为准刷新，
             // 冲突恢复（放弃并重新加载）后的重试才有新锚点，否则永远撞同一个 409
             var serverVersion = storyboard.Element("page").Number("storyboard_version");
@@ -331,8 +340,13 @@ public sealed class StoryboardView : WorkspaceView
                 panel.Element.MouseLeftButtonDown += (s, e) => BeginPanelDrag(s, e, panel);
             RebuildBubbles();
             history.Clear();
+            geometryRequest = null;   // 新页新草稿：旧页的 request_id 不得跨页复用（对齐 web switchPage→clearGeometryDrafts）
             bubblesDeleted = false;
             dirty = false;
+            // 选中态不跨页残留：残留的旧页 selectedBubble 会让新页上按 Delete
+            // 真删旧页气泡（服务端 DELETE），inspector 也须按新页数据重渲。
+            selected = null;
+            selectedBubble = null;
             conflictBar.Visibility = Visibility.Collapsed;   // 新数据落地即冲突解除
             UpdateStatus("已保存");
             RenderPageBar();
@@ -674,11 +688,19 @@ public sealed class StoryboardView : WorkspaceView
             {
                 card.Children.Add(new TextBlock { Text = $"对白 {panel.Dialogues.Count} 条", Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 6, 0, 0) });
                 foreach (var dialogue in panel.Dialogues)
+                {
+                    // DialogueRead 没有 speaker_name 字段：用 speaker_character_id 在
+                    // 本视图已加载的角色列表里查 primary_name，查不到（含空值）回落「旁白」。
+                    var speakerId = dialogue.Text("speaker_character_id");
+                    var speakerName = characters.FirstOrDefault(c => c.Id == speakerId) is { } cast
+                        ? cast.PrimaryName
+                        : "旁白";
                     card.Children.Add(new TextBlock
                     {
-                        Text = $"{dialogue.Text("speaker_name", "旁白")}：{dialogue.Text("target_text")}",
+                        Text = $"{speakerName}：{dialogue.Text("target_text")}",
                         Style = (Style)Application.Current.FindResource("Micro"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 0),
                     });
+                }
             }
             var edit = Kit.Act("编辑本格", async (_, _) => await EditPanel(panel), "Compact");
             edit.Margin = new Thickness(0, 10, 0, 0);
@@ -689,16 +711,47 @@ public sealed class StoryboardView : WorkspaceView
 
     private async Task EditPanel(PanelNode panel)
     {
+        var pageAtRequest = currentPage;
+        if (pageAtRequest == null) return;
         try
         {
-            var fresh = await Api.SendAsync($"pages/{currentPage!.Id}/storyboard", cancellation: lifetime.Token);
+            var fresh = await Api.SendAsync($"pages/{pageAtRequest.Id}/storyboard", cancellation: lifetime.Token);
             var row = fresh.Array("panels").FirstOrDefault(p => p.Text("id") == panel.Id);
             if (row.ValueKind != JsonValueKind.Object) throw new InvalidOperationException("找不到该分镜格");
-            var dialog = new PanelEditDialog(Host, row, characters, outfits);
-            if (dialog.ShowDialog() != true || dialog.Result == null) return;
-            await Api.SendAsync($"panels/{panel.Id}", HttpMethod.Patch, dialog.Result, cancellation: lifetime.Token);
-            Cache.Invalidate("storyboard:" + currentPage.Id, "pages:" + chapterId);
-            await SelectPageAsync(currentPage);
+            // PATCH 在对话框关闭决策之前执行：409 时不关对话框、就地显示冲突与
+            // 「放弃并重新加载」（对齐 web 编辑表单保持打开 + 冲突横幅的行为），
+            // 用户输入不再随 DialogResult=true 一起丢失。
+            var dialog = new PanelEditDialog(Host, row, characters, outfits,
+                async payload =>
+                {
+                    try
+                    {
+                        await Api.SendAsync($"panels/{panel.Id}", HttpMethod.Patch, payload, cancellation: lifetime.Token);
+                        return (PanelEditDialog.PanelSaveOutcome.Saved, "");
+                    }
+                    catch (OperationCanceledException) { return (PanelEditDialog.PanelSaveOutcome.Cancelled, ""); }
+                    catch (Exception error) when (error is not OperationCanceledException)
+                    {
+                        return IsConflict(error)
+                            ? (PanelEditDialog.PanelSaveOutcome.Conflict, "")
+                            : (PanelEditDialog.PanelSaveOutcome.Failed, error.Message);
+                    }
+                },
+                async () =>
+                {
+                    try
+                    {
+                        var snapshot = await Api.SendAsync($"pages/{pageAtRequest.Id}/storyboard", cancellation: lifetime.Token);
+                        var next = snapshot.Array("panels").FirstOrDefault(p => p.Text("id") == panel.Id);
+                        if (next.ValueKind != JsonValueKind.Object) return null;
+                        return next;
+                    }
+                    catch (Exception) { return null; }
+                });
+            if (dialog.ShowDialog() != true) return;
+            Cache.Invalidate("storyboard:" + pageAtRequest.Id, "pages:" + chapterId);
+            // 保存/对话框在途期间用户可能已切页：晚到的刷新不得把画布拉回旧页。
+            if (currentPage?.Id == pageAtRequest.Id) await SelectPageAsync(pageAtRequest);
         }
          catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
@@ -739,14 +792,18 @@ public sealed class StoryboardView : WorkspaceView
 
     private async Task RebuildLayoutAsync(int count, string mode)
     {
+        var pageAtRequest = currentPage;
+        if (pageAtRequest == null) return;
         try
         {
-            await Api.SendAsync($"pages/{currentPage!.Id}/layout", HttpMethod.Patch,
+            await Api.SendAsync($"pages/{pageAtRequest.Id}/layout", HttpMethod.Patch,
                 new { panel_count = count, layout_mode = mode }, cancellation: lifetime.Token);
             history.Clear();
+            geometryRequest = null;   // 整页重排后旧草稿指纹全部作废
             bubblesDeleted = false;
             dirty = false;
-            await SelectPageAsync(currentPage);
+            // PATCH 在途期间用户可能已切页：晚到的刷新不得把画布拉回重建前的旧页。
+            if (currentPage?.Id == pageAtRequest.Id) await SelectPageAsync(pageAtRequest);
             UpdateStatus("版式已重建");
         }
          catch (OperationCanceledException) { }
@@ -760,18 +817,28 @@ public sealed class StoryboardView : WorkspaceView
     private async Task SaveAsync()
     {
         if (currentPage == null || saving || !dirty) return;
+        var pageAtRequest = currentPage;
         saving = true;
         saveButton.IsEnabled = false;
         saveButton.Content = "保存中";
         try
         {
-            // 每次尝试都生成新的 request_id：服务端把 (request_id, payload_hash)
-            // 当作幂等命令持久化，失败后重放同一个 id 只会得到同一个拒绝；
-            // 真正的恢复出口是冲突条上的「放弃草稿并重新加载」。
-            var payload = BuildPayload(Guid.NewGuid());
-            var response = await Api.SendAsync($"pages/{currentPage.Id}/storyboard-geometry", HttpMethod.Put, payload, cancellation: lifetime.Token);
-            storyboard = response;
+            // request_id 复用（对齐 web buildGeometryPayload 的 geometryRequestRef）：
+            // 网络超时后服务端可能已提交事务，重放同 request_id + 同载荷会幂等
+            // 命中已持久化的命令元组并返回既有结果；撤销栈前进/回退或气泡删除
+            // （删除不入栈，气泡数是草稿指纹的一部分）之后才换新 id，避免同 id
+            // 撞不同内容被服务端以 409 拒绝。409 是版本拒绝（早退回滚不落库），
+            // 恢复走冲突条的「放弃草稿并重新加载」，与本复用互不影响。
+            var requestId = geometryRequest is { } prior
+                && prior.StackIndex == history.Index
+                && prior.BubbleCount == bubbles.Count
+                ? prior.Id
+                : Guid.NewGuid();
+            geometryRequest = (requestId, history.Index, bubbles.Count);
+            var payload = BuildPayload(requestId);
+            var response = await Api.SendAsync($"pages/{pageAtRequest.Id}/storyboard-geometry", HttpMethod.Put, payload, cancellation: lifetime.Token);
             history.Clear();
+            geometryRequest = null;   // 草稿已落库，重试身份随之作废
             bubblesDeleted = false;
             dirty = false;
             var version = response.Element("page").Number("storyboard_version");
@@ -779,7 +846,13 @@ public sealed class StoryboardView : WorkspaceView
             UpdateStatus($"已保存 · 当前 V{version}");
             State.Status = $"分镜已保存 · V{version} · 将使 {staleCount} 个候选过期";
             Cache.Invalidate("pages:" + chapterId, "workbench:", "library:" + ProjectId);
-            await SelectPageAsync(currentPage);
+            // PUT 在途期间用户可能已切页：晚到的刷新不得把画布拉回旧页
+            // （storyboard 字段与整页重载一起跳过，避免旧页数据污染新页）。
+            if (currentPage?.Id == pageAtRequest.Id)
+            {
+                storyboard = response;
+                await SelectPageAsync(pageAtRequest);
+            }
         }
         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
@@ -788,7 +861,8 @@ public sealed class StoryboardView : WorkspaceView
             if (IsConflict(error))
             {
                 // 409：保留草稿并亮出冲突条（对齐 web 的冲突横幅 + 放弃重载）。
-                // 重试会带新的 request_id，但版本锚点要等整页重载后才会更新。
+                // 版本拒绝早退不落库，重试沿用同一 request_id 仍是干净的版本检查；
+                // 版本锚点要等整页重载后才会更新。
                 conflictBar.Visibility = Visibility.Visible;
             }
             else
@@ -815,6 +889,7 @@ public sealed class StoryboardView : WorkspaceView
     {
         conflictBar.Visibility = Visibility.Collapsed;
         history.Clear();
+        geometryRequest = null;   // 弃稿即弃用重试身份（对齐 web discardDraft→clearGeometryDrafts）
         bubblesDeleted = false;
         dirty = false;
         selected = null;
@@ -1252,7 +1327,13 @@ internal sealed class PanelEditDialog : Window
 {
     public object? Result { get; private set; }
 
-    public PanelEditDialog(Window owner, JsonElement panel, List<CharacterItem> characters, List<OutfitItem> outfits)
+    // PATCH 结果分类：Saved 关闭对话框；Conflict 保持打开并给出冲突恢复出口；
+    // Failed 弹 MessageBox 后允许就地重试；Cancelled 静默（视图已被离开/停用）。
+    internal enum PanelSaveOutcome { Saved, Conflict, Failed, Cancelled }
+
+    public PanelEditDialog(Window owner, JsonElement panel, List<CharacterItem> characters, List<OutfitItem> outfits,
+        Func<Dictionary<string, object?>, Task<(PanelSaveOutcome Outcome, string Message)>> save,
+        Func<Task<JsonElement?>> reloadRow)
     {
         Owner = owner;
         Title = "编辑本格分镜";
@@ -1264,25 +1345,23 @@ internal sealed class PanelEditDialog : Window
         var scroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         var form = new StackPanel { Margin = new Thickness(24) };
 
+        // 行基线（含 version）与全部种子值都由 Seed 统一落位：初始打开与 409 后的
+        // 「放弃并重新加载」走同一条重置路径，新 version 直接成为下次提交的锚点。
+        var current = panel;
         var shot = new ComboBox();
         foreach (var (key, label) in Labels.ShotType) shot.Items.Add(new ComboBoxItem { Tag = key, Content = label });
-        Select(shot, panel.Text("shot_type"));
         var angle = new ComboBox();
         foreach (var (key, label) in Labels.CameraAngle) angle.Items.Add(new ComboBoxItem { Tag = key, Content = label });
-        Select(angle, panel.Text("camera_angle"));
-        var storedHeight = panel.Text("camera_height");
+        var storedHeight = "";
         var height = new ComboBox();
         foreach (var (key, label) in Labels.CameraHeight) height.Items.Add(new ComboBoxItem { Tag = key, Content = label });
-        Select(height, storedHeight);
         var heightTouched = false;
-        // 种子化之后再挂事件：程序化选中不算用户改动，机位高度未改动就不提交
-        height.SelectionChanged += (_, _) => heightTouched = true;
-        var storedActions = panel.StringMap("actions");
-        var storedScriptAction = storedActions.TryGetValue("script_action", out var scriptText) ? scriptText : "";
-        var scriptAction = new TextBox { Text = storedScriptAction, AcceptsReturn = true, MinHeight = 60 };
-        var background = new TextBox { Text = panel.Text("background"), AcceptsReturn = true, MinHeight = 48 };
-        var props = new TextBox { Text = string.Join("、", panel.Strings("props")) };
-        var soundEffects = new TextBox { Text = string.Join("、", panel.Strings("sound_effects")) };
+        var storedActions = new Dictionary<string, string>();
+        var storedScriptAction = "";
+        var scriptAction = new TextBox { AcceptsReturn = true, MinHeight = 60 };
+        var background = new TextBox { AcceptsReturn = true, MinHeight = 48 };
+        var props = new TextBox();
+        var soundEffects = new TextBox();
 
         form.Children.Add(Label("景别"));
         form.Children.Add(shot);
@@ -1304,13 +1383,13 @@ internal sealed class PanelEditDialog : Window
         // 导致每次打开都全员回落 NONE、保存时把既有出场状态清空。「NONE」只是
         // 客户端语义（服务端枚举没有该值），保存时全量回传非 NONE 项，
         // 未改动的保存即等价于原快照。
-        var storedPresence = panel.Element("character_presence");
+        var storedPresence = default(JsonElement);
         var presence = new Dictionary<string, ComboBox>();
         var expressionBoxes = new Dictionary<string, TextBox>();
         var outfitBoxes = new Dictionary<string, ComboBox>();
         var directionHost = new StackPanel();
-        var storedExpressions = panel.StringMap("expressions");
-        var storedOutfits = panel.StringMap("outfits");
+        var storedExpressions = new Dictionary<string, string>();
+        var storedOutfits = new Dictionary<string, string>();
         foreach (var character in characters)
         {
             var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 4) };
@@ -1318,28 +1397,54 @@ internal sealed class PanelEditDialog : Window
             var box = new ComboBox { Width = 180 };
             foreach (var (key, label) in Labels.CharacterPresence)
                 box.Items.Add(new ComboBoxItem { Tag = key, Content = label });
-            Select(box, storedPresence.Text(character.Id, "NONE") is { Length: > 0 } state ? state : "NONE");
             presence[character.Id] = box;
             box.SelectionChanged += (_, _) => RebuildDirectionRows();
             row.Children.Add(box);
             form.Children.Add(row);
         }
         form.Children.Add(directionHost);
-        RebuildDirectionRows();
-        var bleed = new CheckBox { Content = "出血格", IsChecked = panel.Flag("bleed"), Margin = new Thickness(0, 8, 0, 0) };
-        var borderless = new CheckBox { Content = "无边框", IsChecked = panel.Flag("borderless"), Margin = new Thickness(0, 0, 0, 12) };
+        var bleed = new CheckBox { Content = "出血格", Margin = new Thickness(0, 8, 0, 0) };
+        var borderless = new CheckBox { Content = "无边框", Margin = new Thickness(0, 0, 0, 12) };
         form.Children.Add(bleed);
         form.Children.Add(borderless);
 
-        var error = new TextBlock { Foreground = (Brush)Application.Current.FindResource("Danger"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 6) };
-        form.Children.Add(error);
+        var error = new TextBlock { Foreground = (Brush)Application.Current.FindResource("Danger"), TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
+        // 409 冲突专属出口（对齐 web 的冲突横幅 + discardReload）：重拉该格最新
+        // 数据，以新 version 重置对话框基线（重新 From 种子值），用户可基于新
+        // 基线就地重试保存。
+        var reload = new Button
+        {
+            Content = "放弃并重新加载",
+            Style = (Style)Application.Current.FindResource("InkButton"),
+            Visibility = Visibility.Collapsed,
+            Margin = new Thickness(12, 0, 0, 0),
+        };
+        reload.Click += async (_, _) =>
+        {
+            error.Text = "";
+            reload.IsEnabled = false;
+            var fresh = await reloadRow();
+            if (!IsLoaded) return;   // 对话框已关闭：迟到的结果无处安放
+            reload.IsEnabled = true;
+            if (fresh is not { ValueKind: JsonValueKind.Object } row)
+            {
+                error.Text = "重新加载失败：读取不到该分镜格的最新数据，请稍后重试。";
+                return;
+            }
+            Seed(row);
+        };
+        var errorRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 6) };
+        errorRow.Children.Add(error);
+        errorRow.Children.Add(reload);
+        form.Children.Add(errorRow);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
         var cancel = new Button { Content = "取消", MinWidth = 96, Margin = new Thickness(0, 0, 10, 0) };
         cancel.Click += (_, _) => Close();
         var submit = new Button { Content = "保存本格分镜", MinWidth = 130, Style = (Style)Application.Current.FindResource("InkButton") };
-        submit.Click += (_, _) =>
+        submit.Click += async (_, _) =>
         {
             error.Text = "";
+            reload.Visibility = Visibility.Collapsed;
             submit.IsEnabled = false;
             try
             {
@@ -1349,7 +1454,7 @@ internal sealed class PanelEditDialog : Window
                         presencePayload[entry.Key] = state;
                 var payload = new Dictionary<string, object?>
                 {
-                    ["version"] = panel.Number("version"),
+                    ["version"] = current.Number("version"),
                     ["shot_type"] = (shot.SelectedItem as ComboBoxItem)?.Tag,
                     ["camera_angle"] = (angle.SelectedItem as ComboBoxItem)?.Tag,
                     ["background"] = background.Text,
@@ -1359,7 +1464,9 @@ internal sealed class PanelEditDialog : Window
                     ["bleed"] = bleed.IsChecked == true,
                     ["borderless"] = borderless.IsChecked == true,
                 };
-                // 新增字段仅在改动时提交：拿空默认值覆盖服务端已有内容比不提交更糟
+                // 新增字段仅在改动时提交：拿空默认值覆盖服务端已有内容比不提交更糟。
+                // 机位高度基线是映射后的 overhead；服务端旧 top_down 未被用户改动
+                // 时就不提交（读侧映射保证显示不失真），改动才提交新词表键。
                 if (heightTouched && (height.SelectedItem as ComboBoxItem)?.Tag as string is { Length: > 0 } heightTag && heightTag != storedHeight)
                     payload["camera_height"] = heightTag;
                 if (scriptAction.Text != storedScriptAction)
@@ -1373,10 +1480,25 @@ internal sealed class PanelEditDialog : Window
                         outfitPayload[entry.Key] = outfitId;
                 if (!SameMap(outfitPayload, storedOutfits)) payload["outfits"] = outfitPayload;
                 Result = payload;
-                DialogResult = true;
+                // 关闭决策后置到 PATCH 之后：409 时保持对话框打开、用户输入保留
+                var outcome = await save(payload);
+                if (!IsLoaded) return;   // 对话框已随取消关闭：迟到的结果无处安放
+                if (outcome.Outcome == PanelSaveOutcome.Saved) { DialogResult = true; return; }
+                submit.IsEnabled = true;
+                if (outcome.Outcome == PanelSaveOutcome.Conflict)
+                {
+                    error.Text = "分镜格已被更新，无法用旧版本保存。";
+                    reload.Visibility = Visibility.Visible;
+                }
+                else if (outcome.Outcome == PanelSaveOutcome.Failed)
+                {
+                    // 非 409 维持 MessageBox 提示，对话框不关闭、可直接重试
+                    MessageBox.Show(this, outcome.Message, "保存本格未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
             }
             catch (Exception reason)
             {
+                if (!IsLoaded) return;
                 error.Text = reason.Message;
                 submit.IsEnabled = true;
             }
@@ -1387,6 +1509,44 @@ internal sealed class PanelEditDialog : Window
         scroll.Content = form;
         Content = scroll;
         PreviewKeyDown += (_, e) => { if (e.Key == Key.Escape) Close(); };
+
+        // 行基线与全部表单种子的唯一落位点：初始打开与「放弃并重新加载」共用。
+        void Seed(JsonElement row)
+        {
+            current = row;
+            Select(shot, row.Text("shot_type"));
+            Select(angle, row.Text("camera_angle"));
+            // web 词表键是 overhead（顶视机位）；服务端历史值 top_down 做读侧映射，
+            // 种子与提交统一走 overhead，避免旧值落不中词表而显示失真
+            var rawHeight = row.Text("camera_height");
+            storedHeight = rawHeight == "top_down" ? "overhead" : rawHeight;
+            Select(height, storedHeight);
+            heightTouched = false;
+            storedActions = row.StringMap("actions");
+            storedScriptAction = storedActions.TryGetValue("script_action", out var seeded) ? seeded : "";
+            scriptAction.Text = storedScriptAction;
+            background.Text = row.Text("background");
+            props.Text = string.Join("、", row.Strings("props"));
+            soundEffects.Text = string.Join("、", row.Strings("sound_effects"));
+            storedPresence = row.Element("character_presence");
+            storedExpressions = row.StringMap("expressions");
+            storedOutfits = row.StringMap("outfits");
+            // 表情/服装行按新基线重建：清掉旧输入态，改由存量种子重新落位
+            expressionBoxes.Clear();
+            outfitBoxes.Clear();
+            foreach (var character in characters)
+                Select(presence[character.Id], storedPresence.Text(character.Id, "NONE") is { Length: > 0 } state ? state : "NONE");
+            RebuildDirectionRows();
+            bleed.IsChecked = row.Flag("bleed");
+            borderless.IsChecked = row.Flag("borderless");
+            error.Text = "";
+            reload.Visibility = Visibility.Collapsed;
+        }
+
+        // 初始种子落位后再挂事件：程序化选中不算用户改动，机位高度未改动就不提交；
+        // 重载路径里 Seed 会在 Select 之后把 heightTouched 复位。
+        Seed(panel);
+        height.SelectionChanged += (_, _) => heightTouched = true;
 
         void RebuildDirectionRows()
         {

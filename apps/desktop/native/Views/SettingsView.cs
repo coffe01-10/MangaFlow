@@ -467,7 +467,9 @@ public sealed class SettingsView : WorkspaceView
     private void ClampRuntimeInput(TextBox box, string key)
     {
         var range = RuntimeRanges[key];
-        if (int.TryParse(box.Text.Trim(), out var parsed))
+        // S-3: 与 web ClampedNumberInput 同语义 —— 可解析的小数（"900.5"）按 Math.round
+        // 取整后钳制提交，只有空/非法输入才回退旧值；int.TryParse 会把小数当非法丢掉。
+        if (TryParseRuntimeNumber(box.Text, out var parsed))
         {
             var clamped = Math.Clamp(parsed, range.Min, range.Max);
             runtimeCommitted[key] = clamped;
@@ -476,6 +478,17 @@ public sealed class SettingsView : WorkspaceView
         }
         // 清空或非法输入放弃修改，回显上一个有效值。
         box.Text = runtimeCommitted.GetValueOrDefault(key, range.Min).ToString();
+    }
+
+    // 数字项输入的统一解析：接受小数与科学计数法（web 的 Number(raw)），四舍五入到整数。
+    private static bool TryParseRuntimeNumber(string value, out int number)
+    {
+        number = 0;
+        if (!double.TryParse(value.Trim(), System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var parsed))
+            return false;
+        number = (int)Math.Round(parsed, MidpointRounding.AwayFromZero);
+        return true;
     }
 
     private static ComboBox BuildOptionSelect(string key, string value, string options)
@@ -514,8 +527,9 @@ public sealed class SettingsView : WorkspaceView
                 if (RuntimeRanges.TryGetValue(key, out var range))
                 {
                     // 保存前再钳一次：失焦钩子可能被绕过（未失焦直接点保存），
-                    // 越界值必须在此截住，不能依赖服务端 422 兜底。
-                    var parsed = int.TryParse(value, out var number) ? number : runtimeCommitted.GetValueOrDefault(key, range.Min);
+                    // 越界值必须在此截住，不能依赖服务端 422 兜底；小数与失焦路径
+                    // 同语义（TryParseRuntimeNumber：可解析小数取整后钳制）。
+                    var parsed = TryParseRuntimeNumber(value, out var number) ? number : runtimeCommitted.GetValueOrDefault(key, range.Min);
                     var clamped = Math.Clamp(parsed, range.Min, range.Max);
                     runtimeCommitted[key] = clamped;
                     if (input is TextBox box) box.Text = clamped.ToString();
