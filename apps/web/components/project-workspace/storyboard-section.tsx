@@ -59,8 +59,10 @@ export function StoryboardSection({
   const [editorDirty, setEditorDirty] = useState(false);
   const invalidPlannedPageCount = (pages.data ?? []).filter((page) => getPageStructureIssue(page)).length;
 
-  // Mirrors the script section: switching chapters unmounts the editor, so an
-  // unsaved storyboard must confirm instead of losing geometry/dialogue drafts.
+  // 切换章节必须真正卸载编辑器(按 activeChapterId 重挂载):目标章节的
+  // pages 若已在缓存中,数据瞬时换入不会触发 loading 分支,旧章节的几何
+  // 栈/气泡草稿/未存气泡卡会原样泄漏到新章节的页面上(dirty 误报、保存
+  // 本页误升版本、跨章节误建气泡)。未保存草稿先确认再丢弃。
   function switchChapter(nextChapterId: string) {
     if (!nextChapterId || nextChapterId === activeChapterId) return;
     if (editorDirty && !window.confirm("当前分镜与对白的修改尚未保存，切换章节会丢弃这些修改。仍要切换吗？")) return;
@@ -78,7 +80,7 @@ export function StoryboardSection({
         : pages.isError ? <p className="form-error" role="alert"><CircleAlert size={15} />页面列表读取失败：{pages.error instanceof Error ? pages.error.message : "请稍后重试"}</p>
         : pages.data === undefined ? <div className="loading-panel"><LoaderCircle className="spin" size={16} />正在读取页面…</div>
         : !pages.data.length ? <div className="asset-empty tall"><PanelTop size={28} /><strong>尚未生成分页分镜</strong><p>先完成漫画剧本；系统按场景切换、动作复杂度、对白和气泡容量拆页。</p></div>
-        : <StoryboardEditor chapterId={activeChapterId!} pages={pages.data} characters={characters.data ?? []} outfits={outfits.data ?? []} onReplan={(pageNumber) => replanPage.mutate(pageNumber)} replanPending={replanPage.isPending} replanError={replanPage.error} initialPageId={initialPageId} focusCharacterId={focusCharacterId} onDirtyChange={setEditorDirty} />}
+        : <StoryboardEditor key={activeChapterId!} chapterId={activeChapterId!} pages={pages.data} characters={characters.data ?? []} outfits={outfits.data ?? []} onReplan={(pageNumber) => replanPage.mutate(pageNumber)} replanPending={replanPage.isPending} replanError={replanPage.error} initialPageId={initialPageId} focusCharacterId={focusCharacterId} onDirtyChange={setEditorDirty} />}
     </>
   );
 }

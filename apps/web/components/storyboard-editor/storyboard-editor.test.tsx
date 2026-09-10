@@ -845,19 +845,20 @@ describe("StoryboardEditor canvas (V02-31B)", () => {
     }] });
     data = { page, candidate_count: 0, panels: [withBubble, panel2] };
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
-    renderEditor();
+    const dirtyStates: boolean[] = [];
+    renderEditor({ onDirtyChange: (dirty: boolean) => dirtyStates.push(dirty) });
     stubRect(await screen.findByTestId("canvas-page"), 640, 903);
     fireEvent.pointerDown(bubbleEl("dlg-1"), { button: 0, pointerId: 1, clientX: 160, clientY: 172 });
     fireEvent.pointerUp(window, { pointerId: 1, clientX: 160, clientY: 172 });
     const textbox = await screen.findByRole("textbox", { name: "气泡 1 文字" });
     fireEvent.change(textbox, { target: { value: "雨停之后的早晨" } });
-    expect(screen.getByRole("button", { name: "保存本页" })).toHaveProperty("disabled", false);
+    // 叙事草稿不再点亮「保存本页」(它只提交几何);dirty 经 onDirtyChange 观察。
+    await waitFor(() => expect(dirtyStates.at(-1)).toBe(true));
+    expect(screen.getByRole("button", { name: "保存本页" })).toHaveProperty("disabled", true);
     fireEvent.click(screen.getByRole("button", { name: "删除气泡 1" }));
     await waitFor(() => expect(deleteDialogue).toHaveBeenCalledWith("dlg-1", expect.anything()));
-    // 草稿随气泡一并移除；保存按钮回到禁用，不再永久提示未保存。
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "保存本页" })).toHaveProperty("disabled", true);
-    });
+    // 草稿随气泡一并移除；dirty 回落，不再永久提示未保存。
+    await waitFor(() => expect(dirtyStates.at(-1)).toBe(false));
     confirmSpy.mockRestore();
   });
 

@@ -18,6 +18,7 @@ from app.models import (
     Asset,
     AssetStatus,
     Chapter,
+    MangaPage,
     Project,
     Scene,
     SceneAsset,
@@ -42,6 +43,7 @@ from app.schemas import (
 )
 from app.services.character_packages import lock_asset_for_ownership, run_lock_retry
 from app.services.editor import mark_pages_for_review
+from app.services.ordinal_allocator import lock_entity
 from app.services.scene_assets import (
     mark_pages_for_scene_asset_review,
     normalized_name,
@@ -294,6 +296,21 @@ def delete_scene_asset(project_id: str, asset_id: str, db: Session = Depends(get
     db.commit()
 
 
+def _scene_asset_bound_page_ids(db: Session, scene_asset_id: str) -> set[str]:
+    """Pages whose chapters hold scenes bound to the scene asset — the rows
+    ``mark_pages_for_scene_asset_review`` will write in a bind unit."""
+
+    chapter_ids = set(
+        db.scalars(select(Scene.chapter_id).where(Scene.scene_asset_id == scene_asset_id))
+    )
+    page_ids: set[str] = set()
+    for chapter_id in chapter_ids:
+        page_ids.update(
+            db.scalars(select(MangaPage.id).where(MangaPage.chapter_id == chapter_id))
+        )
+    return page_ids
+
+
 @router.post(
     "/projects/{project_id}/scene-assets/{asset_id}/references",
     response_model=SceneAssetReferenceRead,
@@ -308,6 +325,12 @@ def bind_scene_asset_reference(
     asset = _scene_asset(db, project_id, asset_id)
 
     def _bind() -> SceneAssetReference:
+        # Lock-order fence: the bind takes the asset ownership lock and then
+        # writes bound pages (mark_pages_for_scene_asset_review), while
+        # delete_asset locks those same pages before its teardown reaches the
+        # asset lock — PAGE first here keeps both orders identical on PG.
+        for page_id in sorted(_scene_asset_bound_page_ids(db, asset.id)):
+            lock_entity(db, MangaPage, page_id)
         # Ownership lock (mirrors characters.bind_reference): the kind/
         # liveness validation and the insert must share the Asset row lock
         # taken by PATCH /assets/{id} kind flips — otherwise a binding
@@ -540,6 +563,10 @@ def bind_scene_asset_variant_reference(
         raise HTTPException(status_code=422, detail="场景变体已归档，请先恢复")
 
     def _bind() -> SceneAssetVariantReference:
+        # Same PAGE→ASSET fence as the asset-level bind above (the mark
+        # writes bound pages under the asset ownership lock).
+        for page_id in sorted(_scene_asset_bound_page_ids(db, asset.id)):
+            lock_entity(db, MangaPage, page_id)
         # Same ownership-lock discipline as the asset-level bind above: kind
         # validation and insert must serialize against asset kind flips.
         reference_asset = lock_asset_for_ownership(db, payload.asset_id)

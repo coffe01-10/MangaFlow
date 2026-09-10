@@ -94,24 +94,38 @@ def _validate_reference_assets(
     expected_kind: str,
     label: str,
 ) -> None:
-    for asset_id in asset_ids:
-        asset = db.get(Asset, asset_id)
-        if (
-            not asset
-            or asset.deleted_at is not None
-            or asset.project_id != project_id
-            or (
-                asset.kind != expected_kind
-                and not (
-                    expected_kind == "OUTFIT_REFERENCE"
-                    and asset.source in {"AI_GENERATED", "VERTEX_GENERATED"}
+    # Validate under the asset ownership lock (sorted id order gives one
+    # global order across multi-asset lists): a concurrent PATCH kind flip
+    # tears outfit/style reference lists down while holding this lock, so a
+    # list validated against the old kind cannot commit past the flip — the
+    # same serialization the character/scene bind routes apply.
+    ordered = sorted(set(asset_ids))
+
+    def _validate() -> None:
+        for asset_id in ordered:
+            asset = lock_asset_for_ownership(db, asset_id)
+            if (
+                not asset
+                or asset.deleted_at is not None
+                or asset.project_id != project_id
+                or (
+                    asset.kind != expected_kind
+                    and not (
+                        expected_kind == "OUTFIT_REFERENCE"
+                        and asset.source in {"AI_GENERATED", "VERTEX_GENERATED"}
+                    )
                 )
-            )
-        ):
-            raise HTTPException(
-                status_code=409,
-                detail=f"{label}不存在、用途错误或不属于当前项目",
-            )
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"{label}不存在、用途错误或不属于当前项目",
+                )
+
+    run_lock_retry(
+        db,
+        _validate,
+        conflict_detail="素材校验冲突，请稍后重试",
+    )
 
 
 def _has_active_reference_assets(
@@ -1271,7 +1285,12 @@ def approve_asset_reference(
                     )
                 )
             locked_asset.kind = "CHARACTER_REFERENCE"
-            character.status = "CANONICAL"
+            # CANONICAL requires a resolved identity: an alias-conflicted
+            # character stays NEEDS_CONFIRMATION even with a live reference
+            # (same derivation as PATCH /characters/{id}).
+            character.status = (
+                "NEEDS_CONFIRMATION" if character.alias_conflict else "CANONICAL"
+            )
             character.version += 1
 
         run_lock_retry(

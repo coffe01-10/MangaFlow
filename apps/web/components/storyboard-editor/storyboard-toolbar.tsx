@@ -21,7 +21,7 @@ export function StoryboardToolbar({
   safeAvailable,
   canUndo,
   canRedo,
-  dirty,
+  canSave,
   saving,
   overlayHint,
   onZoomIn,
@@ -39,7 +39,8 @@ export function StoryboardToolbar({
   safeAvailable: boolean;
   canUndo: boolean;
   canRedo: boolean;
-  dirty: boolean;
+  /** 保存本页只提交几何(整包 PUT);叙事草稿有各自的保存按钮。 */
+  canSave: boolean;
   saving: boolean;
   overlayHint: string | null;
   onZoomIn: () => void;
@@ -120,7 +121,7 @@ export function StoryboardToolbar({
           <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); onRebuildLayout(); }}>{storyboardCopy.rebuildLayout}</button>
         </div>}
       </div>
-      <button type="button" className="toolbar-save" disabled={!dirty || saving} onClick={onSave}>
+      <button type="button" className="toolbar-save" disabled={!canSave || saving} onClick={onSave}>
         {saving ? <RefreshCw size={13} className="spin" /> : <Save size={13} />}{saving ? storyboardCopy.saving : storyboardCopy.savePage}
       </button>
     </div>

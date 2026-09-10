@@ -133,6 +133,15 @@ export function useSourceWorkspace({
 
   function chooseSourceFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
+    // The compose box may hold a fully pasted chapter that was never imported;
+    // a file import replacing it silently is the same loss as beginEditChapter
+    // loading a revision over it, so it confirms the same way.
+    if (file && sourceText.trim() && !window.confirm(
+      `当前输入框已有未导入的原文（${sourceText.trim().length} 字），导入文件会覆盖它。继续吗？`,
+    )) {
+      event.target.value = "";
+      return;
+    }
     if (file) importSourceFile.mutate(file);
     event.target.value = "";
   }

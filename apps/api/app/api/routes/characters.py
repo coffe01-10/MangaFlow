@@ -69,10 +69,20 @@ def _recompute_project_conflicts(db: Session, project_id: str) -> None:
             if other.id != item.id
         )
         if conflict != item.alias_conflict:
+            # Atomic version bump: a concurrent PATCH may have advanced the
+            # row past our read; an ORM `+= 1` computed from the stale read
+            # would write the same value back and let a client holding the
+            # pre-change token pass a later optimistic-concurrency check.
+            db.execute(
+                update(Character)
+                .where(Character.id == item.id)
+                .values(version=Character.version + 1)
+                .execution_options(synchronize_session=False)
+            )
             item.alias_conflict = conflict
-            item.version += 1
             if conflict:
                 item.status = "NEEDS_CONFIRMATION"
+            db.expire(item, ["version"])
 
 
 def _live_reference_exists(db: Session, character_id: str) -> bool:
@@ -196,15 +206,15 @@ def update_character(
         raise HTTPException(status_code=409, detail="角色已被更新，请刷新后重试")
     for key, value in values.items():
         setattr(character, key, value)
-    # Status derives from alias conflict and live references — a metadata edit
-    # must not fabricate CANONICAL for a reference-less character (that
-    # transition belongs to reference approval; retract demotes back).
+    # Status derivation: alias conflict forces NEEDS_CONFIRMATION; live
+    # references with a resolved identity give CANONICAL. A reference-less
+    # row keeps its current status — a metadata edit must neither fabricate
+    # CANONICAL (that transition belongs to reference approval) nor erase the
+    # lost-reference NEEDS_CONFIRMATION signal the retract path sets.
     if character.alias_conflict:
         character.status = "NEEDS_CONFIRMATION"
     elif _live_reference_exists(db, character.id):
         character.status = "CANONICAL"
-    else:
-        character.status = "UPLOADED"
     _recompute_project_conflicts(db, character.project_id)
     db.commit()
     db.refresh(character)

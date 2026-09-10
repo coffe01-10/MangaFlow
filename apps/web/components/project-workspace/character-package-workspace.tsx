@@ -103,13 +103,36 @@ function PackageSpecEditor({
   pending: boolean;
   onSave: (payload: PackageSpecPayload) => void;
 }) {
-  const [identity, setIdentity] = useState<Record<string, string>>(() =>
-    Object.fromEntries(Object.entries(pkg.identity_spec ?? {}).map(([key, value]) => [key, value ?? ""])),
-  );
-  const [visual, setVisual] = useState<Record<string, string>>(() =>
-    Object.fromEntries(Object.entries(pkg.visual_spec ?? {}).map(([key, value]) => [key, value ?? ""])),
-  );
-  const [constraints, setConstraints] = useState((pkg.negative_constraints ?? []).join("\n"));
+  function specFromPackage(target: CharacterModelPackage) {
+    return {
+      identity: Object.fromEntries(
+        Object.entries(target.identity_spec ?? {}).map(([key, value]) => [key, value ?? ""]),
+      ),
+      visual: Object.fromEntries(
+        Object.entries(target.visual_spec ?? {}).map(([key, value]) => [key, value ?? ""]),
+      ),
+      constraints: (target.negative_constraints ?? []).join("\n"),
+    };
+  }
+  const [base, setBase] = useState(() => specFromPackage(pkg));
+  const [identity, setIdentity] = useState<Record<string, string>>(base.identity);
+  const [visual, setVisual] = useState<Record<string, string>>(base.visual);
+  const [constraints, setConstraints] = useState(base.constraints);
+  const specDirty =
+    JSON.stringify(identity) !== JSON.stringify(base.identity)
+    || JSON.stringify(visual) !== JSON.stringify(base.visual)
+    || constraints !== base.constraints;
+  // 服务器规格变化(另一处保存后窗口聚焦重拉)时:未编辑的表单采用新值,
+  // 有未保存输入则保留——旧方案把 pkg.version 编进重挂载键,在途输入会被
+  // 静默重置回服务器值。渲染期“props 变化→调整 state”是 React 认可的
+  // 模式(effect 内同步 setState 会触发级联渲染警告)。
+  const serverSpec = specFromPackage(pkg);
+  if (!specDirty && JSON.stringify(serverSpec) !== JSON.stringify(base)) {
+    setBase(serverSpec);
+    setIdentity(serverSpec.identity);
+    setVisual(serverSpec.visual);
+    setConstraints(serverSpec.constraints);
+  }
 
   function clean(fields: Record<string, string>) {
     return Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, value.trim() || null]));
@@ -755,7 +778,7 @@ export function CharacterPackageWorkspace({
                     <p className="pkg-hint">发布前至少绑定 1 张参考图；完整度只作建议，不阻断发布。</p>
                   )}
                   <PackageSpecEditor
-                    key={`spec:${pkg.id}:${pkg.version}`}
+                    key={`spec:${pkg.id}`}
                     pkg={pkg}
                     pending={saveSpec.isPending}
                     onSave={(payload) => saveSpec.mutate(payload)}

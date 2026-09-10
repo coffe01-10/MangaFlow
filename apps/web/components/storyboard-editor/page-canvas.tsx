@@ -360,6 +360,22 @@ export function PageCanvas({
     paintGuides([]);
   };
 
+  // Ctrl+wheel zoom must be a native non-passive listener: React 17+ attaches
+  // wheel passively at the root, so preventDefault() inside onWheel is a
+  // no-op and the browser's page zoom fights the canvas zoom (same fix as
+  // local-edit-workspace).
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const onWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      onZoomStep(event.deltaY > 0 ? -1 : 1);
+    };
+    viewport.addEventListener("wheel", onWheel, { passive: false });
+    return () => viewport.removeEventListener("wheel", onWheel);
+  }, [onZoomStep, viewportRef]);
+
   useEffect(() => {
     if (!gesture) return;
     const move = (event: PointerEvent) => paintGesture(gesture, computeResult(gesture, pointerNorm(event)));
@@ -626,11 +642,6 @@ export function PageCanvas({
   return <div
     className="canvas-viewport"
     ref={viewportRef}
-    onWheel={(event) => {
-      if (!event.ctrlKey && !event.metaKey) return;
-      event.preventDefault();
-      onZoomStep(event.deltaY > 0 ? -1 : 1);
-    }}
   >
     <div
       ref={pageRef}

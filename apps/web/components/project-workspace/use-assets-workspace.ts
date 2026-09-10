@@ -138,11 +138,16 @@ export function useAssetsWorkspace({
   const outfitDeepLinkRef = useRef<string | null>(null);
   useEffect(() => {
     const target = initialOutfitId ?? null;
-    const deepLinkChanged = outfitDeepLinkRef.current !== target;
-    outfitDeepLinkRef.current = target;
-    if (!target || !deepLinkChanged) return;
+    if (outfitDeepLinkRef.current === target) return;
+    if (!target) {
+      outfitDeepLinkRef.current = null;
+      return;
+    }
     const outfit = outfits.data?.find((item) => item.id === target);
+    // outfits 列表未加载时 ref 不前进:一次性提交会让 effect 在数据落地后
+    // 判定"无变化",深链永远不应用(生产准备"去处理"跳转正落在这个窗口)。
     if (!outfit) return;
+    outfitDeepLinkRef.current = target;
     beginOutfitEdit(outfit);
   }, [initialOutfitId, outfits.data]);
   const selectedOutfitFiles = assets.data?.filter((item) => selectedOutfitAssets.includes(item.id)) ?? [];

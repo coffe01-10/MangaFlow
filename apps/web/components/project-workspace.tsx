@@ -255,6 +255,11 @@ export default function ProjectWorkspace({
       if (context?.previous && context.queryKey) {
         queryClient.setQueryData(context.queryKey, context.previous);
       }
+      // 变更在途期间可能有更新的重拉落地,无条件回滚会把新数据盖掉;
+      // 回滚后立即失效,以下一次服务器真相兜底。
+      if (activeChapterId) {
+        void queryClient.invalidateQueries({ queryKey: ["script", activeChapterId] });
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["script", activeChapterId] });

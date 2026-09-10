@@ -446,14 +446,22 @@ export function compileDirectorCommand(input: DirectorRuleInput): DirectorPlan {
       };
     }
     const payload: Record<string, unknown> = {};
-    const wantsGone = /去掉|移除|拿掉|停|不要/.test(utterance);
-    // 移除语义按天气类型映射:"无雨"只对雨系成立,把雾写成"无雨"会污染
-    // 后续所有抽卡的场景提示词;阴/晴互为对方的中性反义。
+    // 否定按"子句"判定:「去掉雾,改成晚上」里否定只作用于雾,时间仍是
+    // 正面设定;整句检测会把时间改动静默丢掉。天气移除值按类型映射
+    // ("雨"系→无雨、雪→无雪、雾→无雾、阴/晴互反),裸「雨」也属于雨系。
+    const NEGATION = /去掉|移除|拿掉|停|不要/;
+    const clauses = utterance.split(/[,，。;；!！?？、]/);
+    const weatherNegated = weather
+      ? clauses.some((clause) => NEGATION.test(clause) && weather[0].test(clause))
+      : false;
+    const timeNegated = timeLabel
+      ? clauses.some((clause) => NEGATION.test(clause) && timeLabel[0].test(clause))
+      : false;
     const WEATHER_REMOVAL: Record<string, string> = {
-      "暴雨": "无雨", "雷雨": "无雨", "大雨": "无雨", "小雨": "无雨",
+      "暴雨": "无雨", "雷雨": "无雨", "大雨": "无雨", "小雨": "无雨", "雨": "无雨",
       "雪": "无雪", "雾": "无雾", "阴": "晴", "晴": "阴",
     };
-    if (wantsGone && !weather && timeLabel) {
+    if (timeNegated && !weather) {
       // 否定时间没有自然反义(「不要夜晚」该变成白天还是清晨?),写回否定值
       // 恰好与用户意图相反,改为要求正面表述。
       return {
@@ -462,12 +470,12 @@ export function compileDirectorCommand(input: DirectorRuleInput): DirectorPlan {
         options: [],
       };
     }
-    const weatherValue = weather ? (wantsGone ? WEATHER_REMOVAL[weather[1]] ?? weather[1] : weather[1]) : null;
+    const weatherValue = weather ? (weatherNegated ? WEATHER_REMOVAL[weather[1]] ?? weather[1] : weather[1]) : null;
     if (weatherValue) payload.weather = weatherValue;
-    if (timeLabel && !wantsGone) payload.time_label = timeLabel[1];
+    if (timeLabel && !timeNegated) payload.time_label = timeLabel[1];
     const changes = [
       weatherValue ? `天气→${weatherValue}` : null,
-      timeLabel && !wantsGone ? `时间→${timeLabel[1]}` : null,
+      timeLabel && !timeNegated ? `时间→${timeLabel[1]}` : null,
     ].filter(Boolean).join("、");
     const panelNote = parsePanelNumber(utterance);
     const scopeNote = panelNote != null ? `（含格 ${panelNote}）` : "";

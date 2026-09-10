@@ -696,9 +696,9 @@ def test_character_alias_conflict_and_reference_binding(client):
     )
     assert resolved.status_code == 200
     assert resolved.json()["alias_conflict"] is False
-    # 解决别名冲突只解除「待确认」；该角色尚无任何参考图绑定，不能凭一次
-    # 元数据编辑就标记为「已定稿」——CANONICAL 由参考图人工通过赋予。
-    assert resolved.json()["status"] == "UPLOADED"
+    # 解决别名冲突不会凭空「已定稿」:CANONICAL 由参考图人工通过赋予;无引用
+    # 行保持原有状态(此处为创建冲突时写入的待确认)。
+    assert resolved.json()["status"] == "NEEDS_CONFIRMATION"
     assert resolved.json()["locked_features"] == ["银色短发", "右眼泪痣"]
     assert resolved.json()["forbidden_changes"] == ["不得改变发色"]
 

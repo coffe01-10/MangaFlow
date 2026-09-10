@@ -154,7 +154,7 @@ describe("director rules 规则桩（V02-41B）", () => {
     expect(plan.scopeLabel).toContain("主场景");
   });
 
-  it("移除类天气口令按类型映射:雾→无雾、雪→无雪,不再一律写成“无雨”", () => {
+  it("移除类天气口令按类型映射:雾→无雾、雪→无雪、裸雨→无雨", () => {
     const fog = compileDirectorCommand(baseInput({ utterance: "把雾去掉" }));
     expect(fog.kind).toBe("command");
     if (fog.kind !== "command") return;
@@ -165,6 +165,26 @@ describe("director rules 规则桩（V02-41B）", () => {
     expect(snow.kind).toBe("command");
     if (snow.kind !== "command") return;
     expect(snow.envelope.payload).toEqual({ weather: "无雪" });
+
+    // 裸「雨」走 WEATHER_LABELS 的兜底条目,移除映射漏掉它会把雨写回去。
+    const rain = compileDirectorCommand(baseInput({ utterance: "把雨去掉" }));
+    expect(rain.kind).toBe("command");
+    if (rain.kind !== "command") return;
+    expect(rain.envelope.payload).toEqual({ weather: "无雨" });
+
+    const rainStop = compileDirectorCommand(baseInput({ utterance: "雨停了" }));
+    expect(rainStop.kind).toBe("command");
+    if (rainStop.kind !== "command") return;
+    expect(rainStop.envelope.payload).toEqual({ weather: "无雨" });
+  });
+
+  it("复合口令按子句判定否定:「去掉雾,改成晚上」移除雾且仍设定时间", () => {
+    const plan = compileDirectorCommand(baseInput({ utterance: "去掉雾，改成晚上" }));
+    expect(plan.kind).toBe("command");
+    if (plan.kind !== "command") return;
+    expect(plan.envelope.operation).toBe("update_scene_context");
+    // TIME_LABELS 把「晚上」归一为规范标签「夜晚」。
+    expect(plan.envelope.payload).toEqual({ weather: "无雾", time_label: "夜晚" });
   });
 
   it("否定时间口令进入澄清而不是把否定值写进 time_label", () => {
