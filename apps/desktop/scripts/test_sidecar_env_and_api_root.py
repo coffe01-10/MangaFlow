@@ -56,6 +56,18 @@ def test_valid_api_root_tree_passes_validation(tmp_path):
                 (root / "fake_channel.py").write_text("", encoding="utf-8"),
             ),
         ),
+        (
+            "api-root/shadowing-fake-channel",
+            # Case variant: Windows resolves imports case-insensitively
+            # (NTFS), so `Fake_Channel.py` shadows the helper's module there
+            # even though a byte-exact check passes. The scan lowercases.
+            lambda root: (
+                (root / "alembic.ini").write_text("", encoding="utf-8"),
+                (root / "app").mkdir(),
+                (root / "app" / "main.py").write_text("", encoding="utf-8"),
+                (root / "Fake_Channel.py").write_text("", encoding="utf-8"),
+            ),
+        ),
     ],
 )
 def test_bad_api_root_trees_are_rejected_before_sys_path(tmp_path, reason, plant):
