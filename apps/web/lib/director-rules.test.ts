@@ -154,6 +154,33 @@ describe("director rules 规则桩（V02-41B）", () => {
     expect(plan.scopeLabel).toContain("主场景");
   });
 
+  it("角色名含天气字样（小雨）时不得把角色指令劫持为场景天气修改", () => {
+    const rain = characterFixture({ id: "character-rain", primary_name: "小雨" });
+    const panels = [panelFixture({
+      characters: ["character-1", "character-rain"],
+      character_presence: { "character-1": "VISIBLE", "character-rain": "VISIBLE" },
+    })];
+    const characters = [characterFixture(), rain];
+    // 「去掉小雨」是移除角色，旧代码会因 /小雨/ 命中天气表而改成场景级
+    // 「无雨」——影响后续所有抽卡，且用户要的角色编辑静默丢失。
+    const remove = compileDirectorCommand(baseInput({
+      panels, characters, selection: { kind: "character", characterId: "character-rain" },
+      utterance: "去掉小雨",
+    }));
+    expect(remove.kind).toBe("command");
+    if (remove.kind !== "command") return;
+    expect(remove.envelope.operation).toBe("update_panel_cast");
+    // 同一角色在场时，真正的天气口令仍然解析为场景上下文（剥离不误伤）。
+    const weather = compileDirectorCommand(baseInput({
+      panels, characters, selection: { kind: "panel", panelId: "panel-1" },
+      utterance: "雨下大一点",
+    }));
+    expect(weather.kind).toBe("command");
+    if (weather.kind !== "command") return;
+    expect(weather.envelope.operation).toBe("update_scene_context");
+    expect(weather.envelope.payload).toEqual({ weather: "大雨" });
+  });
+
   it("D4 「让她微笑」且页上两名角色时必须先点角色芯片，不产出命令", () => {
     const panels = [
       panelFixture({ characters: ["character-1", "character-2"], character_presence: { "character-1": "VISIBLE", "character-2": "VISIBLE" } }),

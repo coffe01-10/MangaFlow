@@ -162,6 +162,24 @@ function mentionedCharacters(utterance: string, characters: Character[]): Charac
   );
 }
 
+/**
+ * 把角色名（含别名）从指令文本中剥除，用于天气/时间匹配：名为「小雨」的
+ * 角色不能只因为字面包含「雨」就把「去掉小雨」劫持成场景级天气修改。
+ * 最长优先，别名包含较短名字时整段消耗；返回文本仅供模式匹配，不再
+ * 用于角色解析（那些分支继续用原文）。
+ */
+function stripCharacterMentions(utterance: string, characters: Character[]): string {
+  let text = utterance;
+  const names = characters
+    .flatMap((character) => [character.primary_name, ...(character.aliases ?? [])])
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+  for (const name of names) {
+    text = text.split(name).join(" ");
+  }
+  return text;
+}
+
 function panelClarifyOptions(panels: StoryboardPanel[]): DirectorClarifyOption[] {
   return orderedPanels(panels).map((panel) => ({
     kind: "panel" as const,
@@ -411,10 +429,13 @@ export function compileDirectorCommand(input: DirectorRuleInput): DirectorPlan {
   }
 
   // Scene context (weather / time of day), before cast rules so 「去掉雨」
-  // resolves as weather. Uses the page's primary scene — the same scene that
-  // feeds generation input.
-  const weather = WEATHER_LABELS.find(([pattern]) => pattern.test(utterance));
-  const timeLabel = TIME_LABELS.find(([pattern]) => pattern.test(utterance));
+  // resolves as weather. Character names are stripped from the matching text
+  // first: a character named 小雨 must not satisfy the 雨 pattern and hijack
+  // 「去掉小雨」/「小雨微笑」 into a scene-level weather change. Cast and
+  // expression branches below keep matching on the original utterance.
+  const nameStripped = stripCharacterMentions(utterance, input.characters);
+  const weather = WEATHER_LABELS.find(([pattern]) => pattern.test(nameStripped));
+  const timeLabel = TIME_LABELS.find(([pattern]) => pattern.test(nameStripped));
   if (weather || timeLabel) {
     const sceneId = input.page.scene_ids[0] ?? null;
     const scene = sceneId ? input.scenes.find((item) => item.id === sceneId) ?? null : null;

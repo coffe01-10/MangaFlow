@@ -314,7 +314,7 @@ beforeEach(() => {
   characterPackagesApi.mockResolvedValue([]);
 });
 
-function Probe({ collect }: { collect: (value: unknown) => void }) {
+function Probe({ collect, selectedPageId = "page-1" }: { collect: (value: unknown) => void; selectedPageId?: string | null }) {
   const queries = useWorkspaceQueries({
     id: "project-1",
     section: "generate",
@@ -330,7 +330,7 @@ function Probe({ collect }: { collect: (value: unknown) => void }) {
     jobs: { data: [], isLoading: false, isError: false } as never,
     characters: queries.characters,
     outfits: queries.outfits,
-    selectedPageId: "page-1",
+    selectedPageId,
     setSelectedPageId: () => undefined,
     setDraft: () => undefined,
     activeDrawModel: "image.nano_banana_2",
@@ -340,7 +340,7 @@ function Probe({ collect }: { collect: (value: unknown) => void }) {
   return null;
 }
 
-function renderGenerationProbe() {
+function renderGenerationProbe(selectedPageId: string | null = "page-1") {
   let latest: GenerationWorkspace | null = null;
   const collect = (value: unknown) => {
     latest = value as GenerationWorkspace;
@@ -348,14 +348,18 @@ function renderGenerationProbe() {
   const client = createClient();
   const element = (
     <QueryClientProvider client={client}>
-      <Probe collect={collect} />
+      <Probe collect={collect} selectedPageId={selectedPageId} />
     </QueryClientProvider>
   );
   const view = render(element);
   return {
     view,
     workspace: () => latest!,
-    rerender: () => view.rerender(element),
+    rerender: (nextPageId: string | null) => view.rerender(
+      <QueryClientProvider client={client}>
+        <Probe collect={collect} selectedPageId={nextPageId} />
+      </QueryClientProvider>,
+    ),
   };
 }
 
@@ -404,6 +408,25 @@ describe("生成工作台修复/升清回归", () => {
       expect(workspace().repairCandidate.isSuccess).toBe(true);
     });
     expect(repairApi).toHaveBeenCalledWith("candidate-1", expect.objectContaining({ resolution: "2K" }));
+  });
+
+  it("切页（含素材库阻断行的跳转路径）清空引用改写、检查面板与批次视图", async () => {
+    // 素材库「去生成」直接 setSelectedPageId：此前只有页面选择器与
+    // goNext 清理这些页内状态，泄漏的改写会并入下一页的生成请求。
+    pagesApi.mockResolvedValue([pageFixture(), pageFixture({ id: "page-2", page_number: 2 })]);
+    const { workspace, rerender } = renderGenerationProbe();
+    await vi.waitFor(() => {
+      expect(workspace().selectedPage?.id).toBe("page-1");
+    });
+    workspace().setReferenceSelections({ "character-1": { asset_id: "asset-x" } } as never);
+    workspace().setReviewCandidateId("candidate-1");
+    rerender("page-2");
+    await vi.waitFor(() => {
+      expect(workspace().selectedPage?.id).toBe("page-2");
+    });
+    expect(workspace().referenceSelections).toEqual({});
+    expect(workspace().reviewCandidateId).toBe(null);
+    expect(workspace().viewedBatchId).toBe(null);
   });
 
   it("共享场景资产查询包含已归档资产，激活绑定方的归档分支", async () => {

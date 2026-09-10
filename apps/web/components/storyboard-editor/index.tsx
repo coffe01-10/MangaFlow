@@ -637,7 +637,14 @@ export function StoryboardEditor({
           onSelectPanels={selectPanels}
           onSelectBubble={selectBubble}
           onClearSelection={() => setSelection(null)}
-          onOpenInspector={() => activePanel && beginPanel(activePanel)}
+          onOpenInspector={() => {
+            // Canvas double-click pairs onSelectPanels with this callback: a
+            // CANCELLED leave-confirm leaves the form on the edited panel, and
+            // re-beginning that same panel here would silently reset the dirty
+            // draft the user just declined to discard.
+            if (editingPanel) return;
+            if (activePanel) beginPanel(activePanel);
+          }}
           onDeleteBubble={(dialogueId) => {
             const bubble = bubbles.find((item) => item.dialogue.id === dialogueId);
             if (bubble && window.confirm("删除这个文字气泡？")) removeDialogue.mutate(dialogueId);

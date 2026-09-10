@@ -226,7 +226,7 @@ export function UsageDashboard() {
       {customRangeInvalid ? (
         <div className="usage-state empty" role="alert">
           <p>自定义时间范围不完整</p>
-          <small>请填写有效的开始日期（结束日期可留空表示到今天），或切回预设范围</small>
+          <small>请填写有效的开始日期（结束日期留空表示只统计开始当天），或切回预设范围</small>
           <button type="button" className="button ghost compact" onClick={resetFilters}>重置筛选</button>
         </div>
       ) : isLoading ? (

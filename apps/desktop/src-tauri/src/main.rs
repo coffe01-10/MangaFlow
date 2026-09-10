@@ -421,31 +421,56 @@ fn run() {
                 }
                 return Err(error.into());
             }
-            let shell_tools = tauri::menu::MenuItem::with_id(
-                app,
-                "open-shell-tools",
-                "壳工具（日志导出 / 文件选择）",
-                true,
-                None::<&str>,
-            )?;
-            let tools_menu = tauri::menu::Submenu::with_id_and_items(
-                app,
-                "tools",
-                "工具",
-                true,
-                &[&shell_tools],
-            )?;
-            let menu = tauri::menu::Menu::with_items(app, &[&tools_menu])?;
-            app.set_menu(menu)?;
-            app.on_menu_event(|app, event| {
-                if event.id() == "open-shell-tools" {
-                    if let Some(window) = app.get_webview_window("shell-tools") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
+            // Menu wiring can fail too, and the shutdown-bookkeeping invariant
+            // applies to it like every setup failure path: run the same
+            // stop_helper bookkeeping rather than bare `?`.
+            if let Err(error) = (|| -> Result<(), tauri::Error> {
+                let shell_tools = tauri::menu::MenuItem::with_id(
+                    app,
+                    "open-shell-tools",
+                    "壳工具（日志导出 / 文件选择）",
+                    true,
+                    None::<&str>,
+                )?;
+                let tools_menu = tauri::menu::Submenu::with_id_and_items(
+                    app,
+                    "tools",
+                    "工具",
+                    true,
+                    &[&shell_tools],
+                )?;
+                let menu = tauri::menu::Menu::with_items(app, &[&tools_menu])?;
+                app.set_menu(menu)?;
+                app.on_menu_event(|app, event| {
+                    if event.id() == "open-shell-tools" {
+                        if let Some(window) = app.get_webview_window("shell-tools") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                });
+                Ok(())
+            })() {
+                if let Some(state) = app.try_state::<HelperState>() {
+                    stop_helper(&mut state.inner().0.lock().expect("helper state lock"));
+                }
+                return Err(error.into());
+            }
+            Ok(())
+        })
+        // The hidden shell-tools window must not outlive the main window:
+        // tauri exits when ALL windows are destroyed, so a lingering hidden
+        // window would keep the process (and the helper sidecar) running
+        // with nothing visible, and the single-instance handler — which
+        // focuses "main" only — could not surface it on relaunch.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Destroyed = event {
+                if window.label() == "main" {
+                    if let Some(tools) = window.app_handle().get_webview_window("shell-tools") {
+                        let _ = tools.destroy();
                     }
                 }
-            });
-            Ok(())
+            }
         })
         .build(tauri::generate_context!())
         .expect("failed to build the MangaFlow desktop shell")

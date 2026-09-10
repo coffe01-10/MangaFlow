@@ -118,16 +118,32 @@ export function useAssetsWorkspace({
     setEditLockedFeatures(boundCharacter.locked_features.join("，"));
     setEditForbiddenChanges(boundCharacter.forbidden_changes.join("，"));
   }, [boundCharacter]);
+  // 深链参数在前进/后退间要重新应用：/assets/[view] 是同一路由文件，
+  // ProjectWorkspace 不因参数变化重挂载（workflow-studio.tsx 记录过同一
+  // 行为），一次性 useState 初值会让 ?character= 的承诺只在首次生效。
+  const characterDeepLinkRef = useRef<string | null>(initialCharacterId ?? null);
+  useEffect(() => {
+    const target = initialCharacterId ?? null;
+    if (characterDeepLinkRef.current === target) return;
+    characterDeepLinkRef.current = target;
+    setBindCharacterId(target ?? "");
+    setEditingOutfitId(null);
+    setSelectedOutfitAssets([]);
+    formSeededRef.current = false;
+  }, [initialCharacterId]);
   const editingOutfit = outfits.data?.find((item) => item.id === editingOutfitId) ?? null;
   // 生产准备“去处理”深链带 ?outfit=：直接把目标服装档案切进编辑态，用户
-  // 不必在列表里再找一次（与 ?character= 预选角色同一模式）。
-  const outfitDeepLinkRef = useRef(false);
+  // 不必在列表里再找一次（与 ?character= 预选角色同一模式）。按参数值
+  // 键控而非一次性布尔：前进/后退回到带 ?outfit= 的历史条目时须重新应用。
+  const outfitDeepLinkRef = useRef<string | null>(null);
   useEffect(() => {
-    if (outfitDeepLinkRef.current || !initialOutfitId) return;
-    const target = outfits.data?.find((item) => item.id === initialOutfitId);
-    if (!target) return;
-    outfitDeepLinkRef.current = true;
-    beginOutfitEdit(target);
+    const target = initialOutfitId ?? null;
+    const deepLinkChanged = outfitDeepLinkRef.current !== target;
+    outfitDeepLinkRef.current = target;
+    if (!target || !deepLinkChanged) return;
+    const outfit = outfits.data?.find((item) => item.id === target);
+    if (!outfit) return;
+    beginOutfitEdit(outfit);
   }, [initialOutfitId, outfits.data]);
   const selectedOutfitFiles = assets.data?.filter((item) => selectedOutfitAssets.includes(item.id)) ?? [];
   const generatedReferenceCandidates = useMemo(

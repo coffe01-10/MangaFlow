@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { getPageGenerationIssue, getPageStructureIssue } from "@/lib/generation-rules";
 import { api, type CharacterPackageSummary, type ImageModelAlias, type InspectionResult, type Job } from "@/lib/api";
@@ -61,6 +61,19 @@ export function useGenerationWorkspace({
   const [referenceOverridePageId, setReferenceOverridePageId] = useState<string | null>(null);
 
   const selectedPageEntry = pages.data?.find((item) => item.id === selectedPageId) ?? pages.data?.[0] ?? null;
+  // Page-scoped state must reset when the page changes from ANY caller —
+  // the picker and goNext already clear these, but library blocker rows and
+  // replan jump pages through setSelectedPageId directly: leaked overrides
+  // would then force the previous page's outfit/asset references onto the
+  // new page's generation payload, and a stale review panel would render
+  // under the new page's grid.
+  const pageScopeRef = useRef<string | null>(selectedPageEntry?.id ?? null);
+  if (pageScopeRef.current !== (selectedPageEntry?.id ?? null)) {
+    pageScopeRef.current = selectedPageEntry?.id ?? null;
+    setReviewCandidateId(null);
+    setReferenceSelections({});
+    setViewedBatchId(null);
+  }
   const workbench = useQuery({
     queryKey: ["generation-workbench", selectedPageEntry?.id],
     queryFn: () => api.generationWorkbench(selectedPageEntry!.id),
