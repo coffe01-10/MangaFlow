@@ -463,21 +463,24 @@ export function compileDirectorCommand(input: DirectorRuleInput): DirectorPlan {
       "暴雨": "无雨", "雷雨": "无雨", "大雨": "无雨", "小雨": "无雨", "雨": "无雨",
       "雪": "无雪", "雾": "无雾", "阴": "晴", "晴": "阴",
     };
-    if (timeNegated && !weather) {
+    const weatherValue = weather ? (weatherNegated ? WEATHER_REMOVAL[weather[1]] ?? weather[1] : weather[1]) : null;
+    if (timeNegated) {
       // 否定时间没有自然反义(「不要夜晚」该变成白天还是清晨?),写回否定值
-      // 恰好与用户意图相反,改为要求正面表述。
+      // 恰好与用户意图相反,改为要求正面表述。即使同一句里天气子句可以按
+      // 否定映射(「不要下雨,不要夜晚」的「无雨」),时间子句也无法编译成
+      // 命令——整体进澄清层并说明天气意向,而不是把时间静默丢进只改天气
+      // 的 payload。子句判定见上:否定只作用于它所在的那一个子句。
       return {
         kind: "clarify",
-        reason: "时间无法直接“移除”，请改成想要的时间，例如：时间改成白天",
+        reason: `${weatherValue ? `天气部分会按「${weatherValue}」处理，但` : ""}时间无法直接“移除”，请改成想要的时间，例如：时间改成白天`,
         options: [],
       };
     }
-    const weatherValue = weather ? (weatherNegated ? WEATHER_REMOVAL[weather[1]] ?? weather[1] : weather[1]) : null;
     if (weatherValue) payload.weather = weatherValue;
-    if (timeLabel && !timeNegated) payload.time_label = timeLabel[1];
+    if (timeLabel) payload.time_label = timeLabel[1];
     const changes = [
       weatherValue ? `天气→${weatherValue}` : null,
-      timeLabel && !timeNegated ? `时间→${timeLabel[1]}` : null,
+      timeLabel ? `时间→${timeLabel[1]}` : null,
     ].filter(Boolean).join("、");
     const panelNote = parsePanelNumber(utterance);
     const scopeNote = panelNote != null ? `（含格 ${panelNote}）` : "";

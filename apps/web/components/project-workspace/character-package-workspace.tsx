@@ -118,6 +118,11 @@ function PackageSpecEditor({
   const [identity, setIdentity] = useState<Record<string, string>>(base.identity);
   const [visual, setVisual] = useState<Record<string, string>>(base.visual);
   const [constraints, setConstraints] = useState(base.constraints);
+  // 最近一次提交的规格（clean 后、与 specFromPackage 同形态）。自身保存成功、
+  // refresh() 把已保存内容送回 pkg 时，base 必须前进到已提交值——否则
+  // specDirty 恒真，之后窗口聚焦重拉到的外部规格变化永远走不进采纳分支。
+  // 用 state 而非 ref：渲染期要读它做比较（react-hooks/refs 禁止渲染期读 ref）。
+  const [submitted, setSubmitted] = useState<typeof base | null>(null);
   const specDirty =
     JSON.stringify(identity) !== JSON.stringify(base.identity)
     || JSON.stringify(visual) !== JSON.stringify(base.visual)
@@ -132,6 +137,15 @@ function PackageSpecEditor({
     setIdentity(serverSpec.identity);
     setVisual(serverSpec.visual);
     setConstraints(serverSpec.constraints);
+  } else if (
+    submitted
+    && JSON.stringify(serverSpec) === JSON.stringify(submitted)
+    && JSON.stringify(serverSpec) !== JSON.stringify(base)
+  ) {
+    // 自身保存落库：base 前进到已提交内容。输入框不动——保存期间用户继续
+    // 敲入的字符原样保留，specDirty 对真实差异（新输入 vs 已保存值）保持。
+    setBase(serverSpec);
+    setSubmitted(null);
   }
 
   function clean(fields: Record<string, string>) {
@@ -144,11 +158,19 @@ function PackageSpecEditor({
       aria-label="角色包规格工作集"
       onSubmit={(event) => {
         event.preventDefault();
-        onSave({
+        const payload = {
           identity_spec: clean(identity),
           visual_spec: clean(visual),
           negative_constraints: constraints.split("\n").map((line) => line.trim()).filter(Boolean),
+        };
+        // 与 specFromPackage 同形态（null→""）:保存成功后用它识别
+        // 「refetch 送回来的就是这次提交的内容」。
+        setSubmitted({
+          identity: Object.fromEntries(Object.entries(payload.identity_spec).map(([key, value]) => [key, value ?? ""])),
+          visual: Object.fromEntries(Object.entries(payload.visual_spec).map(([key, value]) => [key, value ?? ""])),
+          constraints: payload.negative_constraints.join("\n"),
         });
+        onSave(payload);
       }}
     >
       <fieldset>

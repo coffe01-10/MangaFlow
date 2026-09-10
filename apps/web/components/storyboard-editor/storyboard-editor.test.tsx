@@ -627,6 +627,46 @@ describe("StoryboardEditor canvas (V02-31B)", () => {
     expect(screen.getAllByText("P.002")[0].closest("button")).toHaveClass("active");
   });
 
+  it("S15c ?page= 深链在 pages 未就绪时等待:数据落地后应用,参数离开再回仍生效", async () => {
+    const page2Data = {
+      page: page2,
+      candidate_count: 0,
+      panels: [makePanel({ id: "panel-p2", page_id: "page-2", actions: { script_action: "第二页动作" } })],
+    };
+    storyboardQuery.mockReset();
+    storyboardQuery.mockImplementation((pageId: string) =>
+      Promise.resolve((pageId === "page-2" ? page2Data : data) as never));
+    const client = new QueryClient();
+    const tree = (pages: unknown[], initialPageId?: string | null) => (
+      <QueryClientProvider client={client}>
+        <StoryboardEditor
+          chapterId="chapter-1"
+          pages={pages as never}
+          characters={[]}
+          outfits={[]}
+          onReplan={() => undefined}
+          replanPending={false}
+          initialPageId={initialPageId}
+        />
+      </QueryClientProvider>
+    );
+    // 深链先于 pages 查询落地:一次性消费会让 ref 提前前进,数据到达后
+    // 深链被静默丢弃。
+    const view = render(tree([], "page-2"));
+    view.rerender(tree([page, page2], "page-2"));
+    await screen.findByText("第二页动作");
+    expect(screen.getAllByText("P.002")[0].closest("button")).toHaveClass("active");
+
+    // 用户手动切回第 1 页,随后前进/后退回到带 ?page= 的历史条目:深链
+    // 必须重新应用,而不是被已消费的 ref 吞掉。
+    fireEvent.click(screen.getByRole("button", { name: /P\.001/ }));
+    await screen.findByText("第一格动作");
+    view.rerender(tree([page, page2], null));
+    view.rerender(tree([page, page2], "page-2"));
+    await screen.findByText("第二页动作");
+    expect(screen.getAllByText("P.002")[0].closest("button")).toHaveClass("active");
+  });
+
   it("S15b ?character= 自动打开缺服装的出镜格", async () => {
     const withCharacter = makePanel({
       characters: ["char-1"],

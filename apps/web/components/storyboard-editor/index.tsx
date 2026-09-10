@@ -530,15 +530,24 @@ export function StoryboardEditor({
 
   // 同一路由内的 ?page= 变化(前进/后退)不会重挂载编辑器,一次性 useState
   // 初值只认挂载那一刻;后续变化要走 switchPage,复用脏确认与草稿清理。
+  // ref 只在目标页真正进入 pages 后前进:深链常落在 pages 查询落地之前,
+  // 一次性提交会让 effect 在数据到达后判定"无变化",?page= 被静默丢弃
+  // (use-assets-workspace 的 ?outfit= 深链同款写法)。参数离开时重置 ref,
+  // 前进/后退回到同一深链条目才能再次应用。
   const appliedInitialPageRef = useRef<string | null>(null);
   const switchPageRef = useRef(switchPage);
   useEffect(() => { switchPageRef.current = switchPage; });
   useEffect(() => {
     const target = initialPageId ?? null;
-    if (!target || appliedInitialPageRef.current === target) return;
+    if (appliedInitialPageRef.current === target) return;
+    if (!target) {
+      appliedInitialPageRef.current = null;
+      return;
+    }
+    if (!pages.some((page) => page.id === target)) return;
     appliedInitialPageRef.current = target;
     // 初次挂载时 useState 已应用同一值,switchPage 对相同页是 no-op。
-    if (pages.some((page) => page.id === target)) switchPageRef.current(target);
+    switchPageRef.current(target);
   }, [initialPageId, pages]);
 
   const selectPanels = (ids: string[]) => {

@@ -209,6 +209,23 @@ describe("director rules 规则桩（V02-41B）", () => {
     expect(plan.reason).toContain("时间");
   });
 
+  it("天气存在 + 否定时间:「不要下雨,不要夜晚」进澄清,时间不静默丢弃", () => {
+    // 旧逻辑只在「否定时间且无天气」时澄清;天气子句可解析时,时间子句被
+    // 静默丢进只改天气的 payload,用户的时间意图无声丢失。
+    const plan = compileDirectorCommand(baseInput({ utterance: "不要下雨，不要夜晚" }));
+    expect(plan.kind).toBe("clarify");
+    if (plan.kind !== "clarify") return;
+    expect(plan.reason).toContain("时间");
+    // 天气子句的意向一并告知:用户改写口令后两部分都会生效。
+    expect(plan.reason).toContain("无雨");
+
+    // 正面天气 + 否定时间同样不产出只改天气的命令。
+    const mixed = compileDirectorCommand(baseInput({ utterance: "下雨，不要夜晚" }));
+    expect(mixed.kind).toBe("clarify");
+    if (mixed.kind !== "clarify") return;
+    expect(mixed.reason).toContain("时间");
+  });
+
   it("角色名含天气字样（小雨）时不得把角色指令劫持为场景天气修改", () => {
     const rain = characterFixture({ id: "character-rain", primary_name: "小雨" });
     const panels = [panelFixture({
