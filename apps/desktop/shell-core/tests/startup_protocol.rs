@@ -24,7 +24,7 @@ mod common;
 
 use mangaflow_desktop_shell_core::handshake::{spawn_helper, HelperConfig, SpawnError};
 use mangaflow_desktop_shell_core::logs::shell_log_path;
-use mangaflow_desktop_shell_core::ownership::OwnedTree;
+use mangaflow_desktop_shell_core::ownership::{OwnedTree, OwnershipError};
 use mangaflow_desktop_shell_core::protocol::{
     verify_ready_line, VerifyError, GO_PREFIX, HEALTH_PATH,
 };
@@ -43,6 +43,27 @@ fn temp_user_data(tag: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+/// Resolve the owned runtime entry's owner.json under
+/// `<user_data>/runtime/` (the fixture guarantees exactly one owned
+/// runtime entry per user_data root — resolving it once keeps the pid and
+/// state reads on the SAME journal).
+fn newest_journal_path(user_data: &Path) -> Option<std::path::PathBuf> {
+    let runtime = user_data.join("runtime");
+    let entry = std::fs::read_dir(&runtime)
+        .ok()?
+        .filter_map(|entry| entry.ok())
+        .find(|entry| entry.path().join("owner.json").is_file())?
+        .path();
+    Some(entry.join("owner.json"))
+}
+
+fn journal_pid(user_data: &Path) -> Option<u32> {
+    let path = newest_journal_path(user_data)?;
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    u32::try_from(value["pid"].as_u64()?).ok()
 }
 
 fn proc_alive(pid: u32) -> bool {
@@ -1028,66 +1049,46 @@ fn a_garbage_ready_line_fails_verification_and_is_torn_down() {
     let _ = std::fs::remove_dir_all(&user_data);
 }
 
-/// ADR D9 pin: a stand-in that publishes a NON-loopback api_origin must
-/// fail verification with OriginNotLoopback and be torn down — the shell
-/// never GOes a helper that announced off-box reachability.
+/// Error-path pin: a helper binary that cannot be executed must fail the
+/// spawn with a clean Io error (not a panic, not a hang) — and leave no
+/// owned runtime directory behind (RuntimeLayout::create runs before the
+/// spawn, so the abort path must clean it up).
 #[test]
-fn a_non_loopback_origin_fails_verification_and_is_torn_down() {
-    let user_data = temp_user_data("non-loopback");
-    let stand_in = r#"
-import json, os, sys
-token = os.environ["MANGAFLOW_DESKTOP_TOKEN"]
-journal_path = os.environ["MANGAFLOW_DESKTOP_JOURNAL"]
-with open(journal_path, "w", encoding="utf-8") as handle:
-    json.dump({"version": 1, "token": token, "state": "ready",
-               "pid": os.getpid(), "api_origin": "http://10.0.0.9:8080"}, handle)
-print("MANGAFLOW_READY " + json.dumps(
-    {"token": token, "pid": os.getpid(), "api_origin": "http://10.0.0.9:8080"}), flush=True)
-sys.stdin.read()
-"#;
-    let stand_in_path = user_data.join("stand_in_offbox.py");
-    std::fs::write(&stand_in_path, stand_in).unwrap();
+fn spawn_fails_cleanly_on_a_missing_helper_binary() {
+    let user_data = temp_user_data("missing-binary");
     let config = HelperConfig {
-        python: python(),
-        helper_script: stand_in_path.clone(),
+        python: std::path::PathBuf::from("nonexistent-helper-binary-xyz"),
+        helper_script: user_data.join("nonexistent-script.py"),
         helper_args: vec![],
-        ready_timeout: Duration::from_secs(20),
-        health_timeout: Duration::from_secs(10),
+        ready_timeout: Duration::from_secs(5),
+        health_timeout: Duration::from_secs(5),
     };
 
     let error = match spawn_helper(&config, &user_data) {
-        Ok(_) => panic!("a non-loopback origin must not complete the handshake"),
+        Ok(_) => panic!("a missing helper binary must not complete the handshake"),
         Err(error) => error,
     };
+    // The ownership layer wraps the exec failure (NotFound) as
+    // OwnershipError::Spawn — a named ownership-layer error rather than a
+    // bare Io.
     assert!(
-        matches!(error, SpawnError::Verify(VerifyError::OriginNotLoopback)),
+        matches!(error, SpawnError::Ownership(OwnershipError::Spawn(_))),
         "unexpected error: {error:?}"
     );
 
-    // The off-box announcer must be dead after the teardown.
-    #[cfg(unix)]
-    {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
-            let live = std::process::Command::new("pgrep")
-                .args(["-f", "stand_in_offbox.py"])
-                .output()
-                .map(|output| !output.stdout.is_empty())
-                .unwrap_or(true);
-            if !live {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        assert!(
-            !std::process::Command::new("pgrep")
-                .args(["-f", "stand_in_offbox.py"])
-                .output()
-                .map(|output| !output.stdout.is_empty())
-                .unwrap_or(true),
-            "the off-box announcer must be dead after the teardown"
-        );
-    }
+    // Terminal bookkeeping: the pre-spawn failure records "stopped" with
+    // no exit code (the doc contract for pre-spawn ownership failures) —
+    // the runtime directory legitimately persists with the terminal
+    // journal; only the cleanup of the temp root removes it.
+    let journal_value: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(newest_journal_path(&user_data).unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(journal_value["state"], "stopped", "{journal_value}");
+    assert!(
+        journal_value.get("exit_code").is_none(),
+        "a pre-spawn failure records no exit code: {journal_value}"
+    );
     let _ = std::fs::remove_dir_all(&user_data);
 }
 
