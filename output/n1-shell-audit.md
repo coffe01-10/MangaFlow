@@ -231,6 +231,15 @@
 - 终态：cargo test 9/9 套件、**110 项**全绿（单元 66 + 集成 42，Linux 实测
   2026-09-11）。Windows 腿 NOT RUN。
 
+### 轮次与整合收尾（2026-09-11 续）
+
+- 谓词边界表、token 门表、精确截断断言、FIFO/目录/缺失 journal pin 与
+  文档归位已全部落在分支 tip；cargo test 9/9 套件、121 项全绿。
+- 分支重置事故恢复：48ce9e3（目录/缺失 journal pin）与 650672a/3bdd9f5/fb70420
+  （token 契约/sweep symlink/renamed swap doc）已全部回收到本分支谱系。
+- 残留：write_journal_atomic 的 serde_json unwrap（Value 序列化实际不可失败，
+  仅警告级）；健康门身份校验（设计级，需 lead 决策）。
+
 新记录的待办（下轮候选）：
 - 残留：write_journal_atomic 的 serde_json unwrap（Value 序列化实际不可失败）；
   健康门身份校验（设计级，需 lead 决策）。get_status_caps 并行时序 flake 的
