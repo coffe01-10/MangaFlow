@@ -22,6 +22,7 @@ output/playwright/
 output/rc-closure/
 output/v02-21b-screens/
 output/native-parity-review/
+output/native-local/
 .playwright-mcp/
 *.tsbuildinfo
 npm-debug.log*
