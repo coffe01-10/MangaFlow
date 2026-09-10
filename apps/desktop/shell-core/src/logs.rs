@@ -109,12 +109,25 @@ pub fn logs_dir(user_data: &Path) -> PathBuf {
 
 /// Helper (API/Worker) stderr log for one owned run. The token is shell- or
 /// helper-generated and must be 32 hex chars — it becomes part of a file name.
+///
+/// # Panics
+///
+/// Panics in debug builds when `token` is not 32 lowercase-hex chars: the
+/// callers (the shell's spawn path and the tests' fixtures) always pass a
+/// `new_token()` output, and a malformed token silently producing foreign
+/// log names would corrupt the per-run log layout.
 pub fn helper_log_path(user_data: &Path, token: &str) -> PathBuf {
+    debug_assert!(is_valid_token(token), "token must be 32 hex: {token}");
     logs_dir(user_data).join(format!("helper-{token}.stderr.log"))
 }
 
 /// Shell milestone log for one owned run.
+///
+/// # Panics
+///
+/// Same token precondition as [`helper_log_path`].
 pub fn shell_log_path(user_data: &Path, token: &str) -> PathBuf {
+    debug_assert!(is_valid_token(token), "token must be 32 hex: {token}");
     logs_dir(user_data).join(format!("shell-{token}.log"))
 }
 
