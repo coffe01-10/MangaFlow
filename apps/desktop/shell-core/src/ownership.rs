@@ -485,11 +485,10 @@ mod tests {
         assert_eq!(pid_starttime(u32::MAX), None);
     }
 
-    // The Windows-only Job Object test calls `create_kill_on_close_job`
-    // unqualified; on Linux this glob is genuinely unused, which is why a
-    // Linux-only lint must not be allowed to delete it again.
-    #[cfg(windows)]
-    use super::*;
+    // NOTE: the shared `use super::*` at the top of this module must stay
+    // unconditioned — the Windows-only Job Object test below calls
+    // `create_kill_on_close_job` unqualified, and a platform-gated lint must
+    // not be allowed to delete the glob for being unused on Linux.
 
     /// #150 regression: creating and dropping JobHandles must not leak
     /// kernel objects — this is the release path the assign/resume failure

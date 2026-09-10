@@ -532,6 +532,7 @@ mod tests {
         #[cfg(target_os = "linux")]
         let live_starttime = crate::ownership::pid_starttime(live_pid);
         #[cfg(not(target_os = "linux"))]
+        #[allow(unused_variables)] // only the linux cfg blocks below read it
         let live_starttime: Option<u64> = None;
         let line = format!(
             "{READY_PREFIX}{{\"token\":\"{TOKEN}\",\"pid\":{live_pid},\"api_origin\":\"http://127.0.0.1:39001\",\"web_origin\":\"http://127.0.0.1:39002\"}}"
@@ -553,6 +554,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let journal = dir.join(JOURNAL_NAME);
         let payload = verify_ready_line(&line, TOKEN, live_pid).unwrap();
+        #[cfg_attr(not(target_os = "linux"), allow(unused_mut))] // mutated by the linux anchor block only
         let mut good = serde_json::json!({
             "version": PROTOCOL_VERSION, "token": TOKEN, "state": "ready",
             "pid": live_pid, "api_origin": "http://127.0.0.1:39001",
@@ -564,6 +566,7 @@ mod tests {
         }
         std::fs::write(&journal, good.to_string()).unwrap();
         assert!(verify_journal(&journal, &payload).is_ok());
+        #[cfg_attr(not(target_os = "linux"), allow(unused_mut))] // mutated by the linux anchor block only
         let mut mismatched = serde_json::json!({
             "version": PROTOCOL_VERSION, "token": TOKEN, "state": "ready",
             "pid": live_pid, "api_origin": "http://127.0.0.1:39001",
@@ -787,6 +790,7 @@ mod tests {
             port: 8080,
             web_origin: None,
         };
+        #[cfg_attr(not(target_os = "linux"), allow(unused_mut))] // mutated by the linux anchor block only
         let mut base = serde_json::json!({
             "version": PROTOCOL_VERSION,
             "token": token,
@@ -801,6 +805,7 @@ mod tests {
         if let Some(starttime) = crate::ownership::pid_starttime(std::process::id()) {
             base["pid_starttime"] = serde_json::json!(starttime);
         }
+        #[cfg_attr(not(target_os = "linux"), allow(unused_mut))] // extended by the linux anchor cases only
         let mut tampered: Vec<(&str, serde_json::Value)> = vec![
             ("version", serde_json::json!(PROTOCOL_VERSION + 1)),
             ("token", serde_json::json!("f".repeat(32))),
