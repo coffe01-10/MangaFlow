@@ -46,6 +46,11 @@ const journal = join(runtime, "owner.json");
 
 function fail(message) {
   console.error(`D5 FAIL: ${message}`);
+  // The helper is setsid'd (own process group), so the negative-pid kill
+  // reaches it and anything it spawned. Without this, a helper hung before
+  // READY (stdin-EOF watch never armed, nothing reads its stdin) outlives
+  // the script while holding its loopback port (E-review L1a).
+  try { process.kill(-helper.pid, "SIGKILL"); } catch { /* already gone */ }
   process.exitCode = 1;
 }
 
@@ -75,7 +80,11 @@ helper.stdin.write(`MANGAFLOW_GO ${token}\n`);
 let health_ok = false;
 for (let attempt = 0; attempt < 50 && !health_ok; attempt += 1) {
   try {
-    const probe = await fetch(`${ready.api_origin}/api/v1/health`);
+    // Per-attempt timeout: a connection that is accepted but never
+    // responded would otherwise hang the loop past the 50-attempt bound
+    // (E-review L1b).
+    const probe = await fetch(`${ready.api_origin}/api/v1/health`,
+      { signal: AbortSignal.timeout(2000) });
     health_ok = probe.status === 200;
   } catch {
     await new Promise((resolve) => setTimeout(resolve, 200));
