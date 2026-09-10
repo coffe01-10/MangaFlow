@@ -366,7 +366,13 @@ fn write_journal_atomic(journal: &Path, record: &serde_json::Value) -> std::io::
         "{}.pending",
         journal.file_name().unwrap_or_default().to_string_lossy()
     ));
-    std::fs::write(&pending, serde_json::to_string(record).unwrap())?;
+    // Serialization of a serde_json::Value cannot fail today, but the
+    // journal write path is on the teardown hotline (every stop path calls
+    // mark_stopped) — keep it panic-free by contract, not by review.
+    let payload = serde_json::to_vec(record).map_err(|error| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
+    })?;
+    std::fs::write(&pending, payload)?;
     std::fs::rename(&pending, journal)
 }
 
@@ -1008,6 +1014,68 @@ mod tests {
 
     /// Clock-skew fail-closed leg: a terminal journal whose mtime is in the
     /// FUTURE must keep the directory (duration_since errs → continue).
+    /// A journal that is a FIFO must keep the candidate WITHOUT blocking:
+    /// read_journal_bounded checks regular-file via metadata BEFORE any
+    /// open, so the sweep can never hang on a planted pipe. Unix-only:
+    /// mkfifo is a libc call. The sweep runs on a spawned thread with a
+    /// bounded join — if the metadata-before-open ordering ever regressed,
+    /// this test would HANG forever, so the regression must surface as a
+    /// failure instead.
+    #[test]
+    #[cfg(unix)]
+    fn sweep_keeps_a_candidate_whose_journal_is_a_fifo() {
+        use std::ffi::CString;
+        use std::time::Duration;
+
+        let user_data = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-sweep-fifo-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&user_data);
+        let runtime = user_data.join("runtime");
+        let candidate = runtime.join(format!("{RUNTIME_DIR_PREFIX}{}", "b".repeat(32)));
+        std::fs::create_dir_all(&candidate).unwrap();
+        let journal = candidate.join(JOURNAL_NAME);
+        let cpath =
+            CString::new(journal.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o644) }, 0);
+
+        // The wait is bounded by a channel: a regression to open-before-
+        // metadata would hang the sweep forever on the writer-less FIFO —
+        // a hang must surface as a test failure, not wedge the suite.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn({
+            let user_data = user_data.clone();
+            move || {
+                let result = std::panic::catch_unwind(
+                    std::panic::AssertUnwindSafe(|| {
+                        sweep_runtime_dirs_with(&user_data, 0)
+                    }),
+                );
+                let _ = tx.send(());
+                result
+            }
+        });
+        let sweep_started = rx
+            .recv_timeout(Duration::from_secs(60))
+            .expect("the sweep hung on the FIFO journal — metadata-before-open regression");
+        let sweep_result = worker
+            .join()
+            .unwrap_or_else(|payload| panic!("the sweep worker panicked: {payload:?}"));
+        assert!(
+            sweep_result.is_ok(),
+            "the sweep must not error on a FIFO journal: {sweep_result:?}"
+        );
+        let _ = sweep_started;
+
+        assert!(
+            candidate.exists() && journal.exists(),
+            "the FIFO-journal candidate must be kept without blocking"
+        );
+        let _ = std::fs::remove_dir_all(&user_data);
+    }
+
     #[test]
     fn sweep_keeps_a_candidate_with_a_future_mtime_journal() {
         let user_data = std::env::temp_dir().join(format!(
@@ -1062,6 +1130,54 @@ mod tests {
     /// the candidate directory AND the link target's bytes intact — the
     /// deletion decision may never be driven by content outside the
     /// runtime root.
+    /// A journal that is a DIRECTORY (not a regular file) must keep the
+    /// candidate exactly like a symlink: read_journal_bounded refuses
+    /// non-regular files, and the deletion decision may never depend on
+    /// their content.
+    #[test]
+    fn sweep_keeps_a_candidate_whose_journal_is_a_directory() {
+        let user_data = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-sweep-jdir-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&user_data);
+        let runtime = user_data.join("runtime");
+        let candidate = runtime.join(format!("{RUNTIME_DIR_PREFIX}{}", "b".repeat(32)));
+        std::fs::create_dir_all(candidate.join(JOURNAL_NAME)).unwrap();
+
+        sweep_runtime_dirs_with(&user_data, 0).unwrap();
+
+        assert!(
+            candidate.exists(),
+            "a directory-as-journal candidate must be kept"
+        );
+        let _ = std::fs::remove_dir_all(&user_data);
+    }
+
+    /// mark_stopped on a MISSING journal must not fabricate a stopped
+    /// record: absent ownership records are kept absent (the sweep then
+    /// ignores the directory as a foreign/empty name).
+    #[test]
+    fn mark_stopped_without_a_journal_fabricates_nothing() {
+        let dir = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-missing-j-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let layout = RuntimeLayout::create(&dir).unwrap();
+        std::fs::remove_file(layout.journal_path()).unwrap();
+
+        layout.mark_stopped(Some(0)).unwrap();
+
+        assert!(
+            !layout.journal_path().exists(),
+            "mark_stopped must not fabricate a stopped record for a missing journal"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn sweep_keeps_a_candidate_whose_journal_is_a_symlink() {
         let user_data = std::env::temp_dir().join(format!(
@@ -1169,6 +1285,38 @@ mod tests {
             Err(VerifyError::JournalMismatch("non-utf8"))
         ));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Table-driven boundaries for the sweep's runtime-directory name
+    /// predicate: exactly prefix + 32 lowercase-hex chars passes; case,
+    /// length, charset and prefix drift each fail. The stale-runtime sweep
+    /// deletes directories ONLY when this predicate passes, so a false
+    /// positive here would widen deletion to foreign directories.
+    #[test]
+    fn runtime_dir_name_predicate_boundaries() {
+        let valid = "0123456789abcdef0123456789abcdef";
+        assert!(is_runtime_dir_name(&format!("{RUNTIME_DIR_PREFIX}{valid}")));
+        for invalid in [
+            // Case drift (the documented alphabet is lowercase).
+            format!("{RUNTIME_DIR_PREFIX}{}", "A".repeat(32)),
+            format!("{RUNTIME_DIR_PREFIX}{}", valid.to_ascii_uppercase()),
+            // Length boundaries on both sides of 32.
+            format!("{RUNTIME_DIR_PREFIX}{}", "a".repeat(31)),
+            format!("{RUNTIME_DIR_PREFIX}{}", "a".repeat(33)),
+            // Charset drift.
+            format!("{RUNTIME_DIR_PREFIX}{}", "g".repeat(32)),
+            // Prefix drift (missing the trailing separator of the real
+            // prefix) and a foreign prefix entirely.
+            format!("mangaflow-desktop{valid}"),
+            format!("mangaflow-desktopx-{valid}"),
+            format!("other-{valid}"),
+            valid.to_string(),
+        ] {
+            assert!(
+                !is_runtime_dir_name(&invalid),
+                "invalid runtime dir name must be rejected: {invalid}"
+            );
+        }
     }
 
     #[test]

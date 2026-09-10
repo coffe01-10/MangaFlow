@@ -242,13 +242,23 @@ def desktop(tmp_path: Path):
     user_data = tmp_path / "user-data"
     (user_data / "data").mkdir(parents=True)
     shell = DesktopShell(user_data)
+    body_error: BaseException | None = None
     try:
         record = shell.handshake()
         shell.wait_health()
         yield shell, user_data, record
+    except BaseException as error:
+        # An assert inside finally would REPLACE the in-flight body error:
+        # a helper that died mid-test must be reported in addition to, not
+        # instead of, the failure the body actually hit.
+        body_error = error
+        raise
     finally:
         exit_code = shell.stop()
-        assert exit_code == 0, f"helper exited with {exit_code}"
+        if body_error is None:
+            assert exit_code == 0, f"helper exited with {exit_code}"
+        elif exit_code != 0:
+            print(f"note: helper also exited with {exit_code} during the failing body")
 
 
 def _client(shell: DesktopShell) -> httpx.Client:
@@ -504,6 +514,7 @@ def test_sidecar_plan_b_web_server_loop(tmp_path: Path):
         pytest.skip("no node runtime available for the standalone server")
     shell = DesktopShell(tmp_path / "user-data", web_dist=_web_dist_dir())
     (shell.user_data / "data").mkdir(parents=True, exist_ok=True)
+    body_error: BaseException | None = None
     try:
         record = shell.handshake()
         shell.wait_health()
@@ -564,9 +575,17 @@ def test_sidecar_plan_b_web_server_loop(tmp_path: Path):
             {"version", "token", "role", "state", "pid", "pid_starttime", "port",
              "api_origin", "web_origin", "web_port", "started_at", "grandchild_pid"}
         ), record
+    except BaseException as error:
+        # Report the body failure, not the stop-side exit code (same
+        # masking hazard as the fixture above).
+        body_error = error
+        raise
     finally:
         exit_code = shell.stop()
-        assert exit_code == 0, f"helper exited with {exit_code}"
+        if body_error is None:
+            assert exit_code == 0, f"helper exited with {exit_code}"
+        elif exit_code != 0:
+            print(f"note: helper also exited with {exit_code} during the failing body")
     # The web server must not survive the helper's cooperative exit: the
     # port it claimed must be closed now.
     web_port = int(shell.web_origin.rsplit(":", 1)[1])
@@ -614,6 +633,7 @@ def test_sidecar_dead_web_dist_fails_closed_without_web_origin(tmp_path: Path):
         tmp_path / "user-data", web_dist=broken_dist, expect_web_origin=False
     )
     (shell.user_data / "data").mkdir(parents=True, exist_ok=True)
+    body_error: BaseException | None = None
     try:
         record = shell.handshake()
         shell.wait_health()
@@ -641,9 +661,17 @@ def test_sidecar_dead_web_dist_fails_closed_without_web_origin(tmp_path: Path):
                     "fixed relay port - or another process bound it"
                 )
             time.sleep(0.1)
+    except BaseException as error:
+        # Same masking hazard as the fixture: report the body failure
+        # instead of replacing it with the stop-side exit assert.
+        body_error = error
+        raise
     finally:
         exit_code = shell.stop()
-        assert exit_code == 0, f"helper exited with {exit_code}"
+        if body_error is None:
+            assert exit_code == 0, f"helper exited with {exit_code}"
+        elif exit_code != 0:
+            print(f"note: helper also exited with {exit_code} during the failing body")
 
 
 def test_sidecar_mid_session_node_exit_is_detected_and_logged(tmp_path: Path):
@@ -673,6 +701,7 @@ def test_sidecar_mid_session_node_exit_is_detected_and_logged(tmp_path: Path):
     shell = DesktopShell(tmp_path / "user-data", web_dist=dying_dist)
     (shell.user_data / "data").mkdir(parents=True, exist_ok=True)
     stderr_log = shell.stderr_log_path
+    body_error: BaseException | None = None
     try:
         record = shell.handshake()
         shell.wait_health()
@@ -725,9 +754,17 @@ def test_sidecar_mid_session_node_exit_is_detected_and_logged(tmp_path: Path):
             )
         finally:
             dead_origin.close()
+    except BaseException as error:
+        # Same masking hazard as the fixture: report the body failure
+        # instead of replacing it with the stop-side exit assert.
+        body_error = error
+        raise
     finally:
         exit_code = shell.stop()
-        assert exit_code == 0, f"helper exited with {exit_code}"
+        if body_error is None:
+            assert exit_code == 0, f"helper exited with {exit_code}"
+        elif exit_code != 0:
+            print(f"note: helper also exited with {exit_code} during the failing body")
 
 
 def test_node_child_env_strips_ownership_secrets_and_hooks(monkeypatch):

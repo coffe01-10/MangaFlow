@@ -25,7 +25,9 @@ mod common;
 use mangaflow_desktop_shell_core::handshake::{spawn_helper, HelperConfig, SpawnError};
 use mangaflow_desktop_shell_core::logs::shell_log_path;
 use mangaflow_desktop_shell_core::ownership::OwnedTree;
-use mangaflow_desktop_shell_core::protocol::{verify_ready_line, GO_PREFIX, HEALTH_PATH};
+use mangaflow_desktop_shell_core::protocol::{
+    verify_ready_line, VerifyError, GO_PREFIX, HEALTH_PATH,
+};
 
 use common::python;
 
@@ -965,6 +967,127 @@ fn an_immediately_exiting_helper_fails_verification_and_is_torn_down() {
             .unwrap_or(true),
         "no stand-in process may linger after the teardown"
     );
+    let _ = std::fs::remove_dir_all(&user_data);
+}
+
+/// Error-path pin: a helper whose FIRST stdout line is garbage (not the
+/// READY prefix) must fail verification with BadLine and tear the tree
+/// down — the pre-READY channel cannot smuggle unparsed content past the
+/// gate.
+#[test]
+fn a_garbage_ready_line_fails_verification_and_is_torn_down() {
+    let user_data = temp_user_data("garbage-ready");
+    let stand_in_path = user_data.join("stand_in_garbage.py");
+    std::fs::write(&stand_in_path, "print(\"HELLO WORLD\", flush=True)\nimport time\ntime.sleep(60)").unwrap();
+    let config = HelperConfig {
+        python: python(),
+        helper_script: stand_in_path.clone(),
+        helper_args: vec![],
+        ready_timeout: Duration::from_secs(10),
+        health_timeout: Duration::from_secs(5),
+    };
+
+    let started = Instant::now();
+    let error = match spawn_helper(&config, &user_data) {
+        Ok(_) => panic!("a garbage READY line must not complete the handshake"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(error, SpawnError::Verify(VerifyError::BadLine)),
+        "unexpected error: {error:?}"
+    );
+    assert!(
+        started.elapsed() < config.ready_timeout,
+        "the BadLine failure must be quick, not a ready-budget wait"
+    );
+
+    // The garbage-talking stand-in must be dead after the teardown.
+    #[cfg(unix)]
+    {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            let live = std::process::Command::new("pgrep")
+                .args(["-f", "stand_in_garbage.py"])
+                .output()
+                .map(|output| !output.stdout.is_empty())
+                .unwrap_or(true);
+            if !live {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            !std::process::Command::new("pgrep")
+                .args(["-f", "stand_in_garbage.py"])
+                .output()
+                .map(|output| !output.stdout.is_empty())
+                .unwrap_or(true),
+            "the garbage-talking helper must be dead after the teardown"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&user_data);
+}
+
+/// ADR D9 pin: a stand-in that publishes a NON-loopback api_origin must
+/// fail verification with OriginNotLoopback and be torn down — the shell
+/// never GOes a helper that announced off-box reachability.
+#[test]
+fn a_non_loopback_origin_fails_verification_and_is_torn_down() {
+    let user_data = temp_user_data("non-loopback");
+    let stand_in = r#"
+import json, os, sys
+token = os.environ["MANGAFLOW_DESKTOP_TOKEN"]
+journal_path = os.environ["MANGAFLOW_DESKTOP_JOURNAL"]
+with open(journal_path, "w", encoding="utf-8") as handle:
+    json.dump({"version": 1, "token": token, "state": "ready",
+               "pid": os.getpid(), "api_origin": "http://10.0.0.9:8080"}, handle)
+print("MANGAFLOW_READY " + json.dumps(
+    {"token": token, "pid": os.getpid(), "api_origin": "http://10.0.0.9:8080"}), flush=True)
+sys.stdin.read()
+"#;
+    let stand_in_path = user_data.join("stand_in_offbox.py");
+    std::fs::write(&stand_in_path, stand_in).unwrap();
+    let config = HelperConfig {
+        python: python(),
+        helper_script: stand_in_path.clone(),
+        helper_args: vec![],
+        ready_timeout: Duration::from_secs(20),
+        health_timeout: Duration::from_secs(10),
+    };
+
+    let error = match spawn_helper(&config, &user_data) {
+        Ok(_) => panic!("a non-loopback origin must not complete the handshake"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(error, SpawnError::Verify(VerifyError::OriginNotLoopback)),
+        "unexpected error: {error:?}"
+    );
+
+    // The off-box announcer must be dead after the teardown.
+    #[cfg(unix)]
+    {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            let live = std::process::Command::new("pgrep")
+                .args(["-f", "stand_in_offbox.py"])
+                .output()
+                .map(|output| !output.stdout.is_empty())
+                .unwrap_or(true);
+            if !live {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            !std::process::Command::new("pgrep")
+                .args(["-f", "stand_in_offbox.py"])
+                .output()
+                .map(|output| !output.stdout.is_empty())
+                .unwrap_or(true),
+            "the off-box announcer must be dead after the teardown"
+        );
+    }
     let _ = std::fs::remove_dir_all(&user_data);
 }
 

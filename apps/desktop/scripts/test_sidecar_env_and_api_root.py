@@ -25,6 +25,12 @@ import mangaflow_desktop_helper as helper  # noqa: E402
 
 def test_disable_dotenv_is_forced_over_an_inherited_zero(monkeypatch, tmp_path):
     monkeypatch.setenv("MANGAFLOW_DISABLE_DOTENV", "0")
+    # Pre-register every key _apply_app_environment force-sets: without
+    # this, the four globals leak into the same pytest process after the
+    # test (a stale tmp_path DATABASE_URL would poison later DB-dependent
+    # tests).
+    for key in ("DATABASE_URL", "STORAGE_ROOT", "UPLOAD_ROOT", "WEB_ORIGIN"):
+        monkeypatch.setenv(key, f"pre-existing-{key}")
     helper._apply_app_environment(tmp_path, "http://tauri.localhost")
     # The shell owns this environment; setdefault would have kept the
     # inherited "0" and re-enabled .env loading from the helper's CWD.
@@ -54,6 +60,18 @@ def test_valid_api_root_tree_passes_validation(tmp_path):
                 (root / "app").mkdir(),
                 (root / "app" / "main.py").write_text("", encoding="utf-8"),
                 (root / "fake_channel.py").write_text("", encoding="utf-8"),
+            ),
+        ),
+        (
+            "api-root/shadowing-fake-channel",
+            # Case variant: Windows resolves imports case-insensitively
+            # (NTFS), so `Fake_Channel.py` shadows the helper's module there
+            # even though a byte-exact check passes. The scan lowercases.
+            lambda root: (
+                (root / "alembic.ini").write_text("", encoding="utf-8"),
+                (root / "app").mkdir(),
+                (root / "app" / "main.py").write_text("", encoding="utf-8"),
+                (root / "Fake_Channel.py").write_text("", encoding="utf-8"),
             ),
         ),
     ],

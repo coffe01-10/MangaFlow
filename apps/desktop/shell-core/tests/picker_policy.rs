@@ -11,7 +11,9 @@ use mangaflow_desktop_shell_core::picker::{
     read_registered_file, validate_picked_directory, validate_picked_file, PickError, PickKind,
     PickedRegistry,
 };
-use mangaflow_desktop_shell_core::protocol::new_token;
+use mangaflow_desktop_shell_core::protocol::{
+    new_token, JOURNAL_NAME, RUNTIME_DIR_PREFIX,
+};
 
 fn temp_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -303,8 +305,9 @@ fn readback_refails_when_picked_file_is_swapped_grows_or_deleted() {
 
 /// #308: a file swapped between the read-back's identity stat and its open
 /// must fail closed — the real race is untestable by design, so the seam
-/// injects the swap at exactly that point. Delete + recreate changes the
-/// on-disk identity (inode / file index) on every platform.
+/// injects the swap at exactly that point. The rename-based exchange puts
+/// the replacement on a fresh on-disk identity (inode / file index) on
+/// every platform, so the identity mismatch is deterministic.
 #[test]
 fn readback_fails_closed_when_swapped_between_validation_and_open() {
     use mangaflow_desktop_shell_core::read_registered_file_with;
@@ -320,15 +323,25 @@ fn readback_fails_closed_when_swapped_between_validation_and_open() {
     let (picked, bytes) = read_registered_file_with(&registry, &source, || {}).unwrap();
     assert_eq!(bytes, "原始正文".as_bytes());
     assert_eq!(picked.path, source.canonicalize().unwrap());
-    // The swap: same path, different on-disk object, valid policy shape.
+    // The swap: the replacement is created as its OWN file and renamed over
+    // the source — rename swaps the directory entry to the replacement's
+    // inode, which is guaranteed different from the removed original on
+    // every filesystem (a plain remove+recreate can reuse the inode on
+    // tmpfs/overlayfs and would defeat the identity check).
+    let replacement = dir.join("replacement.txt");
+    fs::write(&replacement, "被替换的内容").unwrap();
     let error = read_registered_file_with(&registry, &source, || {
-        fs::remove_file(&source).unwrap();
-        fs::write(&source, "被替换的内容").unwrap();
+        fs::rename(&replacement, &source).unwrap();
     })
     .unwrap_err();
     assert!(
         matches!(error, PickError::SwappedAfterValidation),
         "{error}"
+    );
+    assert_eq!(
+        fs::read_to_string(&source).unwrap(),
+        "被替换的内容",
+        "the swapped content is what the refusal declined to serve"
     );
     let _ = fs::remove_dir_all(&dir);
 }
@@ -389,6 +402,29 @@ fn picker_shape_boundaries_fail_cleanly() {
         ));
     }
 
+    // A FIFO planted as an ANCESTOR of the picked path must be rejected
+    // cleanly (NotARegularFile/DoesNotExist via the metadata checks) and
+    // must NOT hang: every check in the chain is metadata-only (lstat/
+    // fstat never block on a FIFO), and opening the FIFO's path is never
+    // attempted by the validator.
+    #[cfg(unix)]
+    {
+        let fifo_dir = dir.join("fifo-ancestor");
+        fs::create_dir_all(fifo_dir.join("inner")).unwrap();
+        let fifo = fifo_dir.join("pipe");
+        let cpath =
+            std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o644) }, 0);
+        let target = fifo.join("leaf.txt");
+        // The leaf under the FIFO never exists (nothing can be created
+        // inside a pipe) — the pick must fail cleanly through the ancestor
+        // metadata checks, not hang on the FIFO.
+        assert!(
+            validate_picked_file(&target, PickKind::SourceText).is_err(),
+            "a pick through a FIFO ancestor must be rejected"
+        );
+    }
+
     // Permission-denied ancestor: validation through it fails with EACCES
     // instead of succeeding (skipped under root, which reads through the
     // mode bits).
@@ -443,4 +479,54 @@ fn suffix_policy_maps_per_kind_with_exact_allowed_sets() {
             Err(other) => panic!("{name}/{kind:?}: unexpected {other:?}"),
         }
     }
+}
+
+/// Sweep-name boundary table (end-to-end over the real sweep): names that
+/// fail `is_runtime_dir_name` must keep their directories even when the
+/// journal claims a terminal state — the deletion predicate is gated on
+/// the name being a real owned runtime directory.
+#[test]
+fn sweep_keeps_candidates_with_invalid_runtime_names() {
+    let user_data = temp_dir("names");
+    let runtime = user_data.join("runtime");
+    let names = [
+        format!("{RUNTIME_DIR_PREFIX}{}", "A".repeat(32)),   // uppercase hex
+        format!("{RUNTIME_DIR_PREFIX}{}", "g".repeat(32)),   // non-hex char
+        format!("{RUNTIME_DIR_PREFIX}abc"),                  // too short
+        format!("foreign-{}", "a".repeat(32)),               // foreign prefix
+    ];
+    for name in &names {
+        let candidate = runtime.join(name);
+        fs::create_dir_all(&candidate).unwrap();
+        fs::write(
+            candidate.join(&JOURNAL_NAME),
+            format!("{{\"version\":1,\"token\":\"{}\",\"state\":\"stopped\"}}", name),
+        )
+        .unwrap();
+    }
+
+    // Positive control: a VALID owned runtime name with a terminal journal
+    // is swept by the same call — proving the sweep ran and the keeps above
+    // are the name gate at work, not a no-op sweep.
+    let valid = runtime.join(format!("{RUNTIME_DIR_PREFIX}{}", "9".repeat(32)));
+    fs::create_dir_all(&valid).unwrap();
+    fs::write(
+        valid.join("owner.json"),
+        format!("{{\"version\":1,\"token\":\"{}\",\"state\":\"stopped\"}}", "9".repeat(32)),
+    )
+    .unwrap();
+
+    mangaflow_desktop_shell_core::protocol::sweep_runtime_dirs_with(&user_data, 0).unwrap();
+
+    assert!(
+        !valid.exists(),
+        "the positive control must be swept (proves the sweep ran)"
+    );
+    for name in &names {
+        assert!(
+            runtime.join(name).exists(),
+            "invalid runtime-directory name {name} must never be swept"
+        );
+    }
+    let _ = fs::remove_dir_all(&user_data);
 }
