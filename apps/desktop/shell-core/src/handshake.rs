@@ -431,6 +431,7 @@ mod tests {
             let _ = sock.set_read_timeout(Some(Duration::from_millis(100)));
             let _ = sock.read(&mut [0u8; 1024]);
             let _ = sock.set_read_timeout(None);
+            let _ = sock.shutdown(std::net::Shutdown::Write);
             // The socket drops here: HTTP/1.0 + Connection: close means EOF
             // ends the read even though the server never consumed a request
             // body boundary.
@@ -440,9 +441,9 @@ mod tests {
             get_status(&format!("http://127.0.0.1:{port}"), HEALTH_PATH, Duration::from_secs(5))
                 .expect("health read succeeds");
         assert_eq!(status, 200);
-        assert!(
-            (body.len() as u64) <= MAX_STREAM_MESSAGE_BYTES,
-            "response must be capped at {MAX_STREAM_MESSAGE_BYTES}, got {}",
+        assert_eq!(
+            body.len() as u64, MAX_STREAM_MESSAGE_BYTES,
+            "response must be truncated at exactly {MAX_STREAM_MESSAGE_BYTES}, got {}",
             body.len()
         );
         let _ = server.join();

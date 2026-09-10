@@ -11,7 +11,9 @@ use mangaflow_desktop_shell_core::picker::{
     read_registered_file, validate_picked_directory, validate_picked_file, PickError, PickKind,
     PickedRegistry,
 };
-use mangaflow_desktop_shell_core::protocol::{new_token, RUNTIME_DIR_PREFIX};
+use mangaflow_desktop_shell_core::protocol::{
+    new_token, JOURNAL_NAME, RUNTIME_DIR_PREFIX,
+};
 
 fn temp_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -400,6 +402,29 @@ fn picker_shape_boundaries_fail_cleanly() {
         ));
     }
 
+    // A FIFO planted as an ANCESTOR of the picked path must be rejected
+    // cleanly (NotARegularFile/DoesNotExist via the metadata checks) and
+    // must NOT hang: every check in the chain is metadata-only (lstat/
+    // fstat never block on a FIFO), and opening the FIFO's path is never
+    // attempted by the validator.
+    #[cfg(unix)]
+    {
+        let fifo_dir = dir.join("fifo-ancestor");
+        fs::create_dir_all(fifo_dir.join("inner")).unwrap();
+        let fifo = fifo_dir.join("pipe");
+        let cpath =
+            std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o644) }, 0);
+        let target = fifo.join("leaf.txt");
+        // The leaf under the FIFO never exists (nothing can be created
+        // inside a pipe) — the pick must fail cleanly through the ancestor
+        // metadata checks, not hang on the FIFO.
+        assert!(
+            validate_picked_file(&target, PickKind::SourceText).is_err(),
+            "a pick through a FIFO ancestor must be rejected"
+        );
+    }
+
     // Permission-denied ancestor: validation through it fails with EACCES
     // instead of succeeding (skipped under root, which reads through the
     // mode bits).
@@ -474,18 +499,33 @@ fn sweep_keeps_candidates_with_invalid_runtime_names() {
         let candidate = runtime.join(name);
         fs::create_dir_all(&candidate).unwrap();
         fs::write(
-            candidate.join("owner.json"),
+            candidate.join(&JOURNAL_NAME),
             format!("{{\"version\":1,\"token\":\"{}\",\"state\":\"stopped\"}}", name),
         )
         .unwrap();
     }
 
+    // Positive control: a VALID owned runtime name with a terminal journal
+    // is swept by the same call — proving the sweep ran and the keeps above
+    // are the name gate at work, not a no-op sweep.
+    let valid = runtime.join(format!("{RUNTIME_DIR_PREFIX}{}", "9".repeat(32)));
+    fs::create_dir_all(&valid).unwrap();
+    fs::write(
+        valid.join("owner.json"),
+        format!("{{\"version\":1,\"token\":\"{}\",\"state\":\"stopped\"}}", "9".repeat(32)),
+    )
+    .unwrap();
+
     mangaflow_desktop_shell_core::protocol::sweep_runtime_dirs_with(&user_data, 0).unwrap();
 
+    assert!(
+        !valid.exists(),
+        "the positive control must be swept (proves the sweep ran)"
+    );
     for name in &names {
         assert!(
             runtime.join(name).exists(),
-            "a foreign-named directory must never be swept"
+            "invalid runtime-directory name {name} must never be swept"
         );
     }
     let _ = fs::remove_dir_all(&user_data);
