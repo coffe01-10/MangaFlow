@@ -301,6 +301,38 @@ fn readback_refails_when_picked_file_is_swapped_grows_or_deleted() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// #308: a file swapped between the read-back's identity stat and its open
+/// must fail closed — the real race is untestable by design, so the seam
+/// injects the swap at exactly that point. Delete + recreate changes the
+/// on-disk identity (inode / file index) on every platform.
+#[test]
+fn readback_fails_closed_when_swapped_between_validation_and_open() {
+    use mangaflow_desktop_shell_core::read_registered_file_with;
+
+    let dir = temp_dir("swap-seam");
+    let source = dir.join("chapter.txt");
+    fs::write(&source, "原始正文").unwrap();
+
+    let registry = PickedRegistry::new();
+    registry.register(&validate_picked_file(&source, PickKind::SourceText).unwrap());
+
+    // Positive control: with no swap the read returns the validated bytes.
+    let (picked, bytes) = read_registered_file_with(&registry, &source, || {}).unwrap();
+    assert_eq!(bytes, "原始正文".as_bytes());
+    assert_eq!(picked.path, source.canonicalize().unwrap());
+    // The swap: same path, different on-disk object, valid policy shape.
+    let error = read_registered_file_with(&registry, &source, || {
+        fs::remove_file(&source).unwrap();
+        fs::write(&source, "被替换的内容").unwrap();
+    })
+    .unwrap_err();
+    assert!(
+        matches!(error, PickError::SwappedAfterValidation),
+        "{error}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// Table-driven shape boundaries: each malformed shape fails cleanly with
 /// its dedicated error instead of panicking or slipping through. Rows are
 /// (label, path); the deterministic rows assert their exact error variant,

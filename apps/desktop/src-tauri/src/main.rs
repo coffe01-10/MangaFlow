@@ -70,6 +70,28 @@ struct ReadPickedFileDto {
     content_base64: String,
 }
 
+/// One native dialog at a time (#316): a second invoke while a dialog is up
+/// returns an error instead of stacking another modal on the message pump
+/// (sync dialog commands run on the UI thread and would otherwise queue a
+/// second rfd loop behind the first).
+static DIALOG_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+struct DialogClaim;
+
+impl Drop for DialogClaim {
+    fn drop(&mut self) {
+        DIALOG_OPEN.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+fn claim_dialog() -> Result<DialogClaim, String> {
+    if DIALOG_OPEN.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        Err("已有文件对话框打开，请先完成或关闭它".into())
+    } else {
+        Ok(DialogClaim)
+    }
+}
+
 #[tauri::command]
 fn desktop_get_api_origin(origin: tauri::State<ApiOrigin>) -> String {
     origin.0.clone()
@@ -91,6 +113,7 @@ fn desktop_health_probe(origin: tauri::State<ApiOrigin>) -> Result<u16, String> 
 /// confirmation. Returns `Ok(None)` when the user cancels the dialog.
 #[tauri::command]
 fn desktop_export_logs(paths: tauri::State<ShellPaths>) -> Result<Option<ExportReportDto>, String> {
+    let _guard = claim_dialog()?;
     let Some(path) = rfd::FileDialog::new()
         .set_title("导出运行日志")
         .set_file_name("mangaflow-logs.zip")
@@ -129,6 +152,7 @@ fn desktop_pick_file(
     kind: String,
     picked: tauri::State<PickedState>,
 ) -> Result<Option<PickedFileDto>, String> {
+    let _guard = claim_dialog()?;
     let kind = PickKind::parse(&kind).ok_or("unknown pick kind; expected source_text | reference_image")?;
     let (label, extensions) = kind.dialog_filter();
     let chosen = rfd::FileDialog::new()
@@ -151,6 +175,7 @@ fn desktop_pick_file(
 /// symlinks and traversal shapes; `Ok(None)` = user cancelled.
 #[tauri::command]
 fn desktop_pick_directory() -> Result<Option<PickedDirectoryDto>, String> {
+    let _guard = claim_dialog()?;
     let chosen = rfd::FileDialog::new()
         .set_title("选择目录")
         .pick_folder();

@@ -1336,6 +1336,40 @@ mod tests {
             // remove_dir on a junction removes the link, not the target.
             let _ = std::fs::remove_dir(&planted);
             assert!(outside.join(JOURNAL_NAME).exists());
+
+            // #311: a junction whose target is INSIDE the runtime root
+            // defeats the canonical containment check by construction — the
+            // entry file-type guard is the only defense left, so pin it
+            // explicitly. If the guard regressed, sweeping the planted entry
+            // would follow the link and delete the in-root target's journal.
+            let inside = user_data.join("runtime").join("inside-target");
+            std::fs::create_dir_all(&inside).unwrap();
+            std::fs::write(
+                inside.join(JOURNAL_NAME),
+                serde_json::json!({"version": 1, "token": "8".repeat(32), "state": "stopped"}).to_string(),
+            )
+            .unwrap();
+            let planted_inside = user_data
+                .join("runtime")
+                .join(format!("{RUNTIME_DIR_PREFIX}{}", "8".repeat(32)));
+            let output = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&planted_inside)
+                .arg(&inside)
+                .output()
+                .expect("run mklink /J for the in-root junction");
+            assert!(
+                output.status.success(),
+                "mklink /J (in-root) failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            sweep_runtime_dirs_with(&user_data, 0).unwrap();
+            assert!(
+                inside.join(JOURNAL_NAME).exists(),
+                "in-root junction target must survive the sweep (file-type guard)"
+            );
+            let _ = std::fs::remove_dir(&planted_inside);
+            assert!(inside.join(JOURNAL_NAME).exists());
         }
         let _ = std::fs::remove_dir_all(&user_data);
         let _ = std::fs::remove_dir_all(&outside);
