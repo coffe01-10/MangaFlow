@@ -18,6 +18,7 @@ from app.models import (
     PageCandidate,
     Panel,
     Project,
+    StyleProfile,
     WorkflowDefinition,
     WorkflowNodeRun,
     WorkflowRun,
@@ -79,6 +80,14 @@ def approve_node(
             raise ValueError("每次生成候选都必须明确选择 1K、2K 或 4K")
         if node_run.job_id:
             raise ValueError("该节点本次运行已经生成过一个候选")
+        # Lock-order fence (run → node): cancel_run claims the run row first
+        # and then sweeps the node/job/page rows, while the approval unit
+        # below claims the node row and only touches the run at the end —
+        # the AB-BA pair deadlocks on PostgreSQL and turns into a busy
+        # 500 on SQLite. Fence the run row first so both paths share one
+        # order; the conditional claim at the end of the unit still decides
+        # the race semantically.
+        lock_entity(db, WorkflowRun, run.id)
         # Claim the approval atomically: two concurrent approves (double
         # click, retry) both passed the read check above historically, then
         # raced into two candidates where the loser stayed an orphan QUEUED
@@ -348,6 +357,31 @@ def _approve_generate_node(
     # execution must fail the job with 409 semantics, not silently
     # generate against a degraded reference set.
     scene_reference_ids = [item.id for item in scene_reference_assets(db, page)]
+    # Issue #236-2 (workflow half): mirror the route half — the effective
+    # style profile's reference images join the lease set too, so deleting a
+    # style reference under a queued workflow job fails the delete with 409
+    # instead of burning the job's attempts on a missing style reference and
+    # taking the whole run down with it. Same effective-style rule
+    # (page.style_id, falling back to the project default) and the same
+    # liveness filter as the prompt compiler.
+    effective_style_id = page.style_id or db.scalar(
+        select(Project.default_style_id).where(Project.id == run.project_id)
+    )
+    effective_style = db.get(StyleProfile, effective_style_id) if effective_style_id else None
+    style_reference_ids = (
+        list(
+            db.scalars(
+                select(Asset.id).where(
+                    Asset.id.in_(
+                        effective_style.profile.get("reference_asset_ids", []),
+                    ),
+                    Asset.deleted_at.is_(None),
+                )
+            )
+        )
+        if effective_style
+        else []
+    )
     job = engine.create_job(
         db,
         project_id=run.project_id,
@@ -363,7 +397,7 @@ def _approve_generate_node(
             "workflow_node_id": node.id,
             "reference_selections": reference_selections,
         },
-        reference_asset_ids=[*reference_asset_ids, *scene_reference_ids],
+        reference_asset_ids=[*reference_asset_ids, *scene_reference_ids, *style_reference_ids],
         max_attempts=node.config.max_attempts,
         idempotency_key=f"workflow:{run.id}:{node.id}:candidate",
         dependency_ids=dependency_ids,
