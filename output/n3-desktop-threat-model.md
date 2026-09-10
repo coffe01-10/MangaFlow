@@ -106,7 +106,9 @@
 
 ## 8. 配额台账（20260911 Goal）
 
-**B — Issue 账（本 Goal 内 13 个，全部 file:line 级、经 R1 三路审计与人工验证）：**
+**B — Issue 账（本 Goal 内 13 个，全部 file:line 级、经 R1 三路审计与人工验证；行号以提交时基线为准，#339 的 TextBox 实为 StoryboardView.cs:1198，#340 位于 Views/WorkflowView.cs）：**
+
+**分支基线说明（R3 复核）**：本分支基线为 fe22969；PR #352/#353/#354 已合并进 master（d418aba）但**不在本分支树内**——§8 中 #343/#346/#349 的"已修"指 repo 级（master），HEAD 树上仍为开放缺陷，分支 rebase 后即消解。
 - #339 [P1][native] StoryboardView 视图级 PreviewKeyDown 劫持编辑器按键——Backspace 编辑气泡文字触发服务端气泡删除（:91/:1689-1691/:1197）
 - #340 [P2][native] DuplicateSelected 引用共享 Config 字典——编辑克隆即改写原节点并双双自动保存（:950/:1831）
 - #341 [P2][native] F5 Refresh 无确认清空 storyboard 草稿/undo 与打开的 script 编辑表单（:1772-1776/:438-442）
