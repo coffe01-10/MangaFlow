@@ -1241,11 +1241,6 @@ mod tests {
             "{\"stolen\": true}",
             "the symlink target's bytes must be untouched"
         );
-        assert_eq!(
-            std::fs::read_to_string(&outside).unwrap(),
-            "{\"stolen\": true}",
-            "the symlink target's bytes must be untouched"
-        );
         std::fs::remove_file(&journal).unwrap();
         std::fs::write(&journal, b"\xff\xfe not utf8").unwrap();
         assert!(matches!(
