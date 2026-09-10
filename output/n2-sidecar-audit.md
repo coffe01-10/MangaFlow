@@ -214,6 +214,8 @@
     在新断言下响亮失败。#334 待 lead。
   - 0909 续跑：runner **17 passed**（28.0s，E3/E4 双中继架构 + 全部表驱动）；D5 PASS；
     cargo 9/9；#333（死后 announced 端口降级形态钉死）待 lead。
+  - 0911 续跑（master `5a97b6f`，#355 已合并）：runner **23 passed**（28.2s，e2e 5 + relay 9
+    + bind 3 + env/api-root 6）、cargo **110 passed / 0 failed**、D5 PASS——本轮最终证据。
 - **遗留 PR**：#286（断言统一）已由 lead 合并；本审计报告随 night 分支持久化
   （`night/n2-platform-burn-20260908`）。
 - **收敛判定**：范围内（sidecar / scripts / plan-B 壳内 Web / static-export 围栏）无已知
