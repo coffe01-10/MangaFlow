@@ -1098,12 +1098,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&user_data);
     }
 
-    /// Error-path pins: a symlink at the journal path and a non-UTF8
-    /// journal both fail closed (the bounded reader's refusals surfaced as
-    /// JournalMissing / JournalMismatch("non-utf8")).
+    /// Error-path pin: a symlink at the journal path fails closed (the
+    /// bounded reader refuses links, surfaced as JournalMissing) and the
+    /// link target's bytes stay untouched. Unix-only: planting the link
+    /// needs the platform symlink API.
     #[test]
     #[cfg(unix)]
-    fn journal_symlink_and_non_utf8_fail_closed() {
+    fn journal_symlink_fails_closed_and_spares_the_target() {
         let dir = std::env::temp_dir().join(format!(
             "mangaflow-desktop-jsymlink-{}-{}",
             std::process::id(),
@@ -1131,12 +1132,32 @@ mod tests {
             "{\"stolen\": true}",
             "the symlink target's bytes must be untouched"
         );
-        assert_eq!(
-            std::fs::read_to_string(&outside).unwrap(),
-            "{\"stolen\": true}",
-            "the symlink target's bytes must be untouched"
-        );
         std::fs::remove_file(&journal).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Error-path pin (cross-platform, red team 2026-09-09 review: the
+    /// non-UTF8 classification needs no privileges and no symlinks, so it
+    /// must not hide behind the symlink test's unix gate): a journal whose
+    /// bytes are not valid UTF-8 fails closed as JournalMismatch("non-utf8")
+    /// instead of being read lossily or panicking.
+    #[test]
+    fn journal_non_utf8_fails_closed() {
+        let dir = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-jnonutf8-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let journal = dir.join(JOURNAL_NAME);
+        let ready = ReadyPayload {
+            token: "0".repeat(32),
+            pid: 1,
+            api_origin: "http://127.0.0.1:8080".into(),
+            port: 8080,
+            web_origin: None,
+        };
         std::fs::write(&journal, b"\xff\xfe not utf8").unwrap();
         assert!(matches!(
             verify_journal(&journal, &ready),
