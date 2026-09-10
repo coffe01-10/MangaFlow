@@ -248,9 +248,11 @@ def desktop(tmp_path: Path):
         shell.wait_health()
         yield shell, user_data, record
     except BaseException as error:
-        # An assert inside finally would REPLACE the in-flight body error:
-        # a helper that died mid-test must be reported in addition to, not
-        # instead of, the failure the body actually hit.
+        # An assert inside finally would REPLACE the in-flight setup error:
+        # a helper that died during setup (handshake/health) must be
+        # reported in addition to, not instead of, the failure the setup
+        # actually hit. (Mid-TEST failures propagate through the yield and
+        # never reach this except — pytest runs the teardown separately.)
         body_error = error
         raise
     finally:
