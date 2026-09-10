@@ -447,10 +447,12 @@ export function compileDirectorCommand(input: DirectorRuleInput): DirectorPlan {
     }
     const payload: Record<string, unknown> = {};
     // 否定按"子句"判定:「去掉雾,改成晚上」里否定只作用于雾,时间仍是
-    // 正面设定;整句检测会把时间改动静默丢掉。天气移除值按类型映射
-    // ("雨"系→无雨、雪→无雪、雾→无雾、阴/晴互反),裸「雨」也属于雨系。
+    // 正面设定;整句检测会把时间改动静默丢掉。子句从剥离角色名后的文本
+    // 切分(名字里的「停」等否定字样不再劫持天气),且 、 是并列连词不是
+    // 子句边界——「去掉雾、雪」必须整体视为移除,否则首个匹配词会脱离
+    // 否定子句被反向写成肯定值。
     const NEGATION = /去掉|移除|拿掉|停|不要/;
-    const clauses = utterance.split(/[,，。;；!！?？、]/);
+    const clauses = nameStripped.split(/[,，。;；!！?？]/);
     const weatherNegated = weather
       ? clauses.some((clause) => NEGATION.test(clause) && weather[0].test(clause))
       : false;

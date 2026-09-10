@@ -308,6 +308,18 @@ def run_package_transaction(
     raise HTTPException(status_code=409, detail="模型包操作冲突，请稍后重试") from last_error
 
 
+def _is_postgres_retryable_conflict(error: OperationalError) -> bool:
+    """PG deadlock (40P01) / serialization failure (40001): both are resolved
+    by retrying the unit, and both used to escape as an unhandled 500 — the
+    residual lock-order windows (pre-read vs late-commit discoveries) surface
+    exactly this way, so a bounded retry converts them into transparent
+    recovery."""
+
+    orig = getattr(error, "orig", None)
+    pgcode = getattr(orig, "pgcode", None)
+    return pgcode in {"40P01", "40001"}
+
+
 def run_lock_retry(
     db: Session,
     fn,
@@ -316,7 +328,7 @@ def run_lock_retry(
     max_attempts: int = ORDINAL_ALLOCATION_MAX_ATTEMPTS,
     commit: bool = False,
 ):
-    """Retry ``fn()`` on SQLite lock/busy with a full rollback.
+    """Retry ``fn()`` on SQLite lock/busy and PG deadlock/serialization errors.
 
     Callers that take ``lock_asset_for_ownership`` outside
     ``run_package_transaction`` must use this so ``SQLITE_BUSY`` becomes a
@@ -334,7 +346,9 @@ def run_lock_retry(
                 db.commit()
             return result
         except (IntegrityError, OperationalError) as error:
-            if isinstance(error, OperationalError) and not is_sqlite_lock_error(error):
+            if isinstance(error, OperationalError) and not (
+                is_sqlite_lock_error(error) or _is_postgres_retryable_conflict(error)
+            ):
                 raise
             last_error = error
             db.rollback()

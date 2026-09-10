@@ -178,6 +178,20 @@ describe("director rules 规则桩（V02-41B）", () => {
     expect(rainStop.envelope.payload).toEqual({ weather: "无雨" });
   });
 
+  it("并列连词 、 不拆子句:枚举式移除不反向写成肯定值", () => {
+    // 「去掉雾、雪」的 、 是并列:若按子句边界切分,首个匹配词会脱离否定
+    // 子句,把用户要移除的天气写成肯定值。
+    const plan = compileDirectorCommand(baseInput({ utterance: "去掉雾、雪" }));
+    expect(plan.kind).toBe("command");
+    if (plan.kind !== "command") return;
+    expect(plan.envelope.payload).toEqual({ weather: "无雪" });
+
+    const mixed = compileDirectorCommand(baseInput({ utterance: "去掉雨、雾" }));
+    expect(mixed.kind).toBe("command");
+    if (mixed.kind !== "command") return;
+    expect(mixed.envelope.payload).toEqual({ weather: "无雾" });
+  });
+
   it("复合口令按子句判定否定:「去掉雾,改成晚上」移除雾且仍设定时间", () => {
     const plan = compileDirectorCommand(baseInput({ utterance: "去掉雾，改成晚上" }));
     expect(plan.kind).toBe("command");
