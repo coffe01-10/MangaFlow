@@ -595,7 +595,18 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
     for (const item of catalog.data ?? []) groups.set(item.category, [...(groups.get(item.category) ?? []), item]);
     return [...groups.entries()];
   }, [catalog.data]);
-  const displayedRun = currentRun ?? runs.data?.[0] ?? null;
+  // currentRun is the optimistic snapshot from a start/approve/cancel
+  // response and never updates afterwards; the polled runs list is the live
+  // source of truth. Prefer the list entry for the SAME run id once the poll
+  // knows about it, fall back to the snapshot only until the first poll
+  // catches up (and to the list head after a reload when nothing is running).
+  // Freezing on the snapshot kept node badges and WAITING_APPROVAL rows on
+  // the start-time state for the whole run, so later approval barriers never
+  // rendered and the workflow looked hung.
+  const displayedRun = (currentRun && runs.data?.find((run) => run.id === currentRun.id))
+    ?? currentRun
+    ?? runs.data?.[0]
+    ?? null;
   const selectedNodeRun = displayedRun?.node_runs.find((item) => item.node_id === selectedId) ?? null;
   const renderedNodes = useMemo(() => {
     if (!displayedRun) return nodes;

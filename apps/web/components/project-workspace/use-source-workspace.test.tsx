@@ -88,4 +88,36 @@ describe("useSourceWorkspace 关键行为", () => {
     expect(getHook().sourceText).toBe("绝不悄悄丢掉的文本");
     confirmSpy.mockRestore();
   });
+
+  it("迟到的保存成功不得清掉用户已切去编辑的另一章文本", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    let resolveRevise!: () => void;
+    reviseApi.mockReset().mockImplementation(() => new Promise<void>((resolve) => {
+      resolveRevise = resolve;
+    }));
+    const getHook = renderProbe();
+    await act(async () => {
+      getHook().setEditingChapterId("chapter-a");
+      getHook().setSourceText("章节 A 的修订文本");
+    });
+    await act(async () => {
+      getHook().importSource.mutate();
+    });
+    expect(reviseApi).toHaveBeenCalledWith("chapter-a", "第一章", "章节 A 的修订文本");
+    // 保存 A 仍在途：用户此时切到章节 B 的修订编辑。
+    await act(async () => {
+      await getHook().beginEditChapter("chapter-b", "第一章");
+    });
+    expect(getHook().editingChapterId).toBe("chapter-b");
+    expect(getHook().sourceText).toBe("旧章节内容");
+    // A 的保存此刻才成功：表单已归属 B，不得被清空或改写。
+    await act(async () => {
+      resolveRevise();
+    });
+    await waitFor(() => expect(getHook().importSource.isSuccess).toBe(true));
+    expect(getHook().editingChapterId).toBe("chapter-b");
+    expect(getHook().sourceText).toBe("旧章节内容");
+    expect(getHook().importNotice).toBe("");
+    confirmSpy.mockRestore();
+  });
 });
