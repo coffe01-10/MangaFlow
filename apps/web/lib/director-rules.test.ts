@@ -154,6 +154,27 @@ describe("director rules 规则桩（V02-41B）", () => {
     expect(plan.scopeLabel).toContain("主场景");
   });
 
+  it("移除类天气口令按类型映射:雾→无雾、雪→无雪,不再一律写成“无雨”", () => {
+    const fog = compileDirectorCommand(baseInput({ utterance: "把雾去掉" }));
+    expect(fog.kind).toBe("command");
+    if (fog.kind !== "command") return;
+    expect(fog.envelope.operation).toBe("update_scene_context");
+    expect(fog.envelope.payload).toEqual({ weather: "无雾" });
+
+    const snow = compileDirectorCommand(baseInput({ utterance: "雪停了" }));
+    expect(snow.kind).toBe("command");
+    if (snow.kind !== "command") return;
+    expect(snow.envelope.payload).toEqual({ weather: "无雪" });
+  });
+
+  it("否定时间口令进入澄清而不是把否定值写进 time_label", () => {
+    // 「不要夜晚」旧逻辑会写 time_label:"夜晚",与用户意图正好相反。
+    const plan = compileDirectorCommand(baseInput({ utterance: "不要夜晚" }));
+    expect(plan.kind === "clarify" || plan.kind === "unsupported").toBe(true);
+    if (plan.kind === "command") return;
+    expect(plan.reason).toContain("时间");
+  });
+
   it("角色名含天气字样（小雨）时不得把角色指令劫持为场景天气修改", () => {
     const rain = characterFixture({ id: "character-rain", primary_name: "小雨" });
     const panels = [panelFixture({

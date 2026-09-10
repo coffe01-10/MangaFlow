@@ -139,7 +139,15 @@ export function ScriptEditor({
     },
   });
 
+  // 站内编辑按钮(编辑场景/修改)不走 <a> 链接,锚点点击守卫拦不到它们;
+  // 切换编辑目标同样要确认,与锚点守卫和章节 <select> 的丢弃确认一致。
+  function confirmDiscardDraft() {
+    return !editorDirty
+      || window.confirm("当前场景 / 情节拍的修改尚未保存，切换编辑目标会丢弃这些修改。仍要切换吗？");
+  }
+
   function beginScene(scene: ScriptScene) {
+    if (!confirmDiscardDraft()) return;
     setEditingScene(scene.id);
     setEditingBeat(null);
     setSceneDraft({
@@ -153,6 +161,7 @@ export function ScriptEditor({
   }
 
   function beginBeat(beat: ScriptBeat) {
+    if (!confirmDiscardDraft()) return;
     setEditingBeat(beat.id);
     setEditingScene(null);
     setBeatDraft({

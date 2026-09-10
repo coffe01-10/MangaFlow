@@ -381,6 +381,12 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
 
   const connect = useCallback((connection: Connection) => {
     if (!validConnection(connection) || !connection.sourceHandle || !connection.targetHandle) return;
+    // 确定性边 id 意味着同一端口对连两次会产生两条同 id 的边:React key
+    // 冲突,且按 id 删除会一次移除两条。连接前先按端口对判重。
+    if (edgesRef.current.some((edge) => edge.source === connection.source
+      && edge.sourceHandle === connection.sourceHandle
+      && edge.target === connection.target
+      && edge.targetHandle === connection.targetHandle)) return;
     record();
     setEdges((items) => addEdge({
       ...connection,

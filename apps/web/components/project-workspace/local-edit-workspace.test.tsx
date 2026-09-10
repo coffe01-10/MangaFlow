@@ -278,13 +278,16 @@ describe("LocalEditWorkspace 局部选区编辑器（V02-43B）", () => {
     expect(maskStats()).toBe("已选 25% 面积 · 1/8 块");
 
     fireEvent.click(screen.getByRole("button", { name: "放大画布" }));
-    drawRect(stage, [160, 160], [480, 480]);
-    // zoom 1.25 时同一屏幕拖拽映射到更小的图像区域（累计 25% + 16%）
-    expect(maskStats()).toBe("已选 41% 面积 · 2/8 块");
+    // zoom 1.25 时在左上角拖拽映射到图像 [102,102]-[307,307](约 4%,与
+    // 中心 25% 选区部分重叠 0.25%):面积按并集计 28.75% → 29%。若缩放映射
+    // 漂移成恒等,该矩形会与中心选区完全重合,面积仍是 25%,断言即失败。
+    drawRect(stage, [0, 0], [160, 160]);
+    expect(maskStats()).toBe("已选 29% 面积 · 2/8 块");
 
     fireEvent.click(screen.getByRole("button", { name: "复位画布缩放" }));
     drawRect(stage, [160, 160], [480, 480]);
-    expect(maskStats()).toBe("已选 66% 面积 · 3/8 块");
+    // 复位后同一屏幕拖拽映射回与第一块完全相同的矩形:并集面积不变。
+    expect(maskStats()).toBe("已选 29% 面积 · 3/8 块");
   });
 
   it("L5 并排比较：源与新槽位同时可见，徽章与空态不同", () => {

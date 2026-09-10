@@ -124,6 +124,13 @@ def approve_node(
     elif spec.barrier == "APPROVE":
         if run.scope_type != "PAGE" or not run.scope_id:
             raise ValueError("采用候选节点必须使用 PAGE 运行范围")
+        # Lock-order fence mirroring the GENERATE branch above: this unit locks
+        # the page row (#223 currency gate) and only claims the run at the end,
+        # while cancel_run / reconcile's FAILED sweep claim the run first and
+        # then take page locks through mark_job_cancelled's page restore —
+        # the inverse PAGE→RUN order is an AB-BA deadlock on PostgreSQL.
+        # The conditional run claim below still decides the race semantically.
+        lock_entity(db, WorkflowRun, run.id)
         # Lock the page before reading the candidate (#223): a storyboard edit
         # (mark_storyboard_changed) or a concurrent selection/retraction that
         # commits between the route's read and this claim would otherwise be

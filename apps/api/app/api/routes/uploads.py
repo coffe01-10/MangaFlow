@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
 from PIL.Image import DecompressionBombError
 from sqlalchemy import delete, select, update
@@ -35,7 +35,11 @@ from app.models import (
 )
 from app.request_limits import ASSET_UPLOAD_OPENAPI, ParsedUpload, parse_single_file_form
 from app.schemas import AssetRead, AssetUpdate
-from app.services.character_packages import detach_draft_package_references_for_asset
+from app.services.character_packages import (
+    detach_draft_package_references_for_asset,
+    lock_asset_for_ownership,
+    run_lock_retry,
+)
 from app.services.media import (
     create_thumbnails,
     inspect_upload_image,
@@ -198,7 +202,15 @@ def _detach_reference_asset(db: Session, asset: Asset) -> None:
 
 
 @router.get("", response_model=list[AssetRead])
-def list_assets(project_id: str, db: Session = Depends(get_db)) -> list[AssetRead]:
+def list_assets(
+    project_id: str,
+    # Bounded pages: a long-lived project's asset list must not serialize in
+    # one unbounded response; workspace consumers page until a short page
+    # (same contract as scene-assets / character packages).
+    limit: int = Query(default=200, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+) -> list[AssetRead]:
     project = db.get(Project, project_id)
     if not project or project.deleted_at is not None:
         raise HTTPException(status_code=404, detail="项目不存在")
@@ -207,6 +219,8 @@ def list_assets(project_id: str, db: Session = Depends(get_db)) -> list[AssetRea
             select(Asset)
             .where(Asset.project_id == project_id, Asset.deleted_at.is_(None))
             .order_by(Asset.created_at.desc())
+            .offset(offset)
+            .limit(limit)
         )
     )
     return [asset_read(asset) for asset in assets]
@@ -291,8 +305,11 @@ def upload_asset(
             # Issue #210-4: byte-identical re-upload must not silently answer
             # with an asset of a different kind — the caller's binding intent
             # (character/outfit/style/scene) would be attached to a row that
-            # feeds a different reference pool.
-            if existing.kind != normalized_kind:
+            # feeds a different reference pool. Tombstoned rows are exempt:
+            # there is no live binding to misroute, and the resurrect below
+            # rewrites the kind — otherwise deleting an asset would lock its
+            # bytes out of every other reference kind forever.
+            if existing.deleted_at is None and existing.kind != normalized_kind:
                 raise HTTPException(
                     status_code=409,
                     detail="同内容素材已按其他参考用途上传，请先删除原图或改用原用途",
@@ -361,7 +378,7 @@ def upload_asset(
                         )
                     )
                     if existing is not None:
-                        if existing.kind != normalized_kind:
+                        if existing.deleted_at is None and existing.kind != normalized_kind:
                             # The concurrent winner resurrected with a
                             # different kind; do not flip it back.
                             thumbnail_asset_id = asset_id
@@ -465,9 +482,29 @@ def update_asset(
         if asset.source != "USER_UPLOAD":
             raise HTTPException(status_code=409, detail="生成结果不能改成参考图")
         if payload.kind != asset.kind:
-            _ensure_asset_not_in_active_job(db, asset)
-            _detach_reference_asset(db, asset)
-            asset.kind = payload.kind
+            # Kind-flip teardown races the bind routes: they validate kind/
+            # liveness and insert a reference row without the ownership lock,
+            # so a binding committed between this read and the commit below
+            # survives the flip pointing at a now-invalid kind. Serialize on
+            # the same Asset ownership lock the character bind route takes
+            # (flip first, re-validate under the lock; bind routes validate
+            # and insert under it too).
+            def _flip() -> None:
+                locked = lock_asset_for_ownership(db, asset.id)
+                if not locked or locked.deleted_at is not None:
+                    raise HTTPException(status_code=404, detail="素材不存在")
+                if locked.kind == payload.kind:
+                    return
+                _ensure_asset_not_in_active_job(db, locked)
+                _detach_reference_asset(db, locked)
+                locked.kind = payload.kind
+
+            run_lock_retry(
+                db,
+                _flip,
+                conflict_detail="素材用途切换冲突，请稍后重试",
+            )
+            db.expire(asset, ["kind"])
     if "display_name" in payload.model_fields_set:
         asset.display_name = payload.display_name
     # Issue #210/#211: the version bump used to be a blind ORM increment, so

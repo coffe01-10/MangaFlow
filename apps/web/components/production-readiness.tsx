@@ -67,7 +67,7 @@ export function ProductionReadiness({
   return <section className="generation-reference-check production-readiness">
     <header>
       <div><span>PRODUCTION CHECK / 页面生产准备</span><strong>服务器统一判断这页能不能正式生成</strong></div>
-      <small>{loading ? "检查中" : readiness?.ready ? "准备完成" : "存在阻塞项"}</small>
+      <small>{loading ? "检查中" : error ? "检查失败" : readiness?.ready ? "准备完成" : "存在阻塞项"}</small>
     </header>
 
     {loading ? <p className="reference-check-loading"><Cpu className="spin" size={15} />正在核对剧本、参考资产、风格与执行器…</p> : null}

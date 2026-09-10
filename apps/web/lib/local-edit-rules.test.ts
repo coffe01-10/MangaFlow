@@ -112,6 +112,18 @@ describe("local-edit-rules mask 数学", () => {
     expect(formatMaskArea([rect], 1000, 1000)).toBe("1.0");
   });
 
+  it("重叠选区的面积只计一次(并集)", () => {
+    // 两块 10×10 选区完全重叠时,面积应为 100 px²而不是 200。
+    const a: MaskRegion = { points: [[10, 10], [20, 10], [20, 20], [10, 20]] };
+    const b: MaskRegion = { points: [[10, 10], [20, 10], [20, 20], [10, 20]] };
+    const overlap = maskAreaRatio([a, b], 100, 100);
+    expect(overlap).toBeCloseTo(100 / 10000, 5);
+    // 部分重叠:5×10 的重叠区不应计两遍(100+100-50=150)。
+    const c: MaskRegion = { points: [[15, 10], [25, 10], [25, 20], [15, 20]] };
+    const partial = maskAreaRatio([a, c], 100, 100);
+    expect(partial).toBeCloseTo(150 / 10000, 5);
+  });
+
   it("撤销/重做栈深度 ≥ 20（实现为 50）", () => {
     let state: MaskHistoryState = { past: [], present: [], future: [] };
     for (let index = 0; index < LOCAL_EDIT_HISTORY_LIMIT + 10; index += 1) {

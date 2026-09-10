@@ -2,6 +2,7 @@
 
 import { AppShell } from "@/components/shell";
 import { workflowModeLabels } from "@/components/project-workspace/labels";
+import { ClampedNumberInput } from "@/components/clamped-number-input";
 import { api, type Project, type Resolution, type WorkflowMode } from "@/lib/api";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Check, CircleAlert, Gauge, LoaderCircle, Save, ShieldCheck, SlidersHorizontal, Trash2 } from "lucide-react";
@@ -116,11 +117,7 @@ export default function ProjectSettingsPage() {
             <header><Gauge size={18} /><div><span>OUTPUT</span><h2>清晰度与并发</h2></div></header>
             <div className="project-inline-setting"><span><strong>草稿清晰度</strong><small>抽卡和预览使用</small></span><div className="segmented" role="group" aria-label="草稿清晰度">{(["1K", "2K"] as Resolution[]).map((value) => <button key={value} aria-pressed={draft.draft_resolution === value} className={draft.draft_resolution === value ? "selected" : ""} onClick={() => update("draft_resolution", value)}>{value}</button>)}</div></div>
             <div className="project-inline-setting"><span><strong>正式清晰度</strong><small>导出前保持结构升清</small></span><div className="segmented" role="group" aria-label="正式清晰度">{(["1K", "2K", "4K"] as Resolution[]).map((value) => <button key={value} aria-pressed={draft.default_resolution === value} className={draft.default_resolution === value ? "selected" : ""} onClick={() => update("default_resolution", value)}>{value}</button>)}</div></div>
-            <label className="project-inline-setting"><span><strong>任务并发</strong><small>同一项目最多并行任务数</small></span><input type="number" min={1} max={8} value={draft.default_concurrency} onChange={(event) => {
-              // 清空/半输入会得到 0 或 NaN，直接透传会撞后端 422；夹回有效区间。
-              const parsed = Number(event.target.value);
-              if (Number.isFinite(parsed)) update("default_concurrency", Math.min(8, Math.max(1, Math.round(parsed))));
-            }} /></label>
+            <label className="project-inline-setting"><span><strong>任务并发</strong><small>同一项目最多并行任务数</small></span><ClampedNumberInput value={draft.default_concurrency} min={1} max={8} onCommit={(value) => update("default_concurrency", value)} /></label>
           </section>
 
           <section className="project-setting-section checks-section">

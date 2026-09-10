@@ -13,6 +13,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, CircleAlert, LoaderCircle, Palette, Plus, RotateCcw, Sparkles, Trash2 } from "lucide-react";
 import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
+import { useLocalStorageValue, writeLocalStorage } from "@/lib/local-storage-store";
 import { activePollInterval } from "@/lib/task-status";
 
 import { candidateStatusLabels } from "./project-workspace/labels";
@@ -26,6 +27,12 @@ interface CharacterConceptDraft {
 
 function conceptDraftKey(projectId: string, characterId: string) {
   return `mangaflow:character-concept-draft:${projectId}:${characterId}`;
+}
+
+const DEFAULT_STYLE_ATMOSPHERE = "葬礼后的克制情绪、潮湿京都、低饱和但保留人物识别色";
+
+function styleAtmosphereKey(styleId: string) {
+  return `mangaflow:style-atmosphere:${styleId}`;
 }
 
 function CandidatePreview({ candidate, label, onOpen }: { candidate: PageCandidate; label: string; onOpen: (url: string, label: string) => void }) {
@@ -225,7 +232,12 @@ export function StyleProductionPanel({
   onOpen: (url: string, label: string) => void;
 }) {
   const queryClient = useQueryClient();
-  const [atmosphere, setAtmosphere] = useState("葬礼后的克制情绪、潮湿京都、低饱和但保留人物识别色");
+  // 氛围文本按风格持久化:面板以 `${style.id}:${style.version}` 为 key,
+  // 色板分析提交会 bump version 触发重挂载,本地 state 会把用户改过的
+  // 文本静默重置回默认值。与 CharacterConceptPanel 的草稿持久化同模式。
+  const atmosphereKey = styleAtmosphereKey(style.id);
+  const storedAtmosphere = useLocalStorageValue(atmosphereKey, DEFAULT_STYLE_ATMOSPHERE);
+  const atmosphere = storedAtmosphere ?? DEFAULT_STYLE_ATMOSPHERE;
   const [paletteRows, setPaletteRows] = useState(() => paletteFromProfile(style));
 
   const batches = useQuery({
@@ -327,7 +339,7 @@ export function StyleProductionPanel({
   };
 
   return <div className="style-production-pipeline">
-    <div className="pipeline-stage" id={`style-palette-draft-${style.id}`}><header><span>01 / AI 色板草稿</span><small>{style.status === "ANALYZING" ? "正在分析" : paletteRows.length ? `${paletteRows.length} 项` : "尚未生成"}</small></header><label><span>章节氛围</span><textarea value={atmosphere} onChange={(event) => setAtmosphere(event.target.value)} /></label><button type="button" disabled={style.color_mode !== "color" || draftPalette.isPending || style.status === "ANALYZING"} onClick={() => draftPalette.mutate()}>{draftPalette.isPending || style.status === "ANALYZING" ? <LoaderCircle className="spin" size={13} /> : <Palette size={13} />}{paletteRows.length ? "重新提议色板" : "由默认文字模型提议色板"}</button></div>
+    <div className="pipeline-stage" id={`style-palette-draft-${style.id}`}><header><span>01 / AI 色板草稿</span><small>{style.status === "ANALYZING" ? "正在分析" : paletteRows.length ? `${paletteRows.length} 项` : "尚未生成"}</small></header><label><span>章节氛围</span><textarea value={atmosphere} onChange={(event) => writeLocalStorage(atmosphereKey, event.target.value)} /></label><button type="button" disabled={style.color_mode !== "color" || draftPalette.isPending || style.status === "ANALYZING"} onClick={() => draftPalette.mutate()}>{draftPalette.isPending || style.status === "ANALYZING" ? <LoaderCircle className="spin" size={13} /> : <Palette size={13} />}{paletteRows.length ? "重新提议色板" : "由默认文字模型提议色板"}</button></div>
     <div className="pipeline-stage" id={`style-palette-confirm-${style.id}`}><header><span>02 / 编辑并确认色板</span><small>{paletteConfirmed ? "已确认" : "待确认"}</small></header><div className="palette-row-list">{paletteRows.map((row, index) => <div key={`${row.name}-${index}`}><input aria-label={`色板项 ${index + 1} 名称`} value={row.name} onChange={(event) => setPaletteRows((rows) => rows.map((item, itemIndex) => itemIndex === index ? { ...item, name: event.target.value } : item))} placeholder="色板项" /><input aria-label={`色板项 ${index + 1} 内容`} value={row.value} onChange={(event) => setPaletteRows((rows) => rows.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item))} placeholder="颜色或规则" /><button type="button" aria-label={`删除色板项 ${index + 1}`} onClick={() => setPaletteRows((rows) => rows.filter((_, itemIndex) => itemIndex !== index))}><Trash2 size={12} /></button></div>)}</div><button type="button" className="secondary" onClick={() => setPaletteRows((rows) => [...rows, { name: "", value: "" }])}><Plus size={12} />增加色板项</button><button type="button" disabled={!Object.keys(palette).length || approvePalette.isPending} onClick={() => approvePalette.mutate()}><Check size={13} />{paletteConfirmed ? "保存色板修改" : "确认彩色色板"}</button></div>
     <div className="pipeline-stage" id={`style-test-${style.id}`}><header><span>03 / 风格测试图</span><small>{testApproved ? "人工已通过" : "尚未通过"}</small></header><button type="button" disabled={!paletteConfirmed || !model || generateTest.isPending} onClick={() => generateTest.mutate()}>{generateTest.isPending ? <LoaderCircle className="spin" size={13} /> : <Sparkles size={13} />}生成 1K 风格测试图</button><div className="style-test-candidates">{candidates.data?.filter((candidate) => candidate.variant === "STYLE_TEST").map((candidate) => <article className={approvedCandidateId === candidate.id ? "approved" : ""} key={candidate.id}><CandidatePreview candidate={candidate} label={`${style.name} 风格测试 ${candidate.ordinal}`} onOpen={onOpen} /><div><strong>{approvedCandidateId === candidate.id ? "已通过" : `测试图 ${candidate.ordinal}`}</strong><small>{candidateStatusLabels[candidate.status] ?? candidate.status}</small><button type="button" disabled={!candidate.asset_id || approveTest.isPending || approvedCandidateId === candidate.id} onClick={() => approveTest.mutate(candidate.id)}><Check size={12} />人工通过</button></div></article>)}</div></div>
     <div className="pipeline-stage final"><header><span>04 / 激活正式风格</span><small>{active ? "当前使用中" : "待激活"}</small></header><p>{activationHint}</p><button type="button" disabled={active || activate.isPending} onClick={handleActivation}><Check size={13} />{activationLabel}</button></div>

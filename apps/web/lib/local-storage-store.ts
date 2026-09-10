@@ -11,8 +11,12 @@ const listeners = new Set<() => void>();
 
 function subscribe(listener: () => void) {
   listeners.add(listener);
+  // 跨标签同步:storage 事件只在"其他"标签页写入时触发,恰好补上 emitChange
+  // 覆盖不到的方向,否则另一标签页的写入要等手动刷新才会生效。
+  window.addEventListener("storage", listener);
   return () => {
     listeners.delete(listener);
+    window.removeEventListener("storage", listener);
   };
 }
 

@@ -190,6 +190,9 @@ def list_usage_reconciliations(
     channel: str | None = Query(default=None, pattern="^(HTTP_API|CLI)$"),
     since: datetime | None = None,
     until: datetime | None = None,
+    # Bounded response: reconciliations accumulate over the project's life;
+    # the newest periods are what the dashboard compares against attempts.
+    limit: int = Query(default=100, ge=1, le=500),
     db: Session = Depends(get_db),
 ) -> list[ProviderUsageReconciliation]:
     since = _as_utc(since, field="since")
@@ -212,6 +215,6 @@ def list_usage_reconciliations(
             query.order_by(
                 ProviderUsageReconciliation.period_start.desc(),
                 ProviderUsageReconciliation.id.desc(),
-            )
+            ).limit(limit)
         )
     )

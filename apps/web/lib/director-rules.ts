@@ -447,11 +447,27 @@ export function compileDirectorCommand(input: DirectorRuleInput): DirectorPlan {
     }
     const payload: Record<string, unknown> = {};
     const wantsGone = /去掉|移除|拿掉|停|不要/.test(utterance);
-    if (weather) payload.weather = wantsGone ? "无雨" : weather[1];
-    if (timeLabel) payload.time_label = timeLabel[1];
+    // 移除语义按天气类型映射:"无雨"只对雨系成立,把雾写成"无雨"会污染
+    // 后续所有抽卡的场景提示词;阴/晴互为对方的中性反义。
+    const WEATHER_REMOVAL: Record<string, string> = {
+      "暴雨": "无雨", "雷雨": "无雨", "大雨": "无雨", "小雨": "无雨",
+      "雪": "无雪", "雾": "无雾", "阴": "晴", "晴": "阴",
+    };
+    if (wantsGone && !weather && timeLabel) {
+      // 否定时间没有自然反义(「不要夜晚」该变成白天还是清晨?),写回否定值
+      // 恰好与用户意图相反,改为要求正面表述。
+      return {
+        kind: "clarify",
+        reason: "时间无法直接“移除”，请改成想要的时间，例如：时间改成白天",
+        options: [],
+      };
+    }
+    const weatherValue = weather ? (wantsGone ? WEATHER_REMOVAL[weather[1]] ?? weather[1] : weather[1]) : null;
+    if (weatherValue) payload.weather = weatherValue;
+    if (timeLabel && !wantsGone) payload.time_label = timeLabel[1];
     const changes = [
-      weather ? `天气→${wantsGone ? "无雨" : weather[1]}` : null,
-      timeLabel ? `时间→${timeLabel[1]}` : null,
+      weatherValue ? `天气→${weatherValue}` : null,
+      timeLabel && !wantsGone ? `时间→${timeLabel[1]}` : null,
     ].filter(Boolean).join("、");
     const panelNote = parsePanelNumber(utterance);
     const scopeNote = panelNote != null ? `（含格 ${panelNote}）` : "";

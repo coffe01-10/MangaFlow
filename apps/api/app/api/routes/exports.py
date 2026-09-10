@@ -110,10 +110,15 @@ def download_selected_page(
     if not asset or asset.deleted_at is not None:
         raise HTTPException(status_code=409, detail="页面采用素材不存在")
     path = _asset_path(asset)
+    # The route path is fixed (…/export.png) but the delivered filename must
+    # match the actual bytes: webp/jpeg candidates delivered as .png break
+    # extension-based viewers.
+    mime_suffix = (asset.mime_type or "image/png").split("/")[-1].lower()
+    suffix = {"jpeg": "jpg", "png": "png", "webp": "webp"}.get(mime_suffix, "png")
     return FileResponse(
         path,
         media_type=asset.mime_type or "image/png",
-        filename=f"page-{page.page_number:04d}.png",
+        filename=f"page-{page.page_number:04d}.{suffix}",
     )
 
 
