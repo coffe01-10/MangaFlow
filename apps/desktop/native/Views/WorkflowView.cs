@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net.Http;
 using System.IO;
 using System.Text.Json;
@@ -42,6 +43,9 @@ public sealed class WorkflowView : WorkspaceView
     private readonly Dictionary<string, (System.Windows.Shapes.Path Curve, System.Windows.Shapes.Path Hit)> edgePaths = new();
     private List<JsonElement> nodeTypes = [];
     private List<JsonElement> workflows = [];
+    private List<JsonElement> textModels = [];    // /models 里 TEXT+structured_text 的模型（网页 textModels）
+    private List<JsonElement> imageModels = [];   // /models 里 IMAGE+image_edit 的模型（审批时选择）
+    private List<JsonElement> runRows = [];       // 运行历史：GET workflows/{id}/runs 原序（created_at 倒序）
     private List<ChapterItem> chapters = [];
     private List<PageItem> scopePages = [];
     private JsonElement current;
@@ -57,6 +61,12 @@ public sealed class WorkflowView : WorkspaceView
     private double scale = 0.75;
     private System.Windows.Shapes.Path? pendingWire;   // 连线拖拽中的虚线预览
     private Action? cancelWire;                        // Escape 取消进行中的连线拖拽
+    private readonly StackPanel runHistory = new();    // 属性面板下方的运行历史列表（轮询刷新不重建属性面板）
+    private readonly StackPanel approvalQueue = new(); // 页脚审批队列（网页 footer 的 WAITING_APPROVAL 行）
+    private string drawModel = "";                     // 审批时选择的图片模型（网页 drawModel 状态）
+    private string drawResolution = "1K";              // 审批清晰度（网页 drawResolution 状态）
+    private bool approving;                            // 审批动作防重入（网页 approveNode.isPending 禁用）
+    private int runsLoading;                           // LoadRunsAsync 防重入（3s 轮询上一轮未返回时跳过）
 
     public WorkflowView()
     {
@@ -123,8 +133,37 @@ public sealed class WorkflowView : WorkspaceView
         inspectorHost.Children.Add(inspectorHeader);
         var inspectorScroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = inspector, Padding = new Thickness(12) };
         inspectorHost.Children.Add(inspectorScroll);
-        Grid.SetColumn(inspectorHost, 2);
-        split.Children.Add(inspectorHost);
+        // 运行历史与属性面板同列（网页把版本列表这类辅助列表放进属性面板 aside）。
+        // 刻意分成两个面板：轮询刷新运行历史时不重建属性面板的输入框，编辑中的
+        // 文本不会被 3s 轮询打断（网页 runs 轮询也只更新节点角标与审批行）。
+        var historyHost = new DockPanel { Background = new SolidColorBrush(Color.FromRgb(0x20, 0x24, 0x21)) };
+        var historyHeader = new Border
+        {
+            Padding = new Thickness(12, 12, 12, 10),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0x38, 0x3D, 0x39)),
+            BorderThickness = new Thickness(0, 1, 0, 0),
+            Child = new StackPanel
+            {
+                Children =
+                {
+                    new TextBlock { Text = "RUN HISTORY", FontSize = 10, FontWeight = FontWeights.Bold, Foreground = new SolidColorBrush(Color.FromRgb(0xA4, 0xAD, 0xA7)) },
+                    new TextBlock { Text = "运行历史", FontSize = 13, FontWeight = FontWeights.Bold, Foreground = new SolidColorBrush(Color.FromRgb(0xE9, 0xE6, 0xDD)) },
+                },
+            },
+        };
+        DockPanel.SetDock(historyHeader, Dock.Top);
+        historyHost.Children.Add(historyHeader);
+        var historyScroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = runHistory, Padding = new Thickness(12) };
+        historyHost.Children.Add(historyScroll);
+        var rightColumn = new Grid();
+        rightColumn.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        rightColumn.RowDefinitions.Add(new RowDefinition { Height = new GridLength(232) });
+        Grid.SetRow(inspectorHost, 0);
+        Grid.SetRow(historyHost, 1);
+        rightColumn.Children.Add(inspectorHost);
+        rightColumn.Children.Add(historyHost);
+        Grid.SetColumn(rightColumn, 2);
+        split.Children.Add(rightColumn);
 
         var runner = BuildRunner();
         DockPanel.SetDock(runner, Dock.Bottom);
@@ -296,7 +335,13 @@ public sealed class WorkflowView : WorkspaceView
         runMonitor.Margin = new Thickness(18, 0, 0, 0);
         scopeRow.Children.Add(runMonitor);
         dock.Children.Add(scopeRow);
-        bar.Child = dock;
+        // 审批队列挂在页脚（网页 footer 的 WAITING_APPROVAL 行）：有等待确认的
+        // 节点时出现模型/清晰度选择与「确认继续」，为空时不占高度。
+        var content = new StackPanel();
+        content.Children.Add(dock);
+        approvalQueue.Margin = new Thickness(0, 4, 0, 0);
+        content.Children.Add(approvalQueue);
+        bar.Child = content;
         return bar;
     }
 
@@ -313,6 +358,7 @@ public sealed class WorkflowView : WorkspaceView
             nodeTypes = (await typesTask).EnumerateArray().ToList();
             workflows = (await workflowsTask).EnumerateArray().ToList();
             chapters = (await chaptersTask).EnumerateArray().Select(ChapterItem.From).ToList();
+            await LoadModelsAsync();
             RenderLibrary();
             workflowSelector.Items.Clear();
             foreach (var workflow in workflows)
@@ -370,6 +416,45 @@ public sealed class WorkflowView : WorkspaceView
         {
             scopeTarget.SelectedItem = null;
             statusLine.Text = $"运行范围读取失败：{error.Message}";
+        }
+    }
+
+    // 模型目录独立加载（网页的 models 查询也是独立 staleTime 查询）：失败只让
+    // 检查器下拉退化为 auto 选项、审批选不到模型，不阻断工作流载入。
+    private async Task LoadModelsAsync()
+    {
+        try
+        {
+            var rows = await Api.SendAsync("models", cancellation: lifetime.Token);
+            if (lifetime.Token.IsCancellationRequested) return;
+            textModels = rows.EnumerateArray()
+                .Where(m => m.Text("model_type") == "TEXT" && HasOperation(m, "structured_text")).ToList();
+            imageModels = rows.EnumerateArray()
+                .Where(m => m.Text("model_type") == "IMAGE" && HasOperation(m, "image_edit")).ToList();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            textModels = [];
+            imageModels = [];
+            statusLine.Text = $"模型目录读取失败：{error.Message.Split('\n')[0]}";
+        }
+    }
+
+    private static bool HasOperation(JsonElement model, string operation) =>
+        model.Array("operations").Any(item => item.ToString() == operation);
+
+    // 对齐网页 selectedTextModels：TEXT+structured_text 模型里保留「已启用且显示」
+    // 或当前绑定别名的模型（creatorVisibleModels：隐藏模型不失效已绑定值），
+    // quality.inspect 节点还要求 multimodal_analysis 能力。
+    private IEnumerable<JsonElement> VisibleTextModels(WorkflowNode node, string currentAlias)
+    {
+        foreach (var model in textModels)
+        {
+            if (node.Type == "quality.inspect" && !HasOperation(model, "multimodal_analysis")) continue;
+            if (model.Flag("enabled") && model.Flag("display_enabled")
+                || model.Text("logical_alias") == currentAlias)
+                yield return model;
         }
     }
 
@@ -1160,19 +1245,36 @@ public sealed class WorkflowView : WorkspaceView
     private JsonElement latestRun;
     private bool runActive;
 
+    // 运行数据端点与刷新时机对齐网页：GET workflows/{id}/runs（后端 created_at
+    // 倒序）；启动/取消/审批后立即重取，运行期间 3s 轮询（网页 refetchInterval
+    // 3000，条件是列表里任一运行处于 RUNNING）。
     private async Task LoadRunsAsync()
     {
+        // 防重入：上一轮请求未返回时跳过本轮，避免晚到的旧响应覆盖新结果
+        if (Interlocked.CompareExchange(ref runsLoading, 1, 0) != 0) return;
         try
         {
             var runs = await Api.SendAsync($"workflows/{workflowId}/runs", cancellation: lifetime.Token);
             if (lifetime.Token.IsCancellationRequested) return;
-            var list = runs.EnumerateArray().ToList();
-            if (list.Count == 0) return;
-            latestRun = list[0];
-            runActive = latestRun.Text("status") == "RUNNING";
+            runRows = runs.EnumerateArray().ToList();
+            runMonitor.Children.Clear();
+            approvalQueue.Children.Clear();
+            runActive = runRows.Any(row => row.Text("status") == "RUNNING");
+            if (runRows.Count == 0)
+            {
+                foreach (var node in nodes) node.SetRunStatus(null);
+                runMonitor.Children.Add(new TextBlock
+                {
+                    Text = "尚未运行已发布版本",
+                    Foreground = new SolidColorBrush(Color.FromRgb(0xA4, 0xAD, 0xA7)), FontSize = 12,
+                    VerticalAlignment = VerticalAlignment.Center,
+                });
+                RenderRunHistory();
+                return;
+            }
+            latestRun = runRows[0];   // 后端倒序，首条即网页 displayedRun 的 runs.data[0] 回退
             var nodeRuns = latestRun.Array("node_runs");
             var done = nodeRuns.Count(n => n.Text("status") == "COMPLETED");
-            runMonitor.Children.Clear();
             var summary = new TextBlock
             {
                 Text = $"运行 {Labels.Map(Labels.WorkflowRunStatus, latestRun.Text("status"))} · {done}/{nodeRuns.Count}",
@@ -1185,26 +1287,175 @@ public sealed class WorkflowView : WorkspaceView
                 node.SetRunStatus(run.ValueKind == JsonValueKind.Object
                     ? Labels.Map(Labels.WorkflowRunStatus, run.Text("status")) : null);
             }
-            if (runActive && latestRun.Text("status") == "RUNNING")
+            if (latestRun.Text("status") == "RUNNING")
             {
                 var cancel = Kit.Act("取消", async (_, _) =>
                 {
                     try
                     {
-                        await Api.SendAsync($"workflow-runs/{latestRun.Text("id")}/cancel", HttpMethod.Post);
+                        await Api.SendAsync($"workflow-runs/{latestRun.Text("id")}/cancel", HttpMethod.Post, cancellation: lifetime.Token);
                         await LoadRunsAsync();
                     }
+                    catch (OperationCanceledException) { }
                     catch (Exception error) { MessageBox.Show(Host, error.Message, "取消失败"); }
                 }, "Compact");
                 cancel.Margin = new Thickness(12, 0, 0, 0);
                 runMonitor.Children.Add(cancel);
             }
+            RenderApprovals(latestRun);
+            RenderRunHistory();
         }
          catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             _ = error;
         }
+        finally
+        {
+            Interlocked.Exchange(ref runsLoading, 0);
+        }
+    }
+
+    // ============ 审批队列（网页 footer 的 WAITING_APPROVAL 行为基准） ============
+    // 审批行来自「当前展示运行」的 node_runs（网页 displayedRun.node_runs 过滤
+    // WAITING_APPROVAL）。网页对等待节点只有「确认继续」（approve 端点）；
+    // 网页与后端都没有节点级「拒绝」动作——拒绝语义由运行级「取消」承担
+    // （cancel_run 是唯一的停止途径），桌面保持一致，不发明 reject 端点。
+    private void RenderApprovals(JsonElement run)
+    {
+        foreach (var nodeRun in run.Array("node_runs").Where(item => item.Text("status") == "WAITING_APPROVAL"))
+        {
+            var isGenerator = nodeRun.Text("node_type") == "generator.page";
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 7, 0, 0) };
+            row.Children.Add(new TextBlock
+            {
+                Text = isGenerator ? "单页生成等待选择模型" : "采用候选后继续",
+                FontWeight = FontWeights.Bold, FontSize = 12,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xE9, 0xE6, 0xDD)),
+                VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0),
+            });
+            Button approve = null!;
+            if (isGenerator)
+            {
+                // 图片模型列表 = 网页 imageModels（IMAGE+image_edit 再过 creatorVisibleModels）
+                var modelBox = new ComboBox { Width = 220, MaxDropDownHeight = 320 };
+                System.Windows.Automation.AutomationProperties.SetName(modelBox, "选择图片模型");
+                modelBox.Items.Add(new ComboBoxItem { Tag = "", Content = "选择图片模型" });
+                foreach (var model in imageModels.Where(m =>
+                             (m.Flag("enabled") && m.Flag("display_enabled")) || m.Text("logical_alias") == drawModel))
+                    modelBox.Items.Add(new ComboBoxItem
+                    {
+                        Tag = model.Text("logical_alias"),
+                        Content = $"{model.Text("provider")} · {model.Text("display_name")}",
+                    });
+                modelBox.SelectedItem = modelBox.Items.OfType<ComboBoxItem>().FirstOrDefault(item => (string?)item.Tag == drawModel)
+                    ?? modelBox.Items.OfType<ComboBoxItem>().First();
+                modelBox.SelectionChanged += (_, _) =>
+                {
+                    if (modelBox.SelectedItem is ComboBoxItem { Tag: string value })
+                    {
+                        drawModel = value;
+                        // 网页：generator.page 未选模型前「确认继续」禁用
+                        approve.IsEnabled = !approving && drawModel.Length > 0;
+                    }
+                };
+                var resolutionBox = new ComboBox { Width = 76, Margin = new Thickness(8, 0, 0, 0) };
+                System.Windows.Automation.AutomationProperties.SetName(resolutionBox, "选择图片清晰度");
+                foreach (var option in new[] { "1K", "2K", "4K" }) resolutionBox.Items.Add(option);
+                resolutionBox.SelectedItem = drawResolution;
+                resolutionBox.SelectionChanged += (_, _) =>
+                {
+                    if (resolutionBox.SelectedItem is string value) drawResolution = value;
+                };
+                row.Children.Add(modelBox);
+                row.Children.Add(resolutionBox);
+            }
+            else
+            {
+                // 网页此处是跳转单页生成页采用候选的链接
+                var adopt = Kit.Act("前往采用", async (_, _) => await Context!.NavigateSection("generate", ""), "Compact");
+                adopt.Margin = new Thickness(0, 0, 8, 0);
+                row.Children.Add(adopt);
+            }
+            approve = Kit.Act("确认继续", async (_, _) => await ApproveNodeAsync(nodeRun), "CompactInk");
+            approve.Margin = new Thickness(8, 0, 0, 0);
+            approve.IsEnabled = !approving && (!isGenerator || drawModel.Length > 0);
+            row.Children.Add(approve);
+            approvalQueue.Children.Add(row);
+        }
+    }
+
+    // 审批动作对齐网页 approveWorkflowNode：GENERATE 栅栏必须携带显式图片模型与
+    // 清晰度，APPROVE 栅栏载荷为空对象；成功后重取 runs（网页 runs.refetch）。
+    private async Task ApproveNodeAsync(JsonElement nodeRun)
+    {
+        if (approving) return;
+        approving = true;
+        try
+        {
+            var isGenerator = nodeRun.Text("node_type") == "generator.page";
+            var payload = isGenerator
+                ? new { image_model_alias = drawModel.Length > 0 ? drawModel : null, resolution = drawResolution }
+                : (object)new { };
+            await Api.SendAsync(
+                $"workflow-runs/{nodeRun.Text("workflow_run_id")}/nodes/{nodeRun.Text("node_id")}/approve",
+                HttpMethod.Post, payload, cancellation: lifetime.Token);
+            statusLine.Text = "已确认继续";
+            await LoadRunsAsync();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            statusLine.Text = $"审批失败：{error.Message.Split('\n')[0]}";
+        }
+        finally
+        {
+            approving = false;
+        }
+    }
+
+    // ============ 运行历史（桌面补充的只读列表） ============
+    // 网页只把 runs 列表用于页脚当前运行态与审批行；桌面把同一份数据补一个
+    // 历史列表：状态 / 范围 / 节点进度 / 时间。记录无「触发者」字段（后端
+    // WorkflowRunRead 不含操作人），以运行范围代替。
+    private void RenderRunHistory()
+    {
+        runHistory.Children.Clear();
+        if (runRows.Count == 0)
+        {
+            runHistory.Children.Add(new TextBlock
+            {
+                Text = "尚未运行已发布版本",
+                Foreground = new SolidColorBrush(Color.FromRgb(0xA4, 0xAD, 0xA7)), FontSize = 12,
+            });
+            return;
+        }
+        foreach (var run in runRows.Take(8))
+        {
+            var nodeRuns = run.Array("node_runs");
+            var done = nodeRuns.Count(item => item.Text("status") == "COMPLETED");
+            var time = DateTimeOffset.TryParse(run.Text("created_at"), out var date)
+                ? date.ToLocalTime().ToString("MM-dd HH:mm") : "";
+            runHistory.Children.Add(new TextBlock
+            {
+                Text = $"{Labels.Map(Labels.WorkflowRunStatus, run.Text("status"))} · {ScopeLabel(run)} · {done}/{nodeRuns.Count} · {time}",
+                Foreground = new SolidColorBrush(Color.FromRgb(0xE9, 0xE6, 0xDD)),
+                FontSize = 12, Margin = new Thickness(0, 6, 0, 0), TextWrapping = TextWrapping.Wrap,
+            });
+        }
+    }
+
+    private string ScopeLabel(JsonElement run)
+    {
+        var id = run.Text("scope_id");
+        return run.Text("scope_type") switch
+        {
+            "CHAPTER" => chapters.FirstOrDefault(c => c.Id == id) is { } chapter ? $"第 {chapter.Ordinal} 章" : "章节范围",
+            "PAGE" => scopePages.FirstOrDefault(p => p.Id == id) is { } page ? $"第 {page.PageNumber} 页" : "页面范围",
+            "CANDIDATE" => "候选范围",
+            "PROJECT" => "项目范围",
+            var type => type,
+        };
     }
 
     private void UpdateStatus(string label)
@@ -1213,6 +1464,14 @@ public sealed class WorkflowView : WorkspaceView
         statusLine.Text = $"{label} · 草稿 V{current.Number("draft_version")} · 已发布 {(published ? "版本就绪" : "尚未发布")}";
     }
 
+    // ============ 节点检查器（配置项/出现条件/值域对齐网页 workflow-studio） ============
+    // 每项的出现条件、默认值与写回键名逐项对齐网页：
+    // - 建议清晰度：仅 generator.page（默认 1K，写回 resolution）；
+    // - 文本模型+温度：仅 config.model_alias 为真值时（agent./quality./director.
+    //   新节点默认 "auto"），模型下拉来源 = 网页 selectedTextModels 过滤逻辑；
+    // - 超时/重试/提示词/备注：所有节点；condition 三件套：仅 control.condition。
+    // 并发/锁定/需要审批三项网页检查器未渲染（仅存在于 config 契约），桌面按后端
+    // schema 的值域补上编辑入口，见文末差异说明。
     private void RenderInspector()
     {
         inspector.Children.Clear();
@@ -1235,38 +1494,210 @@ public sealed class WorkflowView : WorkspaceView
             return;
         }
         var node = selected;
+        var config = node.ConfigElement;
+
         var name = new TextBox { Text = node.Name };
+        System.Windows.Automation.AutomationProperties.SetName(name, "节点名称");
         // SetName 同步画布标题；标题换行变化会推挤端口区并触发锚点重测+边重画
         name.TextChanged += (_, _) => { node.SetName(name.Text); ScheduleSave(); };
-        var timeout = new TextBox { Text = node.ConfigElement.TryGetProperty("timeout_seconds", out var t) && t.ValueKind == JsonValueKind.Number ? t.GetInt32().ToString() : "900", Width = 130 };
-        var retries = new TextBox { Text = node.ConfigElement.TryGetProperty("max_attempts", out var r) && r.ValueKind == JsonValueKind.Number ? r.GetInt32().ToString() : "3", Width = 130 };
-        var prompt = new TextBox
-        {
-            AcceptsReturn = true, MinHeight = 70,
-            Text = node.ConfigElement.TryGetProperty("prompt_template", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : "",
-        };
-        prompt.TextChanged += (_, _) => { node.SetConfig("prompt_template", prompt.Text.Length == 0 ? null : prompt.Text); ScheduleSave(); };
-        var notes = new TextBox
-        {
-            AcceptsReturn = true, MinHeight = 44,
-            Text = node.ConfigElement.TryGetProperty("notes", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString() : "",
-        };
-        notes.TextChanged += (_, _) => { node.SetConfig("notes", notes.Text.Length == 0 ? null : notes.Text); ScheduleSave(); };
 
         inspector.Children.Add(DarkLabel("节点名称"));
         inspector.Children.Add(name);
         inspector.Children.Add(DarkLabel("节点类型"));
         inspector.Children.Add(new TextBlock { Text = node.Type, Foreground = new SolidColorBrush(Color.FromRgb(0xA4, 0xAD, 0xA7)), FontFamily = (FontFamily)Application.Current.FindResource("Mono"), FontSize = 12 });
-        timeout.TextChanged += (_, _) => { if (int.TryParse(timeout.Text, out var v)) { node.SetConfig("timeout_seconds", v); ScheduleSave(); } };
-        retries.TextChanged += (_, _) => { if (int.TryParse(retries.Text, out var v)) { node.SetConfig("max_attempts", v); ScheduleSave(); } };
+
+        // generator.page：图片模型在审批时必须显式选择（网页检查器为只读说明 + 建议清晰度）
+        if (node.Type == "generator.page")
+        {
+            inspector.Children.Add(DarkLabel("模型"));
+            var modelNote = new TextBox { Text = "必须显式选择供应商图片模型", IsReadOnly = true };
+            System.Windows.Automation.AutomationProperties.SetName(modelNote, "模型说明");
+            inspector.Children.Add(modelNote);
+            var resolution = new ComboBox { Width = 130 };
+            System.Windows.Automation.AutomationProperties.SetName(resolution, "建议清晰度");
+            foreach (var option in new[] { "1K", "2K", "4K" }) resolution.Items.Add(option);
+            resolution.SelectedItem = config.Text("resolution", "1K") is "1K" or "2K" or "4K" ? config.Text("resolution", "1K") : "1K";
+            resolution.SelectionChanged += (_, _) =>
+            {
+                if (resolution.SelectedItem is string value) { node.SetConfig("resolution", value); ScheduleSave(); }
+            };
+            inspector.Children.Add(DarkLabel("建议清晰度"));
+            inspector.Children.Add(resolution);
+        }
+
+        // 文本模型+温度：网页在 config.model_alias 为真值时才渲染（新 agent./quality./
+        // director. 节点默认 "auto"，source/generator 节点为 null → 不出现）。
+        var alias = config.Text("model_alias");
+        if (alias.Length > 0)
+        {
+            var aliasBox = new ComboBox();
+            System.Windows.Automation.AutomationProperties.SetName(aliasBox, "文本模型");
+            // 网页 workflow-studio 的下拉只有 selectedTextModels，"auto" 值无对应选项
+            // 会渲染成空白；桌面固定提供 auto 选项（文案对齐网页设置页「自动路由」），
+            // 保证默认值可见且可改回。
+            aliasBox.Items.Add(new ComboBoxItem { Tag = "auto", Content = "自动路由" });
+            foreach (var model in VisibleTextModels(node, alias))
+                aliasBox.Items.Add(new ComboBoxItem
+                {
+                    Tag = model.Text("logical_alias"),
+                    Content = $"{model.Text("provider")} · {model.Text("display_name")}",
+                });
+            aliasBox.SelectedItem = aliasBox.Items.OfType<ComboBoxItem>().FirstOrDefault(item => (string?)item.Tag == alias);
+            aliasBox.SelectionChanged += (_, _) =>
+            {
+                if (aliasBox.SelectedItem is ComboBoxItem { Tag: string value }) { node.SetConfig("model_alias", value); ScheduleSave(); }
+            };
+            inspector.Children.Add(DarkLabel("文本模型"));
+            inspector.Children.Add(aliasBox);
+
+            var temperature = new TextBox
+            {
+                Text = config.Decimal("temperature", 0.2).ToString("0.###", CultureInfo.InvariantCulture),
+                Width = 130,
+            };
+            System.Windows.Automation.AutomationProperties.SetName(temperature, "温度");
+            AttachNumberEditor(temperature, node, "temperature", 0, 2, 0.2, round: false);
+            inspector.Children.Add(DarkLabel("温度（0-2）"));
+            inspector.Children.Add(temperature);
+        }
+
+        var timeout = new TextBox { Text = ((int)config.Decimal("timeout_seconds", 900)).ToString(), Width = 130 };
+        System.Windows.Automation.AutomationProperties.SetName(timeout, "超时（秒）");
+        AttachNumberEditor(timeout, node, "timeout_seconds", 30, 3600, 900, round: true);
+        var retries = new TextBox { Text = ((int)config.Decimal("max_attempts", 3)).ToString(), Width = 130 };
+        System.Windows.Automation.AutomationProperties.SetName(retries, "重试次数");
+        AttachNumberEditor(retries, node, "max_attempts", 1, 10, 3, round: true);
         inspector.Children.Add(DarkLabel("超时（秒）"));
         inspector.Children.Add(timeout);
         inspector.Children.Add(DarkLabel("重试次数"));
         inspector.Children.Add(retries);
+
+        // 桌面补充（网页检查器未渲染）：并发值域来自后端 schema（1-8，默认 1）
+        var concurrency = new TextBox { Text = ((int)config.Decimal("concurrency", 1)).ToString(), Width = 130 };
+        System.Windows.Automation.AutomationProperties.SetName(concurrency, "并发");
+        AttachNumberEditor(concurrency, node, "concurrency", 1, 8, 1, round: true);
+        inspector.Children.Add(DarkLabel("并发（1-8）"));
+        inspector.Children.Add(concurrency);
+
+        var prompt = new TextBox
+        {
+            AcceptsReturn = true, MinHeight = 70,
+            Text = config.Text("prompt_template"),
+        };
+        System.Windows.Automation.AutomationProperties.SetName(prompt, "提示词");
+        prompt.TextChanged += (_, _) => { node.SetConfig("prompt_template", prompt.Text.Length == 0 ? null : prompt.Text); ScheduleSave(); };
+
         inspector.Children.Add(DarkLabel("提示词"));
         inspector.Children.Add(prompt);
+
+        // condition 三件套：仅 control.condition（默认 path="$"、operator="exists"）
+        if (node.Type == "control.condition")
+        {
+            var path = new TextBox { Text = ConditionText(node, "path", "$"), Width = 180 };
+            System.Windows.Automation.AutomationProperties.SetName(path, "JSON 路径");
+            path.TextChanged += (_, _) => { SetConditionValue(node, "path", path.Text); ScheduleSave(); };
+            var operators = new ComboBox { Width = 130 };
+            System.Windows.Automation.AutomationProperties.SetName(operators, "比较符");
+            foreach (var (value, label) in new[]
+                     {
+                         ("exists", "存在"), ("eq", "等于"), ("ne", "不等于"), ("contains", "包含"),
+                         ("gt", "大于"), ("gte", "大于等于"), ("lt", "小于"), ("lte", "小于等于"),
+                     })
+                operators.Items.Add(new ComboBoxItem { Tag = value, Content = label });
+            var currentOperator = ConditionText(node, "operator", "exists");
+            operators.SelectedItem = operators.Items.OfType<ComboBoxItem>()
+                .FirstOrDefault(item => (string?)item.Tag == currentOperator)
+                ?? operators.Items.OfType<ComboBoxItem>().First(item => (string?)item.Tag == "exists");
+            operators.SelectionChanged += (_, _) =>
+            {
+                if (operators.SelectedItem is ComboBoxItem { Tag: string value }) { SetConditionValue(node, "operator", value); ScheduleSave(); }
+            };
+            var conditionValue = new TextBox { Text = ConditionText(node, "value", ""), Width = 180 };
+            System.Windows.Automation.AutomationProperties.SetName(conditionValue, "比较值");
+            conditionValue.TextChanged += (_, _) => { SetConditionValue(node, "value", conditionValue.Text); ScheduleSave(); };
+            inspector.Children.Add(DarkLabel("JSON 路径"));
+            inspector.Children.Add(path);
+            inspector.Children.Add(DarkLabel("比较符"));
+            inspector.Children.Add(operators);
+            inspector.Children.Add(DarkLabel("比较值"));
+            inspector.Children.Add(conditionValue);
+        }
+
+        var notes = new TextBox
+        {
+            AcceptsReturn = true, MinHeight = 44,
+            Text = config.Text("notes"),
+        };
+        System.Windows.Automation.AutomationProperties.SetName(notes, "备注");
+        notes.TextChanged += (_, _) => { node.SetConfig("notes", notes.Text.Length == 0 ? null : notes.Text); ScheduleSave(); };
         inspector.Children.Add(DarkLabel("备注"));
         inspector.Children.Add(notes);
+
+        // 桌面补充（网页检查器未渲染，config 契约支持）：锁定 / 需要审批
+        var locked = new CheckBox
+        {
+            Content = "锁定", IsChecked = config.Flag("locked"), Margin = new Thickness(0, 12, 0, 0),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xE9, 0xE6, 0xDD)),
+        };
+        System.Windows.Automation.AutomationProperties.SetName(locked, "锁定");
+        locked.Checked += (_, _) => { node.SetConfig("locked", true); ScheduleSave(); };
+        locked.Unchecked += (_, _) => { node.SetConfig("locked", false); ScheduleSave(); };
+        var requiresApproval = new CheckBox
+        {
+            Content = "需要审批", IsChecked = config.Flag("requires_approval"), Margin = new Thickness(0, 6, 0, 0),
+            Foreground = new SolidColorBrush(Color.FromRgb(0xE9, 0xE6, 0xDD)),
+        };
+        System.Windows.Automation.AutomationProperties.SetName(requiresApproval, "需要审批");
+        requiresApproval.Checked += (_, _) => { node.SetConfig("requires_approval", true); ScheduleSave(); };
+        requiresApproval.Unchecked += (_, _) => { node.SetConfig("requires_approval", false); ScheduleSave(); };
+        inspector.Children.Add(locked);
+        inspector.Children.Add(requiresApproval);
+    }
+
+    // 网页数值输入框的等价行为：可解析的输入立即写回钳制值（网页 onChange 里
+    // Number.isFinite 检查后 Math.min/max 钳制写回），半输入（"1e"）保持旧值。
+    // 网页 input 是受控组件、写回会同步重渲显示；桌面在失焦时才把显示对齐到已
+    // 写回的钳制值，避免输入过程中重置光标。
+    private void AttachNumberEditor(TextBox box, WorkflowNode node, string key, double min, double max, double fallback, bool round)
+    {
+        box.TextChanged += (_, _) =>
+        {
+            var text = box.Text.Trim();
+            if (text.Length == 0 || !double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed)) return;
+            var value = Math.Clamp(round ? Math.Round(parsed) : parsed, min, max);
+            node.SetConfig(key, round ? (int)value : value);
+            ScheduleSave();
+        };
+        box.LostFocus += (_, _) =>
+        {
+            var value = node.ConfigElement.Decimal(key, fallback);
+            box.Text = round
+                ? ((int)value).ToString(CultureInfo.InvariantCulture)
+                : value.ToString("0.###", CultureInfo.InvariantCulture);
+        };
+    }
+
+    // condition 子键读取（网页 String(condition.path ?? "$") 等默认值语义）
+    private static string ConditionText(WorkflowNode node, string key, string fallback)
+    {
+        var condition = node.ConfigElement.Element("condition");
+        return condition.ValueKind == JsonValueKind.Object ? condition.Text(key, fallback) : fallback;
+    }
+
+    // condition 写回走「合并已有键再覆盖单键」（网页 { ...condition, path } 展开
+    // 语义），不丢弃 path/operator/value 之外的键。
+    private static void SetConditionValue(WorkflowNode node, string key, object? value)
+    {
+        var merged = new Dictionary<string, object?>();
+        if (node.Config.TryGetValue("condition", out var raw))
+        {
+            if (raw is JsonElement { ValueKind: JsonValueKind.Object } element)
+                foreach (var property in element.EnumerateObject()) merged[property.Name] = property.Value.Clone();
+            else if (raw is Dictionary<string, object?> dictionary)
+                foreach (var entry in dictionary) merged[entry.Key] = entry.Value;
+        }
+        merged[key] = value;
+        node.SetConfig("condition", merged);
     }
 
     private static TextBlock DarkLabel(string text) => new()
