@@ -135,4 +135,4 @@
 - R3：漏报补挖——#344 伴随形状、#343 wiring 空转缺陷、#317 第 1 项被 #298 提前修复的重划
 - R4：终审（对 #357 的复核由 R2 承担；威胁模型与本台账逐项核验）
 
-**D — 旧账状态：** #308 PARTIAL（stat→open 已修，validate→stat 残差）、#313 FIXED、#314 PARTIAL（标记必要不充分）、#315 FIXED、#316 FIXED、#317 两项已修建议关、#311 PARTIAL（junction 钉 + 政策输入）、#299/#300 认领者跟进。非 Desktop 的 N1 期 Red Team Issue（#121-#152 等）不在 N3 审计面。
+**D — 旧账状态（20260911 收尾核对）：** #308 PARTIAL 并已关闭（stat→open 已修，validate→stat 残差记录在案）、#313 FIXED 并已关闭、#314 PARTIAL 开放（标记必要不充分，见 #314 评论）、#315 FIXED 并已关闭、#316 FIXED 并已关闭、#317 两项已修建议关（已在评论中重划）、#311 PARTIAL 开放（junction 钉 + 政策输入）、#299 已关闭（plan-B 本地上下文壳工具窗口，e0b108c）、#300 开放由认领者跟进。非 Desktop 的 N1 期 Red Team Issue（#121-#152 等）不在 N3 审计面。
