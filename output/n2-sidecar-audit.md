@@ -179,6 +179,26 @@
   （legacy）有此能力 ⇒ 相对功能回退。候选方案（均为产品设计决策，不擅动）：壳级菜单/托盘
   入口打开壳工具页、Next 应用加壳链接、或接受缺失直至原生客户端替代。**未修，仅上报。**
 
+
+
+## 15. 20260911 夜（新一轮烧录，基线 `fe22969`）
+
+- **master 推进**：#293–#306/#319/#330/#331/#334 全部合并；scope 内新落地：
+  **#299 已解决**（src-tauri 新增 local-context `shell-tools` 窗口 + 菜单入口，capabilities
+  windows 扩为 [main, shell-tools]——仍无 remote context，#254 契约不变）；`desktop_read_picked_file`
+  转 async（20MiB 读+base64 不再冻结 UI 线程）；`DIALOG_OPEN` 单例对话框（#316）；
+  helper `_validate_api_root`（#314）+ `_apply_app_environment` 强制 DISABLE_DOTENV（#313）；
+  D5 lstat 符号链接围栏 + in-root symlink 自测（#317）；negative-pid kill 收尾加固。
+- **本轮行级复审（上述新代码，无 BLOCKER）**：capabilities 契约不变；fail-closed journal
+  路径；menu 失败走 stop_helper 记账；`_validate_api_root` 的 fake_channel 反遮蔽检查为
+  字节精确——**Windows 大小写不敏感导入可被 `Fake_Channel.py` 遮蔽** → 本轮 PR #336 修复
+  （lowercase 扫描 + 大小写变体测试行，红/绿验证）。
+- **串行证据**：runner **17 passed**（4a0ebe6）；env/api-root **6 passed**（含大小写变体行）；
+  e2e **5 passed**（溯源戳重建后）。#334 的陈旧 bundle 断言在 apps/web 变更后实证生效
+  （stale tree hash → 响亮失败 → 重建恢复）。
+- **PR**：#336（case-insensitive fake_channel shadow scan，OPEN）。
+- **Issue**：#299 已由壳工具窗口落地（本节记录）；#300 CSP 债务仍开放。
+
 ## 13. 完成审计（final sweep，master = `f6e4687`）
 
 - **同步**：`origin/master` 自本轮起点推进 `a52fca9` → `f6e4687`（#286 合入 + N1 final
