@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Desktop shell default capability: core windows/events plus the app's own origin command.",
-  "windows": ["main"],
+  "description": "Desktop shell default capability: core windows/events plus the app's own origin command. shell-tools is the local-context tools window (#299); still no `remote` context — the plan-B web origin stays denied.",
+  "windows": ["main", "shell-tools"],
   "permissions": ["core:default"]
 }

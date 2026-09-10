@@ -167,10 +167,13 @@ fn desktop_pick_directory() -> Result<Option<PickedDirectoryDto>, String> {
 /// Read back a previously picked file so the page can upload it through the
 /// ordinary API upload endpoints. Every call re-validates membership in the
 /// session registry and the full pick policy.
+// async (#316): tauri runs async commands off the main thread — a sync
+// command kept the up-to-20 MiB read + base64 encode on the UI thread,
+// freezing dialogs and the WebView loop for its whole duration.
 #[tauri::command]
-fn desktop_read_picked_file(
+async fn desktop_read_picked_file(
     path: String,
-    picked: tauri::State<PickedState>,
+    picked: tauri::State<'_, PickedState>,
 ) -> Result<ReadPickedFileDto, String> {
     if path.is_empty() {
         return Err(pick_error_message(PickError::EmptyPath));
@@ -395,6 +398,53 @@ fn run() {
                 }
                 return Err(error.into());
             }
+
+            // Shell tools window (#299): plan B loads the web app as a REMOTE
+            // origin, where app-command invokes are (correctly) ACL-denied —
+            // so the only local-context surface for desktop_export_logs /
+            // desktop_pick_* needs its own window. Created programmatically
+            // AFTER the handshake gate (never config-declared), hidden until
+            // the menu opens it; same local-context construction as the main
+            // static-export window, so no `remote` capability is involved.
+            if let Err(error) = tauri::WebviewWindowBuilder::new(
+                app,
+                "shell-tools",
+                tauri::WebviewUrl::App("shell-tools.html".into()),
+            )
+            .title("MangaFlow 壳工具")
+            .inner_size(620.0, 520.0)
+            .visible(false)
+            .build()
+            {
+                if let Some(state) = app.try_state::<HelperState>() {
+                    stop_helper(&mut state.inner().0.lock().expect("helper state lock"));
+                }
+                return Err(error.into());
+            }
+            let shell_tools = tauri::menu::MenuItem::with_id(
+                app,
+                "open-shell-tools",
+                "壳工具（日志导出 / 文件选择）",
+                true,
+                None::<&str>,
+            )?;
+            let tools_menu = tauri::menu::Submenu::with_id_and_items(
+                app,
+                "tools",
+                "工具",
+                true,
+                &[&shell_tools],
+            )?;
+            let menu = tauri::menu::Menu::with_items(app, &[&tools_menu])?;
+            app.set_menu(menu)?;
+            app.on_menu_event(|app, event| {
+                if event.id() == "open-shell-tools" {
+                    if let Some(window) = app.get_webview_window("shell-tools") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+            });
             Ok(())
         })
         .build(tauri::generate_context!())

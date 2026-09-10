@@ -10,7 +10,7 @@
 //   4. asserts the exported app calls the API origin DIRECTLY (no /api path
 //      on the static server, no NEXT_PUBLIC dependency) and renders.
 import { createServer } from "node:http";
-import { readFile, stat } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
 import { join, extname, resolve, sep } from "node:path";
 import { spawn } from "node:child_process";
 import { connect } from "node:net";
@@ -103,7 +103,20 @@ const server = createServer(async (req, res) => {
     if (file !== root && !file.startsWith(root + sep)) {
       throw new Error("path escapes the static export root");
     }
-    if ((await stat(file)).isDirectory()) file = join(file, "index.html");
+    // In-root symlinks are refused like escapes (#317): stat/readFile FOLLOW
+    // them, so a planted link (or one whose target swaps after validation)
+    // would serve content the resolve-only containment check never saw.
+    let info = await lstat(file);
+    if (info.isSymbolicLink()) {
+      throw new Error("symlink inside the static export root");
+    }
+    if (info.isDirectory()) {
+      file = join(file, "index.html");
+      info = await lstat(file);
+      if (info.isSymbolicLink()) {
+        throw new Error("symlink inside the static export root");
+      }
+    }
     const body = await readFile(file);
     res.writeHead(200, { "content-type": MIME[extname(file)] ?? "application/octet-stream" });
     res.end(body);
@@ -164,6 +177,55 @@ try {
   }
 }
 
+// ---- 2c. in-root symlink fence (#317) -------------------------------------
+// The lstat refusal above has no other executable verification: plant a link
+// INSIDE the export root (so the resolve fence passes) whose target exists,
+// and require the server to answer 404 instead of following it. Symlink
+// creation can be unavailable (Windows without developer mode); the probe
+// skips loudly rather than silently weakening the fence check.
+{
+  const { symlink, unlink } = await import("node:fs/promises");
+  const probe = join(FRONTEND, "d5-symlink-probe.json");
+  let planted = true;
+  try {
+    await symlink(join(REPO_ROOT, "package.json"), probe, "file");
+  } catch {
+    planted = false;
+  }
+  if (!planted) {
+    console.log("D5 symlink fence skipped: symlink creation unavailable on this host");
+  } else {
+    try {
+      const viaLink = await new Promise((settle) => {
+        const timer = setTimeout(() => sock.destroy(), 3000);
+        const settleOnce = (raw) => {
+          clearTimeout(timer);
+          settle(raw);
+        };
+        const sock = connect(STATIC_PORT, "127.0.0.1", () => {
+          sock.write(
+            "GET /d5-symlink-probe.json HTTP/1.1\r\n" +
+            "Host: 127.0.0.1\r\nConnection: close\r\n\r\n",
+          );
+        });
+        let raw = "";
+        sock.setEncoding("latin1");
+        sock.on("data", (chunk) => { raw += chunk; });
+        sock.on("close", () => settleOnce(raw));
+        sock.on("error", () => settleOnce(raw));
+      });
+      const status = Number(viaLink.split("\r\n")[0]?.split(" ")[1] ?? 0);
+      if (status !== 404) {
+        fail(`in-root symlink served: answered ${status} (must be 404)`);
+      } else {
+        console.log("D5 symlink fence ok: in-root link refused with 404");
+      }
+    } finally {
+      await unlink(probe).catch(() => {});
+    }
+  }
+}
+
 // ---- 3+4. browser with shell-equivalent initialization script ------------
 const browser = await chromium.launch({ args: ["--no-sandbox"] });
 const context = await browser.newContext();
@@ -211,11 +273,21 @@ await browser.close();
 server.close();
 helper.stdin.end();
 const exit_code = await new Promise((resolve) => {
-  const timer = setTimeout(() => {
-    try { process.kill(-helper.pid, "SIGTERM"); } catch {}
-    helper.once("exit", (_, signal) => resolve(signal));
+  // Negative-pid kill targets the helper's process GROUP — valid because the
+  // sidecar setsids itself at startup (mangaflow_desktop_helper.py main();
+  // this script spawns plain, so that branch runs). A lost SIGTERM must not
+  // hang the await: escalate to SIGKILL after the grace, then give up loudly.
+  const killGroup = (signal) => {
+    try { process.kill(-helper.pid, signal); } catch { /* group already gone */ }
+  };
+  let settled = false;
+  const finish = (code) => { if (!settled) { settled = true; resolve(code); } };
+  const giveUp = setTimeout(() => finish(-1), 40000);
+  const killGrace = setTimeout(() => {
+    killGroup("SIGTERM");
+    setTimeout(() => killGroup("SIGKILL"), 10000);
   }, 15000);
-  helper.once("exit", (code) => { clearTimeout(timer); resolve(code); });
+  helper.once("exit", (code) => { clearTimeout(killGrace); clearTimeout(giveUp); finish(code); });
 });
 if (exit_code !== 0) { ok = false; fail(`helper exit ${exit_code}`); }
 console.log(ok ? "D5 PASS: static export + runtime origin injection + direct CORS-allowed API verified" : "D5 FAILED");

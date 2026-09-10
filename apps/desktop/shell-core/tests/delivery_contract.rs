@@ -107,10 +107,11 @@ fn bundle_identity_and_targets_stay_pinned() {
     assert!(names.contains(&"msi") && names.contains(&"nsis"), "{names:?}");
 }
 
-/// The capability file's authority surface stays exactly the default:
-/// core permissions on the single main window. A new permission, window or
-/// capability file widens what a loaded document may reach and must be a
-/// deliberate contract change, not config drift.
+/// The capability file's authority surface stays pinned: core permissions on
+/// exactly the main + shell-tools windows (the tools window is local-context
+/// by construction, #299). A new permission, window or capability file widens
+/// what a loaded document may reach and must be a deliberate contract change,
+/// not config drift.
 #[test]
 fn capability_surface_stays_the_pinned_default() {
     let capabilities = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src-tauri/capabilities");
@@ -143,10 +144,13 @@ fn capability_surface_stays_the_pinned_default() {
         value["identifier"], "default",
         "capability identifier drifted"
     );
+    // #299: shell-tools is the local-context window the 工具 menu opens (the
+    // plan-B web origin is remote and stays denied). The pair is pinned so a
+    // new window is a deliberate contract change, not config drift.
     assert_eq!(
         value["windows"],
-        serde_json::json!(["main"]),
-        "the capability must target only the main window"
+        serde_json::json!(["main", "shell-tools"]),
+        "the capability must target only the main + shell-tools windows"
     );
     assert_eq!(
         value["permissions"],

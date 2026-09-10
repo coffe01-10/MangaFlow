@@ -9,7 +9,11 @@ Push-Location $nativeRepo
 try {
     $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
     $env:MSBuildEnableWorkloadResolver = 'false'
-    & cargo build --manifest-path apps/desktop/shell-core/Cargo.toml --bin native-host
+    # Release host (#315): the copied host used to be the DEBUG build, so
+    # startup measurements against this output directory timed a debug binary.
+    # Debuggability is unaffected — NativeBackend falls back to the debug path
+    # when present.
+    & cargo build --release --manifest-path apps/desktop/shell-core/Cargo.toml --bin native-host
     if ($LASTEXITCODE -ne 0) { throw 'Native host build failed.' }
     & dotnet build $nativeProject -c Release --nologo
     if ($LASTEXITCODE -ne 0) { throw 'Native UI build failed.' }
@@ -18,7 +22,7 @@ try {
     # so a failed or partial copy here would silently run a stale host. Build and
     # copy are already fail-closed; the hash comparison additionally rejects a
     # truncated/locked copy that Copy-Item reported as success.
-    $hostSource = Join-Path $nativeRepo 'apps/desktop/shell-core/target/debug/native-host.exe'
+    $hostSource = Join-Path $nativeRepo 'apps/desktop/shell-core/target/release/native-host.exe'
     $hostTarget = Join-Path $nativeOutput 'native-host.exe'
     Copy-Item -LiteralPath $hostSource -Destination $hostTarget -Force
     if ((Get-FileHash -LiteralPath $hostSource -Algorithm SHA256).Hash -ne

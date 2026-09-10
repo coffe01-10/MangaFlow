@@ -449,18 +449,51 @@ def _run_stub(journal: Path, record: dict, grandchild: bool) -> int:
         server.server_close()
 
 
+def _validate_api_root(api_root: Path) -> str | None:
+    """Return a rejection reason for an unusable --api-root tree, else None.
+
+    --api-root is unvalidated shell input that becomes sys.path[0]: a wrong
+    or hostile tree can shadow the helper's own modules (fake_channel) and
+    hijack alembic's env.py before the API ever imports (#314). Marker files
+    are checked instead of trusting the path string.
+    """
+    if not (api_root / "alembic.ini").is_file():
+        return "api-root/missing-alembic-ini"
+    if not (api_root / "app" / "main.py").is_file():
+        return "api-root/missing-app-main"
+    if (api_root / "fake_channel.py").is_file():
+        return "api-root/shadowing-fake-channel"
+    return None
+
+
+def _apply_app_environment(user_data: Path, web_origin: str) -> None:
+    # Force-set, not setdefault: an inherited MANGAFLOW_DISABLE_DOTENV=0 would
+    # re-enable .env loading relative to the helper's CWD on every start
+    # (#313) — the shell owns this environment, the surrounding machine does
+    # not. Siblings below are already unconditional for the same reason.
+    os.environ["MANGAFLOW_DISABLE_DOTENV"] = "1"
+    os.environ["DATABASE_URL"] = f"sqlite:///{user_data / 'data' / 'mangaflow.db'}"
+    os.environ["STORAGE_ROOT"] = str(user_data / "storage")
+    os.environ["UPLOAD_ROOT"] = str(user_data / "uploads")
+    os.environ["WEB_ORIGIN"] = web_origin
+
+
 def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
     api_root = Path(args.api_root).resolve()
+    rejection = _validate_api_root(api_root)
+    if rejection is not None:
+        # Fail closed through the journal before any import side effect: the
+        # tree never reaches sys.path, alembic, or uvicorn.
+        record.update(state="failed", error=rejection)
+        _write_journal(journal, record)
+        _log(f"api root rejected: {rejection}")
+        return 1
     sys.path.insert(0, str(api_root))
     user_data = Path(args.user_data).resolve()
     # The shell supplies the user-data root; the helper lays out the
     # database directory under it (ADR §4.1 install-form discipline).
     (user_data / "data").mkdir(parents=True, exist_ok=True)
-    os.environ.setdefault("MANGAFLOW_DISABLE_DOTENV", "1")
-    os.environ["DATABASE_URL"] = f"sqlite:///{user_data / 'data' / 'mangaflow.db'}"
-    os.environ["STORAGE_ROOT"] = str(user_data / "storage")
-    os.environ["UPLOAD_ROOT"] = str(user_data / "uploads")
-    os.environ["WEB_ORIGIN"] = args.web_origin
+    _apply_app_environment(user_data, args.web_origin)
 
     sock = None
     web: WebServer | None = None

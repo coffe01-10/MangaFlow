@@ -198,7 +198,8 @@ powershell -ExecutionPolicy Bypass -File apps/desktop/scripts/start-native.ps1
   rfd/文件选择的**策略层**（picker 矩阵 Windows 原生跑绿）、日志目录/RunLog/里程碑实机写入、
   PyInstaller Windows onedir 冻结 sidecar 冒烟。
 - 仍 **NOT RUN**：WebView2 缺失/损坏安装行为（需可控卸载 Runtime）、WebView2 内
-  `shell-tools.html` 工具页 invoke 与 rfd 原生对话框实机交互（壳内 UI 无工具页入口，协议/
+  `shell-tools.html` 工具页 invoke 与 rfd 原生对话框实机交互（#299 后入口为「工具」菜单
+  打开的本地上下文窗口，菜单/窗口/invoke 实机链路仍待真机验证；协议/
   命令面过 Windows 原生测试）、MSI/NSIS 安装器构建与安装/升级/卸载实机、SmartScreen/签名、
   自动更新链路。缓解不变：编译门禁 + 配置契约测试，不以编译通过冒充实机验证。
 - 否决条件核查（ADR §3.1；**已于 2026-09-06 随 W-21 终批逐项复核，决议见 ADR 头部「批准记录」**）：
@@ -275,9 +276,10 @@ powershell -ExecutionPolicy Bypass -File apps/desktop/scripts/start-native.ps1
   能力授予，不是对路径字符串的永久授权。页面拿到字节后仍走既有
   `/uploads`、`/sources` 上传接口，服务端边界零改动。
 - **触发面**：`shell/shell-tools.html`（壳自带工具页，构建脚本随静态导出
-  一起拷入 `dist/frontend/`，壳内访问 `/shell-tools.html`；依赖
-  `withGlobalTauri`，已启用）。Web 前端内嵌入口属静态导出/方案 B 改造
-  （否决条件 3）范围，本轮不做。
+  一起拷入 `dist/frontend/`；入口为「工具」菜单打开的隐藏本地上下文窗口
+  `shell-tools`——#299 修复，plan-B 远程表单的 IPC 仍按 ACL 拒绝；依赖
+  `withGlobalTauri`，已启用）。菜单/窗口/WebView2 实机交互链路 NOT RUN，
+  见上「仍 NOT RUN」。
 
 ### 6.3 门禁（Linux 可跑部分全绿，2026-09-04）
 
@@ -356,8 +358,9 @@ powershell -ExecutionPolicy Bypass -File apps/desktop/scripts/start-native.ps1
 
 1. Windows 实机全链路：**2026-09-06 实机轮已覆盖**完整 debug 壳的握手/渲染（仪表盘级）/
    单实例多开/崩溃清树/协作停机/用户数据布局/日志链路与 PyInstaller 冻结 sidecar；**仍欠**：
-   WebView2 缺失/损坏安装行为、`shell-tools.html` 工具页 invoke 与 rfd 对话框的壳内实机交互
-   （壳内 UI 无入口；策略/命令面已由 Windows 原生测试覆盖）、MSI/NSIS 安装/升级/卸载实机、
+   WebView2 缺失/损坏安装行为、`shell-tools.html` 工具页 invoke 与 rfd 对话框的实机交互
+   （#299 后入口为「工具」菜单的本地上下文窗口，菜单/invoke 链路待真机；策略/命令面已由
+   Windows 原生测试覆盖）、MSI/NSIS 安装/升级/卸载实机、
    签名、自动更新、多开下的会话清扫竞态。
 2. RQ/Redis worker 进程形态与 Independent Worker（按 Issue 约束不装 Redis/Docker/Postgres；本地 LOCAL_EXECUTOR 已验，双平台）。
 3. V02-52A N=20 性能门禁、Lighthouse/FPS（归 V02-52B；#28 处方两轮门禁见 docs/acceptance/）。
