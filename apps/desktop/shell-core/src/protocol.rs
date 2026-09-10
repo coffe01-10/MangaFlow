@@ -366,7 +366,13 @@ fn write_journal_atomic(journal: &Path, record: &serde_json::Value) -> std::io::
         "{}.pending",
         journal.file_name().unwrap_or_default().to_string_lossy()
     ));
-    std::fs::write(&pending, serde_json::to_string(record).unwrap())?;
+    // Serialization of a serde_json::Value cannot fail today, but the
+    // journal write path is on the teardown hotline (every stop path calls
+    // mark_stopped) — keep it panic-free by contract, not by review.
+    let payload = serde_json::to_vec(record).map_err(|error| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
+    })?;
+    std::fs::write(&pending, payload)?;
     std::fs::rename(&pending, journal)
 }
 
@@ -1169,6 +1175,38 @@ mod tests {
             Err(VerifyError::JournalMismatch("non-utf8"))
         ));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Table-driven boundaries for the sweep's runtime-directory name
+    /// predicate: exactly prefix + 32 lowercase-hex chars passes; case,
+    /// length, charset and prefix drift each fail. The stale-runtime sweep
+    /// deletes directories ONLY when this predicate passes, so a false
+    /// positive here would widen deletion to foreign directories.
+    #[test]
+    fn runtime_dir_name_predicate_boundaries() {
+        let valid = "0123456789abcdef0123456789abcdef";
+        assert!(is_runtime_dir_name(&format!("{RUNTIME_DIR_PREFIX}{valid}")));
+        for invalid in [
+            // Case drift (the documented alphabet is lowercase).
+            format!("{RUNTIME_DIR_PREFIX}{}", "A".repeat(32)),
+            format!("{RUNTIME_DIR_PREFIX}{}", valid.to_ascii_uppercase()),
+            // Length boundaries on both sides of 32.
+            format!("{RUNTIME_DIR_PREFIX}{}", "a".repeat(31)),
+            format!("{RUNTIME_DIR_PREFIX}{}", "a".repeat(33)),
+            // Charset drift.
+            format!("{RUNTIME_DIR_PREFIX}{}", "g".repeat(32)),
+            // Prefix drift (missing the trailing separator of the real
+            // prefix) and a foreign prefix entirely.
+            format!("mangaflow-desktop{valid}"),
+            format!("mangaflow-desktopx-{valid}"),
+            format!("other-{valid}"),
+            valid.to_string(),
+        ] {
+            assert!(
+                !is_runtime_dir_name(&invalid),
+                "invalid runtime dir name must be rejected: {invalid}"
+            );
+        }
     }
 
     #[test]

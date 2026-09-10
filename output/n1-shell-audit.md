@@ -207,7 +207,34 @@
 - 残留：write_journal_atomic 的 serde_json unwrap（Value 序列化实际不可失败）；
   get_status_caps 并行负载 flake（master 既有）。
 
+### 20260911 夜间烧（基线 fe22969）
+
+- 谓词边界表：is_runtime_dir_name（大小写/长度两侧/字符集/前缀漂移）与
+  is_valid_token（大小写/长度/字符集/空串）直接钉测——sweep 的删除与日志名
+  谓词以这两个门为前提，假阳性会扩大删除面。
+- write_journal_atomic 去 unwrap：序列化错误映射为 io::Error（InvalidData），
+  teardown 热线按契约保持无 panic。
+- Linux cargo test 9/9 套件、110 项全绿（fe22969 + 本批）。
+- 类别覆盖：启动协议（journal 校验）✓ picker（形状/注册表边界）✓ 导出上限 ✓
+  错误路径 ✓ 红绿判别（谓词表）✓；OwnedTree/stop 与 CSP/capability 已由
+  20260909 波次交付（#323/#326）。
+- Windows 腿 NOT RUN。
+
+### 20260911 续跑轮记录（review rounds 5-6 + 恢复）
+
+- 轮 5（针对 20260909 夜遗留 pin 的复审）：SHIP + 5 NIT → 全部落实
+  （outside.json 字节断言、aged 对照组、文档归属修正、TODO 勘误、pin 哈希落账）。
+- 轮 6（针对续跑批）：HOLD → 修复：readback 交换测试改为 rename 型（tmpfs 的
+  inode 复用曾挫败 (dev,ino) 身份检查——环境性 flake，现确定性检测）；
+  get_status 夹具排干修复随分支重置丢失后重新落地（请求头排干 + 尾部排干 +
+  128 KiB 收敛 + 精确截断断言）。
+- 终态：cargo test 9/9 套件、**110 项**全绿（单元 66 + 集成 42，Linux 实测
+  2026-09-11）。Windows 腿 NOT RUN。
+
 新记录的待办（下轮候选）：
+- 残留：write_journal_atomic 的 serde_json unwrap（Value 序列化实际不可失败）；
+  健康门身份校验（设计级，需 lead 决策）。get_status_caps 并行时序 flake 的
+  夹具根因已由本轮夹具加固消除。
 
 - ~~`unix_now` panic 路径~~ 已修（commit 2cb6321 注入缝钳制，见轮 5 记录）；残留：
   `write_journal_atomic` 的 serde_json unwrap（Value 序列化实际不可失败，仅警告级）。

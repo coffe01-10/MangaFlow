@@ -303,8 +303,9 @@ fn readback_refails_when_picked_file_is_swapped_grows_or_deleted() {
 
 /// #308: a file swapped between the read-back's identity stat and its open
 /// must fail closed — the real race is untestable by design, so the seam
-/// injects the swap at exactly that point. Delete + recreate changes the
-/// on-disk identity (inode / file index) on every platform.
+/// injects the swap at exactly that point. The rename-based exchange puts
+/// the replacement on a fresh on-disk identity (inode / file index) on
+/// every platform, so the identity mismatch is deterministic.
 #[test]
 fn readback_fails_closed_when_swapped_between_validation_and_open() {
     use mangaflow_desktop_shell_core::read_registered_file_with;
@@ -320,15 +321,25 @@ fn readback_fails_closed_when_swapped_between_validation_and_open() {
     let (picked, bytes) = read_registered_file_with(&registry, &source, || {}).unwrap();
     assert_eq!(bytes, "原始正文".as_bytes());
     assert_eq!(picked.path, source.canonicalize().unwrap());
-    // The swap: same path, different on-disk object, valid policy shape.
+    // The swap: the replacement is created as its OWN file and renamed over
+    // the source — rename swaps the directory entry to the replacement's
+    // inode, which is guaranteed different from the removed original on
+    // every filesystem (a plain remove+recreate can reuse the inode on
+    // tmpfs/overlayfs and would defeat the identity check).
+    let replacement = dir.join("replacement.txt");
+    fs::write(&replacement, "被替换的内容").unwrap();
     let error = read_registered_file_with(&registry, &source, || {
-        fs::remove_file(&source).unwrap();
-        fs::write(&source, "被替换的内容").unwrap();
+        fs::rename(&replacement, &source).unwrap();
     })
     .unwrap_err();
     assert!(
         matches!(error, PickError::SwappedAfterValidation),
         "{error}"
+    );
+    assert_eq!(
+        fs::read_to_string(&source).unwrap(),
+        "被替换的内容",
+        "the swapped content is what the refusal declined to serve"
     );
     let _ = fs::remove_dir_all(&dir);
 }

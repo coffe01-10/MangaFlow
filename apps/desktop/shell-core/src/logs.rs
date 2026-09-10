@@ -1261,6 +1261,33 @@ fn place_archive(
 
 #[cfg(test)]
 mod tests {
+    /// Table-driven boundaries for the log-name token gate: exactly 32
+    /// lowercase-hex chars. The sweep and RunLog both reject anything else
+    /// (case drift, length drift, charset drift), so a false positive would
+    /// let a foreign name be treated as owned history.
+    #[test]
+    fn log_name_token_boundaries() {
+        let valid = "0123456789abcdef0123456789abcdef";
+        assert!(is_valid_token(valid));
+        for invalid in [
+            // Case drift.
+            "A".repeat(32),
+            // Length boundaries on both sides of 32.
+            "a".repeat(31),
+            "a".repeat(33),
+            // Charset drift.
+            "g".repeat(32),
+            // Empty and near-empty.
+            String::new(),
+            "a".to_string(),
+        ] {
+            assert!(
+                !is_valid_token(&invalid),
+                "invalid log token must be rejected: {invalid}"
+            );
+        }
+    }
+
     use super::*;
 
     fn temp_user_data(tag: &str) -> PathBuf {
