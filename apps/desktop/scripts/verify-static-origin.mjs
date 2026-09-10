@@ -317,7 +317,10 @@ const killGrace = setTimeout(() => {
 }, 15000);
 void helper_exit.then((code) => { clearTimeout(killGrace); clearTimeout(giveUp); finish(code); });
 const helper_exit_code = (await helper_exit).code;
-if (helper_exit_code !== 0) { ok = false; fail(`helper exit ${helper_exit_code}`); }
+if (helper_exit_code !== 0) {
+    ok = false;
+    fail(`helper exit ${helper_exit_code ?? "give-up"}`);
+  }
 console.log(ok ? "D5 PASS: static export + runtime origin injection + direct CORS-allowed API verified" : "D5 FAILED");
 process.exitCode = ok ? 0 : 1;
 }
