@@ -11,7 +11,9 @@ use mangaflow_desktop_shell_core::picker::{
     read_registered_file, validate_picked_directory, validate_picked_file, PickError, PickKind,
     PickedRegistry,
 };
-use mangaflow_desktop_shell_core::protocol::{new_token, RUNTIME_DIR_PREFIX};
+use mangaflow_desktop_shell_core::protocol::{
+    new_token, JOURNAL_NAME, RUNTIME_DIR_PREFIX,
+};
 
 fn temp_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -474,18 +476,33 @@ fn sweep_keeps_candidates_with_invalid_runtime_names() {
         let candidate = runtime.join(name);
         fs::create_dir_all(&candidate).unwrap();
         fs::write(
-            candidate.join("owner.json"),
+            candidate.join(&JOURNAL_NAME),
             format!("{{\"version\":1,\"token\":\"{}\",\"state\":\"stopped\"}}", name),
         )
         .unwrap();
     }
 
+    // Positive control: a VALID owned runtime name with a terminal journal
+    // is swept by the same call — proving the sweep ran and the keeps above
+    // are the name gate at work, not a no-op sweep.
+    let valid = runtime.join(format!("{RUNTIME_DIR_PREFIX}{}", "9".repeat(32)));
+    fs::create_dir_all(&valid).unwrap();
+    fs::write(
+        valid.join("owner.json"),
+        format!("{{\"version\":1,\"token\":\"{}\",\"state\":\"stopped\"}}", "9".repeat(32)),
+    )
+    .unwrap();
+
     mangaflow_desktop_shell_core::protocol::sweep_runtime_dirs_with(&user_data, 0).unwrap();
 
+    assert!(
+        !valid.exists(),
+        "the positive control must be swept (proves the sweep ran)"
+    );
     for name in &names {
         assert!(
             runtime.join(name).exists(),
-            "a foreign-named directory must never be swept"
+            "invalid runtime-directory name {name} must never be swept"
         );
     }
     let _ = fs::remove_dir_all(&user_data);
