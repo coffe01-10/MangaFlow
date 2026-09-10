@@ -303,8 +303,9 @@ fn readback_refails_when_picked_file_is_swapped_grows_or_deleted() {
 
 /// #308: a file swapped between the read-back's identity stat and its open
 /// must fail closed — the real race is untestable by design, so the seam
-/// injects the swap at exactly that point. Delete + recreate changes the
-/// on-disk identity (inode / file index) on every platform.
+/// injects the swap at exactly that point. The rename-based exchange puts
+/// the replacement on a fresh on-disk identity (inode / file index) on
+/// every platform, so the identity mismatch is deterministic.
 #[test]
 fn readback_fails_closed_when_swapped_between_validation_and_open() {
     use mangaflow_desktop_shell_core::read_registered_file_with;
