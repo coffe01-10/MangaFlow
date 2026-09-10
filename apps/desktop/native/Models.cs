@@ -40,6 +40,18 @@ public static class JsonFields
     }
     public static List<string> Strings(this JsonElement json, string name) =>
         json.Array(name).Select(item => item.ToString()).ToList();
+    /// <summary>String-valued object map (e.g. scene outfit_assignments);
+    /// non-object or non-string members are skipped.</summary>
+    public static Dictionary<string, string> StringMap(this JsonElement json, string name)
+    {
+        var map = new Dictionary<string, string>();
+        var element = json.Element(name);
+        if (element.ValueKind == JsonValueKind.Object)
+            foreach (var property in element.EnumerateObject())
+                if (property.Value.ValueKind == JsonValueKind.String)
+                    map[property.Name] = property.Value.GetString()!;
+        return map;
+    }
     public static string MapText(this JsonElement json, string name, IReadOnlyDictionary<string, string> table) =>
         Labels.Map(table, json.TextOrNull(name));
 }

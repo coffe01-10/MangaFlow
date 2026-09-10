@@ -35,6 +35,7 @@ public sealed class StoryboardView : WorkspaceView
     private readonly Button undoButton = new() { Content = "撤销", Style = (Style)Application.Current.FindResource("Compact") };
     private readonly Button redoButton = new() { Content = "重做", Style = (Style)Application.Current.FindResource("Compact") };
     private readonly TextBlock zoomLabel = new() { Text = "100%", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 8, 0) };
+    private readonly Border conflictBar = new();
 
     private List<ChapterItem> chapters = [];
     private List<PageItem> pages = [];
@@ -48,9 +49,8 @@ public sealed class StoryboardView : WorkspaceView
     private double zoom = 1;
     private double pageAspect = 257.0 / 182.0;
     private readonly CommandStack history = new();
-    private Guid? requestId;
-    private int historyIndexAtRequest;
-    private bool saving, dirty;
+    private bool saving, dirty, bubblesDeleted;
+    private int pageLoadVersion;
     private PanelNode? selected;
     private BubbleNode? selectedBubble;
 
@@ -72,6 +72,7 @@ public sealed class StoryboardView : WorkspaceView
     private void BuildLayout()
     {
         var root = new Grid { Margin = new Thickness(4, 0, 24, 24) };
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
@@ -100,6 +101,11 @@ public sealed class StoryboardView : WorkspaceView
         pageBar.Margin = new Thickness(0, 0, 0, 12);
         Grid.SetRow(pageBar, 1);
         root.Children.Add(pageBar);
+        // 409 冲突条（对齐 web storyboard-editor 的冲突横幅 + discardDraft）：
+        // 几何保存撞车时保留草稿，并给出「放弃草稿并重新加载」的恢复出口。
+        BuildConflictBar();
+        Grid.SetRow(conflictBar, 2);
+        root.Children.Add(conflictBar);
         chapterSelector.SelectionChanged += async (_, _) =>
         {
             if (chapterSelector.SelectedItem is ComboBoxItem { Tag: string id } && id != chapterId)
@@ -131,8 +137,27 @@ public sealed class StoryboardView : WorkspaceView
         inspectorScroll.Margin = new Thickness(16, 0, 0, 0);
         split.Children.Add(inspectorScroll);
         root.Children.Add(split);
-        Grid.SetRow(split, 2);
+        Grid.SetRow(split, 3);
         Content = root;
+    }
+
+    private void BuildConflictBar()
+    {
+        conflictBar.BorderBrush = (Brush)Application.Current.FindResource("Danger");
+        conflictBar.BorderThickness = new Thickness(0, 0, 0, 2);
+        conflictBar.Padding = new Thickness(14, 9, 14, 9);
+        conflictBar.Margin = new Thickness(0, 0, 0, 12);
+        conflictBar.Visibility = Visibility.Collapsed;
+        var row = new StackPanel { Orientation = Orientation.Horizontal };
+        row.Children.Add(new TextBlock
+        {
+            Text = "分镜格已在别处更新，画布草稿已保留",
+            FontSize = 12.5, VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap,
+        });
+        var discard = new Button { Content = "放弃草稿并重新加载", Style = (Style)Application.Current.FindResource("InkButton"), Margin = new Thickness(12, 0, 0, 0) };
+        discard.Click += async (_, _) => await DiscardDraftAndReloadAsync();
+        row.Children.Add(discard);
+        conflictBar.Child = row;
     }
 
     private FrameworkElement BuildToolbar()
@@ -285,12 +310,17 @@ public sealed class StoryboardView : WorkspaceView
     private async Task SelectPageAsync(PageItem item)
     {
         var previous = currentPage;
+        // 单调请求代号（与 ScriptView 的 scriptLoadVersion 同一模式）：快速连点
+        // 两页时，迟到的旧响应既不得渲染旧分镜，也不得改写 currentPage 与页号记忆。
+        var requestVersion = ++pageLoadVersion;
         try
         {
             storyboard = await Api.SendAsync($"pages/{item.Id}/storyboard", cancellation: lifetime.Token);
-            if (lifetime.Token.IsCancellationRequested) return;
-            // 拉取成功后才切换页签状态与记住的页号
-            currentPage = item;
+            if (requestVersion != pageLoadVersion || lifetime.Token.IsCancellationRequested) return;
+            // 拉取成功后才切换页签状态与记住的页号；页版本以服务端为准刷新，
+            // 冲突恢复（放弃并重新加载）后的重试才有新锚点，否则永远撞同一个 409
+            var serverVersion = storyboard.Element("page").Number("storyboard_version");
+            currentPage = serverVersion > 0 && serverVersion != item.StoryboardVersion ? item with { StoryboardVersion = serverVersion } : item;
             KeyValueStore.Set("storyboard:page:" + ProjectId, item.Id);
             var canvasInfo = storyboard.Element("page").Element("canvas");
             double widthMm = canvasInfo.Decimal("width_mm") is var w && w > 0 ? w : 182;
@@ -301,8 +331,9 @@ public sealed class StoryboardView : WorkspaceView
                 panel.Element.MouseLeftButtonDown += (s, e) => BeginPanelDrag(s, e, panel);
             RebuildBubbles();
             history.Clear();
-            requestId = null;
+            bubblesDeleted = false;
             dirty = false;
+            conflictBar.Visibility = Visibility.Collapsed;   // 新数据落地即冲突解除
             UpdateStatus("已保存");
             RenderPageBar();
             RenderCanvas();
@@ -312,6 +343,8 @@ public sealed class StoryboardView : WorkspaceView
          catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
+            // 迟到的失败同样属于已被取代的请求：不得回滚较新请求已经落下的选中页签
+            if (requestVersion != pageLoadVersion) return;
             currentPage = previous;   // 失败回滚页签选中态
             RenderPageBar();
             UpdateStatus("读取失败");
@@ -585,7 +618,10 @@ public sealed class StoryboardView : WorkspaceView
 
     private void MarkDirty()
     {
-        dirty = history.CanUndo;
+        // 脏判定必须覆盖撤销栈之外的真实草稿：气泡删除虽已即时提交服务端，
+        // 但整页几何快照（面板 bounds + 气泡集合）已偏离最近一次保存/加载的
+        // 版本，在下一次整页保存或页面重载完成前不得回到「已保存」。
+        dirty = history.CanUndo || bubblesDeleted;
         saveButton.IsEnabled = dirty && !saving;
         UpdateStatus(dirty ? "有未保存修改" : "已保存");
     }
@@ -633,7 +669,7 @@ public sealed class StoryboardView : WorkspaceView
                 Text = $"X {panel.Rect.X:P1} · Y {panel.Rect.Y:P1} · 宽 {panel.Rect.Width:P1} · 高 {panel.Rect.Height:P1}",
                 FontFamily = (FontFamily)Application.Current.FindResource("Mono"), FontSize = 12, Margin = new Thickness(0, 6, 0, 4),
             });
-            card.Children.Add(new TextBlock { Text = panel.Action, TextWrapping = TextWrapping.Wrap, FontWeight = FontWeights.Bold });
+            card.Children.Add(new TextBlock { Text = panel.ScriptAction.Length > 0 ? panel.ScriptAction : "待补充", TextWrapping = TextWrapping.Wrap, FontWeight = FontWeights.Bold });
             if (panel.Dialogues.Count > 0)
             {
                 card.Children.Add(new TextBlock { Text = $"对白 {panel.Dialogues.Count} 条", Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 6, 0, 0) });
@@ -681,6 +717,7 @@ public sealed class StoryboardView : WorkspaceView
             bubbles.Remove(bubble);
             page.Children.Remove(bubble.Element);
             Cache.Invalidate("storyboard:" + currentPage?.Id, "pages:" + chapterId);
+            bubblesDeleted = true;   // 删除不在撤销栈里：脏状态必须显式记下这笔草稿
             MarkDirty();
             RenderInspector();
             RenderOrderBadges();
@@ -707,7 +744,7 @@ public sealed class StoryboardView : WorkspaceView
             await Api.SendAsync($"pages/{currentPage!.Id}/layout", HttpMethod.Patch,
                 new { panel_count = count, layout_mode = mode }, cancellation: lifetime.Token);
             history.Clear();
-            requestId = null;
+            bubblesDeleted = false;
             dirty = false;
             await SelectPageAsync(currentPage);
             UpdateStatus("版式已重建");
@@ -728,20 +765,14 @@ public sealed class StoryboardView : WorkspaceView
         saveButton.Content = "保存中";
         try
         {
-            var reuseRequest = requestId != null && historyIndexAtRequest == history.Index;
-            var id = reuseRequest ? requestId!.Value : Guid.NewGuid();
-            if (!reuseRequest)
-            {
-                // Bind the request id to the current undo state so a retry of the same
-                // content replays safely while new edits get a fresh id.
-                requestId = id;
-                historyIndexAtRequest = history.Index;
-            }
-            var payload = BuildPayload(id);
+            // 每次尝试都生成新的 request_id：服务端把 (request_id, payload_hash)
+            // 当作幂等命令持久化，失败后重放同一个 id 只会得到同一个拒绝；
+            // 真正的恢复出口是冲突条上的「放弃草稿并重新加载」。
+            var payload = BuildPayload(Guid.NewGuid());
             var response = await Api.SendAsync($"pages/{currentPage.Id}/storyboard-geometry", HttpMethod.Put, payload, cancellation: lifetime.Token);
             storyboard = response;
-            requestId = null;
             history.Clear();
+            bubblesDeleted = false;
             dirty = false;
             var version = response.Element("page").Number("storyboard_version");
             var staleCount = response.Number("candidate_count");
@@ -750,11 +781,20 @@ public sealed class StoryboardView : WorkspaceView
             Cache.Invalidate("pages:" + chapterId, "workbench:", "library:" + ProjectId);
             await SelectPageAsync(currentPage);
         }
-         catch (OperationCanceledException) { }
+        catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             UpdateStatus("保存失败");
-            MessageBox.Show(Host, error.Message + "\n\n画布草稿已保留，可重试保存或放弃草稿。", "保存未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
+            if (IsConflict(error))
+            {
+                // 409：保留草稿并亮出冲突条（对齐 web 的冲突横幅 + 放弃重载）。
+                // 重试会带新的 request_id，但版本锚点要等整页重载后才会更新。
+                conflictBar.Visibility = Visibility.Visible;
+            }
+            else
+            {
+                MessageBox.Show(Host, error.Message + "\n\n画布草稿已保留，可重试保存或放弃草稿。", "保存未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
         }
         finally
         {
@@ -762,6 +802,26 @@ public sealed class StoryboardView : WorkspaceView
             saveButton.Content = "保存本页";
             saveButton.IsEnabled = dirty;
         }
+    }
+
+    // ApiClient 不透出状态码；它给所有 409 统一加的中文前缀是唯一可识别标记
+    // （与 Services/ApiClient.cs 的 Conflict 分支保持同步的契约）。
+    private static bool IsConflict(Exception error) =>
+        error.Message.StartsWith("数据已变化或操作条件不满足", StringComparison.Ordinal);
+
+    // 对齐 web 的 discardDraft：清空本地几何草稿（面板 bounds、气泡、撤销栈）
+    // 后整页重载，用服务端的新 storyboard_version 重新起锚，打破 409 循环。
+    private async Task DiscardDraftAndReloadAsync()
+    {
+        conflictBar.Visibility = Visibility.Collapsed;
+        history.Clear();
+        bubblesDeleted = false;
+        dirty = false;
+        selected = null;
+        selectedBubble = null;
+        bubbles.Clear();
+        page.Children.Clear();
+        if (currentPage != null) await SelectPageAsync(currentPage);
     }
 
     private object BuildPayload(Guid id)
@@ -910,7 +970,8 @@ public sealed class StoryboardView : WorkspaceView
         public int ReadingOrder { get; init; }
         public int ZOrder { get; init; }
         public int Version { get; init; }
-        public string Action { get; init; } = "";
+        // PanelRead 没有 per-panel action 字段；「动作与表演」实际存放在 actions.script_action
+        public string ScriptAction { get; init; } = "";
         public string ShotType { get; init; } = "";
         public string CameraAngle { get; init; } = "";
         public bool Bleed { get; init; }
@@ -938,7 +999,7 @@ public sealed class StoryboardView : WorkspaceView
                 ReadingOrder = row.Number("reading_order"),
                 ZOrder = geometry.Number("z_order") is var z && z > 0 ? z : row.Number("reading_order"),
                 Version = row.Number("version"),
-                Action = row.Text("action"),
+                ScriptAction = row.Element("actions").Text("script_action"),
                 ShotType = row.Text("shot_type"),
                 CameraAngle = row.Text("camera_angle"),
                 Bleed = bleed,
@@ -1186,7 +1247,7 @@ public sealed class StoryboardView : WorkspaceView
     }
 }
 
-/// <summary>Panel narrative edit dialog: shot, action, cast presence, outfit, dialogues.</summary>
+/// <summary>Panel narrative edit dialog: shot, camera, cast presence, per-cast direction, outfits, flags.</summary>
 internal sealed class PanelEditDialog : Window
 {
     public object? Result { get; private set; }
@@ -1209,7 +1270,16 @@ internal sealed class PanelEditDialog : Window
         var angle = new ComboBox();
         foreach (var (key, label) in Labels.CameraAngle) angle.Items.Add(new ComboBoxItem { Tag = key, Content = label });
         Select(angle, panel.Text("camera_angle"));
-        var action = new TextBox { Text = panel.Text("action"), AcceptsReturn = true, MinHeight = 60 };
+        var storedHeight = panel.Text("camera_height");
+        var height = new ComboBox();
+        foreach (var (key, label) in Labels.CameraHeight) height.Items.Add(new ComboBoxItem { Tag = key, Content = label });
+        Select(height, storedHeight);
+        var heightTouched = false;
+        // 种子化之后再挂事件：程序化选中不算用户改动，机位高度未改动就不提交
+        height.SelectionChanged += (_, _) => heightTouched = true;
+        var storedActions = panel.StringMap("actions");
+        var storedScriptAction = storedActions.TryGetValue("script_action", out var scriptText) ? scriptText : "";
+        var scriptAction = new TextBox { Text = storedScriptAction, AcceptsReturn = true, MinHeight = 60 };
         var background = new TextBox { Text = panel.Text("background"), AcceptsReturn = true, MinHeight = 48 };
         var props = new TextBox { Text = string.Join("、", panel.Strings("props")) };
         var soundEffects = new TextBox { Text = string.Join("、", panel.Strings("sound_effects")) };
@@ -1218,8 +1288,10 @@ internal sealed class PanelEditDialog : Window
         form.Children.Add(shot);
         form.Children.Add(Label("镜头角度"));
         form.Children.Add(angle);
-        form.Children.Add(Label("动作与表演（必填）"));
-        form.Children.Add(action);
+        form.Children.Add(Label("机位高度"));
+        form.Children.Add(height);
+        form.Children.Add(Label("动作与表演"));
+        form.Children.Add(scriptAction);
         form.Children.Add(Label("背景"));
         form.Children.Add(background);
         form.Children.Add(Label("场景道具（用逗号分隔）"));
@@ -1227,7 +1299,18 @@ internal sealed class PanelEditDialog : Window
         form.Children.Add(Label("拟声词（用逗号分隔）"));
         form.Children.Add(soundEffects);
         form.Children.Add(Label("人物状态"));
+        form.Children.Add(Kit.Caption("只有“实际出镜”会要求人物与服装参考；画外音和被提及人物不会阻塞生图。"));
+        // 服务端字段是 character_presence（PanelRead），旧代码读的 presence 不存在，
+        // 导致每次打开都全员回落 NONE、保存时把既有出场状态清空。「NONE」只是
+        // 客户端语义（服务端枚举没有该值），保存时全量回传非 NONE 项，
+        // 未改动的保存即等价于原快照。
+        var storedPresence = panel.Element("character_presence");
         var presence = new Dictionary<string, ComboBox>();
+        var expressionBoxes = new Dictionary<string, TextBox>();
+        var outfitBoxes = new Dictionary<string, ComboBox>();
+        var directionHost = new StackPanel();
+        var storedExpressions = panel.StringMap("expressions");
+        var storedOutfits = panel.StringMap("outfits");
         foreach (var character in characters)
         {
             var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 4) };
@@ -1235,11 +1318,14 @@ internal sealed class PanelEditDialog : Window
             var box = new ComboBox { Width = 180 };
             foreach (var (key, label) in Labels.CharacterPresence)
                 box.Items.Add(new ComboBoxItem { Tag = key, Content = label });
-            Select(box, panel.Element("presence").Text(character.Id, "NONE") is { Length: > 0 } state ? state : "NONE");
+            Select(box, storedPresence.Text(character.Id, "NONE") is { Length: > 0 } state ? state : "NONE");
             presence[character.Id] = box;
+            box.SelectionChanged += (_, _) => RebuildDirectionRows();
             row.Children.Add(box);
             form.Children.Add(row);
         }
+        form.Children.Add(directionHost);
+        RebuildDirectionRows();
         var bleed = new CheckBox { Content = "出血格", IsChecked = panel.Flag("bleed"), Margin = new Thickness(0, 8, 0, 0) };
         var borderless = new CheckBox { Content = "无边框", IsChecked = panel.Flag("borderless"), Margin = new Thickness(0, 0, 0, 12) };
         form.Children.Add(bleed);
@@ -1251,27 +1337,42 @@ internal sealed class PanelEditDialog : Window
         var cancel = new Button { Content = "取消", MinWidth = 96, Margin = new Thickness(0, 0, 10, 0) };
         cancel.Click += (_, _) => Close();
         var submit = new Button { Content = "保存本格分镜", MinWidth = 130, Style = (Style)Application.Current.FindResource("InkButton") };
-        submit.Click += async (_, _) =>
+        submit.Click += (_, _) =>
         {
-            if (action.Text.Trim().Length == 0) { error.Text = "动作与表演不能为空。"; return; }
+            error.Text = "";
             submit.IsEnabled = false;
             try
             {
-                var presencePayload = presence.Where(p => (p.Value.SelectedItem as ComboBoxItem)?.Tag as string is { Length: > 0 } state && state != "NONE")
-                    .ToDictionary(p => p.Key, p => (p.Value.SelectedItem as ComboBoxItem)!.Tag as string);
-                Result = new
+                var presencePayload = new Dictionary<string, string>();
+                foreach (var entry in presence)
+                    if ((entry.Value.SelectedItem as ComboBoxItem)?.Tag as string is { } state && state != "NONE")
+                        presencePayload[entry.Key] = state;
+                var payload = new Dictionary<string, object?>
                 {
-                    version = panel.Number("version"),
-                    shot_type = (shot.SelectedItem as ComboBoxItem)?.Tag,
-                    camera_angle = (angle.SelectedItem as ComboBoxItem)?.Tag,
-                    action = action.Text,
-                    background = background.Text,
-                    props = SplitList(props.Text),
-                    sound_effects = SplitList(soundEffects.Text),
-                    character_presence = presencePayload,
-                    bleed = bleed.IsChecked == true,
-                    borderless = borderless.IsChecked == true,
+                    ["version"] = panel.Number("version"),
+                    ["shot_type"] = (shot.SelectedItem as ComboBoxItem)?.Tag,
+                    ["camera_angle"] = (angle.SelectedItem as ComboBoxItem)?.Tag,
+                    ["background"] = background.Text,
+                    ["props"] = SplitList(props.Text),
+                    ["sound_effects"] = SplitList(soundEffects.Text),
+                    ["character_presence"] = presencePayload,
+                    ["bleed"] = bleed.IsChecked == true,
+                    ["borderless"] = borderless.IsChecked == true,
                 };
+                // 新增字段仅在改动时提交：拿空默认值覆盖服务端已有内容比不提交更糟
+                if (heightTouched && (height.SelectedItem as ComboBoxItem)?.Tag as string is { Length: > 0 } heightTag && heightTag != storedHeight)
+                    payload["camera_height"] = heightTag;
+                if (scriptAction.Text != storedScriptAction)
+                    // actions 是整包字典（含 source_text 等服务端键）：以存量打底只覆写 script_action
+                    payload["actions"] = new Dictionary<string, string>(storedActions) { ["script_action"] = scriptAction.Text };
+                var expressionPayload = expressionBoxes.ToDictionary(entry => entry.Key, entry => entry.Value.Text);
+                if (!SameMap(expressionPayload, storedExpressions)) payload["expressions"] = expressionPayload;
+                var outfitPayload = new Dictionary<string, string>();
+                foreach (var entry in outfitBoxes)
+                    if ((entry.Value.SelectedItem as ComboBoxItem)?.Tag as string is { Length: > 0 } outfitId)
+                        outfitPayload[entry.Key] = outfitId;
+                if (!SameMap(outfitPayload, storedOutfits)) payload["outfits"] = outfitPayload;
+                Result = payload;
                 DialogResult = true;
             }
             catch (Exception reason)
@@ -1287,6 +1388,48 @@ internal sealed class PanelEditDialog : Window
         Content = scroll;
         PreviewKeyDown += (_, e) => { if (e.Key == Key.Escape) Close(); };
 
+        void RebuildDirectionRows()
+        {
+            // 表情/服装只属于「实际出镜」的角色（与 web 一致）：切回不出镜即随行丢弃，
+            // 已输入的表情在重建时保留，不做静默清空。
+            var typed = expressionBoxes.ToDictionary(entry => entry.Key, entry => entry.Value.Text);
+            expressionBoxes.Clear();
+            outfitBoxes.Clear();
+            directionHost.Children.Clear();
+            foreach (var character in characters)
+            {
+                if ((presence[character.Id].SelectedItem as ComboBoxItem)?.Tag as string != "VISIBLE") continue;
+                var card = new StackPanel { Margin = new Thickness(0, 6, 0, 6) };
+                card.Children.Add(new TextBlock { Text = character.PrimaryName, FontWeight = FontWeights.SemiBold });
+                var expressionRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 0) };
+                expressionRow.Children.Add(new TextBlock { Text = "表情", Width = 64, VerticalAlignment = VerticalAlignment.Center });
+                var expression = new TextBox
+                {
+                    Width = 220,
+                    Text = typed.TryGetValue(character.Id, out var edited) ? edited
+                        : storedExpressions.TryGetValue(character.Id, out var seeded) ? seeded : "",
+                };
+                expressionBoxes[character.Id] = expression;
+                expressionRow.Children.Add(expression);
+                card.Children.Add(expressionRow);
+                var options = outfits.Where(option => option.CharacterId == character.Id).ToList();
+                if (options.Count > 0)
+                {
+                    var outfitRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 0) };
+                    outfitRow.Children.Add(new TextBlock { Text = "服装", Width = 64, VerticalAlignment = VerticalAlignment.Center });
+                    var outfit = new ComboBox { Width = 220 };
+                    outfit.Items.Add(new ComboBoxItem { Tag = "", Content = "沿用场景服装" });
+                    foreach (var option in options)
+                        outfit.Items.Add(new ComboBoxItem { Tag = option.Id, Content = option.Name });
+                    Select(outfit, storedOutfits.TryGetValue(character.Id, out var outfitId) ? outfitId : "");
+                    outfitBoxes[character.Id] = outfit;
+                    outfitRow.Children.Add(outfit);
+                    card.Children.Add(outfitRow);
+                }
+                directionHost.Children.Add(card);
+            }
+        }
+
         static void Select(ComboBox box, string tag)
         {
             foreach (var item in box.Items.OfType<ComboBoxItem>())
@@ -1294,6 +1437,13 @@ internal sealed class PanelEditDialog : Window
             if (box.Items.Count > 0) box.SelectedIndex = 0;
         }
         static List<string> SplitList(string text) => text.Split(['，', '、', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+        static bool SameMap(Dictionary<string, string> left, Dictionary<string, string> right)
+        {
+            if (left.Count != right.Count) return false;
+            foreach (var (key, value) in left)
+                if (!right.TryGetValue(key, out var other) || other != value) return false;
+            return true;
+        }
     }
 
     private static TextBlock Label(string text) => new()

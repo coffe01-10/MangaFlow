@@ -19,6 +19,10 @@ namespace MangaFlow.Native.Views;
 public sealed class WorkflowView : WorkspaceView
 {
     private const double NodeWidth = 224;
+    // 端口锚点用固定公式（首行中心 ≈ 节点顶部 70px、行距 25px），与 web 端 Handle
+    // 的 top:64+index*25 定位对齐；不依赖布局完成，载入即可画边（旧实现同理用固定 +64）。
+    private const double PortRowTop = 70;
+    private const double PortRowStep = 25;
     private readonly ComboBox workflowSelector = Selector("选择工作流", 250);
     private readonly Canvas canvas = new() { Background = new SolidColorBrush(Color.FromRgb(0x17, 0x1A, 0x18)) };
     private readonly ScrollViewer canvasScroll = new();
@@ -30,7 +34,8 @@ public sealed class WorkflowView : WorkspaceView
     private readonly ComboBox scopeTarget = new() { Width = 170 };
     private readonly List<WorkflowNode> nodes = [];
     private readonly List<WorkflowEdge> edges = [];
-    private readonly Dictionary<string, System.Windows.Shapes.Path> edgePaths = new();
+    // 每条边两份 Path：可视层（2px 实线）+ 命中层（14px 透明加宽，解决细线难点中）
+    private readonly Dictionary<string, (System.Windows.Shapes.Path Curve, System.Windows.Shapes.Path Hit)> edgePaths = new();
     private List<JsonElement> nodeTypes = [];
     private List<JsonElement> workflows = [];
     private List<ChapterItem> chapters = [];
@@ -39,11 +44,14 @@ public sealed class WorkflowView : WorkspaceView
     private string workflowId = "";
     private int version;
     private WorkflowNode? selected;
+    private string? selectedEdgeKey;
     private readonly Dictionary<string, (double X, double Y)> draftPositions = new();
     private System.Timers.Timer? autosave;
     private int generation;
     private bool dragging;
     private double scale = 0.75;
+    private System.Windows.Shapes.Path? pendingWire;   // 连线拖拽中的虚线预览
+    private Action? cancelWire;                        // Escape 取消进行中的连线拖拽
 
     public WorkflowView()
     {
@@ -128,6 +136,47 @@ public sealed class WorkflowView : WorkspaceView
                 e.Handled = true;
             }
         };
+        // 键盘纪律：Delete/Backspace/Escape 只在画布持有键盘焦点时生效。属性面板的
+        // TextBox 不在画布视觉树下，输入时事件不会路由到画布，不会误删（对齐 web
+        // 的 deleteKeyCode 只作用于 React Flow 选区）。
+        canvas.Focusable = true;
+        canvas.PreviewKeyDown += OnCanvasKeyDown;
+        // 点空白画布 = 清空节点/连线选中并聚焦（节点、端口、连线处理器都会吞掉
+        // 自己的点击，这里只剩空白区域的事件）
+        canvas.MouseLeftButtonDown += (_, _) =>
+        {
+            ClearSelection();
+            FocusCanvas();
+        };
+    }
+
+    private void OnCanvasKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Escape)
+        {
+            // 取消进行中的连线拖拽；没有拖拽时不吞按键
+            var active = cancelWire != null;
+            cancelWire?.Invoke();
+            if (active) e.Handled = true;
+            return;
+        }
+        if (e.Key is not (Key.Delete or Key.Back)) return;
+        if (selectedEdgeKey != null)
+        {
+            DeleteSelectedEdge();
+            e.Handled = true;
+        }
+        else if (selected != null)
+        {
+            DeleteSelected();   // web 的 deleteKeyCode 同样作用于选中的节点
+            e.Handled = true;
+        }
+    }
+
+    // 画布可能尚未挂进视觉树（如无头回归检查），此时 Focus 无效，跳过即可
+    private void FocusCanvas()
+    {
+        if (canvas.IsLoaded) canvas.Focus();
     }
 
     private FrameworkElement BuildTopBar()
@@ -371,7 +420,7 @@ public sealed class WorkflowView : WorkspaceView
             {
                 var node = WorkflowNode.From(row);
                 nodes.Add(node);
-                node.Element.MouseLeftButtonDown += (s, e) => BeginNodeDrag(s, e, node);
+                AttachNodeHandlers(node);
             }
             foreach (var row in graph.Array("edges"))
                 edges.Add(new WorkflowEdge(
@@ -396,19 +445,40 @@ public sealed class WorkflowView : WorkspaceView
     {
         canvas.Children.Clear();
         edgePaths.Clear();
+        // 选中键可能指向已被 Undo/删节点移除的边，重建前先收敛掉悬空引用
+        if (selectedEdgeKey != null && edges.All(e => EdgeKey(e) != selectedEdgeKey)) selectedEdgeKey = null;
         foreach (var edge in edges)
         {
             var from = nodes.FirstOrDefault(n => n.Id == edge.Source);
             var to = nodes.FirstOrDefault(n => n.Id == edge.Target);
             if (from == null || to == null) continue;
+            var geometry = EdgeGeometry(from, edge.SourcePort, to, edge.TargetPort);
             var curve = new System.Windows.Shapes.Path
             {
-                Data = EdgeGeometry(from, to),
+                Data = geometry,
                 Stroke = new SolidColorBrush(Color.FromRgb(0x77, 0x84, 0x7C)),
                 StrokeThickness = 2,
+                IsHitTestVisible = false,   // 点击交给下方加宽的命中层
             };
-            edgePaths[EdgeKey(edge)] = curve;
+            // 命中层：透明加宽描边，解决 2px 细线几乎点不中的问题；Tag 携带边模型
+            var hit = new System.Windows.Shapes.Path
+            {
+                Data = geometry,
+                Stroke = Brushes.Transparent,
+                StrokeThickness = 14,
+                Cursor = Cursors.Hand,
+                Tag = edge,
+            };
+            hit.MouseLeftButtonDown += (_, me) =>
+            {
+                me.Handled = true;   // 不冒泡成空白画布点击
+                SelectEdge(edge);
+            };
+            var key = EdgeKey(edge);
+            if (key == selectedEdgeKey) ApplyEdgeSelection(curve, true);
+            edgePaths[key] = (curve, hit);
             canvas.Children.Add(curve);
+            canvas.Children.Add(hit);
         }
         foreach (var node in nodes)
         {
@@ -460,7 +530,7 @@ public sealed class WorkflowView : WorkspaceView
         var position = (X: 320 + nodes.Count * 24, Y: 120 + nodes.Count * 18);
         var node = WorkflowNode.Create(id, nodeType, type.Text("display_name"), position, type);
         nodes.Add(node);
-        node.Element.MouseLeftButtonDown += (s, e) => BeginNodeDrag(s, e, node);
+        AttachNodeHandlers(node);
         PushHistory(Snapshot("添加节点"));
         Select(node);
         ScheduleSave();
@@ -471,7 +541,62 @@ public sealed class WorkflowView : WorkspaceView
     {
         foreach (var other in nodes) other.SetSelected(other == node);
         selected = node;
+        ClearEdgeSelection();
         RenderInspector();
+    }
+
+    // 连线与节点互斥选中（web 端同一时刻只有一个选中对象驱动 deleteKeyCode）
+    private void SelectEdge(WorkflowEdge edge)
+    {
+        if (selected != null)
+        {
+            selected.SetSelected(false);
+            selected = null;
+            RenderInspector();
+        }
+        var key = EdgeKey(edge);
+        if (selectedEdgeKey != key)
+        {
+            if (selectedEdgeKey != null && edgePaths.TryGetValue(selectedEdgeKey, out var previous))
+                ApplyEdgeSelection(previous.Curve, false);
+            selectedEdgeKey = key;
+        }
+        if (edgePaths.TryGetValue(key, out var current)) ApplyEdgeSelection(current.Curve, true);
+        FocusCanvas();   // Delete 删除连线要求键盘焦点在画布，而不是上一次点过的输入框
+    }
+
+    private void ClearSelection()
+    {
+        foreach (var other in nodes) other.SetSelected(false);
+        selected = null;
+        ClearEdgeSelection();
+        RenderInspector();
+    }
+
+    private void ClearEdgeSelection()
+    {
+        if (selectedEdgeKey == null) return;
+        if (edgePaths.TryGetValue(selectedEdgeKey, out var path)) ApplyEdgeSelection(path.Curve, false);
+        selectedEdgeKey = null;
+    }
+
+    private static void ApplyEdgeSelection(System.Windows.Shapes.Path curve, bool isSelected)
+    {
+        curve.Stroke = new SolidColorBrush(isSelected
+            ? Color.FromRgb(0xE7, 0xE2, 0xD7)   // 与节点选中描边同色，视觉语义一致
+            : Color.FromRgb(0x77, 0x84, 0x7C));
+        curve.StrokeThickness = isSelected ? 3 : 2;
+    }
+
+    // 节点入列/恢复后的统一接线：整体拖拽 + 输出端口发起连线
+    private void AttachNodeHandlers(WorkflowNode node)
+    {
+        node.Element.MouseLeftButtonDown += (s, e) => BeginNodeDrag(s, e, node);
+        // 只有输出端口发起连线（对齐 web 的严格连接模式）；输入端口点击不处理，
+        // 事件继续冒泡成节点拖拽。
+        foreach (var port in node.Ports)
+            if (port.IsOutput)
+                port.Element.MouseLeftButtonDown += (s, e) => BeginWireDrag(s, e, port);
     }
 
     private void BeginNodeDrag(object sender, MouseButtonEventArgs e, WorkflowNode node)
@@ -522,36 +647,138 @@ public sealed class WorkflowView : WorkspaceView
         e.Handled = true;
     }
 
+    // ============ 连线拖拽（输出端口 → 输入端口） ============
+    // 从输出端口按下即捕获鼠标，画一条虚线预览跟随光标；松开时解析落点：
+    // 命中输入端口且校验通过则建边，否则（含空白处）静默取消——与 web 的
+    // onConnect/isValidConnection 语义一致，非法落点不弹窗、不留半成品。
+    private void BeginWireDrag(object sender, MouseButtonEventArgs e, PortSite source)
+    {
+        if (e.ChangedButton != MouseButton.Left) return;
+        e.Handled = true;   // 端口点击不再冒泡成节点拖拽
+        FocusCanvas();      // Escape 取消依赖画布持有键盘焦点
+        var element = (FrameworkElement)sender;
+        element.CaptureMouse();
+        var anchor = PortAnchor(source.Node, source.Id, true);
+        pendingWire = new System.Windows.Shapes.Path
+        {
+            Stroke = new SolidColorBrush(Color.FromRgb(0x77, 0x84, 0x7C)),
+            StrokeThickness = 2,
+            StrokeDashArray = [4, 3],   // 虚线 = 未提交的预览，与实线正式边区分
+            IsHitTestVisible = false,   // 预览线绝不能挡住落点端口的命中
+        };
+        canvas.Children.Add(pendingWire);
+        Mouse.OverrideCursor = Cursors.Cross;
+        MouseEventHandler moved = (_, me) =>
+        {
+            // GetPosition(canvas) 与 Canvas.SetLeft 同一坐标系（文件内节点拖拽同款约定）
+            if (pendingWire != null) pendingWire.Data = BezierWire(anchor, me.GetPosition(canvas));
+        };
+        MouseButtonEventHandler up = null!;
+        MouseEventHandler lost = null!;
+        var finished = false;   // up 释放捕获会再触发 lost，只结算一次
+        void Finish(bool commit)
+        {
+            if (finished) return;
+            finished = true;
+            Mouse.RemoveMouseMoveHandler(element, moved);
+            Mouse.RemoveMouseUpHandler(element, up);
+            Mouse.RemoveLostMouseCaptureHandler(element, lost);
+            cancelWire = null;
+            if (pendingWire != null)
+            {
+                canvas.Children.Remove(pendingWire);
+                pendingWire = null;
+            }
+            Mouse.OverrideCursor = null;
+            element.ReleaseMouseCapture();
+            if (commit) TryConnect(source, PortUnderCursor());
+        }
+        up = (_, _) => Finish(true);
+        lost = (_, _) => Finish(false);   // 失去捕获（切窗等）按取消处理
+        cancelWire = () => Finish(false);
+        Mouse.AddMouseMoveHandler(element, moved);
+        Mouse.AddMouseUpHandler(element, up);
+        Mouse.AddLostMouseCaptureHandler(element, lost);
+    }
+
+    // 解析光标下的输入端口：鼠标捕获不影响 Mouse.DirectlyOver，预览线已关闭
+    // 命中测试，所以 DirectlyOver 就是真实的落点元素；沿视觉树上溯找端口行。
+    private PortSite? PortUnderCursor()
+    {
+        for (var visual = Mouse.DirectlyOver as DependencyObject; visual != null; visual = VisualTreeHelper.GetParent(visual))
+            if (visual is FrameworkElement { Tag: PortSite port } && !port.IsOutput)
+                return port;
+        return null;   // 空白画布/节点本体/输出端口 → 取消
+    }
+
+    // 建边规则照抄 web validConnection + connect：data_type 相同、不自连、
+    // 端口对判重（确定性边 id 意味着重复连接会造出同 id 两条边，后端直接 422）。
+    private bool TryConnect(PortSite source, PortSite? target)
+    {
+        if (target == null) return false;
+        if (target.Node.Id == source.Node.Id
+            || target.DataType != source.DataType
+            || edges.Any(e => e.Source == source.Node.Id && e.SourcePort == source.Id
+                           && e.Target == target.Node.Id && e.TargetPort == target.Id))
+            return false;
+        edges.Add(new WorkflowEdge(source.Node.Id, source.Id, target.Node.Id, target.Id));
+        PushHistory(Snapshot("建立连线"));
+        ScheduleSave();   // 与节点操作同一条 脏标记 → 防抖 → 版本化 PATCH 保存链路
+        RenderCanvas();
+        return true;
+    }
+
+    // 只删连线本身，两端节点原样保留（web applyEdgeChanges remove 的语义）
+    private void DeleteSelectedEdge()
+    {
+        if (selectedEdgeKey == null) return;
+        edges.RemoveAll(e => EdgeKey(e) == selectedEdgeKey);
+        selectedEdgeKey = null;
+        PushHistory(Snapshot("删除连线"));
+        ScheduleSave();
+        RenderCanvas();
+    }
+
     // 拖拽移动时只更新与该节点相连边的 Path Data，避免全量重绘
     private void RedrawEdgesFor(WorkflowNode node)
     {
         foreach (var edge in edges)
         {
             if (edge.Source != node.Id && edge.Target != node.Id) continue;
-            if (!edgePaths.TryGetValue(EdgeKey(edge), out var path)) continue;
+            if (!edgePaths.TryGetValue(EdgeKey(edge), out var pair)) continue;
             var from = nodes.FirstOrDefault(n => n.Id == edge.Source);
             var to = nodes.FirstOrDefault(n => n.Id == edge.Target);
             if (from == null || to == null) continue;
-            path.Data = EdgeGeometry(from, to);
+            var geometry = EdgeGeometry(from, edge.SourcePort, to, edge.TargetPort);
+            pair.Curve.Data = geometry;
+            pair.Hit.Data = geometry;   // 命中层与可视层共用同一份几何
         }
     }
 
     private static string EdgeKey(WorkflowEdge edge) => $"{edge.Source}:{edge.SourcePort}-{edge.Target}:{edge.TargetPort}";
 
-    private static PathGeometry EdgeGeometry(WorkflowNode from, WorkflowNode to)
+    // 端口圆心即连线端点；锚点公式见 PortRowTop 常量注释
+    private Point PortAnchor(WorkflowNode node, string portId, bool isOutput)
     {
-        var start = new Point(from.Position.X + NodeWidth, from.Position.Y + 64);
-        var end = new Point(to.Position.X, to.Position.Y + 64);
-        return new PathGeometry([new PathFigure(start,
+        var index = node.Ports.FirstOrDefault(p => p.Id == portId && p.IsOutput == isOutput)?.Index ?? 0;
+        return new Point(
+            isOutput ? node.Position.X + NodeWidth - 6 : node.Position.X + 6,
+            node.Position.Y + PortRowTop + index * PortRowStep);
+    }
+
+    private static PathGeometry BezierWire(Point start, Point end) => new([new PathFigure(start,
         [
             new BezierSegment(new Point(start.X + 60, start.Y), new Point(end.X - 60, end.Y), end, true),
         ], false)]);
-    }
+
+    private PathGeometry EdgeGeometry(WorkflowNode from, string fromPort, WorkflowNode to, string toPort) =>
+        BezierWire(PortAnchor(from, fromPort, true), PortAnchor(to, toPort, false));
 
     private void DeleteSelected()
     {
         if (selected == null) return;
         edges.RemoveAll(e => e.Source == selected.Id || e.Target == selected.Id);
+        selectedEdgeKey = null;   // 挂在被删节点上的连线一并移除，选中键随之失效
         nodes.Remove(selected);
         selected = null;
         PushHistory(Snapshot("删除节点"));
@@ -568,7 +795,7 @@ public sealed class WorkflowView : WorkspaceView
             selected.Type, selected.Name + " 副本", (selected.Position.X + 44, selected.Position.Y + 44), nodeTypes.FirstOrDefault(t => t.Text("type") == selected.Type));
         clone.Config = selected.Config;
         nodes.Add(clone);
-        clone.Element.MouseLeftButtonDown += (s, e) => BeginNodeDrag(s, e, clone);
+        AttachNodeHandlers(clone);
         PushHistory(Snapshot("复制节点"));
         Select(clone);
         ScheduleSave();
@@ -645,11 +872,12 @@ public sealed class WorkflowView : WorkspaceView
                 if (row.Element("config").ValueKind == JsonValueKind.Object)
                     node.Config = JsonSerializer.Deserialize<Dictionary<string, object?>>(row.Element("config").GetRawText()) ?? [];
                 nodes.Add(node);
-                node.Element.MouseLeftButtonDown += (s, e) => BeginNodeDrag(s, e, node);
+                AttachNodeHandlers(node);
             }
             foreach (var row in snapshot.Array("edges"))
                 edges.Add(new WorkflowEdge(row.Text("source_node"), row.Text("source_port"), row.Text("target_node"), row.Text("target_port")));
             selected = null;
+            selectedEdgeKey = null;   // 快照回放后原选中连线多半已不存在，避免悬空引用
             RenderCanvas();
             RenderInspector();
         }
@@ -1014,6 +1242,8 @@ public sealed class WorkflowView : WorkspaceView
         public Dictionary<string, object?> Config { get; set; } = [];
         public required Border Element { get; init; }
         private TextBlock? statusBadge;
+        // 端口站点表：连线拖拽的发起端与命中端都从这里取（Tag 挂在端口行 Border 上）
+        public readonly List<PortSite> Ports = [];
 
         public JsonElement ConfigElement
         {
@@ -1127,20 +1357,30 @@ public sealed class WorkflowView : WorkspaceView
             var ports = new Grid { Margin = new Thickness(0, 0, 0, 8), MinHeight = 40 };
             ports.ColumnDefinitions.Add(new ColumnDefinition());
             ports.ColumnDefinitions.Add(new ColumnDefinition());
-            var inputs = new StackPanel { Margin = new Thickness(9, 0, 4, 0) };
-            foreach (var input in Inputs.EnumerateArray())
-                inputs.Children.Add(new TextBlock
+            var inputs = new StackPanel { Margin = new Thickness(0, 0, 4, 0) };
+            if (Inputs.ValueKind == JsonValueKind.Array)
+                foreach (var input in Inputs.EnumerateArray())
                 {
-                    Text = $"{input.Text("label")}  {input.Text("data_type")}", FontSize = 10,
-                    Foreground = new SolidColorBrush(Color.FromRgb(0xA4, 0xAD, 0xA7)),
-                });
-            var outputs = new StackPanel { Margin = new Thickness(4, 0, 9, 0) };
-            foreach (var output in Outputs.EnumerateArray())
-                outputs.Children.Add(new TextBlock
+                    var port = new PortSite
+                    {
+                        Node = this, Id = input.Text("id"), DataType = input.Text("data_type"),
+                        IsOutput = false, Index = inputs.Children.Count,
+                    };
+                    Ports.Add(port);
+                    inputs.Children.Add(BuildPortRow(port, input.Text("label")));
+                }
+            var outputs = new StackPanel { Margin = new Thickness(4, 0, 0, 0) };
+            if (Outputs.ValueKind == JsonValueKind.Array)
+                foreach (var output in Outputs.EnumerateArray())
                 {
-                    Text = $"{output.Text("label")}  {output.Text("data_type")}", FontSize = 10,
-                    Foreground = new SolidColorBrush(Color.FromRgb(0xA4, 0xAD, 0xA7)), HorizontalAlignment = HorizontalAlignment.Right,
-                });
+                    var port = new PortSite
+                    {
+                        Node = this, Id = output.Text("id"), DataType = output.Text("data_type"),
+                        IsOutput = true, Index = outputs.Children.Count,
+                    };
+                    Ports.Add(port);
+                    outputs.Children.Add(BuildPortRow(port, output.Text("label")));
+                }
             Grid.SetColumn(inputs, 0);
             Grid.SetColumn(outputs, 1);
             ports.Children.Add(inputs);
@@ -1177,6 +1417,75 @@ public sealed class WorkflowView : WorkspaceView
         {
             if (statusBadge != null) statusBadge.Text = status ?? "DRAFT";
         }
+
+        // 端口行 = 整行命中区（Tag 携带 PortSite 供落点解析）+ data_type 圆点 + 标签。
+        // 圆点配色与 web 端 .handle.text/.json/.image/... 一致；负边距让圆点探出
+        // 节点边缘，圆心正好落在连线锚点上（web 的 Handle 同款出位方式）。
+        private static FrameworkElement BuildPortRow(PortSite port, string label)
+        {
+            var dot = new Ellipse
+            {
+                Width = 10, Height = 10,
+                Fill = new SolidColorBrush(PortColor(port.DataType)),
+                Stroke = new SolidColorBrush(Color.FromRgb(0x16, 0x19, 0x17)), StrokeThickness = 1,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            var text = new TextBlock
+            {
+                Text = $"{label}  {port.DataType}", FontSize = 10,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xA4, 0xAD, 0xA7)),
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            StackPanel content;
+            if (port.IsOutput)
+            {
+                content = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+                text.Margin = new Thickness(0, 0, 4, 0);
+                dot.Margin = new Thickness(0, 0, -9, 0);
+                content.Children.Add(text);
+                content.Children.Add(dot);
+            }
+            else
+            {
+                content = new StackPanel { Orientation = Orientation.Horizontal };
+                dot.Margin = new Thickness(-9, 0, 4, 0);
+                content.Children.Add(dot);
+                content.Children.Add(text);
+            }
+            var row = new Border
+            {
+                MinHeight = PortRowStep,   // 行距即锚点间距，端口行正好落在连线锚点上
+                Padding = new Thickness(port.IsOutput ? 4 : 9, 0, port.IsOutput ? 9 : 4, 0),
+                Tag = port,
+                Child = content,
+            };
+            port.Element = row;
+            if (port.IsOutput) row.Cursor = Cursors.Cross;   // 可拖出连线的手势提示
+            return row;
+        }
+
+        private static Color PortColor(string dataType) => dataType switch
+        {
+            "text" => Color.FromRgb(0x3C, 0x8D, 0x78),
+            "json" => Color.FromRgb(0x3C, 0x76, 0x98),
+            "image" => Color.FromRgb(0xB8, 0x4A, 0x38),
+            "asset" => Color.FromRgb(0xA0, 0x7B, 0x39),
+            "report" => Color.FromRgb(0x80, 0x67, 0xA5),
+            "boolean" => Color.FromRgb(0xD0, 0xC6, 0x5E),
+            _ => Color.FromRgb(0x77, 0x84, 0x7C),
+        };
+    }
+
+    // 端口站点：节点内一个可命中的输入/输出端口，携带建边校验所需的全部信息；
+    // Element 由 BuildPortRow 回填为端口行 Border（BuildVisual 建站后立即成行）
+    private sealed class PortSite
+    {
+        public required WorkflowNode Node { get; init; }
+        public required string Id { get; init; }
+        public required string DataType { get; init; }
+        public required bool IsOutput { get; init; }
+        public int Index { get; init; }
+        public FrameworkElement Element { get; internal set; } = null!;
     }
 
     private sealed record WorkflowEdge(string Source, string SourcePort, string Target, string TargetPort);
