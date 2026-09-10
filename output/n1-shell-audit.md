@@ -207,6 +207,19 @@
 - 残留：write_journal_atomic 的 serde_json unwrap（Value 序列化实际不可失败）；
   get_status_caps 并行负载 flake（master 既有）。
 
+### 20260911 夜间烧（基线 fe22969）
+
+- 谓词边界表：is_runtime_dir_name（大小写/长度两侧/字符集/前缀漂移）与
+  is_valid_token（大小写/长度/字符集/空串）直接钉测——sweep 的删除与日志名
+  谓词以这两个门为前提，假阳性会扩大删除面。
+- write_journal_atomic 去 unwrap：序列化错误映射为 io::Error（InvalidData），
+  teardown 热线按契约保持无 panic。
+- Linux cargo test 9/9 套件、110 项全绿（fe22969 + 本批）。
+- 类别覆盖：启动协议（journal 校验）✓ picker（形状/注册表边界）✓ 导出上限 ✓
+  错误路径 ✓ 红绿判别（谓词表）✓；OwnedTree/stop 与 CSP/capability 已由
+  20260909 波次交付（#323/#326）。
+- Windows 腿 NOT RUN。
+
 新记录的待办（下轮候选）：
 
 - ~~`unix_now` panic 路径~~ 已修（commit 2cb6321 注入缝钳制，见轮 5 记录）；残留：
