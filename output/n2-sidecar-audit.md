@@ -283,4 +283,8 @@
   钉进契约（unsafe-inline 为记录在案的债务；nonce 化留待后续）。
 - **串行证据（全部 RUN）**：apps/web 变更后溯源断言按设计响亮失败 → 重建 bundle →
   runner **23 passed**（27.8s）；cargo **116 passed / 0 failed**；交付契约 **8/8**。
+- **围栏探针扩展（PR #362，待 lead）**：D5 自测新增 sibling-prefix 探针——脚本自建
+  `dist/frontend-sibling-probe/mark.txt` 夹具，raw socket 请求 `/../frontend-sibling-probe/...`，
+  断言 404；专捕 `startsWith(root)` 丢 `+ sep` 的围栏回归（该形态下兄弟目录会被 200 伺服，
+  变异红/绿已验证）。D5 全程 PASS（三探针 + 握手 + 注入 + 直连 API + 渲染）。
 - **跨组上报维持**：picker swap-seam overlayfs flaky（N1）。
