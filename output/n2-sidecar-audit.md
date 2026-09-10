@@ -270,3 +270,17 @@
 | npm shim / 构建溯源 | §6 | ✅ 平台解析 + relay 目标烤入校验 + build-info.json 溯源戳（source_commit/apps_web_tree/relay_origin，PR #334）——e2e 断言 apps/web 树哈希一致，陈旧 bundle 无法静默测试过期 UI |
 | static export 路径围栏 | §7 | ✅ 包含检查（6a97625）+ D5 自测（#281）+ win32 根路径（#289） |
 | CORS/CSP 与 helper 交互 | §8 | ✅ WEB_ORIGIN 派生/TrustedHost/plan-B 同源/withGlobalTauri ACL 契约
+
+## 15. 20260911 深夜续（master 合并我方 #359/#360 后，基线 `fe22969`）
+
+- **复审落地内容（文件/行级，无 BLOCKER）**：`_validate_api_root` 大小写扫描 + fail-closed
+  回退（我方 #359 原样合入）、`_apply_app_environment` 强制 env（#313）、api-root marker
+  校验 fail-closed journal（#314）、DIALOG_OPEN 单例 + `desktop_read_picked_file` 转 async
+  （#316）、D5 lstat 符号链接围栏 + in-root symlink 自测（#317）、`shell-tools` 本地上下文
+  窗口 + 菜单（**#299 解决**，capabilities windows=[main, shell-tools]，仍无 remote
+  context——#254 契约测试 8/8 仍绿）。
+- **Issue #300 Stage 0 落地**：`apps/web/next-config-csp.test.ts` 将 plan-B CSP 响应头
+  钉进契约（unsafe-inline 为记录在案的债务；nonce 化留待后续）。
+- **串行证据（全部 RUN）**：apps/web 变更后溯源断言按设计响亮失败 → 重建 bundle →
+  runner **23 passed**（27.8s）；cargo **116 passed / 0 failed**；交付契约 **8/8**。
+- **跨组上报维持**：picker swap-seam overlayfs flaky（N1）。
