@@ -148,6 +148,94 @@ function payloadPanel(payload: any, id: string) {
   return payload.panels.find((panel: { panel_id: string }) => panel.panel_id === id) as Record<string, any>;
 }
 
+describe("StoryboardEditor 编辑表单归属（R2 审查修复）", () => {
+  const dialogue1 = {
+    id: "dialogue-1",
+    panel_id: "panel-2",
+    speaker_character_id: null,
+    target_text: "第二格的气泡",
+    reading_order: 1,
+    text_direction: "vertical" as const,
+    region: {},
+    rewrite_forbidden: false,
+    bubble: storedBubble,
+  };
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    data = makeStoryboard();
+    storyboardQuery.mockReset();
+    storyboardQuery.mockImplementation(() => Promise.resolve(data as never));
+    saveGeometry.mockReset().mockResolvedValue(data as never);
+    updatePanel.mockReset().mockResolvedValue(data as never);
+    updatePageLayout.mockReset().mockResolvedValue(data as never);
+    updateDialogue.mockReset().mockResolvedValue({} as never);
+    createDialogue.mockReset().mockResolvedValue({} as never);
+    deleteDialogue.mockReset().mockResolvedValue({} as never);
+  });
+
+  it("表单钉在被编辑分格上：选中其他气泡后保存不写错面板", async () => {
+    const panel2WithBubble = makePanel({
+      id: "panel-2",
+      reading_order: 2,
+      bounds: { x: 0.55, y: 0.2, width: 0.35, height: 0.25 },
+      geometry: { type: "rect", rect: { x: 0.55, y: 0.2, width: 0.35, height: 0.25 }, rotation: 0, z_order: 2 },
+      actions: { script_action: "第二格动作" },
+      dialogues: [dialogue1 as never],
+    });
+    data = { page, candidate_count: 0, panels: [panel1, panel2WithBubble] };
+    renderEditor();
+    await screen.findByText("分镜导演台");
+    // 默认展示 panel-1：开始编辑并修改动作（草稿变脏）。
+    fireEvent.click(screen.getByRole("button", { name: /编辑本格/ }));
+    fireEvent.change(screen.getByLabelText("动作与表演"), { target: { value: "新写的第一格动作" } });
+    // 点 panel-2 的气泡：旧代码会把仍打开的表单重挂到 panel-2 名下。
+    fireEvent.pointerDown(bubbleEl("dialogue-1"), { button: 0 });
+    // 检查器仍显示 panel-1 的阅读序，表单没有换目标。
+    expect(screen.getByText(/PANEL 01/)).toBeTruthy();
+    // 保存必须 PATCH 草稿归属的 panel-1，而不是当前选中的 panel-2。
+    fireEvent.click(screen.getByRole("button", { name: "保存本格分镜" }));
+    await waitFor(() => expect(updatePanel).toHaveBeenCalledTimes(1));
+    expect(updatePanel.mock.calls[0][0]).toBe("panel-1");
+    expect((updatePanel.mock.calls[0][1] as { actions: { script_action: string } }).actions.script_action)
+      .toBe("新写的第一格动作");
+  });
+
+  it("表单有未保存修改时，切到其他分格先确认；拒绝则保留表单", async () => {
+    renderEditor();
+    await screen.findByText("分镜导演台");
+    fireEvent.click(screen.getByRole("button", { name: /编辑本格/ }));
+    fireEvent.change(screen.getByLabelText("动作与表演"), { target: { value: "未保存的动作" } });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const layers = screen.getByLabelText(storyboardCopy.layerList);
+    fireEvent.click(within(layers).getByRole("button", { name: /格 02/ }));
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    // 拒绝丢弃：表单与文本保持，选择也不切换。
+    expect(screen.getByLabelText("动作与表演")).toHaveValue("未保存的动作");
+    expect(screen.getByText(/PANEL 01/)).toBeTruthy();
+    // 确认丢弃：表单关闭，检查器切到 panel-2。
+    confirmSpy.mockReturnValue(true);
+    fireEvent.click(within(layers).getByRole("button", { name: /格 02/ }));
+    expect(screen.queryByLabelText("动作与表演")).toBeNull();
+    expect(screen.getByText(/PANEL 02/)).toBeTruthy();
+    confirmSpy.mockRestore();
+  });
+
+  it("重开同一分格不弹确认且表单保持打开", async () => {
+    renderEditor();
+    await screen.findByText("分镜导演台");
+    fireEvent.click(screen.getByRole("button", { name: /编辑本格/ }));
+    fireEvent.change(screen.getByLabelText("动作与表演"), { target: { value: "未保存的动作" } });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const layers = screen.getByLabelText(storyboardCopy.layerList);
+    // 点击正在编辑的 panel-1 自身：不算离开，不丢弃也不弹确认。
+    fireEvent.click(within(layers).getByRole("button", { name: /格 01/ }));
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("动作与表演")).toHaveValue("未保存的动作");
+    confirmSpy.mockRestore();
+  });
+});
+
 describe("StoryboardEditor canvas (V02-31B)", () => {
   beforeEach(() => {
     window.localStorage.clear();
