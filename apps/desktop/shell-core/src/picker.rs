@@ -473,3 +473,47 @@ mod tests {
         assert_eq!(MAX_PICKED_FILE_BYTES, 20 * 1024 * 1024);
     }
 }
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+
+    /// PickError is the rejection surface the WebView surfaces to the user;
+    /// every arm must render with its label and — where the variant carries
+    /// data — that data must be embedded, or the rejection reason the user
+    /// sees loses exactly the information they would act on.
+    #[test]
+    fn pick_error_display_embeds_each_variants_data() {
+        for (error, expected) in [
+            (PickError::EmptyPath, "路径为空"),
+            (PickError::NotAbsolute, "必须是绝对路径"),
+            (PickError::DotComponents, ". / .."),
+            (PickError::DoesNotExist, "路径不存在"),
+            (PickError::IsSymlink, "符号链接"),
+            (PickError::NotARegularFile, "不是常规文件"),
+            (PickError::NotADirectory, "不是目录"),
+            (PickError::NotRegistered, "不是本会话"),
+            (PickError::GrewDuringRead, "读取期间"),
+            (PickError::SwappedAfterValidation, "校验后被替换"),
+        ] {
+            let rendered = error.to_string();
+            assert!(rendered.contains(expected), "{error:?} → {rendered}");
+        }
+        let suffix = PickError::ForbiddenSuffix {
+            allowed: &[".txt", ".md"],
+        }
+        .to_string();
+        assert!(suffix.contains(".txt") && suffix.contains(".md"),
+            "allowed set lost: {suffix}");
+        let too_large = PickError::TooLarge { size: 7, cap: 3 }.to_string();
+        assert!(too_large.contains('7') && too_large.contains('3'),
+            "size/cap lost: {too_large}");
+        let io = PickError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "denied here",
+        ))
+        .to_string();
+        assert!(io.contains("denied here"), "inner io error lost: {io}");
+    }
+}
+
