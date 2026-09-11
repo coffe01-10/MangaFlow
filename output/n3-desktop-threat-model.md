@@ -125,6 +125,9 @@
 
 - **R7（续跑认证 + 新增面复核，2026-09-12 夜）**：交叉复核最新合并增量——#472（phase2 runner default python 钉，test-only）、#463（中继 accept 韧性：errno 瞬态/终态分类、128 连接上限、饱和日志冷却——逐行复核无新缺陷）、#464（本窗 #314 收口，已并入）；当前 \`verify_journal\`/sweep（有界读、FIFO 拒绝、常量时间 token 比较、逐字段校验、linux starttime 锚点）对抗通读——无新发现。认证 HEAD：shell-core **145/145**、sidecar e2e 全家 **44/44**（含 dist 锁、溯源、env/api-root、非 UTF8 跨平台、mid-session 检测等全部新增钉）。**本窗 B 配额由并行 agent 达成（#409-#413/#426-#431/#457-#462 等已入账），C/D 由 #420-#423/#463/#464 及本轮认证覆盖。**
 
+- **R8（main.rs 全文通读）+ 时序观察**：无新发现；并发负载下 \`a_silent_helper_fails_with_ready_timeout\` 一次性抖动（3 次重跑绿，pgrep 探针候选根因，未立案）。
+- **R9（终覆盖轮，2026-09-12 深夜）**：最后 9 个未深读文件（WorkspaceState/Models/Labels/Ui/SceneEditor/JobDetailsWindow/StyleWorkspace/StyleProductionCard/CharacterPackagePane，2,838 行全读）——6 发现已立 Issue：**#484 [P3]** \`Flag("deleted_at")\` 永不匹配时间戳字符串形态（已亲验 Models.cs:24-26 vs web scene-picker.tsx:73）→ 已归档场景资产仍可绑定；**#485 [P3]** CharacterPackagePane 四个变更按钮无 busy 守卫（双提交/publish-save 竞态）；**#486 [P4] 束** dead-batch 闩锁/仪表盘卡片过期等值/灯箱吞错/diff 重入。SOLID 面与覆盖声明见 issue 正文。native 面至此全量覆盖（全部 Views + Services + 共享设施）。
+
 - **R9（同步轮，master tip 3736112）**：窗口分支合并 master（吸收并行轮 #466/#467 traverse-only fallback 全六影子名钉与 % 转义、31e3386 node env 编排名剥离扩展）；交叉复核 31e3386——六个 MANGAFLOW_DESKTOP_* 编排名从 node 子进程 env 剥离正确（helper 自身启动读取不受影响，strip 只作用于 node env dict），无引入缺陷。HEAD 认证：shell-core **145/145**、sidecar 全家 **44/44** 持续绿。
 
 - **R1（本窗首轮，2026-09-12）**：三路并行审计（native 新增面深审：storyboard 编辑套件/检查面板/workflow inspector/审批队列；shell-sidecar-src-tauri 增量：picker 身份校验 1992152、对话框重入守卫、plan-B shell-tools 窗口 #299 解决、helper env/api-root 校验 e0b108c；scripts+docs 一致性）——产出 Issue #339-#351（13 个）与 #343/#346/#349 的修复 PR #352/#353/#354（均合并）。
