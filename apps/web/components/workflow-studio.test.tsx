@@ -550,6 +550,50 @@ describe("WorkflowStudio 运行状态显示", () => {
     expect(screen.queryByLabelText("选择图片模型")).toBeNull();
   });
 
+  // #394：models 查询失败且无任何缓存 data 时，imageModels 同为空，但这是
+  // 目录读取错误而非未配置——错误态必须给出「读取失败」文案与重试出路，
+  // 不能落进 #381 的空目录指引把错误伪装成配置问题。
+  it("目录读取失败且无缓存时审批条渲染错误态与重试，不出现未配置指引", async () => {
+    runsSpy.mockResolvedValue([run({
+      status: "PAUSED",
+      node_runs: [nodeRun({ node_id: "gen-1", node_type: "generator.page", status: "WAITING_APPROVAL" })],
+    })]);
+    modelsSpy.mockRejectedValue(new Error("目录服务暂不可用"));
+
+    renderStudio();
+    await screen.findByText("流程编排");
+
+    expect(await screen.findByText(/模型目录读取失败/)).toBeInTheDocument();
+    expect(screen.queryByText(/未配置可用图像模型/)).toBeNull();
+    // 错误态不渲染模型选择器与设置指引：目录内容未知，指引会误导用户去改配置。
+    expect(screen.queryByLabelText("选择图片模型")).toBeNull();
+    expect(screen.queryByRole("link", { name: "前往设置" })).toBeNull();
+    // 重试按钮走 models.refetch（同一 queryFn），点击后目录被重新请求。
+    const callsBefore = modelsSpy.mock.calls.length;
+    await act(async () => {
+      screen.getByRole("button", { name: "重试" }).click();
+    });
+    await waitFor(() => expect(modelsSpy.mock.calls.length).toBeGreaterThan(callsBefore));
+  });
+
+  // #394 回归：目录请求成功但为空目录时仍走 #381 空目录指引，不误入错误态。
+  it("目录成功返回空数组时维持未配置指引，不渲染读取失败错误态", async () => {
+    runsSpy.mockResolvedValue([run({
+      status: "PAUSED",
+      node_runs: [nodeRun({ node_id: "gen-1", node_type: "generator.page", status: "WAITING_APPROVAL" })],
+    })]);
+    modelsSpy.mockResolvedValue([]);
+
+    renderStudio();
+    await screen.findByText("流程编排");
+
+    expect(await screen.findByText(/未配置可用图像模型/)).toBeInTheDocument();
+    expect(screen.queryByText(/模型目录读取失败/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "重试" })).toBeNull();
+    // 空目录指引保留设置入口。
+    expect(screen.getByRole("link", { name: "前往设置" })).toHaveAttribute("href", "/settings");
+  });
+
   it("有可用图像模型时审批条渲染模型选择器，不渲染空目录指引", async () => {
     const imageModel: ModelCapability = {
       catalog_id: "mi-1",
