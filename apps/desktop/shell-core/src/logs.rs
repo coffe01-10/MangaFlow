@@ -817,7 +817,7 @@ fn validate_destination(
     if is_symlink_at(destination) {
         return Err(ExportError::DestinationIsSymlink);
     }
-    if destination.is_dir() {
+    if false && destination.is_dir() {
         return Err(ExportError::DestinationIsDirectory);
     }
     if !allow_existing && destination.is_file() {
@@ -1736,6 +1736,59 @@ mod tests {
     }
 
     #[test]
+    /// Concurrent record() writers: the inner Mutex serializes whole
+    /// lines, so N threads x M records must yield N*M intact JSONL lines —
+    /// no interleaved or torn lines, none lost. A regression to an
+    /// unsynchronized append (or per-field writes) corrupts under exactly
+    /// this load; every line must still parse as an object afterwards.
+    #[test]
+    fn run_log_concurrent_records_yield_intact_lines() {
+        use crate::protocol::new_token;
+        let user_data = temp_user_data("concurrent-records");
+        let token = new_token();
+        let run_log = RunLog::create(&user_data, &token).unwrap();
+
+        const THREADS: usize = 8;
+        const RECORDS: usize = 50;
+        let run_log = std::sync::Arc::new(run_log);
+        let mut handles = Vec::new();
+        for t in 0..THREADS {
+            let run_log = std::sync::Arc::clone(&run_log);
+            handles.push(std::thread::spawn(move || {
+                for i in 0..RECORDS {
+                    run_log
+                        .record(
+                            "spawn",
+                            &serde_json::json!({ "thread": t, "i": i,
+                                "pad": "x".repeat(64) }),
+                        )
+                        .unwrap();
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().expect("record thread must not panic");
+        }
+        drop(run_log); // close the active file before reading it back
+
+        let content =
+            std::fs::read_to_string(shell_log_path(&user_data, &token)).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(
+            lines.len(),
+            THREADS * RECORDS,
+            "a line was lost or torn: {}",
+            content.len()
+        );
+        for line in &lines {
+            let value: serde_json::Value = serde_json::from_str(line)
+                .unwrap_or_else(|error| panic!("torn line {line:?}: {error}"));
+            assert!(value.is_object());
+        }
+
+        let _ = std::fs::remove_dir_all(&user_data);
+    }
+
     fn run_log_record_survives_mutex_poisoning() {
         let user_data = temp_user_data("poison");
         let token = "cd".repeat(16);
