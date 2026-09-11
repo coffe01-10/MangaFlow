@@ -872,10 +872,17 @@ fn collect_members(
         let entry_name = entry.file_name();
         if entry_name.to_str().is_none() {
             // `to_string_lossy` would fold two distinct non-UTF8 names onto
-            // the same replacement-char member (duplicate ZIP entries).
-            // Skip and report: the file keeps existing on disk.
+            // the same replacement-char member (duplicate ZIP entries), so
+            // the ARCHIVE must not see it — skip. The REPORT is display-only
+            // text: carry the lossy path so the user can find the offending
+            // file instead of an empty name for every top-level case.
+            let lossy_parent = if relative.is_empty() {
+                String::new()
+            } else {
+                format!("{relative}/")
+            };
             skipped.push(SkippedEntry {
-                name: relative.to_string(),
+                name: format!("{lossy_parent}{}", entry_name.to_string_lossy()),
                 reason: "non_utf8_name".into(),
             });
             continue;

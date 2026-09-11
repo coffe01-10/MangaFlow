@@ -409,3 +409,111 @@ mod registry_tests {
         assert_eq!(registry.kind_of(Path::new("/tmp/never-picked.dat")), None);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `PickKind::parse` is the string gate between the WebView invoke and
+    /// the pick surface: only the two exact identifiers route anywhere, and
+    /// everything else — unknown, wrong case, empty — must fail closed to
+    /// None rather than default to a kind.
+    #[test]
+    fn pick_kind_parses_only_the_exact_invoke_identifiers() {
+        assert_eq!(PickKind::parse("source_text"), Some(PickKind::SourceText));
+        assert_eq!(
+            PickKind::parse("reference_image"),
+            Some(PickKind::ReferenceImage)
+        );
+        for rejected in ["", "Source_Text", "SOURCE_TEXT", "source-text",
+                         "source_text ", " reference_image", "image", "text"] {
+            assert_eq!(
+                PickKind::parse(rejected),
+                None,
+                "a non-exact identifier must not route to a kind: {rejected:?}"
+            );
+        }
+    }
+
+    /// The dialog filter (what the OS dialog offers) and the validator's
+    /// allowed suffixes (what the shell accepts afterwards) are two tables
+    /// that must agree: a filter entry without a validator suffix would let
+    /// a user pick a file the shell then refuses; a validator suffix
+    /// without a filter entry makes it unpickable in practice. Both derive
+    /// from the same kind here — pin the correspondence plus the no-dot
+    /// form rfd expects.
+    #[test]
+    fn dialog_filter_extensions_mirror_the_allowed_suffixes() {
+        for kind in [PickKind::SourceText, PickKind::ReferenceImage] {
+            let (label, extensions) = kind.dialog_filter();
+            assert!(!label.is_empty());
+            let suffixes = kind.allowed_suffixes();
+            assert_eq!(extensions.len(), suffixes.len());
+            for (extension, suffix) in extensions.iter().zip(suffixes) {
+                assert!(!extension.contains('.'),
+                    "rfd expects bare extensions: {extension}");
+                assert_eq!(&format!(".{extension}"), suffix,
+                    "filter/validator drift for {kind:?}: {extension} vs {suffix}");
+            }
+        }
+        // The exact sets are pinned in the integration suite
+        // (suffix_policy_maps_per_kind_with_exact_allowed_sets); here the
+        // kinds must simply not swap tables with each other.
+        assert_ne!(
+            PickKind::SourceText.allowed_suffixes(),
+            PickKind::ReferenceImage.allowed_suffixes()
+        );
+    }
+
+    /// Mirrors `app.config.Settings.max_upload_bytes`; a silent drift here
+    /// would make the shell refuse (or over-accept relative to the dialog's
+    /// promise) files the API treats differently.
+    #[test]
+    fn max_pick_bytes_stays_aligned_with_the_upload_cap() {
+        assert_eq!(MAX_PICKED_FILE_BYTES, 20 * 1024 * 1024);
+    }
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+
+    /// PickError is the rejection surface the WebView surfaces to the user;
+    /// every arm must render with its label and — where the variant carries
+    /// data — that data must be embedded, or the rejection reason the user
+    /// sees loses exactly the information they would act on.
+    #[test]
+    fn pick_error_display_embeds_each_variants_data() {
+        for (error, expected) in [
+            (PickError::EmptyPath, "路径为空"),
+            (PickError::NotAbsolute, "必须是绝对路径"),
+            (PickError::DotComponents, ". / .."),
+            (PickError::DoesNotExist, "路径不存在"),
+            (PickError::IsSymlink, "符号链接"),
+            (PickError::NotARegularFile, "不是常规文件"),
+            (PickError::NotADirectory, "不是目录"),
+            (PickError::NotRegistered, "不是本会话"),
+            (PickError::GrewDuringRead, "读取期间"),
+            (PickError::SwappedAfterValidation, "校验后被替换"),
+        ] {
+            let rendered = error.to_string();
+            assert!(rendered.contains(expected), "{error:?} → {rendered}");
+        }
+        let suffix = PickError::ForbiddenSuffix {
+            allowed: &[".txt", ".md"],
+        }
+        .to_string();
+        assert!(suffix.contains(".txt") && suffix.contains(".md"),
+            "allowed set lost: {suffix}");
+        let too_large = PickError::TooLarge { size: 7, cap: 3 }.to_string();
+        assert!(too_large.contains('7') && too_large.contains('3'),
+            "size/cap lost: {too_large}");
+        let io = PickError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "denied here",
+        ))
+        .to_string();
+        assert!(io.contains("denied here"), "inner io error lost: {io}");
+    }
+}
+

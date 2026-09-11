@@ -1407,8 +1407,11 @@ time.sleep(120)
 /// kill what it does not own, and refusing is the fail-closed answer the
 /// Windows Job-membership path solves differently. The abort must still
 /// stop the whole group (parent and grandchild share it) and mark the
-/// journal stopped; both announcer processes are reaped by pid in a
-/// bounded sweep so no failure path leaks a one-hour sleeper.
+/// journal stopped; the bounded sweep VERIFIES both announcer processes
+/// died (the reaping itself is the abort's group stop). In-test failure
+/// paths cannot leak the sleepers — abort_spawn's group stop runs before
+/// the error returns; only hard termination of the test binary itself
+/// could orphan them, and they self-clear at their two-minute sleep.
 #[test]
 #[cfg(unix)]
 fn a_grandchild_pid_ready_is_refused_on_unix_direct_child_membership() {
@@ -1441,9 +1444,9 @@ if pid == 0:
     journal.write_text(json.dumps(record), encoding="utf-8")
     print("MANGAFLOW_READY " + json.dumps(
         {"token": token, "pid": os.getpid(), "api_origin": origin}), flush=True)
-    time.sleep(3600)
+    time.sleep(120)
 side_info.write_text(f"{os.getpid()} {pid}", encoding="utf-8")
-time.sleep(3600)
+time.sleep(120)
 "#,
     )
     .unwrap();
@@ -1486,7 +1489,10 @@ time.sleep(3600)
         .map(|p| p.parse().unwrap())
         .collect();
     let deadline = Instant::now() + Duration::from_secs(10);
-    while pids.iter().any(|p| Path::new(&format!("/proc/{p}")).exists()) {
+    // proc_dead, not bare /proc exists(): a group-killed grandchild
+    // re-parents to init and lingers as a zombie in containers whose init
+    // never reaps — the sweep must not count that as survival.
+    while pids.iter().any(|p| !proc_dead(*p)) {
         assert!(
             Instant::now() < deadline,
             "the group stop must reap the launcher and its grandchild"
@@ -1497,3 +1503,109 @@ time.sleep(3600)
     let _ = fs::remove_dir_all(&user_data);
     let _ = fs::remove_file(&script);
 }
+
+/// Pointing user_data at a REGULAR FILE (a misconfiguration: a stray
+/// archive, a wrong --user-data argument) must fail the handshake cleanly
+/// at the very first step — RuntimeLayout::create's create_dir_all cannot
+/// make a directory path through a file — surfacing as SpawnError::Io,
+/// with no panic and no runtime/logs residue created beside it. The
+/// helper binary is never invoked.
+#[test]
+fn spawn_helper_refuses_a_user_data_path_that_is_a_file() {
+    let parent = temp_user_data("ud-file-parent");
+    let user_data = parent.join("userdata");
+    fs::create_dir_all(&parent).unwrap();
+    fs::write(&user_data, b"not a directory").unwrap();
+
+    let config = HelperConfig::stub(&python(), &helper_script());
+    let error = spawn_helper(&config, &user_data)
+        .err()
+        .expect("a file as user_data must refuse");
+    assert!(
+        matches!(error, SpawnError::Io(_)),
+        "the failure must surface as SpawnError::Io: {error:?}"
+    );
+    // The misconfigured path itself was never converted into a directory,
+    // and no sibling runtime/logs trees were created next to it.
+    assert!(user_data.is_file(), "the stray file must be untouched");
+    assert!(!parent.join("runtime").exists());
+    assert!(!parent.join("logs").exists());
+
+    let _ = fs::remove_dir_all(&parent);
+}
+
+/// None != Some(actual) and trip StartTimeMismatch before the GO write.
+#[test]
+fn go_write_to_a_dead_helper_aborts_with_terminal_records() {
+    let script = temp_user_data("go-epipe").join("dying-helper.py");
+    std::fs::write(
+        &script,
+        r#"
+import json, os, socket, sys
+from pathlib import Path
+
+token = os.environ["MANGAFLOW_DESKTOP_TOKEN"]
+journal = Path(os.environ["MANGAFLOW_DESKTOP_JOURNAL"])
+sock = socket.socket()
+sock.bind(("127.0.0.1", 0))
+port = sock.getsockname()[1]
+origin = f"http://127.0.0.1:{port}"
+record = {
+    "version": 1,
+    "token": token,
+    "state": "ready",
+    "pid": os.getpid(),
+    "api_origin": origin,
+}
+if sys.platform == "linux":
+    # The child dies before the shell verifies; it is a zombie by then and
+    # /proc still answers, so the anchor must be the REAL starttime (the
+    # both-None corner only covers live pids whose /proc read fails).
+    stat = open(f"/proc/{os.getpid()}/stat").read()
+    record["pid_starttime"] = int(stat.rsplit(")", 1)[1].split()[19])
+journal.write_text(json.dumps(record), encoding="utf-8")
+# Close the stdin READ end BEFORE publishing READY: stdout is fd 1 and
+# unaffected, and with the read end already gone the parent's GO write
+# EPIPEs in EVERY interleaving. (Closing after print left a two-syscall
+# window where a preempted child was still alive at the parent's write and
+# the GO landed in the pipe buffer — observed once as a health-timeout
+# loss under load.)
+os.close(0)
+print("MANGAFLOW_READY " + json.dumps({"token": token, "pid": os.getpid(), "api_origin": origin}), flush=True)
+os._exit(0)
+"#,
+    )
+    .unwrap();
+
+    let user_data = temp_user_data("go-epipe-ud");
+    let config = HelperConfig {
+        python: python(),
+        helper_script: script.clone(),
+        helper_args: vec![],
+        ready_timeout: Duration::from_secs(20),
+        health_timeout: Duration::from_secs(5),
+    };
+    let error = spawn_helper(&config, &user_data).err().expect("GO write must fail");
+    assert!(
+        matches!(error, SpawnError::Io(_)),
+        "the EPIPE must surface as SpawnError::Io: {error:?}"
+    );
+
+    // Terminal bookkeeping: the journal the helper wrote as "ready" must
+    // have been marked stopped by the abort path.
+    let runtime = user_data.join("runtime");
+    let journal = std::fs::read_dir(&runtime)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .find(|entry| entry.path().join("owner.json").is_file())
+        .expect("an owned runtime entry exists")
+        .path()
+        .join("owner.json");
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&journal).unwrap()).unwrap();
+    assert_eq!(value["state"].as_str(), Some("stopped"), "{value}");
+
+    let _ = std::fs::remove_dir_all(&user_data);
+    let _ = fs::remove_file(&script);
+}
+
