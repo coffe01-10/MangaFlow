@@ -1533,3 +1533,79 @@ fn spawn_helper_refuses_a_user_data_path_that_is_a_file() {
 
     let _ = fs::remove_dir_all(&parent);
 }
+
+/// None != Some(actual) and trip StartTimeMismatch before the GO write.
+#[test]
+fn go_write_to_a_dead_helper_aborts_with_terminal_records() {
+    let script = temp_user_data("go-epipe").join("dying-helper.py");
+    std::fs::write(
+        &script,
+        r#"
+import json, os, socket, sys
+from pathlib import Path
+
+token = os.environ["MANGAFLOW_DESKTOP_TOKEN"]
+journal = Path(os.environ["MANGAFLOW_DESKTOP_JOURNAL"])
+sock = socket.socket()
+sock.bind(("127.0.0.1", 0))
+port = sock.getsockname()[1]
+origin = f"http://127.0.0.1:{port}"
+record = {
+    "version": 1,
+    "token": token,
+    "state": "ready",
+    "pid": os.getpid(),
+    "api_origin": origin,
+}
+if sys.platform == "linux":
+    # The child dies before the shell verifies; it is a zombie by then and
+    # /proc still answers, so the anchor must be the REAL starttime (the
+    # both-None corner only covers live pids whose /proc read fails).
+    stat = open(f"/proc/{os.getpid()}/stat").read()
+    record["pid_starttime"] = int(stat.rsplit(")", 1)[1].split()[19])
+journal.write_text(json.dumps(record), encoding="utf-8")
+# Close the stdin READ end BEFORE publishing READY: stdout is fd 1 and
+# unaffected, and with the read end already gone the parent's GO write
+# EPIPEs in EVERY interleaving. (Closing after print left a two-syscall
+# window where a preempted child was still alive at the parent's write and
+# the GO landed in the pipe buffer — observed once as a health-timeout
+# loss under load.)
+os.close(0)
+print("MANGAFLOW_READY " + json.dumps({"token": token, "pid": os.getpid(), "api_origin": origin}), flush=True)
+os._exit(0)
+"#,
+    )
+    .unwrap();
+
+    let user_data = temp_user_data("go-epipe-ud");
+    let config = HelperConfig {
+        python: python(),
+        helper_script: script.clone(),
+        helper_args: vec![],
+        ready_timeout: Duration::from_secs(20),
+        health_timeout: Duration::from_secs(5),
+    };
+    let error = spawn_helper(&config, &user_data).err().expect("GO write must fail");
+    assert!(
+        matches!(error, SpawnError::Io(_)),
+        "the EPIPE must surface as SpawnError::Io: {error:?}"
+    );
+
+    // Terminal bookkeeping: the journal the helper wrote as "ready" must
+    // have been marked stopped by the abort path.
+    let runtime = user_data.join("runtime");
+    let journal = std::fs::read_dir(&runtime)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .find(|entry| entry.path().join("owner.json").is_file())
+        .expect("an owned runtime entry exists")
+        .path()
+        .join("owner.json");
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&journal).unwrap()).unwrap();
+    assert_eq!(value["state"].as_str(), Some("stopped"), "{value}");
+
+    let _ = std::fs::remove_dir_all(&user_data);
+    let _ = fs::remove_file(&script);
+}
+
