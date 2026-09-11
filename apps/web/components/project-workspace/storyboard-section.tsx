@@ -17,9 +17,12 @@ const StressStoryboardCanvas = dynamic(() =>
 );
 
 /** `?stress=100` renders the synthetic client-only stress fixture instead of
- * the editor (V02-32); it never reads or writes storyboard data. */
+ * the editor (V02-32); it never reads or writes storyboard data. Dev-only:
+ * production builds silently ignore the param — a reachable URL must never
+ * swap the real storyboard editor for a synthetic canvas (#368). */
 function readStressParam(): boolean {
   if (typeof window === "undefined") return false;
+  if (process.env.NODE_ENV !== "development") return false;
   return Number(new URLSearchParams(window.location.search).get("stress")) === STRESS_NODE_COUNT;
 }
 

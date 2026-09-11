@@ -1,10 +1,11 @@
 // V02-32: `?stress=100` swaps the storyboard section to the client-only
 // stress fixture; without the param the product editor is untouched.
+// #368: the swap is development-only — production builds silently ignore
+// the param so a reachable URL can never replace the real editor.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
-import { beforeEach, vi } from "vitest";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "@/lib/api";
 
@@ -61,8 +62,12 @@ describe("storyboard section ?stress=100 gate", () => {
     window.history.replaceState(null, "", "/projects/p1/storyboard");
     vi.spyOn(api, "storyboard").mockReset();
   });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
 
-  it("带 stress=100：渲染 100 节点压力夹具，不请求分镜数据", async () => {
+  it("开发构建带 stress=100：渲染 100 节点压力夹具，不请求分镜数据", async () => {
+    vi.stubEnv("NODE_ENV", "development");
     window.history.replaceState(null, "", "/projects/p1/storyboard?stress=100");
     const storyboardSpy = vi.spyOn(api, "storyboard").mockResolvedValue({ page, panels: [], candidate_count: 0 } as never);
     renderSection();
@@ -70,6 +75,16 @@ describe("storyboard section ?stress=100 gate", () => {
     expect(document.querySelectorAll(".canvas-object-layer rect")).toHaveLength(100);
     expect(screen.queryByRole("button", { name: "保存本页" })).toBeNull();
     expect(storyboardSpy).not.toHaveBeenCalled();
+  });
+
+  it("生产构建带 stress=100：静默忽略参数，仍渲染产品编辑器", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    window.history.replaceState(null, "", "/projects/p1/storyboard?stress=100");
+    const storyboardSpy = vi.spyOn(api, "storyboard").mockResolvedValue({ page, panels: [], candidate_count: 0 } as never);
+    renderSection();
+    await screen.findByTestId("canvas-page");
+    expect(screen.queryByTestId("stress-canvas")).toBeNull();
+    expect(storyboardSpy).toHaveBeenCalledWith("page-1");
   });
 
   it("不带参数：仍渲染产品编辑器并正常请求分镜", async () => {
