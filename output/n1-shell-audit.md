@@ -252,3 +252,212 @@
 - 健康门不验响应身份（回环 200 即过）——设计级，需 lead 决策。
 - keep=1 与 sweep 的交互（清扫对 keep=1 基名的世代匹配）未测。
 - 并发导出同目标的 `.pending` 竞争（失败方误报 PendingIsSymlink）——需 seam。
+
+### 20260912 夜间烧（基线 44e3945，分支 night/n1-core-burn-20260912）
+
+开跑：fetch + reset --hard origin/master（44e3945，含 lead 的 native/review-loop 文档
+与 #401）+ clean；分支即建于 tip。基线实测 cargo test 9/9 套件、126 项全绿。
+native/** 与 native-tests/** 零触碰（今晚 master 含 native 改动，全部绕开）。
+
+配额 B 账（16 枚独立小 PR，全部 Linux cargo 绿、单主题、基 44e3945）：
+
+| PR | 分支 → sha | 主题 |
+| --- | --- | --- |
+| #402 | night/pr-dist-lock-fallback-hardening → 22bb150 | dist 锁 fallback release 所有权检查 + fd9 超时关闭 + noclobber 测试缝（3 新测试） |
+| #403 | night/pr-pick-kind-unit-pins → (见分支) | PickKind::parse 精确表 + dialog_filter↔allowed_suffixes 对应 + 上限对齐 |
+| #404 | night/pr-pick-error-display → 229f880 | PickError Display 全 13 臂（返工补 Grew/Swapped 两臂） |
+| #405 | night/pr-spawn-error-display → (见分支) | SpawnError Display + source() 链（仅 Io/Verify/Ownership） |
+| #406 | night/pr-export-non-utf8-skip → c86bacf | 导出器非 UTF8 名跳过 + skip 报告携带 lossy 名（行为小改进） |
+| #416 | night/pr-export-staging-debris-skip → (见分支) | 轮转 staging 残骸跳过 + lookalike 极性对照 |
+| #417 | night/pr-export-fifo-skip → (见分支) | 日志目录 FIFO 跳过（通道限界线程，永不打开管道） |
+| #418 | night/pr-destination-dir-root-pins → (见分支) | DestinationIsDirectory/NoFileName 两臂 |
+| #419 | night/pr-runtime-layout-symlink-guard → (见分支) | RuntimeLayout 规范名守卫（create_with_token 缝，去coy 不落 journal） |
+| #421 | night/pr-go-write-epipe-abort → (见分支) | GO 写 EPIPE 中止（子进程关 fd0 确定性触发）+ 终态记录 |
+| #422 | night/pr-journal-mismatch-abort → (见分支) | journal 与 READY 不一致 → Verify(JournalMismatch("state")) 中止 |
+| #423 | night/pr-signal-fallback-pins → (见分支) | signal_tree 逐 pid 回退（手工非组长树）+ contains_pid 负臂 |
+| #424 | night/pr-health-path-controls → (见分支) | get_status 拒绝 CR/LF 路径（拨号前，错误种类钉序） |
+| #425 | night/pr-pick-registry-replace → (见分支) | pick 注册表重选替换语义 + 未知路径负臂 |
+| #432 | night/pr-oversized-ready-line → (见分支) | 超长无换行 READY 行按上限截断 → BadJson 中止 |
+| #433 | night/pr-empty-logs-export → (见分支) | 空日志目录导出 = manifest-only 档案（python zipfile 外部校验） |
+
+配额 C 账：
+- 轮 1（子代理，#402–#406）：5× SHIP，0 BLOCKER/0 MAJOR；3 MINOR 全返工——
+  #402 waiter 时序裕量（4s 持锁）+ release 显式 return 0；#404 补齐 13 臂；
+  #406 报告名诚实性 → 并折叠 lossy 名改进进本 PR。审查含突变法红绿验证与
+  双 PR 合并冲突检查（picker 两模块名不冲突）。
+- 轮 2（子代理，#416–#422 批）：进行中，结果下轮记录。
+- 轮 3-6：窗口纪律继续挖相邻模块后补。
+
+实测：各分支 cargo test 全绿（基线 126 + 各自 1–3 枚增量）。Windows 腿全部
+NOT RUN（无实机）；#419 注明其 Linux pin 同时充当 Windows 大小写漂移的替身钉。
+sidecar 零改动（留 N2）；roadmap/development-progress 未动；未 merge master。
+
+#### 20260912 续：轮 2 结果、返工与 doc-sweep 收割（PR #434–#436）
+
+配额 C 轮 2（子代理，#416–#422 六分支，含 merge-tree 预演）：4× SHIP，2× HOLD，
+均一处级返工，已全部推上分支——
+- #418 HOLD→修：`Path::new("/")` 在 Windows 非绝对（无盘符），该 pin 在主平台
+  直接失败 → 按平台取 nameless absolute root（`C:\` / `/`），并断言 root 本身
+  absolute，保证测的是 NoFileName 守卫而非绝对门；Display NIT 改直写。
+- #421 HOLD→修：外层 doc 注释仍是旧稿（"journal 省略 anchor / 死 pid 双 None"）
+  与脚本相反——死而未收的子进程是 zombie，/proc 仍应答，省略 anchor 反而触发
+  StartTimeMismatch。已改为与脚本一致的真实理由。
+- #421 附加加固（野外捕获）：单独满套件跑曾出现 1 次失败——即轮 2 披露的
+  "GO 写先于 close(0) 落入缓冲"窗口（负载下子进程被抢占）。改为**先关 fd 0
+  再发 READY**（stdout 是 fd 1 不受影响），任何交错下 GO 必 EPIPE；10/10 稳定。
+- 合并冲突预告（轮 2 实测 merge-tree）：#416/#417 同点 EOF 追加 log_export.rs、
+  #421/#422 同点追加 startup_protocol.rs——fn 名不冲突，后合方机械 rebase。
+
+doc-code 不一致 sweep（子代理，双源核验）收割 6 项 → 3 PR：
+- #434 README 状态行对账：安装器链 4 处"仍 NOT RUN"与 D1（2026-09-06 双产物
+  构建 + NSIS 实机装/卸）矛盾 → 按 D1 改写；cargo test 计数 85→126（本轮实测）；
+  plan-B e2e 17→21（pytest 收集复核：e2e 9 + relay 9 + bind 3，首验 17 项留档）；
+  维护行数 3,323→6,231 / 1,900→2,742（wc 实测）；scripts 图补 dist 锁两文件
+  （#343：不列=不测）。
+- #435 rustdoc NOT-RUN 对齐：shell-sim "须在 Windows 复验"、OwnedTree::spawn
+  "Windows 行为仍 NOT RUN"、delivery_contract 头"MSI/NSIS 安装升级卸载均 NOT RUN"
+  ——三者均已被 D1 的 2026-09-06 Windows 实机轮超越（NSIS 装/卸 RUN），改为
+  引用 D1 并保留真实残留（MSI 安装步 + 跨版本升级）。
+- #436 verify-static-origin.mjs 注释勘误：sibling 探针夹具"先于服务器创建"不实
+  （listen 先行）——按实际顺序改写并注明顺序无关。
+
+诚实记录：#434/#435 引用的 D1 记录系 README 既有内容，本轮仅核对文本一致性，
+未复跑任何 Windows 实机验证（Windows 腿整体 NOT RUN 不变）。
+
+- 红绿判别力抽查（本轮配额项，突变法）：#403 的 parse 精确表在 parse 改为
+  大小写不敏感时确实变红；#418 的 DestinationIsDirectory pin 在 is_dir 守卫
+  被禁用时确实变红。抽查通过，两钉均非恒真。
+
+#### 20260912 续二：轮 3 结果（8× SHIP）与返工
+
+- 轮 3（子代理，#423–#436 八分支，含逐分支安全清扫与事实核查）：全部 SHIP，
+  0 BLOCKER/0 MAJOR。一条 MINOR 返工（#434）：量测日期口径与同句两个陈旧计数
+  （tests/ 1,100→2,857；main.rs 338→570）已刷新并统一为 2026-09-12 wc 实测。
+  NIT 返工一处（#423）：foreign 子进程改为 kill-on-drop 守卫，任何断言路径
+  （含限界挂起失败）都不再向宿主泄漏一小时 sleep 进程。
+- 轮 3 事实核查确认：21 项 e2e 计数（pytest 收集）、126 项 cargo 计数
+  （130 − 4 windows-gated）、6,231/2,742 行数、安装器行与 D1 一致、
+  capability/get_status 全部 8 个调用点均传 HEALTH_PATH。
+- 红绿抽查与 python 侧 dist 锁复核：python `_dist_build_lock` 超时路径在
+  unlink 之前 SystemExit，无 bash 侧已修的同款"赢家锁被删"缺陷（核验记录）。
+- 新增 PR：#437（user_data 指向文件 → SpawnError::Io 首步拒绝 + 零残留）、
+  #445（并发 record：8 线程×50 记录 = 400 条完整 JSONL，并发类别钉测）。
+  本 Goal 累计 21 枚独立小 PR。
+- 轮 4 已派出（返工核验 + #437/#445 新审）。
+
+#### 合并顺序提示（给 lead，20260912）
+
+- 本夜 21 枚 PR 分支均基于 44e3945，互不 rebase；EOF 追加型冲突集中在四个文件：
+  tests/log_export.rs（#406/#416/#417/#433）、tests/startup_protocol.rs
+  （#421/#422/#423/#432/#437，且共含同一处 `use std::fs;` 导入块——三方合并可自动
+  取同侧）、src/picker.rs（#403/#404/#425）、src/handshake.rs（#405/#424 的测试
+  追加块）。所有测试 fn 名互异，冲突解法均为"两块都保留"；每合入一枚后，其余
+  分支 `git rebase origin/master` 即可，需要我代 rebase 任何分支请直接指定。
+  src/logs.rs 三分支（#406/#418/#445）改动区域不同（collect_members / 测试锚点），
+  预期无冲突。
+- 勘误（轮 5 更正前条）：.lead-tmp/* 并不在那 4 条旧分支上——它由 lead 以
+  a08dae8 直接提交在 **master**（70+ 文件），本夜全部 21 枚分支的基树因此都
+  继承它；各分支相对 master 的 diff 不触碰该目录，合入不引入新内容。原
+  "旧分支不应复用为载体"警告对象有误，以本条为准。
+
+#### 20260912 续三：轮 4 与轮 5 结果、关键返工
+
+- 轮 4（子代理，三项返工核验 + 两个新分支）：3 SHIP；**2 HOLD，均一处级**：
+  - **#445 critical（自查自纠）**：红绿抽查用的 `if false &&` 突变残留在保存的
+    fixture diff 里，被 #445 分支携带——生产代码 `validate_destination` 的
+    is_dir 拒绝被禁用。已 revert；同分支测试插入曾搁浅
+    `run_log_record_survives_mutex_poisoning` 的 #[test]（毒化覆盖静默消失、
+    新钉双重注册）——归位。两钉各自单收，套件 127 绿。
+  - #423 medium：kill-on-drop 守卫原位于两枚 pin 之后，守卫前的 panic 仍会
+    泄漏 sleeper——先取 pid、守卫上提至 spawn 之后，断言用保存的 pid。
+  - 其余：#418/#421/#434 返工全部核验通过（#421 的 close-before-print 被证明
+    "任何交错都不可能投递 GO"）；#437 SHIP。
+- 轮 5（子代理，横切面：账本 + 21 份 PR 描述 vs 分支实况）：
+  - 账本三项 sha、126 基线（130 − 4 windows-gated）、轮 1-3 返工记录、合并
+    顺序提示全部核验属实；1 条勘误纠错（.lead-tmp 在 master，见上）。
+  - 12 份 PR body 系统性算术错误（"128 green" 应为 127）→ 已逐 PR 评论更正；
+    #404 此前已更正；#406 body "Test-only" 不完整（含 src 小改）→ 已评论披露；
+    #421 body 陈旧于返工后实现 → 已评论更正。其余 body 全部与 diff 相符。
+- 突变残留教训入账：红绿突变必须与被测分支物理隔离，保存的 diff 须在
+  应用前 grep 排除突变指纹（本轮起执行）。
+- 合并交互预警（同仓并行代理）：#415（glm/lock-header-accuracy）与 #420
+  （glm/dist-lock-latch-and-header）同样改 scripts/dist-build-lock.sh 的
+  头注/分支门，与 #402 三方相碰——lead 侧请先合其一，余者 rebase；
+  三者的语义意图（锁分支一致性/头注准确性/测试缝）不互斥。
+
+#### 20260912 轮 6（终验扫）与账本收口
+
+- 轮 6（子代理，21 枚分支终态扫）：**21/21 PASS**——安全（零 native/**、
+  native-tests/**、output/roadmap/.env 路径；合并基全部 44e3945）、突变指纹
+  全零（确认 #445 的 `if false &&` 泄漏在保存 tip 上彻底消失）、远端 tip 与
+  本地一致 21/21（无未推送返工）。合并顺序提示对最终 tip 复核仍然有效。
+- 勘误（补 20260911 段）：该段"121 项全绿"系中断会话的未验证计数，从未构成
+  证据（当时已注明"不作为证据"）；20260911 的权威实测为 110 项（fe22969 谱系），
+  其后各夜计数以各段实测记录为准。
+- 账本 tip 审阅点：本轮 6 次审查全部落账；21 枚 PR 全部开放待 lead 审合。
+
+- 新增 #456（night/pr-grandchild-pid-refusal → 见分支）：Unix 替身钉——
+  launcher 链契约的拒绝侧（Unix 成员=仅直接子，fork 真孙进程以己 pid 发
+  READY → Verify(PidMismatch) 拒绝；abort 组停收割双进程 + journal stopped，
+  有界 /proc 扫描防泄漏）。Windows 侧验收钉原为 cfg(windows)，此为其
+  fail-closed 对偶。累计 22 枚。
+- 轮 7（子代理，两条尾部分支）：#424 SHIP 零发现（held-listener 判别力经
+  独立复现验证：post-dial 守卫确实落到 TimedOut，1s×3 有界）；#456 HOLD →
+  已修：/proc 扫描改用 proc_dead（容器 init 不收尸时 zombie 不得计为存活），
+  doc 去夸口（扫描只验证死亡，收割是 abort 的组停；测试二进制被硬杀时
+  sleeper 以两分钟自清），stand-in sleep 3600→120。
+#### 20260912 同步新远端与 rebase 波次（lead 指令）
+
+- `git fetch` 后 master 已由 44e3945 前移至 c3d694a→d0aaf9f（lead 实时合入
+  本夜 PR 与并行代理 PR：#402/#403/#404/#405/#406/#407/#408/#414/#415/#416/
+  #417/#418/#419/#420/#424/#425/#434/#435/#436/#445/#450-456 等）。按指令对
+  仍开放的 12 枚分支逐一 rebase/reset 到最新 master 并全量复测，force-with-
+  lease 推回（均含本 Goal 独有提交，未丢弃）：
+  #403/#404/#405（picker/handshake EOF 冲突，双模块保留；#405 首轮解析缺闭括号
+  已修复）、#406（rebase 中重构：以 master 版为底追加最终形态测试，2 commit）、
+  #417（首 rebase 误丢测试 → 从分支 blob 重建单 commit）、#421/#422/#423
+  （startup_protocol EOF 冲突，取分支侧）、#432/#433/#437（reset 到 master 后
+  重放单 commit）。
+- **异常记录**：#423 首轮全量复测曾出现 1 次未具名失败（137/1），此后 3 轮
+  全量 + 6 轮定向全部 138 全绿——按既有时序 flake 观察项挂账，若复现以
+  失败名归因。
+- **#456 勘误与补钉**：#456 在 round-7 返工推送前被合入（merged at 4dbb6ac），
+  proc_dead 僵尸扫描修复滞留分支 → 新开 #459（单 commit，基 d0aaf9f）补送。
+- 全部 rebase 分支 Linux cargo 全绿（134-139 不等，随 master 基线增长）。
+  Windows 腿 NOT RUN；native/** 零触碰。
+- #420（glm/dist-lock-latch-and-header，并行代理）仍开放，与 #402（已合）
+  的锁文件后续改动无冲突（#402 已在 master，#420 rebase 责任在其作者侧）。
+
+- 红绿抽查补样（窗口纪律继续）：#422 的 `JournalMismatch("state")` 钉在
+  verify_journal 的 state 比较被禁用时变红（panic 消息如实报告实际 variant）；
+  #445 的 400 行完整线钉在 record 静默丢行时变红（0 ≠ 400）。累计抽查 4 钉
+  （#403/#418/#422/#445）全部非恒真。
+
+#### 20260912 轮 8（rebase 波次终检）与五分支重建
+
+- 轮 8（子代理，11 枚 rebase 后分支逐支核验）抓获**本轮最严重缺陷**：
+  手工 rebase 的"取分支侧/从底重建"解决在 5 枚分支上**静默删除了 master 侧
+  较新测试**（#456 的 grandchild 钉、#417 的 fifo 钉、#403 的 mod tests）——
+  各 tip"全绿"恰因被删测试不再运行。逐一以故障安全法重建：
+  `checkout -B <branch> origin/master` + 从旧 tip 机械提取本支 payload 追加
+  （fn 名锚定 + 硬化存在性断言），每支全量 cargo 绿：
+  - #404：仅追加 mod display_tests，与 master 的 mod tests/registry_tests
+    三模块共存（141 绿）。
+  - #406：仅追加 non-utf8 钉 + logs.rs lossy-report 变更；测试 doc 的陈旧
+    表述已改正（141 绿）。
+  - #421：master 实测无 go-write 测试（早前"已在"信号系冲突标记文件的假
+    阳性——本代理工具错误，已在 PR 评论自纠），完整 payload 重放
+    （close-before-print 硬化 + 更正后锚定理由）（141 绿，3/3 定向稳定）。
+  - #422：仅追加 journal-mismatch 钉（141 绿）。
+  - #423：仅追加 signal 回退钉 + hoisted 守卫（141 绿，12 次定向复跑干净）。
+  - #432 关闭（superseded）：oversized READY 钉已在 master
+    （oversized_ready_line_fails_verification_quickly，a5e739c，wave 中独立
+    合入）；重建分支成空壳（两空行），按审查建议关闭而非重复。
+- **未具名一次性失败挂账**：rebase 后首轮全量曾各出现 1 次无失败名失败
+  （#423 谱系两次）；此后 4 轮全量 + 8 轮定向 + 多轮复跑全部全绿。
+  归因未定，若复现以失败名追责。
+- 轮 8 方法教训：手工冲突解决后，"套件绿"不充分——必须**显式断言 master
+  既有测试清单在合并后仍在**（fn 名清单比对）。本轮起作为 rebase 收尾步骤。
+- 账本分支自身亦按此教训 rebase 到最新 master（f304a1f）：取 master 版
+  logs.rs（意外夹带的 #418 测试在重放中自愈反转）与 master 版审计（并行
+  代理的轮次记录在 wave 中入账），今晚各节作为纯尾差重新追加；套件 140 绿。
