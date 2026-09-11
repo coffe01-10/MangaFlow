@@ -150,3 +150,13 @@
 - #431 [P3] phase2_runner 契约套件 POSIX 静默跳过 + Job 顺序守卫仅源码字符串匹配（附带 P4 注记：e2e Windows stop 或孤儿 node 孙进程、health_probe UI 线程无连接超时）
 
 **核实为守住（R2 clean inventory）**：shell-core——READY 64KiB cap 边界、token 常量时比较、is_loopback_origin 全拒绝形态（[::1]/0.0.0.0/127.0.0.2/unicode）、owner.json 容错、post-spawn 全失败路径 abort_spawn、sweep 名门/拒链/未来 mtime、ziparch 不变量不可达、无输入可达 panic；native——无 WebView2/URI scheme 面、token 不进 C#、Preferences/KeyValueStore 损坏安全、ApiClient traversal 校验、ExportLogs 100MB 上限 + 拒 reparse point、44 个 async void 内部有守卫；e2e——owned-tree Ctrl+C/CtrlBreak 击杀、跨 run 端口污染守卫、#350 dist lock + tree-hash 溯源、#308 picker post-open 身份校验、fake-channel 门控、断言行为化（无 sleep-and-hope）。
+
+### 本窗 R4（2026-09-12）结果：导航/连接契约深挖 + 已立 8 issue 对抗互审（E 轮次）
+
+**已归档 issue（B 账 +4，累计 22/20 ✓ 配额 B 达成）**：
+- #446 [P3] Preferences.Save 关窗/dock 切换无 catch —— 数据目录不可写时 async void 崩溃、跳过优雅后端停止（KILL_ON_JOB_CLOSE 兜底故 P3；KeyValueStore 有对照 catch）
+- #447 [P3] node 子进程继承 MANGAFLOW_STATIC_EXPORT —— plan-B 服务的 web 静默降级为静态导出形态（strip 表缺该名；#313 同族）
+- #448 [P3] ScriptView 编辑表单保存无重入守卫 —— 双击同版本双 PATCH，第二个弹假 「保存未完成」 冲突框
+- #449 [P3] 启动 boot-hang 复用 「提交操作可能已被服务接收」 冲突文案 + 全部图片面绕过 ApiClient 错误详情契约（EnsureSuccessStatusCode/静默 catch/裸英文）
+
+**互审结论（E 轮次 4-5）**：R4-B 交叉审 8 个已立 issue —— 全部 STRENGTHENED/CORRECTED 无 REFUTED：#426 加重（单字符保存也会抹掉其他客户端并发新增：无版本整体替换 + 非 quiet LoadScriptAsync 孤儿化控件）；#427 加重（Verifier 独立发现第二窗口：排队 flush 在 handler1 设置 workflowId 后执行，PATCH workflows/B 携带 A 的图）；#428 加重（应用文案主动邀请重连但路径无任何 ConfirmLeave）；#438/#439/#442 全部加强；#430 修正（三机制真实、P3、stderr 有日志）；#431 确认（结构守卫是该文件 docstring 明示意图）。R4-A 新增：N1（#446）、N2/N3（#449）、media 面契约绕过；**核实守住**：幽灵持久化项目回退首页、状态文件 tmp+move 原子、后端无 401/403（本地 sidecar 无需认证流）、ConfirmLeave 重定向守卫 (:416-423)、HomeView 双提交守卫。
