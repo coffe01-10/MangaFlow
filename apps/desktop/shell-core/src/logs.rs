@@ -1561,20 +1561,23 @@ mod tests {
             validate_destination(&user_data, &dir_destination, false),
             Err(ExportError::DestinationIsDirectory)
         ));
+        // A nameless absolute root: "/" lacks a drive prefix on Windows,
+        // where the nameless absolute form is "C:\" — each platform's
+        // root must pass the absolute gate and fail on the missing file
+        // name instead.
+        #[cfg(windows)]
+        let nameless_root = Path::new("C:\\");
+        #[cfg(not(windows))]
+        let nameless_root = Path::new("/");
+        assert!(nameless_root.is_absolute(), "the root must be absolute");
         assert!(matches!(
-            validate_destination(&user_data, Path::new("/"), false),
+            validate_destination(&user_data, nameless_root, false),
             Err(ExportError::DestinationNoFileName)
         ));
         // The Display arms render the refusal reason (user-visible in the
         // export dialog path).
-        assert!(!matches!(
-            ExportError::DestinationIsDirectory.to_string(),
-            s if s.is_empty()
-        ));
-        assert!(!matches!(
-            ExportError::DestinationNoFileName.to_string(),
-            s if s.is_empty()
-        ));
+        assert!(!ExportError::DestinationIsDirectory.to_string().is_empty());
+        assert!(!ExportError::DestinationNoFileName.to_string().is_empty());
         let _ = fs::remove_dir_all(&user_data);
         let _ = fs::remove_dir_all(&dir_destination);
     }
