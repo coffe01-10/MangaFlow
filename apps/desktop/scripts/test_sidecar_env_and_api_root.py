@@ -181,6 +181,18 @@ def test_valid_api_root_tree_passes_validation(tmp_path):
                 (root / "Fake_Channel.py").write_text("", encoding="utf-8"),
             ),
         ),
+        (
+            "api-root/shadowing-fake-channel",
+            # Directory form: Python 3 imports namespace packages without
+            # __init__.py, so a bare `fake_channel/` directory shadows the
+            # helper's module exactly like the file form.
+            lambda root: (
+                (root / "alembic.ini").write_text("", encoding="utf-8"),
+                (root / "app").mkdir(),
+                (root / "app" / "main.py").write_text("", encoding="utf-8"),
+                (root / "fake_channel").mkdir(),
+            ),
+        ),
     ],
 )
 def test_bad_api_root_trees_are_rejected_before_sys_path(tmp_path, reason, plant):
