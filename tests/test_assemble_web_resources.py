@@ -254,3 +254,34 @@ def test_rerun_with_stale_retired_tree_refuses_and_keeps_copy(tmp_path, monkeypa
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+def test_sweep_reclaims_cross_pid_crash_remnants(tmp_path):
+    """A run SIGKILLed inside the two-rename window parks `<res>.old-<pid>`
+    and `<res>.tmp-<pid>` trees that a later different-pid run never
+    touched (round-5 review finding: 85 MB+ of gitignored debris per
+    occurrence). After a successful swap, with `res` in place, the sweep
+    must reclaim both shapes - they are no longer the only copy of
+    anything."""
+    module = _load_module()
+    src_tree = _make_source(tmp_path)
+    res = tmp_path / "src-tauri" / "web"
+    _make_previous(res)
+
+    other_pid = os.getpid() + 4321
+    debris_old = res.parent / f"{res.name}.old-{other_pid}"
+    debris_tmp = res.parent / f"{res.name}.tmp-{other_pid}"
+    (debris_old / "standalone").mkdir(parents=True)
+    (debris_old / "standalone" / "server.js").write_bytes(b"dead-run")
+    (debris_tmp / "node").mkdir(parents=True)
+    (debris_tmp / "node" / "node.exe").write_bytes(b"half-built")
+
+    # NO getpid patch: the debris names stay foreign to the assemble's own
+    # _clear/finally (real-pid names), so the sweep - not the ordinary
+    # cleanup - is what reclaims them.
+    module.assemble(src_tree, res)
+
+    assert res.exists()
+    assert (res / "standalone" / "server.js").read_bytes() == b"server-entry"
+    assert not debris_old.exists(), "parked .old-<pid> tree must be reclaimed"
+    assert not debris_tmp.exists(), "parked .tmp-<pid> tree must be reclaimed"

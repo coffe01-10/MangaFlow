@@ -178,6 +178,16 @@ def assemble(src: Path = SRC, res: Path = RES, node: Path | None = None) -> Path
             # Covers rollback attempts that died with a non-OSError; the
             # rollback-failed path above already raises its own error.
             raise _recovery_error(res, retired)
+    # Sweep crash remnants from OTHER pids: a run SIGKILLed inside the
+    # two-rename window parks `<res>.old-<pid>` / `<res>.tmp-<pid>` trees
+    # that a later different-pid run never touched (85 MB+ of gitignored
+    # debris per occurrence). Safe exactly when `res` is in place - the
+    # parked trees are by then no longer the only copy of anything.
+    for remnant in res.parent.glob(f"{res.name}.old-*"):
+        shutil.rmtree(remnant, ignore_errors=True)
+    for remnant in res.parent.glob(f"{res.name}.tmp-*"):
+        shutil.rmtree(remnant, ignore_errors=True)
+
     mb = sum(f.stat().st_size for f in res.rglob("*") if f.is_file()) / 1048576
     print(f"WEB_RESOURCES_READY {res} ({mb:.0f} MB)")
     return res
