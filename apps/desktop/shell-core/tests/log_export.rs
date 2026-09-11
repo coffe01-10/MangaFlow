@@ -456,3 +456,50 @@ fn export_skips_a_fifo_without_opening_it() {
     let _ = fs::remove_dir_all(&user_data);
     let _ = fs::remove_file(&destination);
 }
+
+/// A fresh install has a logs directory with nothing rotatable in it; the
+/// export must still succeed as a manifest-only archive — `included` empty
+/// and `skipped` empty — rather than failing or omitting the manifest. The
+/// manifest must never claim contents the archive does not have; here it
+/// claims none.
+#[test]
+fn export_of_an_empty_logs_dir_yields_a_manifest_only_archive() {
+    let user_data = temp_user_data("empty-logs");
+    let logs = logs_dir(&user_data);
+    fs::create_dir_all(&logs).unwrap();
+
+    let destination = std::env::temp_dir().join(format!("mfd-export-{}.zip", new_token()));
+    let report = export_logs_zip(&user_data, &destination).unwrap();
+
+    assert!(report.files.is_empty(), "{report:?}");
+    assert!(report.skipped.is_empty(), "{report:?}");
+    assert_eq!(report.total_bytes, 0, "{report:?}");
+    // The archive is exactly the manifest member, and the manifest's
+    // included list is empty (validated by python's zipfile, the same
+    // external-reader discipline as the collect test above).
+    let archive = fs::read(&destination).unwrap();
+    assert_eq!(&archive[0..2], b"PK");
+    let output = std::process::Command::new(python())
+        .arg("-c")
+        .arg(
+            "import json, sys, zipfile\n\
+             manifest = json.load(zipfile.ZipFile(sys.argv[1]).open('manifest.json'))\n\
+             names = zipfile.ZipFile(sys.argv[1]).namelist()\n\
+             assert names == ['manifest.json'], names\n\
+             assert manifest['included'] == [], manifest\n\
+             print('EMPTY_OK')",
+        )
+        .arg(&destination)
+        .output()
+        .expect("python zipfile validation runs");
+    assert!(
+        output.status.success()
+            && String::from_utf8_lossy(&output.stdout).contains("EMPTY_OK"),
+        "python zipfile validation failed: {} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let _ = fs::remove_dir_all(&user_data);
+    let _ = fs::remove_file(&destination);
+}
