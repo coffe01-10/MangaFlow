@@ -355,6 +355,28 @@ doc-code 不一致 sweep（子代理，双源核验）收割 6 项 → 3 PR：
   分支 `git rebase origin/master` 即可，需要我代 rebase 任何分支请直接指定。
   src/logs.rs 三分支（#406/#418/#445）改动区域不同（collect_members / 测试锚点），
   预期无冲突。
-- 勘误：上夜已合的 4 条旧分支（pr-zip-writer-guards / pr-ownership-error-display /
-  pr-get-status-semantics / pr-rotate-logs-report）的远端 tip 含 .lead-tmp/* 草稿
-  提交（lead 侧工作文件，本轮未触碰、不清理）；这些分支不应再被复用为 PR 载体。
+- 勘误（轮 5 更正前条）：.lead-tmp/* 并不在那 4 条旧分支上——它由 lead 以
+  a08dae8 直接提交在 **master**（70+ 文件），本夜全部 21 枚分支的基树因此都
+  继承它；各分支相对 master 的 diff 不触碰该目录，合入不引入新内容。原
+  "旧分支不应复用为载体"警告对象有误，以本条为准。
+
+#### 20260912 续三：轮 4 与轮 5 结果、关键返工
+
+- 轮 4（子代理，三项返工核验 + 两个新分支）：3 SHIP；**2 HOLD，均一处级**：
+  - **#445 critical（自查自纠）**：红绿抽查用的 `if false &&` 突变残留在保存的
+    fixture diff 里，被 #445 分支携带——生产代码 `validate_destination` 的
+    is_dir 拒绝被禁用。已 revert；同分支测试插入曾搁浅
+    `run_log_record_survives_mutex_poisoning` 的 #[test]（毒化覆盖静默消失、
+    新钉双重注册）——归位。两钉各自单收，套件 127 绿。
+  - #423 medium：kill-on-drop 守卫原位于两枚 pin 之后，守卫前的 panic 仍会
+    泄漏 sleeper——先取 pid、守卫上提至 spawn 之后，断言用保存的 pid。
+  - 其余：#418/#421/#434 返工全部核验通过（#421 的 close-before-print 被证明
+    "任何交错都不可能投递 GO"）；#437 SHIP。
+- 轮 5（子代理，横切面：账本 + 21 份 PR 描述 vs 分支实况）：
+  - 账本三项 sha、126 基线（130 − 4 windows-gated）、轮 1-3 返工记录、合并
+    顺序提示全部核验属实；1 条勘误纠错（.lead-tmp 在 master，见上）。
+  - 12 份 PR body 系统性算术错误（"128 green" 应为 127）→ 已逐 PR 评论更正；
+    #404 此前已更正；#406 body "Test-only" 不完整（含 src 小改）→ 已评论披露；
+    #421 body 陈旧于返工后实现 → 已评论更正。其余 body 全部与 diff 相符。
+- 突变残留教训入账：红绿突变必须与被测分支物理隔离，保存的 diff 须在
+  应用前 grep 排除突变指纹（本轮起执行）。
