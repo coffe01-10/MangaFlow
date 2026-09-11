@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Portable exclusive lock for the writers of apps/desktop/dist/ (#350).
 #
-# Three destructive writers share the dist/ tree (build-frontend-static.sh's
+# Three destructive WRITERS share the dist/ tree (build-frontend-static.sh's
 # rm -rf + repopulate of dist/frontend, build-web-standalone.py's rmtree +
 # move of dist/web-standalone, and the e2e runner's rebuild of the same
-# bundle), so each destructive section must hold this lock; a concurrent
-# build or serving run must never observe a half-deleted tree.
+# bundle), so each destructive section must hold this lock and two writers
+# can never interleave their deletions. READERS take nothing: a serving run
+# (verify-static-origin.mjs) or a browser pointed at dist/frontend during a
+# rebuild can observe the half-deleted window - that residual is documented,
+# not covered here (round-5 review F-Doc).
 #
 # Mechanism, by platform capability:
 #   1. POSIX flock(1) on the stable lock file. The mutex is the open file
