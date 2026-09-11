@@ -264,3 +264,18 @@ def test_bad_api_root_trees_are_rejected_before_sys_path(tmp_path, reason, plant
     # helper's own module next to the sidecar package — the exact hijack the
     # red team described.
     assert helper._validate_api_root(tmp_path) == reason
+
+
+def test_sqlalchemy_url_escapes_percent_interpolation(tmp_path):
+    """#443: set_main_option routes through ConfigParser interpolation, so a
+    bare % in the user-data path (a '100%' username is a legal name) died
+    with an InterpolationSyntaxError before the API ever started. The
+    documented escape (doubling) must round-trip to the original URL."""
+    from alembic.config import Config as AlembicConfig
+
+    url = "sqlite:///C:/Users/100%/data/mangaflow.db"
+    config = AlembicConfig()
+    helper.set_sqlalchemy_url(config, url)
+    # Reading the option back runs the interpolation: the doubled %% must
+    # resolve to the single original %.
+    assert config.get_main_option("sqlalchemy.url") == url
