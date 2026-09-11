@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http;
 using System.Reflection;
@@ -38,6 +39,8 @@ internal static class NativeWorkflowRunChecks
         InspectorShapeChecks();
         ConfigWriteBackChecks();
         await RunsAndApprovalChecks();
+        await DuplicateAutosaveChecks();
+        await DebounceSwitchChecks();
         Console.WriteLine("PASS: workflow inspector full config surface, clamped write-back, run history and approval queue wire contract");
     }
 
@@ -297,6 +300,220 @@ internal static class NativeWorkflowRunChecks
             StopAutosave(view);
         }
     }
+
+    // ── ④ #340: 复制→编辑克隆→防抖 PATCH 载荷里原节点 config 不变（假 Handler） ──
+    // 失败构造：DuplicateSelected 若共享 config 引用，克隆上的检查器编辑会写进
+    // 原节点的字典，800ms 防抖后 PATCH 的 draft_graph 里两个节点携带同一份被改的
+    // config（服务器侧双写）。这里在 PATCH 前后各断言一次：编辑后立即查内存里的
+    // 原节点，PATCH 到达后查载荷里的原节点行。
+    private static async Task DuplicateAutosaveChecks()
+    {
+        var patches = 0;
+        var lastPatch = default(JsonElement);
+        var graph = """
+            {"schema_version":2,"nodes":[
+              {"id":"orig-a","type":"agent.parse","name":"解析","position":{"x":10,"y":20},"inputs":[],"outputs":[],
+               "config":{"model_alias":"auto","temperature":0.2,"notes":""}},
+              {"id":"orig-c","type":"control.condition","name":"条件","position":{"x":330,"y":20},"inputs":[],"outputs":[],
+               "config":{"condition":{"path":"$","operator":"exists","value":""}}}],
+             "edges":[]}
+            """;
+        using var api = new ApiClient("http://127.0.0.1:12345", new Handler(request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (request.Method == HttpMethod.Patch && path.EndsWith("/workflows/wf-dup"))
+            {
+                patches++;
+                lastPatch = JsonDocument.Parse(request.Content!.ReadAsStringAsync().Result).RootElement.Clone();
+                return Task.FromResult(Response("""{"id":"wf-dup","name":"复制检查","version":4,"draft_version":2,"draft_graph":{"nodes":[],"edges":[]}}"""));
+            }
+            if (path.EndsWith("/workflow-node-types")) return Task.FromResult(Response(
+                """[{"type":"agent.parse","label":"解析","display_name":"解析","category":"AGENT","description":"","inputs":[],"outputs":[]},{"type":"control.condition","label":"条件","display_name":"条件","category":"CONTROL","description":"","inputs":[],"outputs":[]}]"""));
+            if (path.EndsWith("/projects/p1/workflows"))
+                return Task.FromResult(Response("""[{"id":"wf-dup","name":"复制检查","version":3,"draft_version":1,"draft_graph":{"nodes":[],"edges":[]}}]"""));
+            if (path.EndsWith("/projects/p1/chapters")) return Task.FromResult(Response("[]"));
+            if (path.EndsWith("/models")) return Task.FromResult(Response("[]"));
+            if (path.EndsWith("/workflows/wf-dup/runs")) return Task.FromResult(Response("[]"));
+            if (path.EndsWith("/workflows/wf-dup"))
+                return Task.FromResult(Response($"{{\"id\":\"wf-dup\",\"name\":\"复制检查\",\"version\":3,\"draft_version\":1,\"draft_graph\":{graph}}}"));
+            throw new Exception("Unexpected duplicate-check request: " + request.RequestUri);
+        }));
+        var view = new WorkflowView();
+        try
+        {
+            view.Activate(new WorkspaceContext
+            {
+                Api = api, Cache = new ApiCache(), State = new WorkspaceState(), Window = null!,
+                Project = new ProjectItem("p1", "复制检查", "", 0, 0),
+                NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
+            });
+            await Until(() => (string?)typeof(WorkflowView).GetField("workflowId", All)!.GetValue(view) == "wf-dup"
+                && Nodes(view).Count == 2);
+
+            // 复制 agent 节点 → 编辑克隆的温度（检查器写回键 temperature）。
+            Select(view, NodeById(view, "orig-a"));
+            Duplicate(view);
+            Require(Nodes(view).Count == 3, "复制 agent 节点未生成克隆");
+            Box(view, "温度")!.Text = "1.5";
+
+            // 复制 condition 节点 → 编辑克隆的条件表达式（SetConditionValue 合并写回）。
+            Select(view, NodeById(view, "orig-c"));
+            Duplicate(view);
+            Require(Nodes(view).Count == 4, "复制 condition 节点未生成克隆");
+            Box(view, "JSON 路径")!.Text = "$.page.turn";
+
+            // PATCH 前快照：内存里的原节点 config 必须未被克隆编辑改写。
+            Require(AsDouble(Config(NodeById(view, "orig-a")), "temperature") == 0.2,
+                "编辑克隆后（PATCH 前）原 agent 节点的温度被改写");
+            Require(ConditionPath(NodeById(view, "orig-c")) == "$",
+                "编辑克隆后（PATCH 前）原 condition 节点的路径被改写");
+
+            // 防抖落盘（800ms 真实计时器）后：载荷里原节点行携带各自原值，克隆行携带编辑值。
+            await Until(() => patches == 1);
+            var rows = lastPatch.Element("draft_graph").Array("nodes");
+            Require(rows.Count == 4, "防抖 PATCH 未携带全部 4 个节点");
+            var originalAgent = rows.Single(row => row.Text("id") == "orig-a");
+            var clonedAgent = rows.Single(row => row.Text("name") == "解析 副本");
+            var originalCondition = rows.Single(row => row.Text("id") == "orig-c");
+            var clonedCondition = rows.Single(row => row.Text("name") == "条件 副本");
+            Require(originalAgent.Element("config").Decimal("temperature") == 0.2 && clonedAgent.Element("config").Decimal("temperature") == 1.5,
+                "PATCH 载荷里原/克隆 agent 节点的温度应当分离（原 0.2 / 克隆 1.5）");
+            Require(originalCondition.Element("config").Element("condition").Text("path") == "$"
+                && clonedCondition.Element("config").Element("condition").Text("path") == "$.page.turn",
+                "PATCH 载荷里原/克隆 condition 节点的路径应当分离");
+            Require(patches == 1, "防抖应合并为一次 PATCH");
+
+            view.Deactivate();
+        }
+        finally
+        {
+            StopAutosave(view);
+        }
+    }
+
+    // ── ⑤ #342: 防抖回调不得把 A 的图 PATCH 进 B（门控请求构造切换空档） ──
+    // 失败构造（原始缺陷）：A 上武装防抖→800ms 内切到 B。选择器路径先 flush A 再
+    // 换 workflowId、再 GET B；GET B 被门控挂起时 workflowId 已是 B 而 nodes 还是
+    // A 的图，武装中的计时器回调此刻执行（旧代码读执行时的字段）→ PATCH B 携带
+    // A 的 nodes。伴生形态：回调在切换 flush 在途时通过身份检查、排进保存链，切换
+    // 完成后才执行——由 SaveNowCoreAsync 的目标身份弃权兜住（第二段验证）。
+    private static async Task DebounceSwitchChecks()
+    {
+        var aGraph = """
+            {"schema_version":2,"nodes":[{"id":"a-node","type":"agent.parse","name":"甲","position":{"x":10,"y":20},"inputs":[],"outputs":[],
+             "config":{"model_alias":"auto","temperature":0.2,"notes":""}}],"edges":[]}
+            """;
+        var bGraph = """
+            {"schema_version":2,"nodes":[{"id":"b-node","type":"agent.parse","name":"乙","position":{"x":10,"y":20},"inputs":[],"outputs":[],
+             "config":{"model_alias":"auto","temperature":0.5,"notes":""}}],"edges":[]}
+            """;
+        var aPatches = 0;
+        var bPatches = 0;
+        var getA = 0;
+        var getB = 0;
+        var bLoadGate = new TaskCompletionSource<HttpResponseMessage>();
+        var bFlushGate = new TaskCompletionSource<HttpResponseMessage>();
+        using var api = new ApiClient("http://127.0.0.1:12345", new Handler(async request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (request.Method == HttpMethod.Patch && path.EndsWith("/workflows/wf-swa"))
+            {
+                aPatches++;
+                return Response("""{"id":"wf-swa","version":6,"draft_version":2,"draft_graph":{"nodes":[],"edges":[]}}""");
+            }
+            if (request.Method == HttpMethod.Patch && path.EndsWith("/workflows/wf-swb"))
+            {
+                bPatches++;
+                if (bPatches == 1) return await bFlushGate.Task;   // 第二段：flush B 的响应挂起，制造“回调已排队、切换未完成”的窗口
+                return Response("""{"id":"wf-swb","version":4,"draft_version":2,"draft_graph":{"nodes":[],"edges":[]}}""");
+            }
+            if (request.Method == HttpMethod.Get && path.EndsWith("/workflows/wf-swa"))
+            {
+                getA++;
+                return Response($"{{\"id\":\"wf-swa\",\"name\":\"A\",\"version\":{(getA >= 3 ? 7 : 5)},\"draft_version\":1,\"draft_graph\":{aGraph}}}");
+            }
+            if (request.Method == HttpMethod.Get && path.EndsWith("/workflows/wf-swb"))
+            {
+                getB++;
+                if (getB == 1) return await bLoadGate.Task;   // 第一段：GET B 挂起 → workflowId=B 而 nodes 仍是 A 的图
+                return Response($"{{\"id\":\"wf-swb\",\"name\":\"B\",\"version\":3,\"draft_version\":1,\"draft_graph\":{bGraph}}}");
+            }
+            if (path.EndsWith("/workflow-node-types")) return Response(
+                """[{"type":"agent.parse","label":"解析","display_name":"解析","category":"AGENT","description":"","inputs":[],"outputs":[]}]""");
+            if (path.EndsWith("/projects/p1/workflows")) return Response(
+                """[{"id":"wf-swa","name":"A","version":5,"draft_version":1,"draft_graph":{"nodes":[],"edges":[]}},{"id":"wf-swb","name":"B","version":3,"draft_version":1,"draft_graph":{"nodes":[],"edges":[]}}]""");
+            if (path.EndsWith("/projects/p1/chapters")) return Response("[]");
+            if (path.EndsWith("/models")) return Response("[]");
+            if (path.EndsWith("/runs")) return Response("[]");
+            throw new Exception("Unexpected debounce-check request: " + request.RequestUri);
+        }));
+        var view = new WorkflowView();
+        try
+        {
+            view.Activate(new WorkspaceContext
+            {
+                Api = api, Cache = new ApiCache(), State = new WorkspaceState(), Window = null!,
+                Project = new ProjectItem("p1", "防抖切换检查", "", 0, 0),
+                NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
+            });
+            var workflowIdField = typeof(WorkflowView).GetField("workflowId", All)!;
+            await Until(() => (string?)workflowIdField.GetValue(view) == "wf-swa" && NodeNames(view).Contains("甲"));
+            var selector = (ComboBox)typeof(WorkflowView).GetField("workflowSelector", All)!.GetValue(view)!;
+            ComboBoxItem Item(string tag) => selector.Items.Cast<ComboBoxItem>().Single(item => (string?)item.Tag == tag);
+
+            // ── 第一段：A 上武装防抖 → GET B 空档内放走 800ms 计时器 ──
+            Select(view, NodeById(view, "a-node"));
+            Box(view, "温度")!.Text = "0.9";
+            Require(typeof(WorkflowView).GetField("autosave", All)!.GetValue(view) as System.Timers.Timer is { Enabled: true },
+                "编辑 A 后防抖计时器应已武装");
+            var armed = Stopwatch.StartNew();
+            selector.SelectedItem = Item("wf-swb");
+            await Until(() => (string?)workflowIdField.GetValue(view) == "wf-swb" && getB == 1);
+            await Until(() => armed.ElapsedMilliseconds >= 950);   // 覆盖 800ms 防抖窗口：陈旧回调必须已放弃
+            Require(bPatches == 0, "防抖窗口内切换到 B 后，A 的武装计时器把 A 的图 PATCH 进了 B");
+            Require(aPatches == 1, "切换路径应先 flush A（一次 wf-swa 的 PATCH）");
+            bLoadGate.TrySetResult(Response($"{{\"id\":\"wf-swb\",\"name\":\"B\",\"version\":3,\"draft_version\":1,\"draft_graph\":{bGraph}}}"));
+            await Until(() => NodeNames(view).Contains("乙"));
+            Require(NodeNames(view).Contains("乙") && !NodeNames(view).Contains("甲"), "B 载入后应只渲染 B 的节点");
+
+            // ── 第二段：B 上武装防抖 → 切回 A（flush B 响应挂起 → 回调排队期间完成切换） ──
+            Select(view, NodeById(view, "b-node"));
+            Box(view, "温度")!.Text = "1.2";
+            armed.Restart();
+            selector.SelectedItem = Item("wf-swa");
+            await Until(() => bPatches == 1);   // flush B 已发出（响应被门控挂起）
+            await Until(() => armed.ElapsedMilliseconds >= 950);   // 武装回调已执行并排进保存链
+            bFlushGate.TrySetResult(Response("""{"id":"wf-swb","version":4,"draft_version":2,"draft_graph":{"nodes":[],"edges":[]}}"""));
+            await Until(() => (string?)workflowIdField.GetValue(view) == "wf-swa" && NodeNames(view).Contains("甲"));
+            await Until(() => armed.ElapsedMilliseconds >= 1250);   // 给排队中的陈旧保存留出执行窗口
+            Require(aPatches == 1, "切回 A 后，B 的迟到防抖保存把 B 的图 PATCH 进了 A（保存链身份弃权失效）");
+            Require(bPatches == 1, "B 的待存编辑应恰好被 flush 一次");
+            Require((int?)typeof(WorkflowView).GetField("version", All)!.GetValue(view) == 7,
+                "切换后版本号被旧工作流的迟到响应改写（应为 A 载入的 version 7）");
+            view.Deactivate();
+        }
+        finally
+        {
+            bLoadGate.TrySetResult(Response("{}"));
+            bFlushGate.TrySetResult(Response("{}"));
+            StopAutosave(view);
+        }
+    }
+
+    private static IEnumerable<string> NodeNames(WorkflowView view) =>
+        Nodes(view).Cast<object>().Select(node => (string)node.GetType().GetField("Name", All)!.GetValue(node)!);
+
+    private static System.Collections.IList Nodes(WorkflowView view) =>
+        (System.Collections.IList)typeof(WorkflowView).GetField("nodes", All)!.GetValue(view)!;
+
+    private static object NodeById(WorkflowView view, string id) =>
+        Nodes(view).Cast<object>().Single(node => (string)node.GetType().GetProperty("Id")!.GetValue(node)! == id);
+
+    private static void Duplicate(WorkflowView view) =>
+        typeof(WorkflowView).GetMethod("DuplicateSelected", All)!.Invoke(view, null);
+
+    private static string ConditionPath(object node) =>
+        ((JsonElement)node.GetType().GetProperty("ConfigElement")!.GetValue(node)!).Element("condition").Text("path");
 
     // ── 反射/断言辅助（沿用 NativeWorkflowConnectionChecks 的零网络模式） ──
 

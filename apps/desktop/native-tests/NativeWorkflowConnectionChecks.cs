@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text.Json;
+using MangaFlow.Native;
 using MangaFlow.Native.Views;
 
 // P2-1 回归：WorkflowView 的连线四契约此前只活在 TryConnect 的 UI 事件链里，
@@ -22,6 +23,8 @@ internal static class NativeWorkflowConnectionChecks
         PureContractChecks();
         EdgeIdChecks();
         TryConnectWiringChecks();
+        DuplicateConfigAliasingChecks();
+        DuplicateUndoSnapshotChecks();
         Console.WriteLine("PASS: workflow connection rules (data_type match / no self-loop / duplicate port pair / deterministic edge id) enforced end to end");
     }
 
@@ -126,6 +129,160 @@ internal static class NativeWorkflowConnectionChecks
             (viewType.GetField("autosave", All)!.GetValue(view) as System.Timers.Timer)?.Stop();
         }
     }
+
+    // ── #340: DuplicateSelected 的 config 不得与原节点共享（检查器编辑就地写
+    // Config[key]，引用共享会让克隆编辑静默改写原节点并被自动保存双写）──
+    // 零网络：不 Activate，节点经 WorkflowNode.Create 直接入列（与上方检查同模式）。
+    private static void DuplicateConfigAliasingChecks()
+    {
+        var view = new WorkflowView();
+        var viewType = typeof(WorkflowView);
+        try
+        {
+            var agentType = JsonDocument.Parse(
+                """{"type":"agent.parse","display_name":"解析","category":"AGENT","inputs":[],"outputs":[]}""");
+            // Restore/DuplicateSelected 都按 nodeTypes 找类型定义补端口，喂入同形状数据。
+            viewType.GetField("nodeTypes", All)!.SetValue(view, new List<JsonElement> { agentType.RootElement });
+            var nodes = (System.Collections.IList)viewType.GetField("nodes", All)!.GetValue(view)!;
+            var original = CreateNode(view, "orig-1", "agent.parse");
+            SetConfig(original, "temperature", 0.4);
+            SetConfig(original, "locked", true);
+
+            Select(view, original);
+            Duplicate(view);
+            Require(nodes.Count == 2, "复制未生成克隆节点");
+            var clone = nodes.Cast<object>().Single(node => !ReferenceEquals(node, original));
+            // 失败构造①：字典引用共享（原缺陷的直接形态）。
+            Require(!ReferenceEquals(Config(original), Config(clone)),
+                "克隆的 config 字典与原节点共享引用：编辑克隆会改写原节点");
+            Require(JsonSerializer.Serialize(Config(original)) == JsonSerializer.Serialize(Config(clone)),
+                "深拷后的克隆 config 内容应与原节点一致（只隔离引用，不改值）");
+
+            // 失败构造②：克隆上改温度/锁定/备注（检查器同款写回键），原节点必须纹丝不动。
+            SetConfig(clone, "temperature", 1.5);
+            SetConfig(clone, "locked", false);
+            SetConfig(clone, "notes", "克隆备注");
+            Require(AsDouble(Config(original), "temperature") == 0.4, "编辑克隆的温度改写了原节点 config");
+            Require(Config(original)["locked"] is true, "编辑克隆的锁定开关改写了原节点 config");
+            Require(Config(original).GetValueOrDefault("notes") is "" or null, "编辑克隆的备注改写了原节点 config");
+            Require(AsDouble(Config(clone), "temperature") == 1.5 && Config(clone)["locked"] is false,
+                "克隆自身的编辑未生效");
+        }
+        finally
+        {
+            StopAutosave(view);
+        }
+    }
+
+    // ── #344: #340 的伴生形态——condition 嵌套可变集合 + undo 快照重放 ──
+    // 形态①：SetConditionValue 存的是 Dictionary<string,object?>（Create 与检查器
+    // 合并写回），字典级浅拷下克隆与原节点共享同一个 condition 对象，克隆改条件
+    // 表达式照样串写原节点。
+    // 形态②：快照在 push 时序列化捕获值（见 WorkflowView.Snapshot）；共享存在时，
+    // 克隆编辑之后推入的快照会把已被污染的原节点 config 一并冻结，重放（undo 回
+    // 基线再 redo 到最新）时把克隆的最后编辑写回原节点。
+    private static void DuplicateUndoSnapshotChecks()
+    {
+        var view = new WorkflowView();
+        var viewType = typeof(WorkflowView);
+        try
+        {
+            var conditionType = JsonDocument.Parse(
+                """{"type":"control.condition","display_name":"条件","category":"CONTROL","inputs":[],"outputs":[]}""");
+            viewType.GetField("nodeTypes", All)!.SetValue(view, new List<JsonElement> { conditionType.RootElement });
+            var nodes = (System.Collections.IList)viewType.GetField("nodes", All)!.GetValue(view)!;
+            var original = CreateNode(view, "cond-1", "control.condition");
+            SetCondition(viewType, original, "operator", "eq");
+            SetCondition(viewType, original, "path", "$.demo");
+            SetConfig(original, "temperature", 0.4);
+
+            // 基线快照先行（与载入后的 history[0] 同构），撤销才有回放目标。
+            var pushHistory = viewType.GetMethod("PushHistory", All) ?? throw Missing("PushHistory");
+            var snapshot = viewType.GetMethod("Snapshot", All) ?? throw Missing("Snapshot");
+            pushHistory.Invoke(view, [snapshot.Invoke(view, ["基线"])]);
+
+            Select(view, original);
+            Duplicate(view);
+            var firstClone = nodes.Cast<object>().Single(node => !ReferenceEquals(node, original));
+            // 形态①失败构造：字典级浅拷会让两节点的 condition 是同一个对象。
+            Require(!ReferenceEquals(Config(original).GetValueOrDefault("condition"), Config(firstClone).GetValueOrDefault("condition")),
+                "克隆与原节点的 condition 共享同一可变集合：字典级浅拷不够，克隆编辑会串写");
+
+            // 克隆改条件表达式（检查器同款 SetConditionValue 合并形态）：原节点不变。
+            SetCondition(viewType, firstClone, "path", "$.cloned");
+            SetConfig(firstClone, "temperature", 1.5);
+            Require(ConfigElement(original).Element("condition").Text("path") == "$.demo",
+                "克隆的条件表达式编辑改写了原节点 condition");
+            Require(ConfigElement(original).Decimal("temperature") == 0.4,
+                "克隆的温度编辑改写了原节点 config");
+            Require(ConfigElement(firstClone).Element("condition").Text("path") == "$.cloned",
+                "克隆自身条件编辑未生效");
+
+            // 形态②失败构造：克隆编辑之后再推一个快照（现实路径是再次复制/拖动），
+            // 共享存在时该快照会冻结被污染的原节点；undo 回基线 → redo 到最新，
+            // 重放后原节点不得携带克隆的最后编辑。
+            Select(view, firstClone);
+            Duplicate(view);
+            var undo = viewType.GetMethod("Undo", All) ?? throw Missing("Undo");
+            var redo = viewType.GetMethod("Redo", All) ?? throw Missing("Redo");
+            undo.Invoke(view, null);
+            undo.Invoke(view, null);
+            Require(nodes.Count == 1, "撤销两次应回到基线（单节点）");
+            redo.Invoke(view, null);
+            redo.Invoke(view, null);
+            Require(nodes.Count == 3, "重做两次应回到最新快照（三节点）");
+            var restoredOriginal = nodes.Cast<object>().Single(node => (string)node.GetType().GetProperty("Id")!.GetValue(node)! == "cond-1");
+            Require(ConfigElement(restoredOriginal).Element("condition").Text("path") == "$.demo"
+                && ConfigElement(restoredOriginal).Element("condition").Text("operator") == "eq",
+                "undo 重放后原节点的 condition 携带了克隆的编辑（快照冻结了被共享污染的 config）");
+            Require(ConfigElement(restoredOriginal).Decimal("temperature") == 0.4,
+                "undo 重放后原节点的温度携带了克隆的编辑");
+            var restoredClone = nodes.Cast<object>().Single(node => (string)node.GetType().GetField("Name", All)!.GetValue(node)! == "条件 副本");
+            Require(ConfigElement(restoredClone).Element("condition").Text("path") == "$.cloned"
+                && ConfigElement(restoredClone).Decimal("temperature") == 1.5,
+                "克隆自身的编辑在快照重放后应保留（只隔离，不丢失）");
+        }
+        finally
+        {
+            StopAutosave(view);
+        }
+    }
+
+    private static void SetCondition(Type viewType, object node, string key, object? value) =>
+        viewType.GetMethod("SetConditionValue", All)!.Invoke(null, [node, key, value]);
+
+    private static object CreateNode(WorkflowView view, string id, string type)
+    {
+        // JsonDocument 刻意不释放：节点持有的 JsonElement 是它的视图。
+        var definition = JsonDocument.Parse("{}").RootElement;
+        var create = NodeType().GetMethod("Create", All) ?? throw Missing("WorkflowNode.Create");
+        var node = create.Invoke(null, [id, type, type, (10.0, 20.0), definition])!;
+        var nodes = (System.Collections.IList)typeof(WorkflowView).GetField("nodes", All)!.GetValue(view)!;
+        nodes.Add(node);
+        return node;
+    }
+
+    private static void Select(WorkflowView view, object node) =>
+        typeof(WorkflowView).GetMethod("Select", All)!.Invoke(view, [node]);
+
+    private static void Duplicate(WorkflowView view) =>
+        typeof(WorkflowView).GetMethod("DuplicateSelected", All)!.Invoke(view, null);
+
+    private static Dictionary<string, object?> Config(object node) =>
+        (Dictionary<string, object?>)node.GetType().GetProperty("Config")!.GetValue(node)!;
+
+    private static void SetConfig(object node, string key, object? value) =>
+        node.GetType().GetMethod("SetConfig", All)!.Invoke(node, [key, value]);
+
+    private static JsonElement ConfigElement(object node) =>
+        (JsonElement)node.GetType().GetProperty("ConfigElement")!.GetValue(node)!;
+
+    private static double AsDouble(Dictionary<string, object?> config, string key) =>
+        config.TryGetValue(key, out var value) && value is JsonElement { ValueKind: JsonValueKind.Number } number
+            ? number.GetDouble() : value is double parsed ? parsed : double.NaN;
+
+    private static void StopAutosave(WorkflowView view) =>
+        (typeof(WorkflowView).GetField("autosave", All)!.GetValue(view) as System.Timers.Timer)?.Stop();
 
     private static object Port(object node, string id)
     {
