@@ -234,3 +234,28 @@ fn rotate_logs_is_a_noop_without_a_logs_directory() {
     );
     let _ = fs::remove_dir_all(&user_data);
 }
+
+/// A stray regular file parked at the logs path (crash debris, user error)
+/// is the one state that breaks every future rotation: read_dir fails, so
+/// the session-start sweep cannot even enumerate. The sweep stays
+/// fail-soft, but the failure must SURFACE — `rotate_logs` reports it as an
+/// error the caller prints to stderr, never `Ok`, and never a panic.
+/// (Whether session start should additionally survive the unwritable logs
+/// path is a design question for `RunLog::create`, out of scope here.)
+#[test]
+fn rotate_logs_reports_a_file_parked_at_the_logs_path() {
+    let user_data = temp_user_data("file-at-logs-path");
+    let logs = logs_dir(&user_data);
+    fs::create_dir_all(&user_data).unwrap();
+    fs::write(&logs, b"not a directory").unwrap();
+
+    let error = mangaflow_desktop_shell_core::logs::rotate_logs(&user_data)
+        .err()
+        .expect("a file at the logs path must be reported, not swallowed");
+    assert_eq!(error.kind(), std::io::ErrorKind::NotADirectory);
+    // The parked file is evidence — the failed sweep must not have touched
+    // (or deleted) it.
+    assert!(logs.is_file(), "the failed sweep must leave the stray file");
+
+    let _ = fs::remove_dir_all(&user_data);
+}
