@@ -1,16 +1,20 @@
-"""Regression tests for the atomic web-resource swap (Issue #347).
+"""Regression tests for the atomic web-resource swap (Issues #347 and #382).
 
 ``apps/desktop/scripts/assemble-web-resources.py`` used to rmtree the
 shipped tree (``src-tauri/web/``) and rebuild it in place: a mid-copy
 failure (disk full, locked file, Ctrl-C) left a truncated bundle that the
 next ``tauri build`` bundled silently. These tests pin the replacement
 contract: assemble into a sibling staging directory, swap with same-volume
-renames, and keep the previous tree byte-identical on failure.
+renames, and keep the previous tree byte-identical on failure. The #382
+cases pin the two windows that contract left open: an async exception
+landing between the two renames, and a rollback that fails while the old
+tree is still parked in the retired directory.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -124,6 +128,93 @@ def test_successful_assemble_swaps_in_the_new_tree(tmp_path, capsys):
     assert [p.name for p in res.parent.iterdir()] == [res.name]
     out = capsys.readouterr().out
     assert f"WEB_RESOURCES_READY {res}" in out
+
+
+def test_keyboardinterrupt_between_renames_rolls_back_old_tree(tmp_path, monkeypatch):
+    module = _load_module()
+    src = _make_source(tmp_path)
+    res = tmp_path / "src-tauri" / "web"
+    _make_previous(res)
+    previous = _tree(res)
+    node = tmp_path / "node.exe"
+    node.write_bytes(b"node-runtime")
+
+    real_rename = os.rename
+    calls = []
+
+    def windowed_rename(src_path, dst_path):
+        calls.append((Path(src_path), Path(dst_path)))
+        if len(calls) == 1:
+            # Call #1 moves the old tree aside. It fully completes, and
+            # then an async Ctrl-C lands after rename #1 but before
+            # rename #2 — the exact #382 window whose exception used to
+            # skip any guard wrapped around the second rename alone.
+            real_rename(src_path, dst_path)
+            raise KeyboardInterrupt("simulated Ctrl-C between the two renames")
+        return real_rename(src_path, dst_path)
+
+    monkeypatch.setattr(os, "rename", windowed_rename)
+
+    with pytest.raises(KeyboardInterrupt, match="simulated Ctrl-C"):
+        module.assemble(src=src, res=res, node=node)
+
+    # The swap really reached "rename #1 done", and the rollback rename
+    # (#2) restored the old tree before the exception propagated.
+    assert len(calls) == 2
+    assert calls[0][1].name == f"{res.name}.old-{os.getpid()}"
+    assert calls[1][0].name == f"{res.name}.old-{os.getpid()}"
+    assert calls[1][1] == res
+    # The old tree is back, byte-identical, as the module docstring
+    # promises for mid-swap failures.
+    assert _tree(res) == previous
+    # No staging or retired remnants beside the resource root.
+    assert [p.name for p in res.parent.iterdir()] == [res.name]
+
+
+def test_failed_rollback_keeps_retired_tree_with_recovery_guide(tmp_path, monkeypatch):
+    module = _load_module()
+    src = _make_source(tmp_path)
+    res = tmp_path / "src-tauri" / "web"
+    _make_previous(res)
+    previous = _tree(res)
+    node = tmp_path / "node.exe"
+    node.write_bytes(b"node-runtime")
+    retired = res.parent / f"{res.name}.old-{os.getpid()}"
+
+    real_rename = os.rename
+    calls = []
+
+    def swing_and_rollback_failure(src_path, dst_path):
+        calls.append((Path(src_path), Path(dst_path)))
+        if len(calls) == 1:
+            return real_rename(src_path, dst_path)
+        if len(calls) == 2:
+            raise OSError("simulated swap rename failure")
+        raise OSError("simulated rollback rename failure")
+
+    monkeypatch.setattr(os, "rename", swing_and_rollback_failure)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        module.assemble(src=src, res=res, node=node)
+
+    # rename #1 (old tree aside), rename #2 (swap, failed), rollback
+    # (failed too).
+    assert len(calls) == 3
+    # The resource root is gone and the retired tree is the only copy of
+    # the old tree: the cleanup must NOT have deleted it (#382).
+    assert not res.exists()
+    assert retired.exists()
+    assert _tree(retired) == previous
+    # The staged new tree is still cleaned up; only the retired tree is
+    # deliberately preserved.
+    assert sorted(p.name for p in res.parent.iterdir()) == [retired.name]
+    # The error tells the operator where the old tree is parked and how to
+    # restore it manually.
+    msg = str(excinfo.value)
+    assert str(retired) in msg
+    assert str(res) in msg
+    assert "Do not delete" in msg
+    assert "Move-Item" in msg
 
 
 if __name__ == "__main__":
