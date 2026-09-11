@@ -44,6 +44,13 @@ if [ -d "$REPO_ROOT/apps/web/node_modules" ]; then
   cp -al "$REPO_ROOT/apps/web/node_modules" "$WORKTREE/apps/web/node_modules"
 fi
 
+# The build log tee below writes into dist/, which may not exist yet on a
+# fresh checkout; the lock's own mkdir only runs at acquire time (#350),
+# i.e. AFTER the build. Create just the directory here so the tee cannot
+# fail before the lock is ever taken — nothing destructive happens outside
+# the lock; the rm -rf + repopulate section below stays inside it.
+mkdir -p "$DESKTOP_ROOT/dist"
+
 cd "$WORKTREE/apps/web"
 MANGAFLOW_STATIC_EXPORT=1 NEXT_TELEMETRY_DISABLED=1 \
   "$WORKTREE/node_modules/.bin/next" build 2>&1 | tee "$DESKTOP_ROOT/dist/static-build.log"
