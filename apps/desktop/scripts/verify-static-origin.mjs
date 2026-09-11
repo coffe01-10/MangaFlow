@@ -33,6 +33,15 @@ const MIME = {
   ".txt": "text/plain", ".ico": "image/x-icon", ".woff2": "font/woff2",
 };
 
+// Module-scope handle on the spawned helper so the main().catch teardown can
+// reach it. The readiness timer and fail() already SIGKILL the helper's
+// process group on their paths; but any OTHER throw after spawn that
+// bypasses fail() (malformed READY JSON, an unreadable journal, a
+// browser-phase exception) used to fall into main().catch → process.exit(1)
+// with the setsid'd helper still alive on its loopback port — the same
+// orphan class as the readiness timeout (#346).
+let helper;
+
 async function main() {
 const token = (await import("node:crypto")).randomBytes(16).toString("hex");
 const user_data = await (async () => {
@@ -62,7 +71,7 @@ function fail(message) {
 }
 
 // ---- 1. sidecar helper + frozen handshake --------------------------------
-const helper = spawn(PYTHON, [HELPER, "app", "--api-root", join(REPO_ROOT, "apps/api"),
+helper = spawn(PYTHON, [HELPER, "app", "--api-root", join(REPO_ROOT, "apps/api"),
   "--user-data", user_data, "--fake-channel", "--web-origin", WEB_ORIGIN], {
   env: { ...process.env, MANGAFLOW_DESKTOP_TOKEN: token, MANGAFLOW_DESKTOP_JOURNAL: journal,
     MANGAFLOW_DISABLE_DOTENV: "1" },
@@ -380,5 +389,13 @@ process.exitCode = ok ? 0 : 1;
 
 main().catch((error) => {
   console.error("D5 FAIL:", error);
+  // Same orphan class as the readiness timeout: this catch sees every
+  // rejection/throw that leaves main() without passing through fail()
+  // (which kills the group itself). Best-effort, mirroring fail(): the
+  // negative-pid kill reaches the setsid'd group; if the helper is already
+  // gone the throw is swallowed.
+  if (helper?.pid) {
+    try { process.kill(-helper.pid, "SIGKILL"); } catch { /* already gone */ }
+  }
   process.exit(1);
 });
