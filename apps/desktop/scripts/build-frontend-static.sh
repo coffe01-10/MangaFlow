@@ -108,8 +108,9 @@ recreate_junction() {
   # cannot enter a file). A missing target resolves to nothing and is
   # reported separately from an outside-the-repo target below — including
   # absolute targets: a dangling one must not escape with an empty
-  # target_kind into the junction branch, where cmd would fail with its
-  # raw message instead of this script's diagnosis (#396).
+  # target_kind into the junction branch. Observed pre-fix behavior there:
+  # mklink silently created a junction pointing at the file (rc 0, no
+  # diagnosis at all), or failed with cmd's raw message (#396).
   target_abs=""
   target_kind=""
   if [ "${target:0:1}" = "/" ]; then
