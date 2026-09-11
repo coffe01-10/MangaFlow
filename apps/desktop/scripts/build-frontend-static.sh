@@ -50,11 +50,12 @@ git -C "$WORKTREE" apply "$DESKTOP_ROOT/patches/web-static-export.patch"
 # #385: cp -al cannot hardlink an NTFS junction — git bash lstats the npm
 # workspace self-link (node_modules/@mangaflow/web) as a symlink and
 # link(2) on it fails with Permission denied — so the clone skips link
-# entries and rebuilds each one afterwards as a junction INSIDE the
-# worktree (a clone pointing back at the business tree would break the
-# worktree sealing). The junction sits one directory below node_modules'
-# top level, so the copy recurses into any subtree that contains a link
-# instead of handing it to cp -al wholesale.
+# entries and rebuilds each one INSIDE the worktree (a clone pointing back
+# at the business tree would break the worktree sealing): directory
+# targets as a junction, file targets as a hardlink (#392/#398). The
+# npm self-link sits one directory below node_modules' top level, so the
+# copy recurses into any subtree that contains a link instead of handing
+# it to cp -al wholesale.
 # clone_hardlink_tree <src> <dst> <rel_prefix>: copy every child of src
 # into a fresh dst via cp -al, skipping link entries (junctions) and
 # printing each skipped path relative to the CLONED TREE ROOT — the prefix
@@ -93,11 +94,11 @@ clone_hardlink_tree() {
 recreate_junction() {
   local tree_rel="$1" link_rel="$2" target link_dir target_abs target_kind new_target
   target="$(readlink "$REPO_ROOT/$tree_rel/$link_rel")" || {
-    echo "cannot read junction target for $tree_rel/$link_rel (#385)" >&2
+    echo "cannot read link target for $tree_rel/$link_rel (#385)" >&2
     return 1
   }
   if [ -z "$target" ]; then
-    echo "cannot read junction target for $tree_rel/$link_rel (#385)" >&2
+    echo "cannot read link target for $tree_rel/$link_rel (#385)" >&2
     return 1
   fi
   link_dir="$(dirname "$REPO_ROOT/$tree_rel/$link_rel")"

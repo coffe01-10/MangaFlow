@@ -21,10 +21,12 @@ landing in the window between the two renames) rolls the old tree back
 before the error propagates; if even the rollback fails, the retired tree
 is kept on disk and a loud error explains how to restore it manually. The
 old tree is only deleted after the new one is complete and in place
-(#347, #382). Re-running in that state is refused: with `res` still
-missing, the parked `web.old-*` tree is the only copy of the previous
-tree, and a new run would delete it before staging anything, so assemble
-fails fast and repeats the manual-restore instructions (#393).
+(#347, #382). A re-run that happens to reuse the parked tree's pid is
+refused in that state: with `res` still missing, `web.old-<pid>` is the
+only copy of the previous tree, and that run would delete it before
+staging anything, so assemble fails fast and repeats the manual-restore
+instructions (#393). A run under a different pid neither touches nor
+deletes the parked tree.
 """
 from __future__ import annotations
 
