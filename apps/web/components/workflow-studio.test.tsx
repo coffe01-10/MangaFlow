@@ -72,11 +72,12 @@ const publishSpy = vi.spyOn(api, "publishWorkflow");
 
 function renderStudio() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const view = render(
     <QueryClientProvider client={client}>
       <WorkflowStudio projectId="project-1" />
     </QueryClientProvider>,
   );
+  return { view, client };
 }
 
 describe("WorkflowStudio 草稿保存与发布", () => {
@@ -267,7 +268,7 @@ describe("WorkflowStudio 草稿离开边界", () => {
       draft_graph: payload.draft_graph as WorkflowGraph,
     }));
 
-    const view = renderStudio();
+    const { view } = renderStudio();
     await screen.findByText("流程编排");
     await act(async () => {
       screen.getByRole("button", { name: /解析原作/ }).click();
@@ -592,6 +593,106 @@ describe("WorkflowStudio 运行状态显示", () => {
     const confirm = screen.getByRole("button", { name: "确认继续" });
     expect(confirm).toBeDisabled();
     fireEvent.change(modelSelect, { target: { value: "image.a" } });
+    await waitFor(() => expect(confirm).toBeEnabled());
+  });
+
+  // round-4 审查（PR #387 后续）：drawModel 只在 select onChange 时写入、无重置
+  // 路径——曾选过模型后目录清空会留下残留别名，旧谓词 !drawModel 拦不住，
+  // 指引文案旁边出现可点的「确认继续」，点击即向审批接口提交失效别名。
+  it("曾选模型后目录清空：指引可见且确认继续禁用，不再提交失效别名", async () => {
+    const imageModel: ModelCapability = {
+      catalog_id: "mi-1",
+      connection_id: "conn-1",
+      provider: "甲",
+      protocol: "vertex",
+      model_id: "image-model-a",
+      logical_alias: "image.a",
+      display_name: "图片模型A",
+      model_type: "IMAGE",
+      input_modalities: ["IMAGE"],
+      output_modalities: ["IMAGE"],
+      operations: ["image_edit"],
+      resolutions: ["1K", "2K", "4K"],
+      preview_resolutions: ["1K"],
+      max_reference_images: 4,
+      regions: [],
+      confidence: "DECLARED",
+      enabled: true,
+      display_enabled: true,
+      auto_eligible: true,
+      priority: 1,
+    };
+    runsSpy.mockResolvedValue([run({
+      status: "PAUSED",
+      node_runs: [nodeRun({ node_id: "gen-1", node_type: "generator.page", status: "WAITING_APPROVAL" })],
+    })]);
+    modelsSpy.mockResolvedValueOnce([imageModel]).mockResolvedValue([]);
+
+    const { client } = renderStudio();
+    await screen.findByText("流程编排");
+
+    const modelSelect = screen.getByLabelText("选择图片模型");
+    await waitFor(() => {
+      expect(within(modelSelect).getByRole("option", { name: "甲 · 图片模型A" })).toBeInTheDocument();
+    });
+    const confirm = screen.getByRole("button", { name: "确认继续" });
+    fireEvent.change(modelSelect, { target: { value: "image.a" } });
+    await waitFor(() => expect(confirm).toBeEnabled());
+
+    // 供应商删除后目录重取为空（例如窗口重新聚焦触发 refetch）。
+    await act(async () => { await client.refetchQueries({ queryKey: ["models"] }); });
+    expect(await screen.findByText(/未配置可用图像模型/)).toBeInTheDocument();
+    expect(confirm).toBeDisabled();
+  });
+
+  it("曾选模型被删但目录仍有其他模型：确认继续禁用直到重新选择", async () => {
+    const imageModelA: ModelCapability = {
+      catalog_id: "mi-1",
+      connection_id: "conn-1",
+      provider: "甲",
+      protocol: "vertex",
+      model_id: "image-model-a",
+      logical_alias: "image.a",
+      display_name: "图片模型A",
+      model_type: "IMAGE",
+      input_modalities: ["IMAGE"],
+      output_modalities: ["IMAGE"],
+      operations: ["image_edit"],
+      resolutions: ["1K", "2K", "4K"],
+      preview_resolutions: ["1K"],
+      max_reference_images: 4,
+      regions: [],
+      confidence: "DECLARED",
+      enabled: true,
+      display_enabled: true,
+      auto_eligible: true,
+      priority: 1,
+    };
+    const imageModelB: ModelCapability = { ...imageModelA, catalog_id: "mi-2", model_id: "image-model-b", logical_alias: "image.b", display_name: "图片模型B" };
+    runsSpy.mockResolvedValue([run({
+      status: "PAUSED",
+      node_runs: [nodeRun({ node_id: "gen-1", node_type: "generator.page", status: "WAITING_APPROVAL" })],
+    })]);
+    modelsSpy.mockResolvedValueOnce([imageModelA]).mockResolvedValue([imageModelB]);
+
+    const { client } = renderStudio();
+    await screen.findByText("流程编排");
+
+    const modelSelect = screen.getByLabelText("选择图片模型");
+    await waitFor(() => {
+      expect(within(modelSelect).getByRole("option", { name: "甲 · 图片模型A" })).toBeInTheDocument();
+    });
+    const confirm = screen.getByRole("button", { name: "确认继续" });
+    fireEvent.change(modelSelect, { target: { value: "image.a" } });
+    await waitFor(() => expect(confirm).toBeEnabled());
+
+    // image.a 的行从目录消失、只剩 image.b：残留选择不得让按钮保持可点。
+    await act(async () => { await client.refetchQueries({ queryKey: ["models"] }); });
+    await waitFor(() => {
+      expect(within(modelSelect).getByRole("option", { name: "甲 · 图片模型B" })).toBeInTheDocument();
+    });
+    expect(confirm).toBeDisabled();
+    fireEvent.change(modelSelect, { target: { value: "image.b" } });
     await waitFor(() => expect(confirm).toBeEnabled());
   });
 });
