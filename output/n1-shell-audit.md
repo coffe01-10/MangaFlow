@@ -406,6 +406,28 @@ doc-code 不一致 sweep（子代理，双源核验）收割 6 项 → 3 PR：
   已修：/proc 扫描改用 proc_dead（容器 init 不收尸时 zombie 不得计为存活），
   doc 去夸口（扫描只验证死亡，收割是 abort 的组停；测试二进制被硬杀时
   sleeper 以两分钟自清），stand-in sleep 3600→120。
+#### 20260912 同步新远端与 rebase 波次（lead 指令）
+
+- `git fetch` 后 master 已由 44e3945 前移至 c3d694a→d0aaf9f（lead 实时合入
+  本夜 PR 与并行代理 PR：#402/#403/#404/#405/#406/#407/#408/#414/#415/#416/
+  #417/#418/#419/#420/#424/#425/#434/#435/#436/#445/#450-456 等）。按指令对
+  仍开放的 12 枚分支逐一 rebase/reset 到最新 master 并全量复测，force-with-
+  lease 推回（均含本 Goal 独有提交，未丢弃）：
+  #403/#404/#405（picker/handshake EOF 冲突，双模块保留；#405 首轮解析缺闭括号
+  已修复）、#406（rebase 中重构：以 master 版为底追加最终形态测试，2 commit）、
+  #417（首 rebase 误丢测试 → 从分支 blob 重建单 commit）、#421/#422/#423
+  （startup_protocol EOF 冲突，取分支侧）、#432/#433/#437（reset 到 master 后
+  重放单 commit）。
+- **异常记录**：#423 首轮全量复测曾出现 1 次未具名失败（137/1），此后 3 轮
+  全量 + 6 轮定向全部 138 全绿——按既有时序 flake 观察项挂账，若复现以
+  失败名归因。
+- **#456 勘误与补钉**：#456 在 round-7 返工推送前被合入（merged at 4dbb6ac），
+  proc_dead 僵尸扫描修复滞留分支 → 新开 #459（单 commit，基 d0aaf9f）补送。
+- 全部 rebase 分支 Linux cargo 全绿（134-139 不等，随 master 基线增长）。
+  Windows 腿 NOT RUN；native/** 零触碰。
+- #420（glm/dist-lock-latch-and-header，并行代理）仍开放，与 #402（已合）
+  的锁文件后续改动无冲突（#402 已在 master，#420 rebase 责任在其作者侧）。
+
 - 红绿抽查补样（窗口纪律继续）：#422 的 `JournalMismatch("state")` 钉在
   verify_journal 的 state 比较被禁用时变红（panic 消息如实报告实际 variant）；
   #445 的 400 行完整线钉在 record 静默丢行时变红（0 ≠ 400）。累计抽查 4 钉
