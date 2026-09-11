@@ -34,6 +34,13 @@
 # This file is SOURCEd (no side effects at source time); the functions are
 # exercised by test_dist_build_lock.py, which run-sidecar-e2e.sh collects.
 
+# The chosen mechanism is LATCHED at acquire time (round-6 review F-NIT):
+# release must use the SAME mechanism acquire did. Re-probing `command -v
+# flock` at release would take the flock arm while the noclobber lock file
+# still exists - skipping the rm -f and wedging every later build into the
+# timeout.
+DIST_LOCK_MECHANISM=""
+
 # acquire_dist_build_lock <lock_path> <timeout_seconds>
 # Uses file descriptor 9 for the flock form; callers must not close it
 # while the critical section runs. Returns non-zero on timeout.
@@ -43,6 +50,9 @@ acquire_dist_build_lock() {
   local lock_path="$1" timeout_seconds="$2"
   mkdir -p "$(dirname "$lock_path")"
   if [ "${MANGAFLOW_DIST_LOCK_FORCE:-}" != "noclobber" ] && command -v flock >/dev/null 2>&1; then
+    # Latched (round-6 review F-NIT, merged as the latch PR): release must
+    # use the SAME mechanism acquire did — see release below.
+    DIST_LOCK_MECHANISM="flock"
     exec 9>"$lock_path"
     if ! flock -w "$timeout_seconds" 9; then
       # Nothing was acquired, so nothing must stay held: close the
@@ -54,6 +64,7 @@ acquire_dist_build_lock() {
     fi
     return 0
   fi
+  DIST_LOCK_MECHANISM="noclobber"
   local waited=0
   until ( set -o noclobber; printf '%s\n' "$$" > "$lock_path" ) 2>/dev/null; do
     if [ "$waited" -ge "$timeout_seconds" ]; then
@@ -77,13 +88,18 @@ acquire_dist_build_lock() {
 # file description, not the file, so its release is unconditional.
 release_dist_build_lock() {
   local lock_path="$1"
-  if [ "${MANGAFLOW_DIST_LOCK_FORCE:-}" != "noclobber" ] && command -v flock >/dev/null 2>&1; then
+  if [ "$DIST_LOCK_MECHANISM" = "flock" ] && [ "${MANGAFLOW_DIST_LOCK_FORCE:-}" != "noclobber" ] && command -v flock >/dev/null 2>&1; then
     flock -u 9 2>/dev/null || true
     exec 9>&-
+    DIST_LOCK_MECHANISM=""
     return 0
   fi
-  if grep -qx "$$" "$lock_path" 2>/dev/null; then
-    rm -f "$lock_path"
+  if [ "$DIST_LOCK_MECHANISM" = "noclobber" ]; then
+    # Master's pid-ownership check: a timed-out waiter's EXIT trap must not
+    # cut the winner's lock short (pid reuse caveat unchanged).
+    if grep -qx "$$" "$lock_path" 2>/dev/null; then
+      rm -f "$lock_path"
+    fi
+    DIST_LOCK_MECHANISM=""
   fi
-  return 0
 }

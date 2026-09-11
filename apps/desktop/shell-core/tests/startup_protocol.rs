@@ -1609,3 +1609,60 @@ os._exit(0)
     let _ = fs::remove_file(&script);
 }
 
+/// only the positive arm.
+#[test]
+#[cfg(unix)]
+fn stop_reaches_a_non_group_leader_child_and_contains_pid_refuses_foreign() {
+    use std::sync::mpsc;
+
+    // Foreign live process for the negative membership pin.
+    let mut foreign = Command::new(python())
+        .arg("-c")
+        .arg("import time; time.sleep(3600)")
+        .spawn()
+        .expect("foreign process spawns");
+    let foreign_pid = foreign.id();
+    // Guard from the earliest possible moment: a panic in the pins below
+    // (the very regressions this test hunts) must not leak the sleeper.
+    struct KillOnDrop<'a>(&'a mut std::process::Child);
+    impl Drop for KillOnDrop<'_> {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let _foreign_guard = KillOnDrop(&mut foreign);
+
+    let mut command = Command::new(python());
+    command.arg("-c").arg("import time; time.sleep(3600)");
+    // Deliberately NOT process_group(0): the child stays in THIS test's
+    // group, so kill(-(child pid)) has no group to signal.
+    let child = command.spawn().expect("child spawns");
+    let mut tree = OwnedTree {
+        child,
+        guard: mangaflow_desktop_shell_core::ownership::TreeGuard::Unix,
+    };
+    assert!(tree.contains_pid(tree.pid()));
+    assert!(
+        !tree.contains_pid(foreign_pid),
+        "a foreign live pid must not count as tree membership"
+    );
+
+    // stop() must still reach the child — via the per-pid fallback — and
+    // must not hang. Bounded: a fallback regression turns into a named
+    // failure, not a stuck suite.
+    let (sender, receiver) = mpsc::channel();
+    let mut tree_for_thread = tree;
+    std::thread::spawn(move || {
+        let _ = sender.send(tree_for_thread.stop(Duration::from_secs(2)));
+    });
+    let outcome = receiver
+        .recv_timeout(Duration::from_secs(30))
+        .expect("stop must finish — a hang means the per-pid fallback died");
+    // The child died by SIGTERM (no exit code) — the fallback delivered.
+    assert!(
+        matches!(outcome, Ok(None) | Ok(Some(_))),
+        "stop must succeed via the fallback signal: {outcome:?}"
+    );
+}
+

@@ -39,6 +39,7 @@ environment and secrets are never written to the journal.
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 import re
@@ -205,13 +206,34 @@ def _serve_relay(relay: socket.socket, api_port: int) -> None:
 
     limiter = _RelayLimiter(WEB_RELAY_MAX_CONNECTIONS)
     log_cooldown = float("-inf")
+    # Transient accept errors that must be retried instead of killing the
+    # relay (accept(2): pending network errors surface here; EMFILE/ENOBUFS/
+    # ENOMEM under fd/memory pressure). Terminal errors: EBADF/ENOTSOCK/
+    # EINVAL - the listener was closed by a helper exit path.
+    transient_accept_errors = {
+        errno.ECONNABORTED,
+        errno.EPROTO,
+        errno.EMFILE,
+        errno.ENFILE,
+        errno.ENOBUFS,
+        errno.ENOMEM,
+        errno.ENETDOWN,
+        errno.ENETUNREACH,
+    }
     while True:
         try:
             client, _ = relay.accept()
         except socket.timeout:
             continue
-        except OSError:
-            return  # listener closed — helper is shutting down
+        except OSError as error:
+            if error.errno not in transient_accept_errors:
+                # Terminal (the listener was closed by a helper exit
+                # path, or a state nothing here can fix). Never die
+                # silently: one line before exiting keeps the failure
+                # diagnosable in the unified logs.
+                _log(f"relay listener exiting on {error!r}")
+                return
+            continue
         if not limiter.try_acquire():
             # Rate-limited: the stderr log only rotates across sessions,
             # so one line per refused connection under a refuse-flood
@@ -474,8 +496,13 @@ def _validate_api_root(api_root: Path) -> str | None:
     try:
         names = {entry.name.lower() for entry in api_root.iterdir()}
     except OSError:
+        # Same set the scan would have produced, via byte-exact existence
+        # probes (stat works through +x): a traverse-only root must fail
+        # closed on ANY of the shadow names, not just fake_channel (R3
+        # review).
         names = set()
-        for probe in ("fake_channel.py", "fake_channel"):
+        for probe in ("fake_channel.py", "fake_channel",
+                      "alembic.py", "alembic", "uvicorn.py", "uvicorn"):
             if (api_root / probe).exists():
                 names.add(probe)
     # A directory named `fake_channel` shadows the helper's module too:
@@ -484,6 +511,15 @@ def _validate_api_root(api_root: Path) -> str | None:
     # the file form.
     if "fake_channel.py" in names or "fake_channel" in names:
         return "api-root/shadowing-fake-channel"
+    # Same shadowing class for the modules imported AFTER sys.path.insert(0):
+    # a root-level alembic.py/alembic/ or uvicorn.py/uvicorn/ would be
+    # imported in place of the venv's real packages (alembic's command module
+    # and uvicorn's server both drive this helper). The real apps/api tree
+    # has none of these at its root (its migrations live in migrations/,
+    # reached via alembic.ini), so the check is safe for it (#314).
+    for shadow in ("alembic.py", "alembic", "uvicorn.py", "uvicorn"):
+        if shadow in names:
+            return f"api-root/shadowing-{shadow}"
     return None
 
 

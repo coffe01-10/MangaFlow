@@ -213,6 +213,49 @@ def test_valid_api_root_tree_passes_validation(tmp_path):
                 (root / "fake_channel").mkdir(),
             ),
         ),
+        (
+            "api-root/shadowing-alembic.py",
+            # #314: a root-level alembic module shadows the venv's real
+            # `from alembic import command` — the migration driver itself.
+            lambda root: (
+                (root / "alembic.ini").write_text("", encoding="utf-8"),
+                (root / "app").mkdir(),
+                (root / "app" / "main.py").write_text("", encoding="utf-8"),
+                (root / "alembic.py").write_text("raise SystemExit('PWNED')", encoding="utf-8"),
+            ),
+        ),
+        (
+            "api-root/shadowing-uvicorn",
+            # #314: same shape for the server import the helper performs.
+            lambda root: (
+                (root / "alembic.ini").write_text("", encoding="utf-8"),
+                (root / "app").mkdir(),
+                (root / "app" / "main.py").write_text("", encoding="utf-8"),
+                (root / "uvicorn").mkdir(),
+            ),
+        ),
+        (
+            "api-root/shadowing-alembic",
+            # Directory form (the most common real alembic layout): the
+            # namespace-package over-rejection is the deliberate policy.
+            lambda root: (
+                (root / "alembic.ini").write_text("", encoding="utf-8"),
+                (root / "app").mkdir(),
+                (root / "app" / "main.py").write_text("", encoding="utf-8"),
+                (root / "alembic").mkdir(),
+            ),
+        ),
+        (
+            "api-root/shadowing-uvicorn.py",
+            # File form for the server package, and a case variant to pin
+            # the lowercase scan for the new names.
+            lambda root: (
+                (root / "alembic.ini").write_text("", encoding="utf-8"),
+                (root / "app").mkdir(),
+                (root / "app" / "main.py").write_text("", encoding="utf-8"),
+                (root / "Uvicorn.py").write_text("", encoding="utf-8"),
+            ),
+        ),
     ],
 )
 def test_bad_api_root_trees_are_rejected_before_sys_path(tmp_path, reason, plant):
