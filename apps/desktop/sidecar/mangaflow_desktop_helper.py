@@ -39,6 +39,7 @@ environment and secrets are never written to the journal.
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 import re
@@ -205,13 +206,34 @@ def _serve_relay(relay: socket.socket, api_port: int) -> None:
 
     limiter = _RelayLimiter(WEB_RELAY_MAX_CONNECTIONS)
     log_cooldown = float("-inf")
+    # Transient accept errors that must be retried instead of killing the
+    # relay (accept(2): pending network errors surface here; EMFILE/ENOBUFS/
+    # ENOMEM under fd/memory pressure). Terminal errors: EBADF/ENOTSOCK/
+    # EINVAL - the listener was closed by a helper exit path.
+    transient_accept_errors = {
+        errno.ECONNABORTED,
+        errno.EPROTO,
+        errno.EMFILE,
+        errno.ENFILE,
+        errno.ENOBUFS,
+        errno.ENOMEM,
+        errno.ENETDOWN,
+        errno.ENETUNREACH,
+    }
     while True:
         try:
             client, _ = relay.accept()
         except socket.timeout:
             continue
-        except OSError:
-            return  # listener closed — helper is shutting down
+        except OSError as error:
+            if error.errno not in transient_accept_errors:
+                # Terminal (the listener was closed by a helper exit
+                # path, or a state nothing here can fix). Never die
+                # silently: one line before exiting keeps the failure
+                # diagnosable in the unified logs.
+                _log(f"relay listener exiting on {error!r}")
+                return
+            continue
         if not limiter.try_acquire():
             # Rate-limited: the stderr log only rotates across sessions,
             # so one line per refused connection under a refuse-flood
