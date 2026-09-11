@@ -327,3 +327,20 @@ doc-code 不一致 sweep（子代理，双源核验）收割 6 项 → 3 PR：
 - 红绿判别力抽查（本轮配额项，突变法）：#403 的 parse 精确表在 parse 改为
   大小写不敏感时确实变红；#418 的 DestinationIsDirectory pin 在 is_dir 守卫
   被禁用时确实变红。抽查通过，两钉均非恒真。
+
+#### 20260912 续二：轮 3 结果（8× SHIP）与返工
+
+- 轮 3（子代理，#423–#436 八分支，含逐分支安全清扫与事实核查）：全部 SHIP，
+  0 BLOCKER/0 MAJOR。一条 MINOR 返工（#434）：量测日期口径与同句两个陈旧计数
+  （tests/ 1,100→2,857；main.rs 338→570）已刷新并统一为 2026-09-12 wc 实测。
+  NIT 返工一处（#423）：foreign 子进程改为 kill-on-drop 守卫，任何断言路径
+  （含限界挂起失败）都不再向宿主泄漏一小时 sleep 进程。
+- 轮 3 事实核查确认：21 项 e2e 计数（pytest 收集）、126 项 cargo 计数
+  （130 − 4 windows-gated）、6,231/2,742 行数、安装器行与 D1 一致、
+  capability/get_status 全部 8 个调用点均传 HEALTH_PATH。
+- 红绿抽查与 python 侧 dist 锁复核：python `_dist_build_lock` 超时路径在
+  unlink 之前 SystemExit，无 bash 侧已修的同款"赢家锁被删"缺陷（核验记录）。
+- 新增 PR：#437（user_data 指向文件 → SpawnError::Io 首步拒绝 + 零残留）、
+  #445（并发 record：8 线程×50 记录 = 400 条完整 JSONL，并发类别钉测）。
+  本 Goal 累计 21 枚独立小 PR。
+- 轮 4 已派出（返工核验 + #437/#445 新审）。
