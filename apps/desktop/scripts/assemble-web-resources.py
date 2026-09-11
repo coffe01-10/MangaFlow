@@ -21,7 +21,10 @@ landing in the window between the two renames) rolls the old tree back
 before the error propagates; if even the rollback fails, the retired tree
 is kept on disk and a loud error explains how to restore it manually. The
 old tree is only deleted after the new one is complete and in place
-(#347, #382).
+(#347, #382). Re-running in that state is refused: with `res` still
+missing, the parked `web.old-*` tree is the only copy of the previous
+tree, and a new run would delete it before staging anything, so assemble
+fails fast and repeats the manual-restore instructions (#393).
 """
 from __future__ import annotations
 
@@ -63,6 +66,16 @@ def _recovery_error(res: Path, retired: Path) -> RuntimeError:
     )
 
 
+def _stale_retired_error(res: Path, retired: Path) -> RuntimeError:
+    return RuntimeError(
+        f"a previous assemble left {res} missing and {retired} holding the "
+        f"only copy of the previous tree; refusing to run because this run "
+        f"would delete that copy before swapping in the new tree. "
+        f"Do not delete it. Manually move {retired} back to {res} (for "
+        f"example Move-Item '{retired}' '{res}') first, then re-run."
+    )
+
+
 def assemble(src: Path = SRC, res: Path = RES, node: Path | None = None) -> Path:
     """Assemble the resource tree beside ``res`` and swap it in atomically.
 
@@ -76,7 +89,10 @@ def assemble(src: Path = SRC, res: Path = RES, node: Path | None = None) -> Path
     between the two renames, rolls the old tree back before the error
     propagates. If even the rollback fails, the retired tree is kept on
     disk (the cleanup never deletes it) and a RuntimeError with manual
-    recovery instructions is raised (#382).
+    recovery instructions is raised (#382). A re-run while that parked
+    copy is still the only one (``res`` missing, same-pid ``retired``
+    present) is refused with the same instructions before anything is
+    staged or deleted (#393).
     """
     if not (src / "server.js").is_file():
         raise SystemExit("run build-web-standalone.py first")
@@ -85,6 +101,14 @@ def assemble(src: Path = SRC, res: Path = RES, node: Path | None = None) -> Path
     staging = res.parent / f"{res.name}.tmp-{os.getpid()}"
     retired = res.parent / f"{res.name}.old-{os.getpid()}"
     _clear(staging)
+    # A retired tree beside a live `res` is a crash remnant from an earlier
+    # run that reused this pid (`res` in place means it is not the only
+    # copy). With `res` missing, `retired` is the recovery copy the #382
+    # rollback-failure path deliberately preserved: a same-pid re-run used
+    # to delete it here, destroying the only old tree before the new one
+    # was even staged, so refuse until it is restored (#393).
+    if retired.exists() and not res.exists():
+        raise _stale_retired_error(res, retired)
     _clear(retired)
     rollback_failed = False
     try:

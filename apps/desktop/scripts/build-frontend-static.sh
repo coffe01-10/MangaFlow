@@ -80,32 +80,77 @@ clone_hardlink_tree() {
 }
 
 # recreate_junction <tree_rel> <link_rel>: rebuild one skipped link entry.
-# The source junction's target (an absolute msys path) keeps only its
-# repo-relative tail, re-anchored at the throwaway worktree, so the clone
-# points at the worktree's OWN apps/web. mklink /J needs no privilege; the
-# // escaping keeps MSYS from rewriting the switches as paths.
+# The source link's target keeps only its repo-relative tail, re-anchored
+# at the throwaway worktree, so the clone points at the worktree's OWN
+# apps/web. Junction targets come back from readlink as absolute msys
+# paths; relative targets (npm/pnpm .bin style, e.g.
+# ../next/dist/bin/next) are resolved against the link's own directory to
+# an absolute path first — the raw text never matches the REPO_ROOT
+# prefix, which used to kill the build on every in-tree relative link
+# (#392). mklink /J needs no privilege; the // escaping keeps MSYS from
+# rewriting the switches as paths. File targets (junctions are
+# directory-only) are rebuilt as hardlinks of the worktree's own copy.
 recreate_junction() {
-  local tree_rel="$1" link_rel="$2" target new_target
+  local tree_rel="$1" link_rel="$2" target link_dir target_abs target_kind new_target
   target="$(readlink "$REPO_ROOT/$tree_rel/$link_rel")" || {
     echo "cannot read junction target for $tree_rel/$link_rel (#385)" >&2
     return 1
   }
-  case "$target" in
+  if [ -z "$target" ]; then
+    echo "cannot read junction target for $tree_rel/$link_rel (#385)" >&2
+    return 1
+  fi
+  link_dir="$(dirname "$REPO_ROOT/$tree_rel/$link_rel")"
+  # Resolve the raw target text to an absolute path (#392): a relative
+  # target resolves against the link's own directory, not the repo root.
+  # Directory targets resolve by cd-ing into them; file targets resolve
+  # through their parent directory with the base name joined back (cd
+  # cannot enter a file). A missing target resolves to nothing and is
+  # reported separately from an outside-the-repo target below.
+  target_abs=""
+  target_kind=""
+  if [ "${target:0:1}" = "/" ]; then
+    target_abs="$target"
+    if [ -d "$target_abs" ]; then
+      target_kind=dir
+    elif [ -e "$target_abs" ]; then
+      target_kind=file
+    fi
+  elif [ -d "$link_dir/$target" ]; then
+    target_abs="$(cd "$link_dir/$target" && pwd)"
+    target_kind=dir
+  elif [ -e "$link_dir/$target" ]; then
+    target_abs="$(cd "$link_dir/$(dirname "$target")" && pwd)/$(basename "$target")"
+    target_kind=file
+  fi
+  if [ -z "$target_abs" ]; then
+    echo "link $tree_rel/$link_rel target '$target' does not exist or cannot be resolved from $link_dir (#392)" >&2
+    return 1
+  fi
+  case "$target_abs" in
     "$REPO_ROOT"/*)
-      new_target="$WORKTREE${target#"$REPO_ROOT"}"
+      new_target="$WORKTREE${target_abs#"$REPO_ROOT"}"
       ;;
     *)
-      echo "junction $tree_rel/$link_rel points outside the repo ($target); unsupported layout (#385)" >&2
+      echo "link $tree_rel/$link_rel points outside the repo ($target_abs); unsupported layout (#385)" >&2
       return 1
       ;;
   esac
-  if [ ! -d "$new_target" ]; then
-    echo "junction target $new_target missing in worktree (#385)" >&2
+  if [ ! -e "$new_target" ]; then
+    echo "link target $new_target missing in worktree (#385)" >&2
     return 1
   fi
   mkdir -p "$(dirname "$WORKTREE/$tree_rel/$link_rel")"
-  cmd //c mklink //J "$(cygpath -w "$WORKTREE/$tree_rel/$link_rel")" "$(cygpath -w "$new_target")" >/dev/null
-  echo "recreated junction $tree_rel/$link_rel -> $new_target"
+  if [ "$target_kind" = file ]; then
+    # A junction can only point at a directory, so a relative file link is
+    # rebuilt as a hardlink of the worktree's own copy — same filesystem,
+    # no privilege needed, and the worktree stays sealed.
+    cp -l "$new_target" "$WORKTREE/$tree_rel/$link_rel"
+    echo "recreated file link $tree_rel/$link_rel -> $new_target"
+  else
+    cmd //c mklink //J "$(cygpath -w "$WORKTREE/$tree_rel/$link_rel")" "$(cygpath -w "$new_target")" >/dev/null
+    echo "recreated junction $tree_rel/$link_rel -> $new_target"
+  fi
 }
 
 clone_deps_tree() {
