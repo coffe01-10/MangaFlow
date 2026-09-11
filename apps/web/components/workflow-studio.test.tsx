@@ -585,7 +585,7 @@ describe("WorkflowStudio 运行状态显示", () => {
     expect(await screen.findByText("单页生成等待选择模型")).toBeInTheDocument();
     expect(screen.queryByText(/未配置可用图像模型/)).toBeNull();
     expect(screen.queryByRole("link", { name: "前往设置" })).toBeNull();
-    const modelSelect = screen.getByLabelText("选择图片模型");
+    const modelSelect = await screen.findByLabelText("选择图片模型");
     await waitFor(() => {
       expect(within(modelSelect).getByRole("option", { name: "甲 · 图片模型A" })).toBeInTheDocument();
     });
@@ -631,7 +631,7 @@ describe("WorkflowStudio 运行状态显示", () => {
     const { client } = renderStudio();
     await screen.findByText("流程编排");
 
-    const modelSelect = screen.getByLabelText("选择图片模型");
+    const modelSelect = await screen.findByLabelText("选择图片模型");
     await waitFor(() => {
       expect(within(modelSelect).getByRole("option", { name: "甲 · 图片模型A" })).toBeInTheDocument();
     });
@@ -678,7 +678,7 @@ describe("WorkflowStudio 运行状态显示", () => {
     const { client } = renderStudio();
     await screen.findByText("流程编排");
 
-    const modelSelect = screen.getByLabelText("选择图片模型");
+    const modelSelect = await screen.findByLabelText("选择图片模型");
     await waitFor(() => {
       expect(within(modelSelect).getByRole("option", { name: "甲 · 图片模型A" })).toBeInTheDocument();
     });
