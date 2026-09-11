@@ -120,6 +120,9 @@
 - 上一窗关闭时的"零发现"是对 4aa1797 前代码面的结论；本窗增量面 = `4aa1797..44e3945` 的桌面 churn（junction 重建/装配换窗/静态导出克隆/dist 锁/zip writer 守卫/ownership 错误展示/get-status 语义/审批别名目录钉/workflow view 暂停取消/ScriptView 双激活/native intake page 重建）——全部是**修复本身带来的新代码**，回归挖掘是本窗第一优先。
 - 配额跟踪：B ≥20 实质 issue（杜绝水文，先挖后报）；C ≥6 非 native 防守测试/契约小 PR；D 既有 Desktop/RedTeam issue 清账（FIXED/PARTIAL/NOT_FIXED 有据）；E ≥6 轮互审；F 本节持续更新。
 
+- **R8（main.rs 全文对抗通读 + 时序观察，2026-09-12 夜）**：src-tauri main.rs（570 行）端到端复核——setup 全部失败路径经 stop_helper 收尾（菜单布线失败也走同一簿记）、shell-tools 窗口生命周期闭合（菜单重建 #351 / 随主窗销毁 / 不接受初始化脚本 / 本地上下文）、对话框守卫 RAII 全路径无泄漏、async 化读回命令、fake_channel 精确 env 门（含单测）——**无新发现**。时序观察（LOW，未立 Issue）：并发全套件下 \`a_silent_helper_fails_with_ready_timeout_and_is_torn_down\` 出现过一次失败（重跑三次均过），属负载时序抖动；pgrep 探针的 -f 匹配与僵尸窗口是候选根因，未复现不立案。
+- **收敛判定（R6-R8 三轮连续无新价值 Finding）**：core 面（main.rs / protocol.rs / 中继 / sweep / journal）在本窗已由并行轮与本 agent 交替扫净；剩余开放项均在各自 owner（WPF native 面待 owner、#300 CSP 债待 nonce 重构、#307 已裁决接受、#311 政策已记录）。**本窗按规则进入收敛。**
+
 - **R7（续跑认证 + 新增面复核，2026-09-12 夜）**：交叉复核最新合并增量——#472（phase2 runner default python 钉，test-only）、#463（中继 accept 韧性：errno 瞬态/终态分类、128 连接上限、饱和日志冷却——逐行复核无新缺陷）、#464（本窗 #314 收口，已并入）；当前 \`verify_journal\`/sweep（有界读、FIFO 拒绝、常量时间 token 比较、逐字段校验、linux starttime 锚点）对抗通读——无新发现。认证 HEAD：shell-core **145/145**、sidecar e2e 全家 **44/44**（含 dist 锁、溯源、env/api-root、非 UTF8 跨平台、mid-session 检测等全部新增钉）。**本窗 B 配额由并行 agent 达成（#409-#413/#426-#431/#457-#462 等已入账），C/D 由 #420-#423/#463/#464 及本轮认证覆盖。**
 
 - **R1（本窗首轮，2026-09-12）**：三路并行审计（native 新增面深审：storyboard 编辑套件/检查面板/workflow inspector/审批队列；shell-sidecar-src-tauri 增量：picker 身份校验 1992152、对话框重入守卫、plan-B shell-tools 窗口 #299 解决、helper env/api-root 校验 e0b108c；scripts+docs 一致性）——产出 Issue #339-#351（13 个）与 #343/#346/#349 的修复 PR #352/#353/#354（均合并）。
