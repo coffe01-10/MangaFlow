@@ -74,6 +74,20 @@ def _bash() -> str:
     return bash
 
 
+def _require_windows_driver() -> None:
+    """The driver needs cygpath (Git for Windows) and cmd //c mklink //J.
+
+    On non-MSYS hosts (Linux CI, WSL) cygpath is absent and every test in
+    this module would hard-fail with a raw driver error instead of a clean
+    skip - the same graceful-skip discipline the other host-shaped suites
+    in this repo use.
+    """
+    if shutil.which("cygpath") is None:
+        pytest.skip("cygpath not available (non-MSYS host); junction contract needs Git for Windows")
+    if os.name != "nt" and shutil.which("cmd") is None:
+        pytest.skip("cmd not available on this non-Windows host; mklink unavailable")
+
+
 def _extract_function() -> str:
     lines = SCRIPT.read_text(encoding="utf-8").splitlines()
     start = next(i for i, line in enumerate(lines) if line.startswith("recreate_junction() {"))
@@ -149,6 +163,7 @@ def _junction_target(path: Path) -> str:
 
 
 def test_relative_dir_link_rebuilds_as_worktree_junction(tmp_path):
+    _require_windows_driver()
     rc, out, err = _run(tmp_path, "@scope/pkg")
     assert rc == 0, err
     assert "outside" not in err
@@ -160,6 +175,7 @@ def test_relative_dir_link_rebuilds_as_worktree_junction(tmp_path):
 
 
 def test_relative_file_link_rebuilds_as_hardlink(tmp_path):
+    _require_windows_driver()
     rc, out, err = _run(tmp_path, ".bin/next")
     assert rc == 0, err
     link = tmp_path / "wt" / "node_modules" / ".bin" / "next"
@@ -172,6 +188,7 @@ def test_relative_file_link_rebuilds_as_hardlink(tmp_path):
 
 
 def test_outside_repo_link_is_refused(tmp_path):
+    _require_windows_driver()
     rc, out, err = _run(tmp_path, "sub/deep/outside-link")
     assert rc != 0
     assert "outside the repo" in err
@@ -180,6 +197,7 @@ def test_outside_repo_link_is_refused(tmp_path):
 
 
 def test_dangling_relative_target_is_refused_with_resolution_error(tmp_path):
+    _require_windows_driver()
     rc, out, err = _run(tmp_path, "dangling-rel")
     assert rc != 0
     assert "does not exist or cannot be resolved" in err
@@ -187,6 +205,7 @@ def test_dangling_relative_target_is_refused_with_resolution_error(tmp_path):
 
 
 def test_dangling_absolute_target_is_refused_before_mklink(tmp_path):
+    _require_windows_driver()
     # #396: a dangling absolute target used to keep target_abs set with an
     # empty target_kind and fall into the mklink branch (raw cmd failure).
     rc, out, err = _run(tmp_path, "dangling-abs")
@@ -198,6 +217,7 @@ def test_dangling_absolute_target_is_refused_before_mklink(tmp_path):
 
 
 def test_absolute_junction_rebuilds_against_worktree(tmp_path):
+    _require_windows_driver()
     # #385 legacy behavior: junction readlink returns an absolute msys path
     # that must keep resolving to the worktree's own apps/web.
     rc, out, err = _run(tmp_path, "abs-junction")
@@ -209,6 +229,7 @@ def test_absolute_junction_rebuilds_against_worktree(tmp_path):
 
 
 def test_absolute_file_target_rebuilds_as_hardlink(tmp_path):
+    _require_windows_driver()
     # #398: the absolute -e branch (an existing absolute target that is a
     # file) is the one arm of the resolution table no earlier case pinned;
     # dropping its target_kind=file assignment must fail here, not pass.
