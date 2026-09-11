@@ -13,7 +13,7 @@ if (-not (Test-Path -LiteralPath ".env")) {
 
 function Get-DotEnvValue([string]$Name) {
     $escapedName = [Regex]::Escape($Name)
-    foreach ($line in Get-Content -LiteralPath ".env") {
+    foreach ($line in Get-Content -LiteralPath ".env" -Encoding UTF8) {
         $trimmed = $line.Trim()
         if (-not $trimmed -or $trimmed.StartsWith("#")) {
             continue
