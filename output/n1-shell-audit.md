@@ -252,3 +252,42 @@
 - 健康门不验响应身份（回环 200 即过）——设计级，需 lead 决策。
 - keep=1 与 sweep 的交互（清扫对 keep=1 基名的世代匹配）未测。
 - 并发导出同目标的 `.pending` 竞争（失败方误报 PendingIsSymlink）——需 seam。
+
+### 20260912 夜间烧（基线 44e3945，分支 night/n1-core-burn-20260912）
+
+开跑：fetch + reset --hard origin/master（44e3945，含 lead 的 native/review-loop 文档
+与 #401）+ clean；分支即建于 tip。基线实测 cargo test 9/9 套件、126 项全绿。
+native/** 与 native-tests/** 零触碰（今晚 master 含 native 改动，全部绕开）。
+
+配额 B 账（16 枚独立小 PR，全部 Linux cargo 绿、单主题、基 44e3945）：
+
+| PR | 分支 → sha | 主题 |
+| --- | --- | --- |
+| #402 | night/pr-dist-lock-fallback-hardening → 22bb150 | dist 锁 fallback release 所有权检查 + fd9 超时关闭 + noclobber 测试缝（3 新测试） |
+| #403 | night/pr-pick-kind-unit-pins → (见分支) | PickKind::parse 精确表 + dialog_filter↔allowed_suffixes 对应 + 上限对齐 |
+| #404 | night/pr-pick-error-display → 229f880 | PickError Display 全 13 臂（返工补 Grew/Swapped 两臂） |
+| #405 | night/pr-spawn-error-display → (见分支) | SpawnError Display + source() 链（仅 Io/Verify/Ownership） |
+| #406 | night/pr-export-non-utf8-skip → c86bacf | 导出器非 UTF8 名跳过 + skip 报告携带 lossy 名（行为小改进） |
+| #416 | night/pr-export-staging-debris-skip → (见分支) | 轮转 staging 残骸跳过 + lookalike 极性对照 |
+| #417 | night/pr-export-fifo-skip → (见分支) | 日志目录 FIFO 跳过（通道限界线程，永不打开管道） |
+| #418 | night/pr-destination-dir-root-pins → (见分支) | DestinationIsDirectory/NoFileName 两臂 |
+| #419 | night/pr-runtime-layout-symlink-guard → (见分支) | RuntimeLayout 规范名守卫（create_with_token 缝，去coy 不落 journal） |
+| #421 | night/pr-go-write-epipe-abort → (见分支) | GO 写 EPIPE 中止（子进程关 fd0 确定性触发）+ 终态记录 |
+| #422 | night/pr-journal-mismatch-abort → (见分支) | journal 与 READY 不一致 → Verify(JournalMismatch("state")) 中止 |
+| #423 | night/pr-signal-fallback-pins → (见分支) | signal_tree 逐 pid 回退（手工非组长树）+ contains_pid 负臂 |
+| #424 | night/pr-health-path-controls → (见分支) | get_status 拒绝 CR/LF 路径（拨号前，错误种类钉序） |
+| #425 | night/pr-pick-registry-replace → (见分支) | pick 注册表重选替换语义 + 未知路径负臂 |
+| #432 | night/pr-oversized-ready-line → (见分支) | 超长无换行 READY 行按上限截断 → BadJson 中止 |
+| #433 | night/pr-empty-logs-export → (见分支) | 空日志目录导出 = manifest-only 档案（python zipfile 外部校验） |
+
+配额 C 账：
+- 轮 1（子代理，#402–#406）：5× SHIP，0 BLOCKER/0 MAJOR；3 MINOR 全返工——
+  #402 waiter 时序裕量（4s 持锁）+ release 显式 return 0；#404 补齐 13 臂；
+  #406 报告名诚实性 → 并折叠 lossy 名改进进本 PR。审查含突变法红绿验证与
+  双 PR 合并冲突检查（picker 两模块名不冲突）。
+- 轮 2（子代理，#416–#422 批）：进行中，结果下轮记录。
+- 轮 3-6：窗口纪律继续挖相邻模块后补。
+
+实测：各分支 cargo test 全绿（基线 126 + 各自 1–3 枚增量）。Windows 腿全部
+NOT RUN（无实机）；#419 注明其 Linux pin 同时充当 Windows 大小写漂移的替身钉。
+sidecar 零改动（留 N2）；roadmap/development-progress 未动；未 merge master。
