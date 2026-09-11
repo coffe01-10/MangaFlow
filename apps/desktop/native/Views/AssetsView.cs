@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Net.Http;
 using System.Text.Json;
 using System.Windows;
@@ -30,6 +30,8 @@ public sealed class AssetsView : WorkspaceView
     internal List<OutfitItem> outfits = [];
     internal List<StyleItem> styles = [];
     internal List<AssetItem> assets = [];
+    internal string ReferenceKind = "CHARACTER_REFERENCE";
+    internal readonly HashSet<string> PendingOutfitReferences = [], PendingStyleReferences = [];
     private List<JsonElement> models = [];
     internal CharacterItem? SelectedCharacter;
     internal OutfitItem? SelectedOutfit;
@@ -67,7 +69,7 @@ public sealed class AssetsView : WorkspaceView
     {
         var changed = ProjectId != context.ProjectId;
         base.Activate(context); epoch++;
-        if (changed) { SelectedCharacter = null; SelectedOutfit = null; OutfitPreviewId = ""; SelectedStyle = null; notice.Text = ""; }
+        if (changed) { SelectedCharacter = null; SelectedOutfit = null; OutfitPreviewId = ""; SelectedStyle = null; notice.Text = ""; ReferenceKind = "CHARACTER_REFERENCE"; PendingOutfitReferences.Clear(); PendingStyleReferences.Clear(); }
         // Deactivation cancels in-flight reads; async void has no caller to observe the
         // cancellation, so swallow it here instead of crashing the dispatcher.
         try { await LoadAsync(); }
@@ -178,6 +180,11 @@ public sealed class AssetsView : WorkspaceView
             if (deepLink.Character is { } linked) SelectedCharacter = linked;
             if (deepLink.Outfit is { } linkedOutfit) SelectedOutfit = linkedOutfit;
             var keepPane = false;
+            if (current == References && host.Children.OfType<ReferencesPane>().FirstOrDefault() is { } referencePane && referencePane.SessionEpoch == captured)
+            {
+                referencePane.AdoptReloaded();
+                return;
+            }
             if (current == Style && host.Children.OfType<StyleWorkspace>().FirstOrDefault() is { } stylePane && stylePane.SessionEpoch == captured)
             {
                 await stylePane.ReloadAsync();
@@ -221,6 +228,11 @@ public sealed class AssetsView : WorkspaceView
         catch (Exception error) when (error is not OperationCanceledException)
         {
             if (!IsCurrent(captured) || request != loadRequest) return;
+            if (current == References && host.Children.OfType<ReferencesPane>().FirstOrDefault() is { } referencePane && referencePane.SessionEpoch == captured)
+            {
+                referencePane.ReportReadFailure(error.Message);
+                return;
+            }
             host.Children.Clear();
             host.Children.Add(Kit.Caption($"资产读取失败：{error.Message}"));
         }
@@ -349,6 +361,7 @@ public sealed class AssetsView : WorkspaceView
     internal bool OwnsOutfits(OutfitWorkspace pane) => host.Children.Contains(pane);
     internal bool OwnsScenes(SceneWorkspace pane) => host.Children.Contains(pane);
     internal bool OwnsStyle(StyleWorkspace pane) => host.Children.Contains(pane);
+    internal bool OwnsReferences(ReferencesPane pane) => host.Children.Contains(pane);
     internal void InvalidateStyleDependents() => Cache.Invalidate("assets:" + ProjectId, "jobs:" + ProjectId, "library:" + ProjectId, "workbench:", "pages:", "dashboard");
     internal void InvalidateSceneDependents() => Cache.Invalidate("assets:" + ProjectId, "script:", "storyboard:", "pages:", "workbench:");
 
@@ -1109,254 +1122,5 @@ internal sealed class OutfitsPane : StackPanel
             view.Notify("服装档案已删除。");
         }
         catch (Exception error) { view.Notify("删除失败：" + error.Message); }
-    }
-}
-
-/// <summary>References pane: upload stage + grouped asset grid with reclassify.</summary>
-internal sealed class ReferencesPane : StackPanel
-{
-    private readonly AssetsView view;
-    private readonly StackPanel groups = new();
-    // Web use-assets-workspace: assetKind is an explicit choice (kind-switch buttons,
-    // default CHARACTER_REFERENCE) that drives the upload's kind field — never a
-    // guess from whatever character happens to be selected.
-    private string selectedKind = "CHARACTER_REFERENCE";
-    private readonly TextBlock uploadLabel = new()
-    {
-        Text = "拖拽图片到这里，或点击上传人物参考", FontWeight = FontWeights.Bold, FontSize = 15,
-        TextAlignment = TextAlignment.Center, Margin = new Thickness(0, 0, 0, 6),
-    };
-    private readonly TextBlock kindHint = new()
-    {
-        Style = (Style)Application.Current.FindResource("Micro"), TextWrapping = TextWrapping.Wrap,
-        Margin = new Thickness(0, 0, 0, 10),
-    };
-    private readonly TextBlock kindDescription = new()
-    {
-        FontSize = 12, Foreground = (Brush)Application.Current.FindResource("Muted"), TextAlignment = TextAlignment.Center,
-    };
-
-    public ReferencesPane(AssetsView view)
-    {
-        this.view = view;
-        Children.Add(PaneHeader("REFERENCE INTAKE", "原始素材 · 上传、分类与追溯原始参考图", $"{view.assets.Count} 个文件"));
-        // Web intake-toolbar / kind-switch（labels.ts kinds 顺序）：显式选择上传用途。
-        var chips = new WrapPanel { Margin = new Thickness(0, 0, 0, 8) };
-        foreach (var (kind, label) in new[]
-                 {
-                     ("CHARACTER_REFERENCE", "人物参考"), ("OUTFIT_REFERENCE", "服装参考"),
-                     ("STYLE_REFERENCE", "漫画风格"), ("SCENE_REFERENCE", "场景参考"),
-                 })
-        {
-            var chip = new ToggleButton
-            {
-                Content = label, Tag = kind, Margin = new Thickness(0, 0, 7, 6),
-                Style = (Style)Application.Current.FindResource("Chip"), IsChecked = kind == selectedKind,
-            };
-            chip.Click += (_, _) =>
-            {
-                selectedKind = kind;
-                foreach (var other in chips.Children.OfType<ToggleButton>()) other.IsChecked = ReferenceEquals(other, chip);
-                UpdateKindHint();
-            };
-            chips.Children.Add(chip);
-        }
-        Children.Add(chips);
-        Children.Add(kindHint);
-        var upload = new Button
-        {
-            Content = new StackPanel { Children = { uploadLabel, kindDescription } }, MinHeight = 84,
-            BorderBrush = (Brush)Application.Current.FindResource("LineDark"), BorderThickness = new Thickness(1),
-            Background = new SolidColorBrush(Color.FromArgb(0x84, 0xFC, 0xFB, 0xF7)),
-            Margin = new Thickness(0, 0, 0, 16), AllowDrop = true,
-        };
-        upload.Click += async (_, _) => await Upload();
-        upload.Drop += async (_, e) =>
-        {
-            if (e.Data.GetData(DataFormats.FileDrop) is string[] { Length: > 0 } files)
-                await Upload(files[0]);
-        };
-        Children.Add(upload);
-        Children.Add(groups);
-        UpdateKindHint();
-        RenderGroups();
-    }
-
-    // Web intake-toolbar hint + upload-stage copy per current kind (assets-section.tsx).
-    private void UpdateKindHint()
-    {
-        uploadLabel.Text = $"拖拽图片到这里，或点击上传{Labels.Map(Labels.AssetKinds, selectedKind)}";
-        kindDescription.Text = selectedKind switch
-        {
-            "CHARACTER_REFERENCE" => "人物图会和选中的主要姓名绑定，不会只依赖文件名猜测身份。",
-            "OUTFIT_REFERENCE" => "上传后自动加入当前服装档案，保存时绑定到上方所选角色。",
-            "SCENE_REFERENCE" => "场景参考图走同一套文件类型、尺寸和安全校验；绑定关系请在场景资产中建立。",
-            _ => "上传后自动加入当前风格档案的待分析参考，创建后再由默认视觉模型分析。",
-        };
-        kindHint.Text = selectedKind switch
-        {
-            "CHARACTER_REFERENCE" => view.SelectedCharacter is { } character
-                ? $"将绑定到选中的角色 {character.PrimaryName}。"
-                : "请先选择要绑定的角色；未选择时上传的人物图不会自动绑定。",
-            "OUTFIT_REFERENCE" => view.SelectedCharacter is { } owner
-                ? $"当前绑定目标：{owner.PrimaryName} → 未命名服装。"
-                : "先选择所属角色，再建立服装档案。",
-            "SCENE_REFERENCE" => "上传后请到场景资产工作区绑定地点。",
-            _ => "当前分析目标：上传后进入待分析参考集。",
-        };
-    }
-
-    private static Border PaneHeader(string kicker, string title, string count)
-    {
-        var border = new Border { Style = (Style)Application.Current.FindResource("CanvasHeader") };
-        var grid = new Grid();
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var heading = new StackPanel();
-        heading.Children.Add(new TextBlock { Text = kicker, Style = (Style)Application.Current.FindResource("SectionIndex") });
-        heading.Children.Add(new TextBlock
-        {
-            Text = title, FontFamily = (FontFamily)Application.Current.FindResource("Serif"),
-            FontSize = 20, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 5, 0, 0),
-        });
-        grid.Children.Add(heading);
-        var counter = new TextBlock { Text = count, Style = (Style)Application.Current.FindResource("Caption"), VerticalAlignment = VerticalAlignment.Bottom };
-        Grid.SetColumn(counter, 1);
-        grid.Children.Add(counter);
-        border.Child = grid;
-        return border;
-    }
-
-    private async Task Upload(string? path = null)
-    {
-        // The explicit selector above owns the kind; the character only decides
-        // whether a CHARACTER_REFERENCE upload additionally binds (web upload
-        // mutationFn: bindCharacterId is required for binding, never for the kind).
-        var kind = selectedKind;
-        if (path == null)
-        {
-            var picker = new OpenFileDialog { Filter = "图片|*.png;*.jpg;*.jpeg;*.webp", Title = $"上传{Labels.Map(Labels.AssetKinds, kind)}" };
-            if (picker.ShowDialog(view.WindowHost()) != true) return;
-            path = picker.FileName;
-        }
-        try
-        {
-            var asset = await view.UploadAsset(kind, path);
-            if (kind == "CHARACTER_REFERENCE" && view.SelectedCharacter is { } character)
-            {
-                await view.ApiSend($"characters/{character.Id}/references", HttpMethod.Post,
-                    new { asset_id = asset.Text("id"), angle = "unspecified", is_canonical = true });
-            }
-            await view.ReloadAssets();
-            view.Notify("上传成功。");
-        }
-        catch (Exception error) { view.Notify(error.Message); }
-    }
-
-    private void RenderGroups()
-    {
-        groups.Children.Clear();
-        foreach (var kind in new[] { "CHARACTER_REFERENCE", "OUTFIT_REFERENCE", "SCENE_REFERENCE", "STYLE_REFERENCE" })
-        {
-            var members = view.assets.Where(a => a.Kind == kind).ToList();
-            var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 16) };
-            panel.Children.Add(new TextBlock
-            {
-                Text = $"{Labels.Map(Labels.AssetKinds, kind)} · {members.Count} FILES",
-                Style = (Style)Application.Current.FindResource("SectionIndex"), Margin = new Thickness(0, 0, 0, 6),
-            });
-            if (members.Count == 0)
-            {
-                panel.Children.Add(Kit.Caption($"尚无{Labels.Map(Labels.AssetKinds, kind)}"));
-            }
-            else
-            {
-                var grid = new WrapPanel();
-                foreach (var asset in members) grid.Children.Add(new AssetCard(view, asset));
-                panel.Children.Add(grid);
-            }
-            groups.Children.Add(panel);
-        }
-    }
-}
-
-internal sealed class AssetCard : Border
-{
-    private readonly AssetsView view;
-    private AssetItem asset;
-
-    public AssetCard(AssetsView view, AssetItem asset)
-    {
-        this.view = view;
-        this.asset = asset;
-        BorderBrush = (Brush)Application.Current.FindResource("Line");
-        BorderThickness = new Thickness(1);
-        Background = (Brush)Application.Current.FindResource("Surface");
-        Padding = new Thickness(10);
-        Margin = new Thickness(0, 0, 10, 10);
-        Width = 168;
-        Render();
-    }
-
-    private void Render()
-    {
-        var panel = new StackPanel();
-        var thumb = new Border
-        {
-            Height = 110, Background = (Brush)Application.Current.FindResource("PaperDeep"),
-            Cursor = Cursors.Hand, Margin = new Thickness(0, 0, 0, 8),
-        };
-        if (asset.ContentUrl.Length > 0)
-        {
-            var image = new ImageBox { SourceUrl = view.OriginFor(asset.ContentUrl.Contains("/content") ? asset.ContentUrl.Replace("/content", "/thumbnail/640") : asset.ContentUrl) };
-            thumb.Child = image;
-            thumb.MouseLeftButtonDown += (_, _) => view.ShowImage(asset.ContentUrl, asset.Name);
-        }
-        panel.Children.Add(thumb);
-        panel.Children.Add(new TextBlock { Text = asset.Name, FontWeight = FontWeights.Bold, FontSize = 12.5, TextTrimming = TextTrimming.CharacterEllipsis, TextWrapping = TextWrapping.NoWrap });
-        panel.Children.Add(new TextBlock
-        {
-            Text = $"{Labels.AssetKindShort(asset.Kind)} · {asset.SizeLabel} · {asset.StatusLabel}",
-            Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 3, 0, 0),
-        });
-        var reclassify = new ComboBox { FontSize = 11, MinHeight = 28, Margin = new Thickness(0, 6, 0, 0) };
-        foreach (var kind in new[] { "CHARACTER_REFERENCE", "OUTFIT_REFERENCE", "SCENE_REFERENCE", "STYLE_REFERENCE" })
-            reclassify.Items.Add(new ComboBoxItem { Tag = kind, Content = Labels.Map(Labels.AssetKinds, kind) });
-        SelectItem(reclassify, asset.Kind);
-        reclassify.SelectionChanged += async (_, _) =>
-        {
-            var next = (reclassify.SelectedItem as ComboBoxItem)?.Tag as string;
-            if (next == null || next == asset.Kind) return;
-            if (MessageBox.Show(view.WindowHost(), $"将把「{asset.Name}」的用途从「{Labels.Map(Labels.AssetKinds, asset.Kind)}」改为「{Labels.Map(Labels.AssetKinds, next)}」，可能解除已有绑定。确定继续吗？",
-                    "重分类", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
-            { SelectItem(reclassify, asset.Kind); return; }
-            try
-            {
-                asset = AssetItem.From(await view.ApiSend($"assets/{asset.Id}", HttpMethod.Patch, new { kind = next }));
-                await view.ReloadAssets();
-            }
-            catch (Exception error) { view.Notify("重分类失败：" + error.Message); }
-        };
-        panel.Children.Add(reclassify);
-        var remove = Kit.Act("删除", async (_, _) =>
-        {
-            if (MessageBox.Show(view.WindowHost(), "删除该素材及其候选记录，并解除已有绑定？", "删除素材",
-                    MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
-            try
-            {
-                await view.ApiSendOptional($"assets/{asset.Id}", HttpMethod.Delete);
-                await view.ReloadAssets();
-            }
-            catch (Exception error) { view.Notify("删除失败：" + error.Message); }
-        }, "CompactDanger");
-        remove.Margin = new Thickness(0, 6, 0, 0);
-        panel.Children.Add(remove);
-        Child = panel;
-    }
-
-    private static void SelectItem(ComboBox box, string tag)
-    {
-        foreach (var item in box.Items.OfType<ComboBoxItem>())
-            if ((string?)item.Tag == tag) { box.SelectedItem = item; return; }
     }
 }

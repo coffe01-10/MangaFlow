@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http;
 using System.IO;
 using System.Text.Json;
@@ -7,6 +7,11 @@ using MangaFlow.Native;
 using MangaFlow.Native.Services;
 
 // Client-side regression checks: API safety, models, preferences, navigation, director rules.
+if (args.Contains("--references"))
+{
+    NativeReferenceChecks.Run(args.FirstOrDefault(a => !a.StartsWith("--")) ?? Path.Combine(Path.GetTempPath(), "mangaflow-reference-checks"));
+    return 0;
+}
 if (args.Contains("--style"))
 {
     NativeStyleChecks.Run(args.FirstOrDefault(a => !a.StartsWith("--")) ?? Path.Combine(Path.GetTempPath(), "mangaflow-style-checks"));
