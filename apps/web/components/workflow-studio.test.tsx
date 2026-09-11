@@ -471,7 +471,7 @@ describe("WorkflowStudio 运行状态显示", () => {
     await screen.findByText("流程编排");
 
     // 页脚不再裸显英文 PAUSED。
-    expect(await screen.findByText(/运行 已暂停/)).toBeInTheDocument();
+    expect(await screen.findByText(/运行 暂停中/)).toBeInTheDocument();
     // 取消按钮在 PAUSED 态必须渲染：cancel_run 接受 PAUSED，否则审批
     // 栅栏态的 run 没有任何停止途径（同 scope 再起 run 会被 409 拒绝）。
     const cancelButton = screen.getByRole("button", { name: /取消/ });

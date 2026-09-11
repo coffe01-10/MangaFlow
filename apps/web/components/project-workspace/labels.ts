@@ -132,7 +132,7 @@ export const workflowRunStatusLabels: Record<string, string> = {
   RUNNING: "运行中",
   // 审批栅栏态（reconciliation 把命中 requires_approval 的 run 置为
   // PAUSED）：页脚与节点徽标此前裸显英文 "PAUSED"。
-  PAUSED: "已暂停",
+  PAUSED: "暂停中",
   COMPLETED: "已完成",
   WAITING_APPROVAL: "等待确认",
   FAILED: "已失败",
