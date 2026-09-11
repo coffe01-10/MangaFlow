@@ -74,6 +74,14 @@ def _read_context() -> tuple[str, Path]:
         raise ValueError("process journal/runtime ownership mismatch")
     if directory.resolve() != directory.absolute():
         raise ValueError("process runtime path/ownership mismatch")
+    # Drop the handshake secrets from the helper's own environment: the
+    # long-lived server (and every subprocess it spawns later - the CLI
+    # channel's children inherit os.environ) must not carry the ownership
+    # token or the journal path for its whole lifetime. The validated local
+    # variables above are the single source from here on; the journal is
+    # rewritten by path, not by re-reading the environment.
+    os.environ.pop("MANGAFLOW_DESKTOP_TOKEN", None)
+    os.environ.pop("MANGAFLOW_DESKTOP_JOURNAL", None)
     return token, journal
 
 
