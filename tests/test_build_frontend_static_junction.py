@@ -1,4 +1,4 @@
-﻿"""Regression tests for recreate_junction in build-frontend-static.sh (#392/#396).
+"""Regression tests for recreate_junction in build-frontend-static.sh (#392/#396).
 
 ``recreate_junction`` rebuilds the link entries that ``clone_hardlink_tree``
 skipped, re-anchoring every in-repo target at the throwaway worktree. The #392
@@ -61,6 +61,7 @@ case "$1" in
   */node_modules/dangling-rel) printf '%s\\n' "apps/web/missing"; exit 0 ;;
   */node_modules/dangling-abs) printf '%s\\n' "$REPO_ROOT/apps/web/gone"; exit 0 ;;
   */node_modules/abs-junction) printf '%s\\n' "$REPO_ROOT/apps/web"; exit 0 ;;
+  */node_modules/abs-file-link) printf '%s\\n' "$REPO_ROOT/pkg/bin/next-file"; exit 0 ;;
 esac
 exit 1
 """
@@ -121,6 +122,8 @@ def _run(tmp_path: Path, link_rel: str, tree_rel: str = "node_modules") -> tuple
         [bash, driver.as_posix()],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         env={
             **env,
             "REPO_ROOT_WIN": str(repo),
@@ -203,6 +206,20 @@ def test_absolute_junction_rebuilds_against_worktree(tmp_path):
     assert os.path.isjunction(link)
     assert _junction_target(link) == os.path.normcase(str(tmp_path / "wt" / "apps" / "web"))
     assert "recreated junction" in out
+
+
+def test_absolute_file_target_rebuilds_as_hardlink(tmp_path):
+    # #398: the absolute -e branch (an existing absolute target that is a
+    # file) is the one arm of the resolution table no earlier case pinned;
+    # dropping its target_kind=file assignment must fail here, not pass.
+    rc, out, err = _run(tmp_path, "abs-file-link")
+    assert rc == 0, err
+    link = tmp_path / "wt" / "node_modules" / "abs-file-link"
+    assert link.is_file()
+    assert link.read_bytes() == b"next-bin-bytes"
+    assert os.stat(link).st_nlink == 2
+    assert os.stat(tmp_path / "wt" / "pkg" / "bin" / "next-file").st_nlink == 2
+    assert "recreated file link" in out
 
 
 if __name__ == "__main__":
