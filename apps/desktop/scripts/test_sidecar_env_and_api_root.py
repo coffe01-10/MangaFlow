@@ -148,6 +148,26 @@ def test_disable_dotenv_is_forced_over_an_inherited_zero(monkeypatch, tmp_path):
     assert helper.os.environ["WEB_ORIGIN"] == "http://tauri.localhost"
 
 
+def test_traverse_only_api_root_still_rejects_the_shadow(monkeypatch, tmp_path):
+    """A traverse-only (0o111) api_root passes the marker `is_file()` checks
+    but cannot be listed - the fail-closed fallback must keep the byte-exact
+    probe (stat works through +x) instead of accepting. Pins the #359
+    round-1 review F1 fix's fallback branch. POSIX-only: the 0o111 shape
+    needs POSIX permission semantics (skip on Windows, where the fallback
+    is unreachable via the ACL model)."""
+    if os.name == "nt":
+        pytest.skip("0o111 traverse-only shape needs POSIX permission semantics")
+    (tmp_path / "alembic.ini").write_text("[alembic]\n", encoding="utf-8")
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "main.py").write_text("", encoding="utf-8")
+    (tmp_path / "fake_channel.py").write_text("", encoding="utf-8")
+    tmp_path.chmod(0o111)
+    try:
+        assert helper._validate_api_root(tmp_path) == "api-root/shadowing-fake-channel"
+    finally:
+        tmp_path.chmod(0o755)
+
+
 def test_valid_api_root_tree_passes_validation(tmp_path):
     (tmp_path / "alembic.ini").write_text("[alembic]\n", encoding="utf-8")
     (tmp_path / "app").mkdir()
