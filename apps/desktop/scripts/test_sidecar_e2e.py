@@ -261,6 +261,111 @@ def desktop(tmp_path: Path):
             print(f"note: helper also exited with {exit_code} during the failing body")
 
 
+class _ScriptedShell:
+    """Process-free DesktopShell double for fixture-contract tests (#349).
+
+    The e2e fixtures must surface the BODY's failure as-is and report the
+    helper's stop-side exit code alongside it — never instead of it. These
+    doubles script handshake/stop outcomes so the property can be pinned
+    without booting a real helper.
+    """
+
+    def __init__(self, user_data: Path, *, stop_code: int, handshake_error=None) -> None:
+        self.user_data = user_data
+        self._stop_code = stop_code
+        self._handshake_error = handshake_error
+        self.stop_calls = 0
+
+    def handshake(self) -> dict:
+        if self._handshake_error is not None:
+            raise self._handshake_error
+        return {"state": "ready", "token": "stub"}
+
+    def wait_health(self) -> None:
+        return None
+
+    def stop(self) -> int:
+        self.stop_calls += 1
+        return self._stop_code
+
+
+def _desktop_fixture_function():
+    """The raw generator behind the ``desktop`` fixture.
+
+    pytest keeps the undecorated function reachable (directly, or via
+    ``__wrapped__`` when the marker wraps it), which lets the tests below
+    drive the fixture's control flow — setup, body failure, teardown —
+    exactly the way pytest does.
+    """
+
+    return getattr(desktop, "__wrapped__", desktop)
+
+
+def test_fixture_preserves_body_failure_over_stop_exit(monkeypatch, tmp_path: Path):
+    """#349 red-team pin: an assert inside ``finally`` REPLACES the in-flight
+    body exception — a helper that dies mid-test was reported as
+    "helper exited with N" with the real failure point destroyed. The
+    fixture must keep the original error and note the exit code instead.
+    """
+
+    scripted = _ScriptedShell(tmp_path, stop_code=1)
+    monkeypatch.setattr(
+        sys.modules[__name__], "DesktopShell", lambda user_data: scripted
+    )
+    generator = _desktop_fixture_function()(tmp_path)
+    next(generator)  # advance through setup to the yield (the test body)
+    # A failure thrown into the body must surface as ITSELF.
+    with pytest.raises(AssertionError, match="BODY_STAGE_MARKER") as caught:
+        generator.throw(AssertionError("BODY_STAGE_MARKER"))
+    assert "helper exited" not in str(caught.value)
+    assert scripted.stop_calls == 1, "fixture must still stop the shell"
+
+
+def test_fixture_preserves_setup_failure_over_stop_exit(monkeypatch, tmp_path: Path):
+    """The handshake failing (helper died pre-READY) is the fixture's own
+    try body: its error must also survive the stop-side exit-code check."""
+
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "DesktopShell",
+        lambda user_data: _ScriptedShell(
+            user_data, stop_code=1, handshake_error=AssertionError("HANDSHAKE_STAGE_MARKER")
+        ),
+    )
+    with pytest.raises(AssertionError, match="HANDSHAKE_STAGE_MARKER"):
+        next(_desktop_fixture_function()(tmp_path))
+
+
+def test_fixture_flags_nonzero_stop_exit_after_successful_body(monkeypatch, tmp_path: Path):
+    """The other half of the contract: when the body SUCCEEDS, the teardown
+    path (pytest resumes the generator after the yield) must still assert
+    the helper exited 0 — the unmask fix must not silently retire the
+    exit-code check."""
+
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "DesktopShell",
+        lambda user_data: _ScriptedShell(user_data, stop_code=9),
+    )
+    generator = _desktop_fixture_function()(tmp_path)
+    shell, user_data, record = next(generator)  # setup + yield
+    assert shell.stop_calls == 0
+    with pytest.raises(AssertionError, match="helper exited with 9"):
+        next(generator)  # teardown resumption, exactly like pytest does
+
+
+def test_fixture_accepts_clean_exit_after_successful_body(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "DesktopShell",
+        lambda user_data: _ScriptedShell(user_data, stop_code=0),
+    )
+    generator = _desktop_fixture_function()(tmp_path)
+    next(generator)  # setup + yield
+    with pytest.raises(StopIteration):
+        next(generator)  # teardown completes cleanly
+
+
 def _client(shell: DesktopShell) -> httpx.Client:
     return httpx.Client(base_url=f"{shell.origin}/api/v1", timeout=30.0)
 

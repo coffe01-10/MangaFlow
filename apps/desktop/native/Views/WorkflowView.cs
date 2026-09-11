@@ -947,13 +947,33 @@ public sealed class WorkflowView : WorkspaceView
         var clone = WorkflowNode.Create(
             $"{selected.Type.Replace('.', '-')}-{Guid.NewGuid().ToString()[..8]}",
             selected.Type, selected.Name + " 副本", (selected.Position.X + 44, selected.Position.Y + 44), nodeTypes.FirstOrDefault(t => t.Text("type") == selected.Type));
-        clone.Config = selected.Config;
+        // #340: 深拷 config。引用赋值会让克隆上的检查器编辑（SetConfig 就地写
+        // Config[key]）静默改写原节点，并被自动保存把两个节点 PATCH 成同一份配置。
+        clone.Config = DeepCopyConfig(selected.Config);
         nodes.Add(clone);
         AttachNodeHandlers(clone);
         PushHistory(Snapshot("复制节点"));
         Select(clone);
         ScheduleSave();
         RenderCanvas();
+    }
+
+    // #340/#344: 复制节点时的 config 深拷。字典级浅拷不够：condition 等嵌套可变值
+    // （Create/检查器合并写回存 Dictionary<string,object?>，服务端载入形态是
+    // JsonElement）仍会共享同一对象，克隆编辑条件同样串写原节点，所以逐层递归。
+    // 标量（string/double/bool）不可变，原样保留。
+    private static Dictionary<string, object?> DeepCopyConfig(Dictionary<string, object?> source)
+    {
+        var copy = new Dictionary<string, object?>(source.Count);
+        foreach (var (key, value) in source)
+            copy[key] = value switch
+            {
+                Dictionary<string, object?> nested => DeepCopyConfig(nested),
+                List<object?> list => list.Select(item => item is Dictionary<string, object?> inner ? DeepCopyConfig(inner) : item).ToList(),
+                JsonElement { ValueKind: not JsonValueKind.Undefined } element => element.Clone(),
+                _ => value,
+            };
+        return copy;
     }
 
     private void AutoLayout()
@@ -977,6 +997,10 @@ public sealed class WorkflowView : WorkspaceView
     private readonly List<string> history = [];
     private int historyIndex;
 
+    // #344: 快照在 push 时即序列化成字符串（值捕获，不是引用捕获）。这个不变式
+    // 依赖 DuplicateSelected 的 config 深拷：若节点间共享可变字典，克隆编辑之后
+    // 推入的快照会把被污染的原节点 config 一并冻结，undo/redo 重放时把克隆的
+    // 最后编辑写回原节点。
     private string Snapshot(string label) => JsonSerializer.Serialize(new
     {
         label,
@@ -1056,10 +1080,19 @@ public sealed class WorkflowView : WorkspaceView
         autosave?.Stop();
         if (dragging) return;
         var timer = new System.Timers.Timer(800) { AutoReset = false };
+        // #342: 防抖计时器在切换工作流/导入时不解除，回调执行时再读 workflowId/
+        // version/nodes 字段会描述新工作流—— LoadWorkflowAsync 的 GET 空档里
+        // workflowId 已是 B 而 nodes 还是 A 的图，回调会把 A 的图 PATCH 进 B。
+        // 调度时捕获 (workflowId, version) 身份：回调发现身份不匹配即放弃（切换/
+        // 导入/导航路径在换 id 前都已 flush 本工作流）；匹配时把武装目标传进保存
+        // 链，排队期间再切换由 SaveNowCoreAsync 弃权。
+        var armedWorkflow = workflowId;
+        var armedVersion = version;
         timer.Elapsed += (_, _) => Dispatcher.BeginInvoke(async () =>
         {
             timer.Stop();   // 回调只停自己的计时器，不碰可能已被替换的 autosave 字段
-            await SaveNowAsync();
+            if (armedWorkflow != workflowId || armedVersion != version) return;   // 陈旧回调：目标工作流已离开（或编辑已随显式保存落盘）
+            await SaveNowAsync(armedWorkflow);
         });
         autosave = timer;
         timer.Start();
@@ -1069,7 +1102,7 @@ public sealed class WorkflowView : WorkspaceView
     // await 它，否则 Deactivate 取消令牌会腰斩在途 PATCH。
     private Task saveChain = Task.CompletedTask;
 
-    private Task SaveNowAsync()
+    private Task SaveNowAsync(string? targetWorkflowId = null)
     {
         var previous = saveChain;
         var run = SaveAfterAsync(previous);
@@ -1079,13 +1112,19 @@ public sealed class WorkflowView : WorkspaceView
         async Task SaveAfterAsync(Task before)
         {
             try { await before; } catch (Exception) { }   // 前一次失败不阻塞本次
-            await SaveNowCoreAsync();
+            await SaveNowCoreAsync(targetWorkflowId);
         }
     }
 
-    private async Task SaveNowCoreAsync()
+    private async Task SaveNowCoreAsync(string? targetWorkflowId = null)
     {
         if (workflowId.Length == 0) return;
+        // #342: 防抖保存携带武装时的工作流身份。回调通过身份检查后、本核开始前
+        // 仍可能插入一次工作流切换——此刻 BuildGraph/URL 读到的是新工作流的 id 配
+        // 旧图（或反之），PATCH 会跨界。身份不再是当前工作流即弃权：旧图的待存
+        // 编辑已由切换路径 flush，不会丢。
+        if (targetWorkflowId != null && targetWorkflowId != workflowId) return;
+        var savedWorkflowId = workflowId;   // PATCH 在途期间也可能切换：响应落地时不把旧工作流的版本号写进新工作流
         var generationAtSave = generation;
         UpdateStatus("保存中");
         try
@@ -1094,10 +1133,11 @@ public sealed class WorkflowView : WorkspaceView
             var saved = await Api.SendAsync($"workflows/{workflowId}", HttpMethod.Patch,
                 new { version, draft_graph = payload }, cancellation: lifetime.Token);
             if (lifetime.Token.IsCancellationRequested) return;
+            if (savedWorkflowId != workflowId) return;   // 切换后到期的旧响应：版本号归属别的工作流，回写会制造伪 409
             version = saved.Number("version");
             current = saved;
             if (generationAtSave == generation) UpdateStatus($"已保存 · 草稿 V{saved.Number("draft_version")}");
-            else await SaveNowCoreAsync();   // new edits landed while saving（同槽递归，避免自我等待）
+            else await SaveNowCoreAsync(targetWorkflowId);   // new edits landed while saving（同槽递归，避免自我等待）
         }
         catch (OperationCanceledException)
         {
@@ -1191,6 +1231,13 @@ public sealed class WorkflowView : WorkspaceView
 
     private async Task ImportGraphAsync()
     {
+        // #342: 导入会换 workflowId，先把当前工作流武装中的防抖编辑落盘（时序同
+        // ConfirmLeaveAsync：先取 Enabled 再 Stop——Timer.Stop 会清掉 Enabled，之后
+        // 再查就永远查不到武装状态），否则之前打开的工作流的待存编辑被静默丢弃。
+        var pendingFlush = autosave is { Enabled: true };
+        autosave?.Stop();
+        if (pendingFlush) await SaveNowAsync();
+        else await saveChain;
         var dialog = new Microsoft.Win32.OpenFileDialog { Title = "导入工作流", Filter = "工作流 JSON|*.json" };
         if (dialog.ShowDialog(Host) != true) return;
         try

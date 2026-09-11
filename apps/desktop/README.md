@@ -17,7 +17,15 @@ apps/desktop/
 │   │                                #   （原子绑定 127.0.0.1:0 → journal → READY 行 →
 │   │                                #    stdin GO 门控 → uvicorn/静态 stub）
 │   │                                #   stub 模式（无三方依赖）供 Rust 测试；app 模式跑真实
-│   │                                #   apps/api：alembic upgrade head + SQLite + 假模型通道
+│   │                                #   apps/api：alembic upgrade head + SQLite + 假模型通道；
+│   │                                #   plan B（W-15）另管理捆绑 node web server 全生命周期：
+│   │                                #   独占绑定固定回环中继端口 39443（`_bind_relay`）→
+│   │                                #   spawn node 跑 standalone server.js（`_spawn_web_server`）→
+│   │                                #   双字节管道中继（宣布 web 端口→node 临时端口；
+│   │                                #   固定 39443→动态 API 端口，rewrites 的构建期目的地）→
+│   │                                #   启动校验 `_await_web_server_boot`（node 未证存活即
+│   │                                #   fail-closed 不启 web）与会话中退出监视
+│   │                                #   `_start_web_exit_watch`（检测+记证，不自动重启）
 │   └── fake_channel.py              # 假模型通道：复用仓库验收缝 app.worker_tasks._adapter，
 │                                    #   种子目录/连接/密钥（AES-GCM 生产凭据路径），零外呼
 ├── shell-core/                      # Rust crate（无 GUI 依赖，沙箱可完整测试）
@@ -51,11 +59,38 @@ apps/desktop/
 │   └── capabilities/default.json    # core:default（自定义命令无需额外权限）
 ├── patches/web-static-export.patch  # 可丢弃前端补丁（静态导出 + 运行时 origin）
 ├── scripts/
-│   ├── run-sidecar-e2e.sh           # 真实 API + 假通道 生成→候选 闭环（pytest）
-│   ├── test_sidecar_e2e.py          #   同上，Python 侧协议实现 + 端到端断言
-│   ├── build-frontend-static.sh     # 一次性 worktree 应用补丁 → next build 导出 → 拷入 dist/
+│   ├── run-sidecar-e2e.sh           # e2e 入口（pytest）：真实 API + 假通道闭环；缺
+│   │                                #   standalone bundle 时先跑 build-web-standalone.py；
+│   │                                #   同时纳入 relay/绑定/env·api-root 回归套件
+│   ├── test_sidecar_e2e.py          #   协议 e2e + 端到端断言：生成→候选→采用闭环、
+│   │                                #   plan-B web server 回路、死 dist fail-closed、
+│   │                                #   node 中途退出检测、node 子进程 env 剥离
+│   ├── test_sidecar_relay.py        #   中继字节管道契约矩阵：半关/FIN/慢首字节/
+│   │                                #   keep-alive 复用/死上游恢复/RST 隔离/
+│   │                                #   并发上限/线程构造失败回收
+│   ├── test_sidecar_relay_bind.py   #   固定中继端口绑定策略：自有 TIME_WAIT 重绑、
+│   │                                #   外来监听（live/SO_REUSEADDR）独占拒绝
+│   ├── test_sidecar_env_and_api_root.py # env 契约（DISABLE_DOTENV 强制覆写继承 0）+
+│   │                                #   api-root 树校验矩阵（坏树在 sys.path 前拒绝）
+│   ├── build-frontend-static.sh     # 一次性 worktree 应用静态导出补丁 → next build → 拷入 dist/
+│   ├── build-web-standalone.py      # plan B：standalone 生产构建 → 拷 .next/static →
+│   │                                #   校验 rewrites 目的地=固定中继端口 39443 →
+│   │                                #   移出 .next/ 到 dist/web-standalone/
+│   ├── assemble-web-resources.py    # 组装安装包 web 资源到 src-tauri/web/（node.exe +
+│   │                                #   standalone 树；先装配进 staging 临时目录再
+│   │                                #   原子 rename 换入，中途失败不伤旧树）
 │   ├── verify-static-origin.mjs     # D5 浏览器级验证（Chromium）
-│   └── package-sidecar.sh           # PyInstaller 打包（Linux 形态）
+│   ├── package-sidecar.sh           # PyInstaller 打包（Linux 形态）
+│   ├── start-desktop.cmd            # 桌面壳双击启动器：组好 sidecar 环境（release 优先
+│   │                                #   回退 debug；检测到 dist/web-standalone 时设
+│   │                                #   MANGAFLOW_DESKTOP_WEB_DIST）
+│   ├── start-native.ps1             # WPF 标准构建/启动入口（§3.1）：cargo --release +
+│   │                                #   dotnet Release + 宿主复制 SHA-256 校验
+│   ├── measure-native-startup.ps1   # 原生客户端启动采样：窗口句柄/输入空闲计时 +
+│   │                                #   退出清树观测；超时与 finally 兜底均
+│   │                                #   taskkill /T /F 树杀（防 sidecar 孤儿占端口）
+│   └── build-app-icon.ps1           # 应用图标生成：源图按不透明像素取景 →
+│                                    #   16–256px 多尺寸写 src-tauri/icons（GDI+）
 └── dist/                            # 构建产物（gitignore 除占位 index.html 与
                                      #   shell-tools.html；根 .gitignore 的 dist/ 规则
                                      #   以 !apps/desktop/dist/ 显式放行本目录）
@@ -177,10 +212,10 @@ powershell -ExecutionPolicy Bypass -File apps/desktop/scripts/start-native.ps1
 | 编号 | 层 | 结论 | 证据 / 边界 |
 | --- | --- | --- | --- |
 | D1 | 打包 | **RUN（双安装包构建 + NSIS 实机装/卸，2026-09-06）/ MSI 安装步 NOT RUN** | `tauri build` 于 Windows 实机产出 MSI（`MangaFlow_0.1.0_x64_en-US.msi`）与 NSIS（`MangaFlow_0.1.0_x64-setup.exe`，内嵌真实静态导出）；NSIS 实机脚本验证：静默安装→用户数据 222 文件逐字节不变→HKCU 卸载项注册→静默卸载→安装目录与注册表项清除、用户数据仍逐字节不变（§5 契约实测成立，脚本保留于验收记录）。MSI 静默安装（per-machine）需管理员授权未提权，NOT RUN。安装/升级/重装数据保留的升级路径实机（覆盖安装同一包）以 NSIS 装卸两态覆盖；带 schema 升级的跨版本升级路径仍欠。 |
-| D2 | Python sidecar | **RUN（Linux + Windows 双形态，含 PyInstaller 冻结产物）** | `run-sidecar-e2e.sh`：真实 `app.main:app` 经 `alembic upgrade head`（30 个迁移到 head）+ SQLite 读写 + 本地 worker（无 Redis 时 API 内 LOCAL_EXECUTOR，即安装版默认形态）+ 假通道完成「生成→候选→采用→PNG 落盘→`/content` 可取」（**2026-09-06 Windows 实机原生复跑通过 11.1s**，停止通道为生产 stdin-EOF 协作停机）。PyInstaller onedir 冻结产物双平台实测（Linux 116MB / Windows 2026-09-06）：完整握手→GO→健康→真实 dashboard API→协作停机 exit 0；`alembic.ini`+`migrations` 必须放 `_internal/` 的硬约束在 Windows 形态同样成立。RQ/Redis Worker 进程形态仍 NOT RUN。 |
+| D2 | Python sidecar | **RUN（Linux + Windows 双形态，含 PyInstaller 冻结产物）** | `run-sidecar-e2e.sh`：真实 `app.main:app` 经 `alembic upgrade head`（31 个迁移到 head，`apps/api/migrations/versions/` 现有 31 个 revision 文件）+ SQLite 读写 + 本地 worker（无 Redis 时 API 内 LOCAL_EXECUTOR，即安装版默认形态）+ 假通道完成「生成→候选→采用→PNG 落盘→`/content` 可取」（**2026-09-06 Windows 实机原生复跑通过 11.1s**，停止通道为生产 stdin-EOF 协作停机）。PyInstaller onedir 冻结产物双平台实测（Linux 116MB / Windows 2026-09-06）：完整握手→GO→健康→真实 dashboard API→协作停机 exit 0；`alembic.ini`+`migrations` 必须放 `_internal/` 的硬约束在 Windows 形态同样成立。RQ/Redis Worker 进程形态仍 NOT RUN。 |
 | D3 | 进程生命周期 | **RUN（两平台原生：Linux 沙箱 + Windows 实机 shell-core 集成 + Windows 实机完整 debug 壳）/ 安装器链仍欠** | `cargo test`（两平台原生，Windows 实机 2026-09-06 全 49 项）：握手全链、错误 GO 拒绝 exit 75、并发双 helper 端口不冲突、`shell-sim` 崩溃后 helper+孙进程全灭、无协作者强杀升级、壳在 spawn 前写入归属 journal、launcher 链 READY pid 经 Job 成员验收。Windows 路径按 `scripts/owned_processes.py` `start_python` 纪律实现：`CREATE_SUSPENDED` 挂起创建 → 建 Job（`KILL_ON_JOB_CLOSE`）→ assign 仍挂起的子进程 → 快照枚举初始线程后 `ResumeThread`；任一步失败即终止仍挂起的子进程（fail-closed）。**完整 debug 壳 Windows 实机 2026-09-06**：真实关窗协作停机（RunLog `stopped` exit 0）与 `taskkill /F` 崩溃清树（全树 3 秒内灭）均实测。真实安装器链 + 多开下的完整 D3 复验仍欠。 |
 | D4 | 端口/单实例 | **RUN（端口+注入+单实例多开实机）/ WebView2 缺失安装行为 NOT RUN** | 原子绑定 `127.0.0.1:0`（socket 先绑后报，无 TOCTOU；并发测试两 helper 端口必异）；WebView 建立前完成握手；运行时注入 = 初始化脚本同步写 `window.__MANGAFLOW_API_ORIGIN__` + invoke `desktop_get_api_origin` 双通道，不依赖 `NEXT_PUBLIC_*`（浏览器断言 `api_origin_env_free`）/不依赖 Next rewrite（D5 实测直连）。**单实例多开 Windows 实机 2026-09-06 RUN**：第二实例立即退出（exit 0）；最小化窗口经 `unminimize()+set_focus()` 修复后正确还原聚焦（修复前 `set_focus` 单独对最小化窗口无效——实机发现的真实缺陷）。 |
-| D5 | 前端形态 | **RUN（机制验证，V02-53B 证据）/ 静态导出为「受限可行」** | `verify-static-origin.mjs`（Chromium）：静态导出页加载 → 注入 origin → 仪表盘**直连**动态端口 API（`/api/v1/projects/dashboard` 200，CORS 按桌面 origin 放行）→ 页面渲染，静态服务器 `/api/*` 零命中。**核心发现**：工作台子树无法只靠 flag 导出——`output:"export"` 要求每个动态段 ≥1 预渲染组合（真实项目 id 构建期不可知）且工作台组件树服务端预渲染崩溃；补丁以「poc 桩组合 + notFound stub + 删 3 个仅服务端页」换得壳级页面导出。**结论：静态导出路线需要正式的前端路由/组件改造（否决条件 3 的关键输入）；方案 B（捆绑 node 跑 next start，保留 rewrites）未被验证**。 |
+| D5 | 前端形态 | **RUN（静态导出机制验证，V02-53B 证据；方案 B 已实现并经 17 项 e2e 验证，2026-09-10 绿）** | 静态导出（V02-53B 历史形态）：`verify-static-origin.mjs`（Chromium）：静态导出页加载 → 注入 origin → 仪表盘**直连**动态端口 API（`/api/v1/projects/dashboard` 200，CORS 按桌面 origin 放行）→ 页面渲染，静态服务器 `/api/*` 零命中。**核心发现**：工作台子树无法只靠 flag 导出——`output:"export"` 要求每个动态段 ≥1 预渲染组合（真实项目 id 构建期不可知）且工作台组件树服务端预渲染崩溃；补丁以「poc 桩组合 + notFound stub + 删 3 个仅服务端页」换得壳级页面导出；静态导出路线需要正式的前端路由/组件改造（否决条件 3 的关键输入）。**方案 B（捆绑 node 跑 next start，保留 rewrites）已实现且有 e2e 覆盖**：`mangaflow_desktop_helper.py` `_spawn_web_server`（独占绑定固定回环中继端口 39443 → spawn node 跑 standalone server.js → 双字节管道中继到动态 API 端口）、启动校验 `_await_web_server_boot`（node 未证存活即 fail-closed 不启 web）、会话中退出监视 `_start_web_exit_watch`；`build-web-standalone.py` 构建期校验 rewrites 目的地=39443；e2e：`test_sidecar_e2e.py::test_sidecar_plan_b_web_server_loop` + `test_sidecar_relay.py` + `test_sidecar_relay_bind.py`（5+9+3=17 项，2026-09-10 绿）。 |
 | D6 | 凭据/日志/数据 | **RUN（目录+日志+凭据路径+日志导出+日志轮转）/ ACL NOT RUN** | 用户数据目录布局：`data/`（DB）、`storage/`、`uploads/` 均落 user-data（测试断言不落仓库）；V02-54B 起统一日志目录 `logs/`（壳 RunLog 里程碑 + helper/API/Worker stderr 按运行分文件），壳侧 `desktop_export_logs` 可归档（store-only ZIP + manifest.json）到用户可选路径；V02-54C 起**按大小轮转**：`shell-*.log` / `helper-*.stderr.log` 单文件达 12 MiB（< 导出 64 MiB 上限）rename 为 `.1`–`.5` 世代、超出删最旧——壳 RunLog 会话内轮转（写前检查、轮转后原打开路径继续写），helper stderr 由 helper 进程持有 fd，采用**跨会话轮转**（新会话 `RunLog::create` 清扫，取舍见 §6.4）；轮转不跟随符号链接、rename/删除不越 canonical logs 根。假通道密钥走生产 `credential_crypto` AES-GCM + 文件主密钥（`storage/.provider-credential-master-key` 自动生成）。Windows ACL 收紧 NOT RUN；轮转 Windows 实机行为 NOT RUN（Linux 实测，见 §6.4）；导出对单文件 64 MiB 上限仍跳过并在 manifest/report 记录。 |
 | D7 | 性能门禁 | **NOT RUN（按约定）** | V02-52A N=20 全样本不存在、本轮明确不跑 V02-52B；仅记录参考值：假闭环 e2e 全程约 4.3s（含 28 个迁移），远优于 ADR 冷启动 ≤15s 建议线，但**非固定窗口测量、不作为门禁证据**。 |
 | D8 | 自动更新（未签名） | **NOT RUN** | 未接 updater 插件、无签名密钥、无更新服务器（Issue 禁止真实签名/服务器）。 |
@@ -205,7 +240,7 @@ powershell -ExecutionPolicy Bypass -File apps/desktop/scripts/start-native.ps1
 - 否决条件核查（ADR §3.1；**已于 2026-09-06 随 W-21 终批逐项复核，决议见 ADR 头部「批准记录」**）：
   1. Python sidecar 打包：**已证伪为否决项**——Windows PyInstaller onedir 冻结产物冒烟全过（W-11 RUN，`_internal/` 硬约束双平台成立）。
   2. WebView2 渲染兼容：仪表盘级渲染 + 运行时 origin 注入实机 RUN（W-02 部分）；画布级渲染受 D5 前端形态约束，属 W-15 实现轮事项，不构成平台级否决。
-  3. 前端静态导出：**发现确定性阻塞**（动态段预渲染组合 + 工作台预渲染崩溃），静态导出非 flag 级改动；方案 B 未在本 PoC 验证 → W-15 实现轮提出设计方案后由 lead 定夺（ADR 倾向「方案 B 或混合形态」输入不变）。
+  3. 前端静态导出：**发现确定性阻塞**（动态段预渲染组合 + 工作台预渲染崩溃），静态导出非 flag 级改动；方案 B（捆绑 node + 固定端口中继，实现见 D5 行与 §1）**已实现并经 17 项 e2e 验证（2026-09-10 绿）**。
   4. Rust 维护能力：壳核心逻辑集中在 shell-core（library 约 3,323 行 Rust，其中
      `logs.rs` 约占 1,900 行——日志布局/轮转/导出是 V02-54B/C 后最大的单一模块；
      另有 tests/ 集成测试约 1,100 行）+ src-tauri 粘合（`main.rs` 约 338 行）；**已由 lead 在终批中裁定可接受**。

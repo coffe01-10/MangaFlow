@@ -15,7 +15,21 @@ REPO_ROOT="$(cd "$DESKTOP_ROOT/../.." && pwd)"
 PARENT="$(dirname "$REPO_ROOT")"
 WORKTREE="$(mktemp -d "$PARENT/mangaflow-desktop-web-XXXXXX")"
 
+# The static-export swap below deletes and repopulates dist/frontend while
+# other writers touch sibling dist/ trees (#350); the lock is released on
+# every exit path through the trap.
+source "$DESKTOP_ROOT/scripts/dist-build-lock.sh"
+DIST_LOCK="$DESKTOP_ROOT/dist/.build.lock"
+dist_lock_held=0
+release_dist_lock_if_held() {
+  if [ "$dist_lock_held" -eq 1 ]; then
+    release_dist_build_lock "$DIST_LOCK"
+    dist_lock_held=0
+  fi
+}
+
 cleanup() {
+  release_dist_lock_if_held
   git -C "$REPO_ROOT" worktree remove --force "$WORKTREE" >/dev/null 2>&1 || true
   rm -rf "$WORKTREE"
 }
@@ -39,9 +53,16 @@ if [ ! -f out/index.html ]; then
   exit 1
 fi
 
+# Destructive section (#350): the delete+repopulate of dist/frontend must
+# not interleave with the other dist/ writers (build-web-standalone.py's
+# rmtree+move, the e2e runner's rebuild) or a serving run reading the tree.
+acquire_dist_build_lock "$DIST_LOCK" 600
+dist_lock_held=1
 rm -rf "$DESKTOP_ROOT/dist/frontend"
 mkdir -p "$DESKTOP_ROOT/dist/frontend"
 cp -r out/. "$DESKTOP_ROOT/dist/frontend/"
 # The shell-owned tools page is not part of the web export; keep it shipped.
 cp "$DESKTOP_ROOT/shell/shell-tools.html" "$DESKTOP_ROOT/dist/frontend/"
+release_dist_build_lock "$DIST_LOCK"
+dist_lock_held=0
 echo "static export copied to $DESKTOP_ROOT/dist/frontend"

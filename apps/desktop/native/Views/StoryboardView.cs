@@ -61,6 +61,8 @@ public sealed class StoryboardView : WorkspaceView
     // 测试缝：headless 回归检查用无模态的实现替换离开确认（AssetsView 的
     // OutfitDraftPrompt 同一模式）；生产路径为 null。
     internal Func<Task<bool>>? LeaveConfirmOverride;
+    // 测试缝：headless 回归检查用无模态实现替换气泡删除确认；生产路径为 null。
+    internal Func<bool>? DeleteConfirmOverride;
 
     private List<ChapterItem> chapters = [];
     private List<PageItem> pages = [];
@@ -88,16 +90,29 @@ public sealed class StoryboardView : WorkspaceView
     public StoryboardView()
     {
         BuildLayout();
-        PreviewKeyDown += OnCanvasKey;
+        // 键盘纪律（对齐 WorkflowView 的模式）：快捷键处理器挂画布元素，不挂整个
+        // View。PreviewKeyDown 是隧道事件，挂在 View 上会让检查器对白编辑器的
+        // TextBox 里按 Backspace/Delete 触发气泡删除确认、方向键变成面板微移、
+        // Tab 被无条件劫持（#339）；挂在 page 上后，画布子树之外的焦点（检查器、
+        // 工具栏）产生的按键根本不会路由进 OnCanvasKey。
+        page.Focusable = true;
+        page.PreviewKeyDown += OnCanvasKey;
         Focusable = true;
         page.MouseLeftButtonDown += (_, e) =>
         {
             if (e.OriginalSource is Canvas)
             {
                 SelectPanel(null);
+                FocusCanvas();
                 e.Handled = true;
             }
         };
+    }
+
+    // 画布可能尚未挂进视觉树（如无头回归检查），此时 Focus 无效，跳过即可。
+    private void FocusCanvas()
+    {
+        if (page.IsLoaded) page.Focus();
     }
 
     private void BuildLayout()
@@ -1011,6 +1026,7 @@ public sealed class StoryboardView : WorkspaceView
         foreach (var bubble in bubbles) bubble.SetSelected(false);
         selected = panel;
         selectedBubble = null;
+        FocusCanvas();   // 选中即聚焦画布：键盘快捷键（Tab/方向键/Delete）随之可用
         RenderResizeHandles();
         RenderInspector();
     }
@@ -1021,6 +1037,7 @@ public sealed class StoryboardView : WorkspaceView
         foreach (var bubbleNode in bubbles) bubbleNode.SetSelected(bubbleNode == bubble);
         selected = panels.FirstOrDefault(p => p.Id == bubble.PanelId);
         selectedBubble = bubble;
+        FocusCanvas();
         // 气泡选中不挂面板缩放手柄（对齐 web：气泡选中时 TransformHandles 换成
         // 气泡手柄；桌面未实现气泡缩放，先清空面板手柄）
         RenderResizeHandles();
@@ -1487,7 +1504,12 @@ public sealed class StoryboardView : WorkspaceView
 
     private async Task DeleteBubbleAsync(BubbleNode bubble)
     {
-        if (MessageBox.Show(Host, "删除这个文字气泡？", "删除气泡", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+        // 测试缝：headless 回归检查用无模态实现替换删除确认（LeaveConfirmOverride
+        // 同一模式）；生产路径为 null。
+        var confirmed = DeleteConfirmOverride is { } prompt
+            ? prompt()
+            : MessageBox.Show(Host, "删除这个文字气泡？", "删除气泡", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
+        if (!confirmed) return;
         var pageAtRequest = currentPage;
         if (pageAtRequest == null) return;
         try
@@ -1683,6 +1705,11 @@ public sealed class StoryboardView : WorkspaceView
     private void OnCanvasKey(object sender, KeyEventArgs e)
     {
         if (currentPage == null) return;
+        // 第二道防线：焦点在文本编辑控件（检查器 TextBox / ComboBox）时按键属于
+        // 文本编辑（退格删字、方向键移光标、Tab 焦点遍历），画布不得劫持。处理器
+        // 挂在 page 上已隔离画布之外的控件，这里再挡住画布子树内将来可能出现的
+        // 文本输入元素（#339）。
+        if (Keyboard.FocusedElement is TextBoxBase or ComboBox) return;
         var step = (Keyboard.Modifiers == ModifierKeys.Shift ? 10 : 1) / Math.Max(1, page.Width);
         switch (e.Key)
         {
@@ -1771,7 +1798,11 @@ public sealed class StoryboardView : WorkspaceView
 
     public override Task RefreshAsync()
     {
-        if (currentPage != null) _ = SelectPageAsync(currentPage);
+        // F5/刷新对齐 web 的 refetch 语义（#341）：重读服务端锚点（页栅栏、
+        // panel.version、canvas 字段）但保留画布几何草稿、撤销栈与对白草稿——
+        // 刷新不得变成静默弃稿。显式弃稿的出口仍是离开确认与冲突条的
+        // 「放弃草稿并重新加载」。
+        if (currentPage != null) _ = SelectPageAsync(currentPage, preserveDrafts: true);
         return Task.CompletedTask;
     }
 
@@ -1785,8 +1816,14 @@ public sealed class StoryboardView : WorkspaceView
     internal bool CanUndoForTest => history.CanUndo;
     internal bool NarrativeDirtyForTest => NarrativeDirty;
     internal int HandleCountForTest => resizeHandles.Count;
+    internal string? SelectedPanelIdForTest => selected?.Id;
+    internal string? SelectedBubbleIdForTest => selectedBubble?.Id;
 
     internal void SelectPanelForTest(int index) => SelectPanel(panels.ElementAtOrDefault(index));
+    internal void SelectBubbleForTest(int index)
+    {
+        if (bubbles.ElementAtOrDefault(index) is { } bubble) SelectBubble(bubble);
+    }
 
     // 驱动一次完整缩放（= BeginHandleDrag 的 moved + Finish，减去真实鼠标设备）：
     // 同一几何核心 ComputeResized + CommitResize，测试即覆盖生产逻辑。

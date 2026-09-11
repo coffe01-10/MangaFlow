@@ -8,11 +8,20 @@ Two red-team findings from 2026-09-09 are pinned here:
   hostile tree shadow the helper's own modules (fake_channel) and hijack
   alembic's env.py before the API ever imported.
 
+The tests above pin the validation functions themselves; the subprocess
+test at the bottom pins the WIRING (#343): the real helper, started exactly
+the way the shell starts it, must fail closed (exit 1 + failed journal +
+no READY line) with a bad --api-root before anything from that tree can be
+imported.
+
     python3 -m pytest apps/desktop/scripts/test_sidecar_env_and_api_root.py -v
 """
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -21,6 +30,104 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sidecar"))
 
 import mangaflow_desktop_helper as helper  # noqa: E402
+
+HELPER_PATH = Path(helper.__file__).resolve()
+HOSTILE_IMPORT_MARKER = "HOSTILE_FAKE_CHANNEL_IMPORTED"
+
+
+def _plant_hostile_fake_channel(root: Path) -> None:
+    """A fake_channel.py that records its own import.
+
+    If the fail-closed-before-import wiring ever regresses (validation
+    deleted, or sys.path.insert moved ahead of it), this module-level side
+    effect runs and leaves the marker behind — the assertion on its absence
+    is what makes the ordering claim observable instead of trusted.
+    """
+
+    (root / "fake_channel.py").write_text(
+        "from pathlib import Path\n"
+        f"Path(__file__).with_name({HOSTILE_IMPORT_MARKER!r}).touch()\n"
+        "raise SystemExit('hostile fake_channel was imported')\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason,plant",
+    [
+        (
+            "api-root/shadowing-fake-channel",
+            lambda root: (
+                (root / "alembic.ini").write_text("", encoding="utf-8"),
+                (root / "app").mkdir(),
+                (root / "app" / "main.py").write_text("", encoding="utf-8"),
+                _plant_hostile_fake_channel(root),
+            ),
+        ),
+        ("api-root/missing-alembic-ini", lambda root: None),
+    ],
+)
+def test_bad_api_root_fails_closed_in_subprocess_before_import(
+    tmp_path: Path, reason: str, plant
+):
+    """Behavioral pin of _run_app's prologue order (#343 part 2).
+
+    The pure-function tests above stay green even if the CALLS in _run_app
+    were deleted or reordered (validation :497-504 vs sys.path.insert :505),
+    so this test runs the real helper as a subprocess with a planted bad
+    --api-root and asserts the observable fail-closed contract: exit 1, a
+    journal record of state=failed with the api-root/ error, no READY line
+    on stdout, and no trace of the hostile tree's modules having been
+    imported.
+    """
+
+    plant(tmp_path)
+    token = os.urandom(16).hex()
+    runtime = tmp_path / "runtime" / f"mangaflow-desktop-{token}"
+    runtime.mkdir(parents=True)
+    journal = runtime / "owner.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(HELPER_PATH),
+            "app",
+            "--api-root",
+            str(tmp_path),
+            "--user-data",
+            str(tmp_path / "user-data"),
+            # The hostile tree only gets a chance to shadow fake_channel
+            # when the channel install path is requested at all.
+            "--fake-channel",
+        ],
+        env=dict(
+            os.environ,
+            MANGAFLOW_DESKTOP_TOKEN=token,
+            MANGAFLOW_DESKTOP_JOURNAL=str(journal),
+            MANGAFLOW_DISABLE_DOTENV="1",
+        ),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 1, (
+        f"helper must fail closed on a bad --api-root; stderr:\n{result.stderr}"
+    )
+    assert "MANGAFLOW_READY" not in result.stdout, (
+        "a rejected api-root must never publish readiness"
+    )
+    assert "api root rejected" in result.stderr, result.stderr
+
+    record = json.loads(journal.read_text(encoding="utf-8"))
+    assert record["state"] == "failed", record
+    assert record["error"] == reason, record
+    assert record["token"] == token, record
+
+    # The fail-closed-BEFORE-import half of the contract: nothing from the
+    # hostile tree was ever loaded (the marker module did not run).
+    assert not (tmp_path / HOSTILE_IMPORT_MARKER).exists(), (
+        "the hostile api-root tree was imported before/instead of rejection"
+    )
 
 
 def test_disable_dotenv_is_forced_over_an_inherited_zero(monkeypatch, tmp_path):
