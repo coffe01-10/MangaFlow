@@ -323,3 +323,7 @@ doc-code 不一致 sweep（子代理，双源核验）收割 6 项 → 3 PR：
 
 诚实记录：#434/#435 引用的 D1 记录系 README 既有内容，本轮仅核对文本一致性，
 未复跑任何 Windows 实机验证（Windows 腿整体 NOT RUN 不变）。
+
+- 红绿判别力抽查（本轮配额项，突变法）：#403 的 parse 精确表在 parse 改为
+  大小写不敏感时确实变红；#418 的 DestinationIsDirectory pin 在 is_dir 守卫
+  被禁用时确实变红。抽查通过，两钉均非恒真。
