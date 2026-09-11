@@ -644,7 +644,15 @@ impl RunLog {
         // directories (#264): the fresh session's own directory was created by
         // RuntimeLayout::create just before this and is skipped by the
         // terminal-state + grace-window predicate either way.
-        let _ = rotate_logs(user_data);
+        if let Err(error) = rotate_logs(user_data) {
+            // Fail-soft stays, but not silent (#150/#264): a whole-sweep
+            // failure — e.g. a stray file parked at the logs path — must hit
+            // stderr like the per-file failures below it, or the one state
+            // that breaks every future rotation is the least visible.
+            eprintln!(
+                "mangaflow-desktop: session-start log rotation failed: {error}"
+            );
+        }
         // The sweep's contract promises a stderr report for its failures —
         // discarding the Result wholesale left that promise unimplemented
         // (#264): a silently failing sweep is invisible exactly when stale
