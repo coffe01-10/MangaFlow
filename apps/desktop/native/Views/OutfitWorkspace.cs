@@ -95,8 +95,14 @@ internal sealed class OutfitWorkspace : StackPanel
         outfitName.TextChanged += (_, _) => UpdateDraft();
         models.AddHandler(ButtonBase.ClickEvent, new RoutedEventHandler((_, _) => RenderRecords()));
         if (view.SelectedCharacter != null) SelectCharacter(view.SelectedCharacter.Id);
-        if (view.outfits.FirstOrDefault(o => o.Id == view.SelectedOutfit?.Id) is { } initialOutfit) BeginEdit(initialOutfit);
+        if (view.PendingOutfitReferences.Count == 0 && view.outfits.FirstOrDefault(o => o.Id == view.SelectedOutfit?.Id) is { } initialOutfit) BeginEdit(initialOutfit);
         lastCharacterId = CharacterId; CaptureDraftBaseline();
+        if (view.PendingOutfitReferences.Count > 0)
+        {
+            Reset();
+            selected.UnionWith(view.PendingOutfitReferences.Where(id => view.assets.Any(a => a.Id == id && a.Kind == "OUTFIT_REFERENCE")));
+            view.PendingOutfitReferences.Clear();
+        }
         UpdateDraft(); RenderRecords(); RenderReferences();
         if (view.OutfitPreviewId.Length > 0) Dispatcher.BeginInvoke(new Action(async () => await LoadLatestResultAsync()));
     }
