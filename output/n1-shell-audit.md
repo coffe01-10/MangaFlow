@@ -269,3 +269,37 @@
 - 本夜计划（配额 B 缺口 ≥4）：每枚独立小 PR、单主题、红绿判别、Linux cargo
   绿、native/** 零触碰。候选：rotation keep=1 × sweep 识别交互 pin（残留项）；
   谓词/边界补充 pin；审计文档一致性。以实际 diff 为准，不开空头支票。
+
+### 20260911 深夜续：四枚独立小 PR（#373–#376）与两轮审查
+
+配额 B 增量（每枚基 4aa1797、单文件为主、Linux 全绿、红绿经子代理突变验证）：
+
+| PR | 分支 → sha | 主题 | 红绿判别（突变验证） |
+| --- | --- | --- | --- |
+| #373 | night/pr-zip-writer-guards → 217e387 | zip 写入器空名/反斜杠名 should_panic pin + 零成员 EOCD 字节表 | 删反斜杠子句仅翻转对应 pin；破坏 comment-length 字段仅翻转空档 pin（唯一覆盖 disk-number/comment 字段） |
+| #374 | night/pr-ownership-error-display → d28ed7d | OwnershipError Display 嵌入细节 + source() 仅 Spawn 链 | Spawn.source()=None / StopFailed 丢 detail 各自翻转 |
+| #375 | night/pr-get-status-semantics → 54fe664 | get_status 非 200 透传/空响应 InvalidData/拒绝连接 ConnectionRefused | 非 200→Err、空响应伪造状态码、吞连接错误各自翻转一枚 pin |
+| #376 | night/pr-rotate-logs-report → e31b91b | RunLog::create 整轮扫失败按 #150/#264 契约上报 stderr + file-at-logs pin | rotate_logs 吞成 Ok 或 panic 即翻转；stderr 腿按惯例人工审查 |
+
+审查（配额 C，子代理×2 并行，全部突变法验证红绿）：
+- 轮 A（#373/#374）：**SHIP**。勘误已修：#373 空档 pin 的动机注释（导出恒附
+  manifest.json，零成员是公共 builder 不变量而非导出输出）→ 217e387；无重复
+  覆盖（catch_unwind 既有 pin 覆盖 u16 两侧，新 pin 仅补空名/反斜杠/EOCD 形状）。
+- 轮 B（#375/#376）：**SHIP**。勘误已修：#375 透传注释的真实消费方
+  （wait_for_health 对 Err/非 200 同样重试；真正分流的是 tauri health probe
+  与 shell-sim body）→ 54fe664。已知可忽略残留：#375 拒绝连接测试的端口复用
+  窗口（~1e-4/次，注释已如实披露）；#376 的 pin 钉 rotate_logs 错误面、不钉
+  stderr 文本（PR 描述如实声明）。
+- 设计级上报（需 lead 决策，未改动）：logs/ 路径被杂散文件占据时
+  RunLog::create 在 create_dir_all 传播失败、会话启动被阻断——是否降级为
+  无日志会话属设计决定，仅记录。
+
+法证勘误（本节早前记录）：keep=1 交互残留项**已被既有单测覆盖**
+（logs.rs `rotation_with_keep_1_prunes_down_to_a_single_generation` 等），
+前账"未测"系陈旧记录，作废；`.pending` 竞争亦已有
+`export_refuses_a_symlink/junction_planted_at_the_pending_sibling` 与
+`no_overwrite_placement_refuses_a_destination_created_after_validation` 钉测，
+"需 seam"评估过时，仅"失败方误报"窄残留可能仍在。
+
+实测：四分支各自 cargo test 全绿（117+1~3 枚增量）；最终汇总以 master 合入后
+复测为准。Windows 腿 NOT RUN。
