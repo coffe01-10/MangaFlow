@@ -93,6 +93,24 @@ describe("SceneWorkspace", () => {
     expect(screen.queryByText("尚未创建场景资产")).not.toBeInTheDocument();
   });
 
+  it("TEST-SCENE-01b 列表超过单页 200 条时循环取全，不再静默截断（#369）", async () => {
+    // 201 条：单页 limit 200 会丢掉最后 1 条；sceneAssetsAll 应翻页取全。
+    const many = Array.from({ length: 201 }, (_, index) =>
+      assetFixture({ id: `asset-${index}`, name: `场景 ${String(index + 1).padStart(3, "0")}` }));
+    listApi.mockImplementation(async (_projectId: string, query = {}) => {
+      const offset = query.offset ?? 0;
+      return many.slice(offset, offset + 200);
+    });
+    renderWorkspace();
+
+    expect(await screen.findByText("201 个场景")).toBeInTheDocument();
+    // 尾部资产可见：截断时第 201 条永远不出现。
+    expect(screen.getByRole("option", { name: /场景 201/ })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /场景 200/ })).toBeInTheDocument();
+    // 确实发生了第二页请求（offset 200）。
+    expect(listApi).toHaveBeenLastCalledWith("project-1", expect.objectContaining({ limit: 200, offset: 200 }));
+  });
+
   it("TEST-SCENE-02 名称为空时阻止提交，回车保存后选中新卡片", async () => {
     listApi.mockResolvedValue([]);
     const created = assetFixture({ id: "asset-new", name: "林间木屋", status: "UPLOADED" });

@@ -240,12 +240,14 @@ export function SceneWorkspace({
 
   const list = useQuery({
     queryKey: ["scene-assets", projectId, { statusFilter, placeFilter, interiorFilter, includeDeleted }],
-    queryFn: () => api.sceneAssets(projectId, {
+    // #369：单页 limit 200 在 >200 条时静默截断（尾部卡片不可见、计数只显示
+    // 200）。sceneAssetsAll 按最大 limit 循环取全，与剧本绑定/生成侧的
+    // 消费方一致（它正是为消除这类截断而生）。
+    queryFn: () => api.sceneAssetsAll(projectId, {
       status: statusFilter || undefined,
       place: placeFilter.trim() || undefined,
       interior: interiorFilter === "" ? undefined : interiorFilter === "true",
       include_deleted: includeDeleted || undefined,
-      limit: 200,
     }),
   });
 

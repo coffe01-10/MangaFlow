@@ -551,6 +551,14 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
     onSuccess: (run) => { setCurrentRun(run); void runs.refetch(); },
     onError: (error) => setNotice(error instanceof Error ? error.message : "取消运行失败"),
   });
+  const retryRun = useMutation({
+    // retry_run clones the FAILED run against the version it actually
+    // executed (pinned_version_id), keeping scope and node range — the footer
+    // 运行工作流 button always re-runs the currently published version.
+    mutationFn: (runId: string) => api.retryWorkflowRun(runId),
+    onSuccess: (run) => { setCurrentRun(run); void runs.refetch(); },
+    onError: (error) => setNotice(error instanceof Error ? error.message : "重试运行失败"),
+  });
 
   async function importFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -780,7 +788,10 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
       <footer className={styles.runner}>
         <div className={styles.runScope}><span>运行范围</span><select aria-label="运行范围类型" value={scopeType} onChange={(event) => { const next = event.target.value as "CHAPTER" | "PAGE"; setScopeType(next); setScopeId(next === "CHAPTER" ? chapters.data?.[0]?.id ?? "" : ""); }}><option value="CHAPTER">章节</option><option value="PAGE">页面</option></select>{scopeType === "PAGE" ? <select aria-label="页面所属章节" value={activeChapter} onChange={(event) => { setPageChapterId(event.target.value); setScopeId(""); }}>{chapters.data?.map((chapter) => <option value={chapter.id} key={chapter.id}>{chapter.title}</option>)}</select> : null}<select aria-label="运行目标" value={effectiveScopeId} onChange={(event) => setScopeId(event.target.value)}>{scopeType === "CHAPTER" ? chapters.data?.map((chapter) => <option value={chapter.id} key={chapter.id}>{chapter.title}</option>) : pages.data?.map((page) => <option value={page.id} key={page.id}>第 {page.page_number} 页</option>)}</select></div>
         <div className={styles.runState}><i className={displayedRun?.status === "RUNNING" ? styles.running : ""} /><span>{displayedRun ? `运行 ${statusLabel[displayedRun.status] ?? displayedRun.status} · ${displayedRun.node_runs.filter((item) => item.status === "COMPLETED").length}/${displayedRun.node_runs.length}` : "尚未运行已发布版本"}</span></div>
-        <div className={styles.runActions}><button disabled={!selectedId || startRun.isPending} onClick={() => startRun.mutate("NODE")}><Play size={13} />运行节点</button><button disabled={!selectedId || startRun.isPending} onClick={() => startRun.mutate("FROM")}><Play size={13} />从这里运行</button>{displayedRun?.status === "RUNNING" ? <button disabled={cancelRun.isPending} onClick={() => cancelRun.mutate(displayedRun.id)}><Pause size={13} />取消</button> : null}<button className={styles.runPrimary} disabled={startRun.isPending} onClick={() => startRun.mutate("FULL")}><Play size={14} />运行工作流</button></div>
+        {/* 取消按钮必须覆盖 PAUSED（审批栅栏态）：cancel_run 接受 PAUSED，
+            而同 scope 的重复运行守卫会把 PAUSED 当活跃 run 拒绝（409 文案
+            指示“先取消”）——不在这里露出按钮，用户就没有任何停止途径。 */}
+        <div className={styles.runActions}><button disabled={!selectedId || startRun.isPending} onClick={() => startRun.mutate("NODE")}><Play size={13} />运行节点</button><button disabled={!selectedId || startRun.isPending} onClick={() => startRun.mutate("FROM")}><Play size={13} />从这里运行</button>{displayedRun && (displayedRun.status === "RUNNING" || displayedRun.status === "PAUSED") ? <button disabled={cancelRun.isPending} onClick={() => cancelRun.mutate(displayedRun.id)}><Pause size={13} />取消</button> : null}{displayedRun?.status === "FAILED" ? <button disabled={retryRun.isPending} onClick={() => retryRun.mutate(displayedRun.id)}><RotateCcw size={13} />重试</button> : null}<button className={styles.runPrimary} disabled={startRun.isPending} onClick={() => startRun.mutate("FULL")}><Play size={14} />运行工作流</button></div>
         {displayedRun?.node_runs.filter((run) => run.status === "WAITING_APPROVAL").map((run) => <div className={styles.approval} key={run.id}><strong>{run.node_type === "generator.page" ? "单页生成等待选择模型" : "采用候选后继续"}</strong>{run.node_type === "generator.page" ? <><select aria-label="选择图片模型" value={drawModel} onChange={(event) => setDrawModel(event.target.value as ImageModelAlias | "")}><option value="">选择图片模型</option>{imageModels.map((model) => <option key={model.catalog_id} value={model.logical_alias}>{model.provider} · {model.display_name}</option>)}</select><select aria-label="选择图片清晰度" value={drawResolution} onChange={(event) => setDrawResolution(event.target.value as Resolution)}><option>1K</option><option>2K</option><option>4K</option></select></> : <Link href={`/projects/${projectId}/generate`}>前往采用</Link>}<button disabled={approveNode.isPending || (run.node_type === "generator.page" && !drawModel)} onClick={() => approveNode.mutate(run)}>确认继续</button></div>)}
       </footer>
     </main>

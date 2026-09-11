@@ -141,6 +141,8 @@ export function ScriptEditor({
 
   // 站内编辑按钮(编辑场景/修改)不走 <a> 链接,锚点点击守卫拦不到它们;
   // 切换编辑目标同样要确认,与锚点守卫和章节 <select> 的丢弃确认一致。
+  // 编辑卡片自己的取消/X 也必须先走这里 (#370):脏草稿下直接清空会静默
+  // 丢弃已输入的场景调度/对白文本,是其他退出路径都防住的同类丢失。
   function confirmDiscardDraft() {
     return !editorDirty
       || window.confirm("当前场景 / 情节拍的修改尚未保存，切换编辑目标会丢弃这些修改。仍要切换吗？");
@@ -195,7 +197,7 @@ export function ScriptEditor({
     {error && <p className="form-error" role="alert"><CircleAlert size={14} />{error.message}{conflict && <> · 内容已被其他页面修改。<button type="button" className="conflict-refresh" onClick={refreshScript}><RefreshCw size={12} />刷新数据</button>（将关闭当前编辑表单并载入最新版本）</>}</p>}
     {script.scenes.map((scene) => <section className={editingScene === scene.id ? "script-scene editing" : "script-scene"} key={scene.id}>
       {editingScene === scene.id && sceneDraft ? <div className="scene-edit-sheet">
-        <header><div><span>SCENE {String(scene.ordinal).padStart(2, "0")} / 修订</span><strong>场景调度单</strong></div><div><button type="button" onClick={() => { setEditingScene(null); setSceneDraft(null); }}><X size={13} />取消</button><button type="button" className="save-edit" disabled={saveScene.isPending} onClick={() => saveScene.mutate(scene)}><Save size={13} />保存场景</button></div></header>
+        <header><div><span>SCENE {String(scene.ordinal).padStart(2, "0")} / 修订</span><strong>场景调度单</strong></div><div><button type="button" onClick={() => { if (!confirmDiscardDraft()) return; setEditingScene(null); setSceneDraft(null); }}><X size={13} />取消</button><button type="button" className="save-edit" disabled={saveScene.isPending} onClick={() => saveScene.mutate(scene)}><Save size={13} />保存场景</button></div></header>
         <div className="scene-edit-grid">
           <label><span>地点（历史兜底，绑定资产时不会清空）</span><input value={sceneDraft.location} onChange={(event) => setSceneDraft({ ...sceneDraft, location: event.target.value })} /></label>
           <label><span>时间</span><input value={sceneDraft.time_label} onChange={(event) => setSceneDraft({ ...sceneDraft, time_label: event.target.value })} /></label>
@@ -219,7 +221,7 @@ export function ScriptEditor({
       <div className="beat-list">{scene.beats.map((beat) => <article className={editingBeat === beat.id ? "beat-row editing" : "beat-row"} key={beat.id}>
         <i>{String(beat.ordinal).padStart(2, "0")}</i>
         {editingBeat === beat.id && beatDraft ? <div className="beat-edit-sheet">
-          <div className="beat-edit-heading"><strong>情节拍修订</strong><div><button type="button" onClick={() => { setEditingBeat(null); setBeatDraft(null); }}><X size={12} />取消</button><button className="save-edit" type="button" disabled={saveBeat.isPending || !beatDraft.action.trim()} onClick={() => saveBeat.mutate(beat)}><Save size={12} />保存</button></div></div>
+          <div className="beat-edit-heading"><strong>情节拍修订</strong><div><button type="button" onClick={() => { if (!confirmDiscardDraft()) return; setEditingBeat(null); setBeatDraft(null); }}><X size={12} />取消</button><button className="save-edit" type="button" disabled={saveBeat.isPending || !beatDraft.action.trim()} onClick={() => saveBeat.mutate(beat)}><Save size={12} />保存</button></div></div>
           <label className="wide"><span>可视化动作</span><textarea value={beatDraft.action} onChange={(event) => setBeatDraft({ ...beatDraft, action: event.target.value })} /></label>
           <div className="beat-edit-grid"><label><span>说话人（可填绰号，保存后归一）</span><input value={beatDraft.speaker_name} onChange={(event) => setBeatDraft({ ...beatDraft, speaker_name: event.target.value })} /></label><label><span>情绪</span><input value={beatDraft.emotion} onChange={(event) => setBeatDraft({ ...beatDraft, emotion: event.target.value })} /></label></div>
           <div className="beat-edit-grid"><label><span>对白</span><textarea value={beatDraft.dialogue} onChange={(event) => setBeatDraft({ ...beatDraft, dialogue: event.target.value })} /></label><label><span>旁白</span><textarea value={beatDraft.narration} onChange={(event) => setBeatDraft({ ...beatDraft, narration: event.target.value })} /></label></div>

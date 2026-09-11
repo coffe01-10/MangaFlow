@@ -5,6 +5,7 @@ import { ProviderManagement } from "@/components/provider-management";
 import { ClampedNumberInput } from "@/components/clamped-number-input";
 import {
   api,
+  ApiError,
   type DiagnosticCheck,
   type RuntimeSettings,
 } from "@/lib/api";
@@ -49,7 +50,10 @@ export default function SystemSettingsPage() {
     mutationFn: () => {
       if (!draft) throw new Error("运行设置尚未加载");
       return api.updateRuntimeSettings({
-        version: draft.version,
+        // 版本跟随缓存里的最新快照而非 localDraft：409 失效重拉后
+        // runtime.data.version 已是服务器当前值，localDraft 仍停在编辑时
+        // 观察到的旧版本，重发它会永远 409。
+        version: runtime.data?.version ?? draft.version,
         queue_mode: draft.queue_mode,
         job_timeout_seconds: draft.job_timeout_seconds,
         job_lease_seconds: draft.job_lease_seconds,
@@ -60,6 +64,15 @@ export default function SystemSettingsPage() {
       });
     },
     onSuccess: (data) => { queryClient.setQueryData(["runtime-settings"], data); setLocalDraft(data); setNotice("运行设置已保存并应用到后续任务"); diagnostics.refetch(); },
+    onError: (error) => {
+      // 409 = 版本落后（桌面 + web 同开时另一端先保存）。失效缓存触发
+      // 重拉，下一次保存带上服务器当前版本，而不是在旧 version 上循环
+      // 409 直到窗口聚焦才恢复（与 workflow-studio 草稿保存的 409 处理
+      // 同一范式）。
+      if (error instanceof ApiError && error.status === 409) {
+        void queryClient.invalidateQueries({ queryKey: ["runtime-settings"] });
+      }
+    },
   });
   const update = <K extends keyof RuntimeSettings>(key: K, value: RuntimeSettings[K]) => { setLocalDraft((current) => ({ ...(current ?? draft!), [key]: value })); setNotice(""); };
   // 数字钳制统一走 ClampedNumberInput:输入期间不夹值,失焦才提交区间内结果。
@@ -95,7 +108,11 @@ export default function SystemSettingsPage() {
                 <label><span>默认并发<small>1–8 路</small></span><ClampedNumberInput value={draft.default_concurrency} min={1} max={8} onCommit={(value) => update("default_concurrency", value)} /></label>
                 <label><span>视觉修复重试<small>不含文字校对 · 0–10 次</small></span><ClampedNumberInput value={draft.max_auto_repairs} min={0} max={10} onCommit={(value) => update("max_auto_repairs", value)} /></label>
                 <label><span>状态检查周期<small>秒</small></span><ClampedNumberInput value={draft.health_check_interval_seconds} min={60} max={3600} onCommit={(value) => update("health_check_interval_seconds", value)} /></label>
-                <label><span>界面轮询周期<small>毫秒</small></span><ClampedNumberInput value={draft.ui_poll_interval_seconds} min={1000} max={60000} onCommit={(value) => update("ui_poll_interval_seconds", value)} /></label>
+                {/* #367：ui_poll_interval_seconds 在 web 端零消费——所有轮询
+                    间隔按视图硬编码（lib/task-status.ts 及各 use-*-workspace），
+                    只有桌面客户端接入该设置（PollInterval.cs）。标签必须如实
+                    标注生效范围，避免“可保存即生效”的误导。 */}
+                <label><span>界面轮询周期<small>毫秒 · 仅桌面客户端生效，Web 使用内置固定间隔</small></span><ClampedNumberInput value={draft.ui_poll_interval_seconds} min={1000} max={60000} onCommit={(value) => update("ui_poll_interval_seconds", value)} /></label>
               </div> : <div className="loading-panel"><LoaderCircle className="spin" />读取设置…</div>}
               {notice && <p className="save-success"><CheckCircle2 size={15} />{notice}</p>}{save.isError && <p className="form-error"><CircleAlert size={15} />{save.error.message}</p>}
             </article>
