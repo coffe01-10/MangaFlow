@@ -496,8 +496,13 @@ def _validate_api_root(api_root: Path) -> str | None:
     try:
         names = {entry.name.lower() for entry in api_root.iterdir()}
     except OSError:
+        # Same set the scan would have produced, via byte-exact existence
+        # probes (stat works through +x): a traverse-only root must fail
+        # closed on ANY of the shadow names, not just fake_channel (R3
+        # review).
         names = set()
-        for probe in ("fake_channel.py", "fake_channel"):
+        for probe in ("fake_channel.py", "fake_channel",
+                      "alembic.py", "alembic", "uvicorn.py", "uvicorn"):
             if (api_root / probe).exists():
                 names.add(probe)
     # A directory named `fake_channel` shadows the helper's module too:
@@ -506,6 +511,15 @@ def _validate_api_root(api_root: Path) -> str | None:
     # the file form.
     if "fake_channel.py" in names or "fake_channel" in names:
         return "api-root/shadowing-fake-channel"
+    # Same shadowing class for the modules imported AFTER sys.path.insert(0):
+    # a root-level alembic.py/alembic/ or uvicorn.py/uvicorn/ would be
+    # imported in place of the venv's real packages (alembic's command module
+    # and uvicorn's server both drive this helper). The real apps/api tree
+    # has none of these at its root (its migrations live in migrations/,
+    # reached via alembic.ini), so the check is safe for it (#314).
+    for shadow in ("alembic.py", "alembic", "uvicorn.py", "uvicorn"):
+        if shadow in names:
+            return f"api-root/shadowing-{shadow}"
     return None
 
 
