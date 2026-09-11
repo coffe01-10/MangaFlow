@@ -474,8 +474,13 @@ def _validate_api_root(api_root: Path) -> str | None:
     try:
         names = {entry.name.lower() for entry in api_root.iterdir()}
     except OSError:
+        # Same set the scan would have produced, via byte-exact existence
+        # probes (stat works through +x): a traverse-only root must fail
+        # closed on ANY of the shadow names, not just fake_channel (R3
+        # review).
         names = set()
-        for probe in ("fake_channel.py", "fake_channel"):
+        for probe in ("fake_channel.py", "fake_channel",
+                      "alembic.py", "alembic", "uvicorn.py", "uvicorn"):
             if (api_root / probe).exists():
                 names.add(probe)
     # A directory named `fake_channel` shadows the helper's module too:
