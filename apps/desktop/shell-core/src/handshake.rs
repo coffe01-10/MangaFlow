@@ -340,6 +340,17 @@ impl From<std::io::Error> for SpawnError {
 /// peer that streams without end costs bounded memory, not an unbounded
 /// String (read_to_string would otherwise buffer the whole body).
 pub fn get_status(origin: &str, path: &str, timeout: Duration) -> std::io::Result<(u16, String)> {
+    // The path is interpolated into the request line verbatim, so CR/LF
+    // would inject a second request (or truncate this one) on the loopback
+    // hop. Every current caller passes HEALTH_PATH; the refusal costs a
+    // scan and keeps the function safe for any future caller. No other
+    // control character can break the request-line framing.
+    if path.bytes().any(|byte| byte == b'\r' || byte == b'\n') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "health path must not contain CR or LF",
+        ));
+    }
     let authority = origin.trim_start_matches("http://");
     let mut stream = TcpStream::connect(authority)?;
     stream.set_read_timeout(Some(timeout))?;
@@ -561,5 +572,27 @@ mod tests {
             Some(&std::ffi::OsStr::new("utf-8")),
             "{envs:?}"
         );
+    }
+
+    /// The path is interpolated into the request line verbatim: a CR or LF
+    /// would inject a second request (request smuggling) or truncate this
+    /// one on the loopback hop. The refusal must fire BEFORE any dial — a
+    /// connection error on the discard port would have the wrong kind.
+    #[test]
+    fn get_status_refuses_cr_or_lf_in_the_path_before_dialing() {
+        for path in [
+            "/api/v1/health\r\nGET /admin HTTP/1.0\r\n",
+            "\n",
+            "x\r",
+        ] {
+            let error = get_status("http://127.0.0.1:9", path, Duration::from_secs(1))
+                .err()
+                .expect("CR/LF in the path must be refused");
+            assert_eq!(
+                error.kind(),
+                std::io::ErrorKind::InvalidInput,
+                "guard must fire before dialing: {path:?} → {error}"
+            );
+        }
     }
 }
