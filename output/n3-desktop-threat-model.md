@@ -134,5 +134,6 @@
 - R2：交叉复审 #357（三声明全部 HOLD，MERGE）+ 11 个旧 Issue 状态复核（#308 PARTIAL、#314 PARTIAL、#315/#316/#317 FIXED）
 - R3：漏报补挖——#344 伴随形状、#343 wiring 空转缺陷、#317 第 1 项被 #298 提前修复的重划
 - R4：终审（对 #357 的复核由 R2 承担；威胁模型与本台账逐项核验）
+- **R5（#464 交叉复核 + 补挖，2026-09-11）**：#314 完成修复 PR #464（alembic/uvicorn 四形态遮蔽拒绝）三任务全 HOLD——真实 apps/api 树零碰撞（含模拟扫描）、消费者穷举（仅 _run_app）、sys.path.insert 先于遮蔽 import 的窗口正确；跟进已修：OSError 探针回退扩展到全部六个影子名（traverse-only 根的 fail-open 不对称）+ 补 alembic/ 目录与 uvicorn.py 文件形态及大小写变体测试行（套件 12→14 全绿）。INFO 记录：PEP 420 命名空间portion的过拒绝是蓄意策略；PyInstaller _internal 布局安全仅隐式断言（打包冒烟建议入后账）。
 
 **D — 旧账状态（20260911 收尾核对）：** #308 PARTIAL 并已关闭（stat→open 已修，validate→stat 残差记录在案）、#313 FIXED 并已关闭、#314 PARTIAL 开放（标记必要不充分，见 #314 评论）、#315 FIXED 并已关闭、#316 FIXED 并已关闭、#317 两项已修建议关（已在评论中重划）、#311 PARTIAL 开放（junction 钉 + 政策输入）、#299 已关闭（plan-B 本地上下文壳工具窗口，e0b108c）、#300 开放由认领者跟进。非 Desktop 的 N1 期 Red Team Issue（#121-#152 等）不在 N3 审计面。
