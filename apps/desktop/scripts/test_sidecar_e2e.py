@@ -226,13 +226,25 @@ class DesktopShell:
                 return code
         # SIGTERM reaches the whole session (uvicorn installs graceful
         # shutdown handlers); escalate to SIGKILL if it refuses.
+        # ProcessLookupError means the helper died mid-test (the exact
+        # scenario the fixture failure-surface additions exist to report):
+        # reap the exit code and fall through so stop() still returns it
+        # instead of masking the body failure the test actually hit.
         try:
             os.killpg(self.process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            code = self.process.wait(timeout=5)
+            self.stderr_log.close()
+            return code
+        try:
             code = self.process.wait(timeout=15)
             self.stderr_log.close()
             return code
         except subprocess.TimeoutExpired:
-            os.killpg(self.process.pid, signal.SIGKILL)
+            try:
+                os.killpg(self.process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             code = self.process.wait(timeout=5)
             self.stderr_log.close()
             return code
