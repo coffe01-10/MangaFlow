@@ -184,3 +184,13 @@
   - #458 [P3] runtime layout 规范化守卫只比叶名——planted symlink at user_data/runtime 父级重定向绕过（会话树落位逃逸；同用户前置；ff0a0e2 只钉了叶名失配形态）
 - **E7**：新批 Hunter 回归挖掘 + lead 直读复核（docstring 矛盾与叶名守卫均经双确认）。
 - **新批核实为守住**：6aba8c2 目的地目录根钉（纯测试钉）、2c598ee get_status 预拨 CR/LF 拒绝（defense-in-depth，全部调用方传常量）、#407 junction 测试平台跳过（与本窗 PR 无重叠）、#408 traverse-only fallback 测试钉（与 #452 目录形态测试互补不冲突）。
+
+### 本窗 R8（2026-09-12 续跑）结果：E8 交叉审 + 对 6 个已合 PR 的对称挖掘
+
+- **E8 裁决**：#457 确认（P3 公允——无 shippable 损失，dev 构建脚本）；#458 确认（生产 `create` 同形态；后果精化为 placement + token journal 披露，非 split-brain）。
+- **对称挖掘新发现（B 账 +3，累计 27）**：
+  - #460 [P3] _validate_api_root 阴影扫描只防 fake_channel——api_root 树同样可遮蔽 helper 的 `alembic`/`uvicorn` 裸名导入（sys.path[0]；lead 直读 import 行确认）
+  - #461 [P3] build-web-standalone 严格 rmtree——锁定文件截断 DESKTOP_DIST 后，同 commit 的旧 build-info.json 使 e2e 新鲜度门放行截断 bundle（#454 同类在姊妹脚本漏修）
+  - #462 [P3] neutrality 门测试模块 win32 门内含可移植断言 + allowlist 读取缺 -Encoding（#450 同族姊妹读）
+- **#430 补充证据**：RuntimeLayout::create 内部窗口（create_dir_all 后、journal 写前失败 → 无 journal 目录永不回收）——#453 只修了 RunLog::create 半边。
+- **E 配额累计 8 轮**。
