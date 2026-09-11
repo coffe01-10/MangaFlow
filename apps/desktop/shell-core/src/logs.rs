@@ -1545,6 +1545,40 @@ mod tests {
         let _ = fs::remove_dir_all(&user_data);
     }
 
+    /// A directory parked at the destination (or a nameless root like "/")
+    /// must refuse with the dedicated variants — a directory destination
+    /// would otherwise surface as a raw io error mid-placement, and the
+    /// root has no file name to place the archive under.
+    #[test]
+    fn destination_validation_rejects_directories_and_nameless_roots() {
+        let user_data = temp_user_data("dest-dir");
+        let dir_destination = std::env::temp_dir().join(format!(
+            "mfd-dest-dir-{}",
+            crate::protocol::new_token()
+        ));
+        fs::create_dir_all(&dir_destination).unwrap();
+        assert!(matches!(
+            validate_destination(&user_data, &dir_destination, false),
+            Err(ExportError::DestinationIsDirectory)
+        ));
+        assert!(matches!(
+            validate_destination(&user_data, Path::new("/"), false),
+            Err(ExportError::DestinationNoFileName)
+        ));
+        // The Display arms render the refusal reason (user-visible in the
+        // export dialog path).
+        assert!(!matches!(
+            ExportError::DestinationIsDirectory.to_string(),
+            s if s.is_empty()
+        ));
+        assert!(!matches!(
+            ExportError::DestinationNoFileName.to_string(),
+            s if s.is_empty()
+        ));
+        let _ = fs::remove_dir_all(&user_data);
+        let _ = fs::remove_dir_all(&dir_destination);
+    }
+
     #[test]
     fn rotation_shifts_generations_and_prunes_oldest() {
         let user_data = temp_user_data("rotate");
