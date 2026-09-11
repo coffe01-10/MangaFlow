@@ -51,10 +51,16 @@ describe("web CSP 契约（#300 nonce 化）", () => {
     expect(directive(csp, "style-src")).toBe("style-src 'self' 'unsafe-inline'");
   });
 
-  it("connect/img 源保持 self + loopback 通配", () => {
+  it("connect/img 源保持 self + 回环两种拼写（127.0.0.1 与 localhost）", () => {
     const csp = buildContentSecurityPolicy("FIXTURE-NONCE", false);
-    expect(directive(csp, "connect-src")).toBe("connect-src 'self' http://127.0.0.1:*");
-    expect(directive(csp, "img-src")).toBe("img-src 'self' data: blob: http://127.0.0.1:*");
+    // localhost 与 127.0.0.1 都要放行：.env.example 文档化的是
+    // http://localhost:8000/api/v1，CSP host-source 按字面匹配。
+    expect(directive(csp, "connect-src")).toBe(
+      "connect-src 'self' http://127.0.0.1:* http://localhost:*",
+    );
+    expect(directive(csp, "img-src")).toBe(
+      "img-src 'self' data: blob: http://127.0.0.1:* http://localhost:*",
+    );
     expect(directive(csp, "object-src")).toBe("object-src 'none'");
     expect(directive(csp, "frame-src")).toBe("frame-src 'none'");
   });

@@ -19,14 +19,20 @@
 //   server stack traces during development (Next.js CSP guide).
 // - 'wasm-unsafe-eval' was dropped: neither the app nor its runtime
 //   dependencies (react, react-query, xyflow, lucide) ship WebAssembly.
+// - connect/img include http://localhost:* alongside 127.0.0.1: CSP
+//   host-sources match literally, and .env.example documents
+//   NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1 — without the
+//   localhost spelling every fetch and <img> in such a deployment is
+//   silently CSP-blocked. localhost still resolves to loopback, so the
+//   loopback-only posture is unchanged.
 export function buildContentSecurityPolicy(nonce: string, isDev: boolean): string {
   return [
     "default-src 'self'",
     `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${isDev ? " 'unsafe-eval'" : ""}`,
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: blob: http://127.0.0.1:*",
+    "img-src 'self' data: blob: http://127.0.0.1:* http://localhost:*",
     "font-src 'self' data:",
-    "connect-src 'self' http://127.0.0.1:*",
+    "connect-src 'self' http://127.0.0.1:* http://localhost:*",
     "object-src 'none'",
     "base-uri 'self'",
     "frame-src 'none'",
