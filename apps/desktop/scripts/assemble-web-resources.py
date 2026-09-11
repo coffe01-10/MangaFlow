@@ -58,6 +58,28 @@ def _clear(path: Path) -> None:
         shutil.rmtree(path)
 
 
+def _sweep_orphan_staging(res: Path) -> None:
+    """Best-effort cleanup of staging remnants from *other* pids (#409).
+
+    `web.old-<pid>`/`web.tmp-<pid>` siblings are removable only while `res`
+    is in place: with `res` missing, a `web.old-*` may be the recovery copy
+    the #382 rollback-failure path preserved (#393), so those are left to
+    the existing refusal/recovery flow. Without this sweep, an ignored
+    rmtree failure in a previous run's finally-block (AV/indexer handle)
+    left a permanent ~85MB `web.old-<pid>` that a later pid-reusing run
+    then hit with a strict rmtree and aborted. Failures here are ignored —
+    this is hygiene, not correctness.
+    """
+    if not res.exists():
+        return
+    mine = f"{res.name}.old-{os.getpid()}"
+    for sibling in res.parent.glob(f"{res.name}.old-*"):
+        if sibling.name != mine:
+            shutil.rmtree(sibling, ignore_errors=True)
+    for sibling in res.parent.glob(f"{res.name}.tmp-*"):
+        shutil.rmtree(sibling, ignore_errors=True)
+
+
 def _recovery_error(res: Path, retired: Path) -> RuntimeError:
     return RuntimeError(
         f"web resource swap failed and the automatic rollback failed too: "
@@ -100,6 +122,7 @@ def assemble(src: Path = SRC, res: Path = RES, node: Path | None = None) -> Path
         raise SystemExit("run build-web-standalone.py first")
     if node is None:
         node = find_node()
+    _sweep_orphan_staging(res)
     staging = res.parent / f"{res.name}.tmp-{os.getpid()}"
     retired = res.parent / f"{res.name}.old-{os.getpid()}"
     _clear(staging)
@@ -111,7 +134,13 @@ def assemble(src: Path = SRC, res: Path = RES, node: Path | None = None) -> Path
     # was even staged, so refuse until it is restored (#393).
     if retired.exists() and not res.exists():
         raise _stale_retired_error(res, retired)
-    _clear(retired)
+    # With `res` in place a same-pid remnant is pure hygiene — a strict
+    # rmtree here (locked file from the previous crashed run) aborted the
+    # whole build (#409), so mirror the finally-block's best-effort
+    # semantics instead. The refusal above already protected the case
+    # where the remnant is the only recovery copy.
+    if retired.exists():
+        shutil.rmtree(retired, ignore_errors=True)
     rollback_failed = False
     try:
         (staging / "node").mkdir(parents=True)
@@ -149,6 +178,16 @@ def assemble(src: Path = SRC, res: Path = RES, node: Path | None = None) -> Path
             # Covers rollback attempts that died with a non-OSError; the
             # rollback-failed path above already raises its own error.
             raise _recovery_error(res, retired)
+    # Sweep crash remnants from OTHER pids: a run SIGKILLed inside the
+    # two-rename window parks `<res>.old-<pid>` / `<res>.tmp-<pid>` trees
+    # that a later different-pid run never touched (85 MB+ of gitignored
+    # debris per occurrence). Safe exactly when `res` is in place - the
+    # parked trees are by then no longer the only copy of anything.
+    for remnant in res.parent.glob(f"{res.name}.old-*"):
+        shutil.rmtree(remnant, ignore_errors=True)
+    for remnant in res.parent.glob(f"{res.name}.tmp-*"):
+        shutil.rmtree(remnant, ignore_errors=True)
+
     mb = sum(f.stat().st_size for f in res.rglob("*") if f.is_file()) / 1048576
     print(f"WEB_RESOURCES_READY {res} ({mb:.0f} MB)")
     return res

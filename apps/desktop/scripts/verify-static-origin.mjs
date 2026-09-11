@@ -188,8 +188,10 @@ try {
 // weakened check only when the sibling does not exist - so this probe
 // CREATES the sibling with a real file. With the correct fence
 // (`startsWith(root + sep)`) it answers 404; a sep-dropped regression
-// answers 200 with the file's bytes. The fixture is created before the
-// server starts and removed after the probe.
+// answers 200 with the file's bytes. The fixture is removed after the
+// probe; the server is already listening when it is created (creation
+// only needs the filesystem, so the comment's earlier "before the server
+// starts" was wrong — ordering with the listener is irrelevant here).
 {
   const { mkdir, writeFile, rm } = await import("node:fs/promises");
   const siblingDir = join(FRONTEND, "..", "frontend-sibling-probe");

@@ -110,7 +110,9 @@ impl OwnedTree {
     /// terminates the child while it is still suspended (it has executed
     /// nothing). The shell-side ownership journal is written by
     /// `RuntimeLayout::create` even earlier: before the process exists at
-    /// all. Windows runtime behavior remains NOT RUN (Linux sandbox).
+    /// all. This Windows path has since RUN on a Windows real machine
+    /// (2026-09-06, README D3: full debug shell + crash cleanup); the Linux
+    /// sandbox still cannot execute it.
     pub fn spawn(mut command: Command) -> Result<OwnedTree, OwnershipError> {
         #[cfg(unix)]
         {

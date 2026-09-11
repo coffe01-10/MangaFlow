@@ -12,6 +12,7 @@
 //!   install its SIGTERM handling (see
 //!   `stdin_close_is_a_cooperative_stop_channel`).
 
+use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -1397,4 +1398,102 @@ time.sleep(120)
         started.elapsed()
     );
     let _ = std::fs::remove_dir_all(&user_data);
+}
+
+/// Unix stand-in for the Windows-gated launcher-chain pin: on Unix,
+/// membership is DIRECT-CHILD-ONLY, so a helper whose readiness is
+/// announced by a real forked grandchild (its own pid in READY and in the
+/// journal) must be REFUSED with Verify(PidMismatch) — the shell cannot
+/// kill what it does not own, and refusing is the fail-closed answer the
+/// Windows Job-membership path solves differently. The abort must still
+/// stop the whole group (parent and grandchild share it) and mark the
+/// journal stopped; both announcer processes are reaped by pid in a
+/// bounded sweep so no failure path leaks a one-hour sleeper.
+#[test]
+#[cfg(unix)]
+fn a_grandchild_pid_ready_is_refused_on_unix_direct_child_membership() {
+    let script = temp_user_data("grandchild-pid").join("forking-helper.py");
+    std::fs::write(
+        &script,
+        r#"
+import json, os, socket, sys, time
+from pathlib import Path
+
+token = os.environ["MANGAFLOW_DESKTOP_TOKEN"]
+journal = Path(os.environ["MANGAFLOW_DESKTOP_JOURNAL"])
+side_info = Path(sys.argv[1]) / "announcer.txt"
+
+pid = os.fork()
+if pid == 0:
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    origin = f"http://127.0.0.1:{port}"
+    stat = open(f"/proc/{os.getpid()}/stat").read()
+    record = {
+        "version": 1,
+        "token": token,
+        "state": "ready",
+        "pid": os.getpid(),
+        "api_origin": origin,
+        "pid_starttime": int(stat.rsplit(")", 1)[1].split()[19]),
+    }
+    journal.write_text(json.dumps(record), encoding="utf-8")
+    print("MANGAFLOW_READY " + json.dumps(
+        {"token": token, "pid": os.getpid(), "api_origin": origin}), flush=True)
+    time.sleep(3600)
+side_info.write_text(f"{os.getpid()} {pid}", encoding="utf-8")
+time.sleep(3600)
+"#,
+    )
+    .unwrap();
+
+    let user_data = temp_user_data("grandchild-pid-ud");
+    // The stand-in needs the user-data path to drop its announcer list.
+    // The user-data path rides helper_args (argv[1]) — no process-global
+    // env mutation, which would race parallel test threads.
+    let config = HelperConfig {
+        python: python(),
+        helper_script: script.clone(),
+        helper_args: vec![user_data.clone().into_os_string().into_string().unwrap()],
+        ready_timeout: Duration::from_secs(20),
+        health_timeout: Duration::from_secs(5),
+    };
+    let error = spawn_helper(&config, &user_data).err().expect("must refuse");
+    match &error {
+        SpawnError::Verify(mangaflow_desktop_shell_core::protocol::VerifyError::PidMismatch) => {}
+        other => panic!("expected Verify(PidMismatch), got {other:?}"),
+    }
+
+    // Terminal bookkeeping ran (the journal the grandchild wrote flips to
+    // stopped), and both announcer processes are dead — bounded sweep.
+    let runtime = user_data.join("runtime");
+    let journal = std::fs::read_dir(&runtime)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .find(|entry| entry.path().join("owner.json").is_file())
+        .expect("an owned runtime entry exists")
+        .path()
+        .join("owner.json");
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&journal).unwrap()).unwrap();
+    assert_eq!(value["state"].as_str(), Some("stopped"), "{value}");
+
+    let announcer =
+        std::fs::read_to_string(user_data.join("announcer.txt")).unwrap();
+    let pids: Vec<u32> = announcer
+        .split_whitespace()
+        .map(|p| p.parse().unwrap())
+        .collect();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while pids.iter().any(|p| Path::new(&format!("/proc/{p}")).exists()) {
+        assert!(
+            Instant::now() < deadline,
+            "the group stop must reap the launcher and its grandchild"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let _ = fs::remove_dir_all(&user_data);
+    let _ = fs::remove_file(&script);
 }

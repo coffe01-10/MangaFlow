@@ -3,6 +3,7 @@ apps/api/app/config.py
 apps/api/app/model_adapters/vertex.py
 apps/api/app/services/connection_verifier.py
 apps/api/app/services/credential_source.py
+apps/api/app/services/vertex_credentials.py
 apps/api/app/services/model_registry.py
 apps/api/app/services/model_router.py
 apps/api/app/services/provider_presets.py

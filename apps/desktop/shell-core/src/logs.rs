@@ -1545,6 +1545,43 @@ mod tests {
         let _ = fs::remove_dir_all(&user_data);
     }
 
+    /// A directory parked at the destination (or a nameless root like "/")
+    /// must refuse with the dedicated variants — a directory destination
+    /// would otherwise surface as a raw io error mid-placement, and the
+    /// root has no file name to place the archive under.
+    #[test]
+    fn destination_validation_rejects_directories_and_nameless_roots() {
+        let user_data = temp_user_data("dest-dir");
+        let dir_destination = std::env::temp_dir().join(format!(
+            "mfd-dest-dir-{}",
+            crate::protocol::new_token()
+        ));
+        fs::create_dir_all(&dir_destination).unwrap();
+        assert!(matches!(
+            validate_destination(&user_data, &dir_destination, false),
+            Err(ExportError::DestinationIsDirectory)
+        ));
+        // A nameless absolute root: "/" lacks a drive prefix on Windows,
+        // where the nameless absolute form is "C:\" — each platform's
+        // root must pass the absolute gate and fail on the missing file
+        // name instead.
+        #[cfg(windows)]
+        let nameless_root = Path::new("C:\\");
+        #[cfg(not(windows))]
+        let nameless_root = Path::new("/");
+        assert!(nameless_root.is_absolute(), "the root must be absolute");
+        assert!(matches!(
+            validate_destination(&user_data, nameless_root, false),
+            Err(ExportError::DestinationNoFileName)
+        ));
+        // The Display arms render the refusal reason (user-visible in the
+        // export dialog path).
+        assert!(!ExportError::DestinationIsDirectory.to_string().is_empty());
+        assert!(!ExportError::DestinationNoFileName.to_string().is_empty());
+        let _ = fs::remove_dir_all(&user_data);
+        let _ = fs::remove_dir_all(&dir_destination);
+    }
+
     #[test]
     fn rotation_shifts_generations_and_prunes_oldest() {
         let user_data = temp_user_data("rotate");
@@ -1733,6 +1770,59 @@ mod tests {
         let inside = logs.join(format!("shell-{}.log", "d".repeat(32)));
         open_append_regular(&inside, &logs_canonical).unwrap();
         let _ = fs::remove_dir_all(&user_data);
+    }
+
+    /// Concurrent record() writers: the inner Mutex serializes whole
+    /// lines, so N threads x M records must yield N*M intact JSONL lines —
+    /// no interleaved or torn lines, none lost. A regression to an
+    /// unsynchronized append (or per-field writes) corrupts under exactly
+    /// this load; every line must still parse as an object afterwards.
+    #[test]
+    fn run_log_concurrent_records_yield_intact_lines() {
+        use crate::protocol::new_token;
+        let user_data = temp_user_data("concurrent-records");
+        let token = new_token();
+        let run_log = RunLog::create(&user_data, &token).unwrap();
+
+        const THREADS: usize = 8;
+        const RECORDS: usize = 50;
+        let run_log = std::sync::Arc::new(run_log);
+        let mut handles = Vec::new();
+        for t in 0..THREADS {
+            let run_log = std::sync::Arc::clone(&run_log);
+            handles.push(std::thread::spawn(move || {
+                for i in 0..RECORDS {
+                    run_log
+                        .record(
+                            "spawn",
+                            &serde_json::json!({ "thread": t, "i": i,
+                                "pad": "x".repeat(64) }),
+                        )
+                        .unwrap();
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().expect("record thread must not panic");
+        }
+        drop(run_log); // close the active file before reading it back
+
+        let content =
+            std::fs::read_to_string(shell_log_path(&user_data, &token)).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(
+            lines.len(),
+            THREADS * RECORDS,
+            "a line was lost or torn: {}",
+            content.len()
+        );
+        for line in &lines {
+            let value: serde_json::Value = serde_json::from_str(line)
+                .unwrap_or_else(|error| panic!("torn line {line:?}: {error}"));
+            assert!(value.is_object());
+        }
+
+        let _ = std::fs::remove_dir_all(&user_data);
     }
 
     #[test]

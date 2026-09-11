@@ -474,8 +474,15 @@ def _validate_api_root(api_root: Path) -> str | None:
     try:
         names = {entry.name.lower() for entry in api_root.iterdir()}
     except OSError:
-        names = {"fake_channel.py"} if (api_root / "fake_channel.py").is_file() else set()
-    if "fake_channel.py" in names:
+        names = set()
+        for probe in ("fake_channel.py", "fake_channel"):
+            if (api_root / probe).exists():
+                names.add(probe)
+    # A directory named `fake_channel` shadows the helper's module too:
+    # Python 3 imports namespace packages without __init__.py, so the bare
+    # directory form hijacks `from fake_channel import install` exactly like
+    # the file form.
+    if "fake_channel.py" in names or "fake_channel" in names:
         return "api-root/shadowing-fake-channel"
     return None
 

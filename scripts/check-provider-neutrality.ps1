@@ -21,7 +21,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $repoRoot '.git'))) {
 if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) {
   Exit-EnvironmentError 'git command missing'
 }
-$patterns = 'VERTEX_NATIVE', 'vertex-ai', 'vertex_configured'
+$patterns = 'VERTEX_NATIVE', 'vertex-ai', 'vertex_configured', 'vertexai'
 $allowlistPath = Join-Path $PSScriptRoot 'provider-neutrality-allowlist.txt'
 if (-not (Test-Path -LiteralPath $allowlistPath)) {
   Exit-EnvironmentError 'allowlist missing'

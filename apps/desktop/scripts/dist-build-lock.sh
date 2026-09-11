@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Portable exclusive lock for the writers of apps/desktop/dist/ (#350).
 #
-# Three destructive writers share the dist/ tree (build-frontend-static.sh's
+# Three destructive WRITERS share the dist/ tree (build-frontend-static.sh's
 # rm -rf + repopulate of dist/frontend, build-web-standalone.py's rmtree +
 # move of dist/web-standalone, and the e2e runner's rebuild of the same
-# bundle), so each destructive section must hold this lock; a concurrent
-# build or serving run must never observe a half-deleted tree.
+# bundle), so each destructive section must hold this lock and two writers
+# can never interleave their deletions. READERS take nothing: a serving run
+# (verify-static-origin.mjs) or a browser pointed at dist/frontend during a
+# rebuild can observe the half-deleted window - that residual is documented,
+# not covered here (round-5 review F-Doc).
 #
 # Mechanism, by platform capability:
 #   1. POSIX flock(1) on the stable lock file. The mutex is the open file
@@ -34,12 +37,18 @@
 # acquire_dist_build_lock <lock_path> <timeout_seconds>
 # Uses file descriptor 9 for the flock form; callers must not close it
 # while the critical section runs. Returns non-zero on timeout.
+# MANGAFLOW_DIST_LOCK_FORCE=noclobber pins the lock-file branch even on
+# hosts that have flock(1) — a test seam, unset in production.
 acquire_dist_build_lock() {
   local lock_path="$1" timeout_seconds="$2"
   mkdir -p "$(dirname "$lock_path")"
-  if command -v flock >/dev/null 2>&1; then
+  if [ "${MANGAFLOW_DIST_LOCK_FORCE:-}" != "noclobber" ] && command -v flock >/dev/null 2>&1; then
     exec 9>"$lock_path"
     if ! flock -w "$timeout_seconds" 9; then
+      # Nothing was acquired, so nothing must stay held: close the
+      # descriptor a later release's `flock -u 9` would otherwise aim at
+      # whatever descriptor 9 has become by then.
+      exec 9>&-
       echo "dist build lock: timed out after ${timeout_seconds}s waiting for $lock_path" >&2
       return 1
     fi
@@ -59,15 +68,22 @@ acquire_dist_build_lock() {
 
 # release_dist_build_lock <lock_path>
 # Must be called with the SAME lock path the section acquired. Safe to
-# call from an EXIT trap after a release that already happened (the flock
-# form tolerates a closed descriptor only via the caller's own held-flag
-# discipline; keep acquire/release paired or guard the trap).
+# call from an EXIT trap after a release that already happened — and,
+# on the lock-file branch, after an acquire that TIMED OUT: release only
+# deletes the file when it still names this shell's pid, so a timed-out
+# waiter's trap can no longer cut the winner's lock short (pid reuse by
+# an unrelated process remains the same theoretical caveat the lock-file
+# mechanism already carries). The flock form holds the mutex on the open
+# file description, not the file, so its release is unconditional.
 release_dist_build_lock() {
   local lock_path="$1"
-  if command -v flock >/dev/null 2>&1; then
+  if [ "${MANGAFLOW_DIST_LOCK_FORCE:-}" != "noclobber" ] && command -v flock >/dev/null 2>&1; then
     flock -u 9 2>/dev/null || true
     exec 9>&-
     return 0
   fi
-  rm -f "$lock_path"
+  if grep -qx "$$" "$lock_path" 2>/dev/null; then
+    rm -f "$lock_path"
+  fi
+  return 0
 }

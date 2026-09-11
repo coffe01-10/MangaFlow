@@ -373,3 +373,39 @@ pub fn read_registered_file_with(
     }
     Ok((picked, buffer))
 }
+
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+
+    /// Re-picking the same canonical path with a different kind must
+    /// REPLACE the registration — the map is keyed by canonical path, so
+    /// the readback's validation policy follows the LATEST pick. A
+    /// regression to "first wins" (or an entry-per-pick multimap) would
+    /// serve stale-kind validation for a file the user re-picked as
+    /// something else. The registry is memory-only: no fs touch here.
+    #[test]
+    fn re_registering_a_path_replaces_the_kind() {
+        let registry = PickedRegistry::new();
+        let picked = |kind| PickedFile {
+            path: PathBuf::from("/tmp/picked.dat"),
+            name: "picked.dat".into(),
+            size_bytes: 8,
+            kind,
+        };
+        registry.register(&picked(PickKind::SourceText));
+        assert_eq!(
+            registry.kind_of(Path::new("/tmp/picked.dat")),
+            Some(PickKind::SourceText)
+        );
+        registry.register(&picked(PickKind::ReferenceImage));
+        assert_eq!(
+            registry.kind_of(Path::new("/tmp/picked.dat")),
+            Some(PickKind::ReferenceImage),
+            "the latest pick must win"
+        );
+        // And an unknown path stays unknown.
+        assert_eq!(registry.kind_of(Path::new("/tmp/never-picked.dat")), None);
+    }
+}
