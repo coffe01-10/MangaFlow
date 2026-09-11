@@ -974,6 +974,15 @@ def test_node_child_env_strips_ownership_secrets_and_hooks(monkeypatch):
     monkeypatch.setenv("NODE_OPTIONS", "--require /evil")
     monkeypatch.setenv("NODE_PATH", "/evil")
     monkeypatch.setenv("PATH", "/usr/bin")
+    for name in (
+        "MANGAFLOW_DESKTOP_HELPER",
+        "MANGAFLOW_DESKTOP_API_ROOT",
+        "MANGAFLOW_DESKTOP_USER_DATA",
+        "MANGAFLOW_DESKTOP_FAKE_CHANNEL",
+        "MANGAFLOW_DESKTOP_WEB_DIST",
+        "MANGAFLOW_DESKTOP_PYTHON",
+    ):
+        monkeypatch.setenv(name, f"/leaky/{name}")
 
     env = helper._node_child_env()
 
@@ -981,4 +990,13 @@ def test_node_child_env_strips_ownership_secrets_and_hooks(monkeypatch):
     assert "MANGAFLOW_DESKTOP_JOURNAL" not in env
     assert "NODE_OPTIONS" not in env
     assert "NODE_PATH" not in env
+    for name in (
+        "MANGAFLOW_DESKTOP_HELPER",
+        "MANGAFLOW_DESKTOP_API_ROOT",
+        "MANGAFLOW_DESKTOP_USER_DATA",
+        "MANGAFLOW_DESKTOP_FAKE_CHANNEL",
+        "MANGAFLOW_DESKTOP_WEB_DIST",
+        "MANGAFLOW_DESKTOP_PYTHON",
+    ):
+        assert name not in env, f"{name} must not ride into the web-facing child"
     assert env["PATH"] == "/usr/bin", "unrelated parent env must ride along"

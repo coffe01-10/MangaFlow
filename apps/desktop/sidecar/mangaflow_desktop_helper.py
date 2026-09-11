@@ -692,16 +692,26 @@ def _node_child_env() -> dict[str, str]:
 
     The full parent env used to ride along, including
     ``MANGAFLOW_DESKTOP_TOKEN``/``_JOURNAL`` (the handshake secret and
-    journal path) and any ``NODE_OPTIONS``/``NODE_PATH`` (which node
-    auto-applies). The child needs the parent env for PATH and friends, but
-    not the handshake identity nor injectable hooks (red team 2026-09-09,
-    #312). Callers add PORT/HOSTNAME/MANGAFLOW_API_ORIGIN/NODE_ENV on top.
+    journal path), the desktop orchestration names
+    (``MANGAFLOW_DESKTOP_HELPER``/``_API_ROOT``/``_USER_DATA``/
+    ``_FAKE_CHANNEL``/``_WEB_DIST``/``_PYTHON`` — the web-facing child has
+    no use for any of them), and any ``NODE_OPTIONS``/``NODE_PATH`` (which
+    node auto-applies). The child needs the parent env for PATH and
+    friends, but not the handshake identity, the launcher's wiring, nor
+    injectable hooks (red team 2026-09-09, #312). Callers add
+    PORT/HOSTNAME/MANGAFLOW_API_ORIGIN/NODE_ENV on top.
     """
 
     env = dict(os.environ)
     for name in (
         "MANGAFLOW_DESKTOP_TOKEN",
         "MANGAFLOW_DESKTOP_JOURNAL",
+        "MANGAFLOW_DESKTOP_HELPER",
+        "MANGAFLOW_DESKTOP_API_ROOT",
+        "MANGAFLOW_DESKTOP_USER_DATA",
+        "MANGAFLOW_DESKTOP_FAKE_CHANNEL",
+        "MANGAFLOW_DESKTOP_WEB_DIST",
+        "MANGAFLOW_DESKTOP_PYTHON",
         "NODE_OPTIONS",
         "NODE_PATH",
     ):
