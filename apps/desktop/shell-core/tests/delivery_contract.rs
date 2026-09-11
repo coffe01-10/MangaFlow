@@ -107,6 +107,63 @@ fn bundle_identity_and_targets_stay_pinned() {
     assert!(names.contains(&"msi") && names.contains(&"nsis"), "{names:?}");
 }
 
+/// Issue #300 (plan-B web form): the CSP for the plan-B desktop web form —
+/// and the normal web deployment, which shares the app — ships from apps/web,
+/// built per request by proxy.ts: Next extracts the nonce from the proxy-set
+/// Content-Security-Policy request header and applies it to its own bootstrap
+/// scripts during dynamic rendering, so script-src no longer needs
+/// 'unsafe-inline'. This pins the source contract:
+/// - next.config.ts headers() must not carry a Content-Security-Policy: two
+///   response headers are both enforced by browsers, so a stale build-time
+///   policy here would silently act as a nonce-less second policy.
+/// - lib/csp.ts's script-src directive must be nonce-based and free of
+///   'unsafe-inline' (re-adding it is a deliberate contract change).
+/// The static-export form's tauri.conf debt is pinned separately above
+/// (`script_src_unsafe_inline_is_pinned_debt_not_drift`).
+#[test]
+fn plan_b_web_csp_script_src_is_nonce_based() {
+    let web = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../web");
+    let read = |name: &str| {
+        let path = web.join(name);
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("apps/web/{name} readable ({path:?}): {error}"))
+    };
+
+    let next_config = read("next.config.ts");
+    assert!(
+        !next_config.contains("Content-Security-Policy"),
+        "next.config headers() must not set a CSP; the nonce policy ships from proxy.ts (#300)"
+    );
+
+    let csp_module = read("lib/csp.ts");
+    let script_src_lines: Vec<&str> = csp_module
+        .lines()
+        .filter(|line| line.contains("script-src"))
+        .collect();
+    assert!(
+        !script_src_lines.is_empty(),
+        "lib/csp.ts must define the script-src directive"
+    );
+    for line in &script_src_lines {
+        assert!(
+            !line.contains("'unsafe-inline'"),
+            "plan-B script-src regained 'unsafe-inline': {line}"
+        );
+    }
+    assert!(
+        script_src_lines
+            .iter()
+            .any(|line| line.contains("'nonce-")),
+        "plan-B script-src must be nonce-based: {script_src_lines:?}"
+    );
+
+    let proxy = read("proxy.ts");
+    assert!(
+        proxy.contains("Content-Security-Policy"),
+        "proxy.ts must set the CSP request header (Next's nonce propagation) and the response header"
+    );
+}
+
 /// Enumerate every capability file the build actually loads. tauri-build's
 /// default glob is `capabilities/**/*` and tauri-utils parses `.json`/`.toml`
 /// at ANY depth - a top-level `read_dir` would let a nested file
