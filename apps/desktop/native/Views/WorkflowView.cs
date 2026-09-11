@@ -1424,8 +1424,12 @@ public sealed class WorkflowView : WorkspaceView
                     if (modelBox.SelectedItem is ComboBoxItem { Tag: string value })
                     {
                         drawModel = value;
-                        // 网页：generator.page 未选模型前「确认继续」禁用
-                        approve.IsEnabled = !approving && drawModel.Length > 0;
+                        // 网页：generator.page 未选模型前「确认继续」禁用；#391 起与 web
+                        // 谓词同构——选中别名还必须仍是 imageModels 目录成员（web 的
+                        // imageModels.some 口径；桌面按全目录 Any 判定：豁免行
+                        // alias==drawModel 时 Any 必真，与含豁免行的可见集等价）。
+                        approve.IsEnabled = !approving && drawModel.Length > 0
+                            && imageModels.Any(m => m.Text("logical_alias") == drawModel);
                     }
                 };
                 var resolutionBox = new ComboBox { Width = 76, Margin = new Thickness(8, 0, 0, 0) };
@@ -1448,7 +1452,11 @@ public sealed class WorkflowView : WorkspaceView
             }
             approve = Kit.Act("确认继续", async (_, _) => await ApproveNodeAsync(nodeRun), "CompactInk");
             approve.Margin = new Thickness(8, 0, 0, 0);
-            approve.IsEnabled = !approving && (!isGenerator || drawModel.Length > 0);
+            // #391：别名失效后重渲染，下拉回退占位项的赋值发生在 SelectionChanged
+            // 挂接之前，事件不触发、drawModel 保留失效别名——初始使能必须用与上面
+            // 及 web 相同的目录成员资格谓词，拦下 image_model_alias 已不在目录的提交。
+            approve.IsEnabled = !approving
+                && (!isGenerator || (drawModel.Length > 0 && imageModels.Any(m => m.Text("logical_alias") == drawModel)));
             row.Children.Add(approve);
             approvalQueue.Children.Add(row);
         }

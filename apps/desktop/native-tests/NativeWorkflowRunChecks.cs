@@ -21,7 +21,9 @@ using MangaFlow.Native.Views;
 //  ② 配置编辑写回 config 的键名与值域钳制（temperature 越界钳制 0-2、半输入不
 //     写回；timeout 30-3600 / attempts 1-10 / concurrency 1-8；condition 合并写回）；
 //  ③ 运行历史与审批队列的端点+载荷+动作后刷新（假 Handler 断言 GET runs、
-//     POST approve 的请求路径与 JSON 载荷、审批后列表重取）。
+//     POST approve 的请求路径与 JSON 载荷、审批后列表重取）；
+//  ③补 #391：审批选中的模型别名失效（目录剔除/清空）后，「确认继续」按
+//     imageModels 全目录成员资格禁用（与 web #387-round-4 谓词同构）。
 //
 // 注册说明（需 lead 注册）：本仓库的发现机制是 NativeInteractionChecks.RunIsolated
 // 里的手动调用列表（--render STA 链，Application 已带 Theme 资源）。因文件级互斥
@@ -44,6 +46,7 @@ internal static class NativeWorkflowRunChecks
             InspectorShapeChecks();
             ConfigWriteBackChecks();
             await RunsAndApprovalChecks();
+            await StaleApprovalModelChecks();
             await DuplicateAutosaveChecks();
             await DebounceSwitchChecks();
         }
@@ -52,7 +55,7 @@ internal static class NativeWorkflowRunChecks
             Console.WriteLine("FAIL: workflow inspector/run checks: " + error.Message);
             throw;
         }
-        Console.WriteLine("PASS: workflow inspector full config surface, clamped write-back, run history and approval queue wire contract");
+        Console.WriteLine("PASS: workflow inspector full config surface, clamped write-back, run history and approval queue wire contract, stale approval model alias gating");
     }
 
     // ── ① 检查器按节点类型渲染的配置项集合（对齐网页 workflow-studio 出现条件） ──
@@ -363,6 +366,102 @@ internal static class NativeWorkflowRunChecks
         }
     }
 
+    // ── ③补 #391: 审批选中的模型别名失效（目录剔除/清空）后，「确认继续」必须按
+    // 目录成员资格禁用（与 web #387-round-4 修复同构：选中别名仍需存在于 imageModels）。
+    // 失败构造：别名失效后重渲染，下拉回退占位项的赋值发生在 SelectionChanged 挂接
+    // 之前，事件不触发、drawModel 保留失效别名；初始使能若只查长度，按钮可点，POST
+    // 出的 image_model_alias 会被后端 resolve_model 拒绝。目录变化经假 Handler 的
+    // 可变 /models 返回 + 反射调用 LoadModelsAsync 驱动（生产的目录加载路径），
+    // 重渲染经 RefreshAsync → LoadRunsAsync → RenderApprovals（生产的审批行渲染路径）。
+    private static async Task StaleApprovalModelChecks()
+    {
+        var runsGets = 0;
+        var runsJson = """
+            [{"id":"run-st","workflow_id":"wf-st","scope_type":"CHAPTER","scope_id":"ch-1","status":"RUNNING","created_at":"2026-09-08T01:02:03Z",
+              "node_runs":[
+                {"id":"nr-st","workflow_run_id":"run-st","node_id":"gen-page-st","node_type":"generator.page","status":"WAITING_APPROVAL"}]}]
+            """;
+        var withSelected =
+            """[{"catalog_id":"mi","logical_alias":"image.b","provider":"乙","display_name":"图片模型B","model_type":"IMAGE","operations":["image_edit"],"enabled":true,"display_enabled":true}]""";
+        var withOther =
+            """[{"catalog_id":"mc","logical_alias":"image.c","provider":"丙","display_name":"图片模型C","model_type":"IMAGE","operations":["image_edit"],"enabled":true,"display_enabled":true}]""";
+        var modelsJson = withSelected;
+        using var api = new ApiClient("http://127.0.0.1:12345", new Handler(request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/models")) return Task.FromResult(Response(modelsJson));
+            if (request.Method == HttpMethod.Get && path.EndsWith("/workflows/wf-st/runs"))
+            {
+                runsGets++;
+                return Task.FromResult(Response(runsJson));
+            }
+            if (path.EndsWith("/workflow-node-types")) return Task.FromResult(Response(
+                """[{"type":"agent.parse","label":"解析","display_name":"解析","category":"AGENT","description":"","inputs":[],"outputs":[]}]"""));
+            if (path.EndsWith("/projects/p1/workflows"))
+                return Task.FromResult(Response("""[{"id":"wf-st","name":"流程","version":3,"draft_version":1,"draft_graph":{"nodes":[],"edges":[]}}]"""));
+            if (path.EndsWith("/projects/p1/chapters"))
+                return Task.FromResult(Response("""[{"id":"ch-1","title":"第一章","ordinal":1,"status":"READY"}]"""));
+            if (path.EndsWith("/workflows/wf-st"))
+                return Task.FromResult(Response("""{"id":"wf-st","name":"流程","version":3,"draft_version":1,"draft_graph":{"nodes":[],"edges":[]}}"""));
+            throw new Exception("Unexpected stale-alias check request: " + request.RequestUri);
+        }));
+        var view = new WorkflowView();
+        var viewType = typeof(WorkflowView);
+        try
+        {
+            view.Activate(new WorkspaceContext
+            {
+                Api = api, Cache = new ApiCache(), State = new WorkspaceState(), Window = null!,
+                Project = new ProjectItem("p1", "别名失效检查", "", 0, 0),
+                NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
+            });
+            var workflowId = viewType.GetField("workflowId", All)!;
+            await Until(() => (string?)workflowId.GetValue(view) == "wf-st" && runsGets >= 1);
+            await Until(() => GeneratorApprove(view) != null);
+
+            // 前置对照：未选模型禁用；选择目录内的 image.b 后解禁（既有行为）。
+            var modelBox = GeneratorModelBox(view) ?? throw new Exception("generator 审批行缺少图片模型下拉");
+            Require(!GeneratorApprove(view)!.IsEnabled, "未选图片模型前确认继续应禁用（前置对照）");
+            modelBox.SelectedItem = modelBox.Items.Cast<ComboBoxItem>().Single(item => (string?)item.Tag == "image.b");
+            Require(GeneratorApprove(view)!.IsEnabled, "选中目录内模型后确认继续应解禁（前置对照）");
+
+            // 目录剔除已选别名（只剩 image.c）→ 重渲染后禁用；新下拉回退到占位项。
+            var removed = await RebuiltApproveAsync(withOther);
+            Require(!removed.IsEnabled, "#391：选中别名被目录剔除后重渲染，确认继续必须禁用");
+            Require((string?)((ComboBoxItem?)GeneratorModelBox(view)!.SelectedItem)?.Tag == "",
+                "别名失效后下拉应回退到占位项（SelectionChanged 尚未挂接，事件不触发）");
+
+            // 回归：目录恢复含 image.b → 重渲染后解禁（防止谓词写反）。
+            Require((await RebuiltApproveAsync(withSelected)).IsEnabled,
+                "目录仍含选中别名时重渲染，确认继续应解禁（回归）");
+
+            // 目录清空 → 重渲染后禁用。
+            Require(!(await RebuiltApproveAsync("[]")).IsEnabled,
+                "目录为空时确认继续必须禁用");
+
+            view.Deactivate();
+        }
+        finally
+        {
+            StopAutosave(view);
+        }
+
+        // 换目录并重渲染：LoadModelsAsync 重取可变 /models，RefreshAsync 触发
+        // LoadRunsAsync 重建审批行；等待新按钮实例出现（行清空到重加之间有间隙）。
+        async Task<Button> RebuiltApproveAsync(string catalog)
+        {
+            modelsJson = catalog;
+            var before = runsGets;
+            var previous = GeneratorApprove(view);
+            await (Task)viewType.GetMethod("LoadModelsAsync", All)!.Invoke(view, null)!;
+            await view.RefreshAsync();
+            await Until(() => runsGets >= before + 1
+                && GeneratorApprove(view) is not null
+                && !ReferenceEquals(previous, GeneratorApprove(view)));
+            return GeneratorApprove(view)!;
+        }
+    }
+
     // ── ④ #340: 复制→编辑克隆→防抖 PATCH 载荷里原节点 config 不变（假 Handler） ──
     // 失败构造：DuplicateSelected 若共享 config 引用，克隆上的检查器编辑会写进
     // 原节点的字典，800ms 防抖后 PATCH 的 draft_graph 里两个节点携带同一份被改的
@@ -639,6 +738,17 @@ internal static class NativeWorkflowRunChecks
 
     private static System.Windows.Controls.CheckBox? Check(WorkflowView view, string name) =>
         Descendants(Field<StackPanel>(view, "inspector")).OfType<System.Windows.Controls.CheckBox>().FirstOrDefault(check => Name(check) == name);
+
+    // 审批队列里 generator.page 行的两个控件（LoadRunsAsync 清空/重加之间会短暂取不到）。
+    private static ComboBox? GeneratorModelBox(WorkflowView view) =>
+        Field<StackPanel>(view, "approvalQueue").Children.OfType<StackPanel>()
+            .FirstOrDefault(row => row.Children.OfType<ComboBox>().Any(combo => Name(combo) == "选择图片模型"))
+            ?.Children.OfType<ComboBox>().FirstOrDefault(combo => Name(combo) == "选择图片模型");
+
+    private static Button? GeneratorApprove(WorkflowView view) =>
+        Field<StackPanel>(view, "approvalQueue").Children.OfType<StackPanel>()
+            .FirstOrDefault(row => row.Children.OfType<ComboBox>().Any(combo => Name(combo) == "选择图片模型"))
+            ?.Children.OfType<Button>().SingleOrDefault(button => (string?)button.Content == "确认继续");
 
     private static string HistoryText(WorkflowView view) =>
         string.Join("\n", Descendants(Field<StackPanel>(view, "runHistory")).OfType<TextBlock>().Select(block => block.Text));
