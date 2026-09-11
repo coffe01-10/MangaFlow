@@ -33,6 +33,10 @@ public sealed class ScriptView : WorkspaceView
     // quiet 加载结果与之相同则跳过 Render，避免打爆正在阅读或编辑中的界面。
     private string renderedScriptSignature = "";
 
+    // 测试缝：headless 回归检查用无模态实现替换离开确认（StoryboardView 的
+    // LeaveConfirmOverride 同一模式）；生产路径为 null。
+    internal Func<Task<bool>>? LeaveConfirmOverride;
+
     public ScriptView()
     {
         var panel = new StackPanel { Margin = new Thickness(4, 0, 24, 28) };
@@ -94,8 +98,14 @@ public sealed class ScriptView : WorkspaceView
             if (chapters.Count > 0)
             {
                 var selected = chapters.FirstOrDefault(c => c.Id == KeyValueStore.Get("workspace:chapter:" + ProjectId)) ?? chapters.FirstOrDefault(c => c.Id == chapterId) ?? chapters[0];
-                SelectChapter(selected.Id);
+                // 激活不是章节切换：离开剧本区时 MainWindow 已运行过离开确认，这里
+                // 必须先赋 chapterId 再拨选择器，让 SelectionChanged 的确认/加载
+                // 旁路保持静默，由 Activate 自己恰好加载一次（StoryboardView.Activate
+                // 同款修复）。旧顺序在处理器里先行 chapterId=id + LoadScriptAsync()，
+                // Activate 随后再 LoadScriptAsync()——每次激活双倍发起一组 4 并发
+                // 请求，迟到的第一轮结果被 scriptLoadVersion 守卫丢弃成纯浪费。
                 chapterId = selected.Id;
+                SelectChapter(selected.Id);
                 await LoadScriptAsync();
             }
             else
@@ -424,6 +434,8 @@ public sealed class ScriptView : WorkspaceView
 
     public override async Task<bool> ConfirmLeaveAsync()
     {
+        // 测试缝优先：headless 检查无模态驱动拒绝/同意分支，否则卡死在 MessageBox。
+        if (LeaveConfirmOverride is { } prompt) return await prompt();
         var sceneEditing = body.Children.OfType<SceneSection>().Any(s => s.IsEditing);
         var beatEditing = body.Children.OfType<SceneSection>().SelectMany(s => s.BeatRows).Any(b => b.IsEditing);
         if (sceneEditing || beatEditing)

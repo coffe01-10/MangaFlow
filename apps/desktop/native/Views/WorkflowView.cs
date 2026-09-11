@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Net.Http;
 using System.IO;
 using System.Text.Json;
@@ -1334,7 +1334,12 @@ public sealed class WorkflowView : WorkspaceView
                 node.SetRunStatus(run.ValueKind == JsonValueKind.Object
                     ? Labels.Map(Labels.WorkflowRunStatus, run.Text("status")) : null);
             }
-            if (latestRun.Text("status") == "RUNNING")
+            // #365：审批栅栏会把 run 置为 PAUSED（workflow_engine/reconciliation 的
+            // 栅栏语义），而 cancel_run 只拒绝终态（lifecycle 排除 COMPLETED/
+            // CANCELLED/FAILED）——取消入口必须在 PAUSED 也可用；否则同 scope 的
+            // 重复运行守卫 409（planning 把 PAUSED 算活跃）会指示一个 UI 上做不到
+            // 的动作。取消仍是唯一的停止途径，不发明别的端点。
+            if (latestRun.Text("status") is "RUNNING" or "PAUSED")
             {
                 var cancel = Kit.Act("取消", async (_, _) =>
                 {
