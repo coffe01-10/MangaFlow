@@ -1,4 +1,4 @@
-namespace MangaFlow.Native;
+﻿namespace MangaFlow.Native;
 
 // Enum → Chinese mappings ported from apps/web/components/project-workspace/labels.ts.
 // Unknown values fall back to the raw enum, exactly like the web labels helper.
@@ -125,6 +125,7 @@ public static class Labels
     {
         ["WAITING"] = "等待中",
         ["RUNNING"] = "运行中",
+        ["PAUSED"] = "暂停中",
         ["COMPLETED"] = "已完成",
         ["WAITING_APPROVAL"] = "等待确认",
         ["FAILED"] = "已失败",
