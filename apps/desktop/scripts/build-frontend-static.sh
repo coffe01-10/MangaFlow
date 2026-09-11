@@ -106,14 +106,18 @@ recreate_junction() {
   # Directory targets resolve by cd-ing into them; file targets resolve
   # through their parent directory with the base name joined back (cd
   # cannot enter a file). A missing target resolves to nothing and is
-  # reported separately from an outside-the-repo target below.
+  # reported separately from an outside-the-repo target below — including
+  # absolute targets: a dangling one must not escape with an empty
+  # target_kind into the junction branch, where cmd would fail with its
+  # raw message instead of this script's diagnosis (#396).
   target_abs=""
   target_kind=""
   if [ "${target:0:1}" = "/" ]; then
-    target_abs="$target"
-    if [ -d "$target_abs" ]; then
+    if [ -d "$target" ]; then
+      target_abs="$target"
       target_kind=dir
-    elif [ -e "$target_abs" ]; then
+    elif [ -e "$target" ]; then
+      target_abs="$target"
       target_kind=file
     fi
   elif [ -d "$link_dir/$target" ]; then
