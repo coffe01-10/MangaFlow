@@ -83,6 +83,15 @@ describe("SystemSettingsPage 任务租约设置", () => {
     expect(screen.getByText(/需不超过任务超时/)).toBeInTheDocument();
   });
 
+  it("界面轮询周期帮助文本注明仅桌面客户端生效（#367 死配置披露）", async () => {
+    renderPage();
+
+    // ui_poll_interval_seconds 在 web 端零消费：字段仍可保存（桌面读取），
+    // 但帮助文本必须如实标注生效范围，不再暗示驱动本 UI。
+    await screen.findByLabelText(/界面轮询周期/);
+    expect(screen.getByText(/仅桌面客户端生效/)).toBeInTheDocument();
+  });
+
   it("保存时把 job_lease_seconds 随载荷提交回后端", async () => {
     updateRuntimeSettingsSpy.mockResolvedValue(runtimeSettings({ job_lease_seconds: 90, version: 8 }));
 

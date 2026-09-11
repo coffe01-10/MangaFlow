@@ -44,6 +44,13 @@ export function hasActiveItem(items: ReadonlyArray<StatusedItem> | undefined | n
 /**
  * useQuery 的 refetchInterval 回调：列表中仍有活动条目时按指定间隔轮询，
  * 全部进入终态后返回 false 停止轮询。
+ *
+ * #367 分歧注记：web 端的轮询间隔由各消费点按视图硬编码传入本助手
+ * （asset-production-panel 2000/3000、use-jobs-workspace 3000、
+ * use-generation-workspace 2500/3000 等），运行设置 ui_poll_interval_seconds
+ * 只由桌面客户端消费（apps/desktop/native/Services/PollInterval.cs）。
+ * 若未来要把 web 接入该设置，这里就是唯一需要换算默认间隔的共享层，
+ * 但需要同时处理各视图刻意调出的差异化间隔，不是单点替换。
  */
 export function activePollInterval(
   items: ReadonlyArray<StatusedItem> | undefined,
