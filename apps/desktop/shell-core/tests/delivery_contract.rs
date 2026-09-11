@@ -1,11 +1,13 @@
 //! Delivery contract tests (OS-independent, run in the Linux sandbox).
 //!
-//! The V02-54 acceptance matrix leaves real MSI/NSIS install, upgrade and
-//! uninstall behavior NOT RUN (no Windows here). These tests freeze the
-//! config-level rules the future installer must keep: the uninstaller must
-//! never carry user-data deletion hooks, the WebView surface stays loopback
-//! only, and the bundle targets stay the pinned MSI + NSIS pair.
-//! D1 re-verification on Windows remains required before shipping.
+//! The V02-54 acceptance matrix left real installer behavior NOT RUN; the
+//! README's D1 row now records the 2026-09-06 Windows round — both bundles
+//! BUILT, NSIS silently installed and uninstalled on the machine with
+//! byte-stable user data — while the MSI install step and schema-bearing
+//! cross-version upgrades remain NOT RUN. These tests freeze the config-
+//! level rules the installer must keep: the uninstaller must never carry
+//! user-data deletion hooks, the WebView surface stays loopback only, and
+//! the bundle targets stay the pinned MSI + NSIS pair.
 
 use serde_json::Value;
 use std::path::{Path, PathBuf};
