@@ -1,0 +1,12 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.10 [39m[90mD:/自媒体/漫画工作流/apps/web[39m
+
+ [32m✓[39m components/workflow-studio.test.tsx [2m([22m[2m13 tests[22m[2m)[22m[33m 1986[2mms[22m[39m
+     [33m[2m✓[22m[39m 保存中继续改图会补交最新草稿，已保存与持久化内容一致 [33m 448[2mms[22m[39m
+     [33m[2m✓[22m[39m 发布会等待最新草稿保存成功；保存失败则不发布 [33m 347[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[32m13 passed[39m[22m[90m (13)[39m
+[2m   Start at [22m 15:01:59
+[2m   Duration [22m 4.92s[2m (transform 249ms, setup 341ms, import 521ms, tests 1.99s, environment 1.85s)[22m
+

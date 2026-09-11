@@ -1,0 +1,67 @@
+warning: in the working copy of 'apps/desktop/native-tests/NativeConsistencyChecks.cs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/native-tests/Program.cs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/native/Views/OutfitWorkspace.cs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/desktop/native/Views/StyleWorkspace.cs', LF will be replaced by CRLF the next time Git touches it
+diff --git a/apps/desktop/native-tests/NativeConsistencyChecks.cs b/apps/desktop/native-tests/NativeConsistencyChecks.cs
+index ed8b368..8da4efd 100644
+--- a/apps/desktop/native-tests/NativeConsistencyChecks.cs
++++ b/apps/desktop/native-tests/NativeConsistencyChecks.cs
+@@ -519,7 +519,8 @@ internal static class NativeConsistencyChecks
+             if (request.Method == HttpMethod.Post && path.EndsWith("/assets/upload"))
+             {
+                 Uploads.Add(await request.Content!.ReadAsStringAsync(token));
+-                return Json("{\"id\":\"asset-9\",\"kind\":\"SCENE_REFERENCE\",\"status\":\"READY\",\"display_name\":\"ref.png\",\"original_name\":\"ref.png\"}");
++                var purpose = ((MultipartFormDataContent)request.Content).Single(p => p.Headers.ContentDisposition?.Name?.Trim('"') == "kind");
++                return Json(JsonSerializer.Serialize(new { id = "asset-9", kind = await purpose.ReadAsStringAsync(token), status = "READY", display_name = "ref.png", original_name = "ref.png" }));
+             }
+             if (request.Method == HttpMethod.Post && path.EndsWith("/characters/char-a/references"))
+             {
+diff --git a/apps/desktop/native-tests/Program.cs b/apps/desktop/native-tests/Program.cs
+index f742bce..4de886d 100644
+--- a/apps/desktop/native-tests/Program.cs
++++ b/apps/desktop/native-tests/Program.cs
+@@ -7,6 +7,11 @@ using MangaFlow.Native;
+ using MangaFlow.Native.Services;
+ 
+ // Client-side regression checks: API safety, models, preferences, navigation, director rules.
++if (args.Contains("--references"))
++{
++    NativeReferenceChecks.Run(args.FirstOrDefault(a => !a.StartsWith("--")) ?? Path.Combine(Path.GetTempPath(), "mangaflow-reference-checks"));
++    return 0;
++}
+ if (args.Contains("--style"))
+ {
+     NativeStyleChecks.Run(args.FirstOrDefault(a => !a.StartsWith("--")) ?? Path.Combine(Path.GetTempPath(), "mangaflow-style-checks"));
+diff --git a/apps/desktop/native/Views/OutfitWorkspace.cs b/apps/desktop/native/Views/OutfitWorkspace.cs
+index 5ef7320..d02d87d 100644
+--- a/apps/desktop/native/Views/OutfitWorkspace.cs
++++ b/apps/desktop/native/Views/OutfitWorkspace.cs
+@@ -95,8 +95,14 @@ internal sealed class OutfitWorkspace : StackPanel
+         outfitName.TextChanged += (_, _) => UpdateDraft();
+         models.AddHandler(ButtonBase.ClickEvent, new RoutedEventHandler((_, _) => RenderRecords()));
+         if (view.SelectedCharacter != null) SelectCharacter(view.SelectedCharacter.Id);
+-        if (view.outfits.FirstOrDefault(o => o.Id == view.SelectedOutfit?.Id) is { } initialOutfit) BeginEdit(initialOutfit);
++        if (view.PendingOutfitReferences.Count == 0 && view.outfits.FirstOrDefault(o => o.Id == view.SelectedOutfit?.Id) is { } initialOutfit) BeginEdit(initialOutfit);
+         lastCharacterId = CharacterId; CaptureDraftBaseline();
++        if (view.PendingOutfitReferences.Count > 0)
++        {
++            Reset();
++            selected.UnionWith(view.PendingOutfitReferences.Where(id => view.assets.Any(a => a.Id == id && a.Kind == "OUTFIT_REFERENCE")));
++            view.PendingOutfitReferences.Clear();
++        }
+         UpdateDraft(); RenderRecords(); RenderReferences();
+         if (view.OutfitPreviewId.Length > 0) Dispatcher.BeginInvoke(new Action(async () => await LoadLatestResultAsync()));
+     }
+diff --git a/apps/desktop/native/Views/StyleWorkspace.cs b/apps/desktop/native/Views/StyleWorkspace.cs
+index 6d781ab..c6e1ba3 100644
+--- a/apps/desktop/native/Views/StyleWorkspace.cs
++++ b/apps/desktop/native/Views/StyleWorkspace.cs
+@@ -73,6 +73,8 @@ internal sealed class StyleWorkspace : StackPanel
+         upload.DragOver += (_, e) => { e.Effects = !saving && e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None; e.Handled = true; };
+         upload.Drop += async (_, e) => { if (e.Data.GetData(DataFormats.FileDrop) is string[] paths) await UploadAsync(paths); e.Handled = true; };
+         Children.Add(upload); Children.Add(references);
++        selected.UnionWith(view.PendingStyleReferences.Where(id => view.assets.Any(a => a.Id == id && a.Kind == "STYLE_REFERENCE")));
++        view.PendingStyleReferences.Clear();
+         name.TextChanged += (_, _) => UpdateDraft(); UpdateDraft(); RenderReferences();
+         Dispatcher.BeginInvoke(new Action(() => { if (Active) InitialLoad = ReloadAsync(); }));
+     }

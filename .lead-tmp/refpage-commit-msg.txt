@@ -1,0 +1,22 @@
+Rebuild native reference intake page
+
+Replace the fixed 168px vertical cards in the assets reference pane with a
+double-column ReferenceWorkspace page rebuilt from assets-section.tsx and
+use-assets-workspace.ts: explicit purpose chips, large dashed upload stage,
+74px thumbnails with original preview, inline rename, reclassify/delete with
+confirmation, real character binding state, and pending outfit/style draft
+references that hand off to their editors on save or analysis.
+
+Upload purpose is fixed before the request; duplicate assets with a different
+kind are rejected client-side, and a failed character binding after a
+successful upload keeps the uploaded asset with a partial-success notice.
+Refresh keeps the current page instance, rename input and pending drafts;
+read failures keep content and offer a retry, and late upload follow-ups are
+ignored after leaving the page.
+
+Verification: dotnet build 0 errors; --references and --style native checks
+PASS (layout, rename retention, confirmations, bind/unbind, duplicate guard,
+refresh identity, draft handoff, classification, 204 delete, upload purpose,
+partial success, detached response); 18 real host+sidecar HTTP checks
+recorded in output/reference-page-review/README.md. Real-window mouse/DPI
+and provider generation NOT RUN. UTF-8 BOM added to all touched .cs files.

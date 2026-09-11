@@ -1,0 +1,38 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.10 [39m[90mD:/自媒体/漫画工作流/apps/web[39m
+
+ [31m❯[39m components/workflow-studio.test.tsx [2m([22m[2m13 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[33m 1983[2mms[22m[39m
+     [33m[2m✓[22m[39m 保存中继续改图会补交最新草稿，已保存与持久化内容一致 [33m 408[2mms[22m[39m
+     [33m[2m✓[22m[39m 发布会等待最新草稿保存成功；保存失败则不发布 [33m 357[2mms[22m[39m
+[31m     [31m×[31m SPA 卸载时会把防抖窗口内的未保存草稿提交到服务器[39m[32m 86[2mms[22m[39m
+     [32m✓[39m 切换工作流前会先保存当前草稿；保存失败则保持原工作流[32m 230[2mms[22m[39m
+     [32m✓[39m PAGE 运行范围可选择其他章节的页面（不再钉死第一章）[32m 112[2mms[22m[39m
+     [32m✓[39m 运行启动后，审批行与进度来自轮询列表而非启动快照[32m 102[2mms[22m[39m
+     [32m✓[39m PAUSED（审批栅栏）运行显示中文状态，且取消按钮存在并调用 cancel[32m 118[2mms[22m[39m
+     [32m✓[39m FAILED 运行在页脚提供重试入口，调用 retryWorkflowRun 复制同一范围[32m 106[2mms[22m[39m
+     [32m✓[39m 轮询间隔契约：RUNNING 3s、PAUSED 10s、混合时 RUNNING 优先、终态停止[32m 1[2mms[22m[39m
+     [32m✓[39m 无可用图像模型时审批条渲染设置指引（含取消出路），不再是无提示死按钮[32m 88[2mms[22m[39m
+     [32m✓[39m 有可用图像模型时审批条渲染模型选择器，不渲染空目录指引[32m 123[2mms[22m[39m
+     [32m✓[39m 曾选模型后目录清空：指引可见且确认继续禁用，不再提交失效别名[32m 119[2mms[22m[39m
+     [32m✓[39m 曾选模型被删但目录仍有其他模型：确认继续禁用直到重新选择[32m 131[2mms[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 1 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m components/workflow-studio.test.tsx[2m > [22mWorkflowStudio 草稿离开边界[2m > [22mSPA 卸载时会把防抖窗口内的未保存草稿提交到服务器
+[31m[1mTypeError[22m: view.unmount is not a function[39m
+[36m [2m❯[22m components/workflow-studio.test.tsx:[2m279:10[22m[39m
+    [90m277|[39m
+    [90m278|[39m     [90m// 卸载发生在 800ms 防抖到期之前：清理函数必须补交这次保存。[39m
+    [90m279|[39m     view[33m.[39m[34munmount[39m()[33m;[39m
+    [90m   |[39m          [31m^[39m
+    [90m280|[39m     [35mawait[39m [34mwaitFor[39m(() [33m=>[39m [34mexpect[39m(updateSpy)[33m.[39m[34mtoHaveBeenCalledTimes[39m([34m1[39m))[33m;[39m
+    [90m281|[39m     expect(updateSpy.mock.calls[0][2].draft_graph?.nodes).toHaveLength…
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m12 passed[39m[22m[90m (13)[39m
+[2m   Start at [22m 14:42:03
+[2m   Duration [22m 4.81s[2m (transform 254ms, setup 391ms, import 511ms, tests 1.98s, environment 1.70s)[22m
+

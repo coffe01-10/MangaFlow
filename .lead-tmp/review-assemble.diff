@@ -1,0 +1,108 @@
+diff --git a/apps/desktop/scripts/assemble-web-resources.py b/apps/desktop/scripts/assemble-web-resources.py
+index 9c83526..92d41e9 100644
+--- a/apps/desktop/scripts/assemble-web-resources.py
++++ b/apps/desktop/scripts/assemble-web-resources.py
+@@ -14,8 +14,14 @@ The tree is never rebuilt in place. Everything is assembled into a sibling
+ staging directory (`web.tmp-<pid>`, same volume) and swapped in with
+ renames, so a mid-copy failure (disk full, file locked by a running app,
+ Ctrl-C) leaves the previous tree byte-identical instead of a truncated
+-bundle that the next `tauri build` would ship silently. The old tree is
+-only deleted after the new one is complete and in place (#347).
++bundle that the next `tauri build` would ship silently. The same guarantee
++covers the swap itself: any failure after the old tree is moved aside (the
++final rename failing, or an async KeyboardInterrupt/SystemExit/MemoryError
++landing in the window between the two renames) rolls the old tree back
++before the error propagates; if even the rollback fails, the retired tree
++is kept on disk and a loud error explains how to restore it manually. The
++old tree is only deleted after the new one is complete and in place
++(#347, #382).
+ """
+ from __future__ import annotations
+ 
+@@ -47,15 +53,30 @@ def _clear(path: Path) -> None:
+         shutil.rmtree(path)
+ 
+ 
++def _recovery_error(res: Path, retired: Path) -> RuntimeError:
++    return RuntimeError(
++        f"web resource swap failed and the automatic rollback failed too: "
++        f"{res} is missing and the only copy of the previous tree is parked "
++        f"at {retired}. Do not delete it. Manually move {retired} back to "
++        f"{res} (for example Move-Item '{retired}' '{res}') before the "
++        f"next tauri build."
++    )
++
++
+ def assemble(src: Path = SRC, res: Path = RES, node: Path | None = None) -> Path:
+     """Assemble the resource tree beside ``res`` and swap it in atomically.
+ 
+     Build order: stage the complete new tree under ``<res>.tmp-<pid>``,
+     move the old tree aside to ``<res>.old-<pid>``, rename the staged tree
+     into place, and only then delete the retired tree. Any failure before
+-    the final rename leaves ``res`` untouched (and the staged half-tree is
+-    cleaned up); if the final rename itself fails, the old tree is rolled
+-    back into place before the error propagates.
++    the old tree is moved aside leaves ``res`` untouched (the staged
++    half-tree is cleaned up). Any failure after that moment, whether the
++    final rename failing on its own or an async exception
++    (KeyboardInterrupt/SystemExit/MemoryError) landing in the window
++    between the two renames, rolls the old tree back before the error
++    propagates. If even the rollback fails, the retired tree is kept on
++    disk (the cleanup never deletes it) and a RuntimeError with manual
++    recovery instructions is raised (#382).
+     """
+     if not (src / "server.js").is_file():
+         raise SystemExit("run build-web-standalone.py first")
+@@ -65,26 +86,43 @@ def assemble(src: Path = SRC, res: Path = RES, node: Path | None = None) -> Path
+     retired = res.parent / f"{res.name}.old-{os.getpid()}"
+     _clear(staging)
+     _clear(retired)
++    rollback_failed = False
+     try:
+         (staging / "node").mkdir(parents=True)
+         shutil.copy2(node, staging / "node" / "node.exe")
+         shutil.copytree(src, staging / "standalone")
+-        if res.exists():
+-            os.rename(res, retired)
+         try:
++            if res.exists():
++                os.rename(res, retired)
+             os.rename(staging, res)
+         except BaseException:
+-            # Same-volume renames practically do not fail — but if this one
+-            # does, put the old tree back instead of leaving the resource
+-            # root missing. Re-raise either way (KeyboardInterrupt included).
++            # Same-volume renames practically do not fail, but any failure
++            # from the moment the old tree is moved aside must restore it.
++            # The BaseException catch is load-bearing: an async Ctrl-C,
++            # SystemExit, or MemoryError landing between the two renames
++            # would otherwise skip a guard around the second rename alone
++            # and reach the cleanup with the resource root missing.
++            # Re-raise either way (KeyboardInterrupt included).
+             if retired.exists() and not res.exists():
+-                os.rename(retired, res)
++                try:
++                    os.rename(retired, res)
++                except OSError as rollback_exc:
++                    rollback_failed = True
++                    raise _recovery_error(res, retired) from rollback_exc
+             raise
+     finally:
+-        # After a successful swap `retired` holds the old tree (delete it
+-        # now); after any failure both are half-states to be removed.
+         shutil.rmtree(staging, ignore_errors=True)
+-        shutil.rmtree(retired, ignore_errors=True)
++        # Delete the retired tree only once `res` is in place again (the
++        # new tree swapped in, or the old tree rolled back). If `res` is
++        # missing while `retired` still holds the only copy of the old
++        # tree, keep it for manual recovery and fail loudly instead of
++        # silently deleting the last copy.
++        if res.exists():
++            shutil.rmtree(retired, ignore_errors=True)
++        elif retired.exists() and not rollback_failed:
++            # Covers rollback attempts that died with a non-OSError; the
++            # rollback-failed path above already raises its own error.
++            raise _recovery_error(res, retired)
+     mb = sum(f.stat().st_size for f in res.rglob("*") if f.is_file()) / 1048576
+     print(f"WEB_RESOURCES_READY {res} ({mb:.0f} MB)")
+     return res

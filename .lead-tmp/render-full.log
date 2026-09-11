@@ -1,0 +1,59 @@
+PASS: untrusted origins rejected
+PASS: server media paths have exactly one API prefix
+PASS: local and server media paths use identical thumbnails
+PASS: lightbox preserves original resolution
+PASS: exact versioned API path
+PASS: UTF-8 JSON survives response disposal
+PASS: 409 preserves actionable server detail
+PASS: interrupted mutation never automatically retries
+PASS: navigation cancellation reaches HTTP handler
+PASS: terminal actions disabled and progress clamped
+PASS: exhausted task cannot retry
+PASS: window preferences persist
+PASS: atomic save leaves no temporary files
+PASS: corrupt preferences fall back safely
+PASS: dashboard bounds visual count
+PASS: dashboard paging preserves remaining projects
+PASS: archive emptying last page returns to valid page
+PASS: cover lettering preserves Unicode graphemes
+PASS: project navigation covers Web routes in order
+PASS: reselecting a page does not rebuild it
+PASS: selecting a new page notifies once
+PASS: unknown page definition is rejected
+PASS: director rule stub compiles whitelisted commands, UUID envelopes and web priority parity
+PASS: local edit accepts explicitly mask-capable image models
+PASS: local edit never falls back to whole-image reference editing
+PASS: rectangle masks clamp to real image pixels
+PASS: brush masks retain area and obey backend point limit
+PASS: local edits preserve the versioned director command contract
+PASS: native mask envelope uses polygon points
+PASS: empty masks cannot be proposed
+PASS: fast eraser strokes remove crossed regions even when samples lie outside
+PASS: eraser strokes preserve neighboring regions
+PASS: eraser taps on polygon boundaries are recognized
+PASS: generation selects canonical references once per visible character
+PASS: published packages inherit server defaults while retaining storyboard outfits
+PASS: published packages cannot hide missing outfit references
+PASS: missing legacy references block generation
+PASS: per-run package and outfit overrides serialize with API field names
+PASS: archived packages do not override legacy defaults
+PASS: usage pagination retains every filter and exact time bounds
+PASS: usage timestamps and escaped filter values round trip
+PASS: invalid usage ranges fail before HTTP requests
+PASS: usage summary respects its separate API filter contract
+PASS: repeated load-more clicks dispatch only one request
+PASS: late pagination responses cannot contaminate a new usage filter
+PASS: late first pages cannot overwrite newer usage results
+PASS: view registry, offline navigation, cached instances, sidebar collapse, workspace layouts
+PASS: re-rendering panes does not re-parent shared controls (B-2..B-5)
+PASS: visual parity regressions — startup, grid bounds, project hits, settings breakpoints, nine pages, model picker, drawers and easing
+PASS: READY-line parse fails closed (prefix/payload/origin rule); disconnect banner follows backend liveness
+PASS: workflow navigation flushes an armed autosave debounce exactly once
+PASS: workflow connection rules (data_type match / no self-loop / duplicate port pair / deterministic edge id) enforced end to end
+PASS: workflow inspector full config surface, clamped write-back, run history and approval queue wire contract
+PASS: storyboard activation loads the remembered chapter exactly once (no side-channel double fetch)
+PASS: storyboard resize handles/bubble create/dialogue 409 recovery/bleed-safe overlay/focus mode/replan/inspector key isolation/refresh draft preservation all match the web contract
+PASS: rectangular toggles, web asset underlines/model cards, exclusive selection and project display names
+PASS: source layout, selected-chapter plan/parse, duplicate guard, multipart import, revision save and stale project isolation
+PASS: character page layout/text, explicit selection, real wire arrays, dedup creation, package cover/matrix/spec, reference unbind and project isolation
+PASS: wardrobe responsive layout, opaque text surfaces, reference draft, versioned editing/conflict, save dedup, library envelope/cursor/adoption, model generation/polling and detached-pane isolation

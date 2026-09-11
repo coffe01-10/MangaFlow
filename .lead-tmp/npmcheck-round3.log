@@ -1,0 +1,974 @@
+
+> mangaflow-ai@0.2.0 check
+> npm run check:neutrality && npm run lint && npm run test && npm run test:web && npm run build
+
+
+> mangaflow-ai@0.2.0 check:neutrality
+> powershell -NoProfile -ExecutionPolicy Bypass -File scripts\check-provider-neutrality.ps1
+
+
+> mangaflow-ai@0.2.0 lint
+> npm run lint --workspace @mangaflow/web && .venv\Scripts\python.exe -m ruff check apps/api tests
+
+
+> @mangaflow/web@0.2.0 lint
+> eslint .
+
+All checks passed!
+
+> mangaflow-ai@0.2.0 test
+> .venv\Scripts\python.exe -m pytest tests
+
+============================= test session starts =============================
+platform win32 -- Python 3.12.9, pytest-8.4.2, pluggy-1.6.0
+rootdir: D:\自媒体\漫画工作流
+configfile: pytest.ini
+plugins: anyio-4.14.2, cov-7.1.0
+collected 1556 items
+
+tests\integration\test_postgres_acceptance.py ssssssssssssssssss         [  1%]
+tests\integration\test_redis_rq_acceptance.py sssssssssssssss            [  2%]
+tests\test_adapter_error_classification.py ...........................   [  3%]
+tests\test_adapter_usage_sweep.py ...................................... [  6%]
+.......                                                                  [  6%]
+tests\test_antigravity_cli.py .................                          [  7%]
+tests\test_approval_pause_recovery.py .....                              [  8%]
+tests\test_archive_and_pricing_bounds.py ....                            [  8%]
+tests\test_archive_run_cancel.py ...                                     [  8%]
+tests\test_assemble_web_resources.py ....                                [  8%]
+tests\test_asset_candidate_favorite.py ..                                [  8%]
+tests\test_asset_dedupe_integrity.py ........                            [  9%]
+tests\test_asset_dedupe_soft_delete.py .....                             [  9%]
+tests\test_asset_generation_redteam_regressions.py ................      [ 10%]
+tests\test_attempt_finalization_upgrade.py .......                       [ 11%]
+tests\test_backup_restore_drill.py ..................................... [ 13%]
+.........                                                                [ 14%]
+tests\test_balance_failure_scoping.py ..                                 [ 14%]
+tests\test_beat_dedupe_bounds.py ....                                    [ 14%]
+tests\test_candidate_lineage.py .....                                    [ 14%]
+tests\test_candidate_route_guards.py ......                              [ 15%]
+tests\test_capability_acceptance.py ..........                           [ 16%]
+tests\test_capability_bounds.py .....                                    [ 16%]
+tests\test_character_packages.py ....................................... [ 18%]
+..                                                                       [ 18%]
+tests\test_cli_capture_and_checksum_sweep.py ...........                 [ 19%]
+tests\test_cli_executable_path_validation.py ............                [ 20%]
+tests\test_cli_executor.py .............s..ss                            [ 21%]
+tests\test_cli_failure_classification.py .......                         [ 22%]
+tests\test_cli_migration.py ..                                           [ 22%]
+tests\test_cli_post_run_classification.py ........                       [ 22%]
+tests\test_cli_process_windows.py s..                                    [ 22%]
+tests\test_cli_redteam_remediation.py ...........                        [ 23%]
+tests\test_cli_stream_decode.py .....                                    [ 23%]
+tests\test_codex_cli.py ...............                                  [ 24%]
+tests\test_condition_branch_skip.py ...                                  [ 25%]
+tests\test_connection_verifier.py ........                               [ 25%]
+tests\test_dashboard_ai_overview.py ..............                       [ 26%]
+tests\test_delete_candidate_guards.py ....                               [ 26%]
+tests\test_deleted_candidate_worker.py .......                           [ 27%]
+tests\test_deleted_chapter_guards.py ..                                  [ 27%]
+tests\test_deleted_chapter_worker.py ...                                 [ 27%]
+tests\test_derived_retry_mutex.py ......                                 [ 27%]
+tests\test_detach_first_writer.py ..                                     [ 28%]
+tests\test_director_commands.py ...............................          [ 30%]
+tests\test_domain_rules.py ....                                          [ 30%]
+tests\test_e2e_isolation.py ..............................               [ 32%]
+tests\test_export_names.py ...                                           [ 32%]
+tests\test_export_node_idempotency.py ....                               [ 32%]
+tests\test_first_page_production.py ........                             [ 33%]
+tests\test_full_acceptance.py .                                          [ 33%]
+tests\test_grok_build_cli.py ................                            [ 34%]
+tests\test_import_text_bounds.py ....                                    [ 34%]
+tests\test_input_validation_hardening.py ............................... [ 36%]
+............                                                             [ 37%]
+tests\test_inspect_and_parse_guards.py ...............................   [ 39%]
+tests\test_inspect_exit_recovery.py ....                                 [ 39%]
+tests\test_inspect_integrity.py ...                                      [ 39%]
+tests\test_inspect_page_drift.py ...                                     [ 39%]
+tests\test_inspection_worker_bounds.py ..                                [ 40%]
+tests\test_integration_harness.py ...................................... [ 42%]
+..........................                                               [ 44%]
+tests\test_job_retry_status_guard.py ......                              [ 44%]
+tests\test_lease_reclaim_fence.py ......                                 [ 44%]
+tests\test_library_pagination.py ......                                  [ 45%]
+tests\test_local_wall_clock.py ........                                  [ 45%]
+tests\test_local_worker.py ....................................          [ 48%]
+tests\test_migration_parity.py ...                                       [ 48%]
+tests\test_migrations.py .........................                       [ 49%]
+tests\test_model_call_audit.py ............                              [ 50%]
+tests\test_model_cost_estimates.py .........                             [ 51%]
+tests\test_model_visibility.py ........                                  [ 51%]
+tests\test_multi_image_guard.py ...                                      [ 51%]
+tests\test_multi_provider_platform.py .................................. [ 54%]
+.....                                                                    [ 54%]
+tests\test_mvp_workflow.py ..........................                    [ 56%]
+tests\test_offline_provider_fixture.py ...                               [ 56%]
+tests\test_ordinal_concurrency.py ..........................             [ 58%]
+tests\test_outfit_teardown_claims.py ....                                [ 58%]
+tests\test_page_readiness.py ....                                        [ 58%]
+tests\test_patch_null_guards.py .....                                    [ 58%]
+tests\test_patch_version_atomicity.py ..........                         [ 59%]
+tests\test_plan_chapter_pages_concurrency.py .....                       [ 59%]
+tests\test_platform_contracts.py ....                                    [ 60%]
+tests\test_pr6_regressions.py ..........                                 [ 60%]
+tests\test_project_scoping.py .......................................... [ 63%]
+........................................................................ [ 68%]
+...                                                                      [ 68%]
+tests\test_project_summary.py ....                                       [ 68%]
+tests\test_projects_api.py ............                                  [ 69%]
+tests\test_provider_audit_codes.py ...........                           [ 69%]
+tests\test_provider_audit_wiring.py ...........                          [ 70%]
+tests\test_provider_contracts.py ........                                [ 71%]
+tests\test_provider_metadata_bounds.py ......                            [ 71%]
+tests\test_provider_neutrality_gate.py ......                            [ 71%]
+tests\test_pytest_collection_gate.py .                                   [ 72%]
+tests\test_quality_gates.py ......                                       [ 72%]
+tests\test_reconcile_failure_isolation.py ......                         [ 72%]
+tests\test_redteam_script_integrity.py ...................               [ 74%]
+tests\test_repair_upscale_guards.py .....                                [ 74%]
+tests\test_retry_after_bounds.py ...........                             [ 75%]
+tests\test_retry_arbitration_bounds.py ....                              [ 75%]
+tests\test_retry_claim_race.py ..                                        [ 75%]
+tests\test_retry_inspect_mutex.py ...........                            [ 76%]
+tests\test_retry_revival_compensation.py .....                           [ 76%]
+tests\test_retry_run_sibling_guard.py .                                  [ 76%]
+tests\test_routes_storage_sweep.py ...........................           [ 78%]
+tests\test_rq_pending_recovery.py ....                                   [ 78%]
+tests\test_run_create_reconcile_isolation.py ..                          [ 78%]
+tests\test_run_creation_guard.py ......                                  [ 79%]
+tests\test_run_failure_sweep.py ............                             [ 79%]
+tests\test_runtime_lease_geometry.py ........                            [ 80%]
+tests\test_scene_assets.py ......................                        [ 81%]
+tests\test_scene_version_cas.py ....                                     [ 82%]
+tests\test_script_storyboard_editing.py ........                         [ 82%]
+tests\test_security_config.py ....                                       [ 82%]
+tests\test_selected_candidate_route_lock.py ...                          [ 82%]
+tests\test_selection_recheck_version.py ..                               [ 83%]
+tests\test_settings_cross_field.py ......                                [ 83%]
+tests\test_source_parse_retry_mutex.py ..                                [ 83%]
+tests\test_stabilization.py ...........                                  [ 84%]
+tests\test_storage_sweeps.py .............                               [ 85%]
+tests\test_story_parse_character_merge.py .                              [ 85%]
+tests\test_storyboard_fence_atomicity.py ..                              [ 85%]
+tests\test_storyboard_layout_contract.py ........................        [ 86%]
+tests\test_style_analyze_idempotency.py ..                               [ 87%]
+tests\test_style_job_guards.py ........                                  [ 87%]
+tests\test_style_palette.py ..                                           [ 87%]
+tests\test_upload_limits.py .......                                      [ 88%]
+tests\test_upload_name_safety.py ....                                    [ 88%]
+tests\test_usage_ledger.py .........                                     [ 88%]
+tests\test_usage_magnitude_bounds.py ....                                [ 89%]
+tests\test_vertex_adapter.py .                                           [ 89%]
+tests\test_vertex_health_and_settings.py ................                [ 90%]
+tests\test_windows_worker_recovery.py ......                             [ 90%]
+tests\test_worker_error_sanitized.py .                                   [ 90%]
+tests\test_worker_handlers_sweep.py .........................            [ 92%]
+tests\test_worker_lost_sweep.py ....                                     [ 92%]
+tests\test_workflow_definitions.py ...................                   [ 93%]
+tests\test_workflow_engine_facade.py ...........                         [ 94%]
+tests\test_workflow_race_guards.py .....                                 [ 94%]
+tests\test_workflow_retry_pinning.py ..........                          [ 95%]
+tests\test_workflow_route_manifest.py ....                               [ 95%]
+tests\test_workflow_validation_sweep.py ................................ [ 97%]
+..................................                                       [100%]
+
+============================== warnings summary ===============================
+.venv\Lib\site-packages\fastapi\testclient.py:1
+  D:\自媒体\漫画工作流\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+tests/test_cli_migration.py: 7 warnings
+tests/test_migration_parity.py: 3 warnings
+tests/test_migrations.py: 79 warnings
+tests/test_scene_assets.py: 10 warnings
+tests/test_usage_ledger.py: 3 warnings
+  D:\自媒体\漫画工作流\.venv\Lib\site-packages\alembic\config.py:612: DeprecationWarning: No path_separator found in configuration; falling back to legacy splitting on spaces, commas, and colons for prepend_sys_path.  Consider adding path_separator=os to Alembic config.
+    util.warn_deprecated(
+
+tests/test_cli_migration.py: 50 warnings
+tests/test_migrations.py: 425 warnings
+tests/test_scene_assets.py: 50 warnings
+tests/test_usage_ledger.py: 25 warnings
+  D:\自媒体\漫画工作流\apps\api\migrations\versions\20260904_29_drop_legacy_page_version_constraint.py:208: SADeprecationWarning: The Column.copy() method is deprecated and will be removed in a future release. (deprecated since: 1.4)
+    column.copy() if hasattr(column, "copy") else column
+
+tests/test_migrations.py: 90 warnings
+  D:\自媒体\漫画工作流\.venv\Lib\site-packages\sqlalchemy\engine\default.py:949: DeprecationWarning: The default datetime adapter is deprecated as of Python 3.12; see the sqlite3 documentation for suggested replacement recipes
+    cursor.executemany(statement, parameters)
+
+tests/test_migrations.py: 18 warnings
+  D:\自媒体\漫画工作流\.venv\Lib\site-packages\sqlalchemy\engine\default.py:952: DeprecationWarning: The default datetime adapter is deprecated as of Python 3.12; see the sqlite3 documentation for suggested replacement recipes
+    cursor.execute(statement, parameters)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+========= 1519 passed, 37 skipped, 761 warnings in 389.32s (0:06:29) ==========
+
+> mangaflow-ai@0.2.0 test:web
+> npm run test --workspace @mangaflow/web
+
+
+> @mangaflow/web@0.2.0 test
+> vitest run
+
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.10 [39m[90mD:/自媒体/漫画工作流/apps/web[39m
+
+ [32m✓[39m components/script-editor.test.tsx [2m([22m[2m5 tests[22m[2m)[22m[33m 957[2mms[22m[39m
+     [33m[2m✓[22m[39m 场景草稿已修改时，取消按钮先弹脏确认；拒绝则保留草稿 [33m 467[2mms[22m[39m
+ [32m✓[39m app/settings/page.test.tsx [2m([22m[2m5 tests[22m[2m)[22m[33m 1325[2mms[22m[39m
+     [33m[2m✓[22m[39m 保存时把 job_lease_seconds 随载荷提交回后端 [33m 470[2mms[22m[39m
+ [32m✓[39m components/project-workspace/library-section.test.tsx [2m([22m[2m5 tests[22m[2m)[22m[33m 1717[2mms[22m[39m
+     [33m[2m✓[22m[39m 章节未生产通过时导出按钮禁用且不调用 createExport [33m 544[2mms[22m[39m
+     [33m[2m✓[22m[39m 章节就绪后导出成功会刷新 exports，失败展示用户可见错误 [33m 520[2mms[22m[39m
+ [32m✓[39m components/project-workspace.test.tsx [2m([22m[2m7 tests[22m[2m)[22m[33m 1754[2mms[22m[39m
+     [33m[2m✓[22m[39m 项目查询 rejected 时展示错误与重试，而不是永久加载 [33m 514[2mms[22m[39m
+     [33m[2m✓[22m[39m ?page= 命中当前章节页面时不渲染回退提示 [33m 342[2mms[22m[39m
+ [32m✓[39m components/project-workspace/jobs-section.test.tsx [2m([22m[2m12 tests[22m[2m)[22m[33m 2785[2mms[22m[39m
+     [33m[2m✓[22m[39m 重试成功的任务立即移出批量归档选择 [33m 461[2mms[22m[39m
+     [33m[2m✓[22m[39m 运行中的任务提供取消，失败任务提供重试，且调用对应接口 [33m 344[2mms[22m[39m
+     [33m[2m✓[22m[39m 同一任务取消 pending 时重复点击只请求一次，其他行仍可取消，成功后刷新列表 [33m 315[2mms[22m[39m
+     [33m[2m✓[22m[39m 同一任务重试 pending 时重复点击只请求一次，其他行仍可重试，成功后刷新列表 [33m 307[2mms[22m[39m
+[90mstderr[2m | components/project-workspace/generate-section.test.tsx[2m > [22m[2mGenerateSection 关键行为[2m > [22m[2m检查任务未终态时持续拉取 workbench，完成后停止
+[22m[39mAn update to GenerateHarness inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/generate-section.test.tsx[2m > [22m[2mGenerateSection 关键行为[2m > [22m[2m检查任务未终态时持续拉取 workbench，完成后停止
+[22m[39mAn update to GenerateHarness inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/generate-section.test.tsx[2m > [22m[2mGenerateSection 关键行为[2m > [22m[2m检查任务未终态时持续拉取 workbench，完成后停止
+[22m[39mAn update to GenerateHarness inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/generate-section.test.tsx[2m > [22m[2mGenerateSection 关键行为[2m > [22m[2m检查任务未终态时持续拉取 workbench，完成后停止
+[22m[39mAn update to GenerateHarness inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+An update to GenerateHarness inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+An update to GenerateHarness inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/generate-section.test.tsx[2m > [22m[2mGenerateSection 关键行为[2m > [22m[2m修复任务非终态时持续拉取 workbench 与候选，FAILED 后停止
+[22m[39mAn update to GenerateHarness inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/generate-section.test.tsx[2m > [22m[2mGenerateSection 关键行为[2m > [22m[2m修复任务非终态时持续拉取 workbench 与候选，FAILED 后停止
+[22m[39mAn update to GenerateHarness inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/generate-section.test.tsx[2m > [22m[2mGenerateSection 关键行为[2m > [22m[2m修复任务非终态时持续拉取 workbench 与候选，FAILED 后停止
+[22m[39mAn update to GenerateHarness inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/generate-section.test.tsx[2m > [22m[2mGenerateSection 关键行为[2m > [22m[2m修复任务非终态时持续拉取 workbench 与候选，FAILED 后停止
+[22m[39mAn update to GenerateHarness inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+ [32m✓[39m components/project-workspace/local-edit-workspace.test.tsx [2m([22m[2m16 tests[22m[2m)[22m[33m 4641[2mms[22m[39m
+     [33m[2m✓[22m[39m L3 矩形+画笔+擦除+撤销；清空需要确认；区域数有上限提示 [33m 758[2mms[22m[39m
+     [33m[2m✓[22m[39m L4 缩放改变映射且复位后无漂移：mask 不随视图变化 [33m 384[2mms[22m[39m
+     [33m[2m✓[22m[39m L6 源≠已暂选：禁用生成并解释父候选规则，可切换查看采用图 [33m 352[2mms[22m[39m
+     [33m[2m✓[22m[39m L5b 预览确认流：propose → 预览卡 → 确认生成才 accept [33m 362[2mms[22m[39m
+     [33m[2m✓[22m[39m L7 生成中锁画笔并可取消任务；取消后 mask 保留可重来 [33m 585[2mms[22m[39m
+     [33m[2m✓[22m[39m L17/L18 成功：比较槽显示新局部候选（未自动暂选），alt 带源/新身份 [33m 354[2mms[22m[39m
+ [32m✓[39m components/usage/usage-dashboard.test.tsx [2m([22m[2m16 tests[22m[2m)[22m[33m 3938[2mms[22m[39m
+     [33m[2m✓[22m[39m renders KPI per currency and never adds estimated with billed amounts [33m 599[2mms[22m[39m
+     [33m[2m✓[22m[39m 自定义范围缺开始日期时可见拒绝查询，而不是退化为全量统计 [33m 436[2mms[22m[39m
+     [33m[2m✓[22m[39m opens the attempt drawer from a row and closes on Escape with focus moved to the close button [33m 523[2mms[22m[39m
+     [33m[2m✓[22m[39m loads more attempts with the keyset cursor [33m 376[2mms[22m[39m
+     [33m[2m✓[22m[39m warns when estimated spend exceeds the configured budget [33m 476[2mms[22m[39m
+ [32m✓[39m components/project-workspace/scene-workspace.test.tsx [2m([22m[2m13 tests[22m[2m)[22m[33m 4587[2mms[22m[39m
+     [33m[2m✓[22m[39m TEST-SCENE-01 首次进入展示空状态，成功返回后渲染卡片 [33m 557[2mms[22m[39m
+     [33m[2m✓[22m[39m TEST-SCENE-01b 列表超过单页 200 条时循环取全，不再静默截断（#369） [33m 1720[2mms[22m[39m
+     [33m[2m✓[22m[39m 归档引用计数慢返回不覆盖后打开资产的确认框内容 [33m 351[2mms[22m[39m
+ [32m✓[39m components/workflow-studio.test.tsx [2m([22m[2m11 tests[22m[2m)[22m[33m 4360[2mms[22m[39m
+     [33m[2m✓[22m[39m 保存中继续改图会补交最新草稿，已保存与持久化内容一致 [33m 1116[2mms[22m[39m
+     [33m[2m✓[22m[39m 发布会等待最新草稿保存成功；保存失败则不发布 [33m 890[2mms[22m[39m
+     [33m[2m✓[22m[39m 切换工作流前会先保存当前草稿；保存失败则保持原工作流 [33m 622[2mms[22m[39m
+ [32m✓[39m components/storyboard-editor/storyboard-editor.v02-32.test.tsx [2m([22m[2m19 tests[22m[2m)[22m[33m 4559[2mms[22m[39m
+     [33m[2m✓[22m[39m B5 竖版 182×257：画布按 mm 比例渲染 [33m 359[2mms[22m[39m
+     [33m[2m✓[22m[39m 同一 1px 方向键增量随画布高度换算为不同归一化步长 [33m 841[2mms[22m[39m
+     [33m[2m✓[22m[39m 3 格页：点选 + 拖动后保存仍走一次整包 PUT，payload 覆盖全部格子 [33m 310[2mms[22m[39m
+     [33m[2m✓[22m[39m 5 格页：点选 + 拖动后保存仍走一次整包 PUT，payload 覆盖全部格子 [33m 423[2mms[22m[39m
+     [33m[2m✓[22m[39m 8 格页：点选 + 拖动后保存仍走一次整包 PUT，payload 覆盖全部格子 [33m 355[2mms[22m[39m
+     [33m[2m✓[22m[39m 阅读序开关只切换显示，不改 reading_order：整包 PUT 仍带服务端序号 [33m 358[2mms[22m[39m
+     [33m[2m✓[22m[39m 网络错误：草稿保留在画布上，不显示已保存；可放弃草稿并重新加载 [33m 368[2mms[22m[39m
+ [32m✓[39m components/project-workspace/director-workspace.test.tsx [2m([22m[2m24 tests[22m[2m)[22m[33m 5180[2mms[22m[39m
+     [33m[2m✓[22m[39m D10 命令历史按页从服务端读取，原文与状态可见 [33m 443[2mms[22m[39m
+     [33m[2m✓[22m[39m D2 缺作用域的口令进入澄清层，不发起 propose；点击格芯片后可重新预览 [33m 303[2mms[22m[39m
+     [33m[2m✓[22m[39m D7 执行期间画布 busy：状态行出现且回调为 true，结束后恢复 [33m 339[2mms[22m[39m
+     [33m[2m✓[22m[39m D17 五路 journal 操作任一在途时，预览与历史的执行按钮全部禁用（#165） [33m 360[2mms[22m[39m
+     [33m[2m✓[22m[39m D21 换页前发出的 journal 变更晚到回调不把旧页命令组种进新页（#165③） [33m 310[2mms[22m[39m
+     [33m[2m✓[22m[39m D18c propose 在途时 journal 按钮全部禁用：丢弃清不掉在途解析文案，落地渲染自己的高风险行（#165 修复补丁） [33m 320[2mms[22m[39m
+ [32m✓[39m components/project-workspace/character-package-workspace.test.tsx [2m([22m[2m15 tests[22m[2m)[22m[33m 6092[2mms[22m[39m
+     [33m[2m✓[22m[39m TEST-PKG-01 首次进入展示空状态，加载后渲染角色卡与完整度 [33m 442[2mms[22m[39m
+     [33m[2m✓[22m[39m TEST-PKG-01 角色包列表分页拉取全部页，短页结束且第二页可选 [33m 2321[2mms[22m[39m
+     [33m[2m✓[22m[39m TEST-PKG-02 完整度百分比来自 API 且缺失项可见；无参考图时阻止发布 [33m 488[2mms[22m[39m
+     [33m[2m✓[22m[39m TEST-PKG-03 空槽可上传或绑定已有素材，已绑槽位可解绑 [33m 329[2mms[22m[39m
+     [33m[2m✓[22m[39m TEST-PKG-04 发布后版本冻结，派生新草稿解除锁定 [33m 372[2mms[22m[39m
+     [33m[2m✓[22m[39m 规格保存 409 乐观锁冲突时透出后端语义提示（#156） [33m 309[2mms[22m[39m
+     [33m[2m✓[22m[39m 服装集支持关联、设默认；历史版本可归档与恢复 [33m 535[2mms[22m[39m
+ [32m✓[39m components/project-workspace/generate-section.test.tsx [2m([22m[2m22 tests[22m[2m)[22m[33m 6668[2mms[22m[39m
+     [33m[2m✓[22m[39m 生产门禁未通过时展示阻塞文案，且不发起生成请求 [33m 834[2mms[22m[39m
+     [33m[2m✓[22m[39m 生成下一页后旧页检查面板不带到第 2 页：reviewCandidateId 被清理 [33m 800[2mms[22m[39m
+     [33m[2m✓[22m[39m 局部修改入口：候选卡片按钮打开局部编辑器，关闭返回网格 [33m 542[2mms[22m[39m
+     [33m[2m✓[22m[39m 视觉检查失败时展示用户可见错误，成功后可发起修复 [33m 700[2mms[22m[39m
+     [33m[2m✓[22m[39m 慢检查请求期间检查按钮保持 pending，并发点击不会丢失 invalidation [33m 418[2mms[22m[39m
+     [33m[2m✓[22m[39m 检查任务进入终态后立即失效 workbench，门禁不依赖无关刷新 [33m 348[2mms[22m[39m
+     [33m[2m✓[22m[39m F24 检查已通过但门禁要求复查时，文案解释输入已更新而不是检查失败 [33m 371[2mms[22m[39m
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m生成工作台修复/升清回归[2m > [22m[2m没有已选检查候选时修复拒绝提交，而不是静默回退 1K
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m生成工作台修复/升清回归[2m > [22m[2m没有已选检查候选时修复拒绝提交，而不是静默回退 1K
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m生成工作台修复/升清回归[2m > [22m[2m没有已选检查候选时修复拒绝提交，而不是静默回退 1K
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m生成工作台修复/升清回归[2m > [22m[2m跨批次检查的候选从工作台选中候选回退解析分辨率，而不是误报未知
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m生成工作台修复/升清回归[2m > [22m[2m跨批次检查的候选从工作台选中候选回退解析分辨率，而不是误报未知
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m生成工作台修复/升清回归[2m > [22m[2m跨批次检查的候选从工作台选中候选回退解析分辨率，而不是误报未知
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m生成工作台修复/升清回归[2m > [22m[2m跨批次检查的候选从工作台选中候选回退解析分辨率，而不是误报未知
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m生成工作台修复/升清回归[2m > [22m[2m跨批次检查的候选从工作台选中候选回退解析分辨率，而不是误报未知
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m生成工作台修复/升清回归[2m > [22m[2m跨批次检查的候选从工作台选中候选回退解析分辨率，而不是误报未知
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m生成工作台修复/升清回归[2m > [22m[2m跨批次检查的候选从工作台选中候选回退解析分辨率，而不是误报未知
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m生成工作台修复/升清回归[2m > [22m[2m切页（含素材库阻断行的跳转路径）清空引用改写、检查面板与批次视图
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m生成工作台修复/升清回归[2m > [22m[2m切页（含素材库阻断行的跳转路径）清空引用改写、检查面板与批次视图
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m生成工作台修复/升清回归[2m > [22m[2m切页（含素材库阻断行的跳转路径）清空引用改写、检查面板与批次视图
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/storyboard-editor/storyboard-editor.test.tsx[2m > [22m[2mStoryboardEditor canvas (V02-31B)[2m > [22m[2mS23 容器尺寸变化自动重适配；手动缩放后停止跟随，适配窗口恢复跟随
+[22m[39mAn update to StoryboardEditor inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m生成工作台修复/升清回归[2m > [22m[2m切页（含素材库阻断行的跳转路径）清空引用改写、检查面板与批次视图
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+An update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m生成工作台修复/升清回归[2m > [22m[2m修复与升清成功后清理 reviewCandidateId（批次已被服务端关闭）
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m生成工作台修复/升清回归[2m > [22m[2m修复与升清成功后清理 reviewCandidateId（批次已被服务端关闭）
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m生成工作台修复/升清回归[2m > [22m[2m修复与升清成功后清理 reviewCandidateId（批次已被服务端关闭）
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m生成工作台修复/升清回归[2m > [22m[2m修复与升清成功后清理 reviewCandidateId（批次已被服务端关闭）
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m生成工作台修复/升清回归[2m > [22m[2m修复与升清成功后清理 reviewCandidateId（批次已被服务端关闭）
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m生成工作台修复/升清回归[2m > [22m[2m修复与升清成功后清理 reviewCandidateId（批次已被服务端关闭）
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m生成工作台修复/升清回归[2m > [22m[2m修复与升清成功后清理 reviewCandidateId（批次已被服务端关闭）
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m生成工作台修复/升清回归[2m > [22m[2m修复与升清成功后清理 reviewCandidateId（批次已被服务端关闭）
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m生成工作台修复/升清回归[2m > [22m[2m修复与升清成功后清理 reviewCandidateId（批次已被服务端关闭）
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m生成工作台修复/升清回归[2m > [22m[2m修复与升清成功后清理 reviewCandidateId（批次已被服务端关闭）
+[22m[39mAn update to Probe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m资产上传用途守卫[2m > [22m[2m上传返回其他用途素材时呈现错误，且不绑定、不进入选中集合
+[22m[39mAn update to AssetsProbe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | components/project-workspace/workspace-hook-regressions.test.tsx[2m > [22m[2m资产上传用途守卫[2m > [22m[2m上传返回其他用途素材时呈现错误，且不绑定、不进入选中集合
+[22m[39mAn update to AssetsProbe inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+ [32m✓[39m components/project-workspace/workspace-hook-regressions.test.tsx [2m([22m[2m8 tests[22m[2m)[22m[33m 812[2mms[22m[39m
+     [33m[2m✓[22m[39m 修复与升清成功后清理 reviewCandidateId（批次已被服务端关闭） [33m 315[2mms[22m[39m
+[90mstderr[2m | components/asset-production-panel.test.tsx[2m > [22m[2mCharacterConceptPanel[2m > [22m[2m不预填人物或服装提示词，只显示简短的占位提示
+[22m[39mAn update to CharacterConceptPanel inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+ [32m✓[39m app/projects/[id]/settings/page.test.tsx [2m([22m[2m2 tests[22m[2m)[22m[33m 641[2mms[22m[39m
+     [33m[2m✓[22m[39m 隐藏普通候选，但保留当前项目默认模型并标注已隐藏 [33m 401[2mms[22m[39m
+[90mstderr[2m | components/project-workspace/use-assets-workspace.test.tsx[2m > [22m[2museAssetsWorkspace 缓存失效与晚到保存防护[2m > [22m[2m晚到的角色保存即使面板已切人，也仍然失效 characters 缓存
+[22m[39mThe current testing environment is not configured to support act(...)
+
+ [32m✓[39m components/asset-production-panel.test.tsx [2m([22m[2m4 tests[22m[2m)[22m[33m 723[2mms[22m[39m
+     [33m[2m✓[22m[39m 直接展示失败任务原因，并允许没有成图的失败记录重试 [33m 345[2mms[22m[39m
+[90mstderr[2m | components/project-workspace/use-assets-workspace.test.tsx[2m > [22m[2museAssetsWorkspace 缓存失效与晚到保存防护[2m > [22m[2m晚到的服装保存即使面板已换服装，也仍然失效 outfits 缓存
+[22m[39mThe current testing environment is not configured to support act(...)
+
+[90mstderr[2m | components/project-workspace/use-assets-workspace.test.tsx[2m > [22m[2museAssetsWorkspace 缓存失效与晚到保存防护[2m > [22m[2m删除服装档案会失效 generation-workbench，与 deleteAsset 行为一致
+[22m[39mThe current testing environment is not configured to support act(...)
+
+[90mstderr[2m | components/project-workspace/use-assets-workspace.test.tsx[2m > [22m[2museAssetsWorkspace 缓存失效与晚到保存防护[2m > [22m[2m删除服装档案会失效 generation-workbench，与 deleteAsset 行为一致
+[22m[39mThe current testing environment is not configured to support act(...)
+
+[90mstderr[2m | components/project-workspace/use-assets-workspace.test.tsx[2m > [22m[2museAssetsWorkspace 缓存失效与晚到保存防护[2m > [22m[2m重分类素材会失效 generation-workbench：CharacterReference 解绑改变生成就绪
+[22m[39mThe current testing environment is not configured to support act(...)
+
+[90mstderr[2m | components/project-workspace/workspace-chrome.test.tsx[2m > [22m[2m左导航图标轨（模板 B）[2m > [22m[2m折叠状态把 rail 类传给侧边栏且当前步骤仍可辨识
+[22m[39mReceived `false` for a non-boolean attribute `scroll`.
+
+If you want to write it to the DOM, pass a string instead: scroll="false" or scroll={value.toString()}.
+
+If you used to conditionally omit it with scroll={condition && value}, pass scroll={condition ? value : undefined} instead.
+
+ [32m✓[39m components/project-workspace/workspace-chrome.test.tsx [2m([22m[2m13 tests[22m[2m)[22m[33m 643[2mms[22m[39m
+     [33m[2m✓[22m[39m 打开后焦点进入对话框，＋/－ 键调整缩放，Esc 关闭 [33m 375[2mms[22m[39m
+ [32m✓[39m components/project-workspace/use-assets-workspace.test.tsx [2m([22m[2m6 tests[22m[2m)[22m[33m 374[2mms[22m[39m
+Not implemented: Window's scrollTo() method
+ [32m✓[39m components/clamped-number-input.test.tsx [2m([22m[2m3 tests[22m[2m)[22m[33m 313[2mms[22m[39m
+ [32m✓[39m components/project-workspace/use-source-workspace.test.tsx [2m([22m[2m4 tests[22m[2m)[22m[33m 385[2mms[22m[39m
+ [32m✓[39m components/project-workspace/character-package-picker.test.tsx [2m([22m[2m3 tests[22m[2m)[22m[33m 471[2mms[22m[39m
+ [32m✓[39m components/project-workspace/storyboard-section.test.tsx [2m([22m[2m3 tests[22m[2m)[22m[33m 468[2mms[22m[39m
+ [32m✓[39m components/shell.test.tsx [2m([22m[2m1 test[22m[2m)[22m[33m 309[2mms[22m[39m
+     [33m[2m✓[22m[39m 只保留三个真实全局入口，并标记当前页面 [33m 305[2mms[22m[39m
+ [32m✓[39m components/project-workspace/scene-picker.test.tsx [2m([22m[2m2 tests[22m[2m)[22m[33m 312[2mms[22m[39m
+ [32m✓[39m components/storyboard-editor/storyboard-editor.test.tsx [2m([22m[2m41 tests[22m[2m)[22m[33m 11154[2mms[22m[39m
+     [33m[2m✓[22m[39m 表单钉在被编辑分格上：选中其他气泡后保存不写错面板 [33m 1245[2mms[22m[39m
+     [33m[2m✓[22m[39m 表单有未保存修改时，切到其他分格先确认；拒绝则保留表单 [33m 350[2mms[22m[39m
+     [33m[2m✓[22m[39m S2 拖动矩形格并保存：一次整包 PUT；失败重试复用 request_id；刷新后位置仍在 [33m 471[2mms[22m[39m
+     [33m[2m✓[22m[39m S5 滚轮区缩放/适配/复位为纯前端，不发 PATCH [33m 331[2mms[22m[39m
+     [33m[2m✓[22m[39m S7 方向键 1px / Shift+10px 视口增量写入归一化 bounds [33m 364[2mms[22m[39m
+     [33m[2m✓[22m[39m S12b 叙事保存 409：同样显示冲突横幅与「放弃并重新加载」，编辑器保持打开 [33m 338[2mms[22m[39m
+     [33m[2m✓[22m[39m S12c 气泡台词保存 409：冲突横幅；放弃并重新加载丢弃未保存草稿 [33m 420[2mms[22m[39m
+     [33m[2m✓[22m[39m S14 重建 3→5 格：确认后才调用 layout，取消不调用 [33m 438[2mms[22m[39m
+     [33m[2m✓[22m[39m S22 保存进行中切换页面：响应写入原页面缓存键，不覆盖新页面 [33m 353[2mms[22m[39m
+     [33m[2m✓[22m[39m S24 新增气泡在途：新气泡卡与本格保存按钮禁用，不再重复提交同版本 POST [33m 373[2mms[22m[39m
+     [33m[2m✓[22m[39m S24b 新增气泡在途：工具栏「保存本页」禁用、画布气泡删除不可交互，不并发版本化写入 [33m 574[2mms[22m[39m
+     [33m[2m✓[22m[39m S24c 几何整包 PUT 在途：检查器保存按钮被组合 busy 禁用，输入仍可编辑 [33m 629[2mms[22m[39m
+ [32m✓[39m app/page.test.tsx [2m([22m[2m1 test[22m[2m)[22m[32m 222[2mms[22m[39m
+ [32m✓[39m lib/director-rules.test.ts [2m([22m[2m27 tests[22m[2m)[22m[32m 148[2mms[22m[39m
+ [32m✓[39m components/provider-management.test.tsx [2m([22m[2m73 tests[22m[2m)[22m[33m 12368[2mms[22m[39m
+     [33m[2m✓[22m[39m 连接健康错误对用户可见，且不回显密钥明文 [33m 327[2mms[22m[39m
+     [33m[2m✓[22m[39m 创建供应商失败时展示 form-error，成功后刷新 providers [33m 757[2mms[22m[39m
+     [33m[2m✓[22m[39m 凭据测试失败展示用户可见错误，不出现输入密钥 [33m 308[2mms[22m[39m
+     [33m[2m✓[22m[39m V02-14A 未就绪 Codex CLI 仍可只读探测，图片冒烟仅在任务中验证 [33m 421[2mms[22m[39m
+     [33m[2m✓[22m[39m V02-14C Grok Build CLI 使用 grok 原生命令且不显示密钥表单 [33m 348[2mms[22m[39m
+     [33m[2m✓[22m[39m 目录模型通过统一 MODEL_SMOKE 验证，图片测试显式确认费用 [33m 479[2mms[22m[39m
+     [33m[2m✓[22m[39m 双能力文字模型逐操作验证：测试文本与测试视觉分别定向 [33m 374[2mms[22m[39m
+     [33m[2m✓[22m[39m 批量显隐使用逐项版本，部分失败后只保留失败项选择 [33m 404[2mms[22m[39m
+     [33m[2m✓[22m[39m P5 停用内置供应商会带 version 发送 PATCH 并进入已停用 [33m 342[2mms[22m[39m
+     [33m[2m✓[22m[39m F1 名称命中只留匹配供应商并展开分组 [33m 328[2mms[22m[39m
+     [33m[2m✓[22m[39m F4 类型=图片时隐藏文字行 [33m 325[2mms[22m[39m
+     [33m[2m✓[22m[39m F7 类型、已验证和搜索同时生效 [33m 386[2mms[22m[39m
+ [32m✓[39m app/desktop-visual-system.test.ts [2m([22m[2m19 tests[22m[2m)[22m[32m 139[2mms[22m[39m
+ [32m✓[39m components/project-workspace/assets-section.test.tsx [2m([22m[2m3 tests[22m[2m)[22m[32m 238[2mms[22m[39m
+ [32m✓[39m lib/workflow-draft-save.test.tsx [2m([22m[2m8 tests[22m[2m)[22m[32m 150[2mms[22m[39m
+ [32m✓[39m components/usage/usage-format.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 48[2mms[22m[39m
+[90mstderr[2m | lib/task-status.polling.test.tsx[2m > [22m[2m任务轮询行为[2m > [22m[2m任务停留在检查/修复阶段时持续轮询，进入终态后停止
+[22m[39mAn update to TestComponent inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | lib/task-status.polling.test.tsx[2m > [22m[2m任务轮询行为[2m > [22m[2m任务停留在检查/修复阶段时持续轮询，进入终态后停止
+[22m[39mAn update to TestComponent inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | lib/task-status.polling.test.tsx[2m > [22m[2m任务轮询行为[2m > [22m[2m任务停留在检查/修复阶段时持续轮询，进入终态后停止
+[22m[39mAn update to TestComponent inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | lib/task-status.polling.test.tsx[2m > [22m[2m任务轮询行为[2m > [22m[2m任务停留在检查/修复阶段时持续轮询，进入终态后停止
+[22m[39mAn update to TestComponent inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | lib/task-status.polling.test.tsx[2m > [22m[2m任务轮询行为[2m > [22m[2m任务停留在检查/修复阶段时持续轮询，进入终态后停止
+[22m[39mAn update to TestComponent inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | lib/task-status.polling.test.tsx[2m > [22m[2m任务轮询行为[2m > [22m[2m任务停留在检查/修复阶段时持续轮询，进入终态后停止
+[22m[39mAn update to TestComponent inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | lib/task-status.polling.test.tsx[2m > [22m[2m任务轮询行为[2m > [22m[2m任务停留在检查/修复阶段时持续轮询，进入终态后停止
+[22m[39mAn update to TestComponent inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+[90mstderr[2m | lib/task-status.polling.test.tsx[2m > [22m[2m任务轮询行为[2m > [22m[2m任务停留在检查/修复阶段时持续轮询，进入终态后停止
+[22m[39mAn update to TestComponent inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+
+ [32m✓[39m lib/task-status.polling.test.tsx [2m([22m[2m1 test[22m[2m)[22m[32m 65[2mms[22m[39m
+ [32m✓[39m lib/local-edit-rules.test.ts [2m([22m[2m20 tests[22m[2m)[22m[32m 46[2mms[22m[39m
+ [32m✓[39m lib/api-scene-assets.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 17[2mms[22m[39m
+ [32m✓[39m components/storyboard-editor/stress-fixture.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 31[2mms[22m[39m
+ [32m✓[39m components/project-workspace/display.test.ts [2m([22m[2m14 tests[22m[2m)[22m[32m 17[2mms[22m[39m
+ [32m✓[39m components/project-workspace/scene-status.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m lib/task-status.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m components/project-workspace/reference-selection.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32m✓[39m app/globals-style.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m next-config-csp.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32m✓[39m lib/generation-rules.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 6[2mms[22m[39m
+ [32m✓[39m lib/model-visibility.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m components/project-workspace/generation-desk-source-contract.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m45 passed[39m[22m[90m (45)[39m
+[2m      Tests [22m [1m[32m484 passed[39m[22m[90m (484)[39m
+[2m   Start at [22m 14:15:37
+[2m   Duration [22m 24.57s[2m (transform 11.17s, setup 32.75s, import 24.99s, tests 78.73s, environment 189.78s)[22m
+
+
+> mangaflow-ai@0.2.0 build
+> npm run build --workspace @mangaflow/web
+
+
+> @mangaflow/web@0.2.0 build
+> next build
+
+▲ Next.js 16.3.3 (Turbopack)
+✓ Running next.config.ts took 150ms
+- Experiments (use with caution):
+  · optimizePackageImports
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 2.3s
+  Running TypeScript ...
+  Finished TypeScript in 4.5s ...
+  Collecting page data using 14 workers ...
+  Generating static pages using 14 workers (0/7) ...
+  Generating static pages using 14 workers (1/7) 
+  Generating static pages using 14 workers (3/7) 
+  Generating static pages using 14 workers (5/7) 
+✓ Generating static pages using 14 workers (7/7) in 776ms
+  Finalizing page optimization ...
+
+Route (app)
+┌ ƒ /
+├ ƒ /_not-found
+├ ƒ /help
+├ ƒ /projects/[id]
+├ ƒ /projects/[id]/[section]
+├ ƒ /projects/[id]/assets
+├ ƒ /projects/[id]/assets/[view]
+├ ƒ /projects/[id]/settings
+├ ƒ /projects/[id]/workflow
+├ ƒ /settings
+├ ƒ /settings/usage
+└ ƒ /workflow
+
+
+ƒ Proxy (Middleware)
+
+ƒ  (Dynamic)  server-rendered on demand
+

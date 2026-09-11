@@ -1,0 +1,591 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.10 [39m[90mD:/自媒体/漫画工作流/apps/web[39m
+
+ [31m❯[39m components/workflow-studio.test.tsx [2m([22m[2m13 tests[22m[2m | [22m[31m2 failed[39m[2m)[22m[33m 3878[2mms[22m[39m
+     [33m[2m✓[22m[39m 保存中继续改图会补交最新草稿，已保存与持久化内容一致 [33m 389[2mms[22m[39m
+     [33m[2m✓[22m[39m 发布会等待最新草稿保存成功；保存失败则不发布 [33m 350[2mms[22m[39m
+     [32m✓[39m SPA 卸载时会把防抖窗口内的未保存草稿提交到服务器[32m 81[2mms[22m[39m
+     [32m✓[39m 切换工作流前会先保存当前草稿；保存失败则保持原工作流[32m 235[2mms[22m[39m
+     [32m✓[39m PAGE 运行范围可选择其他章节的页面（不再钉死第一章）[32m 94[2mms[22m[39m
+     [32m✓[39m 运行启动后，审批行与进度来自轮询列表而非启动快照[32m 113[2mms[22m[39m
+     [32m✓[39m PAUSED（审批栅栏）运行显示中文状态，且取消按钮存在并调用 cancel[32m 107[2mms[22m[39m
+     [32m✓[39m FAILED 运行在页脚提供重试入口，调用 retryWorkflowRun 复制同一范围[32m 94[2mms[22m[39m
+     [32m✓[39m 轮询间隔契约：RUNNING 3s、PAUSED 10s、混合时 RUNNING 优先、终态停止[32m 1[2mms[22m[39m
+     [32m✓[39m 无可用图像模型时审批条渲染设置指引（含取消出路），不再是无提示死按钮[32m 99[2mms[22m[39m
+     [32m✓[39m 有可用图像模型时审批条渲染模型选择器，不渲染空目录指引[32m 109[2mms[22m[39m
+[31m     [31m×[31m 曾选模型后目录清空：指引可见且确认继续禁用，不再提交失效别名[39m[33m 1110[2mms[22m[39m
+[31m     [31m×[31m 曾选模型被删但目录仍有其他模型：确认继续禁用直到重新选择[39m[33m 1093[2mms[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 2 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m components/workflow-studio.test.tsx[2m > [22mWorkflowStudio 运行状态显示[2m > [22m曾选模型后目录清空：指引可见且确认继续禁用，不再提交失效别名
+[31m[1mTestingLibraryElementError[22m[39m: Unable to find an element with the text: /未配置可用图像模型/. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<main[39m
+      [33mclass[39m=[32m"_studio_fca09a"[39m
+    [36m>[39m
+      [36m<header[39m
+        [33mclass[39m=[32m"_topbar_fca09a"[39m
+      [36m>[39m
+        [36m<div[39m
+          [33mclass[39m=[32m"_crumb_fca09a"[39m
+        [36m>[39m
+          [36m<a[39m
+            [33mhref[39m=[32m"/projects/project-1/source"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33maria-hidden[39m=[32m"true"[39m
+              [33mclass[39m=[32m"lucide lucide-arrow-left"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"16"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"16"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"m12 19-7-7 7-7"[39m
+              [36m/>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M19 12H5"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m项目[0m
+          [36m</a>[39m
+          [36m<i />[39m
+          [36m<strong>[39m
+            [0m测试项目[0m
+          [36m</strong>[39m
+          [36m<span>[39m
+            [0m流程编排[0m
+          [36m</span>[39m
+        [36m</div>[39m
+        [36m<div[39m
+          [33mclass[39m=[32m"_workflowSelect_fca09a"[39m
+        [36m>[39m
+          [36m<svg[39m
+            [33maria-hidden[39m=[32m"true"[39m
+            [33mclass[39m=[32m"lucide lucide-git-branch"[39m
+            [33mfill[39m=[32m"none"[39m
+            [33mheight[39m=[32m"15"[39m
+            [33mstroke[39m=[32m"currentColor"[39m
+            [33mstroke-linecap[39m=[32m"round"[39m
+            [33mstroke-linejoin[39m=[32m"round"[39m
+            [33mstroke-width[39m=[32m"2"[39m
+            [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [33mwidth[39m=[32m"15"[39m
+            [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+          [36m>[39m
+            [36m<path[39m
+              [33md[39m=[32m"M15 6a9 9 0 0 0-9 9V3"[39m
+            [36m/>[39m
+            [36m<circle[39m
+              [33mcx[39m=[32m"18"[39m
+              [33mcy[39m=[32m"6"[39m
+              [33mr[39m=[32m"3"[39m
+            [36m/>[39m
+            [36m<circle[39m
+              [33mcx[39m=[32m"6"[39m
+              [33mcy[39m=[32m"18"[39m
+              [33mr[39m=[32m"3"[39m
+            [36m/>[39m
+          [36m</svg>[39m
+          [36m<select[39m
+            [33maria-label[39m=[32m"选择工作流"[39m
+          [36m>[39m
+            [36m<option[39m
+              [33mvalue[39m=[32m"wf-1"[39m
+            [36m>[39m
+              [0m单页生产流程[0m
+            [36m</option>[39m
+          [36m</select>[39m
+          [36m<svg[39m
+            [33maria-hidden[39m=[32m"true"[39m
+            [33mclass[39m=[32m"lucide lucide-chevron-down"[39m
+            [33mfill[39m=[32m"none"[39m
+            [33mheight[39m=[32m"14"[39m
+            [33mstroke[39m=[32m"currentColor"[39m
+            [33mstroke-linecap[39m=[32m"round"[39m
+            [33mstroke-linejoin[39m=[32m"round"[39m
+            [33mstroke-width[39m=[32m"2"[39m
+            [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [33mwidth[39m=[32m"14"[39m
+            [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+          [36m>[39m
+            [36m<path[39m
+              [33md[39m=[32m"m6 9 6 6 6-6"[39m
+            [36m/>[39m
+          [36m</svg>[39m
+        [36m</div>[39m
+        [36m<div[39m
+          [33mclass[39m=[32m"_topActions_fca09a"[39m
+        [36m>[39m
+          [36m<button>[39m
+            [36m<svg[39m
+              [33maria-hidden[39m=[32m"true"[39m
+              [33mclass[39m=[32m"lucide lucide-download"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"14"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"14"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M12 15V3"[39m
+              [36m/>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"[39m
+              [36m/>[39m
+              [36m<path[39m
+                [33md[39m=[32m"m7 10 5 5 5-5"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m导出[0m
+          [36m</button>[39m
+          [36m<label>[39m
+            [36m<svg[39m
+              [33maria-hidden[39m=[32m"true"[39m
+              [33mclass[39m=[32m"lucide lucide-upload"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"14"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"14"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M12 3v12"[39m
+              [36m/>[39m
+              [36m<path[39m
+                [33md[39m=[32m"m17 8-5-5-5 5"[39m
+              [36m/>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m导入[0m
+            [36m<input[39m
+              [33maccept[39m=[32m"application/json,.json"[39m
+              [33mtype[39m=[32m"file"[39m
+            [36m/>[39m
+          [36m</label>[39m
+          [36m<button>[39m
+            [36m<svg[39m
+              [33maria-hidden[39m=[32m"true"[39m
+              [33mclass[39m=[32m"lucide lucide-save"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"14"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"14"[39m
+              [33mxmlns[39m=[...
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<main[39m
+      [33mclass[39m=[32m"_studio_fca09a"[39m
+    [36m>[39m
+      [36m<header[39m
+        [33mclass[39m=[32m"_topbar_fca09a"[39m
+      [36m>[39m
+        [36m<div[39m
+          [33mclass[39m=[32m"_crumb_fca09a"[39m
+        [36m>[39m
+          [36m<a[39m
+            [33mhref[39m=[32m"/projects/project-1/source"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33maria-hidden[39m=[32m"true"[39m
+              [33mclass[39m=[32m"lucide lucide-arrow-left"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"16"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"16"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"m12 19-7-7 7-7"[39m
+              [36m/>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M19 12H5"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m项目[0m
+          [36m</a>[39m
+          [36m<i />[39m
+          [36m<strong>[39m
+            [0m测试项目[0m
+          [36m</strong>[39m
+          [36m<span>[39m
+            [0m流程编排[0m
+          [36m</span>[39m
+        [36m</div>[39m
+        [36m<div[39m
+          [33mclass[39m=[32m"_workflowSelect_fca09a"[39m
+        [36m>[39m
+          [36m<svg[39m
+            [33maria-hidden[39m=[32m"true"[39m
+            [33mclass[39m=[32m"lucide lucide-git-branch"[39m
+            [33mfill[39m=[32m"none"[39m
+            [33mheight[39m=[32m"15"[39m
+            [33mstroke[39m=[32m"currentColor"[39m
+            [33mstroke-linecap[39m=[32m"round"[39m
+            [33mstroke-linejoin[39m=[32m"round"[39m
+            [33mstroke-width[39m=[32m"2"[39m
+            [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [33mwidth[39m=[32m"15"[39m
+            [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+          [36m>[39m
+            [36m<path[39m
+              [33md[39m=[32m"M15 6a9 9 0 0 0-9 9V3"[39m
+            [36m/>[39m
+            [36m<circle[39m
+              [33mcx[39m=[32m"18"[39m
+              [33mcy[39m=[32m"6"[39m
+              [33mr[39m=[32m"3"[39m
+            [36m/>[39m
+            [36m<circle[39m
+              [33mcx[39m=[32m"6"[39m
+              [33mcy[39m=[32m"18"[39m
+              [33mr[39m=[32m"3"[39m
+            [36m/>[39m
+          [36m</svg>[39m
+          [36m<select[39m
+            [33maria-label[39m=[32m"选择工作流"[39m
+          [36m>[39m
+            [36m<option[39m
+              [33mvalue[39m=[32m"wf-1"[39m
+            [36m>[39m
+              [0m单页生产流程[0m
+            [36m</option>[39m
+          [36m</select>[39m
+          [36m<svg[39m
+            [33maria-hidden[39m=[32m"true"[39m
+            [33mclass[39m=[32m"lucide lucide-chevron-down"[39m
+            [33mfill[39m=[32m"none"[39m
+            [33mheight[39m=[32m"14"[39m
+            [33mstroke[39m=[32m"currentColor"[39m
+            [33mstroke-linecap[39m=[32m"round"[39m
+            [33mstroke-linejoin[39m=[32m"round"[39m
+            [33mstroke-width[39m=[32m"2"[39m
+            [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [33mwidth[39m=[32m"14"[39m
+            [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+          [36m>[39m
+            [36m<path[39m
+              [33md[39m=[32m"m6 9 6 6 6-6"[39m
+            [36m/>[39m
+          [36m</svg>[39m
+        [36m</div>[39m
+        [36m<div[39m
+          [33mclass[39m=[32m"_topActions_fca09a"[39m
+        [36m>[39m
+          [36m<button>[39m
+            [36m<svg[39m
+              [33maria-hidden[39m=[32m"true"[39m
+              [33mclass[39m=[32m"lucide lucide-download"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"14"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"14"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M12 15V3"[39m
+              [36m/>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"[39m
+              [36m/>[39m
+              [36m<path[39m
+                [33md[39m=[32m"m7 10 5 5 5-5"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m导出[0m
+          [36m</button>[39m
+          [36m<label>[39m
+            [36m<svg[39m
+              [33maria-hidden[39m=[32m"true"[39m
+              [33mclass[39m=[32m"lucide lucide-upload"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"14"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"14"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M12 3v12"[39m
+              [36m/>[39m
+              [36m<path[39m
+                [33md[39m=[32m"m17 8-5-5-5 5"[39m
+              [36m/>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m导入[0m
+            [36m<input[39m
+              [33maccept[39m=[32m"application/json,.json"[39m
+              [33mtype[39m=[32m"file"[39m
+            [36m/>[39m
+          [36m</label>[39m
+          [36m<button>[39m
+            [36m<svg[39m
+              [33maria-hidden[39m=[32m"true"[39m
+              [33mclass[39m=[32m"lucide lucide-save"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"14"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"14"[39m
+              [33mxmlns[39m=[...
+[90m [2m❯[22m waitForWrapper ../../node_modules/@testing-library/dom/dist/wait-for.js:[2m163:27[22m[39m
+[90m [2m❯[22m ../../node_modules/@testing-library/dom/dist/query-helpers.js:[2m86:33[22m[39m
+[36m [2m❯[22m components/workflow-studio.test.tsx:[2m643:25[22m[39m
+    [90m641|[39m     [90m// 供应商删除后目录重取为空（例如窗口重新聚焦触发 refetch）。[39m
+    [90m642|[39m     [34mact[39m(() [33m=>[39m { [34mfireEvent[39m(window[33m,[39m [35mnew[39m [33mEvent[39m([32m"visibilitychange"[39m))[33m;[39m })[33m;[39m
+    [90m643|[39m     [34mexpect[39m([35mawait[39m screen[33m.[39m[34mfindByText[39m([36m/未配置可用图像模型/[39m))[33m.[39m[34mtoBeInTheDocument[39m()[33m;[39m
+    [90m   |[39m                         [31m^[39m
+    [90m644|[39m     [34mexpect[39m(confirm)[33m.[39m[34mtoBeDisabled[39m()[33m;[39m
+    [90m645|[39m   })[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m components/workflow-studio.test.tsx[2m > [22mWorkflowStudio 运行状态显示[2m > [22m曾选模型被删但目录仍有其他模型：确认继续禁用直到重新选择
+[31m[1mTestingLibraryElementError[22m[39m: Unable to find role="option" and name "甲 · 图片模型B"
+
+Ignored nodes: comments, script, style
+[36m<select[39m
+  [33maria-label[39m=[32m"选择图片模型"[39m
+[36m>[39m
+  [36m<option[39m
+    [33mvalue[39m=[32m""[39m
+  [36m>[39m
+    [0m选择图片模型[0m
+  [36m</option>[39m
+  [36m<option[39m
+    [33mvalue[39m=[32m"image.a"[39m
+  [36m>[39m
+    [0m甲[0m
+    [0m · [0m
+    [0m图片模型A[0m
+  [36m</option>[39m
+[36m</select>[39m
+
+Ignored nodes: comments, script, style
+[36m<html>[39m
+  [36m<head />[39m
+  [36m<body>[39m
+    [36m<div>[39m
+      [36m<main[39m
+        [33mclass[39m=[32m"_studio_fca09a"[39m
+      [36m>[39m
+        [36m<header[39m
+          [33mclass[39m=[32m"_topbar_fca09a"[39m
+        [36m>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"_crumb_fca09a"[39m
+          [36m>[39m
+            [36m<a[39m
+              [33mhref[39m=[32m"/projects/project-1/source"[39m
+            [36m>[39m
+              [36m<svg[39m
+                [33maria-hidden[39m=[32m"true"[39m
+                [33mclass[39m=[32m"lucide lucide-arrow-left"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"16"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"2"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"16"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"m12 19-7-7 7-7"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M19 12H5"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+              [0m项目[0m
+            [36m</a>[39m
+            [36m<i />[39m
+            [36m<strong>[39m
+              [0m测试项目[0m
+            [36m</strong>[39m
+            [36m<span>[39m
+              [0m流程编排[0m
+            [36m</span>[39m
+          [36m</div>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"_workflowSelect_fca09a"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33maria-hidden[39m=[32m"true"[39m
+              [33mclass[39m=[32m"lucide lucide-git-branch"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"15"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"15"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M15 6a9 9 0 0 0-9 9V3"[39m
+              [36m/>[39m
+              [36m<circle[39m
+                [33mcx[39m=[32m"18"[39m
+                [33mcy[39m=[32m"6"[39m
+                [33mr[39m=[32m"3"[39m
+              [36m/>[39m
+              [36m<circle[39m
+                [33mcx[39m=[32m"6"[39m
+                [33mcy[39m=[32m"18"[39m
+                [33mr[39m=[32m"3"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [36m<select[39m
+              [33maria-label[39m=[32m"选择工作流"[39m
+            [36m>[39m
+              [36m<option[39m
+                [33mvalue[39m=[32m"wf-1"[39m
+              [36m>[39m
+                [0m单页生产流程[0m
+              [36m</option>[39m
+            [36m</select>[39m
+            [36m<svg[39m
+              [33maria-hidden[39m=[32m"true"[39m
+              [33mclass[39m=[32m"lucide lucide-chevron-down"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mheight[39m=[32m"14"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+              [33mwidth[39m=[32m"14"[39m
+              [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"m6 9 6 6 6-6"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+          [36m</div>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"_topActions_fca09a"[39m
+          [36m>[39m
+            [36m<button>[39m
+              [36m<svg[39m
+                [33maria-hidden[39m=[32m"true"[39m
+                [33mclass[39m=[32m"lucide lucide-download"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"14"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"2"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"14"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M12 15V3"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"m7 10 5 5 5-5"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+              [0m导出[0m
+            [36m</button>[39m
+            [36m<label>[39m
+              [36m<svg[39m
+                [33maria-hidden[39m=[32m"true"[39m
+                [33mclass[39m=[32m"lucide lucide-upload"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39m=[32m"14"[39m
+                [33mstroke[39m=[32m"currentColor"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+                [33mstroke-width[39m=[32m"2"[39m
+                [33mviewBox[39m=[32m"0 0 24 24"[39m
+                [33mwidth[39m=[32m"14"[39m
+                [33mxmlns[39m=[32m"http://www.w3.org/2000/svg"[39m
+              [36m>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M12 3v12"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"m17 8-5-5-5 5"[39m
+                [36m/>[39m
+                [36m<path[39m
+                  [33md[39m=[32m"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"[39m
+                [36m/>[39m
+              [36m</svg>[39m
+              [0m导入[0m
+              [36m<input[39m
+                [33maccept[39m=[32m"application/json,.json"[39m
+                [33mtype[39m=[32m"file"[39m
+              [36m/>[39m
+            [36m</label>[39m
+            [36m<button>[39m
+              [36m<svg[39m
+                [33maria-hidden[39m=[32m"true"[39m
+                [33mclass[39m=[32m"lucide lucide-save"[39m
+                [33mfill[39m=[32m"none"[39m
+                [33mheight[39...
+[90m [2m❯[22m Proxy.waitForWrapper ../../node_modules/@testing-library/dom/dist/wait-for.js:[2m163:27[22m[39m
+[36m [2m❯[22m components/workflow-studio.test.tsx:[2m690:11[22m[39m
+    [90m688|[39m     [90m// image.a 的行从目录消失、只剩 image.b：残留选择不得让按钮保持可点。[39m
+    [90m689|[39m     [34mact[39m(() [33m=>[39m { [34mfireEvent[39m(window[33m,[39m [35mnew[39m [33mEvent[39m([32m"visibilitychange"[39m))[33m;[39m })[33m;[39m
+    [90m690|[39m     [35mawait[39m [34mwaitFor[39m(() [33m=>[39m {
+    [90m   |[39m           [31m^[39m
+    [90m691|[39m       expect(within(modelSelect).getByRole("option", { name: "甲 · 图片模型…
+    [90m692|[39m     })[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[31m2 failed[39m[22m[2m | [22m[1m[32m11 passed[39m[22m[90m (13)[39m
+[2m   Start at [22m 14:41:00
+[2m   Duration [22m 6.67s[2m (transform 245ms, setup 386ms, import 497ms, tests 3.88s, environment 1.68s)[22m
+

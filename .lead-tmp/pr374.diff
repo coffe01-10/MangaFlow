@@ -1,0 +1,58 @@
+diff --git a/apps/desktop/shell-core/src/ownership.rs b/apps/desktop/shell-core/src/ownership.rs
+index 92c2409..bb13b92 100644
+--- a/apps/desktop/shell-core/src/ownership.rs
++++ b/apps/desktop/shell-core/src/ownership.rs
+@@ -469,6 +469,53 @@ fn job_contains_pid(job: &JobHandle, pid: u32) -> bool {
+ mod tests {
+     use super::*;
+ 
++    /// `OwnershipError` is the operator-facing surface for every spawn /
++    /// assign / resume / stop failure: its Display strings land on stderr
++    /// and in logs, and `source()` must expose the underlying io::Error
++    /// ONLY for `Spawn` — the String variants carry their detail inline, so
++    /// a `source()` there would double-print it in any error chain.
++    /// Exact-substring pins keep the diagnostics from silently losing the
++    /// embedded detail in a refactor.
++    #[test]
++    fn ownership_error_display_embeds_each_detail_and_source_chains_spawn_only() {
++        let spawn = OwnershipError::Spawn(std::io::Error::new(
++            std::io::ErrorKind::NotFound,
++            "helper binary missing",
++        ));
++        let rendered = spawn.to_string();
++        assert!(rendered.contains("spawn"), "prefix lost: {rendered}");
++        assert!(rendered.contains("helper binary missing"), "detail lost: {rendered}");
++        let source = std::error::Error::source(&spawn)
++            .expect("Spawn must chain its io::Error as source()");
++        assert_eq!(source.to_string(), "helper binary missing");
++
++        for (error, label) in [
++            (
++                OwnershipError::JobAssignment("assign detail".into()),
++                "Job Object 操作失败",
++            ),
++            (
++                OwnershipError::Resume("resume detail".into()),
++                "线程恢复流程失败",
++            ),
++            (
++                OwnershipError::StopFailed("stop detail".into()),
++                "停止进程树失败",
++            ),
++        ] {
++            let rendered = error.to_string();
++            assert!(rendered.contains(label), "label lost: {rendered}");
++            assert!(
++                rendered.contains("detail"),
++                "embedded detail lost: {rendered}"
++            );
++            assert!(
++                std::error::Error::source(&error).is_none(),
++                "String variants must not chain a source: {rendered}"
++            );
++        }
++    }
++
+     /// The starttime anchor (field 22 of /proc/<pid>/stat, zero-indexed 19
+     /// after the comm close-paren split): it reads the live test process,
+     /// returns None for a missing pid, and — the whole point — changes
