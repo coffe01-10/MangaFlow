@@ -155,7 +155,7 @@ test("defaultPython prefers the explicit override and maps the venv per platform
   }
 });
 
-test("a never-answering port probe times out with a named error", async () => {
+test("a never-answering port probe times out with a named error", { timeout: 8000 }, async () => {
   const connect = () => {
     // Neither connect nor error ever fires: only the 2s in-lib timer ends
     // it. The shim carries setTimeout so the lib can arm that timer.
