@@ -6,7 +6,9 @@ rmtree + move, and the e2e runner's rebuild of the same bundle); the lock
 ships in two implementations — python (build_web_standalone._dist_build_lock)
 and bash (dist-build-lock.sh) — that must agree on the mechanism per
 platform (flock where it exists, an O_EXCL lock file with retry + timeout
-otherwise).
+otherwise). That agreement assumes bash and python share one environment
+source (#383); the cross-language test probes both sides and skips mixed
+hosts where the two mechanisms cannot see each other.
 
 Each test launches two SUBPROCESSES that contend for the same lock file and
 asserts their critical sections never overlap in wall-clock time, including
@@ -147,6 +149,36 @@ def _have_bash() -> bool:
     return shutil.which("bash") is not None
 
 
+def _interlock_mechanisms_match() -> tuple[bool, str]:
+    """#383: the bash (flock) and python (fcntl) lock forms exclude each
+    other only when both sides resolve to the SAME mechanism, which holds
+    when bash and python come from one environment source (this repo's
+    main path: git bash + Windows-native python — neither has flock/fcntl,
+    both take the lock-file branch). Probe both sides at runtime so a
+    mixed host (MSYS2 bash WITH flock + Windows-native python WITHOUT
+    fcntl, or the mirror case) skips with the reason instead of failing
+    on a race the lock never promised to prevent."""
+
+    try:
+        import fcntl  # noqa: F401
+
+        python_has_flock = True
+    except ImportError:
+        python_has_flock = False
+    probe = subprocess.run(
+        ["bash", "-c", "command -v flock >/dev/null 2>&1"], capture_output=True
+    )
+    bash_has_flock = probe.returncode == 0
+    if bash_has_flock != python_has_flock:
+        return False, (
+            f"bash flock available={bash_has_flock} but python fcntl "
+            f"available={python_has_flock}: mixed-environment host where the "
+            "two lock mechanisms cannot see each other (#383); the "
+            "cross-language exclusion assertion would be a false failure"
+        )
+    return True, ""
+
+
 def test_python_lock_excludes_concurrent_python_holders(tmp_path: Path):
     intervals = _run_contenders(tmp_path, first="python", second="python")
     _assert_mutually_exclusive(intervals)
@@ -165,6 +197,9 @@ def test_python_and_bash_writers_interlock(tmp_path: Path):
 
     if not _have_bash():
         pytest.skip("no bash available for the dist-build-lock.sh branch")
+    mechanisms_match, reason = _interlock_mechanisms_match()
+    if not mechanisms_match:
+        pytest.skip(reason)
     intervals = _run_contenders(tmp_path, first="python", second="bash")
     _assert_mutually_exclusive(intervals)
 

@@ -56,13 +56,18 @@ def _dist_build_lock(
     """Exclusive cross-process lock around the destructive dist/ writes.
 
     flock where the platform has it (POSIX/CI — and the same mechanism
-    dist-build-lock.sh uses, so bash and python writers interlock);
-    otherwise an O_CREAT|O_EXCL lock file with retry + timeout (git bash
-    ships no flock and python there has no fcntl). The mechanisms never
-    mix on one host: flock exists exactly where fcntl does. A fallback
-    holder that crashes leaves the file behind; later writers then fail
-    loudly after the timeout with the remedy in the message (dist/ is
-    disposable build output).
+    dist-build-lock.sh uses when its bash comes from the same environment
+    source, so bash and python writers interlock); otherwise an
+    O_CREAT|O_EXCL lock file with retry + timeout. #383: the interlock
+    assumes bash and python share one environment origin; this repo's
+    main path (git bash + Windows-native python) has neither flock nor
+    fcntl, so both sides take the lock-file branch — but a mixed install
+    (MSYS2 bash WITH flock driving a Windows-native python WITHOUT
+    fcntl) puts the two languages on different mechanisms that cannot
+    see each other, so mutual exclusion silently fails and such hosts
+    are unsupported. A fallback holder that crashes leaves the file
+    behind; later writers then fail loudly after the timeout with the
+    remedy in the message (dist/ is disposable build output).
     """
 
     path.parent.mkdir(parents=True, exist_ok=True)

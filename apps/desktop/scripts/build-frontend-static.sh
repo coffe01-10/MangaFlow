@@ -8,7 +8,8 @@
 #
 # Turbopack rejects node_modules symlinks pointing outside the project root,
 # so the worktree lives next to the repo on the same filesystem and the
-# dependency tree is hardlink-cloned (cp -al) instead of symlinked.
+# dependency tree is hardlink-cloned (cp -al) instead of symlinked — with
+# junction entries skipped and rebuilt inside the worktree (#385).
 set -euo pipefail
 DESKTOP_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REPO_ROOT="$(cd "$DESKTOP_ROOT/../.." && pwd)"
@@ -31,7 +32,14 @@ release_dist_lock_if_held() {
 cleanup() {
   release_dist_lock_if_held
   git -C "$REPO_ROOT" worktree remove --force "$WORKTREE" >/dev/null 2>&1 || true
-  rm -rf "$WORKTREE"
+  # Hardlink-dense trees make rm -rf flake on this host (transient rd /s
+  # /q-style failures); retry once, then warn without failing the build —
+  # the disposable mangaflow-desktop-web-* naming makes any residue
+  # findable for manual deletion.
+  if ! rm -rf "$WORKTREE"; then
+    sleep 2
+    rm -rf "$WORKTREE" || echo "warning: could not fully remove $WORKTREE (disposable; delete manually)" >&2
+  fi
 }
 trap cleanup EXIT
 
@@ -39,9 +47,79 @@ git -C "$REPO_ROOT" worktree add --detach "$WORKTREE" HEAD >/dev/null
 git -C "$WORKTREE" apply "$DESKTOP_ROOT/patches/web-static-export.patch"
 
 # Hardlink-clone the installed workspace dependencies (same filesystem).
-cp -al "$REPO_ROOT/node_modules" "$WORKTREE/node_modules"
+# #385: cp -al cannot hardlink an NTFS junction — git bash lstats the npm
+# workspace self-link (node_modules/@mangaflow/web) as a symlink and
+# link(2) on it fails with Permission denied — so the clone skips link
+# entries and rebuilds each one afterwards as a junction INSIDE the
+# worktree (a clone pointing back at the business tree would break the
+# worktree sealing). The junction sits one directory below node_modules'
+# top level, so the copy recurses into any subtree that contains a link
+# instead of handing it to cp -al wholesale.
+# clone_hardlink_tree <src> <dst> <rel_prefix>: copy every child of src
+# into a fresh dst via cp -al, skipping link entries (junctions) and
+# printing each skipped path relative to the CLONED TREE ROOT — the prefix
+# accumulates across recursions so a nested skip (e.g. @mangaflow/web)
+# reports its full tree-relative path, not the subtree-local one.
+clone_hardlink_tree() {
+  local src="$1" dst="$2" prefix="$3" entry name
+  mkdir -p "$dst"
+  for entry in "$src"/* "$src"/.[!.]* "$src"/..?*; do
+    # Unmatched glob patterns survive as literals; skip those.
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    name="${entry##*/}"
+    if [ -L "$entry" ]; then
+      printf '%s\n' "$prefix$name"
+      continue
+    fi
+    if [ -d "$entry" ] && [ -n "$(find "$entry" -type l -print -quit)" ]; then
+      clone_hardlink_tree "$entry" "$dst/$name" "$prefix$name/"
+      continue
+    fi
+    cp -al "$entry" "$dst/$name"
+  done
+}
+
+# recreate_junction <tree_rel> <link_rel>: rebuild one skipped link entry.
+# The source junction's target (an absolute msys path) keeps only its
+# repo-relative tail, re-anchored at the throwaway worktree, so the clone
+# points at the worktree's OWN apps/web. mklink /J needs no privilege; the
+# // escaping keeps MSYS from rewriting the switches as paths.
+recreate_junction() {
+  local tree_rel="$1" link_rel="$2" target new_target
+  target="$(readlink "$REPO_ROOT/$tree_rel/$link_rel")" || {
+    echo "cannot read junction target for $tree_rel/$link_rel (#385)" >&2
+    return 1
+  }
+  case "$target" in
+    "$REPO_ROOT"/*)
+      new_target="$WORKTREE${target#"$REPO_ROOT"}"
+      ;;
+    *)
+      echo "junction $tree_rel/$link_rel points outside the repo ($target); unsupported layout (#385)" >&2
+      return 1
+      ;;
+  esac
+  if [ ! -d "$new_target" ]; then
+    echo "junction target $new_target missing in worktree (#385)" >&2
+    return 1
+  fi
+  mkdir -p "$(dirname "$WORKTREE/$tree_rel/$link_rel")"
+  cmd //c mklink //J "$(cygpath -w "$WORKTREE/$tree_rel/$link_rel")" "$(cygpath -w "$new_target")" >/dev/null
+  echo "recreated junction $tree_rel/$link_rel -> $new_target"
+}
+
+clone_deps_tree() {
+  local tree_rel="$1" skipped link_rel
+  skipped="$(clone_hardlink_tree "$REPO_ROOT/$tree_rel" "$WORKTREE/$tree_rel" "")"
+  while IFS= read -r link_rel; do
+    [ -n "$link_rel" ] || continue
+    recreate_junction "$tree_rel" "$link_rel"
+  done <<< "$skipped"
+}
+
+clone_deps_tree node_modules
 if [ -d "$REPO_ROOT/apps/web/node_modules" ]; then
-  cp -al "$REPO_ROOT/apps/web/node_modules" "$WORKTREE/apps/web/node_modules"
+  clone_deps_tree apps/web/node_modules
 fi
 
 # The build log tee below writes into dist/, which may not exist yet on a
@@ -72,4 +150,29 @@ cp -r out/. "$DESKTOP_ROOT/dist/frontend/"
 cp "$DESKTOP_ROOT/shell/shell-tools.html" "$DESKTOP_ROOT/dist/frontend/"
 release_dist_build_lock "$DIST_LOCK"
 dist_lock_held=0
+
+# Smoke gate (#385): a green `next build` plus a copied out/ tree can
+# still hide a broken export (wrong output dir, empty routes). Pin the
+# shell entry document and every stub combo the export patch generates
+# via generateStaticParams (patches/web-static-export.patch: the poc
+# section, poc asset view and poc settings routes); any missing file
+# means the Tauri shell would 404 on a shipped screen. Next exports
+# trailingSlash:false layout — flat <route>.html files, index.html only
+# at the root — pinned here exactly as the live export produces them.
+smoke_missing=0
+for rel_html in \
+  index.html \
+  projects/poc/poc-invalid.html \
+  projects/poc/assets/poc-invalid.html \
+  projects/poc/settings.html
+do
+  if [ ! -f "$DESKTOP_ROOT/dist/frontend/$rel_html" ]; then
+    echo "smoke gate: dist/frontend/$rel_html missing (#385)" >&2
+    smoke_missing=1
+  fi
+done
+if [ "$smoke_missing" -ne 0 ]; then
+  exit 1
+fi
+
 echo "static export copied to $DESKTOP_ROOT/dist/frontend"
