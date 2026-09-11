@@ -1,4 +1,4 @@
-using System.Net.Http;
+﻿using System.Net.Http;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -73,6 +73,8 @@ internal sealed class StyleWorkspace : StackPanel
         upload.DragOver += (_, e) => { e.Effects = !saving && e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None; e.Handled = true; };
         upload.Drop += async (_, e) => { if (e.Data.GetData(DataFormats.FileDrop) is string[] paths) await UploadAsync(paths); e.Handled = true; };
         Children.Add(upload); Children.Add(references);
+        selected.UnionWith(view.PendingStyleReferences.Where(id => view.assets.Any(a => a.Id == id && a.Kind == "STYLE_REFERENCE")));
+        view.PendingStyleReferences.Clear();
         name.TextChanged += (_, _) => UpdateDraft(); UpdateDraft(); RenderReferences();
         Dispatcher.BeginInvoke(new Action(() => { if (Active) InitialLoad = ReloadAsync(); }));
     }

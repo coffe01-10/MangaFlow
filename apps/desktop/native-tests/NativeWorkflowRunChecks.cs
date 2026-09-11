@@ -36,11 +36,22 @@ internal static class NativeWorkflowRunChecks
 
     public static async Task Run()
     {
-        InspectorShapeChecks();
-        ConfigWriteBackChecks();
-        await RunsAndApprovalChecks();
-        await DuplicateAutosaveChecks();
-        await DebounceSwitchChecks();
+        // 调用方（NativeInteractionChecks.RunIsolated 的调用列表）当前未 await 本
+        // Task：故障任务会被静默吞掉，套件仍绿。这里至少把失败打印成显式 FAIL
+        // 行（接线补 await 需改 NativeInteractionChecks.cs，超出本文件的改动互斥）。
+        try
+        {
+            InspectorShapeChecks();
+            ConfigWriteBackChecks();
+            await RunsAndApprovalChecks();
+            await DuplicateAutosaveChecks();
+            await DebounceSwitchChecks();
+        }
+        catch (Exception error)
+        {
+            Console.WriteLine("FAIL: workflow inspector/run checks: " + error.Message);
+            throw;
+        }
         Console.WriteLine("PASS: workflow inspector full config surface, clamped write-back, run history and approval queue wire contract");
     }
 
@@ -307,7 +318,8 @@ internal static class NativeWorkflowRunChecks
             await Until(() => Field<StackPanel>(view, "approvalQueue").Children.Count == 1);
             Require(HistoryText(view).Contains("运行中"), "审批后运行历史未随刷新更新");
 
-            // 轮询条件：列表里仍有 RUNNING 运行 → PollTick 继续重取（网页 refetchInterval）。
+            // 轮询条件（#380 新契约）：列表里仍有 RUNNING 运行 → PollTick 每 tick
+            // 重取（网页 refetchInterval 3000）；仅剩 PAUSED → 约 10s 节流一次。
             var before = runsGets;
             view.PollTick();
             await Until(() => runsGets == before + 1);
@@ -322,12 +334,18 @@ internal static class NativeWorkflowRunChecks
             await Until(() => runMonitor.Children.OfType<Button>().Any(button => (string?)button.Content == "取消"));
             Require(runMonitor.Children.OfType<TextBlock>().Any(block => block.Text.Contains("暂停中")),
                 "PAUSED 运行的页脚摘要必须显示中文状态（Labels.WorkflowRunStatus 补 PAUSED）");
-            // PAUSED 不驱动 3s 轮询（网页 refetchInterval 只看 RUNNING）：栅栏等待
-            // 只有人工动作（审批/取消）才会推进。
+            // #380：PAUSED 不再让轮询停摆，而是降频重取（网页 refetchInterval 10000）。
+            // RefreshAsync 刚取回 PAUSED 列表 → 节流窗口已重置：窗口内 PollTick 不得重取。
             var pausedBefore = runsGets;
             view.PollTick();
             await Task.Delay(50);
-            Require(runsGets == pausedBefore, "PAUSED 不应驱动轮询重取（网页 refetchInterval 只看 RUNNING）");
+            Require(runsGets == pausedBefore, "PAUSED 10s 节流窗口内 PollTick 不应重取");
+            // 模拟 10s 流逝（操纵节流时间戳字段）：PollTick 必须触发一次 PAUSED 驱动重取，
+            // 且重取落地后窗口再次重置（数据仍为 PAUSED，取消入口重渲染）。
+            viewType.GetField("lastPausedFetchTicks", All)!.SetValue(view, Environment.TickCount64 - 10_001);
+            view.PollTick();
+            await Until(() => runsGets == pausedBefore + 1
+                && Field<StackPanel>(view, "runMonitor").Children.OfType<Button>().Any(button => (string?)button.Content == "取消"));
             // 取消入口必须真的发出 cancel_run 请求（唯一的停止途径）并刷新列表。
             var getsBeforeCancel = runsGets;
             runMonitor.Children.OfType<Button>().Single(button => (string?)button.Content == "取消")
@@ -591,9 +609,17 @@ internal static class NativeWorkflowRunChecks
         config.TryGetValue(key, out var value) && value is JsonElement { ValueKind: JsonValueKind.Number } number
             ? number.GetDouble() : value is double parsed ? parsed : double.NaN;
 
+    // 按数值读取整数配置：AttachNumberEditor 的三元 `round ? (int)value : value`
+    // 公共类型是 double——即使走 round 分支也会被加宽后按 Double 装箱，超时/重试/
+    // 并行的写回值是 Double 30 而非 Int32（网页 JS 数字本就是 double，JSON 序列化
+    // 后无差别）。钳制断言必须按数值比较；按 CLR 装箱类型断言会恒假（该检查此前
+    // 因调用方未 await 而从未真正执行，这次复活时修正）。
     private static int AsInt(Dictionary<string, object?> config, string key) =>
         config.TryGetValue(key, out var value) && value is JsonElement { ValueKind: JsonValueKind.Number } number
-            ? number.GetInt32() : value is int parsed ? parsed : int.MinValue;
+            ? number.GetInt32()
+            : value is int parsed ? parsed
+            : value is double integral ? (int)integral
+            : int.MinValue;
 
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root)
     {

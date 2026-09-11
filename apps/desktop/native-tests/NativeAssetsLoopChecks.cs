@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Reflection;
@@ -88,10 +88,22 @@ internal static class NativeAssetsLoopChecks
         Click(sceneThumb);
         Require(view.LastPreviewUrl == "http://127.0.0.1:12345/api/v1/assets/a1/content", "scene preview did not resolve the scene reference path");
 
-        // Raw reference library card.
+        // Raw reference library card. The reference-intake rework replaced the
+        // 168px AssetCard (Hand-cursor Border around an ImageBox) with
+        // ReferenceAssetCard's accessible Button{Content=ImageBox} whose Click
+        // opens the preview — the same migration the scene tile went through
+        // above, so target the Button, bounded-wait the dispatcher-deferred
+        // pane build, and raise Click (visual clicks never fire a WPF Button).
         await view.SwitchAsync(AssetsView.References); Layout(view, 1200, 1000);
-        var cardThumb = Descendants(view).OfType<Border>().First(b => b.Cursor == Cursors.Hand && b.Child is ImageBox);
-        ClickVisual(cardThumb);
+        Button? cardThumb = null;
+        var cardWait = DateTime.UtcNow;
+        while (cardThumb == null && DateTime.UtcNow - cardWait < TimeSpan.FromSeconds(3))
+        {
+            await Settle(); Layout(view, 1200, 1000);
+            cardThumb = Descendants(view).OfType<Button>().FirstOrDefault(b => b.Content is ImageBox);
+        }
+        if (cardThumb == null) throw new Exception("reference library thumbnail (Button+ImageBox) never appeared");
+        Click(cardThumb);
         Require(view.LastPreviewUrl == "http://127.0.0.1:12345/api/v1/assets/a1/content", "reference library preview mismatch");
 
         // Outfit wardrobe reference card keeps its raw-path contract (no regression).

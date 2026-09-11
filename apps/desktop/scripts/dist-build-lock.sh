@@ -18,9 +18,15 @@
 #      FILE is the mutex: a holder that dies without releasing leaves it
 #      behind, and later writers fail loudly after the timeout with the
 #      remedy spelled out (dist/ is disposable build output).
-# The two forms never mix on one host: flock exists exactly where python's
-# fcntl does, so whichever mechanism a platform has, every writer on that
-# platform uses it.
+# #383: this pairing only holds when bash and python come from the same
+# environment source. On this repo's main path (git bash driving the
+# Windows-native venv python) NEITHER side has flock/fcntl, so every
+# writer takes the noclobber lock-file branch and they interlock through
+# it. A mixed install — e.g. MSYS2 bash (has flock) driving a
+# Windows-native python (no fcntl) — puts the bash writers on flock and
+# the python writers on the lock file; the two mechanisms cannot see
+# each other, so mutual exclusion silently fails. Such mixed hosts are
+# unsupported.
 #
 # This file is SOURCEd (no side effects at source time); the functions are
 # exercised by test_dist_build_lock.py, which run-sidecar-e2e.sh collects.

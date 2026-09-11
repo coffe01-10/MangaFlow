@@ -1,10 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api, type MangaPage, type WorkflowDefinition, type WorkflowGraph, type WorkflowNodeRun, type WorkflowNodeType, type WorkflowRun } from "@/lib/api";
+import { api, type MangaPage, type ModelCapability, type WorkflowDefinition, type WorkflowGraph, type WorkflowNodeRun, type WorkflowNodeType, type WorkflowRun } from "@/lib/api";
 
-import WorkflowStudio from "./workflow-studio";
+import WorkflowStudio, { workflowRunsPollInterval } from "./workflow-studio";
 
 vi.mock("@xyflow/react", () => ({
   ReactFlow: ({ children }: { children?: unknown }) => <div data-testid="react-flow">{children as never}</div>,
@@ -499,5 +499,99 @@ describe("WorkflowStudio 运行状态显示", () => {
       screen.getByRole("button", { name: /重试/ }).click();
     });
     await waitFor(() => expect(retrySpy).toHaveBeenCalledWith("run-1"));
+  });
+
+  // #380：旧谓词只认 RUNNING——审批栅栏把 run 置为 PAUSED 后轮询停摆，
+  // 审批通过/取消后的状态永远不再更新。新契约：RUNNING → 3s；否则
+  // PAUSED → 10s 折中降频；全部终态/空列表 → 停止轮询。
+  it("轮询间隔契约：RUNNING 3s、PAUSED 10s、混合时 RUNNING 优先、终态停止", () => {
+    expect(workflowRunsPollInterval([run({ status: "RUNNING" })])).toBe(3000);
+    expect(workflowRunsPollInterval([
+      run({ id: "run-a", status: "COMPLETED" }),
+      run({ id: "run-b", status: "RUNNING" }),
+    ])).toBe(3000);
+    // RUNNING 与 PAUSED 混合：保持 3s 快档。
+    expect(workflowRunsPollInterval([
+      run({ id: "run-a", status: "RUNNING" }),
+      run({ id: "run-b", status: "PAUSED" }),
+    ])).toBe(3000);
+    // PAUSED（审批栅栏）态仍轮询，只是降频到 10s。
+    expect(workflowRunsPollInterval([run({ status: "PAUSED" })])).toBe(10000);
+    expect(workflowRunsPollInterval([
+      run({ id: "run-a", status: "COMPLETED" }),
+      run({ id: "run-b", status: "PAUSED" }),
+    ])).toBe(10000);
+    expect(workflowRunsPollInterval([run({ status: "COMPLETED" })])).toBe(false);
+    expect(workflowRunsPollInterval([])).toBe(false);
+    expect(workflowRunsPollInterval(undefined)).toBe(false);
+  });
+
+  // #381：generator.page 的审批选择器来源 imageModels 为空时，「确认继续」
+  // 因 !drawModel 恒真而永久禁用——必须在审批条内给出设置指引与取消出路，
+  // 而不是一个空选择器加无提示的死按钮。
+  it("无可用图像模型时审批条渲染设置指引（含取消出路），不再是无提示死按钮", async () => {
+    runsSpy.mockResolvedValue([run({
+      status: "PAUSED",
+      node_runs: [nodeRun({ node_id: "gen-1", node_type: "generator.page", status: "WAITING_APPROVAL" })],
+    })]);
+    modelsSpy.mockResolvedValue([]);
+
+    renderStudio();
+    await screen.findByText("流程编排");
+
+    expect(await screen.findByText("单页生成等待选择模型")).toBeInTheDocument();
+    expect(await screen.findByText(/未配置可用图像模型/)).toBeInTheDocument();
+    // 指引给出系统设置入口（供应商与模型目录在 /settings 管理）。
+    expect(screen.getByRole("link", { name: "前往设置" })).toHaveAttribute("href", "/settings");
+    // 出路之二：取消按钮已在页脚渲染（PAUSED 态），且可用。
+    expect(screen.getByRole("button", { name: /取消/ })).toBeEnabled();
+    // 空目录下不再渲染无法选择的模型选择器。
+    expect(screen.queryByLabelText("选择图片模型")).toBeNull();
+  });
+
+  it("有可用图像模型时审批条渲染模型选择器，不渲染空目录指引", async () => {
+    const imageModel: ModelCapability = {
+      catalog_id: "mi-1",
+      connection_id: "conn-1",
+      provider: "甲",
+      protocol: "vertex",
+      model_id: "image-model-a",
+      logical_alias: "image.a",
+      display_name: "图片模型A",
+      model_type: "IMAGE",
+      input_modalities: ["IMAGE"],
+      output_modalities: ["IMAGE"],
+      operations: ["image_edit"],
+      resolutions: ["1K", "2K", "4K"],
+      preview_resolutions: ["1K"],
+      max_reference_images: 4,
+      regions: [],
+      confidence: "DECLARED",
+      enabled: true,
+      display_enabled: true,
+      auto_eligible: true,
+      priority: 1,
+    };
+    runsSpy.mockResolvedValue([run({
+      status: "PAUSED",
+      node_runs: [nodeRun({ node_id: "gen-1", node_type: "generator.page", status: "WAITING_APPROVAL" })],
+    })]);
+    modelsSpy.mockResolvedValue([imageModel]);
+
+    renderStudio();
+    await screen.findByText("流程编排");
+
+    expect(await screen.findByText("单页生成等待选择模型")).toBeInTheDocument();
+    expect(screen.queryByText(/未配置可用图像模型/)).toBeNull();
+    expect(screen.queryByRole("link", { name: "前往设置" })).toBeNull();
+    const modelSelect = screen.getByLabelText("选择图片模型");
+    await waitFor(() => {
+      expect(within(modelSelect).getByRole("option", { name: "甲 · 图片模型A" })).toBeInTheDocument();
+    });
+    // 既有行为回归：未选模型前确认继续禁用，选中后解禁。
+    const confirm = screen.getByRole("button", { name: "确认继续" });
+    expect(confirm).toBeDisabled();
+    fireEvent.change(modelSelect, { target: { value: "image.a" } });
+    await waitFor(() => expect(confirm).toBeEnabled());
   });
 });

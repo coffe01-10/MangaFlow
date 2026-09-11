@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Reflection;
@@ -519,7 +519,8 @@ internal static class NativeConsistencyChecks
             if (request.Method == HttpMethod.Post && path.EndsWith("/assets/upload"))
             {
                 Uploads.Add(await request.Content!.ReadAsStringAsync(token));
-                return Json("{\"id\":\"asset-9\",\"kind\":\"SCENE_REFERENCE\",\"status\":\"READY\",\"display_name\":\"ref.png\",\"original_name\":\"ref.png\"}");
+                var purpose = ((MultipartFormDataContent)request.Content).Single(p => p.Headers.ContentDisposition?.Name?.Trim('"') == "kind");
+                return Json(JsonSerializer.Serialize(new { id = "asset-9", kind = await purpose.ReadAsStringAsync(token), status = "READY", display_name = "ref.png", original_name = "ref.png" }));
             }
             if (request.Method == HttpMethod.Post && path.EndsWith("/characters/char-a/references"))
             {

@@ -331,6 +331,8 @@ export default function ProjectWorkspace({
   // 章节，找不到目标时生成台（use-generation-workspace 的 find 兜底）与
   // 分镜编辑器（等待目标页进入 pages 最终 no-op）都会静默落到本章第 1 页，
   // 用户以为深链已生效。这里在数据就绪后给出可见提示，而不是无声错页。
+  // #384：就绪判定只看 pages.data 已解析——零页章节同样要提示（旧的
+  // length > 0 前置会把零页章节的深链横幅整个吞掉，静默无反馈）。
   const deepLinkPageId = searchParams.get("page");
   const deepLinkPageMissing = Boolean(
     needsPages
@@ -338,7 +340,6 @@ export default function ProjectWorkspace({
       && dismissedDeepLinkPageId !== deepLinkPageId
       && !pages.isLoading
       && pages.data !== undefined
-      && pages.data.length > 0
       && !pages.data.some((page) => page.id === deepLinkPageId),
   );
 
@@ -407,7 +408,11 @@ export default function ProjectWorkspace({
               <CircleAlert size={17} />
               <div>
                 <strong>深链目标页不在当前章节</strong>
-                <p>链接指向的页面不属于当前选中的章节，已显示本章第 1 页。请切换到目标章节后重试，或从任务中心重新进入。</p>
+                {/* #384：零页章节没有“已显示第 1 页”可言——文案按 pages
+                    是否为空区分，避免横幅本身陈述错误回退位置。 */}
+                <p>{(pages.data?.length ?? 0) > 0
+                  ? "链接指向的页面不属于当前选中的章节，已显示本章第 1 页。请切换到目标章节后重试，或从任务中心重新进入。"
+                  : "链接指向的页面不属于当前选中的章节，且本章还没有任何页面。请切换到目标章节后重试，或从任务中心重新进入。"}</p>
               </div>
               <button type="button" className="button ghost compact" onClick={() => setDismissedDeepLinkPageId(deepLinkPageId)}>知道了</button>
             </div>
