@@ -346,3 +346,58 @@ fn export_skips_members_beyond_the_recursion_depth_cap() {
     let _ = fs::remove_dir_all(&user_data);
     let _ = fs::remove_file(&destination);
 }
+
+/// Rotation staging debris (`.rotating` / `.rotating-oldest` siblings of a
+/// ROTATABLE base — a crash or rollback caught mid-rotation) must be
+/// skipped with the rotation_staging reason: archiving it would duplicate
+/// the oldest generation under a second name. The polarity control: a user
+/// file that merely ENDS in ".rotating" but is not a rotatable base
+/// archives like any other member — dropping the is_rotatable_base_name
+/// gate would silently exclude user files from exports.
+#[test]
+fn export_skips_rotation_staging_debris_but_not_lookalike_user_files() {
+    let user_data = temp_user_data("staging-debris");
+    let token = new_token();
+    let logs = logs_dir(&user_data);
+    fs::create_dir_all(&logs).unwrap();
+    let run_log = RunLog::create(&user_data, &token).unwrap();
+    run_log
+        .record("spawn", &serde_json::json!({ "token": token }))
+        .unwrap();
+
+    // Debris of the real base: both staging suffixes.
+    fs::write(logs.join(format!("shell-{token}.log.rotating")), "mid-shift\n").unwrap();
+    fs::write(
+        logs.join(format!("shell-{token}.log.rotating-oldest")),
+        "staged oldest\n",
+    )
+    .unwrap();
+    // Lookalike: ends in .rotating but is NOT a rotatable base name.
+    fs::write(logs.join("notes.rotating"), "user content\n").unwrap();
+
+    let destination = std::env::temp_dir().join(format!("mfd-export-{}.zip", new_token()));
+    let report = export_logs_zip(&user_data, &destination).unwrap();
+
+    // read_dir order is filesystem-dependent; compare as sorted sets.
+    let mut skipped: Vec<(String, &str)> = report
+        .skipped
+        .iter()
+        .map(|s| (s.name.clone(), s.reason.as_str()))
+        .collect();
+    skipped.sort_unstable();
+    let expected = vec![
+        (format!("shell-{token}.log.rotating"), "rotation_staging"),
+        (format!("shell-{token}.log.rotating-oldest"), "rotation_staging"),
+    ];
+    assert_eq!(skipped, expected, "{skipped:?}");
+    // The lookalike user file archives normally, alongside the run log.
+    // (read_dir order is filesystem-dependent; compare as sorted sets.)
+    let mut files = report.files.clone();
+    files.sort_unstable();
+    let mut expected_files = vec![format!("shell-{token}.log"), "notes.rotating".to_string()];
+    expected_files.sort_unstable();
+    assert_eq!(files, expected_files, "{report:?}");
+
+    let _ = fs::remove_dir_all(&user_data);
+    let _ = fs::remove_file(&destination);
+}
