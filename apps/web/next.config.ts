@@ -16,6 +16,10 @@ const apiOrigin = process.env.MANGAFLOW_API_ORIGIN ?? "http://127.0.0.1:8000";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  // #372: stop advertising the framework in every response header
+  // (X-Powered-By: Next.js). Top-level option only — the headers() list
+  // below stays pinned by next-config-csp.test.ts.
+  poweredByHeader: false,
   // W-15 plan B: the desktop shell serves the production app with a bundled
   // node (next standalone server). `output: "standalone"` changes only the
   // artifact layout of a production build (a self-contained server/ tree
