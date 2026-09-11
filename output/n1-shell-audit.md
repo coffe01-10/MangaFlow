@@ -380,6 +380,10 @@ doc-code 不一致 sweep（子代理，双源核验）收割 6 项 → 3 PR：
     #421 body 陈旧于返工后实现 → 已评论更正。其余 body 全部与 diff 相符。
 - 突变残留教训入账：红绿突变必须与被测分支物理隔离，保存的 diff 须在
   应用前 grep 排除突变指纹（本轮起执行）。
+- 合并交互预警（同仓并行代理）：#415（glm/lock-header-accuracy）与 #420
+  （glm/dist-lock-latch-and-header）同样改 scripts/dist-build-lock.sh 的
+  头注/分支门，与 #402 三方相碰——lead 侧请先合其一，余者 rebase；
+  三者的语义意图（锁分支一致性/头注准确性/测试缝）不互斥。
 
 #### 20260912 轮 6（终验扫）与账本收口
 
