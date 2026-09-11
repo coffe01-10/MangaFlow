@@ -100,6 +100,7 @@
 | PR #305（已合并） | 第 1 轮 MAJOR 返工：构造失败槽位泄漏（finally 兜底关闭+释放） | Linux pytest RUN（红/绿） |
 | PR #319（待 lead） | #306 评审返工：告警断言注释精确化 + stderr 日志字面量去重 | Linux e2e RUN（4 passed） |
 | Issue #299 | plan-B 壳工具页不可达（设计决策项，三候选方案，未擅改） | 证据链完整（§12b） |
+| PR #420（待 lead） | dist 锁机制 acquire 时闭锁（F-NIT：flock 中途消失→release 走错臂→楔死后续构建）+ 锁头文档范围修正（F-Doc） | Linux RUN（锁套件 5 passed） |
 | Issue #300 | 双形态 CSP unsafe-inline 债务 nonce/hash 改造跟踪 | 无既有跟踪项 |
 | 审计文档 | 本文件（随各轮审查增量更新；行号基线随合并轮次刷新） | 子代理抽查 30+ 引用（第 3 轮） |
 
