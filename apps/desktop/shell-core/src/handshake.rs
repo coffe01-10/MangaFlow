@@ -488,12 +488,14 @@ mod tests {
         (format!("http://127.0.0.1:{port}"), server)
     }
 
-    /// The health gate's contract is pass-through: whatever status the peer
-    /// sends arrives as `Ok((status, body))` so the retry loop in
-    /// `wait_for_health` can distinguish "not ready yet" from a transport
-    /// failure. A gate that started mapping non-200 to `Err` — or that
-    /// dropped the body — would silently change that decision for every
-    /// caller.
+    /// The health surface's contract is pass-through: whatever status the
+    /// peer sends arrives as `Ok((status, body))`. The retry loop in
+    /// `wait_for_health` retries identically on `Err` and on non-200; the
+    /// callers that DO branch on the distinction are the tauri health probe
+    /// (`Err` renders as an error string, `Ok(status)` as a number) and the
+    /// shell simulator's body consumer. A `get_status` that started mapping
+    /// non-200 to `Err` — or that dropped the body — would silently change
+    /// what those callers report.
     #[test]
     fn get_status_passes_non_200_statuses_through_with_the_body() {
         let (origin, server) = respond_on_loopback(
