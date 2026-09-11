@@ -143,9 +143,13 @@ test("defaultPython prefers the explicit override and maps the venv per platform
     assert.equal(defaultPython("C:/repo", "win32"), "C:/repo\\.venv\\Scripts\\python.exe");
     assert.equal(defaultPython("/repo", "linux"), "/repo/.venv/bin/python");
     // The production entry passes no platform argument: the host platform
-    // decides, and on a POSIX CI host the win32 mapping must not leak.
-    const host = defaultPython("/repo");
-    assert.ok(host === "/repo/.venv/bin/python" || host.endsWith(".venv\\Scripts\\python.exe"));
+    // decides. Conditional-exact (not a disjunction): a disjunction would
+    // accept a lib that hard-pins the WRONG platform on every host.
+    if (process.platform === "win32") {
+      assert.equal(defaultPython("/repo"), "/repo/.venv\\Scripts\\python.exe");
+    } else {
+      assert.equal(defaultPython("/repo"), "/repo/.venv/bin/python");
+    }
   } finally {
     if (original !== undefined) process.env.MANGAFLOW_PYTHON = original;
   }
