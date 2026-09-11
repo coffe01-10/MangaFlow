@@ -997,6 +997,10 @@ public sealed class WorkflowView : WorkspaceView
     private readonly List<string> history = [];
     private int historyIndex;
 
+    // #344: 快照在 push 时即序列化成字符串（值捕获，不是引用捕获）。这个不变式
+    // 依赖 DuplicateSelected 的 config 深拷：若节点间共享可变字典，克隆编辑之后
+    // 推入的快照会把被污染的原节点 config 一并冻结，undo/redo 重放时把克隆的
+    // 最后编辑写回原节点。
     private string Snapshot(string label) => JsonSerializer.Serialize(new
     {
         label,
