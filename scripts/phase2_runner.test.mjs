@@ -186,3 +186,29 @@ test("waitForOwnedHealth names the last health error at timeout", async () => {
     /timed out waiting for owned health.*503/s,
   );
 });
+
+test("json() keeps 204 as null, merges content-type, and names the failing call", async () => {
+  const { json } = await import("./phase2_runner.mjs");
+  const seen = [];
+  const fetchImpl = async (url, init) => {
+    seen.push([url, init?.headers?.["content-type"]]);
+    if (url.endsWith("no-content")) {
+      return { ok: true, status: 204 };
+    }
+    if (url.endsWith("boom")) {
+      return { ok: false, status: 500, text: async () => "boom body" };
+    }
+    return { ok: true, status: 200, json: async () => ({ ok: 1 }) };
+  };
+  assert.equal(await json("http://x/no-content", {}, fetchImpl), null);
+  const payload = await json("http://x/data", { method: "POST", body: "{}" }, fetchImpl);
+  assert.deepEqual(payload, { ok: 1 });
+  // content-type must be set even when the caller passes other headers.
+  await json("http://x/data", { headers: { "x-trace": "t" } }, fetchImpl);
+  assert.equal(seen[2][1], "application/json");
+  await assert.rejects(
+    () => json("http://x/boom", { method: "DELETE" }, fetchImpl),
+    /DELETE http:\/\/x\/boom: 500 boom body/,
+  );
+});
+
