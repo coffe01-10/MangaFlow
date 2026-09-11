@@ -8,7 +8,10 @@ contract: assemble into a sibling staging directory, swap with same-volume
 renames, and keep the previous tree byte-identical on failure. The #382
 cases pin the two windows that contract left open: an async exception
 landing between the two renames, and a rollback that fails while the old
-tree is still parked in the retired directory.
+tree is still parked in the retired directory. The #393 case pins the
+operator re-run in that end state: with the resource root missing and a
+same-pid retired tree parked as the only copy, assemble must refuse
+instead of deleting it during startup cleanup.
 """
 
 from __future__ import annotations
@@ -210,6 +213,38 @@ def test_failed_rollback_keeps_retired_tree_with_recovery_guide(tmp_path, monkey
     assert sorted(p.name for p in res.parent.iterdir()) == [retired.name]
     # The error tells the operator where the old tree is parked and how to
     # restore it manually.
+    msg = str(excinfo.value)
+    assert str(retired) in msg
+    assert str(res) in msg
+    assert "Do not delete" in msg
+    assert "Move-Item" in msg
+
+
+def test_rerun_with_stale_retired_tree_refuses_and_keeps_copy(tmp_path, monkeypatch):
+    module = _load_module()
+    src = _make_source(tmp_path)
+    res = tmp_path / "src-tauri" / "web"
+    node = tmp_path / "node.exe"
+    node.write_bytes(b"node-runtime")
+    # The #382 rollback-failure end state: res is gone and the retired
+    # tree sits under a pid this new run reuses, so its startup cleanup
+    # would rmtree the only copy of the old tree before staging anything.
+    monkeypatch.setattr(os, "getpid", lambda: 424242)
+    retired = res.parent / f"{res.name}.old-{os.getpid()}"
+    _make_previous(retired)
+    parked = _tree(retired)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        module.assemble(src=src, res=res, node=node)
+
+    # Refused before anything was staged or deleted: the parked tree is
+    # byte-identical and still the only entry beside the resource root.
+    assert not res.exists()
+    assert retired.exists()
+    assert _tree(retired) == parked
+    assert sorted(p.name for p in res.parent.iterdir()) == [retired.name]
+    # The error repeats the manual-recovery guidance instead of failing
+    # silently or suggesting a plain re-run would be safe.
     msg = str(excinfo.value)
     assert str(retired) in msg
     assert str(res) in msg
