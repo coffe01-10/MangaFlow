@@ -190,8 +190,10 @@ mod tests {
 
     /// A zero-member archive must still be a structurally valid ZIP: the
     /// EOCD alone, with both count fields at 0 and the central-directory
-    /// size/offset at 0 — the shape a user picks when logs were all
-    /// skipped, which must not read as corrupt.
+    /// size/offset at 0. `ZipWriter` is a public builder, so a zero-entry
+    /// `finish()` is a reachable shape for any caller — and this is the
+    /// only pin covering the disk-number and comment-length fields, which
+    /// the multi-member round-trip test never reads.
     #[test]
     fn finish_on_a_fresh_writer_yields_a_valid_empty_archive() {
         let bytes = ZipWriter::new().finish();
