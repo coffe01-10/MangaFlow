@@ -13,12 +13,9 @@
 //!   `stdin_close_is_a_cooperative_stop_channel`).
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
-
-#[cfg(unix)]
-use std::path::Path;
 
 mod common;
 
@@ -1050,9 +1047,11 @@ fn a_garbage_ready_line_fails_verification_and_is_torn_down() {
 }
 
 /// Error-path pin: a helper binary that cannot be executed must fail the
-/// spawn with a clean Io error (not a panic, not a hang) — and leave no
-/// owned runtime directory behind (RuntimeLayout::create runs before the
-/// spawn, so the abort path must clean it up).
+/// spawn with a clean named error — the ownership layer wraps the exec
+/// NotFound as OwnershipError::Spawn — not a panic, not a hang — and the
+/// pre-spawn failure records "stopped" with no exit code while the owned
+/// runtime directory legitimately persists with the terminal journal (the
+/// doc contract for pre-spawn ownership failures).
 #[test]
 fn spawn_fails_cleanly_on_a_missing_helper_binary() {
     let user_data = temp_user_data("missing-binary");
