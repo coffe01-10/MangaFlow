@@ -344,3 +344,17 @@ doc-code 不一致 sweep（子代理，双源核验）收割 6 项 → 3 PR：
   #445（并发 record：8 线程×50 记录 = 400 条完整 JSONL，并发类别钉测）。
   本 Goal 累计 21 枚独立小 PR。
 - 轮 4 已派出（返工核验 + #437/#445 新审）。
+
+#### 合并顺序提示（给 lead，20260912）
+
+- 本夜 21 枚 PR 分支均基于 44e3945，互不 rebase；EOF 追加型冲突集中在四个文件：
+  tests/log_export.rs（#406/#416/#417/#433）、tests/startup_protocol.rs
+  （#421/#422/#423/#432/#437，且共含同一处 `use std::fs;` 导入块——三方合并可自动
+  取同侧）、src/picker.rs（#403/#404/#425）、src/handshake.rs（#405/#424 的测试
+  追加块）。所有测试 fn 名互异，冲突解法均为"两块都保留"；每合入一枚后，其余
+  分支 `git rebase origin/master` 即可，需要我代 rebase 任何分支请直接指定。
+  src/logs.rs 三分支（#406/#418/#445）改动区域不同（collect_members / 测试锚点），
+  预期无冲突。
+- 勘误：上夜已合的 4 条旧分支（pr-zip-writer-guards / pr-ownership-error-display /
+  pr-get-status-semantics / pr-rotate-logs-report）的远端 tip 含 .lead-tmp/* 草稿
+  提交（lead 侧工作文件，本轮未触碰、不清理）；这些分支不应再被复用为 PR 载体。
