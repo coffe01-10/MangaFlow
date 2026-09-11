@@ -138,3 +138,15 @@
 **台账备注（不立卷，有据）**：FA3 dist-lock bash/python 混装互斥失效——87a5ce9 已文档性裁决 "unsupported"，不重复立卷；FA4 build-frontend-static.sh link→link 链重建 glob 序依赖（fail-closed 构建中止，flaky 非损坏）——并入 #409 修复批次顺带；FC1 fake_channel 目录形态——按 Verifier 建议折叠进敌意根加固说明（建议在 _validate_api_root 契约注释标明"目录形态不拒"或在测试补一条钉死现状）；FB4 native 无全局异常面（44 个 async void 均内部有守卫，纯加固注记）。
 
 **核实为守住（本窗新增代码面）**：7386eca 悬空绝对目标拒绝、cf4bcff swap 回滚 fail-closed、42f5e5e junction-aware 克隆、bdf8d9a 别名目录钉（与 web 侧谓词等价 + 服务端复验）、7a32cc0 PAUSED 取消生命周期（WAITING_APPROVAL→CANCELLED 重写 + UI 刷新）、7699a87 轮询节流（陈旧 ≤10s 自愈）、fc06f3c 单次加载不变量 + conflict bar 收拢、373/375/376 测试钉行为一致。
+
+### 本窗 R2（2026-09-12）结果：native Views 深挖（首个全量 Views 状态机审计）+ shell-core 边缘 + e2e/tauri 面。3 路 Hunter + 1 轮独立 Verifier（3 个 P2 全确认，Z2 被 Verifier 追加第二个跨写窗口）
+
+**已归档 issue（B 账 +6，累计 11/20）**：
+- #426 [P2] ScriptView 衣柜多存复活已删分配（陈旧 scene 快照逐角色 PATCH、无 version、后端整体替换；范围修正：≥2 脏位且含删除时才触发）
+- #427 [P2] WorkflowView 切换竞态跨工作流写图（无加载序守卫 + Activate 双加载 + 排队 flush 用陈旧画布 + 等版本绕过 CAS——Verifier 追加第二个窗口）
+- #428 [P2] Reconnect 绕过 ConfirmLeaveAsync（#341 修复只覆盖 RefreshAsync；Activate 全量重载摧毁脚本表单/分镜草稿/导演草稿；应用文案「项目数据已保留」与实际行为相反）
+- #429 [P3] Views 草稿守卫家族四例（GenerateView 导演草稿、Settings/ProjectSettings 表单含半输 API key、StoryboardView 章节切换陈旧渲染、LocalEditWindow 关窗丢 mask）
+- #430 [P3] shell-core 生命周期三边缘（导出 ENOSPC 孤儿 .pending 且无磁盘空间检查/2GiB 内存构档、RunLog::create 失败泄漏永久不可清扫 runtime 目录、planted .rotating 目录永久楔死该日志轮转）
+- #431 [P3] phase2_runner 契约套件 POSIX 静默跳过 + Job 顺序守卫仅源码字符串匹配（附带 P4 注记：e2e Windows stop 或孤儿 node 孙进程、health_probe UI 线程无连接超时）
+
+**核实为守住（R2 clean inventory）**：shell-core——READY 64KiB cap 边界、token 常量时比较、is_loopback_origin 全拒绝形态（[::1]/0.0.0.0/127.0.0.2/unicode）、owner.json 容错、post-spawn 全失败路径 abort_spawn、sweep 名门/拒链/未来 mtime、ziparch 不变量不可达、无输入可达 panic；native——无 WebView2/URI scheme 面、token 不进 C#、Preferences/KeyValueStore 损坏安全、ApiClient traversal 校验、ExportLogs 100MB 上限 + 拒 reparse point、44 个 async void 内部有守卫；e2e——owned-tree Ctrl+C/CtrlBreak 击杀、跨 run 端口污染守卫、#350 dist lock + tree-hash 溯源、#308 picker post-open 身份校验、fake-channel 门控、断言行为化（无 sleep-and-hope）。
