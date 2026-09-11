@@ -1673,7 +1673,11 @@ fn stop_reaches_a_non_group_leader_child_and_contains_pid_refuses_foreign() {
 /// `MANGAFLOW_*` variable would be inherited by every subprocess the
 /// helper spawns for its whole lifetime (#478's companion pin on the
 /// shell side). The stand-in echoes back every MANGAFLOW_* key it
-/// received plus the UTF-8 pair, via a side report file under user_data.
+/// received plus the UTF-8 pair, via a side report file under user_data;
+/// the expected set is the parent's own MANGAFLOW_* keys plus the two
+/// identifiers, so documented harness overrides stay legitimate. The
+/// stand-in closes its stdin read end before publishing READY, making
+/// the run's Io abort deterministic.
 #[test]
 fn the_helper_environment_carries_exactly_the_documented_additions() {
     let script = temp_user_data("env-surface").join("env-report-helper.py");
@@ -1690,24 +1694,28 @@ sock = socket.socket()
 sock.bind(("127.0.0.1", 0))
 port = sock.getsockname()[1]
 origin = f"http://127.0.0.1:{port}"
-stat = open(f"/proc/{os.getpid()}/stat").read()
 record = {
     "version": 1,
     "token": token,
     "state": "ready",
     "pid": os.getpid(),
     "api_origin": origin,
-    "pid_starttime": int(stat.rsplit(")", 1)[1].split()[19]),
 }
+if sys.platform == "linux":
+    stat = open(f"/proc/{os.getpid()}/stat").read()
+    record["pid_starttime"] = int(stat.rsplit(")", 1)[1].split()[19])
 journal.write_text(json.dumps(record), encoding="utf-8")
 report.write_text(json.dumps({
     "mangaflow_keys": sorted(k for k in os.environ if k.startswith("MANGAFLOW_")),
     "python_utf8": os.environ.get("PYTHONUTF8"),
     "python_io_encoding": os.environ.get("PYTHONIOENCODING"),
 }), encoding="utf-8")
+# Close the stdin read end BEFORE publishing READY so the shell's GO
+# write EPIPEs in every interleaving (same determinism as the go-write
+# abort pin); stdout is fd 1 and unaffected.
+os.close(0)
 print("MANGAFLOW_READY " + json.dumps(
     {"token": token, "pid": os.getpid(), "api_origin": origin}), flush=True)
-os.close(0)
 os._exit(0)
 "#,
     )
@@ -1730,9 +1738,23 @@ os._exit(0)
             .unwrap_or_else(|error| panic!("env report readable: {error}")),
     )
     .unwrap();
+    // The child inherits the harness environ, so the expected surface is
+    // the parent's own MANGAFLOW_* keys (documented overrides such as
+    // MANGAFLOW_DESKTOP_PYTHON may legitimately be set) plus exactly the
+    // two handshake identifiers the shell adds.
+    let mut parent_keys: Vec<String> = std::env::vars()
+        .map(|(k, _)| k)
+        .filter(|k| k.starts_with("MANGAFLOW_"))
+        .collect();
+    parent_keys.push("MANGAFLOW_DESKTOP_JOURNAL".to_string());
+    parent_keys.push("MANGAFLOW_DESKTOP_TOKEN".to_string());
+    parent_keys.sort();
+    parent_keys.dedup();
     assert_eq!(
         report["mangaflow_keys"],
-        serde_json::json!(["MANGAFLOW_DESKTOP_JOURNAL", "MANGAFLOW_DESKTOP_TOKEN"]),
+        serde_json::Value::Array(
+            parent_keys.iter().map(|k| serde_json::json!(k)).collect()
+        ),
         "the shell must add exactly the two handshake identifiers: {report}"
     );
     assert_eq!(report["python_utf8"], "1");
