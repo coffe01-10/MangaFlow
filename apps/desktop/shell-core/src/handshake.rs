@@ -576,18 +576,31 @@ mod tests {
 
     /// The path is interpolated into the request line verbatim: a CR or LF
     /// would inject a second request (request smuggling) or truncate this
-    /// one on the loopback hop. The refusal must fire BEFORE any dial — a
-    /// connection error on the discard port would have the wrong kind.
+    /// one on the loopback hop. The refusal must fire BEFORE any dial: the
+    /// probe targets a HELD listener, so a guard that fired after the dial
+    /// would let the request through and surface as a read timeout — a
+    /// different kind — while the pre-dial guard returns InvalidInput
+    /// regardless of what the peer would have said.
     #[test]
     fn get_status_refuses_cr_or_lf_in_the_path_before_dialing() {
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let port = listener.local_addr().unwrap().port();
+        // The listener is HELD (never accepted from): a post-dial guard
+        // would complete the connect and hang on the response read.
         for path in [
             "/api/v1/health\r\nGET /admin HTTP/1.0\r\n",
             "\n",
             "x\r",
         ] {
-            let error = get_status("http://127.0.0.1:9", path, Duration::from_secs(1))
-                .err()
-                .expect("CR/LF in the path must be refused");
+            let error = get_status(
+                &format!("http://127.0.0.1:{port}"),
+                path,
+                Duration::from_secs(1),
+            )
+            .err()
+            .expect("CR/LF in the path must be refused");
             assert_eq!(
                 error.kind(),
                 std::io::ErrorKind::InvalidInput,
