@@ -119,3 +119,9 @@
 - 基线：origin/master `44e3945`，分支 `night/n3-redteam-burn-20260912`（与 master 同点起步）。`native/**`、`native-tests/**` 只读。
 - 上一窗关闭时的"零发现"是对 4aa1797 前代码面的结论；本窗增量面 = `4aa1797..44e3945` 的桌面 churn（junction 重建/装配换窗/静态导出克隆/dist 锁/zip writer 守卫/ownership 错误展示/get-status 语义/审批别名目录钉/workflow view 暂停取消/ScriptView 双激活/native intake page 重建）——全部是**修复本身带来的新代码**，回归挖掘是本窗第一优先。
 - 配额跟踪：B ≥20 实质 issue（杜绝水文，先挖后报）；C ≥6 非 native 防守测试/契约小 PR；D 既有 Desktop/RedTeam issue 清账（FIXED/PARTIAL/NOT_FIXED 有据）；E ≥6 轮互审；F 本节持续更新。
+
+- **R1（本窗首轮，2026-09-12）**：三路并行审计（native 新增面深审：storyboard 编辑套件/检查面板/workflow inspector/审批队列；shell-sidecar-src-tauri 增量：picker 身份校验 1992152、对话框重入守卫、plan-B shell-tools 窗口 #299 解决、helper env/api-root 校验 e0b108c；scripts+docs 一致性）——产出 Issue #339-#351（13 个）与 #343/#346/#349 的修复 PR #352/#353/#354（均合并）。
+- **R2（交叉复审）**：#357 三声明全 HOLD（MERGE）；11 个旧 Issue 质量审计——全 CORRECT 无重复，#317 第 1 项被 #298 提前修复（已重划），行号漂移不影响结论。
+- **R3（补挖）**：#344 伴随形状、#343 wiring 空转、#311 工具链注意事项与 GO 拒绝残渣第三来源——已评论/入台账。
+- **R4（终审）**：#354 扩展三处 + 台账与 GitHub 状态一致性核验——GO。
+- **R5（续跑轮，master 44e3945）**：交叉复核窗口内生产增量——helper \`_validate_api_root\` iterdir fail-closed（修复真实的 fail-open：traverse-only 根的裸 set() 回退，探针已证）、get_status 夹具 RST 规避排水纪律（test-only，并行负载下的 ConnectionReset 消除）、rotate-logs stderr 报告（契约一致）、ziparch 名长守卫（此前已审）——**无引入缺陷**。认证 HEAD：shell-core **126/126**、sidecar e2e+relay+env+dist-lock **34/34**（apps/web 树哈希溯源断言按设计强制了 bundle 重建）。回归挖掘由并行窗内审计持续覆盖（native intake/workflow 暂停取消/ScriptView 双激活已在 R1 native 深审范围）。
