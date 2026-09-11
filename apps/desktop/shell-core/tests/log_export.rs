@@ -503,3 +503,58 @@ fn export_of_an_empty_logs_dir_yields_a_manifest_only_archive() {
     let _ = fs::remove_dir_all(&user_data);
     let _ = fs::remove_file(&destination);
 }
+
+/// A non-UTF8 log file name must never enter the ARCHIVE: lossy
+/// conversion would fold distinct byte names onto the same
+/// replacement-char member (duplicate ZIP entries). The report is
+/// display-only text, so it carries the lossy path for findability.
+/// The file itself must survive untouched: an export is a read-only walk.
+/// Unix-only: planting invalid-UTF8 names needs raw OsStr bytes.
+#[test]
+#[cfg(unix)]
+fn export_skips_a_non_utf8_member_name_without_lossy_folding() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let user_data = temp_user_data("non-utf8");
+    let token = new_token();
+    let logs = logs_dir(&user_data);
+    fs::create_dir_all(&logs).unwrap();
+    let run_log = RunLog::create(&user_data, &token).unwrap();
+    run_log
+        .record("spawn", &serde_json::json!({ "token": token }))
+        .unwrap();
+
+    // Two DIFFERENT invalid byte names that lossy-fold onto the same
+    // replacement-char member string.
+    let raw_a = b"bad-\xFF.log";
+    let raw_b = b"bad-\xFE.log";
+    fs::write(logs.join(std::ffi::OsStr::from_bytes(raw_a)), "a\n").unwrap();
+    fs::write(logs.join(std::ffi::OsStr::from_bytes(raw_b)), "b\n").unwrap();
+
+    let destination = std::env::temp_dir().join(format!("mfd-export-{}.zip", new_token()));
+    let report = export_logs_zip(&user_data, &destination).unwrap();
+
+    // The only archived member is the run log itself.
+    assert_eq!(report.files, vec![format!("shell-{token}.log")], "{report:?}");
+    // The report is display-only, so it carries the LOSSY path (both raw
+    // names fold onto the same string here — acceptable in a report, fatal
+    // in an archive). The user can find both offending files; the archive
+    // still contains neither.
+    let skipped_names: Vec<&str> = report.skipped.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(
+        skipped_names,
+        vec!["bad-\u{FFFD}.log", "bad-\u{FFFD}.log"],
+        "both skips must be reported with findable lossy names: {skipped_names:?}"
+    );
+    assert!(report.skipped.iter().all(|s| s.reason == "non_utf8_name"),
+        "each skip must carry the non_utf8_name reason: {report:?}");
+
+    // Both files must still exist byte-identical on disk.
+    assert_eq!(fs::read(logs.join(std::ffi::OsStr::from_bytes(raw_a))).unwrap(), b"a\n");
+    assert_eq!(fs::read(logs.join(std::ffi::OsStr::from_bytes(raw_b))).unwrap(), b"b\n");
+    // The archive stays a valid zip starting at the local header.
+    assert_eq!(&fs::read(&destination).unwrap()[0..2], b"PK");
+
+    let _ = fs::remove_dir_all(&user_data);
+    let _ = fs::remove_file(&destination);
+}
