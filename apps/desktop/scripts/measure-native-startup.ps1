@@ -7,6 +7,16 @@ $exe = Join-Path $repo 'apps/desktop/native/bin/Release/net8.0-windows/MangaFlow
 $dataRoot = Join-Path $env:TEMP ("mangaflow-perf-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $dataRoot | Out-Null
 $results = @()
+# Current sample's process, so the finally block can tree-kill it after a
+# Ctrl+C or a mid-sample throw. Cleared once a sample has been accounted for.
+$proc = $null
+function Stop-SampleTree {
+    param([int]$SamplePid)
+    # The client spawns a job-less child tree (native-host → python sidecar);
+    # Stop-Process would kill only the WPF root and orphan the children
+    # holding the API port. taskkill /T walks the whole descendant tree.
+    & taskkill /PID $SamplePid /T /F | Out-Null
+}
 try {
     for ($i = 1; $i -le $Samples; $i++) {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -14,7 +24,6 @@ try {
         $psi.WorkingDirectory = $repo
         $psi.UseShellExecute = $false
         $psi.EnvironmentVariables['MANGAFLOW_NATIVE_REPO'] = $repo
-        $psi.EnvironmentVariables['MANGAFLOW_DESKTOP_USER_DATA'] = $dataRoot
         # Fresh data dir per sample so each run includes full backend provisioning.
         $runData = Join-Path $dataRoot "run-$i"
         $psi.EnvironmentVariables['MANGAFLOW_DESKTOP_USER_DATA'] = $runData
@@ -45,10 +54,17 @@ try {
         $results[-1] | Add-Member -NotePropertyName CleanClose -NotePropertyValue $cleanClose
         $results[-1] | Add-Member -NotePropertyName Exited -NotePropertyValue $exited
         $results[-1] | Add-Member -NotePropertyName LeftoverChildren -NotePropertyValue ($leftover -join ',')
-        if (-not $exited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+        if (-not $exited) { Stop-SampleTree $proc.Id }
+        $proc = $null
     }
 }
 finally {
+    # Belt-and-braces: a Ctrl+C or a mid-sample throw during the 120 s sample
+    # window would otherwise leak the whole tree (root + native-host + sidecar)
+    # holding its API port for the rest of the session.
+    if ($proc -and (Get-Process -Id $proc.Id -ErrorAction SilentlyContinue)) {
+        Stop-SampleTree $proc.Id
+    }
     $results | Format-Table -AutoSize | Out-String | Write-Output
     try { Remove-Item -Recurse -Force $dataRoot -ErrorAction SilentlyContinue } catch {}
 }
