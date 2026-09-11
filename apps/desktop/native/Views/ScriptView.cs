@@ -437,6 +437,10 @@ public sealed class ScriptView : WorkspaceView
 
     public override Task RefreshAsync()
     {
+        // F5/用户刷新不得销毁打开中的场景/情节拍编辑表单（#341）：quiet 轮询路径
+        // 早有同款守卫（LoadScriptAsync 的 editingFormsOpen 检查），用户显式刷新
+        // 同样提前返回——表单关闭后的下一次加载（轮询或手动刷新）会用新数据重绘。
+        if (editingFormsOpen) return Task.CompletedTask;
         _ = LoadScriptAsync();
         return Task.CompletedTask;
     }

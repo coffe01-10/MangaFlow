@@ -124,9 +124,11 @@ internal static class NativeStoryboardEditChecks
             FocusModeChecks(view);
             await ReplanChecks(view, fixture);
             await InspectorKeyIsolationChecks(view, fixture);
+            await RefreshKeepsDraftsChecks(view, fixture);
+            await ScriptRefreshKeepsFormsChecks();
         }
         finally { view.Deactivate(); }
-        Console.WriteLine("PASS: storyboard resize handles/bubble create/dialogue 409 recovery/bleed-safe overlay/focus mode/replan/inspector key isolation all match the web contract");
+        Console.WriteLine("PASS: storyboard resize handles/bubble create/dialogue 409 recovery/bleed-safe overlay/focus mode/replan/inspector key isolation/refresh draft preservation all match the web contract");
     }
 
     // ── 1. 缩放手柄：bounds 变更、撤销栈、整包 PUT 载荷、最小尺寸 ──
@@ -383,6 +385,78 @@ internal static class NativeStoryboardEditChecks
         finally { owner.Close(); }
     }
 
+    // ── 8. 刷新保草稿（#341）：脏状态（几何草稿 + 撤销栈 + 对白草稿）下走 RefreshAsync，
+    // 服务端数据必须重读（StoryboardGets 增加），同时草稿原样存活——回归（preserveDrafts:false
+    // 的旧刷新）会清空撤销栈、把几何弹回服务端值、丢弃对白草稿，三条断言全部失败。
+    private static async Task RefreshKeepsDraftsChecks(StoryboardView view, Fixture fixture)
+    {
+        view.SelectPanelForTest(0);
+        view.ResizeViaHandleForTest(0, "e", new Point(0.8, 0.35));   // 制造几何草稿
+        var draft = view.PanelRectForTest(0);
+        Require(draft.Width > 0.6, "几何草稿构造失败（宽度应偏离服务端 0.5）");
+        Require(view.CanUndoForTest, "几何草稿必须点亮撤销栈");
+        var box = Descendants(view).OfType<TextBox>().Single(element => GetName(element) == "气泡 1 文字");
+        box.Text = "刷新后仍在的台词";
+        Require(view.NarrativeDirtyForTest, "对白草稿构造失败");
+        var reads = fixture.StoryboardGets;
+        await view.RefreshAsync();
+        await Until(() => fixture.StoryboardGets > reads);   // 刷新确实重读了服务端锚点
+        await Settle();
+        Require(view.CanUndoForTest, "刷新必须保留撤销栈（refetch 语义，不是弃稿）");
+        Require(view.PanelRectForTest(0) == draft, "刷新必须保留画布几何草稿");
+        Require(view.NarrativeDirtyForTest, "刷新必须保留对白草稿");
+        Require(Descendants(view).OfType<TextBox>().Any(element => GetName(element) == "气泡 1 文字" && element.Text == "刷新后仍在的台词"),
+            "刷新后检查器必须从草稿册回填未保存的台词");
+    }
+
+    // ── 9. 剧本表单刷新存活（#341）：打开的场景/情节拍编辑表单 + 用户刷新路径，
+    // 表单与输入必须存活；表单关闭后刷新恢复工作。回归（无守卫的 LoadScriptAsync）
+    // 在 await RefreshAsync 返回时已同步清空 body（非 quiet 路径的 spinner 分支），
+    // 「表单存活」断言立即失败。
+    private static async Task ScriptRefreshKeepsFormsChecks()
+    {
+        var fixture = new ScriptFixture();
+        using var api = new ApiClient("http://127.0.0.1:12345", fixture);
+        var view = new ScriptView();
+        view.Activate(new WorkspaceContext
+        {
+            Api = api, Cache = new ApiCache(), State = new WorkspaceState(), Window = null!,
+            Project = new ProjectItem("sb-script", "剧本刷新测试", "", 0, 0),
+            NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
+        });
+        try
+        {
+            var body = Field<System.Windows.Controls.StackPanel>(view, "body");
+            await Until(() => body.Children.OfType<SceneSection>().Any());
+            var scene = body.Children.OfType<SceneSection>().Single();
+            Click(Buttons(scene, "编辑场景").Single());
+            Descendants(scene).OfType<TextBox>().First().Text = "刷新后的地点";
+            var beat = scene.BeatRows.Single();
+            Click(Buttons(beat, "编辑").Single());
+            Descendants(beat).OfType<TextBox>().First().Text = "刷新后的动作";
+
+            var reads = fixture.ScriptReads;
+            await view.RefreshAsync();
+            Require(fixture.ScriptReads == reads, "编辑表单打开时刷新应提前返回，不得发起 script 读取");
+            var scenes = body.Children.OfType<SceneSection>().ToList();
+            Require(scenes.Count == 1 && scenes[0].IsEditing, "用户刷新后场景编辑表单必须存活（#341）");
+            var editingBeat = scenes[0].BeatRows.FirstOrDefault(row => row.IsEditing);
+            Require(editingBeat != null, "用户刷新后情节拍编辑表单必须存活（#341）");
+            Require(Descendants(scenes[0]).OfType<TextBox>().Any(box => box.Text == "刷新后的地点"),
+                "场景表单输入必须在刷新后保留");
+            Require(Descendants(editingBeat!).OfType<TextBox>().Any(box => box.Text == "刷新后的动作"),
+                "情节拍输入必须在刷新后保留");
+
+            // 表单关闭后刷新恢复工作（守卫不得把刷新永久挡死）。
+            Click(Buttons(scenes[0], "退出编辑").Single());
+            reads = fixture.ScriptReads;
+            await view.RefreshAsync();
+            await Until(() => fixture.ScriptReads > reads);
+            await Until(() => body.Children.OfType<SceneSection>().Any());
+        }
+        finally { view.Deactivate(); }
+    }
+
     // ── helpers（NativeAssetsLoopChecks 同款）──
     private static async Task Until(Func<bool> condition)
     {
@@ -536,5 +610,38 @@ internal static class NativeStoryboardEditChecks
                "candidate_count":2}
               """;
         }
+    }
+
+    // #341 剧本侧夹具：一章一场景一情节拍，只计数 script 读取（读取与渲染解耦后，
+    // 「表单打开时刷新不发起读取」即可作为守卫生效的直接判据）。
+    private sealed class ScriptFixture : HttpMessageHandler
+    {
+        public int ScriptReads;
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (request.Method == HttpMethod.Get)
+            {
+                if (path.EndsWith("/chapters/ch-1/script")) { ScriptReads++; return Task.FromResult(Json(Script)); }
+                if (path.EndsWith("/projects/sb-script/chapters"))
+                    return Task.FromResult(Json("""[{"id":"ch-1","title":"第一章","ordinal":1,"page_count":1}]"""));
+                if (path.EndsWith("/projects/sb-script/characters")) return Task.FromResult(Json("[]"));
+                if (path.EndsWith("/projects/sb-script/outfits")) return Task.FromResult(Json("[]"));
+                if (path.EndsWith("/scene-assets")) return Task.FromResult(Json("[]"));
+            }
+            return Task.FromResult(Json("{}"));
+        }
+
+        private const string Script = """
+            {"status":"CONFIRMED","coverage_ratio":1.0,"source_segments":[
+              {"id":"seg-1","text":"原文片段"}],
+             "scenes":[
+              {"id":"sc-1","location":"旧地点","time_label":"夜","weather":"小雨","purpose":"建立场景","emotional_arc":"平静转不安",
+               "version":3,"scene_asset_id":"","scene_asset_variant_id":"","outfit_assignments":{},"source_segments":[],
+               "beats":[
+                {"id":"bt-1","action":"旧动作","speaker_name":"樱","dialogue":"……","narration":"","subtext":"",
+                 "must_visualize":true,"mergeable":false,"page_turn_hook":false,"importance":0.5,"version":2,"source_segments":[]}]}]}
+            """;
     }
 }

@@ -1798,7 +1798,11 @@ public sealed class StoryboardView : WorkspaceView
 
     public override Task RefreshAsync()
     {
-        if (currentPage != null) _ = SelectPageAsync(currentPage);
+        // F5/刷新对齐 web 的 refetch 语义（#341）：重读服务端锚点（页栅栏、
+        // panel.version、canvas 字段）但保留画布几何草稿、撤销栈与对白草稿——
+        // 刷新不得变成静默弃稿。显式弃稿的出口仍是离开确认与冲突条的
+        // 「放弃草稿并重新加载」。
+        if (currentPage != null) _ = SelectPageAsync(currentPage, preserveDrafts: true);
         return Task.CompletedTask;
     }
 
