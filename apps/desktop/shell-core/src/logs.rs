@@ -817,7 +817,7 @@ fn validate_destination(
     if is_symlink_at(destination) {
         return Err(ExportError::DestinationIsSymlink);
     }
-    if false && destination.is_dir() {
+    if destination.is_dir() {
         return Err(ExportError::DestinationIsDirectory);
     }
     if !allow_existing && destination.is_file() {
@@ -1735,7 +1735,6 @@ mod tests {
         let _ = fs::remove_dir_all(&user_data);
     }
 
-    #[test]
     /// Concurrent record() writers: the inner Mutex serializes whole
     /// lines, so N threads x M records must yield N*M intact JSONL lines —
     /// no interleaved or torn lines, none lost. A regression to an
@@ -1789,6 +1788,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&user_data);
     }
 
+    #[test]
     fn run_log_record_survives_mutex_poisoning() {
         let user_data = temp_user_data("poison");
         let token = "cd".repeat(16);
