@@ -13,18 +13,15 @@
 //!   `stdin_close_is_a_cooperative_stop_channel`).
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
-
-#[cfg(unix)]
-use std::path::Path;
 
 mod common;
 
 use mangaflow_desktop_shell_core::handshake::{spawn_helper, HelperConfig, SpawnError};
 use mangaflow_desktop_shell_core::logs::shell_log_path;
-use mangaflow_desktop_shell_core::ownership::OwnedTree;
+use mangaflow_desktop_shell_core::ownership::{OwnedTree, OwnershipError};
 use mangaflow_desktop_shell_core::protocol::{
     verify_ready_line, VerifyError, GO_PREFIX, HEALTH_PATH,
 };
@@ -43,6 +40,20 @@ fn temp_user_data(tag: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+/// Resolve the owned runtime entry's owner.json under
+/// `<user_data>/runtime/` (the fixture guarantees exactly one owned
+/// runtime entry per user_data root — resolving it once keeps the pid and
+/// state reads on the SAME journal).
+fn newest_journal_path(user_data: &Path) -> Option<std::path::PathBuf> {
+    let runtime = user_data.join("runtime");
+    let entry = std::fs::read_dir(&runtime)
+        .ok()?
+        .filter_map(|entry| entry.ok())
+        .find(|entry| entry.path().join("owner.json").is_file())?
+        .path();
+    Some(entry.join("owner.json"))
 }
 
 fn proc_alive(pid: u32) -> bool {
@@ -1025,6 +1036,51 @@ fn a_garbage_ready_line_fails_verification_and_is_torn_down() {
             "the garbage-talking helper must be dead after the teardown"
         );
     }
+    let _ = std::fs::remove_dir_all(&user_data);
+}
+
+/// Error-path pin: a helper binary that cannot be executed must fail the
+/// spawn with a clean named error — the ownership layer wraps the exec
+/// NotFound as OwnershipError::Spawn — not a panic, not a hang — and the
+/// pre-spawn failure records "stopped" with no exit code while the owned
+/// runtime directory legitimately persists with the terminal journal (the
+/// doc contract for pre-spawn ownership failures).
+#[test]
+fn spawn_fails_cleanly_on_a_missing_helper_binary() {
+    let user_data = temp_user_data("missing-binary");
+    let config = HelperConfig {
+        python: std::path::PathBuf::from("nonexistent-helper-binary-xyz"),
+        helper_script: user_data.join("nonexistent-script.py"),
+        helper_args: vec![],
+        ready_timeout: Duration::from_secs(5),
+        health_timeout: Duration::from_secs(5),
+    };
+
+    let error = match spawn_helper(&config, &user_data) {
+        Ok(_) => panic!("a missing helper binary must not complete the handshake"),
+        Err(error) => error,
+    };
+    // The ownership layer wraps the exec failure (NotFound) as
+    // OwnershipError::Spawn — a named ownership-layer error rather than a
+    // bare Io.
+    assert!(
+        matches!(error, SpawnError::Ownership(OwnershipError::Spawn(_))),
+        "unexpected error: {error:?}"
+    );
+
+    // Terminal bookkeeping: the pre-spawn failure records "stopped" with
+    // no exit code (the doc contract for pre-spawn ownership failures) —
+    // the runtime directory legitimately persists with the terminal
+    // journal; only the cleanup of the temp root removes it.
+    let journal_value: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(newest_journal_path(&user_data).unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(journal_value["state"], "stopped", "{journal_value}");
+    assert!(
+        journal_value.get("exit_code").is_none(),
+        "a pre-spawn failure records no exit code: {journal_value}"
+    );
     let _ = std::fs::remove_dir_all(&user_data);
 }
 
