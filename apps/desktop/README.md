@@ -246,8 +246,8 @@ powershell -ExecutionPolicy Bypass -File apps/desktop/scripts/start-native.ps1
   3. 前端静态导出：**发现确定性阻塞**（动态段预渲染组合 + 工作台预渲染崩溃），静态导出非 flag 级改动；方案 B（捆绑 node + 固定端口中继，实现见 D5 行与 §1）**已实现并经 21 项 e2e 验证（2026-09-12 复核）**。
   4. Rust 维护能力：壳核心逻辑集中在 shell-core（library 约 6,231 行 Rust，其中
      `logs.rs` 约占 2,742 行——日志布局/轮转/导出是 V02-54B/C 后最大的单一模块；
-     另有 tests/ 集成测试约 1,100 行）+ src-tauri 粘合（`main.rs` 约 338 行）；**已由 lead 在终批中裁定可接受**。
-     （行数为 2026-09-06 powershell 实测口径：`src/**/*.rs` 去 `src/bin/`、`src-tauri/src`。）
+     另有 tests/ 集成测试约 2,857 行）+ src-tauri 粘合（`main.rs` 约 570 行）；**已由 lead 在终批中裁定可接受**。
+     （行数为 2026-09-12 wc 实测口径：`src/**/*.rs` 去 `src/bin/`、`src-tauri/src`。）
 
 ## 5. 用户数据安全（安装/升级/卸载契约）
 
