@@ -1,0 +1,174 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running unittests src\lib.rs (target\debug\deps\mangaflow_desktop_shell_core-5dcbdb924ccb968b.exe)
+
+running 71 tests
+test b64::tests::all_byte_values_match_the_reference_vector ... ok
+test handshake::tests::helper_command_forces_utf8_stdio_environment ... ok
+test b64::tests::encoded_length_is_always_padded_to_multiple_of_four ... ok
+test b64::tests::rfc4648_test_vectors ... ok
+test logs::tests::log_name_token_boundaries ... ok
+test handshake::tests::get_status_caps_the_response_read ... ok
+test logs::tests::destination_validation_rejects_traversal_and_user_data_targets ... ok
+test logs::tests::overwrite_placement_failure_cleans_up_the_pending_sibling ... ok
+test logs::tests::export_refuses_a_symlink_planted_at_the_pending_sibling ... ok
+test logs::tests::open_append_regular_refuses_paths_outside_the_logs_root ... ok
+test logs::tests::export_includes_members_at_exactly_the_total_cap ... ok
+test logs::tests::restore_refuses_to_clobber_an_occupied_oldest_slot ... ok
+test logs::tests::rotation_fails_and_preserves_an_ambiguous_oldest_staging_leftover ... ok
+test logs::tests::rotation_never_follows_symlinks_or_leaves_the_logs_root ... ok
+test logs::tests::no_overwrite_placement_refuses_a_destination_created_after_validation ... ok
+test logs::tests::export_refuses_an_existing_destination_without_confirmation ... ok
+test logs::tests::export_replaces_a_stale_regular_pending_sibling ... ok
+test logs::tests::rotation_failure_on_an_unrenameable_base_loses_no_generations ... ok
+test logs::tests::export_skips_a_member_that_cannot_be_read ... ok
+test ownership::tests::job_handle_drop_releases_the_kernel_object ... ok
+test ownership::tests::ownership_error_display_embeds_each_detail_and_source_chains_spawn_only ... ok
+test logs::tests::run_log_rejects_non_hex_tokens ... ok
+test protocol::tests::accepts_wellformed_ready_line ... ok
+test protocol::tests::journal_directory_path_surfaces_as_journal_missing ... ok
+test logs::tests::export_caps_members_and_total_bytes_with_reported_skips ... ok
+test logs::tests::run_log_record_survives_mutex_poisoning ... ok
+test logs::tests::rotation_self_heals_a_staged_oldest_leftover_into_the_empty_slot ... ok
+test logs::tests::rotation_with_keep_1_prunes_down_to_a_single_generation ... ok
+test logs::tests::export_refuses_a_junction_planted_at_the_pending_sibling ... ok
+test protocol::tests::mark_stopped_without_a_journal_fabricates_nothing ... ok
+test protocol::tests::rejects_a_plus_prefixed_port_in_the_origin ... ok
+test protocol::tests::rejects_garbage_lines ... ok
+test protocol::tests::rejects_loopback_lookalike_origins ... ok
+test protocol::tests::new_token_output_satisfies_the_token_format_contract_and_is_unique ... ok
+test protocol::tests::rejects_non_loopback_origin ... ok
+test protocol::tests::rejects_pids_beyond_the_u32_range_even_when_they_wrap_onto_the_expected_pid ... ok
+test protocol::tests::runtime_dir_name_predicate_boundaries ... ok
+test protocol::tests::rejects_wrong_token_or_pid ... ok
+test protocol::tests::journal_non_utf8_fails_closed ... ok
+test protocol::tests::accepts_web_origin_and_validates_it_is_loopback ... ok
+test logs::tests::session_sweep_rotates_only_oversized_base_files ... ok
+test logs::tests::rotation_shift_failure_unwinds_already_renamed_generations ... ok
+test protocol::tests::mark_stopped_preserves_an_unparsable_journal ... ok
+test protocol::tests::sweep_keeps_a_candidate_whose_journal_is_a_directory ... ok
+test protocol::tests::token_matches_survives_length_and_byte_differences ... ok
+test protocol::tests::unix_now_clamps_a_pre_epoch_clock ... ok
+test protocol::tests::sweep_keeps_a_candidate_whose_journal_is_a_symlink ... ok
+test protocol::tests::verify_errors_display_and_route_through_the_error_trait ... ok
+test ziparch::tests::add_file_refuses_a_backslash_member_name - should panic ... ok
+test ziparch::tests::add_file_refuses_an_empty_member_name - should panic ... ok
+test protocol::tests::runtime_layout_journals_ownership_before_any_spawn ... ok
+test ziparch::tests::archive_round_trips_through_central_directory ... ok
+test protocol::tests::journal_reads_are_bounded_and_oversize_fails_closed ... ok
+test ziparch::tests::crc32_matches_known_vectors ... ok
+test ziparch::tests::dos_date_time_clamps_far_future_years ... ok
+test protocol::tests::session_start_sweeps_a_stale_terminal_runtime_directory ... ok
+test ziparch::tests::dos_date_time_packs_utc ... ok
+test ziparch::tests::finish_on_a_fresh_writer_yields_a_valid_empty_archive ... ok
+test logs::tests::rotation_final_rename_failure_unwinds_the_completed_shift ... ok
+test ziparch::tests::member_names_beyond_the_u16_field_panic_instead_of_corrupting ... ok
+test protocol::tests::sweep_keeps_a_candidate_with_a_future_mtime_journal ... ok
+test protocol::tests::sweep_removes_only_stale_terminal_runtime_dirs ... ok
+test logs::tests::rotation_shifts_generations_and_prunes_oldest ... ok
+test handshake::tests::get_status_passes_non_200_statuses_through_with_the_body ... ok
+test handshake::tests::get_status_fails_closed_on_an_empty_response ... ok
+test protocol::tests::journal_tamper_matrix_fails_closed_on_every_identity_field ... ok
+test protocol::tests::sweep_never_removes_through_planted_links ... ok
+test ziparch::tests::add_file_accepts_the_u16_maximum_and_panics_beyond_it ... ok
+test logs::tests::run_log_rotation_circuit_breaker_opens_after_three_failures ... ok
+test logs::tests::export_manifest_excludes_members_that_change_during_export ... ok
+test handshake::tests::get_status_maps_a_refused_connection_to_an_error ... ok
+
+test result: ok. 71 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.05s
+
+     Running unittests src\bin\native-host.rs (target\debug\deps\native_host-a83de6be63e10593.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\bin\shell-sim.rs (target\debug\deps\shell_sim-ac77c836b9c09020.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\delivery_contract.rs (target\debug\deps\delivery_contract-9b57c7e2bc2a70bb.exe)
+
+running 9 tests
+test script_src_unsafe_inline_is_pinned_debt_not_drift ... ok
+test no_config_declared_window_may_bypass_the_handshake_gate ... ok
+test webview_network_surface_stays_loopback_only ... ok
+test bundle_identity_and_targets_stay_pinned ... ok
+test capability_surface_stays_the_pinned_default ... ok
+test uninstall_config_must_not_carry_user_data_deletion_hooks ... ok
+test with_global_tauri_stays_enabled_for_the_shell_tools_page ... ok
+test no_capability_may_grant_a_remote_ipc_context ... ok
+test plan_b_web_csp_script_src_is_nonce_based ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\log_export.rs (target\debug\deps\log_export-55ec58b3f0d1aa49.exe)
+
+running 6 tests
+test export_refuses_destinations_inside_user_data_root ... ok
+test export_overwrite_replaces_and_never_orphans_the_pending_sibling ... ok
+test export_skips_members_beyond_the_recursion_depth_cap ... ok
+test export_archives_logs_skips_escapes_and_python_validates ... ok
+test handshake_writes_run_logs_that_export_contains_without_commands ... ok
+test export_includes_a_member_at_exactly_the_per_member_cap ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.22s
+
+     Running tests\log_rotation.rs (target\debug\deps\log_rotation-4d0fca5cbbd68fca.exe)
+
+running 6 tests
+test rotate_logs_is_a_noop_without_a_logs_directory ... ok
+test rotate_logs_reports_a_file_parked_at_the_logs_path ... ok
+test session_start_sweep_leaves_below_threshold_logs_alone ... ok
+test session_start_sweep_rotates_oversized_previous_session_logs ... ok
+test run_log_rotates_mid_session_and_open_path_stays_writable ... ok
+test rotated_generations_are_exported_with_the_active_log ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.61s
+
+     Running tests\picker_policy.rs (target\debug\deps\picker_policy-380e7e8238a297e4.exe)
+
+running 10 tests
+test traversal_shapes_are_rejected_before_any_read ... ok
+test suffix_and_size_policies_mirror_upload_boundaries ... ok
+test source_text_pick_round_trips_through_registry_readback ... ok
+test readback_refails_when_picked_file_is_swapped_grows_or_deleted ... ok
+test suffix_policy_maps_per_kind_with_exact_allowed_sets ... ok
+test sweep_keeps_candidates_with_invalid_runtime_names ... ok
+test picker_shape_boundaries_fail_cleanly ... ok
+test readback_fails_closed_when_swapped_between_validation_and_open ... ok
+test picks_through_linked_parent_directories_are_refused ... ok
+test directory_pick_validates_type_and_symlinks ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests\startup_protocol.rs (target\debug\deps\startup_protocol-565015104222544e.exe)
+
+running 17 tests
+test spawn_fails_cleanly_on_a_missing_helper_binary ... ok
+test stdin_close_is_a_cooperative_stop_channel ... ok
+test stop_is_idempotent_and_reports_the_cached_exit ... ok
+test shell_crash_still_kills_helper_and_descendants ... ok
+test noncooperative_helper_is_forcefully_killed ... ok
+test a_non_loopback_origin_fails_verification_and_is_torn_down ... ok
+test an_immediately_exiting_helper_fails_verification_and_is_torn_down ... ok
+test handshake_go_health_and_clean_stop_leaves_no_residue ... ok
+test post_ready_stdout_chatter_does_not_break_the_session ... ok
+test ready_pid_from_a_launcher_interpreter_chain_is_accepted_via_job_membership ... ok
+test concurrent_helpers_bind_distinct_dynamic_ports ... ok
+test wrong_go_token_is_refused_without_serving ... ok
+test health_timeout_failure_still_records_terminal_state_and_kills ... ok
+test a_garbage_ready_line_fails_verification_and_is_torn_down ... ok
+test oversized_ready_line_fails_verification_quickly ... ok
+test a_silent_helper_fails_with_ready_timeout_and_is_torn_down ... ok
+test a_second_helper_spawns_cleanly_after_a_full_first_session ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.25s
+
+   Doc-tests mangaflow_desktop_shell_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
