@@ -175,3 +175,12 @@
 **E — 互审轮次（6/6 ✓）**：E1 R1 Verifier（11 项）；E2 R2 Verifier（3 P2）；E3 R3 Verifier + 结构 P3 抽检；E4 R4 JOB1 交叉审 8 个已立 issue（全部 STRENGTHENED/CORRECTED，零 REFUTED）；E5 R4 Verifier（N1 降级 P3 + N5/N6/N2/N3 确认）；E6 终轮（#429 四项确认 + JobsView 陈旧对话框新姊妹发现，证据已挂 #429）。
 
 **F — 最终配额状态（截至本节提交）**：B **22/20 ✓**（#409-#413、#426-#431、#438-#444、#446-#449）；C **6/6 ✓**（#450-#455）；D **✓**；E **6/6 ✓**。窗口结束条件：时间到 09:00 后可 COMPLETE；若窗口延长，下一优先 = 已立 issue 的 owner 认领跟进 + 对 #426/#427/#428 修复 PR 的回归挖掘（native Views 是新开的深水区）。
+
+### 本窗 R7（2026-09-12 续跑，master 对齐 c3d694a）结果：新修复批回归挖掘 + E 第 7 轮
+
+- **已立 issue 关闭核验（D 延续）**：#409（cb0fc60 + #454 双清扫）、#412（b7833c8/#451）、#413（9dc0257/#450）、#430-2（633a868/#453）、#431（0f36205/#455）——全部 FIXED，证据评论已挂。6 个防守 PR（#450-#455）全部被认领合入且在新 tip 存活；#454 被 owner 扩展（cb0fc60 post-swap sweep），与 #454 的 pre-sweep 清扫在 HEAD 共存。
+- **新 issue（B 账 +2，累计 24）**：
+  - #457 [P3] assemble post-swap 清扫与模块 docstring/恢复契约矛盾（「different pid 不触碰」已失效）+ 并发 assemble 无锁（清扫可删除另一 run 的回滚源；fail-closed）
+  - #458 [P3] runtime layout 规范化守卫只比叶名——planted symlink at user_data/runtime 父级重定向绕过（会话树落位逃逸；同用户前置；ff0a0e2 只钉了叶名失配形态）
+- **E7**：新批 Hunter 回归挖掘 + lead 直读复核（docstring 矛盾与叶名守卫均经双确认）。
+- **新批核实为守住**：6aba8c2 目的地目录根钉（纯测试钉）、2c598ee get_status 预拨 CR/LF 拒绝（defense-in-depth，全部调用方传常量）、#407 junction 测试平台跳过（与本窗 PR 无重叠）、#408 traverse-only fallback 测试钉（与 #452 目录形态测试互补不冲突）。
