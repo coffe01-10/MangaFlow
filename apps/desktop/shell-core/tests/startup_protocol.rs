@@ -1666,3 +1666,78 @@ fn stop_reaches_a_non_group_leader_child_and_contains_pid_refuses_foreign() {
     );
 }
 
+
+/// The shell adds EXACTLY four variables to the helper's environment — the
+/// two handshake identifiers (token, journal path) plus the UTF-8 stdio
+/// pair. A future secret or credential that rides along in a new
+/// `MANGAFLOW_*` variable would be inherited by every subprocess the
+/// helper spawns for its whole lifetime (#478's companion pin on the
+/// shell side). The stand-in echoes back every MANGAFLOW_* key it
+/// received plus the UTF-8 pair, via a side report file under user_data.
+#[test]
+fn the_helper_environment_carries_exactly_the_documented_additions() {
+    let script = temp_user_data("env-surface").join("env-report-helper.py");
+    std::fs::write(
+        &script,
+        r#"
+import json, os, socket, sys
+from pathlib import Path
+
+token = os.environ["MANGAFLOW_DESKTOP_TOKEN"]
+journal = Path(os.environ["MANGAFLOW_DESKTOP_JOURNAL"])
+report = Path(sys.argv[1]) / "env-report.json"
+sock = socket.socket()
+sock.bind(("127.0.0.1", 0))
+port = sock.getsockname()[1]
+origin = f"http://127.0.0.1:{port}"
+stat = open(f"/proc/{os.getpid()}/stat").read()
+record = {
+    "version": 1,
+    "token": token,
+    "state": "ready",
+    "pid": os.getpid(),
+    "api_origin": origin,
+    "pid_starttime": int(stat.rsplit(")", 1)[1].split()[19]),
+}
+journal.write_text(json.dumps(record), encoding="utf-8")
+report.write_text(json.dumps({
+    "mangaflow_keys": sorted(k for k in os.environ if k.startswith("MANGAFLOW_")),
+    "python_utf8": os.environ.get("PYTHONUTF8"),
+    "python_io_encoding": os.environ.get("PYTHONIOENCODING"),
+}), encoding="utf-8")
+print("MANGAFLOW_READY " + json.dumps(
+    {"token": token, "pid": os.getpid(), "api_origin": origin}), flush=True)
+os.close(0)
+os._exit(0)
+"#,
+    )
+    .unwrap();
+
+    let user_data = temp_user_data("env-surface-ud");
+    let config = HelperConfig {
+        python: python(),
+        helper_script: script.clone(),
+        helper_args: vec![user_data.clone().into_os_string().into_string().unwrap()],
+        ready_timeout: Duration::from_secs(20),
+        health_timeout: Duration::from_secs(5),
+    };
+    spawn_helper(&config, &user_data).err().expect("the stand-in exits before GO: an Io abort");
+    // (The GO write fails against the closed stdin — the abort is expected;
+    // the env surface is what this test pins.)
+
+    let report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(user_data.join("env-report.json"))
+            .unwrap_or_else(|error| panic!("env report readable: {error}")),
+    )
+    .unwrap();
+    assert_eq!(
+        report["mangaflow_keys"],
+        serde_json::json!(["MANGAFLOW_DESKTOP_JOURNAL", "MANGAFLOW_DESKTOP_TOKEN"]),
+        "the shell must add exactly the two handshake identifiers: {report}"
+    );
+    assert_eq!(report["python_utf8"], "1");
+    assert_eq!(report["python_io_encoding"], "utf-8");
+
+    let _ = fs::remove_dir_all(&user_data);
+    let _ = fs::remove_file(&script);
+}
