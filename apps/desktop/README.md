@@ -55,7 +55,7 @@ apps/desktop/
 │   │                                #   desktop_pick_directory / desktop_read_picked_file
 │   │                                #   （rfd 原生对话框）；退出时停树并记 RunLog
 │   ├── tauri.conf.json              # frontendDist=../dist/frontend；withGlobalTauri；
-│   │                                #   bundle msi+nsis（未构建）
+│   │                                #   bundle msi+nsis（双产物已构建，NSIS 实机装/卸 RUN；MSI 安装步 NOT RUN，见 D1）
 │   └── capabilities/default.json    # core:default（自定义命令无需额外权限）
 ├── patches/web-static-export.patch  # 可丢弃前端补丁（静态导出 + 运行时 origin）
 ├── scripts/
@@ -72,6 +72,9 @@ apps/desktop/
 │   │                                #   外来监听（live/SO_REUSEADDR）独占拒绝
 │   ├── test_sidecar_env_and_api_root.py # env 契约（DISABLE_DOTENV 强制覆写继承 0）+
 │   │                                #   api-root 树校验矩阵（坏树在 sys.path 前拒绝）
+│   ├── dist-build-lock.sh           # dist/ 破坏性写者的互斥锁（flock/noclobber 双形态，#350；
+│   │                                #   bash 与 python 须同环境源，#383）
+│   ├── test_dist_build_lock.py      #   锁的并发自测（run-sidecar-e2e.sh 收集）
 │   ├── build-frontend-static.sh     # 一次性 worktree 应用静态导出补丁 → next build → 拷入 dist/
 │   ├── build-web-standalone.py      # plan B：standalone 生产构建 → 拷 .next/static →
 │   │                                #   校验 rewrites 目的地=固定中继端口 39443 →
@@ -133,7 +136,7 @@ apps/desktop/
    **每个壳退出路径（正常/崩溃/超时）都必须
    清树**，见 `tests/startup_protocol.rs::shell_crash_still_kills_helper_and_descendants`。
 
-## 3. 运行方式（Linux 沙箱与 Windows 实机均实测过；安装器链仍 NOT RUN）
+## 3. 运行方式（Linux 沙箱与 Windows 实机均实测过；安装器链部分实机——NSIS 装/卸 RUN，MSI 安装步仍 NOT RUN，见 D1）
 
 需要 rustup stable（1.98.1，含 `x86_64-pc-windows-msvc` std）在 PATH；系统 cargo 1.85
 无 Windows std，Windows 目标检查会报 E0463。
@@ -145,7 +148,7 @@ apps/desktop/scripts/run-sidecar-e2e.sh
 
 # b. Rust 协议/所有权测试（需 python3；Windows 上默认解析为 `python`，
 #    除非显式设置 MANGAFLOW_DESKTOP_PYTHON）
-cd apps/desktop/shell-core && cargo test   # 85 项（Linux 2026-09-09 实测；2026-09-06 Windows 实机为 49 项，夜间波次后持续增长）
+cd apps/desktop/shell-core && cargo test   # 126 项（Linux 2026-09-12 实测；2026-09-06 Windows 实机为 49 项，夜间波次后持续增长）
 
 # c. Windows 目标编译校验（在本 Linux 机即可；需要 llvm-rc 于 PATH）
 cd apps/desktop/src-tauri && cargo check --target x86_64-pc-windows-msvc
@@ -215,7 +218,7 @@ powershell -ExecutionPolicy Bypass -File apps/desktop/scripts/start-native.ps1
 | D2 | Python sidecar | **RUN（Linux + Windows 双形态，含 PyInstaller 冻结产物）** | `run-sidecar-e2e.sh`：真实 `app.main:app` 经 `alembic upgrade head`（31 个迁移到 head，`apps/api/migrations/versions/` 现有 31 个 revision 文件）+ SQLite 读写 + 本地 worker（无 Redis 时 API 内 LOCAL_EXECUTOR，即安装版默认形态）+ 假通道完成「生成→候选→采用→PNG 落盘→`/content` 可取」（**2026-09-06 Windows 实机原生复跑通过 11.1s**，停止通道为生产 stdin-EOF 协作停机）。PyInstaller onedir 冻结产物双平台实测（Linux 116MB / Windows 2026-09-06）：完整握手→GO→健康→真实 dashboard API→协作停机 exit 0；`alembic.ini`+`migrations` 必须放 `_internal/` 的硬约束在 Windows 形态同样成立。RQ/Redis Worker 进程形态仍 NOT RUN。 |
 | D3 | 进程生命周期 | **RUN（两平台原生：Linux 沙箱 + Windows 实机 shell-core 集成 + Windows 实机完整 debug 壳）/ 安装器链仍欠** | `cargo test`（两平台原生，Windows 实机 2026-09-06 全 49 项）：握手全链、错误 GO 拒绝 exit 75、并发双 helper 端口不冲突、`shell-sim` 崩溃后 helper+孙进程全灭、无协作者强杀升级、壳在 spawn 前写入归属 journal、launcher 链 READY pid 经 Job 成员验收。Windows 路径按 `scripts/owned_processes.py` `start_python` 纪律实现：`CREATE_SUSPENDED` 挂起创建 → 建 Job（`KILL_ON_JOB_CLOSE`）→ assign 仍挂起的子进程 → 快照枚举初始线程后 `ResumeThread`；任一步失败即终止仍挂起的子进程（fail-closed）。**完整 debug 壳 Windows 实机 2026-09-06**：真实关窗协作停机（RunLog `stopped` exit 0）与 `taskkill /F` 崩溃清树（全树 3 秒内灭）均实测。真实安装器链 + 多开下的完整 D3 复验仍欠。 |
 | D4 | 端口/单实例 | **RUN（端口+注入+单实例多开实机）/ WebView2 缺失安装行为 NOT RUN** | 原子绑定 `127.0.0.1:0`（socket 先绑后报，无 TOCTOU；并发测试两 helper 端口必异）；WebView 建立前完成握手；运行时注入 = 初始化脚本同步写 `window.__MANGAFLOW_API_ORIGIN__` + invoke `desktop_get_api_origin` 双通道，不依赖 `NEXT_PUBLIC_*`（浏览器断言 `api_origin_env_free`）/不依赖 Next rewrite（D5 实测直连）。**单实例多开 Windows 实机 2026-09-06 RUN**：第二实例立即退出（exit 0）；最小化窗口经 `unminimize()+set_focus()` 修复后正确还原聚焦（修复前 `set_focus` 单独对最小化窗口无效——实机发现的真实缺陷）。 |
-| D5 | 前端形态 | **RUN（静态导出机制验证，V02-53B 证据；方案 B 已实现并经 17 项 e2e 验证，2026-09-10 绿）** | 静态导出（V02-53B 历史形态）：`verify-static-origin.mjs`（Chromium）：静态导出页加载 → 注入 origin → 仪表盘**直连**动态端口 API（`/api/v1/projects/dashboard` 200，CORS 按桌面 origin 放行）→ 页面渲染，静态服务器 `/api/*` 零命中。**核心发现**：工作台子树无法只靠 flag 导出——`output:"export"` 要求每个动态段 ≥1 预渲染组合（真实项目 id 构建期不可知）且工作台组件树服务端预渲染崩溃；补丁以「poc 桩组合 + notFound stub + 删 3 个仅服务端页」换得壳级页面导出；静态导出路线需要正式的前端路由/组件改造（否决条件 3 的关键输入）。**方案 B（捆绑 node 跑 next start，保留 rewrites）已实现且有 e2e 覆盖**：`mangaflow_desktop_helper.py` `_spawn_web_server`（独占绑定固定回环中继端口 39443 → spawn node 跑 standalone server.js → 双字节管道中继到动态 API 端口）、启动校验 `_await_web_server_boot`（node 未证存活即 fail-closed 不启 web）、会话中退出监视 `_start_web_exit_watch`；`build-web-standalone.py` 构建期校验 rewrites 目的地=39443；e2e：`test_sidecar_e2e.py::test_sidecar_plan_b_web_server_loop` + `test_sidecar_relay.py` + `test_sidecar_relay_bind.py`（5+9+3=17 项，2026-09-10 绿）。 |
+| D5 | 前端形态 | **RUN（静态导出机制验证，V02-53B 证据；方案 B 已实现并经 21 项 e2e 验证，2026-09-12 复核）** | 静态导出（V02-53B 历史形态）：`verify-static-origin.mjs`（Chromium）：静态导出页加载 → 注入 origin → 仪表盘**直连**动态端口 API（`/api/v1/projects/dashboard` 200，CORS 按桌面 origin 放行）→ 页面渲染，静态服务器 `/api/*` 零命中。**核心发现**：工作台子树无法只靠 flag 导出——`output:"export"` 要求每个动态段 ≥1 预渲染组合（真实项目 id 构建期不可知）且工作台组件树服务端预渲染崩溃；补丁以「poc 桩组合 + notFound stub + 删 3 个仅服务端页」换得壳级页面导出；静态导出路线需要正式的前端路由/组件改造（否决条件 3 的关键输入）。**方案 B（捆绑 node 跑 next start，保留 rewrites）已实现且有 e2e 覆盖**：`mangaflow_desktop_helper.py` `_spawn_web_server`（独占绑定固定回环中继端口 39443 → spawn node 跑 standalone server.js → 双字节管道中继到动态 API 端口）、启动校验 `_await_web_server_boot`（node 未证存活即 fail-closed 不启 web）、会话中退出监视 `_start_web_exit_watch`；`build-web-standalone.py` 构建期校验 rewrites 目的地=39443；e2e：`test_sidecar_e2e.py::test_sidecar_plan_b_web_server_loop` + `test_sidecar_relay.py` + `test_sidecar_relay_bind.py`（9+9+3=21 项，pytest 收集 2026-09-12 复核；2026-09-10 首验时为 5+9+3=17 项）。 |
 | D6 | 凭据/日志/数据 | **RUN（目录+日志+凭据路径+日志导出+日志轮转）/ ACL NOT RUN** | 用户数据目录布局：`data/`（DB）、`storage/`、`uploads/` 均落 user-data（测试断言不落仓库）；V02-54B 起统一日志目录 `logs/`（壳 RunLog 里程碑 + helper/API/Worker stderr 按运行分文件），壳侧 `desktop_export_logs` 可归档（store-only ZIP + manifest.json）到用户可选路径；V02-54C 起**按大小轮转**：`shell-*.log` / `helper-*.stderr.log` 单文件达 12 MiB（< 导出 64 MiB 上限）rename 为 `.1`–`.5` 世代、超出删最旧——壳 RunLog 会话内轮转（写前检查、轮转后原打开路径继续写），helper stderr 由 helper 进程持有 fd，采用**跨会话轮转**（新会话 `RunLog::create` 清扫，取舍见 §6.4）；轮转不跟随符号链接、rename/删除不越 canonical logs 根。假通道密钥走生产 `credential_crypto` AES-GCM + 文件主密钥（`storage/.provider-credential-master-key` 自动生成）。Windows ACL 收紧 NOT RUN；轮转 Windows 实机行为 NOT RUN（Linux 实测，见 §6.4）；导出对单文件 64 MiB 上限仍跳过并在 manifest/report 记录。 |
 | D7 | 性能门禁 | **NOT RUN（按约定）** | V02-52A N=20 全样本不存在、本轮明确不跑 V02-52B；仅记录参考值：假闭环 e2e 全程约 4.3s（含 31 个迁移），远优于 ADR 冷启动 ≤15s 建议线，但**非固定窗口测量、不作为门禁证据**。 |
 | D8 | 自动更新（未签名） | **NOT RUN** | 未接 updater 插件、无签名密钥、无更新服务器（Issue 禁止真实签名/服务器）。 |
@@ -235,14 +238,14 @@ powershell -ExecutionPolicy Bypass -File apps/desktop/scripts/start-native.ps1
 - 仍 **NOT RUN**：WebView2 缺失/损坏安装行为（需可控卸载 Runtime）、WebView2 内
   `shell-tools.html` 工具页 invoke 与 rfd 原生对话框实机交互（#299 后入口为「工具」菜单
   打开的本地上下文窗口，菜单/窗口/invoke 实机链路仍待真机验证；协议/
-  命令面过 Windows 原生测试）、MSI/NSIS 安装器构建与安装/升级/卸载实机、SmartScreen/签名、
+  命令面过 Windows 原生测试）、MSI 安装步实机与带 schema 升级的跨版本升级路径（NSIS 装/卸已 RUN，见 D1）、SmartScreen/签名、
   自动更新链路。缓解不变：编译门禁 + 配置契约测试，不以编译通过冒充实机验证。
 - 否决条件核查（ADR §3.1；**已于 2026-09-06 随 W-21 终批逐项复核，决议见 ADR 头部「批准记录」**）：
   1. Python sidecar 打包：**已证伪为否决项**——Windows PyInstaller onedir 冻结产物冒烟全过（W-11 RUN，`_internal/` 硬约束双平台成立）。
   2. WebView2 渲染兼容：仪表盘级渲染 + 运行时 origin 注入实机 RUN（W-02 部分）；画布级渲染受 D5 前端形态约束，属 W-15 实现轮事项，不构成平台级否决。
-  3. 前端静态导出：**发现确定性阻塞**（动态段预渲染组合 + 工作台预渲染崩溃），静态导出非 flag 级改动；方案 B（捆绑 node + 固定端口中继，实现见 D5 行与 §1）**已实现并经 17 项 e2e 验证（2026-09-10 绿）**。
-  4. Rust 维护能力：壳核心逻辑集中在 shell-core（library 约 3,323 行 Rust，其中
-     `logs.rs` 约占 1,900 行——日志布局/轮转/导出是 V02-54B/C 后最大的单一模块；
+  3. 前端静态导出：**发现确定性阻塞**（动态段预渲染组合 + 工作台预渲染崩溃），静态导出非 flag 级改动；方案 B（捆绑 node + 固定端口中继，实现见 D5 行与 §1）**已实现并经 21 项 e2e 验证（2026-09-12 复核）**。
+  4. Rust 维护能力：壳核心逻辑集中在 shell-core（library 约 6,231 行 Rust，其中
+     `logs.rs` 约占 2,742 行——日志布局/轮转/导出是 V02-54B/C 后最大的单一模块；
      另有 tests/ 集成测试约 1,100 行）+ src-tauri 粘合（`main.rs` 约 338 行）；**已由 lead 在终批中裁定可接受**。
      （行数为 2026-09-06 powershell 实测口径：`src/**/*.rs` 去 `src/bin/`、`src-tauri/src`。）
 
@@ -395,7 +398,7 @@ powershell -ExecutionPolicy Bypass -File apps/desktop/scripts/start-native.ps1
    单实例多开/崩溃清树/协作停机/用户数据布局/日志链路与 PyInstaller 冻结 sidecar；**仍欠**：
    WebView2 缺失/损坏安装行为、`shell-tools.html` 工具页 invoke 与 rfd 对话框的实机交互
    （#299 后入口为「工具」菜单的本地上下文窗口，菜单/invoke 链路待真机；策略/命令面已由
-   Windows 原生测试覆盖）、MSI/NSIS 安装/升级/卸载实机、
+   Windows 原生测试覆盖）、MSI 安装步与跨版本升级实机、
    签名、自动更新、多开下的会话清扫竞态。
 2. RQ/Redis worker 进程形态与 Independent Worker（按 Issue 约束不装 Redis/Docker/Postgres；本地 LOCAL_EXECUTOR 已验，双平台）。
 3. V02-52A N=20 性能门禁、Lighthouse/FPS（归 V02-52B；#28 处方两轮门禁见 docs/acceptance/）。
