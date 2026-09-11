@@ -111,3 +111,11 @@
 **#307 node_port 共绑残差 —— 接受为同用户残差（选项三）。** 依据：攻击前提是同用户进程（netstat 级发现 + SO_REUSEADDR 共绑）；公告端口自 #301 起已 helper 自持且 Windows 独占绑定，共绑面只剩 node 内部临时端口；回环信任模型本就把同用户划在边界内。身份质询方案只能发现非代理型共绑（概率性），helper 前置 HTTP 终结是真实架构改动，均不值 P3 同用户残差的代价。若未来威胁模型把同用户纳入边界，重开此项。
 
 **#311 runtime sweep —— 第一部分已实证、第二部分不自动回收。** 第一部分（junction 过 guard-1）：Windows 腿 2026-09-11 首次实跑 `sweep_never_removes_through_planted_links` 的 in-root junction 钉住（protocol.rs Windows cfg 块）——**通过**：当前工具链的 `DirEntry::file_type()` 把 junction（name-surrogate 重解析点）报为 `is_dir()==false`，guard-1 即拦截，无需生产改动。第二部分（SIGKILL created/ready 残渣永不回收）：**决策不实现自动回收**——WPF 腿共享 runtime 布局且无单实例互斥，错误回收会删掉活会话的 ownership journal，其风险远大于每次硬崩溃留下的小 JSON 残渣；现有"清扫跳过非终态"是蓄意且被测试钉住的行为。重开条件：sweep 引入跨平台 pid+starttime 活性预言机并经 lead 安全论证。
+
+---
+
+## 8. 2026-09-12 加重窗口台账（重开，窗口至 09:00）
+
+- 基线：origin/master `44e3945`，分支 `night/n3-redteam-burn-20260912`（与 master 同点起步）。`native/**`、`native-tests/**` 只读。
+- 上一窗关闭时的"零发现"是对 4aa1797 前代码面的结论；本窗增量面 = `4aa1797..44e3945` 的桌面 churn（junction 重建/装配换窗/静态导出克隆/dist 锁/zip writer 守卫/ownership 错误展示/get-status 语义/审批别名目录钉/workflow view 暂停取消/ScriptView 双激活/native intake page 重建）——全部是**修复本身带来的新代码**，回归挖掘是本窗第一优先。
+- 配额跟踪：B ≥20 实质 issue（杜绝水文，先挖后报）；C ≥6 非 native 防守测试/契约小 PR；D 既有 Desktop/RedTeam issue 清账（FIXED/PARTIAL/NOT_FIXED 有据）；E ≥6 轮互审；F 本节持续更新。
