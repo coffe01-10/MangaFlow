@@ -125,3 +125,16 @@
 - **R3（补挖）**：#344 伴随形状、#343 wiring 空转、#311 工具链注意事项与 GO 拒绝残渣第三来源——已评论/入台账。
 - **R4（终审）**：#354 扩展三处 + 台账与 GitHub 状态一致性核验——GO。
 - **R5（续跑轮，master 44e3945）**：交叉复核窗口内生产增量——helper \`_validate_api_root\` iterdir fail-closed（修复真实的 fail-open：traverse-only 根的裸 set() 回退，探针已证）、get_status 夹具 RST 规避排水纪律（test-only，并行负载下的 ConnectionReset 消除）、rotate-logs stderr 报告（契约一致）、ziparch 名长守卫（此前已审）——**无引入缺陷**。认证 HEAD：shell-core **126/126**、sidecar e2e+relay+env+dist-lock **34/34**（apps/web 树哈希溯源断言按设计强制了 bundle 重建）。回归挖掘由并行窗内审计持续覆盖（native intake/workflow 暂停取消/ScriptView 双激活已在 R1 native 深审范围）。
+
+### 本窗 R1（2026-09-12）结果：3 路并行 Hunter + 1 轮独立 Verifier → 11 项候选全核实（10 P3 确认，FC1 建议折叠：fake_channel 扫描是防误用标记而非安全边界——helper 已先经 alembic env.py 执行树内任意代码，目录形态零增量对抗风险）
+
+**已归档 issue（B 账 +5）**：
+- #409 assemble-web-resources retired-copy 生命周期：ignore_errors 泄漏 web.old-<pid>（pid 复用后 :114 裸 rmtree 中止构建）+ 拒绝范围 pid-local + 恢复指引过期（Move-Item 对现存 web 是嵌套非恢复）
+- #410 单实例/跨客户端键失效：WPF 互斥体按词法路径哈希（subst/junction/8.3 别名绕过）+ tauri/WPF 无共享 user-data interlock → 一库两 API 服务（busy_timeout 无 WAL → 锁竞争非损坏）
+- #411 WPF NativeBackend 无击杀升级：>40s 楔死宿主 → StopAsync 超时未重置状态 → 重连永久死锁；窗口关闭后宿主+sidecar 存活继续服务 DB（Job Object 只绑 helper 树）
+- #412 neutrality 门漏检：模式集缺 `vertexai` 标记——vertex_credentials.py:249 的 `vertexai=True` 今天就在门外且文件不在 allowlist，check:neutrality 照样通过
+- #413 start-dev.ps1 .env 按 5.1 ANSI 解码：非 ASCII 凭据变 mojibake 后提升进 env（python-dotenv 不覆盖已设值）
+
+**台账备注（不立卷，有据）**：FA3 dist-lock bash/python 混装互斥失效——87a5ce9 已文档性裁决 "unsupported"，不重复立卷；FA4 build-frontend-static.sh link→link 链重建 glob 序依赖（fail-closed 构建中止，flaky 非损坏）——并入 #409 修复批次顺带；FC1 fake_channel 目录形态——按 Verifier 建议折叠进敌意根加固说明（建议在 _validate_api_root 契约注释标明"目录形态不拒"或在测试补一条钉死现状）；FB4 native 无全局异常面（44 个 async void 均内部有守卫，纯加固注记）。
+
+**核实为守住（本窗新增代码面）**：7386eca 悬空绝对目标拒绝、cf4bcff swap 回滚 fail-closed、42f5e5e junction-aware 克隆、bdf8d9a 别名目录钉（与 web 侧谓词等价 + 服务端复验）、7a32cc0 PAUSED 取消生命周期（WAITING_APPROVAL→CANCELLED 重写 + UI 刷新）、7699a87 轮询节流（陈旧 ≤10s 自愈）、fc06f3c 单次加载不变量 + conflict bar 收拢、373/375/376 测试钉行为一致。
