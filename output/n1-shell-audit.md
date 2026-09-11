@@ -401,6 +401,11 @@ doc-code 不一致 sweep（子代理，双源核验）收割 6 项 → 3 PR：
   READY → Verify(PidMismatch) 拒绝；abort 组停收割双进程 + journal stopped，
   有界 /proc 扫描防泄漏）。Windows 侧验收钉原为 cfg(windows)，此为其
   fail-closed 对偶。累计 22 枚。
+- 轮 7（子代理，两条尾部分支）：#424 SHIP 零发现（held-listener 判别力经
+  独立复现验证：post-dial 守卫确实落到 TimedOut，1s×3 有界）；#456 HOLD →
+  已修：/proc 扫描改用 proc_dead（容器 init 不收尸时 zombie 不得计为存活），
+  doc 去夸口（扫描只验证死亡，收割是 abort 的组停；测试二进制被硬杀时
+  sleeper 以两分钟自清），stand-in sleep 3600→120。
 - 红绿抽查补样（窗口纪律继续）：#422 的 `JournalMismatch("state")` 钉在
   verify_journal 的 state 比较被禁用时变红（panic 消息如实报告实际 variant）；
   #445 的 400 行完整线钉在 record 静默丢行时变红（0 ≠ 400）。累计抽查 4 钉
