@@ -252,3 +252,20 @@
 - 健康门不验响应身份（回环 200 即过）——设计级，需 lead 决策。
 - keep=1 与 sweep 的交互（清扫对 keep=1 基名的世代匹配）未测。
 - 并发导出同目标的 `.pending` 竞争（失败方误报 PendingIsSymlink）——需 seam。
+
+### 20260911 深夜续：PR #364 法证与分支重建
+
+- **法证**：远端 burn 分支曾为陈旧谱系回放（9 commits，基 4aa1797）：其中
+  `output/n1-shell-audit.md` 带有**已提交的冲突标记**（`<<<<<<< HEAD` /
+  `>>>>>>> fb70420`），且相对 master 净删除 ~289 行较新版测试
+  （protocol.rs −166 / picker_policy.rs −89 / startup_protocol.rs −52——均为
+  #361/#363 已并入的较新版本被旧版覆盖）。该谱系来自上一会话中断的错误
+  冲突解决，**唯一价值为零**（audit +26 亦为重复/标记垃圾）。
+- **处置**：`git reset --hard 4aa1797` + `--force-with-lease` 推回（仅 burn
+  分支；master 未动）。#364 保留开放，转为承载本轮 audit 账本增量与本夜
+  ≥4 枚独立小 PR 的落账。
+- 勘误：前节"121 项全绿"系中断会话的未验证计数，不作为证据；以 master tip
+  4aa1797 的实测为准（本节下方复核记录）。
+- 本夜计划（配额 B 缺口 ≥4）：每枚独立小 PR、单主题、红绿判别、Linux cargo
+  绿、native/** 零触碰。候选：rotation keep=1 × sweep 识别交互 pin（残留项）；
+  谓词/边界补充 pin；审计文档一致性。以实际 diff 为准，不开空头支票。
