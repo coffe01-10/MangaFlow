@@ -26,6 +26,7 @@ so a bare `npm run test` never spawns it.
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
 import subprocess
 import sys
@@ -75,11 +76,14 @@ def _load_standalone_module():
     return module
 
 
-def _run_contenders(tmp_path: Path, *, first: str, second: str) -> dict:
+def _run_contenders(
+    tmp_path: Path, *, first: str, second: str, env_extra: dict | None = None
+) -> dict:
     """Launch both contenders concurrently and return their intervals.
 
-    ``first``/``second`` select "python" or "bash". Returns
-    ``{name: (launch, start, end)}`` in wall-clock nanoseconds, where
+    ``first``/``second`` select "python" or "bash". ``env_extra`` is merged
+    into both children's environment (the bash-side lock-branch test seam).
+    Returns ``{name: (launch, start, end)}`` in wall-clock nanoseconds, where
     ``launch`` is recorded by the parent just before spawning (so it
     precedes every acquire attempt the child can make).
     """
@@ -106,7 +110,10 @@ def _run_contenders(tmp_path: Path, *, first: str, second: str) -> dict:
     processes = {}
     for key, (command, _base) in plans.items():
         launch = time.time_ns()
-        processes[key] = (subprocess.Popen(command), launch)
+        env = None
+        if env_extra:
+            env = {**os.environ, **env_extra}
+        processes[key] = (subprocess.Popen(command, env=env), launch)
 
     intervals = {}
     failures = []
@@ -233,3 +240,103 @@ def test_importing_the_build_script_has_no_side_effects():
     module = _load_standalone_module()
     assert callable(module.main)
     assert callable(module._dist_build_lock)
+
+
+_NOCLOBBER_SEAM = {"MANGAFLOW_DIST_LOCK_FORCE": "noclobber"}
+
+_BASH_TIMED_OUT_WAITER = (
+    'source "{helper}"\n'
+    "if acquire_dist_build_lock \"{lock}\" {timeout}; then\n"
+    "  echo 'unexpectedly acquired the held lock' >&2\n"
+    "  exit 8\n"
+    "fi\n"
+    # The waiter's EXIT trap would call release unconditionally — exercise
+    # exactly that shape, which used to delete the holder's lock file.
+    'release_dist_build_lock "{lock}"\n'
+    "exit 0\n"
+)
+
+
+def test_noclobber_timed_out_waiter_leaves_the_holder_locked(tmp_path: Path):
+    """Lock-file branch: a waiter whose acquire TIMED OUT is not the
+    holder. Its release (as an EXIT trap would) must not delete the
+    winner's lock file — cutting it short would let a third writer in
+    while the winner's critical section still runs. Red against the old
+    unconditional ``rm -f``."""
+
+    lock = tmp_path / "dist" / ".build.lock"
+    holder_base = tmp_path / "holder"
+    holder_base.mkdir()
+    holder_script = _BASH_CONTENDER.format(
+        helper=LOCK_SH, lock=lock, start=holder_base / "start",
+        end=holder_base / "end",
+    )
+    holder = subprocess.Popen(
+        ["bash", "-c", holder_script],
+        env={**os.environ, **_NOCLOBBER_SEAM},
+    )
+    try:
+        for _ in range(100):
+            if (holder_base / "start").exists():
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail("holder never acquired the lock")
+        assert lock.exists(), "the lock file must exist while held"
+
+        waiter = subprocess.run(
+            ["bash", "-c", _BASH_TIMED_OUT_WAITER.format(
+                helper=LOCK_SH, lock=lock, timeout=1)],
+            env={**os.environ, **_NOCLOBBER_SEAM},
+            capture_output=True, text=True, timeout=CONTEND_TIMEOUT,
+        )
+        assert waiter.returncode == 0, (
+            f"waiter must time out cleanly, rc={waiter.returncode}: {waiter.stderr}"
+        )
+        assert lock.exists(), (
+            "the timed-out waiter's release deleted the holder's lock file"
+        )
+        holder_pid = lock.read_text(encoding="utf-8").strip()
+        assert holder_pid, "lock file must still carry the holder's pid"
+    finally:
+        holder.communicate(timeout=CONTEND_TIMEOUT)
+    assert holder.returncode == 0
+    assert not lock.exists(), "the holder's own release must clean the lock"
+
+
+def test_stale_noclobber_lock_fails_loudly_with_the_remedy(tmp_path: Path):
+    """The header promises that a stale lock file (a holder that died
+    without releasing) makes later writers fail LOUDLY after the timeout,
+    with the remedy spelled out. Pin the loud failure end to end — return
+    code, the remedy message, and that the failed acquirer leaves the
+    stale file for the human to inspect."""
+
+    lock = tmp_path / "dist" / ".build.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text("999999999\n", encoding="utf-8")
+
+    probe = subprocess.run(
+        ["bash", "-c",
+         f'source "{LOCK_SH}"\nacquire_dist_build_lock "{lock}" 1\n'],
+        env={**os.environ, **_NOCLOBBER_SEAM},
+        capture_output=True, text=True, timeout=CONTEND_TIMEOUT,
+    )
+    assert probe.returncode != 0, "a stale lock must fail the acquire"
+    assert "stale lock file" in probe.stderr, (
+        f"the remedy must be spelled out on stderr: {probe.stderr}"
+    )
+    assert lock.exists(), "the failed acquirer must leave the stale file"
+
+
+def test_forced_noclobber_branch_serializes_two_bash_writers(tmp_path: Path):
+    """The lock-file branch's exclusion property was only ever exercised
+    on flock-less hosts; with the branch-force seam it is pinned on every
+    host. Both contenders take the seam, so the flock and lock-file
+    mechanisms cannot mask each other."""
+
+    if not _have_bash():
+        pytest.skip("no bash available for the dist-build-lock.sh branch")
+    intervals = _run_contenders(
+        tmp_path, first="bash", second="bash", env_extra=_NOCLOBBER_SEAM
+    )
+    _assert_mutually_exclusive(intervals)
