@@ -461,4 +461,43 @@ describe("WorkflowStudio 运行状态显示", () => {
     // 进度计数 1/2 同样来自轮询数据（快照是 0/2）。
     expect(screen.getByText(/1\/2/)).toBeInTheDocument();
   });
+
+  it("PAUSED（审批栅栏）运行显示中文状态，且取消按钮存在并调用 cancel", async () => {
+    const cancelSpy = vi.spyOn(api, "cancelWorkflowRun");
+    cancelSpy.mockResolvedValue(run({ status: "CANCELLED" }));
+    runsSpy.mockResolvedValue([run({ status: "PAUSED" })]);
+
+    renderStudio();
+    await screen.findByText("流程编排");
+
+    // 页脚不再裸显英文 PAUSED。
+    expect(await screen.findByText(/运行 暂停中/)).toBeInTheDocument();
+    // 取消按钮在 PAUSED 态必须渲染：cancel_run 接受 PAUSED，否则审批
+    // 栅栏态的 run 没有任何停止途径（同 scope 再起 run 会被 409 拒绝）。
+    const cancelButton = screen.getByRole("button", { name: /取消/ });
+    expect(cancelButton).toBeEnabled();
+    await act(async () => {
+      cancelButton.click();
+    });
+    await waitFor(() => expect(cancelSpy).toHaveBeenCalledWith("run-1"));
+    // PAUSED 不是 FAILED：不渲染重试入口。
+    expect(screen.queryByRole("button", { name: /重试/ })).toBeNull();
+  });
+
+  it("FAILED 运行在页脚提供重试入口，调用 retryWorkflowRun 复制同一范围", async () => {
+    const retrySpy = vi.spyOn(api, "retryWorkflowRun");
+    retrySpy.mockResolvedValue(run({ id: "run-2", status: "WAITING" }));
+    runsSpy.mockResolvedValue([run({ status: "FAILED" })]);
+
+    renderStudio();
+    await screen.findByText("流程编排");
+
+    expect(await screen.findByText(/运行 已失败/)).toBeInTheDocument();
+    // PAUSED/终态外不渲染取消；FAILED 只露出重试。
+    expect(screen.queryByRole("button", { name: /^取消$/ })).toBeNull();
+    await act(async () => {
+      screen.getByRole("button", { name: /重试/ }).click();
+    });
+    await waitFor(() => expect(retrySpy).toHaveBeenCalledWith("run-1"));
+  });
 });

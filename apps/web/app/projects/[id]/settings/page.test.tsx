@@ -1,8 +1,8 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api, type ModelCapability, type Project } from "@/lib/api";
+import { ApiError, api, type ModelCapability, type Project } from "@/lib/api";
 
 import ProjectSettingsPage from "./page";
 
@@ -13,6 +13,7 @@ vi.mock("next/navigation", () => ({
 
 const projectSpy = vi.spyOn(api, "project");
 const modelsSpy = vi.spyOn(api, "models");
+const updateProjectSpy = vi.spyOn(api, "updateProject");
 
 function project(overrides: Partial<Project> = {}): Project {
   return {
@@ -77,6 +78,7 @@ describe("ProjectSettingsPage 模型展示偏好", () => {
   beforeEach(() => {
     projectSpy.mockReset();
     modelsSpy.mockReset();
+    updateProjectSpy.mockReset();
   });
 
   it("隐藏普通候选，但保留当前项目默认模型并标注已隐藏", async () => {
@@ -94,5 +96,39 @@ describe("ProjectSettingsPage 模型展示偏好", () => {
     expect(screen.getByRole("option", { name: "Example · Visible text" })).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: /Hidden other/ })).not.toBeInTheDocument();
     expect(screen.getByRole("option", { name: "Example · Hidden current（已隐藏）" })).toBeInTheDocument();
+  });
+});
+
+describe("ProjectSettingsPage 409 版本冲突恢复", () => {
+  beforeEach(() => {
+    projectSpy.mockReset();
+    modelsSpy.mockReset().mockResolvedValue([]);
+    updateProjectSpy.mockReset();
+  });
+
+  it("409 后失效项目缓存重拉，重试保存携带服务器新版本成功", async () => {
+    // 首次载入 version 1；409 触发的失效重拉拿到 version 2。
+    projectSpy.mockReset()
+      .mockResolvedValueOnce(project({ version: 1 }))
+      .mockResolvedValue(project({ version: 2, default_concurrency: 3 }));
+    updateProjectSpy
+      .mockRejectedValueOnce(new ApiError("项目设置已被其他页面修改，请刷新后重试", 409, { message: "项目设置已被其他页面修改，请刷新后重试" }))
+      .mockResolvedValue(project({ version: 2, default_concurrency: 3 }));
+
+    renderPage();
+    await screen.findByText("测试项目");
+    fireEvent.click(screen.getByRole("button", { name: /保存项目设置/ }));
+
+    // 第一次保存用旧版本被拒；onError 必须失效 ["project", id] 触发重拉。
+    await waitFor(() => expect(updateProjectSpy).toHaveBeenCalledTimes(1));
+    expect(updateProjectSpy).toHaveBeenLastCalledWith("project-1", expect.objectContaining({ version: 1 }));
+    await waitFor(() => expect(projectSpy.mock.calls.length).toBeGreaterThanOrEqual(2));
+    expect(await screen.findByText(/项目设置已被其他页面修改/)).toBeInTheDocument();
+
+    // 用户重试：mutationFn 读重拉后的 project.data.version（2），不再无限 409。
+    fireEvent.click(screen.getByRole("button", { name: /保存项目设置/ }));
+    await waitFor(() => expect(updateProjectSpy).toHaveBeenCalledTimes(2));
+    expect(updateProjectSpy).toHaveBeenLastCalledWith("project-1", expect.objectContaining({ version: 2 }));
+    await screen.findByText("项目设置已保存");
   });
 });

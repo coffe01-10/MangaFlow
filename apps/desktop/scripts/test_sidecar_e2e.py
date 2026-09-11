@@ -10,6 +10,7 @@ Run via scripts/run-sidecar-e2e.sh (needs .venv-desktop with apps/api deps).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -545,6 +546,72 @@ def test_sidecar_boot_and_fake_generate_candidate_loop(desktop):
     ), final_journal
 
 
+# The stable lock file every dist/ writer takes EXCLUSIVELY (#350) —
+# build-web-standalone.py's DIST_LOCK_PATH and build-frontend-static.sh's
+# DIST_LOCK resolve to this same path.
+DIST_LOCK_PATH = REPO_ROOT / "apps/desktop/dist/.build.lock"
+
+
+@contextlib.contextmanager
+def _dist_read_lock(timeout: float = 60.0):
+    """Shared reader side of the dist/ build lock (#372 item 2).
+
+    The writers hold the exclusive lock around every destructive swap of
+    the dist/ trees (build-web-standalone.py's fcntl.flock LOCK_EX branch,
+    dist-build-lock.sh's ``flock -w`` form). ``fcntl.flock(fd, LOCK_SH)``
+    here is the same flock(2) mechanism as ``flock -s``, so it excludes a
+    writer's mid-rmtree/move window from the verification sampling the
+    caller performs — #350 locked the writers; this closes the e2e's read
+    window against them.
+
+    flock-capable hosts only (POSIX/CI — the same platform split the
+    writers use). Windows ships neither flock nor fcntl; the writers'
+    O_EXCL lock-file fallback there is a DIFFERENT mechanism (the lock
+    file itself is the mutex) with no shared mode, and a shared read
+    cannot be pieced together from the two — so this reader takes no lock
+    on Windows and the verification window stays unlocked there
+    (residual risk recorded in #372).
+
+    Deadlock surface (evaluated before adding): this is the only lock the
+    e2e reader holds and every writer holds only the exclusive one, so no
+    lock-order cycle exists; run-sidecar-e2e.sh rebuilds the bundle in a
+    subprocess that releases its lock before pytest starts, so a single
+    process never holds both sides of the same lock file.
+    """
+
+    try:
+        import errno
+        import fcntl
+    except ImportError:
+        yield  # Windows: no shared-lock primitive exists; see the docstring.
+        return
+
+    DIST_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(DIST_LOCK_PATH), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                break
+            except OSError as error:
+                if error.errno not in (errno.EACCES, errno.EAGAIN):
+                    raise
+                if time.monotonic() >= deadline:
+                    raise AssertionError(
+                        f"dist read lock: timed out after {timeout}s waiting "
+                        f"for {DIST_LOCK_PATH} (a writer holds the exclusive "
+                        "lock)"
+                    ) from error
+                time.sleep(0.25)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
 def _web_dist_dir() -> Path:
     """The Next standalone bundle (plan B, W-15): produced and relocated to
     apps/desktop/dist/web-standalone by scripts/build-web-standalone.py
@@ -553,42 +620,47 @@ def _web_dist_dir() -> Path:
     :8000 destination and no static copy)."""
 
     dist = REPO_ROOT / "apps/desktop/dist/web-standalone"
-    assert (dist / "server.js").is_file(), (
-        f"{dist} missing server.js — run scripts/build-web-standalone.py first"
-    )
-    assert (dist / ".next" / "static").is_dir(), (
-        f"{dist} missing .next/static — run scripts/build-web-standalone.py first"
-    )
-    # A stale bundle built for the wrong target would make the loop pass
-    # vacuously through some other listener; the relay destination is the
-    # contract under test.
-    manifest = dist / ".next" / "routes-manifest.json"
-    assert "127.0.0.1:39443" in manifest.read_text(encoding="utf-8"), (
-        f"{manifest} does not target the helper relay — rebuild with "
-        "scripts/build-web-standalone.py"
-    )
-    # Build provenance: the bundle must come from THIS source tree. dist/ is
-    # gitignored and survives for days, so a bundle built from an older
-    # apps/web would silently test outdated UI code. Both the source commit
-    # and the apps/web tree hash are stamped by the build script.
-    build_info_path = dist / "build-info.json"
-    assert build_info_path.is_file(), (
-        f"{build_info_path} missing — rebuild with scripts/build-web-standalone.py"
-    )
-    build_info = json.loads(build_info_path.read_text(encoding="utf-8"))
-    def _git(*args: str) -> str:
-        return subprocess.run(
-            ["git", *args], cwd=REPO_ROOT, check=True, capture_output=True, text=True
-        ).stdout.strip()
-    # Branch-independent: the apps/web TREE hash is what the UI was built
-    # from, identical across branches that share the same web source. The
-    # source_commit stays in the stamp as provenance metadata only.
-    expected_tree = _git("rev-parse", "HEAD:apps/web")
-    assert build_info.get("apps_web_tree") == expected_tree, (
-        f"stale web bundle: built from apps/web tree "
-        f"{build_info.get('apps_web_tree')!r} but the tree is at "
-        f"{expected_tree!r} — rerun scripts/build-web-standalone.py"
-    )
+    # Reader side of the #350 lock: the whole verification window (bundle
+    # shape, relay manifest, build provenance, tree-hash compare) samples
+    # the very tree a writer's rmtree+move replaces, so it runs under the
+    # shared lock (#372 item 2).
+    with _dist_read_lock():
+        assert (dist / "server.js").is_file(), (
+            f"{dist} missing server.js — run scripts/build-web-standalone.py first"
+        )
+        assert (dist / ".next" / "static").is_dir(), (
+            f"{dist} missing .next/static — run scripts/build-web-standalone.py first"
+        )
+        # A stale bundle built for the wrong target would make the loop pass
+        # vacuously through some other listener; the relay destination is the
+        # contract under test.
+        manifest = dist / ".next" / "routes-manifest.json"
+        assert "127.0.0.1:39443" in manifest.read_text(encoding="utf-8"), (
+            f"{manifest} does not target the helper relay — rebuild with "
+            "scripts/build-web-standalone.py"
+        )
+        # Build provenance: the bundle must come from THIS source tree. dist/ is
+        # gitignored and survives for days, so a bundle built from an older
+        # apps/web would silently test outdated UI code. Both the source commit
+        # and the apps/web tree hash are stamped by the build script.
+        build_info_path = dist / "build-info.json"
+        assert build_info_path.is_file(), (
+            f"{build_info_path} missing — rebuild with scripts/build-web-standalone.py"
+        )
+        build_info = json.loads(build_info_path.read_text(encoding="utf-8"))
+        def _git(*args: str) -> str:
+            return subprocess.run(
+                ["git", *args], cwd=REPO_ROOT, check=True, capture_output=True, text=True
+            ).stdout.strip()
+        # Branch-independent: the apps/web TREE hash is what the UI was built
+        # from, identical across branches that share the same web source. The
+        # source_commit stays in the stamp as provenance metadata only.
+        expected_tree = _git("rev-parse", "HEAD:apps/web")
+        assert build_info.get("apps_web_tree") == expected_tree, (
+            f"stale web bundle: built from apps/web tree "
+            f"{build_info.get('apps_web_tree')!r} but the tree is at "
+            f"{expected_tree!r} — rerun scripts/build-web-standalone.py"
+        )
     return dist
 
 

@@ -512,6 +512,14 @@ public sealed class StoryboardView : WorkspaceView
                 selected = panels.FirstOrDefault(p => p.Id == selectedPanelId);
                 selectedBubble = bubbles.FirstOrDefault(b => b.Id == selectedBubbleId);
                 MarkDirty();   // 撤销栈/气泡删除/叙事草稿照旧参与脏判定（不因重载清零）
+                // #371：按重载后的真实状态重估冲突条。preserve 重载已把服务器锚点
+                // 换成最新（上方 currentPage 的页栅栏、重建 panels/bubbles 的
+                // panel.version），重试保存即可成功——409 的前提（锚点过期）不复
+                // 存在，横幅文案「分镜格已在别处更新」对新画布不再成立，保留只会
+                // 把用户引向「放弃草稿并重新加载」这一破坏性出口；未保存草稿的存
+                // 在仍由脏判定/离开确认表达。读取失败走下面的 catch，storyboard
+                // 字段未换新锚点，横幅在那里保持原状。
+                conflictBar.Visibility = Visibility.Collapsed;
             }
             RenderPageBar();
             RenderCanvas();

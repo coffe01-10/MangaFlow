@@ -77,6 +77,9 @@ export default function ProjectWorkspace({
   const [localDraft, setDraft] = useState<Project | null>(null);
   const [selectedChapterId, setSelectedChapterId] = useState<string | null>(null);
   const [selectedPageId, setSelectedPageId] = useState<string | null>(() => searchParams.get("page"));
+  // ?page= 深链跨章回退提示的关闭状态：按目标页 id 记忆，新深链到来时
+  // 重新出现，用户手动关掉后同一目标不重复打扰。
+  const [dismissedDeepLinkPageId, setDismissedDeepLinkPageId] = useState<string | null>(null);
   const storedDrawModel = useLocalStorageValue(`mangaflow.image-model.${id}`, "auto");
   const drawModel: ImageModelAlias | null = storedDrawModel !== "auto" ? storedDrawModel : null;
   const [previewImage, setPreviewImage] = useState<{ url: string; label: string; candidate?: PageCandidate } | null>(null);
@@ -324,6 +327,21 @@ export default function ProjectWorkspace({
     && (section !== "library" || !library.isLoading)
     && (section !== "jobs" || !jobs.isLoading);
 
+  // #368：?page= 深链可能指向其他章节的页面。pages 查询只覆盖当前选中
+  // 章节，找不到目标时生成台（use-generation-workspace 的 find 兜底）与
+  // 分镜编辑器（等待目标页进入 pages 最终 no-op）都会静默落到本章第 1 页，
+  // 用户以为深链已生效。这里在数据就绪后给出可见提示，而不是无声错页。
+  const deepLinkPageId = searchParams.get("page");
+  const deepLinkPageMissing = Boolean(
+    needsPages
+      && deepLinkPageId
+      && dismissedDeepLinkPageId !== deepLinkPageId
+      && !pages.isLoading
+      && pages.data !== undefined
+      && pages.data.length > 0
+      && !pages.data.some((page) => page.id === deepLinkPageId),
+  );
+
   useEffect(() => {
     if (!workspaceRouteReady) return;
     const key = `mangaflow.workspace-scroll.${id}`;
@@ -384,6 +402,16 @@ export default function ProjectWorkspace({
         />
 
         <section className="workspace-canvas">
+          {deepLinkPageMissing && (
+            <div className="workflow-warning" role="status" aria-live="polite">
+              <CircleAlert size={17} />
+              <div>
+                <strong>深链目标页不在当前章节</strong>
+                <p>链接指向的页面不属于当前选中的章节，已显示本章第 1 页。请切换到目标章节后重试，或从任务中心重新进入。</p>
+              </div>
+              <button type="button" className="button ghost compact" onClick={() => setDismissedDeepLinkPageId(deepLinkPageId)}>知道了</button>
+            </div>
+          )}
           {section === "source" && (
             <SourceSection
               chapters={chapters}

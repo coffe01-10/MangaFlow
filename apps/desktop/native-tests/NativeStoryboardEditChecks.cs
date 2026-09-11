@@ -126,6 +126,8 @@ internal static class NativeStoryboardEditChecks
             await InspectorKeyIsolationChecks(view, fixture);
             await RefreshKeepsDraftsChecks(view, fixture);
             await ScriptRefreshKeepsFormsChecks();
+            await ScriptActivateLoadsOnceChecks();
+            await ScriptLeaveSeamChecks();
         }
         finally { view.Deactivate(); }
         Console.WriteLine("PASS: storyboard resize handles/bubble create/dialogue 409 recovery/bleed-safe overlay/focus mode/replan/inspector key isolation/refresh draft preservation all match the web contract");
@@ -248,6 +250,21 @@ internal static class NativeStoryboardEditChecks
         Require(box.Text == "改后台词", "409 冲突必须保留用户输入");
         Require(Descendants(view).OfType<Button>().Any(button => Equals(button.Content, "放弃草稿并重新加载")),
             "409 必须亮出冲突条（放弃草稿并重新加载）");
+
+        // #371：409 悬置期间走 preserve 重载（F5 RefreshAsync 路径）：服务器锚点重读
+        // 落地后冲突条按重载后的真实状态重估收起（页栅栏与 panel.version 已换新，
+        // 重试保存即可成功），同时对白草稿存活——刷新不是弃稿。回归（preserve 分支
+        // 不动 conflictBar）在「冲突条应收起」处失败（横幅滞留到下一次保存成功/弃稿）。
+        var conflictReads = fixture.StoryboardGets;
+        await view.RefreshAsync();
+        await Until(() => fixture.StoryboardGets > conflictReads);
+        await Settle();
+        Require(Field<Border>(view, "conflictBar").Visibility == Visibility.Collapsed,
+            "preserve 重载落地新锚点后冲突条应重估收起（#371）");
+        Require(view.NarrativeDirtyForTest, "preserve 重载后对白草稿必须存活（重估收起不是弃稿）");
+        Layout(view, 1400, 1000);
+        box = Descendants(view).OfType<TextBox>().Single(element => GetName(element) == "气泡 1 文字");
+        Require(box.Text == "改后台词", "preserve 重载后检查器必须从草稿册回填未保存的台词");
 
         // 重试成功：冲突条解除、草稿摘除、输入按服务端数据回填
         fixture.FailDialoguePatch = false;
@@ -457,6 +474,74 @@ internal static class NativeStoryboardEditChecks
         finally { view.Deactivate(); }
     }
 
+    // ── 10. 激活单轮加载（#371）：Activate 拨选择器触发的 SelectionChanged 处理器
+    // 与 Activate 自身的 LoadScriptAsync 会各加载一遍（每次激活双倍发起一组 4 并发
+    // 请求）。修复后先赋 chapterId 再拨选择器，处理器旁路保持静默——「一次激活恰好
+    // 一轮 script 读取」即直接判据。回归（旧顺序，先拨选择器后赋值）在
+    // ScriptReads==2 处失败。
+    private static async Task ScriptActivateLoadsOnceChecks()
+    {
+        var fixture = new ScriptFixture();
+        using var api = new ApiClient("http://127.0.0.1:12345", fixture);
+        var view = new ScriptView();
+        view.Activate(new WorkspaceContext
+        {
+            Api = api, Cache = new ApiCache(), State = new WorkspaceState(), Window = null!,
+            Project = new ProjectItem("sb-script", "剧本激活测试", "", 0, 0),
+            NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
+        });
+        try
+        {
+            var body = Field<System.Windows.Controls.StackPanel>(view, "body");
+            await Until(() => body.Children.OfType<SceneSection>().Any());
+            await Settle();
+            Require(fixture.ScriptReads == 1,
+                $"激活应恰好发起一轮 script 读取（实际 {fixture.ScriptReads} 轮，SelectionChanged 双倍加载未修复，#371）");
+        }
+        finally { view.Deactivate(); }
+    }
+
+    // ── 11. 离开确认缝（#371）：ConfirmLeaveAsync 的无模态测试缝（StoryboardView
+    // 的 LeaveConfirmOverride 同款）。拒绝分支：选择器弹回原章节、不发起目标章节的
+    // 读取；同意分支：切换生效并加载目标章节。没有缝时 headless 驱动这两个分支会
+    // 卡死在 MessageBox。
+    private static async Task ScriptLeaveSeamChecks()
+    {
+        var fixture = new ScriptFixture();
+        using var api = new ApiClient("http://127.0.0.1:12345", fixture);
+        var view = new ScriptView();
+        view.Activate(new WorkspaceContext
+        {
+            Api = api, Cache = new ApiCache(), State = new WorkspaceState(), Window = null!,
+            Project = new ProjectItem("sb-script", "剧本离开缝测试", "", 0, 0),
+            NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
+        });
+        try
+        {
+            var body = Field<System.Windows.Controls.StackPanel>(view, "body");
+            await Until(() => body.Children.OfType<SceneSection>().Any());
+            var selector = Field<System.Windows.Controls.ComboBox>(view, "chapterSelector");
+            ComboBoxItem Item(string tag) => selector.Items.Cast<ComboBoxItem>().Single(item => (string?)item.Tag == tag);
+
+            var rejections = 0;
+            view.LeaveConfirmOverride = () => { rejections++; return Task.FromResult(false); };
+            var reads = fixture.ScriptReads;
+            selector.SelectedItem = Item("ch-2");
+            await Settle();
+            Require(rejections == 1, "切章必须经过离开确认缝（无模态驱动，#371）");
+            Require(ReferenceEquals(selector.SelectedItem, Item("ch-1")), "拒绝离开后选择器必须弹回原章节");
+            Require(fixture.ScriptReads == reads, "拒绝离开后不得发起目标章节的 script 读取");
+            Require(Field<string>(view, "chapterId") == "ch-1", "拒绝离开后 chapterId 不得切换");
+
+            view.LeaveConfirmOverride = () => Task.FromResult(true);
+            reads = fixture.ScriptReads;
+            selector.SelectedItem = Item("ch-2");
+            await Until(() => fixture.ScriptReads == reads + 1);
+            Require(Field<string>(view, "chapterId") == "ch-2", "同意离开后应切换到目标章节");
+        }
+        finally { view.Deactivate(); }
+    }
+
     // ── helpers（NativeAssetsLoopChecks 同款）──
     private static async Task Until(Func<bool> condition)
     {
@@ -624,8 +709,9 @@ internal static class NativeStoryboardEditChecks
             if (request.Method == HttpMethod.Get)
             {
                 if (path.EndsWith("/chapters/ch-1/script")) { ScriptReads++; return Task.FromResult(Json(Script)); }
+                if (path.EndsWith("/chapters/ch-2/script")) { ScriptReads++; return Task.FromResult(Json(Script)); }
                 if (path.EndsWith("/projects/sb-script/chapters"))
-                    return Task.FromResult(Json("""[{"id":"ch-1","title":"第一章","ordinal":1,"page_count":1}]"""));
+                    return Task.FromResult(Json("""[{"id":"ch-1","title":"第一章","ordinal":1,"page_count":1},{"id":"ch-2","title":"第二章","ordinal":2,"page_count":1}]"""));
                 if (path.EndsWith("/projects/sb-script/characters")) return Task.FromResult(Json("[]"));
                 if (path.EndsWith("/projects/sb-script/outfits")) return Task.FromResult(Json("[]"));
                 if (path.EndsWith("/scene-assets")) return Task.FromResult(Json("[]"));

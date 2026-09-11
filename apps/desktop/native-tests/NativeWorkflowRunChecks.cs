@@ -195,6 +195,7 @@ internal static class NativeWorkflowRunChecks
     {
         var runsGets = 0;
         var approves = 0;
+        var cancels = 0;
         var approveBody = default(JsonElement);
         // 初始为空列表：空历史文案断言后再切到等待审批的数据（后端 created_at
         // 倒序，首条即网页 displayedRun）。
@@ -211,9 +212,27 @@ internal static class NativeWorkflowRunChecks
                 {"id":"nr-1","workflow_run_id":"run-1","node_id":"gen-page-1","node_type":"generator.page","status":"RUNNING"},
                 {"id":"nr-2","workflow_run_id":"run-1","node_id":"adopt-1","node_type":"control.approval","status":"WAITING_APPROVAL"}]}]
             """;
+        // #365：命中审批栅栏的 run 语义（reconciliation 把 run 置 PAUSED，卡在
+        // 栅栏的节点保持 WAITING_APPROVAL）。
+        var pausedJson = """
+            [{"id":"run-1","workflow_id":"wf-1","scope_type":"CHAPTER","scope_id":"ch-1","status":"PAUSED","created_at":"2026-09-08T01:02:03Z",
+              "node_runs":[
+                {"id":"nr-2","workflow_run_id":"run-1","node_id":"adopt-1","node_type":"control.approval","status":"WAITING_APPROVAL"}]}]
+            """;
+        var cancelledJson = """
+            [{"id":"run-1","workflow_id":"wf-1","scope_type":"CHAPTER","scope_id":"ch-1","status":"CANCELLED","created_at":"2026-09-08T01:02:03Z",
+              "node_runs":[
+                {"id":"nr-2","workflow_run_id":"run-1","node_id":"adopt-1","node_type":"control.approval","status":"CANCELLED"}]}]
+            """;
         using var api = new ApiClient("http://127.0.0.1:12345", new Handler(request =>
         {
             var path = request.RequestUri!.AbsolutePath;
+            if (request.Method == HttpMethod.Post && path.EndsWith("/workflow-runs/run-1/cancel"))
+            {
+                cancels++;
+                runsJson = cancelledJson;   // cancel_run 生效后下一轮 runs 反映终态
+                return Task.FromResult(Response("""{"id":"run-1","status":"CANCELLED"}"""));
+            }
             if (request.Method == HttpMethod.Post && path.EndsWith("/workflow-runs/run-1/nodes/gen-page-1/approve"))
             {
                 approves++;
@@ -292,6 +311,31 @@ internal static class NativeWorkflowRunChecks
             var before = runsGets;
             view.PollTick();
             await Until(() => runsGets == before + 1);
+
+            // ── #365（桌面半边）：审批栅栏 PAUSED 的运行必须能取消 ──
+            // 后端把命中审批栅栏的 run 置为 PAUSED，而 cancel_run 只拒绝终态——
+            // 取消入口在 PAUSED 不可用会让同 scope 的重复运行 409 指示一个 UI 上
+            // 做不到的动作。回归（只在 RUNNING 渲染取消钮）在「取消入口存在」处失败。
+            runsJson = pausedJson;
+            await view.RefreshAsync();
+            var runMonitor = Field<StackPanel>(view, "runMonitor");
+            await Until(() => runMonitor.Children.OfType<Button>().Any(button => (string?)button.Content == "取消"));
+            Require(runMonitor.Children.OfType<TextBlock>().Any(block => block.Text.Contains("暂停中")),
+                "PAUSED 运行的页脚摘要必须显示中文状态（Labels.WorkflowRunStatus 补 PAUSED）");
+            // PAUSED 不驱动 3s 轮询（网页 refetchInterval 只看 RUNNING）：栅栏等待
+            // 只有人工动作（审批/取消）才会推进。
+            var pausedBefore = runsGets;
+            view.PollTick();
+            await Task.Delay(50);
+            Require(runsGets == pausedBefore, "PAUSED 不应驱动轮询重取（网页 refetchInterval 只看 RUNNING）");
+            // 取消入口必须真的发出 cancel_run 请求（唯一的停止途径）并刷新列表。
+            var getsBeforeCancel = runsGets;
+            runMonitor.Children.OfType<Button>().Single(button => (string?)button.Content == "取消")
+                .RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            await Until(() => cancels == 1 && runsGets > getsBeforeCancel);
+            await Until(() => Field<StackPanel>(view, "runMonitor").Children.OfType<Button>()
+                .All(button => (string?)button.Content != "取消"));
+            Require(HistoryText(view).Contains("已取消"), "取消后运行历史应显示已取消");
 
             view.Deactivate();
         }

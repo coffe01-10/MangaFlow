@@ -83,6 +83,15 @@ describe("SystemSettingsPage 任务租约设置", () => {
     expect(screen.getByText(/需不超过任务超时/)).toBeInTheDocument();
   });
 
+  it("界面轮询周期帮助文本注明仅桌面客户端生效（#367 死配置披露）", async () => {
+    renderPage();
+
+    // ui_poll_interval_seconds 在 web 端零消费：字段仍可保存（桌面读取），
+    // 但帮助文本必须如实标注生效范围，不再暗示驱动本 UI。
+    await screen.findByLabelText(/界面轮询周期/);
+    expect(screen.getByText(/仅桌面客户端生效/)).toBeInTheDocument();
+  });
+
   it("保存时把 job_lease_seconds 随载荷提交回后端", async () => {
     updateRuntimeSettingsSpy.mockResolvedValue(runtimeSettings({ job_lease_seconds: 90, version: 8 }));
 
@@ -118,5 +127,34 @@ describe("SystemSettingsPage 任务租约设置", () => {
     const error = await screen.findByText(/job_lease_seconds 不能超过 job_timeout_seconds/);
     expect(error).toBeInTheDocument();
     expect(error.className).toContain("form-error");
+  });
+
+  it("409 版本冲突后失效缓存重拉，重试保存带上服务器新版本成功", async () => {
+    // 首次载入 version 7；409 触发的失效重拉必须拿到 version 8。
+    runtimeSettingsSpy.mockReset()
+      .mockResolvedValueOnce(runtimeSettings({ version: 7 }))
+      .mockResolvedValue(runtimeSettings({ version: 8, job_lease_seconds: 90 }));
+    updateRuntimeSettingsSpy
+      .mockRejectedValueOnce(new ApiError("设置已被其他会话修改，请刷新后重试", 409, { message: "设置已被其他会话修改，请刷新后重试" }))
+      .mockResolvedValue(runtimeSettings({ version: 8, job_lease_seconds: 90 }));
+
+    renderPage();
+    const leaseInput = await screen.findByLabelText(/任务租约/);
+    fireEvent.change(leaseInput, { target: { value: "90" } });
+    fireEvent(leaseInput, new FocusEvent("focusout", { bubbles: true }));
+    fireEvent.click(screen.getByRole("button", { name: /保存运行设置/ }));
+
+    // 第一次保存用旧版本 7 被拒；onError 必须失效 runtime-settings 触发重拉。
+    await waitFor(() => expect(updateRuntimeSettingsSpy).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(runtimeSettingsSpy.mock.calls.length).toBeGreaterThanOrEqual(2));
+    expect(await screen.findByText(/设置已被其他会话修改/)).toBeInTheDocument();
+
+    // 用户重试：重拉后的缓存版本是 8，不再停在旧 version 上无限 409。
+    fireEvent.click(screen.getByRole("button", { name: /保存运行设置/ }));
+    await waitFor(() => expect(updateRuntimeSettingsSpy).toHaveBeenCalledTimes(2));
+    expect(updateRuntimeSettingsSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({ version: 8, job_lease_seconds: 90 }),
+    );
+    await screen.findByText("运行设置已保存并应用到后续任务");
   });
 });
