@@ -74,6 +74,14 @@ def _read_context() -> tuple[str, Path]:
         raise ValueError("process journal/runtime ownership mismatch")
     if directory.resolve() != directory.absolute():
         raise ValueError("process runtime path/ownership mismatch")
+    # Drop the handshake secrets from the helper's own environment: the
+    # long-lived server (and every subprocess it spawns later - the CLI
+    # channel's children inherit os.environ) must not carry the ownership
+    # token or the journal path for its whole lifetime. The validated local
+    # variables above are the single source from here on; the journal is
+    # rewritten by path, not by re-reading the environment.
+    os.environ.pop("MANGAFLOW_DESKTOP_TOKEN", None)
+    os.environ.pop("MANGAFLOW_DESKTOP_JOURNAL", None)
     return token, journal
 
 
@@ -207,9 +215,10 @@ def _serve_relay(relay: socket.socket, api_port: int) -> None:
     limiter = _RelayLimiter(WEB_RELAY_MAX_CONNECTIONS)
     log_cooldown = float("-inf")
     # Transient accept errors that must be retried instead of killing the
-    # relay (accept(2): pending network errors surface here; EMFILE/ENOBUFS/
-    # ENOMEM under fd/memory pressure). Terminal errors: EBADF/ENOTSOCK/
-    # EINVAL - the listener was closed by a helper exit path.
+    # relay. POSIX accept(2): pending network errors surface here and must
+    # be retried like EAGAIN; resource exhaustion (EMFILE/ENFILE/ENOBUFS/
+    # ENOMEM) surfaces immediately. Terminal errors: EBADF/ENOTSOCK/EINVAL
+    # - the listener was closed by a helper exit path.
     transient_accept_errors = {
         errno.ECONNABORTED,
         errno.EPROTO,
@@ -219,7 +228,25 @@ def _serve_relay(relay: socket.socket, api_port: int) -> None:
         errno.ENOMEM,
         errno.ENETDOWN,
         errno.ENETUNREACH,
+        errno.ECONNRESET,
+        errno.ETIMEDOUT,
+        errno.EHOSTUNREACH,
+        errno.ENETRESET,
     }
+    if sys.platform == "win32":
+        # Windows accept errors carry raw Winsock codes (10000+), not UCRT
+        # E* values - only WSAEMFILE aliases EMFILE(24). Without the WSA
+        # entries the terminal branch would kill the relay on the most
+        # common transient error (WSAECONNABORTED, a WebView dropping the
+        # connection mid-navigation).
+        for wsa_name in (
+            "WSAECONNABORTED",
+            "WSAENFILE",
+            "WSAENOBUFS",
+            "WSAENETDOWN",
+            "WSAENETUNREACH",
+        ):
+            transient_accept_errors.add(getattr(errno, wsa_name))
     while True:
         try:
             client, _ = relay.accept()
@@ -233,6 +260,12 @@ def _serve_relay(relay: socket.socket, api_port: int) -> None:
                 # diagnosable in the unified logs.
                 _log(f"relay listener exiting on {error!r}")
                 return
+            if error.errno in (errno.EMFILE, errno.ENFILE, errno.ENOBUFS, errno.ENOMEM):
+                # Resource exhaustion persists until the pressure lifts -
+                # without a backoff the retry would hot-spin one core
+                # (round-2 review F2). The connection is dropped; the
+                # client retries on its own cadence.
+                time.sleep(0.1)
             continue
         if not limiter.try_acquire():
             # Rate-limited: the stderr log only rotates across sessions,
@@ -302,12 +335,28 @@ def _serve_relay(relay: socket.socket, api_port: int) -> None:
                     ),
                 ]
                 try:
+                    started = []
                     for pump in pumps:
-                        pump.start()
+                        try:
+                            pump.start()
+                            started.append(pump)
+                        except (RuntimeError, MemoryError):
+                            # A partial start leaves earlier pumps running
+                            # against sockets the finally is about to
+                            # close: SHUT_RDWR both now so the survivors'
+                            # next recv/sendall fails and they exit
+                            # deterministically instead of lingering on
+                            # closed fds.
+                            for sock in (pair_client, pair_upstream):
+                                try:
+                                    sock.shutdown(socket.SHUT_RDWR)
+                                except OSError:
+                                    pass
+                            raise
+                    for pump in started:
+                        pump.join()
                 except (RuntimeError, MemoryError):
-                    return
-                for pump in pumps:
-                    pump.join()
+                    pass
             except (RuntimeError, MemoryError):
                 # Construction or start failed under host-wide pressure (OS
                 # thread/memory limits - not our own counter, which the cap
@@ -496,8 +545,13 @@ def _validate_api_root(api_root: Path) -> str | None:
     try:
         names = {entry.name.lower() for entry in api_root.iterdir()}
     except OSError:
+        # Same set the scan would have produced, via byte-exact existence
+        # probes (stat works through +x): a traverse-only root must fail
+        # closed on ANY of the shadow names, not just fake_channel (R3
+        # review).
         names = set()
-        for probe in ("fake_channel.py", "fake_channel"):
+        for probe in ("fake_channel.py", "fake_channel",
+                      "alembic.py", "alembic", "uvicorn.py", "uvicorn"):
             if (api_root / probe).exists():
                 names.add(probe)
     # A directory named `fake_channel` shadows the helper's module too:
@@ -506,6 +560,15 @@ def _validate_api_root(api_root: Path) -> str | None:
     # the file form.
     if "fake_channel.py" in names or "fake_channel" in names:
         return "api-root/shadowing-fake-channel"
+    # Same shadowing class for the modules imported AFTER sys.path.insert(0):
+    # a root-level alembic.py/alembic/ or uvicorn.py/uvicorn/ would be
+    # imported in place of the venv's real packages (alembic's command module
+    # and uvicorn's server both drive this helper). The real apps/api tree
+    # has none of these at its root (its migrations live in migrations/,
+    # reached via alembic.ini), so the check is safe for it (#314).
+    for shadow in ("alembic.py", "alembic", "uvicorn.py", "uvicorn"):
+        if shadow in names:
+            return f"api-root/shadowing-{shadow}"
     return None
 
 
@@ -519,6 +582,21 @@ def _apply_app_environment(user_data: Path, web_origin: str) -> None:
     os.environ["STORAGE_ROOT"] = str(user_data / "storage")
     os.environ["UPLOAD_ROOT"] = str(user_data / "uploads")
     os.environ["WEB_ORIGIN"] = web_origin
+
+
+def set_sqlalchemy_url(config, url: str) -> None:
+    """Set sqlalchemy.url through Alembic's ConfigParser-backed config.
+
+    set_main_option routes the value through ConfigParser interpolation,
+    where a bare ``%`` introduces a ``%(name)s`` substitution — a ``%`` in
+    the user-data path (a ``100%`` username is a legal Windows name) made
+    ``command.upgrade`` die with an interpolation error before the API ever
+    started (#443). Alembic's documented escape is doubling it; reading the
+    option back resolves to the original URL, so the escaped form never
+    reaches SQLAlchemy.
+    """
+
+    config.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
 
 
 def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
@@ -552,9 +630,7 @@ def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
             from alembic.config import Config as AlembicConfig
 
             alembic_config = AlembicConfig(str(api_root / "alembic.ini"))
-            alembic_config.set_main_option(
-                "sqlalchemy.url", os.environ["DATABASE_URL"]
-            )
+            set_sqlalchemy_url(alembic_config, os.environ["DATABASE_URL"])
             command.upgrade(alembic_config, "head")
         except BaseException as error:  # noqa: BLE001 - journal the failure, then exit
             record.update(state="failed", error=f"alembic:{type(error).__name__}")
@@ -665,16 +741,26 @@ def _node_child_env() -> dict[str, str]:
 
     The full parent env used to ride along, including
     ``MANGAFLOW_DESKTOP_TOKEN``/``_JOURNAL`` (the handshake secret and
-    journal path) and any ``NODE_OPTIONS``/``NODE_PATH`` (which node
-    auto-applies). The child needs the parent env for PATH and friends, but
-    not the handshake identity nor injectable hooks (red team 2026-09-09,
-    #312). Callers add PORT/HOSTNAME/MANGAFLOW_API_ORIGIN/NODE_ENV on top.
+    journal path), the desktop orchestration names
+    (``MANGAFLOW_DESKTOP_HELPER``/``_API_ROOT``/``_USER_DATA``/
+    ``_FAKE_CHANNEL``/``_WEB_DIST``/``_PYTHON`` — the web-facing child has
+    no use for any of them), and any ``NODE_OPTIONS``/``NODE_PATH`` (which
+    node auto-applies). The child needs the parent env for PATH and
+    friends, but not the handshake identity, the launcher's wiring, nor
+    injectable hooks (red team 2026-09-09, #312). Callers add
+    PORT/HOSTNAME/MANGAFLOW_API_ORIGIN/NODE_ENV on top.
     """
 
     env = dict(os.environ)
     for name in (
         "MANGAFLOW_DESKTOP_TOKEN",
         "MANGAFLOW_DESKTOP_JOURNAL",
+        "MANGAFLOW_DESKTOP_HELPER",
+        "MANGAFLOW_DESKTOP_API_ROOT",
+        "MANGAFLOW_DESKTOP_USER_DATA",
+        "MANGAFLOW_DESKTOP_FAKE_CHANNEL",
+        "MANGAFLOW_DESKTOP_WEB_DIST",
+        "MANGAFLOW_DESKTOP_PYTHON",
         "NODE_OPTIONS",
         "NODE_PATH",
     ):
