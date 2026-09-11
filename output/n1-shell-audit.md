@@ -291,3 +291,35 @@ native/** 与 native-tests/** 零触碰（今晚 master 含 native 改动，全�
 实测：各分支 cargo test 全绿（基线 126 + 各自 1–3 枚增量）。Windows 腿全部
 NOT RUN（无实机）；#419 注明其 Linux pin 同时充当 Windows 大小写漂移的替身钉。
 sidecar 零改动（留 N2）；roadmap/development-progress 未动；未 merge master。
+
+#### 20260912 续：轮 2 结果、返工与 doc-sweep 收割（PR #434–#436）
+
+配额 C 轮 2（子代理，#416–#422 六分支，含 merge-tree 预演）：4× SHIP，2× HOLD，
+均一处级返工，已全部推上分支——
+- #418 HOLD→修：`Path::new("/")` 在 Windows 非绝对（无盘符），该 pin 在主平台
+  直接失败 → 按平台取 nameless absolute root（`C:\` / `/`），并断言 root 本身
+  absolute，保证测的是 NoFileName 守卫而非绝对门；Display NIT 改直写。
+- #421 HOLD→修：外层 doc 注释仍是旧稿（"journal 省略 anchor / 死 pid 双 None"）
+  与脚本相反——死而未收的子进程是 zombie，/proc 仍应答，省略 anchor 反而触发
+  StartTimeMismatch。已改为与脚本一致的真实理由。
+- #421 附加加固（野外捕获）：单独满套件跑曾出现 1 次失败——即轮 2 披露的
+  "GO 写先于 close(0) 落入缓冲"窗口（负载下子进程被抢占）。改为**先关 fd 0
+  再发 READY**（stdout 是 fd 1 不受影响），任何交错下 GO 必 EPIPE；10/10 稳定。
+- 合并冲突预告（轮 2 实测 merge-tree）：#416/#417 同点 EOF 追加 log_export.rs、
+  #421/#422 同点追加 startup_protocol.rs——fn 名不冲突，后合方机械 rebase。
+
+doc-code 不一致 sweep（子代理，双源核验）收割 6 项 → 3 PR：
+- #434 README 状态行对账：安装器链 4 处"仍 NOT RUN"与 D1（2026-09-06 双产物
+  构建 + NSIS 实机装/卸）矛盾 → 按 D1 改写；cargo test 计数 85→126（本轮实测）；
+  plan-B e2e 17→21（pytest 收集复核：e2e 9 + relay 9 + bind 3，首验 17 项留档）；
+  维护行数 3,323→6,231 / 1,900→2,742（wc 实测）；scripts 图补 dist 锁两文件
+  （#343：不列=不测）。
+- #435 rustdoc NOT-RUN 对齐：shell-sim "须在 Windows 复验"、OwnedTree::spawn
+  "Windows 行为仍 NOT RUN"、delivery_contract 头"MSI/NSIS 安装升级卸载均 NOT RUN"
+  ——三者均已被 D1 的 2026-09-06 Windows 实机轮超越（NSIS 装/卸 RUN），改为
+  引用 D1 并保留真实残留（MSI 安装步 + 跨版本升级）。
+- #436 verify-static-origin.mjs 注释勘误：sibling 探针夹具"先于服务器创建"不实
+  （listen 先行）——按实际顺序改写并注明顺序无关。
+
+诚实记录：#434/#435 引用的 D1 记录系 README 既有内容，本轮仅核对文本一致性，
+未复跑任何 Windows 实机验证（Windows 腿整体 NOT RUN 不变）。
