@@ -396,6 +396,11 @@ doc-code 不一致 sweep（子代理，双源核验）收割 6 项 → 3 PR：
   其后各夜计数以各段实测记录为准。
 - 账本 tip 审阅点：本轮 6 次审查全部落账；21 枚 PR 全部开放待 lead 审合。
 
+- 新增 #456（night/pr-grandchild-pid-refusal → 见分支）：Unix 替身钉——
+  launcher 链契约的拒绝侧（Unix 成员=仅直接子，fork 真孙进程以己 pid 发
+  READY → Verify(PidMismatch) 拒绝；abort 组停收割双进程 + journal stopped，
+  有界 /proc 扫描防泄漏）。Windows 侧验收钉原为 cfg(windows)，此为其
+  fail-closed 对偶。累计 22 枚。
 - 红绿抽查补样（窗口纪律继续）：#422 的 `JournalMismatch("state")` 钉在
   verify_journal 的 state 比较被禁用时变红（panic 消息如实报告实际 variant）；
   #445 的 400 行完整线钉在 record 静默丢行时变红（0 ≠ 400）。累计抽查 4 钉
