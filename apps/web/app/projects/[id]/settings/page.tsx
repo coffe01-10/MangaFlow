@@ -3,7 +3,7 @@
 import { AppShell } from "@/components/shell";
 import { workflowModeLabels } from "@/components/project-workspace/labels";
 import { ClampedNumberInput } from "@/components/clamped-number-input";
-import { api, type Project, type Resolution, type WorkflowMode } from "@/lib/api";
+import { api, ApiError, type Project, type Resolution, type WorkflowMode } from "@/lib/api";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Check, CircleAlert, Gauge, LoaderCircle, Save, ShieldCheck, SlidersHorizontal, Trash2 } from "lucide-react";
 import Link from "next/link";
@@ -71,6 +71,14 @@ export default function ProjectSettingsPage() {
         text_model_alias: data.text_model_alias,
       });
       announceSaved();
+    },
+    onError: (error) => {
+      // 409 = 乐观版本号落后（另一端先保存了同一项目）。失效缓存触发
+      // 重拉，mutationFn 读的是 project.data.version，下一次保存自动带上
+      // 服务器当前版本，而不是停在旧值上无限 409。
+      if (error instanceof ApiError && error.status === 409) {
+        void queryClient.invalidateQueries({ queryKey: ["project", id] });
+      }
     },
   });
   const update = <K extends keyof ProjectDraft>(key: K, value: ProjectDraft[K]) => {

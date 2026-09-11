@@ -5,6 +5,7 @@ import { ProviderManagement } from "@/components/provider-management";
 import { ClampedNumberInput } from "@/components/clamped-number-input";
 import {
   api,
+  ApiError,
   type DiagnosticCheck,
   type RuntimeSettings,
 } from "@/lib/api";
@@ -49,7 +50,10 @@ export default function SystemSettingsPage() {
     mutationFn: () => {
       if (!draft) throw new Error("运行设置尚未加载");
       return api.updateRuntimeSettings({
-        version: draft.version,
+        // 版本跟随缓存里的最新快照而非 localDraft：409 失效重拉后
+        // runtime.data.version 已是服务器当前值，localDraft 仍停在编辑时
+        // 观察到的旧版本，重发它会永远 409。
+        version: runtime.data?.version ?? draft.version,
         queue_mode: draft.queue_mode,
         job_timeout_seconds: draft.job_timeout_seconds,
         job_lease_seconds: draft.job_lease_seconds,
@@ -60,6 +64,15 @@ export default function SystemSettingsPage() {
       });
     },
     onSuccess: (data) => { queryClient.setQueryData(["runtime-settings"], data); setLocalDraft(data); setNotice("运行设置已保存并应用到后续任务"); diagnostics.refetch(); },
+    onError: (error) => {
+      // 409 = 版本落后（桌面 + web 同开时另一端先保存）。失效缓存触发
+      // 重拉，下一次保存带上服务器当前版本，而不是在旧 version 上循环
+      // 409 直到窗口聚焦才恢复（与 workflow-studio 草稿保存的 409 处理
+      // 同一范式）。
+      if (error instanceof ApiError && error.status === 409) {
+        void queryClient.invalidateQueries({ queryKey: ["runtime-settings"] });
+      }
+    },
   });
   const update = <K extends keyof RuntimeSettings>(key: K, value: RuntimeSettings[K]) => { setLocalDraft((current) => ({ ...(current ?? draft!), [key]: value })); setNotice(""); };
   // 数字钳制统一走 ClampedNumberInput:输入期间不夹值,失焦才提交区间内结果。

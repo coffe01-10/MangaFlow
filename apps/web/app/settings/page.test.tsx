@@ -119,4 +119,33 @@ describe("SystemSettingsPage 任务租约设置", () => {
     expect(error).toBeInTheDocument();
     expect(error.className).toContain("form-error");
   });
+
+  it("409 版本冲突后失效缓存重拉，重试保存带上服务器新版本成功", async () => {
+    // 首次载入 version 7；409 触发的失效重拉必须拿到 version 8。
+    runtimeSettingsSpy.mockReset()
+      .mockResolvedValueOnce(runtimeSettings({ version: 7 }))
+      .mockResolvedValue(runtimeSettings({ version: 8, job_lease_seconds: 90 }));
+    updateRuntimeSettingsSpy
+      .mockRejectedValueOnce(new ApiError("设置已被其他会话修改，请刷新后重试", 409, { message: "设置已被其他会话修改，请刷新后重试" }))
+      .mockResolvedValue(runtimeSettings({ version: 8, job_lease_seconds: 90 }));
+
+    renderPage();
+    const leaseInput = await screen.findByLabelText(/任务租约/);
+    fireEvent.change(leaseInput, { target: { value: "90" } });
+    fireEvent(leaseInput, new FocusEvent("focusout", { bubbles: true }));
+    fireEvent.click(screen.getByRole("button", { name: /保存运行设置/ }));
+
+    // 第一次保存用旧版本 7 被拒；onError 必须失效 runtime-settings 触发重拉。
+    await waitFor(() => expect(updateRuntimeSettingsSpy).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(runtimeSettingsSpy.mock.calls.length).toBeGreaterThanOrEqual(2));
+    expect(await screen.findByText(/设置已被其他会话修改/)).toBeInTheDocument();
+
+    // 用户重试：重拉后的缓存版本是 8，不再停在旧 version 上无限 409。
+    fireEvent.click(screen.getByRole("button", { name: /保存运行设置/ }));
+    await waitFor(() => expect(updateRuntimeSettingsSpy).toHaveBeenCalledTimes(2));
+    expect(updateRuntimeSettingsSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({ version: 8, job_lease_seconds: 90 }),
+    );
+    await screen.findByText("运行设置已保存并应用到后续任务");
+  });
 });
