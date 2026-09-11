@@ -1,0 +1,81 @@
+D:\自媒体\漫画工作流\apps\desktop\native-tests\NativeInteractionChecks.cs(52,124): warning CS4014: 由于此调用不会等待，因此在此调用完成之前将会继续执行当前方法。请考虑将 "await" 运算符应用于调用结果。 [D:\自媒体\漫画工作流\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流\apps\desktop\native-tests\NativeNavigationChecks.cs(112,31): warning CS8600: 将 null 文本或可能的 null 值转换为不可为 null 类型。 [D:\自媒体\漫画工作流\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流\apps\desktop\native-tests\NativeNavigationChecks.cs(112,74): warning CS8600: 将 null 文本或可能的 null 值转换为不可为 null 类型。 [D:\自媒体\漫画工作流\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流\apps\desktop\native-tests\NativeNavigationChecks.cs(112,74): warning CS8602: 解引用可能出现空引用。 [D:\自媒体\漫画工作流\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流\apps\desktop\native-tests\NativeNavigationChecks.cs(114,31): warning CS8600: 将 null 文本或可能的 null 值转换为不可为 null 类型。 [D:\自媒体\漫画工作流\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流\apps\desktop\native-tests\NativeNavigationChecks.cs(114,80): warning CS8600: 将 null 文本或可能的 null 值转换为不可为 null 类型。 [D:\自媒体\漫画工作流\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流\apps\desktop\native-tests\NativeNavigationChecks.cs(114,80): warning CS8602: 解引用可能出现空引用。 [D:\自媒体\漫画工作流\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流\apps\desktop\native-tests\NativeNavigationChecks.cs(116,22): warning CS8600: 将 null 文本或可能的 null 值转换为不可为 null 类型。 [D:\自媒体\漫画工作流\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流\apps\desktop\native-tests\NativeNavigationChecks.cs(117,26): warning CS8602: 解引用可能出现空引用。 [D:\自媒体\漫画工作流\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流\apps\desktop\native-tests\NativeNavigationChecks.cs(151,27): warning CS8600: 将 null 文本或可能的 null 值转换为不可为 null 类型。 [D:\自媒体\漫画工作流\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流\apps\desktop\native-tests\NativeNavigationChecks.cs(152,17): warning CS8602: 解引用可能出现空引用。 [D:\自媒体\漫画工作流\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流\apps\desktop\native-tests\NativeBackendChecks.cs(91,13): warning CS8602: 解引用可能出现空引用。 [D:\自媒体\漫画工作流\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流\apps\desktop\native-tests\NativeBackendChecks.cs(61,31): warning CS1998: 此异步方法缺少 "await" 运算符，将以同步方式运行。请考虑使用 "await" 运算符等待非阻止的 API 调用，或者使用 "await Task.Run(...)" 在后台线程上执行占用大量 CPU 的工作。 [D:\自媒体\漫画工作流\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流\apps\desktop\native-tests\NativeAssetsLoopChecks.cs(150,15): warning CS8604: “void NativeAssetsLoopChecks.Click(ButtonBase button)”中的形参“button”可能传入 null 引用实参。 [D:\自媒体\漫画工作流\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流\apps\desktop\native-tests\NativeDockChecks.cs(367,31): warning CS1998: 此异步方法缺少 "await" 运算符，将以同步方式运行。请考虑使用 "await" 运算符等待非阻止的 API 调用，或者使用 "await Task.Run(...)" 在后台线程上执行占用大量 CPU 的工作。 [D:\自媒体\漫画工作流\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+PASS: untrusted origins rejected
+PASS: server media paths have exactly one API prefix
+PASS: local and server media paths use identical thumbnails
+PASS: lightbox preserves original resolution
+PASS: exact versioned API path
+PASS: UTF-8 JSON survives response disposal
+PASS: 409 preserves actionable server detail
+PASS: interrupted mutation never automatically retries
+PASS: navigation cancellation reaches HTTP handler
+PASS: terminal actions disabled and progress clamped
+PASS: exhausted task cannot retry
+PASS: window preferences persist
+PASS: atomic save leaves no temporary files
+PASS: corrupt preferences fall back safely
+PASS: dashboard bounds visual count
+PASS: dashboard paging preserves remaining projects
+PASS: archive emptying last page returns to valid page
+PASS: cover lettering preserves Unicode graphemes
+PASS: project navigation covers Web routes in order
+PASS: reselecting a page does not rebuild it
+PASS: selecting a new page notifies once
+PASS: unknown page definition is rejected
+PASS: director rule stub compiles whitelisted commands, UUID envelopes and web priority parity
+PASS: local edit accepts explicitly mask-capable image models
+PASS: local edit never falls back to whole-image reference editing
+PASS: rectangle masks clamp to real image pixels
+PASS: brush masks retain area and obey backend point limit
+PASS: local edits preserve the versioned director command contract
+PASS: native mask envelope uses polygon points
+PASS: empty masks cannot be proposed
+PASS: fast eraser strokes remove crossed regions even when samples lie outside
+PASS: eraser strokes preserve neighboring regions
+PASS: eraser taps on polygon boundaries are recognized
+PASS: generation selects canonical references once per visible character
+PASS: published packages inherit server defaults while retaining storyboard outfits
+PASS: published packages cannot hide missing outfit references
+PASS: missing legacy references block generation
+PASS: per-run package and outfit overrides serialize with API field names
+PASS: archived packages do not override legacy defaults
+PASS: usage pagination retains every filter and exact time bounds
+PASS: usage timestamps and escaped filter values round trip
+PASS: invalid usage ranges fail before HTTP requests
+PASS: usage summary respects its separate API filter contract
+PASS: repeated load-more clicks dispatch only one request
+PASS: late pagination responses cannot contaminate a new usage filter
+PASS: late first pages cannot overwrite newer usage results
+PASS: view registry, offline navigation, cached instances, sidebar collapse, workspace layouts
+PASS: re-rendering panes does not re-parent shared controls (B-2..B-5)
+PASS: visual parity regressions — startup, grid bounds, project hits, settings breakpoints, nine pages, model picker, drawers and easing
+PASS: READY-line parse fails closed (prefix/payload/origin rule); disconnect banner follows backend liveness
+PASS: workflow navigation flushes an armed autosave debounce exactly once
+DIAG-FAILURE: System.Exception: Offscreen native UI validation failed
+ ---> System.Exception: Native interaction regression
+ ---> System.InvalidOperationException: Sequence contains no matching element
+   at System.Linq.ThrowHelper.ThrowNoMatchException()
+   at System.Linq.Enumerable.Single[TSource](IEnumerable`1 source, Func`2 predicate)
+   at NativeWorkflowConnectionChecks.DuplicateUndoSnapshotChecks() in D:\自媒体\漫画工作流\apps\desktop\native-tests\NativeWorkflowConnectionChecks.cs:line 240
+   at NativeWorkflowConnectionChecks.Run() in D:\自媒体\漫画工作流\apps\desktop\native-tests\NativeWorkflowConnectionChecks.cs:line 27
+   at NativeInteractionChecks.<>c__DisplayClass1_0.<<RunIsolated>b__2>d.MoveNext() in D:\自媒体\漫画工作流\apps\desktop\native-tests\NativeInteractionChecks.cs:line 52
+   --- End of inner exception stack trace ---
+   at NativeInteractionChecks.RunIsolated(String output) in D:\自媒体\漫画工作流\apps\desktop\native-tests\NativeInteractionChecks.cs:line 58
+   at NativeInteractionChecks.Run(String output) in D:\自媒体\漫画工作流\apps\desktop\native-tests\NativeInteractionChecks.cs:line 24
+   at NativeVisualChecks.<>c__DisplayClass0_0.<Run>b__0() in D:\自媒体\漫画工作流\apps\desktop\native-tests\NativeVisualChecks.cs:line 69
+   --- End of inner exception stack trace ---
+   at NativeVisualChecks.Run(String output) in D:\自媒体\漫画工作流\apps\desktop\native-tests\NativeVisualChecks.cs:line 77
+   at Program.<Main>$(String[] args) in D:\自媒体\漫画工作流\apps\desktop\native-tests\Program.cs:line 141
