@@ -619,4 +619,47 @@ mod tests {
             );
         }
     }
+
+    /// SpawnError is what the shell reports for every failed helper start;
+    /// no test ever rendered one (the integration asserts use `matches!`/
+    /// Debug). Pin each Display arm — the three data-carrying arms must
+    /// embed their inner error — and the source() chain: Io/Verify/
+    /// Ownership expose their inner error for chain-walking reporters,
+    /// while the two bare timeouts carry no source so a reporter never
+    /// prints a phantom cause.
+    #[test]
+    fn spawn_error_display_embeds_inner_errors_and_chains_source() {
+        let io = SpawnError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "binary gone",
+        ));
+        assert!(io.to_string().contains("binary gone"), "{}", io);
+        let ownership = SpawnError::Ownership(OwnershipError::StopFailed(
+            "stop detail".into(),
+        ));
+        assert!(ownership.to_string().contains("stop detail"), "{}", ownership);
+        let verify = SpawnError::Verify(VerifyError::JournalMissing);
+        assert!(!verify.to_string().is_empty());
+
+        for (error, has_source) in [
+            (io, true),
+            (SpawnError::ReadyTimeout, false),
+            (SpawnError::HealthTimeout, false),
+            (verify, true),
+            (ownership, true),
+        ] {
+            assert_eq!(
+                std::error::Error::source(&error).is_some(),
+                has_source,
+                "source() polarity wrong for {error}"
+            );
+        }
+        // The ReadyTimeout/HealthTimeout labels stay distinct — a merge
+        // would make post-GO hangs indistinguishable from pre-READY ones
+        // in the operator log.
+        assert_ne!(
+            SpawnError::ReadyTimeout.to_string(),
+            SpawnError::HealthTimeout.to_string()
+        );
+    }
 }
