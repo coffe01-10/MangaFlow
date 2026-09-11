@@ -290,6 +290,25 @@ fn stop_helper(helper: &mut Option<SpawnedHelper>) {
     }
 }
 
+// The shell-tools window construction, shared by setup (#299) and the menu
+// handler's rebuild path (#351: the window's default close destroys it, so
+// the menu must be able to bring it back instead of only showing it).
+// Programmatic construction AFTER the handshake gate, never config-declared,
+// hidden until the menu opens it.
+fn build_shell_tools_window(
+    app: &tauri::AppHandle,
+) -> Result<tauri::WebviewWindow, tauri::Error> {
+    tauri::WebviewWindowBuilder::new(
+        app,
+        "shell-tools",
+        tauri::WebviewUrl::App("shell-tools.html".into()),
+    )
+    .title("MangaFlow 壳工具")
+    .inner_size(620.0, 520.0)
+    .visible(false)
+    .build()
+}
+
 fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -431,16 +450,7 @@ fn run() {
             // AFTER the handshake gate (never config-declared), hidden until
             // the menu opens it; same local-context construction as the main
             // static-export window, so no `remote` capability is involved.
-            if let Err(error) = tauri::WebviewWindowBuilder::new(
-                app,
-                "shell-tools",
-                tauri::WebviewUrl::App("shell-tools.html".into()),
-            )
-            .title("MangaFlow 壳工具")
-            .inner_size(620.0, 520.0)
-            .visible(false)
-            .build()
-            {
+            if let Err(error) = build_shell_tools_window(app.handle()) {
                 if let Some(state) = app.try_state::<HelperState>() {
                     stop_helper(&mut state.inner().0.lock().expect("helper state lock"));
                 }
@@ -468,10 +478,25 @@ fn run() {
                 app.set_menu(menu)?;
                 app.on_menu_event(|app, event| {
                     if event.id() == "open-shell-tools" {
-                        if let Some(window) = app.get_webview_window("shell-tools") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
+                        // The window's default close DESTROYS it, so after the
+                        // user closes the tools window once, get_webview_window
+                        // returns None forever — showing alone turned the menu
+                        // item into a silent session-long no-op (#351). Rebuild
+                        // it with the same construction as setup instead; a
+                        // rebuild failure is logged and leaves the app running
+                        // (the window is an optional surface, not boot state).
+                        let window = match app.get_webview_window("shell-tools") {
+                            Some(window) => window,
+                            None => match build_shell_tools_window(app) {
+                                Ok(window) => window,
+                                Err(error) => {
+                                    eprintln!("shell-tools window rebuild failed: {error}");
+                                    return;
+                                }
+                            },
+                        };
+                        let _ = window.show();
+                        let _ = window.set_focus();
                     }
                 });
                 Ok(())
