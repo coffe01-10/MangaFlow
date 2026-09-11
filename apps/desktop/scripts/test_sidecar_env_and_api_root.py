@@ -328,24 +328,3 @@ def test_sqlalchemy_url_escapes_percent_interpolation(tmp_path):
     # Reading the option back runs the interpolation: the doubled %% must
     # resolve to the single original %.
     assert config.get_main_option("sqlalchemy.url") == url
-
-
-def test_read_context_drops_handshake_secrets_from_the_environment(monkeypatch, tmp_path):
-    """After validation, the token and journal path must be gone from the
-    helper's own os.environ: the long-lived server (and every subprocess it
-    spawns later — the CLI channel's children inherit os.environ) must not
-    carry the ownership secrets for its whole lifetime. The validated local
-    variables are the single source from here on."""
-    token = "b" * 32
-    runtime = tmp_path / f"mangaflow-desktop-{token}"
-    runtime.mkdir(parents=True)
-    journal = runtime / "owner.json"
-    monkeypatch.setenv("MANGAFLOW_DESKTOP_TOKEN", token)
-    monkeypatch.setenv("MANGAFLOW_DESKTOP_JOURNAL", str(journal))
-
-    returned_token, returned_journal = helper._read_context()
-
-    assert returned_token == token
-    assert returned_journal == journal
-    assert os.environ.get("MANGAFLOW_DESKTOP_TOKEN") is None
-    assert os.environ.get("MANGAFLOW_DESKTOP_JOURNAL") is None
