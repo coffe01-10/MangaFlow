@@ -111,3 +111,86 @@
 **#307 node_port 共绑残差 —— 接受为同用户残差（选项三）。** 依据：攻击前提是同用户进程（netstat 级发现 + SO_REUSEADDR 共绑）；公告端口自 #301 起已 helper 自持且 Windows 独占绑定，共绑面只剩 node 内部临时端口；回环信任模型本就把同用户划在边界内。身份质询方案只能发现非代理型共绑（概率性），helper 前置 HTTP 终结是真实架构改动，均不值 P3 同用户残差的代价。若未来威胁模型把同用户纳入边界，重开此项。
 
 **#311 runtime sweep —— 第一部分已实证、第二部分不自动回收。** 第一部分（junction 过 guard-1）：Windows 腿 2026-09-11 首次实跑 `sweep_never_removes_through_planted_links` 的 in-root junction 钉住（protocol.rs Windows cfg 块）——**通过**：当前工具链的 `DirEntry::file_type()` 把 junction（name-surrogate 重解析点）报为 `is_dir()==false`，guard-1 即拦截，无需生产改动。第二部分（SIGKILL created/ready 残渣永不回收）：**决策不实现自动回收**——WPF 腿共享 runtime 布局且无单实例互斥，错误回收会删掉活会话的 ownership journal，其风险远大于每次硬崩溃留下的小 JSON 残渣；现有"清扫跳过非终态"是蓄意且被测试钉住的行为。重开条件：sweep 引入跨平台 pid+starttime 活性预言机并经 lead 安全论证。
+
+---
+
+## 8. 2026-09-12 加重窗口台账（重开，窗口至 09:00）
+
+- 基线：origin/master `44e3945`，分支 `night/n3-redteam-burn-20260912`（与 master 同点起步）。`native/**`、`native-tests/**` 只读。
+- 上一窗关闭时的"零发现"是对 4aa1797 前代码面的结论；本窗增量面 = `4aa1797..44e3945` 的桌面 churn（junction 重建/装配换窗/静态导出克隆/dist 锁/zip writer 守卫/ownership 错误展示/get-status 语义/审批别名目录钉/workflow view 暂停取消/ScriptView 双激活/native intake page 重建）——全部是**修复本身带来的新代码**，回归挖掘是本窗第一优先。
+- 配额跟踪：B ≥20 实质 issue（杜绝水文，先挖后报）；C ≥6 非 native 防守测试/契约小 PR；D 既有 Desktop/RedTeam issue 清账（FIXED/PARTIAL/NOT_FIXED 有据）；E ≥6 轮互审；F 本节持续更新。
+
+- **R1（本窗首轮，2026-09-12）**：三路并行审计（native 新增面深审：storyboard 编辑套件/检查面板/workflow inspector/审批队列；shell-sidecar-src-tauri 增量：picker 身份校验 1992152、对话框重入守卫、plan-B shell-tools 窗口 #299 解决、helper env/api-root 校验 e0b108c；scripts+docs 一致性）——产出 Issue #339-#351（13 个）与 #343/#346/#349 的修复 PR #352/#353/#354（均合并）。
+- **R2（交叉复审）**：#357 三声明全 HOLD（MERGE）；11 个旧 Issue 质量审计——全 CORRECT 无重复，#317 第 1 项被 #298 提前修复（已重划），行号漂移不影响结论。
+- **R3（补挖）**：#344 伴随形状、#343 wiring 空转、#311 工具链注意事项与 GO 拒绝残渣第三来源——已评论/入台账。
+- **R4（终审）**：#354 扩展三处 + 台账与 GitHub 状态一致性核验——GO。
+- **R5（续跑轮，master 44e3945）**：交叉复核窗口内生产增量——helper \`_validate_api_root\` iterdir fail-closed（修复真实的 fail-open：traverse-only 根的裸 set() 回退，探针已证）、get_status 夹具 RST 规避排水纪律（test-only，并行负载下的 ConnectionReset 消除）、rotate-logs stderr 报告（契约一致）、ziparch 名长守卫（此前已审）——**无引入缺陷**。认证 HEAD：shell-core **126/126**、sidecar e2e+relay+env+dist-lock **34/34**（apps/web 树哈希溯源断言按设计强制了 bundle 重建）。回归挖掘由并行窗内审计持续覆盖（native intake/workflow 暂停取消/ScriptView 双激活已在 R1 native 深审范围）。
+
+### 本窗 R1（2026-09-12）结果：3 路并行 Hunter + 1 轮独立 Verifier → 11 项候选全核实（10 P3 确认，FC1 建议折叠：fake_channel 扫描是防误用标记而非安全边界——helper 已先经 alembic env.py 执行树内任意代码，目录形态零增量对抗风险）
+
+**已归档 issue（B 账 +5）**：
+- #409 assemble-web-resources retired-copy 生命周期：ignore_errors 泄漏 web.old-<pid>（pid 复用后 :114 裸 rmtree 中止构建）+ 拒绝范围 pid-local + 恢复指引过期（Move-Item 对现存 web 是嵌套非恢复）
+- #410 单实例/跨客户端键失效：WPF 互斥体按词法路径哈希（subst/junction/8.3 别名绕过）+ tauri/WPF 无共享 user-data interlock → 一库两 API 服务（busy_timeout 无 WAL → 锁竞争非损坏）
+- #411 WPF NativeBackend 无击杀升级：>40s 楔死宿主 → StopAsync 超时未重置状态 → 重连永久死锁；窗口关闭后宿主+sidecar 存活继续服务 DB（Job Object 只绑 helper 树）
+- #412 neutrality 门漏检：模式集缺 `vertexai` 标记——vertex_credentials.py:249 的 `vertexai=True` 今天就在门外且文件不在 allowlist，check:neutrality 照样通过
+- #413 start-dev.ps1 .env 按 5.1 ANSI 解码：非 ASCII 凭据变 mojibake 后提升进 env（python-dotenv 不覆盖已设值）
+
+**台账备注（不立卷，有据）**：FA3 dist-lock bash/python 混装互斥失效——87a5ce9 已文档性裁决 "unsupported"，不重复立卷；FA4 build-frontend-static.sh link→link 链重建 glob 序依赖（fail-closed 构建中止，flaky 非损坏）——并入 #409 修复批次顺带；FC1 fake_channel 目录形态——按 Verifier 建议折叠进敌意根加固说明（建议在 _validate_api_root 契约注释标明"目录形态不拒"或在测试补一条钉死现状）；FB4 native 无全局异常面（44 个 async void 均内部有守卫，纯加固注记）。
+
+**核实为守住（本窗新增代码面）**：7386eca 悬空绝对目标拒绝、cf4bcff swap 回滚 fail-closed、42f5e5e junction-aware 克隆、bdf8d9a 别名目录钉（与 web 侧谓词等价 + 服务端复验）、7a32cc0 PAUSED 取消生命周期（WAITING_APPROVAL→CANCELLED 重写 + UI 刷新）、7699a87 轮询节流（陈旧 ≤10s 自愈）、fc06f3c 单次加载不变量 + conflict bar 收拢、373/375/376 测试钉行为一致。
+
+### 本窗 R2（2026-09-12）结果：native Views 深挖（首个全量 Views 状态机审计）+ shell-core 边缘 + e2e/tauri 面。3 路 Hunter + 1 轮独立 Verifier（3 个 P2 全确认，Z2 被 Verifier 追加第二个跨写窗口）
+
+**已归档 issue（B 账 +6，累计 11/20）**：
+- #426 [P2] ScriptView 衣柜多存复活已删分配（陈旧 scene 快照逐角色 PATCH、无 version、后端整体替换；范围修正：≥2 脏位且含删除时才触发）
+- #427 [P2] WorkflowView 切换竞态跨工作流写图（无加载序守卫 + Activate 双加载 + 排队 flush 用陈旧画布 + 等版本绕过 CAS——Verifier 追加第二个窗口）
+- #428 [P2] Reconnect 绕过 ConfirmLeaveAsync（#341 修复只覆盖 RefreshAsync；Activate 全量重载摧毁脚本表单/分镜草稿/导演草稿；应用文案「项目数据已保留」与实际行为相反）
+- #429 [P3] Views 草稿守卫家族四例（GenerateView 导演草稿、Settings/ProjectSettings 表单含半输 API key、StoryboardView 章节切换陈旧渲染、LocalEditWindow 关窗丢 mask）
+- #430 [P3] shell-core 生命周期三边缘（导出 ENOSPC 孤儿 .pending 且无磁盘空间检查/2GiB 内存构档、RunLog::create 失败泄漏永久不可清扫 runtime 目录、planted .rotating 目录永久楔死该日志轮转）
+- #431 [P3] phase2_runner 契约套件 POSIX 静默跳过 + Job 顺序守卫仅源码字符串匹配（附带 P4 注记：e2e Windows stop 或孤儿 node 孙进程、health_probe UI 线程无连接超时）
+
+**核实为守住（R2 clean inventory）**：shell-core——READY 64KiB cap 边界、token 常量时比较、is_loopback_origin 全拒绝形态（[::1]/0.0.0.0/127.0.0.2/unicode）、owner.json 容错、post-spawn 全失败路径 abort_spawn、sweep 名门/拒链/未来 mtime、ziparch 不变量不可达、无输入可达 panic；native——无 WebView2/URI scheme 面、token 不进 C#、Preferences/KeyValueStore 损坏安全、ApiClient traversal 校验、ExportLogs 100MB 上限 + 拒 reparse point、44 个 async void 内部有守卫；e2e——owned-tree Ctrl+C/CtrlBreak 击杀、跨 run 端口污染守卫、#350 dist lock + tree-hash 溯源、#308 picker post-open 身份校验、fake-channel 门控、断言行为化（无 sleep-and-hope）。
+
+### 本窗 R4（2026-09-12）结果：导航/连接契约深挖 + 已立 8 issue 对抗互审（E 轮次）
+
+**已归档 issue（B 账 +4，累计 22/20 ✓ 配额 B 达成）**：
+- #446 [P3] Preferences.Save 关窗/dock 切换无 catch —— 数据目录不可写时 async void 崩溃、跳过优雅后端停止（KILL_ON_JOB_CLOSE 兜底故 P3；KeyValueStore 有对照 catch）
+- #447 [P3] node 子进程继承 MANGAFLOW_STATIC_EXPORT —— plan-B 服务的 web 静默降级为静态导出形态（strip 表缺该名；#313 同族）
+- #448 [P3] ScriptView 编辑表单保存无重入守卫 —— 双击同版本双 PATCH，第二个弹假 「保存未完成」 冲突框
+- #449 [P3] 启动 boot-hang 复用 「提交操作可能已被服务接收」 冲突文案 + 全部图片面绕过 ApiClient 错误详情契约（EnsureSuccessStatusCode/静默 catch/裸英文）
+
+**互审结论（E 轮次 4-5）**：R4-B 交叉审 8 个已立 issue —— 全部 STRENGTHENED/CORRECTED 无 REFUTED：#426 加重（单字符保存也会抹掉其他客户端并发新增：无版本整体替换 + 非 quiet LoadScriptAsync 孤儿化控件）；#427 加重（Verifier 独立发现第二窗口：排队 flush 在 handler1 设置 workflowId 后执行，PATCH workflows/B 携带 A 的图）；#428 加重（应用文案主动邀请重连但路径无任何 ConfirmLeave）；#438/#439/#442 全部加强；#430 修正（三机制真实、P3、stderr 有日志）；#431 确认（结构守卫是该文件 docstring 明示意图）。R4-A 新增：N1（#446）、N2/N3（#449）、media 面契约绕过；**核实守住**：幽灵持久化项目回退首页、状态文件 tmp+move 原子、后端无 401/403（本地 sidecar 无需认证流）、ConfirmLeave 重定向守卫 (:416-423)、HomeView 双提交守卫。
+### 本窗 R5-R6（2026-09-12）结果：C 配额完成 + D 配额完成 + E 第 6 轮
+
+**C — 防守测试/契约小 PR（6/6 ✓）**：
+- #450 start-dev.ps1 .env UTF-8（#413）
+- #451 neutrality 门补 `vertexai` 标记 + allowlist vertex_credentials.py（#412）
+- #452 fake_channel 目录形态拒扫 + 契约测试（本窗新发现，FC1）
+- #453 RunLog::create 失败 finalize ownership journal（#430-2；cargo 76+9+7 全绿）
+- #454 assemble 孤儿 web.old-*/tmp-* 清扫 + 5 契约测试（#409-1/-3）
+- #455 phase2_runner 契约测试 POSIX 化拆分（#431-1；POSIX 实跑 2/2）
+
+**D — 旧账清账 ✓**：#149 **FIXED**（.pending 拒链 + hard_link 无覆写落位 + 目的地/pending 共享检查，HEAD 直证）；#150 四项全 **FIXED**（rotation staging-first + 3 次熔断、JobHandle Drop、PYTHONUTF8/PYTHONIOENCODING、.pending 拒链）——均有 HEAD file:line 证据评论。#307/#311 维持 lead 决策记录；#264/#265/#272/#275/#276/#309/#310/#312 前窗已有证据评论。
+
+**E — 互审轮次（6/6 ✓）**：E1 R1 Verifier（11 项）；E2 R2 Verifier（3 P2）；E3 R3 Verifier + 结构 P3 抽检；E4 R4 JOB1 交叉审 8 个已立 issue（全部 STRENGTHENED/CORRECTED，零 REFUTED）；E5 R4 Verifier（N1 降级 P3 + N5/N6/N2/N3 确认）；E6 终轮（#429 四项确认 + JobsView 陈旧对话框新姊妹发现，证据已挂 #429）。
+
+**F — 最终配额状态（截至本节提交）**：B **22/20 ✓**（#409-#413、#426-#431、#438-#444、#446-#449）；C **6/6 ✓**（#450-#455）；D **✓**；E **6/6 ✓**。窗口结束条件：时间到 09:00 后可 COMPLETE；若窗口延长，下一优先 = 已立 issue 的 owner 认领跟进 + 对 #426/#427/#428 修复 PR 的回归挖掘（native Views 是新开的深水区）。
+
+### 本窗 R7（2026-09-12 续跑，master 对齐 c3d694a）结果：新修复批回归挖掘 + E 第 7 轮
+
+- **已立 issue 关闭核验（D 延续）**：#409（cb0fc60 + #454 双清扫）、#412（b7833c8/#451）、#413（9dc0257/#450）、#430-2（633a868/#453）、#431（0f36205/#455）——全部 FIXED，证据评论已挂。6 个防守 PR（#450-#455）全部被认领合入且在新 tip 存活；#454 被 owner 扩展（cb0fc60 post-swap sweep），与 #454 的 pre-sweep 清扫在 HEAD 共存。
+- **新 issue（B 账 +2，累计 24）**：
+  - #457 [P3] assemble post-swap 清扫与模块 docstring/恢复契约矛盾（「different pid 不触碰」已失效）+ 并发 assemble 无锁（清扫可删除另一 run 的回滚源；fail-closed）
+  - #458 [P3] runtime layout 规范化守卫只比叶名——planted symlink at user_data/runtime 父级重定向绕过（会话树落位逃逸；同用户前置；ff0a0e2 只钉了叶名失配形态）
+- **E7**：新批 Hunter 回归挖掘 + lead 直读复核（docstring 矛盾与叶名守卫均经双确认）。
+- **新批核实为守住**：6aba8c2 目的地目录根钉（纯测试钉）、2c598ee get_status 预拨 CR/LF 拒绝（defense-in-depth，全部调用方传常量）、#407 junction 测试平台跳过（与本窗 PR 无重叠）、#408 traverse-only fallback 测试钉（与 #452 目录形态测试互补不冲突）。
+
+### 本窗 R8（2026-09-12 续跑）结果：E8 交叉审 + 对 6 个已合 PR 的对称挖掘
+
+- **E8 裁决**：#457 确认（P3 公允——无 shippable 损失，dev 构建脚本）；#458 确认（生产 `create` 同形态；后果精化为 placement + token journal 披露，非 split-brain）。
+- **对称挖掘新发现（B 账 +3，累计 27）**：
+  - #460 [P3] _validate_api_root 阴影扫描只防 fake_channel——api_root 树同样可遮蔽 helper 的 `alembic`/`uvicorn` 裸名导入（sys.path[0]；lead 直读 import 行确认）
+  - #461 [P3] build-web-standalone 严格 rmtree——锁定文件截断 DESKTOP_DIST 后，同 commit 的旧 build-info.json 使 e2e 新鲜度门放行截断 bundle（#454 同类在姊妹脚本漏修）
+  - #462 [P3] neutrality 门测试模块 win32 门内含可移植断言 + allowlist 读取缺 -Encoding（#450 同族姊妹读）
+- **#430 补充证据**：RuntimeLayout::create 内部窗口（create_dir_all 后、journal 写前失败 → 无 journal 目录永不回收）——#453 只修了 RunLog::create 半边。
+- **E 配额累计 8 轮**。

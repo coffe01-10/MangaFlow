@@ -299,6 +299,19 @@ impl RuntimeLayout {
                 "runtime path/ownership mismatch",
             ));
         }
+        // Containment, not just the leaf name: a symlink planted at the
+        // runtime name pointing at a same-leaf directory OUTSIDE the
+        // user-data root passes the leaf check above but relocates the
+        // session's journal (and everything the helper writes under it)
+        // to an attacker-chosen subtree. The session tree must live inside
+        // the user-data root, resolved on both sides (#458).
+        let user_data_canonical = user_data.canonicalize()?;
+        if !resolved.starts_with(&user_data_canonical) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "runtime path escapes the user-data root",
+            ));
+        }
         let layout = RuntimeLayout {
             user_data: user_data.to_path_buf(),
             token: token.to_string(),
@@ -1576,3 +1589,51 @@ mod tests {
         let _ = std::fs::remove_dir_all(&outside);
     }
 }
+
+    /// The containment guard (#458): a symlink planted at the exact runtime
+    /// name whose TARGET uses the same leaf (an attacker-chosen subtree with
+    /// a pre-built `mangaflow-desktop-<token>` directory) passes the leaf
+    /// check — the session tree must additionally live INSIDE the resolved
+    /// user-data root, or the journal (and everything the helper writes
+    /// under the session dir) is relocated to an attacker-chosen subtree.
+    #[cfg(unix)]
+    #[test]
+    fn runtime_layout_refuses_a_same_leaf_target_outside_the_user_data_root() {
+        use std::os::unix::fs::symlink;
+
+        let user_data = std::env::temp_dir().join(format!(
+            "mangaflow-layout-contain-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&user_data);
+        let outside_root = std::env::temp_dir().join(format!(
+            "mangaflow-layout-outside-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&outside_root);
+
+        let token = new_token();
+        // The attacker pre-builds a same-leaf directory outside the root.
+        let outside = outside_root.join(format!("{RUNTIME_DIR_PREFIX}{token}"));
+        std::fs::create_dir_all(&outside).unwrap();
+        // ... and plants a symlink at the runtime name pointing at it.
+        let planted = user_data.join("runtime").join(format!("{RUNTIME_DIR_PREFIX}{token}"));
+        std::fs::create_dir_all(planted.parent().unwrap()).unwrap();
+        symlink(&outside, &planted).unwrap();
+
+        let error = RuntimeLayout::create_with_token(&user_data, &token)
+            .err()
+            .expect("a same-leaf target outside the user-data root must refuse");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("user-data root"), "{error}");
+        // The refusal must not have journaled ownership into the outside tree.
+        assert!(
+            !outside.join(JOURNAL_NAME).exists(),
+            "the outside tree must stay journal-free: {error}"
+        );
+
+        let _ = std::fs::remove_dir_all(&user_data);
+        let _ = std::fs::remove_dir_all(&outside_root);
+    }
