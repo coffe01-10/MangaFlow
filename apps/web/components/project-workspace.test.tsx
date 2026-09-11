@@ -218,4 +218,26 @@ describe("ProjectWorkspace ?page= 跨章深链回退提示", () => {
     await screen.findByTestId("canvas-page");
     expect(screen.queryByText("深链目标页不在当前章节")).not.toBeInTheDocument();
   });
+
+  // #384：有页章节但目标页不存在（失效/已删链接）→ 横幅必须出现。
+  it("#384 有页章节缺目标页时横幅出现（就绪判定不依赖目标存在）", async () => {
+    mockSearchParams.current = new URLSearchParams({ page: "page-deleted" });
+    renderStoryboardWorkspace();
+
+    expect(await screen.findByText("深链目标页不在当前章节")).toBeInTheDocument();
+    expect(screen.getByText(/已显示本章第 1 页/)).toBeInTheDocument();
+  });
+
+  // #384：旧的 pages.data.length > 0 前置把零页章节的横幅整个吞掉——
+  // 零页 + 深链同样是"目标页不在当前章节"，必须给出可见反馈。
+  it("#384 零页章节 + 深链时横幅同样出现，且文案不谎称已显示第 1 页", async () => {
+    pagesApi.mockResolvedValue([]);
+    mockSearchParams.current = new URLSearchParams({ page: "page-anywhere" });
+    renderStoryboardWorkspace();
+
+    const banner = await screen.findByText("深链目标页不在当前章节");
+    expect(banner).toBeInTheDocument();
+    expect(screen.getByText(/本章还没有任何页面/)).toBeInTheDocument();
+    expect(screen.queryByText(/已显示本章第 1 页/)).toBeNull();
+  });
 });

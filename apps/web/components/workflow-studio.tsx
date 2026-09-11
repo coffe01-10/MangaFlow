@@ -165,6 +165,17 @@ function downloadJson(name: string, value: unknown) {
   URL.revokeObjectURL(url);
 }
 
+// #380：PAUSED（审批栅栏）也是活跃态。旧谓词只认 RUNNING——审批通过或取消后，
+// run 已不是 RUNNING，轮询彻底停摆，页脚状态与节点徽标冻结在旧数据上直到手动
+// 刷新。契约：任一 run RUNNING → 3s；否则任一 run PAUSED → 10s 折中降频；
+// 全部终态（或无运行）→ false 停止轮询。导出供测试直接钉住该词汇表。
+export function workflowRunsPollInterval(runs: ReadonlyArray<WorkflowRun> | undefined): number | false {
+  const list = runs ?? [];
+  if (list.some((run) => run.status === "RUNNING")) return 3000;
+  if (list.some((run) => run.status === "PAUSED")) return 10000;
+  return false;
+}
+
 export default function WorkflowStudio({ projectId }: { projectId: string }) {
   const queryClient = useQueryClient();
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -213,7 +224,7 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
     queryKey: ["workflow-runs", activeWorkflow?.id],
     queryFn: () => api.workflowRuns(activeWorkflow!.id),
     enabled: Boolean(activeWorkflow),
-    refetchInterval: (query) => (query.state.data ?? []).some((run) => run.status === "RUNNING") ? 3000 : false,
+    refetchInterval: (query) => workflowRunsPollInterval(query.state.data),
   });
 
   useEffect(() => { nodesRef.current = nodes; }, [nodes]);
@@ -792,7 +803,11 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
             而同 scope 的重复运行守卫会把 PAUSED 当活跃 run 拒绝（409 文案
             指示“先取消”）——不在这里露出按钮，用户就没有任何停止途径。 */}
         <div className={styles.runActions}><button disabled={!selectedId || startRun.isPending} onClick={() => startRun.mutate("NODE")}><Play size={13} />运行节点</button><button disabled={!selectedId || startRun.isPending} onClick={() => startRun.mutate("FROM")}><Play size={13} />从这里运行</button>{displayedRun && (displayedRun.status === "RUNNING" || displayedRun.status === "PAUSED") ? <button disabled={cancelRun.isPending} onClick={() => cancelRun.mutate(displayedRun.id)}><Pause size={13} />取消</button> : null}{displayedRun?.status === "FAILED" ? <button disabled={retryRun.isPending} onClick={() => retryRun.mutate(displayedRun.id)}><RotateCcw size={13} />重试</button> : null}<button className={styles.runPrimary} disabled={startRun.isPending} onClick={() => startRun.mutate("FULL")}><Play size={14} />运行工作流</button></div>
-        {displayedRun?.node_runs.filter((run) => run.status === "WAITING_APPROVAL").map((run) => <div className={styles.approval} key={run.id}><strong>{run.node_type === "generator.page" ? "单页生成等待选择模型" : "采用候选后继续"}</strong>{run.node_type === "generator.page" ? <><select aria-label="选择图片模型" value={drawModel} onChange={(event) => setDrawModel(event.target.value as ImageModelAlias | "")}><option value="">选择图片模型</option>{imageModels.map((model) => <option key={model.catalog_id} value={model.logical_alias}>{model.provider} · {model.display_name}</option>)}</select><select aria-label="选择图片清晰度" value={drawResolution} onChange={(event) => setDrawResolution(event.target.value as Resolution)}><option>1K</option><option>2K</option><option>4K</option></select></> : <Link href={`/projects/${projectId}/generate`}>前往采用</Link>}<button disabled={approveNode.isPending || (run.node_type === "generator.page" && !drawModel)} onClick={() => approveNode.mutate(run)}>确认继续</button></div>)}
+        {/* #381：generator.page 的审批选择器来源是 imageModels——目录为空时
+            选择器里没有可选项，!drawModel 恒真，「确认继续」永久禁用且没有任何
+            出路提示。空目录时改渲染明确指引（设置入口 + 取消按钮已在页脚），
+            而不是一个空选择器。 */}
+        {displayedRun?.node_runs.filter((run) => run.status === "WAITING_APPROVAL").map((run) => <div className={styles.approval} key={run.id}><strong>{run.node_type === "generator.page" ? "单页生成等待选择模型" : "采用候选后继续"}</strong>{run.node_type === "generator.page" ? imageModels.length === 0 ? <><span>未配置可用图像模型：请先在设置中启用图像模型，或取消本次运行。</span><Link href="/settings">前往设置</Link></> : <><select aria-label="选择图片模型" value={drawModel} onChange={(event) => setDrawModel(event.target.value as ImageModelAlias | "")}><option value="">选择图片模型</option>{imageModels.map((model) => <option key={model.catalog_id} value={model.logical_alias}>{model.provider} · {model.display_name}</option>)}</select><select aria-label="选择图片清晰度" value={drawResolution} onChange={(event) => setDrawResolution(event.target.value as Resolution)}><option>1K</option><option>2K</option><option>4K</option></select></> : <Link href={`/projects/${projectId}/generate`}>前往采用</Link>}<button disabled={approveNode.isPending || (run.node_type === "generator.page" && !drawModel)} onClick={() => approveNode.mutate(run)}>确认继续</button></div>)}
       </footer>
     </main>
   );
