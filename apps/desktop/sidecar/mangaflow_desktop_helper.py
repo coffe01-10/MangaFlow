@@ -535,6 +535,21 @@ def _apply_app_environment(user_data: Path, web_origin: str) -> None:
     os.environ["WEB_ORIGIN"] = web_origin
 
 
+def set_sqlalchemy_url(config, url: str) -> None:
+    """Set sqlalchemy.url through Alembic's ConfigParser-backed config.
+
+    set_main_option routes the value through ConfigParser interpolation,
+    where a bare ``%`` introduces a ``%(name)s`` substitution — a ``%`` in
+    the user-data path (a ``100%`` username is a legal Windows name) made
+    ``command.upgrade`` die with an interpolation error before the API ever
+    started (#443). Alembic's documented escape is doubling it; reading the
+    option back resolves to the original URL, so the escaped form never
+    reaches SQLAlchemy.
+    """
+
+    config.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
+
+
 def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
     api_root = Path(args.api_root).resolve()
     rejection = _validate_api_root(api_root)
@@ -566,9 +581,7 @@ def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
             from alembic.config import Config as AlembicConfig
 
             alembic_config = AlembicConfig(str(api_root / "alembic.ini"))
-            alembic_config.set_main_option(
-                "sqlalchemy.url", os.environ["DATABASE_URL"]
-            )
+            set_sqlalchemy_url(alembic_config, os.environ["DATABASE_URL"])
             command.upgrade(alembic_config, "head")
         except BaseException as error:  # noqa: BLE001 - journal the failure, then exit
             record.update(state="failed", error=f"alembic:{type(error).__name__}")
