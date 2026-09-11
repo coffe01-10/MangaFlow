@@ -401,3 +401,58 @@ fn export_skips_rotation_staging_debris_but_not_lookalike_user_files() {
     let _ = fs::remove_dir_all(&user_data);
     let _ = fs::remove_file(&destination);
 }
+
+/// A FIFO planted in the logs directory must be skipped with the
+/// not_a_regular_file reason — and, critically, the exporter must never
+/// OPEN it: a plain `fs::read` on a pipe blocks until a writer appears,
+/// so a regression to read-without-type-check would hang every export
+/// until someone writes to the pipe. The export runs on a thread with a
+/// bounded join so a regression surfaces as a test failure, not a hang.
+/// Unix-only: mkfifo is a libc call.
+#[test]
+#[cfg(unix)]
+fn export_skips_a_fifo_without_opening_it() {
+    use std::ffi::CString;
+    use std::sync::mpsc;
+
+    let user_data = temp_user_data("fifo");
+    let token = new_token();
+    let logs = logs_dir(&user_data);
+    fs::create_dir_all(&logs).unwrap();
+    let run_log = RunLog::create(&user_data, &token).unwrap();
+    run_log
+        .record("spawn", &serde_json::json!({ "token": token }))
+        .unwrap();
+
+    let fifo = logs.join("planted-pipe");
+    let cpath = CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o644) }, 0);
+
+    let (sender, receiver) = mpsc::channel();
+    let thread_user_data = user_data.clone();
+    std::thread::spawn(move || {
+        let destination =
+            std::env::temp_dir().join(format!("mfd-export-{}.zip", new_token()));
+        let result = export_logs_zip(&thread_user_data, &destination)
+            .map(|report| (report, destination));
+        let _ = sender.send(result);
+    });
+    let outcome = receiver
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("export must finish — a hang means the exporter opened the FIFO");
+    let (report, destination) = outcome.expect("export succeeds");
+
+    let skipped: Vec<(&str, &str)> = report
+        .skipped
+        .iter()
+        .map(|s| (s.name.as_str(), s.reason.as_str()))
+        .collect();
+    assert_eq!(skipped, vec![("planted-pipe", "not_a_regular_file")], "{skipped:?}");
+    // The run log alone is archived; the FIFO contributed nothing.
+    let mut files = report.files.clone();
+    files.sort_unstable();
+    assert_eq!(files, vec![format!("shell-{token}.log")], "{report:?}");
+
+    let _ = fs::remove_dir_all(&user_data);
+    let _ = fs::remove_file(&destination);
+}
