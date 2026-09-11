@@ -1,4 +1,4 @@
-using System.Reflection;
+﻿using System.Reflection;
 using System.Text.Json;
 using MangaFlow.Native;
 using MangaFlow.Native.Views;
@@ -192,6 +192,9 @@ internal static class NativeWorkflowConnectionChecks
             viewType.GetField("nodeTypes", All)!.SetValue(view, new List<JsonElement> { conditionType.RootElement });
             var nodes = (System.Collections.IList)viewType.GetField("nodes", All)!.GetValue(view)!;
             var original = CreateNode(view, "cond-1", "control.condition");
+            // CreateNode 助手以 type 充当 name（别名断言不关心名字）；本检查按展示名
+            // 语义断言克隆命名（原名 + " 副本"），先把原名设成展示名"条件"。
+            NodeType().GetField("Name", All)!.SetValue(original, "条件");
             SetCondition(viewType, original, "operator", "eq");
             SetCondition(viewType, original, "path", "$.demo");
             SetConfig(original, "temperature", 0.4);
