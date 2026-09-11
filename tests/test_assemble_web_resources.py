@@ -285,3 +285,36 @@ def test_sweep_reclaims_cross_pid_crash_remnants(tmp_path):
     assert (res / "standalone" / "server.js").read_bytes() == b"server-entry"
     assert not debris_old.exists(), "parked .old-<pid> tree must be reclaimed"
     assert not debris_tmp.exists(), "parked .tmp-<pid> tree must be reclaimed"
+
+
+def test_find_node_prefers_override_then_path_then_named_fallback(tmp_path, monkeypatch):
+    """NODE_EXE wins only when it names a REAL file; a dangling NODE_EXE falls
+    through to PATH, then to the documented fallback, and only a total miss
+    raises — with the remedy spelled out (set NODE_EXE or fix PATH). All four
+    branches are monkeypatched, so this runs on POSIX."""
+
+    module = _load_module()
+    real_exe = tmp_path / "node-real.exe"
+    real_exe.write_bytes(b"node")
+    dangling = tmp_path / "node-dangling.exe"  # never created: not a file
+    on_path = tmp_path / "node-on-path.exe"
+    on_path.write_bytes(b"node-on-path")
+
+    # 1. A real NODE_EXE override wins outright.
+    monkeypatch.setenv("NODE_EXE", str(real_exe))
+    monkeypatch.setattr(module.shutil, "which", lambda name: str(on_path))
+    assert module.find_node() == real_exe
+
+    # 2. A NODE_EXE that is not a file is ignored (falls through to PATH).
+    monkeypatch.setenv("NODE_EXE", str(dangling))
+    assert module.find_node() == on_path
+
+    # 3. No NODE_EXE: PATH resolution answers.
+    monkeypatch.delenv("NODE_EXE")
+    assert module.find_node() == on_path
+
+    # 4. Total miss: the refusal names the remedy. (The C:\node fallback
+    # cannot exist on POSIX; monkeypatch which to None to force the miss.)
+    monkeypatch.setattr(module.shutil, "which", lambda name: None)
+    with pytest.raises(SystemExit, match="NODE_EXE"):
+        module.find_node()
