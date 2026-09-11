@@ -1407,8 +1407,11 @@ time.sleep(120)
 /// kill what it does not own, and refusing is the fail-closed answer the
 /// Windows Job-membership path solves differently. The abort must still
 /// stop the whole group (parent and grandchild share it) and mark the
-/// journal stopped; both announcer processes are reaped by pid in a
-/// bounded sweep so no failure path leaks a one-hour sleeper.
+/// journal stopped; the bounded sweep VERIFIES both announcer processes
+/// died (the reaping itself is the abort's group stop). In-test failure
+/// paths cannot leak the sleepers — abort_spawn's group stop runs before
+/// the error returns; only hard termination of the test binary itself
+/// could orphan them, and they self-clear at their two-minute sleep.
 #[test]
 #[cfg(unix)]
 fn a_grandchild_pid_ready_is_refused_on_unix_direct_child_membership() {
@@ -1441,9 +1444,9 @@ if pid == 0:
     journal.write_text(json.dumps(record), encoding="utf-8")
     print("MANGAFLOW_READY " + json.dumps(
         {"token": token, "pid": os.getpid(), "api_origin": origin}), flush=True)
-    time.sleep(3600)
+    time.sleep(120)
 side_info.write_text(f"{os.getpid()} {pid}", encoding="utf-8")
-time.sleep(3600)
+time.sleep(120)
 "#,
     )
     .unwrap();
@@ -1486,7 +1489,10 @@ time.sleep(3600)
         .map(|p| p.parse().unwrap())
         .collect();
     let deadline = Instant::now() + Duration::from_secs(10);
-    while pids.iter().any(|p| Path::new(&format!("/proc/{p}")).exists()) {
+    // proc_dead, not bare /proc exists(): a group-killed grandchild
+    // re-parents to init and lingers as a zombie in containers whose init
+    // never reaps — the sweep must not count that as survival.
+    while pids.iter().any(|p| !proc_dead(*p)) {
         assert!(
             Instant::now() < deadline,
             "the group stop must reap the launcher and its grandchild"
