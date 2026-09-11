@@ -21,12 +21,17 @@ if [ ! -f "$REPO_ROOT/apps/desktop/dist/web-standalone/server.js" ]; then
   "$VENV/bin/python" "$DESKTOP_ROOT/scripts/build-web-standalone.py"
 fi
 # The relay/bind regression suites (test_sidecar_relay*.py) are
-# pure-loopback stdlib+pytest and run everywhere the e2e runs; keep them in
-# this runner so the relay pipe/bind contracts stay exercised instead of
-# depending on someone remembering a manual pytest command.
+# pure-loopback stdlib+pytest and run everywhere the e2e runs; the env/
+# api-root suite pins the helper's startup ownership contract; the dist
+# build lock suite keeps the shared dist/ writers mutually exclusive
+# (#350). Keep them all in this runner so the contracts stay exercised
+# instead of depending on someone remembering a manual pytest command.
+# (pytest.ini's testpaths/norecursedirs exclude apps/desktop from a bare
+# pytest, so an unlisted file here is an untested file — #343.)
 exec "$VENV/bin/python" -m pytest \
   "$DESKTOP_ROOT/scripts/test_sidecar_e2e.py" \
   "$DESKTOP_ROOT/scripts/test_sidecar_relay.py" \
   "$DESKTOP_ROOT/scripts/test_sidecar_relay_bind.py" \
   "$DESKTOP_ROOT/scripts/test_sidecar_env_and_api_root.py" \
+  "$DESKTOP_ROOT/scripts/test_dist_build_lock.py" \
   -v "$@"
