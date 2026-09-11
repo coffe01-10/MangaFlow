@@ -157,15 +157,43 @@ def test_traverse_only_api_root_still_rejects_the_shadow(monkeypatch, tmp_path):
     is unreachable via the ACL model)."""
     if os.name == "nt":
         pytest.skip("0o111 traverse-only shape needs POSIX permission semantics")
-    (tmp_path / "alembic.ini").write_text("[alembic]\n", encoding="utf-8")
-    (tmp_path / "app").mkdir()
-    (tmp_path / "app" / "main.py").write_text("", encoding="utf-8")
-    (tmp_path / "fake_channel.py").write_text("", encoding="utf-8")
-    tmp_path.chmod(0o111)
-    try:
-        assert helper._validate_api_root(tmp_path) == "api-root/shadowing-fake-channel"
-    finally:
-        tmp_path.chmod(0o755)
+    # One planted shadow per probe name in the R3-extended fallback
+    # (fake_channel.py / fake_channel / alembic.py / alembic / uvicorn.py /
+    # uvicorn): a traverse-only root must fail closed on ANY of them - and
+    # a clean traverse-only root must pass (no false positive from the
+    # fallback's byte-exact probes).
+    probes = [
+        "fake_channel.py", "fake_channel",
+        "alembic.py", "alembic",
+        "uvicorn.py", "uvicorn",
+    ]
+    for shadow in probes:
+        root = tmp_path / f"root-{shadow.replace('.', '-')}"
+        root.mkdir(parents=True)
+        (root / "alembic.ini").write_text("[alembic]\n", encoding="utf-8")
+        (root / "app").mkdir()
+        (root / "app" / "main.py").write_text("", encoding="utf-8")
+        (root / shadow).write_text("", encoding="utf-8")
+        root.chmod(0o111)
+        try:
+            reason = helper._validate_api_root(root)
+        finally:
+            root.chmod(0o755)
+        assert reason is not None and reason.startswith("api-root/shadowing-"), (
+            f"traverse-only root with {shadow!r} must be rejected: {reason!r}"
+        )
+        clean = tmp_path / f"clean-{shadow.replace('.', '-')}"
+        clean.mkdir(parents=True)
+        (clean / "alembic.ini").write_text("[alembic]\n", encoding="utf-8")
+        (clean / "app").mkdir()
+        (clean / "app" / "main.py").write_text("", encoding="utf-8")
+        clean.chmod(0o111)
+        try:
+            assert helper._validate_api_root(clean) is None, (
+                f"clean traverse-only root with no {shadow!r} must pass"
+            )
+        finally:
+            clean.chmod(0o755)
 
 
 def test_valid_api_root_tree_passes_validation(tmp_path):
