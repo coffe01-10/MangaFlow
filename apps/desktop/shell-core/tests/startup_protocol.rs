@@ -1497,3 +1497,5 @@ time.sleep(3600)
     let _ = fs::remove_dir_all(&user_data);
     let _ = fs::remove_file(&script);
 }
+
+
