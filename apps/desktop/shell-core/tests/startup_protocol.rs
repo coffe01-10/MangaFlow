@@ -1497,3 +1497,33 @@ time.sleep(3600)
     let _ = fs::remove_dir_all(&user_data);
     let _ = fs::remove_file(&script);
 }
+
+/// Pointing user_data at a REGULAR FILE (a misconfiguration: a stray
+/// archive, a wrong --user-data argument) must fail the handshake cleanly
+/// at the very first step — RuntimeLayout::create's create_dir_all cannot
+/// make a directory path through a file — surfacing as SpawnError::Io,
+/// with no panic and no runtime/logs residue created beside it. The
+/// helper binary is never invoked.
+#[test]
+fn spawn_helper_refuses_a_user_data_path_that_is_a_file() {
+    let parent = temp_user_data("ud-file-parent");
+    let user_data = parent.join("userdata");
+    fs::create_dir_all(&parent).unwrap();
+    fs::write(&user_data, b"not a directory").unwrap();
+
+    let config = HelperConfig::stub(&python(), &helper_script());
+    let error = spawn_helper(&config, &user_data)
+        .err()
+        .expect("a file as user_data must refuse");
+    assert!(
+        matches!(error, SpawnError::Io(_)),
+        "the failure must surface as SpawnError::Io: {error:?}"
+    );
+    // The misconfigured path itself was never converted into a directory,
+    // and no sibling runtime/logs trees were created next to it.
+    assert!(user_data.is_file(), "the stray file must be untouched");
+    assert!(!parent.join("runtime").exists());
+    assert!(!parent.join("logs").exists());
+
+    let _ = fs::remove_dir_all(&parent);
+}
