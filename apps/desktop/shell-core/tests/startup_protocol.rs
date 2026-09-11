@@ -56,13 +56,6 @@ fn newest_journal_path(user_data: &Path) -> Option<std::path::PathBuf> {
     Some(entry.join("owner.json"))
 }
 
-fn journal_pid(user_data: &Path) -> Option<u32> {
-    let path = newest_journal_path(user_data)?;
-    let value: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
-    u32::try_from(value["pid"].as_u64()?).ok()
-}
-
 fn proc_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
@@ -1088,6 +1081,69 @@ fn spawn_fails_cleanly_on_a_missing_helper_binary() {
         journal_value.get("exit_code").is_none(),
         "a pre-spawn failure records no exit code: {journal_value}"
     );
+    let _ = std::fs::remove_dir_all(&user_data);
+}
+
+/// ADR D9 pin: a stand-in that publishes a NON-loopback api_origin must
+/// fail verification with OriginNotLoopback and be torn down — the shell
+/// never GOes a helper that announced off-box reachability.
+#[test]
+fn a_non_loopback_origin_fails_verification_and_is_torn_down() {
+    let user_data = temp_user_data("non-loopback");
+    let stand_in = r#"
+import json, os, sys
+token = os.environ["MANGAFLOW_DESKTOP_TOKEN"]
+journal_path = os.environ["MANGAFLOW_DESKTOP_JOURNAL"]
+with open(journal_path, "w", encoding="utf-8") as handle:
+    json.dump({"version": 1, "token": token, "state": "ready",
+               "pid": os.getpid(), "api_origin": "http://10.0.0.9:8080"}, handle)
+print("MANGAFLOW_READY " + json.dumps(
+    {"token": token, "pid": os.getpid(), "api_origin": "http://10.0.0.9:8080"}), flush=True)
+sys.stdin.read()
+"#;
+    let stand_in_path = user_data.join("stand_in_offbox.py");
+    std::fs::write(&stand_in_path, stand_in).unwrap();
+    let config = HelperConfig {
+        python: python(),
+        helper_script: stand_in_path.clone(),
+        helper_args: vec![],
+        ready_timeout: Duration::from_secs(20),
+        health_timeout: Duration::from_secs(10),
+    };
+
+    let error = match spawn_helper(&config, &user_data) {
+        Ok(_) => panic!("a non-loopback origin must not complete the handshake"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(error, SpawnError::Verify(VerifyError::OriginNotLoopback)),
+        "unexpected error: {error:?}"
+    );
+
+    // The off-box announcer must be dead after the teardown.
+    #[cfg(unix)]
+    {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            let live = std::process::Command::new("pgrep")
+                .args(["-f", "stand_in_offbox.py"])
+                .output()
+                .map(|output| !output.stdout.is_empty())
+                .unwrap_or(true);
+            if !live {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            !std::process::Command::new("pgrep")
+                .args(["-f", "stand_in_offbox.py"])
+                .output()
+                .map(|output| !output.stdout.is_empty())
+                .unwrap_or(true),
+            "the off-box announcer must be dead after the teardown"
+        );
+    }
     let _ = std::fs::remove_dir_all(&user_data);
 }
 
