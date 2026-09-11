@@ -310,12 +310,28 @@ def _serve_relay(relay: socket.socket, api_port: int) -> None:
                     ),
                 ]
                 try:
+                    started = []
                     for pump in pumps:
-                        pump.start()
+                        try:
+                            pump.start()
+                            started.append(pump)
+                        except (RuntimeError, MemoryError):
+                            # A partial start leaves earlier pumps running
+                            # against sockets the finally is about to
+                            # close: SHUT_RDWR both now so the survivors'
+                            # next recv/sendall fails and they exit
+                            # deterministically instead of lingering on
+                            # closed fds.
+                            for sock in (pair_client, pair_upstream):
+                                try:
+                                    sock.shutdown(socket.SHUT_RDWR)
+                                except OSError:
+                                    pass
+                            raise
+                    for pump in started:
+                        pump.join()
                 except (RuntimeError, MemoryError):
-                    return
-                for pump in pumps:
-                    pump.join()
+                    pass
             except (RuntimeError, MemoryError):
                 # Construction or start failed under host-wide pressure (OS
                 # thread/memory limits - not our own counter, which the cap
