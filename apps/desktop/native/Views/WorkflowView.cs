@@ -253,6 +253,11 @@ public sealed class WorkflowView : WorkspaceView
         {
             if (workflowSelector.SelectedItem is ComboBoxItem { Tag: string id } && id != workflowId)
             {
+                // #342 补齐（与 ConfirmLeaveAsync 同款纪律）：先停掉武装中的防抖
+                // 计时器再 flush。否则 flush 响应在途时计时器到期，回调的身份检查
+                // 读到的仍是旧 workflowId/version（切换还没越过 await），会把同一份
+                // 草稿按同版本号 PATCH 第二次（生产环境表现为伪 409）。
+                autosave?.Stop();
                 await SaveNowAsync();
                 workflowId = id;
                 await LoadWorkflowAsync();
@@ -1291,10 +1296,16 @@ public sealed class WorkflowView : WorkspaceView
 
     private JsonElement latestRun;
     private bool runActive;
+    // #380：仅剩 PAUSED（审批栅栏）时轮询不再停摆，但重取节流到约 10s 一次；
+    // lastPausedFetchTicks 记录上一次 PAUSED 数据落地的 Environment.TickCount64
+    // （任何一次取回 PAUSED 列表的请求都会重置窗口），PollTick 据此降频。
+    private bool runPaused;
+    private long lastPausedFetchTicks;
 
     // 运行数据端点与刷新时机对齐网页：GET workflows/{id}/runs（后端 created_at
-    // 倒序）；启动/取消/审批后立即重取，运行期间 3s 轮询（网页 refetchInterval
-    // 3000，条件是列表里任一运行处于 RUNNING）。
+    // 倒序）；启动/取消/审批后立即重取；轮询条件是列表里任一运行处于 RUNNING
+    // 或 PAUSED（#380：审批栅栏不该让轮询停摆）——RUNNING 每 tick 重取（网页
+    // refetchInterval 3000），仅剩 PAUSED 时降频为约 10s 一次（网页 10000）。
     private async Task LoadRunsAsync()
     {
         // 防重入：上一轮请求未返回时跳过本轮，避免晚到的旧响应覆盖新结果
@@ -1307,6 +1318,12 @@ public sealed class WorkflowView : WorkspaceView
             runMonitor.Children.Clear();
             approvalQueue.Children.Clear();
             runActive = runRows.Any(row => row.Text("status") == "RUNNING");
+            // #380：无 RUNNING 但存在 PAUSED（审批栅栏）时也算活跃：别端的审批/
+            // 恢复/取消都会推进 run，停摆会把页脚与节点徽标冻结在旧数据上。
+            runPaused = !runActive && runRows.Any(row => row.Text("status") == "PAUSED");
+            // 任何一次取回 PAUSED 列表的请求都重置 10s 节流窗口（含手动刷新与
+            // 动作后的立即重取），PollTick 只在窗口外才降频补拉。
+            if (runPaused) lastPausedFetchTicks = Environment.TickCount64;
             if (runRows.Count == 0)
             {
                 foreach (var node in nodes) node.SetRunStatus(null);
@@ -1760,7 +1777,10 @@ public sealed class WorkflowView : WorkspaceView
 
     public override void PollTick()
     {
+        // #380：RUNNING 每 tick 重取；仅剩 PAUSED 时节流到约 10s 一次（网页
+        // refetchInterval 3000/10000 的桌面同构契约）；全部终态不轮询。
         if (runActive) _ = LoadRunsAsync();
+        else if (runPaused && Environment.TickCount64 - lastPausedFetchTicks >= 10_000) _ = LoadRunsAsync();
     }
 
     public override Task RefreshAsync()
