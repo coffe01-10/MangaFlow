@@ -4,8 +4,10 @@
 //! shell (Unix PDEATHSIG chain / Windows KILL_ON_JOB_CLOSE).
 //!
 //! On Windows this binary additionally exercises the root Job Object path at
-//! spawn; runtime behavior there is NOT RUN in the Linux sandbox and must be
-//! re-verified on Windows (D3).
+//! spawn; the D3 re-verification this doc used to demand has since RUN on a
+//! Windows real machine (2026-09-06: crash cleanup killed helper +
+//! descendants via the Job path, plus the full debug-shell rounds — see the
+//! README's D3 row).
 
 use std::time::Duration;
 
