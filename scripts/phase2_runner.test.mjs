@@ -131,3 +131,22 @@ test("cleanup throw still writes summary and is non-zero", async () => {
   assert.equal(wrote.runtime_removed, false);
   assert.match(wrote.errors.join(" "), /failed to remove owned runtime/);
 });
+
+test("defaultPython prefers the explicit override and maps the venv per platform", async () => {
+  const { defaultPython } = await import("./phase2_runner.mjs");
+  const original = process.env.MANGAFLOW_PYTHON;
+  try {
+    process.env.MANGAFLOW_PYTHON = "/opt/custom/python";
+    assert.equal(defaultPython("C:/repo", "win32"), "/opt/custom/python");
+    assert.equal(defaultPython("/repo"), "/opt/custom/python");
+    delete process.env.MANGAFLOW_PYTHON;
+    assert.equal(defaultPython("C:/repo", "win32"), "C:/repo\\.venv\\Scripts\\python.exe");
+    assert.equal(defaultPython("/repo", "linux"), "/repo/.venv/bin/python");
+    // The production entry passes no platform argument: the host platform
+    // decides, and on a POSIX CI host the win32 mapping must not leak.
+    const host = defaultPython("/repo");
+    assert.ok(host === "/repo/.venv/bin/python" || host.endsWith(".venv\\Scripts\\python.exe"));
+  } finally {
+    if (original !== undefined) process.env.MANGAFLOW_PYTHON = original;
+  }
+});
