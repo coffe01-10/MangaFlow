@@ -280,7 +280,13 @@ impl RuntimeLayout {
     /// the child process exists at all. The helper overwrites this journal
     /// atomically with the readiness state once it publishes readiness.
     pub fn create(user_data: &Path) -> std::io::Result<RuntimeLayout> {
-        let token = new_token();
+        Self::create_with_token(user_data, &new_token())
+    }
+
+    /// Test seam: `create` with a caller-chosen token, so the canonical-name
+    /// mismatch guard is reachable (a planted symlink at the exact runtime
+    /// name cannot be built against a random 128-bit token).
+    fn create_with_token(user_data: &Path, token: &str) -> std::io::Result<RuntimeLayout> {
         let runtime = user_data
             .join("runtime")
             .join(format!("{RUNTIME_DIR_PREFIX}{token}"));
@@ -295,7 +301,7 @@ impl RuntimeLayout {
         }
         let layout = RuntimeLayout {
             user_data: user_data.to_path_buf(),
-            token,
+            token: token.to_string(),
         };
         write_journal_atomic(
             &layout.journal_path(),
@@ -1317,6 +1323,53 @@ mod tests {
                 "invalid runtime dir name must be rejected: {invalid}"
             );
         }
+    }
+
+    /// The canonical-name guard: a symlink planted at the EXACT runtime
+    /// directory name redirects create_dir_all elsewhere, and canonicalize
+    /// resolves to a differently-named directory — the layout must refuse
+    /// with InvalidInput rather than journal ownership under a name the
+    /// shell does not own. Reachable only through the token seam: a random
+    /// 128-bit token cannot be targeted in advance (on case-insensitive
+    /// filesystems the same guard catches casing drift of a real dir).
+    #[cfg(unix)]
+    #[test]
+    fn runtime_layout_refuses_a_planted_symlink_at_its_own_name() {
+        use std::os::unix::fs::symlink;
+
+        let user_data = std::env::temp_dir().join(format!(
+            "mangaflow-layout-guard-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&user_data);
+        let elsewhere = std::env::temp_dir().join(format!(
+            "mangaflow-layout-elsewhere-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&elsewhere);
+        let decoy = elsewhere.join("renamed-target");
+        std::fs::create_dir_all(&decoy).unwrap();
+
+        let token = new_token();
+        let planted = user_data.join("runtime").join(format!("{RUNTIME_DIR_PREFIX}{token}"));
+        std::fs::create_dir_all(planted.parent().unwrap()).unwrap();
+        symlink(&decoy, &planted).unwrap();
+
+        let error = RuntimeLayout::create_with_token(&user_data, &token)
+            .err()
+            .expect("a planted symlink at the runtime name must refuse");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("ownership mismatch"), "{error}");
+        // The refusal must not have journaled ownership into the decoy.
+        assert!(
+            !decoy.join(JOURNAL_NAME).exists(),
+            "the decoy must stay journal-free: {error}"
+        );
+
+        let _ = std::fs::remove_dir_all(&user_data);
+        let _ = std::fs::remove_dir_all(&elsewhere);
     }
 
     #[test]
