@@ -267,10 +267,19 @@ def test_noclobber_timed_out_waiter_leaves_the_holder_locked(tmp_path: Path):
     lock = tmp_path / "dist" / ".build.lock"
     holder_base = tmp_path / "holder"
     holder_base.mkdir()
-    holder_script = _BASH_CONTENDER.format(
-        helper=LOCK_SH, lock=lock, start=holder_base / "start",
-        end=holder_base / "end",
-    )
+    holder_script = (
+        "set -e\n"
+        'source "{helper}"\n'
+        'acquire_dist_build_lock "{lock}" 30\n'
+        'date +%s%N > "{start}"\n'
+        # Hold well past the waiter's 1s timeout (+1s poll slack): its
+        # second-and-final attempt must land while the lock is still held,
+        # or the waiter acquires and the test measures nothing.
+        "sleep 4\n"
+        'date +%s%N > "{end}"\n'
+        'release_dist_build_lock "{lock}"\n'
+    ).format(helper=LOCK_SH, lock=lock, start=holder_base / "start",
+             end=holder_base / "end")
     holder = subprocess.Popen(
         ["bash", "-c", holder_script],
         env={**os.environ, **_NOCLOBBER_SEAM},

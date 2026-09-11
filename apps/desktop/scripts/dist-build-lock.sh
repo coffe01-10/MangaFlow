@@ -82,4 +82,5 @@ release_dist_build_lock() {
   if grep -qx "$$" "$lock_path" 2>/dev/null; then
     rm -f "$lock_path"
   fi
+  return 0
 }
