@@ -432,3 +432,32 @@ doc-code 不一致 sweep（子代理，双源核验）收割 6 项 → 3 PR：
   verify_journal 的 state 比较被禁用时变红（panic 消息如实报告实际 variant）；
   #445 的 400 行完整线钉在 record 静默丢行时变红（0 ≠ 400）。累计抽查 4 钉
   （#403/#418/#422/#445）全部非恒真。
+
+#### 20260912 轮 8（rebase 波次终检）与五分支重建
+
+- 轮 8（子代理，11 枚 rebase 后分支逐支核验）抓获**本轮最严重缺陷**：
+  手工 rebase 的"取分支侧/从底重建"解决在 5 枚分支上**静默删除了 master 侧
+  较新测试**（#456 的 grandchild 钉、#417 的 fifo 钉、#403 的 mod tests）——
+  各 tip"全绿"恰因被删测试不再运行。逐一以故障安全法重建：
+  `checkout -B <branch> origin/master` + 从旧 tip 机械提取本支 payload 追加
+  （fn 名锚定 + 硬化存在性断言），每支全量 cargo 绿：
+  - #404：仅追加 mod display_tests，与 master 的 mod tests/registry_tests
+    三模块共存（141 绿）。
+  - #406：仅追加 non-utf8 钉 + logs.rs lossy-report 变更；测试 doc 的陈旧
+    表述已改正（141 绿）。
+  - #421：master 实测无 go-write 测试（早前"已在"信号系冲突标记文件的假
+    阳性——本代理工具错误，已在 PR 评论自纠），完整 payload 重放
+    （close-before-print 硬化 + 更正后锚定理由）（141 绿，3/3 定向稳定）。
+  - #422：仅追加 journal-mismatch 钉（141 绿）。
+  - #423：仅追加 signal 回退钉 + hoisted 守卫（141 绿，12 次定向复跑干净）。
+  - #432 关闭（superseded）：oversized READY 钉已在 master
+    （oversized_ready_line_fails_verification_quickly，a5e739c，wave 中独立
+    合入）；重建分支成空壳（两空行），按审查建议关闭而非重复。
+- **未具名一次性失败挂账**：rebase 后首轮全量曾各出现 1 次无失败名失败
+  （#423 谱系两次）；此后 4 轮全量 + 8 轮定向 + 多轮复跑全部全绿。
+  归因未定，若复现以失败名追责。
+- 轮 8 方法教训：手工冲突解决后，"套件绿"不充分——必须**显式断言 master
+  既有测试清单在合并后仍在**（fn 名清单比对）。本轮起作为 rebase 收尾步骤。
+- 账本分支自身亦按此教训 rebase 到最新 master（f304a1f）：取 master 版
+  logs.rs（意外夹带的 #418 测试在重放中自愈反转）与 master 版审计（并行
+  代理的轮次记录在 wave 中入账），今晚各节作为纯尾差重新追加；套件 140 绿。
