@@ -171,6 +171,38 @@ mod tests {
         assert_eq!(date >> 9, 0);
     }
 
+    /// The remaining shape guards not covered by the catch_unwind pins
+    /// below: a member name must be a non-empty forward-slash relative
+    /// path (the exporter pre-filters, but `add_file` is documented as the
+    /// last-resort invariant for any future caller). Each pin is red if
+    /// its guard is removed (the call simply stops panicking).
+    #[test]
+    #[should_panic(expected = "zip member names must be non-empty")]
+    fn add_file_refuses_an_empty_member_name() {
+        ZipWriter::new().add_file("", b"x", 0, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "zip member names must be non-empty")]
+    fn add_file_refuses_a_backslash_member_name() {
+        ZipWriter::new().add_file("dir\\one.log", b"x", 0, 0);
+    }
+
+    /// A zero-member archive must still be a structurally valid ZIP: the
+    /// EOCD alone, with both count fields at 0 and the central-directory
+    /// size/offset at 0 — the shape a user picks when logs were all
+    /// skipped, which must not read as corrupt.
+    #[test]
+    fn finish_on_a_fresh_writer_yields_a_valid_empty_archive() {
+        let bytes = ZipWriter::new().finish();
+        assert_eq!(bytes.len(), 22);
+        assert_eq!(&bytes[..4], &0x0605_4b50u32.to_le_bytes());
+        assert_eq!(&bytes[4..8], &[0u8; 4]); // disk numbers
+        assert_eq!(&bytes[8..12], &[0u8; 4]); // entry counts (x2)
+        assert_eq!(&bytes[12..20], &[0u8; 8]); // central size + offset
+        assert_eq!(&bytes[20..22], &[0u8; 2]); // comment length
+    }
+
     #[test]
     fn archive_round_trips_through_central_directory() {
         let mut zip = ZipWriter::new();
