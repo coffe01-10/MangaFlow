@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text.Json;
+using MangaFlow.Native;
 using MangaFlow.Native.Views;
 
 // P2-1 回归：WorkflowView 的连线四契约此前只活在 TryConnect 的 UI 事件链里，
@@ -22,6 +23,7 @@ internal static class NativeWorkflowConnectionChecks
         PureContractChecks();
         EdgeIdChecks();
         TryConnectWiringChecks();
+        DuplicateConfigAliasingChecks();
         Console.WriteLine("PASS: workflow connection rules (data_type match / no self-loop / duplicate port pair / deterministic edge id) enforced end to end");
     }
 
@@ -126,6 +128,83 @@ internal static class NativeWorkflowConnectionChecks
             (viewType.GetField("autosave", All)!.GetValue(view) as System.Timers.Timer)?.Stop();
         }
     }
+
+    // ── #340: DuplicateSelected 的 config 不得与原节点共享（检查器编辑就地写
+    // Config[key]，引用共享会让克隆编辑静默改写原节点并被自动保存双写）──
+    // 零网络：不 Activate，节点经 WorkflowNode.Create 直接入列（与上方检查同模式）。
+    private static void DuplicateConfigAliasingChecks()
+    {
+        var view = new WorkflowView();
+        var viewType = typeof(WorkflowView);
+        try
+        {
+            var agentType = JsonDocument.Parse(
+                """{"type":"agent.parse","display_name":"解析","category":"AGENT","inputs":[],"outputs":[]}""");
+            // Restore/DuplicateSelected 都按 nodeTypes 找类型定义补端口，喂入同形状数据。
+            viewType.GetField("nodeTypes", All)!.SetValue(view, new List<JsonElement> { agentType.RootElement });
+            var nodes = (System.Collections.IList)viewType.GetField("nodes", All)!.GetValue(view)!;
+            var original = CreateNode(view, "orig-1", "agent.parse");
+            SetConfig(original, "temperature", 0.4);
+            SetConfig(original, "locked", true);
+
+            Select(view, original);
+            Duplicate(view);
+            Require(nodes.Count == 2, "复制未生成克隆节点");
+            var clone = nodes.Cast<object>().Single(node => !ReferenceEquals(node, original));
+            // 失败构造①：字典引用共享（原缺陷的直接形态）。
+            Require(!ReferenceEquals(Config(original), Config(clone)),
+                "克隆的 config 字典与原节点共享引用：编辑克隆会改写原节点");
+            Require(JsonSerializer.Serialize(Config(original)) == JsonSerializer.Serialize(Config(clone)),
+                "深拷后的克隆 config 内容应与原节点一致（只隔离引用，不改值）");
+
+            // 失败构造②：克隆上改温度/锁定/备注（检查器同款写回键），原节点必须纹丝不动。
+            SetConfig(clone, "temperature", 1.5);
+            SetConfig(clone, "locked", false);
+            SetConfig(clone, "notes", "克隆备注");
+            Require(AsDouble(Config(original), "temperature") == 0.4, "编辑克隆的温度改写了原节点 config");
+            Require(Config(original)["locked"] is true, "编辑克隆的锁定开关改写了原节点 config");
+            Require(Config(original).GetValueOrDefault("notes") is "" or null, "编辑克隆的备注改写了原节点 config");
+            Require(AsDouble(Config(clone), "temperature") == 1.5 && Config(clone)["locked"] is false,
+                "克隆自身的编辑未生效");
+        }
+        finally
+        {
+            StopAutosave(view);
+        }
+    }
+
+    private static object CreateNode(WorkflowView view, string id, string type)
+    {
+        // JsonDocument 刻意不释放：节点持有的 JsonElement 是它的视图。
+        var definition = JsonDocument.Parse("{}").RootElement;
+        var create = NodeType().GetMethod("Create", All) ?? throw Missing("WorkflowNode.Create");
+        var node = create.Invoke(null, [id, type, type, (10.0, 20.0), definition])!;
+        var nodes = (System.Collections.IList)typeof(WorkflowView).GetField("nodes", All)!.GetValue(view)!;
+        nodes.Add(node);
+        return node;
+    }
+
+    private static void Select(WorkflowView view, object node) =>
+        typeof(WorkflowView).GetMethod("Select", All)!.Invoke(view, [node]);
+
+    private static void Duplicate(WorkflowView view) =>
+        typeof(WorkflowView).GetMethod("DuplicateSelected", All)!.Invoke(view, null);
+
+    private static Dictionary<string, object?> Config(object node) =>
+        (Dictionary<string, object?>)node.GetType().GetProperty("Config")!.GetValue(node)!;
+
+    private static void SetConfig(object node, string key, object? value) =>
+        node.GetType().GetMethod("SetConfig", All)!.Invoke(node, [key, value]);
+
+    private static JsonElement ConfigElement(object node) =>
+        (JsonElement)node.GetType().GetProperty("ConfigElement")!.GetValue(node)!;
+
+    private static double AsDouble(Dictionary<string, object?> config, string key) =>
+        config.TryGetValue(key, out var value) && value is JsonElement { ValueKind: JsonValueKind.Number } number
+            ? number.GetDouble() : value is double parsed ? parsed : double.NaN;
+
+    private static void StopAutosave(WorkflowView view) =>
+        (typeof(WorkflowView).GetField("autosave", All)!.GetValue(view) as System.Timers.Timer)?.Stop();
 
     private static object Port(object node, string id)
     {

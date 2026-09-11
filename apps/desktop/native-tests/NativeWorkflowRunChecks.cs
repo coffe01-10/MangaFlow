@@ -38,6 +38,7 @@ internal static class NativeWorkflowRunChecks
         InspectorShapeChecks();
         ConfigWriteBackChecks();
         await RunsAndApprovalChecks();
+        await DuplicateAutosaveChecks();
         Console.WriteLine("PASS: workflow inspector full config surface, clamped write-back, run history and approval queue wire contract");
     }
 
@@ -297,6 +298,108 @@ internal static class NativeWorkflowRunChecks
             StopAutosave(view);
         }
     }
+
+    // ── ④ #340: 复制→编辑克隆→防抖 PATCH 载荷里原节点 config 不变（假 Handler） ──
+    // 失败构造：DuplicateSelected 若共享 config 引用，克隆上的检查器编辑会写进
+    // 原节点的字典，800ms 防抖后 PATCH 的 draft_graph 里两个节点携带同一份被改的
+    // config（服务器侧双写）。这里在 PATCH 前后各断言一次：编辑后立即查内存里的
+    // 原节点，PATCH 到达后查载荷里的原节点行。
+    private static async Task DuplicateAutosaveChecks()
+    {
+        var patches = 0;
+        var lastPatch = default(JsonElement);
+        var graph = """
+            {"schema_version":2,"nodes":[
+              {"id":"orig-a","type":"agent.parse","name":"解析","position":{"x":10,"y":20},"inputs":[],"outputs":[],
+               "config":{"model_alias":"auto","temperature":0.2,"notes":""}},
+              {"id":"orig-c","type":"control.condition","name":"条件","position":{"x":330,"y":20},"inputs":[],"outputs":[],
+               "config":{"condition":{"path":"$","operator":"exists","value":""}}}],
+             "edges":[]}
+            """;
+        using var api = new ApiClient("http://127.0.0.1:12345", new Handler(request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (request.Method == HttpMethod.Patch && path.EndsWith("/workflows/wf-dup"))
+            {
+                patches++;
+                lastPatch = JsonDocument.Parse(request.Content!.ReadAsStringAsync().Result).RootElement.Clone();
+                return Task.FromResult(Response("""{"id":"wf-dup","name":"复制检查","version":4,"draft_version":2,"draft_graph":{"nodes":[],"edges":[]}}"""));
+            }
+            if (path.EndsWith("/workflow-node-types")) return Task.FromResult(Response(
+                """[{"type":"agent.parse","label":"解析","display_name":"解析","category":"AGENT","description":"","inputs":[],"outputs":[]},{"type":"control.condition","label":"条件","display_name":"条件","category":"CONTROL","description":"","inputs":[],"outputs":[]}]"""));
+            if (path.EndsWith("/projects/p1/workflows"))
+                return Task.FromResult(Response("""[{"id":"wf-dup","name":"复制检查","version":3,"draft_version":1,"draft_graph":{"nodes":[],"edges":[]}}]"""));
+            if (path.EndsWith("/projects/p1/chapters")) return Task.FromResult(Response("[]"));
+            if (path.EndsWith("/models")) return Task.FromResult(Response("[]"));
+            if (path.EndsWith("/workflows/wf-dup/runs")) return Task.FromResult(Response("[]"));
+            if (path.EndsWith("/workflows/wf-dup"))
+                return Task.FromResult(Response($"{{\"id\":\"wf-dup\",\"name\":\"复制检查\",\"version\":3,\"draft_version\":1,\"draft_graph\":{graph}}}"));
+            throw new Exception("Unexpected duplicate-check request: " + request.RequestUri);
+        }));
+        var view = new WorkflowView();
+        try
+        {
+            view.Activate(new WorkspaceContext
+            {
+                Api = api, Cache = new ApiCache(), State = new WorkspaceState(), Window = null!,
+                Project = new ProjectItem("p1", "复制检查", "", 0, 0),
+                NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
+            });
+            await Until(() => (string?)typeof(WorkflowView).GetField("workflowId", All)!.GetValue(view) == "wf-dup"
+                && Nodes(view).Count == 2);
+
+            // 复制 agent 节点 → 编辑克隆的温度（检查器写回键 temperature）。
+            Select(view, NodeById(view, "orig-a"));
+            Duplicate(view);
+            Require(Nodes(view).Count == 3, "复制 agent 节点未生成克隆");
+            Box(view, "温度")!.Text = "1.5";
+
+            // 复制 condition 节点 → 编辑克隆的条件表达式（SetConditionValue 合并写回）。
+            Select(view, NodeById(view, "orig-c"));
+            Duplicate(view);
+            Require(Nodes(view).Count == 4, "复制 condition 节点未生成克隆");
+            Box(view, "JSON 路径")!.Text = "$.page.turn";
+
+            // PATCH 前快照：内存里的原节点 config 必须未被克隆编辑改写。
+            Require(AsDouble(Config(NodeById(view, "orig-a")), "temperature") == 0.2,
+                "编辑克隆后（PATCH 前）原 agent 节点的温度被改写");
+            Require(ConditionPath(NodeById(view, "orig-c")) == "$",
+                "编辑克隆后（PATCH 前）原 condition 节点的路径被改写");
+
+            // 防抖落盘（800ms 真实计时器）后：载荷里原节点行携带各自原值，克隆行携带编辑值。
+            await Until(() => patches == 1);
+            var rows = lastPatch.Element("draft_graph").Array("nodes");
+            Require(rows.Count == 4, "防抖 PATCH 未携带全部 4 个节点");
+            var originalAgent = rows.Single(row => row.Text("id") == "orig-a");
+            var clonedAgent = rows.Single(row => row.Text("name") == "解析 副本");
+            var originalCondition = rows.Single(row => row.Text("id") == "orig-c");
+            var clonedCondition = rows.Single(row => row.Text("name") == "条件 副本");
+            Require(originalAgent.Element("config").Decimal("temperature") == 0.2 && clonedAgent.Element("config").Decimal("temperature") == 1.5,
+                "PATCH 载荷里原/克隆 agent 节点的温度应当分离（原 0.2 / 克隆 1.5）");
+            Require(originalCondition.Element("config").Element("condition").Text("path") == "$"
+                && clonedCondition.Element("config").Element("condition").Text("path") == "$.page.turn",
+                "PATCH 载荷里原/克隆 condition 节点的路径应当分离");
+            Require(patches == 1, "防抖应合并为一次 PATCH");
+
+            view.Deactivate();
+        }
+        finally
+        {
+            StopAutosave(view);
+        }
+    }
+
+    private static System.Collections.IList Nodes(WorkflowView view) =>
+        (System.Collections.IList)typeof(WorkflowView).GetField("nodes", All)!.GetValue(view)!;
+
+    private static object NodeById(WorkflowView view, string id) =>
+        Nodes(view).Cast<object>().Single(node => (string)node.GetType().GetProperty("Id")!.GetValue(node)! == id);
+
+    private static void Duplicate(WorkflowView view) =>
+        typeof(WorkflowView).GetMethod("DuplicateSelected", All)!.Invoke(view, null);
+
+    private static string ConditionPath(object node) =>
+        ((JsonElement)node.GetType().GetProperty("ConfigElement")!.GetValue(node)!).Element("condition").Text("path");
 
     // ── 反射/断言辅助（沿用 NativeWorkflowConnectionChecks 的零网络模式） ──
 

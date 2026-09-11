@@ -947,13 +947,33 @@ public sealed class WorkflowView : WorkspaceView
         var clone = WorkflowNode.Create(
             $"{selected.Type.Replace('.', '-')}-{Guid.NewGuid().ToString()[..8]}",
             selected.Type, selected.Name + " 副本", (selected.Position.X + 44, selected.Position.Y + 44), nodeTypes.FirstOrDefault(t => t.Text("type") == selected.Type));
-        clone.Config = selected.Config;
+        // #340: 深拷 config。引用赋值会让克隆上的检查器编辑（SetConfig 就地写
+        // Config[key]）静默改写原节点，并被自动保存把两个节点 PATCH 成同一份配置。
+        clone.Config = DeepCopyConfig(selected.Config);
         nodes.Add(clone);
         AttachNodeHandlers(clone);
         PushHistory(Snapshot("复制节点"));
         Select(clone);
         ScheduleSave();
         RenderCanvas();
+    }
+
+    // #340/#344: 复制节点时的 config 深拷。字典级浅拷不够：condition 等嵌套可变值
+    // （Create/检查器合并写回存 Dictionary<string,object?>，服务端载入形态是
+    // JsonElement）仍会共享同一对象，克隆编辑条件同样串写原节点，所以逐层递归。
+    // 标量（string/double/bool）不可变，原样保留。
+    private static Dictionary<string, object?> DeepCopyConfig(Dictionary<string, object?> source)
+    {
+        var copy = new Dictionary<string, object?>(source.Count);
+        foreach (var (key, value) in source)
+            copy[key] = value switch
+            {
+                Dictionary<string, object?> nested => DeepCopyConfig(nested),
+                List<object?> list => list.Select(item => item is Dictionary<string, object?> inner ? DeepCopyConfig(inner) : item).ToList(),
+                JsonElement { ValueKind: not JsonValueKind.Undefined } element => element.Clone(),
+                _ => value,
+            };
+        return copy;
     }
 
     private void AutoLayout()
