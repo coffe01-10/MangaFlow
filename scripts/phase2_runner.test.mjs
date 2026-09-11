@@ -143,10 +143,46 @@ test("defaultPython prefers the explicit override and maps the venv per platform
     assert.equal(defaultPython("C:/repo", "win32"), "C:/repo\\.venv\\Scripts\\python.exe");
     assert.equal(defaultPython("/repo", "linux"), "/repo/.venv/bin/python");
     // The production entry passes no platform argument: the host platform
-    // decides, and on a POSIX CI host the win32 mapping must not leak.
-    const host = defaultPython("/repo");
-    assert.ok(host === "/repo/.venv/bin/python" || host.endsWith(".venv\\Scripts\\python.exe"));
+    // decides. Conditional-exact (not a disjunction): a disjunction would
+    // accept a lib that hard-pins the WRONG platform on every host.
+    if (process.platform === "win32") {
+      assert.equal(defaultPython("/repo"), "/repo/.venv\\Scripts\\python.exe");
+    } else {
+      assert.equal(defaultPython("/repo"), "/repo/.venv/bin/python");
+    }
   } finally {
     if (original !== undefined) process.env.MANGAFLOW_PYTHON = original;
   }
+});
+
+test("a never-answering port probe times out with a named error", async () => {
+  const connect = () => {
+    // Neither connect nor error ever fires: only the 2s in-lib timer ends
+    // it. The shim carries setTimeout so the lib can arm that timer.
+    const socket = new EventEmitter();
+    socket.setTimeout = (ms, cb) => setTimeout(cb, ms);
+    socket.destroy = () => undefined;
+    return socket;
+  };
+  const started = Date.now();
+  await assert.rejects(
+    () => assertPortFree(8000, connect),
+    /port probe timeout/,
+  );
+  assert.ok(Date.now() - started >= 1_500, "the probe must honor its window");
+});
+
+test("waitForOwnedHealth names the last health error at timeout", async () => {
+  const child = { exitCode: null, owned: true, pid: 4242 };
+  await assert.rejects(
+    () => waitForOwnedHealth({
+      url: "http://127.0.0.1:8000/api/v1/health",
+      runId: "run-a",
+      child,
+      timeoutMs: 300,
+      fetchImpl: async () => ({ ok: false, status: 503 }),
+      sleep: async () => undefined,
+    }),
+    /timed out waiting for owned health.*503/s,
+  );
 });
