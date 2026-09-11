@@ -90,7 +90,18 @@ pub struct SpawnedHelper {
 /// shell just killed.
 pub fn spawn_helper(config: &HelperConfig, user_data: &Path) -> Result<SpawnedHelper, SpawnError> {
     let layout = RuntimeLayout::create(user_data)?;
-    let run_log = RunLog::create(user_data, &layout.token)?;
+    let run_log = match RunLog::create(user_data, &layout.token) {
+        Ok(run_log) => run_log,
+        // `RuntimeLayout::create` already wrote the ownership journal as
+        // state "created"; without this record the session-start sweep
+        // (which deletes only terminal "stopped"/"failed" journals) would
+        // never reclaim the directory. No RunLog milestone exists yet, so
+        // only the ownership journal can be finalized here.
+        Err(error) => {
+            let _ = layout.mark_stopped(None);
+            return Err(SpawnError::Io(error));
+        }
+    };
     // The helper's stderr — which carries uvicorn/API/Worker output in the
     // desktop form — lands in the unified logs directory instead of being
     // inherited from a console a GUI shell does not have (ADR §4.5).
