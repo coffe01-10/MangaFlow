@@ -7,6 +7,7 @@ using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using MangaFlow.Native;
@@ -122,9 +123,10 @@ internal static class NativeStoryboardEditChecks
             await OverlayChecks(view, fixture);
             FocusModeChecks(view);
             await ReplanChecks(view, fixture);
+            await InspectorKeyIsolationChecks(view, fixture);
         }
         finally { view.Deactivate(); }
-        Console.WriteLine("PASS: storyboard resize handles/bubble create/dialogue 409 recovery/bleed-safe overlay/focus mode/replan all match the web contract");
+        Console.WriteLine("PASS: storyboard resize handles/bubble create/dialogue 409 recovery/bleed-safe overlay/focus mode/replan/inspector key isolation all match the web contract");
     }
 
     // ── 1. 缩放手柄：bounds 变更、撤销栈、整包 PUT 载荷、最小尺寸 ──
@@ -322,6 +324,65 @@ internal static class NativeStoryboardEditChecks
         view.LeaveConfirmOverride = null;
     }
 
+    // ── 7. 键盘隔离（#339）：焦点在对白编辑 TextBox 内按 Backspace/Delete/方向键/Tab，
+    // 不得触发气泡删除确认 / 面板微移 / 撤销入栈 / 选中切换；焦点在画布内快捷键照常工作。
+    // 真实构造：视图挂进已显示的离屏窗口（KeyEventArgs 需要 PresentationSource），
+    // 把 PreviewKeyDown 隧道事件直接 raise 在 TextBox 上——与真实按键同一路由路径
+    // （根→…→TextBox）。处理器若错误地挂在整个 View 上（回归），View 在该路由上，
+    // 处理器必然触发：e.Handled 翻真、删除确认被调、撤销栈入条，检查随之失败。
+    private static async Task InspectorKeyIsolationChecks(StoryboardView view, Fixture fixture)
+    {
+        var owner = new Window
+        {
+            Width = 1400, Height = 1000, ShowInTaskbar = false, ShowActivated = false,
+            WindowStartupLocation = WindowStartupLocation.Manual, Left = -2400, Top = 80,
+            Content = view,
+        };
+        owner.Show();
+        try
+        {
+            Layout(view, 1400, 1000);
+            view.SelectBubbleForTest(0);
+            var text = Descendants(view).OfType<TextBox>().Single(box => GetName(box) == "气泡 1 文字");
+            text.Text = "键盘焦点中的台词";
+            text.Focus();   // 让键盘焦点真实落在编辑器内（守卫分支也由此被覆盖）
+            Require(Keyboard.FocusedElement == text, "测试窗口未取得键盘焦点（键盘隔离检查无法进行）");
+            var confirms = 0;
+            view.DeleteConfirmOverride = () => { confirms++; return false; };
+            var undoBefore = view.CanUndoForTest;
+            var rectBefore = view.PanelRectForTest(0);
+            foreach (var key in new[] { Key.Back, Key.Delete, Key.Left, Key.Up, Key.Tab })
+                Require(!Press(text, key), $"对白编辑 TextBox 内按 {key} 不得被画布快捷键劫持（e.Handled 必须保持 false）");
+            Require(confirms == 0, "对白编辑 TextBox 内按 Backspace/Delete 不得触发气泡删除确认");
+            Require(fixture.DialogueDeletes == 0, "对白编辑 TextBox 内按键不得发出服务端气泡删除");
+            Require(view.CanUndoForTest == undoBefore, "对白编辑 TextBox 内按方向键不得向撤销栈推入面板微调条目");
+            Require(view.PanelRectForTest(0) == rectBefore, "对白编辑 TextBox 内按方向键不得微移面板");
+            Require(view.SelectedBubbleIdForTest == "dlg-1" && view.SelectedPanelIdForTest == "panel-1",
+                "对白编辑 TextBox 内按 Tab 不得切换画布选中");
+            Require(text.Text == "键盘焦点中的台词", "按键模拟不得吞掉编辑器文本");
+
+            // 正向对照：焦点在画布内（选中即聚焦）时三类快捷键仍然生效。
+            view.DeleteConfirmOverride = null;
+            var page = Field<Canvas>(view, "page");
+            view.SelectPanelForTest(0);
+            Require(Keyboard.FocusedElement == page, "画布未取得键盘焦点（正向对照无法进行）");
+            Require(view.CanUndoForTest == undoBefore, "正向对照基线被污染");
+            Require(Press(page, Key.Left), "画布内按方向键应微移面板");
+            Require(view.CanUndoForTest != undoBefore, "画布内方向键微调必须进入撤销栈");
+            Require(view.PanelRectForTest(0) != rectBefore, "画布内方向键应移动面板");
+            view.SelectPanelForTest(-1);
+            Require(Press(page, Key.Tab), "画布内按 Tab 应切换选中格");
+            Require(view.SelectedPanelIdForTest == "panel-1", "无选中起按 Tab 应选中第一格");
+            view.SelectBubbleForTest(0);
+            var deletes = fixture.DialogueDeletes;
+            view.DeleteConfirmOverride = () => true;
+            Require(Press(page, Key.Back), "画布内按 Backspace 应触发气泡删除确认");
+            await Until(() => fixture.DialogueDeletes == deletes + 1);
+            view.DeleteConfirmOverride = null;
+        }
+        finally { owner.Close(); }
+    }
+
     // ── helpers（NativeAssetsLoopChecks 同款）──
     private static async Task Until(Func<bool> condition)
     {
@@ -365,6 +426,17 @@ internal static class NativeStoryboardEditChecks
 
     private static void Click(ButtonBase button) => button.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
 
+    // 合成 PreviewKeyDown（NativeDockChecks.Press 的同款）：挂在真实视觉树（已显示
+    // 的离屏窗口）里的元素上 raise，与真实按键走相同的隧道路由；返回 e.Handled。
+    private static bool Press(UIElement target, Key key)
+    {
+        var source = PresentationSource.FromVisual(target as Visual ?? throw new Exception("按键目标不在视觉树内"))
+            ?? throw new Exception("按键目标未连接到 PresentationSource（先挂进已显示的窗口）");
+        var args = new KeyEventArgs(Keyboard.PrimaryDevice, source, 0, key) { RoutedEvent = UIElement.PreviewKeyDownEvent };
+        target.RaiseEvent(args);
+        return args.Handled;
+    }
+
     // ToggleButton 的合成点击：RaiseEvent(ClickEvent) 不会翻转 IsChecked——
     // 真实点击是「先翻转 IsChecked 再冒泡 Click」，读 IsChecked 的处理器
     // （出血框/安全区/专注模式）必须用这个等价序列驱动。
@@ -394,7 +466,7 @@ internal static class NativeStoryboardEditChecks
         public int PanelVersion = 4;
         public int PageVersion = 7;
         public int StoryboardGets;
-        public int GeometryPuts, DialoguePosts, DialoguePatches, Plans;
+        public int GeometryPuts, DialoguePosts, DialoguePatches, DialogueDeletes, Plans;
         public JsonElement GeometryBody, DialoguePostBody, DialoguePatchBody, PlanBody;
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
@@ -430,6 +502,11 @@ internal static class NativeStoryboardEditChecks
                 DialogueText = body.Text("target_text");
                 PanelVersion += 1;
                 return Json("""{"id":"dlg-1","panel_id":"panel-1","speaker_character_id":"c1","target_text":"改后台词","reading_order":1,"text_direction":"vertical","rewrite_forbidden":true}""");
+            }
+            if (path.EndsWith("/dialogues/dlg-1") && request.Method == HttpMethod.Delete)
+            {
+                DialogueDeletes++;
+                return Json("{}");
             }
             if (path.EndsWith("/chapters/ch-1/plan"))
             {
