@@ -122,6 +122,8 @@
 
 - **R10（隔夜修复复核 + 全量认证，06:28）**：交叉复核隔夜两修——75ce571（plan-B skip 门探针对齐 _find_node 首候选，回应本窗 R2 复核 F10 NIT）与 ecaf242（Stop-SampleTree 的 pid 重用身份守卫，回应 #348）——**均正确**（前者 test-only 且探针现在与 helper 的首候选精确一致；后者 ProcessName 核验先于 taskkill）。认证 HEAD f10b844：shell-core **146/146**、sidecar 全家 **45/45**（含隔夜新增的 identity-guard 与 skip-gate 修正）。**窗内账目终值：Issues 33+（我 17 + 并行 16+，全部 file:line 级）；防守 PR 8 个（#318/#320/#321/#330/#335/#352/#353/#354 合并 8 + #357/#465/#466 开放 3）；互审 10 轮（R1-R10）。**
 
+- **R12（周末窗同步 + 新钉复核，2026-09-13，tip 3e25a68）**：窗口分支对齐并吸收 6 个新钉——c5198a7（exit watcher settle 竞态钉）、debdf49（SIGTERM→exit(0) 协作停止 handler 钉）、b646fbe（中继 half-broken-pipe 上游韧性钉）、5bfcca0（最老暂存名目录拒绝钉，#430 族）、1776a1b 合并。logs.rs 生产侧仅 +33 行新钉（rotation_refuses_a_directory_at_the_oldest_staging_name：目录占住 `.rotating-oldest` 时拒绝自愈吸收并保留全部历史——正确方向）。我的 #525/#526 均已合并。认证 HEAD：shell-core **150/150**、sidecar 全家 **76/76**。
+
 - **R11（窗口收尾，08:49）**：对齐 master f10b844（无新代码变更，仅确认）；开放面维持——#357（栅栏完整性，R2 复核 MERGE）、#465（runtime 包含性守卫）、#466（% 转义）、#307/#311（lead 已裁决）、#314 PARTIAL 剩余、#339-#342/#344（WPF native 面）、#345（README）、#348/#350-#351（工具链 P4）、#300（CSP 债）。08:00 后窗口关闭，夜值记录归档于本文件。
 
 - **R8（main.rs 全文对抗通读 + 时序观察，2026-09-12 夜）**：src-tauri main.rs（570 行）端到端复核——setup 全部失败路径经 stop_helper 收尾（菜单布线失败也走同一簿记）、shell-tools 窗口生命周期闭合（菜单重建 #351 / 随主窗销毁 / 不接受初始化脚本 / 本地上下文）、对话框守卫 RAII 全路径无泄漏、async 化读回命令、fake_channel 精确 env 门（含单测）——**无新发现**。时序观察（LOW，未立 Issue）：并发全套件下 \`a_silent_helper_fails_with_ready_timeout_and_is_torn_down\` 出现过一次失败（重跑三次均过），属负载时序抖动；pgrep 探针的 -f 匹配与僵尸窗口是候选根因，未复现不立案。
