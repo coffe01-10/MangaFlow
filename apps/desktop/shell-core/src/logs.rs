@@ -213,6 +213,23 @@ fn remove_file_if_exists(path: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Clear a rotation staging sibling, absorbing a DIRECTORY planted at the
+/// staging name (#430). The staging path is built by
+/// [`rotation_staging_path`] from a validated rotatable base — the name is
+/// gated by construction — so a directory there is debris, not data: plain
+/// `remove_file` returns EISDIR on every attempt, which wedged rotation
+/// for the process lifetime (circuit breaker after three failures) and
+/// was never cleared by the session-start sweep (staging names match no
+/// rotatable base pattern).
+fn remove_staging_if_exists(path: &Path) -> std::io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => fs::remove_dir_all(path),
+        Ok(_) => remove_file_if_exists(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 /// Staging name used while a rotation shifts generations around a base.
 /// It matches no rotatable base pattern (`is_rotatable_base_name` requires
 /// the exact `.log` / `.stderr.log` suffixes), so a leftover staging file is
@@ -433,8 +450,11 @@ fn rotate_file(
     // holds the OVERSIZED base content at rotation time — a file whose
     // rotation can simply be retried — while a `.rotating-oldest` leftover
     // holds the oldest HISTORY generation, which is why that one is never
-    // deleted unconditionally; see shift_generations_up.)
-    remove_file_if_exists(&staging)?;
+    // deleted unconditionally; see shift_generations_up.) The staging clear
+    // absorbs a directory planted at the staging name (#430) — the name is
+    // shell-owned by construction, so the entry is debris, and a wedge here
+    // would open the rotation circuit breaker for the whole process.
+    remove_staging_if_exists(&staging)?;
     // The critical gate: a base that cannot be renamed (locked without
     // FILE_SHARE_DELETE) fails HERE, before any generation is shifted or
     // deleted — the retry loop the in-session rotation runs on every record
@@ -1185,7 +1205,16 @@ fn export_logs_with(
         .and_then(|mut file| file.write_all(&archive))
         .map_err(|error| match error.kind() {
             std::io::ErrorKind::AlreadyExists => ExportError::PendingIsSymlink,
-            _ => ExportError::Io(error),
+            _ => {
+                // A failed staging write (ENOSPC/EFBIG mid-write, disk
+                // vanishing) leaves a TRUNCATED archive at the pending
+                // sibling; the only other pending cleanup lives in
+                // place_archive, which this path never reaches (#430).
+                // Remove the orphan now — the failure must leave nothing
+                // behind but its error.
+                let _ = remove_file_if_exists(&pending);
+                ExportError::Io(error)
+            }
         })?;
     place_archive(&pending, &destination_canonical, overwrite_confirmed)?;
 
@@ -2836,4 +2865,95 @@ mod tests {
 
         let _ = fs::remove_dir_all(&user_data);
     }
+    /// #430 item 3: a same-user-planted DIRECTORY at the shell-owned
+    /// `.rotating` staging name used to fail `remove_file` (EISDIR) on
+    /// every attempt — the rotation circuit breaker opened for the
+    /// process lifetime and the session-start sweep (which only matches
+    /// rotatable base names) never cleared it. The staging clear must
+    /// absorb the planted directory and rotate normally.
+    #[test]
+    fn rotation_absorbs_a_planted_directory_at_the_staging_name() {
+        let user_data = temp_user_data("dirstaging");
+        let logs = logs_dir(&user_data);
+        fs::create_dir_all(&logs).unwrap();
+        let logs_canonical = logs.canonicalize().unwrap();
+        let base = logs.join(format!("shell-{}.log", "5".repeat(32)));
+        fs::write(&base, "oversized base content").unwrap();
+        let staging = rotation_staging_path(&base).unwrap();
+        fs::create_dir_all(&staging).unwrap();
+        fs::write(staging.join("planted"), "debris").unwrap();
+
+        assert!(rotate_file(&base, &logs_canonical, 8, ROTATION_KEEP_GENERATIONS).unwrap());
+        assert!(!staging.exists(), "the planted directory must be absorbed");
+        assert_eq!(
+            fs::read_to_string(generation_path(&base, 1).unwrap()).unwrap(),
+            "oversized base content"
+        );
+        let _ = fs::remove_dir_all(&user_data);
+    }
+
+    /// #430 item 1: a staging write that fails mid-write (ENOSPC-class)
+    /// must not orphan a truncated `.pending` archive — the historical
+    /// branch returned the error with no cleanup (place_archive's pending
+    /// cleanup is never reached on this path). The failure is injected for
+    /// real: the child re-executes this very test under a tiny
+    /// RLIMIT_FSIZE with SIGXFSZ ignored, so the archive's write_all dies
+    /// with EFBIG partway through the regular file.
+    #[test]
+    fn export_write_failure_leaves_no_truncated_pending_sibling() {
+        let user_data = temp_user_data("enospc");
+        let token = "e".repeat(32);
+        let run_log = RunLog::create(&user_data, &token).unwrap();
+        run_log
+            .record("seed", &serde_json::json!({ "entry": "some content" }))
+            .unwrap();
+        drop(run_log);
+
+        #[cfg(unix)]
+        {
+            if std::env::var_os("MF_TEST_FSIZE_CHILD").is_some() {
+                unsafe {
+                    libc::signal(libc::SIGXFSZ, libc::SIG_IGN);
+                    let limit = libc::rlimit {
+                        rlim_cur: 32,
+                        rlim_max: 32,
+                    };
+                    assert_eq!(libc::setrlimit(libc::RLIMIT_FSIZE, &limit), 0);
+                }
+                let destination = std::env::temp_dir().join(format!(
+                    "mfd-enospc-{}.zip",
+                    crate::protocol::new_token()
+                ));
+                let result = export_logs_zip(&user_data, &destination);
+                assert!(result.is_err(), "the size-capped write must fail");
+                let pending = destination.with_file_name(format!(
+                    "{}.pending",
+                    destination.file_name().unwrap().to_string_lossy()
+                ));
+                assert!(
+                    !pending.exists(),
+                    "a failed staging write must not orphan a truncated pending sibling"
+                );
+                let _ = fs::remove_file(&destination);
+                let _ = fs::remove_dir_all(&user_data);
+                return;
+            }
+            // Substring filter, not `--exact`: the full path is
+            // `logs::tests::<name>`, and an --exact miss runs zero tests
+            // and exits 0 — a vacuous pass.
+            let child = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("export_write_failure_leaves_no_truncated_pending_sibling")
+                .env("MF_TEST_FSIZE_CHILD", "1")
+                .status()
+                .unwrap();
+            assert!(child.success(), "the child-side assertions failed: {child}");
+        }
+        #[cfg(not(unix))]
+        {
+            // Windows has no rlimit injection seam; the cleanup branch is
+            // compiled in but its failure path is NOT RUN here.
+        }
+        let _ = fs::remove_dir_all(&user_data);
+    }
+
 }
