@@ -426,6 +426,7 @@ def test_stdin_eof_watch_drains_post_go_bytes_and_signals(monkeypatch):
     )
 
 
+<<<<<<< HEAD
 def test_read_context_rejects_a_symlinked_journal(monkeypatch, tmp_path):
     """A symlink planted at the journal path must be refused before the
     token is trusted as the runtime anchor: the link could point the
@@ -449,3 +450,47 @@ def test_read_context_rejects_a_symlinked_journal(monkeypatch, tmp_path):
 
     with pytest.raises(ValueError, match="absolute real path"):
         helper._read_context()
+=======
+def test_write_journal_refuses_links_and_writes_atomically(tmp_path):
+    """_write_journal's two guards: (1) a symlink at the journal OR the
+    .pending sibling must be refused before any write (the journal is the
+    ownership anchor; a link would redirect it); (2) the happy path writes
+    via a .pending temp then os.replace — no partial journal can exist."""
+
+    import importlib.util
+    import json as json_module
+
+    spec = importlib.util.spec_from_file_location(
+        "mangaflow_desktop_helper_wj", str(HELPER_PATH)
+    )
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+
+    record = {"version": 1, "state": "ready"}
+    token = "d" * 32
+    runtime = tmp_path / f"mangaflow-desktop-{token}"
+    runtime.mkdir(parents=True)
+    journal = runtime / "owner.json"
+
+    # (1) A symlink at the journal itself must be refused, target untouched.
+    outside = tmp_path / "outside.json"
+    outside.write_text("{}", encoding="utf-8")
+    journal.symlink_to(outside)
+    with pytest.raises(RuntimeError, match="must not be a link"):
+        helper._write_journal(journal, record)
+    assert outside.read_text(encoding="utf-8") == "{}"
+
+    journal.unlink()
+
+    # (2) A symlink at the .pending sibling must also be refused.
+    pending = journal.with_name(journal.name + ".pending")
+    pending.symlink_to(outside)
+    with pytest.raises(RuntimeError, match="must not be a link"):
+        helper._write_journal(journal, record)
+    pending.unlink()
+
+    # (3) Happy path: the journal lands with sorted-key JSON and no .pending.
+    helper._write_journal(journal, record)
+    assert json.loads(journal.read_text(encoding="utf-8")) == record
+    assert not pending.exists()
+>>>>>>> 7600c45 (Pin _write_journal's link guards and atomic happy path)
