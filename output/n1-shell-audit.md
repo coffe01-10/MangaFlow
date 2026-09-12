@@ -461,3 +461,19 @@ doc-code 不一致 sweep（子代理，双源核验）收割 6 项 → 3 PR：
 - 账本分支自身亦按此教训 rebase 到最新 master（f304a1f）：取 master 版
   logs.rs（意外夹带的 #418 测试在重放中自愈反转）与 master 版审计（并行
   代理的轮次记录在 wave 中入账），今晚各节作为纯尾差重新追加；套件 140 绿。
+
+### 20260912-wknd 夜间续（基线 f43ac71）
+
+- 基线复核：cargo 149 全绿、node 13 全绿、pytest（assemble/phase2 contract）9 pass。
+- 波次吸收确认：#487-#499（13-issue mega round）全部携带钉测——relay transient/
+  terminal accept 双侧、pump partial-start、fake_channel cleanup、static-export
+  strip（env 测试已扩展 #447 断言）、staging 自愈（absorbs-a-planted-directory +
+  EFBIG RLIMIT 注入）、assemble 锁化、guard-frontend-dist（4 钉）——本机复跑
+  全绿，无新增缺口。
+- 新增 #505（night/pr-json-header-precedence）：json() 头合并**优先级**钉
+  （轮 9 咨询项——caller content-type 覆盖默认；spread 反向即红）。
+  弃置的 spawnOwned 钉说明：assertSupervised 走真实控制器子进程，无测试缝，
+  记为设计级（不给缝造假）。
+- 新增 #506（night/pr-guard-query-and-root-refs）：#444 guard 引用过滤的两
+  个承重半边——skip 表（remote/data/hash/root 不落盘解析 + 相对引用极性对照）
+  与查询串剥离（Next 哈希 URL）（6 pass）。
