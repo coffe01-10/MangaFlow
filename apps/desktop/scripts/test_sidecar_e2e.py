@@ -1209,13 +1209,16 @@ def test_web_exit_watch_logs_a_mid_session_crash_and_stays_silent_on_stop(monkey
     assert not thread.is_alive(), "the event must release a live watcher"
 
 
-def test_web_spawn_env_additions_are_exact(monkeypatch):
-    """The helper's caller-side additions on top of _node_child_env: PORT
-    (node's own ephemeral bind), HOSTNAME pinned to loopback (Next reads
-    it as the bind host — an inherited HOSTNAME would point the server at
-    a foreign name), MANGAFLOW_API_ORIGIN at the fixed relay (rewrites
-    are baked against 39443), NODE_ENV=production (a dev-mode Next server
-    would recompile on the fly). Pin the four additions exactly."""
+def test_web_spawn_env_additions_are_exact():
+    """The helper's caller-side additions on top of _node_child_env, pinned
+    at the seam the helper itself uses (_web_spawn_env_additions): PORT
+    (node's own ephemeral bind, string form — env values must be str),
+    HOSTNAME pinned to loopback (Next reads it as the bind host — an
+    inherited HOSTNAME would point the server at a foreign name),
+    MANGAFLOW_API_ORIGIN at the fixed relay (rewrites are baked against
+    39443), NODE_ENV=production (a dev-mode Next server would recompile
+    on the fly). The historical pin built its own dict and asserted it —
+    a tautology that stayed green through any real-call-site drift."""
 
     import importlib.util
 
@@ -1225,27 +1228,81 @@ def test_web_spawn_env_additions_are_exact(monkeypatch):
     helper = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(helper)
 
-    base = helper._node_child_env()
-    # The strip list must have already removed the orchestration names so
-    # the additions below are the only MANGAFLOW_DESKTOP_* keys present.
-    for name in base:
-        assert not name.startswith("MANGAFLOW_DESKTOP_"), (
-            f"{name} must have been stripped by _node_child_env"
+    assert helper._web_spawn_env_additions(4321) == {
+        "PORT": "4321",
+        "HOSTNAME": "127.0.0.1",
+        "MANGAFLOW_API_ORIGIN": f"http://127.0.0.1:{helper.WEB_RELAY_PORT}",
+        "NODE_ENV": "production",
+    }
+
+    # Composed with the strip list: a MANGAFLOW_DESKTOP_* key surviving
+    # composition means _node_child_env's strip list missed an exported
+    # orchestration name (the additions dict is compile-time-constant and
+    # cannot add one), and PORT must be a string (env values are strings;
+    # an int PORT makes node's env write raise TypeError at spawn).
+    env = helper._node_child_env()
+    env.update(helper._web_spawn_env_additions(4321))
+    assert not any(name.startswith("MANGAFLOW_DESKTOP_") for name in env), (
+        "an exported orchestration name survived _node_child_env's strip list"
+    )
+    assert isinstance(env["PORT"], str)
+
+
+def test_spawn_web_server_applies_the_pinned_additions(tmp_path, monkeypatch):
+    """The USE pin, replacing the tautology: _spawn_web_server's real
+    Popen must receive the pinned additions composed on the stripped
+    base. The relay port is redirected to a free port (the fixed 39443
+    stays free for a concurrently running helper), and Popen raises a
+    sentinel right after capturing — the spawned sockets are function
+    locals dropped at unwind, so nothing leaks past the test."""
+
+    import importlib.util
+    import socket as socket_module
+    import types
+
+    spec = importlib.util.spec_from_file_location(
+        "mangaflow_desktop_helper_spawnenv", str(HELPER)
+    )
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+
+    dist = tmp_path / "web"
+    dist.mkdir()
+    (dist / "server.js").write_text("module.exports = 1;", encoding="utf-8")
+
+    free_relay = socket_module.socket()
+    free_relay.bind(("127.0.0.1", 0))
+    relay_port = free_relay.getsockname()[1]
+    free_relay.close()
+    monkeypatch.setattr(helper, "WEB_RELAY_PORT", relay_port)
+    monkeypatch.setattr(helper, "_find_node", lambda web_dist: "/bin/false")
+
+    captured = {}
+
+    class _Captured(RuntimeError):
+        pass
+
+    def fake_popen(argv, **kwargs):
+        captured["argv"] = argv
+        captured["env"] = kwargs["env"]
+        raise _Captured("captured")
+
+    monkeypatch.setattr(helper.subprocess, "Popen", fake_popen)
+
+    with pytest.raises(_Captured):
+        helper._spawn_web_server(
+            types.SimpleNamespace(web_dist=str(dist)), api_port=1234
         )
 
-    env = dict(base)
-    env.update(
-        PORT="4321",  # Popen env values must be strings (production passes str)
-        HOSTNAME="127.0.0.1",
-        MANGAFLOW_API_ORIGIN=f"http://127.0.0.1:{helper.WEB_RELAY_PORT}",
-        NODE_ENV="production",
-    )
-    # The caller's own additions must not leak handshake identity back in.
-    assert "MANGAFLOW_DESKTOP_TOKEN" not in env
-    assert env["PORT"] == "4321"
+    assert captured["argv"][0] == "/bin/false"
+    env = captured["env"]
     assert env["HOSTNAME"] == "127.0.0.1"
-    assert env["MANGAFLOW_API_ORIGIN"] == f"http://127.0.0.1:{helper.WEB_RELAY_PORT}"
+    assert env["MANGAFLOW_API_ORIGIN"] == f"http://127.0.0.1:{relay_port}"
     assert env["NODE_ENV"] == "production"
+    assert env["PORT"].isdigit(), "node's ephemeral port, in string form"
+    assert not any(
+        name.startswith("MANGAFLOW_DESKTOP_") for name in env
+    ), "handshake identity must not ride into the web child"
 
 
 def test_web_exit_watch_poll_cadence_is_the_loop_heartbeat(monkeypatch):
