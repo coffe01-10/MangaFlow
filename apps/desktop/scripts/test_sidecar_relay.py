@@ -796,3 +796,56 @@ def test_webserver_close_releases_the_second_socket_when_the_first_fails():
     broken, healthy = _FakeSock(close_raises=True), _FakeSock()
     helper.WebServer(process, 1, 2, broken, healthy).close()  # must not raise
     assert healthy.closed, "the second socket must still be released"
+
+
+def test_relay_saturation_log_is_rate_limited(monkeypatch):
+    """The saturation entry ("connection limit N reached") must log ONCE
+    per 10s cooldown under a refuse-flood — the stderr log only rotates
+    across sessions, so one line per refusal would grow it for the rest
+    of the session. Drive a real cap-2 relay with repeated overflow
+    clients and count the lines on the helper's captured _log."""
+
+    import io
+
+    api = StubApi()
+    captured = io.StringIO()
+    monkeypatch.setattr(helper, "_log", lambda message: captured.write(message + "\n"))
+    monkeypatch.setattr(helper, "WEB_RELAY_MAX_CONNECTIONS", 2)
+    port, stop = start_relay(monkeypatch, api)
+    try:
+        # Fill both slots with pinned connections.
+        pinned = []
+        for _ in range(2):
+            client = socket.create_connection(("127.0.0.1", port), timeout=15)
+            client.sendall(REQUEST)
+            assert read_response(client, timeout_seconds=4).endswith(b"ok")
+            pinned.append(client)
+
+        # Overflow flood: several refused clients in quick succession.
+        for _ in range(5):
+            overflow = socket.create_connection(("127.0.0.1", port), timeout=15)
+            overflow.sendall(REQUEST)
+            overflow.close()
+
+        lines = [
+            line for line in captured.getvalue().splitlines()
+            if "connection limit" in line
+        ]
+        assert 1 <= len(lines) <= 2, (
+            f"saturation log must be rate-limited, got {len(lines)} lines: {lines}"
+        )
+        assert all(
+            str(helper.WEB_RELAY_MAX_CONNECTIONS) in line for line in lines
+        ), "the saturation line must name the enforced cap"
+
+        # Release a slot, then the flood resumes being refused — a NEW
+        # cooldown line is correct (state changed), and it must again be
+        # rate-limited, not one-per-refusal.
+        for client in pinned:
+            client.close()
+        stop()
+    except BaseException:
+        for client in pinned:
+            client.close()
+        stop()
+        raise
