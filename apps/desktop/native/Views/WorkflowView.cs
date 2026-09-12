@@ -50,6 +50,13 @@ public sealed class WorkflowView : WorkspaceView
     private List<PageItem> scopePages = [];
     private JsonElement current;
     private string workflowId = "";
+    // #427: 画布当前图归属的工作流 id（version/current 与它同组提交）。快速切换时
+    // workflowId 先行指向新选择，画布仍属旧工作流直到载入提交——PATCH 必须按画布
+    // 归属配对 (graph, id)，绝不能按"当前 workflowId"发请求（否则 A 的图会写进 B）。
+    private string canvasWorkflowId = "";
+    // #427: 载入请求令牌（ScriptView.scriptLoadVersion 同款）：A→B→C 快速切换时
+    // GET 响应可能乱序返回，迟到响应不得把画布翻回旧工作流。
+    private int workflowLoadVersion;
     private int version;
     private WorkflowNode? selected;
     private string? selectedEdgeKey;
@@ -258,9 +265,17 @@ public sealed class WorkflowView : WorkspaceView
                 // 读到的仍是旧 workflowId/version（切换还没越过 await），会把同一份
                 // 草稿按同版本号 PATCH 第二次（生产环境表现为伪 409）。
                 autosave?.Stop();
-                await SaveNowAsync();
+                // #427: 在任何 await 之前提交新 id。旧顺序把 workflowId = id 放在
+                // await SaveNowAsync() 之后：处理器悬挂在 flush 期间发生第二次切换，
+                // 后一个处理器读到旧 workflowId、其排进保存链的 flush（target 为空）
+                // 轮到执行时按"当前 workflowId"发 PATCH——此刻 id 已被前一个处理器
+                // 改成 B、画布却还是 A 的图 → A 的图 PATCH 进 workflows/B（两个新
+                // 工作流版本恰好相同时后端 CAS 也拦不住）。离场 flush 必须点名离开
+                // 的工作流，保存核按画布归属配对 (graph, id)（SaveNowCoreAsync）。
+                var leaving = workflowId;
                 workflowId = id;
-                await LoadWorkflowAsync();
+                await SaveNowAsync(leaving);
+                await LoadWorkflowAsync(id);
             }
         };
         dock.Children.Add(workflowSelector);
@@ -378,10 +393,14 @@ public sealed class WorkflowView : WorkspaceView
             var targetId = workflowId;
             var target = workflows.FirstOrDefault(w => w.Text("id") == targetId);
             if (target.ValueKind != JsonValueKind.Object) target = workflows[0];
-            foreach (var item in workflowSelector.Items.OfType<ComboBoxItem>())
-                if ((string?)item.Tag == target.Text("id")) { workflowSelector.SelectedItem = item; break; }
+            // #427: 先提交 id 再拨选择器（ScriptView/StoryboardView 的 Activate 同款
+            // 纪律）：SelectionChanged 处理器的 id != workflowId 检查保持静默，由
+            // Activate 自己恰好载入一次。旧顺序先拨 SelectedItem（处理器先行载入
+            // 一次）再自行载入——每次激活双倍 GET，迟到的第一份纯属浪费。
             workflowId = target.Text("id");
-            await LoadWorkflowAsync();
+            foreach (var item in workflowSelector.Items.OfType<ComboBoxItem>())
+                if ((string?)item.Tag == workflowId) { workflowSelector.SelectedItem = item; break; }
+            await LoadWorkflowAsync(workflowId);
             await LoadScopeTargetsAsync();
         }
         catch (OperationCanceledException) { }
@@ -503,12 +522,23 @@ public sealed class WorkflowView : WorkspaceView
         }
     }
 
-    private async Task LoadWorkflowAsync()
+    private async Task LoadWorkflowAsync(string? targetId = null)
     {
+        var requestedId = targetId ?? workflowId;
+        // #427: 载入请求序号（ScriptView.scriptLoadVersion 同款）：A→B→C 快速切换时
+        // 两个 GET 的响应可能乱序返回，迟到响应若照常落地会把画布翻回旧工作流，而
+        // workflowId 已指向新工作流——下一次编辑的 ScheduleSave 就会把旧图 PATCH 进
+        // 新工作流（版本恰好相等时后端 CAS 也拦不住）。非最新请求的响应整份丢弃。
+        var requestVersion = ++workflowLoadVersion;
         try
         {
-            current = await Api.SendAsync($"workflows/{workflowId}", cancellation: lifetime.Token);
-            if (lifetime.Token.IsCancellationRequested) return;
+            var loaded = await Api.SendAsync($"workflows/{requestedId}", cancellation: lifetime.Token);
+            if (requestVersion != workflowLoadVersion || lifetime.Token.IsCancellationRequested) return;
+            // 提交块：画布归属、当前选择、版本号与 current 同组落地（都在 UI 线程，
+            // 中间无 await），三者永不描述不同的工作流。
+            current = loaded;
+            workflowId = requestedId;
+            canvasWorkflowId = requestedId;
             version = current.Number("version");
             nodes.Clear();
             edges.Clear();
@@ -1088,15 +1118,17 @@ public sealed class WorkflowView : WorkspaceView
         // #342: 防抖计时器在切换工作流/导入时不解除，回调执行时再读 workflowId/
         // version/nodes 字段会描述新工作流—— LoadWorkflowAsync 的 GET 空档里
         // workflowId 已是 B 而 nodes 还是 A 的图，回调会把 A 的图 PATCH 进 B。
-        // 调度时捕获 (workflowId, version) 身份：回调发现身份不匹配即放弃（切换/
-        // 导入/导航路径在换 id 前都已 flush 本工作流）；匹配时把武装目标传进保存
-        // 链，排队期间再切换由 SaveNowCoreAsync 弃权。
-        var armedWorkflow = workflowId;
+        // #427 起切换在 flush 前就前移 workflowId，身份检查改以画布归属为准：
+        // 调度时捕获 (画布归属, version) 身份，回调发现画布已换主（或版本已随显式
+        // 保存推进、焦点已离开）即放弃——切换/导入/导航路径在换画布前都已 flush
+        // 本工作流；匹配时把武装目标传进保存链，排队期间再切换由 SaveNowCoreAsync
+        // 的画布归属弃权兜底。
+        var armedWorkflow = canvasWorkflowId;
         var armedVersion = version;
         timer.Elapsed += (_, _) => Dispatcher.BeginInvoke(async () =>
         {
             timer.Stop();   // 回调只停自己的计时器，不碰可能已被替换的 autosave 字段
-            if (armedWorkflow != workflowId || armedVersion != version) return;   // 陈旧回调：目标工作流已离开（或编辑已随显式保存落盘）
+            if (armedWorkflow != canvasWorkflowId || armedWorkflow != workflowId || armedVersion != version) return;   // 陈旧回调：画布/选择已离开（或编辑已随显式保存落盘）
             await SaveNowAsync(armedWorkflow);
         });
         autosave = timer;
@@ -1123,22 +1155,25 @@ public sealed class WorkflowView : WorkspaceView
 
     private async Task SaveNowCoreAsync(string? targetWorkflowId = null)
     {
-        if (workflowId.Length == 0) return;
-        // #342: 防抖保存携带武装时的工作流身份。回调通过身份检查后、本核开始前
-        // 仍可能插入一次工作流切换——此刻 BuildGraph/URL 读到的是新工作流的 id 配
-        // 旧图（或反之），PATCH 会跨界。身份不再是当前工作流即弃权：旧图的待存
-        // 编辑已由切换路径 flush，不会丢。
-        if (targetWorkflowId != null && targetWorkflowId != workflowId) return;
-        var savedWorkflowId = workflowId;   // PATCH 在途期间也可能切换：响应落地时不把旧工作流的版本号写进新工作流
+        // #427: (归属 id, version, 图) 必须同一时刻快照。本核在保存队列里轮到执行
+        // 时，画布可能已经换成别的工作流（或选择已先行切换）——URL 读"当前
+        // workflowId"、载荷读当前画布，两者各说各话就会出现 A 的图 PATCH 进
+        // workflows/B 的跨界写。PATCH 目标一律取画布归属 canvasWorkflowId；
+        // 调用方点名的目标（防抖武装/切换离场 flush）已不等于画布归属时弃权：
+        // 那份图的待存编辑已由更早的 flush 落盘，不会丢。
+        var graphOwner = canvasWorkflowId;
+        if (graphOwner.Length == 0) return;
+        if (targetWorkflowId != null && targetWorkflowId != graphOwner) return;
+        var graphVersion = version;   // PATCH 在途期间也可能切换：响应落地时不把旧工作流的版本号写进新工作流
         var generationAtSave = generation;
         UpdateStatus("保存中");
         try
         {
             var payload = BuildGraph();
-            var saved = await Api.SendAsync($"workflows/{workflowId}", HttpMethod.Patch,
-                new { version, draft_graph = payload }, cancellation: lifetime.Token);
+            var saved = await Api.SendAsync($"workflows/{graphOwner}", HttpMethod.Patch,
+                new { version = graphVersion, draft_graph = payload }, cancellation: lifetime.Token);
             if (lifetime.Token.IsCancellationRequested) return;
-            if (savedWorkflowId != workflowId) return;   // 切换后到期的旧响应：版本号归属别的工作流，回写会制造伪 409
+            if (graphOwner != canvasWorkflowId) return;   // PATCH 在途时画布已换主：版本号/定义归属别的工作流，回写会制造伪 409
             version = saved.Number("version");
             current = saved;
             if (generationAtSave == generation) UpdateStatus($"已保存 · 草稿 V{saved.Number("draft_version")}");
