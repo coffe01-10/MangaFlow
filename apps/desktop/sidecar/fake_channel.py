@@ -41,6 +41,10 @@ _MODEL_OPERATIONS = {
 # The alias complete-sheet resolves explicitly at the route layer.
 IMAGE_LEGACY_ALIAS = "image.nano_banana_2"
 
+# Rows seeded under this exact name are the channel's — remove() targets
+# them and nothing else, so the cleanup never touches real profiles.
+PROFILE_NAME = "Desktop Fake Channel"
+
 
 def _png(color: tuple[int, int, int] = (245, 245, 240)) -> bytes:
     buffer = BytesIO()
@@ -176,11 +180,11 @@ def _seed_catalog() -> None:
     from app.services.credential_crypto import encrypt_secret
 
     with SessionLocal() as db:
-        existing = db.query(ProviderProfile).filter_by(name="Desktop Fake Channel").one_or_none()
+        existing = db.query(ProviderProfile).filter_by(name=PROFILE_NAME).one_or_none()
         if existing is not None:
             return
         profile = ProviderProfile(
-            name="Desktop Fake Channel",
+            name=PROFILE_NAME,
             category="LOCAL",
             description="Desktop e2e fake channel; never called over network",
             enabled=True,
@@ -225,8 +229,64 @@ def _seed_catalog() -> None:
         db.commit()
 
 
+def remove() -> dict[str, int]:
+    """Delete exactly the rows ``install()`` seeded; leave all else alone.
+
+    The seeding is one-way by default (#443): one opt-in dev run writes the
+    profile/connection/key/models into the session's DATABASE_URL, and the
+    rows persist into later production sessions pointing at the
+    intentionally unreachable base URL. This cleanup deletes the profile
+    named :data:`PROFILE_NAME` with its connections, keys and models; no
+    unrelated row is ever touched. Idempotent: seeding nothing reports
+    zero counts.
+    """
+
+    removed = {"profiles": 0, "connections": 0, "keys": 0, "models": 0}
+    with SessionLocal() as db:
+        from sqlalchemy import inspect
+
+        # A never-migrated DB (fresh --user-data) cannot hold the seeds;
+        # report zeros instead of dying on a missing table.
+        if not inspect(db.get_bind()).has_table(ProviderProfile.__tablename__):
+            return removed
+        profile = db.query(ProviderProfile).filter_by(name=PROFILE_NAME).one_or_none()
+        if profile is None:
+            return removed
+        connection_ids = [
+            row.id
+            for row in db.query(ProviderConnection.id).filter_by(
+                provider_id=profile.id
+            )
+        ]
+        if connection_ids:
+            removed["keys"] = (
+                db.query(ProviderKey)
+                .filter(ProviderKey.connection_id.in_(connection_ids))
+                .delete(synchronize_session=False)
+            )
+            removed["models"] = (
+                db.query(AIModel)
+                .filter(AIModel.connection_id.in_(connection_ids))
+                .delete(synchronize_session=False)
+            )
+            removed["connections"] = (
+                db.query(ProviderConnection)
+                .filter(ProviderConnection.id.in_(connection_ids))
+                .delete(synchronize_session=False)
+            )
+        db.delete(profile)
+        removed["profiles"] = 1
+        db.commit()
+    return removed
+
+
 def install() -> None:
-    """Wire the fake channel into the worker seam; call after migrations."""
+    """Wire the fake channel into the worker seam; call after migrations.
+
+    The catalog rows this seeds (and the adapter swap) live until removed:
+    run the helper with ``--fake-channel-cleanup`` against the same
+    user-data directory to delete them again.
+    """
     import app.worker_tasks as worker_tasks
 
     _seed_catalog()

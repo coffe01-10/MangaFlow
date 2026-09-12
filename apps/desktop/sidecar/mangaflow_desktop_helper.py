@@ -591,6 +591,18 @@ def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
     (user_data / "data").mkdir(parents=True, exist_ok=True)
     _apply_app_environment(user_data, args.web_origin)
 
+    if args.fake_channel_cleanup:
+        # Cleanup runs against the same DATABASE_URL the seeding used and
+        # exits without binding ports or spawning node: it is a dev-DB
+        # repair command, not a session (#443).
+        from fake_channel import remove  # provided next to this helper
+
+        removed = remove()
+        record.update(state="stopped", detail="fake-channel-cleanup", removed=removed)
+        _write_journal(journal, record)
+        _log(f"fake channel rows removed: {removed}")
+        return 0
+
     sock = None
     web: WebServer | None = None
     web_shutdown = threading.Event()
@@ -1073,7 +1085,19 @@ def main() -> int:
     parser.add_argument("--grandchild", action="store_true", help="stub: spawn a test descendant")
     parser.add_argument("--api-root", help="app: path to apps/api")
     parser.add_argument("--user-data", help="app: user data directory (data/storage/uploads live here)")
-    parser.add_argument("--fake-channel", action="store_true", help="app: install the fake model channel")
+    parser.add_argument(
+        "--fake-channel",
+        action="store_true",
+        help=(
+            "app: install the fake model channel (seeds permanent rows into "
+            "the user-data DB; remove them again with --fake-channel-cleanup)"
+        ),
+    )
+    parser.add_argument(
+        "--fake-channel-cleanup",
+        action="store_true",
+        help="app: delete the fake channel's seeded DB rows and exit",
+    )
     parser.add_argument(
         "--web-origin",
         default="http://tauri.localhost",
