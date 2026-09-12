@@ -318,3 +318,39 @@ def test_find_node_prefers_override_then_path_then_named_fallback(tmp_path, monk
     monkeypatch.setattr(module.shutil, "which", lambda name: None)
     with pytest.raises(SystemExit, match="NODE_EXE"):
         module.find_node()
+
+
+def test_sweep_spares_the_recovery_copy_when_res_is_missing(tmp_path):
+    """The sweep's load-bearing restraint (#409/#393): with `res` MISSING,
+    a `web.old-*` sibling may be the recovery copy the #382 rollback
+    preserved — the sweep must leave it for the refusal/recovery flow
+    (and its `.tmp-*` cousins too, per the same rule). Running assemble
+    in that state must refuse loudly WITHOUT deleting the parked copy."""
+
+    module = _load_module()
+    src_tree = _make_source(tmp_path)
+    res = tmp_path / "src-tauri" / "web"
+    # The refusal keys on the SAME-PID retired name (#393): only that is
+    # provably the rollback-failure copy of THIS re-run.
+    recovery = tmp_path / "src-tauri" / f"{res.name}.old-{os.getpid()}"
+    (recovery / "standalone").mkdir(parents=True)
+    (recovery / "standalone" / "server.js").write_bytes(b"recovery-copy")
+    tmp_sibling = tmp_path / "src-tauri" / f"{res.name}.tmp-{os.getpid()}"
+    (tmp_sibling / "half").mkdir(parents=True)
+    (tmp_sibling / "half" / "x").write_bytes(b"x")
+    # A foreign-pid sibling must be LEFT by the missing-res sweep guard and
+    # also survive the refusal untouched.
+    foreign = tmp_path / "src-tauri" / f"{res.name}.old-999999"
+    (foreign / "junk").mkdir(parents=True)
+    (foreign / "junk" / "y").write_bytes(b"y")
+
+    with pytest.raises(RuntimeError) as refusal:
+        module.assemble(src_tree, res)
+    assert "Manually move" in str(refusal.value)
+    # The refusal fired before anything was staged: the same-pid recovery
+    # copy AND the foreign-pid tree survive untouched (nothing deleted).
+    # The same-pid .tmp- staging sibling is the one exception — the
+    # finally-block's own staging cleanup claims it (it was never a copy
+    # of anything, just this run's half-staged tree).
+    assert (recovery / "standalone" / "server.js").read_bytes() == b"recovery-copy"
+    assert (foreign / "junk" / "y").read_bytes() == b"y"
