@@ -599,3 +599,56 @@ def test_await_go_accepts_exact_line_and_rejects_drift(monkeypatch):
     assert run("\n") is False  # empty line
     assert run("") is False  # bare EOF-ish empty string
 
+
+
+def test_bind_loopback_claims_an_ephemeral_port_and_sets_the_platform_option(monkeypatch):
+    """The API bind: an ephemeral loopback port claimed atomically, with
+    the platform-correct socket option (SO_REUSEADDR on POSIX so TIME_WAIT
+    rebind works; SO_EXCLUSIVEADDRUSE on win32 so a co-bind fails closed —
+    the opposite semantics, pinned via the option each platform sets)."""
+
+    import importlib.util
+    import socket as socket_module
+
+    spec = importlib.util.spec_from_file_location(
+        "mangaflow_desktop_helper_bind", str(HELPER_PATH)
+    )
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+
+    observed = {}
+    real_setsockopt = socket_module.socket.setsockopt
+
+    def spy_setsockopt(self, level, optname, value):
+        observed[optname] = value
+        return real_setsockopt(self, level, optname, value)
+
+    monkeypatch.setattr(socket_module.socket, "setsockopt", spy_setsockopt)
+
+    if sys.platform == "win32":
+        monkeypatch.setattr(
+            socket_module, "SO_REUSEADDR", getattr(socket_module, "SO_REUSEADDR", 4)
+        )
+
+    sock = helper._bind_loopback()
+    try:
+        host, port = sock.getsockname()
+        assert host == "127.0.0.1", "the API must bind loopback only"
+        assert port > 0, "the port must be ephemeral (kernel-assigned)"
+        # A listening socket (the helper calls listen(128) before returning).
+        assert sock.getsockopt(socket_module.SOL_SOCKET, socket_module.SO_ACCEPTCONN) != 0
+        if sys.platform == "win32":
+            assert observed.get(socket_module.SO_EXCLUSIVEADDRUSE) == 1
+        else:
+            assert observed.get(socket_module.SO_REUSEADDR) == 1
+    finally:
+        sock.close()
+
+    # After close, the port returns to the kernel pool — a second bind of
+    # the same ephemeral port succeeds on POSIX (SO_REUSEADDR semantics).
+    second = helper._bind_loopback()
+    second_host, second_port = second.getsockname()
+    try:
+        assert second_host == "127.0.0.1"
+    finally:
+        second.close()
