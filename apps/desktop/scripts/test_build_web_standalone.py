@@ -155,3 +155,29 @@ def test_npm_shim_is_platform_resolved_and_actually_used(monkeypatch):
     env = recorded["kwargs"]["env"]
     assert env is not os.environ
     assert env["MANGAFLOW_API_ORIGIN"] == "http://127.0.0.1:39443"
+
+
+def test_relay_origin_is_single_sourced_with_the_helper():
+    """Cross-module pin: the build script's RELAY_ORIGIN (baked into the
+    bundle's rewrites and verified against the compiled manifest) and the
+    helper's WEB_RELAY_PORT (the runtime relay owner) are independent
+    literals in two modules. If they drift, NOTHING fails at build or
+    startup: the bundle bakes a port nobody relays, the dashboard's API
+    calls are refused, and plan-B is silently broken in production. The
+    in-file leg (main()'s env literal vs RELAY_ORIGIN) is incidentally
+    guarded by the manifest verification; the cross-module leg had no pin
+    at all until this one."""
+
+    import importlib.util
+
+    helper_spec = importlib.util.spec_from_file_location(
+        "mangaflow_desktop_helper_relay",
+        str(_SCRIPT.parent.parent / "sidecar" / "mangaflow_desktop_helper.py"),
+    )
+    helper = importlib.util.module_from_spec(helper_spec)
+    helper_spec.loader.exec_module(helper)
+
+    assert bw.RELAY_ORIGIN == f"http://127.0.0.1:{helper.WEB_RELAY_PORT}", (
+        "the baked rewrite origin and the runtime relay port must stay the "
+        "same constant (39443) across build-web-standalone and the helper"
+    )
