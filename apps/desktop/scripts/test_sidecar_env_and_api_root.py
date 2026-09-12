@@ -644,8 +644,10 @@ def test_bind_loopback_claims_an_ephemeral_port_and_sets_the_platform_option(mon
     finally:
         sock.close()
 
-    # After close, the port returns to the kernel pool — a second bind of
-    # the same ephemeral port succeeds on POSIX (SO_REUSEADDR semantics).
+    # After close, a fresh bind claims a fresh kernel-assigned port (the
+    # guard's claim is repeatability, not same-port TIME_WAIT rebind — a
+    # closed listening socket produces no TIME_WAIT; that belongs to
+    # connections).
     second = helper._bind_loopback()
     second_host, second_port = second.getsockname()
     try:
