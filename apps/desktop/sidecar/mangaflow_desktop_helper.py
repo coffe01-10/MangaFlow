@@ -759,6 +759,25 @@ def _node_child_env() -> dict[str, str]:
     return env
 
 
+def _web_spawn_env_additions(node_port: int) -> dict[str, str]:
+    """The caller-side additions on top of :func:`_node_child_env` (pinned
+    by ``test_web_spawn_env_additions_are_exact``): PORT is node's own
+    ephemeral bind; HOSTNAME is pinned to loopback (Next reads it as the
+    bind host — an inherited HOSTNAME would point the server at a foreign
+    name); MANGAFLOW_API_ORIGIN is the fixed relay (rewrites are baked
+    against 39443; this env form only matters for a bundle built without
+    that destination — the dev form); NODE_ENV pins production (a
+    dev-mode Next server would recompile on the fly).
+    """
+
+    return {
+        "PORT": str(node_port),
+        "HOSTNAME": "127.0.0.1",
+        "MANGAFLOW_API_ORIGIN": f"http://127.0.0.1:{WEB_RELAY_PORT}",
+        "NODE_ENV": "production",
+    }
+
+
 def _spawn_web_server(args: argparse.Namespace, api_port: int) -> WebServer | None:
     """Start the Next standalone server (plan B, W-15) as a helper child.
 
@@ -844,14 +863,7 @@ def _spawn_web_server(args: argparse.Namespace, api_port: int) -> WebServer | No
                 pass
         return None
     env = _node_child_env()
-    env.update(
-        PORT=str(node_port),
-        HOSTNAME="127.0.0.1",
-        # Only relevant when the bundle was built without the fixed relay
-        # destination (dev form); the shipped bundle has the relay baked in.
-        MANGAFLOW_API_ORIGIN=f"http://127.0.0.1:{WEB_RELAY_PORT}",
-        NODE_ENV="production",
-    )
+    env.update(_web_spawn_env_additions(node_port))
     try:
         # Unix: die with the helper exactly like the helper itself does
         # (PR_SET_PDEATHSIG before the first instruction). Windows needs no
