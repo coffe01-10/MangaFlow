@@ -54,3 +54,17 @@ def test_controller_forwards_mixed_encoding_log_as_raw_bytes():
     forward_log_chunk(chunk, stdout=target)
     assert bytes(target.buffer.written) == chunk
     assert target.buffer.flushed
+
+
+def test_phase2_runner_failure_paths_use_the_documented_node_resolver():
+    """The subprocess must resolve node exactly like run_e2e_owned.py does:
+    MANGAFLOW_NODE first, then PATH (`shutil.which`). A resolution drift
+    between the controller and this contract test would run different
+    node builds and let a platform-specific runner bug pass unseen."""
+
+    import inspect
+
+    source = inspect.getsource(test_phase2_runner_failure_paths)
+    assert 'os.environ.get("MANGAFLOW_NODE", "node")' in source, (
+        "the contract test must use the documented MANGAFLOW_NODE resolver"
+    )
