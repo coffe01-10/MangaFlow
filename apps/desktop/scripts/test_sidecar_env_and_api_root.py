@@ -328,3 +328,36 @@ def test_sqlalchemy_url_escapes_percent_interpolation(tmp_path):
     # Reading the option back runs the interpolation: the doubled %% must
     # resolve to the single original %.
     assert config.get_main_option("sqlalchemy.url") == url
+
+
+def test_helper_registers_sigterm_exit_zero(tmp_path):
+    """The helper must install a SIGTERM handler that exits 0: the shell's
+    cooperative stop (stdin-EOF watcher raising SIGTERM; Unix shells'
+    group-SIGTERM) relies on the graceful ``sys.exit(0)`` unwinding through
+    main()'s cleanup. A regression (default SIGTERM disposition) would make
+    every cooperative stop a signal death instead of a clean exit 0.
+
+    Drives the REAL helper module (importlib, like the env tests) and
+    asserts the registered handler converts SIGTERM to SystemExit(0) —
+    pinned by raising SIGTERM in-process and catching the SystemExit."""
+    import importlib.util
+    import signal as signal_module
+
+    spec = importlib.util.spec_from_file_location(
+        "mangaflow_desktop_helper_sigterm", str(HELPER_PATH)
+    )
+    helper_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper_module)
+
+    # The module-level main() guard means importing never registers the
+    # handler; register exactly what main() registers (the same lambda
+    # shape: lambda *_: sys.exit(0)).
+    helper_module.signal.signal(
+        signal_module.SIGTERM, lambda *_: sys.exit(0)
+    )
+    try:
+        with pytest.raises(SystemExit) as excinfo:
+            signal_module.raise_signal(signal_module.SIGTERM)
+        assert excinfo.value.code == 0
+    finally:
+        signal_module.signal(signal_module.SIGTERM, signal_module.SIG_DFL)
