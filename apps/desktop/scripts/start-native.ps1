@@ -13,11 +13,17 @@ $nativeProject = Join-Path $nativeRepo 'apps/desktop/native/MangaFlow.Native.csp
 if ($UserData) {
     $userDataFull = [IO.Path]::GetFullPath($UserData).TrimEnd('\')
     $shellDataFull = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'com.mangaflow.desktop')).TrimEnd('\')
+    # Both nesting directions are refused (#600): the WPF client's session
+    # sweep rotates shell-named logs and enumerates runtime dirs, so a
+    # -UserData that CONTAINS the shell directory hands the shell's
+    # diagnostics to the other client's cleanup, not just the same-DB
+    # hazard an inner -UserData creates.
     $overlapsShellData = $userDataFull.Equals($shellDataFull, [StringComparison]::OrdinalIgnoreCase) -or
-        $userDataFull.StartsWith($shellDataFull + '\', [StringComparison]::OrdinalIgnoreCase)
+        $userDataFull.StartsWith($shellDataFull + '\', [StringComparison]::OrdinalIgnoreCase) -or
+        $shellDataFull.StartsWith($userDataFull + '\', [StringComparison]::OrdinalIgnoreCase)
     if ($overlapsShellData) {
-        throw ("Refusing -UserData '{0}': it is inside the Tauri shell user-data directory '{1}'. " -f $userDataFull, $shellDataFull) +
-            'The shell already serves that data; a second client on it would run a second API server on one SQLite database (#410). Pass a directory outside the shell data directory.'
+        throw ("Refusing -UserData '{0}': it overlaps the Tauri shell user-data directory '{1}'. " -f $userDataFull, $shellDataFull) +
+            'The shell already serves that data; a second client on one SQLite database (#410), or a client tree containing the shell data, would share or destroy the other side''s state. Pass a directory outside the shell data directory.'
     }
 }
 Push-Location $nativeRepo
