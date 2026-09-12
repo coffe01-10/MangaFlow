@@ -259,3 +259,52 @@ fn rotate_logs_reports_a_file_parked_at_the_logs_path() {
 
     let _ = fs::remove_dir_all(&user_data);
 }
+
+#[test]
+fn session_sweep_ignores_a_planted_logs_root_link() {
+    // #610: with the logs root planted as a link, the rotation sweep must
+    // no-op instead of renaming/deleting oversized pattern matches inside
+    // whatever the link targets.
+    let user_data = temp_user_data("sweep-root-link");
+    let foreign = temp_user_data("sweep-root-link-target");
+    fs::create_dir_all(&foreign).unwrap();
+    let foreign_log_name = format!("shell-{}.log", new_token());
+    let foreign_log = foreign.join(&foreign_log_name);
+    fs::File::create(&foreign_log)
+        .unwrap()
+        .set_len(ROTATION_THRESHOLD_BYTES + 1)
+        .unwrap();
+
+    let logs = logs_dir(&user_data);
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&foreign, &logs).unwrap();
+    #[cfg(windows)]
+    {
+        let _ = std::os::windows::fs::symlink_dir(&foreign, &logs);
+    }
+    if !logs
+        .symlink_metadata()
+        .map(|meta| meta.is_symlink())
+        .unwrap_or(false)
+    {
+        eprintln!("root link creation not permitted; skipping the root-link assertions");
+        let _ = fs::remove_dir_all(&user_data);
+        let _ = fs::remove_dir_all(&foreign);
+        return;
+    }
+
+    mangaflow_desktop_shell_core::logs::rotate_logs(&user_data).unwrap();
+
+    // The foreign tree is untouched: no generation shift, no size change.
+    assert_eq!(
+        fs::metadata(&foreign_log).unwrap().len(),
+        ROTATION_THRESHOLD_BYTES + 1
+    );
+    assert!(
+        !foreign.join(format!("{foreign_log_name}.1")).exists(),
+        "the foreign tree must not gain rotation generations"
+    );
+
+    let _ = fs::remove_dir_all(&user_data);
+    let _ = fs::remove_dir_all(&foreign);
+}

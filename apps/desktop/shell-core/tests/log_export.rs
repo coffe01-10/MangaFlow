@@ -558,3 +558,56 @@ fn export_skips_a_non_utf8_member_name_without_lossy_folding() {
     let _ = fs::remove_dir_all(&user_data);
     let _ = fs::remove_file(&destination);
 }
+
+#[test]
+fn export_refuses_a_planted_logs_root_link() {
+    // #610: the root itself planted as a link must not redirect the export
+    // onto a foreign tree — canonicalize would follow it and the
+    // containment check would compare the target against itself.
+    let user_data = temp_user_data("root-link");
+    let foreign = temp_user_data("root-link-target");
+    fs::create_dir_all(&foreign).unwrap();
+    fs::write(foreign.join("shell-foreign.log"), "foreign bytes\n").unwrap();
+
+    let logs = logs_dir(&user_data);
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&foreign, &logs).unwrap();
+    #[cfg(windows)]
+    {
+        // Junctions need no privilege on Windows; creation may still be
+        // unavailable, in which case the whole probe skips (same precedent
+        // as the picker's dir_link helpers).
+        let _ = std::os::windows::fs::symlink_dir(&foreign, &logs);
+    }
+    if !logs
+        .symlink_metadata()
+        .map(|meta| meta.is_symlink())
+        .unwrap_or(false)
+    {
+        eprintln!("root link creation not permitted; skipping the root-link assertions");
+        let _ = fs::remove_dir_all(&user_data);
+        let _ = fs::remove_dir_all(&foreign);
+        return;
+    }
+
+    let destination =
+        std::env::temp_dir().join(format!("mfd-export-rootlink-{}.zip", new_token()));
+    let error = export_logs_zip(&user_data, &destination).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            mangaflow_desktop_shell_core::logs::ExportError::LogsRootIsSymlink
+        ),
+        "{error}"
+    );
+    assert!(!destination.exists(), "no archive may appear");
+    // The foreign tree is untouched: the walk never started.
+    assert_eq!(
+        fs::read(foreign.join("shell-foreign.log")).unwrap(),
+        b"foreign bytes\n"
+    );
+
+    let _ = fs::remove_dir_all(&user_data);
+    let _ = fs::remove_dir_all(&foreign);
+    let _ = fs::remove_file(&destination);
+}

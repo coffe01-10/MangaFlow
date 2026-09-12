@@ -545,6 +545,19 @@ fn sweep_logs_dir(
 /// liveness check that would exclude a live session's files yet.
 pub fn rotate_logs(user_data: &Path) -> std::io::Result<()> {
     let logs = logs_dir(user_data);
+    // #610: a planted root link would redirect the sweep (renames/deletes of
+    // oversized pattern matches) onto whatever it targets. Refuse and leave
+    // the foreign tree alone.
+    if logs
+        .symlink_metadata()
+        .is_ok_and(|meta| meta.is_symlink())
+    {
+        eprintln!(
+            "mangaflow-desktop: logs directory {} is a symlink; skipping the rotation sweep (#610)",
+            logs.display()
+        );
+        return Ok(());
+    }
     let Ok(logs_canonical) = logs.canonicalize() else {
         return Ok(()); // no logs directory yet — nothing to rotate
     };
@@ -752,6 +765,10 @@ pub enum ExportError {
     /// written through a link.
     PendingIsSymlink,
     DestinationInsideUserData,
+    /// #610: the logs directory itself is a symlink/junction — planted-root
+    /// links must not redirect the export onto a foreign tree (the entry
+    /// level already refuses link members; the root gets the same refusal).
+    LogsRootIsSymlink,
     Io(std::io::Error),
 }
 
@@ -774,6 +791,9 @@ impl std::fmt::Display for ExportError {
             }
             ExportError::DestinationInsideUserData => {
                 write!(f, "导出目标不能位于用户数据根之内")
+            }
+            ExportError::LogsRootIsSymlink => {
+                write!(f, "日志目录是符号链接，拒绝导出（#610：防止重定向到外部目录）")
             }
             ExportError::Io(error) => write!(f, "导出失败: {error}"),
         }
@@ -1081,6 +1101,16 @@ fn export_logs_with(
 ) -> Result<ExportReport, ExportError> {
     let destination_canonical = validate_destination(user_data, destination, overwrite_confirmed)?;
     let logs = logs_dir(user_data);
+    // #610: a planted root link must not redirect the walk — canonicalize
+    // would follow it and the containment check would compare the target
+    // against itself. The entry level refuses link members; the root gets
+    // the same refusal.
+    if logs
+        .symlink_metadata()
+        .is_ok_and(|meta| meta.is_symlink())
+    {
+        return Err(ExportError::LogsRootIsSymlink);
+    }
     let logs_canonical = logs.canonicalize().map_err(ExportError::Io)?;
 
     let mut members: Vec<(String, PathBuf, u64)> = Vec::new();
