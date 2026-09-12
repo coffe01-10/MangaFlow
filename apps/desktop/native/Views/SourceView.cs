@@ -321,6 +321,12 @@ public sealed class SourceView : WorkspaceView
             ResetCompose(); notice.Text = $"已导入「{title}」。";
             Cache.Invalidate("chapters:" + projectId, "dashboard"); await LoadChaptersAsync();
         }
+        catch (TimeoutException)
+        {
+            // #439: a large file import can exceed the 30 s HTTP timeout after the server may
+            // already have applied it — surface the same copy as Submit instead of vanishing.
+            if (epoch == activation) error.Text = "请求超时，服务可能已保存。请先刷新确认，避免重复提交。";
+        }
         catch (OperationCanceledException) { }
         catch (Exception ex) { if (epoch == activation) error.Text = ex.Message; }
         finally { if (epoch == activation) { importing = false; SetComposeEnabled(true); } }

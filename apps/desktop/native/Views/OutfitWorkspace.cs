@@ -194,7 +194,10 @@ internal sealed class OutfitWorkspace : StackPanel
     {
         if (busy || !Active) return;
         busy = true; IsEnabled = false;
+        // #439: uploads share the 30 s HTTP timeout; ApiClient reports it as TimeoutException.
+        // Without this branch the raw English "A task was canceled." leaked into the banner.
         try { await action(); }
+        catch (TimeoutException) { if (Active) view.Notify("请求超时，服务可能已保存。请先刷新确认，避免重复提交。"); }
         catch (Exception ex) { if (Active) view.Notify(ex.Message); }
         finally { busy = false; IsEnabled = true; if (Active) { UpdateDraft(); RenderRecords(); } }
     }
