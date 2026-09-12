@@ -308,3 +308,18 @@ def test_fresh_bootstrap_lock_is_never_stolen(tmp_path):
     assert "bootstrap lock" in out and "remove it" in out, out
     assert "PIP_CALLS=0" in out, out
     assert lock.exists(), "a live-looking lock must not be removed behind its holder"
+
+
+def test_runner_tees_the_last_run_log():
+    """A load flake that only shows up once must keep its failure
+    identity: the runner tees the full pytest output to a persistent
+    dist/ log and propagates the exit code through the pipe (static
+    contract — executing the main body would run the whole suite)."""
+
+    script = _SCRIPT.read_text(encoding="utf-8")
+    assert 'E2E_LOG_PATH="$DESKTOP_ROOT/dist/e2e-last-run.log"' in script
+    assert '2>&1 | tee "$E2E_LOG_PATH" || pytest_exit=$?' in script
+    assert 'exit "$pytest_exit"' in script
+    assert "\nexec " not in script, (
+        "the exec form would bypass the tee and lose the log on failure"
+    )

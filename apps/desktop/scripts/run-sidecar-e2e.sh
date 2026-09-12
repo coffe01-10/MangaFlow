@@ -148,7 +148,14 @@ fi
 # instead of depending on someone remembering a manual pytest command.
 # (pytest.ini's testpaths/norecursedirs exclude apps/desktop from a bare
 # pytest, so an unlisted file here is an untested file — #343.)
-exec "$VENV_PYTHON" -m pytest \
+# The full output lands in a persistent last-run log: a load flake that
+# only shows up once (two singletons in one weekend were lost to
+# `tail -1` pipelines) must keep its failure identity for triage. dist/
+# is gitignored build output, so the log is disposable by construction.
+# pipefail preserves pytest's exit code through the tee.
+E2E_LOG_PATH="$DESKTOP_ROOT/dist/e2e-last-run.log"
+pytest_exit=0
+"$VENV_PYTHON" -m pytest \
   "$DESKTOP_ROOT/scripts/test_sidecar_e2e.py" \
   "$DESKTOP_ROOT/scripts/test_sidecar_relay.py" \
   "$DESKTOP_ROOT/scripts/test_sidecar_relay_bind.py" \
@@ -158,5 +165,6 @@ exec "$VENV_PYTHON" -m pytest \
   "$DESKTOP_ROOT/scripts/test_build_web_standalone.py" \
   "$DESKTOP_ROOT/scripts/test_guard_frontend_dist.py" \
   "$DESKTOP_ROOT/scripts/test_run_sidecar_e2e.py" \
-  -v "$@"
+  -v "$@" 2>&1 | tee "$E2E_LOG_PATH" || pytest_exit=$?
+exit "$pytest_exit"
 fi
