@@ -595,3 +595,45 @@ def test_relay_partial_pump_start_releases_slot_and_serves_next(monkeypatch):
             stop()
     finally:
         api.close()
+
+
+def test_relay_survives_a_half_broken_pipe_upstream(monkeypatch):
+    """The upstream send raising EPIPE mid-response (a peer that closed
+    after reading only part of the response, e.g. a browser tab navigating
+    away) must kill only that connection's pump: the relay keeps serving
+    and a fresh connection works end to end.
+
+    Simulates by wrapping the upstream send: the FIRST response send
+    raises BrokenPipeError after the stub got the request.
+    """
+    api = StubApi()
+    try:
+        port, stop = start_relay(monkeypatch, api)
+        original_sendall = socket.socket.sendall
+
+        def broken_sendall(self, data):
+            if b"200 OK" in data:
+                raise BrokenPipeError(32, "Broken pipe")
+            return original_sendall(self, data)
+
+        monkeypatch.setattr(socket.socket, "sendall", broken_sendall)
+        victim = socket.create_connection(("127.0.0.1", port), timeout=15)
+        try:
+            victim.sendall(REQUEST)
+            assert read_until_closed(victim, timeout_seconds=4) == b"", (
+                "an EPIPE-damaged response must not be delivered as content"
+            )
+        finally:
+            victim.close()
+        monkeypatch.undo()
+
+        client = socket.create_connection(("127.0.0.1", port), timeout=15)
+        try:
+            client.sendall(REQUEST)
+            body = read_response(client, timeout_seconds=4)
+        finally:
+            client.close()
+        assert body.startswith(b"HTTP/1.1 200") and body.endswith(b"ok"), body
+        stop()
+    finally:
+        api.close()
