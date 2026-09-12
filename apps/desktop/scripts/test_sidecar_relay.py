@@ -699,3 +699,100 @@ class TestRelayLimiterUnit:
             "capacity must be restored — a lost release shows here"
         )
 
+
+
+class _FakeProcess:
+    """Process double for the close() escalation ladder: terminate succeeds
+    (graceful), or wait hangs until killed (escalation), or hangs forever
+    (reap timeout)."""
+
+    def __init__(self, mode: str) -> None:
+        self.mode = mode  # "graceful" | "needs-kill" | "unreapable" | "exited"
+        self.terminate_calls = 0
+        self.kill_calls = 0
+        self.wait_calls = 0
+
+    def poll(self) -> int | None:
+        return 0 if self.mode == "exited" else None
+
+    def terminate(self) -> None:
+        self.terminate_calls += 1
+        if self.mode in ("graceful", "exited"):
+            self.mode = "exited"
+
+    def kill(self) -> None:
+        self.kill_calls += 1
+        if self.mode == "needs-kill":
+            self.mode = "exited"
+
+    def wait(self, timeout=None):
+        self.wait_calls += 1
+        if self.mode != "exited":
+            import subprocess
+
+            raise subprocess.TimeoutExpired("fake", timeout)
+        return 0
+
+
+class _FakeSock:
+    def __init__(self, close_raises: bool = False) -> None:
+        self.closed = False
+        self._close_raises = close_raises
+
+    def close(self) -> None:
+        if self._close_raises:
+            raise OSError("close failed (EBADF)")
+        self.closed = True
+
+
+def test_webserver_close_terminates_gracefully_and_releases_both_sockets():
+    process = _FakeProcess("graceful")
+    web_sock, relay = _FakeSock(), _FakeSock()
+    helper.WebServer(process, 1, 2, web_sock, relay).close()
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 0, "a graceful wait must not escalate to kill"
+    assert web_sock.closed and relay.closed
+
+
+def test_webserver_close_escalates_to_kill_and_reaps():
+    """wait(5) times out after terminate: close must kill and then REAP
+    (a lingering zombie holds the pid and reads as a phantom running node)."""
+    process = _FakeProcess("needs-kill")
+    web_sock, relay = _FakeSock(), _FakeSock()
+    helper.WebServer(process, 1, 2, web_sock, relay).close()
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 1
+    assert process.wait_calls == 2, "the killed child must be reaped promptly"
+    assert web_sock.closed and relay.closed
+
+
+def test_webserver_close_survives_an_unreapable_child():
+    """Even when the reap wait also times out, close must not raise — and
+    must STILL release both sockets (a raise here would skip the finally's
+    socket releases on the helper's shutdown path)."""
+    process = _FakeProcess("unreapable")
+    web_sock, relay = _FakeSock(), _FakeSock()
+    helper.WebServer(process, 1, 2, web_sock, relay).close()
+    assert process.kill_calls == 1
+    assert web_sock.closed and relay.closed
+
+
+def test_webserver_close_skips_termination_for_an_exited_child():
+    process = _FakeProcess("exited")
+    web_sock, relay = _FakeSock(), _FakeSock()
+    helper.WebServer(process, 1, 2, web_sock, relay).close()
+    assert process.terminate_calls == 0
+    assert process.kill_calls == 0
+    assert web_sock.closed and relay.closed
+
+
+def test_webserver_close_releases_the_second_socket_when_the_first_fails():
+    """E3-F2: both closes are guarded — a raising close (EBADF from a
+    dead fd) must be SUPPRESSED and must not skip the second socket.
+    Requiring no raise AND the healthy socket released pins the guard in
+    both directions: a guard removal re-raises, a guard narrowing to
+    only-the-first-socket strands the relay."""
+    process = _FakeProcess("exited")
+    broken, healthy = _FakeSock(close_raises=True), _FakeSock()
+    helper.WebServer(process, 1, 2, broken, healthy).close()  # must not raise
+    assert healthy.closed, "the second socket must still be released"
