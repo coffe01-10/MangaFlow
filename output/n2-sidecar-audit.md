@@ -601,3 +601,32 @@
 - **交叉核查**：#591（venv bootstrap mkdir 锁）——落实 §26 记录的 #570 邻接缝（并发
   bootstrap 竞窗），闭环；#592（exit watcher cadence + crash-path shutdown 钉）与
   #589/#590 行级读过，无缺陷。
+
+## 30. 20260913 续三（master f1cd46b——#597/#600/#601/#602/#603/#604 已并）
+
+- **#599 处置（CONFLICTING → 关闭）**：#597（引用 #595）已落地同测试同预算的放宽
+  （4s→15s×2，逐行核验 IN-MASTER verbatim；我支仅注释文本不同、master 版等价引
+  #595）——完全被取代，关闭并留核验说明。
+- **交叉评审（无缺陷）**：#597 helper 变更（user-data 含 `?` 拒绝——SQLAlchemy database
+  段正则 `[^?]+` 只截于 `?`，`#`/`%` 原样入路径，论证成立）；#604（RELAY_ORIGIN 与
+  WEB_RELAY_PORT 跨模块单一来源钉——两侧同错则 manifest 校验自洽通过、唯 e2e 兜底，
+  钉法正确）；#601（start-native.ps1 包含方向，native 域不评）。
+- **#608（runner 留痕日志，待 lead）**：两例单发 flake 败于 `tail -1` 管道无法 triage——
+  runner tee 全量输出至 `dist/e2e-last-run.log`（gitignore 补线）+ pipefail 保退出码 +
+  去 exec。**第 18 轮评审 REQUEST_CHANGES → 返工**：F1 MEDIUM——"dist/ 已被 gitignore"
+  的声明为假（ignore 规则枚举特定工件），补 `dist/e2e-last-run.log`；评审实测**当场捕获
+  该 flake 现行**（日志留全身份）。
+- **捕获 flake 的真因（PR #609，待 lead）——非读取预算**：日志证据 = 健康客户端
+  ECONNRESET + stderr `relay connection limit 1 reached`（+ 良性的 stop() 拆 EBADF 行）。
+  机制：cap-1 测试自主线程观测失败完成（pipe_starts==2 / broken 客户端掉线）时，
+  `limiter.release()` 仍在 pump 线程清理路径上——窗口内下一个客户端被溢出拒绝（cap=1
+  → 立即 close 带未读数据 → RST）。#597 的 15s 预算修错了维度（reset 是即时的，非超时）。
+  修复：`exchange_after_release` 限界重试（15s）**仅 pre-bytes** 溢出拒绝；两个竞态变体
+  （partial-pump、construction-failure）改写。
+- **第 19 轮评审（1 子代理，REQUEST_CHANGES → 返工）**：F2 MEDIUM——docstring 承诺
+  pre-bytes 过滤但 `read_response` 丢弃缓冲、post-bytes 死亡会被干净二刷掩盖。返工：
+  `read_response` 在 reset 异常上盖章 `bytes_before_reset`；重试仅当为空。评审另确认：
+  外层构造变体无窗口（release 在 accept 线程同拍完成，重试为无害冗余）；FIN 味残余
+  （请求未随 ACK 入队时溢出 close 为优雅 FIN → 不重试）窄且记录在案。
+- **串行证据**：目标双测试 8×3 循环绿；真 runner **126 passed in 73.06s**（exit=0，
+  #608 日志生效）；#608 分支评审期间实测捕获 flake 一次（日志留身份）。
