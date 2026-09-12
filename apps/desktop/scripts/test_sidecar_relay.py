@@ -17,6 +17,7 @@ severed every keep-alive connection after 5s of silence.
 
 from __future__ import annotations
 
+import errno
 import socket
 import struct
 import sys
@@ -434,3 +435,97 @@ def test_relay_caps_concurrent_connections(monkeypatch):
             stop()
     finally:
         api.close()
+
+
+class _FlakyAcceptListener:
+    """Hand ``_serve_relay`` a listener whose accept() fails on demand.
+
+    ``socket.socket`` is a C type, so per-instance method overrides are
+    impossible; ``_serve_relay`` only calls ``accept()`` on the listener,
+    so this proxy is the narrowest injection point for accept-loop errors.
+    """
+
+    def __init__(self, sock: socket.socket, failures: list[Exception]) -> None:
+        self._sock = sock
+        self._failures = list(failures)
+
+    def accept(self) -> tuple[socket.socket, tuple]:
+        if self._failures:
+            raise self._failures.pop(0)
+        return self._sock.accept()
+
+
+TRANSIENT_ACCEPT_ERRORS = [
+    pytest.param(
+        ConnectionAbortedError(errno.ECONNABORTED, "client RST between handshake and accept"),
+        id="econnaborted",
+    ),
+    pytest.param(
+        OSError(errno.EPROTO, "protocol error pending on the listener"),
+        id="eproto",
+    ),
+    pytest.param(
+        OSError(errno.EMFILE, "fd exhaustion under host pressure"),
+        id="emfile",
+    ),
+]
+
+
+@pytest.mark.parametrize("error", TRANSIENT_ACCEPT_ERRORS)
+def test_relay_accept_survives_transient_accept_errors(monkeypatch, error):
+    """A transient accept() error may never kill the relay loop (#438).
+
+    The historical defect: every non-timeout OSError exited the loop
+    permanently — ports stayed bound, the journal stayed ready, and all
+    plan-B API traffic hung with zero detection. The loop must treat
+    ECONNABORTED/EPROTO/EMFILE-class accept failures as retryable and
+    serve the very next connection.
+    """
+    api = StubApi()
+    try:
+        port = _free_port()
+        monkeypatch.setattr(helper, "WEB_RELAY_PORT", port)
+        relay = helper._bind_relay(api.port)
+        assert relay is not None, "the relay bind must succeed on a free port"
+        flaky = _FlakyAcceptListener(relay, [error])
+        thread = threading.Thread(
+            target=helper._serve_relay, args=(flaky, api.port), daemon=True
+        )
+        thread.start()
+        try:
+            client = socket.create_connection(("127.0.0.1", port), timeout=15)
+            try:
+                client.sendall(REQUEST)
+                body = read_response(client, timeout_seconds=4)
+            finally:
+                client.close()
+            assert body.endswith(b"ok"), body
+        finally:
+            relay.close()
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+    finally:
+        api.close()
+
+
+def test_relay_terminal_accept_error_logs_before_exiting(monkeypatch):
+    """A terminal accept() error (listener closed) must be logged, never
+    silent (#438): the pre-#463 loop returned without a single log line,
+    making a dead relay indistinguishable from a healthy journal."""
+    logged: list[str] = []
+    monkeypatch.setattr(helper, "_log", lambda message: logged.append(message))
+    port = _free_port()
+    monkeypatch.setattr(helper, "WEB_RELAY_PORT", port)
+    # Dead upstream port is fine: the loop must die on the listener close
+    # before any client ever connects.
+    relay = helper._bind_relay(port)
+    assert relay is not None, "the relay bind must succeed on a free port"
+    thread = threading.Thread(
+        target=helper._serve_relay, args=(relay, port), daemon=True
+    )
+    thread.start()
+    time.sleep(0.2)  # let the loop enter accept()
+    relay.close()  # next accept() raises the terminal EBADF
+    thread.join(timeout=5)
+    assert not thread.is_alive(), "a closed listener must end the accept loop"
+    assert any("relay listener exiting" in line for line in logged), logged
