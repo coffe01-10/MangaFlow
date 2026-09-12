@@ -395,9 +395,12 @@ def test_pid_starttime_reads_the_live_anchor_and_degrades_to_none():
     split) as an int. On this Linux host it must equal the shell-core
     parser's arithmetic on the same process — a split or index drift
     would make every journal anchor mismatch and fail every handshake
-    (the shell side refuses StartTimeMismatch). The degradation contract
-    (missing/odd stat → None, never an exception) is exercised structurally
-    on Windows/other hosts where /proc is absent."""
+    (the shell side refuses StartTimeMismatch). Host gate: /proc is the
+    function's documented degradation surface (missing/odd stat → None),
+    so hosts without it skip — the None branch itself is NOT exercised by
+    this test on any host."""
+    if not Path("/proc/self/stat").exists():
+        pytest.skip("/proc absent on this host — the anchor is Linux-only")
 
     from pathlib import Path as _Path
 
