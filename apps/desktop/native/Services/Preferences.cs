@@ -20,14 +20,23 @@ public sealed class Preferences
 
     public void Save(string root)
     {
-        Directory.CreateDirectory(root);
-        var destination = Path.Combine(root, "window.json");
-        var temporary = Path.Combine(root, $"window-{Guid.NewGuid():N}.tmp");
+        // #446: Save runs from async-void handlers (OnClosing, HideDock, ShowDock)
+        // with no DispatcherUnhandledException net — an unwritable prefs path would
+        // crash the process and skip the graceful backend stop. Window shape is
+        // cosmetic; never crash the app over it (KeyValueStore.Save keeps the
+        // same contract).
         try
         {
-            File.WriteAllText(temporary, JsonSerializer.Serialize(this));
-            File.Move(temporary, destination, true);
+            Directory.CreateDirectory(root);
+            var destination = Path.Combine(root, "window.json");
+            var temporary = Path.Combine(root, $"window-{Guid.NewGuid():N}.tmp");
+            try
+            {
+                File.WriteAllText(temporary, JsonSerializer.Serialize(this));
+                File.Move(temporary, destination, true);
+            }
+            finally { if (File.Exists(temporary)) File.Delete(temporary); }
         }
-        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
     }
 }
