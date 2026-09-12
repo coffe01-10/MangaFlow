@@ -1241,13 +1241,15 @@ def test_web_spawn_env_additions_are_exact():
         "NODE_ENV": "production",
     }
 
-    # Composed with the strip list: the additions must not leak handshake
-    # identity back in, and PORT must be a string (env values are strings;
+    # Composed with the strip list: a MANGAFLOW_DESKTOP_* key surviving
+    # composition means _node_child_env's strip list missed an exported
+    # orchestration name (the additions dict is compile-time-constant and
+    # cannot add one), and PORT must be a string (env values are strings;
     # an int PORT makes node's env write raise TypeError at spawn).
     env = helper._node_child_env()
     env.update(helper._web_spawn_env_additions(4321))
     assert not any(name.startswith("MANGAFLOW_DESKTOP_") for name in env), (
-        "a stripped orchestration name leaked back in through the additions"
+        "an exported orchestration name survived _node_child_env's strip list"
     )
     assert isinstance(env["PORT"], str)
 
