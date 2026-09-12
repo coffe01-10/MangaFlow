@@ -4,6 +4,7 @@ import inspect
 import json
 import logging
 import os
+import re
 
 import pytest
 from sqlalchemy.exc import OperationalError
@@ -26,13 +27,39 @@ def test_windows_runner_refuses_non_windows_without_spawning():
 
 
 def test_windows_source_assigns_and_journals_before_resume_without_shell():
+    """Structural ordering guard for the Windows supervision boundary.
+
+    The behavioral loop coverage (fake-kernel cancel-probe test) runs
+    Windows-side only — off-Windows this source pin is the only
+    supervision guard that runs, so it must not be refactor-blind
+    (#431): every marker is matched as ALL of its call sites via regex,
+    a duplicated call site fails the exactly-one assert instead of
+    slipping past an index/rindex pair, and the ordering compares the
+    full occurrence lists rather than a mixed first/last index.
+    """
+
     source = inspect.getsource(
         __import__("app.services.cli_process_windows", fromlist=["*"])
     )
-    assign = source.index("AssignProcessToJobObject(job_handle, process_handle)")
-    journal = source.rindex("_record_suspended_process(cwd")
-    resume = source.index("ResumeThread(thread_handle)")
-    assert assign < journal < resume
+
+    def call_sites(pattern: str) -> list[int]:
+        # Negative lookbehind: the marker must be a CALL SITE, not the
+        # function's own `def` line (the journal helper's definition shares
+        # the prefix the naive string match hits).
+        return [
+            match.start()
+            for match in re.finditer(f"(?<!def ){pattern}", source)
+        ]
+
+    assign_sites = call_sites(
+        re.escape("AssignProcessToJobObject(job_handle, process_handle)")
+    )
+    journal_sites = call_sites(re.escape("_record_suspended_process(cwd"))
+    resume_sites = call_sites(re.escape("ResumeThread(thread_handle)"))
+    assert len(assign_sites) == 1, f"one assign call site expected: {assign_sites}"
+    assert len(journal_sites) == 1, f"one journal call site expected: {journal_sites}"
+    assert len(resume_sites) == 1, f"one resume call site expected: {resume_sites}"
+    assert assign_sites[0] < journal_sites[0] < resume_sites[0]
     assert "shell=True" not in source
     assert "cmd /c" not in source.lower()
 
