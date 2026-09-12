@@ -477,3 +477,6 @@ doc-code 不一致 sweep（子代理，双源核验）收割 6 项 → 3 PR：
 - 新增 #506（night/pr-guard-query-and-root-refs）：#444 guard 引用过滤的两
   个承重半边——skip 表（remote/data/hash/root 不落盘解析 + 相对引用极性对照）
   与查询串剥离（Next 哈希 URL）（6 pass）。
+- 新增 #509（night/pr-build-info-stamp-refusal）：_replace_dist 的
+  stamp-write 失败拒绝钉（bundle 已就位时失败必须传播、无 stamp 无
+  .tmp 残留，下次 e2e 拒绝未钉源树）（4 pass）。
