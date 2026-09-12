@@ -331,3 +331,31 @@
   - F3 NIT（已修）：新测试 docstring "above" 方位词过时。
 - **串行证据**：guard 套件 **9 passed**；本轮早前全量（基线 f97c186 树）runner **88 passed**、
   cargo **152/0**。
+## 18. 20260912-wknd 续二（基线 `a734bdb`）
+
+- **dist-lock 互锁审计（无缺陷，行级核实）**：`build-frontend-static.sh:23` 的
+  `DIST_LOCK="$DESKTOP_ROOT/dist/.build.lock"` 与 `build-web-standalone.py:44` 的
+  `DIST_LOCK_PATH = REPO/"apps/desktop/dist"/".build.lock"` 为同一路径——bash flock(1) 与
+  python fcntl.flock 在同一 inode 上互锁（#383 所述同环境源前提在 CI/Linux 成立）；
+  `dist-build-lock.sh` 的闩锁机制（F-NIT）、超时路径 fd9 关闭、noclobber pid 属主释放逐一复核。
+  `build-frontend-static.sh` 的 tee 日志写在锁外（仅追加 static-build.log，非破坏性）；
+  破坏段 L195-203 全程持锁。E2E runner 经 build-web-standalone.py 重建（python 锁）。无缺陷。
+- **PR #568（D5 READY 读取加固，待 lead）**：`verify-static-origin.mjs` 就绪等待原以
+  `stdout.once("data")` + `split("\n")[0]` 解析——READY 行分片到达时会解析出截断前缀并误报
+  "bad ready line"；崩溃于 READY 之前的 helper（导入错误）则烧满 20s 且误报 "readiness
+  timeout"。改为累积至首个换行 + exit 事件立即以真实退出状态拒绝。综合证据（合成新旧对照
+  harness，每读取用独立子进程、监听器随 spawn 同步挂接，与脚本一致）：
+  - 分片 READY：旧 `\"MANGAFLOW\"`（截断）→ 新完整行；
+  - 静默退出(3)：旧等满计时器（生产 20s）→ 新立即 `helper exited before READY (code 3)`。
+  - 全量 D5 两次 PASS（改动后含 rework）：三围栏探针 404、握手、渲染、直连 API 全绿。
+- **第 9 轮审查（1 子代理，文件/行级，APPROVE + 4 NIT，2 项返工）**：
+  - NIT-1（已返工）：pre-READY 缓冲无上界 + 每块 O(n²) 重扫——加 1 MiB 上界并按超时路径
+    杀进程组（helper stdout 在 READY 前为纯协议输出，越界即 rogue import）。
+  - NIT-2（已返工）：spawn 失败（无 python3）发 'error' 而非 'exit'，原会以未处理事件裸栈
+    崩溃——等待内挂 `error` 监听并纳入 cleanup；修正 "bad interpreter" 注释措辞。
+  - NIT-3（记录）：exit-before-data 回调顺序无契约保证，可能把已写 READY 的死亡误述为
+    "exited before READY"——语义上握手失败成立且更快，不改。
+  - NIT-4（记录，先于本 PR 存在）：Windows 文本管道 `\r\n` 下尾随 `\r` 保留——JSON.parse
+    容忍尾随空白，比较均在解析值上进行，良性。
+  - 评审同时行级核实：流模式（移除最后 data 监听后仍 flowing、零积压）、超时杀组路径完好、
+    diff 仅两 hunk、移动的前缀检查逐字节一致。
