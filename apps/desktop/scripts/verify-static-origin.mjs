@@ -94,25 +94,43 @@ const readyLine = await new Promise((resolve, reject) => {
   let buffer = "";
   const onData = (chunk) => {
     buffer += chunk.toString();
+    // The helper's stdout is protocol-only before READY; megabytes of
+    // newline-free output mean a rogue import looping on print — bound the
+    // buffer and kill the group like the timeout path does.
+    if (buffer.length > 1048576) {
+      try { process.kill(-helper.pid, "SIGKILL"); } catch { /* already gone */ }
+      cleanup();
+      reject(new Error("helper stdout exceeded 1 MiB before READY"));
+      return;
+    }
     const newline = buffer.indexOf("\n");
     if (newline === -1) return;
     cleanup();
     resolve(buffer.slice(0, newline));
   };
-  // A helper that dies before READY (import error, bad interpreter) must
+  // A helper that dies before READY (an import error, for example) must
   // fail NOW with its exit status — waiting for the timer would spend the
   // full 20s and misreport a crash as a "readiness timeout".
   const onExit = (code, signal) => {
     cleanup();
     reject(new Error(`helper exited before READY (code ${code} signal ${signal})`));
   };
+  // A spawn failure (no python3 binary) emits 'error', not 'exit' — an
+  // unhandled 'error' event would crash the script with a raw stack
+  // instead of this diagnosis.
+  const onError = (error) => {
+    cleanup();
+    reject(new Error(`helper could not be spawned: ${error.message}`));
+  };
   const cleanup = () => {
     clearTimeout(timer);
     helper.stdout.off("data", onData);
     helper.off("exit", onExit);
+    helper.off("error", onError);
   };
   helper.stdout.on("data", onData);
   helper.once("exit", onExit);
+  helper.once("error", onError);
 });
 // Track the helper's exit from the earliest possible moment: fail() may
 // SIGKILL the process group at ANY later point (including while the script
