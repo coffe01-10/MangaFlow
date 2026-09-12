@@ -387,3 +387,40 @@ def test_read_context_rejects_malformed_tokens(monkeypatch, tmp_path, bad_token)
     )
     with pytest.raises(ValueError, match="invalid process ownership token"):
         helper._read_context()
+
+
+def test_stdin_eof_watch_drains_post_go_bytes_and_signals(monkeypatch):
+    """The stdin-EOF watcher's drain loop must be token-agnostic: any
+    post-GO bytes (a double GO from a buggy launcher, stray writes) are
+    drained and ignored, and EOF always raises SIGTERM into the process
+    (the cooperative stop). A regression to a token-matching drain (e.g.
+    only draining lines matching the GO prefix) would hang the cooperative
+    stop on a buggy launcher's stray writes."""
+    import importlib.util
+    import io
+    import signal as signal_module
+    import time as time_module
+
+    spec = importlib.util.spec_from_file_location(
+        "mangaflow_desktop_helper_eof", str(HELPER_PATH)
+    )
+    helper_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper_module)
+
+    # Deterministic SIGTERM capture instead of the real delivery.
+    delivered = []
+    monkeypatch.setattr(
+        helper_module.signal, "raise_signal",
+        lambda sig: delivered.append(sig),
+    )
+
+    fake_stdin = io.StringIO("MANGAFLOW_GO wrong-token\n" + "junk\n")
+    monkeypatch.setattr(helper_module.sys, "stdin", fake_stdin)
+
+    helper_module._start_stdin_eof_watch()
+    deadline = time_module.monotonic() + 5
+    while not delivered and time_module.monotonic() < deadline:
+        time_module.sleep(0.05)
+    assert delivered == [signal_module.SIGTERM], (
+        f"EOF after draining junk must raise SIGTERM: {delivered!r}"
+    )
