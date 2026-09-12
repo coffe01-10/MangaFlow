@@ -184,3 +184,44 @@ def test_sourcing_the_runner_runs_nothing(tmp_path):
     assert done.returncode == 0, done.stderr
     assert "SOURCED_OK" in done.stdout
     assert "PIP_CALLS" not in done.stdout
+
+
+def test_scripts_layout_venv_is_recognized_without_recreation(tmp_path):
+    """A Windows-hosted venv (Scripts/python.exe — the layout start-desktop.cmd
+    requires) must resolve to its interpreter WITHOUT triggering a re-create
+    or a re-install: the old bin-only predicate re-ran `python3 -m venv` on
+    every invocation and the final exec failed, making the runner unusable
+    on the platform whose layout this venv layout comes from."""
+
+    rc, out = _run_harness_in(
+        tmp_path,
+        'mkdir -p "$VENV/Scripts" && printf "#!/bin/sh\\n" > "$VENV/Scripts/python.exe" '
+        '&& chmod +x "$VENV/Scripts/python.exe"',
+    )
+    assert rc == 0, out
+    assert "ENSURE_RC=0" in out, out
+    assert "PIP_CALLS=1" in out, "no stamp yet: the install must run once"
+    assert f"STAMP={_requirements_hash()}" in out
+    # The second run must neither re-create nor re-install (the stamp now
+    # matches through the Scripts-layout resolution).
+    rc, out2 = _run_harness_in(tmp_path, "true")
+    assert rc == 0, out2
+    assert "PIP_CALLS=0" in out2, out2
+
+
+def test_partial_scripts_layout_venv_self_heals(tmp_path):
+    """Scripts/ present but no stamp (interrupted install on Windows) —
+    same self-heal contract as the bin layout."""
+
+    rc, out = _run_harness_in(
+        tmp_path,
+        'mkdir -p "$VENV/Scripts" && printf "#!/bin/sh\\n" > "$VENV/Scripts/python.exe" '
+        '&& chmod +x "$VENV/Scripts/python.exe"',
+        fake_pip_rc=1,
+    )
+    assert "ENSURE_RC=1" in out, out
+    assert "STAMP=MISSING" in out, out
+    rc, out2 = _run_harness_in(tmp_path, "true")
+    assert rc == 0, out2
+    assert "PIP_CALLS=1" in out2, "a retry must re-run the install"
+    assert f"STAMP={_requirements_hash()}" in out2
