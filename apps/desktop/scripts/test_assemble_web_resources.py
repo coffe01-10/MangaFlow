@@ -184,3 +184,28 @@ def test_concurrent_assembles_serialize_on_the_dist_lock(tmp_path):
         if child.poll() is None:
             child.kill()
             child.wait(timeout=10)
+
+
+def test_clear_refuses_loudly_when_a_remnant_survives(tmp_path, monkeypatch):
+    """#409 finding 2 (staging variant): a same-pid staging remnant with a
+    locked file must not abort with a raw OSError mid-delete — and must
+    never let the new tree merge into the half-cleared remnant."""
+
+    remnant = _plant(tmp_path, "web.tmp-4242")
+
+    def locked_rmtree(path, ignore_errors=False):
+        raise OSError("file locked by another process")
+
+    monkeypatch.setattr(assemble.shutil, "rmtree", locked_rmtree)
+    try:
+        assemble._clear(remnant)
+    except SystemExit as refusal:
+        assert "could not fully clear" in str(refusal)
+    else:
+        raise AssertionError("a surviving remnant must refuse, not pass")
+    assert remnant.exists()
+
+
+def test_clear_is_noop_without_a_remnant(tmp_path):
+    assemble._clear(tmp_path / "web.tmp-4242")  # must not raise
+    assert not (tmp_path / "web.tmp-4242").exists()
