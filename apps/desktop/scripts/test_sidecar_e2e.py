@@ -1424,9 +1424,10 @@ def test_await_web_server_boot_logs_and_returns_false_on_boot_exit(monkeypatch):
 def test_await_web_server_boot_retries_through_a_not_ready_window(monkeypatch):
     """The middle leg: node ALIVE but its port not yet accepting (Next's
     listen lag) must NOT be judged dead — the loop retries until the port
-    opens within the budget. The port opens late (a second thread flips it
-    after a delay); a regression that returned False on the first closed
-    probe would hang the downgrade path on a merely-slow boot."""
+    opens within the budget. The fake socket refuses the first two probes
+    (ECONNREFUSED), then answers; a regression that returned False on the
+    first closed probe — downgrading a merely-slow boot — goes red, and
+    the probe counter proves the loop actually retried."""
 
     import importlib.util
     import socket
@@ -1439,33 +1440,45 @@ def test_await_web_server_boot_retries_through_a_not_ready_window(monkeypatch):
     helper_module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(helper_module)
 
-    class SlowListenNode:
+    probes = {"count": 0}
+    gate = threading.Event()  # set at +0.4s: the port "opens" then
+
+    class FakeSocket:
+        def __init__(self, *a, **kw):
+            pass
+
+        def settimeout(self, seconds):
+            pass
+
+        def connect_ex(self, address):
+            probes["count"] += 1
+            if gate.is_set():
+                return 0
+            import errno
+            return errno.ECONNREFUSED
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(helper_module.socket, "socket", FakeSocket)
+
+    class AliveNode:
         returncode = None
 
         def poll(self):
             return None  # alive throughout
 
-    node = SlowListenNode()
-    listener = socket.socket()
-    listener.bind(("127.0.0.1", 0))
-    listener.listen(1)
-    late_port = listener.getsockname()[1]
     monkeypatch.setattr(helper_module, "WEB_BOOT_TIMEOUT_SECONDS", 5.0)
-    monkeypatch.setattr(helper_module.time, "sleep", lambda seconds: None)
-    # The listener opens only after 600ms: earlier probes see a closed port.
-    opener = threading.Timer(0.6, listener.accept)  # wake accept queue
-    opener.start()
-    # The connect succeeds once the kernel has the listening socket bound —
-    # it was bound at creation; only the helper's probe cadence matters.
+    threading.Timer(0.4, gate.set).start()
 
     started = time_module.monotonic()
-    result = helper_module._await_web_server_boot(node, late_port)
+    result = helper_module._await_web_server_boot(AliveNode(), 0)
     elapsed = time_module.monotonic() - started
-    listener.close()
-    opener.join(timeout=5)
 
-    assert result is True, "a merely-slow boot must not be judged dead"
-    assert elapsed < helper_module.WEB_BOOT_TIMEOUT_SECONDS, (
+    assert result is True, "the opened port must eventually be accepted"
+    assert probes["count"] >= 2, (
+        f"the loop must have retried through the refused window: {probes['count']}"
+    )
+    assert elapsed < helper_module.WEB_BOOT_TIMEOUT_SECONDS + 1.0, (
         f"the wait must end at first acceptance: {elapsed:.2f}s"
     )
-    del opener
