@@ -120,6 +120,8 @@
 - 上一窗关闭时的"零发现"是对 4aa1797 前代码面的结论；本窗增量面 = `4aa1797..44e3945` 的桌面 churn（junction 重建/装配换窗/静态导出克隆/dist 锁/zip writer 守卫/ownership 错误展示/get-status 语义/审批别名目录钉/workflow view 暂停取消/ScriptView 双激活/native intake page 重建）——全部是**修复本身带来的新代码**，回归挖掘是本窗第一优先。
 - 配额跟踪：B ≥20 实质 issue（杜绝水文，先挖后报）；C ≥6 非 native 防守测试/契约小 PR；D 既有 Desktop/RedTeam issue 清账（FIXED/PARTIAL/NOT_FIXED 有据）；E ≥6 轮互审；F 本节持续更新。
 
+- **R10（隔夜修复复核 + 全量认证，06:28）**：交叉复核隔夜两修——75ce571（plan-B skip 门探针对齐 _find_node 首候选，回应本窗 R2 复核 F10 NIT）与 ecaf242（Stop-SampleTree 的 pid 重用身份守卫，回应 #348）——**均正确**（前者 test-only 且探针现在与 helper 的首候选精确一致；后者 ProcessName 核验先于 taskkill）。认证 HEAD f10b844：shell-core **146/146**、sidecar 全家 **45/45**（含隔夜新增的 identity-guard 与 skip-gate 修正）。**窗内账目终值：Issues 33+（我 17 + 并行 16+，全部 file:line 级）；防守 PR 8 个（#318/#320/#321/#330/#335/#352/#353/#354 合并 8 + #357/#465/#466 开放 3）；互审 10 轮（R1-R10）。**
+
 - **R8（main.rs 全文对抗通读 + 时序观察，2026-09-12 夜）**：src-tauri main.rs（570 行）端到端复核——setup 全部失败路径经 stop_helper 收尾（菜单布线失败也走同一簿记）、shell-tools 窗口生命周期闭合（菜单重建 #351 / 随主窗销毁 / 不接受初始化脚本 / 本地上下文）、对话框守卫 RAII 全路径无泄漏、async 化读回命令、fake_channel 精确 env 门（含单测）——**无新发现**。时序观察（LOW，未立 Issue）：并发全套件下 \`a_silent_helper_fails_with_ready_timeout_and_is_torn_down\` 出现过一次失败（重跑三次均过），属负载时序抖动；pgrep 探针的 -f 匹配与僵尸窗口是候选根因，未复现不立案。
 - **收敛判定（R6-R8 三轮连续无新价值 Finding）**：core 面（main.rs / protocol.rs / 中继 / sweep / journal）在本窗已由并行轮与本 agent 交替扫净；剩余开放项均在各自 owner（WPF native 面待 owner、#300 CSP 债待 nonce 重构、#307 已裁决接受、#311 政策已记录）。**本窗按规则进入收敛。**
 
