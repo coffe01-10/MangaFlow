@@ -426,7 +426,6 @@ def test_stdin_eof_watch_drains_post_go_bytes_and_signals(monkeypatch):
     )
 
 
-<<<<<<< HEAD
 def test_read_context_rejects_a_symlinked_journal(monkeypatch, tmp_path):
     """A symlink planted at the journal path must be refused before the
     token is trusted as the runtime anchor: the link could point the
@@ -450,7 +449,7 @@ def test_read_context_rejects_a_symlinked_journal(monkeypatch, tmp_path):
 
     with pytest.raises(ValueError, match="absolute real path"):
         helper._read_context()
-=======
+
 def test_write_journal_refuses_links_and_writes_atomically(tmp_path):
     """_write_journal's two guards: (1) a symlink at the journal OR the
     .pending sibling must be refused before any write (the journal is the
@@ -503,4 +502,3 @@ def test_write_journal_refuses_links_and_writes_atomically(tmp_path):
         record, sort_keys=True
     ), "the stamp must be the exact sorted-key serialization"
     assert not pending.exists()
->>>>>>> 7600c45 (Pin _write_journal's link guards and atomic happy path)
