@@ -84,6 +84,9 @@ public sealed class StoryboardView : WorkspaceView
     private (Guid Id, int StackIndex, int BubbleCount)? geometryRequest;
     private bool saving, dirty, bubblesDeleted;
     private int pageLoadVersion;
+    // #429-3: LoadPagesAsync 的章节页列表读取序号（与 pageLoadVersion 分工：
+    // 那个只守 SelectPageAsync 的整页分镜读取，这个守页列表与页签重渲）。
+    private int pagesLoadVersion;
     private PanelNode? selected;
     private BubbleNode? selectedBubble;
 
@@ -388,10 +391,15 @@ public sealed class StoryboardView : WorkspaceView
 
     private async Task LoadPagesAsync()
     {
+        // #429-3: 页列表读取序号（ScriptView.scriptLoadVersion / SelectPageAsync 的
+        // pageLoadVersion 同款）：pageLoadVersion 只覆盖整页分镜读取，本方法此前没有
+        // 守卫——A 章的 pages 响应慢于 B 切换落地时，旧响应会把 pages/画布翻回 A 而
+        // 选择器仍显示 B，用户在错误的章节视图上编辑。非最新请求的响应整份丢弃。
+        var requestVersion = ++pagesLoadVersion;
         try
         {
             var rows = await Api.SendAsync($"chapters/{chapterId}/pages", cancellation: lifetime.Token);
-            if (lifetime.Token.IsCancellationRequested) return;
+            if (requestVersion != pagesLoadVersion || lifetime.Token.IsCancellationRequested) return;
             pages = rows.EnumerateArray().Select(PageItem.From).ToList();
             RenderPageBar();
             var requested = KeyValueStore.Get("storyboard:page:" + ProjectId);
@@ -408,6 +416,8 @@ public sealed class StoryboardView : WorkspaceView
          catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
+            // 迟到的失败同属已被取代的请求：不得把较新请求已落下的页面列表盖成错误卡
+            if (requestVersion != pagesLoadVersion) return;
             inspector.Children.Add(Kit.Caption($"页面列表读取失败：{error.Message}"));
         }
     }
@@ -1815,6 +1825,23 @@ public sealed class StoryboardView : WorkspaceView
         // 「放弃草稿并重新加载」。
         if (currentPage != null) _ = SelectPageAsync(currentPage, preserveDrafts: true);
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// #428: 重连（重新连接 → ConnectAsync → OpenProjectAsync 同项目分支）在用户
+    /// 拒绝弃稿时的保真激活。重连已 Dispose 旧 ApiClient，必须重绑新上下文，但
+    /// 不能走 Activate 的整链重载——LoadPagesAsync→SelectPageAsync（preserveDrafts
+    /// 默认 false）会清掉几何草稿、撤销栈与叙事草稿。脏判定与 ConfirmLeaveAsync
+    /// 同源（dirty）；用户仍可用 F5（RefreshAsync 的 preserve 重载）刷新服务端锚点。
+    /// </summary>
+    internal void ActivatePreservingDrafts(WorkspaceContext context)
+    {
+        if (!dirty)
+        {
+            Activate(context);
+            return;
+        }
+        base.Activate(context);
     }
 
     // ============ Test seams（headless 回归检查专用；不承载生产行为）============
