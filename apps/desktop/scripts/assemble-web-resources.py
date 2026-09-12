@@ -55,9 +55,27 @@ def find_node() -> Path:
 
 
 def _clear(path: Path) -> None:
-    # Crash remnant of an earlier run that happened to reuse this pid.
+    """Clear a crash remnant of an earlier run that happened to reuse this
+    pid — best-effort first, refuse if a remnant survives (#409).
+
+    A strict rmtree on a remnant holding one locked file (AV/indexer
+    handle from the crashed run) aborted the whole build with a raw
+    OSError mid-delete. Best-effort first; if even that cannot finish,
+    refuse loudly — the staged copytree must never merge the new tree
+    into a half-cleared remnant.
+    """
+
+    if not path.exists():
+        return
+    try:
+        shutil.rmtree(path, ignore_errors=True)
+    except OSError:
+        pass  # truly best-effort: the refusal below decides the outcome
     if path.exists():
-        shutil.rmtree(path)
+        raise SystemExit(
+            f"could not fully clear {path} (a file inside is locked — AV/"
+            "indexer/running app?); delete it manually and re-run."
+        )
 
 
 def _sweep_orphan_staging(res: Path) -> None:
