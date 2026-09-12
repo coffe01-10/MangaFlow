@@ -327,3 +327,17 @@
 - 缝隙调用点核验：#585 后 `HOSTNAME/NODE_ENV` 全 helper 仅单一定义 + `_spawn_web_server` 单一调用，无残留内联。
 
 **认证**：relay+env 组合 58/58 ×3（含 #597 修复后负载循环）；e2e 12/12（去 plan-B 子集，bundle 缺席如实记）。
+
+---
+
+## 14. 周末窗续跑（2026-09-13 07:12 Asia/Shanghai，基线 f1cd46b；#601/#603/#604 已合，#599 已按 superseded 处置）
+
+**C 轮（防守 pin）：**
+- **PR #605**：**平台绑定策略家族钉**——同一策略在代码里手写了三遍（`_bind_loopback` API 端口 / `_bind_relay` 固定中继端口 / `_StubServer` stub 健康服务器），后两者此前无选项级钉。#574 式 setsockopt spy 覆盖两个未钉监听器；关键构造：spy 在 bind **之前**记录选项，故固定中继端口被并发 helper 占用时断言依然成立（bind 可败、策略不可败）；stub 腿绑 0 端口免碰撞，同覆盖 POSIX `allow_reuse_address` 机制与 win32 `server_bind` 覆写两臂。RUN 36/36。
+
+**E 轮（假阳性 ×3 + 全文审计）：**
+- 日志轮转的 Windows 语义（我最初怀疑 rename-of-open-file 失败）：`rotate_if_large` **先 close 再 rename**（logs.rs:597 注释点名 FILE_SHARE_DELETE）、staging-first（:409-460）零代际损失、重开重试 + 断路器——`log_rotation.rs` 的稀疏文件测试在 Linux 全绿、Windows 语义由结构保证。SOLID。
+- `build-frontend-static.sh` **首次全文审计**（229 行）：junction/相对链接重建（#385/#392/#396/#398）、REPO_ROOT 前缀封印（外部指向拒绝）、锁序（tee 目标 mkdir 先于锁、破坏段在锁内、smoke 门在锁外但 frontend 唯一写者是本脚本故无兄弟写者干扰）、mktemp 0700 + cp -al 同盘假设、硬链接密集树清理重试——经 #350/#372/#385 系八轮打磨，无新发现。
+- API 暴露面复核：main.py:167 明文文档化"API unauthenticated + TrustedHost 防 DNS rebinding + CORS 白名单 + loopback 绑定"——多用户主机暴露是**已记录的架构取舍**，不重复立案。
+
+**认证**：f1cd46b 轻套件全量 **110/110**（56.7s，八文件；含 #605 新钉与 #604 跨模块钉）。

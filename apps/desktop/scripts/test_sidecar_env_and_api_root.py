@@ -747,3 +747,53 @@ def test_stdin_eof_watch_signals_on_immediate_eof(monkeypatch):
     assert delivered == [signal.SIGTERM], (
         f"immediate EOF must raise SIGTERM: {delivered!r}"
     )
+
+
+def test_relay_and_stub_binds_follow_the_platform_bind_policy(monkeypatch):
+    """Family pin for the loopback listeners' platform bind policy. The
+    codebase hand-rolls the same policy three times — ``_bind_loopback``
+    (API port, pinned by its own test), ``_bind_relay`` (fixed relay port),
+    and ``_StubServer`` (stub-mode health server) — and a policy edit that
+    lands in one but not the others reopens the #574-class hazard: on
+    Windows a missing SO_EXCLUSIVEADDRUSE yields to a later SO_REUSEADDR
+    co-binder (traffic share/steal); on POSIX a missing SO_REUSEADDR turns
+    the relay's own TIME_WAIT remnants into spurious fail-closed
+    downgrades. The spy records options before any bind, so the assertions
+    hold even when the fixed relay port is taken by a concurrent run (the
+    bind may fail; the policy must not)."""
+
+    import socket as socket_module
+
+    observed = {}
+    real_setsockopt = socket_module.socket.setsockopt
+
+    def spy_setsockopt(self, level, optname, value):
+        observed[optname] = value
+        return real_setsockopt(self, level, optname, value)
+
+    monkeypatch.setattr(socket_module.socket, "setsockopt", spy_setsockopt)
+
+    expected_option = (
+        socket_module.SO_EXCLUSIVEADDRUSE if sys.platform == "win32"
+        else socket_module.SO_REUSEADDR
+    )
+
+    # The relay: policy is recorded even if the fixed port is busy.
+    relay = helper._bind_relay(12345)
+    assert observed.get(expected_option) == 1, (
+        f"the relay bind must set the platform option (observed {observed})"
+    )
+    if relay is not None:
+        relay.close()
+
+    # The stub health server: port 0 keeps it collision-free; the stdlib
+    # allow_reuse_address mechanism (POSIX) and the server_bind override
+    # (win32) must produce the same single platform option.
+    observed.clear()
+    server = helper._StubServer(("127.0.0.1", 0), helper._StubHandler)
+    try:
+        assert observed.get(expected_option) == 1, (
+            f"the stub health bind must set the platform option (observed {observed})"
+        )
+    finally:
+        server.server_close()
