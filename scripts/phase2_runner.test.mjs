@@ -215,3 +215,20 @@ test("json() keeps 204 as null, merges content-type, and names the failing call"
   );
 });
 
+test("json(): an explicit caller content-type wins over the default", async () => {
+  const { json } = await import("./phase2_runner.mjs");
+  // The lib builds headers as { "content-type": "application/json",
+  // ...init?.headers } — the caller's spread comes LAST, so an explicit
+  // override (e.g. a form post) must survive. Round-15 review noted the
+  // merge precedence was asserted only indirectly (the default present);
+  // this pins the override side itself.
+  const seen = [];
+  const fetchImpl = async (url, init) => {
+    seen.push({ ...init?.headers });
+    return { ok: true, status: 200, json: async () => ({ ok: 1 }) };
+  };
+  await json("http://x/form", {
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+  }, fetchImpl);
+  assert.equal(seen[0]["content-type"], "application/x-www-form-urlencoded");
+});
