@@ -482,15 +482,25 @@ def test_write_journal_refuses_links_and_writes_atomically(tmp_path):
 
     journal.unlink()
 
-    # (2) A symlink at the .pending sibling must also be refused.
+    # (2) A symlink at the .pending sibling must also be refused — and
+    # because write_text would FOLLOW that link, the outside target must
+    # still carry its original bytes (a guard removed or reordered lets
+    # the record clobber it through the link).
     pending = journal.with_name(journal.name + ".pending")
     pending.symlink_to(outside)
     with pytest.raises(RuntimeError, match="must not be a link"):
         helper._write_journal(journal, record)
+    assert outside.read_text(encoding="utf-8") == "{}", (
+        "the .pending link target must not be clobbered"
+    )
     pending.unlink()
 
-    # (3) Happy path: the journal lands with sorted-key JSON and no .pending.
+    # (3) Happy path: the journal lands with sorted-key JSON and no
+    # .pending. Byte-exact: a dropped sort_keys changes the file's shape
+    # even though the parsed content matches.
     helper._write_journal(journal, record)
-    assert json.loads(journal.read_text(encoding="utf-8")) == record
+    assert journal.read_text(encoding="utf-8") == json_module.dumps(
+        record, sort_keys=True
+    ), "the stamp must be the exact sorted-key serialization"
     assert not pending.exists()
 >>>>>>> 7600c45 (Pin _write_journal's link guards and atomic happy path)
