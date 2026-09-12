@@ -529,3 +529,69 @@ def test_relay_terminal_accept_error_logs_before_exiting(monkeypatch):
     thread.join(timeout=5)
     assert not thread.is_alive(), "a closed listener must end the accept loop"
     assert any("relay listener exiting" in line for line in logged), logged
+
+
+def test_relay_partial_pump_start_releases_slot_and_serves_next(monkeypatch):
+    """A partial pump start must unwind deterministically (#443 item 1).
+
+    The historical hazard: when the SECOND pipe thread's start() failed
+    under host thread exhaustion, the cleanup path closed both sockets
+    while the FIRST pump was blocked in recv on them. Linux does not wake
+    a blocked recv on close() — if the fd number was reused by the next
+    accepted connection, the surviving pump silently consumed that
+    connection's first bytes. PR #480 made the unwind SHUT_RDWR-first
+    (waking the survivor) and this test pins the observable contract at
+    the connection level: the broken connection drops, its relay slot is
+    released, and the NEXT client is served intact.
+    """
+    api = StubApi()
+    try:
+        monkeypatch.setattr(helper, "WEB_RELAY_MAX_CONNECTIONS", 1)
+        port, stop = start_relay(monkeypatch, api)
+        try:
+            real_thread = threading.Thread
+            pipe_starts = {"count": 0}
+
+            class _StartFailsSecondPipe:
+                """Presents start() but raises on it — stand-in for the
+                RuntimeError('can't start new thread') the OS raises under
+                thread exhaustion."""
+
+                def start(self) -> None:
+                    raise RuntimeError("can't start new thread")
+
+            def flaky_thread(*args, **kwargs):
+                if getattr(kwargs.get("target"), "__name__", "") == "_pipe":
+                    pipe_starts["count"] += 1
+                    if pipe_starts["count"] == 2:
+                        return _StartFailsSecondPipe()
+                return real_thread(*args, **kwargs)
+
+            monkeypatch.setattr(helper.threading, "Thread", flaky_thread)
+            broken = socket.create_connection(("127.0.0.1", port), timeout=15)
+            try:
+                broken.sendall(REQUEST)
+                # No response can ever flow (the upstream->client pump
+                # never started): the client must see a definite end, not
+                # a hang.
+                assert read_until_closed(broken, timeout_seconds=4) == b""
+            finally:
+                broken.close()
+            assert pipe_starts["count"] == 2, "the second pipe start must be the one exploding"
+
+            # The slot must be free again: with the cap at 1, only a
+            # released slot lets this next client through — and the bytes
+            # it exchanges must be its own (fd-reuse byte theft would
+            # corrupt or stall this exchange).
+            monkeypatch.setattr(helper.threading, "Thread", real_thread)
+            client = socket.create_connection(("127.0.0.1", port), timeout=15)
+            try:
+                client.sendall(REQUEST)
+                body = read_response(client, timeout_seconds=4)
+            finally:
+                client.close()
+            assert body.endswith(b"ok"), body
+        finally:
+            stop()
+    finally:
+        api.close()
