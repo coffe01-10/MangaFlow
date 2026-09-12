@@ -143,3 +143,24 @@ def test_guard_strips_query_strings_before_resolving(tmp_path):
     result = _run_guard(dist)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "1 local assets" in result.stdout
+
+
+def test_guard_covers_single_quoted_attributes(tmp_path):
+    """Both HTML quote forms are legal (Next emits double quotes; a
+    hand-edited page may carry single ones). A regex that captures only
+    one form would extract an empty reference set and pass a dangling
+    placeholder vacuously — the exact white-screen path this guard
+    blocks. Pin both forms on the same page."""
+
+    dist = tmp_path / "frontend"
+    dist.mkdir()
+    (dist / "index.html").write_text(
+        '<html><head>'
+        "<script src='_next/static/chunks/single-missing.js'></script>"
+        "<link rel='stylesheet' href='_next/static/chunks/single-missing.css'/>"
+        "</head><body></body></html>",
+        encoding="utf-8",
+    )
+    result = _run_guard(dist)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "single-missing.js" in result.stderr
