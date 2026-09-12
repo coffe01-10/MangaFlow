@@ -1,0 +1,370 @@
+20 issues
+====================================================================================================
+#486 [P4][Desktop Red Team][native] StyleProductionCard dead-batch latch, WorkspaceState stale dashboard card, Lightbox swallowed load failure, package diff re-entrancy
+**Found:** native final-coverage audit (2026-09-12, HEAD fe22969). Four P4 robustness defects sharing the silent-degradation class; bundled per the no-spam rule, each independent.
+
+1. **Dead-batch latch** — `Views/StyleProductionCard.cs:150-152,166`: batch creation succeeds but the candidates POST fails → `pendingBatch` kept (correct anti-double-billing), but **no code path ever clears it**. If the pending batch later becomes unusable server-side, every 生成 1K 风格测试图 click re-targets the dead batch id with an opaque error for the rest of the session; only an app restart resets it. Fix: clear `pendingBatch` when the batch's candidates are confirmed absent/expired (or add a retry-through-new-batch path).
+2. **Stale dashboard card** — `WorkspaceState.cs:54-55` + `Models.cs:59-68`: `DashboardProjects.SequenceEqual(visible)` uses record equality over (Id, Name, Summary, Pending, Failed) only — `ModeLabel`/`Resolution`/`NextSection`/`NextLabel` (bound by HomeView.cs:281 as 模式·分辨率) are excluded → changing a project's workflow mode/resolution leaves the dashboard cover stale until a Summary-affecting count changes. Fix: include the displayed fields in the equality (or compare explicitly).
+3. **Lightbox swallows load failure** — `Controls/Ui.cs:658-673`: `catch (Exception) { }` → a failed full-size image shows a permanently blank dark window with no error/retry, while the thumbnail path at least shows 图片加载失败. Fix: surface the failure like ImageBox does.
+4. **Package diff re-entrancy** — `Views/CharacterPackageDetails.cs:193` (`await Compare(); ShowDialog()`, button CharacterPackagePane.cs:147): during the multi-second fetch no window appears and 对比历史 stays enabled → a second click queues a second modal that pops after the first closes. Fix: disable the button while `Compare` runs.
+
+Each: P4, uncovered by checks, independent fixes.
+====================================================================================================
+#485 [P3][Desktop Red Team][native] CharacterPackagePane mutating buttons lack the busy/disable guard — double-submit, publish/save race, false-failure toasts
+**Found:** native read-only audit (2026-09-12, HEAD fe22969).
+
+## Mechanism
+
+`Kit.Act` (`ViewKit.cs:159-166`) only wires `Click` without debounce; protection is handler-side, and these CharacterPackagePane handlers have none (unlike `SaveSpec` :358 and `CharacterPackageDetails.Change` :117, which do `if (busy…) return; busy = true; IsEnabled = false`):
+
+1. **Create package** (:93-101): double-click fires two POSTs; the second (typically 409) lands after `LoadAsync` repainted the active package → "创建失败：<409 detail>" toast immediately after a successful creation.
+2. **Derive version** (:131-145): double-click → two POST /versions → duplicate drafts if permitted, else a false "派生失败" toast after success.
+3. **Publish** (:385-399): no busy guard → a concurrent 保存草稿规格 (`SaveSpec`) can complete **after** the publish snapshot froze, so the published version's spec is missing the just-saved edits while both "版本已发布" and "草稿规格已保存" toasts appear.
+4. **Activate published version** (:436-447): double-click → the second POST fails on `expected_published_version_id` → a false error toast on a succeeded operation.
+
+## Severity
+
+P3 (paid/publish workflow integrity; false-failure and duplicate-submit on the package lifecycle).
+
+## Existing tests
+
+None cover these handlers' busy behavior.
+
+## Suggested fix surface (WPF owner)
+
+Apply the `busy`/`IsEnabled=false` pattern used by SaveSpec/Change to all four handlers; add interaction checks (double-click → single POST; publish-during-save → serialized or refused).
+====================================================================================================
+#484 [P3][Desktop Red Team][native] Flag("deleted_at") never matches the API's timestamp-string form — soft-deleted scene assets stay bindable and display the wrong status in Script view
+**Found:** native final-coverage audit (2026-09-12, HEAD fe22969 lineage). Native paths change-forbidden — Issue-only.
+
+## Mechanism
+
+`apps/desktop/native/Models.cs:24-26`:
+
+```csharp
+public static bool Flag(this JsonElement json, string name) =>
+    ... value.ValueKind is JsonValueKind.True;
+```
+
+`Models.cs:322`: `Deleted = s.Flag("deleted_at")`. But the backend models `deleted_at` as `null` (live) or an **ISO timestamp string** (deleted) — proven by the web's own filtering `item.deleted_at == null` (`apps/web/components/project-workspace/scene-picker.tsx:73`) and its test fixtures (`deleted_at: "2026-09-01T00:00:00Z"`, generate-section.test.tsx:958). `JsonValueKind.True` never matches either shape → `Deleted` is always `false` in production data.
+
+## User-visible failure
+
+Script view 的 "本场场景资产" 绑定下拉（`Views/ScriptView.cs:590` — `sceneAssets.Where(a => !a.Deleted)`）**仍列出已归档资产**并允许绑定到场景（web 已隐藏）；列表行还显示原始状态 "已上传" 而非 "已归档"（Models.cs:311 只在 `Deleted` 为 true 时映射 ARCHIVED）。Same class: any other consumer of `Flag("deleted_at")`.
+
+## Severity
+
+P3: display-integrity + bind-the-wrong-asset (a deleted asset's content can still be bound into generation inputs).
+
+## Existing tests
+
+Native tests never exercise a deleted_at timestamp shape.
+
+## Suggested fix surface (WPF owner)
+
+Parse the timestamp form: `Deleted = value.ValueKind == JsonValueKind.String` (or `FlagString(name)` helper returning true for a non-null string), matching the web contract. Add a fixture with `deleted_at: "<iso>"` asserting `Deleted == true` and the Script dropdown filtering it.
+====================================================================================================
+#471 [P4][Desktop Red Team][native] Swallowed-cancel / silent-failure cluster: Settings Save-Delete OCE, hidden drawer errors, F5 empty catch, non-atomic canonical-reference swap
+**Found:** native read-only audit (2026-09-12, HEAD fe22969). Four low-severity robustness defects sharing one class (cancelled/silent operations lose feedback or atomicity), bundled to avoid issue spam.
+
+1. **Settings Save/Delete OCE** — `Views/ProjectSettingsView.cs:357` / :389: navigating away mid-PATCH/mid-DELETE cancels the call; if the server applied it anyway, the client's `version` (:346-348) was never advanced → an immediate re-save 409s ("数据已变化…请刷新后重试") until F5; the silent delete leaves the settings page up. Re-entering the view converges — P4.
+2. **Hidden drawer error** — `Views/HomeView.cs:454` (取消/✕ stay enabled while `creating`) + :521: clicking 创建项目 then instantly 取消 while the server answers 400/409 → the error is written to `drawerError.Text` on a now-collapsed drawer — no visible feedback anywhere. Fix: route the failure to `State.Status` when closed, or disable 取消/✕ while `creating`.
+3. **F5 empty catch** — `MainWindow.xaml.cs:543-546`: `try { await LoadDashboardAsync(...) } catch (Exception) { }` — backend stopped → F5 on home → nothing: stale metrics remain, no error, no retry cue (contrast `ConnectAsync`, which sets `state.Error`). Fix: set `state.Error`/status with the failure.
+4. **Non-atomic canonical swap** — `Views/SceneWorkspace.cs:223-229`: 设为规范参考 DELETEs the old reference then POSTs the canonical one; if the POST fails the scene is left with the reference unbound, and recovery requires re-uploading a file (`UploadAsync` :230-242 binds only new uploads — no bind-existing control). Honest error, asset not lost — P4. Fix: bind-existing control in the detail pane, or reorder/cleanup on POST failure.
+
+Each: repro as written, P4, uncovered by checks (the interaction suite covers happy paths only). Suggested fixes are per-item and independent.
+====================================================================================================
+#470 [P3][Desktop Red Team][native] CreateProject swallows a navigation-cancelled submit — the project may exist server-side with no feedback, inviting a duplicate resubmit
+**Found:** native read-only audit (2026-09-12, HEAD fe22969).
+
+## Repro
+
+Home → 建立新的漫画项目 drawer → fill the name → click 创建项目 → **immediately click any nav entry** (e.g. 使用帮助) while the POST is in flight. Navigating cancels `lifetime.Token` (`ViewKit.cs:59-65`), HttpClient aborts mid-POST — but the server may already have created the project.
+
+**Result:** the `catch (OperationCanceledException) { }` at `Views/HomeView.cs:518` is silent; `Cache.Invalidate("dashboard","projects")` (:512) and the version check (:513-516) are skipped. No message anywhere; the dashboard list still shows the old state; the cached drawer keeps the filled name. Clicking 创建项目 again resubmits → **duplicate project** (or an unexplained 409 on the retry).
+
+The shell itself documents this exact hazard class for timeouts (`MainWindow.xaml.cs:128-133`: "提交操作可能已被服务接收…避免重复提交") — the nav-cancel path bypasses that text.
+
+## Severity
+
+P3: phantom server state with an invited duplicate resubmit; no data destruction.
+
+## Existing tests
+
+`NativeInteractionChecks.cs:71-105` covers only the happy path.
+
+## Suggested fix surface (WPF owner)
+
+Use a write token NOT cancelled by `Deactivate` for the create POST, or on `OperationCanceledException` surface "提交结果未知，请刷新后确认" and invalidate the dashboard cache before the version check. Check: cancel mid-POST → the message appears and the dashboard reloads.
+====================================================================================================
+#469 [P3][Desktop Red Team][native] ProjectSettingsView silently discards unsaved edits on F5 / section switch / project switch / window close
+**Found:** native read-only audit (2026-09-12, HEAD fe22969).
+
+## Repro
+
+项目设置 → change 任务并发 2→8 and/or switch 工作方式 → then any of:
+(a) press F5, (b) click any sidebar section, (c) Ctrl+K to another project, (d) close the window.
+
+**Result:** no prompt on any path — all edits, including the typed delete-confirmation name, are silently discarded.
+
+## Mechanism
+
+`Views/ProjectSettingsView.cs` is an editable form (with a danger zone) but:
+- `RefreshAsync` (:397-402) unconditionally `LoadAsync()` → `Render()` rebuilds the inputs from the server;
+- `Dirty()` (:305) only hides the success banner — **no dirty flag exists**;
+- no `ConfirmLeaveAsync` override (base returns true, `ViewKit.cs:20,68`), and the shell consumes it at `MainWindow.xaml.cs:209, 416, 458, 655`.
+
+Every other editable view in the codebase implements the discipline (`SourceView.cs:462`, `AssetsView.cs:356`, `WorkflowView.cs:1800`, `ScriptView.cs:435`, `StoryboardView.cs:1793`) — ProjectSettingsView was left out.
+
+## Severity
+
+P3: silent loss of user edits via four standard paths; the typed 删除确认 name is also lost (forced retype before the destructive action).
+
+## Existing tests
+
+Only a render-twice smoke (`NativeRerenderChecks.cs:81-91`).
+
+## Suggested fix surface (WPF owner)
+
+Dirty tracking in `Dirty()` + a `ConfirmLeaveAsync` override; make `RefreshAsync` prompt (or skip) when dirty. Checks: dirty form + each of the four paths → confirm fires; clean form → no prompt.
+====================================================================================================
+#468 [P3][Desktop Red Team][native] '..' in a user-controlled query value makes the request unsendable — delete-project is permanently blocked for names containing '..'
+**Found:** native read-only audit (2026-09-12, HEAD fe22969 lineage). Native paths change-forbidden — this Issue is the deliverable for the WPF owner.
+
+## Mechanism
+
+`apps/desktop/native/Services/ApiClient.cs:217-221`:
+
+```csharp
+private static void Validate(string path)
+{
+    if (path.StartsWith('/') || path.Contains("://", StringComparison.Ordinal) || path.Contains(".."))
+        throw new ArgumentException("无效的 API 路径");
+}
+```
+
+`Validate` runs on the **full path including the query string**, and the query encoding leaves `.` unescaped (`HttpUtility.UrlEncode` / `Uri.EscapeDataString` treat `.` as RFC 3986 unreserved). So any user-controlled query value containing `..` survives encoding into `path?query` and trips the substring check — the request is never sent.
+
+## Repro
+
+**A (data-destructive op permanently blocked):** create a project named e.g. `序章..终章` → 项目设置 → danger zone → type the exact name → 删除项目 → every attempt fails with "删除未完成：无效的 API 路径". The project cannot be deleted from the desktop client (`Views/ProjectSettingsView.cs:384`).
+
+**B:** 场景资产 tab → type `东京..雨` in 地点前缀 → the debounce fires `ReloadAsync` → every load fails with "场景资产无法载入：无效的 API 路径" until the text is manually cleared (`Views/SceneWorkspace.cs:108`).
+
+## Severity
+
+P3: a legitimate free-text value permanently blocks a data-destructive operation (A) or a whole view's data load (B); no workaround inside the client.
+
+## Existing tests
+
+`NativeSceneChecks.cs:53-54` only asserts well-formed filter params arrive; nothing covers hostile/free-text query values.
+
+## Suggested fix surface (native owner)
+
+Split `Validate` on `?` and apply the `..` traversal check to the **path segment only** (the query is URL-encoded; encoded `..` in a query value is harmless data), or drop the substring check for the query portion while keeping the path-segment checks (`/:/://`). Add checks: a project named with `..` can be deleted; a scene filter containing `..` loads.
+====================================================================================================
+#449 [P3][Desktop][native] Startup boot-hang reuses the 「提交操作可能已被服务接收」 conflict copy, and every image surface bypasses the ApiClient error-detail contract (EnsureSuccessStatusCode / silent catch / raw English)
+## Baseline
+- origin/master 44e3945. Verified: Hunter + Verifier A spot-checks.
+
+1. **Wrong copy on startup timeout**: `Services/NativeBackend.cs:73-74` (35s WaitAsync on READY → TimeoutException) is mapped by `MainWindow.xaml.cs:128-133` to 「…提交操作可能已被服务接收，请先刷新确认，避免重复提交。」 — semantics for a submit-timeout, applied to a startup boot-hang where nothing was submitted (slow/hung sidecar). Confusing guidance at the worst moment.
+2. **Media surfaces bypass the error contract**: all image display paths use a separate HttpClient without the ApiClient.ThrowResponseError mapping (:137-152) — `Controls/Ui.cs:318` EnsureSuccessStatusCode; `Controls/Ui.cs:658-673` Lightbox `catch (Exception) {}` (blank viewer, zero feedback); `Views/LocalEditWindow.cs:146` raw English HttpRequestException.Message. Backend 404/409 `detail` for asset content is unreachable to users. (Only explicit downloads via SaveDownloadAsync — LibraryView.cs:398, GenerateView.cs:654 — get detail mapping.)
+
+Fix surface: separate ErrorText copy for the startup timeout; route ImageStore/Lightbox through a shared error mapping (or at minimum a localized fallback with the status code).
+Test status: none; both are UI-copy/mapping-level fixes. Recommended owner: **Frontend Deep Polish (native)**.
+====================================================================================================
+#448 [P3][Desktop][native] ScriptView edit-form saves are not reentrancy-guarded — double-click sends two PATCHes with the same stale version; the second draws a false 「保存未完成」 conflict MessageBox
+## Baseline
+- origin/master 44e3945. Verified: Hunter + cross-reviewer + Verifier A.
+
+## Finding
+`apps/desktop/native/Views/ScriptView.cs:565-572` (scene form save) and `:777-793` (beat form save) hook plain Click handlers via `Kit.Act` (ViewKit.cs:158-164 — no disable/guard) with no in-flight flag (LoadScene :282-298 / SaveBeat :300-316 reset `ExitEdit` only on success). A double-click fires two PATCHes carrying the same captured scene/beat version: the first succeeds, the second 409s and raises the false conflict MessageBox 「保存未完成」 (:296/:314). No data loss (first save wins) — pure UX false alarm, but it trains users to ignore the conflict dialog that #427/#428-class races make genuinely important.
+
+## Suggested fix surface
+Disable the save button / add an in-flight flag around the PATCH (the ViewKit.Act helper is the natural place), and/or make the conflict handler distinguish 'second identical click' from a real concurrent edit.
+
+## Test status
+No native test covers double-click saves. Recommended owner: **N2 / Desktop**.
+====================================================================================================
+#446 [P3][Desktop][native] Preferences.Save on window close / dock toggle is unchecked — an unwritable prefs path crashes the app out of async void and skips the graceful backend stop (KeyValueStore does catch the same errors)
+## Baseline
+- origin/master 44e3945. Verified: Hunter + Verifier A (downgraded P2→P3: rare FS states, and the lost graceful backend stop is backstopped by shell-core KILL_ON_JOB_CLOSE via ownership.rs:6,:295 — as MainWindow.xaml.cs:661-663's own comment notes).
+
+## Finding
+- `apps/desktop/native/MainWindow.xaml.cs:650-686` OnClosing is `async void` with no try/catch; `preferences.Save(dataRoot)` (:668) runs BEFORE `lifetime.Cancel()` (:669) and `backend.StopAsync()` (:674).
+- `Services/Preferences.cs:26-31` is try/finally, no catch: `File.Move(overwrite:true)` throws UnauthorizedAccessException on a read-only window.json, IOException if dest is a dir/locked; WriteAllText throws on disk-full/ACL.
+- Exception propagates out of async void → no DispatcherUnhandledException handler exists (verified) → process crash; HideDock (:528) / ShowDock (:536) equally unguarded.
+- Contrast: `Services/KeyValueStore.cs:82-85` catches exactly these with the comment 「never crash the app over them」.
+
+## Suggested fix surface
+Wrap the Save calls (or add the catch inside Preferences.Save mirroring KeyValueStore) so prefs failures never crash close/dock-toggle; optionally surface a one-line notice.
+
+## Test status
+native-tests cover Preferences corrupt-read fallback but not Save-failure. Recommended owner: **N2 / Desktop**.
+====================================================================================================
+#442 [P3][Desktop][native] Free-text scene place filter containing '..' breaks the whole scene list — ApiClient.Validate rejects '..' anywhere in path+query and UrlEncode leaves dots unescaped
+## Baseline
+- origin/master 44e3945. Verified: Hunter + Verifier A (Validate runs on path+query at ApiClient.cs:41 before construction — the query is NOT exempt).
+
+## Finding
+`apps/desktop/native/Services/ApiClient.cs:217-221` `Validate` rejects any path+query containing `..`; `HttpUtility.UrlEncode` (:226-236 QueryBuilder) leaves `.` unescaped. `SceneWorkspace.cs:108` interpolates the free-text place filter (`place.Text.Trim()`) into the query — typing e.g. 「第3..5层」 throws client-side ArgumentException → the list renders 「场景资产无法载入：无效的 API 路径」 (SceneWorkspace.cs:115) instead of an empty/filtered result.
+
+## Suggested fix surface
+Encode then validate only the path portion (query values should be exempt from the traversal check — they are values, not segments), or escape '.' as %2E in query values before Validate. Bridge site AssetsView.cs:322 shares the flow.
+
+## Test status
+No native test covers Validate-vs-query interaction. Recommended owner: **N2 / Desktop**.
+====================================================================================================
+#441 [P3][Desktop][native] ApiCache is inert — zero FetchAsync/Entry call sites and zero Invalidated subscribers make all ~40 Cache.Invalidate calls decorative no-ops (staleness trap for future code)
+## Baseline
+- origin/master 44e3945. Verified: Hunter + Verifier A (grep over all native/*.cs: zero `.FetchAsync(`/`.Entry(` outside ApiCache.cs; zero Invalidated subscribers; ScriptView.cs:411's own comment admits jobs keys are never written).
+
+## Finding
+`apps/desktop/native/Services/ApiCache.cs:53-118`: `entries` is always empty; every `Cache.Invalidate(...)` call across the Views (~40 sites: after PATCH/POST/DELETE) marks a nonexistent entry and fires an event with no handlers. Freshness currently works only because each mutator also does an explicit reload — but any future mutation path that relies on invalidation alone (JobsView.cs:379,:439 appear to intend exactly that before calling LoadAsync) will silently show stale data.
+
+## Suggested fix surface
+Either delete ApiCache (dead abstraction) or wire it: route view loads through FetchAsync so invalidation becomes real. Deleting is the honest small fix; wiring is the useful-but-larger one. Either way, add a test asserting a mutation invalidates the subsequent read path.
+
+## Test status
+No test references ApiCache. Recommended owner: **N2 / Desktop**.
+====================================================================================================
+#440 [P3][Desktop][native] Scene variant/archived integrity in ScriptView: binding dropdown offers archived (deleted) variants, and SceneAssetItem.Deleted can never be true (Flag() only matches boolean true vs the API's datetime string)
+## Baseline
+- origin/master 44e3945. Verified: Hunter (line-level, API cross-checked).
+
+1. `apps/desktop/native/Views/ScriptView.cs:605` — RefreshVariants iterates `asset.Variants` unfiltered while the API embeds ALL variants incl. deleted (`routes/scene_assets.py` `_scene_asset_read` has no deleted_at filter); the native list call (ScriptView.cs:159) excludes deleted assets only. SceneWorkspace.cs:171 correctly filters `!Deleted(v)` — ScriptView does not. Selecting an archived variant then saving gets 422 「场景变体已归档，请先恢复」 (scene_assets.py:676-678) — a confusing dead option instead of being hidden.
+2. `apps/desktop/native/Models.cs:322` `Deleted = s.Flag("deleted_at")` — JsonFields.Flag (:24-26) matches only JsonValueKind.True, but the API serializes `deleted_at` as ISO datetime string or null (schemas.py:454,469) → the flag can never be true. Latent today (only consumer is ScriptView:590 with the list endpoint excluding deleted rows; SceneWorkspace has its own string helper :81), but any future include_deleted consumer shows archived scenes as active.
+
+Fix surface: filter variants by the same string-based deleted_at check SceneWorkspace uses (and fix Flag or add a FlagDate helper). Test status: no native test covers variant filtering. Recommended owner: **N2 / Desktop**.
+====================================================================================================
+#439 [P2][Desktop][native] Source import times out silently — UploadAsync lacks the timeout translation and SourceView swallows OperationCanceledException; a legal 20MB novel import can vanish with zero feedback
+## Baseline
+- origin/master 44e3945. Verified: Hunter + Verifier A (borderline-P2 confirmed: backend cap 20MB (config.py:88), so a legal max-size import on slow hardware fits inside the 30s window; the flow advertises 「不会限制总页数」).
+
+## Affected subsystem
+- `apps/desktop/native/Services/ApiClient.cs:26` (`Timeout = 30s`), `:55-58` (SendOptionalAsync translates TaskCanceledException→TimeoutException), `:69-89` (**UploadAsync has no translation** — raw TaskCanceledException propagates)
+- `apps/desktop/native/Views/SourceView.cs:324` — `catch (OperationCanceledException) { }` swallows it; error/notice cleared at :312, never set; the button just re-enables
+
+## Reproduction
+1. Import a large (≤20MB) source file on slow hardware/disk; server-side split+DB writes push the request past HttpClient's 30s.
+2. TaskCanceledException → swallowed → UI resets to idle with no notice. The user believes the import did nothing (file effectively lost from their point of view); no error, no retry affordance.
+3. Sibling upload sites (OutfitWorkspace.cs:~195 RunAsync) surface the raw English 「A task was canceled.」 instead of the Chinese timeout copy — inconsistent and unlocalized.
+
+## Expected behavior
+Translate the timeout in UploadAsync (mirror SendOptionalAsync) and surface the localized timeout notice in ImportFileAsync; never swallow silently.
+
+## Suggested regression test
+Contract test: UploadAsync against a fake handler that delays >timeout → assert TimeoutException-shaped error (not OperationCanceledException); SourceView test: timeout during import → assert notice shown and importing state reset with the error surfaced.
+
+## Known NOT RUN
+Static dual-verified (WPF leg). Recommended owner: **N2 / Desktop**.
+====================================================================================================
+#429 [P3][Desktop][native] Views draft-guard family: director draft dropped on F5/chapter switch, settings forms (incl. half-typed API key) wiped on refresh, StoryboardView chapter-switch stale render, LocalEditWindow close silently discards masks
+## Baseline
+- origin/master 44e3945. Verified: Hunter (full view trace); cluster of four same-family gaps distinct from filed #428 (reconnect) and #341 (F5 script/storyboard).
+
+1. `native/Views/GenerateView.cs:1400-1403 vs 1417-1423, 98-106` — PollTick deliberately skips rebuild when `pane.HasDraft`, but RefreshAsync→LoadWorkbenchAsync renders when data changed, and the chapter-selector handler has no ConfirmLeaveAsync — both drop the typed director command.
+2. `native/Views/ProjectSettingsView.cs:397-402` + `native/Views/SettingsView.cs:636-639,:767-770` — both RefreshAsync unconditionally reload+render: radio/concurrency edits and the ConnectionPanel PasswordBox (half-typed API key) wiped with zero dirty check.
+3. `native/Views/StoryboardView.cs:389-413` — LoadPagesAsync has no epoch guard (pageLoadVersion covers only SelectPageAsync): slow chapter-A pages response completing after B flips pages/canvas back to A while the selector shows B; saves use currentPage so internally consistent, but the user edits the wrong chapter view.
+4. `native/Views/LocalEditWindow.cs:319-326` — groupId==0 closes with no draft guard: drawn regions + instruction lost, unlike StoryboardView's leave confirm.
+
+Fix surface: route all reload paths through the HasDraft/ConfirmLeave seam (GenerateView already has the predicate — reuse it), add an epoch to LoadPagesAsync, add a dirty check to LocalEditWindow OnClosing.
+Test status: none of the four paths covered in native-tests. Recommended owner: **N2 / Desktop**.
+====================================================================================================
+#428 [P2][Desktop][native] Reconnect bypasses ConfirmLeaveAsync — recovery path re-activates all views with full reloads, destroying unsaved script forms, storyboard drafts and director drafts (#341 fix incomplete)
+## Baseline
+- origin/master 44e3945. Verified: Hunter + Verifier A (scope: manual button only; the app explicitly invites it — 「连接失败，可重新连接；项目数据已保留」at MainWindow.xaml.cs:115, while the recovery destroys unsaved multi-form work).
+
+## Affected subsystem
+- `apps/desktop/native/MainWindow.xaml.cs:120-126` (Reconnect → ConnectAsync → OpenProjectAsync(same project)) — OpenProjectAsync :430 same-id branch skips ConfirmLeaveAsync AND Deactivate → :447 ActivateCurrentViewAsync → :338 `view.Activate(context)` full reload
+- Guards verified absent: ScriptView.Activate :109 non-quiet LoadScriptAsync → :146 body.Children.Clear() (the editingFormsOpen guard exists only on the quiet path :170); StoryboardView.Activate :298 → SelectPageAsync(target, preserveDrafts:false default) → :489 clears drafts; WorkflowView.Activate :384 LoadWorkflowAsync :513-515 clears nodes/edges incl. armed debounce edits; GenerateView Activate → Render :423-429 constructs a fresh DirectorPane discarding HasDraft (:1524)
+- The #341 fix (commit 1345b5d 「Preserve drafts and script forms on refresh」) patched only RefreshAsync — Activate was untouched; coverage gap established
+
+## Reproduction
+1. Edit a script form (or storyboard geometry/dialogue drafts, or type a director command).
+2. API connection drops; user clicks 重新连接.
+3. Reconnect succeeds → OpenProjectAsync same-id skips all leave confirms → every view re-activates with full reloads → unsaved forms/drafts destroyed without any prompt.
+
+## Expected behavior
+The same ConfirmLeaveAsync/preserve-draft semantics the #341 fix applied to RefreshAsync must guard the reconnect path (or Activate must accept a quiet/preserve mode that Reconnect uses).
+
+## Suggested regression test
+Native contract test: dirty ScriptView + Reconnect → assert ConfirmLeaveAsync invoked / drafts preserved (mirror the 1345b5d RefreshAsync tests at the Activate entry point).
+
+## Known NOT RUN
+Static dual-verified (WPF leg). Recommended owner: **N2 / Desktop**.
+====================================================================================================
+#427 [P2][Desktop][native] WorkflowView switch race writes one workflow's graph into another — no load-version guard, queued flush uses stale canvas, equal versions bypass the backend CAS
+## Baseline
+- origin/master 44e3945. Verified: Hunter + Verifier A — which additionally found a **second cross-write window** the hunter missed: the queued flush PATCHes workflows/B with A's graph at A's version.
+
+## Affected subsystem
+- `apps/desktop/native/Views/WorkflowView.cs:252-265` (async-void selector handler suspends at `await SaveNowAsync()` before `workflowId = id`), `:506-540` (`LoadWorkflowAsync` has NO request-version guard — contrast ScriptView.cs:126-137 `scriptLoadVersion`), `:1094-1099` (ScheduleSave arms (workflowId, version)), `:1137,:1159-1174` (payload = canvas state via BuildGraph), `:381-384` (Activate sets SelectedItem → handler fires → loads twice), `:1131` (targetWorkflowId=null → queued flush runs after handler1 set workflowId=B)
+- Backend CAS: `apps/api/app/api/routes/workflow_definitions.py:184-190` compares `WorkflowDefinition.version == payload.version` — equal versions (fresh templates both v1) → rowcount 1 → silent full replacement
+
+## Reproduction (two windows)
+1. Rapid switch A→B→C: handler1 suspends at SaveNowAsync; handler2 queues its flush; handler1 resumes setting workflowId=B; handler2's queued flush (targetWorkflowId null → uses current workflowId=B) PATCHes **workflows/B with A's still-loaded graph at A's version**.
+2. handler2's LoadWorkflowAsync(B or C) lands last → canvas shows B's graph while `workflowId`=C. Next edit: ScheduleSave arms (C, version-from-B), identity check passes → PATCH `workflows/C` with B's graph; if C is also version-matched (fresh workflows both v1) the CAS passes → **C's draft_graph silently replaced by B's graph**. Unequal versions → permanent 409 error loop.
+
+## Expected behavior
+LoadWorkflowAsync takes a request seq/token (ScriptView pattern) and discards stale responses; the switch handler serializes id assignment before any flush; ScheduleSave validates the armed graph actually belongs to the armed workflow (or re-snapshots at save time).
+
+## Suggested regression test
+Contract test: two overlapping LoadWorkflowAsync calls with reversed completion order → assert final canvas/workflowId coherent and no PATCH is issued with a mismatched (graph, id) pair; Activate → assert exactly one load.
+
+## Known NOT RUN
+Static dual-verified (WPF leg). Recommended owner: **N2 / Desktop**.
+====================================================================================================
+#426 [P2][Desktop][native] ScriptView wardrobe multi-save resurrects removed outfit assignments — stale scene snapshot re-PATCHed per character, silent revert of user deletions
+## Baseline
+- origin/master 44e3945. Verified: Hunter + Verifier A (end-to-end; scope corrected: requires ≥2 dirty characters with ≥1 removal; two pure changes and single-char saves are safe).
+
+## Affected subsystem
+- `apps/desktop/native/Views/ScriptView.cs:655-666` (save handler: `dirty` computed ONCE from the render-time snapshot; loop calls `await view.SaveOutfitAssignment(scene, ...)` per dirty character) + `:318-338` (`SaveOutfitAssignment` re-parses the SAME stale `scene` and PATCHes `scenes/{id}/outfits` with `new { assignments }` — no version)
+- Backend: `apps/api/app/api/routes/asset_generation.py:953-991` — version optional (getattr → skip 409), blind sequential claims succeed, :985 full-replaces `scene.outfit_assignments`, :988-991 marks pages for review per PATCH
+
+## Reproduction
+1. Open 服装指定 with two dirty changes: remove character A's assignment AND change B's.
+2. Save → PATCH#1 sends `{B:new}` (A removed server-side) → PATCH#2 re-reads the stale snapshot and sends `{A:oldA, B:new}` → **A's removal silently reverted**.
+3. Pages marked for review twice; the wrong outfit ids feed compiled page prompts (asset_generation.py:409-412) → wrong-costume output ships.
+
+## Expected behavior
+Compute the final merged map once and send a single PATCH (or track removals explicitly); send the scene version so concurrent edits 409 instead of last-write-wins.
+
+## Suggested regression test
+Native contract test: two-dirty-character save against a fake API capturing both PATCH bodies → assert the final body matches the user's intent (A absent) and exactly one PATCH carries the full final map.
+
+## Known NOT RUN
+Static dual-verified (WPF leg, no Windows host in this environment). Recommended owner: **N2 / Desktop**.
+====================================================================================================
+#411 [P3][Desktop] WPF NativeBackend has no kill escalation or wedged-host recovery — a >40s hung host deadlocks every reconnect and survives window close with the API still serving the DB
+## Baseline
+- origin/master 44e3945. Verified: Hunter + Verifier A (precisions: the 40s wait re-enters via StopAsync from ConnectAsync:78, StartAsync:36 unreachable after timeout; the host normally exits on stdin EOF so the wedged-host precondition is genuinely abnormal; the KILL_ON_JOB_CLOSE contract covers only the helper tree under the host).
+
+## Findings (apps/desktop/native/Services/NativeBackend.cs)
+1. **No kill escalation**: StopAsync (:141-153) closes stdin, `WaitAsync(40s)`, comment "No PID-based kill". If the host hangs in `stop()` (native-host.rs:16-24 — journal rename under an AV/indexer lock), the wait times out; `TimeoutException` is not caught (only `InvalidOperationException when !started`), so the `:151-153` `process`/`started` reset is **skipped** — the backend stays wedged.
+2. **Reconnect deadlock**: every subsequent Reconnect (MainWindow.xaml.cs:78) re-enters StopAsync → another 40s wait → fail. Forever.
+3. **Survives window close**: WPF spawns native-host.exe with plain ProcessStartInfo (:46-51, no Job Object on this leg — the shell-core Job Object ties only the helper tree to the host). OnClosing (:650-681) catches the stop failure and exits trusting "the Job Object" → the wedged host + python sidecar (API serving the user-data DB on loopback) outlive the app.
+
+## Suggested fix surface
+Catch TaskCanceled/Timeout in StopAsync → escalate to `process.Kill(entireProcessTree: true)` (Windows) / process-group signal, then reset `process`/`started` in a finally; consider a WPF-side Job Object binding the host (mirrors shell semantics); reset state so Reconnect can retry a fresh spawn.
+
+## Test status
+native-tests cover READY parsing/ApiClient/Preferences only; Start/Stop lifecycle and the wedged-host path have zero coverage (NativeBackend.cs has no runnable unit harness off-Windows — contract-pin the escalation decision table at minimum).
+====================================================================================================
+#410 [P3][Desktop] Single-instance/cross-client gates are keying-blind: WPF mutex hashes the lexical path (subst/junction/8.3 aliases bypass it) and tauri/WPF legs share no user-data interlock — two API servers on one SQLite
+## Baseline
+- origin/master 44e3945. Verified: Hunter + Verifier A (FB1 corrected: the mutex key is the user-data dir path, not the process path; consequence is lock contention — busy_timeout 5000, no WAL — not corruption).
+
+## Findings
+1. **WPF mutex is lexically keyed** (`apps/desktop/native/App.xaml.cs:52-55`): mutex name = `Local\MangaFlow.Native.<sha256(GetFullPath(userData).TrimEnd('\\').ToUpperInvariant())>` — no canonicalization (subst drive, junction, 8.3 short name of the same directory all differ). Launching the native client via two spellings of the same `MANGAFLOW_DESKTOP_USER_DATA` yields two mutexes → two WPF clients → two native hosts → two sidecars → two API servers on one `sqlite:///<user_data>/data/mangaflow.db`.
+2. **Tauri shell and WPF leg share no interlock**: shell uses the single-instance plugin (`src-tauri/src/main.rs:314`) with `app_local_data_dir`; `scripts/start-native.ps1:35 -UserData` can point the WPF leg at the shell's user-data with nothing refusing the overlap → same two-servers-one-DB outcome. `protocol.rs:394-397` comment "the WPF leg shares this layout without a single-instance mutex" is stale (the App mutex exists).
+
+## Impact
+Concurrent writers hit "database is locked" after 5s (database.py sets busy_timeout only, no WAL) and duplicate background work (two sweeps, two relays on distinct ports so no port clash — purely data-layer divergence). Same-user preconditions; consequence is contention/lost-update risk, not corruption — P3.
+
+## Suggested fix surface
+Canonicalize the user-data path before hashing (e.g. resolve junctions/subst to the final path via GetFinalPathNameByHandle, fall back to the lexical path on error), and have start-native.ps1 refuse/override -UserData pointing inside the shell's app-local-data dir; fix the stale protocol.rs comment while there.
+
+## Test status
+native-tests cover READY parsing/ApiClient/Preferences; no test for mutex construction or cross-leg interlock (and the mutex itself is untestable off-Windows — pin the canonicalization helper's unit semantics where it lives).

@@ -50,6 +50,8 @@ uploads/*
 # Editors / OS
 .DS_Store
 Thumbs.db
+# Stray file created by PowerShell-style `> $null` redirects run under cmd
+$null
 .idea/
 .vscode/
 .venv-poc/

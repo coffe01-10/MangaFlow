@@ -1,0 +1,96 @@
+
+> mangaflow-ai@0.2.0 check
+> npm run check:neutrality && npm run lint && npm run test && npm run test:web && npm run build
+
+
+> mangaflow-ai@0.2.0 check:neutrality
+> powershell -NoProfile -ExecutionPolicy Bypass -File scripts\check-provider-neutrality.ps1
+
+
+> mangaflow-ai@0.2.0 lint
+> npm run lint --workspace @mangaflow/web && .venv\Scripts\python.exe -m ruff check apps/api tests
+
+
+> @mangaflow/web@0.2.0 lint
+> eslint .
+
+F401 [*] `os` imported but unused
+ --> tests\test_e2e_isolation.py:3:8
+  |
+1 | import importlib.util
+2 | import json
+3 | import os
+  |        ^^
+4 | import shutil
+5 | import subprocess
+  |
+help: Remove unused import: `os`
+
+F811 [*] Redefinition of unused `os` from line 3
+   --> tests\test_e2e_isolation.py:179:12
+    |
+177 | @pytest.fixture
+178 | def process_tree(tmp_path):
+179 |     import os
+    |            ^^ `os` redefined here
+180 |
+181 |     from owned_processes import OwnedProcessTree
+    |
+   ::: tests\test_e2e_isolation.py:3:8
+    |
+  1 | import importlib.util
+  2 | import json
+  3 | import os
+    |        -- previous definition of `os` here
+  4 | import shutil
+  5 | import subprocess
+    |
+help: Remove definition: `os`
+
+F811 [*] Redefinition of unused `os` from line 3
+   --> tests\test_e2e_isolation.py:331:12
+    |
+329 | def test_controller_death_kills_tree_and_journal_can_be_recovered(tmp_path, ending):
+330 |     import json
+331 |     import os
+    |            ^^ `os` redefined here
+332 |     import subprocess
+333 |     import sys
+    |
+   ::: tests\test_e2e_isolation.py:3:8
+    |
+  1 | import importlib.util
+  2 | import json
+  3 | import os
+    |        -- previous definition of `os` here
+  4 | import shutil
+  5 | import subprocess
+    |
+help: Remove definition: `os`
+
+F811 [*] Redefinition of unused `os` from line 3
+   --> tests\test_e2e_isolation.py:436:12
+    |
+435 | def test_process_body_and_cleanup_failures_both_reported(tmp_path):
+436 |     import os
+    |            ^^ `os` redefined here
+437 |     import sqlite3
+    |
+   ::: tests\test_e2e_isolation.py:3:8
+    |
+  1 | import importlib.util
+  2 | import json
+  3 | import os
+    |        -- previous definition of `os` here
+  4 | import shutil
+  5 | import subprocess
+    |
+help: Remove definition: `os`
+
+Found 4 errors.
+[*] 4 fixable with the `--fix` option.
+npm notice
+npm notice New minor version of npm available! 11.4.2 -> 11.19.1
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v11.19.1
+npm notice To update run: npm install -g npm@11.19.1
+npm notice

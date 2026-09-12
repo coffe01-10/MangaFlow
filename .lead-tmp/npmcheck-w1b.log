@@ -1,0 +1,373 @@
+
+> mangaflow-ai@0.2.0 check
+> npm run check:neutrality && npm run lint && npm run test && npm run test:web && npm run build
+
+
+> mangaflow-ai@0.2.0 check:neutrality
+> powershell -NoProfile -ExecutionPolicy Bypass -File scripts\check-provider-neutrality.ps1
+
+
+> mangaflow-ai@0.2.0 lint
+> npm run lint --workspace @mangaflow/web && .venv\Scripts\python.exe -m ruff check apps/api tests
+
+
+> @mangaflow/web@0.2.0 lint
+> eslint .
+
+All checks passed!
+
+> mangaflow-ai@0.2.0 test
+> .venv\Scripts\python.exe -m pytest tests
+
+============================= test session starts =============================
+platform win32 -- Python 3.12.9, pytest-8.4.2, pluggy-1.6.0
+rootdir: D:\自媒体\漫画工作流
+configfile: pytest.ini
+plugins: anyio-4.14.2, cov-7.1.0
+collected 1573 items
+
+tests\integration\test_postgres_acceptance.py ssssssssssssssssss         [  1%]
+tests\integration\test_redis_rq_acceptance.py sssssssssssssss            [  2%]
+tests\test_adapter_error_classification.py ...........................   [  3%]
+tests\test_adapter_usage_sweep.py ...................................... [  6%]
+.......                                                                  [  6%]
+tests\test_antigravity_cli.py .................                          [  7%]
+tests\test_approval_pause_recovery.py .....                              [  8%]
+tests\test_archive_and_pricing_bounds.py ....                            [  8%]
+tests\test_archive_run_cancel.py ...                                     [  8%]
+tests\test_assemble_web_resources.py ......F.                            [  9%]
+tests\test_asset_candidate_favorite.py ..                                [  9%]
+tests\test_asset_dedupe_integrity.py ........                            [  9%]
+tests\test_asset_dedupe_soft_delete.py .....                             [  9%]
+tests\test_asset_generation_redteam_regressions.py ................      [ 10%]
+tests\test_attempt_finalization_upgrade.py .......                       [ 11%]
+tests\test_backup_restore_drill.py ..................................... [ 13%]
+.........                                                                [ 14%]
+tests\test_balance_failure_scoping.py ..                                 [ 14%]
+tests\test_beat_dedupe_bounds.py ....                                    [ 14%]
+tests\test_build_frontend_static_junction.py .......                     [ 15%]
+tests\test_candidate_lineage.py .....                                    [ 15%]
+tests\test_candidate_route_guards.py ......                              [ 15%]
+tests\test_capability_acceptance.py ..........                           [ 16%]
+tests\test_capability_bounds.py .....                                    [ 16%]
+tests\test_character_packages.py ....................................... [ 19%]
+..                                                                       [ 19%]
+tests\test_cli_capture_and_checksum_sweep.py ...........                 [ 20%]
+tests\test_cli_executable_path_validation.py ............                [ 20%]
+tests\test_cli_executor.py .............s..ss                            [ 22%]
+tests\test_cli_failure_classification.py .......                         [ 22%]
+tests\test_cli_migration.py ..                                           [ 22%]
+tests\test_cli_post_run_classification.py ........                       [ 23%]
+tests\test_cli_process_windows.py s..                                    [ 23%]
+tests\test_cli_redteam_remediation.py ...........                        [ 24%]
+tests\test_cli_stream_decode.py .....                                    [ 24%]
+tests\test_codex_cli.py ...............                                  [ 25%]
+tests\test_condition_branch_skip.py ...                                  [ 25%]
+tests\test_connection_verifier.py ........                               [ 26%]
+tests\test_dashboard_ai_overview.py ..............                       [ 26%]
+tests\test_delete_candidate_guards.py ....                               [ 27%]
+tests\test_deleted_candidate_worker.py .......                           [ 27%]
+tests\test_deleted_chapter_guards.py ..                                  [ 27%]
+tests\test_deleted_chapter_worker.py ...                                 [ 27%]
+tests\test_derived_retry_mutex.py ......                                 [ 28%]
+tests\test_detach_first_writer.py ..                                     [ 28%]
+tests\test_director_commands.py ...............................          [ 30%]
+tests\test_domain_rules.py ....                                          [ 30%]
+tests\test_e2e_isolation.py ............................                 [ 32%]
+tests\test_export_names.py ...                                           [ 32%]
+tests\test_export_node_idempotency.py ....                               [ 32%]
+tests\test_fake_channel_cleanup.py ...                                   [ 33%]
+tests\test_first_page_production.py ........                             [ 33%]
+tests\test_full_acceptance.py .                                          [ 33%]
+tests\test_grok_build_cli.py ................                            [ 34%]
+tests\test_import_text_bounds.py ....                                    [ 34%]
+tests\test_input_validation_hardening.py ............................... [ 36%]
+............                                                             [ 37%]
+tests\test_inspect_and_parse_guards.py ...............................   [ 39%]
+tests\test_inspect_exit_recovery.py ....                                 [ 39%]
+tests\test_inspect_integrity.py ...                                      [ 40%]
+tests\test_inspect_page_drift.py ...                                     [ 40%]
+tests\test_inspection_worker_bounds.py ..                                [ 40%]
+tests\test_integration_harness.py ...................................... [ 42%]
+..........................                                               [ 44%]
+tests\test_job_retry_status_guard.py ......                              [ 44%]
+tests\test_lease_reclaim_fence.py ......                                 [ 45%]
+tests\test_library_pagination.py ......                                  [ 45%]
+tests\test_local_wall_clock.py ........                                  [ 46%]
+tests\test_local_worker.py ....................................          [ 48%]
+tests\test_migration_parity.py ...                                       [ 48%]
+tests\test_migrations.py .........................                       [ 50%]
+tests\test_model_call_audit.py ............                              [ 50%]
+tests\test_model_cost_estimates.py .........                             [ 51%]
+tests\test_model_visibility.py ........                                  [ 52%]
+tests\test_multi_image_guard.py ...                                      [ 52%]
+tests\test_multi_provider_platform.py .................................. [ 54%]
+.....                                                                    [ 54%]
+tests\test_mvp_workflow.py ..........................                    [ 56%]
+tests\test_offline_provider_fixture.py ...                               [ 56%]
+tests\test_ordinal_concurrency.py ..........................             [ 58%]
+tests\test_outfit_teardown_claims.py ....                                [ 58%]
+tests\test_page_readiness.py ....                                        [ 58%]
+tests\test_patch_null_guards.py .....                                    [ 58%]
+tests\test_patch_version_atomicity.py ..........                         [ 59%]
+tests\test_phase2_runner_contract.py F.                                  [ 59%]
+tests\test_plan_chapter_pages_concurrency.py .....                       [ 60%]
+tests\test_platform_contracts.py ....                                    [ 60%]
+tests\test_pr6_regressions.py ..........                                 [ 60%]
+tests\test_project_scoping.py .......................................... [ 63%]
+........................................................................ [ 68%]
+...                                                                      [ 68%]
+tests\test_project_summary.py ....                                       [ 68%]
+tests\test_projects_api.py ............                                  [ 69%]
+tests\test_provider_audit_codes.py ...........                           [ 70%]
+tests\test_provider_audit_wiring.py ...........                          [ 70%]
+tests\test_provider_contracts.py ........                                [ 71%]
+tests\test_provider_metadata_bounds.py ......                            [ 71%]
+tests\test_provider_neutrality_gate.py ........                          [ 72%]
+tests\test_pytest_collection_gate.py .                                   [ 72%]
+tests\test_quality_gates.py ......                                       [ 72%]
+tests\test_reconcile_failure_isolation.py ......                         [ 73%]
+tests\test_redteam_script_integrity.py ...................               [ 74%]
+tests\test_repair_upscale_guards.py .....                                [ 74%]
+tests\test_retry_after_bounds.py ...........                             [ 75%]
+tests\test_retry_arbitration_bounds.py ....                              [ 75%]
+tests\test_retry_claim_race.py ..                                        [ 75%]
+tests\test_retry_inspect_mutex.py ...........                            [ 76%]
+tests\test_retry_revival_compensation.py .....                           [ 76%]
+tests\test_retry_run_sibling_guard.py .                                  [ 76%]
+tests\test_routes_storage_sweep.py ...........................           [ 78%]
+tests\test_rq_pending_recovery.py ....                                   [ 78%]
+tests\test_run_create_reconcile_isolation.py ..                          [ 78%]
+tests\test_run_creation_guard.py ......                                  [ 79%]
+tests\test_run_failure_sweep.py ............                             [ 79%]
+tests\test_runtime_lease_geometry.py ........                            [ 80%]
+tests\test_scene_assets.py ......................                        [ 81%]
+tests\test_scene_version_cas.py ....                                     [ 82%]
+tests\test_script_storyboard_editing.py ........                         [ 82%]
+tests\test_security_config.py ....                                       [ 82%]
+tests\test_selected_candidate_route_lock.py ...                          [ 83%]
+tests\test_selection_recheck_version.py ..                               [ 83%]
+tests\test_settings_cross_field.py ......                                [ 83%]
+tests\test_source_parse_retry_mutex.py ..                                [ 83%]
+tests\test_stabilization.py ...........                                  [ 84%]
+tests\test_start_dev_ps1_contracts.py .                                  [ 84%]
+tests\test_storage_sweeps.py .............                               [ 85%]
+tests\test_story_parse_character_merge.py .                              [ 85%]
+tests\test_storyboard_fence_atomicity.py ..                              [ 85%]
+tests\test_storyboard_layout_contract.py ........................        [ 87%]
+tests\test_style_analyze_idempotency.py ..                               [ 87%]
+tests\test_style_job_guards.py ........                                  [ 87%]
+tests\test_style_palette.py ..                                           [ 87%]
+tests\test_upload_limits.py .......                                      [ 88%]
+tests\test_upload_name_safety.py ....                                    [ 88%]
+tests\test_usage_ledger.py .........                                     [ 89%]
+tests\test_usage_magnitude_bounds.py ....                                [ 89%]
+tests\test_vertex_adapter.py .                                           [ 89%]
+tests\test_vertex_health_and_settings.py ................                [ 90%]
+tests\test_windows_worker_recovery.py ......                             [ 90%]
+tests\test_worker_error_sanitized.py .                                   [ 90%]
+tests\test_worker_handlers_sweep.py .........................            [ 92%]
+tests\test_worker_lost_sweep.py ....                                     [ 92%]
+tests\test_workflow_definitions.py ...................                   [ 93%]
+tests\test_workflow_engine_facade.py ...........                         [ 94%]
+tests\test_workflow_race_guards.py .....                                 [ 94%]
+tests\test_workflow_retry_pinning.py ..........                          [ 95%]
+tests\test_workflow_route_manifest.py ....                               [ 95%]
+tests\test_workflow_validation_sweep.py ................................ [ 97%]
+..................................                                       [100%]
+
+================================== FAILURES ===================================
+________ test_find_node_prefers_override_then_path_then_named_fallback ________
+
+tmp_path = WindowsPath('C:/Users/chen/AppData/Local/Temp/pytest-of-chen/pytest-1082/test_find_node_prefers_overrid0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001508FA17920>
+
+    def test_find_node_prefers_override_then_path_then_named_fallback(tmp_path, monkeypatch):
+        """NODE_EXE wins only when it names a REAL file; a dangling NODE_EXE falls
+        through to PATH, then to the documented fallback, and only a total miss
+        raises — with the remedy spelled out (set NODE_EXE or fix PATH). All four
+        branches are monkeypatched, so this runs on POSIX."""
+    
+        module = _load_module()
+        real_exe = tmp_path / "node-real.exe"
+        real_exe.write_bytes(b"node")
+        dangling = tmp_path / "node-dangling.exe"  # never created: not a file
+        on_path = tmp_path / "node-on-path.exe"
+        on_path.write_bytes(b"node-on-path")
+    
+        # 1. A real NODE_EXE override wins outright.
+        monkeypatch.setenv("NODE_EXE", str(real_exe))
+        monkeypatch.setattr(module.shutil, "which", lambda name: str(on_path))
+        assert module.find_node() == real_exe
+    
+        # 2. A NODE_EXE that is not a file is ignored (falls through to PATH).
+        monkeypatch.setenv("NODE_EXE", str(dangling))
+        assert module.find_node() == on_path
+    
+        # 3. No NODE_EXE: PATH resolution answers.
+        monkeypatch.delenv("NODE_EXE")
+        assert module.find_node() == on_path
+    
+        # 4. Total miss: the refusal names the remedy. (The C:\node fallback
+        # cannot exist on POSIX; monkeypatch which to None to force the miss.)
+        monkeypatch.setattr(module.shutil, "which", lambda name: None)
+>       with pytest.raises(SystemExit, match="NODE_EXE"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE <class 'SystemExit'>
+
+tests\test_assemble_web_resources.py:319: Failed
+______________________ test_phase2_runner_failure_paths _______________________
+
+    def test_phase2_runner_failure_paths():
+        result = subprocess.run(
+            [os.environ.get("MANGAFLOW_NODE", "node"), "--test", "scripts/phase2_runner.test.mjs"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+>       assert result.returncode == 0, result.stdout + result.stderr
+E       AssertionError: TAP version 13
+E         # Subtest: occupied ports fail closed without contacting unknown health
+E         ok 1 - occupied ports fail closed without contacting unknown health
+E           ---
+E           duration_ms: 1.3927
+E           type: 'test'
+E           ...
+E         # Subtest: health from another instance is rejected
+E         ok 2 - health from another instance is rejected
+E           ---
+E           duration_ms: 0.4405
+E           type: 'test'
+E           ...
+E         # Subtest: spawn failure is not treated as a healthy owned API
+E         ok 3 - spawn failure is not treated as a healthy owned API
+E           ---
+E           duration_ms: 0.2665
+E           type: 'test'
+E           ...
+E         # Subtest: dead child is not treated as a healthy owned API
+E         ok 4 - dead child is not treated as a healthy owned API
+E           ---
+E           duration_ms: 0.1961
+E           type: 'test'
+E           ...
+E         # Subtest: unsafe raw PID and path deletion APIs no longer exist
+E         ok 5 - unsafe raw PID and path deletion APIs no longer exist
+E           ---
+E           duration_ms: 0.2352
+E           type: 'test'
+E           ...
+E         # Subtest: uncontrolled entry fails before launching services
+E         ok 6 - uncontrolled entry fails before launching services
+E           ---
+E           duration_ms: 0.3118
+E           type: 'test'
+E           ...
+E         # Subtest: unexpected port errors do not count as a free endpoint
+E         ok 7 - unexpected port errors do not count as a free endpoint
+E           ---
+E           duration_ms: 0.2707
+E           type: 'test'
+E           ...
+E         # Subtest: cleanup errors land in the final summary and fail the run
+E         ok 8 - cleanup errors land in the final summary and fail the run
+E           ---
+E           duration_ms: 1.0451
+E           type: 'test'
+E           ...
+E         # Subtest: cleanup throw still writes summary and is non-zero
+E         ok 9 - cleanup throw still writes summary and is non-zero
+E           ---
+E           duration_ms: 0.8179
+E           type: 'test'
+E           ...
+E         # Subtest: defaultPython prefers the explicit override and maps the venv per platform
+E         not ok 10 - defaultPython prefers the explicit override and maps the venv per platform
+E           ---
+E           duration_ms: 2.0852
+E           type: 'test'
+E           location: 'D:\\自媒体\\漫画工作流\\scripts\\phase2_runner.test.mjs:135:1'
+E           failureType: 'testCodeFailure'
+E           error: |-
+E             Expected values to be strictly equal:
+E             + actual - expected
+E             
+E             + '/repo\\.venv\\Scripts\\python.exe'
+E             - '/repo/.venv\\Scripts\\python.exe'
+E                     ^
+E             
+E           code: 'ERR_ASSERTION'
+E           name: 'AssertionError'
+E           expected: '/repo/.venv\\Scripts\\python.exe'
+E           actual: '/repo\\.venv\\Scripts\\python.exe'
+E           operator: 'strictEqual'
+E           stack: |-
+E             TestContext.<anonymous> (file:///D:/%E8%87%AA%E5%AA%92%E4%BD%93/%E6%BC%AB%E7%94%BB%E5%B7%A5%E4%BD%9C%E6%B5%81/scripts/phase2_runner.test.mjs:149:14)
+E             async Test.run (node:internal/test_runner/test:1054:7)
+E             async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+E           ...
+E         # Subtest: a never-answering port probe times out with a named error
+E         ok 11 - a never-answering port probe times out with a named error
+E           ---
+E           duration_ms: 2000.1657
+E           type: 'test'
+E           ...
+E         # Subtest: waitForOwnedHealth names the last health error at timeout
+E         ok 12 - waitForOwnedHealth names the last health error at timeout
+E           ---
+E           duration_ms: 300.4539
+E           type: 'test'
+E           ...
+E         # Subtest: json() keeps 204 as null, merges content-type, and names the failing call
+E         ok 13 - json() keeps 204 as null, merges content-type, and names the failing call
+E           ---
+E           duration_ms: 1.0969
+E           type: 'test'
+E           ...
+E         1..13
+E         # tests 13
+E         # suites 0
+E         # pass 12
+E         # fail 1
+E         # cancelled 0
+E         # skipped 0
+E         # todo 0
+E         # duration_ms 2393.2913
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['node', '--test', 'scripts/phase2_runner.test.mjs'], returncode=1, stdout="TAP version 13\n# Su...tests 13\n# suites 0\n# pass 12\n# fail 1\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 2393.2913\n", stderr='').returncode
+
+tests\test_phase2_runner_contract.py:27: AssertionError
+============================== warnings summary ===============================
+.venv\Lib\site-packages\fastapi\testclient.py:1
+  D:\自媒体\漫画工作流\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+tests/test_cli_migration.py: 7 warnings
+tests/test_migration_parity.py: 3 warnings
+tests/test_migrations.py: 79 warnings
+tests/test_scene_assets.py: 10 warnings
+tests/test_usage_ledger.py: 3 warnings
+  D:\自媒体\漫画工作流\.venv\Lib\site-packages\alembic\config.py:612: DeprecationWarning: No path_separator found in configuration; falling back to legacy splitting on spaces, commas, and colons for prepend_sys_path.  Consider adding path_separator=os to Alembic config.
+    util.warn_deprecated(
+
+tests/test_cli_migration.py: 50 warnings
+tests/test_migrations.py: 425 warnings
+tests/test_scene_assets.py: 50 warnings
+tests/test_usage_ledger.py: 25 warnings
+  D:\自媒体\漫画工作流\apps\api\migrations\versions\20260904_29_drop_legacy_page_version_constraint.py:208: SADeprecationWarning: The Column.copy() method is deprecated and will be removed in a future release. (deprecated since: 1.4)
+    column.copy() if hasattr(column, "copy") else column
+
+tests/test_migrations.py: 90 warnings
+  D:\自媒体\漫画工作流\.venv\Lib\site-packages\sqlalchemy\engine\default.py:949: DeprecationWarning: The default datetime adapter is deprecated as of Python 3.12; see the sqlite3 documentation for suggested replacement recipes
+    cursor.executemany(statement, parameters)
+
+tests/test_migrations.py: 18 warnings
+  D:\自媒体\漫画工作流\.venv\Lib\site-packages\sqlalchemy\engine\default.py:952: DeprecationWarning: The default datetime adapter is deprecated as of Python 3.12; see the sqlite3 documentation for suggested replacement recipes
+    cursor.execute(statement, parameters)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_assemble_web_resources.py::test_find_node_prefers_override_then_path_then_named_fallback
+FAILED tests/test_phase2_runner_contract.py::test_phase2_runner_failure_paths
+==== 2 failed, 1534 passed, 37 skipped, 761 warnings in 339.09s (0:05:39) =====
