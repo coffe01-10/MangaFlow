@@ -88,3 +88,29 @@ def test_best_effort_clear_is_noop_for_missing_path(tmp_path):
     target = tmp_path / "never-existed"
     bw._best_effort_clear(target, "the target")  # must not raise
     assert not target.exists()
+
+
+def test_replace_dist_refuses_when_the_stamp_write_fails(tmp_path, monkeypatch):
+    """The stamp write (temp name + os.replace) is the last step, but it can
+    still fail (read-only dist parent, disk full). The bundle is already in
+    place at that point — the failure must propagate (a bundle without its
+    provenance stamp is exactly what the e2e refuses) and no .tmp residue
+    may linger next to a live bundle."""
+
+    standalone = _standalone_at(tmp_path)
+    dist = _stale_dist_at(tmp_path)
+    monkeypatch.setattr(bw, "_git", lambda *args: "abc123")
+
+    def failing_write_text(self, data, encoding=None):
+        raise OSError("dist parent is read-only")
+
+    monkeypatch.setattr(Path, "write_text", failing_write_text)
+    with pytest.raises(OSError, match="read-only"):
+        bw._replace_dist(standalone, dist)
+    monkeypatch.undo()
+    # The bundle moved in (the move precedes the stamp), but no stamp and
+    # no temp residue may exist — the next run's e2e must refuse it, not
+    # silently trust an unstamped tree.
+    assert (dist / "server.js").read_text(encoding="utf-8") == "module.exports = 1;"
+    assert not (dist / "build-info.json").exists()
+    assert not (dist / ".build-info.json.tmp").exists()
