@@ -282,3 +282,23 @@
 - **PR #579**（修 #575，他人新立的 scripts 票）：`measure-native-startup.ps1` 采样循环加 `$proc.HasExited` break——死根不再烧满 120s 窗口 + 后续 ~45s 收尾（默认 3 样本全坏构建从 ~8 分钟假忙降到秒级失败）。断言次序：窗口捕获 → HasExited break → WaitForInputIdle（快速崩溃但出过窗口的样本仍记诚实 windowMs）。行账保留 `WindowHandleMs=-1`/`Exited`；`-not $exited` 门正确跳过 Stop-SampleTree；后代快照与残留检查照跑（崩溃根泄漏的 sidecar 仍被上报）。**NOT RUN**（Linux 无 pwsh，与 issue 自述同界）；静态验证：花括号平衡、断言次序、下游行/门一致性程序化核验。
 
 **收敛修正**：第 10 节"彻底扫净"结论对**测试面**不成立——E1 证明已合并的测试自身可含空转断言（绿≠有效）。测试面复审（含对我此前贡献的）已纳入 E 轮常项。
+
+---
+
+## 12. 周末窗续跑（2026-09-13 05:40 Asia/Shanghai，基线 01781e2 = 8674830 + #581/#582/#583）
+
+**B 轮（新立 Issue ×3，全部 file/line + 修复面 + 既有测试边界）：**
+- **#586 [P4]** run-sidecar-e2e.sh venv bootstrap 无互斥：两个并发 runner 向同一 venv 交错 pip 安装且**都写完成印章**——印章说谎，把印章要消灭的"永久不自愈坏 venv"原样 reintroduce；印章就地写入非原子，第三读者见部分文件会加入安装放大竞争。
+- **#587 [P4]** helper f-string 拼 DATABASE_URL：make_url 在第一个 `?` 截断 database 组件——user_data 路径含 `?`（POSIX 合法）会把 sqlite 库**静默建到 user_data 之外**（sweep/export/互斥锁的包容根全部失效且零报错）。
+- **#588 [P4]** verify-static-origin.mjs（D5）孤儿清理全靠负 pid 组杀：libuv 在 Windows 对 `pid<=0` 返回 EINVAL，各路径 `catch{}` 注释断言"组已消失"实为"未尝试"——#346 孤儿类在 Windows 复活（helper 无 Job Object，带端口存活）。
+
+**C 轮（防守 PR ×2）：**
+- **PR #591**（修 #586）：快路径（印章匹配零开销）+ 慢路径 **venv 兄弟位 mkdir 锁**（git-bash 可移植，flock 不可用；**关键教训：锁不得放 venv 内部**——fresh 路径 venv 目录尚不存在，锁永远建不出来，新并发测试以挂死形式抓到）+ 30 分钟陈锁破碎 + 原子印章发布（temp+mv）+ 锁内复查 + 单点释放；`MANGAFLOW_E2E_BOOTSTRAP_MAX_WAIT` 仅测试可调（默认 900s）。3 新测试：真双进程竞争（恰一次安装）/陈锁破碎/活锁不窃。RUN 13/13。
+- **PR #593**（修 #587）：`_apply_app_environment` 在**任何键设置之前**拒绝含 `?` 的 user_data（SystemExit，拒绝后必须零残留）。**对 issue 修复面的实证修正**：`URL.create().render_as_string()` 不做引号化（`?` 原样出）；预引号化反向破坏——**make_url 从不解码 database 组件**，sqlite3 会收到字面 `%3F` 文件名。故唯一可行修复即拒绝；`%`/`#`/空格经语法逐字入路径，刻意保持合法（延续 #443 的 `100%` 用户名支持），并由测试钉死该语义边界。2 新测试，RUN 34/34 + 全 e2e 后台认证中。
+
+**E 轮（互审 + 假阳性登记）：**
+- E5：交叉审 **PR #584**（PORT 类型保真 + HOSTNAME 恢复）——RUN 1 passed；确认其自述的 strip 前置在本测试形态下空转，canary 种子建议已留评。
+- E6 假阳性×3：api-root 大小写变体 shadow——扫描已有 `.lower()`（false positive 消解）；ziparch 疑有解析面——实为纯写出器（ZipWriter），无解压炸弹/重叠条目面；assemble 孤儿清扫疑在锁外——实为"整个 assemble 在 #350 锁内"（含清扫），SOLID。
+- D 轮：#372 复核——四子项均在 #379 修毕带证据关闭（长服务窗无共享锁为已记录残留），无需行动。
+
+**认证**：基线 01781e2 轻套件 **94/94**；#591/#593 落地后 env+runner **47/47**；全 e2e 认证见下轮补记。
