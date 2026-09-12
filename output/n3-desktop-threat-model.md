@@ -120,7 +120,9 @@
 - 上一窗关闭时的"零发现"是对 4aa1797 前代码面的结论；本窗增量面 = `4aa1797..44e3945` 的桌面 churn（junction 重建/装配换窗/静态导出克隆/dist 锁/zip writer 守卫/ownership 错误展示/get-status 语义/审批别名目录钉/workflow view 暂停取消/ScriptView 双激活/native intake page 重建）——全部是**修复本身带来的新代码**，回归挖掘是本窗第一优先。
 - 配额跟踪：B ≥20 实质 issue（杜绝水文，先挖后报）；C ≥6 非 native 防守测试/契约小 PR；D 既有 Desktop/RedTeam issue 清账（FIXED/PARTIAL/NOT_FIXED 有据）；E ≥6 轮互审；F 本节持续更新。
 
-- **R10（隔夜修复复核 + 全量认证，06:28）**：交叉复核隔夜两修——75ce571（plan-B skip 门探针对齐 _find_node 首候选，回应本窗 R2 复核 F10 NIT）与 ecaf242（Stop-SampleTree 的 pid 重用身份守卫，回应 #348）——**均正确**（前者 test-only 且探针现在与 helper 的首候选精确一致；后者 ProcessName 核验先于 taskkill）。认证 HEAD f10b844：shell-core **146/146**、sidecar 全家 **45/45**（含隔夜新增的 identity-guard 与 skip-gate 修正）。**窗内账目终值：Issues 33+（我 17 + 并行 16+，全部 file:line 级）；防守 PR 8 个（#318/#320/#321/#330/#335/#352/#353/#354 合并 8 + #357/#465/#466 开放 3）；互审 10 轮（R1-R10）。**
+- **R10（隔夜修复复核 + 全量认证，06:28）**：交叉复核隔夜两修——75ce571（plan-B skip 门探针对齐 _find_node 首候选，回应本窗 R2 复核 F10 NIT）与 ecaf242（Stop-SampleTree 的 pid 重用身份守卫，回应 #348）——**均正确**（前者 test-only 且探针现在与 helper 的首候选精确一致；后者 ProcessName 核验先于 taskkill）。认证 HEAD f10b844：shell-core **146/146**、sidecar 全家 **45/45**（含隔夜新增的 identity-guard 与 skip-gate 修正）。
+
+- **R11（窗口收尾，08:49）**：对齐 master f10b844（无新代码变更）；开放面清单归档于 §8 末尾。
 
 - **R12（周末窗同步 + 新钉复核，2026-09-13，tip 3e25a68）**：窗口分支对齐并吸收 6 个新钉——c5198a7（exit watcher settle 竞态钉）、debdf49（SIGTERM→exit(0) 协作停止 handler 钉）、b646fbe（中继 half-broken-pipe 上游韧性钉）、5bfcca0（最老暂存名目录拒绝钉，#430 族）、1776a1b 合并。logs.rs 生产侧仅 +33 行新钉（rotation_refuses_a_directory_at_the_oldest_staging_name：目录占住 `.rotating-oldest` 时拒绝自愈吸收并保留全部历史——正确方向）。我的 #525/#526 均已合并。认证 HEAD：shell-core **150/150**、sidecar 全家 **76/76**。
 
@@ -251,3 +253,15 @@
 
 **D — [native] 票处置：** 本窗不修 WPF（按 Goal 规则）；#484/#485/#486/#468-#471 等 native 票维持开放待 owner。
 
+---
+
+## 10. 最终认证与 CORS/origin 交互核验（2026-09-12 深夜值守）
+
+**HEAD 认证（351bbe5 = master tip）**：shell-core **152/152**、sidecar 全家 **83/83**（含全部新增钉）。工作树干净。
+
+**WEB_ORIGIN / CORS 交互核验**（两形态均正确）：
+- 静态导出形态：WebView 在 \`http://tauri.localhost\`（本地协议），API 在 \`127.0.0.1:<port>\` → 跨域 → helper 设 \`WEB_ORIGIN=http://tauri.localhost\` → API CORS 白名单允许 → 页面经注入的 \`__MANGAFLOW_API_ORIGIN__\` 直连 API ✓
+- Plan-B 形态：WebView 在 \`http://127.0.0.1:<node_port>\` → 同源请求 → Next 服务端 rewrites 代理到中继（39443）→ 中继转发到动态 API 端口 → 无跨域 → 无需 CORS ✓
+- 两种形态的 \`WEB_ORIGIN\` 均由 helper 默认 \`--web-origin http://tauri.localhost\` 提供（\`mangaflow_desktop_helper.py:559\`），shell 不传覆盖 → 一致。
+
+**收敛确认**：非 native 桌面对抗面在 HEAD 上已彻底扫净（R5-R10 连续无新发现）。所有开放 Issue 均归属明确。窗口至 09-14 09:00。
