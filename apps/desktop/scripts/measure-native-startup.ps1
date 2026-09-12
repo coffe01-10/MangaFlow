@@ -15,6 +15,16 @@ function Stop-SampleTree {
     # The client spawns a job-less child tree (native-host → python sidecar);
     # Stop-Process would kill only the WPF root and orphan the children
     # holding the API port. taskkill /T walks the whole descendant tree.
+    # Identity guard (round-6 review): Windows reuses pids aggressively - a
+    # Ctrl+C after the sample already exited can land this taskkill on an
+    # unrelated new process. Verify the pid still names MangaFlow.Native
+    # before killing; a recycled pid is skipped (its own owner reaps it).
+    $proc = Get-Process -Id $SamplePid -ErrorAction SilentlyContinue
+    if (-not $proc) { return }
+    if ($proc.ProcessName -ne 'MangaFlow.Native') {
+        Write-Warning ("Stop-SampleTree: pid {0} is now '{1}' (pid reuse) - skip" -f $SamplePid, $proc.ProcessName)
+        return
+    }
     & taskkill /PID $SamplePid /T /F | Out-Null
 }
 try {

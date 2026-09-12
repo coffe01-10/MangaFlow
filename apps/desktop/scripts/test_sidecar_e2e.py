@@ -698,7 +698,7 @@ def test_sidecar_plan_b_web_server_loop(tmp_path: Path):
     compiled rewrites; the cooperative stop reaps the web server with the
     helper."""
     if shutil.which("node") is None and not (
-        (HELPER.parent / "node" / ("node.exe" if os.name == "nt" else "bin/node"))
+        (HELPER.parent / "node" / ("node.exe" if os.name == "nt" else "node"))
     ).exists():
         pytest.skip("no node runtime available for the standalone server")
     shell = DesktopShell(tmp_path / "user-data", web_dist=_web_dist_dir())
