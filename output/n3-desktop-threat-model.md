@@ -230,5 +230,24 @@
 - W-R2 补充（scripts 深水 SOLID）：中继 limiter 槽位会计无泄漏（部分启动/溢出/构造失败全路径配对释放）、监听 socket 无 TIME_WAIT 语义（崩溃即重绑）、#443 fake_channel 污染已由 a73fa81 清理命令覆盖、phase2 runner 无泄漏（Job controller 全覆盖，assertSupervised 关闭逃逸口）、D5 static_hits/MIME 无边界穿越。
 - **W-R3（同步 master c3b49fd：#512/#513/#519 + 窗口增量复核，2026-09-13）**：7704208（web exit watch 三模式单测钉 + #507 socket 契约 FakeSock 钉）；759f010/#511 是**对我 #443 修复的 MAJOR 补强**——migrations/env.py 与 app/main.py 的两条裸 set_main_option 路径会在程序化升级时覆盖 helper 的转义值（转义链现三处齐全）；ecaf242/#483（measure pid 重用守卫）、75ce571（plan-B skip 门对齐 _find_node）。我的 #508 修复 PR **#525** 已开（Windows Job Object，nt-gated，POSIX 10/10 不变）。认证 HEAD：shell-core **149/149**、sidecar 全家 **71/71**。
 
+## 9. 周末窗口台账（20260912-wknd，窗口至 09-14 09:00；基线 f43ac71/351bbe5）
+
+### 已有但未入 master 的跟进修复（已重开 PR）：
+- **PR #554** [P3/POSIX] \`shutdown(SHUT_RDWR)\` + \`close()\` 替代 plain close：解决阻塞 accept 持有内核引用导致公告端口在 mid-session 死亡后仍绑定（每死一次一个劫持窗口）——#507 的 POSIX 半边收口
+- **PR #555** [P4/comment] e2e fixture 注释范围校准（pytest yield fixture 不注入 mid-test 错误；守卫覆盖 setup-phase）
+
+### 本窗新立 Issue：
+- #548 [P4] dist/ 构建产物无跨进程锁——并发 build/e2e/D5 互破坏
+- #549 [P4] build-frontend-static.sh: tee 目标可能不存在 + cp -al 硬链接共享 inode
+
+### E 轮（周末窗）：
+- W-R1'：assemble 原子化替代方案直接验证（成功/失败双路径）、guard 单/双引号 + 反斜杠矩阵（6/6）、D5 fences 三项终审——全部 SOLID
+- W-R2：交叉复审 #510——MERGE，两处必修跟进（shutdown-before-close + e2e 契约更新）已由并行代理落地
+- W-R3：同步 master + 确认窗口增量均为 test/docs/pin 类（无新生产缺陷）
+- W-R4：guard 对抗探针（单/双引号矩阵 6/6）→ vacuous-pass 旁路发现 → PR #526 已合并
+- W-R5：build-app-icon.ps1 审计（CLEAN）+ e2e 测试去重扫描（8 文件全 OK）+ shell-tools sink 终审（textContent only）+ #460 检查（0 个独有 chunk 引用）——无新发现
+
+**D — 旧账状态（20260912-wknd 收尾核对）：** 全部 19 个我发起的 Issue 已修复关闭并带证据评论；#299/#307/#311 lead 已裁决；#300/#314 PARTIAL 剩余开放；#339-#342/#344 native 票由 WPF owner 跟进（本窗不修 WPF）。
+
 **D — [native] 票处置：** 本窗不修 WPF（按 Goal 规则）；#484/#485/#486/#468-#471 等 native 票维持开放待 owner。
 
