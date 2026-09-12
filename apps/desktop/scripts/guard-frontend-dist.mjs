@@ -43,12 +43,16 @@ const references = new Set();
 // stripping minifier pass is lossless HTML) may carry single-quoted or
 // UNQUOTED values — either would reduce the extracted set to zero and make
 // the guard PASS vacuously over a dangling placeholder (the exact white-
-// screen-installer path this guard exists to block). The unquoted form ends
-// at whitespace or the closing bracket, per the HTML tokenizer; the
+// screen-installer path this guard exists to block). The unquoted class
+// mirrors the HTML5 tokenizer's unquoted-attribute-value state: the value
+// ends at tab/LF/FF/space or `>`; quotes, `<`, `&`, and non-ASCII spaces
+// are parse errors but PART of the value, so excluding them here (e.g. via
+// JS \s, which matches U+00A0) would extract a prefix the browser never
+// requests and could pass a guard over a file the page never loads. The
 // backslash form is also captured so a Windows-style ref resolves through
 // join() like its forward-slash twin.
 for (const match of html.matchAll(
-  /(?:href|src)\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s"'>]+))/gi
+  /(?:href|src)\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\t\n\f >]+))/gi
 )) {
   const raw = match[1] ?? match[2] ?? match[3];
   const ref = raw.split(/[?#]/, 1)[0].replace(/\\/g, "/");
