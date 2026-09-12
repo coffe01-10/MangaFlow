@@ -5,7 +5,9 @@
 // `tauri build` from a clean clone (frontendDist=../dist/frontend) would
 // otherwise embed a two-file frontend with dangling script refs — a
 // white-screen installer shipped silently. The guard walks index.html's
-// local href/src references and refuses unless every one exists on disk.
+// local href/src references and refuses unless every one resolves to a
+// real file on disk (a directory, the static server's 404 under
+// trailingSlash:false, counts as dangling).
 //
 // Wired as tauri.conf.json's beforeBuildCommand (object form with cwd="..",
 // so it is independent of where the tauri CLI was invoked). Also runnable
