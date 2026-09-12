@@ -361,3 +361,29 @@ def test_helper_registers_sigterm_exit_zero(tmp_path):
         assert excinfo.value.code == 0
     finally:
         signal_module.signal(signal_module.SIGTERM, signal_module.SIG_DFL)
+
+
+@pytest.mark.parametrize(
+    "bad_token",
+    [
+        "a" * 32 + "\n",  # shell launcher trailing-newline attack
+        "a" * 32 + " ",  # trailing space
+        "A" * 32,  # uppercase hex
+        "a" * 33,  # too long
+        "g" * 32,  # non-hex
+        "",  # missing
+    ],
+    ids=["trailing-newline", "trailing-space", "uppercase", "too-long", "non-hex", "empty"],
+)
+def test_read_context_rejects_malformed_tokens(monkeypatch, tmp_path, bad_token):
+    """Every malformed ownership-token shape must be refused before the
+    journal path is trusted: the token is the filename anchor for the
+    runtime directory, so a sloppy match (substring/prefix) would let a
+    crafted env var point the helper at a foreign runtime directory."""
+    monkeypatch.setenv("MANGAFLOW_DESKTOP_TOKEN", bad_token)
+    monkeypatch.setenv(
+        "MANGAFLOW_DESKTOP_JOURNAL",
+        str(tmp_path / f"mangaflow-desktop-{bad_token.strip()}" / "owner.json"),
+    )
+    with pytest.raises(ValueError, match="invalid process ownership token"):
+        helper._read_context()
