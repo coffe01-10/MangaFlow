@@ -2,14 +2,47 @@
 # Run the desktop sidecar e2e (real API + fake model channel) in the
 # sandbox venv. Creates .venv-desktop on first use.
 set -euo pipefail
+
+# ensure_e2e_venv <venv_dir> <requirements...>: create the venv if missing
+# and install the requirements. A previous run interrupted mid-install used
+# to leave a PARTIAL venv that every later run accepted (the only check was
+# that bin/python existed) and then died at import time with confusing
+# errors — and nothing ever self-healed it. A stamp file now records the
+# requirements hash of the LAST COMPLETED install: missing/mismatched stamp
+# means the install never finished (or the requirements changed) and the
+# install is (re)run. The pip step is a function so the contract test can
+# override it — a test must never touch the network.
+ensure_e2e_venv() {
+  local venv="$1"; shift
+  local stamp_file="$venv/.mangaflow-bootstrap"
+  local expected
+  expected="$(cat "$@" | md5sum | cut -d' ' -f1)"
+  if [ ! -x "$venv/bin/python" ]; then
+    python3 -m venv "$venv"
+  fi
+  if [ ! -f "$stamp_file" ] || [ "$(cat "$stamp_file" 2>/dev/null)" != "$expected" ]; then
+    # Explicit propagation: a failed install must never reach the stamp
+    # write, even if a future caller drops set -e.
+    install_e2e_requirements "$venv" "$@" || return $?
+    printf '%s\n' "$expected" > "$stamp_file"
+  fi
+}
+
+install_e2e_requirements() {
+  local venv="$1"; shift
+  # One -r per file: `pip install -r f1 f2` would parse f2 as a requirement
+  # string and fail (caught by running the real runner after the refactor).
+  local pip_args=() req
+  for req in "$@"; do pip_args+=(-r "$req"); done
+  "$venv/bin/python" -m pip install -q "${pip_args[@]}"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 DESKTOP_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REPO_ROOT="$(cd "$DESKTOP_ROOT/../.." && pwd)"
 VENV="$REPO_ROOT/.venv-desktop"
 
-if [ ! -x "$VENV/bin/python" ]; then
-  python3 -m venv "$VENV"
-  "$VENV/bin/pip" install -q -r "$REPO_ROOT/apps/api/requirements.txt" -r "$REPO_ROOT/apps/api/requirements-dev.txt"
-fi
+ensure_e2e_venv "$VENV" "$REPO_ROOT/apps/api/requirements.txt" "$REPO_ROOT/apps/api/requirements-dev.txt"
 
 export MANGAFLOW_DESKTOP_PYTHON="$VENV/bin/python"
 export MANGAFLOW_DESKTOP_HELPER="$DESKTOP_ROOT/sidecar/mangaflow_desktop_helper.py"
@@ -42,4 +75,6 @@ exec "$VENV/bin/python" -m pytest \
   "$DESKTOP_ROOT/scripts/test_assemble_web_resources.py" \
   "$DESKTOP_ROOT/scripts/test_build_web_standalone.py" \
   "$DESKTOP_ROOT/scripts/test_guard_frontend_dist.py" \
+  "$DESKTOP_ROOT/scripts/test_run_sidecar_e2e.py" \
   -v "$@"
+fi
