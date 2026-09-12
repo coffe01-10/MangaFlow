@@ -440,3 +440,21 @@
   - F4 INFO（记录）：git-bash 下导出的 MANGAFLOW_DESKTOP_PYTHON 为 POSIX 形路径——已核实
     全部消费方（测试断言剥离、helper 剥离、start-desktop.cmd 自设 Win32 路径）均不受影响；
     若未来喂给 Win32 消费方（cargo 测试）需转换——非本 PR 范围。
+
+## 22. 20260912-wknd 续六（master e4f6bcf——#572/#573 已并，本轮 6 PR 全部合入）
+
+- **合并状态**：#566（guard 无引号值+tokenizer 重落）、#568（D5 READY 读取加固）、
+  #570（runner venv bootstrap 自愈）、#571（#566 竞态重落）、#572（guard 目录引用拒绝）、
+  #573（runner Windows venv 布局）——本轮全部 merged。
+- **Issue #575（新开）**：`measure-native-startup.ps1:70-76` 采样循环不查 `HasExited`——
+  崩溃根进程的样本烧满 120s + 3s + 45s + 5s ≈ 165s/样本，默认 3 样本全坏 ≈ 8 分钟死等。
+  建议在 Refresh 后加 `if ($proc.HasExited) { break }`（记录行保持诚实，L105 的
+  `-not $exited` 门自然跳过杀树）。证据边界：沙箱无 pwsh，静态证明；运行时验证属
+  Windows 测量主机（NOT RUN）。
+- **静态复核（无缺陷）**：`start-desktop.cmd`（相对 REPO 路径、env 传递经 start、
+  WEB_DIST 缺席降级路径均正确）；`tauri.conf.json`（bundle.resources 对缺失的 assembled
+  树为 fail-closed；无 devUrl → "tauri dev" 非文档化流程，dev 守卫缺口不成立——全仓 grep
+  无 tauri dev 用法）；`fake_channel.remove()`（has_table 守卫、定向删除、幂等、单事务）；
+  `build-frontend-static.sh` 锁外 tee（追加型日志，非破坏性）。
+- **串行证据（master e4f6bcf）**：真 runner **103 passed in 62.85s**（他组 #569 的
+  `_await_go` 钉死入列）；shell-core cargo **153 passed / 0 failed**。
