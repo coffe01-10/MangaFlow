@@ -222,6 +222,9 @@
 **E — 互审轮次：**
 - W-R1（三路并行深挖）：src-tauri 六角度全部 SOLID（vendored tauri 2.11.5 源码级验证：菜单事件串行派发、duplicate label 返回 Err 非 panic、Exit 路径全覆盖、init script 不进 shell-tools、health probe 零参数无走私）；scripts/sidecar 深挖——中继 limiter/部分启动纪律无槽位泄漏、监听 socket 无 TIME_WAIT 语义、#443 fake_channel 污染已由 a73fa81 的清理命令覆盖、phase2 runner 无泄漏（Job controller 全覆盖）、D5 static_hits/MIME 无边界穿越；**协议交互审计出新发现 #507 + #508**。
 - W-R1 补充：协议交互审计确认七个角度 SOLID（双腿不共享 user_data 默认、sweep 宽限期不杀活会话、GO/EOF 竞态自愈、mark_stopped 无跨会话覆盖、.pending 无读取路径、token_matches 时序仅长度依赖、stdin borrow 通过 GO 后仍可用）。
+- **W-R2（#510 交叉复审 + 必修跟进，2026-09-12 深夜）**：复审结论 MERGE 但抓到两处缺口——F1 [MEDIUM/POSIX]：plain close() 不唤醒阻塞中的 accept()（内核引用持有者是被阻塞线程），公告端口仍绑定，**下一笔** WebView 连接仍被转发到 node 释放的端口（每死一次一个劫持窗口，标题声明在 Windows 外不完全成立）；F2 [MEDIUM/e2e]：既有 mid-session 测试仍断言旧 E3 契约。两项已修：watcher 先 shutdown(SHUT_RDWR) 再 close()（parked-accept 复现验证端口立即释放），e2e 更新为 #507 契约（探测到端口必须释放）。套件 67/67 绿。
+- W-R2 补充（scripts 深水 SOLID）：中继 limiter 槽位会计无泄漏（部分启动/溢出/构造失败全路径配对释放）、监听 socket 无 TIME_WAIT 语义（崩溃即重绑）、#443 fake_channel 污染已由 a73fa81 清理命令覆盖、phase2 runner 无泄漏（Job controller 全覆盖，assertSupervised 关闭逃逸口）、D5 static_hits/MIME 无边界穿越。
+- **W-R3（同步 master c3b49fd：#512/#513/#519 + 窗口增量复核，2026-09-13）**：7704208（web exit watch 三模式单测钉 + #507 socket 契约 FakeSock 钉）；759f010/#511 是**对我 #443 修复的 MAJOR 补强**——migrations/env.py 与 app/main.py 的两条裸 set_main_option 路径会在程序化升级时覆盖 helper 的转义值（转义链现三处齐全）；ecaf242/#483（measure pid 重用守卫）、75ce571（plan-B skip 门对齐 _find_node）。我的 #508 修复 PR **#525** 已开（Windows Job Object，nt-gated，POSIX 10/10 不变）。认证 HEAD：shell-core **149/149**、sidecar 全家 **71/71**。
 
 **D — [native] 票处置：** 本窗不修 WPF（按 Goal 规则）；#484/#485/#486/#468-#471 等 native 票维持开放待 owner。
 
