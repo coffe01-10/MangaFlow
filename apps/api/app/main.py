@@ -34,7 +34,12 @@ def _assert_database_is_current() -> None:
 
     settings = get_settings()
     alembic_config = AlembicConfig(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
-    alembic_config.set_main_option("sqlalchemy.url", settings.database_url)
+    # set_main_option runs ConfigParser interpolation: a raw "%" in the URL
+    # (a Windows user profile path) raises ValueError. Same class as the
+    # migrations/env.py fix (#443 lineage).
+    alembic_config.set_main_option(
+        "sqlalchemy.url", settings.database_url.replace("%", "%%")
+    )
     expected_heads = set(ScriptDirectory.from_config(alembic_config).get_heads())
     with engine.connect() as connection:
         current_heads = set(MigrationContext.configure(connection).get_current_heads())

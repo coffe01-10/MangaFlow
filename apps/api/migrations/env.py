@@ -15,7 +15,14 @@ if config.config_file_name is not None:
     # the rest of the process.
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 if config.attributes.get("connection") is None:
-    config.set_main_option("sqlalchemy.url", get_settings().database_url)
+    # set_main_option runs ConfigParser interpolation: a raw "%" (a Windows
+    # user profile path, a URL query) raises ValueError here. The helper's
+    # escaped value (mangaflow_desktop_helper set_sqlalchemy_url) is ALSO
+    # overwritten by this line on every programmatic upgrade, so the raw
+    # settings URL must be escaped on this path too (#443 lineage).
+    config.set_main_option(
+        "sqlalchemy.url", get_settings().database_url.replace("%", "%%")
+    )
 target_metadata = Base.metadata
 
 
