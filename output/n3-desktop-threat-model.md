@@ -268,3 +268,17 @@
 - 两种形态的 \`WEB_ORIGIN\` 均由 helper 默认 \`--web-origin http://tauri.localhost\` 提供（\`mangaflow_desktop_helper.py:559\`），shell 不传覆盖 → 一致。
 
 **收敛确认**：非 native 桌面对抗面在 HEAD 上已彻底扫净（R5-R10 连续无新发现）。所有开放 Issue 均归属明确。窗口至 09-14 09:00。
+---
+
+## 11. 周末窗续跑（2026-09-13 深夜，基线 8674830 = e4f6bcf + #574/#576/#577）
+
+**E 轮（本轮四审）——全部带 RUN 证据：**
+- **E1（对己方 #510 契约测试的复审）**：抓到 mid-session 死亡测试的**空转断言**——post-loop `probe.connect_ex(...)` 复用上一轮已被 `finally: probe.close()` 关闭的 socket，对已关闭 socket connect_ex 返回 EBADF(9)≠0，断言**无条件通过**（#507 端口释放检查形同虚设）。负向构造验证：对从未释放端口的监听器，旧形状求值 True（空转）、新 `released` 标志形状求值 False（正确失败）。修复 PR **#577 已合并**（8674830），正向 RUN：mid-session 测试 1 passed/3.5s。
+- **E2（交叉审 #574，API bind 平台 pin）**：RUN Linux 全套 12 passed（含新 `_bind_loopback` pin：loopback/临时端口/listening/平台选项四钉 + setsockopt spy）。测试形状 SOLID；留两条非阻塞 nit（win32 分支 no-op setattr 误导读者；second-bind 只钉 host 未钉 `port > 0`）。
+- **E3（交叉审 #576，guard 真占位符 clean-clone pin）**：git ls-files -z + git show HEAD 重建干净克隆的 dist/frontend 双文件悬空占位符，要求 guard 拒绝——#444 立法本意的真实工件钉。cwd 钉到 repo 根（round-13 复审修正）。RUN：guard 套件全绿（12/12 含此钉）。
+- **E4（交叉审 #578，npm shim pin）**：PR 分支 worktree RUN 5 passed/0.02s。关键形状验证：`main()` 首语句即被 fake 拦截的 `subprocess.run`，RuntimeError 停机点在**任何文件系统副作用之前**（无 dist 写、无锁获取）——离线钉为封闭式。argv/env/39443 中继常量三钉均与脚本逐字相符。留一条非阻塞 nit（env 只钉注入键未钉 os.environ 透传）。
+
+**C — 防守 PR（本轮）：**
+- **PR #579**（修 #575，他人新立的 scripts 票）：`measure-native-startup.ps1` 采样循环加 `$proc.HasExited` break——死根不再烧满 120s 窗口 + 后续 ~45s 收尾（默认 3 样本全坏构建从 ~8 分钟假忙降到秒级失败）。断言次序：窗口捕获 → HasExited break → WaitForInputIdle（快速崩溃但出过窗口的样本仍记诚实 windowMs）。行账保留 `WindowHandleMs=-1`/`Exited`；`-not $exited` 门正确跳过 Stop-SampleTree；后代快照与残留检查照跑（崩溃根泄漏的 sidecar 仍被上报）。**NOT RUN**（Linux 无 pwsh，与 issue 自述同界）；静态验证：花括号平衡、断言次序、下游行/门一致性程序化核验。
+
+**收敛修正**：第 10 节"彻底扫净"结论对**测试面**不成立——E1 证明已合并的测试自身可含空转断言（绿≠有效）。测试面复审（含对我此前贡献的）已纳入 E 轮常项。
