@@ -362,7 +362,30 @@ pub fn get_status(origin: &str, path: &str, timeout: Duration) -> std::io::Resul
             "health path must not contain CR or LF",
         ));
     }
-    let authority = origin.trim_start_matches("http://");
+    // The extraction must yield exactly the pinned loopback host: userinfo
+    // (`user@host`), IPv6 (`[::1]`), https schemes and bare hostnames would
+    // otherwise reach TcpStream::connect as hostnames to RESOLVE — the
+    // IPv6-loopback form actually dials (probe-verified, #535). The READY
+    // gate upstream already pins 127.0.0.1, but get_status is pub: keep the
+    // dial self-contained.
+    let authority = origin
+        .strip_prefix("http://")
+        .ok_or_else(|| std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "origin must be an http://127.0.0.1:<port> URL",
+        ))?;
+    let (host, port) = authority
+        .rsplit_once(':')
+        .ok_or_else(|| std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "origin must be an http://127.0.0.1:<port> URL",
+        ))?;
+    if host != "127.0.0.1" || port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "origin must be an http://127.0.0.1:<port> URL",
+        ));
+    }
     let mut stream = TcpStream::connect(authority)?;
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
@@ -661,5 +684,43 @@ mod tests {
             SpawnError::ReadyTimeout.to_string(),
             SpawnError::HealthTimeout.to_string()
         );
+    }
+}
+
+#[cfg(test)]
+mod authority_gate_tests {
+    use super::*;
+
+    /// #535: get_status must dial ONLY the pinned loopback host. The
+    /// extraction used to be a bare trim_start_matches, which let userinfo,
+    /// IPv6 (a real successful dial against [::1]!), https schemes and
+    /// bare hostnames through as TcpStream::connect hostnames to resolve.
+    #[test]
+    fn authority_gate_rejects_every_non_pinned_shape() {
+        for origin in [
+            "http://127.0.0.1:39001@evil:1", // userinfo smuggle
+            "http://[::1]:39001",            // IPv6 loopback (probe: dials!)
+            "https://127.0.0.1:39001",       // scheme not stripped before
+            "http://localhost:39001",        // hostname resolves
+            "http://127.0.0.2:39001",        // neighbor loopback address
+            "127.0.0.1:39001",               // no scheme
+            "http://127.0.0.1",              // no port
+        ] {
+            let error = get_status(origin, HEALTH_PATH, Duration::from_secs(1))
+                .err()
+                .expect(&format!("{origin} must be refused"));
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{origin}: {error}");
+        }
+    }
+
+    /// The pinned shape still dials: a refused connection on a free loopback
+    /// port surfaces as a connect error (NotFound/ConnectionRefused), NOT as
+    /// the gate's InvalidInput.
+    #[test]
+    fn authority_gate_passes_the_pinned_shape_through_to_the_dial() {
+        let error = get_status("http://127.0.0.1:1", HEALTH_PATH, Duration::from_millis(500))
+            .err()
+            .expect("port 1 must be closed");
+        assert_ne!(error.kind(), std::io::ErrorKind::InvalidInput, "{error}");
     }
 }
