@@ -553,3 +553,31 @@
   （文件惯例）、F2 空行规整、F3 wait 返回注解、F4 E3-F2 docstring 精确化（搁浅变异 =
   元组收窄/except 内提前返回）。ruff clean；22 passed 双 cwd；每测试对应真实源码行的
   独立红变异表齐备（评审实证）。
+
+## 28. 20260913（续跑戳 ~05:39 Asia/Shanghai；master 01781e2——#579/#580/#582/#583 已并）
+
+- **合并消化**：我方 #578（NPM shim 钉）、#581（WebServer.close 梯）已并。#569 CONFLICTING
+  核查：实为 MERGED（537f835 在 master），`test_await_go_accepts_exact_line_and_rejects_drift`
+  于 origin/master 在位（git grep 实证）——徽章为陈旧 mergeability 态，已留说明。
+  #579 交叉核查：按我方 Issue #575 的建议落实（`$proc.HasExited → break`，L70-76 采样窗），
+  Issue 闭环。
+- **#583 交叉评审发现实质缺陷（同义反复钉子）**：`test_web_spawn_env_additions_are_exact`
+  在测试内自建 `env.update({...四键...})` 再断言该 dict——从未观测 `_spawn_web_server`
+  真实调用点；真实代码漂移（NODE_ENV 翻转、HOSTNAME 丢失、token 回漏）全程保持绿。
+  AGENTS.md 规则 5（真实失败构造）所禁的确切形态。
+- **PR #585（待 lead）——去同义反复**：
+  - 行为保持提取：四项添加移入模块函数 `_web_spawn_env_additions(node_port)`，
+    `_spawn_web_server` 经 `env.update(_web_spawn_env_additions(node_port))` 调用
+    （键/值/str() 逐字一致，"dev form" 注释保留于 docstring）。
+  - 精确钉：真函数输出 dict 全等（含 PORT 为 str——env 值必须字符串）。
+  - **USE 钉（真观测）**：Popen double 捕获 `_spawn_web_server` 实际传给 node 的 env——
+    中继端口重定向至空闲端口（固定 39443 保持空闲，避免与并发 helper 冲突）、假 node
+    路径短路发现、捕获后哨兵即抛；生成的 socket 为函数局部量随展开释放（纯监听者关闭
+    不产生 TIME_WAIT；哨兵早于 relay 线程启动）。
+  - strip 契约保留：与 `_node_child_env` 组合后不得复现 `MANGAFLOW_DESKTOP_*`。
+- **第 16 轮审查（1 子代理，文件/行级，APPROVE，1 LOW 返工）**：提取保真（键/值/后期绑定
+  WEB_RELAY_PORT 语义）确认；USE 钉管线逐步核实（SimpleNamespace、server.js 真文件、
+  无 default-arg 绑定、哨兵路径 socket/线程/fd 卫生）；F1 LOW（已返工）：组合 env 检查的
+  失败信息误归因（只可能因 strip list 遗漏而失败）——已改为正确归因。
+- **串行证据**：两新测试过；真 runner **114 passed in 64.24s**（提取后 plan-B 实测真实
+  spawn 路径，行为保持确认）；评审者独立复跑 114 passed in 64.27s。
