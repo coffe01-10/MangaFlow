@@ -674,3 +674,43 @@ def test_apply_app_environment_creates_absent_keys(monkeypatch, tmp_path):
     assert helper.os.environ["STORAGE_ROOT"] == str(tmp_path / "storage")
     assert helper.os.environ["UPLOAD_ROOT"] == str(tmp_path / "uploads")
     assert helper.os.environ["WEB_ORIGIN"] == "http://tauri.localhost"
+
+
+def test_apply_app_environment_refuses_url_hostile_user_data(tmp_path):
+    """#587: make_url ends the database component at the first ``?`` — a
+    ``?`` in the user-data path would silently move the session's sqlite
+    file outside ``user_data`` (the sweep/export/mutex containment root).
+    The helper must refuse loudly BEFORE any environment is applied. The
+    check runs first: nothing below it (including the #313 force-set) may
+    execute for a refused path."""
+
+    hostile = tmp_path / "w?rd"
+    hostile.mkdir()
+    helper.os.environ.pop("DATABASE_URL", None)
+    helper.os.environ.pop("MANGAFLOW_DISABLE_DOTENV", None)
+
+    with pytest.raises(SystemExit, match="sqlite"):
+        helper._apply_app_environment(hostile, "http://tauri.localhost")
+    assert "DATABASE_URL" not in helper.os.environ, (
+        "a refused path must not leave a truncated DATABASE_URL behind"
+    )
+    assert "MANGAFLOW_DISABLE_DOTENV" not in helper.os.environ
+
+
+def test_apply_app_environment_passes_url_reserved_chars_verbatim(tmp_path):
+    """The audited char semantics of the sqlite URL grammar: ``#``, ``%``
+    and spaces are NOT special to make_url's database regex — they flow
+    verbatim into the sqlite file path (nothing percent-decodes them back),
+    so they stay legal and must produce the exact f-string target. Pins the
+    boundary of the #587 refusal so a future 'quote it' regression that
+    WOULD encode these (and send sqlite to a literal %3F filename) fails
+    here."""
+
+    exotic = tmp_path / "100%done #tag sp"
+    (exotic / "data").mkdir(parents=True)
+    helper._apply_app_environment(exotic, "http://tauri.localhost")
+
+    from sqlalchemy.engine import make_url
+
+    url = make_url(helper.os.environ["DATABASE_URL"])
+    assert url.database == str(exotic / "data" / "mangaflow.db"), url.database
