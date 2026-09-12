@@ -478,3 +478,18 @@
     行为（变更时强制有意识更新），非假阳性风险。
   - 评审同时核实：字节保真（sha256 一致，含 UTF-8 中文）、污染克隆下仍封闭、无 vacuous
     通过路径、diff 仅测试文件。
+
+## 24. 20260912-wknd 续八（master e4f6bcf 未动，#576 待 lead）
+
+- **深查无缺陷（负发现，行级核实，扩大覆盖）**：
+  - `_RelayLimiter`（helper L131-157）：计数器上锁正确，`max_connections` 为构造快照
+    （日志与强制一致），`release` 下限钳制；线程每连接 + WEB_RELAY_MAX_CONNECTIONS 封顶
+    ——前轮连接上限 PR 持续有效。
+  - `_bind_relay`：POSIX REUSEADDR/Windows EXCLUSIVEADDRUSE 语义注释与实现一致（#253/#256）。
+  - plan-B e2e（test_sidecar_e2e.py L700-748）：dist 读锁、manifest 39443 目标、
+    apps_web_tree 溯源三方钉死；`_non_loopback_ipv4` 的 UDP route-lookup 无包发送、
+    无第二网卡时自跳过——正确。
+  - `apps/web/next.config.ts`：rewrites 编译期常量、distDir dev/prod 分离、CSP 已移
+    proxy.ts（#300，nonce 化留跟踪）——全部有测试钉死。
+  - `fake_channel.remove()`：has_table 守卫 + 定向删除 + 幂等 + 单事务——干净。
+- **在途**：#576（guard 真·占位符 clean-clone 钉死，round-13 返工完毕）待 lead 审。
