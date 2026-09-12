@@ -918,9 +918,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// An oversized journal (identity fields are a few hundred bytes) must
-    /// fail with JournalTooLarge instead of being buffered into the shell —
-    /// the read is bounded at the cap with one detection byte to spare.
     #[test]
     /// #561 (helper parity): a symlink at the journal or the .pending
     /// sibling must be refused before any write — the pending write
@@ -928,7 +925,6 @@ mod tests {
     /// record to an attacker-chosen file. Both refusals surface as
     /// InvalidInput with the link named; the outside target stays
     /// untouched. Unix-only: symlink creation.
-    #[test]
     #[cfg(unix)]
     fn write_journal_atomic_refuses_links_at_both_names() {
         use crate::protocol::new_token;
@@ -973,6 +969,10 @@ mod tests {
         let _ = fs::remove_dir_all(&user_data);
     }
 
+    /// An oversized journal (identity fields are a few hundred bytes) must
+    /// fail with JournalTooLarge instead of being buffered into the shell —
+    /// the read is bounded at the cap with one detection byte to spare.
+    #[test]
     fn journal_reads_are_bounded_and_oversize_fails_closed() {
         let dir = std::env::temp_dir().join(format!(
             "mangaflow-desktop-jsize-{}-{}",
