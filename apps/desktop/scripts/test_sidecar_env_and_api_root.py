@@ -449,3 +449,48 @@ def test_read_context_rejects_a_symlinked_journal(monkeypatch, tmp_path):
 
     with pytest.raises(ValueError, match="absolute real path"):
         helper._read_context()
+
+
+def test_write_journal_refuses_links_and_writes_atomically(tmp_path):
+    """_write_journal's two guards: (1) a symlink at the journal OR the
+    .pending sibling must be refused before any write (the journal is the
+    ownership anchor; a link would redirect it); (2) the happy path writes
+    via a .pending temp then os.replace — no partial journal can exist."""
+
+    import json
+
+    record = {"version": 1, "state": "ready"}
+    token = "d" * 32
+    runtime = tmp_path / f"mangaflow-desktop-{token}"
+    runtime.mkdir(parents=True)
+    journal = runtime / "owner.json"
+
+    # (1) A symlink at the journal itself must be refused, target untouched.
+    outside = tmp_path / "outside.json"
+    outside.write_text("{}", encoding="utf-8")
+    journal.symlink_to(outside)
+    with pytest.raises(RuntimeError, match="must not be a link"):
+        helper._write_journal(journal, record)
+    assert outside.read_text(encoding="utf-8") == "{}"
+
+    journal.unlink()
+
+    # (2) A symlink at the .pending sibling must also be refused — and
+    # because write_text would FOLLOW that link, the outside target must
+    # still carry its original bytes (a guard removed or reordered lets
+    # the record clobber it through the link).
+    pending = journal.with_name(journal.name + ".pending")
+    pending.symlink_to(outside)
+    with pytest.raises(RuntimeError, match="must not be a link"):
+        helper._write_journal(journal, record)
+    assert outside.read_text(encoding="utf-8") == "{}", (
+        "the .pending link target must not be clobbered"
+    )
+
+    pending.unlink()
+
+    # (3) Happy path: the journal is written atomically via .pending.
+    helper._write_journal(journal, record)
+    written = json.loads(journal.read_text(encoding="utf-8"))
+    assert written == record
+    assert not journal.with_name(journal.name + ".pending").exists()
