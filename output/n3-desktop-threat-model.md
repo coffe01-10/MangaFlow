@@ -135,6 +135,9 @@
 
 - **R7（续跑认证 + 新增面复核，2026-09-12 夜）**：交叉复核最新合并增量——#472（phase2 runner default python 钉，test-only）、#463（中继 accept 韧性：errno 瞬态/终态分类、128 连接上限、饱和日志冷却——逐行复核无新缺陷）、#464（本窗 #314 收口，已并入）；当前 \`verify_journal\`/sweep（有界读、FIFO 拒绝、常量时间 token 比较、逐字段校验、linux starttime 锚点）对抗通读——无新发现。认证 HEAD：shell-core **145/145**、sidecar e2e 全家 **44/44**（含 dist 锁、溯源、env/api-root、非 UTF8 跨平台、mid-session 检测等全部新增钉）。**本窗 B 配额由并行 agent 达成（#409-#413/#426-#431/#457-#462 等已入账），C/D 由 #420-#423/#463/#464 及本轮认证覆盖。**
 
+- **R10-R12（隔夜修复复核 + 同步，06:28-14:52）**：75ce571（skip 门对齐 _find_node 首候选）与 ecaf242（Stop-SampleTree pid 重用身份守卫）均正确；跨 R6-R10 六轮互审后 core 面（main.rs/protocol.rs/中继/sweep/journal/picker/验证脚本）连续多轮无新价值 Finding——收敛。
+- **R13-R15（周末窗续跑至 master 8a8ac52）**：shell-core 153/153 全绿；guard 单引号 vacuous-pass 旁路发现并修复（#526）；Windows e2e harness Job Object 修复（#525）；FakeSock shutdown 方法补齐（#558）。convergence confirmed.
+
 - **R8（main.rs 全文通读）+ 时序观察**：无新发现；并发负载下 \`a_silent_helper_fails_with_ready_timeout\` 一次性抖动（3 次重跑绿，pgrep 探针候选根因，未立案）。
 - **R9（终覆盖轮，2026-09-12 深夜）**：最后 9 个未深读文件（WorkspaceState/Models/Labels/Ui/SceneEditor/JobDetailsWindow/StyleWorkspace/StyleProductionCard/CharacterPackagePane，2,838 行全读）——6 发现已立 Issue：**#484 [P3]** \`Flag("deleted_at")\` 永不匹配时间戳字符串形态（已亲验 Models.cs:24-26 vs web scene-picker.tsx:73）→ 已归档场景资产仍可绑定；**#485 [P3]** CharacterPackagePane 四个变更按钮无 busy 守卫（双提交/publish-save 竞态）；**#486 [P4] 束** dead-batch 闩锁/仪表盘卡片过期等值/灯箱吞错/diff 重入。SOLID 面与覆盖声明见 issue 正文。native 面至此全量覆盖（全部 Views + Services + 共享设施）。
 

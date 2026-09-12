@@ -1033,16 +1033,18 @@ def test_sidecar_mid_session_node_exit_is_detected_and_logged(tmp_path: Path):
         # freed ephemeral port. The API session keeps serving.
         web_port = int(shell.web_origin.rsplit(":", 1)[1])
         deadline = time.monotonic() + 5.0
+        released = False
         while time.monotonic() < deadline:
             probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             probe.settimeout(1.0)
             try:
                 if probe.connect_ex(("127.0.0.1", web_port)) != 0:
-                    break  # released: the watcher closed it on detection
+                    released = True
+                    break
             finally:
                 probe.close()
             time.sleep(0.1)
-        assert probe.connect_ex(("127.0.0.1", web_port)) != 0, (
+        assert released, (
             f"announced port {web_port} still answering after the mid-session "
             "death — the relay must not forward to the freed upstream (#507)"
         )
