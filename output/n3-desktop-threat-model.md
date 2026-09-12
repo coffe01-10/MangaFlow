@@ -309,3 +309,21 @@
 - **E9（#590 已合内容的追踪复跑）**：合入的 relay 钉在**整套负载下**抓到两处时序 flake（#581 pump 钉 4s 墙钟界、#590 饱和日志计数与 accept 线程赛跑）——孤立 5/5，组合套件 ~6 跑 2 红。立 **#595** 并开修复 PR **#597**（活性界 4s→15s；饱和计数改 2s 有界轮询，上限语义不变）。修复后组合负载 3×58/58。生产代码零改动。
 - **#593 同步**：merge origin/master 解决 test_sidecar_env_and_api_root.py 尾部双追加冲突（保留 #589 EOF 钉 + #587 拒绝钉两侧），合并后 env 35/35。
 - **认证更正**：本沙箱 e2e 全量 12/12 是**去 plan-B 子集**（git clean 后 standalone bundle 缺席，其余 skip）；#593 的 guard 对所有 spawn 路径为无操作（tmp_path 无 `?`），env 套 35/35 直接钉其行为。
+
+---
+
+## 13. 周末窗续跑（2026-09-13 06:42 Asia/Shanghai，基线 ae74b77；#598/#596/#585/#597/#593 全合，无 open）
+
+**B 轮（新立 Issue ×2）：**
+- **#600 [P4]** start-native.ps1 的 #410 包容检查**单向**——拒绝"UserData 在 shell 目录内"但不拒绝"UserData **包含** shell 目录"：`-UserData $env:LOCALAPPDATA` 会把 shell 的 logs/runtime 嵌进 WPF 客户端的会话清扫/导出范围（两端共享 shell-core 日志命名约定，shell 的历史诊断成了对方清理候选）。
+- **#602 [P4/L3-shape]** owner.json 终态竞争：shell `mark_stopped`（protocol.rs:343/383）与 helper `_write_journal`（:88）**共用同一 .pending 暂存名**且无跨写者串行化。三腿：(1) abort-setup 窗口内 helper 病理延迟的 ready rename 落在 stopped **之后** → 死会话永久非终态、runtime 目录永不可回收（sweep 看不见单实例互斥锁）；(2) 共用 pending 名的会合危害——A 的 rename 可能发布 B 的载荷、败者的 replace 抛 FileNotFoundError（helper 失败路径未守卫，可掩盖原始错误）；(3) mark_stopped 读-改-写对并发 failed 记录的丢失更新。**按代理政策不动代码（进程生命周期+终态热线 = L3），修复面三选项留 lead 裁决（CAS 重读 / 分写者 pending 名 / sweep 侧 pid 死亡+长宽限回收）。**
+
+**C 轮（防守 PR）：**
+- **PR #601**（修 #600）：对称谓词项 + throw 消息改为双向 overlap 语义。NOT RUN pwsh（同 #575 界）；谓词七形状静态模拟——**其中第七形状我自己测试表预期写错**（`...deskto` 前缀路径正确**放行**，是我的 harness 断言错、非谓词错），已在 PR 上留更正评。
+
+**E 轮（互审 + 假阳性）：**
+- 假阳性×2：fake_channel CLI 旗标 vs #275 env 门——核验为**双层设计**（helper 尊重旗标；生产调用方 shell 在 main.rs:348 以 `== OsStr("1")` 精确门控），非门旁路；shell 侧 stdout post-GO 排空——handshake.rs:174-207 已有带字节上限的 drain 线程（EPIPE 防护 + 1MiB 行帽），生产面 SOLID。
+- **PR #599 复审**：与我已合的 #597 同测试同修复（仅注释文案异），判定 superseded 建议关闭；其"hang guard, not a sync point"注释文案更优（点明 0.5s accept-poll 机制），若 lead 偏好可作 comment-only 跟随。
+- 缝隙调用点核验：#585 后 `HOSTNAME/NODE_ENV` 全 helper 仅单一定义 + `_spawn_web_server` 单一调用，无残留内联。
+
+**认证**：relay+env 组合 58/58 ×3（含 #597 修复后负载循环）；e2e 12/12（去 plan-B 子集，bundle 缺席如实记）。
