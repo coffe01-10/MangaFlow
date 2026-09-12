@@ -25,8 +25,10 @@ old tree is only deleted after the new one is complete and in place
 refused in that state: with `res` still missing, `web.old-<pid>` is the
 only copy of the previous tree, and that run would delete it before
 staging anything, so assemble fails fast and repeats the manual-restore
-instructions (#393). A run under a different pid neither touches nor
-deletes the parked tree.
+instructions (#393). While `res` is missing, no run touches or deletes
+the parked tree; once any later run has swapped a complete tree back into
+place, parked remnants from other pids are no longer the only copy of
+anything and are swept as build debris (#409).
 """
 from __future__ import annotations
 
@@ -86,7 +88,9 @@ def _recovery_error(res: Path, retired: Path) -> RuntimeError:
         f"{res} is missing and the only copy of the previous tree is parked "
         f"at {retired}. Do not delete it. Manually move {retired} back to "
         f"{res} (for example Move-Item '{retired}' '{res}') before the "
-        f"next tauri build."
+        "next tauri build. Re-running assemble instead of restoring "
+        "manually is also safe: the new tree is swapped in and this parked "
+        "copy is then removed as build debris."
     )
 
 
@@ -96,8 +100,33 @@ def _stale_retired_error(res: Path, retired: Path) -> RuntimeError:
         f"only copy of the previous tree; refusing to run because this run "
         f"would delete that copy before swapping in the new tree. "
         f"Do not delete it. Manually move {retired} back to {res} (for "
-        f"example Move-Item '{retired}' '{res}') first, then re-run."
+        f"example Move-Item '{retired}' '{res}') first, then re-run. A "
+        "different-pid run may proceed, and once it has swapped the new "
+        "tree in, this parked copy is removed as build debris."
     )
+
+
+def _dist_lock():
+    """The shared dist/ build lock, reused from build-web-standalone (#457).
+
+    The hyphenated sibling filename is not importable by name, so the spec
+    load keeps ONE lock implementation instead of a diverging copy. The
+    whole assemble — sweep, staging, the two-rename swap, and the
+    post-swap debris sweep — runs under it: two concurrent assembles can
+    no longer delete each other's live staging (`web.tmp-<pid>`) or a
+    rollback source parked inside the rename window, and an in-flight
+    standalone rebuild cannot hand assemble a half-swapped source tree.
+    """
+
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "build_web_standalone_lock",
+        Path(__file__).with_name("build-web-standalone.py"),
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module._dist_build_lock(module.DIST_LOCK_PATH)
 
 
 def assemble(src: Path = SRC, res: Path = RES, node: Path | None = None) -> Path:
@@ -117,11 +146,21 @@ def assemble(src: Path = SRC, res: Path = RES, node: Path | None = None) -> Path
     copy is still the only one (``res`` missing, same-pid ``retired``
     present) is refused with the same instructions before anything is
     staged or deleted (#393).
+
+    Everything above runs under the shared dist/ build lock (#457):
+    concurrent assembles serialize instead of racing their sweeps against
+    each other's live staging/rollback trees.
     """
     if not (src / "server.js").is_file():
         raise SystemExit("run build-web-standalone.py first")
     if node is None:
         node = find_node()
+    with _dist_lock():
+        return _assemble(src, res, node)
+
+
+def _assemble(src: Path, res: Path, node: Path) -> Path:
+    """Locked body of :func:`assemble` (caller holds the dist lock)."""
     _sweep_orphan_staging(res)
     staging = res.parent / f"{res.name}.tmp-{os.getpid()}"
     retired = res.parent / f"{res.name}.old-{os.getpid()}"
