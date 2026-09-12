@@ -566,3 +566,36 @@ def test_read_context_rejects_a_symlinked_runtime_directory(tmp_path, monkeypatc
 
     with pytest.raises(ValueError, match="ownership mismatch"):
         helper._read_context()
+
+def test_await_go_accepts_exact_line_and_rejects_drift(monkeypatch):
+    """_await_go is the handshake's final gate: the line must be exactly
+    GO_PREFIX + token after strip() — a wrong token, a GO for a previous
+    run, or extra payload on the line must all be rejected (False), and
+    only the exact match accepted (True). Pins both sides of the gate."""
+
+    import importlib.util
+    import io
+
+    spec = importlib.util.spec_from_file_location(
+        "mangaflow_desktop_helper_go", str(HELPER_PATH)
+    )
+    helper_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper_module)
+
+    token = "e" * 32
+    monkeypatch.setattr(
+        helper_module, "GO_PREFIX", "MANGAFLOW_GO "
+    )
+
+    def run(stdin_text):
+        fake = io.StringIO(stdin_text)
+        monkeypatch.setattr(helper_module.sys, "stdin", fake)
+        return helper_module._await_go(token)
+
+    assert run(f"MANGAFLOW_GO {token}\n") is True
+    assert run(f"MANGAFLOW_GO {token}  \n") is True  # strip() forgives EOL spaces
+    assert run(f"MANGAFLOW_GO {'f' * 32}\n") is False  # wrong token
+    assert run(f"MANGAFLOW_GO {token} extra\n") is False  # payload on the line
+    assert run("\n") is False  # empty line
+    assert run("") is False  # bare EOF-ish empty string
+
