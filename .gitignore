@@ -52,6 +52,8 @@ uploads/*
 Thumbs.db
 # Stray file created by PowerShell-style `> $null` redirects run under cmd
 $null
+# Crash dumps: 500 MB-scale, far past the 100 MB GitHub file limit — never commit
+*.dmp
 .idea/
 .vscode/
 .venv-poc/
