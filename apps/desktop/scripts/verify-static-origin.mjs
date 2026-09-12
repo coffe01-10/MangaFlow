@@ -87,12 +87,33 @@ const readyLine = await new Promise((resolve, reject) => {
     try { process.kill(-helper.pid, "SIGKILL"); } catch { /* already gone */ }
     reject(new Error("helper readiness timeout"));
   }, 20000);
-  helper.stdout.once("data", (chunk) => {
+  // Accumulate until the first newline: stdout is a pipe, so the READY
+  // line is not guaranteed to arrive in one chunk — a partial first chunk
+  // resolved here would fail the startsWith check below and report a
+  // phantom "bad ready line".
+  let buffer = "";
+  const onData = (chunk) => {
+    buffer += chunk.toString();
+    const newline = buffer.indexOf("\n");
+    if (newline === -1) return;
+    cleanup();
+    resolve(buffer.slice(0, newline));
+  };
+  // A helper that dies before READY (import error, bad interpreter) must
+  // fail NOW with its exit status — waiting for the timer would spend the
+  // full 20s and misreport a crash as a "readiness timeout".
+  const onExit = (code, signal) => {
+    cleanup();
+    reject(new Error(`helper exited before READY (code ${code} signal ${signal})`));
+  };
+  const cleanup = () => {
     clearTimeout(timer);
-    resolve(chunk.toString().split("\n")[0]);
-  });
+    helper.stdout.off("data", onData);
+    helper.off("exit", onExit);
+  };
+  helper.stdout.on("data", onData);
+  helper.once("exit", onExit);
 });
-if (!readyLine.startsWith("MANGAFLOW_READY ")) return fail(`bad ready line: ${readyLine}`);
 // Track the helper's exit from the earliest possible moment: fail() may
 // SIGKILL the process group at ANY later point (including while the script
 // is inside the browser phase), and an exit listener registered only in the
@@ -100,6 +121,7 @@ if (!readyLine.startsWith("MANGAFLOW_READY ")) return fail(`bad ready line: ${re
 let helper_exit_resolve;
 const helper_exit = new Promise((resolve) => { helper_exit_resolve = resolve; });
 helper.once("exit", (code, signal) => helper_exit_resolve({ code, signal }));
+if (!readyLine.startsWith("MANGAFLOW_READY ")) return fail(`bad ready line: ${readyLine}`);
 const ready = JSON.parse(readyLine.slice("MANGAFLOW_READY ".length));
 const record = JSON.parse((await readFile(journal)).toString());
 if (ready.token !== token) return fail("token mismatch");
