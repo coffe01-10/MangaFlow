@@ -458,3 +458,23 @@
   `build-frontend-static.sh` 锁外 tee（追加型日志，非破坏性）。
 - **串行证据（master e4f6bcf）**：真 runner **103 passed in 62.85s**（他组 #569 的
   `_await_go` 钉死入列）；shell-core cargo **153 passed / 0 failed**。
+
+## 23. 20260912-wknd 续七（master e4f6bcf）
+
+- **PR #576（guard 真·占位符 clean-clone 契约钉死，待 lead，test-only）**：套件此前只用
+  合成页面测试 guard——其存在理由（#444：干净克隆下被 track 的占位符 index.html 引用
+  全部 gitignored 的 chunk，tauri build 必须被拒）从未对真实工件钉死。测试从 git 重建
+  clean-clone 状态（ls-files → 仅 index.html + shell-tools.html；`git show HEAD:` 字节级，
+  对持有完整构建产物的 working tree 保持封闭）并要求拒绝 + 指名悬空 `_next/static/chunks/`
+  引用 + 补救提示。占位符若将来自洽，钉子响亮失败、须有意识更新。
+- **第 13 轮审查（1 子代理，文件/行级，REQUEST_CHANGES → 已返工）**：
+  - F1 HIGH（返工，评审者实证复现）：`git ls-files` 裸 pathspec 按进程 cwd 解析——从
+    apps/desktop/scripts 运行套件时匹配为空 → 假失败。返工：git 调用显式 `cwd=` 仓库根
+    （对齐 provenance 测试先例），双 cwd 运行均 11 passed。
+  - F2 LOW（返工）：`.split()` 按空白切分不抗路径内空格/非 ASCII（quotePath 八进制转义）
+    ——改 `-z` + `\\0` 切分。
+  - F3 LOW（返工）：pytestmark 增补 git 可用性 skipif（镜像既有 node skipif）。
+  - F4 INFO（记录）：`missing[0]` 断言依赖占位符文档序首个引用为 chunk——是钉子的正确
+    行为（变更时强制有意识更新），非假阳性风险。
+  - 评审同时核实：字节保真（sha256 一致，含 UTF-8 中文）、污染克隆下仍封闭、无 vacuous
+    通过路径、diff 仅测试文件。
