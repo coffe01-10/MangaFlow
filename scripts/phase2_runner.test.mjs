@@ -211,4 +211,21 @@ test("json() keeps 204 as null, merges content-type, and names the failing call"
     /DELETE http:\/\/x\/boom: 500 boom body/,
   );
 });
-
+test("json(): caller headers override the json content-type default", async () => {
+  const { json } = await import("./phase2_runner.mjs");
+  // The lib spreads {...init} first and content-type before caller headers
+  // ({"content-type": ..., ...init?.headers}) — so a caller that passes an
+  // explicit content-type WINS (e.g. sending a form body). Round-9 review
+  // noted this precedence was unpinned; pin it now so a flip of the spread
+  // order (silently forcing json onto every request) goes red.
+  const seen = [];
+  const fetchImpl = async (url, init) => {
+    seen.push(init?.headers);
+    return { ok: true, status: 200, json: async () => ({ ok: 1 }) };
+  };
+  await json("http://x/form", { headers: { "content-type": "application/x-www-form-urlencoded" } }, fetchImpl);
+  assert.equal(seen[0]["content-type"], "application/x-www-form-urlencoded");
+  // And the default still applies when the caller passes none.
+  await json("http://x/plain", {}, fetchImpl);
+  assert.equal(seen[1]["content-type"], "application/json");
+});
