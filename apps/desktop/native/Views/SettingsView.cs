@@ -49,6 +49,9 @@ public sealed class SettingsView : WorkspaceView
     private bool verified, hidden;
     private JsonElement runtime;
     private bool runtimeSaving;
+    // #429-2: 运行参数各项的渲染初值——刷新守卫用实时对比而不是粘性标志位，
+    // 用户改回原值即自动恢复可刷新。
+    private readonly Dictionary<string, string> renderedRuntime = new();
 
     public SettingsView()
     {
@@ -456,6 +459,7 @@ public sealed class SettingsView : WorkspaceView
         input.SetValue(HorizontalAlignmentProperty, HorizontalAlignment.Left);
         panel.Children.Add(input);
         runtimeInputs[key] = input;
+        renderedRuntime[key] = value;
         runtimeForm.Children.Add(panel);
     }
 
@@ -635,8 +639,35 @@ public sealed class SettingsView : WorkspaceView
 
     public override Task RefreshAsync()
     {
+        // #429-2: F5/刷新不得清掉未保存编辑——运行参数（并发、队列模式等输入）与
+        // 连接面板录入到一半的 API Key。镜像 ScriptView.RefreshAsync 的
+        // editingFormsOpen 守卫：有草稿时本轮跳过重载；草稿保存/清空后的下一次
+        // 刷新会用新数据重绘。
+        if (RuntimeDraft() || ConnectionDraft()) return Task.CompletedTask;
         _ = LoadAllAsync();
         return Task.CompletedTask;
+    }
+
+    private bool RuntimeDraft() => runtimeInputs.Any(entry => entry.Value switch
+    {
+        TextBox box => box.Text != renderedRuntime.GetValueOrDefault(entry.Key),
+        ComboBox combo => ((combo.SelectedItem as ComboBoxItem)?.Tag as string ?? "") != renderedRuntime.GetValueOrDefault(entry.Key),
+        _ => false,
+    });
+
+    // 任意展开的连接面板里是否有录入到一半的草稿。面板随 RenderProviders 重建，
+    // 实时查树上的实例即可——重建后空密码自然判干净，没有粘性标志位失配的问题。
+    private bool ConnectionDraft() => providerList.Children.OfType<ProviderCard>()
+        .SelectMany(SelfAndDescendants).OfType<ConnectionPanel>().Any(panel => panel.HasDraft);
+
+    private static IEnumerable<DependencyObject> SelfAndDescendants(DependencyObject node)
+    {
+        yield return node;
+        // Border/StackPanel 直接持有可视子级，未布局也能遍历；ProviderCard 与
+        // ConnectionPanel 都是不带模板的 Border，不依赖 ContentPresenter 展开。
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(node); i++)
+            foreach (var child in SelfAndDescendants(VisualTreeHelper.GetChild(node, i)))
+                yield return child;
     }
 }
 
@@ -760,6 +791,12 @@ internal sealed class ConnectionPanel : Border
 
     internal bool IsCliConnection => connection.Text("credential_source") == "CLI_SESSION";
     internal SettingsView Owner => owner;
+
+    /// <summary>#429-2: 面板内是否有录入到一半的草稿（半截 API Key / 手工模型表单），
+    /// SettingsView.RefreshAsync 据此跳过重载而不是直接清空。密钥标签预填
+    /// "default"，单独改动无意义（保存需要两者齐全），不计入。</summary>
+    internal bool HasDraft =>
+        keyValue.SecurePassword.Length > 0 || manualId.Text.Trim().Length > 0 || manualName.Text.Trim().Length > 0;
 
     private void Render()
     {
