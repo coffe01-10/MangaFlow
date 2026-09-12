@@ -574,7 +574,13 @@ def test_relay_partial_pump_start_releases_slot_and_serves_next(monkeypatch):
                 # No response can ever flow (the upstream->client pump
                 # never started): the client must see a definite end, not
                 # a hang.
-                assert read_until_closed(broken, timeout_seconds=4) == b""
+                # The budget is a HANG GUARD, not a sync point: the
+                # unwind is millisecond-scale, but the accept loop
+                # polls at 0.5s intervals, so a loaded host can spend
+                # several of those stalls before the cleanup runs — a
+                # too-tight budget here produced a false alarm under
+                # the full serial suite (round-17 review).
+                assert read_until_closed(broken, timeout_seconds=15) == b""
             finally:
                 broken.close()
             assert pipe_starts["count"] == 2, "the second pipe start must be the one exploding"
@@ -587,7 +593,7 @@ def test_relay_partial_pump_start_releases_slot_and_serves_next(monkeypatch):
             client = socket.create_connection(("127.0.0.1", port), timeout=15)
             try:
                 client.sendall(REQUEST)
-                body = read_response(client, timeout_seconds=4)
+                body = read_response(client, timeout_seconds=15)
             finally:
                 client.close()
             assert body.endswith(b"ok"), body
