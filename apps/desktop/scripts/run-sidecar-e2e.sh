@@ -22,7 +22,7 @@ ensure_e2e_venv() {
   local stamp_file="$venv/.mangaflow-bootstrap"
   local expected
   expected="$(cat "$@" | md5sum | cut -d' ' -f1)"
-  if [ ! -x "$venv/bin/python" ]; then
+  if ! resolve_venv_python "$venv"; then
     # Explicit propagation, mirroring the install step below: set -e is
     # suppressed inside an if-condition caller, and the function must fail
     # before any stamp write either way.
@@ -36,15 +36,39 @@ ensure_e2e_venv() {
   fi
 }
 
+# resolve_venv_python <venv_dir>: echo the venv's interpreter path, layout
+# agnostic. A Windows-hosted venv (git-bash driving Windows python — the
+# Scripts/ layout start-desktop.cmd requires at
+# .venv-desktop/Scripts/python.exe) has no bin/python, so the old bin-only
+# predicate re-ran `python3 -m venv` on EVERY invocation and the final exec
+# failed: the runner could not run on exactly the platform whose layout
+# start-desktop.cmd tells users to create this venv for. POSIX venvs keep
+# bin/python; Windows venvs carry Scripts/python.exe. Returns non-zero when
+# neither exists (fresh venv, creation needed).
+resolve_venv_python() {
+  local venv="$1"
+  if [ -x "$venv/bin/python" ]; then
+    echo "$venv/bin/python"
+    return 0
+  fi
+  if [ -x "$venv/Scripts/python.exe" ]; then
+    echo "$venv/Scripts/python.exe"
+    return 0
+  fi
+  return 1
+}
+
 install_e2e_requirements() {
   local venv="$1"; shift
+  local venv_python
+  venv_python="$(resolve_venv_python "$venv")" || return 1
   # One -r per file: `pip install -r f1 f2` would parse f2 as a requirement
   # string and fail (caught by running the real runner after the refactor).
   local pip_args=() req
   for req in "$@"; do pip_args+=(-r "$req"); done
   # The alternation keeps bash <= 4.3 (empty array + set -u = unbound
   # variable) from breaking on a zero-file call.
-  "$venv/bin/python" -m pip install -q ${pip_args[@]+"${pip_args[@]}"}
+  "$venv_python" -m pip install -q ${pip_args[@]+"${pip_args[@]}"}
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
@@ -54,14 +78,15 @@ VENV="$REPO_ROOT/.venv-desktop"
 
 ensure_e2e_venv "$VENV" "$REPO_ROOT/apps/api/requirements.txt" "$REPO_ROOT/apps/api/requirements-dev.txt"
 
-export MANGAFLOW_DESKTOP_PYTHON="$VENV/bin/python"
+VENV_PYTHON="$(resolve_venv_python "$VENV")"
+export MANGAFLOW_DESKTOP_PYTHON="$VENV_PYTHON"
 export MANGAFLOW_DESKTOP_HELPER="$DESKTOP_ROOT/sidecar/mangaflow_desktop_helper.py"
 cd "$REPO_ROOT"
 # The plan B test needs the relocated Next standalone bundle; build it when
 # missing (the build script verifies the relay destination, copies static
 # assets, and moves the tree out of `.next`'s reach).
 if [ ! -f "$REPO_ROOT/apps/desktop/dist/web-standalone/server.js" ]; then
-  "$VENV/bin/python" "$DESKTOP_ROOT/scripts/build-web-standalone.py"
+  "$VENV_PYTHON" "$DESKTOP_ROOT/scripts/build-web-standalone.py"
 fi
 # The relay/bind regression suites (test_sidecar_relay*.py) are
 # pure-loopback stdlib+pytest and run everywhere the e2e runs; the env/
@@ -76,7 +101,7 @@ fi
 # instead of depending on someone remembering a manual pytest command.
 # (pytest.ini's testpaths/norecursedirs exclude apps/desktop from a bare
 # pytest, so an unlisted file here is an untested file — #343.)
-exec "$VENV/bin/python" -m pytest \
+exec "$VENV_PYTHON" -m pytest \
   "$DESKTOP_ROOT/scripts/test_sidecar_e2e.py" \
   "$DESKTOP_ROOT/scripts/test_sidecar_relay.py" \
   "$DESKTOP_ROOT/scripts/test_sidecar_relay_bind.py" \
