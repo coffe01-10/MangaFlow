@@ -980,6 +980,17 @@ def _start_web_exit_watch(
                 # process claims node's freed ephemeral port and answered on
                 # the app's own announced origin (#507). Connection-refused
                 # is the honest failure; the helper stays up for the API.
+                # shutdown(SHUT_RDWR) FIRST: on POSIX a plain close() does
+                # not wake the relay thread parked in a blocking accept() —
+                # the stuck accept holds a kernel reference, the port stays
+                # bound, and the NEXT WebView connection is still relayed to
+                # node's freed port (one hijack window per death, R2 review
+                # of #510). shutdown() wakes the accept with an error; the
+                # subsequent close() releases the fd.
+                try:
+                    announced_sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
                 try:
                     announced_sock.close()
                 except OSError:
