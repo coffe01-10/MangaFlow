@@ -16,14 +16,14 @@ namespace MangaFlow.Native.Views;
 /// coordinates; gestures move FrameworkElements directly (zero re-render during drag)
 /// and commit into an undo stack on release. Save is one atomic PUT with request_id.
 /// </summary>
-public sealed class StoryboardView : WorkspaceView
+public sealed partial class StoryboardView : WorkspaceView
 {
     private const double BasePageWidth = 640;
     private const double MinSize = 0.03, MinBubble = 0.02, SnapThreshold = 0.012;
     private static readonly double[] PageGuides = [0, 0.5, 1];
 
     private readonly ComboBox chapterSelector = Selector("章节选择", 240);
-    private readonly StackPanel pageBar = new() { Orientation = Orientation.Horizontal };
+    private readonly StackPanel pageBar = new() { Orientation = Orientation.Vertical };
     private readonly Canvas page = new() { Background = Brushes.White };
     private readonly Border pageHost = new();
     private readonly ScrollViewer viewport = new() { Background = new SolidColorBrush(Color.FromRgb(0xD8, 0xD2, 0xC6)), VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto };
@@ -31,14 +31,14 @@ public sealed class StoryboardView : WorkspaceView
     private readonly TextBlock statusLine = new() { Style = (Style)Application.Current.FindResource("Micro") };
     private readonly ToggleButton snapButton = new() { Content = "吸附", Style = (Style)Application.Current.FindResource("Pill"), IsChecked = true };
     private readonly ToggleButton orderButton = new() { Content = "阅读序", Style = (Style)Application.Current.FindResource("Pill"), IsChecked = true };
-    private readonly Button saveButton = new() { Content = "保存本页", Style = (Style)Application.Current.FindResource("InkButton") };
-    private readonly Button undoButton = new() { Content = "撤销", Style = (Style)Application.Current.FindResource("Compact") };
-    private readonly Button redoButton = new() { Content = "重做", Style = (Style)Application.Current.FindResource("Compact") };
+    private readonly Button saveButton = new() { Content = "保存本页", IsEnabled = false, Style = (Style)Application.Current.FindResource("InkButton") };
+    private readonly Button undoButton = new() { Content = "撤销", IsEnabled = false, Style = (Style)Application.Current.FindResource("Compact") };
+    private readonly Button redoButton = new() { Content = "重做", IsEnabled = false, Style = (Style)Application.Current.FindResource("Compact") };
     private readonly TextBlock zoomLabel = new() { Text = "100%", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 8, 0) };
     private readonly Border conflictBar = new();
     // 对齐 web StoryboardToolbar 的两组开关：出血框/安全区默认关闭，页缺 canvas
     // 字段时禁用；专注模式对齐 focus-mode CSS（隐藏页面条）；重算按钮对齐
-    // storyboard-status 行的「从本页重新计算」（桌面无独立 status 行，放工具栏）。
+    // storyboard-status 行的「从本页重新计算」。
     private readonly ToggleButton bleedButton = new() { Content = "出血框", Style = (Style)Application.Current.FindResource("Pill") };
     private readonly ToggleButton safeButton = new() { Content = "安全区", Style = (Style)Application.Current.FindResource("Pill") };
     private readonly ToggleButton focusButton = new() { Content = "专注模式", Style = (Style)Application.Current.FindResource("Pill") };
@@ -118,77 +118,6 @@ public sealed class StoryboardView : WorkspaceView
         if (page.IsLoaded) page.Focus();
     }
 
-    private void BuildLayout()
-    {
-        var root = new Grid { Margin = new Thickness(4, 0, 24, 24) };
-        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-
-        var header = new Border { Style = (Style)Application.Current.FindResource("CanvasHeader") };
-        var headerGrid = new Grid();
-        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var heading = new StackPanel();
-        heading.Children.Add(new TextBlock { Text = "PAGE CAPACITY", Style = (Style)Application.Current.FindResource("SectionIndex") });
-        heading.Children.Add(new TextBlock
-        {
-            Text = "动态分页 · 内容有多少，页面就有多少",
-            FontFamily = (FontFamily)Application.Current.FindResource("Serif"),
-            FontSize = 21, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 5, 0, 0),
-        });
-        headerGrid.Children.Add(heading);
-        var stage = new StackPanel { Orientation = Orientation.Horizontal };
-        stage.Children.Add(chapterSelector);
-        stage.VerticalAlignment = VerticalAlignment.Bottom;
-        headerGrid.Children.Add(stage);
-        headerGrid.Children.Clear();
-        header.Child = new PageHeading(heading, stage);
-        root.Children.Add(header);
-
-        pageBar.Margin = new Thickness(0, 0, 0, 12);
-        Grid.SetRow(pageBar, 1);
-        root.Children.Add(pageBar);
-        // 409 冲突条（对齐 web storyboard-editor 的冲突横幅 + discardDraft）：
-        // 几何保存撞车时保留草稿，并给出「放弃草稿并重新加载」的恢复出口。
-        BuildConflictBar();
-        Grid.SetRow(conflictBar, 2);
-        root.Children.Add(conflictBar);
-        chapterSelector.SelectionChanged += async (_, _) =>
-        {
-            if (chapterSelector.SelectedItem is ComboBoxItem { Tag: string id } && id != chapterId)
-            {
-                if (!await ConfirmLeaveAsync()) { SelectChapter(chapterId); return; }
-                chapterId = id;
-                await LoadPagesAsync();
-            }
-        };
-
-        var split = new Grid();
-        split.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        split.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(320) });
-        // Canvas column.
-        var canvasColumn = new DockPanel();
-        var toolbar = BuildToolbar();
-        DockPanel.SetDock(toolbar, Dock.Top);
-        canvasColumn.Children.Add(toolbar);
-        pageHost.Background = Brushes.White;
-        pageHost.Child = page;
-        pageHost.SizeChanged += (_, _) => UpdatePageSize();
-        viewport.Content = new Border { Child = pageHost, Margin = new Thickness(24), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-        viewport.PreviewMouseWheel += OnViewportWheel;
-        canvasColumn.Children.Add(viewport);
-        Grid.SetColumn(canvasColumn, 0);
-        split.Children.Add(canvasColumn);
-        var inspectorScroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = inspector };
-        Grid.SetColumn(inspectorScroll, 1);
-        inspectorScroll.Margin = new Thickness(16, 0, 0, 0);
-        split.Children.Add(inspectorScroll);
-        root.Children.Add(split);
-        Grid.SetRow(split, 3);
-        Content = root;
-    }
 
     private void BuildConflictBar()
     {
@@ -209,66 +138,6 @@ public sealed class StoryboardView : WorkspaceView
         conflictBar.Child = row;
     }
 
-    private FrameworkElement BuildToolbar()
-    {
-        var bar = new DockPanel { Margin = new Thickness(0, 0, 0, 10) };
-        var right = new StackPanel { Orientation = Orientation.Horizontal };
-        undoButton.Click += (_, _) => Undo();
-        redoButton.Click += (_, _) => Redo();
-        undoButton.Margin = new Thickness(0, 0, 6, 0);
-        right.Children.Add(undoButton);
-        right.Children.Add(redoButton);
-        replanButton.Click += async (_, _) => await ReplanFromPageAsync();
-        replanButton.Margin = new Thickness(6, 0, 6, 0);
-        right.Children.Add(replanButton);
-        focusButton.Click += (_, _) => ApplyFocusMode();
-        focusButton.Margin = new Thickness(0, 0, 6, 0);
-        right.Children.Add(focusButton);
-        var rebuild = Kit.Act("重建本页版式…", (_, _) => RebuildLayout(), "Compact");
-        rebuild.Margin = new Thickness(6, 0, 10, 0);
-        right.Children.Add(rebuild);
-        saveButton.Click += async (_, _) => await SaveAsync();
-        right.Children.Add(saveButton);
-        DockPanel.SetDock(right, Dock.Right);
-        bar.Children.Add(right);
-        var left = new StackPanel { Orientation = Orientation.Horizontal };
-        var zoomOut = Kit.Act("－", (_, _) => SetZoom(zoom / 1.25), "Compact");
-        var zoomIn = Kit.Act("＋", (_, _) => SetZoom(zoom * 1.25), "Compact");
-        var fit = Kit.Act("适配窗口", (_, _) => FitViewport(), "Compact");
-        var reset = Kit.Act("复位", (_, _) => SetZoom(1), "Compact");
-        left.Children.Add(zoomOut);
-        left.Children.Add(zoomLabel);
-        left.Children.Add(zoomIn);
-        left.Children.Add(fit);
-        left.Children.Add(reset);
-        snapButton.Margin = new Thickness(14, 0, 6, 0);
-        left.Children.Add(snapButton);
-        orderButton.Margin = new Thickness(0, 0, 6, 0);
-        orderButton.Click += (_, _) => { RenderOrderBadges(); };
-        left.Children.Add(orderButton);
-        bleedButton.Click += (_, _) => RenderGuidesOverlay();
-        bleedButton.Margin = new Thickness(0, 0, 6, 0);
-        left.Children.Add(bleedButton);
-        safeButton.Click += (_, _) => RenderGuidesOverlay();
-        safeButton.Margin = new Thickness(0, 0, 6, 0);
-        left.Children.Add(safeButton);
-        left.Children.Add(statusLine);
-        bar.Children.Add(left);
-        // Match the web toolbar wrapping; a horizontal StackPanel otherwise measures
-        // all controls at infinite width and paints over the inspector in narrow windows.
-        var wrapped = new WrapPanel { Margin = bar.Margin };
-        foreach (var group in new[] { left, right })
-        {
-            var children = group.Children.Cast<UIElement>().ToArray();
-            group.Children.Clear();
-            foreach (var child in children)
-            {
-                if (child is FrameworkElement element) element.Margin = new Thickness(0, 0, 6, 6);
-                wrapped.Children.Add(child);
-            }
-        }
-        return wrapped;
-    }
 
     public override async void Activate(WorkspaceContext context)
     {
@@ -433,21 +302,24 @@ public sealed class StoryboardView : WorkspaceView
                 {
                     Children =
                     {
-                        new TextBlock { Text = $"P.{item.PageNumber:D3}", FontWeight = FontWeights.Bold },
-                        new TextBlock { Text = $"{item.PanelCount} 格 · {item.StateLabel}", Style = (Style)Application.Current.FindResource("Micro") },
+                        new TextBlock { Text = $"P.{item.PageNumber:D3}", FontFamily = (FontFamily)FindResource("Serif"), FontSize = 12 },
+                        new TextBlock { Text = $"{item.PanelCount} 格", FontSize = 11, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 5, 0, 4) },
+                        new TextBlock { Text = item.ContinuityStatus == "NEEDS_REVIEW" ? "待复查" : item.StateLabel, FontSize = 12 },
                     },
                 },
-                Style = (Style)Application.Current.FindResource("Chip"),
-                IsChecked = currentPage?.Id == item.Id, Margin = new Thickness(0, 0, 8, 0), MinWidth = 86,
+                Style = (Style)Application.Current.FindResource("Pill"),
+                IsChecked = currentPage?.Id == item.Id, Margin = new Thickness(0, 0, 0, 5), MinWidth = 76, MinHeight = 76, Padding = new Thickness(8),
             };
             var captured = item;
             chip.Click += async (_, _) =>
             {
+                if (currentPage?.Id == captured.Id) { chip.IsChecked = true; return; }
                 if (!await ConfirmLeaveAsync()) { chip.IsChecked = currentPage?.Id == captured.Id; return; }
                 await SelectPageAsync(captured);
             };
             pageBar.Children.Add(chip);
         }
+        RefreshPageSelector(); UpdatePageSummary();
     }
 
     private async Task SelectPageAsync(PageItem item, bool preserveDrafts = false)
@@ -511,7 +383,7 @@ public sealed class StoryboardView : WorkspaceView
                 selected = null;
                 selectedBubble = null;
                 conflictBar.Visibility = Visibility.Collapsed;   // 新数据落地即冲突解除
-                UpdateStatus("已保存");
+                MarkDirty();
             }
             else
             {
@@ -535,6 +407,7 @@ public sealed class StoryboardView : WorkspaceView
             RenderCanvas();
             RenderInspector();
             UpdatePageSize();
+            if (fitPending && viewport.ActualWidth > 100 && viewport.ActualHeight > 100) { fitPending = false; FitViewport(); }
             ApplyOutfitFocus();
         }
          catch (OperationCanceledException) { }
@@ -599,15 +472,19 @@ public sealed class StoryboardView : WorkspaceView
         {
             var badge = new Border
             {
-                Background = new SolidColorBrush(Color.FromRgb(0x15, 0x15, 0x12)),
+                Background = new SolidColorBrush(Color.FromRgb(0x15, 0x15, 0x12)), HorizontalAlignment = HorizontalAlignment.Right,
                 Padding = new Thickness(5, 2, 5, 2),
                 Child = new TextBlock { Text = $"格 {panel.ReadingOrder:D2}", FontSize = 10, Foreground = Brushes.White },
             };
-            badge.SetValue(FrameworkElement.TagProperty, "order-badge");
-            Canvas.SetLeft(badge, panel.Rect.X * page.Width + 2);
-            Canvas.SetTop(badge, panel.Rect.Y * page.Height + 2);
-            Panel.SetZIndex(badge, 45);
-            page.Children.Add(badge);
+            // Bind to the rendered panel so zoom, drag, resize and keyboard movement
+            // cannot leave badges at their previous canvas coordinates.
+            var anchor = new Grid { Tag = "order-badge", IsHitTestVisible = false };
+            anchor.Children.Add(badge);
+            anchor.SetBinding(WidthProperty, new System.Windows.Data.Binding("Width") { Source = panel.Element });
+            anchor.SetBinding(Canvas.LeftProperty, new System.Windows.Data.Binding { Source = panel.Element, Path = new PropertyPath("(0)", Canvas.LeftProperty) });
+            anchor.SetBinding(Canvas.TopProperty, new System.Windows.Data.Binding { Source = panel.Element, Path = new PropertyPath("(0)", Canvas.TopProperty) });
+            Panel.SetZIndex(anchor, 45);
+            page.Children.Add(anchor);
         }
     }
 
@@ -1124,19 +1001,26 @@ public sealed class StoryboardView : WorkspaceView
         UpdateStatus(dirty ? "有未保存修改" : "已保存");
     }
 
-    private void UpdateStatus(string label) => statusLine.Text = $"{label} · 当前 V{currentPage?.StoryboardVersion ?? 0}";
+    private void UpdateStatus(string label)
+    {
+        undoButton.IsEnabled = history.CanUndo;
+        redoButton.IsEnabled = history.CanRedo;
+        statusLine.Text = label.Contains("当前 V") ? label : $"{label} · 当前 V{currentPage?.StoryboardVersion ?? 0}";
+        var failed = label.Contains("失败") || label.Contains("冲突");
+        var changed = failed || dirty || saving || narrativeBusy;
+        statusLine.Foreground = AssetPageUi.Brush(failed ? "Danger" : changed ? "Ink" : "Success");
+        saveState.Background = AssetPageUi.Brush(failed ? "WarningBg" : changed ? "Surface" : "SuccessBg");
+        saveState.BorderBrush = AssetPageUi.Brush(failed ? "Danger" : changed ? "LineDark" : "Success");
+        UpdatePageSummary();
+    }
 
     // ============ Inspector ============
     private void RenderInspector()
     {
         inspector.Children.Clear();
         if (currentPage == null) return;
-        inspector.Children.Add(new TextBlock
-        {
-            Text = $"第 {currentPage.PageNumber} 页 · {panels.Count} 格 · {bubbles.Count} 气泡",
-            Style = (Style)Application.Current.FindResource("SectionIndex"),
-        });
-        inspector.Children.Add(Kit.Caption("修改不会删除已有候选；保存会整页提交几何。"));
+        inspector.Children.Add(InspectorHeading($"P.{currentPage.PageNumber:D3}" + (selected == null ? "" : $" / PANEL {selected.ReadingOrder:D2}"), "分镜导演台",
+            selected == null ? null : Kit.Act("编辑本格", async (_, _) => { if (selected is { } target) await EditPanel(target); }, "Compact")));
         if (selected == null && selectedBubble == null)
         {
             inspector.Children.Add(Kit.Caption("点击画布中的格子或气泡查看属性。Tab 切换格子，方向键微调，Delete 删除气泡。"));
@@ -1156,20 +1040,33 @@ public sealed class StoryboardView : WorkspaceView
             }
             return;
         }
-        var card = new StackPanel { Margin = new Thickness(0, 10, 0, 0) };
-        card.Children.Add(new TextBlock { Text = $"PANEL {panel.ReadingOrder:D2} · 分镜导演台", Style = (Style)Application.Current.FindResource("SectionIndex") });
+        var card = new StackPanel();
+        card.Children.Add(Kit.FieldLabel("几何（只读）"));
         card.Children.Add(new TextBlock
         {
             Text = $"X {panel.Rect.X:P1} · Y {panel.Rect.Y:P1} · 宽 {panel.Rect.Width:P1} · 高 {panel.Rect.Height:P1}",
-            FontFamily = (FontFamily)Application.Current.FindResource("Mono"), FontSize = 12, Margin = new Thickness(0, 6, 0, 4),
+            FontSize = 14, FontWeight = FontWeights.Bold, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 8),
         });
-        card.Children.Add(new TextBlock { Text = panel.ScriptAction.Length > 0 ? panel.ScriptAction : "待补充", TextWrapping = TextWrapping.Wrap, FontWeight = FontWeights.Bold });
-        // 气泡选中时检查器仍钉在其所属格（对齐 web inspectorPanel），对应气泡卡高亮
-        BuildDialogueEditor(card, panel);
-        var edit = Kit.Act("编辑本格", async (_, _) => await EditPanel(panel), "Compact");
-        edit.Margin = new Thickness(0, 10, 0, 0);
-        card.Children.Add(edit);
-        inspector.Children.Add(new Border { Style = (Style)Application.Current.FindResource("Card"), Padding = new Thickness(14), Child = card });
+        card.Children.Add(Kit.Caption($"阅读序 {panel.ReadingOrder} · 绘制层 Z{panel.ZOrder}" + (panel.Bleed ? " · 出血格" : "") + (panel.Borderless ? " · 无边框" : "")));
+        var source = storyboard.Array("panels").FirstOrDefault(p => p.Text("id") == panel.Id);
+        card.Children.Add(InspectorDetail("景别", Labels.ShotType.GetValueOrDefault(panel.ShotType, panel.ShotType)));
+        card.Children.Add(InspectorDetail("角度", Labels.CameraAngle.GetValueOrDefault(panel.CameraAngle, panel.CameraAngle)));
+        card.Children.Add(InspectorDetail("动作", panel.ScriptAction));
+        card.Children.Add(InspectorDetail("背景", source.Text("background")));
+        card.Children.Add(InspectorDetail("道具", string.Join("、", source.Array("props").Select(p => p.ToString())), "无"));
+        var presence = source.Element("character_presence");
+        var cast = new WrapPanel { Margin = new Thickness(0, 10, 0, 0) };
+        var members = presence.ValueKind == JsonValueKind.Object
+            ? presence.EnumerateObject().Select(p => (Id: p.Name, State: p.Value.GetString() ?? ""))
+            : source.Array("characters").Select(p => (Id: p.ToString(), State: "VISIBLE"));
+        foreach (var member in members.Where(m => m.State != "NONE"))
+            cast.Children.Add(new Border { BorderBrush = AssetPageUi.Brush("Line"), BorderThickness = new Thickness(1), Padding = new Thickness(6, 4, 6, 4), Margin = new Thickness(0, 0, 5, 5),
+                Child = new TextBlock { FontSize = 10, Text = $"{characters.FirstOrDefault(c => c.Id == member.Id)?.PrimaryName ?? "未知角色"} · {(member.State == "VISIBLE" ? "实际出镜" : member.State == "OFFSCREEN" ? "画外" : "提及")}" } });
+        card.Children.Add(cast);
+        inspector.Children.Add(InspectorSection(card));
+        var lettering = new StackPanel();
+        BuildDialogueEditor(lettering, panel);
+        inspector.Children.Add(InspectorSection(lettering));
     }
 
     // 对白编辑区（对齐 web panel-inspector 的 LETTERING 段 + dialogue-card）：
@@ -1207,7 +1104,7 @@ public sealed class StoryboardView : WorkspaceView
         var highlighted = !isNew && selectedBubble?.Id == dialogueId;
 
         var body = new StackPanel();
-        var head = new StackPanel { Orientation = Orientation.Horizontal };
+        var head = new WrapPanel();
         head.Children.Add(new TextBlock
         {
             Text = isNew ? $"新增文字气球 · BALLOON {index:D2}" : $"气泡 {index:D2} · BALLOON {index:D2}",
@@ -1520,7 +1417,7 @@ public sealed class StoryboardView : WorkspaceView
     // 独立 status 行——其内容在工具栏 statusLine/重算按钮里，保持可见）。
     private void ApplyFocusMode()
     {
-        pageBar.Visibility = focusButton.IsChecked == true ? Visibility.Collapsed : Visibility.Visible;
+        ConfigureDesk(ActualWidth > 0 ? ActualWidth : 1100, true);
     }
 
     private async Task DeleteBubbleAsync(BubbleNode bubble)
@@ -1792,6 +1689,7 @@ public sealed class StoryboardView : WorkspaceView
 
     private void SetZoom(double value)
     {
+        fitToViewport = false;
         zoom = Math.Clamp(value, 0.25, 4);
         zoomLabel.Text = $"{(int)Math.Round(zoom * 100)}%";
         UpdatePageSize();
@@ -1801,6 +1699,7 @@ public sealed class StoryboardView : WorkspaceView
     {
         var width = Math.Clamp(Math.Min((viewport.ActualWidth - 72) / BasePageWidth, (viewport.ActualHeight - 72) / (BasePageWidth * pageAspect)), 0.25, 4);
         SetZoom(width);
+        fitToViewport = true;
     }
 
     public override Task<bool> ConfirmLeaveAsync()
