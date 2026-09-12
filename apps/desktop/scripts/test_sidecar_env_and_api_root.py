@@ -540,3 +540,29 @@ def test_pid_starttime_degrades_to_none_without_proc(monkeypatch):
     import unittest.mock
     with unittest.mock.patch.object(helper, "Path", FakePath):
         assert helper._pid_starttime() is None
+
+
+def test_read_context_rejects_a_symlinked_runtime_directory(tmp_path, monkeypatch):
+    """The resolve() vs absolute() guard: a symlink planted at the runtime
+    DIRECTORY (not the journal file) redirects the ownership anchor to a
+    foreign directory — the resolve() comparison must catch it even though
+    the directory NAME still matches the token."""
+
+    token = "e" * 32
+    foreign = tmp_path / "foreign-runtime-dir"
+    (foreign / f"mangaflow-desktop-{token}").mkdir(parents=True)
+    runtime_parent = tmp_path / "runtime-link-parent"
+    runtime_parent.mkdir(parents=True)
+    runtime_dir = runtime_parent / f"mangaflow-desktop-{token}"
+    runtime_dir.symlink_to(foreign / f"mangaflow-desktop-{token}")
+    (foreign / f"mangaflow-desktop-{token}" / "owner.json").write_text(
+        "{}", encoding="utf-8"
+    )
+
+    monkeypatch.setenv("MANGAFLOW_DESKTOP_TOKEN", token)
+    monkeypatch.setenv(
+        "MANGAFLOW_DESKTOP_JOURNAL", str(runtime_dir / "owner.json")
+    )
+
+    with pytest.raises(ValueError, match="ownership mismatch"):
+        helper._read_context()
