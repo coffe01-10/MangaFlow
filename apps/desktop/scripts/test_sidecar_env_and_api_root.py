@@ -661,16 +661,27 @@ def test_apply_app_environment_creates_absent_keys(monkeypatch, tmp_path):
     ABSENT leg — keys not in the parent environ at all must still be
     force-created (a shell started from a minimal env, e.g. a systemd unit
     or CI runner, must not produce a helper missing DATABASE_URL and
-    silently defaulting to a CWD-relative sqlite file)."""
+    silently defaulting to a CWD-relative sqlite file). Snapshot/restore
+    is manual: monkeypatch.delenv on an ABSENT key records nothing, so
+    undo() could not wipe the untracked direct writes and all five keys
+    would leak into later tests."""
 
-    for key in ("MANGAFLOW_DISABLE_DOTENV", "DATABASE_URL", "STORAGE_ROOT",
-                "UPLOAD_ROOT", "WEB_ORIGIN"):
+    KEYS = ("MANGAFLOW_DISABLE_DOTENV", "DATABASE_URL", "STORAGE_ROOT",
+            "UPLOAD_ROOT", "WEB_ORIGIN")
+    for key in KEYS:
         monkeypatch.delenv(key, raising=False)
 
     helper._apply_app_environment(tmp_path, "http://tauri.localhost")
 
-    assert helper.os.environ["MANGAFLOW_DISABLE_DOTENV"] == "1"
-    assert helper.os.environ["DATABASE_URL"] == f"sqlite:///{tmp_path / 'data' / 'mangaflow.db'}"
-    assert helper.os.environ["STORAGE_ROOT"] == str(tmp_path / "storage")
-    assert helper.os.environ["UPLOAD_ROOT"] == str(tmp_path / "uploads")
-    assert helper.os.environ["WEB_ORIGIN"] == "http://tauri.localhost"
+    try:
+        assert helper.os.environ["MANGAFLOW_DISABLE_DOTENV"] == "1"
+        assert helper.os.environ["DATABASE_URL"] == f"sqlite:///{tmp_path / 'data' / 'mangaflow.db'}"
+        assert helper.os.environ["STORAGE_ROOT"] == str(tmp_path / "storage")
+        assert helper.os.environ["UPLOAD_ROOT"] == str(tmp_path / "uploads")
+        assert helper.os.environ["WEB_ORIGIN"] == "http://tauri.localhost"
+    finally:
+        # The function writes os.environ directly (untracked by
+        # monkeypatch): pop what it created so no state leaks into later
+        # tests (round-20 review, empirically proven leak).
+        for key in KEYS:
+            helper.os.environ.pop(key, None)
