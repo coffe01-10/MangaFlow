@@ -1,5 +1,7 @@
 using System.IO;
+using System.Net;
 using System.Net.Http;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
@@ -218,12 +220,14 @@ public sealed class ImageBox : ContentControl
         return new Border { Background = background, Child = new Spinner { Size = 18 } };
     }
 
-    private static Border FailedPlaceholder()
+    private static Border FailedPlaceholder(string message)
     {
         var background = Application.Current.TryFindResource("PaperDeep") as Brush ?? Brushes.LightGray;
         var text = new TextBlock
         {
-            Text = "图片加载失败", FontSize = 11, TextWrapping = TextWrapping.Wrap,
+            // #449-2：带上映射后的服务端 detail（或状态码回退），不再只有笼统一句。
+            Text = message.Length > 0 ? message : "图片加载失败", FontSize = 11, TextWrapping = TextWrapping.Wrap,
+            TextAlignment = TextAlignment.Center,
             HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
             Style = (Style)Application.Current.FindResource("Micro"),
         };
@@ -255,17 +259,28 @@ public sealed class ImageBox : ContentControl
                     if (token.IsCancellationRequested || SourceUrl != url) return;
                     // null = 下载到空数据/无法解码；同样离开 spinner 状态。
                     if (image != null) Present(image);
-                    else Content = FailedPlaceholder();
+                    else Content = FailedPlaceholder("图片为空或无法解码。");
                 });
             }
-            catch (OperationCanceledException) { }
-            catch (Exception)
+            // HttpClient 的 30s 超时表现为调用方令牌未取消的取消异常（镜像 ApiClient
+            // 的判定）：留在原地就是永远转圈的缩略图。
+            catch (OperationCanceledException) when (!token.IsCancellationRequested)
             {
-                if (token.IsCancellationRequested) return;
                 await Dispatcher.BeginInvoke(() =>
                 {
                     if (token.IsCancellationRequested || SourceUrl != url) return;
-                    Content = FailedPlaceholder();
+                    Content = FailedPlaceholder("图片加载超时，请重试。");
+                });
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                if (token.IsCancellationRequested) return;
+                var message = MediaErrors.Localize(ex);
+                await Dispatcher.BeginInvoke(() =>
+                {
+                    if (token.IsCancellationRequested || SourceUrl != url) return;
+                    Content = FailedPlaceholder(message);
                 });
             }
         }, token);
@@ -283,11 +298,98 @@ public sealed class ImageBox : ContentControl
     }
 }
 
+/// <summary>媒体直连 HttpClient 的错误映射（#449-2）：镜像 ApiClient.ThrowResponseError
+/// 的语义（ApiClient.cs 不归本文件改动，就地复制）：JSON detail（字符串 / FastAPI 422
+/// 数组 / {code,message,blockers} 对象）优先；否则本地化回退带状态码；409 追加冲突
+/// 前缀，让后端 404/409 的 detail 对图片界面可达，而不是一行生成的英文。</summary>
+internal static class MediaErrors
+{
+    public static string DescribeResponse(HttpResponseMessage response, string body, string fallbackLabel = "图片加载失败")
+    {
+        var detail = $"{fallbackLabel}（{(int)response.StatusCode}）";
+        try
+        {
+            using var error = JsonDocument.Parse(body);
+            if (error.RootElement.ValueKind == JsonValueKind.Object &&
+                error.RootElement.TryGetProperty("detail", out var value))
+                detail = DescribeDetail(value, detail);
+            else if (error.RootElement.ValueKind == JsonValueKind.String)
+                detail = error.RootElement.GetString() ?? detail;
+        }
+        catch (JsonException) { }
+        if (response.StatusCode == HttpStatusCode.Conflict)
+            detail = "数据已变化或操作条件不满足。请刷新后重试。\n" + detail;
+        return detail.Length > 2000 ? detail[..2000] : detail;
+    }
+
+    /// <summary>已映射的 InvalidOperationException/TimeoutException 携带服务端
+    /// detail 或状态码回退；其余（HttpRequestException 等）是原始英文，给本地化回退。</summary>
+    public static string Localize(Exception error) => error switch
+    {
+        InvalidOperationException or TimeoutException => error.Message,
+        _ => "图片加载失败，请检查本地服务后重试。",
+    };
+
+    private static string DescribeDetail(JsonElement value, string fallback)
+    {
+        switch (value.ValueKind)
+        {
+            case JsonValueKind.String:
+                return value.GetString() ?? fallback;
+            case JsonValueKind.Array:
+            {
+                var lines = new List<string>();
+                foreach (var item in value.EnumerateArray())
+                {
+                    if (item.ValueKind == JsonValueKind.Object &&
+                        item.TryGetProperty("msg", out var msg) && msg.ValueKind == JsonValueKind.String &&
+                        item.TryGetProperty("loc", out var loc) && loc.ValueKind == JsonValueKind.Array)
+                    {
+                        var path = string.Join(".", loc.EnumerateArray().Skip(1).Select(part => part.ToString()));
+                        lines.Add(path.Length > 0 ? $"{path}：{msg.GetString()}" : msg.GetString() ?? "");
+                    }
+                    else lines.Add(item.ToString());
+                }
+                return lines.Count > 0 ? string.Join("\n", lines) : fallback;
+            }
+            case JsonValueKind.Object:
+            {
+                var message = value.TryGetProperty("message", out var header) && header.ValueKind == JsonValueKind.String
+                    ? header.GetString() : null;
+                var blockers = new List<string>();
+                if (value.TryGetProperty("blockers", out var list) && list.ValueKind == JsonValueKind.Array)
+                    foreach (var blocker in list.EnumerateArray())
+                        if (blocker.ValueKind == JsonValueKind.Object &&
+                            blocker.TryGetProperty("message", out var text) && text.ValueKind == JsonValueKind.String &&
+                            text.GetString() is { Length: > 0 } blockerMessage)
+                            blockers.Add(blockerMessage);
+                if (message is { Length: > 0 } && blockers.Count > 0)
+                    return $"{message}：{string.Join("；", blockers)}";
+                if (blockers.Count > 0) return string.Join("；", blockers);
+                return message is { Length: > 0 } ? message : value.ToString();
+            }
+            default:
+                return value.ToString();
+        }
+    }
+}
+
 /// <summary>Shared download+decode cache for thumbnails and originals.</summary>
 public static class ImageStore
 {
-    private static readonly HttpClient http = new(new HttpClientHandler { UseProxy = false })
-    { Timeout = TimeSpan.FromSeconds(30) };
+    /// <summary>native-tests 注入点（KeyValueStore.UseLocation 同款模式）：共享静态
+    /// HttpClient 无法构造注入，检查用它回放 4xx/5xx 与成功图片响应；生产恒为 null。</summary>
+    internal static Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>? TestResponder { get; set; }
+
+    private static readonly HttpClient http = new(new RoutedHandler()) { Timeout = TimeSpan.FromSeconds(30) };
+
+    private sealed class RoutedHandler : DelegatingHandler
+    {
+        public RoutedHandler() => InnerHandler = new HttpClientHandler { UseProxy = false };
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellation) =>
+            TestResponder?.Invoke(request, cancellation) ?? base.SendAsync(request, cancellation);
+    }
+
     private static readonly Dictionary<string, BitmapImage> cache = new();
     private static readonly LinkedList<string> order = new();
     private static readonly object gate = new();
@@ -315,7 +417,13 @@ public static class ImageStore
         using (var request = new HttpRequestMessage(HttpMethod.Get, url))
         using (var response = await http.SendAsync(request, cancellation).ConfigureAwait(false))
         {
-            response.EnsureSuccessStatusCode();
+            if (!response.IsSuccessStatusCode)
+            {
+                // #449-2：原 EnsureSuccessStatusCode 只会抛生成的英文行，后端 404/409
+                // 的 detail（如素材归档冲突）到不了任何图片界面；改走 MediaErrors 映射。
+                var text = await response.Content.ReadAsStringAsync(cancellation).ConfigureAwait(false);
+                throw new InvalidOperationException(MediaErrors.DescribeResponse(response, text));
+            }
             data = await response.Content.ReadAsByteArrayAsync(cancellation).ConfigureAwait(false);
         }
         if (data.Length == 0 || data.Length > 60 * 1024 * 1024) return null;
@@ -578,6 +686,15 @@ public sealed class Lightbox : Window
         Text = "100%", Foreground = Brushes.WhiteSmoke, FontSize = 13,
         Margin = new Thickness(16, 0, 16, 0), VerticalAlignment = VerticalAlignment.Center,
     };
+    // #486-3：原图加载失败不再吞掉——失败文案 + 重试取代永久空白黑窗（与 ImageBox
+    // 的 图片加载失败 对齐，并透出 #449-2 的服务端 detail）。
+    private readonly TextBlock failureText = new()
+    {
+        Foreground = Brushes.WhiteSmoke, FontSize = 14, TextWrapping = TextWrapping.Wrap,
+        TextAlignment = TextAlignment.Center, MaxWidth = 560,
+    };
+    private readonly StackPanel failurePanel;
+    private string pendingUrl = "";
     private double zoom = 1;
     private readonly Action? onClose;
 
@@ -618,14 +735,31 @@ public sealed class Lightbox : Window
             Foreground = (Brush)Application.Current.FindResource("LineDark"),
             FontSize = 11, Margin = new Thickness(24, 8, 24, 18),
         };
+        var retry = LightboxButton("重试加载", paper);
+        retry.Margin = new Thickness(0, 14, 0, 0);
+        retry.Click += (_, _) => { if (pendingUrl.Length > 0) _ = Load(pendingUrl); };
+        failurePanel = new StackPanel
+        {
+            Visibility = Visibility.Collapsed,
+            HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+        };
+        failurePanel.Children.Add(failureText);
+        failurePanel.Children.Add(retry);
         var viewer = new ScrollViewer
         {
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-            Content = new Border
+            Content = new Grid
             {
-                Child = image, HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center,
+                Children =
+                {
+                    new Border
+                    {
+                        Child = image, HorizontalAlignment = HorizontalAlignment.Center,
+                        VerticalAlignment = VerticalAlignment.Center,
+                    },
+                    failurePanel,
+                },
             },
         };
         viewer.MouseLeftButtonDown += (_, e) => { if (e.OriginalSource is ScrollViewer) Close(); };
@@ -657,19 +791,42 @@ public sealed class Lightbox : Window
 
     private async Task Load(string url)
     {
+        pendingUrl = url;
+        await Dispatcher.BeginInvoke(() => ShowFailure(null));
         try
         {
             var bitmap = await Task.Run(() => ImageStore.LoadAsync(url, CancellationToken.None));
-            if (bitmap != null)
+            // null = 空数据/无法解码：同样按失败处理，不再停在空白黑窗。
+            if (bitmap == null) throw new InvalidOperationException("图片为空或无法解码。");
+            await Dispatcher.BeginInvoke(() =>
             {
-                await Dispatcher.BeginInvoke(() =>
-                {
-                    image.Source = bitmap;
-                    SetZoom(1);
-                });
-            }
+                image.Source = bitmap;
+                SetZoom(1);
+            });
         }
-        catch (Exception) { }
+        // CancellationToken.None 永不被调用方取消；到这里即 HttpClient 30s 超时。
+        catch (OperationCanceledException)
+        {
+            await Dispatcher.BeginInvoke(() => ShowFailure("图片加载超时，请重试。"));
+        }
+        catch (Exception ex)
+        {
+            var message = MediaErrors.Localize(ex);
+            await Dispatcher.BeginInvoke(() => ShowFailure(message));
+        }
+    }
+
+    /// <summary>null = 收起失败面板；非空 = 展示映射后的失败文案并清掉旧图。</summary>
+    private void ShowFailure(string? message)
+    {
+        if (message == null)
+        {
+            failurePanel.Visibility = Visibility.Collapsed;
+            return;
+        }
+        image.Source = null;
+        failureText.Text = message;
+        failurePanel.Visibility = Visibility.Visible;
     }
 
     private void SetZoom(double value)

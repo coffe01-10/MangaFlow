@@ -147,10 +147,31 @@ internal sealed class StyleProductionCard : Border
     {
         if (owner.Model.Length == 0) throw new InvalidOperationException("请先在上方选择本次风格测试模型。");
         if (!Profile.Flag("palette_confirmed") || paletteDirty) throw new InvalidOperationException("请先确认并保存彩色色板。");
+        await VerifyPendingBatchAsync();
         if (pendingBatch.Length == 0) { var batch = await owner.View.ApiSend("asset-generation-batches", HttpMethod.Post, new { target_type = "STYLE", target_id = Id, generation_kind = "STYLE_TEST" }); pendingBatch = batch.Text("id"); }
         await owner.View.ApiSend($"asset-generation-batches/{pendingBatch}/candidates", HttpMethod.Post, new { model_alias = owner.Model, resolution = "1K", variant = "STYLE_TEST", instruction = "" });
         batchId = pendingBatch; pendingBatch = ""; owner.Notify("风格测试任务已提交，候选会在完成后自动更新。");
     });
+
+    /// <summary>#486-1 死批次闩锁：候选 POST 失败后 pendingBatch 保留（防止重复计费），
+    /// 但批次在服务端可能已经死亡——create_asset_candidate 只接受存在且 status=OPEN
+    /// 的批次，其余一律 409「资产生成批次不存在或已关闭」。不核实就重试会让本会话
+    /// 每次生成都反复打死批次 id。这里用批次列表确认：缺席或非 OPEN 即弃用换新；
+    /// 列表读不出来（连接/服务异常）时不动闩锁直接报错——丢弃可能仍存活的批次
+    /// 会造成重复建批计费，比保持现状更糟。</summary>
+    private async Task VerifyPendingBatchAsync()
+    {
+        if (pendingBatch.Length == 0) return;
+        List<JsonElement> batches;
+        try
+        {
+            batches = (await owner.View.ApiSend(QueryBuilder.Build("asset-generation-batches", ("target_type", "STYLE"), ("target_id", Id), ("limit", 10))))
+                .EnumerateArray().ToList();
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { throw new InvalidOperationException("无法确认上一次的生成批次是否仍可用，请稍后重试。\n" + ex.Message, ex); }
+        if (!batches.Any(b => b.Text("id") == pendingBatch && b.Text("status") == "OPEN")) pendingBatch = "";
+    }
     private Task ActivateAsync()
     {
         if (!Color) { modes.BringIntoView(); return Task.CompletedTask; }
