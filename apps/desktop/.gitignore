@@ -6,4 +6,6 @@ dist/frontend/*
 !dist/frontend/index.html
 !dist/frontend/shell-tools.html
 dist/static-build.log
+dist/.build.lock
+dist/.build.lock
 src-tauri/gen/schemas/
