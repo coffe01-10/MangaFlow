@@ -93,6 +93,37 @@ def test_tauri_conf_wires_the_guard_as_before_build_command():
     assert conf["build"]["frontendDist"] == "../dist/frontend"
 
 
+def test_guard_refuses_a_reference_resolving_to_a_directory(tmp_path):
+    """A reference must resolve to a FILE: existsSync answered true for a
+    directory, so `src="chunks/"` (or the unquoted `src=chunks/>` whose
+    capture carries the trailing slash) passed the guard while the static
+    server answers 404 for the directory URL — a broken page shipped
+    silently. Red: the old check passed both quoted and unquoted forms."""
+
+    dist = tmp_path / "frontend"
+    (dist / "chunks").mkdir(parents=True)
+    (dist / "chunks" / "keep.txt").write_text("x", encoding="utf-8")
+    (dist / "index.html").write_text(
+        "<html><head>"
+        '<script src="chunks/"></script>'
+        "<script src=chunks/></script>"
+        "</head><body></body></html>",
+        encoding="utf-8",
+    )
+    result = _run_guard(dist)
+    assert result.returncode == 1, (
+        f"directory references must refuse, got rc=0: {result.stdout}"
+    )
+    assert "chunks/" in result.stderr
+
+    # Control: a real file beside the directory still passes.
+    (dist / "index.html").write_text(
+        '<script src="chunks/keep.txt"></script>'
+    )
+    result = _run_guard(dist)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_guard_ignores_remote_data_hash_and_root_references(tmp_path):
     """The reference filter's skip list is load-bearing in BOTH directions:
     remote/data/hash/root references must not be resolved against disk (a

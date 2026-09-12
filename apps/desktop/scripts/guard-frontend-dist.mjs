@@ -5,14 +5,16 @@
 // `tauri build` from a clean clone (frontendDist=../dist/frontend) would
 // otherwise embed a two-file frontend with dangling script refs — a
 // white-screen installer shipped silently. The guard walks index.html's
-// local href/src references and refuses unless every one exists on disk.
+// local href/src references and refuses unless every one resolves to a
+// real file on disk (a directory, the static server's 404 under
+// trailingSlash:false, counts as dangling).
 //
 // Wired as tauri.conf.json's beforeBuildCommand (object form with cwd="..",
 // so it is independent of where the tauri CLI was invoked). Also runnable
 // directly: `node guard-frontend-dist.mjs [distDir]` (the optional argument
 // exists for the regression test; production uses the repo layout).
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -70,9 +72,19 @@ for (const match of html.matchAll(
   references.add(ref);
 }
 
-const missing = [...references].filter(
-  (ref) => !existsSync(join(distDir, ref))
-);
+// A reference must resolve to a FILE, not merely to something that exists:
+// existsSync answers true for directories (and the unquoted form captures a
+// trailing slash — `src=chunks/>` extracts `chunks/`), so a reference to a
+// directory used to pass the guard while the static server (and the tauri
+// asset handler) answers 404 for it — a broken page shipped silently. Every
+// reference a Next export emits is a file; anything else is dangling.
+const missing = [...references].filter((ref) => {
+  try {
+    return !statSync(join(distDir, ref)).isFile();
+  } catch {
+    return true;
+  }
+});
 if (missing.length > 0) {
   fail(
     `index.html references ${missing.length} missing local asset(s), e.g. ${missing[0]} ` +
