@@ -90,18 +90,40 @@ internal sealed partial class CharacterPackagePane : Border
         content.Children.Clear();
         content.Children.Add(new TextBlock { Text = "PACKAGE DETAIL", FontSize = 13 });
         content.Children.Add(Kit.Caption("未启用角色模型包（沿用人物参考图路径）。创建后可维护四视图矩阵、表情集与默认服装，并发布不可变版本用于生成。"));
-        var create = Kit.Act("创建角色模型包", async (_, _) =>
-        {
-            try
-            {
-                await view.ApiSend(string.Format(Base, view.ProjectIdValue, character.Id), HttpMethod.Post, new { });
-                await LoadAsync();
-            }
-            catch (Exception error) { view.Notify("创建失败：" + error.Message); }
-        }, "InkButton");
+        var create = Kit.Act("创建角色模型包", async (_, _) => await CreatePackage(), "InkButton");
         create.Margin = new Thickness(0, 10, 0, 0);
         create.HorizontalAlignment = HorizontalAlignment.Left;
         content.Children.Add(create);
+    }
+
+    // #485: SaveSpec/Change 同款 busy 守卫——双击会发出两个 POST，第二个（典型 409
+    // 「包已存在」）在 LoadAsync 重绘之后落地，成功创建后反而弹「创建失败」。
+    private async Task CreatePackage()
+    {
+        if (busy || !Showing) return; busy = true; IsEnabled = false;
+        try
+        {
+            await view.ApiSend(string.Format(Base, view.ProjectIdValue, character.Id), HttpMethod.Post, new { });
+            if (!Showing) return;
+            await LoadAsync();
+        }
+        catch (Exception error) { if (Showing) view.Notify("创建失败：" + error.Message); }
+        finally { busy = false; IsEnabled = true; }
+    }
+
+    private async Task DeriveVersion()
+    {
+        if (busy || !Showing) return; busy = true; IsEnabled = false;
+        try
+        {
+            var published = package.Array("versions").FirstOrDefault(v => v.Text("id") == package.Text("published_version_id"));
+            await view.ApiSend(string.Format(Base, view.ProjectIdValue, character.Id) + "/versions", HttpMethod.Post,
+                new { base_version_id = published.ValueKind == JsonValueKind.Object ? published.Text("id") : (string?)null });
+            if (!Showing) return;
+            await LoadAsync();
+        }
+        catch (Exception error) { if (Showing) view.Notify("派生失败：" + error.Message); }
+        finally { busy = false; IsEnabled = true; }
     }
 
     private JsonElement? Draft()
@@ -128,23 +150,17 @@ internal sealed partial class CharacterPackagePane : Border
         var actions = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Right };
         var draft = Draft();
         {
-            var derive = Kit.Act("派生新版本", async (_, _) =>
-            {
-                try
-                {
-                    var published = package.Array("versions").FirstOrDefault(v => v.Text("id") == package.Text("published_version_id"));
-                    await view.ApiSend(string.Format(Base, view.ProjectIdValue, character.Id) + "/versions", HttpMethod.Post,
-                        new { base_version_id = published.ValueKind == JsonValueKind.Object ? published.Text("id") : (string?)null });
-                    await LoadAsync();
-                }
-                catch (Exception error) { view.Notify("派生失败：" + error.Message); }
-            }, "Compact");
+            // #485: 双击守卫——否则两个 POST /versions 产出重复草稿，或在成功派生后弹
+            // 虚假「派生失败」。与 SaveSpec/Change 同一 busy 互斥。
+            var derive = Kit.Act("派生新版本", async (_, _) => await DeriveVersion(), "Compact");
             derive.IsEnabled = draft == null;
             derive.MinHeight = 44;
             derive.ToolTip = "从已发布版本派生新的可编辑草稿";
             actions.Children.Add(derive);
         }
-        var compare = Kit.Act("对比历史", async (_, _) => await ShowHistory(), "Outline");
+        // #486-4: 把触发按钮传给 ShowHistory，取数期间禁用（否则第二次点击会在第一
+        // 个对话框关闭后再排一个模态）。
+        var compare = Kit.Act("对比历史", async (sender, _) => await ShowHistory(sender as Button), "Outline");
         compare.IsEnabled = package.Array("versions").Count > 1; compare.Margin = new Thickness(8, 0, 0, 0); actions.Children.Add(compare);
         var archive = Kit.Act(package.Text("status") == "ARCHIVED" ? "恢复角色包" : "归档角色包", async (_, _) =>
         {
@@ -382,13 +398,25 @@ internal sealed partial class CharacterPackagePane : Border
         finally { busy = false; IsEnabled = true; }
     }
 
+    // 测试缝：headless 回归检查用无模态实现替换发布确认（StoryboardView 的
+    // DeleteConfirmOverride 同一模式）；生产路径为 null。
+    internal Func<Task<bool>>? PublishConfirmOverride;
+
     private async Task Publish(JsonElement draft)
     {
-        if (MessageBox.Show(view.WindowHost(),
-                $"发布版本 V{draft.Number("version_number")}？发布后该版本将固化为不可变版本，用于后续分镜与生图；历史候选与已发布版本不受影响。确认发布？",
-                "发布版本", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+        // #485: 发布全程持有 busy——与 SaveSpec 互斥。否则并发的「保存草稿规格」可以
+        // 在发布快照冻结之后才落地：已发布版本丢失刚保存的编辑，而「版本已发布」与
+        // 「草稿规格已保存」两条提示同时弹出。保存进行中时发布直接拒绝（整个面板
+        // 此时已随 SaveSpec 禁用），保存完成后再次点击即可发布。
+        if (busy || !Showing) return; busy = true; IsEnabled = false;
         try
         {
+            var confirmed = PublishConfirmOverride is { } prompt
+                ? await prompt()
+                : MessageBox.Show(view.WindowHost(),
+                    $"发布版本 V{draft.Number("version_number")}？发布后该版本将固化为不可变版本，用于后续分镜与生图；历史候选与已发布版本不受影响。确认发布？",
+                    "发布版本", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
+            if (!confirmed) return;
             await view.ApiSend($"{string.Format(Base, view.ProjectIdValue, character.Id)}/versions/{draft.Text("id")}/publish", HttpMethod.Post);
             if (!Showing) return;
             view.Notify("版本已发布。");
@@ -396,6 +424,7 @@ internal sealed partial class CharacterPackagePane : Border
             await view.ReloadAssets();
         }
         catch (Exception error) { if (Showing) view.Notify("发布失败：" + error.Message); }
+        finally { busy = false; IsEnabled = true; }
     }
 
     private async Task DeleteDraft(JsonElement draft)
@@ -433,20 +462,27 @@ internal sealed partial class CharacterPackagePane : Border
             row.Children.Add(new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap });
             if (!isCurrent && version.Text("status") != "ARCHIVED")
             {
-                var activate = Kit.Act("设为发布版本", async (_, _) =>
-                {
-                    try
-                    {
-                        await view.ApiSend($"{string.Format(Base, view.ProjectIdValue, character.Id)}/activate", HttpMethod.Post,
-                            new { version_id = version.Text("id"), expected_published_version_id = package.TextOrNull("published_version_id") });
-                        await LoadAsync();
-                    }
-                    catch (Exception error) { view.Notify(error.Message); }
-                }, "Compact");
+                // #485: 双击守卫——否则第二个 POST activate 撞上 expected_published_
+                // version_id 校验，成功切换后反而弹错误提示。
+                var activate = Kit.Act("设为发布版本", async (_, _) => await ActivateVersion(version), "Compact");
                 activate.Margin = new Thickness(12, 0, 0, 0);
                 row.Children.Add(activate);
             }
             versions.Children.Add(row);
         }
+    }
+
+    private async Task ActivateVersion(JsonElement version)
+    {
+        if (busy || !Showing) return; busy = true; IsEnabled = false;
+        try
+        {
+            await view.ApiSend($"{string.Format(Base, view.ProjectIdValue, character.Id)}/activate", HttpMethod.Post,
+                new { version_id = version.Text("id"), expected_published_version_id = package.TextOrNull("published_version_id") });
+            if (!Showing) return;
+            await LoadAsync();
+        }
+        catch (Exception error) { if (Showing) view.Notify(error.Message); }
+        finally { busy = false; IsEnabled = true; }
     }
 }
