@@ -7,6 +7,11 @@ using MangaFlow.Native;
 using MangaFlow.Native.Services;
 
 // Client-side regression checks: API safety, models, preferences, navigation, director rules.
+if (args.Contains("--script"))
+{
+    NativeScriptPageChecks.Run(args.FirstOrDefault(a => !a.StartsWith("--")) ?? Path.Combine(Path.GetTempPath(), "mangaflow-script-checks"));
+    return 0;
+}
 if (args.Contains("--references"))
 {
     NativeReferenceChecks.Run(args.FirstOrDefault(a => !a.StartsWith("--")) ?? Path.Combine(Path.GetTempPath(), "mangaflow-reference-checks"));
