@@ -26,7 +26,9 @@ fi
 # build lock suite keeps the shared dist/ writers mutually exclusive
 # (#350); the assemble suite pins the staging sweep/swap contracts and
 # their dist-lock serialization (#409/#457); the build-web-standalone
-# suite pins the bundle swap's clear-refuse and atomic stamp (#461).
+# suite pins the bundle swap's clear-refuse and atomic stamp (#461); the
+# frontend-dist guard suite pins tauri's pre-bundle refusal of the
+# placeholder export (#444).
 # Keep them all in this runner so the contracts stay exercised
 # instead of depending on someone remembering a manual pytest command.
 # (pytest.ini's testpaths/norecursedirs exclude apps/desktop from a bare
@@ -39,4 +41,5 @@ exec "$VENV/bin/python" -m pytest \
   "$DESKTOP_ROOT/scripts/test_dist_build_lock.py" \
   "$DESKTOP_ROOT/scripts/test_assemble_web_resources.py" \
   "$DESKTOP_ROOT/scripts/test_build_web_standalone.py" \
+  "$DESKTOP_ROOT/scripts/test_guard_frontend_dist.py" \
   -v "$@"

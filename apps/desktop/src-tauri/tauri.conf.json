@@ -4,7 +4,11 @@
   "version": "0.2.0",
   "identifier": "com.mangaflow.desktop",
   "build": {
-    "frontendDist": "../dist/frontend"
+    "frontendDist": "../dist/frontend",
+    "beforeBuildCommand": {
+      "script": "node scripts/guard-frontend-dist.mjs",
+      "cwd": ".."
+    }
   },
   "app": {
     "withGlobalTauri": true,

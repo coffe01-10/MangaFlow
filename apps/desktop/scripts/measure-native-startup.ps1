@@ -27,6 +27,32 @@ function Stop-SampleTree {
     }
     & taskkill /PID $SamplePid /T /F | Out-Null
 }
+
+function Get-DescendantPids {
+    # #444: the python sidecar is a GRANDCHILD (WPF → native-host → python),
+    # but Win32_Process ParentProcessId matches DIRECT children only — the
+    # historical single-level snapshot could not see a leaked sidecar still
+    # holding the API port, so `LeftoverChildren` reported a false (empty).
+    # Walk the whole descendant tree, deduped (a pid reattached to an
+    # earlier ancestor must not loop the walk), bounded by the dedup set.
+    param([int]$RootPid)
+    $seen = @{}
+    $frontier = @($RootPid)
+    while ($frontier.Count -gt 0) {
+        $next = @()
+        foreach ($parentPid in $frontier) {
+            $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $parentPid" -ErrorAction SilentlyContinue)
+            foreach ($child in $children) {
+                if (-not $seen.ContainsKey($child.ProcessId)) {
+                    $seen[$child.ProcessId] = $child.Name
+                    $next += $child.ProcessId
+                }
+            }
+        }
+        $frontier = $next
+    }
+    return $seen
+}
 try {
     for ($i = 1; $i -le $Samples; $i++) {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -51,15 +77,27 @@ try {
         $results += [pscustomobject]@{ Sample = $i; WindowHandleMs = $windowMs; InputIdleMs = $idleMs }
         # Give the window a moment to settle its first dashboard load, then close it.
         Start-Sleep -Seconds 3
-        $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($proc.Id)" -ErrorAction SilentlyContinue)
+        # Descendant snapshot BEFORE the close (#444): recursive, so a
+        # grandchild sidecar counts as this run's child. Taken right before
+        # CloseMainWindow; late spawns after this point are invisible to the
+        # leftover check by construction — a known limit, noted because the
+        # docs'「5 秒内零残留」claims cite this script (NUI-7 rows in
+        # docs/native-ui-migration.md and docs/roadmap.md were collected with
+        # the historical SINGLE-LEVEL sweep and need re-measurement under the
+        # recursive one before being cited again).
+        $children = Get-DescendantPids -RootPid $proc.Id
         $cleanClose = $proc.CloseMainWindow()
         $proc.WaitForExit(45000) | Out-Null
         $exited = $proc.HasExited
-        # Observe exit cleanup: children spawned by this run must not outlive it by 5s.
+        # Observe exit cleanup: descendants spawned by this run must not
+        # outlive it by 5s. A pid alive again with a DIFFERENT image is a
+        # reuse, not a leftover (Win32_Process names carry the .exe suffix;
+        # Get-Process ProcessName does not).
         Start-Sleep -Seconds 5
         $leftover = @()
-        foreach ($child in $children) {
-            if (Get-Process -Id $child.ProcessId -ErrorAction SilentlyContinue) { $leftover += "$($child.Name):$($child.ProcessId)" }
+        foreach ($childPid in $children.Keys) {
+            $still = Get-Process -Id $childPid -ErrorAction SilentlyContinue
+            if ($still -and (($still.ProcessName + '.exe') -eq $children[$childPid])) { $leftover += "$($children[$childPid]):$childPid" }
         }
         $results[-1] | Add-Member -NotePropertyName CleanClose -NotePropertyValue $cleanClose
         $results[-1] | Add-Member -NotePropertyName Exited -NotePropertyValue $exited
