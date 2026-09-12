@@ -637,3 +637,60 @@ def test_relay_survives_a_half_broken_pipe_upstream(monkeypatch):
         stop()
     finally:
         api.close()
+
+class TestRelayLimiterUnit:
+    """Unit pins for the limiter's own arithmetic (the connection-level test
+    covers the cap's observable effect; these pin the counter under
+    contention and its clamp, without sockets)."""
+
+    def test_release_clamps_at_zero_and_cap_is_the_snapshot(self):
+        limiter = helper._RelayLimiter(2)
+        assert limiter.max_connections == 2, "the snapshot must be the cap"
+        # Release with nothing live: must clamp at zero, never go negative
+        # (a negative live count would permanently shrink the capacity).
+        limiter.release()
+        limiter.release()
+        assert limiter.try_acquire(), "capacity must survive stray releases"
+        # Full cycle: this second acquire fills the cap (1 live already),
+        # the next is refused, one release frees exactly one slot, and two
+        # releases return to zero (clamped).
+        assert limiter.try_acquire()
+        assert not limiter.try_acquire(), "the third acquire must be refused"
+        limiter.release()
+        assert limiter.try_acquire(), "a release must free exactly one slot"
+        limiter.release()
+        limiter.release()
+        # Back at zero (clamped): one more acquire must succeed.
+
+    def test_try_acquire_is_atomic_under_thread_contention(self):
+        """N threads racing M slots: exactly M acquires succeed overall —
+        a torn read of _live under the lock (or a missing lock) lets the
+        count overshoot. Threads then release in the same order, and the
+        counter returns to exactly zero (clamp or leak would show here)."""
+
+        limiter = helper._RelayLimiter(8)
+        successes = []
+        lock = threading.Lock()
+        barrier = threading.Barrier(16)
+
+        def contender():
+            barrier.wait()  # maximize contention on the same instant
+            if limiter.try_acquire():
+                with lock:
+                    successes.append(1)
+
+        threads = [threading.Thread(target=contender) for _ in range(16)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert len(successes) == 8, (
+            f"exactly 8 of 16 contenders must win: {len(successes)}"
+        )
+        # Drain: each winner releases once; stray releases are impossible
+        # by construction here, so the counter must be back at zero —
+        # observable as 8 more successful acquires.
+        for _ in range(8):
+            limiter.release()
+        assert limiter.try_acquire(), "capacity must be fully restored"
+
