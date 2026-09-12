@@ -1005,3 +1005,94 @@ def test_node_child_env_strips_ownership_secrets_and_hooks(monkeypatch):
     ):
         assert name not in env, f"{name} must not ride into the web-facing child"
     assert env["PATH"] == "/usr/bin", "unrelated parent env must ride along"
+
+
+def test_web_exit_watch_logs_a_mid_session_crash_and_stays_silent_on_stop(monkeypatch):
+    """Unit pins for the detection half the e2e covers only from the log
+    side: (1) a node process that dies WITHOUT the shutdown event set must
+    produce exactly one "exited mid-session" line naming the exit code;
+    (2) the same death WITH the event set (a deliberate stop that reaped
+    the child first) must stay silent — the R2 check-then-act regression;
+    (3) the watcher must return after the log, not loop. Runs against the
+    real _start_web_exit_watch with fake Popen doubles; no node, no ports."""
+
+    import importlib.util
+    import io
+    import threading
+
+    spec = importlib.util.spec_from_file_location(
+        "mangaflow_desktop_helper_watch", str(HELPER)
+    )
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+
+    class FakeNode:
+        def __init__(self, code):
+            self._code = code
+
+        def poll(self):
+            return self._code
+
+    class FakeSock:
+        """Announced-socket double: records closes (#507's contract)."""
+
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    captured = io.StringIO()
+    monkeypatch.setattr(helper, "_log", lambda message: captured.write(message + "\n"))
+    sock = FakeSock()
+
+    # (1) Crash without shutdown: one line naming the code, the announced
+    # socket is closed (a dead origin must refuse, not relay to a squatter),
+    # and the thread returns.
+    shutdown = threading.Event()
+    thread = helper._start_web_exit_watch(FakeNode(3), shutdown, sock)
+    thread.join(timeout=5)
+    assert not thread.is_alive(), "the watcher must return after logging"
+    assert sock.closed, "the announced socket must close on mid-session death"
+    lines = [line for line in captured.getvalue().splitlines() if line]
+    assert len(lines) == 1, lines
+    assert "exited mid-session" in lines[0] and "code 3" in lines[0]
+
+    # (2) Deliberate stop reaped the child first: the event settles the
+    # check-then-act race — no log, watcher returns promptly.
+    captured.truncate(0)
+    captured.seek(0)
+    shutdown = threading.Event()
+    shutdown.set()
+    live_sock = FakeSock()
+    thread = helper._start_web_exit_watch(FakeNode(0), shutdown, live_sock)
+    thread.join(timeout=5)
+    assert not live_sock.closed, (
+        "a stop-side reap must NOT close the announced socket (the helper's "
+        "own close path owns it)"
+    )
+    assert not thread.is_alive()
+    assert captured.getvalue() == "", (
+        "a deliberate stop must not log a spurious mid-session crash"
+    )
+
+    # (3) A live node with the event unset keeps watching (no log, still
+    # alive) until the event fires — the poll cadence is the loop, not a
+    # one-shot.
+    captured.truncate(0)
+    captured.seek(0)
+
+    class LiveNode:
+        def poll(self):
+            return None
+
+    shutdown = threading.Event()
+    live_sock2 = FakeSock()
+    thread = helper._start_web_exit_watch(LiveNode(), shutdown, live_sock2)
+    thread.join(timeout=0.6)
+    assert not live_sock2.closed, "a live node must keep the announced port"
+    assert thread.is_alive(), "a live node must keep the watcher running"
+    assert captured.getvalue() == ""
+    shutdown.set()
+    thread.join(timeout=5)
+    assert not thread.is_alive(), "the event must release a live watcher"
