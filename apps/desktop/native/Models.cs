@@ -24,6 +24,14 @@ public static class JsonFields
     public static bool Flag(this JsonElement json, string name) =>
         json.ValueKind == JsonValueKind.Object &&
         json.TryGetProperty(name, out var value) && value.ValueKind is JsonValueKind.True;
+    /// <summary>Soft-delete marker for timestamp columns such as deleted_at: the API serializes
+    /// them as null (live) or an ISO datetime string (deleted) — the web filters with
+    /// `item.deleted_at == null`; a legacy boolean true also counts. Flag() above only matches
+    /// real booleans and stays reserved for those fields (#484/#440).</summary>
+    public static bool FlagDate(this JsonElement json, string name) =>
+        json.ValueKind == JsonValueKind.Object &&
+        json.TryGetProperty(name, out var value) &&
+        value.ValueKind is JsonValueKind.String or JsonValueKind.True;
     public static JsonElement Element(this JsonElement json, string name)
     {
         if (json.ValueKind == JsonValueKind.Object &&
@@ -319,7 +327,9 @@ public record SceneAssetItem(string Id, string Name)
             ? interior.ValueKind == JsonValueKind.True
             : null,
         Version = s.Number("version"),
-        Deleted = s.Flag("deleted_at"),
+        // deleted_at 是 null | ISO 时间戳字符串（后端 schemas），不是布尔 —— 旧
+        // Flag() 只匹配 JsonValueKind.True，生产数据里 Deleted 恒为 false（#484）。
+        Deleted = s.FlagDate("deleted_at"),
         References = s.Array("references"),
         Variants = s.Array("variants"),
     };
