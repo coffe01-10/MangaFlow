@@ -20,6 +20,7 @@ from __future__ import annotations
 import errno
 import socket
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -700,7 +701,6 @@ class TestRelayLimiterUnit:
         )
 
 
-
 class _FakeProcess:
     """Process double for the close() escalation ladder: terminate succeeds
     (graceful), or wait hangs until killed (escalation), or hangs forever
@@ -725,11 +725,9 @@ class _FakeProcess:
         if self.mode == "needs-kill":
             self.mode = "exited"
 
-    def wait(self, timeout=None):
+    def wait(self, timeout=None) -> int:
         self.wait_calls += 1
         if self.mode != "exited":
-            import subprocess
-
             raise subprocess.TimeoutExpired("fake", timeout)
         return 0
 
@@ -790,8 +788,9 @@ def test_webserver_close_releases_the_second_socket_when_the_first_fails():
     """E3-F2: both closes are guarded — a raising close (EBADF from a
     dead fd) must be SUPPRESSED and must not skip the second socket.
     Requiring no raise AND the healthy socket released pins the guard in
-    both directions: a guard removal re-raises, a guard narrowing to
-    only-the-first-socket strands the relay."""
+    the directions that matter: removing the guard re-raises out of
+    close(), and stranding the relay (narrowing the tuple, or an early
+    return/break in the except) leaves the healthy socket unclosed."""
     process = _FakeProcess("exited")
     broken, healthy = _FakeSock(close_raises=True), _FakeSock()
     helper.WebServer(process, 1, 2, broken, healthy).close()  # must not raise
