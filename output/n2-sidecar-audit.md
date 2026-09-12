@@ -533,3 +533,23 @@
 - **master 前进消化**：#574（他组 API-bind 钉死，§25 已交叉评审）、#576（我方 clean-clone
   钉死）已并；#577（他组，plan-B mid-session 死后端口断言去空洞）——wknd 分支已 merge
   origin/master。
+
+## 27. 20260912-wknd 续十一（lead 指令：#562/#538 CONFLICTING 处置 + 下一小 pin）
+
+- **#562/#538 打捞核查（行级）**：两者对 master 的缺失行——#562 仅 4 行 happy-path 尾部
+  （`written == record` + `.pending` 不存在断言）；master 合并版以**更强形式**取代：
+  字节级 sorted-key 序列化比较 + `assert not pending.exists()`。#538 的缺失行全是旧单测试
+  的名称/docstring——master 拆分双测试（live anchor/正 int/确定性/直读 /proc 交叉核对/
+  降级）完整覆盖。**结论：两者 rebase 均为空 diff，无可打捞**；CONFLICTING 仅为旧分支的
+  mergeability 态。已在两 PR 留确认说明，保持 CLOSED。
+- **下一小 pin → PR #581（test-only，待 lead）**：`WebServer.close()` 此前无直接钉子——
+  terminate → wait(5) → kill → reap 升级梯、已退出子进程跳过、E3-F2 守卫双 socket 释放
+  只存在于注释。5 个 process/socket double 测试钉死：优雅终止不升级；挂死升级 kill + 及时
+  reap（wait_calls==2）；不可 reap 子进程不抛且双 socket 照放；已退出子进程零 terminate；
+  守卫方向——close 抛 OSError 被抑制且第二个 socket 照放（删守卫→重抛；收窄元组/提前
+  返回→搁浅 relay）。
+- **第 15 轮审查（1 子代理，文件/行级，APPROVE，4 LOW 全部返工）**：double 保真（wait 计数
+  含超时消耗、unreapable 建模、poll 语义）逐项确认；F1 subprocess import 提升至模块顶
+  （文件惯例）、F2 空行规整、F3 wait 返回注解、F4 E3-F2 docstring 精确化（搁浅变异 =
+  元组收窄/except 内提前返回）。ruff clean；22 passed 双 cwd；每测试对应真实源码行的
+  独立红变异表齐备（评审实证）。
