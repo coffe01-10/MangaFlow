@@ -315,22 +315,28 @@ public sealed class ScriptView : WorkspaceView
         }
     }
 
-    internal async Task SaveOutfitAssignment(JsonElement scene, string characterId, string? outfitId)
+    /// <summary>
+    /// #426: wardrobe save now sends ONE full-map PATCH. The caller merges the live
+    /// selector state into the final assignment map before calling; this method must
+    /// never re-derive assignments from its own stale snapshot (the old per-character
+    /// loop re-parsed the same render-time scene per call, so a removal landed by
+    /// PATCH #1 was resurrected by PATCH #2). The payload also carries the observed
+    /// scene version — schemas.SceneOutfitUpdate's optional optimistic-lock token —
+    /// so concurrent edits 409 instead of last-write-wins.
+    /// </summary>
+    internal async Task SaveOutfitAssignments(JsonElement scene, IReadOnlyDictionary<string, string> assignments)
     {
         try
         {
             // outfit_assignments 是 {characterId: outfitId} 字典(后端 SceneRead);
             // 按数组解析会得到空映射,后端全量替换会悄悄清掉其他角色的指定。
-            var assignments = scene.StringMap("outfit_assignments");
-            if (outfitId == null) assignments.Remove(characterId);
-            else assignments[characterId] = outfitId;
             await Api.SendAsync($"scenes/{scene.Text("id")}/outfits", HttpMethod.Patch,
-                new { assignments }, cancellation: lifetime.Token);
+                new { assignments, version = scene.Number("version") }, cancellation: lifetime.Token);
             notice.Text = "本场服装指定已保存；相关页面会标记为待复查。";
             Cache.Invalidate("script:" + chapterId, "pages:" + chapterId);
             await LoadScriptAsync();
         }
-         catch (OperationCanceledException) { }
+        catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             MessageBox.Show(Host, error.Message, "服装指定未保存", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -562,13 +568,25 @@ internal sealed class SceneSection : Border
         var cancel = Kit.Act("取消", (_, _) => { editing = false; Render(); }, "Ghost");
         cancel.Margin = new Thickness(0, 0, 10, 0);
         actions.Children.Add(cancel);
-        var save = Kit.Act("保存场景", async (_, _) =>
+        // #448: 双击保存会用同一份捕获的 scene version 发出两个 PATCH，第二个必然
+        // 409 并弹出假的「保存未完成」冲突框。在途标志挡住第二次进入；禁用按钮只是
+        // 视觉反馈（RaiseEvent/合成点击仍会触达禁用按钮，标志才是守卫）。
+        var saveBusy = false;
+        var save = Kit.Act("保存场景", async (sender, _) =>
         {
-            await view.LoadScene(this, scene, new Dictionary<string, object?>
+            if (saveBusy) return;
+            saveBusy = true;
+            var button = (Button)sender!;
+            button.IsEnabled = false;
+            try
             {
-                ["location"] = location.Text, ["time_label"] = time.Text, ["weather"] = weather.Text,
-                ["purpose"] = purpose.Text, ["emotional_arc"] = emotionalArc.Text,
-            });
+                await view.LoadScene(this, scene, new Dictionary<string, object?>
+                {
+                    ["location"] = location.Text, ["time_label"] = time.Text, ["weather"] = weather.Text,
+                    ["purpose"] = purpose.Text, ["emotional_arc"] = emotionalArc.Text,
+                });
+            }
+            finally { saveBusy = false; button.IsEnabled = true; }
         }, "InkButton");
         actions.Children.Add(save);
         panel.Children.Add(actions);
@@ -602,7 +620,10 @@ internal sealed class SceneSection : Border
             var selectedAsset = (assetSelector.SelectedItem as ComboBoxItem)?.Tag as string;
             var asset = sceneAssets.FirstOrDefault(a => a.Id == selectedAsset);
             if (asset != null)
-                foreach (var variant in asset.Variants)
+                // #440: 场景详情接口内嵌的 variants 含已归档变体（列表裁剪只发生在
+                // 资产级），已归档变体不可选 —— 保存会 422「场景变体已归档」。
+                // 与 SceneWorkspace.Deleted 同一判定：deleted_at 为时间戳字符串即归档。
+                foreach (var variant in asset.Variants.Where(v => !v.FlagDate("deleted_at")))
                 {
                     var name = variant.Text("name");
                     var item = new ComboBoxItem { Tag = variant.Text("id"), Content = variant.Flag("is_canonical") ? $"{name}（默认）" : name };
@@ -652,17 +673,37 @@ internal sealed class SceneSection : Border
             selectors.Add((character.Id, selector));
             panel.Children.Add(row);
         }
-        var save = Kit.Act("保存服装指定", async (_, _) =>
+        // #426/#448: 终版 assignments 在保存瞬间从「实时选择器状态 + 渲染时快照」
+        // 合并一次得到，单个 PATCH 全量提交。旧实现按角色循环、每次调用都从同一份
+        // 过期快照重建全量映射，PATCH #1 刚删掉的指定会被 PATCH #2 原样复活。
+        // 在途标志挡住双击（PATCH 现在携带 version，重复提交的后果从悄悄覆盖升级
+        // 成真 409，必须像场景/情节拍保存一样挡住第二次进入）。
+        var saveBusy = false;
+        var save = Kit.Act("保存服装指定", async (sender, _) =>
         {
+            if (saveBusy) return;
             var current = scene.StringMap("outfit_assignments");
-            var dirty = selectors.Where(s =>
+            var dirty = selectors.Any(s =>
                 ((s.Selector.SelectedItem as ComboBoxItem)?.Tag as string ?? "")
                 != (current.TryGetValue(s.CharacterId, out var value) ? value : ""));
-            foreach (var (characterId, selector) in dirty)
+            if (!dirty) return;
+            saveBusy = true;
+            var button = (Button)sender!;
+            button.IsEnabled = false;
+            try
             {
-                var outfitId = (selector.SelectedItem as ComboBoxItem)?.Tag as string;
-                await view.SaveOutfitAssignment(scene, characterId, outfitId.Length > 0 ? outfitId : null);
+                // 未在本衣橱区渲染的角色（无服装档案）保留服务端现状，只覆盖表单内
+                // 可编辑的角色；选择「未指定」= 从终版映射里删除该角色。
+                var final = current;
+                foreach (var (characterId, selector) in selectors)
+                {
+                    var outfitId = (selector.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
+                    if (outfitId.Length == 0) final.Remove(characterId);
+                    else final[characterId] = outfitId;
+                }
+                await view.SaveOutfitAssignments(scene, final);
             }
+            finally { saveBusy = false; button.IsEnabled = true; }
         }, "Compact");
         save.Margin = new Thickness(0, 8, 0, 0);
         panel.Children.Add(save);
@@ -774,22 +815,33 @@ internal sealed class BeatRow : Border
         var cancel = Kit.Act("取消", (_, _) => { editing = false; Render(); }, "Ghost");
         cancel.Margin = new Thickness(0, 0, 10, 0);
         actions.Children.Add(cancel);
-        var save = Kit.Act("保存情节拍", async (_, _) =>
+        // #448: 与场景保存同一在途守卫 —— 双击会带同一份 beat version 发两个
+        // PATCH，第二个 409 弹出假的「保存未完成」冲突框。
+        var saveBusy = false;
+        var save = Kit.Act("保存情节拍", async (sender, _) =>
         {
+            if (saveBusy) return;
             if (action.Text.Trim().Length == 0) { MessageBox.Show(Window.GetWindow(this), "可视化动作不能为空。", "保存情节拍"); return; }
-            await view.SaveBeat(this, beat, new Dictionary<string, object?>
+            saveBusy = true;
+            var button = (Button)sender!;
+            button.IsEnabled = false;
+            try
             {
-                ["action"] = action.Text,
-                ["speaker_name"] = speaker.Text,
-                ["emotion"] = emotion.Text,
-                ["dialogue"] = dialogue.Text,
-                ["narration"] = narration.Text,
-                ["subtext"] = subtext.Text,
-                ["importance"] = Math.Round(importance.Value, 2),
-                ["must_visualize"] = mustVisualize.IsChecked == true,
-                ["mergeable"] = mergeable.IsChecked == true,
-                ["page_turn_hook"] = pageTurn.IsChecked == true,
-            });
+                await view.SaveBeat(this, beat, new Dictionary<string, object?>
+                {
+                    ["action"] = action.Text,
+                    ["speaker_name"] = speaker.Text,
+                    ["emotion"] = emotion.Text,
+                    ["dialogue"] = dialogue.Text,
+                    ["narration"] = narration.Text,
+                    ["subtext"] = subtext.Text,
+                    ["importance"] = Math.Round(importance.Value, 2),
+                    ["must_visualize"] = mustVisualize.IsChecked == true,
+                    ["mergeable"] = mergeable.IsChecked == true,
+                    ["page_turn_hook"] = pageTurn.IsChecked == true,
+                });
+            }
+            finally { saveBusy = false; button.IsEnabled = true; }
         }, "InkButton");
         actions.Children.Add(save);
         panel.Children.Add(actions);
