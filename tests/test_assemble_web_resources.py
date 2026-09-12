@@ -349,8 +349,14 @@ def test_sweep_spares_the_recovery_copy_when_res_is_missing(tmp_path):
     assert "Manually move" in str(refusal.value)
     # The refusal fired before anything was staged: the same-pid recovery
     # copy AND the foreign-pid tree survive untouched (nothing deleted).
-    # The same-pid .tmp- staging sibling is the one exception — the
-    # finally-block's own staging cleanup claims it (it was never a copy
-    # of anything, just this run's half-staged tree).
+    # The same-pid .tmp- staging sibling is the one exception — _clear
+    # claims it BEFORE the refusal (it was never a copy of anything, just
+    # this run's half-staged tree); the finally-block never runs on this
+    # path.
     assert (recovery / "standalone" / "server.js").read_bytes() == b"recovery-copy"
     assert (foreign / "junk" / "y").read_bytes() == b"y"
+    # Pin the .tmp claim itself: a regression that removes _clear(staging)
+    # or moves it after the refusal would leave the half-staged tree.
+    assert not tmp_sibling.exists(), (
+        "_clear must claim the same-pid staging sibling before the refusal"
+    )
