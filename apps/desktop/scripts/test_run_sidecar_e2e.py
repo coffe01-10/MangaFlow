@@ -190,22 +190,31 @@ def test_scripts_layout_venv_is_recognized_without_recreation(tmp_path):
     """A Windows-hosted venv (Scripts/python.exe — the layout start-desktop.cmd
     requires) must resolve to its interpreter WITHOUT triggering a re-create
     or a re-install: the old bin-only predicate re-ran `python3 -m venv` on
-    every invocation and the final exec failed, making the runner unusable
-    on the platform whose layout this venv layout comes from."""
+    every invocation and the install step then failed on the missing
+    bin/python. A failing python3 shim makes any creation attempt red."""
 
-    rc, out = _run_harness_in(
-        tmp_path,
-        'mkdir -p "$VENV/Scripts" && printf "#!/bin/sh\\n" > "$VENV/Scripts/python.exe" '
-        '&& chmod +x "$VENV/Scripts/python.exe"',
+    # A FAILING python3 shim is the creation detector: resolution must
+    # succeed from Scripts/ alone, so the shim is never invoked (rc=0
+    # proves no re-create happened). A bin-only predicate (master) fails
+    # resolution, invokes the shim, and lands at ENSURE_RC=3 — red.
+    setup = (
+        'mkdir -p "$VENV/Scripts" shim && '
+        'printf "#!/bin/sh\\n" > "$VENV/Scripts/python.exe" '
+        '&& chmod +x "$VENV/Scripts/python.exe" && '
+        'printf "#!/bin/sh\\nexit 3\\n" > shim/python3 '
+        '&& chmod +x shim/python3 && PATH="$PWD/shim:$PATH"'
     )
+    rc, out = _run_harness_in(tmp_path, setup)
     assert rc == 0, out
     assert "ENSURE_RC=0" in out, out
     assert "PIP_CALLS=1" in out, "no stamp yet: the install must run once"
     assert f"STAMP={_requirements_hash()}" in out
     # The second run must neither re-create nor re-install (the stamp now
-    # matches through the Scripts-layout resolution).
-    rc, out2 = _run_harness_in(tmp_path, "true")
+    # matches through the Scripts-layout resolution) — the failing shim
+    # stays in PATH to catch any latent creation attempt.
+    rc, out2 = _run_harness_in(tmp_path, setup)
     assert rc == 0, out2
+    assert "ENSURE_RC=0" in out2, out2
     assert "PIP_CALLS=0" in out2, out2
 
 

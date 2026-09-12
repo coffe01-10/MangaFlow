@@ -22,7 +22,9 @@ ensure_e2e_venv() {
   local stamp_file="$venv/.mangaflow-bootstrap"
   local expected
   expected="$(cat "$@" | md5sum | cut -d' ' -f1)"
-  if ! resolve_venv_python "$venv"; then
+  # >/dev/null: resolve echoes the interpreter on success; in this
+  # if-context that stdout would leak into the caller's stream.
+  if ! resolve_venv_python "$venv" >/dev/null; then
     # Explicit propagation, mirroring the install step below: set -e is
     # suppressed inside an if-condition caller, and the function must fail
     # before any stamp write either way.
@@ -40,9 +42,10 @@ ensure_e2e_venv() {
 # agnostic. A Windows-hosted venv (git-bash driving Windows python — the
 # Scripts/ layout start-desktop.cmd requires at
 # .venv-desktop/Scripts/python.exe) has no bin/python, so the old bin-only
-# predicate re-ran `python3 -m venv` on EVERY invocation and the final exec
-# failed: the runner could not run on exactly the platform whose layout
-# start-desktop.cmd tells users to create this venv for. POSIX venvs keep
+# predicate re-ran `python3 -m venv` on EVERY invocation and the install
+# step (bin/python -m pip) failed before any exec: the runner could not run
+# on exactly the platform whose layout start-desktop.cmd tells users to
+# create this venv for. POSIX venvs keep
 # bin/python; Windows venvs carry Scripts/python.exe. Returns non-zero when
 # neither exists (fresh venv, creation needed).
 resolve_venv_python() {
