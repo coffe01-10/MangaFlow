@@ -189,7 +189,16 @@ def test_guard_unquoted_value_matches_browser_url_not_a_prefix(tmp_path):
     white-screens. So each run plants ONLY the truncated prefix and must
     still refuse: the truncated capture would find it and pass."""
 
-    for full_name in ('chunk"quoted.js', "chunk\u00a0nbsp.js"):
+    # Refusal phase for both shapes: only the truncated prefix (`chunk`,
+    # NTFS-legal) is planted — a truncating capture resolves it and passes
+    # (rc=0), so the rc==1 assert is the red detector. The positive control
+    # runs only for the NBSP name: `"` is in the NTFS/FAT forbidden filename
+    # set, so creating the quoted name would error the suite on the repo's
+    # primary platform (round-11 review).
+    for full_name, positive_control in (
+        ('chunk"quoted.js', False),
+        ("chunk\u00a0nbsp.js", True),
+    ):
         dist = tmp_path / "frontend"
         dist.mkdir(exist_ok=True)
         (dist / "chunk").write_text("// truncated prefix exists", encoding="utf-8")
@@ -204,8 +213,10 @@ def test_guard_unquoted_value_matches_browser_url_not_a_prefix(tmp_path):
         )
         assert full_name in result.stderr, result.stderr
 
-        # Positive control: the real (full) name on disk passes — the refusal
-        # above is the name mismatch, not the syntax.
+        if not positive_control:
+            continue
+        # Positive control: the real (full) name on disk passes — the
+        # refusal above is the name mismatch, not the syntax.
         (dist / full_name).write_text("// chunk", encoding="utf-8")
         result = _run_guard(dist)
         assert result.returncode == 0, result.stdout + result.stderr
