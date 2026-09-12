@@ -973,6 +973,7 @@ def test_node_child_env_strips_ownership_secrets_and_hooks(monkeypatch):
     monkeypatch.setenv("MANGAFLOW_DESKTOP_JOURNAL", "/tmp/owner.json")
     monkeypatch.setenv("NODE_OPTIONS", "--require /evil")
     monkeypatch.setenv("NODE_PATH", "/evil")
+    monkeypatch.setenv("MANGAFLOW_STATIC_EXPORT", "1")
     monkeypatch.setenv("PATH", "/usr/bin")
     for name in (
         "MANGAFLOW_DESKTOP_HELPER",
@@ -990,6 +991,10 @@ def test_node_child_env_strips_ownership_secrets_and_hooks(monkeypatch):
     assert "MANGAFLOW_DESKTOP_JOURNAL" not in env
     assert "NODE_OPTIONS" not in env
     assert "NODE_PATH" not in env
+    # #447: a user-shell MANGAFLOW_STATIC_EXPORT (leftover from a static
+    # export build session) must not ride in — the served app reads it at
+    # runtime and would silently render in static-export form.
+    assert "MANGAFLOW_STATIC_EXPORT" not in env
     for name in (
         "MANGAFLOW_DESKTOP_HELPER",
         "MANGAFLOW_DESKTOP_API_ROOT",

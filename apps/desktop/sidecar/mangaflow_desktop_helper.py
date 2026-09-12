@@ -719,10 +719,13 @@ def _node_child_env() -> dict[str, str]:
     journal path), the desktop orchestration names
     (``MANGAFLOW_DESKTOP_HELPER``/``_API_ROOT``/``_USER_DATA``/
     ``_FAKE_CHANNEL``/``_WEB_DIST``/``_PYTHON`` — the web-facing child has
-    no use for any of them), and any ``NODE_OPTIONS``/``NODE_PATH`` (which
-    node auto-applies). The child needs the parent env for PATH and
-    friends, but not the handshake identity, the launcher's wiring, nor
-    injectable hooks (red team 2026-09-09, #312). Callers add
+    no use for any of them), any ``NODE_OPTIONS``/``NODE_PATH`` (which
+    node auto-applies), and ``MANGAFLOW_STATIC_EXPORT`` (a user-shell
+    leftover from a static-export build session — the served app reads it
+    at runtime and would silently render in static-export form while the
+    shell expects the dynamic app, #447). The child needs the parent env
+    for PATH and friends, but not the handshake identity, the launcher's
+    wiring, nor injectable hooks (red team 2026-09-09, #312). Callers add
     PORT/HOSTNAME/MANGAFLOW_API_ORIGIN/NODE_ENV on top.
     """
 
@@ -736,6 +739,7 @@ def _node_child_env() -> dict[str, str]:
         "MANGAFLOW_DESKTOP_FAKE_CHANNEL",
         "MANGAFLOW_DESKTOP_WEB_DIST",
         "MANGAFLOW_DESKTOP_PYTHON",
+        "MANGAFLOW_STATIC_EXPORT",
         "NODE_OPTIONS",
         "NODE_PATH",
     ):
