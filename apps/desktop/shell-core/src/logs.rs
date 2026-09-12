@@ -1384,6 +1384,39 @@ mod tests {
         let _ = fs::remove_dir_all(&user_data);
     }
 
+    /// The ambiguous-refusal arm must also fire when the leftover is a
+    /// DIRECTORY parked at the `.rotating-oldest` name (same-user planting,
+    /// #430 family): unlike the plain `.rotating` sibling, this name may
+    /// hold history, so the self-heal retry (which renames the leftover
+    /// into the empty slot) and any absorption must NOT run. The fixture
+    /// occupies the `.keep` slot with a FILE, so rename(dir → file) fails
+    /// with ENOTDIR-class errors — the rotation fails with the manual
+    /// remedy and base/keep-slot/planted-directory all survive untouched.
+    #[test]
+    fn rotation_refuses_a_directory_at_the_oldest_staging_name() {
+        let user_data = temp_user_data("oldestdir");
+        let logs = logs_dir(&user_data);
+        fs::create_dir_all(&logs).unwrap();
+        let logs_canonical = logs.canonicalize().unwrap();
+        let base = logs.join(format!("shell-{}.log", "8".repeat(32)));
+        fs::write(generation_path(&base, 5).unwrap(), "content-5").unwrap();
+        let staging = rotation_oldest_staging_path(&base).unwrap();
+        fs::create_dir_all(staging.join("planted")).unwrap();
+        fs::write(staging.join("planted/history-like"), "maybe history").unwrap();
+        fs::write(&base, "oversized base").unwrap();
+
+        let result = rotate_file(&base, &logs_canonical, 8, ROTATION_KEEP_GENERATIONS);
+        assert!(result.is_err(), "{result:?}");
+        assert_eq!(
+            fs::read_to_string(generation_path(&base, 5).unwrap()).unwrap(),
+            "content-5"
+        );
+        assert!(staging.is_dir(), "the planted directory must survive");
+        assert!(staging.join("planted/history-like").exists());
+        assert_eq!(fs::read_to_string(&base).unwrap(), "oversized base");
+        let _ = fs::remove_dir_all(&user_data);
+    }
+
     /// An empty `.keep` slot makes the leftover unambiguously the oldest
     /// generation a failed rotation could not restore: the self-heal retry
     /// puts it back and the rotation proceeds normally (the pruned drop at
