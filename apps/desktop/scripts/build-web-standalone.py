@@ -129,6 +129,59 @@ def _git(*args: str) -> str:
     ).stdout.strip()
 
 
+def _best_effort_clear(path: Path, what: str) -> None:
+    """Clear ``path`` best-effort, then refuse if a remnant survived (#461).
+
+    A strict rmtree aborts mid-delete when one file is locked (AV scanner,
+    indexer, a still-running app) and leaves the tree truncated; for a
+    fully rebuildable target the right move is a best-effort clear plus a
+    loud refusal when even that could not finish — the caller must never
+    merge fresh output into a half-deleted remnant.
+    """
+
+    if not path.exists():
+        return
+    try:
+        shutil.rmtree(path, ignore_errors=True)
+    except OSError:
+        pass  # truly best-effort: the refusal below decides the outcome
+    if path.exists():
+        raise SystemExit(
+            f"could not fully clear {path} (a file inside is locked — AV/"
+            "indexer/running app?); delete it manually and re-run. "
+            f"{what} must not be merged into a half-cleared remnant."
+        )
+
+
+def _replace_dist(standalone: Path, desktop_dist: Path) -> None:
+    """Move the verified bundle into place and stamp it (under the lock).
+
+    #461: the clear is best-effort-then-refuse (never a truncated merge of
+    fresh and stale files), and build-info.json is written to a temp name
+    and os.replace()d only AFTER the move — so the provenance stamp can
+    never describe a payload it did not arrive with, and a crash mid-write
+    can never leave a partial JSON inside a valid-looking bundle.
+    """
+
+    _best_effort_clear(desktop_dist, "the new web-standalone bundle")
+    desktop_dist.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(standalone), str(desktop_dist))
+
+    # Build provenance: the e2e asserts the bundle was built from THIS
+    # source tree, so a stale relocated bundle (dist/ is gitignored and
+    # survives for days) can never silently test outdated UI code.
+    build_info = {
+        "source_commit": _git("rev-parse", "HEAD"),
+        "apps_web_tree": _git("rev-parse", "HEAD:apps/web"),
+        "relay_origin": RELAY_ORIGIN,
+    }
+    staged = desktop_dist / ".build-info.json.tmp"
+    staged.write_text(
+        json.dumps(build_info, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    os.replace(staged, desktop_dist / "build-info.json")
+
+
 def main() -> int:
     subprocess.run(
         [NPM, "run", "build", "--workspace", "@mangaflow/web"],
@@ -157,8 +210,7 @@ def main() -> int:
         )
 
     static_dst = standalone / ".next" / "static"
-    if static_dst.exists():
-        shutil.rmtree(static_dst)
+    _best_effort_clear(static_dst, "the fresh static copy")
     shutil.copytree(WEB / ".next" / "static", static_dst)
 
     # Destructive section (#350): the rmtree+move replaces dist/web-standalone
@@ -167,22 +219,7 @@ def main() -> int:
     # written inside the lock too, so a reader that sees the moved bundle can
     # never see it without its build-info.json.
     with _dist_build_lock():
-        if DESKTOP_DIST.exists():
-            shutil.rmtree(DESKTOP_DIST)
-        DESKTOP_DIST.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(standalone), str(DESKTOP_DIST))
-
-        # Build provenance: the e2e asserts the bundle was built from THIS
-        # source tree, so a stale relocated bundle (dist/ is gitignored and
-        # survives for days) can never silently test outdated UI code.
-        build_info = {
-            "source_commit": _git("rev-parse", "HEAD"),
-            "apps_web_tree": _git("rev-parse", "HEAD:apps/web"),
-            "relay_origin": RELAY_ORIGIN,
-        }
-        (DESKTOP_DIST / "build-info.json").write_text(
-            json.dumps(build_info, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
+        _replace_dist(standalone, DESKTOP_DIST)
 
     print("WEB_STANDALONE_READY", DESKTOP_DIST)
     return 0
