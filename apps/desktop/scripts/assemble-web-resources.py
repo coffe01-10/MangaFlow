@@ -124,7 +124,7 @@ def _stale_retired_error(res: Path, retired: Path) -> RuntimeError:
     )
 
 
-def _dist_lock():
+def _dist_lock(lock_path: Path | None = None):
     """The shared dist/ build lock, reused from build-web-standalone (#457).
 
     The hyphenated sibling filename is not importable by name, so the spec
@@ -134,6 +134,10 @@ def _dist_lock():
     no longer delete each other's live staging (`web.tmp-<pid>`) or a
     rollback source parked inside the rename window, and an in-flight
     standalone rebuild cannot hand assemble a half-swapped source tree.
+
+    ``lock_path`` defaults to the shared DIST_LOCK_PATH; tests pass a
+    tmp_path file so they serialize among themselves instead of touching
+    the repo's real lock (round-7 review F4).
     """
 
     import importlib.util
@@ -144,10 +148,15 @@ def _dist_lock():
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module._dist_build_lock(module.DIST_LOCK_PATH)
+    return module._dist_build_lock(lock_path or module.DIST_LOCK_PATH)
 
 
-def assemble(src: Path = SRC, res: Path = RES, node: Path | None = None) -> Path:
+def assemble(
+    src: Path = SRC,
+    res: Path = RES,
+    node: Path | None = None,
+    lock_path: Path | None = None,
+) -> Path:
     """Assemble the resource tree beside ``res`` and swap it in atomically.
 
     Build order: stage the complete new tree under ``<res>.tmp-<pid>``,
@@ -173,7 +182,7 @@ def assemble(src: Path = SRC, res: Path = RES, node: Path | None = None) -> Path
         raise SystemExit("run build-web-standalone.py first")
     if node is None:
         node = find_node()
-    with _dist_lock():
+    with _dist_lock(lock_path):
         return _assemble(src, res, node)
 
 
