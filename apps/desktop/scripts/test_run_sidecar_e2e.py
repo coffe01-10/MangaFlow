@@ -279,7 +279,6 @@ def test_stale_bootstrap_lock_is_broken_and_install_proceeds(tmp_path):
     minutes) must be broken instead of dead-locking every future run —
     otherwise the crash-safety fix becomes its own denial of service."""
 
-    venv = tmp_path / "venv"
     lock = tmp_path / "venv.bootstrap-lock"
     lock.mkdir(parents=True)
     subprocess.run(["touch", "-d", "31 minutes ago", str(lock)], check=True)
@@ -298,7 +297,6 @@ def test_fresh_bootstrap_lock_is_never_stolen(tmp_path):
     way past a genuinely wedged bootstrap (the knob only shortens the
     budget for this test; the default is 900s)."""
 
-    venv = tmp_path / "venv"
     lock = tmp_path / "venv.bootstrap-lock"
     lock.mkdir(parents=True)
 
