@@ -359,3 +359,33 @@
     容忍尾随空白，比较均在解析值上进行，良性。
   - 评审同时行级核实：流模式（移除最后 data 监听后仍 flowing、零积压）、超时杀组路径完好、
     diff 仅两 hunk、移动的前缀检查逐字节一致。
+
+## 19. 20260912-wknd 续三（基线 `a734bdb`）
+
+- **PR #570（e2e runner venv bootstrap 自愈，待 lead）**：`run-sidecar-e2e.sh` 原 bootstrap 仅
+  检查 `.venv-desktop/bin/python` 存在——pip 安装中途被打断（网络抖动/Ctrl-C）留下的**部分
+  venv** 会被此后每次运行接受并在 import 期以费解错误崩溃，且永不自愈；该 runner 是本仓全部
+  sidecar 契约的取证路径。改为 `ensure_e2e_venv`：戳文件记录最近**完成**安装的 requirements
+  md5，缺失/过期（requirements 变更）即重装；`install ... || return $?` 保证失败绝不写戳。
+  主体移入 `BASH_SOURCE` source-guard 使契约可离线测试（pip 步骤为具名函数供测试覆盖）。
+  **首版重构引入的 `-r` 形状破坏（第二个 requirements 路径被 pip 解析为需求串）由实跑真
+  runner 当场捕获**——恰是覆盖式测试看不见的类别；stub python 离线钉死 `-r f1 -r f2` 形状。
+- **串行证据**：新套件 8 passed（含失败 venv 创建传播钉死）；全量经真 runner 路径
+  **98 passed in 62.56s**；真 runner 首跑为戳写入后的第二次（无 pip 重装，离线安全）。
+- **第 10 轮审查（1 子代理，文件/行级，APPROVE + 5 MINOR + 6 NIT，5 项返工）**：
+  - R1/R8（已返工）：venv 创建步骤依赖环境 set -e，而 harness 的 if 上下文会抑制之——
+    传播回归无法被现有测试捕获；加 `python3 -m venv ... || return $?` 并新增失败创建者
+    shim 测试（ENSURE_RC=3 + 无戳）。
+  - R5（已返工）：`${pip_args[@]}` 空数组 + `set -u` 在 bash ≤4.3（macOS 3.2/RHEL7 4.2）
+    为 unbound variable——加 `${pip_args[@]+...}` 哨兵。
+  - R6（已返工）：`cat "$@"` 零实参读 stdin 挂起——加显式用法守卫 return 2。
+  - R7（已返工）：`_SCRIPT` 未 resolve 而 harness 先 cd——与兄弟路径对齐。
+  - R9（已返工）：source-guard 测试断言位置错误（$0=-c 永远不会指向 tmp_path）+ docstring
+    声称不存在的 export 断言——修正措辞与断言集。
+  - R2/R3/R4/R10/R11（记录，不返工）：requirements 缺失时新硬失败（合理 delta）；并发
+    bootstrap 竞窗无锁（AGENTS.md 禁并行 e2e，结果收敛、优于旧静默中毒；flock 留作后续）；
+    bin/python 为目录时不自愈（与旧行为同等，响亮失败）；`$$` 计数器 PID 复用理论性；
+    python3 -m venv 真创建 ~6s 成本可接受。
+  - 评审同时行级核实：exec 路径行为逐段等同旧版（导出/cd/重建块/pytest 调用）、source-guard
+    三种调用形态、md5sum 于 git-bash 可用、tests/test_pytest_collection_gate.py 仍绿
+    （新文件不漏入裸 pytest）。
