@@ -674,3 +674,38 @@ def test_apply_app_environment_creates_absent_keys(monkeypatch, tmp_path):
     assert helper.os.environ["STORAGE_ROOT"] == str(tmp_path / "storage")
     assert helper.os.environ["UPLOAD_ROOT"] == str(tmp_path / "uploads")
     assert helper.os.environ["WEB_ORIGIN"] == "http://tauri.localhost"
+
+
+def test_stdin_eof_watch_signals_on_immediate_eof(monkeypatch):
+    """The EOF leg itself: stdin closing with ZERO post-GO bytes (the
+    shell's graceful stop path — stdin closed, nothing written) must raise
+    SIGTERM. The drain loop's contract is `readline() != ""`, so an empty
+    first read is EOF, not junk — a regression to `if line:` (treating EOF
+    as junk and looping forever) would hang the cooperative stop."""
+
+    import importlib.util
+    import io
+    import signal
+    import time as time_module
+
+    spec = importlib.util.spec_from_file_location(
+        "mangaflow_desktop_helper_eof0", str(HELPER_PATH)
+    )
+    helper_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper_module)
+
+    delivered = []
+    monkeypatch.setattr(
+        helper_module.signal, "raise_signal",
+        lambda sig: delivered.append(sig),
+    )
+    fake_stdin = io.StringIO("")
+    monkeypatch.setattr(helper_module.sys, "stdin", fake_stdin)
+
+    helper_module._start_stdin_eof_watch()
+    deadline = time_module.monotonic() + 5
+    while not delivered and time_module.monotonic() < deadline:
+        time_module.sleep(0.05)
+    assert delivered == [signal.SIGTERM], (
+        f"immediate EOF must raise SIGTERM: {delivered!r}"
+    )
