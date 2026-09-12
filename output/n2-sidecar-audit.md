@@ -389,3 +389,27 @@
   - 评审同时行级核实：exec 路径行为逐段等同旧版（导出/cd/重建块/pytest 调用）、source-guard
     三种调用形态、md5sum 于 git-bash 可用、tests/test_pytest_collection_gate.py 仍绿
     （新文件不漏入裸 pytest）。
+
+## 20. 20260912-wknd 续四（基线 0dc5957——master 已并我方 #566/#568 与他组 #567）
+
+- **合并竞态发现与补救**：#566 于 19:23Z 从**返工前 tip（f21adb6）**被并——第 8 轮审查
+  MINOR（无引号分支用 JS `\s` 且排除引号，截断捕获可解析出已落盘前缀而空泛通过）的修复
+  b5677e4 未进 master。**PR #571（cherry-pick 原样重落，待 lead）**：逐字节核验
+  （PR 自身两文件对 b5677e4 diff 为 0 字节；基座偏移仅 #567/#568 的无关文件）；新增前缀
+  判别测试对 master 现行正则实证红（评审代理复跑：截断捕获 → "1 local assets, all
+  present" rc=0 → 断言失败，与预测一致）。
+- **PR #572（guard 目录引用拒绝，待 lead）**：`existsSync` 对目录返回 true（第 8 轮 F2
+  NIT 转正）：引号 `src="chunks/"` 与无引号 `src=chunks/>`（捕获含尾斜杠）的目录引用
+  通过 guard，而静态服务器（tauri 资产处理器同理）对目录 URL 404——坏页静默出货。
+  改 `statSync().isFile()` + catch 即缺失（fail-closed）。红/绿实证：旧检查下两种形态
+  rc=0（红），修复后拒绝并点名 `chunks/`；旁挂真实文件放行；既有 8 测试零回归。
+- **第 11 轮审查（1 子代理，双 PR，文件/行级）**：
+  - #571 **REQUEST_CHANGES → 已返工**：新测试正向对照创建 `chunk"quoted.js` 文件——
+    `"` 在 NTFS/FAT 禁用字符集，Windows（本仓主平台）下套件直接报错。返工：两形态保留
+    拒绝相（仅落盘合法前缀 `chunk`，红探针不变），正向对照仅对 NTFS 合法的 NBSP 名运行。
+    9/9 复绿。
+  - #572 **APPROVE**：评审行级核实——TOCTOU 为构建期固有且 catch fail-closed（LOW 记录）；
+    statSync 与 existsSync 同为跟随型（符号链接行为零回归；D5 服务器拒链接属运行时威胁
+    模型差异，非缺口）；跳过表先于 statSync 生效（无跳过项可达 stat）；两 PR 正交可叠加
+    （#571 的 tokenizer 类下 `src=chunks/>` 捕获不变）。LOW 注记（头注释措辞过时）已修。
+- **串行证据**：#571 分支套件 9 passed；#572 分支套件 9 passed；node --check 双绿。
