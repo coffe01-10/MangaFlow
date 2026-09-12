@@ -114,3 +114,34 @@ def test_replace_dist_refuses_when_the_stamp_write_fails(tmp_path, monkeypatch):
     assert (dist / "server.js").read_text(encoding="utf-8") == "module.exports = 1;"
     assert not (dist / "build-info.json").exists()
     assert not (dist / ".build-info.json.tmp").exists()
+
+
+def test_npm_shim_is_platform_resolved_and_actually_used(monkeypatch):
+    """Adjacent-seam pin (npm shim/platform paths): the npm CLI shim is
+    npm.cmd on Windows and npm everywhere else, and `main()` must invoke
+    THAT constant — a hardcoded npm.cmd (the historical shim bug class)
+    breaks Linux/CI, and a call site that bypasses the constant would
+    break the other platform. The fake subprocess records the argv and
+    env before stopping main, so the shape is pinned offline (no build)."""
+
+    expected = "npm.cmd" if sys.platform == "win32" else "npm"
+    assert bw.NPM == expected, (
+        "the npm shim must resolve per platform, not be hardcoded"
+    )
+
+    recorded = {}
+
+    def fake_run(argv, **kwargs):
+        recorded["argv"] = argv
+        recorded["env"] = kwargs["env"]
+        raise RuntimeError("stop-main-before-build")
+
+    monkeypatch.setattr(bw.subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="stop-main-before-build"):
+        bw.main()
+
+    assert recorded["argv"][0] == bw.NPM, recorded["argv"]
+    assert recorded["argv"][1:4] == ["run", "build", "--workspace"]
+    assert recorded["argv"][4] == "@mangaflow/web"
+    # The desktop bundle bakes the helper's fixed relay port at build time.
+    assert recorded["env"]["MANGAFLOW_API_ORIGIN"] == "http://127.0.0.1:39443"
