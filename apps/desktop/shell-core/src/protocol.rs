@@ -385,6 +385,20 @@ fn write_journal_atomic(journal: &Path, record: &serde_json::Value) -> std::io::
         "{}.pending",
         journal.file_name().unwrap_or_default().to_string_lossy()
     ));
+    // Same-user link planting (#561): a symlink at either name would make
+    // the pending write follow it and redirect the ~200-byte ownership
+    // record to an attacker-chosen file. Refuse both before any write —
+    // the helper's _write_journal enforces the same parity.
+    for path in [journal, &pending] {
+        if std::fs::symlink_metadata(path)
+            .is_ok_and(|meta| meta.is_symlink())
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("process journal must not be a link: {}", path.display()),
+            ));
+        }
+    }
     // Serialization of a serde_json::Value cannot fail today, but the
     // journal write path is on the teardown hotline (every stop path calls
     // mark_stopped) — keep it panic-free by contract, not by review.
@@ -908,6 +922,57 @@ mod tests {
     /// fail with JournalTooLarge instead of being buffered into the shell —
     /// the read is bounded at the cap with one detection byte to spare.
     #[test]
+    /// #561 (helper parity): a symlink at the journal or the .pending
+    /// sibling must be refused before any write — the pending write
+    /// follows links, so a planted link would redirect the ownership
+    /// record to an attacker-chosen file. Both refusals surface as
+    /// InvalidInput with the link named; the outside target stays
+    /// untouched. Unix-only: symlink creation.
+    #[test]
+    #[cfg(unix)]
+    fn write_journal_atomic_refuses_links_at_both_names() {
+        use crate::protocol::new_token;
+        use std::fs;
+        use std::os::unix::fs::symlink as platform_symlink;
+        let user_data = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-jlink-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = fs::remove_dir_all(&user_data);
+        let runtime = user_data.join("runtime").join(format!(
+            "{RUNTIME_DIR_PREFIX}{}",
+            "a".repeat(32)
+        ));
+        fs::create_dir_all(&runtime).unwrap();
+        let journal = runtime.join(JOURNAL_NAME);
+        let pending = journal.with_file_name(format!("{JOURNAL_NAME}.pending"));
+        let outside = user_data.join("outside.json");
+        fs::write(&outside, b"{}").unwrap();
+
+        // (1) Link at the journal: refused, outside untouched.
+        platform_symlink(&outside, &journal).unwrap();
+        let error = write_journal_atomic(&journal, &serde_json::json!({"state": "ready"}))
+            .err()
+            .expect("a symlinked journal must be refused");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("must not be a link"));
+        assert_eq!(fs::read(&outside).unwrap(), b"{}");
+
+        // (2) Link at the pending sibling: refused, journal not created,
+        // outside untouched (write_text would have followed the link).
+        fs::remove_file(&journal).unwrap();
+        platform_symlink(&outside, &pending).unwrap();
+        let error = write_journal_atomic(&journal, &serde_json::json!({"state": "ready"}))
+            .err()
+            .expect("a symlinked pending sibling must be refused");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(fs::read(&outside).unwrap(), b"{}");
+        assert!(!journal.exists());
+
+        let _ = fs::remove_dir_all(&user_data);
+    }
+
     fn journal_reads_are_bounded_and_oversize_fails_closed() {
         let dir = std::env::temp_dir().join(format!(
             "mangaflow-desktop-jsize-{}-{}",
