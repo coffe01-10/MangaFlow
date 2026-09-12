@@ -93,6 +93,45 @@ class DesktopShell:
             env=env,
             start_new_session=True,  # mirrors setsid; shell can killpg the tree
         )
+        # Windows: the launcher-style venv python re-execs the real
+        # interpreter as a CHILD (#508) — process.kill() on the redirector
+        # leaves that grandchild holding its API port and the stdout write
+        # end. Assign the tree to a KILL_ON_JOB_CLOSE Job so stop() can
+        # terminate the whole tree; POSIX needs none of this (killpg covers
+        # the session via start_new_session).
+        self._job_handle = None
+        if os.name == "nt":
+            import ctypes
+
+            job = ctypes.windll.kernel32.CreateJobObjectW(None, None)
+            if job:
+                class _JobLimits(ctypes.Structure):
+                    _fields_ = [
+                        ("PerProcessUserTimeLimit", ctypes.c_int64),
+                        ("PerJobUserTimeLimit", ctypes.c_int64),
+                        ("LimitFlags", ctypes.c_uint32),
+                        ("MinimumWorkingSetSize", ctypes.c_size_t),
+                        ("MaximumWorkingSetSize", ctypes.c_size_t),
+                        ("ActiveProcessLimit", ctypes.c_uint32),
+                        ("Affinity", ctypes.c_size_t),
+                        ("PriorityClass", ctypes.c_uint32),
+                        ("SchedulingClass", ctypes.c_uint32),
+                    ]
+
+                limits = _JobLimits()
+                limits.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+                if ctypes.windll.kernel32.SetInformationJobObject(
+                    job, 9, ctypes.byref(limits), ctypes.sizeof(limits)
+                ):
+                    handle = ctypes.windll.kernel32.OpenProcess(
+                        0x1F0FFF, False, self.process.pid
+                    )  # PROCESS_ALL_ACCESS
+                    if handle:
+                        try:
+                            ctypes.windll.kernel32.AssignProcessToJobObject(job, handle)
+                            self._job_handle = job
+                        finally:
+                            ctypes.windll.kernel32.CloseHandle(handle)
 
     def _assert_owned_pid(self, pid: int) -> None:
         """The READY announcer must be a process this shell spawned.
@@ -208,6 +247,17 @@ class DesktopShell:
             time.sleep(0.2)
         raise AssertionError(f"health never became ready: {last_error}")
 
+    def _close_job(self) -> None:
+        """Release the KILL_ON_JOB_CLOSE Job (#508): closing the handle
+        triggers the kill-on-close for anything still assigned (a last-
+        resort backstop after the explicit terminate), and dropping the
+        reference lets the handle be finalized."""
+        if getattr(self, "_job_handle", None) is not None:
+            import ctypes
+
+            ctypes.windll.kernel32.CloseHandle(self._job_handle)
+            self._job_handle = None
+
     def stop(self) -> int:
         if os.name == "nt":
             # The production Windows stop channel: closing the helper's stdin
@@ -217,11 +267,22 @@ class DesktopShell:
                 if self.process.stdin and not self.process.stdin.closed:
                     self.process.stdin.close()
                 code = self.process.wait(timeout=20)
+                self._close_job()
                 self.stderr_log.close()
                 return code
             except subprocess.TimeoutExpired:
+                # Kill the whole tree via the Job (#508): a launcher-style
+                # venv python means the real interpreter is a GRANDCHILD the
+                # direct kill() never reached — it kept the API port bound
+                # and the reader thread blocked. TerminateJobObject reaches
+                # every member; the direct child then reaps normally.
+                if self._job_handle is not None:
+                    import ctypes
+
+                    ctypes.windll.kernel32.TerminateJobObject(self._job_handle, 1)
                 self.process.kill()
                 code = self.process.wait(timeout=5)
+                self._close_job()
                 self.stderr_log.close()
                 return code
         # SIGTERM reaches the whole session (uvicorn installs graceful
