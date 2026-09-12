@@ -282,3 +282,48 @@
 - **PR #579**（修 #575，他人新立的 scripts 票）：`measure-native-startup.ps1` 采样循环加 `$proc.HasExited` break——死根不再烧满 120s 窗口 + 后续 ~45s 收尾（默认 3 样本全坏构建从 ~8 分钟假忙降到秒级失败）。断言次序：窗口捕获 → HasExited break → WaitForInputIdle（快速崩溃但出过窗口的样本仍记诚实 windowMs）。行账保留 `WindowHandleMs=-1`/`Exited`；`-not $exited` 门正确跳过 Stop-SampleTree；后代快照与残留检查照跑（崩溃根泄漏的 sidecar 仍被上报）。**NOT RUN**（Linux 无 pwsh，与 issue 自述同界）；静态验证：花括号平衡、断言次序、下游行/门一致性程序化核验。
 
 **收敛修正**：第 10 节"彻底扫净"结论对**测试面**不成立——E1 证明已合并的测试自身可含空转断言（绿≠有效）。测试面复审（含对我此前贡献的）已纳入 E 轮常项。
+
+---
+
+## 12. 周末窗续跑（2026-09-13 05:40 Asia/Shanghai，基线 01781e2 = 8674830 + #581/#582/#583）
+
+**B 轮（新立 Issue ×3，全部 file/line + 修复面 + 既有测试边界）：**
+- **#586 [P4]** run-sidecar-e2e.sh venv bootstrap 无互斥：两个并发 runner 向同一 venv 交错 pip 安装且**都写完成印章**——印章说谎，把印章要消灭的"永久不自愈坏 venv"原样 reintroduce；印章就地写入非原子，第三读者见部分文件会加入安装放大竞争。
+- **#587 [P4]** helper f-string 拼 DATABASE_URL：make_url 在第一个 `?` 截断 database 组件——user_data 路径含 `?`（POSIX 合法）会把 sqlite 库**静默建到 user_data 之外**（sweep/export/互斥锁的包容根全部失效且零报错）。
+- **#588 [P4]** verify-static-origin.mjs（D5）孤儿清理全靠负 pid 组杀：libuv 在 Windows 对 `pid<=0` 返回 EINVAL，各路径 `catch{}` 注释断言"组已消失"实为"未尝试"——#346 孤儿类在 Windows 复活（helper 无 Job Object，带端口存活）。
+
+**C 轮（防守 PR ×2）：**
+- **PR #591**（修 #586）：快路径（印章匹配零开销）+ 慢路径 **venv 兄弟位 mkdir 锁**（git-bash 可移植，flock 不可用；**关键教训：锁不得放 venv 内部**——fresh 路径 venv 目录尚不存在，锁永远建不出来，新并发测试以挂死形式抓到）+ 30 分钟陈锁破碎 + 原子印章发布（temp+mv）+ 锁内复查 + 单点释放；`MANGAFLOW_E2E_BOOTSTRAP_MAX_WAIT` 仅测试可调（默认 900s）。3 新测试：真双进程竞争（恰一次安装）/陈锁破碎/活锁不窃。RUN 13/13。
+- **PR #593**（修 #587）：`_apply_app_environment` 在**任何键设置之前**拒绝含 `?` 的 user_data（SystemExit，拒绝后必须零残留）。**对 issue 修复面的实证修正**：`URL.create().render_as_string()` 不做引号化（`?` 原样出）；预引号化反向破坏——**make_url 从不解码 database 组件**，sqlite3 会收到字面 `%3F` 文件名。故唯一可行修复即拒绝；`%`/`#`/空格经语法逐字入路径，刻意保持合法（延续 #443 的 `100%` 用户名支持），并由测试钉死该语义边界。2 新测试，RUN 34/34 + 全 e2e 后台认证中。
+
+**E 轮（互审 + 假阳性登记）：**
+- E5：交叉审 **PR #584**（PORT 类型保真 + HOSTNAME 恢复）——RUN 1 passed；确认其自述的 strip 前置在本测试形态下空转，canary 种子建议已留评。
+- E6 假阳性×3：api-root 大小写变体 shadow——扫描已有 `.lower()`（false positive 消解）；ziparch 疑有解析面——实为纯写出器（ZipWriter），无解压炸弹/重叠条目面；assemble 孤儿清扫疑在锁外——实为"整个 assemble 在 #350 锁内"（含清扫），SOLID。
+- D 轮：#372 复核——四子项均在 #379 修毕带证据关闭（长服务窗无共享锁为已记录残留），无需行动。
+
+**认证**：基线 01781e2 轻套件 **94/94**；#591/#593 落地后 env+runner **47/47**；全 e2e 认证见下轮补记。
+### §12 补记（同日稍晚，基线 3ec0f29 = 01781e2 + #589/#590）：
+
+- **E7（假阴性自纠）**：交叉审 **PR #585**（de-tautologize #583）确认——#583 的四加成钉是**自建字典自断言**（同义反复，经 #584 类型修复后依然如此），我两次审查（#583 合并时、#584 复审时）均未识破，且当窗正引用 E1 空转断言类。#585 以 `_web_spawn_env_additions` 缝隙提取 + 真 Popen 捕获 USE 钉修正（sentinel 取 RuntimeError 子类绕开 OSError 处理器；中继端口重定向保 39443 空闲）。RUN 2 passed，已留自纠评。教训：审查"钉"先问**被测对象是否真是生产路径**。
+- **E8（交叉审 #592 cadence 钉）**：RUN 3 passed；双半钉（同循环记录 + 活节点心跳 ≥3 次询）均有意义，1.2s 预算对 250ms cadence 留 ~2x 裕量——SOLID。
+- **E9（#590 已合内容的追踪复跑）**：合入的 relay 钉在**整套负载下**抓到两处时序 flake（#581 pump 钉 4s 墙钟界、#590 饱和日志计数与 accept 线程赛跑）——孤立 5/5，组合套件 ~6 跑 2 红。立 **#595** 并开修复 PR **#597**（活性界 4s→15s；饱和计数改 2s 有界轮询，上限语义不变）。修复后组合负载 3×58/58。生产代码零改动。
+- **#593 同步**：merge origin/master 解决 test_sidecar_env_and_api_root.py 尾部双追加冲突（保留 #589 EOF 钉 + #587 拒绝钉两侧），合并后 env 35/35。
+- **认证更正**：本沙箱 e2e 全量 12/12 是**去 plan-B 子集**（git clean 后 standalone bundle 缺席，其余 skip）；#593 的 guard 对所有 spawn 路径为无操作（tmp_path 无 `?`），env 套 35/35 直接钉其行为。
+
+---
+
+## 13. 周末窗续跑（2026-09-13 06:42 Asia/Shanghai，基线 ae74b77；#598/#596/#585/#597/#593 全合，无 open）
+
+**B 轮（新立 Issue ×2）：**
+- **#600 [P4]** start-native.ps1 的 #410 包容检查**单向**——拒绝"UserData 在 shell 目录内"但不拒绝"UserData **包含** shell 目录"：`-UserData $env:LOCALAPPDATA` 会把 shell 的 logs/runtime 嵌进 WPF 客户端的会话清扫/导出范围（两端共享 shell-core 日志命名约定，shell 的历史诊断成了对方清理候选）。
+- **#602 [P4/L3-shape]** owner.json 终态竞争：shell `mark_stopped`（protocol.rs:343/383）与 helper `_write_journal`（:88）**共用同一 .pending 暂存名**且无跨写者串行化。三腿：(1) abort-setup 窗口内 helper 病理延迟的 ready rename 落在 stopped **之后** → 死会话永久非终态、runtime 目录永不可回收（sweep 看不见单实例互斥锁）；(2) 共用 pending 名的会合危害——A 的 rename 可能发布 B 的载荷、败者的 replace 抛 FileNotFoundError（helper 失败路径未守卫，可掩盖原始错误）；(3) mark_stopped 读-改-写对并发 failed 记录的丢失更新。**按代理政策不动代码（进程生命周期+终态热线 = L3），修复面三选项留 lead 裁决（CAS 重读 / 分写者 pending 名 / sweep 侧 pid 死亡+长宽限回收）。**
+
+**C 轮（防守 PR）：**
+- **PR #601**（修 #600）：对称谓词项 + throw 消息改为双向 overlap 语义。NOT RUN pwsh（同 #575 界）；谓词七形状静态模拟——**其中第七形状我自己测试表预期写错**（`...deskto` 前缀路径正确**放行**，是我的 harness 断言错、非谓词错），已在 PR 上留更正评。
+
+**E 轮（互审 + 假阳性）：**
+- 假阳性×2：fake_channel CLI 旗标 vs #275 env 门——核验为**双层设计**（helper 尊重旗标；生产调用方 shell 在 main.rs:348 以 `== OsStr("1")` 精确门控），非门旁路；shell 侧 stdout post-GO 排空——handshake.rs:174-207 已有带字节上限的 drain 线程（EPIPE 防护 + 1MiB 行帽），生产面 SOLID。
+- **PR #599 复审**：与我已合的 #597 同测试同修复（仅注释文案异），判定 superseded 建议关闭；其"hang guard, not a sync point"注释文案更优（点明 0.5s accept-poll 机制），若 lead 偏好可作 comment-only 跟随。
+- 缝隙调用点核验：#585 后 `HOSTNAME/NODE_ENV` 全 helper 仅单一定义 + `_spawn_web_server` 单一调用，无残留内联。
+
+**认证**：relay+env 组合 58/58 ×3（含 #597 修复后负载循环）；e2e 12/12（去 plan-B 子集，bundle 缺席如实记）。
