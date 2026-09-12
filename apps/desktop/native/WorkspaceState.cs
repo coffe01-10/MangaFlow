@@ -52,7 +52,13 @@ public sealed class WorkspaceState : Observable
     {
         dashboardPage = Math.Clamp(dashboardPage, 0, Math.Max(0, (Projects.Count - 1) / DashboardPageSize));
         var visible = Projects.Skip(dashboardPage * DashboardPageSize).Take(DashboardPageSize).ToList();
-        if (!DashboardProjects.SequenceEqual(visible))
+        // #486-2：封面显示字段（ModeLabel/Resolution/NextSection/NextLabel）在
+        // record 主构造参数之外。实测 record 合成等值今天已覆盖 body 属性（原始
+        // 审计的「仅 ctor 参数」前提不成立，缺陷按描述不可复现）；这里改成
+        // SameDisplay 显式比较是把显示契约写死——将来 ProjectItem 重构为 class、
+        // 或显示字段挪出等值面时不再靠隐式合成等值兜底。
+        if (DashboardProjects.Count != visible.Count
+            || DashboardProjects.Zip(visible).Any(pair => !pair.First.SameDisplay(pair.Second)))
         {
             DashboardProjects.Clear();
             foreach (var item in visible) DashboardProjects.Add(item);

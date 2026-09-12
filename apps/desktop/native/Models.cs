@@ -73,6 +73,15 @@ public record ProjectItem(string Id, string Name, string Summary, int Pending, i
     public string NextSection { get; init; } = "source";
     public string NextLabel { get; init; } = "";
     public string ModeAndResolution => $"{ModeLabel} · {Resolution}";
+    /// <summary>#486-2：仪表盘封面绑定 ModeAndResolution（HomeView 模式·分辨率）、
+    /// 点击按 NextSection 导航，这些字段在 record 主构造参数之外。实测 record 合成
+    /// 等值已覆盖 body 属性（缺陷按原始描述不可复现）；此显式比较把「显示字段必须
+    /// 参与重绘判定」固化为契约，防止 record→class 等重构静默丢失它们。</summary>
+    public bool SameDisplay(ProjectItem? other) => other != null
+        && Id == other.Id && Name == other.Name && Summary == other.Summary
+        && Pending == other.Pending && Failed == other.Failed
+        && ModeLabel == other.ModeLabel && Resolution == other.Resolution
+        && NextSection == other.NextSection && NextLabel == other.NextLabel;
     public int Progress => PageCount <= 0 ? 0 : Math.Clamp((int)Math.Round(100d * SelectedPages / PageCount), 0, 100);
     public string CoverTitle
     {
