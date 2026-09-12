@@ -413,3 +413,30 @@
     模型差异，非缺口）；跳过表先于 statSync 生效（无跳过项可达 stat）；两 PR 正交可叠加
     （#571 的 tokenizer 类下 `src=chunks/>` 捕获不变）。LOW 注记（头注释措辞过时）已修。
 - **串行证据**：#571 分支套件 9 passed；#572 分支套件 9 passed；node --check 双绿。
+
+## 21. 20260912-wknd 续五（基线 2dea2ec——#569/#570/#571 已并；#572 待 lead）
+
+- **交叉审查（无缺陷）**：#569（他组 `_await_go` 双侧钉死，纯测试）与 #567（runtime 目录
+  符号链接拒绝钉死）行级复核通过；#573 前 probe：e2e 已断言 manifest 39443（L712）+
+  apps_web_tree（L734），build-info.relay_origin 与 manifest 检查冗余——无缺口。
+- **PR #573（runner 识别 Windows venv 布局，待 lead）**：`run-sidecar-e2e.sh` 仅认
+  `bin/python`——Windows 宿主 venv（git-bash 驱动 Windows python 产生 `Scripts/python.exe`，
+  恰是 `start-desktop.cmd` L19 要求的布局）下 runner 每次重跑 `python3 -m venv` 且安装步骤
+  因 bin/python 缺失失败（评审纠正因果链：死于 install 而非 exec）——而 setup-codex.ps1
+  建的是另一个 venv（`.venv`），start-desktop.cmd 的补救链在 Windows 上死路。新增
+  `resolve_venv_python`（bin 优先 → Scripts 回退 → 两者皆缺返回非零），安装/导出/重建/exec
+  全部经其解析；POSIX 行为不变。
+- **串行证据**：契约套件 10 passed；全量真 runner **102 passed in 63.22s**；Windows NOT RUN
+  （Scripts 判定用 stub 可执行文件离线证明）。
+- **第 12 轮审查（1 子代理，文件/行级，REQUEST_CHANGES → 已返工）**：
+  - F1 HIGH（返工）：新 Scripts 布局测试对 master 也绿——Linux 上 `python3 -m venv` 会
+    原位补出 bin/python（评审探针：master 恰好多调一次 venv 模块"治愈"布局），断言无法
+    区分两侧。返工：失败型 python3 shim 作创建探针（识别测试：仅凭 Scripts/ 解析成功则
+    shim 永不被调 → rc=0；bin-only 判定失败 → shim 触发 → ENSURE_RC=3），并按评审方法在
+    scratch worktree 对 master runner 实证红（1 failed, 1 passed）。
+  - F2 LOW（返工）：ensure 的 if 上下文中 resolve 的成功回显泄漏到调用方 stdout——
+    `>/dev/null`。
+  - F3 INFO（返工，doc）：因果链更正（install 步失败先于 exec）。
+  - F4 INFO（记录）：git-bash 下导出的 MANGAFLOW_DESKTOP_PYTHON 为 POSIX 形路径——已核实
+    全部消费方（测试断言剥离、helper 剥离、start-desktop.cmd 自设 Win32 路径）均不受影响；
+    若未来喂给 Win32 消费方（cargo 测试）需转换——非本 PR 范围。
