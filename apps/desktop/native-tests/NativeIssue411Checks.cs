@@ -22,7 +22,10 @@ internal static class NativeIssue411Checks
     public static void Run()
     {
         StopEscalationDecisionTable();
-        StopAsyncEscalatesAndResets().GetAwaiter().GetResult();
+        // 必须走线程池：StopAsync 的 await 续体会回到捕获的 SynchronizationContext——
+        // 在 RunIsolated 的 Dispatcher 上下文里直接 GetResult() 会把续体锁死在
+        // 被阻塞的调度线程上（死锁）。Task.Run 使续体留在无线程亲和的池线程。
+        Task.Run(StopAsyncEscalatesAndResets).GetAwaiter().GetResult();
         PreferencesSaveSurvivesUnwritablePaths();
         StartupTimeoutCopy();
         Console.WriteLine(

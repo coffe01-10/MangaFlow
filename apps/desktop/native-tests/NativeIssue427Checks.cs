@@ -21,49 +21,66 @@ internal static class NativeIssue427Checks
 
     public static void Run()
     {
+        // Application 是 AppDomain 级单例：链内（RunIsolated）已有 Application 时
+        // 必须复用调用方线程，只有独立运行才自建 STA 线程 + Application
+        // （NativeStoryboardEditChecks.Run 的同款双模式，否则链内 new Application()
+        // 抛「不能在同一 AppDomain 中创建多个实例」）。
+        if (Application.Current is null) RunOnDedicatedStaThread();
+        else RunFrame();
+    }
+
+    // 独立运行（进程里还没有 Application）：自建 STA 线程 + Application/Theme。
+    private static void RunOnDedicatedStaThread()
+    {
         Exception? failure = null;
         var thread = new Thread(() =>
         {
             try
             {
-                // WorkflowView 的构造/渲染依赖 Application 资源（Theme.xaml 的
-                // Paper/Mono/Serif），检查在自己的 STA 线程上拉起整套资源并泵
-                // Dispatcher（NativeVisualChecks / NativeInteractionChecks 同款）。
-                var app = new Application();
+                var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
                 app.Resources.MergedDictionaries.Add(new ResourceDictionary { Source = new Uri("/MangaFlow.Native;component/Theme.xaml", UriKind.Relative) });
-                var frame = new DispatcherFrame();
-                Dispatcher.CurrentDispatcher.UnhandledException += (_, e) =>
-                {
-                    e.Handled = true;
-                    failure ??= new Exception("Dispatcher unhandled: " + e.Exception.Message, e.Exception);
-                    frame.Continue = false;
-                };
-                var timeout = new DispatcherTimer { Interval = TimeSpan.FromSeconds(60) };
-                timeout.Tick += (_, _) => { failure ??= new TimeoutException("NativeIssue427Checks timed out"); frame.Continue = false; };
-                timeout.Start();
-                Dispatcher.CurrentDispatcher.BeginInvoke(new Action(async () =>
-                {
-                    try
-                    {
-                        await ReversedCompletionLoadRace();
-                        Console.WriteLine("PASS: #427 乱序完成的两次工作流载入——画布/workflowId/version 保持一致（画布显示最后请求的工作流）");
-                        await SwitchWithPendingFlushKeepsGraphOwnership();
-                        Console.WriteLine("PASS: #427 A→B→C 切换（离场 flush 挂起在途）——没有发出 (graph, id) 配错的 PATCH，离场编辑照常落盘");
-                        await ActivateLoadsExactlyOnce();
-                        Console.WriteLine("PASS: #427 Activate 恰好发起一次工作流载入");
-                    }
-                    catch (Exception error) { failure = error; }
-                    finally { frame.Continue = false; }
-                }));
-                Dispatcher.PushFrame(frame);
-                timeout.Stop();
-                app.Shutdown();
+                RunFrame();
             }
-            catch (Exception error) { failure ??= error; }
+            catch (Exception error) { failure = error; }
         });
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
         thread.Join();
+        if (failure != null) throw new Exception("NativeIssue427Checks failed", failure);
+    }
+
+    // STA + DispatcherFrame 泵（NativeInteractionChecks.RunIsolated 的模式）：
+    // async 续体经由 DispatcherSynchronizationContext 回到泵上执行。
+    private static void RunFrame()
+    {
+        Exception? failure = null;
+        var frame = new DispatcherFrame();
+        Dispatcher.CurrentDispatcher.UnhandledException += (_, e) =>
+        {
+            e.Handled = true;
+            failure ??= new Exception("Dispatcher unhandled: " + e.Exception.Message, e.Exception);
+            frame.Continue = false;
+        };
+        var timeout = new DispatcherTimer { Interval = TimeSpan.FromSeconds(60) };
+        timeout.Tick += (_, _) => { failure ??= new TimeoutException("NativeIssue427Checks timed out"); frame.Continue = false; };
+        timeout.Start();
+        SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext());
+        Dispatcher.CurrentDispatcher.BeginInvoke(new Action(async () =>
+        {
+            try
+            {
+                await ReversedCompletionLoadRace();
+                Console.WriteLine("PASS: #427 乱序完成的两次工作流载入——画布/workflowId/version 保持一致（画布显示最后请求的工作流）");
+                await SwitchWithPendingFlushKeepsGraphOwnership();
+                Console.WriteLine("PASS: #427 A→B→C 切换（离场 flush 挂起在途）——没有发出 (graph, id) 配错的 PATCH，离场编辑照常落盘");
+                await ActivateLoadsExactlyOnce();
+                Console.WriteLine("PASS: #427 Activate 恰好发起一次工作流载入");
+            }
+            catch (Exception error) { failure = error; }
+            finally { frame.Continue = false; }
+        }));
+        Dispatcher.PushFrame(frame);
+        timeout.Stop();
         if (failure != null) throw new Exception("NativeIssue427Checks failed", failure);
     }
 

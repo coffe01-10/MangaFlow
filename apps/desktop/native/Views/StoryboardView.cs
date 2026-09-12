@@ -817,7 +817,7 @@ public sealed class StoryboardView : WorkspaceView
         element.CaptureMouse();
         MouseEventHandler moved = (_, me) =>
         {
-            var next = ComputeResized(origin, handle, ToNormalized(me.GetPosition(page)), panel);
+            var next = ComputeResized(origin, handle, ToNormalized(me.GetPosition(page)), panel, Keyboard.Modifiers);
             panel.SetRectDirect(next, page);
             PositionResizeHandles(next);
         };
@@ -849,10 +849,13 @@ public sealed class StoryboardView : WorkspaceView
     // web resize 手势的几何核心：applyResize（最小尺寸 MinSize=0.03 / Shift 锁
     // 宽高比 / Alt 从中心对称缩放）+ 可选吸附（阈值 6px 折算归一化，对齐
     // SNAP_THRESHOLD_PX；目标线 = 页参考线 + 其余格的边/中线）。
-    private Rect ComputeResized(Rect origin, string handle, Point pointer, PanelNode self)
+    // 修饰键由调用方传入：生产路径读 Keyboard.Modifiers，测试访问器显式给
+    // ModifierKeys.None——headless 检查绝不能读取宿主机物理键盘状态
+    // （曾因残留的 Shift 按下状态让 se 缩放走进宽高比锁分支随机飘红）。
+    private Rect ComputeResized(Rect origin, string handle, Point pointer, PanelNode self, ModifierKeys modifiers)
     {
         var resized = ApplyResize(origin, handle, pointer,
-            Keyboard.Modifiers == ModifierKeys.Shift, Keyboard.Modifiers == ModifierKeys.Alt, MinSize);
+            modifiers == ModifierKeys.Shift, modifiers == ModifierKeys.Alt, MinSize);
         if (snapButton.IsChecked != true) return resized;
         var threshold = 6 / Math.Max(1, page.Width);
         var xTargets = new List<double>(PageGuides);
@@ -1835,11 +1838,13 @@ public sealed class StoryboardView : WorkspaceView
 
     // 驱动一次完整缩放（= BeginHandleDrag 的 moved + Finish，减去真实鼠标设备）：
     // 同一几何核心 ComputeResized + CommitResize，测试即覆盖生产逻辑。
-    internal void ResizeViaHandleForTest(int index, string handle, Point pointerNormalized)
+    // 修饰键显式传入（默认 None）：headless 检查不得依赖宿主机键盘状态；
+    // 需要验证 Shift/Alt 分支时由检查点名传入。
+    internal void ResizeViaHandleForTest(int index, string handle, Point pointerNormalized, ModifierKeys modifiers = ModifierKeys.None)
     {
         if (panels.ElementAtOrDefault(index) is not { } panel) return;
         var origin = panel.Rect;
-        var next = ComputeResized(origin, handle, pointerNormalized, panel);
+        var next = ComputeResized(origin, handle, pointerNormalized, panel, modifiers);
         panel.SetRectDirect(next, page);
         PositionResizeHandles(next);
         CommitResize(panel, origin);
