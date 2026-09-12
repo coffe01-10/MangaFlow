@@ -24,7 +24,10 @@ fi
 # pure-loopback stdlib+pytest and run everywhere the e2e runs; the env/
 # api-root suite pins the helper's startup ownership contract; the dist
 # build lock suite keeps the shared dist/ writers mutually exclusive
-# (#350). Keep them all in this runner so the contracts stay exercised
+# (#350); the assemble suite pins the staging sweep/swap contracts and
+# their dist-lock serialization (#409/#457); the build-web-standalone
+# suite pins the bundle swap's clear-refuse and atomic stamp (#461).
+# Keep them all in this runner so the contracts stay exercised
 # instead of depending on someone remembering a manual pytest command.
 # (pytest.ini's testpaths/norecursedirs exclude apps/desktop from a bare
 # pytest, so an unlisted file here is an untested file — #343.)
@@ -34,4 +37,6 @@ exec "$VENV/bin/python" -m pytest \
   "$DESKTOP_ROOT/scripts/test_sidecar_relay_bind.py" \
   "$DESKTOP_ROOT/scripts/test_sidecar_env_and_api_root.py" \
   "$DESKTOP_ROOT/scripts/test_dist_build_lock.py" \
+  "$DESKTOP_ROOT/scripts/test_assemble_web_resources.py" \
+  "$DESKTOP_ROOT/scripts/test_build_web_standalone.py" \
   -v "$@"

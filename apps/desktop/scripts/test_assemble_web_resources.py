@@ -6,6 +6,7 @@ import importlib.util
 import os
 from pathlib import Path
 import sys
+import time
 
 _SCRIPT = Path(__file__).with_name("assemble-web-resources.py")
 _spec = importlib.util.spec_from_file_location("assemble_web_resources", _SCRIPT)
@@ -80,3 +81,106 @@ def test_same_pid_remnant_beside_live_tree_clears_best_effort(tmp_path, monkeypa
         res.parent / f"web.old-{os.getpid()}", ignore_errors=True
     )
     assert not mine.exists()
+
+
+def _buildable_source(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """A minimal (src, res, node) triple that assemble() accepts."""
+
+    src = tmp_path / "src"
+    (src / ".next").mkdir(parents=True)
+    (src / "server.js").write_text("module.exports = 1;", encoding="utf-8")
+    res = tmp_path / "web"
+    node = tmp_path / "node.exe"
+    node.write_bytes(b"MZ fake runtime")
+    return src, res, node
+
+
+def test_full_assemble_sweeps_other_pid_debris_after_swap(tmp_path):
+    """End-to-end through assemble(): once the new tree is in place, the
+    post-swap sweep removes other-pid parked/staged debris (#409/#457) —
+    the behavior the module docstring now describes."""
+
+    src, res, node = _buildable_source(tmp_path)
+    old = _plant(tmp_path, "web.old-111")
+    stuck_tmp = _plant(tmp_path, "web.tmp-222")
+
+    assemble.assemble(src=src, res=res, node=node)
+
+    assert (res / "standalone" / "server.js").is_file()
+    assert (res / "node" / "node.exe").read_bytes() == b"MZ fake runtime"
+    assert not old.exists(), "parked debris from another pid must be swept"
+    assert not stuck_tmp.exists(), "staged debris from another pid must be swept"
+
+
+def test_error_texts_tell_the_truth_about_the_sweep(tmp_path):
+    """#457 finding 1: the recovery instructions must not promise the
+    parked tree stays forever — a later successful assemble removes it."""
+
+    res = tmp_path / "web"
+    retired = tmp_path / "web.old-4242"
+    for text in (
+        str(assemble._recovery_error(res, retired)),
+        str(assemble._stale_retired_error(res, retired)),
+    ):
+        assert "Do not delete it" in text
+        assert "removed as build debris" in text, (
+            "instructions must state that re-running assemble sweeps the "
+            "parked copy once the new tree is in place"
+        )
+
+
+_CHILD_ASSEMBLE = (
+    "import importlib.util, sys, time\n"
+    "from pathlib import Path\n"
+    "module_path, src, res, node, done = sys.argv[1:6]\n"
+    "spec = importlib.util.spec_from_file_location('assemble_probe', module_path)\n"
+    "module = importlib.util.module_from_spec(spec)\n"
+    "spec.loader.exec_module(module)\n"
+    "module.assemble(src=Path(src), res=Path(res), node=Path(node))\n"
+    "Path(done).write_text('done', encoding='utf-8')\n"
+)
+
+
+def test_concurrent_assembles_serialize_on_the_dist_lock(tmp_path):
+    """#457 finding 2: assemble takes the shared dist/ build lock, so a
+    second assemble waits instead of racing its sweep against the first
+    run's live staging tree."""
+
+    import subprocess
+
+    src, res, node = _buildable_source(tmp_path)
+    done = tmp_path / "child-done"
+
+    child = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            _CHILD_ASSEMBLE,
+            str(_SCRIPT),
+            str(src),
+            str(res),
+            str(node),
+            str(done),
+        ],
+    )
+    try:
+        # The child cannot finish while this process holds the same lock.
+        with assemble._dist_lock():
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline and child.poll() is None:
+                assert not done.exists(), (
+                    "assemble completed while another holder owned the dist lock"
+                )
+                time.sleep(0.1)
+            assert not done.exists(), (
+                "assemble completed while another holder owned the dist lock"
+            )
+        # Releasing lets the waiting child finish the swap.
+        child.wait(timeout=60)
+        assert child.returncode == 0
+        assert done.exists()
+        assert (res / "standalone" / "server.js").is_file()
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=10)
