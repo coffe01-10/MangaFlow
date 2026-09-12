@@ -515,10 +515,23 @@ public sealed class HomeView : WorkspaceView
             State.Status = $"项目「{name}」已创建";
             CreateRequested?.Invoke();
         }
-         catch (OperationCanceledException) { }
+        catch (OperationCanceledException)
+        {
+            // #470: navigation cancelled the POST mid-flight; the server may still
+            // have created the project. Surface the unknown outcome (wording follows
+            // the shell's own timeout copy) and drop cached dashboards so re-entry
+            // refetches instead of inviting a blind duplicate resubmit.
+            Cache.Invalidate("dashboard", "projects");
+            State.Error = "创建请求已取消，提交结果未知：服务可能已接收该请求，请先刷新确认，避免重复提交。";
+            State.Status = "创建请求已取消，结果未知，请刷新后确认";
+        }
         catch (Exception error) when (error is not OperationCanceledException)
         {
-            drawerError.Text = error.Message;
+            // #471-2: 取消/✕ stay enabled while creating, so the drawer may already
+            // be collapsed when the answer arrives — route the failure where the
+            // user can actually see it.
+            if (drawer.Open) drawerError.Text = error.Message;
+            else State.Status = "创建项目失败：" + error.Message.Split('\n')[0];
         }
         finally
         {

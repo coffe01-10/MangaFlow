@@ -84,12 +84,28 @@ public sealed class NativeBackend(string repository, string userData)
                 throw new InvalidOperationException(error.Message + "\n" + reason);
             }
         }
-        catch
+        catch (Exception error)
         {
             await StopAsync();
-            throw;
+            throw WrapStartupFailure(error);
         }
     }
+
+    /// <summary>#449: a boot-hang (READY wait timeout) has its own shell copy — nothing
+    /// has been submitted at this point, so the generic timeout copy's 提交 guidance
+    /// must not be reused. MainWindow.ErrorText passes InvalidOperationException
+    /// messages through verbatim, so the wrap reaches the UI as-is.</summary>
+    internal const string StartupTimeoutText =
+        "本地服务启动超时：等待服务就绪超过 35 秒。请点击重新连接；若反复出现请导出诊断日志排查。";
+
+    // Pure wrap so off-process checks can pin the mapping: only the startup
+    // timeout gets the dedicated copy, every other startup failure keeps its
+    // original exception (and message) for the shell to surface.
+    internal static Exception WrapStartupFailure(Exception error) => error switch
+    {
+        TimeoutException => new InvalidOperationException(StartupTimeoutText, error),
+        _ => error,
+    };
 
     /// Parse the native-host READY line into the API origin. #276: the parse
     /// site itself asserts the loopback http rule — ApiClient re-validates in
@@ -132,7 +148,7 @@ public sealed class NativeBackend(string repository, string userData)
             && uri.Fragment.Length == 0 && uri.UserInfo.Length == 0;
     }
 
-    public async Task StopAsync()
+    public async Task StopAsync(TimeSpan? gracefulTimeout = null)
     {
         await stopLock.WaitAsync();
         try
@@ -140,18 +156,57 @@ public sealed class NativeBackend(string repository, string userData)
             if (process == null) return;
             try
             {
-                // No PID-based kill: only close our private lifetime pipe.
+                // Graceful stop: close our private lifetime pipe and give the tree a
+                // bounded window to exit on its own (no PID-based kill on this path).
                 if (started)
                 {
                     if (!process.HasExited) process.StandardInput.Close();
-                    await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(40));
+                    await process.WaitForExitAsync().WaitAsync(gracefulTimeout ?? TimeSpan.FromSeconds(40));
                 }
             }
             catch (InvalidOperationException) when (!started) { }
-            process.Dispose();
-            process = null;
-            started = false;
+            catch (Exception error) when (error is TimeoutException or TaskCanceledException)
+            {
+                // #411: the graceful window elapsed — let the decision table pick the
+                // escalation instead of letting the timeout wedge the tracked state.
+                if (PlanStopEscalation(started, timedOut: true) == StopEscalation.KillTree)
+                    await KillTreeAsync();
+            }
+            finally
+            {
+                // #411: reset the tracked state on EVERY path (success, timeout,
+                // unexpected failure) so StartAsync can spawn a fresh host — a
+                // wedged non-null process made every reconnect re-fail for 40 s.
+                process.Dispose();
+                process = null;
+                started = false;
+            }
         }
         finally { stopLock.Release(); }
     }
+
+    // #411: the pipe close failed to end the tree in time — hard-kill the whole
+    // tree. Even when the kill itself fails, the caller's state reset still runs;
+    // the shell-core Job Object (KILL_ON_JOB_CLOSE) reaps the tree at app exit.
+    private async Task KillTreeAsync()
+    {
+        try
+        {
+            if (process is { HasExited: false } live)
+            {
+                live.Kill(entireProcessTree: true);
+                await live.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            }
+        }
+        catch (Exception error) when (error is TimeoutException or TaskCanceledException
+            or InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException) { }
+    }
+
+    internal enum StopEscalation { None, KillTree }
+
+    /// <summary>#411 decision table, pure so off-process checks can pin every row:
+    /// only a started process whose graceful stop window elapsed escalates to a
+    /// tree kill; every other combination stays with the plain state reset.</summary>
+    internal static StopEscalation PlanStopEscalation(bool started, bool timedOut)
+        => started && timedOut ? StopEscalation.KillTree : StopEscalation.None;
 }

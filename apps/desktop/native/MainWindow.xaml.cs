@@ -542,7 +542,16 @@ public partial class MainWindow : Window
         if (activeView != null) await activeView.RefreshAsync();
         if (page == "home" && api != null)
         {
-            try { await LoadDashboardAsync(lifetime.Token); } catch (Exception) { }
+            try { await LoadDashboardAsync(lifetime.Token); }
+            catch (OperationCanceledException) { }
+            catch (Exception error)
+            {
+                // #471-3: F5 on a dead backend must not leave stale metrics behind in
+                // silence — mirror ConnectAsync's failure surfacing so the user gets
+                // both an error and a retry cue.
+                state.Error = ErrorText(error);
+                state.Status = "刷新失败，可按 F5 重试；项目数据已保留";
+            }
         }
     }
 
