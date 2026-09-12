@@ -645,7 +645,7 @@ def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
                 # Ownership of the announced origin now includes noticing
                 # when it dies: arm the mid-session exit watch (log-only,
                 # ADR §4.5 detection scope).
-                _start_web_exit_watch(web.process, web_shutdown)
+                _start_web_exit_watch(web.process, web_shutdown, web.web_sock)
 
         record.update(
             state="ready",
@@ -941,7 +941,9 @@ WEB_BOOT_TIMEOUT_SECONDS = 10.0
 WEB_EXIT_WATCH_INTERVAL_SECONDS = 0.25
 
 
-def _start_web_exit_watch(node: subprocess.Popen, shutdown: threading.Event) -> threading.Thread:
+def _start_web_exit_watch(
+    node: subprocess.Popen, shutdown: threading.Event, announced_sock: socket.socket
+) -> threading.Thread:
     """Detect the plan-B web server dying mid-session and log it.
 
     Boot verification (#271) proves node owns its port at READY time; nothing
@@ -952,7 +954,9 @@ def _start_web_exit_watch(node: subprocess.Popen, shutdown: threading.Event) -> 
     shutdown in progress, records the exit code as a forensic milestone. It
     never restarts anything (out of 0.2.x scope) and never blocks shutdown —
     the helper's finally sets the event first, so cooperative and escalation
-    stops stay silent.
+    stops stay silent. On a genuine mid-session death it ALSO closes the
+    announced socket: the relay must not forward WebView traffic to
+    whatever local process claims node's freed ephemeral port (#507).
     """
 
     def _watch() -> None:
@@ -971,6 +975,15 @@ def _start_web_exit_watch(node: subprocess.Popen, shutdown: threading.Event) -> 
                     f"web server exited mid-session (code {code}); the plan-B "
                     "web origin is dead - restart the app to recover"
                 )
+                # Close the announced socket NOW: every WebView request after
+                # node's death would otherwise be relayed to whatever local
+                # process claims node's freed ephemeral port and answered on
+                # the app's own announced origin (#507). Connection-refused
+                # is the honest failure; the helper stays up for the API.
+                try:
+                    announced_sock.close()
+                except OSError:
+                    pass
                 return
             time.sleep(WEB_EXIT_WATCH_INTERVAL_SECONDS)
 
