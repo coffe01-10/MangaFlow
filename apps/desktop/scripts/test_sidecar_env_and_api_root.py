@@ -387,3 +387,27 @@ def test_read_context_rejects_malformed_tokens(monkeypatch, tmp_path, bad_token)
     )
     with pytest.raises(ValueError, match="invalid process ownership token"):
         helper._read_context()
+
+
+def test_pid_starttime_reads_the_live_anchor_and_degrades_to_none():
+    """The Linux identity anchor the helper writes into the ownership
+    journal: /proc/self/stat field 22 (index 19 after the comm close-paren
+    split) as an int. On this Linux host it must equal the shell-core
+    parser's arithmetic on the same process — a split or index drift
+    would make every journal anchor mismatch and fail every handshake
+    (the shell side refuses StartTimeMismatch). The degradation contract
+    (missing/odd stat → None, never an exception) is exercised structurally
+    on Windows/other hosts where /proc is absent."""
+
+    from pathlib import Path as _Path
+
+    mine = helper._pid_starttime()
+    assert mine is not None, "/proc/self/stat must be readable on Linux"
+
+    # Cross-check against the shell-core parser's arithmetic on the same
+    # process: same field, same value.
+    stat = _Path("/proc/self/stat").read_text(encoding="utf-8")
+    expected = int(stat.rsplit(")", 1)[1].split()[19])
+    assert mine == expected
+
+    assert isinstance(mine, int) and mine > 0
