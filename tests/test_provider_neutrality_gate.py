@@ -1,15 +1,19 @@
 """Regression tests for the provider-neutrality grep gate (Issue #41, audit M13).
 
-The gate is a PowerShell 5.1 script; these tests exercise its documented
-0/1/2 exit-code contract: pass on the current repo, fail closed on allowlisted
-violations, environment errors on missing allowlist, and the one-shot
-``-UpdateAllowlist`` bootstrap that only accepts an empty allowlist. All runs
-are local; no credentials and no provider calls are involved.
+The gate is a PowerShell 5.1 script; the behavioral tests exercise its
+documented 0/1/2 exit-code contract: pass on the current repo, fail closed
+on allowlisted violations, environment errors on missing allowlist, and the
+one-shot ``-UpdateAllowlist`` bootstrap that only accepts an empty
+allowlist. They are gated on a PowerShell BINARY being on PATH (powershell
+or pwsh) — not on the OS (#462): hosts of any OS that carry pwsh run them.
+The static tests at the top run everywhere and pin the gate's heuristic
+(the marker set) and its allowlist encoding. All runs are local; no
+credentials and no provider calls are involved.
 """
 
+import re
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -20,15 +24,57 @@ EMPTY_ALLOWLIST = (
     "# Generated baseline; remove a path when its final allowed hit is removed.\n"
 )
 
-pytestmark = pytest.mark.skipif(
-    sys.platform != "win32", reason="provider-neutrality gate is Windows PowerShell only"
+# The gate's whole heuristic (#412): every known Vertex SDK surface, as
+# fixed strings. A new SDK surface must land here AND in the script's
+# $patterns (the test below keeps the two from drifting apart).
+EXPECTED_PATTERNS = (
+    "VERTEX_NATIVE",
+    "vertex-ai",
+    "vertex_configured",
+    "vertexai",
+    "aiplatform",
+    "google-cloud-aiplatform",
+)
+
+
+def test_marker_set_covers_every_known_vertex_sdk_surface():
+    """The script's $patterns must be exactly EXPECTED_PATTERNS and be
+    documented in the header: the historical set missed the 'vertexai' SDK
+    import surface entirely (#412), so a reintroduced `import vertexai`
+    in apps/** was undetectable."""
+
+    source = REPO_SCRIPT.read_text(encoding="utf-8")
+    declared = re.search(r"^\$patterns = (.+)$", source, re.MULTILINE)
+    assert declared, "the script must declare its marker set in $patterns"
+    quoted = tuple(re.findall(r"'([^']+)'", declared.group(1)))
+    assert quoted == EXPECTED_PATTERNS
+    assert "# Marker set:" in source, (
+        "the marker set must be documented in the script header"
+    )
+
+
+def test_allowlist_read_pins_utf8_encoding():
+    """The allowlist is WRITTEN UTF-8-no-BOM but was READ with Windows
+    PowerShell 5.1's ANSI default — a non-ASCII allowlisted path
+    round-tripped as mojibake into a permanent false violation (#462)."""
+
+    source = REPO_SCRIPT.read_text(encoding="utf-8")
+    assert re.search(
+        r"Get-Content -LiteralPath \$allowlistPath -Encoding UTF8", source
+    ), "the allowlist read must pin -Encoding UTF8"
+
+
+POWERSHELL = shutil.which("powershell") or shutil.which("pwsh")
+requires_powershell = pytest.mark.skipif(
+    POWERSHELL is None, reason="no PowerShell binary (powershell/pwsh) on PATH"
 )
 
 
 def run_gate(script: Path, *args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+    assert POWERSHELL is not None, "requires_powershell marker missing"
     return subprocess.run(
         [
-            "powershell",
+            POWERSHELL,
             "-NoProfile",
             "-ExecutionPolicy",
             "Bypass",
@@ -45,6 +91,7 @@ def run_gate(script: Path, *args: str, cwd: Path) -> subprocess.CompletedProcess
     )
 
 
+@requires_powershell
 def test_gate_passes_on_current_repo():
     result = run_gate(REPO_SCRIPT, cwd=REPO_ROOT)
     assert result.returncode == 0, f"stdout={result.stdout}\nstderr={result.stderr}"
@@ -69,6 +116,7 @@ def make_sandbox_repo(tmp_path: Path) -> Path:
     return root
 
 
+@requires_powershell
 def test_gate_fails_and_prints_violations_outside_allowlist(tmp_path):
     root = make_sandbox_repo(tmp_path)
     outside = tmp_path / "outside-cwd"
@@ -79,6 +127,7 @@ def test_gate_fails_and_prints_violations_outside_allowlist(tmp_path):
     assert "apps/demo/other.py:1" in result.stdout
 
 
+@requires_powershell
 def test_gate_allows_listed_paths(tmp_path):
     root = make_sandbox_repo(tmp_path)
     allowlist = root / "scripts" / "provider-neutrality-allowlist.txt"
@@ -89,6 +138,7 @@ def test_gate_allows_listed_paths(tmp_path):
     assert result.returncode == 0, f"stdout={result.stdout}\nstderr={result.stderr}"
 
 
+@requires_powershell
 def test_gate_missing_allowlist_exits_two(tmp_path):
     root = make_sandbox_repo(tmp_path)
     (root / "scripts" / "provider-neutrality-allowlist.txt").unlink()
@@ -97,6 +147,7 @@ def test_gate_missing_allowlist_exits_two(tmp_path):
     assert "allowlist missing" in result.stderr
 
 
+@requires_powershell
 def test_update_allowlist_rejects_non_empty_allowlist(tmp_path):
     root = make_sandbox_repo(tmp_path)
     allowlist = root / "scripts" / "provider-neutrality-allowlist.txt"
@@ -108,6 +159,7 @@ def test_update_allowlist_rejects_non_empty_allowlist(tmp_path):
     assert "-UpdateAllowlist requires an empty allowlist" in result.stderr
 
 
+@requires_powershell
 def test_update_allowlist_generates_sorted_unique_utf8_without_bom(tmp_path):
     root = make_sandbox_repo(tmp_path)
     # A third distinct file plus a repeated hit inside one file exercises
