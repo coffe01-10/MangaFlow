@@ -424,3 +424,28 @@ def test_stdin_eof_watch_drains_post_go_bytes_and_signals(monkeypatch):
     assert delivered == [signal_module.SIGTERM], (
         f"EOF after draining junk must raise SIGTERM: {delivered!r}"
     )
+
+
+def test_read_context_rejects_a_symlinked_journal(monkeypatch, tmp_path):
+    """A symlink planted at the journal path must be refused before the
+    token is trusted as the runtime anchor: the link could point the
+    ownership journal at a foreign runtime directory the shell does not
+    own. The absolute check alone would miss a RELATIVE symlink whose
+    target is elsewhere."""
+
+    token = "c" * 32
+    foreign = tmp_path / "foreign-runtime"
+    foreign.mkdir(parents=True)
+    target = foreign / "owner.json"
+    target.write_text("{}", encoding="utf-8")
+
+    runtime = tmp_path / f"mangaflow-desktop-{token}"
+    runtime.mkdir(parents=True)
+    journal = runtime / "owner.json"
+    journal.symlink_to(target)
+
+    monkeypatch.setenv("MANGAFLOW_DESKTOP_TOKEN", token)
+    monkeypatch.setenv("MANGAFLOW_DESKTOP_JOURNAL", str(journal))
+
+    with pytest.raises(ValueError, match="absolute real path"):
+        helper._read_context()
