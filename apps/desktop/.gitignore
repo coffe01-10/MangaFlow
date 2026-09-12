@@ -9,3 +9,4 @@ dist/static-build.log
 dist/.build.lock
 dist/.build.lock
 src-tauri/gen/schemas/
+dist/e2e-last-run.log
