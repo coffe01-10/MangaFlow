@@ -33,10 +33,19 @@ public sealed class ProjectSettingsView : WorkspaceView
     private List<ModelOption> textModels = [];
     private bool saving;
     private System.Timers.Timer? successTimer;
+    // #469: 未保存编辑标记——本页是可编辑表单（含危险区），F5/切节/切项目/关窗
+    // 都必须先过 ConfirmLeaveAsync，而不是静默丢弃。
+    private bool dirty;
+
+    // 测试缝：headless 检查无模态驱动离开确认（ScriptView/StoryboardView 的
+    // LeaveConfirmOverride 同款目的；放在脏判定之后，干净表单不咨询）。
+    internal Func<Task<bool>>? LeaveConfirmOverride;
 
     public ProjectSettingsView()
     {
         saveSuccess.Visibility = Visibility.Collapsed;
+        // 危险区输入到一半的删除确认名同样是用户输入，纳入同一份未保存守护。
+        nameForDelete.TextChanged += (_, _) => Dirty();
         var grid = new Grid { Margin = new Thickness(36, 32, 36, 24) };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -142,6 +151,7 @@ public sealed class ProjectSettingsView : WorkspaceView
         consistencySwitch.Checked += (_, _) => Dirty();
         consistencySwitch.Unchecked += (_, _) => Dirty();
         modelSelector.SelectionChanged += (_, _) => Dirty();
+        concurrencyInput.TextChanged += (_, _) => Dirty();
         body.Children.Clear();
         saveSuccess.Visibility = Visibility.Collapsed;
         saveError.Visibility = Visibility.Collapsed;
@@ -177,8 +187,7 @@ public sealed class ProjectSettingsView : WorkspaceView
         }
         body.Children.Add(Section("工作方式", "WORKFLOW MODE", modeGroup));
 
-        BuildSegment(draftGroup, ["1K", "2K"], project.Text("draft_resolution", "1K"));
-        BuildSegment(finalGroup, ["1K", "2K", "4K"], project.Text("default_resolution", "2K"));
+        BuildSegments(project.Text("draft_resolution", "1K"), project.Text("default_resolution", "2K"));
         concurrencyInput.Text = project.Number("default_concurrency").ToString();
         var outputPanel = new StackPanel
         {
@@ -242,6 +251,10 @@ public sealed class ProjectSettingsView : WorkspaceView
         body.Children.Add(saveButton);
         body.Children.Add(saveSuccess);
         body.Children.Add(saveError);
+        // 程序化回填（上面的 IsChecked/Text/SelectedItem 赋值）会同步触发 Dirty；
+        // 渲染完成即服务端状态，收尾清脏。危险区的删除确认名不随渲染重建，
+        // 留在缓存视图里反而避免了跨导航丢失，不参与此重置。
+        dirty = false;
     }
 
     private static void Select(ComboBox selector, string value)
@@ -274,6 +287,15 @@ public sealed class ProjectSettingsView : WorkspaceView
         _ = previous;
     }
 
+    private void BuildSegments(string draft, string final)
+    {
+        BuildSegment(draftGroup, ["1K", "2K"], draft);
+        BuildSegment(finalGroup, ["1K", "2K", "4K"], final);
+        // 分辨率 Pill 选中即编辑（互斥处理器只负责收起兄弟项，不标脏）。
+        foreach (var toggle in draftGroup.Children.OfType<ToggleButton>().Concat(finalGroup.Children.OfType<ToggleButton>()))
+            toggle.Checked += (_, _) => Dirty();
+    }
+
     private static StackPanel Labelled(string label, FrameworkElement control)
     {
         var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 14) };
@@ -302,7 +324,11 @@ public sealed class ProjectSettingsView : WorkspaceView
         };
     }
 
-    private void Dirty() => saveSuccess.Visibility = Visibility.Collapsed;
+    private void Dirty()
+    {
+        dirty = true;
+        saveSuccess.Visibility = Visibility.Collapsed;
+    }
 
     private string CheckedMode() =>
         modeGroup.Children.OfType<RadioButton>().FirstOrDefault(r => r.IsChecked == true) is { Tag: string mode } ? mode : "SEMI_AUTO";
@@ -347,6 +373,7 @@ public sealed class ProjectSettingsView : WorkspaceView
             }, cancellation: lifetime.Token);
             version = saved.Number("version");
             project = saved;
+            dirty = false;
             saveSuccess.Visibility = Visibility.Visible;
             successTimer?.Stop();
             successTimer = new System.Timers.Timer(4000) { AutoReset = false };
@@ -354,7 +381,15 @@ public sealed class ProjectSettingsView : WorkspaceView
             successTimer.Start();
             Cache.Invalidate("project:" + ProjectId, "dashboard", "projects");
         }
-         catch (OperationCanceledException) { }
+        catch (OperationCanceledException)
+        {
+            // #471-1: 导航/关闭取消了在途 PATCH——服务端可能已落库，而本地 version
+            // 未推进，直接重存会立刻 409。给出「提交结果未知」反馈而不是沉默；
+            // 重新进入本页时 Activate→LoadAsync 会重读服务端，自然收敛。
+            saveError.Text = "保存已取消，提交结果未知，请刷新后确认";
+            saveError.Visibility = Visibility.Visible;
+            State.Status = "项目设置保存已取消，提交结果未知，请刷新后确认";
+        }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             saveError.Text = error.Message;
@@ -386,7 +421,14 @@ public sealed class ProjectSettingsView : WorkspaceView
             State.Status = $"项目「{expected}」已删除";
             await Context!.OpenDashboard();
         }
-         catch (OperationCanceledException) { }
+        catch (OperationCanceledException)
+        {
+            // #471-1: DELETE 同样可能已被服务端执行。导航已在进行中，弹模态只会
+            // 打断它；用全局状态条说明结果未知。危险区按钮只在构造时创建、不随
+            // Render 重建，必须恢复可用，否则缓存视图会留下永远禁用的删除按钮。
+            State.Status = "项目删除已取消，提交结果未知，请刷新后确认";
+            ((Button)sender).IsEnabled = true;
+        }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             MessageBox.Show(Host, error.Message, "删除未完成", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -394,9 +436,29 @@ public sealed class ProjectSettingsView : WorkspaceView
         }
     }
 
+    public override async Task<bool> ConfirmLeaveAsync()
+    {
+        // #469: 侧栏切节（MainWindow:458）/ Ctrl+K 切项目（:416）/ 关窗（:655）
+        // 都走这里；干净表单直接放行，不打扰。
+        if (!dirty) return true;
+        var leave = LeaveConfirmOverride is { } prompt
+            ? await prompt()
+            : MessageBox.Show(Host, "项目设置有未保存的修改（包括已输入的删除确认名称），离开会丢弃这些内容。确定离开吗？",
+                "离开确认", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
+        if (!leave) return false;
+        // 同意离开即弃稿：dirty 原样保留会让同一次弃稿在再次激活/重载前重复弹窗
+        // （StoryboardView.ConfirmLeaveAsync 同款处理）。
+        dirty = false;
+        return true;
+    }
+
     public override Task RefreshAsync()
     {
         if (saveSuccess.Visibility == Visibility.Visible) return Task.CompletedTask;
+        // #469: F5（MainWindow.Refresh 不经过 ConfirmLeaveAsync）不得静默丢弃
+        // 编辑——镜像 ScriptView.RefreshAsync 的 editingFormsOpen 守卫：有草稿时
+        // 本轮跳过重载，保存或弃稿后的下一次刷新用新数据重绘。
+        if (dirty) return Task.CompletedTask;
         _ = LoadAsync();
         return Task.CompletedTask;
     }
