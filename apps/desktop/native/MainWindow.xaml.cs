@@ -262,7 +262,7 @@ public partial class MainWindow : Window
 
     private void Navigate(string destination) => _ = NavigateAsync(destination);
 
-    private async Task ActivateCurrentViewAsync()
+    private async Task ActivateCurrentViewAsync(bool preserveDrafts = false)
     {
         if (api == null || !state.Connected) return;
         var context = new WorkspaceContext
@@ -335,7 +335,7 @@ public partial class MainWindow : Window
             state.Busy = true;
             try
             {
-                view.Activate(context);
+                ActivateView(view, context, preserveDrafts);
                 request.Token.ThrowIfCancellationRequested();
                 state.Error = "";
             }
@@ -352,6 +352,26 @@ public partial class MainWindow : Window
             }
         }
         UpdateChrome();
+    }
+
+    // #428: 重连拒绝弃稿时的保真激活分派。IWorkspaceView.Activate 的签名
+    // （ViewKit 契约，所有视图共用）不携带保真模式，这里按具体视图分派到各自
+    // 的 ActivatePreservingDrafts 入口；无草稿面的视图走全量 Activate。
+    private static void ActivateView(IWorkspaceView view, WorkspaceContext context, bool preserveDrafts)
+    {
+        if (!preserveDrafts)
+        {
+            view.Activate(context);
+            return;
+        }
+        switch (view)
+        {
+            case ScriptView script: script.ActivatePreservingDrafts(context); break;
+            case StoryboardView storyboard: storyboard.ActivatePreservingDrafts(context); break;
+            case GenerateView generate: generate.ActivatePreservingDrafts(context); break;
+            case WorkflowView workflow: workflow.ActivatePreservingDrafts(context); break;
+            default: view.Activate(context); break;
+        }
     }
 
     private async Task EnsureProjectAsync()
@@ -427,7 +447,23 @@ public partial class MainWindow : Window
     private async Task OpenProjectAsync(ProjectItem? item)
     {
         if (item == null) return;
-        if (state.CurrentProject?.Id != item.Id)
+        if (state.CurrentProject?.Id == item.Id)
+        {
+            // #428: 同项目分支只由重连触达（重新连接 → ConnectAsync → 此处）。
+            // 旧代码直接跳到 ActivateCurrentViewAsync 的全量重载，把未保存的
+            // 剧本表单/分镜草稿/导演指令静默清空（#341 只修了 RefreshAsync）。
+            // 离开确认先行：拒绝弃稿则改走保真激活——视图保留草稿，只重绑重连
+            // 换上的新 ApiClient（旧实例已 Dispose，不换会在下次请求抛异常）。
+            if (activeView != null && !await activeView.ConfirmLeaveAsync())
+            {
+                state.CurrentProject = item;
+                preferences.RecentProject = item.Id;
+                await ActivateCurrentViewAsync(preserveDrafts: true);
+                if (dock != null && state.Connected) _ = dock.RefreshAsync(item.Id, lifetime.Token);
+                return;
+            }
+        }
+        else
         {
             // Staying on the same page re-activates the same view instance; cancel the
             // old reads first so late responses cannot paint the new project.

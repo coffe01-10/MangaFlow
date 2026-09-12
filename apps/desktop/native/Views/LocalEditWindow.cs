@@ -143,8 +143,27 @@ public sealed class LocalEditWindow : Window
             notice.Text = capableModels.Count == 0 ? "当前没有支持显式选区 mask 的模型，请到系统设置配置。" : "矩形或画笔绘制选区，最多 8 个。源图必须是本页已暂选的候选。";
         }
         catch (OperationCanceledException) { }
+        catch (HttpRequestException error)
+        {
+            // #449-3: 源图读取走 ImageStore 的独立 HttpClient，不经过 ApiClient
+            // 的 ThrowResponseError detail 映射——EnsureSuccessStatusCode 抛出的
+            // 英文原文（HttpRequestException.Message）不得直接上屏。按应用的
+            // 错误契约（中文标签 + 状态码，ApiClient 同型）映射；连接层失败没有
+            // 状态码时给统一中文兜底。
+            notice.Text = DescribeImageLoadFailure((int?)error.StatusCode);
+        }
         catch (Exception error) when (error is not OperationCanceledException) { notice.Text = error.Message; }
     }
+
+    // #449-3: 源图读取失败的本地化文案。拿不到响应体（异常已抛出），按状态码
+    // 归类；与 ApiClient.ThrowResponseError 的「fallbackLabel（code）」同型。
+    internal static string DescribeImageLoadFailure(int? statusCode) => statusCode switch
+    {
+        404 => "源图不存在或已删除（HTTP 404），请回生成工作台确认候选仍在。",
+        409 => "源图读取遇到版本冲突（HTTP 409），请刷新后重试。",
+        null => "无法连接本地服务读取源图，请检查本地服务后重新打开本窗口。",
+        _ => $"源图读取失败（HTTP {statusCode}），请稍后重试。",
+    };
     private void SetZoom(double value)
     {
         zoom = Math.Clamp(value, .5, 4);
@@ -320,8 +339,31 @@ public sealed class LocalEditWindow : Window
     {
         if (closed) return;
         if (busy) { args.Cancel = true; return; }
-        if (groupId.Length == 0) return;
+        if (groupId.Length == 0)
+        {
+            // #429-4: 未提交预览（groupId==0）时直接关闭会静默丢掉已画选区与
+            // 修改指令——补上与 StoryboardView 离开确认同款的脏守卫；拒绝则留在
+            // 窗口继续编辑。accept 之后（acceptedId 已记录）画布已锁定、修改已
+            // 提交，关闭属于正常收尾，不再打扰。
+            if (HasUnsavedDraft && !ConfirmCloseDraft()) args.Cancel = true;
+            return;
+        }
         args.Cancel = true; await Discard();
         if (groupId.Length == 0) { closed = true; Close(); }
+    }
+
+    private bool HasUnsavedDraft =>
+        groupId.Length == 0 && acceptedId.Length == 0
+        && (regions.Count > 0 || instruction.Text.Trim().Length > 0);
+
+    // 测试缝：headless 回归检查用无模态实现替换关闭确认（StoryboardView 的
+    // LeaveConfirmOverride 同一模式）；生产路径为 null。
+    internal Func<bool>? CloseConfirmOverride;
+
+    private bool ConfirmCloseDraft()
+    {
+        if (CloseConfirmOverride is { } prompt) return prompt();
+        return MessageBox.Show(this, "已画的选区与修改指令尚未提交，关闭会丢弃这些内容。仍要关闭吗？",
+            "关闭确认", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
     }
 }

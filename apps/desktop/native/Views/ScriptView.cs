@@ -195,6 +195,24 @@ public sealed class ScriptView : WorkspaceView
         }
     }
 
+    /// <summary>
+    /// #428: 重连（重新连接 → ConnectAsync → OpenProjectAsync 同项目分支）在用户
+    /// 拒绝弃稿时的保真激活。重连已 Dispose 旧 ApiClient，视图必须重绑新上下文
+    /// （否则下一次请求直接抛异常），但绝不能走 Activate 的整链重载——非 quiet 的
+    /// LoadScriptAsync 会先 body.Children.Clear() 清掉打开中的编辑表单。守卫与
+    /// #341 的 RefreshAsync 同源（editingFormsOpen）：表单关闭后的下一次加载
+    /// （轮询/F5）会用新数据重绘，这里原地保留表单即可。
+    /// </summary>
+    internal void ActivatePreservingDrafts(WorkspaceContext context)
+    {
+        if (!editingFormsOpen)
+        {
+            Activate(context);
+            return;
+        }
+        base.Activate(context);
+    }
+
     private static Border EmptyState(string title, string description)
     {
         var stack = new StackPanel();

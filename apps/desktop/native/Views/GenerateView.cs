@@ -99,11 +99,21 @@ public sealed class GenerateView : WorkspaceView
         {
             if (chapterSelector.SelectedItem is ComboBoxItem { Tag: string id } && id != chapterId)
             {
+                // #429-1: 切章对导演台是破坏性操作（换章重载会重建 DirectorPane，
+                // 已输入的指令丢失）——先过离开确认（ScriptView/StoryboardView 的
+                // 章节切换处理器同款契约），拒绝则选择器弹回原章节。
+                if (!await ConfirmLeaveAsync()) { SelectChapter(chapterId); return; }
                 chapterId = id;
                 KeyValueStore.Set("generate:chapter:" + ProjectId, id);
                 await LoadPagesAsync();
             }
         };
+    }
+
+    private void SelectChapter(string id)
+    {
+        foreach (var item in chapterSelector.Items.OfType<ComboBoxItem>())
+            if ((string?)item.Tag == id) { chapterSelector.SelectedItem = item; return; }
     }
 
     private void SwitchMode(bool isDirector)
@@ -1416,10 +1426,49 @@ public sealed class GenerateView : WorkspaceView
 
     public override Task RefreshAsync()
     {
+        // #429-1: PollTick 对有草稿的导演台早已「keep drafts alive」（HasDraft 早退），
+        // 用户刷新同样不得丢稿——LoadWorkbenchAsync 在数据变化时 Render() 会重建
+        // DirectorPane，已输入的指令随之消失。守卫复用同一 HasDraft 判定；F5 在
+        // 无草稿时照常重载。
+        if (DirectorDraftActive) return Task.CompletedTask;
         if (currentPage != null) _ = LoadWorkbenchAsync();
         // 手动刷新同样覆盖检查面板的数据源（web 的失效会让 inspections 查询重新拉取）。
         if (reviewCandidateId is { } reviewId) _ = LoadInspectionsAsync(reviewId);
         return Task.CompletedTask;
+    }
+
+    // #429-1/#428: 导演台草稿判定——PollTick 的 keep-drafts 谓词复用到这里
+    // （RefreshAsync/切章确认/保真激活三条路径共用同一份语义）。
+    private bool DirectorDraftActive => director && directorPane is { HasDraft: true };
+
+    // 测试缝：headless 回归检查用无模态实现替换离开确认（StoryboardView 的
+    // LeaveConfirmOverride 同一模式）；生产路径为 null。
+    internal Func<Task<bool>>? LeaveConfirmOverride;
+
+    public override Task<bool> ConfirmLeaveAsync()
+    {
+        // 测试缝优先：headless 检查无模态驱动拒绝/同意分支，否则卡死在 MessageBox。
+        if (LeaveConfirmOverride is { } prompt) return prompt();
+        if (!DirectorDraftActive) return Task.FromResult(true);
+        var result = MessageBox.Show(Host, "导演指令尚未提交，离开会丢弃已输入的指令与预览选择。仍要离开吗？",
+            "离开确认", MessageBoxButton.YesNo, MessageBoxImage.Question);
+        return Task.FromResult(result == MessageBoxResult.Yes);
+    }
+
+    /// <summary>
+    /// #428: 重连（重新连接 → ConnectAsync → OpenProjectAsync 同项目分支）在用户
+    /// 拒绝弃稿时的保真激活。重连已 Dispose 旧 ApiClient，必须重绑新上下文，但
+    /// 不能走 Activate 的整链重载——换章/重激活路径的 Render() 会 new 一个
+    /// DirectorPane，已输入的指令（HasDraft）直接消失。无草稿时照常全量激活。
+    /// </summary>
+    internal void ActivatePreservingDrafts(WorkspaceContext context)
+    {
+        if (!DirectorDraftActive)
+        {
+            Activate(context);
+            return;
+        }
+        base.Activate(context);
     }
 }
 

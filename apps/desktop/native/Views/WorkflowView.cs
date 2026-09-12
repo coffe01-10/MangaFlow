@@ -1846,6 +1846,18 @@ public sealed class WorkflowView : WorkspaceView
         return true;
     }
 
+    /// <summary>
+    /// #428: 重连（重新连接 → ConnectAsync → OpenProjectAsync 同项目分支）在
+    /// 离开确认被拒绝时的保真激活。本视图的确认永远返回 true（防抖草稿先冲刷
+    /// 落盘），生产路径不会走到这里；保真语义按同一纪律兜底：重绑新 ApiClient
+    /// 后把武装中的防抖冲刷到服务端（画布节点/边原地保留，不整链重载）。
+    /// </summary>
+    internal async void ActivatePreservingDrafts(WorkspaceContext context)
+    {
+        base.Activate(context);
+        await ConfirmLeaveAsync();
+    }
+
     // ============ Node visual model ============
     private sealed class WorkflowNode
     {
