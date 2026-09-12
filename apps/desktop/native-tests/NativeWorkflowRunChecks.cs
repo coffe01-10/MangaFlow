@@ -591,7 +591,9 @@ internal static class NativeWorkflowRunChecks
             if (request.Method == HttpMethod.Get && path.EndsWith("/workflows/wf-swa"))
             {
                 getA++;
-                return Response($"{{\"id\":\"wf-swa\",\"name\":\"A\",\"version\":{(getA >= 3 ? 7 : 5)},\"draft_version\":1,\"draft_graph\":{aGraph}}}");
+                // #427 修复后 Activate 恰好载入一次：A 的载入共 2 次（初始 + 切回），
+                // 切回时 A 已被 flush 过，服务端版本应为 7（旧校准按双载入的 3 次计）。
+                return Response($"{{\"id\":\"wf-swa\",\"name\":\"A\",\"version\":{(getA >= 2 ? 7 : 5)},\"draft_version\":1,\"draft_graph\":{aGraph}}}");
             }
             if (request.Method == HttpMethod.Get && path.EndsWith("/workflows/wf-swb"))
             {

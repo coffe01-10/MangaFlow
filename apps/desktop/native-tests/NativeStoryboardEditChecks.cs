@@ -151,6 +151,28 @@ internal static class NativeStoryboardEditChecks
         Require(view.HandleCountForTest == 0, "无选中时不得残留缩放手柄");
         view.SelectPanelForTest(0);
 
+        // 修饰键分支钉测（在初始 0.5×0.4、ratio=1.25 的格子上）：Shift 锁宽高比 →
+        // se 拖到 (0.85,0.75) 时 height=0.75/1.25=0.60（左上角不动）；Alt 从中心
+        // 对称 → 两轴各收敛到中心距与页边界的较小者（0.7×0.6，左上角移到 (0,0)）。
+        // 修饰键由访问器显式传入——headless 检查不得读宿主机物理键盘：曾因残留的
+        // Shift 按下状态让下面的普通 se 拖拽随机走进 ratio 锁分支飘红。
+        view.ResizeViaHandleForTest(0, "se", new Point(0.85, 0.75), System.Windows.Input.ModifierKeys.Shift);
+        var locked = view.PanelRectForTest(0);
+        Require(Math.Abs(locked.X - 0.1) < 1e-9 && Math.Abs(locked.Y - 0.1) < 1e-9
+            && Math.Abs(locked.Width - 0.75) < 1e-9 && Math.Abs(locked.Height - 0.60) < 1e-9,
+            $"Shift 应锁宽高比（实际 {locked.Width:F3}×{locked.Height:F3}，期望 0.750×0.600）");
+        Layout(view, 1400, 1000);
+        Click(Buttons(view, "撤销").Single());
+        view.ResizeViaHandleForTest(0, "se", new Point(0.85, 0.75), System.Windows.Input.ModifierKeys.Alt);
+        var centered = view.PanelRectForTest(0);
+        Require(Math.Abs(centered.X) < 1e-9 && Math.Abs(centered.Y) < 1e-9
+            && Math.Abs(centered.Width - 0.70) < 1e-9 && Math.Abs(centered.Height - 0.60) < 1e-9,
+            $"Alt 应从中心对称缩放（实际 X={centered.X:F3} Y={centered.Y:F3} {centered.Width:F3}×{centered.Height:F3}，期望 (0,0) 0.700×0.600）");
+        Layout(view, 1400, 1000);
+        Click(Buttons(view, "撤销").Single());
+        Require(Math.Abs(view.PanelRectForTest(0).Width - 0.5) < 1e-9 && Math.Abs(view.PanelRectForTest(0).Height - 0.4) < 1e-9,
+            "修饰键用例撤到底后应回到夹具初始 0.5×0.4");
+
         var before = view.PanelRectForTest(0);
         view.ResizeViaHandleForTest(0, "se", new Point(0.85, 0.75));
         var grown = view.PanelRectForTest(0);
