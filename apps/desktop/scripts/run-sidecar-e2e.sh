@@ -22,6 +22,50 @@ ensure_e2e_venv() {
   local stamp_file="$venv/.mangaflow-bootstrap"
   local expected
   expected="$(cat "$@" | md5sum | cut -d' ' -f1)"
+  # Fast path: a stamp that already matches is immutable evidence of a
+  # completed install (the publish below is an atomic rename), so trusting
+  # it needs no lock.
+  if resolve_venv_python "$venv" >/dev/null \
+     && [ -f "$stamp_file" ] \
+     && [ "$(cat "$stamp_file" 2>/dev/null)" = "$expected" ]; then
+    return 0
+  fi
+  # Slow path (#586): two runners reaching this point would interleave pip
+  # installs into the SAME venv and both write the stamp — blessing a
+  # corrupt venv forever, the exact never-self-heals state the stamp exists
+  # to prevent. A mkdir lock serializes check → install → stamp (atomic on
+  # POSIX and git-bash alike; flock is not shipped with git-bash). The lock
+  # is a SIBLING of the venv, never a child: on the fresh path the venv dir
+  # does not exist yet, and a lock inside it could neither be created nor
+  # hold the venv creation it gates. A lock orphaned by a killed run is
+  # broken after 30 minutes of silence — before that, a live install is
+  # indistinguishable from a stale lock.
+  local lock_dir="${venv}.bootstrap-lock"
+  local waited=0
+  local max_wait="${MANGAFLOW_E2E_BOOTSTRAP_MAX_WAIT:-900}"
+  until mkdir "$lock_dir" 2>/dev/null; do
+    if [ -n "$(find "$lock_dir" -maxdepth 0 -mmin +30 2>/dev/null)" ]; then
+      rm -rf "$lock_dir"
+      continue
+    fi
+    waited=$((waited + 5))
+    if [ "$waited" -ge "$max_wait" ]; then
+      echo "ensure_e2e_venv: bootstrap lock $lock_dir still held after ${waited}s; remove it if no other runner is active" >&2
+      return 1
+    fi
+    sleep 5
+  done
+  local status=0
+  _ensure_e2e_venv_locked "$venv" "$stamp_file" "$expected" "$@" || status=$?
+  # Single release point: every exit of the critical section lands here.
+  rmdir "$lock_dir" 2>/dev/null || true
+  return "$status"
+}
+
+_ensure_e2e_venv_locked() {
+  local venv="$1" stamp_file="$2" expected="$3"; shift 3
+  # Re-check inside the lock: the runner that held it before us may have
+  # completed the install while we waited.
   if ! resolve_venv_python "$venv"; then
     # Explicit propagation, mirroring the install step below: set -e is
     # suppressed inside an if-condition caller, and the function must fail
@@ -32,7 +76,10 @@ ensure_e2e_venv() {
     # Explicit propagation: a failed install must never reach the stamp
     # write, even if a future caller drops set -e.
     install_e2e_requirements "$venv" "$@" || return $?
-    printf '%s\n' "$expected" > "$stamp_file"
+    # Atomic publish: a concurrent fast-path reader must see either the old
+    # stamp or the new one, never a partial file (#586).
+    printf '%s\n' "$expected" > "$stamp_file.tmp.$$" \
+      && mv -f "$stamp_file.tmp.$$" "$stamp_file"
   fi
 }
 

@@ -14,6 +14,7 @@ never touch the network.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -32,7 +33,8 @@ def _requirements_hash() -> str:
     return hashed
 
 
-def _run_harness_in(workdir: Path, setup: str, fake_pip_rc: int = 0) -> tuple[int, str]:
+def _run_harness_in(workdir: Path, setup: str, fake_pip_rc: int = 0,
+                    env: dict[str, str] | None = None) -> tuple[int, str]:
     harness = f"""
 set -euo pipefail
 cd {workdir}
@@ -56,6 +58,7 @@ echo "STAMP=$(cat "$VENV/.mangaflow-bootstrap" 2>/dev/null || echo MISSING)"
         ["bash", "-c", harness, "harness", str(workdir / "venv")],
         capture_output=True,
         text=True,
+        env={**os.environ, **(env or {})},
     )
     return done.returncode, done.stdout + done.stderr
 
@@ -225,3 +228,85 @@ def test_partial_scripts_layout_venv_self_heals(tmp_path):
     assert rc == 0, out2
     assert "PIP_CALLS=1" in out2, "a retry must re-run the install"
     assert f"STAMP={_requirements_hash()}" in out2
+
+
+def test_concurrent_bootstraps_install_exactly_once(tmp_path):
+    """#586: two runners racing the bootstrap on a fresh checkout must
+    serialize on the bootstrap lock — exactly ONE pip install into the
+    shared venv, both callers succeed, one matching stamp. The winner's
+    install is slowed so the loser arrives while the lock is held and
+    exercises the wait-and-recheck path instead of a second install."""
+
+    venv = tmp_path / "venv"
+    cnt = tmp_path / "pip.calls"
+    harness = f"""
+set -euo pipefail
+cd {tmp_path}
+source {_SCRIPT}
+install_e2e_requirements() {{
+  sleep 2
+  echo $(( $(cat {cnt} 2>/dev/null || echo 0) + 1 )) > {cnt}
+}}
+if ensure_e2e_venv {venv} {_REQ} {_REQ_DEV}; then
+  echo "ENSURE_RC=0"
+else
+  echo "ENSURE_RC=$?"
+fi
+"""
+    first = subprocess.Popen(
+        ["bash", "-c", harness], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
+    import time
+
+    time.sleep(0.5)  # let the first runner take the lock and start installing
+    second = subprocess.Popen(
+        ["bash", "-c", harness], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
+    o1, e1 = first.communicate()
+    o2, e2 = second.communicate()
+    out1, out2 = o1 + e1, o2 + e2
+    assert first.returncode == 0 and second.returncode == 0, (out1, out2)
+    assert out1.count("ENSURE_RC=0") == 1 and out2.count("ENSURE_RC=0") == 1, (out1, out2)
+    assert cnt.exists() and cnt.read_text().strip() == "1", (
+        f"two concurrent bootstraps must pip-install exactly once, saw {cnt.read_text() if cnt.exists() else 'nothing'}"
+    )
+    assert (venv / ".mangaflow-bootstrap").read_text().strip() == _requirements_hash()
+    assert not (tmp_path / "venv.bootstrap-lock").exists(), "the lock must be released"
+
+
+def test_stale_bootstrap_lock_is_broken_and_install_proceeds(tmp_path):
+    """A lock orphaned by a killed run (no live holder, silent for over 30
+    minutes) must be broken instead of dead-locking every future run —
+    otherwise the crash-safety fix becomes its own denial of service."""
+
+    venv = tmp_path / "venv"
+    lock = tmp_path / "venv.bootstrap-lock"
+    lock.mkdir(parents=True)
+    subprocess.run(["touch", "-d", "31 minutes ago", str(lock)], check=True)
+
+    rc, out = _run_harness_in(tmp_path, "true")
+    assert rc == 0, out
+    assert "ENSURE_RC=0" in out, out
+    assert "PIP_CALLS=1" in out, out
+    assert not lock.exists(), "the stale lock must not survive the run"
+
+
+def test_fresh_bootstrap_lock_is_never_stolen(tmp_path):
+    """A FRESH lock (a live holder looks identical) must never be broken:
+    the waiter gives up with a named diagnosis, leaves the lock in place,
+    and installs nothing — a user removing the lock by hand stays the only
+    way past a genuinely wedged bootstrap (the knob only shortens the
+    budget for this test; the default is 900s)."""
+
+    venv = tmp_path / "venv"
+    lock = tmp_path / "venv.bootstrap-lock"
+    lock.mkdir(parents=True)
+
+    rc, out = _run_harness_in(
+        tmp_path, "true", env={"MANGAFLOW_E2E_BOOTSTRAP_MAX_WAIT": "1"}
+    )
+    assert rc == 0, out
+    assert "ENSURE_RC=1" in out, out
+    assert "bootstrap lock" in out and "remove it" in out, out
+    assert "PIP_CALLS=0" in out, out
+    assert lock.exists(), "a live-looking lock must not be removed behind its holder"
