@@ -261,3 +261,42 @@ def test_guard_covers_single_quoted_attributes(tmp_path):
     result = _run_guard(dist)
     assert result.returncode == 1, result.stdout + result.stderr
     assert "single-missing.js" in result.stderr
+
+
+def test_guard_refuses_the_tracked_placeholder_on_a_clean_clone(tmp_path):
+    """The guard's reason to exist (#444), pinned against the REAL artifact:
+    the repo tracks only index.html + shell-tools.html under dist/frontend —
+    every _next chunk index.html references is gitignored — so a clean clone
+    reconstructs exactly the dangling two-file placeholder. Rebuild that
+    state from git (the working tree here may hold a FULL built export) and
+    require the refusal. If this test ever fails because the placeholder
+    became self-contained, that is a conscious repo decision that must
+    update this pin, not a cleanup."""
+
+    tracked = subprocess.run(
+        ["git", "ls-files", "--", "apps/desktop/dist/frontend"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    assert tracked, "the placeholder export must be tracked for this pin"
+    assert any(path.endswith("index.html") for path in tracked)
+
+    for repo_path in tracked:
+        rel = Path(repo_path).relative_to("apps/desktop/dist/frontend")
+        dest = tmp_path / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        content = subprocess.run(
+            ["git", "show", f"HEAD:{repo_path}"],
+            capture_output=True,
+            check=True,
+        ).stdout
+        dest.write_bytes(content)
+
+    result = _run_guard(tmp_path)
+    assert result.returncode == 1, (
+        "a clean clone's tracked placeholder must be refused, got "
+        f"rc=0: {result.stdout}"
+    )
+    assert "build-frontend-static.sh" in result.stderr
+    assert "_next/static/chunks/" in result.stderr, result.stderr
