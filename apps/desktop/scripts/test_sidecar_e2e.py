@@ -1206,3 +1206,42 @@ def test_web_exit_watch_logs_a_mid_session_crash_and_stays_silent_on_stop(monkey
     shutdown.set()
     thread.join(timeout=5)
     assert not thread.is_alive(), "the event must release a live watcher"
+
+
+def test_web_spawn_env_additions_are_exact(monkeypatch):
+    """The helper's caller-side additions on top of _node_child_env: PORT
+    (node's own ephemeral bind), HOSTNAME pinned to loopback (Next reads
+    it as the bind host — an inherited HOSTNAME would point the server at
+    a foreign name), MANGAFLOW_API_ORIGIN at the fixed relay (rewrites
+    are baked against 39443), NODE_ENV=production (a dev-mode Next server
+    would recompile on the fly). Pin the four additions exactly."""
+
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "mangaflow_desktop_helper_envadd", str(HELPER)
+    )
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+
+    base = helper._node_child_env()
+    # The strip list must have already removed the orchestration names so
+    # the additions below are the only MANGAFLOW_DESKTOP_* keys present.
+    for name in base:
+        assert not name.startswith("MANGAFLOW_DESKTOP_"), (
+            f"{name} must have been stripped by _node_child_env"
+        )
+
+    env = dict(base)
+    env.update(
+        PORT=4321,
+        HOSTNAME="127.0.0.1",
+        MANGAFLOW_API_ORIGIN=f"http://127.0.0.1:{helper.WEB_RELAY_PORT}",
+        NODE_ENV="production",
+    )
+    # The caller's own additions must not leak handshake identity back in.
+    assert "MANGAFLOW_DESKTOP_TOKEN" not in env
+    assert env["PORT"] == 4321
+    assert env["HOSTNAME"] == "127.0.0.1"
+    assert env["MANGAFLOW_API_ORIGIN"] == f"http://127.0.0.1:{helper.WEB_RELAY_PORT}"
+    assert env["NODE_ENV"] == "production"

@@ -70,6 +70,10 @@ try {
         while ($sw.ElapsedMilliseconds -lt 120000) {
             $proc.Refresh()
             if ($windowMs -lt 0 -and $proc.MainWindowHandle -ne 0) { $windowMs = $sw.ElapsedMilliseconds }
+            # A root that died at spawn must not burn the rest of the sample
+            # window (#575): exit the poll and record the honest -1 row; the
+            # leftover sweep below still reports any sidecar it leaked.
+            if ($proc.HasExited) { break }
             if ($windowMs -ge 0) {
                 if ($proc.WaitForInputIdle(50)) { $idleMs = $sw.ElapsedMilliseconds; break }
             } else { Start-Sleep -Milliseconds 20 }

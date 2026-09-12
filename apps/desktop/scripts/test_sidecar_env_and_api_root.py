@@ -654,3 +654,23 @@ def test_bind_loopback_claims_an_ephemeral_port_and_sets_the_platform_option(mon
         assert second_host == "127.0.0.1"
     finally:
         second.close()
+
+
+def test_apply_app_environment_creates_absent_keys(monkeypatch, tmp_path):
+    """The inherited-zero pin (#313) covers the override leg; this pins the
+    ABSENT leg — keys not in the parent environ at all must still be
+    force-created (a shell started from a minimal env, e.g. a systemd unit
+    or CI runner, must not produce a helper missing DATABASE_URL and
+    silently defaulting to a CWD-relative sqlite file)."""
+
+    for key in ("MANGAFLOW_DISABLE_DOTENV", "DATABASE_URL", "STORAGE_ROOT",
+                "UPLOAD_ROOT", "WEB_ORIGIN"):
+        monkeypatch.delenv(key, raising=False)
+
+    helper._apply_app_environment(tmp_path, "http://tauri.localhost")
+
+    assert helper.os.environ["MANGAFLOW_DISABLE_DOTENV"] == "1"
+    assert helper.os.environ["DATABASE_URL"] == f"sqlite:///{tmp_path / 'data' / 'mangaflow.db'}"
+    assert helper.os.environ["STORAGE_ROOT"] == str(tmp_path / "storage")
+    assert helper.os.environ["UPLOAD_ROOT"] == str(tmp_path / "uploads")
+    assert helper.os.environ["WEB_ORIGIN"] == "http://tauri.localhost"

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -114,3 +115,43 @@ def test_replace_dist_refuses_when_the_stamp_write_fails(tmp_path, monkeypatch):
     assert (dist / "server.js").read_text(encoding="utf-8") == "module.exports = 1;"
     assert not (dist / "build-info.json").exists()
     assert not (dist / ".build-info.json.tmp").exists()
+
+
+def test_npm_shim_is_platform_resolved_and_actually_used(monkeypatch):
+    """Adjacent-seam pin (npm shim/platform paths): the npm CLI shim is
+    npm.cmd on Windows and npm everywhere else, and `main()` must invoke
+    THAT constant — a hardcoded npm.cmd (the historical shim bug class)
+    breaks Linux/CI, and a call site that bypasses the constant would
+    break the other platform. The fake subprocess records the argv and
+    env before stopping main, so the shape is pinned offline (no build)."""
+
+    expected = "npm.cmd" if sys.platform == "win32" else "npm"
+    assert bw.NPM == expected, (
+        "the npm shim must resolve per platform, not be hardcoded"
+    )
+
+    recorded = {}
+
+    def fake_run(argv, **kwargs):
+        recorded["argv"] = argv
+        recorded["kwargs"] = kwargs
+        raise RuntimeError("stop-main-before-build")
+
+    monkeypatch.setattr(bw.subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="stop-main-before-build"):
+        bw.main()
+
+    assert recorded["argv"][0] == bw.NPM, recorded["argv"]
+    assert recorded["argv"][1:4] == ["run", "build", "--workspace"]
+    assert recorded["argv"][4] == "@mangaflow/web"
+    # A silent build failure must stay impossible, and the build must run
+    # from the repo root regardless of the caller's cwd.
+    assert recorded["kwargs"]["check"] is True
+    assert recorded["kwargs"]["cwd"] == bw.REPO
+    # The desktop bundle bakes the helper's fixed relay port at build time.
+    # Identity check: the env must be a FRESH dict with the override, not a
+    # pass-through of os.environ — on a host that happens to export the
+    # value, a dropped override would otherwise slip past the value compare.
+    env = recorded["kwargs"]["env"]
+    assert env is not os.environ
+    assert env["MANGAFLOW_API_ORIGIN"] == "http://127.0.0.1:39443"
