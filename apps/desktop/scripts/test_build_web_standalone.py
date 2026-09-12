@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -133,7 +134,7 @@ def test_npm_shim_is_platform_resolved_and_actually_used(monkeypatch):
 
     def fake_run(argv, **kwargs):
         recorded["argv"] = argv
-        recorded["env"] = kwargs["env"]
+        recorded["kwargs"] = kwargs
         raise RuntimeError("stop-main-before-build")
 
     monkeypatch.setattr(bw.subprocess, "run", fake_run)
@@ -143,5 +144,14 @@ def test_npm_shim_is_platform_resolved_and_actually_used(monkeypatch):
     assert recorded["argv"][0] == bw.NPM, recorded["argv"]
     assert recorded["argv"][1:4] == ["run", "build", "--workspace"]
     assert recorded["argv"][4] == "@mangaflow/web"
+    # A silent build failure must stay impossible, and the build must run
+    # from the repo root regardless of the caller's cwd.
+    assert recorded["kwargs"]["check"] is True
+    assert recorded["kwargs"]["cwd"] == bw.REPO
     # The desktop bundle bakes the helper's fixed relay port at build time.
-    assert recorded["env"]["MANGAFLOW_API_ORIGIN"] == "http://127.0.0.1:39443"
+    # Identity check: the env must be a FRESH dict with the override, not a
+    # pass-through of os.environ — on a host that happens to export the
+    # value, a dropped override would otherwise slip past the value compare.
+    env = recorded["kwargs"]["env"]
+    assert env is not os.environ
+    assert env["MANGAFLOW_API_ORIGIN"] == "http://127.0.0.1:39443"
