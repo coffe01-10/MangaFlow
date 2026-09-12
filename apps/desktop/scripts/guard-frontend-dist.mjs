@@ -38,8 +38,16 @@ try {
 }
 
 const references = new Set();
-for (const [, value] of html.matchAll(/(?:href|src)\s*=\s*"([^"]+)"/g)) {
-  const ref = value.split(/[?#]/, 1)[0];
+// Both HTML quote forms are legal: Next's static export emits double quotes,
+// but a hand-edited or tool-transformed index.html with single-quoted
+// attributes must not reduce the extracted set to zero — that would make
+// the guard PASS vacuously over a dangling placeholder (the exact white-
+// screen-installer path this guard exists to block). The backslash form is
+// also captured so a Windows-style ref resolves through join() like its
+// forward-slash twin.
+for (const match of html.matchAll(/(?:href|src)\s*=\s*(?:"([^"]+)"|'([^']+)')/gi)) {
+  const raw = match[1] ?? match[2];
+  const ref = raw.split(/[?#]/, 1)[0].replace(/\\/g, "/");
   if (
     !ref ||
     ref.startsWith("http:") ||
