@@ -1234,14 +1234,14 @@ def test_web_spawn_env_additions_are_exact(monkeypatch):
 
     env = dict(base)
     env.update(
-        PORT=4321,
+        PORT="4321",  # Popen env values must be strings (production passes str)
         HOSTNAME="127.0.0.1",
         MANGAFLOW_API_ORIGIN=f"http://127.0.0.1:{helper.WEB_RELAY_PORT}",
         NODE_ENV="production",
     )
     # The caller's own additions must not leak handshake identity back in.
     assert "MANGAFLOW_DESKTOP_TOKEN" not in env
-    assert env["PORT"] == 4321
+    assert env["PORT"] == "4321"
     assert env["HOSTNAME"] == "127.0.0.1"
     assert env["MANGAFLOW_API_ORIGIN"] == f"http://127.0.0.1:{helper.WEB_RELAY_PORT}"
     assert env["NODE_ENV"] == "production"
