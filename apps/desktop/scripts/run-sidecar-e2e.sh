@@ -14,11 +14,19 @@ set -euo pipefail
 # override it — a test must never touch the network.
 ensure_e2e_venv() {
   local venv="$1"; shift
+  # Misuse guard: with no requirement files, cat would read stdin and hang.
+  if [ "$#" -eq 0 ]; then
+    echo "ensure_e2e_venv: no requirement files given" >&2
+    return 2
+  fi
   local stamp_file="$venv/.mangaflow-bootstrap"
   local expected
   expected="$(cat "$@" | md5sum | cut -d' ' -f1)"
   if [ ! -x "$venv/bin/python" ]; then
-    python3 -m venv "$venv"
+    # Explicit propagation, mirroring the install step below: set -e is
+    # suppressed inside an if-condition caller, and the function must fail
+    # before any stamp write either way.
+    python3 -m venv "$venv" || return $?
   fi
   if [ ! -f "$stamp_file" ] || [ "$(cat "$stamp_file" 2>/dev/null)" != "$expected" ]; then
     # Explicit propagation: a failed install must never reach the stamp
@@ -34,7 +42,9 @@ install_e2e_requirements() {
   # string and fail (caught by running the real runner after the refactor).
   local pip_args=() req
   for req in "$@"; do pip_args+=(-r "$req"); done
-  "$venv/bin/python" -m pip install -q "${pip_args[@]}"
+  # The alternation keeps bash <= 4.3 (empty array + set -u = unbound
+  # variable) from breaking on a zero-file call.
+  "$venv/bin/python" -m pip install -q ${pip_args[@]+"${pip_args[@]}"}
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

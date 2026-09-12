@@ -17,7 +17,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-_SCRIPT = Path(__file__).with_name("run-sidecar-e2e.sh")
+_SCRIPT = Path(__file__).with_name("run-sidecar-e2e.sh").resolve()
 _REQ = Path(__file__).resolve().parents[2] / "api" / "requirements.txt"
 _REQ_DEV = Path(__file__).resolve().parents[2] / "api" / "requirements-dev.txt"
 
@@ -152,10 +152,29 @@ def test_install_builds_one_r_flag_per_requirements_file(tmp_path):
     assert f"-r {req_a} -r {req_b}" in done.stdout, done.stdout
 
 
+def test_failed_venv_creation_propagates_before_the_stamp(tmp_path):
+    # The venv-creation step carries the same explicit propagation as the
+    # install step: a missing venv creator must fail the call (even from an
+    # if-condition context, where set -e is suppressed) without writing a
+    # stamp, so the next run retries.
+    rc, out = _run_harness_in(
+        tmp_path,
+        # A failing venv creator earlier in PATH (coreutils stay reachable
+        # so the harness itself still runs): `python3 -m venv` exits 3.
+        'mkdir -p shim && printf "#!/bin/sh\\nexit 3\\n" > shim/python3 '
+        '&& chmod +x shim/python3 && PATH="$PWD/shim:$PATH"',
+        fake_pip_rc=0,
+    )
+    assert "STAMP=MISSING" in out, out
+    assert "ENSURE_RC=3" in out, out
+
+
 def test_sourcing_the_runner_runs_nothing(tmp_path):
-    # The source-guard: sourcing (as these tests do) must not create the
-    # repo venv, export anything, or exec pytest — the old script ran its
-    # whole body on source, which is exactly what made it untestable.
+    # The source-guard: sourcing (as these tests do) must not run the main
+    # body — a guard regression would exec pytest (this harness never
+    # returns from that) or compute the venv path from $0. The old script
+    # ran its whole body on source, which is exactly what made it
+    # untestable.
     done = subprocess.run(
         ["bash", "-c", f"source {_SCRIPT} && echo SOURCED_OK"],
         capture_output=True,
@@ -165,4 +184,3 @@ def test_sourcing_the_runner_runs_nothing(tmp_path):
     assert done.returncode == 0, done.stderr
     assert "SOURCED_OK" in done.stdout
     assert "PIP_CALLS" not in done.stdout
-    assert not (tmp_path / ".venv-desktop").exists()
