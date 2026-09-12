@@ -862,6 +862,55 @@ def test_sidecar_plan_b_web_server_loop(tmp_path: Path):
     )
 
 
+def test_web_exit_watch_settle_race_stays_silent(monkeypatch):
+    """The R2 check-then-act half the unit pins above cannot reach: node's
+    poll returns a code, the watcher enters the settle wait, and the
+    shutdown event lands DURING that wait — the death is a deliberate-stop
+    side effect, so the watcher must stay silent and must NOT close the
+    announced socket (the helper's close path owns it). The event is set
+    by a timer ~50ms into the settle wait."""
+
+    import importlib.util
+    import io
+    import threading
+
+    spec = importlib.util.spec_from_file_location(
+        "mangaflow_desktop_helper_settle", str(HELPER)
+    )
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+
+    class DyingAfterStart:
+        def poll(self):
+            return 0  # reaped before the watcher's first loop check
+
+    class FakeSock:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    captured = io.StringIO()
+    monkeypatch.setattr(helper, "_log", lambda message: captured.write(message + "\n"))
+    sock = FakeSock()
+
+    # The event lands while the watcher is inside shutdown.wait(interval):
+    # start with the event UNSET, then set it shortly after (the watcher's
+    # first poll observes the code and enters the settle wait).
+    shutdown = threading.Event()
+    threading.Timer(0.05, shutdown.set).start()
+
+    thread = helper._start_web_exit_watch(DyingAfterStart(), shutdown, sock)
+    thread.join(timeout=5)
+    assert not thread.is_alive(), "the settle path must end the watcher"
+    assert captured.getvalue() == "", (
+        "a death explained by the shutdown event must not log a crash"
+    )
+    assert not sock.closed, (
+        "the settle path must leave the announced socket to the close path"
+    )
+
 def test_sidecar_dead_web_dist_fails_closed_without_web_origin(tmp_path: Path):
     """Red team 2026-09-08: a web server that dies during boot must NOT leave
     web_origin in READY or the journal.
