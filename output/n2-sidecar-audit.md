@@ -493,3 +493,13 @@
     proxy.ts（#300，nonce 化留跟踪）——全部有测试钉死。
   - `fake_channel.remove()`：has_table 守卫 + 定向删除 + 幂等 + 单事务——干净。
 - **在途**：#576（guard 真·占位符 clean-clone 钉死，round-13 返工完毕）待 lead 审。
+
+## 25. 20260912-wknd 续九（master e4f6bcf 未动）
+
+- **交叉评审 #574（他组，test-only，行级）**：`_bind_loopback`（API 端口）的平台选项 +
+  端体 ephemeral 认领钉死——与 #253/#256（`_bind_relay`，固定中继端口）互补不重叠，两个
+  bind 点现均有直接钉子。PR ref 本地实证：套件 31 passed、目标测试 1 passed。
+  MINOR（不阻塞）：spy 只记录"设了"不记录"何时设"——bind 后 setsockopt 对 TIME_WAIT
+  无效仍会通过；实际顺序由 relay-bind 的 TIME_WAIT 重绑测试端到端覆盖。win32 分支
+  Linux 不可证（NOT RUN 惯例）。已在 PR 上留评审意见。
+- **#576 状态**：仍 OPEN 待 lead。
