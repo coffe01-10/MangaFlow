@@ -360,7 +360,7 @@ def test_relay_releases_slot_when_thread_construction_fails(monkeypatch, scenari
             client = socket.create_connection(("127.0.0.1", port), timeout=15)
             try:
                 client.sendall(REQUEST)
-                body = read_response(client, timeout_seconds=4)
+                body = read_response(client, timeout_seconds=15)
             finally:
                 client.close()
             assert body.endswith(b"ok"), body
@@ -496,7 +496,7 @@ def test_relay_accept_survives_transient_accept_errors(monkeypatch, error):
             client = socket.create_connection(("127.0.0.1", port), timeout=15)
             try:
                 client.sendall(REQUEST)
-                body = read_response(client, timeout_seconds=4)
+                body = read_response(client, timeout_seconds=15)
             finally:
                 client.close()
             assert body.endswith(b"ok"), body
@@ -574,7 +574,10 @@ def test_relay_partial_pump_start_releases_slot_and_serves_next(monkeypatch):
                 # No response can ever flow (the upstream->client pump
                 # never started): the client must see a definite end, not
                 # a hang.
-                assert read_until_closed(broken, timeout_seconds=4) == b""
+                # Load-tolerant bound (#595): the contract is "a definite
+                # end arrives, not a hang" — the number only has to be an
+                # upper bound, never a latency pin.
+                assert read_until_closed(broken, timeout_seconds=15) == b""
             finally:
                 broken.close()
             assert pipe_starts["count"] == 2, "the second pipe start must be the one exploding"
@@ -587,7 +590,7 @@ def test_relay_partial_pump_start_releases_slot_and_serves_next(monkeypatch):
             client = socket.create_connection(("127.0.0.1", port), timeout=15)
             try:
                 client.sendall(REQUEST)
-                body = read_response(client, timeout_seconds=4)
+                body = read_response(client, timeout_seconds=15)
             finally:
                 client.close()
             assert body.endswith(b"ok"), body
@@ -827,13 +830,26 @@ def test_relay_saturation_log_is_rate_limited(monkeypatch):
             overflow.sendall(REQUEST)
             overflow.close()
 
-        lines = [
-            line for line in captured.getvalue().splitlines()
-            if "connection limit" in line
-        ]
-        assert 1 <= len(lines) <= 2, (
+        # The log write happens on the relay's accept thread — under load
+        # the flood can complete before it logs (#595), so wait for the
+        # first line instead of racing it; the CEILING is then what pins
+        # the rate limiting (not one line per refusal).
+        import time as _time
+
+        deadline = _time.monotonic() + 2.0
+        lines: list[str] = []
+        while _time.monotonic() < deadline:
+            lines = [
+                line for line in captured.getvalue().splitlines()
+                if "connection limit" in line
+            ]
+            if lines:
+                break
+            _time.sleep(0.05)
+        assert len(lines) <= 2, (
             f"saturation log must be rate-limited, got {len(lines)} lines: {lines}"
         )
+        assert lines, "at least one saturation line must land within 2s"
         assert all(
             str(helper.WEB_RELAY_MAX_CONNECTIONS) in line for line in lines
         ), "the saturation line must name the enforced cap"

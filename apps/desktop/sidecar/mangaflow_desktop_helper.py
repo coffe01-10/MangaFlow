@@ -548,6 +548,19 @@ def _validate_api_root(api_root: Path) -> str | None:
 
 
 def _apply_app_environment(user_data: Path, web_origin: str) -> None:
+    # make_url treats the first ``?`` as the start of the query string, and
+    # its regex stops the database component there — a ``?`` in the
+    # user-data path (illegal on Windows, legal on POSIX dev boxes) would
+    # silently move the database outside ``user_data`` (#587). Every other
+    # URL-hostile-looking character (``%``, ``#``, spaces) passes through
+    # the grammar verbatim into the sqlite path, so only ``?`` needs the
+    # loud refusal; nothing is percent-quoted because SQLAlchemy never
+    # decodes the database component back.
+    if "?" in str(user_data):
+        raise SystemExit(
+            f"user-data path contains '?' which cannot appear in a sqlite "
+            f"URL: {user_data!r}; choose a user-data directory without it"
+        )
     # Force-set, not setdefault: an inherited MANGAFLOW_DISABLE_DOTENV=0 would
     # re-enable .env loading relative to the helper's CWD on every start
     # (#313) — the shell owns this environment, the surrounding machine does
