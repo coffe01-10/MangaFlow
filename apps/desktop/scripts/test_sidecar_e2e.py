@@ -899,6 +899,13 @@ def test_web_exit_watch_settle_race_stays_silent(monkeypatch):
 
     captured = io.StringIO()
     monkeypatch.setattr(helper, "_log", lambda message: captured.write(message + "\n"))
+    class FakeSock:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
     sock = FakeSock()
 
     # The event lands while the watcher is inside shutdown.wait(interval):
@@ -1245,3 +1252,83 @@ def test_web_spawn_env_additions_are_exact(monkeypatch):
     assert env["HOSTNAME"] == "127.0.0.1"
     assert env["MANGAFLOW_API_ORIGIN"] == f"http://127.0.0.1:{helper.WEB_RELAY_PORT}"
     assert env["NODE_ENV"] == "production"
+
+
+def test_web_exit_watch_poll_cadence_is_the_loop_heartbeat(monkeypatch):
+    """The watcher's poll cadence (250ms) is its responsiveness contract:
+    a death observed in cycle N must be logged by cycle N (the log and the
+    detection are in the same iteration), and a live node must see
+    poll() called repeatedly — a one-shot watcher would miss a death that
+    happens after the first check."""
+
+    import importlib.util
+    import io
+    import threading
+
+    spec = importlib.util.spec_from_file_location(
+        "mangaflow_desktop_helper_cadence", str(HELPER)
+    )
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+
+    class FakeSock:
+        def __init__(self):
+            self.closed = False
+            self.shutdowns = 0
+
+        def shutdown(self, how):
+            self.shutdowns += 1
+
+        def close(self):
+            self.closed = True
+
+    captured = io.StringIO()
+    monkeypatch.setattr(helper, "_log", lambda message: captured.write(message + "\n"))
+
+    class SequenceNode:
+        """poll answers live for N cycles, then reports an exit code."""
+
+        def __init__(self, live_cycles):
+            self.live_cycles = live_cycles
+            self.calls = 0
+
+        def poll(self):
+            self.calls += 1
+            return None if self.calls <= self.live_cycles else 0
+
+    # Death observed on the FIRST live-cycle boundary: exactly one log
+    # line, named code, thread returns — no duplicate logging from the
+    # outer loop re-entering.
+    node = SequenceNode(live_cycles=2)
+    shutdown = threading.Event()
+    sock = FakeSock()
+    thread = helper._start_web_exit_watch(node, shutdown, sock)
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    lines = [line for line in captured.getvalue().splitlines() if line]
+    assert len(lines) == 1 and "code 0" in lines[0], lines
+    assert sock.closed, "the announced socket must close on the crash path"
+
+    # A node that stays live sees repeated polls (the heartbeat), until
+    # the shutdown event releases the watcher with no log and no close.
+    captured.truncate(0)
+    captured.seek(0)
+
+    class LiveNode:
+        calls = 0
+
+        def poll(self):
+            LiveNode.calls += 1
+            return None
+
+    live = LiveNode()
+    shutdown2 = threading.Event()
+    live_sock = FakeSock()
+    thread2 = helper._start_web_exit_watch(live, shutdown2, live_sock)
+    thread2.join(timeout=1.2)
+    assert thread2.is_alive(), "a live node keeps the watcher running"
+    assert LiveNode.calls >= 3, "the watcher must poll on its cadence"
+    shutdown2.set()
+    thread2.join(timeout=5)
+    assert not thread2.is_alive()
+    assert captured.getvalue() == "" and not live_sock.closed
