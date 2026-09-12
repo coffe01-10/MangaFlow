@@ -503,3 +503,33 @@
   无效仍会通过；实际顺序由 relay-bind 的 TIME_WAIT 重绑测试端到端覆盖。win32 分支
   Linux 不可证（NOT RUN 惯例）。已在 PR 上留评审意见。
 - **#576 状态**：仍 OPEN 待 lead。
+
+## 26. 20260912-wknd 续十（指定领域串行证据重跑；master 前进至 8674830——#574/#576/#577 已并）
+
+- **指令**：对 sibling-prefix、env/api-root fail-closed、表驱动矩阵扩展、npm shim/平台路径、
+  超时 helper 及已合模块邻接缝，重跑 Linux pytest/e2e 证据；套件串行；Windows NOT RUN。
+- **串行证据（依次执行，无并行重套件）**：
+  1. 真 runner 全量：**103 passed in 63.24s**（含 env/api-root fail-closed 套件 31、
+     relay/bind 表驱动矩阵、dist-lock、assemble、build-web-standalone、guard 全家）。
+  2. D5 全量：**PASS**——sibling-prefix fence 404、encoded-traversal fence 404、
+     in-root symlink fence 404、握手（READY/GO/健康）全绿。
+  3. shell-core cargo：**153 passed / 0 failed**；交付契约 **9/9**。
+- **邻接缝处置（npm shim/平台路径）**：`build-web-standalone.py` 的 NPM 平台解析常量
+  无任何钉子——**PR #578（test-only，待 lead）**：常量逐平台钉死 + 经记录型 fake
+  subprocess 钉死 main() 实际调用形状（argv 用 NPM 常量 + `run build --workspace
+  @mangaflow/web` + env 烤入 `MANGAFLOW_API_ORIGIN=…:39443`），离线零构建。
+  **第 14 轮评审（1 子代理，APPROVE，2 项返工）**：
+  - F3 LOW（返工）：环境变量值比较可被"宿主恰好导出该值 + 调用点退化为
+    `env=dict(os.environ)`"泄漏通过——加 `env is not os.environ` 身份断言。
+  - F5 INFO（返工）：`check=True`/`cwd=REPO` 此前被 `**kwargs` 吸收未断言（静默构建失败、
+    错 cwd 变异不可检）——补两条断言。
+  - F2/F4/F6（记录）：常量钉子在 win32 宿主为重言（expected 与硬编码同为 npm.cmd）——
+    尖牙仅在非 Windows CI，docstring 措辞已如实；`sys.platform=="win32"` 与源码
+    `os.name=="nt"` 在真实 CPython 平台等价；patch 打在全局 subprocess 模块上——对目标
+    有效且暴露面为零（main() 首句即 run，fake 立即抛）。
+  - 变异红力（评审者实证）：(a) NPM 硬编码 → 常量断言红；(b) 调用点字面量 npm.cmd →
+    argv[0] 断言红；(c) 丢弃 env override → 值比较红（补身份断言后闭环境泄漏）；(d) 删除
+    env= → KeyError 逃逸 pytest.raises → 红。
+- **master 前进消化**：#574（他组 API-bind 钉死，§25 已交叉评审）、#576（我方 clean-clone
+  钉死）已并；#577（他组，plan-B mid-session 死后端口断言去空洞）——wknd 分支已 merge
+  origin/master。
