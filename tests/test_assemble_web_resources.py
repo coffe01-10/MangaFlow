@@ -290,8 +290,10 @@ def test_sweep_reclaims_cross_pid_crash_remnants(tmp_path):
 def test_find_node_prefers_override_then_path_then_named_fallback(tmp_path, monkeypatch):
     """NODE_EXE wins only when it names a REAL file; a dangling NODE_EXE falls
     through to PATH, then to the documented fallback, and only a total miss
-    raises — with the remedy spelled out (set NODE_EXE or fix PATH). All four
-    branches are monkeypatched, so this runs on POSIX."""
+    raises — with the remedy spelled out (set NODE_EXE or fix PATH). Every
+    branch is monkeypatched, so this is hermetic on POSIX AND on Windows
+    hosts that really have the legacy C:\\node\\node.exe install (the
+    fallback is a module constant precisely so it can be redirected)."""
 
     module = _load_module()
     real_exe = tmp_path / "node-real.exe"
@@ -313,11 +315,20 @@ def test_find_node_prefers_override_then_path_then_named_fallback(tmp_path, monk
     monkeypatch.delenv("NODE_EXE")
     assert module.find_node() == on_path
 
-    # 4. Total miss: the refusal names the remedy. (The C:\node fallback
-    # cannot exist on POSIX; monkeypatch which to None to force the miss.)
+    # 4. Total miss: the refusal names the remedy. Redirect the fallback to a
+    # nonexistent tmp path — a Windows host may genuinely have C:\node\node.exe
+    # (the documented location), and the miss branch must not probe the real
+    # drive.
     monkeypatch.setattr(module.shutil, "which", lambda name: None)
+    monkeypatch.setattr(module, "NODE_FALLBACK", tmp_path / "absent-node.exe")
     with pytest.raises(SystemExit, match="NODE_EXE"):
         module.find_node()
+
+    # 5. The documented fallback wins when it names a real file.
+    fallback_exe = tmp_path / "fallback-node.exe"
+    fallback_exe.write_bytes(b"fallback-node")
+    monkeypatch.setattr(module, "NODE_FALLBACK", fallback_exe)
+    assert module.find_node() == fallback_exe
 
 
 def test_sweep_spares_the_recovery_copy_when_res_is_missing(tmp_path):

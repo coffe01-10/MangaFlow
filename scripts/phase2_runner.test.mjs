@@ -145,8 +145,11 @@ test("defaultPython prefers the explicit override and maps the venv per platform
     // The production entry passes no platform argument: the host platform
     // decides. Conditional-exact (not a disjunction): a disjunction would
     // accept a lib that hard-pins the WRONG platform on every host.
+    // (The win32 expectation mirrors line 143's committed contract: the same
+    // `${root}\` join as the explicit branch. The forward-slash spelling here
+    // was a never-executed-on-Windows typo — POSIX hosts skip this branch.)
     if (process.platform === "win32") {
-      assert.equal(defaultPython("/repo"), "/repo/.venv\\Scripts\\python.exe");
+      assert.equal(defaultPython("/repo"), "/repo\\.venv\\Scripts\\python.exe");
     } else {
       assert.equal(defaultPython("/repo"), "/repo/.venv/bin/python");
     }

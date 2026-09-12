@@ -41,6 +41,13 @@ SRC = REPO / "apps/desktop/dist/web-standalone"
 RES = REPO / "apps/desktop/src-tauri/web"
 
 
+# The documented last-resort node location. A module constant (not an inline
+# literal) so tests can monkeypatch it: the machine running the checks may
+# genuinely have this legacy install, and the total-miss branch must stay
+# hermetic instead of probing the real C:\ drive.
+NODE_FALLBACK = Path(r"C:\node\node.exe")
+
+
 def find_node() -> Path:
     override = os.environ.get("NODE_EXE")
     if override and Path(override).is_file():
@@ -48,9 +55,8 @@ def find_node() -> Path:
     which = shutil.which("node")
     if which:
         return Path(which)
-    fallback = Path(r"C:\node\node.exe")
-    if fallback.is_file():
-        return fallback
+    if NODE_FALLBACK.is_file():
+        return NODE_FALLBACK
     raise SystemExit("no node runtime found (set NODE_EXE or put node on PATH)")
 
 

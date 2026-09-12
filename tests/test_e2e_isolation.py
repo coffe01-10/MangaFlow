@@ -176,8 +176,6 @@ def test_final_cleanup_failure_keeps_owner_and_recovers_after_file_unlock(runtim
 # These run real lightweight Windows processes, but no database, Redis or supplier.
 @pytest.fixture
 def process_tree(tmp_path):
-    import os
-
     from owned_processes import OwnedProcessTree
 
     if os.name != "nt":
@@ -327,10 +325,7 @@ def test_process_stop_failure_is_not_completion_and_can_retry(process_tree, monk
 
 @pytest.mark.parametrize("ending", ["kill", "abrupt"])
 def test_controller_death_kills_tree_and_journal_can_be_recovered(tmp_path, ending):
-    import json
-    import os
     import subprocess
-    import sys
 
     from owned_processes import _checked, _kernel, recover_stopped_tree
 
@@ -433,7 +428,6 @@ while not pathlib.Path(sys.argv[2]).exists():
 
 
 def test_process_body_and_cleanup_failures_both_reported(tmp_path):
-    import os
     import sqlite3
 
     from owned_processes import OwnedProcessTree
