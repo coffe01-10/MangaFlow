@@ -77,8 +77,20 @@ public sealed class ApiClient : IDisposable
         content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(file.ContentType);
         form.Add(content, file.Name, file.FileName);
         using var request = new HttpRequestMessage(HttpMethod.Post, path) { Content = form };
-        using var response = await client.SendAsync(request, cancellation).ConfigureAwait(false);
-        var text = await response.Content.ReadAsStringAsync(cancellation).ConfigureAwait(false);
+        HttpResponseMessage response;
+        string text;
+        try
+        {
+            response = await client.SendAsync(request, cancellation).ConfigureAwait(false);
+            text = await response.Content.ReadAsStringAsync(cancellation).ConfigureAwait(false);
+        }
+        // Mirror SendOptionalAsync (#439): a legal 20 MB source import exceeds the 30 s
+        // HttpClient timeout on slow hardware. Without this translation callers' silent
+        // OperationCanceledException filters swallowed the failure and the upload vanished.
+        catch (OperationCanceledException) when (!cancellation.IsCancellationRequested)
+        {
+            throw new TimeoutException("请求超时，请检查本地服务后重试。");
+        }
         if (!response.IsSuccessStatusCode)
         {
             ThrowResponseError(response, text, "上传失败");
@@ -216,7 +228,16 @@ public sealed class ApiClient : IDisposable
 
     private static void Validate(string path)
     {
-        if (path.StartsWith('/') || path.Contains("://", StringComparison.Ordinal) || path.Contains(".."))
+        if (path.StartsWith('/') || path.Contains("://", StringComparison.Ordinal))
+            throw new ArgumentException("无效的 API 路径");
+        // #442/#468: HttpUtility.UrlEncode / Uri.EscapeDataString leave '.' unescaped, so a
+        // legitimate user value (project name 「序章..终章」, scene place filter 「东京..雨」)
+        // survives encoding into `path?query` and used to trip the traversal check — the
+        // request was never sent. Query values are encoded data, not path segments: apply
+        // the '..' check to the path portion only. Absolute-path and '://' stay whole-string.
+        var queryStart = path.IndexOf('?');
+        var route = queryStart < 0 ? path : path[..queryStart];
+        if (route.Contains(".."))
             throw new ArgumentException("无效的 API 路径");
     }
 

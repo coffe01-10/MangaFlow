@@ -225,7 +225,19 @@ internal sealed class SceneWorkspace : StackPanel
         var path = $"{Base}/{scene.Text("id")}/references";
         await view.ApiSendOptional(path + "/" + reference.Text("asset_id"), HttpMethod.Delete);
         try { await view.ApiSend(path, HttpMethod.Post, new { asset_id = reference.Text("asset_id"), role = reference.Text("role", "main"), is_canonical = true }); }
-        catch (Exception ex) { throw new InvalidOperationException("原参考已解除，重新绑定失败，请上传并重新绑定：" + ex.Message, ex); }
+        catch (Exception ex)
+        {
+            // #471-4: the DELETE above already unbound the reference and no bind-existing
+            // control exists — without a best-effort rebind the only recovery is re-uploading
+            // the file. Rebind the same asset as it was (non-canonical); if even that fails,
+            // the message states exactly what state the scene is left in.
+            var restored = false;
+            try { await view.ApiSend(path, HttpMethod.Post, new { asset_id = reference.Text("asset_id"), role = reference.Text("role", "main"), is_canonical = false }); restored = true; }
+            catch (Exception) { }
+            throw new InvalidOperationException(restored
+                ? $"设为规范参考未完成，原参考绑定已恢复，可重试：{ex.Message}"
+                : $"原参考已解除，重新绑定失败，请上传并重新绑定：{ex.Message}", ex);
+        }
     });
     private Task UploadAsync(JsonElement scene, string? variant = null)
     {
