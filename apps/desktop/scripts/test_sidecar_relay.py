@@ -137,6 +137,13 @@ def read_response(client: socket.socket, timeout_seconds: float) -> bytes:
             chunk = client.recv(65536)
         except socket.timeout:
             continue
+        except ConnectionResetError as error:
+            # Stamp the bytes received before the reset: the only caller
+            # that retries resets (exchange_after_release) must retry a
+            # PRE-bytes overflow refusal but never absorb a mid-exchange
+            # death — a post-bytes reset is a real pipe defect.
+            error.bytes_before_reset = data
+            raise
         if not chunk:
             pytest.fail("relay closed the connection before a full response")
         data += chunk
@@ -255,9 +262,10 @@ def exchange_after_release(port: int, retry_seconds: float = 15.0) -> bytes:
         try:
             client.sendall(REQUEST)
             return read_response(client, timeout_seconds=15)
-        except ConnectionResetError:
+        except ConnectionResetError as error:
             client.close()
-            if time.monotonic() >= deadline:
+            post_bytes = getattr(error, "bytes_before_reset", b"")
+            if post_bytes or time.monotonic() >= deadline:
                 raise
             time.sleep(0.1)
         finally:
