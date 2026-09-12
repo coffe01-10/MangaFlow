@@ -87,12 +87,51 @@ const readyLine = await new Promise((resolve, reject) => {
     try { process.kill(-helper.pid, "SIGKILL"); } catch { /* already gone */ }
     reject(new Error("helper readiness timeout"));
   }, 20000);
-  helper.stdout.once("data", (chunk) => {
+  // Accumulate until the first newline: stdout is a pipe, so the READY
+  // line is not guaranteed to arrive in one chunk — a partial first chunk
+  // resolved here would fail the startsWith check below and report a
+  // phantom "bad ready line".
+  let buffer = "";
+  const onData = (chunk) => {
+    buffer += chunk.toString();
+    // The helper's stdout is protocol-only before READY; megabytes of
+    // newline-free output mean a rogue import looping on print — bound the
+    // buffer and kill the group like the timeout path does.
+    if (buffer.length > 1048576) {
+      try { process.kill(-helper.pid, "SIGKILL"); } catch { /* already gone */ }
+      cleanup();
+      reject(new Error("helper stdout exceeded 1 MiB before READY"));
+      return;
+    }
+    const newline = buffer.indexOf("\n");
+    if (newline === -1) return;
+    cleanup();
+    resolve(buffer.slice(0, newline));
+  };
+  // A helper that dies before READY (an import error, for example) must
+  // fail NOW with its exit status — waiting for the timer would spend the
+  // full 20s and misreport a crash as a "readiness timeout".
+  const onExit = (code, signal) => {
+    cleanup();
+    reject(new Error(`helper exited before READY (code ${code} signal ${signal})`));
+  };
+  // A spawn failure (no python3 binary) emits 'error', not 'exit' — an
+  // unhandled 'error' event would crash the script with a raw stack
+  // instead of this diagnosis.
+  const onError = (error) => {
+    cleanup();
+    reject(new Error(`helper could not be spawned: ${error.message}`));
+  };
+  const cleanup = () => {
     clearTimeout(timer);
-    resolve(chunk.toString().split("\n")[0]);
-  });
+    helper.stdout.off("data", onData);
+    helper.off("exit", onExit);
+    helper.off("error", onError);
+  };
+  helper.stdout.on("data", onData);
+  helper.once("exit", onExit);
+  helper.once("error", onError);
 });
-if (!readyLine.startsWith("MANGAFLOW_READY ")) return fail(`bad ready line: ${readyLine}`);
 // Track the helper's exit from the earliest possible moment: fail() may
 // SIGKILL the process group at ANY later point (including while the script
 // is inside the browser phase), and an exit listener registered only in the
@@ -100,6 +139,7 @@ if (!readyLine.startsWith("MANGAFLOW_READY ")) return fail(`bad ready line: ${re
 let helper_exit_resolve;
 const helper_exit = new Promise((resolve) => { helper_exit_resolve = resolve; });
 helper.once("exit", (code, signal) => helper_exit_resolve({ code, signal }));
+if (!readyLine.startsWith("MANGAFLOW_READY ")) return fail(`bad ready line: ${readyLine}`);
 const ready = JSON.parse(readyLine.slice("MANGAFLOW_READY ".length));
 const record = JSON.parse((await readFile(journal)).toString());
 if (ready.token !== token) return fail("token mismatch");
