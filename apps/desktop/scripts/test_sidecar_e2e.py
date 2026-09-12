@@ -1419,3 +1419,53 @@ def test_await_web_server_boot_logs_and_returns_false_on_boot_exit(monkeypatch):
     assert result is False, "a boot-exit node must downgrade, not serve"
     logged = captured.getvalue()
     assert "exited during boot" in logged and "code 7" in logged, logged
+
+
+def test_await_web_server_boot_retries_through_a_not_ready_window(monkeypatch):
+    """The middle leg: node ALIVE but its port not yet accepting (Next's
+    listen lag) must NOT be judged dead — the loop retries until the port
+    opens within the budget. The port opens late (a second thread flips it
+    after a delay); a regression that returned False on the first closed
+    probe would hang the downgrade path on a merely-slow boot."""
+
+    import importlib.util
+    import socket
+    import threading
+    import time as time_module
+
+    spec = importlib.util.spec_from_file_location(
+        "mangaflow_desktop_helper_notready", str(HELPER)
+    )
+    helper_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper_module)
+
+    class SlowListenNode:
+        returncode = None
+
+        def poll(self):
+            return None  # alive throughout
+
+    node = SlowListenNode()
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    late_port = listener.getsockname()[1]
+    monkeypatch.setattr(helper_module, "WEB_BOOT_TIMEOUT_SECONDS", 5.0)
+    monkeypatch.setattr(helper_module.time, "sleep", lambda seconds: None)
+    # The listener opens only after 600ms: earlier probes see a closed port.
+    opener = threading.Timer(0.6, listener.accept)  # wake accept queue
+    opener.start()
+    # The connect succeeds once the kernel has the listening socket bound —
+    # it was bound at creation; only the helper's probe cadence matters.
+
+    started = time_module.monotonic()
+    result = helper_module._await_web_server_boot(node, late_port)
+    elapsed = time_module.monotonic() - started
+    listener.close()
+    opener.join(timeout=5)
+
+    assert result is True, "a merely-slow boot must not be judged dead"
+    assert elapsed < helper_module.WEB_BOOT_TIMEOUT_SECONDS, (
+        f"the wait must end at first acceptance: {elapsed:.2f}s"
+    )
+    del opener
