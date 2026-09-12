@@ -660,13 +660,16 @@ class TestRelayLimiterUnit:
         assert limiter.try_acquire(), "a release must free exactly one slot"
         limiter.release()
         limiter.release()
-        # Back at zero (clamped): one more acquire must succeed.
+        # Back at zero (clamped): one more acquire must succeed (1 live).
+        assert limiter.try_acquire()
 
     def test_try_acquire_is_atomic_under_thread_contention(self):
         """N threads racing M slots: exactly M acquires succeed overall —
-        a torn read of _live under the lock (or a missing lock) lets the
-        count overshoot. Threads then release in the same order, and the
-        counter returns to exactly zero (clamp or leak would show here)."""
+        an off-by-one cap or a broken refuse branch lets the count
+        overshoot (the round-15 review notes CPython's GIL makes a torn
+        read of this two-step check unrealizable, so the lock's absence
+        is pinned at the connection level, not here). The drain back to a
+        working acquire catches a release that lost count."""
 
         limiter = helper._RelayLimiter(8)
         successes = []
@@ -692,5 +695,7 @@ class TestRelayLimiterUnit:
         # observable as 8 more successful acquires.
         for _ in range(8):
             limiter.release()
-        assert limiter.try_acquire(), "capacity must be fully restored"
+        assert limiter.try_acquire(), (
+            "capacity must be restored — a lost release shows here"
+        )
 
