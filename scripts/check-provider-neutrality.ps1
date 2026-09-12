@@ -1,4 +1,12 @@
 #Requires -Version 5.1
+# Provider-neutrality gate (Issue #41, audit M13): fixed-string greps over
+# apps/** for every known Vertex SDK surface.
+# Marker set: VERTEX_NATIVE, vertex-ai, vertex_configured, vertexai,
+#   aiplatform, google-cloud-aiplatform.
+# The set is the gate's whole heuristic — a new SDK surface (import path or
+# pip name) must be added here AND in
+# tests/test_provider_neutrality_gate.py's EXPECTED_PATTERNS, which pins
+# this list (#412).
 param(
   [switch]$UpdateAllowlist,
   [string]$RepositoryRoot
@@ -21,13 +29,17 @@ if (-not (Test-Path -LiteralPath (Join-Path $repoRoot '.git'))) {
 if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) {
   Exit-EnvironmentError 'git command missing'
 }
-$patterns = 'VERTEX_NATIVE', 'vertex-ai', 'vertex_configured', 'vertexai'
+$patterns = 'VERTEX_NATIVE', 'vertex-ai', 'vertex_configured', 'vertexai', 'aiplatform', 'google-cloud-aiplatform'
 $allowlistPath = Join-Path $PSScriptRoot 'provider-neutrality-allowlist.txt'
 if (-not (Test-Path -LiteralPath $allowlistPath)) {
   Exit-EnvironmentError 'allowlist missing'
 }
 $allowed = @{}
-Get-Content -LiteralPath $allowlistPath | ForEach-Object {
+# -Encoding UTF8: the file is WRITTEN UTF-8-no-BOM below, and Windows
+# PowerShell 5.1's Get-Content defaults to ANSI — a non-ASCII allowlisted
+# path would round-trip as mojibake into a permanent false violation
+# (#462, same family as start-dev's .env read).
+Get-Content -LiteralPath $allowlistPath -Encoding UTF8 | ForEach-Object {
   $line = $_.Trim()
   if ($line -and -not $line.StartsWith('#')) { $allowed[$line] = $true }
 }
