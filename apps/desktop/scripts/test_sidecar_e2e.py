@@ -889,9 +889,13 @@ def test_web_exit_watch_settle_race_stays_silent(monkeypatch):
     class FakeSock:
         def __init__(self):
             self.closed = False
+            self.shutdown_called = False
 
         def close(self):
             self.closed = True
+
+        def shutdown(self, how):
+            self.shutdown_called = True
 
     captured = io.StringIO()
     monkeypatch.setattr(helper, "_log", lambda message: captured.write(message + "\n"))
@@ -1133,13 +1137,18 @@ def test_web_exit_watch_logs_a_mid_session_crash_and_stays_silent_on_stop(monkey
             return self._code
 
     class FakeSock:
-        """Announced-socket double: records closes (#507's contract)."""
+        """Announced-socket double: records closes and shutdowns (#507's
+        contract: the watcher must call shutdown(SHUT_RDWR) before close())."""
 
         def __init__(self):
             self.closed = False
+            self.shutdown_called = False
 
         def close(self):
             self.closed = True
+
+        def shutdown(self, how):
+            self.shutdown_called = True
 
     captured = io.StringIO()
     monkeypatch.setattr(helper, "_log", lambda message: captured.write(message + "\n"))
