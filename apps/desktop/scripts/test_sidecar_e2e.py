@@ -322,9 +322,11 @@ def desktop(tmp_path: Path):
         shell.wait_health()
         yield shell, user_data, record
     except BaseException as error:
-        # An assert inside finally would REPLACE the in-flight body error:
-        # a helper that died mid-test must be reported in addition to, not
-        # instead of, the failure the body actually hit.
+        # An assert inside finally would REPLACE the in-flight setup error:
+        # a helper that died during setup (handshake/health) must be
+        # reported in addition to, not instead of, the failure the setup
+        # actually hit. (Mid-TEST failures propagate through the yield and
+        # never reach this except — pytest runs the teardown separately.)
         body_error = error
         raise
     finally:
@@ -1020,39 +1022,26 @@ def test_sidecar_mid_session_node_exit_is_detected_and_logged(tmp_path: Path):
         # Detection is log-only (no restart): the API session is untouched.
         with urllib.request.urlopen(f"{shell.origin}/api/v1/projects", timeout=10) as response:
             assert response.status == 200
-        # The announced origin degrades to fail-fast: the helper-owned
-        # listening socket stays up (the E3 redesign), but each connection
-        # is closed promptly with no response bytes once node is gone -
-        # never a hang, and the session keeps serving through the API port.
+        # The announced origin degrades to honest refusal (#507): the
+        # exit watcher closes the helper-owned listening socket once node's
+        # death is detected, so new WebView connections are REFUSED — they
+        # must never be forwarded to whatever local process claims node's
+        # freed ephemeral port. The API session keeps serving.
         web_port = int(shell.web_origin.rsplit(":", 1)[1])
-        dead_origin = socket.create_connection(("127.0.0.1", web_port), timeout=15)
-        try:
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            probe.settimeout(1.0)
             try:
-                dead_origin.sendall(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
-            except OSError:
-                pass  # RST before the request was even written: prompt fail-fast
-            deadline = time.monotonic() + 4.0
-            data = b""
-            closed = False
-            dead_origin.settimeout(0.5)
-            while time.monotonic() < deadline:
-                try:
-                    chunk = dead_origin.recv(65536)
-                except socket.timeout:
-                    # Must precede except OSError: TimeoutError subclasses it.
-                    continue
-                except OSError:
-                    closed = True  # RST: prompt fail-fast
-                    break
-                if not chunk:
-                    closed = True  # FIN
-                    break
-                data += chunk
-            assert closed and b"HTTP/" not in data, (
-                f"dead origin mishandled (closed={closed}): {data!r}"
-            )
-        finally:
-            dead_origin.close()
+                if probe.connect_ex(("127.0.0.1", web_port)) != 0:
+                    break  # released: the watcher closed it on detection
+            finally:
+                probe.close()
+            time.sleep(0.1)
+        assert probe.connect_ex(("127.0.0.1", web_port)) != 0, (
+            f"announced port {web_port} still answering after the mid-session "
+            "death — the relay must not forward to the freed upstream (#507)"
+        )
     except BaseException as error:
         # Same masking hazard as the fixture: report the body failure
         # instead of replacing it with the stop-side exit assert.

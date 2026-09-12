@@ -233,8 +233,8 @@ test("json(): an explicit caller content-type wins over the default", async () =
   assert.equal(seen[0]["content-type"], "application/x-www-form-urlencoded");
 });
 
+
 test("waitForOwnedHealth treats non-ok statuses as not-ready and keeps polling", async () => {
-  const { waitForOwnedHealth } = await import("./phase2_runner.mjs");
   const child = { exitCode: null, owned: true, pid: 4242 };
   // First probe answers 503 (not-ready), second answers healthy: the loop
   // must retry through the non-ok status and return the healthy body.
@@ -254,24 +254,16 @@ test("waitForOwnedHealth treats non-ok statuses as not-ready and keeps polling",
 });
 
 test("waitForOwnedHealth surfaces a probe transport error at timeout", async () => {
-  const { waitForOwnedHealth } = await import("./phase2_runner.mjs");
   const child = { exitCode: null, owned: true, pid: 4242 };
-  let error = null;
-  try {
-    await waitForOwnedHealth({
+  await assert.rejects(
+    () => waitForOwnedHealth({
       url: "http://127.0.0.1:8000/api/v1/health",
       runId: "run-a",
       child,
       timeoutMs: 100,
       fetchImpl: async () => { throw new Error("ECONNRESET mid-probe"); },
       sleep: async () => undefined,
-    });
-  } catch (caught) {
-    error = caught;
-  }
-  assert.ok(
-    error instanceof Error && error.message.includes("ECONNRESET mid-probe"),
-    "the last transport error must surface at timeout",
+    }),
+    /ECONNRESET mid-probe/,
   );
 });
-
