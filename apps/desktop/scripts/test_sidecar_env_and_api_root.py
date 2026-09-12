@@ -502,3 +502,41 @@ def test_write_journal_refuses_links_and_writes_atomically(tmp_path):
         record, sort_keys=True
     ), "the stamp must be the exact sorted-key serialization"
     assert not pending.exists()
+
+
+def test_pid_starttime_reads_live_anchor_and_is_deterministic():
+    """The helper's Linux identity anchor: /proc/self/stat field 22
+    (index 19 after the comm close-paren split) as a positive int.
+    A split/index drift would make the journal anchor disagree with the
+    shell-core verifier's parser and fail every handshake with
+    StartTimeMismatch. Pin: live value matches a direct /proc read,
+    is a positive int, and is deterministic for the same process."""
+    import pathlib
+
+    a = helper._pid_starttime()
+    b = helper._pid_starttime()
+    assert a is not None and isinstance(a, int) and a > 0, f"got {a!r}"
+    assert a == b, f"non-deterministic for the same process: {a} vs {b}"
+
+    # Cross-check against a direct /proc/self/stat read.
+    stat_text = pathlib.Path("/proc/self/stat").read_text(encoding="utf-8")
+    expected = int(stat_text.rsplit(")", 1)[1].split()[19])
+    assert a == expected, f"helper {a} != direct /proc read {expected}"
+
+
+def test_pid_starttime_degrades_to_none_without_proc(monkeypatch):
+    """On a host without /proc (or if the file vanishes mid-run), the
+    function must return None — never raise."""
+    monkeypatch.setattr(
+        helper.Path, "read_text",
+        lambda *a, **kw: (_ for _ in ()).throw(OSError("no /proc")),
+    )
+    # Monkeypatch the module's Path to a type whose read_text always fails.
+    class FakePath:
+        def __init__(self, p):
+            self._p = p
+        def read_text(self, *a, **kw):
+            raise OSError("no /proc")
+    import unittest.mock
+    with unittest.mock.patch.object(helper, "Path", FakePath):
+        assert helper._pid_starttime() is None
