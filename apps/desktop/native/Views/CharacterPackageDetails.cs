@@ -164,32 +164,48 @@ internal sealed partial class CharacterPackagePane
         return lines.Count == 0 ? "没有变化" : string.Join("\n", lines);
     }
 
-    private async Task ShowHistory()
+    // #486-4: 差异取数是异步的且模态对话框在取数之后才弹出——取数期间「对比历史」
+    // 仍可点击，第二次点击会在第一个对话框关闭后再排一个模态。latch 拒绝挂起中的
+    // 第二次调用（合成点击绕过 IsEnabled），source 按钮同步禁用挡住真实双击。
+    private bool comparing;
+
+    private async Task ShowHistory(Button? source = null)
     {
-        var rows = package.Array("versions").OrderBy(v => v.Number("version_number")).ToList(); if (rows.Count < 2) return;
-        var content = new StackPanel { Margin = new Thickness(24) };
-        var from = new ComboBox { MinHeight = 42 }; var to = new ComboBox { MinHeight = 42 };
-        foreach (var v in rows) { from.Items.Add(new ComboBoxItem { Content = $"V{v.Number("version_number")}", Tag = v.Text("id") }); to.Items.Add(new ComboBoxItem { Content = $"V{v.Number("version_number")}", Tag = v.Text("id") }); }
-        from.SelectedIndex = 0; to.SelectedIndex = rows.Count - 1;
-        content.Children.Add(Kit.Caption("比较基准版本")); content.Children.Add(from); content.Children.Add(Kit.Caption("目标版本")); content.Children.Add(to);
-        var result = new StackPanel { Margin = new Thickness(0, 18, 0, 0) };
-        async Task Compare()
+        if (comparing) return;
+        comparing = true;
+        if (source is { } invoker) invoker.IsEnabled = false;
+        try
         {
-            result.Children.Clear(); result.Children.Add(Kit.Caption("正在读取差异…"));
-            try
+            var rows = package.Array("versions").OrderBy(v => v.Number("version_number")).ToList(); if (rows.Count < 2) return;
+            var content = new StackPanel { Margin = new Thickness(24) };
+            var from = new ComboBox { MinHeight = 42 }; var to = new ComboBox { MinHeight = 42 };
+            foreach (var v in rows) { from.Items.Add(new ComboBoxItem { Content = $"V{v.Number("version_number")}", Tag = v.Text("id") }); to.Items.Add(new ComboBoxItem { Content = $"V{v.Number("version_number")}", Tag = v.Text("id") }); }
+            from.SelectedIndex = 0; to.SelectedIndex = rows.Count - 1;
+            content.Children.Add(Kit.Caption("比较基准版本")); content.Children.Add(from); content.Children.Add(Kit.Caption("目标版本")); content.Children.Add(to);
+            var result = new StackPanel { Margin = new Thickness(0, 18, 0, 0) };
+            async Task Compare()
             {
-                var data = await view.ApiSend($"{PackagePath}/diff?base_version_id={Uri.EscapeDataString((string)((ComboBoxItem)from.SelectedItem).Tag)}&target_version_id={Uri.EscapeDataString((string)((ComboBoxItem)to.SelectedItem).Tag)}");
-                result.Children.Clear();
-                foreach (var (key, label) in new[] { ("identity_spec", "身份锚点"), ("visual_spec", "视觉规格"), ("negative_constraints", "负面约束"), ("references", "参考图"), ("outfits", "服装集") })
+                result.Children.Clear(); result.Children.Add(Kit.Caption("正在读取差异…"));
+                try
                 {
-                    result.Children.Add(Title(label));
-                    result.Children.Add(new TextBlock { Text = DescribeChanges(key, data.Element(key)), FontSize = 13, TextWrapping = TextWrapping.Wrap, Foreground = AssetPageUi.Brush("Muted") });
+                    var data = await view.ApiSend($"{PackagePath}/diff?base_version_id={Uri.EscapeDataString((string)((ComboBoxItem)from.SelectedItem).Tag)}&target_version_id={Uri.EscapeDataString((string)((ComboBoxItem)to.SelectedItem).Tag)}");
+                    result.Children.Clear();
+                    foreach (var (key, label) in new[] { ("identity_spec", "身份锚点"), ("visual_spec", "视觉规格"), ("negative_constraints", "负面约束"), ("references", "参考图"), ("outfits", "服装集") })
+                    {
+                        result.Children.Add(Title(label));
+                        result.Children.Add(new TextBlock { Text = DescribeChanges(key, data.Element(key)), FontSize = 13, TextWrapping = TextWrapping.Wrap, Foreground = AssetPageUi.Brush("Muted") });
+                    }
                 }
+                catch (Exception ex) { result.Children.Clear(); result.Children.Add(Kit.Caption(ex.Message)); }
             }
-            catch (Exception ex) { result.Children.Clear(); result.Children.Add(Kit.Caption(ex.Message)); }
+            content.Children.Add(Kit.Act("比较所选版本", async (_, _) => await Compare(), "Outline")); content.Children.Add(result);
+            var dialog = new Window { Owner = view.WindowHost(), Title = "角色模型包 · 对比历史", Width = 720, Height = 720, Content = new ScrollViewer { Content = content, VerticalScrollBarVisibility = ScrollBarVisibility.Auto }, WindowStartupLocation = WindowStartupLocation.CenterOwner };
+            await Compare(); dialog.ShowDialog();
         }
-        content.Children.Add(Kit.Act("比较所选版本", async (_, _) => await Compare(), "Outline")); content.Children.Add(result);
-        var dialog = new Window { Owner = view.WindowHost(), Title = "角色模型包 · 对比历史", Width = 720, Height = 720, Content = new ScrollViewer { Content = content, VerticalScrollBarVisibility = ScrollBarVisibility.Auto }, WindowStartupLocation = WindowStartupLocation.CenterOwner };
-        await Compare(); dialog.ShowDialog();
+        finally
+        {
+            comparing = false;
+            if (source is { } button) button.IsEnabled = true;
+        }
     }
 }
