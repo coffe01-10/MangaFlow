@@ -1,0 +1,47 @@
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native\Views\AssetsView.cs(19,92): warning CS0108: “AssetsView.Style”隐藏继承的成员“FrameworkElement.Style”。如果是有意隐藏，请使用关键字 new。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native\MangaFlow.Native_runmbse0_wpftmp.csproj]
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native\MainWindow.xaml.cs(265,24): warning CS1998: 此异步方法缺少 "await" 运算符，将以同步方式运行。请考虑使用 "await" 运算符等待非阻止的 API 调用，或者使用 "await Task.Run(...)" 在后台线程上执行占用大量 CPU 的工作。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native\MangaFlow.Native_runmbse0_wpftmp.csproj]
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native\MainWindow.xaml.cs(474,24): warning CS1998: 此异步方法缺少 "await" 运算符，将以同步方式运行。请考虑使用 "await" 运算符等待非阻止的 API 调用，或者使用 "await Task.Run(...)" 在后台线程上执行占用大量 CPU 的工作。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native\MangaFlow.Native_runmbse0_wpftmp.csproj]
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native\Services\DirectorRules.cs(300,13): warning CS8620: 由于引用类型的可为 null 性差异，List<(string, string, string)> 类型的实参不能用于 DirectorPlanResult DirectorPlanResult.Clarify(string reason, List<(string, string?, string)> options) 中 List<(string, string?, string)> 类型的形参 options。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native\MangaFlow.Native_runmbse0_wpftmp.csproj]
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native\Views\ScriptView.cs(644,29): warning CS8602: 解引用可能出现空引用。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native\MangaFlow.Native_runmbse0_wpftmp.csproj]
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native\Services\DirectorRules.cs(313,17): warning CS8620: 由于引用类型的可为 null 性差异，List<(string, string, string)> 类型的实参不能用于 DirectorPlanResult DirectorPlanResult.Clarify(string reason, List<(string, string?, string)> options) 中 List<(string, string?, string)> 类型的形参 options。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native\MangaFlow.Native_runmbse0_wpftmp.csproj]
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native\Services\DirectorRules.cs(323,13): warning CS8620: 由于引用类型的可为 null 性差异，List<(string, string, string)> 类型的实参不能用于 DirectorPlanResult DirectorPlanResult.Clarify(string reason, List<(string, string?, string)> options) 中 List<(string, string?, string)> 类型的形参 options。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native\MangaFlow.Native_runmbse0_wpftmp.csproj]
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native\Views\WorkflowView.cs(1296,24): warning CS1998: 此异步方法缺少 "await" 运算符，将以同步方式运行。请考虑使用 "await" 运算符等待非阻止的 API 调用，或者使用 "await Task.Run(...)" 在后台线程上执行占用大量 CPU 的工作。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native\MangaFlow.Native_runmbse0_wpftmp.csproj]
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native\Views\WorkflowView.cs(1854,23): warning CS8618: 在退出构造函数时，不可为 null 的 字段 "Name" 必须包含非 null 值。请考虑添加 "required" 修饰符或将该 字段 声明为可为 null。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native\MangaFlow.Native_runmbse0_wpftmp.csproj]
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native\Views\AssetsView.cs(19,92): warning CS0108: “AssetsView.Style”隐藏继承的成员“FrameworkElement.Style”。如果是有意隐藏，请使用关键字 new。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native\MangaFlow.Native.csproj]
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native\MainWindow.xaml.cs(265,24): warning CS1998: 此异步方法缺少 "await" 运算符，将以同步方式运行。请考虑使用 "await" 运算符等待非阻止的 API 调用，或者使用 "await Task.Run(...)" 在后台线程上执行占用大量 CPU 的工作。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native\MangaFlow.Native.csproj]
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native\Services\DirectorRules.cs(300,13): warning CS8620: 由于引用类型的可为 null 性差异，List<(string, string, string)> 类型的实参不能用于 DirectorPlanResult DirectorPlanResult.Clarify(string reason, List<(string, string?, string)> options) 中 List<(string, string?, string)> 类型的形参 options。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native\MangaFlow.Native.csproj]
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native\Services\DirectorRules.cs(313,17): warning CS8620: 由于引用类型的可为 null 性差异，List<(string, string, string)> 类型的实参不能用于 DirectorPlanResult DirectorPlanResult.Clarify(string reason, List<(string, string?, string)> options) 中 List<(string, string?, string)> 类型的形参 options。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native\MangaFlow.Native.csproj]
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native\Services\DirectorRules.cs(323,13): warning CS8620: 由于引用类型的可为 null 性差异，List<(string, string, string)> 类型的实参不能用于 DirectorPlanResult DirectorPlanResult.Clarify(string reason, List<(string, string?, string)> options) 中 List<(string, string?, string)> 类型的形参 options。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native\MangaFlow.Native.csproj]
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native\MainWindow.xaml.cs(474,24): warning CS1998: 此异步方法缺少 "await" 运算符，将以同步方式运行。请考虑使用 "await" 运算符等待非阻止的 API 调用，或者使用 "await Task.Run(...)" 在后台线程上执行占用大量 CPU 的工作。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native\MangaFlow.Native.csproj]
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native\Views\WorkflowView.cs(1296,24): warning CS1998: 此异步方法缺少 "await" 运算符，将以同步方式运行。请考虑使用 "await" 运算符等待非阻止的 API 调用，或者使用 "await Task.Run(...)" 在后台线程上执行占用大量 CPU 的工作。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native\MangaFlow.Native.csproj]
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native\Views\ScriptView.cs(644,29): warning CS8602: 解引用可能出现空引用。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native\MangaFlow.Native.csproj]
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native\Views\WorkflowView.cs(1854,23): warning CS8618: 在退出构造函数时，不可为 null 的 字段 "Name" 必须包含非 null 值。请考虑添加 "required" 修饰符或将该 字段 声明为可为 null。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native\MangaFlow.Native.csproj]
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\NativeBackendChecks.cs(91,13): warning CS8602: 解引用可能出现空引用。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\NativeBackendChecks.cs(61,31): warning CS1998: 此异步方法缺少 "await" 运算符，将以同步方式运行。请考虑使用 "await" 运算符等待非阻止的 API 调用，或者使用 "await Task.Run(...)" 在后台线程上执行占用大量 CPU 的工作。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\NativeAssetsLoopChecks.cs(162,15): warning CS8604: “void NativeAssetsLoopChecks.Click(ButtonBase button)”中的形参“button”可能传入 null 引用实参。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\NativeNavigationChecks.cs(112,31): warning CS8600: 将 null 文本或可能的 null 值转换为不可为 null 类型。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\NativeNavigationChecks.cs(112,74): warning CS8600: 将 null 文本或可能的 null 值转换为不可为 null 类型。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\NativeNavigationChecks.cs(112,74): warning CS8602: 解引用可能出现空引用。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\NativeNavigationChecks.cs(114,31): warning CS8600: 将 null 文本或可能的 null 值转换为不可为 null 类型。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\NativeNavigationChecks.cs(114,80): warning CS8600: 将 null 文本或可能的 null 值转换为不可为 null 类型。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\NativeNavigationChecks.cs(114,80): warning CS8602: 解引用可能出现空引用。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\NativeNavigationChecks.cs(116,22): warning CS8600: 将 null 文本或可能的 null 值转换为不可为 null 类型。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\NativeNavigationChecks.cs(117,26): warning CS8602: 解引用可能出现空引用。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\NativeNavigationChecks.cs(151,27): warning CS8600: 将 null 文本或可能的 null 值转换为不可为 null 类型。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\NativeNavigationChecks.cs(152,17): warning CS8602: 解引用可能出现空引用。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\NativeDockChecks.cs(367,31): warning CS1998: 此异步方法缺少 "await" 运算符，将以同步方式运行。请考虑使用 "await" 运算符等待非阻止的 API 调用，或者使用 "await Task.Run(...)" 在后台线程上执行占用大量 CPU 的工作。 [D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+Unhandled exception. System.Exception: NativeIssue485Checks failed
+ ---> System.Exception: NativeIssue485Checks failed
+ ---> System.Exception: 创建角色模型包双击必须只发出一次 POST（实际 2 次，#485）
+   at NativeIssue485Checks.Require(Boolean condition, String message) in D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\NativeIssue485Checks.cs:line 315
+   at NativeIssue485Checks.CreateDoubleClickSendsSinglePost() in D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\NativeIssue485Checks.cs:line 131
+   at NativeIssue485Checks.CheckAsync() in D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\NativeIssue485Checks.cs:line 101
+   at NativeIssue485Checks.<>c__DisplayClass3_0.<<RunFrame>b__2>d.MoveNext() in D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\NativeIssue485Checks.cs:line 90
+   --- End of inner exception stack trace ---
+   at NativeIssue485Checks.RunFrame() in D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\NativeIssue485Checks.cs:line 96
+   at NativeIssue485Checks.<>c__DisplayClass2_0.<RunOnDedicatedStaThread>b__0() in D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\NativeIssue485Checks.cs:line 62
+   --- End of inner exception stack trace ---
+   at NativeIssue485Checks.RunOnDedicatedStaThread() in D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\NativeIssue485Checks.cs:line 69
+   at NativeIssue485Checks.Run() in D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\NativeIssue485Checks.cs:line 48
+   at Program.<Main>$(String[] args) in D:\自媒体\漫画工作流-wt-b\apps\desktop\native-tests\Program.cs:line 10
+   at Program.<Main>(String[] args)

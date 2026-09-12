@@ -1,0 +1,109 @@
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native\Views\AssetsView.cs(19,92): warning CS0108: “AssetsView.Style”隐藏继承的成员“FrameworkElement.Style”。如果是有意隐藏，请使用关键字 new。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MangaFlow.Native.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MainWindow.xaml.cs(265,24): warning CS1998: 此异步方法缺少 "await" 运算符，将以同步方式运行。请考虑使用 "await" 运算符等待非阻止的 API 调用，或者使用 "await Task.Run(...)" 在后台线程上执行占用大量 CPU 的工作。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MangaFlow.Native.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MainWindow.xaml.cs(474,24): warning CS1998: 此异步方法缺少 "await" 运算符，将以同步方式运行。请考虑使用 "await" 运算符等待非阻止的 API 调用，或者使用 "await Task.Run(...)" 在后台线程上执行占用大量 CPU 的工作。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MangaFlow.Native.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native\Services\DirectorRules.cs(300,13): warning CS8620: 由于引用类型的可为 null 性差异，List<(string, string, string)> 类型的实参不能用于 DirectorPlanResult DirectorPlanResult.Clarify(string reason, List<(string, string?, string)> options) 中 List<(string, string?, string)> 类型的形参 options。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MangaFlow.Native.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native\Services\DirectorRules.cs(313,17): warning CS8620: 由于引用类型的可为 null 性差异，List<(string, string, string)> 类型的实参不能用于 DirectorPlanResult DirectorPlanResult.Clarify(string reason, List<(string, string?, string)> options) 中 List<(string, string?, string)> 类型的形参 options。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MangaFlow.Native.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native\Services\DirectorRules.cs(323,13): warning CS8620: 由于引用类型的可为 null 性差异，List<(string, string, string)> 类型的实参不能用于 DirectorPlanResult DirectorPlanResult.Clarify(string reason, List<(string, string?, string)> options) 中 List<(string, string?, string)> 类型的形参 options。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MangaFlow.Native.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native\Views\ScriptView.cs(644,29): warning CS8602: 解引用可能出现空引用。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MangaFlow.Native.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native\Views\WorkflowView.cs(1296,24): warning CS1998: 此异步方法缺少 "await" 运算符，将以同步方式运行。请考虑使用 "await" 运算符等待非阻止的 API 调用，或者使用 "await Task.Run(...)" 在后台线程上执行占用大量 CPU 的工作。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MangaFlow.Native.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native\Views\WorkflowView.cs(1854,23): warning CS8618: 在退出构造函数时，不可为 null 的 字段 "Name" 必须包含非 null 值。请考虑添加 "required" 修饰符或将该 字段 声明为可为 null。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MangaFlow.Native.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\NativeBackendChecks.cs(91,13): warning CS8602: 解引用可能出现空引用。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\NativeBackendChecks.cs(61,31): warning CS1998: 此异步方法缺少 "await" 运算符，将以同步方式运行。请考虑使用 "await" 运算符等待非阻止的 API 调用，或者使用 "await Task.Run(...)" 在后台线程上执行占用大量 CPU 的工作。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\NativeAssetsLoopChecks.cs(162,15): warning CS8604: “void NativeAssetsLoopChecks.Click(ButtonBase button)”中的形参“button”可能传入 null 引用实参。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\NativeNavigationChecks.cs(112,31): warning CS8600: 将 null 文本或可能的 null 值转换为不可为 null 类型。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\NativeNavigationChecks.cs(112,74): warning CS8600: 将 null 文本或可能的 null 值转换为不可为 null 类型。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\NativeNavigationChecks.cs(112,74): warning CS8602: 解引用可能出现空引用。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\NativeNavigationChecks.cs(114,31): warning CS8600: 将 null 文本或可能的 null 值转换为不可为 null 类型。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\NativeNavigationChecks.cs(114,80): warning CS8600: 将 null 文本或可能的 null 值转换为不可为 null 类型。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\NativeNavigationChecks.cs(114,80): warning CS8602: 解引用可能出现空引用。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\NativeNavigationChecks.cs(116,22): warning CS8600: 将 null 文本或可能的 null 值转换为不可为 null 类型。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\NativeNavigationChecks.cs(117,26): warning CS8602: 解引用可能出现空引用。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\NativeNavigationChecks.cs(151,27): warning CS8600: 将 null 文本或可能的 null 值转换为不可为 null 类型。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\NativeNavigationChecks.cs(152,17): warning CS8602: 解引用可能出现空引用。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\NativeDockChecks.cs(367,31): warning CS1998: 此异步方法缺少 "await" 运算符，将以同步方式运行。请考虑使用 "await" 运算符等待非阻止的 API 调用，或者使用 "await Task.Run(...)" 在后台线程上执行占用大量 CPU 的工作。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\MangaFlow.Native.Tests.csproj]
+PASS: untrusted origins rejected
+PASS: server media paths have exactly one API prefix
+PASS: local and server media paths use identical thumbnails
+PASS: lightbox preserves original resolution
+PASS: exact versioned API path
+PASS: UTF-8 JSON survives response disposal
+PASS: 409 preserves actionable server detail
+PASS: interrupted mutation never automatically retries
+PASS: navigation cancellation reaches HTTP handler
+PASS: terminal actions disabled and progress clamped
+PASS: exhausted task cannot retry
+PASS: window preferences persist
+PASS: atomic save leaves no temporary files
+PASS: corrupt preferences fall back safely
+PASS: dashboard bounds visual count
+PASS: dashboard paging preserves remaining projects
+PASS: archive emptying last page returns to valid page
+PASS: cover lettering preserves Unicode graphemes
+PASS: project navigation covers Web routes in order
+PASS: reselecting a page does not rebuild it
+PASS: selecting a new page notifies once
+PASS: unknown page definition is rejected
+PASS: director rule stub compiles whitelisted commands, UUID envelopes and web priority parity
+PASS: local edit accepts explicitly mask-capable image models
+PASS: local edit never falls back to whole-image reference editing
+PASS: rectangle masks clamp to real image pixels
+PASS: brush masks retain area and obey backend point limit
+PASS: local edits preserve the versioned director command contract
+PASS: native mask envelope uses polygon points
+PASS: empty masks cannot be proposed
+PASS: fast eraser strokes remove crossed regions even when samples lie outside
+PASS: eraser strokes preserve neighboring regions
+PASS: eraser taps on polygon boundaries are recognized
+PASS: generation selects canonical references once per visible character
+PASS: published packages inherit server defaults while retaining storyboard outfits
+PASS: published packages cannot hide missing outfit references
+PASS: missing legacy references block generation
+PASS: per-run package and outfit overrides serialize with API field names
+PASS: archived packages do not override legacy defaults
+PASS: usage pagination retains every filter and exact time bounds
+PASS: usage timestamps and escaped filter values round trip
+PASS: invalid usage ranges fail before HTTP requests
+PASS: usage summary respects its separate API filter contract
+PASS: repeated load-more clicks dispatch only one request
+PASS: late pagination responses cannot contaminate a new usage filter
+PASS: late first pages cannot overwrite newer usage results
+PASS: view registry, offline navigation, cached instances, sidebar collapse, workspace layouts
+PASS: re-rendering panes does not re-parent shared controls (B-2..B-5)
+PASS: visual parity regressions — startup, grid bounds, project hits, settings breakpoints, nine pages, model picker, drawers and easing
+PASS: READY-line parse fails closed (prefix/payload/origin rule); disconnect banner follows backend liveness
+PASS: workflow navigation flushes an armed autosave debounce exactly once
+PASS: workflow connection rules (data_type match / no self-loop / duplicate port pair / deterministic edge id) enforced end to end
+PASS: workflow inspector full config surface, clamped write-back, run history and approval queue wire contract, stale approval model alias gating
+PASS: storyboard activation loads the remembered chapter exactly once (no side-channel double fetch)
+PASS: storyboard resize handles/bubble create/dialogue 409 recovery/bleed-safe overlay/focus mode/replan/inspector key isolation/refresh draft preservation all match the web contract
+PASS: rectangular toggles, web asset underlines/model cards, exclusive selection and project display names
+PASS: source layout, selected-chapter plan/parse, duplicate guard, multipart import, revision save and stale project isolation
+PASS: character page layout/text, explicit selection, real wire arrays, dedup creation, package cover/matrix/spec, reference unbind and project isolation
+PASS: wardrobe responsive layout, opaque text surfaces, reference draft, versioned editing/conflict, save dedup, library envelope/cursor/adoption, model generation/polling and detached-pane isolation
+PASS: media preview converts once, concept loop polls/adopts/dedupes, frozen spec readout uses version snapshots, unsaved outfit drafts are guarded
+PASS: 检查面板按 Read 模型渲染（版本过滤 + 维度去重 + 气泡差异）；逐项修复按 web 载荷提交并在成功后收起；终态后结果/工作台/页面重拉；空结果/失败/迟到响应有守卫
+PASS: poll interval setting, FAILED-only retry, streaming downloads, usage budget/breakdown, upload purpose, 409 blockers and entity deep links all match the web contract
+PASS: jobs real wire contract, history loading, late read/mutation isolation, deduplication, error recovery, stable polling, ledger paging and unknown values
+PASS: library cursor/filter isolation, selection actions, export readiness/deduplication, real file downloads and interrupted-download cleanup
+PASS: dock counts/headline, cross-project isolation, cancel/retry dedup, shell collapse/restore, Enter/Esc/focus parity, help anchors and narrow layout
+PASS: state matrix — empty/loading/error/recovery/switch for 17 pages and asset subviews
+PASS: encoded query values containing '..' are sent; '..' in the path portion is still rejected
+PASS: upload timeouts surface as TimeoutException while genuine cancellations stay cancellations
+PASS: source file import timeout shows the localized notice and re-enables the form
+PASS: outfit reference upload timeout reports the localized Chinese notice
+PASS: failed canonical-reference swap restores the unbound reference and reports the real state
+PASS: deleted_at timestamp/null/absent/legacy-boolean shapes, archived status label, and archived asset/variant exclusion from Script binding dropdowns (#484/#440)
+PASS: wardrobe save merges live selector state once into a single version-carrying full-map PATCH; scene/beat saves reject double-click re-entry (#426/#448)
+NOT RUN: real WPF mouse double-click timing; a synthetic double RaiseEvent drives the same re-entry path
+PASS: #411 stop-timeout escalates to a tree kill and resets backend state; #446 preferences save failures never crash; #449 boot-hang copy never mentions submits
+PASS: #470 cancelled create surfaces unknown-outcome guidance and invalidates caches; #471-2 closed-drawer failures reach the status line; #471-3 F5 failures surface an error and retry cue
+PASS: #427 乱序完成的两次工作流载入——画布/workflowId/version 保持一致（画布显示最后请求的工作流）
+PASS: #427 A→B→C 切换（离场 flush 挂起在途）——没有发出 (graph, id) 配错的 PATCH，离场编辑照常落盘
+PASS: #427 Activate 恰好发起一次工作流载入
+PASS: project settings guard unsaved edits on leave/refresh; cancelled saves report unknown outcome; settings refresh preserves drafts
+PASS: #486-2 模式/分辨率/下一步变更（计数不变）触发仪表盘封面重绘，无变化时不重复重建
+PASS: #486-1 候选失败保留批次闩锁；重试核实死批次（缺席/非 OPEN）后换新批次，活批次仍复用
+PASS: #486-3 + #449-2 灯箱失败可见且可重试；409 detail 与非 JSON 的带状态码本地化回退到达图片界面
+PASS: native creation preserves card choices; generation posts reference overrides once; local-edit preview/accept/discard preserve source and command contracts
+PASS: native XAML loads and lays out at 1320 / 940 px; review fixtures rendered
+Native client checks passed: 54; WPF navigation and visual checks passed

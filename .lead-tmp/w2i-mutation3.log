@@ -1,0 +1,35 @@
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native\Views\AssetsView.cs(19,92): warning CS0108: “AssetsView.Style”隐藏继承的成员“FrameworkElement.Style”。如果是有意隐藏，请使用关键字 new。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MangaFlow.Native_kcequizz_wpftmp.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MainWindow.xaml.cs(265,24): warning CS1998: 此异步方法缺少 "await" 运算符，将以同步方式运行。请考虑使用 "await" 运算符等待非阻止的 API 调用，或者使用 "await Task.Run(...)" 在后台线程上执行占用大量 CPU 的工作。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MangaFlow.Native_kcequizz_wpftmp.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MainWindow.xaml.cs(474,24): warning CS1998: 此异步方法缺少 "await" 运算符，将以同步方式运行。请考虑使用 "await" 运算符等待非阻止的 API 调用，或者使用 "await Task.Run(...)" 在后台线程上执行占用大量 CPU 的工作。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MangaFlow.Native_kcequizz_wpftmp.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native\Services\DirectorRules.cs(300,13): warning CS8620: 由于引用类型的可为 null 性差异，List<(string, string, string)> 类型的实参不能用于 DirectorPlanResult DirectorPlanResult.Clarify(string reason, List<(string, string?, string)> options) 中 List<(string, string?, string)> 类型的形参 options。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MangaFlow.Native_kcequizz_wpftmp.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native\Services\DirectorRules.cs(313,17): warning CS8620: 由于引用类型的可为 null 性差异，List<(string, string, string)> 类型的实参不能用于 DirectorPlanResult DirectorPlanResult.Clarify(string reason, List<(string, string?, string)> options) 中 List<(string, string?, string)> 类型的形参 options。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MangaFlow.Native_kcequizz_wpftmp.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native\Services\DirectorRules.cs(323,13): warning CS8620: 由于引用类型的可为 null 性差异，List<(string, string, string)> 类型的实参不能用于 DirectorPlanResult DirectorPlanResult.Clarify(string reason, List<(string, string?, string)> options) 中 List<(string, string?, string)> 类型的形参 options。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MangaFlow.Native_kcequizz_wpftmp.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native\Views\ScriptView.cs(644,29): warning CS8602: 解引用可能出现空引用。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MangaFlow.Native_kcequizz_wpftmp.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native\Views\WorkflowView.cs(1296,24): warning CS1998: 此异步方法缺少 "await" 运算符，将以同步方式运行。请考虑使用 "await" 运算符等待非阻止的 API 调用，或者使用 "await Task.Run(...)" 在后台线程上执行占用大量 CPU 的工作。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MangaFlow.Native_kcequizz_wpftmp.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native\Views\WorkflowView.cs(1854,23): warning CS8618: 在退出构造函数时，不可为 null 的 字段 "Name" 必须包含非 null 值。请考虑添加 "required" 修饰符或将该 字段 声明为可为 null。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MangaFlow.Native_kcequizz_wpftmp.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native\Views\AssetsView.cs(19,92): warning CS0108: “AssetsView.Style”隐藏继承的成员“FrameworkElement.Style”。如果是有意隐藏，请使用关键字 new。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MangaFlow.Native.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MainWindow.xaml.cs(265,24): warning CS1998: 此异步方法缺少 "await" 运算符，将以同步方式运行。请考虑使用 "await" 运算符等待非阻止的 API 调用，或者使用 "await Task.Run(...)" 在后台线程上执行占用大量 CPU 的工作。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MangaFlow.Native.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MainWindow.xaml.cs(474,24): warning CS1998: 此异步方法缺少 "await" 运算符，将以同步方式运行。请考虑使用 "await" 运算符等待非阻止的 API 调用，或者使用 "await Task.Run(...)" 在后台线程上执行占用大量 CPU 的工作。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MangaFlow.Native.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native\Services\DirectorRules.cs(300,13): warning CS8620: 由于引用类型的可为 null 性差异，List<(string, string, string)> 类型的实参不能用于 DirectorPlanResult DirectorPlanResult.Clarify(string reason, List<(string, string?, string)> options) 中 List<(string, string?, string)> 类型的形参 options。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MangaFlow.Native.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native\Services\DirectorRules.cs(313,17): warning CS8620: 由于引用类型的可为 null 性差异，List<(string, string, string)> 类型的实参不能用于 DirectorPlanResult DirectorPlanResult.Clarify(string reason, List<(string, string?, string)> options) 中 List<(string, string?, string)> 类型的形参 options。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MangaFlow.Native.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native\Services\DirectorRules.cs(323,13): warning CS8620: 由于引用类型的可为 null 性差异，List<(string, string, string)> 类型的实参不能用于 DirectorPlanResult DirectorPlanResult.Clarify(string reason, List<(string, string?, string)> options) 中 List<(string, string?, string)> 类型的形参 options。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MangaFlow.Native.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native\Views\ScriptView.cs(644,29): warning CS8602: 解引用可能出现空引用。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MangaFlow.Native.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native\Views\WorkflowView.cs(1296,24): warning CS1998: 此异步方法缺少 "await" 运算符，将以同步方式运行。请考虑使用 "await" 运算符等待非阻止的 API 调用，或者使用 "await Task.Run(...)" 在后台线程上执行占用大量 CPU 的工作。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MangaFlow.Native.csproj]
+D:\自媒体\漫画工作流-wt-c\apps\desktop\native\Views\WorkflowView.cs(1854,23): warning CS8618: 在退出构造函数时，不可为 null 的 字段 "Name" 必须包含非 null 值。请考虑添加 "required" 修饰符或将该 字段 声明为可为 null。 [D:\自媒体\漫画工作流-wt-c\apps\desktop\native\MangaFlow.Native.csproj]
+PASS: #486-2 模式/分辨率/下一步变更（计数不变）触发仪表盘封面重绘，无变化时不重复重建
+PASS: #486-1 候选失败保留批次闩锁；重试核实死批次（缺席/非 OPEN）后换新批次，活批次仍复用
+Unhandled exception. System.Exception: Issue 486/449 checks failed
+ ---> System.Exception: Issue 486/449 checks failed
+ ---> System.Exception: 等待超时（3s）：#486-3 原图加载失败后失败 UI 未出现（仍是空白黑窗）
+   at NativeIssue486Checks.Until(Func`1 condition, String message) in D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\NativeIssue486Checks.cs:line 301
+   at NativeIssue486Checks.MediaSurfacesSurfaceBackendDetail() in D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\NativeIssue486Checks.cs:line 247
+   at NativeIssue486Checks.CheckAsync(String output) in D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\NativeIssue486Checks.cs:line 115
+   at NativeIssue486Checks.<>c__DisplayClass2_0.<<RunFrame>b__2>d.MoveNext() in D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\NativeIssue486Checks.cs:line 100
+   --- End of inner exception stack trace ---
+   at NativeIssue486Checks.RunFrame(String output) in D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\NativeIssue486Checks.cs:line 106
+   at NativeIssue486Checks.<>c__DisplayClass1_0.<RunOnDedicatedStaThread>b__0() in D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\NativeIssue486Checks.cs:line 71
+   --- End of inner exception stack trace ---
+   at NativeIssue486Checks.RunOnDedicatedStaThread(String output) in D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\NativeIssue486Checks.cs:line 78
+   at NativeIssue486Checks.Run(String output) in D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\NativeIssue486Checks.cs:line 48
+   at Program.<Main>$(String[] args) in D:\自媒体\漫画工作流-wt-c\apps\desktop\native-tests\Program.cs:line 10
+   at Program.<Main>(String[] args)
