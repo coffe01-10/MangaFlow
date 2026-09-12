@@ -899,13 +899,6 @@ def test_web_exit_watch_settle_race_stays_silent(monkeypatch):
 
     captured = io.StringIO()
     monkeypatch.setattr(helper, "_log", lambda message: captured.write(message + "\n"))
-    class FakeSock:
-        def __init__(self):
-            self.closed = False
-
-        def close(self):
-            self.closed = True
-
     sock = FakeSock()
 
     # The event lands while the watcher is inside shutdown.wait(interval):
@@ -923,6 +916,7 @@ def test_web_exit_watch_settle_race_stays_silent(monkeypatch):
     assert not sock.closed, (
         "the settle path must leave the announced socket to the close path"
     )
+
 
 def test_sidecar_dead_web_dist_fails_closed_without_web_origin(tmp_path: Path):
     """Red team 2026-09-08: a web server that dies during boot must NOT leave
