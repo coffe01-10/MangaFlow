@@ -145,6 +145,41 @@ def test_guard_strips_query_strings_before_resolving(tmp_path):
     assert "1 local assets" in result.stdout
 
 
+def test_guard_covers_unquoted_attributes(tmp_path):
+    """HTML5 also allows UNQUOTED attribute values (`src=/_next/x.js`) —
+    the same tool-transform channel as the single-quote case above (a
+    quote-stripping minifier pass over a static export is lossless HTML).
+    A regex that captures only quoted values extracts an empty set there
+    and passes a dangling placeholder vacuously. Pin both a refusal (dangling
+    unquoted refs) and a pass (unquoted refs that exist on disk)."""
+
+    dist = tmp_path / "frontend"
+    dist.mkdir()
+    (dist / "index.html").write_text(
+        "<html><head>"
+        "<script src=_next/static/chunks/unquoted-missing.js></script>"
+        "<link rel=stylesheet href=_next/static/chunks/unquoted-missing.css>"
+        "</head><body></body></html>",
+        encoding="utf-8",
+    )
+    result = _run_guard(dist)
+    assert result.returncode == 1, (
+        f"unquoted dangling refs must refuse, got rc=0: {result.stdout}"
+    )
+    assert "unquoted-missing.js" in result.stderr
+
+    (dist / "_next" / "static" / "chunks").mkdir(parents=True)
+    (dist / "_next" / "static" / "chunks" / "unquoted-missing.js").write_text(
+        "// chunk", encoding="utf-8"
+    )
+    (dist / "_next" / "static" / "chunks" / "unquoted-missing.css").write_text(
+        "/* chunk */", encoding="utf-8"
+    )
+    result = _run_guard(dist)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "2 local assets" in result.stdout
+
+
 def test_guard_covers_single_quoted_attributes(tmp_path):
     """Both HTML quote forms are legal (Next emits double quotes; a
     hand-edited page may carry single ones). A regex that captures only
