@@ -1383,3 +1383,39 @@ def test_web_exit_watch_poll_cadence_is_the_loop_heartbeat(monkeypatch):
     thread2.join(timeout=5)
     assert not thread2.is_alive()
     assert captured.getvalue() == "" and not live_sock.closed
+
+
+def test_await_web_server_boot_logs_and_returns_false_on_boot_exit(monkeypatch):
+    """The boot-exit leg's log contract: a node that dies during boot must
+    (1) return False (the caller downgrades to static export) and (2) log
+    the exit code — a silent downgrade leaves operators with no lifecycle
+    evidence for the death. The returncode must be the node's OWN code.
+    Popen double; no node, no ports; budget shortened for speed."""
+
+    import importlib.util
+    import io
+
+    spec = importlib.util.spec_from_file_location(
+        "mangaflow_desktop_helper_bootlog", str(HELPER)
+    )
+    helper_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper_module)
+
+    captured = io.StringIO()
+    monkeypatch.setattr(
+        helper_module, "_log", lambda message: captured.write(message + "\n")
+    )
+
+    class DeadAtBootNode:
+        returncode = 7
+
+        def poll(self):
+            return 7
+
+    monkeypatch.setattr(helper_module, "WEB_BOOT_TIMEOUT_SECONDS", 0.5)
+    result = helper_module._await_web_server_boot(
+        DeadAtBootNode(), 0
+    )
+    assert result is False, "a boot-exit node must downgrade, not serve"
+    logged = captured.getvalue()
+    assert "exited during boot" in logged and "code 7" in logged, logged
