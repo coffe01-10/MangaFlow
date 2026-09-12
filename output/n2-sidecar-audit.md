@@ -581,3 +581,23 @@
   失败信息误归因（只可能因 strip list 遗漏而失败）——已改为正确归因。
 - **串行证据**：两新测试过；真 runner **114 passed in 64.24s**（提取后 plan-B 实测真实
   spawn 路径，行为保持确认）；评审者独立复跑 114 passed in 64.27s。
+## 29. 20260913 续二（master 1bd6104——#589/#590/#591/#592 已并；续跑戳 ~06:19）
+
+- **#585 CONFLICTING 处置**：rebase 到 1bd6104。冲突本质：master 侧他人对同义反复测试的
+  精修（PORT 字符串化）vs 本支整体替换——按去同义反复版解决，完整保留 #592 新增的
+  cadence 测试。rebase 后串行 runner **120 passed in 73.47s**（119+本支净增 1）。
+- **#596（FakeSock 去重，下一小 pin，待 lead）**：ruff F811 在 **master 本体**即红——
+  合并产物在 settle 测试同函数域留下两个 FakeSock 定义，第二个（无 shutdown 跟踪）遮蔽
+  第一个，#558 的 shutdown_called 仪表成死代码；同函数还有缺失 PEP8 空行。保留富定义、
+  修空行。第 17 轮评审 APPROVE（遮蔽分析/行为零变化/−7+1 纯度全部实证）。
+- **负载 flake 发现与处置（PR #599，待 lead）**：评审者在全量串行下实测
+  `test_relay_partial_pump_start_releases_slot_and_serves_next` 失败一次、隔离通过——
+  4s 挂死守卫预算可被 accept 循环 0.5s 轮询在负载下的多个调度 stall 吃满 = 假告警。
+  本支把该测试两处预算 4s→15s（限域，附 hang-guard-vs-sync 说明）；其余同形调用点
+  留 4s 待实际 flake 再动（避免拖慢真挂死检出）。
+- **串行证据与本支披露**：本支首跑 1 failed/118 passed（**失败身份因输出管道 tail -1
+  丢失，如实记录**）；随后 **5 连绿**（119 passed ×5, ~73s）。若复发：runner 增加失败
+  身份留存 + 固定端口 TIME_WAIT 预检等待。
+- **交叉核查**：#591（venv bootstrap mkdir 锁）——落实 §26 记录的 #570 邻接缝（并发
+  bootstrap 竞窗），闭环；#592（exit watcher cadence + crash-path shutdown 钉）与
+  #589/#590 行级读过，无缺陷。
