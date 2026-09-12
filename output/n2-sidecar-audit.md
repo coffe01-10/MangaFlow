@@ -307,4 +307,27 @@
 - **本轮 PR**：#407（junction 跳过，已合并）、#408（traverse-only 覆盖，已合并）、
   #414（assemble 残留清扫，待 lead）、#415（锁头文档范围，待 lead）。
 - **跨组上报维持**：picker swap-seam overlayfs flaky（N1）；
-  Issue #300 nonce/hash 阶段未开始（Stage 0 契约钉死已落地）。
+  Issue #300 nonce/hash 阶段未开始（Stage 0 契约钉死已落地）。## 17. 20260912-wknd 续（基线 `a734bdb`，master 已并我方 #563/#565）
+
+- **同步**：`reset --hard origin/master`（a734bdb）；审计自 origin/night/n2-platform-burn-20260912-wknd
+  恢复（309 行全量）。
+- **账本清理**：关闭被取代的重复 PR #562（journal link-guard 钉死，#560 已并）、#538
+  （pid_starttime 锚定，#563 已并）——合并后 master 测试名逐一核对
+  （`test_write_journal_refuses_links_and_writes_atomically`、
+  `test_pid_starttime_reads_live_anchor_and_is_deterministic`、
+  `test_pid_starttime_degrades_to_none_without_proc`）。
+- **PR #566（guard fail-open 修复，待 lead）**：`guard-frontend-dist.mjs` 的 href/src 提取
+  正则只匹配两种带引号形态；HTML5 无引号属性值（`src=/_next/static/chunks/app.js`）——
+  引号剥离式 minifier 变换的合法产物——会令提取集为空，guard 对悬空占位符空泛通过
+  （恰是其存在所要拦截的白屏安装包路径）。红/绿钉死：旧正则对无引号悬空页 rc=0
+  （"0 local assets, all present"）；修复后拒绝并点名 chunk，同页落盘后放行计数 2。
+- **第 8 轮审查（1 子代理，文件/行级，APPROVE + 3 findings，全部处置）**：
+  - F1 MINOR（已返工）：无引号分支原用 JS `\s` 且排除引号，而 HTML5 tokenizer 将引号/
+    `<`/非 ASCII 空格保留在值内（parse error 但属于值）——截断捕获会解析出"前缀"，
+    前缀落盘时 guard 空泛通过而页面白屏。返工：字符类改为 tokenizer 终止集
+    `[^\t\n\f >]`，新增前缀判别测试（仅落盘截断前缀必须拒绝 + 真名放行对照）。
+  - F2 NIT（记录，不属本 PR）：`existsSync` 对目录返回 true——`src="foo/"` 引号形态
+    master 已有同样行为，本 PR 仅新增一种语法；留作独立跟进。
+  - F3 NIT（已修）：新测试 docstring "above" 方位词过时。
+- **串行证据**：guard 套件 **9 passed**；本轮早前全量（基线 f97c186 树）runner **88 passed**、
+  cargo **152/0**。
