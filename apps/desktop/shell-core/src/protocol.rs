@@ -411,11 +411,13 @@ fn write_journal_atomic(journal: &Path, record: &serde_json::Value) -> std::io::
 ///    window, so a just-finished session stays inspectable.
 ///
 /// "created"/"ready" directories are NEVER touched — the native-host (WPF)
-/// leg shares this layout without a single-instance mutex, so a non-terminal
-/// directory may belong to a live session. Foreign names (not
-/// `mangaflow-desktop-<32 hex>`), symlinks/junctions planted at a candidate
-/// name, unparsable journals, and anything that does not canonically resolve
-/// inside the runtime root are all left untouched.
+/// leg now holds its own single-instance mutex (keyed by its canonical
+/// user-data path, App.xaml.cs), but this sweep cannot observe that lock: it
+/// never learns which user-data directory the WPF leg runs on, so a
+/// non-terminal directory may still belong to a live session. Foreign names
+/// (not `mangaflow-desktop-<32 hex>`), symlinks/junctions planted at a
+/// candidate name, unparsable journals, and anything that does not
+/// canonically resolve inside the runtime root are all left untouched.
 pub const RUNTIME_SWEEP_GRACE_SECONDS: u64 = 24 * 60 * 60;
 
 /// Whether a runtime-directory base name is one this shell may sweep.

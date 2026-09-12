@@ -5,6 +5,21 @@ param(
 $ErrorActionPreference = 'Stop'
 $nativeRepo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../..'))
 $nativeProject = Join-Path $nativeRepo 'apps/desktop/native/MangaFlow.Native.csproj'
+# #410: the Tauri shell owns %LOCALAPPDATA%\com.mangaflow.desktop (tauri.conf.json
+# identifier + app_local_data_dir in src-tauri/src/main.rs) and already runs its own
+# API server there. Pointing the WPF client's -UserData inside that directory would
+# start a second server on the same SQLite database, so refuse the overlap up front,
+# before any build work.
+if ($UserData) {
+    $userDataFull = [IO.Path]::GetFullPath($UserData).TrimEnd('\')
+    $shellDataFull = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'com.mangaflow.desktop')).TrimEnd('\')
+    $overlapsShellData = $userDataFull.Equals($shellDataFull, [StringComparison]::OrdinalIgnoreCase) -or
+        $userDataFull.StartsWith($shellDataFull + '\', [StringComparison]::OrdinalIgnoreCase)
+    if ($overlapsShellData) {
+        throw ("Refusing -UserData '{0}': it is inside the Tauri shell user-data directory '{1}'. " -f $userDataFull, $shellDataFull) +
+            'The shell already serves that data; a second client on it would run a second API server on one SQLite database (#410). Pass a directory outside the shell data directory.'
+    }
+}
 Push-Location $nativeRepo
 try {
     $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
