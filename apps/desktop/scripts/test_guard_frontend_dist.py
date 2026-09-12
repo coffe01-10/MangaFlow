@@ -21,9 +21,15 @@ _SCRIPTS = Path(__file__).resolve().parent
 GUARD = _SCRIPTS / "guard-frontend-dist.mjs"
 CONF = _SCRIPTS.parent / "src-tauri" / "tauri.conf.json"
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("node") is None, reason="the guard itself is a node script"
-)
+pytestmark = [
+    pytest.mark.skipif(
+        shutil.which("node") is None, reason="the guard itself is a node script"
+    ),
+    pytest.mark.skipif(
+        shutil.which("git") is None,
+        reason="the clean-clone pin reconstructs the placeholder via git",
+    ),
+]
 
 
 def _run_guard(dist: Path) -> subprocess.CompletedProcess:
@@ -273,12 +279,19 @@ def test_guard_refuses_the_tracked_placeholder_on_a_clean_clone(tmp_path):
     became self-contained, that is a conscious repo decision that must
     update this pin, not a cleanup."""
 
+    # git pathspecs resolve against the process cwd; pin it to the repo
+    # root so the suite stays runnable from any directory (round-13
+    # review: the bare pathspec matched nothing from apps/desktop/scripts).
+    # -z keeps the split path-exact (spaces, non-ASCII names).
     tracked = subprocess.run(
-        ["git", "ls-files", "--", "apps/desktop/dist/frontend"],
+        ["git", "ls-files", "-z", "--", "apps/desktop/dist/frontend"],
         capture_output=True,
-        text=True,
         check=True,
-    ).stdout.split()
+        cwd=_SCRIPTS.parent.parent.parent,
+    ).stdout.split(b"\0")
+    tracked = [
+        path.decode("utf-8") for path in tracked if path
+    ]
     assert tracked, "the placeholder export must be tracked for this pin"
     assert any(path.endswith("index.html") for path in tracked)
 
@@ -290,6 +303,7 @@ def test_guard_refuses_the_tracked_placeholder_on_a_clean_clone(tmp_path):
             ["git", "show", f"HEAD:{repo_path}"],
             capture_output=True,
             check=True,
+            cwd=_SCRIPTS.parent.parent.parent,
         ).stdout
         dest.write_bytes(content)
 
