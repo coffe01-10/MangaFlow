@@ -387,3 +387,13 @@
 - **#612 的 Windows 腿依赖记录**：三处根守卫用的 `symlink_metadata().is_symlink()` 原语与 #311 时代在真机 Windows 上验证过的 junction 检测同源（picker 注释同断言）；我的测试在 Windows 上走 best-effort symlink_dir 腿，junction 效力承继 #311 验证结论——若未来 std 行为变更，该前提需随 #311 一并复验。
 
 **结论**：连续第二轮收敛对抗审查无新发现。生产非 native 面（helper 100% + shell-core 全部 + scripts 主干全读）在 360abb9 上维持"扫净"状态；本窗累计 B+9 / C+7（全合）/ E 轮次超额。
+
+---
+
+## 18. 周末窗续跑（2026-09-13 08:38 Asia/Shanghai，基线 36b32ce；#616/#617 已合）
+
+**E 轮（交叉审）：**
+- **PR #616**（rlimit 子进程输出改管道，**logs.rs 生产测试代码**）：RUN 目标测试 **1 passed** + 全量 **155/155**。真实缺陷修复：`cargo test > run.log` 场景下子进程全程 RLIMIT_FSIZE=32 且**继承文件型 stdout**，断言通过后 libtest 自己的结果行写入 EFBIG——"因成功而失败"，交互式管道场景不可见。`.output()` 双管道并发排空（无 64KiB 死锁）、失败细节进父断言、防 `--exact` 空转守卫保留。附一条记录性核对：套件计数 155 vs 上轮 156（本 diff 无增删测试；如第三轮仍 155 则判定为早前聚合口径差）。
+- **PR #615** 补充认证：env 套 37/37（360abb9 轮已记）。
+
+**认证**：36b32ce 上 shell-core **155/155**（目标 rlimit 测试经 `--lib` 过滤器直击，纠正了我先用集成套件过滤器 0-hit 的调用）。
