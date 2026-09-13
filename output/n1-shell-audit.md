@@ -498,3 +498,6 @@ doc-code 不一致 sweep（子代理，双源核验）收割 6 项 → 3 PR：
   156/156 @ adb646a、orphan sweep clean、queue_enabled ordering probe）
   已入 master。账本分支 rebase 同步；cargo 168 全绿复核（首轮 1 次瞬态
   失败未具名，复跑 168 全绿 ×2——挂账观察）。
+- 合入确认（06:4x UTC，master a3422e8 谱系）：#733（journal 64KiB read
+  bound——sidecar + tests only）已入 master。账本分支 rebase 同步；
+  cargo 168 全绿复核。
