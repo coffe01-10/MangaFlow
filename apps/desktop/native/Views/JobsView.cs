@@ -3,15 +3,13 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
-using System.Windows.Input;
-using System.Windows.Media;
 using MangaFlow.Native.Controls;
 using MangaFlow.Native.Services;
 
 namespace MangaFlow.Native.Views;
 
 /// <summary>NUI-2B: jobs center — running/failed groups, history view, archive/restore/delete, costs.</summary>
-public sealed class JobsView : WorkspaceView
+public sealed partial class JobsView : WorkspaceView
 {
     private readonly ScrollViewer scroller = new() { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
     private readonly StackPanel body = new();
@@ -34,46 +32,11 @@ public sealed class JobsView : WorkspaceView
 
     public JobsView()
     {
-        var panel = new StackPanel { Margin = new Thickness(4, 0, 24, 28) };
-        var header = new Border { Style = (Style)Application.Current.FindResource("CanvasHeader") };
-        var headerGrid = new Grid();
-        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var heading = new StackPanel();
-        heading.Children.Add(new TextBlock { Text = "JOBS", Style = (Style)Application.Current.FindResource("SectionIndex") });
-        heading.Children.Add(new TextBlock
-        {
-            Text = "任务中心 · 每个生成任务都能看懂、取消和重试",
-            FontFamily = (FontFamily)Application.Current.FindResource("Serif"),
-            FontSize = 21, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 5, 0, 0),
-        });
-        headerGrid.Children.Add(heading);
-        var count = new TextBlock { Style = (Style)Application.Current.FindResource("Caption"), VerticalAlignment = VerticalAlignment.Bottom };
-        count.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding("JobHint") { Mode = System.Windows.Data.BindingMode.OneWay });
-        Grid.SetColumn(count, 1);
-        headerGrid.Children.Add(count);
-        headerGrid.Children.Clear();
-        header.Child = new PageHeading(heading, count);
-        panel.Children.Add(header);
-
-        var toolbar = new DockPanel { LastChildFill = false, Margin = new Thickness(0, 0, 0, 14) };
-        var tabs = new StackPanel { Orientation = Orientation.Horizontal };
-        recentTab.Margin = new Thickness(0, 0, 8, 0);
-        tabs.Children.Add(recentTab);
-        tabs.Children.Add(historyTab);
-        DockPanel.SetDock(tabs, Dock.Left);
-        toolbar.Children.Add(tabs);
+        BuildPage();
         archiveAll.Click += ArchiveAllCompleted;
-        DockPanel.SetDock(archiveAll, Dock.Right);
-        toolbar.Children.Add(archiveAll);
-        panel.Children.Add(toolbar);
-        notice.Margin = new Thickness(0, 0, 0, 10);
-        panel.Children.Add(notice);
-        panel.Children.Add(body);
-        scroller.Content = panel;
+        archiveSelected.Click += BulkArchive;
         recentTab.Click += (_, _) => SwitchView(false);
         historyTab.Click += (_, _) => SwitchView(true);
-        Content = scroller;
     }
 
     private void SwitchView(bool history)
@@ -86,10 +49,12 @@ public sealed class JobsView : WorkspaceView
         historyTab.IsChecked = history;
         selected.Clear();
         notice.Text = "";
-        archiveAll.Visibility = history ? Visibility.Collapsed : Visibility.Visible;
+        bulkActions.Visibility = history ? Visibility.Collapsed : Visibility.Visible;
+        UpdateToolbar();
         jobs.Clear();
         lastResponse = "";
         expandedDates.Clear();
+        expandedDates.Add("failed");
         _ = LoadAsync();
     }
 
@@ -101,7 +66,9 @@ public sealed class JobsView : WorkspaceView
         selected.Clear();
         pending.Clear();
         expandedDates.Clear();
+        expandedDates.Add("failed");
         bulkPending = false;
+        UpdateToolbar();
         notice.Text = "";
         lastResponse = "";
         await LoadAsync();
@@ -129,7 +96,7 @@ public sealed class JobsView : WorkspaceView
         {
             body.Children.Clear();
             body.Children.Add(Caption("正在读取任务…"));
-            State.JobHint = "正在读取…";
+            State.JobHint = countLabel.Text = "正在读取…";
         }
         try
         {
@@ -150,7 +117,7 @@ public sealed class JobsView : WorkspaceView
             if (token.IsCancellationRequested || version != requestVersion) return;
             lastResponse = "";
             listFailed = true;
-            State.JobHint = "读取失败";
+            State.JobHint = countLabel.Text = "读取失败";
             body.Children.Clear();
             var stack = new StackPanel();
             stack.Children.Add(new TextBlock { Text = $"任务列表读取失败：{error.Message}", TextWrapping = TextWrapping.Wrap });
@@ -166,149 +133,78 @@ public sealed class JobsView : WorkspaceView
     private void Render()
     {
         body.Children.Clear();
-        archiveAll.IsEnabled = !bulkPending && pending.Count == 0;
-        State.JobHint = jobs.Count == 0 ? "" : $"{jobs.Count} 个任务";
-        if (jobs.Count == 0)
-        {
-            var stack = new StackPanel();
-            stack.Children.Add(new TextBlock
-            {
-                Text = archivedView ? "还没有历史任务" : "当前没有任务",
-                FontFamily = (FontFamily)Application.Current.FindResource("Serif"), FontSize = 18, FontWeight = FontWeights.Bold,
-            });
-            stack.Children.Add(Caption(archivedView
-                ? "归档后的已结束任务会保留在这里，可随时恢复。"
-                : "剧本解析、页面生成、检查和修复都会列在这里。"));
-            body.Children.Add(new Border { Style = (Style)Application.Current.FindResource("Card"), Padding = new Thickness(26), Child = stack });
-            return;
-        }
-
+        UpdateToolbar();
+        State.JobHint = countLabel.Text = jobs.Count == 0 ? "" : $"{jobs.Count} 个任务";
+        if (jobs.Count == 0) { body.Children.Add(EmptyState()); return; }
         var running = jobs.Where(j => j.Active).ToList();
         var failed = jobs.Where(j => j.State == "FAILED").ToList();
         var finished = jobs.Where(j => j.Terminal && j.State != "FAILED").ToList();
-
         if (running.Count > 0)
         {
-            body.Children.Add(SectionLabel($"正在运行 · {running.Count}"));
-            foreach (var job in running) body.Children.Add(Row(job));
+            var stack = new StackPanel();
+            stack.Children.Add(GroupHeading("正在运行", $"{running.Count} 个任务"));
+            foreach (var job in running) stack.Children.Add(Row(job));
+            body.Children.Add(new Border { Child = stack, Margin = new Thickness(0, 0, 0, 16) });
         }
         if (failed.Count > 0)
-        {
-            body.Children.Add(SectionLabel($"失败任务 · {failed.Count} 条 · 展开查看错误与重试"));
-            foreach (var job in failed) body.Children.Add(Row(job));
-        }
+            body.Children.Add(Group("failed", "失败任务", $"{failed.Count} 条 · 展开查看错误与重试", failed, true));
         foreach (var group in finished.GroupBy(j => DateTimeOffset.TryParse(j.CreatedAt, out var date)
-            ? date.ToLocalTime().ToString("yyyy-MM-dd") : "日期未知"))
+            ? date.ToLocalTime().Date : DateTime.MinValue).OrderByDescending(g => g.Key))
         {
-            var rows = new StackPanel();
-            foreach (var job in group) rows.Children.Add(Row(job));
-            var expander = new Expander
-            {
-                Header = $"{group.Key} · {group.Count()} 条{(archivedView ? "已归档" : "已结束")}任务",
-                Content = rows, IsExpanded = expandedDates.Contains(group.Key), Margin = new Thickness(0, 12, 0, 0),
-            };
-            expander.Expanded += (_, _) => expandedDates.Add(group.Key);
-            expander.Collapsed += (_, _) => expandedDates.Remove(group.Key);
-            body.Children.Add(expander);
-        }
-        if (!archivedView && selected.Count > 0)
-        {
-            var bar = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 12, 0, 0) };
-            var bulk = Act($"归档已选（{selected.Count}）", BulkArchive, "Compact");
-            bulk.IsEnabled = !bulkPending && pending.Count == 0;
-            bar.Children.Add(bulk);
-            body.Children.Add(bar);
+            string key = group.Key.ToString("yyyy-MM-dd");
+            body.Children.Add(Group(key, group.Key == DateTime.MinValue ? "日期未知" : group.Key.ToString("yyyy/M/d"),
+                $"{group.Count()} 条{(archivedView ? "已归档" : "已结束")}任务", group));
         }
     }
-
-    private static TextBlock SectionLabel(string text) => new()
-    {
-        Text = text, Style = (Style)Application.Current.FindResource("SectionIndex"),
-        Margin = new Thickness(0, 16, 0, 8),
-    };
 
     private Border Row(JobItem job)
     {
         var row = new Border
         {
-            Style = (Style)Application.Current.FindResource("Card"),
-            Padding = new Thickness(18, 13, 14, 13),
-            Margin = new Thickness(0, 0, 0, 7),
-            Cursor = job.ResultImageUrl.Length > 0 ? Cursors.Hand : null,
-            Tag = job,
+            BorderBrush = AssetPageUi.Brush("Line"), BorderThickness = new Thickness(1),
+            Background = AssetPageUi.Brush("Surface"), Margin = new Thickness(0, 0, 0, 6), Tag = job,
         };
-        var grid = new Grid();
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var stateBrush = AssetPageUi.Brush(job.State is "FAILED" or "CANCELLED" ? "Danger" : job.Active ? "Warning" : "Success");
+        var select = new Grid();
         if (!archivedView && job.Terminal)
         {
-            var box = new CheckBox { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) };
-            box.IsChecked = selected.Contains(job.Id);
-            box.IsEnabled = !bulkPending && !pending.Contains(job.Id);
+            var box = new CheckBox { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center,
+                IsChecked = selected.Contains(job.Id), IsEnabled = !bulkPending && !pending.Contains(job.Id) };
             System.Windows.Automation.AutomationProperties.SetName(box, $"选择{job.Name}");
             box.Click += (_, _) =>
             {
-                if (box.IsChecked == true) selected.Add(job.Id);
-                else selected.Remove(job.Id);
-                Render();
+                if (box.IsChecked == true) selected.Add(job.Id); else selected.Remove(job.Id);
+                UpdateToolbar();
             };
-            grid.Children.Add(box);
+            select.Children.Add(box);
         }
-        var info = new StackPanel();
-        var titleRow = new WrapPanel();
-        titleRow.Children.Add(new TextBlock { Text = job.Name, FontWeight = FontWeights.Bold, FontSize = 14 });
-        var status = new TextBlock
-        {
-            Text = job.StatusLabel, FontWeight = FontWeights.Bold, FontSize = 13,
-            Foreground = job.State == "FAILED" ? (Brush)Application.Current.FindResource("Danger")
-                : job.Terminal ? (Brush)Application.Current.FindResource("Muted")
-                : (Brush)Application.Current.FindResource("Success"),
-            Margin = new Thickness(12, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center,
-        };
-        titleRow.Children.Add(status);
-        info.Children.Add(titleRow);
+        var type = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        type.Children.Add(new TextBlock { Text = job.Name, FontSize = 13, TextWrapping = TextWrapping.Wrap });
+        type.Children.Add(new TextBlock { Text = job.StatusLabel, FontSize = 13, FontWeight = FontWeights.SemiBold,
+            Foreground = stateBrush, Margin = new Thickness(0, 5, 0, 0), TextWrapping = TextWrapping.Wrap });
+        var info = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        info.Children.Add(new TextBlock { Text = job.ModelName.Length > 0 ? job.ModelName : job.NodeName.Length > 0 ? job.NodeName : "系统任务",
+            FontSize = 13, TextWrapping = TextWrapping.Wrap });
         if (job.Active)
         {
-            var progressRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 8, 0, 0) };
-            var bar = new ProgressBar { Value = job.Progress, Width = 190, VerticalAlignment = VerticalAlignment.Center };
+            var bar = new ProgressBar { Value = job.Progress, Height = 5, Margin = new Thickness(0, 10, 0, 6) };
             System.Windows.Automation.AutomationProperties.SetName(bar, $"{job.Name}进度");
-            progressRow.Children.Add(bar);
-            progressRow.Children.Add(new TextBlock
-            {
-                Text = $"{job.Progress}% · 尝试 {job.Attempt}/{job.MaxAttempts}",
-                Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(10, 0, 0, 0),
-                VerticalAlignment = VerticalAlignment.Center,
-            });
-            info.Children.Add(progressRow);
+            info.Children.Add(bar);
+            info.Children.Add(Caption($"{job.Progress}% · 尝试 {job.Attempt}/{job.MaxAttempts}"));
         }
-        var detailParts = new List<string>();
-        if (job.NodeName.Length > 0) detailParts.Add(job.NodeName);
-        else if (job.ModelName.Length > 0) detailParts.Add(job.ModelName);
-        else detailParts.Add("系统任务");
-        if (job.HasDuration) detailParts.Add($"耗时 {job.Duration:0.0} 秒");
-        else detailParts.Add("尚未完成");
-        var cost = job.CostLabel;
-        if (cost.Length > 0) detailParts.Add(cost);
-        var detail = Caption(string.Join(" · ", detailParts));
-        detail.TextWrapping = TextWrapping.Wrap;
-        detail.Margin = new Thickness(0, 7, 0, 0);
-        info.Children.Add(detail);
+        var detail = Caption($"{(job.HasDuration ? $"耗时 {job.Duration:0.0} 秒" : "尚未完成")} · {job.CostLabel}");
+        detail.TextWrapping = TextWrapping.Wrap; detail.Margin = new Thickness(0, 5, 0, 0); info.Children.Add(detail);
         if (job.ErrorLabel.Length > 0)
-        {
-            var reason = new TextBlock
-            {
-                Text = job.ErrorLabel, FontStyle = FontStyles.Italic, FontSize = 12,
-                Foreground = (Brush)Application.Current.FindResource("Danger"),
-                TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0),
-            };
-            info.Children.Add(reason);
-        }
-        grid.Children.Add(info);
-        Grid.SetColumn(info, 1);
+            info.Children.Add(new TextBlock { Text = job.ErrorLabel, FontSize = 12, Foreground = AssetPageUi.Brush("Danger"),
+                TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0) });
 
-        var actions = new WrapPanel { MaxWidth = 210, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0) };
-        actions.Children.Add(Act("调用与成本", (_, _) => new JobDetailsWindow(Host, Api, ProjectId, job).ShowDialog(), "Compact"));
+        var actions = new WrapPanel { VerticalAlignment = VerticalAlignment.Center };
+        var ledger = Act("调用与成本", (_, _) => new JobDetailsWindow(Host, Api, ProjectId, job).ShowDialog(), "Compact");
+        ledger.HorizontalAlignment = HorizontalAlignment.Left;
+        ledger.Margin = new Thickness(0, 6, 0, 0);
+        ledger.IsEnabled = !bulkPending && !pending.Contains(job.Id);
+        StyleAction(ledger);
+        info.Children.Add(ledger);
         if (job.ResultImageUrl.Length > 0)
             actions.Children.Add(Act("查看结果", (_, _) => OpenImage(job.ResultImageUrl, job.Name), "Compact"));
         if (!archivedView && job.CanCancel)
@@ -351,13 +247,15 @@ public sealed class JobsView : WorkspaceView
                 actions.Children.Add(purge);
             }
         }
-        grid.Children.Add(actions);
         foreach (var button in actions.Children.OfType<Button>())
+        {
             button.IsEnabled = !bulkPending && !pending.Contains(job.Id);
-        Grid.SetColumn(actions, 2);
-        row.Child = grid;
-        if (job.ResultImageUrl.Length > 0)
-            row.MouseLeftButtonDown += (_, e) => { if (e.OriginalSource is Border or TextBlock) OpenImage(job.ResultImageUrl, job.Name); };
+            button.Margin = new Thickness(0, 3, 6, 3); button.MinHeight = 38;
+            StyleAction(button);
+        }
+        // A dedicated result action avoids opening an image when another control is clicked.
+        row.Child = new Border { BorderBrush = stateBrush, BorderThickness = new Thickness(3, 0, 0, 0),
+            Padding = new Thickness(8, 14, 8, 14), Child = new JobRowPanel(select, type, info, actions) };
         return row;
     }
 
@@ -456,7 +354,7 @@ public sealed class JobsView : WorkspaceView
 
     private void UpdateActionAvailability()
     {
-        archiveAll.IsEnabled = !bulkPending && pending.Count == 0;
+        UpdateToolbar();
         if (!listFailed) Render();
     }
 

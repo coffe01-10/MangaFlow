@@ -171,10 +171,10 @@ internal static class NativeJobsChecks
         rows.Add(rows[0] with { Id = "job-finished", State = "COMPLETED", StatusLabel = "已完成", Detail = "", ErrorCode = "", CanCancel = false, CanRetry = false,
             Cost = new CostEstimate("0.125", "USD", "AVAILABLE", "估算值不等于供应商账单") });
         typeof(JobsView).GetMethod("Render", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)!.Invoke(view, null);
-        var group = Descendants(view).OfType<Expander>().Single();
+        var group = Descendants(view).OfType<Expander>().Single(e => !Equals(e.Tag, "failed"));
         group.IsExpanded = true;
         typeof(JobsView).GetMethod("Render", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)!.Invoke(view, null);
-        Require(Descendants(view).OfType<Expander>().Single().IsExpanded, "poll lost expanded date group");
+        Require(Descendants(view).OfType<Expander>().Single(e => !Equals(e.Tag, "failed")).IsExpanded, "poll lost expanded date group");
         foreach (var width in new[] { 940, 1320 })
         {
             view.Width = width; view.Height = 760;
