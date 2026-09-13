@@ -839,3 +839,11 @@
   （显式 LOCAL/REDIS 用户选择不动）。app 侧测试：可达 Redis 假体下零入队、本地采纳。
 - **串行证据**：local-worker 套件 37 passed；真 runner **156 passed in 78.32s**（exit=0）。
 - ruff 四文件全绿。
+
+- **§35 补遗十（第 30 轮 CRITICAL → PR #724，待 lead）**：#723 的修复在 shipped 运行时
+  **无效**——pydantic-settings 无 env 前缀：字段 `desktop_embedded` 读 `DESKTOP_EMBEDDED`，
+  helper 写 `MANGAFLOW_DESKTOP_EMBEDDED`（评审实测两向：置 MANGAFLOW_… → False；置
+  DESKTOP_… → True）。单测全绿因 monkeypatch 绕过 env 层；真流程全绿因 fixture 的 LOCAL
+  钉——两层互相遮蔽。修复：字段改名 `mangaflow_desktop_embedded`（仓库名称惯例对齐
+  MANGAFLOW_CREDENTIAL_MASTER_KEY）+ **无 monkeypatch** 的 env 映射双向回归钉。
+  （#723 已并在先——本 PR 为其缺失的实现。）
