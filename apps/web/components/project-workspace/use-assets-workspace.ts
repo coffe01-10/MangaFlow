@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ChangeEvent, DragEvent } from "react";
 
 import { activePollInterval } from "@/lib/task-status";
@@ -107,12 +107,32 @@ export function useAssetsWorkspace({
     enabled: section === "assets" && assetView === "outfits" && showGeneratedReferencePicker && Boolean(bindCharacterId),
   });
   const boundCharacter = characters.data?.find((item) => item.id === bindCharacterId) ?? null;
-  // Deep links (?character=) preselect the character before the user clicks
-  // the chip; seed the edit form once so the panel is immediately usable.
-  const formSeededRef = useRef(false);
+  // #647：改绑守卫。人物设定视图外的改绑路径（服装视图“所属角色”select、
+  // beginOutfitEdit、?character= 深链）不得静默丢弃未保存的角色规范/服装
+  // 表单——脏时与 assets-section 的 switchBoundCharacter 走同一确认文案，
+  // 拒绝则由调用方保持原绑定。
+  const characterEditorDirty = Boolean(boundCharacter && (
+    editCharacterName !== boundCharacter.primary_name
+    || editCharacterAliases !== boundCharacter.aliases.join("，")
+    || editLockedFeatures !== boundCharacter.locked_features.join("，")
+    || editForbiddenChanges !== boundCharacter.forbidden_changes.join("，")
+  ));
+  const outfitFormDirty = Boolean(editingOutfitId)
+    || outfitName.trim() !== ""
+    || outfitLockedFields.trim() !== ""
+    || selectedOutfitAssets.length > 0;
+  const confirmBindCharacterChange = useCallback(() => {
+    if (!characterEditorDirty && !outfitFormDirty) return true;
+    return window.confirm("当前角色的表单尚未保存（服装表单 / 角色规范），切换角色会丢弃这些内容。仍要切换吗？");
+  }, [characterEditorDirty, outfitFormDirty]);
+  // #647：播种按 boundCharacter.id 键控而非一次性布尔。改绑（select/
+  // beginOutfitEdit/深链/芯片）后编辑框必须重播种为新角色的数据，否则旧角色
+  // 的姓名/固定特征会随 updateCharacter(boundCharacter.id) 写进新角色。未保存
+  // 编辑的丢弃已由各改绑路径的 confirmBindCharacterChange 先行确认。
+  const seededCharacterIdRef = useRef<string | null>(null);
   useEffect(() => {
-    if (formSeededRef.current || !boundCharacter) return;
-    formSeededRef.current = true;
+    if (!boundCharacter || seededCharacterIdRef.current === boundCharacter.id) return;
+    seededCharacterIdRef.current = boundCharacter.id;
     setEditCharacterName(boundCharacter.primary_name);
     setEditCharacterAliases(boundCharacter.aliases.join("，"));
     setEditLockedFeatures(boundCharacter.locked_features.join("，"));
@@ -126,11 +146,13 @@ export function useAssetsWorkspace({
     const target = initialCharacterId ?? null;
     if (characterDeepLinkRef.current === target) return;
     characterDeepLinkRef.current = target;
+    // #647：深链改绑与 select/beginOutfitEdit 同一守卫——脏时确认，拒绝则
+    // 保持当前绑定（ref 已前进，避免每次渲染重复弹窗；再次导航仍会确认）。
+    if ((target ?? "") !== bindCharacterId && !confirmBindCharacterChange()) return;
     setBindCharacterId(target ?? "");
     setEditingOutfitId(null);
     setSelectedOutfitAssets([]);
-    formSeededRef.current = false;
-  }, [initialCharacterId]);
+  }, [initialCharacterId, bindCharacterId, confirmBindCharacterChange]);
   const editingOutfit = outfits.data?.find((item) => item.id === editingOutfitId) ?? null;
   // 生产准备“去处理”深链带 ?outfit=：直接把目标服装档案切进编辑态，用户
   // 不必在列表里再找一次（与 ?character= 预选角色同一模式）。按参数值
@@ -478,6 +500,9 @@ export function useAssetsWorkspace({
   }
 
   function beginOutfitEdit(outfit: Outfit) {
+    // #647：进入服装编辑会把绑定切到该服装的归属角色——跨角色时先走改绑
+    // 守卫，拒绝则整个不进入编辑（避免“绑定 A、编辑 C 的服装”的混合状态）。
+    if (outfit.character_id !== bindCharacterId && !confirmBindCharacterChange()) return;
     setEditingOutfitId(outfit.id);
     setBindCharacterId(outfit.character_id);
     setOutfitName(outfit.name);
@@ -558,6 +583,9 @@ export function useAssetsWorkspace({
     generatedReferenceLibrary,
     generatedReferenceCandidates,
     boundCharacter,
+    characterEditorDirty,
+    outfitFormDirty,
+    confirmBindCharacterChange,
     editingOutfit,
     selectedOutfitFiles,
     selectedStyleFiles,

@@ -90,7 +90,13 @@ function renderAssets(
     characters: {
       data: [
         characterFixture(),
-        characterFixture({ id: "character-b", primary_name: "角色B" }),
+        characterFixture({
+          id: "character-b",
+          primary_name: "角色B",
+          aliases: ["小B"],
+          locked_features: ["银发"],
+          forbidden_changes: ["左眼泪痣"],
+        }),
       ],
     } as never,
     outfits: {
@@ -161,8 +167,11 @@ describe("useAssetsWorkspace 缓存失效与晚到保存防护", () => {
         expect(result.current.updateCharacter.isSuccess).toBe(true);
       });
     });
-    // 身份防护只拦表单回填…
-    expect(result.current.editCharacterName).toBe("角色A");
+    // 身份防护只拦表单回填：#647 后改绑即重播种，表单此刻已是角色B的数据
+    // （既不是旧的「角色A」、更不是晚到的「角色A改」——晚到保存不得覆盖）。
+    await waitFor(() => {
+      expect(result.current.editCharacterName).toBe("角色B");
+    });
     // …缓存版本号必须失效，否则下一次保存带旧 version 撞出假 409。
     expect(client.getQueryState(["characters", "project-1"])?.isInvalidated).toBe(true);
   });
@@ -329,5 +338,165 @@ describe("useAssetsWorkspace 风格色彩模式的水合安全", () => {
     });
     expect(result.current.styleColorMode).toBe("color");
     expect(window.localStorage.getItem("mangaflow.style-mode.project-1")).toBe("color");
+  });
+});
+
+describe("useAssetsWorkspace 改绑重播种与脏确认（#647）", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    stylesApi.mockReset().mockResolvedValue([] satisfies StyleProfile[]);
+    libraryApi.mockReset();
+    updateCharacterApi.mockReset().mockResolvedValue(
+      characterFixture({ id: "character-b", primary_name: "角色B", version: 2 }),
+    );
+    updateOutfitApi.mockReset();
+    deleteOutfitApi.mockReset().mockResolvedValue({ ok: true } as never);
+  });
+
+  // 支持以不同 initialCharacterId 重渲染（深链前进/后退路径），其余 props 与
+  // renderAssets 保持同构。
+  function renderAssetsHook(initialProps: { initialCharacterId?: string | null }) {
+    const client = createClient();
+    const hook = renderHook(
+      (props: { initialCharacterId?: string | null }) => useAssetsWorkspace({
+        id: "project-1",
+        section: "assets",
+        assetView: "references",
+        router: { push: vi.fn() } as never,
+        projectPath: (target) => `/projects/project-1/${target}`,
+        activeChapterId: "chapter-1",
+        assets: { data: [] } as never,
+        characters: {
+          data: [
+            characterFixture(),
+            characterFixture({
+              id: "character-b",
+              primary_name: "角色B",
+              aliases: ["小B"],
+              locked_features: ["银发"],
+              forbidden_changes: ["左眼泪痣"],
+            }),
+          ],
+        } as never,
+        outfits: {
+          data: [
+            outfitFixture(),
+            outfitFixture({ id: "outfit-b", name: "便服", character_id: "character-b" }),
+          ],
+        } as never,
+        requireDrawModel: () => "image.nano_banana_2",
+        initialCharacterId: props.initialCharacterId,
+      }),
+      {
+        wrapper: ({ children }: { children: ReactNode }) => (
+          <QueryClientProvider client={client}>{children}</QueryClientProvider>
+        ),
+        initialProps,
+      },
+    );
+    return hook;
+  }
+
+  it("改绑后编辑表单按新角色重播种，保存写入的是新角色（#647）", async () => {
+    const { result } = renderAssetsHook({ initialCharacterId: "character-a" });
+    await waitFor(() => {
+      expect(result.current.editCharacterName).toBe("角色A");
+    });
+    // 服装视图「所属角色」select 确认后的落地路径：直接换绑。
+    act(() => {
+      result.current.setBindCharacterId("character-b");
+    });
+    await waitFor(() => {
+      expect(result.current.boundCharacter?.id).toBe("character-b");
+      expect(result.current.editCharacterName).toBe("角色B");
+      expect(result.current.editCharacterAliases).toBe("小B");
+      expect(result.current.editLockedFeatures).toBe("银发");
+      expect(result.current.editForbiddenChanges).toBe("左眼泪痣");
+    });
+    // 保存不得再把旧角色的规范字段写进新角色：目标是 character-b、内容是 B 的。
+    await act(async () => {
+      result.current.updateCharacter.mutate();
+      await waitFor(() => {
+        expect(result.current.updateCharacter.isSuccess).toBe(true);
+      });
+    });
+    expect(updateCharacterApi).toHaveBeenCalledWith(
+      "character-b",
+      1,
+      "角色B",
+      ["小B"],
+      ["银发"],
+      ["左眼泪痣"],
+    );
+  });
+
+  it("脏状态下 beginOutfitEdit 跨角色改绑先确认，拒绝保持原绑定且不进入编辑（#647）", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const { result } = renderAssetsHook({ initialCharacterId: "character-a" });
+    await waitFor(() => {
+      expect(result.current.editCharacterName).toBe("角色A");
+    });
+    act(() => {
+      result.current.setEditCharacterName("角色A（未保存）");
+    });
+    act(() => {
+      result.current.beginOutfitEdit(outfitFixture({ id: "outfit-b", name: "便服", character_id: "character-b" }));
+    });
+    // 与 switchBoundCharacter 同一确认文案；拒绝不改绑、不清表单、不进编辑态。
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("未保存"));
+    expect(result.current.bindCharacterId).toBe("character-a");
+    expect(result.current.editCharacterName).toBe("角色A（未保存）");
+    expect(result.current.editingOutfitId).toBeNull();
+    expect(result.current.outfitName).toBe("");
+    // 确认后放行：服装编辑态落地、绑定切到归属角色、编辑表单重播种为 B。
+    confirmSpy.mockReturnValue(true);
+    act(() => {
+      result.current.beginOutfitEdit(outfitFixture({ id: "outfit-b", name: "便服", character_id: "character-b" }));
+    });
+    expect(result.current.editingOutfitId).toBe("outfit-b");
+    expect(result.current.outfitName).toBe("便服");
+    await waitFor(() => {
+      expect(result.current.bindCharacterId).toBe("character-b");
+      expect(result.current.editCharacterName).toBe("角色B");
+    });
+    confirmSpy.mockRestore();
+  });
+
+  it("beginOutfitEdit 编辑当前绑定角色的服装不触发改绑确认", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const { result } = renderAssetsHook({ initialCharacterId: "character-a" });
+    await waitFor(() => {
+      expect(result.current.editCharacterName).toBe("角色A");
+    });
+    act(() => {
+      result.current.beginOutfitEdit(outfitFixture());
+    });
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(result.current.editingOutfitId).toBe("outfit-a");
+    expect(result.current.outfitName).toBe("校服");
+    confirmSpy.mockRestore();
+  });
+
+  it("深链改绑在脏状态下先确认，拒绝保持原绑定（#647）", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const { result, rerender } = renderAssetsHook({ initialCharacterId: "character-a" });
+    await waitFor(() => {
+      expect(result.current.editCharacterName).toBe("角色A");
+    });
+    act(() => {
+      result.current.setEditCharacterName("角色A（未保存）");
+    });
+    rerender({ initialCharacterId: "character-b" });
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("未保存"));
+    expect(result.current.bindCharacterId).toBe("character-a");
+    expect(result.current.editCharacterName).toBe("角色A（未保存）");
+    // 拒绝后再导航（目标变化）且确认接受：正常改绑并按新角色重播种。
+    confirmSpy.mockReturnValue(true);
+    rerender({ initialCharacterId: null });
+    await waitFor(() => {
+      expect(result.current.bindCharacterId).toBe("");
+    });
+    expect(result.current.editCharacterName).toBe("角色A（未保存）");
+    confirmSpy.mockRestore();
   });
 });
