@@ -142,6 +142,7 @@ export function AssetsSection({
     selectStyleMode,
     resetOutfitForm,
     beginOutfitEdit,
+    confirmBindCharacterChange,
     chooseFile,
     dropReferenceFile,
     confirmDeleteOutfit,
@@ -258,7 +259,19 @@ export function AssetsSection({
           </div>
           <div className="profile-compose">
             <div className="workbench-fields">
-              <label><span>所属角色</span><select aria-label="服装所属角色" className="text-input" value={editingOutfit?.character_id ?? bindCharacterId} disabled={Boolean(editingOutfit)} onChange={(event) => setBindCharacterId(event.target.value)}><option value="">选择角色后再绑定服装</option>{characters.data?.map((character) => <option key={character.id} value={character.id}>{character.primary_name}{character.aliases.length ? `（${character.aliases.join(" / ")}）` : ""}</option>)}</select></label>
+              <label><span>所属角色</span><select aria-label="服装所属角色" className="text-input" value={editingOutfit?.character_id ?? bindCharacterId} disabled={Boolean(editingOutfit)} onChange={(event) => {
+                const next = event.target.value;
+                if (next === bindCharacterId) return;
+                // #647：改绑不得静默丢弃未保存的角色规范/服装表单——与人物
+                // 设定视图的 switchBoundCharacter 同一确认；拒绝则保持原绑定
+                // 并回退 select 显示（受控组件无状态变化时不会自动回滚）。
+                if (!confirmBindCharacterChange()) {
+                  event.target.value = bindCharacterId;
+                  return;
+                }
+                setBindCharacterId(next);
+                setSelectedCharacterOutfitId("");
+              }}><option value="">选择角色后再绑定服装</option>{characters.data?.map((character) => <option key={character.id} value={character.id}>{character.primary_name}{character.aliases.length ? `（${character.aliases.join(" / ")}）` : ""}</option>)}</select></label>
               <label><span>服装档案名称</span><input aria-label="服装档案名称" className="text-input" value={outfitName} onChange={(event) => setOutfitName(event.target.value)} placeholder="例如：校服 / 冬季便装" /></label>
               <label><span>一致性锁定项</span><input aria-label="服装锁定项" className="text-input" value={outfitLockedFields} onChange={(event) => setOutfitLockedFields(event.target.value)} placeholder="颜色、鞋型、领结、配饰…" /></label>
             </div>

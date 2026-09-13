@@ -8,7 +8,7 @@
  */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { useEffect } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -24,6 +24,7 @@ import {
   type Script,
 } from "@/lib/api";
 
+import { AssetsSection } from "./assets-section";
 import { useAssetsWorkspace } from "./use-assets-workspace";
 import { useGenerationWorkspace, type GenerationWorkspace } from "./use-generation-workspace";
 import { chapterParseJob, scriptPollInterval, useWorkspaceQueries } from "./use-workspace-queries";
@@ -211,7 +212,7 @@ function workbenchFixture(): GenerationWorkbench {
   };
 }
 
-function characterFixture(): Character {
+function characterFixture(overrides: Partial<Character> = {}): Character {
   return {
     id: "character-1",
     project_id: "project-1",
@@ -224,6 +225,7 @@ function characterFixture(): Character {
     status: "ACTIVE",
     version: 1,
     references: [],
+    ...overrides,
   };
 }
 
@@ -571,5 +573,95 @@ describe("剧本轮询词汇表（SOURCE_PARSE 驱动）", () => {
     expect(scriptPollInterval([], "chapter-1")).toBe(false);
     // READY 状态本身不再驱动轮询（后端从不输出 PROCESSING）。
     expect(scriptPollInterval(undefined, "chapter-1")).toBe(false);
+  });
+});
+
+// #647：服装视图「所属角色」select 是绕过 switchBoundCharacter 的改绑路径，
+// 用真实 AssetsSection + 真实 hook 验证接线（确认守卫 + 改绑重播种）。
+function AssetsOutfitsProbe({ collect }: { collect: (value: ReturnType<typeof useAssetsWorkspace>) => void }) {
+  const queries = useWorkspaceQueries({
+    id: "project-1",
+    section: "assets",
+    assetView: "outfits",
+    selectedChapterId: "chapter-1",
+  });
+  const workspace = useAssetsWorkspace({
+    id: "project-1",
+    section: "assets",
+    assetView: "outfits",
+    router: { push: () => undefined, replace: () => undefined } as never,
+    projectPath: (target) => `/projects/project-1/${target}`,
+    activeChapterId: "chapter-1",
+    assets: queries.assets,
+    characters: queries.characters,
+    outfits: queries.outfits,
+    requireDrawModel: () => "image.nano_banana_2",
+    initialCharacterId: "character-1",
+  });
+  useEffect(() => collect(workspace));
+  return (
+    <AssetsSection
+      id="project-1"
+      assetView="outfits"
+      draft={{ default_style_id: null }}
+      assets={queries.assets}
+      characters={queries.characters}
+      outfits={queries.outfits}
+      modelOptions={[]}
+      activeDrawModel={null}
+      setDrawModel={() => undefined}
+      openPreview={() => undefined}
+      rememberWorkspaceScroll={() => undefined}
+      workspace={workspace}
+    />
+  );
+}
+
+describe("服装视图所属角色 select 的改绑守卫与重播种（#647）", () => {
+  it("脏状态下 select 改绑先确认，拒绝保持原绑定并回退显示；确认后改绑并重播种", async () => {
+    charactersApi.mockResolvedValue([
+      characterFixture(),
+      characterFixture({
+        id: "character-2",
+        primary_name: "苏晚",
+        aliases: ["小晚"],
+        locked_features: ["银发"],
+        forbidden_changes: ["左眼泪痣"],
+      }),
+    ]);
+    let latest: ReturnType<typeof useAssetsWorkspace> | null = null;
+    const collect = (value: unknown) => {
+      latest = value as ReturnType<typeof useAssetsWorkspace>;
+    };
+    render(
+      <QueryClientProvider client={createClient()}>
+        <AssetsOutfitsProbe collect={collect} />
+      </QueryClientProvider>,
+    );
+    const workspace = () => latest!;
+    // 深链预选 character-1：编辑表单已按其播种。
+    await vi.waitFor(() => {
+      expect(workspace().editCharacterName).toBe("林澈");
+    });
+    // 在服装视图输入档案名 → 服装表单脏。
+    fireEvent.change(screen.getByLabelText("服装档案名称"), { target: { value: "冬季大衣" } });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const select = screen.getByLabelText("服装所属角色") as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "character-2" } });
+    // 与 switchBoundCharacter 同一确认文案；拒绝不改绑、select 显示回退。
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("未保存"));
+    expect(workspace().bindCharacterId).toBe("character-1");
+    expect(select.value).toBe("character-1");
+    // 确认后改绑：编辑表单按新角色重播种（不再持旧角色数据等保存串写）。
+    confirmSpy.mockReturnValue(true);
+    fireEvent.change(select, { target: { value: "character-2" } });
+    await vi.waitFor(() => {
+      expect(workspace().bindCharacterId).toBe("character-2");
+      expect(workspace().editCharacterName).toBe("苏晚");
+      expect(workspace().editLockedFeatures).toBe("银发");
+    });
+    // 服装草稿与 switchBoundCharacter 的非编辑态语义一致：保留不重置。
+    expect(workspace().outfitName).toBe("冬季大衣");
+    confirmSpy.mockRestore();
   });
 });

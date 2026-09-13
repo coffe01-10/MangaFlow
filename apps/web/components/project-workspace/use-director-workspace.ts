@@ -146,6 +146,11 @@ export function useDirectorWorkspace({
     onError: (error: Error) => {
       pendingProposePlanRef.current = null;
       if (!journalMutationPageStillActive()) return;
+      // #648：propose 失败后预览卡不得拿新指令的解析文案盖在旧 group 的
+      // diff 上（意图/作用域/摘要/风险取 previewPlan，执行按钮执行的却是
+      // 旧命令）。回滚 plan 为 null，卡片回退到 operation 标签 + 命令原文
+      // 渲染——与 accept/reject 路径清空 previewPlan 的既有语义一致。
+      setPreviewState((current) => ({ ...current, plan: null }));
       setNotice(error.message);
     },
   });
