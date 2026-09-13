@@ -125,6 +125,11 @@ def _write_journal(journal: Path, record: dict) -> None:
     # that here, loudly.
     if journal.exists() and not journal.is_file():
         raise RuntimeError("process journal must be a regular file")
+    # The pending name gets the same refusal: write_text would block
+    # forever on a planted FIFO (open for writing with no reader never
+    # returns) — the #685 parity extends to both staged names.
+    if pending.exists() and not pending.is_file():
+        raise RuntimeError("journal pending sibling must be a regular file")
     pending.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
     current_state: str | None = None
     try:
