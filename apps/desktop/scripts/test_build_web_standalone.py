@@ -234,3 +234,36 @@ def test_static_prerender_assert_fails_closed_on_baked_routes(tmp_path):
     legacy = tmp_path / "legacy"
     legacy.mkdir()
     bw.assert_no_static_prerender(legacy)  # missing manifest: tolerated
+
+
+def test_static_prerender_assert_covers_dynamic_routes_too(tmp_path):
+    """#678: prerender-manifest.json carries TWO page collections — routes
+    (app-router bakes) and dynamicRoutes (legacy pages-router fallback
+    shape). A baked dynamicRoutes entry is equally nonce-less and must trip
+    the same refusal; an exempted /_global-error in dynamicRoutes is as
+    tolerated as its routes twin."""
+
+    def manifest_at(standalone: Path, body: dict) -> Path:
+        (standalone / ".next").mkdir(parents=True, exist_ok=True)
+        manifest = standalone / ".next" / "prerender-manifest.json"
+        manifest.write_text(json.dumps(body), encoding="utf-8")
+        return manifest
+
+    dynamic_baked = tmp_path / "dynamic"
+    manifest_at(
+        dynamic_baked,
+        {
+            "routes": {"/_global-error": {"b": 2}},
+            "dynamicRoutes": {"/legacy/:path": {"fallback": False}},
+        },
+    )
+    with pytest.raises(SystemExit, match="MANGAFLOW_STATIC_EXPORT"):
+        bw.assert_no_static_prerender(dynamic_baked)
+
+    dynamic_clean = tmp_path / "dynamic-clean"
+    manifest_at(dynamic_clean, {"routes": {}, "dynamicRoutes": {}})
+    bw.assert_no_static_prerender(dynamic_clean)  # empty both halves must not raise
+    # The /_global-error exemption is the EXACT routes key only: a dynamic
+    # route whose pattern merely contains it is a real baked page and is
+    # refused (safe direction — refusing costs a rebuild, accepting ships a
+    # blank page).

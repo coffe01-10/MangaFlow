@@ -195,7 +195,14 @@ def assert_no_static_prerender(standalone: Path) -> None:
     manifest = standalone / ".next" / "prerender-manifest.json"
     if not manifest.is_file():
         return
-    routes = json.loads(manifest.read_text(encoding="utf-8")).get("routes", {})
+    manifest_json = json.loads(manifest.read_text(encoding="utf-8"))
+    # Both page collections: routes covers the app-router bakes this guard
+    # targets, dynamicRoutes is the legacy pages-router fallback shape —
+    # a baked entry in either is nonce-less and blanks the plan-B app (#678).
+    routes = {
+        **manifest_json.get("routes", {}),
+        **manifest_json.get("dynamicRoutes", {}),
+    }
     routes.pop("/_global-error", None)
     if routes:
         raise SystemExit(
