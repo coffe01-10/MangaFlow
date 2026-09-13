@@ -424,3 +424,17 @@
 - **计数定谳**：36b32ce 与 ebe982d 双双稳定 **155**——我早前在 360abb9 的单次 156 系聚合口径伪差，已在 #616 评中撤销该存疑记录。
 
 **流程**：#620（台账 §19）按 lead 指示 rebase 到 ebe982d，output 冲突保留 §18+§19 双节，force-with-lease 推送，MERGEABLE CLEAN。
+
+---
+
+## 21. 夜班开跑（2026-09-13 23:00 后，基线 5d8730e；间隙 72 提交含日班大批量）
+
+**间隙增量审计（desktop 侧生产变更全读）：**
+- **#602 修复落地（shell+helper 双侧）**：per-writer 暂存名（`owner.json.shell.pending` / `.helper.pending`）+ helper 终态 CAS（`TERMINAL_JOURNAL_STATES`，类型守卫、fail-open、终→终放行保留取证、非终 over 终跳过+pending 清理）+ shell `mark_stopped` post-write 单次有界重读 + `merge_stop_onto_current` 纯决策缝（字段保留、非对象拒绝、exit_code=None 不注入）。残余窗口双文件诚实标注"互补 best-effort 非 CAS"。→ **D 轮：#602 已评 FIXED 带证据（RUN journal 套 16/16 + shell-core 162/162）**。
+- **#588 修复落地**：`killHelperTree` 单一收口（fail/超时/1MiB 界/main().catch 全路由），win32 `taskkill /PID /T /F`（plain spawn 无 Job，/T 为最小正确树杀；/F 折叠信号区别已文档化），POSIX 保组杀；ESRCH/128 静默、其余失败一行诊断；**额外的 reaped-child 短路**（exitCode 非空先返）关闭陈旧 pid 树杀危害——issue 建议面之外的正向加固。→ **D 轮：#588 已评 FIXED 带证据**。
+- **helper `_node_child_env` 大小写不敏感清洗**：Windows 小写变体环境名（PowerShell/cmd 惯设）经 `.upper()` 归一剔除——node 大小写不敏感读取，精确名 pop 漏防。
+- **build-web-standalone 静态预渲染守卫**：`MANGAFLOW_STATIC_EXPORT` 构建路径大小写不敏感清洗 + `assert_no_static_prerender`（prerender 路由存在即 SystemExit——nonce'd CSP 会烘焙出无 nonce 页面 = 静默白屏）。#300 架构的对称构建侧守卫；顺带将 npm build env 从 os.environ 透传改为清洗字典（响应我 #578 评审 nit 的同类）。
+- **tauri.conf.json**：security.headers 增 X-Content-Type-Options（增量加固；CSP 债务原样保留，delivery_contract +123 延伸钉）。
+- **新套件**：`test_sidecar_journal.py`（8 测）、`test_verify_static_origin.py`（6 测）——形状优良（全部文件级确定性、fail-open 分支覆盖、unlink 失败清理）。**但两者未接入 runner 收集**——pytest.ini `norecursedirs` 排除 apps/desktop + runner 清单未列 = **14 测试从未在任何标准流程运行**（#343 类第二例）。→ **B：#675 已立 + C：PR #676 已修**（runner 收集 130→146，RUN collect + 独立 16/16）。
+
+**认证**：shell-core **162/162**（间隙后）；journal+verify 新套 **16/16**。
