@@ -486,3 +486,11 @@ doc-code 不一致 sweep（子代理，双源核验）收割 6 项 → 3 PR：
   ——此前 CONFLICTING 的分支已由其作者 rebase 后合入）与 #728（ledger-33
   diagnostics-leg pin，RUN 40/40）均已入 master。cargo 168 全绿复核。
 - 夜间循环：drift-watch 继续；CONFLICTING 队列已清空。
+- 合入确认（04:0x UTC，master adb646a 谱系）：#729（busy-4173 teardown
+  kill-list 钉）与 #730（ledger 33b）已入 master。账本分支同步。
+- plan-b e2e 环境复建：build-info.json 的 source_commit 漂移（apps/web
+  tree 更新后）导致 stale-bundle 拒绝——实跑 build-web-standalone.py
+  重建后 18 pass 全绿（环境问题，非代码回归；dist 产物未提交）。
+- 增量收割排查：guard 的反斜杠归一化已由 #700 钉测覆盖；relay 表驱动
+  三腿与 WebServer close trio 已由 #710/#609 谱系覆盖——本段无新开
+  PR 的真实缺口（新缺口随波次出现时即席跟进）。
