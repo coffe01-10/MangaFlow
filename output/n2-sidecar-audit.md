@@ -784,3 +784,17 @@
   `assert_eq!(RUNTIME_SWEEP_GRACE_SECONDS, 24*60*60)` + docstring 过度声明更正 + NTP
   方向性勘误（backward step 反向缩小 aged 的 age；窗口毫秒级，理论性）。→ **PR #707**。
   （#705 本体已在评审期间被并，9e48ba8。）
+
+## 37. 夜班续三（master 50211a2→b208ed8——#709/#710 已并，追溯评审）
+
+- **PR #709（FIFO 套件 mkfifo 门）+ #710（预算统一 15s）双双已并**（追溯 round-26 APPROVE）。
+  #709 评审实证：gate 模拟 Windows（删 os.mkfifo）→ 12 skipped 零错误；hasattr 判据优于
+  sys.platform。#710：11 处 4s→15s 零残余、运行时无成本（失败路径天花板）。
+- **#710 MEDIUM 跟进 → PR #712（待 lead）**：管道语义**表格测试**残留 4s 臂（自身
+  slow-first-byte 延迟 5.6s——文件内最紧预算，正是负载敏感类）→ 15s；docstring
+  "all budgets 15s" 过度声明（cap-release 重试循环的 2s 探针是预期超时的同步点）→
+  措辞精确化豁免。23 passed；ruff clean。
+- **#709 LOW 记录**：gate 范围宽于必需（套件级跳过牺牲 10 个平台无关测试的 Windows
+  覆盖）——夜班取舍，记录不阻塞；ruff F841（unused helper）为 master 既有。
+- **流程披露**：夜分支两次误吞本应独立开 PR 的提交（§35 补遗、mkfifo 门）——均已分支
+  手术修复；教训：checkout -b 与编辑必须同一命令块确认。
