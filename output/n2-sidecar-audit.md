@@ -830,3 +830,12 @@
   与 #566/#571、#608 同型）。cherry-pick 原样，双测试共存绿。
 - **诊断探针已全部回滚**（apps/api/job_service.py 的 submit/execute-start 写文件探针为
   临时本地调试，未提交、已还原）。
+
+- **§35 补遗九（产品侧闭环）→ PR #723（待 lead，apps/api+helper 双侧）**：#721 只修了
+  e2e 封闭性；产品安装形态的 AUTO 队列模式仍会把 job 交给"恰好可达"的环境 redis
+  （外部 worker 以不匹配代码执行我方付费 job = 正确性危险）。三件套：
+  `Settings.desktop_embedded`（config，默认 False）+ helper 注入
+  `MANGAFLOW_DESKTOP_EMBEDDED=1` + `enqueue_job` 对 AUTO+embedded 直走本地执行
+  （显式 LOCAL/REDIS 用户选择不动）。app 侧测试：可达 Redis 假体下零入队、本地采纳。
+- **串行证据**：local-worker 套件 37 passed；真 runner **156 passed in 78.32s**（exit=0）。
+- ruff 四文件全绿。
