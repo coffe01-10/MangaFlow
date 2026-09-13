@@ -1436,7 +1436,6 @@ def test_await_web_server_boot_retries_through_a_not_ready_window(monkeypatch):
     the probe counter proves the loop actually retried."""
 
     import importlib.util
-    import socket
     import threading
     import time as time_module
 
@@ -1488,3 +1487,66 @@ def test_await_web_server_boot_retries_through_a_not_ready_window(monkeypatch):
     assert elapsed < helper_module.WEB_BOOT_TIMEOUT_SECONDS + 1.0, (
         f"the wait must end at first acceptance: {elapsed:.2f}s"
     )
+
+def test_plan_b_pages_carry_the_nonce_csp(tmp_path: Path):
+    """#300 runtime leg: a served plan-B page must carry the proxy's nonce'd
+    CSP (nonce-based script-src, no unsafe-inline/unsafe-eval in the
+    production form), and the rendered HTML's bootstrap script nonces must
+    be COVERED by that header — the browser executes only matching scripts,
+    so a header/HTML nonce mismatch is a blank page with every source-level
+    pin (vitest, delivery_contract) still green: those pins see the source,
+    the nonce exists only in a real rendered response."""
+    if shutil.which("node") is None and not (
+        (HELPER.parent / "node" / ("node.exe" if os.name == "nt" else "node"))
+    ).exists():
+        pytest.skip("no node runtime available for the standalone server")
+    shell = DesktopShell(tmp_path / "user-data", web_dist=_web_dist_dir())
+    (shell.user_data / "data").mkdir(parents=True, exist_ok=True)
+    body_error: BaseException | None = None
+    try:
+        shell.handshake()
+        shell.wait_health()
+        web = shell.web_origin
+        response_body = ""
+        csp_header = ""
+        for _ in range(100):
+            try:
+                with urllib.request.urlopen(f"{web}/", timeout=2) as response:
+                    if response.status == 200:
+                        response_body = response.read().decode("utf-8", "replace")
+                        csp_header = response.headers.get("Content-Security-Policy", "")
+                        break
+            except Exception:  # noqa: BLE001 - node may still be booting
+                time.sleep(0.2)
+        else:
+            raise AssertionError("plan-B web server never served /")
+
+        # The browser-facing header: the production nonce form.
+        script_src = next(
+            (part for part in csp_header.split("; ") if part.startswith("script-src")),
+            "",
+        )
+        assert "'nonce-" in script_src, f"script-src must be nonce-based: {csp_header}"
+        assert "'strict-dynamic'" in script_src, csp_header
+        assert "'unsafe-inline'" not in script_src, csp_header
+        assert "'unsafe-eval'" not in script_src, csp_header
+
+        # Rendered scripts carry nonces, and at least one is allowed by the
+        # header — the actual executable contract.
+        html_nonces = set(re.findall(r'nonce="([A-Za-z0-9+/_-]+={0,2})"', response_body))
+        assert html_nonces, "rendered HTML carries no nonce'd script tags"
+        header_nonces = set(re.findall(r"'nonce-([A-Za-z0-9+/_-]+={0,2})'", script_src))
+        assert html_nonces & header_nonces, (
+            f"HTML script nonces {sorted(html_nonces)} are not covered by the "
+            f"CSP header nonces {sorted(header_nonces)} — the browser would "
+            "block every script and render a blank page"
+        )
+    except BaseException as error:
+        body_error = error
+        raise
+    finally:
+        exit_code = shell.stop()
+        if body_error is None:
+            assert exit_code == 0, f"helper exited with {exit_code}"
+        elif exit_code != 0:
+            print(f"note: helper also exited with {exit_code} during the failing body")
