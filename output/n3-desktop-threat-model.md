@@ -466,3 +466,14 @@
 - **#685 [P4]** `read_journal_bounded` 对称性缺口：Rust 侧拒非常规文件（`!is_file` → None，FIFO 不可能挂 shell），Python `_write_journal` 终态检查只拒 symlink——同户种植的 FIFO 让 `read_text()` **永久阻塞**（无写者 FIFO 的读打开不返回）。可达性受控（pre-READY 挂死被 shell 超时中止干净收拾；中会话挂死必在已败流程内、树杀覆盖）但属 #561 家族单行 parity。→ **PR #686**：`journal.exists() and not journal.is_file()` 响亮拒绝（缺省臂不变）+ `os.mkfifo` 拒绝测试（FIFO 字节不动、pending 清理、非活体挂死 RUN）。RUN 9/9。
 
 **认证**：journal 套 9/9；shell-core 164/164（上轮）。
+
+---
+
+## 24. 夜班续（2026-09-14 00:30，基线 3475146 + 本地 #688 分支）
+
+**C 轮（新钉）：**
+- **PR #688**：**plan-B 运行时 nonce CSP 端到端钉**——#300 架构此前只有源级（vitest/delivery_contract）与构建工件级（assert_no_static_prerender）钉，**运行时腿全无测试**：proxy 对真实文档请求附加 CSP、Next 真把匹配 nonce 注入渲染脚本——该机制随 Next 版本敏感（读取 proxy 设置的 CSP 请求头），回归即白屏且全绿。新测对**真实服务页**断言：响应头 script-src nonce 基 + strict-dynamic + 无 unsafe-inline/eval；HTML 携带 nonce 脚本标签；**HTML nonce 与头 nonce 相交**（浏览器可执行契约）。RUN：目标 1 passed + plan-B 对 2 passed + **全 runner 148 passed**（74s）。
+- **沙箱里程碑**：standalone bundle 首次本地构建成功——plan-B 腿全活跃（此前 12 passed/70+ skipped），后续夜班所有 plan-B 回归可真跑。
+- 顺手：#592 合并代码里的未用 `import socket`（ruff F401）移除。
+
+**E 轮**：#684 交叉审（merge-race 三现模式核实，cherry-pick 正确；留重复 `.build.lock` 行 nit）。
