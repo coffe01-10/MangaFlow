@@ -782,9 +782,15 @@ class CLIExecutionController:
         status = result.get("status")
         if status == "FAILED":
             failure = result.get("error") if isinstance(result.get("error"), dict) else {}
-            code = str(failure.get("code") or "UPSTREAM").upper()
+            code = str(failure.get("code") or "").upper()
             if not _SAFE_CODE.fullmatch(code) or code not in CLI_FAILURE_CODES:
-                code = "UPSTREAM"
+                # #645: an agent-invented code (CONTENT_POLICY, RATE_LIMITED,
+                # missing, ...) is deterministic from our point of view — we
+                # do not know it is transient. Collapsing it to the retryable
+                # UPSTREAM re-ran the paid CLI up to max_attempts times per
+                # deterministic failure. UNKNOWN_RESULT is terminal (the user
+                # can still reset_for_retry) and retained for diagnosis.
+                code = "UNKNOWN_RESULT"
             raise ProviderAdapterError(
                 code,
                 _sanitize_message(str(failure.get("message") or "CLI 执行失败")),
