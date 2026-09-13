@@ -482,3 +482,7 @@ doc-code 不一致 sweep（子代理，双源核验）收割 6 项 → 3 PR：
   .tmp 残留，下次 e2e 拒绝未钉源树）（4 pass）。
 - 合入确认（21:12 UTC，master 2371437 谱系）：#726（ledger-32）已入。
   账本分支同步。夜间循环继续。
+- 合入确认（21:50 UTC，master aa6730a 谱系）：#725（embedded diagnostics
+  ——此前 CONFLICTING 的分支已由其作者 rebase 后合入）与 #728（ledger-33
+  diagnostics-leg pin，RUN 40/40）均已入 master。cargo 168 全绿复核。
+- 夜间循环：drift-watch 继续；CONFLICTING 队列已清空。
