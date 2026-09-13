@@ -654,10 +654,14 @@ def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
         return 1
     sys.path.insert(0, str(api_root))
     user_data = Path(args.user_data).resolve()
-    # The shell supplies the user-data root; the helper lays out the
-    # database directory under it (ADR §4.1 install-form discipline).
-    (user_data / "data").mkdir(parents=True, exist_ok=True)
+    # The env application (which refuses a URL-hostile user-data, #587)
+    # must run BEFORE the database directory is created: a refused path is
+    # left exactly as the shell supplied it, without a stray data/
+    # directory announcing a session that never happened (ADR §4.1
+    # install-form discipline still holds — the layout below runs for
+    # every accepted path).
     _apply_app_environment(user_data, args.web_origin)
+    (user_data / "data").mkdir(parents=True, exist_ok=True)
 
     if args.fake_channel_cleanup:
         # Cleanup runs against the same DATABASE_URL the seeding used and
@@ -1241,7 +1245,17 @@ def main() -> int:
             return _run_stub(journal, record, args.grandchild)
         return _run_app(args, journal, record)
     except SystemExit as exit_request:
-        return int(exit_request.code or 0)
+        # CPython SystemExit semantics: a non-int code (a message) is
+        # printed to stderr and the process exits 1. int() on a message
+        # used to raise a bare ValueError traceback instead (#587's
+        # refusal raises SystemExit with a message).
+        code = exit_request.code
+        if code is None:
+            return 0
+        if isinstance(code, int):
+            return code
+        print(code, file=sys.stderr)
+        return 1
     except BaseException as error:  # noqa: BLE001 - last-resort failure journal
         record.update(state="failed", error=type(error).__name__)
         try:

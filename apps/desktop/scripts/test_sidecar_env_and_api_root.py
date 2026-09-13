@@ -836,3 +836,57 @@ def test_await_go_logs_the_rejection_with_the_offending_shape(monkeypatch):
     assert "0" * 32 not in logged and token not in logged, (
         "the untrusted handshake line must not be echoed into the log"
     )
+
+
+def test_refusal_leaves_user_data_untouched_and_exits_cleanly(tmp_path, monkeypatch):
+    """End-to-end refusal pin for the #587 check (the unit above pins
+    _apply_app_environment alone; this pins the REAL flow through
+    main()): a `?`-containing user-data must (a) exit 1 with the sqlite
+    remedy on stderr — NOT a ValueError traceback from main()'s int()
+    on a string SystemExit code — and (b) leave the supplied path
+    exactly as supplied: no data/ directory announcing a session that
+    never happened (the mkdir used to run before the refusal)."""
+
+    import subprocess
+
+    # The api-root validation runs BEFORE the user-data handling, so the
+    # flow needs a marker-valid tree to reach the refusal.
+    api_root = tmp_path / "api"
+    (api_root / "app").mkdir(parents=True)
+    (api_root / "alembic.ini").write_text("[alembic]\n", encoding="utf-8")
+    (api_root / "app" / "main.py").write_text("# marker\n", encoding="utf-8")
+    hostile = tmp_path / "w?rd"
+    hostile.mkdir()
+    # The real shell creates the runtime directory before spawning.
+    (tmp_path / "runtime" / f"mangaflow-desktop-{'e' * 32}").mkdir(parents=True)
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(HELPER_PATH),
+            "app",
+            "--api-root",
+            str(api_root),
+            "--user-data",
+            str(hostile),
+        ],
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "MANGAFLOW_DESKTOP_TOKEN": "e" * 32,
+            "MANGAFLOW_DESKTOP_JOURNAL": str(
+                tmp_path / "runtime" / f"mangaflow-desktop-{'e' * 32}" / "owner.json"
+            ),
+            "MANGAFLOW_DISABLE_DOTENV": "1",
+        },
+    )
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "cannot appear in a sqlite" in proc.stderr, proc.stderr
+    assert "ValueError" not in proc.stderr, (
+        "a string SystemExit code must not crash main() into a traceback: "
+        + proc.stderr
+    )
+    assert not (hostile / "data").exists(), (
+        "a refused user-data must not gain a data/ directory"
+    )
