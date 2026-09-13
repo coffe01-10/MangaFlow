@@ -7,6 +7,11 @@ using MangaFlow.Native;
 using MangaFlow.Native.Services;
 
 // Client-side regression checks: API safety, models, preferences, navigation, director rules.
+if (args.Contains("--generate-page"))
+{
+    NativeGeneratePageChecks.Run(args.FirstOrDefault(a => !a.StartsWith("--")) ?? Path.Combine(Path.GetTempPath(), "mangaflow-generate-page-checks"));
+    return 0;
+}
 if (args.Contains("--storyboard-page"))
 {
     NativeStoryboardPageChecks.Run(args.FirstOrDefault(a => !a.StartsWith("--")) ?? Path.Combine(Path.GetTempPath(), "mangaflow-storyboard-page-checks"));

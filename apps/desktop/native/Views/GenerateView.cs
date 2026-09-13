@@ -16,7 +16,7 @@ namespace MangaFlow.Native.Views;
 /// NUI-5: generation desk — draw mode (readiness, model, references, candidates,
 /// inspection, production gate, next page) plus the director rule-stub loop.
 /// </summary>
-public sealed class GenerateView : WorkspaceView
+public sealed partial class GenerateView : WorkspaceView
 {
     private readonly ComboBox chapterSelector = Selector("章节选择", 220);
     private readonly WrapPanel pageBar = new();
@@ -61,40 +61,7 @@ public sealed class GenerateView : WorkspaceView
 
     public GenerateView()
     {
-        var root = new DockPanel { Margin = new Thickness(4, 0, 24, 24) };
-        var scroller = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-        var panel = new StackPanel();
-        var header = new Border { Style = (Style)Application.Current.FindResource("CanvasHeader") };
-        var headerGrid = new Grid();
-        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var heading = new StackPanel();
-        heading.Children.Add(new TextBlock { Text = "DRAW", Style = (Style)Application.Current.FindResource("SectionIndex") });
-        heading.Children.Add(new TextBlock
-        {
-            Text = "单页抽卡 · 每次只生成 1 页",
-            FontFamily = (FontFamily)Application.Current.FindResource("Serif"),
-            FontSize = 21, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 5, 0, 0),
-        });
-        headerGrid.Children.Add(heading);
-        var modes = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Bottom };
-        drawMode.Click += (_, _) => SwitchMode(false);
-        directorMode.Click += (_, _) => SwitchMode(true);
-        modes.Children.Add(drawMode);
-        directorMode.Margin = new Thickness(8, 0, 12, 0);
-        modes.Children.Add(directorMode);
-        modes.Children.Add(chapterSelector);
-        headerGrid.Children.Add(modes);
-        headerGrid.Children.Clear();
-        header.Child = new PageHeading(heading, modes);
-        panel.Children.Add(header);
-        panel.Children.Add(pageBar);
-        pageBar.Margin = new Thickness(0, 0, 0, 14);
-        panel.Children.Add(notice);
-        panel.Children.Add(body);
-        scroller.Content = panel;
-        root.Children.Add(scroller);
-        Content = root;
+        BuildGenerationLayout();
         chapterSelector.SelectionChanged += async (_, _) =>
         {
             if (chapterSelector.SelectedItem is ComboBoxItem { Tag: string id } && id != chapterId)
@@ -321,21 +288,20 @@ public sealed class GenerateView : WorkspaceView
         {
             var chip = new ToggleButton
             {
-                Content = new StackPanel
-                {
-                    Children =
-                    {
-                        new TextBlock { Text = $"第 {item.PageNumber} 页", FontWeight = FontWeights.Bold },
-                        new TextBlock { Text = item.StateLabel, Style = (Style)Application.Current.FindResource("Micro") },
-                    },
-                },
-                Style = (Style)Application.Current.FindResource("Chip"),
-                IsChecked = currentPage?.Id == item.Id, Margin = new Thickness(0, 0, 6, 0), MinWidth = 78,
+                Content = item.PageNumber.ToString(), ToolTip = $"第 {item.PageNumber} 页 · {item.StateLabel}",
+                Style = (Style)Application.Current.FindResource("Pill"),
+                IsChecked = currentPage?.Id == item.Id, Margin = new Thickness(0, 0, 5, 5), MinWidth = 42, MinHeight = 42,
             };
             var captured = item;
-            chip.Click += async (_, _) => await SelectPageAsync(captured);
+            chip.Click += async (_, _) =>
+            {
+                if (currentPage?.Id == captured.Id) { chip.IsChecked = true; return; }
+                if (!await ConfirmLeaveAsync()) { chip.IsChecked = false; return; }
+                await SelectPageAsync(captured);
+            };
             pageBar.Children.Add(chip);
         }
+        RenderGenerationNavigation();
     }
 
     private async Task SelectPageAsync(PageItem item)
@@ -432,6 +398,7 @@ public sealed class GenerateView : WorkspaceView
     private void Render()
     {
         body.Children.Clear();
+        RenderGenerationNavigation();
         if (currentPage == null) return;
         if (director)
         {
@@ -470,7 +437,7 @@ public sealed class GenerateView : WorkspaceView
                 Text = "旧图可以继续查看，但必须确认版本并重新完成视觉检查后，才能进入下一页或导出。",
                 Style = (Style)Application.Current.FindResource("Caption"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 0),
             });
-            var staleRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 0) };
+            var staleRow = new WrapPanel { Margin = new Thickness(0, 10, 0, 0) };
             // 捕获渲染时的候选快照：工作台稍后会被整体替换，闭包不能引用可变字段。
             var staleCandidate = selectedCandidate;
             staleRow.Children.Add(Kit.Act("沿用并重新检查", async (_, _) => await KeepSelectedCandidateAsync(staleCandidate), "InkButton"));
@@ -491,37 +458,8 @@ public sealed class GenerateView : WorkspaceView
             body.Children.Add(Wrap(null, banner));
         }
 
-        // Production readiness card.
-        var readinessCard = new StackPanel();
-        readinessCard.Children.Add(new TextBlock { Text = "PRODUCTION CHECK / 页面生产准备", Style = (Style)Application.Current.FindResource("SectionIndex") });
-        var blockers = readiness.Array("blockers");
-        if (!ready && blockers.Count > 0)
-        {
-            readinessCard.Children.Add(new TextBlock
-            {
-                Text = $"{blockers.Count} 项准备工作未完成",
-                FontWeight = FontWeights.Bold, Foreground = (Brush)Application.Current.FindResource("Warning"), Margin = new Thickness(0, 6, 0, 0),
-            });
-            foreach (var blocker in blockers)
-            {
-                var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 5, 0, 0) };
-                row.Children.Add(new TextBlock { Text = "• " + blocker.Text("message"), TextWrapping = TextWrapping.Wrap });
-                var route = RouteForBlocker(blocker, currentPage.Id);
-                var go = Kit.Act("去处理", async (_, _) => await Context!.NavigateSection(route.Section, route.Query), "Compact");
-                go.Margin = new Thickness(10, 0, 0, 0);
-                row.Children.Add(go);
-                readinessCard.Children.Add(row);
-            }
-        }
-        else
-        {
-            readinessCard.Children.Add(new TextBlock
-            {
-                Text = "页面生产条件已全部满足，可以确认参考图后生成 1 个 1K 彩色候选。",
-                Style = (Style)Application.Current.FindResource("Caption"), Margin = new Thickness(0, 6, 0, 0),
-            });
-        }
-        body.Children.Add(Wrap("页面生产准备", readinessCard));
+        body.Children.Add(BuildPageContext());
+        body.Children.Add(BuildReadiness(readiness));
 
         // Model picker.
         var editModels = UsableEditModels();
@@ -531,15 +469,17 @@ public sealed class GenerateView : WorkspaceView
             modelCard.Children.Add(new TextBlock { Text = "暂无已启用且支持参考图编辑的图片模型，请先到系统设置配置供应商。", Foreground = (Brush)Application.Current.FindResource("Danger"), FontSize = 12.5 });
         else
         {
-            var row = new WrapPanel { Margin = new Thickness(0, 6, 0, 0) };
+            var row = new TilePanel { MinimumTileWidth = 300, MaximumColumns = 2, Gap = 8, Margin = new Thickness(0, 10, 0, 0) };
             foreach (var model in editModels)
             {
                 var alias = model.Text("logical_alias");
                 var chip = new ToggleButton
                 {
-                    Content = $"{model.Text("display_name")} · {model.Text("model_id")}",
-                    Style = (Style)Application.Current.FindResource("Chip"),
-                    IsChecked = alias == selectedModel, Margin = new Thickness(0, 0, 8, 6),
+                    Content = ModelTileContent(model),
+                    Style = (Style)Application.Current.FindResource("ModelChoice"),
+                    HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                    Padding = new Thickness(14), MinHeight = 66,
+                    IsChecked = alias == selectedModel,
                 };
                 chip.Click += (_, _) =>
                 {
@@ -553,33 +493,23 @@ public sealed class GenerateView : WorkspaceView
             modelCard.Children.Add(row);
         }
         // The card is added in both cases: it explains either the choice or why generation is blocked.
-        body.Children.Add(Wrap(null, modelCard));
+        body.Children.Add(new Border { Child = modelCard, Margin = new Thickness(0, 0, 0, 16) });
 
         body.Children.Add(BuildReferenceCard(references, referenceReady));
 
         // Generate bar.
-        var generateBar = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 14) };
+        var generateBar = new StackPanel { Margin = new Thickness(0, 4, 0, 14) };
         var generate = new Button { Content = GenerateButtonLabel(ready, editModels.Count > 0), Style = (Style)Application.Current.FindResource("InkButton"),
-            IsEnabled = ready && referenceReady && editModels.Any(m => m.Text("logical_alias") == selectedModel) && !pendingRows.Contains("generate") };
+            IsEnabled = ready && referenceReady && editModels.Any(m => m.Text("logical_alias") == selectedModel) && !pendingRows.Contains("generate") && !ViewingHistory && !pendingRows.Contains("batch") };
         if (!referenceReady) generate.Content = referencesLoaded ? "先确认人物与服装参考" : "正在读取参考配置";
+        if (ViewingHistory) generate.Content = "先切回最新批次再抽卡";
         generate.Click += async (_, _) => await GenerateAsync();
-        generateBar.Children.Add(generate);
+        var specification = new StackPanel();
+        specification.Children.Add(Kit.Caption("正式模型 · " + editModels.FirstOrDefault(m => m.Text("logical_alias") == selectedModel).Text("display_name", "尚未选择")));
+        specification.Children.Add(new TextBlock { Text = "1K · 彩色 · 1 个候选", FontWeight = FontWeights.Bold, Margin = new Thickness(0, 6, 0, 0) });
+        generateBar.Children.Add(new Border { Child = new PageHeading(specification, generate), Padding = new Thickness(16), BorderThickness = new Thickness(1), BorderBrush = AssetPageUi.Brush("Ink"), Background = AssetPageUi.Brush("Surface") });
         body.Children.Add(generateBar);
 
-        if (batches.Count > 0)
-        {
-            var picker = Selector("浏览生成批次", 270);
-            foreach (var batch in batches.OrderByDescending(b => b.Number("ordinal")))
-                picker.Items.Add(new ComboBoxItem { Tag = batch.Text("id"), Content = $"批次 {batch.Number("ordinal")} · {batch.Text("status")}" });
-            picker.SelectedItem = picker.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string?)i.Tag ==
-                (viewedBatchId ?? workbench.Element("current_batch").Text("id")));
-            picker.SelectionChanged += async (_, _) =>
-            {
-                if (picker.SelectedItem is ComboBoxItem { Tag: string id }) await ViewBatchAsync(id);
-            };
-            picker.Margin = new Thickness(0, 0, 0, 12);
-            body.Children.Add(picker);
-        }
 
         // Candidates.
         var displayedBatch = batches.FirstOrDefault(b => b.Text("id") == (viewedBatchId ?? workbench.Element("current_batch").Text("id")));
@@ -594,7 +524,7 @@ public sealed class GenerateView : WorkspaceView
         }
         else
         {
-            var grid = new TilePanel { MinimumTileWidth = 230 };
+            var grid = new TilePanel { MinimumTileWidth = 280, MaximumColumns = 3, Gap = 16 };
             foreach (var row in candidates)
                 grid.Children.Add(new GenerateCandidateCard(this, CandidateItem.From(row)));
             body.Children.Add(grid);
@@ -740,13 +670,13 @@ public sealed class GenerateView : WorkspaceView
             {
                 Text = title, FontWeight = FontWeights.Bold, FontSize = 14, Margin = new Thickness(0, 0, 0, 4),
             });
-        return new Border { Style = (Style)Application.Current.FindResource("Card"), Padding = new Thickness(18), Margin = new Thickness(0, 0, 0, 14), Child = card };
+        return new Border { Background = AssetPageUi.Brush("Surface"), BorderBrush = AssetPageUi.Brush("Line"), BorderThickness = new Thickness(1), Padding = new Thickness(16), Margin = new Thickness(0, 0, 0, 16), Child = card };
     }
 
     private async Task GenerateAsync()
     {
         var references = EffectiveReferences();
-        if (currentPage == null || selectedModel.Length == 0 || !referencesLoaded || !workbench.Element("readiness").Flag("ready") ||
+        if (currentPage == null || selectedModel.Length == 0 || !referencesLoaded || ViewingHistory || pendingRows.Contains("batch") || !workbench.Element("readiness").Flag("ready") ||
             !GenerationReferences.Ready(references, referenceOutfits, referencePackages) || !pendingRows.Add("generate")) return;
         var targetPage = currentPage;
         var modelAlias = selectedModel;
@@ -1478,7 +1408,7 @@ internal sealed class GenerateCandidateCard : Border
         var panel = new StackPanel();
         var artwork = new Border
         {
-            Height = 180, Background = (Brush)Application.Current.FindResource("PaperDeep"),
+            Background = (Brush)Application.Current.FindResource("PaperDeep"),
             Cursor = Cursors.Hand, Margin = new Thickness(0, 0, 0, 8),
         };
         var url = candidate.ContentUrl.Length > 0 ? candidate.ContentUrl
@@ -1495,7 +1425,7 @@ internal sealed class GenerateCandidateCard : Border
                 Style = (Style)Application.Current.FindResource("Micro"),
                 HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
             };
-        panel.Children.Add(artwork);
+        panel.Children.Add(new ArtworkFrame { Child = artwork });
         panel.Children.Add(new TextBlock
         {
             Text = $"候选 {candidate.Ordinal} · {candidate.ModelAlias}",
