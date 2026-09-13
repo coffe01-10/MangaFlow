@@ -1081,11 +1081,15 @@ def test_node_child_env_strips_ownership_secrets_and_hooks(monkeypatch):
     monkeypatch.setenv("NODE_PATH", "/evil")
     monkeypatch.setenv("MANGAFLOW_STATIC_EXPORT", "1")
     monkeypatch.setenv("PATH", "/usr/bin")
+    # Case-variant scrub pin: a lowercase-only orchestration name (Windows
+    # shells set those happily, and node reads env names case-insensitively
+    # there) must be stripped with the same force as the exact-case names —
+    # an exact-name pop over dict(os.environ) lets it ride through.
+    monkeypatch.setenv("mangaflow_desktop_fake_channel", "/leaky/lower")
     for name in (
         "MANGAFLOW_DESKTOP_HELPER",
         "MANGAFLOW_DESKTOP_API_ROOT",
         "MANGAFLOW_DESKTOP_USER_DATA",
-        "MANGAFLOW_DESKTOP_FAKE_CHANNEL",
         "MANGAFLOW_DESKTOP_WEB_DIST",
         "MANGAFLOW_DESKTOP_PYTHON",
     ):
@@ -1101,11 +1105,13 @@ def test_node_child_env_strips_ownership_secrets_and_hooks(monkeypatch):
     # export build session) must not ride in — the served app reads it at
     # runtime and would silently render in static-export form.
     assert "MANGAFLOW_STATIC_EXPORT" not in env
+    assert "mangaflow_desktop_fake_channel" not in env, (
+        "a lowercase orchestration name survived the env scrub"
+    )
     for name in (
         "MANGAFLOW_DESKTOP_HELPER",
         "MANGAFLOW_DESKTOP_API_ROOT",
         "MANGAFLOW_DESKTOP_USER_DATA",
-        "MANGAFLOW_DESKTOP_FAKE_CHANNEL",
         "MANGAFLOW_DESKTOP_WEB_DIST",
         "MANGAFLOW_DESKTOP_PYTHON",
     ):

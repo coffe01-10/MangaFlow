@@ -754,8 +754,11 @@ def _node_child_env() -> dict[str, str]:
     PORT/HOSTNAME/MANGAFLOW_API_ORIGIN/NODE_ENV on top.
     """
 
-    env = dict(os.environ)
-    for name in (
+    # Case-insensitive scrub: a plain dict() of os.environ keeps original
+    # casing, and on Windows a lowercase variant (PowerShell/cmd happily
+    # set those) would ride through an exact-name pop while node still
+    # reads it as the canonical name.
+    dropped = {
         "MANGAFLOW_DESKTOP_TOKEN",
         "MANGAFLOW_DESKTOP_JOURNAL",
         "MANGAFLOW_DESKTOP_HELPER",
@@ -767,9 +770,10 @@ def _node_child_env() -> dict[str, str]:
         "MANGAFLOW_STATIC_EXPORT",
         "NODE_OPTIONS",
         "NODE_PATH",
-    ):
-        env.pop(name, None)
-    return env
+    }
+    return {
+        name: value for name, value in os.environ.items() if name.upper() not in dropped
+    }
 
 
 def _web_spawn_env_additions(node_port: int) -> dict[str, str]:

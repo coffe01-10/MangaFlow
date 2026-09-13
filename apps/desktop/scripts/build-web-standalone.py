@@ -218,7 +218,10 @@ def main() -> int:
     build_env = {
         name: value
         for name, value in os.environ.items()
-        if name != "MANGAFLOW_STATIC_EXPORT"
+        # Windows env names are case-insensitive end to end: a lowercase
+        # variant set in cmd/PowerShell survives an exact-match scrub and
+        # Node still reads it as the flag.
+        if name.upper() != "MANGAFLOW_STATIC_EXPORT"
     }
     build_env["MANGAFLOW_API_ORIGIN"] = "http://127.0.0.1:39443"
     subprocess.run(

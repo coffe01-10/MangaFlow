@@ -198,10 +198,14 @@ def test_static_export_flag_is_scrubbed_from_the_build_env(monkeypatch):
         raise RuntimeError("stop-main-before-build")
 
     monkeypatch.setenv("MANGAFLOW_STATIC_EXPORT", "1")
+    # Windows env lookups are case-insensitive end to end, so a lowercase
+    # variant must be scrubbed with the same force.
+    monkeypatch.setenv("mangaflow_static_export", "1")
     monkeypatch.setattr(bw.subprocess, "run", fake_run)
     with pytest.raises(RuntimeError, match="stop-main-before-build"):
         bw.main()
     assert "MANGAFLOW_STATIC_EXPORT" not in recorded["env"], recorded["env"]
+    assert "mangaflow_static_export" not in recorded["env"], recorded["env"]
     # The sibling build-time constant still rides along.
     assert recorded["env"]["MANGAFLOW_API_ORIGIN"] == "http://127.0.0.1:39443"
 
