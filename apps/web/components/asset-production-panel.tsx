@@ -50,13 +50,11 @@ export function CharacterConceptPanel({
   character,
   model,
   onOpen,
-  onDirtyChange,
 }: {
   projectId: string;
   character: Character;
   model: ImageModelAlias | null;
   onOpen: (url: string, label: string) => void;
-  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const queryClient = useQueryClient();
   const [appearance, setAppearance] = useState("");
@@ -105,11 +103,10 @@ export function CharacterConceptPanel({
       JSON.stringify(draft),
     );
   }, [appearance, character.id, draftReady, lockedFields, outfitDescription, outfitName, projectId]);
-  // #546-1：外层用 key={character.id} 键控本面板，切换角色即重挂载。草稿虽
-  // 有 localStorage 兜底，仍把「有已输入内容」上抛，让切换前的确认覆盖
-  // 概念设定草稿（script-editor 的 onDirtyChange 同模式）。
-  const conceptDirty = Boolean(appearance.trim() || outfitName.trim() || outfitDescription.trim() || lockedFields.trim());
-  useEffect(() => { onDirtyChange?.(conceptDirty); }, [conceptDirty, onDirtyChange]);
+  // #546-1：外层用 key={character.id} 键控本面板，切换角色即重挂载。概念
+  // 草稿已按「项目 + 角色」持久化到 localStorage（上方 effect），重挂载即
+  // 恢复，切换角色不丢内容——因此不再上抛脏标记（曾接线到切换确认造成
+  // 过度弹窗，属 #441 指向的死道具陷阱，已连同外层接线一并移除）。
 
   const batches = useQuery({
     queryKey: ["asset-batches", "CHARACTER", character.id],

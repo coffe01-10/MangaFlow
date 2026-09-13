@@ -280,6 +280,10 @@ export function useAssetsWorkspace({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["assets", id] });
       queryClient.invalidateQueries({ queryKey: ["characters", id] });
+      // 解绑人物参考会重新触发 MISSING_CHARACTER_REFERENCE 阻塞项：与镜像的
+      // 绑定路径（bindExistingCharacterReference）一致失效生成工作台，就绪
+      // 判定必须立即变旧，而不是等 staleTime 过后才反映（#544）。
+      queryClient.invalidateQueries({ queryKey: ["generation-workbench"] });
     },
   });
 

@@ -1684,4 +1684,48 @@ describe("ProviderManagement 模型目录错误面与连接草稿守卫（#545-8
     expect(confirmSpy).not.toHaveBeenCalled();
     confirmSpy.mockRestore();
   });
+
+  it("TEST-PROV-GUARD5 保存自定义标签密钥后脏态解除：后续收起不再确认", async () => {
+    saveProviderKey.mockResolvedValue(makeConnection().keys[0]);
+    renderPlatform();
+    fireEvent.change(await screen.findByLabelText("密钥标签"), { target: { value: "prod" } });
+    fireEvent.change(screen.getByLabelText("API Key"), { target: { value: "sk-live-typed" } });
+
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    // 保存前：自定义标签本身就是脏输入，收起会确认并保留。
+    fireEvent.click(document.getElementById("provider-card-toggle-provider-1")!);
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(document.getElementById("provider-card-toggle-provider-1")).toHaveAttribute("aria-expanded", "true");
+
+    // 保存成功：标签已落库，面板回到「无未保存输入」。若标签不回位
+    // "default"，draftDirty 恒真，之后每次收起 / beforeunload 都误报。
+    fireEvent.click(screen.getByRole("button", { name: "保存密钥" }));
+    await waitFor(() => expect(screen.getByText("密钥已保存")).toBeInTheDocument());
+    fireEvent.click(document.getElementById("provider-card-toggle-provider-1")!);
+    await waitFor(() => {
+      expect(document.getElementById("provider-card-toggle-provider-1")).toHaveAttribute("aria-expanded", "false");
+    });
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    confirmSpy.mockRestore();
+  });
+
+  it("TEST-PROV-GUARD6 手工添加图片模型后类型选择回位 TEXT：脏态不再残留", async () => {
+    createProviderModel.mockResolvedValue(makeProviderModel({ provider_model_id: "manual-image-1" }));
+    renderPlatform();
+    fireEvent.change(await screen.findByLabelText("上游模型 ID"), { target: { value: "manual-image-1" } });
+    // 工具栏的类型筛选组与手工表单的 select 同名，按 combobox 角色精确定位。
+    fireEvent.change(screen.getByRole("combobox", { name: "模型类型" }), { target: { value: "IMAGE" } });
+    fireEvent.click(screen.getByRole("button", { name: "添加模型" }));
+    await waitFor(() => expect(createProviderModel).toHaveBeenCalledTimes(1));
+
+    // 提交成功后类型回位「文字模型」；残留 IMAGE 会让 draftDirty 恒真。
+    expect(screen.getByRole("combobox", { name: "模型类型" })).toHaveValue("TEXT");
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    fireEvent.click(document.getElementById("provider-card-toggle-provider-1")!);
+    await waitFor(() => {
+      expect(document.getElementById("provider-card-toggle-provider-1")).toHaveAttribute("aria-expanded", "false");
+    });
+    expect(confirmSpy).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
 });

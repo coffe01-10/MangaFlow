@@ -119,6 +119,9 @@ export function ConnectionPanel({
     mutationFn: () => api.saveProviderKey(connection.id, keyLabel.trim(), apiKey.trim()),
     onSuccess: () => {
       setApiKey("");
+      // 标签已随密钥一起落库：不回位 "default" 会让 draftDirty 永远为真，
+      // 收起 / beforeunload 在没有任何未保存输入时仍反复确认。
+      setKeyLabel("default");
       setNotice("密钥已保存");
       refresh();
     },
@@ -190,6 +193,9 @@ export function ConnectionPanel({
     onSuccess: () => {
       setManualId("");
       setManualName("");
+      // 类型选择已随模型提交：不回位 "TEXT" 会让 draftDirty 永远为真（同
+      // saveKey 的标签回位）。
+      setManualType("TEXT");
       setNotice("已添加。测试通过前不会进入自动路由。");
       refresh();
       queueMicrotask(() => manualRef.current?.focus());

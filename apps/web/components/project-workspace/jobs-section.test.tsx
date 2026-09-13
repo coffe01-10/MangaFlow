@@ -533,4 +533,50 @@ describe("JobsSection", () => {
     // 无结果的任务行不获得键语义（点击本就无行为）。
     expect(screen.getAllByRole("button", { name: "查看结果：生成页面" })).toHaveLength(1);
   });
+
+  it("行内控件的按键不被整行键语义劫持：复选框空格仍勾选、按钮回车不重复打开预览", async () => {
+    const openPreview = vi.fn();
+    jobsApi.mockReset().mockResolvedValue([
+      jobFixture({
+        id: "job-image-result",
+        status: "COMPLETED",
+        progress: 100,
+        result: {
+          kind: "IMAGE",
+          label: "候选 1",
+          candidate_id: "candidate-1",
+          page_id: "page-1",
+          content_url: "/api/v1/assets/asset-9/content",
+          thumbnail_url: "/api/v1/assets/asset-9/thumbnail/640",
+        },
+      }),
+    ]);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <JobsHarness openPreview={openPreview} />
+      </QueryClientProvider>,
+    );
+
+    const select = await screen.findByRole("checkbox", { name: "选择生成页面" });
+    // 空格在复选框上按下：事件冒泡到行，但行不得 preventDefault（fireEvent 对
+    // 可取消事件返回 false 即被取消；被吞掉浏览器就不再切换勾选）、也不得
+    // 借机打开预览。
+    expect(fireEvent.keyDown(select, { key: " " })).toBe(true);
+    expect(openPreview).not.toHaveBeenCalled();
+    // 未被吞掉的空格随后正常勾选（jsdom 不模拟原生触发，按真实序列点击）。
+    fireEvent.click(select);
+    expect(select).toBeChecked();
+
+    // 回车落在「查看结果」按钮上时同样只归按钮自己：keyDown 阶段不打开，
+    // 随后的 click 只打开一次（修复前行处理器会抢先进 showResult）。
+    const viewButton = screen.getByRole("button", { name: "查看结果" });
+    expect(fireEvent.keyDown(viewButton, { key: "Enter" })).toBe(true);
+    expect(openPreview).not.toHaveBeenCalled();
+    fireEvent.click(viewButton);
+    expect(openPreview).toHaveBeenCalledTimes(1);
+  });
 });
