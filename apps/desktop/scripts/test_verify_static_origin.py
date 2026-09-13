@@ -88,6 +88,11 @@ def test_every_teardown_path_routes_through_kill_helper_tree():
         'reject(new Error("helper stdout exceeded 1 MiB before READY"))',
     )
     grace_body = _span(source, "const killGrace = setTimeout(() => {", "}, 15000);")
+    busy_body = _span(
+        source,
+        "// A busy 4173",
+        "process.exit(1);",
+    )
     catch_body = source[source.index("main().catch(") :]
 
     for name, span in [
@@ -95,6 +100,7 @@ def test_every_teardown_path_routes_through_kill_helper_tree():
         ("readiness timeout", timeout_body),
         ("stdout bound", stdout_body),
         ("grace escalation", grace_body),
+        ("busy-4173 catch", busy_body),
         ("main().catch", catch_body),
     ]:
         assert "killHelperTree(" in span, f"teardown path {name} bypasses killHelperTree"
