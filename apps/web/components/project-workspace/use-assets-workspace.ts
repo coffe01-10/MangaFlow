@@ -121,10 +121,22 @@ export function useAssetsWorkspace({
     || outfitName.trim() !== ""
     || outfitLockedFields.trim() !== ""
     || selectedOutfitAssets.length > 0;
+  // 最新值镜像：?character= / ?outfit= 深链 effect 需要把改绑动作列入依赖
+  // （exhaustive-deps），而 set-state-in-effect 禁止 effect 依赖会被其自身
+  // setState 改变的值（bindCharacterId 一变 → 回调身份变 → effect 重跑）。
+  // 守卫经 ref 读 freshest state，回调即可保持稳定引用。ref 只在事件与
+  // effect 回调里读取，不参与渲染输出。
+  const bindGuardRef = useRef({ bindCharacterId, characterEditorDirty, outfitFormDirty });
+  // 渲染期写 ref 被 react-hooks/refs 禁止；每次提交后在 effect 里同步最新值。
+  useEffect(() => {
+    bindGuardRef.current = { bindCharacterId, characterEditorDirty, outfitFormDirty };
+  });
   const confirmBindCharacterChange = useCallback(() => {
-    if (!characterEditorDirty && !outfitFormDirty) return true;
+    const { characterEditorDirty: characterDirty, outfitFormDirty: outfitDirty } =
+      bindGuardRef.current;
+    if (!characterDirty && !outfitDirty) return true;
     return window.confirm("当前角色的表单尚未保存（服装表单 / 角色规范），切换角色会丢弃这些内容。仍要切换吗？");
-  }, [characterEditorDirty, outfitFormDirty]);
+  }, []);
   // #647：播种按 boundCharacter.id 键控而非一次性布尔。改绑（select/
   // beginOutfitEdit/深链/芯片）后编辑框必须重播种为新角色的数据，否则旧角色
   // 的姓名/固定特征会随 updateCharacter(boundCharacter.id) 写进新角色。未保存
@@ -142,17 +154,39 @@ export function useAssetsWorkspace({
   // ProjectWorkspace 不因参数变化重挂载（workflow-studio.tsx 记录过同一
   // 行为），一次性 useState 初值会让 ?character= 的承诺只在首次生效。
   const characterDeepLinkRef = useRef<string | null>(initialCharacterId ?? null);
+  // 深链应用抽为具名动作：effect 体保持纯调度（react-hooks/set-state-in-effect），
+  // 确认逻辑与 select/beginOutfitEdit 走同一守卫。
+  const applyCharacterDeepLink = useCallback((target: string | null) => {
+    // #647：深链改绑与 select/beginOutfitEdit 同一守卫——脏时确认，拒绝则
+    // 保持当前绑定（ref 已前进，避免每次渲染重复弹窗；再次导航仍会确认）。
+    if ((target ?? "") !== bindGuardRef.current.bindCharacterId
+      && !confirmBindCharacterChange()) return;
+    setBindCharacterId(target ?? "");
+    setEditingOutfitId(null);
+    setSelectedOutfitAssets([]);
+  }, [confirmBindCharacterChange]);
   useEffect(() => {
     const target = initialCharacterId ?? null;
     if (characterDeepLinkRef.current === target) return;
     characterDeepLinkRef.current = target;
-    // #647：深链改绑与 select/beginOutfitEdit 同一守卫——脏时确认，拒绝则
-    // 保持当前绑定（ref 已前进，避免每次渲染重复弹窗；再次导航仍会确认）。
-    if ((target ?? "") !== bindCharacterId && !confirmBindCharacterChange()) return;
-    setBindCharacterId(target ?? "");
-    setEditingOutfitId(null);
-    setSelectedOutfitAssets([]);
-  }, [initialCharacterId, bindCharacterId, confirmBindCharacterChange]);
+    applyCharacterDeepLink(target);
+  }, [initialCharacterId, applyCharacterDeepLink]);
+  // useCallback：?outfit= 深链 effect 把它列入依赖（exhaustive-deps），
+  // 普通函数每次渲染新引用会让 effect 每渲染重跑。定义必须位于该 effect
+  // 之前——deps 数组在渲染期求值，const 不允许前向引用。
+  const beginOutfitEdit = useCallback((outfit: Outfit) => {
+    // #647：进入服装编辑会把绑定切到该服装的归属角色——跨角色时先走改绑
+    // 守卫，拒绝则整个不进入编辑（避免“绑定 A、编辑 C 的服装”的混合状态）。
+    if (outfit.character_id !== bindGuardRef.current.bindCharacterId
+      && !confirmBindCharacterChange()) return;
+    setEditingOutfitId(outfit.id);
+    setBindCharacterId(outfit.character_id);
+    setOutfitName(outfit.name);
+    setOutfitLockedFields(outfit.locked_fields.join("，"));
+    setSelectedOutfitAssets(outfit.reference_asset_ids);
+    setShowGeneratedReferencePicker(false);
+    setAssetKind("OUTFIT_REFERENCE");
+  }, [confirmBindCharacterChange]);
   const editingOutfit = outfits.data?.find((item) => item.id === editingOutfitId) ?? null;
   // 生产准备“去处理”深链带 ?outfit=：直接把目标服装档案切进编辑态，用户
   // 不必在列表里再找一次（与 ?character= 预选角色同一模式）。按参数值
@@ -171,7 +205,9 @@ export function useAssetsWorkspace({
     if (!outfit) return;
     outfitDeepLinkRef.current = target;
     beginOutfitEdit(outfit);
-  }, [initialOutfitId, outfits.data]);
+    // beginOutfitEdit 每次渲染都是新引用，但 ref 守卫使重跑成为廉价 no-op；
+    // 不加进依赖会让 exhaustive-deps 在后续改动中漏报真实缺口。
+  }, [initialOutfitId, outfits.data, beginOutfitEdit]);
   const selectedOutfitFiles = assets.data?.filter((item) => selectedOutfitAssets.includes(item.id)) ?? [];
   const generatedReferenceCandidates = useMemo(
     () => (generatedReferenceLibrary.data?.groups ?? [])
@@ -497,19 +533,6 @@ export function useAssetsWorkspace({
     setOutfitLockedFields("");
     setSelectedOutfitAssets([]);
     setShowGeneratedReferencePicker(false);
-  }
-
-  function beginOutfitEdit(outfit: Outfit) {
-    // #647：进入服装编辑会把绑定切到该服装的归属角色——跨角色时先走改绑
-    // 守卫，拒绝则整个不进入编辑（避免“绑定 A、编辑 C 的服装”的混合状态）。
-    if (outfit.character_id !== bindCharacterId && !confirmBindCharacterChange()) return;
-    setEditingOutfitId(outfit.id);
-    setBindCharacterId(outfit.character_id);
-    setOutfitName(outfit.name);
-    setOutfitLockedFields(outfit.locked_fields.join("，"));
-    setSelectedOutfitAssets(outfit.reference_asset_ids);
-    setShowGeneratedReferencePicker(false);
-    setAssetKind("OUTFIT_REFERENCE");
   }
 
   function uploadReferenceFile(file?: File) {
