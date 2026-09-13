@@ -1951,10 +1951,6 @@ mod tests {
         fs::create_dir_all(block_dir.join("occupied")).unwrap();
 
         let result = run_log.record("after_block", &serde_json::json!({ "k": 1 }));
-        // Either the record succeeded (rotation failed first and was
-        // reported after the write — the contract) or it failed cleanly;
-        // the log must contain the FIRST milestone either way, and the
-        // failure must be visible to the caller (not swallowed).
         // record() reports the rotation failure (rotation.and(written)):
         // the caller sees the error, but the WRITE still happened first —
         // the milestone is never lost to housekeeping.
@@ -1963,6 +1959,10 @@ mod tests {
         assert!(
             log.contains("after_block"),
             "the milestone must still be written before the failure surfaced: {log}"
+        );
+        assert!(
+            log.contains("\"seed\""),
+            "the failed rotation must not clobber the seeded history: {log}"
         );
         let _ = fs::remove_dir_all(&user_data);
     }
