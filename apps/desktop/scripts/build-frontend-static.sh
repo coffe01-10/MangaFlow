@@ -147,7 +147,14 @@ recreate_junction() {
     return 1
   fi
   mkdir -p "$(dirname "$WORKTREE/$tree_rel/$link_rel")"
-  if [ "$target_kind" = file ]; then
+  if [ "$(uname -s)" = "Linux" ] || [ "$(uname)" = "Darwin" ]; then
+    # POSIX (#717): both link kinds rebuild as REAL symlinks re-anchored at
+    # the worktree — same seal, no privilege. A hardlink (the historical
+    # file-link shape) breaks Linux node shims: their relative requires
+    # resolve from the hardlink's own path, not the linked target's.
+    ln -sfn "$new_target" "$WORKTREE/$tree_rel/$link_rel"
+    echo "recreated symlink $tree_rel/$link_rel -> $new_target"
+  elif [ "$target_kind" = file ]; then
     # A junction can only point at a directory, so a relative file link is
     # rebuilt as a hardlink of the worktree's own copy — same filesystem,
     # no privilege needed, and the worktree stays sealed.
