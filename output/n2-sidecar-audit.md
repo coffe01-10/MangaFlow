@@ -860,3 +860,11 @@
   （队列禁用/LOCAL/AUTO±embedded±redis 可达性 × enqueue vs 诊断）；probe_redis=False
   调用者全量清点（无既有行为变化）；39 passed。跟进已推：settings UI 的嵌入式基线
   从误导性 WARNING 改报 OK（"按设计本地执行"）；诊断假体补 close()。
+
+- **§35 补遗十四（#729 rebase 完成流程事故披露）**：rebase 中误将我方内容强推至他组
+  `glm/ledger-23`（refspec 错误，持续约 1 分钟）——已立即以原 tip 06afa31 恢复（ls-remote
+  核验）并在 #687 留事故说明；#687 owner 请在下次推送前核验分支。#729 最终态：
+  rebase 至最新 master（账本 33b 并入），PR 文件 = 钉测试 + 审计 rider，mergeable 待
+  GitHub 重算。
+- **教训强化**：跨分支 refspec 推送必须逐字核对目标分支名；本窗两次分支手术 + 一次误推
+  均为 checkout/分支操作与内容操作交错的产物。
