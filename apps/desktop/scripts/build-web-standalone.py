@@ -182,7 +182,45 @@ def _replace_dist(standalone: Path, desktop_dist: Path) -> None:
     os.replace(staged, desktop_dist / "build-info.json")
 
 
+def assert_no_static_prerender(standalone: Path) -> None:
+    """Fail loudly when any page baked into the prerender: the nonce'd
+    CSP (proxy.ts) over statically prerendered HTML blocks every
+    bootstrap script (the baked pages carry no nonce) — a blank desktop
+    app that the build itself reports as success. The desktop bundle
+    must render fully dynamically (layout.tsx awaits connection()), so
+    the prerender manifest names no routes (/_global-error excepted).
+    The empty manifest is the norm on Next versions that only register
+    the error page."""
+
+    manifest = standalone / ".next" / "prerender-manifest.json"
+    if not manifest.is_file():
+        return
+    routes = json.loads(manifest.read_text(encoding="utf-8")).get("routes", {})
+    routes.pop("/_global-error", None)
+    if routes:
+        raise SystemExit(
+            "standalone prerender baked nonce-less pages "
+            f"({', '.join(sorted(routes))}) — the plan-B proxy's nonce'd "
+            "CSP would block their scripts and ship a blank app. Check "
+            "for a stray MANGAFLOW_STATIC_EXPORT in the build "
+            "environment."
+        )
+
+
 def main() -> int:
+    # MANGAFLOW_STATIC_EXPORT must NOT ride into this build: layout.tsx
+    # skips connection() when it is "1" (#300-era nonce architecture) —
+    # without connection() every page bakes into the prerender without a
+    # nonce, and the runtime proxy's nonce'd CSP then blocks every
+    # bootstrap script: a silently blank desktop app reported as build
+    # success. #447 scrubbed the same variable from the RUNTIME child
+    # env; this is the symmetric BUILD-path guard.
+    build_env = {
+        name: value
+        for name, value in os.environ.items()
+        if name != "MANGAFLOW_STATIC_EXPORT"
+    }
+    build_env["MANGAFLOW_API_ORIGIN"] = "http://127.0.0.1:39443"
     subprocess.run(
         [NPM, "run", "build", "--workspace", "@mangaflow/web"],
         cwd=REPO,
@@ -190,13 +228,14 @@ def main() -> int:
         # The desktop bundle bakes the helper's fixed relay port into its
         # rewrites at build time (see the comment in next.config.ts); the plain
         # default (8000) stays for every non-desktop form.
-        env=dict(os.environ, MANGAFLOW_API_ORIGIN="http://127.0.0.1:39443"),
+        env=build_env,
     )
 
     standalone = WEB / ".next" / "standalone" / "apps" / "web"
     server_js = standalone / "server.js"
     if not server_js.is_file():
         raise SystemExit(f"standalone build did not produce {server_js}")
+    assert_no_static_prerender(standalone)
 
     manifest = standalone / ".next" / "routes-manifest.json"
     destinations = json.loads(manifest.read_text(encoding="utf-8"))
