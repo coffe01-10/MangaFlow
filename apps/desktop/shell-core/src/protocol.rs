@@ -448,6 +448,20 @@ fn is_runtime_dir_name(name: &str) -> bool {
 /// `u64::MAX` instead of rewriting mtimes).
 pub fn sweep_runtime_dirs_with(user_data: &Path, grace_seconds: u64) -> std::io::Result<()> {
     let runtime = user_data.join("runtime");
+    // #610: a planted root link would redirect the sweep — canonicalize
+    // follows it and the candidate containment at the bottom would compare
+    // the target against itself. The candidate level already refuses links;
+    // the root gets the same refusal.
+    if runtime
+        .symlink_metadata()
+        .is_ok_and(|meta| meta.is_symlink())
+    {
+        eprintln!(
+            "mangaflow-desktop: runtime directory {} is a symlink; skipping the stale-runtime sweep (#610)",
+            runtime.display()
+        );
+        return Ok(());
+    }
     let Ok(runtime_canonical) = runtime.canonicalize() else {
         return Ok(()); // no runtime directory yet — nothing to sweep
     };
