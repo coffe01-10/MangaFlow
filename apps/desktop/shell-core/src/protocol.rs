@@ -1982,6 +1982,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(&user_data);
         let _ = std::fs::remove_dir_all(&outside);
     }
+    #[test]
+    fn runtime_layout_refuses_a_same_leaf_target_outside_the_user_data_root() {
+        use std::os::unix::fs::symlink;
+
+        let user_data = std::env::temp_dir().join(format!(
+            "mangaflow-layout-contain-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&user_data);
+        let outside_root = std::env::temp_dir().join(format!(
+            "mangaflow-layout-outside-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&outside_root);
+
+        let token = new_token();
+        // The attacker pre-builds a same-leaf directory outside the root.
+        let outside = outside_root.join(format!("{RUNTIME_DIR_PREFIX}{token}"));
+        std::fs::create_dir_all(&outside).unwrap();
+        // ... and plants a symlink at the runtime name pointing at it.
+        let planted = user_data.join("runtime").join(format!("{RUNTIME_DIR_PREFIX}{token}"));
+        std::fs::create_dir_all(planted.parent().unwrap()).unwrap();
+        symlink(&outside, &planted).unwrap();
+
+        let error = RuntimeLayout::create_with_token(&user_data, &token)
+            .err()
+            .expect("a same-leaf target outside the user-data root must refuse");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("user-data root"), "{error}");
+        // The refusal must not have journaled ownership into the outside tree.
+        assert!(
+            !outside.join(JOURNAL_NAME).exists(),
+            "the outside tree must stay journal-free: {error}"
+        );
+
+        let _ = std::fs::remove_dir_all(&user_data);
+        let _ = std::fs::remove_dir_all(&outside_root);
+    }
+
     /// #561/#685 family parity for the STAGED name: a FIFO planted at the
     /// shell-owned `.shell.pending` sibling would block `fs::write` forever
     /// (open for writing with no reader never returns) — and the write sits
