@@ -136,7 +136,13 @@ def _write_journal(journal: Path, record: dict) -> None:
     pending.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
     current_state: str | None = None
     try:
-        current = json.loads(journal.read_text(encoding="utf-8"))
+        # Bounded like the Rust read_journal_bounded (64 KiB + 1): a planted
+        # oversized journal must not buffer unbounded bytes into the helper
+        # at every state write (#732). An oversize read truncates, the parse
+        # fails, and the fail-open arm treats it as unreadable — the same
+        # "oversize = unreadable" treatment the Rust side applies.
+        with journal.open("r", encoding="utf-8") as handle:
+            current = json.loads(handle.read(64 * 1024 + 1))
         if isinstance(current, dict):
             state = current.get("state")
             # Only a string state can be terminal; anything else (missing,
