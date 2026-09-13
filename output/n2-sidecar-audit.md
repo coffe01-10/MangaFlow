@@ -757,3 +757,15 @@
   恢复 40 行进 mod tests（双测试绿、cargo **165/0**）；附 TOCTOU 注释（F4）、尾行修复（F5）、
   docstring 错字（F6）；#681 分支同步把失败 journal 重试加宽至 (OSError, RuntimeError)（F3）。
   评审另确认：目录占位两侧均干净拒绝（新正则消息）、links 原文案保留使既有钉不动。
+
+## 36. 夜班续二（master da2b65f——#699 已并）
+
+- **PR #699 已并（GO 拒绝 journal 终态）**：两处拒绝路径（stub/app）退出 75 前 journal
+  `state=failed/error=go-refused`——泄漏闭环（sweep 只回收 stopped/failed）。
+- **第 25 轮评审（1 子代理，文件/行级，APPROVE）**：终态守卫 ready→failed 正常发布；
+  子进程 PDEATHSIG 无新阻塞；e2e 钉 75 经 main() 返回链保留（非 int SystemExit 分支不涉
+  返回值形态）；app 模式 finally 清理链不被 journaling 跳过；**红线双向**——对 ecde326
+  前基线钉以 `'ready' == 'failed'` 红、对 HEAD 绿。Info：sweep 回收受
+  RUNTIME_SWEEP_GRACE_SECONDS=24h 宽限（#264 设计）——"下一会话即回收"的表述勘误为
+  "24h 宽限后的首个会话启动"。
+- **串行证据**：真 runner **153 passed**（exit=0）。
