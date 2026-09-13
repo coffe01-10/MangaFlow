@@ -109,6 +109,129 @@ fn bundle_identity_and_targets_stay_pinned() {
     assert!(names.contains(&"msi") && names.contains(&"nsis"), "{names:?}");
 }
 
+/// Issue #623 (static-export form's non-CSP security headers): apps/web's
+/// next.config.ts headers() ships X-Content-Type-Options / X-Frame-Options /
+/// Referrer-Policy, but that list only applies to a running Next server —
+/// the STATIC export form is served by tauri's built-in protocol
+/// (`WebviewUrl::App("index.html")`, src-tauri/main.rs), which never runs
+/// next.config. The built-in protocol in tauri 2.11.5 applies exactly one
+/// configurable header set: `app.security.headers` (tauri-utils'
+/// HeaderConfig, applied via add_configured_headers to every app response
+/// in tauri's protocol/tauri.rs). That struct has a FIXED
+/// deny_unknown_fields field set: X-Content-Type-Options is supported, so
+/// nosniff now ships on the static form through that seam (pinned below,
+/// with web-form parity for the value). X-Frame-Options and
+/// Referrer-Policy are NOT in that field set — see the debt marker
+/// constant below for why their absence is pinned rather than silently
+/// forgotten.
+#[test]
+fn static_form_ships_x_content_type_options_via_the_header_seam() {
+    let config = tauri_config();
+    let headers = &config["app"]["security"]["headers"];
+    assert_eq!(
+        serde_json::to_string(headers).unwrap(),
+        r#"{"X-Content-Type-Options":"nosniff"}"#,
+        "the static form's header seam is app.security.headers; any change here \
+         (adding a HeaderConfig-supported header, dropping nosniff) is a \
+         deliberate contract change (#623), not config drift"
+    );
+
+    // Parity anchor: the debt is measured against the WEB form's list. If
+    // apps/web drops or renames the header, the divergence this pin guards
+    // has changed shape and must be re-reviewed.
+    let web = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../web/next.config.ts");
+    let web_config =
+        std::fs::read_to_string(&web).unwrap_or_else(|error| panic!("{web:?} readable: {error}"));
+    assert!(
+        web_config.contains(r#"{ key: "X-Content-Type-Options", value: "nosniff" }"#),
+        "the web form must keep shipping X-Content-Type-Options: nosniff for parity"
+    );
+}
+
+/// The accepted-debt marker for the two headers the built-in protocol
+/// cannot carry (issue #623). This constant is the single source of truth
+/// for WHY they are absent from the static form; the test below fails when
+/// the marker is deleted (the debt is silently forgotten), edited into a
+/// resolution claim while the headers still do not ship, or left stale
+/// after a tauri upgrade (it pins the tauri-utils version whose
+/// HeaderConfig defines the reachable field set).
+const X_FRAME_AND_REFERRER_POLICY_DEBT: &str = "\
+X-Frame-Options: DENY and Referrer-Policy: no-referrer do NOT ship on the \
+static-export form. The serving seam is tauri's built-in protocol \
+(WebviewUrl::App), whose only configurable response headers are the fixed \
+HeaderConfig field set of app.security.headers (tauri-utils 2.9.3, \
+deny_unknown_fields) — those two headers are not in it. Shipping them \
+would require replacing the built-in 'tauri' scheme handler via \
+register_uri_scheme_protocol plus reimplementing tauri's asset serving \
+(dev-server proxying, asset resolution, CSP/HTML rewriting) inside this \
+shell — a lead-designed change, deliberately not smuggled into a header \
+fix. The web form ships both (apps/web/next.config.ts headers()). This \
+divergence is accepted debt, NOT resolved; re-evaluate on every tauri / \
+tauri-utils upgrade.";
+
+#[test]
+fn x_frame_options_and_referrer_policy_absence_is_pinned_debt() {
+    // The marker must name both missing headers and stay an explicit debt
+    // claim — not an accidental omission or a false "resolved" note.
+    for header in ["X-Frame-Options", "Referrer-Policy"] {
+        assert!(
+            X_FRAME_AND_REFERRER_POLICY_DEBT.contains(header),
+            "the debt marker must name {header}"
+        );
+    }
+    assert!(
+        X_FRAME_AND_REFERRER_POLICY_DEBT.contains("NOT resolved"),
+        "the debt marker must state it is unresolved debt"
+    );
+
+    // Reality check 1: neither header may silently appear in the tauri
+    // config (HeaderConfig would reject them at build time anyway, but a
+    // future tauri-utils adding support must come with a marker update).
+    let config_text = serde_json::to_string(&tauri_config()).unwrap();
+    assert!(
+        !config_text.contains("X-Frame-Options") && !config_text.contains("Referrer-Policy"),
+        "a header appeared in the config without updating the debt marker"
+    );
+
+    // Reality check 2: the debt is measured against a web form that still
+    // ships both headers.
+    let web = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../web/next.config.ts");
+    let web_config =
+        std::fs::read_to_string(&web).unwrap_or_else(|error| panic!("{web:?} readable: {error}"));
+    assert!(
+        web_config.contains(r#"{ key: "X-Frame-Options", value: "DENY" }"#),
+        "the web form must keep shipping X-Frame-Options: DENY (the debt reference)"
+    );
+    assert!(
+        web_config.contains(r#"{ key: "Referrer-Policy", value: "no-referrer" }"#),
+        "the web form must keep shipping Referrer-Policy: no-referrer (the debt reference)"
+    );
+
+    // Staleness guard: the marker names the tauri-utils version whose
+    // HeaderConfig defines the reachable field set. A dependency upgrade
+    // must consciously re-evaluate this debt (and update the marker), not
+    // carry a stale claim forward.
+    let lock_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src-tauri/Cargo.lock");
+    let lock = std::fs::read_to_string(&lock_path)
+        .unwrap_or_else(|error| panic!("{lock_path:?} readable: {error}"));
+    let anchor = lock
+        .find("name = \"tauri-utils\"")
+        .expect("src-tauri Cargo.lock pins tauri-utils");
+    let version_start = lock[anchor..]
+        .find("version = \"")
+        .expect("tauri-utils version line")
+        + anchor
+        + "version = \"".len();
+    let version_end = lock[version_start..].find('"').expect("version closes") + version_start;
+    let version = &lock[version_start..version_end];
+    assert!(
+        X_FRAME_AND_REFERRER_POLICY_DEBT.contains(version),
+        "the debt marker names tauri-utils {version} but that is no longer the \
+         pinned version — re-evaluate whether the built-in protocol can now \
+         carry X-Frame-Options / Referrer-Policy, then update the marker"
+    );
+}
+
 /// Issue #300 (plan-B web form): the CSP for the plan-B desktop web form —
 /// and the normal web deployment, which shares the app — ships from apps/web,
 /// built per request by proxy.ts: Next extracts the nonce from the proxy-set
