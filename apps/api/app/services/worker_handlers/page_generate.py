@@ -127,6 +127,29 @@ def _load_reference_assets(
                 "已确认的参考图已删除或失效，已在调用模型前停止任务："
                 + "、".join(sorted(missing_ids))
             )
+        # #642: the prompt's binding declaration iterates
+        # reference_selections (character reference first, outfit second per
+        # character), and ImageRequest only ships image bytes — position is
+        # the model's only alignment channel for the "逐项对应" mapping. The
+        # id-set query above returns rows in database order, so reorder the
+        # loaded references to the declaration order; a stable sort keeps any
+        # id outside the selection list (none here — appended scene/style/
+        # continuity references below) behind the selected ones.
+        declared_positions = {
+            asset_id: index
+            for index, asset_id in enumerate(
+                selected_id
+                for character_id, selection in reference_selections.items()
+                for selected_id in (
+                    selection.get("character_asset_id"),
+                    selection.get("outfit_asset_id"),
+                )
+                if selected_id
+            )
+        }
+        references.sort(
+            key=lambda asset: declared_positions.get(asset.id, len(declared_positions))
+        )
         for character_id in page_character_ids:
             if character_id in package_facts:
                 # Contract §8.5: package candidates consume the queue-time
