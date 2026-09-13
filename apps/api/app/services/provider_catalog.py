@@ -14,6 +14,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import ObjectDeletedError
 
+from app.api.helpers import reject_required_nulls
 from app.config import Settings
 from app.http_bounds import read_bounded_http_body
 from app.model_adapters.base import ProviderAdapterError
@@ -368,7 +369,10 @@ def update_provider(
     if profile.version != payload.version:
         raise HTTPException(status_code=409, detail="供应商设置已更新，请刷新后重试")
     changes = payload.model_dump(exclude_unset=True, exclude={"version"})
-    changes = {key: value for key, value in changes.items() if value is not None}
+    # Explicit nulls used to be silently dropped here, leaving an empty
+    # update that still bumped ``version`` — a no-op that burned an
+    # optimistic-lock token (#664). Reject them like the other PATCH paths.
+    reject_required_nulls(ProviderProfile, changes)
     for key, value in changes.items():
         setattr(profile, key, value)
     profile.version += 1
@@ -426,6 +430,9 @@ def update_connection(
     if connection.version != payload.version:
         raise HTTPException(status_code=409, detail="连接设置已更新，请刷新后重试")
     changes = payload.model_dump(exclude_unset=True, exclude={"version"})
+    # Explicit nulls survive ``exclude_unset``; applying them to the NOT NULL
+    # name/base_url columns surfaced as a raw IntegrityError 500 (#664).
+    reject_required_nulls(ProviderConnection, changes)
     default_cli_executable = default_cli_executable_for_protocol(connection.protocol)
     previous_cli_executable = str(
         (connection.nonsecret_config or {}).get("cli_executable")
@@ -621,6 +628,10 @@ def update_model(db: Session, model_id: str, payload: ProviderModelUpdate) -> AI
     display_enabled = changes.pop("display_enabled", None)
     if display_requested and display_enabled is None:
         raise HTTPException(status_code=422, detail="模型展示偏好不能为 null")
+    # ``display_enabled`` keeps its dedicated message above; the remaining
+    # explicit nulls (display_name etc.) hit NOT NULL columns and used to
+    # fail at commit with a 500 instead of a validation error (#664).
+    reject_required_nulls(AIModel, changes)
     if display_requested and not changes:
         result = db.execute(
             update(AIModel)
