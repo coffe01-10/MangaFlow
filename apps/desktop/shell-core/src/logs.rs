@@ -1925,6 +1925,38 @@ mod tests {
     }
 
     #[test]
+    /// The record line's exact shape: ts/event/fields in one JSONL line —
+    /// the export manifest and every forensics reader parse THIS shape.
+    /// Pins the three keys (no extras that would grow the contract), the
+    /// event name verbatim, and the fields' verbatim nesting.
+    #[test]
+    fn run_log_record_line_shape_is_ts_event_fields() {
+        let user_data = temp_user_data("line-shape");
+        let token = "ab".repeat(16);
+        let run_log = RunLog::create(&user_data, &token).unwrap();
+        run_log
+            .record("spawn", &serde_json::json!({ "pid": 4242, "detail": "x" }))
+            .unwrap();
+
+        let log = fs::read_to_string(shell_log_path(&user_data, &token)).unwrap();
+        let value: serde_json::Value = serde_json::from_str(
+            log.lines().next().expect("one line written"),
+        )
+        .unwrap();
+        assert_eq!(
+            value["event"], "spawn",
+            "the event name must be verbatim"
+        );
+        assert_eq!(value["fields"]["pid"], 4242, "fields nest verbatim: {value}");
+        assert_eq!(value["fields"]["detail"], "x");
+        assert!(
+            value["ts"].as_u64().is_some(),
+            "ts must be a number (unix seconds): {value}"
+        );
+        assert!(log.ends_with('\n'), "each record is one newline-terminated line");
+        let _ = fs::remove_dir_all(&user_data);
+    }
+
     fn run_log_record_survives_mutex_poisoning() {
         let user_data = temp_user_data("poison");
         let token = "cd".repeat(16);
