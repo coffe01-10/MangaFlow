@@ -860,3 +860,41 @@
   （队列禁用/LOCAL/AUTO±embedded±redis 可达性 × enqueue vs 诊断）；probe_redis=False
   调用者全量清点（无既有行为变化）；39 passed。跟进已推：settings UI 的嵌入式基线
   从误导性 WARNING 改报 OK（"按设计本地执行"）；诊断假体补 close()。
+
+- **§35 补遗十三（round-30 APPROVE + F6 跟进）→ PR #729（待 lead）**：#715 追溯 APPROVE
+  （busy-4173 catch 可达性/状态/计划B不可达/kill-before-print/端口常量契约逐项确认；
+  SIGKILL 优于 stdin.end() 的理由引 N3 §31 优雅停机挂起记录）。F6 跟进：拆销路径钉清单
+  增补 busy-4173 span（注释锚 → process.exit），mutation 红/绿实测。过程：夜分支残留的
+  cherry-pick 状态已 --quit 清理并推送同步。
+- **§35 补遗十四（#729 rebase 完成流程事故披露）**：rebase 中误将我方内容强推至他组
+  `glm/ledger-23`（refspec 错误，持续约 1 分钟）——已立即以原 tip 06afa31 恢复（ls-remote
+  核验）并在 #687 留事故说明；#687 owner 请在下次推送前核验分支。#729 最终态：
+  rebase 至最新 master（账本 33b 并入），PR 文件 = 钉测试 + 审计 rider，mergeable 待
+  GitHub 重算。
+- **教训强化**：跨分支 refspec 推送必须逐字核对目标分支名；本窗两次分支手术 + 一次误推
+  均为 checkout/分支操作与内容操作交错的产物。
+=======
+
+- **§35 补遗十五（06:07 同步）**：夜分支并 master adb646a（#729/#730 已并在 master 侧，
+  与我方补遗 13/14 同文件双写——并集解决保留双侧）；串行证据重跑 **156 passed**（exit=0）
+  + cargo **168/0**（合并后 ledger 文件不参与执行，证据有效）。
+
+- **§35 补遗十六（06:30 同步）**：master adc96b5（#731 账本 33c）并入；其 queue_enabled
+  排序探针与我方 round-30 矩阵一致（queue_enabled=False 在 embedded 分支前短路 →
+  QUEUE_DISABLED，设计自洽——交叉验证）。#725 上留防重说明：诊断腿已由
+  test_embedded_auto_diagnostics_report_local_despite_reachable_redis 覆盖（可达 redis
+  假体三断言），#727 的 drop-in 若无额外断言不应重复合并。
+
+- **§35 补遗十七（a3422e8 收尾证据 + #733 交叉审）**：真 runner **157 passed**（exit=0，
+  含 #733 新钉）+ cargo **168/0**。#733 终态检查 64KiB+1 有界读交叉审：超限=截断→解析
+  失败→fail-open 与文档语义一致（"oversize = unreadable"，Rust 读侧 fail-closed 属不同
+  消费者）；text 模式按字符截断（多字节上界 ~4×）为 micro-nit 仍有界；InvalidUTF8 ⊂
+  ValueError ✅。无新缺陷。
+
+- **§35 补遗十八（#734 佐证核查——拆除顺序核验，不抢修）**：#734（他组自报 P1）的
+  "helper exit give-up 3/3 同现"——D5 静态模式拆除顺序核验**正确**：browser.close() →
+  server.close() → stdin.end() 依序（518-520），give-up 为升级梯按设计触发
+  （SIGTERM@15s → 放弃@40s → ok=false）。根因在其构建臂页面行为（数据缺失页的重试
+  fetch 在 stdin.end 时可能挂起连接 → uvicorn 优雅停机等待），非 D5 脚本回归。
+  #734 由申报 agent 持有（缓解选项留 lead），不抢修。
+- **同步**：master 54e9eb1（#735 账本 34 docs-only）并入，零冲突。
