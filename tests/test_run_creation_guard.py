@@ -100,6 +100,36 @@ def test_second_active_run_for_same_scope_is_refused(db_session):
     assert len(runs) == 1
 
 
+@pytest.mark.parametrize("first,second", [(None, "project_id"), ("project_id", None)])
+def test_project_scope_spellings_cannot_bypass_the_guard(db_session, first, second):
+    """#656: scope.py admits both PROJECT spellings (scope_id NULL and
+    scope_id == project_id) and WorkflowRunCreate does not normalize them, so
+    an exact-match guard let the second spelling start a second ACTIVE run on
+    the same scope. Both spellings must collide."""
+
+    workflow = _seed_published_workflow(db_session)
+
+    def resolve(spelling):
+        return None if spelling is None else workflow.project_id
+
+    _seed_run(db_session, workflow, status="RUNNING", scope_id=resolve(first))
+
+    with pytest.raises(ValueError, match="该范围已有进行中的运行"):
+        create_workflow_run(
+            db_session,
+            workflow,
+            scope_type="PROJECT",
+            scope_id=resolve(second),
+            start_node_ids=[],
+            stop_node_ids=[],
+        )
+
+    runs = db_session.scalars(
+        select(WorkflowRun).where(WorkflowRun.workflow_id == workflow.id)
+    ).all()
+    assert len(runs) == 1
+
+
 @pytest.mark.parametrize("terminal", ["FAILED", "CANCELLED", "COMPLETED"])
 def test_terminal_runs_do_not_block_a_new_start(db_session, terminal):
     """T2: start-after-failure / cancel / completion all keep working."""
@@ -117,14 +147,26 @@ def test_terminal_runs_do_not_block_a_new_start(db_session, terminal):
     assert second.id != first_id
 
 
-def test_different_scope_ids_run_concurrently(db_session):
-    """T3: the guard is per (workflow, scope_type, scope_id), not global."""
+def test_different_workflows_scopes_run_concurrently(db_session):
+    """T3: the guard is per (workflow, scope), not global. A PROJECT scope no
+    longer has a second spelling (#656 normalized scope_id NULL and
+    scope_id == project_id into one scope), so independence is shown across
+    two workflows of one project."""
 
     workflow = _seed_published_workflow(db_session)
     _seed_run(db_session, workflow, status="RUNNING", scope_id=None)
+    second = WorkflowDefinition(
+        project_id=workflow.project_id,
+        name="另一源节点流程",
+        draft_graph=_source_only_graph(),
+    )
+    db_session.add(second)
+    db_session.commit()
+    publish_workflow(db_session, second)
+    db_session.refresh(second)
 
     other = create_workflow_run(
-        db_session, workflow, **_start_kwargs(workflow.project_id)
+        db_session, second, **_start_kwargs(second.project_id)
     )
     assert other.status in {"RUNNING", "COMPLETED"}
 

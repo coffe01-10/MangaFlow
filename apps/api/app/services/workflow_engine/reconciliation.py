@@ -394,6 +394,18 @@ def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
             continue
         spec = NODE_TYPE_MAP[node_map[node_id].type]
         if spec.barrier:
+            # (#657) A cancel that claims the run mid-pass used to be caught
+            # only by the post-loop recheck below, after WAITING_APPROVAL was
+            # already stamped into the session: the early return then served
+            # a payload with WAITING_APPROVAL nodes under a CANCELLED run.
+            # Recheck the run right before stamping the barrier (mirroring
+            # the non-barrier recheck below) and roll the pass's pending
+            # writes back so the response reflects the canceller's terminal
+            # state.
+            db.refresh(run, attribute_names=["status"])
+            if run.status in {"COMPLETED", "CANCELLED", "FAILED"}:
+                db.rollback()
+                return get_run(db, run.id)
             item.status = "WAITING_APPROVAL"
             item.input_snapshot = {**item.input_snapshot, "action": spec.barrier}
             paused = True
@@ -461,8 +473,31 @@ def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
     else:
         desired = "RUNNING"
     if desired == "RUNNING":
-        run.version += 1
+        # The RUNNING fast path needs the same terminal fence as the claim
+        # below (#655): the pass may hold node writes pending in the session
+        # (the line-430 RUNNING stamp), and this commit used to flush them
+        # unconditionally. A cancel_run claiming the run between the final
+        # status recheck and this commit then had its CANCELLED node row
+        # overwritten by the pending RUNNING write — a zombie RUNNING node
+        # under a terminal run that no later pass can repair (terminal runs
+        # return early above). Flush the node writes first so they share the
+        # claim's transaction, and only commit while the run is still
+        # non-terminal; a lost claim rolls the pending writes back wholesale.
+        db.flush()
+        claimed = db.execute(
+            update(WorkflowRun)
+            .where(
+                WorkflowRun.id == run.id,
+                WorkflowRun.status.not_in(["COMPLETED", "CANCELLED", "FAILED"]),
+            )
+            .values(version=WorkflowRun.version + 1)
+            .execution_options(synchronize_session=False)
+        )
+        if claimed.rowcount != 1:
+            db.rollback()
+            return get_run(db, run.id)
         db.commit()
+        db.refresh(run)
         return get_run(db, run.id)
     # Terminal and paused transitions must not overwrite a concurrently
     # written terminal state: two reconcilers race routinely (worker

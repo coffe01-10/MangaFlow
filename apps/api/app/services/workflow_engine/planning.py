@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.domain.states import JobStatus
@@ -83,11 +83,23 @@ def create_workflow_run(
     # tombstone here like retry_run does and refuse instead of resurrecting.
     if workflow.deleted_at is not None:
         raise ValueError("工作流不存在或已删除")
+    # PROJECT scope has two accepted spellings (scope.py's validation admits
+    # scope_id == None and scope_id == project_id), and WorkflowRunCreate does
+    # not normalize them. An exact scope_id match let a run started under one
+    # spelling bypass the guard of the other spelling and run a second ACTIVE
+    # run on the same scope (#656), so match both spellings for PROJECT;
+    # every other scope type keeps the exact match (scope_id is mandatory and
+    # unambiguous there).
+    scope_match = (
+        or_(WorkflowRun.scope_id.is_(None), WorkflowRun.scope_id == workflow.project_id)
+        if scope_type == "PROJECT"
+        else WorkflowRun.scope_id == scope_id
+    )
     active_run = db.scalar(
         select(WorkflowRun.id).where(
             WorkflowRun.workflow_id == workflow.id,
             WorkflowRun.scope_type == scope_type,
-            WorkflowRun.scope_id == scope_id,
+            scope_match,
             WorkflowRun.status.not_in({"COMPLETED", "CANCELLED", "FAILED"}),
         )
     )
