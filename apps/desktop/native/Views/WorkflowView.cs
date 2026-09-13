@@ -18,7 +18,7 @@ namespace MangaFlow.Native.Views;
 /// NUI-4: workflow DAG studio. Nodes drag on a dark canvas with bezier edges;
 /// drafts autosave debounced (800ms) with optimistic version, runs poll at 3s.
 /// </summary>
-public sealed class WorkflowView : WorkspaceView
+public sealed partial class WorkflowView : WorkspaceView
 {
     private const double NodeWidth = 224;
     // 端口锚点固定公式（首行中心 ≈ 节点顶部 70px、行距 25px）：只在布局完成前的
@@ -77,107 +77,7 @@ public sealed class WorkflowView : WorkspaceView
 
     public WorkflowView()
     {
-        var root = new Grid();
-        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });   // topbar
-        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });   // status
-        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        root.Children.Add(BuildTopBar());
-        var status = BuildStatusBar();
-        Grid.SetRow(status, 1);
-        root.Children.Add(status);
-        var split = new Grid();
-        split.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(238) });
-        split.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        split.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(286) });
-        Grid.SetRow(split, 2);
-        root.Children.Add(split);
-
-        var libraryHost = new DockPanel { Background = new SolidColorBrush(Color.FromRgb(0x20, 0x24, 0x21)) };
-        var libraryHeader = new Border
-        {
-            Padding = new Thickness(12, 14, 12, 12),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(0x38, 0x3D, 0x39)),
-            BorderThickness = new Thickness(0, 0, 0, 1),
-            Child = new StackPanel
-            {
-                Children =
-                {
-                    new TextBlock { Text = "NODE LIBRARY", FontSize = 10, FontWeight = FontWeights.Bold, Foreground = new SolidColorBrush(Color.FromRgb(0xA4, 0xAD, 0xA7)) },
-                    new TextBlock { Text = "节点库", FontSize = 15, FontWeight = FontWeights.Bold, Foreground = new SolidColorBrush(Color.FromRgb(0xE9, 0xE6, 0xDD)) },
-                },
-            },
-        };
-        DockPanel.SetDock(libraryHeader, Dock.Top);
-        libraryHost.Children.Add(libraryHeader);
-        var libraryScroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = library, Padding = new Thickness(10) };
-        libraryHost.Children.Add(libraryScroll);
-        Grid.SetColumn(libraryHost, 0);
-        split.Children.Add(libraryHost);
-
-        canvasScroll.Content = canvas;
-        canvasScroll.Background = new SolidColorBrush(Color.FromRgb(0x17, 0x1A, 0x18));
-        canvasScroll.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
-        canvasScroll.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
-        Grid.SetColumn(canvasScroll, 1);
-        split.Children.Add(canvasScroll);
-
-        var inspectorHost = new DockPanel { Background = new SolidColorBrush(Color.FromRgb(0x20, 0x24, 0x21)) };
-        var inspectorHeader = new Border
-        {
-            Padding = new Thickness(12, 14, 12, 12),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(0x38, 0x3D, 0x39)),
-            BorderThickness = new Thickness(0, 0, 0, 1),
-            Child = new StackPanel
-            {
-                Children =
-                {
-                    new TextBlock { Text = "INSPECTOR", FontSize = 10, FontWeight = FontWeights.Bold, Foreground = new SolidColorBrush(Color.FromRgb(0xA4, 0xAD, 0xA7)) },
-                    new TextBlock { Text = "属性面板", FontSize = 15, FontWeight = FontWeights.Bold, Foreground = new SolidColorBrush(Color.FromRgb(0xE9, 0xE6, 0xDD)) },
-                },
-            },
-        };
-        DockPanel.SetDock(inspectorHeader, Dock.Top);
-        inspectorHost.Children.Add(inspectorHeader);
-        var inspectorScroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = inspector, Padding = new Thickness(12) };
-        inspectorHost.Children.Add(inspectorScroll);
-        // 运行历史与属性面板同列（网页把版本列表这类辅助列表放进属性面板 aside）。
-        // 刻意分成两个面板：轮询刷新运行历史时不重建属性面板的输入框，编辑中的
-        // 文本不会被 3s 轮询打断（网页 runs 轮询也只更新节点角标与审批行）。
-        var historyHost = new DockPanel { Background = new SolidColorBrush(Color.FromRgb(0x20, 0x24, 0x21)) };
-        var historyHeader = new Border
-        {
-            Padding = new Thickness(12, 12, 12, 10),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(0x38, 0x3D, 0x39)),
-            BorderThickness = new Thickness(0, 1, 0, 0),
-            Child = new StackPanel
-            {
-                Children =
-                {
-                    new TextBlock { Text = "RUN HISTORY", FontSize = 10, FontWeight = FontWeights.Bold, Foreground = new SolidColorBrush(Color.FromRgb(0xA4, 0xAD, 0xA7)) },
-                    new TextBlock { Text = "运行历史", FontSize = 13, FontWeight = FontWeights.Bold, Foreground = new SolidColorBrush(Color.FromRgb(0xE9, 0xE6, 0xDD)) },
-                },
-            },
-        };
-        DockPanel.SetDock(historyHeader, Dock.Top);
-        historyHost.Children.Add(historyHeader);
-        var historyScroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = runHistory, Padding = new Thickness(12) };
-        historyHost.Children.Add(historyScroll);
-        var rightColumn = new Grid();
-        rightColumn.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        rightColumn.RowDefinitions.Add(new RowDefinition { Height = new GridLength(232) });
-        Grid.SetRow(inspectorHost, 0);
-        Grid.SetRow(historyHost, 1);
-        rightColumn.Children.Add(inspectorHost);
-        rightColumn.Children.Add(historyHost);
-        Grid.SetColumn(rightColumn, 2);
-        split.Children.Add(rightColumn);
-
-        var runner = BuildRunner();
-        DockPanel.SetDock(runner, Dock.Bottom);
-        var shell = new DockPanel();
-        shell.Children.Add(runner);
-        shell.Children.Add(root);
-        Content = shell;
+        BuildStudio();
         canvas.PreviewMouseWheel += (sender, e) =>
         {
             if (Keyboard.Modifiers == ModifierKeys.Control)
@@ -239,23 +139,19 @@ public sealed class WorkflowView : WorkspaceView
             BorderBrush = new SolidColorBrush(Color.FromRgb(0x38, 0x3D, 0x39)),
             BorderThickness = new Thickness(0, 0, 0, 1),
         };
-        var dock = new DockPanel();
-        var actions = new StackPanel { Orientation = Orientation.Horizontal };
-        actions.Children.Add(Kit.Act("保存", async (_, _) => await SaveNowAsync(), "Compact"));
-        var validate = Kit.Act("校验", async (_, _) => await ValidateAsync(), "Compact");
-        validate.Margin = new Thickness(6, 0, 0, 0);
-        actions.Children.Add(validate);
-        var publish = Kit.Act("发布", async (_, _) => await PublishAsync(), "CompactInk");
-        publish.Margin = new Thickness(6, 0, 0, 0);
-        actions.Children.Add(publish);
-        var export = Kit.Act("导出", (_, _) => ExportGraph(), "Compact");
-        export.Margin = new Thickness(6, 0, 0, 0);
-        actions.Children.Add(export);
-        var import = Kit.Act("导入", async (_, _) => await ImportGraphAsync(), "Compact");
-        import.Margin = new Thickness(6, 0, 0, 0);
-        actions.Children.Add(import);
-        DockPanel.SetDock(actions, Dock.Right);
-        dock.Children.Add(actions);
+        var actions = new WrapPanel();
+        actions.Children.Add(FlowAction("导出", (_, _) => ExportGraph(), "Compact", light: true));
+        actions.Children.Add(FlowAction("导入", async (_, _) => await ImportGraphAsync(), "Compact", light: true));
+        actions.Children.Add(FlowAction("保存", async (_, _) => await SaveNowAsync(), "Compact", light: true));
+        actions.Children.Add(FlowAction("校验", async (_, _) => await ValidateAsync(), "Compact", light: true));
+        actions.Children.Add(FlowAction("发布", async (_, _) => await PublishAsync(), "CompactInk", light: true));
+        workflowSelector.Style = (Style)Application.Current.FindResource(typeof(ComboBox));
+        workflowSelector.Width = 230; workflowSelector.MinHeight = 34; workflowSelector.Height = 34;
+        var title = new WrapPanel { VerticalAlignment = VerticalAlignment.Center };
+        title.Children.Add(new TextBlock { Text = "流程编排", Foreground = new SolidColorBrush(Color.FromRgb(154, 73, 58)),
+            FontSize = 12, Margin = new Thickness(0, 0, 18, 0), VerticalAlignment = VerticalAlignment.Center });
+        title.Children.Add(workflowSelector);
+        bar.Child = new PageHeading(title, actions);
         workflowSelector.SelectionChanged += async (_, _) =>
         {
             if (workflowSelector.SelectedItem is ComboBoxItem { Tag: string id } && id != workflowId)
@@ -278,46 +174,6 @@ public sealed class WorkflowView : WorkspaceView
                 await LoadWorkflowAsync(id);
             }
         };
-        dock.Children.Add(workflowSelector);
-        bar.Child = dock;
-        return bar;
-    }
-
-    private FrameworkElement BuildStatusBar()
-    {
-        var bar = new Border
-        {
-            Background = new SolidColorBrush(Color.FromRgb(0x20, 0x24, 0x21)),
-            Padding = new Thickness(16, 8, 16, 8),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(0x38, 0x3D, 0x39)),
-            BorderThickness = new Thickness(0, 0, 0, 1),
-        };
-        var dock = new DockPanel();
-        var canvasTools = new StackPanel { Orientation = Orientation.Horizontal };
-        canvasTools.Children.Add(Kit.Act("撤销", (_, _) => Undo(), "Compact"));
-        var redo = Kit.Act("重做", (_, _) => Redo(), "Compact");
-        redo.Margin = new Thickness(6, 0, 0, 0);
-        canvasTools.Children.Add(redo);
-        var auto = Kit.Act("自动布局", (_, _) => AutoLayout(), "Compact");
-        auto.Margin = new Thickness(6, 0, 0, 0);
-        canvasTools.Children.Add(auto);
-        var copy = Kit.Act("复制", (_, _) => DuplicateSelected(), "Compact");
-        copy.Margin = new Thickness(6, 0, 0, 0);
-        canvasTools.Children.Add(copy);
-        // P2-2: 删除按钮统一分派（选中连线删连线，否则选中节点删节点），且无
-        // 选中对象时禁用——对齐 web 端 deleteKeyCode 只作用于唯一选中对象 +
-        // 工具栏 disabled 语义，不再出现点了静默无效。
-        removeButton = Kit.Act("删除", (_, _) => DeleteSelection(), "Compact");
-        removeButton.Margin = new Thickness(6, 0, 0, 0);
-        canvasTools.Children.Add(removeButton);
-        var fit = Kit.Act("查看全图", (_, _) => FitView(), "Compact");
-        fit.Margin = new Thickness(6, 0, 0, 0);
-        canvasTools.Children.Add(fit);
-        DockPanel.SetDock(canvasTools, Dock.Left);
-        dock.Children.Add(canvasTools);
-        statusLine.HorizontalAlignment = HorizontalAlignment.Right;
-        dock.Children.Add(statusLine);
-        bar.Child = dock;
         return bar;
     }
 
@@ -330,35 +186,31 @@ public sealed class WorkflowView : WorkspaceView
             BorderThickness = new Thickness(0, 1, 0, 0),
             Padding = new Thickness(16, 9, 16, 9),
         };
-        var dock = new DockPanel();
-        var actions = new StackPanel { Orientation = Orientation.Horizontal };
-        var runNode = Kit.Act("运行节点", async (_, _) => await RunAsync([SelectedId()], [SelectedId()]), "Compact");
-        var runFrom = Kit.Act("从这里运行", async (_, _) => await RunAsync([SelectedId()], []), "Compact");
-        runFrom.Margin = new Thickness(6, 0, 0, 0);
-        var runAll = Kit.Act("运行工作流", async (_, _) => await RunAsync([], []), "CompactInk");
+        var actions = new WrapPanel();
+        runNodeButton = FlowAction("运行节点", async (_, _) => await RunAsync([SelectedId()], [SelectedId()]), "Compact");
+        runFromButton = FlowAction("从这里运行", async (_, _) => await RunAsync([SelectedId()], []), "Compact");
+        runFromButton.Margin = new Thickness(6, 0, 0, 0);
+        var runAll = FlowAction("运行工作流", async (_, _) => await RunAsync([], []), "CompactInk");
         runAll.Margin = new Thickness(6, 0, 0, 0);
-        actions.Children.Add(runNode);
-        actions.Children.Add(runFrom);
+        actions.Children.Add(runNodeButton);
+        actions.Children.Add(runFromButton);
         actions.Children.Add(runAll);
-        DockPanel.SetDock(actions, Dock.Right);
-        dock.Children.Add(actions);
         scopeType.Items.Add(new ComboBoxItem { Tag = "CHAPTER", Content = "章节" });
         scopeType.Items.Add(new ComboBoxItem { Tag = "PAGE", Content = "页面" });
         scopeType.SelectedIndex = 0;
         scopeType.SelectionChanged += async (_, _) => await LoadScopeTargetsAsync();
-        var scopeRow = new StackPanel { Orientation = Orientation.Horizontal };
+        var scopeRow = new WrapPanel { VerticalAlignment = VerticalAlignment.Center };
         var label = new TextBlock { Text = "运行范围  ", VerticalAlignment = VerticalAlignment.Center, Foreground = new SolidColorBrush(Color.FromRgb(0xE9, 0xE6, 0xDD)), FontSize = 12 };
         scopeRow.Children.Add(label);
         scopeRow.Children.Add(scopeType);
         scopeTarget.Margin = new Thickness(8, 0, 0, 0);
         scopeRow.Children.Add(scopeTarget);
-        runMonitor.Margin = new Thickness(18, 0, 0, 0);
+        runMonitor.Margin = new Thickness(12, 0, 0, 0);
         scopeRow.Children.Add(runMonitor);
-        dock.Children.Add(scopeRow);
         // 审批队列挂在页脚（网页 footer 的 WAITING_APPROVAL 行）：有等待确认的
         // 节点时出现模型/清晰度选择与「确认继续」，为空时不占高度。
         var content = new StackPanel();
-        content.Children.Add(dock);
+        content.Children.Add(new PageHeading(scopeRow, actions));
         approvalQueue.Margin = new Thickness(0, 4, 0, 0);
         content.Children.Add(approvalQueue);
         bar.Child = content;
@@ -506,7 +358,7 @@ public sealed class WorkflowView : WorkspaceView
                 {
                     Children =
                     {
-                        new TextBlock { Text = type.Text("display_name"), FontWeight = FontWeights.Bold, FontSize = 12.5, Foreground = new SolidColorBrush(Color.FromRgb(0xE9, 0xE6, 0xDD)), TextWrapping = TextWrapping.Wrap },
+                        new TextBlock { Text = type.Text("display_name"), FontWeight = FontWeights.Bold, FontSize = 13, Foreground = new SolidColorBrush(Color.FromRgb(0xE9, 0xE6, 0xDD)), TextWrapping = TextWrapping.Wrap },
                         new TextBlock { Text = type.Text("description"), FontSize = 11, Foreground = new SolidColorBrush(Color.FromRgb(0xA4, 0xAD, 0xA7)), TextWrapping = TextWrapping.Wrap },
                     },
                 },
@@ -517,6 +369,7 @@ public sealed class WorkflowView : WorkspaceView
                 Margin = new Thickness(0, 0, 0, 6),
                 Padding = new Thickness(10, 8, 10, 8),
             };
+            button.Style = (Style)FindResource("FlowButton");
             button.Click += (_, _) => AddNode(type);
             library.Children.Add(button);
         }
@@ -537,6 +390,7 @@ public sealed class WorkflowView : WorkspaceView
             // 提交块：画布归属、当前选择、版本号与 current 同组落地（都在 UI 线程，
             // 中间无 await），三者永不描述不同的工作流。
             current = loaded;
+            validationValue.Text = "未校验";
             workflowId = requestedId;
             canvasWorkflowId = requestedId;
             version = current.Number("version");
@@ -629,11 +483,13 @@ public sealed class WorkflowView : WorkspaceView
         }
         ApplyView();
         RefreshDeleteButton();   // 重建会收敛悬空的 selectedEdgeKey，按钮态随之刷新
+        RefreshCanvasButtons();
     }
 
     private void ApplyView()
     {
         canvas.RenderTransform = new ScaleTransform(scale, scale);
+        zoomLabel.Text = $"{scale:P0}";
         canvas.Width = Math.Max(1200, nodes.Count * 285 / Math.Max(0.2, scale));
         canvas.Height = Math.Max(700, 700 / Math.Max(0.2, scale));
     }
@@ -915,6 +771,7 @@ public sealed class WorkflowView : WorkspaceView
     private void RefreshDeleteButton()
     {
         if (removeButton != null) removeButton.IsEnabled = selectedEdgeKey != null || selected != null;
+        RefreshCanvasButtons();
     }
 
     // 拖拽移动时只更新与该节点相连边的 Path Data，避免全量重绘
@@ -1105,6 +962,7 @@ public sealed class WorkflowView : WorkspaceView
         history.Add(snapshot);
         if (history.Count > 40) history.RemoveAt(0);
         historyIndex = history.Count;
+        RefreshCanvasButtons();
     }
 
     // ============ Autosave (800ms debounce, serialized, version-carried) ============
@@ -1217,6 +1075,7 @@ public sealed class WorkflowView : WorkspaceView
             var issues = report.Array("issues");
             var errors = issues.Count(i => i.Text("severity") == "ERROR");
             var warnings = issues.Count - errors;
+            validationValue.Text = $"{issues.Count} 项";
             statusLine.Text = $"校验完成：{errors} 项错误 · {warnings} 项警告";
             if (issues.Count > 0)
                 MessageBox.Show(Host, string.Join("\n", issues.Select(i => $"[{i.Text("severity")}] {i.Text("message")}")), "校验问题");
@@ -1393,7 +1252,7 @@ public sealed class WorkflowView : WorkspaceView
             // 的动作。取消仍是唯一的停止途径，不发明别的端点。
             if (latestRun.Text("status") is "RUNNING" or "PAUSED")
             {
-                var cancel = Kit.Act("取消", async (_, _) =>
+                var cancel = FlowAction("取消", async (_, _) =>
                 {
                     try
                     {
@@ -1481,11 +1340,11 @@ public sealed class WorkflowView : WorkspaceView
             else
             {
                 // 网页此处是跳转单页生成页采用候选的链接
-                var adopt = Kit.Act("前往采用", async (_, _) => await Context!.NavigateSection("generate", ""), "Compact");
+                var adopt = FlowAction("前往采用", async (_, _) => await Context!.NavigateSection("generate", ""), "Compact");
                 adopt.Margin = new Thickness(0, 0, 8, 0);
                 row.Children.Add(adopt);
             }
-            approve = Kit.Act("确认继续", async (_, _) => await ApproveNodeAsync(nodeRun), "CompactInk");
+            approve = FlowAction("确认继续", async (_, _) => await ApproveNodeAsync(nodeRun), "CompactInk");
             approve.Margin = new Thickness(8, 0, 0, 0);
             // #391：别名失效后重渲染，下拉回退占位项的赋值发生在 SelectionChanged
             // 挂接之前，事件不触发、drawModel 保留失效别名——初始使能必须用与上面
@@ -1573,7 +1432,10 @@ public sealed class WorkflowView : WorkspaceView
     private void UpdateStatus(string label)
     {
         var published = current.Text("published_version_id").Length > 0;
-        statusLine.Text = $"{label} · 草稿 V{current.Number("draft_version")} · 已发布 {(published ? "版本就绪" : "尚未发布")}";
+        draftValue.Text = $"V{current.Number("draft_version")}";
+        publishedValue.Text = published ? "版本就绪" : "尚未发布";
+        saveValue.Text = label.Split('·')[0].Trim();
+        statusLine.Text = "";
     }
 
     // ============ 节点检查器（配置项/出现条件/值域对齐网页 workflow-studio） ============
@@ -1589,6 +1451,7 @@ public sealed class WorkflowView : WorkspaceView
         inspector.Children.Clear();
         if (selected == null)
         {
+            inspectorHeading.Text = "属性面板";
             inspector.Children.Add(new TextBlock
             {
                 Text = "从这里开始", Foreground = new SolidColorBrush(Color.FromRgb(0xE9, 0xE6, 0xDD)),
@@ -1607,6 +1470,7 @@ public sealed class WorkflowView : WorkspaceView
         }
         var node = selected;
         var config = node.ConfigElement;
+        inspectorHeading.Text = node.Name;
 
         var name = new TextBox { Text = node.Name };
         System.Windows.Automation.AutomationProperties.SetName(name, "节点名称");
@@ -1625,7 +1489,7 @@ public sealed class WorkflowView : WorkspaceView
             var modelNote = new TextBox { Text = "必须显式选择供应商图片模型", IsReadOnly = true };
             System.Windows.Automation.AutomationProperties.SetName(modelNote, "模型说明");
             inspector.Children.Add(modelNote);
-            var resolution = new ComboBox { Width = 130 };
+            var resolution = new ComboBox {  };
             System.Windows.Automation.AutomationProperties.SetName(resolution, "建议清晰度");
             foreach (var option in new[] { "1K", "2K", "4K" }) resolution.Items.Add(option);
             resolution.SelectedItem = config.Text("resolution", "1K") is "1K" or "2K" or "4K" ? config.Text("resolution", "1K") : "1K";
@@ -1665,7 +1529,6 @@ public sealed class WorkflowView : WorkspaceView
             var temperature = new TextBox
             {
                 Text = config.Decimal("temperature", 0.2).ToString("0.###", CultureInfo.InvariantCulture),
-                Width = 130,
             };
             System.Windows.Automation.AutomationProperties.SetName(temperature, "温度");
             AttachNumberEditor(temperature, node, "temperature", 0, 2, 0.2, round: false);
@@ -1673,10 +1536,10 @@ public sealed class WorkflowView : WorkspaceView
             inspector.Children.Add(temperature);
         }
 
-        var timeout = new TextBox { Text = ((int)config.Decimal("timeout_seconds", 900)).ToString(), Width = 130 };
+        var timeout = new TextBox { Text = ((int)config.Decimal("timeout_seconds", 900)).ToString() };
         System.Windows.Automation.AutomationProperties.SetName(timeout, "超时（秒）");
         AttachNumberEditor(timeout, node, "timeout_seconds", 30, 3600, 900, round: true);
-        var retries = new TextBox { Text = ((int)config.Decimal("max_attempts", 3)).ToString(), Width = 130 };
+        var retries = new TextBox { Text = ((int)config.Decimal("max_attempts", 3)).ToString() };
         System.Windows.Automation.AutomationProperties.SetName(retries, "重试次数");
         AttachNumberEditor(retries, node, "max_attempts", 1, 10, 3, round: true);
         inspector.Children.Add(DarkLabel("超时（秒）"));
@@ -1685,7 +1548,7 @@ public sealed class WorkflowView : WorkspaceView
         inspector.Children.Add(retries);
 
         // 桌面补充（网页检查器未渲染）：并发值域来自后端 schema（1-8，默认 1）
-        var concurrency = new TextBox { Text = ((int)config.Decimal("concurrency", 1)).ToString(), Width = 130 };
+        var concurrency = new TextBox { Text = ((int)config.Decimal("concurrency", 1)).ToString() };
         System.Windows.Automation.AutomationProperties.SetName(concurrency, "并发");
         AttachNumberEditor(concurrency, node, "concurrency", 1, 8, 1, round: true);
         inspector.Children.Add(DarkLabel("并发（1-8）"));
@@ -1705,10 +1568,10 @@ public sealed class WorkflowView : WorkspaceView
         // condition 三件套：仅 control.condition（默认 path="$"、operator="exists"）
         if (node.Type == "control.condition")
         {
-            var path = new TextBox { Text = ConditionText(node, "path", "$"), Width = 180 };
+            var path = new TextBox { Text = ConditionText(node, "path", "$") };
             System.Windows.Automation.AutomationProperties.SetName(path, "JSON 路径");
             path.TextChanged += (_, _) => { SetConditionValue(node, "path", path.Text); ScheduleSave(); };
-            var operators = new ComboBox { Width = 130 };
+            var operators = new ComboBox {  };
             System.Windows.Automation.AutomationProperties.SetName(operators, "比较符");
             foreach (var (value, label) in new[]
                      {
@@ -1724,7 +1587,7 @@ public sealed class WorkflowView : WorkspaceView
             {
                 if (operators.SelectedItem is ComboBoxItem { Tag: string value }) { SetConditionValue(node, "operator", value); ScheduleSave(); }
             };
-            var conditionValue = new TextBox { Text = ConditionText(node, "value", ""), Width = 180 };
+            var conditionValue = new TextBox { Text = ConditionText(node, "value", "") };
             System.Windows.Automation.AutomationProperties.SetName(conditionValue, "比较值");
             conditionValue.TextChanged += (_, _) => { SetConditionValue(node, "value", conditionValue.Text); ScheduleSave(); };
             inspector.Children.Add(DarkLabel("JSON 路径"));
@@ -2074,12 +1937,8 @@ public sealed class WorkflowView : WorkspaceView
                 Height = 3, Background = new SolidColorBrush(color),
                 HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Top,
             };
-            Element.Loaded += (_, _) =>
-            {
-                var grid = Element.Child as StackPanel;
-                grid?.Children.Insert(0, topBar);
-                QueueAnchorMeasure();   // 载入（含 topBar 插入引起的重排）后重测端口锚点
-            };
+            content.Children.Insert(0, topBar);
+            Element.Loaded += (_, _) => QueueAnchorMeasure();
         }
 
         public void SetSelected(bool isSelected)
