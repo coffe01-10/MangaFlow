@@ -22,7 +22,8 @@ from app.models import (
     WorkflowVersion,
     utcnow,
 )
-from app.services.workflow_engine.catalog import graph_checksum
+from app.services.workflow_engine import reconciliation as workflow_reconciliation
+from app.services.workflow_engine.catalog import _node, graph_checksum
 from app.services.workflow_engine.reconciliation import reconcile_run
 
 
@@ -144,6 +145,74 @@ def test_running_fast_path_is_fenced_against_concurrent_cancel(db_session, monke
     assert result.status == "CANCELLED"
     returned_node = next(item for item in result.node_runs if item.id == node_run_id)
     assert returned_node.status == "CANCELLED"  # not resurrected to RUNNING
+    db_session.expire_all()
+    assert db_session.get(WorkflowRun, run_id).status == "CANCELLED"
+    assert db_session.get(WorkflowNodeRun, node_run_id).status == "CANCELLED"
+
+
+def test_barrier_branch_rechecks_terminal_run_before_waiting_approval(db_session, monkeypatch):
+    """#657: the barrier branch stamped WAITING_APPROVAL without a terminal
+    recheck, so a run cancelled mid-pass (here: the cancel lands while
+    reconcile loads the graph) ended up returning a payload with
+    WAITING_APPROVAL nodes under a CANCELLED run — the post-loop recheck
+    returned without rolling the stamp back. The barrier branch must recheck
+    the run state right before stamping and serve the canceller's terminal
+    snapshot instead."""
+
+    monkeypatch.setattr(get_settings(), "queue_enabled", False)
+    project = Project(name="栅栏分支终态复查")
+    db_session.add(project)
+    db_session.flush()
+    graph = {
+        "schema_version": 2,
+        "nodes": [_node("adopt", "control.approval", "采用候选", 0, 0)],
+        "edges": [],
+    }
+    _, version = _definition_and_version(db_session, project, "栅栏复查流程", graph)
+    run = WorkflowRun(
+        workflow_id=version.workflow_id,
+        workflow_version_id=version.id,
+        project_id=project.id,
+        scope_type="PAGE",
+        scope_id="scope-barrier-recheck",
+        status="RUNNING",
+        started_at=utcnow(),
+    )
+    db_session.add(run)
+    db_session.flush()
+    node_run = WorkflowNodeRun(
+        workflow_run_id=run.id,
+        node_id="adopt",
+        node_type="control.approval",
+        status="WAITING",
+        output_refs={},
+    )
+    db_session.add(node_run)
+    db_session.commit()
+    run_id, node_run_id = run.id, node_run.id
+
+    factory = _session_factory(db_session)
+    real_graph_for_run = workflow_reconciliation._graph_for_run
+    fired: list[bool] = []
+
+    def _graph_with_concurrent_cancel(db, target_run):
+        graph = real_graph_for_run(db, target_run)
+        # The run is cancelled mid-pass, after reconcile's entry read saw it
+        # RUNNING but before the barrier node is visited.
+        fired.append(True)
+        _cancel_run_via_second_session(factory, run_id)
+        return graph
+
+    monkeypatch.setattr(
+        workflow_reconciliation, "_graph_for_run", _graph_with_concurrent_cancel
+    )
+
+    result = reconcile_run(db_session, run_id)
+
+    assert fired, "the concurrent-cancel window was not constructed"
+    assert result.status == "CANCELLED"
+    returned_node = next(item for item in result.node_runs if item.id == node_run_id)
+    assert returned_node.status == "CANCELLED"  # never WAITING_APPROVAL
     db_session.expire_all()
     assert db_session.get(WorkflowRun, run_id).status == "CANCELLED"
     assert db_session.get(WorkflowNodeRun, node_run_id).status == "CANCELLED"

@@ -394,6 +394,18 @@ def reconcile_run(db: Session, run_id: str) -> WorkflowRun:
             continue
         spec = NODE_TYPE_MAP[node_map[node_id].type]
         if spec.barrier:
+            # (#657) A cancel that claims the run mid-pass used to be caught
+            # only by the post-loop recheck below, after WAITING_APPROVAL was
+            # already stamped into the session: the early return then served
+            # a payload with WAITING_APPROVAL nodes under a CANCELLED run.
+            # Recheck the run right before stamping the barrier (mirroring
+            # the non-barrier recheck below) and roll the pass's pending
+            # writes back so the response reflects the canceller's terminal
+            # state.
+            db.refresh(run, attribute_names=["status"])
+            if run.status in {"COMPLETED", "CANCELLED", "FAILED"}:
+                db.rollback()
+                return get_run(db, run.id)
             item.status = "WAITING_APPROVAL"
             item.input_snapshot = {**item.input_snapshot, "action": spec.barrier}
             paused = True
