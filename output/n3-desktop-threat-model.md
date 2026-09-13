@@ -500,3 +500,13 @@
 - 头两次 plan-B 活体运行中 helper 未在 40s give-up 窗口内退出（15s/25s 组杀升级未产生 exit 事件），第三次起未复现且本次干净退出。怀疑方向：uvicorn 优雅停机等中继 keep-alive 连接排空。pytest 侧同一 teardown（DesktopShell.stop）始终 exit 0。继续盯。
 
 **认证**：D5 plan-B PASS ×3（第三次为最终干净形态）；node --check 过。
+
+---
+
+## 28. 夜班续（2026-09-14 02:05，基线 da2b65f；#694/#697/#699 已合）
+
+**E 轮：**
+- **PR #699 交叉审**（GO 拒绝终态日志，夜班代理）：RUN journal 套 12/12。两处拒绝点（stub+app）均记 `state=failed, error="go-refused"`——我此前审 `_run_stub` 时标注的"直接 CLI 运行泄漏 runtime 目录"残段就此收口。与 #697/#602 语义交互核验：shell 后续 `mark_stopped` 的 `apply_stop` 不触碰 error 字段，根因取证在终态存活。
+- **瞬态挂起复现尝试（负载下）**：D5 plan-B ×1 并发三路 journal/verify 套件压载——PASS、零 give-up。累计 **8/8 干净**（早前 2 次异常疑为并发构建期负载），维持观察项。
+
+**认证**：journal 12/12；D5 plan-B 负载下 PASS。
