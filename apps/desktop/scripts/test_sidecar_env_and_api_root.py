@@ -872,6 +872,7 @@ def test_refusal_leaves_user_data_untouched_and_exits_cleanly(tmp_path, monkeypa
         ],
         capture_output=True,
         text=True,
+        timeout=60,
         env={
             **os.environ,
             "MANGAFLOW_DESKTOP_TOKEN": "e" * 32,

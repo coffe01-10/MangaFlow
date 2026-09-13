@@ -1254,6 +1254,15 @@ def main() -> int:
             return 0
         if isinstance(code, int):
             return code
+        # A message-form refusal journals its failure for forensics (the
+        # stale-runtime sweep only reclaims stopped/failed journals, so a
+        # silent exit would strand the runtime directory on shell-less
+        # runs; the real shell flow terminalizes via mark_stopped).
+        record.update(state="failed", error="refused: " + str(code))
+        try:
+            _write_journal(journal, record)
+        except OSError:
+            pass
         print(code, file=sys.stderr)
         return 1
     except BaseException as error:  # noqa: BLE001 - last-resort failure journal
