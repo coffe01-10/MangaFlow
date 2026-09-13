@@ -480,3 +480,7 @@ doc-code 不一致 sweep（子代理，双源核验）收割 6 项 → 3 PR：
 - 新增 #509（night/pr-build-info-stamp-refusal）：_replace_dist 的
   stamp-write 失败拒绝钉（bundle 已就位时失败必须传播、无 stamp 无
   .tmp 残留，下次 e2e 拒绝未钉源树）（4 pass）。
+- 窗口内复验（01:0x+，master ebe982d）：assemble 双套件（apps/desktop/scripts
+  版 10 钉 + tests/ 版 8 钉）全绿；runner venv bootstrap 14 钉全绿；
+  cargo 155 全绿。并行代理的 assemble 覆盖（#492/#493/#609 谱系）与本方
+  #509/#513 钉共存无冲突。
