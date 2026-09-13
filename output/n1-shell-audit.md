@@ -480,3 +480,5 @@ doc-code 不一致 sweep（子代理，双源核验）收割 6 项 → 3 PR：
 - 新增 #509（night/pr-build-info-stamp-refusal）：_replace_dist 的
   stamp-write 失败拒绝钉（bundle 已就位时失败必须传播、无 stamp 无
   .tmp 残留，下次 e2e 拒绝未钉源树）（4 pass）。
+- 合入确认（21:12 UTC，master 2371437 谱系）：#726（ledger-32）已入。
+  账本分支同步。夜间循环继续。
