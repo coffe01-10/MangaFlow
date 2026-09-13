@@ -118,6 +118,13 @@ def _write_journal(journal: Path, record: dict) -> None:
     for target in (journal, pending):
         if target.is_symlink():
             raise RuntimeError("process journal must not be a link")
+    # #685 (read_journal_bounded parity): a non-regular journal — a planted
+    # FIFO, the same-user planting posture #561 covers for links — would
+    # block read_text() below forever (an open for reading on a writerless
+    # FIFO never returns). The Rust side refuses it before opening; mirror
+    # that here, loudly.
+    if journal.exists() and not journal.is_file():
+        raise RuntimeError("process journal must be a regular file")
     pending.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
     current_state: str | None = None
     try:
