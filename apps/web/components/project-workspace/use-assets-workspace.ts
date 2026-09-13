@@ -202,6 +202,10 @@ export function useAssetsWorkspace({
       }
       queryClient.invalidateQueries({ queryKey: ["assets", id] });
       queryClient.invalidateQueries({ queryKey: ["characters", id] });
+      // 角色参考上传（含随后的自动绑定）改变生成就绪输入（如
+      // MISSING_CHARACTER_REFERENCE 阻塞项）；与 deleteAsset 一致失效生成
+      // 工作台，让生成台立刻按新参考判定就绪（#544）。
+      queryClient.invalidateQueries({ queryKey: ["generation-workbench"] });
     },
     onError: (reason) => setUploadError(reason instanceof Error ? reason.message : "上传失败"),
   });
@@ -265,6 +269,9 @@ export function useAssetsWorkspace({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["assets", id] });
       queryClient.invalidateQueries({ queryKey: ["characters", id] });
+      // 绑定人物参考直接改变生成就绪判定（MISSING_CHARACTER_REFERENCE）；
+      // 与 deleteAsset 一致失效生成工作台，修复阻塞项后生成台立即解封（#544）。
+      queryClient.invalidateQueries({ queryKey: ["generation-workbench"] });
     },
   });
 
@@ -355,6 +362,9 @@ export function useAssetsWorkspace({
       // 同 updateCharacter：保存已生效，先失效缓存的旧 version（否则下次保存
       // 假 409）；身份校验只用于不覆盖用户正在编辑的表单。
       queryClient.invalidateQueries({ queryKey: ["outfits", id] });
+      // 保存改变了服装的参考图集合：生成就绪按服装参考判定，工作台必须一并
+      // 失效（与 deleteOutfit 同族，#544）。
+      queryClient.invalidateQueries({ queryKey: ["generation-workbench"] });
       // Same guard as updateCharacter: don't wipe the form the user is now
       // editing with a late result from a previously selected outfit.
       if (targetId !== editingOutfitId) return;
@@ -441,7 +451,12 @@ export function useAssetsWorkspace({
   const updateStyleMode = useMutation({
     mutationFn: ({ style, colorMode }: { style: StyleProfile; colorMode: StyleProfile["color_mode"] }) =>
       api.updateStyleMode(style.id, style.version, colorMode),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["styles", id] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["styles", id] });
+      // 色彩模式直接决定 STYLE_NOT_COLOR 就绪阻塞项；失效生成工作台，生成台
+      // 不在旧判定上继续禁用生成（与 deleteOutfit/deleteAsset 同族，#544）。
+      queryClient.invalidateQueries({ queryKey: ["generation-workbench"] });
+    },
   });
 
   function selectStyleMode(mode: StyleProfile["color_mode"]) {

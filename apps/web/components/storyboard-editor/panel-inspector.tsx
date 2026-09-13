@@ -164,7 +164,25 @@ export function PanelInspector({
     <section className="dialogue-editor"><header><div><span>LETTERING</span><strong>文字与气泡</strong><small>{panel.dialogues.length} 个气泡 · 本格文字单独校对</small></div><button type="button" disabled={Boolean(newDialogue)} onClick={() => onNewDialogueChange({ target_text: "", speaker_character_id: null, text_direction: "vertical", rewrite_forbidden: true })}><MessageSquarePlus size={12} />新增气泡</button></header>
       <div className="dialogue-stack">{panel.dialogues.map((dialogue, index) => {
         const draft = dialogueDrafts[dialogue.id] ?? { target_text: dialogue.target_text, speaker_character_id: dialogue.speaker_character_id, text_direction: dialogue.text_direction, rewrite_forbidden: dialogue.rewrite_forbidden };
-        return <div key={dialogue.id} className={dialogue.id === selectedBubbleId ? "dialogue-card-slot selected" : "dialogue-card-slot"} style={{ cursor: "pointer" } as CSSProperties} onClick={() => onSelectBubble(dialogue.id)}>
+        // 可点击的卡片槽位必须具备真实按钮的键盘语义（#546 a11y）：鼠标点击
+        // 之外，Enter/空格同样选中气泡；图层列表已是真实 <button>，此处对齐。
+        return <div
+          key={dialogue.id}
+          role="button"
+          tabIndex={0}
+          aria-label={`选中气泡 ${index + 1}`}
+          className={dialogue.id === selectedBubbleId ? "dialogue-card-slot selected" : "dialogue-card-slot"}
+          style={{ cursor: "pointer" } as CSSProperties}
+          onClick={() => onSelectBubble(dialogue.id)}
+          onKeyDown={(event) => {
+            // 只响应槽位自身的按键：卡片内的 textarea/按钮事件会冒泡上来，
+            // 拦截它们会吞掉正文中输入的空格与回车。
+            if (event.currentTarget !== event.target) return;
+            if (event.key !== "Enter" && event.key !== " ") return;
+            event.preventDefault();
+            onSelectBubble(dialogue.id);
+          }}
+        >
           <DialogueCard
             index={index + 1}
             draft={draft}

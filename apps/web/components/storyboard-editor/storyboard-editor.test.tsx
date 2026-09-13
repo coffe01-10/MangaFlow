@@ -1224,3 +1224,135 @@ describe("StoryboardEditor inspector resizer（既有用例）", () => {
     await waitFor(() => expect(window.localStorage.getItem("mangaflow.storyboard-inspector-width")).toBe("530"));
   });
 });
+
+describe("StoryboardEditor 保存失效与气泡交互回归（#544 / #546）", () => {
+  const bubbleDialogue = {
+    id: "dlg-1",
+    panel_id: "panel-1",
+    speaker_character_id: null,
+    target_text: "早上好",
+    reading_order: 1,
+    text_direction: "vertical" as const,
+    region: { preferred: "upper_inner" },
+    rewrite_forbidden: true,
+    bubble: storedBubble,
+  };
+
+  function renderEditorWithClient(client: QueryClient) {
+    return render(
+      <QueryClientProvider client={client}>
+        <StoryboardEditor
+          chapterId="chapter-1"
+          pages={[page] as never}
+          characters={[]}
+          outfits={[]}
+          onReplan={() => undefined}
+          replanPending={false}
+        />
+      </QueryClientProvider>,
+    );
+  }
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    data = makeStoryboard();
+    storyboardQuery.mockReset();
+    storyboardQuery.mockImplementation(() => Promise.resolve(data as never));
+    saveGeometry.mockReset().mockResolvedValue(data as never);
+    updatePanel.mockReset().mockResolvedValue({} as never);
+    updatePageLayout.mockReset().mockResolvedValue(data as never);
+    updateDialogue.mockReset().mockResolvedValue({} as never);
+    createDialogue.mockReset().mockResolvedValue({} as never);
+    deleteDialogue.mockReset().mockResolvedValue(undefined as never);
+  });
+
+  it("#544 叙事保存后失效 generation-workbench 与 candidates，工作台不再持旧 storyboard_version", async () => {
+    data = { page, candidate_count: 0, panels: [makePanel({ dialogues: [bubbleDialogue as never] }), panel2] };
+    const client = new QueryClient();
+    const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+    renderEditorWithClient(client);
+    await screen.findByTestId("canvas-page");
+    fireEvent.change(screen.getByRole("textbox", { name: "气泡 1 文字" }), { target: { value: "雨停之后的早晨" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存更改" }));
+    await waitFor(() => expect(updateDialogue).toHaveBeenCalledTimes(1));
+    // refresh() 的完整失效集合：分镜快照、pages、生成工作台（抽卡与「沿用并
+    // 重新检查」按工作台页版本提交）与候选卡 version_state 标签。
+    await waitFor(() => {
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["storyboard", "page-1"] });
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["pages", "chapter-1"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["generation-workbench"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["candidates"] });
+  });
+
+  it("#544 几何整包保存成功后同样失效 generation-workbench 与 candidates", async () => {
+    const client = new QueryClient();
+    const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+    renderEditorWithClient(client);
+    stubRect(await screen.findByTestId("canvas-page"), 640, 903);
+    const element = panelEl("panel-1");
+    fireEvent.pointerDown(element, { button: 0, pointerId: 1, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(window, { pointerId: 1, clientX: 164, clientY: 100 });
+    fireEvent.pointerUp(window, { pointerId: 1, clientX: 164, clientY: 100 });
+    fireEvent.click(screen.getByRole("button", { name: "保存本页" }));
+    await waitFor(() => expect(saveGeometry).toHaveBeenCalledTimes(1));
+    await waitFor(() => {
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["generation-workbench"] });
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["pages", "chapter-1"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["candidates"] });
+  });
+
+  it("#546 新增气泡取消：已输入文字先确认，拒绝则保留卡片；空文本直接收起", async () => {
+    renderEditorWithClient(new QueryClient());
+    await screen.findByTestId("canvas-page");
+    fireEvent.click(screen.getByRole("button", { name: "编辑本格" }));
+    fireEvent.click(screen.getByRole("button", { name: "新增气泡" }));
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    // 空文本：取消不打扰，直接收起。
+    fireEvent.click(document.querySelector(".dialogue-card.new .dialogue-cancel") as HTMLButtonElement);
+    expect(confirmSpy).not.toHaveBeenCalled();
+    await waitFor(() => expect(document.querySelector(".dialogue-card.new")).toBeNull());
+
+    // 已输入文字：先确认；拒绝则已敲入的内容保留。
+    fireEvent.click(screen.getByRole("button", { name: "新增气泡" }));
+    fireEvent.change(screen.getByLabelText("新增气泡文字"), { target: { value: "还没保存的台词" } });
+    fireEvent.click(document.querySelector(".dialogue-card.new .dialogue-cancel") as HTMLButtonElement);
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(document.querySelector(".dialogue-card.new")).not.toBeNull();
+    expect((screen.getByLabelText("新增气泡文字") as HTMLTextAreaElement).value).toBe("还没保存的台词");
+
+    // 确认丢弃：卡片收起。
+    confirmSpy.mockReturnValue(true);
+    fireEvent.click(document.querySelector(".dialogue-card.new .dialogue-cancel") as HTMLButtonElement);
+    expect(confirmSpy).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(document.querySelector(".dialogue-card.new")).toBeNull());
+    confirmSpy.mockRestore();
+  });
+
+  it("#546 气泡卡槽具备按钮语义：Enter/空格选中气泡，且不吞卡片内输入", async () => {
+    data = { page, candidate_count: 0, panels: [makePanel({ dialogues: [bubbleDialogue as never] }), panel2] };
+    renderEditorWithClient(new QueryClient());
+    await screen.findByTestId("canvas-page");
+    const slot = document.querySelector(".dialogue-card-slot") as HTMLElement;
+    expect(slot).toHaveAttribute("role", "button");
+    expect(slot).toHaveAttribute("tabindex", "0");
+    expect(slot).not.toHaveClass("selected");
+
+    fireEvent.keyDown(slot, { key: "Enter" });
+    expect(slot).toHaveClass("selected");
+    // 画布 Esc 清除选中后，空格同样能选中（覆盖两个触发键）。
+    fireEvent.keyDown(canvasPage(), { key: "Escape" });
+    expect(slot).not.toHaveClass("selected");
+    fireEvent.keyDown(slot, { key: " " });
+    expect(slot).toHaveClass("selected");
+
+    // 卡片内的 textarea 按键会冒泡到槽位：不能被拦截（否则正文无法输入空格）。
+    fireEvent.keyDown(canvasPage(), { key: "Escape" });
+    expect(slot).not.toHaveClass("selected");
+    const textbox = screen.getByRole("textbox", { name: "气泡 1 文字" });
+    const spaceNotPrevented = fireEvent.keyDown(textbox, { key: " " });
+    expect(spaceNotPrevented).toBe(true);
+    expect(slot).not.toHaveClass("selected");
+  });
+});

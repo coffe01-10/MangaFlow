@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tan
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { getPageGenerationIssue, getPageStructureIssue } from "@/lib/generation-rules";
-import { api, type CharacterPackageSummary, type ImageModelAlias, type InspectionResult, type Job } from "@/lib/api";
+import { api, isConflictError, type CharacterPackageSummary, type ImageModelAlias, type InspectionResult, type Job } from "@/lib/api";
 import { activePollInterval, hasActiveItem, isTerminalTaskStatus } from "@/lib/task-status";
 
 import { recommendedRepairType } from "./display";
@@ -397,6 +397,14 @@ export function useGenerationWorkspace({
       queryClient.invalidateQueries({ queryKey: ["pages", activeChapterId] });
       queryClient.invalidateQueries({ queryKey: ["generation-workbench", selectedPage?.id] });
       queryClient.invalidateQueries({ queryKey: ["chapter-production", activeChapterId] });
+    },
+    onError: (error) => {
+      // 409：提交的 storyboard_version 已过期（工作台快照落后于服务端，如分镜
+      // 保存后未失效的窗口）。不失效会让「沿用并重新检查」带着同一旧版本无限
+      // 重试；失效工作台与分镜快照，下一次尝试携带新版本（#544）。
+      if (!isConflictError(error)) return;
+      queryClient.invalidateQueries({ queryKey: ["generation-workbench", selectedPage?.id] });
+      queryClient.invalidateQueries({ queryKey: ["storyboard", selectedPage?.id] });
     },
   });
 

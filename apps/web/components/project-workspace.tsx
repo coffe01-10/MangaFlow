@@ -271,6 +271,9 @@ export default function ProjectWorkspace({
       // generation-workbench 时，工作台仍持旧 storyboard_version，首次抽卡即 409。
       queryClient.invalidateQueries({ queryKey: ["pages", activeChapterId] });
       queryClient.invalidateQueries({ queryKey: ["generation-workbench"] });
+      // storyboard_version 已 bump：候选卡的 version_state 标签由 ["candidates"]
+      // 查询渲染，不失效会与已失效的工作台横幅在新鲜度窗口内互相矛盾（#544）。
+      queryClient.invalidateQueries({ queryKey: ["candidates"] });
     },
   });
 

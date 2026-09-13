@@ -218,6 +218,12 @@ export function StoryboardEditor({
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ["storyboard", currentPage?.id] });
     queryClient.invalidateQueries({ queryKey: ["pages", chapterId] });
+    // 每次保存都会在服务端 bump storyboard_version。生成工作台持有页版本
+    // （抽卡与「沿用并重新检查」都按它提交，staleTime 15s），不失效时首次
+    // 操作即 409；候选卡 version_state 标签由 ["candidates"] 查询渲染，也要
+    // 一并失效。守护理由同 project-workspace assignOutfit 的注释（#544）。
+    queryClient.invalidateQueries({ queryKey: ["generation-workbench"] });
+    queryClient.invalidateQueries({ queryKey: ["candidates"] });
   };
 
   const clearGeometryDrafts = () => {
@@ -237,6 +243,10 @@ export function StoryboardEditor({
       // response under the new key would corrupt the canvas cache.
       queryClient.setQueryData(["storyboard", variables.pageId], response);
       queryClient.invalidateQueries({ queryKey: ["pages", chapterId] });
+      // 几何整包 PUT 同样 bump storyboard_version：生成工作台与候选标签必须
+      // 一并失效（同 refresh()，理由见其注释，#544）。
+      queryClient.invalidateQueries({ queryKey: ["generation-workbench"] });
+      queryClient.invalidateQueries({ queryKey: ["candidates"] });
       setNotice(storyboardCopy.savedNotice(response.page.storyboard_version, response.candidate_count));
     },
   });
@@ -728,7 +738,12 @@ export function StoryboardEditor({
           onRemoveDialogue={(dialogueId) => window.confirm("删除这个文字气泡？") && removeDialogue.mutate(dialogueId)}
           onNewDialogueChange={setNewDialogue}
           onAddDialogue={() => newDialogue && addDialogue.mutate(newDialogue)}
-          onCancelNewDialogue={() => setNewDialogue(null)}
+          onCancelNewDialogue={() => {
+            // 取消新增气泡：已输入的文字不能无确认丢弃（同族：删除气泡、离开
+            // 编辑等退出路径都先确认）；空文本直接收起，不打扰（#546）。
+            if (newDialogue?.target_text.trim() && !window.confirm("取消将丢弃已输入的气泡文字，确定取消吗？")) return;
+            setNewDialogue(null);
+          }}
           onSelectPanel={(panelId) => selectPanels([panelId])}
           onSelectBubble={selectBubble}
           inspectorOpen={inspectorOpen}
