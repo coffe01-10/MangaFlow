@@ -890,3 +890,11 @@
   失败→fail-open 与文档语义一致（"oversize = unreadable"，Rust 读侧 fail-closed 属不同
   消费者）；text 模式按字符截断（多字节上界 ~4×）为 micro-nit 仍有界；InvalidUTF8 ⊂
   ValueError ✅。无新缺陷。
+
+- **§35 补遗十八（#734 佐证核查——拆除顺序核验，不抢修）**：#734（他组自报 P1）的
+  "helper exit give-up 3/3 同现"——D5 静态模式拆除顺序核验**正确**：browser.close() →
+  server.close() → stdin.end() 依序（518-520），give-up 为升级梯按设计触发
+  （SIGTERM@15s → 放弃@40s → ok=false）。根因在其构建臂页面行为（数据缺失页的重试
+  fetch 在 stdin.end 时可能挂起连接 → uvicorn 优雅停机等待），非 D5 脚本回归。
+  #734 由申报 agent 持有（缓解选项留 lead），不抢修。
+- **同步**：master 54e9eb1（#735 账本 34 docs-only）并入，零冲突。
