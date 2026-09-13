@@ -507,7 +507,7 @@ def test_diagnostics_route_reports_embedded_auto_as_ok(client, monkeypatch):
     assert "按设计本地执行" in queue_check["message"], queue_check
 
 
-def test_embedded_auto_mode_adopts_locally_despite_a_reachable_redis(
+def test_embedded_auto_diagnostics_report_local_despite_reachable_redis(
     db_session, monkeypatch
 ):
     """Diagnostics must match enqueue behavior in the embedded runtime:
