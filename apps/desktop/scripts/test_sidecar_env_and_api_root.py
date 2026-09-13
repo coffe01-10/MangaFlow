@@ -797,3 +797,39 @@ def test_relay_and_stub_binds_follow_the_platform_bind_policy(monkeypatch):
         )
     finally:
         server.server_close()
+
+
+def test_await_go_logs_the_rejection_with_the_offending_shape(monkeypatch):
+    """The rejection log leg: a refused GO line must land in the unified
+    stderr log with the offending shape visible (forensics for a launcher
+    that sent stale or malformed handshake lines), and the helper must
+    still return False — refusal is a state, not a crash. StringIO stdin;
+    the module's _log is captured, not the real stderr."""
+
+    import importlib.util
+    import io
+
+    spec = importlib.util.spec_from_file_location(
+        "mangaflow_desktop_helper_golog", str(HELPER_PATH)
+    )
+    helper_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper_module)
+
+    token = "f" * 32
+    captured = io.StringIO()
+    monkeypatch.setattr(
+        helper_module, "_log", lambda message: captured.write(message + "\n")
+    )
+
+    # A stale-run GO (wrong token) — the launcher bug this forensics targets.
+    fake_stdin = io.StringIO(f"MANGAFLOW_GO {'0' * 32}\n")
+    monkeypatch.setattr(helper_module.sys, "stdin", fake_stdin)
+
+    assert helper_module._await_go(token) is False
+    logged = captured.getvalue()
+    assert "GO line rejected" in logged, logged
+    # Secret hygiene: the RAW untrusted line must NOT be echoed (only the
+    # fixed rejection text) — the log is world-readable across sessions.
+    assert "0" * 32 not in logged and token not in logged, (
+        "the untrusted handshake line must not be echoed into the log"
+    )
