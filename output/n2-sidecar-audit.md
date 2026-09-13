@@ -653,3 +653,20 @@
   找回）、工作树复原干净。
 - **串行证据**：新 master runner **127 passed**（exit=0）；cargo 修复后 **155/0**；
   文件重定向触发器 exit 0（93 passed）。
+
+## 32. 20260913 续五（master 36b32ce——#616/#617 已并）
+
+- **#616 已并**（shell-core rlimit 子进程 EFBIG 修复）。
+- **PR #618（shell-core protocol.rs，待 lead）——属性插错吞掉的死测试复活**：#561 测试
+  插入在 oversize-journal 测试的 docstring 与其 `#[test]` 之间——links 测试带**双重
+  `#[test]`**（duplicate_macro_attributes 警告），而
+  `journal_reads_are_bounded_and_oversize_fails_closed` **完全无属性**：按 dead_code
+  编译，JournalTooLarge 契约从未运行。修复为纯块移动（4+/4-，移动块 md5 双向核验一致）。
+- **第 21 轮评审（1 子代理，文件/行级，APPROVE）**：before/after 逐行+md5 核验；复活测试
+  实跑通过且**非空洞**（+1 字节超 JOURNAL_MAX_BYTES → verify_journal 有界读 → 断言
+  JournalTooLarge；补边界：恰在 cap 上因内容非尺寸失败）。**额外发现（INFO→实义）**：
+  master 的双重属性使 links 测试被**执行两次**——基线 155 的计数 = 重复执行 + 死测试
+  恰好抵消，"计数未变"曾是掩盖信号；HEAD 155 = 155 个唯一测试（基线唯一数 154）。
+  fmt 38 处既有差异两侧一致，零新增。
+- **串行证据**：cargo 全量 **155 passed / 0 failed**（唯一数 155）；复活测试按名过滤
+  1 passed；双警告清零。
