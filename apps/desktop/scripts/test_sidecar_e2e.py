@@ -234,6 +234,23 @@ class DesktopShell:
         self.origin = origin
         return record
 
+    def pin_local_queue(self) -> None:
+        """Hermeticity against an ambient Redis: the runtime queue mode
+        defaults to AUTO, which prefers a reachable Redis — in this
+        sandbox a redis-server from another work slot answers on 6379,
+        our paid jobs get enqueued into a queue none of OUR workers
+        drain, and the session hangs (or a foreign worker executes them
+        with mismatched code). The desktop install form runs without
+        Redis by design: pin LOCAL before any job is minted."""
+        request = urllib.request.Request(
+            f"{self.origin}/api/v1/settings/runtime",
+            data=json.dumps({"queue_mode": "LOCAL"}).encode(),
+            method="PATCH",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            assert response.status == 200, response.status
+
     def wait_health(self, timeout: float = 20.0) -> None:
         deadline = time.monotonic() + timeout
         last_error: Exception | None = None
@@ -320,6 +337,11 @@ def desktop(tmp_path: Path):
     try:
         record = shell.handshake()
         shell.wait_health()
+        # Hermeticity: an ambient redis on 6379 (another work slot's)
+        # would otherwise capture AUTO-mode jobs into a queue we never
+        # drain (observed 2026-09-14: jobs stuck QUEUED 120s, root cause
+        # pid 545150 redis-server since Sep 02).
+        shell.pin_local_queue()
         yield shell, user_data, record
     except BaseException as error:
         # An assert inside finally would REPLACE the in-flight setup error:
@@ -345,6 +367,12 @@ class _ScriptedShell:
     doubles script handshake/stop outcomes so the property can be pinned
     without booting a real helper.
     """
+
+    def pin_local_queue(self) -> None:
+        # The real DesktopShell pins the runtime queue mode to LOCAL after
+        # health; the scripted double accepts the call as a no-op — these
+        # tests exercise fixture failure semantics, not queue wiring.
+        return None
 
     def __init__(self, user_data: Path, *, stop_code: int, handshake_error=None) -> None:
         self.user_data = user_data
