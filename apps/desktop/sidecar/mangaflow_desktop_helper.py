@@ -128,6 +128,9 @@ def _write_journal(journal: Path, record: dict) -> None:
     # The pending name gets the same refusal: write_text would block
     # forever on a planted FIFO (open for writing with no reader never
     # returns) — the #685 parity extends to both staged names.
+    # Best-effort like every guard here: an attacker can swap in a FIFO
+    # between this check and write_text (the airtight form is
+    # open(O_NOFOLLOW|O_CREAT) + fstat, beyond this parity's scope).
     if pending.exists() and not pending.is_file():
         raise RuntimeError("journal pending sibling must be a regular file")
     pending.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
