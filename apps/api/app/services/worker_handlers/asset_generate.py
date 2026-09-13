@@ -32,6 +32,7 @@ from app.models import (
 from app.services.asset_dedupe import adopt_deleted_duplicate, live_duplicate
 from app.services.media import create_thumbnails, remove_thumbnails
 from app.services.model_router import model_supports_resolution
+from app.services.prompt_compiler import STRUCTURED_BLOCK_MAX_CHARS, _bound_structured_block
 from app.services.worker_handlers import execution, provider
 from app.services.worker_handlers.execution import JobCancelledError
 
@@ -206,7 +207,13 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
             "primary_name": character.primary_name,
             "aliases": character.aliases,
             "description": character.canonical_description,
-            "locked_features": character.locked_features,
+            # #641: structured fields enter the paid prompt through
+            # json.dumps(prompt_payload) — the same per-block budget the page
+            # compiler applies (prompt_compiler.py) bounds them here so a
+            # hostile/huge blob cannot bill megabytes of prompt.
+            "locked_features": _bound_structured_block(
+                character.locked_features, STRUCTURED_BLOCK_MAX_CHARS
+            ),
         }
     elif batch.target_type == "OUTFIT":
         outfit = db.get(Outfit, batch.target_id)
@@ -245,9 +252,18 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
         subject = {
             "character": character.primary_name,
             "outfit": outfit.name,
-            "components": outfit.components,
-            "state_rules": outfit.state_rules,
-            "locked_fields": outfit.locked_fields,
+            # #641: same per-block budget as the page compiler for these JSON
+            # structures — OutfitCreate caps neither components nor
+            # state_rules at field level, only the 2MB request body.
+            "components": _bound_structured_block(
+                outfit.components, STRUCTURED_BLOCK_MAX_CHARS
+            ),
+            "state_rules": _bound_structured_block(
+                outfit.state_rules, STRUCTURED_BLOCK_MAX_CHARS
+            ),
+            "locked_fields": _bound_structured_block(
+                outfit.locked_fields, STRUCTURED_BLOCK_MAX_CHARS
+            ),
         }
     elif batch.target_type == "STYLE":
         style = db.get(StyleProfile, batch.target_id)
@@ -271,8 +287,15 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
         subject = {
             "name": style.name,
             "color_mode": style.color_mode,
-            "profile": style.profile,
-            "locked_fields": style.locked_fields,
+            # #641: StyleProfileUpdate.profile is a FiniteJsonDict that only
+            # rejects non-finite floats — a ~1.5MB PATCH would ride the paid
+            # prompt unbounded. reference_asset_ids above still resolves from
+            # the raw profile (reference loading must not see the bounded
+            # copy); only the embedded prompt block is bounded.
+            "profile": _bound_structured_block(style.profile, STRUCTURED_BLOCK_MAX_CHARS),
+            "locked_fields": _bound_structured_block(
+                style.locked_fields, STRUCTURED_BLOCK_MAX_CHARS
+            ),
         }
     else:
         raise RuntimeError("资产生成目标类型无效")
