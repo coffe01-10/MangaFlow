@@ -27,6 +27,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -288,3 +289,52 @@ def test_last_resort_merge_preserves_the_annotated_phase_error():
     helper._merge_last_resort_failure(unannotated, RuntimeError("boom"))
     assert unannotated["state"] == "failed"
     assert unannotated["error"] == "RuntimeError", unannotated
+
+
+def test_go_refusal_journals_failed_and_exits_75(tmp_path):
+    """End-to-end: a handshake refused on a wrong GO token must leave the
+    journal in a TERMINAL state — the stale-runtime sweep reclaims only
+    stopped/failed, so a journal left at ready leaked the runtime
+    directory forever. The stub mode is the fast, dependency-free flow
+    for both refusal sites (the app mode shares the same pattern)."""
+
+    import json as json_module
+    import subprocess
+
+    token = "0123456789abcdef0123456789abcdef"
+    runtime = tmp_path / "runtime" / f"mangaflow-desktop-{token}"
+    runtime.mkdir(parents=True)
+    journal = runtime / "owner.json"
+
+    helper = _load_helper()
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            str(HELPER),
+            "stub",
+            "--grandchild",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        env={
+            **os.environ,
+            "MANGAFLOW_DESKTOP_TOKEN": token,
+            "MANGAFLOW_DESKTOP_JOURNAL": str(journal),
+            "MANGAFLOW_DISABLE_DOTENV": "1",
+        },
+    )
+    try:
+        ready_line = proc.stdout.readline()
+        assert ready_line.startswith("MANGAFLOW_READY "), ready_line
+        # The wrong token: the helper must refuse, journal failed, exit 75.
+        proc.stdin.write(f"MANGAFLOW_GO {'f' * 32}\n")
+        proc.stdin.flush()
+        assert proc.wait(timeout=30) == 75, "EXIT_HANDSHAKE_REFUSED is 75"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    record = json_module.loads(journal.read_text(encoding="utf-8"))
+    assert record["state"] == "failed", record
+    assert record["error"] == "go-refused", record
