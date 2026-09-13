@@ -778,3 +778,9 @@
     master 可见；后续夜班账本节以 master 上的该文件为底续写。
   - 评审实证：mutation 双向红（0 窗回归 → 首断言；sweep 全废 → 次断言含静默 remove
     失败）。
+
+- **§35 补遗七（第 27 轮，REQUEST_CHANGES → 修复中）**：#705 边界钉的 HIGH——mtimes 锚在
+  被测常量自身，常量 24h→1h 全套件照样绿（评审实证 mutation c）。修复：字面
+  `assert_eq!(RUNTIME_SWEEP_GRACE_SECONDS, 24*60*60)` + docstring 过度声明更正 + NTP
+  方向性勘误（backward step 反向缩小 aged 的 age；窗口毫秒级，理论性）。→ **PR #707**。
+  （#705 本体已在评审期间被并，9e48ba8。）
