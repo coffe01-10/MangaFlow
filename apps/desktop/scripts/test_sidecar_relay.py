@@ -137,6 +137,13 @@ def read_response(client: socket.socket, timeout_seconds: float) -> bytes:
             chunk = client.recv(65536)
         except socket.timeout:
             continue
+        except ConnectionResetError as error:
+            # Stamp the bytes received before the reset: the only caller
+            # that retries resets (exchange_after_release) must retry a
+            # PRE-bytes overflow refusal but never absorb a mid-exchange
+            # death — a post-bytes reset is a real pipe defect.
+            error.bytes_before_reset = data
+            raise
         if not chunk:
             pytest.fail("relay closed the connection before a full response")
         data += chunk
@@ -236,6 +243,33 @@ def read_until_closed(client: socket.socket, timeout_seconds: float) -> bytes:
     pytest.fail(
         f"relay never closed the connection within {timeout_seconds}s: {data!r}"
     )
+
+
+def exchange_after_release(port: int, retry_seconds: float = 15.0) -> bytes:
+    """Send one REQUEST and read the response, retrying while the relay
+    refuses the connection as overflow. The cap-1 tests observe the
+    failure (pipe_starts == 2 / the broken client's drop) from the MAIN
+    thread while the slot's ``limiter.release()`` still runs on the pump
+    thread's cleanup path — a client that connects in that window is
+    refused as overflow and sees ECONNRESET (the captured round-18
+    flake). The retry makes the phase deterministic WITHOUT losing the
+    pin's teeth: a permanent slot leak still fails at the deadline, and
+    an attempt that dies AFTER response bytes started is a real pipe
+    defect, not a race to absorb — only a pre-bytes refusal is retried."""
+    deadline = time.monotonic() + retry_seconds
+    while True:
+        client = socket.create_connection(("127.0.0.1", port), timeout=15)
+        try:
+            client.sendall(REQUEST)
+            return read_response(client, timeout_seconds=15)
+        except ConnectionResetError as error:
+            client.close()
+            post_bytes = getattr(error, "bytes_before_reset", b"")
+            if post_bytes or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.1)
+        finally:
+            client.close()
 
 
 ERROR_PATH_SCENARIOS = ["dead-upstream-recovery", "client-rst-isolation"]
@@ -357,12 +391,7 @@ def test_relay_releases_slot_when_thread_construction_fails(monkeypatch, scenari
             # Restore construction: the released slot must serve the next
             # client (the leak would have ratcheted capacity to zero).
             monkeypatch.setattr(helper.threading, "Thread", real_thread)
-            client = socket.create_connection(("127.0.0.1", port), timeout=15)
-            try:
-                client.sendall(REQUEST)
-                body = read_response(client, timeout_seconds=15)
-            finally:
-                client.close()
+            body = exchange_after_release(port)
             assert body.endswith(b"ok"), body
         finally:
             stop()
@@ -587,12 +616,7 @@ def test_relay_partial_pump_start_releases_slot_and_serves_next(monkeypatch):
             # it exchanges must be its own (fd-reuse byte theft would
             # corrupt or stall this exchange).
             monkeypatch.setattr(helper.threading, "Thread", real_thread)
-            client = socket.create_connection(("127.0.0.1", port), timeout=15)
-            try:
-                client.sendall(REQUEST)
-                body = read_response(client, timeout_seconds=15)
-            finally:
-                client.close()
+            body = exchange_after_release(port)
             assert body.endswith(b"ok"), body
         finally:
             stop()
