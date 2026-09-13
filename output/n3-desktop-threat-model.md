@@ -534,3 +534,5 @@
 **E 轮（交叉审，全部 RUN）：**
 - **PR #705**（sweep 24h **边界**钉）：RUN 1 passed——`utimensat` 显式 mtime ±5s 跨越 `RUNTIME_SWEEP_GRACE_SECONDS`（陈旧回收/新鲜存活），确定性无 sleep；**journal mtime 才是 sweep 时钟**（非目录），字段选择正确。与 #702 的存活钉互补合拢：wrapper 传常量 + 常量即文档值，两半都钉死。
 - **PR #704**（web spawn 中继线程失败的双 socket 清扫钉）：RUN 1 passed——真实 `_spawn_web_server` + 线程类替换引发降级臂，断言 announced+relay 双 socket 关闭与 node 回收（残留 announced socket 会被读成幻影活 node）。
+
+**§29 补充（02:35）**：**PR #707**（已合）——夜班 agent 的 round-27 finding 1 补上我 #705 审查漏掉的重锚定洞：边界测试锚在常量上，常量变更会整体重锚仍绿；新增字面量断言 `== 24*60*60` + NTP 回拨边界注记。我的 #705/#707 两评均已记自纠。sweep 家族至此钉齐：候选名门/链接拒绝/根守卫/终态 CAS/per-writer 暂存/存活/边界/字面量。
