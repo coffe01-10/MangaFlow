@@ -487,3 +487,16 @@
 - **B：#690 [P4]** plan-B 无浏览器级渲染探针：#300 CSP 三层验证（vitest 源级/delivery_contract 工件级/我的 urllib nonce 相交钉）无一证明**脚本真在 CSP 下执行**——typo 指令（浏览器 fail-closed）、prod 库需 eval、WebView2 特有语义三类破坏 urllib 不可见。唯一真浏览器探针（D5 的 playwright：pageerror/rendered_marker）只驱静态形态。修复面：D5 加 plan-B 模式（同证据形状指向 shell.web_origin）或 pytest-playwright 冒烟——lead 裁决。
 
 **认证**：runner **148/148 ×2**（含 plan-B 全活跃）；shell-tools sink 重扫阴性。
+
+---
+
+## 26. 夜班续（2026-09-14 01:15，基线 fd97adc；#620/#683/#686/#687/#688/#689 全合；#691 rebased MERGEABLE）
+
+**C 轮（#690 落地）：**
+- **PR #693**：D5（verify-static-origin.mjs）新增 **`MANGAFLOW_D5_MODE=plan-b` 模式**——helper 带 `--web-dist`（不带 `--web-origin`，与生产 shell 一致），静态测试服务器与其三个 fence 整体守卫跳过（flag 未设时静态路径字节不变），浏览器证据指向 `ready.web_origin`（与 journal 一致性校验）。plan-B 新断言：**document 响应**的 CSP script-src 必须_nonce 基_且无 unsafe-inline/eval——捕获走 `page.goto` 主帧响应（response 事件捕获会与同源资产响应竞争读空，该捕获 bug 在本 PR 活体运行中发现并修复，未发布）。
+- **活体 RUN ×3 连续 D5 PASS**："plan-B form rendered under the served nonce'd CSP; same-origin API verified through the relay"——真实 helper（alembic 迁移/API/node 子进程/中继）+ 真 Chromium。#690 的"脚本真在 CSP 下执行"缺口至此有可执行验证。
+
+**观察项（暂记，非确认缺陷）：**
+- 头两次 plan-B 活体运行中 helper 未在 40s give-up 窗口内退出（15s/25s 组杀升级未产生 exit 事件），第三次起未复现且本次干净退出。怀疑方向：uvicorn 优雅停机等中继 keep-alive 连接排空。pytest 侧同一 teardown（DesktopShell.stop）始终 exit 0。继续盯。
+
+**认证**：D5 plan-B PASS ×3（第三次为最终干净形态）；node --check 过。
