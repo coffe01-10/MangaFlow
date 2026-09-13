@@ -484,6 +484,40 @@ def test_desktop_embedded_env_var_maps_to_settings(monkeypatch):
     assert Settings().mangaflow_desktop_embedded is False
 
 
+def test_embedded_auto_diagnostics_report_local_despite_reachable_redis(
+    db_session, monkeypatch
+):
+    """Diagnostics must match enqueue behavior in the embedded runtime:
+    with a REACHABLE ambient Redis, AUTO used to report
+    actual_executor=REDIS while enqueues ran locally — advertising an
+    executor the session never uses. The embedded rule reports LOCAL
+    with Redis NOT_USED (enqueue parity, round-30 review follow-up)."""
+
+    from app.services.runtime_settings import queue_execution_state
+
+    _set_queue_mode(db_session, "AUTO")
+    settings = Settings(
+        environment="development", mangaflow_desktop_embedded=True
+    )
+
+    class _FakeRedis:
+        def ping(self):
+            return True
+
+    class _FakeQueue:
+        def enqueue(self, *args, **kwargs):
+            return None
+
+    monkeypatch.setattr("redis.Redis.from_url", lambda *_a, **_k: _FakeRedis())
+    monkeypatch.setattr("rq.Queue", lambda name, connection: _FakeQueue())
+
+    state = queue_execution_state(db_session, settings, probe_redis=True)
+
+    assert state.actual_executor == "LOCAL"
+    assert state.redis_state == "NOT_USED"
+    assert state.can_execute is True
+
+
 def test_embedded_auto_mode_adopts_locally_despite_a_reachable_redis(
     db_session, monkeypatch
 ):
