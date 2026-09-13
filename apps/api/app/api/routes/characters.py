@@ -6,6 +6,7 @@ from app.api.helpers import character_references, ensure_project_scope, reject_r
 from app.database import get_db
 from app.models import (
     Asset,
+    AssetStatus,
     Character,
     CharacterModelPackage,
     CharacterModelPackageVersion,
@@ -325,5 +326,18 @@ def unbind_reference(
     if not reference:
         raise HTTPException(status_code=404, detail="角色参考绑定不存在")
     ensure_project_scope(db, reference, project_id, label="角色参考绑定")
+    character = db.get(Character, reference.character_id)
     db.delete(reference)
+    # autoflush is off: flush the delete so the remaining-reference read below
+    # cannot still see the row this request removes.
+    db.flush()
+    if character:
+        # Issue #632: unbinding must recompute character.status with the same
+        # shape as retract_asset_reference — a character left without any live
+        # (non-tombstoned) reference drops to NEEDS_CONFIRMATION so the
+        # confirmation guidance returns, while a surviving live reference keeps
+        # CANONICAL. version always advances: the binding set changed.
+        if not _live_reference_exists(db, character.id):
+            character.status = AssetStatus.NEEDS_CONFIRMATION
+        character.version += 1
     db.commit()
