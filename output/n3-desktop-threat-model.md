@@ -564,3 +564,5 @@
 **认证**：fixture 依赖流 3 测全绿（9396ffc）。
 
 **§31 补充（04:58）**：**#723/#724 审阅**（night 代理，apps/api 生产改动——源自本 Goal #721 的外来 redis 发现）：helper 置 `MANGAFLOW_DESKTOP_EMBEDDED=1`；API 侧 `Settings.mangaflow_desktop_embedded`（pydantic 环境派生名与 helper 置值一致，#724 修复初版的映射 CRITICAL）+ `enqueue_job` 在 AUTO+embedded 时本地入队（外来 redis 只 ping 得通不是执行器——错配代码执行付费任务 #721 诊断）。RUN：`tests/test_local_worker.py` **38/38** + 旗标读通验证 True。交互核验：该 env 由 helper `os.environ` 设置、API 进程同进程继承 ✓；`_node_child_env` 是否剥离 EMBEDDED 无影响（node 不读）。
+
+**§32 补充（05:07）**：**#727 已立 + 钉已交付 #725**：#725 的诊断腿（`queue_execution_state` 的 embedded-AUTO 分支）零覆盖（test_local_worker 只钉 env 名映射与 enqueue 腿）。修复 PR 在 #725 分支 worktree 上验证 **40/40**（39+1：embedded+AUTO 假 ping 环境 → LOCAL/NOT_USED/can_execute=True；非 embedded 对照保 redis 报告；FakeRedis 需 close()——诊断路径关探针连接），钉以 drop-in 形式留在 PR 评（不推他人分支）。
