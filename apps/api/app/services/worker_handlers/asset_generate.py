@@ -39,6 +39,35 @@ from app.services.worker_handlers.execution import JobCancelledError
 LOGGER = logging.getLogger("mangaflow.worker.asset_generate")
 
 
+def _asset_blob_bytes(asset: Asset) -> bytes:
+    """Read a reference blob with a missing-file preflight (#643 / #210-5).
+
+    A vanished blob is deterministic — no retry re-creates the file — so the
+    old RuntimeError landed in the worker's unclassified path as retryable
+    WORKER_ERROR and burned max_attempts of lease idling before the paid
+    call. Terminal ``INVALID_INPUT`` (retryable=False) matches the
+    inspection/style_analyze/page_generate preflights; a FileNotFoundError
+    from the is_file→read_bytes race is classified the same way.
+    """
+
+    path = provider._asset_path(asset)
+    is_file = getattr(path, "is_file", None)
+    if callable(is_file) and not is_file():
+        raise ProviderAdapterError(
+            "INVALID_INPUT",
+            f"参考图文件不存在，已终止任务：{asset.original_name}",
+            retryable=False,
+        )
+    try:
+        return path.read_bytes()
+    except FileNotFoundError as error:
+        raise ProviderAdapterError(
+            "INVALID_INPUT",
+            f"参考图文件不存在，已终止任务：{asset.original_name}",
+            retryable=False,
+        ) from error
+
+
 def _save_asset_candidate(db, candidate: AssetCandidate, project_id: str, data: bytes) -> Asset:
     settings = get_settings()
     batch = db.get(GenerationBatch, candidate.batch_id)
@@ -379,10 +408,9 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
     )
     if {item.id for item in current_assets} != set(reference_ids):
         raise RuntimeError("参考图在生成前发生变化，已停止模型调用")
-    for asset in references:
-        if not provider._asset_path(asset).is_file():
-            raise RuntimeError(f"参考图文件不存在：{asset.original_name}")
-    reference_bytes = [provider._asset_path(asset).read_bytes() for asset in references]
+    # #643: deterministic missing-file preflight must end the job terminally
+    # instead of classifying as retryable WORKER_ERROR.
+    reference_bytes = [_asset_blob_bytes(asset) for asset in references]
     reference_types = [asset.mime_type for asset in references]
     binding = provider._binding(
         db,

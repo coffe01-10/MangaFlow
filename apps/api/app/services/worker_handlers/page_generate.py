@@ -580,9 +580,17 @@ def _run_page_generate(db, job: GenerationJob) -> None:
 
     reference_asset_ids = [asset.id for asset in reference_assets]
     if job.job_type in {"PAGE_REPAIR", "PAGE_UPSCALE", "PAGE_REGION_REGENERATE"}:
-        original = db.get(PageCandidate, job.request_parameters.get("original_candidate_id"))
+        original_id = job.request_parameters.get("original_candidate_id")
+        original = db.get(PageCandidate, original_id) if original_id else None
         if not original or not original.asset_id:
-            raise RuntimeError("修复或升清任务缺少原始候选图")
+            # #643: deterministic pre-call failure — a retry cannot conjure the
+            # original candidate — so fail terminally instead of burning
+            # max_attempts as retryable WORKER_ERROR.
+            raise ProviderAdapterError(
+                "INVALID_INPUT",
+                "修复或升清任务缺少原始候选图，已终止任务",
+                retryable=False,
+            )
         if original.deleted_at is not None:
             raise JobCancelledError("原始候选已被删除，模型返回结果不再写入")
         original_asset = db.get(Asset, original.asset_id)
@@ -592,10 +600,17 @@ def _run_page_generate(db, job: GenerationJob) -> None:
         reference_types.insert(0, original_asset.mime_type)
         reference_asset_ids.insert(0, original_asset.id)
         if job.job_type == "PAGE_REPAIR":
-            repair = db.get(RepairPlan, job.request_parameters.get("repair_plan_id"))
+            repair_plan_id = job.request_parameters.get("repair_plan_id")
+            repair = db.get(RepairPlan, repair_plan_id) if repair_plan_id else None
             inspection = db.get(InspectionResult, repair.inspection_result_id) if repair else None
             if not repair or not inspection:
-                raise RuntimeError("修复任务缺少检查结果或修复计划")
+                # #643: same deterministic pre-call failure class as the
+                # missing-original guard above.
+                raise ProviderAdapterError(
+                    "INVALID_INPUT",
+                    "修复任务缺少检查结果或修复计划，已终止任务",
+                    retryable=False,
+                )
             repair_context = {
                 "repair_type": repair.repair_type,
                 "category": inspection.category,
