@@ -583,3 +583,5 @@
 - **流程教训（入账）**：#719 合并前我只跑了修复臂的构建 rc + 既有套件绿，**未跑 D5 静态验收**——D5 是该产出的验收器，回归恰在套件盲区。后续构建类 PR 一律附 D5 双模式运行。
 
 **认证**：runner **157/157**（a3422e8，+1 系 #704 钉）；D5 plan-B PASS（同 tip）；D5 静态 FAIL 3/3 即本条 P1 证据。
+
+**§34 补充（07:00）**：**#734 升级证据——dist/frontend 内部不一致已确证**：index.html 引用 11 个 chunk，其中 **2 个缺失**（`08r0r1jh9l4en.js` 入口 JS + `2bhj1v-27oang.css`）→ 无应用 JS 执行 → 无数据获取 → 外壳照渲染（D5 的 rendered_marker 阴性失真）。3× D5 FAIL 一致；而 03:45 同一产出 D5 PASS（api_request_count ≥ 1，PASS 断言即要求）——**03:45 之后某时刻 dist/frontend 被未知写者变异**（mit 构建于 next build 阶段失败未触及破坏段；assemble 目标是 src-tauri/web 非此树；D5/浏览器只读——写者未定）。**系统性缺口**：dist/frontend 无 web-standalone 式 build-info 溯源戳，内部不一致只能靠全 D5 浏览器运行发现——建议与 #734 缓解一并裁决（provenance 戳 + 一致性自检）。#733（journal 64KiB bound）已合并。
