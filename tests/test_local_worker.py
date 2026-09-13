@@ -504,6 +504,9 @@ def test_embedded_auto_diagnostics_report_local_despite_reachable_redis(
         def ping(self):
             return True
 
+        def close(self):
+            pass
+
     class _FakeQueue:
         def enqueue(self, *args, **kwargs):
             return None
