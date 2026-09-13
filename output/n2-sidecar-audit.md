@@ -898,3 +898,9 @@
   fetch 在 stdin.end 时可能挂起连接 → uvicorn 优雅停机等待），非 D5 脚本回归。
   #734 由申报 agent 持有（缓解选项留 lead），不抢修。
 - **同步**：master 54e9eb1（#735 账本 34 docs-only）并入，零冲突。
+
+- **§35 补遗十九（自伤缺陷自纠）**：PR #737 路由钉的插入使
+  `test_embedded_auto_mode_adopts_locally_despite_a_reachable_redis` 与诊断腿测试**同名**
+  ——后者被遮蔽从未运行（39 计数含遮蔽）。改名
+  `test_embedded_auto_diagnostics_report_local_despite_reachable_redis` 后 40 收集全绿
+  （诊断腿首次真跑通过）；F811 清零。教训：插入测试用同名锚时必须核对新名唯一性。

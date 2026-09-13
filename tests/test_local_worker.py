@@ -484,6 +484,36 @@ def test_desktop_embedded_env_var_maps_to_settings(monkeypatch):
     assert Settings().mangaflow_desktop_embedded is False
 
 
+def test_diagnostics_route_warns_when_auto_redis_is_unreachable(client, monkeypatch):
+    """The truth table's WARNING cell: a NON-embedded AUTO runtime with an
+    unreachable Redis must report WARNING (QUEUE_UNAVAILABLE fallback —
+    jobs wait rather than run), not the embedded OK branch."""
+
+    monkeypatch.setattr(
+        "app.api.routes.settings.get_settings",
+        lambda: Settings(environment="production", mangaflow_desktop_embedded=False),
+    )
+
+    class _FailingRedis:
+        def ping(self):
+            raise ConnectionError("no redis in this sandbox")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "redis.Redis.from_url", lambda *_a, **_k: _FailingRedis()
+    )
+
+    response = client.get("/api/v1/settings/diagnostics")
+    assert response.status_code == 200, response.text
+    queue_check = next(
+        check for check in response.json()["checks"] if check["id"] == "queue"
+    )
+    assert queue_check["status"] == "WARNING", queue_check
+    assert "Redis 暂不可用" in queue_check["message"], queue_check
+
+
 def test_diagnostics_route_reports_embedded_auto_as_ok(client, monkeypatch):
     """Route-level pin: with the embedded flag and an AUTO queue mode, the
     diagnostics QUEUE check reports OK (designed local baseline), not the
