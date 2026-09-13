@@ -562,3 +562,5 @@
 - 与本台账观察项的关系：D5 瞬态挂起与此**不同机制**（uvicorn 停机等中继排空 vs 任务入队），但同属"沙箱环境污染"家族——外来 redis 也可能解释部分历史 flake。
 
 **认证**：fixture 依赖流 3 测全绿（9396ffc）。
+
+**§31 补充（04:58）**：**#723/#724 审阅**（night 代理，apps/api 生产改动——源自本 Goal #721 的外来 redis 发现）：helper 置 `MANGAFLOW_DESKTOP_EMBEDDED=1`；API 侧 `Settings.mangaflow_desktop_embedded`（pydantic 环境派生名与 helper 置值一致，#724 修复初版的映射 CRITICAL）+ `enqueue_job` 在 AUTO+embedded 时本地入队（外来 redis 只 ping 得通不是执行器——错配代码执行付费任务 #721 诊断）。RUN：`tests/test_local_worker.py` **38/38** + 旗标读通验证 True。交互核验：该 env 由 helper `os.environ` 设置、API 进程同进程继承 ✓；`_node_child_env` 是否剥离 EMBEDDED 无影响（node 不读）。
