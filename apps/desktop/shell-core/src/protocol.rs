@@ -1446,6 +1446,50 @@ mod tests {
         let _ = std::fs::remove_dir_all(&user_data);
     }
 
+    /// The PRODUCTION wrapper's 24h forensic grace is a contract: the
+    /// no-arg sweep_runtime_dirs must pass RUNTIME_SWEEP_GRACE_SECONDS —
+    /// a wrapper regression to a 0 window would reclaim just-terminalized
+    /// directories immediately and silently destroy the forensic window
+    /// every other sweep test deliberately bypasses with explicit windows.
+    /// A fresh (age-0) stopped journal must survive the production
+    /// wrapper and be removed by the explicit-0 form on the same tree.
+    #[test]
+    fn production_sweep_keeps_a_fresh_terminal_dir_within_grace() {
+        let user_data = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-sweep-grace-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&user_data);
+        let runtime = user_data.join("runtime");
+        let candidate = runtime.join(format!("{RUNTIME_DIR_PREFIX}{}", "c".repeat(32)));
+        std::fs::create_dir_all(&candidate).unwrap();
+        std::fs::write(
+            candidate.join(JOURNAL_NAME),
+            format!(
+                "{{\"version\":1,\"token\":\"{}\",\"state\":\"stopped\"}}",
+                "c".repeat(32)
+            ),
+        )
+        .unwrap();
+
+        sweep_runtime_dirs(&user_data).unwrap();
+
+        assert!(
+            candidate.exists(),
+            "a fresh terminal dir must survive the production 24h grace"
+        );
+
+        // Cross-check: the explicit-0 window is what removes it — proving
+        // the survival above is the grace at work, not a broken sweep.
+        sweep_runtime_dirs_with(&user_data, 0).unwrap();
+        assert!(
+            !candidate.exists(),
+            "the explicit zero window must reclaim the same dir"
+        );
+        let _ = std::fs::remove_dir_all(&user_data);
+    }
+
     /// mark_stopped on a MISSING journal must not fabricate a stopped
     /// record: absent ownership records are kept absent (the sweep then
     /// ignores the directory as a foreign/empty name).
