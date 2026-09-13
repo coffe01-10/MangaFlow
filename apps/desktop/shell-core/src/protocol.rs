@@ -1491,11 +1491,15 @@ mod tests {
     }
 
     /// Round-26 finding 6: the survival pin proves the wrapper is not
-    /// zero-window; THIS pin proves the constant is the documented 24h —
-    /// two directories with explicit mtimes ±5s around the boundary: the
-    /// aged one (24h+5s) is reclaimed, the fresh one (24h−5s) survives.
-    /// Explicit utimensat mtimes keep it deterministic (no sleeps); the
-    /// 10s margin absorbs scheduler skew between the two sweeps.
+    /// zero-window; THIS pin proves the boundary semantics at the
+    /// documented constant — two directories with explicit mtimes ±5s
+    /// around `RUNTIME_SWEEP_GRACE_SECONDS`: the aged one (past grace)
+    /// is reclaimed, the fresh one (inside grace) survives. Explicit
+    /// utimensat mtimes keep it deterministic (no sleeps); the 10s
+    /// margin absorbs scheduler skew between the two sweeps (note: a
+    /// large NTP backward step can flip the aged side to kept — the
+    /// mtime-to-sweep window is milliseconds, so this is theoretical).
+    /// The constant's literal 24h value is asserted below.
     #[test]
     #[cfg(unix)]
     fn production_sweep_boundary_is_the_documented_24h() {
@@ -1507,6 +1511,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("runtime")).unwrap();
 
+        // The value itself, literally: the boundary math below anchors on
+        // this constant, so without this assert a changed constant would
+        // re-anchor the whole test and still pass (round-27 finding 1).
+        assert_eq!(RUNTIME_SWEEP_GRACE_SECONDS, 24 * 60 * 60);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
