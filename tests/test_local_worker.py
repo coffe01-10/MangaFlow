@@ -484,7 +484,30 @@ def test_desktop_embedded_env_var_maps_to_settings(monkeypatch):
     assert Settings().mangaflow_desktop_embedded is False
 
 
-def test_embedded_auto_diagnostics_report_local_despite_reachable_redis(
+def test_diagnostics_route_reports_embedded_auto_as_ok(client, monkeypatch):
+    """Route-level pin: with the embedded flag and an AUTO queue mode, the
+    diagnostics QUEUE check reports OK (designed local baseline), not the
+    Redis-unavailable WARNING — end-to-end through the route, the service
+    resolver, and the embedded flag's env-independent Settings field."""
+
+    monkeypatch.setattr(
+        "app.api.routes.settings.get_settings",
+        lambda: Settings(
+            environment="development", mangaflow_desktop_embedded=True
+        ),
+    )
+    response = client.get("/api/v1/settings/diagnostics")
+    assert response.status_code == 200, response.text
+    queue_check = next(
+        check
+        for check in response.json()["checks"]
+        if check["id"] == "queue"
+    )
+    assert queue_check["status"] == "OK", queue_check
+    assert "按设计本地执行" in queue_check["message"], queue_check
+
+
+def test_embedded_auto_mode_adopts_locally_despite_a_reachable_redis(
     db_session, monkeypatch
 ):
     """Diagnostics must match enqueue behavior in the embedded runtime:
