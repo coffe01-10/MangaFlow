@@ -197,6 +197,20 @@ def build_page_readiness(
     project = db.get(Project, chapter.project_id)
     blockers: list[PageReadinessBlocker] = []
 
+    # ``DELETE /chapters/{id}`` only tombstones the chapter: the page row and
+    # this gate keep resolving. Without a BLOCKING finding here the readiness
+    # door would accept generation and the worker would cancel the job
+    # afterwards (#633).
+    if chapter.deleted_at is not None:
+        blockers.append(
+            _block(
+                "CHAPTER_DELETED",
+                "所属章节已删除，请先恢复章节后再生成",
+                "source",
+                target_id=chapter.id,
+            )
+        )
+
     source_complete = bool(page.source_coverage.get("complete"))
     if not source_complete:
         blockers.append(
