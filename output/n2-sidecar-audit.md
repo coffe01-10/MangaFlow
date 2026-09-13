@@ -847,3 +847,11 @@
   钉——两层互相遮蔽。修复：字段改名 `mangaflow_desktop_embedded`（仓库名称惯例对齐
   MANGAFLOW_CREDENTIAL_MASTER_KEY）+ **无 monkeypatch** 的 env 映射双向回归钉。
   （#723 已并在先——本 PR 为其缺失的实现。）
+
+- **§35 补遗十一（round-30 跟进二）→ PR #725（待 lead）**：embedded AUTO 下
+  `queue_execution_state` 探测可达 redis 并报告 `actual_executor=REDIS/can_execute`——
+  而 #724 后 enqueue 实际本地执行：诊断（settings UI）在恰好危险场景误导用户。修复：
+  embedded 规则前置于探测（LOCAL / NOT_USED / can_execute=True），与 enqueue 路径对齐；
+  可达 redis 假体下的诊断 parity 测试（LOCAL/NOT_USED/can_execute 三断言）。
+- **串行证据**：local-worker 套件 **39 passed**；真 runner **156 passed**（exit=0）；
+  cargo **168/0**。
