@@ -412,3 +412,15 @@
 **E 轮（本轮对抗核验，CLEAN）**：delivery_contract.rs 全文结构（9 钉全部读真实 shipped 工件而非自建 fixture——tauri.conf/capabilities 全深度枚举防嵌套旁路）；proxy.ts/csp.ts 逐行（上）；relay_bind 套全文（真实 TIME_WAIT 前置验证 + skip-loud）；native-host.rs（§16 已记）。
 
 **结论**：无新缺陷。台账单点勘误完成；#300 系 CSP 收敛质量高（推理全部内联成文）。
+
+
+---
+
+## 20. 周末窗续跑（2026-09-13 09:00 Asia/Shanghai，基线 ebe982d；#618/#619 已合，#620 已 rebase 为 MERGEABLE CLEAN）
+
+**E 轮（交叉审）：**
+- **PR #618**（复活被属性插入吞掉的 oversized-journal 测试）：RUN 目标测试 **1 passed** + 全量 **155/155**。确认系 **`#[test]` splice 类**（属性与 doc 注释被并行插入带跑到下一个测试上，fn 编译为死关联函数从未运行）；复活正确（属性+注释归位、函数体未动）。
+- **机械清扫（阴性）**：shell-core 全部 `fn test_*` 的"4 行内属性存在"检查——**无更多死测试**；Python 侧唯一缩进 `def test_*` 为 pytest 可收集的 `Test*` 类方法（relay limiter 单元钉），非嵌套牺牲品。
+- **计数定谳**：36b32ce 与 ebe982d 双双稳定 **155**——我早前在 360abb9 的单次 156 系聚合口径伪差，已在 #616 评中撤销该存疑记录。
+
+**流程**：#620（台账 §19）按 lead 指示 rebase 到 ebe982d，output 冲突保留 §18+§19 双节，force-with-lease 推送，MERGEABLE CLEAN。
