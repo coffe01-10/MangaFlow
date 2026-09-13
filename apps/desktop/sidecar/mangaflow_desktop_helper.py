@@ -553,6 +553,11 @@ def _run_stub(journal: Path, record: dict, grandchild: bool) -> int:
                 record["grandchild_pid"] = child.pid
                 _write_journal(journal, record)
         if not _await_go(record["token"]):
+            # The stale-runtime sweep reclaims only stopped/failed
+            # journals — leaving this one at ready would leak the runtime
+            # directory forever on a refused handshake.
+            record.update(state="failed", error="go-refused")
+            _write_journal(journal, record)
             server.server_close()
             return EXIT_HANDSHAKE_REFUSED
         _start_stdin_eof_watch()
@@ -753,6 +758,8 @@ def _run_app(args: argparse.Namespace, journal: Path, record: dict) -> int:
         print(f"MANGAFLOW_READY {json.dumps({k: record[k] for k in ready_fields})}", flush=True)
 
         if not _await_go(record["token"]):
+            record.update(state="failed", error="go-refused")
+            _write_journal(journal, record)
             return EXIT_HANDSHAKE_REFUSED
 
         # Arm the cooperative stop channel before the (slow) app import: the
