@@ -293,6 +293,10 @@ if (!PLAN_B) {
   } catch (error) {
     // A busy 4173 (leftover D5 run, dev server) used to surface as an
     // unhandled 'error' event with a raw stack; name the cause and the fix.
+    // The helper is already spawned and holds its loopback port: exiting
+    // WITHOUT killing it would orphan it (the file's own #346 class) —
+    // route through killHelperTree like every other teardown (#588).
+    killHelperTree(helper);
     console.error(
       `D5 FAIL: static port ${STATIC_PORT} on 127.0.0.1 is busy ` +
       `(${error?.code ?? error}) — stop the other listener and retry.`,
