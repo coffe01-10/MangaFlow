@@ -314,3 +314,20 @@ def test_guard_refuses_the_tracked_placeholder_on_a_clean_clone(tmp_path):
     )
     assert "build-frontend-static.sh" in result.stderr
     assert "_next/static/chunks/" in result.stderr, result.stderr
+
+
+def test_guard_normalizes_backslashes_in_unquoted_attributes(tmp_path):
+    """A Windows-style backslash reference in an UNQUOTED attribute must
+    normalize to forward slashes and still resolve: the round-14 tokenizer
+    captures backslashes verbatim, so `src=_next/static/chunks/app.js`
+    with backslash separators must not be refused as missing."""
+
+    dist = tmp_path / "frontend"
+    (dist / "_next" / "static" / "chunks").mkdir(parents=True)
+    (dist / "_next" / "static" / "chunks" / "app.js").write_text("// chunk")
+    (dist / "index.html").write_text(
+        "<script src=_next\\static\\chunks\\app.js></script>"
+    )
+    result = _run_guard(dist)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "all present" in result.stdout
