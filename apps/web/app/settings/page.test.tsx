@@ -172,4 +172,49 @@ describe("SystemSettingsPage 任务租约设置", () => {
     window.dispatchEvent(dirty);
     expect(dirty.defaultPrevented).toBe(true);
   });
+
+  it("保存在途继续修改时，响应落地保留本地修改而不是提交快照回弹（#650）", async () => {
+    let resolveSave: ((settings: RuntimeSettings) => void) | undefined;
+    updateRuntimeSettingsSpy.mockImplementation(
+      () => new Promise<RuntimeSettings>((resolve) => {
+        resolveSave = resolve;
+      }),
+    );
+
+    renderPage();
+
+    // 修改租约并保存：请求在途，控件保持可编辑（这是修复的前提）。
+    const leaseInput = await screen.findByLabelText(/任务租约/);
+    fireEvent.change(leaseInput, { target: { value: "90" } });
+    fireEvent(leaseInput, new FocusEvent("focusout", { bubbles: true }));
+    fireEvent.click(screen.getByRole("button", { name: /保存运行设置/ }));
+    await waitFor(() => expect(updateRuntimeSettingsSpy).toHaveBeenCalledTimes(1));
+
+    // 保存在途再切换队列模式：本地草稿领先于提交快照。
+    fireEvent.change(screen.getByRole("combobox", { name: /队列模式/ }), { target: { value: "LOCAL" } });
+
+    // 响应落地：服务器只保存了提交快照（队列模式仍是 AUTO）。旧实现会
+    // setLocalDraft(data) 整体覆盖，把 LOCAL 静默回弹成 AUTO。
+    resolveSave?.(runtimeSettings({ job_lease_seconds: 90, version: 8 }));
+
+    await screen.findByText("运行设置已保存，之后又有新修改");
+    // 在途修改保留：队列模式仍是 LOCAL；已确认的租约 90 同样保留。
+    expect(screen.getByRole("combobox", { name: /队列模式/ })).toHaveValue("LOCAL");
+    expect(screen.getByLabelText(/任务租约/)).toHaveValue(90);
+  });
+
+  it("保存在途无新修改时，成功后仍按服务器响应同步并提示已保存（#650）", async () => {
+    updateRuntimeSettingsSpy.mockResolvedValue(runtimeSettings({ job_lease_seconds: 90, version: 8 }));
+
+    renderPage();
+
+    const leaseInput = await screen.findByLabelText(/任务租约/);
+    fireEvent.change(leaseInput, { target: { value: "90" } });
+    fireEvent(leaseInput, new FocusEvent("focusout", { bubbles: true }));
+    fireEvent.click(screen.getByRole("button", { name: /保存运行设置/ }));
+
+    await screen.findByText("运行设置已保存并应用到后续任务");
+    expect(screen.getByLabelText(/任务租约/)).toHaveValue(90);
+    expect(screen.queryByText(/之后又有新修改/)).not.toBeInTheDocument();
+  });
 });

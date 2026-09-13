@@ -13,6 +13,16 @@ import { creatorVisibleModels } from "@/lib/model-visibility";
 
 type ProjectDraft = Pick<Project, "workflow_mode" | "draft_resolution" | "default_resolution" | "default_concurrency" | "consistency_check_enabled" | "default_text_model_id" | "text_model_alias">;
 
+function sameProjectDraft(left: ProjectDraft, right: ProjectDraft): boolean {
+  return left.workflow_mode === right.workflow_mode
+    && left.draft_resolution === right.draft_resolution
+    && left.default_resolution === right.default_resolution
+    && left.default_concurrency === right.default_concurrency
+    && left.consistency_check_enabled === right.consistency_check_enabled
+    && left.default_text_model_id === right.default_text_model_id
+    && left.text_model_alias === right.text_model_alias;
+}
+
 export default function ProjectSettingsPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
@@ -20,16 +30,16 @@ export default function ProjectSettingsPage() {
   const project = useQuery({ queryKey: ["project", id], queryFn: () => api.project(id) });
   const models = useQuery({ queryKey: ["models"], queryFn: api.models });
   const [localDraft, setLocalDraft] = useState<ProjectDraft | null>(null);
-  const [saved, setSaved] = useState(false);
+  const [savedNotice, setSavedNotice] = useState("");
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
   // The floating toast must dismiss itself; leaving it up forever reads as a
   // stale "still saving" signal on later visits to the page.
   const savedTimerRef = useRef<number | null>(null);
   useEffect(() => () => { if (savedTimerRef.current !== null) window.clearTimeout(savedTimerRef.current); }, []);
-  const announceSaved = () => {
-    setSaved(true);
+  const announceSaved = (message: string) => {
+    setSavedNotice(message);
     if (savedTimerRef.current !== null) window.clearTimeout(savedTimerRef.current);
-    savedTimerRef.current = window.setTimeout(() => setSaved(false), 4000);
+    savedTimerRef.current = window.setTimeout(() => setSavedNotice(""), 4000);
   };
   const draft = localDraft ?? (project.data ? {
       workflow_mode: project.data.workflow_mode,
@@ -53,24 +63,38 @@ export default function ProjectSettingsPage() {
   const currentTextModelMissing = currentTextModelValue !== "auto" && !textModels.some((model) =>
     textModelOptionValue(model.catalog_id, model.logical_alias) === currentTextModelValue,
   );
+  // #650：最近一次提交保存的草稿快照（mutationFn 在提交那一刻写入）。
+  const submittedDraftRef = useRef<ProjectDraft | null>(null);
 
   const save = useMutation({
+    // #650：提交时快照草稿；保存期间控件保持可编辑（这是本修复的前提），
+    // 响应落地时只有草稿未再变化才整体回填——在途新修改不会被提交时的
+    // 旧快照静默回弹。react-query 在 mutation 在途期间持续把最新渲染的
+    // options 同步给 pending mutation，onSuccess 闭包里的 localDraft 就是
+    // 响应落地那一刻的最新草稿（script-editor 保存在途不锁输入的同一纪律）。
     mutationFn: () => {
       if (!draft || !project.data) throw new Error("项目设置尚未加载");
+      submittedDraftRef.current = draft;
       return api.updateProject(id, { ...draft, version: project.data.version });
     },
     onSuccess: (data) => {
       queryClient.setQueryData(["project", id], data);
-      setLocalDraft({
-        workflow_mode: data.workflow_mode,
-        draft_resolution: data.draft_resolution,
-        default_resolution: data.default_resolution,
-        default_concurrency: data.default_concurrency,
-        consistency_check_enabled: data.consistency_check_enabled,
-        default_text_model_id: data.default_text_model_id,
-        text_model_alias: data.text_model_alias,
-      });
-      announceSaved();
+      const submitted = submittedDraftRef.current;
+      const editedDuringSave = localDraft !== null
+        && submitted !== null
+        && !sameProjectDraft(localDraft, submitted);
+      if (!editedDuringSave) {
+        setLocalDraft({
+          workflow_mode: data.workflow_mode,
+          draft_resolution: data.draft_resolution,
+          default_resolution: data.default_resolution,
+          default_concurrency: data.default_concurrency,
+          consistency_check_enabled: data.consistency_check_enabled,
+          default_text_model_id: data.default_text_model_id,
+          text_model_alias: data.text_model_alias,
+        });
+      }
+      announceSaved(editedDuringSave ? "项目设置已保存，之后又有新修改" : "项目设置已保存");
     },
     onError: (error) => {
       // 409 = 乐观版本号落后（另一端先保存了同一项目）。失效缓存触发
@@ -83,7 +107,7 @@ export default function ProjectSettingsPage() {
   });
   const update = <K extends keyof ProjectDraft>(key: K, value: ProjectDraft[K]) => {
     setLocalDraft((current) => ({ ...(current ?? draft!), [key]: value }));
-    setSaved(false);
+    setSavedNotice("");
   };
   const archive = useMutation({
     mutationFn: () => {
@@ -184,7 +208,7 @@ export default function ProjectSettingsPage() {
             }}><option value="auto">自动路由 · 已验证文字/视觉模型</option>{currentTextModelMissing ? <option value={currentTextModelValue}>当前配置 · {currentTextModelValue}</option> : null}{textModels.map((model) => <option key={model.catalog_id} value={textModelOptionValue(model.catalog_id, model.logical_alias)}>{model.provider} · {model.display_name}{!model.display_enabled ? "（已隐藏）" : ""}</option>)}</select></label>
           </section>
         </div> : <div className="loading-panel"><LoaderCircle className="spin" />读取项目设置…</div>}
-        {saved && <p className="save-success floating" role="status"><Check size={15} />项目设置已保存</p>}
+        {savedNotice && <p className="save-success floating" role="status"><Check size={15} />{savedNotice}</p>}
         {save.isError && <p className="form-error"><CircleAlert size={15} />{save.error.message}</p>}
         {project.data && <section className="project-danger-zone"><header><Trash2 size={18} /><div><span>DANGER ZONE / 项目管理</span><h2>删除当前项目</h2></div></header><div><p>删除后项目将从工作台隐藏。数据库记录和生成文件暂时保留，避免误删；如需恢复可由维护工具处理。</p><label><span>输入项目名称确认</span><input aria-label="输入项目名称确认删除" value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} placeholder={project.data.name} /></label><button type="button" disabled={deleteConfirmation !== project.data.name || archive.isPending} onClick={() => { if (window.confirm(`确认从工作台删除项目“${project.data.name}”？`)) archive.mutate(); }}>{archive.isPending ? <LoaderCircle className="spin" size={16} /> : <Trash2 size={16} />}删除项目</button></div>{archive.isError && <p className="form-error"><CircleAlert size={15} />{archive.error.message}</p>}</section>}
       </main>

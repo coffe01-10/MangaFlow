@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { useState, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api, ApiError, type Character, type GenerationWorkbench, type InspectionResult, type Job, type MangaPage, type PageCandidate, type SceneAsset, type Script, type StoryboardPanel } from "@/lib/api";
+import { api, ApiError, type Character, type GenerationBatch, type GenerationWorkbench, type InspectionResult, type Job, type MangaPage, type PageCandidate, type SceneAsset, type Script, type StoryboardPanel } from "@/lib/api";
 
 import { GenerateSection } from "./generate-section";
 import { useGenerationWorkspace } from "./use-generation-workspace";
@@ -969,6 +969,34 @@ describe("GenerateSection 关键行为", () => {
       expect(generateCandidate).toHaveBeenCalled();
       expect(screen.getByText("供应商返回 429")).toBeInTheDocument();
     });
+  });
+
+  it("#649 新批次在途时生成按钮禁用（防交错点击双开批次），结束后恢复", async () => {
+    // startBatch 挂起复现「点新批次后立刻点生成」的窗口：generate 的
+    // mutationFn 用点击时快照 currentBatch ?? await api.startBatch(...)，
+    // 此时再放行点击会用空/旧批次快照双开批次。
+    let releaseBatch: ((batch: GenerationBatch) => void) | undefined;
+    startBatch.mockImplementation(
+      () => new Promise<GenerationBatch>((resolve) => {
+        releaseBatch = resolve;
+      }),
+    );
+    renderGenerate();
+    const generateButton = await screen.findByRole("button", { name: "生成 1 个 1K 彩色候选" });
+    await waitFor(() => {
+      expect(generateButton).toBeEnabled();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "新批次" }));
+    await waitFor(() => {
+      expect(generateButton).toBeDisabled();
+    });
+    fireEvent.click(generateButton);
+    expect(generateCandidate).not.toHaveBeenCalled();
+    releaseBatch?.(workbenchFixture().current_batch!);
+    await waitFor(() => {
+      expect(generateButton).toBeEnabled();
+    });
+    expect(generateCandidate).not.toHaveBeenCalled();
   });
 
   it("TEST-SCENE-06 生成区展示持久化场景绑定，归档引用不显示为已就绪", async () => {
