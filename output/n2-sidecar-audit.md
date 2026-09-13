@@ -711,3 +711,19 @@
   双 INFO（journal 测试的 symlink_to 无 Windows 特权守卫——日班既有；monkeypatch 全局
   os/Path 由 teardown 恢复）记录不阻塞。
 - **runner 证据链**：#608 留痕日志两次发挥 triage 作用（本窗 + 日班 flake）。
+
+## 35. 夜班续（master 0b8fca9→；#676/#679 已并）
+
+- **PR #681（#587 拒绝路径硬化，待 lead）**——两缺陷 + 端到端钉：
+  1. `_run_app` 在 `_apply_app_environment` 可拒绝 URL-hostile user-data **之前**创建
+     `data/` 目录——被拒路径上留下"从未发生的会话"的杂物目录。env 应用提前，布局随接受
+     而行（ADR §4.1 纪律不变）。
+  2. 拒绝以**字符串** `SystemExit` 形态抛出，而 `main()` 用 `int(exit_request.code or 0)`
+     转换——裸 ValueError traceback 取代了 CPython 的"消息进 stderr、退出 1"语义。
+     SystemExit 处理改按 CPython 语义实现。
+  - 端到端钉：真 helper + `?`-user-data + 标记合法 api-root → exit 1 + sqlite 补救文案于
+    stderr + 无 traceback + 无 `data/` 目录。38 passed（37+1）。
+- **串行证据**：真 runner **148 passed in 73.63s**（exit=0）。
+- **交叉核查**：#626（他组）修复我方 Issue #623 的 static-form 头部 + D5 Windows 拆除——
+  收敛方向正确；#679 加固 prerender 守卫。
+- **流程披露**：一次 PR 证据评论误贴到 #626（他组 PR）——已删除并改贴 #681。
