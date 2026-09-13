@@ -181,3 +181,52 @@ def test_relay_origin_is_single_sourced_with_the_helper():
         "the baked rewrite origin and the runtime relay port must stay the "
         "same constant (39443) across build-web-standalone and the helper"
     )
+
+
+def test_static_export_flag_is_scrubbed_from_the_build_env(monkeypatch):
+    """The BUILD-path guard for MANGAFLOW_STATIC_EXPORT (#447's runtime
+    scrub, symmetric): layout.tsx skips connection() when the flag is
+    "1", so a stray export of it bakes nonce-less pages into the
+    prerender while the runtime proxy attaches a nonce'd CSP — a blank
+    desktop app reported as build success. The env handed to npm must
+    not contain the flag even when the outer shell exports it."""
+
+    recorded = {}
+
+    def fake_run(argv, **kwargs):
+        recorded["env"] = kwargs["env"]
+        raise RuntimeError("stop-main-before-build")
+
+    monkeypatch.setenv("MANGAFLOW_STATIC_EXPORT", "1")
+    monkeypatch.setattr(bw.subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="stop-main-before-build"):
+        bw.main()
+    assert "MANGAFLOW_STATIC_EXPORT" not in recorded["env"], recorded["env"]
+    # The sibling build-time constant still rides along.
+    assert recorded["env"]["MANGAFLOW_API_ORIGIN"] == "http://127.0.0.1:39443"
+
+
+def test_static_prerender_assert_fails_closed_on_baked_routes(tmp_path):
+    """The loud post-build check: a prerender manifest naming page routes
+    (nonce-less baked pages under a nonce'd CSP) must refuse with the
+    remedy; /_global-error is exempt (Next always bakes it) and a missing
+    manifest is tolerated (older Next shapes)."""
+
+    def manifest_at(standalone: Path, routes: dict) -> Path:
+        (standalone / ".next").mkdir(parents=True, exist_ok=True)
+        manifest = standalone / ".next" / "prerender-manifest.json"
+        manifest.write_text(json.dumps({"routes": routes}), encoding="utf-8")
+        return manifest
+
+    baked = tmp_path / "baked"
+    manifest_at(baked, {"/": {"a": 1}, "/_global-error": {"b": 2}})
+    with pytest.raises(SystemExit, match="MANGAFLOW_STATIC_EXPORT"):
+        bw.assert_no_static_prerender(baked)
+
+    clean = tmp_path / "clean"
+    manifest_at(clean, {"/_global-error": {"b": 2}})
+    bw.assert_no_static_prerender(clean)  # must not raise
+
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    bw.assert_no_static_prerender(legacy)  # missing manifest: tolerated
