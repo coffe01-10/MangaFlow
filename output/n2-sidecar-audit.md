@@ -860,3 +860,9 @@
   （队列禁用/LOCAL/AUTO±embedded±redis 可达性 × enqueue vs 诊断）；probe_redis=False
   调用者全量清点（无既有行为变化）；39 passed。跟进已推：settings UI 的嵌入式基线
   从误导性 WARNING 改报 OK（"按设计本地执行"）；诊断假体补 close()。
+
+- **§35 补遗十三（round-30 APPROVE + F6 跟进）→ PR #729（待 lead）**：#715 追溯 APPROVE
+  （busy-4173 catch 可达性/状态/计划B不可达/kill-before-print/端口常量契约逐项确认；
+  SIGKILL 优于 stdin.end() 的理由引 N3 §31 优雅停机挂起记录）。F6 跟进：拆销路径钉清单
+  增补 busy-4173 span（注释锚 → process.exit），mutation 红/绿实测。过程：夜分支残留的
+  cherry-pick 状态已 --quit 清理并推送同步。
