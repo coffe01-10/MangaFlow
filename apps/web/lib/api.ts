@@ -1434,6 +1434,14 @@ const VALIDATION_MESSAGE_PATTERNS: Array<[RegExp, string | ((match: RegExpMatchA
   [/^Input should be a valid email\b/, "输入应为有效的邮箱地址"],
   [/^Input should be a valid URL\b/, "输入应为有效的网址"],
   [/^Input should be a valid UUID\b/, "输入应为有效的 UUID"],
+  // literal / enum 枚举消息：pydantic-core 拼接值列表（实测 2.13 为普通单引号，
+  // 兼容双引号变体），字面值必须逐字保留，只本地化「、」「或」连接词。
+  [
+    /^Input should be ((?:'[^']*'|"[^"]*")(?:, (?:'[^']*'|"[^"]*"))*) or ('[^']*'|"[^"]*")$/,
+    (m) => `输入应为 ${(m[1].match(/'[^']*'|"[^"]*"/g) ?? []).join("、")} 或 ${m[2]}`,
+  ],
+  // StringConstraints pattern 消息：模式原文（含引号）逐字保留。
+  [/^String should match pattern ('[^']*'|"[^"]*")$/, (m) => `文本必须匹配模式 ${m[1]}`],
   [/^String should have at most (\d+) characters?$/, (m) => `文本长度不能超过 ${m[1]} 个字符`],
   [/^String should have at least (\d+) characters?$/, (m) => `文本至少需要 ${m[1]} 个字符`],
   [/^Input should be less than or equal to (.+)$/, (m) => `输入不能大于 ${m[1]}`],

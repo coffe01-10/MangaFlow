@@ -35,6 +35,34 @@ describe("localizeValidationMessage（#545-9）", () => {
     expect(localizeValidationMessage("Input should be greater than 0")).toBe("输入必须大于 0");
   });
 
+  it("pydantic v2 literal/enum 枚举消息保留字面值，只本地化连接词", () => {
+    // 实测形状：pydantic 2.13.4 / pydantic-core 2.46.4 对 Literal 与 Enum 都
+    // 发 "Input should be 'A', 'B' or 'C'"（普通单引号，最后以 or 相连）。
+    expect(localizeValidationMessage("Input should be 'AUTO', 'LOCAL' or 'REDIS'"))
+      .toBe("输入应为 'AUTO'、'LOCAL' 或 'REDIS'");
+    // 长值列表不截断（pydantic-core 全量罗列）。
+    expect(localizeValidationMessage(
+      "Input should be 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k' or 'l'",
+    )).toBe("输入应为 'a'、'b'、'c'、'd'、'e'、'f'、'g'、'h'、'i'、'j'、'k' 或 'l'");
+    // 双引号变体同样本地化（不同 pydantic-core 版本的引号风格差异），字面值
+    // 原样保留。
+    expect(localizeValidationMessage('Input should be "AUTO", "LOCAL" or "REDIS"'))
+      .toBe('输入应为 "AUTO"、"LOCAL" 或 "REDIS"');
+    // 单值不可能出现（or 连接至少两项），但形状内未加引号的文本不匹配。
+    expect(localizeValidationMessage("Input should be 42")).toBe("Input should be 42");
+  });
+
+  it("pydantic v2 字符串 pattern 消息保留模式原文", () => {
+    expect(localizeValidationMessage("String should match pattern '^[A-Z]{3}$'"))
+      .toBe("文本必须匹配模式 '^[A-Z]{3}$'");
+    // 兼容双引号变体：模式内容（含反斜杠）逐字保留。
+    expect(localizeValidationMessage('String should match pattern "^[a-z]{2}-\\d{3}"'))
+      .toBe('文本必须匹配模式 "^[a-z]{2}-\\d{3}"');
+    // 模式带不配对引号时不强行翻译，原样回退。
+    expect(localizeValidationMessage("String should match pattern ^[a-z]+$"))
+      .toBe("String should match pattern ^[a-z]+$");
+  });
+
   it("识别不了的消息原样返回（含业务 Value error）", () => {
     expect(localizeValidationMessage("Value error, 章节归属不允许跨项目")).toBe(
       "Value error, 章节归属不允许跨项目",

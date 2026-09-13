@@ -82,6 +82,9 @@ export function JobsSection({
       aria-label={resultUrl ? `查看结果：${jobLabels[job.job_type] ?? job.job_type}` : undefined}
       onKeyDown={resultUrl ? (event) => {
         // #546-8：整行可点击查看结果，但没有键语义时键盘用户进不去。
+        // 只响应行自身的按键：行内复选框与按钮的事件会冒泡上来，拦截它们
+        // 会吞掉空格勾选与按钮回车（panel-inspector 的冒泡守卫同模式）。
+        if (event.currentTarget !== event.target) return;
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
           showResult();

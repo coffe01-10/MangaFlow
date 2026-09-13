@@ -15,6 +15,7 @@ const deleteOutfitApi = vi.spyOn(api, "deleteOutfit");
 const updateAssetApi = vi.spyOn(api, "updateAsset");
 const uploadAssetApi = vi.spyOn(api, "uploadAsset");
 const bindCharacterReferenceApi = vi.spyOn(api, "bindCharacterReference");
+const unbindCharacterReferenceApi = vi.spyOn(api, "unbindCharacterReference");
 const updateStyleModeApi = vi.spyOn(api, "updateStyleMode");
 
 function characterFixture(overrides: Partial<Character> = {}): Character {
@@ -129,6 +130,7 @@ describe("useAssetsWorkspace 缓存失效与晚到保存防护", () => {
       kind: "CHARACTER_REFERENCE",
     } as Asset);
     bindCharacterReferenceApi.mockReset().mockResolvedValue({} as never);
+    unbindCharacterReferenceApi.mockReset().mockResolvedValue({} as never);
     updateStyleModeApi.mockReset().mockResolvedValue(styleFixture() as never);
   });
 
@@ -237,6 +239,21 @@ describe("useAssetsWorkspace 缓存失效与晚到保存防护", () => {
     });
     expect(bindCharacterReferenceApi).toHaveBeenCalledWith("character-a", "asset-9");
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["generation-workbench"] });
+  });
+
+  it("#544 解绑人物参考后失效 generation-workbench：解掉最后一个参考会重建 MISSING_CHARACTER_REFERENCE 阻塞", async () => {
+    const client = createClient();
+    await seedFreshCache(client, ["generation-workbench", "page-1"], { stale: true });
+    const { result } = renderAssets(client, "character-a");
+    await act(async () => {
+      result.current.unbindExistingCharacterReference.mutate("reference-1");
+      await waitFor(() => {
+        expect(result.current.unbindExistingCharacterReference.isSuccess).toBe(true);
+      });
+    });
+    expect(unbindCharacterReferenceApi).toHaveBeenCalledWith("reference-1");
+    // 与镜像的绑定路径一致：就绪判定必须立即变旧，而不是等 15s staleTime。
+    expect(client.getQueryState(["generation-workbench", "page-1"])?.isInvalidated).toBe(true);
   });
 
   it("#544 切换风格色彩模式后失效 generation-workbench：STYLE_NOT_COLOR 阻塞即时反映", async () => {

@@ -281,7 +281,7 @@ describe("AssetsSection 候选错误面与角色切换草稿守卫（#545-4 / #5
     confirmSpy.mockRestore();
   });
 
-  it("TEST-ASSET-GUARD2 概念设定面板有输入时切换角色同样先确认（#546-1）", async () => {
+  it("TEST-ASSET-GUARD2 概念设定面板有输入时切换角色不再确认（草稿按角色持久化）", async () => {
     const first = characterFixture();
     const second = characterFixture({
       id: "character-2",
@@ -299,14 +299,21 @@ describe("AssetsSection 候选错误面与角色切换草稿守卫（#545-4 / #5
     workspace.editForbiddenChanges = first.forbidden_changes.join("，");
     renderAssetsView(workspace, { assetView: "characters", characters: [first, second] });
 
-    // 概念面板动态导入完成后渲染表单；输入即视为草稿。
+    // 概念面板动态导入完成后渲染表单；输入即写入按「项目 + 角色」键控的
+    // localStorage 草稿，切换角色（面板按 key 重挂载）不丢任何内容。
+    // 反转说明：该测试曾断言「概念草稿有输入 → 切换必须确认」，但草稿本身
+    // 已持久化并在重挂载后恢复，确认属于过度弹窗；conceptPanelDirty 及
+    // CharacterConceptPanel 的 onDirtyChange 接线已按 #441（死道具陷阱）
+    // 一并移除，概念输入不再参与切换确认。
     const appearance = await screen.findByPlaceholderText("简述外貌与气质；可留空");
     fireEvent.change(appearance, { target: { value: "黑发黑瞳" } });
 
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     fireEvent.click(screen.getByRole("button", { name: /苏晚/ }));
-    expect(confirmSpy).toHaveBeenCalled();
-    expect(workspace.setBindCharacterId).not.toHaveBeenCalled();
+    expect(confirmSpy).not.toHaveBeenCalled();
+    await waitFor(() => expect(workspace.setBindCharacterId).toHaveBeenCalledWith("character-2"));
+    // 草稿保留在原角色的存储键里，切回即可恢复。
+    expect(window.localStorage.getItem("mangaflow:character-concept-draft:project-1:character-1")).toContain("黑发黑瞳");
     confirmSpy.mockRestore();
   });
 

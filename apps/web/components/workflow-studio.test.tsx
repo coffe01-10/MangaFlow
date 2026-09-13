@@ -818,6 +818,52 @@ describe("WorkflowStudio 默认工作流部分失败与错误面（#545-2 / #545
     ]);
   });
 
+  it("TEST-WF-CREATE3 重试进行中禁用按钮，双击只跑一轮补建不重复创建", async () => {
+    let listCalls = 0;
+    const retryList = deferred<WorkflowDefinition[]>();
+    workflowsSpy.mockImplementation(async () => {
+      listCalls += 1;
+      return listCalls === 1 ? [] : retryList.promise;
+    });
+    createWorkflowSpy.mockRejectedValue(new Error("模板创建被拒"));
+    renderStudio();
+    expect(await screen.findByText("默认工作流创建失败")).toBeInTheDocument();
+
+    // 重试按钮点击后进入「重拉列表 → 补建」两段异步；期间按钮禁用，
+    // 再点一次不得并发跑第二轮（否则每个模板被创建两次）。
+    createWorkflowSpy.mockClear();
+    createWorkflowSpy.mockImplementation(async (_projectId: string, name?: string) =>
+      workflow({ id: "wf-export", name }));
+    const retryButton = screen.getByRole("button", { name: "重试创建" });
+    fireEvent.click(retryButton);
+    fireEvent.click(retryButton);
+    expect(retryButton).toBeDisabled();
+    // 服务器上已有单页流程：本轮只补建整章导出流程，且只补一次。
+    retryList.resolve([workflow({ id: "wf-page", name: "单页生产流程" })]);
+    await screen.findByText("流程编排");
+    expect(createWorkflowSpy.mock.calls.map((call) => call[1])).toEqual(["整章导出流程"]);
+  });
+
+  it("TEST-WF-CREATE4 重试前重拉列表失败时展示列表错误，不盲目补建", async () => {
+    let listCalls = 0;
+    workflowsSpy.mockImplementation(async () => {
+      listCalls += 1;
+      if (listCalls === 1) return [];
+      throw new Error("列表接口 503");
+    });
+    createWorkflowSpy.mockRejectedValue(new Error("模板创建被拒"));
+    renderStudio();
+    expect(await screen.findByText("默认工作流创建失败")).toBeInTheDocument();
+
+    // 重拉失败 → 查询进入错误态，组件渲染列表错误面；缺失集合判定没有
+    // 可信输入，不得发起任何 createWorkflow（否则会重复创建已存在的流程）。
+    createWorkflowSpy.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "重试创建" }));
+    expect(await screen.findByText("无法载入项目工作流")).toBeInTheDocument();
+    expect(screen.getByText(/列表接口 503/)).toBeInTheDocument();
+    expect(createWorkflowSpy).not.toHaveBeenCalled();
+  });
+
   it("TEST-WF-VER1 发布版本读取失败不再谎报「尚未发布」，重试后恢复（#545-7）", async () => {
     versionsSpy.mockRejectedValueOnce(new Error("版本接口 500"));
     renderStudio();

@@ -203,6 +203,7 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
   const [legacyGraph, setLegacyGraph] = useState<WorkflowGraph | null>(null);
   const [notice, setNotice] = useState("");
   const [createFailed, setCreateFailed] = useState("");
+  const [retryCreatePending, setRetryCreatePending] = useState(false);
   const [saveStatus, setSaveStatus] = useState<WorkflowSaveStatus>("已保存");
   const initializedId = useRef<string | null>(null);
   const workflowRef = useRef<WorkflowDefinition | null>(null);
@@ -279,16 +280,32 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
   }, [createDefaultWorkflows, createFailed, workflows.data, workflows.isSuccess]);
 
   async function retryCreateMissingWorkflows() {
-    // 先重拉再补建：失败后缓存里可能已有部分成功未落缓存（或另一端建过），
-    // 按最新列表的名字集合判断缺失，避免重复创建同模板工作流。
-    const latest = await workflows.refetch();
-    const existing = new Set((latest.data ?? []).map((item) => item.name));
-    const missing = DEFAULT_WORKFLOW_TEMPLATES.filter((tpl) => !existing.has(tpl.name));
-    if (!missing.length) {
-      setCreateFailed("");
-      return;
+    // 重入守卫：重试是「重拉列表 → 补建」两段异步，双击会并发跑两份，
+    // 各自都看到同样的缺失集合，把每个模板创建两次。
+    if (retryCreatePending) return;
+    setRetryCreatePending(true);
+    try {
+      // 先重拉再补建：失败后缓存里可能已有部分成功未落缓存（或另一端建过），
+      // 按最新列表的名字集合判断缺失，避免重复创建同模板工作流。
+      const latest = await workflows.refetch();
+      // 重拉失败（或把已有数据翻空）时列表状态未知：按名称判缺失可能重复
+      // 创建，不在未知状态上补建，转列表错误面让用户再次重试。
+      if (latest.isError || !latest.data) {
+        setCreateFailed(
+          `工作流列表刷新失败：${latest.error instanceof Error ? latest.error.message : "请稍后重试"}。请重试。`,
+        );
+        return;
+      }
+      const existing = new Set(latest.data.map((item) => item.name));
+      const missing = DEFAULT_WORKFLOW_TEMPLATES.filter((tpl) => !existing.has(tpl.name));
+      if (!missing.length) {
+        setCreateFailed("");
+        return;
+      }
+      await createDefaultWorkflows(missing);
+    } finally {
+      setRetryCreatePending(false);
     }
-    await createDefaultWorkflows(missing);
   }
 
   useEffect(() => {
@@ -718,7 +735,7 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
       <div className={styles.loading}>
         <strong>默认工作流创建失败</strong>
         <span>{createFailed}</span>
-        <button type="button" onClick={() => { void retryCreateMissingWorkflows(); }}>重试创建</button>
+        <button type="button" disabled={retryCreatePending} onClick={() => { void retryCreateMissingWorkflows(); }}>重试创建</button>
       </div>
     );
   }

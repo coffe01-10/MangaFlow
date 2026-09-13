@@ -75,6 +75,10 @@ export function ProviderCard({
           aria-controls={panelId}
           onClick={() => {
             if (shown && cardDirty && !window.confirm("该供应商连接中有未保存的输入，收起会丢弃这些草稿。仍要收起吗？")) return;
+            // 确认收起即弃稿：连接面板随之卸载，不再有人把脏标记清回 false，
+            // 这里同步清空集合；否则 cardDirty 残留 true，重新展开（新面板
+            // 无任何输入）后收起仍弹确认，beforeunload 也一直误报。
+            if (shown && cardDirty) setDirtyConnectionIds(new Set());
             setExpanded((current) => !current);
           }}
         >

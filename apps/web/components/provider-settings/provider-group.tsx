@@ -70,6 +70,10 @@ export function ProviderGroup({
           aria-controls={panelId}
           onClick={() => {
             if (shown && groupDirty && !window.confirm("该分组中有未保存的连接输入，收起会丢弃这些草稿。仍要收起吗？")) return;
+            // 确认收起即弃稿：分组内所有卡片（连同脏标记上抛方）一起卸载，
+            // 无人把脏标记清回 false；这里同步清空集合，否则 groupDirty
+            // 残留 true，重新展开后收起仍弹确认，页面级 beforeunload 误报。
+            if (shown && groupDirty) setDirtyProviderIds(new Set());
             setExpanded((current) => !current);
           }}
         >

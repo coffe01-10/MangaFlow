@@ -20,7 +20,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 
 import { publicUrl, type AssetPurpose, type ImageModelAlias } from "@/lib/api";
 
@@ -157,8 +157,9 @@ export function AssetsSection({
     ? kinds
     : kinds.filter(([kind]) => kind === currentAssetKind);
   // #546-1：概念设定面板按角色键控（key={boundCharacter.id}），切换即重挂载。
-  // 草稿脏标记上抛到这里，与下面两组本地草稿合成「切换前确认」的判据。
-  const [conceptPanelDirty, setConceptPanelDirty] = useState(false);
+  // 概念草稿本身已按「项目 + 角色」持久化到 localStorage（重挂载即恢复），
+  // 切换角色不丢任何内容，因此不参与切换确认——曾把它并入确认条件属于
+  // 过度弹窗（#441 死道具同款陷阱），已连同 onDirtyChange 接线一并移除。
   const characterEditorDirty = Boolean(boundCharacter && (
     editCharacterName !== boundCharacter.primary_name
     || editCharacterAliases !== boundCharacter.aliases.join("，")
@@ -170,8 +171,8 @@ export function AssetsSection({
     || outfitLockedFields.trim() !== ""
     || selectedOutfitAssets.length > 0;
   function switchBoundCharacter(character: { id: string; primary_name: string; aliases: string[]; locked_features: string[]; forbidden_changes: string[] }) {
-    if ((outfitFormDirty || characterEditorDirty || conceptPanelDirty)
-      && !window.confirm("当前角色的表单或草稿尚未保存（服装表单 / 角色规范 / 概念设定），切换角色会丢弃这些内容。仍要切换吗？")) return;
+    if ((outfitFormDirty || characterEditorDirty)
+      && !window.confirm("当前角色的表单尚未保存（服装表单 / 角色规范），切换角色会丢弃这些内容。仍要切换吗？")) return;
     if (editingOutfitId) resetOutfitForm();
     setBindCharacterId(character.id);
     setSelectedCharacterOutfitId("");
@@ -238,7 +239,7 @@ export function AssetsSection({
       </div>
       {boundCharacter && <div className="character-editor"><div><strong>规范姓名与一致性锁</strong><span>剧本统一使用主要姓名；固定特征和禁止改变项会进入每次生图提示。</span></div><input aria-label="编辑主要姓名" className="text-input" value={editCharacterName} onChange={(event) => setEditCharacterName(event.target.value)} /><input aria-label="编辑角色绰号" className="text-input" value={editCharacterAliases} onChange={(event) => setEditCharacterAliases(event.target.value)} placeholder="绰号，用逗号分隔" /><button className="button outline compact" disabled={!editCharacterName.trim() || updateCharacter.isPending} onClick={() => updateCharacter.mutate()}>{updateCharacter.isPending ? <LoaderCircle className="spin" size={13} /> : <Pencil size={13} />}保存角色规范</button><div className="character-lock-fields"><input aria-label="角色固定特征" className="text-input" value={editLockedFeatures} onChange={(event) => setEditLockedFeatures(event.target.value)} placeholder="固定特征：黑色长发、左眼泪痣…" /><input aria-label="角色禁止改变项" className="text-input" value={editForbiddenChanges} onChange={(event) => setEditForbiddenChanges(event.target.value)} placeholder="禁止改变：发色、瞳色、身高关系…" /></div>{boundCharacter.alias_conflict && <em><CircleAlert size={12} />当前称呼与其他角色冲突，请修改后保存</em>}</div>}
       <ImageModelPicker selected={activeDrawModel} onSelect={setDrawModel} options={modelOptions} label="项目视觉模型（必须显式选择，并在各生成页面保持一致）" />
-      {boundCharacter && <CharacterConceptPanel key={boundCharacter.id} projectId={id} character={boundCharacter} model={activeDrawModel} onOpen={openPreview} onDirtyChange={setConceptPanelDirty} />}
+      {boundCharacter && <CharacterConceptPanel key={boundCharacter.id} projectId={id} character={boundCharacter} model={activeDrawModel} onOpen={openPreview} />}
       <CharacterPackageWorkspace projectId={id} characters={characters.data ?? []} assets={assets.data ?? []} />
       </>}
       {assetView === "outfits" && <>
