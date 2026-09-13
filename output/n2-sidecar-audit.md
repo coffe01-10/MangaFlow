@@ -732,3 +732,10 @@
   `state=failed, error="refused: …"`（sweep 只回收 stopped/failed，静默退出会在 shell-less
   运行搁浅 runtime 目录；实测 journal 留痕）；pin 加 timeout=60。评审红线双向核验
   （reorder 还原 → data/ 断言红；handler 还原 → ValueError 断言红）。
+
+- **§35 补遗二（第三次合并竞态，模式升级上报）**：#608 的 round-18 gitignore 修复
+  （e8e5898）亦未进 master——`dist/e2e-last-run.log` 在 master 上不受忽略，每次 runner
+  运行弄脏工作树。**PR #684**（cherry-pick 原样重落，check-ignore 实证 + 契约套件
+  14 passed）。模式记录：#566→#571、#608→(无)、本例——**lead 侧合并动作取到的 SHA 晚于
+  评审返工推送时，返工即丢失**；建议 lead 合并前以 PR 分支当前 tip 为准（或返工推送后
+  评论 pin SHA）。
