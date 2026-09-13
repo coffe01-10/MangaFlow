@@ -8,6 +8,12 @@ in the plain sandbox:
 
     python3 -m pytest apps/desktop/scripts/test_sidecar_relay.py -v
 
+Budget policy (#595/#597): every read timeout in these tests is a HANG
+GUARD — an upper bound on "the contract definitely broke", never a
+latency pin. The relay's accept loop polls at 0.5s intervals, so all
+budgets are set generously (15s) to keep load-sensitive false alarms
+out of the suite; a real hang still fails, just later.
+
 They pin the pipe contract: once a relay connection is established, the
 pump must not impose any read deadline of its own. The historical defect
 was the connect-phase timeout (5s) staying armed on the upstream socket,
@@ -210,7 +216,7 @@ def test_relay_pipe_semantics_table(
                 if scenario == "upstream-fin":
                     # EOF must flow on the SAME connection: the client must
                     # see the peer's close, never a silent dead connection.
-                    tail = read_until_closed(client, timeout_seconds=4)
+                    tail = read_until_closed(client, timeout_seconds=15)
                     assert tail == b"", f"EOF expected right after the response: {tail!r}"
             finally:
                 client.close()
@@ -301,7 +307,7 @@ def test_relay_error_path_table(monkeypatch, scenario):
                 client = socket.create_connection(("127.0.0.1", port), timeout=15)
                 try:
                     client.sendall(REQUEST)
-                    assert read_until_closed(client, timeout_seconds=4) == b""
+                    assert read_until_closed(client, timeout_seconds=15) == b""
                 finally:
                     client.close()
                 # The API comes alive on the very same port.
@@ -310,7 +316,7 @@ def test_relay_error_path_table(monkeypatch, scenario):
                     client = socket.create_connection(("127.0.0.1", port), timeout=15)
                     try:
                         client.sendall(REQUEST)
-                        body = read_response(client, timeout_seconds=4)
+                        body = read_response(client, timeout_seconds=15)
                     finally:
                         client.close()
                     assert body.endswith(b"ok"), body
@@ -327,7 +333,7 @@ def test_relay_error_path_table(monkeypatch, scenario):
                 client = socket.create_connection(("127.0.0.1", port), timeout=15)
                 try:
                     client.sendall(REQUEST)
-                    body = read_response(client, timeout_seconds=4)
+                    body = read_response(client, timeout_seconds=15)
                 finally:
                     client.close()
                 assert body.endswith(b"ok"), body
@@ -382,7 +388,7 @@ def test_relay_releases_slot_when_thread_construction_fails(monkeypatch, scenari
             refused = socket.create_connection(("127.0.0.1", port), timeout=15)
             try:
                 refused.sendall(REQUEST)
-                assert read_until_closed(refused, timeout_seconds=4) == b"", (
+                assert read_until_closed(refused, timeout_seconds=15) == b"", (
                     "a construction-failed connection must be dropped promptly"
                 )
             finally:
@@ -420,7 +426,7 @@ def test_relay_caps_concurrent_connections(monkeypatch):
             for _ in range(2):
                 client = socket.create_connection(("127.0.0.1", port), timeout=15)
                 client.sendall(REQUEST)
-                body = read_response(client, timeout_seconds=4)
+                body = read_response(client, timeout_seconds=15)
                 assert body.endswith(b"ok"), body
                 pinned.append(client)
 
@@ -429,7 +435,7 @@ def test_relay_caps_concurrent_connections(monkeypatch):
             overflow = socket.create_connection(("127.0.0.1", port), timeout=15)
             try:
                 overflow.sendall(REQUEST)
-                assert read_until_closed(overflow, timeout_seconds=4) == b"", (
+                assert read_until_closed(overflow, timeout_seconds=15) == b"", (
                     "an overflow connection must be closed without a response"
                 )
             finally:
@@ -457,7 +463,7 @@ def test_relay_caps_concurrent_connections(monkeypatch):
                 f"a slot was never released for a new client: {served!r}"
             )
             pinned[1].sendall(REQUEST)
-            assert read_response(pinned[1], timeout_seconds=4).endswith(b"ok")
+            assert read_response(pinned[1], timeout_seconds=15).endswith(b"ok")
         finally:
             for client in pinned:
                 client.close()
@@ -647,7 +653,7 @@ def test_relay_survives_a_half_broken_pipe_upstream(monkeypatch):
         victim = socket.create_connection(("127.0.0.1", port), timeout=15)
         try:
             victim.sendall(REQUEST)
-            assert read_until_closed(victim, timeout_seconds=4) == b"", (
+            assert read_until_closed(victim, timeout_seconds=15) == b"", (
                 "an EPIPE-damaged response must not be delivered as content"
             )
         finally:
@@ -657,7 +663,7 @@ def test_relay_survives_a_half_broken_pipe_upstream(monkeypatch):
         client = socket.create_connection(("127.0.0.1", port), timeout=15)
         try:
             client.sendall(REQUEST)
-            body = read_response(client, timeout_seconds=4)
+            body = read_response(client, timeout_seconds=15)
         finally:
             client.close()
         assert body.startswith(b"HTTP/1.1 200") and body.endswith(b"ok"), body
@@ -845,7 +851,7 @@ def test_relay_saturation_log_is_rate_limited(monkeypatch):
         for _ in range(2):
             client = socket.create_connection(("127.0.0.1", port), timeout=15)
             client.sendall(REQUEST)
-            assert read_response(client, timeout_seconds=4).endswith(b"ok")
+            assert read_response(client, timeout_seconds=15).endswith(b"ok")
             pinned.append(client)
 
         # Overflow flood: several refused clients in quick succession.
