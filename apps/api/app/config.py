@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     # mode must never hand jobs to a coincidentally reachable ambient
     # Redis (foreign workers would execute paid jobs with mismatched
     # code — observed 2026-09-14 in the sandbox, #721).
-    desktop_embedded: bool = False
+    mangaflow_desktop_embedded: bool = False
     api_prefix: str = "/api/v1"
 
     database_url: str = "sqlite:///./storage/mangaflow.db"
