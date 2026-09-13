@@ -341,3 +341,20 @@
 - API 暴露面复核：main.py:167 明文文档化"API unauthenticated + TrustedHost 防 DNS rebinding + CORS 白名单 + loopback 绑定"——多用户主机暴露是**已记录的架构取舍**，不重复立案。
 
 **认证**：f1cd46b 轻套件全量 **110/110**（56.7s，八文件；含 #605 新钉与 #604 跨模块钉）。
+
+---
+
+## 15. 周末窗续跑（2026-09-13 07:37 Asia/Shanghai，基线 f5843ae 不变；#607/#608 交叉审完成）
+
+**E 轮（交叉审）：**
+- **PR #607**（boot-exit 日志腿钉）：RUN 1 passed——`_await_web_server_boot` 三腿（boot-exit / mid-session death / clean stop）钉齐。
+- **PR #608**（runner 持久 last-run 日志，生产脚本）：RUN 14/14。tee+pipefail+`||`+`exit` 链正确传播；`"\nexec " not in script` 永久钉死绕过回归。留评一条已接受边界：`tee dist/e2e-last-run.log` 假定 dist/ 存在（runner 流程必然满足），敌意路径下 SIGPIPE 会以误导 exit 1 杀死中程套件——一行 mkdir 可收口，非阻塞。
+- 假阳性："node 死亡时已建立中继连接终结"候选——`_pipe` 的 `EOF → SHUT_WR` + `test_relay_pipe_semantics_table` 的 close_after_response/client-half-close 场景已覆盖上游 EOF 腿，无需新钉（relay 23/23）。
+
+**B 轮（新立 Issue）：**
+- **#610 [P4]** sweep/export **根符号链接透明化**：`rotate_logs`（logs.rs:546）、`export_logs_with`（:1046-1048）、`sweep_runtime_dirs_with`（protocol.rs:449）三处都 `canonicalize` **穿过**根链接再与目标自身做包含判断（自指恒真）。危害家族：导出路径（唯一出机的路径）可被重定向为外部目录泄露进支持包；清扫路径重命名/删除外来树中模式匹配文件；与 #561（journal 双名拒绝）、#458（runtime 名拒绝）、候选级 no-follow 的既有姿态不一致。
+
+**C 轮（防守 PR）：**
+- **PR #612**（修 #610）：三处根守卫（export：新 `ExportError::LogsRootIsSymlink` 变体 + zh Display；双 sweep：stderr 一行 + no-op，与"目录尚不存在"臂同形）+ 三站点各一测试（export 拒绝且不写档、外来树字节不变；rotation 无代际迁移；runtime 外来终态目录+journal 存活）。RUN Linux：三套件绿 + **连续两轮全量 156/156**（首轮一次未复现的单失败，负载 flake 家族，不在改动路径）。Windows junction 腿 best-effort skip（picker_policy 先例）。
+
+**认证**：relay 23/23；shell-core 全量 156/156 ×2。

@@ -530,3 +530,49 @@ fn sweep_keeps_candidates_with_invalid_runtime_names() {
     }
     let _ = fs::remove_dir_all(&user_data);
 }
+
+#[test]
+fn runtime_sweep_ignores_a_planted_runtime_root_link() {
+    // #610: with the runtime root itself planted as a link, the candidate
+    // containment would compare the link target against itself — the sweep
+    // must no-op instead of reclaiming foreign "terminal" directories.
+    let user_data = temp_dir("runtime-root-link");
+    let foreign = temp_dir("runtime-root-link-target");
+    let token = "a".repeat(32);
+    let planted = foreign.join(format!("{RUNTIME_DIR_PREFIX}{token}"));
+    fs::create_dir_all(&planted).unwrap();
+    fs::write(
+        planted.join("owner.json"),
+        format!("{{\"version\":1,\"token\":\"{token}\",\"state\":\"stopped\"}}"),
+    )
+    .unwrap();
+
+    let runtime = user_data.join("runtime");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&foreign, &runtime).unwrap();
+    #[cfg(windows)]
+    {
+        let _ = std::os::windows::fs::symlink_dir(&foreign, &runtime);
+    }
+    if !runtime
+        .symlink_metadata()
+        .map(|meta| meta.is_symlink())
+        .unwrap_or(false)
+    {
+        eprintln!("root link creation not permitted; skipping the root-link assertions");
+        let _ = fs::remove_dir_all(&user_data);
+        let _ = fs::remove_dir_all(&foreign);
+        return;
+    }
+
+    mangaflow_desktop_shell_core::protocol::sweep_runtime_dirs_with(&user_data, 0).unwrap();
+
+    assert!(planted.exists(), "the foreign runtime dir must be untouched");
+    assert!(
+        planted.join("owner.json").exists(),
+        "the foreign journal must survive the sweep"
+    );
+
+    let _ = fs::remove_dir_all(&user_data);
+    let _ = fs::remove_dir_all(&foreign);
+}

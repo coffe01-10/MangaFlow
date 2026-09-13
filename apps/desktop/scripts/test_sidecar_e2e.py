@@ -1419,3 +1419,66 @@ def test_await_web_server_boot_logs_and_returns_false_on_boot_exit(monkeypatch):
     assert result is False, "a boot-exit node must downgrade, not serve"
     logged = captured.getvalue()
     assert "exited during boot" in logged and "code 7" in logged, logged
+
+
+def test_await_web_server_boot_retries_through_a_not_ready_window(monkeypatch):
+    """The middle leg: node ALIVE but its port not yet accepting (Next's
+    listen lag) must NOT be judged dead — the loop retries until the port
+    opens within the budget. The fake socket refuses the first two probes
+    (ECONNREFUSED), then answers; a regression that returned False on the
+    first closed probe — downgrading a merely-slow boot — goes red, and
+    the probe counter proves the loop actually retried."""
+
+    import importlib.util
+    import socket
+    import threading
+    import time as time_module
+
+    spec = importlib.util.spec_from_file_location(
+        "mangaflow_desktop_helper_notready", str(HELPER)
+    )
+    helper_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper_module)
+
+    probes = {"count": 0}
+    gate = threading.Event()  # set at +0.4s: the port "opens" then
+
+    class FakeSocket:
+        def __init__(self, *a, **kw):
+            pass
+
+        def settimeout(self, seconds):
+            pass
+
+        def connect_ex(self, address):
+            probes["count"] += 1
+            if gate.is_set():
+                return 0
+            import errno
+            return errno.ECONNREFUSED
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(helper_module.socket, "socket", FakeSocket)
+
+    class AliveNode:
+        returncode = None
+
+        def poll(self):
+            return None  # alive throughout
+
+    monkeypatch.setattr(helper_module, "WEB_BOOT_TIMEOUT_SECONDS", 5.0)
+    threading.Timer(0.4, gate.set).start()
+
+    started = time_module.monotonic()
+    result = helper_module._await_web_server_boot(AliveNode(), 0)
+    elapsed = time_module.monotonic() - started
+
+    assert result is True, "the opened port must eventually be accepted"
+    assert probes["count"] >= 2, (
+        f"the loop must have retried through the refused window: {probes['count']}"
+    )
+    assert elapsed < helper_module.WEB_BOOT_TIMEOUT_SECONDS + 1.0, (
+        f"the wait must end at first acceptance: {elapsed:.2f}s"
+    )
