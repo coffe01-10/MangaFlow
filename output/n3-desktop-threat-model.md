@@ -551,3 +551,14 @@
 
 **B 轮（新立）：**
 - **#717 [P4]** `recreate_junction` 的目录分支无条件使用 git-bash 专属三件套（`cygpath`/`cmd //c mklink`）——POSIX 上 node_modules 内的树内目录符号链接触发 command-not-found（本沙箱活体观察到三行报错；导出仍建成并通过 D5，但 #385 的"链接在 worktree 内重建、worktree 保持密封"契约在 POSIX 静默未达）。修复面：按平台守卫创建腿（POSIX `ln -sfn` / win32 mklink），文件腿已是可移植的 `cp -l`。
+
+---
+
+## 31. 夜班续（2026-09-14 04:23，基线 9396ffc；#720/#721 已合）
+
+**E 轮（交叉审）：**
+- **PR #720 交叉审**已留评（§30 段）：复活 #458 钉 + 外部树 journal-free 腿 + TOCTOU 边界注记——RUN 1+12/12。
+- **PR #721 交叉审**（e2e 密封性）：`DesktopShell.pin_local_queue()`——沙箱 6379 上的**外来 redis-server**（他工作槽）捕获 AUTO 队列模式任务进永不排空的队列（观察：任务 QUEUED 卡 120s，根因 9 月 2 日起的 pid 545150 redis）。fixture 在铸造任何任务前 PATCH `queue_mode=LOCAL`。桌面安装形态设计上无 Redis——钉 LOCAL 是正确姿态。RUN：fixture 依赖流全绿。
+- 与本台账观察项的关系：D5 瞬态挂起与此**不同机制**（uvicorn 停机等中继排空 vs 任务入队），但同属"沙箱环境污染"家族——外来 redis 也可能解释部分历史 flake。
+
+**认证**：fixture 依赖流 3 测全绿（9396ffc）。
