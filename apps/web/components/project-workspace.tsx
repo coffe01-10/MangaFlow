@@ -346,17 +346,36 @@ export default function ProjectWorkspace({
       && !pages.data.some((page) => page.id === deepLinkPageId),
   );
 
+  // #659：跨分区返回的滚动恢复不能在 scrollTo 后无条件删键——分区是
+  // dynamic() chunk，可能晚于数据查询就绪（dev/冷启动），矮文档会把
+  // scrollTo 钳制在当前可滚高度内。改为「滚动确认落地（阈值内）才消费
+  // 键」，未落地时保留键并逐帧重试；重试上限（≈2s@60fps）兜底目标超出
+  // 最终文档高度的场景，避免恢复键永驻、在无关刷新时跳到陈旧位置。
   useEffect(() => {
     if (!workspaceRouteReady) return;
     const key = `mangaflow.workspace-scroll.${id}`;
     const saved = window.sessionStorage.getItem(key);
     if (saved === null) return;
-    const top = Number(saved);
-    const frame = window.requestAnimationFrame(() => {
-      window.scrollTo({ top: Number.isFinite(top) ? top : 0, behavior: "auto" });
-      window.sessionStorage.removeItem(key);
-    });
-    return () => window.cancelAnimationFrame(frame);
+    const savedTop = Number(saved);
+    const top = Number.isFinite(savedTop) ? savedTop : 0;
+    let attempts = 0;
+    let cancelled = false;
+    let frame = 0;
+    const attempt = () => {
+      if (cancelled) return;
+      window.scrollTo({ top, behavior: "auto" });
+      attempts += 1;
+      if (Math.abs(window.scrollY - top) <= 1 || attempts >= 120) {
+        window.sessionStorage.removeItem(key);
+        return;
+      }
+      frame = window.requestAnimationFrame(attempt);
+    };
+    frame = window.requestAnimationFrame(attempt);
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(frame);
+    };
   }, [assetView, id, section, workspaceRouteReady]);
 
   // 首载失败必须先于加载分支判断：rejected 状态下 data 为空、draft 为 null，
