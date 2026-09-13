@@ -784,3 +784,49 @@
   `assert_eq!(RUNTIME_SWEEP_GRACE_SECONDS, 24*60*60)` + docstring 过度声明更正 + NTP
   方向性勘误（backward step 反向缩小 aged 的 age；窗口毫秒级，理论性）。→ **PR #707**。
   （#705 本体已在评审期间被并，9e48ba8。）
+
+## 37. 夜班续三（master 50211a2→b208ed8——#709/#710 已并，追溯评审）
+
+- **PR #709（FIFO 套件 mkfifo 门）+ #710（预算统一 15s）双双已并**（追溯 round-26 APPROVE）。
+  #709 评审实证：gate 模拟 Windows（删 os.mkfifo）→ 12 skipped 零错误；hasattr 判据优于
+  sys.platform。#710：11 处 4s→15s 零残余、运行时无成本（失败路径天花板）。
+- **#710 MEDIUM 跟进 → PR #712（待 lead）**：管道语义**表格测试**残留 4s 臂（自身
+  slow-first-byte 延迟 5.6s——文件内最紧预算，正是负载敏感类）→ 15s；docstring
+  "all budgets 15s" 过度声明（cap-release 重试循环的 2s 探针是预期超时的同步点）→
+  措辞精确化豁免。23 passed；ruff clean。
+- **#709 LOW 记录**：gate 范围宽于必需（套件级跳过牺牲 10 个平台无关测试的 Windows
+  覆盖）——夜班取舍，记录不阻塞；ruff F841（unused helper）为 master 既有。
+- **流程披露**：夜分支两次误吞本应独立开 PR 的提交（§35 补遗、mkfifo 门）——均已分支
+  手术修复；教训：checkout -b 与编辑必须同一命令块确认。
+
+## 38. 夜班续四（master 7cad2df——#712 已并；D5 双模式重写交叉审）
+
+- **#693 重写交叉审 → P1 实锤 → PR #713（已并，追溯 round-28 APPROVE）**：plan-B 重写把
+  static_hits/server 移入 `if (!PLAN_B)` 块，而 evidence/teardown 在函数域引用——**默认
+  static 模式握手后 ReferenceError 崩溃**（三围栏全绿后死）；#693 只实测了 plan-b 腿。
+  修复：static_hits 提升函数域 + server let 块内赋值。评审：eslint no-undef 全量 0 发现、
+  TDZ/fail() 干净、双模式实测 PASS。**过程补丁**：评审指出我方脚本静默删除 #458 包含性
+  钉（protocol.rs）——已恢复（见 §35 补遗五）。
+- **PR #715（待 lead）**：busy-4173 catch `process.exit(1)` 不杀 helper（文件自述 #346
+  孤儿类，#588 漏路由的路径）→ killHelperTree。健康运行冷路径，双模式 PASS 复验。
+- **预防性切片候选（记录）**：eslint no-undef 未覆盖 scripts/*.mjs——#713 类缺陷可被
+  `--rule no-undef` 拦截（评审实证 0 发现于修复后）。
+- **串行证据**：static + plan-b 双模式 **D5 PASS** ×2 各（修复前 static FAIL 实证）。
+
+## 39. 夜班续五（master 9fc7371→e2e-hermetic 期间；两次全量 runner 失败的根因闭环）
+
+- **候选循环 e2e 两连败的根因（sqlite 事后取证 + 诊断探针，非仓库回归）**：
+  generation_jobs 行 `status=QUEUED / lease_owner=NULL / error_code=NULL` + diag 探针
+  `_submit_local` **零调用** + 沙箱存活 `redis-server *:6379`（pid 545150，他槽位，Sep 02 起）
+  → 运行时队列模式默认 AUTO，redis 可达即走 REDIS 分支 → job 入**无人消费的外部队列**。
+  00:55 的绿跑是恰有他组 worker 代跑（或 redis 瞬断走 adopt-local）——同一 commit 两态皆现，
+  坐实环境性。**正确性危险**：外部 worker 可用不匹配代码执行我方付费 job。
+- **PR #721（待 lead）**：`desktop` fixture 在 wait_health 后经
+  `PATCH /settings/runtime {queue_mode: LOCAL}` 钉本地执行（桌面安装形态本无 Redis 设计）；
+  `_ScriptedShell` 补 no-op 使三个 fixture 语义测试保持。修复前对 ambient-redis 在位环境
+  120s+ 挂死；修复后隔离跑 **4.14s PASS**；全量 **156 passed**（exit=0）。
+- **PR #720（待 lead）**：#458 包含性钉恢复的重落——发现 #692 合并时该恢复提交
+  （ac695f8，round-24 blocker 修复）留在已并分支上未进 master（**合并竞态第四次**，
+  与 #566/#571、#608 同型）。cherry-pick 原样，双测试共存绿。
+- **诊断探针已全部回滚**（apps/api/job_service.py 的 submit/execute-start 写文件探针为
+  临时本地调试，未提交、已还原）。

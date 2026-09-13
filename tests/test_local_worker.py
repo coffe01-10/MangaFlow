@@ -471,6 +471,48 @@ def test_local_mode_submits_without_touching_redis(db_session, monkeypatch):
     assert submitted == [job.id]
 
 
+def test_embedded_auto_mode_adopts_locally_despite_a_reachable_redis(
+    db_session, monkeypatch
+):
+    """The desktop-embedded runtime (#721 diagnosis) must not hand AUTO
+    jobs to a coincidentally reachable ambient Redis: with
+    desktop_embedded=True the LOCAL adoption fires even though a Redis
+    ping would succeed — the payload would otherwise sit in a queue no
+    worker of ours drains (or a foreign worker executes it with
+    mismatched code)."""
+
+    _set_queue_mode(db_session, "AUTO")
+    job = _waiting_job(db_session, "embedded")
+    submitted: list[str] = []
+    monkeypatch.setattr(
+        job_service, "get_settings", lambda: Settings(environment="development", desktop_embedded=True)
+    )
+    monkeypatch.setattr(
+        job_service, "_submit_local", lambda job_id: submitted.append(job_id)
+    )
+    # A reachable Redis must be IRRELEVANT in the embedded runtime: the
+    # fake would record an enqueue if the code ever tried.
+    enqueued: list[str] = []
+
+    class _FakeQueue:
+        def enqueue(self, *args, **kwargs):
+            enqueued.append(args[0])
+
+    class _FakeRedis:
+        def ping(self):
+            return True
+
+    monkeypatch.setattr("redis.Redis.from_url", lambda *_a, **_k: _FakeRedis())
+    monkeypatch.setattr("rq.Queue", lambda name, connection: _FakeQueue())
+
+    result = job_service.enqueue_job(db_session, job)
+
+    assert result.status == JobStatus.QUEUED
+    assert result.error_code == "LOCAL_WORKER"
+    assert submitted == [job.id]
+    assert enqueued == [], "the embedded runtime must not touch Redis"
+
+
 def test_redis_mode_keeps_job_waiting_when_redis_is_unavailable(
     db_session, monkeypatch
 ):

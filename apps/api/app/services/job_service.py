@@ -386,6 +386,12 @@ def enqueue_job(db: Session, job: GenerationJob) -> GenerationJob:
         db.refresh(job)
         return job
     queue_mode = read_queue_mode(db)
+    # The embedded desktop runtime has no Redis by design: an ambient
+    # Redis that merely answers a ping is not an executor — handing
+    # paid jobs to it strands them (no worker of ours drains that
+    # queue) or routes them to foreign code (#721 diagnosis).
+    if queue_mode == "AUTO" and settings.desktop_embedded:
+        return _enqueue_locally(db, job, "本地后台执行器正在处理任务")
     if queue_mode == "LOCAL":
         return _enqueue_locally(db, job, "本地后台执行器正在处理任务")
 
