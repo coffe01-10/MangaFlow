@@ -884,3 +884,9 @@
   QUEUE_DISABLED，设计自洽——交叉验证）。#725 上留防重说明：诊断腿已由
   test_embedded_auto_diagnostics_report_local_despite_reachable_redis 覆盖（可达 redis
   假体三断言），#727 的 drop-in 若无额外断言不应重复合并。
+
+- **§35 补遗十七（a3422e8 收尾证据 + #733 交叉审）**：真 runner **157 passed**（exit=0，
+  含 #733 新钉）+ cargo **168/0**。#733 终态检查 64KiB+1 有界读交叉审：超限=截断→解析
+  失败→fail-open 与文档语义一致（"oversize = unreadable"，Rust 读侧 fail-closed 属不同
+  消费者）；text 模式按字符截断（多字节上界 ~4×）为 micro-nit 仍有界；InvalidUTF8 ⊂
+  ValueError ✅。无新缺陷。
