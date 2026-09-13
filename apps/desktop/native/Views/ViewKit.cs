@@ -36,7 +36,6 @@ public abstract class WorkspaceView : UserControl, IWorkspaceView
     }
     protected WorkspaceContext? Context { get; private set; }
     protected ApiClient Api => Context?.Api ?? throw new InvalidOperationException("视图尚未激活");
-    protected ApiCache Cache => Context?.Cache ?? throw new InvalidOperationException("视图尚未激活");
     protected WorkspaceState State => Context?.State ?? throw new InvalidOperationException("视图尚未激活");
     protected ProjectItem? Project => Context?.Project;
     protected string ProjectId => Context?.ProjectId ?? "";

@@ -293,7 +293,7 @@ internal static class NativeLibraryChecks
             using var file = File.Create(Path.Combine(output, $"native-library-populated-{width}.png")); encoder.Save(file);
         }
     }
-    private static WorkspaceContext Context(ApiClient api, string project) => new() { Api = api, Cache = new(), State = new(), Window = null!, Project = new(project, project, "", 0, 0), NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask };
+    private static WorkspaceContext Context(ApiClient api, string project) => new() { Api = api, State = new(), Window = null!, Project = new(project, project, "", 0, 0), NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask };
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root) { yield return root; foreach (var child in LogicalTreeHelper.GetChildren(root).OfType<DependencyObject>()) foreach (var item in Descendants(child)) yield return item; }
     private static IEnumerable<Button> Buttons(DependencyObject root) => Descendants(root).OfType<Button>();
     private static string Text(DependencyObject root) => string.Join("\n", Descendants(root).OfType<TextBlock>().Select(t => t.Text));

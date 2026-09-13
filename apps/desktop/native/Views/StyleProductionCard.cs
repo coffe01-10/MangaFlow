@@ -183,7 +183,7 @@ internal sealed class StyleProductionCard : Border
     private async Task RunAsync(Func<Task> action)
     {
         if (busy || !Attached) return; busy = true; IsEnabled = false; error.Text = "";
-        try { await action(); if (Attached) { owner.View.InvalidateStyleDependents(); await owner.ReloadAsync(); } }
+        try { await action(); if (Attached) { await owner.ReloadAsync(); } }
         catch (Exception ex) { if (Attached) { error.Text = ex.Message; if (pendingBatch.Length > 0) error.Text += "\n批次已创建，点击生成可在该批次重试。"; } }
         finally { busy = false; IsEnabled = true; UpdateState(); RenderCandidates(); }
     }

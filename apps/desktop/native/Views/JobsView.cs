@@ -367,7 +367,6 @@ public sealed class JobsView : WorkspaceView
         var version = activationVersion;
         var token = lifetime.Token;
         var projectId = ProjectId;
-        var cache = Cache;
         pending.Add(job.Id);
         Render();
         try
@@ -376,7 +375,6 @@ public sealed class JobsView : WorkspaceView
                 await Api.SendOptionalAsync($"jobs/{job.Id}?project_id={projectId}", HttpMethod.Delete, cancellation: token);
             else
                 await Api.SendAsync($"jobs/{job.Id}/{action}?project_id={projectId}", HttpMethod.Post, cancellation: token);
-            cache.Invalidate("jobs:" + projectId);
             if (token.IsCancellationRequested || version != activationVersion) return;
             notice.Text = label switch
             {
@@ -429,14 +427,12 @@ public sealed class JobsView : WorkspaceView
         var version = activationVersion;
         var token = lifetime.Token;
         var projectId = ProjectId;
-        var cache = Cache;
         bulkPending = true;
         Render();
         try
         {
             var result = await Api.SendAsync($"projects/{projectId}/jobs/{action}", HttpMethod.Post,
                 payload, cancellation: token);
-            cache.Invalidate("jobs:" + projectId);
             if (token.IsCancellationRequested || version != activationVersion) return;
             notice.Text = message(result);
             selected.Clear();

@@ -342,12 +342,7 @@ public sealed class AssetsView : WorkspaceView
             ("file", Path.GetFileName(filePath), mime, data), lifetime.Token);
     }
 
-    internal async Task ReloadAssets()
-    {
-        var captured = epoch;
-        await LoadAsync();
-        if (IsCurrent(captured)) Cache.Invalidate("assets:" + ProjectId, "dashboard");
-    }
+    internal async Task ReloadAssets() => await LoadAsync();
 
     public override Task RefreshAsync() => LoadAsync();
 
@@ -356,14 +351,10 @@ public sealed class AssetsView : WorkspaceView
     public override async Task<bool> ConfirmLeaveAsync() =>
         await GuardOutfitDraftAsync() == OutfitDraftDecision.Proceed;
 
-    internal void InvalidateOutfitDependents() => Cache.Invalidate("assets:" + ProjectId, "library:" + ProjectId, "jobs:" + ProjectId, "workbench:", "script:", "storyboard:", "pages:", "dashboard");
-
     internal bool OwnsOutfits(OutfitWorkspace pane) => host.Children.Contains(pane);
     internal bool OwnsScenes(SceneWorkspace pane) => host.Children.Contains(pane);
     internal bool OwnsStyle(StyleWorkspace pane) => host.Children.Contains(pane);
     internal bool OwnsReferences(ReferencesPane pane) => host.Children.Contains(pane);
-    internal void InvalidateStyleDependents() => Cache.Invalidate("assets:" + ProjectId, "jobs:" + ProjectId, "library:" + ProjectId, "workbench:", "pages:", "dashboard");
-    internal void InvalidateSceneDependents() => Cache.Invalidate("assets:" + ProjectId, "script:", "storyboard:", "pages:", "workbench:");
 
     public override void PollTick()
     {

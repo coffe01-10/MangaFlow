@@ -49,7 +49,7 @@ internal static class NativeInspectionChecks
         var view = new GenerateView();
         view.Activate(new WorkspaceContext
         {
-            Api = api, Cache = new(), State = new(), Window = null!,
+            Api = api, State = new(), Window = null!,
             Project = new ProjectItem("p1", "检查面板测试", "", 0, 0),
             NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
         });

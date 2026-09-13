@@ -159,7 +159,7 @@ internal static class NativeIssue486Checks
             KeyValueStore.Set("image-model:p", "model-a");
             view.Activate(new WorkspaceContext
             {
-                Api = api, Cache = new(), State = new(), Window = null!,
+                Api = api, State = new(), Window = null!,
                 Project = new ProjectItem("p", "#486 死批次检查", "", 0, 0),
                 NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
             });

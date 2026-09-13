@@ -160,7 +160,7 @@ internal sealed class StyleWorkspace : StackPanel
             Notify("风格档案已创建，正在提交分析。");
             try { var job = await View.ApiSend($"styles/{style.Text("id")}/analyze", HttpMethod.Post); Notify("风格档案已创建 · " + JobLabel(job)); }
             catch (Exception ex) { Notify("档案已保存，但分析未启动；可在下方重新分析。" + ex.Message); }
-            if (Active) { View.InvalidateStyleDependents(); await ReloadAsync(); }
+            if (Active) { await ReloadAsync(); }
         }
         catch (Exception ex) { Notify(ex.Message); }
         finally { saving = false; IsEnabled = true; UpdateDraft(); }
@@ -210,7 +210,7 @@ internal sealed class StyleWorkspace : StackPanel
             var assets = await View.ApiSend($"assets?project_id={ProjectId}"); if (!Active) return;
             View.assets = assets.EnumerateArray().Select(AssetItem.From).ToList();
             selected.RemoveWhere(key => !View.assets.Any(a => a.Id == key && a.Kind == "STYLE_REFERENCE"));
-            View.InvalidateStyleDependents(); await ReloadAsync();
+            await ReloadAsync();
         }
         catch (Exception ex) { Notify(ex.Message); }
         finally { saving = false; IsEnabled = true; if (Active) { RenderReferences(); UpdateDraft(); } }

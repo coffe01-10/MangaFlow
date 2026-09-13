@@ -379,7 +379,6 @@ public sealed class ProjectSettingsView : WorkspaceView
             successTimer = new System.Timers.Timer(4000) { AutoReset = false };
             successTimer.Elapsed += (_, _) => Dispatcher.BeginInvoke(() => saveSuccess.Visibility = Visibility.Collapsed);
             successTimer.Start();
-            Cache.Invalidate("project:" + ProjectId, "dashboard", "projects");
         }
         catch (OperationCanceledException)
         {
@@ -417,7 +416,6 @@ public sealed class ProjectSettingsView : WorkspaceView
         try
         {
             await Api.SendOptionalAsync($"projects/{ProjectId}?confirm_name={Uri.EscapeDataString(expected)}", HttpMethod.Delete, cancellation: lifetime.Token);
-            Cache.Invalidate("dashboard", "projects");
             State.Status = $"项目「{expected}」已删除";
             await Context!.OpenDashboard();
         }

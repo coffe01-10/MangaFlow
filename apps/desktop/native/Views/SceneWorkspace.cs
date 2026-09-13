@@ -217,7 +217,7 @@ internal sealed class SceneWorkspace : StackPanel
         catch (Exception ex) { error = ex.Message; }
         finally { busy = false; IsEnabled = true; }
         if (!Active) return;
-        view.InvalidateSceneDependents(); await ReloadAsync(); if (error != null) Message(error);
+        await ReloadAsync(); if (error != null) Message(error);
     }
     internal Task ChangeAsync(string path, HttpMethod method, object? payload = null) => RunAsync(async () => { await view.ApiSendOptional(path, method, payload); });
     private Task CanonicalAsync(JsonElement scene, JsonElement reference) => RunAsync(async () =>
@@ -290,7 +290,7 @@ internal sealed class SceneWorkspace : StackPanel
         {
             if (!Active) throw new InvalidOperationException("页面已切换，请重新打开编辑器。");
             var data = await view.ApiSend(scene == null ? Base : $"{Base}/{scene.Value.Text("id")}", scene == null ? HttpMethod.Post : HttpMethod.Patch, payload);
-            if (Active) { selected = data.Text("id"); view.InvalidateSceneDependents(); await ReloadAsync(); }
+            if (Active) { selected = data.Text("id"); await ReloadAsync(); }
         }); editor.Owner = view.WindowHost(); editor.ShowDialog();
     }
     private void EditVariant(JsonElement scene, JsonElement? variant)
@@ -299,7 +299,7 @@ internal sealed class SceneWorkspace : StackPanel
         {
             if (!Active) throw new InvalidOperationException("页面已切换，请重新打开编辑器。");
             var path = $"{Base}/{scene.Text("id")}/variants" + (variant == null ? "" : "/" + variant.Value.Text("id"));
-            await view.ApiSend(path, variant == null ? HttpMethod.Post : HttpMethod.Patch, payload); if (Active) { view.InvalidateSceneDependents(); await ReloadAsync(); }
+            await view.ApiSend(path, variant == null ? HttpMethod.Post : HttpMethod.Patch, payload); if (Active) { await ReloadAsync(); }
         }); editor.Owner = view.WindowHost(); editor.ShowDialog();
     }
 }

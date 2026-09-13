@@ -220,7 +220,6 @@ internal sealed class OutfitWorkspace : StackPanel
         selected.IntersectWith(liveIds);
         initialSelected.IntersectWith(liveIds);
         Children.RemoveAt(0); Children.Insert(0, AssetPageUi.Header("WARDROBE / 服装档案", "角色、服装与参考图逐一绑定", $"{view.outfits.Count} 份档案"));
-        view.InvalidateOutfitDependents();
         RenderReferences(); RenderRecords(); UpdateDraft();
     }
     internal Task SaveAsync() => SaveDraftAsync();

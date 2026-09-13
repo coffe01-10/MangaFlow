@@ -116,7 +116,7 @@ internal static class NativeIssue484Checks
         var view = new ScriptView();
         view.Activate(new WorkspaceContext
         {
-            Api = api, Cache = new ApiCache(), State = new WorkspaceState(), Window = null!,
+            Api = api, State = new WorkspaceState(), Window = null!,
             Project = new ProjectItem("issue484", "归档资产测试", "", 0, 0),
             NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
         });

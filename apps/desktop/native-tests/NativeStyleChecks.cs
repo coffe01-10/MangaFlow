@@ -35,7 +35,7 @@ internal static class NativeStyleChecks
         try
         {
             KeyValueStore.Set("image-model:p", "model-a"); KeyValueStore.Set("style-mode:p", "color");
-            view.Activate(new WorkspaceContext { Api = api, Cache = new(), State = new(), Window = null!, Project = new ProjectItem("p", "漫画风格测试", "", 0, 0), NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask });
+            view.Activate(new WorkspaceContext { Api = api, State = new(), Window = null!, Project = new ProjectItem("p", "漫画风格测试", "", 0, 0), NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask });
             await view.RefreshAsync(); await view.SwitchAsync(AssetsView.Style); await Task.Delay(30); Layout(view, 1100, 1500);
             var pane = NativeParityChecks.Descendants(view).OfType<StyleWorkspace>().Single(); await pane.InitialLoad;
             var cards = Field<Dictionary<string, StyleProductionCard>>(pane, "cards"); var card = cards["style1"];
@@ -78,7 +78,7 @@ internal static class NativeStyleChecks
             Require(cards.Count == 1, "detached style workspace ignores late list response");
             await view.SwitchAsync(AssetsView.Style); await Task.Delay(15); Layout(view, 1100, 1300);
             var oldPane = NativeParityChecks.Descendants(view).OfType<StyleWorkspace>().Single();
-            view.Activate(new WorkspaceContext { Api = api, Cache = new(), State = new(), Window = null!, Project = new ProjectItem("p2", "另一个项目", "", 0, 0), NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask });
+            view.Activate(new WorkspaceContext { Api = api, State = new(), Window = null!, Project = new ProjectItem("p2", "另一个项目", "", 0, 0), NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask });
             await view.RefreshAsync(); await Task.Delay(15); Layout(view, 1100, 1300);
             var nextPane = NativeParityChecks.Descendants(view).OfType<StyleWorkspace>().Single();
             Require(!ReferenceEquals(oldPane, nextPane) && nextPane.ProjectId == "p2", "switching project must replace the old style workspace");

@@ -33,7 +33,7 @@ internal static class NativeButtonChecks
 
         using var api = new ApiClient("http://127.0.0.1:12345", new FixtureHandler());
         var view = new AssetsView();
-        view.Activate(new WorkspaceContext { Api = api, Cache = new(), State = new(), Window = null!, Project = projects[0],
+        view.Activate(new WorkspaceContext { Api = api, State = new(), Window = null!, Project = projects[0],
             NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask });
         try
         {

@@ -100,7 +100,7 @@ internal static class NativeStoryboardEditChecks
         var view = new StoryboardView();
         view.Activate(new WorkspaceContext
         {
-            Api = api, Cache = new ApiCache(), State = new WorkspaceState(), Window = null!,
+            Api = api, State = new WorkspaceState(), Window = null!,
             Project = new ProjectItem("sb-edit", "分镜编辑测试", "", 0, 0),
             NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
         });
@@ -459,7 +459,7 @@ internal static class NativeStoryboardEditChecks
         var view = new ScriptView();
         view.Activate(new WorkspaceContext
         {
-            Api = api, Cache = new ApiCache(), State = new WorkspaceState(), Window = null!,
+            Api = api, State = new WorkspaceState(), Window = null!,
             Project = new ProjectItem("sb-script", "剧本刷新测试", "", 0, 0),
             NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
         });
@@ -508,7 +508,7 @@ internal static class NativeStoryboardEditChecks
         var view = new ScriptView();
         view.Activate(new WorkspaceContext
         {
-            Api = api, Cache = new ApiCache(), State = new WorkspaceState(), Window = null!,
+            Api = api, State = new WorkspaceState(), Window = null!,
             Project = new ProjectItem("sb-script", "剧本激活测试", "", 0, 0),
             NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
         });
@@ -534,7 +534,7 @@ internal static class NativeStoryboardEditChecks
         var view = new ScriptView();
         view.Activate(new WorkspaceContext
         {
-            Api = api, Cache = new ApiCache(), State = new WorkspaceState(), Window = null!,
+            Api = api, State = new WorkspaceState(), Window = null!,
             Project = new ProjectItem("sb-script", "剧本离开缝测试", "", 0, 0),
             NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
         });

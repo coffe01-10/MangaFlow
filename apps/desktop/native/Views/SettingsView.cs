@@ -628,13 +628,11 @@ public sealed class SettingsView : WorkspaceView
     }
 
     internal new ApiClient Api => base.Api;
-    internal new ApiCache Cache => base.Cache;
     internal new Window Host => base.Host;
 
     internal void OnProvidersChanged()
     {
         _ = LoadProvidersAsync();
-        Cache.Invalidate("providers", "models", "dashboard");
     }
 
     public override Task RefreshAsync()
@@ -1284,7 +1282,6 @@ internal sealed class ModelRow : Border
         {
             model = await panel.Owner.Api.SendAsync($"providers/models/{model.Text("id")}", HttpMethod.Patch,
                 new { display_enabled = !model.Flag("display_enabled"), version = model.Number("version") });
-            panel.Owner.Cache.Invalidate("providers", "models", "dashboard");
             Render();
         }
         catch (Exception error)

@@ -267,7 +267,7 @@ public sealed class LocalEditWindow : Window
             if (command.Text("status") != "EXECUTED") throw new InvalidOperationException(command.Element("error").Text("message", "命令尚未执行，请刷新后检查状态。"));
             acceptedId = commandId; groupId = ""; preview.Children.Clear();
             notice.Text = "局部生成任务已提交，可以关闭窗口后在任务中心继续查看。";
-            context.Cache.Invalidate("workbench:", "library:", "jobs:"); poll.Start();
+            poll.Start();
         }
         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException) { notice.Text = error.Message; }
@@ -327,7 +327,6 @@ public sealed class LocalEditWindow : Window
         {
             await context.Api.SendAsync($"pages/{pageId}/select-candidate", HttpMethod.Post,
                 new { candidate_id = candidate.Id, manual_text_confirmed = true, accept_stale = false }, lifetime.Token);
-            context.Cache.Invalidate("workbench:", "library:", "pages:");
             notice.Text = "已暂选局部修改结果，请返回生成工作台完成视觉检查。";
             preview.IsEnabled = false;
         }

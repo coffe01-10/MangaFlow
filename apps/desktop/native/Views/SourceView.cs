@@ -319,7 +319,7 @@ public sealed class SourceView : WorkspaceView
             if (epoch != activation || token.IsCancellationRequested) return;
             activeChapterId = result.Array("chapters").FirstOrDefault().Text("id");
             ResetCompose(); notice.Text = $"已导入「{title}」。";
-            Cache.Invalidate("chapters:" + projectId, "dashboard"); await LoadChaptersAsync();
+            await LoadChaptersAsync();
         }
         catch (TimeoutException)
         {
@@ -371,7 +371,6 @@ public sealed class SourceView : WorkspaceView
                 ResetCompose();
                 await LoadChaptersAsync();
             }
-            if (epoch == activation) Cache.Invalidate("chapters:" + ProjectId, "script:", "pages:", "dashboard");
         }
          catch (OperationCanceledException) { }
         catch (Exception reason) when (reason is not OperationCanceledException)
@@ -398,7 +397,6 @@ public sealed class SourceView : WorkspaceView
                 ? "章节已移入回收状态"
                 : $"已删除 {pendingRestoreChapterIds.Count} 章，可一次全部撤回";
             undoBanner.Visibility = Visibility.Visible;
-            Cache.Invalidate("chapters:" + ProjectId, "dashboard");
             await LoadChaptersAsync();
         }
          catch (OperationCanceledException) { }
@@ -422,7 +420,6 @@ public sealed class SourceView : WorkspaceView
                 pendingRestoreChapterIds.RemoveAt(0);
             }
             undoBanner.Visibility = Visibility.Collapsed;
-            Cache.Invalidate("chapters:" + ProjectId, "dashboard");
             await LoadChaptersAsync();
         }
          catch (OperationCanceledException) { }
@@ -455,7 +452,6 @@ public sealed class SourceView : WorkspaceView
             {
                 var pageId = result.Array("pages").FirstOrDefault().Text("id");
                 if (pageId.Length > 0) KeyValueStore.Set("storyboard:page:" + ProjectId, pageId);
-                Cache.Invalidate("pages:" + chapter.Id, "chapters:" + ProjectId);
             }
             State.Status = plan ? "分页计算完成" : "剧本解析任务已创建";
             await context.NavigateSection(plan ? "storyboard" : "jobs", "");

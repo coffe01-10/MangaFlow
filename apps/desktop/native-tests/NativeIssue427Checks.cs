@@ -276,7 +276,7 @@ internal static class NativeIssue427Checks
 
     private static WorkspaceContext Context(ApiClient api) => new()
     {
-        Api = api, Cache = new ApiCache(), State = new WorkspaceState(), Window = null!,
+        Api = api, State = new WorkspaceState(), Window = null!,
         Project = new ProjectItem("p1", "#427 检查", "", 0, 0),
         NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
     };

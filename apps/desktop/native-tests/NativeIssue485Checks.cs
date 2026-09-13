@@ -291,7 +291,7 @@ internal static class NativeIssue485Checks
         var view = new AssetsView();
         view.Activate(new WorkspaceContext
         {
-            Api = api, Cache = new ApiCache(), State = new WorkspaceState(), Window = null!,
+            Api = api, State = new WorkspaceState(), Window = null!,
             Project = new ProjectItem("issue485", "角色包守卫检查", "", 0, 0),
             NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
         });

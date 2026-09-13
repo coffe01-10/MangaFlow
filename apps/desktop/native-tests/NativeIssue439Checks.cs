@@ -182,7 +182,7 @@ internal static class NativeIssue439Checks
 
     private static WorkspaceContext Context(ApiClient api, string projectId) => new()
     {
-        Api = api, Cache = new ApiCache(), State = new WorkspaceState(), Window = null!,
+        Api = api, State = new WorkspaceState(), Window = null!,
         Project = new ProjectItem(projectId, "超时与规范参考测试", "", 0, 0),
         NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
     };

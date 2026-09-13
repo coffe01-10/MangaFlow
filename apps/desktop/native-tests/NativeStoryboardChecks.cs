@@ -44,7 +44,7 @@ internal static class NativeStoryboardChecks
         viewType.GetField("chapterId", flags)!.SetValue(view, "ch-1");
         view.Activate(new WorkspaceContext
         {
-            Api = api, Cache = new ApiCache(), State = new WorkspaceState(), Window = null!,
+            Api = api, State = new WorkspaceState(), Window = null!,
             Project = new ProjectItem("p1", "分镜测试", "", 0, 0),
             NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
         });

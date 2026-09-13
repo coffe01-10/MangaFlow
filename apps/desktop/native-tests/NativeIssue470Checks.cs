@@ -13,9 +13,8 @@ using MangaFlow.Native.Services;
 using MangaFlow.Native.Views;
 
 // #470 / #471-2 / #471-3 的回归检查（需 STA + Dispatcher 泵，自带启动引导）：
-// - #470：导航取消创建 POST 后必须浮出「提交结果未知…请刷新确认」反馈并
-//   失效 dashboard/projects 缓存——否则服务端可能已建项却无任何提示，
-//   引导用户重复提交造成重复项目；
+// - #470：导航取消创建 POST 后必须浮出「提交结果未知…请刷新确认」反馈
+//（#441 删除 ApiCache 后，新鲜度由各 mutator 的显式重载负责；此处不再断言缓存失效）；
 // - #471-2：创建期间点取消会先合上抽屉，之后到达的 400/409 若只写进
 //   已折叠抽屉里的 drawerError，用户在任何地方都看不到——抽屉关闭时
 //   失败必须改道 State.Status；
@@ -99,15 +98,12 @@ internal static class NativeIssue470Checks
         Dispatcher.PushFrame(frame);
         timeout.Stop();
         if (failure != null) throw new Exception("Issue 470 checks failed", failure);
-        Console.WriteLine("PASS: #470 cancelled create surfaces unknown-outcome guidance and invalidates caches; #471-2 closed-drawer failures reach the status line; #471-3 F5 failures surface an error and retry cue");
+        Console.WriteLine("PASS: #470 cancelled create surfaces unknown-outcome guidance; #471-2 closed-drawer failures reach the status line; #471-3 F5 failures surface an error and retry cue");
     }
 
     // #470：POST 在途时 Deactivate 取消令牌（服务端可能已建项）。
     private static async Task CancelledCreateSurfacesUnknownOutcome()
     {
-        var cache = new ApiCache();
-        var invalidated = new List<string>();
-        cache.Invalidated += prefix => invalidated.Add(prefix);
         var state = new WorkspaceState();
         using var api = new ApiClient("http://127.0.0.1:12345", new Handler(async (_, token) =>
         {
@@ -115,7 +111,7 @@ internal static class NativeIssue470Checks
             return new HttpResponseMessage(HttpStatusCode.OK);
         }));
         var view = new HomeView();
-        SetContext(view, api, cache, state);
+        SetContext(view, api, state);
         try
         {
             Field<TextBox>(view, "nameInput").Text = "取消风暴测试";
@@ -125,8 +121,6 @@ internal static class NativeIssue470Checks
             Require(state.Error.Contains("提交结果未知") && state.Error.Contains("刷新") && state.Error.Contains("避免重复提交"),
                 "被取消的创建必须浮出与外壳一致的「提交结果未知」提示");
             Require(state.Status.Contains("刷新"), "被取消的创建必须在状态行留下刷新提示");
-            Require(invalidated.Contains("dashboard") && invalidated.Contains("projects"),
-                "被取消的创建必须失效 dashboard/projects 缓存");
         }
         finally { view.Deactivate(); }
     }
@@ -138,7 +132,7 @@ internal static class NativeIssue470Checks
         var pending = new TaskCompletionSource<HttpResponseMessage>();
         using var api = new ApiClient("http://127.0.0.1:12345", new Handler((_, _) => pending.Task));
         var view = new HomeView();
-        SetContext(view, api, new ApiCache(), state);
+        SetContext(view, api, state);
         try
         {
             view.OpenCreationDrawer();
@@ -170,7 +164,7 @@ internal static class NativeIssue470Checks
         var pending = new TaskCompletionSource<HttpResponseMessage>();
         using var api = new ApiClient("http://127.0.0.1:12345", new Handler((_, _) => pending.Task));
         var view = new HomeView();
-        SetContext(view, api, new ApiCache(), state);
+        SetContext(view, api, state);
         try
         {
             view.OpenCreationDrawer();
@@ -243,11 +237,11 @@ internal static class NativeIssue470Checks
     private static T Field<T>(object value, string name) =>
         (T)value.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(value)!;
 
-    private static void SetContext(WorkspaceView view, ApiClient api, ApiCache cache, WorkspaceState state) =>
+    private static void SetContext(WorkspaceView view, ApiClient api, WorkspaceState state) =>
         typeof(WorkspaceView).GetProperty("Context", BindingFlags.Instance | BindingFlags.NonPublic)!
             .SetValue(view, new WorkspaceContext
             {
-                Api = api, Cache = cache, State = state, Window = null!,
+                Api = api, State = state, Window = null!,
                 NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
             });
 
