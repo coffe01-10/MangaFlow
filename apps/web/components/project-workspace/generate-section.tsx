@@ -129,6 +129,12 @@ export function GenerateSection({
   const [directorMode, setDirectorMode] = useState(false);
   const [directorBusy, setDirectorBusy] = useState(false);
   const pageGenerationPending = generate.isPending || hasActiveItem(candidates.data);
+  // 旧候选横幅的「当前分镜」版本必须取工作台查询自己的页版本（#544）：
+  // version_state 由工作台快照计算，「沿用并重新检查」提交的也是工作台页
+  // 版本；selectedPage 在工作台无数据时回退 pages 列表查询，打印它的版本会
+  // 与横幅状态和实际提交值互相矛盾。
+  const workbenchStoryboardVersion = workbench.data?.page.storyboard_version
+    ?? selectedPage?.storyboard_version;
 
   return (
     <div className="generate-workbench">
@@ -193,7 +199,7 @@ export function GenerateSection({
       ) : <>
         {selectedPageStructureIssue && <div className="workflow-warning"><CircleAlert size={17} /><div><strong>当前页暂不能生成</strong><p>{selectedPageStructureIssue}</p></div><Link className="button outline compact" href={projectPath("script")}>前往漫画剧本</Link></div>}
         {selectedPage.continuity_status === "NEEDS_REVIEW" && <div className="workflow-warning"><CircleAlert size={17} /><div><strong>剧本或分镜已修改</strong><p>历史候选仍然保留，但可能不再对应当前脚本。建议重新抽卡并执行连续性检查。</p></div><Link className="button outline compact" href={projectPath("storyboard")}>检查分镜</Link></div>}
-        {selectedWorkbenchCandidate && ["STALE", "LEGACY_UNKNOWN"].includes(selectedWorkbenchCandidate.version_state) && <div className="stale-candidate-banner"><div><span>版本需要决定</span><strong>旧候选基于 {selectedWorkbenchCandidate.based_on_storyboard_version ? `V${selectedWorkbenchCandidate.based_on_storyboard_version}` : "未知版本"}，当前分镜为 V{selectedPage.storyboard_version}</strong><p>旧图可以继续查看，但必须确认版本并重新完成视觉检查后，才能进入下一页或导出。</p></div><div><button disabled={keepSelectedCandidate.isPending || inspectCandidate.isPending} onClick={() => keepSelectedCandidate.mutate(selectedWorkbenchCandidate.id, { onSuccess: () => { setReviewCandidateId(selectedWorkbenchCandidate.id); inspectCandidate.mutate(selectedWorkbenchCandidate.id); } })}><Check size={14} />沿用并重新检查</button><button className="primary" disabled={generate.isPending || !pageReadiness.data?.ready || !generationReferenceReady || isViewingHistoricalBatch} onClick={() => generate.mutate()}><Sparkles size={14} />{isViewingHistoricalBatch ? "先切回最新批次" : `按当前 V${selectedPage.storyboard_version} 重新生成`}</button></div></div>}
+        {selectedWorkbenchCandidate && ["STALE", "LEGACY_UNKNOWN"].includes(selectedWorkbenchCandidate.version_state) && <div className="stale-candidate-banner"><div><span>版本需要决定</span><strong>旧候选基于 {selectedWorkbenchCandidate.based_on_storyboard_version ? `V${selectedWorkbenchCandidate.based_on_storyboard_version}` : "未知版本"}，当前分镜为 V{workbenchStoryboardVersion}</strong><p>旧图可以继续查看，但必须确认版本并重新完成视觉检查后，才能进入下一页或导出。</p></div><div><button disabled={keepSelectedCandidate.isPending || inspectCandidate.isPending} onClick={() => keepSelectedCandidate.mutate(selectedWorkbenchCandidate.id, { onSuccess: () => { setReviewCandidateId(selectedWorkbenchCandidate.id); inspectCandidate.mutate(selectedWorkbenchCandidate.id); } })}><Check size={14} />沿用并重新检查</button><button className="primary" disabled={generate.isPending || !pageReadiness.data?.ready || !generationReferenceReady || isViewingHistoricalBatch} onClick={() => generate.mutate()}><Sparkles size={14} />{isViewingHistoricalBatch ? "先切回最新批次" : `按当前 V${workbenchStoryboardVersion} 重新生成`}</button></div></div>}
         <div className="draw-toolbar">
           <div className="page-picker">{pages.data?.map((page) => <button key={page.id} className={selectedPage.id === page.id ? "active" : ""} onClick={() => { setSelectedPageId(page.id); setViewedBatchId(null); setReviewCandidateId(null); setReferenceSelections({}); setReferenceOverridePageId(null); }}>{page.page_number}</button>)}</div>
           <div className="batch-toolbar-actions">

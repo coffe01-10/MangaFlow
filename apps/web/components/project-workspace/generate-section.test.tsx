@@ -586,6 +586,68 @@ describe("GenerateSection 关键行为", () => {
     });
   });
 
+  it("#544 沿用并重新检查 409：失效工作台与分镜快照，下一次尝试携带新版本", async () => {
+    const stale = candidateFixture({ version_state: "STALE", is_selected: true });
+    workbenchApi.mockResolvedValue(workbenchFixture({
+      selected_candidate: stale,
+      candidates: [stale],
+    }));
+    candidatesApi.mockResolvedValue([stale]);
+    keepSelected.mockRejectedValueOnce(new ApiError("分镜已再次更新，请刷新后重试", 409));
+    const { client } = renderGenerate();
+    const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+    await screen.findByText("版本需要决定");
+    fireEvent.click(screen.getByRole("button", { name: "沿用并重新检查" }));
+    await waitFor(() => {
+      expect(keepSelected).toHaveBeenCalledWith("page-1", "candidate-1", 2);
+    });
+    // 409 = 提交的 storyboard_version 过期：不失效会让按钮带着同一旧版本无限
+    // 重试。工作台与分镜快照必须失效，重试即携带新版本。
+    await waitFor(() => {
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["generation-workbench", "page-1"] });
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["storyboard", "page-1"] });
+    // 失败路径不触发组件的 per-call onSuccess：不串起视觉检查。
+    expect(inspectCandidate).not.toHaveBeenCalled();
+  });
+
+  it("#544 沿用并重新检查非 409 失败：不做版本失效重拉", async () => {
+    const stale = candidateFixture({ version_state: "STALE", is_selected: true });
+    workbenchApi.mockResolvedValue(workbenchFixture({
+      selected_candidate: stale,
+      candidates: [stale],
+    }));
+    candidatesApi.mockResolvedValue([stale]);
+    keepSelected.mockRejectedValueOnce(new Error("网关暂时不可用"));
+    const { client } = renderGenerate();
+    const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+    await screen.findByText("版本需要决定");
+    fireEvent.click(screen.getByRole("button", { name: "沿用并重新检查" }));
+    await waitFor(() => {
+      expect(screen.getByText("网关暂时不可用")).toBeInTheDocument();
+    });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["generation-workbench", "page-1"] });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["storyboard", "page-1"] });
+  });
+
+  it("#544 旧候选横幅打印工作台查询的当前分镜版本，而不是 pages 列表版本", async () => {
+    const stale = candidateFixture({ version_state: "STALE", is_selected: true, based_on_storyboard_version: 3 });
+    // pages 列表查询停在 V5、工作台已到 V7 的窗口内：横幅与「沿用并重新检查」
+    // 的提交值都来自工作台，打印的版本必须与工作台一致。
+    pagesApi.mockResolvedValue([pageFixture({ storyboard_version: 5 })]);
+    workbenchApi.mockResolvedValue(workbenchFixture({
+      page: pageFixture({ storyboard_version: 7 }),
+      selected_candidate: stale,
+      candidates: [stale],
+    }));
+    candidatesApi.mockResolvedValue([stale]);
+    renderGenerate();
+    await screen.findByText("版本需要决定");
+    expect(screen.getByText(/当前分镜为 V7/)).toBeInTheDocument();
+    expect(screen.queryByText(/当前分镜为 V5/)).toBeNull();
+    expect(screen.getByRole("button", { name: /按当前 V7 重新生成/ })).toBeInTheDocument();
+  });
+
   it("检查任务未终态时持续拉取 workbench，完成后停止", async () => {
     vi.useFakeTimers();
     try {

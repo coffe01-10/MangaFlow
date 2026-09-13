@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api, type MangaPage, type Project, type Script } from "@/lib/api";
+import { api, type Character, type MangaPage, type Outfit, type Project, type Script } from "@/lib/api";
 
 import ProjectWorkspace from "./project-workspace";
 
@@ -30,6 +30,8 @@ const charactersApi = vi.spyOn(api, "characters");
 const outfitsApi = vi.spyOn(api, "outfits");
 const pagesApi = vi.spyOn(api, "pages");
 const storyboardApi = vi.spyOn(api, "storyboard");
+const sceneAssetsAllApi = vi.spyOn(api, "sceneAssetsAll");
+const assignSceneOutfitsApi = vi.spyOn(api, "assignSceneOutfits");
 
 function projectFixture(): Project {
   return {
@@ -238,6 +240,107 @@ describe("ProjectWorkspace ?page= 跨章深链回退提示", () => {
     const banner = await screen.findByText("深链目标页不在当前章节");
     expect(banner).toBeInTheDocument();
     expect(screen.getByText(/本章还没有任何页面/)).toBeInTheDocument();
-    expect(screen.queryByText(/已显示本章第 1 页/)).toBeNull();
+    expect(screen.queryByText(/已显示第 1 页/)).toBeNull();
+  });
+});
+
+describe("ProjectWorkspace assignOutfit 失效集合（#544）", () => {
+  it("指定场景服装成功后失效 script/pages/generation-workbench/candidates", async () => {
+    const character: Character = {
+      id: "character-1",
+      project_id: "project-1",
+      primary_name: "林澈",
+      aliases: [],
+      alias_conflict: false,
+      canonical_description: "",
+      locked_features: [],
+      forbidden_changes: [],
+      status: "ACTIVE",
+      version: 1,
+      references: [],
+    };
+    const outfit: Outfit = {
+      id: "outfit-1",
+      project_id: "project-1",
+      character_id: "character-1",
+      name: "校服",
+      components: {},
+      state_rules: {},
+      locked_fields: [],
+      reference_asset_ids: [],
+      status: "ACTIVE",
+      version: 1,
+    };
+    mockSearchParams.current = new URLSearchParams();
+    projectApi.mockReset().mockResolvedValue(projectFixture());
+    modelsApi.mockReset().mockResolvedValue([]);
+    chaptersApi.mockReset().mockResolvedValue([{
+      id: "chapter-1",
+      project_id: "project-1",
+      title: "一",
+      ordinal: 1,
+      status: "READY",
+      current_source_revision_id: null,
+      source_character_count: 0,
+      segment_count: 0,
+      page_count: 1,
+      coverage_ratio: 1,
+      created_at: "2026-09-01T00:00:00Z",
+      updated_at: "2026-09-01T00:00:00Z",
+      version: 1,
+    }]);
+    scriptApi.mockReset().mockResolvedValue({
+      chapter_id: "chapter-1",
+      status: "READY",
+      revision_no: 1,
+      coverage: {},
+      scenes: [{
+        id: "scene-1",
+        ordinal: 1,
+        location: "学校天台",
+        scene_asset_id: null,
+        scene_asset_variant_id: null,
+        time_label: "黄昏",
+        weather: "雨",
+        purpose: "相遇",
+        emotional_arc: "平静到紧张",
+        source_range: {},
+        outfit_assignments: {},
+        locked_fields: [],
+        version: 1,
+        beats: [],
+      }],
+    } satisfies Script);
+    jobsApi.mockReset().mockResolvedValue([]);
+    charactersApi.mockReset().mockResolvedValue([character]);
+    outfitsApi.mockReset().mockResolvedValue([outfit]);
+    pagesApi.mockReset().mockResolvedValue([]);
+    storyboardApi.mockReset();
+    sceneAssetsAllApi.mockReset().mockResolvedValue([]);
+    assignSceneOutfitsApi.mockReset().mockResolvedValue({ ok: true } as never);
+
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+    render(
+      <QueryClientProvider client={client}>
+        <ProjectWorkspace section="script" />
+      </QueryClientProvider>,
+    );
+
+    const wardrobeSelect = await screen.findByLabelText("林澈");
+    fireEvent.change(wardrobeSelect, { target: { value: "outfit-1" } });
+    await waitFor(() => {
+      expect(assignSceneOutfitsApi).toHaveBeenCalledWith("scene-1", { "character-1": "outfit-1" });
+    });
+    // 后端会 bump storyboard_version：候选卡的 version_state 标签由
+    // ["candidates"] 查询渲染，缺失失效会让卡片标签落后于已失效的工作台横幅。
+    await waitFor(() => {
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["candidates"] });
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["script", "chapter-1"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["pages", "chapter-1"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["generation-workbench"] });
   });
 });

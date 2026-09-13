@@ -13,6 +13,9 @@ const updateCharacterApi = vi.spyOn(api, "updateCharacter");
 const updateOutfitApi = vi.spyOn(api, "updateOutfit");
 const deleteOutfitApi = vi.spyOn(api, "deleteOutfit");
 const updateAssetApi = vi.spyOn(api, "updateAsset");
+const uploadAssetApi = vi.spyOn(api, "uploadAsset");
+const bindCharacterReferenceApi = vi.spyOn(api, "bindCharacterReference");
+const updateStyleModeApi = vi.spyOn(api, "updateStyleMode");
 
 function characterFixture(overrides: Partial<Character> = {}): Character {
   return {
@@ -42,6 +45,20 @@ function outfitFixture(overrides: Partial<Outfit> = {}): Outfit {
     locked_fields: [],
     reference_asset_ids: [],
     status: "ACTIVE",
+    version: 1,
+    ...overrides,
+  };
+}
+
+function styleFixture(overrides: Partial<StyleProfile> = {}): StyleProfile {
+  return {
+    id: "style-1",
+    project_id: "project-1",
+    name: "黑白网点风格",
+    color_mode: "monochrome",
+    profile: {},
+    locked_fields: [],
+    status: "ANALYZED",
     version: 1,
     ...overrides,
   };
@@ -107,6 +124,12 @@ describe("useAssetsWorkspace 缓存失效与晚到保存防护", () => {
       id: "asset-1",
       kind: "STYLE_REFERENCE",
     } as Asset);
+    uploadAssetApi.mockReset().mockResolvedValue({
+      id: "asset-9",
+      kind: "CHARACTER_REFERENCE",
+    } as Asset);
+    bindCharacterReferenceApi.mockReset().mockResolvedValue({} as never);
+    updateStyleModeApi.mockReset().mockResolvedValue(styleFixture() as never);
   });
 
   it("晚到的角色保存即使面板已切人，也仍然失效 characters 缓存", async () => {
@@ -145,6 +168,7 @@ describe("useAssetsWorkspace 缓存失效与晚到保存防护", () => {
   it("晚到的服装保存即使面板已换服装，也仍然失效 outfits 缓存", async () => {
     const client = createClient();
     await seedFreshCache(client, ["outfits", "project-1"], [outfitFixture()]);
+    const invalidateSpy = vi.spyOn(client, "invalidateQueries");
     const { result } = renderAssets(client, "character-a");
     act(() => {
       result.current.beginOutfitEdit(outfitFixture());
@@ -172,6 +196,62 @@ describe("useAssetsWorkspace 缓存失效与晚到保存防护", () => {
     expect(result.current.outfitName).toBe("便服");
     expect(result.current.editingOutfitId).toBe("outfit-b");
     expect(client.getQueryState(["outfits", "project-1"])?.isInvalidated).toBe(true);
+    // #544：保存改变了服装参考集合 → 生成就绪输入变化，生成工作台必须一并
+    // 失效（与 deleteOutfit 同族），否则生成台按旧参考继续禁用生成。
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["generation-workbench"] });
+  });
+
+  it("#544 上传并自动绑定人物参考后失效 generation-workbench：就绪阻塞项立即解除", async () => {
+    const client = createClient();
+    const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+    const { result } = renderAssets(client, "character-a");
+    await waitFor(() => {
+      expect(result.current.boundCharacter?.id).toBe("character-a");
+    });
+    // assetView=references 的当前用途是 CHARACTER_REFERENCE，且已选中角色：
+    // 上传后会走 upload + bindCharacterReference 组合路径。
+    await act(async () => {
+      result.current.upload.mutate(new File(["x"], "ref.png", { type: "image/png" }));
+      await waitFor(() => {
+        expect(result.current.upload.isSuccess).toBe(true);
+      });
+    });
+    expect(bindCharacterReferenceApi).toHaveBeenCalledWith("character-a", "asset-9");
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["assets", "project-1"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["characters", "project-1"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["generation-workbench"] });
+  });
+
+  it("#544 绑定既有素材为人物参考后失效 generation-workbench", async () => {
+    const client = createClient();
+    const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+    const { result } = renderAssets(client, "character-a");
+    await waitFor(() => {
+      expect(result.current.boundCharacter?.id).toBe("character-a");
+    });
+    await act(async () => {
+      result.current.bindExistingCharacterReference.mutate("asset-9");
+      await waitFor(() => {
+        expect(result.current.bindExistingCharacterReference.isSuccess).toBe(true);
+      });
+    });
+    expect(bindCharacterReferenceApi).toHaveBeenCalledWith("character-a", "asset-9");
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["generation-workbench"] });
+  });
+
+  it("#544 切换风格色彩模式后失效 generation-workbench：STYLE_NOT_COLOR 阻塞即时反映", async () => {
+    const client = createClient();
+    const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+    const { result } = renderAssets(client, "character-a");
+    await act(async () => {
+      result.current.updateStyleMode.mutate({ style: styleFixture(), colorMode: "color" });
+      await waitFor(() => {
+        expect(result.current.updateStyleMode.isSuccess).toBe(true);
+      });
+    });
+    expect(updateStyleModeApi).toHaveBeenCalledWith("style-1", 1, "color");
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["styles", "project-1"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["generation-workbench"] });
   });
 
   it("删除服装档案会失效 generation-workbench，与 deleteAsset 行为一致", async () => {
