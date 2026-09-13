@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api, type SceneAsset, type Script, type ScriptScene } from "@/lib/api";
@@ -162,5 +162,90 @@ describe("ScriptEditor 编辑卡片取消的脏确认", () => {
     expect(confirmSpy).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: /编辑场景/ })).toBeInTheDocument();
     confirmSpy.mockRestore();
+  });
+});
+
+describe("ScriptEditor 保存在途继续输入不随成功丢弃（#636）", () => {
+  beforeEach(() => {
+    updateSceneApi.mockReset();
+    updateBeatApi.mockReset();
+  });
+
+  it("场景保存在途继续输入：成功后表单保留，在途增量不丢", async () => {
+    let resolveSave!: (value: unknown) => void;
+    updateSceneApi.mockImplementation(() => new Promise((resolve) => {
+      resolveSave = resolve;
+    }));
+    renderEditor();
+
+    fireEvent.click(screen.getByRole("button", { name: /编辑场景/ }));
+    const location = screen.getByLabelText(/地点（历史兜底/);
+    fireEvent.change(location, { target: { value: "车站前的坡道" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存场景" }));
+    await waitFor(() => expect(updateSceneApi).toHaveBeenCalledTimes(1));
+    // PUT 在途：用户继续补字（表单在 isPending 期间不锁输入）。
+    fireEvent.change(location, { target: { value: "车站前的坡道，雨夜" } });
+
+    // 成功落地：表单不得收起，在途增量仍在输入框里等待下一次保存。
+    await act(async () => {
+      resolveSave({});
+    });
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("场景修改已保存"));
+    expect(screen.getByLabelText(/地点（历史兜底/)).toHaveValue("车站前的坡道，雨夜");
+    expect(screen.getByRole("button", { name: "保存场景" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /编辑场景/ })).not.toBeInTheDocument();
+  });
+
+  it("场景保存成功且无在途变化：表单正常收起", async () => {
+    updateSceneApi.mockResolvedValue({} as never);
+    renderEditor();
+
+    fireEvent.click(screen.getByRole("button", { name: /编辑场景/ }));
+    fireEvent.change(screen.getByLabelText(/地点（历史兜底/), { target: { value: "车站前的坡道" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存场景" }));
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent("场景修改已保存");
+    });
+    // 回到只读场景头：编辑卡片收起，编辑入口重新出现。
+    expect(screen.queryByRole("button", { name: "保存场景" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /编辑场景/ })).toBeInTheDocument();
+  });
+
+  it("情节拍保存在途继续输入：成功后表单保留，在途增量不丢", async () => {
+    let resolveSave!: (value: unknown) => void;
+    updateBeatApi.mockImplementation(() => new Promise((resolve) => {
+      resolveSave = resolve;
+    }));
+    renderEditor();
+
+    fireEvent.click(screen.getByRole("button", { name: "修改" }));
+    const action = screen.getByLabelText("可视化动作");
+    fireEvent.change(action, { target: { value: "主角攥紧了书包带" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(updateBeatApi).toHaveBeenCalledTimes(1));
+    // PUT 在途：用户继续补字。
+    fireEvent.change(action, { target: { value: "主角攥紧了书包带，指节发白" } });
+
+    await act(async () => {
+      resolveSave({});
+    });
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("情节拍修改已保存"));
+    expect(screen.getByLabelText("可视化动作")).toHaveValue("主角攥紧了书包带，指节发白");
+    expect(screen.getByRole("button", { name: "保存" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "修改" })).not.toBeInTheDocument();
+  });
+
+  it("情节拍保存成功且无在途变化：表单正常收起", async () => {
+    updateBeatApi.mockResolvedValue({} as never);
+    renderEditor();
+
+    fireEvent.click(screen.getByRole("button", { name: "修改" }));
+    fireEvent.change(screen.getByLabelText("可视化动作"), { target: { value: "主角攥紧了书包带" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent("情节拍修改已保存");
+    });
+    expect(screen.queryByRole("button", { name: "保存" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "修改" })).toBeInTheDocument();
   });
 });
