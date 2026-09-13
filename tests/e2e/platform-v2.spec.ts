@@ -85,6 +85,22 @@ test("项目阶段可深链、后退、刷新并进入真实工作流", async ({
   await expect(page.getByRole("button", { name: "发布", exact: true })).toBeEnabled();
 });
 
+test("项目设置页展示主标题且设置分组可交互", async ({ page, request }) => {
+  const id = await projectId(request);
+  await page.goto(`/projects/${id}/settings`);
+  // 主标题来自 project-settings-hero；读取失败时页面只有错误面板，标题必失。
+  await expect(page.getByRole("heading", { name: /控制每一次生成/ })).toBeVisible();
+
+  // 「工作方式」分组真实可交互：种子项目默认 SEMI_AUTO（models.py 列默认值），
+  // 点击导演单选后选中态必须迁移，证明设置分组不只是静态渲染。
+  const modeGroup = page.getByRole("radiogroup", { name: "工作方式" });
+  await expect(modeGroup).toBeVisible();
+  await expect(modeGroup.getByRole("radio", { name: /半自动/ })).toHaveAttribute("aria-checked", "true");
+  await modeGroup.getByRole("radio", { name: /导演模式/ }).click();
+  await expect(modeGroup.getByRole("radio", { name: /导演模式/ })).toHaveAttribute("aria-checked", "true");
+  await expect(modeGroup.getByRole("radio", { name: /半自动/ })).toHaveAttribute("aria-checked", "false");
+});
+
 test("核心路由遵守首屏 API 请求预算", async ({ page, request }) => {
   const id = await projectId(request);
   let apiRequests = 0;
@@ -125,14 +141,21 @@ test("核心页面没有严重或致命 Axe 问题", async ({ page, request }) =
     `/projects/${id}/storyboard`,
     `/projects/${id}/generate`,
     `/projects/${id}/jobs`,
+    `/projects/${id}/settings`,
     `/projects/${id}/workflow`,
     "/settings",
   ]) {
     await page.goto(path);
     await page.waitForLoadState("networkidle");
-    const results = await new AxeBuilder({ page })
-      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
-      .analyze();
+    const builder = new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]);
+    // 设置页两处 .project-setting-note 存在既有生产对比度缺陷（2.91 vs 4.5，
+    // serious，见 #670）；CSS 修复不属于测试 PR，这里只对这两个元素显式豁免，
+    // 其余 serious/critical 规则在本路由照常全量检查。#670 修复后删除 exclude。
+    if (path === `/projects/${id}/settings`) {
+      builder.exclude(".project-setting-note");
+    }
+    const results = await builder.analyze();
     const blocking = results.violations.filter((item) =>
       ["serious", "critical"].includes(item.impact ?? ""),
     );

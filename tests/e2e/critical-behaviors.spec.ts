@@ -52,7 +52,6 @@ function fakeJob(projectId: string, status: string) {
     target_type: "PAGE",
     target_id: "e2e-page-1",
     job_type: "PAGE_INSPECT",
-    priority: 0,
     status,
     progress: status === "COMPLETED" ? 100 : 40,
     attempt_count: 1,
@@ -60,6 +59,8 @@ function fakeJob(projectId: string, status: string) {
     model_alias: "text.fast",
     error_code: null,
     error_message: null,
+    workflow_run_id: null,
+    workflow_node_id: null,
     created_at: now,
     updated_at: now,
     started_at: now,
@@ -67,6 +68,9 @@ function fakeJob(projectId: string, status: string) {
     archived_at: null,
     usage_summary: {},
     estimated_cost: null,
+    estimated_cost_currency: null,
+    estimated_cost_status: "AVAILABLE",
+    estimated_cost_note: null,
     result: null,
     duration_ms: 1200,
   };
@@ -233,6 +237,40 @@ test("任务活动阶段持续轮询，进入终态后停止", async ({ page, re
   const stoppedAt = jobPolls.length;
   await page.waitForTimeout(6500);
   expect(jobPolls.length).toBeLessThanOrEqual(stoppedAt + 1);
+});
+
+test("部分估算任务在队列坞与任务中心渲染 PARTIAL 费用文案", async ({ page, request }) => {
+  const id = await createProject(request, "费用估算部分");
+  // 对照 lib/api.ts 的 Job 类型：非兜底分支需要 estimated_cost 非 null，
+  // jobs-section 的 costEstimateLabel 才会渲染「部分估算 <金额>」。
+  const partialCostJob = {
+    ...fakeJob(id, "COMPLETED"),
+    id: "e2e-job-partial",
+    estimated_cost: 0.012345,
+    estimated_cost_currency: "CNY",
+    estimated_cost_status: "PARTIAL",
+    estimated_cost_note: "个别子调用缺少定价版本",
+  };
+
+  await page.route(/\/api\/v1\/projects\/[^/]+\/jobs/, async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([partialCostJob]),
+    });
+  });
+
+  await page.goto(`/projects/${id}/jobs`);
+  // 队列坞最近任务链接先落地（mock 的 COMPLETED 任务进入 dock）。
+  await expect(page.getByRole("link", { name: /检查页面 · 已完成/ })).toBeVisible();
+  // 终态任务收在折叠的日期分组里，展开后断言非兜底的 PARTIAL 文案
+  // （CNY 金额来自 Intl currencyDisplay:"code"，与单元测试口径一致）。
+  await page.locator(".job-group").first().locator("summary").click();
+  await expect(page.locator(".job-detail small span[title]")).toHaveText("部分估算 CNY 0.012345");
 });
 
 async function assertProductionGate(
