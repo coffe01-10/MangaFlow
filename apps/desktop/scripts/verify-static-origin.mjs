@@ -60,6 +60,12 @@ let helper;
 // a kill that never happened as "already gone".
 function killHelperTree(child, signal = "SIGKILL") {
   if (!child?.pid) return;
+  // Reaped-child short-circuit (pid-reuse hazard): node sets exitCode once
+  // the child has been reaped; from that moment the OS may recycle the pid,
+  // and a `taskkill /PID <pid> /T /F` (or the POSIX group kill) aimed at
+  // the stale pid would tree-kill an innocent recycled process. There is
+  // also nothing left to kill, so return BEFORE either platform branch.
+  if (child.exitCode !== null) return;
   if (process.platform === "win32") {
     const kill = spawnSync(
       "taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" });

@@ -605,6 +605,7 @@ def test_controller_death_kills_tree_and_journal_can_be_recovered(tmp_path, endi
     import os
     import subprocess
     import sys
+    import time
 
     from tests.integration.process_resources import _checked, _kernel, recover_stopped_tree
 
@@ -653,6 +654,25 @@ os._exit(23)
             (tmp_path / "exit-now").touch()
         assert controller.wait(timeout=8) != 0
         assert all(api.WaitForSingleObject(handle, 5000) == 0 for handle in handles)
+        # Under full-suite load the single-shot waits above can succeed while
+        # kernel teardown lags (the controller's visible liveness and the
+        # job's active counters have not drained yet), which made
+        # recover_stopped_tree refuse with "still active". Settle before
+        # recovering: poll until the controller is reaped AND every
+        # descendant handle is signaled (1s wait per handle per round,
+        # bounded at ~30s total; break early once settled). The library's
+        # refusal behavior is correct and stays untouched — this poll only
+        # narrows the teardown race from the test side.
+        settle_deadline = time.monotonic() + 30
+        while not (
+            controller.poll() is not None
+            and all(
+                api.WaitForSingleObject(handle, 1000) == 0  # WAIT_OBJECT_0
+                for handle in handles
+            )
+        ):
+            if time.monotonic() >= settle_deadline:
+                break
         recover_stopped_tree(directory, identity["token"])
         assert not directory.exists()
     finally:
