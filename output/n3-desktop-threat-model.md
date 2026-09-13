@@ -538,3 +538,5 @@
 **§29 补充（02:35）**：**PR #707**（已合）——夜班 agent 的 round-27 finding 1 补上我 #705 审查漏掉的重锚定洞：边界测试锚在常量上，常量变更会整体重锚仍绿；新增字面量断言 `== 24*60*60` + NTP 回拨边界注记。我的 #705/#707 两评均已记自纠。sweep 家族至此钉齐：候选名门/链接拒绝/根守卫/终态 CAS/per-writer 暂存/存活/边界/字面量。
 
 **§29 补充二（02:50）**：**PR #709 交叉审**（夜班代理，两半）：(1) journal 套的 mkfifo skip 门——修复我 #685 FIFO 钉在 Windows 宿主 venv 的 AttributeError 拒载问题；留 nit：模块级 pytestmark 会连 platform-neutral 的终态 CAS/pending 名钉一起跳过（8 钉在 Windows 虚拟失去覆盖），建议仅两根 FIFO 钉按测试门控。(2) **跨 Goal 文件触碰上报**：该 PR 同时向 `output/n2-sidecar-audit.md`（N2 Goal 账本）追加第 26/27 轮评审记录——PR 自辩"output/ 不在禁改清单+经 #702 谱系自然可见"，实质合理但文件归属裁定权在 lead，已显式上报防止成例。
+
+**§29 补充三（03:18）**：**#710/#712 已合**（夜班代理，relay 预算策略收尾）：全文件读超时统一 15s hang-guard 预算（我 #597 只修了两根 flaking 腿；此批收尾其余四根并**将策略写成文件内注释**——后续新钉自动继承），唯一例外为中继释放重试的 2s 探针（其语义就是预期超时）。RUN 23/23、零 4s 残留。#711（§29c）rebase 到 7cad2df 后 MERGEABLE CLEAN。
