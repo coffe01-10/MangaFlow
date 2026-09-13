@@ -358,3 +358,32 @@
 - **PR #612**（修 #610）：三处根守卫（export：新 `ExportError::LogsRootIsSymlink` 变体 + zh Display；双 sweep：stderr 一行 + no-op，与"目录尚不存在"臂同形）+ 三站点各一测试（export 拒绝且不写档、外来树字节不变；rotation 无代际迁移；runtime 外来终态目录+journal 存活）。RUN Linux：三套件绿 + **连续两轮全量 156/156**（首轮一次未复现的单失败，负载 flake 家族，不在改动路径）。Windows junction 腿 best-effort skip（picker_policy 先例）。
 
 **认证**：relay 23/23；shell-core 全量 156/156 ×2。
+
+---
+
+## 16. 周末窗续跑（2026-09-13 08:04 Asia/Shanghai，基线 6430ea5；#609/#611/#612/#613 已合）
+
+**E 轮（交叉审 + 收敛面清点）：**
+- **PR #609**（relay 槽位释放竞争，夜班代理）：RUN 24/24。与我的 #595/#597 互补且更优——`bytes_before_reset` 印章使重试**只吸收 pre-bytes 溢出拒绝**（cap-1 的 `limiter.release()` 仍在泵线程清理路径时连入的下一客户端），post-bytes reset 照抛（真实管道缺陷）；印章取失败 recv 前的累计 `data`，语义正确。
+- **PR #611**（not-ready 钉重建于确定性 FakeSocket）：随 24/24 认证——前两次 ECONNREFUSED 后开门，探针计数证明重试真实发生，替代原线程翻转监听的时序构造。
+- **收敛面清点（全部 CLEAN，假阳性 #10-#12）**：`native-host.rs` 全文 81 行（WPF 腿进程所有者：spawn-vs-stop 竞态双检、READY 断管即停、250ms 子进程监视、精确匹配的 TEST_STUB 门）；`_find_node`（bundled 优先、PATH 退化有文档）；`_run_app` 全文（helper 至此 **100% 读完**：验证前置、GO 拒绝路径 finally 释放公告端口、exit-watch 静默语义、uvicorn 预绑定 socket 传递）；`test_sidecar_relay_bind.py` 全文（真实 TIME_WAIT 具备前置验证 + skip-loud、外来监听拒绝对称）；`verify_ready_line_where`（u32 紧 pid 拒 64 位回绕）/`verify_journal`（FIFO/symlink 拒绝 + 有界读）。
+
+**配额状态（如实）**：author:@me Issue 总数已触 GitHub 查询上限（100），B 目标累计早已越过；本窗新增 9 票（#548/#549/#586/#587/#588/#595/#600/#602/#610）+ 修复 PR 7（#591/#593/#597/#601/#604/#605/#612 全合）。生产面经本轮清点后无可读存量——后续 B 增量只能来自新增量代码或更深交互模拟。
+
+**认证**：relay 24/24（含 #609 重构）；shell-core 156/156 ×2（上一轮）。
+
+---
+
+## 17. 收敛对抗审查轮（2026-09-13 08:21 Asia/Shanghai，基线 360abb9；#614/#615 已合）
+
+**E 轮（交叉审）：**
+- **PR #615**（GO 拒绝日志 no-echo 卫生钉）：RUN **37/37**。钉住拒绝进入统一 stderr 日志（launcher 陈旧/畸形握手的取证）且**不回显**不可信行（两个 token 均不得出现在日志——跨会话可读日志的密钥卫生）。
+
+**收敛对抗审查（本轮主题，全部阴性）：**
+- **认证**：360abb9 轻套件全量 **112/112**（57s）+ shell-core **156/156**。
+- **标记扫描**：TODO/FIXME/XXX/HACK 零命中（仅 mktemp `XXXXXXXX` 模板名误报）。
+- **unwrap/expect 盘点**：logs/protocol/handshake 三大文件生产代码（`mod tests` 前）仅 **1+2+2=5** 处，加 ownership 3 / picker 2 / ziparch 5 共 **15** 处生产 unwrap——均为此前窗口逐个核验过的 fail-loud 不变量或平台 FFI；其余 380 处全在内联测试模块。
+- **READY 行对抗形状推演**：重复 JSON 键（serde 取后者 → 错 token 被拒，安全方向）、超长行（MAX_STREAM_MESSAGE_BYTES 帽截断 → 解析失败拒绝）、64 位 pid（u32 try_from 拒绝，回绕不可达）、非 ASCII token（恒时比较失配拒绝）——全部落安全方向，无新缺口。
+- **#612 的 Windows 腿依赖记录**：三处根守卫用的 `symlink_metadata().is_symlink()` 原语与 #311 时代在真机 Windows 上验证过的 junction 检测同源（picker 注释同断言）；我的测试在 Windows 上走 best-effort symlink_dir 腿，junction 效力承继 #311 验证结论——若未来 std 行为变更，该前提需随 #311 一并复验。
+
+**结论**：连续第二轮收敛对抗审查无新发现。生产非 native 面（helper 100% + shell-core 全部 + scripts 主干全读）在 360abb9 上维持"扫净"状态；本窗累计 B+9 / C+7（全合）/ E 轮次超额。
