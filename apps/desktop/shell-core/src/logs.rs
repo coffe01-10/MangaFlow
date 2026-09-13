@@ -1924,6 +1924,49 @@ mod tests {
         let _ = std::fs::remove_dir_all(&user_data);
     }
 
+    /// The record's failure contract: a rotation error is REPORTED but the
+    /// milestone is still written — the write is the last write and wins.
+    /// A regression that wrote the milestone BEFORE the rotation (losing
+    /// the line on rotation failure) or returned before the write flips
+    /// this red.
+    #[test]
+    fn record_survives_a_failing_rotation_and_still_writes_the_milestone() {
+        let user_data = temp_user_data("rotation-err-order");
+        let token = "cd".repeat(16);
+        let run_log = RunLog::create(&user_data, &token).unwrap();
+        // Seed one milestone, then sparse-oversize the base so the next
+        // record triggers rotate_if_large.
+        run_log.record("seed", &serde_json::json!({})).unwrap();
+        let base = shell_log_path(&user_data, &token);
+        let f = fs::OpenOptions::new().append(true).open(&base).unwrap();
+        f.set_len(ROTATION_THRESHOLD_BYTES + 1).unwrap();
+        drop(f);
+
+        // Rotation must fail: the oversized base's rename target (.1)
+        // is a DIRECTORY — rename over a non-empty dir always fails.
+        let block_dir = base.with_file_name(format!(
+            "{}.1",
+            base.file_name().unwrap().to_string_lossy()
+        ));
+        fs::create_dir_all(block_dir.join("occupied")).unwrap();
+
+        let result = run_log.record("after_block", &serde_json::json!({ "k": 1 }));
+        // Either the record succeeded (rotation failed first and was
+        // reported after the write — the contract) or it failed cleanly;
+        // the log must contain the FIRST milestone either way, and the
+        // failure must be visible to the caller (not swallowed).
+        // record() reports the rotation failure (rotation.and(written)):
+        // the caller sees the error, but the WRITE still happened first —
+        // the milestone is never lost to housekeeping.
+        assert!(result.is_err(), "the rotation failure must surface: {result:?}");
+        let log = fs::read_to_string(&base).unwrap();
+        assert!(
+            log.contains("after_block"),
+            "the milestone must still be written before the failure surfaced: {log}"
+        );
+        let _ = fs::remove_dir_all(&user_data);
+    }
+
     #[test]
     /// The record line's exact shape: ts/event/fields in one JSONL line —
     /// the export manifest and every forensics reader parse THIS shape.
@@ -3069,3 +3112,4 @@ mod tests {
     }
 
 }
+
