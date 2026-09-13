@@ -35,6 +35,16 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[3]
 HELPER = REPO_ROOT / "apps/desktop/sidecar/mangaflow_desktop_helper.py"
 
+# The FIFO-refusal pins plant real named pipes (os.mkfifo is Unix-only);
+# on a Windows-hosted venv they would error at fixture setup and take the
+# whole suite down — skip the suite there instead of failing it (#573's
+# runner explicitly supports that platform).
+pytestmark = pytest.mark.skipif(
+    not hasattr(os, "mkfifo"),
+    reason="os.mkfifo (named pipes) is Unix-only; the FIFO-refusal pins "
+    "need it",
+)
+
 TOKEN = "0123456789abcdef0123456789abcdef"
 
 
