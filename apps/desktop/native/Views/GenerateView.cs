@@ -1170,7 +1170,8 @@ public sealed partial class GenerateView : WorkspaceView
     /// <summary>
     /// 逐项修复（web repairCandidate）：按 issue 的检查结果 id 与推荐修复范围提交
     /// POST /candidates/{id}/repairs；成功后收起面板（修复会关闭当前批次并新开 REPAIR 批次，
-    /// 旧候选不在新批次里），并失效工作台/候选/任务/页面数据。
+    /// 旧候选不在新批次里）并显式重载工作台 —— #441 删除缓存后没有 invalidation 兜底，
+    /// 任务/页面数据由 WatchInspectJobsAsync 轮询与页面栏重载覆盖。
     /// </summary>
     internal async Task RepairCandidateAsync(JsonElement inspection)
     {

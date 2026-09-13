@@ -27,16 +27,18 @@ internal static class NativeIssue441Checks
     // 它们不是源码，git 也不跟踪。
     private static void NoCacheReferencesRemain(string nativeRoot)
     {
-        foreach (var file in Directory.EnumerateFiles(nativeRoot, "*", SearchOption.AllDirectories))
+        // IgnoreInaccessible：单个 ACL 拒绝的子目录不能让整条默认检查链因 UnauthorizedAccessException/IOException 失败（AttributesToSkip=None 维持旧扫描对 Hidden/System 文件的全覆盖）。
+        foreach (var file in new DirectoryInfo(nativeRoot).EnumerateFiles("*",
+            new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true, AttributesToSkip = FileAttributes.None }))
         {
-            var segments = new DirectoryInfo(Path.GetDirectoryName(file)!).FullName
-                .Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar]);
+            var segments = file.DirectoryName!.Split(
+                [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar]);
             if (segments.Contains("bin") || segments.Contains("obj")) continue;
             string text;
-            try { text = File.ReadAllText(file); }
+            try { text = File.ReadAllText(file.FullName); }
             catch (Exception) { continue; }   // 二进制资源等不可读文件不可能承载 C# 引用
-            Require(!text.Contains("ApiCache"), "#441 " + Relative(nativeRoot, file) + " 仍引用 ApiCache");
-            Require(!text.Contains("Cache.Invalidate"), "#441 " + Relative(nativeRoot, file) + " 仍调用 Cache.Invalidate");
+            Require(!text.Contains("ApiCache"), "#441 " + Relative(nativeRoot, file.FullName) + " 仍引用 ApiCache");
+            Require(!text.Contains("Cache.Invalidate"), "#441 " + Relative(nativeRoot, file.FullName) + " 仍调用 Cache.Invalidate");
         }
     }
 
