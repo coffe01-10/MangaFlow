@@ -6,6 +6,7 @@ scene/beat/script persistence.  Cancellation checks between chunks stay owned
 by the execution shell.
 """
 
+import hashlib
 import json
 import logging
 
@@ -92,6 +93,57 @@ def _story_parse_chunks(segments: list[SourceSegment]) -> list[list[SourceSegmen
     if current:
         chunks.append(current)
     return chunks
+
+
+def _story_parse_checkpoint_key(segments: list[SourceSegment]) -> str:
+    """Content hash over the parse inputs (id+ordinal+text), #646.
+
+    A retry only resumes from the checkpoint when the chapter's segments are
+    byte-identical to the ones the paid prefix chunks were generated from;
+    any edit re-keys the checkpoint and forces a full re-parse.
+    """
+
+    payload = json.dumps(
+        [
+            {"id": segment.id, "ordinal": segment.ordinal, "text": segment.text}
+            for segment in segments
+        ],
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _restore_story_parse_checkpoint(
+    job: GenerationJob, checkpoint_key: str, chunk_count: int
+) -> tuple[list[StoryParseOutput], int]:
+    """Restore completed chunk outputs from ``request_parameters`` (#646).
+
+    Returns ``([], 0)`` unless the stored key matches the current inputs and
+    the stored shape validates; a mismatched or corrupt checkpoint is ignored
+    and the parse starts from chunk 1 rather than failing the retry.
+    """
+
+    parameters = job.request_parameters
+    checkpoint = parameters.get("story_parse_checkpoint") if parameters else None
+    if not isinstance(checkpoint, dict) or checkpoint.get("key") != checkpoint_key:
+        return [], 0
+    outputs = checkpoint.get("outputs")
+    completed = checkpoint.get("completed_chunks")
+    if not isinstance(outputs, list) or not isinstance(completed, int):
+        return [], 0
+    if not 0 <= completed <= chunk_count:
+        return [], 0
+    try:
+        restored = [StoryParseOutput.model_validate(item) for item in outputs]
+    except Exception:
+        LOGGER.warning(
+            "story parse: checkpoint outputs failed validation; restarting "
+            "from chunk 1 (job %s)",
+            job.id,
+        )
+        return [], 0
+    return restored, completed
 
 
 def _scene_fingerprint(scene: SceneDraft) -> tuple | None:
@@ -455,8 +507,21 @@ def _run_story_parse(db, job: GenerationJob) -> None:
         task_kind=job.job_type,
     )
     job.catalog_model_id = binding.resolved.model.id
-    chunk_outputs: list[StoryParseOutput] = []
     chunks = _story_parse_chunks(segments)
+    # #646: resume from the paid prefix instead of re-billing it. A retry
+    # (e.g. chunk 5 hit a transient TIMEOUT on attempt 1) used to restart at
+    # chunk 1, paying for chunks 1-4 again on every remaining attempt.
+    checkpoint_key = _story_parse_checkpoint_key(segments)
+    chunk_outputs, completed_chunks = _restore_story_parse_checkpoint(
+        job, checkpoint_key, len(chunks)
+    )
+    if completed_chunks:
+        LOGGER.info(
+            "story parse: resuming job %s after chunk %d/%d from checkpoint",
+            job.id,
+            completed_chunks,
+            len(chunks),
+        )
 
     def generate_chunk(
         chunk: list[SourceSegment], chunk_label: str
@@ -491,6 +556,11 @@ def _run_story_parse(db, job: GenerationJob) -> None:
         )
 
     for chunk_index, chunk in enumerate(chunks, 1):
+        if chunk_index <= completed_chunks:
+            # #646: this prefix chunk already succeeded and was checkpointed
+            # in an earlier attempt — re-running it would bill twice without
+            # changing the merged output.
+            continue
         try:
             chunk_outputs.append(generate_chunk(chunk, f"{chunk_index}/{len(chunks)}"))
         except ProviderAdapterError as error:
@@ -525,6 +595,19 @@ def _run_story_parse(db, job: GenerationJob) -> None:
                 retryable=False,
             )
         execution._ensure_job_not_cancelled(db, job)
+        # #646: checkpoint the paid prefix through the owned-commit path —
+        # the same lease/cancel discipline as _commit_owned_progress, never a
+        # bare db.commit that would bypass lease ownership.
+        execution._commit_owned_checkpoint(
+            db,
+            job,
+            key="story_parse_checkpoint",
+            value={
+                "key": checkpoint_key,
+                "completed_chunks": chunk_index,
+                "outputs": [output.model_dump(mode="json") for output in chunk_outputs],
+            },
+        )
     output = _merge_story_parse_outputs(chunk_outputs)
     output = _sanitize_story_parse_output(output)
     execution._ensure_job_not_cancelled(db, job)

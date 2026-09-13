@@ -104,6 +104,17 @@ class GoogleTextAdapter(_GoogleBase):
                     system_instruction=request.system_instruction,
                     temperature=request.temperature,
                     max_output_tokens=request.metadata.get("max_output_tokens"),
+                    # #644: mirror vertex.generate_structured — only set
+                    # thinking_config when the caller declared a budget, so a
+                    # cost-saving thinking_budget=0 is not silently dropped on
+                    # Gemini 2.5's default dynamic thinking.
+                    thinking_config=(
+                        types.ThinkingConfig(
+                            thinking_budget=request.metadata["thinking_budget"]
+                        )
+                        if "thinking_budget" in request.metadata
+                        else None
+                    ),
                     response_mime_type="application/json",
                     response_schema=output_schema,
                 ),
@@ -146,6 +157,17 @@ class GoogleTextAdapter(_GoogleBase):
                     system_instruction=request.system_instruction,
                     temperature=request.temperature,
                     max_output_tokens=request.metadata.get("max_output_tokens"),
+                    # #644: mirror vertex.generate_structured — only set
+                    # thinking_config when the caller declared a budget, so a
+                    # cost-saving thinking_budget=0 is not silently dropped on
+                    # Gemini 2.5's default dynamic thinking.
+                    thinking_config=(
+                        types.ThinkingConfig(
+                            thinking_budget=request.metadata["thinking_budget"]
+                        )
+                        if "thinking_budget" in request.metadata
+                        else None
+                    ),
                     response_mime_type="application/json",
                     response_schema=output_schema,
                 ),
