@@ -228,3 +228,26 @@ def test_skip_cleanup_survives_an_unlink_failure(tmp_path: Path, monkeypatch):
     helper._write_journal(journal, _record("ready"))  # must not raise
 
     assert journal.read_bytes() == before
+
+
+def test_non_regular_journal_is_refused_not_hung(tmp_path: Path):
+    """#685: the Rust read_journal_bounded refuses non-regular journals
+    before opening; the helper's terminal check read the journal with no
+    such guard, so a planted FIFO blocked read_text() forever. A FIFO at
+    the journal path must fail fast (RuntimeError naming the file) instead
+    of hanging, and must not clobber the FIFO with the pending payload."""
+
+    runtime = tmp_path / f"runtime/mangaflow-desktop-{TOKEN}"
+    runtime.mkdir(parents=True)
+    journal = runtime / "owner.json"
+    os.mkfifo(journal)
+    record = _record("created")
+    with pytest.raises(RuntimeError, match="regular file"):
+        _load_helper()._write_journal(journal, record)
+    # The FIFO survives untouched (a blocking-open never happened; the
+    # pending staging is the only place bytes were written, and it must be
+    # gone once the refusal unwinds).
+    import stat
+
+    assert stat.S_ISFIFO(journal.stat().st_mode)
+    assert not journal.with_name(journal.name + ".helper.pending").exists()
