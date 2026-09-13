@@ -83,6 +83,11 @@ def diagnostics(db: Session = Depends(get_db)) -> DiagnosticsRead:
         if queue_state.actual_executor == "LOCAL":
             if queue_state.queue_mode == "LOCAL":
                 return "OK", "LOCAL 模式；本地后台执行器可以执行新任务"
+            if queue_state.redis_state == "NOT_USED":
+                # The embedded desktop runtime: local execution is the
+                # designed baseline, not a Redis-outage fallback — report
+                # OK, not the misleading "temporarily unavailable".
+                return "OK", "AUTO 模式；桌面内嵌运行时按设计本地执行新任务"
             return "WARNING", "AUTO 模式；Redis 暂不可用，已切换本地后台执行器"
         if queue_state.actual_executor == "REDIS":
             return "OK", f"{queue_state.queue_mode} 模式；Redis 队列可以执行新任务"
