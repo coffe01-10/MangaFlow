@@ -141,6 +141,37 @@ def test_posix_branch_keeps_process_group_kill_semantics():
     assert "process.kill(-child.pid, signal)" in body
 
 
+def test_reaped_helper_guard_precedes_platform_kill_branches():
+    """killHelperTree must short-circuit when the helper is already reaped
+    (``child.exitCode !== null`` — node sets exitCode once the child is
+    reaped): after the reap the OS may have recycled the pid, and a
+    taskkill /PID <pid> /T /F (or the POSIX group kill) against the stale
+    pid would kill an innocent tree. The guard must return BEFORE both
+    platform branches — a missing or late guard still fires the kill."""
+    code = _code_text(_kill_helper_body(_source())).splitlines()
+    guard_indexes = [
+        index
+        for index, line in enumerate(code)
+        if "exitCode" in line and "return" in line
+    ]
+    assert guard_indexes, (
+        "killHelperTree must return early for a reaped child "
+        "(child.exitCode !== null): pid-reuse hazard — the recycled pid "
+        "would be tree-killed"
+    )
+    guard_index = guard_indexes[0]
+    platform_indexes = [
+        index
+        for index, line in enumerate(code)
+        if 'process.platform === "win32"' in line or "process.kill(" in line
+    ]
+    assert platform_indexes, "killHelperTree must keep its platform kill branches"
+    assert all(index > guard_index for index in platform_indexes), (
+        "the reaped-child exitCode guard must precede every platform kill "
+        "branch (a kill after the guard can hit a recycled pid)"
+    )
+
+
 def test_kill_failure_outcomes_are_distinguished_from_already_gone():
     """ESRCH (and taskkill exit 128, "process not found") after a real
     attempt is already-gone and stays silent; every OTHER failure gets a

@@ -29,6 +29,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 HELPER = REPO_ROOT / "apps/desktop/sidecar/mangaflow_desktop_helper.py"
 
@@ -177,6 +179,36 @@ def test_helper_stages_under_its_own_pending_name(tmp_path: Path, monkeypatch):
         "the legacy shared pending name must stay unused (#602)"
     )
     assert json.loads(journal.read_text(encoding="utf-8"))["state"] == "ready"
+
+
+def test_helper_refuses_a_symlink_at_its_own_pending_name(tmp_path: Path):
+    """Helper-side symlink-refusal pin (#602): a link planted at the
+    helper's OWN staging name ``owner.json.helper.pending`` must be refused
+    BEFORE any write — ``write_text`` would follow the link and clobber its
+    target, so a guard that is missing, reordered, or pointed back at the
+    legacy shared ``.pending`` name lets the record leak through the link.
+    The refusal must leave both the journal bytes and the link target
+    untouched."""
+    helper = _load_helper()
+    journal = _journal_path(tmp_path)
+    _write_state(journal, "created")
+    before = journal.read_bytes()
+
+    outside = tmp_path / "outside.json"
+    outside.write_text("{}", encoding="utf-8")
+    pending = journal.with_name(journal.name + ".helper.pending")
+    pending.symlink_to(outside)
+
+    with pytest.raises(RuntimeError, match="must not be a link"):
+        helper._write_journal(journal, _record("ready"))
+
+    assert outside.read_text(encoding="utf-8") == "{}", (
+        "the .helper.pending link target must not be clobbered"
+    )
+    assert journal.read_bytes() == before, (
+        "the refused write must not touch the journal either"
+    )
+    assert pending.is_symlink(), "the refusal must not remove the planted link"
 
 
 def test_skip_cleanup_survives_an_unlink_failure(tmp_path: Path, monkeypatch):

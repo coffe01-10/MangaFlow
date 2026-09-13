@@ -452,9 +452,10 @@ def test_read_context_rejects_a_symlinked_journal(monkeypatch, tmp_path):
 
 def test_write_journal_refuses_links_and_writes_atomically(tmp_path):
     """_write_journal's two guards: (1) a symlink at the journal OR the
-    .pending sibling must be refused before any write (the journal is the
-    ownership anchor; a link would redirect it); (2) the happy path writes
-    via a .pending temp then os.replace — no partial journal can exist."""
+    helper's .helper.pending staging sibling must be refused before any
+    write (the journal is the ownership anchor; a link would redirect it);
+    (2) the happy path writes via a .pending temp then os.replace — no
+    partial journal can exist."""
 
     import importlib.util
     import json as json_module
@@ -481,11 +482,13 @@ def test_write_journal_refuses_links_and_writes_atomically(tmp_path):
 
     journal.unlink()
 
-    # (2) A symlink at the .pending sibling must also be refused — and
-    # because write_text would FOLLOW that link, the outside target must
-    # still carry its original bytes (a guard removed or reordered lets
-    # the record clobber it through the link).
-    pending = journal.with_name(journal.name + ".pending")
+    # (2) A symlink at the helper's OWN staging sibling
+    # (owner.json.helper.pending, #602) must also be refused — and because
+    # write_text would FOLLOW that link, the outside target must still
+    # carry its original bytes (a guard removed or reordered, or a helper
+    # regression back to the legacy shared .pending name, lets the record
+    # clobber the target through the link).
+    pending = journal.with_name(journal.name + ".helper.pending")
     pending.symlink_to(outside)
     with pytest.raises(RuntimeError, match="must not be a link"):
         helper._write_journal(journal, record)

@@ -101,12 +101,15 @@ def _write_journal(journal: Path, record: dict) -> None:
     ``owner.json.pending`` let one writer publish the other's payload (or
     raise FileNotFoundError from the other's rename, masking real errors).
 
-    Terminal-state CAS: immediately before ``os.replace``, the CURRENT
-    journal is read (fail-open on missing/unparsable/non-object). If it is
-    already terminal (``stopped``/``failed``) and the record about to be
-    published is non-terminal (e.g. a late ``ready``), publication is
-    SKIPPED — reviving a dead session's journal to ready would leak the
-    runtime directory forever (the stale-runtime sweep only reclaims
+    Terminal-state check (best-effort, not an atomic CAS — a stop landing
+    between the read and the ``os.replace`` below still revives; the
+    shell's post-write verify is the complementary repair): immediately
+    before ``os.replace``, the CURRENT journal is read (fail-open on
+    missing/unparsable/non-object). If it is already terminal
+    (``stopped``/``failed``) and the record about to be published is
+    non-terminal (e.g. a late ``ready``), publication is SKIPPED —
+    reviving a dead session's journal to ready would leak the runtime
+    directory forever (the stale-runtime sweep only reclaims
     stopped/failed). Terminal→terminal and non-terminal→non-terminal
     transitions publish normally (a late ``failed`` landing on a
     ``stopped`` journal is allowed and useful forensics).

@@ -381,6 +381,13 @@ impl RuntimeLayout {
         // fields) and write again through the same atomic helper. An
         // unparsable/unreadable re-read keeps the bytes untouched, exactly
         // like the pre-write guard above.
+        //
+        // Residual window, admitted: this verify and the helper's
+        // pre-replace terminal-state check are complementary best-effort
+        // checks, NOT an atomic CAS. The shell's stop can land between the
+        // helper's read and its own replace (reviving), and this post-write
+        // verify can in turn be overtaken by a later helper write landing
+        // after its read — the combined window is small but not zero.
         if let Some(text) = read_journal_bounded(&journal) {
             if let Ok(current) = serde_json::from_str::<serde_json::Value>(&text) {
                 if let Some(merged) = merge_stop_onto_current(&current, exit_code, unix_now()) {
