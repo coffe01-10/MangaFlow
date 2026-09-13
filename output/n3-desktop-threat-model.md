@@ -568,3 +568,5 @@
 **§32 补充（05:07）**：**#727 已立 + 钉已交付 #725**：#725 的诊断腿（`queue_execution_state` 的 embedded-AUTO 分支）零覆盖（test_local_worker 只钉 env 名映射与 enqueue 腿）。修复 PR 在 #725 分支 worktree 上验证 **40/40**（39+1：embedded+AUTO 假 ping 环境 → LOCAL/NOT_USED/can_execute=True；非 embedded 对照保 redis 报告；FakeRedis 需 close()——诊断路径关探针连接），钉以 drop-in 形式留在 PR 评（不推他人分支）。
 
 **§33 补充（03:39）**：**#729 判读更正**——该 PR 的 runtime_settings embedded 分支**重复已合的 #725 内容**（master :118 已有；base 先于 #725 合并所致，合并时为幂等 no-op）；真正新增为 settings.py queue_check 的 embedded OK 文案（诊断与行为一致，正确）+ busy-4173 钉 + N2 账本追加。lead 已裁定 #729 归 N2 rebase——我的评审评论未发出（命令取消），重复分支观察转记于此。
+
+**§33 补充二（06:07）**：基线 adb646a 认证——**runner 全量 156/156**（78s，含 plan-B 全活跃；自 148 增长系 sweep 家族新钉）、孤儿扫描阴性（#675 类无复发）。负向探针：`queue_enabled=False` 在 embedded 分支**之前**短路（QUEUE_DISABLED）——嵌入运行时与"执行器未启用"不矛盾，设计自洽。孤儿扫描与本轮全量认证后无新发现。
