@@ -232,10 +232,20 @@ console.log(`D5 handshake ok, api_origin=${ready.api_origin}`);
 
 // ---- 2. static export server (static mode only; plan-B skips it — the
 // helper's own announced origin is the surface under test) --------------
+// Static-mode evidence collector, hoisted to FUNCTION scope: the evidence
+// object at the end reads it in BOTH modes (plan-B reports an empty list),
+// and a block-scoped const inside the `if (!PLAN_B)` branch threw
+// ReferenceError in static mode — the DEFAULT mode crashed after the
+// handshake with every fence green (#693's live verification ran only the
+// plan-b leg).
+const static_hits = [];
+// `server` is likewise function-scoped: the teardown (`server.close()`,
+// static mode only) and any probe diagnostics reference it after this
+// block — same class as the static_hits hoist above.
+let server;
 if (!PLAN_B) {
   // ---- 2. static export server (no /api routes exist here) -----------------
-  const static_hits = [];
-  const server = createServer(async (req, res) => {
+  server = createServer(async (req, res) => {
     static_hits.push(req.url);
     if (req.url.startsWith("/api/")) {
       res.writeHead(404, { "content-type": "application/json" });
