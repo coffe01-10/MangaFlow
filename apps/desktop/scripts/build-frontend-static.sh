@@ -217,6 +217,26 @@ dist_lock_held=0
 # means the Tauri shell would 404 on a shipped screen. Next exports
 # trailingSlash:false layout — flat <route>.html files, index.html only
 # at the root — pinned here exactly as the live export produces them.
+# Referenced-chunks consistency self-check (#734 residue): the observed
+# failure mode was an internally inconsistent export — index.html referencing
+# two chunks that were never written — which only a full browser run caught.
+# Every /_next/static/... reference the shipped entry document makes must
+# exist on disk, or the build fails here instead of shipping a data-less
+# shell.
+for ref in $(grep -oE '/_next/static/[A-Za-z0-9/_.-]+' "$DESKTOP_ROOT/dist/frontend/index.html" | sort -u); do
+  if [ ! -f "$DESKTOP_ROOT/dist/frontend$ref" ]; then
+    echo "smoke gate: index.html references missing chunk: $ref" >&2
+    smoke_missing=1
+  fi
+done
+
+# Provenance stamp (web-standalone's build-info.json precedent): what was
+# built, from which commit, when — so a served export can be identified
+# without trusting its directory contents.
+printf '{"commit":"%s","built_at":"%s"}\n' \
+  "$(git -C "$REPO_ROOT" rev-parse HEAD)" \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DESKTOP_ROOT/dist/frontend/build-info.json"
+
 smoke_missing=0
 for rel_html in \
   index.html \
