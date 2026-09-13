@@ -798,3 +798,17 @@
   覆盖）——夜班取舍，记录不阻塞；ruff F841（unused helper）为 master 既有。
 - **流程披露**：夜分支两次误吞本应独立开 PR 的提交（§35 补遗、mkfifo 门）——均已分支
   手术修复；教训：checkout -b 与编辑必须同一命令块确认。
+
+## 38. 夜班续四（master 7cad2df——#712 已并；D5 双模式重写交叉审）
+
+- **#693 重写交叉审 → P1 实锤 → PR #713（已并，追溯 round-28 APPROVE）**：plan-B 重写把
+  static_hits/server 移入 `if (!PLAN_B)` 块，而 evidence/teardown 在函数域引用——**默认
+  static 模式握手后 ReferenceError 崩溃**（三围栏全绿后死）；#693 只实测了 plan-b 腿。
+  修复：static_hits 提升函数域 + server let 块内赋值。评审：eslint no-undef 全量 0 发现、
+  TDZ/fail() 干净、双模式实测 PASS。**过程补丁**：评审指出我方脚本静默删除 #458 包含性
+  钉（protocol.rs）——已恢复（见 §35 补遗五）。
+- **PR #715（待 lead）**：busy-4173 catch `process.exit(1)` 不杀 helper（文件自述 #346
+  孤儿类，#588 漏路由的路径）→ killHelperTree。健康运行冷路径，双模式 PASS 复验。
+- **预防性切片候选（记录）**：eslint no-undef 未覆盖 scripts/*.mjs——#713 类缺陷可被
+  `--rule no-undef` 拦截（评审实证 0 发现于修复后）。
+- **串行证据**：static + plan-b 双模式 **D5 PASS** ×2 各（修复前 static FAIL 实证）。
