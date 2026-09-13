@@ -371,3 +371,19 @@
 **配额状态（如实）**：author:@me Issue 总数已触 GitHub 查询上限（100），B 目标累计早已越过；本窗新增 9 票（#548/#549/#586/#587/#588/#595/#600/#602/#610）+ 修复 PR 7（#591/#593/#597/#601/#604/#605/#612 全合）。生产面经本轮清点后无可读存量——后续 B 增量只能来自新增量代码或更深交互模拟。
 
 **认证**：relay 24/24（含 #609 重构）；shell-core 156/156 ×2（上一轮）。
+
+---
+
+## 17. 收敛对抗审查轮（2026-09-13 08:21 Asia/Shanghai，基线 360abb9；#614/#615 已合）
+
+**E 轮（交叉审）：**
+- **PR #615**（GO 拒绝日志 no-echo 卫生钉）：RUN **37/37**。钉住拒绝进入统一 stderr 日志（launcher 陈旧/畸形握手的取证）且**不回显**不可信行（两个 token 均不得出现在日志——跨会话可读日志的密钥卫生）。
+
+**收敛对抗审查（本轮主题，全部阴性）：**
+- **认证**：360abb9 轻套件全量 **112/112**（57s）+ shell-core **156/156**。
+- **标记扫描**：TODO/FIXME/XXX/HACK 零命中（仅 mktemp `XXXXXXXX` 模板名误报）。
+- **unwrap/expect 盘点**：logs/protocol/handshake 三大文件生产代码（`mod tests` 前）仅 **1+2+2=5** 处，加 ownership 3 / picker 2 / ziparch 5 共 **15** 处生产 unwrap——均为此前窗口逐个核验过的 fail-loud 不变量或平台 FFI；其余 380 处全在内联测试模块。
+- **READY 行对抗形状推演**：重复 JSON 键（serde 取后者 → 错 token 被拒，安全方向）、超长行（MAX_STREAM_MESSAGE_BYTES 帽截断 → 解析失败拒绝）、64 位 pid（u32 try_from 拒绝，回绕不可达）、非 ASCII token（恒时比较失配拒绝）——全部落安全方向，无新缺口。
+- **#612 的 Windows 腿依赖记录**：三处根守卫用的 `symlink_metadata().is_symlink()` 原语与 #311 时代在真机 Windows 上验证过的 junction 检测同源（picker 注释同断言）；我的测试在 Windows 上走 best-effort symlink_dir 腿，junction 效力承继 #311 验证结论——若未来 std 行为变更，该前提需随 #311 一并复验。
+
+**结论**：连续第二轮收敛对抗审查无新发现。生产非 native 面（helper 100% + shell-core 全部 + scripts 主干全读）在 360abb9 上维持"扫净"状态；本窗累计 B+9 / C+7（全合）/ E 轮次超额。
