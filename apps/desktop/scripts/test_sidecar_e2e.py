@@ -1550,3 +1550,95 @@ def test_plan_b_pages_carry_the_nonce_csp(tmp_path: Path):
             assert exit_code == 0, f"helper exited with {exit_code}"
         elif exit_code != 0:
             print(f"note: helper also exited with {exit_code} during the failing body")
+
+
+def test_web_spawn_relay_thread_failure_sweeps_both_sockets(monkeypatch, tmp_path):
+    """The downgrade arm when the relay announce/relay thread START fails:
+    node is terminated, reaped, and BOTH sockets — announced and relay —
+    are closed before returning None (a lingering zombie would read as a
+    phantom running node). Driven through the real _spawn_web_server with
+    a real web_dist directory containing server.js; the thread class is
+    swapped for a raiser so the arm fires deterministically."""
+
+    import importlib.util
+    import threading
+    import types
+
+    spec = importlib.util.spec_from_file_location(
+        "mangaflow_desktop_helper_sweep", str(HELPER)
+    )
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+
+    class FakeSock:
+        def __init__(self, name):
+            self.name = name
+            self.closed = False
+
+        def bind(self, *a):
+            pass
+
+        def listen(self, n):
+            pass
+
+        def getsockname(self):
+            return ("127.0.0.1", 55555)
+
+        def close(self):
+            self.closed = True
+
+    class FakePopen:
+        def __init__(self):
+            self.terminated = False
+            self.waits = 0
+            self.killed = False
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            self.waits += 1
+            return 0
+
+        def kill(self):
+            self.killed = True
+
+    node_process = FakePopen()
+    web_sock = FakeSock("web")
+    relay = FakeSock("relay")
+
+    helper._bind_relay = lambda api_port: relay
+    helper._bind_web_port = lambda: web_sock
+    monkeypatch.setattr(helper, "_log", lambda message: None)
+
+    # A real web_dist directory (server.js present) so the flow reaches
+    # the thread-start arm.
+    web_dist = tmp_path / "web-dist"
+    web_dist.mkdir()
+    (web_dist / "server.js").write_text("module.exports = 1;", encoding="utf-8")
+
+    class RaisingThread:
+        def __init__(self, *a, **kw):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    real_thread = threading.Thread
+    real_popen = helper.subprocess.Popen
+    threading.Thread = RaisingThread
+    helper.subprocess.Popen = lambda *a, **kw: node_process
+    try:
+        args = types.SimpleNamespace(web_dist=str(web_dist))
+        result = helper._spawn_web_server(args, 8000)
+    finally:
+        threading.Thread = real_thread
+        helper.subprocess.Popen = real_popen
+
+    assert result is None, "the downgrade arm must return None"
+    assert node_process.terminated, "the node must be terminated"
+    assert node_process.waits >= 1, "the node must be reaped"
+    assert not node_process.killed, "a prompt wait needs no kill"
+    assert web_sock.closed and relay.closed, (
+        "both sockets must be closed in the downgrade arm"
+    )
