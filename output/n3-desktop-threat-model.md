@@ -512,3 +512,17 @@
 **认证**：journal 12/12；D5 plan-B 负载下 PASS。
 
 **§28 补充（02:10）**：delivery_contract 套在当前 conf 状态执行 **11/11**——含 #623 头缝对（nosniff 经 app.security.headers + X-Frame-Options/Referrer-Policy 债务标记的 Cargo.lock 版本锚定 staleness guard）。间隙 +123 行的审计至此**读+跑双完成**。
+
+---
+
+## 27. 夜班续（2026-09-14 01:40，基线 773bba0；#691/#693/#695/#692 已合；#694 rebased MERGEABLE CLEAN）
+
+**流程**：#694 首次 rebase 踩了分支历史残留（旧 fixup 提交重放连爆三次冲突）——abort 后以 `checkout -B` 重建为 origin/master 上的单一干净提交，force-with-lease 推送，MERGEABLE CLEAN。教训：rebase 冲突多于一处时直接重建分支，不逐个补丁。
+
+**E 轮（阴性）：**
+- 5× 连续 plan-B D5 活体运行全 PASS、零 give-up——瞬态挂起在正常负载下不可复现，维持观察项记录。
+- #693 的 D5 变更未破坏 verify_static_origin 结构钉（18/18 含 journal 套）。
+- #695（registry kind-swap 钉）审阅：test-only +61，registry 按 canonical path 键控的语义钉。CLEAN。
+
+**B/C（新立 + 修复）：**
+- **#696 [P4]** helper 最后兜底失败处理器**覆盖相位注记错误**：alembic 腿记 `alembic:<Type>` 后 re-raise，main() 的兜底 `record.update(error=type(error).__name__)` 把相位前缀抹掉——终态 journal 丢失"死在哪一腿"。→ **PR #697**：`_merge_last_resort_failure` 纯缝（setdefault 保留首个注记错误为根因）+ 双腿单测。RUN 49/49。
