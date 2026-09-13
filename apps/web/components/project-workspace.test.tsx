@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api, type Character, type MangaPage, type Outfit, type Project, type Script } from "@/lib/api";
 
@@ -342,5 +342,125 @@ describe("ProjectWorkspace assignOutfit 失效集合（#544）", () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["script", "chapter-1"] });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["pages", "chapter-1"] });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["generation-workbench"] });
+  });
+});
+
+// #659：跨分区返回的滚动恢复与 dynamic 分区 chunk 加载竞态。jsdom 没有
+// 布局：scrollY/scrollTo 用可调 maxScroll 的夹具模拟「矮文档钳制 → 内容
+// 撑高」，rAF 用手动 flush 的桩驱动，验证键只在滚动确认落地后消费。
+describe("ProjectWorkspace 跨分区滚动恢复（#659）", () => {
+  function installScrollModel(maxScroll: number) {
+    const state = { maxScroll, y: 0 };
+    Object.defineProperty(window, "scrollY", { configurable: true, get: () => state.y });
+    const scrollTo = vi.spyOn(window, "scrollTo").mockImplementation(((options?: ScrollToOptions) => {
+      state.y = Math.max(0, Math.min(options?.top ?? 0, state.maxScroll));
+    }) as never);
+    return { state, scrollTo };
+  }
+
+  function installRaf() {
+    const pending = new Map<number, FrameRequestCallback>();
+    let nextHandle = 1;
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      const handle = nextHandle++;
+      pending.set(handle, callback);
+      return handle;
+    });
+    const cancel = vi.spyOn(window, "cancelAnimationFrame").mockImplementation((handle) => {
+      pending.delete(handle);
+    });
+    const flush = (frames: number) => {
+      for (let index = 0; index < frames; index += 1) {
+        const callbacks = [...pending.values()];
+        pending.clear();
+        for (const callback of callbacks) callback(16 * (index + 1));
+      }
+    };
+    return { flush, pendingCount: () => pending.size, raf, cancel };
+  }
+
+  let scrollStub: ReturnType<typeof installScrollModel>;
+  let rafStub: ReturnType<typeof installRaf>;
+
+  beforeEach(() => {
+    mockSearchParams.current = new URLSearchParams();
+    projectApi.mockReset().mockResolvedValue(projectFixture());
+    modelsApi.mockReset().mockResolvedValue([]);
+    chaptersApi.mockReset().mockResolvedValue([{
+      id: "chapter-1",
+      project_id: "project-1",
+      title: "一",
+      ordinal: 1,
+      status: "READY",
+      current_source_revision_id: null,
+      source_character_count: 0,
+      segment_count: 0,
+      page_count: 0,
+      coverage_ratio: 1,
+      created_at: "2026-09-01T00:00:00Z",
+      updated_at: "2026-09-01T00:00:00Z",
+      version: 1,
+    }]);
+    scriptApi.mockReset().mockResolvedValue({
+      chapter_id: "chapter-1",
+      status: "READY",
+      revision_no: 1,
+      coverage: {},
+      scenes: [],
+    } satisfies Script);
+    jobsApi.mockReset().mockResolvedValue([]);
+    window.sessionStorage.clear();
+    scrollStub = installScrollModel(400);
+    rafStub = installRaf();
+  });
+
+  afterEach(() => {
+    rafStub.raf.mockRestore();
+    rafStub.cancel.mockRestore();
+    scrollStub.scrollTo.mockRestore();
+    delete (window as { scrollY?: number }).scrollY;
+    window.sessionStorage.clear();
+  });
+
+  it("矮文档钳制时保留恢复键；文档撑高后恢复到位并消费键", async () => {
+    window.sessionStorage.setItem("mangaflow.workspace-scroll.project-1", "3000");
+    renderWorkspace();
+    // 数据就绪后恢复 effect 把首帧排上 rAF（旧实现里这帧会无条件删键）。
+    await waitFor(() => expect(rafStub.pendingCount()).toBe(1));
+    // 分区 chunk 未就绪：文档矮，scrollTo 被钳制，键必须保留待重试。
+    rafStub.flush(30);
+    expect(scrollStub.state.y).toBe(400);
+    expect(scrollStub.scrollTo).toHaveBeenCalledWith({ top: 3000, behavior: "auto" });
+    expect(window.sessionStorage.getItem("mangaflow.workspace-scroll.project-1")).toBe("3000");
+    // chunk 落地、内容撑高：下一帧恢复到位，落地后才消费键。
+    scrollStub.state.maxScroll = 5000;
+    rafStub.flush(1);
+    expect(scrollStub.state.y).toBe(3000);
+    expect(window.sessionStorage.getItem("mangaflow.workspace-scroll.project-1")).toBeNull();
+  });
+
+  it("目标始终无法到达时按重试上限放弃并消费键，避免恢复键永驻", async () => {
+    window.sessionStorage.setItem("mangaflow.workspace-scroll.project-1", "3000");
+    renderWorkspace();
+    await waitFor(() => expect(rafStub.pendingCount()).toBe(1));
+    // 远超上限的帧数：文档最终也没有长高，恢复放弃（停在钳制位置），
+    // 键被消费，不会在后续无关刷新时跳到陈旧位置。
+    rafStub.flush(200);
+    expect(scrollStub.state.y).toBe(400);
+    expect(window.sessionStorage.getItem("mangaflow.workspace-scroll.project-1")).toBeNull();
+    expect(rafStub.pendingCount()).toBe(0);
+  });
+
+  it("卸载时取消挂起的恢复帧，cleanup 后不再触发 scrollTo，键未消费", async () => {
+    scrollStub.state.maxScroll = 5000;
+    window.sessionStorage.setItem("mangaflow.workspace-scroll.project-1", "1200");
+    const view = renderWorkspace();
+    await waitFor(() => expect(rafStub.pendingCount()).toBe(1));
+    view.unmount();
+    expect(rafStub.cancel).toHaveBeenCalled();
+    expect(rafStub.pendingCount()).toBe(0);
+    rafStub.flush(5);
+    expect(scrollStub.scrollTo).not.toHaveBeenCalled();
+    expect(window.sessionStorage.getItem("mangaflow.workspace-scroll.project-1")).toBe("1200");
   });
 });
