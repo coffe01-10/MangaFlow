@@ -637,3 +637,51 @@ fn registry_kind_swap_updates_the_read_policy() {
         .expect("registered text read");
     assert_eq!(first_bytes, b"text");
 }
+
+
+// Registry entries are keyed by canonical path; registering a second
+// path must not contaminate the first entry's kind, and each path's
+// readback stays path-faithful. Complements the lib unit test
+// (re_registering_a_path_replaces_the_kind), which pins last-wins on the
+// SAME path; here the paths differ, so the pin is non-trivial.
+#[test]
+fn registry_second_pick_leaves_the_first_paths_kind_untouched() {
+    let dir = temp_dir("kind-swap");
+    fs::create_dir_all(&dir).unwrap();
+    let text_file = dir.join("doc.txt");
+    fs::write(&text_file, b"text").unwrap();
+    let image_file = dir.join("img.png");
+    fs::write(&image_file, b"png").unwrap();
+
+    let registry = PickedRegistry::new();
+    let text_picked = validate_picked_file(&text_file, PickKind::SourceText)
+        .expect("a .txt is a valid source-text pick");
+    registry.register(&text_picked);
+    assert_eq!(
+        registry.kind_of(text_picked.path.as_path()),
+        Some(PickKind::SourceText)
+    );
+    let (_, bytes) = read_registered_file(&registry, text_picked.path.as_path())
+        .expect("registered text read");
+    assert_eq!(bytes, b"text");
+
+    // A DIFFERENT path with the same kind family must not contaminate the
+    // first entry: each canonical path keeps its own kind.
+    let second = dir.join("other.txt");
+    fs::write(&second, b"other").unwrap();
+    let second_picked = validate_picked_file(&second, PickKind::SourceText)
+        .expect("a .txt is a valid source-text pick");
+    registry.register(&second_picked);
+    assert_eq!(
+        registry.kind_of(second_picked.path.as_path()),
+        Some(PickKind::SourceText)
+    );
+    // The first entry's kind is unchanged by the second registration.
+    assert_eq!(
+        registry.kind_of(text_picked.path.as_path()),
+        Some(PickKind::SourceText)
+    );
+    let (_, first_bytes) = read_registered_file(&registry, text_picked.path.as_path())
+        .expect("registered text read");
+    assert_eq!(first_bytes, b"text");
+}
