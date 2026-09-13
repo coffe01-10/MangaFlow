@@ -471,6 +471,19 @@ def test_local_mode_submits_without_touching_redis(db_session, monkeypatch):
     assert submitted == [job.id]
 
 
+def test_desktop_embedded_env_var_maps_to_settings(monkeypatch):
+    """The helper sets MANGAFLOW_DESKTOP_EMBEDDED; pydantic-settings maps
+    the FIELD name with no prefix, so the field is
+    mangaflow_desktop_embedded — this pins the exact env-name link the
+    round-30 review caught broken (helper writes MANGAFLOW_…, field read
+    DESKTOP_…: the fix was inert)."""
+
+    monkeypatch.setenv("MANGAFLOW_DESKTOP_EMBEDDED", "1")
+    assert Settings().mangaflow_desktop_embedded is True
+    monkeypatch.delenv("MANGAFLOW_DESKTOP_EMBEDDED")
+    assert Settings().mangaflow_desktop_embedded is False
+
+
 def test_embedded_auto_mode_adopts_locally_despite_a_reachable_redis(
     db_session, monkeypatch
 ):
@@ -485,7 +498,9 @@ def test_embedded_auto_mode_adopts_locally_despite_a_reachable_redis(
     job = _waiting_job(db_session, "embedded")
     submitted: list[str] = []
     monkeypatch.setattr(
-        job_service, "get_settings", lambda: Settings(environment="development", desktop_embedded=True)
+        job_service, "get_settings", lambda: Settings(
+            environment="development", mangaflow_desktop_embedded=True
+        )
     )
     monkeypatch.setattr(
         job_service, "_submit_local", lambda job_id: submitted.append(job_id)
