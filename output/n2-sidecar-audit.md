@@ -670,3 +670,27 @@
   fmt 38 处既有差异两侧一致，零新增。
 - **串行证据**：cargo 全量 **155 passed / 0 failed**（唯一数 155）；复活测试按名过滤
   1 passed；双警告清零。
+
+## 33. 20260913 续六（master ebe982d——#618/#619 已并；#620 已 rebase 留说明）
+
+- **#620 处置（lead 指令）**：glm/ledger-19 与 #619 同文件冲突——rebase 到 ebe982d，
+  冲突为两账本节同锚（18→19 顺序保全，无内容丢失），force-with-lease 推回原分支并留
+  说明；本地临时分支已清理。
+- **plan-B CSP 专项对抗核验（1 子代理，遍历源 + 出货 bundle，FINDINGS）**——#620 勘误
+  所述 nonce 架构主体**全部核验为可靠**：每请求 nonce 绑定（请求头/响应头同源构造、
+  force-dynamic 关全路由缓存、无服务端 fetch、.rsc 不被 matcher 排除）；matcher 无文档
+  旁路；双头语义对齐 Next 16.3.3 源码（请求头读取 + nonce 提取正则 + functions-config
+  注册链）；strict-dynamic 无死权重；dev unsafe-eval 构建期死代码消除 + 运行时
+  NODE_ENV=production 双保险。
+- **P1 实锤 → PR #622（待 lead）**：`build-web-standalone.py` 构建继承环境中的
+  `MANGAFLOW_STATIC_EXPORT`——layout.tsx 跳过 connection() → 页面无 nonce 烘入
+  prerender → 运行时 nonce CSP 拦全部引导脚本 = **静默白屏出货**。#447 只修运行时；
+  本 PR 补对称构建路径 scrub + `assert_no_static_prerender` 响亮校验（prerender
+  manifest 不得含页面路由，/_global-error 豁免、缺 manifest 容忍，拒绝文案带
+  stray-flag 补救）。测试：scrub 钉 + fail-closed/豁免/缺失三态。全量串行 runner
+  **130 passed in 73.17s**。
+- **P2 → Issue #623**：static-export 形态无三非 CSP 安全头（headers() 仅运行服务器生效，
+  Tauri 自定义协议无头注入）——未钉未档，需 lead 决策（加头 vs 记债钉住）。
+- 其余 NIT（x-nonce 死头、/_global-error nonce 错配、文本 grep 钉脆性、api 前缀前瞻）
+  已记录于评审输出，按需跟进。
+- **串行证据**：build-standalone 套件 8 passed；真 runner 130 passed。
