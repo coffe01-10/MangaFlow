@@ -12,7 +12,7 @@
 import { createServer } from "node:http";
 import { lstat, readFile } from "node:fs/promises";
 import { join, extname, resolve, sep } from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { connect } from "node:net";
 import { chromium } from "playwright";
 // fileURLToPath, not `.pathname`: on Windows `.pathname` yields `/C:/...`,
@@ -34,13 +34,49 @@ const MIME = {
 };
 
 // Module-scope handle on the spawned helper so the main().catch teardown can
-// reach it. The readiness timer and fail() already SIGKILL the helper's
-// process group on their paths; but any OTHER throw after spawn that
-// bypasses fail() (malformed READY JSON, an unreadable journal, a
-// browser-phase exception) used to fall into main().catch → process.exit(1)
-// with the setsid'd helper still alive on its loopback port — the same
-// orphan class as the readiness timeout (#346).
+// reach it. The readiness timer and fail() already kill the helper's tree
+// (process group on POSIX, taskkill /T on Windows — killHelperTree below)
+// on their paths; but any OTHER throw after spawn that bypasses fail()
+// (malformed READY JSON, an unreadable journal, a browser-phase exception)
+// used to fall into main().catch → process.exit(1) with the setsid'd helper
+// still alive on its loopback port — the same orphan class as the readiness
+// timeout (#346).
 let helper;
+
+// Single choke-point for EVERY teardown kill of the helper (#588). The old
+// per-path `process.kill(-helper.pid, "SIGKILL")` is POSIX process-group
+// semantics: on Windows libuv rejects pid<=0 with EINVAL without attempting
+// anything, every call site's try/catch swallowed that as "already gone",
+// and the helper stayed alive holding its loopback port.
+// - win32: `taskkill /PID <pid> /T /F` tree-kills by pid. The helper is a
+//   plain spawn() (no Job Object exists to close), so /T is the approved
+//   minimal fix; taskkill's /F means the SIGTERM/SIGKILL distinction
+//   collapses to the same forced kill on that platform.
+// - POSIX: keep the negative-pid group kill (the helper is setsid'd).
+// Outcome reporting: ESRCH — and taskkill exit 128 ("process not found")
+// after a real attempt — means already gone and stays silent; any other
+// failure (EINVAL/EPERM/spawn error/non-zero taskkill exit) prints a
+// one-line stderr diagnostic naming the pid, so the log stops misreporting
+// a kill that never happened as "already gone".
+function killHelperTree(child, signal = "SIGKILL") {
+  if (!child?.pid) return;
+  if (process.platform === "win32") {
+    const kill = spawnSync(
+      "taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+    if (kill.error) {
+      console.error(`D5: helper tree kill for pid ${child.pid} could not run: ${kill.error.message}`);
+    } else if (kill.status !== 0 && kill.status !== 128) {
+      console.error(`D5: helper tree kill for pid ${child.pid} failed: taskkill exited ${kill.status}`);
+    }
+    return;
+  }
+  try {
+    process.kill(-child.pid, signal);
+  } catch (error) {
+    if (error?.code === "ESRCH") return; // group already gone: silent ok
+    console.error(`D5: helper tree kill for pid ${child.pid} failed: ${error?.code ?? error}`);
+  }
+}
 
 async function main() {
 const token = (await import("node:crypto")).randomBytes(16).toString("hex");
@@ -65,8 +101,10 @@ function fail(message) {
   // The helper is setsid'd (own process group), so the negative-pid kill
   // reaches it and anything it spawned. Without this, a helper hung before
   // READY (stdin-EOF watch never armed, nothing reads its stdin) outlives
-  // the script while holding its loopback port (E-review L1a).
-  try { process.kill(-helper.pid, "SIGKILL"); } catch { /* already gone */ }
+  // the script while holding its loopback port (E-review L1a). #588: the
+  // kill routes through killHelperTree so Windows does not silently skip
+  // it (libuv rejects pid<=0 with EINVAL there).
+  killHelperTree(helper);
   process.exitCode = 1;
 }
 
@@ -83,8 +121,9 @@ const readyLine = await new Promise((resolve, reject) => {
     // armed after GO), so nothing would terminate it: kill the process
     // group before failing, or it outlives the script holding its
     // loopback port (E2 review of #353 — the headline fix bypassed
-    // fail() on exactly this path).
-    try { process.kill(-helper.pid, "SIGKILL"); } catch { /* already gone */ }
+    // fail() on exactly this path). #588: via killHelperTree so the kill
+    // also happens on Windows (taskkill tree-kill).
+    killHelperTree(helper);
     reject(new Error("helper readiness timeout"));
   }, 20000);
   // Accumulate until the first newline: stdout is a pipe, so the READY
@@ -98,7 +137,7 @@ const readyLine = await new Promise((resolve, reject) => {
     // newline-free output mean a rogue import looping on print — bound the
     // buffer and kill the group like the timeout path does.
     if (buffer.length > 1048576) {
-      try { process.kill(-helper.pid, "SIGKILL"); } catch { /* already gone */ }
+      killHelperTree(helper);
       cleanup();
       reject(new Error("helper stdout exceeded 1 MiB before READY"));
       return;
@@ -406,18 +445,18 @@ console.log("sample api requests:", api_requests.slice(0, 3));
 await browser.close();
 server.close();
 helper.stdin.end();
-// The killGroup escalation still covers the cooperative-grace case; the
-// exit promise above was registered at spawn, so a helper already killed
-// by fail() settles immediately instead of hanging on the give-up timer.
-const killGroup = (signal) => {
-  try { process.kill(-helper.pid, signal); } catch { /* group already gone */ }
-};
+// The killHelperTree escalation still covers the cooperative-grace case;
+// the exit promise above was registered at spawn, so a helper already
+// killed by fail() settles immediately instead of hanging on the give-up
+// timer. #588: the grace path routes through killHelperTree like every
+// other teardown kill (on Windows both calls are the same forced taskkill
+// tree-kill; the second is a silent no-op once the tree is gone).
 let settled = false;
 const finish = (code) => { if (!settled) { settled = true; helper_exit_resolve(code); } };
 const giveUp = setTimeout(() => finish(-1), 40000);
 const killGrace = setTimeout(() => {
-  killGroup("SIGTERM");
-  setTimeout(() => killGroup("SIGKILL"), 10000);
+  killHelperTree(helper, "SIGTERM");
+  setTimeout(() => killHelperTree(helper, "SIGKILL"), 10000);
 }, 15000);
 void helper_exit.then((code) => { clearTimeout(killGrace); clearTimeout(giveUp); finish(code); });
 const helper_exit_code = (await helper_exit).code;
@@ -433,11 +472,10 @@ main().catch((error) => {
   console.error("D5 FAIL:", error);
   // Same orphan class as the readiness timeout: this catch sees every
   // rejection/throw that leaves main() without passing through fail()
-  // (which kills the group itself). Best-effort, mirroring fail(): the
-  // negative-pid kill reaches the setsid'd group; if the helper is already
-  // gone the throw is swallowed.
-  if (helper?.pid) {
-    try { process.kill(-helper.pid, "SIGKILL"); } catch { /* already gone */ }
-  }
+  // (which kills the group itself). Best-effort, mirroring fail() — and
+  // #588: routed through killHelperTree so Windows actually kills the
+  // tree instead of swallowing libuv's EINVAL as "already gone". If the
+  // helper is already gone the kill stays silent there.
+  if (helper) killHelperTree(helper);
   process.exit(1);
 });
