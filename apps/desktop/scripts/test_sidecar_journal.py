@@ -316,7 +316,6 @@ def test_go_refusal_journals_failed_and_exits_75(tmp_path):
     runtime.mkdir(parents=True)
     journal = runtime / "owner.json"
 
-    helper = _load_helper()
     proc = subprocess.Popen(
         [
             sys.executable,
@@ -348,3 +347,20 @@ def test_go_refusal_journals_failed_and_exits_75(tmp_path):
     record = json_module.loads(journal.read_text(encoding="utf-8"))
     assert record["state"] == "failed", record
     assert record["error"] == "go-refused", record
+
+
+def test_oversize_journal_fail_open_and_publish(tmp_path: Path):
+    """#732: the terminal check's read is bounded (64 KiB + 1, the Rust
+    read_journal_bounded parity) — a planted oversize journal truncates,
+    parses as broken, and fails OPEN to a normal publish instead of
+    buffering unbounded bytes into the helper."""
+
+    journal = _journal_path(tmp_path)
+    with journal.open("wb") as handle:
+        handle.write(b'{"version":1,"token":"' + TOKEN.encode())
+        handle.seek(64 * 1024 + 8)
+        handle.write(b"\0")
+    helper = _load_helper()
+    helper._write_journal(journal, _record("ready"))
+    published = json.loads(journal.read_text(encoding="utf-8"))
+    assert published["state"] == "ready", published
