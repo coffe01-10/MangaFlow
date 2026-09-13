@@ -540,3 +540,14 @@
 **§29 补充二（02:50）**：**PR #709 交叉审**（夜班代理，两半）：(1) journal 套的 mkfifo skip 门——修复我 #685 FIFO 钉在 Windows 宿主 venv 的 AttributeError 拒载问题；留 nit：模块级 pytestmark 会连 platform-neutral 的终态 CAS/pending 名钉一起跳过（8 钉在 Windows 虚拟失去覆盖），建议仅两根 FIFO 钉按测试门控。(2) **跨 Goal 文件触碰上报**：该 PR 同时向 `output/n2-sidecar-audit.md`（N2 Goal 账本）追加第 26/27 轮评审记录——PR 自辩"output/ 不在禁改清单+经 #702 谱系自然可见"，实质合理但文件归属裁定权在 lead，已显式上报防止成例。
 
 **§29 补充三（03:18）**：**#710/#712 已合**（夜班代理，relay 预算策略收尾）：全文件读超时统一 15s hang-guard 预算（我 #597 只修了两根 flaking 腿；此批收尾其余四根并**将策略写成文件内注释**——后续新钉自动继承），唯一例外为中继释放重试的 2s 探针（其语义就是预期超时）。RUN 23/23、零 4s 残留。#711（§29c）rebase 到 7cad2df 后 MERGEABLE CLEAN。
+
+---
+
+## 30. 夜班续（2026-09-14 03:39，基线 1787d2d；#711/#713/#714 已合）
+
+**自纠（重要）：**
+- **#713 修复我 #693 的作用域回归**：我对静态服务器块的 `if (!PLAN_B)` 守卫把 `const static_hits`/`const server` **块级作用域化**——静态模式（默认形态！）在证据对象读取时 ReferenceError，握手后即崩。我 #693 只活体验证了 plan-B 腿，"静态路径字节不变"的声明是错的（包裹改变了作用域）。夜班代理活体发现并修复（提升到函数作用域）。教训：模式守卫重构必须双模式各跑一次活体。
+- **验证**：真实静态导出构建后静态模式 D5 **PASS**（rendered_marker/注入/CORS API 全证据）。
+
+**B 轮（新立）：**
+- **#717 [P4]** `recreate_junction` 的目录分支无条件使用 git-bash 专属三件套（`cygpath`/`cmd //c mklink`）——POSIX 上 node_modules 内的树内目录符号链接触发 command-not-found（本沙箱活体观察到三行报错；导出仍建成并通过 D5，但 #385 的"链接在 worktree 内重建、worktree 保持密封"契约在 POSIX 静默未达）。修复面：按平台守卫创建腿（POSIX `ln -sfn` / win32 mklink），文件腿已是可移植的 `cp -l`。
