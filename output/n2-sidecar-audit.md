@@ -769,3 +769,18 @@
   RUNTIME_SWEEP_GRACE_SECONDS=24h 宽限（#264 设计）——"下一会话即回收"的表述勘误为
   "24h 宽限后的首个会话启动"。
 - **串行证据**：真 runner **153 passed**（exit=0）。
+
+- **§35 补遗六（第 26 轮，追溯 APPROVE——#702 已并 9ad2a80）**：
+  - 钉的强度边界（LOW 记录）：本钉锁"wrapper ≠ 0"（fresh 存活 + 显式 0 回收双向红），
+    非"恰为 24h"——精确 24h 边界钉需 mtime=now−24h±ε 夹具，留待后续。
+  - **流程更正**：#702 的合并实携两文件——protocol.rs +44 与 771 行审计账本
+    （分支谱系自夜分支 ledger tip 切出所致）。output/ 不在禁改清单，且账本由此进
+    master 可见；后续夜班账本节以 master 上的该文件为底续写。
+  - 评审实证：mutation 双向红（0 窗回归 → 首断言；sweep 全废 → 次断言含静默 remove
+    失败）。
+
+- **§35 补遗七（第 27 轮，REQUEST_CHANGES → 修复中）**：#705 边界钉的 HIGH——mtimes 锚在
+  被测常量自身，常量 24h→1h 全套件照样绿（评审实证 mutation c）。修复：字面
+  `assert_eq!(RUNTIME_SWEEP_GRACE_SECONDS, 24*60*60)` + docstring 过度声明更正 + NTP
+  方向性勘误（backward step 反向缩小 aged 的 age；窗口毫秒级，理论性）。→ **PR #707**。
+  （#705 本体已在评审期间被并，9e48ba8。）
