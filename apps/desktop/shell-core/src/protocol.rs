@@ -369,20 +369,73 @@ impl RuntimeLayout {
                 return Ok(());
             }
         };
-        value["state"] = "stopped".into();
-        value["stopped_at"] = unix_now().into();
-        if let Some(code) = exit_code {
-            value["exit_code"] = code.into();
+        apply_stop(&mut value, exit_code, unix_now());
+        write_journal_atomic(&journal, &value)?;
+
+        // #602 post-write verify (single bounded retry — never a loop): the
+        // helper also writes this journal (every state transition). A late
+        // helper `ready` landing between the rename above and this read
+        // would revive a dead session's journal to a state the stale-runtime
+        // sweep never reclaims. Re-read ONCE; when the state is not
+        // "stopped", merge the stop onto the CURRENT record (keeping its
+        // fields) and write again through the same atomic helper. An
+        // unparsable/unreadable re-read keeps the bytes untouched, exactly
+        // like the pre-write guard above.
+        if let Some(text) = read_journal_bounded(&journal) {
+            if let Ok(current) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(merged) = merge_stop_onto_current(&current, exit_code, unix_now()) {
+                    return write_journal_atomic(&journal, &merged);
+                }
+            }
         }
-        write_journal_atomic(&journal, &value)
+        Ok(())
     }
+}
+
+/// The stop transformation applied to a journal record: terminal state,
+/// timestamp, and (when this stop knows one) the exit code. Shared by the
+/// initial write and the #602 post-write re-apply so the two can never drift.
+fn apply_stop(record: &mut serde_json::Value, exit_code: Option<i32>, stopped_at: u64) {
+    record["state"] = "stopped".into();
+    record["stopped_at"] = stopped_at.into();
+    if let Some(code) = exit_code {
+        record["exit_code"] = code.into();
+    }
+}
+
+/// #602 pure decision seam for `mark_stopped`'s post-write verify: decide
+/// whether the just-written stop was clobbered by a concurrent helper write,
+/// and if so, build the record to re-publish.
+///
+/// - `None` — no re-apply: the current record already says `"stopped"`, or it
+///   is a non-object (forensic anomaly — overwriting would destroy it, same
+///   rationale as the pre-write guard).
+/// - `Some(merged)` — the current record (fields preserved) with the stop
+///   transformation applied: `state="stopped"`, `stopped_at`, and `exit_code`
+///   when this call intended one (a `None` exit code leaves any existing
+///   field untouched, mirroring the first write).
+fn merge_stop_onto_current(
+    current: &serde_json::Value,
+    exit_code: Option<i32>,
+    stopped_at: u64,
+) -> Option<serde_json::Value> {
+    if !current.is_object() || current["state"].as_str() == Some("stopped") {
+        return None;
+    }
+    let mut merged = current.clone();
+    apply_stop(&mut merged, exit_code, stopped_at);
+    Some(merged)
 }
 
 /// Atomic journal write (pending file + rename, same shape as the helper and
 /// `owned_processes.py`). Identity fields only — never commands, env, secrets.
+/// The staging name is shell-owned (``owner.json.shell.pending``, #602): the
+/// helper stages its writes to ``owner.json.helper.pending`` — a shared
+/// pending name let the two writers rendezvous (publishing the other's
+/// payload or failing with the other's missing file).
 fn write_journal_atomic(journal: &Path, record: &serde_json::Value) -> std::io::Result<()> {
     let pending = journal.with_file_name(format!(
-        "{}.pending",
+        "{}.shell.pending",
         journal.file_name().unwrap_or_default().to_string_lossy()
     ));
     // Same-user link planting (#561): a symlink at either name would make
@@ -932,6 +985,123 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// #602 seam test for the post-write verify: when a concurrent helper
+    /// write (e.g. a late `ready`) clobbers the stop, the merge decision must
+    /// re-apply the stop ONTO THE CURRENT RECORD — state=stopped with this
+    /// call's exit_code and stopped_at, every other field carried over from
+    /// the helper's record — and the decision must be pure (the input record
+    /// is never mutated).
+    #[test]
+    fn merge_stop_reapplies_a_clobbered_stop_onto_the_current_record() {
+        let current = serde_json::json!({
+            "version": PROTOCOL_VERSION,
+            "token": TOKEN,
+            "state": "ready",
+            "pid": 4242,
+            "api_origin": "http://127.0.0.1:39001",
+            "web_origin": "http://127.0.0.1:39002",
+        });
+        let merged = merge_stop_onto_current(&current, Some(7), 1_700_000_012)
+            .expect("a clobbered (non-stopped) current record must re-apply the stop");
+        assert_eq!(merged["state"], "stopped");
+        assert_eq!(merged["exit_code"], 7);
+        assert_eq!(merged["stopped_at"], 1_700_000_012);
+        // Every other field comes from the CURRENT (re-read) record, not
+        // from the shell's earlier write: identity and origins survive the
+        // re-apply.
+        assert_eq!(merged["pid"], 4242);
+        assert_eq!(merged["token"], TOKEN);
+        assert_eq!(merged["api_origin"], "http://127.0.0.1:39001");
+        assert_eq!(merged["web_origin"], "http://127.0.0.1:39002");
+        // Purity: the decision must not mutate its input.
+        assert_eq!(current["state"], "ready");
+        assert!(current.get("stopped_at").is_none());
+    }
+
+    /// The no-op half of the seam: a journal whose state already says
+    /// "stopped" (the common case — nothing raced the rename) needs no
+    /// second write.
+    #[test]
+    fn merge_stop_is_a_noop_when_the_stop_survived() {
+        let stopped = serde_json::json!({
+            "version": PROTOCOL_VERSION,
+            "token": TOKEN,
+            "state": "stopped",
+            "stopped_at": 1,
+            "exit_code": 0,
+        });
+        assert!(merge_stop_onto_current(&stopped, Some(0), 2).is_none());
+    }
+
+    /// A re-read `failed` record also gets the stop re-applied (the design
+    /// re-applies on any non-stopped state), but its forensic fields ride
+    /// along; an exit_code of None must not inject an exit_code field —
+    /// mirroring the first write's conditional.
+    #[test]
+    fn merge_stop_reapplies_onto_a_failed_record_and_keeps_its_fields() {
+        let failed = serde_json::json!({
+            "version": PROTOCOL_VERSION,
+            "token": TOKEN,
+            "state": "failed",
+            "error": "alembic:OperationalError",
+        });
+        let merged = merge_stop_onto_current(&failed, None, 5)
+            .expect("a clobbered failed record must re-apply the stop");
+        assert_eq!(merged["state"], "stopped");
+        assert_eq!(merged["stopped_at"], 5);
+        assert_eq!(merged["error"], "alembic:OperationalError");
+        assert!(
+            merged.get("exit_code").is_none(),
+            "a None exit code must not fabricate an exit_code field"
+        );
+    }
+
+    /// Non-object re-reads (42, [1,2,3]) are forensic anomalies, exactly like
+    /// the pre-write guard: the merge must refuse instead of fabricating a
+    /// deletable object from them.
+    #[test]
+    fn merge_stop_refuses_non_object_current_records() {
+        for current in [serde_json::json!(42), serde_json::json!([1, 2, 3])] {
+            assert!(
+                merge_stop_onto_current(&current, Some(0), 1).is_none(),
+                "a non-object current record must not be re-written: {current}"
+            );
+        }
+    }
+
+    /// #602 staging-name pin: a successful mark_stopped must leave no pending
+    /// sibling behind — neither the shell-owned `owner.json.shell.pending`
+    /// nor the legacy shared `owner.json.pending` the two writers used to
+    /// rendezvous on.
+    #[test]
+    fn mark_stopped_leaves_no_shell_pending_sibling_behind() {
+        let dir = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-nopending-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let layout = RuntimeLayout::create(&dir).unwrap();
+
+        layout.mark_stopped(Some(0)).unwrap();
+
+        let journal = layout.journal_path();
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&journal).unwrap()).unwrap();
+        assert_eq!(value["state"], "stopped");
+        let directory = journal.parent().expect("the journal lives in its runtime dir");
+        assert!(
+            !directory.join(format!("{JOURNAL_NAME}.shell.pending")).exists(),
+            "the shell pending sibling must not survive a successful stop write"
+        );
+        assert!(
+            !directory.join(format!("{JOURNAL_NAME}.pending")).exists(),
+            "the legacy shared pending name must stay unused (#602)"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// #561 (helper parity): a symlink at the journal or the .pending
     /// sibling must be refused before any write — the pending write
     /// follows links, so a planted link would redirect the ownership
@@ -956,7 +1126,7 @@ mod tests {
         ));
         fs::create_dir_all(&runtime).unwrap();
         let journal = runtime.join(JOURNAL_NAME);
-        let pending = journal.with_file_name(format!("{JOURNAL_NAME}.pending"));
+        let pending = journal.with_file_name(format!("{JOURNAL_NAME}.shell.pending"));
         let outside = user_data.join("outside.json");
         fs::write(&outside, b"{}").unwrap();
 
