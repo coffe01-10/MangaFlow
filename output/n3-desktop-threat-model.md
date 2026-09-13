@@ -570,3 +570,16 @@
 **§33 补充（03:39）**：**#729 判读更正**——该 PR 的 runtime_settings embedded 分支**重复已合的 #725 内容**（master :118 已有；base 先于 #725 合并所致，合并时为幂等 no-op）；真正新增为 settings.py queue_check 的 embedded OK 文案（诊断与行为一致，正确）+ busy-4173 钉 + N2 账本追加。lead 已裁定 #729 归 N2 rebase——我的评审评论未发出（命令取消），重复分支观察转记于此。
 
 **§33 补充二（06:07）**：基线 adb646a 认证——**runner 全量 156/156**（78s，含 plan-B 全活跃；自 148 增长系 sweep 家族新钉）、孤儿扫描阴性（#675 类无复发）。负向探针：`queue_enabled=False` 在 embedded 分支**之前**短路（QUEUE_DISABLED）——嵌入运行时与"执行器未启用"不矛盾，设计自洽。孤儿扫描与本轮全量认证后无新发现。
+
+---
+
+## 34. 夜班续（2026-09-14 06:46，基线 a3422e8；#733 已合）——**P1 回归自纠上报**
+
+**发现（双臂差分，RUN Linux 活体）：**
+- **#734 [P1]** 我 #719 的 POSIX symlink 臂修复了 #717 的 command-not-found，但产出的静态导出**功能不同**：仪表盘渲染外壳（baked HTML 标记）但客户端包**从不发起数据获取**——D5 静态 **3/3 FAIL**（"no direct API request observed" + helper exit give-up 3/3）；而 03:45 的坏臂构建（@mangaflow/web 链接缺失的意外配置）D5 **PASS**（api_request_count ≥ 1）。直接浏览器探针（11 请求全加载、零 page error）证实非加载失败而是**取数逻辑未执行**。根因假设：turbopack/next 经重建的 workspace 符号链解析模块（preserve-symlinks 语义）改变了打包图——未经设计的配置对比。
+- **同现观察**：三次失败运行均伴随 helper exit give-up（静态形态无 node/中继，纯 uvicorn）——疑数据-less 页客户端经 uvicorn 优雅停机持连接重试，或独立停机回归，同现 3/3 一并记录。
+- **严重度**：P1（POSIX 构建路径的产出未过项目自身 D5 验收）；Windows junction 臂 NOT RUN 待真机验证。
+- **缓解选项留 lead**：(1) POSIX 臂回退到跳过+警告（恢复意外正确的行为）；(2) 保留密封并查 turbopack symlink 解析（lead 设计）。
+- **流程教训（入账）**：#719 合并前我只跑了修复臂的构建 rc + 既有套件绿，**未跑 D5 静态验收**——D5 是该产出的验收器，回归恰在套件盲区。后续构建类 PR 一律附 D5 双模式运行。
+
+**认证**：runner **157/157**（a3422e8，+1 系 #704 钉）；D5 plan-B PASS（同 tip）；D5 静态 FAIL 3/3 即本条 P1 证据。
