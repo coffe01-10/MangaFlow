@@ -1490,6 +1490,76 @@ mod tests {
         let _ = std::fs::remove_dir_all(&user_data);
     }
 
+    /// Round-26 finding 6: the survival pin proves the wrapper is not
+    /// zero-window; THIS pin proves the constant is the documented 24h —
+    /// two directories with explicit mtimes ±5s around the boundary: the
+    /// aged one (24h+5s) is reclaimed, the fresh one (24h−5s) survives.
+    /// Explicit utimensat mtimes keep it deterministic (no sleeps); the
+    /// 10s margin absorbs scheduler skew between the two sweeps.
+    #[test]
+    #[cfg(unix)]
+    fn production_sweep_boundary_is_the_documented_24h() {
+        let dir = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-sweep-bnd-{}-{}",
+            std::process::id(),
+            new_token()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("runtime")).unwrap();
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let grace = RUNTIME_SWEEP_GRACE_SECONDS;
+        let runtime_root = dir.join("runtime");
+        let make_candidate = |token: &str, mtime_secs: u64| {
+            let candidate = runtime_root.join(format!("{RUNTIME_DIR_PREFIX}{token}"));
+            std::fs::create_dir_all(&candidate).unwrap();
+            std::fs::write(
+                candidate.join(JOURNAL_NAME),
+                format!("{{\"version\":1,\"token\":\"{token}\",\"state\":\"stopped\"}}"),
+            )
+            .unwrap();
+            // The sweep's clock is the JOURNAL's mtime (the terminal
+            // write), not the directory's.
+            let cpath = std::ffi::CString::new(
+                candidate
+                    .join(JOURNAL_NAME)
+                    .as_os_str()
+                    .to_string_lossy()
+                    .as_bytes(),
+            )
+            .unwrap();
+            let tv = libc::timespec {
+                tv_sec: mtime_secs as libc::time_t,
+                tv_nsec: 0,
+            };
+            unsafe {
+                assert_eq!(
+                    libc::utimensat(libc::AT_FDCWD, cpath.as_ptr(), [tv, tv].as_ptr(), 0),
+                    0
+                );
+            }
+            candidate
+        };
+
+        let aged = make_candidate("1".repeat(32).as_str(), now - grace - 5);
+        let fresh = make_candidate("2".repeat(32).as_str(), now - grace + 5);
+
+        sweep_runtime_dirs(&dir).unwrap();
+
+        assert!(
+            !aged.exists(),
+            "past the 24h grace the terminal dir must be reclaimed"
+        );
+        assert!(
+            fresh.exists(),
+            "inside the 24h grace the terminal dir must survive"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// mark_stopped on a MISSING journal must not fabricate a stopped
     /// record: absent ownership records are kept absent (the sweep then
     /// ignores the directory as a foreign/empty name).
