@@ -861,8 +861,18 @@
   调用者全量清点（无既有行为变化）；39 passed。跟进已推：settings UI 的嵌入式基线
   从误导性 WARNING 改报 OK（"按设计本地执行"）；诊断假体补 close()。
 
+<<<<<<< HEAD
 - **§35 补遗十三（round-30 APPROVE + F6 跟进）→ PR #729（待 lead）**：#715 追溯 APPROVE
   （busy-4173 catch 可达性/状态/计划B不可达/kill-before-print/端口常量契约逐项确认；
   SIGKILL 优于 stdin.end() 的理由引 N3 §31 优雅停机挂起记录）。F6 跟进：拆销路径钉清单
   增补 busy-4173 span（注释锚 → process.exit），mutation 红/绿实测。过程：夜分支残留的
   cherry-pick 状态已 --quit 清理并推送同步。
+=======
+- **§35 补遗十四（#729 rebase 完成流程事故披露）**：rebase 中误将我方内容强推至他组
+  `glm/ledger-23`（refspec 错误，持续约 1 分钟）——已立即以原 tip 06afa31 恢复（ls-remote
+  核验）并在 #687 留事故说明；#687 owner 请在下次推送前核验分支。#729 最终态：
+  rebase 至最新 master（账本 33b 并入），PR 文件 = 钉测试 + 审计 rider，mergeable 待
+  GitHub 重算。
+- **教训强化**：跨分支 refspec 推送必须逐字核对目标分支名；本窗两次分支手术 + 一次误推
+  均为 checkout/分支操作与内容操作交错的产物。
+>>>>>>> c5f18ae (Audit: §35 addendum 14 — #729 rebase done, glm/ledger-23 overwrite incident disclosed)
