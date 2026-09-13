@@ -510,3 +510,5 @@
 - **瞬态挂起复现尝试（负载下）**：D5 plan-B ×1 并发三路 journal/verify 套件压载——PASS、零 give-up。累计 **8/8 干净**（早前 2 次异常疑为并发构建期负载），维持观察项。
 
 **认证**：journal 12/12；D5 plan-B 负载下 PASS。
+
+**§28 补充（02:10）**：delivery_contract 套在当前 conf 状态执行 **11/11**——含 #623 头缝对（nosniff 经 app.security.headers + X-Frame-Options/Referrer-Policy 债务标记的 Cargo.lock 版本锚定 staleness guard）。间隙 +123 行的审计至此**读+跑双完成**。
