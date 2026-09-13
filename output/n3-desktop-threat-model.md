@@ -526,3 +526,11 @@
 
 **B/C（新立 + 修复）：**
 - **#696 [P4]** helper 最后兜底失败处理器**覆盖相位注记错误**：alembic 腿记 `alembic:<Type>` 后 re-raise，main() 的兜底 `record.update(error=type(error).__name__)` 把相位前缀抹掉——终态 journal 丢失"死在哪一腿"。→ **PR #697**：`_merge_last_resort_failure` 纯缝（setdefault 保留首个注记错误为根因）+ 双腿单测。RUN 49/49。
+
+---
+
+## 29. 夜班续（2026-09-14 02:15，基线 9e48ba8；#698/#702/#703/#704/#705 已合或待合）
+
+**E 轮（交叉审，全部 RUN）：**
+- **PR #705**（sweep 24h **边界**钉）：RUN 1 passed——`utimensat` 显式 mtime ±5s 跨越 `RUNTIME_SWEEP_GRACE_SECONDS`（陈旧回收/新鲜存活），确定性无 sleep；**journal mtime 才是 sweep 时钟**（非目录），字段选择正确。与 #702 的存活钉互补合拢：wrapper 传常量 + 常量即文档值，两半都钉死。
+- **PR #704**（web spawn 中继线程失败的双 socket 清扫钉）：RUN 1 passed——真实 `_spawn_web_server` + 线程类替换引发降级臂，断言 announced+relay 双 socket 关闭与 node 回收（残留 announced socket 会被读成幻影活 node）。
