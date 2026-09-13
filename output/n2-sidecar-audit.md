@@ -749,3 +749,11 @@
 - **§35 补遗四（9fc7371 串行证据）**：night 分支并 master 后真 runner **149 passed**
   (exit=0) + shell-core **164/0**；#678 对我方 assert_no_static_prerender 的 dynamicRoutes
   扩展交叉审通过（pages-router 形态补钉，实现+测试完整）。
+
+- **§35 补遗五（PR #692 第 24 轮返工）**：REQUEST_CHANGES 的 blocker 是要害——FIFO 插入
+  脚本把 #458 包含性回归测试
+  （runtime_layout_refuses_a_same_leaf_target_outside_the_user_data_root）1对1 静默替换，
+  "escapes the user-data root" 分支**零覆盖**且 164 绿不报警（评审 -S 核实）。已从 master
+  恢复 40 行进 mod tests（双测试绿、cargo **165/0**）；附 TOCTOU 注释（F4）、尾行修复（F5）、
+  docstring 错字（F6）；#681 分支同步把失败 journal 重试加宽至 (OSError, RuntimeError)（F3）。
+  评审另确认：目录占位两侧均干净拒绝（新正则消息）、links 原文案保留使既有钉不动。
