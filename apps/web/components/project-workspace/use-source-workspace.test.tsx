@@ -133,7 +133,7 @@ describe("useSourceWorkspace 关键行为", () => {
     let resolveUpload!: (value: { chapters: { id: string }[]; total_characters: number }) => void;
     uploadApi.mockReset().mockImplementation(() => new Promise<{ chapters: { id: string }[]; total_characters: number }>((resolve) => {
       resolveUpload = resolve;
-    }));
+    }) as never);
     const selected: (string | null)[] = [];
     const getHook = renderProbe((chapterId) => selected.push(chapterId));
     await act(async () => {
@@ -162,7 +162,7 @@ describe("useSourceWorkspace 关键行为", () => {
     let resolveUpload!: (value: { chapters: { id: string }[]; total_characters: number }) => void;
     uploadApi.mockReset().mockImplementation(() => new Promise<{ chapters: { id: string }[]; total_characters: number }>((resolve) => {
       resolveUpload = resolve;
-    }));
+    }) as never);
     const getHook = renderProbe();
     await act(async () => {
       getHook().importSourceFile.mutate(new File(["第一章内容"], "chapter-1.txt", { type: "text/plain" }));

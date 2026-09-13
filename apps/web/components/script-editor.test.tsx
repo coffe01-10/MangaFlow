@@ -174,7 +174,7 @@ describe("ScriptEditor 保存在途继续输入不随成功丢弃（#636）", ()
   it("场景保存在途继续输入：成功后表单保留，在途增量不丢", async () => {
     let resolveSave!: (value: unknown) => void;
     updateSceneApi.mockImplementation(() => new Promise((resolve) => {
-      resolveSave = resolve;
+      resolveSave = resolve as (value: unknown) => void;
     }));
     renderEditor();
 
@@ -214,7 +214,7 @@ describe("ScriptEditor 保存在途继续输入不随成功丢弃（#636）", ()
   it("情节拍保存在途继续输入：成功后表单保留，在途增量不丢", async () => {
     let resolveSave!: (value: unknown) => void;
     updateBeatApi.mockImplementation(() => new Promise((resolve) => {
-      resolveSave = resolve;
+      resolveSave = resolve as (value: unknown) => void;
     }));
     renderEditor();
 
