@@ -438,3 +438,15 @@
 - **新套件**：`test_sidecar_journal.py`（8 测）、`test_verify_static_origin.py`（6 测）——形状优良（全部文件级确定性、fail-open 分支覆盖、unlink 失败清理）。**但两者未接入 runner 收集**——pytest.ini `norecursedirs` 排除 apps/desktop + runner 清单未列 = **14 测试从未在任何标准流程运行**（#343 类第二例）。→ **B：#675 已立 + C：PR #676 已修**（runner 收集 130→146，RUN collect + 独立 16/16）。
 
 **认证**：shell-core **162/162**（间隙后）；journal+verify 新套 **16/16**。
+
+---
+
+## 22. 夜班续（2026-09-14 00:10，基线 3475146；#676/#679/#680/#681/#682 已合）
+
+**E 轮（交叉审）：**
+- **PR #681**（refusal-path 硬化，helper 生产 +22）：RUN env+journal **46/46** + shell-core **164/164**。两半都是 #587 拒绝路径的真实集成修复：(1) `_apply_app_environment` 提到 `data/` mkdir **之前**——被拒路径零残留（我 #593 漏了 mkdir 次序，夜班代理抓到；活体探针：拒绝 ⇒ exit 1 + journal 记录 + 无 data/ 残留）；(2) main() 的 `int(code or 0)` 会把我 #593 的 `SystemExit(message)` 变成裸 ValueError traceback——我的测试直呼 `_apply_app_environment`、e2e 从不播种敌意路径，两层验证都看不见该断链。教训入账：拒绝路径的唯一调用侧处理是"异常→int 转换"时，必须有 main() 级测试。
+- **PR #680/#682**（record 行形状钉 + write-before-rotation-failure 契约钉）：随 shell-core 164/164 认证。
+
+**D 轮（续）**：#602/#588 FIXED 评已留（§21）；无新 [native] 票需处置。
+
+**认证**：shell-core **164/164**；env+journal **46/46**；活体探针（敌意 user_data 经 main 相邻流）：exit 1、journal 记录、无 data/ 残留。
