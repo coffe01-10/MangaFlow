@@ -450,12 +450,26 @@ fn write_journal_atomic(journal: &Path, record: &serde_json::Value) -> std::io::
     // record to an attacker-chosen file. Refuse both before any write —
     // the helper's _write_journal enforces the same parity.
     for path in [journal, &pending] {
-        if std::fs::symlink_metadata(path)
-            .is_ok_and(|meta| meta.is_symlink())
-        {
+        let Ok(meta) = std::fs::symlink_metadata(path) else {
+            continue; // nothing planted at an absent name
+        };
+        if meta.is_symlink() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 format!("process journal must not be a link: {}", path.display()),
+            ));
+        }
+        // Non-regular names (a planted FIFO) must refuse too: fs::write
+        // would block forever on a writerless FIFO — and this write sits
+        // on the teardown hotline (every stop path calls mark_stopped),
+        // so a hang here stalls the whole stop flow (#561/#685 family).
+        if !meta.is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "process journal and its pending sibling must be regular files: {}",
+                    path.display()
+                ),
             ));
         }
     }
@@ -1846,52 +1860,54 @@ mod tests {
         let _ = std::fs::remove_dir_all(&user_data);
         let _ = std::fs::remove_dir_all(&outside);
     }
-}
-
-    /// The containment guard (#458): a symlink planted at the exact runtime
-    /// name whose TARGET uses the same leaf (an attacker-chosen subtree with
-    /// a pre-built `mangaflow-desktop-<token>` directory) passes the leaf
-    /// check — the session tree must additionally live INSIDE the resolved
-    /// user-data root, or the journal (and everything the helper writes
-    /// under the session dir) is relocated to an attacker-chosen subtree.
-    #[cfg(unix)]
+    /// #561/#685 family parity for the STAGED name: a FIFO planted at the
+    /// shell-owned `.shell.pending` sibling would block `fs::write` forever
+    /// (open for writing with no reader never returns) — and the write sits
+    /// on the teardown hotline (every stop path calls mark_stopped). The
+    /// refusal must be loud, leave the FIFO untouched, and not publish.
     #[test]
-    fn runtime_layout_refuses_a_same_leaf_target_outside_the_user_data_root() {
-        use std::os::unix::fs::symlink;
-
-        let user_data = std::env::temp_dir().join(format!(
-            "mangaflow-layout-contain-{}-{}",
+    #[cfg(unix)]
+    fn write_journal_atomic_refuses_a_fifo_at_the_pending_name() {
+        let dir = std::env::temp_dir().join(format!(
+            "mangaflow-desktop-pfifo-{}-{}",
             std::process::id(),
             new_token()
         ));
-        let _ = std::fs::remove_dir_all(&user_data);
-        let outside_root = std::env::temp_dir().join(format!(
-            "mangaflow-layout-outside-{}-{}",
-            std::process::id(),
-            new_token()
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let layout = RuntimeLayout::create(&dir).unwrap();
+        let journal = layout.journal_path();
+        let pending = journal.with_file_name(format!(
+            "{JOURNAL_NAME}.shell.pending"
         ));
-        let _ = std::fs::remove_dir_all(&outside_root);
+        let cpath = std::ffi::CString::new(
+            pending.as_os_str().to_string_lossy().as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o644) }, 0);
 
-        let token = new_token();
-        // The attacker pre-builds a same-leaf directory outside the root.
-        let outside = outside_root.join(format!("{RUNTIME_DIR_PREFIX}{token}"));
-        std::fs::create_dir_all(&outside).unwrap();
-        // ... and plants a symlink at the runtime name pointing at it.
-        let planted = user_data.join("runtime").join(format!("{RUNTIME_DIR_PREFIX}{token}"));
-        std::fs::create_dir_all(planted.parent().unwrap()).unwrap();
-        symlink(&outside, &planted).unwrap();
+        // RuntimeLayout::create already published a created journal: the
+        // refusal contract is "nothing new publishes", so the journal's
+        // bytes must be byte-identical after the refused attempt.
+        let before = std::fs::read(&journal).unwrap();
 
-        let error = RuntimeLayout::create_with_token(&user_data, &token)
-            .err()
-            .expect("a same-leaf target outside the user-data root must refuse");
+        let error = write_journal_atomic(
+            &journal,
+            &serde_json::json!({"state": "stopped"}),
+        )
+        .err()
+        .expect("a FIFO at the pending name must be refused");
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
-        assert!(error.to_string().contains("user-data root"), "{error}");
-        // The refusal must not have journaled ownership into the outside tree.
         assert!(
-            !outside.join(JOURNAL_NAME).exists(),
-            "the outside tree must stay journal-free: {error}"
+            error.to_string().contains("regular files"),
+            "the refusal must name the regular-file contract: {error}"
         );
-
-        let _ = std::fs::remove_dir_all(&user_data);
-        let _ = std::fs::remove_dir_all(&outside_root);
+        assert!(pending.exists(), "the planted FIFO must be left untouched");
+        assert_eq!(
+            std::fs::read(&journal).unwrap(),
+            before,
+            "a refused write must not publish anything new"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
+}

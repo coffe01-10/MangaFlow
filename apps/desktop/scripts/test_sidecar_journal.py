@@ -251,3 +251,40 @@ def test_non_regular_journal_is_refused_not_hung(tmp_path: Path):
 
     assert stat.S_ISFIFO(journal.stat().st_mode)
     assert not journal.with_name(journal.name + ".helper.pending").exists()
+
+
+def test_write_journal_refuses_a_fifo_at_the_pending_sibling(tmp_path):
+    """#685 parity for the staged name: a FIFO planted at the
+    `.helper.pending` sibling would block pending.write_text() forever
+    (open for writing with no reader never returns) — the same
+    same-user planting posture the journal itself refuses. The write
+    must refuse loudly, leave the FIFO byte-for-byte intact, and not
+    create the journal."""
+
+    helper = _load_helper()
+    journal = _journal_path(tmp_path)
+    pending = journal.with_name("owner.json.helper.pending")
+    os.mkfifo(pending)
+    with pytest.raises(RuntimeError, match="regular file"):
+        helper._write_journal(journal, _record("ready"))
+    assert pending.exists(), "the planted FIFO must be left untouched"
+    assert not journal.exists(), "a refused write must not create the journal"
+
+
+def test_last_resort_merge_preserves_the_annotated_phase_error():
+    """#696: the alembic leg journals ``alembic:<Type>`` and re-raises; the
+    last-resort merge must keep that annotation in the terminal record
+    (first annotated error wins as root cause), not clobber it with the
+    bare exception class name."""
+
+    helper = _load_helper()
+    record = {"version": 1, "token": TOKEN, "state": "ready",
+              "error": "alembic:OperationalError"}
+    helper._merge_last_resort_failure(record, RuntimeError("late"))
+    assert record["state"] == "failed"
+    assert record["error"] == "alembic:OperationalError", record
+
+    unannotated = {"version": 1, "token": TOKEN, "state": "created"}
+    helper._merge_last_resort_failure(unannotated, RuntimeError("boom"))
+    assert unannotated["state"] == "failed"
+    assert unannotated["error"] == "RuntimeError", unannotated

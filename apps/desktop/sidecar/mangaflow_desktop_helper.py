@@ -125,6 +125,11 @@ def _write_journal(journal: Path, record: dict) -> None:
     # that here, loudly.
     if journal.exists() and not journal.is_file():
         raise RuntimeError("process journal must be a regular file")
+    # The pending name gets the same refusal: write_text would block
+    # forever on a planted FIFO (open for writing with no reader never
+    # returns) — the #685 parity extends to both staged names.
+    if pending.exists() and not pending.is_file():
+        raise RuntimeError("journal pending sibling must be a regular file")
     pending.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
     current_state: str | None = None
     try:
@@ -1202,6 +1207,21 @@ def _await_web_server_boot(node: subprocess.Popen, node_port: int) -> bool:
     return False
 
 
+def _merge_last_resort_failure(record: dict, error: BaseException) -> None:
+    """Terminal failure merge for main()'s last-resort handler (#696).
+
+    An annotated failure leg (e.g. the alembic leg's ``alembic:<Type>``)
+    journals its error and re-raises; this handler must PRESERVE that
+    annotation — the phase prefix is the forensics — instead of clobbering
+    it with the bare exception class name. ``setdefault``: the first
+    annotated error wins as root cause; unannotated paths still get the
+    class name.
+    """
+
+    record.setdefault("error", type(error).__name__)
+    record["state"] = "failed"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("stub", "app"))
@@ -1264,7 +1284,7 @@ def main() -> int:
         print(code, file=sys.stderr)
         return 1
     except BaseException as error:  # noqa: BLE001 - last-resort failure journal
-        record.update(state="failed", error=type(error).__name__)
+        _merge_last_resort_failure(record, error)
         try:
             _write_journal(journal, record)
         except OSError:

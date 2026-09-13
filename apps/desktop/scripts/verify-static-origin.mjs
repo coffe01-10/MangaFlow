@@ -27,6 +27,14 @@ const HELPER = join(DESKTOP_ROOT, "sidecar/mangaflow_desktop_helper.py");
 const PYTHON = process.env.MANGAFLOW_DESKTOP_PYTHON ?? "python3";
 const STATIC_PORT = 4173;
 const WEB_ORIGIN = `http://127.0.0.1:${STATIC_PORT}`;
+// #690: MANGAFLOW_D5_MODE=plan-b drives the Next-standalone form instead of
+// the static export — the helper spawns node with its own announced web
+// origin, the static-test-server fences are skipped, and the browser
+// evidence targets that origin. This is the ONLY probe that proves scripts
+// actually execute under the plan-B nonce'd CSP (urllib pins see header and
+// HTML shapes; a browser fails closed on a directive typo or a forbidden
+// eval the source pins cannot notice).
+const PLAN_B = process.env.MANGAFLOW_D5_MODE === "plan-b";
 const MIME = {
   ".html": "text/html", ".js": "text/javascript", ".css": "text/css",
   ".json": "application/json", ".svg": "image/svg+xml", ".png": "image/png",
@@ -115,8 +123,14 @@ function fail(message) {
 }
 
 // ---- 1. sidecar helper + frozen handshake --------------------------------
-helper = spawn(PYTHON, [HELPER, "app", "--api-root", join(REPO_ROOT, "apps/api"),
-  "--user-data", user_data, "--fake-channel", "--web-origin", WEB_ORIGIN], {
+const helperArgs = [HELPER, "app", "--api-root", join(REPO_ROOT, "apps/api"),
+  "--user-data", user_data, "--fake-channel"];
+if (PLAN_B) {
+  helperArgs.push("--web-dist", join(DESKTOP_ROOT, "dist/web-standalone"));
+} else {
+  helperArgs.push("--web-origin", WEB_ORIGIN);
+}
+helper = spawn(PYTHON, helperArgs, {
   env: { ...process.env, MANGAFLOW_DESKTOP_TOKEN: token, MANGAFLOW_DESKTOP_JOURNAL: journal,
     MANGAFLOW_DISABLE_DOTENV: "1" },
   stdio: ["pipe", "pipe", "inherit"],
@@ -191,6 +205,13 @@ if (ready.token !== token) return fail("token mismatch");
 if (ready.pid !== helper.pid) return fail("pid mismatch");
 if (record.state !== "ready" || record.api_origin !== ready.api_origin) return fail("journal mismatch");
 if (!ready.api_origin.startsWith("http://127.0.0.1:")) return fail("origin not loopback");
+if (PLAN_B) {
+  // The announced web origin is the helper's own exclusive port: identity
+  // must agree across READY and the journal, and the static-test-server
+  // origin must never appear in this mode.
+  if (ready.web_origin !== record.web_origin) return fail("plan-B web origin mismatch");
+  if (!ready.web_origin?.startsWith("http://127.0.0.1:")) return fail("plan-B web origin not loopback");
+}
 // The pre-bound socket serves nothing until the shell verifies and sends GO.
 helper.stdin.write(`MANGAFLOW_GO ${token}\n`);
 let health_ok = false;
@@ -209,239 +230,271 @@ for (let attempt = 0; attempt < 50 && !health_ok; attempt += 1) {
 if (!health_ok) return fail("health not ready after GO");
 console.log(`D5 handshake ok, api_origin=${ready.api_origin}`);
 
-// ---- 2. static export server (no /api routes exist here) -----------------
-const static_hits = [];
-const server = createServer(async (req, res) => {
-  static_hits.push(req.url);
-  if (req.url.startsWith("/api/")) {
-    res.writeHead(404, { "content-type": "application/json" });
-    return res.end(JSON.stringify({ error: "static server has no /api routes (D5 contract)" }));
-  }
-  let path = req.url.split("?")[0];
-  if (path.endsWith("/")) path += "index.html";
-  try {
-    // Containment first: unlike a browser, a raw HTTP client can send `..`
-    // segments verbatim (curl --path-as-is), so resolve and refuse anything
-    // that would leave the static export root instead of trusting the URL.
-    const root = resolve(FRONTEND);
-    let file = resolve(root, `.${decodeURIComponent(path)}`);
-    if (file !== root && !file.startsWith(root + sep)) {
-      throw new Error("path escapes the static export root");
+// ---- 2. static export server (static mode only; plan-B skips it — the
+// helper's own announced origin is the surface under test) --------------
+if (!PLAN_B) {
+  // ---- 2. static export server (no /api routes exist here) -----------------
+  const static_hits = [];
+  const server = createServer(async (req, res) => {
+    static_hits.push(req.url);
+    if (req.url.startsWith("/api/")) {
+      res.writeHead(404, { "content-type": "application/json" });
+      return res.end(JSON.stringify({ error: "static server has no /api routes (D5 contract)" }));
     }
-    // In-root symlinks are refused like escapes (#317): stat/readFile FOLLOW
-    // them, so a planted link (or one whose target swaps after validation)
-    // would serve content the resolve-only containment check never saw.
-    let info = await lstat(file);
-    if (info.isSymbolicLink()) {
-      throw new Error("symlink inside the static export root");
-    }
-    if (info.isDirectory()) {
-      file = join(file, "index.html");
-      info = await lstat(file);
+    let path = req.url.split("?")[0];
+    if (path.endsWith("/")) path += "index.html";
+    try {
+      // Containment first: unlike a browser, a raw HTTP client can send `..`
+      // segments verbatim (curl --path-as-is), so resolve and refuse anything
+      // that would leave the static export root instead of trusting the URL.
+      const root = resolve(FRONTEND);
+      let file = resolve(root, `.${decodeURIComponent(path)}`);
+      if (file !== root && !file.startsWith(root + sep)) {
+        throw new Error("path escapes the static export root");
+      }
+      // In-root symlinks are refused like escapes (#317): stat/readFile FOLLOW
+      // them, so a planted link (or one whose target swaps after validation)
+      // would serve content the resolve-only containment check never saw.
+      let info = await lstat(file);
       if (info.isSymbolicLink()) {
         throw new Error("symlink inside the static export root");
       }
-    }
-    const body = await readFile(file);
-    res.writeHead(200, { "content-type": MIME[extname(file)] ?? "application/octet-stream" });
-    res.end(body);
-  } catch {
-    const body = await readFile(join(FRONTEND, "404.html")).catch(() => "404");
-    res.writeHead(404, { "content-type": "text/html" });
-    res.end(body);
-  }
-});
-try {
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(STATIC_PORT, "127.0.0.1", resolve);
-  });
-} catch (error) {
-  // A busy 4173 (leftover D5 run, dev server) used to surface as an
-  // unhandled 'error' event with a raw stack; name the cause and the fix.
-  console.error(
-    `D5 FAIL: static port ${STATIC_PORT} on 127.0.0.1 is busy ` +
-    `(${error?.code ?? error}) — stop the other listener and retry.`,
-  );
-  process.exit(1);
-}
-
-// ---- 2b-2. sibling-prefix fence probe (round-5 review) --------------------
-// The far-escape probe above cannot catch the classic `startsWith(root)`
-// (missing `+ sep`) weakening: a resolved sibling of the export root
-// (`.../dist/frontend-sibling-probe/...`) fails BOTH the strict and the
-// weakened check only when the sibling does not exist - so this probe
-// CREATES the sibling with a real file. With the correct fence
-// (`startsWith(root + sep)`) it answers 404; a sep-dropped regression
-// answers 200 with the file's bytes. The fixture is removed after the
-// probe; the server is already listening when it is created (creation
-// only needs the filesystem, so the comment's earlier "before the server
-// starts" was wrong — ordering with the listener is irrelevant here).
-{
-  const { mkdir, writeFile, rm } = await import("node:fs/promises");
-  const siblingDir = join(FRONTEND, "..", "frontend-sibling-probe");
-  const mark = join(siblingDir, "mark.txt");
-  let fixture = true;
-  try {
-    await mkdir(siblingDir, { recursive: true });
-    await writeFile(mark, "d5 sibling probe\n", "utf-8");
-  } catch {
-    fixture = false;
-    console.log("D5 sibling-prefix probe skipped: fixture creation failed");
-  }
-  if (fixture) {
-    try {
-      const viaSibling = await new Promise((settle) => {
-        const timer = setTimeout(() => sock2.destroy(), 3000);
-        const settleOnce = (raw) => {
-          clearTimeout(timer);
-          settle(raw);
-        };
-        const sock2 = connect(STATIC_PORT, "127.0.0.1", () => {
-          sock2.write(
-            "GET /../frontend-sibling-probe/mark.txt HTTP/1.1\r\n" +
-            "Host: 127.0.0.1\r\nConnection: close\r\n\r\n",
-          );
-        });
-        let raw = "";
-        sock2.setEncoding("latin1");
-        sock2.on("data", (chunk) => { raw += chunk; });
-        sock2.on("close", () => settleOnce(raw));
-        sock2.on("error", () => settleOnce(raw));
-      });
-      const status = Number(viaSibling.split("\r\n")[0]?.split(" ")[1] ?? 0);
-      if (status !== 404) {
-        fail(`sibling-prefix served: answered ${status} (must be 404)`);
-      } else {
-        console.log("D5 sibling-prefix fence ok: sibling dir refused with 404");
+      if (info.isDirectory()) {
+        file = join(file, "index.html");
+        info = await lstat(file);
+        if (info.isSymbolicLink()) {
+          throw new Error("symlink inside the static export root");
+        }
       }
-    } finally {
-      await rm(siblingDir, { recursive: true, force: true }).catch(() => {});
+      const body = await readFile(file);
+      res.writeHead(200, { "content-type": MIME[extname(file)] ?? "application/octet-stream" });
+      res.end(body);
+    } catch {
+      const body = await readFile(join(FRONTEND, "404.html")).catch(() => "404");
+      res.writeHead(404, { "content-type": "text/html" });
+      res.end(body);
     }
-  }
-}
-
-// ---- 2b. path-fence self-test (N2 audit §7) ------------------------------
-// The containment check in the handler above has no other executable
-// verification: pin it here with an encoded-traversal request sent over a
-// RAW socket. WHATWG URL parsing (fetch) would decode %2e%2e and collapse
-// the dot segments before they ever reach the handler; a raw request keeps
-// them verbatim so decodeURIComponent + resolve inside the handler is what
-// gets exercised. The target must EXIST when the fence is missing - four
-// levels up is the repository root - otherwise the handler's generic 404
-// would mask the breach.
-{
-  const traversal = await new Promise((settle) => {
-    const timer = setTimeout(() => sock.destroy(), 3000);
-    const settleOnce = (raw) => {
-      clearTimeout(timer);
-      settle(raw);
-    };
-    const sock = connect(STATIC_PORT, "127.0.0.1", () => {
-      sock.write(
-        "GET /%2e%2e/%2e%2e/%2e%2e/%2e%2e/package.json HTTP/1.1\r\n" +
-        "Host: 127.0.0.1\r\nConnection: close\r\n\r\n",
-      );
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(STATIC_PORT, "127.0.0.1", resolve);
     });
-    let raw = "";
-    sock.setEncoding("latin1");
-    sock.on("data", (chunk) => { raw += chunk; });
-    sock.on("close", () => settleOnce(raw));
-    sock.on("error", () => settleOnce(raw));
-  });
-  const status = Number(traversal.split("\r\n")[0]?.split(" ")[1] ?? 0);
-  if (status !== 404) {
-    fail(`path fence breached: encoded traversal answered ${status} (must be 404)`);
-  } else {
-    console.log("D5 path fence ok: encoded traversal refused with 404");
+  } catch (error) {
+    // A busy 4173 (leftover D5 run, dev server) used to surface as an
+    // unhandled 'error' event with a raw stack; name the cause and the fix.
+    console.error(
+      `D5 FAIL: static port ${STATIC_PORT} on 127.0.0.1 is busy ` +
+      `(${error?.code ?? error}) — stop the other listener and retry.`,
+    );
+    process.exit(1);
   }
-}
 
-// ---- 2c. in-root symlink fence (#317) -------------------------------------
-// The lstat refusal above has no other executable verification: plant a link
-// INSIDE the export root (so the resolve fence passes) whose target exists,
-// and require the server to answer 404 instead of following it. Symlink
-// creation can be unavailable (Windows without developer mode); the probe
-// skips loudly rather than silently weakening the fence check.
-{
-  const { symlink, unlink } = await import("node:fs/promises");
-  const probe = join(FRONTEND, "d5-symlink-probe.json");
-  let planted = true;
-  try {
-    await symlink(join(REPO_ROOT, "package.json"), probe, "file");
-  } catch {
-    planted = false;
-  }
-  if (!planted) {
-    console.log("D5 symlink fence skipped: symlink creation unavailable on this host");
-  } else {
+  // ---- 2b-2. sibling-prefix fence probe (round-5 review) --------------------
+  // The far-escape probe above cannot catch the classic `startsWith(root)`
+  // (missing `+ sep`) weakening: a resolved sibling of the export root
+  // (`.../dist/frontend-sibling-probe/...`) fails BOTH the strict and the
+  // weakened check only when the sibling does not exist - so this probe
+  // CREATES the sibling with a real file. With the correct fence
+  // (`startsWith(root + sep)`) it answers 404; a sep-dropped regression
+  // answers 200 with the file's bytes. The fixture is removed after the
+  // probe; the server is already listening when it is created (creation
+  // only needs the filesystem, so the comment's earlier "before the server
+  // starts" was wrong — ordering with the listener is irrelevant here).
+  {
+    const { mkdir, writeFile, rm } = await import("node:fs/promises");
+    const siblingDir = join(FRONTEND, "..", "frontend-sibling-probe");
+    const mark = join(siblingDir, "mark.txt");
+    let fixture = true;
     try {
-      const viaLink = await new Promise((settle) => {
-        const timer = setTimeout(() => sock.destroy(), 3000);
-        const settleOnce = (raw) => {
-          clearTimeout(timer);
-          settle(raw);
-        };
-        const sock = connect(STATIC_PORT, "127.0.0.1", () => {
-          sock.write(
-            "GET /d5-symlink-probe.json HTTP/1.1\r\n" +
-            "Host: 127.0.0.1\r\nConnection: close\r\n\r\n",
-          );
+      await mkdir(siblingDir, { recursive: true });
+      await writeFile(mark, "d5 sibling probe\n", "utf-8");
+    } catch {
+      fixture = false;
+      console.log("D5 sibling-prefix probe skipped: fixture creation failed");
+    }
+    if (fixture) {
+      try {
+        const viaSibling = await new Promise((settle) => {
+          const timer = setTimeout(() => sock2.destroy(), 3000);
+          const settleOnce = (raw) => {
+            clearTimeout(timer);
+            settle(raw);
+          };
+          const sock2 = connect(STATIC_PORT, "127.0.0.1", () => {
+            sock2.write(
+              "GET /../frontend-sibling-probe/mark.txt HTTP/1.1\r\n" +
+              "Host: 127.0.0.1\r\nConnection: close\r\n\r\n",
+            );
+          });
+          let raw = "";
+          sock2.setEncoding("latin1");
+          sock2.on("data", (chunk) => { raw += chunk; });
+          sock2.on("close", () => settleOnce(raw));
+          sock2.on("error", () => settleOnce(raw));
         });
-        let raw = "";
-        sock.setEncoding("latin1");
-        sock.on("data", (chunk) => { raw += chunk; });
-        sock.on("close", () => settleOnce(raw));
-        sock.on("error", () => settleOnce(raw));
-      });
-      const status = Number(viaLink.split("\r\n")[0]?.split(" ")[1] ?? 0);
-      if (status !== 404) {
-        fail(`in-root symlink served: answered ${status} (must be 404)`);
-      } else {
-        console.log("D5 symlink fence ok: in-root link refused with 404");
+        const status = Number(viaSibling.split("\r\n")[0]?.split(" ")[1] ?? 0);
+        if (status !== 404) {
+          fail(`sibling-prefix served: answered ${status} (must be 404)`);
+        } else {
+          console.log("D5 sibling-prefix fence ok: sibling dir refused with 404");
+        }
+      } finally {
+        await rm(siblingDir, { recursive: true, force: true }).catch(() => {});
       }
-    } finally {
-      await unlink(probe).catch(() => {});
+    }
+  }
+
+  // ---- 2b. path-fence self-test (N2 audit §7) ------------------------------
+  // The containment check in the handler above has no other executable
+  // verification: pin it here with an encoded-traversal request sent over a
+  // RAW socket. WHATWG URL parsing (fetch) would decode %2e%2e and collapse
+  // the dot segments before they ever reach the handler; a raw request keeps
+  // them verbatim so decodeURIComponent + resolve inside the handler is what
+  // gets exercised. The target must EXIST when the fence is missing - four
+  // levels up is the repository root - otherwise the handler's generic 404
+  // would mask the breach.
+  {
+    const traversal = await new Promise((settle) => {
+      const timer = setTimeout(() => sock.destroy(), 3000);
+      const settleOnce = (raw) => {
+        clearTimeout(timer);
+        settle(raw);
+      };
+      const sock = connect(STATIC_PORT, "127.0.0.1", () => {
+        sock.write(
+          "GET /%2e%2e/%2e%2e/%2e%2e/%2e%2e/package.json HTTP/1.1\r\n" +
+          "Host: 127.0.0.1\r\nConnection: close\r\n\r\n",
+        );
+      });
+      let raw = "";
+      sock.setEncoding("latin1");
+      sock.on("data", (chunk) => { raw += chunk; });
+      sock.on("close", () => settleOnce(raw));
+      sock.on("error", () => settleOnce(raw));
+    });
+    const status = Number(traversal.split("\r\n")[0]?.split(" ")[1] ?? 0);
+    if (status !== 404) {
+      fail(`path fence breached: encoded traversal answered ${status} (must be 404)`);
+    } else {
+      console.log("D5 path fence ok: encoded traversal refused with 404");
+    }
+  }
+
+  // ---- 2c. in-root symlink fence (#317) -------------------------------------
+  // The lstat refusal above has no other executable verification: plant a link
+  // INSIDE the export root (so the resolve fence passes) whose target exists,
+  // and require the server to answer 404 instead of following it. Symlink
+  // creation can be unavailable (Windows without developer mode); the probe
+  // skips loudly rather than silently weakening the fence check.
+  {
+    const { symlink, unlink } = await import("node:fs/promises");
+    const probe = join(FRONTEND, "d5-symlink-probe.json");
+    let planted = true;
+    try {
+      await symlink(join(REPO_ROOT, "package.json"), probe, "file");
+    } catch {
+      planted = false;
+    }
+    if (!planted) {
+      console.log("D5 symlink fence skipped: symlink creation unavailable on this host");
+    } else {
+      try {
+        const viaLink = await new Promise((settle) => {
+          const timer = setTimeout(() => sock.destroy(), 3000);
+          const settleOnce = (raw) => {
+            clearTimeout(timer);
+            settle(raw);
+          };
+          const sock = connect(STATIC_PORT, "127.0.0.1", () => {
+            sock.write(
+              "GET /d5-symlink-probe.json HTTP/1.1\r\n" +
+              "Host: 127.0.0.1\r\nConnection: close\r\n\r\n",
+            );
+          });
+          let raw = "";
+          sock.setEncoding("latin1");
+          sock.on("data", (chunk) => { raw += chunk; });
+          sock.on("close", () => settleOnce(raw));
+          sock.on("error", () => settleOnce(raw));
+        });
+        const status = Number(viaLink.split("\r\n")[0]?.split(" ")[1] ?? 0);
+        if (status !== 404) {
+          fail(`in-root symlink served: answered ${status} (must be 404)`);
+        } else {
+          console.log("D5 symlink fence ok: in-root link refused with 404");
+        }
+      } finally {
+        await unlink(probe).catch(() => {});
+      }
     }
   }
 }
 
-// ---- 3+4. browser with shell-equivalent initialization script ------------
+// ---- 3+4. browser: static form gets the shell-equivalent init script and
+// targets the static server; plan-B targets the helper's announced origin
+// directly (#690) and proves the app executes under the served nonce'd CSP.
+const target = PLAN_B ? ready.web_origin : WEB_ORIGIN;
 const browser = await chromium.launch({ args: ["--no-sandbox"] });
 const context = await browser.newContext();
-await context.addInitScript(`window.__MANGAFLOW_API_ORIGIN__ = '${ready.api_origin}';`);
+if (!PLAN_B) {
+  await context.addInitScript(`window.__MANGAFLOW_API_ORIGIN__ = '${ready.api_origin}';`);
+}
 const page = await context.newPage();
 const api_requests = [];
 const api_bad = [];
 const page_errors = [];
+let document_csp = "";
+// The API surface differs by form: static calls the API origin directly
+// (CORS), plan-B goes same-origin through the relay — both must be seen.
+const api_prefix = PLAN_B ? target : ready.api_origin;
 page.on("request", (request) => {
-  if (request.url().startsWith(ready.api_origin)) api_requests.push(request.url());
+  if (request.url().startsWith(api_prefix)) api_requests.push(request.url());
 });
 page.on("response", (response) => {
-  if (response.url().startsWith(ready.api_origin) && response.status() >= 300) {
+  if (response.url().startsWith(api_prefix) && response.status() >= 300) {
     api_bad.push(`${response.status()} ${response.url()}`);
   }
 });
 page.on("pageerror", (error) => page_errors.push(String(error)));
 
-await page.goto(`${WEB_ORIGIN}/`, { waitUntil: "networkidle", timeout: 60000 });
+const document_response = await page.goto(`${target}/`, { waitUntil: "networkidle", timeout: 60000 });
 await page.waitForTimeout(1500);
+if (PLAN_B && document_response) {
+  // The goto response IS the document (main frame): headers straight from
+  // it, no response-event races with same-origin assets.
+  document_csp = document_response.headers()["content-security-policy"] ?? "";
+}
 
 const body_text = await page.evaluate(() => document.body.innerText);
 const evidence = {
+  mode: PLAN_B ? "plan-b" : "static",
   api_request_count: api_requests.length,
   api_bad,
-  static_api_hits: static_hits.filter((url) => url?.startsWith("/api/")),
+  static_api_hits: PLAN_B ? [] : static_hits.filter((url) => url?.startsWith("/api/")),
   page_errors,
-  injected_origin: await page.evaluate(() => window.__MANGAFLOW_API_ORIGIN__ ?? null),
-  api_origin_env_free: await page.evaluate(() =>
+  document_csp_script_src: (document_csp.split("; ").find((part) => part.startsWith("script-src")) ?? "").slice(0, 80),
+  injected_origin: PLAN_B ? "n/a (same-origin form; no init script)" : await page.evaluate(() => window.__MANGAFLOW_API_ORIGIN__ ?? null),
+  api_origin_env_free: PLAN_B ? true : await page.evaluate(() =>
     Object.keys(window).filter((key) => key.startsWith("__MANGAFLOW_ORIGIN")).length === 0),
   rendered_marker: body_text.includes("新建项目") || body_text.includes("最近创作"),
 };
-if (evidence.injected_origin !== ready.api_origin) { ok = false; fail("origin injection missing"); }
+if (!PLAN_B && evidence.injected_origin !== ready.api_origin) { ok = false; fail("origin injection missing"); }
+if (PLAN_B) {
+  // #690's headline: the served document's CSP must be the nonce'd form and
+  // must cover at least one nonce the rendered scripts actually carry —
+  // otherwise the browser blocked the bootstrap (blank app, green pins).
+  const scriptSrc = evidence.document_csp_script_src;
+  if (!scriptSrc.includes("'nonce-")) {
+    ok = false; fail(`plan-B document CSP script-src is not nonce-based: "${scriptSrc}"`);
+  }
+  if (scriptSrc.includes("'unsafe-inline'") || scriptSrc.includes("'unsafe-eval'")) {
+    ok = false; fail(`plan-B document CSP regained inline/eval: "${scriptSrc}"`);
+  }
+}
 if (evidence.api_request_count === 0) { ok = false; fail("no direct API request observed"); }
 if (evidence.api_bad.length > 0) { ok = false; fail(`API responses failed: ${evidence.api_bad.join(", ")}`); }
-if (evidence.static_api_hits.length > 0) { ok = false; fail("app still calls the static server for /api"); }
+if (!PLAN_B && evidence.static_api_hits.length > 0) { ok = false; fail("app still calls the static server for /api"); }
 if (!evidence.rendered_marker) { ok = false; fail("exported dashboard did not render its shell markers"); }
 if (page_errors.length > 0) { ok = false; fail(`page errors: ${page_errors.join(" | ")}`); }
 
@@ -449,7 +502,7 @@ console.log("D5 evidence:", JSON.stringify(evidence, null, 2));
 console.log("sample api requests:", api_requests.slice(0, 3));
 
 await browser.close();
-server.close();
+if (!PLAN_B) server.close();
 helper.stdin.end();
 // The killHelperTree escalation still covers the cooperative-grace case;
 // the exit promise above was registered at spawn, so a helper already
@@ -470,7 +523,11 @@ if (helper_exit_code !== 0) {
     ok = false;
     fail(`helper exit ${helper_exit_code ?? "give-up"}`);
   }
-console.log(ok ? "D5 PASS: static export + runtime origin injection + direct CORS-allowed API verified" : "D5 FAILED");
+console.log(ok
+  ? (PLAN_B
+      ? "D5 PASS: plan-B form rendered under the served nonce'd CSP; same-origin API verified through the relay"
+      : "D5 PASS: static export + runtime origin injection + direct CORS-allowed API verified")
+  : "D5 FAILED");
 process.exitCode = ok ? 0 : 1;
 }
 
