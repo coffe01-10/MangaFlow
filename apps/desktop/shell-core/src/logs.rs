@@ -3004,12 +3004,29 @@ mod tests {
             // Substring filter, not `--exact`: the full path is
             // `logs::tests::<name>`, and an --exact miss runs zero tests
             // and exits 0 — a vacuous pass.
-            let child = std::process::Command::new(std::env::current_exe().unwrap())
+            // Pipe (don't inherit) the child's streams: the child lives
+            // its whole body under RLIMIT_FSIZE=32 and libtest's own
+            // result-line write to an INHERITED file-backed stdout dies
+            // with EFBIG after the assertions pass — failing the child
+            // for succeeding (`io error when listing tests:
+            // FileTooLarge` under `cargo test > run.log`; terminals and
+            // pipes are not size-capped, which hid this from interactive
+            // runs). .output() drains both pipes, so nothing deadlocks
+            // and the child's failure detail still reaches the assert.
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .arg("export_write_failure_leaves_no_truncated_pending_sibling")
                 .env("MF_TEST_FSIZE_CHILD", "1")
-                .status()
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .output()
                 .unwrap();
-            assert!(child.success(), "the child-side assertions failed: {child}");
+            assert!(
+                output.status.success(),
+                "the child-side assertions failed: {}\nstdout:\n{}\nstderr:\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
         #[cfg(not(unix))]
         {
