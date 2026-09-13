@@ -641,6 +641,11 @@ def _apply_app_environment(user_data: Path, web_origin: str) -> None:
     # (#313) — the shell owns this environment, the surrounding machine does
     # not. Siblings below are already unconditional for the same reason.
     os.environ["MANGAFLOW_DISABLE_DOTENV"] = "1"
+    # Marks this process as the desktop-embedded runtime for the API's
+    # queue selection: AUTO stays local even when an ambient Redis
+    # answers — a foreign worker would execute paid jobs with
+    # mismatched code (observed 2026-09-14, #721).
+    os.environ["MANGAFLOW_DESKTOP_EMBEDDED"] = "1"
     os.environ["DATABASE_URL"] = f"sqlite:///{user_data / 'data' / 'mangaflow.db'}"
     os.environ["STORAGE_ROOT"] = str(user_data / "storage")
     os.environ["UPLOAD_ROOT"] = str(user_data / "uploads")

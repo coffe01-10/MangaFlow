@@ -12,6 +12,12 @@ _ENV_FILE = None if os.environ.get("MANGAFLOW_DISABLE_DOTENV") == "1" else ".env
 class Settings(BaseSettings):
     app_name: str = "MangaFlow AI"
     environment: str = "development"
+    # Set by the desktop sidecar helper (MANGAFLOW_DESKTOP_EMBEDDED=1):
+    # the embedded runtime ships without Redis by design, so AUTO queue
+    # mode must never hand jobs to a coincidentally reachable ambient
+    # Redis (foreign workers would execute paid jobs with mismatched
+    # code — observed 2026-09-14 in the sandbox, #721).
+    desktop_embedded: bool = False
     api_prefix: str = "/api/v1"
 
     database_url: str = "sqlite:///./storage/mangaflow.db"
