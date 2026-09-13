@@ -147,15 +147,9 @@ test("核心页面没有严重或致命 Axe 问题", async ({ page, request }) =
   ]) {
     await page.goto(path);
     await page.waitForLoadState("networkidle");
-    const builder = new AxeBuilder({ page })
-      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]);
-    // 设置页两处 .project-setting-note 存在既有生产对比度缺陷（2.91 vs 4.5，
-    // serious，见 #670）；CSS 修复不属于测试 PR，这里只对这两个元素显式豁免，
-    // 其余 serious/critical 规则在本路由照常全量检查。#670 修复后删除 exclude。
-    if (path === `/projects/${id}/settings`) {
-      builder.exclude(".project-setting-note");
-    }
-    const results = await builder.analyze();
+    const results = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
+      .analyze();
     const blocking = results.violations.filter((item) =>
       ["serious", "critical"].includes(item.impact ?? ""),
     );
