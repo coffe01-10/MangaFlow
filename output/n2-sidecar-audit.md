@@ -745,3 +745,7 @@
   688 与 689 沿堆叠基座），追加型冲突均保全两节；#688 链上顺带移除仅空白差异的重复提交。
   过程披露：#689 首次继续时把带标记文件提交并强推——即时发现、以验证锚清除标记后二次
   force-push 修复（grep 0 残留）。
+
+- **§35 补遗四（9fc7371 串行证据）**：night 分支并 master 后真 runner **149 passed**
+  (exit=0) + shell-core **164/0**；#678 对我方 assert_no_static_prerender 的 dynamicRoutes
+  扩展交叉审通过（pages-router 形态补钉，实现+测试完整）。
