@@ -33,6 +33,7 @@ from app.models import (
     AIModel,
     Asset,
     CLIExecutionRun,
+    ExportBundle,
     GenerationJob,
     ModelCallAttempt,
     Project,
@@ -551,6 +552,42 @@ def test_orphan_sweep_keeps_soft_deleted_references(media_context):
     sweep_orphan_generated_files(settings, factory, older_than=_WINDOW)
 
     assert kept.exists()
+
+
+def test_orphan_sweep_covers_exports_with_bundle_references(media_context):
+    """#634: export archives are written under ``storage/exports`` before
+    their row commits. Past-grace files with no ``ExportBundle`` row are
+    swept; files pinned by a bundle row — and fresh orphans inside the grace
+    window — survive. Both fix halves are exercised: dropping either the
+    ``exports`` scan root or the bundle reference column flips one of the
+    two assertions below."""
+
+    settings, factory, project_id = media_context
+
+    orphan = _write_media(settings, "exports/p1/c1/orphan.zip")
+    fresh_orphan = _write_media(settings, "exports/p1/c1/fresh.zip", old=False)
+    referenced_key = "exports/p1/c1/referenced.zip"
+    referenced = _write_media(settings, referenced_key)
+    with factory() as db:
+        db.add(
+            ExportBundle(
+                project_id=project_id,
+                export_type="PNG",
+                storage_key=referenced_key,
+                byte_size=3,
+                sha256=sha256(referenced_key.encode()).hexdigest(),
+                page_count=1,
+            )
+        )
+        db.commit()
+
+    counts = sweep_orphan_generated_files(settings, factory, older_than=_WINDOW)
+
+    assert not orphan.exists()
+    assert fresh_orphan.exists()
+    assert referenced.exists()
+    assert counts["removed"] == 1
+    assert counts["failed"] == 0
 
 
 def test_orphan_sweep_without_media_roots_is_noop(media_context):

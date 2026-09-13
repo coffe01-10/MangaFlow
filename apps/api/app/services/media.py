@@ -14,7 +14,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.config import Settings
-from app.models import Asset
+from app.models import Asset, ExportBundle
 
 LOGGER = logging.getLogger("mangaflow.media")
 
@@ -180,7 +180,7 @@ def sweep_orphan_generated_files(
     *,
     older_than: timedelta = DEFAULT_ORPHAN_GRACE,
 ) -> dict[str, int]:
-    """Delete generated and uploaded files no ``Asset`` row references.
+    """Delete generated and uploaded files no row references.
 
     Orphan origin: ``_save_generated_asset`` / ``_save_asset_candidate``
     write bytes under ``storage/generated`` before any DB row exists, and the
@@ -189,12 +189,17 @@ def sweep_orphan_generated_files(
     disk. The same window exists for user uploads (``uploads/{project_id}``
     is written before the row insert; a crash, or the loser of a concurrent
     resurrect — see the upload route's version-CAS — leaves its bytes
-    behind). This sweep walks ``storage/generated``, ``storage/thumbnails``
+    behind), and for export bundles (``exports.py`` writes the archive under
+    ``storage/exports`` before its ``ExportBundle`` row commits). This sweep
+    walks ``storage/generated``, ``storage/thumbnails``, ``storage/exports``
     and the whole ``upload_root`` and unlinks files that are (a) older than
     ``older_than`` (floored at one hour) and (b) referenced by no ``Asset``
     row through ``storage_key``, ``thumbnail_320_key`` or
     ``thumbnail_640_key`` — soft-deleted rows count as references too,
-    because asset deletes unlink no files by design.
+    because asset deletes unlink no files by design — nor by any
+    ``ExportBundle.storage_key``. The two checks move together: scanning
+    ``exports`` without the bundle reference column would delete in-use
+    export products (#634).
 
     Conservative: symlinks/junctions are neither followed nor unlinked,
     walk errors are logged and skipped without aborting the sweep, reference
@@ -220,7 +225,7 @@ def sweep_orphan_generated_files(
     # ``thumbnails`` subtree), while generated media sits under the named
     # storage subdirectories; scanning upload_root wholesale covers both.
     scan_roots: list[tuple[Path, tuple[str, ...]]] = [
-        (root, ("generated", "thumbnails")),
+        (root, ("generated", "thumbnails", "exports")),
     ]
     if upload_root != root:
         scan_roots.append((upload_root, ("",)))
@@ -272,6 +277,18 @@ def sweep_orphan_generated_files(
                     referenced.update(
                         key for key in (storage_key, thumb_320, thumb_640) if key
                     )
+                # The exports subtree is scanned too (#634), so every bundle
+                # row's key — live or awaiting its own superseded-prune — must
+                # pin its bytes, exactly like a soft-deleted Asset reference.
+                referenced.update(
+                    key
+                    for key in db.scalars(
+                        select(ExportBundle.storage_key).where(
+                            ExportBundle.storage_key.in_(chunk)
+                        )
+                    )
+                    if key
+                )
 
     counts = {"removed": 0, "failed": 0, "scanned": len(candidates)}
     for path, key in candidates:
@@ -286,7 +303,7 @@ def sweep_orphan_generated_files(
             LOGGER.warning("orphan sweep could not unlink %s", path)
             counts["failed"] += 1
 
-    for relative_root in ("generated", "thumbnails"):
+    for relative_root in ("generated", "thumbnails", "exports"):
         _prune_empty_directories(root / relative_root)
     # Same best-effort pruning for upload_root: project directories whose
     # files were all swept must not accumulate; the root itself is kept by
