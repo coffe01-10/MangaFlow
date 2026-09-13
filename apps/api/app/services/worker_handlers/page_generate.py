@@ -127,6 +127,29 @@ def _load_reference_assets(
                 "已确认的参考图已删除或失效，已在调用模型前停止任务："
                 + "、".join(sorted(missing_ids))
             )
+        # #642: the prompt's binding declaration iterates
+        # reference_selections (character reference first, outfit second per
+        # character), and ImageRequest only ships image bytes — position is
+        # the model's only alignment channel for the "逐项对应" mapping. The
+        # id-set query above returns rows in database order, so reorder the
+        # loaded references to the declaration order; a stable sort keeps any
+        # id outside the selection list (none here — appended scene/style/
+        # continuity references below) behind the selected ones.
+        declared_positions = {
+            asset_id: index
+            for index, asset_id in enumerate(
+                selected_id
+                for character_id, selection in reference_selections.items()
+                for selected_id in (
+                    selection.get("character_asset_id"),
+                    selection.get("outfit_asset_id"),
+                )
+                if selected_id
+            )
+        }
+        references.sort(
+            key=lambda asset: declared_positions.get(asset.id, len(declared_positions))
+        )
         for character_id in page_character_ids:
             if character_id in package_facts:
                 # Contract §8.5: package candidates consume the queue-time
@@ -557,9 +580,17 @@ def _run_page_generate(db, job: GenerationJob) -> None:
 
     reference_asset_ids = [asset.id for asset in reference_assets]
     if job.job_type in {"PAGE_REPAIR", "PAGE_UPSCALE", "PAGE_REGION_REGENERATE"}:
-        original = db.get(PageCandidate, job.request_parameters.get("original_candidate_id"))
+        original_id = job.request_parameters.get("original_candidate_id")
+        original = db.get(PageCandidate, original_id) if original_id else None
         if not original or not original.asset_id:
-            raise RuntimeError("修复或升清任务缺少原始候选图")
+            # #643: deterministic pre-call failure — a retry cannot conjure the
+            # original candidate — so fail terminally instead of burning
+            # max_attempts as retryable WORKER_ERROR.
+            raise ProviderAdapterError(
+                "INVALID_INPUT",
+                "修复或升清任务缺少原始候选图，已终止任务",
+                retryable=False,
+            )
         if original.deleted_at is not None:
             raise JobCancelledError("原始候选已被删除，模型返回结果不再写入")
         original_asset = db.get(Asset, original.asset_id)
@@ -569,10 +600,17 @@ def _run_page_generate(db, job: GenerationJob) -> None:
         reference_types.insert(0, original_asset.mime_type)
         reference_asset_ids.insert(0, original_asset.id)
         if job.job_type == "PAGE_REPAIR":
-            repair = db.get(RepairPlan, job.request_parameters.get("repair_plan_id"))
+            repair_plan_id = job.request_parameters.get("repair_plan_id")
+            repair = db.get(RepairPlan, repair_plan_id) if repair_plan_id else None
             inspection = db.get(InspectionResult, repair.inspection_result_id) if repair else None
             if not repair or not inspection:
-                raise RuntimeError("修复任务缺少检查结果或修复计划")
+                # #643: same deterministic pre-call failure class as the
+                # missing-original guard above.
+                raise ProviderAdapterError(
+                    "INVALID_INPUT",
+                    "修复任务缺少检查结果或修复计划，已终止任务",
+                    retryable=False,
+                )
             repair_context = {
                 "repair_type": repair.repair_type,
                 "category": inspection.category,

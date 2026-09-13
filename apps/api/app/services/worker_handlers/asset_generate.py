@@ -32,10 +32,40 @@ from app.models import (
 from app.services.asset_dedupe import adopt_deleted_duplicate, live_duplicate
 from app.services.media import create_thumbnails, remove_thumbnails
 from app.services.model_router import model_supports_resolution
+from app.services.prompt_compiler import STRUCTURED_BLOCK_MAX_CHARS, _bound_structured_block
 from app.services.worker_handlers import execution, provider
 from app.services.worker_handlers.execution import JobCancelledError
 
 LOGGER = logging.getLogger("mangaflow.worker.asset_generate")
+
+
+def _asset_blob_bytes(asset: Asset) -> bytes:
+    """Read a reference blob with a missing-file preflight (#643 / #210-5).
+
+    A vanished blob is deterministic — no retry re-creates the file — so the
+    old RuntimeError landed in the worker's unclassified path as retryable
+    WORKER_ERROR and burned max_attempts of lease idling before the paid
+    call. Terminal ``INVALID_INPUT`` (retryable=False) matches the
+    inspection/style_analyze/page_generate preflights; a FileNotFoundError
+    from the is_file→read_bytes race is classified the same way.
+    """
+
+    path = provider._asset_path(asset)
+    is_file = getattr(path, "is_file", None)
+    if callable(is_file) and not is_file():
+        raise ProviderAdapterError(
+            "INVALID_INPUT",
+            f"参考图文件不存在，已终止任务：{asset.original_name}",
+            retryable=False,
+        )
+    try:
+        return path.read_bytes()
+    except FileNotFoundError as error:
+        raise ProviderAdapterError(
+            "INVALID_INPUT",
+            f"参考图文件不存在，已终止任务：{asset.original_name}",
+            retryable=False,
+        ) from error
 
 
 def _save_asset_candidate(db, candidate: AssetCandidate, project_id: str, data: bytes) -> Asset:
@@ -206,7 +236,13 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
             "primary_name": character.primary_name,
             "aliases": character.aliases,
             "description": character.canonical_description,
-            "locked_features": character.locked_features,
+            # #641: structured fields enter the paid prompt through
+            # json.dumps(prompt_payload) — the same per-block budget the page
+            # compiler applies (prompt_compiler.py) bounds them here so a
+            # hostile/huge blob cannot bill megabytes of prompt.
+            "locked_features": _bound_structured_block(
+                character.locked_features, STRUCTURED_BLOCK_MAX_CHARS
+            ),
         }
     elif batch.target_type == "OUTFIT":
         outfit = db.get(Outfit, batch.target_id)
@@ -245,9 +281,18 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
         subject = {
             "character": character.primary_name,
             "outfit": outfit.name,
-            "components": outfit.components,
-            "state_rules": outfit.state_rules,
-            "locked_fields": outfit.locked_fields,
+            # #641: same per-block budget as the page compiler for these JSON
+            # structures — OutfitCreate caps neither components nor
+            # state_rules at field level, only the 2MB request body.
+            "components": _bound_structured_block(
+                outfit.components, STRUCTURED_BLOCK_MAX_CHARS
+            ),
+            "state_rules": _bound_structured_block(
+                outfit.state_rules, STRUCTURED_BLOCK_MAX_CHARS
+            ),
+            "locked_fields": _bound_structured_block(
+                outfit.locked_fields, STRUCTURED_BLOCK_MAX_CHARS
+            ),
         }
     elif batch.target_type == "STYLE":
         style = db.get(StyleProfile, batch.target_id)
@@ -271,8 +316,15 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
         subject = {
             "name": style.name,
             "color_mode": style.color_mode,
-            "profile": style.profile,
-            "locked_fields": style.locked_fields,
+            # #641: StyleProfileUpdate.profile is a FiniteJsonDict that only
+            # rejects non-finite floats — a ~1.5MB PATCH would ride the paid
+            # prompt unbounded. reference_asset_ids above still resolves from
+            # the raw profile (reference loading must not see the bounded
+            # copy); only the embedded prompt block is bounded.
+            "profile": _bound_structured_block(style.profile, STRUCTURED_BLOCK_MAX_CHARS),
+            "locked_fields": _bound_structured_block(
+                style.locked_fields, STRUCTURED_BLOCK_MAX_CHARS
+            ),
         }
     else:
         raise RuntimeError("资产生成目标类型无效")
@@ -356,10 +408,9 @@ def _run_asset_generate(db, job: GenerationJob) -> None:
     )
     if {item.id for item in current_assets} != set(reference_ids):
         raise RuntimeError("参考图在生成前发生变化，已停止模型调用")
-    for asset in references:
-        if not provider._asset_path(asset).is_file():
-            raise RuntimeError(f"参考图文件不存在：{asset.original_name}")
-    reference_bytes = [provider._asset_path(asset).read_bytes() for asset in references]
+    # #643: deterministic missing-file preflight must end the job terminally
+    # instead of classifying as retryable WORKER_ERROR.
+    reference_bytes = [_asset_blob_bytes(asset) for asset in references]
     reference_types = [asset.mime_type for asset in references]
     binding = provider._binding(
         db,
