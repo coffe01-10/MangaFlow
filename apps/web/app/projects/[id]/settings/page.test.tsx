@@ -174,3 +174,58 @@ describe("ProjectSettingsPage 未保存草稿离开守卫（#546-4）", () => {
     confirmSpy.mockRestore();
   });
 });
+
+describe("ProjectSettingsPage 保存覆盖在途编辑（#650）", () => {
+  beforeEach(() => {
+    projectSpy.mockReset().mockResolvedValue(project());
+    modelsSpy.mockReset().mockResolvedValue([]);
+    updateProjectSpy.mockReset();
+  });
+
+  it("保存在途再改清晰度时，响应落地保留本地修改而不是提交快照回弹", async () => {
+    let resolveSave: ((value: Project) => void) | undefined;
+    updateProjectSpy.mockImplementation(
+      () => new Promise<Project>((resolve) => {
+        resolveSave = resolve;
+      }),
+    );
+
+    renderPage();
+    await screen.findByRole("radiogroup", { name: "工作方式" });
+
+    // 修改草稿清晰度并保存：请求在途，控件保持可编辑（这是修复的前提）。
+    const draftGroup = screen.getByRole("group", { name: "草稿清晰度" });
+    fireEvent.click(within(draftGroup).getByRole("button", { name: "2K" }));
+    fireEvent.click(screen.getByRole("button", { name: /保存项目设置/ }));
+    await waitFor(() => expect(updateProjectSpy).toHaveBeenCalledTimes(1));
+
+    // 保存在途再切换正式清晰度：本地草稿领先于提交快照。
+    const defaultGroup = screen.getByRole("group", { name: "正式清晰度" });
+    fireEvent.click(within(defaultGroup).getByRole("button", { name: "4K" }));
+
+    // 响应落地：服务器只保存了提交快照（正式清晰度仍是 2K）。旧实现会
+    // setLocalDraft({...data...}) 整体覆盖，把 4K 静默回弹成 2K。
+    resolveSave?.(project({ draft_resolution: "2K", version: 2 }));
+
+    await screen.findByText("项目设置已保存，之后又有新修改");
+    // 在途修改保留：正式清晰度仍是 4K；已确认的草稿 2K 同样保留。
+    expect(within(defaultGroup).getByRole("button", { name: "4K" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(draftGroup).getByRole("button", { name: "2K" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.queryByText(/^项目设置已保存$/)).not.toBeInTheDocument();
+  });
+
+  it("保存在途无新修改时，成功后仍按服务器响应同步并提示已保存", async () => {
+    updateProjectSpy.mockResolvedValue(project({ draft_resolution: "2K", version: 2 }));
+
+    renderPage();
+    await screen.findByRole("radiogroup", { name: "工作方式" });
+
+    const draftGroup = screen.getByRole("group", { name: "草稿清晰度" });
+    fireEvent.click(within(draftGroup).getByRole("button", { name: "2K" }));
+    fireEvent.click(screen.getByRole("button", { name: /保存项目设置/ }));
+
+    await screen.findByText("项目设置已保存");
+    expect(within(draftGroup).getByRole("button", { name: "2K" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.queryByText(/之后又有新修改/)).not.toBeInTheDocument();
+  });
+});

@@ -23,7 +23,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const diagnosticIcons: Record<DiagnosticCheck["status"], typeof CheckCircle2> = {
   OK: CheckCircle2, WARNING: TriangleAlert, FAILED: CircleAlert, NOT_CHECKED: RefreshCw,
@@ -47,11 +47,14 @@ export default function SystemSettingsPage() {
   // 与运行设置草稿合成页面级 beforeunload 判据。
   const [providerDirty, setProviderDirty] = useState(false);
   const draft = localDraft ?? runtime.data ?? null;
+  // #650：最近一次提交保存的草稿快照（mutationFn 在提交那一刻写入）。
+  const submittedDraftRef = useRef<RuntimeSettings | null>(null);
 
   const save = useMutation({
     // RuntimeSettingsUpdate is extra="forbid" server-side; only send the editable keys.
     mutationFn: () => {
       if (!draft) throw new Error("运行设置尚未加载");
+      submittedDraftRef.current = draft;
       return api.updateRuntimeSettings({
         // 版本跟随缓存里的最新快照而非 localDraft：409 失效重拉后
         // runtime.data.version 已是服务器当前值，localDraft 仍停在编辑时
@@ -66,7 +69,24 @@ export default function SystemSettingsPage() {
         ui_poll_interval_seconds: draft.ui_poll_interval_seconds,
       });
     },
-    onSuccess: (data) => { queryClient.setQueryData(["runtime-settings"], data); setLocalDraft(data); setNotice("运行设置已保存并应用到后续任务"); diagnostics.refetch(); },
+    // #650：保存在途控件保持可编辑；响应落地时仅当草稿未再变化才整体回填。
+    // 在途新修改保留，只提示已保存部分。react-query 在在途期间持续把最新
+    // 渲染的 options 同步给 pending mutation，onSuccess 闭包里的 localDraft
+    // 就是响应落地那一刻的最新草稿（script-editor 同一纪律）。
+    onSuccess: (data) => {
+      queryClient.setQueryData(["runtime-settings"], data);
+      const submitted = submittedDraftRef.current;
+      const editedDuringSave = localDraft !== null
+        && submitted !== null
+        && JSON.stringify(localDraft) !== JSON.stringify(submitted);
+      if (!editedDuringSave) {
+        setLocalDraft(data);
+        setNotice("运行设置已保存并应用到后续任务");
+      } else {
+        setNotice("运行设置已保存，之后又有新修改");
+      }
+      diagnostics.refetch();
+    },
     onError: (error) => {
       // 409 = 版本落后（桌面 + web 同开时另一端先保存）。失效缓存触发
       // 重拉，下一次保存带上服务器当前版本，而不是在旧 version 上循环
