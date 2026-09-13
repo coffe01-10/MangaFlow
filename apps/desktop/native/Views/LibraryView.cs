@@ -11,13 +11,13 @@ using Microsoft.Win32;
 namespace MangaFlow.Native.Views;
 
 /// <summary>Native batch library with filter-scoped paging and chapter export readiness.</summary>
-public sealed class LibraryView : WorkspaceView
+public sealed partial class LibraryView : WorkspaceView
 {
     private readonly StackPanel body = new(), exportDesk = new(), exportList = new();
     private readonly ComboBox chapterSelector = Selector("章节筛选", 200), characterSelector = Selector("角色筛选", 160),
         kindSelector = Selector("生成类型筛选", 150), modelSelector = Selector("模型筛选", 190), resolutionSelector = Selector("清晰度筛选", 110);
     private readonly DatePicker dateFrom = new() { Width = 140 }, dateTo = new() { Width = 140 };
-    private readonly ToggleButton favoriteOnly = new() { Content = "只看收藏", Style = (Style)Application.Current.FindResource("Chip") };
+    private readonly ToggleButton favoriteOnly = new() { Content = "♡ 只看收藏", Style = (Style)Application.Current.FindResource("Pill") };
     private readonly TextBlock countLabel = Kit.Caption(""), pagerLabel = Kit.Caption("每页最多 30 个批次");
     private readonly TextBlock notice = Kit.Caption("");
     private readonly WrapPanel pager = new() { Margin = new Thickness(0, 14, 0, 0) };
@@ -35,25 +35,9 @@ public sealed class LibraryView : WorkspaceView
 
     public LibraryView()
     {
-        var panel = new StackPanel { Margin = new Thickness(4, 0, 24, 28) };
-        var heading = new StackPanel();
-        heading.Children.Add(Kicker("LIBRARY / 批次素材库"));
-        heading.Children.Add(new TextBlock { Text = "保存每一次值得比较的结果", FontFamily = (FontFamily)FindResource("Serif"), FontSize = 21, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 5, 0, 0) });
-        panel.Children.Add(new Border { Style = (Style)FindResource("CanvasHeader"), Child = new PageHeading(heading, countLabel) });
-        var filters = new WrapPanel { Margin = new Thickness(0, 0, 0, 14) };
-        foreach (var control in new FrameworkElement[] { chapterSelector, favoriteOnly, characterSelector, kindSelector, modelSelector, resolutionSelector })
-        {
-            control.Margin = new Thickness(0, 0, 8, 8);
-            filters.Children.Add(control);
-        }
+        var panel = BuildLibraryLayout(out var dates);
         AddChoices(kindSelector, "全部类型", Labels.GenerationKind.Select(kv => (kv.Key, kv.Value)));
         AddChoices(resolutionSelector, "全部清晰度", new[] { "1K", "2K", "4K" }.Select(s => (s, s)));
-        foreach (var (label, picker) in new[] { ("从", dateFrom), ("至", dateTo) })
-        {
-            var field = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 8, 8) };
-            field.Children.Add(new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) });
-            field.Children.Add(picker); filters.Children.Add(field);
-        }
         System.Windows.Automation.AutomationProperties.SetName(dateFrom, "素材开始日期");
         System.Windows.Automation.AutomationProperties.SetName(dateTo, "素材结束日期");
         foreach (var selector in new[] { chapterSelector, characterSelector, kindSelector, modelSelector, resolutionSelector })
@@ -61,14 +45,15 @@ public sealed class LibraryView : WorkspaceView
         favoriteOnly.Click += (_, _) => { if (!populating) _ = LoadAsync(); };
         dateFrom.SelectedDateChanged += (_, _) => { if (!populating) _ = LoadAsync(); };
         dateTo.SelectedDateChanged += (_, _) => { if (!populating) _ = LoadAsync(); };
-        filters.Children.Add(Kit.Act("重置", (_, _) =>
+        var reset = Kit.Act("重置", (_, _) =>
         {
             populating = true;
             try { ResetControls(); }
             finally { populating = false; }
             _ = LoadAsync(); _ = LoadExportsAsync();
-        }, "Compact"));
-        panel.Children.Add(filters);
+        }, "Compact");
+        reset.Height = 42; reset.MinHeight = 42; reset.VerticalAlignment = VerticalAlignment.Top; reset.FontSize = 13;
+        dates.Children.Add(reset);
         notice.Margin = new Thickness(0, 0, 0, 12);
         notice.TextWrapping = TextWrapping.Wrap;
         panel.Children.Add(notice); panel.Children.Add(body);
@@ -80,7 +65,7 @@ public sealed class LibraryView : WorkspaceView
         panel.Children.Add(pager);
         exportDesk.Margin = new Thickness(0, 28, 0, 0);
         panel.Children.Add(exportDesk); panel.Children.Add(exportList);
-        Content = new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        Content = new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
         UpdatePager();
     }
 
@@ -187,33 +172,35 @@ public sealed class LibraryView : WorkspaceView
 
     private void Render()
     {
-        var snapshot = feed.Data.ValueKind == JsonValueKind.Object ? feed.Data.GetRawText() : "";
+        var snapshot = feed.Filter + "|" + (feed.Data.ValueKind == JsonValueKind.Object ? feed.Data.GetRawText() : "");
         if (snapshot == renderedData && body.Children.Count > 0) { UpdateCandidateActions(); return; }
         renderedData = snapshot; candidateActions.Clear();
         body.Children.Clear();
         var groups = feed.Data.Array("groups");
         countLabel.Text = $"{feed.Data.Number("total_candidates")} 个候选";
-        favoriteOnly.Content = $"只看收藏（{feed.Data.Number("favorite_count")}）";
+        favoriteOnly.Content = $"♡ 只看收藏（{feed.Data.Number("favorite_count")}）";
         if (groups.Count == 0)
         {
-            body.Children.Add(new Border { Style = (Style)FindResource("Card"), Padding = new Thickness(26),
-                Child = new StackPanel { Children = { new TextBlock { Text = "素材库还是空的", FontSize = 18, FontFamily = (FontFamily)FindResource("Serif") },
-                    Kit.Caption("从单页抽卡开始，所有候选都会按批次保留。") } } });
+            var filtered = HasFilters;
+            body.Children.Add(new Border { Background = AssetPageUi.Brush("Surface"), BorderBrush = AssetPageUi.Brush("Line"), BorderThickness = new Thickness(1), Padding = new Thickness(26), MinHeight = 230,
+                Child = new StackPanel { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Children = {
+                    new TextBlock { Text = filtered ? "没有符合筛选条件的素材" : "素材库还是空的", FontSize = 22, FontFamily = (FontFamily)FindResource("Serif"), TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center },
+                    new TextBlock { Text = filtered ? "调整筛选条件或点击“重置”查看全部素材。" : "从单页抽卡开始，所有候选都会按批次保留。", Foreground = AssetPageUi.Brush("Muted"), Margin = new Thickness(0, 12, 0, 0), TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center } } } });
             return;
         }
-        var batches = new BatchPanel();
+        var batches = new LibraryBatchPanel();
         body.Children.Add(batches);
         foreach (var group in groups)
         {
             var batch = group.Element("batch");
             var candidates = group.Array("candidates");
             var section = new StackPanel();
-            var date = DateTimeOffset.TryParse(batch.Text("created_at"), out var created) ? created.ToLocalTime().ToString("yyyy-MM-dd HH:mm") : "";
+            var date = DateTimeOffset.TryParse(batch.Text("created_at"), out var created) ? created.ToLocalTime().ToString("yyyy/M/d HH:mm:ss") : "";
             var title = new StackPanel();
-            title.Children.Add(Kit.Caption($"BATCH {batch.Number("ordinal"):D3}"));
-            title.Children.Add(new TextBlock { Text = Labels.Map(Labels.GenerationKind, batch.Text("generation_kind")), FontFamily = (FontFamily)FindResource("Serif"), FontWeight = FontWeights.Bold, FontSize = 12 });
+            title.Children.Add(new TextBlock { Text = $"BATCH {batch.Number("ordinal"):D3}", FontSize = 12, Foreground = AssetPageUi.Brush("Muted") });
+            title.Children.Add(new TextBlock { Text = Labels.Map(Labels.GenerationKind, batch.Text("generation_kind")), FontFamily = (FontFamily)FindResource("Serif"), FontWeight = FontWeights.Bold, FontSize = 14, Margin = new Thickness(0, 5, 0, 0) });
             section.Children.Add(new Border { Padding = new Thickness(13, 11, 13, 11), BorderBrush = (Brush)FindResource("Line"), BorderThickness = new Thickness(0, 0, 0, 1),
-                Child = new PageHeading(title, Kit.Caption($"{date} · {candidates.Count} 张")) });
+                Child = new LibraryBatchHeading(title, Kit.Caption($"{date} · {candidates.Count} 张")) });
             var tiles = new TilePanel { MinimumTileWidth = 160, MaximumColumns = Math.Clamp(candidates.Count, 1, 3), Gap = 14, Margin = new Thickness(14) };
             foreach (var row in candidates) tiles.Children.Add(CandidateCard(CandidateItem.From(row)));
             section.Children.Add(tiles);
@@ -231,13 +218,14 @@ public sealed class LibraryView : WorkspaceView
         {
             artwork.Child = new ImageBox { SourceUrl = Api.PublicUrl(url) };
         }
-        else artwork.Child = new TextBlock { Text = candidate.StatusLabel, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        else artwork.Child = new TextBlock { Text = candidate.StatusLabel, Foreground = AssetPageUi.Brush("Muted"), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
         var preview = Kit.Act("", (_, _) => { if (url.Length > 0) OpenImage(url, $"批次候选 {candidate.Ordinal}"); }, "Ghost");
         preview.Content = artwork; preview.Padding = new Thickness(0); preview.BorderThickness = new Thickness(0);
+        preview.IsEnabled = url.Length > 0; preview.ToolTip = url.Length > 0 ? "放大查看原图" : "当前候选尚无可预览图片";
         preview.HorizontalContentAlignment = HorizontalAlignment.Stretch; preview.VerticalContentAlignment = VerticalAlignment.Stretch;
         System.Windows.Automation.AutomationProperties.SetName(preview, $"放大查看批次候选 {candidate.Ordinal}");
         panel.Children.Add(new ArtworkFrame { Child = preview });
-        panel.Children.Add(new TextBlock { Text = modelNames.GetValueOrDefault(candidate.ModelAlias, candidate.ModelAlias), FontWeight = FontWeights.Bold, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0, 8, 0, 3) });
+        panel.Children.Add(new TextBlock { Text = modelNames.GetValueOrDefault(candidate.ModelAlias, candidate.ModelAlias), ToolTip = modelNames.GetValueOrDefault(candidate.ModelAlias, candidate.ModelAlias), FontSize = 13, FontWeight = FontWeights.Bold, TextWrapping = TextWrapping.NoWrap, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0, 10, 0, 4) });
         panel.Children.Add(Kit.Caption($"{candidate.Resolution} · {candidate.StatusLabel} · {candidate.VersionLabel}"));
         var actions = new WrapPanel { Margin = new Thickness(0, 8, 0, 0), IsEnabled = !pending.Contains(candidate.Id) };
         candidateActions[candidate.Id] = actions;
@@ -260,8 +248,8 @@ public sealed class LibraryView : WorkspaceView
         }, "CompactDanger"));
         foreach (var button in actions.Children.OfType<Button>()) button.Margin = new Thickness(0, 0, 6, 4);
         panel.Children.Add(actions);
-        return new Border { Child = panel, BorderBrush = (Brush)FindResource(candidate.IsSelected ? "Success" : "Line"),
-            BorderThickness = new Thickness(1, 1, 1, candidate.IsSelected ? 3 : 1), Background = (Brush)FindResource("Surface"), Padding = new Thickness(10), Tag = candidate.Id };
+        return new Border { Child = panel, BorderBrush = (Brush)FindResource("Success"),
+            BorderThickness = candidate.IsSelected ? new Thickness(0, 0, 0, 3) : new Thickness(0), Background = (Brush)FindResource("Surface"), Padding = new Thickness(0, 0, 0, 8), Tag = candidate.Id };
     }
 
     private void UpdateCandidateActions()
