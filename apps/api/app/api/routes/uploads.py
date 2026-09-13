@@ -19,6 +19,7 @@ from app.models import (
     Asset,
     AssetCandidate,
     AssetStatus,
+    Character,
     CharacterModelPackage,
     CharacterModelPackageVersion,
     CharacterModelPackageVersionReference,
@@ -120,7 +121,34 @@ def _detach_reference_asset(db: Session, asset: Asset) -> None:
     # Contract §10.3: DRAFT package relation rows are physically cleared with the
     # asset; READY+ rows keep the frozen fact and consumers filter by deleted_at.
     detach_draft_package_references_for_asset(db, asset.id)
+    # Issue #632: capture the characters this asset was bound to before their
+    # CharacterReference rows go away, then recompute each one below with the
+    # same shape as retract_asset_reference — a character left without a live
+    # (non-tombstoned) reference drops to NEEDS_CONFIRMATION; a surviving live
+    # reference keeps CANONICAL. version always advances for affected
+    # characters, mirroring the outfit/style/scene recompute in this teardown.
+    affected_character_ids = set(
+        db.scalars(
+            select(CharacterReference.character_id).where(
+                CharacterReference.asset_id == asset.id
+            )
+        )
+    )
     db.execute(delete(CharacterReference).where(CharacterReference.asset_id == asset.id))
+    for character_id in affected_character_ids:
+        character = db.get(Character, character_id)
+        if not character:
+            continue
+        remaining_asset_ids = list(
+            db.scalars(
+                select(CharacterReference.asset_id).where(
+                    CharacterReference.character_id == character_id
+                )
+            )
+        )
+        if not _live_reference_exists(db, remaining_asset_ids):
+            character.status = AssetStatus.NEEDS_CONFIRMATION
+        character.version += 1
     for outfit in db.scalars(select(Outfit).where(Outfit.project_id == asset.project_id)):
         if asset.id not in outfit.reference_asset_ids:
             continue
