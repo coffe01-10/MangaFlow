@@ -96,3 +96,51 @@ def _commit_owned_progress(
         raise JobLeaseLostError("任务租约已被其他执行器接管")
     db.commit()
     db.refresh(job)
+
+
+def _commit_owned_checkpoint(db, job: GenerationJob, *, key: str, value: dict) -> None:
+    """Persist one handler checkpoint entry into ``request_parameters``.
+
+    Same ownership discipline as ``_commit_owned_progress`` (#646): the write
+    lands through a conditional UPDATE guarded by the lease and the
+    not-cancelled filters, so a handler can durably checkpoint paid progress
+    (e.g. SOURCE_PARSE chunk outputs for retry resume) without a bare
+    ``db.commit`` that would bypass lease ownership. The merge is read from
+    the caller's fresh ORM copy and written as a full replacement under the
+    ownership guard; other ``request_parameters`` keys are preserved.
+    """
+
+    _ensure_job_not_cancelled(db, job)
+    owner = db.info.get("job_lease_owner")
+    now = datetime.now(UTC)
+    parameters = dict(job.request_parameters or {})
+    parameters[key] = value
+    filters = [
+        GenerationJob.id == job.id,
+        GenerationJob.cancelled_at.is_(None),
+        GenerationJob.status.not_in(
+            {JobStatus.CANCELLED, JobStatus.COMPLETED, JobStatus.FAILED}
+        ),
+    ]
+    if owner:
+        filters.extend(
+            [
+                GenerationJob.lease_owner == owner,
+                GenerationJob.lease_expires_at.is_not(None),
+                GenerationJob.lease_expires_at > now,
+            ]
+        )
+    updated = db.execute(
+        update(GenerationJob)
+        .where(*filters)
+        .values(request_parameters=parameters)
+        .execution_options(synchronize_session=False)
+    )
+    if updated.rowcount != 1:
+        db.rollback()
+        current = db.get(GenerationJob, job.id)
+        if current is not None:
+            _ensure_job_not_cancelled(db, current)
+        raise JobLeaseLostError("任务租约已被其他执行器接管")
+    db.commit()
+    db.refresh(job)
