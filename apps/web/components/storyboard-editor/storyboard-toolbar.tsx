@@ -107,8 +107,10 @@ export function StoryboardToolbar({
       >{storyboardCopy.safeArea}</button>
     </div>
     <div className="toolbar-group" role="group" aria-label="撤销与重做">
-      <button type="button" aria-label={storyboardCopy.undo} disabled={!canUndo} onClick={onUndo}><Undo2 size={14} /></button>
-      <button type="button" aria-label={storyboardCopy.redo} disabled={!canRedo} onClick={onRedo}><Redo2 size={14} /></button>
+      {/* 撤销/重做与保存按钮同受 saving 禁用（#637）：保存在途的撤销/重做会
+          改写草稿与命令栈，随后被保存成功的 clearGeometryDrafts 静默清掉。 */}
+      <button type="button" aria-label={storyboardCopy.undo} disabled={!canUndo || saving} onClick={onUndo}><Undo2 size={14} /></button>
+      <button type="button" aria-label={storyboardCopy.redo} disabled={!canRedo || saving} onClick={onRedo}><Redo2 size={14} /></button>
     </div>
     {overlayHint && <p className="toolbar-hint">{overlayHint}</p>}
     {!overlayHint && <p className="toolbar-hint" aria-hidden="true">Tab 切换格子 · 方向键微调（Shift 加速） · 回车打开属性 · Delete 删除气泡</p>}

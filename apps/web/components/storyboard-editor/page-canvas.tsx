@@ -507,6 +507,10 @@ export function PageCanvas({
       return;
     }
     if (event.key.startsWith("Arrow")) {
+      // 方向键微调与指针手势/Delete 同受 interactive 门禁（#637）：几何保存在
+      // 途时微调命令会被保存成功的 clearGeometryDrafts 一并清掉，静默丢失。
+      // 与 Delete 分支一致：不拦截不冒泡，键盘保持默认行为。
+      if (!interactive) return;
       event.preventDefault();
       if (!selection) {
         navigatePanels(event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1);

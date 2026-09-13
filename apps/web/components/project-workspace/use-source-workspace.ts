@@ -77,21 +77,33 @@ export function useSourceWorkspace({
   const importSourceFile = useMutation({
     mutationFn: (file: File) => {
       setImportNotice("");
+      // Capture compose-box ownership at upload time (same guard shape as
+      // importSource, plus a text snapshot): a slow upload resolving after the
+      // user opened a revision or typed new text must not clear it.
+      const savedEditingId = editingChapterId;
+      const savedText = sourceText;
       return api.uploadSource(
         id,
         sourceTitle.trim() || file.name.replace(/\.(txt|md|markdown)$/i, ""),
         file,
-      );
+      ).then((result) => ({ result, savedEditingId, savedText }));
     },
-    onSuccess: (result) => {
-      setSelectedChapterId(result.chapters[0]?.id ?? null);
-      setEditingChapterId(null);
-      setSourceText("");
-      setImportNotice(`已导入 ${result.total_characters} 字。下一步：点击“生成漫画剧本”把这一章结构化成场景与情节拍。`);
+    onSuccess: ({ result, savedEditingId, savedText }) => {
       queryClient.invalidateQueries({ queryKey: ["chapters", id] });
       queryClient.invalidateQueries({ queryKey: ["revisions"] });
       queryClient.invalidateQueries({ queryKey: ["script"] });
       queryClient.invalidateQueries({ queryKey: ["pages"] });
+      if (editingChapterId !== savedEditingId || sourceText !== savedText) {
+        // The compose box moved to different content (another chapter's
+        // revision, or freshly typed text) while the upload was in flight:
+        // refresh the server-side lists, but leave the box and the selected
+        // chapter alone.
+        return;
+      }
+      setSelectedChapterId(result.chapters[0]?.id ?? null);
+      setEditingChapterId(null);
+      setSourceText("");
+      setImportNotice(`已导入 ${result.total_characters} 字。下一步：点击“生成漫画剧本”把这一章结构化成场景与情节拍。`);
     },
   });
 

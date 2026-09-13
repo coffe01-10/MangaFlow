@@ -113,19 +113,27 @@ export function ScriptEditor({
     queryClient.invalidateQueries({ queryKey: ["pages", chapterId] });
   };
   const saveScene = useMutation({
-    mutationFn: (scene: ScriptScene) => api.updateScene(scene.id, { version: scene.version, ...sceneDraft! }),
-    onSuccess: () => {
-      setEditingScene(null);
-      setSceneDraft(null);
+    mutationFn: (scene: ScriptScene) =>
+      api.updateScene(scene.id, { version: scene.version, ...sceneDraft! }).then(() => sceneDraft!),
+    onSuccess: (submittedDraft) => {
+      // 表单在保存在途时不锁输入（同 storyboard savePanel 的纪律）：只有当前
+      // 草稿仍等于提交内容时才收起表单；在途继续敲入的增量留在表单里待存。
+      if (JSON.stringify(sceneDraft) === JSON.stringify(submittedDraft)) {
+        setEditingScene(null);
+        setSceneDraft(null);
+      }
       setNotice("场景修改已保存；相关页面已标记为待复查。");
       refresh();
     },
   });
   const saveBeat = useMutation({
-    mutationFn: (beat: ScriptBeat) => api.updateBeat(beat.id, { version: beat.version, ...beatDraft! }),
-    onSuccess: () => {
-      setEditingBeat(null);
-      setBeatDraft(null);
+    mutationFn: (beat: ScriptBeat) =>
+      api.updateBeat(beat.id, { version: beat.version, ...beatDraft! }).then(() => beatDraft!),
+    onSuccess: (submittedDraft) => {
+      if (JSON.stringify(beatDraft) === JSON.stringify(submittedDraft)) {
+        setEditingBeat(null);
+        setBeatDraft(null);
+      }
       setNotice("情节拍修改已保存；分镜与历史候选保留，相关页面需复查。");
       refresh();
     },
