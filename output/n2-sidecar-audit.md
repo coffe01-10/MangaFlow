@@ -855,3 +855,8 @@
   可达 redis 假体下的诊断 parity 测试（LOCAL/NOT_USED/can_execute 三断言）。
 - **串行证据**：local-worker 套件 **39 passed**；真 runner **156 passed**（exit=0）；
   cargo **168/0**。
+
+- **§35 补遗十二（round-29 APPROVE + 跟进）→ #725 评审闭环**：parity 矩阵全格核验一致
+  （队列禁用/LOCAL/AUTO±embedded±redis 可达性 × enqueue vs 诊断）；probe_redis=False
+  调用者全量清点（无既有行为变化）；39 passed。跟进已推：settings UI 的嵌入式基线
+  从误导性 WARNING 改报 OK（"按设计本地执行"）；诊断假体补 close()。
