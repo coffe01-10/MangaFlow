@@ -501,3 +501,6 @@ doc-code 不一致 sweep（子代理，双源核验）收割 6 项 → 3 PR：
 - 合入确认（06:4x UTC，master a3422e8 谱系）：#733（journal 64KiB read
   bound——sidecar + tests only）已入 master。账本分支 rebase 同步；
   cargo 168 全绿复核。
+- 合入确认（07:1x UTC，master f88a105 谱系）：#736（ledger 34b docs）与
+  #737（embedded OK route pin——tests + audit）已入 master。账本分支
+  rebase 同步；cargo 168 全绿复核。
