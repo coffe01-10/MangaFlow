@@ -1261,7 +1261,10 @@ def main() -> int:
         record.update(state="failed", error="refused: " + str(code))
         try:
             _write_journal(journal, record)
-        except OSError:
+        except (OSError, RuntimeError):
+            # RuntimeError: the same planted-file refusals _write_journal
+            # raises normally — a secondary traceback must not mask the
+            # original refusal.
             pass
         print(code, file=sys.stderr)
         return 1
