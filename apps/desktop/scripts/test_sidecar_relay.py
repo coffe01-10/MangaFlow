@@ -10,9 +10,11 @@ in the plain sandbox:
 
 Budget policy (#595/#597): every read timeout in these tests is a HANG
 GUARD — an upper bound on "the contract definitely broke", never a
-latency pin. The relay's accept loop polls at 0.5s intervals, so all
-budgets are set generously (15s) to keep load-sensitive false alarms
-out of the suite; a real hang still fails, just later.
+latency pin. The relay's accept loop polls at 0.5s intervals, so hang
+guards are set generously (15s) to keep load-sensitive false alarms out
+of the suite; a real hang still fails, just later. The single exception
+is the cap-release retry loop's 2s probe, which EXPECTS the timeout and
+polls under its own 5s deadline — that one is a sync point by design.
 
 They pin the pipe contract: once a relay connection is established, the
 pump must not impose any read deadline of its own. The historical defect
@@ -199,7 +201,9 @@ def test_relay_pipe_semantics_table(
       severed under the web server's pooled connections.
     """
     api = StubApi(response_delay=response_delay, close_after_response=close_after_response)
-    read_budget = 10 if response_delay else 4
+    # The table's own slow-first-byte delay is 5.6s; 15 matches the
+    # file-wide hang-guard budget (upper bound, never a latency pin).
+    read_budget = 15
     try:
         port, stop = start_relay(monkeypatch, api)
         try:
