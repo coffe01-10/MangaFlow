@@ -904,3 +904,9 @@
   ——后者被遮蔽从未运行（39 计数含遮蔽）。改名
   `test_embedded_auto_diagnostics_report_local_despite_reachable_redis` 后 40 收集全绿
   （诊断腿首次真跑通过）；F811 清零。教训：插入测试用同名锚时必须核对新名唯一性。
+
+- **§35 补遗二十（queue_check 真值表路由级收口）→ PR #740（待 lead）**：嵌入式 OK 钉
+  （#737）之外的最后一格——**非 embedded AUTO + redis 不可达 → WARNING/QUEUE_UNAVAILABLE**
+  （生产环境：job 等待而非执行）路由级端到端钉（失败 redis 假体 + production
+  environment）。local-worker 套件 **41 passed**；ruff clean。真值表四格齐：
+  LOCAL=OK / embedded AUTO=OK / AUTO+unreachable=WARNING / REDIS reachable=OK（既有）。
