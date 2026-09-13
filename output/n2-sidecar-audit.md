@@ -878,3 +878,9 @@
 - **§35 补遗十五（06:07 同步）**：夜分支并 master adb646a（#729/#730 已并在 master 侧，
   与我方补遗 13/14 同文件双写——并集解决保留双侧）；串行证据重跑 **156 passed**（exit=0）
   + cargo **168/0**（合并后 ledger 文件不参与执行，证据有效）。
+
+- **§35 补遗十六（06:30 同步）**：master adc96b5（#731 账本 33c）并入；其 queue_enabled
+  排序探针与我方 round-30 矩阵一致（queue_enabled=False 在 embedded 分支前短路 →
+  QUEUE_DISABLED，设计自洽——交叉验证）。#725 上留防重说明：诊断腿已由
+  test_embedded_auto_diagnostics_report_local_despite_reachable_redis 覆盖（可达 redis
+  假体三断言），#727 的 drop-in 若无额外断言不应重复合并。
