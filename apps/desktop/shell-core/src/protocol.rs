@@ -932,10 +932,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// An oversized journal (identity fields are a few hundred bytes) must
-    /// fail with JournalTooLarge instead of being buffered into the shell —
-    /// the read is bounded at the cap with one detection byte to spare.
-    #[test]
     /// #561 (helper parity): a symlink at the journal or the .pending
     /// sibling must be refused before any write — the pending write
     /// follows links, so a planted link would redirect the ownership
@@ -987,6 +983,10 @@ mod tests {
         let _ = fs::remove_dir_all(&user_data);
     }
 
+    /// An oversized journal (identity fields are a few hundred bytes) must
+    /// fail with JournalTooLarge instead of being buffered into the shell —
+    /// the read is bounded at the cap with one detection byte to spare.
+    #[test]
     fn journal_reads_are_bounded_and_oversize_fails_closed() {
         let dir = std::env::temp_dir().join(format!(
             "mangaflow-desktop-jsize-{}-{}",
