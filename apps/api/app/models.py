@@ -678,6 +678,14 @@ class ModelCallAttempt(Timestamped, Base):
         Index("ix_model_call_attempts_chapter_started", "chapter_id", "started_at"),
         Index("ix_model_call_attempts_page_started", "page_id", "started_at"),
         Index("ix_model_call_attempts_candidate_started", "candidate_id", "started_at"),
+        # Issue #663: usage_attempt_query filters/sorts by provider + model_id +
+        # started_at (settings usage dashboard); no other index covers this prefix.
+        Index(
+            "ix_model_call_attempts_provider_model_started",
+            "provider",
+            "model_id",
+            "started_at",
+        ),
         CheckConstraint(
             "outcome IS NULL OR outcome IN ('SUCCEEDED', 'FAILED')",
             name="ck_model_call_attempts_outcome",
@@ -1280,6 +1288,10 @@ class PageCandidate(Timestamped, Base):
     __table_args__ = (
         UniqueConstraint("batch_id", "ordinal"),
         Index("ix_page_candidates_batch_deleted_ordinal", "batch_id", "deleted_at", "ordinal"),
+        # Issue #663: job finalization and asset-deletion guards scan by
+        # job_id/asset_id; candidates are the highest-volume table.
+        Index("ix_page_candidates_job_id", "job_id"),
+        Index("ix_page_candidates_asset_id", "asset_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -1359,7 +1371,13 @@ class CandidateLineage(Base):
 
 class AssetCandidate(Timestamped, Base):
     __tablename__ = "asset_candidates"
-    __table_args__ = (UniqueConstraint("batch_id", "ordinal"),)
+    __table_args__ = (
+        UniqueConstraint("batch_id", "ordinal"),
+        # Issue #663: same hot paths as page_candidates (job finalization,
+        # asset-deletion guard in uploads).
+        Index("ix_asset_candidates_job_id", "job_id"),
+        Index("ix_asset_candidates_asset_id", "asset_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     batch_id: Mapped[str] = mapped_column(

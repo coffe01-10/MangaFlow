@@ -4,12 +4,22 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import and_, or_, select, text
+from sqlalchemy import (
+    Date,
+    and_,
+    case,
+    cast,
+    func,
+    literal_column,
+    or_,
+    select,
+    text,
+)
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -434,10 +444,44 @@ def usage_attempt_query(
     return query
 
 
-def _total_or_none(items: list[ModelCallAttempt], attribute: str) -> int | None:
-    values = [getattr(item, attribute) for item in items]
-    present = [Decimal(value) for value in values if value is not None]
-    return int(sum(present, Decimal(0))) if present else None
+def _sum_or_none(value: object) -> int | None:
+    """SQL SUM matches the previous per-row semantics: NULL stays None."""
+
+    return None if value is None else int(value)
+
+
+def _count_where(condition):
+    """COUNT(*) restricted to ``condition`` as a SUM over a 0/1 CASE."""
+
+    return func.sum(case((condition, 1), else_=0))
+
+
+def _day_bucket_expression(dialect_name: str, column, offset_seconds: int):
+    """SQL calendar-day bucket that mirrors summarize_usage's Python bucketing.
+
+    Stored values are read as UTC instants (naive values are already UTC wall
+    clocks on SQLite; offset-bearing strings are converted by the engine),
+    shifted by the window's fixed offset, then truncated to a date. The
+    expression must stay deterministic on both supported dialects:
+
+    - SQLite: ``date()`` already normalizes offset-bearing values to UTC and
+      treats offset-free values as UTC, so a single ``"±N seconds"`` modifier
+      reproduces ``started.replace(tzinfo=UTC).astimezone(tz).date()`` exactly.
+    - PostgreSQL: ``AT TIME ZONE 'UTC'`` pins the session-independent UTC wall
+      clock before the fixed offset is added (NOT RUN offline, no live PG).
+    """
+
+    if dialect_name == "postgresql":
+        return cast(
+            column.op("AT TIME ZONE")("UTC")
+            + literal_column(f"interval '{offset_seconds} seconds'"),
+            Date,
+        )
+    return func.date(column, f"{offset_seconds} seconds")
+
+
+def _as_day(value: object) -> date:
+    return value if isinstance(value, date) else date.fromisoformat(str(value))
 
 
 def summarize_usage(
@@ -457,20 +501,59 @@ def summarize_usage(
         _usage_for_attempt,
     )
 
-    attempts = list(
-        db.scalars(
-            usage_attempt_query(
-                project_id=project_id,
-                job_id=None,
-                channel=channel,
-                provider=provider,
-                model_id=model_id,
-                since=since,
-                until=until,
-            ).order_by(ModelCallAttempt.started_at, ModelCallAttempt.id)
+    # 日期分桶跟随查询窗口的本地时区：前端发送本地午夜的 since/until
+    # （toIsoLocalMidnight，如 +08:00），按窗口偏移分桶才能让“某天”的
+    # 用量与操作者的日历一致。路由已把窗口归一化为 UTC，所以偏移须由
+    # 调用方显式传入；未传时从窗口本身推导，无窗口（或 naive）按 UTC。
+    if window_offset is None:
+        window = since or until
+        window_offset = (
+            window.utcoffset()
+            if window is not None and window.utcoffset() is not None
+            else timedelta(0)
         )
+    display_tz = timezone(window_offset)
+
+    # 计数/求和类指标全部下推为 SQL 聚合（issue #663）：账本每次付费调用
+    # 增长一行，看板不能为了几个分组数字把过滤区间整段载入 Python。
+    # 聚合复用 usage_attempt_query 的过滤语义（子查询），分组键与原先的
+    # Python 分桶完全一致（本地日、provider、model、channel），随后仍在
+    # Python 内按键排序，保证与旧实现逐字节相同的输出顺序。
+    attempts = usage_attempt_query(
+        project_id=project_id,
+        job_id=None,
+        channel=channel,
+        provider=provider,
+        model_id=model_id,
+        since=since,
+        until=until,
+    ).subquery()
+    day_bucket = _day_bucket_expression(
+        db.get_bind().dialect.name, attempts.c.started_at, int(window_offset.total_seconds())
     )
-    pairs = {(item.provider, item.model_id) for item in attempts}
+    aggregate_rows = db.execute(
+        select(
+            day_bucket.label("day"),
+            attempts.c.provider,
+            attempts.c.model_id,
+            attempts.c.channel,
+            func.count().label("attempt_count"),
+            _count_where(attempts.c.outcome == "SUCCEEDED").label("succeeded_count"),
+            _count_where(attempts.c.outcome == "FAILED").label("failed_count"),
+            _count_where(attempts.c.outcome.is_(None)).label("pending_count"),
+            _count_where(
+                or_(attempts.c.usage_status.is_(None), attempts.c.usage_status == "UNKNOWN")
+            ).label("unknown_count"),
+            _count_where(attempts.c.usage_status == "PARTIAL").label("partial_count"),
+            _count_where(attempts.c.usage_status == "COMPLETE").label("complete_count"),
+            func.sum(attempts.c.input_tokens).label("input_tokens"),
+            func.sum(attempts.c.output_tokens).label("output_tokens"),
+            func.sum(attempts.c.cached_input_tokens).label("cached_input_tokens"),
+            func.sum(attempts.c.output_images).label("output_images"),
+        ).group_by(day_bucket, attempts.c.provider, attempts.c.model_id, attempts.c.channel)
+    ).all()
+
+    pairs = {(row.provider, row.model_id) for row in aggregate_rows}
     prices = (
         list(
             db.scalars(
@@ -494,40 +577,37 @@ def summarize_usage(
     for price in prices:
         prices_by_pair[(price.provider, price.model_id)].append(price)
 
-    # 日期分桶跟随查询窗口的本地时区：前端发送本地午夜的 since/until
-    # （toIsoLocalMidnight，如 +08:00），按窗口偏移分桶才能让“某天”的
-    # 用量与操作者的日历一致。路由已把窗口归一化为 UTC，所以偏移须由
-    # 调用方显式传入；未传时从窗口本身推导，无窗口（或 naive）按 UTC。
-    if window_offset is None:
-        window = since or until
-        window_offset = (
-            window.utcoffset()
-            if window is not None and window.utcoffset() is not None
-            else timedelta(0)
+    # 金额估价无法等价下推：_active_price 按 started_at 选取时间版本化价
+    # 格、_estimate_attempt 混合 usage JSON 与结构化列，SQL 复刻两段逻辑
+    # 必然引入行为漂移。因此保守地保持逐行估价，但只载入可能影响数字的
+    # 行——已终态（outcome 非空）且 (provider, model_id) 配置过价格版本；
+    # 未定价/未终态的行不产生任何成本，与原先的全表扫描严格等价。未配置
+    # 价格的部署（默认形态）看板不再载入任何账本行。
+    estimated: dict[tuple, dict[str, Decimal]] = {}
+    if prices_by_pair:
+        priced_pair_filter = or_(
+            *[
+                and_(
+                    ModelCallAttempt.provider == pair_provider,
+                    ModelCallAttempt.model_id == pair_model,
+                )
+                for pair_provider, pair_model in sorted(prices_by_pair)
+            ]
         )
-    display_tz = timezone(window_offset)
-
-    buckets: dict[tuple, list[ModelCallAttempt]] = defaultdict(list)
-    for attempt in attempts:
-        started = attempt.started_at
-        if started.tzinfo is None:
-            started = started.replace(tzinfo=UTC)
-        key = (
-            started.astimezone(display_tz).date(),
-            attempt.provider,
-            attempt.model_id,
-            attempt.channel,
+        cost_attempts = db.scalars(
+            usage_attempt_query(
+                project_id=project_id,
+                job_id=None,
+                channel=channel,
+                provider=provider,
+                model_id=model_id,
+                since=since,
+                until=until,
+            )
+            .where(ModelCallAttempt.outcome.is_not(None), priced_pair_filter)
+            .order_by(ModelCallAttempt.started_at, ModelCallAttempt.id)
         )
-        buckets[key].append(attempt)
-
-    groups: list[UsageSummaryGroup] = []
-    for (day, item_provider, item_model, channel), items in sorted(buckets.items()):
-        status_counts = {"UNKNOWN": 0, "PARTIAL": 0, "COMPLETE": 0}
-        estimated: dict[str, Decimal] = defaultdict(Decimal)
-        for item in items:
-            status_counts[item.usage_status or "UNKNOWN"] += 1
-            if item.outcome is None:
-                continue
+        for item in cost_attempts:
             price = _active_price(
                 prices_by_pair.get((item.provider, item.model_id), []),
                 item.started_at,
@@ -535,27 +615,50 @@ def summarize_usage(
             if price is None:
                 continue
             amount, _complete = _estimate_attempt(_usage_for_attempt(item), price)
-            if amount is not None:
-                estimated[price.currency] += amount
+            if amount is None:
+                continue
+            started = item.started_at
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=UTC)
+            key = (
+                started.astimezone(display_tz).date(),
+                item.provider,
+                item.model_id,
+                item.channel,
+            )
+            estimated.setdefault(key, defaultdict(Decimal))[price.currency] += amount
 
+    groups: list[UsageSummaryGroup] = []
+    ordered_rows = sorted(
+        aggregate_rows,
+        key=lambda row: (_as_day(row.day), row.provider, row.model_id, row.channel),
+    )
+    for row in ordered_rows:
+        day = _as_day(row.day)
+        key = (day, row.provider, row.model_id, row.channel)
+        group_costs = estimated.get(key) or {}
         groups.append(
             UsageSummaryGroup(
                 day=day,
-                provider=item_provider,
-                model_id=item_model,
-                channel=channel,
-                attempt_count=len(items),
-                succeeded_count=sum(item.outcome == "SUCCEEDED" for item in items),
-                failed_count=sum(item.outcome == "FAILED" for item in items),
-                pending_count=sum(item.outcome is None for item in items),
-                input_tokens=_total_or_none(items, "input_tokens"),
-                output_tokens=_total_or_none(items, "output_tokens"),
-                cached_input_tokens=_total_or_none(items, "cached_input_tokens"),
-                output_images=_total_or_none(items, "output_images"),
-                usage_status_counts=status_counts,
+                provider=row.provider,
+                model_id=row.model_id,
+                channel=row.channel,
+                attempt_count=row.attempt_count,
+                succeeded_count=row.succeeded_count,
+                failed_count=row.failed_count,
+                pending_count=row.pending_count,
+                input_tokens=_sum_or_none(row.input_tokens),
+                output_tokens=_sum_or_none(row.output_tokens),
+                cached_input_tokens=_sum_or_none(row.cached_input_tokens),
+                output_images=_sum_or_none(row.output_images),
+                usage_status_counts={
+                    "UNKNOWN": row.unknown_count,
+                    "PARTIAL": row.partial_count,
+                    "COMPLETE": row.complete_count,
+                },
                 estimated_costs=[
                     CurrencyAmount(currency=currency, amount=amount)
-                    for currency, amount in sorted(estimated.items())
+                    for currency, amount in sorted(group_costs.items())
                 ],
             )
         )
