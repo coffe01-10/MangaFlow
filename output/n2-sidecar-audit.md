@@ -630,3 +630,26 @@
   （请求未随 ACK 入队时溢出 close 为优雅 FIN → 不重试）窄且记录在案。
 - **串行证据**：目标双测试 8×3 循环绿；真 runner **126 passed in 73.06s**（exit=0，
   #608 日志生效）；#608 分支评审期间实测捕获 flake 一次（日志留身份）。
+
+## 31. 20260913 续四（master 6430ea5→360abb9——#609/#611/#612/#613/#614/#615 已并）
+
+- **合并消化**：我方 #608（runner 留痕日志）、#609（slot-release 竞态重试）已并。
+  #611（boot-wait not-ready 窗重钉，test-only）、#612（root-link 家族拒绝，shell-core）、
+  #613/#614/#615（他组账本/GO-log 卫生）行级读过，无缺陷。
+- **本窗口首个 cargo 失败的根因定位与修复（PR #616，shell-core，待 lead）**：
+  `cargo test > run.log`（文件重定向取证的自然形态）下 lib 二进制整体 EFBIG 失败——
+  `export_write_failure_leaves_no_truncated_pending_sibling` 的子进程全程处于
+  RLIMIT_FSIZE=32 且**不还原**：断言全过后 libtest 自己向继承的文件型 stdout 写结果行
+  → EFBIG → 子进程"因成功而失败"（`io error when listing tests: FileTooLarge` 为
+  libtest 对 run_tests_console IO 错误的历史性误导文案；SIGXFSZ 被 SIG_IGN 决定了暴露
+  形态是 EFBIG 而非信号杀死）。终端/管道不受 FSIZE 限制——全部交互式运行绿，掩盖至今。
+  修复：父进程 `.output()` 管道接管子进程双流（管道不受限、无死锁、失败详情进断言消息）。
+- **第 20 轮评审（1 子代理，文件/行级，APPROVE）**：根因保真（32 字节截断实测、结果行
+  为限制后首个写）；INFO 纠正历史记录——libtest 的 failures 块写 **stdout** 而非 stderr
+  （修复断言嵌入双流故免疫）；fmt 7 文件差异为 master 既有（本 PR 零新增）；155/0 全绿 +
+  文件重定向触发器消失（exit 0, 93 passed）。
+- **过程事故披露**：一次 `git stash pop` 弹出他组陈旧 stash（glm/fakesock-shutdown-pin
+  基座）在 #616 分支制造冲突文件——已 HEAD 恢复、stash 条目未损（内容可由其 owner
+  找回）、工作树复原干净。
+- **串行证据**：新 master runner **127 passed**（exit=0）；cargo 修复后 **155/0**；
+  文件重定向触发器 exit 0（93 passed）。
