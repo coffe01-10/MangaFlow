@@ -727,3 +727,8 @@
 - **交叉核查**：#626（他组）修复我方 Issue #623 的 static-form 头部 + D5 Windows 拆除——
   收敛方向正确；#679 加固 prerender 守卫。
 - **流程披露**：一次 PR 证据评论误贴到 #626（他组 PR）——已删除并改贴 #681。
+
+- **§35 补遗（第 23 轮返工）**：APPROVE 带两跟进已应用——message 分支现 journal
+  `state=failed, error="refused: …"`（sweep 只回收 stopped/failed，静默退出会在 shell-less
+  运行搁浅 runtime 目录；实测 journal 留痕）；pin 加 timeout=60。评审红线双向核验
+  （reorder 还原 → data/ 断言红；handler 还原 → ValueError 断言红）。
