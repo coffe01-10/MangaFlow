@@ -196,7 +196,7 @@ internal static class NativeJobsChecks
 
     private static WorkspaceContext Context(ApiClient api, string project) => new()
     {
-        Api = api, Cache = new ApiCache(), State = new WorkspaceState(), Window = null!,
+        Api = api, State = new WorkspaceState(), Window = null!,
         Project = new ProjectItem(project, project, "", 0, 0),
         NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
     };

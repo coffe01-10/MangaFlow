@@ -102,7 +102,7 @@ internal static class NativeIssue426Checks
         var view = new ScriptView();
         view.Activate(new WorkspaceContext
         {
-            Api = api, Cache = new ApiCache(), State = new WorkspaceState(), Window = null!,
+            Api = api, State = new WorkspaceState(), Window = null!,
             Project = new ProjectItem("issue426", "服装保存测试", "", 0, 0),
             NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
         });

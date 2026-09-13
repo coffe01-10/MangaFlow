@@ -225,7 +225,7 @@ internal static class NativeStateMatrixChecks
 
     private static WorkspaceContext Context(ApiClient api, string project) => new()
     {
-        Api = api, Cache = new ApiCache(), State = new WorkspaceState { Connected = true }, Window = null!,
+        Api = api, State = new WorkspaceState { Connected = true }, Window = null!,
         Project = new ProjectItem(project, project == "matrix-a" ? "甲项目" : "乙项目", "", 0, 0),
         NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
     };

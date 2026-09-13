@@ -509,7 +509,6 @@ public sealed class HomeView : WorkspaceView
         {
             await Api.SendAsync("projects", HttpMethod.Post,
                 new { name, workflow_mode = mode, default_resolution = resolution }, cancellation: lifetime.Token);
-            Cache.Invalidate("dashboard", "projects");
             nameInput.Text = "";
             drawer.Open = false;
             State.Status = $"项目「{name}」已创建";
@@ -519,9 +518,8 @@ public sealed class HomeView : WorkspaceView
         {
             // #470: navigation cancelled the POST mid-flight; the server may still
             // have created the project. Surface the unknown outcome (wording follows
-            // the shell's own timeout copy) and drop cached dashboards so re-entry
-            // refetches instead of inviting a blind duplicate resubmit.
-            Cache.Invalidate("dashboard", "projects");
+            // the shell's own timeout copy) so the user refreshes to confirm instead
+            // of blindly resubmitting a duplicate.
             State.Error = "创建请求已取消，提交结果未知：服务可能已接收该请求，请先刷新确认，避免重复提交。";
             State.Status = "创建请求已取消，结果未知，请刷新后确认";
         }

@@ -370,7 +370,7 @@ internal static class NativeDockChecks
         var view = new HelpView();
         typeof(WorkspaceView).GetProperty("Context", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(view, new WorkspaceContext
         {
-            Api = null!, Cache = new ApiCache(), State = new WorkspaceState(), Window = null!,
+            Api = null!, State = new WorkspaceState(), Window = null!,
             Project = null, NavigateSection = (_, _) => Task.CompletedTask,
             OpenDashboard = () => { openedDashboard = true; return Task.CompletedTask; },
         });

@@ -37,7 +37,7 @@ internal static class NativeReferenceChecks
         var upload = Path.Combine(output, "upload-fixture.png");
         try
         {
-            view.Activate(new WorkspaceContext { Api = api, Cache = new(), State = new(), Window = null!, Project = new ProjectItem("p", "参考素材验收", "", 0, 0), NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask });
+            view.Activate(new WorkspaceContext { Api = api, State = new(), Window = null!, Project = new ProjectItem("p", "参考素材验收", "", 0, 0), NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask });
             await view.RefreshAsync(); view.SelectedCharacter = view.characters[0]; await view.SwitchAsync(AssetsView.References);
             var pane = Field<Grid>(view, "host").Children.OfType<ReferencesPane>().Single(); await pane.ReloadStyleLinks();
             var cards = Field<Dictionary<string, ReferenceAssetCard>>(pane, "cards");

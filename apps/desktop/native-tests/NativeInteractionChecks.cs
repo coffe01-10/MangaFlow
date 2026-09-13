@@ -50,7 +50,7 @@ internal static class NativeInteractionChecks
         Dispatcher.CurrentDispatcher.BeginInvoke(new Action(async () =>
         {
             // #386: NativeWorkflowRunChecks.Run() returns Task — dropping the await let its faults vanish as unobserved task exceptions and the suite stayed green without running a single assertion in it. The other un-awaited calls here are void-signature (synchronous) checks.
-            try { await NativeBackendChecks.Run(); await NativeWorkflowChecks.Run(); NativeWorkflowConnectionChecks.Run(); await NativeWorkflowRunChecks.Run(); await NativeStoryboardChecks.Run(); NativeStoryboardEditChecks.Run(output); await NativeButtonChecks.Run(output); await NativeSourceChecks.Run(output); await NativeCharacterPageChecks.Run(output); await NativeOutfitChecks.Run(output); await NativeAssetsLoopChecks.Run(output); await NativeInspectionChecks.Run(output); NativeConsistencyChecks.Run(output); await Creation(); await Generation(); await LocalEdit(); await NativeJobsChecks.Run(output); await NativeLibraryChecks.Run(output); await NativeDockChecks.Run(output); await NativeStateMatrixChecks.Run(output); await NativeIssue442Checks.Run(); NativeIssue439Checks.Run(output); NativeIssue484Checks.Run(output); NativeIssue426Checks.Run(output); NativeIssue411Checks.Run(); NativeIssue470Checks.Run(); NativeIssue427Checks.Run(); NativeIssue469Checks.Run(); NativeIssue428Checks.Run(); NativeIssue429Checks.Run(); NativeIssue485Checks.Run(); NativeIssue486Checks.Run(output); NativeIssue410Checks.Run(); }
+            try { await NativeBackendChecks.Run(); await NativeWorkflowChecks.Run(); NativeWorkflowConnectionChecks.Run(); await NativeWorkflowRunChecks.Run(); await NativeStoryboardChecks.Run(); NativeStoryboardEditChecks.Run(output); await NativeButtonChecks.Run(output); await NativeSourceChecks.Run(output); await NativeCharacterPageChecks.Run(output); await NativeOutfitChecks.Run(output); await NativeAssetsLoopChecks.Run(output); await NativeInspectionChecks.Run(output); NativeConsistencyChecks.Run(output); await Creation(); await Generation(); await LocalEdit(); await NativeJobsChecks.Run(output); await NativeLibraryChecks.Run(output); await NativeDockChecks.Run(output); await NativeStateMatrixChecks.Run(output); await NativeIssue442Checks.Run(); NativeIssue439Checks.Run(output); NativeIssue484Checks.Run(output); NativeIssue426Checks.Run(output); NativeIssue411Checks.Run(); NativeIssue470Checks.Run(); NativeIssue427Checks.Run(); NativeIssue469Checks.Run(); NativeIssue428Checks.Run(); NativeIssue429Checks.Run(); NativeIssue485Checks.Run(); NativeIssue486Checks.Run(output); NativeIssue410Checks.Run(); NativeIssue441Checks.Run(); }
             catch (Exception error) { failure = error; }
             finally { frame.Continue = false; }
         }));
@@ -62,7 +62,7 @@ internal static class NativeInteractionChecks
 
     private static WorkspaceContext Context(ApiClient api) => new()
     {
-        Api = api, Cache = new ApiCache(), State = new WorkspaceState(), Window = null!,
+        Api = api, State = new WorkspaceState(), Window = null!,
         Project = new ProjectItem("project", "交互测试", "", 0, 0),
         NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
     };

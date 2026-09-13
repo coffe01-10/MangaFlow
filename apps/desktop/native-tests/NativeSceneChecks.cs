@@ -35,7 +35,7 @@ internal static class NativeSceneChecks
     {
         var fixture = new Fixture(); using var api = new ApiClient("http://127.0.0.1:12345", fixture);
         var view = new AssetsView();
-        view.Activate(new WorkspaceContext { Api = api, Cache = new(), State = new(), Window = null!, Project = new ProjectItem("scene-project", "场景页测试", "", 0, 0), NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask });
+        view.Activate(new WorkspaceContext { Api = api, State = new(), Window = null!, Project = new ProjectItem("scene-project", "场景页测试", "", 0, 0), NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask });
         await view.RefreshAsync(); await view.SwitchAsync(AssetsView.Scenes); await Task.Delay(25);
         view.Measure(new Size(1100, 1100)); view.Arrange(new Rect(0, 0, 1100, 1100)); view.UpdateLayout();
         var pane = NativeParityChecks.Descendants(view).OfType<SceneWorkspace>().Single(); await pane.InitialLoad;

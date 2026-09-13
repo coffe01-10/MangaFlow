@@ -32,7 +32,7 @@ internal static class NativeScriptPageChecks
         var fixture = new Fixture(); using var api = new ApiClient("http://127.0.0.1:12345", fixture); var view = new ScriptView();
         try
         {
-            view.Activate(new WorkspaceContext { Api = api, Cache = new(), State = new(), Window = null!, Project = new ProjectItem("p", "我最讨厌妹妹了", "", 0, 0), NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask });
+            view.Activate(new WorkspaceContext { Api = api, State = new(), Window = null!, Project = new ProjectItem("p", "我最讨厌妹妹了", "", 0, 0), NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask });
             SceneSection Scene() => Field<StackPanel>(view, "body").Children.OfType<SceneSection>().Single();
             await Until(() => Field<StackPanel>(view, "body").Children.OfType<SceneSection>().Any());
             Render(view, 1100, 1400, Path.Combine(output, "native-script-1100.png"));

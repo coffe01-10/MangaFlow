@@ -272,14 +272,13 @@ public sealed class LibraryView : WorkspaceView
     private async Task CandidateAction(CandidateItem candidate, string action)
     {
         if (action is not ("favorite" or "delete" or "retract") || lifetime.IsCancellationRequested || (action == "delete" && candidate.IsSelected) || (action == "retract" && (!candidate.IsSelected || candidate.PageId.Length == 0)) || !pending.Add(candidate.Id)) return;
-        var epoch = activation; var token = lifetime.Token; var project = ProjectId;
+        var epoch = activation; var token = lifetime.Token;
         Render();
         try
         {
             if (action == "favorite") await Api.SendAsync($"candidates/{candidate.Id}/favorite", HttpMethod.Patch, new { is_favorite = !candidate.Favorite }, token);
             else if (action == "delete") await Api.SendOptionalAsync($"candidates/{candidate.Id}", HttpMethod.Delete, cancellation: token);
             else if (action == "retract") await Api.SendOptionalAsync($"pages/{candidate.PageId}/selected-candidate?candidate_id={candidate.Id}", HttpMethod.Delete, cancellation: token);
-            Cache.Invalidate("library:" + project, "workbench:", "pages:", "dashboard");
             if (epoch != activation || token.IsCancellationRequested) return;
             await ReadLibrary(() => feed.RefreshAsync(Api, token));
             if (action == "retract") await LoadExportsAsync();
@@ -370,11 +369,10 @@ public sealed class LibraryView : WorkspaceView
     {
         if (exporting || readyChapter != chapterId || lifetime.IsCancellationRequested) return;
         exporting = true; exportDesk.IsEnabled = false;
-        var epoch = activation; var token = lifetime.Token; var project = ProjectId;
+        var epoch = activation; var token = lifetime.Token;
         try
         {
             await Api.SendAsync($"chapters/{chapterId}/exports", HttpMethod.Post, new { export_type = type }, token);
-            Cache.Invalidate("exports:" + project);
             if (epoch != activation || token.IsCancellationRequested) return;
             notice.Text = $"{type} 导出文件已生成，可在下方下载。";
             await LoadExportsAsync();

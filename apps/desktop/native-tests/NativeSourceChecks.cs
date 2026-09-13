@@ -19,7 +19,7 @@ internal static class NativeSourceChecks
         using var api = new ApiClient("http://127.0.0.1:12345", fake);
         var view = new SourceView();
         var navigated = "";
-        WorkspaceContext Context(string id) => new() { Api = api, Cache = new(), State = new(), Window = null!, Project = new ProjectItem(id, "我最讨厌妹妹了", "1 章 · 11 页已规划", 0, 0), NavigateSection = (section, _) => { navigated = section; return Task.CompletedTask; }, OpenDashboard = () => Task.CompletedTask };
+        WorkspaceContext Context(string id) => new() { Api = api, State = new(), Window = null!, Project = new ProjectItem(id, "我最讨厌妹妹了", "1 章 · 11 页已规划", 0, 0), NavigateSection = (section, _) => { navigated = section; return Task.CompletedTask; }, OpenDashboard = () => Task.CompletedTask };
         view.Activate(Context("source-fixture"));
         try
         {

@@ -37,6 +37,11 @@ if (args.Contains("--storyedit"))
     NativeStoryboardEditChecks.Run(args.FirstOrDefault(a => !a.StartsWith("--")) ?? Path.Combine(Path.GetTempPath(), "mangaflow-storyedit-checks"));
     return 0;
 }
+if (args.Contains("--issue441"))
+{
+    NativeIssue441Checks.Run();
+    return 0;
+}
 var count = 0;
 void Check(bool condition, string name)
 {

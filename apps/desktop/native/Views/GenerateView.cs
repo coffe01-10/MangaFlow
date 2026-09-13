@@ -765,7 +765,6 @@ public sealed class GenerateView : WorkspaceView
                 storyboard_version = targetPage.StoryboardVersion,
                 reference_selections = references,
             }, cancellation: token);
-            Cache.Invalidate("workbench:" + targetPage.Id, "library:" + project, "jobs:" + project);
             if (token.IsCancellationRequested || currentPage?.Id != targetPage.Id || ProjectId != project) return;
             State.Status = "已加入 1 个生成任务";
             viewedBatchId = null;
@@ -856,7 +855,6 @@ public sealed class GenerateView : WorkspaceView
             // 升清会关闭当前批次并新开 UPSCALE 批次，旧候选不在新批次里。
             var closePanel = (action == "delete" && reviewCandidateId == candidate.Id) || action is "upscale2k" or "upscale4k";
             if (closePanel) { reviewCandidateId = null; panelError = null; }
-            Cache.Invalidate("workbench:" + targetPage, "library:" + project, "jobs:" + project, "pages:" + chapterId);
             if (token.IsCancellationRequested || currentPage?.Id != targetPage || ProjectId != project) return;
             await LoadWorkbenchAsync();
             if (closePanel) Render();
@@ -924,7 +922,6 @@ public sealed class GenerateView : WorkspaceView
             }, cancellation: token);
             TrackInspectJob(inspectJob);
             State.Status = "已沿用旧候选并创建视觉检查任务";
-            Cache.Invalidate("workbench:" + targetPage.Id, "pages:" + chapterId, "jobs:" + project);
             if (token.IsCancellationRequested || currentPage?.Id != targetPage.Id || ProjectId != project) return;
             await LoadWorkbenchAsync();
         }
@@ -949,7 +946,6 @@ public sealed class GenerateView : WorkspaceView
         try
         {
             var next = await Api.SendAsync($"pages/{currentPage.Id}/next", HttpMethod.Post, cancellation: lifetime.Token);
-            Cache.Invalidate("pages:" + chapterId, "workbench:", "library:" + ProjectId);
             var nextPage = pages.FirstOrDefault(p => p.Id == next.Text("id"));
             if (nextPage != null) await SelectPageAsync(nextPage);
             else await LoadPagesAsync();
@@ -969,7 +965,6 @@ public sealed class GenerateView : WorkspaceView
     // Bridges for the nested director pane and candidate cards.
     internal WorkspaceContext? Ctx => Context;
     internal ApiClient Api2() => Api;
-    internal ApiCache Cache2() => Cache;
     internal string ProjectId2 => ProjectId;
     internal void OpenImageExternal(string url, string label) => OpenImage(url, label);
     internal async Task OpenLocalEdit(CandidateItem candidate)
@@ -1288,7 +1283,6 @@ public sealed class GenerateView : WorkspaceView
             reviewCandidateId = null;
             panelError = null;
             State.Status = "已创建修复任务";
-            Cache.Invalidate("workbench:" + targetPage.Id, "library:" + project, "jobs:" + project, "pages:" + chapterId);
             if (token.IsCancellationRequested || currentPage?.Id != targetPage.Id || ProjectId != project) return;
             await LoadWorkbenchAsync();
         }
@@ -1336,8 +1330,7 @@ public sealed class GenerateView : WorkspaceView
             if (turned.Count > 0)
             {
                 // G-4: web 在检查终态同时失效 pages —— 页面生产状态（continuity/门禁）来自 pages
-                // 数据，只刷工作台会让页面栏停在检查前的状态。
-                Cache.Invalidate("pages:" + chapterId);
+                // 数据，只刷工作台会让页面栏停在检查前的状态；桌面以显式页面栏重载落实。
                 _ = RefreshPageBarAsync();
             }
             // ── 检查面板的数据看护（web reviewJob + inspections 轮询 + 终态 invalidation）──
@@ -1378,7 +1371,6 @@ public sealed class GenerateView : WorkspaceView
                 if (!(turnedTerminal && reviewJob.ValueKind == JsonValueKind.Object && turned.Contains(reviewJob.Text("id"))))
                 {
                     _ = LoadWorkbenchAsync();
-                    Cache.Invalidate("pages:" + chapterId);
                     _ = RefreshPageBarAsync();
                 }
             }
@@ -1762,7 +1754,6 @@ internal sealed class DirectorPane : Border
             var groupId = previewGroup.Text("command_group_id");
             previewGroup = await view.Api2().SendAsync(
                 $"projects/{view.ProjectId2}/director/commands/{commandId}/{action}", HttpMethod.Post);
-            view.Cache2().Invalidate("director:" + view.ProjectId2, "workbench:", "pages:");
             await view.ReloadWorkbench();
             RenderPreview();
             await LoadHistoryAsync();

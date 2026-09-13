@@ -254,12 +254,12 @@ internal sealed class ReferenceAssetCard : Border
     {
         if (pane.Busy || !pane.Active || next == Asset.Kind || !ReferencesPane.Kinds.Contains(next)) return;
         if (!pane.Ask($"将把「{Asset.Name}」的用途从「{ReferencesPane.Label(Asset.Kind)}」改为「{ReferencesPane.Label(next)}」，可能解除已有绑定。确定继续吗？")) return;
-        await pane.Mutate(async () => { await pane.View.ApiSend($"assets/{Asset.Id}", HttpMethod.Patch, new { kind = next }); if (pane.Active) { pane.View.InvalidateOutfitDependents(); await pane.View.ReloadAssets(); await pane.ReloadStyleLinks(); } });
+        await pane.Mutate(async () => { await pane.View.ApiSend($"assets/{Asset.Id}", HttpMethod.Patch, new { kind = next }); if (pane.Active) { await pane.View.ReloadAssets(); await pane.ReloadStyleLinks(); } });
     }
     internal async Task Delete()
     {
         if (pane.Busy || !pane.Active || !pane.Ask("删除该素材及其候选记录，并解除已有绑定？")) return;
-        await pane.Mutate(async () => { await pane.View.ApiSendOptional($"assets/{Asset.Id}", HttpMethod.Delete); if (pane.Active) { pane.View.InvalidateOutfitDependents(); await pane.View.ReloadAssets(); } });
+        await pane.Mutate(async () => { await pane.View.ApiSendOptional($"assets/{Asset.Id}", HttpMethod.Delete); if (pane.Active) { await pane.View.ReloadAssets(); } });
     }
     internal void SetBusy(bool value) { nameHost.IsEnabled = !value; kind.IsEnabled = !value; remove.IsEnabled = !value; binding.IsEnabled = !value; }
     internal void UpdateBinding()

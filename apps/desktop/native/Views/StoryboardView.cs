@@ -1260,7 +1260,6 @@ public sealed partial class StoryboardView : WorkspaceView
                     catch (Exception) { return null; }
                 });
             if (dialog.ShowDialog() != true) return;
-            Cache.Invalidate("storyboard:" + pageAtRequest.Id, "pages:" + chapterId);
             // 保存/对话框在途期间用户可能已切页：晚到的刷新不得把画布拉回旧页。
             // preserve：本格 PATCH 后的重载不吞画布几何草稿与检查器里的对白草稿
             //（对齐 web savePanel.onSuccess → refresh 只换服务端数据）。
@@ -1304,7 +1303,6 @@ public sealed partial class StoryboardView : WorkspaceView
             // 先解除 busy 再触发重载：preserve 重载会重建检查器与保存按钮，
             // 若在 busy 中重建，按钮的初始 IsEnabled 会卡在禁用态。
             narrativeBusy = false;
-            Cache.Invalidate("storyboard:" + pageAtRequest.Id, "pages:" + chapterId);
             // 在途保存期间继续敲入的文本不能被这次成功静默丢弃（对齐 web）：
             // 草稿仍等于提交内容时才摘除，否则保留新输入（编辑器保持脏）。
             if (dialogueDrafts.TryGetValue(dialogueId, out var latest) && latest == submitted)
@@ -1347,7 +1345,6 @@ public sealed partial class StoryboardView : WorkspaceView
             }, cancellation: lifetime.Token);
             // 同上：先解除 busy 再触发会重建检查器的重载
             narrativeBusy = false;
-            Cache.Invalidate("storyboard:" + pageAtRequest.Id, "pages:" + chapterId);
             // 提交后又有输入则保留卡片（对齐 web addDialogue.onSuccess 的比较逻辑）
             if (newDialogue == submitted) newDialogue = null;
             conflictBar.Visibility = Visibility.Collapsed;
@@ -1387,7 +1384,6 @@ public sealed partial class StoryboardView : WorkspaceView
             // 之前的页保持不变）。
             var result = await Api.SendAsync($"chapters/{chapterAtRequest}/plan", HttpMethod.Post,
                 new { replace_existing = true, from_page_number = pageAtRequest.PageNumber }, cancellation: lifetime.Token);
-            Cache.Invalidate("pages:" + chapterAtRequest, "storyboard:" + pageAtRequest.Id, "workbench:", "library:" + ProjectId);
             State.Status = $"已从第 {pageAtRequest.PageNumber} 页重新计算分页";
             // 重算在途期间用户可能已切页/切章：晚到的重载不得把画布拉回旧上下文
             if (chapterId == chapterAtRequest && (currentPage?.Id == pageAtRequest.Id || currentPage == null))
@@ -1437,7 +1433,6 @@ public sealed partial class StoryboardView : WorkspaceView
             bubbles.Remove(bubble);
             page.Children.Remove(bubble.Element);
             dialogueDrafts.Remove(bubble.Id);   // 孤儿草稿不得让编辑器永久脏（对齐 web removeDialogue.onSuccess）
-            Cache.Invalidate("storyboard:" + pageAtRequest.Id, "pages:" + chapterId);
             bubblesDeleted = true;   // 删除不在撤销栈里：脏状态必须显式记下这笔草稿
             MarkDirty();
             RenderInspector();
@@ -1516,7 +1511,6 @@ public sealed partial class StoryboardView : WorkspaceView
             var staleCount = response.Number("candidate_count");
             UpdateStatus($"已保存 · 当前 V{version}");
             State.Status = $"分镜已保存 · V{version} · 将使 {staleCount} 个候选过期";
-            Cache.Invalidate("pages:" + chapterId, "workbench:", "library:" + ProjectId);
             // PUT 在途期间用户可能已切页：晚到的刷新不得把画布拉回旧页
             // （storyboard 字段与整页重载一起跳过，避免旧页数据污染新页）。
             if (currentPage?.Id == pageAtRequest.Id)

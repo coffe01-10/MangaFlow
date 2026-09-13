@@ -33,7 +33,7 @@ internal static class NativeAssetsLoopChecks
         var fake = new Fixture();
         using var api = new ApiClient("http://127.0.0.1:12345", fake);
         var view = new AssetsView();
-        WorkspaceContext Context(string id) => new() { Api = api, Cache = new(), State = new(), Window = null!, Project = new ProjectItem(id, "资产闭环测试", "", 0, 0), NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask };
+        WorkspaceContext Context(string id) => new() { Api = api, State = new(), Window = null!, Project = new ProjectItem(id, "资产闭环测试", "", 0, 0), NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask };
         view.Activate(Context("loop-fixture"));
         view.RecordPreviewInsteadOfDialog = true;
         try

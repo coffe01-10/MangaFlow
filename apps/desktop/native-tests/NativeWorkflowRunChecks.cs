@@ -276,7 +276,7 @@ internal static class NativeWorkflowRunChecks
         {
             view.Activate(new WorkspaceContext
             {
-                Api = api, Cache = new ApiCache(), State = new WorkspaceState(), Window = null!,
+                Api = api, State = new WorkspaceState(), Window = null!,
                 Project = new ProjectItem("p1", "运行测试", "", 0, 0),
                 NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
             });
@@ -411,7 +411,7 @@ internal static class NativeWorkflowRunChecks
         {
             view.Activate(new WorkspaceContext
             {
-                Api = api, Cache = new ApiCache(), State = new WorkspaceState(), Window = null!,
+                Api = api, State = new WorkspaceState(), Window = null!,
                 Project = new ProjectItem("p1", "别名失效检查", "", 0, 0),
                 NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
             });
@@ -504,7 +504,7 @@ internal static class NativeWorkflowRunChecks
         {
             view.Activate(new WorkspaceContext
             {
-                Api = api, Cache = new ApiCache(), State = new WorkspaceState(), Window = null!,
+                Api = api, State = new WorkspaceState(), Window = null!,
                 Project = new ProjectItem("p1", "复制检查", "", 0, 0),
                 NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
             });
@@ -615,7 +615,7 @@ internal static class NativeWorkflowRunChecks
         {
             view.Activate(new WorkspaceContext
             {
-                Api = api, Cache = new ApiCache(), State = new WorkspaceState(), Window = null!,
+                Api = api, State = new WorkspaceState(), Window = null!,
                 Project = new ProjectItem("p1", "防抖切换检查", "", 0, 0),
                 NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask,
             });

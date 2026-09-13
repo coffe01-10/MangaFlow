@@ -313,7 +313,6 @@ public sealed class ScriptView : WorkspaceView
             await Api.SendAsync($"scenes/{scene.Text("id")}", HttpMethod.Patch, changes, cancellation: lifetime.Token);
             section.ExitEdit();
             notice.Text = "场景修改已保存；相关页面已标记为待复查。";
-            Cache.Invalidate("script:" + chapterId, "pages:" + chapterId);
             await LoadScriptAsync();
         }
          catch (OperationCanceledException) { }
@@ -331,7 +330,6 @@ public sealed class ScriptView : WorkspaceView
             await Api.SendAsync($"beats/{beatValue.Text("id")}", HttpMethod.Patch, changes, cancellation: lifetime.Token);
             beat.ExitEdit();
             notice.Text = "情节拍修改已保存；分镜与历史候选保留，相关页面需复查。";
-            Cache.Invalidate("script:" + chapterId, "pages:" + chapterId);
             await LoadScriptAsync();
         }
          catch (OperationCanceledException) { }
@@ -359,7 +357,6 @@ public sealed class ScriptView : WorkspaceView
             await Api.SendAsync($"scenes/{scene.Text("id")}/outfits", HttpMethod.Patch,
                 new { assignments, version = scene.Number("version") }, cancellation: lifetime.Token);
             notice.Text = "本场服装指定已保存；相关页面会标记为待复查。";
-            Cache.Invalidate("script:" + chapterId, "pages:" + chapterId);
             await LoadScriptAsync();
         }
         catch (OperationCanceledException) { }
@@ -375,7 +372,6 @@ public sealed class ScriptView : WorkspaceView
         {
             await Api.SendAsync($"scenes/{scene.Text("id")}/bind-asset", HttpMethod.Patch,
                 new { scene_asset_id = assetId, scene_asset_variant_id = variantId }, cancellation: lifetime.Token);
-            Cache.Invalidate("script:" + chapterId, "scene-assets:" + ProjectId);
             await LoadScriptAsync();
         }
          catch (OperationCanceledException) { }
@@ -400,7 +396,6 @@ public sealed class ScriptView : WorkspaceView
             await Api.SendAsync($"scenes/{scene.Text("id")}/bind-asset", HttpMethod.Patch,
                 new { scene_asset_id = createdId, scene_asset_variant_id = (string?)null }, cancellation: token);
             if (token.IsCancellationRequested || chapter != chapterId || project != ProjectId) return;
-            Cache.Invalidate("script:" + chapter, "scene-assets:" + project, "pages:" + chapter);
             await LoadScriptAsync(); notice.Text = "场景资产已创建并绑定；原地点文本已保留。";
         }
         catch (OperationCanceledException) { }
@@ -419,7 +414,6 @@ public sealed class ScriptView : WorkspaceView
         try
         {
             await Api.SendOptionalAsync($"chapters/{chapterId}/script", HttpMethod.Delete, cancellation: lifetime.Token);
-            Cache.Invalidate("script:" + chapterId, "pages:" + chapterId, "chapters:" + ProjectId);
             await LoadScriptAsync();
         }
          catch (OperationCanceledException) { }
@@ -467,8 +461,8 @@ public sealed class ScriptView : WorkspaceView
     /// SC-3: 本章是否存在活跃 SOURCE_PARSE（对齐 web chapterParseJob：
     /// job_type == "SOURCE_PARSE" &amp;&amp; job.target_id == chapterId 且非终态）。
     /// 数据源选「自行轻量拉取全项目活跃任务列表」：State.DockJob 只暴露全项目第一项
-    /// （他章任务会误判/漏判），ApiCache 的 jobs 键当前无人写入（只有 Invalidate 调用），
-    /// 都无法按 target_id 判定；jobsProbeBusy 保证每拍最多一次探测，慢响应由下一拍重试。
+    /// （他章任务会误判/漏判），无法按 target_id 判定；jobsProbeBusy 保证每拍最多
+    /// 一次探测，慢响应由下一拍重试。
     /// </summary>
     private async Task PollChapterParseAsync()
     {

@@ -27,7 +27,6 @@ public partial class MainWindow : Window
     // default 3000 ms) instead of a hardcoded 3 s; see PollInterval for the生效语义.
     private readonly DispatcherTimer poll = new() { Interval = Services.PollInterval.Interval };
     private readonly DispatcherTimer dockPoll = new() { Interval = Services.PollInterval.Interval };
-    private readonly ApiCache cache = new();
     private readonly Dictionary<string, IWorkspaceView> viewCache = new();
     private ApiClient? api;
     private DockQueue? dock;
@@ -268,7 +267,6 @@ public partial class MainWindow : Window
         var context = new WorkspaceContext
         {
             Api = api,
-            Cache = cache,
             State = state,
             Window = this,
             Project = state.CurrentProject,

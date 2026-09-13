@@ -40,7 +40,7 @@ internal static class NativeStoryboardPageChecks
         var fixture = new Fixture(); using var api = new ApiClient("http://127.0.0.1:12345", fixture); var view = new StoryboardView();
         try
         {
-            view.Activate(new WorkspaceContext { Api = api, Cache = new(), State = new(), Window = null!, Project = new ProjectItem("layout", "我最讨厌妹妹了", "", 0, 0), NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask });
+            view.Activate(new WorkspaceContext { Api = api, State = new(), Window = null!, Project = new ProjectItem("layout", "我最讨厌妹妹了", "", 0, 0), NavigateSection = (_, _) => Task.CompletedTask, OpenDashboard = () => Task.CompletedTask });
             await Until(() => view.PanelCountForTest == 3);
             view.SelectPanelForTest(0); Render(view, 1320, 900, Path.Combine(output, "native-storyboard-1320.png"));
             var strip = Field<StackPanel>(view, "pageBar"); var viewport = Field<ScrollViewer>(view, "viewport");
