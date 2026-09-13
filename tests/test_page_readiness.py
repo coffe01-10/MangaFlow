@@ -235,6 +235,43 @@ def test_readiness_only_requires_visible_cast_and_blockers_disappear(
     assert rejected_resolution.status_code == 422
 
 
+def test_soft_deleted_chapter_blocks_generation_until_restored(
+    client, db_session, tmp_path, monkeypatch
+):
+    """#633: ``DELETE /chapters/{id}`` only tombstones the row, so the
+    readiness gate must itself refuse generation instead of accepting a job
+    the worker cancels afterwards."""
+    project, page, panel, characters = _base_page(db_session)
+    _enable_assets_style_provider(
+        db_session, tmp_path, monkeypatch, project, page, panel, characters
+    )
+    assert client.post(f"/api/v1/pages/{page.id}/batches").status_code == 201
+
+    chapter_id = page.chapter_id
+    assert client.delete(f"/api/v1/chapters/{chapter_id}").status_code == 204
+
+    readiness = client.get(f"/api/v1/pages/{page.id}/readiness")
+    assert readiness.status_code == 200
+    payload = readiness.json()
+    assert payload["ready"] is False
+    chapter_blockers = [
+        item for item in payload["blockers"] if item["code"] == "CHAPTER_DELETED"
+    ]
+    assert len(chapter_blockers) == 1
+    assert chapter_blockers[0]["severity"] == "BLOCKING"
+    assert chapter_blockers[0]["target_id"] == chapter_id
+
+    rejected = client.post(f"/api/v1/pages/{page.id}/batches")
+    assert rejected.status_code == 409
+    detail = rejected.json()["detail"]
+    assert detail["code"] == "PAGE_NOT_READY"
+    assert "CHAPTER_DELETED" in {item["code"] for item in detail["blockers"]}
+
+    assert client.post(f"/api/v1/chapters/{chapter_id}/restore").status_code == 200
+    restored = client.post(f"/api/v1/pages/{page.id}/batches")
+    assert restored.status_code == 201
+
+
 def test_readiness_allows_pages_without_visible_characters(
     client, db_session, tmp_path, monkeypatch
 ):
