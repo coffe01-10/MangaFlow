@@ -397,3 +397,18 @@
 - **PR #615** 补充认证：env 套 37/37（360abb9 轮已记）。
 
 **认证**：36b32ce 上 shell-core **155/155**（目标 rlimit 测试经 `--lib` 过滤器直击，纠正了我先用集成套件过滤器 0-hit 的调用）。
+
+---
+## 19. 台账勘误 + CSP 架构核验（2026-09-13 08:38 后半，基线 36b32ce）
+
+**勘误（对本台账 §10）**：§10 记载"plan-B script-src keeps 'unsafe-inline'——与 tauri.conf CSP 同一文档化债务"**已过时**。#300 系修复后 plan-B 的 CSP 架构为：
+- `apps/web/lib/csp.ts`：**nonce 基** script-src（`'nonce-<per-request>' 'strict-dynamic'`，dev 加 'unsafe-eval'）；`unsafe-inline` 已从 script-src 移除；style-src 保留 unsafe-inline（注释论证 style 非脚本执行原语，残余为视觉风险）；`wasm-unsafe-eval` 有据移除（依赖无 wasm）。
+- `apps/web/proxy.ts`：每请求 `crypto.randomUUID` → base64 nonce（注释对齐 Next 的 nonce 提取正则）；**双头**——CSP 同时写入请求头（Next 渲染时读取并注入自身脚本 nonce）与响应头（浏览器侧策略）；`layout.tsx` 全页 dynamic rendering（静态预渲染 HTML 无请求即无 nonce，注释点名）。
+- matcher 排除 /api、_next/static、_next/image、favicon.ico、prefetch——全部真实文档路由被覆盖（Next 官方 CSP 指南推荐形状）。
+- 静态导出形态（无服务器可跑 proxy）维持 tauri.conf 的 'unsafe-inline' 债务——由 `delivery_contract.rs::script_src_unsafe_inline_is_pinned_debt_not_drift` 明确**钉为债务**，两形态边界注释齐全。
+- 三个非 CSP 安全头（nosniff / X-Frame-Options DENY / Referrer-Policy）仍在 next.config.ts headers()，未被重构丢弃。
+- `connect/img` 增 `http://localhost:*`：文件内注释论证（.env.example 文档化的 localhost 拼写）+ loopback 姿态不变（CSP 字面匹配，localhost 解析劫持需本机管理权 = 同信任域）。
+
+**E 轮（本轮对抗核验，CLEAN）**：delivery_contract.rs 全文结构（9 钉全部读真实 shipped 工件而非自建 fixture——tauri.conf/capabilities 全深度枚举防嵌套旁路）；proxy.ts/csp.ts 逐行（上）；relay_bind 套全文（真实 TIME_WAIT 前置验证 + skip-loud）；native-host.rs（§16 已记）。
+
+**结论**：无新缺陷。台账单点勘误完成；#300 系 CSP 收敛质量高（推理全部内联成文）。
