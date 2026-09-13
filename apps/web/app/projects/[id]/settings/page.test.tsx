@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError, api, type ModelCapability, type Project } from "@/lib/api";
@@ -130,5 +130,47 @@ describe("ProjectSettingsPage 409 版本冲突恢复", () => {
     await waitFor(() => expect(updateProjectSpy).toHaveBeenCalledTimes(2));
     expect(updateProjectSpy).toHaveBeenLastCalledWith("project-1", expect.objectContaining({ version: 2 }));
     await screen.findByText("项目设置已保存");
+  });
+});
+
+describe("ProjectSettingsPage 未保存草稿离开守卫（#546-4）", () => {
+  beforeEach(() => {
+    projectSpy.mockReset().mockResolvedValue(project());
+    modelsSpy.mockReset().mockResolvedValue([]);
+    updateProjectSpy.mockReset();
+  });
+
+  it("草稿脏时锚点离开先确认、刷新被 beforeunload 拦截，保存后解除", async () => {
+    renderPage();
+    await screen.findByRole("radiogroup", { name: "工作方式" });
+
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    // 干净状态：站内锚点直接放行，不弹确认。
+    const link = screen.getByRole("link", { name: /返回工作区/ });
+    const cleanEvent = createEvent.click(link);
+    fireEvent(link, cleanEvent);
+    expect(confirmSpy).not.toHaveBeenCalled();
+
+    // 修改草稿清晰度 → 脏。
+    const draftGroup = screen.getByRole("group", { name: "草稿清晰度" });
+    fireEvent.click(within(draftGroup).getByRole("button", { name: "2K" }));
+
+    const blocked = createEvent.click(link);
+    fireEvent(link, blocked);
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("尚未保存"));
+    expect(blocked.defaultPrevented).toBe(true);
+
+    // 刷新/关闭同样被拦。
+    const unload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(unload);
+    expect(unload.defaultPrevented).toBe(true);
+
+    // 保存成功后脏标记回落：不再确认。
+    updateProjectSpy.mockResolvedValue(project({ draft_resolution: "2K", version: 2 }));
+    fireEvent.click(screen.getByRole("button", { name: /保存项目设置/ }));
+    await screen.findByText("项目设置已保存");
+    fireEvent.click(link);
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    confirmSpy.mockRestore();
   });
 });

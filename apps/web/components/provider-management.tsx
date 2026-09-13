@@ -3,7 +3,7 @@
 import { api, type ModelCapability } from "@/lib/api";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CircleAlert, LoaderCircle, Sparkles } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ProviderCreateForm } from "./provider-settings/provider-create-form";
 import {
@@ -20,7 +20,11 @@ import { ProviderToolbar } from "./provider-settings/provider-toolbar";
 
 const EMPTY_MODELS: ModelCapability[] = [];
 
-export function ProviderManagement() {
+export function ProviderManagement({
+  onDirtyChange,
+}: {
+  onDirtyChange?: (dirty: boolean) => void;
+} = {}) {
   const queryClient = useQueryClient();
   const providers = useQuery({ queryKey: ["providers"], queryFn: api.providers });
   const models = useQuery({ queryKey: ["models"], queryFn: api.models });
@@ -33,6 +37,29 @@ export function ProviderManagement() {
   const [createOpen, setCreateOpen] = useState(false);
   const [focusProviderId, setFocusProviderId] = useState<string | null>(null);
   const [pinnedProviderId, setPinnedProviderId] = useState<string | null>(null);
+  // #546-5：连接面板的半成品草稿（API Key / 手工模型 / JSON）随卡片卸载即丢。
+  // 各分组把「有脏面板」上抛到这里，搜索变更（会过滤/收起卡片）前先确认，
+  // 并向页面级 beforeunload 提供统一脏标记。
+  const [dirtyGroupIds, setDirtyGroupIds] = useState<Set<string>>(new Set());
+
+  function handleGroupDirty(groupId: string, dirty: boolean) {
+    setDirtyGroupIds((current) => {
+      if (dirty === current.has(groupId)) return current;
+      const next = new Set(current);
+      if (dirty) next.add(groupId);
+      else next.delete(groupId);
+      return next;
+    });
+  }
+
+  const managementDirty = dirtyGroupIds.size > 0;
+  useEffect(() => { onDirtyChange?.(managementDirty); }, [managementDirty, onDirtyChange]);
+
+  function handleFilterChange(next: string) {
+    if (next === filter) return;
+    if (managementDirty && !window.confirm("当前有连接面板包含未保存的输入，修改搜索会收起这些面板并丢弃草稿。仍要继续吗？")) return;
+    setFilter(next);
+  }
 
   const catalog = models.data ?? EMPTY_MODELS;
   const grouped = useMemo(() => {
@@ -82,7 +109,7 @@ export function ProviderManagement() {
       return (
         <p className="provider-group-empty">
           没有符合当前搜索或筛选的供应商
-          <button type="button" onClick={() => setFilter("")}>清除筛选</button>
+          <button type="button" onClick={() => handleFilterChange("")}>清除筛选</button>
         </p>
       );
     }
@@ -103,6 +130,7 @@ export function ProviderManagement() {
           catalog={catalog}
           focusProviderId={focusProviderId}
           onKeyFocused={clearFocus}
+          onDirtyChange={(dirty) => handleGroupDirty("configured", dirty)}
         />
         <ProviderGroup
           id="unconfigured"
@@ -119,6 +147,7 @@ export function ProviderManagement() {
           catalog={catalog}
           focusProviderId={focusProviderId}
           onKeyFocused={clearFocus}
+          onDirtyChange={(dirty) => handleGroupDirty("unconfigured", dirty)}
         />
         <ProviderGroup
           id="disabled"
@@ -135,6 +164,7 @@ export function ProviderManagement() {
           catalog={catalog}
           focusProviderId={focusProviderId}
           onKeyFocused={clearFocus}
+          onDirtyChange={(dirty) => handleGroupDirty("disabled", dirty)}
         />
       </div>
     );
@@ -151,7 +181,7 @@ export function ProviderManagement() {
       </header>
       <ProviderToolbar
         filter={filter}
-        onFilterChange={setFilter}
+        onFilterChange={handleFilterChange}
         onJump={jumpToResults}
         matchCount={visibleCount}
         modelType={modelType}
@@ -168,6 +198,15 @@ export function ProviderManagement() {
         onToggleCreate={() => setCreateOpen((current) => !current)}
       />
       <p className="provider-toolbar-hint">可添加兼容连接；账号型凭据由服务端环境管理，CLI 登录由外部工具管理，Key 型连接在各自连接卡内录入。</p>
+      {/* #545-8：models 查询失败被 `?? EMPTY_MODELS` 吞掉时，搜索匹配和模型
+          计数会静默退化。供应商列表错误已在 renderResults 单独渲染，这里只
+          提示目录读取失败本身。 */}
+      {models.isError && !providers.isError && (
+        <p className="form-error" role="alert">
+          <CircleAlert size={14} />模型目录读取失败，搜索匹配与模型计数可能不完整
+          <button type="button" onClick={() => models.refetch()}>重试</button>
+        </p>
+      )}
       <ProviderCreateForm
         open={createOpen}
         onCreated={(provider) => {

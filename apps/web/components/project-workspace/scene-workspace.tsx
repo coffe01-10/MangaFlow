@@ -237,6 +237,10 @@ export function SceneWorkspace({
     palette_mood: "",
     is_canonical: false,
   });
+  // #546-3：弹窗表单的「打开时快照」。backdrop/Escape 与取消按钮关闭前，
+  // 当前草稿与快照不一致（有未保存输入）就先确认，取消关闭则原样保留。
+  const [draftSnapshot, setDraftSnapshot] = useState("");
+  const [variantSnapshot, setVariantSnapshot] = useState("");
 
   const list = useQuery({
     queryKey: ["scene-assets", projectId, { statusFilter, placeFilter, interiorFilter, includeDeleted }],
@@ -494,19 +498,23 @@ export function SceneWorkspace({
 
   function openCreate() {
     setFormError("");
-    setDraft({ name: "", description: "", location_hint: "", structured: emptyStructured() });
+    const next = { name: "", description: "", location_hint: "", structured: emptyStructured() };
+    setDraft(next);
+    setDraftSnapshot(JSON.stringify(next));
     setShowCreate(true);
   }
 
   function openEdit() {
     setFormError("");
     if (!selected) return;
-    setDraft({
+    const next = {
       name: selected.name,
       description: selected.description,
       location_hint: selected.location_hint,
       structured: pickStructured(selected.structured),
-    });
+    };
+    setDraft(next);
+    setDraftSnapshot(JSON.stringify(next));
     setShowEdit(true);
   }
 
@@ -514,7 +522,7 @@ export function SceneWorkspace({
     const overrides = pickVariantOverrides(variant?.structured_overrides);
     const palette = (overrides.palette ?? {}) as { dominant?: string[]; mood?: string };
     setEditingVariantId(variant?.id ?? null);
-    setVariantDraft({
+    const next = {
       name: variant?.name ?? "",
       time_of_day: typeof overrides.time_of_day === "string" ? overrides.time_of_day : "",
       weather: typeof overrides.weather === "string" ? overrides.weather : "",
@@ -523,9 +531,28 @@ export function SceneWorkspace({
       palette_dominant: joinList(palette.dominant),
       palette_mood: palette.mood ?? "",
       is_canonical: variant?.is_canonical ?? false,
-    });
+    };
+    setVariantDraft(next);
+    setVariantSnapshot(JSON.stringify(next));
     setFormError("");
     setShowVariant(true);
+  }
+
+  const sceneDraftDirty = (showCreate || showEdit) && JSON.stringify(draft) !== draftSnapshot;
+  const variantDraftDirty = showVariant && JSON.stringify(variantDraft) !== variantSnapshot;
+
+  function closeAssetForm() {
+    if (sceneDraftDirty && !window.confirm("当前弹窗内容尚未保存，关闭会丢弃已输入的内容。仍要关闭吗？")) return;
+    setShowCreate(false);
+    setShowEdit(false);
+    setFormError("");
+  }
+
+  function closeVariantForm() {
+    if (variantDraftDirty && !window.confirm("当前弹窗内容尚未保存，关闭会丢弃已输入的内容。仍要关闭吗？")) return;
+    setShowVariant(false);
+    setEditingVariantId(null);
+    setFormError("");
   }
 
   async function openDelete(asset: SceneAsset) {
@@ -817,6 +844,7 @@ export function SceneWorkspace({
           title={showCreate ? "新建场景资产" : "编辑场景资产"}
           wide
           onClose={() => { setShowCreate(false); setShowEdit(false); }}
+          confirmClose={sceneDraftDirty}
           triggerRef={showCreate ? createTriggerRef : undefined}
         >
           <form
@@ -847,7 +875,7 @@ export function SceneWorkspace({
             <StructuredFields value={draft.structured} onChange={(structured) => setDraft({ ...draft, structured })} />
             {formError && <p className="form-error" role="alert"><CircleAlert size={14} />{formError}</p>}
             <div className="provider-dialog-actions">
-              <button type="button" onClick={() => { setShowCreate(false); setShowEdit(false); setFormError(""); }}>取消</button>
+              <button type="button" onClick={closeAssetForm}>取消</button>
               <button type="submit" className="button ink compact" disabled={!draft.name.trim() || createAsset.isPending || updateAsset.isPending}>
                 {(createAsset.isPending || updateAsset.isPending) ? <LoaderCircle className="spin" size={13} /> : null}
                 保存
@@ -861,6 +889,7 @@ export function SceneWorkspace({
         <SceneModal
           title={editingVariantId ? "编辑环境变体" : "添加环境变体"}
           onClose={() => { setShowVariant(false); setEditingVariantId(null); }}
+          confirmClose={variantDraftDirty}
           triggerRef={variantTriggerRef}
         >
           <form
@@ -907,7 +936,7 @@ export function SceneWorkspace({
             </label>
             {formError && <p className="form-error" role="alert"><CircleAlert size={14} />{formError}</p>}
             <div className="provider-dialog-actions">
-              <button type="button" onClick={() => { setShowVariant(false); setEditingVariantId(null); setFormError(""); }}>取消</button>
+              <button type="button" onClick={closeVariantForm}>取消</button>
               <button type="submit" className="button ink compact" disabled={!variantDraft.name.trim() || saveVariant.isPending}>保存变体</button>
             </div>
           </form>

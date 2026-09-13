@@ -96,6 +96,13 @@ const categoryLabel: Record<string, string> = {
 
 const statusLabel = workflowRunStatusLabels;
 
+// 空项目的默认工作流对（契约 §4.1）：按名称识别「缺失」，供首次自动创建
+// 与失败后的「重试创建」补建共用（#545 item 2：部分成功后只补缺失项）。
+const DEFAULT_WORKFLOW_TEMPLATES: { name: string; template: "manga_default" | "chapter_export" }[] = [
+  { name: "单页生产流程", template: "manga_default" },
+  { name: "整章导出流程", template: "chapter_export" },
+];
+
 function nodeTone(type: string) {
   if (type.startsWith("source.")) return "input";
   if (type.startsWith("control.")) return "control";
@@ -231,20 +238,58 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
   useEffect(() => { edgesRef.current = edges; }, [edges]);
   useEffect(() => { workflowRef.current = activeWorkflow; }, [activeWorkflow]);
 
-  useEffect(() => {
-    if (!workflows.isSuccess || workflows.data.length || creating.current) return;
+  // #545 item 2：Promise.all 在「单页成功、整章失败」时整体拒绝——已建成的
+  // 流程既不进缓存，重试又被 data.length 守卫挡住，缺失的整章导出流程从此
+  // 无法补建。allSettled 保留部分成功；失败留给「重试创建」按名称补建缺失
+  // 项（createFailed 期间禁用自动创建，避免重试路径与 effect 双重建）。
+  const createDefaultWorkflows = useCallback(async (missing: typeof DEFAULT_WORKFLOW_TEMPLATES) => {
+    if (!missing.length) {
+      setCreateFailed("");
+      return;
+    }
     creating.current = true;
-    Promise.all([
-      api.createWorkflow(projectId, "单页生产流程", "manga_default"),
-      api.createWorkflow(projectId, "整章导出流程", "chapter_export"),
-    ]).then(([pageWorkflow, exportWorkflow]) => {
-      queryClient.setQueryData<WorkflowDefinition[]>(["workflows", projectId], [pageWorkflow, exportWorkflow]);
-      setActiveId(pageWorkflow.id);
-    }).catch((error: unknown) => {
-      // Surface instead of leaving the empty-state spinner up forever.
-      setCreateFailed(error instanceof Error ? error.message : "创建默认工作流失败，请重试。");
-    }).finally(() => { creating.current = false; });
-  }, [projectId, queryClient, workflows.data, workflows.isSuccess]);
+    const results = await Promise.allSettled(
+      missing.map((tpl) => api.createWorkflow(projectId, tpl.name, tpl.template)),
+    );
+    creating.current = false;
+    const created = results
+      .filter((result): result is PromiseFulfilledResult<WorkflowDefinition> => result.status === "fulfilled")
+      .map((result) => result.value);
+    if (created.length) {
+      queryClient.setQueryData<WorkflowDefinition[]>(["workflows", projectId], (items = []) => {
+        const known = new Set(items.map((item) => item.id));
+        return [...items, ...created.filter((item) => !known.has(item.id))];
+      });
+      const preferred = created.find((item) => item.name === DEFAULT_WORKFLOW_TEMPLATES[0].name) ?? created[0];
+      setActiveId((current) => current ?? preferred.id);
+    }
+    const failures = results
+      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+      .map((result) => (result.reason instanceof Error ? result.reason.message : String(result.reason)));
+    if (failures.length) {
+      setCreateFailed(`部分默认工作流创建失败：${failures.join("；")}。点击「重试创建」只会补建缺失的流程。`);
+    } else {
+      setCreateFailed("");
+    }
+  }, [projectId, queryClient]);
+
+  useEffect(() => {
+    if (createFailed || !workflows.isSuccess || workflows.data.length || creating.current) return;
+    void createDefaultWorkflows(DEFAULT_WORKFLOW_TEMPLATES);
+  }, [createDefaultWorkflows, createFailed, workflows.data, workflows.isSuccess]);
+
+  async function retryCreateMissingWorkflows() {
+    // 先重拉再补建：失败后缓存里可能已有部分成功未落缓存（或另一端建过），
+    // 按最新列表的名字集合判断缺失，避免重复创建同模板工作流。
+    const latest = await workflows.refetch();
+    const existing = new Set((latest.data ?? []).map((item) => item.name));
+    const missing = DEFAULT_WORKFLOW_TEMPLATES.filter((tpl) => !existing.has(tpl.name));
+    if (!missing.length) {
+      setCreateFailed("");
+      return;
+    }
+    await createDefaultWorkflows(missing);
+  }
 
   useEffect(() => {
     if (!activeWorkflow || initializedId.current === activeWorkflow.id) return;
@@ -673,7 +718,7 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
       <div className={styles.loading}>
         <strong>默认工作流创建失败</strong>
         <span>{createFailed}</span>
-        <button type="button" onClick={() => { setCreateFailed(""); void workflows.refetch(); }}>重试创建</button>
+        <button type="button" onClick={() => { void retryCreateMissingWorkflows(); }}>重试创建</button>
       </div>
     );
   }
@@ -718,12 +763,21 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
 
       {legacyGraph ? <section className={styles.legacy}><History size={17} /><div><strong>发现升级前保存在当前浏览器的工作流草稿</strong><span>它不影响现在的服务端草稿与已发布版本。需要保留时可另存导入；确认无用可永久忽略。</span></div><button onClick={importLegacy}>另存为新流程</button><button className={styles.ignoreLegacy} onClick={() => window.confirm("永久忽略这份旧版浏览器草稿？不会删除服务端流程。") && ignoreLegacy()}><X size={14} />永久忽略</button></section> : null}
       {notice ? <button className={styles.notice} role="status" aria-live="polite" onClick={() => setNotice("")}>{notice}<X size={12} /></button> : null}
-      <section className={styles.workflowStatus} aria-live="polite"><div><span>草稿版本</span><strong>V{activeWorkflow.draft_version}</strong></div><div><span>已发布版本</span><strong>{versions.data?.[0] ? `V${versions.data[0].revision}` : "尚未发布"}</strong></div><div><span>保存状态</span><strong>{saveStatus}</strong></div><div><span>校验问题</span><strong>{validation.length} 项</strong></div><button onClick={() => startRun.mutate("FULL")} disabled={startRun.isPending}><Play size={14} />运行已发布流程</button></section>
+      <section className={styles.workflowStatus} aria-live="polite"><div><span>草稿版本</span><strong>V{activeWorkflow.draft_version}</strong></div><div><span>已发布版本</span>{versions.isError ? <><strong>读取失败</strong><button type="button" onClick={() => void versions.refetch()}>重试</button></> : <strong>{versions.data?.[0] ? `V${versions.data[0].revision}` : "尚未发布"}</strong>}</div><div><span>保存状态</span><strong>{saveStatus}</strong></div><div><span>校验问题</span><strong>{validation.length} 项</strong></div><button onClick={() => startRun.mutate("FULL")} disabled={startRun.isPending}><Play size={14} />运行已发布流程</button></section>
 
       <section className={`${styles.body} ${libraryOpen ? "" : styles.libraryClosed} ${inspectorOpen ? "" : styles.inspectorClosed}`}>
         <aside className={styles.library}>
           <header><div><span>NODE LIBRARY</span><strong>节点库</strong></div><button aria-label="关闭节点库" onClick={() => setLibraryOpen(false)}><X size={14} /></button></header>
-          <div className={styles.libraryScroll}>{groupedCatalog.map(([category, items]) => <section key={category}><span>{categoryLabel[category] ?? category}</span>{items.map((item) => <button key={item.type} onClick={() => addNode(item)}><Plus size={13} /><div><strong>{item.label}</strong><small>{item.description}</small></div></button>)}</section>)}</div>
+          {catalog.isError ? (
+            // #545-7：节点目录读取失败不能静默清空节点库——给出原因与重试。
+            <div className={styles.libraryScroll} role="alert">
+              <strong>节点库读取失败</strong>
+              <span>{catalog.error instanceof Error ? catalog.error.message : "请稍后重试"}</span>
+              <button type="button" onClick={() => void catalog.refetch()}>重试</button>
+            </div>
+          ) : (
+            <div className={styles.libraryScroll}>{groupedCatalog.map(([category, items]) => <section key={category}><span>{categoryLabel[category] ?? category}</span>{items.map((item) => <button key={item.type} onClick={() => addNode(item)}><Plus size={13} /><div><strong>{item.label}</strong><small>{item.description}</small></div></button>)}</section>)}</div>
+          )}
         </aside>
 
         <section className={styles.canvas}>
@@ -792,7 +846,7 @@ export default function WorkflowStudio({ projectId }: { projectId: string }) {
             <label>备注<textarea value={selected.data.graphNode.config.notes} onChange={(event) => updateSelected({}, { notes: event.target.value })} /></label>
             {selectedNodeRun ? <section className={styles.nodeRuntime}><strong>{statusLabel[selectedNodeRun.status] ?? selectedNodeRun.status}</strong><span>{selectedNodeRun.started_at && selectedNodeRun.finished_at ? `耗时 ${((new Date(selectedNodeRun.finished_at).getTime() - new Date(selectedNodeRun.started_at).getTime()) / 1000).toFixed(1)} 秒` : "尚未产生完整耗时"}</span><pre>{JSON.stringify(selectedNodeRun.output_refs, null, 2)}</pre>{selectedNodeRun.error_message ? <em>{selectedNodeRun.error_code ? `${selectedNodeRun.error_code} · ` : ""}{selectedNodeRun.error_message}</em> : null}</section> : null}
           </div> : <div className={styles.noSelection}><GitBranch size={28} /><strong>从这里开始</strong><ol><li>选择节点查看配置</li><li>拖动端口建立连线</li><li>校验草稿并修复问题</li><li>发布不可变版本</li><li>选择范围后运行</li></ol></div>}
-          <section className={styles.versionList}><header><span>发布版本</span><strong>{versions.data?.length ?? 0}</strong></header>{versions.data?.slice(0, 4).map((version) => <button key={version.id} disabled={restoreVersion.isPending} onClick={() => { if (window.confirm(`用发布版本 V${version.revision} 覆盖当前草稿？未保存的草稿修改会丢失。`)) restoreVersion.mutate(version.id); }}><RotateCcw size={12} />V{version.revision}<small>{new Date(version.published_at).toLocaleString("zh-CN")}</small></button>)}</section>
+          <section className={styles.versionList}><header><span>发布版本</span><strong>{versions.isError ? "读取失败" : versions.data?.length ?? 0}</strong></header>{versions.isError ? <div role="alert"><span>发布版本列表读取失败：{versions.error instanceof Error ? versions.error.message : "请稍后重试"}</span><button type="button" onClick={() => void versions.refetch()}>重试</button></div> : versions.data?.slice(0, 4).map((version) => <button key={version.id} disabled={restoreVersion.isPending} onClick={() => { if (window.confirm(`用发布版本 V${version.revision} 覆盖当前草稿？未保存的草稿修改会丢失。`)) restoreVersion.mutate(version.id); }}><RotateCcw size={12} />V{version.revision}<small>{new Date(version.published_at).toLocaleString("zh-CN")}</small></button>)}</section>
         </aside>
       </section>
 

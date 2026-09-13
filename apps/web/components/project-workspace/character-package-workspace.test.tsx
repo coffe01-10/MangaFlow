@@ -700,3 +700,98 @@ describe("CharacterPackageWorkspace", () => {
     expect(screen.queryByText("数据已变化，请刷新后重试")).not.toBeInTheDocument();
   });
 });
+
+describe("CharacterPackageWorkspace 详情错误面与规格草稿守卫（#545-1 / #546-2）", () => {
+  function secondSummary() {
+    return summaryFixture({
+      id: "pkg-2",
+      character_id: "character-2",
+      character: { id: "character-2", primary_name: "苏晚", aliases: [], alias_conflict: false },
+    });
+  }
+
+  beforeEach(() => {
+    listApi.mockReset().mockResolvedValue([]);
+    detailApi.mockReset();
+    createApi.mockReset();
+    updateApi.mockReset();
+    deriveApi.mockReset();
+    publishApi.mockReset();
+    activateApi.mockReset();
+    archiveVersionApi.mockReset();
+    restoreVersionApi.mockReset();
+    deleteDraftApi.mockReset();
+    bindRefApi.mockReset();
+    unbindRefApi.mockReset();
+    coverApi.mockReset();
+    bindOutfitApi.mockReset();
+    defaultOutfitApi.mockReset();
+    diffApi.mockReset();
+    uploadApi.mockReset();
+    outfitsApi.mockReset().mockResolvedValue([]);
+  });
+
+  it("TEST-PKG-ERR1 详情查询失败渲染右侧错误面板与重试，重试成功后恢复（#545-1）", async () => {
+    listApi.mockResolvedValue([summaryFixture()]);
+    detailApi.mockRejectedValueOnce(new Error("后端 503")).mockResolvedValueOnce(packageFixture());
+    renderWorkspace();
+    const errorPane = await screen.findByRole("alert");
+    expect(errorPane).toHaveTextContent("角色模型包详情读取失败");
+    expect(errorPane).toHaveTextContent("后端 503");
+    expect(screen.queryByRole("heading", { name: "林澈 的角色模型包" })).not.toBeInTheDocument();
+    fireEvent.click(within(errorPane).getByRole("button", { name: "重试" }));
+    expect(await screen.findByRole("heading", { name: "林澈 的角色模型包" })).toBeInTheDocument();
+    expect(detailApi).toHaveBeenCalledTimes(2);
+  });
+
+  it("TEST-PKG-GUARD1 规格草稿未保存时点击切换角色先确认，取消则保留草稿（#546-2）", async () => {
+    listApi.mockResolvedValue([summaryFixture(), secondSummary()]);
+    detailApi.mockResolvedValue(packageFixture());
+    renderWorkspace();
+    await screen.findByRole("heading", { name: "林澈 的角色模型包" });
+    const specInput = screen.getByLabelText("身份锚点 年龄段外观");
+    fireEvent.change(specInput, { target: { value: "18 岁大学生" } });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const listbox = screen.getByRole("listbox", { name: "角色模型包列表" });
+    fireEvent.click(within(listbox).getByRole("option", { name: /苏晚/ }));
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("规格草稿尚未保存"));
+    // 取消：不切换、不重拉详情，已输入的规格原样保留。
+    expect(detailApi).not.toHaveBeenCalledWith("project-1", "character-2");
+    expect(screen.getByLabelText("身份锚点 年龄段外观")).toHaveValue("18 岁大学生");
+    confirmSpy.mockReturnValue(true);
+    fireEvent.click(within(listbox).getByRole("option", { name: /苏晚/ }));
+    await waitFor(() => expect(detailApi).toHaveBeenCalledWith("project-1", "character-2"));
+    confirmSpy.mockRestore();
+  });
+
+  it("TEST-PKG-GUARD2 方向键切换角色同样受脏草稿确认约束（#546-2）", async () => {
+    listApi.mockResolvedValue([summaryFixture(), secondSummary()]);
+    detailApi.mockResolvedValue(packageFixture());
+    renderWorkspace();
+    await screen.findByRole("heading", { name: "林澈 的角色模型包" });
+    fireEvent.change(screen.getByLabelText("身份锚点 年龄段外观"), { target: { value: "18 岁大学生" } });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const listbox = screen.getByRole("listbox", { name: "角色模型包列表" });
+    fireEvent.keyDown(listbox, { key: "ArrowDown" });
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("规格草稿尚未保存"));
+    expect(detailApi).not.toHaveBeenCalledWith("project-1", "character-2");
+    expect(screen.getByLabelText("身份锚点 年龄段外观")).toHaveValue("18 岁大学生");
+    confirmSpy.mockReturnValue(true);
+    fireEvent.keyDown(listbox, { key: "ArrowDown" });
+    await waitFor(() => expect(detailApi).toHaveBeenCalledWith("project-1", "character-2"));
+    confirmSpy.mockRestore();
+  });
+
+  it("TEST-PKG-GUARD3 无脏草稿时切换不弹确认（#546-2）", async () => {
+    listApi.mockResolvedValue([summaryFixture(), secondSummary()]);
+    detailApi.mockResolvedValue(packageFixture());
+    renderWorkspace();
+    await screen.findByRole("heading", { name: "林澈 的角色模型包" });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const listbox = screen.getByRole("listbox", { name: "角色模型包列表" });
+    fireEvent.click(within(listbox).getByRole("option", { name: /苏晚/ }));
+    expect(confirmSpy).not.toHaveBeenCalled();
+    await waitFor(() => expect(detailApi).toHaveBeenCalledWith("project-1", "character-2"));
+    confirmSpy.mockRestore();
+  });
+});

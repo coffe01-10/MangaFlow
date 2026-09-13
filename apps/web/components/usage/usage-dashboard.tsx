@@ -221,6 +221,15 @@ export function UsageDashboard() {
             <Download size={15} />导出 CSV
           </button>
         </div>
+        {/* #545-10：项目 / 维度查询失败时下拉只剩「全部」，静默缺项会被当成
+            「没有别的选项」。就地提示失败并给各自的重试。 */}
+        {(projects.isError || facets.isError) && (
+          <p className="usage-facet-error" role="alert">
+            筛选选项读取失败{projects.isError ? "（项目）" : ""}{facets.isError ? "（供应商 / 模型）" : ""}，下拉可能缺少选项
+            {projects.isError && <button type="button" className="button ghost compact" onClick={() => projects.refetch()}>重试项目</button>}
+            {facets.isError && <button type="button" className="button ghost compact" onClick={() => facets.refetch()}>重试供应商 / 模型</button>}
+          </p>
+        )}
       </section>
 
       {customRangeInvalid ? (

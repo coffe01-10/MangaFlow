@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api, type ProjectDashboard } from "@/lib/api";
@@ -48,5 +48,32 @@ describe("HomePage AI 连接摘要", () => {
     expect(screen.getByText("4 个可用模型")).toBeInTheDocument();
     expect(screen.queryByText(/Vertex|Gemini|Nano Banana/i)).not.toBeInTheDocument();
     expect(dashboardSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("仪表盘读取失败显示错误面板并提供重试（#545-6）", async () => {
+    dashboardSpy.mockReset().mockResolvedValue({
+      totals: {
+        project_count: 0,
+        page_count: 0,
+        selected_page_count: 0,
+        review_page_count: 0,
+        pending_job_count: 0,
+      },
+      ai_overview: {
+        enabled_model_count: 0,
+        healthy_connection_count: 0,
+        configured_connection_count: 0,
+      },
+      projects: [],
+    } satisfies ProjectDashboard).mockRejectedValueOnce(new Error("API 未启动"));
+
+    renderPage();
+
+    expect(await screen.findByText("无法连接 MangaFlow API")).toBeInTheDocument();
+    const retry = screen.getByRole("button", { name: "重试" });
+    fireEvent.click(retry);
+    await waitFor(() => expect(dashboardSpy.mock.calls.length).toBeGreaterThanOrEqual(2));
+    // 重试成功后回到正常视图（错误面板消失）。
+    await waitFor(() => expect(screen.queryByText("无法连接 MangaFlow API")).not.toBeInTheDocument());
   });
 });

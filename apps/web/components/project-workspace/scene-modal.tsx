@@ -10,20 +10,36 @@ export function SceneModal({
   onClose,
   triggerRef,
   wide = false,
+  confirmClose = false,
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
   triggerRef?: RefObject<HTMLElement | null>;
   wide?: boolean;
+  /** #546-3：为真时，backdrop 点击 / Escape 关闭前先确认（表单有未保存输入）。 */
+  confirmClose?: boolean;
 }) {
   const titleId = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
+  const confirmCloseRef = useRef(confirmClose);
 
   useEffect(() => {
     onCloseRef.current = onClose;
   }, [onClose]);
+
+  useEffect(() => {
+    confirmCloseRef.current = confirmClose;
+  }, [confirmClose]);
+
+  // 键盘监听是 mount-only（见下），确认开关与关闭回调都走 ref 才能拿到最新值。
+  function requestClose() {
+    // #546-3：创建/编辑/变体表单在 backdrop 与 Escape 下直接关闭会静默丢弃
+    // 已输入未保存的内容；显式的取消按钮由调用方自行确认。
+    if (confirmCloseRef.current && !window.confirm("当前弹窗内容尚未保存，关闭会丢弃已输入的内容。仍要关闭吗？")) return;
+    onCloseRef.current();
+  }
 
   useEffect(() => {
     const previouslyFocused = document.activeElement as HTMLElement | null;
@@ -34,6 +50,8 @@ export function SceneModal({
     function onKey(event: KeyboardEvent) {
       if (event.key === "Escape") {
         event.preventDefault();
+        // 与 backdrop 点击同一守卫：有未保存输入先确认，取消则保持弹窗。
+        if (confirmCloseRef.current && !window.confirm("当前弹窗内容尚未保存，关闭会丢弃已输入的内容。仍要关闭吗？")) return;
         onCloseRef.current();
         return;
       }
@@ -60,7 +78,7 @@ export function SceneModal({
   }, [triggerRef]);
 
   return (
-    <div className="provider-dialog-backdrop" onClick={() => onCloseRef.current()}>
+    <div className="provider-dialog-backdrop" onClick={() => requestClose()}>
       <div
         ref={dialogRef}
         role="dialog"

@@ -23,7 +23,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 const diagnosticIcons: Record<DiagnosticCheck["status"], typeof CheckCircle2> = {
   OK: CheckCircle2, WARNING: TriangleAlert, FAILED: CircleAlert, NOT_CHECKED: RefreshCw,
@@ -43,6 +43,9 @@ export default function SystemSettingsPage() {
   const diagnostics = useQuery({ queryKey: ["diagnostics"], queryFn: api.diagnostics });
   const [localDraft, setLocalDraft] = useState<RuntimeSettings | null>(null);
   const [notice, setNotice] = useState("");
+  // #546-5：供应商连接面板的半成品草稿（API Key / 手工模型 / JSON）上抛；
+  // 与运行设置草稿合成页面级 beforeunload 判据。
+  const [providerDirty, setProviderDirty] = useState(false);
   const draft = localDraft ?? runtime.data ?? null;
 
   const save = useMutation({
@@ -77,6 +80,26 @@ export default function SystemSettingsPage() {
   const update = <K extends keyof RuntimeSettings>(key: K, value: RuntimeSettings[K]) => { setLocalDraft((current) => ({ ...(current ?? draft!), [key]: value })); setNotice(""); };
   // 数字钳制统一走 ClampedNumberInput:输入期间不夹值,失焦才提交区间内结果。
 
+  const runtimeDraftDirty = Boolean(localDraft && runtime.data && (
+    localDraft.queue_mode !== runtime.data.queue_mode
+    || localDraft.job_timeout_seconds !== runtime.data.job_timeout_seconds
+    || localDraft.job_lease_seconds !== runtime.data.job_lease_seconds
+    || localDraft.max_auto_repairs !== runtime.data.max_auto_repairs
+    || localDraft.default_concurrency !== runtime.data.default_concurrency
+    || localDraft.health_check_interval_seconds !== runtime.data.health_check_interval_seconds
+    || localDraft.ui_poll_interval_seconds !== runtime.data.ui_poll_interval_seconds
+  ));
+  const pageDirty = runtimeDraftDirty || providerDirty;
+  useEffect(() => {
+    if (!pageDirty) return;
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", beforeUnload);
+    return () => window.removeEventListener("beforeunload", beforeUnload);
+  }, [pageDirty]);
+
   return (
     <AppShell>
       <div className="paper-texture" />
@@ -98,7 +121,7 @@ export default function SystemSettingsPage() {
         </section>
         <div className="settings-board">
           <section className="settings-primary">
-            <ProviderManagement />
+            <ProviderManagement onDirtyChange={setProviderDirty} />
             <article className="control-card">
               <header><div><ServerCog size={18} /><span>WORKER / RUNTIME</span></div><small>非敏感动态设置</small></header>
               {draft ? <div className="runtime-form">

@@ -478,4 +478,59 @@ describe("JobsSection", () => {
     expect(lightboxUrl).toContain("/api/v1/assets/asset-9/content");
     expect(lightboxUrl).not.toContain("thumbnail/640");
   });
+
+  it("任务列表读取失败提供重试并重新拉取（#545-5）", async () => {
+    jobsApi.mockReset().mockRejectedValueOnce(new Error("任务接口 503")).mockResolvedValue([]);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <JobsHarness />
+      </QueryClientProvider>,
+    );
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("任务列表读取失败");
+    expect(alert).toHaveTextContent("任务接口 503");
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    await waitFor(() => expect(jobsApi).toHaveBeenCalledTimes(2));
+  });
+
+  it("可点击的任务行具备键语义，Enter 可打开结果（#546-8）", async () => {
+    const openPreview = vi.fn();
+    jobsApi.mockReset().mockResolvedValue([
+      jobFixture({
+        id: "job-image-result",
+        status: "COMPLETED",
+        progress: 100,
+        result: {
+          kind: "IMAGE",
+          label: "候选 1",
+          candidate_id: "candidate-1",
+          page_id: "page-1",
+          content_url: "/api/v1/assets/asset-9/content",
+          thumbnail_url: "/api/v1/assets/asset-9/thumbnail/640",
+        },
+      }),
+      jobFixture({ id: "job-no-result", status: "RUNNING", progress: 10 }),
+    ]);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <JobsHarness openPreview={openPreview} />
+      </QueryClientProvider>,
+    );
+
+    const row = await screen.findByRole("button", { name: "查看结果：生成页面" });
+    expect(row).toHaveAttribute("tabindex", "0");
+    fireEvent.keyDown(row, { key: "Enter" });
+    await waitFor(() => expect(openPreview).toHaveBeenCalledTimes(1));
+    // 无结果的任务行不获得键语义（点击本就无行为）。
+    expect(screen.getAllByRole("button", { name: "查看结果：生成页面" })).toHaveLength(1);
+  });
 });

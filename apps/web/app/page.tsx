@@ -223,7 +223,7 @@ export default function HomePage() {
             {dashboard.isLoading ? (
               <div className="loading-panel"><LoaderCircle className="spin" />正在读取项目…</div>
             ) : dashboard.isError ? (
-              <div className="error-panel"><CircleAlert /><div><strong>无法连接 MangaFlow API</strong><p>请确认 FastAPI 已在 8000 端口启动。</p></div></div>
+              <div className="error-panel"><CircleAlert /><div><strong>无法连接 MangaFlow API</strong><p>请确认 FastAPI 已在 8000 端口启动。</p><p><button type="button" className="button outline compact" onClick={() => dashboard.refetch()}>重试</button></p></div></div>
             ) : (
               <div className="project-grid">
                 {dashboard.data?.projects.map((item, index) => <ProjectCard key={item.project.id} item={item} index={index} />)}

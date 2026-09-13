@@ -740,3 +740,113 @@ describe("WorkflowStudio 运行状态显示", () => {
     await waitFor(() => expect(confirm).toBeEnabled());
   });
 });
+
+const createWorkflowSpy = vi.spyOn(api, "createWorkflow");
+
+describe("WorkflowStudio 默认工作流部分失败与错误面（#545-2 / #545-7）", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    projectSpy.mockReset().mockResolvedValue({
+      id: "project-1",
+      name: "测试项目",
+      language: "zh-CN",
+      reading_direction: "rtl",
+      page_ratio: "b5_portrait",
+      default_resolution: "2K",
+      draft_resolution: "1K",
+      workflow_mode: "SEMI_AUTO",
+      default_concurrency: 1,
+      default_style_id: null,
+      consistency_check_enabled: true,
+      text_model_alias: "text.fast",
+      last_image_model_alias: null,
+      default_text_model_id: null,
+      last_image_model_id: null,
+      created_at: "2026-08-27T00:00:00Z",
+      updated_at: "2026-08-27T00:00:00Z",
+      version: 1,
+    });
+    workflowsSpy.mockReset().mockResolvedValue([workflow()]);
+    catalogSpy.mockReset().mockResolvedValue([nodeType]);
+    modelsSpy.mockReset().mockResolvedValue([]);
+    chaptersSpy.mockReset().mockResolvedValue([]);
+    pagesSpy.mockReset().mockResolvedValue([]);
+    versionsSpy.mockReset().mockResolvedValue([]);
+    runsSpy.mockReset().mockResolvedValue([]);
+    updateSpy.mockReset();
+    publishSpy.mockReset();
+    createWorkflowSpy.mockReset();
+  });
+
+  it("TEST-WF-CREATE1 部分创建失败可恢复，重试只补建缺失的整章导出流程（#545-2）", async () => {
+    let listCalls = 0;
+    // 首次列表为空触发自动创建；失败后重试重拉时，服务器上已有建成的单页流程。
+    workflowsSpy.mockImplementation(async () => {
+      listCalls += 1;
+      return listCalls === 1 ? [] : [workflow({ id: "wf-page", name: "单页生产流程" })];
+    });
+    createWorkflowSpy.mockImplementation(async (_projectId: string, name?: string) => {
+      if (name === "整章导出流程") throw new Error("整章创建被拒");
+      return workflow({ id: "wf-page", name: "单页生产流程" });
+    });
+
+    renderStudio();
+    expect(await screen.findByText("默认工作流创建失败")).toBeInTheDocument();
+    expect(screen.getByText(/整章创建被拒/)).toBeInTheDocument();
+
+    createWorkflowSpy.mockResolvedValue(workflow({ id: "wf-export", name: "整章导出流程" }));
+    fireEvent.click(screen.getByRole("button", { name: "重试创建" }));
+    await screen.findByText("流程编排");
+
+    const createdNames = createWorkflowSpy.mock.calls.map((call) => call[1]);
+    expect(createdNames).toEqual(["单页生产流程", "整章导出流程", "整章导出流程"]);
+  });
+
+  it("TEST-WF-CREATE2 全部创建失败后重试仍会补建两个流程（#545-2）", async () => {
+    workflowsSpy.mockResolvedValue([]);
+    createWorkflowSpy.mockRejectedValueOnce(new Error("网络中断"));
+    renderStudio();
+    expect(await screen.findByText("默认工作流创建失败")).toBeInTheDocument();
+    createWorkflowSpy.mockResolvedValue(workflow({ id: "wf-page" }));
+    fireEvent.click(screen.getByRole("button", { name: "重试创建" }));
+    await screen.findByText("流程编排");
+    expect(createWorkflowSpy.mock.calls.map((call) => call[1])).toEqual([
+      "单页生产流程",
+      "整章导出流程",
+      "单页生产流程",
+      "整章导出流程",
+    ]);
+  });
+
+  it("TEST-WF-VER1 发布版本读取失败不再谎报「尚未发布」，重试后恢复（#545-7）", async () => {
+    versionsSpy.mockRejectedValueOnce(new Error("版本接口 500"));
+    renderStudio();
+    await screen.findByText("流程编排");
+    await waitFor(() => expect(screen.getAllByText("读取失败").length).toBeGreaterThan(0));
+    expect(screen.queryByText("尚未发布")).not.toBeInTheDocument();
+    versionsSpy.mockResolvedValueOnce([{
+      id: "ver-1",
+      workflow_id: "wf-1",
+      revision: 3,
+      graph: emptyGraph,
+      graph_checksum: "abc",
+      validation_report: { valid: true, issues: [], topological_order: [] },
+      published_at: "2026-08-27T00:00:00Z",
+    }]);
+    fireEvent.click(screen.getAllByRole("button", { name: "重试" })[0]);
+    await waitFor(() => expect(versionsSpy).toHaveBeenCalledTimes(2));
+    // 状态条与版本列表都应显示 V3（不再是读取失败 / 尚未发布）。
+    await waitFor(() => expect(screen.getAllByText("V3").length).toBeGreaterThanOrEqual(2));
+  });
+
+  it("TEST-WF-LIB1 节点库读取失败显示错误与重试，恢复后可添加节点（#545-7）", async () => {
+    catalogSpy.mockRejectedValueOnce(new Error("目录 503"));
+    renderStudio();
+    await screen.findByText("流程编排");
+    expect(await screen.findByText(/节点库读取失败/)).toBeInTheDocument();
+    expect(screen.getByText(/目录 503/)).toBeInTheDocument();
+    catalogSpy.mockResolvedValueOnce([nodeType]);
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    expect(await screen.findByRole("button", { name: /解析原作/ })).toBeInTheDocument();
+  });
+});

@@ -351,8 +351,9 @@ describe("UsageDashboard cost semantics", () => {
   it("shows a retryable error state when the summary request fails", async () => {
     usageSummaryApi.mockRejectedValue(new Error("boom"));
     renderDashboard();
-    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
-    expect(screen.getByText(/用量数据加载失败/)).toBeTruthy();
+    // usageSummary 同时是维度来源：主错误面板之外还会有筛选提示（#545-10），
+    // 这里定位看板级错误本体。
+    await waitFor(() => expect(screen.getByText(/用量数据加载失败：boom/)).toBeTruthy());
     expect(screen.getByRole("button", { name: "重试" })).toBeTruthy();
   });
 
@@ -424,5 +425,31 @@ describe("UsageDashboard cost semantics", () => {
       delete urlRecord.revokeObjectURL;
       clickSpy.mockRestore();
     }
+  });
+});
+
+describe("UsageDashboard 筛选选项错误面（#545-10）", () => {
+  it("项目下拉来源读取失败显示筛选选项读取失败与重试（#545-10）", async () => {
+    projectsApi.mockReset().mockRejectedValueOnce(new Error("项目接口 503")).mockResolvedValueOnce([]);
+    renderDashboard();
+
+    const hint = await screen.findByText(/筛选选项读取失败/);
+    expect(hint.textContent).toContain("（项目）");
+    expect(hint.textContent).toContain("下拉可能缺少选项");
+    fireEvent.click(screen.getByRole("button", { name: "重试项目" }));
+    await waitFor(() => expect(projectsApi).toHaveBeenCalledTimes(2));
+  });
+
+  it("维度来源读取失败标注供应商/模型并提供独立重试（#545-10）", async () => {
+    usageSummaryApi.mockReset().mockImplementation(async (filters?: unknown) =>
+      filters && Object.keys(filters).length === 0
+        ? Promise.reject(new Error("维度 503"))
+        : Promise.resolve(populatedSummary));
+    renderDashboard();
+
+    const hint = await screen.findByText(/筛选选项读取失败/);
+    expect(hint.textContent).toContain("（供应商 / 模型）");
+    expect(screen.queryByRole("button", { name: "重试项目" })).toBeNull();
+    expect(screen.getByRole("button", { name: "重试供应商 / 模型" })).toBeTruthy();
   });
 });

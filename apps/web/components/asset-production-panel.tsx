@@ -50,11 +50,13 @@ export function CharacterConceptPanel({
   character,
   model,
   onOpen,
+  onDirtyChange,
 }: {
   projectId: string;
   character: Character;
   model: ImageModelAlias | null;
   onOpen: (url: string, label: string) => void;
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const queryClient = useQueryClient();
   const [appearance, setAppearance] = useState("");
@@ -103,6 +105,11 @@ export function CharacterConceptPanel({
       JSON.stringify(draft),
     );
   }, [appearance, character.id, draftReady, lockedFields, outfitDescription, outfitName, projectId]);
+  // #546-1：外层用 key={character.id} 键控本面板，切换角色即重挂载。草稿虽
+  // 有 localStorage 兜底，仍把「有已输入内容」上抛，让切换前的确认覆盖
+  // 概念设定草稿（script-editor 的 onDirtyChange 同模式）。
+  const conceptDirty = Boolean(appearance.trim() || outfitName.trim() || outfitDescription.trim() || lockedFields.trim());
+  useEffect(() => { onDirtyChange?.(conceptDirty); }, [conceptDirty, onDirtyChange]);
 
   const batches = useQuery({
     queryKey: ["asset-batches", "CHARACTER", character.id],
@@ -205,7 +212,22 @@ export function CharacterConceptPanel({
       return <article key={candidate.id} className={approved ? "approved" : candidate.status === "FAILED" ? "failed" : ""}><CandidatePreview candidate={candidate} label={`${character.primary_name} 综合设定草稿 ${candidate.ordinal}`} onOpen={onOpen} /><div><span>CONCEPT {String(candidate.ordinal).padStart(2, "0")}</span><strong>{approved ? "已确认为规范参考" : candidate.status === "FAILED" ? "生成失败" : "等待人工确认"}</strong><small>{candidateStatusLabels[candidate.status] ?? candidate.status} · {candidate.resolution}</small>{failureMessage ? <p className="candidate-inline-error"><CircleAlert size={13} />{failureMessage}</p> : null}<details><summary>查看实际提示词</summary><p>{promptPreview(candidate)}</p></details><div className="candidate-decision-row">{candidate.status === "FAILED" ? <><button type="button" className="secondary" disabled={deleteFailed.isPending || rejectAndRedraw.isPending} onClick={() => window.confirm("只删除这条失败记录？") && deleteFailed.mutate(candidate.id)}><Trash2 size={13} />删除记录</button><button type="button" disabled={!model || !outfitName.trim() || !outfitDescription.trim() || deleteFailed.isPending || rejectAndRedraw.isPending} onClick={() => window.confirm("删除失败记录并按当前描述重新生成？") && rejectAndRedraw.mutate(candidate.id)}><RotateCcw size={13} />重新生成</button></> : <><button type="button" className="secondary" disabled={(approved && !candidate.asset_id) || rejectAndRedraw.isPending || retractApproval.isPending} onClick={() => approved ? (window.confirm("撤销采用这张设定图？人物与服装绑定会解除，图片仍保留在素材库。") && retractApproval.mutate(candidate.id)) : (window.confirm("拒绝这张草稿并按当前描述重新生成？") && rejectAndRedraw.mutate(candidate.id))}><RotateCcw size={13} />{approved ? "撤销采用" : "拒绝并重抽"}</button><button type="button" disabled={!candidate.asset_id || approved || approve.isPending} onClick={() => approve.mutate(candidate.id)}><Check size={13} />{approved ? "已绑定人物与服装" : "确认并设为规范参考"}</button></>}</div></div></article>;
     })}</div>
     {(candidates.data?.length ?? 0) > 2 ? <p className="asset-result-empty">另有 {(candidates.data?.length ?? 0) - 2} 个历史候选，可在生成素材库中查看。</p> : null}
-    {!candidates.data?.length ? <p className="asset-result-empty">第一张草稿生成后会实时出现在这里；确认前不会进入正式页面提示词。</p> : null}
+    {batches.isError || candidates.isError ? (
+      // #545-3：读取失败必须与「还没生成」区分开——静默空态会被读成
+      // 「什么都没生成」，诱导用户再跑一次付费生成。
+      <p className="form-error" role="alert">
+        <CircleAlert size={14} />设定草稿读取失败：{[
+          batches.isError ? `批次：${batches.error instanceof Error ? batches.error.message : "读取失败"}` : null,
+          candidates.isError ? `候选：${candidates.error instanceof Error ? candidates.error.message : "读取失败"}` : null,
+        ].filter(Boolean).join("；")}
+        <button type="button" className="button outline compact" onClick={() => {
+          void batches.refetch();
+          // candidates 在没有批次时是 disabled 查询：强 refetch 会执行
+          // queryFn 里的 batch!.id 直接抛错，把重试变成新的失败。
+          if (batch) void candidates.refetch();
+        }}>重试读取</button>
+      </p>
+    ) : !candidates.data?.length ? <p className="asset-result-empty">第一张草稿生成后会实时出现在这里；确认前不会进入正式页面提示词。</p> : null}
   </section>;
 }
 
@@ -239,6 +261,26 @@ export function StyleProductionPanel({
   const storedAtmosphere = useLocalStorageValue(atmosphereKey, DEFAULT_STYLE_ATMOSPHERE);
   const atmosphere = storedAtmosphere ?? DEFAULT_STYLE_ATMOSPHERE;
   const [paletteRows, setPaletteRows] = useState(() => paletteFromProfile(style));
+  // #546-6：外层 key 已去掉 version（见 assets-section），色板行不再随
+  // ANALYZING 轮询 bump version 重挂载——重挂载会把进行中的色板编辑静默
+  // 重置回服务器值。改用 PackageSpecEditor 的渲染期重同步：仅当没有未保存
+  // 编辑时才采纳服务器新色板；自身确认色板落库后由 submittedPalette 把
+  // base 前进到已提交内容，保持 paletteDirty 对真实差异有效。
+  const [paletteBase, setPaletteBase] = useState(() => paletteFromProfile(style));
+  const [submittedPalette, setSubmittedPalette] = useState<typeof paletteBase | null>(null);
+  const paletteDirty = JSON.stringify(paletteRows) !== JSON.stringify(paletteBase);
+  const serverPalette = paletteFromProfile(style);
+  if (!paletteDirty && JSON.stringify(serverPalette) !== JSON.stringify(paletteBase)) {
+    setPaletteBase(serverPalette);
+    setPaletteRows(serverPalette);
+  } else if (
+    submittedPalette
+    && JSON.stringify(serverPalette) === JSON.stringify(submittedPalette)
+    && JSON.stringify(serverPalette) !== JSON.stringify(paletteBase)
+  ) {
+    setPaletteBase(serverPalette);
+    setSubmittedPalette(null);
+  }
 
   const batches = useQuery({
     queryKey: ["asset-batches", "STYLE", style.id],
@@ -340,8 +382,14 @@ export function StyleProductionPanel({
 
   return <div className="style-production-pipeline">
     <div className="pipeline-stage" id={`style-palette-draft-${style.id}`}><header><span>01 / AI 色板草稿</span><small>{style.status === "ANALYZING" ? "正在分析" : paletteRows.length ? `${paletteRows.length} 项` : "尚未生成"}</small></header><label><span>章节氛围</span><textarea value={atmosphere} onChange={(event) => writeLocalStorage(atmosphereKey, event.target.value)} /></label><button type="button" disabled={style.color_mode !== "color" || draftPalette.isPending || style.status === "ANALYZING"} onClick={() => draftPalette.mutate()}>{draftPalette.isPending || style.status === "ANALYZING" ? <LoaderCircle className="spin" size={13} /> : <Palette size={13} />}{paletteRows.length ? "重新提议色板" : "由默认文字模型提议色板"}</button></div>
-    <div className="pipeline-stage" id={`style-palette-confirm-${style.id}`}><header><span>02 / 编辑并确认色板</span><small>{paletteConfirmed ? "已确认" : "待确认"}</small></header><div className="palette-row-list">{paletteRows.map((row, index) => <div key={`${row.name}-${index}`}><input aria-label={`色板项 ${index + 1} 名称`} value={row.name} onChange={(event) => setPaletteRows((rows) => rows.map((item, itemIndex) => itemIndex === index ? { ...item, name: event.target.value } : item))} placeholder="色板项" /><input aria-label={`色板项 ${index + 1} 内容`} value={row.value} onChange={(event) => setPaletteRows((rows) => rows.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item))} placeholder="颜色或规则" /><button type="button" aria-label={`删除色板项 ${index + 1}`} onClick={() => setPaletteRows((rows) => rows.filter((_, itemIndex) => itemIndex !== index))}><Trash2 size={12} /></button></div>)}</div><button type="button" className="secondary" onClick={() => setPaletteRows((rows) => [...rows, { name: "", value: "" }])}><Plus size={12} />增加色板项</button><button type="button" disabled={!Object.keys(palette).length || approvePalette.isPending} onClick={() => approvePalette.mutate()}><Check size={13} />{paletteConfirmed ? "保存色板修改" : "确认彩色色板"}</button></div>
-    <div className="pipeline-stage" id={`style-test-${style.id}`}><header><span>03 / 风格测试图</span><small>{testApproved ? "人工已通过" : "尚未通过"}</small></header><button type="button" disabled={!paletteConfirmed || !model || generateTest.isPending} onClick={() => generateTest.mutate()}>{generateTest.isPending ? <LoaderCircle className="spin" size={13} /> : <Sparkles size={13} />}生成 1K 风格测试图</button><div className="style-test-candidates">{candidates.data?.filter((candidate) => candidate.variant === "STYLE_TEST").map((candidate) => <article className={approvedCandidateId === candidate.id ? "approved" : ""} key={candidate.id}><CandidatePreview candidate={candidate} label={`${style.name} 风格测试 ${candidate.ordinal}`} onOpen={onOpen} /><div><strong>{approvedCandidateId === candidate.id ? "已通过" : `测试图 ${candidate.ordinal}`}</strong><small>{candidateStatusLabels[candidate.status] ?? candidate.status}</small><button type="button" disabled={!candidate.asset_id || approveTest.isPending || approvedCandidateId === candidate.id} onClick={() => approveTest.mutate(candidate.id)}><Check size={12} />人工通过</button></div></article>)}</div></div>
+    <div className="pipeline-stage" id={`style-palette-confirm-${style.id}`}><header><span>02 / 编辑并确认色板</span><small>{paletteConfirmed ? "已确认" : "待确认"}</small></header><div className="palette-row-list">{paletteRows.map((row, index) => <div key={`${row.name}-${index}`}><input aria-label={`色板项 ${index + 1} 名称`} value={row.name} onChange={(event) => setPaletteRows((rows) => rows.map((item, itemIndex) => itemIndex === index ? { ...item, name: event.target.value } : item))} placeholder="色板项" /><input aria-label={`色板项 ${index + 1} 内容`} value={row.value} onChange={(event) => setPaletteRows((rows) => rows.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item))} placeholder="颜色或规则" /><button type="button" aria-label={`删除色板项 ${index + 1}`} onClick={() => setPaletteRows((rows) => rows.filter((_, itemIndex) => itemIndex !== index))}><Trash2 size={12} /></button></div>)}</div><button type="button" className="secondary" onClick={() => setPaletteRows((rows) => [...rows, { name: "", value: "" }])}><Plus size={12} />增加色板项</button><button type="button" disabled={!Object.keys(palette).length || approvePalette.isPending} onClick={() => { setSubmittedPalette(Object.entries(palette).map(([name, value]) => ({ name, value }))); approvePalette.mutate(); }}><Check size={13} />{paletteConfirmed ? "保存色板修改" : "确认彩色色板"}</button></div>
+    <div className="pipeline-stage" id={`style-test-${style.id}`}><header><span>03 / 风格测试图</span><small>{testApproved ? "人工已通过" : "尚未通过"}</small></header><button type="button" disabled={!paletteConfirmed || !model || generateTest.isPending} onClick={() => generateTest.mutate()}>{generateTest.isPending ? <LoaderCircle className="spin" size={13} /> : <Sparkles size={13} />}生成 1K 风格测试图</button><div className="style-test-candidates">{batches.isError || candidates.isError ? <p className="form-error" role="alert"><CircleAlert size={14} />测试图候选读取失败：{[
+      batches.isError ? `批次：${batches.error instanceof Error ? batches.error.message : "读取失败"}` : null,
+      candidates.isError ? `候选：${candidates.error instanceof Error ? candidates.error.message : "读取失败"}` : null,
+    ].filter(Boolean).join("；")}<button type="button" className="button outline compact" onClick={() => {
+      void batches.refetch();
+      if (batch) void candidates.refetch();
+    }}>重试读取</button></p> : candidates.data?.filter((candidate) => candidate.variant === "STYLE_TEST").map((candidate) => <article className={approvedCandidateId === candidate.id ? "approved" : ""} key={candidate.id}><CandidatePreview candidate={candidate} label={`${style.name} 风格测试 ${candidate.ordinal}`} onOpen={onOpen} /><div><strong>{approvedCandidateId === candidate.id ? "已通过" : `测试图 ${candidate.ordinal}`}</strong><small>{candidateStatusLabels[candidate.status] ?? candidate.status}</small><button type="button" disabled={!candidate.asset_id || approveTest.isPending || approvedCandidateId === candidate.id} onClick={() => approveTest.mutate(candidate.id)}><Check size={12} />人工通过</button></div></article>)}</div></div>
     <div className="pipeline-stage final"><header><span>04 / 激活正式风格</span><small>{active ? "当前使用中" : "待激活"}</small></header><p>{activationHint}</p><button type="button" disabled={active || activate.isPending} onClick={handleActivation}><Check size={13} />{activationLabel}</button></div>
     {error ? <p className="form-error"><CircleAlert size={14} />{error.message}</p> : null}
   </div>;

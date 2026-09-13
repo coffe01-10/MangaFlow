@@ -97,6 +97,44 @@ export default function ProjectSettingsPage() {
       router.replace("/");
     },
   });
+  // #546-4：localDraft 与服务器快照的可编辑字段不一致即脏；保存成功后两者
+  // 同步（onSuccess 同时写缓存与 localDraft），脏标记自然回落。
+  const settingsDirty = Boolean(localDraft && project.data && (
+    localDraft.workflow_mode !== project.data.workflow_mode
+    || localDraft.draft_resolution !== project.data.draft_resolution
+    || localDraft.default_resolution !== project.data.default_resolution
+    || localDraft.default_concurrency !== project.data.default_concurrency
+    || localDraft.consistency_check_enabled !== project.data.consistency_check_enabled
+    || localDraft.default_text_model_id !== project.data.default_text_model_id
+    || localDraft.text_model_alias !== project.data.text_model_alias
+  ));
+  // 离开守卫镜像 script-editor：beforeunload 拦刷新/关闭，捕获阶段拦站内
+  // 锚点（返回工作区 Link），有未保存修改时先确认。
+  useEffect(() => {
+    if (!settingsDirty) return;
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    const click = (event: MouseEvent) => {
+      if (event.defaultPrevented) return;
+      const target = event.target;
+      const anchor = target instanceof Element ? target.closest("a[href]") : null;
+      if (!anchor) return;
+      const href = anchor.getAttribute("href") ?? "";
+      if (!href.startsWith("/") || href === window.location.pathname) return;
+      if (!window.confirm("当前项目设置尚未保存，离开页面会丢弃这些修改。仍要离开吗？")) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+    window.addEventListener("beforeunload", beforeUnload);
+    document.addEventListener("click", click, true);
+    return () => {
+      window.removeEventListener("beforeunload", beforeUnload);
+      document.removeEventListener("click", click, true);
+    };
+  }, [settingsDirty]);
 
   return (
     <AppShell>
