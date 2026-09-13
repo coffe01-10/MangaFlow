@@ -477,3 +477,13 @@
 - 顺手：#592 合并代码里的未用 `import socket`（ruff F401）移除。
 
 **E 轮**：#684 交叉审（merge-race 三现模式核实，cherry-pick 正确；留重复 `.build.lock` 行 nit）。
+
+---
+## 25. 夜班续（2026-09-14 01:00，基线 3475146 不变）
+
+**E 轮（继续，两条阴性 + 一条新覆盖图缺口）：**
+- `next-config-csp.test.ts` 全文：vitest 侧指令级全覆盖（nonce/dev-eval/无 wasm、style-src 保留论证、connect/img 回环双拼写、object/frame none）——§19 验证环闭合：loopback 姿态在**单元级**也有钉。
+- `shell-tools.html` 间隙零变更 + sink 重扫（innerHTML/document.write/eval/Function）——CLEAN。
+- **B：#690 [P4]** plan-B 无浏览器级渲染探针：#300 CSP 三层验证（vitest 源级/delivery_contract 工件级/我的 urllib nonce 相交钉）无一证明**脚本真在 CSP 下执行**——typo 指令（浏览器 fail-closed）、prod 库需 eval、WebView2 特有语义三类破坏 urllib 不可见。唯一真浏览器探针（D5 的 playwright：pageerror/rendered_marker）只驱静态形态。修复面：D5 加 plan-B 模式（同证据形状指向 shell.web_origin）或 pytest-playwright 冒烟——lead 裁决。
+
+**认证**：runner **148/148 ×2**（含 plan-B 全活跃）；shell-tools sink 重扫阴性。
