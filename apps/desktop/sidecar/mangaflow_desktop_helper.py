@@ -57,6 +57,10 @@ TOKEN_RE = re.compile(r"[0-9a-f]{32}")
 GO_PREFIX = "MANGAFLOW_GO "
 EXIT_HANDSHAKE_REFUSED = 75
 
+# 终态集合（#602）：shell 的 stopped / helper 的 failed。一旦 journal 进入
+# 终态，非终态记录（如迟到的 ready）不得再复活它。
+TERMINAL_JOURNAL_STATES = frozenset({"stopped", "failed"})
+
 
 def _log(message: str) -> None:
     print(f"[desktop-helper] {message}", file=sys.stderr, flush=True)
@@ -86,11 +90,59 @@ def _read_context() -> tuple[str, Path]:
 
 
 def _write_journal(journal: Path, record: dict) -> None:
-    pending = journal.with_name(journal.name + ".pending")
+    """Atomically publish ``record`` to the ownership journal (#602).
+
+    Two writers coexist on this file: this helper (every state transition,
+    including ready and a late failed) and the shell's ``mark_stopped``
+    (pending + rename in shell-core protocol.rs). They stage under
+    per-writer pending names so the staging files can never rendezvous:
+    the helper owns ``owner.json.helper.pending``, the shell
+    ``owner.json.shell.pending``. The historical shared
+    ``owner.json.pending`` let one writer publish the other's payload (or
+    raise FileNotFoundError from the other's rename, masking real errors).
+
+    Terminal-state CAS: immediately before ``os.replace``, the CURRENT
+    journal is read (fail-open on missing/unparsable/non-object). If it is
+    already terminal (``stopped``/``failed``) and the record about to be
+    published is non-terminal (e.g. a late ``ready``), publication is
+    SKIPPED — reviving a dead session's journal to ready would leak the
+    runtime directory forever (the stale-runtime sweep only reclaims
+    stopped/failed). Terminal→terminal and non-terminal→non-terminal
+    transitions publish normally (a late ``failed`` landing on a
+    ``stopped`` journal is allowed and useful forensics).
+    """
+    pending = journal.with_name(journal.name + ".helper.pending")
     for target in (journal, pending):
         if target.is_symlink():
             raise RuntimeError("process journal must not be a link")
     pending.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+    current_state: str | None = None
+    try:
+        current = json.loads(journal.read_text(encoding="utf-8"))
+        if isinstance(current, dict):
+            state = current.get("state")
+            # Only a string state can be terminal; anything else (missing,
+            # number, list, object) fails open — and an unhashable value
+            # must not turn the membership test into a TypeError.
+            if isinstance(state, str):
+                current_state = state
+    except (OSError, ValueError):
+        # 缺失 / 编码错误 / 无法解析的当前 journal：按 fail-open 放行发布。
+        current_state = None
+    new_state = record.get("state")
+    if (
+        current_state in TERMINAL_JOURNAL_STATES
+        and new_state not in TERMINAL_JOURNAL_STATES
+    ):
+        _log(
+            f"journal {journal} is already terminal (state={current_state!r}); "
+            f"skipping publication of non-terminal state {new_state!r}"
+        )
+        try:
+            pending.unlink()
+        except OSError:
+            pass
+        return
     os.replace(pending, journal)
 
 
