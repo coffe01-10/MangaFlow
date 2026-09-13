@@ -1412,8 +1412,45 @@ function formatValidationError(items: Array<{ loc?: unknown[]; msg?: string }>):
   const field = Array.isArray(first.loc)
     ? first.loc.filter((part) => typeof part === "string" && part !== "body").join(".")
     : "";
-  const message = first.msg ?? "请求数据不符合要求";
+  const message = localizeValidationMessage(first.msg ?? "请求数据不符合要求");
   return field ? `${field}：${message}` : message;
+}
+
+// pydantic v2 校验消息是英文原文（"Field required" 等），中文界面直接透出会
+// 出现「name：Field required」这类混合文案。这里只映射 pydantic v2 自带的
+// 高频消息类型（含带参数的长度/大小比较）；识别不了的自定义/Value error
+// 文本原样返回，避免错误翻译业务语义。顺序敏感：带「or equal to」的规则
+// 必须先于不带的前缀匹配。
+const VALIDATION_MESSAGE_PATTERNS: Array<[RegExp, string | ((match: RegExpMatchArray) => string)]> = [
+  [/^Field required$/, "该字段为必填项"],
+  [/^Extra inputs are not permitted$/, "存在不允许的额外字段"],
+  [/^Input should be a valid integer\b/, "输入应为整数"],
+  [/^Input should be a valid string\b/, "输入应为文本"],
+  [/^Input should be a valid number\b/, "输入应为数字"],
+  [/^Input should be a valid boolean\b/, "输入应为布尔值"],
+  [/^Input should be a valid (?:list|array)\b/, "输入应为列表"],
+  [/^Input should be a valid dict(?:ionary)?\b/, "输入应为对象"],
+  [/^Input should be a valid date\b/, "输入应为有效的日期"],
+  [/^Input should be a valid email\b/, "输入应为有效的邮箱地址"],
+  [/^Input should be a valid URL\b/, "输入应为有效的网址"],
+  [/^Input should be a valid UUID\b/, "输入应为有效的 UUID"],
+  [/^String should have at most (\d+) characters?$/, (m) => `文本长度不能超过 ${m[1]} 个字符`],
+  [/^String should have at least (\d+) characters?$/, (m) => `文本至少需要 ${m[1]} 个字符`],
+  [/^Input should be less than or equal to (.+)$/, (m) => `输入不能大于 ${m[1]}`],
+  [/^Input should be greater than or equal to (.+)$/, (m) => `输入不能小于 ${m[1]}`],
+  [/^Input should be less than (.+)$/, (m) => `输入必须小于 ${m[1]}`],
+  [/^Input should be greater than (.+)$/, (m) => `输入必须大于 ${m[1]}`],
+];
+
+export function localizeValidationMessage(message: string): string {
+  for (const [pattern, replacement] of VALIDATION_MESSAGE_PATTERNS) {
+    const match = message.match(pattern);
+    if (!match) continue;
+    // 命中即整条替换：前缀型规则（如「Input should be a valid integer,
+    // unable to parse…」）的英文后缀是 pydantic 解析细节，对用户没有增量信息。
+    return typeof replacement === "function" ? replacement(match) : replacement;
+  }
+  return message;
 }
 
 export class ApiError extends Error {

@@ -1585,3 +1585,103 @@ describe("窄桌面布局", () => {
     expect(stylesheet).toContain(".provider-models article span, .provider-models article small { overflow: hidden;");
   });
 });
+
+describe("ProviderManagement 模型目录错误面与连接草稿守卫（#545-8 / #546-5）", () => {
+  beforeEach(() => {
+    providersApi.mockReset().mockResolvedValue([makeProvider()]);
+    modelsApi.mockReset().mockResolvedValue([]);
+    providerModelsApi.mockReset().mockResolvedValue([]);
+    verifyConnection.mockReset();
+    discoverModels.mockReset();
+    updateVisibility.mockReset();
+    updateVisibilityBatch.mockReset();
+    saveProviderKey.mockReset();
+    createProviderModel.mockReset();
+    updateConnection.mockReset();
+    createProvider.mockReset();
+    updateProvider.mockReset();
+    deleteProvider.mockReset();
+  });
+
+  it("TEST-PROV-ERR 模型目录读取失败显示提示与重试，且不与供应商错误重复（#545-8）", async () => {
+    modelsApi.mockRejectedValueOnce(new Error("目录 503"));
+    renderPlatform();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("模型目录读取失败");
+    expect(alert).toHaveTextContent("搜索匹配与模型计数可能不完整");
+    expect(screen.queryByText("供应商列表读取失败")).not.toBeInTheDocument();
+
+    modelsApi.mockResolvedValueOnce([]);
+    fireEvent.click(within(alert).getByRole("button", { name: "重试" }));
+    await waitFor(() => expect(modelsApi).toHaveBeenCalledTimes(2));
+  });
+
+  it("TEST-PROV-GUARD1 连接面板有半成品输入时收起卡片先确认，取消保留输入（#546-5）", async () => {
+    renderPlatform();
+    const keyInput = await screen.findByLabelText("API Key");
+    fireEvent.change(keyInput, { target: { value: "sk-live-half-typed" } });
+
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const cardToggle = document.getElementById("provider-card-toggle-provider-1")!;
+    expect(cardToggle).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(cardToggle);
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("未保存的输入"));
+    expect(document.getElementById("provider-card-toggle-provider-1")).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByLabelText("API Key")).toHaveValue("sk-live-half-typed");
+
+    confirmSpy.mockReturnValue(true);
+    fireEvent.click(cardToggle);
+    await waitFor(() => {
+      expect(document.getElementById("provider-card-toggle-provider-1")).toHaveAttribute("aria-expanded", "false");
+    });
+    expect(screen.queryByLabelText("API Key")).not.toBeInTheDocument();
+    confirmSpy.mockRestore();
+  });
+
+  it("TEST-PROV-GUARD2 收起分组同样先确认（#546-5）", async () => {
+    renderPlatform();
+    fireEvent.change(await screen.findByLabelText("API Key"), { target: { value: "sk-live-half-typed" } });
+
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const groupToggle = screen.getByRole("button", { name: /已配置/ });
+    expect(groupToggle).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(groupToggle);
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("未保存的连接输入"));
+    expect(screen.getByRole("button", { name: /已配置/ })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByLabelText("API Key")).toHaveValue("sk-live-half-typed");
+    confirmSpy.mockRestore();
+  });
+
+  it("TEST-PROV-GUARD3 搜索过滤在有脏面板时先确认，取消则保持原筛选（#546-5）", async () => {
+    renderPlatform();
+    fireEvent.change(await screen.findByLabelText("API Key"), { target: { value: "sk-live-half-typed" } });
+
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const search = screen.getByLabelText("筛选供应商");
+    fireEvent.change(search, { target: { value: "zzz" } });
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("修改搜索"));
+    // 筛选未应用：输入仍显示旧值，供应商卡未被过滤掉。
+    expect(screen.getByLabelText("筛选供应商")).toHaveValue("");
+    expect(document.getElementById("provider-card-toggle-provider-1")).toBeInTheDocument();
+
+    confirmSpy.mockReturnValue(true);
+    fireEvent.change(search, { target: { value: "zzz" } });
+    expect(screen.getByLabelText("筛选供应商")).toHaveValue("zzz");
+    confirmSpy.mockRestore();
+  });
+
+  it("TEST-PROV-GUARD4 无脏输入时收起与搜索都不弹确认（#546-5）", async () => {
+    renderPlatform();
+    await screen.findByLabelText("API Key");
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    fireEvent.click(document.getElementById("provider-card-toggle-provider-1")!);
+    await waitFor(() => {
+      expect(document.getElementById("provider-card-toggle-provider-1")).toHaveAttribute("aria-expanded", "false");
+    });
+    fireEvent.change(screen.getByLabelText("筛选供应商"), { target: { value: "zzz" } });
+    expect(screen.getByLabelText("筛选供应商")).toHaveValue("zzz");
+    expect(confirmSpy).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+});

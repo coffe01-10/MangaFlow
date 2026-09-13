@@ -21,9 +21,11 @@ function cliDisplay(connection: ProviderConnection) {
 export function ConnectionAdvanced({
   connection,
   busy,
+  onDirtyChange,
 }: {
   connection: ProviderConnection;
   busy: boolean;
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const queryClient = useQueryClient();
   const cli = cliDisplay(connection);
@@ -49,6 +51,14 @@ export function ConnectionAdvanced({
   const endpointResult = validateJsonRecord(endpointText, "endpoint_templates");
   const headerResult = validateJsonRecord(headerText, "extra_headers");
   const canSave = endpointResult.ok && headerResult.ok && Boolean(baseUrl.trim());
+  // #546-5：高级连接草稿（Base URL / JSON / CLI 路径）与初始快照的差异即脏；
+  // 上抛给 ConnectionPanel 汇总，供收起确认使用。
+  const advancedDirty = baseUrl !== connection.base_url
+    || responses !== connection.use_responses_api
+    || endpointText !== JSON.stringify(connection.endpoint_templates, null, 2)
+    || headerText !== JSON.stringify(connection.extra_headers, null, 2)
+    || cliExecutable !== String(connection.nonsecret_config.cli_executable ?? cli.command);
+  useEffect(() => { onDirtyChange?.(advancedDirty); }, [advancedDirty, onDirtyChange]);
 
   const saveConnection = useMutation({
     mutationFn: () => {

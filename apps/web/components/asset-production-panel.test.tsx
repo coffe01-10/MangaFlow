@@ -1,10 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api, type Character } from "@/lib/api";
+import { api, type Character, type StyleProfile } from "@/lib/api";
 
-import { CharacterConceptPanel } from "./asset-production-panel";
+import { CharacterConceptPanel, StyleProductionPanel } from "./asset-production-panel";
 
 const assetBatches = vi.spyOn(api, "assetBatches");
 const candidates = vi.spyOn(api, "candidates");
@@ -198,5 +198,128 @@ describe("CharacterConceptPanel", () => {
         outfit_description: undefined,
       }));
     });
+  });
+
+  it("TEST-CONCEPT-ERR 批次读取失败显示错误与重试，不再伪装成空态（#545-3）", async () => {
+    assetBatches.mockRejectedValueOnce(new Error("批次接口 500"));
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <CharacterConceptPanel
+          projectId="project-1"
+          character={character}
+          model="image.fast"
+          onOpen={() => undefined}
+        />
+      </QueryClientProvider>,
+    );
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("设定草稿读取失败");
+    expect(alert).toHaveTextContent("批次：批次接口 500");
+    // 失败不得被误读为「还没生成」，否则会诱导重复付费生成。
+    expect(screen.queryByText("第一张草稿生成后会实时出现在这里；确认前不会进入正式页面提示词。"))
+      .not.toBeInTheDocument();
+
+    assetBatches.mockResolvedValueOnce([]);
+    fireEvent.click(within(alert).getByRole("button", { name: "重试读取" }));
+    await waitFor(() => expect(assetBatches).toHaveBeenCalledTimes(2));
+    await screen.findByText("第一张草稿生成后会实时出现在这里；确认前不会进入正式页面提示词。");
+  });
+});
+
+function styleFixture(overrides: Partial<StyleProfile> = {}): StyleProfile {
+  return {
+    id: "style-1",
+    project_id: "project-1",
+    name: "雨季水彩",
+    color_mode: "color",
+    profile: { palette_draft: { "肤色": "#f2e2d5", "发色": "#3a2e2a" } },
+    locked_fields: [],
+    status: "ACTIVE",
+    version: 3,
+    ...overrides,
+  };
+}
+
+describe("StyleProductionPanel 候选错误面与色板草稿守卫（#545-3 / #546-6）", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    assetBatches.mockReset().mockResolvedValue([]);
+    candidates.mockReset().mockResolvedValue([]);
+    jobs.mockReset().mockResolvedValue([]);
+    confirmAction.mockReset().mockReturnValue(true);
+  });
+
+  function renderPanel(style: StyleProfile) {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(
+      <QueryClientProvider client={client}>
+        <StyleProductionPanel
+          projectId="project-1"
+          style={style}
+          model="image.fast"
+          active={false}
+          onOpen={() => undefined}
+        />
+      </QueryClientProvider>,
+    );
+    return { client, rerender: (next: StyleProfile) => view.rerender(
+      <QueryClientProvider client={client}>
+        <StyleProductionPanel
+          projectId="project-1"
+          style={next}
+          model="image.fast"
+          active={false}
+          onOpen={() => undefined}
+        />
+      </QueryClientProvider>,
+    ) };
+  }
+
+  it("TEST-STYLE-ERR 测试图候选读取失败显示错误与重试（#545-3）", async () => {
+    assetBatches.mockRejectedValueOnce(new Error("候选批次 503"));
+    renderPanel(styleFixture());
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("测试图候选读取失败");
+    expect(alert).toHaveTextContent("候选批次 503");
+
+    assetBatches.mockResolvedValueOnce([]);
+    fireEvent.click(within(alert).getByRole("button", { name: "重试读取" }));
+    await waitFor(() => expect(assetBatches).toHaveBeenCalledTimes(2));
+  });
+
+  it("TEST-STYLE-GUARD1 version bump 不再重挂载：进行中的色板编辑在轮询刷新后保留（#546-6）", async () => {
+    const initial = styleFixture({
+      status: "ANALYZING",
+      profile: { palette_draft: { "肤色": "#f2e2d5" } },
+    });
+    const { rerender } = renderPanel(initial);
+    const nameInput = await screen.findByLabelText("色板项 1 名称");
+    expect(nameInput).toHaveValue("肤色");
+    fireEvent.change(nameInput, { target: { value: "主肤色" } });
+
+    // ANALYZING 轮询完成：version bump，服务器还补充了「天空」一项。
+    const bumped = styleFixture({
+      status: "ACTIVE",
+      version: 4,
+      profile: { palette_draft: { "肤色": "#f2e2d5", "天空": "#a8c8e8" } },
+    });
+    rerender(bumped);
+
+    // 脏输入原样保留，没有被服务器色板覆盖。
+    expect(screen.getByLabelText("色板项 1 名称")).toHaveValue("主肤色");
+    expect(screen.queryByLabelText("色板项 2 名称")).not.toBeInTheDocument();
+  });
+
+  it("TEST-STYLE-GUARD2 未编辑时服务器新色板仍会被采纳（非脏重同步）（#546-6）", async () => {
+    const initial = styleFixture({ profile: { palette_draft: { "肤色": "#f2e2d5" } } });
+    const { rerender } = renderPanel(initial);
+    expect(await screen.findByLabelText("色板项 1 名称")).toHaveValue("肤色");
+
+    const updated = styleFixture({ version: 4, profile: { palette_draft: { "肤色": "#f2e2d5", "天空": "#a8c8e8" } } });
+    rerender(updated);
+
+    await waitFor(() => expect(screen.getByLabelText("色板项 2 名称")).toHaveValue("天空"));
   });
 });

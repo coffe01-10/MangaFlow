@@ -73,7 +73,21 @@ export function JobsSection({
       if (resultUrl && job.result) openPreview(resultUrl, job.result.label);
     };
     const failureReason = job.error_message || errorCodeLabels[job.error_code ?? ""] || "";
-    return <article className={`job-row status-${job.status.toLowerCase()} ${resultUrl ? "has-result" : ""}`} key={job.id} onClick={resultUrl ? showResult : undefined}>
+    return <article
+      className={`job-row status-${job.status.toLowerCase()} ${resultUrl ? "has-result" : ""}`}
+      key={job.id}
+      onClick={resultUrl ? showResult : undefined}
+      role={resultUrl ? "button" : undefined}
+      tabIndex={resultUrl ? 0 : undefined}
+      aria-label={resultUrl ? `查看结果：${jobLabels[job.job_type] ?? job.job_type}` : undefined}
+      onKeyDown={resultUrl ? (event) => {
+        // #546-8：整行可点击查看结果，但没有键语义时键盘用户进不去。
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          showResult();
+        }
+      } : undefined}
+    >
       {!showArchivedJobs && terminal && <label className="job-select" onClick={(event) => event.stopPropagation()}><input type="checkbox" aria-label={`选择${jobLabels[job.job_type] ?? job.job_type}`} checked={selectedJobIds.includes(job.id)} onChange={(event) => setSelectedJobIds((values) => event.target.checked ? [...values, job.id] : values.filter((id) => id !== job.id))} /></label>}
       <div className="job-type"><span>{jobLabels[job.job_type] ?? job.job_type}</span><strong>{jobStatusLabels[job.status] ?? job.status}</strong></div>
       {showProgress && <div className="job-progress" role="progressbar" aria-label="任务进度" aria-valuenow={job.progress} aria-valuemin={0} aria-valuemax={100}><i><b style={{ width: `${Math.min(100, Math.max(0, job.progress))}%` }} /></i><span>{job.progress}% · 尝试 {job.attempt_count}/{job.max_attempts}</span></div>}
@@ -87,7 +101,7 @@ export function JobsSection({
       <header className="canvas-header"><div><span>JOBS / 任务中心</span><h2>每个生成任务都能看懂、取消和重试</h2></div><small>{jobs.data?.length ?? 0} 个任务</small></header>
       <div className="job-toolbar"><div><button className={!showArchivedJobs ? "active" : ""} onClick={() => { setShowArchivedJobs(false); setJobNotice(""); setSelectedJobIds([]); }}><ListTodo size={13} />近期任务</button><button className={showArchivedJobs ? "active" : ""} onClick={() => { setShowArchivedJobs(true); setJobNotice(""); setSelectedJobIds([]); }}><History size={13} />历史记录</button></div>{!showArchivedJobs && <div className="job-bulk-actions"><button disabled={!selectedJobIds.length || bulkArchiveJobs.isPending} onClick={() => bulkArchiveJobs.mutate()}><Archive size={13} />归档已选（{selectedJobIds.length}）</button><button disabled={archiveCompletedJobs.isPending} onClick={() => { if (window.confirm("将所有已完成、失败和已取消任务移入历史记录？生成候选与溯源信息不会删除。")) archiveCompletedJobs.mutate(); }}><Archive size={13} />归档全部终态</button></div>}</div>
       {jobNotice && <p className={jobNotice.includes("失败") ? "job-notice error" : "job-notice"} role={jobNotice.includes("失败") ? "alert" : "status"}>{jobNotice.includes("失败") ? <CircleAlert size={13} /> : <Check size={13} />}{jobNotice}</p>}
-      {jobs.isError && <p className="form-error" role="alert"><CircleAlert size={15} />任务列表读取失败：{jobs.error instanceof Error ? jobs.error.message : "请稍后重试"}</p>}
+      {jobs.isError && <p className="form-error" role="alert"><CircleAlert size={15} />任务列表读取失败：{jobs.error instanceof Error ? jobs.error.message : "请稍后重试"}<button type="button" className="button outline compact" onClick={() => jobs.refetch()}>重试</button></p>}
       <div className="job-sections">
         {activeJobs.length > 0 && <section><header><strong>正在运行</strong><small>{activeJobs.length} 条</small></header><div className="job-list">{activeJobs.map((job) => renderJob(job, true))}</div></section>}
         {failedJobs.length > 0 && <details open className="job-group failed"><summary><span>失败任务</span><strong>{failedJobs.length} 条 · 展开查看错误与重试</strong></summary><div className="job-list">{failedJobs.map((job) => renderJob(job, false))}</div></details>}

@@ -157,4 +157,19 @@ describe("SystemSettingsPage 任务租约设置", () => {
     );
     await screen.findByText("运行设置已保存并应用到后续任务");
   });
+
+  it("运行设置草稿未保存时刷新/关闭被 beforeunload 拦截（#546-5）", async () => {
+    renderPage();
+
+    await screen.findByLabelText(/任务租约/);
+    // 干净状态不拦截。
+    const clean = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(clean);
+    expect(clean.defaultPrevented).toBe(false);
+
+    fireEvent.change(screen.getByRole("combobox", { name: /队列模式/ }), { target: { value: "LOCAL" } });
+    const dirty = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(dirty);
+    expect(dirty.defaultPrevented).toBe(true);
+  });
 });

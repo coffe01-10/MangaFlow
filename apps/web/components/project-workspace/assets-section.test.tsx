@@ -1,8 +1,8 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { Asset, AssetPurpose } from "@/lib/api";
+import { api, type Asset, type AssetPurpose, type Character } from "@/lib/api";
 
 import { AssetsSection } from "./assets-section";
 import type { AssetsWorkspace } from "./use-assets-workspace";
@@ -174,5 +174,166 @@ describe("AssetsSection 用途重分类（#165）", () => {
     const workspace = makeWorkspace({ ...mutation(), isPending: true });
     renderAssets(workspace);
     expect(screen.getByLabelText("修改素材用途")).toBeDisabled();
+  });
+});
+
+function characterFixture(overrides: Partial<Character> = {}): Character {
+  return {
+    id: "character-1",
+    project_id: "project-1",
+    primary_name: "林澈",
+    aliases: ["小澈"],
+    alias_conflict: false,
+    canonical_description: "",
+    locked_features: ["黑色长发"],
+    forbidden_changes: ["发色"],
+    status: "ACTIVE",
+    version: 1,
+    references: [],
+    ...overrides,
+  };
+}
+
+function renderAssetsView(
+  workspace: AssetsWorkspace,
+  { assetView, characters }: { assetView: string; characters: Character[] },
+) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={client}>
+      <AssetsSection
+        id="project-1"
+        assetView={assetView as never}
+        draft={{ default_style_id: null }}
+        assets={{ data: [assetFixture()] } as never}
+        characters={{ data: characters } as never}
+        outfits={{ data: [] } as never}
+        modelOptions={[]}
+        activeDrawModel={null}
+        setDrawModel={vi.fn()}
+        openPreview={() => undefined}
+        rememberWorkspaceScroll={() => undefined}
+        workspace={workspace}
+      />
+    </QueryClientProvider>,
+  );
+}
+
+describe("AssetsSection 候选错误面与角色切换草稿守卫（#545-4 / #546-1）", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    window.localStorage.clear();
+    vi.spyOn(api, "assetBatches").mockResolvedValue([]);
+    vi.spyOn(api, "candidates").mockResolvedValue([]);
+    vi.spyOn(api, "jobs").mockResolvedValue([]);
+  });
+
+  it("TEST-ASSET-ERR 服装穿着图候选读取失败显示错误卡与重试（#545-4）", async () => {
+    const workspace = makeWorkspace();
+    workspace.selectedCharacterOutfitId = "outfit-1";
+    workspace.assetCandidates = {
+      data: [],
+      isError: true,
+      error: new Error("候选接口 503"),
+      refetch: vi.fn(),
+    } as never;
+    renderAssetsView(workspace, { assetView: "outfits", characters: [] });
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("服装穿着图读取失败");
+    expect(alert).toHaveTextContent("候选接口 503");
+    fireEvent.click(screen.getByRole("button", { name: "重试读取" }));
+    await waitFor(() => expect(workspace.assetCandidates.refetch).toHaveBeenCalled());
+  });
+
+  it("TEST-ASSET-GUARD1 角色规范有未保存修改时切换角色先确认，取消保留草稿（#546-1）", async () => {
+    const first = characterFixture();
+    const second = characterFixture({
+      id: "character-2",
+      primary_name: "苏晚",
+      aliases: [],
+      locked_features: [],
+      forbidden_changes: [],
+    });
+    const workspace = makeWorkspace();
+    workspace.bindCharacterId = first.id;
+    workspace.boundCharacter = first;
+    // 编辑器字段与服务器不一致 = 脏。
+    workspace.editCharacterName = "林小澈";
+    workspace.editCharacterAliases = first.aliases.join("，");
+    workspace.editLockedFeatures = first.locked_features.join("，");
+    workspace.editForbiddenChanges = first.forbidden_changes.join("，");
+    renderAssetsView(workspace, { assetView: "characters", characters: [first, second] });
+
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    fireEvent.click(await screen.findByRole("button", { name: /苏晚/ }));
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("未保存"));
+    // 取消：不切换、不覆盖编辑字段。
+    expect(workspace.setBindCharacterId).not.toHaveBeenCalled();
+    expect(workspace.setEditCharacterName).not.toHaveBeenCalled();
+
+    confirmSpy.mockReturnValue(true);
+    fireEvent.click(screen.getByRole("button", { name: /苏晚/ }));
+    await waitFor(() => expect(workspace.setBindCharacterId).toHaveBeenCalledWith("character-2"));
+    expect(workspace.setEditCharacterName).toHaveBeenCalledWith("苏晚");
+    confirmSpy.mockRestore();
+  });
+
+  it("TEST-ASSET-GUARD2 概念设定面板有输入时切换角色同样先确认（#546-1）", async () => {
+    const first = characterFixture();
+    const second = characterFixture({
+      id: "character-2",
+      primary_name: "苏晚",
+      aliases: [],
+      locked_features: [],
+      forbidden_changes: [],
+    });
+    const workspace = makeWorkspace();
+    workspace.bindCharacterId = first.id;
+    workspace.boundCharacter = first;
+    workspace.editCharacterName = first.primary_name;
+    workspace.editCharacterAliases = first.aliases.join("，");
+    workspace.editLockedFeatures = first.locked_features.join("，");
+    workspace.editForbiddenChanges = first.forbidden_changes.join("，");
+    renderAssetsView(workspace, { assetView: "characters", characters: [first, second] });
+
+    // 概念面板动态导入完成后渲染表单；输入即视为草稿。
+    const appearance = await screen.findByPlaceholderText("简述外貌与气质；可留空");
+    fireEvent.change(appearance, { target: { value: "黑发黑瞳" } });
+
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    fireEvent.click(screen.getByRole("button", { name: /苏晚/ }));
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(workspace.setBindCharacterId).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+
+  it("TEST-ASSET-GUARD3 无任何草稿时切换角色不弹确认（#546-1）", async () => {
+    const first = characterFixture();
+    const second = characterFixture({
+      id: "character-2",
+      primary_name: "苏晚",
+      aliases: [],
+      locked_features: [],
+      forbidden_changes: [],
+    });
+    const workspace = makeWorkspace();
+    workspace.bindCharacterId = first.id;
+    workspace.boundCharacter = first;
+    workspace.editCharacterName = first.primary_name;
+    workspace.editCharacterAliases = first.aliases.join("，");
+    workspace.editLockedFeatures = first.locked_features.join("，");
+    workspace.editForbiddenChanges = first.forbidden_changes.join("，");
+    workspace.outfitName = "";
+    workspace.selectedOutfitAssets = [];
+    renderAssetsView(workspace, { assetView: "characters", characters: [first, second] });
+
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    fireEvent.click(await screen.findByRole("button", { name: /苏晚/ }));
+    expect(confirmSpy).not.toHaveBeenCalled();
+    await waitFor(() => expect(workspace.setBindCharacterId).toHaveBeenCalledWith("character-2"));
+    confirmSpy.mockRestore();
   });
 });

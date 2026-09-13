@@ -41,6 +41,7 @@ export function ConnectionPanel({
   catalog,
   autoFocusKey,
   onKeyFocused,
+  onDirtyChange,
 }: {
   connection: ProviderConnection;
   modelType: ModelTypeFilter;
@@ -50,6 +51,7 @@ export function ConnectionPanel({
   catalog: ModelCapability[];
   autoFocusKey: boolean;
   onKeyFocused: () => void;
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const queryClient = useQueryClient();
   const models = useQuery({
@@ -63,6 +65,7 @@ export function ConnectionPanel({
   const [manualType, setManualType] = useState<"TEXT" | "IMAGE">("TEXT");
   const [notice, setNotice] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [advancedDirty, setAdvancedDirty] = useState(false);
   const [visibilityFailures, setVisibilityFailures] = useState<
     ModelVisibilityBatchResult["failed"]
   >([]);
@@ -88,6 +91,17 @@ export function ConnectionPanel({
     keyRef.current?.focus();
     onKeyFocused();
   }, [autoFocusKey, onKeyFocused]);
+
+  // #546-5：半成品输入（API Key / 手工模型 / 高级连接 JSON）随面板卸载即丢。
+  // 把「有未保存输入」上抛给卡片，收起 / 搜索过滤前可确认（script-editor 的
+  // onDirtyChange 同模式）。keyLabel 初始值是 "default"。
+  const draftDirty = advancedDirty
+    || apiKey.trim() !== ""
+    || keyLabel !== "default"
+    || manualId.trim() !== ""
+    || manualName.trim() !== ""
+    || manualType !== "TEXT";
+  useEffect(() => { onDirtyChange?.(draftDirty); }, [draftDirty, onDirtyChange]);
 
   function refresh() {
     queryClient.invalidateQueries({ queryKey: ["providers"] });
@@ -359,7 +373,7 @@ export function ConnectionPanel({
           <CircleAlert size={14} />{actionError.message}
         </p>
       )}
-      <ConnectionAdvanced connection={connection} busy={pending} />
+      <ConnectionAdvanced connection={connection} busy={pending} onDirtyChange={setAdvancedDirty} />
       <div className="provider-models">
         {models.isPending && <p>正在读取模型目录…</p>}
         {models.isError && (

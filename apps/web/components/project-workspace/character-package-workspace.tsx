@@ -13,7 +13,7 @@ import {
   Users,
 } from "lucide-react";
 import Image from "next/image";
-import { useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 
 import {
   api,
@@ -98,10 +98,12 @@ function PackageSpecEditor({
   pkg,
   pending,
   onSave,
+  onDirtyChange,
 }: {
   pkg: CharacterModelPackage;
   pending: boolean;
   onSave: (payload: PackageSpecPayload) => void;
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   function specFromPackage(target: CharacterModelPackage) {
     return {
@@ -147,6 +149,10 @@ function PackageSpecEditor({
     setBase(serverSpec);
     setSubmitted(null);
   }
+  // #546-2：specDirty 只在本组件内部可见，而「切换角色」的键控重挂载
+  // （key={`spec:${pkg.id}`}）发生在父级。把脏标记上抛，父级才能在丢弃
+  // 前征得确认（script-editor 的 onDirtyChange 同模式）。
+  useEffect(() => { onDirtyChange?.(specDirty); }, [specDirty, onDirtyChange]);
 
   function clean(fields: Record<string, string>) {
     return Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, value.trim() || null]));
@@ -244,6 +250,8 @@ export function CharacterPackageWorkspace({
   const [showDiff, setShowDiff] = useState(false);
   const [publishTarget, setPublishTarget] = useState<PackageVersion | null>(null);
   const [createCharacterId, setCreateCharacterId] = useState("");
+  // #546-2：规格编辑器（键控重挂载）的脏标记上抛到这里，切换角色前可确认。
+  const [specEditorDirty, setSpecEditorDirty] = useState(false);
 
   const list = useQuery({
     queryKey: ["character-packages", projectId],
@@ -548,6 +556,17 @@ export function CharacterPackageWorkspace({
     apply(file);
   }
 
+  // #546-2：切换角色会让 PackageSpecEditor 以新包 id 重挂载，未保存的规格
+  // 输入随之丢弃。点击与方向键两条路径都先确认（script-editor 的
+  // confirmDiscardDraft 同模式）；取消则原地保留草稿。
+  function switchCharacter(nextCharacterId: string) {
+    if (nextCharacterId !== resolvedCharacterId
+      && specEditorDirty
+      && !window.confirm("当前规格草稿尚未保存，切换角色会丢弃这些修改。仍要切换吗？")) return;
+    setSelectedCharacterId(nextCharacterId);
+    headingRef.current?.focus();
+  }
+
   function onListKey(event: KeyboardEvent<HTMLDivElement>) {
     if (!["ArrowDown", "ArrowUp"].includes(event.key) || !packages.length) return;
     event.preventDefault();
@@ -555,8 +574,7 @@ export function CharacterPackageWorkspace({
     const next = event.key === "ArrowDown"
       ? Math.min(packages.length - 1, current + 1)
       : Math.max(0, current - 1);
-    setSelectedCharacterId(packages[next].character_id);
-    headingRef.current?.focus();
+    switchCharacter(packages[next].character_id);
   }
 
   const coverReference = draft?.references.find((item) => item.role === "cover") ?? null;
@@ -631,7 +649,7 @@ export function CharacterPackageWorkspace({
                   role="option"
                   aria-selected={resolvedCharacterId === item.character_id}
                   className={resolvedCharacterId === item.character_id ? "scene-card active" : "scene-card"}
-                  onClick={() => { setSelectedCharacterId(item.character_id); headingRef.current?.focus(); }}
+                  onClick={() => switchCharacter(item.character_id)}
                 >
                   <strong>{item.character.primary_name}</strong>
                   <span>
@@ -804,6 +822,7 @@ export function CharacterPackageWorkspace({
                     pkg={pkg}
                     pending={saveSpec.isPending}
                     onSave={(payload) => saveSpec.mutate(payload)}
+                    onDirtyChange={setSpecEditorDirty}
                   />
 
                   <section className="pkg-cover-block" aria-label="封面">
@@ -950,6 +969,17 @@ export function CharacterPackageWorkspace({
                   </ul>
                 </section>
               ) : null}
+            </section>
+          ) : detail.isError ? (
+            // #545-1：详情查询失败时右侧不能再静默空白——列表还在，用户会以为
+            // 该角色没有模型包。给出失败原因与重试（列表级错误已有同类面板）。
+            <section className="scene-detail-pane" aria-label="模型包详情读取失败">
+              <div className="asset-empty" role="alert">
+                <CircleAlert />
+                <strong>角色模型包详情读取失败</strong>
+                <p>{detail.error instanceof Error ? detail.error.message : "请稍后重试"}</p>
+                <button type="button" className="button outline compact" onClick={() => detail.refetch()}>重试</button>
+              </div>
             </section>
           ) : null}
         </div>

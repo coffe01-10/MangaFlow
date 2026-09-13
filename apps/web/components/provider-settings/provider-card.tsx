@@ -2,7 +2,7 @@
 
 import type { ModelCapability, ProviderProfile } from "@/lib/api";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { ConnectionPanel } from "./connection-panel";
 import { mapCategory, mapRisk } from "./provider-copy";
@@ -21,6 +21,7 @@ export function ProviderCard({
   catalog,
   autoFocusKey,
   onKeyFocused,
+  onDirtyChange,
 }: {
   provider: ProviderProfile;
   forceExpanded: boolean;
@@ -32,10 +33,30 @@ export function ProviderCard({
   catalog: ModelCapability[];
   autoFocusKey: boolean;
   onKeyFocused: () => void;
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const [expanded, setExpanded] = useState(
     preferExpanded || provider.connections.some((connection) => connection.configured),
   );
+  // #546-5：收起卡片会卸载 ConnectionPanel（API Key / 手工模型 / JSON 草稿
+  // 随之丢失）。各连接面板上抛脏标记，收起前确认。
+  const [dirtyConnectionIds, setDirtyConnectionIds] = useState<Set<string>>(new Set());
+  const cardDirty = dirtyConnectionIds.size > 0;
+  useEffect(() => { onDirtyChange?.(cardDirty); }, [cardDirty, onDirtyChange]);
+
+  function handleConnectionDirty(connectionId: string, dirty: boolean) {
+    setDirtyConnectionIds((current) => {
+      // 必须在无变化时返回原引用：父级每次渲染都传新的 onDirtyChange
+      // 闭包，effect 会反复执行；新 Set 会造成 setState → 渲染 → effect
+      // 的无限循环。
+      if (dirty === current.has(connectionId)) return current;
+      const next = new Set(current);
+      if (dirty) next.add(connectionId);
+      else next.delete(connectionId);
+      return next;
+    });
+  }
+
   const shown = forceExpanded || preferExpanded || expanded;
   const panelId = `provider-card-${provider.id}`;
   const connectionCount = provider.connections.length;
@@ -52,7 +73,10 @@ export function ProviderCard({
           className="provider-card-toggle"
           aria-expanded={shown}
           aria-controls={panelId}
-          onClick={() => setExpanded((current) => !current)}
+          onClick={() => {
+            if (shown && cardDirty && !window.confirm("该供应商连接中有未保存的输入，收起会丢弃这些草稿。仍要收起吗？")) return;
+            setExpanded((current) => !current);
+          }}
         >
           {shown ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
           <span className="provider-card-title">
@@ -90,6 +114,7 @@ export function ProviderCard({
               catalog={catalog}
               autoFocusKey={autoFocusKey}
               onKeyFocused={onKeyFocused}
+              onDirtyChange={(dirty) => handleConnectionDirty(connection.id, dirty)}
             />
           ))}
         </div>

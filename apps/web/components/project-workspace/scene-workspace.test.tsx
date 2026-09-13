@@ -445,3 +445,84 @@ describe("SceneWorkspace", () => {
     expect(screen.getByText("归档场景“车站前街”？")).toBeInTheDocument();
   });
 });
+
+describe("SceneWorkspace 表单弹窗草稿守卫（#546-3）", () => {
+  beforeEach(() => {
+    listApi.mockReset().mockResolvedValue([assetFixture()]);
+    createApi.mockReset();
+    updateApi.mockReset();
+    deleteApi.mockReset();
+    restoreApi.mockReset();
+    uploadApi.mockReset();
+    bindRefApi.mockReset();
+    unbindRefApi.mockReset();
+    createVariantApi.mockReset();
+    chaptersApi.mockReset().mockResolvedValue([]);
+    scriptApi.mockReset().mockResolvedValue({ chapter_id: "c1", status: "READY", revision_no: 1, coverage: {}, scenes: [] });
+  });
+
+  it("TEST-SCENE-MODAL1 新建表单有未保存输入时 Escape / 背板先确认，取消保留输入（#546-3）", async () => {
+    renderWorkspace();
+    fireEvent.click(await screen.findByRole("button", { name: /新建场景/ }));
+    const nameInput = await screen.findByLabelText("场景名称");
+    fireEvent.change(nameInput, { target: { value: "废弃车站" } });
+
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("尚未保存"));
+    expect(screen.getByLabelText("场景名称")).toHaveValue("废弃车站");
+
+    const backdrop = document.querySelector(".provider-dialog-backdrop");
+    expect(backdrop).not.toBeNull();
+    fireEvent.click(backdrop!);
+    expect(confirmSpy).toHaveBeenCalledTimes(2);
+    expect(screen.getByLabelText("场景名称")).toHaveValue("废弃车站");
+
+    confirmSpy.mockReturnValue(true);
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByLabelText("场景名称")).not.toBeInTheDocument());
+    confirmSpy.mockRestore();
+  });
+
+  it("TEST-SCENE-MODAL2 干净表单直接关闭，不弹确认（#546-3）", async () => {
+    renderWorkspace();
+    fireEvent.click(await screen.findByRole("button", { name: /新建场景/ }));
+    await screen.findByLabelText("场景名称");
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(confirmSpy).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByLabelText("场景名称")).not.toBeInTheDocument());
+    confirmSpy.mockRestore();
+  });
+
+  it("TEST-SCENE-MODAL3 环境变体编辑表单同样受守卫，取消按钮也不丢草稿（#546-3）", async () => {
+    listApi.mockResolvedValue([assetFixture({
+      variants: [{
+        id: "variant-1",
+        scene_asset_id: "asset-1",
+        name: "雨天",
+        structured_overrides: { weather: "大雨" },
+        is_canonical: false,
+        deleted_at: null,
+        version: 1,
+        references: [],
+      }],
+    })]);
+    renderWorkspace();
+    fireEvent.click(await screen.findByRole("button", { name: "编辑" }));
+
+    const weatherInput = await screen.findByLabelText("变体天气");
+    expect(weatherInput).toHaveValue("大雨");
+    fireEvent.change(weatherInput, { target: { value: "暴雨" } });
+
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("尚未保存"));
+    expect(screen.getByLabelText("变体天气")).toHaveValue("暴雨");
+
+    confirmSpy.mockReturnValue(true);
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByLabelText("变体天气")).not.toBeInTheDocument());
+    confirmSpy.mockRestore();
+  });
+});

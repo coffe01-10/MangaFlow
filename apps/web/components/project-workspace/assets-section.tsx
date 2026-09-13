@@ -20,7 +20,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { publicUrl, type AssetPurpose, type ImageModelAlias } from "@/lib/api";
 
@@ -156,6 +156,30 @@ export function AssetsSection({
   const visibleAssetKinds = assetView === "references"
     ? kinds
     : kinds.filter(([kind]) => kind === currentAssetKind);
+  // #546-1：概念设定面板按角色键控（key={boundCharacter.id}），切换即重挂载。
+  // 草稿脏标记上抛到这里，与下面两组本地草稿合成「切换前确认」的判据。
+  const [conceptPanelDirty, setConceptPanelDirty] = useState(false);
+  const characterEditorDirty = Boolean(boundCharacter && (
+    editCharacterName !== boundCharacter.primary_name
+    || editCharacterAliases !== boundCharacter.aliases.join("，")
+    || editLockedFeatures !== boundCharacter.locked_features.join("，")
+    || editForbiddenChanges !== boundCharacter.forbidden_changes.join("，")
+  ));
+  const outfitFormDirty = Boolean(editingOutfitId)
+    || outfitName.trim() !== ""
+    || outfitLockedFields.trim() !== ""
+    || selectedOutfitAssets.length > 0;
+  function switchBoundCharacter(character: { id: string; primary_name: string; aliases: string[]; locked_features: string[]; forbidden_changes: string[] }) {
+    if ((outfitFormDirty || characterEditorDirty || conceptPanelDirty)
+      && !window.confirm("当前角色的表单或草稿尚未保存（服装表单 / 角色规范 / 概念设定），切换角色会丢弃这些内容。仍要切换吗？")) return;
+    if (editingOutfitId) resetOutfitForm();
+    setBindCharacterId(character.id);
+    setSelectedCharacterOutfitId("");
+    setEditCharacterName(character.primary_name);
+    setEditCharacterAliases(character.aliases.join("，"));
+    setEditLockedFeatures(character.locked_features.join("，"));
+    setEditForbiddenChanges(character.forbidden_changes.join("，"));
+  }
 
   return (
     <>
@@ -210,17 +234,17 @@ export function AssetsSection({
         <button className="button ink compact" disabled={!characterName.trim() || createCharacter.isPending} onClick={() => createCharacter.mutate()}><Plus size={14} />添加角色</button>
       </div>
       <div className="character-strip">
-        {characters.data?.map((character) => <button key={character.id} className={bindCharacterId === character.id ? "character-chip active" : "character-chip"} onClick={() => { if (editingOutfitId) resetOutfitForm(); setBindCharacterId(character.id); setSelectedCharacterOutfitId(""); setEditCharacterName(character.primary_name); setEditCharacterAliases(character.aliases.join("，")); setEditLockedFeatures(character.locked_features.join("，")); setEditForbiddenChanges(character.forbidden_changes.join("，")); }}><strong>{character.primary_name}</strong><span>{character.aliases.length ? `又名 ${character.aliases.join(" / ")}` : "无绰号"}</span>{character.alias_conflict && <em>称呼冲突待确认</em>}<small>{character.references.length} 张参考图 · {character.locked_features.length} 项已锁定</small></button>)}
+        {characters.data?.map((character) => <button key={character.id} className={bindCharacterId === character.id ? "character-chip active" : "character-chip"} onClick={() => switchBoundCharacter(character)}><strong>{character.primary_name}</strong><span>{character.aliases.length ? `又名 ${character.aliases.join(" / ")}` : "无绰号"}</span>{character.alias_conflict && <em>称呼冲突待确认</em>}<small>{character.references.length} 张参考图 · {character.locked_features.length} 项已锁定</small></button>)}
       </div>
       {boundCharacter && <div className="character-editor"><div><strong>规范姓名与一致性锁</strong><span>剧本统一使用主要姓名；固定特征和禁止改变项会进入每次生图提示。</span></div><input aria-label="编辑主要姓名" className="text-input" value={editCharacterName} onChange={(event) => setEditCharacterName(event.target.value)} /><input aria-label="编辑角色绰号" className="text-input" value={editCharacterAliases} onChange={(event) => setEditCharacterAliases(event.target.value)} placeholder="绰号，用逗号分隔" /><button className="button outline compact" disabled={!editCharacterName.trim() || updateCharacter.isPending} onClick={() => updateCharacter.mutate()}>{updateCharacter.isPending ? <LoaderCircle className="spin" size={13} /> : <Pencil size={13} />}保存角色规范</button><div className="character-lock-fields"><input aria-label="角色固定特征" className="text-input" value={editLockedFeatures} onChange={(event) => setEditLockedFeatures(event.target.value)} placeholder="固定特征：黑色长发、左眼泪痣…" /><input aria-label="角色禁止改变项" className="text-input" value={editForbiddenChanges} onChange={(event) => setEditForbiddenChanges(event.target.value)} placeholder="禁止改变：发色、瞳色、身高关系…" /></div>{boundCharacter.alias_conflict && <em><CircleAlert size={12} />当前称呼与其他角色冲突，请修改后保存</em>}</div>}
       <ImageModelPicker selected={activeDrawModel} onSelect={setDrawModel} options={modelOptions} label="项目视觉模型（必须显式选择，并在各生成页面保持一致）" />
-      {boundCharacter && <CharacterConceptPanel key={boundCharacter.id} projectId={id} character={boundCharacter} model={activeDrawModel} onOpen={openPreview} />}
+      {boundCharacter && <CharacterConceptPanel key={boundCharacter.id} projectId={id} character={boundCharacter} model={activeDrawModel} onOpen={openPreview} onDirtyChange={setConceptPanelDirty} />}
       <CharacterPackageWorkspace projectId={id} characters={characters.data ?? []} assets={assets.data ?? []} />
       </>}
       {assetView === "outfits" && <>
       <header className="canvas-header"><div><span>WARDROBE / 服装档案</span><h2>角色、服装与参考图逐一绑定</h2></div><small>{outfits.data?.length ?? 0} 份档案</small></header>
       <ImageModelPicker selected={activeDrawModel} onSelect={setDrawModel} options={modelOptions} label="本次服装预览模型" />
-      {selectedCharacterOutfitId && <section className="asset-live-results"><header><div><span>LIVE RESULT</span><strong>服装穿着图实时结果</strong></div><small>{outfits.data?.find((outfit) => outfit.id === selectedCharacterOutfitId)?.name ?? "服装"}</small></header><div className="asset-result-grid">{assetCandidates.data?.map((candidate) => <article key={candidate.id}><CandidateArtwork contentUrl={candidate.content_url} thumbnailUrl={candidate.thumbnail_url} label={`服装穿着图 ${candidate.ordinal}`} onOpen={openPreview} /><div><strong>服装穿着预览</strong><span>{candidateStatusLabels[candidate.status] ?? candidate.status} · {candidate.resolution}</span><details><summary>实际提示词</summary><p>{promptPreview(candidate)}</p></details></div></article>)}</div></section>}
+      {selectedCharacterOutfitId && <section className="asset-live-results"><header><div><span>LIVE RESULT</span><strong>服装穿着图实时结果</strong></div><small>{outfits.data?.find((outfit) => outfit.id === selectedCharacterOutfitId)?.name ?? "服装"}</small></header><div className="asset-result-grid">{assetCandidates.data?.map((candidate) => <article key={candidate.id}><CandidateArtwork contentUrl={candidate.content_url} thumbnailUrl={candidate.thumbnail_url} label={`服装穿着图 ${candidate.ordinal}`} onOpen={openPreview} /><div><strong>服装穿着预览</strong><span>{candidateStatusLabels[candidate.status] ?? candidate.status} · {candidate.resolution}</span><details><summary>实际提示词</summary><p>{promptPreview(candidate)}</p></details></div></article>)}</div>{assetCandidates.isError && <div className="asset-empty" role="alert"><CircleAlert size={25} /><strong>服装穿着图读取失败</strong><p>{assetCandidates.error instanceof Error ? assetCandidates.error.message : "请稍后重试"}</p><button type="button" className="button outline compact" onClick={() => assetCandidates.refetch()}>重试读取</button></div>}</section>}
       </>}
       <div className="asset-workbench">
         {assetView === "outfits" &&
@@ -264,7 +288,10 @@ export function AssetsSection({
           <div className="profile-subsection-title"><div><span>已保存档案</span><strong>逐份修改与切换</strong></div><p>下方开关修改的是该档案本身，不会改变上方新档案表单。</p></div><div className="profile-records">{styles.data?.map((style) => {
             const isActive = draft.default_style_id === style.id && style.status === "ACTIVE";
             const referenceCount = style.profile.reference_asset_ids?.length ?? 0;
-            return <article className={styleDeepLinked(style.id) ? `${isActive ? "active " : ""}style-production-record deep-link-focus` : isActive ? "active style-production-record" : "style-production-record"} key={style.id} ref={styleDeepLinked(style.id) ? focusStyleRef : undefined}><div className="profile-record-title"><span>{isActive ? "CURRENT STYLE" : "STYLE PROFILE"}</span><strong>{style.name}</strong><small>{styleStatusLabels[style.status] ?? style.status} · {referenceCount} 张参考 · {style.locked_fields.length} 项锁定</small></div><ComicModeSwitch compact value={style.color_mode} disabled={updateStyleMode.isPending} onChange={(colorMode) => updateStyleMode.mutate({ style, colorMode })} />{style.status === "DRAFT" && <p className="reanalyze-note">彩色风格必须依次确认色板和测试图，再激活用于正式页面。</p>}<div className="profile-record-actions"><button type="button" disabled={!referenceCount || analyzeStyle.isPending} onClick={() => analyzeStyle.mutate(style.id)}>重新分析画面语言</button></div><StyleProductionPanel key={`${style.id}:${style.version}`} projectId={id} style={style} model={activeDrawModel} active={isActive} onOpen={openPreview} /></article>;
+            return <article className={styleDeepLinked(style.id) ? `${isActive ? "active " : ""}style-production-record deep-link-focus` : isActive ? "active style-production-record" : "style-production-record"} key={style.id} ref={styleDeepLinked(style.id) ? focusStyleRef : undefined}><div className="profile-record-title"><span>{isActive ? "CURRENT STYLE" : "STYLE PROFILE"}</span><strong>{style.name}</strong><small>{styleStatusLabels[style.status] ?? style.status} · {referenceCount} 张参考 · {style.locked_fields.length} 项锁定</small></div><ComicModeSwitch compact value={style.color_mode} disabled={updateStyleMode.isPending} onChange={(colorMode) => updateStyleMode.mutate({ style, colorMode })} />{style.status === "DRAFT" && <p className="reanalyze-note">彩色风格必须依次确认色板和测试图，再激活用于正式页面。</p>}<div className="profile-record-actions"><button type="button" disabled={!referenceCount || analyzeStyle.isPending} onClick={() => analyzeStyle.mutate(style.id)}>重新分析画面语言</button></div>{/* #546-6：key 不再包含 version——ANALYZING 轮询 bump version 会让面板重挂载，
+    进行中的色板编辑被静默重置（氛围文本已有 localStorage 兜底，色板行没有）。
+    服务器色板变化改由 StyleProductionPanel 内部「非脏才重同步」采纳。 */}
+<StyleProductionPanel key={style.id} projectId={id} style={style} model={activeDrawModel} active={isActive} onOpen={openPreview} /></article>;
           })}{!styles.data?.length && !styles.isLoading && <p className="profile-record-empty">选择色彩模式并绑定参考页，建立第一份漫画风格档案。</p>}</div>
         </section></>}
       </div>
