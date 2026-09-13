@@ -216,6 +216,13 @@ def _character(db: Session, project_id: str, character_id: str) -> Character:
 
 
 def _package(db: Session, project_id: str, character_id: str) -> CharacterModelPackage:
+    # Issue #662: the writers/readers sharing this accessor used to check only
+    # package ownership, so packages under a soft-deleted project stayed
+    # mutable and readable. Liveness sits at this shared boundary — the same
+    # policy ensure_project_scope enforces for object-id routes (#236) — and
+    # runs before the package lookup, so the ownership 404s cannot probe a
+    # filed-away project either.
+    _project(db, project_id)
     package = db.scalar(
         select(CharacterModelPackage).where(
             CharacterModelPackage.character_id == character_id
@@ -361,12 +368,15 @@ def create_package(
     db: Session, project_id: str, character_id: str, payload: dict
 ) -> CharacterModelPackage:
     """§5.3-1: create the compatible ACTIVE package plus an initial V1 DRAFT."""
-    _project(db, project_id)
-    character = _character(db, project_id, character_id)
-    normalized = _normalize_spec_payload(payload)
+    # Issue #662: the locked liveness check replaces the previous plain
+    # ``_project`` read plus the same re-check under the lock, keeping the 404
+    # precedence (project before character before payload validation) while
+    # issuing one project query instead of two.
     project = lock_entity(db, Project, project_id)
     if project is None or project.deleted_at is not None:
         raise HTTPException(status_code=404, detail="项目不存在")
+    character = _character(db, project_id, character_id)
+    normalized = _normalize_spec_payload(payload)
 
     def _create() -> CharacterModelPackage:
         # Issue #145-A: the duplicate read, both INSERT flushes and the commit
@@ -420,7 +430,9 @@ def create_package(
 
 
 def get_package(db: Session, project_id: str, character_id: str) -> CharacterModelPackage:
-    _project(db, project_id)
+    # ``_package`` owns the project-liveness check now (issue #662), so the
+    # read path resolves the project once instead of twice; behavior is
+    # unchanged because the check still precedes the package lookup.
     return _package(db, project_id, character_id)
 
 
