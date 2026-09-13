@@ -1081,6 +1081,52 @@ describe("StoryboardEditor canvas (V02-31B)", () => {
     await waitFor(() => expect(cardSave).toBeEnabled());
   });
 
+  it("S26 几何保存在途：方向键微调与撤销/重做被门禁冻结（#637）", async () => {
+    // 保存在途画布 interactive=false：方向键微调若照常 onCommand，保存成功的
+    // clearGeometryDrafts 会把保存后才做的微调/撤销连草稿带命令栈一并清掉。
+    let releaseReject: ((reason?: unknown) => void) | undefined;
+    saveGeometry.mockReset();
+    saveGeometry.mockImplementation(() => new Promise((_resolve, reject) => {
+      releaseReject = reject;
+    }) as never);
+    renderEditor();
+    stubRect(await screen.findByTestId("canvas-page"), 640, 903);
+    // 两笔几何命令 + 一次撤销：undo/redo 均可用且仍有可保存草稿。
+    const element = panelEl("panel-1");
+    fireEvent.pointerDown(element, { button: 0, pointerId: 1, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(window, { pointerId: 1, clientX: 132, clientY: 100 });
+    fireEvent.pointerUp(window, { pointerId: 1, clientX: 132, clientY: 100 });
+    fireEvent.pointerDown(element, { button: 0, pointerId: 2, clientX: 132, clientY: 100 });
+    fireEvent.pointerMove(window, { pointerId: 2, clientX: 164, clientY: 100 });
+    fireEvent.pointerUp(window, { pointerId: 2, clientX: 164, clientY: 100 });
+    expect(element.style.left).toBe("20%");
+    fireEvent.click(screen.getByRole("button", { name: "撤销" }));
+    await waitFor(() => expect(element.style.left).toBe("15%"));
+    const undo = screen.getByRole("button", { name: "撤销" });
+    const redo = screen.getByRole("button", { name: "重做" });
+    expect(undo).toBeEnabled();
+    expect(redo).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "保存本页" }));
+    await waitFor(() => expect(saveGeometry).toHaveBeenCalledTimes(1));
+
+    // PUT 在途：撤销/重做禁用；方向键不产生几何命令，也不拦截默认行为
+    // （与 Delete 分支同语义）。
+    expect(undo).toBeDisabled();
+    expect(redo).toBeDisabled();
+    const arrowNotPrevented = fireEvent.keyDown(canvasPage(), { key: "ArrowRight" });
+    expect(arrowNotPrevented).toBe(true);
+    expect(element.style.left).toBe("15%");
+    expect(saveGeometry).toHaveBeenCalledTimes(1);
+
+    // 保存失败落地（草稿保留）：门禁解除，微调与撤销/重做恢复可用。
+    releaseReject?.(new Error("网络中断"));
+    await waitFor(() => expect(undo).toBeEnabled());
+    expect(redo).toBeEnabled();
+    const arrowPrevented = !fireEvent.keyDown(canvasPage(), { key: "ArrowRight" });
+    expect(arrowPrevented).toBe(true);
+    await waitFor(() => expect(Number.parseFloat(element.style.left)).toBeCloseTo(15.15625, 5));
+  });
+
   it("S25 拟声词结构化对象：输入框显示文本而非 [object Object]，编辑按索引保留 x/y 几何", async () => {
     // 后端 read_sound_effects 恒返回结构化对象（旧字符串已被包装成
     // {text,x,y,rotation,size}），检查器必须取 text 展示、按索引重建保留几何。
