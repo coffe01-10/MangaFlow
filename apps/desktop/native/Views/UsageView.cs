@@ -13,7 +13,7 @@ using MangaFlow.Native.Services;
 namespace MangaFlow.Native.Views;
 
 /// <summary>NUI-6: usage &amp; cost dashboard \u2014 filters, KPI, trend, attempts keyset paging, budget, CSV.</summary>
-public sealed class UsageView : WorkspaceView
+public sealed partial class UsageView : WorkspaceView
 {
     private readonly ScrollViewer scroller = new() { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
     private readonly ComboBox rangeSelector = Selector("时间范围", 130);
@@ -21,7 +21,7 @@ public sealed class UsageView : WorkspaceView
     private readonly ComboBox providerSelector = Selector("按供应商筛选", 150);
     private readonly ComboBox modelSelector = Selector("按模型筛选", 160);
     private readonly ComboBox channelSelector = Selector("按通道筛选", 110);
-    private readonly WrapPanel kpiRow = new();
+    private readonly UsageKpiPanel kpiRow = new();
     // Web usage-dashboard order: KPI \u2192 budget banner \u2192 trend \u2192 per-model breakdown.
     private readonly StackPanel budgetHost = new() { Margin = new Thickness(0, 14, 0, 0) };
     private readonly StackPanel breakdownHost = new();
@@ -41,14 +41,7 @@ public sealed class UsageView : WorkspaceView
 
     public UsageView()
     {
-        var panel = new StackPanel { Margin = new Thickness(36, 30, 36, 28) };
-        panel.Children.Add(new TextBlock { Text = "SYSTEM / USAGE & COST", Style = (Style)Application.Current.FindResource("SectionIndex") });
-        panel.Children.Add(new TextBlock
-        {
-            Text = "系统设置 / 用量与成本看板",
-            FontFamily = (FontFamily)Application.Current.FindResource("Serif"),
-            FontSize = 26, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 6, 0, 16),
-        });
+        var panel = new StackPanel { Margin = new Thickness(28, 30, 28, 40), MaxWidth = 1480 };
         var filters = new WrapPanel { Margin = new Thickness(0, 0, 0, 14) };
         foreach (var (key, label) in new[] { ("7d", "近 7 天"), ("30d", "近 30 天"), ("month", "本月"), ("custom", "自定义") })
             rangeSelector.Items.Add(new ComboBoxItem { Tag = key, Content = label });
@@ -58,11 +51,11 @@ public sealed class UsageView : WorkspaceView
             customRange.Visibility = (rangeSelector.SelectedItem as ComboBoxItem)?.Tag as string == "custom" ? Visibility.Visible : Visibility.Collapsed;
             _ = LoadAsync();
         };
-        filters.Children.Add(rangeSelector);
-        projectSelector.Margin = new Thickness(8, 0, 0, 0);
+        filters.Children.Add(FilterField("时间范围", rangeSelector));
+        projectSelector.Margin = new Thickness(0);
         projectSelector.SelectionChanged += (_, _) => _ = LoadAsync();
-        filters.Children.Add(projectSelector);
-        providerSelector.Margin = new Thickness(8, 0, 0, 0);
+        filters.Children.Add(FilterField("项目", projectSelector));
+        providerSelector.Margin = new Thickness(0);
         providerSelector.SelectionChanged += (_, _) =>
         {
             if (updatingFilters) return;
@@ -71,24 +64,26 @@ public sealed class UsageView : WorkspaceView
             updatingFilters = false;
             _ = LoadAsync();
         };
-        filters.Children.Add(providerSelector);
-        modelSelector.Margin = new Thickness(8, 0, 0, 0);
+        filters.Children.Add(FilterField("供应商", providerSelector));
+        modelSelector.Margin = new Thickness(0);
         modelSelector.SelectionChanged += (_, _) => _ = LoadAsync();
-        filters.Children.Add(modelSelector);
-        channelSelector.Items.Add(new ComboBoxItem { Tag = "", Content = "通道" });
+        filters.Children.Add(FilterField("模型", modelSelector));
+        channelSelector.Items.Add(new ComboBoxItem { Tag = "", Content = "全部通道" });
         channelSelector.Items.Add(new ComboBoxItem { Tag = "HTTP_API", Content = "HTTP API" });
         channelSelector.Items.Add(new ComboBoxItem { Tag = "CLI", Content = "CLI" });
         channelSelector.SelectedIndex = 0;
         channelSelector.SelectionChanged += (_, _) => _ = LoadAsync();
-        channelSelector.Margin = new Thickness(8, 0, 0, 0);
-        filters.Children.Add(channelSelector);
+        channelSelector.Margin = new Thickness(0);
+        filters.Children.Add(FilterField("通道", channelSelector));
         var refresh = Kit.Act("刷新", async (_, _) => await LoadAsync(), "Compact");
         refresh.Margin = new Thickness(12, 0, 0, 0);
-        filters.Children.Add(refresh);
         var export = Kit.Act("导出 CSV", (_, _) => ExportCsv(), "Compact");
         export.Margin = new Thickness(8, 0, 0, 0);
-        filters.Children.Add(export);
-        panel.Children.Add(filters);
+        refresh.VerticalAlignment = VerticalAlignment.Bottom; export.VerticalAlignment = VerticalAlignment.Bottom;
+        var filterActions = new WrapPanel { VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 0, 8) };
+        filterActions.Children.Add(refresh); filterActions.Children.Add(export); filters.Children.Add(filterActions);
+        panel.Children.Add(new Border { Padding = new Thickness(14), BorderBrush = AssetPageUi.Brush("LineDark"), BorderThickness = new Thickness(1),
+            Background = AssetPageUi.Brush("Surface"), Child = filters, Margin = new Thickness(0, 0, 0, 14) });
         customRange.Children.Add(Kit.FieldLabel("从 "));
         customRange.Children.Add(sinceDate);
         customRange.Children.Add(Kit.FieldLabel(" 至 "));
@@ -101,8 +96,7 @@ public sealed class UsageView : WorkspaceView
         kpiRow.Margin = new Thickness(0, 10, 0, 0);
         panel.Children.Add(kpiRow);
         panel.Children.Add(budgetHost);
-        trendHost.Margin = new Thickness(0, 16, 0, 0);
-        panel.Children.Add(WrapCard("费用与调用趋势", trendHost));
+        panel.Children.Add(WrapCard("费用与调用趋势", trendHost, BuildTrendActions()));
         panel.Children.Add(WrapCard("供应商与模型分解", breakdownHost));
         panel.Children.Add(WrapCard("调用明细", attemptsTable));
         panel.Children.Add(WrapCard("账单对账记录", billedTable));
@@ -112,16 +106,8 @@ public sealed class UsageView : WorkspaceView
             Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 12, 0, 0), TextWrapping = TextWrapping.Wrap,
         });
         scroller.Content = panel;
-        Content = scroller;
+        BuildUsageShell();
     }
-
-    private static Border WrapCard(string title, UIElement content) => new()
-    {
-        Style = (Style)Application.Current.FindResource("Card"),
-        Padding = new Thickness(18),
-        Margin = new Thickness(0, 0, 0, 14),
-        Child = new StackPanel { Children = { new TextBlock { Text = title, FontWeight = FontWeights.Bold, FontSize = 14, Margin = new Thickness(0, 0, 0, 8) }, content } },
-    };
 
     public override async void Activate(WorkspaceContext context)
     {
@@ -256,6 +242,7 @@ public sealed class UsageView : WorkspaceView
         kpiRow.Children.Add(KpiCard("账单支出",
             billedBy.Count == 0 ? "暂无对账记录" : string.Join("\n", billedBy.Select(b => $"{Symbol(b.Currency)}{b.Sum:0.00}")),
             "账单事实与估算永不相加"));
+        kpiRow.Children.Add(TokenKpi(groups));
         RenderBudget(groups);
         RenderTrend(groups);
         RenderBreakdown(groups);
@@ -342,7 +329,7 @@ public sealed class UsageView : WorkspaceView
             Tag = tone,
         };
         System.Windows.Automation.AutomationProperties.SetName(banner, "预算提醒");
-        var row = new StackPanel { Orientation = Orientation.Horizontal };
+        var row = new UsageBudgetRow();
         var toneBrush = tone switch
         {
             "over" => (Brush)Application.Current.FindResource("Danger"),
@@ -375,10 +362,10 @@ public sealed class UsageView : WorkspaceView
         var amountInput = new TextBox { Width = 110, Text = budget is { } kept ? kept.Amount.ToString("0.##") : "" };
         System.Windows.Automation.AutomationProperties.SetName(amountInput, "预算金额");
         var hint = new TextBlock { Style = (Style)Application.Current.FindResource("Micro"), VerticalAlignment = VerticalAlignment.Center };
-        var form = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 0) };
-        form.Children.Add(currencyInput);
+        var form = new WrapPanel { Margin = new Thickness(0, 10, 0, 0) };
+        form.Children.Add(FilterField("币种", currencyInput));
         form.Children.Add(new TextBlock { Text = " ", Width = 6 });
-        form.Children.Add(amountInput);
+        form.Children.Add(FilterField("预算金额", amountInput));
         var save = Kit.Act("保存", (_, _) =>
         {
             var currency = currencyInput.Text.Trim().ToUpperInvariant();
@@ -410,6 +397,7 @@ public sealed class UsageView : WorkspaceView
             form.Children.Add(clear);
         }
         form.Children.Add(hint);
+        banner.Child = null;
         var column = new StackPanel { Children = { row, form } };
         banner.Child = column;
     }
@@ -428,7 +416,7 @@ public sealed class UsageView : WorkspaceView
             return;
         }
         var header = BreakdownRow("供应商 / 模型", "通道", "调用", "成功 / 失败 / 未决", "输入 / 输出 Token", "缓存命中", "图片", "估算金额（原币种）", "成本语义");
-        header.FontWeight = FontWeights.Bold;
+        header.Background = AssetPageUi.Brush("PaperDeep");
         breakdownHost.Children.Add(header);
         var rows = groups.GroupBy(g => (Provider: g.Text("provider"), Model: g.Text("model_id"), Channel: g.Text("channel")))
             .OrderBy(r => r.Key.Provider, StringComparer.Ordinal)
@@ -472,7 +460,7 @@ public sealed class UsageView : WorkspaceView
                 input is null && output is null ? "未知" : $"{input?.ToString() ?? "未知"} / {output?.ToString() ?? "未知"}",
                 cached?.ToString() ?? "未知",
                 images?.ToString() ?? "未知",
-                costs.Count == 0 ? "无估算数据" : string.Join("　", costs),
+                costs.Count == 0 ? "无估算数据" : string.Join("\n", costs),
                 mode == "MIXED" ? "混合" : Labels.Map(Labels.CostMode, mode)));
         }
         breakdownHost.Children.Add(new TextBlock
@@ -493,151 +481,12 @@ public sealed class UsageView : WorkspaceView
         return "UNKNOWN";
     }
 
-    private static TextBlock BreakdownRow(string providerModel, string channel, string calls, string outcomes,
-        string tokens, string cached, string images, string costs, string mode) => new()
-    {
-        Text = $"{Trim(providerModel, 44),-44}  {channel,-9}  {calls,7}  {Trim(outcomes, 17),-17}  {Trim(tokens, 19),-19}  {Trim(cached, 8),-8}  {images,4}  {Trim(costs, 30),-30}  {mode}",
-        FontFamily = (FontFamily)Application.Current.FindResource("Mono"),
-        FontSize = 11.5,
-        TextWrapping = TextWrapping.NoWrap,
-        Margin = new Thickness(0, 3, 0, 3),
-    };
-
     private static string Trim(string value, int width) => value.Length <= width ? value : value[..(width - 1)] + "\u2026";
 
     private static string Symbol(string currency) => currency switch
     {
         "CNY" => "\u00a5", "USD" => "$", "EUR" => "\u20ac", "GBP" => "\u00a3", "JPY" => "JP\u00a5", "HKD" => "HK$", _ => currency + " ",
     };
-
-    private static Border KpiCard(string title, string value, string note) => new()
-    {
-        Style = (Style)Application.Current.FindResource("Card"),
-        Padding = new Thickness(16),
-        Margin = new Thickness(0, 0, 12, 0),
-        MinWidth = 210,
-        VerticalAlignment = VerticalAlignment.Top,
-        Child = new StackPanel
-        {
-            Children =
-            {
-                new TextBlock { Text = title, Style = (Style)Application.Current.FindResource("Micro") },
-                new TextBlock { Text = value, FontFamily = (FontFamily)Application.Current.FindResource("Serif"), FontSize = 22, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 6, 0, 4) },
-                new TextBlock { Text = note, Style = (Style)Application.Current.FindResource("Micro") },
-            },
-        },
-    };
-
-    private void RenderTrend(List<JsonElement> groups)
-    {
-        trendHost.Children.Clear();
-        var byDay = groups.GroupBy(g => g.Text("day")).OrderBy(g => g.Key).ToList();
-        if (byDay.Count == 0)
-        {
-            trendHost.Children.Add(Kit.Caption("所选范围内无用量记录。"));
-            return;
-        }
-        const double chartWidth = 640, chartHeight = 140;
-        var canvas = new Canvas { Width = chartWidth, Height = chartHeight, Background = (Brush)Application.Current.FindResource("PaperDeep") };
-        var slot = chartWidth / byDay.Count;
-        var max = byDay.Max(day => day.Sum(g => g.Number("attempt_count")));
-        var palette = new[] { "#D34A2F", "#3F6D4E", "#3F5E8C", "#A8842C", "#6D4A7E" };
-        var index = 0;
-        foreach (var day in byDay)
-        {
-            var count = day.Sum(g => g.Number("attempt_count"));
-            var barHeight = max == 0 ? 0 : Math.Max(2, count / (double)max * (chartHeight - 24));
-            var bar = new Rectangle
-            {
-                Width = Math.Max(3, slot * 0.6),
-                Height = barHeight,
-                Fill = new SolidColorBrush((Color)ColorConverter.ConvertFromString(palette[index % palette.Length])),
-                ToolTip = $"{day.Key} · {count} 次调用",
-            };
-            Canvas.SetLeft(bar, index * slot + slot * 0.2);
-            Canvas.SetTop(bar, chartHeight - 16 - barHeight);
-            canvas.Children.Add(bar);
-            if (index % 3 == 0)
-            {
-                var label = new TextBlock { Text = day.Key.Length >= 10 ? day.Key[5..10] : day.Key, FontSize = 9, Foreground = (Brush)Application.Current.FindResource("Muted") };
-                Canvas.SetLeft(label, index * slot);
-                Canvas.SetTop(label, chartHeight - 14);
-                canvas.Children.Add(label);
-            }
-            index++;
-        }
-        trendHost.Children.Add(canvas);
-        trendHost.Children.Add(new TextBlock
-        {
-            Text = "按日调用次数分组柱状图；金额与 Token 明细见调用明细表。未知不等于 0。",
-            Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 8, 0, 0), TextWrapping = TextWrapping.Wrap,
-        });
-    }
-
-    private void RenderAttempts()
-    {
-        attemptsTable.Children.Clear();
-        attemptsTable.Children.Add(new TextBlock
-        {
-            Text = $"已加载 {attempts.Count} 条 · 最新调用在前",
-            Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 0, 0, 8),
-        });
-        if (attempts.Count == 0)
-        {
-            attemptsTable.Children.Add(Kit.Caption("该范围暂无调用尝试记录。"));
-            return;
-        }
-        foreach (var attempt in attempts)
-        {
-            var row = new StackPanel
-            {
-                Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 4), Cursor = Cursors.Hand,
-            };
-            var started = attempt.Text("started_at");
-            var time = started.Length >= 16 ? started.Replace('T', ' ')[..16] : started;
-            var costMode = CostModeOf(attempt);
-            row.Children.Add(new TextBlock { Text = time, Width = 108, FontFamily = (FontFamily)Application.Current.FindResource("Mono"), FontSize = 11.5, VerticalAlignment = VerticalAlignment.Center });
-            row.Children.Add(new TextBlock { Text = attempt.Text("channel"), Width = 64, Style = (Style)Application.Current.FindResource("Micro"), VerticalAlignment = VerticalAlignment.Center });
-            row.Children.Add(new TextBlock
-            {
-                Text = $"{attempt.Text("provider")} · {attempt.Text("model_id")}", Width = 220,
-                Style = (Style)Application.Current.FindResource("Micro"), TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center,
-            });
-            row.Children.Add(new TextBlock
-            {
-                Text = $"第 {attempt.Number("dispatch_no")} 次派发", Width = 84,
-                Style = (Style)Application.Current.FindResource("Micro"), VerticalAlignment = VerticalAlignment.Center,
-            });
-            row.Children.Add(new TextBlock
-            {
-                Text = Labels.Map(Labels.AttemptOutcome, attempt.Text("outcome")), Width = 44,
-                Foreground = attempt.Text("outcome") == "SUCCEEDED" ? (Brush)Application.Current.FindResource("Success")
-                    : attempt.Text("outcome") == "FAILED" ? (Brush)Application.Current.FindResource("Danger")
-                    : (Brush)Application.Current.FindResource("Muted"),
-                VerticalAlignment = VerticalAlignment.Center,
-            });
-            row.Children.Add(new TextBlock
-            {
-                Text = Labels.Map(Labels.CostMode, costMode), Width = 70,
-                Style = (Style)Application.Current.FindResource("Micro"),
-                ToolTip = Labels.Map(Labels.CostModeHint, costMode), VerticalAlignment = VerticalAlignment.Center,
-            });
-            var detail = Kit.Act("详情", (_, _) => new AttemptDrawer(Host, attempt).ShowDialog(), "Compact");
-            row.Children.Add(detail);
-            row.MouseLeftButtonDown += (_, _) => new AttemptDrawer(Host, attempt).ShowDialog();
-            attemptsTable.Children.Add(row);
-        }
-        if (nextCursor != null)
-        {
-            var more = Kit.Act("加载更多", async (_, _) => await LoadMoreAsync(), "Compact");
-            more.Margin = new Thickness(0, 8, 0, 0);
-            attemptsTable.Children.Add(more);
-        }
-        else
-        {
-            attemptsTable.Children.Add(new TextBlock { Text = "已加载全部匹配记录", Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 8, 0, 0) });
-        }
-    }
 
     private async Task LoadMoreAsync()
     {
@@ -664,36 +513,6 @@ public sealed class UsageView : WorkspaceView
         if (attempt.Element("usage").ValueKind is JsonValueKind.Null or JsonValueKind.Undefined
             && attempt.Text("outcome") == "SUCCEEDED") return "UNAVAILABLE";
         return "UNKNOWN";
-    }
-
-    private void RenderBilled(List<JsonElement> billed)
-    {
-        billedTable.Children.Clear();
-        if (billed.Count == 0)
-        {
-            billedTable.Children.Add(Kit.Caption("所选范围内暂无对账记录。"));
-            return;
-        }
-        foreach (var row in billed)
-        {
-            var item = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 4) };
-            item.Children.Add(new TextBlock
-            {
-                Text = $"{row.Text("period_start")[..Math.Min(10, row.Text("period_start").Length)]} ~ {row.Text("period_end")[..Math.Min(10, row.Text("period_end").Length)]}",
-                Width = 140, Style = (Style)Application.Current.FindResource("Micro"), VerticalAlignment = VerticalAlignment.Center,
-            });
-            item.Children.Add(new TextBlock
-            {
-                Text = $"{row.Text("provider")} · {row.Text("model_id")}", Width = 230,
-                Style = (Style)Application.Current.FindResource("Micro"), TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center,
-            });
-            item.Children.Add(new TextBlock
-            {
-                Text = $"账单 {Symbol(row.Text("currency"))}{Money(row, "billed_amount"):0.00}",
-                FontWeight = FontWeights.Bold, VerticalAlignment = VerticalAlignment.Center,
-            });
-            billedTable.Children.Add(item);
-        }
     }
 
     private void ExportCsv()

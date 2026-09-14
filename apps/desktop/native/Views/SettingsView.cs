@@ -11,17 +11,17 @@ using MangaFlow.Native.Services;
 namespace MangaFlow.Native.Views;
 
 /// <summary>NUI-2C: settings — provider platform, runtime params, layered diagnostics, storage.</summary>
-public sealed class SettingsView : WorkspaceView
+public sealed partial class SettingsView : WorkspaceView
 {
     private readonly ScrollViewer scroller = new() { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
     private readonly StackPanel providerList = new();
-    private readonly TextBox searchInput = new() { MinWidth = 260 };
+    private readonly TextBox searchInput = new() { MinWidth = 0 };
     private readonly ComboBox capabilityFilter = Selector("能力", 150);
     private readonly ComboBox sortFilter = Selector("排序", 130);
     private readonly CheckBox verifiedOnly = new() { Content = "仅已验证" };
     private readonly CheckBox showHidden = new() { Content = "显示已隐藏" };
     private readonly TextBlock providerSummary = new() { Style = (Style)Application.Current.FindResource("Caption") };
-    private readonly StackPanel runtimeForm = new();
+    private readonly SystemSettingsTiles runtimeForm = new() { Breakpoint = 620 };
     private readonly Button runtimeSave = new() { Content = "保存运行设置", Style = (Style)Application.Current.FindResource("InkButton") };
     private readonly TextBlock runtimeError = new() { Foreground = (Brush)Application.Current.FindResource("Danger"), TextWrapping = TextWrapping.Wrap };
     private readonly Border runtimeNotice = Notice("运行设置已保存并应用到后续任务", "ok");
@@ -53,93 +53,27 @@ public sealed class SettingsView : WorkspaceView
     // 用户改回原值即自动恢复可刷新。
     private readonly Dictionary<string, string> renderedRuntime = new();
 
-    public SettingsView()
-    {
-        var page = new StackPanel { Margin = new Thickness(34, 32, 34, 40) };
-        page.Children.Add(BuildStatusStrip());
-        var board = new Grid { Name = "SettingsBoard" };
-        board.ColumnDefinitions.Add(new ColumnDefinition());
-        board.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(342) });
-        board.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        board.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        var main = new StackPanel();
-        main.Children.Add(BuildProviderBoard());
-        main.Children.Add(BuildRuntimeCard());
-        board.Children.Add(main);
-        var side = new StackPanel { Name = "SettingsDiagnostics", Margin = new Thickness(22, 0, 0, 0) };
-        var diagnostics = BuildDiagnosticsCard();
-        side.Children.Add(diagnostics);
-        var storage = BuildStorageCard();
-        storage.Margin = new Thickness(0, 18, 0, 0);
-        side.Children.Add(storage);
-        Grid.SetColumn(side, 1);
-        board.Children.Add(side);
-        SizeChanged += (_, _) =>
-        {
-            var narrow = ActualWidth < 1280;
-            board.ColumnDefinitions[1].Width = new GridLength(narrow ? 0 : 342);
-            Grid.SetColumn(side, narrow ? 0 : 1);
-            Grid.SetRow(side, narrow ? 1 : 0);
-            side.Margin = narrow ? new Thickness(0, 20, 0, 0) : new Thickness(22, 0, 0, 0);
-        };
-        page.Children.Add(board);
-        scroller.Content = page;
-        Content = scroller;
-    }
-
-    private Border BuildStatusStrip()
-    {
-        var strip = new Border
-        {
-            Background = (Brush)Application.Current.FindResource("PaperDeep"),
-            BorderBrush = (Brush)Application.Current.FindResource("Line"),
-            BorderThickness = new Thickness(1),
-            Padding = new Thickness(18, 12, 18, 12),
-            Margin = new Thickness(0, 0, 0, 18),
-        };
-        var grid = new Grid();
-        for (var i = 0; i < 5; i++) grid.ColumnDefinitions.Add(new ColumnDefinition());
-        (string, TextBlock)[] cells =
-        [
-            ("AI 连接", healthLabel), ("执行器", executorLabel), ("数据库", databaseLabel),
-            ("存储", storageLabel), ("最近检查", checkedAtLabel),
-        ];
-        for (var i = 0; i < cells.Length; i++)
-        {
-            var (label, value) = cells[i];
-            var panel = new StackPanel { Margin = new Thickness(0, 0, 14, 0) };
-            panel.Children.Add(new TextBlock { Text = label, Style = (Style)Application.Current.FindResource("Micro") });
-            value.FontWeight = FontWeights.Bold;
-            value.FontSize = 13;
-            value.Text = "读取中";
-            panel.Children.Add(value);
-            Grid.SetColumn(panel, i);
-            grid.Children.Add(panel);
-        }
-        strip.Child = grid;
-        return strip;
-    }
+    public SettingsView() => BuildSystemPage();
 
     private Border BuildProviderBoard()
     {
         var board = new Border
         {
             Style = (Style)Application.Current.FindResource("Card"),
-            Padding = new Thickness(22),
-            Margin = new Thickness(0, 0, 0, 16),
+            Padding = new Thickness(14),
+            Margin = new Thickness(0, 0, 0, 18),
         };
         var panel = new StackPanel();
-        var header = new DockPanel { Margin = new Thickness(0, 0, 0, 14) };
-        var summary = providerSummary;
-        summary.VerticalAlignment = VerticalAlignment.Bottom;
-        DockPanel.SetDock(summary, Dock.Right);
-        header.Children.Add(summary);
-        header.Children.Add(new TextBlock { Text = "AI 供应商与模型", FontWeight = FontWeights.Bold, FontSize = 16 });
-        panel.Children.Add(header);
+        panel.Children.Add(new PageHeading(
+            SystemHeading("AI 供应商与模型", "PROVIDER PLATFORM"), providerSummary) { Margin = new Thickness(0, 0, 0, 16) });
+        searchInput.ToolTip = "搜索供应商名称或连接协议";
+        searchInput.MinHeight = 38;
 
         searchInput.TextChanged += (_, _) => { search = searchInput.Text.Trim().ToLowerInvariant(); RenderProviders(); };
         System.Windows.Automation.AutomationProperties.SetName(searchInput, "筛选供应商");
         searchInput.Margin = new Thickness(0, 0, 0, 10);
+        panel.Children.Add(new TextBlock { Text = "搜索供应商名称或连接协议", FontSize = 12,
+            Foreground = AssetPageUi.Brush("Muted"), Margin = new Thickness(0, 0, 0, 6) });
         panel.Children.Add(searchInput);
 
         var filters = new WrapPanel { Margin = new Thickness(0, 0, 0, 10) };
@@ -183,89 +117,26 @@ public sealed class SettingsView : WorkspaceView
         var add = Kit.Act("＋ 添加供应商", (_, _) => new ProviderCreateDialog(this).ShowDialog(), "CompactInk");
         add.Margin = new Thickness(0, 0, 6, 6);
         filters.Children.Add(add);
+        var jump = Kit.Act("跳到结果", (_, _) =>
+        {
+            var first = providerList.Children.OfType<ProviderCard>().FirstOrDefault();
+            if (first == null) return;
+            first.BringIntoView();
+            SelfAndDescendants(first).OfType<Button>().FirstOrDefault()?.Focus();
+        }, "Compact");
+        jump.Margin = new Thickness(0, 0, 6, 6);
+        filters.Children.Add(jump);
         panel.Children.Add(filters);
         panel.Children.Add(new TextBlock
         {
             Text = "可添加兼容连接；账号型凭据由服务端环境管理，CLI 登录由外部工具管理，Key 型连接在各自连接卡内录入。",
-            Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 0, 0, 12), TextWrapping = TextWrapping.Wrap,
+            FontSize = 12, Foreground = AssetPageUi.Brush("Muted"), Margin = new Thickness(0, 0, 0, 12), TextWrapping = TextWrapping.Wrap,
         });
         panel.Children.Add(providerList);
         board.Child = panel;
         return board;
     }
 
-    private Border BuildRuntimeCard()
-    {
-        var card = new Border
-        {
-            Style = (Style)Application.Current.FindResource("Card"),
-            Padding = new Thickness(22),
-            Margin = new Thickness(0, 0, 0, 0),
-        };
-        var panel = new StackPanel();
-        panel.Children.Add(new TextBlock { Text = "WORKER / RUNTIME", Style = (Style)Application.Current.FindResource("SectionIndex"), Margin = new Thickness(0, 0, 0, 4) });
-        panel.Children.Add(new TextBlock { Text = "运行参数", FontWeight = FontWeights.Bold, FontSize = 16, Margin = new Thickness(0, 0, 0, 4) });
-        panel.Children.Add(new TextBlock { Text = "非敏感动态设置", Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 0, 0, 14) });
-        panel.Children.Add(runtimeForm);
-        runtimeNotice.Visibility = Visibility.Collapsed;
-        runtimeNotice.Margin = new Thickness(0, 6, 0, 6);
-        panel.Children.Add(runtimeNotice);
-        runtimeError.Margin = new Thickness(0, 6, 0, 6);
-        panel.Children.Add(runtimeError);
-        runtimeSave.Margin = new Thickness(0, 8, 0, 0);
-        runtimeSave.HorizontalAlignment = HorizontalAlignment.Left;
-        runtimeSave.Click += SaveRuntime;
-        panel.Children.Add(runtimeSave);
-        card.Child = panel;
-        return card;
-    }
-
-    private Border BuildDiagnosticsCard()
-    {
-        var card = new Border { Style = (Style)Application.Current.FindResource("Card"), Padding = new Thickness(22) };
-        var panel = new StackPanel();
-        var header = new DockPanel { Margin = new Thickness(0, 0, 0, 12) };
-        recheckButton.Click += async (_, _) => await LoadDiagnosticsAsync();
-        DockPanel.SetDock(recheckButton, Dock.Right);
-        header.Children.Add(recheckButton);
-        header.Children.Add(new TextBlock { Text = "分层诊断", FontWeight = FontWeights.Bold, FontSize = 16 });
-        panel.Children.Add(header);
-        panel.Children.Add(diagnosticsList);
-        card.Child = panel;
-        return card;
-    }
-
-    private Border BuildStorageCard()
-    {
-        var card = new Border { Style = (Style)Application.Current.FindResource("Card"), Padding = new Thickness(22) };
-        var panel = new StackPanel();
-        panel.Children.Add(new TextBlock { Text = "本地存储", FontWeight = FontWeights.Bold, FontSize = 16, Margin = new Thickness(0, 0, 0, 12) });
-        var grid = new Grid();
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        grid.ColumnDefinitions.Add(new ColumnDefinition());
-        var rows = new[] { ("数据库", "database"), ("生成内容", "storage_root"), ("用户上传", "upload_root") };
-        for (var i = 0; i < rows.Length; i++)
-        {
-            var (label, key) = rows[i];
-            var labelBlock = new TextBlock { Text = label, Style = (Style)Application.Current.FindResource("Caption"), Margin = new Thickness(0, 6, 18, 6) };
-            Grid.SetRow(labelBlock, i);
-            grid.Children.Add(labelBlock);
-            var value = new TextBlock { FontFamily = (FontFamily)Application.Current.FindResource("Mono"), FontSize = 12, Text = "—" };
-            storageValueBlocks[key] = value;
-            Grid.SetRow(value, i);
-            Grid.SetColumn(value, 1);
-            grid.RowDefinitions.Add(new RowDefinition());
-            grid.Children.Add(value);
-        }
-        panel.Children.Add(grid);
-        panel.Children.Add(new TextBlock
-        {
-            Text = "凭据路径、私钥、令牌和 Redis 地址不会通过此接口返回。",
-            Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 12, 0, 0), TextWrapping = TextWrapping.Wrap,
-        });
-        card.Child = panel;
-        return card;
-    }
 
     public override async void Activate(WorkspaceContext context)
     {
@@ -451,16 +322,18 @@ public sealed class SettingsView : WorkspaceView
 
     private void AddRuntimeField(string label, string key, string value, string? options = null)
     {
-        var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 12) };
-        panel.Children.Add(FieldLabel(label));
-        FrameworkElement input = options == null
-            ? BuildRuntimeNumber(key, value)
-            : BuildOptionSelect(key, value, options);
-        input.SetValue(HorizontalAlignmentProperty, HorizontalAlignment.Left);
-        panel.Children.Add(input);
+        FrameworkElement input = options == null ? BuildRuntimeNumber(key, value) : BuildOptionSelect(key, value, options);
+        input.Width = options == null ? 92 : 130;
+        input.VerticalAlignment = VerticalAlignment.Center;
+        System.Windows.Automation.AutomationProperties.SetName(input, label);
         runtimeInputs[key] = input;
         renderedRuntime[key] = value;
-        runtimeForm.Children.Add(panel);
+        var (title, detail) = RuntimeLabel(key);
+        runtimeForm.Children.Add(new Border {
+            Padding = new Thickness(13), MinHeight = 82,
+            BorderBrush = AssetPageUi.Brush("Line"), BorderThickness = new Thickness(0, 0, 1, 1),
+            Child = new PageHeading(SystemLabel(title, detail), input)
+        });
     }
 
     private TextBox BuildRuntimeNumber(string key, string value)
@@ -598,24 +471,11 @@ public sealed class SettingsView : WorkspaceView
                     "FAILED" => (Brush)Application.Current.FindResource("Danger"),
                     _ => (Brush)Application.Current.FindResource("Muted"),
                 };
-                var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 7, 0, 7) };
-                row.Children.Add(new Border
-                {
-                    Width = 8, Height = 8, CornerRadius = new CornerRadius(4),
-                    Background = brush, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0),
-                });
-                var text = new StackPanel();
-                text.Children.Add(new TextBlock { Text = check.Text("label"), FontWeight = FontWeights.Bold, FontSize = 13 });
-                var message = check.Text("message");
-                if (message.Length > 0) text.Children.Add(new TextBlock { Text = message, Style = (Style)Application.Current.FindResource("Micro") });
-                row.Children.Add(text);
-                var latency = check.Element("latency_ms").ValueKind == JsonValueKind.Number
-                    ? $"{check.Number("latency_ms")} ms" : "—";
-                row.Children.Add(new TextBlock
-                {
-                    Text = latency, Style = (Style)Application.Current.FindResource("Micro"),
-                    VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 0, 0, 0),
-                });
+                var text = SystemLabel(check.Text("label"), check.Text("message"));
+                var latency = check.Element("latency_ms").ValueKind == JsonValueKind.Number ? $"{check.Number("latency_ms")} ms" : "— ms";
+                var row = new Border { Padding = new Thickness(12), BorderBrush = brush, BorderThickness = new Thickness(3, 0, 0, 0), Margin = new Thickness(0, 0, 0, 1),
+                    Child = new PageHeading(text, new TextBlock { Text = latency, FontSize = 12, Foreground = brush, VerticalAlignment = VerticalAlignment.Center }) };
+                row.SetValue(System.Windows.Automation.AutomationProperties.NameProperty, $"{check.Text("label")} · {status}");
                 diagnosticsList.Children.Add(row);
             }
         }
@@ -706,8 +566,8 @@ internal sealed class ProviderCard : Border
         var header = new Button
         {
             Style = (Style)Application.Current.FindResource("Nav"),
-            HorizontalContentAlignment = HorizontalAlignment.Left,
-            Padding = new Thickness(18, 12, 14, 12),
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Padding = new Thickness(13, 12, 13, 12),
             Background = Brushes.Transparent,
             Content = BuildHeader(),
         };
@@ -723,9 +583,6 @@ internal sealed class ProviderCard : Border
 
     private FrameworkElement BuildHeader()
     {
-        var grid = new Grid();
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var info = new StackPanel();
         var category = $"{Labels.Map(Labels.ProviderCategory, provider.Text("category", "CUSTOM"))} · {Labels.Map(Labels.ProviderRisk, provider.Text("risk_label", "LOW"))}";
         info.Children.Add(new TextBlock { Text = category, Style = (Style)Application.Current.FindResource("Micro") });
@@ -733,7 +590,6 @@ internal sealed class ProviderCard : Border
         var description = provider.Text("description");
         if (description.Length > 0)
             info.Children.Add(new TextBlock { Text = description, Style = (Style)Application.Current.FindResource("Micro") });
-        grid.Children.Add(info);
         var counts = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
         var connections = provider.Array("connections");
         var configured = connections.Count(c => c.Flag("configured"));
@@ -742,9 +598,7 @@ internal sealed class ProviderCard : Border
             Text = $"{configured}/{connections.Count} 连接 · {connections.Sum(c => c.Number("model_count"))} 模型",
             Style = (Style)Application.Current.FindResource("Micro"), HorizontalAlignment = HorizontalAlignment.Right,
         });
-        grid.Children.Add(counts);
-        Grid.SetColumn(counts, 1);
-        return grid;
+        return new PageHeading(info, counts);
     }
 }
 
@@ -812,7 +666,7 @@ internal sealed class ConnectionPanel : Border
         var header = new DockPanel { Margin = new Thickness(0, 0, 0, 8) };
         var badge = new Border
         {
-            CornerRadius = new CornerRadius(99), Padding = new Thickness(10, 3, 10, 3),
+            CornerRadius = new CornerRadius(0), Padding = new Thickness(10, 3, 10, 3),
             Background = health == "HEALTHY" ? (Brush)Application.Current.FindResource("SuccessBg")
                 : health == "DEGRADED" ? (Brush)Application.Current.FindResource("WarningBg")
                 : (Brush)Application.Current.FindResource("PaperDeep"),
@@ -826,7 +680,7 @@ internal sealed class ConnectionPanel : Border
         title.Children.Add(new TextBlock
         {
             Text = $"{connection.Text("protocol")} · {connection.Text("base_url")}",
-            Style = (Style)Application.Current.FindResource("Micro"), FontFamily = (FontFamily)Application.Current.FindResource("Mono"),
+            Style = (Style)Application.Current.FindResource("Micro"), FontFamily = (FontFamily)Application.Current.FindResource("Mono"), TextWrapping = TextWrapping.Wrap,
         });
         header.Children.Add(title);
         panel.Children.Add(header);
@@ -876,15 +730,17 @@ internal sealed class ConnectionPanel : Border
         }
         var panel = new StackPanel { Margin = new Thickness(0, 10, 0, 0) };
         var writable = connection.Flag("credential_writable");
-        var row = new StackPanel { Orientation = Orientation.Horizontal };
+        var row = new SystemSettingsTiles { Columns = 3, Breakpoint = 620, Gap = 8 };
+        keyLabel.Width = double.NaN; keyValue.Width = double.NaN;
         System.Windows.Automation.AutomationProperties.SetName(keyLabel, "密钥标签");
         System.Windows.Automation.AutomationProperties.SetName(keyValue, "API Key");
         keyValue.Tag = connection.Text("id");
-        row.Children.Add(keyLabel);
-        keyValue.Margin = new Thickness(8, 0, 8, 0);
+        row.Children.Add(InputField("密钥标签", keyLabel));
+        keyValue.Margin = new Thickness(0);
         keyValue.IsEnabled = writable;
-        row.Children.Add(keyValue);
+        row.Children.Add(InputField("API Key", keyValue));
         var save = Kit.Act("保存密钥", async (_, _) => await SaveKey(), "Compact");
+        save.VerticalAlignment = VerticalAlignment.Bottom;
         save.IsEnabled = writable;
         row.Children.Add(save);
         panel.Children.Add(row);
@@ -1109,6 +965,15 @@ internal sealed class ConnectionPanel : Border
 
     private bool manualOpen;
 
+    private static StackPanel InputField(string label, FrameworkElement input)
+    {
+        var field = new StackPanel();
+        field.Children.Add(new TextBlock { Text = label, FontSize = 12, Foreground = AssetPageUi.Brush("Muted"),
+            Margin = new Thickness(0, 0, 0, 6) });
+        field.Children.Add(input);
+        return field;
+    }
+
     private void ToggleManualForm(object sender, RoutedEventArgs e)
     {
         manualOpen = !manualOpen;
@@ -1118,22 +983,24 @@ internal sealed class ConnectionPanel : Border
             return;
         }
         var form = new StackPanel { Margin = new Thickness(0, 10, 0, 0) };
-        var row = new StackPanel { Orientation = Orientation.Horizontal };
+        var row = new SystemSettingsTiles { Columns = 2, Breakpoint = 620, Gap = 8 };
+        manualId.Width = double.NaN; manualName.Width = double.NaN;
         System.Windows.Automation.AutomationProperties.SetName(manualId, "上游模型 ID");
         manualId.Tag = "上游模型 ID";
-        row.Children.Add(manualId);
-        manualName.Margin = new Thickness(8, 0, 8, 0);
+        row.Children.Add(InputField("上游模型 ID", manualId));
+        manualName.Margin = new Thickness(0);
         System.Windows.Automation.AutomationProperties.SetName(manualName, "显示名");
-        row.Children.Add(manualName);
+        row.Children.Add(InputField("显示名称（可选）", manualName));
         manualType.Items.Clear();
         manualType.Items.Add(new ComboBoxItem { Tag = "TEXT", Content = "文字模型" });
         if (connection.Array("supported_model_types").Any(t => t.ToString() == "IMAGE"))
             manualType.Items.Add(new ComboBoxItem { Tag = "IMAGE", Content = "图片模型" });
         manualType.SelectedIndex = 0;
-        manualType.Width = 120;
-        row.Children.Add(manualType);
+        manualType.Width = double.NaN;
+        row.Children.Add(InputField("模型类型", manualType));
         var submit = Kit.Act("添加模型", async (_, _) => await AddManualModel(), "CompactInk");
-        submit.Margin = new Thickness(8, 0, 0, 0);
+        submit.VerticalAlignment = VerticalAlignment.Bottom;
+        submit.Margin = new Thickness(0);
         row.Children.Add(submit);
         form.Children.Add(row);
         var host = new Border
@@ -1205,11 +1072,8 @@ internal sealed class ModelRow : Border
 
     private void Render()
     {
-        var grid = new Grid();
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var info = new StackPanel();
-        var nameRow = new StackPanel { Orientation = Orientation.Horizontal };
+        var nameRow = new WrapPanel();
         nameRow.Children.Add(new TextBlock { Text = model.Text("display_name", model.Text("provider_model_id")), FontWeight = FontWeights.Bold, FontSize = 13.5 });
         foreach (var (tag, text) in new[]
                  {
@@ -1241,9 +1105,8 @@ internal sealed class ModelRow : Border
             Text = $"{confidence} · 来源 {model.Text("source", "manual")}" + (operations.Count > 0 ? " · " + string.Join(" · ", operations) : ""),
             Style = (Style)Application.Current.FindResource("Micro"),
         });
-        grid.Children.Add(info);
 
-        var actions = new StackPanel { Orientation = Orientation.Horizontal };
+        var actions = new WrapPanel();
         var visible = model.Flag("display_enabled");
         var toggle = Kit.Act(visible ? "隐藏" : "显示", async (_, _) => await ToggleVisibility(), "Compact");
         actions.Children.Add(toggle);
@@ -1271,9 +1134,7 @@ internal sealed class ModelRow : Border
             test.Click += (_, _) => _ = panel.RunSmokeTest(model, key, image);
             actions.Children.Add(test);
         }
-        grid.Children.Add(actions);
-        Grid.SetColumn(actions, 1);
-        Child = grid;
+        Child = new PageHeading(info, actions);
     }
 
     private async Task ToggleVisibility()

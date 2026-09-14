@@ -1,0 +1,18 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Style x:Key="UsageDataDisclosure" TargetType="Expander">
+    <Setter Property="Template"><Setter.Value>
+      <ControlTemplate TargetType="Expander">
+        <StackPanel>
+          <ToggleButton Style="{StaticResource Pill}" HorizontalAlignment="Left" Margin="0,0,0,8"
+                        Content="{TemplateBinding Header}"
+                        IsChecked="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"/>
+          <ContentPresenter x:Name="Data" ContentSource="Content" Visibility="Collapsed"/>
+        </StackPanel>
+        <ControlTemplate.Triggers>
+          <Trigger Property="IsExpanded" Value="True"><Setter TargetName="Data" Property="Visibility" Value="Visible"/></Trigger>
+        </ControlTemplate.Triggers>
+      </ControlTemplate>
+    </Setter.Value></Setter>
+  </Style>
+</ResourceDictionary>
