@@ -2067,11 +2067,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
-  updateWorkflow: (workflowId: string, version: number, payload: Partial<Pick<WorkflowDefinition, "name" | "description" | "draft_graph" | "is_active">>) =>
-    request<WorkflowDefinition>(`/workflows/${workflowId}`, {
-      method: "PATCH",
-      body: JSON.stringify({ ...payload, version }),
-    }),
+  updateWorkflow: (workflowId: string, version: number, payload: Partial<Pick<WorkflowDefinition, "name" | "description" | "draft_graph" | "is_active">>) => {
+    const body = JSON.stringify({ ...payload, version });
+    // keepalive lets the workflow editor's beforeunload/visibilitychange
+    // draft flush survive page teardown (an ordinary in-flight fetch is
+    // killed and the last debounced edit drops). keepalive caps the body
+    // at 64 KiB, so only opt in when the serialized payload fits.
+    const init: RequestInit = { method: "PATCH", body };
+    if (body.length <= 60_000) init.keepalive = true;
+    return request<WorkflowDefinition>(`/workflows/${workflowId}`, init);
+  },
   validateWorkflow: (workflowId: string) => request<WorkflowValidation>(`/workflows/${workflowId}/validate`, { method: "POST" }),
   publishWorkflow: (workflowId: string) => request<WorkflowVersion>(`/workflows/${workflowId}/publish`, { method: "POST" }),
   workflowVersions: (workflowId: string) => request<WorkflowVersion[]>(`/workflows/${workflowId}/versions`),
