@@ -254,6 +254,102 @@ def test_google_text_result_carries_provider_usage(monkeypatch):
     }
 
 
+# Round-10 (#207 residue): post-200 failures are billed too — every raise
+# after the body decode must carry the usage so the FAILED attempt row
+# prices the spend instead of hiding it.
+
+
+def test_chat_validation_failure_keeps_billed_usage():
+    adapter = _chat_adapter(
+        lambda request: httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"finish_reason": "stop", "message": {"content": "not json"}}
+                ],
+                "usage": {"prompt_tokens": 21, "completion_tokens": 4},
+            },
+            request=request,
+        )
+    )
+    with pytest.raises(ProviderAdapterError) as excinfo:
+        adapter.generate_structured(StructuredRequest(prompt="x"), SmokeReply)
+    assert excinfo.value.code == "INVALID_OUTPUT"
+    assert excinfo.value.usage == {"prompt_tokens": 21, "completion_tokens": 4}
+
+
+def test_anthropic_truncation_failure_keeps_billed_usage():
+    adapter = _anthropic_adapter(
+        lambda request: httpx.Response(
+            200,
+            json={
+                "stop_reason": "max_tokens",
+                "content": [{"type": "text", "text": '{"ok"'}],
+                "usage": {"input_tokens": 30, "output_tokens": 12},
+            },
+            request=request,
+        )
+    )
+    with pytest.raises(ProviderAdapterError) as excinfo:
+        adapter.generate_structured(StructuredRequest(prompt="x"), SmokeReply)
+    assert excinfo.value.code == "OUTPUT_TRUNCATED"
+    assert excinfo.value.usage == {"input_tokens": 30, "output_tokens": 12}
+
+
+def test_google_blocked_failure_keeps_billed_usage(monkeypatch):
+    from app.model_adapters.google import GoogleRuntime, GoogleTextAdapter
+
+    adapter = GoogleTextAdapter(
+        GoogleRuntime(api_key="k", model_id="m", display_name="m")
+    )
+    response = SimpleNamespace(
+        candidates=[],
+        prompt_feedback=SimpleNamespace(block_reason="SAFETY"),
+        text="",
+        usage_metadata=_UsageMetadata({"prompt_token_count": 15}),
+    )
+    monkeypatch.setattr(adapter, "_execute", lambda operation: response)
+    with pytest.raises(ProviderAdapterError) as excinfo:
+        adapter.generate_structured(StructuredRequest(prompt="x"), SmokeReply)
+    assert excinfo.value.code == "CONTENT_POLICY"
+    assert excinfo.value.usage == {"prompt_token_count": 15}
+
+
+def test_vertex_validate_failure_keeps_billed_usage(monkeypatch):
+    from app.model_adapters.vertex import VertexTextAdapter
+
+    settings = Settings(
+        google_cloud_project="test-project",
+        google_application_credentials=Path(__file__),
+    )
+    adapter = VertexTextAdapter(settings, build_registry(settings)["text.fast"])
+    response = SimpleNamespace(
+        candidates=[],
+        prompt_feedback=None,
+        text="not json at all",
+        usage_metadata=_UsageMetadata({"prompt_token_count": 8, "candidates_token_count": 6}),
+    )
+    monkeypatch.setattr(adapter, "_execute", lambda operation: response)
+    with pytest.raises(ProviderAdapterError) as excinfo:
+        adapter.generate_structured(StructuredRequest(prompt="x"), SmokeReply)
+    assert excinfo.value.code == "INVALID_OUTPUT"
+    assert excinfo.value.usage == {"prompt_token_count": 8, "candidates_token_count": 6}
+
+
+def test_image_empty_result_keeps_billed_usage():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"data": [], "usage": {"input_tokens": 9, "output_tokens": 2}},
+        )
+
+    adapter = _chat_adapter(handler)
+    with pytest.raises(ProviderAdapterError) as excinfo:
+        adapter.generate_asset(ImageRequest(prompt="p", resolution="1K"))
+    assert excinfo.value.code == "INVALID_OUTPUT"
+    assert excinfo.value.usage == {"input_tokens": 9, "output_tokens": 2}
+
+
 def test_usage_absent_result_has_no_provider_usage():
     adapter = _chat_adapter(
         lambda request: httpx.Response(

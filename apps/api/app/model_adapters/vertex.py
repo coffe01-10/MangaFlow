@@ -121,9 +121,14 @@ class VertexTextAdapter(_VertexBase):
                 )
             )
             if self._blocked_reason(response):
-                raise VertexAdapterError(
+                # A blocked response still bills the input tokens: keep the
+                # usage on the error so the FAILED attempt prices the spend
+                # (#207 — the attach below only serves the success path).
+                blocked = VertexAdapterError(
                     "CONTENT_POLICY", "请求被 Vertex 内容安全策略拦截，系统已缩小生成片段；请重试"
                 )
+                blocked.usage = response_usage(response) or None
+                raise blocked
             result = self._validate_structured(
                 self._response_text(response),
                 output_schema,
@@ -131,7 +136,13 @@ class VertexTextAdapter(_VertexBase):
             )
             attach_provider_usage(result, response_usage(response))
             return result
-        except VertexAdapterError:
+        except VertexAdapterError as error:
+            # Post-200 validation failures are billed too (#207): retryable
+            # INVALID_OUTPUT re-dispatches and re-bills — the failed attempt
+            # row must price the real spend.
+            response = locals().get("response")
+            if response is not None and not getattr(error, "usage", None):
+                error.usage = response_usage(response) or None
             raise
         except Exception as error:
             raise self._translate_error(error) from error
@@ -171,9 +182,11 @@ class VertexTextAdapter(_VertexBase):
                 )
             )
             if self._blocked_reason(response):
-                raise VertexAdapterError(
+                blocked = VertexAdapterError(
                     "CONTENT_POLICY", "请求被 Vertex 内容安全策略拦截，系统已缩小生成片段；请重试"
                 )
+                blocked.usage = response_usage(response) or None
+                raise blocked
             result = self._validate_structured(
                 self._response_text(response),
                 output_schema,
@@ -181,7 +194,10 @@ class VertexTextAdapter(_VertexBase):
             )
             attach_provider_usage(result, response_usage(response))
             return result
-        except VertexAdapterError:
+        except VertexAdapterError as error:
+            response = locals().get("response")
+            if response is not None and not getattr(error, "usage", None):
+                error.usage = response_usage(response) or None
             raise
         except Exception as error:
             raise self._translate_error(error) from error
@@ -244,14 +260,22 @@ class VertexImageAdapter(_VertexBase):
                         images.append(part.inline_data.data)
                     elif part.text:
                         texts.append(part.text)
+            usage = response_usage(response) or {}
             if not images:
+                # Empty results (content filter) are billed 200s: the usage
+                # read above rides the error (#207).
                 if self._blocked_reason(response):
-                    raise VertexAdapterError(
+                    blocked = VertexAdapterError(
                         "CONTENT_POLICY",
                         "请求被 Vertex 内容安全策略拦截，本次生成被拒绝",
                     )
-                raise VertexAdapterError("INVALID_OUTPUT", "模型未返回图像")
-            usage = response_usage(response) or {}
+                    if usage:
+                        blocked.usage = usage
+                    raise blocked
+                empty = VertexAdapterError("INVALID_OUTPUT", "模型未返回图像")
+                if usage:
+                    empty.usage = usage
+                raise empty
             return ModelResponse(
                 model_id=self.capability.model_id,
                 request_id=getattr(response, "response_id", None),
