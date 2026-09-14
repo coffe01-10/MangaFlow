@@ -11,6 +11,7 @@ complete export.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -242,7 +243,11 @@ def test_guard_unquoted_value_matches_browser_url_not_a_prefix(tmp_path):
         assert full_name in result.stderr, result.stderr
 
         # Positive control: the real (full) name on disk passes — the refusal
-        # above is the name mismatch, not the syntax.
+        # above is the name mismatch, not the syntax. NTFS cannot hold a '"'
+        # in a filename, so on Windows the quote case stops after the refusal
+        # leg (which never writes the illegal name; only the HTML carries it).
+        if os.name == "nt" and '"' in full_name:
+            continue
         (dist / full_name).write_text("// chunk", encoding="utf-8")
         result = _run_guard(dist)
         assert result.returncode == 0, result.stdout + result.stderr
@@ -314,6 +319,25 @@ def test_guard_refuses_the_tracked_placeholder_on_a_clean_clone(tmp_path):
     )
     assert "build-frontend-static.sh" in result.stderr
     assert "_next/static/chunks/" in result.stderr, result.stderr
+
+
+def test_static_build_smoke_gate_failure_flag_precedes_both_loops():
+    """Source-order pin for build-frontend-static.sh's smoke gate (the #741
+    regression): the referenced-chunks loop and the stub-html loop share one
+    failure flag, so its initialization must precede BOTH loops. #741 slid
+    the chunks loop in above the pre-existing `smoke_missing=0`, leaving the
+    reset between the loops — the chunks gate recorded its failure and the
+    very next line wiped it, so an internally inconsistent export (index.html
+    referencing chunks that were never written, the exact #734 observed
+    damage) exited 0."""
+    src = (_SCRIPTS / "build-frontend-static.sh").read_text(encoding="utf-8")
+    assert src.count("smoke_missing=0") == 1, (
+        "the smoke gate must initialize its shared failure flag exactly once, "
+        f"found {src.count('smoke_missing=0')}"
+    )
+    assert src.index("smoke_missing=0") < src.index("smoke_missing=1"), (
+        "the failure-flag reset must precede the first loop that can set it"
+    )
 
 
 def test_guard_normalizes_backslashes_in_unquoted_attributes(tmp_path):
