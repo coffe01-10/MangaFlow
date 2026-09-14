@@ -1,7 +1,7 @@
 // Types for phase2_runner_lib.cjs consumers (playwright.config.ts,
 // tests/e2e/global-setup.ts). assertSupervised returns the Python verifier's
 // parsed JSON: run identity plus verified listener PIDs when a port is given.
-import type { ChildProcess } from "node:child_process";
+import type { ChildProcess, StdioOptions } from "node:child_process";
 import type { Socket } from "node:net";
 
 export const API_ORIGIN: string;
@@ -28,7 +28,7 @@ export interface OwnedChildProcess extends ChildProcess {
 export function spawnOwned(
   command: string,
   args: readonly string[],
-  options?: { stdio?: ChildProcess["stdio"]; cwd?: string; env?: NodeJS.ProcessEnv; shell?: boolean },
+  options?: { stdio?: StdioOptions; cwd?: string; env?: NodeJS.ProcessEnv; shell?: boolean },
 ): OwnedChildProcess;
 
 export function waitForOwnedHealth(options: {
