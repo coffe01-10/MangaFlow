@@ -1162,7 +1162,11 @@ def test_accept_non_http_execution_error_terminalizes_failed_and_replays(
     assert row.status == "FAILED"
     assert row.error["code"] == "EXECUTION_ERROR"
     assert row.error["status"] == 500
-    assert "worker exploded" in row.error["message"]
+    # Sanitization contract (round-9, worker_tasks/provider precedent): the
+    # stored-and-replayed message names the exception TYPE but never the raw
+    # text (SQL with bound values, paths) — the full detail lives in the log.
+    assert "RuntimeError" in row.error["message"]
+    assert "worker exploded" not in row.error["message"]
     group = db_session.scalar(
         select(DirectorCommandGroup).where(
             DirectorCommandGroup.command_group_id == shot["command_group_id"]

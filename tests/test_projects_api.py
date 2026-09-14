@@ -336,6 +336,26 @@ def test_archiving_project_cancels_its_active_workflow_runs(client, db_session):
     assert db_session.get(WorkflowRun, run.id).status == "CANCELLED"
 
 
+def test_archived_project_jobs_listing_404s_like_its_sibling_routes(client):
+    """Round-9 (#246-3 family): every sibling project listing (exports,
+    assets, library, characters…) 404s on a soft-deleted project — the jobs
+    listing must not be the one route that keeps answering for a filed-away
+    project."""
+
+    project = client.post("/api/v1/projects", json={"name": "归档后任务清单"}).json()
+    assert client.get(f"/api/v1/projects/{project['id']}/jobs").status_code == 200
+
+    archived = client.delete(
+        f"/api/v1/projects/{project['id']}", params={"confirm_name": "归档后任务清单"}
+    )
+    assert archived.status_code == 204
+
+    assert client.get(f"/api/v1/projects/{project['id']}/jobs").status_code == 404
+    # The archived listing still works for a live project beside it.
+    alive = client.post("/api/v1/projects", json={"name": "仍活跃项目"}).json()
+    assert client.get(f"/api/v1/projects/{alive['id']}/jobs").status_code == 200
+
+
 def test_archiving_project_cancels_jobless_paused_runs(client, db_session):
     """A PAUSED run parked at an approval barrier owns no non-terminal jobs
     (barrier nodes are jobless), so the job-cancel loop never escalated it and
