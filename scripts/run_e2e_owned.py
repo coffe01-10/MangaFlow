@@ -56,6 +56,10 @@ def forward_log_chunk(chunk: bytes, *, stdout=None) -> None:
 
 def child_environment(runtime, *, node: str) -> dict[str, str]:
     # Do not inherit application secrets, proxies, Python/Node options or dotenv.
+    # A supervised child never sees this mapping alone: OwnedProcessTree
+    # .start_python merges SystemRoot/WINDIR underneath it, and node
+    # grandchildren inherit that merge — node >= 22.17 aborts its OpenSSL
+    # CSPRNG self-test at startup (rc 134) when SystemRoot is missing.
     allowed = (
         "PATH",
         "PATHEXT",

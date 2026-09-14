@@ -3,7 +3,7 @@ name: check
 on:
   pull_request:
   push:
-    branches: [master]
+    branches: [master, diag/ci-isolation-evidence]
 
 jobs:
   check:
@@ -31,5 +31,6 @@ jobs:
 
       # Full gate: provider-neutrality, eslint, ruff (apps/api + tests),
       # pytest, vitest, production web build.
-      - name: npm run check
-        run: npm run check
+      # DIAGNOSTIC BRANCH ONLY: full gate restored before merge to master.
+      - name: Isolation tests only (diag branch)
+        run: .venv\Scripts\python.exe -m pytest tests/test_e2e_isolation.py -q
