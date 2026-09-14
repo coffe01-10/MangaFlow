@@ -206,6 +206,13 @@ mkdir -p "$DESKTOP_ROOT/dist/frontend"
 cp -r out/. "$DESKTOP_ROOT/dist/frontend/"
 # The shell-owned tools page is not part of the web export; keep it shipped.
 cp "$DESKTOP_ROOT/shell/shell-tools.html" "$DESKTOP_ROOT/dist/frontend/"
+# Provenance stamp (web-standalone's build-info.json precedent): what was
+# built, from which commit, when — written INSIDE the lock like every other
+# write to the dist trees (#350 discipline; the stamp landed outside it in
+# #741 and that was an unlocked-write slip).
+printf '{"commit":"%s","built_at":"%s"}\n' \
+  "$(git -C "$REPO_ROOT" rev-parse HEAD)" \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DESKTOP_ROOT/dist/frontend/build-info.json"
 release_dist_build_lock "$DIST_LOCK"
 dist_lock_held=0
 
@@ -229,13 +236,6 @@ for ref in $(grep -oE '/_next/static/[A-Za-z0-9/_.-]+' "$DESKTOP_ROOT/dist/front
     smoke_missing=1
   fi
 done
-
-# Provenance stamp (web-standalone's build-info.json precedent): what was
-# built, from which commit, when — so a served export can be identified
-# without trusting its directory contents.
-printf '{"commit":"%s","built_at":"%s"}\n' \
-  "$(git -C "$REPO_ROOT" rev-parse HEAD)" \
-  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DESKTOP_ROOT/dist/frontend/build-info.json"
 
 smoke_missing=0
 for rel_html in \
