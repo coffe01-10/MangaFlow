@@ -54,8 +54,12 @@ def _ensure_job_not_cancelled(db, job: GenerationJob) -> None:
     if owner and (
         job.lease_owner != owner
         or job.lease_expires_at is None
-        or _lease_is_expired(job.lease_expires_at)
     ):
+        # Ownership loss only — NOT mere expiry: the #130 reclaim-grace
+        # contract makes the owner-matched completion CAS the arbiter, so a
+        # starved-but-alive executor finishing within the grace window must
+        # keep its already-billed output. The janitor's reclaim resets the
+        # owner; that (or a terminal reset) is what loses the lease here.
         raise JobLeaseLostError("任务租约已被其他执行器接管")
 
 
@@ -66,7 +70,6 @@ def _commit_owned_progress(
 
     _ensure_job_not_cancelled(db, job)
     owner = db.info.get("job_lease_owner")
-    now = datetime.now(UTC)
     filters = [
         GenerationJob.id == job.id,
         GenerationJob.cancelled_at.is_(None),
@@ -77,9 +80,12 @@ def _commit_owned_progress(
     if owner:
         filters.extend(
             [
+                # Ownership guard, not expiry (same #130 contract as
+                # _ensure_job_not_cancelled): an expired-but-unreclaimed
+                # lease still owns its writes; the janitor's reclaim flips
+                # the owner and fails this CAS.
                 GenerationJob.lease_owner == owner,
                 GenerationJob.lease_expires_at.is_not(None),
-                GenerationJob.lease_expires_at > now,
             ]
         )
     updated = db.execute(
@@ -112,7 +118,6 @@ def _commit_owned_checkpoint(db, job: GenerationJob, *, key: str, value: dict) -
 
     _ensure_job_not_cancelled(db, job)
     owner = db.info.get("job_lease_owner")
-    now = datetime.now(UTC)
     parameters = dict(job.request_parameters or {})
     parameters[key] = value
     filters = [
@@ -125,9 +130,10 @@ def _commit_owned_checkpoint(db, job: GenerationJob, *, key: str, value: dict) -
     if owner:
         filters.extend(
             [
+                # Ownership guard, not expiry (same #130 contract as
+                # _ensure_job_not_cancelled).
                 GenerationJob.lease_owner == owner,
                 GenerationJob.lease_expires_at.is_not(None),
-                GenerationJob.lease_expires_at > now,
             ]
         )
     updated = db.execute(
