@@ -109,12 +109,23 @@ export default function ProjectSettingsPage() {
     setLocalDraft((current) => ({ ...(current ?? draft!), [key]: value }));
     setSavedNotice("");
   };
+  // 项目归档后，它的本地偏好与每个角色的概念草稿再没有任何 UI 可以触及——
+  // 不清理就会无限期留在本机（已删除的创作文本不随项目消失）。
+  const purgeProjectStorage = (projectId: string) => {
+    window.localStorage.removeItem(`mangaflow.image-model.${projectId}`);
+    window.localStorage.removeItem(`mangaflow.style-mode.${projectId}`);
+    const draftPrefix = `mangaflow:character-concept-draft:${projectId}:`;
+    for (const key of Object.keys(window.localStorage)) {
+      if (key.startsWith(draftPrefix)) window.localStorage.removeItem(key);
+    }
+  };
   const archive = useMutation({
     mutationFn: () => {
       if (!project.data || deleteConfirmation !== project.data.name) throw new Error("请输入完整项目名称");
       return api.deleteProject(id, deleteConfirmation);
     },
     onSuccess: async () => {
+      purgeProjectStorage(id);
       await queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       await queryClient.invalidateQueries({ queryKey: ["projects"] });
       queryClient.removeQueries({ queryKey: ["project", id] });
