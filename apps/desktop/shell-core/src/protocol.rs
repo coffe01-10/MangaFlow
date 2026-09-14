@@ -1277,6 +1277,21 @@ mod tests {
         assert_eq!(unix_now_from(at_epoch), 0);
     }
 
+    /// The ts monotonicity contract across the crate's timestamps: two
+    /// consecutive unix_now() draws must be non-decreasing (a clock that
+    /// steps backwards would make mark_stopped's stopped_at precede
+    /// created_at in the journal, breaking forensics ordering). The seam
+    /// pins the clamp; this pins the ordering across real draws.
+    #[test]
+    fn unix_now_draws_are_monotonically_non_decreasing() {
+        let first = unix_now();
+        let second = unix_now();
+        assert!(
+            second >= first,
+            "unix_now went backwards: {first} -> {second}"
+        );
+    }
+
     /// The token generator's output contract: 32 lowercase hex chars, the
     /// exact shape the stale-runtime sweep's name predicate (and every
     /// log/journal name in the crate) recognizes, and unique across draws.
