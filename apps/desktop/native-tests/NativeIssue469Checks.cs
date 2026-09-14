@@ -197,7 +197,7 @@ internal static class NativeIssue469Checks
     private static TextBox? Concurrency(FrameworkElement view) =>
         Descendants(view).OfType<TextBox>().FirstOrDefault(t => System.Windows.Automation.AutomationProperties.GetName(t) == "任务并发");
     private static Button SaveButton(FrameworkElement view) =>
-        Descendants(view).OfType<Button>().Single(b => Equals(b.Content, "保存项目设置"));
+        Descendants(view).OfType<Button>().Single(b => System.Windows.Automation.AutomationProperties.GetName(b) == "保存项目设置");
     private static PasswordBox? Password(FrameworkElement view) =>
         Descendants(view).OfType<PasswordBox>().FirstOrDefault();
     private static TextBox? RuntimeConcurrency(FrameworkElement view) =>

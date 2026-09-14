@@ -10,7 +10,7 @@ using MangaFlow.Native.Services;
 namespace MangaFlow.Native.Views;
 
 /// <summary>NUI-2A: full native project settings — five sections + danger zone.</summary>
-public sealed class ProjectSettingsView : WorkspaceView
+public sealed partial class ProjectSettingsView : WorkspaceView
 {
     private readonly StackPanel body = new();
     private readonly TextBox nameForDelete = new() { MaxLength = 120 };
@@ -46,47 +46,7 @@ public sealed class ProjectSettingsView : WorkspaceView
         saveSuccess.Visibility = Visibility.Collapsed;
         // 危险区输入到一半的删除确认名同样是用户输入，纳入同一份未保存守护。
         nameForDelete.TextChanged += (_, _) => Dirty();
-        var grid = new Grid { Margin = new Thickness(36, 32, 36, 24) };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        var scroller = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = body };
-        Grid.SetRowSpan(scroller, 2);
-        var danger = BuildDangerZone();
-        Grid.SetRow(danger, 1);
-        Grid.SetColumn(danger, 1);
-        grid.Children.Add(scroller);
-        grid.Children.Add(danger);
-        Content = grid;
-    }
-
-    private Border BuildDangerZone()
-    {
-        var panel = new StackPanel();
-        panel.Children.Add(new TextBlock { Text = "DANGER ZONE / 项目管理", Style = (Style)Application.Current.FindResource("SectionIndex"), Margin = new Thickness(0, 0, 0, 8) });
-        panel.Children.Add(new TextBlock
-        {
-            Text = "删除当前项目",
-            FontFamily = (FontFamily)Application.Current.FindResource("Serif"),
-            FontSize = 19, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 0, 0, 8),
-        });
-        panel.Children.Add(Caption("删除后项目将从工作台隐藏。数据库记录和生成文件暂时保留，避免误删；如需恢复可由维护工具处理。"));
-        nameForDelete.Margin = new Thickness(0, 14, 0, 0);
-        System.Windows.Automation.AutomationProperties.SetName(nameForDelete, "输入项目名称确认删除");
-        panel.Children.Add(nameForDelete);
-        var remove = Act("删除项目", DeleteProject, "DangerButton");
-        remove.Margin = new Thickness(0, 12, 0, 0);
-        panel.Children.Add(remove);
-        return new Border
-        {
-            Style = (Style)Application.Current.FindResource("Card"),
-            BorderBrush = (Brush)Application.Current.FindResource("Danger"),
-            Padding = new Thickness(22),
-            Margin = new Thickness(20, 24, 0, 0),
-            VerticalAlignment = VerticalAlignment.Top,
-            Child = panel,
-        };
+        BuildSettingsPage();
     }
 
     public override async void Activate(WorkspaceContext context)
@@ -103,8 +63,9 @@ public sealed class ProjectSettingsView : WorkspaceView
     private async Task LoadAsync()
     {
         body.Children.Clear();
+        saveButton.IsEnabled = false;
         projectTitle.Text = "读取项目设置…";
-        body.Children.Add(projectTitle);
+        body.Children.Add(SettingsHero());
         var spinner = new Spinner { Size = 20, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 18, 0, 0) };
         body.Children.Add(spinner);
         try
@@ -126,7 +87,8 @@ public sealed class ProjectSettingsView : WorkspaceView
         catch (Exception error) when (error is not OperationCanceledException)
         {
             body.Children.Clear();
-            body.Children.Add(projectTitle);
+            projectTitle.Text = "项目设置";
+            body.Children.Add(SettingsHero());
             var stack = new StackPanel();
             stack.Children.Add(new TextBlock { Text = "项目设置读取失败", FontWeight = FontWeights.Bold, FontSize = 15 });
             stack.Children.Add(Caption(error.Message));
@@ -145,7 +107,9 @@ public sealed class ProjectSettingsView : WorkspaceView
         finalGroup = new StackPanel();
         concurrencyInput = new TextBox { Width = 120 };
         consistencySwitch = new CheckBox { Style = (Style)Application.Current.FindResource("Switch") };
-        modelSelector = Selector("文字任务默认路由", 320);
+        modelSelector = Selector("文字任务默认路由", 260);
+        modelSelector.Width = double.NaN;
+        concurrencyInput.Width = 78;
         System.Windows.Automation.AutomationProperties.SetName(concurrencyInput, "任务并发");
         // Wire once per instance: the controls above are fresh on every Render.
         consistencySwitch.Checked += (_, _) => Dirty();
@@ -156,12 +120,9 @@ public sealed class ProjectSettingsView : WorkspaceView
         saveSuccess.Visibility = Visibility.Collapsed;
         saveError.Visibility = Visibility.Collapsed;
         projectTitle.Text = project.Text("name");
-        body.Children.Add(new TextBlock
-        {
-            Text = "这里仅保存当前项目的制作策略。图片模型仍在每个候选生成前单独选择，不设置主次。",
-            Style = (Style)Application.Current.FindResource("Caption"),
-            Margin = new Thickness(0, 6, 0, 22),
-        });
+        body.Children.Add(SettingsHero());
+        var settings = new ProjectSettingsGrid { Margin = new Thickness(0, 18, 0, 0) };
+        body.Children.Add(settings);
 
         modeGroup.Children.Clear();
         foreach (var mode in new[] { "DIRECTOR", "SEMI_AUTO", "AUTO" })
@@ -169,15 +130,16 @@ public sealed class ProjectSettingsView : WorkspaceView
             var card = new RadioButton
             {
                 GroupName = "workflow-mode",
+                Style = (Style)FindResource("SettingsModeChoice"),
                 Tag = mode,
-                Margin = new Thickness(0, 0, 0, 10),
+                Margin = new Thickness(0, 0, 0, 7),
                 MinHeight = 62,
                 Content = new StackPanel
                 {
                     Children =
                     {
                         new TextBlock { Text = Labels.Map(Labels.WorkflowModeShort, mode) + (mode == "DIRECTOR" ? "模式" : ""), FontWeight = FontWeights.Bold, FontSize = 14 },
-                        new TextBlock { Text = Labels.Map(Labels.WorkflowModeDetail, mode), Style = (Style)Application.Current.FindResource("Micro"), Margin = new Thickness(0, 4, 0, 0) },
+                        new TextBlock { Text = Labels.Map(Labels.WorkflowModeDetail, mode), FontSize = 12, Foreground = AssetPageUi.Brush("Muted"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 0) },
                     },
                 },
             };
@@ -185,7 +147,7 @@ public sealed class ProjectSettingsView : WorkspaceView
             card.Checked += (_, _) => Dirty();
             modeGroup.Children.Add(card);
         }
-        body.Children.Add(Section("工作方式", "WORKFLOW MODE", modeGroup));
+        settings.Children.Add(Section("工作方式", "WORKFLOW MODE", modeGroup));
 
         BuildSegments(project.Text("draft_resolution", "1K"), project.Text("default_resolution", "2K"));
         concurrencyInput.Text = project.Number("default_concurrency").ToString();
@@ -193,36 +155,21 @@ public sealed class ProjectSettingsView : WorkspaceView
         {
             Children =
             {
-                Labelled("草稿清晰度 / 抽卡和预览使用", draftGroup),
-                Labelled("正式清晰度 / 导出前保持结构升清", finalGroup),
-                Labelled("任务并发 / 同一项目最多并行任务数（1–8）", concurrencyInput),
+                InlineSetting("草稿清晰度", "抽卡和预览使用", draftGroup),
+                InlineSetting("正式清晰度", "导出前保持结构升清", finalGroup),
+                InlineSetting("任务并发", "同一项目最多并行任务数（1–8）", concurrencyInput),
             },
         };
-        body.Children.Add(Section("清晰度与并发", "OUTPUT", outputPanel));
+        settings.Children.Add(Section("清晰度与并发", "OUTPUT", outputPanel));
 
-        consistencySwitch.Content = "连续性检查 / 检查角色、服装、道具和场景状态";
+        consistencySwitch.Style = (Style)FindResource("SettingsContinuitySwitch");
+        consistencySwitch.Content = SettingLabel("连续性检查", "检查角色、服装、道具和场景状态");
         consistencySwitch.IsChecked = project.Flag("consistency_check_enabled");
-        var note = Notice("文字由人工校对 / 采用候选前必须明确确认页面文字，不再运行 OCR 或自动文字修复。", "neutral");
-        note.Margin = new Thickness(0, 14, 0, 0);
+        var note = PolicyNote(null, "文字由人工校对", "采用候选前必须明确确认页面文字，不再运行 OCR 或自动文字修复。");
+        note.Margin = new Thickness(0, 12, 0, 0);
         var gatePanel = new StackPanel { Children = { consistencySwitch, note } };
-        body.Children.Add(Section("检查开关", "QUALITY GATES", gatePanel));
-
-        body.Children.Add(new Border
-        {
-            Background = (Brush)Application.Current.FindResource("PaperDeep"),
-            BorderBrush = (Brush)Application.Current.FindResource("Line"),
-            BorderThickness = new Thickness(1),
-            Padding = new Thickness(18),
-            Margin = new Thickness(0, 16, 0, 0),
-            Child = new StackPanel
-            {
-                Children =
-                {
-                    new TextBlock { Text = "MODEL POLICY / 模型策略", Style = (Style)Application.Current.FindResource("SectionIndex"), Margin = new Thickness(0, 0, 0, 6) },
-                    new TextBlock { Text = "图片模型按任务选择 / 项目不绑定图片“主模型”。每次生成候选都必须明确选择供应商模型，以保持画风一致。", TextWrapping = TextWrapping.Wrap },
-                },
-            },
-        });
+        settings.Children.Add(Section("检查开关", "QUALITY GATES", gatePanel));
+        settings.Children.Add(PolicyNote("MODEL POLICY", "图片模型按任务选择", "项目不绑定图片“主模型”。每次生成候选都必须明确选择供应商模型，以保持画风一致。"));
 
         modelSelector.Items.Clear();
         modelSelector.Items.Add(new ComboBoxItem { Tag = "auto", Content = "自动路由 · 已验证文字/视觉模型" });
@@ -243,14 +190,13 @@ public sealed class ProjectSettingsView : WorkspaceView
         }
         else if (known != null) Select(modelSelector, known.Value);
         else modelSelector.SelectedIndex = 0;
-        var textPanel = new StackPanel { Children = { Labelled("剧本、风格分析与视觉检查 / 自动路由只使用已完成能力测试的模型", modelSelector) } };
-        body.Children.Add(Section("文字任务默认路由", "TEXT MODEL", textPanel));
+        var textPanel = new StackPanel { Children = { Labelled("剧本、风格分析与视觉检查", modelSelector) } };
+        textPanel.Children.Add(Caption("自动路由只使用已完成能力测试的模型"));
+        settings.Children.Add(Section("文字任务默认路由", "TEXT MODEL", textPanel));
 
-        saveButton.Margin = new Thickness(0, 22, 0, 6);
-        saveButton.HorizontalAlignment = HorizontalAlignment.Left;
-        body.Children.Add(saveButton);
-        body.Children.Add(saveSuccess);
-        body.Children.Add(saveError);
+        body.Children.Add(dangerZone);
+        saveButton.IsEnabled = !saving;
+        UpdateDeleteAvailability();
         // 程序化回填（上面的 IsChecked/Text/SelectedItem 赋值）会同步触发 Dirty；
         // 渲染完成即服务端状态，收尾清脏。危险区的删除确认名不随渲染重建，
         // 留在缓存视图里反而避免了跨导航丢失，不参与此重置。
@@ -274,8 +220,9 @@ public sealed class ProjectSettingsView : WorkspaceView
             var toggle = new ToggleButton
             {
                 Content = option, Style = (Style)Application.Current.FindResource("Pill"),
-                IsChecked = option == current, Margin = new Thickness(0, 0, 8, 0), MinWidth = 64,
+                IsChecked = option == current, Margin = new Thickness(0), MinWidth = 48, MinHeight = 36,
             };
+            toggle.Click += (_, _) => { if (toggle.IsChecked != true) toggle.IsChecked = true; };
             toggle.Checked += (_, _) =>
             {
                 foreach (var other in group.Children.OfType<ToggleButton>())
@@ -300,28 +247,9 @@ public sealed class ProjectSettingsView : WorkspaceView
     {
         var panel = new StackPanel { Margin = new Thickness(0, 0, 0, 14) };
         panel.Children.Add(FieldLabel(label));
-        control.HorizontalAlignment = HorizontalAlignment.Left;
+        control.HorizontalAlignment = HorizontalAlignment.Stretch;
         panel.Children.Add(control);
         return panel;
-    }
-
-    private static Border Section(string title, string kicker, UIElement content)
-    {
-        var panel = new StackPanel { Margin = new Thickness(2) };
-        panel.Children.Add(new TextBlock { Text = kicker, Style = (Style)Application.Current.FindResource("SectionIndex"), Margin = new Thickness(0, 0, 0, 6) });
-        panel.Children.Add(new TextBlock
-        {
-            Text = title, FontFamily = (FontFamily)Application.Current.FindResource("Serif"),
-            FontSize = 19, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 0, 0, 12),
-        });
-        panel.Children.Add(content);
-        return new Border
-        {
-            Style = (Style)Application.Current.FindResource("Card"),
-            Padding = new Thickness(22),
-            Margin = new Thickness(0, 0, 0, 16),
-            Child = panel,
-        };
     }
 
     private void Dirty()
