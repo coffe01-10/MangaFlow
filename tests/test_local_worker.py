@@ -574,6 +574,75 @@ def test_embedded_auto_diagnostics_report_local_despite_reachable_redis(
     assert state.can_execute is True
 
 
+def test_embedded_explicit_redis_mode_also_enqueues_locally(
+    db_session, monkeypatch
+):
+    """An explicit REDIS queue_mode must not bypass the embedded guard: a
+    desktop DB restored from a server deployment can carry the mode, and
+    an ambient Redis answering a ping is still not an executor the
+    embedded runtime owns (#721 hazard, REDIS leg — round-8 review)."""
+
+    _set_queue_mode(db_session, "REDIS")
+    job = _waiting_job(db_session, "embedded-redis")
+    submitted: list[str] = []
+    monkeypatch.setattr(
+        job_service, "get_settings", lambda: Settings(
+            environment="development", mangaflow_desktop_embedded=True
+        )
+    )
+    monkeypatch.setattr(
+        job_service, "_submit_local", lambda job_id: submitted.append(job_id)
+    )
+    enqueued: list[str] = []
+
+    class _FakeQueue:
+        def enqueue(self, *args, **kwargs):
+            enqueued.append(args[0])
+
+    class _FakeRedis:
+        def ping(self):
+            return True
+
+    monkeypatch.setattr("redis.Redis.from_url", lambda *_a, **_k: _FakeRedis())
+    monkeypatch.setattr("rq.Queue", lambda name, connection: _FakeQueue())
+
+    result = job_service.enqueue_job(db_session, job)
+
+    assert result.status == JobStatus.QUEUED
+    assert result.error_code == "LOCAL_WORKER"
+    assert submitted == [job.id]
+    assert enqueued == [], "explicit REDIS must not hand jobs to ambient Redis in the embedded runtime"
+
+
+def test_embedded_explicit_redis_diagnostics_report_local(db_session, monkeypatch):
+    """Diagnostics parity for the REDIS leg above: the embedded runtime
+    reports LOCAL/NOT_USED for an explicit REDIS mode with a reachable
+    ambient Redis — the executor enqueue actually uses, never the one the
+    mode string names."""
+
+    from app.services.runtime_settings import queue_execution_state
+
+    _set_queue_mode(db_session, "REDIS")
+    settings = Settings(
+        environment="development", mangaflow_desktop_embedded=True
+    )
+
+    class _FakeRedis:
+        def ping(self):
+            return True
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("redis.Redis.from_url", lambda *_a, **_k: _FakeRedis())
+
+    state = queue_execution_state(db_session, settings, probe_redis=True)
+
+    assert state.actual_executor == "LOCAL"
+    assert state.redis_state == "NOT_USED"
+    assert state.can_execute is True
+
+
 def test_auto_diagnostics_without_embedded_flag_still_report_redis(
     db_session, monkeypatch
 ):
