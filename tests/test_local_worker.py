@@ -574,6 +574,35 @@ def test_embedded_auto_diagnostics_report_local_despite_reachable_redis(
     assert state.can_execute is True
 
 
+def test_auto_diagnostics_without_embedded_flag_still_report_redis(
+    db_session, monkeypatch
+):
+    """Non-embedded control for the embedded pin above: with a REACHABLE
+    Redis and no desktop-embedded flag, AUTO diagnostics still report the
+    REDIS executor — guarding the embedded branch from ever swallowing the
+    server deployment's report (#727 fix surface, item 2)."""
+
+    from app.services.runtime_settings import queue_execution_state
+
+    _set_queue_mode(db_session, "AUTO")
+    settings = Settings(environment="development")
+
+    class _FakeRedis:
+        def ping(self):
+            return True
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("redis.Redis.from_url", lambda *_a, **_k: _FakeRedis())
+
+    state = queue_execution_state(db_session, settings, probe_redis=True)
+
+    assert state.actual_executor == "REDIS"
+    assert state.redis_state == "AVAILABLE"
+    assert state.can_execute is True
+
+
 def test_embedded_auto_mode_adopts_locally_despite_a_reachable_redis(
     db_session, monkeypatch
 ):
