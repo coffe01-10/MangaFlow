@@ -109,23 +109,32 @@ export default function ProjectSettingsPage() {
     setLocalDraft((current) => ({ ...(current ?? draft!), [key]: value }));
     setSavedNotice("");
   };
-  // 项目归档后，它的本地偏好与每个角色的概念草稿再没有任何 UI 可以触及——
-  // 不清理就会无限期留在本机（已删除的创作文本不随项目消失）。
-  const purgeProjectStorage = (projectId: string) => {
+  // 项目归档后，它的本地偏好与每个角色/风格的概念草稿再没有任何 UI 可以
+  // 触及——不清理就会无限期留在本机（已删除的创作文本不随项目消失）。
+  // style-atmosphere 按 styleId 而非 projectId 存键，且归档后 styles 列表
+  // 404，必须在 DELETE 之前先取回 id 清单。
+  const purgeProjectStorage = (projectId: string, styleIds: string[]) => {
     window.localStorage.removeItem(`mangaflow.image-model.${projectId}`);
     window.localStorage.removeItem(`mangaflow.style-mode.${projectId}`);
     const draftPrefix = `mangaflow:character-concept-draft:${projectId}:`;
     for (const key of Object.keys(window.localStorage)) {
       if (key.startsWith(draftPrefix)) window.localStorage.removeItem(key);
     }
+    for (const styleId of styleIds) {
+      window.localStorage.removeItem(`mangaflow:style-atmosphere:${styleId}`);
+    }
   };
   const archive = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       if (!project.data || deleteConfirmation !== project.data.name) throw new Error("请输入完整项目名称");
-      return api.deleteProject(id, deleteConfirmation);
+      const styleIds = await api.styles(id)
+        .then((items) => items.map((item) => item.id))
+        .catch(() => [] as string[]);
+      await api.deleteProject(id, deleteConfirmation);
+      return styleIds;
     },
-    onSuccess: async () => {
-      purgeProjectStorage(id);
+    onSuccess: async (styleIds) => {
+      purgeProjectStorage(id, styleIds);
       await queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       await queryClient.invalidateQueries({ queryKey: ["projects"] });
       queryClient.removeQueries({ queryKey: ["project", id] });

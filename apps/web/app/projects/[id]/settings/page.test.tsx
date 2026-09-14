@@ -15,6 +15,7 @@ const projectSpy = vi.spyOn(api, "project");
 const modelsSpy = vi.spyOn(api, "models");
 const updateProjectSpy = vi.spyOn(api, "updateProject");
 const deleteProjectSpy = vi.spyOn(api, "deleteProject");
+const stylesSpy = vi.spyOn(api, "styles");
 
 function project(overrides: Partial<Project> = {}): Project {
   return {
@@ -140,16 +141,23 @@ describe("ProjectSettingsPage 删除项目清理本机数据", () => {
     modelsSpy.mockReset().mockResolvedValue([]);
     updateProjectSpy.mockReset();
     deleteProjectSpy.mockReset().mockResolvedValue(undefined);
+    stylesSpy.mockReset().mockResolvedValue([
+      { id: "style-1", name: "风格一" },
+      { id: "style-2", name: "风格二" },
+    ]);
     window.localStorage.clear();
   });
 
-  it("归档成功后清除项目偏好与角色概念草稿，不动其他项目的数据", async () => {
+  it("归档成功后清除项目偏好、角色概念草稿与风格氛围文本，不动其他项目的数据", async () => {
     window.localStorage.setItem("mangaflow.image-model.project-1", "model-a");
     window.localStorage.setItem("mangaflow.style-mode.project-1", "color");
     window.localStorage.setItem("mangaflow:character-concept-draft:project-1:char-1", "外观草稿");
     window.localStorage.setItem("mangaflow:character-concept-draft:project-1:char-2", "服装草稿");
+    window.localStorage.setItem("mangaflow:style-atmosphere:style-1", "氛围草稿一");
+    window.localStorage.setItem("mangaflow:style-atmosphere:style-2", "氛围草稿二");
     window.localStorage.setItem("mangaflow.image-model.project-2", "model-b");
     window.localStorage.setItem("mangaflow:character-concept-draft:project-2:char-1", "别家的草稿");
+    window.localStorage.setItem("mangaflow:style-atmosphere:style-other", "别家的氛围");
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
 
     renderPage();
@@ -163,10 +171,13 @@ describe("ProjectSettingsPage 删除项目清理本机数据", () => {
       expect(window.localStorage.getItem("mangaflow.style-mode.project-1")).toBeNull();
       expect(window.localStorage.getItem("mangaflow:character-concept-draft:project-1:char-1")).toBeNull();
       expect(window.localStorage.getItem("mangaflow:character-concept-draft:project-1:char-2")).toBeNull();
+      expect(window.localStorage.getItem("mangaflow:style-atmosphere:style-1")).toBeNull();
+      expect(window.localStorage.getItem("mangaflow:style-atmosphere:style-2")).toBeNull();
     });
     // 其他项目的数据不受影响。
     expect(window.localStorage.getItem("mangaflow.image-model.project-2")).toBe("model-b");
     expect(window.localStorage.getItem("mangaflow:character-concept-draft:project-2:char-1")).toBe("别家的草稿");
+    expect(window.localStorage.getItem("mangaflow:style-atmosphere:style-other")).toBe("别家的氛围");
     confirmSpy.mockRestore();
   });
 });

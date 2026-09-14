@@ -63,6 +63,12 @@ provider.install_legacy_adapter_lookup(lambda alias: _adapter(alias))
 
 
 def _worker_id() -> str:
+    # An RQ parent that generated the owner for its horse (rq_windows hands
+    # it over so the pre-kill timeout marker can fence on ownership) takes
+    # precedence; every other execution path mints its own identity.
+    inherited = os.environ.get("MANGAFLOW_LEASE_OWNER")
+    if inherited:
+        return inherited
     return f"{socket.gethostname()}-{os.getpid()}-{uuid4().hex}"
 
 
@@ -665,6 +671,22 @@ def execute_job(job_id: str) -> None:
 
             mark_job_cancelled(db, job)
             db.commit()
+            # Every other terminal branch reconciles the owning run; without
+            # this a cancelled node under a RUNNING run stalls (reconcile's
+            # own comment calls out the shape) until someone opens the run
+            # detail page — the one-active-run guard blocks the scope the
+            # whole time. mark_job_cancelled stamps only the node.
+            cancelled_run_id = _resolve_workflow_run_id(db, job)
+            if cancelled_run_id:
+                try:
+                    from app.services.workflow_engine import reconcile_run
+
+                    reconcile_run(db, cancelled_run_id)
+                except Exception:
+                    LOGGER.exception(
+                        "workflow run %s reconcile failed after job cancellation",
+                        cancelled_run_id,
+                    )
         return
     except StaleStoryboardVersionError as error:
         db.rollback()
