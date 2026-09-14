@@ -222,6 +222,82 @@ def test_completion_lease_lost_logs_double_spend_warning(db_session, monkeypatch
     assert "任务租约已被其他执行器接管" in message
 
 
+def test_heartbeat_renews_an_expired_but_unreclaimed_lease(db_session, monkeypatch):
+    """WE1 (round-10): the heartbeat's renewal CAS used to fence on
+    ``lease_expires_at > now`` — a DB outage that froze the heartbeat thread
+    made the FIRST successful renewal after reconnect observe the lapsed
+    lease, mark itself lost, and every later guard discarded the
+    already-billed output even though nobody reclaimed the row (#130's exact
+    starved-but-alive scenario). Renewal is now ownership-fenced: an
+    expired-but-own lease revives; a reclaimed (owner-flipped) row loses."""
+
+    job = _seed_leased_job(db_session, "围栏内自续约", expired_seconds_ago=30)
+    monkeypatch.setattr(worker_tasks, "SessionLocal", _session_factory(db_session))
+
+    heartbeat = worker_tasks._LeaseHeartbeat(job.id, "starved-worker")
+    assert heartbeat._renew_once() is True
+    assert heartbeat.lost is False
+
+    db_session.expire_all()
+    row = db_session.get(GenerationJob, job.id)
+    assert row.lease_owner == "starved-worker"
+    refreshed = row.lease_expires_at
+    if refreshed.tzinfo is None:
+        refreshed = refreshed.replace(tzinfo=UTC)
+    assert refreshed > datetime.now(UTC)
+
+    # The janitor reclaimed mid-flight: the owner flipped, renewal fails.
+    db_session.execute(
+        update(GenerationJob)
+        .where(GenerationJob.id == job.id)
+        .values(lease_owner=None, status=JobStatus.WAITING)
+    )
+    db_session.commit()
+
+    assert heartbeat._renew_once() is False
+    assert heartbeat.lost is True
+
+
+def test_handler_guards_treat_own_expired_lease_as_still_owned(db_session):
+    """WE1, handler-side seams: _ensure_job_not_cancelled and the owned
+    progress/checkpoint CASes used to treat a merely-expired OWN lease as
+    lost — the post-paid-call guard raised JobLeaseLostError and the
+    completion rolled back billed output that the owner-matched completion
+    CAS (the #130 arbiter) would have committed. Ownership loss — owner
+    flipped or lease reset — is what must raise."""
+
+    from app.services.worker_handlers.execution import (
+        JobLeaseLostError,
+        _commit_owned_progress,
+        _ensure_job_not_cancelled,
+    )
+
+    job = _seed_leased_job(db_session, "围栏内完成", expired_seconds_ago=30)
+    job.status = JobStatus.GENERATING
+    db_session.commit()
+    db_session.info["job_lease_owner"] = "starved-worker"
+
+    # Merely expired, still ours: no raise, and the owned write lands.
+    _ensure_job_not_cancelled(db_session, job)
+    _commit_owned_progress(db_session, job, status=JobStatus.GENERATING, progress=55)
+    db_session.expire_all()
+    assert db_session.get(GenerationJob, job.id).progress == 55
+
+    # A successor executor holds the row: the guard raises (the write above
+    # would have been the successor's to make).
+    db_session.execute(
+        update(GenerationJob)
+        .where(GenerationJob.id == job.id)
+        .values(lease_owner="successor-worker")
+    )
+    db_session.commit()
+    try:
+        _ensure_job_not_cancelled(db_session, job)
+        raise AssertionError("owner flip must raise JobLeaseLostError")
+    except JobLeaseLostError:
+        pass
+
+
 def test_execute_locally_logs_lease_lost_discard(db_session, monkeypatch, caplog):
     """The local executor's silent except-return (job_service) gets the same
     warning with row context (defense in depth for lease-lost raises from

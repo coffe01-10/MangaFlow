@@ -136,38 +136,52 @@ class _LeaseHeartbeat:
                     self.timed_out = True
                     self._mark_local_timeout()
                 return
-            try:
-                now = utcnow()
-                with SessionLocal() as db:
-                    updated = db.execute(
-                        update(GenerationJob)
-                        .where(
-                            GenerationJob.id == self.job_id,
-                            GenerationJob.lease_owner == self.owner,
-                            GenerationJob.lease_expires_at.is_not(None),
-                            GenerationJob.lease_expires_at > now,
-                            GenerationJob.status.in_(ACTIVE_STATUSES),
-                            GenerationJob.status.not_in(
-                                {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED}
-                            ),
-                        )
-                        .values(lease_expires_at=now + self.duration)
-                        .execution_options(synchronize_session=False)
+            if not self._renew_once():
+                return
+
+    def _renew_once(self) -> bool:
+        """One renewal attempt. Returns False when the lease is lost (the
+        caller stops renewing). Extracted from _run so the ownership
+        predicates are unit-testable without the heartbeat interval."""
+        try:
+            now = utcnow()
+            with SessionLocal() as db:
+                updated = db.execute(
+                    update(GenerationJob)
+                    .where(
+                        GenerationJob.id == self.job_id,
+                        GenerationJob.lease_owner == self.owner,
+                        GenerationJob.lease_expires_at.is_not(None),
+                        # NOT fenced on lease_expires_at > now: an expired
+                        # but UNRECLAIMED lease is still ours (#130's
+                        # reclaim-grace contract — the completion CAS
+                        # arbitrates on ownership, not expiry). Renewing
+                        # after a transient stall (DB outage froze the
+                        # heartbeat thread) keeps the starved-but-alive
+                        # executor on its own row; the janitor's reclaim
+                        # flips the owner and this CAS fails correctly.
+                        GenerationJob.status.in_(ACTIVE_STATUSES),
+                        GenerationJob.status.not_in(
+                            {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED}
+                        ),
                     )
-                    db.commit()
-                    if updated.rowcount != 1:
-                        self.lost = True
-                        return
-            except Exception:
-                # A transient heartbeat failure should not turn a healthy
-                # provider call into a second paid request.  The lease itself
-                # remains the source of truth and will be reclaimed if it
-                # eventually expires.
-                LOGGER.warning(
-                    "lease heartbeat failed for job %s", self.job_id, exc_info=True
+                    .values(lease_expires_at=now + self.duration)
+                    .execution_options(synchronize_session=False)
                 )
-                if self.stop.wait(1.0):
-                    return
+                db.commit()
+                if updated.rowcount != 1:
+                    self.lost = True
+                    return False
+                return True
+        except Exception:
+            # A transient heartbeat failure should not turn a healthy
+            # provider call into a second paid request.  The lease itself
+            # remains the source of truth and will be reclaimed if it
+            # eventually expires.
+            LOGGER.warning(
+                "lease heartbeat failed for job %s", self.job_id, exc_info=True
+            )
+            return self.stop.wait(1.0)
 
     def _mark_local_timeout(self) -> None:
         """Write the one-shot LOCAL_TIMEOUT marker while the lease is live.
