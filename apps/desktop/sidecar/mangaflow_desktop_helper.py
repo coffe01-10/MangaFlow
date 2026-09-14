@@ -1308,7 +1308,11 @@ def main() -> int:
         _merge_last_resort_failure(record, error)
         try:
             _write_journal(journal, record)
-        except OSError:
+        except (OSError, RuntimeError):
+            # OSError: the write itself failed. RuntimeError: the #686/#692
+            # guards (planted link/FIFO at the journal or pending names)
+            # refuse before writing — the last-resort handler must not die
+            # with a traceback on the same posture it guards against.
             pass
         _log(f"helper failed: {error!r}")
         return 1
