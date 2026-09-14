@@ -121,22 +121,38 @@ class GoogleTextAdapter(_GoogleBase):
             )
         )
         if self._blocked_reason(response):
-            raise ProviderAdapterError(
+            # A blocked response still bills the input tokens (#207): the
+            # usage rides the error so the FAILED attempt prices the spend.
+            blocked = ProviderAdapterError(
                 "CONTENT_POLICY",
                 "请求被 Gemini API 内容安全策略拦截，系统已缩小生成片段；请重试",
             )
+            blocked.usage = response_usage(response) or None
+            raise blocked
+        usage = response_usage(response) or None
         try:
             text = response.text
         except Exception as error:
-            raise ProviderAdapterError(
+            unparsable = ProviderAdapterError(
                 "INVALID_OUTPUT", "Gemini API 返回结构无法解析", retryable=True
-            ) from error
+            )
+            if usage:
+                unparsable.usage = usage
+            raise unparsable from error
         if not text:
-            raise ProviderAdapterError("INVALID_OUTPUT", "Gemini API 没有返回文本")
-        result = _validate_structured_text(
-            text, output_schema, failure_message="Gemini API 返回结构无法验证"
-        )
-        attach_provider_usage(result, response_usage(response))
+            empty = ProviderAdapterError("INVALID_OUTPUT", "Gemini API 没有返回文本")
+            if usage:
+                empty.usage = usage
+            raise empty
+        try:
+            result = _validate_structured_text(
+                text, output_schema, failure_message="Gemini API 返回结构无法验证"
+            )
+        except ProviderAdapterError as error:
+            if usage:
+                error.usage = usage
+            raise
+        attach_provider_usage(result, usage)
         return result
 
     def analyze_multimodal(
@@ -174,22 +190,36 @@ class GoogleTextAdapter(_GoogleBase):
             )
         )
         if self._blocked_reason(response):
-            raise ProviderAdapterError(
+            blocked = ProviderAdapterError(
                 "CONTENT_POLICY",
                 "请求被 Gemini API 内容安全策略拦截，系统已缩小生成片段；请重试",
             )
+            blocked.usage = response_usage(response) or None
+            raise blocked
+        usage = response_usage(response) or None
         try:
             text = response.text
         except Exception as error:
-            raise ProviderAdapterError(
+            unparsable = ProviderAdapterError(
                 "INVALID_OUTPUT", "Gemini API 返回结构无法解析", retryable=True
-            ) from error
+            )
+            if usage:
+                unparsable.usage = usage
+            raise unparsable from error
         if not text:
-            raise ProviderAdapterError("INVALID_OUTPUT", "Gemini API 没有返回分析结果")
-        result = _validate_structured_text(
-            text, output_schema, failure_message="Gemini API 返回结构无法验证"
-        )
-        attach_provider_usage(result, response_usage(response))
+            empty = ProviderAdapterError("INVALID_OUTPUT", "Gemini API 没有返回分析结果")
+            if usage:
+                empty.usage = usage
+            raise empty
+        try:
+            result = _validate_structured_text(
+                text, output_schema, failure_message="Gemini API 返回结构无法验证"
+            )
+        except ProviderAdapterError as error:
+            if usage:
+                error.usage = usage
+            raise
+        attach_provider_usage(result, usage)
         return result
 
 
@@ -264,12 +294,20 @@ class GoogleImageAdapter(_GoogleBase):
                 "INVALID_OUTPUT", "Gemini API 图像响应结构无法解析", retryable=True
             ) from error
         if not images:
+            # Empty results (content filter) are billed 200s: the usage read
+            # above rides the error so the FAILED attempt prices the spend.
             if self._blocked_reason(response):
-                raise ProviderAdapterError(
+                blocked = ProviderAdapterError(
                     "CONTENT_POLICY",
                     "请求被 Gemini API 内容安全策略拦截，本次生成被拒绝",
                 )
-            raise ProviderAdapterError("INVALID_OUTPUT", "Gemini API 未返回图像")
+                if usage:
+                    blocked.usage = usage
+                raise blocked
+            empty = ProviderAdapterError("INVALID_OUTPUT", "Gemini API 未返回图像")
+            if usage:
+                empty.usage = usage
+            raise empty
         return ModelResponse(
             model_id=self.runtime.model_id,
             request_id=getattr(response, "response_id", None),

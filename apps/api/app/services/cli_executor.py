@@ -283,7 +283,18 @@ class CLIExecutionController:
                     error.retain_artifacts = True
                 raise error
             if outcome.timed_out:
-                raise ProviderAdapterError("TIMEOUT", "CLI 图片任务执行超时", retryable=True)
+                # The CLI may already have emitted its end-event usage and
+                # written result.json before the wall clock cut in (a paid
+                # run whose completion raced the timeout): best-effort read,
+                # same suppressed-exception discipline as late cancellation,
+                # and retain the artifacts as billing evidence.
+                timeout_error = ProviderAdapterError(
+                    "TIMEOUT", "CLI 图片任务执行超时", retryable=True
+                )
+                with contextlib.suppress(ProviderAdapterError, OSError, SQLAlchemyError):
+                    timeout_error.usage = self._read_result(run_id, run_directory).usage
+                timeout_error.retain_artifacts = True
+                raise timeout_error
             if outcome.error_code:
                 if outcome.error_code not in CLI_FAILURE_CODES:
                     raise ProviderAdapterError("INVALID_OUTPUT", "CLI 返回了无效错误码")
@@ -349,8 +360,19 @@ class CLIExecutionController:
                 )
             else:
                 error = ProviderAdapterError("CRASH", "CLI controller 异常终止")
+            # The child finished and its result may carry billed usage: keep
+            # it on the classified error (the worker's FAILED finalize reads
+            # error.usage) and retain the run directory instead of deleting
+            # the billing evidence, mirroring the late-cancellation posture.
+            if outcome is not None and not outcome.timed_out and not outcome.cancelled:
+                with contextlib.suppress(ProviderAdapterError, OSError, SQLAlchemyError):
+                    error.usage = self._read_result(run_id, run_directory).usage
+                error.retain_artifacts = True
             self._finish_failure(run_id, error, outcome)
-            self._cleanup(run_id, retain=error.code in _RETAIN)
+            self._cleanup(
+                run_id,
+                retain=error.code in _RETAIN or getattr(error, "retain_artifacts", False),
+            )
             raise error from unexpected
 
     def recover_abandoned(

@@ -415,6 +415,7 @@ class OpenAICompatibleAdapter(_CompatibleBase):
                 headers=_safe_headers(self.runtime),
                 json=payload,
             )
+            usage: dict[str, Any] | None = None
             try:
                 body = _json_body(response)
                 usage = _body_usage(body)
@@ -425,12 +426,20 @@ class OpenAICompatibleAdapter(_CompatibleBase):
                 # and escape as a retryable WORKER_ERROR re-billing the call.
                 if not isinstance(text, str):
                     text = self._responses_text(body)
-            except ProviderAdapterError:
+            except ProviderAdapterError as error:
+                # The provider already billed this call (#207): every raise
+                # after the body decode carries the usage so the FAILED
+                # attempt row prices the spend instead of hiding it.
+                if usage:
+                    error.usage = usage
                 raise
             except Exception as error:
-                raise ProviderAdapterError(
+                failure = ProviderAdapterError(
                     "INVALID_OUTPUT", "模型已响应，但响应结构无法解析", retryable=True
-                ) from error
+                )
+                if usage:
+                    failure.usage = usage
+                raise failure from error
         else:
             messages = []
             if request.system_instruction:
@@ -455,19 +464,33 @@ class OpenAICompatibleAdapter(_CompatibleBase):
                 headers=_safe_headers(self.runtime),
                 json=payload,
             )
+            usage: dict[str, Any] | None = None
             try:
                 body = _json_body(response)
                 usage = _body_usage(body)
                 text = self._chat_text(body)
-            except ProviderAdapterError:
+            except ProviderAdapterError as error:
+                if usage:
+                    error.usage = usage
                 raise
             except Exception as error:
-                raise ProviderAdapterError(
+                failure = ProviderAdapterError(
                     "INVALID_OUTPUT", "模型已响应，但响应结构无法解析", retryable=True
-                ) from error
-        result = _validate_structured_text(
-            text, output_schema, failure_message="模型已响应，但结构化结果无法验证"
-        )
+                )
+                if usage:
+                    failure.usage = usage
+                raise failure from error
+        try:
+            result = _validate_structured_text(
+                text, output_schema, failure_message="模型已响应，但结构化结果无法验证"
+            )
+        except ProviderAdapterError as error:
+            # Post-200 validation failures are billed too (#207): retryable
+            # INVALID_OUTPUT here re-dispatches and re-bills while the failed
+            # attempt row would otherwise price zero tokens.
+            if usage:
+                error.usage = usage
+            raise
         attach_provider_usage(result, usage)
         return result
 
@@ -524,21 +547,31 @@ class OpenAICompatibleAdapter(_CompatibleBase):
             body = _json_body(response)
             usage = _body_usage(body)
             text = self._chat_text(body)
-        except ProviderAdapterError:
+        except ProviderAdapterError as error:
+            if usage:
+                error.usage = usage
             raise
         except Exception as error:
             # A 200 body with hostile shapes (choices[0] as a bare string,
             # message missing) is a malformed provider response, not a worker
             # defect: classify like generate_structured instead of letting an
             # AttributeError escape as an unclassified WORKER_ERROR.
-            raise ProviderAdapterError(
+            failure = ProviderAdapterError(
                 "INVALID_OUTPUT", "模型已响应，但响应结构无法解析", retryable=True
-            ) from error
-        result = _validate_structured_text(
-            text,
-            output_schema,
-            failure_message="模型已响应，但多模态结果无法验证",
-        )
+            )
+            if usage:
+                failure.usage = usage
+            raise failure from error
+        try:
+            result = _validate_structured_text(
+                text,
+                output_schema,
+                failure_message="模型已响应，但多模态结果无法验证",
+            )
+        except ProviderAdapterError as error:
+            if usage:
+                error.usage = usage
+            raise
         attach_provider_usage(result, usage)
         return result
 
@@ -629,7 +662,12 @@ class OpenAICompatibleAdapter(_CompatibleBase):
                 wrapped.usage = usage
             raise wrapped from error
         if not images:
-            raise ProviderAdapterError("INVALID_OUTPUT", "图片模型没有返回可用图片")
+            # An empty data list (content filter) is a billed 200: the usage
+            # block was in scope and must ride the error (#207).
+            empty = ProviderAdapterError("INVALID_OUTPUT", "图片模型没有返回可用图片")
+            if usage:
+                empty.usage = usage
+            raise empty
         return ModelResponse(
             model_id=body.get("model") or self.runtime.model_id,
             request_id=body.get("id") or response.headers.get("x-request-id"),
@@ -772,12 +810,21 @@ class AnthropicCompatibleAdapter(_CompatibleBase):
             json=payload,
         )
         body = _json_body(response)
-        result = _validate_structured_text(
-            self._text(body),
-            output_schema,
-            failure_message="模型已响应，但结构化结果无法验证",
-        )
-        attach_provider_usage(result, _body_usage(body))
+        usage = _body_usage(body)
+        try:
+            result = _validate_structured_text(
+                self._text(body),
+                output_schema,
+                failure_message="模型已响应，但结构化结果无法验证",
+            )
+        except ProviderAdapterError as error:
+            # The POST billed the tokens already: CONTENT_POLICY /
+            # OUTPUT_TRUNCATED / INVALID_OUTPUT raises must carry the usage
+            # so the FAILED attempt row prices the spend (#207).
+            if usage:
+                error.usage = usage
+            raise
+        attach_provider_usage(result, usage)
         return result
 
     def analyze_multimodal(
@@ -816,12 +863,18 @@ class AnthropicCompatibleAdapter(_CompatibleBase):
             json=payload,
         )
         body = _json_body(response)
-        result = _validate_structured_text(
-            self._text(body),
-            output_schema,
-            failure_message="模型已响应，但多模态结果无法验证",
-        )
-        attach_provider_usage(result, _body_usage(body))
+        usage = _body_usage(body)
+        try:
+            result = _validate_structured_text(
+                self._text(body),
+                output_schema,
+                failure_message="模型已响应，但多模态结果无法验证",
+            )
+        except ProviderAdapterError as error:
+            if usage:
+                error.usage = usage
+            raise
+        attach_provider_usage(result, usage)
         return result
 
     @staticmethod
