@@ -291,8 +291,19 @@ def bind_reference(
                     )
                     existing.is_canonical = True
                 return existing
+            # The global unique index on asset_id makes this bind STEAL the
+            # row from another character. The victim must be recomputed with
+            # the same shape as unbind_reference (Issue #632): a character
+            # left without any live reference drops to NEEDS_CONFIRMATION, and
+            # version always advances because the binding set changed.
+            victim_id = existing.character_id
             db.delete(existing)
             db.flush()
+            victim = db.get(Character, victim_id)
+            if victim:
+                if not _live_reference_exists(db, victim.id):
+                    victim.status = AssetStatus.NEEDS_CONFIRMATION
+                victim.version += 1
         if payload.is_canonical:
             db.execute(
                 update(CharacterReference)

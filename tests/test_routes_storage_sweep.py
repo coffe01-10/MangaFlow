@@ -404,6 +404,48 @@ def test_approve_reference_recomputes_other_characters(client, db_session, monke
     assert db_session.get(Character, target.id).status == AssetStatus.CANONICAL
 
 
+def test_bind_reference_recomputes_the_displaced_character(
+    client, db_session, monkeypatch, tmp_path
+):
+    """Round-9 review (P2): POST /characters/{id}/references steals the
+    globally-unique asset_id row from another character; the victim must be
+    recomputed exactly like unbind_reference (Issue #632) — losing its only
+    live reference drops it to NEEDS_CONFIRMATION with a version bump,
+    instead of reporting CANONICAL over an empty reference set forever."""
+    _uploads_to(monkeypatch, tmp_path)
+    project, _chapter, _page = _seed_tree(db_session)
+    target = Character(project_id=project.id, primary_name="林澈")
+    rival = Character(
+        project_id=project.id, primary_name="陈昊", status=AssetStatus.CANONICAL
+    )
+    db_session.add_all([target, rival])
+    db_session.flush()
+    created = _upload(client, project.id, "character")
+    db_session.add(
+        CharacterReference(character_id=rival.id, asset_id=created["id"], is_canonical=True)
+    )
+    db_session.commit()
+    rival_version = db_session.get(Character, rival.id).version
+
+    response = client.post(
+        f"/api/v1/characters/{target.id}/references",
+        json={"asset_id": created["id"]},
+    )
+
+    assert response.status_code == 201, response.text
+    db_session.expire_all()
+    # The rival lost its only reference row and must not stay CANONICAL.
+    assert (
+        db_session.scalar(
+            select(CharacterReference.id).where(CharacterReference.character_id == rival.id)
+        )
+        is None
+    )
+    displaced = db_session.get(Character, rival.id)
+    assert displaced.status == AssetStatus.NEEDS_CONFIRMATION
+    assert displaced.version == rival_version + 1, "the binding set changed"
+
+
 # ---------------------------------------------------------------------------
 # #210-2: style test approval / activation blob preflight
 # ---------------------------------------------------------------------------
