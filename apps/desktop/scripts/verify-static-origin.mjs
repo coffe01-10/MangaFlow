@@ -467,8 +467,15 @@ let document_csp = "";
 // any asset 3xx/4xx (a missing favicon) would fail it (#690 evidence).
 const isApiRequest = (url) => {
   if (PLAN_B) {
-    try { return new URL(url).pathname.startsWith("/api/"); }
-    catch { return false; }
+    // Same-origin ONLY: a path filter alone would let a loopback
+    // cross-origin call (CSP permits http://localhost:<any-port>) satisfy
+    // the "direct API request observed" gate while the relay carried
+    // nothing — the same-origin contract must be evidenced, not asserted.
+    try {
+      const parsed = new URL(url);
+      return parsed.origin === new URL(target).origin &&
+        parsed.pathname.startsWith("/api/");
+    } catch { return false; }
   }
   return url.startsWith(ready.api_origin);
 };
