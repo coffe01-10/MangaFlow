@@ -68,9 +68,12 @@ function writeBudget(budget: StoredBudget | null) {
 
 interface UsageBudgetBannerProps {
   groups: UsageSummaryGroup[];
+  /** True when the totals are a dimension-filtered subset: the banner text
+   * must qualify the comparison instead of reading as total spend. */
+  filtered?: boolean;
 }
 
-export function UsageBudgetBanner({ groups }: UsageBudgetBannerProps) {
+export function UsageBudgetBanner({ groups, filtered = false }: UsageBudgetBannerProps) {
   const budget = useSyncExternalStore(
     subscribeToBudget,
     getBudgetSnapshot,
@@ -134,7 +137,12 @@ export function UsageBudgetBanner({ groups }: UsageBudgetBannerProps) {
       <span className="usage-budget-status" role={alertRole ? "alert" : undefined}>
         <PiggyBank size={15} />
         {statusText}
-        {budget ? <small>（仅对比估算支出，不含账单事实）</small> : null}
+        {budget ? (
+          <small>
+            {filtered ? "（按当前筛选的估算支出" : "（仅对比估算支出"}
+            ，不含账单事实）
+          </small>
+        ) : null}
       </span>
       {open ? (
         <span className="usage-budget-form">

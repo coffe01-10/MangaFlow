@@ -20,8 +20,28 @@ const RANGE_LABELS: Record<Exclude<RangePreset, "custom">, string> = {
   month: "本月",
 };
 
+// The backend derives the day-bucketing timezone from the RAW offset on the
+// from/to params (usage.py: "分桶时区跟随调用方本地午夜窗口的原始偏移"):
+// Date.toISOString() stamps Z (UTC) and would silently re-bucket every
+// calendar day to UTC days — a UTC+8 user watching spend at 01:00 local
+// would see it filed under the previous day in the trend chart. Emit local
+// wall time carrying the machine offset instead; the instant is unchanged,
+// so filtering stays identical and only the bucket boundary follows local
+// midnight as designed.
+function toLocalIsoWithOffset(date: Date) {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const offsetMinutes = -date.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const abs = Math.abs(offsetMinutes);
+  return (
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
+    `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}` +
+    `${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`
+  );
+}
+
 function toIsoLocalMidnight(date: Date) {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).toISOString();
+  return toLocalIsoWithOffset(new Date(date.getFullYear(), date.getMonth(), date.getDate()));
 }
 
 // "YYYY-MM-DD" must parse as LOCAL midnight; Date(string) would read it as UTC
@@ -45,10 +65,10 @@ export function UsageDashboard() {
   const sinceUntil = useMemo((): { since?: string; until?: string } => {
     const now = new Date();
     if (preset === "7d") {
-      return { since: new Date(now.getTime() - 7 * 86_400_000).toISOString() };
+      return { since: toLocalIsoWithOffset(new Date(now.getTime() - 7 * 86_400_000)) };
     }
     if (preset === "30d") {
-      return { since: new Date(now.getTime() - 30 * 86_400_000).toISOString() };
+      return { since: toLocalIsoWithOffset(new Date(now.getTime() - 30 * 86_400_000)) };
     }
     if (preset === "month") {
       return { since: toIsoLocalMidnight(new Date(now.getFullYear(), now.getMonth(), 1)) };
@@ -131,12 +151,23 @@ export function UsageDashboard() {
   };
 
   const exportCsv = () => {
-    if (!summaryData || summaryData.groups.length === 0) return;
-    const blob = new Blob([buildUsageCsv(summaryData.groups)], { type: "text/csv;charset=utf-8" });
+    // Billed-only dashboards can export too: the reconciliation facts are
+    // often the reason an operator downloads the file at all.
+    if (!summaryData || (summaryData.groups.length === 0 && summaryData.billed.length === 0)) {
+      return;
+    }
+    const blob = new Blob(
+      [buildUsageCsv(summaryData.groups, summaryData.billed)],
+      { type: "text/csv;charset=utf-8" },
+    );
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `usage-${new Date().toISOString().slice(0, 10)}.csv`;
+    // Local date stamp: the UTC slice names yesterday's file near local
+    // midnight for every user east of Greenwich.
+    const now = new Date();
+    const stamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    anchor.download = `usage-${stamp}.csv`;
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
@@ -144,6 +175,10 @@ export function UsageDashboard() {
   };
 
   const isLoading = summary.isLoading || attempts.isLoading || facets.isLoading;
+  // The budget banner compares against the FILTERED totals; when a dimension
+  // filter is active the comparison is about a subset, and the banner text
+  // must say so instead of reading as a statement about total spend.
+  const hasActiveDimensionFilters = Boolean(projectId || provider || modelId || channel);
   // A failed fetchNextPage must not wipe the whole dashboard; pagination
   // errors render inside the attempts table via its own error prop.
   const errorMessage = summary.error?.message ?? null;
@@ -263,7 +298,7 @@ export function UsageDashboard() {
       ) : summaryData ? (
         <>
           <UsageKpiGrid summary={summaryData} />
-          <UsageBudgetBanner groups={summaryData.groups} />
+          <UsageBudgetBanner groups={summaryData.groups} filtered={hasActiveDimensionFilters} />
           <UsageTrendChart groups={summaryData.groups} />
           <UsageBreakdownTable groups={summaryData.groups} />
           <UsageAttemptsTable

@@ -228,4 +228,37 @@ describe("buildUsageCsv", () => {
     expect(csv).toContain("2026-09-01,'=SUM");
     expect(csv).toContain("HTTP_API,");
   });
+
+  it("appends the billed reconciliation records as a second block", () => {
+    const billed = {
+      id: "br-1",
+      provider: "usage-provider",
+      model_id: "imagen-3.0-generate-002",
+      channel: "HTTP_API" as const,
+      connection_id: null,
+      billing_account_id: "acct-01",
+      import_batch_id: "batch-01",
+      idempotency_key: "idem-01",
+      period_start: "2026-09-01",
+      period_end: "2026-09-30",
+      currency: "CNY",
+      billed_amount: "128.00",
+      source_note: "九月账单",
+      entered_by: "ops",
+      created_at: "2026-10-01T00:00:00Z",
+    };
+    const csv = buildUsageCsv([makeGroup()], [billed]);
+    expect(csv).toContain("类型");
+    expect(csv).toContain("账单对账");
+    expect(csv).toContain("acct-01");
+    expect(csv).toContain("CNY,128.00");
+    expect(csv).toContain("九月账单");
+    // The estimated block stays intact ahead of the billed block.
+    expect(csv.indexOf("估算金额（原币种）")).toBeLessThan(csv.indexOf("账单对账"));
+  });
+
+  it("keeps the single-block shape when there are no billed records", () => {
+    const csv = buildUsageCsv([makeGroup()], []);
+    expect(csv).not.toContain("账单对账");
+  });
 });
