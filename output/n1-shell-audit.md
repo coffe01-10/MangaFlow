@@ -480,3 +480,12 @@ doc-code 不一致 sweep（子代理，双源核验）收割 6 项 → 3 PR：
 - 新增 #509（night/pr-build-info-stamp-refusal）：_replace_dist 的
   stamp-write 失败拒绝钉（bundle 已就位时失败必须传播、无 stamp 无
   .tmp 残留，下次 e2e 拒绝未钉源树）（4 pass）。
+
+### 20260914 夜班（新 Goal · 基线 23ae8fc）
+
+- 开跑：fetch + reset --hard origin/master（23ae8fc 谱系）+ clean -fd；
+  分支 night/n1-core-burn-20260914 建于 tip。
+- 基线实测：cargo 168 全绿（含前夜全部存留钉与 #565-#615 波次内容）。
+- 硬边确认：native/** 与 native-tests/** 零触碰；web/api 面不入围；
+  sidecar 少动（留 N2）。
+- 夜间计划：shell-core 相邻面继续收割、审查轮次 ≥6、每轮追加账本。
