@@ -83,31 +83,63 @@ def assigned_runtime(*, require_job: bool = True) -> BrowserRuntime:
     return BrowserRuntime(token, path)
 
 
+def _listener_pids(port: int) -> list[int]:
+    """List PIDs owning LISTEN sockets on 127.0.0.1:<port> via the native TCP table.
+
+    This used to shell out to `Get-NetTCPConnection`; every call spawned a
+    fresh powershell.exe whose cold CIM/NetTCPIP module load exceeded the
+    15s subprocess timeout on CI runners (subprocess.TimeoutExpired). The
+    in-process iphlpapi query returns the same owner rows in milliseconds.
+    """
+
+    class _TcpRowOwnerPid(ctypes.Structure):
+        _fields_ = [
+            ("state", wintypes.DWORD),
+            ("local_addr", wintypes.DWORD),
+            ("local_port", wintypes.DWORD),
+            ("remote_addr", wintypes.DWORD),
+            ("remote_port", wintypes.DWORD),
+            ("owning_pid", wintypes.DWORD),
+        ]
+
+    iphlpapi = ctypes.WinDLL("iphlpapi", use_last_error=True)
+    # AF_INET (2) + TCP_TABLE_OWNER_PID_LISTENER (3): LISTEN rows with owning
+    # PID. (Class 2 is TCP_TABLE_BASIC_ALL whose rows lack dwOwningPid.)
+    size = wintypes.DWORD(0)
+    table: ctypes.Array | None = None
+    for _ in range(3):
+        result = iphlpapi.GetExtendedTcpTable(table, ctypes.byref(size), False, 2, 3, 0)
+        if result == 0:
+            break
+        if result != 122:  # ERROR_INSUFFICIENT_BUFFER
+            raise ctypes.WinError(result)
+        table = (ctypes.c_byte * size.value)()
+    else:
+        raise RuntimeError("TCP listener table kept growing; giving up")
+    assert table is not None
+    count = ctypes.cast(table, ctypes.POINTER(wintypes.DWORD))[0]
+    if 4 + count * ctypes.sizeof(_TcpRowOwnerPid) > size.value:
+        raise RuntimeError("TCP listener table row count exceeds its buffer")
+    rows = ctypes.cast(
+        ctypes.byref(table, ctypes.sizeof(wintypes.DWORD)), ctypes.POINTER(_TcpRowOwnerPid)
+    )
+    loopback = 0x0100007F  # 127.0.0.1 in network byte order.
+    pids: list[int] = []
+    for index in range(count):
+        row = rows[index]
+        # dwLocalPort is network byte order in a DWORD: ntohs equivalent.
+        local_port = ((row.local_port >> 8) & 0xFF) | ((row.local_port & 0xFF) << 8)
+        if row.local_addr == loopback and local_port == port:
+            pids.append(row.owning_pid)
+    return pids
+
+
 def verify_owned_listener(runtime: BrowserRuntime, port: int) -> list[int]:
     """Read loopback listeners, then verify each real process HANDLE is in our job."""
-    import subprocess
-
     if type(port) is not int or not 1 <= port <= 65535:
         raise ValueError("Invalid listener port")
-    powershell = Path(os.environ["SYSTEMROOT"]) / ("System32/WindowsPowerShell/v1.0/powershell.exe")
-    # This is a fixed read-only query with a validated integer, never a PID kill.
-    command = (
-        "$ErrorActionPreference='Stop'; "
-        f"@(Get-NetTCPConnection -State Listen -LocalAddress 127.0.0.1 -LocalPort {port}) "
-        "| Select-Object -ExpandProperty OwningProcess | ConvertTo-Json -Compress"
-    )
-    result = subprocess.run(
-        [str(powershell), "-NoProfile", "-NonInteractive", "-Command", command],
-        capture_output=True,
-        text=True,
-        timeout=15,
-        check=True,
-        creationflags=subprocess.CREATE_NO_WINDOW,
-    )
-    pids = json.loads(result.stdout)
-    if type(pids) is int:
-        pids = [pids]
-    if not isinstance(pids, list) or not pids:
+    pids = _listener_pids(port)
+    if not pids:
         raise RuntimeError("No owned loopback listener")
     api = _kernel()
     job = _checked(api.OpenJobObjectW(0x0004, False, _job_name(runtime.run_id)))

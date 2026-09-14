@@ -498,6 +498,12 @@ def test_next_preload_never_reads_fake_dotenv(runtime, tmp_path):
     (fake_root / ".env").write_text("SENTINEL=do-not-read\n", encoding="utf-8")
     node = shutil.which("node")
     env = child_environment(runtime, node=node)
+    # Mirror the production inheritance: a supervised node child always runs
+    # under start_python's OS-bootstrap merge, and node >= 22.17 aborts its
+    # OpenSSL CSPRNG self-test at startup (rc 134) when SystemRoot is missing.
+    env.update(
+        {key: os.environ[key] for key in ("SYSTEMROOT", "WINDIR") if key in os.environ}
+    )
     script = """
 const fs = require("node:fs");
 const original = fs.readFileSync;
@@ -601,10 +607,17 @@ main(port=int(port))
     assert any(project["name"] == "e2e-lighthouse-workbench" for project in projects)
     verify_result = runtime.tree.payload / "listener-pids.json"
     verify_code = """
-import json, pathlib, sys
+import json, pathlib, sys, traceback
 sys.path.insert(0, sys.argv[1])
 from e2e_runtime import assigned_runtime, verify_owned_listener
-pids = verify_owned_listener(assigned_runtime(), int(sys.argv[2]))
+try:
+    pids = verify_owned_listener(assigned_runtime(), int(sys.argv[2]))
+except BaseException:
+    exc = sys.exc_info()[1]
+    detail = traceback.format_exc() + "\\nCHILD_STDERR:\\n" + str(getattr(exc, "stderr", None))
+    detail += "\\nCHILD_STDOUT:\\n" + str(getattr(exc, "stdout", None))
+    pathlib.Path(sys.argv[3]).write_text(detail, encoding="utf-8")
+    raise SystemExit(1)
 pathlib.Path(sys.argv[3]).write_text(json.dumps(pids), encoding="utf-8")
 """
     verifier = runtime.tree.start_python(
@@ -613,7 +626,24 @@ pathlib.Path(sys.argv[3]).write_text(json.dumps(pids), encoding="utf-8")
         [str(ROOT / "scripts"), str(port), str(verify_result)],
         environment=child_environment(runtime, node=shutil.which("node")),
     )
-    assert verifier.wait(timeout=20) == 0
+    try:
+        verifier_code = verifier.wait(timeout=20)
+    except TimeoutError:
+        pytest.fail(
+            "verifier timed out; diagnostics: "
+            + (
+                verify_result.read_text(encoding="utf-8")
+                if verify_result.exists()
+                else "(none written)"
+            )
+            + "; api log: "
+            + (log.read_text(encoding="utf-8") if log.exists() else "(none)")
+        )
+    assert verifier_code == 0, (
+        verify_result.read_text(encoding="utf-8")
+        if verify_result.exists()
+        else "verifier exited without writing diagnostics"
+    )
     actual_pid = int(pid_file.read_text(encoding="utf-8"))
     assert actual_pid in json.loads(verify_result.read_text(encoding="utf-8"))
     api = runtime.tree.api
@@ -651,13 +681,19 @@ def test_foreign_loopback_listener_is_rejected_by_actual_job_check(runtime):
         foreign.listen()
         port = foreign.getsockname()[1]
         code = """
-import pathlib, sys
+import pathlib, sys, traceback
 sys.path.insert(0, sys.argv[1])
 from e2e_runtime import assigned_runtime, verify_owned_listener
 try:
     verify_owned_listener(assigned_runtime(), int(sys.argv[2]))
 except RuntimeError as exc:
     pathlib.Path(sys.argv[3]).write_text(str(exc), encoding="utf-8")
+except BaseException:
+    exc = sys.exc_info()[1]
+    detail = traceback.format_exc() + "\\nCHILD_STDERR:\\n" + str(getattr(exc, "stderr", None))
+    detail += "\\nCHILD_STDOUT:\\n" + str(getattr(exc, "stdout", None))
+    pathlib.Path(sys.argv[3]).write_text(detail, encoding="utf-8")
+    raise SystemExit(1)
 else:
     raise AssertionError("foreign listener accepted")
 """
@@ -667,7 +703,22 @@ else:
             [str(ROOT / "scripts"), str(port), str(result)],
             environment=child_environment(runtime, node=shutil.which("node")),
         )
-        assert child.wait(timeout=20) == 0
+        try:
+            child_code = child.wait(timeout=20)
+        except TimeoutError:
+            pytest.fail(
+                "listener check timed out; diagnostics: "
+                + (
+                    result.read_text(encoding="utf-8")
+                    if result.exists()
+                    else "(none written)"
+                )
+            )
+        assert child_code == 0, (
+            result.read_text(encoding="utf-8")
+            if result.exists()
+            else "child exited without writing diagnostics"
+        )
         assert "does not belong" in result.read_text(encoding="utf-8")
 
 
