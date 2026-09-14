@@ -374,6 +374,16 @@ describe("UsageDashboard cost semantics", () => {
       const expected = Date.now() - 7 * 86_400_000;
       expect(Math.abs(since.getTime() - expected)).toBeLessThan(60_000);
     });
+    // Round-9: the RAW since must carry a local offset (±HH:MM), never a Z
+    // suffix — the backend derives the day-bucketing timezone from this
+    // exact string, and a Z re-buckets every calendar day to UTC days
+    // (a UTC+8 user's 01:00 spend files under the previous day).
+    const raw = usageSummaryApi.mock.calls
+      .map((call) => (call[0] as { since?: string } | undefined)?.since)
+      .filter((value): value is string => Boolean(value))
+      .at(-1)!;
+    expect(raw).toMatch(/[+-]\d{2}:\d{2}$/);
+    expect(raw.endsWith("Z")).toBe(false);
   });
 
   it("applies the channel filter to the summary KPIs, not only the attempts table", async () => {

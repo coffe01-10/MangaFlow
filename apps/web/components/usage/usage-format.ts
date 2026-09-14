@@ -1,6 +1,7 @@
 import type {
   ModelCallAttempt,
   UsageCurrencyAmount,
+  UsageReconciliation,
   UsageSummaryGroup,
 } from "@/lib/api";
 
@@ -321,8 +322,14 @@ function csvCell(value: string | number | null) {
 }
 
 /** CSV of summary groups. One physical row per currency so amounts from
- * different currencies are never added together on a single line. */
-export function buildUsageCsv(groups: UsageSummaryGroup[]): string {
+ * different currencies are never added together on a single line. Billed
+ * reconciliation records — the facts the on-screen 账单对账记录 table shows
+ * — follow as a second block so an exported file can reconcile an invoice
+ * without the dashboard open beside it. */
+export function buildUsageCsv(
+  groups: UsageSummaryGroup[],
+  billed: UsageReconciliation[] = [],
+): string {
   const header = [
     "日期",
     "供应商",
@@ -370,8 +377,36 @@ export function buildUsageCsv(groups: UsageSummaryGroup[]): string {
       ]);
     }
   }
-  const body = [header, ...lines]
-    .map((row) => row.map(csvCell).join(","))
-    .join("\r\n");
+  const billedHeader = [
+    "类型",
+    "账期开始",
+    "账期结束",
+    "供应商",
+    "模型ID",
+    "通道",
+    "账单账户",
+    "账单币种",
+    "账单金额",
+    "录入人",
+    "备注",
+  ];
+  const billedLines: Array<Array<string | number | null>> = billed.map((item) => [
+    "账单对账",
+    item.period_start,
+    item.period_end,
+    item.provider,
+    item.model_id,
+    item.channel,
+    item.billing_account_id,
+    item.currency,
+    item.billed_amount,
+    item.entered_by,
+    item.source_note,
+  ]);
+  const blocks = [[header, ...lines]];
+  if (billedLines.length > 0) blocks.push([billedHeader, ...billedLines]);
+  const body = blocks
+    .map((block) => block.map((row) => row.map(csvCell).join(",")).join("\r\n"))
+    .join("\r\n\r\n");
   return `\uFEFF${body}\r\n`;
 }
