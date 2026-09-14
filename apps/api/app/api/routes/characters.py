@@ -303,7 +303,17 @@ def bind_reference(
             if victim:
                 if not _live_reference_exists(db, victim.id):
                     victim.status = AssetStatus.NEEDS_CONFIRMATION
-                victim.version += 1
+                # Atomic version bump (the _recompute_project_conflicts
+                # pattern): an ORM `+= 1` from this transaction's read loses
+                # to a concurrent victim PATCH and lets a client holding the
+                # pre-steal token pass a later optimistic-concurrency check.
+                db.execute(
+                    update(Character)
+                    .where(Character.id == victim.id)
+                    .values(version=Character.version + 1)
+                    .execution_options(synchronize_session=False)
+                )
+                db.expire(victim, ["version"])
         if payload.is_canonical:
             db.execute(
                 update(CharacterReference)
