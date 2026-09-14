@@ -20,7 +20,8 @@ public sealed partial class ProjectSettingsView
         var actions = new WrapPanel();
         var back = Act("返回工作区", async (_, _) =>
         {
-            if (Context != null && await ConfirmLeaveAsync()) await Context.NavigateSection("source", null);
+            // NavigateSection 的 query 参数不可空（MainWindow 深链解析直接解引用）。
+            if (Context != null && await ConfirmLeaveAsync()) await Context.NavigateSection("source", "");
         }, "Ghost");
         actions.Children.Add(back); actions.Children.Add(saveButton);
         saveButton.Content = SourceIcon.Label("save", "保存项目设置");
