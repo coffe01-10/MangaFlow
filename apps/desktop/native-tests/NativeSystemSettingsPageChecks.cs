@@ -60,6 +60,7 @@ internal static class NativeSystemSettingsPageChecks
             view.Activate(new WorkspaceContext { Api = api, State = new(), Window = null!, Project = null,
                 NavigateSection = (section, _) => { navigated = section; return Task.CompletedTask; }, OpenDashboard = () => { navigated = "home"; return Task.CompletedTask; } });
             await Until(() => Field<Dictionary<string, FrameworkElement>>(view, "runtimeInputs").Count == 7 && fixture.ModelReads > 0);
+            Require(Field<TextBlock>(view, "healthLabel").Text == "2 健康", "health label reflects provider state (A09)");
             foreach (int width in new[] { 1440, 1240, 760, 360 })
             {
                 Layout(view, width, 1800);
@@ -115,21 +116,100 @@ internal static class NativeSystemSettingsPageChecks
             var scroll = Field<ScrollViewer>(view, "scroller"); Layout(view, 1440, 1000); scroll.ScrollToEnd(); Layout(view, 1440, 1000);
             Require(save.TranslatePoint(new Point(), view).Y < 150, "save remains at top after scrolling");
             Render(view, 1440, 1000, Path.Combine(output, "native-system-settings-saved.png"));
-            fixture.Gate = null; fixture.Conflict = true;
+            fixture.Gate = null;
+            // A05：保存期间的新运行参数不得被提交时的旧响应覆盖——提交 5 后改 7，
+            // 响应落地仍显示 7、继续标脏；再次保存携带 7 与新版本。
+            fixture.Gate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            Click(save); await Until(() => fixture.Patches == 2);
+            ((TextBox)Field<Dictionary<string, FrameworkElement>>(view, "runtimeInputs")["default_concurrency"]).Text = "7";
+            fixture.Gate.SetResult(true); await Until(() => !Field<bool>(view, "runtimeSaving"));
+            var concurrencyAfterInFlight = (TextBox)Field<Dictionary<string, FrameworkElement>>(view, "runtimeInputs")["default_concurrency"];
+            Require(concurrencyAfterInFlight.Text == "7", "runtime edits during save are preserved (A05)");
+            var notice = Field<Border>(view, "runtimeNotice");
+            Require(notice.Visibility == Visibility.Visible && (notice.Child as TextBlock)!.Text.Contains("之后又有新修改"),
+                "in-flight edit notice distinguishes the newer edits");
+            Require((bool)typeof(SettingsView).GetMethod("RuntimeDraft", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(view, null)!,
+                "form stays dirty until the newer edits are saved");
+            Click(save); await Until(() => !Field<bool>(view, "runtimeSaving"));
+            Require(fixture.Patches == 3 && fixture.Payload.Number("default_concurrency") == 7 && fixture.Payload.Number("version") == 11,
+                "second save carries the newer value and refreshed version");
+
+            fixture.Conflict = true;
             ((TextBox)Field<Dictionary<string, FrameworkElement>>(view, "runtimeInputs")["default_concurrency"]).Text = "6";
             Click(save); await Until(() => !Field<bool>(view, "runtimeSaving"));
-            Require(Field<TextBlock>(view, "runtimeError").Text.Contains("刷新"), "conflict detail visible");
+            // A06：409 后本地草稿保留 + 静默同步版本（不重绘表单），下一次保存携带
+            // 服务器当前版本而不是循环 409。
+            Require(Field<TextBlock>(view, "runtimeError").Text.Contains("最新版本号"), "conflict recovery guidance visible");
+            Require(Field<JsonElement>(view, "runtime").Number("version") == 13, "conflict synced the server version");
+            Require(((TextBox)Field<Dictionary<string, FrameworkElement>>(view, "runtimeInputs")["default_concurrency"]).Text == "6",
+                "conflict preserves local edits");
+            Click(save); await Until(() => !Field<bool>(view, "runtimeSaving"));
+            Require(fixture.Patches == 5 && fixture.Payload.Number("version") == 13 && fixture.Payload.Number("default_concurrency") == 6,
+                "retry after conflict carries the synced version");
+
+            // A09：诊断失败不得沿用上一次的执行器状态。
             fixture.FailDiagnostics = true;
             Click(Field<Button>(view, "recheckButton"));
             await Until(() => Field<StackPanel>(view, "diagnosticsList").Children.OfType<TextBlock>().Any(t => t.Text.Contains("诊断读取失败")));
+            Require(Field<TextBlock>(view, "executorLabel").Text == "读取失败", "diagnostics failure clears the executor label (A09)");
             Render(view, 1440, 1000, Path.Combine(output, "native-system-settings-diagnostic-error.png"));
             fixture.FailDiagnostics = false; Click(Field<Button>(view, "recheckButton"));
             await Until(() => Field<StackPanel>(view, "diagnosticsList").Children.OfType<Border>().Any());
+            Require(Field<TextBlock>(view, "executorLabel").Text == "LOCAL", "diagnostics retry restores the executor label");
+            // A09：运行设置读取失败同样不得沿用旧值。
+            fixture.FailRuntime = true;
+            await (Task)typeof(SettingsView).GetMethod("LoadRuntimeAsync", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(view, null)!;
+            Require(Field<TextBlock>(view, "databaseLabel").Text == "读取失败", "runtime read failure clears the storage labels (A09)");
+            fixture.FailRuntime = false;
+            await (Task)typeof(SettingsView).GetMethod("LoadRuntimeAsync", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(view, null)!;
+            Require(Field<TextBlock>(view, "databaseLabel").Text == "SQLITE", "runtime retry restores storage labels");
+
+            // A08：连接面板草稿在搜索/筛选/收起前必须确认；拒绝则原样保留。
+            var password = Desc(view).OfType<System.Windows.Controls.PasswordBox>().FirstOrDefault();
+            if (password != null)
+            {
+                password.Password = "half-typed-secret";
+                view.DiscardDraftsConfirmOverride = _ => Task.FromResult(false);
+                Field<TextBox>(view, "searchInput").Text = "Google";
+                await Task.Delay(60);
+                Require(Field<TextBox>(view, "searchInput").Text == "", "declined search reverts the filter (A08)");
+                Require(Desc(view).OfType<System.Windows.Controls.PasswordBox>().Any(p => p.Password == "half-typed-secret"),
+                    "declined search keeps the connection draft");
+                var cardWithDraft = Desc(view).OfType<ProviderCard>()
+                    .First(card => Desc(card).OfType<System.Windows.Controls.PasswordBox>().Any(p => p.Password.Length > 0));
+                var header = Desc(cardWithDraft).OfType<Button>().First(b => b.Content is PageHeading);
+                var panelsBefore = Desc(view).OfType<ConnectionPanel>().Count();
+                Click(header);
+                await Task.Delay(60);
+                Require(Desc(view).OfType<ConnectionPanel>().Count() == panelsBefore, "declined collapse keeps the connection panels (A08)");
+                view.DiscardDraftsConfirmOverride = _ => Task.FromResult(true);
+                Field<TextBox>(view, "searchInput").Text = "Google";
+                await Task.Delay(60);
+                Require(Field<StackPanel>(view, "providerList").Children.OfType<ProviderCard>().Count() == 1, "accepted search filters cards");
+                Field<TextBox>(view, "searchInput").Text = "";
+                await Task.Delay(60);
+
+                // A07：运行参数/连接草稿的离开保护——拒绝保留，同意弃稿。
+                var freshPassword = Desc(view).OfType<System.Windows.Controls.PasswordBox>().First();
+                freshPassword.Password = "leave-guard-secret";
+                ((TextBox)Field<Dictionary<string, FrameworkElement>>(view, "runtimeInputs")["default_concurrency"]).Text = "4";
+                view.LeaveConfirmOverride = _ => Task.FromResult(false);
+                Require(!await view.ConfirmLeaveAsync(), "dirty drafts block leaving (A07)");
+                Require(Desc(view).OfType<System.Windows.Controls.PasswordBox>().Any(p => p.Password == "leave-guard-secret")
+                    && ((TextBox)Field<Dictionary<string, FrameworkElement>>(view, "runtimeInputs")["default_concurrency"]).Text == "4",
+                    "declined leave keeps drafts intact");
+                view.LeaveConfirmOverride = _ => Task.FromResult(true);
+                Require(await view.ConfirmLeaveAsync(), "confirmed leave passes");
+                Require(((TextBox)Field<Dictionary<string, FrameworkElement>>(view, "runtimeInputs")["default_concurrency"]).Text == "6"
+                    && Desc(view).OfType<System.Windows.Controls.PasswordBox>().All(p => p.Password.Length == 0),
+                    "confirmed leave discards drafts: runtime inputs revert and key fields clear (A07)");
+            }
+
             Click(Desc(view).OfType<Button>().Single(b => Equals(b.Content, "用量与成本看板")));
             Require(navigated == "usage", "usage navigation is wired");
             Click(Desc(view).OfType<Button>().Single(b => Equals(b.Content, "返回项目")));
             Require(navigated == "home", "return navigation is wired");
-            Console.WriteLine("PASS: system settings 1440/1240/760/360 layouts, runtime payload/rounding, pending duplicate guard, save/error feedback, provider search, diagnostic retry and navigation.");
+            Console.WriteLine("PASS: system settings layouts, runtime payload/rounding, pending duplicate guard, in-flight edit protection (A05), conflict version sync + retry (A06), leave protection with draft discard (A07), connection-draft guards on search/collapse (A08), independent status labels on failures (A09), provider search, diagnostic retry and navigation.");
             Console.WriteLine("HTTP fixtures and offscreen WPF only. Live backend/provider mutations, native high-DPI windows and animation timing NOT RUN.");
         }
         finally { view.Deactivate(); }
@@ -155,7 +235,7 @@ internal static class NativeSystemSettingsPageChecks
     private sealed class Fixture : HttpMessageHandler
     {
         internal int ModelReads, Patches;
-        internal bool Conflict, FailDiagnostics;
+        internal bool Conflict, FailDiagnostics, FailRuntime;
         internal TaskCompletionSource<bool>? Gate;
         internal JsonElement Payload;
         private Dictionary<string, object?> runtime = new() {
@@ -172,13 +252,23 @@ internal static class NativeSystemSettingsPageChecks
                 using var doc = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
                 Payload = doc.RootElement.Clone(); Patches++;
                 if (Gate != null) await Gate.Task.WaitAsync(token);
-                if (Conflict) return Response("{\"detail\":\"版本已更新，请刷新\"}", HttpStatusCode.Conflict);
+                if (Conflict)
+                {
+                    // 一次性冲突 + 另一端已保存（服务端版本前进）：恢复路径的 GET 读到它。
+                    Conflict = false;
+                    runtime["version"] = Payload.Number("version") + 1;
+                    return Response("{\"detail\":\"版本已更新，请刷新\"}", HttpStatusCode.Conflict);
+                }
                 foreach (var p in Payload.EnumerateObject()) runtime[p.Name] = p.Value.Clone();
                 runtime["version"] = Payload.Number("version") + 1;
                 return Response(JsonSerializer.Serialize(runtime));
             }
             Require(request.Method == HttpMethod.Get, "no paid calls in UI checks");
-            if (path.EndsWith("/settings/runtime")) return Response(JsonSerializer.Serialize(runtime));
+            if (path.EndsWith("/settings/runtime"))
+            {
+                if (FailRuntime) return Response("{\"detail\":\"服务暂时不可用\"}", HttpStatusCode.ServiceUnavailable);
+                return Response(JsonSerializer.Serialize(runtime));
+            }
             if (path.EndsWith("/settings/diagnostics"))
             {
                 if (FailDiagnostics) return Response("{\"detail\":\"诊断服务暂时不可用\"}", HttpStatusCode.ServiceUnavailable);
@@ -189,7 +279,10 @@ internal static class NativeSystemSettingsPageChecks
                         new { label = "生成内容目录", message = @"D:\MangaFlow\workspace\generated-content", status = "OK", latency_ms = (int?)1 } } }));
             }
             if (path.EndsWith("/providers")) return Response(JsonSerializer.Serialize(new[] {
-                Provider("p1", "OpenAI · Codex CLI", true), Provider("p2", "Google · Vertex AI", false) }));
+                Provider("p1", "OpenAI · Codex CLI", true), Provider("p2", "Google · Vertex AI", false),
+                // A07/A08：Key 型连接（可录 API Key 的面板）。
+                Provider("p3", "KeyVendor", true, "KEY") }));
+            if (path.Contains("p3-connection")) return Response("[]");   // KeyVendor 连接：无模型行
             if (path.EndsWith("/models"))
             {
                 ModelReads++;
@@ -202,10 +295,11 @@ internal static class NativeSystemSettingsPageChecks
             }
             throw new Exception("unexpected request: " + path);
         }
-        private static object Provider(string id, string name, bool ready) => new { id, name, enabled = true, category = "CUSTOM", risk_label = "LOW",
+        private static object Provider(string id, string name, bool ready, string credentialSource = "CLI_SESSION") => new { id, name, enabled = true, category = "CUSTOM", risk_label = "LOW",
             preset_key = id, description = "用于漫画制作的文字与图像生成连接",
             connections = new[] { new { id = id + "-connection", name = "默认连接", protocol = "OPENAI", base_url = "https://api.example.invalid/v1",
-                credential_source = "CLI_SESSION", configured = ready, enabled = true, health_state = ready ? "HEALTHY" : "UNCONFIGURED",
+                credential_source = credentialSource, configured = ready, enabled = true, health_state = ready ? "HEALTHY" : "UNCONFIGURED",
+                credential_writable = credentialSource == "KEY",
                 supports_model_discovery = true, supports_balance = false, model_count = ready ? 2 : 0, key_count = 0, keys = Array.Empty<object>() } } };
         private static HttpResponseMessage Response(string json, HttpStatusCode status = HttpStatusCode.OK) => new(status) { Content = new StringContent(json) };
     }

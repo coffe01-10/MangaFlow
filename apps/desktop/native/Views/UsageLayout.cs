@@ -101,6 +101,7 @@ public sealed partial class UsageView
 
     private void RenderAttempts()
     {
+        attemptsFooterError = null;
         attemptsTable.Children.Clear();
         attemptsTable.Children.Add(new TextBlock { Text = $"已加载 {attempts.Count} 条 · 最新调用在前", FontSize = 12, Foreground = AssetPageUi.Brush("Muted"), Margin = new Thickness(14,10,14,10) });
         if (attempts.Count == 0) { attemptsTable.Children.Add(Kit.Caption("该范围暂无调用尝试记录。")); return; }
@@ -141,8 +142,13 @@ public sealed partial class UsageView
         double[] widths = [240,300,220];
         billedTable.Children.Add(TableRow(["账单周期","供应商 / 模型","账单金额（原币种）"], widths,true));
         foreach (var b in billed)
+        {
+            // 未知金额 ≠ 0：billed_amount 缺失时显示“未知”，不渲染成 0.00。
+            var amount = b.Element("billed_amount").ValueKind is JsonValueKind.Number or JsonValueKind.String
+                ? $"{b.Text("currency")} {Money(b, "billed_amount"):0.00}" : "金额未知";
             billedTable.Children.Add(TableRow([$"{b.Text("period_start").Split('T')[0]} ~ {b.Text("period_end").Split('T')[0]}",
-                $"{b.Text("provider")} · {b.Text("model_id")}",$"{b.Text("currency")} {Money(b,"billed_amount"):0.00}"],widths));
+                $"{b.Text("provider")} · {b.Text("model_id")}", amount], widths));
+        }
     }
 }
 

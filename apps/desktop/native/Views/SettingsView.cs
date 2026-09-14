@@ -53,7 +53,55 @@ public sealed partial class SettingsView : WorkspaceView
     // 用户改回原值即自动恢复可刷新。
     private readonly Dictionary<string, string> renderedRuntime = new();
 
-    public SettingsView() => BuildSystemPage();
+    public SettingsView()
+    {
+        BuildSystemPage();
+        // A09：状态条初值——三条并行读取各自独立，未完成前显示进行中而不是空白。
+        UpdateHealthLabel();
+        databaseLabel.Text = "读取中";
+        storageLabel.Text = "读取中";
+        executorLabel.Text = "读取中";
+        checkedAtLabel.Text = "—";
+    }
+
+    // A07：运行参数与连接草稿的离开保护。侧栏切节 / Ctrl+K 切项目 / 关窗都走
+    // ConfirmLeaveAsync（MainWindow 同一契约），基类默认放行会把半截 API Key、
+    // 手工模型表单和运行参数草稿静默丢弃。测试缝：headless 检查无模态驱动。
+    internal Func<string, Task<bool>>? LeaveConfirmOverride;
+
+    public override async Task<bool> ConfirmLeaveAsync()
+    {
+        if (!RuntimeDraft() && !ConnectionDraft()) return true;
+        var message = "系统设置有未保存的修改（运行参数，或连接面板中录入到一半的密钥/手工模型），离开会丢弃这些内容。确定离开吗？";
+        var leave = LeaveConfirmOverride is { } prompt
+            ? await prompt(message)
+            : MessageBox.Show(Host, message, "离开确认", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
+        if (!leave) return false;
+        // 同意离开即弃稿：把输入回填到已渲染的服务端值并清空连接面板草稿——
+        // 草稿是实时检测的，不清理会在后续导航上反复弹窗。
+        DiscardDrafts();
+        return true;
+    }
+
+    private void DiscardDrafts()
+    {
+        foreach (var (key, input) in runtimeInputs)
+        {
+            var rendered = renderedRuntime.GetValueOrDefault(key);
+            switch (input)
+            {
+                case TextBox box:
+                    box.Text = rendered;
+                    break;
+                case ComboBox combo:
+                    foreach (var item in combo.Items.OfType<ComboBoxItem>())
+                        if ((string?)item.Tag == rendered) { combo.SelectedItem = item; break; }
+                    break;
+            }
+        }
+        foreach (var panel in providerList.Children.OfType<ProviderCard>().SelectMany(SelfAndDescendants).OfType<ConnectionPanel>())
+            panel.DiscardDraft();
+    }
 
     private Border BuildProviderBoard()
     {
@@ -69,7 +117,7 @@ public sealed partial class SettingsView : WorkspaceView
         searchInput.ToolTip = "搜索供应商名称或连接协议";
         searchInput.MinHeight = 38;
 
-        searchInput.TextChanged += (_, _) => { search = searchInput.Text.Trim().ToLowerInvariant(); RenderProviders(); };
+        searchInput.TextChanged += async (_, _) => await HandleSearchChanged();
         System.Windows.Automation.AutomationProperties.SetName(searchInput, "筛选供应商");
         searchInput.Margin = new Thickness(0, 0, 0, 10);
         panel.Children.Add(new TextBlock { Text = "搜索供应商名称或连接协议", FontSize = 12,
@@ -79,39 +127,33 @@ public sealed partial class SettingsView : WorkspaceView
         var filters = new WrapPanel { Margin = new Thickness(0, 0, 0, 10) };
         var textPill = new ToggleButton { Content = "文字", Style = (Style)Application.Current.FindResource("Pill"), Margin = new Thickness(0, 0, 6, 6) };
         var imagePill = new ToggleButton { Content = "图片", Style = (Style)Application.Current.FindResource("Pill"), Margin = new Thickness(0, 0, 14, 6) };
-        textPill.Click += (_, _) => { modelType = modelType == "TEXT" ? "ALL" : "TEXT"; imagePill.IsChecked = false; RenderProviders(); };
-        imagePill.Click += (_, _) => { modelType = modelType == "IMAGE" ? "ALL" : "IMAGE"; textPill.IsChecked = false; RenderProviders(); };
+        textPill.Click += async (_, _) => await HandleModelTypeFlip("TEXT", textPill, imagePill);
+        imagePill.Click += async (_, _) => await HandleModelTypeFlip("IMAGE", imagePill, textPill);
         filters.Children.Add(textPill);
         filters.Children.Add(imagePill);
         capabilityFilter.Items.Add(new ComboBoxItem { Tag = "ALL", Content = "全部能力" });
         foreach (var (key, label) in Labels.ModelOperation)
             capabilityFilter.Items.Add(new ComboBoxItem { Tag = key, Content = label });
         capabilityFilter.SelectedIndex = 0;
-        capabilityFilter.SelectionChanged += (_, _) =>
-        {
-            capability = (capabilityFilter.SelectedItem as ComboBoxItem)?.Tag as string ?? "ALL";
-            RenderProviders();
-        };
+        capabilityFilter.SelectionChanged += async (_, _) => await HandleFilterComboChange(capabilityFilter, "能力",
+            value => capability = value);
         capabilityFilter.Margin = new Thickness(0, 0, 10, 6);
         filters.Children.Add(capabilityFilter);
         verifiedOnly.ToolTip = "自动路由只使用已验证模型";
         verifiedOnly.Margin = new Thickness(0, 0, 14, 6);
         verifiedOnly.VerticalAlignment = VerticalAlignment.Center;
-        verifiedOnly.Click += (_, _) => { verified = verifiedOnly.IsChecked == true; RenderProviders(); };
+        verifiedOnly.Click += async (_, _) => await HandleFilterToggleFlip(verifiedOnly, value => verified = value);
         filters.Children.Add(verifiedOnly);
         showHidden.ToolTip = "隐藏只影响创作界面的模型选择，不影响调用或路由";
         showHidden.Margin = new Thickness(0, 0, 14, 6);
         showHidden.VerticalAlignment = VerticalAlignment.Center;
-        showHidden.Click += (_, _) => { hidden = showHidden.IsChecked == true; RenderProviders(); };
+        showHidden.Click += async (_, _) => await HandleFilterToggleFlip(showHidden, value => hidden = value);
         filters.Children.Add(showHidden);
         foreach (var (key, label) in new[] { ("RECOMMENDED", "推荐"), ("NAME", "名称"), ("HEALTH", "健康"), ("MODELS", "模型数量"), ("LATENCY", "延迟") })
             sortFilter.Items.Add(new ComboBoxItem { Tag = key, Content = label });
         sortFilter.SelectedIndex = 0;
-        sortFilter.SelectionChanged += (_, _) =>
-        {
-            sort = (sortFilter.SelectedItem as ComboBoxItem)?.Tag as string ?? "RECOMMENDED";
-            RenderProviders();
-        };
+        sortFilter.SelectionChanged += async (_, _) => await HandleFilterComboChange(sortFilter, "排序",
+            value => sort = value);
         sortFilter.Margin = new Thickness(0, 0, 10, 6);
         filters.Children.Add(sortFilter);
         var add = Kit.Act("＋ 添加供应商", (_, _) => new ProviderCreateDialog(this).ShowDialog(), "CompactInk");
@@ -157,6 +199,8 @@ public sealed partial class SettingsView : WorkspaceView
 
     private async Task LoadProvidersAsync()
     {
+        providersState = ProvidersLoading;
+        UpdateHealthLabel();
         try
         {
             var loaded = await Api.SendAsync("providers", cancellation: lifetime.Token);
@@ -164,6 +208,7 @@ public sealed partial class SettingsView : WorkspaceView
             if (lifetime.Token.IsCancellationRequested) return;
             providers = loaded.EnumerateArray().ToList();
             catalog = models.EnumerateArray().ToList();
+            providersState = ProvidersLoaded;
             var configured = providers.Count(p => p.Array("connections").Any(c => c.Flag("configured")));
             providerSummary.Text = $"{providers.Count} 家供应商 · {configured} 已配置";
             RenderProviders();
@@ -171,6 +216,10 @@ public sealed partial class SettingsView : WorkspaceView
          catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
+            providers = [];
+            catalog = [];
+            providersState = ProvidersFailed;
+            providerSummary.Text = "供应商列表读取失败";
             providerList.Children.Clear();
             var stack = new StackPanel();
             stack.Children.Add(new TextBlock { Text = "供应商列表读取失败", FontWeight = FontWeights.Bold });
@@ -186,6 +235,23 @@ public sealed partial class SettingsView : WorkspaceView
                 Child = stack,
             });
         }
+        finally { UpdateHealthLabel(); }
+    }
+
+    // A09：健康状态只由 providers 的读取结果决定，不再挂在 LoadDiagnosticsAsync
+    // 的完成时序上——diagnostics 先回来停在“读取中”、providers 失败留旧值的
+    // 两种错态都从根上消除。空列表（读取成功但 0 家）显示事实“0 健康”。
+    private const int ProvidersLoading = 0, ProvidersLoaded = 1, ProvidersFailed = 2;
+    private int providersState = ProvidersLoading;
+
+    private void UpdateHealthLabel()
+    {
+        healthLabel.Text = providersState switch
+        {
+            ProvidersLoaded => $"{providers.SelectMany(p => p.Array("connections")).Count(c => c.Text("health_state") == "HEALTHY")} 健康",
+            ProvidersFailed => "供应商读取失败",
+            _ => "读取中",
+        };
     }
 
     private static int HealthRank(JsonElement connection)
@@ -267,6 +333,90 @@ public sealed partial class SettingsView : WorkspaceView
         return false;
     }
 
+    // ============ A08：搜索/筛选/收起变更前的连接草稿守护 ============
+    // web provider-management 的 onFilterChange 在 dirtyGroupIds 非空时先确认，
+    // 拒绝则保持原筛选不动。RenderProviders 会整树重建 ConnectionPanel，录入到
+    // 一半的 API Key 与手工模型表单会随之消失——每条触发路径都要给用户拒绝的
+    // 机会，取消不丢稿。
+    // 测试缝：headless 检查无法驱动 MessageBox（ProjectSettingsView 的
+    // LeaveConfirmOverride 同款目的）。
+    internal Func<string, Task<bool>>? DiscardDraftsConfirmOverride;
+
+    internal async Task<bool> ConfirmDiscardConnectionDrafts(string action)
+    {
+        if (!ConnectionDraft()) return true;
+        var message = $"当前有连接面板包含未保存的输入，{action}会丢弃这些草稿。仍要继续吗？";
+        return DiscardDraftsConfirmOverride is { } prompt
+            ? await prompt(message)
+            : MessageBox.Show(Host, message, "丢弃草稿确认", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
+    }
+
+    private string appliedSearch = "";
+    private bool restoringSearch;
+
+    private async Task HandleSearchChanged()
+    {
+        if (restoringSearch) return;
+        var raw = searchInput.Text;
+        if (raw.Trim().ToLowerInvariant() == appliedSearch.Trim().ToLowerInvariant()) return;
+        if (!await ConfirmDiscardConnectionDrafts("修改搜索"))
+        {
+            // 拒绝丢弃：回滚输入框原文（restoringSearch 防止回写再次触发本处理器）。
+            restoringSearch = true;
+            try { searchInput.Text = appliedSearch; }
+            finally { restoringSearch = false; }
+            return;
+        }
+        appliedSearch = raw;
+        search = raw.Trim().ToLowerInvariant();
+        RenderProviders();
+    }
+
+    private readonly Dictionary<ComboBox, string> appliedComboSelections = new();
+
+    private async Task HandleFilterComboChange(ComboBox selector, string label, Action<string> apply)
+    {
+        if (!appliedComboSelections.TryGetValue(selector, out var applied))
+            appliedComboSelections[selector] = applied = (selector.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
+        var next = (selector.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
+        if (next == applied) return;
+        if (!await ConfirmDiscardConnectionDrafts($"修改{label}筛选"))
+        {
+            // 回选旧项会再进本处理器：next == applied 早退，不会二次渲染。
+            foreach (var item in selector.Items.OfType<ComboBoxItem>())
+                if ((string?)item.Tag == applied) { selector.SelectedItem = item; break; }
+            return;
+        }
+        appliedComboSelections[selector] = next;
+        apply(next);
+        RenderProviders();
+    }
+
+    private async Task HandleFilterToggleFlip(ToggleButton toggle, Action<bool> apply)
+    {
+        var next = toggle.IsChecked == true;
+        if (!await ConfirmDiscardConnectionDrafts(next ? "开启该筛选" : "关闭该筛选"))
+        {
+            toggle.IsChecked = !next;   // 程序化回置不触发 Click
+            return;
+        }
+        apply(next);
+        RenderProviders();
+    }
+
+    private async Task HandleModelTypeFlip(string key, ToggleButton self, ToggleButton other)
+    {
+        var enabling = self.IsChecked == true;
+        if (!await ConfirmDiscardConnectionDrafts(enabling ? $"按{self.Content}筛选" : "清除类型筛选"))
+        {
+            self.IsChecked = !enabling;
+            return;
+        }
+        modelType = enabling ? key : "ALL";
+        if (enabling) other.IsChecked = false;
+        RenderProviders();
+    }
+
     private async Task LoadRuntimeAsync()
     {
         runtimeForm.Children.Clear();
@@ -282,6 +432,10 @@ public sealed partial class SettingsView : WorkspaceView
         {
             runtimeForm.Children.Clear();
             runtimeForm.Children.Add(Caption($"读取设置失败：{error.Message}"));
+            // A09：读取失败不得沿用上一次的数据库/存储状态——各状态条独立准确。
+            databaseLabel.Text = "读取失败";
+            storageLabel.Text = "读取失败";
+            foreach (var block in storageValueBlocks.Values) block.Text = "读取失败";
         }
     }
 
@@ -390,6 +544,23 @@ public sealed partial class SettingsView : WorkspaceView
 
     public void SaveRuntimeSettings() => SaveRuntime(runtimeSave, new RoutedEventArgs());
 
+    // A05/web #650：提交那一刻的运行参数快照。响应落地时只有输入未再变化才整体
+    // 回填重绘；在途新编辑保留显示并继续标脏（renderedRuntime 未推进，
+    // RuntimeDraft() 仍为真），第二次保存携带新值与新版本。
+    private string RuntimeSnapshot() => string.Join('\u0001', runtimeInputs.OrderBy(entry => entry.Key)
+        .Select(entry => entry.Value switch
+        {
+            TextBox box => box.Text.Trim(),
+            ComboBox combo => (combo.SelectedItem as ComboBoxItem)?.Tag as string ?? "",
+            _ => "",
+        }));
+
+    private void ShowRuntimeNotice(string message)
+    {
+        if (runtimeNotice.Child is TextBlock text) text.Text = message;
+        runtimeNotice.Visibility = Visibility.Visible;
+    }
+
     private async void SaveRuntime(object sender, RoutedEventArgs e)
     {
         if (runtimeSaving || runtime.ValueKind != JsonValueKind.Object) return;
@@ -422,17 +593,49 @@ public sealed partial class SettingsView : WorkspaceView
                 }
                 payload[key] = int.TryParse(value, out var raw) && key != "queue_mode" ? raw : value;
             }
+            var submitted = RuntimeSnapshot();
             runtime = await Api.SendAsync("settings/runtime", HttpMethod.Patch, payload, cancellation: lifetime.Token);
-            RenderRuntime();
+            if (submitted != RuntimeSnapshot())
+            {
+                // 请求期间的新编辑：不重建表单（RenderRuntime 会清空重输），保留
+                // 当前输入并继续标脏；保存已生效的部分照常应用到轮询/诊断。
+                ShowRuntimeNotice("运行设置已保存，之后又有新修改");
+            }
+            else
+            {
+                RenderRuntime();
+                ShowRuntimeNotice("运行设置已保存并应用到后续任务");
+            }
             // Publish the fresh ui_poll_interval_seconds into the shared poll period
             // before notifying: MainWindow's handler only re-arms its timers. Null /
             // invalid values keep the current period (PollInterval.Apply contract).
             PollInterval.Apply(PollInterval.Parse(runtime));
             RuntimeSaved?.Invoke();
-            runtimeNotice.Visibility = Visibility.Visible;
             await LoadDiagnosticsAsync();
         }
-         catch (OperationCanceledException) { }
+        catch (OperationCanceledException) { }
+        catch (ApiException conflict) when (conflict.Status == 409)
+        {
+            // A06/web invalidateQueries：409 = 版本落后（本机与 web 同开时另一端先
+            // 保存）。静默重读服务端只推进 runtime（含版本），本地无草稿时才安全
+            // 重绘；有草稿时输入原样保留，下一次保存自动携带服务器当前版本，
+            // 而不是在旧 version 上循环 409 直到手动刷新。
+            try
+            {
+                var fresh = await Api.SendAsync("settings/runtime", cancellation: lifetime.Token);
+                if (!lifetime.Token.IsCancellationRequested)
+                {
+                    runtime = fresh;
+                    if (!RuntimeDraft()) RenderRuntime();
+                }
+                runtimeError.Text = "检测到其他端保存了较新版本，本地修改已保留。已同步最新版本号，再次保存将覆盖远端修改。";
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception recovery) when (recovery is not OperationCanceledException)
+            {
+                runtimeError.Text = conflict.Message + $"\n自动同步最新版本失败：{recovery.Message}。本地修改已保留，请稍后重试保存。";
+            }
+        }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             runtimeError.Text = error.Message;
@@ -455,8 +658,7 @@ public sealed partial class SettingsView : WorkspaceView
             if (lifetime.Token.IsCancellationRequested) return;
             diagnosticsList.Children.Clear();
             executorLabel.Text = diagnostics.Element("queue").Text("actual_executor", "—");
-            healthLabel.Text = providers.Count == 0 ? "读取中"
-                : $"{providers.SelectMany(p => p.Array("connections")).Count(c => c.Text("health_state") == "HEALTHY")} 健康";
+            UpdateHealthLabel();
             var checkedAt = diagnostics.TextOrNull("checked_at");
             checkedAtLabel.Text = checkedAt == null ? "尚未记录"
                 : DateTime.TryParse(checkedAt, null, System.Globalization.DateTimeStyles.RoundtripKind, out var time)
@@ -484,6 +686,9 @@ public sealed partial class SettingsView : WorkspaceView
         {
             diagnosticsList.Children.Clear();
             diagnosticsList.Children.Add(Caption($"诊断读取失败：{error.Message}。请稍后重试。"));
+            // A09：诊断失败不得沿用上一次的执行器状态；checkedAt 同步失效标记。
+            executorLabel.Text = "读取失败";
+            checkedAtLabel.Text = "—";
         }
     }
 
@@ -518,7 +723,7 @@ public sealed partial class SettingsView : WorkspaceView
     private bool ConnectionDraft() => providerList.Children.OfType<ProviderCard>()
         .SelectMany(SelfAndDescendants).OfType<ConnectionPanel>().Any(panel => panel.HasDraft);
 
-    private static IEnumerable<DependencyObject> SelfAndDescendants(DependencyObject node)
+    internal static IEnumerable<DependencyObject> SelfAndDescendants(DependencyObject node)
     {
         yield return node;
         // Border/StackPanel 直接持有可视子级，未布局也能遍历；ProviderCard 与
@@ -571,7 +776,16 @@ internal sealed class ProviderCard : Border
             Background = Brushes.Transparent,
             Content = BuildHeader(),
         };
-        header.Click += (_, _) => { expanded[id] = !open; Render(); };
+        header.Click += async (_, _) =>
+        {
+            // A08：收起会销毁该供应商面板内的连接草稿（Render 重建
+            // ConnectionPanel）——有草稿时先确认，拒绝则保持展开原状。
+            if (open && SettingsView.SelfAndDescendants(this).OfType<ConnectionPanel>().Any(panel => panel.HasDraft)
+                && !await owner.ConfirmDiscardConnectionDrafts("收起该供应商"))
+                return;
+            expanded[id] = !open;
+            Render();
+        };
         panel.Children.Add(header);
         if (open)
         {
@@ -649,6 +863,15 @@ internal sealed class ConnectionPanel : Border
     /// "default"，单独改动无意义（保存需要两者齐全），不计入。</summary>
     internal bool HasDraft =>
         keyValue.SecurePassword.Length > 0 || manualId.Text.Trim().Length > 0 || manualName.Text.Trim().Length > 0;
+
+    /// <summary>A07：用户在离开确认里同意弃稿时清空录入到一半的内容（不落任何
+    /// 磁盘/网络痕迹，密钥只存在于内存控件中）。</summary>
+    internal void DiscardDraft()
+    {
+        keyValue.Clear();
+        manualId.Text = "";
+        manualName.Text = "";
+    }
 
     private void Render()
     {

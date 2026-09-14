@@ -45,8 +45,9 @@ internal static class NativeBehaviorChecks
         try { (filter with { Until = filter.Since }).Validate(); throw new Exception("invalid range accepted"); }
         catch (ArgumentException) { check(true, "invalid usage ranges fail before HTTP requests"); }
         var summaryQuery = HttpUtility.ParseQueryString(new Uri("http://localhost/" + filter.SummaryPath()).Query);
-        check(summaryQuery["from"] == firstQuery["since"] && summaryQuery["to"] == firstQuery["until"] && summaryQuery["channel"] == null,
-            "usage summary respects its separate API filter contract");
+        check(summaryQuery["from"] == firstQuery["since"] && summaryQuery["to"] == firstQuery["until"]
+            && summaryQuery["channel"] == "HTTP_API" && summaryQuery["project_id"] == "p",
+            "usage summary filters by channel, project and exact time bounds like attempts (A10)");
 
         static HttpResponseMessage Response(string body) => new(HttpStatusCode.OK) { Content = new StringContent(body) };
         var oldPage = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);

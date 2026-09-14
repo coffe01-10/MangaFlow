@@ -94,10 +94,56 @@ internal static class NativeWorkflowPageChecks
                 "editor changes do not reach draft save");
             Call(view, "ClearSelection");
             Require(!Field<Button>(view, "runNodeButton").IsEnabled && !Field<Button>(view, "copyButton").IsEnabled, "cleared selection leaves contextual commands active");
-            Console.WriteLine("PASS: workflow 1440/1100/940/650 layouts, responsive drawers, preserved editor, dark fields, contextual actions, zoom, copy/undo/redo, draft save and repeated node loading.");
+
+            // ============ A01：保存失败必须阻断发布/校验/切换/离开 ============
+            var status = Field<TextBlock>(view, "statusLine");
+            var saveNow = typeof(WorkflowView).GetMethod("SaveNowAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            var nodesNow = Field<System.Collections.IList>(view, "nodes");
+            var nodeCount = nodesNow.Count;
+            fixture.FailPatch = "error";
+            Click(Desc(view).OfType<Button>().Single(b => Equals(b.Content, "发布")));
+            await Until(() => status.Text.Contains("发布已取消"));
+            Require(fixture.Publishes == 0, "publish never fires after a failed draft save (A01)");
+            Click(Desc(view).OfType<Button>().Single(b => Equals(b.Content, "校验")));
+            await Until(() => status.Text.Contains("校验已取消"));
+            Require(fixture.Validates == 0, "validate never fires after a failed draft save (A01)");
+            // 409：静默同步服务端版本（不回读图），草稿节点原样保留。
+            fixture.FailPatch = "conflict"; fixture.WorkflowVersion = 9;
+            Require(!await (Task<bool>)saveNow.Invoke(view, new object?[] { null })!, "conflicted save reports failure to the caller");
+            await Until(() => Field<int>(view, "version") == 9);
+            Require(Field<System.Collections.IList>(view, "nodes").Count == nodeCount, "draft nodes survive failed saves (A01)");
+            // 恢复后发布照常放行。
+            fixture.FailPatch = null;
+            Click(Desc(view).OfType<Button>().Single(b => Equals(b.Content, "发布")));
+            await Until(() => fixture.Publishes == 1);
+            // 切换被阻断：留在原工作流，选择器回滚，目标工作流不被加载。
+            fixture.FailPatch = "error";
+            var selector = Field<ComboBox>(view, "workflowSelector");
+            selector.SelectedItem = selector.Items.OfType<ComboBoxItem>().Single(i => (string?)i.Tag == "wf-other");
+            await Until(() => status.Text.Contains("切换已取消"));
+            Require(Field<string>(view, "workflowId") == "wf-layout" && Field<string>(view, "canvasWorkflowId") == "wf-layout",
+                "blocked switch keeps the current workflow (A01)");
+            Require((selector.SelectedItem as ComboBoxItem)!.Tag as string == "wf-layout", "selector reverts to the current workflow");
+            Require(fixture.OtherReads == 0, "blocked switch never loads the target workflow");
+            // 离开默认被阻断（草稿保留）；显式弃稿才放行。
+            view.SaveFailLeaveOverride = _ => Task.FromResult(false);
+            Require(!await view.ConfirmLeaveAsync(), "failed flush blocks leaving by default (A01)");
+            view.SaveFailLeaveOverride = _ => Task.FromResult(true);
+            Require(await view.ConfirmLeaveAsync(), "explicit discard allows leaving after a failed flush");
+            view.SaveFailLeaveOverride = null;
+            fixture.FailPatch = null;
+
+            Console.WriteLine("PASS: workflow 1440/1100/940/650 layouts, responsive drawers, preserved editor, dark fields, contextual actions, zoom, copy/undo/redo, draft save, repeated node loading, and failed-save gating of publish/validate/switch/leave with 409 version sync (A01).");
             Console.WriteLine("Offscreen WPF + HTTP fixtures. Live API/Worker/provider, physical pointer drag, high DPI and frame timing NOT RUN.");
         }
-        finally { await view.ConfirmLeaveAsync(); view.Deactivate(); }
+        finally
+        {
+            // A01 后离开确认在「上一次保存失败」时也会询问弃稿——离屏检查无宿主
+            // 窗口，MessageBox 会 ArgumentNullException；接测试缝显式弃稿离场。
+            view.SaveFailLeaveOverride = _ => Task.FromResult(true);
+            await view.ConfirmLeaveAsync();
+            view.Deactivate();
+        }
     }
     private static void Call(object target, string name, params object[] args) => target.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(target, args);
     private static void Fits(Panel panel)
@@ -118,7 +164,9 @@ internal static class NativeWorkflowPageChecks
     private static void Render(FrameworkElement e, int w, int h, string path) { Layout(e, w, h); var bitmap = new RenderTargetBitmap(w, h, 96, 96, PixelFormats.Pbgra32); bitmap.Render(e); var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap)); using var f = File.Create(path); encoder.Save(f); }
     private sealed class Fixture : HttpMessageHandler
     {
-        internal int Patches;
+        internal int Patches, Publishes, Validates, OtherReads;
+        internal string? FailPatch;   // "error"=500 / "conflict"=409；持续到测试清除
+        internal int WorkflowVersion = 3;
         internal string Saved = "";
         private static object Port(string id, string label, string data_type) => new { id, label, data_type };
         private static object[] Catalog => [
@@ -145,16 +193,29 @@ internal static class NativeWorkflowPageChecks
             if (request.Method == HttpMethod.Patch)
             {
                 Patches++; Saved = await request.Content!.ReadAsStringAsync(token);
+                if (FailPatch == "conflict")
+                    return Response(new { detail = "草稿版本已落后，请刷新后重试" }, HttpStatusCode.Conflict);
+                if (FailPatch == "error")
+                    return Response(new { detail = "服务暂不可用" }, HttpStatusCode.ServiceUnavailable);
                 var graph = JsonSerializer.Deserialize<JsonElement>(Saved).GetProperty("draft_graph");
                 return Response(new { id = "wf-layout", name = "单页生产流程", version = Patches + 3, draft_version = Patches + 2, draft_graph = graph, published_version_id = "v1" });
             }
+            if (request.Method == HttpMethod.Post)
+            {
+                if (path.EndsWith("/validate")) { Validates++; return Response(new { issues = Array.Empty<object>() }); }
+                if (path.EndsWith("/publish")) { Publishes++; return Response(new { id = "wf-layout", name = "单页生产流程", version = WorkflowVersion, published_version_id = "v9" }); }
+                throw new Exception("unexpected mutation: " + path);
+            }
             Require(request.Method == HttpMethod.Get, "layout checks must not start paid work");
             if (path.EndsWith("/workflow-node-types")) return Response(Catalog);
-            if (path.EndsWith("/projects/layout/workflows")) return Response(new[] { new { id = "wf-layout", name = "单页生产流程" } });
+            if (path.EndsWith("/projects/layout/workflows")) return Response(new[] {
+                new { id = "wf-layout", name = "单页生产流程" },
+                new { id = "wf-other", name = "备用工作流" } });
             if (path.EndsWith("/chapters")) return Response(new[] { new { id = "ch1", ordinal = 1, title = "第一章" } });
-            if (path.EndsWith("/workflows/wf-layout")) return Response(new { id = "wf-layout", name = "单页生产流程", version = 3, draft_version = 2, draft_graph = Graph(), published_version_id = "v1" });
+            if (path.EndsWith("/workflows/wf-layout")) return Response(new { id = "wf-layout", name = "单页生产流程", version = WorkflowVersion, draft_version = 2, draft_graph = Graph(), published_version_id = "v1" });
+            if (path.EndsWith("/workflows/wf-other")) { OtherReads++; return Response(new { id = "wf-other", name = "备用工作流", version = 1, draft_version = 1, draft_graph = Graph(), published_version_id = (string?)null }); }
             return Response(Array.Empty<object>());
         }
-        private static HttpResponseMessage Response(object data) => new(HttpStatusCode.OK) { Content = new StringContent(JsonSerializer.Serialize(data)) };
+        private static HttpResponseMessage Response(object data, HttpStatusCode status = HttpStatusCode.OK) => new(status) { Content = new StringContent(JsonSerializer.Serialize(data)) };
     }
 }

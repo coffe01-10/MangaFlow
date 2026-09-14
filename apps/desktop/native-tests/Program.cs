@@ -77,6 +77,30 @@ if (args.Contains("--issue441"))
     NativeIssue441Checks.Run();
     return 0;
 }
+if (args.Contains("--interaction"))
+{
+    // --render 的 parity 前奏在 master 上有一个独立的既有失败（generate/940
+    // PageHeading 重叠）时，仍可单独驱动 NativeInteractionChecks 全链——该链
+    // 覆盖 #428/#429/#469 等所有视图行为套件，是视图行为改动的匹配验证面。
+    // 与 --render 同款专用 STA 线程 + Application 泵（MainWindow 需要 STA）。
+    Exception? interactionFailure = null;
+    var interactionThread = new Thread(() =>
+    {
+        try
+        {
+            var app = new Application();
+            app.Resources.MergedDictionaries.Add(new ResourceDictionary { Source = new Uri("/MangaFlow.Native;component/Theme.xaml", UriKind.Relative) });
+            NativeInteractionChecks.Run(args.FirstOrDefault(a => !a.StartsWith("--")) ?? Path.Combine(Path.GetTempPath(), "mangaflow-interaction-checks"));
+            app.Shutdown();
+        }
+        catch (Exception e) { interactionFailure = e; }
+    });
+    interactionThread.SetApartmentState(ApartmentState.STA);
+    interactionThread.Start();
+    interactionThread.Join();
+    if (interactionFailure != null) throw new Exception("Native interaction checks failed", interactionFailure);
+    return 0;
+}
 var count = 0;
 void Check(bool condition, string name)
 {
@@ -114,7 +138,21 @@ using (var client = new ApiClient("http://127.0.0.1:12345", new FakeHandler((_, 
     Task.FromResult(new HttpResponseMessage(HttpStatusCode.Conflict) { Content = new StringContent("{\"detail\":\"版本已更新\"}") }))))
 {
     try { await client.SendAsync("settings/runtime", HttpMethod.Patch, new { version = 1 }); throw new Exception("409 accepted"); }
-    catch (InvalidOperationException e) { Check(e.Message.Contains("版本已更新") && e.Message.Contains("刷新"), "409 preserves actionable server detail"); }
+    catch (ApiException e) { Check(e is InvalidOperationException && e.Status == 409 && e.Message.Contains("版本已更新") && e.Message.Contains("刷新"), "409 preserves status and actionable server detail (A15)"); }
+}
+// A15：404 与 5xx 保留可判别的状态码——调用点（场景引用检查、冲突恢复）需要
+// 区分“资源不存在”与“读取失败”，不再解析 Message 文本。
+using (var client = new ApiClient("http://127.0.0.1:12345", new FakeHandler((_, _) =>
+    Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound) { Content = new StringContent("{\"detail\":\"章节不存在\"}") }))))
+{
+    try { await client.SendAsync("chapters/gone"); throw new Exception("404 accepted"); }
+    catch (ApiException e) { Check(e.Status == 404 && e.Message.Contains("章节不存在"), "404 carries its status for missing-resource branches (A15)"); }
+}
+using (var client = new ApiClient("http://127.0.0.1:12345", new FakeHandler((_, _) =>
+    Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) { Content = new StringContent("plain text") }))))
+{
+    try { await client.SendAsync("projects"); throw new Exception("503 accepted"); }
+    catch (ApiException e) { Check(e.Status == 503 && e.Detail.ValueKind == JsonValueKind.Undefined, "non-JSON errors keep status with no structured detail (A15)"); }
 }
 var mutationCalls = 0;
 using (var client = new ApiClient("http://127.0.0.1:12345", new FakeHandler((_, _) =>

@@ -32,12 +32,20 @@ public sealed partial class UsageView : WorkspaceView
     private readonly StackPanel attemptsTable = new();
     private readonly StackPanel billedTable = new();
     private readonly TextBlock summaryLine = new() { Style = (Style)Application.Current.FindResource("Caption") };
+    // A14：汇总分区失败时的就地重试（与明细分区各自的错误 UI 互不顶替）。
+    private readonly Button summaryRetry;
     private JsonElement summary;
     private readonly UsageAttemptFeed feed = new();
     private List<JsonElement> attempts => feed.Items;
     private string? nextCursor => feed.NextCursor;
     private bool updatingFilters;
     private int loadRevision;
+    // A12/A13：维度（供应商/模型）与项目列表的独立来源与失败标记。
+    private readonly StackPanel dimensionBar = new();
+    private JsonElement facets;
+    private string projectDimensionError = "", facetDimensionError = "";
+    private UsageFilter? currentFilter;
+    private StackPanel? attemptsFooterError;
 
     public UsageView()
     {
@@ -62,6 +70,8 @@ public sealed partial class UsageView : WorkspaceView
             updatingFilters = true;
             modelSelector.SelectedIndex = 0;
             updatingFilters = false;
+            // A12：供应商切换即时联动模型选项（facets 来源），清除不兼容模型。
+            RenderDimensionOptions();
             _ = LoadAsync();
         };
         filters.Children.Add(FilterField("供应商", providerSelector));
@@ -75,15 +85,31 @@ public sealed partial class UsageView : WorkspaceView
         channelSelector.SelectionChanged += (_, _) => _ = LoadAsync();
         channelSelector.Margin = new Thickness(0);
         filters.Children.Add(FilterField("通道", channelSelector));
-        var refresh = Kit.Act("刷新", async (_, _) => await LoadAsync(), "Compact");
+        // A14：汇总分区独立的失败提示 + 重试；平时收起。
+        summaryRetry = Kit.Act("重试汇总", async (_, _) => await ReloadSummaryPartitionAsync(), "Compact");
+        summaryRetry.Visibility = Visibility.Collapsed;
+        summaryRetry.Margin = new Thickness(0, 4, 0, 0);
+        var refresh = Kit.Act("刷新", async (_, _) =>
+        {
+            // A13：刷新同时重取项目列表与维度（facets）——新建项目/新供应商
+            // 不再要求重进页面才出现在下拉里。
+            await LoadProjectsAsync();
+            await LoadFacetsAsync();
+            await LoadAsync();
+        }, "Compact");
         refresh.Margin = new Thickness(12, 0, 0, 0);
         var export = Kit.Act("导出 CSV", (_, _) => ExportCsv(), "Compact");
         export.Margin = new Thickness(8, 0, 0, 0);
         refresh.VerticalAlignment = VerticalAlignment.Bottom; export.VerticalAlignment = VerticalAlignment.Bottom;
         var filterActions = new WrapPanel { VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 0, 8) };
         filterActions.Children.Add(refresh); filterActions.Children.Add(export); filters.Children.Add(filterActions);
+        var filterCard = new StackPanel();
+        filterCard.Children.Add(filters);
+        // A12/A13：项目/维度读取失败的就地提示与重试入口；无错误时零占位。
+        dimensionBar.Visibility = Visibility.Collapsed;
+        filterCard.Children.Add(dimensionBar);
         panel.Children.Add(new Border { Padding = new Thickness(14), BorderBrush = AssetPageUi.Brush("LineDark"), BorderThickness = new Thickness(1),
-            Background = AssetPageUi.Brush("Surface"), Child = filters, Margin = new Thickness(0, 0, 0, 14) });
+            Background = AssetPageUi.Brush("Surface"), Child = filterCard, Margin = new Thickness(0, 0, 0, 14) });
         customRange.Children.Add(Kit.FieldLabel("从 "));
         customRange.Children.Add(sinceDate);
         customRange.Children.Add(Kit.FieldLabel(" 至 "));
@@ -93,6 +119,7 @@ public sealed partial class UsageView : WorkspaceView
         System.Windows.Automation.AutomationProperties.SetName(untilDate, "结束日期（含当天）");
         panel.Children.Add(customRange);
         panel.Children.Add(summaryLine);
+        panel.Children.Add(summaryRetry);
         kpiRow.Margin = new Thickness(0, 10, 0, 0);
         panel.Children.Add(kpiRow);
         panel.Children.Add(budgetHost);
@@ -112,27 +139,129 @@ public sealed partial class UsageView : WorkspaceView
     public override async void Activate(WorkspaceContext context)
     {
         base.Activate(context);
+        // A13：项目列表读取失败不中止用量数据加载（两者数据独立），失败也不
+        // 伪装成“没有项目”——下拉保留现状，就地给出可重试的错误。
+        await LoadProjectsAsync();
+        await LoadFacetsAsync();
+        await LoadAsync();
+    }
+
+    private async Task LoadProjectsAsync()
+    {
         try
         {
-            var token = lifetime.Token;
-            var projects = await Api.SendAsync("projects", cancellation: token);
-            if (token.IsCancellationRequested) return;
+            var projects = await Api.SendAsync("projects", cancellation: lifetime.Token);
+            if (lifetime.Token.IsCancellationRequested) return;
             updatingFilters = true;
-            var selected = (projectSelector.SelectedItem as ComboBoxItem)?.Tag as string;
-            projectSelector.Items.Clear();
-            projectSelector.Items.Add(new ComboBoxItem { Tag = "", Content = "全部项目" });
-            foreach (var project in projects.EnumerateArray())
-                projectSelector.Items.Add(new ComboBoxItem { Tag = project.Text("id"), Content = project.Text("name") });
-            projectSelector.SelectedItem = projectSelector.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string?)i.Tag == selected)
-                ?? projectSelector.Items[0];
-            updatingFilters = false;
-            await LoadAsync();
+            try
+            {
+                var selected = (projectSelector.SelectedItem as ComboBoxItem)?.Tag as string;
+                projectSelector.Items.Clear();
+                projectSelector.Items.Add(new ComboBoxItem { Tag = "", Content = "全部项目" });
+                foreach (var project in projects.EnumerateArray())
+                    projectSelector.Items.Add(new ComboBoxItem { Tag = project.Text("id"), Content = project.Text("name") });
+                projectSelector.SelectedItem = projectSelector.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string?)i.Tag == selected)
+                    ?? projectSelector.Items[0];
+            }
+            finally { updatingFilters = false; }
+            projectDimensionError = "";
+            RenderDimensionErrors();
         }
         catch (OperationCanceledException) { }
         catch (Exception error) when (error is not OperationCanceledException)
         {
-            summaryLine.Text = $"用量数据加载失败：{error.Message}";
+            projectDimensionError = error.Message.Split('\n')[0];
+            RenderDimensionErrors();
         }
+    }
+
+    /// <summary>A12：维度（供应商/模型）的独立来源——不带筛选的汇总（facets），
+    /// 对应 web usage-facets 查询。选项完整稳定，不随当前汇总结果增减。</summary>
+    private async Task LoadFacetsAsync()
+    {
+        try
+        {
+            var loaded = await Api.SendAsync(UsageFilter.FacetsPath(), cancellation: lifetime.Token);
+            if (lifetime.Token.IsCancellationRequested) return;
+            facets = loaded;
+            facetDimensionError = "";
+            RenderDimensionErrors();
+            RenderDimensionOptions();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            facetDimensionError = error.Message.Split('\n')[0];
+            RenderDimensionErrors();
+        }
+    }
+
+    private void RenderDimensionErrors()
+    {
+        dimensionBar.Children.Clear();
+        if (projectDimensionError.Length == 0 && facetDimensionError.Length == 0)
+        {
+            dimensionBar.Visibility = Visibility.Collapsed;
+            return;
+        }
+        var row = new WrapPanel { Margin = new Thickness(0, 10, 0, 0) };
+        var label = "筛选选项读取失败"
+            + (projectDimensionError.Length > 0 ? "（项目）" : "")
+            + (facetDimensionError.Length > 0 ? "（供应商 / 模型）" : "")
+            + "，下拉可能缺少选项";
+        row.Children.Add(new TextBlock
+        {
+            Text = label,
+            Style = (Style)Application.Current.FindResource("Caption"),
+            Foreground = (Brush)Application.Current.FindResource("Danger"),
+            VerticalAlignment = VerticalAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+        });
+        var details = string.Join("\n", new[] { projectDimensionError, facetDimensionError }.Where(m => m.Length > 0));
+        row.ToolTip = details;
+        if (projectDimensionError.Length > 0)
+        {
+            var retryProjects = Kit.Act("重试项目", async (_, _) => await LoadProjectsAsync(), "Compact");
+            retryProjects.Margin = new Thickness(10, 0, 0, 0);
+            row.Children.Add(retryProjects);
+        }
+        if (facetDimensionError.Length > 0)
+        {
+            var retryFacets = Kit.Act("重试供应商 / 模型", async (_, _) => await LoadFacetsAsync(), "Compact");
+            retryFacets.Margin = new Thickness(10, 0, 0, 0);
+            row.Children.Add(retryFacets);
+        }
+        dimensionBar.Children.Add(row);
+        dimensionBar.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>A12：按 facets 重建供应商/模型选项；模型跟随所选供应商联动，
+    /// 不兼容的已选模型回退“全部”。updatingFilters 抑制选择器的重入加载。</summary>
+    private void RenderDimensionOptions()
+    {
+        if (facets.ValueKind != JsonValueKind.Object) return;
+        updatingFilters = true;
+        try
+        {
+            var groups = facets.Array("groups");
+            var selectedProvider = (providerSelector.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
+            var selectedModel = (modelSelector.SelectedItem as ComboBoxItem)?.Tag as string ?? "";
+            void Fill(ComboBox selector, string all, IEnumerable<string> values, string current)
+            {
+                selector.Items.Clear();
+                selector.Items.Add(new ComboBoxItem { Tag = "", Content = all });
+                foreach (var value in values.Where(v => v.Length > 0).Distinct().OrderBy(v => v, StringComparer.Ordinal))
+                    selector.Items.Add(new ComboBoxItem { Tag = value, Content = value });
+                selector.SelectedItem = selector.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string?)i.Tag == current)
+                    ?? selector.Items[0];
+            }
+            Fill(providerSelector, "全部供应商", groups.Select(g => g.Text("provider")), selectedProvider);
+            var modelGroups = selectedProvider.Length == 0
+                ? groups
+                : groups.Where(g => g.Text("provider") == selectedProvider).ToList();
+            Fill(modelSelector, "全部模型", modelGroups.Select(g => g.Text("model_id")), selectedModel);
+        }
+        finally { updatingFilters = false; }
     }
 
     private UsageFilter CaptureFilter()
@@ -168,39 +297,107 @@ public sealed partial class UsageView : WorkspaceView
         breakdownHost.Children.Clear();
         billedTable.Children.Clear();
         budgetFormOpen = false;
+        attemptsFooterError = null;
+        summaryRetry.Visibility = Visibility.Collapsed;
+        UsageFilter filter;
         try
         {
-            var filter = CaptureFilter();
-            summaryLine.Text = "正在读取用量\u2026";
-            var summaryTask = Api.SendAsync(filter.SummaryPath(), cancellation: token);
-            var attemptsTask = feed.LoadAsync(Api, filter, token);
-            await Task.WhenAll(summaryTask, attemptsTask);
-            if (token.IsCancellationRequested || request != loadRevision) return;
-            summary = await summaryTask;
-            RenderSummary();
-            RenderAttempts();
-            updatingFilters = true;
-            try
-            {
-                void AddChoices(ComboBox selector, string all, IEnumerable<string> values)
-                {
-                    if (selector.Items.Count == 0) selector.Items.Add(new ComboBoxItem { Tag = "", Content = all });
-                    foreach (var value in values.Distinct().OrderBy(v => v))
-                        if (!selector.Items.OfType<ComboBoxItem>().Any(i => (string?)i.Tag == value))
-                            selector.Items.Add(new ComboBoxItem { Tag = value, Content = value });
-                    if (selector.SelectedIndex < 0) selector.SelectedIndex = 0;
-                }
-                AddChoices(providerSelector, "全部供应商", summary.Array("groups").Select(g => g.Text("provider")));
-                AddChoices(modelSelector, "全部模型", summary.Array("groups").Select(g => g.Text("model_id")));
-            }
-            finally { updatingFilters = false; }
+            filter = CaptureFilter();
         }
-        catch (OperationCanceledException) { }
-        catch (Exception error)
+        catch (ArgumentException error)
         {
             if (!token.IsCancellationRequested && request == loadRevision)
                 summaryLine.Text = $"用量数据加载失败：{error.Message}";
+            return;
         }
+        currentFilter = filter;
+        summaryLine.Text = "正在读取用量\u2026";
+        // A14：汇总与明细是独立分区（web 的两个 query）。任一失败不阻止另一块
+        // 渲染，失败分区就地提示并提供重试；过时响应仍由 loadRevision 隔离。
+        var summaryTask = Api.SendAsync(filter.SummaryPath(), cancellation: token);
+        var attemptsTask = feed.LoadAsync(Api, filter, token);
+        Exception? summaryError = null, attemptsError = null;
+        try { await summaryTask; } catch (Exception error) when (error is not OperationCanceledException) { summaryError = error; }
+        try { await attemptsTask; } catch (Exception error) when (error is not OperationCanceledException) { attemptsError = error; }
+        if (token.IsCancellationRequested || request != loadRevision) return;
+        if (summaryError == null)
+        {
+            summary = summaryTask.Result;
+            RenderSummary();
+        }
+        else
+        {
+            summaryLine.Text = $"用量汇总读取失败：{summaryError.Message.Split('\n')[0]}";
+            summaryRetry.Visibility = Visibility.Visible;
+        }
+        if (attemptsError == null) RenderAttempts();
+        else RenderAttemptsError(attemptsError.Message.Split('\n')[0]);
+    }
+
+    private async Task ReloadSummaryPartitionAsync()
+    {
+        if (currentFilter == null || lifetime.IsCancellationRequested) return;
+        var request = loadRevision;
+        var token = lifetime.Token;
+        try
+        {
+            var loaded = await Api.SendAsync(currentFilter.SummaryPath(), cancellation: token);
+            if (!token.IsCancellationRequested && request == loadRevision)
+            {
+                summary = loaded;
+                RenderSummary();
+                summaryRetry.Visibility = Visibility.Collapsed;
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            if (!token.IsCancellationRequested && request == loadRevision)
+            {
+                summaryLine.Text = $"用量汇总读取失败：{error.Message.Split('\n')[0]}";
+                summaryRetry.Visibility = Visibility.Visible;
+            }
+        }
+    }
+
+    private async Task ReloadAttemptsPartitionAsync()
+    {
+        if (currentFilter == null || lifetime.IsCancellationRequested) return;
+        var request = loadRevision;
+        var token = lifetime.Token;
+        try
+        {
+            feed.Reset();
+            attemptsTable.Children.Clear();
+            attemptsFooterError = null;
+            var loaded = await feed.LoadAsync(Api, currentFilter, token);
+            if (!token.IsCancellationRequested && request == loadRevision && loaded) RenderAttempts();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            if (!token.IsCancellationRequested && request == loadRevision)
+                RenderAttemptsError(error.Message.Split('\n')[0]);
+        }
+    }
+
+    private void RenderAttemptsError(string message)
+    {
+        attemptsTable.Children.Clear();
+        attemptsFooterError = null;
+        var row = new StackPanel { Margin = new Thickness(14, 10, 14, 10) };
+        row.Children.Add(new TextBlock
+        {
+            Text = $"调用明细读取失败：{message}",
+            Style = (Style)Application.Current.FindResource("Caption"),
+            Foreground = (Brush)Application.Current.FindResource("Danger"),
+            TextWrapping = TextWrapping.Wrap,
+        });
+        var retry = Kit.Act("重试明细", async (_, _) => await ReloadAttemptsPartitionAsync(), "Compact");
+        retry.Margin = new Thickness(0, 8, 0, 0);
+        retry.HorizontalAlignment = HorizontalAlignment.Left;
+        row.Children.Add(retry);
+        attemptsTable.Children.Add(row);
     }
 
     private void RenderSummary()
@@ -499,9 +696,36 @@ public sealed partial class UsageView : WorkspaceView
         catch (OperationCanceledException) { }
         catch (Exception error)
         {
+            // A14：分页错误就地显示在明细表尾（用户视线下方），不再只写页面顶部。
             if (!token.IsCancellationRequested && request == loadRevision)
-                summaryLine.Text = $"加载更多失败，可重试：{error.Message}";
+                ShowAttemptsFooterError($"加载更多失败，可重试：{error.Message.Split('\n')[0]}");
         }
+    }
+
+    private void ShowAttemptsFooterError(string message)
+    {
+        ClearAttemptsFooterError();
+        var row = new StackPanel { Margin = new Thickness(14, 8, 14, 10) };
+        row.Children.Add(new TextBlock
+        {
+            Text = message,
+            Style = (Style)Application.Current.FindResource("Caption"),
+            Foreground = (Brush)Application.Current.FindResource("Danger"),
+            TextWrapping = TextWrapping.Wrap,
+        });
+        var retry = Kit.Act("重试加载更多", async (_, _) => await LoadMoreAsync(), "Compact");
+        retry.Margin = new Thickness(0, 6, 0, 0);
+        retry.HorizontalAlignment = HorizontalAlignment.Left;
+        row.Children.Add(retry);
+        attemptsFooterError = row;
+        attemptsTable.Children.Add(row);
+    }
+
+    private void ClearAttemptsFooterError()
+    {
+        if (attemptsFooterError == null) return;
+        attemptsTable.Children.Remove(attemptsFooterError);
+        attemptsFooterError = null;
     }
 
     private static string CostModeOf(JsonElement attempt)
@@ -515,9 +739,73 @@ public sealed partial class UsageView : WorkspaceView
         return "UNKNOWN";
     }
 
+    /// <summary>A11：金额单元格的稳定序列化。pydantic Decimal 序列化为字符串
+    /// （"60.00"）——原样透传（web csvCell(String(value)) 同款）；数字形态用
+    /// InvariantCulture 定点格式，逗号小数文化不再破坏列。未知金额输出空串，
+    /// 不写成 0。</summary>
+    internal static string AmountText(JsonElement element, string name)
+    {
+        if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(name, out var value)) return "";
+        return value.ValueKind switch
+        {
+            JsonValueKind.Number => value.TryGetDouble(out var number)
+                ? number.ToString("0.####################", System.Globalization.CultureInfo.InvariantCulture) : "",
+            JsonValueKind.String => value.GetString() ?? "",
+            _ => "",
+        };
+    }
+
+    /// <summary>A11：CSV 序列化的纯函数（web buildUsageCsv 逐块对齐）——估算区块
+    /// 每币种一行；账单对账记录作为第二区块（有账单才出现表头），账单事实永不
+    /// 与估算相加。行尾 \r\n、区块间空行、UTF-8 BOM 由调用方写入。</summary>
+    internal static string BuildUsageCsv(JsonElement summary)
+    {
+        var builder = new StringBuilder();
+        void Row(params string[] cells)
+        {
+            for (var i = 0; i < cells.Length; i++)
+            {
+                if (i > 0) builder.Append(',');
+                builder.Append(Csv(cells[i]));
+            }
+            builder.Append("\r\n");
+        }
+        Row("日期", "供应商", "模型ID", "通道", "调用次数", "成功", "失败", "未决",
+            "输入Token", "输出Token", "缓存命中Token", "输出图片张数", "计量状态分布", "估算币种", "估算金额（原币种）");
+        foreach (var group in summary.Array("groups"))
+        {
+            var costs = group.Array("estimated_costs");
+            var rows = costs.Count == 0
+                ? [("", "")]
+                : costs.Select(c => (c.Text("currency"), AmountText(c, "amount"))).ToList();
+            foreach (var (currency, amount) in rows)
+                Row(group.Text("day"), group.Text("provider"), group.Text("model_id"), group.Text("channel"),
+                    group.Number("attempt_count").ToString(), group.Number("succeeded_count").ToString(),
+                    group.Number("failed_count").ToString(), group.Number("pending_count").ToString(),
+                    NumberOrNull(group, "input_tokens"), NumberOrNull(group, "output_tokens"),
+                    NumberOrNull(group, "cached_input_tokens"), NumberOrNull(group, "output_images"),
+                    string.Join(" ", group.Element("usage_status_counts").EnumerateObject().Select(p => $"{p.Name}:{p.Value}")),
+                    currency.Length == 0 ? "无估算数据" : currency, amount);
+        }
+        var billed = summary.Array("billed");
+        if (billed.Count > 0)
+        {
+            builder.Append("\r\n");
+            Row("类型", "账期开始", "账期结束", "供应商", "模型ID", "通道", "账单账户", "账单币种", "账单金额", "录入人", "备注");
+            foreach (var item in billed)
+                Row("账单对账", item.Text("period_start"), item.Text("period_end"), item.Text("provider"),
+                    item.Text("model_id"), item.Text("channel"), item.Text("billing_account_id"),
+                    item.Text("currency"), AmountText(item, "billed_amount"), item.Text("entered_by"), item.Text("source_note"));
+        }
+        return builder.ToString();
+    }
+
     private void ExportCsv()
     {
-        if (summary.ValueKind != JsonValueKind.Object)
+        // Billed-only dashboards can export too (web)：账单事实往往正是运营下载
+        // 文件的原因。
+        if (summary.ValueKind != JsonValueKind.Object
+            || (summary.Array("groups").Count == 0 && summary.Array("billed").Count == 0))
         {
             MessageBox.Show(Host, "尚无可导出的数据。", "导出 CSV");
             return;
@@ -529,24 +817,7 @@ public sealed partial class UsageView : WorkspaceView
         if (dialog.ShowDialog(Host) != true) return;
         try
         {
-            var builder = new StringBuilder("\uFEFF");
-            builder.AppendLine("日期,供应商,模型ID,通道,调用次数,成功,失败,未决,输入Token,输出Token,缓存命中Token,输出图片张数,计量状态分布,估算币种,估算金额（原币种）");
-            foreach (var group in summary.Array("groups"))
-            {
-                var costs = group.Array("estimated_costs");
-                var rows = costs.Count == 0 ? [("", "")] : costs.Select(c => (c.Text("currency"), Money(c).ToString())).ToList();
-                foreach (var (currency, amount) in rows)
-                {
-                    var line = string.Join(",",
-                        Csv(group.Text("day")), Csv(group.Text("provider")), Csv(group.Text("model_id")), Csv(group.Text("channel")),
-                        group.Number("attempt_count"), group.Number("succeeded_count"), group.Number("failed_count"), group.Number("pending_count"),
-                        NumberOrNull(group, "input_tokens"), NumberOrNull(group, "output_tokens"), NumberOrNull(group, "cached_input_tokens"),
-                        NumberOrNull(group, "output_images"), Csv(string.Join(" ", group.Element("usage_status_counts").EnumerateObject().Select(p => $"{p.Name}:{p.Value}"))),
-                        currency.Length == 0 ? "无估算数据" : currency, amount);
-                    builder.AppendLine(line);
-                }
-            }
-            File.WriteAllText(dialog.FileName, builder.ToString(), new UTF8Encoding(false));
+            File.WriteAllText(dialog.FileName, "\uFEFF" + BuildUsageCsv(summary), new UTF8Encoding(false));
             MessageBox.Show(Host, "CSV 已导出。", "导出完成");
         }
         catch (Exception error)

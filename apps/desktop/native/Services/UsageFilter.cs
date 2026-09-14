@@ -14,9 +14,17 @@ public sealed record UsageFilter(DateTimeOffset Since, DateTimeOffset Until,
     public string SummaryPath()
     {
         Validate();
+        // A10：channel 与明细同一契约——后端 get_usage_summary 已支持，汇总口径
+        // 必须跟随所选通道，否则统计卡/趋势/预算与分页明细描述不同的数据集
+        // （web usageSummary 同样透传 channel）。空/未选时省略参数。
         return QueryBuilder.Build("usage/summary", ("from", Since.ToUniversalTime().ToString("O")),
-            ("to", Until.ToUniversalTime().ToString("O")), ("project_id", ProjectId), ("provider", Provider), ("model_id", ModelId));
+            ("to", Until.ToUniversalTime().ToString("O")), ("project_id", ProjectId), ("provider", Provider),
+            ("model_id", ModelId), ("channel", Channel));
     }
+
+    /// <summary>A12：维度（供应商/模型）选项的独立来源——不带任何筛选的汇总，
+    /// 对应 web usage-facets 查询。选项不随当前筛选增减，供应商联动模型。</summary>
+    public static string FacetsPath() => "usage/summary";
 
     public string AttemptsPath(string? cursor = null)
     {

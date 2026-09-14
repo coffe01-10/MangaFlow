@@ -99,13 +99,47 @@ internal static class NativeUsagePageChecks
             Layout(view,360,1200);Fits(Desc(view).OfType<UsageBudgetRow>().Single());
             fixture.FailMore=true;
             await Invoke(view,"LoadMoreAsync");
-            Require(Field<UsageAttemptFeed>(view,"feed").Items.Count==1 && Field<TextBlock>(view,"summaryLine").Text.Contains("加载更多失败"),"pagination failure preserves rows");
+            // A14：分页错误就地显示在明细表尾，不再只写页面顶部。
+            Require(Field<UsageAttemptFeed>(view,"feed").Items.Count==1
+                && Desc(Field<StackPanel>(view,"attemptsTable")).OfType<TextBlock>().Any(t=>t.Text.Contains("加载更多失败"))
+                && !Field<TextBlock>(view,"summaryLine").Text.Contains("加载更多失败"),
+                "pagination failure reports inline and preserves rows");
             fixture.FailMore=false; await Invoke(view,"LoadMoreAsync");
             Require(Field<UsageAttemptFeed>(view,"feed").Items.Count==2 && fixture.MoreReads==2,"load-more retry appends once");
             Layout(view,1240,1000);Field<ScrollViewer>(view,"scroller").ScrollToEnd();Layout(view,1240,1000);
             Render(view,1240,1000,Path.Combine(output,"native-usage-tables.png"));
             var channel=Field<ComboBox>(view,"channelSelector");
             channel.SelectedIndex=2;await Until(()=>fixture.LastAttemptQuery.Contains("channel=CLI"));
+            // A10：汇总请求同样携带通道筛选，统计卡/趋势/明细口径一致。
+            Require(fixture.LastSummaryQuery.Contains("channel=CLI"),"summary follows the selected channel (A10)");
+
+            // A12：维度选项来自独立 facets（不随当前汇总结果增减），模型跟随供应商联动。
+            string[] Options(ComboBox box)=>box.Items.OfType<ComboBoxItem>().Select(i=>(string?)i.Tag).Where(t=>t!.Length>0).ToArray()!;
+            var provider=Field<ComboBox>(view,"providerSelector");
+            Require(Options(provider).SequenceEqual(new[]{"Codex CLI","Google"}),"provider options come from facets (A12)");
+            Require(Options(Field<ComboBox>(view,"modelSelector")).SequenceEqual(new[]{"codex-imagegen","gemini-3.1-flash-image"}),
+                "model options cover every provider by default (A12)");
+            provider.SelectedItem=provider.Items.OfType<ComboBoxItem>().Single(i=>(string?)i.Tag=="Google");
+            await Until(()=>Options(Field<ComboBox>(view,"modelSelector")).SequenceEqual(new[]{"gemini-3.1-flash-image"}));
+            Require((Field<ComboBox>(view,"modelSelector").SelectedItem as ComboBoxItem)!.Tag as string=="",
+                "provider switch clears the incompatible model selection (A12)");
+            provider.SelectedItem=provider.Items.OfType<ComboBoxItem>().Single(i=>(string?)i.Tag=="");
+            await Until(()=>Options(Field<ComboBox>(view,"modelSelector")).Length==2);
+
+            // A13：项目列表读取失败不中止用量数据、不伪装成“没有项目”，可独立重试。
+            fixture.FailProjects=true;
+            await Invoke(view,"LoadProjectsAsync");
+            Require(Field<StackPanel>(view,"dimensionBar").Visibility==Visibility.Visible
+                && Desc(view).OfType<TextBlock>().Any(t=>t.Text.Contains("筛选选项读取失败")&&t.Text.Contains("项目")),
+                "project read failure surfaces with a retry (A13)");
+            Require(Field<ComboBox>(view,"projectSelector").Items.OfType<ComboBoxItem>().Count()==2,
+                "existing project options survive the failure (A13)");
+            await Invoke(view,"LoadAsync");
+            Require(Field<UsageKpiPanel>(view,"kpiRow").Children.Count==4,"usage data still loads while projects fail (A13)");
+            fixture.FailProjects=false;
+            Click(Desc(view).OfType<Button>().Single(b=>Equals(b.Content,"重试项目")));
+            await Until(()=>Field<StackPanel>(view,"dimensionBar").Visibility==Visibility.Collapsed);
+
             var since=Field<DatePicker>(view,"sinceDate");var until=Field<DatePicker>(view,"untilDate");
             since.SelectedDate=new DateTime(2026,9,13);until.SelectedDate=new DateTime(2026,9,12);
             int reads=fixture.SummaryReads;Field<ComboBox>(view,"rangeSelector").SelectedIndex=3;
@@ -114,15 +148,59 @@ internal static class NativeUsagePageChecks
             fixture.Empty=true;await Invoke(view,"LoadAsync");Layout(view,1240,900);
             Render(view,1240,900,Path.Combine(output,"native-usage-empty.png"));
             Require(Field<TextBlock>(view,"summaryLine").Text.Contains("暂无调用记录"),"empty state");
-            fixture.Fail=true;await Invoke(view,"LoadAsync");
-            Require(Field<TextBlock>(view,"summaryLine").Text.Contains("加载失败"),"failed read feedback");
-            fixture.Fail=false;fixture.Empty=false;await Invoke(view,"LoadAsync");
+            // A14：汇总失败不阻止明细分区渲染，失败分区就地提示并提供重试。
+            fixture.Fail=true;fixture.Empty=false;await Invoke(view,"LoadAsync");
+            Require(Field<TextBlock>(view,"summaryLine").Text.Contains("用量汇总读取失败"),"failed summary read feedback");
+            Require(Field<UsageAttemptFeed>(view,"feed").Items.Count==1,$"attempts partition rows (got {Field<UsageAttemptFeed>(view,"feed").Items.Count})");
+            Require(Field<Button>(view,"summaryRetry").Visibility==Visibility.Visible,"summary retry appears (A14)");
+            fixture.Fail=false;fixture.FailAttempts=true;await Invoke(view,"LoadAsync");
+            Require(Field<UsageKpiPanel>(view,"kpiRow").Children.Count==4,"summary partition renders while attempts fail (A14)");
+            Require(Desc(Field<StackPanel>(view,"attemptsTable")).OfType<TextBlock>().Any(t=>t.Text.Contains("调用明细读取失败")),
+                "attempts failure shows an inline error (A14)");
+            fixture.FailAttempts=false;
+            Click(Desc(view).OfType<Button>().Single(b=>Equals(b.Content,"重试明细")));
+            await Until(()=>Field<UsageAttemptFeed>(view,"feed").Items.Count==1);
             Require(Field<UsageKpiPanel>(view,"kpiRow").Children.Count==4,"reload recovers populated state");
             Click(Desc(view).OfType<Button>().Single(b=>Equals(b.Content,"设置首页")));Require(destination=="settings","settings link");
             Click(Desc(view).OfType<Button>().Single(b=>Equals(b.Content,"返回项目")));Require(destination=="home","home link");
             var csv=typeof(UsageView).GetMethod("Csv",BindingFlags.NonPublic|BindingFlags.Static)!;
             Require((string)csv.Invoke(null,new object[]{"=1+1"})! == "'=1+1","existing CSV formula guard");
-            Console.WriteLine("PASS: usage 1440/1240/760/360 layouts, 4 KPIs, three trend metrics, currency isolation, calendar gaps, unknown values, budget edit, paginated retry, invalid dates, empty/error/reload and navigation.");
+
+            // A11：CSV 序列化契约——估算每币种一行、账单第二区块、转义与公式
+            // 前缀守卫、未知金额不写成零、文化无关的小数格式。
+            var buildCsv=typeof(UsageView).GetMethod("BuildUsageCsv",BindingFlags.NonPublic|BindingFlags.Static)!;
+            var amountText=typeof(UsageView).GetMethod("AmountText",BindingFlags.NonPublic|BindingFlags.Static)!;
+            using var csvSummary=JsonDocument.Parse(
+                """{"groups":[{"day":"2026-09-09","provider":"=SUM(A1)","model_id":"model,with\"quote","channel":"HTTP_API","attempt_count":3,"succeeded_count":2,"failed_count":1,"pending_count":0,"input_tokens":100,"output_tokens":50,"estimated_costs":[{"currency":"CNY","amount":"60.00"},{"currency":"USD","amount":2.5}],"usage_status_counts":{"COMPLETE":2}}],"billed":[{"period_start":"2026-09-01","period_end":"2026-09-14","provider":"Google","model_id":"gemini","channel":"HTTP_API","billing_account_id":"acct-1","currency":"CNY","billed_amount":"100.00","entered_by":"ops","source_note":"发票对账"}]}""");
+            var csvText=(string)buildCsv.Invoke(null,new object[]{csvSummary.RootElement})!;
+            var lines=csvText.Split("\r\n");
+            Require(lines[0].Split(',').Length==15,"csv keeps 15 estimate columns (A11)");
+            Require(csvText.Contains("60.00")&&csvText.Contains("2.5"),"per-currency rows keep the original amount format");
+            Require(csvText.Contains("'=SUM(A1)"),"formula prefix guarded in provider cells (A11)");
+            Require(csvText.Contains("\"model,with\"\"quote\""),"commas and quotes escaped (A11)");
+            var blank=Array.IndexOf(lines,"");
+            Require(blank==3&&lines[blank+1].StartsWith("类型,账期开始"),"billed block follows a blank separator line (A11)");
+            Require(lines[blank+2].Contains("账单对账")&&lines[blank+2].Contains("100.00"),"billed reconciliation row serialized (A11)");
+            using var billedOnly=JsonDocument.Parse(
+                """{"groups":[],"billed":[{"period_start":"2026-09-01","period_end":"2026-09-14","provider":"Google","model_id":"gemini","channel":"HTTP_API","billing_account_id":null,"currency":"CNY","billed_amount":null,"entered_by":"ops","source_note":null}]}""");
+            var billedCsv=(string)buildCsv.Invoke(null,new object[]{billedOnly.RootElement})!;
+            Require(!billedCsv.Contains("无估算数据"),"billed-only export skips estimate placeholder rows (A11)");
+            Require((string)amountText.Invoke(null,new object[]{billedOnly.RootElement.GetProperty("billed")[0],"billed_amount"})=="",
+                "unknown billed amount stays empty, never zero (A11)");
+            typeof(UsageView).GetMethod("RenderBilled",BindingFlags.NonPublic|BindingFlags.Instance)!.Invoke(view,
+                new object[]{billedOnly.RootElement.GetProperty("billed").EnumerateArray().ToList()});
+            Require(Desc(Field<StackPanel>(view,"billedTable")).OfType<TextBlock>().Any(t=>t.Text=="金额未知"),
+                "unknown billed amount is not rendered as zero (A11)");
+            var culture=System.Globalization.CultureInfo.CurrentCulture;
+            System.Threading.Thread.CurrentThread.CurrentCulture=System.Globalization.CultureInfo.GetCultureInfo("de-DE");
+            try
+            {
+                using var numberAmount=JsonDocument.Parse("""{"amount":1234.56}""");
+                Require((string)amountText.Invoke(null,new object[]{numberAmount.RootElement,"amount"})=="1234.56",
+                    "csv numeric amounts are culture-invariant (A11)");
+            }
+            finally{System.Threading.Thread.CurrentThread.CurrentCulture=culture;}
+            Console.WriteLine("PASS: usage layouts, 4 KPIs, three trend metrics, currency isolation, calendar gaps, unknown values, budget edit, paginated inline retry, channel parity for summary+attempts (A10), facets dimensions with provider linkage (A12), project retry (A13), partitioned summary/attempts errors (A14), csv contract incl. billed block/escaping/invariant amounts (A11), invalid dates, empty/reload and navigation.");
             Console.WriteLine("HTTP fixtures/offscreen WPF only. Real backend, CSV file dialog/write, detail modal, native high-DPI and frame timing NOT RUN.");
         }
         finally{view.Deactivate();}
@@ -148,9 +226,9 @@ internal static class NativeUsagePageChecks
     private static void Render(FrameworkElement e, int w, int h, string path) { Layout(e, w, h); var bitmap = new RenderTargetBitmap(w, h, 96, 96, PixelFormats.Pbgra32); bitmap.Render(e); var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap)); using var f = File.Create(path); encoder.Save(f); }
     private sealed class Fixture:HttpMessageHandler
     {
-        internal bool Fail,FailMore,Empty;
+        internal bool Fail,FailMore,Empty,FailProjects,FailAttempts;
         internal int SummaryReads,MoreReads;
-        internal string LastAttemptQuery="";
+        internal string LastAttemptQuery="",LastSummaryQuery="";
         private static object Group(string day,string provider,string model,int count,long? tokens,long? images,object[] costs)=>new {
             day,provider,model_id=model,channel=provider=="Codex CLI"?"CLI":"HTTP_API",attempt_count=count,succeeded_count=count-1,failed_count=1,pending_count=0,
             input_tokens=tokens,output_tokens=tokens/2,cached_input_tokens=tokens/4,output_images=images,estimated_costs=costs,usage_status_counts=new{COMPLETE=count-1,UNKNOWN=1} };
@@ -158,10 +236,14 @@ internal static class NativeUsagePageChecks
         {
             Require(request.Method==HttpMethod.Get,"usage UI must not mutate backend");
             var path=request.RequestUri!.AbsolutePath;
-            if(path.EndsWith("/projects"))return Task.FromResult(Response("[{\"id\":\"project-1\",\"name\":\"雨夜来信\"}]"));
+            if(path.EndsWith("/projects"))
+            {
+                if(FailProjects)return Task.FromResult(Response("{\"detail\":\"项目服务暂时不可用\"}",HttpStatusCode.ServiceUnavailable));
+                return Task.FromResult(Response("[{\"id\":\"project-1\",\"name\":\"雨夜来信\"}]"));
+            }
             if(path.EndsWith("/summary"))
             {
-                SummaryReads++;
+                SummaryReads++;LastSummaryQuery=request.RequestUri.Query;
                 if(Fail)return Task.FromResult(Response("{\"detail\":\"服务暂时不可用\"}",HttpStatusCode.ServiceUnavailable));
                 object[] groups=Empty?[]:[
                     Group("2026-09-09","Google","gemini-3.1-flash-image",5,1200,2,[new{currency="CNY",amount="60.00"},new{currency="USD",amount="2.00"}]),
@@ -173,6 +255,7 @@ internal static class NativeUsagePageChecks
             if(path.EndsWith("/attempts"))
             {
                 LastAttemptQuery=request.RequestUri.Query;
+                if(FailAttempts)return Task.FromResult(Response("{\"detail\":\"明细服务暂时不可用\"}",HttpStatusCode.ServiceUnavailable));
                 bool more=request.RequestUri.Query.Contains("cursor=");
                 if(more){MoreReads++;if(FailMore)return Task.FromResult(Response("{\"detail\":\"分页暂时失败\"}",HttpStatusCode.ServiceUnavailable));}
                 object[] items=Empty?[]:[new{id=more?"a2":"a1",started_at="2026-09-12T12:34:00Z",channel=more?"CLI":"HTTP_API",

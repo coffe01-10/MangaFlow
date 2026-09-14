@@ -31,6 +31,9 @@ public sealed partial class ProjectSettingsView : WorkspaceView
     private JsonElement project;
     private int version;
     private List<ModelOption> textModels = [];
+    // 渲染时建立 选项值 → 模型 的映射（A04）：Save 据此判断选中的是目录模型还是
+    // 旧 alias，不依赖可能在保存响应后变化的 project 快照。
+    private readonly Dictionary<string, ModelOption> optionRoutes = new();
     private bool saving;
     private System.Timers.Timer? successTimer;
     // #469: 未保存编辑标记——本页是可编辑表单（含危险区），F5/切节/切项目/关窗
@@ -178,23 +181,34 @@ public sealed partial class ProjectSettingsView : WorkspaceView
         settings.Children.Add(PolicyNote("MODEL POLICY", "图片模型按任务选择", "项目不绑定图片“主模型”。每次生成候选都必须明确选择供应商模型，以保持画风一致。"));
 
         modelSelector.Items.Clear();
+        optionRoutes.Clear();
         modelSelector.Items.Add(new ComboBoxItem { Tag = "auto", Content = "自动路由 · 已验证文字/视觉模型" });
-        foreach (var option in textModels)
-            modelSelector.Items.Add(new ComboBoxItem
-            {
-                Tag = option.Value,
-                Content = option.Label + (option.Hidden ? "（已隐藏）" : ""),
-            });
         var currentTextModel = project.Text("default_text_model_id");
         var currentAlias = project.Text("text_model_alias");
-        var known = textModels.FirstOrDefault(m => m.Value == currentTextModel || m.Value == currentAlias);
-        if (known == null && (currentTextModel.Length > 0 || currentAlias.Length > 0))
+        // A04/web textModelOptionValue：选项值默认取 catalog_id，仅当某模型的旧
+        // logical_alias 恰为当前存储的 text_model_alias 时用 alias（让现状能正确
+        // 回显为选中项）。catalog_id 缺失的旧响应回退 Value，保持兼容。
+        string RouteOf(ModelOption m) =>
+            currentTextModel.Length > 0 && m.CatalogId == currentTextModel ? m.CatalogId
+            : currentAlias.Length > 0 && m.Value == currentAlias && m.Value != m.CatalogId ? m.Value
+            : m.CatalogId.Length > 0 ? m.CatalogId : m.Value;
+        foreach (var option in textModels)
         {
-            var keep = currentTextModel.Length > 0 ? currentTextModel : currentAlias;
-            modelSelector.Items.Add(new ComboBoxItem { Tag = keep, Content = $"当前配置 · {keep}" });
-            Select(modelSelector, keep);
+            var route = RouteOf(option);
+            optionRoutes[route] = option;
+            modelSelector.Items.Add(new ComboBoxItem
+            {
+                Tag = route,
+                Content = option.Label + (option.Hidden ? "（已隐藏）" : ""),
+            });
         }
-        else if (known != null) Select(modelSelector, known.Value);
+        var currentRoute = currentTextModel.Length > 0 ? currentTextModel : currentAlias;
+        if (currentRoute.Length > 0 && !optionRoutes.ContainsKey(currentRoute))
+        {
+            modelSelector.Items.Add(new ComboBoxItem { Tag = currentRoute, Content = $"当前配置 · {currentRoute}" });
+            Select(modelSelector, currentRoute);
+        }
+        else if (currentRoute.Length > 0) Select(modelSelector, currentRoute);
         else modelSelector.SelectedIndex = 0;
         var textPanel = new StackPanel { Children = { Labelled("剧本、风格分析与视觉检查", modelSelector) } };
         textPanel.Children.Add(Caption("自动路由只使用已完成能力测试的模型"));
@@ -284,6 +298,24 @@ public sealed partial class ProjectSettingsView : WorkspaceView
     private static string CheckedSegment(StackPanel group) =>
         group.Children.OfType<ToggleButton>().FirstOrDefault(t => t.IsChecked == true) is { Content: string value } ? value : "1K";
 
+    private string CurrentRoute() => modelSelector.SelectedItem is ComboBoxItem { Tag: string tag } ? tag : "auto";
+
+    // A02/web #650：提交那一刻的表单快照（含危险区确认名）。响应落地时只有表单
+    // 未再变化才清脏；在途新编辑保留显示并继续标脏，第二次保存携带新值与新版本。
+    private string FormSnapshot(string route) => string.Join('\u0001',
+        CheckedMode(), CheckedSegment(draftGroup), CheckedSegment(finalGroup),
+        concurrencyInput.Text.Trim(), consistencySwitch.IsChecked == true ? "1" : "0", route, nameForDelete.Text);
+
+    private void ShowSuccess(string message)
+    {
+        if (saveSuccess.Child is TextBlock text) text.Text = message;
+        saveSuccess.Visibility = Visibility.Visible;
+        successTimer?.Stop();
+        successTimer = new System.Timers.Timer(4000) { AutoReset = false };
+        successTimer.Elapsed += (_, _) => Dispatcher.BeginInvoke(() => saveSuccess.Visibility = Visibility.Collapsed);
+        successTimer.Start();
+    }
+
     private async void Save(object sender, RoutedEventArgs e)
     {
         if (saving || project.ValueKind == JsonValueKind.Undefined) return;
@@ -293,19 +325,21 @@ public sealed partial class ProjectSettingsView : WorkspaceView
             saveError.Visibility = Visibility.Visible;
             return;
         }
-        var route = modelSelector.SelectedItem is ComboBoxItem { Tag: string tag } ? tag : "auto";
+        var route = CurrentRoute();
         string? textModelId = null, textAlias = null;
         if (route != "auto")
         {
-            if (textModels.Any(m => m.Value == route && m.Value == project.Text("default_text_model_id")))
-                textModelId = route;
-            else if (route == project.Text("default_text_model_id"))
-                textModelId = route;
-            else textAlias = route;
+            // A04/web selectingLegacyAlias：只有选中的值恰是某模型的旧 alias
+            // （logical_alias ≠ catalog_id）才写 text_model_alias；新选目录模型一律
+            // 写 default_text_model_id。auto 两者都清空。
+            if (optionRoutes.TryGetValue(route, out var chosen) && route == chosen.Value && route != chosen.CatalogId)
+                textAlias = route;
+            else textModelId = route;
         }
         saving = true;
         saveButton.IsEnabled = false;
         saveError.Visibility = Visibility.Collapsed;
+        var submitted = FormSnapshot(route);
         try
         {
             var saved = await Api.SendAsync($"projects/{ProjectId}", HttpMethod.Patch, new
@@ -321,12 +355,18 @@ public sealed partial class ProjectSettingsView : WorkspaceView
             }, cancellation: lifetime.Token);
             version = saved.Number("version");
             project = saved;
-            dirty = false;
-            saveSuccess.Visibility = Visibility.Visible;
-            successTimer?.Stop();
-            successTimer = new System.Timers.Timer(4000) { AutoReset = false };
-            successTimer.Elapsed += (_, _) => Dispatcher.BeginInvoke(() => saveSuccess.Visibility = Visibility.Collapsed);
-            successTimer.Start();
+            if (submitted != FormSnapshot(CurrentRoute()))
+            {
+                // 请求期间又有新编辑（含删除确认名）：保留显示与脏标记，第二次
+                // 保存携带新值和新版本；成功提示明确说“之后又有新修改”。
+                dirty = true;
+                ShowSuccess("项目设置已保存，之后又有新修改");
+            }
+            else
+            {
+                dirty = false;
+                ShowSuccess("项目设置已保存");
+            }
         }
         catch (OperationCanceledException)
         {
@@ -336,6 +376,29 @@ public sealed partial class ProjectSettingsView : WorkspaceView
             saveError.Text = "保存已取消，提交结果未知，请刷新后确认";
             saveError.Visibility = Visibility.Visible;
             State.Status = "项目设置保存已取消，提交结果未知，请刷新后确认";
+        }
+        catch (ApiException conflict) when (conflict.Status == 409)
+        {
+            // A03/web invalidateQueries：409 = 乐观版本落后（另一端先保存）。静默
+            // 重读服务端只推进 version/project 元数据、不重绘表单——本地草稿原样
+            // 保留；下一次保存自动携带服务器当前版本，而不是停在旧值上无限 409，
+            // 也不用「取消 dirty 守卫」这种会丢稿的捷径。
+            try
+            {
+                var fresh = await Api.SendAsync($"projects/{ProjectId}", cancellation: lifetime.Token);
+                if (!lifetime.Token.IsCancellationRequested)
+                {
+                    version = fresh.Number("version");
+                    project = fresh;
+                }
+                saveError.Text = "检测到其他端保存了较新版本，本地修改已保留。已同步最新版本号；再次保存将覆盖远端修改，如需改用远端内容请先记下本地改动再刷新。";
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception recovery) when (recovery is not OperationCanceledException)
+            {
+                saveError.Text = conflict.Message + $"\n自动同步最新版本失败：{recovery.Message}。本地修改已保留，请稍后重试保存。";
+            }
+            saveError.Visibility = Visibility.Visible;
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {

@@ -105,10 +105,66 @@ internal static class NativeProjectSettingsPageChecks
             scroll.ScrollToEnd(); Layout(view, 1240, 900);
             Require(save.TranslatePoint(new Point(), view).Y < 100 && success.TranslatePoint(new Point(), view).Y < 180, "save and feedback stay above scrolled form");
             Render(view, 1240, 900, Path.Combine(output, "native-project-settings-saved.png"));
+            // A02：保存期间的新编辑不得被提交时的旧响应静默清脏——提交 2 后改 8，
+            // 响应落地仍显示 8、继续标脏，成功提示说明“之后又有新修改”；第二次
+            // 保存携带 8 与新版本（web submittedDraftRef/sameProjectDraft 同款）。
+            input.Text = "2";
+            fixture.Gate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            Click(save); await Until(() => fixture.Patches == 2);
+            input.Text = "8";
+            fixture.Gate.SetResult(true); await Until(() => save.IsEnabled);
+            Require(input.Text == "8" && Field<bool>(view, "dirty"), "edits during save stay visible and dirty");
+            Require(success.Visibility == Visibility.Visible
+                && (success.Child as TextBlock)!.Text.Contains("之后又有新修改"), "in-flight edit notice distinguishes the newer edits");
+            Click(save); await Until(() => save.IsEnabled);
+            Require(fixture.Patches == 3 && fixture.LastPayload.Number("default_concurrency") == 8
+                && fixture.LastPayload.Number("version") == 5, "second save carries the newer value and refreshed version");
+            Require(!Field<bool>(view, "dirty"), "clean form after the second save");
+
+            // A04：目录模型/旧 alias 的写入字段区分。
+            var selector = Field<ComboBox>(view, "modelSelector");
+            var catalogOption = selector.Items.OfType<ComboBoxItem>().Single(i => (string?)i.Tag == "cat-new");
+            selector.SelectedItem = catalogOption;
+            Click(save); await Until(() => fixture.Patches == 4);
+            Require(fixture.LastPayload.Text("default_text_model_id") == "cat-new"
+                && fixture.LastPayload.GetProperty("text_model_alias").ValueKind == JsonValueKind.Null,
+                "new catalog model writes default_text_model_id, not the alias");
+            fixture.State["text_model_alias"] = "legacy-alias";
+            fixture.State["default_text_model_id"] = null;
+            await (Task)typeof(ProjectSettingsView).GetMethod("LoadAsync", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(view, null)!;
+            await Until(() => save.IsEnabled);
+            selector = Field<ComboBox>(view, "modelSelector");
+            Require((selector.SelectedItem as ComboBoxItem)!.Tag as string == "legacy-alias"
+                && selector.Items.OfType<ComboBoxItem>().Any(i => i.Content is string label && label.EndsWith("（已隐藏）")),
+                "legacy alias round-trips as the selected route and hidden models stay labelled");
+            Click(save); await Until(() => fixture.Patches == 5);
+            Require(fixture.LastPayload.GetProperty("default_text_model_id").ValueKind == JsonValueKind.Null
+                && fixture.LastPayload.Text("text_model_alias") == "legacy-alias",
+                "explicit legacy alias selection keeps text_model_alias");
+            fixture.State["text_model_alias"] = null;
+            fixture.State["default_text_model_id"] = "gone-model";
+            await (Task)typeof(ProjectSettingsView).GetMethod("LoadAsync", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(view, null)!;
+            await Until(() => save.IsEnabled);
+            selector = Field<ComboBox>(view, "modelSelector");
+            var kept = (selector.SelectedItem as ComboBoxItem)!;
+            Require((string?)kept.Tag == "gone-model" && (kept.Content as string)!.StartsWith("当前配置 · "),
+                "model missing from the catalog stays visible as the current configuration");
+
             fixture.Gate = null; fixture.Conflict = true;
-            input.Text = "7"; Click(save); await Until(() => save.IsEnabled);
-            Require(fixture.Patches == 2 && error.Visibility == Visibility.Visible && error.Text.Contains("刷新")
-                && success.Visibility == Visibility.Collapsed && input.Text == "7", "conflict preserves edits and exposes actionable error");
+            var readsBeforeConflict = fixture.Reads;
+            // A04 的重载换过控件实例：并发输入框必须实时反射获取。
+            Field<TextBox>(view, "concurrencyInput").Text = "7"; Click(save);
+            await Until(() => save.IsEnabled && fixture.Reads > readsBeforeConflict);
+            // A03：409 后本地编辑保留 + 静默重读服务端版本（不重绘表单），下一次
+            // 保存携带服务器当前版本而不是停在旧值上循环 409。
+            Require(fixture.Patches == 6 && error.Visibility == Visibility.Visible && error.Text.Contains("本地修改已保留")
+                && success.Visibility == Visibility.Collapsed && Field<TextBox>(view, "concurrencyInput").Text == "7", "conflict preserves edits and exposes actionable error");
+            Require(Field<int>(view, "version") == 9, "conflict recovery synced the server version");
+            Click(save); await Until(() => save.IsEnabled);
+            Require(fixture.Patches == 7, $"retry patch count (got {fixture.Patches})");
+            Require(fixture.LastPayload.Number("version") == 9, $"retry carries synced version (got {fixture.LastPayload.Number("version")})");
+            Require(fixture.LastPayload.Number("default_concurrency") == 7, $"retry carries preserved concurrency (got {fixture.LastPayload.Number("default_concurrency")})");
+            Require(success.Visibility == Visibility.Visible, $"retry success feedback (error text: {Field<TextBlock>(view, "saveError").Text})");
             Render(view, 1240, 900, Path.Combine(output, "native-project-settings-conflict.png"));
             var delete = Field<Button>(view, "deleteButton");
             var name = Field<TextBox>(view, "nameForDelete");
@@ -125,7 +181,7 @@ internal static class NativeProjectSettingsPageChecks
             Render(view, 1240, 900, Path.Combine(output, "native-project-settings-read-error.png"));
             fixture.FailRead = false;
             Click(Desc(view).OfType<Button>().Single(b => Equals(b.Content, "重试"))); await Until(() => save.IsEnabled);
-            Require(Field<TextBox>(view, "concurrencyInput").Text == "8", "retry reloads server state");
+            Require(Field<TextBox>(view, "concurrencyInput").Text == "7", "retry reloads server state");
 
             // 无障碍：每个可交互控件必须有可用的 UIA 名——AutomationProperties
             // 显式名或字符串 Content 至少其一。基线数量防止「树没走到」的空转绿灯。
@@ -164,7 +220,7 @@ internal static class NativeProjectSettingsPageChecks
             Require(navigations[1].Section == "source" && navigations[1].Query != null,
                 "confirmed leave navigates with a non-null query");
 
-            Console.WriteLine("PASS: project settings 1240/940/650/360 layouts, pinned save/feedback, exclusive resolutions, input validation, PATCH payload/version, pending deduplication, conflict, exact delete-name gate, rerender, read retry, UIA names, back navigation.");
+            Console.WriteLine("PASS: project settings layouts, pinned save/feedback, exclusive resolutions, input validation, PATCH payload/version, pending deduplication, in-flight edit protection (A02), conflict version sync + retry (A03), catalog/alias routing (A04), exact delete-name gate, rerender, read retry, UIA names, back navigation.");
             Console.WriteLine("Offscreen WPF and HTTP fixtures only; live backend, deletion, providers, high-DPI windows and frame timing NOT RUN.");
         }
         finally { Field<System.Timers.Timer?>(view, "successTimer")?.Dispose(); view.Deactivate(); }
@@ -190,9 +246,10 @@ internal static class NativeProjectSettingsPageChecks
     private sealed class Fixture : HttpMessageHandler
     {
         internal bool Conflict, FailRead;
-        internal int Patches;
+        internal int Patches, Reads;
         internal JsonElement LastPayload;
         internal TaskCompletionSource<bool>? Gate;
+        internal Dictionary<string, object?> State => project;
         private Dictionary<string, object?> project = new() {
             ["id"] = "layout", ["name"] = "我最讨厌妹妹了", ["workflow_mode"] = "SEMI_AUTO",
             ["draft_resolution"] = "1K", ["default_resolution"] = "2K", ["default_concurrency"] = 2,
@@ -204,7 +261,13 @@ internal static class NativeProjectSettingsPageChecks
                 Require(request.RequestUri!.AbsolutePath.EndsWith("/projects/layout"), "unexpected mutation path");
                 LastPayload = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token)).RootElement.Clone(); Patches++;
                 if (Gate != null) await Gate.Task.WaitAsync(token);
-                if (Conflict) return Response("{\"detail\":\"项目版本已更新，请刷新后再试\"}", HttpStatusCode.Conflict);
+                if (Conflict)
+                {
+                    // 一次性冲突 + 另一端已保存（服务端版本前进）：恢复路径的 GET 读到它。
+                    Conflict = false;
+                    project["version"] = LastPayload.Number("version") + 1;
+                    return Response("{\"detail\":\"项目版本已更新，请刷新后再试\"}", HttpStatusCode.Conflict);
+                }
                 foreach (var property in LastPayload.EnumerateObject()) project[property.Name] = property.Value.Clone();
                 project["version"] = LastPayload.Number("version") + 1;
                 return Response(JsonSerializer.Serialize(project));
@@ -212,7 +275,14 @@ internal static class NativeProjectSettingsPageChecks
             Require(request.Method == HttpMethod.Get, "unexpected mutation method");
             if (FailRead) return Response("{\"detail\":\"服务暂时不可用\"}", HttpStatusCode.ServiceUnavailable);
             if (request.RequestUri!.AbsolutePath.EndsWith("/models"))
-                return Response("[{\"model_type\":\"TEXT\",\"logical_alias\":\"text-fixture\",\"display_name\":\"已验证文字模型\",\"provider\":\"Fixture\",\"operations\":[\"structured_text\",\"multimodal_analysis\"]}]");
+                // A04：目录模型（catalog_id 与 logical_alias 相同）、旧别名模型
+                // （两者不同）与已隐藏模型三种形态。
+                return Response(JsonSerializer.Serialize(new object[] {
+                    new { model_type = "TEXT", catalog_id = "cat-new", logical_alias = "cat-new", display_name = "目录新模型", provider = "Fixture", display_enabled = true, operations = new[] { "structured_text", "multimodal_analysis" } },
+                    new { model_type = "TEXT", catalog_id = "cat-legacy", logical_alias = "legacy-alias", display_name = "旧别名模型", provider = "Fixture", display_enabled = true, operations = new[] { "structured_text", "multimodal_analysis" } },
+                    new { model_type = "TEXT", catalog_id = "cat-hidden", logical_alias = "cat-hidden", display_name = "已隐藏模型", provider = "Fixture", display_enabled = false, operations = new[] { "structured_text", "multimodal_analysis" } },
+                }));
+            Reads++;
             return Response(JsonSerializer.Serialize(project));
         }
         private static HttpResponseMessage Response(string json, HttpStatusCode status = HttpStatusCode.OK) => new(status) { Content = new StringContent(json) };

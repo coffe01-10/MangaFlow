@@ -170,11 +170,29 @@ public sealed partial class WorkflowView : WorkspaceView
                 // 的工作流，保存核按画布归属配对 (graph, id)（SaveNowCoreAsync）。
                 var leaving = workflowId;
                 workflowId = id;
-                await SaveNowAsync(leaving);
+                if (!await SaveNowAsync(leaving))
+                {
+                    // 离场 flush 失败：原工作流草稿还没落盘，绝不能切走（Load 会用
+                    // 服务端旧图覆盖画布）。回滚选择与目标 id，重新武装防抖，草稿
+                    // 原样保留在画布上等下一次保存。
+                    workflowId = leaving;
+                    SelectWorkflowItem(leaving);
+                    ScheduleSave();
+                    statusLine.Text = "切换已取消：当前工作流草稿保存未完成，请重试保存后再切换";
+                    return;
+                }
                 await LoadWorkflowAsync(id);
             }
         };
         return bar;
+    }
+
+    // 程序化回选不重入切换处理器：处理器首行就用 `id != workflowId` 挡住回选
+    // 自身（此刻 workflowId 已回滚为 leaving，条件为假）。
+    private void SelectWorkflowItem(string id)
+    {
+        foreach (var item in workflowSelector.Items.OfType<ComboBoxItem>())
+            if ((string?)item.Tag == id) { workflowSelector.SelectedItem = item; return; }
     }
 
     private FrameworkElement BuildRunner()
@@ -995,23 +1013,27 @@ public sealed partial class WorkflowView : WorkspaceView
 
     // 保存队列尾。所有调用点都在 UI 线程上，读写无需加锁；导航离开时也要
     // await 它，否则 Deactivate 取消令牌会腰斩在途 PATCH。
-    private Task saveChain = Task.CompletedTask;
+    // 返回值 = 本次保存核是否成功落盘（合法弃权——画布已换主/目标不匹配——
+    // 也算成功：那份图的待存编辑已由更早的 flush 落盘）。保存失败必须让调用
+    // 方看见：校验/发布/切换/导入/离开都会据此中止，避免校验旧草稿、发布旧
+    // 草稿或带着未落盘草稿切走（web workflow-studio 的 saveNow() 同款契约）。
+    private Task<bool> saveChain = Task.FromResult(true);
 
-    private Task SaveNowAsync(string? targetWorkflowId = null)
+    private Task<bool> SaveNowAsync(string? targetWorkflowId = null)
     {
         var previous = saveChain;
         var run = SaveAfterAsync(previous);
         saveChain = run;
         return run;
 
-        async Task SaveAfterAsync(Task before)
+        async Task<bool> SaveAfterAsync(Task before)
         {
             try { await before; } catch (Exception) { }   // 前一次失败不阻塞本次
-            await SaveNowCoreAsync(targetWorkflowId);
+            return await SaveNowCoreAsync(targetWorkflowId);
         }
     }
 
-    private async Task SaveNowCoreAsync(string? targetWorkflowId = null)
+    private async Task<bool> SaveNowCoreAsync(string? targetWorkflowId = null)
     {
         // #427: (归属 id, version, 图) 必须同一时刻快照。本核在保存队列里轮到执行
         // 时，画布可能已经换成别的工作流（或选择已先行切换）——URL 读"当前
@@ -1020,8 +1042,8 @@ public sealed partial class WorkflowView : WorkspaceView
         // 调用方点名的目标（防抖武装/切换离场 flush）已不等于画布归属时弃权：
         // 那份图的待存编辑已由更早的 flush 落盘，不会丢。
         var graphOwner = canvasWorkflowId;
-        if (graphOwner.Length == 0) return;
-        if (targetWorkflowId != null && targetWorkflowId != graphOwner) return;
+        if (graphOwner.Length == 0) return true;
+        if (targetWorkflowId != null && targetWorkflowId != graphOwner) return true;
         var graphVersion = version;   // PATCH 在途期间也可能切换：响应落地时不把旧工作流的版本号写进新工作流
         var generationAtSave = generation;
         UpdateStatus("保存中");
@@ -1030,22 +1052,50 @@ public sealed partial class WorkflowView : WorkspaceView
             var payload = BuildGraph();
             var saved = await Api.SendAsync($"workflows/{graphOwner}", HttpMethod.Patch,
                 new { version = graphVersion, draft_graph = payload }, cancellation: lifetime.Token);
-            if (lifetime.Token.IsCancellationRequested) return;
-            if (graphOwner != canvasWorkflowId) return;   // PATCH 在途时画布已换主：版本号/定义归属别的工作流，回写会制造伪 409
+            if (lifetime.Token.IsCancellationRequested) return true;
+            if (graphOwner != canvasWorkflowId) return true;   // PATCH 在途时画布已换主：版本号/定义归属别的工作流，回写会制造伪 409
             version = saved.Number("version");
             current = saved;
             if (generationAtSave == generation) UpdateStatus($"已保存 · 草稿 V{saved.Number("draft_version")}");
-            else await SaveNowCoreAsync(targetWorkflowId);   // new edits landed while saving（同槽递归，避免自我等待）
+            else return await SaveNowCoreAsync(targetWorkflowId);   // new edits landed while saving（同槽递归，避免自我等待）
+            return true;
         }
         catch (OperationCanceledException)
         {
-            // 导航/关闭取消在途保存：视图即将离场，吞掉令牌异常防止逃逸到 dispatcher
+            // 导航/关闭取消在途保存：视图即将离场，吞掉令牌异常防止逃逸到 dispatcher。
+            // 取消发生在离开路径上，调用方（离开/切换）不会再推进后续动作。
             UpdateStatus("保存已取消");
+            return true;
         }
         catch (Exception error)
         {
             UpdateStatus("保存失败");
             statusLine.Text = $"保存失败：{error.Message.Split('\n')[0]}";
+            // 409 = 本地 version 落后（另一端先保存/发布，或导航冲刷与显式保存赛跑）。
+            // 静默重拉服务端定义只推进 version/current，不回读图——本地草稿保持
+            // 原样，下一次保存自动携带服务器当前版本，而不是停在旧值上无限 409
+            // （web workflow-studio 的 invalidateQueries 同款语义）。
+            if (error is ApiException { Status: 409 } && graphOwner == canvasWorkflowId)
+                await RefreshWorkflowVersionAsync(graphOwner);
+            return false;
+        }
+    }
+
+    /// <summary>409 后只同步版本与定义元数据，绝不覆盖画布上的本地草稿图。</summary>
+    private async Task RefreshWorkflowVersionAsync(string targetId)
+    {
+        try
+        {
+            var fresh = await Api.SendAsync($"workflows/{targetId}", cancellation: lifetime.Token);
+            if (lifetime.Token.IsCancellationRequested || targetId != canvasWorkflowId) return;
+            version = fresh.Number("version");
+            current = fresh;
+            statusLine.Text = "检测到其他端已保存较新版本；已同步版本号，再次保存将覆盖远端草稿";
+        }
+        catch (Exception)
+        {
+            // 版本同步是尽力而为：失败时保持旧 version，用户重试保存仍会得到
+            // 带原始服务端明细的 409，不会静默变成本地数据丢失。
         }
     }
 
@@ -1068,7 +1118,13 @@ public sealed partial class WorkflowView : WorkspaceView
 
     private async Task ValidateAsync()
     {
-        await SaveNowAsync();
+        // 保存失败不得继续校验：POST validate 校验的是服务端草稿，本地最新编辑
+        // 没落盘时结果描述的是旧图（web workflow-studio："草稿保存失败，未校验"）。
+        if (!await SaveNowAsync())
+        {
+            statusLine.Text = "校验已取消：草稿保存未完成";
+            return;
+        }
         try
         {
             var report = await Api.SendAsync($"workflows/{workflowId}/validate", HttpMethod.Post, cancellation: lifetime.Token);
@@ -1089,7 +1145,14 @@ public sealed partial class WorkflowView : WorkspaceView
 
     private async Task PublishAsync()
     {
-        await SaveNowAsync();
+        // 发布是落不可变版本的动作：保存失败后继续发布会把旧草稿固化为正式版
+        // 本（web workflow-studio："草稿保存失败，未发布"）。必须先落盘再发布。
+        if (!await SaveNowAsync())
+        {
+            statusLine.Text = "发布已取消：草稿保存未完成，不会发布旧草稿";
+            State.Status = "工作流发布已阻止：草稿保存未完成";
+            return;
+        }
         try
         {
             await Api.SendAsync($"workflows/{workflowId}/publish", HttpMethod.Post, cancellation: lifetime.Token);
@@ -1135,7 +1198,17 @@ public sealed partial class WorkflowView : WorkspaceView
         // 再查就永远查不到武装状态），否则之前打开的工作流的待存编辑被静默丢弃。
         var pendingFlush = autosave is { Enabled: true };
         autosave?.Stop();
-        if (pendingFlush) await SaveNowAsync();
+        if (pendingFlush)
+        {
+            // 导入会换 workflowId：当前工作流的待存编辑没落盘就继续导入，
+            // 导入成功后旧草稿会被静默覆盖。保存失败时中止导入并重新武装防抖。
+            if (!await SaveNowAsync())
+            {
+                ScheduleSave();
+                statusLine.Text = "导入已取消：当前工作流草稿保存未完成，请重试保存后再导入";
+                return;
+            }
+        }
         else await saveChain;
         var dialog = new Microsoft.Win32.OpenFileDialog { Title = "导入工作流", Filter = "工作流 JSON|*.json" };
         if (dialog.ShowDialog(Host) != true) return;
@@ -1695,6 +1768,10 @@ public sealed partial class WorkflowView : WorkspaceView
         return Task.CompletedTask;
     }
 
+    // 测试缝：headless 检查无法驱动保存失败后的放弃/留下确认（ProjectSettingsView
+    // 的 LeaveConfirmOverride 同款目的）。null 时走 MessageBox。
+    internal Func<string, Task<bool>>? SaveFailLeaveOverride;
+
     public override async Task<bool> ConfirmLeaveAsync()
     {
         // Flush the debounced draft AND await any PATCH already in flight: returning
@@ -1704,16 +1781,29 @@ public sealed partial class WorkflowView : WorkspaceView
         // the last edits were silently lost on navigation.
         var pendingFlush = autosave is { Enabled: true };
         autosave?.Stop();
-        if (pendingFlush) await SaveNowAsync();
-        else await saveChain;
+        var saved = pendingFlush ? await SaveNowAsync() : await saveChain;
+        if (saved) return true;
+        // A01：保存失败后默认禁止离开（发布旧草稿/丢草稿的风险都在离场动作里）。
+        // 提供显式弃稿出口：用户明确选择放弃才放行，且选择留在本页时草稿原样
+        // 保留在画布上，重新武装防抖等待下一次保存。
+        var discard = SaveFailLeaveOverride is { } prompt
+            ? await prompt("当前工作流草稿保存失败。留在本页保留草稿稍后重试，或放弃未保存修改离开。")
+            : MessageBox.Show(Host, "当前工作流草稿保存失败。确定放弃未保存的修改并离开吗？\n（选择“否”可留在本页，草稿保留在画布上等待重试）",
+                "离开确认", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
+        if (!discard)
+        {
+            ScheduleSave();
+            return false;
+        }
         return true;
     }
 
     /// <summary>
     /// #428: 重连（重新连接 → ConnectAsync → OpenProjectAsync 同项目分支）在
-    /// 离开确认被拒绝时的保真激活。本视图的确认永远返回 true（防抖草稿先冲刷
-    /// 落盘），生产路径不会走到这里；保真语义按同一纪律兜底：重绑新 ApiClient
-    /// 后把武装中的防抖冲刷到服务端（画布节点/边原地保留，不整链重载）。
+    /// 离开确认被拒绝时的保真激活。本视图的确认默认放行（防抖草稿先冲刷
+    /// 落盘）；保存失败时会询问弃稿/留守（A01）。保真语义按同一纪律兜底：重绑
+    /// 新 ApiClient 后把武装中的防抖冲刷到服务端（画布节点/边原地保留，不整链
+    /// 重载）。
     /// </summary>
     internal async void ActivatePreservingDrafts(WorkspaceContext context)
     {

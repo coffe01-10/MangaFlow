@@ -7,6 +7,26 @@ using System.IO;
 
 namespace MangaFlow.Native.Services;
 
+/// <summary>
+/// 非 2xx 响应的结构化翻译：保留状态码与 detail 根形态，让调用方能可靠区分
+/// 404（资源不存在）/ 409（版本冲突）/ 5xx 等场景，而不是解析 Message 文本。
+/// 继承 InvalidOperationException：既有的 catch (Exception) 处理器与错误文案
+/// 展示零改动；Message 仍是 ThrowResponseError 产出的可读明细。
+/// </summary>
+public sealed class ApiException : InvalidOperationException
+{
+    public int Status { get; }
+    /// <summary>detail 根的 JSON 形态（String/Array/Object/未给 detail 时 Undefined），
+    /// 供调用点按后端契约读取结构化字段（如 409 blockers）。</summary>
+    public JsonElement Detail { get; }
+
+    public ApiException(string message, int status, JsonElement detail) : base(message)
+    {
+        Status = status;
+        Detail = detail;
+    }
+}
+
 public sealed class ApiClient : IDisposable
 {
     private readonly HttpClient client;
@@ -149,19 +169,23 @@ public sealed class ApiClient : IDisposable
     private static void ThrowResponseError(HttpResponseMessage response, string text, string fallbackLabel = "请求失败")
     {
         var detail = $"{fallbackLabel}（{(int)response.StatusCode}）";
+        JsonElement structured = default;
         try
         {
             using var error = JsonDocument.Parse(text);
             if (error.RootElement.ValueKind == JsonValueKind.Object &&
                 error.RootElement.TryGetProperty("detail", out var value))
+            {
                 detail = DescribeDetail(value, detail);
+                structured = value.Clone();
+            }
             else if (error.RootElement.ValueKind == JsonValueKind.String)
                 detail = error.RootElement.GetString() ?? detail;
         }
         catch (JsonException) { }
         if (response.StatusCode == HttpStatusCode.Conflict)
             detail = "数据已变化或操作条件不满足。请刷新后重试。\n" + detail;
-        throw new InvalidOperationException(detail.Length > 2000 ? detail[..2000] : detail);
+        throw new ApiException(detail.Length > 2000 ? detail[..2000] : detail, (int)response.StatusCode, structured);
     }
 
     private static string DescribeDetail(JsonElement value, string fallback)

@@ -437,12 +437,21 @@ public record ExportItem(string Id, string ExportType)
 
 public record ModelOption(string Value, string Label, string Provider, string ModelId, bool Hidden, bool Image)
 {
+    /// <summary>目录模型 ID（GET /models 的 catalog_id）。Value 承载的是 logical_alias
+    /// （后端 = legacy_alias 或回退 catalog_id），两者可能不同：项目设置的“新选目录
+    /// 模型”必须写 default_text_model_id=catalog_id，只有明确选中旧 alias 时才写
+    /// text_model_alias（web textModelOptionValue/selectingLegacyAlias 同款契约）。
+    /// 其他使用方（当前仅本项目设置页）不感知该字段，默认空串保持兼容。</summary>
+    public string CatalogId { get; init; } = "";
     public static ModelOption From(JsonElement m) => new(
         m.Text("logical_alias"),
         $"{m.Text("provider")} · {m.Text("display_name")}",
         m.Text("provider"), m.Text("model_id"),
         m.ValueKind == JsonValueKind.Object && m.TryGetProperty("display_enabled", out var display) && display.ValueKind == JsonValueKind.False,
-        m.Text("model_type") == "IMAGE");
+        m.Text("model_type") == "IMAGE")
+    {
+        CatalogId = m.Text("catalog_id"),
+    };
 }
 
 public class Observable : INotifyPropertyChanged
