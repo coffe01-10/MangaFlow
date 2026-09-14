@@ -2071,10 +2071,12 @@ export const api = {
     const body = JSON.stringify({ ...payload, version });
     // keepalive lets the workflow editor's beforeunload/visibilitychange
     // draft flush survive page teardown (an ordinary in-flight fetch is
-    // killed and the last debounced edit drops). keepalive caps the body
-    // at 64 KiB, so only opt in when the serialized payload fits.
+    // killed and the last debounced edit drops). The browser enforces the
+    // 64 KiB cap on the UTF-8 wire bytes — .length counts UTF-16 code
+    // units, so a CJK-heavy body (~3 bytes/char) would pass a length gate
+    // and then hard-fail the fetch; measure actual bytes.
     const init: RequestInit = { method: "PATCH", body };
-    if (body.length <= 60_000) init.keepalive = true;
+    if (new TextEncoder().encode(body).byteLength <= 60_000) init.keepalive = true;
     return request<WorkflowDefinition>(`/workflows/${workflowId}`, init);
   },
   validateWorkflow: (workflowId: string) => request<WorkflowValidation>(`/workflows/${workflowId}/validate`, { method: "POST" }),
